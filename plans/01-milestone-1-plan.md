@@ -8,7 +8,7 @@ Implement **Milestone 1 (Foundation, STEP Import, & `wgpu` CAD Viewport)** from 
 ## User Review Required
 
 > [!IMPORTANT]
-> **Environment Bootstrap Required:** This Ubuntu 26.04 workspace does not currently have `rustc`/`cargo` or Linux windowing/Vulkan headers installed. Upon plan approval, the first execution step will install the stable Rust toolchain via `rustup`, `cargo-deny`, and standard `apt` system headers (`build-essential`, `pkg-config`, X11/Wayland/xkbcommon headers, `libvulkan-dev`, `mesa-vulkan-drivers` Lavapipe, and `xvfb` for headless GPU test verification).
+> **Environment Bootstrap Required:** This Ubuntu 26.04 workspace does not currently have `rustc`/`cargo` or Linux windowing/Vulkan headers installed. Upon plan approval, Step 1 will first author [DEVELOPMENT.md](file:///workspace/ChipCutter/DEVELOPMENT.md) with contributor setup instructions, and Step 2 will run those exact Ubuntu commands (`apt` native headers + `rustup` stable + `cargo-deny`) to dogfood and verify the guide.
 
 To align with the latest 2026 Rust CAD ecosystem, `chip-cad` will use the actively maintained **`monstertruck`** crate family (`monstertruck-io`, `monstertruck-meshing`, `monstertruck-modeling` v0.4.x — the direct Apache-2.0 continuation of `truck`) encapsulated strictly behind the `CadKernel` trait. We will update [01-architecture.md](file:///workspace/ChipCutter/specs/01-architecture.md), [02-cad-selection.md](file:///workspace/ChipCutter/specs/02-cad-selection.md), and [AGENTS.md](file:///workspace/ChipCutter/AGENTS.md) accordingly.
 
@@ -48,11 +48,49 @@ flowchart TD
 
 ## Proposed Changes
 
-### 1. Environment Bootstrap, Spec Sync, & Workspace Configuration
-Install Rust stable (`1.85+` / Rust 2024 edition), Linux `winit`/`wgpu` native build dependencies, and `cargo-deny`, then initialize workspace-level manifests.
+### 1. Contributor Build Environment Guide (`DEVELOPMENT.md`)
+**Executed first—before installing any packages or modifying the system—**so contributor setup requirements are documented upfront and immediately dogfooded during Step 2.
+
+#### [NEW] [DEVELOPMENT.md](file:///workspace/ChipCutter/DEVELOPMENT.md)
+Comprehensive contributor onboarding and build-environment reference containing:
+1. **Toolchain & Rust Requirements:**
+   - **Rust `1.85+` (Edition 2024)** via `rustup` (`default` profile + `rustfmt` and `clippy` components).
+   - **`cargo-deny`** for enforcing ChipCutter's permissive-only dependency policy (`deny.toml`).
+   - **Zero C++ CAD Kernel Dependencies:** Explains that STEP loading and B-Rep meshing (`monstertruck`) and 2D offsetting (`cavalier_contours`) are 100% pure Rust—no system OpenCASCADE or CMake build required.
+2. **System Libraries Rationale Table:**
+   - C toolchain & `pkg-config` (linking native crates).
+   - Windowing & input headers on Linux (`libx11-dev`, `libxcb1-dev`, `libxcursor-dev`, `libxi-dev`, `libxrandr-dev`, `libxkbcommon-dev`, `libwayland-dev` for `eframe`/`winit`).
+   - Graphics API runtime/headers (`libvulkan-dev` + GPU Vulkan ICD on Linux; native Metal on macOS; native DX12/Vulkan on Windows for `wgpu 30`).
+   - Native file dialogs (`libgtk-3-dev` / `xdg-desktop-portal` for `rfd` on Linux).
+   - Headless CI / Container GPU testing (`mesa-vulkan-drivers` providing software Vulkan **Lavapipe** + `xvfb` virtual framebuffer).
+3. **Copy-Paste Contributor Setup Examples by Platform:**
+   - **Ubuntu 24.04 / 26.04 & Debian:**
+     ```bash
+     sudo apt-get update && sudo apt-get install -y --no-install-recommends \
+       ca-certificates curl build-essential pkg-config libssl-dev \
+       libx11-dev libxcb1-dev libxcursor-dev libxi-dev libxrandr-dev \
+       libxkbcommon-dev libwayland-dev libvulkan-dev libgtk-3-dev \
+       mesa-vulkan-drivers xvfb
+
+     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile default --component rustfmt,clippy
+     source "$HOME/.cargo/env"
+     cargo install --locked cargo-deny
+     ```
+   - **Fedora / RHEL (40+):** Equivalent `sudo dnf install ...` + `rustup` + `cargo-deny` recipe.
+   - **Arch Linux:** Equivalent `sudo pacman -S --needed ...` + `rustup` + `cargo-deny` recipe.
+   - **macOS (Apple Silicon & Intel):** `xcode-select --install` + `rustup` + `cargo-deny` (runs directly on Metal with no extra system packages).
+   - **Windows 10/11:** Visual Studio Build Tools (`Desktop development with C++` + Windows 10/11 SDK) + `rustup-init.exe` + `cargo-deny`.
+4. **Environment Verification & Developer Workflow Cheat Sheet:**
+   - Sanity-check commands (`rustc --version`, `cargo clippy`, `cargo deny check licenses`, `cargo test --workspace`), running the GUI vs. headless CLI, and troubleshooting common Linux Wayland/X11 or Lavapipe software-Vulkan issues.
+
+---
+
+### 2. Environment Bootstrap, Spec Sync, & Workspace Configuration
+Execute the Ubuntu 26.04 setup commands directly from [DEVELOPMENT.md](file:///workspace/ChipCutter/DEVELOPMENT.md) to bootstrap this workspace (and validate the documented steps firsthand), then sync specs and initialize workspace-level manifests.
 
 #### [MODIFY] [01-architecture.md](file:///workspace/ChipCutter/specs/01-architecture.md), [02-cad-selection.md](file:///workspace/ChipCutter/specs/02-cad-selection.md), & [AGENTS.md](file:///workspace/ChipCutter/AGENTS.md)
 - Update crate table references from legacy `truck-*` crate names to `monstertruck-io` (`step` feature), `monstertruck-modeling`, and `monstertruck-meshing` (`0.4.x`, Apache-2.0) behind `CadKernel`.
+- Add a pointer to [DEVELOPMENT.md](file:///workspace/ChipCutter/DEVELOPMENT.md) in [AGENTS.md](file:///workspace/ChipCutter/AGENTS.md) for contributor/build environment setup.
 
 #### [NEW] [Cargo.toml](file:///workspace/ChipCutter/Cargo.toml)
 ```toml
@@ -105,7 +143,7 @@ rfd = "0.15"
 
 ---
 
-### 2. Canonical Math, Geometry, & Expression Crate (`crates/chip-math`)
+### 3. Canonical Math, Geometry, & Expression Crate (`crates/chip-math`)
 Pure `f64` millimeter math foundation with zero UI/GPU dependencies.
 
 #### [NEW] [lib.rs](file:///workspace/ChipCutter/crates/chip-math/src/lib.rs) & [units.rs](file:///workspace/ChipCutter/crates/chip-math/src/units.rs)
@@ -126,7 +164,7 @@ Pure `f64` millimeter math foundation with zero UI/GPU dependencies.
 
 ---
 
-### 3. CAD Kernel, STEP Pipeline, & Spatial Picking (`crates/chip-cad`)
+### 4. CAD Kernel, STEP Pipeline, & Spatial Picking (`crates/chip-cad`)
 Isolates `monstertruck` behind `CadKernel` and produces exact `f64` B-Rep metadata alongside `FaceId`/`EdgeId`-tagged tessellations.
 
 #### [NEW] [model.rs](file:///workspace/ChipCutter/crates/chip-cad/src/model.rs) & [kernel.rs](file:///workspace/ChipCutter/crates/chip-cad/src/kernel.rs)
@@ -180,7 +218,7 @@ pub trait CadKernel: Send + Sync {
 
 ---
 
-### 4. Headless CLI Inspector (`crates/chip-cli`)
+### 5. Headless CLI Inspector (`crates/chip-cli`)
 Proves `AGENTS.md` Invariant #1 (UI-agnostic core) from Milestone 1.
 
 #### [NEW] [main.rs](file:///workspace/ChipCutter/crates/chip-cli/src/main.rs)
@@ -188,7 +226,7 @@ Proves `AGENTS.md` Invariant #1 (UI-agnostic core) from Milestone 1.
 
 ---
 
-### 5. Desktop GUI & `wgpu` 3D CAD Viewport (`crates/chip-gui`)
+### 6. Desktop GUI & `wgpu` 3D CAD Viewport (`crates/chip-gui`)
 Responsive `eframe` + `egui_tiles` workspace with custom 4x MSAA CAD rendering.
 
 #### [NEW] [camera.rs](file:///workspace/ChipCutter/crates/chip-gui/src/camera.rs)
