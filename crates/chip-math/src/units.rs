@@ -3,6 +3,9 @@ use serde::{Deserialize, Serialize};
 /// Exact international inch definition in millimeters.
 pub const MM_PER_INCH: f64 = 25.4;
 
+/// Exact international foot definition in meters (`1 ft == 0.3048 m`), used for `SFM <-> m/min`.
+pub const METERS_PER_FOOT: f64 = 0.3048;
+
 /// Curve endpoint chaining and point coincidence tolerance (`0.1 µm`).
 pub const COINCIDENCE_TOL_MM: f64 = 1e-4;
 
@@ -66,6 +69,72 @@ impl DisplayUnit {
             Self::Millimeter => mm2,
             Self::Inch => mm2 / (MM_PER_INCH * MM_PER_INCH),
         }
+    }
+
+    /// Feedrate unit suffix (`"mm/min"` or `"ipm"`).
+    pub const fn feed_suffix(self) -> &'static str {
+        match self {
+            Self::Millimeter => "mm/min",
+            Self::Inch => "ipm",
+        }
+    }
+
+    /// Converts canonical `mm/min` feedrate into display units (`mm/min` or `in/min`).
+    #[inline]
+    pub fn feed_from_mm_min(self, mm_min: f64) -> f64 {
+        self.from_mm(mm_min)
+    }
+
+    /// Converts display-unit feedrate (`mm/min` or `ipm`) into canonical `mm/min`.
+    #[inline]
+    pub fn feed_to_mm_min(self, val: f64) -> f64 {
+        self.to_mm(val)
+    }
+
+    /// Surface speed unit suffix (`"m/min"` or `"SFM"`).
+    pub const fn surface_speed_suffix(self) -> &'static str {
+        match self {
+            Self::Millimeter => "m/min",
+            Self::Inch => "SFM",
+        }
+    }
+
+    /// Converts canonical `m/min` surface speed into display units (`m/min` or `SFM`).
+    #[inline]
+    pub fn surface_speed_from_m_min(self, m_min: f64) -> f64 {
+        match self {
+            Self::Millimeter => m_min,
+            Self::Inch => m_min / METERS_PER_FOOT,
+        }
+    }
+
+    /// Converts display-unit surface speed (`m/min` or `SFM`) into canonical `m/min`.
+    #[inline]
+    pub fn surface_speed_to_m_min(self, val: f64) -> f64 {
+        match self {
+            Self::Millimeter => val,
+            Self::Inch => val * METERS_PER_FOOT,
+        }
+    }
+
+    /// Chipload unit suffix (`"mm/tooth"` or `"in/tooth"`).
+    pub const fn chipload_suffix(self) -> &'static str {
+        match self {
+            Self::Millimeter => "mm/tooth",
+            Self::Inch => "in/tooth",
+        }
+    }
+
+    /// Converts canonical `mm/tooth` chipload into display units (`mm/tooth` or `in/tooth`).
+    #[inline]
+    pub fn chipload_from_mm(self, mm_tooth: f64) -> f64 {
+        self.from_mm(mm_tooth)
+    }
+
+    /// Converts display-unit chipload (`mm/tooth` or `in/tooth`) into canonical `mm/tooth`.
+    #[inline]
+    pub fn chipload_to_mm(self, val: f64) -> f64 {
+        self.to_mm(val)
     }
 
     /// Formats a millimeter length with appropriate decimal precision and unit suffix.

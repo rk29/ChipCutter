@@ -1,4 +1,4 @@
-use chip_math::{Aabb3, DMat4, DVec3, DVec4, Ray3};
+use chip_math::{Aabb3, DMat4, DVec3, DVec4, Ray3, RigidFrame3};
 use glam::{Mat4, Vec3};
 
 /// Camera projection mode. Orthographic is the default for CAD/CAM inspection.
@@ -109,6 +109,9 @@ pub struct CadCamera {
     pub mouse_preset: MousePreset,
     pub orbit_mode: OrbitMode,
     pub scene_radius_mm: f64,
+    /// Orthonormal reference frame for Turntable orbit and standard views (defaults to world XYZ,
+    /// or locks onto the active Setup's WCS `+Z` spindle axis!).
+    pub turntable_frame: RigidFrame3,
 }
 
 impl Default for CadCamera {
@@ -125,6 +128,7 @@ impl Default for CadCamera {
             mouse_preset: MousePreset::Fusion360,
             orbit_mode: OrbitMode::TurntableZUp,
             scene_radius_mm: 75.0,
+            turntable_frame: RigidFrame3::IDENTITY,
         };
         cam.sync_trackball_from_angles();
         cam
@@ -140,11 +144,19 @@ impl CadCamera {
                 let sp = self.pitch_rad.sin();
                 let cy = self.yaw_rad.cos();
                 let sy = self.yaw_rad.sin();
-                // Offset from target to eye
-                let eye_dir = DVec3::new(cp * cy, cp * sy, sp);
+                // Offset from target to eye in active `turntable_frame` coordinates
+                let eye_dir_local = DVec3::new(cp * cy, cp * sy, sp);
+                let eye_dir = self
+                    .turntable_frame
+                    .local_to_world_dir(eye_dir_local)
+                    .normalize_or_zero();
                 let forward = (-eye_dir).normalize_or_zero();
-                // Horizontal tangent around +Z so even at pitch = ±90° right vector never degenerates!
-                let right = DVec3::new(-sy, cy, 0.0).normalize_or_zero();
+                // Horizontal tangent around turntable +Z so even at pitch = ±90° right vector never degenerates!
+                let right_local = DVec3::new(-sy, cy, 0.0).normalize_or_zero();
+                let right = self
+                    .turntable_frame
+                    .local_to_world_dir(right_local)
+                    .normalize_or_zero();
                 let up = right.cross(forward).normalize_or_zero();
                 let eye = self.target_mm + eye_dir * self.distance_mm;
                 (eye, forward, right, up)
@@ -179,7 +191,8 @@ impl CadCamera {
             self.sync_trackball_from_angles();
         } else {
             let (eye, _, _, _) = self.basis();
-            let offset = (eye - self.target_mm).normalize_or_zero();
+            let offset_world = (eye - self.target_mm).normalize_or_zero();
+            let offset = self.turntable_frame.world_to_local_dir(offset_world);
             self.pitch_rad = offset.z.clamp(-1.0, 1.0).asin();
             self.yaw_rad = offset.y.atan2(offset.x);
         }
@@ -258,6 +271,53 @@ impl CadCamera {
                 self.distance_mm = padded_h / (2.0 * (0.5 * *fov_y_rad).tan());
             }
         }
+    }
+
+    /// Locks the turntable horizon to `wcs_frame` and aligns the camera looking straight down
+    /// Setup `-Z` with `+X` right and `+Y` up (`08-ui-viewport.md`).
+    pub fn align_to_setup_top(&mut self, wcs_frame: &RigidFrame3, bounds_wcs: &Aabb3) {
+        self.turntable_frame = *wcs_frame;
+        if bounds_wcs.is_valid() {
+            self.target_mm = wcs_frame.local_to_world_point(bounds_wcs.center());
+            let radius = (0.5 * bounds_wcs.diagonal()).max(5.0);
+            self.scene_radius_mm = radius;
+            let padded_h = radius * 2.4;
+            match &mut self.projection {
+                ProjectionMode::Orthographic { ortho_height_mm } => {
+                    *ortho_height_mm = padded_h;
+                    self.distance_mm = radius * 3.5;
+                }
+                ProjectionMode::Perspective { fov_y_rad } => {
+                    self.distance_mm = padded_h / (2.0 * (0.5 * *fov_y_rad).tan());
+                }
+            }
+        }
+        self.set_standard_view(StandardView::Top);
+    }
+
+    /// Projects a 3D world-space point (`mm`) into 2D `egui` screen coordinates inside `viewport_rect`.
+    /// Returns `None` if behind the camera near clip plane.
+    pub fn project_world_to_screen(
+        &self,
+        world_pt_mm: DVec3,
+        viewport_rect: egui::Rect,
+    ) -> Option<egui::Pos2> {
+        if viewport_rect.width() < 2.0 || viewport_rect.height() < 2.0 {
+            return None;
+        }
+        let aspect = (viewport_rect.width() as f64) / (viewport_rect.height() as f64);
+        let (view_d, proj_d) = self.view_proj_f64(aspect);
+        let clip = (proj_d * view_d) * world_pt_mm.extend(1.0);
+        if clip.w <= 1e-9 {
+            return None;
+        }
+        let ndc = clip.truncate() / clip.w;
+        if ndc.z < -0.1 || ndc.z > 1.05 {
+            return None;
+        }
+        let sx = viewport_rect.left() + ((ndc.x + 1.0) * 0.5) as f32 * viewport_rect.width();
+        let sy = viewport_rect.top() + ((1.0 - ndc.y) * 0.5) as f32 * viewport_rect.height();
+        Some(egui::pos2(sx, sy))
     }
 
     pub fn orbit_pixels(&mut self, delta_px: egui::Vec2) {

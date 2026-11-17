@@ -85,5 +85,5 @@ flowchart LR
 | STEP & B-Rep Kernel | `monstertruck-io` (`step`), `monstertruck-modeling`, `monstertruck-meshing` (`truck` family) | Apache-2.0 |
 | 2D Arc-Aware Offsetting | `cavalier_contours` | MIT / Apache-2.0 |
 | Math & Spatial Queries | `nalgebra` or `glam::DVec3`/`DAffine3`, `rstar` (R-tree spatial index) | Apache-2.0 / MIT |
-| Serialization & Archives | `serde`, `toml`, `serde_json`, `zip` | MIT / Apache-2.0 |
+| Serialization, Hashing, & Paths | `serde`, `toml`, `serde_json`, `zip`, `sha2`, `dirs` | MIT / Apache-2.0 |
 | Parallelism & CLI | `rayon`, `crossbeam-channel`, `clap` | MIT / Apache-2.0 |

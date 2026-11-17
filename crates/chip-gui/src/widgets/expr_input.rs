@@ -1,6 +1,82 @@
+use std::hash::Hash;
+
 use chip_math::{DisplayUnit, EvalContext, ParamLength, evaluate_length_mm};
 
-/// Reusable `egui` parameter input widget supporting mixed units (`1/4 in`, `6mm + 10 thou`)
+/// Immediate-mode inline expression editor operating directly on a document-owned [`ParamLength`].
+///
+/// Stores transient keyboard edit buffer in `egui` temporary memory keyed by `id_salt`, so
+/// `Ctrl+Z` / `Ctrl+Y` document Undo/Redo immediately reflects updated values with zero stale state!
+pub fn edit_param_length(
+    ui: &mut egui::Ui,
+    id_salt: impl Hash + std::fmt::Debug,
+    param: &mut ParamLength,
+    ctx: &EvalContext,
+    width_px: f32,
+) -> bool {
+    let widget_id = ui.make_persistent_id(id_salt);
+    let draft_id = widget_id.with("draft");
+
+    let mut draft_text: String = ui
+        .data_mut(|d| d.get_temp::<String>(draft_id))
+        .unwrap_or_else(|| match &param.expr {
+            Some(expr) => expr.clone(),
+            None => ctx.default_unit.format_number(param.value_mm),
+        });
+
+    let mut committed = false;
+
+    ui.horizontal(|ui| {
+        let resp = ui.add(
+            egui::TextEdit::singleline(&mut draft_text)
+                .id(widget_id)
+                .desired_width(width_px),
+        );
+
+        if !resp.has_focus() && !resp.lost_focus() {
+            draft_text = match &param.expr {
+                Some(expr) => expr.clone(),
+                None => ctx.default_unit.format_number(param.value_mm),
+            };
+        }
+
+        let live_eval = evaluate_length_mm(&draft_text, ctx);
+
+        if resp.has_focus() {
+            ui.data_mut(|d| d.insert_temp(draft_id, draft_text.clone()));
+        }
+
+        let enter_pressed = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        if resp.lost_focus() || enter_pressed {
+            ui.data_mut(|d| d.remove::<String>(draft_id));
+            if let Ok(parsed) = ParamLength::parse(&draft_text, ctx)
+                && ((parsed.value_mm - param.value_mm).abs() > 1e-9 || parsed.expr != param.expr)
+            {
+                *param = parsed;
+                committed = true;
+            }
+        }
+
+        match live_eval {
+            Ok(mm) => {
+                ui.weak(format!("= {}", ctx.default_unit.format_length(mm)));
+            }
+            Err(err) if resp.has_focus() => {
+                ui.colored_label(egui::Color32::from_rgb(240, 92, 92), "[!]")
+                    .on_hover_text(err.to_string());
+            }
+            Err(_) => {
+                ui.weak(format!(
+                    "= {}",
+                    ctx.default_unit.format_length(param.value_mm)
+                ));
+            }
+        }
+    });
+
+    committed
+}
+
+/// Reusable stateful `egui` parameter input widget supporting mixed units (`1/4 in`, `6mm + 10 thou`)
 /// and scoped CAM variables (`tool_d * 0.4`).
 #[derive(Debug, Clone)]
 pub struct ExpressionInput {
@@ -30,12 +106,10 @@ impl ExpressionInput {
         self.param.value_mm
     }
 
-    /// Re-evaluates stored formula when upstream variables (e.g., `tool_d`) change.
     pub fn refresh(&mut self, ctx: &EvalContext) {
         let _ = self.param.reevaluate(ctx);
     }
 
-    /// Renders the input field and returns `true` if a new canonical millimeter value was committed.
     pub fn show(&mut self, ui: &mut egui::Ui, id_salt: &str, ctx: &EvalContext) -> bool {
         let mut committed = false;
 
@@ -81,7 +155,7 @@ impl ExpressionInput {
 
             let preview_mm = live_eval.unwrap_or(self.param.value_mm);
             if let Some(err) = &self.last_error {
-                ui.colored_label(egui::Color32::from_rgb(240, 92, 92), "⚠")
+                ui.colored_label(egui::Color32::from_rgb(240, 92, 92), "[!]")
                     .on_hover_text(err);
             } else {
                 ui.weak(format!("= {}", ctx.default_unit.format_length(preview_mm)));

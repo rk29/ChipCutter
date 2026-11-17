@@ -21,25 +21,25 @@ path = "cad/motor_mount_v3.step"
 sha256 = "8f434346648f6b96df89dda901c5176b10a6d83961dd3c1ac88b59b2dc327aa4"
 
 [[tools]]
-id = "tool_t1"
+id = "t1_6mm_flat_3fl"
 tool_number = 1
-name = "6mm 3FL Carbide Flat"
-kind = { type = "flat_endmill", diameter_mm = 6.0, flute_length_mm = 18.0, overall_length_mm = 50.0, shank_diameter_mm = 6.0, flutes = 3 }
+length_offset_number = 1
+diameter_offset_number = 1
+name = "6mm 3FL Carbide Flat Endmill"
+stickout_length_mm = 24.0
+geometry = { type = "flat_endmill", diameter_mm = 6.0, flute_length_mm = 18.0, overall_length_mm = 50.0, shank_diameter_mm = 6.0, flutes = 3 }
 
 [[setups]]
 id = "setup_1"
-name = "Op 1 - Top"
+name = "Setup 1 — Top Op"
 wcs_slot = "G54"
-post_profile = "linuxcnc"
-stock = { type = "relative_box", side_offset_mm = 2.0, top_offset_mm = 1.0, bottom_offset_mm = 0.0 }
+post_profile = "grbl"
 
 [[setups.operations]]
-id = "op_pocket_1"
-name = "Bearing Bore Pocket"
+id = "op_1_pocket"
+name = "Center Cavity Pocket"
 kind = "pocket_2d"
-tool_id = "tool_t1"
-stepover_expr = "tool_d * 0.4"
-stepover_mm = 2.4
+tool_id = "t1_6mm_flat_3fl"
 ```
 
 ### 2. Portable `.chipz` Bundle Archive

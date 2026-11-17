@@ -1,0 +1,16 @@
+[package]
+name = "chip-cam"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+chip-math.workspace = true
+chip-cad.workspace = true
+chip-tools.workspace = true
+glam.workspace = true
+serde.workspace = true
+thiserror.workspace = true

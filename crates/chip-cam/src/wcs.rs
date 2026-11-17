@@ -1,0 +1,561 @@
+use chip_cad::{
+    CadDocument, CurveKind, EdgeId, FaceId, SelectionBinding, SurfaceKind, analyze_cylindrical_hole,
+};
+use chip_math::{Aabb3, DVec3, EvalContext, FrameError, ParamLength, RigidFrame3};
+use serde::{Deserialize, Serialize};
+use thiserror::Error;
+
+/// Errors raised during WCS orientation, Stock computation, Feature extraction, or Height validation.
+#[derive(Debug, Clone, PartialEq, Error)]
+pub enum CamError {
+    #[error("CAD document contains no solid bodies")]
+    EmptyCadDocument,
+    #[error(transparent)]
+    Frame(#[from] FrameError),
+    #[error(
+        "invalid WCS axis reference: CAD entity #{index} is missing or has incompatible geometry"
+    )]
+    InvalidWcsAxisRef { index: u32 },
+    #[error("invalid WCS origin feature reference: CAD entity #{index} is missing or incompatible")]
+    InvalidWcsOriginRef { index: u32 },
+    #[error("stock dimension '{field}' resolved to {value_mm:.4} mm (must be finite and > 0)")]
+    InvalidStockDimension { field: &'static str, value_mm: f64 },
+    #[error(
+        "fixed stock {axis} ({stock_mm:.3} mm) is smaller than model {axis} ({model_mm:.3} mm)"
+    )]
+    StockSmallerThanModel {
+        axis: &'static str,
+        stock_mm: f64,
+        model_mm: f64,
+    },
+    #[error(
+        "selected face #{face_id} is not planar horizontal relative to Setup WCS +Z (|n·Z| = {cos_z:.4})"
+    )]
+    FaceNotHorizontalInWcs { face_id: u32, cos_z: f64 },
+    #[error(
+        "selected hole #{face_id} axis is not parallel to Setup WCS +Z (|axis·Z| = {cos_z:.4})"
+    )]
+    HoleNotAlignedWithWcsZ { face_id: u32, cos_z: f64 },
+    #[error("selected entity #{index} could not be resolved in the current CAD document")]
+    MissingSelectedEntity { index: u32 },
+    #[error(
+        "height hierarchy violation: {upper_name} ({upper_z:.3} mm) must be >= {lower_name} ({lower_z:.3} mm)"
+    )]
+    HeightHierarchyViolation {
+        upper_name: &'static str,
+        upper_z: f64,
+        lower_name: &'static str,
+        lower_z: f64,
+    },
+}
+
+/// Controller work coordinate offset slot (`G54`..`G59`, `G59.1`..`G59.3`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum WorkOffsetSlot {
+    #[serde(rename = "default")]
+    Default,
+    #[default]
+    G54,
+    G55,
+    G56,
+    G57,
+    G58,
+    G59,
+    #[serde(rename = "G59.1")]
+    G59_1,
+    #[serde(rename = "G59.2")]
+    G59_2,
+    #[serde(rename = "G59.3")]
+    G59_3,
+}
+
+impl WorkOffsetSlot {
+    pub const ALL: [Self; 10] = [
+        Self::Default,
+        Self::G54,
+        Self::G55,
+        Self::G56,
+        Self::G57,
+        Self::G58,
+        Self::G59,
+        Self::G59_1,
+        Self::G59_2,
+        Self::G59_3,
+    ];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Default => "0 (Controller Default)",
+            Self::G54 => "G54 (Offset 1)",
+            Self::G55 => "G55 (Offset 2)",
+            Self::G56 => "G56 (Offset 3)",
+            Self::G57 => "G57 (Offset 4)",
+            Self::G58 => "G58 (Offset 5)",
+            Self::G59 => "G59 (Offset 6)",
+            Self::G59_1 => "G59.1 (Offset 7)",
+            Self::G59_2 => "G59.2 (Offset 8)",
+            Self::G59_3 => "G59.3 (Offset 9)",
+        }
+    }
+
+    pub const fn short_code(self) -> &'static str {
+        match self {
+            Self::Default => "Default",
+            Self::G54 => "G54",
+            Self::G55 => "G55",
+            Self::G56 => "G56",
+            Self::G57 => "G57",
+            Self::G58 => "G58",
+            Self::G59 => "G59",
+            Self::G59_1 => "G59.1",
+            Self::G59_2 => "G59.2",
+            Self::G59_3 => "G59.3",
+        }
+    }
+}
+
+/// 1D anchor selector along a bounding box axis (`Min`, `Center`, `Max`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AxisAnchor {
+    Min,
+    #[default]
+    Center,
+    Max,
+}
+
+impl AxisAnchor {
+    pub const ALL: [Self; 3] = [Self::Min, Self::Center, Self::Max];
+
+    #[inline]
+    pub fn interp(self, min: f64, max: f64) -> f64 {
+        match self {
+            Self::Min => min,
+            Self::Center => 0.5 * (min + max),
+            Self::Max => max,
+        }
+    }
+}
+
+/// 27-point grid selector (`3 × 3 × 3`) on a Stock or Model axis-aligned bounding box in WCS space.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct BoxAnchor27 {
+    pub x: AxisAnchor,
+    pub y: AxisAnchor,
+    pub z: AxisAnchor,
+}
+
+impl Default for BoxAnchor27 {
+    fn default() -> Self {
+        Self::TOP_FRONT_LEFT
+    }
+}
+
+impl BoxAnchor27 {
+    pub const TOP_CENTER: Self = Self {
+        x: AxisAnchor::Center,
+        y: AxisAnchor::Center,
+        z: AxisAnchor::Max,
+    };
+
+    pub const TOP_FRONT_LEFT: Self = Self {
+        x: AxisAnchor::Min,
+        y: AxisAnchor::Min,
+        z: AxisAnchor::Max,
+    };
+
+    pub const BOTTOM_FRONT_LEFT: Self = Self {
+        x: AxisAnchor::Min,
+        y: AxisAnchor::Min,
+        z: AxisAnchor::Min,
+    };
+
+    pub const VOLUMETRIC_CENTER: Self = Self {
+        x: AxisAnchor::Center,
+        y: AxisAnchor::Center,
+        z: AxisAnchor::Center,
+    };
+
+    /// Returns all 27 anchor combinations in deterministic `(z, y, x)` order.
+    pub fn all_27() -> [Self; 27] {
+        let mut out = [Self::VOLUMETRIC_CENTER; 27];
+        let mut idx = 0;
+        for z in [AxisAnchor::Max, AxisAnchor::Center, AxisAnchor::Min] {
+            for y in [AxisAnchor::Max, AxisAnchor::Center, AxisAnchor::Min] {
+                for x in [AxisAnchor::Min, AxisAnchor::Center, AxisAnchor::Max] {
+                    out[idx] = Self { x, y, z };
+                    idx += 1;
+                }
+            }
+        }
+        out
+    }
+
+    #[inline]
+    pub fn eval_on_aabb(self, aabb: &Aabb3) -> DVec3 {
+        DVec3::new(
+            self.x.interp(aabb.min.x, aabb.max.x),
+            self.y.interp(aabb.min.y, aabb.max.y),
+            self.z.interp(aabb.min.z, aabb.max.z),
+        )
+    }
+
+    pub fn label(self) -> String {
+        let z_lbl = match self.z {
+            AxisAnchor::Max => "Top",
+            AxisAnchor::Center => "Mid-Z",
+            AxisAnchor::Min => "Bottom",
+        };
+        let y_lbl = match self.y {
+            AxisAnchor::Min => "Front",
+            AxisAnchor::Center => "Center",
+            AxisAnchor::Max => "Back",
+        };
+        let x_lbl = match self.x {
+            AxisAnchor::Min => "Left",
+            AxisAnchor::Center => "Center",
+            AxisAnchor::Max => "Right",
+        };
+        if self.x == AxisAnchor::Center && self.y == AxisAnchor::Center {
+            format!("{z_lbl} Center")
+        } else {
+            format!("{z_lbl} {y_lbl}-{x_lbl}")
+        }
+    }
+}
+
+/// B-Rep entity supplying a WCS axis direction vector.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum WcsAxisRef {
+    /// Uses planar face outward normal or cylinder/cone axis direction.
+    FaceAxis(SelectionBinding),
+    /// Uses straight line edge direction (`end - start`).
+    EdgeDirection(SelectionBinding),
+}
+
+impl WcsAxisRef {
+    pub fn resolve_world_dir(&self, doc: &CadDocument) -> Result<DVec3, CamError> {
+        match self {
+            Self::FaceAxis(b) => {
+                let face = doc
+                    .face(FaceId(b.last_index))
+                    .ok_or(CamError::InvalidWcsAxisRef {
+                        index: b.last_index,
+                    })?;
+                match face.surface {
+                    SurfaceKind::Plane { normal, .. } => Ok(normal),
+                    SurfaceKind::Cylinder { axis_dir, .. }
+                    | SurfaceKind::Cone { axis_dir, .. }
+                    | SurfaceKind::Torus { axis_dir, .. } => Ok(axis_dir),
+                    SurfaceKind::OtherNurbs => Err(CamError::InvalidWcsAxisRef {
+                        index: b.last_index,
+                    }),
+                }
+            }
+            Self::EdgeDirection(b) => {
+                let edge = doc
+                    .edge(EdgeId(b.last_index))
+                    .ok_or(CamError::InvalidWcsAxisRef {
+                        index: b.last_index,
+                    })?;
+                match edge.curve {
+                    CurveKind::Line { start_mm, end_mm } => Ok(end_mm - start_mm),
+                    CurveKind::CircleArc { normal, .. } => Ok(normal),
+                    CurveKind::EllipseArc | CurveKind::OtherNurbs => {
+                        Err(CamError::InvalidWcsAxisRef {
+                            index: b.last_index,
+                        })
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// WCS machine axis alignment mode (`T_body_to_wcs` rotation).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum WcsOrientationMode {
+    ModelOrientation {
+        #[serde(default)]
+        flip_z: bool,
+        #[serde(default)]
+        flip_x: bool,
+        #[serde(default)]
+        clock_90: u8,
+    },
+    SelectZAndX {
+        z_ref: WcsAxisRef,
+        #[serde(default)]
+        flip_z: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        x_ref: Option<WcsAxisRef>,
+        #[serde(default)]
+        flip_x: bool,
+        #[serde(default)]
+        clock_90: u8,
+    },
+    SelectXYPlane {
+        face_ref: SelectionBinding,
+        #[serde(default)]
+        flip_z: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        x_edge_ref: Option<SelectionBinding>,
+        #[serde(default)]
+        clock_90: u8,
+    },
+}
+
+impl Default for WcsOrientationMode {
+    fn default() -> Self {
+        Self::ModelOrientation {
+            flip_z: false,
+            flip_x: false,
+            clock_90: 0,
+        }
+    }
+}
+
+impl WcsOrientationMode {
+    /// Resolves the pure rotational basis (`origin == ZERO`) in world coordinates.
+    pub fn resolve_rotation(&self, doc: &CadDocument) -> Result<RigidFrame3, CamError> {
+        match self {
+            Self::ModelOrientation {
+                flip_z,
+                flip_x,
+                clock_90,
+            } => Ok(RigidFrame3::from_z_and_x_hint(
+                DVec3::ZERO,
+                DVec3::Z,
+                Some(DVec3::X),
+                *flip_z,
+                *flip_x,
+                *clock_90,
+            )?),
+            Self::SelectZAndX {
+                z_ref,
+                flip_z,
+                x_ref,
+                flip_x,
+                clock_90,
+            } => {
+                let raw_z = z_ref.resolve_world_dir(doc)?;
+                let raw_x = match x_ref {
+                    Some(xr) => Some(xr.resolve_world_dir(doc)?),
+                    None => None,
+                };
+                Ok(RigidFrame3::from_z_and_x_hint(
+                    DVec3::ZERO,
+                    raw_z,
+                    raw_x,
+                    *flip_z,
+                    *flip_x,
+                    *clock_90,
+                )?)
+            }
+            Self::SelectXYPlane {
+                face_ref,
+                flip_z,
+                x_edge_ref,
+                clock_90,
+            } => {
+                let face =
+                    doc.face(FaceId(face_ref.last_index))
+                        .ok_or(CamError::InvalidWcsAxisRef {
+                            index: face_ref.last_index,
+                        })?;
+                let SurfaceKind::Plane { normal, .. } = face.surface else {
+                    return Err(CamError::InvalidWcsAxisRef {
+                        index: face_ref.last_index,
+                    });
+                };
+                let x_hint = match x_edge_ref {
+                    Some(eb) => {
+                        let edge =
+                            doc.edge(EdgeId(eb.last_index))
+                                .ok_or(CamError::InvalidWcsAxisRef {
+                                    index: eb.last_index,
+                                })?;
+                        match edge.curve {
+                            CurveKind::Line { start_mm, end_mm } => Some(end_mm - start_mm),
+                            _ => {
+                                return Err(CamError::InvalidWcsAxisRef {
+                                    index: eb.last_index,
+                                });
+                            }
+                        }
+                    }
+                    None => None,
+                };
+                Ok(RigidFrame3::from_z_and_x_hint(
+                    DVec3::ZERO,
+                    normal,
+                    x_hint,
+                    *flip_z,
+                    false,
+                    *clock_90,
+                )?)
+            }
+        }
+    }
+}
+
+/// Specific B-Rep point/feature anchor for WCS origin (`X0 Y0 Z0`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum WcsFeaturePointRef {
+    EdgeStart(SelectionBinding),
+    EdgeMidpoint(SelectionBinding),
+    EdgeEnd(SelectionBinding),
+    CircleCenter(SelectionBinding),
+    HoleAxisCenter {
+        hole_face: SelectionBinding,
+        top_rim: bool,
+    },
+}
+
+impl WcsFeaturePointRef {
+    pub fn resolve_world_point(
+        &self,
+        doc: &CadDocument,
+        spindle_up_world: DVec3,
+    ) -> Result<DVec3, CamError> {
+        match self {
+            Self::EdgeStart(b) | Self::EdgeMidpoint(b) | Self::EdgeEnd(b) => {
+                let edge = doc
+                    .edge(EdgeId(b.last_index))
+                    .ok_or(CamError::InvalidWcsOriginRef {
+                        index: b.last_index,
+                    })?;
+                match edge.curve {
+                    CurveKind::Line { start_mm, end_mm } => Ok(match self {
+                        Self::EdgeStart(_) => start_mm,
+                        Self::EdgeMidpoint(_) => 0.5 * (start_mm + end_mm),
+                        Self::EdgeEnd(_) => end_mm,
+                        _ => start_mm,
+                    }),
+                    CurveKind::CircleArc {
+                        start_mm,
+                        end_mm,
+                        center_mm,
+                        ..
+                    } => Ok(match self {
+                        Self::EdgeStart(_) => start_mm,
+                        Self::EdgeMidpoint(_) => center_mm,
+                        Self::EdgeEnd(_) => end_mm,
+                        _ => center_mm,
+                    }),
+                    _ => Err(CamError::InvalidWcsOriginRef {
+                        index: b.last_index,
+                    }),
+                }
+            }
+            Self::CircleCenter(b) => {
+                let edge = doc
+                    .edge(EdgeId(b.last_index))
+                    .ok_or(CamError::InvalidWcsOriginRef {
+                        index: b.last_index,
+                    })?;
+                if let CurveKind::CircleArc { center_mm, .. } = edge.curve {
+                    Ok(center_mm)
+                } else {
+                    Err(CamError::InvalidWcsOriginRef {
+                        index: b.last_index,
+                    })
+                }
+            }
+            Self::HoleAxisCenter { hole_face, top_rim } => {
+                let fid = FaceId(hole_face.last_index);
+                let face = doc.face(fid).ok_or(CamError::InvalidWcsOriginRef {
+                    index: hole_face.last_index,
+                })?;
+                let SurfaceKind::Cylinder {
+                    axis_origin_mm,
+                    axis_dir,
+                    is_internal: true,
+                    ..
+                } = face.surface
+                else {
+                    return Err(CamError::InvalidWcsOriginRef {
+                        index: hole_face.last_index,
+                    });
+                };
+                let span = analyze_cylindrical_hole(doc, fid, spindle_up_world).ok_or(
+                    CamError::InvalidWcsOriginRef {
+                        index: hole_face.last_index,
+                    },
+                )?;
+                let target_proj = if *top_rim {
+                    span.top_proj_mm
+                } else {
+                    span.bottom_proj_mm
+                };
+                let u = axis_dir.normalize_or_zero();
+                let up = spindle_up_world.normalize_or_zero();
+                let denom = u.dot(up);
+                if denom.abs() < 1e-6 {
+                    return Err(CamError::InvalidWcsOriginRef {
+                        index: hole_face.last_index,
+                    });
+                }
+                let s = (target_proj - axis_origin_mm.dot(up)) / denom;
+                Ok(axis_origin_mm + u * s)
+            }
+        }
+    }
+}
+
+/// WCS origin (`X0 Y0 Z0`) anchor mode.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum WcsOriginMode {
+    StockBoxPoint { anchor: BoxAnchor27 },
+    ModelBoxPoint { anchor: BoxAnchor27 },
+    SelectedCadFeature { feature: WcsFeaturePointRef },
+}
+
+impl Default for WcsOriginMode {
+    fn default() -> Self {
+        Self::StockBoxPoint {
+            anchor: BoxAnchor27::TOP_FRONT_LEFT,
+        }
+    }
+}
+
+/// Complete Work Coordinate System specification for a [`crate::setup::Setup`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WcsConfig {
+    #[serde(default)]
+    pub orientation: WcsOrientationMode,
+    #[serde(default)]
+    pub origin: WcsOriginMode,
+    #[serde(default = "default_zero_offsets")]
+    pub additional_offset_wcs: [ParamLength; 3],
+}
+
+fn default_zero_offsets() -> [ParamLength; 3] {
+    [
+        ParamLength::from_mm(0.0),
+        ParamLength::from_mm(0.0),
+        ParamLength::from_mm(0.0),
+    ]
+}
+
+impl Default for WcsConfig {
+    fn default() -> Self {
+        Self {
+            orientation: WcsOrientationMode::default(),
+            origin: WcsOriginMode::default(),
+            additional_offset_wcs: default_zero_offsets(),
+        }
+    }
+}
+
+impl WcsConfig {
+    pub fn reevaluate_offsets(&mut self, ctx: &EvalContext) {
+        for off in &mut self.additional_offset_wcs {
+            let _ = off.reevaluate(ctx);
+        }
+    }
+}

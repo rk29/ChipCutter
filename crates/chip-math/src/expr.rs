@@ -40,10 +40,12 @@ pub enum ExprError {
 }
 
 /// Scoped variables available when evaluating operation or setup parameter formulas.
-/// Variable values representing lengths must be stored in canonical `f64` millimeters.
+/// Length variables are stored in canonical `f64` millimeters; dimensionless/angle variables
+/// (such as `flutes` or `tip_angle` in radians) are stored as scalars.
 #[derive(Debug, Clone, Default)]
 pub struct EvalContext {
     vars: BTreeMap<String, f64>,
+    scalar_vars: BTreeMap<String, f64>,
     pub default_unit: DisplayUnit,
 }
 
@@ -51,6 +53,7 @@ impl EvalContext {
     pub fn new(default_unit: DisplayUnit) -> Self {
         Self {
             vars: BTreeMap::new(),
+            scalar_vars: BTreeMap::new(),
             default_unit,
         }
     }
@@ -66,6 +69,20 @@ impl EvalContext {
 
     pub fn get_var(&self, name: &str) -> Option<f64> {
         self.vars.get(name).copied()
+    }
+
+    /// Inserts a dimensionless or radian-angle variable (e.g., `flutes`, `tip_angle`).
+    pub fn with_scalar_var(mut self, name: impl Into<String>, val: f64) -> Self {
+        self.scalar_vars.insert(name.into(), val);
+        self
+    }
+
+    pub fn set_scalar_var(&mut self, name: impl Into<String>, val: f64) {
+        self.scalar_vars.insert(name.into(), val);
+    }
+
+    pub fn get_scalar_var(&self, name: &str) -> Option<f64> {
+        self.scalar_vars.get(name).copied()
     }
 }
 
@@ -488,6 +505,11 @@ impl<'a> Parser<'a> {
                     Val {
                         number: var_mm,
                         dim: Dim::Millimeters,
+                    }
+                } else if let Some(scalar) = self.ctx.get_scalar_var(&name) {
+                    Val {
+                        number: scalar,
+                        dim: Dim::Scalar,
                     }
                 } else {
                     return Err(ExprError::UnknownIdentifier { name });

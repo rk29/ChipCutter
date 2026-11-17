@@ -158,6 +158,14 @@ pub struct GeometricSignature {
     pub aabb_mm: Aabb3,
 }
 
+/// Persistent CAD entity reference combining last-known topology index and [`GeometricSignature`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SelectionBinding {
+    pub body_id: BodyId,
+    pub last_index: u32,
+    pub signature: GeometricSignature,
+}
+
 /// Directed use of an [`EdgeId`] inside a [`BRepLoop`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OrientedEdgeUse {
@@ -271,6 +279,37 @@ impl CadDocument {
     #[inline]
     pub fn brep_loop(&self, id: LoopId) -> Option<&BRepLoop> {
         self.loops.get(id.0 as usize)
+    }
+
+    /// Creates a persistent [`SelectionBinding`] for a [`FaceId`].
+    pub fn bind_face(&self, id: FaceId) -> Option<SelectionBinding> {
+        let f = self.face(id)?;
+        Some(SelectionBinding {
+            body_id: f.body_id,
+            last_index: id.0,
+            signature: f.signature.clone(),
+        })
+    }
+
+    /// Creates a persistent [`SelectionBinding`] for an [`EdgeId`].
+    pub fn bind_edge(&self, id: EdgeId) -> Option<SelectionBinding> {
+        let e = self.edge(id)?;
+        Some(SelectionBinding {
+            body_id: e.body_id,
+            last_index: id.0,
+            signature: e.signature.clone(),
+        })
+    }
+
+    /// Creates a persistent [`SelectionBinding`] for a [`LoopId`].
+    pub fn bind_loop(&self, id: LoopId) -> Option<SelectionBinding> {
+        let lp = self.brep_loop(id)?;
+        let face = self.face(lp.face_id)?;
+        Some(SelectionBinding {
+            body_id: face.body_id,
+            last_index: id.0,
+            signature: lp.signature.clone(),
+        })
     }
 
     /// Expands an [`EdgeId`] to all edges belonging to its primary boundary loop.

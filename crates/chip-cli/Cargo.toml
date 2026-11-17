@@ -14,5 +14,8 @@ workspace = true
 [dependencies]
 chip-math.workspace = true
 chip-cad.workspace = true
+chip-tools.workspace = true
+chip-cam.workspace = true
+chip-project.workspace = true
 clap.workspace = true
 thiserror.workspace = true

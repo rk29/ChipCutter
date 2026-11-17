@@ -2,21 +2,31 @@
 //!
 //! Isolates `monstertruck` behind [`CadKernel`] and exposes canonical `f64` millimeter
 //! B-Rep topology (`BodyId`, `FaceId`, `LoopId`, `EdgeId`), analytic geometry classification,
-//! `GeometricSignature`s for associative STEP reload, per-entity tessellations, and spatial
-//! ray-picking.
+//! `GeometricSignature`s for associative STEP reload, welded vertex-edge topology graphs,
+//! open-chain pathfinding, assistive hole/coplanar queries, per-entity tessellations, and
+//! spatial ray-picking.
 
 pub mod fixtures;
 pub mod kernel;
 pub mod model;
 pub mod monstertruck_kernel;
 pub mod picking;
+pub mod topology;
 
-pub use fixtures::{SampleStepError, sample_machined_plate_step};
+pub use fixtures::{
+    SampleStepError, sample_machined_plate_step, sample_machined_plate_step_inches,
+    sample_multi_feature_bracket_step,
+};
 pub use kernel::{CadError, CadKernel};
 pub use model::{
     BRepEdge, BRepFace, BRepLoop, BodyId, CadDocument, CurveKind, EdgeId, EdgePolyline,
     EntitySignatureKind, FaceId, FaceTriangle, GeometricSignature, LoopId, OrientedEdgeUse,
-    RenderMesh, RenderVertex, SolidBody, StepUnitKind, SurfaceKind,
+    RenderMesh, RenderVertex, SelectionBinding, SolidBody, StepUnitKind, SurfaceKind,
 };
 pub use monstertruck_kernel::MonstertruckKernel;
 pub use picking::{CadPicker, PickFilter, PickHit, PickTarget};
+pub use topology::{
+    CylindricalHoleSpan, EdgeEndpointInfo, LogicalCylindricalHole, TopologyGraph, VertexId,
+    analyze_cylindrical_hole, expand_coaxial_hole_faces, find_coplanar_faces,
+    find_same_diameter_holes, group_coaxial_holes, highest_adjacent_wall_top,
+};

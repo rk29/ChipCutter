@@ -2,18 +2,24 @@ struct ViewportUniforms {
     view_proj: mat4x4<f32>,
     inv_view_proj: mat4x4<f32>,
     view: mat4x4<f32>,
+    wcs_world_to_local: mat4x4<f32>,
+    wcs_local_to_world: mat4x4<f32>,
     camera_pos: vec4<f32>,
     // x = width_px, y = height_px, z = grid_minor_mm, w = grid_major_mm
     viewport_and_grid: vec4<f32>,
-    // x = hovered_face_id (u32::MAX if none), y = selected_face_id (u32::MAX if none), z = show_grid (1/0), w = ortho_flag (1/0)
+    // x = hovered_face_id (u32::MAX if none), y = ghost_part (1/0), z = show_grid (1/0), w = ortho_flag (1/0)
     pick_flags: vec4<u32>,
 };
 
 @group(0) @binding(0)
 var<uniform> u_vp: ViewportUniforms;
 
+// Per-face highlight state: 0 = Default, 1 = Hovered, 2 = Selected
+@group(0) @binding(1)
+var<storage, read> face_states: array<u32>;
+
 // ============================================================================
-// Pass 1: Studio Background Gradient + Anti-Aliased WCS XY Grid (Z = 0)
+// Pass 1: Studio Background Gradient + Active Setup WCS XY Grid (Z_wcs = 0)
 // ============================================================================
 
 struct BgOut {
@@ -23,7 +29,6 @@ struct BgOut {
 
 @vertex
 fn vs_background(@builtin(vertex_index) vid: u32) -> BgOut {
-    // Fullscreen triangle covering [-1, 1]^2
     var pos = array<vec2<f32>, 3>(
         vec2<f32>(-1.0, -1.0),
         vec2<f32>(3.0, -1.0),
@@ -51,47 +56,50 @@ fn fs_background(in: BgOut) -> BgFragOut {
     if (u_vp.pick_flags.z != 0u) {
         let near_h = u_vp.inv_view_proj * vec4<f32>(in.ndc, 0.0, 1.0);
         let far_h = u_vp.inv_view_proj * vec4<f32>(in.ndc, 1.0, 1.0);
-        let p_near = near_h.xyz / near_h.w;
-        let p_far = far_h.xyz / far_h.w;
+        let p_near_world = near_h.xyz / near_h.w;
+        let p_far_world = far_h.xyz / far_h.w;
+
+        let p_near = (u_vp.wcs_world_to_local * vec4<f32>(p_near_world, 1.0)).xyz;
+        let p_far = (u_vp.wcs_world_to_local * vec4<f32>(p_far_world, 1.0)).xyz;
         let ray_dir = p_far - p_near;
 
         if (abs(ray_dir.z) > 1e-6) {
             let s = -p_near.z / ray_dir.z;
             if (s >= 0.0 && s <= 1.0) {
-                let hit = p_near + ray_dir * s;
-                let clip_hit = u_vp.view_proj * vec4<f32>(hit, 1.0);
+                let hit_wcs = p_near + ray_dir * s;
+                let hit_world = (u_vp.wcs_local_to_world * vec4<f32>(hit_wcs, 1.0)).xyz;
+                let clip_hit = u_vp.view_proj * vec4<f32>(hit_world, 1.0);
                 let ndc_z = clip_hit.z / clip_hit.w;
 
                 if (ndc_z >= 0.0 && ndc_z <= 1.0) {
                     let minor_step = max(u_vp.viewport_and_grid.z, 0.001);
                     let major_step = max(u_vp.viewport_and_grid.w, 0.01);
 
-                    let coord_minor = hit.xy / minor_step;
+                    let coord_minor = hit_wcs.xy / minor_step;
                     let deriv_minor = fwidth(coord_minor);
                     let dist_minor = abs(fract(coord_minor - 0.5) - 0.5) / max(deriv_minor, vec2<f32>(1e-4));
                     let line_minor = 1.0 - clamp(min(dist_minor.x, dist_minor.y), 0.0, 1.0);
 
-                    let coord_major = hit.xy / major_step;
+                    let coord_major = hit_wcs.xy / major_step;
                     let deriv_major = fwidth(coord_major);
                     let dist_major = abs(fract(coord_major - 0.5) - 0.5) / max(deriv_major, vec2<f32>(1e-4));
                     let line_major = 1.0 - clamp(min(dist_major.x, dist_major.y), 0.0, 1.0);
 
-                    // X & Y WCS zero axes
-                    let axis_px = abs(hit.xy) / max(fwidth(hit.xy), vec2<f32>(1e-4));
+                    let axis_px = abs(hit_wcs.xy) / max(fwidth(hit_wcs.xy), vec2<f32>(1e-4));
                     let x_axis = 1.0 - clamp(axis_px.y - 0.35, 0.0, 1.0);
                     let y_axis = 1.0 - clamp(axis_px.x - 0.35, 0.0, 1.0);
 
-                    let dist_from_origin = length(hit.xy);
+                    let dist_from_origin = length(hit_wcs.xy);
                     let fade = 1.0 - smoothstep(major_step * 8.0, major_step * 28.0, dist_from_origin);
 
                     var grid_rgb = vec3<f32>(0.24, 0.27, 0.32);
                     var alpha = line_minor * 0.22 + line_major * 0.42;
 
-                    if (x_axis > 0.01 && hit.x >= -major_step * 2.0) {
+                    if (x_axis > 0.01 && hit_wcs.x >= -major_step * 2.0) {
                         grid_rgb = mix(grid_rgb, vec3<f32>(0.85, 0.28, 0.28), x_axis);
                         alpha = max(alpha, x_axis * 0.78);
                     }
-                    if (y_axis > 0.01 && hit.y >= -major_step * 2.0) {
+                    if (y_axis > 0.01 && hit_wcs.y >= -major_step * 2.0) {
                         grid_rgb = mix(grid_rgb, vec3<f32>(0.26, 0.78, 0.38), y_axis);
                         alpha = max(alpha, y_axis * 0.78);
                     }
@@ -99,7 +107,6 @@ fn fs_background(in: BgOut) -> BgFragOut {
                     alpha = clamp(alpha * fade, 0.0, 0.85);
                     if (alpha > 0.005) {
                         col = mix(col, grid_rgb, alpha);
-                        out_depth = clamp(ndc_z + 0.00015, 0.0, 1.0);
                     }
                 }
             }
@@ -113,7 +120,7 @@ fn fs_background(in: BgOut) -> BgFragOut {
 }
 
 // ============================================================================
-// Pass 2: Shaded B-Rep Solid Faces (Studio Headlight + FaceId Highlighting)
+// Pass 2: Shaded B-Rep Solid Faces (Multi-Face Selection + Ghost Translucency)
 // ============================================================================
 
 struct SolidVertexIn {
@@ -146,21 +153,31 @@ fn fs_solid(in: SolidVertexOut, @builtin(front_facing) is_front: bool) -> @locat
         vn = -vn;
     }
 
-    // Base CAD machined aluminum / steel material color
+    var state: u32 = 0u;
+    if (in.face_id < arrayLength(&face_states)) {
+        state = face_states[in.face_id];
+    }
+
     var albedo = vec3<f32>(0.68, 0.72, 0.77);
     var emissive = vec3<f32>(0.0);
+    var out_alpha: f32 = 1.0;
 
-    if (in.face_id == u_vp.pick_flags.y) {
-        // Selected B-Rep face: rich warm gold/amber
+    if (u_vp.pick_flags.y != 0u) {
+        out_alpha = 0.36;
+    }
+
+    if (state == 2u) {
+        // Selected B-Rep face(s): rich warm gold/amber
         albedo = vec3<f32>(0.96, 0.72, 0.24);
         emissive = vec3<f32>(0.08, 0.05, 0.01);
-    } else if (in.face_id == u_vp.pick_flags.x) {
+        out_alpha = max(out_alpha, 0.88);
+    } else if (state == 1u || in.face_id == u_vp.pick_flags.x) {
         // Hovered B-Rep face: crisp sky cyan
         albedo = vec3<f32>(0.36, 0.78, 0.96);
         emissive = vec3<f32>(0.04, 0.08, 0.11);
+        out_alpha = max(out_alpha, 0.82);
     }
 
-    // Camera-locked 3-point CAD studio lighting (readable from every orbit angle!)
     let key_dir = normalize(vec3<f32>(0.42, 0.56, 0.71));
     let fill_dir = normalize(vec3<f32>(-0.62, -0.25, 0.45));
     let rim_dir = normalize(vec3<f32>(0.0, 0.75, -0.66));
@@ -173,7 +190,6 @@ fn fs_solid(in: SolidVertexOut, @builtin(front_facing) is_front: bool) -> @locat
     let half_vec = normalize(key_dir + view_dir);
     let spec = pow(max(dot(vn, half_vec), 0.0), 36.0) * 0.22;
 
-    // Subtle world +Z hemisphere tint so top vs bottom faces have natural spatial cue
     let hemi = 0.5 + 0.5 * in.world_normal.z;
     let ambient = mix(vec3<f32>(0.20, 0.22, 0.26), vec3<f32>(0.30, 0.32, 0.35), hemi);
 
@@ -181,11 +197,38 @@ fn fs_solid(in: SolidVertexOut, @builtin(front_facing) is_front: bool) -> @locat
         + vec3<f32>(spec)
         + emissive;
 
-    return vec4<f32>(clamp(lit, vec3<f32>(0.0), vec3<f32>(1.0)), 1.0);
+    return vec4<f32>(clamp(lit, vec3<f32>(0.0), vec3<f32>(1.0)), out_alpha);
 }
 
 // ============================================================================
-// Pass 3: Screen-Space Width-Stabilized Topological Edges & WCS Triad Gizmo
+// Pass 3: Translucent Stock & Z-Height Planes Overlay
+// ============================================================================
+
+struct OverlayVertexIn {
+    @location(0) pos_mm: vec3<f32>,
+    @location(1) color: vec4<f32>,
+};
+
+struct OverlayVertexOut {
+    @builtin(position) clip_pos: vec4<f32>,
+    @location(0) color: vec4<f32>,
+};
+
+@vertex
+fn vs_overlay(in: OverlayVertexIn) -> OverlayVertexOut {
+    var out: OverlayVertexOut;
+    out.clip_pos = u_vp.view_proj * vec4<f32>(in.pos_mm, 1.0);
+    out.color = in.color;
+    return out;
+}
+
+@fragment
+fn fs_overlay(in: OverlayVertexOut) -> @location(0) vec4<f32> {
+    return in.color;
+}
+
+// ============================================================================
+// Pass 4: Screen-Space Width-Stabilized Edges, Stock Wireframe, WCS Triad, & Arrows
 // ============================================================================
 
 struct EdgeInstanceIn {
@@ -205,7 +248,6 @@ fn vs_edge(
     @builtin(vertex_index) corner_idx: u32,
     inst: EdgeInstanceIn,
 ) -> EdgeVertexOut {
-    // 2 triangles (6 vertices) forming a screen-space quad around segment p0 -> p1
     var corners = array<vec2<f32>, 6>(
         vec2<f32>(0.0, -0.5),
         vec2<f32>(1.0, -0.5),
@@ -235,7 +277,6 @@ fn vs_edge(
     let offset_ndc = (normal_px * (uv.y * inst.width_px) * 2.0) / screen_size;
     base_clip.x = base_clip.x + offset_ndc.x * base_clip.w;
     base_clip.y = base_clip.y + offset_ndc.y * base_clip.w;
-    // Slight depth bias toward camera so topological edges sit cleanly on coplanar faces
     base_clip.z = max(base_clip.z - 0.00035 * base_clip.w, 0.0);
 
     var out: EdgeVertexOut;
