@@ -9,7 +9,7 @@ pub mod units;
 
 pub use expr::{EvalContext, ExprError, ParamLength, evaluate_length_mm};
 pub use frame::{FrameError, RigidFrame3};
-pub use geom2d::{Aabb2, ArcPolyline2D, ArcSegment2D};
+pub use geom2d::{Aabb2, ArcPolyline2D, ArcSegment2D, PolylineProjection};
 pub use geom3d::{Aabb3, Ray3, SegmentHit};
 pub use glam::{DAffine3, DMat3, DMat4, DQuat, DVec2, DVec3, DVec4};
 pub use units::{

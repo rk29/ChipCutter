@@ -25,6 +25,7 @@ ClProgram
       ├── SpindleStart { rpm, direction: CW | CCW }
       ├── SpindleStop
       ├── Coolant { mode: Off | Flood | Mist | Air }
+      ├── CutterComp { mode: Off | WearLeft | WearRight }
       ├── RapidMove { x, y, z }
       ├── LinearMove { x, y, z, feed_mm_min, role: Plunge | Ramp | LeadIn | Cut | LeadOut }
       ├── ArcMove { plane: XY | XZ | YZ, dir: CW | CCW, end_xyz, center_offset_ijk, radius, turns, feed_mm_min }

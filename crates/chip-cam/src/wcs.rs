@@ -47,6 +47,51 @@ pub enum CamError {
         lower_name: &'static str,
         lower_z: f64,
     },
+    #[error("toolpath generation cancelled")]
+    Cancelled,
+    #[error("operation '{op_name}' has no cutting tool assigned")]
+    MissingTool { op_name: String },
+    #[error(
+        "cutter '{tool_name}' ({tool_kind}) is incompatible with operation '{op_name}' ({op_kind})"
+    )]
+    IncompatibleTool {
+        op_name: String,
+        op_kind: &'static str,
+        tool_name: String,
+        tool_kind: &'static str,
+    },
+    #[error(
+        "operation '{op_name}' ({op_kind}) requires at least one compatible geometry selection"
+    )]
+    EmptySelection {
+        op_name: String,
+        op_kind: &'static str,
+    },
+    #[error("invalid parameter '{param}' = {value:.4}: {reason}")]
+    InvalidParameter {
+        param: &'static str,
+        value: f64,
+        reason: &'static str,
+    },
+    #[error(
+        "pocket cavity cannot accommodate cutter Ø{tool_diameter_mm:.3} mm (no collision-free interior offset)"
+    )]
+    PocketTooNarrowForTool { tool_diameter_mm: f64 },
+    #[error("hole Ø{hole_diameter_mm:.3} mm is smaller than cutter Ø{tool_diameter_mm:.3} mm")]
+    HoleSmallerThanTool {
+        hole_diameter_mm: f64,
+        tool_diameter_mm: f64,
+    },
+    #[error("invalid chamfer configuration: {reason}")]
+    InvalidChamferGeometry { reason: String },
+    #[error(
+        "chamfer tip Z ({tip_z_wcs:.3} mm) collides with adjacent lower floor at Z = {floor_z_wcs:.3} mm (reduce tip_offset)"
+    )]
+    ChamferTipCollision { tip_z_wcs: f64, floor_z_wcs: f64 },
+    #[error(
+        "operation '{op_name}' produced an empty toolpath (check heights, stepover, and stock-to-leave)"
+    )]
+    EmptyToolpath { op_name: String },
 }
 
 /// Controller work coordinate offset slot (`G54`..`G59`, `G59.1`..`G59.3`).

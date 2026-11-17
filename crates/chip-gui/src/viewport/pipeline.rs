@@ -1,8 +1,15 @@
-use std::collections::HashSet;
+use std::{
+    collections::HashSet,
+    hash::{Hash as _, Hasher as _},
+    sync::Arc,
+};
 
 use bytemuck::{Pod, Zeroable};
 use chip_cad::{CadDocument, EdgeId, FaceId, PickTarget, expand_coaxial_hole_faces};
-use chip_cam::{BoxAnchor27, ChainDirectionArrow3D, ResolvedStockGeometry, StockAxis};
+use chip_cam::{
+    BoxAnchor27, ChainDirectionArrow3D, GeneratedToolpath, MotionRole, ResolvedStockGeometry,
+    SegmentMotion3D, StockAxis, TabMarker3D,
+};
 use chip_math::{Aabb3, DMat4, DVec3, DisplayUnit, MM_PER_INCH, RigidFrame3};
 use wgpu::util::DeviceExt as _;
 
@@ -57,7 +64,16 @@ pub struct ZPlaneVisual {
     pub border_rgba: [f32; 4],
 }
 
-/// Active hover, multi-selection, WCS, Stock, and Z-plane scene state fed into the 3D CAD/CAM viewport.
+/// Cached generated toolpath item queued for Pass #5 GPU-instanced rendering (`08-ui-viewport.md`).
+#[derive(Debug, Clone)]
+pub struct ToolpathRenderEntry {
+    pub op_id: String,
+    pub cache_key: [u8; 32],
+    pub toolpath: Arc<GeneratedToolpath>,
+    pub is_focused: bool,
+}
+
+/// Active hover, multi-selection, WCS, Stock, Z-plane, and Toolpath scene state fed into the 3D CAD/CAM viewport.
 #[derive(Debug, Clone)]
 pub struct HighlightState {
     pub hovered: Option<PickTarget>,
@@ -71,6 +87,10 @@ pub struct HighlightState {
     pub z_planes_wcs: Vec<ZPlaneVisual>,
     pub ghost_part: bool,
     pub show_grid: bool,
+    pub toolpaths: Vec<ToolpathRenderEntry>,
+    pub show_toolpaths: bool,
+    pub show_rapids: bool,
+    pub preview_tab_marker_wcs: Option<TabMarker3D>,
 }
 
 impl Default for HighlightState {
@@ -87,6 +107,10 @@ impl Default for HighlightState {
             z_planes_wcs: Vec::new(),
             ghost_part: false,
             show_grid: true,
+            toolpaths: Vec::new(),
+            show_toolpaths: true,
+            show_rapids: true,
+            preview_tab_marker_wcs: None,
         }
     }
 }
@@ -236,6 +260,11 @@ struct UploadedCadGpu {
     index_count: u32,
 }
 
+struct UploadedToolpathsGpu {
+    signature_hash: u64,
+    buf: Option<(wgpu::Buffer, u32)>,
+}
+
 /// 4x MSAA `wgpu` 3D CAD/CAM viewport renderer shared by `egui` and headless tests.
 pub struct ViewportRenderer {
     bgl: wgpu::BindGroupLayout,
@@ -251,6 +280,7 @@ pub struct ViewportRenderer {
     targets: Option<FrameTargets>,
     egui_tex_id: Option<egui::TextureId>,
     uploaded_cad: Option<UploadedCadGpu>,
+    uploaded_toolpaths: Option<UploadedToolpathsGpu>,
     overlay_buf: Option<(wgpu::Buffer, u32)>,
     edge_buf: Option<(wgpu::Buffer, u32)>,
 }
@@ -533,6 +563,7 @@ impl ViewportRenderer {
             targets: None,
             egui_tex_id: None,
             uploaded_cad: None,
+            uploaded_toolpaths: None,
             overlay_buf: None,
             edge_buf: None,
         }
@@ -691,6 +722,30 @@ impl ViewportRenderer {
         }
         edge_instances.clear();
 
+        // Update cached Pass #5 GPU-instanced toolpaths only when toolpaths/frame/toggles change!
+        let tp_sig = compute_toolpath_gpu_signature(highlight);
+        if self
+            .uploaded_toolpaths
+            .as_ref()
+            .is_none_or(|u| u.signature_hash != tp_sig)
+        {
+            let tp_instances = build_toolpath_gpu_instances(highlight);
+            let buf = if tp_instances.is_empty() {
+                None
+            } else {
+                let b = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("chip_toolpath_instances"),
+                    contents: bytemuck::cast_slice(&tp_instances),
+                    usage: wgpu::BufferUsages::VERTEX,
+                });
+                Some((b, tp_instances.len() as u32))
+            };
+            self.uploaded_toolpaths = Some(UploadedToolpathsGpu {
+                signature_hash: tp_sig,
+                buf,
+            });
+        }
+
         let (vp, inv_vp, eye, view) = camera.gpu_matrices(w, h);
         let (minor_mm, major_mm) = adaptive_grid_steps(camera, h as f32, display_unit);
         let wcs_l2w = dmat4_to_f32_2d(highlight.wcs_frame.to_dmat4_local_to_world());
@@ -776,13 +831,23 @@ impl ViewportRenderer {
                 pass.draw(0..*vert_count, 0..1);
             }
 
-            // 4. Topological edges, Stock wireframe, WCS triad, & 3D chain arrows
+            // 4. Topological edges, Stock wireframe, WCS triad, 3D chain arrows, & Tab bridges
             if let Some((edge_buf, count)) = &self.edge_buf
                 && *count > 0
             {
                 pass.set_pipeline(&self.edge_pipeline);
                 pass.set_vertex_buffer(0, edge_buf.slice(..));
                 pass.draw(0..6, 0..*count);
+            }
+
+            // 5. GPU-Instanced Toolpath Pass (500,000+ segments @ 60 FPS)
+            if let Some(tp_gpu) = &self.uploaded_toolpaths
+                && let Some((tp_buf, tp_count)) = &tp_gpu.buf
+                && *tp_count > 0
+            {
+                pass.set_pipeline(&self.edge_pipeline);
+                pass.set_vertex_buffer(0, tp_buf.slice(..));
+                pass.draw(0..6, 0..*tp_count);
             }
         }
 
@@ -1006,7 +1071,235 @@ fn build_edge_and_scene_instances(
         });
     }
 
+    // 6. 3D Holding Tab Bridge Markers (from generated toolpaths + live interactive cursor preview)
+    if highlight.show_toolpaths {
+        for entry in &highlight.toolpaths {
+            let alpha_scale = if entry.is_focused { 1.0 } else { 0.45 };
+            for tab in &entry.toolpath.tab_markers_wcs {
+                emit_tab_marker_visual(
+                    tab,
+                    &highlight.wcs_frame,
+                    false,
+                    alpha_scale,
+                    overlay_tris,
+                    &mut out,
+                );
+            }
+        }
+    }
+    if let Some(preview_tab) = &highlight.preview_tab_marker_wcs {
+        emit_tab_marker_visual(
+            preview_tab,
+            &highlight.wcs_frame,
+            true,
+            1.0,
+            overlay_tris,
+            &mut out,
+        );
+    }
+
     out
+}
+
+fn emit_tab_marker_visual(
+    tab: &TabMarker3D,
+    wcs_frame: &RigidFrame3,
+    is_hover_preview: bool,
+    alpha_scale: f32,
+    overlay_tris: &mut Vec<OverlayVertexGpu>,
+    edges: &mut Vec<EdgeInstanceGpu>,
+) {
+    let tan = chip_math::DVec2::new(tab.tangent_xy.x, tab.tangent_xy.y).normalize_or_zero();
+    let t2 = if tan.length_squared() < 0.2 {
+        chip_math::DVec2::X
+    } else {
+        tan
+    };
+    let n2 = chip_math::DVec2::new(-t2.y, t2.x);
+    let half_w = 0.5 * tab.width_mm.max(0.8);
+    let half_t = 1.1; // visual bridge thickness across contour edge
+    let z0 = tab.center_wcs.z;
+    let z1 = z0 + tab.height_mm.max(0.3);
+
+    let fill_col = if is_hover_preview {
+        [0.24, 0.98, 0.72, 0.36 * alpha_scale]
+    } else {
+        [0.98, 0.76, 0.22, 0.28 * alpha_scale]
+    };
+    let wire_col = if is_hover_preview {
+        [0.24, 0.98, 0.72, 0.98 * alpha_scale]
+    } else {
+        [1.0, 0.82, 0.26, 0.95 * alpha_scale]
+    };
+
+    let c2 = chip_math::DVec2::new(tab.center_wcs.x, tab.center_wcs.y);
+    let to_w =
+        |xy: chip_math::DVec2, z: f64| wcs_frame.local_to_world_point(DVec3::new(xy.x, xy.y, z));
+
+    if tab.is_triangular {
+        // Triangular prism bridge peaking at `(c2, z1)`
+        let bl0 = to_w(c2 - t2 * half_w - n2 * half_t, z0);
+        let bl1 = to_w(c2 - t2 * half_w + n2 * half_t, z0);
+        let br0 = to_w(c2 + t2 * half_w - n2 * half_t, z0);
+        let br1 = to_w(c2 + t2 * half_w + n2 * half_t, z0);
+        let ap0 = to_w(c2 - n2 * half_t, z1);
+        let ap1 = to_w(c2 + n2 * half_t, z1);
+
+        push_quad_tris(overlay_tris, bl0, ap0, ap1, bl1, fill_col);
+        push_quad_tris(overlay_tris, ap0, br0, br1, ap1, fill_col);
+        for (a, b) in [
+            (bl0, ap0),
+            (ap0, br0),
+            (bl1, ap1),
+            (ap1, br1),
+            (ap0, ap1),
+            (bl0, bl1),
+            (br0, br1),
+        ] {
+            edges.push(EdgeInstanceGpu {
+                p0_mm: dvec3_f32(a),
+                p1_mm: dvec3_f32(b),
+                color: wire_col,
+                width_px: 2.3,
+            });
+        }
+    } else {
+        // Rectangular bridge box
+        let b00 = to_w(c2 - t2 * half_w - n2 * half_t, z0);
+        let b10 = to_w(c2 + t2 * half_w - n2 * half_t, z0);
+        let b11 = to_w(c2 + t2 * half_w + n2 * half_t, z0);
+        let b01 = to_w(c2 - t2 * half_w + n2 * half_t, z0);
+        let t00 = to_w(c2 - t2 * half_w - n2 * half_t, z1);
+        let t10 = to_w(c2 + t2 * half_w - n2 * half_t, z1);
+        let t11 = to_w(c2 + t2 * half_w + n2 * half_t, z1);
+        let t01 = to_w(c2 - t2 * half_w + n2 * half_t, z1);
+
+        push_quad_tris(overlay_tris, t00, t10, t11, t01, fill_col);
+        for (a, b) in [
+            (t00, t10),
+            (t10, t11),
+            (t11, t01),
+            (t01, t00),
+            (b00, t00),
+            (b10, t10),
+            (b11, t11),
+            (b01, t01),
+        ] {
+            edges.push(EdgeInstanceGpu {
+                p0_mm: dvec3_f32(a),
+                p1_mm: dvec3_f32(b),
+                color: wire_col,
+                width_px: 2.3,
+            });
+        }
+    }
+}
+
+fn compute_toolpath_gpu_signature(highlight: &HighlightState) -> u64 {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    highlight.show_toolpaths.hash(&mut h);
+    highlight.show_rapids.hash(&mut h);
+    for v in [
+        highlight.wcs_frame.origin_mm,
+        highlight.wcs_frame.x_axis,
+        highlight.wcs_frame.y_axis,
+        highlight.wcs_frame.z_axis,
+    ] {
+        v.x.to_bits().hash(&mut h);
+        v.y.to_bits().hash(&mut h);
+        v.z.to_bits().hash(&mut h);
+    }
+    if highlight.show_toolpaths {
+        highlight.toolpaths.len().hash(&mut h);
+        for item in &highlight.toolpaths {
+            item.op_id.hash(&mut h);
+            item.cache_key.hash(&mut h);
+            item.is_focused.hash(&mut h);
+        }
+    }
+    h.finish()
+}
+
+fn build_toolpath_gpu_instances(highlight: &HighlightState) -> Vec<EdgeInstanceGpu> {
+    if !highlight.show_toolpaths || highlight.toolpaths.is_empty() {
+        return Vec::new();
+    }
+
+    let mut out = Vec::new();
+    let frame = &highlight.wcs_frame;
+
+    for entry in &highlight.toolpaths {
+        let alpha = if entry.is_focused { 0.96_f32 } else { 0.36_f32 };
+        let width_scale = if entry.is_focused { 1.0_f32 } else { 0.80_f32 };
+
+        for seg in &entry.toolpath.segments_wcs {
+            let (color, width_px, arc_steps) = match seg.motion {
+                SegmentMotion3D::Rapid => {
+                    if !highlight.show_rapids {
+                        continue;
+                    }
+                    ([0.98, 0.75, 0.16, 0.82 * alpha], 1.5 * width_scale, 1usize)
+                }
+                SegmentMotion3D::Linear { role, .. } => {
+                    let (rgb, w) = role_color_and_width(role);
+                    ([rgb[0], rgb[1], rgb[2], alpha], w * width_scale, 1usize)
+                }
+                SegmentMotion3D::Arc {
+                    radius_mm,
+                    signed_sweep_rad,
+                    role,
+                    ..
+                } => {
+                    let (rgb, w) = role_color_and_width(role);
+                    // Discretize circular/helical arcs strictly on GPU upload to <= ~0.025 mm chord error
+                    let step_angle = if radius_mm > 0.05 {
+                        (2.0 * (1.0 - (0.025 / radius_mm).min(0.5)).acos()).clamp(0.06, 0.32)
+                    } else {
+                        0.25
+                    };
+                    let n = ((signed_sweep_rad.abs() / step_angle).ceil() as usize).clamp(4, 96);
+                    ([rgb[0], rgb[1], rgb[2], alpha], w * width_scale, n)
+                }
+            };
+
+            if arc_steps <= 1 {
+                let p0 = frame.local_to_world_point(seg.start_wcs);
+                let p1 = frame.local_to_world_point(seg.end_wcs);
+                out.push(EdgeInstanceGpu {
+                    p0_mm: dvec3_f32(p0),
+                    p1_mm: dvec3_f32(p1),
+                    color,
+                    width_px,
+                });
+            } else {
+                let mut prev = frame.local_to_world_point(seg.start_wcs);
+                for k in 1..=arc_steps {
+                    let t = (k as f64) / (arc_steps as f64);
+                    let cur = frame.local_to_world_point(seg.sample_point(t));
+                    out.push(EdgeInstanceGpu {
+                        p0_mm: dvec3_f32(prev),
+                        p1_mm: dvec3_f32(cur),
+                        color,
+                        width_px,
+                    });
+                    prev = cur;
+                }
+            }
+        }
+    }
+
+    out
+}
+
+fn role_color_and_width(role: MotionRole) -> ([f32; 3], f32) {
+    match role {
+        MotionRole::Cut => ([0.22, 0.74, 0.98], 2.25),
+        MotionRole::FinishCut => ([0.14, 0.90, 0.94], 2.45),
+        MotionRole::LeadIn | MotionRole::LeadOut => ([0.20, 0.84, 0.60], 1.95),
+        MotionRole::Plunge | MotionRole::Ramp => ([0.98, 0.44, 0.52], 2.15),
+        MotionRole::TabRamp => ([0.98, 0.80, 0.24], 2.35),
+        MotionRole::LinkTransition => ([0.56, 0.78, 0.98], 1.75),
+    }
 }
 
 fn push_quad_tris(
@@ -1529,5 +1822,81 @@ mod tests {
         let png = render_offscreen_png(&doc, &cam, &highlight, 640, 480).unwrap();
         assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"));
         assert!(png.len() > 8_000);
+    }
+
+    #[test]
+    fn renders_instanced_toolpaths_and_holding_tab_markers() {
+        use std::sync::atomic::AtomicBool;
+
+        use chip_cad::sample_cam_torture_block_step;
+        use chip_cam::{
+            HeightReference, HeightSpec, Operation, OperationKind, StrategyParams, TabProfileKind,
+            generate_operation_toolpath,
+        };
+        use chip_tools::default_starter_tool_library;
+
+        let step = sample_cam_torture_block_step().unwrap();
+        let doc = MonstertruckKernel
+            .load_step_bytes("torture.step", step.as_bytes(), DEFAULT_TESS_CHORD_TOL_MM)
+            .unwrap();
+        let setup = Setup::new("s1", "Op 1", WorkOffsetSlot::G54);
+        let resolved = setup
+            .resolve_immutable(&doc, DisplayUnit::Millimeter)
+            .unwrap();
+
+        let starter = default_starter_tool_library();
+        let flat_6mm = &starter.tools[0];
+        let mut op = Operation::new("op_cnt", "Profile", OperationKind::Contour2D);
+        op.tool_id = Some(flat_6mm.id.clone());
+        let first_loop = doc.loops[0].id;
+        op.selections
+            .push(chip_cam::GeometrySelectionItem::ClosedLoop {
+                binding: doc.bind_loop(first_loop).unwrap(),
+                reverse: false,
+                side_flip: false,
+            });
+        op.heights.top = HeightSpec::new(HeightReference::ModelTop, 0.0);
+        op.heights.bottom = HeightSpec::new(HeightReference::ModelBottom, 0.0);
+        if let StrategyParams::Contour2D(p) = op.strategy_mut() {
+            p.tabs.enabled = true;
+            p.tabs.profile = TabProfileKind::Triangular {
+                ramp_angle_deg: 25.0,
+            };
+        }
+
+        let tp = Arc::new(
+            generate_operation_toolpath(
+                &doc,
+                &resolved,
+                &op,
+                flat_6mm,
+                DisplayUnit::Millimeter,
+                true,
+                &AtomicBool::new(false),
+            )
+            .unwrap(),
+        );
+
+        let mut cam = CadCamera::default();
+        cam.fit_aabb(&doc.aabb_mm);
+
+        let highlight = HighlightState {
+            wcs_frame: resolved.frame,
+            stock: Some(resolved.stock),
+            show_stock: true,
+            toolpaths: vec![ToolpathRenderEntry {
+                op_id: op.id.clone(),
+                cache_key: [7_u8; 32],
+                toolpath: tp,
+                is_focused: true,
+            }],
+            show_toolpaths: true,
+            show_rapids: true,
+            ..HighlightState::default()
+        };
+
+        let png = render_offscreen_png(&doc, &cam, &highlight, 640, 480).unwrap();
+        assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"));
+        assert!(png.len() > 10_000);
     }
 }

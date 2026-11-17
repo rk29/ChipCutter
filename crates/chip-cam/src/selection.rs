@@ -1,6 +1,9 @@
+use std::collections::HashSet;
+
 use chip_cad::{
     BodyId, CadDocument, CurveKind, EdgeId, FaceId, LoopId, OrientedEdgeUse, SelectionBinding,
-    SurfaceKind, group_coaxial_holes, highest_adjacent_wall_top,
+    SurfaceKind, classify_planar_face_loops, extract_modeled_chamfer_strip, group_coaxial_holes,
+    highest_adjacent_wall_top,
 };
 use chip_math::{ArcPolyline2D, ArcSegment2D, DVec2, DVec3, RigidFrame3};
 use serde::{Deserialize, Serialize};
@@ -79,7 +82,11 @@ pub enum ExtractedFeature25D {
     PlanarFace {
         face_id: FaceId,
         outer_boundary_wcs: ArcPolyline2D,
+        /// Per-segment flag (`outer_boundary_wcs.segments.len()`) true when touching open air/exterior step.
+        open_outer_segments: Vec<bool>,
         inner_islands_wcs: Vec<ArcPolyline2D>,
+        /// Subset of `inner_islands_wcs` that bound true raised islands/bosses (`Z > face_z_wcs`).
+        raised_islands_wcs: Vec<ArcPolyline2D>,
         face_z_wcs: f64,
         inferred_top_z_wcs: f64,
         area_mm2: f64,
@@ -90,6 +97,18 @@ pub enum ExtractedFeature25D {
         max_z_wcs: f64,
         reverse: bool,
         side_flip: bool,
+        source_edge_ids: Vec<EdgeId>,
+    },
+    ModeledChamfer {
+        face_id: FaceId,
+        upper_polyline_wcs: ArcPolyline2D,
+        lower_polyline_wcs: ArcPolyline2D,
+        radial_width_mm: f64,
+        axial_drop_mm: f64,
+        bevel_half_angle_rad: f64,
+        top_z_wcs: f64,
+        bottom_z_wcs: f64,
+        edge_ids: Vec<EdgeId>,
     },
     CylindricalHole {
         primary_face: FaceId,
@@ -160,50 +179,134 @@ pub fn extract_selection_features(
                 let face = doc.face(fid).ok_or(CamError::MissingSelectedEntity {
                     index: binding.last_index,
                 })?;
-                let SurfaceKind::Plane { origin_mm, normal } = face.surface else {
+
+                // Check horizontal planar face first; otherwise check modeled angled chamfer face!
+                let horizontal_plane = match face.surface {
+                    SurfaceKind::Plane { origin_mm, normal } => {
+                        let n_wcs = setup.frame.world_to_local_dir(normal.normalize_or_zero());
+                        if n_wcs.z.abs() >= 0.999 {
+                            Some(origin_mm)
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                };
+
+                if let Some(origin_mm) = horizontal_plane {
+                    let face_z_wcs = setup.frame.world_to_local_point(origin_mm).z;
+                    let cls = classify_planar_face_loops(doc, fid, setup.frame.z_axis);
+                    let (outer_boundary_wcs, open_outer_segments) = match face.outer_loop {
+                        Some(lid) => {
+                            let (p, flags, _, _) = project_loop_to_wcs_xy_with_open_flags(
+                                doc,
+                                &setup.frame,
+                                lid,
+                                Some(&cls.open_outer_edges),
+                            )?;
+                            (p, flags)
+                        }
+                        None => (ArcPolyline2D::default(), Vec::new()),
+                    };
+                    let mut inner_islands_wcs = Vec::with_capacity(face.inner_loops.len());
+                    let mut raised_islands_wcs = Vec::new();
+                    for &ilid in &face.inner_loops {
+                        let poly = project_loop_to_wcs_xy(doc, &setup.frame, ilid)?.0;
+                        if cls.raised_inner_loops.contains(&ilid) {
+                            raised_islands_wcs.push(poly.clone());
+                        }
+                        inner_islands_wcs.push(poly);
+                    }
+
+                    // Pocket Top Z inference: highest adjacent wall top Z in WCS (or Stock Top if open)
+                    let inferred_top = highest_adjacent_wall_top(doc, fid, setup.frame.z_axis)
+                        .map(|world_proj| {
+                            let wcs_origin_proj = setup.frame.origin_mm.dot(setup.frame.z_axis);
+                            world_proj - wcs_origin_proj
+                        })
+                        .unwrap_or(stock_top_z);
+
+                    if !highlight_faces.contains(&fid) {
+                        highlight_faces.push(fid);
+                    }
+                    top_candidates.push(inferred_top);
+                    bottom_candidates.push(face_z_wcs);
+                    features.push(ExtractedFeature25D::PlanarFace {
+                        face_id: fid,
+                        outer_boundary_wcs,
+                        open_outer_segments,
+                        inner_islands_wcs,
+                        raised_islands_wcs,
+                        face_z_wcs,
+                        inferred_top_z_wcs: inferred_top,
+                        area_mm2: face.area_mm2,
+                    });
+                } else if let Some(strip) =
+                    extract_modeled_chamfer_strip(doc, fid, setup.frame.z_axis)
+                {
+                    let wcs_origin_proj = setup.frame.origin_mm.dot(setup.frame.z_axis);
+                    let top_z_wcs = strip.top_proj_mm - wcs_origin_proj;
+                    let bottom_z_wcs = strip.bottom_proj_mm - wcs_origin_proj;
+                    let upper_closed = is_oriented_uses_closed(doc, &strip.upper_edges);
+                    let lower_closed = is_oriented_uses_closed(doc, &strip.lower_edges);
+                    let upper_polyline_wcs = if strip.upper_edges.is_empty() {
+                        ArcPolyline2D::default()
+                    } else {
+                        project_oriented_edges_to_wcs_xy(
+                            doc,
+                            &setup.frame,
+                            &strip.upper_edges,
+                            upper_closed,
+                        )?
+                        .0
+                    };
+                    let lower_polyline_wcs = if strip.lower_edges.is_empty() {
+                        ArcPolyline2D::default()
+                    } else {
+                        project_oriented_edges_to_wcs_xy(
+                            doc,
+                            &setup.frame,
+                            &strip.lower_edges,
+                            lower_closed,
+                        )?
+                        .0
+                    };
+                    let mut edge_ids = Vec::new();
+                    for u in strip.upper_edges.iter().chain(strip.lower_edges.iter()) {
+                        if !edge_ids.contains(&u.edge_id) {
+                            edge_ids.push(u.edge_id);
+                        }
+                    }
+                    if !highlight_faces.contains(&fid) {
+                        highlight_faces.push(fid);
+                    }
+                    top_candidates.push(top_z_wcs);
+                    bottom_candidates.push(bottom_z_wcs);
+                    features.push(ExtractedFeature25D::ModeledChamfer {
+                        face_id: fid,
+                        upper_polyline_wcs,
+                        lower_polyline_wcs,
+                        radial_width_mm: strip.radial_width_mm,
+                        axial_drop_mm: strip.axial_drop_mm,
+                        bevel_half_angle_rad: strip.bevel_half_angle_rad,
+                        top_z_wcs,
+                        bottom_z_wcs,
+                        edge_ids,
+                    });
+                } else {
+                    let cos_z = match face.surface {
+                        SurfaceKind::Plane { normal, .. } => setup
+                            .frame
+                            .world_to_local_dir(normal.normalize_or_zero())
+                            .z
+                            .abs(),
+                        _ => 0.0,
+                    };
                     return Err(CamError::FaceNotHorizontalInWcs {
                         face_id: fid.0,
-                        cos_z: 0.0,
-                    });
-                };
-                let n_wcs = setup.frame.world_to_local_dir(normal.normalize_or_zero());
-                if n_wcs.z.abs() < 0.999 {
-                    return Err(CamError::FaceNotHorizontalInWcs {
-                        face_id: fid.0,
-                        cos_z: n_wcs.z.abs(),
+                        cos_z,
                     });
                 }
-                let face_z_wcs = setup.frame.world_to_local_point(origin_mm).z;
-                let outer_boundary_wcs = match face.outer_loop {
-                    Some(lid) => project_loop_to_wcs_xy(doc, &setup.frame, lid)?.0,
-                    None => ArcPolyline2D::default(),
-                };
-                let mut inner_islands_wcs = Vec::with_capacity(face.inner_loops.len());
-                for &ilid in &face.inner_loops {
-                    inner_islands_wcs.push(project_loop_to_wcs_xy(doc, &setup.frame, ilid)?.0);
-                }
-
-                // Pocket Top Z inference: highest adjacent wall top Z in WCS (or Stock Top if open)
-                let inferred_top = highest_adjacent_wall_top(doc, fid, setup.frame.z_axis)
-                    .map(|world_proj| {
-                        let wcs_origin_proj = setup.frame.origin_mm.dot(setup.frame.z_axis);
-                        world_proj - wcs_origin_proj
-                    })
-                    .unwrap_or(stock_top_z);
-
-                if !highlight_faces.contains(&fid) {
-                    highlight_faces.push(fid);
-                }
-                top_candidates.push(inferred_top);
-                bottom_candidates.push(face_z_wcs);
-                features.push(ExtractedFeature25D::PlanarFace {
-                    face_id: fid,
-                    outer_boundary_wcs,
-                    inner_islands_wcs,
-                    face_z_wcs,
-                    inferred_top_z_wcs: inferred_top,
-                    area_mm2: face.area_mm2,
-                });
             }
             GeometrySelectionItem::ClosedLoop {
                 binding,
@@ -214,7 +317,9 @@ pub fn extract_selection_features(
                 let lp = doc.brep_loop(lid).ok_or(CamError::MissingSelectedEntity {
                     index: binding.last_index,
                 })?;
+                let mut source_edge_ids = Vec::with_capacity(lp.edges.len());
                 for u in &lp.edges {
+                    source_edge_ids.push(u.edge_id);
                     if !highlight_edges.contains(&u.edge_id) {
                         highlight_edges.push(u.edge_id);
                     }
@@ -242,6 +347,7 @@ pub fn extract_selection_features(
                     max_z_wcs: max_z,
                     reverse: *reverse,
                     side_flip: *side_flip,
+                    source_edge_ids,
                 });
             }
             GeometrySelectionItem::OpenChain {
@@ -256,7 +362,9 @@ pub fn extract_selection_features(
                         index: start_edge.last_index,
                     });
                 }
+                let mut source_edge_ids = Vec::with_capacity(resolved_edges.len());
                 for u in resolved_edges {
+                    source_edge_ids.push(u.edge_id);
                     if !highlight_edges.contains(&u.edge_id) {
                         highlight_edges.push(u.edge_id);
                     }
@@ -285,6 +393,7 @@ pub fn extract_selection_features(
                     max_z_wcs: max_z,
                     reverse: *reverse,
                     side_flip: *side_flip,
+                    source_edge_ids,
                 });
             }
             GeometrySelectionItem::CylindricalHole { binding } => {
@@ -392,15 +501,63 @@ fn build_chain_arrow(
     })
 }
 
+fn is_oriented_uses_closed(doc: &CadDocument, uses: &[OrientedEdgeUse]) -> bool {
+    if uses.is_empty() {
+        return false;
+    }
+    if uses.len() == 1
+        && let Some(e) = doc.edge(uses[0].edge_id)
+        && matches!(
+            e.curve,
+            CurveKind::CircleArc {
+                is_full_circle: true,
+                ..
+            }
+        )
+    {
+        return true;
+    }
+    let endpoint = |u: OrientedEdgeUse, start: bool| -> Option<DVec3> {
+        let ep = doc
+            .render_mesh
+            .edge_polylines
+            .iter()
+            .find(|ep| ep.edge_id == u.edge_id)?;
+        if start == u.forward {
+            ep.points_mm.first().copied()
+        } else {
+            ep.points_mm.last().copied()
+        }
+    };
+    match (
+        uses.first().and_then(|&u| endpoint(u, true)),
+        uses.last().and_then(|&u| endpoint(u, false)),
+    ) {
+        (Some(p0), Some(p1)) => p0.distance(p1) <= 1e-3,
+        _ => false,
+    }
+}
+
 fn project_loop_to_wcs_xy(
     doc: &CadDocument,
     frame: &RigidFrame3,
     loop_id: LoopId,
 ) -> Result<(ArcPolyline2D, f64, f64), CamError> {
+    let (poly, _, min_z, max_z) =
+        project_loop_to_wcs_xy_with_open_flags(doc, frame, loop_id, None)?;
+    Ok((poly, min_z, max_z))
+}
+
+fn project_loop_to_wcs_xy_with_open_flags(
+    doc: &CadDocument,
+    frame: &RigidFrame3,
+    loop_id: LoopId,
+    open_edges: Option<&HashSet<EdgeId>>,
+) -> Result<(ArcPolyline2D, Vec<bool>, f64, f64), CamError> {
     let lp = doc
         .brep_loop(loop_id)
         .ok_or(CamError::MissingSelectedEntity { index: loop_id.0 })?;
-    project_oriented_edges_to_wcs_xy(doc, frame, &lp.edges, true)
+    project_oriented_edges_with_flags(doc, frame, &lp.edges, true, open_edges)
 }
 
 fn project_oriented_edges_to_wcs_xy(
@@ -409,11 +566,25 @@ fn project_oriented_edges_to_wcs_xy(
     uses: &[OrientedEdgeUse],
     closed: bool,
 ) -> Result<(ArcPolyline2D, f64, f64), CamError> {
+    let (poly, _, min_z, max_z) =
+        project_oriented_edges_with_flags(doc, frame, uses, closed, None)?;
+    Ok((poly, min_z, max_z))
+}
+
+fn project_oriented_edges_with_flags(
+    doc: &CadDocument,
+    frame: &RigidFrame3,
+    uses: &[OrientedEdgeUse],
+    closed: bool,
+    open_edges: Option<&HashSet<EdgeId>>,
+) -> Result<(ArcPolyline2D, Vec<bool>, f64, f64), CamError> {
     let mut segments = Vec::with_capacity(uses.len());
+    let mut open_flags = Vec::with_capacity(uses.len());
     let mut min_z = f64::INFINITY;
     let mut max_z = f64::NEG_INFINITY;
 
     for u in uses {
+        let is_open = open_edges.is_some_and(|s| s.contains(&u.edge_id));
         let edge = doc
             .edge(u.edge_id)
             .ok_or(CamError::MissingSelectedEntity { index: u.edge_id.0 })?;
@@ -551,6 +722,7 @@ fn project_oriented_edges_to_wcs_xy(
                 }
             }
         }
+        open_flags.resize(segments.len(), is_open);
     }
 
     if !min_z.is_finite() {
@@ -558,7 +730,7 @@ fn project_oriented_edges_to_wcs_xy(
         max_z = 0.0;
     }
 
-    Ok((ArcPolyline2D { segments, closed }, min_z, max_z))
+    Ok((ArcPolyline2D { segments, closed }, open_flags, min_z, max_z))
 }
 
 fn determine_arc_ccw_in_wcs(

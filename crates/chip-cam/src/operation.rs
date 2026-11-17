@@ -1,7 +1,12 @@
+use chip_math::EvalContext;
 use chip_tools::{CoolantMode, CuttingPreset, Tool, ToolId, ToolOperationClass};
 use serde::{Deserialize, Serialize};
 
-use crate::{heights::OperationHeights, selection::GeometrySelectionItem};
+use crate::{
+    heights::OperationHeights,
+    params::{LinkingParams, PassesParams, StrategyParams},
+    selection::GeometrySelectionItem,
+};
 
 /// The 5 core v1 2.5D CAM operation types (`05-operations.md`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -165,6 +170,12 @@ pub struct Operation {
     pub selections: Vec<GeometrySelectionItem>,
     #[serde(default)]
     pub heights: OperationHeights,
+    #[serde(default)]
+    pub passes: PassesParams,
+    #[serde(default)]
+    pub linking: LinkingParams,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strategy: Option<StrategyParams>,
     #[serde(skip)]
     pub runtime_status: OperationStatus,
 }
@@ -181,12 +192,46 @@ impl Operation {
             feed_overrides: OperationFeedOverrides::default(),
             selections: Vec::new(),
             heights: OperationHeights::default(),
+            passes: PassesParams::default(),
+            linking: LinkingParams::default(),
+            strategy: Some(StrategyParams::default_for_kind(kind)),
             runtime_status: OperationStatus::Dirty,
         }
     }
 
     pub fn mark_dirty(&mut self) {
         self.runtime_status = OperationStatus::Dirty;
+    }
+
+    /// Returns concrete [`StrategyParams`] matching `self.kind` (falling back to defaults when loading M2 files).
+    pub fn resolved_strategy(&self) -> StrategyParams {
+        match &self.strategy {
+            Some(s) => {
+                let mut clone = s.clone();
+                clone.ensure_matches_kind(self.kind);
+                clone
+            }
+            None => StrategyParams::default_for_kind(self.kind),
+        }
+    }
+
+    /// Mutable access to [`StrategyParams`], initializing defaults if absent or mismatched with `self.kind`.
+    pub fn strategy_mut(&mut self) -> &mut StrategyParams {
+        let s = self
+            .strategy
+            .get_or_insert_with(|| StrategyParams::default_for_kind(self.kind));
+        s.ensure_matches_kind(self.kind);
+        s
+    }
+
+    /// Re-evaluates all inline parameter formulas (`heights`, `passes`, `linking`, `strategy`) under `ctx`.
+    pub fn reevaluate_all(&mut self, ctx: &EvalContext) {
+        self.heights.reevaluate(ctx);
+        self.passes.reevaluate(ctx);
+        self.linking.reevaluate(ctx);
+        if let Some(s) = &mut self.strategy {
+            s.reevaluate(ctx);
+        }
     }
 
     /// Resolves effective feeds, speeds, stepdown, stepover, and coolant from `tool` + `preset_id` + `feed_overrides`.

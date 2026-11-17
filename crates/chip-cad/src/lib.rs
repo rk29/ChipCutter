@@ -14,8 +14,8 @@ pub mod picking;
 pub mod topology;
 
 pub use fixtures::{
-    SampleStepError, sample_machined_plate_step, sample_machined_plate_step_inches,
-    sample_multi_feature_bracket_step,
+    SampleStepError, sample_cam_torture_block_step, sample_machined_plate_step,
+    sample_machined_plate_step_inches, sample_multi_feature_bracket_step,
 };
 pub use kernel::{CadError, CadKernel};
 pub use model::{
@@ -26,7 +26,9 @@ pub use model::{
 pub use monstertruck_kernel::MonstertruckKernel;
 pub use picking::{CadPicker, PickFilter, PickHit, PickTarget};
 pub use topology::{
-    CylindricalHoleSpan, EdgeEndpointInfo, LogicalCylindricalHole, TopologyGraph, VertexId,
-    analyze_cylindrical_hole, expand_coaxial_hole_faces, find_coplanar_faces,
-    find_same_diameter_holes, group_coaxial_holes, highest_adjacent_wall_top,
+    CylindricalHoleSpan, EdgeEndpointInfo, LogicalCylindricalHole, ModeledChamferStrip,
+    PlanarFaceLoopClassification, TopologyGraph, VertexId, analyze_cylindrical_hole,
+    classify_planar_face_loops, expand_coaxial_hole_faces, extract_modeled_chamfer_strip,
+    find_coplanar_faces, find_same_diameter_holes, group_coaxial_holes,
+    highest_adjacent_lower_floor_proj, highest_adjacent_wall_top,
 };

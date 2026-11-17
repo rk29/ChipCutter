@@ -248,6 +248,292 @@ pub fn sample_multi_feature_bracket_step(
     Ok(CompleteStepDisplay::new(models, header).to_string())
 }
 
+/// Builds a comprehensive Milestone 3 CAM verification block (`100 × 80 × 22 mm` max envelope):
+/// - Base slab `[0..100] × [0..80]` (`Z = 0..14 mm`) with `R10` corner fillet,
+/// - **Open-edge shoulder/step shelf** `[76..100] × [0..80]` at `Z = 14 mm` (open on 3 air edges,
+///   bounded on `-X` by a `6 mm` vertical step wall rising to the `Z = 20 mm` main plateau),
+/// - **4x `Ø6.0 mm` (`R = 3.0 mm`) mounting through-holes** (`Z = 0..14 mm`) on the right step shelf,
+/// - **Closed pocket** `[12..46] × [16..64]` (`Z = 12..20 mm`) containing a **raised `Ø10.0 mm`
+///   (`R = 5.0 mm`) central cylindrical island boss** at `(29, 40)` (`Z = 12..20 mm`),
+/// - **Wide blind counterbore** `Ø18.0 mm` (`R = 9.0 mm`) at `(60, 22)` (`Z = 10..20 mm`),
+/// - **Modeled `45° × 2.0 mm` beveled boss pad** `[50..70] × [44..72]` rising from `Z = 20 mm` to
+///   `[52..68] × [46..70]` at `Z = 22 mm` with exact `45°` sloped planar chamfer walls.
+pub fn sample_cam_torture_block_step() -> std::result::Result<String, SampleStepError> {
+    // 1. Base Z = 0 outer wire with split vertices at X = 76 so the Z = 14 step and Z = 20 plateau
+    //    share exact topological vertices and edges!
+    let v0 = builder::vertex(Point3::new(0.0, 0.0, 0.0));
+    let v_f76 = builder::vertex(Point3::new(76.0, 0.0, 0.0));
+    let v1 = builder::vertex(Point3::new(100.0, 0.0, 0.0));
+    let v2 = builder::vertex(Point3::new(100.0, 80.0, 0.0));
+    let v_b76 = builder::vertex(Point3::new(76.0, 80.0, 0.0));
+    let v3 = builder::vertex(Point3::new(10.0, 80.0, 0.0));
+    let v4 = builder::vertex(Point3::new(0.0, 70.0, 0.0));
+
+    let inv_sqrt2 = std::f64::consts::FRAC_1_SQRT_2;
+    let fillet_mid = Point3::new(10.0 - 10.0 * inv_sqrt2, 70.0 + 10.0 * inv_sqrt2, 0.0);
+    let fillet_edge = builder::try_circle_arc(&v3, &v4, fillet_mid)
+        .map_err(|e| SampleStepError::Modeling(e.to_string()))?;
+
+    let base_outer_z0: Wire = vec![
+        builder::line(&v0, &v_f76), // [0] front-left (0..76, 0)
+        builder::line(&v_f76, &v1), // [1] front-right step (76..100, 0)
+        builder::line(&v1, &v2),    // [2] right step (100, 0..80)
+        builder::line(&v2, &v_b76), // [3] back-right step (100..76, 80)
+        builder::line(&v_b76, &v3), // [4] back-left (76..10, 80)
+        fillet_edge,                // [5] R10 fillet (10,80 -> 0,70)
+        builder::line(&v4, &v0),    // [6] left (0, 70..0)
+    ]
+    .into();
+
+    // 4x Ø6.0 mm (R = 3.0 mm) through-holes on the right step shelf (X = 88)
+    let step_holes = [(88.0, 14.0), (88.0, 32.0), (88.0, 48.0), (88.0, 66.0)];
+    let mut base_wires_z0 = vec![base_outer_z0];
+    for (cx, cy) in step_holes {
+        let seed = builder::vertex(Point3::new(cx + 3.0, cy, 0.0));
+        let w_ccw: Wire = builder::revolve(
+            &seed,
+            Point3::new(cx, cy, 0.0),
+            Vector3::unit_z(),
+            SweepAngle::Closed,
+            2,
+        );
+        base_wires_z0.push(w_ccw.inverse());
+    }
+
+    let base_face_z0 = builder::try_attach_plane(base_wires_z0)
+        .map_err(|e| SampleStepError::Modeling(e.to_string()))?;
+    let base_solid_z14 = builder::extrude(&base_face_z0, Vector3::new(0.0, 0.0, 14.0));
+    let mut shell_faces: Vec<Face> = base_solid_z14
+        .into_boundaries()
+        .into_iter()
+        .next()
+        .ok_or_else(|| SampleStepError::Modeling("missing base z14 shell".to_string()))?
+        .into_iter()
+        .collect();
+
+    // Pop Z = 14 top cap and split along X = 76 into:
+    //  (a) Right open-step floor face at Z = 14 ([76..100] x [0..80] with the 4 through-hole mouths)
+    //  (b) Left plateau base wire ([0..76] x [0..80]) extruded up from Z = 14 -> Z = 20!
+    let old_z14_cap = shell_faces
+        .pop()
+        .ok_or_else(|| SampleStepError::Modeling("empty z14 shell".to_string()))?;
+    let mut z14_wires = old_z14_cap.boundaries();
+    let z14_outer: Vec<Edge> = z14_wires.remove(0).into_iter().collect();
+    if z14_outer.len() != 7 {
+        return Err(SampleStepError::Modeling(format!(
+            "expected 7 outer edges on Z=14 cap, got {}",
+            z14_outer.len()
+        )));
+    }
+    let v_f76_z14 = z14_outer[0].back().clone();
+    let v_b76_z14 = z14_outer[3].back().clone();
+    let e_div_z14 = builder::line(&v_f76_z14, &v_b76_z14);
+
+    // (a) Right open-edge step shelf at Z = 14
+    let step_outer_wire_z14: Wire = vec![
+        z14_outer[1].clone(),
+        z14_outer[2].clone(),
+        z14_outer[3].clone(),
+        e_div_z14.inverse(),
+    ]
+    .into();
+    let mut step_wires_z14 = vec![step_outer_wire_z14];
+    step_wires_z14.extend(z14_wires); // the 4 through-hole inner wires at Z = 14
+    let step_floor_face_z14 = builder::try_attach_plane(step_wires_z14)
+        .map_err(|e| SampleStepError::Modeling(e.to_string()))?;
+    shell_faces.push(step_floor_face_z14);
+
+    // (b) Extrude Left plateau ([0..76] x [0..80]) from Z = 14 -> Z = 20
+    let plateau_wire_z14: Wire = vec![
+        z14_outer[0].clone(),
+        e_div_z14,
+        z14_outer[4].clone(),
+        z14_outer[5].clone(),
+        z14_outer[6].clone(),
+    ]
+    .into();
+    let plateau_base_z14 = builder::try_attach_plane(vec![plateau_wire_z14])
+        .map_err(|e| SampleStepError::Modeling(e.to_string()))?;
+    let plateau_solid = builder::extrude(&plateau_base_z14, Vector3::new(0.0, 0.0, 6.0)); // Z = 14 -> 20
+    let mut plateau_faces: Vec<Face> = plateau_solid
+        .into_boundaries()
+        .into_iter()
+        .next()
+        .ok_or_else(|| SampleStepError::Modeling("missing plateau shell".to_string()))?
+        .into_iter()
+        .collect();
+    let plateau_top_z20 = plateau_faces
+        .pop()
+        .ok_or_else(|| SampleStepError::Modeling("empty plateau shell".to_string()))?;
+    // Skip `plateau_faces[0]` (its internal Z=14 bottom cap) and add its 5 vertical walls (including the X=76 step wall!)
+    for wf in plateau_faces.into_iter().skip(1) {
+        shell_faces.push(wf);
+    }
+    let mut top_z20_wires = plateau_top_z20.boundaries();
+
+    // 2. Closed Pocket [12..46] x [16..64] at Z = 12..20 with Raised Ø10 mm (R = 5) Island Boss at (29, 40)
+    let p_a = builder::vertex(Point3::new(12.0, 16.0, 12.0));
+    let p_b = builder::vertex(Point3::new(46.0, 16.0, 12.0));
+    let p_c = builder::vertex(Point3::new(46.0, 64.0, 12.0));
+    let p_d = builder::vertex(Point3::new(12.0, 64.0, 12.0));
+    let pkt_outer_z12: Wire = vec![
+        builder::line(&p_a, &p_b),
+        builder::line(&p_b, &p_c),
+        builder::line(&p_c, &p_d),
+        builder::line(&p_d, &p_a),
+    ]
+    .into();
+    let island_seed_z12 = builder::vertex(Point3::new(29.0 + 5.0, 40.0, 12.0));
+    let island_wire_z12: Wire = builder::revolve(
+        &island_seed_z12,
+        Point3::new(29.0, 40.0, 12.0),
+        Vector3::unit_z(),
+        SweepAngle::Closed,
+        2,
+    );
+    let annular_floor_proto =
+        builder::try_attach_plane(vec![pkt_outer_z12, island_wire_z12.inverse()])
+            .map_err(|e| SampleStepError::Modeling(e.to_string()))?;
+    let annular_plug = builder::extrude(&annular_floor_proto, Vector3::new(0.0, 0.0, 8.0)); // Z = 12 -> 20
+    let mut annular_faces: Vec<Face> = annular_plug
+        .into_boundaries()
+        .into_iter()
+        .next()
+        .ok_or_else(|| SampleStepError::Modeling("missing annular pocket plug".to_string()))?
+        .into_iter()
+        .collect();
+    let annular_top_z20 = annular_faces
+        .pop()
+        .ok_or_else(|| SampleStepError::Modeling("empty annular plug".to_string()))?;
+    let mut annular_top_wires = annular_top_z20.boundaries();
+    if annular_top_wires.len() != 2 {
+        return Err(SampleStepError::Modeling(
+            "expected outer + island wire on annular pocket plug".to_string(),
+        ));
+    }
+    let pkt_mouth_z20 = annular_top_wires.remove(0);
+    let island_top_cw_z20 = annular_top_wires.remove(0);
+    // Invert bottom + outer walls + inner island walls so normals point into solid / out of boss!
+    for f in annular_faces {
+        shell_faces.push(f.inverse());
+    }
+    // Cap top of the central Ø10mm cylindrical boss at Z = 20 (+Z outward normal)
+    let island_top_cap_z20 = builder::try_attach_plane(vec![island_top_cw_z20.inverse()])
+        .map_err(|e| SampleStepError::Modeling(e.to_string()))?;
+    shell_faces.push(island_top_cap_z20);
+    top_z20_wires.push(pkt_mouth_z20.inverse());
+
+    // 3. Wide Blind Counterbore Ø18.0 mm (R = 9.0 mm) at (60, 22), Z = 10..20
+    let cb_seed = builder::vertex(Point3::new(60.0 + 9.0, 22.0, 10.0));
+    let cb_wire_z10: Wire = builder::revolve(
+        &cb_seed,
+        Point3::new(60.0, 22.0, 10.0),
+        Vector3::unit_z(),
+        SweepAngle::Closed,
+        2,
+    );
+    let cb_floor_proto = builder::try_attach_plane(vec![cb_wire_z10])
+        .map_err(|e| SampleStepError::Modeling(e.to_string()))?;
+    let cb_plug = builder::extrude(&cb_floor_proto, Vector3::new(0.0, 0.0, 10.0)); // Z = 10 -> 20
+    let mut cb_faces: Vec<Face> = cb_plug
+        .into_boundaries()
+        .into_iter()
+        .next()
+        .ok_or_else(|| SampleStepError::Modeling("missing counterbore plug".to_string()))?
+        .into_iter()
+        .collect();
+    let cb_top_z20 = cb_faces
+        .pop()
+        .ok_or_else(|| SampleStepError::Modeling("empty counterbore plug".to_string()))?;
+    let cb_mouth_z20 = cb_top_z20
+        .boundaries()
+        .into_iter()
+        .next()
+        .ok_or_else(|| SampleStepError::Modeling("missing counterbore mouth".to_string()))?;
+    for f in cb_faces {
+        shell_faces.push(f.inverse());
+    }
+    top_z20_wires.push(cb_mouth_z20.inverse());
+
+    // 4. Modeled 45° x 2.0 mm Beveled Boss Pad:
+    //    Base [50..70] x [44..72] at Z = 20 -> Top [52..68] x [46..70] at Z = 22
+    let b0 = builder::vertex(Point3::new(50.0, 44.0, 20.0));
+    let b1 = builder::vertex(Point3::new(70.0, 44.0, 20.0));
+    let b2 = builder::vertex(Point3::new(70.0, 72.0, 20.0));
+    let b3 = builder::vertex(Point3::new(50.0, 72.0, 20.0));
+
+    let t0 = builder::vertex(Point3::new(52.0, 46.0, 22.0));
+    let t1 = builder::vertex(Point3::new(68.0, 46.0, 22.0));
+    let t2 = builder::vertex(Point3::new(68.0, 70.0, 22.0));
+    let t3 = builder::vertex(Point3::new(52.0, 70.0, 22.0));
+
+    let eb0 = builder::line(&b0, &b1);
+    let eb1 = builder::line(&b1, &b2);
+    let eb2 = builder::line(&b2, &b3);
+    let eb3 = builder::line(&b3, &b0);
+
+    let et0 = builder::line(&t0, &t1);
+    let et1 = builder::line(&t1, &t2);
+    let et2 = builder::line(&t2, &t3);
+    let et3 = builder::line(&t3, &t0);
+
+    let ed0 = builder::line(&b0, &t0);
+    let ed1 = builder::line(&b1, &t1);
+    let ed2 = builder::line(&b2, &t2);
+    let ed3 = builder::line(&b3, &t3);
+
+    // 4 planar 45° chamfer side faces (CCW from outside -> outward normals tilted 45° up!)
+    let chamf_front = builder::try_attach_plane(vec![
+        vec![eb0.clone(), ed1.clone(), et0.inverse(), ed0.inverse()].into(),
+    ])
+    .map_err(|e| SampleStepError::Modeling(e.to_string()))?;
+    let chamf_right = builder::try_attach_plane(vec![
+        vec![eb1.clone(), ed2.clone(), et1.inverse(), ed1.inverse()].into(),
+    ])
+    .map_err(|e| SampleStepError::Modeling(e.to_string()))?;
+    let chamf_back = builder::try_attach_plane(vec![
+        vec![eb2.clone(), ed3.clone(), et2.inverse(), ed2.inverse()].into(),
+    ])
+    .map_err(|e| SampleStepError::Modeling(e.to_string()))?;
+    let chamf_left = builder::try_attach_plane(vec![
+        vec![eb3.clone(), ed0.clone(), et3.inverse(), ed3.inverse()].into(),
+    ])
+    .map_err(|e| SampleStepError::Modeling(e.to_string()))?;
+    let boss_top_z22 = builder::try_attach_plane(vec![vec![et0, et1, et2, et3].into()])
+        .map_err(|e| SampleStepError::Modeling(e.to_string()))?;
+
+    shell_faces.push(chamf_front);
+    shell_faces.push(chamf_right);
+    shell_faces.push(chamf_back);
+    shell_faces.push(chamf_left);
+    shell_faces.push(boss_top_z22);
+
+    let boss_footprint_ccw: Wire = vec![eb0, eb1, eb2, eb3].into();
+    top_z20_wires.push(boss_footprint_ccw.inverse());
+
+    // Finalize main plateau Z = 20 top face
+    let final_top_z20 = builder::try_attach_plane(top_z20_wires)
+        .map_err(|e| SampleStepError::Modeling(e.to_string()))?;
+    shell_faces.push(final_top_z20);
+
+    let full_shell: Shell = shell_faces.into();
+    let solid = Solid::try_new(vec![full_shell])
+        .map_err(|e| SampleStepError::Modeling(format!("non-manifold torture block: {e}")))?;
+
+    let compressed = solid.compress();
+    let models: StepModels<'_, _, _, _> = [&compressed].into_iter().collect();
+    let header = StepHeaderDescriptor {
+        file_name: "sample_cam_torture_block.step".to_string(),
+        time_stamp: "2026-11-17T00:00:00".to_string(),
+        authors: vec!["ChipCutter".to_string()],
+        organization: vec!["ChipCutter CAM".to_string()],
+        organization_system: "monstertruck".to_string(),
+        authorization: String::new(),
+    };
+
+    Ok(CompleteStepDisplay::new(models, header).to_string())
+}
+
 fn build_plate_step_with_scale(
     s: f64,
     prefix: SiPrefix,
@@ -605,5 +891,98 @@ mod tests {
             )
             .unwrap();
         assert_eq!(tilted_doc.bodies.len(), 1);
+    }
+
+    #[test]
+    fn torture_block_classifies_open_step_raised_island_modeled_chamfer_and_lower_floor() {
+        use crate::topology::{
+            classify_planar_face_loops, extract_modeled_chamfer_strip,
+            highest_adjacent_lower_floor_proj,
+        };
+
+        let step = sample_cam_torture_block_step().unwrap();
+        let doc = MonstertruckKernel
+            .load_step_bytes(
+                "torture_block.step",
+                step.as_bytes(),
+                DEFAULT_TESS_CHORD_TOL_MM,
+            )
+            .unwrap();
+        assert_eq!(doc.bodies.len(), 1);
+
+        // 1. Open-edge step floor at Z = 14.0 mm: 3 open air edges + 1 rising wall edge at X = 76,
+        //    and its 4 Ø6mm through-hole inner loops are downward holes (0 raised islands!)
+        let step_floor = doc
+            .faces
+            .iter()
+            .find(|f| {
+                matches!(
+                    f.surface,
+                    SurfaceKind::Plane { origin_mm, normal }
+                    if normal.z > 0.99 && approx_eq(origin_mm.z, 14.0, 1e-2)
+                )
+            })
+            .unwrap()
+            .id;
+        let step_cls = classify_planar_face_loops(&doc, step_floor, DVec3::Z);
+        assert_eq!(step_cls.open_outer_edges.len(), 3);
+        assert!(step_cls.raised_inner_loops.is_empty());
+
+        // 2. Enclosed island pocket floor at Z = 12.0 mm: 0 open outer edges + 1 raised Ø10mm island boss!
+        let island_pkt_floor = doc
+            .faces
+            .iter()
+            .find(|f| {
+                matches!(
+                    f.surface,
+                    SurfaceKind::Plane { origin_mm, normal }
+                    if normal.z > 0.99 && approx_eq(origin_mm.z, 12.0, 1e-2)
+                )
+            })
+            .unwrap()
+            .id;
+        let pkt_cls = classify_planar_face_loops(&doc, island_pkt_floor, DVec3::Z);
+        assert!(pkt_cls.open_outer_edges.is_empty());
+        assert_eq!(pkt_cls.raised_inner_loops.len(), 1);
+
+        // 3. Modeled 45° x 2.0 mm chamfer strip on the beveled boss (Z = 20..22 mm)
+        let chamfer_face = doc
+            .faces
+            .iter()
+            .find(|f| {
+                matches!(
+                    f.surface,
+                    SurfaceKind::Plane { normal, .. }
+                    if approx_eq(normal.z, std::f64::consts::FRAC_1_SQRT_2, 1e-2)
+                )
+            })
+            .unwrap()
+            .id;
+        let strip = extract_modeled_chamfer_strip(&doc, chamfer_face, DVec3::Z).unwrap();
+        assert!(approx_eq(
+            strip.bevel_half_angle_rad,
+            std::f64::consts::FRAC_PI_4,
+            1e-2
+        ));
+        assert!(approx_eq(strip.axial_drop_mm, 2.0, 2e-2));
+        assert!(approx_eq(strip.radial_width_mm, 2.0, 2e-2));
+        assert!(!strip.upper_edges.is_empty());
+        assert!(!strip.lower_edges.is_empty());
+
+        // 4. Adjacent lower step floor detection below the X = 76, Z = 20 sharp edge
+        let step_top_edge = doc
+            .edges
+            .iter()
+            .find(|e| {
+                approx_eq(e.aabb_mm.min.z, 20.0, 1e-2)
+                    && approx_eq(e.aabb_mm.max.z, 20.0, 1e-2)
+                    && approx_eq(e.aabb_mm.min.x, 76.0, 1e-2)
+                    && approx_eq(e.aabb_mm.max.x, 76.0, 1e-2)
+            })
+            .unwrap()
+            .id;
+        let lower_floor =
+            highest_adjacent_lower_floor_proj(&doc, &[step_top_edge], 20.0, DVec3::Z).unwrap();
+        assert!(approx_eq(lower_floor, 14.0, 2e-2));
     }
 }

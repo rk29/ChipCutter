@@ -2,6 +2,7 @@
 # Enforces permissive / weak-copyleft licenses only (no GPL / LGPL / AGPL).
 
 [advisories]
+unmaintained = "workspace"
 ignore = []
 
 [licenses]

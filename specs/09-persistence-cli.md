@@ -57,7 +57,7 @@ Binary name: `chipcutter`
 
 | Subcommand | Purpose |
 |---|---|
-| `chipcutter validate <project.chip.toml>` | Loads project + STEP models, checks CAD SHA-256 / geometric signature bindings, validates height/tool/parameter invariants, exits non-zero on error. |
+| `chipcutter validate [--generate] <project.chip.toml>` | Loads project + STEP models, checks CAD SHA-256 / geometric signature bindings, validates height/tool/parameter invariants (and optionally generates all enabled 2.5D toolpaths in parallel when `--generate` is passed), exiting non-zero on error. |
 | `chipcutter build <project.chip.toml> [-o <out_dir>] [--setup <name>] [--post <profile>]` | Generates all enabled operations in parallel, runs crash/gouge verification (failing the build on critical crashes unless `--allow-warnings`), and writes `.nc`/`.ngc` G-code files + JSON summary stats. |
 | `chipcutter simulate <project.chip.toml> [--resolution fine] [--report report.json]` | Runs headless heightmap stock removal & gouge/crash checks, outputting cycle times, remaining stock volume, and any collision diagnostics. |
 | `chipcutter tools import-fusion <input.json> -o <output.tools.toml>` | Converts a Fusion 360 JSON/tools library into a native ChipCutter `.tools.toml` library. |

@@ -1,11 +1,14 @@
 use std::{path::PathBuf, process::ExitCode};
 
 use chip_cad::{
-    CadKernel, CurveKind, MonstertruckKernel, SurfaceKind, sample_machined_plate_step,
-    sample_multi_feature_bracket_step,
+    CadKernel, CurveKind, MonstertruckKernel, SurfaceKind, sample_cam_torture_block_step,
+    sample_machined_plate_step, sample_multi_feature_bracket_step,
 };
 use chip_math::{DEFAULT_TESS_CHORD_TOL_MM, DisplayUnit};
-use chip_project::{DiagnosticSeverity, ProjectDocument, resolve_model_path, validate_project};
+use chip_project::{
+    DiagnosticSeverity, ProjectDocument, ToolpathCache, generate_project_blocking,
+    resolve_model_path, validate_project,
+};
 use chip_tools::import_fusion_library_path;
 use clap::{Parser, Subcommand};
 
@@ -40,11 +43,17 @@ enum Commands {
         /// Tilt the generated multi-feature bracket by 30° X / 25° Z to test WCS alignment.
         #[arg(long)]
         tilted: bool,
+        /// Generate the Milestone 3 CAM torture block (island pocket, open step, wide bore, 45° bevel).
+        #[arg(long)]
+        cam_torture: bool,
     },
     /// Validate a `.chip.toml` project's STEP hashes, tools, Setups, WCS, selections, and Z heights.
     Validate {
         /// Path to `.chip.toml` project file.
         project: PathBuf,
+        /// Also generate all enabled 2.5D toolpaths in parallel and verify non-empty CL-data output.
+        #[arg(long)]
+        generate: bool,
     },
     /// Tool library utilities (`import-fusion`).
     Tools {
@@ -85,8 +94,11 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
             output,
             multi_feature,
             tilted,
+            cam_torture,
         } => {
-            let step = if multi_feature || tilted {
+            let step = if cam_torture {
+                sample_cam_torture_block_step()?
+            } else if multi_feature || tilted {
                 sample_multi_feature_bracket_step(tilted)?
             } else {
                 sample_machined_plate_step()?
@@ -179,8 +191,8 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
             );
             Ok(ExitCode::SUCCESS)
         }
-        Commands::Validate { project } => {
-            let proj_doc = ProjectDocument::load_from_path(&project)?;
+        Commands::Validate { project, generate } => {
+            let mut proj_doc = ProjectDocument::load_from_path(&project)?;
             let proj_dir = project.parent();
 
             let mut loaded_cad = None;
@@ -217,7 +229,40 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
                 };
                 println!("  [{tag}] {}: {}", diag.scope, diag.message);
             }
-            if report.is_valid() {
+
+            let mut gen_failed = false;
+            if generate {
+                if let Some(cad_doc) = loaded_cad.as_ref() {
+                    let mut cache = ToolpathCache::new(64);
+                    let batch = generate_project_blocking(&mut proj_doc, cad_doc, &mut cache, 1);
+                    println!("=== Toolpath Generation Summary ===");
+                    for (scope, _id, tp) in &batch.generated {
+                        println!(
+                            "  [OK  ] {}: {} pass(es), {} G1, {} G2/G3, {} drill, cut={:.1} mm, rapid={:.1} mm, est={:.1}s",
+                            scope,
+                            tp.stats.pass_count,
+                            tp.stats.linear_move_count,
+                            tp.stats.arc_move_count,
+                            tp.stats.drill_cycle_count,
+                            tp.stats.cutting_distance_mm,
+                            tp.stats.rapid_distance_mm,
+                            tp.stats.total_est_time_sec
+                        );
+                        for w in &tp.warnings {
+                            println!("         [WARN] {w}");
+                        }
+                    }
+                    for (scope, err_msg) in &batch.errors {
+                        eprintln!("  [FAIL] {scope}: {err_msg}");
+                        gen_failed = true;
+                    }
+                } else {
+                    eprintln!("  [FAIL] Cannot generate toolpaths: no valid STEP model loaded.");
+                    gen_failed = true;
+                }
+            }
+
+            if report.is_valid() && !gen_failed {
                 println!(
                     "Validation PASSED ({} warning(s), 0 errors).",
                     report.warning_count()
@@ -225,7 +270,7 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
                 Ok(ExitCode::SUCCESS)
             } else {
                 eprintln!(
-                    "Validation FAILED ({} error(s), {} warning(s)).",
+                    "Validation FAILED ({} validation error(s), {} warning(s)).",
                     report.error_count(),
                     report.warning_count()
                 );

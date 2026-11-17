@@ -1,4 +1,5 @@
 pub mod browser;
+pub mod diagnostics;
 pub mod operation_inspector;
 pub mod setup_inspector;
 pub mod tool_library;
@@ -22,16 +23,18 @@ pub enum SetupTab {
     Heights,
 }
 
-/// Active sub-tab in the Operation Inspector.
+/// Active sub-tab in the 5-tab Operation Inspector (`08-ui-viewport.md`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum OperationTab {
     Tool,
     #[default]
     Geometry,
     Heights,
+    Passes,
+    Linking,
 }
 
-/// Interactive 3D viewport selection capture mode driven by Setup WCS or Operation Geometry tabs.
+/// Interactive 3D viewport selection capture mode driven by Setup WCS or Operation Geometry/Passes tabs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ViewportPickMode {
     #[default]
@@ -62,6 +65,10 @@ pub enum ViewportPickMode {
         start_edge: Option<EdgeId>,
     },
     OpCylindricalHoles {
+        setup_idx: usize,
+        op_idx: usize,
+    },
+    PlaceContourTab {
         setup_idx: usize,
         op_idx: usize,
     },
@@ -102,6 +109,10 @@ impl ViewportPickMode {
             Self::OpCylindricalHoles { .. } => {
                 Some("Geometry Pick Active: Click cylindrical hole walls to toggle selection".to_string())
             }
+            Self::PlaceContourTab { .. } => Some(
+                "Manual Holding Tab Mode: Click on selected contour edge to add a tab (Right-Click near tab to remove, Esc to exit)"
+                    .to_string(),
+            ),
         }
     }
 }

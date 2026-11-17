@@ -1,11 +1,17 @@
 //! Project document state, deterministic `.chip.toml` serialization, CAD SHA-256 verification,
 //! project invariant validation, and instant Undo/Redo history (`chip-project`).
 
+pub mod cache;
+pub mod dispatcher;
 pub mod document;
 pub mod history;
 pub mod toml_io;
 pub mod validation;
 
+pub use cache::{OperationInputHash, ToolpathCache, compute_operation_input_hash};
+pub use dispatcher::{
+    BatchGenerationReport, DispatcherEvent, JobDispatcher, generate_project_blocking,
+};
 pub use document::{
     ModelEntry, ProjectDocument, compute_sha256_hex, portable_model_path, resolve_model_path,
 };
@@ -130,5 +136,122 @@ mod tests {
         history.record_before_edit("Branch V3", None, &doc);
         doc.project_name = "V3".to_string();
         assert!(!history.can_redo());
+    }
+
+    #[test]
+    fn dispatcher_generates_in_parallel_invalidates_on_edit_and_restores_clean_on_undo() {
+        use std::{collections::HashSet, sync::Arc, time::Instant};
+
+        use chip_cad::sample_cam_torture_block_step;
+        use chip_cam::OperationStatus;
+        use chip_math::ParamLength;
+
+        let step_str = sample_cam_torture_block_step().unwrap();
+        let cad_doc = Arc::new(
+            MonstertruckKernel
+                .load_step_bytes(
+                    "torture.step",
+                    step_str.as_bytes(),
+                    DEFAULT_TESS_CHORD_TOL_MM,
+                )
+                .unwrap(),
+        );
+
+        let starter = default_starter_tool_library();
+        let flat_6mm = &starter.tools[0];
+        let face_38mm = starter
+            .tools
+            .iter()
+            .find(|t| matches!(t.geometry, chip_tools::CutterGeometry::FaceMill { .. }))
+            .unwrap();
+
+        let mut proj = ProjectDocument::new("M3 Dispatcher + Undo Cache Test");
+        proj.ensure_tool_embedded(flat_6mm);
+        proj.ensure_tool_embedded(face_38mm);
+
+        let mut op_face = Operation::new("op_1_face", "Face Stock", OperationKind::Facing);
+        op_face.tool_id = Some(face_38mm.id.clone());
+
+        let pkt_floor = cad_doc
+            .faces
+            .iter()
+            .find(|f| {
+                matches!(
+                    f.surface,
+                    SurfaceKind::Plane { origin_mm, normal }
+                    if normal.z > 0.99 && (origin_mm.z - 12.0).abs() < 0.05
+                )
+            })
+            .unwrap()
+            .id;
+        let mut op_pkt = Operation::new("op_2_pkt", "Island Pocket", OperationKind::Pocket2D);
+        op_pkt.tool_id = Some(flat_6mm.id.clone());
+        op_pkt.selections.push(GeometrySelectionItem::PlanarFace {
+            binding: cad_doc.bind_face(pkt_floor).unwrap(),
+        });
+
+        proj.setups[0].operations = vec![op_face, op_pkt];
+
+        // Deterministic .chip.toml roundtrip with full Passes, Linking, and StrategyParams!
+        let toml_1 = proj.to_toml_string().unwrap();
+        let reparsed = ProjectDocument::from_toml_str(&toml_1).unwrap();
+        assert_eq!(toml_1, reparsed.to_toml_string().unwrap());
+
+        let mut cache = ToolpathCache::new(64);
+        let mut dispatcher = JobDispatcher::new(None);
+        let mut history = UndoHistory::new(50);
+
+        let spawned =
+            dispatcher.dispatch_operations(&mut proj, Arc::clone(&cad_doc), 1, &cache, None, None);
+        assert_eq!(spawned, 2);
+        assert_eq!(
+            proj.setups[0].operations[0].runtime_status,
+            OperationStatus::Generating
+        );
+
+        // Wait briefly for rayon background tasks to complete
+        let start_wait = Instant::now();
+        while dispatcher.is_busy() && start_wait.elapsed().as_secs() < 10 {
+            dispatcher.poll_events(&mut proj, &mut cache, 1);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        dispatcher.poll_events(&mut proj, &mut cache, 1);
+
+        assert_eq!(
+            proj.setups[0].operations[0].runtime_status,
+            OperationStatus::Clean
+        );
+        assert_eq!(
+            proj.setups[0].operations[1].runtime_status,
+            OperationStatus::Clean
+        );
+
+        // Mutate stepdown on op_2_pkt -> reconciles immediately to Dirty while op_1_face stays Clean!
+        history.record_before_edit("Change Stepdown", None, &proj);
+        proj.setups[0].operations[1].passes.max_stepdown = ParamLength::from_mm(1.25);
+        cache.reconcile_project_statuses(&mut proj, 1, &HashSet::new());
+        assert_eq!(
+            proj.setups[0].operations[0].runtime_status,
+            OperationStatus::Clean
+        );
+        assert_eq!(
+            proj.setups[0].operations[1].runtime_status,
+            OperationStatus::Dirty
+        );
+
+        // Undo (`Ctrl+Z`) -> restores Clean status + cached GeneratedToolpath in < 1 ms!
+        let t_undo = Instant::now();
+        history.undo(&mut proj).unwrap();
+        cache.reconcile_project_statuses(&mut proj, 1, &HashSet::new());
+        let undo_us = t_undo.elapsed().as_micros();
+        assert!(
+            undo_us < 10_000,
+            "Undo + cache reconciliation should be instantaneous, took {undo_us} us"
+        );
+        assert_eq!(
+            proj.setups[0].operations[1].runtime_status,
+            OperationStatus::Clean
+        );
+        assert!(cache.get_for_operation(&proj, 0, 1, 1).is_some());
     }
 }

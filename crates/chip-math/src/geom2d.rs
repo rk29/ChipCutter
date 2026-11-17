@@ -220,6 +220,121 @@ impl ArcSegment2D {
             }
         }
     }
+
+    /// Extracts the exact sub-segment over normalized arc-length interval `[u0, u1] ⊆ [0, 1]`.
+    pub fn slice_u(&self, u0: f64, u1: f64) -> Option<Self> {
+        let a = u0.clamp(0.0, 1.0);
+        let b = u1.clamp(0.0, 1.0);
+        if b - a <= 1e-12 {
+            return None;
+        }
+        match *self {
+            Self::Line { start, end } => {
+                let d = end - start;
+                let p0 = start + d * a;
+                let p1 = start + d * b;
+                if p0.distance(p1) <= 1e-12 {
+                    None
+                } else {
+                    Some(Self::Line { start: p0, end: p1 })
+                }
+            }
+            Self::Arc {
+                start,
+                center,
+                radius,
+                ccw,
+                ..
+            } => {
+                if radius <= 1e-12 {
+                    return None;
+                }
+                let a0 = (start.y - center.y).atan2(start.x - center.x);
+                let sweep = self.signed_sweep_rad();
+                let th0 = a0 + sweep * a;
+                let th1 = a0 + sweep * b;
+                let p0 = center + DVec2::new(th0.cos(), th0.sin()) * radius;
+                let p1 = center + DVec2::new(th1.cos(), th1.sin()) * radius;
+                if (sweep * (b - a)).abs() * radius <= 1e-12 {
+                    None
+                } else {
+                    Some(Self::Arc {
+                        start: p0,
+                        end: p1,
+                        center,
+                        radius,
+                        ccw,
+                    })
+                }
+            }
+        }
+    }
+
+    /// Splits this segment at normalized arc-length parameter `u ∈ [0, 1]`.
+    pub fn split_at(&self, u: f64) -> (Option<Self>, Option<Self>) {
+        (self.slice_u(0.0, u), self.slice_u(u, 1.0))
+    }
+
+    /// Returns `(closest_point, local_u ∈ [0, 1], distance_mm)` from `query` to this segment.
+    pub fn closest_point(&self, query: DVec2) -> (DVec2, f64, f64) {
+        match *self {
+            Self::Line { start, end } => {
+                let ab = end - start;
+                let len_sq = ab.length_squared();
+                if len_sq <= 1e-24 {
+                    return (start, 0.0, query.distance(start));
+                }
+                let u = ((query - start).dot(ab) / len_sq).clamp(0.0, 1.0);
+                let pt = start + ab * u;
+                (pt, u, query.distance(pt))
+            }
+            Self::Arc {
+                start,
+                end,
+                center,
+                radius,
+                ccw,
+            } => {
+                let rel = query - center;
+                let rel_len = rel.length();
+                let sweep_mag = self.signed_sweep_rad().abs();
+                if radius <= 1e-12 || sweep_mag <= 1e-12 {
+                    return (start, 0.0, query.distance(start));
+                }
+                if rel_len > 1e-12 {
+                    let a0 = (start.y - center.y).atan2(start.x - center.x);
+                    let aq = rel.y.atan2(rel.x);
+                    let delta = if ccw {
+                        (aq - a0).rem_euclid(std::f64::consts::TAU)
+                    } else {
+                        (a0 - aq).rem_euclid(std::f64::consts::TAU)
+                    };
+                    if delta <= sweep_mag + 1e-12 {
+                        let u = (delta / sweep_mag).clamp(0.0, 1.0);
+                        let pt = center + (rel / rel_len) * radius;
+                        return (pt, u, query.distance(pt));
+                    }
+                }
+                let d0 = query.distance(start);
+                let d1 = query.distance(end);
+                if d0 <= d1 {
+                    (start, 0.0, d0)
+                } else {
+                    (end, 1.0, d1)
+                }
+            }
+        }
+    }
+}
+
+/// Closest-point projection result onto an [`ArcPolyline2D`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PolylineProjection {
+    pub s_mm: f64,
+    pub s_norm: f64,
+    pub point: DVec2,
+    pub tangent: DVec2,
+    pub distance_mm: f64,
 }
 
 /// Connected sequence of 2D analytic line and circular arc segments in `f64` millimeters.
@@ -304,6 +419,227 @@ impl ArcPolyline2D {
         }
         self.segments.last().and_then(|s| s.eval_at(1.0))
     }
+
+    /// Evaluates `(point, unit_tangent)` at arc-length `s_mm` from the start (wrapping modulo perimeter if `closed`).
+    pub fn eval_at_distance(&self, s_mm: f64) -> Option<(DVec2, DVec2)> {
+        let total = self.perimeter();
+        if total < 1e-12 {
+            return None;
+        }
+        let s = if self.closed {
+            s_mm.rem_euclid(total)
+        } else {
+            s_mm.clamp(0.0, total)
+        };
+        self.sample_at_fraction(s / total)
+    }
+
+    /// Projects `query` onto the closest point along this polyline.
+    pub fn project_point(&self, query: DVec2) -> Option<PolylineProjection> {
+        let total = self.perimeter();
+        if total < 1e-12 {
+            return None;
+        }
+        let mut best: Option<PolylineProjection> = None;
+        let mut accum = 0.0;
+        for seg in &self.segments {
+            let seg_len = seg.length();
+            if seg_len < 1e-12 {
+                continue;
+            }
+            let (pt, u, dist) = seg.closest_point(query);
+            let is_better = match best {
+                None => true,
+                Some(prev) => dist < prev.distance_mm,
+            };
+            if is_better {
+                let tangent = seg.eval_at(u).map_or(DVec2::X, |(_, t)| t);
+                let s_mm = (accum + u * seg_len).clamp(0.0, total);
+                best = Some(PolylineProjection {
+                    s_mm,
+                    s_norm: (s_mm / total).clamp(0.0, 1.0),
+                    point: pt,
+                    tangent,
+                    distance_mm: dist,
+                });
+            }
+            accum += seg_len;
+        }
+        best
+    }
+
+    /// Minimum Euclidean distance from `query` to any curve segment on this polyline.
+    pub fn distance_to_point(&self, query: DVec2) -> f64 {
+        self.project_point(query)
+            .map_or(f64::INFINITY, |p| p.distance_mm)
+    }
+
+    /// Ensures a closed loop has `CCW` (`ccw == true`, `signed_area > 0`) or `CW` (`ccw == false`) orientation.
+    pub fn ensure_orientation(&self, ccw: bool) -> Self {
+        if !self.closed {
+            return self.clone();
+        }
+        let is_ccw = self.signed_area() >= 0.0;
+        if is_ccw == ccw {
+            self.clone()
+        } else {
+            self.reverse()
+        }
+    }
+
+    /// Extracts an open sub-polyline over `[s_start_mm, s_end_mm]`.
+    /// When `self.closed` and `s_end_mm > s_start_mm`, supports seamless wrap-around past `perimeter()`.
+    pub fn slice_interval(&self, s_start_mm: f64, s_end_mm: f64) -> Self {
+        let total = self.perimeter();
+        if total < 1e-12 || s_end_mm <= s_start_mm + 1e-12 {
+            return Self {
+                segments: Vec::new(),
+                closed: false,
+            };
+        }
+
+        if !self.closed {
+            let a = s_start_mm.clamp(0.0, total);
+            let b = s_end_mm.clamp(0.0, total);
+            return Self {
+                segments: self.slice_non_wrapping(a, b),
+                closed: false,
+            };
+        }
+
+        let span = (s_end_mm - s_start_mm).min(total);
+        let a = s_start_mm.rem_euclid(total);
+        if a + span <= total + 1e-12 {
+            Self {
+                segments: self.slice_non_wrapping(a, (a + span).min(total)),
+                closed: false,
+            }
+        } else {
+            let mut segs = self.slice_non_wrapping(a, total);
+            segs.extend(self.slice_non_wrapping(0.0, (a + span - total).min(total)));
+            Self {
+                segments: segs,
+                closed: false,
+            }
+        }
+    }
+
+    fn slice_non_wrapping(&self, a: f64, b: f64) -> Vec<ArcSegment2D> {
+        let mut out = Vec::new();
+        if b <= a + 1e-12 {
+            return out;
+        }
+        let mut accum = 0.0;
+        for seg in &self.segments {
+            let len = seg.length();
+            if len < 1e-12 {
+                continue;
+            }
+            let seg_s0 = accum;
+            let seg_s1 = accum + len;
+            let ov0 = a.max(seg_s0);
+            let ov1 = b.min(seg_s1);
+            if ov1 > ov0 + 1e-12 {
+                let u0 = ((ov0 - seg_s0) / len).clamp(0.0, 1.0);
+                let u1 = ((ov1 - seg_s0) / len).clamp(0.0, 1.0);
+                if let Some(sub) = seg.slice_u(u0, u1) {
+                    out.push(sub);
+                }
+            }
+            accum = seg_s1;
+        }
+        out
+    }
+
+    /// Shifts the start/end seam of a closed polyline to `new_start_s_mm` around its perimeter.
+    pub fn rotate_closed_seam(&self, new_start_s_mm: f64) -> Self {
+        if !self.closed {
+            return self.clone();
+        }
+        let total = self.perimeter();
+        if total < 1e-12 {
+            return self.clone();
+        }
+        let s0 = new_start_s_mm.rem_euclid(total);
+        if s0 <= 1e-9 || (total - s0) <= 1e-9 {
+            return self.clone();
+        }
+        let mut sliced = self.slice_interval(s0, s0 + total);
+        sliced.closed = true;
+        sliced
+    }
+
+    /// Exact analytic point-in-region test for a closed [`ArcPolyline2D`], accounting for circular arc caps.
+    pub fn contains_point(&self, pt: DVec2) -> bool {
+        if !self.closed || self.segments.is_empty() {
+            return false;
+        }
+        let aabb = self.exact_aabb();
+        if pt.x < aabb.min.x - 1e-9
+            || pt.x > aabb.max.x + 1e-9
+            || pt.y < aabb.min.y - 1e-9
+            || pt.y > aabb.max.y + 1e-9
+        {
+            return false;
+        }
+        if self.distance_to_point(pt) <= 1e-8 {
+            return true;
+        }
+
+        // Subdivide any arc >= 150° into minor arcs (< 90°) so every circular cap is strictly convex
+        let mut minor_segs = Vec::with_capacity(self.segments.len() + 4);
+        for seg in &self.segments {
+            if matches!(seg, ArcSegment2D::Arc { .. }) && seg.signed_sweep_rad().abs() > 2.6 {
+                let (h0, h1) = seg.split_at(0.5);
+                if let Some(s0) = h0 {
+                    minor_segs.push(s0);
+                }
+                if let Some(s1) = h1 {
+                    minor_segs.push(s1);
+                }
+            } else {
+                minor_segs.push(*seg);
+            }
+        }
+
+        // 1. Standard ray-casting parity across segment chords
+        let mut inside = false;
+        for seg in &minor_segs {
+            let a = seg.start();
+            let b = seg.end();
+            if (a.y > pt.y) != (b.y > pt.y) {
+                let x_intersect = a.x + (pt.y - a.y) * (b.x - a.x) / (b.y - a.y);
+                if pt.x < x_intersect {
+                    inside = !inside;
+                }
+            }
+        }
+
+        // 2. Toggle parity for any strictly convex minor circular segment cap containing `pt`
+        for seg in &minor_segs {
+            if let ArcSegment2D::Arc {
+                start,
+                end,
+                center,
+                radius,
+                ccw,
+            } = *seg
+                && pt.distance_squared(center) <= radius * radius
+            {
+                let chord = end - start;
+                let rel = pt - start;
+                let cross = chord.x * rel.y - chord.y * rel.x;
+                // For a minor CCW arc, the circular cap lies to the RIGHT of chord `start -> end` (`cross < 0`);
+                // for a minor CW arc, the circular cap lies to the LEFT of chord `start -> end` (`cross > 0`).
+                let in_cap = if ccw { cross < 0.0 } else { cross > 0.0 };
+                if in_cap {
+                    inside = !inside;
+                }
+            }
+        }
+
+        inside
+    }
 }
 
 #[cfg(test)]
@@ -349,5 +685,23 @@ mod tests {
         let rev = poly.reverse();
         assert!(approx_eq(rev.signed_area(), -expected_area, 1e-9));
         assert!(approx_eq(rev.perimeter(), poly.perimeter(), 1e-9));
+
+        // Point-in-circle & cap tests
+        assert!(poly.contains_point(center));
+        assert!(poly.contains_point(center + DVec2::new(9.9, 0.0)));
+        assert!(poly.contains_point(center + DVec2::new(7.0, 7.0))); // 9.899 < 10 -> inside circular cap!
+        assert!(!poly.contains_point(center + DVec2::new(7.2, 7.2))); // 10.18 > 10 -> outside!
+
+        // Seam rotation preserves area, perimeter, and exact arcs
+        let rotated = poly.rotate_closed_seam(12.345);
+        assert!(rotated.closed);
+        assert!(approx_eq(rotated.perimeter(), poly.perimeter(), 1e-9));
+        assert!(approx_eq(rotated.signed_area(), expected_area, 1e-8));
+
+        // Closest-point projection onto arc
+        let proj = poly.project_point(center + DVec2::new(0.0, 20.0)).unwrap();
+        assert!(approx_eq(proj.distance_mm, 10.0, 1e-9));
+        assert!(approx_eq(proj.point.x, center.x, 1e-9));
+        assert!(approx_eq(proj.point.y, center.y + 10.0, 1e-9));
     }
 }

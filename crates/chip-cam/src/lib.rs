@@ -1,16 +1,34 @@
 //! Setups, Work Coordinate Systems (WCS), stock definitions, 2.5D B-Rep feature extraction,
 //! Z-height hierarchy resolution, and CAM operation models (`chip-cam`).
 
+pub mod cl_data;
 pub mod heights;
+pub mod offset2d;
 pub mod operation;
+pub mod params;
 pub mod selection;
 pub mod setup;
 pub mod stock;
+pub mod strategies;
+pub mod toolpath;
 pub mod wcs;
 
+pub use cl_data::{ArcDir, ArcPlane, ClEvent, CutterCompMode, DrillCycleKind, MotionRole};
 pub use heights::{HeightReference, HeightSpec, OperationHeights, ResolvedHeights, SetupHeights};
+pub use offset2d::{
+    HelicalEntryPole, OffsetRegionNode, PocketRegion2D, build_offset_region_tree,
+    clip_scanline_to_region, find_helical_entry_pole, from_cavalier_polyline, offset_polyline,
+    to_cavalier_polyline,
+};
 pub use operation::{
     EffectiveCuttingParams, Operation, OperationFeedOverrides, OperationKind, OperationStatus,
+};
+pub use params::{
+    ChamferSourceMode, ChamferTraceMode, ChamferTraceParams, Contour2DParams, ContourCompensation,
+    DrillBoreParams, EntryStrategy, FacingCutMode, FacingParams, HoldingTabsConfig,
+    HoleMachiningMode, LeadConfig, LinkingParams, ManualTabAnchor, PassesParams, Pocket2DParams,
+    PocketPassOrder, PocketStrategyKind, RetractPolicy, StrategyParams, TabPlacementMode,
+    TabProfileKind,
 };
 pub use selection::{
     ChainDirectionArrow3D, ExtractedFeature25D, ExtractedSelectionSummary, GeometrySelectionItem,
@@ -20,6 +38,17 @@ pub use setup::{ResolvedSetup, Setup};
 pub use stock::{
     FixedBoxXyAlign, FixedBoxZAlign, ResolvedStockGeometry, StockAxis, StockConfig,
     compute_tight_oriented_model_aabb,
+};
+pub use strategies::{
+    compute_z_levels, generate_operation_toolpath,
+    pocket2d::{
+        ContourParallelStrategy, PocketEngagementParams, PocketStrategy, PocketSubpath2D,
+        ZigZagPocketStrategy,
+    },
+};
+pub use toolpath::{
+    DEFAULT_RAPID_RATE_MM_MIN, GeneratedToolpath, SegmentMotion3D, TabMarker3D, ToolpathBuilder,
+    ToolpathSegment3D, ToolpathStats, expand_drill_cycle_segments,
 };
 pub use wcs::{
     AxisAnchor, BoxAnchor27, CamError, WcsAxisRef, WcsConfig, WcsFeaturePointRef,

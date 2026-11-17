@@ -1,16 +1,21 @@
 use chip_cad::CadDocument;
-use chip_cam::{Operation, OperationKind, Setup, WorkOffsetSlot};
-use chip_project::{ProjectDocument, UndoHistory};
+use chip_cam::{Operation, OperationKind, OperationStatus, Setup, WorkOffsetSlot};
+use chip_project::{ProjectDocument, ToolpathCache, UndoHistory};
 
-use crate::panels::{InspectorFocus, OperationTab, SetupTab, ViewportPickMode};
+use crate::panels::{
+    InspectorFocus, OperationTab, SetupTab, ViewportPickMode, diagnostics::format_cycle_time,
+};
 
 /// High-level UI actions emitted by the CAM Browser pane.
 #[derive(Debug, Clone)]
 pub enum BrowserAction {
     OpenStepDialog,
     LoadMultiFeatureSample { tilted: bool },
+    LoadCamTortureBlock,
     OpenToolLibrary,
     AlignCameraToActiveSetup,
+    GenerateSetup(usize),
+    GenerateSingleOp { setup_idx: usize, op_id: String },
     Log(String),
 }
 
@@ -20,7 +25,9 @@ pub fn show_cam_browser(
     ui: &mut egui::Ui,
     project: &mut ProjectDocument,
     history: &mut UndoHistory,
+    toolpath_cache: &ToolpathCache,
     cad_doc: Option<&CadDocument>,
+    cad_revision: u64,
     active_setup_idx: &mut usize,
     focus: &mut InspectorFocus,
     setup_tab: &mut SetupTab,
@@ -109,8 +116,15 @@ pub fn show_cam_browser(
                             emitted_action = Some(BrowserAction::OpenStepDialog);
                         }
                         if ui
-                            .small_button("Sample Bracket")
-                            .on_hover_text("Load prismatic bracket with 4x Ø6 holes, 2 coplanar pockets, and blind bore")
+                            .small_button("CAM Torture")
+                            .on_hover_text("Load M3 CAM Torture Block (island pocket, open step, Ø18 bore, 45° bevel)")
+                            .clicked()
+                        {
+                            emitted_action = Some(BrowserAction::LoadCamTortureBlock);
+                        }
+                        if ui
+                            .small_button("Bracket")
+                            .on_hover_text("Load M2 prismatic bracket")
                             .clicked()
                         {
                             emitted_action =
@@ -118,7 +132,7 @@ pub fn show_cam_browser(
                         }
                         if ui
                             .small_button("Tilted 30°")
-                            .on_hover_text("Load 30°-tilted STEP bracket to test interactive WCS face/edge alignment")
+                            .on_hover_text("Load 30°-tilted STEP bracket")
                             .clicked()
                         {
                             emitted_action =
@@ -158,6 +172,7 @@ pub fn show_cam_browser(
             let mut deferred_op_add: Option<(usize, OperationKind)> = None;
             let mut deferred_op_move: Option<(usize, usize, isize)> = None;
             let mut deferred_op_delete: Option<(usize, usize)> = None;
+            let mut deferred_op_duplicate: Option<(usize, usize)> = None;
             let mut deferred_op_toggle_suppress: Option<(usize, usize)> = None;
 
             for s_idx in 0..project.setups.len() {
@@ -181,6 +196,14 @@ pub fn show_cam_browser(
                                 *active_setup_idx = s_idx;
                                 *focus = InspectorFocus::Setup { setup_idx: s_idx };
                                 *pick_mode = ViewportPickMode::InspectEntity;
+                            }
+                            if ui
+                                .small_button("Gen (Ctrl+G)")
+                                .on_hover_text("Generate dirty toolpaths in this Setup")
+                                .clicked()
+                            {
+                                *active_setup_idx = s_idx;
+                                emitted_action = Some(BrowserAction::GenerateSetup(s_idx));
                             }
                             if ui
                                 .small_button("Top View")
@@ -218,31 +241,79 @@ pub fn show_cam_browser(
 
                         // Operations list
                         let op_len = project.setups[s_idx].operations.len();
-                        for (o_idx, op) in project.setups[s_idx].operations.iter().enumerate() {
+                        for o_idx in 0..op_len {
                             let is_sel = *focus
                                 == InspectorFocus::Operation {
                                     setup_idx: s_idx,
                                     op_idx: o_idx,
                                 };
-                            let badge = if op.suppressed {
-                                "[-]"
+                            let cached_tp = toolpath_cache
+                                .get_for_operation(project, s_idx, o_idx, cad_revision);
+                            let op = &project.setups[s_idx].operations[o_idx];
+
+                            let (badge_str, badge_col, hover_note) = if op.suppressed {
+                                ("[-]", egui::Color32::from_gray(120), Some("Suppressed".to_string()))
                             } else {
-                                op.runtime_status.badge_icon()
+                                match &op.runtime_status {
+                                    OperationStatus::Clean => (
+                                        "[OK]",
+                                        egui::Color32::from_rgb(86, 224, 134),
+                                        cached_tp.as_ref().map(|(_, tp)| {
+                                            format!(
+                                                "Clean: {} passes, est. {}",
+                                                tp.stats.pass_count,
+                                                format_cycle_time(tp.stats.total_est_time_sec)
+                                            )
+                                        }),
+                                    ),
+                                    OperationStatus::Dirty => (
+                                        "[*]",
+                                        egui::Color32::from_rgb(245, 190, 66),
+                                        Some("Dirty — press Ctrl+G to regenerate".to_string()),
+                                    ),
+                                    OperationStatus::Generating => (
+                                        "..",
+                                        egui::Color32::from_rgb(90, 190, 250),
+                                        Some("Generating on background thread…".to_string()),
+                                    ),
+                                    OperationStatus::Error { message }
+                                    | OperationStatus::NeedsRepick { message } => (
+                                        "[!]",
+                                        egui::Color32::from_rgb(248, 92, 92),
+                                        Some(message.clone()),
+                                    ),
+                                }
                             };
-                            let label_txt = format!(
-                                "{badge} {}. {} ({})",
-                                o_idx + 1,
-                                op.name,
-                                op.selections.len()
-                            );
+
+                            let label_txt = format!("{}. {}", o_idx + 1, op.name);
                             let rich = if op.suppressed {
                                 egui::RichText::new(label_txt).strikethrough().weak()
                             } else {
                                 egui::RichText::new(label_txt)
                             };
 
+                            let op_id_clone = op.id.clone();
+                            let op_kind_val = op.kind;
+                            let is_sup = op.suppressed;
+                            let is_gen = !is_sup
+                                && matches!(op.runtime_status, OperationStatus::Generating);
+
                             ui.horizontal(|ui| {
-                                if ui.selectable_label(is_sel, rich).clicked() {
+                                if is_gen {
+                                    ui.add(egui::Spinner::new().size(12.0));
+                                } else {
+                                    ui.colored_label(badge_col, badge_str);
+                                }
+
+                                let max_lbl_w = (ui.available_width() - 86.0).max(48.0);
+                                let mut resp = ui.add_sized(
+                                    [max_lbl_w, 18.0],
+                                    egui::Button::selectable(is_sel, rich).truncate(),
+                                );
+                                if let Some(tip) = hover_note {
+                                    resp = resp.on_hover_text(tip);
+                                }
+                                if resp.clicked() {
                                     *active_setup_idx = s_idx;
                                     *focus = InspectorFocus::Operation {
                                         setup_idx: s_idx,
@@ -251,10 +322,40 @@ pub fn show_cam_browser(
                                     *pick_mode = default_pick_mode_for_op(
                                         s_idx,
                                         o_idx,
-                                        op.kind,
+                                        op_kind_val,
                                         *op_tab,
                                     );
                                 }
+
+                                resp.context_menu(|ui| {
+                                    if ui.button("Generate Toolpath").clicked() {
+                                        emitted_action = Some(BrowserAction::GenerateSingleOp {
+                                            setup_idx: s_idx,
+                                            op_id: op_id_clone.clone(),
+                                        });
+                                        ui.close();
+                                    }
+                                    if ui.button("Duplicate Operation").clicked() {
+                                        deferred_op_duplicate = Some((s_idx, o_idx));
+                                        ui.close();
+                                    }
+                                    if ui
+                                        .button(if is_sup {
+                                            "Enable Operation"
+                                        } else {
+                                            "Suppress Operation"
+                                        })
+                                        .clicked()
+                                    {
+                                        deferred_op_toggle_suppress = Some((s_idx, o_idx));
+                                        ui.close();
+                                    }
+                                    if ui.button("Delete Operation").clicked() {
+                                        deferred_op_delete = Some((s_idx, o_idx));
+                                        ui.close();
+                                    }
+                                });
+
                                 ui.with_layout(
                                     egui::Layout::right_to_left(egui::Align::Center),
                                     |ui| {
@@ -266,7 +367,7 @@ pub fn show_cam_browser(
                                             deferred_op_delete = Some((s_idx, o_idx));
                                         }
                                         if ui
-                                            .small_button(if op.suppressed { "On" } else { "Off" })
+                                            .small_button(if is_sup { "On" } else { "Off" })
                                             .on_hover_text("Toggle Suppressed")
                                             .clicked()
                                         {
@@ -298,7 +399,7 @@ pub fn show_cam_browser(
                 history.record_before_edit(format!("Add {}", kind.label()), None, project);
                 let next_op_num = project.setups[s_idx].operations.len() + 1;
                 let mut op = Operation::new(
-                    format!("op_{s_idx}_{next_op_num}"),
+                    format!("op_{s_idx}_{next_op_num}_{}", project.setups[s_idx].operations.len()),
                     format!("{} {}", kind.default_name(), next_op_num),
                     kind,
                 );
@@ -317,8 +418,25 @@ pub fn show_cam_browser(
                     setup_idx: s_idx,
                     op_idx: o_idx,
                 };
-                *op_tab = OperationTab::Geometry;
+                *op_tab = if kind == OperationKind::Facing {
+                    OperationTab::Passes
+                } else {
+                    OperationTab::Geometry
+                };
                 *pick_mode = default_pick_mode_for_op(s_idx, o_idx, kind, *op_tab);
+            }
+
+            if let Some((s_idx, o_idx)) = deferred_op_duplicate {
+                history.record_before_edit("Duplicate Operation", None, project);
+                let mut dup = project.setups[s_idx].operations[o_idx].clone();
+                dup.id = format!("{}_copy_{}", dup.id, project.setups[s_idx].operations.len() + 1);
+                dup.name = format!("{} (Copy)", dup.name);
+                dup.mark_dirty();
+                project.setups[s_idx].operations.insert(o_idx + 1, dup);
+                *focus = InspectorFocus::Operation {
+                    setup_idx: s_idx,
+                    op_idx: o_idx + 1,
+                };
             }
 
             if let Some((s_idx, o_idx, dir)) = deferred_op_move {

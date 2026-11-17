@@ -193,11 +193,12 @@ pub fn import_fusion_library_bytes(
         let mut extracted = None;
         for i in 0..archive.len() {
             let mut file = archive.by_index(i)?;
-            if file.name().ends_with(".json") {
+            let entry_name = file.name()?.into_owned();
+            if entry_name.ends_with(".json") {
                 let mut buf = Vec::new();
                 file.read_to_end(&mut buf)
                     .map_err(|source| FusionImportError::Io {
-                        path: file.name().to_string(),
+                        path: entry_name,
                         source,
                     })?;
                 extracted = Some(buf);
