@@ -6,6 +6,8 @@
 
 ## 1. Spec-First Workflow
 - **Authoritative Source of Truth:** All product, algorithmic, and architectural decisions live in `specs/`. Before proposing changes or writing code for any subsystem, read its corresponding spec document below.
+- **Build & Environment Setup:** Contributor toolchain, native dependencies, and headless test setup live in `DEVELOPMENT.md`.
+- **Implementation Plans Location:** Store milestone and feature implementation plans in `/workspace/ChipCutter_plans/` (outside the repository code tree so plans can be reviewed and iterated cleanly).
 - **No Unsolicited Code Generation:** While iterating on specifications, do **not** scaffold `Cargo.toml` or `.rs` files until the user explicitly asks to begin implementation.
 - **Keep Specs Synchronized:** Whenever an architectural decision, file schema, or scope boundary changes during implementation, update the relevant `specs/*.md` file in the same task.
 
@@ -37,7 +39,7 @@
 4. **True Circular & Helical Arc Preservation:**
    Preserve analytic lines and circular arcs (`ArcPolyline2D` / `cavalier_contours` bulge polylines) through 2D offsetting and into `ClEvent::ArcMove` so CNC controllers receive smooth `G2`/`G3` arcs instead of dense `G1` micro-segments.
 5. **CAD Kernel Encapsulation (`CadKernel` Trait):**
-   Isolate `truck` (`ruststep`, `truck-topology`, `truck-modeling`, `truck-meshalgo`) strictly inside `chip-cad`. Downstream crates interact only with `CadDocument`, `BodyId`, `FaceId`, `LoopId`, `EdgeId`, and `GeometricSignature`.
+   Isolate `monstertruck` (`monstertruck-io`, `monstertruck-modeling`, `monstertruck-meshing`) strictly inside `chip-cad`. Downstream crates interact only with `CadDocument`, `BodyId`, `FaceId`, `LoopId`, `EdgeId`, and `GeometricSignature`.
 6. **Explicit Regeneration (`Ctrl+G`) & Non-Blocking UI:**
    Editing parameters, tools, or setups mutates lightweight document state immediately (for `< 1 ms` Undo/Redo) and marks affected operations `Dirty`. Never run STEP loading, tessellation, polygon offsetting, or simulation synchronously on the `egui` thread; dispatch background `rayon` jobs with cancellation tokens.
 7. **Typed CL-Data Post Boundary:**

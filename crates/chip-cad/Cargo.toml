@@ -1,0 +1,18 @@
+[package]
+name = "chip-cad"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+chip-math.workspace = true
+glam.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+rstar.workspace = true
+monstertruck-io.workspace = true
+monstertruck-meshing.workspace = true
+monstertruck-modeling.workspace = true

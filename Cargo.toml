@@ -1,0 +1,48 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/chip-math",
+    "crates/chip-cad",
+    "crates/chip-cli",
+    "crates/chip-gui",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+
+[workspace.dependencies]
+chip-math = { path = "crates/chip-math" }
+chip-cad = { path = "crates/chip-cad" }
+
+glam = { version = "0.29", features = ["serde", "bytemuck"] }
+bytemuck = { version = "1.21", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+thiserror = "2.0"
+rstar = "0.12"
+rayon = "1.10"
+crossbeam-channel = "0.5"
+clap = { version = "4.5", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+pollster = "0.4"
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+monstertruck-io = { version = "0.4", features = ["step"] }
+monstertruck-meshing = "0.4"
+monstertruck-modeling = "0.4"
+
+eframe = { version = "0.37", default-features = false, features = ["wgpu", "default_fonts", "wayland", "x11"] }
+egui = "0.37"
+egui-wgpu = "0.37"
+egui_tiles = "0.18"
+wgpu = "30"
+rfd = "0.15"

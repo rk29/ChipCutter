@@ -27,12 +27,12 @@ CadDocument
 ---
 
 ## STEP Import Pipeline
-1. **Supported Schemas:** ISO 10303-21 STEP files (`.step`, `.stp`) covering AP203, AP214, and AP242 solid and shell representations via `truck-stepio`.
+1. **Supported Schemas:** ISO 10303-21 STEP files (`.step`, `.stp`) covering AP203, AP214, and AP242 solid and shell representations via `monstertruck-io` (`step` feature).
 2. **Unit Normalization:** Read the STEP file's `LENGTH_UNIT` (`MILLIMETRE`, `INCH`, `METRE`, etc.) and scale all imported geometry into canonical `f64` millimeters on load.
 3. **Analytic Surface & Curve Classification:**
    - Even when a CAD exporter encodes planar faces or circular edges as degree-1/degree-2 rational B-splines, `chip-cad` runs an analytic recognizer on import (within `1e-5 mm` tolerance) to classify true `Plane`, `Cylinder`, `Cone`, `Line`, and `CircleArc` primitives. This is essential for hole recognition, WCS alignment, and `G2`/`G3` arc toolpaths.
 4. **Viewport Tessellation & Pick Buffers:**
-   - Each `BRepFace` is tessellated via `truck-meshalgo` into an indexed triangle mesh tagged with its `FaceId` and vertex normals.
+   - Each `BRepFace` is tessellated via `monstertruck-meshing` into an indexed triangle mesh tagged with its `FaceId` and vertex normals.
    - Each `BRepEdge` is discretized into polyline vertices tagged with its `EdgeId`.
    - CPU-side BVH / R-tree acceleration structures are built over face triangles and edge segments for sub-millisecond hover and click raycasting in the 3D viewport.
 

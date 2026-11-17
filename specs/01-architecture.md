@@ -82,7 +82,7 @@ flowchart LR
 |---|---|---|
 | GUI Shell & Docking | `eframe`, `egui`, `egui_wgpu`, `egui_tiles`, `rfd` | MIT / Apache-2.0 |
 | 3D GPU Rendering | `wgpu`, `bytemuck`, `glam` (f32 GPU / f64 math bridge) | MIT / Apache-2.0 |
-| STEP & B-Rep Kernel | `truck-stepio` (`ruststep`), `truck-topology`, `truck-modeling`, `truck-meshalgo` | Apache-2.0 |
+| STEP & B-Rep Kernel | `monstertruck-io` (`step`), `monstertruck-modeling`, `monstertruck-meshing` (`truck` family) | Apache-2.0 |
 | 2D Arc-Aware Offsetting | `cavalier_contours` | MIT / Apache-2.0 |
 | Math & Spatial Queries | `nalgebra` or `glam::DVec3`/`DAffine3`, `rstar` (R-tree spatial index) | Apache-2.0 / MIT |
 | Serialization & Archives | `serde`, `toml`, `serde_json`, `zip` | MIT / Apache-2.0 |

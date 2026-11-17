@@ -1,0 +1,7 @@
+/target
+/.chipcutter-cache
+*.chipz
+*.nc
+*.ngc
+*.gcode
+.DS_Store

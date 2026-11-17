@@ -7,7 +7,7 @@
 
 ## v1 Scope Summary
 - **Machining Paradigm:** 2.5D CNC milling & routing (architected cleanly to extend to 3-axis surface milling in v2+).
-- **CAD Input:** 3D B-Rep solids in **STEP** format (AP203 / AP214 / AP242) via pure-Rust `truck` (`ruststep` + `truck-meshalgo`) behind a kernel abstraction trait.
+- **CAD Input:** 3D B-Rep solids in **STEP** format (AP203 / AP214 / AP242) via pure-Rust `monstertruck` (`monstertruck-io` + `monstertruck-meshing`, the maintained continuation of `truck`) behind a kernel abstraction trait.
 - **Geometry Selection:** Interactive 3D picking of planar faces, closed/open edge loops, and cylindrical holes directly on the B-Rep model, with automatic Z-top / Z-bottom inference and manual overrides.
 - **Setups & WCS:** Multi-setup workflow (`Op1`, `Op2`, …) per project with box/cylinder stock, B-Rep-driven axis alignment, WCS origin placement, and setup-level safe retract planes.
 - **v1 Operations:**
