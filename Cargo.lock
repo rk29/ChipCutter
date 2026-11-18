@@ -617,6 +617,7 @@ dependencies = [
  "cavalier_contours",
  "chip-cad",
  "chip-math",
+ "chip-sim",
  "chip-tools",
  "glam",
  "serde",
@@ -630,9 +631,13 @@ dependencies = [
  "chip-cad",
  "chip-cam",
  "chip-math",
+ "chip-post",
  "chip-project",
+ "chip-sim",
  "chip-tools",
  "clap",
+ "serde",
+ "serde_json",
  "thiserror 2.0.21",
 ]
 
@@ -644,7 +649,9 @@ dependencies = [
  "chip-cad",
  "chip-cam",
  "chip-math",
+ "chip-post",
  "chip-project",
+ "chip-sim",
  "chip-tools",
  "clap",
  "crossbeam-channel",
@@ -672,6 +679,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "chip-post"
+version = "0.1.0"
+dependencies = [
+ "chip-cam",
+ "chip-math",
+ "chip-tools",
+ "dirs",
+ "serde",
+ "thiserror 2.0.21",
+ "toml",
+]
+
+[[package]]
 name = "chip-project"
 version = "0.1.0"
 dependencies = [
@@ -685,6 +705,20 @@ dependencies = [
  "sha2",
  "thiserror 2.0.21",
  "toml",
+]
+
+[[package]]
+name = "chip-sim"
+version = "0.1.0"
+dependencies = [
+ "chip-cad",
+ "chip-cam",
+ "chip-math",
+ "chip-tools",
+ "glam",
+ "rayon",
+ "serde",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

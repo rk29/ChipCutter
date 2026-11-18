@@ -11,6 +11,7 @@ use chip_cam::{
     SegmentMotion3D, StockAxis, TabMarker3D,
 };
 use chip_math::{Aabb3, DMat4, DVec3, DisplayUnit, MM_PER_INCH, RigidFrame3};
+use chip_sim::{SimColoredVertex, SimStockMesh, SimToolMesh};
 use wgpu::util::DeviceExt as _;
 
 use crate::camera::{CadCamera, StandardView};
@@ -30,6 +31,15 @@ struct ViewportUniformsGpu {
     camera_pos: [f32; 4],
     viewport_and_grid: [f32; 4],
     pick_flags: [u32; 4],
+    sim_tool_tip_wcs: [f32; 4],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct SimColoredVertexGpu {
+    pos_wcs_mm: [f32; 3],
+    normal_wcs: [f32; 3],
+    color_rgba: [f32; 4],
 }
 
 #[repr(C)]
@@ -91,6 +101,12 @@ pub struct HighlightState {
     pub show_toolpaths: bool,
     pub show_rapids: bool,
     pub preview_tab_marker_wcs: Option<TabMarker3D>,
+    /// Pass #6: Optional 3D machined `HeightfieldStock` mesh (`(mesh_rev, Arc<SimStockMesh>)`).
+    pub sim_stock_mesh: Option<(u64, Arc<SimStockMesh>)>,
+    /// Pass #6: Optional 3D revolved Flute+Shank+Holder mesh (`(tool_rev, Arc<SimToolMesh>)`) + WCS tip position.
+    pub sim_tool_mesh: Option<(u64, Arc<SimToolMesh>, DVec3)>,
+    /// Optional global motion segment limit for progressive toolpath trail during playback.
+    pub sim_trail_limit: Option<usize>,
 }
 
 impl Default for HighlightState {
@@ -111,6 +127,9 @@ impl Default for HighlightState {
             show_toolpaths: true,
             show_rapids: true,
             preview_tab_marker_wcs: None,
+            sim_stock_mesh: None,
+            sim_tool_mesh: None,
+            sim_trail_limit: None,
         }
     }
 }
@@ -265,6 +284,13 @@ struct UploadedToolpathsGpu {
     buf: Option<(wgpu::Buffer, u32)>,
 }
 
+struct UploadedSimIndexedMeshGpu {
+    revision: u64,
+    vertex_buf: wgpu::Buffer,
+    index_buf: wgpu::Buffer,
+    index_count: u32,
+}
+
 /// 4x MSAA `wgpu` 3D CAD/CAM viewport renderer shared by `egui` and headless tests.
 pub struct ViewportRenderer {
     bgl: wgpu::BindGroupLayout,
@@ -277,10 +303,14 @@ pub struct ViewportRenderer {
     solid_ghost_pipeline: wgpu::RenderPipeline,
     overlay_pipeline: wgpu::RenderPipeline,
     edge_pipeline: wgpu::RenderPipeline,
+    sim_stock_pipeline: wgpu::RenderPipeline,
+    sim_tool_pipeline: wgpu::RenderPipeline,
     targets: Option<FrameTargets>,
     egui_tex_id: Option<egui::TextureId>,
     uploaded_cad: Option<UploadedCadGpu>,
     uploaded_toolpaths: Option<UploadedToolpathsGpu>,
+    uploaded_sim_stock: Option<UploadedSimIndexedMeshGpu>,
+    uploaded_sim_tool: Option<UploadedSimIndexedMeshGpu>,
     overlay_buf: Option<(wgpu::Buffer, u32)>,
     edge_buf: Option<(wgpu::Buffer, u32)>,
 }
@@ -549,6 +579,88 @@ impl ViewportRenderer {
             cache: None,
         });
 
+        let sim_vbuf_layout = wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<SimColoredVertexGpu>() as u64,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &wgpu::vertex_attr_array![
+                0 => Float32x3,
+                1 => Float32x3,
+                2 => Float32x4,
+            ],
+        };
+
+        let sim_stock_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("chip_sim_stock_pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_sim_stock"),
+                buffers: &[Some(sim_vbuf_layout.clone())],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample,
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_sim_mesh"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: COLOR_FORMAT,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+
+        let sim_tool_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("chip_sim_tool_pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_sim_tool"),
+                buffers: &[Some(sim_vbuf_layout)],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample,
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_sim_mesh"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: COLOR_FORMAT,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+
         Self {
             bgl,
             uniform_buf,
@@ -560,10 +672,14 @@ impl ViewportRenderer {
             solid_ghost_pipeline,
             overlay_pipeline,
             edge_pipeline,
+            sim_stock_pipeline,
+            sim_tool_pipeline,
             targets: None,
             egui_tex_id: None,
             uploaded_cad: None,
             uploaded_toolpaths: None,
+            uploaded_sim_stock: None,
+            uploaded_sim_tool: None,
             overlay_buf: None,
             edge_buf: None,
         }
@@ -746,6 +862,51 @@ impl ViewportRenderer {
             });
         }
 
+        // Upload Pass #6 3D machined stock mesh & 3D revolved cutter assembly when revision changes
+        match &highlight.sim_stock_mesh {
+            Some((rev, stock_mesh)) => {
+                if self
+                    .uploaded_sim_stock
+                    .as_ref()
+                    .is_none_or(|u| u.revision != *rev)
+                {
+                    self.uploaded_sim_stock = upload_sim_indexed_mesh(
+                        device,
+                        *rev,
+                        &stock_mesh.vertices,
+                        &stock_mesh.indices,
+                        "chip_sim_stock",
+                    );
+                }
+            }
+            None => {
+                self.uploaded_sim_stock = None;
+            }
+        }
+
+        let mut tool_tip_wcs = [0.0_f32; 4];
+        match &highlight.sim_tool_mesh {
+            Some((rev, tool_mesh, tip_wcs)) => {
+                tool_tip_wcs = [tip_wcs.x as f32, tip_wcs.y as f32, tip_wcs.z as f32, 1.0];
+                if self
+                    .uploaded_sim_tool
+                    .as_ref()
+                    .is_none_or(|u| u.revision != *rev)
+                {
+                    self.uploaded_sim_tool = upload_sim_indexed_mesh(
+                        device,
+                        *rev,
+                        &tool_mesh.vertices,
+                        &tool_mesh.indices,
+                        "chip_sim_tool",
+                    );
+                }
+            }
+            None => {
+                self.uploaded_sim_tool = None;
+            }
+        }
+
         let (vp, inv_vp, eye, view) = camera.gpu_matrices(w, h);
         let (minor_mm, major_mm) = adaptive_grid_steps(camera, h as f32, display_unit);
         let wcs_l2w = dmat4_to_f32_2d(highlight.wcs_frame.to_dmat4_local_to_world());
@@ -765,6 +926,7 @@ impl ViewportRenderer {
                 u32::from(highlight.show_grid),
                 u32::from(camera.projection.is_orthographic()),
             ],
+            sim_tool_tip_wcs: tool_tip_wcs,
         };
         queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&uniforms));
 
@@ -808,8 +970,22 @@ impl ViewportRenderer {
             pass.set_pipeline(&self.bg_pipeline);
             pass.draw(0..3, 0..1);
 
-            // 2. Shaded B-Rep solid (opaque or translucent ghost)
-            if let Some(cad_gpu) = &self.uploaded_cad
+            // 2A / Pass #6A: Shaded 3D Machined Stock Mesh (when simulation stock view is active)
+            let showing_sim_stock = if let Some(sim_stock_gpu) = &self.uploaded_sim_stock
+                && sim_stock_gpu.index_count > 0
+            {
+                pass.set_pipeline(&self.sim_stock_pipeline);
+                pass.set_vertex_buffer(0, sim_stock_gpu.vertex_buf.slice(..));
+                pass.set_index_buffer(sim_stock_gpu.index_buf.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..sim_stock_gpu.index_count, 0, 0..1);
+                true
+            } else {
+                false
+            };
+
+            // 2B. Shaded B-Rep solid (opaque normally, or translucent ghost when comparing against machined stock)
+            if (!showing_sim_stock || highlight.ghost_part)
+                && let Some(cad_gpu) = &self.uploaded_cad
                 && cad_gpu.index_count > 0
             {
                 if highlight.ghost_part {
@@ -820,6 +996,16 @@ impl ViewportRenderer {
                 pass.set_vertex_buffer(0, cad_gpu.vertex_buf.slice(..));
                 pass.set_index_buffer(cad_gpu.index_buf.slice(..), wgpu::IndexFormat::Uint32);
                 pass.draw_indexed(0..cad_gpu.index_count, 0, 0..1);
+            }
+
+            // Pass #6B: Animated 3D Revolved Cutter + Shank + Collet/Holder Assembly
+            if let Some(sim_tool_gpu) = &self.uploaded_sim_tool
+                && sim_tool_gpu.index_count > 0
+            {
+                pass.set_pipeline(&self.sim_tool_pipeline);
+                pass.set_vertex_buffer(0, sim_tool_gpu.vertex_buf.slice(..));
+                pass.set_index_buffer(sim_tool_gpu.index_buf.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..sim_tool_gpu.index_count, 0, 0..1);
             }
 
             // 3. Translucent Stock & Z-Height Planes
@@ -853,6 +1039,42 @@ impl ViewportRenderer {
 
         queue.submit(std::iter::once(encoder.finish()));
     }
+}
+
+fn upload_sim_indexed_mesh(
+    device: &wgpu::Device,
+    revision: u64,
+    vertices: &[SimColoredVertex],
+    indices: &[u32],
+    label: &'static str,
+) -> Option<UploadedSimIndexedMeshGpu> {
+    if vertices.is_empty() || indices.is_empty() {
+        return None;
+    }
+    let gpu_verts: Vec<SimColoredVertexGpu> = vertices
+        .iter()
+        .map(|v| SimColoredVertexGpu {
+            pos_wcs_mm: v.pos_mm,
+            normal_wcs: v.normal,
+            color_rgba: v.color_rgba,
+        })
+        .collect();
+    let vertex_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some(label),
+        contents: bytemuck::cast_slice(&gpu_verts),
+        usage: wgpu::BufferUsages::VERTEX,
+    });
+    let index_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some(label),
+        contents: bytemuck::cast_slice(indices),
+        usage: wgpu::BufferUsages::INDEX,
+    });
+    Some(UploadedSimIndexedMeshGpu {
+        revision,
+        vertex_buf,
+        index_buf,
+        index_count: indices.len() as u32,
+    })
 }
 
 fn create_vp_bind_group(
@@ -927,8 +1149,10 @@ fn build_edge_and_scene_instances(
     let mut out = Vec::new();
     let (hov_edges, sel_edges) = highlight.collect_edge_sets();
 
-    // 1. B-Rep topological edges
-    if let Some(cad_doc) = doc {
+    // 1. B-Rep topological edges (hidden when solid machined stock replaces B-Rep unless ghost target is on)
+    if (highlight.sim_stock_mesh.is_none() || highlight.ghost_part)
+        && let Some(cad_doc) = doc
+    {
         for poly in &cad_doc.render_mesh.edge_polylines {
             let (color, width_px) = if sel_edges.contains(&poly.edge_id) {
                 ([1.0, 0.78, 0.18, 1.0], 3.4)
@@ -949,8 +1173,9 @@ fn build_edge_and_scene_instances(
         }
     }
 
-    // 2. Stock translucent shell + wireframe in active Setup WCS
+    // 2. Stock translucent shell + wireframe in active Setup WCS (when not replaced by 3D machined stock)
     if highlight.show_stock
+        && highlight.sim_stock_mesh.is_none()
         && let Some(stock) = &highlight.stock
     {
         emit_stock_visuals(stock, &highlight.wcs_frame, overlay_tris, &mut out);
@@ -1199,6 +1424,7 @@ fn compute_toolpath_gpu_signature(highlight: &HighlightState) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     highlight.show_toolpaths.hash(&mut h);
     highlight.show_rapids.hash(&mut h);
+    highlight.sim_trail_limit.hash(&mut h);
     for v in [
         highlight.wcs_frame.origin_mm,
         highlight.wcs_frame.x_axis,
@@ -1227,12 +1453,20 @@ fn build_toolpath_gpu_instances(highlight: &HighlightState) -> Vec<EdgeInstanceG
 
     let mut out = Vec::new();
     let frame = &highlight.wcs_frame;
+    let mut global_seg_counter = 0usize;
 
     for entry in &highlight.toolpaths {
         let alpha = if entry.is_focused { 0.96_f32 } else { 0.36_f32 };
         let width_scale = if entry.is_focused { 1.0_f32 } else { 0.80_f32 };
 
         for seg in &entry.toolpath.segments_wcs {
+            let cur_global = global_seg_counter;
+            global_seg_counter += 1;
+            if let Some(limit) = highlight.sim_trail_limit
+                && cur_global > limit
+            {
+                continue;
+            }
             let (color, width_px, arc_steps) = match seg.motion {
                 SegmentMotion3D::Rapid => {
                     if !highlight.show_rapids {
@@ -1892,6 +2126,97 @@ mod tests {
             }],
             show_toolpaths: true,
             show_rapids: true,
+            ..HighlightState::default()
+        };
+
+        let png = render_offscreen_png(&doc, &cam, &highlight, 640, 480).unwrap();
+        assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"));
+        assert!(png.len() > 10_000);
+    }
+
+    #[test]
+    fn renders_pass_6_machined_stock_mesh_and_3d_cutter_assembly() {
+        use std::sync::atomic::AtomicBool;
+
+        use chip_cad::{SurfaceKind, sample_cam_torture_block_step};
+        use chip_cam::{
+            GeometrySelectionItem, Operation, OperationKind, generate_operation_toolpath,
+        };
+        use chip_sim::{
+            MachineKinematicsConfig, SimOperationInput, SimResolution, SimVerificationConfig,
+            build_cutter_assembly_mesh, run_setup_simulation, tessellate_stock_mesh,
+        };
+        use chip_tools::default_starter_tool_library;
+
+        let step = sample_cam_torture_block_step().unwrap();
+        let doc = MonstertruckKernel
+            .load_step_bytes("torture.step", step.as_bytes(), DEFAULT_TESS_CHORD_TOL_MM)
+            .unwrap();
+        let setup = Setup::new("s1", "Op 1", WorkOffsetSlot::G54);
+        let resolved = setup
+            .resolve_immutable(&doc, DisplayUnit::Millimeter)
+            .unwrap();
+
+        let starter = default_starter_tool_library();
+        let flat_6mm = &starter.tools[0];
+        let pkt_floor = doc
+            .faces
+            .iter()
+            .find(|f| {
+                matches!(
+                    f.surface,
+                    SurfaceKind::Plane { origin_mm, normal }
+                    if normal.z > 0.99 && (origin_mm.z - 12.0).abs() < 0.05
+                )
+            })
+            .unwrap()
+            .id;
+
+        let mut op = Operation::new("op_pkt", "Island Pocket", OperationKind::Pocket2D);
+        op.tool_id = Some(flat_6mm.id.clone());
+        op.selections.push(GeometrySelectionItem::PlanarFace {
+            binding: doc.bind_face(pkt_floor).unwrap(),
+        });
+
+        let tp = generate_operation_toolpath(
+            &doc,
+            &resolved,
+            &op,
+            flat_6mm,
+            DisplayUnit::Millimeter,
+            true,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+
+        let sim_ops = [SimOperationInput::from_operation(&op, flat_6mm, &tp)];
+        let sim_res = run_setup_simulation(
+            &doc,
+            &resolved,
+            &setup.target_bodies,
+            &sim_ops,
+            SimResolution::Standard,
+            MachineKinematicsConfig::default(),
+            SimVerificationConfig::default(),
+            None,
+        )
+        .unwrap();
+
+        let stock_mesh = Arc::new(tessellate_stock_mesh(&sim_res.final_stock, true));
+        let tool_mesh = Arc::new(build_cutter_assembly_mesh(flat_6mm, 24, false));
+        let mid_snap = sim_res
+            .timeline
+            .sample_at_time(sim_res.timeline.total_time_sec * 0.5)
+            .unwrap();
+
+        let mut cam = CadCamera::default();
+        cam.fit_aabb(&doc.aabb_mm);
+
+        let highlight = HighlightState {
+            wcs_frame: resolved.frame,
+            sim_stock_mesh: Some((1, stock_mesh)),
+            sim_tool_mesh: Some((1, tool_mesh, mid_snap.tip_pos_wcs)),
+            sim_trail_limit: Some(mid_snap.global_seg_idx),
             ..HighlightState::default()
         };
 

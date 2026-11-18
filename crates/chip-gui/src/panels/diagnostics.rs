@@ -1,5 +1,6 @@
 use chip_cam::OperationStatus;
 use chip_project::{ProjectDocument, ToolpathCache};
+use chip_sim::{SetupSimulationResult, SimDiagnostic, SimSeverity};
 
 /// Formats estimated cycle seconds as `Xm YYs` or `YY.Ys`.
 pub fn format_cycle_time(sec: f64) -> String {
@@ -15,20 +16,23 @@ pub fn format_cycle_time(sec: f64) -> String {
     }
 }
 
-/// Renders the bottom **Diagnostics & Toolpath Summary** pane (`08-ui-viewport.md`).
+/// Renders the bottom **Diagnostics & Log** pane (`08-ui-viewport.md` & `06-simulation.md` §4),
+/// returning `Some(SimDiagnostic)` when the user clicks `[Jump to Move]` on a crash/gouge/warning.
 pub fn show_diagnostics_panel(
     ui: &mut egui::Ui,
     project: &ProjectDocument,
     active_setup_idx: usize,
     cache: &ToolpathCache,
     cad_revision: u64,
+    sim_result: Option<&SetupSimulationResult>,
     logs: &[String],
-) {
+) -> Option<SimDiagnostic> {
     let u = project.display_units;
+    let mut jump_target: Option<SimDiagnostic> = None;
 
     ui.columns(2, |cols| {
-        // Left column: Active Setup Toolpath Summary & Operation Warnings/Errors
-        cols[0].strong("Active Setup Toolpath Summary");
+        // Left column: Simulation Crash/Gouge Diagnostics + Active Setup Toolpath Summary
+        cols[0].strong("Simulation Verification & Toolpath Summary");
         cols[0].separator();
 
         if let Some(setup) = project.setups.get(active_setup_idx) {
@@ -37,6 +41,48 @@ pub fn show_diagnostics_panel(
             egui::ScrollArea::vertical()
                 .id_salt("diag_tp_summary")
                 .show(&mut cols[0], |ui| {
+                    if let Some(sim) = sim_result {
+                        if sim.diagnostics.is_empty() {
+                            ui.colored_label(
+                                egui::Color32::from_rgb(86, 224, 134),
+                                "[OK] Simulation Verified: 0 crashes, 0 gouges, 0 warnings.",
+                            );
+                        } else {
+                            for diag in &sim.diagnostics {
+                                let col = match diag.severity {
+                                    SimSeverity::CriticalError => {
+                                        egui::Color32::from_rgb(252, 92, 92)
+                                    }
+                                    SimSeverity::Warning => egui::Color32::from_rgb(248, 198, 76),
+                                };
+                                ui.horizontal_wrapped(|ui| {
+                                    if ui
+                                        .small_button("Jump to Move")
+                                        .on_hover_text(
+                                            "Snap 3D camera & simulation scrubber directly to this move",
+                                        )
+                                        .clicked()
+                                    {
+                                        jump_target = Some(diag.clone());
+                                    }
+                                    ui.colored_label(
+                                        col,
+                                        format!(
+                                            "{} [{}] {} (Seg #{}, t={:.2}s): {}",
+                                            diag.severity.badge(),
+                                            diag.kind.label(),
+                                            diag.op_name,
+                                            diag.global_seg_idx + 1,
+                                            diag.timeline_time_sec,
+                                            diag.message
+                                        ),
+                                    );
+                                });
+                            }
+                        }
+                        ui.separator();
+                    }
+
                     for (o_idx, op) in setup.operations.iter().enumerate() {
                         if op.suppressed {
                             ui.weak(format!("[-] {}. {} (Suppressed)", o_idx + 1, op.name));
@@ -126,4 +172,6 @@ pub fn show_diagnostics_panel(
                 }
             });
     });
+
+    jump_target
 }

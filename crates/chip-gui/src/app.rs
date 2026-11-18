@@ -9,28 +9,32 @@ use chip_cad::{
     sample_machined_plate_step, sample_multi_feature_bracket_step,
 };
 use chip_cam::{
-    ExtractedFeature25D, GeometrySelectionItem, HeightReference, HeightSpec, HoleMachiningMode,
-    ManualTabAnchor, Operation, OperationKind, ResolvedHeights, ResolvedSetup, Setup,
-    StrategyParams, TabMarker3D, TabProfileKind, WcsAxisRef, WcsFeaturePointRef,
-    WcsOrientationMode, WcsOriginMode, WorkOffsetSlot, extract_selection_features,
+    ChamferSourceMode, ChamferTraceMode, ExtractedFeature25D, GeometrySelectionItem,
+    HeightReference, HeightSpec, HoleMachiningMode, ManualTabAnchor, Operation, OperationKind,
+    ResolvedHeights, ResolvedSetup, Setup, StrategyParams, TabMarker3D, TabProfileKind, WcsAxisRef,
+    WcsFeaturePointRef, WcsOrientationMode, WcsOriginMode, WorkOffsetSlot,
+    extract_selection_features,
 };
-use chip_math::{DEFAULT_TESS_CHORD_TOL_MM, DVec2, DisplayUnit, EvalContext};
+use chip_math::{DEFAULT_TESS_CHORD_TOL_MM, DVec2, DisplayUnit, EvalContext, ParamLength};
 use chip_project::{
     JobDispatcher, ModelEntry, ProjectDocument, ToolpathCache, UndoHistory, compute_sha256_hex,
     portable_model_path, resolve_model_path, validate_project,
 };
+use chip_sim::SimDiagnostic;
 use chip_tools::{ToolLibrary, load_or_default_global_library};
 use crossbeam_channel::{Receiver, Sender};
 
 use crate::{
     camera::{CadCamera, MousePreset, OrbitMode},
-    layout::{WorkspacePane, create_default_workspace_tree},
+    layout::{WorkspacePane, create_default_workspace_tree, focus_workspace_pane},
     panels::{
         InspectorFocus, OperationTab, SetupTab, ViewportPickMode,
         browser::{BrowserAction, default_pick_mode_for_op, show_cam_browser},
         diagnostics::show_diagnostics_panel,
+        gcode_preview::{GCodePreviewPanelState, GCodeUiAction},
         operation_inspector::show_operation_inspector,
         setup_inspector::show_setup_inspector,
+        simulation::{SimulationPanelState, SimulationUiAction},
         tool_library::ToolLibraryModalState,
     },
     viewport::{
@@ -102,6 +106,9 @@ pub struct ChipCutterApp {
     dispatcher: JobDispatcher,
     global_tools: ToolLibrary,
     tool_library_modal: ToolLibraryModalState,
+    sim_panel: SimulationPanelState,
+    gcode_panel: GCodePreviewPanelState,
+    auto_sim_after_gen: bool,
 
     active_setup_idx: usize,
     inspector_focus: InspectorFocus,
@@ -165,6 +172,9 @@ impl ChipCutterApp {
             dispatcher,
             global_tools,
             tool_library_modal: ToolLibraryModalState::new(),
+            sim_panel: SimulationPanelState::default(),
+            gcode_panel: GCodePreviewPanelState::default(),
+            auto_sim_after_gen: true,
             active_setup_idx: 0,
             inspector_focus: InspectorFocus::Setup { setup_idx: 0 },
             setup_tab: SetupTab::Wcs,
@@ -185,7 +195,7 @@ impl ChipCutterApp {
             wb_stepover: ExpressionInput::new(2.54, Some("tool_d * 0.4")),
             wb_clearance_z: ExpressionInput::new(26.0, Some("model_top_z + 10 mm")),
             logs: vec![
-                "ChipCutter v0.1.0 initialized (Milestone 3: 2.5D Toolpath Engine & Explicit Ctrl+G Dispatcher)."
+                "ChipCutter v0.1.0 initialized (Milestone 4: Heightmap Simulation, Crash Verifier, & TOML Post-Processors)."
                     .to_string(),
             ],
             self_test,
@@ -473,7 +483,7 @@ impl ChipCutterApp {
         });
     }
 
-    fn poll_background_jobs(&mut self) {
+    fn poll_background_jobs(&mut self, egui_ctx: &egui::Context) {
         while let Ok(msg) = self.job_rx.try_recv() {
             self.loading_in_flight = false;
             match msg {
@@ -546,6 +556,7 @@ impl ChipCutterApp {
                     self.refresh_dependent_expressions();
 
                     if seed_demo == SeedDemoKind::CamTortureBlock {
+                        self.auto_sim_after_gen = true;
                         self.trigger_generate_dirty(None, None);
                     }
                 }
@@ -563,7 +574,43 @@ impl ChipCutterApp {
                 &mut self.toolpath_cache,
                 m.revision,
             );
+            let had_gen_completion = !gen_logs.is_empty();
             self.logs.extend(gen_logs);
+
+            if self.auto_sim_after_gen && had_gen_completion && !self.dispatcher.is_busy() {
+                self.auto_sim_after_gen = false;
+                self.trigger_active_setup_simulation(egui_ctx);
+            }
+        }
+
+        // Poll background heightmap simulation worker
+        let _ = self.sim_panel.poll_worker(&mut self.logs);
+    }
+
+    fn trigger_active_setup_simulation(&mut self, egui_ctx: &egui::Context) {
+        let Some(m) = &self.model else {
+            self.logs
+                .push("Cannot simulate: load a STEP model first.".to_string());
+            return;
+        };
+        let proj_dir = self.project_file_path.as_deref().and_then(Path::parent);
+        self.sim_panel.trigger_simulation(
+            &self.project,
+            self.active_setup_idx,
+            Arc::clone(&m.doc),
+            m.revision,
+            &self.toolpath_cache,
+            proj_dir,
+            egui_ctx.clone(),
+            &mut self.logs,
+        );
+    }
+
+    fn jump_to_sim_diagnostic(&mut self, diag: &SimDiagnostic) {
+        self.sim_panel.jump_to_time(diag.timeline_time_sec);
+        focus_workspace_pane(&mut self.tree, WorkspacePane::SimulationTimeline);
+        if let Some(Ok(rs)) = self.active_resolved_setup() {
+            self.camera.target_mm = rs.frame.local_to_world_point(diag.location_wcs);
         }
     }
 
@@ -676,7 +723,7 @@ impl ChipCutterApp {
     }
 
     fn seed_cam_torture_demo_job(&mut self, doc: &CadDocument, sha256_hex: &str) {
-        self.project = ProjectDocument::new("CAM Torture Block (M3)");
+        self.project = ProjectDocument::new("CAM Torture Block");
         self.project.models = vec![ModelEntry {
             id: "model_1".to_string(),
             path: doc.source_name.clone(),
@@ -718,7 +765,7 @@ impl ChipCutterApp {
             .find(|t| matches!(t.geometry, chip_tools::CutterGeometry::ChamferMill { .. }))
             .cloned();
 
-        // 1. Facing Top Stock
+        // 1. Facing Top Stock (`Z = 23 -> 22`)
         if let Some(fm) = &face_38mm {
             let mut op_face = Operation::new("op_1_face", "Face Stock Top", OperationKind::Facing);
             op_face.tool_id = Some(fm.id.clone());
@@ -726,7 +773,30 @@ impl ChipCutterApp {
             self.project.setups[0].operations.push(op_face);
         }
 
-        // 2. Closed Island Pocket (Z = 12.0 mm floor with Ø10mm raised island boss)
+        // 2. Plateau Deck around Z=22 Boss Pad (`Z = 22 -> 20 mm`)
+        if let Some(plat_face) = doc.faces.iter().find(|f| {
+            matches!(
+                f.surface,
+                SurfaceKind::Plane { origin_mm, normal }
+                if normal.z > 0.99 && (origin_mm.z - 20.0).abs() < 0.05 && f.area_mm2 > 1500.0
+            )
+        }) && let Some(bind) = doc.bind_face(plat_face.id)
+            && let Some(em) = &flat_6mm
+        {
+            let mut op_plat = Operation::new(
+                "op_2_plateau",
+                "Plateau Deck Around Boss",
+                OperationKind::Pocket2D,
+            );
+            op_plat.tool_id = Some(em.id.clone());
+            op_plat.preset_id = em.presets.first().map(|p| p.id.clone());
+            op_plat
+                .selections
+                .push(GeometrySelectionItem::PlanarFace { binding: bind });
+            self.project.setups[0].operations.push(op_plat);
+        }
+
+        // 3. Closed Island Pocket (Z = 12.0 mm floor with Ø10mm raised island boss)
         if let Some(pkt_floor) = doc.faces.iter().find(|f| {
             matches!(
                 f.surface,
@@ -890,6 +960,13 @@ impl ChipCutterApp {
                 reverse: false,
                 side_flip: true,
             });
+            if let StrategyParams::ChamferTrace(p) = op_ch.strategy_mut() {
+                p.mode = ChamferTraceMode::EdgeChamfer;
+                p.chamfer_source = ChamferSourceMode::SharpEdge {
+                    width: ParamLength::from_mm(0.5),
+                };
+                p.tip_offset = ParamLength::from_mm(0.8);
+            }
             self.project.setups[0].operations.push(op_ch);
         }
 
@@ -1069,6 +1146,20 @@ impl ChipCutterApp {
                     });
                 }
             }
+
+            let (sim_stock, sim_tool, sim_trail) = self.sim_panel.resolve_viewport_visuals(
+                &self.project,
+                self.active_setup_idx,
+                &self.toolpath_cache,
+                m.revision,
+            );
+            self.highlight.sim_stock_mesh = sim_stock;
+            self.highlight.sim_tool_mesh = sim_tool;
+            self.highlight.sim_trail_limit = sim_trail;
+        } else {
+            self.highlight.sim_stock_mesh = None;
+            self.highlight.sim_tool_mesh = None;
+            self.highlight.sim_trail_limit = None;
         }
     }
 
@@ -1627,12 +1718,36 @@ impl ChipCutterApp {
                             self.save_project_to_disk(&path);
                         }
                     }
+                    if ui.button("Export G-Code (.nc / .ngc)…").clicked() {
+                        ui.close();
+                        focus_workspace_pane(&mut self.tree, WorkspacePane::GCodePreview);
+                        let cad_doc = self.model.as_ref().map(|m| &m.doc);
+                        let cad_rev = self.model.as_ref().map_or(0, |m| m.revision);
+                        let proj_dir = self.project_file_path.as_deref().and_then(Path::parent);
+                        self.gcode_panel.ensure_profiles_loaded(proj_dir);
+                        self.gcode_panel.rebuild_preview_if_needed(
+                            &self.project,
+                            self.active_setup_idx,
+                            cad_doc,
+                            cad_rev,
+                            &self.toolpath_cache,
+                            self.project_file_path.as_deref(),
+                        );
+                        self.gcode_panel.trigger_export_action(
+                            &self.project,
+                            self.active_setup_idx,
+                            &self.toolpath_cache,
+                            cad_rev,
+                            &self.sim_panel,
+                            &mut self.logs,
+                        );
+                    }
                     ui.separator();
                     if ui.button("Import STEP Model…").clicked() {
                         ui.close();
                         self.open_step_dialog(&ctx);
                     }
-                    if ui.button("Load CAM Torture Block (M3)").clicked() {
+                    if ui.button("Load CAM Torture Block").clicked() {
                         ui.close();
                         self.spawn_cam_torture_sample_load(true, ctx.clone());
                     }
@@ -1891,6 +2006,22 @@ impl ChipCutterApp {
                     self.trigger_generate_dirty(Some(self.active_setup_idx), None);
                 }
 
+                if ui
+                    .button("Simulate")
+                    .on_hover_text("Run 2.5D Z-Dexel Heightmap Stock Removal & Crash Checks")
+                    .clicked()
+                {
+                    focus_workspace_pane(&mut self.tree, WorkspacePane::SimulationTimeline);
+                    self.trigger_active_setup_simulation(&ctx);
+                }
+                if ui
+                    .button("Post G-Code")
+                    .on_hover_text("Open G-Code Preview & Safety-Gated Export")
+                    .clicked()
+                {
+                    focus_workspace_pane(&mut self.tree, WorkspacePane::GCodePreview);
+                }
+
                 if ui.button("Tool Library").clicked() {
                     self.tool_library_modal.open = true;
                 }
@@ -1959,7 +2090,7 @@ impl ChipCutterApp {
     }
 
     fn handle_self_test(&mut self, ctx: &egui::Context) {
-        let is_busy = self.dispatcher.is_busy();
+        let is_busy = self.dispatcher.is_busy() || self.sim_panel.is_busy();
         let Some(st) = &mut self.self_test else {
             if is_busy {
                 ctx.request_repaint();
@@ -1971,7 +2102,13 @@ impl ChipCutterApp {
             return;
         }
         st.frames_rendered += 1;
-        if st.frames_rendered < 4 {
+        if st.frames_rendered == 1
+            && let Some(res) = &self.sim_panel.active_result
+        {
+            // Position scrubber near 82% so most pockets/bores are machined AND the 3D cutter assembly is actively cutting!
+            self.sim_panel.current_time_sec = res.timeline.total_time_sec * 0.82;
+        }
+        if st.frames_rendered < 5 {
             ctx.request_repaint();
             return;
         }
@@ -2004,11 +2141,12 @@ impl ChipCutterApp {
 
 impl eframe::App for ChipCutterApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        self.poll_background_jobs();
+        let ctx = ui.ctx().clone();
+        self.poll_background_jobs(&ctx);
+        self.sim_panel.update_playback_and_shortcuts(&ctx);
         self.sync_viewport_scene_state();
         self.draw_top_bars(ui);
 
-        let ctx = ui.ctx().clone();
         self.tool_library_modal.show(
             &ctx,
             &mut self.global_tools,
@@ -2052,6 +2190,8 @@ impl egui_tiles::Behavior<WorkspacePane> for PaneBehavior<'_> {
             WorkspacePane::CamBrowser => self.ui_cam_browser(ui),
             WorkspacePane::Viewport3D => self.ui_viewport_3d(ui),
             WorkspacePane::Inspector => self.ui_inspector(ui),
+            WorkspacePane::SimulationTimeline => self.ui_simulation(ui),
+            WorkspacePane::GCodePreview => self.ui_gcode_preview(ui),
             WorkspacePane::DiagnosticsLog => self.ui_diagnostics(ui),
         }
         egui_tiles::UiResponse::None
@@ -2445,17 +2585,85 @@ impl PaneBehavior<'_> {
         });
     }
 
+    fn ui_simulation(&mut self, ui: &mut egui::Ui) {
+        let mut pending_action: Option<SimulationUiAction> = None;
+        egui::Frame::NONE.inner_margin(6.0).show(ui, |ui| {
+            let cad_doc = self.app.model.as_ref().map(|m| &m.doc);
+            let cad_rev = self.app.model.as_ref().map_or(0, |m| m.revision);
+            let proj_dir = self.app.project_file_path.as_deref().and_then(Path::parent);
+            pending_action = self.app.sim_panel.show_ui(
+                ui,
+                &self.app.project,
+                self.app.active_setup_idx,
+                cad_doc,
+                cad_rev,
+                &self.app.toolpath_cache,
+                proj_dir,
+                &mut self.app.logs,
+            );
+        });
+        if let Some(act) = pending_action {
+            match act {
+                SimulationUiAction::FocusDiagnosticsTab => {
+                    focus_workspace_pane(&mut self.app.tree, WorkspacePane::DiagnosticsLog);
+                }
+                SimulationUiAction::CenterCameraWcs(pt_wcs) => {
+                    if let Some(Ok(rs)) = self.app.active_resolved_setup() {
+                        self.app.camera.target_mm = rs.frame.local_to_world_point(pt_wcs);
+                    }
+                }
+            }
+        }
+    }
+
+    fn ui_gcode_preview(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
+        let mut pending_action: Option<GCodeUiAction> = None;
+        egui::Frame::NONE.inner_margin(6.0).show(ui, |ui| {
+            let cad_doc = self.app.model.as_ref().map(|m| &m.doc);
+            let cad_rev = self.app.model.as_ref().map_or(0, |m| m.revision);
+            pending_action = self.app.gcode_panel.show_ui(
+                ui,
+                &mut self.app.project,
+                &mut self.app.history,
+                self.app.active_setup_idx,
+                cad_doc,
+                cad_rev,
+                &self.app.toolpath_cache,
+                self.app.project_file_path.as_deref(),
+                &self.app.sim_panel,
+                &mut self.app.logs,
+            );
+        });
+        if let Some(act) = pending_action {
+            match act {
+                GCodeUiAction::RunSimulationFirst => {
+                    focus_workspace_pane(&mut self.app.tree, WorkspacePane::SimulationTimeline);
+                    self.app.trigger_active_setup_simulation(&ctx);
+                }
+                GCodeUiAction::JumpToCrash(diag) => {
+                    self.app.jump_to_sim_diagnostic(&diag);
+                }
+            }
+        }
+    }
+
     fn ui_diagnostics(&mut self, ui: &mut egui::Ui) {
+        let mut jump_diag: Option<SimDiagnostic> = None;
         egui::Frame::NONE.inner_margin(6.0).show(ui, |ui| {
             let cad_rev = self.app.model.as_ref().map_or(0, |m| m.revision);
-            show_diagnostics_panel(
+            jump_diag = show_diagnostics_panel(
                 ui,
                 &self.app.project,
                 self.app.active_setup_idx,
                 &self.app.toolpath_cache,
                 cad_rev,
+                self.app.sim_panel.active_result.as_deref(),
                 &self.app.logs,
             );
         });
+        if let Some(diag) = jump_diag {
+            self.app.jump_to_sim_diagnostic(&diag);
+        }
     }
 }

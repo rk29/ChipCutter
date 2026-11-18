@@ -1,0 +1,531 @@
+use std::{
+    hash::{Hash as _, Hasher as _},
+    path::Path,
+    sync::Arc,
+};
+
+use chip_cad::CadDocument;
+use chip_post::{
+    OperationPostInput, PostOutputFile, PostProfile, SetupPostInput, describe_wcs_origin,
+    load_available_post_profiles, post_process_setup,
+};
+use chip_project::{ProjectDocument, ToolpathCache, UndoHistory};
+use chip_sim::{SimDiagnostic, SimSeverity};
+
+use crate::panels::simulation::SimulationPanelState;
+
+/// Actions emitted by `[G-Code Preview]` back to `ChipCutterApp`.
+#[derive(Debug, Clone)]
+pub enum GCodeUiAction {
+    RunSimulationFirst,
+    JumpToCrash(SimDiagnostic),
+}
+
+#[derive(Default)]
+pub struct GCodePreviewPanelState {
+    available_profiles: Vec<PostProfile>,
+    custom_loaded_profiles: Vec<PostProfile>,
+    cached_sig: Option<u64>,
+    pub cached_files: Vec<PostOutputFile>,
+    pub cached_lines_per_file: Vec<Vec<String>>,
+    pub last_error: Option<String>,
+    pub selected_file_tab: usize,
+    show_safety_gate_modal: bool,
+    pending_unverified_warning: bool,
+}
+
+impl GCodePreviewPanelState {
+    pub fn ensure_profiles_loaded(&mut self, project_dir: Option<&Path>) {
+        if self.available_profiles.is_empty() {
+            self.refresh_profiles(project_dir);
+        }
+    }
+
+    pub fn refresh_profiles(&mut self, project_dir: Option<&Path>) {
+        let mut list = load_available_post_profiles(project_dir);
+        for custom in &self.custom_loaded_profiles {
+            if let Some(existing) = list.iter_mut().find(|p| p.id == custom.id) {
+                *existing = custom.clone();
+            } else {
+                list.push(custom.clone());
+            }
+        }
+        self.available_profiles = list;
+        self.cached_sig = None;
+    }
+
+    fn compute_preview_signature(
+        &self,
+        project: &ProjectDocument,
+        setup_idx: usize,
+        cache: &ToolpathCache,
+        cad_revision: u64,
+    ) -> u64 {
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        cad_revision.hash(&mut h);
+        setup_idx.hash(&mut h);
+        project.project_name.hash(&mut h);
+        if let Some(setup) = project.setups.get(setup_idx) {
+            setup.name.hash(&mut h);
+            setup.post_profile.hash(&mut h);
+            format!("{:?}", setup.wcs_slot).hash(&mut h);
+            for (o_idx, op) in setup.operations.iter().enumerate() {
+                op.suppressed.hash(&mut h);
+                op.name.hash(&mut h);
+                if !op.suppressed
+                    && let Some((hk, _)) =
+                        cache.get_for_operation(project, setup_idx, o_idx, cad_revision)
+                {
+                    hk.0.hash(&mut h);
+                }
+            }
+        }
+        h.finish()
+    }
+
+    pub(crate) fn rebuild_preview_if_needed(
+        &mut self,
+        project: &ProjectDocument,
+        setup_idx: usize,
+        cad_doc: Option<&Arc<CadDocument>>,
+        cad_revision: u64,
+        cache: &ToolpathCache,
+        project_file_path: Option<&Path>,
+    ) {
+        let sig = self.compute_preview_signature(project, setup_idx, cache, cad_revision);
+        if self.cached_sig == Some(sig) {
+            return;
+        }
+        self.cached_sig = Some(sig);
+        self.cached_files.clear();
+        self.cached_lines_per_file.clear();
+        self.last_error = None;
+
+        let Some(doc) = cad_doc else {
+            self.last_error = Some("Load a STEP model first.".to_string());
+            return;
+        };
+        let Some(setup) = project.setups.get(setup_idx) else {
+            self.last_error = Some("No active Setup.".to_string());
+            return;
+        };
+
+        let profile = self
+            .available_profiles
+            .iter()
+            .find(|p| p.id.eq_ignore_ascii_case(&setup.post_profile))
+            .or_else(|| self.available_profiles.first())
+            .cloned();
+        let Some(post_profile) = profile else {
+            self.last_error = Some("No post-processor profile available.".to_string());
+            return;
+        };
+
+        let resolved = match setup.resolve_immutable(doc, project.display_units) {
+            Ok(r) => r,
+            Err(e) => {
+                self.last_error = Some(format!("Setup WCS error: {e}"));
+                return;
+            }
+        };
+
+        let mut op_refs = Vec::new();
+        for (o_idx, op) in setup.operations.iter().enumerate() {
+            if op.suppressed {
+                continue;
+            }
+            if let Some(tid) = &op.tool_id
+                && let Some(tool) = project.tools.iter().find(|t| &t.id == tid)
+                && let Some((_, tp)) =
+                    cache.get_for_operation(project, setup_idx, o_idx, cad_revision)
+            {
+                op_refs.push((op, tool, tp));
+            }
+        }
+
+        if op_refs.is_empty() {
+            self.last_error =
+                Some("Generate clean toolpaths (Ctrl+G) to preview G-code.".to_string());
+            return;
+        }
+
+        let post_ops: Vec<OperationPostInput<'_>> = op_refs
+            .iter()
+            .map(|(op, tool, tp)| OperationPostInput {
+                op,
+                tool,
+                toolpath: tp.as_ref(),
+            })
+            .collect();
+
+        let proj_label = project_file_path
+            .and_then(|p| p.file_name())
+            .and_then(|s| s.to_str())
+            .unwrap_or(&project.project_name);
+        let stem = project_file_path
+            .and_then(|p| p.file_stem())
+            .and_then(|s| s.to_str())
+            .map(|s| s.trim_end_matches(".chip"))
+            .unwrap_or(&project.project_name);
+
+        let input = SetupPostInput {
+            project_name: proj_label,
+            setup_name: &setup.name,
+            wcs_slot: setup.wcs_slot,
+            wcs_origin_description: describe_wcs_origin(&setup.wcs),
+            stock: resolved.stock,
+            clearance_z_wcs: resolved.clearance_z_wcs,
+            retract_z_wcs: resolved.retract_z_wcs,
+            operations: post_ops,
+        };
+
+        match post_process_setup(&input, &post_profile, stem) {
+            Ok(files) => {
+                self.cached_lines_per_file = files
+                    .iter()
+                    .map(|f| f.content.lines().map(ToOwned::to_owned).collect())
+                    .collect();
+                self.cached_files = files;
+                if self.selected_file_tab >= self.cached_files.len() {
+                    self.selected_file_tab = 0;
+                }
+            }
+            Err(e) => {
+                self.last_error = Some(e.to_string());
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn show_ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        project: &mut ProjectDocument,
+        history: &mut UndoHistory,
+        setup_idx: usize,
+        cad_doc: Option<&Arc<CadDocument>>,
+        cad_revision: u64,
+        cache: &ToolpathCache,
+        project_file_path: Option<&Path>,
+        sim_state: &SimulationPanelState,
+        logs: &mut Vec<String>,
+    ) -> Option<GCodeUiAction> {
+        let mut action: Option<GCodeUiAction> = None;
+        let proj_dir = project_file_path.and_then(|p| p.parent());
+        self.ensure_profiles_loaded(proj_dir);
+
+        // Top Bar: Post-Processor Profile Selector, Load Custom .post.toml, Safety Status, & Export Button
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Post Profile:");
+            if setup_idx < project.setups.len() {
+                let current_id = project.setups[setup_idx].post_profile.clone();
+                let current_label = self
+                    .available_profiles
+                    .iter()
+                    .find(|p| p.id.eq_ignore_ascii_case(&current_id))
+                    .map(|p| p.name.as_str())
+                    .unwrap_or(&current_id);
+
+                let mut chosen_id = current_id.clone();
+                egui::ComboBox::from_id_salt("gcode_post_profile_combo")
+                    .selected_text(current_label)
+                    .width(240.0)
+                    .show_ui(ui, |ui| {
+                        for prof in &self.available_profiles {
+                            ui.selectable_value(&mut chosen_id, prof.id.clone(), &prof.name);
+                        }
+                    });
+                if chosen_id != current_id {
+                    history.record_before_edit("Change Post Profile", None, project);
+                    project.setups[setup_idx].post_profile = chosen_id;
+                    self.cached_sig = None;
+                }
+            }
+
+            if ui
+                .small_button("Load .post.toml…")
+                .on_hover_text("Load a custom TOML post-processor profile from disk")
+                .clicked()
+                && let Some(path) = rfd::FileDialog::new()
+                    .add_filter("ChipCutter Post Profile", &["toml"])
+                    .pick_file()
+            {
+                match PostProfile::load_from_path(&path) {
+                    Ok(prof) => {
+                        let pid = prof.id.clone();
+                        let pname = prof.name.clone();
+                        self.custom_loaded_profiles.push(prof);
+                        self.refresh_profiles(proj_dir);
+                        if setup_idx < project.setups.len() {
+                            history.record_before_edit("Load Custom Post Profile", None, project);
+                            project.setups[setup_idx].post_profile = pid;
+                        }
+                        logs.push(format!(
+                            "Loaded custom post profile '{pname}' from '{}'.",
+                            path.display()
+                        ));
+                    }
+                    Err(e) => {
+                        logs.push(format!(
+                            "ERROR loading post profile '{}': {e}",
+                            path.display()
+                        ));
+                    }
+                }
+            }
+
+            ui.separator();
+
+            let verified =
+                sim_state.is_verified_up_to_date(project, setup_idx, cache, cad_revision);
+            let crit_count = sim_state
+                .active_result
+                .as_ref()
+                .map_or(0, |r| r.critical_error_count());
+
+            if verified && crit_count == 0 {
+                ui.colored_label(
+                    egui::Color32::from_rgb(86, 224, 134),
+                    "[OK] Sim Verified (0 Crashes)",
+                );
+            } else if crit_count > 0 {
+                ui.colored_label(
+                    egui::Color32::from_rgb(252, 92, 92),
+                    format!("[!] {crit_count} Critical Crash/Gouge(s)!"),
+                );
+            } else {
+                ui.colored_label(
+                    egui::Color32::from_rgb(244, 188, 76),
+                    "[*] Unverified — Run Simulation before machining",
+                );
+            }
+
+            let can_export = !self.cached_files.is_empty();
+            if ui
+                .add_enabled(can_export, egui::Button::new("Export G-Code…"))
+                .clicked()
+            {
+                if crit_count > 0 {
+                    self.show_safety_gate_modal = true;
+                    self.pending_unverified_warning = false;
+                } else if !verified {
+                    self.show_safety_gate_modal = true;
+                    self.pending_unverified_warning = true;
+                } else {
+                    self.export_files_with_dialog(logs);
+                }
+            }
+        });
+
+        self.rebuild_preview_if_needed(
+            project,
+            setup_idx,
+            cad_doc,
+            cad_revision,
+            cache,
+            project_file_path,
+        );
+
+        // Safety Gate Confirmation Modal (`06-simulation.md` §4)
+        if self.show_safety_gate_modal {
+            let mut open = true;
+            egui::Window::new(if self.pending_unverified_warning {
+                "Simulation Not Yet Verified"
+            } else {
+                "[!] CRITICAL CRASH / GOUGE DETECTED — EXPORT BLOCKED"
+            })
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .open(&mut open)
+            .show(ui.ctx(), |ui| {
+                ui.set_max_width(480.0);
+                if self.pending_unverified_warning {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(248, 198, 78),
+                        "Heightmap crash & gouge verification has not been run on the current toolpaths.",
+                    );
+                    ui.label("Run Simulation first to verify zero G0 rapid crashes, gouges, or holder collisions.");
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Run Simulation Now (Recommended)").clicked() {
+                            self.show_safety_gate_modal = false;
+                            action = Some(GCodeUiAction::RunSimulationFirst);
+                        }
+                        if ui.button("Export Unverified Anyway").clicked() {
+                            self.show_safety_gate_modal = false;
+                            self.export_files_with_dialog(logs);
+                        }
+                    });
+                } else {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(255, 96, 96),
+                        "ChipCutter detected critical physical collisions or part gouges in this Setup:",
+                    );
+                    let mut first_crit: Option<SimDiagnostic> = None;
+                    if let Some(res) = &sim_state.active_result {
+                        for d in res
+                            .diagnostics
+                            .iter()
+                            .filter(|d| d.severity == SimSeverity::CriticalError)
+                        {
+                            if first_crit.is_none() {
+                                first_crit = Some(d.clone());
+                            }
+                            ui.monospace(format!("• [{}] {}: {}", d.kind.label(), d.op_name, d.message));
+                        }
+                    }
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if let Some(diag) = first_crit
+                            && ui.button("Cancel & Jump to Crash in 3D").clicked()
+                        {
+                            self.show_safety_gate_modal = false;
+                            action = Some(GCodeUiAction::JumpToCrash(diag));
+                        }
+                        if ui
+                            .button(
+                                egui::RichText::new("Acknowledge Risk & Override Export")
+                                    .color(egui::Color32::from_rgb(255, 110, 110)),
+                            )
+                            .clicked()
+                        {
+                            self.show_safety_gate_modal = false;
+                            self.export_files_with_dialog(logs);
+                        }
+                    });
+                }
+            });
+            if !open {
+                self.show_safety_gate_modal = false;
+            }
+        }
+
+        ui.separator();
+
+        if let Some(err) = &self.last_error {
+            ui.weak(err);
+            return action;
+        }
+        if self.cached_files.is_empty() {
+            ui.weak("No G-code output generated.");
+            return action;
+        }
+
+        // File Tabs (when `split_files_by_tool` emits multiple `.nc` files) + Line Stats
+        ui.horizontal_wrapped(|ui| {
+            for (idx, f) in self.cached_files.iter().enumerate() {
+                let lbl = format!("{} ({}L)", f.filename, f.line_count);
+                ui.selectable_value(&mut self.selected_file_tab, idx, lbl);
+            }
+            if let Some(active) = self.cached_files.get(self.selected_file_tab) {
+                ui.separator();
+                ui.weak(format!(
+                    "Max line: {} chars | Tools: {:?}",
+                    active.max_line_chars, active.tool_numbers
+                ));
+            }
+        });
+
+        // Virtualized 60-FPS Monospace G-Code Viewer (`show_rows`)
+        if let Some(lines) = self.cached_lines_per_file.get(self.selected_file_tab) {
+            let row_h = ui.text_style_height(&egui::TextStyle::Monospace);
+            egui::ScrollArea::vertical()
+                .id_salt(("gcode_preview_scroll", self.selected_file_tab))
+                .auto_shrink([false, false])
+                .show_rows(ui, row_h, lines.len(), |ui, row_range| {
+                    for line_idx in row_range {
+                        let line = &lines[line_idx];
+                        let col = gcode_line_color(line);
+                        ui.horizontal(|ui| {
+                            ui.weak(format!("{:>5} ", line_idx + 1));
+                            ui.colored_label(col, egui::RichText::new(line).monospace());
+                        });
+                    }
+                });
+        }
+
+        action
+    }
+
+    pub fn trigger_export_action(
+        &mut self,
+        project: &ProjectDocument,
+        setup_idx: usize,
+        cache: &ToolpathCache,
+        cad_revision: u64,
+        sim_state: &SimulationPanelState,
+        logs: &mut Vec<String>,
+    ) {
+        let verified = sim_state.is_verified_up_to_date(project, setup_idx, cache, cad_revision);
+        let crit_count = sim_state
+            .active_result
+            .as_ref()
+            .map_or(0, |r| r.critical_error_count());
+        if crit_count > 0 {
+            self.show_safety_gate_modal = true;
+            self.pending_unverified_warning = false;
+        } else if !verified {
+            self.show_safety_gate_modal = true;
+            self.pending_unverified_warning = true;
+        } else {
+            self.export_files_with_dialog(logs);
+        }
+    }
+
+    fn export_files_with_dialog(&self, logs: &mut Vec<String>) {
+        if self.cached_files.is_empty() {
+            return;
+        }
+        if self.cached_files.len() == 1 {
+            let f = &self.cached_files[0];
+            if let Some(dest) = rfd::FileDialog::new()
+                .set_file_name(&f.filename)
+                .save_file()
+            {
+                match std::fs::write(&dest, &f.content) {
+                    Ok(()) => logs.push(format!(
+                        "Exported G-code ({} lines) to '{}'.",
+                        f.line_count,
+                        dest.display()
+                    )),
+                    Err(e) => logs.push(format!("ERROR writing '{}': {e}", dest.display())),
+                }
+            }
+        } else if let Some(dir) = rfd::FileDialog::new().pick_folder() {
+            for f in &self.cached_files {
+                let dest = dir.join(&f.filename);
+                match std::fs::write(&dest, &f.content) {
+                    Ok(()) => logs.push(format!(
+                        "Exported '{}' ({} lines).",
+                        dest.display(),
+                        f.line_count
+                    )),
+                    Err(e) => logs.push(format!("ERROR writing '{}': {e}", dest.display())),
+                }
+            }
+        }
+    }
+}
+
+fn gcode_line_color(line: &str) -> egui::Color32 {
+    let t = line.trim_start();
+    if t.starts_with('(') || t.starts_with(';') || t == "%" {
+        egui::Color32::from_rgb(132, 146, 166)
+    } else if t.contains("G0 ") || t.ends_with("G0") {
+        egui::Color32::from_rgb(248, 198, 76)
+    } else if t.contains("G2 ") || t.contains("G3 ") {
+        egui::Color32::from_rgb(92, 228, 158)
+    } else if t.contains("G81") || t.contains("G82") || t.contains("G83") || t.contains("G73") {
+        egui::Color32::from_rgb(238, 138, 248)
+    } else if t.contains("M6")
+        || t.contains("M3")
+        || t.contains("M5")
+        || t.contains("M30")
+        || t.contains("M2")
+    {
+        egui::Color32::from_rgb(248, 132, 118)
+    } else {
+        egui::Color32::from_rgb(150, 208, 252)
+    }
+}

@@ -9,6 +9,8 @@ struct ViewportUniforms {
     viewport_and_grid: vec4<f32>,
     // x = hovered_face_id (u32::MAX if none), y = ghost_part (1/0), z = show_grid (1/0), w = ortho_flag (1/0)
     pick_flags: vec4<u32>,
+    // xyz = active 3D cutter tip position in Setup WCS (mm)
+    sim_tool_tip_wcs: vec4<f32>,
 };
 
 @group(0) @binding(0)
@@ -288,4 +290,74 @@ fn vs_edge(
 @fragment
 fn fs_edge(in: EdgeVertexOut) -> @location(0) vec4<f32> {
     return in.color;
+}
+
+// ============================================================================
+// Pass 6: Shaded 3D Machined Stock Mesh & 3D Revolved Cutter/Shank/Holder Mesh
+// ============================================================================
+
+struct SimVertexIn {
+    @location(0) pos_wcs_mm: vec3<f32>,
+    @location(1) normal_wcs: vec3<f32>,
+    @location(2) color_rgba: vec4<f32>,
+};
+
+struct SimVertexOut {
+    @builtin(position) clip_pos: vec4<f32>,
+    @location(0) view_normal: vec3<f32>,
+    @location(1) world_normal: vec3<f32>,
+    @location(2) color_rgba: vec4<f32>,
+};
+
+@vertex
+fn vs_sim_stock(in: SimVertexIn) -> SimVertexOut {
+    var out: SimVertexOut;
+    let world_pos = (u_vp.wcs_local_to_world * vec4<f32>(in.pos_wcs_mm, 1.0)).xyz;
+    let world_n = normalize((u_vp.wcs_local_to_world * vec4<f32>(in.normal_wcs, 0.0)).xyz);
+    out.clip_pos = u_vp.view_proj * vec4<f32>(world_pos, 1.0);
+    out.world_normal = world_n;
+    out.view_normal = normalize((u_vp.view * vec4<f32>(world_n, 0.0)).xyz);
+    out.color_rgba = in.color_rgba;
+    return out;
+}
+
+@vertex
+fn vs_sim_tool(in: SimVertexIn) -> SimVertexOut {
+    var out: SimVertexOut;
+    let local_wcs = in.pos_wcs_mm + u_vp.sim_tool_tip_wcs.xyz;
+    let world_pos = (u_vp.wcs_local_to_world * vec4<f32>(local_wcs, 1.0)).xyz;
+    let world_n = normalize((u_vp.wcs_local_to_world * vec4<f32>(in.normal_wcs, 0.0)).xyz);
+    out.clip_pos = u_vp.view_proj * vec4<f32>(world_pos, 1.0);
+    out.world_normal = world_n;
+    out.view_normal = normalize((u_vp.view * vec4<f32>(world_n, 0.0)).xyz);
+    out.color_rgba = in.color_rgba;
+    return out;
+}
+
+@fragment
+fn fs_sim_mesh(in: SimVertexOut, @builtin(front_facing) is_front: bool) -> @location(0) vec4<f32> {
+    var vn = normalize(in.view_normal);
+    if (!is_front) {
+        vn = -vn;
+    }
+
+    let key_dir = normalize(vec3<f32>(0.42, 0.56, 0.71));
+    let fill_dir = normalize(vec3<f32>(-0.62, -0.25, 0.45));
+    let rim_dir = normalize(vec3<f32>(0.0, 0.75, -0.66));
+    let view_dir = vec3<f32>(0.0, 0.0, 1.0);
+
+    let ndl_key = max(dot(vn, key_dir), 0.0);
+    let ndl_fill = max(dot(vn, fill_dir), 0.0);
+    let ndl_rim = max(dot(vn, rim_dir), 0.0);
+
+    let half_vec = normalize(key_dir + view_dir);
+    let spec = pow(max(dot(vn, half_vec), 0.0), 42.0) * 0.25;
+
+    let hemi = 0.5 + 0.5 * in.world_normal.z;
+    let ambient = mix(vec3<f32>(0.21, 0.23, 0.27), vec3<f32>(0.32, 0.34, 0.38), hemi);
+
+    let lit = in.color_rgba.rgb * (ambient + 0.65 * ndl_key + 0.24 * ndl_fill + 0.14 * ndl_rim)
+        + vec3<f32>(spec);
+
+    return vec4<f32>(clamp(lit, vec3<f32>(0.0), vec3<f32>(1.0)), in.color_rgba.a);
 }

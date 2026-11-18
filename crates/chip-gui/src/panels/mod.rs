@@ -1,7 +1,9 @@
 pub mod browser;
 pub mod diagnostics;
+pub mod gcode_preview;
 pub mod operation_inspector;
 pub mod setup_inspector;
+pub mod simulation;
 pub mod tool_library;
 
 use chip_cad::EdgeId;

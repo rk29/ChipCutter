@@ -1,0 +1,56 @@
+# ChipCutter Post-Processor Profile: GRBL 1.1 / FluidNC (Hobby Router & Mill)
+# User-editable TOML dialect configuration (`07-post-processor.md`).
+
+schema_version = 1
+id = "grbl"
+name = "GRBL 1.1 / FluidNC (Split by Tool)"
+description = "Standard GRBL 1.1 / FluidNC G-code: <=80 chars/line, expanded peck drilling, 90-deg quadrant arcs, split files per tool."
+extension = "nc"
+
+units = "mm"
+coord_decimals = 3
+feed_decimals = 0
+spindle_decimals = 0
+suppress_trailing_zeros = true
+max_line_length = 80
+comment_style = "parentheses"
+
+emit_wcs_code = true
+allow_extended_wcs = false
+use_g43_length_offset = false
+use_cutter_comp_g41_g42 = false
+safe_home_z_on_end = false
+
+arc_center_mode = "incremental_ijk"
+max_arc_sweep_deg = 90.0
+allow_helical_arcs = true
+helical_linearize_tol_mm = 0.015
+
+expand_drill_cycles = true
+tool_change_mode = "split_files_by_tool"
+
+rapid_rate_mm_min = 5000.0
+accel_mm_s2 = 500.0
+tool_change_time_sec = 0.0
+
+program_header = [
+    "G90 G94 G17 {unit_code}",
+    "{wcs_code}",
+]
+
+operation_header = [
+    "({op_name} - {strategy_name})",
+]
+
+tool_change_block = []
+
+spindle_start_block = [
+    "S{rpm} {spindle_dir}",
+]
+
+operation_footer = []
+
+program_footer = [
+    "M5",
+    "M30",
+]

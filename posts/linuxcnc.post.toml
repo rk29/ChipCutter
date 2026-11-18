@@ -1,0 +1,66 @@
+# ChipCutter Post-Processor Profile: LinuxCNC (RS274NGC)
+# Full RS274NGC dialect with G64 P0.025 path blending, T# M6 + G43 H#, native G81-G83/G73 cycles, and G54..G59.3.
+
+schema_version = 1
+id = "linuxcnc"
+name = "LinuxCNC (RS274NGC)"
+description = "LinuxCNC RS274NGC controller post with G64 path blending, G43 tool length offsets, and native canned drill cycles."
+extension = "ngc"
+
+units = "mm"
+coord_decimals = 4
+feed_decimals = 1
+spindle_decimals = 0
+suppress_trailing_zeros = false
+comment_style = "parentheses"
+path_blend_tol_mm = 0.025
+
+emit_wcs_code = true
+allow_extended_wcs = true
+use_g43_length_offset = true
+use_cutter_comp_g41_g42 = true
+safe_home_z_on_end = true
+
+arc_center_mode = "incremental_ijk"
+max_arc_sweep_deg = 180.0
+allow_helical_arcs = true
+helical_linearize_tol_mm = 0.010
+
+expand_drill_cycles = false
+tool_change_mode = "m6"
+
+rapid_rate_mm_min = 6000.0
+accel_mm_s2 = 800.0
+tool_change_time_sec = 15.0
+
+program_header = [
+    "%",
+    "G17 {unit_code} G40 G49 {wcs_code} G80 G90 G94 {blend_code}",
+]
+
+operation_header = [
+    "( --- {op_name} [{strategy_name}] --- )",
+]
+
+tool_change_block = [
+    "M9",
+    "M5",
+    "T{tool_number} M6",
+    "G43 H{length_offset}",
+]
+
+spindle_start_block = [
+    "S{rpm} {spindle_dir}",
+]
+
+operation_footer = [
+    "G80",
+]
+
+program_footer = [
+    "M9",
+    "M5",
+    "G53 G0 Z0",
+    "M2",
+    "%",
+]

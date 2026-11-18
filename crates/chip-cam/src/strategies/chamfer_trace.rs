@@ -76,6 +76,7 @@ fn generate_edge_chamfer(
         offset_sign: f64,
         chamfer_width_mm: f64,
         top_z_wcs: f64,
+        is_modeled_upper_edge: bool,
         edge_ids: Vec<EdgeId>,
     }
 
@@ -116,6 +117,7 @@ fn generate_edge_chamfer(
                         offset_sign: sign,
                         chamfer_width_mm: *radial_width_mm,
                         top_z_wcs: *top_z_wcs,
+                        is_modeled_upper_edge: true,
                         edge_ids: edge_ids.clone(),
                     });
                 }
@@ -144,6 +146,7 @@ fn generate_edge_chamfer(
                     offset_sign: sign,
                     chamfer_width_mm: w,
                     top_z_wcs: *max_z_wcs,
+                    is_modeled_upper_edge: false,
                     edge_ids: source_edge_ids.clone(),
                 });
             }
@@ -173,6 +176,7 @@ fn generate_edge_chamfer(
                     offset_sign: 1.0,
                     chamfer_width_mm: w.max(0.05),
                     top_z_wcs: *face_z_wcs,
+                    is_modeled_upper_edge: false,
                     edge_ids: eids,
                 });
             }
@@ -192,10 +196,17 @@ fn generate_edge_chamfer(
         let w = job.chamfer_width_mm;
 
         // Exact chamfer kinematics (`05-operations.md` §5A):
-        //   axial_drop    = w / tan(θ) + d_tip
-        //   radial_offset = (tip_diameter / 2) + d_tip * tan(θ)  (measured outward from upper chamfer edge!)
+        //   axial_drop = w / tan(θ) + d_tip
+        //   - For an unmodeled Sharp Edge (whose XY coincides with the vertical wall / lower chamfer edge):
+        //       radial_offset = (tip_diameter / 2) + d_tip * tan(θ)
+        //   - For a Modeled Chamfer Face (where `upper_poly_wcs` is set back inward by `w` from the lower edge):
+        //       radial_offset = w + (tip_diameter / 2) + d_tip * tan(θ)
         let axial_drop = w / theta_rad.tan() + d_tip;
-        let radial_offset = 0.5 * tip_dia_mm + d_tip * theta_rad.tan();
+        let radial_offset = if job.is_modeled_upper_edge {
+            w + 0.5 * tip_dia_mm + d_tip * theta_rad.tan()
+        } else {
+            0.5 * tip_dia_mm + d_tip * theta_rad.tan()
+        };
 
         if d_tip * theta_rad.tan() + w > max_flute_radial + 1e-3 {
             return Err(CamError::InvalidChamferGeometry {

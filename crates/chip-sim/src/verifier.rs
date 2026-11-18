@@ -1,0 +1,98 @@
+use chip_math::DVec3;
+use serde::{Deserialize, Serialize};
+
+/// Severity level of a simulation diagnostic (`06-simulation.md` §4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SimSeverity {
+    /// Blocks `chipcutter build` and GUI G-code export unless explicitly overridden.
+    CriticalError,
+    /// Non-blocking machining advisory (shank rub or aggressive vertical plunge).
+    Warning,
+}
+
+impl SimSeverity {
+    pub const fn badge(self) -> &'static str {
+        match self {
+            Self::CriticalError => "[!]",
+            Self::Warning => "[WARN]",
+        }
+    }
+}
+
+/// Specific safety rule triggered during heightmap verification (`06-simulation.md` §4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SimIssueKind {
+    /// `G0` rapid move removes stock deeper than rapid tolerance.
+    RapidIntoStock,
+    /// Cutting or rapid move penetrates below the target STEP B-Rep upper surface (`> gouge_tol`).
+    TargetModelGouge,
+    /// Engagement depth exceeds `tool.flute_length_mm` (non-cutting shank rub).
+    FluteLengthExceeded,
+    /// Uncut stock protrudes above `z_tip + tool.stickout_length_mm` within holder/collet radius.
+    HolderCollision,
+    /// Vertical plunge (`ΔXY == 0`) into material with non-center-cutting tool or excessive depth.
+    UnsafeVerticalPlunge,
+}
+
+impl SimIssueKind {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::RapidIntoStock => "Rapid-into-Stock Crash",
+            Self::TargetModelGouge => "Target Model Gouge",
+            Self::FluteLengthExceeded => "Flute Length Exceeded (Shank Rub)",
+            Self::HolderCollision => "Holder / Collet Collision",
+            Self::UnsafeVerticalPlunge => "Excessive Vertical Plunge",
+        }
+    }
+
+    pub const fn default_severity(self) -> SimSeverity {
+        match self {
+            Self::RapidIntoStock | Self::TargetModelGouge | Self::HolderCollision => {
+                SimSeverity::CriticalError
+            }
+            Self::FluteLengthExceeded | Self::UnsafeVerticalPlunge => SimSeverity::Warning,
+        }
+    }
+}
+
+/// Structured simulation diagnostic clickable in the UI to jump the camera + timeline scrubber
+/// straight to the offending motion span (`06-simulation.md` §4).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SimDiagnostic {
+    pub severity: SimSeverity,
+    pub kind: SimIssueKind,
+    pub op_idx: usize,
+    pub op_id: String,
+    pub op_name: String,
+    pub tool_number: u32,
+    pub global_seg_idx: usize,
+    pub timeline_time_sec: f64,
+    pub location_wcs: DVec3,
+    /// Worst violation magnitude in millimeters (crash depth, gouge depth, shank rub, or plunge excess).
+    pub max_excess_mm: f64,
+    pub message: String,
+}
+
+/// Tolerances governing automated crash & gouge detection.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct SimVerificationConfig {
+    /// Allowed axial surface tolerance before declaring a target solid gouge (`06-simulation.md`: `0.02 mm`).
+    pub gouge_tol_mm: f64,
+    /// Allowed axial rapid contact tolerance (`mm`).
+    pub rapid_crash_tol_mm: f64,
+    /// Radial skin tolerance (`mm`) preventing tangential contact along vertical cliff walls from
+    /// false-triggering axial cliff gouges due to chord/grid quantization.
+    pub radial_wall_skin_mm: f64,
+}
+
+impl Default for SimVerificationConfig {
+    fn default() -> Self {
+        Self {
+            gouge_tol_mm: 0.02,
+            rapid_crash_tol_mm: 0.02,
+            radial_wall_skin_mm: 0.018,
+        }
+    }
+}

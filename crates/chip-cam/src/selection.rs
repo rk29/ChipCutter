@@ -325,6 +325,20 @@ pub fn extract_selection_features(
                     }
                 }
                 let (mut poly, min_z, max_z) = project_loop_to_wcs_xy(doc, &setup.frame, lid)?;
+                // Normalize closed loop winding relative to solid material in WCS XY before applying `reverse`:
+                // - Outer face loops and raised boss base loops wind CW (`want_ccw = false`) so `LeftClimb`
+                //   offsets outward into open air (Climb Milling around the exterior).
+                // - Internal pocket/hole cutout loops wind CCW (`want_ccw = true`) so `LeftClimb`
+                //   offsets inward into the cutout!
+                if poly.closed && poly.signed_area().abs() > 1e-6 {
+                    let want_ccw = if lp.is_outer {
+                        false
+                    } else {
+                        let cls = classify_planar_face_loops(doc, lp.face_id, setup.frame.z_axis);
+                        !cls.raised_inner_loops.contains(&lid)
+                    };
+                    poly = poly.ensure_orientation(want_ccw);
+                }
                 if *reverse {
                     poly = poly.reverse();
                 }

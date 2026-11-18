@@ -634,4 +634,120 @@ fn verifies_all_five_v1_strategies_against_torture_block_invariants() {
     )
     .unwrap();
     assert!(approx_eq(tp_mod_chamf.stats.bounds_wcs.min.z, 20.0, 2e-2));
+
+    // =========================================================================
+    // 6. PHYSICAL Z-DEXEL HEIGHTMAP ORACLE (`chip-sim`, AGENTS.md §4)
+    // =========================================================================
+    // Also machine the Z = 20.0 mm main plateau around the raised Z = 22.0 mm chamfered boss pad
+    // so subsequent operations starting from Z = 20.0 mm enter cleanly!
+    let plateau_z20_face = doc
+        .faces
+        .iter()
+        .find(|f| {
+            matches!(
+                f.surface,
+                SurfaceKind::Plane { origin_mm, normal }
+                if normal.z > 0.99 && approx_eq(origin_mm.z, 20.0, 1e-2) && f.area_mm2 > 1500.0
+            )
+        })
+        .unwrap()
+        .id;
+    let mut op_plateau = Operation::new(
+        "op_plateau",
+        "Plateau Deck Around Boss",
+        OperationKind::Pocket2D,
+    );
+    op_plateau.tool_id = Some(flat_6mm.id.clone());
+    op_plateau.selections = vec![GeometrySelectionItem::PlanarFace {
+        binding: doc.bind_face(plateau_z20_face).unwrap(),
+    }];
+    let tp_plateau = generate_operation_toolpath(
+        &doc,
+        &resolved_setup,
+        &op_plateau,
+        flat_6mm,
+        DisplayUnit::Millimeter,
+        false,
+        &cancel,
+    )
+    .unwrap();
+
+    // Generate ContourParallel Island Pocket for physical simulation
+    let mut op_pkt_sim = Operation::new("op_pkt_sim", "Island Cavity", OperationKind::Pocket2D);
+    op_pkt_sim.tool_id = Some(flat_6mm.id.clone());
+    op_pkt_sim.selections = vec![GeometrySelectionItem::PlanarFace {
+        binding: doc.bind_face(island_pkt_floor).unwrap(),
+    }];
+    let tp_pkt_sim = generate_operation_toolpath(
+        &doc,
+        &resolved_setup,
+        &op_pkt_sim,
+        flat_6mm,
+        DisplayUnit::Millimeter,
+        false,
+        &cancel,
+    )
+    .unwrap();
+
+    let sim_ops = [
+        chip_sim::SimOperationInput::from_operation(&op_face, face_mill_38mm, &tp_face),
+        chip_sim::SimOperationInput::from_operation(&op_plateau, flat_6mm, &tp_plateau),
+        chip_sim::SimOperationInput::from_operation(&op_open_pkt, flat_6mm, &tp_open),
+        chip_sim::SimOperationInput::from_operation(&op_pkt_sim, flat_6mm, &tp_pkt_sim),
+        chip_sim::SimOperationInput::from_operation(&op_bore, flat_6mm, &tp_bore),
+        chip_sim::SimOperationInput::from_operation(&op_drill, &drill_6mm, &tp_drill),
+        chip_sim::SimOperationInput::from_operation(&op_contour, flat_6mm, &tp_cnt),
+        chip_sim::SimOperationInput::from_operation(&op_chamf, chamfer_90deg, &tp_chamf),
+        chip_sim::SimOperationInput::from_operation(&op_mod_chamf, &big_chamfer, &tp_mod_chamf),
+    ];
+
+    let sim_res = chip_sim::run_setup_simulation(
+        &doc,
+        &resolved_setup,
+        &setup.target_bodies,
+        &sim_ops,
+        chip_sim::SimResolution::Fine,
+        chip_sim::MachineKinematicsConfig::default(),
+        chip_sim::SimVerificationConfig::default(),
+        None,
+    )
+    .unwrap();
+
+    assert_eq!(
+        sim_res.critical_error_count(),
+        0,
+        "Expected ZERO critical rapid crashes, target gouges, or holder collisions across all 9 torture block operations, got: {:#?}",
+        sim_res.diagnostics
+    );
+
+    // Verify exact heightmap Z values on machined features!
+    // 1. Island Pocket Floor at (20, 25) -> Z == 12.00 ± 0.02 mm
+    let z_pkt_floor = sim_res.final_stock.sample_stock_z(20.0, 25.0).unwrap();
+    assert!(
+        approx_eq(z_pkt_floor, 12.0, 0.02),
+        "Island pocket floor should be at Z = 12.00 mm, got {z_pkt_floor:.4}"
+    );
+    // 2. Central Ø10mm Raised Island Boss at (29, 40) -> untouched at Z == 20.00 ± 0.02 mm!
+    let z_island_top = sim_res.final_stock.sample_stock_z(29.0, 40.0).unwrap();
+    assert!(
+        approx_eq(z_island_top, 20.0, 0.02),
+        "Central Ø10mm island boss top should remain at Z = 20.00 mm, got {z_island_top:.4}"
+    );
+    // 3. Ø18mm Blind Counterbore Floor at (60, 22) -> Z == 10.00 ± 0.02 mm!
+    let z_bore_floor = sim_res.final_stock.sample_stock_z(60.0, 22.0).unwrap();
+    assert!(
+        approx_eq(z_bore_floor, 10.0, 0.02),
+        "Ø18mm counterbore floor should be at Z = 10.00 mm, got {z_bore_floor:.4}"
+    );
+    // 4. Drilled Ø6mm through-hole center at (88, 14) -> completely Breakthrough (`None`)!
+    assert!(
+        sim_res.final_stock.sample_stock_z(88.0, 14.0).is_none(),
+        "Through-hole center (88, 14) must be completely drilled through Z=0!"
+    );
+    // 5. Raised chamfered boss top pad at (60, 58) -> Z == 22.00 ± 0.02 mm!
+    let z_boss_pad = sim_res.final_stock.sample_stock_z(60.0, 58.0).unwrap();
+    assert!(
+        approx_eq(z_boss_pad, 22.0, 0.02),
+        "Chamfered boss pad top should be at Z = 22.00 mm, got {z_boss_pad:.4}"
+    );
 }

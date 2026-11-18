@@ -1,0 +1,61 @@
+# ChipCutter Post-Processor Profile: grblHAL / FluidNC with M6 Tool-Setter Macro
+# Emits a single combined .nc program using M6 tool changes while preserving GRBL <=80 char limits.
+
+schema_version = 1
+id = "grblhal_atc"
+name = "grblHAL / FluidNC (ATC / M6 Macro)"
+description = "Single-file grblHAL / FluidNC output with M6 tool-setter changes, expanded drill cycles, and <=80 chars/line."
+extension = "nc"
+
+units = "mm"
+coord_decimals = 3
+feed_decimals = 0
+spindle_decimals = 0
+suppress_trailing_zeros = true
+max_line_length = 80
+comment_style = "parentheses"
+
+emit_wcs_code = true
+allow_extended_wcs = true
+use_g43_length_offset = false
+use_cutter_comp_g41_g42 = false
+safe_home_z_on_end = true
+
+arc_center_mode = "incremental_ijk"
+max_arc_sweep_deg = 90.0
+allow_helical_arcs = true
+helical_linearize_tol_mm = 0.015
+
+expand_drill_cycles = true
+tool_change_mode = "m6"
+
+rapid_rate_mm_min = 5000.0
+accel_mm_s2 = 600.0
+tool_change_time_sec = 15.0
+
+program_header = [
+    "G90 G94 G17 {unit_code}",
+    "{wcs_code}",
+]
+
+operation_header = [
+    "({op_name} - {strategy_name})",
+]
+
+tool_change_block = [
+    "M5",
+    "T{tool_number} M6",
+]
+
+spindle_start_block = [
+    "S{rpm} {spindle_dir}",
+]
+
+operation_footer = []
+
+program_footer = [
+    "M9",
+    "M5",
+    "G53 G0 Z0",
+    "M30",
+]

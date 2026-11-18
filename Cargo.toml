@@ -5,6 +5,8 @@ members = [
     "crates/chip-cad",
     "crates/chip-tools",
     "crates/chip-cam",
+    "crates/chip-sim",
+    "crates/chip-post",
     "crates/chip-project",
     "crates/chip-cli",
     "crates/chip-gui",
@@ -27,6 +29,8 @@ chip-math = { version = "0.1.0", path = "crates/chip-math" }
 chip-cad = { version = "0.1.0", path = "crates/chip-cad" }
 chip-tools = { version = "0.1.0", path = "crates/chip-tools" }
 chip-cam = { version = "0.1.0", path = "crates/chip-cam" }
+chip-sim = { version = "0.1.0", path = "crates/chip-sim" }
+chip-post = { version = "0.1.0", path = "crates/chip-post" }
 chip-project = { version = "0.1.0", path = "crates/chip-project" }
 
 glam = { version = "0.29", features = ["serde", "bytemuck"] }
