@@ -54,6 +54,15 @@ pub(crate) struct CachedFrameGeo {
     pub focused_extracted: Option<Result<ExtractedSelectionSummary, String>>,
 }
 
+/// Optional startup demo mode for CLI flags (`--demo-pure-2d`, `--demo-nameplate`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum StartupDemoMode {
+    #[default]
+    None,
+    Pure2dPanel,
+    EngravedNameplate,
+}
+
 /// Self-test automation configuration for headless CI screenshot capture.
 pub struct SelfTestConfig {
     pub screenshot_path: PathBuf,
@@ -99,6 +108,9 @@ pub struct ChipCutterApp {
     pub(crate) setup_tab: SetupTab,
     pub(crate) op_tab: OperationTab,
     pub(crate) pick_mode: ViewportPickMode,
+    pub(crate) selected_sketch_entity_idx: Option<usize>,
+    pub(crate) sketch_snap_grid_mm: Option<f64>,
+    pub(crate) sketch_author_start_xy: Option<chip_math::DVec2>,
     pub(crate) lock_chipload: bool,
     pub(crate) show_27pt_dots: bool,
     pub(crate) show_z_planes: bool,
@@ -141,13 +153,27 @@ impl ChipCutterApp {
         initial_path: Option<PathBuf>,
         self_test: Option<SelfTestConfig>,
     ) -> Self {
-        Self::new_with_mode(cc, initial_path, false, self_test)
+        Self::new_with_demo(cc, initial_path, StartupDemoMode::None, self_test)
     }
 
     pub fn new_with_mode(
         cc: &eframe::CreationContext<'_>,
         initial_path: Option<PathBuf>,
         demo_pure_2d: bool,
+        self_test: Option<SelfTestConfig>,
+    ) -> Self {
+        let mode = if demo_pure_2d {
+            StartupDemoMode::Pure2dPanel
+        } else {
+            StartupDemoMode::None
+        };
+        Self::new_with_demo(cc, initial_path, mode, self_test)
+    }
+
+    pub fn new_with_demo(
+        cc: &eframe::CreationContext<'_>,
+        initial_path: Option<PathBuf>,
+        demo_mode: StartupDemoMode,
         self_test: Option<SelfTestConfig>,
     ) -> Self {
         let mut visuals = egui::Visuals::dark();
@@ -191,6 +217,9 @@ impl ChipCutterApp {
             setup_tab: SetupTab::Wcs,
             op_tab: OperationTab::Passes,
             pick_mode: ViewportPickMode::InspectEntity,
+            selected_sketch_entity_idx: None,
+            sketch_snap_grid_mm: None,
+            sketch_author_start_xy: None,
             lock_chipload: true,
             show_27pt_dots: true,
             show_z_planes: true,
@@ -239,10 +268,16 @@ impl ChipCutterApp {
                     app.spawn_step_file_load(path, cc.egui_ctx.clone());
                 }
             }
-        } else if demo_pure_2d {
-            app.load_pure2d_router_panel_demo(&cc.egui_ctx);
         } else {
-            app.spawn_cam_torture_sample_load(true, cc.egui_ctx.clone());
+            match demo_mode {
+                StartupDemoMode::Pure2dPanel => app.load_pure2d_router_panel_demo(&cc.egui_ctx),
+                StartupDemoMode::EngravedNameplate => {
+                    app.load_engraved_nameplate_demo(&cc.egui_ctx)
+                }
+                StartupDemoMode::None => {
+                    app.spawn_cam_torture_sample_load(true, cc.egui_ctx.clone())
+                }
+            }
         }
 
         app
@@ -420,6 +455,53 @@ impl ChipCutterApp {
             self.camera
                 .align_to_setup_top(&rs.frame, &rs.stock.aabb_wcs());
         }
+    }
+
+    pub(crate) fn align_camera_to_sketch(&mut self, sketch_idx: usize) {
+        let Some(Ok(rs)) = self.active_resolved_setup() else {
+            return;
+        };
+        let Some(sk) = self.project.sketches.get(sketch_idx) else {
+            return;
+        };
+        let wf = if let Some(m) = &self.model {
+            chip_cam::resolve_sketch_world_frame_with_doc(&m.doc, sk, &rs)
+        } else {
+            chip_cam::resolve_sketch_world_frame(false, sk, &rs)
+        };
+        let mut bounds_2d = sk.exact_aabb();
+        if !bounds_2d.is_valid() || bounds_2d.size().length() < 1.0 {
+            let st = rs.stock.aabb_wcs();
+            if st.is_valid() {
+                bounds_2d = chip_math::Aabb2::from_points([
+                    chip_math::DVec2::new(st.min.x, st.min.y),
+                    chip_math::DVec2::new(st.max.x, st.max.y),
+                ]);
+            }
+        }
+        self.camera.align_to_sketch_plane(&wf, &bounds_2d);
+    }
+
+    pub(crate) fn create_new_setup_xy_sketch(&mut self) {
+        self.history
+            .record_before_edit("New 2D Sketch", None, &self.project);
+        let setup_id = self
+            .project
+            .setups
+            .get(self.active_setup_idx)
+            .map_or_else(|| "setup_1".to_string(), |s| s.id.clone());
+        let n = self.project.sketches.len() + 1;
+        let sk = chip_sketch::SketchLayer::new(
+            format!("sketch_{n}"),
+            format!("Sketch {n} (Setup XY)"),
+            setup_id,
+        );
+        self.project.sketches.push(sk);
+        let sk_idx = self.project.sketches.len() - 1;
+        self.inspector_focus = InspectorFocus::Sketch { sketch_idx: sk_idx };
+        self.selected_sketch_entity_idx = None;
+        self.pick_mode = ViewportPickMode::InspectEntity;
+        self.cached_frame_geo = None;
     }
 
     pub(crate) fn trigger_active_setup_simulation(&mut self, egui_ctx: &egui::Context) {

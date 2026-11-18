@@ -77,7 +77,9 @@ impl ChipCutterApp {
             self.open_project_dialog(ctx);
         }
         if esc_key {
-            if self.pick_mode != ViewportPickMode::InspectEntity {
+            if self.sketch_author_start_xy.take().is_some() {
+                // Cancelled first rubber-band click while staying in SketchAuthor tool
+            } else if self.pick_mode != ViewportPickMode::InspectEntity {
                 self.pick_mode = ViewportPickMode::InspectEntity;
                 self.highlight.preview_tab_marker_wcs = None;
             } else if self.dispatcher.is_busy() {
@@ -231,6 +233,13 @@ impl ChipCutterApp {
                 ui.close();
                 self.load_pure2d_router_panel_demo(ctx);
             }
+            if ui
+                .button("Demo: Load Engraved Nameplate (Sketch + Text)")
+                .clicked()
+            {
+                ui.close();
+                self.load_engraved_nameplate_demo(ctx);
+            }
             if ui.button("Load Multi-Feature Sample Bracket").clicked() {
                 ui.close();
                 self.spawn_multi_feature_sample_load(false, true, ctx.clone());
@@ -299,6 +308,22 @@ impl ChipCutterApp {
                 ));
                 self.active_setup_idx = self.project.setups.len() - 1;
                 self.inspector_focus = InspectorFocus::Setup {
+                    setup_idx: self.active_setup_idx,
+                };
+                ui.close();
+            }
+            if ui.button("+ New 2D Sketch (Setup XY)").clicked() {
+                self.create_new_setup_xy_sketch();
+                ui.close();
+            }
+            if ui
+                .add_enabled(
+                    self.model.is_some(),
+                    egui::Button::new("+ New 2D Sketch on 3D Face…"),
+                )
+                .clicked()
+            {
+                self.pick_mode = ViewportPickMode::PickSketchHostFace {
                     setup_idx: self.active_setup_idx,
                 };
                 ui.close();

@@ -33,19 +33,20 @@ pub fn pick_sketch_layer_2d(
         return None;
     }
 
-    // 1. Closest curve/circle boundary within `edge_tol_mm`
+    // 1. Closest curve/circle/stroke boundary within `edge_tol_mm`
     let mut best_edge: Option<(String, f64)> = None;
     for ent in &sketch.entities {
         if ent.is_construction {
             continue;
         }
-        let poly = ent.entity.to_arc_polyline();
-        if poly.segments.is_empty() {
-            continue;
-        }
-        let d = poly.distance_to_point(query_xy);
-        if d <= edge_tol_mm && best_edge.as_ref().is_none_or(|(_, prev_d)| d < *prev_d) {
-            best_edge = Some((ent.id.clone(), d));
+        for poly in ent.entity.to_arc_polylines(None) {
+            if poly.segments.is_empty() {
+                continue;
+            }
+            let d = poly.distance_to_point(query_xy);
+            if d <= edge_tol_mm && best_edge.as_ref().is_none_or(|(_, prev_d)| d < *prev_d) {
+                best_edge = Some((ent.id.clone(), d));
+            }
         }
     }
 

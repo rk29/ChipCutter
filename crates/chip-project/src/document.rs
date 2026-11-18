@@ -1,8 +1,12 @@
-use std::path::{Component, Path, PathBuf};
+use std::{
+    path::{Component, Path, PathBuf},
+    sync::Arc,
+};
 
+use chip_cad::CadDocument;
 use chip_cam::{Setup, WorkOffsetSlot};
 use chip_math::DisplayUnit;
-use chip_sketch::SketchLayer;
+use chip_sketch::{CustomFontMap, SketchEntity, SketchFontSource, SketchLayer};
 use chip_tools::{Tool, ToolId};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -111,6 +115,64 @@ impl ProjectDocument {
                 .cmp(&b.tool_number)
                 .then_with(|| a.id.cmp(&b.id))
         });
+    }
+
+    /// Loads any custom `.ttf`/`.otf` font byte buffers referenced by [`SketchFontSource::CustomFile`]
+    /// relative to `project_dir`.
+    pub fn load_custom_fonts(&self, project_dir: Option<&Path>) -> CustomFontMap {
+        let mut map = CustomFontMap::new();
+        for sk in &self.sketches {
+            for ent in &sk.entities {
+                if let SketchEntity::Text(txt) = &ent.entity
+                    && let SketchFontSource::CustomFile { path, sha256, .. } = &txt.font
+                    && !map.contains_key(path)
+                {
+                    let disk_path = resolve_model_path(project_dir, path);
+                    if let Ok(bytes) = std::fs::read(&disk_path) {
+                        let arc_buf = Arc::new(bytes);
+                        map.insert(path.clone(), Arc::clone(&arc_buf));
+                        if !sha256.is_empty() {
+                            map.insert(sha256.clone(), arc_buf);
+                        }
+                    }
+                }
+            }
+        }
+        map
+    }
+
+    /// Re-evaluates all parametric [`SketchLayer`] expressions (`stock_x`, `stock_y`, `stock_z`, etc.)
+    /// against their associated [`Setup`]s and rebuilds closed [`chip_sketch::PlanarVectorRegion`]s.
+    pub fn reevaluate_sketches(
+        &mut self,
+        cad_doc: &CadDocument,
+        custom_fonts: Option<&CustomFontMap>,
+    ) {
+        if self.sketches.is_empty() {
+            return;
+        }
+        let snapshot_sketches = self.sketches.clone();
+        let resolved_setups: Vec<(String, chip_math::EvalContext)> = self
+            .setups
+            .iter()
+            .filter_map(|s| {
+                s.resolve_with_sketches(cad_doc, &snapshot_sketches, self.display_units)
+                    .ok()
+                    .map(|rs| (s.id.clone(), rs.eval_context(self.display_units)))
+            })
+            .collect();
+
+        for sk in &mut self.sketches {
+            let target_id = sk.anchor.setup_id();
+            let ctx = resolved_setups
+                .iter()
+                .find(|(id, _)| id == target_id)
+                .or_else(|| resolved_setups.first())
+                .map(|(_, c)| c.clone())
+                .unwrap_or_else(|| chip_math::EvalContext::new(self.display_units));
+            sk.reevaluate(&ctx);
+            sk.rebuild_regions(custom_fonts);
+        }
     }
 }
 

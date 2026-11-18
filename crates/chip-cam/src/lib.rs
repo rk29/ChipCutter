@@ -43,7 +43,9 @@ pub use selection::{
     ChainDirectionArrow3D, ExtractedFeature25D, ExtractedSelectionSummary, GeometrySelectionItem,
     extract_selection_features, extract_selection_features_with_sketches,
 };
-pub use setup::{ResolvedSetup, Setup, resolve_sketch_world_frame};
+pub use setup::{
+    ResolvedSetup, Setup, resolve_sketch_world_frame, resolve_sketch_world_frame_with_doc,
+};
 pub use stock::{
     FixedBoxXyAlign, FixedBoxZAlign, ResolvedStockGeometry, StockAxis, StockConfig,
     compute_tight_oriented_model_aabb,

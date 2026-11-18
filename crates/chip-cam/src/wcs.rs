@@ -41,6 +41,10 @@ pub enum CamError {
     #[error("selected sketch item '{sketch_id}/{item_id}' could not be resolved")]
     MissingSelectedSketch { sketch_id: String, item_id: String },
     #[error(
+        "selected sketch '{sketch_name}' normal is not aligned with Setup WCS +Z (n·Z = {cos_z:.4})"
+    )]
+    SketchNotAlignedWithSetupZ { sketch_name: String, cos_z: f64 },
+    #[error(
         "pure-2D setup (no 3D STEP model) cannot reference 3D B-Rep faces/edges for WCS orientation or origin"
     )]
     Pure2dRequiresBoxWcs,

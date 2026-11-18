@@ -599,6 +599,7 @@ pub fn generate_project_blocking(
     cache: &mut ToolpathCache,
     cad_revision: u64,
 ) -> BatchGenerationReport {
+    project.reevaluate_sketches(cad_doc, None);
     let mut report = BatchGenerationReport::default();
     let total_ops: usize = project
         .setups

@@ -369,8 +369,15 @@ fn generate_curve_trace(
                 ..
             } => traces.push((polyline_wcs.clone(), *side_flip)),
             ExtractedFeature25D::PlanarFace {
-                outer_boundary_wcs, ..
-            } => traces.push((outer_boundary_wcs.clone(), false)),
+                outer_boundary_wcs,
+                inner_islands_wcs,
+                ..
+            } => {
+                traces.push((outer_boundary_wcs.clone(), false));
+                for isl in inner_islands_wcs {
+                    traces.push((isl.clone(), false));
+                }
+            }
             _ => {}
         }
     }

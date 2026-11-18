@@ -54,6 +54,8 @@ pub struct HighlightState {
     pub extra_selected_sketch_regions: HashSet<(String, String)>,
     pub extra_selected_sketch_entities: HashSet<(String, String)>,
     pub sketch_visuals: Vec<SketchLayerVisual>,
+    pub sketch_preview_polys: Vec<(RigidFrame3, ArcPolyline2D)>,
+    pub sketch_snap_marker: Option<(DVec3, &'static str, DVec2)>,
     pub chain_arrows: Vec<ChainDirectionArrow3D>,
     pub wcs_frame: RigidFrame3,
     pub stock: Option<ResolvedStockGeometry>,
@@ -85,6 +87,8 @@ impl Default for HighlightState {
             extra_selected_sketch_regions: HashSet::new(),
             extra_selected_sketch_entities: HashSet::new(),
             sketch_visuals: Vec::new(),
+            sketch_preview_polys: Vec::new(),
+            sketch_snap_marker: None,
             chain_arrows: Vec::new(),
             wcs_frame: RigidFrame3::IDENTITY,
             stock: None,
@@ -419,11 +423,8 @@ fn emit_sketch_layer_visuals(
         // Slight +0.04 mm lift along sketch +Z normal so 2D curves sit crisply above Stock Top / Machined Stock!
         let lift = wf.z_axis * 0.04;
 
-        // 1. Base sketch entities (circles, closed loops, open chains)
+        // 1. Base sketch entities (primitives, hole patterns, outline & Hershey text, polylines)
         for ent in &sk.entities {
-            if ent.is_construction {
-                continue;
-            }
             let key = (sk.id.clone(), ent.id.clone());
             let is_sel = highlight.extra_selected_sketch_entities.contains(&key)
                 || matches!(
@@ -443,19 +444,25 @@ fn emit_sketch_layer_visuals(
                 }) if sketch_id == &sk.id && entity_id == &ent.id
             );
 
-            let poly = ent.entity.to_arc_polyline();
-            let (col, width_px) = if is_sel {
-                ([1.0, 0.80, 0.20, 1.0], 3.4)
-            } else if is_hov {
-                ([0.25, 0.96, 1.0, 1.0], 3.1)
-            } else if matches!(ent.entity, SketchEntity::Circle { .. }) {
-                ([0.42, 0.92, 0.78, 0.96], 2.2)
-            } else if poly.closed {
-                ([0.38, 0.78, 0.98, 0.94], 2.05)
-            } else {
-                ([1.0, 0.56, 0.34, 0.96], 2.2)
-            };
-            emit_arc_polyline_edges(&poly, wf, lift, col, width_px, out);
+            for poly in ent.entity.to_arc_polylines(None) {
+                let (col, width_px) = if is_sel {
+                    ([1.0, 0.80, 0.20, 1.0], 3.4)
+                } else if is_hov {
+                    ([0.25, 0.96, 1.0, 1.0], 3.1)
+                } else if ent.is_construction {
+                    ([0.56, 0.65, 0.78, 0.65], 1.65)
+                } else if matches!(
+                    ent.entity,
+                    SketchEntity::Circle { .. } | SketchEntity::PointPattern(_)
+                ) {
+                    ([0.42, 0.92, 0.78, 0.96], 2.2)
+                } else if poly.closed {
+                    ([0.38, 0.78, 0.98, 0.94], 2.05)
+                } else {
+                    ([1.0, 0.56, 0.34, 0.96], 2.2)
+                };
+                emit_arc_polyline_edges(&poly, wf, lift, col, width_px, out);
+            }
         }
 
         // 2. Highlighted / hovered `PlanarVectorRegion` outer + island boundaries
@@ -514,6 +521,32 @@ fn emit_sketch_layer_visuals(
                     });
                 }
             }
+        }
+    }
+
+    // Live interactive 2D Sketch rubber-band preview + 2D Snap diamond marker
+    for (wf, preview_poly) in &highlight.sketch_preview_polys {
+        let lift = wf.z_axis * 0.08;
+        emit_arc_polyline_edges(preview_poly, wf, lift, [0.22, 0.96, 1.0, 0.98], 2.6, out);
+    }
+    if let Some((snap_world, _, _)) = highlight.sketch_snap_marker {
+        let (_, _, cam_r, cam_u) = camera.basis();
+        let dx = cam_r * (diag_tick * 1.15);
+        let dy = cam_u * (diag_tick * 1.15);
+        for (a, b) in [
+            (snap_world - dx, snap_world + dy),
+            (snap_world + dy, snap_world + dx),
+            (snap_world + dx, snap_world - dy),
+            (snap_world - dy, snap_world - dx),
+            (snap_world - dx * 1.4, snap_world + dx * 1.4),
+            (snap_world - dy * 1.4, snap_world + dy * 1.4),
+        ] {
+            out.push(EdgeInstanceGpu {
+                p0_mm: dvec3_f32(a),
+                p1_mm: dvec3_f32(b),
+                color: [1.0, 0.84, 0.18, 1.0],
+                width_px: 2.5,
+            });
         }
     }
 }

@@ -344,10 +344,12 @@ fn inspect_2d_vector(
     let mut arc_seg_count = 0usize;
     let mut line_seg_count = 0usize;
     for ent in &sketch.entities {
-        for seg in ent.entity.to_arc_polyline().segments {
-            match seg {
-                ArcSegment2D::Arc { .. } => arc_seg_count += 1,
-                ArcSegment2D::Line { .. } => line_seg_count += 1,
+        for poly in ent.entity.to_arc_polylines(None) {
+            for seg in poly.segments {
+                match seg {
+                    ArcSegment2D::Arc { .. } => arc_seg_count += 1,
+                    ArcSegment2D::Line { .. } => line_seg_count += 1,
+                }
             }
         }
     }

@@ -262,6 +262,7 @@ impl CutterGeometry {
                     | ToolOperationClass::Contour2D
                     | ToolOperationClass::Pocket2D
                     | ToolOperationClass::HelicalBore
+                    | ToolOperationClass::Trace
             ),
             Self::BallEndmill { .. } => matches!(
                 op_class,

@@ -494,6 +494,42 @@ impl ChipCutterApp {
         egui_ctx.request_repaint();
     }
 
+    pub fn load_engraved_nameplate_demo(&mut self, egui_ctx: &egui::Context) {
+        self.loading_in_flight = false;
+        while self.job_rx.try_recv().is_ok() {}
+        self.dispatcher.cancel_all();
+        self.sim_panel.cancel_in_flight();
+        self.sim_panel.active_result = None;
+        self.gcode_panel.invalidate_preview();
+        self.clear_bundle_extract_dir();
+        self.project_file_path = None;
+        self.history.clear();
+        self.clean_undo_len = Some(0);
+        self.last_reload_banner = None;
+        self.external_step_modified = false;
+        self.model = None;
+        self.project =
+            chip_project::build_engraved_nameplate_demo_project(&self.global_tools.tools);
+        self.active_setup_idx = 0;
+        self.inspector_focus = InspectorFocus::Sketch { sketch_idx: 0 };
+        self.selected_sketch_entity_idx = Some(3);
+        self.pick_mode = ViewportPickMode::InspectEntity;
+        self.sketch_author_start_xy = None;
+        self.highlight.hovered = None;
+        self.highlight.selected = None;
+        self.highlight.hovered_sketch = None;
+        self.highlight.selected_sketch = None;
+        self.cached_frame_geo = None;
+        self.fit_scene_to_viewport();
+        self.logs.push(
+            "Loaded Engraved Nameplate + Dual-Mode Typography Demo (Bolt Circle Drill, Ø22 Bore, DejaVuSans-Bold 'CHIP' Pocket, Hershey 1-Pass 'S/N 2026-08' Trace, R10 Plaque + Tabs)."
+                .to_string(),
+        );
+        self.auto_sim_after_gen = true;
+        self.trigger_generate_dirty(None, None);
+        egui_ctx.request_repaint();
+    }
+
     pub(crate) fn spawn_revision_demo_load(
         &mut self,
         load_v2_rebind: bool,

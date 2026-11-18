@@ -57,6 +57,8 @@ pub struct ChipzExportSummary {
     pub model_files: Vec<String>,
     #[serde(default)]
     pub vector_files: Vec<String>,
+    #[serde(default)]
+    pub font_files: Vec<String>,
     pub custom_post_files: Vec<String>,
 }
 
@@ -221,6 +223,52 @@ pub fn pack_chipz_bundle_with_options(
         }
     }
 
+    // Bundle any custom `.ttf`/`.otf` font files referenced by `SketchFontSource::CustomFile` under `fonts/*`!
+    let mut font_files = Vec::new();
+    let mut used_font_names: Vec<String> = Vec::new();
+    let mut packed_fonts_by_src: BTreeMap<String, (String, String)> = BTreeMap::new();
+    for sk in &mut bundled_proj.sketches {
+        for ent in &mut sk.entities {
+            if let chip_sketch::SketchEntity::Text(txt) = &mut ent.entity
+                && let chip_sketch::SketchFontSource::CustomFile { path, sha256, .. } =
+                    &mut txt.font
+            {
+                if let Some((bundle_rel, known_sha)) = packed_fonts_by_src.get(path).cloned() {
+                    *path = bundle_rel;
+                    *sha256 = known_sha;
+                    continue;
+                }
+                let orig_key = path.clone();
+                let disk_path = resolve_model_path(project_dir, path);
+                let raw_bytes = std::fs::read(&disk_path).map_err(|source| BundleError::Io {
+                    path: disk_path.display().to_string(),
+                    source,
+                })?;
+                let base_fname = Path::new(path.as_str())
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .map(sanitize_bundle_filename)
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| "custom_font.ttf".to_string());
+                let mut unique_fname = base_fname.clone();
+                let mut suffix = 2usize;
+                while used_font_names.contains(&unique_fname) {
+                    unique_fname = format!("{suffix}_{base_fname}");
+                    suffix += 1;
+                }
+                used_font_names.push(unique_fname.clone());
+
+                let bundle_rel = format!("fonts/{unique_fname}");
+                let actual_sha = compute_sha256_hex(&raw_bytes);
+                *path = bundle_rel.clone();
+                *sha256 = actual_sha.clone();
+                packed_fonts_by_src.insert(orig_key, (bundle_rel.clone(), actual_sha));
+                font_files.push(bundle_rel.clone());
+                entries.insert(bundle_rel, raw_bytes);
+            }
+        }
+    }
+
     // Bundle any non-builtin custom `.post.toml` profiles referenced by Setups!
     let builtins = builtin_post_profiles();
     let mut custom_post_files = Vec::new();
@@ -284,6 +332,7 @@ pub fn pack_chipz_bundle_with_options(
         archive_size_bytes: archive_bytes.len(),
         model_files,
         vector_files,
+        font_files,
         custom_post_files,
     };
     Ok((archive_bytes, summary))
@@ -440,12 +489,48 @@ pub fn unpack_chipz_bytes(
                 });
             }
         }
+        for ent in &sk.entities {
+            if let chip_sketch::SketchEntity::Text(txt) = &ent.entity
+                && let chip_sketch::SketchFontSource::CustomFile { path, sha256, .. } = &txt.font
+            {
+                let font_rel = validate_safe_relative_entry_path(path)?;
+                let font_path = dest_dir.join(font_rel);
+                let font_bytes = std::fs::read(&font_path).map_err(|source| BundleError::Io {
+                    path: font_path.display().to_string(),
+                    source,
+                })?;
+                let actual_sha = compute_sha256_hex(&font_bytes);
+                if !sha256.is_empty() && !actual_sha.eq_ignore_ascii_case(sha256) {
+                    return Err(BundleError::ModelHashMismatch {
+                        path: path.clone(),
+                        expected: sha256.clone(),
+                        actual: actual_sha,
+                    });
+                }
+            }
+        }
+    }
+
+    let mut unpacked_project = project;
+    let font_map = unpacked_project.load_custom_fonts(Some(dest_dir));
+    for sk in &mut unpacked_project.sketches {
+        for ent in &mut sk.entities {
+            if let chip_sketch::SketchEntity::Text(txt) = &mut ent.entity
+                && let chip_sketch::SketchFontSource::CustomFile { path, .. } = &mut txt.font
+            {
+                let abs = dest_dir.join(path.as_str());
+                *path = abs.display().to_string();
+            }
+        }
+        if !font_map.is_empty() {
+            sk.rebuild_regions(Some(&font_map));
+        }
     }
 
     Ok(UnpackedChipzBundle {
         extract_dir: dest_dir.to_path_buf(),
         project_toml_path,
-        project,
+        project: unpacked_project,
         extracted_files,
     })
 }

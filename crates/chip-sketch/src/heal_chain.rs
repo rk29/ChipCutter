@@ -156,10 +156,11 @@ pub fn heal_and_classify_sketch_geometry(
     let mut region_candidates: Vec<(Option<String>, ArcPolyline2D)> = Vec::new();
 
     for (idx, (sub_layer, center_xy, diameter_mm)) in circles.into_iter().enumerate() {
-        let ent = SketchEntity::Circle {
-            center_xy,
-            diameter: ParamLength::from_mm(diameter_mm),
-        };
+        let ent = SketchEntity::new_circle(
+            ParamLength::from_mm(center_xy.x),
+            ParamLength::from_mm(center_xy.y),
+            ParamLength::from_mm(diameter_mm),
+        );
         let poly = ent.to_arc_polyline();
         region_candidates.push((sub_layer.clone(), poly));
         entities.push(SketchEntityEntry {
@@ -181,9 +182,7 @@ pub fn heal_and_classify_sketch_geometry(
             name: format!("Closed Loop {}", idx + 1),
             sub_layer,
             is_construction: false,
-            entity: SketchEntity::Polyline {
-                polyline: loop_poly,
-            },
+            entity: SketchEntity::new_polyline(loop_poly),
         });
     }
 
@@ -205,14 +204,12 @@ pub fn heal_and_classify_sketch_geometry(
             name: format!("Open Chain {}", idx + 1),
             sub_layer,
             is_construction: false,
-            entity: SketchEntity::Polyline {
-                polyline: open_poly,
-            },
+            entity: SketchEntity::new_polyline(open_poly),
         });
     }
 
     // 4. Classify closed loops into Even-Odd nested `PlanarVectorRegion`s (`outer_ccw` + direct `islands_cw`)
-    let regions = classify_planar_regions(region_candidates);
+    let regions = classify_planar_regions_from_candidates(region_candidates);
 
     HealedSketchGeometry {
         entities,
@@ -423,7 +420,9 @@ fn snap_segment_end(seg: ArcSegment2D, new_end: DVec2) -> ArcSegment2D {
     }
 }
 
-fn classify_planar_regions(
+/// Organizes closed candidate loops (`(sub_layer, ArcPolyline2D)`) into Even-Odd nested
+/// [`PlanarVectorRegion`]s (`outer_ccw` paired with direct `islands_cw`).
+pub fn classify_planar_regions_from_candidates(
     candidates: Vec<(Option<String>, ArcPolyline2D)>,
 ) -> Vec<PlanarVectorRegion> {
     struct LoopItem {

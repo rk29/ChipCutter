@@ -773,7 +773,9 @@ dependencies = [
  "rstar",
  "serde",
  "sha2",
+ "skrifa",
  "thiserror 2.0.21",
+ "toml",
  "usvg",
 ]
 

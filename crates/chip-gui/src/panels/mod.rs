@@ -4,10 +4,55 @@ pub mod gcode_preview;
 pub mod operation_inspector;
 pub mod setup_inspector;
 pub mod simulation;
+pub mod sketch_inspector;
 pub mod tool_library;
 pub mod vector_import_modal;
 
 use chip_cad::EdgeId;
+
+/// Interactive 2D primitive creation tool active inside [`ViewportPickMode::SketchAuthor`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SketchAuthorTool {
+    Rectangle,
+    Circle,
+    Slot,
+    Polygon,
+    BoltCircle,
+    PlaceText,
+}
+
+impl SketchAuthorTool {
+    pub const ALL: [Self; 6] = [
+        Self::Rectangle,
+        Self::Circle,
+        Self::Slot,
+        Self::Polygon,
+        Self::BoltCircle,
+        Self::PlaceText,
+    ];
+
+    pub const fn short_label(self) -> &'static str {
+        match self {
+            Self::Rectangle => "Rect",
+            Self::Circle => "Circle",
+            Self::Slot => "Slot",
+            Self::Polygon => "Hex/Poly",
+            Self::BoltCircle => "Bolt Circle",
+            Self::PlaceText => "Text",
+        }
+    }
+
+    pub const fn tooltip(self) -> &'static str {
+        match self {
+            Self::Rectangle => "2-Click Corner-to-Corner Rectangle on Sketch Plane",
+            Self::Circle => "2-Click Center + Radius Circle on Sketch Plane",
+            Self::Slot => "2-Click Center + End Stadium Slot on Sketch Plane",
+            Self::Polygon => "2-Click Center + Radius Regular Hexagon on Sketch Plane",
+            Self::BoltCircle => "2-Click Center + Bolt Circle Radius Pattern on Sketch Plane",
+            Self::PlaceText => "1-Click Place CAM Text on Sketch Plane",
+        }
+    }
+}
 
 /// Currently inspected node in the right-hand Inspector pane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,6 +121,16 @@ pub enum ViewportPickMode {
         setup_idx: usize,
         op_idx: usize,
     },
+    PickSketchHostFace {
+        setup_idx: usize,
+    },
+    RebindSketchHostFace {
+        sketch_idx: usize,
+    },
+    SketchAuthor {
+        sketch_idx: usize,
+        tool: SketchAuthorTool,
+    },
 }
 
 impl ViewportPickMode {
@@ -117,6 +172,14 @@ impl ViewportPickMode {
                 "Manual Holding Tab Mode: Click on selected contour edge to add a tab (Right-Click near tab to remove, Esc to exit)"
                     .to_string(),
             ),
+            Self::PickSketchHostFace { .. } | Self::RebindSketchHostFace { .. } => Some(
+                "Sketch on 3D Face: Click any planar B-Rep face in the 3D viewport to attach an associative 2D Sketch (Esc to cancel)"
+                    .to_string(),
+            ),
+            Self::SketchAuthor { tool, .. } => Some(format!(
+                "2D Sketch Draw [{}]: Click on the Sketch plane (2D Snapping active; Right-Click / Esc to exit)",
+                tool.short_label()
+            )),
         }
     }
 }

@@ -295,6 +295,30 @@ impl CadCamera {
         self.set_standard_view(StandardView::Top);
     }
 
+    /// Switches to Orthographic projection and looks straight down `-Z` of `sketch_frame`,
+    /// framing `bounds_2d` (with comfortable padding).
+    pub fn align_to_sketch_plane(
+        &mut self,
+        sketch_frame: &RigidFrame3,
+        bounds_2d: &chip_math::Aabb2,
+    ) {
+        self.turntable_frame = *sketch_frame;
+        let (center_2d, diag_mm) = if bounds_2d.is_valid() && bounds_2d.size().length() > 1.0 {
+            (bounds_2d.center(), bounds_2d.size().length())
+        } else {
+            (chip_math::DVec2::ZERO, 120.0)
+        };
+        self.target_mm =
+            sketch_frame.local_to_world_point(DVec3::new(center_2d.x, center_2d.y, 0.0));
+        let radius = (0.5 * diag_mm).max(15.0);
+        self.scene_radius_mm = radius;
+        self.distance_mm = radius * 3.5;
+        self.projection = ProjectionMode::Orthographic {
+            ortho_height_mm: radius * 2.35,
+        };
+        self.set_standard_view(StandardView::Top);
+    }
+
     /// Projects a 3D world-space point (`mm`) into 2D `egui` screen coordinates inside `viewport_rect`.
     /// Returns `None` if behind the camera near clip plane.
     pub fn project_world_to_screen(

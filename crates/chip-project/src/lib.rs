@@ -23,8 +23,8 @@ pub use cache::{
 };
 pub use demos::{
     build_adaptive_rest_demo_project, build_cam_torture_project,
-    build_multi_feature_bracket_project, build_pure2d_router_panel_demo_project,
-    build_revision_v1_demo_project,
+    build_engraved_nameplate_demo_project, build_multi_feature_bracket_project,
+    build_pure2d_router_panel_demo_project, build_revision_v1_demo_project,
 };
 pub use dispatcher::{
     BatchGenerationReport, DispatcherEvent, JobDispatcher, generate_project_blocking,
@@ -38,7 +38,10 @@ pub use pipeline::{
     kinematics_for_post_profile, post_process_project_setup, resolve_kinematics_for_key,
     simulate_project_setup,
 };
-pub use reload::{CadReloadReport, OperationReloadOutcome, rebind_project_to_reloaded_cad};
+pub use reload::{
+    CadReloadReport, OperationReloadOutcome, cad_binding_to_sketch_face,
+    rebind_project_to_reloaded_cad, sketch_face_to_cad_binding,
+};
 pub use toml_io::ProjectIoError;
 pub use validation::{
     DiagnosticSeverity, ProjectValidationReport, ValidationDiagnostic, validate_project,
@@ -761,5 +764,259 @@ setups = []
         assert_eq!(unpacked.project.sketches.len(), 1);
         assert!(tmp.join("vectors/panel.dxf").is_file());
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn associative_planar_face_sketch_rebinds_across_step_v1_to_v2_and_checks_setup_z_alignment() {
+        use chip_cad::{TopologyGraph, sample_revised_part_pair_step};
+        use chip_cam::{
+            CamError, ChamferTraceMode, StrategyParams, extract_selection_features_with_sketches,
+        };
+        use chip_math::ParamLength;
+        use chip_sim::SimResolution;
+        use chip_sketch::{
+            FaceSketchOriginMode, HersheyFontKind, SketchAnchor, SketchEntity, SketchEntityEntry,
+            SketchFontSource, SketchLayer, SketchTextSpec, SlotLengthMode,
+        };
+
+        let (step_v1, step_v2) = sample_revised_part_pair_step().unwrap();
+        let doc_v1 = MonstertruckKernel
+            .load_step_bytes("rev_v1.step", step_v1.as_bytes(), DEFAULT_TESS_CHORD_TOL_MM)
+            .unwrap();
+        let doc_v2 = MonstertruckKernel
+            .load_step_bytes("rev_v2.step", step_v2.as_bytes(), DEFAULT_TESS_CHORD_TOL_MM)
+            .unwrap();
+        let topo_v2 = TopologyGraph::build(&doc_v2);
+
+        let starter = default_starter_tool_library();
+        let mut proj = ProjectDocument::new("Associative PlanarFace Sketch Test");
+        proj.models.push(ModelEntry {
+            id: "model_1".to_string(),
+            path: "rev_v1.step".to_string(),
+            sha256: compute_sha256_hex(step_v1.as_bytes()),
+        });
+        let ch_tool = starter
+            .tools
+            .iter()
+            .find(|t| matches!(t.geometry, chip_tools::CutterGeometry::ChamferMill { .. }))
+            .unwrap();
+        proj.ensure_tool_embedded(ch_tool);
+
+        // Anchor a 2D Sketch onto the top planar STEP face (`+Z`, `z = 20.0 mm`)
+        let top_face_v1 = doc_v1
+            .faces
+            .iter()
+            .find(|f| {
+                matches!(
+                    f.surface,
+                    SurfaceKind::Plane { origin_mm, normal }
+                    if normal.z > 0.99 && (origin_mm.z - 20.0).abs() < 0.05
+                )
+            })
+            .unwrap();
+        let top_bind_v1 = cad_binding_to_sketch_face(&doc_v1.bind_face(top_face_v1.id).unwrap());
+
+        let mut sk = SketchLayer::new("sk_top_face", "Top Face Serial & Slot", "setup_1");
+        sk.anchor = SketchAnchor::PlanarFace {
+            setup_id: "setup_1".to_string(),
+            face_binding: top_bind_v1,
+            origin_mode: FaceSketchOriginMode::FaceCentroid,
+            x_axis_clock_deg: 0.0,
+            z_offset: ParamLength::from_mm(0.0),
+        };
+        sk.entities.push(SketchEntityEntry {
+            id: "slot_1".to_string(),
+            name: "Keyway Slot".to_string(),
+            sub_layer: None,
+            is_construction: false,
+            entity: SketchEntity::Slot {
+                mode: SlotLengthMode::CenterToCenter,
+                x: ParamLength::from_mm(0.0),
+                y: ParamLength::from_mm(-18.0),
+                length: ParamLength::from_mm(16.0),
+                width: ParamLength::from_mm(6.0),
+                angle_deg: 0.0,
+            },
+        });
+        sk.entities.push(SketchEntityEntry {
+            id: "ser_1".to_string(),
+            name: "Part Number".to_string(),
+            sub_layer: None,
+            is_construction: false,
+            entity: SketchEntity::Text(SketchTextSpec {
+                content: "REV-A".to_string(),
+                font: SketchFontSource::Hershey {
+                    font: HersheyFontKind::Mono,
+                },
+                cap_height: ParamLength::from_mm(4.5),
+                y: ParamLength::from_mm(18.0),
+                ..SketchTextSpec::default()
+            }),
+        });
+        sk.rebuild_regions(None);
+        proj.sketches.push(sk);
+
+        let mut op_trace = Operation::new(
+            "op_face_scribe",
+            "Top Face Scribe",
+            OperationKind::ChamferTrace,
+        );
+        op_trace.tool_id = Some(ch_tool.id.clone());
+        op_trace.preset_id = ch_tool.presets.first().map(|p| p.id.clone());
+        op_trace.heights.bottom = HeightSpec::new(HeightReference::ModelTop, -0.3);
+        op_trace
+            .selections
+            .push(GeometrySelectionItem::SketchEntity {
+                sketch_id: "sk_top_face".to_string(),
+                entity_id: "ser_1".to_string(),
+                reverse: false,
+                side_flip: false,
+            });
+        if let StrategyParams::ChamferTrace(p) = op_trace.strategy_mut() {
+            p.mode = ChamferTraceMode::CurveTrace;
+        }
+        proj.setups[0].operations.push(op_trace);
+
+        let mut cache = ToolpathCache::new(16);
+        let batch_v1 = generate_project_blocking(&mut proj, &doc_v1, &mut cache, 1);
+        assert!(batch_v1.is_ok(), "v1 errors: {:?}", batch_v1.errors);
+
+        // Reload `v2` STEP -> associative `PlanarFace` sketch re-binds cleanly and regenerates with 0 sim crashes!
+        let reload_rep = rebind_project_to_reloaded_cad(
+            &mut proj,
+            0,
+            &doc_v2,
+            &topo_v2,
+            &compute_sha256_hex(step_v2.as_bytes()),
+            Some("rev_v2.step".to_string()),
+        );
+        assert_eq!(reload_rep.needs_repick_count, 0);
+        assert!(reload_rep.setup_wcs_warnings.is_empty());
+
+        let batch_v2 = generate_project_blocking(&mut proj, &doc_v2, &mut cache, 2);
+        assert!(batch_v2.is_ok(), "v2 errors: {:?}", batch_v2.errors);
+
+        let sim_v2 = simulate_project_setup(&SetupSimRequest {
+            project: &proj,
+            setup_idx: 0,
+            cad_doc: &doc_v2,
+            cad_revision: 2,
+            cache: &cache,
+            kinematics: resolve_kinematics_for_key("grbl", None),
+            resolution: SimResolution::Standard,
+            cancel: None,
+        })
+        .unwrap();
+        assert!(!sim_v2.has_critical_errors());
+
+        // Also verify a side-face `PlanarFace` sketch (`normal ≈ +X`) is rejected when selected in a `+Z` Setup!
+        let side_face = doc_v2
+            .faces
+            .iter()
+            .find(|f| matches!(f.surface, SurfaceKind::Plane { normal, .. } if normal.x > 0.99))
+            .unwrap();
+        let mut side_sk = SketchLayer::new("sk_side", "Side Wall Sketch", "setup_1");
+        side_sk.anchor = SketchAnchor::PlanarFace {
+            setup_id: "setup_1".to_string(),
+            face_binding: cad_binding_to_sketch_face(&doc_v2.bind_face(side_face.id).unwrap()),
+            origin_mode: FaceSketchOriginMode::FaceCentroid,
+            x_axis_clock_deg: 0.0,
+            z_offset: ParamLength::from_mm(0.0),
+        };
+        side_sk.entities.push(SketchEntityEntry {
+            id: "c_side".to_string(),
+            name: "Side Hole".to_string(),
+            sub_layer: None,
+            is_construction: false,
+            entity: SketchEntity::new_circle(
+                ParamLength::from_mm(0.0),
+                ParamLength::from_mm(0.0),
+                ParamLength::from_mm(6.0),
+            ),
+        });
+        let rs_top = proj.setups[0]
+            .resolve_with_sketches(&doc_v2, &[side_sk.clone()], proj.display_units)
+            .unwrap();
+        let err = extract_selection_features_with_sketches(
+            &doc_v2,
+            &[side_sk],
+            &rs_top,
+            &[GeometrySelectionItem::SketchEntity {
+                sketch_id: "sk_side".to_string(),
+                entity_id: "c_side".to_string(),
+                reverse: false,
+                side_flip: false,
+            }],
+        )
+        .unwrap_err();
+        assert!(matches!(err, CamError::SketchNotAlignedWithSetupZ { .. }));
+    }
+
+    #[test]
+    fn engraved_nameplate_demo_passes_sim_and_chipz_bundles_custom_ttf_fonts() {
+        use chip_cad::CadDocument;
+        use chip_sim::SimResolution;
+        use chip_sketch::{BUILTIN_DEJAVU_SANS_BOLD_TTF, SketchEntity, SketchFontSource};
+
+        let starter = default_starter_tool_library();
+        let mut proj = build_engraved_nameplate_demo_project(&starter.tools);
+        assert!(proj.models.is_empty());
+        assert_eq!(proj.sketches.len(), 1);
+        assert_eq!(proj.setups[0].operations.len(), 5);
+
+        let empty_cad = CadDocument::empty();
+        let mut cache = ToolpathCache::new(32);
+        let batch = generate_project_blocking(&mut proj, &empty_cad, &mut cache, 1);
+        assert!(batch.is_ok(), "nameplate batch errors: {:?}", batch.errors);
+        assert_eq!(batch.generated.len(), 5);
+
+        let sim = simulate_project_setup(&SetupSimRequest {
+            project: &proj,
+            setup_idx: 0,
+            cad_doc: &empty_cad,
+            cad_revision: 1,
+            cache: &cache,
+            kinematics: resolve_kinematics_for_key("grbl", None),
+            resolution: SimResolution::Standard,
+            cancel: None,
+        })
+        .unwrap();
+        assert!(
+            !sim.has_critical_errors(),
+            "Nameplate + Text demo must pass heightfield sim with 0 crashes/gouges, got: {:?}",
+            sim.diagnostics
+        );
+
+        // Verify custom `.ttf` font asset packing & SHA-256 verification inside `.chipz` (`fonts/*`)
+        let tmp_src = std::env::temp_dir().join(format!("chipz_font_src_{}", std::process::id()));
+        let tmp_dst = std::env::temp_dir().join(format!("chipz_font_dst_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp_src);
+        let _ = std::fs::remove_dir_all(&tmp_dst);
+        std::fs::create_dir_all(&tmp_src).unwrap();
+        let custom_ttf_path = tmp_src.join("CustomSansBold.ttf");
+        std::fs::write(&custom_ttf_path, BUILTIN_DEJAVU_SANS_BOLD_TTF).unwrap();
+
+        if let Some(ent) = proj.sketches[0]
+            .entities
+            .iter_mut()
+            .find(|e| e.id == "ent_title_ttf")
+            && let SketchEntity::Text(txt) = &mut ent.entity
+        {
+            txt.font = SketchFontSource::CustomFile {
+                path: "CustomSansBold.ttf".to_string(),
+                sha256: String::new(),
+                face_index: 0,
+            };
+        }
+
+        let (bundle_bytes, sum) = pack_chipz_bundle_bytes(&proj, Some(&tmp_src), &[], &[]).unwrap();
+        assert_eq!(sum.font_files, vec!["fonts/CustomSansBold.ttf".to_string()]);
+
+        let unpacked = unpack_chipz_bytes(&bundle_bytes, &tmp_dst).unwrap();
+        assert!(tmp_dst.join("fonts/CustomSansBold.ttf").is_file());
+        assert!(!unpacked.project.sketches[0].regions.is_empty());
+
+        let _ = std::fs::remove_dir_all(&tmp_src);
+        let _ = std::fs::remove_dir_all(&tmp_dst);
     }
 }

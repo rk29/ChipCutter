@@ -1,16 +1,45 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use chip_cad::{
-    CadDocument, FaceId, RematchOutcome, SelectionBinding, TopologyGraph,
-    expand_coaxial_hole_faces, rematch_edge, rematch_face, rematch_loop,
+    BodyId, CadDocument, EntitySignatureKind, FaceId, GeometricSignature, RematchOutcome,
+    SelectionBinding, TopologyGraph, expand_coaxial_hole_faces, rematch_edge, rematch_face,
+    rematch_loop,
 };
 use chip_cam::{
     GeometrySelectionItem, OperationStatus, WcsAxisRef, WcsFeaturePointRef, WcsOrientationMode,
     WcsOriginMode, extract_selection_features_with_sketches,
 };
+use chip_sketch::{SketchAnchor, SketchFaceBinding};
 use serde::{Deserialize, Serialize};
 
 use crate::document::{ModelEntry, ProjectDocument};
+
+/// Converts a CAD-kernel-independent [`SketchFaceBinding`] into a [`SelectionBinding`] (`PlanarFace`).
+pub fn sketch_face_to_cad_binding(b: &SketchFaceBinding) -> SelectionBinding {
+    SelectionBinding {
+        body_id: BodyId(b.body_id),
+        last_index: b.last_face_index,
+        signature: GeometricSignature {
+            kind: EntitySignatureKind::PlanarFace,
+            normal_or_axis: b.normal_world,
+            centroid_mm: b.centroid_world_mm,
+            characteristic_measure: b.area_mm2,
+            aabb_mm: b.aabb_mm,
+        },
+    }
+}
+
+/// Converts a planar [`SelectionBinding`] (`chip-cad`) into a serializable [`SketchFaceBinding`].
+pub fn cad_binding_to_sketch_face(b: &SelectionBinding) -> SketchFaceBinding {
+    SketchFaceBinding {
+        body_id: b.body_id.0,
+        last_face_index: b.last_index,
+        normal_world: b.signature.normal_or_axis,
+        centroid_world_mm: b.signature.centroid_mm,
+        area_mm2: b.signature.characteristic_measure,
+        aabb_mm: b.signature.aabb_mm,
+    }
+}
 
 /// Per-operation outcome after reloading a revised STEP model (`02-cad-selection.md` §CAD Reload).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -102,6 +131,35 @@ pub fn rebind_project_to_reloaded_cad(
         new_sha256: new_sha256.to_string(),
         ..CadReloadReport::default()
     };
+
+    // Step 0: Re-bind associative `SketchAnchor::PlanarFace` sketches on revised STEP geometry!
+    let mut broken_sketch_reasons: HashMap<String, String> = HashMap::new();
+    let mut updated_sketch_indices: HashSet<String> = HashSet::new();
+    for sk in &mut project.sketches {
+        if let SketchAnchor::PlanarFace { face_binding, .. } = &mut sk.anchor {
+            let cad_bind = sketch_face_to_cad_binding(face_binding);
+            match rematch_face(new_doc, &cad_bind) {
+                RematchOutcome::Matched {
+                    updated_binding,
+                    index_changed,
+                    ..
+                } => {
+                    *face_binding = cad_binding_to_sketch_face(&updated_binding);
+                    if index_changed {
+                        updated_sketch_indices.insert(sk.id.clone());
+                    }
+                }
+                RematchOutcome::Ambiguous { message, .. } | RematchOutcome::Missing { message } => {
+                    let msg = format!(
+                        "Sketch '{}' host planar face could not re-bind: {message}",
+                        sk.name
+                    );
+                    report.setup_wcs_warnings.push(msg.clone());
+                    broken_sketch_reasons.insert(sk.id.clone(), msg);
+                }
+            }
+        }
+    }
 
     let display_unit = project.display_units;
     let project_tools = project.tools.clone();
@@ -326,10 +384,17 @@ pub fn rebind_project_to_reloaded_cad(
                             }
                         }
                     }
-                    GeometrySelectionItem::SketchRegion { .. }
-                    | GeometrySelectionItem::SketchEntity { .. }
-                    | GeometrySelectionItem::SketchLayerAll { .. } => {
-                        updated_selections.push(item.clone());
+                    GeometrySelectionItem::SketchRegion { sketch_id, .. }
+                    | GeometrySelectionItem::SketchEntity { sketch_id, .. }
+                    | GeometrySelectionItem::SketchLayerAll { sketch_id, .. } => {
+                        if let Some(err) = broken_sketch_reasons.get(sketch_id) {
+                            failure_reasons.push(err.clone());
+                        } else {
+                            if updated_sketch_indices.contains(sketch_id) {
+                                changed_index_count += 1;
+                            }
+                            updated_selections.push(item.clone());
+                        }
                     }
                 }
             }

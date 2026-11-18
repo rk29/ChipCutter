@@ -1,21 +1,21 @@
 use std::path::Path;
 
 use chip_cad::{CurveKind, PickFilter, PickTarget, SurfaceKind};
-use chip_cam::{GeometrySelectionItem, WcsOriginMode};
+use chip_cam::WcsOriginMode;
 use chip_sim::SimDiagnostic;
-use chip_sketch::{SketchAnchor, SketchPlaneRef};
 
 use crate::{
-    app::ChipCutterApp,
+    app::{ChipCutterApp, viewport_controller::SketchAuthorInteractionInput},
     layout::{WorkspacePane, focus_workspace_pane},
     panels::{
-        InspectorFocus, SetupTab, ViewportPickMode,
+        InspectorFocus, OperationTab, SetupTab, ViewportPickMode,
         browser::{BrowserAction, CamBrowserCtx, show_cam_browser},
         diagnostics::show_diagnostics_panel,
         gcode_preview::{GCodePanelCtx, GCodeUiAction},
         operation_inspector::{OperationInspectorCtx, show_operation_inspector},
         setup_inspector::{SetupInspectorCtx, show_setup_inspector},
         simulation::{SimPanelCtx, SimulationUiAction},
+        sketch_inspector::{SketchInspectorAction, SketchInspectorCtx, show_sketch_inspector},
     },
     viewport::{draw_view_cube_overlay, draw_wcs_origin_27pt_overlay},
 };
@@ -95,6 +95,17 @@ impl PaneBehavior<'_> {
                     BrowserAction::LoadPure2dPanelDemo => {
                         self.app.load_pure2d_router_panel_demo(&ctx);
                     }
+                    BrowserAction::LoadNameplateDemo => {
+                        self.app.load_engraved_nameplate_demo(&ctx);
+                    }
+                    BrowserAction::NewSetupXySketch => {
+                        self.app.create_new_setup_xy_sketch();
+                    }
+                    BrowserAction::StartPickSketchHostFace => {
+                        self.app.pick_mode = ViewportPickMode::PickSketchHostFace {
+                            setup_idx: self.app.active_setup_idx,
+                        };
+                    }
                     BrowserAction::LoadRevisionDemoV1 => {
                         self.app.spawn_revision_demo_load(false, ctx.clone());
                     }
@@ -128,6 +139,8 @@ impl PaneBehavior<'_> {
 
         self.app.camera.handle_viewport_input(ui, &response);
         self.app.highlight.preview_tab_marker_wcs = None;
+        self.app.highlight.sketch_preview_polys.clear();
+        self.app.highlight.sketch_snap_marker = None;
 
         if let ViewportPickMode::PlaceContourTab { setup_idx, op_idx } = self.app.pick_mode {
             if let Some(cursor_pos) = response.hover_pos()
@@ -145,8 +158,33 @@ impl PaneBehavior<'_> {
                     right_click,
                 );
             }
+        } else if let ViewportPickMode::SketchAuthor { sketch_idx, tool } = self.app.pick_mode {
+            if let Some(cursor_pos) = response.hover_pos()
+                && let Some(ray) = self.app.camera.screen_ray(cursor_pos, avail)
+            {
+                let mm_per_px = self.app.camera.mm_per_pixel(avail.height());
+                let primary_click = response.clicked_by(egui::PointerButton::Primary);
+                let right_click = response.clicked_by(egui::PointerButton::Secondary);
+                self.app
+                    .handle_sketch_author_viewport_interaction(SketchAuthorInteractionInput {
+                        sketch_idx,
+                        tool,
+                        ray,
+                        mm_per_px,
+                        primary_click,
+                        right_click,
+                    });
+                if primary_click || right_click {
+                    self.app.sync_viewport_scene_state();
+                }
+            }
         } else {
             let filter = self.app.effective_pick_filter();
+            let picking_3d_host_face = matches!(
+                self.app.pick_mode,
+                ViewportPickMode::PickSketchHostFace { .. }
+                    | ViewportPickMode::RebindSketchHostFace { .. }
+            );
             let mut clicked_target = None;
             let mut clicked_sketch = None;
             let mut was_primary_click = false;
@@ -155,7 +193,11 @@ impl PaneBehavior<'_> {
                 && let Some(ray) = self.app.camera.screen_ray(cursor_pos, avail)
             {
                 let mm_per_px = self.app.camera.mm_per_pixel(avail.height());
-                let sketch_hit = self.app.pick_sketch_in_viewport(&ray, mm_per_px);
+                let sketch_hit = if picking_3d_host_face {
+                    None
+                } else {
+                    self.app.pick_sketch_in_viewport(&ray, mm_per_px)
+                };
                 self.app.highlight.hovered_sketch = sketch_hit;
 
                 if let Some(m) = &self.app.model {
@@ -251,6 +293,24 @@ impl PaneBehavior<'_> {
         }
 
         draw_view_cube_overlay(ui, avail, &mut self.app.camera);
+
+        if let Some((snap_world, badge, xy_mm)) = self.app.highlight.sketch_snap_marker
+            && let Some(screen_pt) = self.app.camera.project_world_to_screen(snap_world, avail)
+        {
+            let u = self.app.project.display_units;
+            let lbl = format!(
+                "[{badge}] X={} Y={}",
+                u.format_length(xy_mm.x),
+                u.format_length(xy_mm.y)
+            );
+            ui.painter().text(
+                egui::pos2(screen_pt.x + 12.0, screen_pt.y - 12.0),
+                egui::Align2::LEFT_BOTTOM,
+                lbl,
+                egui::FontId::monospace(12.0),
+                egui::Color32::from_rgb(255, 218, 64),
+            );
+        }
 
         if let Some(banner) = self.app.pick_mode.banner_text() {
             let banner_pos = egui::pos2(avail.left() + 12.0, avail.top() + 14.0);
@@ -357,7 +417,10 @@ impl PaneBehavior<'_> {
                     self.ui_cad_entity_inspector(ui);
                 }
                 InspectorFocus::Sketch { sketch_idx } => {
-                    self.ui_sketch_inspector(ui, sketch_idx);
+                    let invalidated = self.ui_sketch_inspector(ui, sketch_idx);
+                    if invalidated {
+                        frame_geo = None;
+                    }
                 }
             });
 
@@ -493,165 +556,50 @@ impl PaneBehavior<'_> {
         });
     }
 
-    fn ui_sketch_inspector(&mut self, ui: &mut egui::Ui, sketch_idx: usize) {
-        let u = self.app.project.display_units;
-        if sketch_idx >= self.app.project.sketches.len() {
-            ui.weak("No Sketch Layer selected.");
-            return;
-        }
-
+    fn ui_sketch_inspector(&mut self, ui: &mut egui::Ui, sketch_idx: usize) -> bool {
         let eval_ctx = self.app.eval_context();
-        let pre_sketch = self.app.project.sketches[sketch_idx].clone();
-        let mut mutated: Option<&'static str> = None;
-        let mut add_to_new_op = false;
-
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            {
-                let sk = &mut self.app.project.sketches[sketch_idx];
-                ui.horizontal(|ui| {
-                    ui.heading("2D Sketch Layer");
-                    if ui.checkbox(&mut sk.visible, "Visible").changed() {
-                        mutated = Some("Toggle Sketch Visibility");
-                    }
-                });
-                ui.separator();
-
-                ui.horizontal(|ui| {
-                    ui.label("Name:");
-                    if ui.text_edit_singleline(&mut sk.name).lost_focus()
-                        && sk.name != pre_sketch.name
-                    {
-                        mutated = Some("Rename Sketch Layer");
-                    }
-                });
-
-                let SketchAnchor::SetupXy {
-                    plane_ref,
-                    z_offset,
-                    ..
-                } = &mut sk.anchor;
-                ui.horizontal(|ui| {
-                    ui.label("Anchor Plane:");
-                    egui::ComboBox::from_id_salt(("sk_plane_ref", sketch_idx))
-                        .selected_text(plane_ref.label())
-                        .show_ui(ui, |ui| {
-                            for r in SketchPlaneRef::ALL {
-                                if ui.selectable_value(plane_ref, r, r.label()).changed() {
-                                    mutated = Some("Change Sketch Plane Reference");
-                                }
-                            }
-                        });
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Z Offset:");
-                    if crate::widgets::edit_param_length(
-                        ui,
-                        ("sk_z_off", sketch_idx),
-                        z_offset,
-                        &eval_ctx,
-                        115.0,
-                    ) {
-                        mutated = Some("Edit Sketch Z Offset");
-                    }
-                });
-            }
-
-            let sk = &self.app.project.sketches[sketch_idx];
-            let aabb = sk.exact_aabb();
-            let sz = aabb.size();
-            let islands: usize = sk.regions.iter().map(|r| r.islands_cw.len()).sum();
-
-            ui.separator();
-            ui.strong("Evaluated 2D Geometry");
-            ui.label(format!(
-                "2D Bounds:   {} × {}",
-                u.format_length(sz.x),
-                u.format_length(sz.y)
-            ));
-            ui.label(format!(
-                "Entities:    {} ({} circles, {} closed loops, {} open chains)",
-                sk.entities.len(),
-                sk.circle_count(),
-                sk.closed_loop_count(),
-                sk.open_chain_count()
-            ));
-            ui.label(format!(
-                "Regions:     {} planar region(s) ({islands} interior island(s))",
-                sk.regions.len()
-            ));
-            let layers = sk.sub_layer_names();
-            if !layers.is_empty() {
-                ui.label(format!("Sub-Layers:  {}", layers.join(", ")));
-            }
-            if let Some(asset) = &sk.source_asset {
-                ui.weak(format!("Source {}: {}", asset.format.label(), asset.path));
-            }
-
-            if !sk.diagnostics.is_empty() {
-                ui.separator();
-                ui.strong(format!("Import Diagnostics ({})", sk.diagnostics.len()));
-                for d in &sk.diagnostics {
-                    ui.small(format!("• {}", d.message));
+        let has_cad_model = self.app.model.is_some();
+        let proj_path = self.app.virtual_project_file_path();
+        let act = show_sketch_inspector(
+            ui,
+            SketchInspectorCtx {
+                project: &mut self.app.project,
+                sketch_idx,
+                active_setup_idx: self.app.active_setup_idx,
+                selected_entity_idx: &mut self.app.selected_sketch_entity_idx,
+                snap_grid_mm: &mut self.app.sketch_snap_grid_mm,
+                author_start_xy: &mut self.app.sketch_author_start_xy,
+                history: &mut self.app.history,
+                pick_mode: &mut self.app.pick_mode,
+                eval_ctx: &eval_ctx,
+                has_cad_model,
+                project_file: proj_path.as_deref(),
+            },
+        );
+        let mut invalidated = false;
+        if let Some(action) = act {
+            match action {
+                SketchInspectorAction::LookAtSketch(idx) => {
+                    self.app.cached_frame_geo = None;
+                    invalidated = true;
+                    self.app.align_camera_to_sketch(idx);
+                }
+                SketchInspectorAction::InvalidateFrameCache => {
+                    self.app.cached_frame_geo = None;
+                    invalidated = true;
+                }
+                SketchInspectorAction::FocusOperation { setup_idx, op_idx } => {
+                    self.app.cached_frame_geo = None;
+                    invalidated = true;
+                    self.app.inspector_focus = InspectorFocus::Operation { setup_idx, op_idx };
+                    self.app.op_tab = OperationTab::Geometry;
+                }
+                SketchInspectorAction::Log(msg) => {
+                    self.app.logs.push(msg);
                 }
             }
-
-            ui.separator();
-            if ui
-                .button("+ Create 2D Contour Op on Sketch")
-                .on_hover_text(
-                    "Create a new 2D Contour operation pre-populated with this Sketch Layer",
-                )
-                .clicked()
-            {
-                add_to_new_op = true;
-            }
-        });
-
-        if let Some(action) = mutated {
-            let mut pre_doc = self.app.project.clone();
-            pre_doc.sketches[sketch_idx] = pre_sketch;
-            self.app.history.record_before_edit(action, None, &pre_doc);
-            self.app.cached_frame_geo = None;
         }
-
-        if add_to_new_op && self.app.active_setup_idx < self.app.project.setups.len() {
-            let sk_id = self.app.project.sketches[sketch_idx].id.clone();
-            let sk_name = self.app.project.sketches[sketch_idx].name.clone();
-            let s_idx = self.app.active_setup_idx;
-            self.app.history.record_before_edit(
-                "Add 2D Sketch Contour Op",
-                None,
-                &self.app.project,
-            );
-            let n = self.app.project.setups[s_idx].operations.len() + 1;
-            let mut op = chip_cam::Operation::new(
-                format!("op_{s_idx}_{n}_sketch"),
-                format!("2D Contour — {sk_name}"),
-                chip_cam::OperationKind::Contour2D,
-            );
-            if let Some(t) = self
-                .app
-                .project
-                .tools
-                .iter()
-                .find(|t| chip_cam::OperationKind::Contour2D.is_compatible_with_tool(t))
-            {
-                op.tool_id = Some(t.id.clone());
-                op.preset_id = t.presets.first().map(|p| p.id.clone());
-            }
-            op.selections.push(GeometrySelectionItem::SketchLayerAll {
-                sketch_id: sk_id,
-                sub_layer: None,
-                reverse: false,
-                side_flip: false,
-            });
-            self.app.project.setups[s_idx].operations.push(op);
-            let o_idx = self.app.project.setups[s_idx].operations.len() - 1;
-            self.app.inspector_focus = InspectorFocus::Operation {
-                setup_idx: s_idx,
-                op_idx: o_idx,
-            };
-        }
+        invalidated
     }
 
     fn ui_simulation(&mut self, ui: &mut egui::Ui) {

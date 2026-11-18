@@ -1,6 +1,8 @@
-use chip_cad::{BodyId, CadDocument};
+use chip_cad::{BodyId, CadDocument, FaceId, SurfaceKind};
 use chip_math::{Aabb2, Aabb3, DVec2, DVec3, DisplayUnit, EvalContext, RigidFrame3};
-use chip_sketch::{SketchAnchor, SketchLayer, SketchPlaneRef};
+use chip_sketch::{
+    FaceSketchOriginMode, SketchAnchor, SketchFaceBinding, SketchLayer, SketchPlaneRef,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -201,11 +203,13 @@ fn compute_pure_2d_sheet_rot_aabb(
 ) -> Aabb3 {
     let mut xy = Aabb2::EMPTY;
     for sk in sketches {
-        let SketchAnchor::SetupXy {
+        if let SketchAnchor::SetupXy {
             setup_id: sk_setup_id,
             ..
-        } = &sk.anchor;
-        if sk.visible && (sk_setup_id == setup_id || sk_setup_id.is_empty()) {
+        } = &sk.anchor
+            && sk.visible
+            && (sk_setup_id == setup_id || sk_setup_id.is_empty())
+        {
             let b = sk.exact_aabb();
             if b.is_valid() {
                 xy.extend_point(b.min);
@@ -245,6 +249,16 @@ fn compute_pure_2d_sheet_rot_aabb(
     aabb
 }
 
+/// Resolves the canonical 3D World [`RigidFrame3`] of a [`SketchLayer`] inside `setup`,
+/// querying `doc` directly when anchored to a 3D planar B-Rep face ([`SketchAnchor::PlanarFace`]).
+pub fn resolve_sketch_world_frame_with_doc(
+    doc: &CadDocument,
+    sketch: &SketchLayer,
+    setup: &ResolvedSetup,
+) -> RigidFrame3 {
+    resolve_sketch_world_frame_inner(!doc.bodies.is_empty(), Some(doc), sketch, setup)
+}
+
 /// Resolves the canonical 3D World [`RigidFrame3`] of a [`SketchLayer`] inside `setup`!
 ///
 /// - Mapping `(x_sketch, y_sketch, 0.0)` via `frame.local_to_world_point(...)` yields the 3D World
@@ -256,34 +270,128 @@ pub fn resolve_sketch_world_frame(
     sketch: &SketchLayer,
     setup: &ResolvedSetup,
 ) -> RigidFrame3 {
-    let SketchAnchor::SetupXy {
-        plane_ref,
-        z_offset,
-        ..
-    } = &sketch.anchor;
-    let stock_aabb = setup.stock.aabb_wcs();
-    let base_z_wcs = match plane_ref {
-        SketchPlaneRef::StockTop => stock_aabb.max.z,
-        SketchPlaneRef::ModelTop => setup.model_aabb_wcs.max.z,
-        SketchPlaneRef::StockBottom => stock_aabb.min.z,
-        SketchPlaneRef::WcsOrigin => 0.0,
-    };
-    let z_wcs = base_z_wcs + z_offset.value_mm;
+    resolve_sketch_world_frame_inner(doc_has_bodies, None, sketch, setup)
+}
 
-    if !doc_has_bodies {
-        // Pure-2D mode: `sketch` XY coordinates define the virtual sheet in rotated world XY!
-        let rot_only = setup.frame.with_origin(DVec3::ZERO);
-        let origin_rot = rot_only.world_to_local_point(setup.frame.origin_mm);
-        let world_origin =
-            setup
-                .frame
-                .local_to_world_point(DVec3::new(-origin_rot.x, -origin_rot.y, z_wcs));
-        setup.frame.with_origin(world_origin)
-    } else {
-        // Hybrid 3D STEP + SetupXY mode: `sketch` XY coordinates are anchored directly at Setup WCS `(0, 0)`!
-        let world_origin = setup
-            .frame
-            .local_to_world_point(DVec3::new(0.0, 0.0, z_wcs));
-        setup.frame.with_origin(world_origin)
+fn resolve_sketch_world_frame_inner(
+    doc_has_bodies: bool,
+    doc: Option<&CadDocument>,
+    sketch: &SketchLayer,
+    setup: &ResolvedSetup,
+) -> RigidFrame3 {
+    match &sketch.anchor {
+        SketchAnchor::SetupXy {
+            plane_ref,
+            z_offset,
+            ..
+        } => {
+            let stock_aabb = setup.stock.aabb_wcs();
+            let base_z_wcs = match plane_ref {
+                SketchPlaneRef::StockTop => stock_aabb.max.z,
+                SketchPlaneRef::ModelTop => setup.model_aabb_wcs.max.z,
+                SketchPlaneRef::StockBottom => stock_aabb.min.z,
+                SketchPlaneRef::WcsOrigin => 0.0,
+            };
+            let z_wcs = base_z_wcs + z_offset.value_mm;
+
+            if !doc_has_bodies {
+                // Pure-2D mode: `sketch` XY coordinates define the virtual sheet in rotated world XY!
+                let rot_only = setup.frame.with_origin(DVec3::ZERO);
+                let origin_rot = rot_only.world_to_local_point(setup.frame.origin_mm);
+                let world_origin = setup.frame.local_to_world_point(DVec3::new(
+                    -origin_rot.x,
+                    -origin_rot.y,
+                    z_wcs,
+                ));
+                setup.frame.with_origin(world_origin)
+            } else {
+                // Hybrid 3D STEP + SetupXY mode: `sketch` XY coordinates are anchored directly at Setup WCS `(0, 0)`!
+                let world_origin = setup
+                    .frame
+                    .local_to_world_point(DVec3::new(0.0, 0.0, z_wcs));
+                setup.frame.with_origin(world_origin)
+            }
+        }
+        SketchAnchor::PlanarFace {
+            face_binding,
+            origin_mode,
+            x_axis_clock_deg,
+            z_offset,
+            ..
+        } => resolve_planar_face_sketch_frame(
+            doc,
+            face_binding,
+            *origin_mode,
+            *x_axis_clock_deg,
+            z_offset.value_mm,
+            setup,
+        ),
     }
+}
+
+fn resolve_planar_face_sketch_frame(
+    doc: Option<&CadDocument>,
+    binding: &SketchFaceBinding,
+    origin_mode: FaceSketchOriginMode,
+    x_axis_clock_deg: f64,
+    z_offset_mm: f64,
+    setup: &ResolvedSetup,
+) -> RigidFrame3 {
+    let mut normal_world = binding.normal_world;
+    let mut centroid_world = binding.centroid_world_mm;
+
+    if let Some(cad_doc) = doc
+        && let Some(face) = cad_doc.face(FaceId(binding.last_face_index))
+        && let SurfaceKind::Plane { normal, .. } = face.surface
+        && normal.dot(binding.normal_world.normalize_or_zero()) > 0.90
+    {
+        normal_world = normal;
+        if let Some(live_bind) = cad_doc.bind_face(face.id) {
+            centroid_world = live_bind.signature.centroid_mm;
+        } else if face.aabb_mm.is_valid() {
+            centroid_world = face.aabb_mm.center();
+        }
+    }
+
+    let z_axis = normal_world.normalize_or_zero();
+    let z_axis = if z_axis.length_squared() > 0.5 {
+        z_axis
+    } else {
+        setup.frame.z_axis
+    };
+
+    // Choose deterministic in-plane reference `+X` axis: align with `setup.frame.x_axis` when
+    // parallel to Setup XY, otherwise project world `+X` (or `+Y` when normal ≈ `±X`).
+    let base_cand = if z_axis.dot(setup.frame.z_axis).abs() >= 0.999 {
+        setup.frame.x_axis
+    } else if z_axis.dot(DVec3::X).abs() < 0.9 {
+        DVec3::X
+    } else {
+        DVec3::Y
+    };
+    let mut ref_x = (base_cand - z_axis * base_cand.dot(z_axis)).normalize_or_zero();
+    if ref_x.length_squared() < 0.5 {
+        let alt = if z_axis.dot(DVec3::Y).abs() < 0.9 {
+            DVec3::Y
+        } else {
+            DVec3::Z
+        };
+        ref_x = (alt - z_axis * alt.dot(z_axis)).normalize_or_zero();
+    }
+    let ref_y = z_axis.cross(ref_x).normalize_or_zero();
+    let (sin_c, cos_c) = x_axis_clock_deg.to_radians().sin_cos();
+    let x_axis = (ref_x * cos_c + ref_y * sin_c).normalize_or_zero();
+    let y_axis = z_axis.cross(x_axis).normalize_or_zero();
+
+    let base_origin = match origin_mode {
+        FaceSketchOriginMode::FaceCentroid => centroid_world,
+        FaceSketchOriginMode::SetupWcsProjected => {
+            setup.frame.origin_mm + z_axis * (centroid_world - setup.frame.origin_mm).dot(z_axis)
+        }
+    };
+    let origin_mm = base_origin + z_axis * z_offset_mm;
+
+    let _ = y_axis;
+    RigidFrame3::from_z_and_x_hint(origin_mm, z_axis, Some(x_axis), false, false, 0)
+        .unwrap_or_else(|_| setup.frame.with_origin(origin_mm))
 }

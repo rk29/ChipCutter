@@ -2,13 +2,17 @@ use chip_cad::{
     CadDocument, OrientedEdgeUse, SurfaceKind, TopologyGraph, find_same_diameter_holes,
 };
 use chip_cam::{
-    AdaptiveClearingParams, BoxAnchor27, ChamferSourceMode, ChamferTraceMode,
-    GeometrySelectionItem, HeightReference, HeightSpec, HoleMachiningMode, Operation,
-    OperationKind, PocketStrategyKind, RestMachiningConfig, RestMachiningMode, StockConfig,
-    StrategyParams, TabProfileKind, WcsOriginMode,
+    AdaptiveClearingParams, BoxAnchor27, ChamferSourceMode, ChamferTraceMode, ContourCompensation,
+    FixedBoxXyAlign, FixedBoxZAlign, GeometrySelectionItem, HeightReference, HeightSpec,
+    HoleMachiningMode, Operation, OperationKind, PocketStrategyKind, RestMachiningConfig,
+    RestMachiningMode, StockConfig, StrategyParams, TabProfileKind, WcsOriginMode,
 };
-use chip_math::{DisplayUnit, ParamLength, approx_eq};
-use chip_sketch::{DxfImportOptions, import_dxf_bytes, sample_router_panel_dxf};
+use chip_math::{DisplayUnit, EvalContext, ParamLength, approx_eq};
+use chip_sketch::{
+    DxfImportOptions, HersheyFontKind, PointPatternSpec, RectAnchorMode, SketchEntity,
+    SketchEntityEntry, SketchFontSource, SketchLayer, SketchTextSpec, TextHAlign, TextVAlign,
+    import_dxf_bytes, sample_router_panel_dxf,
+};
 use chip_tools::{
     CoolantMode, CutterGeometry, CuttingPreset, SpindleDirection, SurfaceSpeedPresetSpec, Tool,
     ToolId,
@@ -881,6 +885,299 @@ pub fn build_pure2d_router_panel_demo_project(
             };
         }
         proj.setups[0].operations.push(op_outer);
+    }
+
+    proj
+}
+
+/// Builds a Milestone 8 **Parametric Industrial Nameplate & Dual-Mode CAM Typography**
+/// [`ProjectDocument`] (`models = []`) showcasing:
+/// 1. Parametric `Rectangle` plaque (`width = "stock_x - 10 mm"`, `height = "stock_y - 10 mm"`, `R10` fillets),
+///    `Circle` gauge cutout, `PointPattern::BoltCircle` (`6× Ø6.0 mm` flange holes), TrueType Outline
+///    `Text` (`"CHIP"` — `DejaVuSans-Bold` preserving `'P'`'s counter-island), and single-line
+///    `HersheySimplexSans` `Text` (`"S/N 2026-08"`).
+/// 2. `Op 1` (`T6` Ø6mm Twist Drill): **6× Ø6mm Flange Bolt Circle** (`PointPattern::BoltCircle`).
+/// 3. `Op 2` (`T1` Ø6mm Flat Endmill): **Ø22mm Gauge Port Through-Pocket** (`Circle`).
+/// 4. `Op 3` (`T9` Ø2mm 2FL Carbide Endmill): **TrueType Outline Text Pocket (`"CHIP"`, `1.5 mm` deep)**.
+/// 5. `Op 4` (`T5` 90° Chamfer / Engraving Mill): **Hershey 1-Pass Serial Engraving (`"S/N 2026-08"`, `0.4 mm` deep)**.
+/// 6. `Op 5` (`T1` Ø6mm Flat Endmill): **Outer Filleted Plaque Profile + Triangular Holding Tabs**.
+pub fn build_engraved_nameplate_demo_project(available_tools: &[Tool]) -> ProjectDocument {
+    let mut proj = ProjectDocument::new("Engraved Industrial Nameplate (2D Sketch + Text)");
+    proj.models.clear();
+
+    proj.setups[0].name = "Setup 1 — 6mm Anodized Plate (G54 Top Center)".to_string();
+    proj.setups[0].wcs.origin = WcsOriginMode::StockBoxPoint {
+        anchor: BoxAnchor27::TOP_CENTER,
+    };
+    proj.setups[0].stock = StockConfig::FixedBox {
+        width_x: ParamLength::from_mm(180.0),
+        depth_y: ParamLength::from_mm(84.0),
+        height_z: ParamLength::from_mm(6.0),
+        xy_align: FixedBoxXyAlign::CenterXy,
+        z_align: FixedBoxZAlign::OffsetFromTop {
+            top_allowance: ParamLength::from_mm(0.0),
+        },
+    };
+
+    let mut eval_ctx = EvalContext::new(DisplayUnit::Millimeter);
+    eval_ctx.set_var("stock_x", 180.0);
+    eval_ctx.set_var("stock_y", 84.0);
+    eval_ctx.set_var("stock_z", 6.0);
+
+    let mut sk = SketchLayer::new("sketch_nameplate", "Nameplate Layout & Text", "setup_1");
+    sk.entities.push(SketchEntityEntry {
+        id: "ent_plaque_rect".to_string(),
+        name: "Outer Plaque (R10 Fillets)".to_string(),
+        sub_layer: Some("OUTLINE".to_string()),
+        is_construction: false,
+        entity: SketchEntity::Rectangle {
+            anchor: RectAnchorMode::Center,
+            x: ParamLength::from_mm(0.0),
+            y: ParamLength::from_mm(0.0),
+            width: ParamLength::parse("stock_x - 10 mm", &eval_ctx)
+                .unwrap_or_else(|_| ParamLength::from_mm(170.0)),
+            height: ParamLength::parse("stock_y - 10 mm", &eval_ctx)
+                .unwrap_or_else(|_| ParamLength::from_mm(74.0)),
+            corner_radius: ParamLength::from_mm(10.0),
+            rotation_deg: 0.0,
+        },
+    });
+    sk.entities.push(SketchEntityEntry {
+        id: "ent_gauge_bore".to_string(),
+        name: "Ø22mm Gauge Window".to_string(),
+        sub_layer: Some("CUTOUTS".to_string()),
+        is_construction: false,
+        entity: SketchEntity::new_circle(
+            ParamLength::from_mm(-52.0),
+            ParamLength::from_mm(0.0),
+            ParamLength::from_mm(22.0),
+        ),
+    });
+    sk.entities.push(SketchEntityEntry {
+        id: "ent_flange_bolts".to_string(),
+        name: "6x Ø6mm Flange Bolt Circle".to_string(),
+        sub_layer: Some("HOLES".to_string()),
+        is_construction: false,
+        entity: SketchEntity::PointPattern(PointPatternSpec::BoltCircle {
+            center_x: ParamLength::from_mm(-52.0),
+            center_y: ParamLength::from_mm(0.0),
+            bolt_circle_diameter: ParamLength::from_mm(46.0),
+            hole_diameter: ParamLength::from_mm(6.0),
+            count: 6,
+            start_angle_deg: 0.0,
+        }),
+    });
+    sk.entities.push(SketchEntityEntry {
+        id: "ent_title_ttf".to_string(),
+        name: "Logo Text 'CHIP' (Outline)".to_string(),
+        sub_layer: Some("LOGO_TEXT".to_string()),
+        is_construction: false,
+        entity: SketchEntity::Text(SketchTextSpec {
+            content: "CHIP".to_string(),
+            font: SketchFontSource::BuiltinSansBold,
+            cap_height: ParamLength::from_mm(24.0),
+            x: ParamLength::from_mm(26.0),
+            y: ParamLength::from_mm(10.0),
+            h_align: TextHAlign::Center,
+            v_align: TextVAlign::Middle,
+            letter_spacing: ParamLength::from_mm(1.2),
+            ..SketchTextSpec::default()
+        }),
+    });
+    sk.entities.push(SketchEntityEntry {
+        id: "ent_serial_hershey".to_string(),
+        name: "Serial 'S/N 2026-08' (1-Line)".to_string(),
+        sub_layer: Some("SERIAL_ENGRAVE".to_string()),
+        is_construction: false,
+        entity: SketchEntity::Text(SketchTextSpec {
+            content: "S/N 2026-08".to_string(),
+            font: SketchFontSource::Hershey {
+                font: HersheyFontKind::SimplexSans,
+            },
+            cap_height: ParamLength::from_mm(6.5),
+            x: ParamLength::from_mm(26.0),
+            y: ParamLength::from_mm(-18.0),
+            h_align: TextHAlign::Center,
+            v_align: TextVAlign::Middle,
+            letter_spacing: ParamLength::from_mm(0.6),
+            ..SketchTextSpec::default()
+        }),
+    });
+    sk.rebuild_regions(None);
+    proj.sketches.push(sk);
+
+    let flat_6mm = available_tools
+        .iter()
+        .find(|t| {
+            matches!(
+                t.geometry,
+                CutterGeometry::FlatEndmill { diameter_mm, .. }
+                if (diameter_mm - 6.0).abs() < 0.05
+            )
+        })
+        .cloned();
+    let drill_6mm = available_tools
+        .iter()
+        .find(|t| matches!(t.geometry, CutterGeometry::TwistDrill { .. }))
+        .cloned();
+    let chamf_90 = available_tools
+        .iter()
+        .find(|t| matches!(t.geometry, CutterGeometry::ChamferMill { .. }))
+        .cloned();
+
+    let t9_2mm = Tool {
+        id: ToolId("t9_2mm_flat_2fl".to_string()),
+        tool_number: 9,
+        length_offset_number: 9,
+        diameter_offset_number: 9,
+        name: "2mm 2FL Carbide Detail Endmill".to_string(),
+        vendor: Some("Generic Carbide".to_string()),
+        product_id: None,
+        native_unit: DisplayUnit::Millimeter,
+        spindle_direction: SpindleDirection::Cw,
+        default_coolant: CoolantMode::AirBlast,
+        stickout_length_mm: 14.0,
+        geometry: CutterGeometry::FlatEndmill {
+            diameter_mm: 2.0,
+            flute_length_mm: 8.0,
+            overall_length_mm: 50.0,
+            shank_diameter_mm: 3.175,
+            flutes: 2,
+        },
+        presets: vec![CuttingPreset::from_surface_speed(SurfaceSpeedPresetSpec {
+            id: "al6061_detail",
+            name: "Aluminum 6061 - Fine Lettering",
+            material: "Aluminum 6061",
+            diameter_mm: 2.0,
+            flutes: 2,
+            surface_speed_m_min: 150.0,
+            chipload_mm_tooth: 0.015,
+            default_stepdown_mm: 0.8,
+            default_stepover_mm: 0.9,
+            coolant_override: Some(CoolantMode::AirBlast),
+        })],
+    };
+    proj.ensure_tool_embedded(&t9_2mm);
+    if let Some(em) = &flat_6mm {
+        proj.ensure_tool_embedded(em);
+    }
+    if let Some(dr) = &drill_6mm {
+        proj.ensure_tool_embedded(dr);
+    }
+    if let Some(ch) = &chamf_90 {
+        proj.ensure_tool_embedded(ch);
+    }
+
+    // Op 1: 6x Ø6mm Flange Bolt Circle (`Drilling`)
+    if let Some(dr) = &drill_6mm {
+        let mut op_bolts = Operation::new(
+            "op_1_bolt_circle",
+            "6x Ø6mm Flange Bolt Circle",
+            OperationKind::DrillBore,
+        );
+        op_bolts.tool_id = Some(dr.id.clone());
+        op_bolts.preset_id = dr.presets.first().map(|p| p.id.clone());
+        op_bolts
+            .selections
+            .push(GeometrySelectionItem::SketchEntity {
+                sketch_id: "sketch_nameplate".to_string(),
+                entity_id: "ent_flange_bolts".to_string(),
+                reverse: false,
+                side_flip: false,
+            });
+        proj.setups[0].operations.push(op_bolts);
+    }
+
+    // Op 2: Ø22mm Gauge Port Through-Cutout (`2D Pocket`)
+    if let Some(em) = &flat_6mm {
+        let mut op_bore = Operation::new(
+            "op_2_gauge_window",
+            "Ø22mm Gauge Window Cutout",
+            OperationKind::Pocket2D,
+        );
+        op_bore.tool_id = Some(em.id.clone());
+        op_bore.preset_id = em.presets.first().map(|p| p.id.clone());
+        op_bore.heights.bottom = HeightSpec::new(HeightReference::StockBottom, 0.0);
+        op_bore
+            .selections
+            .push(GeometrySelectionItem::SketchLayerAll {
+                sketch_id: "sketch_nameplate".to_string(),
+                sub_layer: Some("CUTOUTS".to_string()),
+                reverse: false,
+                side_flip: false,
+            });
+        proj.setups[0].operations.push(op_bore);
+    }
+
+    // Op 3: Recessed TrueType Outline Text `"CHIP"` (`1.5 mm` deep, preserving `'P'` counter-island!)
+    let mut op_logo = Operation::new(
+        "op_3_logo_text_pocket",
+        "Outline Text 'CHIP' Pocket",
+        OperationKind::Pocket2D,
+    );
+    op_logo.tool_id = Some(t9_2mm.id.clone());
+    op_logo.preset_id = t9_2mm.presets.first().map(|p| p.id.clone());
+    op_logo.heights.bottom = HeightSpec::new(HeightReference::StockTop, -1.5);
+    op_logo
+        .selections
+        .push(GeometrySelectionItem::SketchEntity {
+            sketch_id: "sketch_nameplate".to_string(),
+            entity_id: "ent_title_ttf".to_string(),
+            reverse: false,
+            side_flip: false,
+        });
+    if let StrategyParams::Pocket2D(p) = op_logo.strategy_mut() {
+        p.stepover = ParamLength::from_mm(0.85);
+    }
+    proj.setups[0].operations.push(op_logo);
+
+    // Op 4: 1-Pass Hershey Serial Engraving `"S/N 2026-08"` (`CurveTrace`, `0.4 mm` deep)
+    if let Some(ch) = &chamf_90 {
+        let mut op_ser = Operation::new(
+            "op_4_serial_engrave",
+            "1-Pass Serial 'S/N 2026-08' Trace",
+            OperationKind::ChamferTrace,
+        );
+        op_ser.tool_id = Some(ch.id.clone());
+        op_ser.preset_id = ch.presets.first().map(|p| p.id.clone());
+        op_ser.heights.bottom = HeightSpec::new(HeightReference::StockTop, -0.4);
+        op_ser.selections.push(GeometrySelectionItem::SketchEntity {
+            sketch_id: "sketch_nameplate".to_string(),
+            entity_id: "ent_serial_hershey".to_string(),
+            reverse: false,
+            side_flip: false,
+        });
+        if let StrategyParams::ChamferTrace(p) = op_ser.strategy_mut() {
+            p.mode = ChamferTraceMode::CurveTrace;
+            p.trace_compensation = ContourCompensation::CenterOff;
+            p.trace_axial_offset = ParamLength::from_mm(0.0);
+        }
+        proj.setups[0].operations.push(op_ser);
+    }
+
+    // Op 5: Outer Filleted Plaque Profile + Triangular Holding Tabs (`OUTLINE`)
+    if let Some(em) = &flat_6mm {
+        let mut op_out = Operation::new(
+            "op_5_plaque_profile",
+            "Outer Filleted Plaque + Tabs",
+            OperationKind::Contour2D,
+        );
+        op_out.tool_id = Some(em.id.clone());
+        op_out.preset_id = em.presets.first().map(|p| p.id.clone());
+        op_out.heights.bottom = HeightSpec::new(HeightReference::StockBottom, 0.0);
+        op_out.selections.push(GeometrySelectionItem::SketchEntity {
+            sketch_id: "sketch_nameplate".to_string(),
+            entity_id: "ent_plaque_rect".to_string(),
+            reverse: false,
+            side_flip: false,
+        });
+        if let StrategyParams::Contour2D(p) = op_out.strategy_mut() {
+            p.tabs.enabled = true;
+            p.tabs.profile = TabProfileKind::Triangular {
+                ramp_angle_deg: 25.0,
+            };
+        }
+        proj.setups[0].operations.push(op_out);
     }
 
     proj

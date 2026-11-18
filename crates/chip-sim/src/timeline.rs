@@ -50,7 +50,17 @@ impl<'a> SimOperationInput<'a> {
         toolpath: &'a GeneratedToolpath,
     ) -> Self {
         let cutting = op.effective_cutting_params(tool);
-        let intentional_edge_break_mm = if op.kind == OperationKind::ChamferTrace {
+        let all_sketch_selections = !op.selections.is_empty()
+            && op.selections.iter().all(|s| {
+                matches!(
+                    s,
+                    chip_cam::GeometrySelectionItem::SketchRegion { .. }
+                        | chip_cam::GeometrySelectionItem::SketchEntity { .. }
+                        | chip_cam::GeometrySelectionItem::SketchLayerAll { .. }
+                )
+            });
+
+        let base_edge_break_mm = if op.kind == OperationKind::ChamferTrace {
             match op.resolved_strategy() {
                 StrategyParams::ChamferTrace(p) => match p.mode {
                     ChamferTraceMode::EdgeChamfer => match p.chamfer_source {
@@ -71,6 +81,14 @@ impl<'a> SimOperationInput<'a> {
         } else {
             0.0
         };
+
+        let sketch_depth_allowance_mm =
+            if all_sketch_selections && toolpath.stats.bounds_wcs.is_valid() {
+                (toolpath.stats.bounds_wcs.max.z - toolpath.stats.bounds_wcs.min.z).max(0.0) + 0.5
+            } else {
+                0.0
+            };
+        let intentional_edge_break_mm = base_edge_break_mm.max(sketch_depth_allowance_mm);
 
         Self {
             op_id: &op.id,

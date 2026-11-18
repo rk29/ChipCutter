@@ -17,6 +17,9 @@ pub enum BrowserAction {
     LoadCamTortureBlock,
     LoadAdaptiveRestDemo,
     LoadPure2dPanelDemo,
+    LoadNameplateDemo,
+    NewSetupXySketch,
+    StartPickSketchHostFace,
     LoadRevisionDemoV1,
     ReloadRevisionDemoV2,
     OpenToolLibrary,
@@ -179,6 +182,15 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                             emitted_action = Some(BrowserAction::LoadPure2dPanelDemo);
                         }
                         if ui
+                            .small_button("Nameplate + Text")
+                            .on_hover_text(
+                                "Load Milestone 8 Engraved Nameplate (Bolt Circle, DejaVuSans-Bold Outline Text, Hershey 1-Pass Serial Trace, R10 Fillets)",
+                            )
+                            .clicked()
+                        {
+                            emitted_action = Some(BrowserAction::LoadNameplateDemo);
+                        }
+                        if ui
                             .small_button("Bracket")
                             .on_hover_text("Load M2 prismatic bracket")
                             .clicked()
@@ -239,7 +251,14 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                                     sk.regions.len(),
                                     sk.entities.len()
                                 );
-                                if ui.selectable_label(is_sel, lbl).clicked() {
+                                let sk_w = (ui.available_width() - 28.0).max(48.0);
+                                if ui
+                                    .add_sized(
+                                        [sk_w, 18.0],
+                                        egui::Button::selectable(is_sel, lbl).truncate(),
+                                    )
+                                    .clicked()
+                                {
                                     *focus = InspectorFocus::Sketch { sketch_idx: sk_idx };
                                     *pick_mode = ViewportPickMode::InspectEntity;
                                 }
@@ -273,6 +292,23 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                     }
 
                     ui.horizontal_wrapped(|ui| {
+                        if ui
+                            .small_button("+ New Sketch")
+                            .on_hover_text("Create a new parametric 2D Sketch on Setup XY")
+                            .clicked()
+                        {
+                            emitted_action = Some(BrowserAction::NewSetupXySketch);
+                        }
+                        if cad_doc.is_some()
+                            && ui
+                                .small_button("+ On 3D Face")
+                                .on_hover_text(
+                                    "Click a planar STEP B-Rep face in the 3D viewport to attach an associative 2D Sketch",
+                                )
+                                .clicked()
+                        {
+                            emitted_action = Some(BrowserAction::StartPickSketchHostFace);
+                        }
                         if ui
                             .small_button("+ Import DXF/SVG…")
                             .on_hover_text("Import AutoCAD .dxf or W3C .svg 2D vector artwork")
@@ -476,7 +512,7 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                                     ui.colored_label(badge_col, badge_str);
                                 }
 
-                                let max_lbl_w = (ui.available_width() - 86.0).max(48.0);
+                                let max_lbl_w = (ui.available_width() - 106.0).max(48.0);
                                 let mut resp = ui.add_sized(
                                     [max_lbl_w, 18.0],
                                     egui::Button::selectable(is_sel, rich).truncate(),
