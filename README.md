@@ -1,0 +1,159 @@
+# ChipCutter
+
+**ChipCutter** is an offline desktop 2.5D Computer-Aided Manufacturing (CAM) application (`chip-gui`) and headless CLI (`chipcutter`) written in **100% pure Rust** (`eframe` + `egui` + `wgpu` + `monstertruck` + `cavalier_contours`).
+
+It turns 3D **STEP** B-Rep CAD solids (`AP203` / `AP214` / `AP242`) into physically verified, arc-accurate (`G2`/`G3`) CNC milling and routing G-code—without C++ OpenCASCADE/CGAL build dependencies, cloud accounts, or copyleft libraries.
+
+![ChipCutter Desktop CAM Interface](docs/images/chipcutter-gui.png)
+
+---
+
+## Highlights
+
+- **Pure-Rust STEP B-Rep Kernel & Associative Reload (`Ctrl+R`):**
+  - Imports ISO 10303-21 `.step`/`.stp` solids via `monstertruck`, automatically normalizing units (`mm` / `in`) into a canonical `f64` millimeter kernel and classifying analytic planar faces, cylindrical holes/bosses, cones, lines, and circular arcs.
+  - Interactive 3D BVH ray-picking of planar faces, closed edge loops, shortest-path open edge chains, coplanar faces, and same-diameter holes with automatic Z-top / Z-bottom inference.
+  - **Associative CAD Revision Re-Matching:** Reloading an edited STEP model (`Ctrl+R` or `chipcutter reload-step`) re-binds Setup WCS references first, fuzzy-matches modified/shifted features via `GeometricSignature`, heals open edge chains, marks matched operations `Dirty`, and flags deleted or ambiguous features for 1-click recovery while preserving all tool, feed/speed, height, pass, and holding-tab settings.
+
+- **Multi-Setup WCS & Parametric Machinist Expressions:**
+  - Multiple Setups (`G54`–`G59.3`) per project with box or cylindrical stock, B-Rep face/edge WCS orientation alignment (supporting tilted/rotated parts), and an interactive 3D **27-point** stock/model WCS origin picker.
+  - Every dimensional input accepts mixed-unit formulas and variables (`1/4 in`, `tool_d * 0.4`, `model_top_z + 10 mm`, `hole_d / 2`).
+
+- **Five Arc-Preserving 2.5D Machining Strategies:**
+  1. **Facing** — Zig-zag or one-way surfacing across stock XY bounds with pass extension and corner roll arcs.
+  2. **2D Contour / Profile** — Exact circular-arc offsetting (`cavalier_contours`), multi-depth stepdowns, helical/linear ramps, horizontal + vertical tangent lead-in/out arcs, rough/finish wall passes, and automatic or click-on-contour rectangular/triangular holding tabs.
+  3. **2D Pocket** — Closed pockets with arbitrary islands and open-shoulder pockets (automatic air-side overhang expansion, region-tree island splitting, contour-parallel offset or zig-zag clearing, helical/ramp entry, and finish wall pass).
+  4. **Drilling & Helical Bore Milling** — Spot, simple drill (`G81`), peck drill (`G83`/`G73`), and multi-pitch helical interpolation + flat-bottom cleanup circle for oversized bores and counterbores.
+  5. **Edge Chamfering & 2D Curve Trace** — Exact chamfer-mill tip-offset kinematics (`tip_dia`, included angle, `tip_offset`) for both sharp unmodeled CAD edges and modeled `45°` bevel faces, plus centerline curve engraving.
+
+- **Tool Library & Coupled SFM / Chipload Calculator:**
+  - Supports Flat, Ball, Bull-Nose, Chamfer, Face Mill, and Twist Drill geometries with per-material cutting presets (`Aluminum 6061`, `Mild Steel`, `Hardwood`, `Acrylic`, etc.), radial chip-thinning compensation, `.tools.toml` libraries, and a **Fusion 360 `.json` / `.tools` (ZIP)** importer.
+
+- **2.5D Z-Dexel Heightmap Stock Simulation & Mandatory Crash Gate:**
+  - Multi-threaded `rayon` toolpath generation (`Ctrl+G`) and `< 1 ms` `100`-step Undo/Redo (`Ctrl+Z` / `Ctrl+Y`).
+  - Interactive 3D machined-stock & revolved cutter/shank/holder timeline playback with trapezoidal-acceleration cycle-time estimation.
+  - **5-Rule Physical Verifier:** Automatically checks every setup for `G0` rapid-into-stock crashes, target B-Rep part gouges (`> 0.02 mm`), non-cutting shank/flute-length collisions, holder collisions, and non-center-cutting plunges—blocking unsafe G-code export in both CLI and GUI.
+
+- **Configurable TOML Post-Processors & Portable `.chipz` Bundles:**
+  - Ships with built-in **Grbl 1.1 / FluidNC** (automatic file-per-tool splitting, `<= 80`-char line guard, quadrant arc splitting, expanded peck drills), **grblHAL / FluidNC ATC**, and **LinuxCNC (RS274NGC)** (`M6` + `G43 H`, `G64 P`, native canned cycles) profiles in [`posts/`](posts/).
+  - Git-diff-friendly `.chip.toml` project manifests plus byte-deterministic, self-contained **`.chipz`** portable bundles (`project.chip.toml` + `models/*.step` + custom `posts/*.post.toml`).
+
+---
+
+## Quickstart
+
+### 1. Prerequisites
+- **Rust `1.85+` stable** (Rust Edition 2024).
+- On Linux, install native windowing/Vulkan headers for `chip-gui` (macOS and Windows include Metal / DirectX 12 windowing out of the box—see [**`DEVELOPMENT.md`**](DEVELOPMENT.md) for Ubuntu/Debian, Fedora, Arch, macOS, and Windows setup commands).
+
+### 2. Launch the Desktop CAM Application (`chip-gui`)
+```bash
+# Launch with the built-in seeded CAM Torture Block demo job:
+cargo run --release -p chip-gui
+
+# Or open an existing .chip.toml project, .chipz bundle, or .step model directly:
+cargo run --release -p chip-gui -- path/to/part.step
+```
+
+#### Essential Desktop Shortcuts
+| Shortcut | Action |
+|---|---|
+| `Ctrl+G` | Generate dirty 2.5D toolpaths on background `rayon` pool |
+| `Ctrl+R` | Reload active STEP model & associatively re-match CAM features |
+| `Ctrl+O` / `Ctrl+S` | Open (`.chip.toml` / `.chipz`) / Save (`.chip.toml`) project |
+| `Ctrl+Z` / `Ctrl+Y` | Instant Undo / Redo (`100` steps) |
+| `Space` | Play / Pause 3D simulation timeline scrubbing |
+| `P` / `F` | Toggle Orthographic vs. Perspective camera / Fit model to viewport |
+| `Esc` | Exit active 3D picking mode or cancel in-flight generation |
+
+### 3. Headless CLI Workflow (`chipcutter`)
+Every CAD, toolpath, simulation, post-processing, associative reload, and bundling feature works headlessly without a GPU or display server:
+
+```bash
+# 1. Generate a sample machined STEP solid + seeded 8-operation .chip.toml project
+cargo run -p chip-cli -- generate-sample-step /tmp/torture.step --cam-torture --project-out /tmp/torture.chip.toml
+
+# 2. Inspect normalized STEP B-Rep geometry (planes, cylindrical holes, cones, arcs)
+cargo run -p chip-cli -- inspect /tmp/torture.step
+
+# 3. Validate project invariants and generate all 2.5D toolpaths
+cargo run -p chip-cli -- validate --generate /tmp/torture.chip.toml
+
+# 4. Run headless heightmap stock removal & 5-rule crash/gouge verification
+cargo run -p chip-cli -- simulate /tmp/torture.chip.toml --resolution fine --report /tmp/sim_report.json
+
+# 5. Build safety-verified G-code (LinuxCNC single ATC file or Grbl split-by-tool files)
+cargo run -p chip-cli -- build /tmp/torture.chip.toml -o /tmp/out_linuxcnc --post linuxcnc
+cargo run -p chip-cli -- build /tmp/torture.chip.toml -o /tmp/out_grbl --post grbl
+
+# 6. Pack a self-contained portable .chipz archive (and build directly from it)
+cargo run -p chip-cli -- bundle pack /tmp/torture.chip.toml -o /tmp/torture.chipz
+cargo run -p chip-cli -- build /tmp/torture.chipz -o /tmp/out_from_bundle --post linuxcnc
+
+# 7. Reload a revised STEP file and associatively re-bind operations
+cargo run -p chip-cli -- reload-step /tmp/torture.chip.toml --step /tmp/torture_v2.step -o /tmp/torture_v2.chip.toml
+
+# 8. Convert a Fusion 360 tool library (.json or .tools) into native .tools.toml
+cargo run -p chip-cli -- tools import-fusion shop_tools.json -o shop.tools.toml
+```
+
+---
+
+## Workspace Layout
+
+See [**`ARCHITECTURE.md`**](ARCHITECTURE.md) for the end-to-end CAM data pipeline, crate dependency diagrams, concurrency model, and 3D `wgpu` viewport render passes.
+
+All core geometry, CAM, simulation, post-processing, and project persistence crates are strictly **UI-agnostic** (`#![deny(unsafe_code)]`, `clippy::unwrap_used = "deny"`, `clippy::expect_used = "deny"`):
+
+| Path | Description |
+|---|---|
+| [`crates/chip-math`](crates/chip-math) | Canonical `f64` millimeter types, `RigidFrame3` WCS math, 2D arc polylines, and machinist unit/expression evaluator |
+| [`crates/chip-cad`](crates/chip-cad) | `CadKernel` trait, `monstertruck` STEP B-Rep loader/tessellator, R-tree ray picker, topology graph, and `GeometricSignature` reload re-matching |
+| [`crates/chip-tools`](crates/chip-tools) | 6 cutter geometries, material presets, coupled SFM/chipload & chip-thinning math, `.tools.toml` I/O, and Fusion 360 importer |
+| [`crates/chip-cam`](crates/chip-cam) | Setups, box/cylinder stock, WCS alignment, Z-height hierarchy, `cavalier_contours` 2D offsetting, and the 5 v1 2.5D strategies |
+| [`crates/chip-sim`](crates/chip-sim) | Trapezoidal motion timeline, revolved cutter profiles/meshes, 2.5D Z-dexel stock heightmap, and 5-rule crash/gouge verifier |
+| [`crates/chip-post`](crates/chip-post) | Typed `ClEvent` consumer, modal state machine, quadrant arc & peck-drill expansion, and `.post.toml` G-code emitter |
+| [`crates/chip-project`](crates/chip-project) | Deterministic `.chip.toml` schema, `.chipz` portable bundles, associative reload re-binding, `rayon` job dispatcher, and Undo/Redo |
+| [`crates/chip-cli`](crates/chip-cli) | `chipcutter` headless CLI binary and golden end-to-end G-code snapshot suite |
+| [`crates/chip-gui`](crates/chip-gui) | `eframe` + `egui_tiles` + `wgpu` 4x MSAA 6-pass 3D CAD/CAM desktop application |
+| [`posts/`](posts) | Built-in TOML post-processor profiles (`grbl.post.toml`, `grblhal_atc.post.toml`, `linuxcnc.post.toml`) |
+| [`specs/`](specs) | Authoritative subsystem architecture & algorithm specifications (`00-overview.md` – `10-roadmap.md`) |
+| [`plans/`](plans) | Milestone 1–5 engineering implementation plans (`01-milestone-1-plan.md` – `05-milestone-5-plan.md`) |
+
+---
+
+## Documentation
+
+- [**`ARCHITECTURE.md`**](ARCHITECTURE.md) — End-to-end data pipeline, crate dependency graph, threading/caching model, and 3D render passes
+- [**`DEVELOPMENT.md`**](DEVELOPMENT.md) — Platform build prerequisites, native Linux/macOS/Windows setup, and headless CI instructions
+- [**`specs/00-overview.md`**](specs/00-overview.md) — Product scope, non-goals, and full specification index (`00` through `10`)
+- [**`specs/10-roadmap.md`**](specs/10-roadmap.md) — Completed v1 milestones and v2+ roadmap (Adaptive roughing, 2D DXF/SVG & V-carving, 3-axis surface milling)
+- [**`AGENTS.md`**](AGENTS.md) — Architectural invariants and contributor guidelines
+
+---
+
+## Verification & Testing
+
+```bash
+# Formatting, strict Clippy lints, and permissive license audit (deny.toml)
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo deny check
+
+# Full unit, physical heightmap oracle, offscreen wgpu, and golden CLI snapshot suite
+cargo test --workspace
+
+# Headless Linux GUI launch + screenshot self-test (using Lavapipe + Xvfb)
+WGPU_BACKEND=vulkan xvfb-run -a cargo run -p chip-gui -- --self-test-screenshot /tmp/preview.png
+```
+
+---
+
+## License
+
+Licensed under either of:
+
+- **Apache License, Version 2.0** (`http://www.apache.org/licenses/LICENSE-2.0`)
+- **MIT License** (`http://opensource.org/licenses/MIT`)
+
+at your option. All third-party dependencies are verified permissive-only via [`deny.toml`](deny.toml) (`cargo deny check licenses`).
