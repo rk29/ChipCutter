@@ -984,6 +984,7 @@ fn verifies_adaptive_clearing_and_rest_machining_against_sim_oracle() {
         setup: &resolved_setup,
         op: &op_rest_3,
         tool: &tool_3mm,
+        clearing_tool: None,
         display_unit: DisplayUnit::Millimeter,
         is_first_tool_in_setup: false,
         upstream_rest: &upstream,
@@ -1136,4 +1137,268 @@ fn verifies_adaptive_clearing_and_rest_machining_against_sim_oracle() {
         .sample_stock_z(29.0, 40.0)
         .unwrap();
     assert!(approx_eq(z_island_after, 20.0, 0.02));
+}
+
+#[test]
+fn verifies_vcarve_medial_corner_climbs_two_tool_flat_clearance_and_male_inlay_plug() {
+    use std::sync::atomic::AtomicBool;
+
+    use chip_cad::CadDocument;
+    use chip_cam::{
+        BoxAnchor27, FixedBoxXyAlign, FixedBoxZAlign, GeometrySelectionItem, Operation,
+        OperationGenRequest, OperationKind, Setup, StockConfig, StrategyParams, VCarveClearingKind,
+        VCarveInlayMode, WcsOriginMode, WorkOffsetSlot, generate_operation_toolpath_with_rest,
+    };
+    use chip_math::{DisplayUnit, ParamLength, approx_eq};
+    use chip_sketch::{
+        RectAnchorMode, SketchEntity, SketchEntityEntry, SketchFontSource, SketchLayer,
+        SketchTextSpec,
+    };
+    use chip_tools::{
+        CoolantMode, CutterGeometry, SpindleDirection, Tool, ToolId, default_starter_tool_library,
+    };
+
+    let empty_doc = CadDocument::empty();
+    let cancel = AtomicBool::new(false);
+    let starter = default_starter_tool_library();
+    let flat_6mm = &starter.tools[0];
+    let vbit_60 = starter
+        .tools
+        .iter()
+        .find(|t| t.id.0 == "t8_6mm_60deg_vbit")
+        .unwrap();
+
+    // Sharp 90° V-bit with Ø24mm cone so a 20×20mm square carves in 1 pure medial pyramid to Z = -10.0 mm!
+    let vbit_90_wide = Tool {
+        id: ToolId("vbit_90_24mm".to_string()),
+        tool_number: 12,
+        length_offset_number: 12,
+        diameter_offset_number: 12,
+        name: "24mm 90° Sign V-Bit".to_string(),
+        vendor: None,
+        product_id: None,
+        native_unit: DisplayUnit::Millimeter,
+        spindle_direction: SpindleDirection::Cw,
+        default_coolant: CoolantMode::Disabled,
+        stickout_length_mm: 24.0,
+        geometry: CutterGeometry::ChamferMill {
+            diameter_mm: 24.0,
+            tip_diameter_mm: 0.0,
+            included_angle_deg: 90.0,
+            flute_length_mm: 14.0,
+            overall_length_mm: 55.0,
+            shank_diameter_mm: 6.35,
+            flutes: 2,
+        },
+        presets: vbit_60.presets.clone(),
+    };
+
+    // 1. Pure Medial V-Carve on a 20×20mm square: center reaches Z = -10.0 mm and 4 corner bisectors climb to Z = 0.0 mm!
+    let mut sk_sq = SketchLayer::new("sk_sq", "Square Test", "setup_1");
+    sk_sq.entities.push(SketchEntityEntry {
+        id: "sq_20".to_string(),
+        name: "20x20 Square".to_string(),
+        sub_layer: None,
+        is_construction: false,
+        entity: SketchEntity::Rectangle {
+            anchor: RectAnchorMode::Center,
+            x: ParamLength::from_mm(0.0),
+            y: ParamLength::from_mm(0.0),
+            width: ParamLength::from_mm(20.0),
+            height: ParamLength::from_mm(20.0),
+            corner_radius: ParamLength::from_mm(0.0),
+            rotation_deg: 0.0,
+        },
+    });
+    sk_sq.rebuild_regions(None);
+
+    let mut setup = Setup::new("setup_1", "V-Carve Test", WorkOffsetSlot::G54);
+    setup.wcs.origin = WcsOriginMode::StockBoxPoint {
+        anchor: BoxAnchor27::TOP_CENTER,
+    };
+    setup.stock = StockConfig::FixedBox {
+        width_x: ParamLength::from_mm(140.0),
+        depth_y: ParamLength::from_mm(80.0),
+        height_z: ParamLength::from_mm(15.0),
+        xy_align: FixedBoxXyAlign::CenterXy,
+        z_align: FixedBoxZAlign::OffsetFromTop {
+            top_allowance: ParamLength::from_mm(0.0),
+        },
+    };
+    let sketches_sq = [sk_sq];
+    let resolved_sq = setup
+        .resolve_with_sketches(&empty_doc, &sketches_sq, DisplayUnit::Millimeter)
+        .unwrap();
+
+    let mut op_pure = Operation::new("op_pure_vc", "Pure Square V-Carve", OperationKind::VCarve);
+    op_pure.tool_id = Some(vbit_90_wide.id.clone());
+    op_pure.passes.multiple_depths = false;
+    op_pure
+        .selections
+        .push(GeometrySelectionItem::SketchRegion {
+            sketch_id: "sk_sq".to_string(),
+            region_id: sketches_sq[0].regions[0].id.clone(),
+        });
+    if let StrategyParams::VCarve(vp) = op_pure.strategy_mut() {
+        vp.flat_depth = None;
+    }
+
+    let tp_pure = generate_operation_toolpath_with_rest(&OperationGenRequest {
+        doc: &empty_doc,
+        sketches: &sketches_sq,
+        setup: &resolved_sq,
+        op: &op_pure,
+        tool: &vbit_90_wide,
+        clearing_tool: None,
+        display_unit: DisplayUnit::Millimeter,
+        is_first_tool_in_setup: true,
+        upstream_rest: &[],
+        cancel: &cancel,
+    })
+    .unwrap();
+    assert!(approx_eq(tp_pure.stats.bounds_wcs.min.z, -10.0, 0.05));
+    for &(cx, cy) in &[(10.0, 10.0), (-10.0, 10.0), (10.0, -10.0), (-10.0, -10.0)] {
+        let hit_corner = tp_pure.segments_wcs.iter().any(|s| {
+            (s.end_wcs.x - cx).hypot(s.end_wcs.y - cy) <= 0.15 && s.end_wcs.z.abs() <= 0.15
+        });
+        assert!(
+            hit_corner,
+            "90° V-bit corner climb must reach sharp square corner ({cx}, {cy}, Z=0)"
+        );
+    }
+
+    // Verify analytical conical 3D sweeper produces exact inverted pyramid (`z(5, 0) = -5.0 mm`, `z(0, 0) = -10.0 mm`, 0 crashes!)
+    let sim_sq = chip_sim::run_setup_simulation(&chip_sim::SetupSimulationInput {
+        doc: &empty_doc,
+        setup: &resolved_sq,
+        target_bodies: &[],
+        operations: &[chip_sim::SimOperationInput::from_operation(
+            &op_pure,
+            &vbit_90_wide,
+            &tp_pure,
+        )],
+        resolution: chip_sim::SimResolution::Fine,
+        kinematics: chip_sim::MachineKinematicsConfig::default(),
+        verify_config: chip_sim::SimVerificationConfig::default(),
+        cancel: None,
+    })
+    .unwrap();
+    assert_eq!(sim_sq.critical_error_count(), 0);
+    let z_center = sim_sq.final_stock.sample_stock_z(0.0, 0.0).unwrap();
+    let z_wall_mid = sim_sq.final_stock.sample_stock_z(5.0, 0.0).unwrap();
+    assert!(approx_eq(z_center, -10.0, 0.08), "got z_center={z_center}");
+    assert!(
+        approx_eq(z_wall_mid, -5.0, 0.12),
+        "analytical 45° bevel wall at x=5 must be Z=-5.0 mm, got {z_wall_mid}"
+    );
+
+    // 2. Two-Stage Flat-Bottom V-Carve (`T1` Ø6mm Flat Endmill + `T8` 60° V-Bit) on bold TrueType "B8O" + V-Inlay Male Plug!
+    let mut sk_txt = SketchLayer::new("sk_b8o", "Bold Text", "setup_1");
+    sk_txt.entities.push(SketchEntityEntry {
+        id: "txt_b8o".to_string(),
+        name: "B8O".to_string(),
+        sub_layer: None,
+        is_construction: false,
+        entity: SketchEntity::Text(SketchTextSpec {
+            content: "B8O".to_string(),
+            font: SketchFontSource::BuiltinSansBold,
+            cap_height: ParamLength::from_mm(42.0),
+            ..SketchTextSpec::default()
+        }),
+    });
+    sk_txt.rebuild_regions(None);
+    let sketches_txt = [sk_txt];
+    let resolved_txt = setup
+        .resolve_with_sketches(&empty_doc, &sketches_txt, DisplayUnit::Millimeter)
+        .unwrap();
+
+    let mut op_two_tool = Operation::new(
+        "op_vcarve_2tool",
+        "B8O Flat-Bottom V-Carve",
+        OperationKind::VCarve,
+    );
+    op_two_tool.tool_id = Some(vbit_60.id.clone());
+    op_two_tool
+        .selections
+        .push(GeometrySelectionItem::SketchEntity {
+            sketch_id: "sk_b8o".to_string(),
+            entity_id: "txt_b8o".to_string(),
+            reverse: false,
+            side_flip: false,
+        });
+    if let StrategyParams::VCarve(vp) = op_two_tool.strategy_mut() {
+        vp.flat_depth = Some(ParamLength::from_mm(2.0));
+        vp.clearing_tool_id = Some(flat_6mm.id.clone());
+        vp.clearing_strategy = VCarveClearingKind::ContourParallel;
+    }
+
+    let tp_two = generate_operation_toolpath_with_rest(&OperationGenRequest {
+        doc: &empty_doc,
+        sketches: &sketches_txt,
+        setup: &resolved_txt,
+        op: &op_two_tool,
+        tool: vbit_60,
+        clearing_tool: Some(flat_6mm),
+        display_unit: DisplayUnit::Millimeter,
+        is_first_tool_in_setup: true,
+        upstream_rest: &[],
+        cancel: &cancel,
+    })
+    .unwrap();
+    let stage1 = tp_two
+        .clearing_stage
+        .as_ref()
+        .expect("expected Stage 1 Flat Endmill clearing sub-toolpath");
+    assert_eq!(stage1.tool_id, flat_6mm.id);
+    assert!(!stage1.toolpath.segments_wcs.is_empty());
+
+    let sim_two = chip_sim::run_setup_simulation(&chip_sim::SetupSimulationInput {
+        doc: &empty_doc,
+        setup: &resolved_txt,
+        target_bodies: &[],
+        operations: &[
+            chip_sim::SimOperationInput::from_operation(&op_two_tool, flat_6mm, &stage1.toolpath),
+            chip_sim::SimOperationInput::from_operation(&op_two_tool, vbit_60, &tp_two),
+        ],
+        resolution: chip_sim::SimResolution::Fine,
+        kinematics: chip_sim::MachineKinematicsConfig::default(),
+        verify_config: chip_sim::SimVerificationConfig::default(),
+        cancel: None,
+    })
+    .unwrap();
+    assert_eq!(
+        sim_two.critical_error_count(),
+        0,
+        "Two-tool Flat-Bottom V-Carve must pass Fine heightmap sim with 0 crashes: {:?}",
+        sim_two.diagnostics
+    );
+
+    // 3. Male V-Inlay Plug (`start_depth = 1.6 mm`, `glue_gap_bottom = 0.6 mm` => floor `Z = -2.2 mm`)
+    let mut op_plug = Operation::new("op_inlay_plug", "B8O Male Plug", OperationKind::VCarve);
+    op_plug.tool_id = Some(vbit_60.id.clone());
+    op_plug.selections = op_two_tool.selections.clone();
+    if let StrategyParams::VCarve(vp) = op_plug.strategy_mut() {
+        vp.clearing_tool_id = Some(flat_6mm.id.clone());
+        vp.inlay_mode = VCarveInlayMode::MalePlug {
+            start_depth: ParamLength::from_mm(1.6),
+            glue_gap_bottom: ParamLength::from_mm(0.6),
+            border_margin: ParamLength::from_mm(4.0),
+            auto_mirror_x: true,
+        };
+    }
+    let tp_plug = generate_operation_toolpath_with_rest(&OperationGenRequest {
+        doc: &empty_doc,
+        sketches: &sketches_txt,
+        setup: &resolved_txt,
+        op: &op_plug,
+        tool: vbit_60,
+        clearing_tool: Some(flat_6mm),
+        display_unit: DisplayUnit::Millimeter,
+        is_first_tool_in_setup: true,
+        upstream_rest: &[],
+        cancel: &cancel,
+    })
+    .unwrap();
+    assert!(approx_eq(tp_plug.stats.bounds_wcs.min.z, -2.2, 0.05));
+    assert!(tp_plug.clearing_stage.is_some());
 }

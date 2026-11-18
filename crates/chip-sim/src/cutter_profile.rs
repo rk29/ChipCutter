@@ -181,6 +181,17 @@ impl RadialCutterProfile {
         }
     }
 
+    /// Returns `cot(θ) = 1 / tan(θ)` when the cutter has a conical flute envelope (`Chamfer` / `V-Bit` / `Drill`),
+    /// enabling closed-form analytical 3D V-carve stationary-point sweeping in `sweeper.rs`.
+    #[inline]
+    pub fn conical_slope_cot_theta(&self) -> Option<f64> {
+        match self.kind {
+            TipEnvelopeKind::Chamfer { tan_half_angle, .. }
+            | TipEnvelopeKind::Drill { tan_half_angle } => Some(1.0 / tan_half_angle.max(1e-6)),
+            _ => None,
+        }
+    }
+
     /// Evaluates axial offset `dz >= 0` from the cutter tip `(0, 0, 0)` to the lower cutting
     /// envelope at radial distance `r_mm` from the spindle axis (`None` if `r_mm > cutting_radius_mm`).
     #[inline]

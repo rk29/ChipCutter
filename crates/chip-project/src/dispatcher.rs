@@ -54,6 +54,7 @@ struct QueuedOpTask {
     sketches: Arc<Vec<SketchLayer>>,
     op: Operation,
     tool: Option<Tool>,
+    clearing_tool: Option<Tool>,
     display_unit: DisplayUnit,
     is_first_tool_in_setup: bool,
     upstream_rest: Vec<UpstreamSweptInput>,
@@ -314,12 +315,16 @@ impl JobDispatcher {
                             .tool_id
                             .as_ref()
                             .and_then(|tid| project.tool(tid).cloned());
+                        let clearing_tool = project.setups[s_idx].operations[o_idx]
+                            .clearing_tool_id()
+                            .and_then(|tid| project.tool(tid).cloned());
 
                         tasks.push(QueuedOpTask {
                             setup: project.setups[s_idx].clone(),
                             sketches: Arc::clone(&shared_sketches),
                             op: project.setups[s_idx].operations[o_idx].clone(),
                             tool,
+                            clearing_tool,
                             display_unit: project.display_units,
                             is_first_tool_in_setup: is_first_tool,
                             upstream_rest,
@@ -496,11 +501,15 @@ impl JobDispatcher {
                                 .tool_id
                                 .as_ref()
                                 .and_then(|tid| project.tool(tid).cloned());
+                            let clearing_tool = project.setups[s_idx].operations[o_idx]
+                                .clearing_tool_id()
+                                .and_then(|tid| project.tool(tid).cloned());
                             next_tasks.push(QueuedOpTask {
                                 setup: project.setups[s_idx].clone(),
                                 sketches: Arc::clone(&shared_sketches),
                                 op: project.setups[s_idx].operations[o_idx].clone(),
                                 tool,
+                                clearing_tool,
                                 display_unit: project.display_units,
                                 is_first_tool_in_setup: is_first_tool,
                                 upstream_rest,
@@ -563,6 +572,7 @@ fn execute_single_task(
         setup: &resolved_setup,
         op: &task.op,
         tool,
+        clearing_tool: task.clearing_tool.as_ref(),
         display_unit: task.display_unit,
         is_first_tool_in_setup: task.is_first_tool_in_setup,
         upstream_rest: &task.upstream_rest,
@@ -661,6 +671,9 @@ pub fn generate_project_blocking(
                             .tool_id
                             .as_ref()
                             .and_then(|tid| project.tool(tid).cloned());
+                        let clearing_tool = op
+                            .clearing_tool_id()
+                            .and_then(|tid| project.tool(tid).cloned());
                         wave_tasks.push((
                             (s_idx, o_idx),
                             scope,
@@ -669,6 +682,7 @@ pub fn generate_project_blocking(
                                 sketches: Arc::clone(&shared_sketches),
                                 op: op.clone(),
                                 tool,
+                                clearing_tool,
                                 display_unit: project.display_units,
                                 is_first_tool_in_setup: is_first,
                                 upstream_rest,

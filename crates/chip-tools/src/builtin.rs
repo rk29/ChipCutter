@@ -335,6 +335,56 @@ pub fn default_starter_tool_library() -> ToolLibrary {
         })],
     });
 
+    // T8: 6.0 mm 60° Sharp Carbide V-Bit / Engraving Cutter
+    tools.push(Tool {
+        id: ToolId("t8_6mm_60deg_vbit".to_string()),
+        tool_number: 8,
+        length_offset_number: 8,
+        diameter_offset_number: 8,
+        name: "6mm 60° Carbide Engraving V-Bit".to_string(),
+        vendor: None,
+        product_id: None,
+        native_unit: DisplayUnit::Millimeter,
+        spindle_direction: SpindleDirection::Cw,
+        default_coolant: CoolantMode::AirBlast,
+        stickout_length_mm: 20.0,
+        geometry: CutterGeometry::ChamferMill {
+            diameter_mm: 6.0,
+            tip_diameter_mm: 0.0,
+            included_angle_deg: 60.0,
+            flute_length_mm: 10.0,
+            overall_length_mm: 50.0,
+            shank_diameter_mm: 6.0,
+            flutes: 2,
+        },
+        presets: vec![
+            CuttingPreset::from_surface_speed(SurfaceSpeedPresetSpec {
+                id: "hardwood_vcarve",
+                name: "Hardwood / Acrylic - V-Carve & Inlay",
+                material: "Hardwood / Acrylic",
+                diameter_mm: 6.0,
+                flutes: 2,
+                surface_speed_m_min: 300.0,
+                chipload_mm_tooth: 0.045,
+                default_stepdown_mm: 3.0,
+                default_stepover_mm: 0.5,
+                coolant_override: Some(CoolantMode::Disabled),
+            }),
+            CuttingPreset::from_surface_speed(SurfaceSpeedPresetSpec {
+                id: "al6061_vcarve",
+                name: "Aluminum 6061 - Fine V-Engrave",
+                material: "Aluminum 6061",
+                diameter_mm: 6.0,
+                flutes: 2,
+                surface_speed_m_min: 180.0,
+                chipload_mm_tooth: 0.020,
+                default_stepdown_mm: 0.8,
+                default_stepover_mm: 0.35,
+                coolant_override: Some(CoolantMode::AirBlast),
+            }),
+        ],
+    });
+
     ToolLibrary {
         schema_version: ToolLibrary::CURRENT_SCHEMA_VERSION,
         name: "ChipCutter Starter Shop Library".to_string(),

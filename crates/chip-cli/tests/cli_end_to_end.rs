@@ -559,3 +559,114 @@ fn cli_pure2d_inspect_import_bundle_simulate_and_build_work_end_to_end() {
     );
     assert!(out_dir.join("build_summary.json").is_file());
 }
+
+#[test]
+fn v2_golden_adaptive_rest_and_two_tool_vcarve_snapshots_match_byte_for_byte() {
+    use chip_cad::sample_cam_torture_block_step;
+    use chip_project::{
+        build_adaptive_rest_demo_project, build_vcarve_sign_and_inlay_demo_project,
+    };
+
+    let tmp = TempTestDir::new("v2_goldens");
+    let starter = default_starter_tool_library();
+    let update_goldens = std::env::var_os("UPDATE_V2_GOLDENS").is_some();
+
+    // 1. v2 Golden A: 2D Adaptive Roughing + 2D Rest Cleanup (`linuxcnc/v2_adaptive_rest.ngc`)
+    let step_str = sample_cam_torture_block_step().unwrap();
+    let step_path = tmp.path().join("torture.step");
+    std::fs::write(&step_path, step_str.as_bytes()).unwrap();
+    let cad_doc = MonstertruckKernel
+        .load_step_bytes(
+            "torture.step",
+            step_str.as_bytes(),
+            DEFAULT_TESS_CHORD_TOL_MM,
+        )
+        .unwrap();
+    let mut adap_proj = build_adaptive_rest_demo_project(
+        &cad_doc,
+        "torture.step".to_string(),
+        &compute_sha256_hex(step_str.as_bytes()),
+        &starter.tools,
+    );
+    for op in &mut adap_proj.setups[0].operations {
+        if op.id == "op_3_open_shoulder_adaptive" {
+            op.suppressed = true;
+        }
+    }
+    let adap_toml = tmp.path().join("v2_adaptive_rest.chip.toml");
+    adap_proj.save_to_path(&adap_toml).unwrap();
+
+    let adap_out = tmp.path().join("out_adap_lcnc");
+    let adap_res = Command::new(cli_bin())
+        .args([
+            "build",
+            adap_toml.to_str().unwrap(),
+            "-o",
+            adap_out.to_str().unwrap(),
+            "--post",
+            "linuxcnc",
+        ])
+        .output()
+        .expect("build v2_adaptive_rest");
+    assert!(
+        adap_res.status.success(),
+        "v2_adaptive_rest build failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&adap_res.stdout),
+        String::from_utf8_lossy(&adap_res.stderr)
+    );
+    let actual_adap = std::fs::read_to_string(adap_out.join("v2_adaptive_rest.ngc")).unwrap();
+    let golden_adap_path = golden_dir().join("linuxcnc/v2_adaptive_rest.ngc");
+    if update_goldens {
+        std::fs::write(&golden_adap_path, &actual_adap).unwrap();
+    }
+    let expected_adap = std::fs::read_to_string(&golden_adap_path).unwrap();
+    assert_eq!(
+        actual_adap, expected_adap,
+        "v2_adaptive_rest.ngc drifted from golden snapshot"
+    );
+
+    // 2. v2 Golden B: Two-Tool V-Inlay Male Plug (`grbl` split files `T1` Stage 1 + `T8` Stage 2)
+    let mut vcarve_proj = build_vcarve_sign_and_inlay_demo_project(&starter.tools);
+    vcarve_proj.setups.remove(0);
+    let vcarve_toml = tmp.path().join("v2_inlay.chip.toml");
+    vcarve_proj.save_to_path(&vcarve_toml).unwrap();
+
+    let vc_out = tmp.path().join("out_vc_grbl");
+    let vc_res = Command::new(cli_bin())
+        .args([
+            "build",
+            vcarve_toml.to_str().unwrap(),
+            "-o",
+            vc_out.to_str().unwrap(),
+            "--post",
+            "grbl",
+        ])
+        .output()
+        .expect("build v2_inlay");
+    assert!(
+        vc_res.status.success(),
+        "v2_inlay build failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&vc_res.stdout),
+        String::from_utf8_lossy(&vc_res.stderr)
+    );
+
+    let v2_grbl_files = [
+        "v2_inlay_01_T1_6mm_3fl_carbide_flat_end.nc",
+        "v2_inlay_02_T8_6mm_60_carbide_engraving.nc",
+    ];
+    for fname in v2_grbl_files {
+        let actual = std::fs::read_to_string(vc_out.join(fname)).unwrap_or_else(|e| {
+            panic!(
+                "missing emitted v2 Grbl file {fname} ({e}); stdout:\n{}",
+                String::from_utf8_lossy(&vc_res.stdout)
+            )
+        });
+        let gpath = golden_dir().join("grbl").join(fname);
+        if update_goldens {
+            std::fs::write(&gpath, &actual).unwrap();
+        }
+        let expected = std::fs::read_to_string(&gpath)
+            .unwrap_or_else(|e| panic!("missing golden v2 Grbl file {fname}: {e}"));
+        assert_eq!(actual, expected, "{fname} drifted from golden snapshot");
+    }
+}

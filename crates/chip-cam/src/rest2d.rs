@@ -3,11 +3,8 @@
 
 use std::sync::Arc;
 
-use cavalier_contours::{
-    polyline::{
-        BooleanOp, PlineBooleanOptions, PlineOrientation, PlineSource, PlineSourceMut, Polyline,
-    },
-    shape_algorithms::{Shape, ShapeOffsetOptions},
+use cavalier_contours::polyline::{
+    BooleanOp, PlineBooleanOptions, PlineOrientation, PlineSource, PlineSourceMut, Polyline,
 };
 use chip_math::{Aabb2, ArcPolyline2D, ArcSegment2D, DVec2};
 
@@ -185,7 +182,10 @@ impl RegionSet2D {
                 let hole_aabb = hole_cw.exact_aabb();
                 if hole_ccw.vertex_count() >= 2 {
                     let preserved = intersect_set_with_simple_ccw(&acc, &hole_ccw, &hole_aabb);
-                    next = next.union(&preserved);
+                    // `(acc \ O_Q)` lies outside `O_Q` while `(acc ∩ H_k)` lies strictly inside
+                    // `H_k ⊂ int(O_Q)` (and `H_k` are pairwise disjoint), so their closures are
+                    // strictly disjoint—appending directly avoids nested-island recursion!
+                    next.regions.extend(preserved.regions);
                 }
             }
             acc = next;
@@ -333,37 +333,68 @@ fn to_ccw_pline(poly: &ArcPolyline2D) -> Polyline<f64> {
     pl
 }
 
-fn offset_single_region_shape(reg: &PocketRegion2D, signed_inward_mm: f64) -> Vec<PocketRegion2D> {
-    let mut plines = Vec::with_capacity(1 + reg.islands_cw.len());
-    let outer_pl = to_ccw_pline(&reg.outer_ccw);
-    if outer_pl.vertex_count() < 2 {
+pub(crate) fn offset_single_region_shape(
+    reg: &PocketRegion2D,
+    signed_inward_mm: f64,
+) -> Vec<PocketRegion2D> {
+    if !signed_inward_mm.is_finite() {
         return Vec::new();
     }
-    plines.push(outer_pl);
-    for isl in &reg.islands_cw {
-        let mut isl_pl = to_cavalier_polyline(isl);
-        if isl_pl.vertex_count() >= 2 {
-            if isl_pl.orientation() != PlineOrientation::Clockwise {
-                isl_pl.invert_direction_mut();
-            }
-            plines.push(isl_pl);
+    if signed_inward_mm.abs() <= 1e-7 {
+        return vec![reg.clone()];
+    }
+
+    let outer_loops =
+        crate::offset2d::offset_polyline(&reg.outer_ccw.ensure_orientation(true), signed_inward_mm);
+    let mut outers = Vec::new();
+    let mut holes = Vec::new();
+    for lp in outer_loops {
+        if !lp.closed || lp.segments.len() < 2 {
+            continue;
+        }
+        let area = lp.signed_area();
+        if area > 1e-5 {
+            outers.push(lp.ensure_orientation(true));
+        } else if area < -1e-5 {
+            holes.push(lp.ensure_orientation(false));
         }
     }
-    let shape = Shape::from_plines(plines);
-    let offset_shape = shape.parallel_offset(signed_inward_mm, &ShapeOffsetOptions::default());
-    let outers: Vec<ArcPolyline2D> = offset_shape
-        .ccw_plines
-        .iter()
-        .map(|ip| from_cavalier_polyline(&ip.polyline).ensure_orientation(true))
-        .filter(|p| p.closed && p.segments.len() >= 2 && p.signed_area() > 1e-5)
-        .collect();
-    let holes: Vec<ArcPolyline2D> = offset_shape
-        .cw_plines
-        .iter()
-        .map(|ip| from_cavalier_polyline(&ip.polyline).ensure_orientation(false))
-        .filter(|p| p.closed && p.segments.len() >= 2 && p.signed_area().abs() > 1e-5)
-        .collect();
-    assign_holes_to_outers(outers, holes)
+
+    let mut set = RegionSet2D {
+        regions: assign_holes_to_outers(outers, holes),
+    };
+    if set.is_empty() || reg.islands_cw.is_empty() {
+        return set.regions;
+    }
+
+    let mut hole_sets: Vec<RegionSet2D> = Vec::with_capacity(reg.islands_cw.len());
+    for isl in &reg.islands_cw {
+        let isl_loops =
+            crate::offset2d::offset_polyline(&isl.ensure_orientation(true), -signed_inward_mm);
+        let mut i_outers = Vec::new();
+        let mut i_holes = Vec::new();
+        for lp in isl_loops {
+            if !lp.closed || lp.segments.len() < 2 {
+                continue;
+            }
+            let area = lp.signed_area();
+            if area > 1e-5 {
+                i_outers.push(lp.ensure_orientation(true));
+            } else if area < -1e-5 {
+                i_holes.push(lp.ensure_orientation(false));
+            }
+        }
+        let isl_regs = assign_holes_to_outers(i_outers, i_holes);
+        if !isl_regs.is_empty() {
+            hole_sets.push(RegionSet2D { regions: isl_regs });
+        }
+    }
+
+    if !hole_sets.is_empty() {
+        let merged_holes = RegionSet2D::union_many(&mut hole_sets);
+        set = set.difference(&merged_holes);
+    }
+    set.regions
 }
 
 fn assign_holes_to_outers(
@@ -432,6 +463,9 @@ fn union_simple_ccw_loops(
     let mut holes: Vec<Polyline<f64>> = Vec::new();
 
     for mut cand in loops {
+        if cand.vertex_count() < 2 || cand.area().abs() <= 1e-5 {
+            continue;
+        }
         if cand.orientation() != PlineOrientation::CounterClockwise {
             cand.invert_direction_mut();
         }
@@ -445,8 +479,15 @@ fn union_simple_ccw_loops(
                     .next()
                     .map(|b| b.pline)
                     .unwrap_or(cand);
+                if cand.vertex_count() >= 2
+                    && cand.orientation() != PlineOrientation::CounterClockwise
+                {
+                    cand.invert_direction_mut();
+                }
                 for neg in res.neg_plines {
-                    holes.push(neg.pline);
+                    if neg.pline.vertex_count() >= 2 {
+                        holes.push(neg.pline);
+                    }
                 }
             } else {
                 // Disjoint: keep `existing` separate and continue testing `cand` against remaining loops
@@ -456,18 +497,23 @@ fn union_simple_ccw_loops(
         // Filter any previously formed courtyard holes that were covered by `cand`
         let mut surviving_holes = Vec::new();
         for mut h in holes {
+            if h.vertex_count() < 2 {
+                continue;
+            }
             if h.orientation() != PlineOrientation::CounterClockwise {
                 h.invert_direction_mut();
             }
             let diff = h.boolean_opt(&cand, BooleanOp::Not, opts);
             for pos in diff.pos_plines {
-                if pos.pline.area().abs() > 1e-5 {
+                if pos.pline.vertex_count() >= 2 && pos.pline.area().abs() > 1e-5 {
                     surviving_holes.push(pos.pline);
                 }
             }
         }
         holes = surviving_holes;
-        current_outers.push(cand);
+        if cand.vertex_count() >= 2 && cand.area().abs() > 1e-5 {
+            current_outers.push(cand);
+        }
         outers = current_outers;
     }
     (outers, holes)
@@ -509,12 +555,12 @@ fn subtract_simple_ccw_from_set(
             for o in cur_outers {
                 let diff = o.boolean_opt(obs, BooleanOp::Not, &opts);
                 for pos in diff.pos_plines {
-                    if pos.pline.area().abs() > 1e-5 {
+                    if pos.pline.vertex_count() >= 2 && pos.pline.area().abs() > 1e-5 {
                         next_outers.push(pos.pline);
                     }
                 }
                 for neg in diff.neg_plines {
-                    if neg.pline.area().abs() > 1e-5 {
+                    if neg.pline.vertex_count() >= 2 && neg.pline.area().abs() > 1e-5 {
                         cur_holes.push(neg.pline);
                     }
                 }
@@ -524,6 +570,9 @@ fn subtract_simple_ccw_from_set(
 
         let mut base = assemble_regions_from_outers_and_holes(cur_outers, cur_holes);
         for mut cy in obs_courtyards {
+            if cy.vertex_count() < 2 {
+                continue;
+            }
             if cy.orientation() != PlineOrientation::CounterClockwise {
                 cy.invert_direction_mut();
             }

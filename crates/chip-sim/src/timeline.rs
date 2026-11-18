@@ -60,8 +60,8 @@ impl<'a> SimOperationInput<'a> {
                 )
             });
 
-        let base_edge_break_mm = if op.kind == OperationKind::ChamferTrace {
-            match op.resolved_strategy() {
+        let base_edge_break_mm = match op.kind {
+            OperationKind::ChamferTrace => match op.resolved_strategy() {
                 StrategyParams::ChamferTrace(p) => match p.mode {
                     ChamferTraceMode::EdgeChamfer => match p.chamfer_source {
                         ChamferSourceMode::SharpEdge { width } => {
@@ -77,9 +77,11 @@ impl<'a> SimOperationInput<'a> {
                     ChamferTraceMode::CurveTrace => p.trace_axial_offset.value_mm.max(0.0),
                 },
                 _ => 0.0,
+            },
+            OperationKind::VCarve if toolpath.stats.bounds_wcs.is_valid() => {
+                (toolpath.stats.bounds_wcs.max.z - toolpath.stats.bounds_wcs.min.z).max(0.0) + 0.5
             }
-        } else {
-            0.0
+            _ => 0.0,
         };
 
         let sketch_depth_allowance_mm =

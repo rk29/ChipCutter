@@ -69,6 +69,8 @@ pub enum ToolOperationClass {
     HelicalBore,
     Chamfer,
     Trace,
+    VCarve,
+    VCarveFlatClearance,
 }
 
 /// Physical cutter geometry stored in canonical `f64` millimeters.
@@ -255,6 +257,7 @@ impl CutterGeometry {
                     | ToolOperationClass::Pocket2D
                     | ToolOperationClass::HelicalBore
                     | ToolOperationClass::Trace
+                    | ToolOperationClass::VCarveFlatClearance
             ),
             Self::BullNoseEndmill { .. } => matches!(
                 op_class,
@@ -270,10 +273,15 @@ impl CutterGeometry {
                     | ToolOperationClass::Pocket2D
                     | ToolOperationClass::Trace
             ),
-            Self::ChamferMill { .. } => matches!(
-                op_class,
-                ToolOperationClass::Chamfer | ToolOperationClass::Trace | ToolOperationClass::Drill
-            ),
+            Self::ChamferMill {
+                included_angle_deg, ..
+            } => match op_class {
+                ToolOperationClass::VCarve => (10.0..=160.0).contains(included_angle_deg),
+                ToolOperationClass::Chamfer
+                | ToolOperationClass::Trace
+                | ToolOperationClass::Drill => true,
+                _ => false,
+            },
             Self::TwistDrill { .. } => matches!(op_class, ToolOperationClass::Drill),
             Self::FaceMill { .. } => matches!(
                 op_class,

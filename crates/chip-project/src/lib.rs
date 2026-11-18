@@ -25,6 +25,7 @@ pub use demos::{
     build_adaptive_rest_demo_project, build_cam_torture_project,
     build_engraved_nameplate_demo_project, build_multi_feature_bracket_project,
     build_pure2d_router_panel_demo_project, build_revision_v1_demo_project,
+    build_vcarve_sign_and_inlay_demo_project,
 };
 pub use dispatcher::{
     BatchGenerationReport, DispatcherEvent, JobDispatcher, generate_project_blocking,
@@ -1018,5 +1019,93 @@ setups = []
 
         let _ = std::fs::remove_dir_all(&tmp_src);
         let _ = std::fs::remove_dir_all(&tmp_dst);
+    }
+
+    #[test]
+    fn vcarve_sign_and_inlay_demo_passes_sim_and_posts_atc_and_grbl_split_files() {
+        use chip_cad::CadDocument;
+        use chip_post::resolve_post_profile;
+        use chip_sim::SimResolution;
+
+        let starter = default_starter_tool_library();
+        let mut proj = build_vcarve_sign_and_inlay_demo_project(&starter.tools);
+        assert_eq!(proj.setups.len(), 2);
+
+        let empty_cad = CadDocument::empty();
+        let val = validate_project(&proj, None, Some(&empty_cad));
+        assert!(
+            val.is_valid(),
+            "expected valid vcarve demo project, got: {:?}",
+            val.diagnostics
+        );
+
+        let mut cache = ToolpathCache::new(32);
+        let batch = generate_project_blocking(&mut proj, &empty_cad, &mut cache, 1);
+        assert!(batch.is_ok(), "vcarve batch errors: {:?}", batch.errors);
+        assert_eq!(batch.generated.len(), 4);
+
+        // Setup 1 (`Op 1` 2-stage + `Op 2` medial + `Op 3` contour = 4 ReadySetupOperation items!)
+        let ready_s0 = collect_ready_setup_operations(&proj, 0, &cache, 1);
+        assert_eq!(ready_s0.len(), 4);
+        assert_eq!(ready_s0[0].tool.tool_number, 1); // Stage 1 Ø6mm Flat Endmill
+        assert_eq!(ready_s0[1].tool.tool_number, 8); // Stage 2 60° V-Bit
+
+        // Both Setup 1 (Female Sign Plaque) and Setup 2 (Male V-Inlay Plug) must pass 3D sim cleanly!
+        for setup_idx in [0, 1] {
+            let sim = simulate_project_setup(&SetupSimRequest {
+                project: &proj,
+                setup_idx,
+                cad_doc: &empty_cad,
+                cad_revision: 1,
+                cache: &cache,
+                kinematics: resolve_kinematics_for_key("linuxcnc", None),
+                resolution: SimResolution::Standard,
+                cancel: None,
+            })
+            .unwrap();
+            assert!(
+                !sim.has_critical_errors(),
+                "V-Carve demo setup {setup_idx} must pass heightfield sim with 0 crashes/gouges, got: {:?}",
+                sim.diagnostics
+            );
+        }
+
+        // Verify ATC (`linuxcnc`) emits 1 unified program with `T1 M6` + `T8 M6`!
+        let linuxcnc = resolve_post_profile("linuxcnc", None).unwrap();
+        let atc_files = post_process_project_setup(&SetupPostRequest {
+            project: &proj,
+            setup_idx: 1,
+            cad_doc: &empty_cad,
+            cad_revision: 1,
+            cache: &cache,
+            post_profile: &linuxcnc,
+            project_label: &proj.project_name,
+            program_stem: "inlay_plug",
+        })
+        .unwrap();
+        assert_eq!(atc_files.len(), 1);
+        assert!(atc_files[0].content.contains("T1 M6"));
+        assert!(atc_files[0].content.contains("T8 M6"));
+
+        // Verify GRBL (`split_files_by_tool = true`) splits the single Two-Tool V-Carve op into 2 files!
+        let grbl = resolve_post_profile("grbl", None).unwrap();
+        let grbl_files = post_process_project_setup(&SetupPostRequest {
+            project: &proj,
+            setup_idx: 1,
+            cad_doc: &empty_cad,
+            cad_revision: 1,
+            cache: &cache,
+            post_profile: &grbl,
+            project_label: &proj.project_name,
+            program_stem: "inlay_plug",
+        })
+        .unwrap();
+        assert_eq!(
+            grbl_files.len(),
+            2,
+            "GRBL must split Two-Tool V-Carve into Stage 1 (T1) and Stage 2 (T8) files!"
+        );
+        assert!(grbl_files[0].filename.contains("T1"));
+        assert!(grbl_files[1].filename.contains("T8"));
     }
 }

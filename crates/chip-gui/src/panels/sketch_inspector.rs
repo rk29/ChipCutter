@@ -545,6 +545,20 @@ pub fn show_sketch_inspector(
                     OperationKind::ChamferTrace,
                 );
             }
+            if ui
+                .button("+ V-Carve")
+                .on_hover_text("Create a variable-depth 3D V-Carve / Bevel Inlay operation")
+                .clicked()
+            {
+                action = create_quick_sketch_op(
+                    project,
+                    history,
+                    sketch_idx,
+                    active_setup_idx,
+                    *selected_entity_idx,
+                    OperationKind::VCarve,
+                );
+            }
         });
     });
 

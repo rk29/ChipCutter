@@ -54,13 +54,14 @@ pub(crate) struct CachedFrameGeo {
     pub focused_extracted: Option<Result<ExtractedSelectionSummary, String>>,
 }
 
-/// Optional startup demo mode for CLI flags (`--demo-pure-2d`, `--demo-nameplate`).
+/// Optional startup demo mode for CLI flags (`--demo-pure-2d`, `--demo-nameplate`, `--demo-vcarve`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum StartupDemoMode {
     #[default]
     None,
     Pure2dPanel,
     EngravedNameplate,
+    VCarveSign,
 }
 
 /// Self-test automation configuration for headless CI screenshot capture.
@@ -240,7 +241,7 @@ impl ChipCutterApp {
             wb_stepover: ExpressionInput::new(2.54, Some("tool_d * 0.4")),
             wb_clearance_z: ExpressionInput::new(26.0, Some("model_top_z + 10 mm")),
             logs: vec![
-                "ChipCutter v0.1.0 initialized (v1 Complete: Associative STEP Reload, .chipz Bundles, Heightmap Verifier, & Post-Processors)."
+                "ChipCutter v0.2.0 initialized (v2 Complete: 2D Adaptive & Rest, DXF/SVG & Sketches, CAM Typography, Two-Tool V-Carving & V-Inlays)."
                     .to_string(),
             ],
             self_test,
@@ -274,6 +275,7 @@ impl ChipCutterApp {
                 StartupDemoMode::EngravedNameplate => {
                     app.load_engraved_nameplate_demo(&cc.egui_ctx)
                 }
+                StartupDemoMode::VCarveSign => app.load_vcarve_sign_demo(&cc.egui_ctx),
                 StartupDemoMode::None => {
                     app.spawn_cam_torture_sample_load(true, cc.egui_ctx.clone())
                 }

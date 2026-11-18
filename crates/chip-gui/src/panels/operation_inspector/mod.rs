@@ -8,7 +8,7 @@ use chip_cad::CadDocument;
 use chip_cam::{ExtractedSelectionSummary, OperationStatus, ResolvedSetup};
 use chip_math::EvalContext;
 use chip_project::{ProjectDocument, UndoHistory};
-use chip_tools::ToolLibrary;
+use chip_tools::{ToolId, ToolLibrary, ToolOperationClass};
 
 use crate::panels::{OperationTab, ViewportPickMode, browser::default_pick_mode_for_op};
 
@@ -237,11 +237,34 @@ pub fn show_operation_inspector(ui: &mut egui::Ui, ctx: OperationInspectorCtx<'_
                             .effective_cutting_params(t);
                         (t.geometry.cutting_diameter_mm(), eff.cutting_feed_mm_min)
                     });
+                let mut clearing_tool_candidates: Vec<(ToolId, String, Option<String>)> =
+                    Vec::new();
+                for t in project.tools.iter().chain(global_tools.tools.iter()) {
+                    if t.geometry
+                        .supports_operation(ToolOperationClass::VCarveFlatClearance)
+                        && !clearing_tool_candidates
+                            .iter()
+                            .any(|(id, _, _)| *id == t.id)
+                    {
+                        let preset_id = t.presets.first().map(|p| p.id.clone());
+                        clearing_tool_candidates.push((
+                            t.id.clone(),
+                            format!(
+                                "T{} — {} (Ø{:.2} mm)",
+                                t.tool_number,
+                                t.name,
+                                t.geometry.cutting_diameter_mm()
+                            ),
+                            preset_id,
+                        ));
+                    }
+                }
                 passes_tab::show_passes_tab(
                     ui,
                     passes_tab::PassesTabCtx {
                         op: &mut project.setups[setup_idx].operations[op_idx],
                         preceding_ops: &preceding_ops,
+                        clearing_tool_candidates: &clearing_tool_candidates,
                         tool_feed_preview,
                         display_unit,
                         setup_idx,
@@ -263,6 +286,14 @@ pub fn show_operation_inspector(ui: &mut egui::Ui, ctx: OperationInspectorCtx<'_
         });
 
     if let Some(action) = mutated_label {
+        if let Some(ctid) = project.setups[setup_idx].operations[op_idx]
+            .clearing_tool_id()
+            .cloned()
+            && project.tool(&ctid).is_none()
+            && let Some(gt) = global_tools.tool(&ctid)
+        {
+            project.ensure_tool_embedded(gt);
+        }
         let mut pre_doc = project.clone();
         pre_doc.tools.truncate(pre_tools_len);
         pre_doc.setups[setup_idx].operations[op_idx] = pre_op;

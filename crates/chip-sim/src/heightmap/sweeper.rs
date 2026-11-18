@@ -619,11 +619,11 @@ impl SweepPrimitive {
                     });
                 }
 
-                // Shaped cutter on sloped 3D ramp: sample `[t_lo, t_hi]` + `t_min_r`
+                // Shaped cutter on sloped 3D ramp: evaluate `[t_lo, t_hi]`, `t_min_r`, AND exact
+                // closed-form stationary point `t*` for conical V-bits/chamfer cutters!
                 let mut best: Option<CutterCellHit> = None;
-                let samples = 6usize;
-                for s in 0..=samples {
-                    let t = t_lo + (t_hi - t_lo) * (s as f64 / samples as f64);
+                let mut consider_t = |t_cand: f64| {
+                    let t = t_cand.clamp(t_lo, t_hi);
                     let r = (px - (start.x + t * dx)).hypot(py - (start.y + t * dy));
                     if let Some(p_dz) = prof.tip_to_envelope_dz(r) {
                         let z_tip = start.z + t * dz;
@@ -636,19 +636,22 @@ impl SweepPrimitive {
                             });
                         }
                     }
+                };
+
+                let samples = 6usize;
+                for s in 0..=samples {
+                    consider_t(t_lo + (t_hi - t_lo) * (s as f64 / samples as f64));
                 }
-                {
-                    let r = min_r;
-                    if let Some(p_dz) = prof.tip_to_envelope_dz(r) {
-                        let z_tip = start.z + t_min_r * dz;
-                        let z_cut = z_tip + p_dz;
-                        if best.is_none_or(|b| z_cut < b.z_cut_mm) {
-                            best = Some(CutterCellHit {
-                                z_cut_mm: z_cut,
-                                z_tip_mm: z_tip,
-                                r_mm: r,
-                            });
-                        }
+                consider_t(t_min_r);
+
+                if let Some(k_cot) = prof.conical_slope_cot_theta() {
+                    let denom_sq = k_cot * k_cot * l2 - dz * dz;
+                    if denom_sq > 1e-12 {
+                        let d_perp = d_perp_sq.max(0.0).sqrt();
+                        let l_xy = l2.sqrt();
+                        let t_star =
+                            tc - dz.signum() * dz.abs() * d_perp / (l_xy * denom_sq.sqrt());
+                        consider_t(t_star);
                     }
                 }
                 best

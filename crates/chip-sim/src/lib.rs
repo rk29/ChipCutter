@@ -33,7 +33,7 @@ mod tests {
     #[test]
     fn radial_cutter_profiles_and_3d_revolved_meshes_are_exact_for_all_six_types() {
         let lib = default_starter_tool_library();
-        assert_eq!(lib.tools.len(), 7);
+        assert_eq!(lib.tools.len(), 8);
 
         // T1: 6mm Flat Endmill -> P(r) == 0 for 0 <= r <= 3
         let flat = RadialCutterProfile::from_tool(&lib.tools[0]);
@@ -82,6 +82,19 @@ mod tests {
         assert!(!face.is_center_cutting);
         assert!(approx_eq(face.tip_to_envelope_dz(10.0).unwrap(), 0.0, 1e-9));
         assert!(face.tip_to_envelope_dz(19.5).unwrap() > 0.8);
+
+        // T8: 6mm 60deg V-Bit (sharp tip_d = 0.0 -> cot(30deg) = sqrt(3))
+        let vbit = RadialCutterProfile::from_tool(&lib.tools[7]);
+        assert!(approx_eq(
+            vbit.conical_slope_cot_theta().unwrap(),
+            3.0_f64.sqrt(),
+            1e-9
+        ));
+        assert!(approx_eq(
+            vbit.tip_to_envelope_dz(1.0).unwrap(),
+            3.0_f64.sqrt(),
+            1e-9
+        ));
 
         for t in &lib.tools {
             let mesh = build_cutter_assembly_mesh(t, 24, false);

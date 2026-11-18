@@ -3,16 +3,17 @@ use chip_cam::{
     ChamferTraceParams, Contour2DParams, ContourCompensation, DrillBoreParams, DrillCycleKind,
     FacingCutMode, FacingParams, HoleMachiningMode, Operation, OperationKind, Pocket2DParams,
     PocketPassOrder, PocketStrategyKind, RestMachiningConfig, RestMachiningMode, StrategyParams,
-    TabPlacementMode, TabProfileKind,
+    TabPlacementMode, TabProfileKind, VCarveClearingKind, VCarveInlayMode, VCarveParams,
 };
 use chip_math::{DisplayUnit, EvalContext, ParamLength};
-use chip_tools::compute_adaptive_thinning_feed;
+use chip_tools::{ToolId, compute_adaptive_thinning_feed};
 
 use crate::{panels::ViewportPickMode, widgets::edit_param_length};
 
 pub struct PassesTabCtx<'a> {
     pub op: &'a mut Operation,
     pub preceding_ops: &'a [(String, String)],
+    pub clearing_tool_candidates: &'a [(ToolId, String, Option<String>)],
     pub tool_feed_preview: Option<(f64, f64)>,
     pub display_unit: DisplayUnit,
     pub setup_idx: usize,
@@ -26,6 +27,7 @@ pub fn show_passes_tab(ui: &mut egui::Ui, ctx: PassesTabCtx<'_>) {
     let PassesTabCtx {
         op,
         preceding_ops,
+        clearing_tool_candidates,
         tool_feed_preview,
         display_unit,
         setup_idx,
@@ -124,6 +126,19 @@ pub fn show_passes_tab(ui: &mut egui::Ui, ctx: PassesTabCtx<'_>) {
         }
         StrategyParams::ChamferTrace(p) => {
             show_chamfer_trace_params(ui, p, setup_idx, op_idx, eval_ctx, mutated_label);
+        }
+        StrategyParams::VCarve(p) => {
+            show_vcarve_params(
+                ui,
+                VCarveParamsUiCtx {
+                    p,
+                    clearing_tool_candidates,
+                    setup_idx,
+                    op_idx,
+                    eval_ctx,
+                    mutated_label,
+                },
+            );
         }
     }
 }
@@ -981,6 +996,200 @@ fn show_chamfer_trace_params(
             ) {
                 *mutated_label = Some("Edit Trace Axial Depth");
             }
+        }
+    }
+}
+
+struct VCarveParamsUiCtx<'a> {
+    p: &'a mut VCarveParams,
+    clearing_tool_candidates: &'a [(ToolId, String, Option<String>)],
+    setup_idx: usize,
+    op_idx: usize,
+    eval_ctx: &'a EvalContext,
+    mutated_label: &'a mut Option<&'static str>,
+}
+
+fn show_vcarve_params(ui: &mut egui::Ui, ctx: VCarveParamsUiCtx<'_>) {
+    let VCarveParamsUiCtx {
+        p,
+        clearing_tool_candidates,
+        setup_idx,
+        op_idx,
+        eval_ctx,
+        mutated_label,
+    } = ctx;
+
+    let mut has_flat_depth = p.flat_depth.is_some();
+    if ui
+        .checkbox(
+            &mut has_flat_depth,
+            "Limit Maximum Depth (Flat-Bottom V-Carve)",
+        )
+        .on_hover_text(
+            "Clamps V-bit carving at a flat floor depth (`d_flat`) for wide letters, crests, and V-inlays.",
+        )
+        .changed()
+    {
+        p.flat_depth = if has_flat_depth {
+            Some(ParamLength::from_mm(3.0))
+        } else {
+            None
+        };
+        *mutated_label = Some("Toggle V-Carve Flat Depth");
+    }
+
+    if let Some(fd) = &mut p.flat_depth {
+        ui.label("Flat Floor Depth (`d_flat` below Top):");
+        if edit_param_length(ui, ("vc_flat_d", setup_idx, op_idx), fd, eval_ctx, 120.0) {
+            *mutated_label = Some("Edit V-Carve Flat Depth");
+        }
+
+        ui.add_space(4.0);
+        ui.strong("Two-Stage Flat Area Clearance");
+        let current_lbl = match &p.clearing_tool_id {
+            None => "None (V-Bit Clears All Flats)".to_string(),
+            Some(cid) => clearing_tool_candidates
+                .iter()
+                .find(|(id, _, _)| id == cid)
+                .map_or_else(|| cid.0.clone(), |(_, lbl, _)| lbl.clone()),
+        };
+        ui.label("Secondary Flat Clearing Tool:");
+        egui::ComboBox::from_id_salt(("vc_clear_tool", setup_idx, op_idx))
+            .selected_text(current_lbl)
+            .width(230.0)
+            .show_ui(ui, |ui| {
+                let is_none = p.clearing_tool_id.is_none();
+                if ui
+                    .selectable_label(is_none, "None (V-Bit Clears All Flats)")
+                    .clicked()
+                    && !is_none
+                {
+                    p.clearing_tool_id = None;
+                    p.clearing_preset_id = None;
+                    *mutated_label = Some("Clear V-Carve Secondary Tool");
+                }
+                for (tid, lbl, default_preset) in clearing_tool_candidates {
+                    let is_sel = p.clearing_tool_id.as_ref() == Some(tid);
+                    if ui.selectable_label(is_sel, lbl).clicked() && !is_sel {
+                        p.clearing_tool_id = Some(tid.clone());
+                        p.clearing_preset_id = default_preset.clone();
+                        *mutated_label = Some("Select V-Carve Secondary Clearing Tool");
+                    }
+                }
+            });
+
+        if p.clearing_tool_id.is_some() {
+            ui.horizontal_wrapped(|ui| {
+                ui.label("Stage 1 Strategy:");
+                for kind in VCarveClearingKind::ALL {
+                    if ui
+                        .selectable_value(&mut p.clearing_strategy, kind, kind.label())
+                        .changed()
+                    {
+                        *mutated_label = Some("Change V-Carve Clearing Strategy");
+                    }
+                }
+            });
+            ui.label("Stage 1 Radial Blend Allowance:");
+            if edit_param_length(
+                ui,
+                ("vc_clr_alw", setup_idx, op_idx),
+                &mut p.clearing_radial_allowance,
+                eval_ctx,
+                110.0,
+            ) {
+                *mutated_label = Some("Edit V-Carve Clearing Allowance");
+            }
+        }
+
+        ui.label("V-Bit Flat Corner Stepover:");
+        if edit_param_length(
+            ui,
+            ("vc_flat_so", setup_idx, op_idx),
+            &mut p.vbit_flat_stepover,
+            eval_ctx,
+            110.0,
+        ) {
+            *mutated_label = Some("Edit V-Bit Flat Stepover");
+        }
+    }
+
+    ui.separator();
+    ui.strong("Mated V-Inlay Mode");
+    let is_male = matches!(p.inlay_mode, VCarveInlayMode::MalePlug { .. });
+    let mut sel_male = is_male;
+    ui.horizontal_wrapped(|ui| {
+        if ui
+            .selectable_value(&mut sel_male, false, "Female Cavity")
+            .clicked()
+            && is_male
+        {
+            p.inlay_mode = VCarveInlayMode::Disabled;
+            *mutated_label = Some("Set V-Carve Female Cavity Mode");
+        }
+        if ui
+            .selectable_value(&mut sel_male, true, "Male Inlay Plug")
+            .on_hover_text(
+                "Generates a mirrored raised male V-inlay plug with bevel engagement (`start_depth`) + bottom glue gap.",
+            )
+            .clicked()
+            && !is_male
+        {
+            if p.flat_depth.is_none() {
+                p.flat_depth = Some(ParamLength::from_mm(3.0));
+            }
+            p.inlay_mode = VCarveInlayMode::MalePlug {
+                start_depth: ParamLength::from_mm(2.0),
+                glue_gap_bottom: ParamLength::from_mm(1.0),
+                border_margin: ParamLength::from_mm(5.0),
+                auto_mirror_x: true,
+            };
+            *mutated_label = Some("Enable V-Inlay Male Plug Mode");
+        }
+    });
+
+    if let VCarveInlayMode::MalePlug {
+        start_depth,
+        glue_gap_bottom,
+        border_margin,
+        auto_mirror_x,
+    } = &mut p.inlay_mode
+    {
+        ui.label("Inlay Engagement (`start_depth`):");
+        if edit_param_length(
+            ui,
+            ("vc_inl_sd", setup_idx, op_idx),
+            start_depth,
+            eval_ctx,
+            110.0,
+        ) {
+            *mutated_label = Some("Edit V-Inlay Start Depth");
+        }
+        ui.label("Bottom Glue Gap (`glue_gap_bottom`):");
+        if edit_param_length(
+            ui,
+            ("vc_inl_gg", setup_idx, op_idx),
+            glue_gap_bottom,
+            eval_ctx,
+            110.0,
+        ) {
+            *mutated_label = Some("Edit V-Inlay Glue Gap");
+        }
+        ui.label("Plug Frame Margin:");
+        if edit_param_length(
+            ui,
+            ("vc_inl_bm", setup_idx, op_idx),
+            border_margin,
+            eval_ctx,
+            110.0,
+        ) {
+            *mutated_label = Some("Edit V-Inlay Border Margin");
+        }
+        if ui
+            .checkbox(auto_mirror_x, "Mirror Artwork Across X (Face-Down Glue-Up)")
+            .changed()
+        {
+            *mutated_label = Some("Toggle V-Inlay Auto Mirror X");
         }
     }
 }

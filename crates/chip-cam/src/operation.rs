@@ -8,7 +8,7 @@ use crate::{
     selection::GeometrySelectionItem,
 };
 
-/// The 5 core v1 2.5D CAM operation types (`05-operations.md`).
+/// Supported 2.5D CAM operation types (`05-operations.md`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OperationKind {
@@ -19,15 +19,18 @@ pub enum OperationKind {
     Pocket2D,
     DrillBore,
     ChamferTrace,
+    #[serde(rename = "vcarve")]
+    VCarve,
 }
 
 impl OperationKind {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Facing,
         Self::Contour2D,
         Self::Pocket2D,
         Self::DrillBore,
         Self::ChamferTrace,
+        Self::VCarve,
     ];
 
     pub const fn label(self) -> &'static str {
@@ -37,6 +40,7 @@ impl OperationKind {
             Self::Pocket2D => "2D Pocket",
             Self::DrillBore => "Drill / Helical Bore",
             Self::ChamferTrace => "Edge Chamfer / Trace",
+            Self::VCarve => "V-Carve / Bevel Inlay",
         }
     }
 
@@ -47,6 +51,7 @@ impl OperationKind {
             Self::Pocket2D => "2D Pocket",
             Self::DrillBore => "Holes / Bore",
             Self::ChamferTrace => "Edge Chamfer",
+            Self::VCarve => "V-Carve",
         }
     }
 
@@ -70,6 +75,7 @@ impl OperationKind {
                     .supports_operation(ToolOperationClass::Chamfer)
                     || tool.geometry.supports_operation(ToolOperationClass::Trace)
             }
+            Self::VCarve => tool.geometry.supports_operation(ToolOperationClass::VCarve),
         }
     }
 }
@@ -228,6 +234,14 @@ impl Operation {
     /// Returns `true` when 2.5D Rest Machining is enabled on this operation.
     pub fn has_rest_machining(&self) -> bool {
         !self.passes.rest_machining.is_disabled()
+    }
+
+    /// Returns the optional secondary Flat Area Clearance [`ToolId`] when `self` is a two-stage `VCarve` op.
+    pub fn clearing_tool_id(&self) -> Option<&ToolId> {
+        match &self.strategy {
+            Some(StrategyParams::VCarve(p)) => p.clearing_tool_id.as_ref(),
+            _ => None,
+        }
     }
 
     pub fn mark_dirty(&mut self) {

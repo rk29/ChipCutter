@@ -18,6 +18,7 @@ pub enum BrowserAction {
     LoadAdaptiveRestDemo,
     LoadPure2dPanelDemo,
     LoadNameplateDemo,
+    LoadVCarveDemo,
     NewSetupXySketch,
     StartPickSketchHostFace,
     LoadRevisionDemoV1,
@@ -189,6 +190,15 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                             .clicked()
                         {
                             emitted_action = Some(BrowserAction::LoadNameplateDemo);
+                        }
+                        if ui
+                            .small_button("V-Carve + Inlay")
+                            .on_hover_text(
+                                "Load Milestone 9 V-Carved Hardwood Sign & Mated V-Inlay Plug (Two-Stage Flat Clearance + 3D Medial Corner Climbs)",
+                            )
+                            .clicked()
+                        {
+                            emitted_action = Some(BrowserAction::LoadVCarveDemo);
                         }
                         if ui
                             .small_button("Bracket")
@@ -427,6 +437,7 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                                 ("Pocket", OperationKind::Pocket2D),
                                 ("Drill/Bore", OperationKind::DrillBore),
                                 ("Chamfer", OperationKind::ChamferTrace),
+                                ("V-Carve", OperationKind::VCarve),
                             ] {
                                 if ui.small_button(short).clicked() {
                                     deferred_op_add = Some((s_idx, kind));
@@ -714,7 +725,7 @@ pub fn default_pick_mode_for_op(
         return ViewportPickMode::InspectEntity;
     }
     match kind {
-        OperationKind::Facing | OperationKind::Pocket2D => {
+        OperationKind::Facing | OperationKind::Pocket2D | OperationKind::VCarve => {
             ViewportPickMode::OpPlanarFaces { setup_idx, op_idx }
         }
         OperationKind::Contour2D | OperationKind::ChamferTrace => {

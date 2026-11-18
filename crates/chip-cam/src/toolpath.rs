@@ -160,6 +160,14 @@ impl Default for ToolpathStats {
     }
 }
 
+/// Optional Stage 1 Flat-Endmill area clearance sub-toolpath attached to a two-stage
+/// [`crate::params::VCarveParams`] operation (`05-operations.md` §6B).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ClearingSubToolpath {
+    pub tool_id: chip_tools::ToolId,
+    pub toolpath: GeneratedToolpath,
+}
+
 /// Cached output of generating a single 2.5D CAM [`crate::operation::Operation`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GeneratedToolpath {
@@ -169,6 +177,8 @@ pub struct GeneratedToolpath {
     pub stats: ToolpathStats,
     pub tab_markers_wcs: Vec<TabMarker3D>,
     pub warnings: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clearing_stage: Option<Box<ClearingSubToolpath>>,
 }
 
 /// Planar or helical `G17` XY circular arc specification passed to [`ToolpathBuilder::arc_xy_to`].
@@ -219,6 +229,7 @@ pub struct ToolpathBuilder {
     pub segments_wcs: Vec<ToolpathSegment3D>,
     pub tab_markers_wcs: Vec<TabMarker3D>,
     pub warnings: Vec<String>,
+    pub clearing_stage: Option<Box<ClearingSubToolpath>>,
     pub pass_count: usize,
     dwell_total_sec: f64,
 }
@@ -232,6 +243,7 @@ impl ToolpathBuilder {
             segments_wcs: Vec::new(),
             tab_markers_wcs: Vec::new(),
             warnings: Vec::new(),
+            clearing_stage: None,
             pass_count: 0,
             dwell_total_sec: 0.0,
         }
@@ -579,6 +591,7 @@ impl ToolpathBuilder {
             },
             tab_markers_wcs: self.tab_markers_wcs,
             warnings: self.warnings,
+            clearing_stage: self.clearing_stage,
         }
     }
 }

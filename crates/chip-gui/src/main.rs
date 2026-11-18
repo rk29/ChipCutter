@@ -22,6 +22,10 @@ struct GuiArgs {
     #[arg(long)]
     demo_nameplate: bool,
 
+    /// Launch directly into the Milestone 9 V-Carve Sign & Mated V-Inlay Plug demo job.
+    #[arg(long)]
+    demo_vcarve: bool,
+
     /// Render the sample part, capture a full-window PNG screenshot to this path, and exit.
     #[arg(long)]
     self_test_screenshot: Option<PathBuf>,
@@ -37,7 +41,9 @@ fn main() -> eframe::Result {
 
     let args = GuiArgs::parse();
     let self_test = args.self_test_screenshot.map(SelfTestConfig::new);
-    let demo_mode = if args.demo_nameplate {
+    let demo_mode = if args.demo_vcarve {
+        StartupDemoMode::VCarveSign
+    } else if args.demo_nameplate {
         StartupDemoMode::EngravedNameplate
     } else if args.demo_pure_2d {
         StartupDemoMode::Pure2dPanel

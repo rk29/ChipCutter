@@ -37,7 +37,7 @@ mod tests {
     fn starter_library_validates_and_roundtrips_toml_deterministically() {
         let lib = default_starter_tool_library();
         lib.validate_all().unwrap();
-        assert_eq!(lib.tools.len(), 7);
+        assert_eq!(lib.tools.len(), 8);
 
         let toml_1 = lib.to_toml_string().unwrap();
         let reloaded = ToolLibrary::from_toml_str(&toml_1).unwrap();

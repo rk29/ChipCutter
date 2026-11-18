@@ -197,6 +197,17 @@ impl ChipCutterApp {
                     o_idx,
                     cad_rev,
                 ) {
+                    if let Some(stage) = &tp.clearing_stage {
+                        let mut stage_key = hash.0;
+                        stage_key[0] ^= 0x53;
+                        stage_key[1] ^= 0x31;
+                        self.highlight.toolpaths.push(ToolpathRenderEntry {
+                            op_id: format!("{}_clear", op.id),
+                            cache_key: stage_key,
+                            toolpath: std::sync::Arc::new(stage.toolpath.clone()),
+                            is_focused,
+                        });
+                    }
                     self.highlight.toolpaths.push(ToolpathRenderEntry {
                         op_id: op.id.clone(),
                         cache_key: hash.0,

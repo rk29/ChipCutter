@@ -240,6 +240,13 @@ impl ChipCutterApp {
                 ui.close();
                 self.load_engraved_nameplate_demo(ctx);
             }
+            if ui
+                .button("Demo: Load V-Carve Sign & V-Inlay Plug")
+                .clicked()
+            {
+                ui.close();
+                self.load_vcarve_sign_demo(ctx);
+            }
             if ui.button("Load Multi-Feature Sample Bracket").clicked() {
                 ui.close();
                 self.spawn_multi_feature_sample_load(false, true, ctx.clone());
@@ -648,6 +655,45 @@ impl ChipCutterApp {
                     .clicked()
                 {
                     self.create_new_adaptive_operation();
+                }
+                if ui
+                    .button("+ V-Carve")
+                    .on_hover_text(
+                        "Add a new 3D Medial-Axis V-Carve / Flat Clearance / V-Inlay operation",
+                    )
+                    .clicked()
+                    && self.active_setup_idx < self.project.setups.len()
+                {
+                    self.history
+                        .record_before_edit("Add V-Carve", None, &self.project);
+                    let s_idx = self.active_setup_idx;
+                    let n = self.project.setups[s_idx].operations.len() + 1;
+                    let mut op = Operation::new(
+                        format!("op_{s_idx}_{n}_vcarve"),
+                        format!("V-Carve {n}"),
+                        OperationKind::VCarve,
+                    );
+                    if let Some(t) = self
+                        .project
+                        .tools
+                        .iter()
+                        .chain(self.global_tools.tools.iter())
+                        .find(|t| OperationKind::VCarve.is_compatible_with_tool(t))
+                        .cloned()
+                    {
+                        self.project.ensure_tool_embedded(&t);
+                        op.tool_id = Some(t.id);
+                        op.preset_id = t.presets.first().map(|p| p.id.clone());
+                    }
+                    self.project.setups[s_idx].operations.push(op);
+                    let o_idx = self.project.setups[s_idx].operations.len() - 1;
+                    self.inspector_focus = InspectorFocus::Operation {
+                        setup_idx: s_idx,
+                        op_idx: o_idx,
+                    };
+                    self.op_tab = OperationTab::Geometry;
+                    self.pick_mode =
+                        default_pick_mode_for_op(s_idx, o_idx, OperationKind::VCarve, self.op_tab);
                 }
                 if self.dispatcher.is_busy() {
                     ui.spinner();

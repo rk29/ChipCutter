@@ -946,6 +946,111 @@ impl ChamferTraceParams {
     }
 }
 
+/// Area-clearing strategy for Stage 1 of a flat-bottom two-tool [`VCarveParams`] (`05-operations.md` §6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VCarveClearingKind {
+    #[default]
+    ContourParallel,
+    Adaptive,
+}
+
+impl VCarveClearingKind {
+    pub const ALL: [Self; 2] = [Self::ContourParallel, Self::Adaptive];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::ContourParallel => "Contour-Parallel Offset",
+            Self::Adaptive => "2D Adaptive Trochoidal",
+        }
+    }
+}
+
+/// Optional V-Inlay male plug generation mode (`05-operations.md` §6C).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum VCarveInlayMode {
+    #[default]
+    Disabled,
+    MalePlug {
+        start_depth: ParamLength,
+        glue_gap_bottom: ParamLength,
+        border_margin: ParamLength,
+        #[serde(default = "default_true")]
+        auto_mirror_x: bool,
+    },
+}
+
+impl VCarveInlayMode {
+    pub const fn is_male_plug(&self) -> bool {
+        matches!(self, Self::MalePlug { .. })
+    }
+}
+
+fn default_vcarve_clearing_allowance() -> ParamLength {
+    ParamLength::from_mm(0.05)
+}
+
+fn default_vbit_flat_stepover() -> ParamLength {
+    ParamLength::from_mm(0.5)
+}
+
+/// Strategy parameters for **V-Carving, Flat-Bottom Clearance, & V-Inlays** (`05-operations.md` §6).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VCarveParams {
+    /// Optional maximum flat floor depth below `Top Height` (`None` = pure unlimited medial V-carve).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flat_depth: Option<ParamLength>,
+    /// Optional secondary **Flat Endmill** for Stage 1 wide flat-bottom pocket clearing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clearing_tool_id: Option<chip_tools::ToolId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clearing_preset_id: Option<String>,
+    #[serde(default)]
+    pub clearing_strategy: VCarveClearingKind,
+    #[serde(default = "default_vcarve_clearing_allowance")]
+    pub clearing_radial_allowance: ParamLength,
+    #[serde(default = "default_vbit_flat_stepover")]
+    pub vbit_flat_stepover: ParamLength,
+    #[serde(default)]
+    pub inlay_mode: VCarveInlayMode,
+}
+
+impl Default for VCarveParams {
+    fn default() -> Self {
+        Self {
+            flat_depth: Some(ParamLength::from_mm(2.0)),
+            clearing_tool_id: None,
+            clearing_preset_id: None,
+            clearing_strategy: VCarveClearingKind::ContourParallel,
+            clearing_radial_allowance: default_vcarve_clearing_allowance(),
+            vbit_flat_stepover: default_vbit_flat_stepover(),
+            inlay_mode: VCarveInlayMode::Disabled,
+        }
+    }
+}
+
+impl VCarveParams {
+    pub fn reevaluate(&mut self, ctx: &EvalContext) {
+        if let Some(fd) = &mut self.flat_depth {
+            let _ = fd.reevaluate(ctx);
+        }
+        let _ = self.clearing_radial_allowance.reevaluate(ctx);
+        let _ = self.vbit_flat_stepover.reevaluate(ctx);
+        if let VCarveInlayMode::MalePlug {
+            start_depth,
+            glue_gap_bottom,
+            border_margin,
+            ..
+        } = &mut self.inlay_mode
+        {
+            let _ = start_depth.reevaluate(ctx);
+            let _ = glue_gap_bottom.reevaluate(ctx);
+            let _ = border_margin.reevaluate(ctx);
+        }
+    }
+}
+
 /// Strategy-specific parameter block inside [`crate::operation::Operation`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "strategy_kind", rename_all = "snake_case")]
@@ -957,6 +1062,8 @@ pub enum StrategyParams {
     Pocket2D(Pocket2DParams),
     DrillBore(DrillBoreParams),
     ChamferTrace(ChamferTraceParams),
+    #[serde(rename = "vcarve")]
+    VCarve(VCarveParams),
 }
 
 impl StrategyParams {
@@ -967,6 +1074,7 @@ impl StrategyParams {
             OperationKind::Pocket2D => Self::Pocket2D(Pocket2DParams::default()),
             OperationKind::DrillBore => Self::DrillBore(DrillBoreParams::default()),
             OperationKind::ChamferTrace => Self::ChamferTrace(ChamferTraceParams::default()),
+            OperationKind::VCarve => Self::VCarve(VCarveParams::default()),
         }
     }
 
@@ -978,6 +1086,7 @@ impl StrategyParams {
                 | (OperationKind::Pocket2D, Self::Pocket2D(_))
                 | (OperationKind::DrillBore, Self::DrillBore(_))
                 | (OperationKind::ChamferTrace, Self::ChamferTrace(_))
+                | (OperationKind::VCarve, Self::VCarve(_))
         );
         if !matches {
             *self = Self::default_for_kind(kind);
@@ -991,6 +1100,7 @@ impl StrategyParams {
             Self::Pocket2D(p) => p.reevaluate(ctx),
             Self::DrillBore(p) => p.reevaluate(ctx),
             Self::ChamferTrace(p) => p.reevaluate(ctx),
+            Self::VCarve(p) => p.reevaluate(ctx),
         }
     }
 }

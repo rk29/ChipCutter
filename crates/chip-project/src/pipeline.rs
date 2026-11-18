@@ -47,6 +47,20 @@ pub fn collect_ready_setup_operations<'a>(
             && let Some((_hash, toolpath)) =
                 cache.get_for_operation(project, setup_idx, op_idx, cad_revision)
         {
+            // When Two-Stage Flat-Bottom V-Carving produced a secondary Flat Endmill Stage 1
+            // clearing toolpath, emit Stage 1 FIRST followed by Stage 2 V-Bit SECOND so both
+            // `chip-sim` stock removal and `chip-post` (`M6` ATC or GRBL `split_files_by_tool`)
+            // sequence both tools cleanly!
+            if let Some(stage) = &toolpath.clearing_stage
+                && let Some(clear_tool) = project.tools.iter().find(|t| t.id == stage.tool_id)
+            {
+                ready.push(ReadySetupOperation {
+                    op_idx,
+                    op,
+                    tool: clear_tool,
+                    toolpath: Arc::new(stage.toolpath.clone()),
+                });
+            }
             ready.push(ReadySetupOperation {
                 op_idx,
                 op,

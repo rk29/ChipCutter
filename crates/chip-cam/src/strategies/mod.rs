@@ -4,6 +4,7 @@ pub mod contour2d;
 pub mod drill_bore;
 pub mod facing;
 pub mod pocket2d;
+pub mod vcarve;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -35,6 +36,8 @@ pub struct StrategyExecContext<'a> {
     pub linking: LinkingParams,
     pub selection: ExtractedSelectionSummary,
     pub upstream_rest: &'a [UpstreamSweptInput],
+    pub is_first_tool_in_setup: bool,
+    pub clearing_tool: Option<&'a Tool>,
     pub cancel: &'a AtomicBool,
 }
 
@@ -64,6 +67,7 @@ pub struct OperationGenRequest<'a> {
     pub setup: &'a ResolvedSetup,
     pub op: &'a Operation,
     pub tool: &'a Tool,
+    pub clearing_tool: Option<&'a Tool>,
     pub display_unit: DisplayUnit,
     pub is_first_tool_in_setup: bool,
     pub upstream_rest: &'a [UpstreamSweptInput],
@@ -87,6 +91,7 @@ pub fn generate_operation_toolpath(
         setup,
         op,
         tool,
+        clearing_tool: None,
         display_unit,
         is_first_tool_in_setup,
         upstream_rest: &[],
@@ -105,6 +110,7 @@ pub fn generate_operation_toolpath_with_rest(
         setup,
         op,
         tool,
+        clearing_tool,
         display_unit,
         is_first_tool_in_setup,
         upstream_rest,
@@ -188,6 +194,8 @@ pub fn generate_operation_toolpath_with_rest(
         linking,
         selection,
         upstream_rest,
+        is_first_tool_in_setup,
+        clearing_tool,
         cancel,
     };
 
@@ -224,6 +232,9 @@ pub fn generate_operation_toolpath_with_rest(
         StrategyParams::DrillBore(p) => drill_bore::generate_drill_bore(&ctx, p, &mut builder)?,
         StrategyParams::ChamferTrace(p) => {
             chamfer_trace::generate_chamfer_trace(&ctx, p, &mut builder)?;
+        }
+        StrategyParams::VCarve(p) => {
+            vcarve::generate_vcarve(&ctx, p, &mut builder)?;
         }
     }
 

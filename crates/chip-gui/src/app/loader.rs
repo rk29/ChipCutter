@@ -530,6 +530,45 @@ impl ChipCutterApp {
         egui_ctx.request_repaint();
     }
 
+    pub fn load_vcarve_sign_demo(&mut self, egui_ctx: &egui::Context) {
+        self.loading_in_flight = false;
+        while self.job_rx.try_recv().is_ok() {}
+        self.dispatcher.cancel_all();
+        self.sim_panel.cancel_in_flight();
+        self.sim_panel.active_result = None;
+        self.gcode_panel.invalidate_preview();
+        self.clear_bundle_extract_dir();
+        self.project_file_path = None;
+        self.history.clear();
+        self.clean_undo_len = Some(0);
+        self.last_reload_banner = None;
+        self.external_step_modified = false;
+        self.model = None;
+        self.project =
+            chip_project::build_vcarve_sign_and_inlay_demo_project(&self.global_tools.tools);
+        self.active_setup_idx = 0;
+        self.inspector_focus = InspectorFocus::Operation {
+            setup_idx: 0,
+            op_idx: 0,
+        };
+        self.op_tab = OperationTab::Passes;
+        self.pick_mode = ViewportPickMode::InspectEntity;
+        self.sketch_author_start_xy = None;
+        self.highlight.hovered = None;
+        self.highlight.selected = None;
+        self.highlight.hovered_sketch = None;
+        self.highlight.selected_sketch = None;
+        self.cached_frame_geo = None;
+        self.fit_scene_to_viewport();
+        self.logs.push(
+            "Loaded V-Carve Sign & Mated V-Inlay Plug Demo (Setup 1: Two-Stage Ø6mm + 60° V-Bit Crest & 'CHIP' + Medial 'CAM v2' + Plaque Tabs; Setup 2: Mirrored Male V-Inlay Plug)."
+                .to_string(),
+        );
+        self.auto_sim_after_gen = true;
+        self.trigger_generate_dirty(None, None);
+        egui_ctx.request_repaint();
+    }
+
     pub(crate) fn spawn_revision_demo_load(
         &mut self,
         load_v2_rebind: bool,

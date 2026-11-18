@@ -17,7 +17,10 @@ pub mod wcs;
 
 pub use cl_data::{ArcDir, ArcPlane, ClEvent, CutterCompMode, DrillCycleKind, MotionRole};
 pub use heights::{HeightReference, HeightSpec, OperationHeights, ResolvedHeights, SetupHeights};
-pub use medial::{MedialNode2D, extract_interior_medial_nodes, find_medial_inscribed_pole};
+pub use medial::{
+    MedialChain2D, MedialNode2D, extract_interior_medial_nodes, extract_medial_axis_chains,
+    find_medial_inscribed_pole,
+};
 pub use offset2d::{
     HelicalEntryPole, OffsetRegionNode, PocketRegion2D, build_offset_region_tree,
     clip_scanline_to_region, find_helical_entry_pole, from_cavalier_polyline, offset_polyline,
@@ -32,7 +35,7 @@ pub use params::{
     FacingCutMode, FacingParams, HoldingTabsConfig, HoleMachiningMode, LeadConfig, LinkingParams,
     ManualTabAnchor, PassesParams, Pocket2DParams, PocketPassOrder, PocketStrategyKind,
     RestMachiningConfig, RestMachiningMode, RetractPolicy, StrategyParams, TabPlacementMode,
-    TabProfileKind,
+    TabProfileKind, VCarveClearingKind, VCarveInlayMode, VCarveParams,
 };
 pub use rest2d::{
     ContourRestClipQuery, PocketRestQuery, RegionSet2D, RestPocketWorkItem, UpstreamSweptInput,
@@ -59,9 +62,9 @@ pub use strategies::{
     },
 };
 pub use toolpath::{
-    DEFAULT_RAPID_RATE_MM_MIN, DrillCycleSpec, GeneratedToolpath, SegmentMotion3D, TabMarker3D,
-    ToolpathBuilder, ToolpathSegment3D, ToolpathStats, VerticalArcMove, XyArcMove,
-    expand_drill_cycle_segments,
+    ClearingSubToolpath, DEFAULT_RAPID_RATE_MM_MIN, DrillCycleSpec, GeneratedToolpath,
+    SegmentMotion3D, TabMarker3D, ToolpathBuilder, ToolpathSegment3D, ToolpathStats,
+    VerticalArcMove, XyArcMove, expand_drill_cycle_segments,
 };
 pub use wcs::{
     AxisAnchor, BoxAnchor27, CamError, WcsAxisRef, WcsConfig, WcsFeaturePointRef,

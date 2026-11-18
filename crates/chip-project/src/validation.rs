@@ -235,6 +235,34 @@ pub fn validate_project(
                     report.push_warning(&op_scope, "no cutting tool assigned yet");
                 }
 
+                if let Some(ctid) = op.clearing_tool_id() {
+                    match project.tool(ctid) {
+                        Some(ctool) => {
+                            if !ctool.geometry.supports_operation(
+                                chip_tools::ToolOperationClass::VCarveFlatClearance,
+                            ) {
+                                report.push_error(
+                                    &op_scope,
+                                    format!(
+                                        "secondary flat clearing tool '{}' ({}) must be a Flat Endmill",
+                                        ctool.name,
+                                        ctool.geometry.kind_label()
+                                    ),
+                                );
+                            }
+                        }
+                        None => {
+                            report.push_error(
+                                &op_scope,
+                                format!(
+                                    "referenced clearing_tool_id '{}' is not present in project tools",
+                                    ctid.0
+                                ),
+                            );
+                        }
+                    }
+                }
+
                 // Validate selections & Z-height hierarchy
                 let summary = match extract_selection_features_with_sketches(
                     cad_doc,

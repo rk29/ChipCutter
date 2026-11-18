@@ -252,6 +252,20 @@ impl PocketRegion2D {
             return vec![self.clone()];
         }
 
+        let has_micro_arc = |p: &ArcPolyline2D| {
+            p.segments
+                .iter()
+                .any(|s| matches!(s, ArcSegment2D::Arc { .. }) && s.signed_sweep_rad().abs() < 0.05)
+        };
+        if self.islands_cw.len() > 1
+            || self.outer_ccw.segments.len() > 16
+            || self.islands_cw.iter().any(|isl| isl.segments.len() > 16)
+            || has_micro_arc(&self.outer_ccw)
+            || self.islands_cw.iter().any(has_micro_arc)
+        {
+            return crate::rest2d::offset_single_region_shape(self, inward_dist_mm);
+        }
+
         let mut plines = Vec::with_capacity(1 + self.islands_cw.len());
         let mut outer_pl = to_cavalier_polyline(&self.outer_ccw);
         if outer_pl.vertex_count() < 2 {
@@ -301,7 +315,6 @@ impl PocketRegion2D {
             })
             .collect();
 
-        // Assign each CW hole loop to the smallest-area CCW outer loop that encloses a sample point on it
         for hole in holes {
             if let Some((sample_pt, _)) = hole.sample_at_fraction(0.13) {
                 let mut best_idx: Option<(usize, f64)> = None;

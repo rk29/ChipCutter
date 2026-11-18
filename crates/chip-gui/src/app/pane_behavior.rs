@@ -98,6 +98,9 @@ impl PaneBehavior<'_> {
                     BrowserAction::LoadNameplateDemo => {
                         self.app.load_engraved_nameplate_demo(&ctx);
                     }
+                    BrowserAction::LoadVCarveDemo => {
+                        self.app.load_vcarve_sign_demo(&ctx);
+                    }
                     BrowserAction::NewSetupXySketch => {
                         self.app.create_new_setup_xy_sketch();
                     }

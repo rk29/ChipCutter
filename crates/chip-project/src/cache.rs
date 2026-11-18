@@ -81,6 +81,13 @@ pub fn compute_operation_input_hash(
     {
         hasher.update(s.as_bytes());
     }
+    if let Some(ctid) = op.clearing_tool_id()
+        && let Some(ctool) = project.tool(ctid)
+        && let Ok(s) = toml::to_string(ctool)
+    {
+        hasher.update(b"|clearing_tool:");
+        hasher.update(s.as_bytes());
+    }
     if let Ok(s) = toml::to_string(op) {
         hasher.update(s.as_bytes());
     }

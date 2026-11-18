@@ -4,4 +4,6 @@
 *.nc
 *.ngc
 *.gcode
+!crates/chip-cli/tests/golden/**/*.nc
+!crates/chip-cli/tests/golden/**/*.ngc
 .DS_Store

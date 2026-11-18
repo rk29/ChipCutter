@@ -5,7 +5,8 @@ use chip_cam::{
     AdaptiveClearingParams, BoxAnchor27, ChamferSourceMode, ChamferTraceMode, ContourCompensation,
     FixedBoxXyAlign, FixedBoxZAlign, GeometrySelectionItem, HeightReference, HeightSpec,
     HoleMachiningMode, Operation, OperationKind, PocketStrategyKind, RestMachiningConfig,
-    RestMachiningMode, StockConfig, StrategyParams, TabProfileKind, WcsOriginMode,
+    RestMachiningMode, Setup, StockConfig, StrategyParams, TabProfileKind, VCarveClearingKind,
+    VCarveInlayMode, WcsOriginMode, WorkOffsetSlot,
 };
 use chip_math::{DisplayUnit, EvalContext, ParamLength, approx_eq};
 use chip_sketch::{
@@ -1180,5 +1181,278 @@ pub fn build_engraved_nameplate_demo_project(available_tools: &[Tool]) -> Projec
         proj.setups[0].operations.push(op_out);
     }
 
+    proj
+}
+
+/// Builds a Milestone 9 **V-Carved Hardwood Sign & Mated V-Inlay Plug** [`ProjectDocument`]
+/// (`models = []`) showcasing:
+/// 1. **Setup 1 (`G54` — Female Sign Plaque, `180 × 84 × 12 mm`):**
+///    - `Op 1` (`T1` Ø6mm Flat Endmill Stage 1 + `T8` 60° V-Bit Stage 2): **Two-Stage Flat-Bottom
+///      V-Carving** of a `36 × 36 mm` filleted crest emblem (with an inner `Ø12 mm` boss island)
+///      and TrueType `"CHIP"` title (`flat_depth = 3.0 mm`).
+///    - `Op 2` (`T8` 60° V-Bit): **Pure Medial Variable-Depth V-Carve** subtitle `"CAM v2"` with
+///      simultaneous 3-axis `(X, Y, Z)` strokes and sharp 3D corner climbs.
+///    - `Op 3` (`T1` Ø6mm Flat Endmill): **Outer Filleted Sign Plaque Profile + Triangular Tabs**.
+/// 2. **Setup 2 (`G55` — Mated Male V-Inlay Plug, `180 × 84 × 12 mm`):**
+///    - `Op 1` (`T1` Ø6mm Flat Endmill Stage 1 + `T8` 60° V-Bit Stage 2): **Mirrored Male V-Inlay
+///      Plug** (`start_depth = 2.0 mm`, `glue_gap_bottom = 1.0 mm`, `border_margin = 5.0 mm`,
+///      `auto_mirror_x = true`) mated to the Setup 1 crest emblem!
+pub fn build_vcarve_sign_and_inlay_demo_project(available_tools: &[Tool]) -> ProjectDocument {
+    let mut proj = ProjectDocument::new("V-Carve Sign & Mated V-Inlay Plug");
+    proj.models.clear();
+
+    let stock_cfg = StockConfig::FixedBox {
+        width_x: ParamLength::from_mm(180.0),
+        depth_y: ParamLength::from_mm(84.0),
+        height_z: ParamLength::from_mm(12.0),
+        xy_align: FixedBoxXyAlign::CenterXy,
+        z_align: FixedBoxZAlign::OffsetFromTop {
+            top_allowance: ParamLength::from_mm(0.0),
+        },
+    };
+
+    proj.setups[0].name = "Setup 1 — Female Sign Plaque (G54)".to_string();
+    proj.setups[0].wcs_slot = WorkOffsetSlot::G54;
+    proj.setups[0].wcs.origin = WcsOriginMode::StockBoxPoint {
+        anchor: BoxAnchor27::TOP_CENTER,
+    };
+    proj.setups[0].stock = stock_cfg.clone();
+
+    let mut setup_plug = Setup::new(
+        "setup_2_plug",
+        "Setup 2 — Mated Male V-Inlay Plug (G55)",
+        WorkOffsetSlot::G55,
+    );
+    setup_plug.wcs.origin = WcsOriginMode::StockBoxPoint {
+        anchor: BoxAnchor27::TOP_CENTER,
+    };
+    setup_plug.stock = stock_cfg;
+
+    let mut sk = SketchLayer::new("sketch_vcarve_sign", "V-Carve Sign & Crest", "setup_1");
+    sk.entities.push(SketchEntityEntry {
+        id: "ent_sign_plaque_rect".to_string(),
+        name: "Outer Sign Plaque (R8 Fillets)".to_string(),
+        sub_layer: Some("OUTLINE".to_string()),
+        is_construction: false,
+        entity: SketchEntity::Rectangle {
+            anchor: RectAnchorMode::Center,
+            x: ParamLength::from_mm(0.0),
+            y: ParamLength::from_mm(0.0),
+            width: ParamLength::from_mm(166.0),
+            height: ParamLength::from_mm(70.0),
+            corner_radius: ParamLength::from_mm(8.0),
+            rotation_deg: 0.0,
+        },
+    });
+    sk.entities.push(SketchEntityEntry {
+        id: "ent_crest_outer".to_string(),
+        name: "Crest Shield Outer (36x36mm)".to_string(),
+        sub_layer: Some("VCARVE_CREST".to_string()),
+        is_construction: false,
+        entity: SketchEntity::Rectangle {
+            anchor: RectAnchorMode::Center,
+            x: ParamLength::from_mm(-50.0),
+            y: ParamLength::from_mm(0.0),
+            width: ParamLength::from_mm(36.0),
+            height: ParamLength::from_mm(36.0),
+            corner_radius: ParamLength::from_mm(4.0),
+            rotation_deg: 0.0,
+        },
+    });
+    sk.entities.push(SketchEntityEntry {
+        id: "ent_crest_boss".to_string(),
+        name: "Crest Center Boss (Ø12mm)".to_string(),
+        sub_layer: Some("VCARVE_CREST".to_string()),
+        is_construction: false,
+        entity: SketchEntity::new_circle(
+            ParamLength::from_mm(-50.0),
+            ParamLength::from_mm(0.0),
+            ParamLength::from_mm(12.0),
+        ),
+    });
+    sk.entities.push(SketchEntityEntry {
+        id: "ent_vcarve_title".to_string(),
+        name: "Title 'CHIP' (28mm Bold)".to_string(),
+        sub_layer: Some("VCARVE_TITLE".to_string()),
+        is_construction: false,
+        entity: SketchEntity::Text(SketchTextSpec {
+            content: "CHIP".to_string(),
+            font: SketchFontSource::BuiltinSansBold,
+            cap_height: ParamLength::from_mm(28.0),
+            x: ParamLength::from_mm(22.0),
+            y: ParamLength::from_mm(8.0),
+            h_align: TextHAlign::Center,
+            v_align: TextVAlign::Middle,
+            letter_spacing: ParamLength::from_mm(1.5),
+            ..SketchTextSpec::default()
+        }),
+    });
+    sk.entities.push(SketchEntityEntry {
+        id: "ent_vcarve_subtitle".to_string(),
+        name: "Subtitle 'CAM v2' (11mm Medial)".to_string(),
+        sub_layer: Some("VCARVE_MEDIAL".to_string()),
+        is_construction: false,
+        entity: SketchEntity::Text(SketchTextSpec {
+            content: "CAM v2".to_string(),
+            font: SketchFontSource::BuiltinSansBold,
+            cap_height: ParamLength::from_mm(11.0),
+            x: ParamLength::from_mm(22.0),
+            y: ParamLength::from_mm(-17.0),
+            h_align: TextHAlign::Center,
+            v_align: TextVAlign::Middle,
+            letter_spacing: ParamLength::from_mm(1.0),
+            ..SketchTextSpec::default()
+        }),
+    });
+    sk.rebuild_regions(None);
+    proj.sketches.push(sk);
+
+    let flat_6mm = available_tools
+        .iter()
+        .find(|t| {
+            matches!(
+                t.geometry,
+                CutterGeometry::FlatEndmill { diameter_mm, .. }
+                if (diameter_mm - 6.0).abs() < 0.05
+            )
+        })
+        .cloned();
+    let vbit_60 = available_tools
+        .iter()
+        .find(|t| {
+            matches!(
+                t.geometry,
+                CutterGeometry::ChamferMill {
+                    tip_diameter_mm,
+                    included_angle_deg,
+                    ..
+                } if tip_diameter_mm <= 0.05 && (included_angle_deg - 60.0).abs() < 1.0
+            )
+        })
+        .or_else(|| {
+            available_tools
+                .iter()
+                .find(|t| matches!(t.geometry, CutterGeometry::ChamferMill { .. }))
+        })
+        .cloned();
+
+    if let Some(em) = &flat_6mm {
+        proj.ensure_tool_embedded(em);
+    }
+    if let Some(vb) = &vbit_60 {
+        proj.ensure_tool_embedded(vb);
+    }
+
+    // Setup 1 Op 1: Two-Stage Flat-Bottom V-Carving (`T1` Ø6mm Clear + `T8` 60° V-Bit)
+    if let Some(vb) = &vbit_60 {
+        let mut op_female = Operation::new(
+            "op_1_female_vcarve",
+            "Crest & 'CHIP' — 2-Tool Flat V-Carve",
+            OperationKind::VCarve,
+        );
+        op_female.tool_id = Some(vb.id.clone());
+        op_female.preset_id = vb.presets.first().map(|p| p.id.clone());
+        op_female
+            .selections
+            .push(GeometrySelectionItem::SketchLayerAll {
+                sketch_id: "sketch_vcarve_sign".to_string(),
+                sub_layer: Some("VCARVE_CREST".to_string()),
+                reverse: false,
+                side_flip: false,
+            });
+        op_female
+            .selections
+            .push(GeometrySelectionItem::SketchLayerAll {
+                sketch_id: "sketch_vcarve_sign".to_string(),
+                sub_layer: Some("VCARVE_TITLE".to_string()),
+                reverse: false,
+                side_flip: false,
+            });
+        if let StrategyParams::VCarve(p) = op_female.strategy_mut() {
+            p.flat_depth = Some(ParamLength::from_mm(3.0));
+            if let Some(em) = &flat_6mm {
+                p.clearing_tool_id = Some(em.id.clone());
+                p.clearing_preset_id = em.presets.first().map(|pr| pr.id.clone());
+            }
+            p.clearing_strategy = VCarveClearingKind::ContourParallel;
+        }
+        proj.setups[0].operations.push(op_female);
+
+        // Setup 1 Op 2: Pure Medial Variable-Depth V-Carve Subtitle `'CAM v2'`
+        let mut op_medial = Operation::new(
+            "op_2_subtitle_medial",
+            "Subtitle 'CAM v2' — Medial V-Carve",
+            OperationKind::VCarve,
+        );
+        op_medial.tool_id = Some(vb.id.clone());
+        op_medial.preset_id = vb.presets.first().map(|p| p.id.clone());
+        op_medial
+            .selections
+            .push(GeometrySelectionItem::SketchLayerAll {
+                sketch_id: "sketch_vcarve_sign".to_string(),
+                sub_layer: Some("VCARVE_MEDIAL".to_string()),
+                reverse: false,
+                side_flip: false,
+            });
+        proj.setups[0].operations.push(op_medial);
+
+        // Setup 2 Op 1: Mated Male V-Inlay Plug (`G55`)
+        let mut op_plug = Operation::new(
+            "op_1_male_inlay_plug",
+            "Crest Male V-Inlay Plug (Mirrored)",
+            OperationKind::VCarve,
+        );
+        op_plug.tool_id = Some(vb.id.clone());
+        op_plug.preset_id = vb.presets.first().map(|p| p.id.clone());
+        op_plug
+            .selections
+            .push(GeometrySelectionItem::SketchLayerAll {
+                sketch_id: "sketch_vcarve_sign".to_string(),
+                sub_layer: Some("VCARVE_CREST".to_string()),
+                reverse: false,
+                side_flip: false,
+            });
+        if let StrategyParams::VCarve(p) = op_plug.strategy_mut() {
+            p.flat_depth = Some(ParamLength::from_mm(3.0));
+            if let Some(em) = &flat_6mm {
+                p.clearing_tool_id = Some(em.id.clone());
+                p.clearing_preset_id = em.presets.first().map(|pr| pr.id.clone());
+            }
+            p.inlay_mode = VCarveInlayMode::MalePlug {
+                start_depth: ParamLength::from_mm(2.0),
+                glue_gap_bottom: ParamLength::from_mm(1.0),
+                border_margin: ParamLength::from_mm(5.0),
+                auto_mirror_x: true,
+            };
+        }
+        setup_plug.operations.push(op_plug);
+    }
+
+    // Setup 1 Op 3: Outer Filleted Sign Plaque Profile + Triangular Tabs
+    if let Some(em) = &flat_6mm {
+        let mut op_out = Operation::new(
+            "op_3_sign_profile",
+            "Outer Sign Plaque + Tabs",
+            OperationKind::Contour2D,
+        );
+        op_out.tool_id = Some(em.id.clone());
+        op_out.preset_id = em.presets.first().map(|p| p.id.clone());
+        op_out.heights.bottom = HeightSpec::new(HeightReference::StockBottom, 0.0);
+        op_out.selections.push(GeometrySelectionItem::SketchEntity {
+            sketch_id: "sketch_vcarve_sign".to_string(),
+            entity_id: "ent_sign_plaque_rect".to_string(),
+            reverse: false,
+            side_flip: false,
+        });
+        if let StrategyParams::Contour2D(p) = op_out.strategy_mut() {
+            p.tabs.enabled = true;
+            p.tabs.profile = TabProfileKind::Triangular {
+                ramp_angle_deg: 25.0,
+            };
+        }
+        proj.setups[0].operations.push(op_out);
+    }
+
+    proj.setups.push(setup_plug);
     proj
 }
