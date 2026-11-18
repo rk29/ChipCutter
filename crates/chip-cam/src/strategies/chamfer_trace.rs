@@ -1,4 +1,3 @@
-use chip_cad::{EdgeId, highest_adjacent_lower_floor_proj};
 use chip_math::{ArcPolyline2D, DVec2, DVec3};
 use chip_tools::CutterGeometry;
 
@@ -8,7 +7,7 @@ use crate::{
     params::{ChamferSourceMode, ChamferTraceMode, ChamferTraceParams, ContourCompensation},
     selection::ExtractedFeature25D,
     strategies::{StrategyExecContext, compute_z_levels},
-    toolpath::ToolpathBuilder,
+    toolpath::{ToolpathBuilder, XyArcMove},
     wcs::CamError,
 };
 
@@ -68,7 +67,6 @@ fn generate_edge_chamfer(
     }
     let max_flute_radial = 0.5 * (outer_dia_mm - tip_dia_mm).max(0.0);
     let retract_z = ctx.safe_retract_z();
-    let wcs_origin_proj = ctx.setup.frame.origin_mm.dot(ctx.setup.frame.z_axis);
 
     // Collect chamfer targets from either `ModeledChamfer` faces or sharp `Contour` / `PlanarFace` edges!
     struct ChamferJob {
@@ -77,7 +75,7 @@ fn generate_edge_chamfer(
         chamfer_width_mm: f64,
         top_z_wcs: f64,
         is_modeled_upper_edge: bool,
-        edge_ids: Vec<EdgeId>,
+        adjacent_lower_floor_z_wcs: Option<f64>,
     }
 
     let mut jobs: Vec<ChamferJob> = Vec::new();
@@ -85,13 +83,13 @@ fn generate_edge_chamfer(
     for feat in &ctx.selection.features {
         match feat {
             ExtractedFeature25D::ModeledChamfer {
-                face_id,
                 upper_polyline_wcs,
                 lower_polyline_wcs,
                 radial_width_mm,
                 bevel_half_angle_rad,
                 top_z_wcs,
-                edge_ids,
+                outward_normal_xy_wcs,
+                adjacent_lower_floor_z_wcs,
                 ..
             } => {
                 if (bevel_half_angle_rad - theta_rad).abs() > 2.5_f64.to_radians() {
@@ -106,8 +104,7 @@ fn generate_edge_chamfer(
                 // If `lower_polyline_wcs` has larger signed area / lies to the RIGHT of `upper_polyline_wcs`,
                 // the outward air side is `-1` (right); if `upper` is CCW around a boss, right is outward!
                 let sign = determine_modeled_chamfer_offset_sign(
-                    ctx,
-                    *face_id,
+                    *outward_normal_xy_wcs,
                     upper_polyline_wcs,
                     lower_polyline_wcs,
                 );
@@ -118,7 +115,7 @@ fn generate_edge_chamfer(
                         chamfer_width_mm: *radial_width_mm,
                         top_z_wcs: *top_z_wcs,
                         is_modeled_upper_edge: true,
-                        edge_ids: edge_ids.clone(),
+                        adjacent_lower_floor_z_wcs: *adjacent_lower_floor_z_wcs,
                     });
                 }
             }
@@ -126,7 +123,7 @@ fn generate_edge_chamfer(
                 polyline_wcs,
                 max_z_wcs,
                 side_flip,
-                source_edge_ids,
+                adjacent_lower_floor_z_wcs,
                 ..
             } => {
                 let w = match &params.chamfer_source {
@@ -147,28 +144,19 @@ fn generate_edge_chamfer(
                     chamfer_width_mm: w,
                     top_z_wcs: *max_z_wcs,
                     is_modeled_upper_edge: false,
-                    edge_ids: source_edge_ids.clone(),
+                    adjacent_lower_floor_z_wcs: *adjacent_lower_floor_z_wcs,
                 });
             }
             ExtractedFeature25D::PlanarFace {
-                face_id,
                 outer_boundary_wcs,
                 face_z_wcs,
+                adjacent_lower_floor_z_wcs,
                 ..
             } => {
                 let w = match &params.chamfer_source {
                     ChamferSourceMode::SharpEdge { width } => width.value_mm,
                     ChamferSourceMode::ModeledFace => 0.5,
                 };
-                let mut eids = Vec::new();
-                if let Some(face) = ctx.doc.face(*face_id)
-                    && let Some(lid) = face.outer_loop
-                    && let Some(lp) = ctx.doc.brep_loop(lid)
-                {
-                    for u in &lp.edges {
-                        eids.push(u.edge_id);
-                    }
-                }
                 // CCW outer boundary of a top face has solid inside (left) and air outside (right -> `-1.0`, or reverse to CW + `+1.0` for Climb!)
                 let cw_outer = outer_boundary_wcs.ensure_orientation(false);
                 jobs.push(ChamferJob {
@@ -177,7 +165,7 @@ fn generate_edge_chamfer(
                     chamfer_width_mm: w.max(0.05),
                     top_z_wcs: *face_z_wcs,
                     is_modeled_upper_edge: false,
-                    edge_ids: eids,
+                    adjacent_lower_floor_z_wcs: *adjacent_lower_floor_z_wcs,
                 });
             }
             ExtractedFeature25D::CylindricalHole { .. } => {}
@@ -220,22 +208,14 @@ fn generate_edge_chamfer(
         let tip_z_wcs = job.top_z_wcs - axial_drop;
 
         // Adjacent lower step floor collision guard (`05-operations.md` §5A)!
-        if params.check_adjacent_walls && !job.edge_ids.is_empty() {
-            let top_proj_world = job.top_z_wcs + wcs_origin_proj;
-            if let Some(floor_proj_world) = highest_adjacent_lower_floor_proj(
-                ctx.doc,
-                &job.edge_ids,
-                top_proj_world,
-                ctx.setup.frame.z_axis,
-            ) {
-                let floor_z_wcs = floor_proj_world - wcs_origin_proj;
-                if tip_z_wcs < floor_z_wcs - 1e-3 {
-                    return Err(CamError::ChamferTipCollision {
-                        tip_z_wcs,
-                        floor_z_wcs,
-                    });
-                }
-            }
+        if params.check_adjacent_walls
+            && let Some(floor_z_wcs) = job.adjacent_lower_floor_z_wcs
+            && tip_z_wcs < floor_z_wcs - 1e-3
+        {
+            return Err(CamError::ChamferTipCollision {
+                tip_z_wcs,
+                floor_z_wcs,
+            });
         }
 
         let offset_paths = offset_polyline(&job.upper_poly_wcs, job.offset_sign * radial_offset);
@@ -287,15 +267,15 @@ fn generate_edge_chamfer(
 
             if lead_r > 1e-4 {
                 let c_in = start_xy + n_safe * lead_r;
-                builder.arc_xy_to(
-                    DVec3::new(start_xy.x, start_xy.y, tip_z_wcs),
-                    c_in,
-                    lead_r,
-                    job.offset_sign >= 0.0,
-                    0,
-                    ctx.cutting.lead_feed_mm_min,
-                    MotionRole::LeadIn,
-                );
+                builder.arc_xy_to(XyArcMove {
+                    end_wcs: DVec3::new(start_xy.x, start_xy.y, tip_z_wcs),
+                    center_xy: c_in,
+                    radius_mm: lead_r,
+                    ccw: job.offset_sign >= 0.0,
+                    turns: 0,
+                    feed_mm_min: ctx.cutting.lead_feed_mm_min,
+                    role: MotionRole::LeadIn,
+                });
             }
 
             builder.emit_polyline_2d_z_interp(
@@ -334,21 +314,15 @@ fn generate_edge_chamfer(
 }
 
 fn determine_modeled_chamfer_offset_sign(
-    ctx: &StrategyExecContext<'_>,
-    face_id: chip_cad::FaceId,
+    outward_normal_xy_wcs: Option<DVec2>,
     upper_poly_wcs: &ArcPolyline2D,
     lower_poly_wcs: &ArcPolyline2D,
 ) -> f64 {
     // Use the modeled chamfer face's outward horizontal normal component in WCS!
-    if let Some(face) = ctx.doc.face(face_id)
-        && let chip_cad::SurfaceKind::Plane { normal, .. } = face.surface
+    if let Some(n_xy) = outward_normal_xy_wcs
         && let Some((_, tan2)) = upper_poly_wcs.sample_at_fraction(0.5)
     {
-        let n_wcs = ctx
-            .setup
-            .frame
-            .world_to_local_dir(normal.normalize_or_zero());
-        let out_xy = DVec2::new(n_wcs.x, n_wcs.y).normalize_or_zero();
+        let out_xy = n_xy.normalize_or_zero();
         let left_n = DVec2::new(-tan2.y, tan2.x);
         if out_xy.dot(left_n) < 0.0 {
             return -1.0;

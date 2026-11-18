@@ -9,7 +9,7 @@ use crate::{
     },
     selection::ExtractedFeature25D,
     strategies::{StrategyExecContext, compute_z_levels},
-    toolpath::{TabMarker3D, ToolpathBuilder},
+    toolpath::{TabMarker3D, ToolpathBuilder, VerticalArcMove, XyArcMove},
     wcs::CamError,
 };
 
@@ -228,12 +228,14 @@ pub fn generate_contour2d(
                         ctx,
                         params,
                         builder,
-                        &poly,
-                        base_sign,
-                        &z_levels,
-                        target_bottom_z,
-                        cut_feed,
-                        cut_role,
+                        &SpiralContourEmitSpec {
+                            poly: &poly,
+                            base_sign,
+                            z_levels: &z_levels,
+                            target_bottom_z,
+                            cut_feed,
+                            cut_role,
+                        },
                     );
                 } else {
                     for &z_cut in &z_levels {
@@ -242,14 +244,16 @@ pub fn generate_contour2d(
                             ctx,
                             params,
                             builder,
-                            &poly,
-                            base_sign,
-                            z_cut,
-                            target_bottom_z,
-                            &loop_tabs_s_mm,
-                            tool_r,
-                            cut_feed,
-                            cut_role,
+                            &SingleDepthContourPassSpec {
+                                poly: &poly,
+                                base_sign,
+                                z_cut,
+                                target_bottom_z,
+                                tab_centers_s_mm: &loop_tabs_s_mm,
+                                tool_r,
+                                cut_feed,
+                                cut_role,
+                            },
                         );
                     }
                 }
@@ -360,18 +364,49 @@ fn nudge_tab_away_from_corners(poly: &ArcPolyline2D, ideal_frac: f64, min_arc_r:
     best_f
 }
 
-#[allow(clippy::too_many_arguments)]
+struct SpiralContourEmitSpec<'a> {
+    poly: &'a ArcPolyline2D,
+    base_sign: f64,
+    z_levels: &'a [f64],
+    target_bottom_z: f64,
+    cut_feed: f64,
+    cut_role: MotionRole,
+}
+
+struct SingleDepthContourPassSpec<'a> {
+    poly: &'a ArcPolyline2D,
+    base_sign: f64,
+    z_cut: f64,
+    target_bottom_z: f64,
+    tab_centers_s_mm: &'a [f64],
+    tool_r: f64,
+    cut_feed: f64,
+    cut_role: MotionRole,
+}
+
+struct LeadArcSpec<'a> {
+    poly: &'a ArcPolyline2D,
+    anchor_pt: DVec2,
+    anchor_tan: DVec2,
+    base_sign: f64,
+    z_cut: f64,
+    retract_z: f64,
+}
+
 fn emit_continuous_spiral_contour(
     ctx: &StrategyExecContext<'_>,
     params: &Contour2DParams,
     builder: &mut ToolpathBuilder,
-    poly: &ArcPolyline2D,
-    base_sign: f64,
-    z_levels: &[f64],
-    target_bottom_z: f64,
-    cut_feed: f64,
-    cut_role: MotionRole,
+    spec: &SpiralContourEmitSpec<'_>,
 ) {
+    let &SpiralContourEmitSpec {
+        poly,
+        base_sign,
+        z_levels,
+        target_bottom_z,
+        cut_feed,
+        cut_role,
+    } = spec;
     let Some((entry_pt, entry_tan)) = poly.sample_at_fraction(0.0) else {
         return;
     };
@@ -382,12 +417,14 @@ fn emit_continuous_spiral_contour(
         ctx,
         &ctx.linking.lead_in,
         builder,
-        poly,
-        entry_pt,
-        entry_tan,
-        base_sign,
-        start_z,
-        retract_z,
+        &LeadArcSpec {
+            poly,
+            anchor_pt: entry_pt,
+            anchor_tan: entry_tan,
+            base_sign,
+            z_cut: start_z,
+            retract_z,
+        },
     );
 
     if params.wear_comp_metadata && base_sign != 0.0 {
@@ -444,30 +481,34 @@ fn emit_continuous_spiral_contour(
             ctx,
             lead_out_cfg,
             builder,
-            poly,
-            exit_pt,
-            exit_tan,
-            base_sign,
-            target_bottom_z,
-            retract_z,
+            &LeadArcSpec {
+                poly,
+                anchor_pt: exit_pt,
+                anchor_tan: exit_tan,
+                base_sign,
+                z_cut: target_bottom_z,
+                retract_z,
+            },
         );
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn emit_single_depth_contour_pass(
     ctx: &StrategyExecContext<'_>,
     params: &Contour2DParams,
     builder: &mut ToolpathBuilder,
-    poly: &ArcPolyline2D,
-    base_sign: f64,
-    z_cut: f64,
-    target_bottom_z: f64,
-    tab_centers_s_mm: &[f64],
-    tool_r: f64,
-    cut_feed: f64,
-    cut_role: MotionRole,
+    spec: &SingleDepthContourPassSpec<'_>,
 ) {
+    let &SingleDepthContourPassSpec {
+        poly,
+        base_sign,
+        z_cut,
+        target_bottom_z,
+        tab_centers_s_mm,
+        tool_r,
+        cut_feed,
+        cut_role,
+    } = spec;
     let Some((entry_pt, entry_tan)) = poly.sample_at_fraction(0.0) else {
         return;
     };
@@ -536,12 +577,14 @@ fn emit_single_depth_contour_pass(
             ctx,
             &ctx.linking.lead_in,
             builder,
-            poly,
-            entry_pt,
-            entry_tan,
-            base_sign,
-            z_cut,
-            retract_z,
+            &LeadArcSpec {
+                poly,
+                anchor_pt: entry_pt,
+                anchor_tan: entry_tan,
+                base_sign,
+                z_cut,
+                retract_z,
+            },
         );
     }
 
@@ -607,12 +650,14 @@ fn emit_single_depth_contour_pass(
             ctx,
             lead_out_cfg,
             builder,
-            poly,
-            exit_pt,
-            exit_tan,
-            base_sign,
-            z_cut,
-            retract_z,
+            &LeadArcSpec {
+                poly,
+                anchor_pt: exit_pt,
+                anchor_tan: exit_tan,
+                base_sign,
+                z_cut,
+                retract_z,
+            },
         );
     } else if let Some(cur) = builder.current_pos() {
         builder.rapid_to(DVec3::new(cur.x, cur.y, retract_z));
@@ -768,18 +813,20 @@ fn emit_contour_with_holding_tabs(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn emit_approach_and_lead_in(
     ctx: &StrategyExecContext<'_>,
     lead: &LeadConfig,
     builder: &mut ToolpathBuilder,
-    poly: &ArcPolyline2D,
-    entry_pt: DVec2,
-    entry_tan: DVec2,
-    base_sign: f64,
-    z_cut: f64,
-    retract_z: f64,
+    spec: &LeadArcSpec<'_>,
 ) {
+    let &LeadArcSpec {
+        poly,
+        anchor_pt: entry_pt,
+        anchor_tan: entry_tan,
+        base_sign,
+        z_cut,
+        retract_z,
+    } = spec;
     let feed_z = ctx.heights.feed_z_wcs;
     if let Some(cur) = builder.current_pos()
         && cur.z < retract_z - 1e-6
@@ -853,15 +900,15 @@ fn emit_approach_and_lead_in(
             } else {
                 -std::f64::consts::FRAC_PI_2
             };
-            builder.arc_vertical_plane_to(
-                ArcPlane::XZ,
-                DVec3::new(p_arc_start.x, p_arc_start.y, z_cut),
-                center_xz,
-                r_v,
-                sweep,
-                ctx.cutting.lead_feed_mm_min,
-                MotionRole::LeadIn,
-            );
+            builder.arc_vertical_plane_to(VerticalArcMove {
+                plane: ArcPlane::XZ,
+                end_wcs: DVec3::new(p_arc_start.x, p_arc_start.y, z_cut),
+                center_wcs: center_xz,
+                radius_mm: r_v,
+                signed_sweep_rad: sweep,
+                feed_mm_min: ctx.cutting.lead_feed_mm_min,
+                role: MotionRole::LeadIn,
+            });
         } else if t.x.abs() <= 1e-4 && dz > 1e-4 {
             let sign_y = t.y.signum();
             let center_yz = DVec3::new(p_arc_start.x, p_arc_start.y, z_cut + r_v);
@@ -870,15 +917,15 @@ fn emit_approach_and_lead_in(
             } else {
                 -std::f64::consts::FRAC_PI_2
             };
-            builder.arc_vertical_plane_to(
-                ArcPlane::YZ,
-                DVec3::new(p_arc_start.x, p_arc_start.y, z_cut),
-                center_yz,
-                r_v,
-                sweep,
-                ctx.cutting.lead_feed_mm_min,
-                MotionRole::LeadIn,
-            );
+            builder.arc_vertical_plane_to(VerticalArcMove {
+                plane: ArcPlane::YZ,
+                end_wcs: DVec3::new(p_arc_start.x, p_arc_start.y, z_cut),
+                center_wcs: center_yz,
+                radius_mm: r_v,
+                signed_sweep_rad: sweep,
+                feed_mm_min: ctx.cutting.lead_feed_mm_min,
+                role: MotionRole::LeadIn,
+            });
         } else {
             builder.linear_to(
                 DVec3::new(p_arc_start.x, p_arc_start.y, z_cut),
@@ -890,15 +937,15 @@ fn emit_approach_and_lead_in(
 
     if r_h > 1e-4 && sweep_rad > 1e-3 {
         let c_in = p_arc_end + n_safe * r_h;
-        builder.arc_xy_to(
-            DVec3::new(p_arc_end.x, p_arc_end.y, z_cut),
-            c_in,
-            r_h,
-            base_sign >= 0.0,
-            0,
-            ctx.cutting.lead_feed_mm_min,
-            MotionRole::LeadIn,
-        );
+        builder.arc_xy_to(XyArcMove {
+            end_wcs: DVec3::new(p_arc_end.x, p_arc_end.y, z_cut),
+            center_xy: c_in,
+            radius_mm: r_h,
+            ccw: base_sign >= 0.0,
+            turns: 0,
+            feed_mm_min: ctx.cutting.lead_feed_mm_min,
+            role: MotionRole::LeadIn,
+        });
     }
 
     if l_lin > 1e-4 {
@@ -910,18 +957,20 @@ fn emit_approach_and_lead_in(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn emit_lead_out_and_retract(
     ctx: &StrategyExecContext<'_>,
     lead: &LeadConfig,
     builder: &mut ToolpathBuilder,
-    poly: &ArcPolyline2D,
-    exit_pt: DVec2,
-    exit_tan: DVec2,
-    base_sign: f64,
-    z_cut: f64,
-    retract_z: f64,
+    spec: &LeadArcSpec<'_>,
 ) {
+    let &LeadArcSpec {
+        poly,
+        anchor_pt: exit_pt,
+        anchor_tan: exit_tan,
+        base_sign,
+        z_cut,
+        retract_z,
+    } = spec;
     if lead.enabled && base_sign != 0.0 {
         let aabb_sz = poly.exact_aabb().size();
         let max_safe_r = if poly.closed {
@@ -953,15 +1002,15 @@ fn emit_lead_out_and_retract(
             let p_arc_end = p_arc_start
                 + n_safe * (r_h * (1.0 - sweep_rad.cos()))
                 + t * (r_h * sweep_rad.sin());
-            builder.arc_xy_to(
-                DVec3::new(p_arc_end.x, p_arc_end.y, z_cut),
-                c_out,
-                r_h,
-                base_sign >= 0.0,
-                0,
-                ctx.cutting.lead_feed_mm_min,
-                MotionRole::LeadOut,
-            );
+            builder.arc_xy_to(XyArcMove {
+                end_wcs: DVec3::new(p_arc_end.x, p_arc_end.y, z_cut),
+                center_xy: c_out,
+                radius_mm: r_h,
+                ccw: base_sign >= 0.0,
+                turns: 0,
+                feed_mm_min: ctx.cutting.lead_feed_mm_min,
+                role: MotionRole::LeadOut,
+            });
         }
     }
 

@@ -5,11 +5,10 @@ use std::{
 };
 
 use chip_cad::CadDocument;
-use chip_post::{
-    OperationPostInput, PostOutputFile, PostProfile, SetupPostInput, describe_wcs_origin,
-    load_available_post_profiles, post_process_setup,
+use chip_post::{PostOutputFile, PostProfile, load_available_post_profiles};
+use chip_project::{
+    ProjectDocument, SetupPostRequest, ToolpathCache, UndoHistory, post_process_project_setup,
 };
-use chip_project::{ProjectDocument, ToolpathCache, UndoHistory};
 use chip_sim::{SimDiagnostic, SimSeverity};
 
 use crate::panels::simulation::SimulationPanelState;
@@ -19,6 +18,19 @@ use crate::panels::simulation::SimulationPanelState;
 pub enum GCodeUiAction {
     RunSimulationFirst,
     JumpToCrash(SimDiagnostic),
+}
+
+/// Context references passed to [`GCodePreviewPanelState::show_ui`] and `rebuild_preview_if_needed`.
+pub struct GCodePanelCtx<'a> {
+    pub project: &'a mut ProjectDocument,
+    pub history: &'a mut UndoHistory,
+    pub setup_idx: usize,
+    pub cad_doc: Option<&'a Arc<CadDocument>>,
+    pub cad_revision: u64,
+    pub cache: &'a ToolpathCache,
+    pub project_file_path: Option<&'a Path>,
+    pub sim_state: &'a SimulationPanelState,
+    pub logs: &'a mut Vec<String>,
 }
 
 #[derive(Default)]
@@ -133,43 +145,6 @@ impl GCodePreviewPanelState {
             return;
         };
 
-        let resolved = match setup.resolve_immutable(doc, project.display_units) {
-            Ok(r) => r,
-            Err(e) => {
-                self.last_error = Some(format!("Setup WCS error: {e}"));
-                return;
-            }
-        };
-
-        let mut op_refs = Vec::new();
-        for (o_idx, op) in setup.operations.iter().enumerate() {
-            if op.suppressed {
-                continue;
-            }
-            if let Some(tid) = &op.tool_id
-                && let Some(tool) = project.tools.iter().find(|t| &t.id == tid)
-                && let Some((_, tp)) =
-                    cache.get_for_operation(project, setup_idx, o_idx, cad_revision)
-            {
-                op_refs.push((op, tool, tp));
-            }
-        }
-
-        if op_refs.is_empty() {
-            self.last_error =
-                Some("Generate clean toolpaths (Ctrl+G) to preview G-code.".to_string());
-            return;
-        }
-
-        let post_ops: Vec<OperationPostInput<'_>> = op_refs
-            .iter()
-            .map(|(op, tool, tp)| OperationPostInput {
-                op,
-                tool,
-                toolpath: tp.as_ref(),
-            })
-            .collect();
-
         let proj_label = project_file_path
             .and_then(|p| p.file_name())
             .and_then(|s| s.to_str())
@@ -180,18 +155,16 @@ impl GCodePreviewPanelState {
             .map(|s| s.trim_end_matches(".chip"))
             .unwrap_or(&project.project_name);
 
-        let input = SetupPostInput {
-            project_name: proj_label,
-            setup_name: &setup.name,
-            wcs_slot: setup.wcs_slot,
-            wcs_origin_description: describe_wcs_origin(&setup.wcs),
-            stock: resolved.stock,
-            clearance_z_wcs: resolved.clearance_z_wcs,
-            retract_z_wcs: resolved.retract_z_wcs,
-            operations: post_ops,
-        };
-
-        match post_process_setup(&input, &post_profile, stem) {
+        match post_process_project_setup(&SetupPostRequest {
+            project,
+            setup_idx,
+            cad_doc: doc.as_ref(),
+            cad_revision,
+            cache,
+            post_profile: &post_profile,
+            project_label: proj_label,
+            program_stem: stem,
+        }) {
             Ok(files) => {
                 self.cached_lines_per_file = files
                     .iter()
@@ -203,25 +176,23 @@ impl GCodePreviewPanelState {
                 }
             }
             Err(e) => {
-                self.last_error = Some(e.to_string());
+                self.last_error = Some(e);
             }
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub fn show_ui(
-        &mut self,
-        ui: &mut egui::Ui,
-        project: &mut ProjectDocument,
-        history: &mut UndoHistory,
-        setup_idx: usize,
-        cad_doc: Option<&Arc<CadDocument>>,
-        cad_revision: u64,
-        cache: &ToolpathCache,
-        project_file_path: Option<&Path>,
-        sim_state: &SimulationPanelState,
-        logs: &mut Vec<String>,
-    ) -> Option<GCodeUiAction> {
+    pub fn show_ui(&mut self, ui: &mut egui::Ui, ctx: GCodePanelCtx<'_>) -> Option<GCodeUiAction> {
+        let GCodePanelCtx {
+            project,
+            history,
+            setup_idx,
+            cad_doc,
+            cad_revision,
+            cache,
+            project_file_path,
+            sim_state,
+            logs,
+        } = ctx;
         let mut action: Option<GCodeUiAction> = None;
         let proj_dir = project_file_path.and_then(|p| p.parent());
         self.ensure_profiles_loaded(proj_dir);

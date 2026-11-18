@@ -5,7 +5,7 @@ use crate::{
     params::{FacingCutMode, FacingParams},
     selection::ExtractedFeature25D,
     strategies::{StrategyExecContext, compute_z_levels},
-    toolpath::ToolpathBuilder,
+    toolpath::{ToolpathBuilder, XyArcMove},
     wcs::CamError,
 };
 
@@ -211,15 +211,15 @@ pub fn generate_facing(
                 // Turning from `+u` toward `+v` (`next_pv > pv`) is CCW; turning from `-u` toward `+v` is CW!
                 let ccw = if forward { next_pv > pv } else { next_pv < pv };
                 if link_r > 1e-4 {
-                    builder.arc_xy_to(
-                        DVec3::new(p_next_start.x, p_next_start.y, z_cut),
-                        mid_center,
-                        link_r,
+                    builder.arc_xy_to(XyArcMove {
+                        end_wcs: DVec3::new(p_next_start.x, p_next_start.y, z_cut),
+                        center_xy: mid_center,
+                        radius_mm: link_r,
                         ccw,
-                        0,
-                        ctx.cutting.lead_feed_mm_min,
-                        MotionRole::LinkTransition,
-                    );
+                        turns: 0,
+                        feed_mm_min: ctx.cutting.lead_feed_mm_min,
+                        role: MotionRole::LinkTransition,
+                    });
                 } else {
                     builder.linear_to(
                         DVec3::new(p_next_start.x, p_next_start.y, z_cut),

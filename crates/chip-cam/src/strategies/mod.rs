@@ -23,7 +23,6 @@ use crate::{
 
 /// Resolved immutable context passed into each 2.5D toolpath strategy generator.
 pub struct StrategyExecContext<'a> {
-    pub doc: &'a CadDocument,
     pub setup: &'a ResolvedSetup,
     pub op: &'a Operation,
     pub tool: &'a Tool,
@@ -134,7 +133,6 @@ pub fn generate_operation_toolpath(
     }
 
     let ctx = StrategyExecContext {
-        doc,
         setup,
         op,
         tool,

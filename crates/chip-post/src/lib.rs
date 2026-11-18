@@ -1,7 +1,9 @@
 //! User-editable TOML post-processor profiles, ATC vs. split-by-tool partitioning,
 //! modal state tracking, arc splitting, and G-code emission (`chip-post`).
 
+mod cycles_arcs;
 pub mod emitter;
+mod modal;
 pub mod partition;
 pub mod profile;
 
@@ -18,8 +20,8 @@ pub use profile::{
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use chip_cam::{
-        ClEvent, CutterCompMode, DrillCycleKind, MotionRole, Operation, OperationKind,
-        ResolvedStockGeometry, ToolpathBuilder, WorkOffsetSlot,
+        ClEvent, CutterCompMode, DrillCycleKind, DrillCycleSpec, MotionRole, Operation,
+        OperationKind, ResolvedStockGeometry, ToolpathBuilder, WorkOffsetSlot, XyArcMove,
     };
     use chip_math::{Aabb3, DVec2, DVec3};
     use chip_tools::{CoolantMode, SpindleDirection, default_starter_tool_library};
@@ -104,15 +106,15 @@ mod tests {
             mode: CutterCompMode::WearLeft,
         });
         // Full 2-turn (720°) helical CCW bore from Z=0 down to Z=-10 around center (50, 40), R = 6.0!
-        b2.arc_xy_to(
-            DVec3::new(56.0, 40.0, -10.0),
-            DVec2::new(50.0, 40.0),
-            6.0,
-            true,
-            1, // 1 extra turn beyond base 360° => 720° total!
-            800.0,
-            MotionRole::Ramp,
-        );
+        b2.arc_xy_to(XyArcMove {
+            end_wcs: DVec3::new(56.0, 40.0, -10.0),
+            center_xy: DVec2::new(50.0, 40.0),
+            radius_mm: 6.0,
+            ccw: true,
+            turns: 1, // 1 extra turn beyond base 360° => 720° total!
+            feed_mm_min: 800.0,
+            role: MotionRole::Ramp,
+        });
         b2.push_event(ClEvent::CutterComp {
             mode: CutterCompMode::Off,
         });
@@ -144,18 +146,18 @@ mod tests {
         b3.push_event(ClEvent::Coolant {
             mode: CoolantMode::Flood,
         });
-        b3.emit_drill_cycle(
-            DrillCycleKind::DeepPeck,
-            DVec3::new(20.0, 20.0, -16.0),
-            2.0,
-            15.0,
-            4.0,
-            None,
-            1.5,
-            0.5,
-            0.0,
-            320.0,
-        );
+        b3.emit_drill_cycle(DrillCycleSpec {
+            kind: DrillCycleKind::DeepPeck,
+            bottom_wcs: DVec3::new(20.0, 20.0, -16.0),
+            r_plane_z_wcs: 2.0,
+            clear_z_wcs: 15.0,
+            peck_q_mm: 4.0,
+            decreasing_factor: None,
+            min_peck_mm: 1.5,
+            chip_break_retract_mm: 0.5,
+            dwell_sec: 0.0,
+            feed_mm_min: 320.0,
+        });
         b3.push_event(ClEvent::OperationEnd);
         let tp3 = b3.finish();
 

@@ -10,10 +10,11 @@ use std::{
 use chip_cad::CadDocument;
 use chip_cam::{GeneratedToolpath, Operation};
 use chip_math::{DVec3, DisplayUnit, MM_PER_INCH};
-use chip_post::resolve_post_profile;
-use chip_project::{ProjectDocument, ToolpathCache};
+use chip_project::{
+    ProjectDocument, ToolpathCache, collect_ready_setup_operations, resolve_kinematics_for_key,
+};
 use chip_sim::{
-    MachineKinematicsConfig, ScrubSnapshot, SetupSimulationResult, SimError, SimOperationInput,
+    ScrubSnapshot, SetupSimulationInput, SetupSimulationResult, SimError, SimOperationInput,
     SimResolution, SimStockMesh, SimToolMesh, SimVerificationConfig, build_cutter_assembly_mesh,
     format_cycle_time_hms, run_setup_simulation, tessellate_stock_mesh,
 };
@@ -69,7 +70,36 @@ pub struct SimulationPanelState {
     next_gpu_mesh_rev: u64,
 }
 
-/// Actions emitted by `[Simulation Timeline]` back to `ChipCutterApp`.
+/// Arguments for spawning a background heightmap simulation run.
+pub struct SimTriggerArgs<'a> {
+    pub project: &'a ProjectDocument,
+    pub setup_idx: usize,
+    pub cad_doc: Arc<CadDocument>,
+    pub cad_revision: u64,
+    pub cache: &'a ToolpathCache,
+    pub project_dir: Option<&'a std::path::Path>,
+    pub egui_ctx: egui::Context,
+    pub logs: &'a mut Vec<String>,
+}
+
+/// Pass #6 GPU stock, revolved cutter assembly, and trail segment cap returned by [`SimulationPanelState::resolve_viewport_visuals`].
+pub struct SimViewportVisuals {
+    pub stock: Option<(u64, Arc<SimStockMesh>)>,
+    pub cutter: Option<(u64, Arc<SimToolMesh>, DVec3)>,
+    pub trail_limit: Option<usize>,
+}
+
+/// Context references passed to [`SimulationPanelState::show_ui`].
+pub struct SimPanelCtx<'a> {
+    pub project: &'a ProjectDocument,
+    pub setup_idx: usize,
+    pub cad_doc: Option<&'a Arc<CadDocument>>,
+    pub cad_revision: u64,
+    pub cache: &'a ToolpathCache,
+    pub project_dir: Option<&'a std::path::Path>,
+    pub logs: &'a mut Vec<String>,
+}
+///Context structs above; actions emitted by `[Simulation Timeline]` back to `ChipCutterApp`.
 #[derive(Debug, Clone)]
 pub enum SimulationUiAction {
     FocusDiagnosticsTab,
@@ -162,18 +192,17 @@ impl SimulationPanelState {
     }
 
     /// Spawns a non-blocking `rayon` background job to run `HeightfieldStock` simulation & crash checks.
-    #[allow(clippy::too_many_arguments)]
-    pub fn trigger_simulation(
-        &mut self,
-        project: &ProjectDocument,
-        setup_idx: usize,
-        cad_doc: Arc<CadDocument>,
-        cad_revision: u64,
-        cache: &ToolpathCache,
-        project_dir: Option<&std::path::Path>,
-        egui_ctx: egui::Context,
-        logs: &mut Vec<String>,
-    ) {
+    pub fn trigger_simulation(&mut self, args: SimTriggerArgs<'_>) {
+        let SimTriggerArgs {
+            project,
+            setup_idx,
+            cad_doc,
+            cad_revision,
+            cache,
+            project_dir,
+            egui_ctx,
+            logs,
+        } = args;
         let Some(setup) = project.setups.get(setup_idx) else {
             return;
         };
@@ -185,23 +214,15 @@ impl SimulationPanelState {
             }
         };
 
-        let mut owned_ops: Vec<OwnedSimOp> = Vec::new();
-        for (o_idx, op) in setup.operations.iter().enumerate() {
-            if op.suppressed {
-                continue;
-            }
-            if let Some(tid) = &op.tool_id
-                && let Some(tool) = project.tools.iter().find(|t| &t.id == tid)
-                && let Some((_, tp)) =
-                    cache.get_for_operation(project, setup_idx, o_idx, cad_revision)
-            {
-                owned_ops.push(OwnedSimOp {
-                    op: op.clone(),
-                    tool: tool.clone(),
-                    toolpath: tp,
-                });
-            }
-        }
+        let ready = collect_ready_setup_operations(project, setup_idx, cache, cad_revision);
+        let owned_ops: Vec<OwnedSimOp> = ready
+            .into_iter()
+            .map(|r| OwnedSimOp {
+                op: r.op.clone(),
+                tool: r.tool.clone(),
+                toolpath: r.toolpath,
+            })
+            .collect();
 
         if owned_ops.is_empty() {
             logs.push(format!(
@@ -220,14 +241,7 @@ impl SimulationPanelState {
         let signature = self.compute_setup_sim_signature(project, setup_idx, cache, cad_revision);
         let resolution = self.resolution;
         let target_bodies = setup.target_bodies.clone();
-        let kin = resolve_post_profile(&setup.post_profile, project_dir)
-            .map(|p| MachineKinematicsConfig {
-                rapid_rate_mm_min: p.rapid_rate_mm_min,
-                accel_mm_s2: p.accel_mm_s2,
-                junction_deviation_mm: 0.05,
-                tool_change_time_sec: p.tool_change_time_sec,
-            })
-            .unwrap_or_default();
+        let kin = resolve_kinematics_for_key(&setup.post_profile, project_dir);
 
         logs.push(format!(
             "Simulating Setup '{}' at {} resolution on background worker…",
@@ -245,16 +259,16 @@ impl SimulationPanelState {
                 })
                 .collect();
 
-            let res = run_setup_simulation(
-                &cad_doc,
-                &resolved,
-                &target_bodies,
-                &refs,
+            let res = run_setup_simulation(&SetupSimulationInput {
+                doc: &cad_doc,
+                setup: &resolved,
+                target_bodies: &target_bodies,
+                operations: &refs,
                 resolution,
-                kin,
-                SimVerificationConfig::default(),
-                Some(&cancel_flag),
-            );
+                kinematics: kin,
+                verify_config: SimVerificationConfig::default(),
+                cancel: Some(&cancel_flag),
+            });
             let mapped = match res {
                 Ok(sim) => Ok(Arc::new(sim)),
                 Err(SimError::Cancelled) => return,
@@ -375,23 +389,26 @@ impl SimulationPanelState {
     }
 
     /// Produces the cached Pass #6 GPU stock mesh, 3D revolved cutter mesh + tip position, and trail limit.
-    #[allow(clippy::type_complexity)]
     pub fn resolve_viewport_visuals(
         &mut self,
         project: &ProjectDocument,
         setup_idx: usize,
         cache: &ToolpathCache,
         cad_revision: u64,
-    ) -> (
-        Option<(u64, Arc<SimStockMesh>)>,
-        Option<(u64, Arc<SimToolMesh>, DVec3)>,
-        Option<usize>,
-    ) {
+    ) -> SimViewportVisuals {
         let Some(res) = &self.active_result else {
-            return (None, None, None);
+            return SimViewportVisuals {
+                stock: None,
+                cutter: None,
+                trail_limit: None,
+            };
         };
         if self.active_setup_idx != setup_idx {
-            return (None, None, None);
+            return SimViewportVisuals {
+                stock: None,
+                cutter: None,
+                trail_limit: None,
+            };
         }
 
         let snap = res.timeline.sample_at_time(self.current_time_sec);
@@ -416,31 +433,18 @@ impl SimulationPanelState {
             if self.cached_stock_key != Some(desired_key) && allow_remesh {
                 let mesh = if completed_key == usize::MAX {
                     tessellate_stock_mesh(&res.final_stock, self.color_by_operation)
-                } else if let Some(setup) = project.setups.get(setup_idx) {
-                    let mut op_refs = Vec::new();
-                    for (o_idx, op) in setup.operations.iter().enumerate() {
-                        if op.suppressed {
-                            continue;
-                        }
-                        if let Some(tid) = &op.tool_id
-                            && let Some(tool) = project.tools.iter().find(|t| &t.id == tid)
-                            && let Some((_, tp)) =
-                                cache.get_for_operation(project, setup_idx, o_idx, cad_revision)
-                        {
-                            op_refs.push((op, tool, tp));
-                        }
-                    }
-                    let inputs: Vec<SimOperationInput<'_>> = op_refs
+                } else {
+                    let ready =
+                        collect_ready_setup_operations(project, setup_idx, cache, cad_revision);
+                    let inputs: Vec<SimOperationInput<'_>> = ready
                         .iter()
-                        .map(|(op, tool, tp)| {
-                            SimOperationInput::from_operation(op, tool, tp.as_ref())
+                        .map(|r| {
+                            SimOperationInput::from_operation(r.op, r.tool, r.toolpath.as_ref())
                         })
                         .collect();
                     let intermediate =
                         res.reconstruct_stock_at_time(&inputs, self.current_time_sec);
                     tessellate_stock_mesh(&intermediate, self.color_by_operation)
-                } else {
-                    tessellate_stock_mesh(&res.final_stock, self.color_by_operation)
                 };
 
                 let rev = self.next_gpu_mesh_rev;
@@ -493,22 +497,28 @@ impl SimulationPanelState {
             None
         };
 
-        (stock_out, tool_out, trail_out)
+        SimViewportVisuals {
+            stock: stock_out,
+            cutter: tool_out,
+            trail_limit: trail_out,
+        }
     }
 
     /// Renders the bottom `[Simulation Timeline]` workspace tab (`06-simulation.md` §1–4).
-    #[allow(clippy::too_many_arguments)]
     pub fn show_ui(
         &mut self,
         ui: &mut egui::Ui,
-        project: &ProjectDocument,
-        setup_idx: usize,
-        cad_doc: Option<&Arc<CadDocument>>,
-        cad_revision: u64,
-        cache: &ToolpathCache,
-        project_dir: Option<&std::path::Path>,
-        logs: &mut Vec<String>,
+        ctx: SimPanelCtx<'_>,
     ) -> Option<SimulationUiAction> {
+        let SimPanelCtx {
+            project,
+            setup_idx,
+            cad_doc,
+            cad_revision,
+            cache,
+            project_dir,
+            logs,
+        } = ctx;
         let mut action: Option<SimulationUiAction> = None;
         let display_unit = project.display_units;
 
@@ -527,16 +537,16 @@ impl SimulationPanelState {
                 .clicked()
                 && let Some(doc) = cad_doc
             {
-                self.trigger_simulation(
+                self.trigger_simulation(SimTriggerArgs {
                     project,
                     setup_idx,
-                    Arc::clone(doc),
+                    cad_doc: Arc::clone(doc),
                     cad_revision,
                     cache,
                     project_dir,
-                    ui.ctx().clone(),
+                    egui_ctx: ui.ctx().clone(),
                     logs,
-                );
+                });
             }
             if busy {
                 ui.spinner();

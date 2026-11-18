@@ -78,6 +78,21 @@ pub fn compute_radial_chip_thinning(
     })
 }
 
+/// Input parameters for constructing a [`CuttingPreset`] from surface speed (`m/min`) and chipload (`mm/tooth`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SurfaceSpeedPresetSpec<'a> {
+    pub id: &'a str,
+    pub name: &'a str,
+    pub material: &'a str,
+    pub diameter_mm: f64,
+    pub flutes: u32,
+    pub surface_speed_m_min: f64,
+    pub chipload_mm_tooth: f64,
+    pub default_stepdown_mm: f64,
+    pub default_stepover_mm: f64,
+    pub coolant_override: Option<CoolantMode>,
+}
+
 /// Per-material cutting parameters coupled via `RPM ↔ Surface Speed` and `Chipload ↔ Feedrate`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CuttingPreset {
@@ -100,35 +115,24 @@ pub struct CuttingPreset {
 impl CuttingPreset {
     /// Creates a consistent preset from surface speed (`m/min`) and chipload (`mm/tooth`),
     /// deriving `lead = 0.8 * feed`, `ramp = 0.5 * feed`, and `plunge = 0.33 * feed` per `04-tool-library.md`.
-    #[allow(clippy::too_many_arguments)]
-    pub fn from_surface_speed(
-        id: impl Into<String>,
-        name: impl Into<String>,
-        material: impl Into<String>,
-        diameter_mm: f64,
-        flutes: u32,
-        surface_speed_m_min: f64,
-        chipload_mm_tooth: f64,
-        default_stepdown_mm: f64,
-        default_stepover_mm: f64,
-        coolant_override: Option<CoolantMode>,
-    ) -> Self {
-        let rpm = rpm_from_surface_speed(surface_speed_m_min, diameter_mm).unwrap_or(10_000.0);
-        let feed = feed_from_chipload(rpm, flutes, chipload_mm_tooth);
+    pub fn from_surface_speed(spec: SurfaceSpeedPresetSpec<'_>) -> Self {
+        let rpm =
+            rpm_from_surface_speed(spec.surface_speed_m_min, spec.diameter_mm).unwrap_or(10_000.0);
+        let feed = feed_from_chipload(rpm, spec.flutes, spec.chipload_mm_tooth);
         Self {
-            id: id.into(),
-            name: name.into(),
-            material: material.into(),
+            id: spec.id.to_string(),
+            name: spec.name.to_string(),
+            material: spec.material.to_string(),
             spindle_rpm: rpm,
-            surface_speed_m_min,
+            surface_speed_m_min: spec.surface_speed_m_min,
             cutting_feed_mm_min: feed,
-            chipload_mm_tooth,
+            chipload_mm_tooth: spec.chipload_mm_tooth,
             lead_feed_mm_min: 0.8 * feed,
             ramp_feed_mm_min: 0.5 * feed,
             plunge_feed_mm_min: (feed / 3.0).max(10.0),
-            default_stepdown_mm,
-            default_stepover_mm,
-            coolant_override,
+            default_stepdown_mm: spec.default_stepdown_mm,
+            default_stepover_mm: spec.default_stepover_mm,
+            coolant_override: spec.coolant_override,
         }
     }
 

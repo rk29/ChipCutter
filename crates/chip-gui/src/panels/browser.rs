@@ -23,21 +23,34 @@ pub enum BrowserAction {
     Log(String),
 }
 
+/// Context references passed to [`show_cam_browser`].
+pub struct CamBrowserCtx<'a> {
+    pub project: &'a mut ProjectDocument,
+    pub history: &'a mut UndoHistory,
+    pub toolpath_cache: &'a ToolpathCache,
+    pub cad_doc: Option<&'a CadDocument>,
+    pub cad_revision: u64,
+    pub active_setup_idx: &'a mut usize,
+    pub focus: &'a mut InspectorFocus,
+    pub setup_tab: &'a mut SetupTab,
+    pub op_tab: &'a mut OperationTab,
+    pub pick_mode: &'a mut ViewportPickMode,
+}
+
 /// Renders the left-hand hierarchical **CAM Browser** (`08-ui-viewport.md`).
-#[allow(clippy::too_many_arguments)]
-pub fn show_cam_browser(
-    ui: &mut egui::Ui,
-    project: &mut ProjectDocument,
-    history: &mut UndoHistory,
-    toolpath_cache: &ToolpathCache,
-    cad_doc: Option<&CadDocument>,
-    cad_revision: u64,
-    active_setup_idx: &mut usize,
-    focus: &mut InspectorFocus,
-    setup_tab: &mut SetupTab,
-    op_tab: &mut OperationTab,
-    pick_mode: &mut ViewportPickMode,
-) -> Option<BrowserAction> {
+pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<BrowserAction> {
+    let CamBrowserCtx {
+        project,
+        history,
+        toolpath_cache,
+        cad_doc,
+        cad_revision,
+        active_setup_idx,
+        focus,
+        setup_tab,
+        op_tab,
+        pick_mode,
+    } = ctx;
     let mut emitted_action = None;
 
     if !project.setups.is_empty() && *active_setup_idx >= project.setups.len() {

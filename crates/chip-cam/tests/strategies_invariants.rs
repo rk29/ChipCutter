@@ -701,16 +701,16 @@ fn verifies_all_five_v1_strategies_against_torture_block_invariants() {
         chip_sim::SimOperationInput::from_operation(&op_mod_chamf, &big_chamfer, &tp_mod_chamf),
     ];
 
-    let sim_res = chip_sim::run_setup_simulation(
-        &doc,
-        &resolved_setup,
-        &setup.target_bodies,
-        &sim_ops,
-        chip_sim::SimResolution::Fine,
-        chip_sim::MachineKinematicsConfig::default(),
-        chip_sim::SimVerificationConfig::default(),
-        None,
-    )
+    let sim_res = chip_sim::run_setup_simulation(&chip_sim::SetupSimulationInput {
+        doc: &doc,
+        setup: &resolved_setup,
+        target_bodies: &setup.target_bodies,
+        operations: &sim_ops,
+        resolution: chip_sim::SimResolution::Fine,
+        kinematics: chip_sim::MachineKinematicsConfig::default(),
+        verify_config: chip_sim::SimVerificationConfig::default(),
+        cancel: None,
+    })
     .unwrap();
 
     assert_eq!(

@@ -1,0 +1,759 @@
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Instant,
+};
+
+use chip_cad::{
+    CadDocument, CadKernel, CadPicker, MonstertruckKernel, TopologyGraph,
+    sample_cam_torture_block_step, sample_machined_plate_step, sample_multi_feature_bracket_step,
+    sample_revised_part_pair_step,
+};
+use chip_math::DEFAULT_TESS_CHORD_TOL_MM;
+use chip_project::{
+    ModelEntry, OperationReloadOutcome, ProjectDocument, build_cam_torture_project,
+    build_multi_feature_bracket_project, build_revision_v1_demo_project, compute_sha256_hex,
+    export_chipz_bundle, is_chipz_path, portable_model_path, rebind_project_to_reloaded_cad,
+    resolve_model_path, unpack_chipz_bundle,
+};
+
+use crate::{
+    app::{ChipCutterApp, LoadedModelState},
+    panels::{InspectorFocus, OperationTab, SetupTab, ViewportPickMode},
+};
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LoadPurpose {
+    FreshImport { update_model_entry: bool },
+    SeedMultiFeatureBracket,
+    SeedCamTortureBlock,
+    SeedRevisionDemoV1,
+    ReloadRebind { update_path: bool },
+}
+
+pub(crate) struct LoadedPayload {
+    pub doc: CadDocument,
+    pub picker: CadPicker,
+    pub topo: TopologyGraph,
+    pub raw_step_bytes: Vec<u8>,
+    pub source_path: Option<PathBuf>,
+    pub sha256_hex: String,
+    pub purpose: LoadPurpose,
+}
+
+pub(crate) enum LoadJobResult {
+    Loaded {
+        payload: Box<LoadedPayload>,
+        elapsed_ms: u128,
+    },
+    Failed(String),
+}
+
+impl ChipCutterApp {
+    pub(crate) fn open_step_dialog(&mut self, ctx: &egui::Context) {
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("STEP 3D Models", &["step", "stp", "STEP", "STP"])
+            .pick_file()
+        {
+            self.spawn_step_file_load(path, ctx.clone());
+        }
+    }
+
+    pub(crate) fn open_project_dialog(&mut self, ctx: &egui::Context) {
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter(
+                "ChipCutter Project & Portable Bundle (.chip.toml, .chipz)",
+                &["toml", "chipz", "CHIPZ"],
+            )
+            .pick_file()
+        {
+            if is_chipz_path(&path) {
+                self.load_chipz_from_disk(&path, ctx.clone());
+            } else {
+                self.load_project_from_disk(&path, ctx.clone());
+            }
+        }
+    }
+
+    pub(crate) fn save_project_dialog(&mut self) {
+        if let Some(existing) = self.project_file_path.clone() {
+            self.save_project_to_disk(&existing);
+        } else if let Some(path) = rfd::FileDialog::new()
+            .set_file_name("job.chip.toml")
+            .save_file()
+        {
+            self.save_project_to_disk(&path);
+        }
+    }
+
+    pub(crate) fn load_project_from_disk(&mut self, path: &Path, egui_ctx: egui::Context) {
+        match ProjectDocument::load_from_path(path) {
+            Ok(doc) => {
+                self.clear_bundle_extract_dir();
+                self.history.clear();
+                self.clean_undo_len = Some(0);
+                self.external_step_modified = false;
+                self.last_reload_banner = None;
+                self.project = doc;
+                self.project_file_path = Some(path.to_path_buf());
+                self.active_setup_idx = 0;
+                self.inspector_focus = InspectorFocus::Setup { setup_idx: 0 };
+                self.setup_tab = SetupTab::Wcs;
+                self.pick_mode = ViewportPickMode::InspectEntity;
+                self.gcode_panel.refresh_profiles(path.parent());
+                self.logs
+                    .push(format!("Opened project '{}'.", path.display()));
+                if let Some(first_model) = self.project.models.first() {
+                    let step_path = resolve_model_path(path.parent(), &first_model.path);
+                    self.spawn_step_file_load_with_purpose(
+                        step_path,
+                        LoadPurpose::FreshImport {
+                            update_model_entry: false,
+                        },
+                        egui_ctx,
+                    );
+                }
+            }
+            Err(err) => {
+                self.logs
+                    .push(format!("ERROR opening project '{}': {err}", path.display()));
+            }
+        }
+    }
+
+    pub(crate) fn load_chipz_from_disk(&mut self, archive_path: &Path, egui_ctx: egui::Context) {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        let extract_dir = std::env::temp_dir().join(format!(
+            "chipcutter_gui_chipz_{}_{nanos}",
+            std::process::id()
+        ));
+        match unpack_chipz_bundle(archive_path, &extract_dir) {
+            Ok(unpacked) => {
+                self.clear_bundle_extract_dir();
+                self.bundle_extract_dir = Some(extract_dir.clone());
+                self.history.clear();
+                self.clean_undo_len = Some(0);
+                self.external_step_modified = false;
+                self.last_reload_banner = None;
+                self.project = unpacked.project;
+                self.project_file_path = None;
+                self.active_setup_idx = 0;
+                self.inspector_focus = InspectorFocus::Setup { setup_idx: 0 };
+                self.pick_mode = ViewportPickMode::InspectEntity;
+                self.gcode_panel.refresh_profiles(Some(&extract_dir));
+                self.logs.push(format!(
+                    "Unpacked portable bundle '{}' ({} file(s)).",
+                    archive_path.display(),
+                    unpacked.extracted_files.len()
+                ));
+                if let Some(first_model) = self.project.models.first() {
+                    let step_path = resolve_model_path(Some(&extract_dir), &first_model.path);
+                    self.spawn_step_file_load_with_purpose(
+                        step_path,
+                        LoadPurpose::FreshImport {
+                            update_model_entry: false,
+                        },
+                        egui_ctx,
+                    );
+                }
+            }
+            Err(err) => {
+                let _ = std::fs::remove_dir_all(&extract_dir);
+                self.logs.push(format!(
+                    "ERROR unpacking portable bundle '{}': {err}",
+                    archive_path.display()
+                ));
+            }
+        }
+    }
+
+    pub(crate) fn save_project_to_disk(&mut self, path: &Path) {
+        for entry in &mut self.project.models {
+            let cur = PathBuf::from(&entry.path);
+            if cur.is_absolute() {
+                entry.path = portable_model_path(Some(path), &cur);
+            }
+        }
+        match self.project.save_to_path(path) {
+            Ok(()) => {
+                self.project_file_path = Some(path.to_path_buf());
+                self.clean_undo_len = Some(self.history.undo_len());
+                self.logs
+                    .push(format!("Saved project to '{}'.", path.display()));
+            }
+            Err(err) => {
+                self.logs
+                    .push(format!("ERROR saving project '{}': {err}", path.display()));
+            }
+        }
+    }
+
+    pub(crate) fn export_chipz_dialog(&mut self) {
+        let default_stem = self
+            .project_file_path
+            .as_deref()
+            .and_then(Path::file_stem)
+            .and_then(|s| s.to_str())
+            .map(|s| s.trim_end_matches(".chip"))
+            .unwrap_or("job");
+        let Some(dest_path) = rfd::FileDialog::new()
+            .add_filter("ChipCutter Portable Bundle (.chipz)", &["chipz"])
+            .set_file_name(format!("{default_stem}.chipz"))
+            .save_file()
+        else {
+            return;
+        };
+
+        let mut fallback: Vec<(&str, &[u8])> = Vec::new();
+        if let (Some(m), Some(first)) = (&self.model, self.project.models.first()) {
+            fallback.push((first.id.as_str(), m.raw_step_bytes.as_slice()));
+            fallback.push((first.path.as_str(), m.raw_step_bytes.as_slice()));
+        }
+        let proj_dir = self
+            .project_file_path
+            .as_deref()
+            .and_then(Path::parent)
+            .or(self.bundle_extract_dir.as_deref());
+        match export_chipz_bundle(
+            &self.project,
+            proj_dir,
+            &fallback,
+            self.gcode_panel.custom_profiles(),
+            &dest_path,
+        ) {
+            Ok(sum) => {
+                self.logs.push(format!(
+                    "Exported portable bundle '{}' ({} bytes, {} model(s), {} custom post(s)).",
+                    dest_path.display(),
+                    sum.archive_size_bytes,
+                    sum.model_files.len(),
+                    sum.custom_post_files.len()
+                ));
+            }
+            Err(err) => {
+                self.logs.push(format!(
+                    "ERROR exporting portable bundle '{}': {err}",
+                    dest_path.display()
+                ));
+            }
+        }
+    }
+
+    pub(crate) fn reload_active_step_model(&mut self, egui_ctx: &egui::Context) {
+        let disk_path = self
+            .model
+            .as_ref()
+            .and_then(|m| m.source_path.clone())
+            .or_else(|| {
+                let first = self.project.models.first()?;
+                let resolved = resolve_model_path(self.active_project_dir(), &first.path);
+                resolved.is_file().then_some(resolved)
+            });
+
+        if let Some(step_path) = disk_path {
+            self.spawn_step_file_load_with_purpose(
+                step_path,
+                LoadPurpose::ReloadRebind { update_path: false },
+                egui_ctx.clone(),
+            );
+        } else {
+            self.logs.push(
+                "Current STEP model is an in-memory sample; choose a STEP file on disk to associatively re-bind (or try '-> Rev v2')."
+                    .to_string(),
+            );
+            self.replace_step_dialog(egui_ctx);
+        }
+    }
+
+    pub(crate) fn replace_step_dialog(&mut self, ctx: &egui::Context) {
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("STEP 3D Models", &["step", "stp", "STEP", "STP"])
+            .pick_file()
+        {
+            self.spawn_step_file_load_with_purpose(
+                path,
+                LoadPurpose::ReloadRebind { update_path: true },
+                ctx.clone(),
+            );
+        }
+    }
+
+    pub(crate) fn spawn_step_file_load(&mut self, path: PathBuf, egui_ctx: egui::Context) {
+        self.spawn_step_file_load_with_purpose(
+            path,
+            LoadPurpose::FreshImport {
+                update_model_entry: true,
+            },
+            egui_ctx,
+        );
+    }
+
+    pub(crate) fn spawn_step_file_load_with_purpose(
+        &mut self,
+        path: PathBuf,
+        purpose: LoadPurpose,
+        egui_ctx: egui::Context,
+    ) {
+        self.loading_in_flight = true;
+        self.logs.push(format!(
+            "Loading STEP file '{}' on background worker…",
+            path.display()
+        ));
+        let tx = self.job_tx.clone();
+        rayon::spawn(move || {
+            let t0 = Instant::now();
+            let res = match std::fs::read(&path) {
+                Ok(bytes) => {
+                    let name = path
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("part.step")
+                        .to_string();
+                    parse_step_bytes_job(name, bytes, Some(path), purpose, t0)
+                }
+                Err(e) => LoadJobResult::Failed(format!("failed to read {}: {e}", path.display())),
+            };
+            let _ = tx.send(res);
+            egui_ctx.request_repaint();
+        });
+    }
+
+    pub(crate) fn spawn_sample_plate_load(&mut self, egui_ctx: egui::Context) {
+        self.loading_in_flight = true;
+        self.logs
+            .push("Generating & tessellating sample CNC mounting plate STEP model…".to_string());
+        let tx = self.job_tx.clone();
+        rayon::spawn(move || {
+            let t0 = Instant::now();
+            let res = match sample_machined_plate_step() {
+                Ok(step_str) => parse_step_bytes_job(
+                    "sample_machined_plate.step".to_string(),
+                    step_str.into_bytes(),
+                    None,
+                    LoadPurpose::FreshImport {
+                        update_model_entry: false,
+                    },
+                    t0,
+                ),
+                Err(e) => LoadJobResult::Failed(e.to_string()),
+            };
+            let _ = tx.send(res);
+            egui_ctx.request_repaint();
+        });
+    }
+
+    pub(crate) fn spawn_multi_feature_sample_load(
+        &mut self,
+        tilted: bool,
+        seed_demo_ops: bool,
+        egui_ctx: egui::Context,
+    ) {
+        self.loading_in_flight = true;
+        self.logs.push(format!(
+            "Generating Milestone 2 multi-feature bracket STEP fixture (tilted={tilted})…"
+        ));
+        let tx = self.job_tx.clone();
+        rayon::spawn(move || {
+            let t0 = Instant::now();
+            let res = match sample_multi_feature_bracket_step(tilted) {
+                Ok(step_str) => {
+                    let name = if tilted {
+                        "sample_multi_feature_tilted.step"
+                    } else {
+                        "sample_multi_feature_bracket.step"
+                    };
+                    let purpose = if seed_demo_ops {
+                        LoadPurpose::SeedMultiFeatureBracket
+                    } else {
+                        LoadPurpose::FreshImport {
+                            update_model_entry: false,
+                        }
+                    };
+                    parse_step_bytes_job(name.to_string(), step_str.into_bytes(), None, purpose, t0)
+                }
+                Err(e) => LoadJobResult::Failed(e.to_string()),
+            };
+            let _ = tx.send(res);
+            egui_ctx.request_repaint();
+        });
+    }
+
+    pub(crate) fn spawn_cam_torture_sample_load(
+        &mut self,
+        seed_demo_ops: bool,
+        egui_ctx: egui::Context,
+    ) {
+        self.loading_in_flight = true;
+        self.logs.push(
+            "Generating Milestone 3 CAM Torture Block STEP fixture (island pocket, open step, Ø18 bore, 45° bevel)…"
+                .to_string(),
+        );
+        let tx = self.job_tx.clone();
+        rayon::spawn(move || {
+            let t0 = Instant::now();
+            let res = match sample_cam_torture_block_step() {
+                Ok(step_str) => {
+                    let purpose = if seed_demo_ops {
+                        LoadPurpose::SeedCamTortureBlock
+                    } else {
+                        LoadPurpose::FreshImport {
+                            update_model_entry: false,
+                        }
+                    };
+                    parse_step_bytes_job(
+                        "sample_cam_torture_block.step".to_string(),
+                        step_str.into_bytes(),
+                        None,
+                        purpose,
+                        t0,
+                    )
+                }
+                Err(e) => LoadJobResult::Failed(e.to_string()),
+            };
+            let _ = tx.send(res);
+            egui_ctx.request_repaint();
+        });
+    }
+
+    pub(crate) fn spawn_revision_demo_load(
+        &mut self,
+        load_v2_rebind: bool,
+        egui_ctx: egui::Context,
+    ) {
+        self.loading_in_flight = true;
+        self.logs.push(if load_v2_rebind {
+            "Reloading CAD Revision v2 STEP fixture (resized pocket, shifted Ø14 bore, 1 deleted Ø6 hole)…"
+                .to_string()
+        } else {
+            "Generating Milestone 5 CAD Revision v1 STEP fixture & seeding CAM job…".to_string()
+        });
+        let tx = self.job_tx.clone();
+        rayon::spawn(move || {
+            let t0 = Instant::now();
+            let res = match sample_revised_part_pair_step() {
+                Ok((v1_str, v2_str)) => {
+                    let (name, step_str, purpose) = if load_v2_rebind {
+                        (
+                            "sample_revision_part_v2.step",
+                            v2_str,
+                            LoadPurpose::ReloadRebind { update_path: false },
+                        )
+                    } else {
+                        (
+                            "sample_revision_part_v1.step",
+                            v1_str,
+                            LoadPurpose::SeedRevisionDemoV1,
+                        )
+                    };
+                    parse_step_bytes_job(name.to_string(), step_str.into_bytes(), None, purpose, t0)
+                }
+                Err(e) => LoadJobResult::Failed(e.to_string()),
+            };
+            let _ = tx.send(res);
+            egui_ctx.request_repaint();
+        });
+    }
+
+    pub(crate) fn poll_background_jobs(&mut self, egui_ctx: &egui::Context) {
+        while let Ok(msg) = self.job_rx.try_recv() {
+            self.loading_in_flight = false;
+            match msg {
+                LoadJobResult::Loaded {
+                    payload,
+                    elapsed_ms,
+                } => {
+                    self.apply_loaded_cad_payload(*payload, elapsed_ms);
+                }
+                LoadJobResult::Failed(err) => {
+                    self.logs.push(format!("ERROR loading STEP model: {err}"));
+                }
+            }
+        }
+
+        // Throttled (every 2s) external STEP modification check on disk (`09-persistence-cli.md` §1)
+        if !self.loading_in_flight && self.last_disk_check.elapsed().as_secs_f32() >= 2.0 {
+            self.last_disk_check = Instant::now();
+            if let (Some(m), Some(first)) = (&self.model, self.project.models.first())
+                && let Some(disk_path) = &m.source_path
+                && let Ok(meta) = std::fs::metadata(disk_path)
+                && meta.is_file()
+                && meta.len() <= 64 * 1024 * 1024
+                && let Ok(bytes) = std::fs::read(disk_path)
+            {
+                let disk_sha = compute_sha256_hex(&bytes);
+                self.external_step_modified = disk_sha != first.sha256;
+            }
+        }
+
+        // Poll background toolpath generation worker events (`JobDispatcher`)
+        if let Some(m) = &self.model {
+            self.dispatcher.cancel_stale_jobs(&self.project, m.revision);
+            let gen_logs = self.dispatcher.poll_events(
+                &mut self.project,
+                &mut self.toolpath_cache,
+                m.revision,
+            );
+            let had_gen_completion = !gen_logs.is_empty();
+            self.logs.extend(gen_logs);
+
+            if self.auto_sim_after_gen && had_gen_completion && !self.dispatcher.is_busy() {
+                self.auto_sim_after_gen = false;
+                self.trigger_active_setup_simulation(egui_ctx);
+            }
+        }
+
+        let _ = self.sim_panel.poll_worker(&mut self.logs);
+    }
+
+    fn apply_loaded_cad_payload(&mut self, payload: LoadedPayload, elapsed_ms: u128) {
+        let LoadedPayload {
+            doc,
+            picker,
+            topo,
+            raw_step_bytes,
+            source_path,
+            sha256_hex,
+            purpose,
+        } = payload;
+        let size = doc.aabb_mm.size();
+        self.logs.push(format!(
+            "Loaded '{}' [{}] in {} ms — {} faces, {} loops, {} edges (X={:.2} Y={:.2} Z={:.2} mm).",
+            doc.source_name,
+            doc.detected_unit.label(),
+            elapsed_ms,
+            doc.faces.len(),
+            doc.loops.len(),
+            doc.edges.len(),
+            size.x,
+            size.y,
+            size.z,
+        ));
+
+        self.dispatcher.cancel_all();
+        self.external_step_modified = false;
+        let was_model_empty = self.model.is_none();
+        let mut fit_camera = true;
+
+        match purpose {
+            LoadPurpose::SeedMultiFeatureBracket => {
+                self.clear_bundle_extract_dir();
+                self.project_file_path = None;
+                self.history.clear();
+                self.clean_undo_len = Some(0);
+                self.last_reload_banner = None;
+                self.project = build_multi_feature_bracket_project(
+                    &doc,
+                    doc.source_name.clone(),
+                    &sha256_hex,
+                    &self.global_tools.tools,
+                );
+                self.active_setup_idx = 0;
+                if !self.project.setups[0].operations.is_empty() {
+                    self.inspector_focus = InspectorFocus::Operation {
+                        setup_idx: 0,
+                        op_idx: 0,
+                    };
+                    self.op_tab = OperationTab::Geometry;
+                }
+            }
+            LoadPurpose::SeedCamTortureBlock => {
+                self.clear_bundle_extract_dir();
+                self.project_file_path = None;
+                self.history.clear();
+                self.clean_undo_len = Some(0);
+                self.last_reload_banner = None;
+                self.project = build_cam_torture_project(
+                    &doc,
+                    doc.source_name.clone(),
+                    &sha256_hex,
+                    &self.global_tools.tools,
+                );
+                self.active_setup_idx = 0;
+                if self.project.setups[0].operations.len() > 1 {
+                    self.inspector_focus = InspectorFocus::Operation {
+                        setup_idx: 0,
+                        op_idx: 1,
+                    };
+                    self.op_tab = OperationTab::Passes;
+                }
+            }
+            LoadPurpose::SeedRevisionDemoV1 => {
+                self.clear_bundle_extract_dir();
+                self.project_file_path = None;
+                self.history.clear();
+                self.clean_undo_len = Some(0);
+                self.last_reload_banner = None;
+                self.project = build_revision_v1_demo_project(
+                    &doc,
+                    &topo,
+                    doc.source_name.clone(),
+                    &sha256_hex,
+                    &self.global_tools.tools,
+                );
+                self.active_setup_idx = 0;
+                self.inspector_focus = InspectorFocus::Operation {
+                    setup_idx: 0,
+                    op_idx: 1,
+                };
+                self.op_tab = OperationTab::Passes;
+            }
+            LoadPurpose::FreshImport { update_model_entry } => {
+                self.last_reload_banner = None;
+                if update_model_entry {
+                    if let Some(step_path) = &source_path {
+                        let rel = portable_model_path(self.project_file_path.as_deref(), step_path);
+                        self.project.models = vec![ModelEntry {
+                            id: "model_1".to_string(),
+                            path: rel,
+                            sha256: sha256_hex.clone(),
+                        }];
+                    }
+                } else if self.project.models.is_empty() {
+                    self.project.models = vec![ModelEntry {
+                        id: "model_1".to_string(),
+                        path: doc.source_name.clone(),
+                        sha256: sha256_hex.clone(),
+                    }];
+                }
+            }
+            LoadPurpose::ReloadRebind { update_path } => {
+                fit_camera = was_model_empty;
+                self.apply_associative_reload_rebind(
+                    &doc,
+                    &topo,
+                    &sha256_hex,
+                    source_path.as_deref(),
+                    update_path,
+                );
+            }
+        }
+
+        if fit_camera {
+            self.camera.fit_aabb(&doc.aabb_mm);
+        }
+        self.highlight.hovered = None;
+        self.highlight.selected = None;
+
+        let rev = self.next_revision;
+        self.next_revision += 1;
+        self.model = Some(LoadedModelState {
+            doc: Arc::new(doc),
+            picker,
+            topo,
+            raw_step_bytes,
+            source_path,
+            revision: rev,
+        });
+        self.cached_frame_geo = None;
+        self.refresh_dependent_expressions();
+
+        if matches!(
+            purpose,
+            LoadPurpose::SeedCamTortureBlock | LoadPurpose::SeedRevisionDemoV1
+        ) {
+            self.auto_sim_after_gen = true;
+            self.trigger_generate_dirty(None, None);
+        }
+    }
+
+    fn apply_associative_reload_rebind(
+        &mut self,
+        doc: &CadDocument,
+        topo: &TopologyGraph,
+        sha256_hex: &str,
+        source_path: Option<&Path>,
+        update_path: bool,
+    ) {
+        self.history
+            .record_before_edit("Reload STEP Model", None, &self.project);
+        let new_rel = if update_path {
+            source_path.map(|sp| portable_model_path(self.project_file_path.as_deref(), sp))
+        } else {
+            None
+        };
+        let report =
+            rebind_project_to_reloaded_cad(&mut self.project, 0, doc, topo, sha256_hex, new_rel);
+        let summary = report.summary_line();
+        let has_warn = report.needs_repick_count > 0 || !report.setup_wcs_warnings.is_empty();
+        self.logs.push(summary.clone());
+        for w in &report.setup_wcs_warnings {
+            self.logs.push(format!("  [WCS WARN] {w}"));
+        }
+        let mut first_repick: Option<(usize, usize)> = None;
+        for out in &report.operation_outcomes {
+            match out {
+                OperationReloadOutcome::ReboundDirty {
+                    setup_name,
+                    op_name,
+                    updated_indices,
+                    ..
+                } => {
+                    self.logs.push(format!(
+                        "  [REBOUND ] {setup_name} -> {op_name} ({updated_indices} topology update(s))"
+                    ));
+                }
+                OperationReloadOutcome::NeedsRepick {
+                    setup_name,
+                    op_id,
+                    op_name,
+                    reason,
+                } => {
+                    self.logs
+                        .push(format!("  [REPICK! ] {setup_name} -> {op_name}: {reason}"));
+                    if first_repick.is_none() {
+                        for (si, s) in self.project.setups.iter().enumerate() {
+                            if let Some(oi) = s.operations.iter().position(|op| &op.id == op_id) {
+                                first_repick = Some((si, oi));
+                                break;
+                            }
+                        }
+                    }
+                }
+                OperationReloadOutcome::SuppressedSkipped { .. } => {}
+            }
+        }
+        if let Some((si, oi)) = first_repick {
+            self.active_setup_idx = si;
+            self.inspector_focus = InspectorFocus::Operation {
+                setup_idx: si,
+                op_idx: oi,
+            };
+            self.op_tab = OperationTab::Geometry;
+        }
+        self.sim_panel.cancel_in_flight();
+        self.sim_panel.active_result = None;
+        self.gcode_panel.invalidate_preview();
+        self.last_reload_banner = Some((summary, has_warn));
+    }
+}
+
+fn parse_step_bytes_job(
+    name: String,
+    raw_step_bytes: Vec<u8>,
+    source_path: Option<PathBuf>,
+    purpose: LoadPurpose,
+    t0: Instant,
+) -> LoadJobResult {
+    let sha256_hex = compute_sha256_hex(&raw_step_bytes);
+    match MonstertruckKernel.load_step_bytes(&name, &raw_step_bytes, DEFAULT_TESS_CHORD_TOL_MM) {
+        Ok(doc) => {
+            let picker = CadPicker::build(&doc);
+            let topo = TopologyGraph::build(&doc);
+            LoadJobResult::Loaded {
+                payload: Box::new(LoadedPayload {
+                    doc,
+                    picker,
+                    topo,
+                    raw_step_bytes,
+                    source_path,
+                    sha256_hex,
+                    purpose,
+                }),
+                elapsed_ms: t0.elapsed().as_millis(),
+            }
+        }
+        Err(e) => LoadJobResult::Failed(e.to_string()),
+    }
+}

@@ -1,0 +1,122 @@
+pub mod bundle_reload_tools;
+pub mod inspect_sample;
+pub mod validate_sim_build;
+
+use std::path::{Path, PathBuf};
+
+use chip_cad::{CadDocument, CadKernel, MonstertruckKernel};
+use chip_math::DEFAULT_TESS_CHORD_TOL_MM;
+use chip_project::{ProjectDocument, is_chipz_path, resolve_model_path, unpack_chipz_bundle};
+use chip_sim::{SimDiagnostic, SimResolution};
+use serde::Serialize;
+
+pub struct TempExtractGuard(PathBuf);
+
+impl Drop for TempExtractGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+pub struct LoadedCliInput {
+    pub proj: ProjectDocument,
+    pub dir: Option<PathBuf>,
+    pub _guard: Option<TempExtractGuard>,
+}
+
+pub fn load_project_or_chipz(path: &Path) -> Result<LoadedCliInput, Box<dyn std::error::Error>> {
+    if is_chipz_path(path) {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        let temp_dir = std::env::temp_dir().join(format!(
+            "chipcutter_cli_chipz_{}_{nanos}",
+            std::process::id()
+        ));
+        let unpacked = unpack_chipz_bundle(path, &temp_dir)?;
+        let guard = TempExtractGuard(temp_dir.clone());
+        Ok(LoadedCliInput {
+            proj: unpacked.project,
+            dir: Some(temp_dir),
+            _guard: Some(guard),
+        })
+    } else {
+        let proj = ProjectDocument::load_from_path(path)?;
+        let dir = path.parent().map(Path::to_path_buf);
+        Ok(LoadedCliInput {
+            proj,
+            dir,
+            _guard: None,
+        })
+    }
+}
+
+pub fn load_primary_cad_for_project(
+    proj: &ProjectDocument,
+    proj_dir: Option<&Path>,
+) -> Result<CadDocument, Box<dyn std::error::Error>> {
+    let first = proj
+        .models
+        .first()
+        .ok_or("project contains no CAD [[models]] entry")?;
+    let step_path = resolve_model_path(proj_dir, &first.path);
+    let bytes = std::fs::read(&step_path)
+        .map_err(|e| format!("failed to read STEP model '{}': {e}", step_path.display()))?;
+    let name = step_path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("model.step");
+    Ok(MonstertruckKernel.load_step_bytes(name, &bytes, DEFAULT_TESS_CHORD_TOL_MM)?)
+}
+
+pub fn parse_sim_resolution(raw: &str) -> SimResolution {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "fine" | "1024" => SimResolution::Fine,
+        "ultra" | "2048" => SimResolution::Ultra,
+        _ => SimResolution::Standard,
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct SetupSimReportJson {
+    pub setup_id: String,
+    pub setup_name: String,
+    pub resolution: SimResolution,
+    pub total_time_sec: f64,
+    pub total_time_hms: String,
+    pub cutting_time_sec: f64,
+    pub rapid_time_sec: f64,
+    pub tool_change_time_sec: f64,
+    pub initial_stock_volume_mm3: f64,
+    pub remaining_stock_volume_mm3: f64,
+    pub removed_volume_mm3: f64,
+    pub critical_error_count: usize,
+    pub warning_count: usize,
+    pub diagnostics: Vec<SimDiagnostic>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ProjectSimReportJson {
+    pub project_name: String,
+    pub passed: bool,
+    pub setups: Vec<SetupSimReportJson>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BuildFileSummaryJson {
+    pub setup_name: String,
+    pub post_profile_id: String,
+    pub filename: String,
+    pub line_count: usize,
+    pub max_line_chars: usize,
+    pub tool_numbers: Vec<u32>,
+    pub operation_names: Vec<String>,
+    pub est_time_sec: f64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BuildSummaryJson {
+    pub project_name: String,
+    pub files: Vec<BuildFileSummaryJson>,
+    pub simulation: Vec<SetupSimReportJson>,
+}

@@ -1,8 +1,8 @@
 use chip_math::DisplayUnit;
 use chip_project::{ProjectDocument, UndoHistory};
 use chip_tools::{
-    CoolantMode, CutterGeometry, CuttingPreset, SpindleDirection, Tool, ToolId, ToolLibrary,
-    default_global_tool_library_path, import_fusion_library_path,
+    CoolantMode, CutterGeometry, CuttingPreset, SpindleDirection, SurfaceSpeedPresetSpec, Tool,
+    ToolId, ToolLibrary, default_global_tool_library_path, import_fusion_library_path,
 };
 
 /// Persistent UI state for the modal/floating **Tool Library Manager** window (`04-tool-library.md`).
@@ -75,16 +75,18 @@ impl ToolLibraryModalState {
                                 flutes: 3,
                             },
                             presets: vec![CuttingPreset::from_surface_speed(
-                                "default_al",
-                                "Aluminum 6061",
-                                "Aluminum 6061",
-                                6.0,
-                                3,
-                                240.0,
-                                0.04,
-                                3.0,
-                                2.4,
-                                None,
+                                SurfaceSpeedPresetSpec {
+                                    id: "default_al",
+                                    name: "Aluminum 6061",
+                                    material: "Aluminum 6061",
+                                    diameter_mm: 6.0,
+                                    flutes: 3,
+                                    surface_speed_m_min: 240.0,
+                                    chipload_mm_tooth: 0.04,
+                                    default_stepdown_mm: 3.0,
+                                    default_stepover_mm: 2.4,
+                                    coolant_override: None,
+                                },
                             )],
                         });
                         self.selected_tool_idx = global_lib.tools.len() - 1;
@@ -404,17 +406,20 @@ impl ToolLibraryModalState {
                                 if ui.small_button("+ Preset").clicked() {
                                     let d = tool.geometry.cutting_diameter_mm();
                                     let fl = tool.geometry.flutes();
+                                    let pid = format!("preset_{}", tool.presets.len() + 1);
                                     tool.presets.push(CuttingPreset::from_surface_speed(
-                                        format!("preset_{}", tool.presets.len() + 1),
-                                        "New Material Preset",
-                                        "Custom",
-                                        d,
-                                        fl,
-                                        200.0,
-                                        0.035,
-                                        0.5 * d,
-                                        0.4 * d,
-                                        None,
+                                        SurfaceSpeedPresetSpec {
+                                            id: &pid,
+                                            name: "New Material Preset",
+                                            material: "Custom",
+                                            diameter_mm: d,
+                                            flutes: fl,
+                                            surface_speed_m_min: 200.0,
+                                            chipload_mm_tooth: 0.035,
+                                            default_stepdown_mm: 0.5 * d,
+                                            default_stepover_mm: 0.4 * d,
+                                            coolant_override: None,
+                                        },
                                     ));
                                     self.selected_preset_idx = tool.presets.len() - 1;
                                 }

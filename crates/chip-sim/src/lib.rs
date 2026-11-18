@@ -10,8 +10,9 @@ pub use cutter_profile::{
     RadialCutterProfile, SimColoredVertex, SimToolMesh, ToolMeshZone, build_cutter_assembly_mesh,
 };
 pub use heightmap::{
-    HeightfieldStock, OPERATION_STOCK_PALETTE, SetupSimulationResult, SimError, SimResolution,
-    SimStockMesh, StockCheckpoint, UNCUT_OP_IDX, run_setup_simulation, tessellate_stock_mesh,
+    HeightfieldStock, OPERATION_STOCK_PALETTE, SetupSimulationInput, SetupSimulationResult,
+    SimError, SimResolution, SimStockMesh, StockCheckpoint, UNCUT_OP_IDX, run_setup_simulation,
+    tessellate_stock_mesh,
 };
 pub use timeline::{
     MachineKinematicsConfig, MotionSpan, OperationTimelineSummary, ScrubSnapshot,
@@ -234,16 +235,16 @@ mod tests {
             },
         ];
 
-        let res = run_setup_simulation(
-            &cad_doc,
-            &resolved,
-            &setup.target_bodies,
-            &ops,
-            SimResolution::Standard,
-            MachineKinematicsConfig::default(),
-            SimVerificationConfig::default(),
-            None,
-        )
+        let res = run_setup_simulation(&SetupSimulationInput {
+            doc: &cad_doc,
+            setup: &resolved,
+            target_bodies: &setup.target_bodies,
+            operations: &ops,
+            resolution: SimResolution::Standard,
+            kinematics: MachineKinematicsConfig::default(),
+            verify_config: SimVerificationConfig::default(),
+            cancel: None,
+        })
         .unwrap();
 
         assert!(res.has_critical_errors());

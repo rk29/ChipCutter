@@ -11,7 +11,7 @@ use crate::{
     params::{EntryStrategy, Pocket2DParams, PocketPassOrder, PocketStrategyKind},
     selection::ExtractedFeature25D,
     strategies::{StrategyExecContext, compute_z_levels},
-    toolpath::ToolpathBuilder,
+    toolpath::{ToolpathBuilder, XyArcMove},
     wcs::CamError,
 };
 
@@ -509,12 +509,14 @@ pub fn generate_pocket2d(
                         emit_pocket_cavity_entry(
                             ctx,
                             builder,
-                            entry_reg,
-                            &poly,
-                            start_xy,
-                            prev_level_z,
-                            z_cut,
-                            retract_z,
+                            &PocketCavityEntrySpec {
+                                entry_region: entry_reg,
+                                first_ring: &poly,
+                                ring_start_xy: start_xy,
+                                prev_level_z,
+                                z_cut,
+                                retract_z,
+                            },
                         );
                     } else {
                         // Island or secondary cleanup loop inside already-cleared cavity!
@@ -655,17 +657,37 @@ fn retract_and_plunge(
     );
 }
 
-#[allow(clippy::too_many_arguments)]
-fn emit_pocket_cavity_entry(
-    ctx: &StrategyExecContext<'_>,
-    builder: &mut ToolpathBuilder,
-    entry_region: &PocketRegion2D,
-    first_ring: &ArcPolyline2D,
+struct PocketCavityEntrySpec<'a> {
+    entry_region: &'a PocketRegion2D,
+    first_ring: &'a ArcPolyline2D,
     ring_start_xy: DVec2,
     prev_level_z: f64,
     z_cut: f64,
     retract_z: f64,
+}
+
+struct RingLinearRampSpec<'a> {
+    ring: &'a ArcPolyline2D,
+    ring_start_xy: DVec2,
+    ramp_top_z: f64,
+    z_cut: f64,
+    angle_rad: f64,
+    retract_z: f64,
+}
+
+fn emit_pocket_cavity_entry(
+    ctx: &StrategyExecContext<'_>,
+    builder: &mut ToolpathBuilder,
+    spec: &PocketCavityEntrySpec<'_>,
 ) {
+    let &PocketCavityEntrySpec {
+        entry_region,
+        first_ring,
+        ring_start_xy,
+        prev_level_z,
+        z_cut,
+        retract_z,
+    } = spec;
     let tool_d = ctx.tool.geometry.cutting_diameter_mm();
     let ramp_top_z = (prev_level_z + 0.5).min(ctx.heights.feed_z_wcs);
     let angle_rad = ctx.linking.ramp_angle_deg.clamp(0.5, 25.0).to_radians();
@@ -718,44 +740,44 @@ fn emit_pocket_cavity_entry(
                         ramp_top_z - dz * (rev as f64)
                     };
                     let z_mid = 0.5 * (builder.current_pos().map_or(ramp_top_z, |p| p.z) + z_end);
-                    builder.arc_xy_to(
-                        DVec3::new(h_opp.x, h_opp.y, z_mid),
-                        c,
-                        r_helix,
-                        true,
-                        0,
-                        ctx.cutting.ramp_feed_mm_min,
-                        MotionRole::Ramp,
-                    );
-                    builder.arc_xy_to(
-                        DVec3::new(h_start.x, h_start.y, z_end),
-                        c,
-                        r_helix,
-                        true,
-                        0,
-                        ctx.cutting.ramp_feed_mm_min,
-                        MotionRole::Ramp,
-                    );
+                    builder.arc_xy_to(XyArcMove {
+                        end_wcs: DVec3::new(h_opp.x, h_opp.y, z_mid),
+                        center_xy: c,
+                        radius_mm: r_helix,
+                        ccw: true,
+                        turns: 0,
+                        feed_mm_min: ctx.cutting.ramp_feed_mm_min,
+                        role: MotionRole::Ramp,
+                    });
+                    builder.arc_xy_to(XyArcMove {
+                        end_wcs: DVec3::new(h_start.x, h_start.y, z_end),
+                        center_xy: c,
+                        radius_mm: r_helix,
+                        ccw: true,
+                        turns: 0,
+                        feed_mm_min: ctx.cutting.ramp_feed_mm_min,
+                        role: MotionRole::Ramp,
+                    });
                 }
                 // Flat cleanup circle at helix bottom, then feed to `ring_start_xy`!
-                builder.arc_xy_to(
-                    DVec3::new(h_opp.x, h_opp.y, z_cut),
-                    c,
-                    r_helix,
-                    true,
-                    0,
-                    ctx.cutting.ramp_feed_mm_min,
-                    MotionRole::Ramp,
-                );
-                builder.arc_xy_to(
-                    DVec3::new(h_start.x, h_start.y, z_cut),
-                    c,
-                    r_helix,
-                    true,
-                    0,
-                    ctx.cutting.ramp_feed_mm_min,
-                    MotionRole::Ramp,
-                );
+                builder.arc_xy_to(XyArcMove {
+                    end_wcs: DVec3::new(h_opp.x, h_opp.y, z_cut),
+                    center_xy: c,
+                    radius_mm: r_helix,
+                    ccw: true,
+                    turns: 0,
+                    feed_mm_min: ctx.cutting.ramp_feed_mm_min,
+                    role: MotionRole::Ramp,
+                });
+                builder.arc_xy_to(XyArcMove {
+                    end_wcs: DVec3::new(h_start.x, h_start.y, z_cut),
+                    center_xy: c,
+                    radius_mm: r_helix,
+                    ccw: true,
+                    turns: 0,
+                    feed_mm_min: ctx.cutting.ramp_feed_mm_min,
+                    role: MotionRole::Ramp,
+                });
                 builder.linear_to(
                     DVec3::new(ring_start_xy.x, ring_start_xy.y, z_cut),
                     ctx.cutting.lead_feed_mm_min,
@@ -774,40 +796,46 @@ fn emit_pocket_cavity_entry(
             emit_linear_ramp_on_ring(
                 ctx,
                 builder,
-                first_ring,
-                ring_start_xy,
-                ramp_top_z,
-                z_cut,
-                angle_rad,
-                retract_z,
+                &RingLinearRampSpec {
+                    ring: first_ring,
+                    ring_start_xy,
+                    ramp_top_z,
+                    z_cut,
+                    angle_rad,
+                    retract_z,
+                },
             );
         }
         EntryStrategy::LinearRamp => {
             emit_linear_ramp_on_ring(
                 ctx,
                 builder,
-                first_ring,
-                ring_start_xy,
-                ramp_top_z,
-                z_cut,
-                angle_rad,
-                retract_z,
+                &RingLinearRampSpec {
+                    ring: first_ring,
+                    ring_start_xy,
+                    ramp_top_z,
+                    z_cut,
+                    angle_rad,
+                    retract_z,
+                },
             );
         }
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn emit_linear_ramp_on_ring(
     ctx: &StrategyExecContext<'_>,
     builder: &mut ToolpathBuilder,
-    ring: &ArcPolyline2D,
-    ring_start_xy: DVec2,
-    ramp_top_z: f64,
-    z_cut: f64,
-    angle_rad: f64,
-    retract_z: f64,
+    spec: &RingLinearRampSpec<'_>,
 ) {
+    let &RingLinearRampSpec {
+        ring,
+        ring_start_xy,
+        ramp_top_z,
+        z_cut,
+        angle_rad,
+        retract_z,
+    } = spec;
     if ring.perimeter() <= 1e-3 {
         retract_and_plunge(ctx, builder, ring_start_xy, z_cut, retract_z);
         return;

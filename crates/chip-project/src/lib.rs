@@ -3,9 +3,11 @@
 
 pub mod bundle;
 pub mod cache;
+pub mod demos;
 pub mod dispatcher;
 pub mod document;
 pub mod history;
+pub mod pipeline;
 pub mod reload;
 pub mod toml_io;
 pub mod validation;
@@ -16,6 +18,9 @@ pub use bundle::{
     unpack_chipz_bytes,
 };
 pub use cache::{OperationInputHash, ToolpathCache, compute_operation_input_hash};
+pub use demos::{
+    build_cam_torture_project, build_multi_feature_bracket_project, build_revision_v1_demo_project,
+};
 pub use dispatcher::{
     BatchGenerationReport, DispatcherEvent, JobDispatcher, generate_project_blocking,
 };
@@ -23,6 +28,11 @@ pub use document::{
     ModelEntry, ProjectDocument, compute_sha256_hex, portable_model_path, resolve_model_path,
 };
 pub use history::UndoHistory;
+pub use pipeline::{
+    ReadySetupOperation, SetupPostRequest, SetupSimRequest, collect_ready_setup_operations,
+    kinematics_for_post_profile, post_process_project_setup, resolve_kinematics_for_key,
+    simulate_project_setup,
+};
 pub use reload::{CadReloadReport, OperationReloadOutcome, rebind_project_to_reloaded_cad};
 pub use toml_io::ProjectIoError;
 pub use validation::{
@@ -271,10 +281,7 @@ mod tests {
             ChamferSourceMode, ChamferTraceMode, HoleMachiningMode, OperationStatus, StrategyParams,
         };
         use chip_math::{ParamLength, approx_eq};
-        use chip_sim::{
-            MachineKinematicsConfig, SimOperationInput, SimResolution, SimVerificationConfig,
-            run_setup_simulation,
-        };
+        use chip_sim::{MachineKinematicsConfig, SimResolution};
 
         let (v1_step, v2_step) = sample_revised_part_pair_step().unwrap();
         let doc_v1 = MonstertruckKernel
@@ -488,33 +495,16 @@ mod tests {
         );
         assert_eq!(batch_v2.generated.len(), 5);
 
-        let resolved_v2 = proj.setups[0]
-            .resolve_immutable(&doc_v2, proj.display_units)
-            .unwrap();
-        let mut op_refs = Vec::new();
-        for (o_idx, op) in proj.setups[0].operations.iter().enumerate() {
-            if op.suppressed {
-                continue;
-            }
-            let tool = proj.tool(op.tool_id.as_ref().unwrap()).unwrap();
-            let (_, tp) = cache.get_for_operation(&proj, 0, o_idx, 2).unwrap();
-            op_refs.push((op, tool, tp));
-        }
-        let sim_inputs: Vec<SimOperationInput<'_>> = op_refs
-            .iter()
-            .map(|(op, tool, tp)| SimOperationInput::from_operation(op, tool, tp.as_ref()))
-            .collect();
-
-        let sim_v2 = run_setup_simulation(
-            &doc_v2,
-            &resolved_v2,
-            &proj.setups[0].target_bodies,
-            &sim_inputs,
-            SimResolution::Standard,
-            MachineKinematicsConfig::default(),
-            SimVerificationConfig::default(),
-            None,
-        )
+        let sim_v2 = simulate_project_setup(&SetupSimRequest {
+            project: &proj,
+            setup_idx: 0,
+            cad_doc: &doc_v2,
+            cad_revision: 2,
+            cache: &cache,
+            kinematics: MachineKinematicsConfig::default(),
+            resolution: SimResolution::Standard,
+            cancel: None,
+        })
         .unwrap();
         assert_eq!(
             sim_v2.critical_error_count(),

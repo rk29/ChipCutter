@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use chip_cad::{
     BodyId, CadDocument, CurveKind, EdgeId, FaceId, LoopId, OrientedEdgeUse, SelectionBinding,
     SurfaceKind, classify_planar_face_loops, extract_modeled_chamfer_strip, group_coaxial_holes,
-    highest_adjacent_wall_top,
+    highest_adjacent_lower_floor_proj, highest_adjacent_wall_top,
 };
 use chip_math::{ArcPolyline2D, ArcSegment2D, DVec2, DVec3, RigidFrame3};
 use serde::{Deserialize, Serialize};
@@ -80,7 +80,7 @@ impl GeometrySelectionItem {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExtractedFeature25D {
     PlanarFace {
-        face_id: FaceId,
+        source_face_id: Option<FaceId>,
         outer_boundary_wcs: ArcPolyline2D,
         /// Per-segment flag (`outer_boundary_wcs.segments.len()`) true when touching open air/exterior step.
         open_outer_segments: Vec<bool>,
@@ -89,6 +89,7 @@ pub enum ExtractedFeature25D {
         raised_islands_wcs: Vec<ArcPolyline2D>,
         face_z_wcs: f64,
         inferred_top_z_wcs: f64,
+        adjacent_lower_floor_z_wcs: Option<f64>,
         area_mm2: f64,
     },
     Contour {
@@ -98,9 +99,10 @@ pub enum ExtractedFeature25D {
         reverse: bool,
         side_flip: bool,
         source_edge_ids: Vec<EdgeId>,
+        adjacent_lower_floor_z_wcs: Option<f64>,
     },
     ModeledChamfer {
-        face_id: FaceId,
+        source_face_id: Option<FaceId>,
         upper_polyline_wcs: ArcPolyline2D,
         lower_polyline_wcs: ArcPolyline2D,
         radial_width_mm: f64,
@@ -108,10 +110,12 @@ pub enum ExtractedFeature25D {
         bevel_half_angle_rad: f64,
         top_z_wcs: f64,
         bottom_z_wcs: f64,
+        outward_normal_xy_wcs: Option<DVec2>,
+        adjacent_lower_floor_z_wcs: Option<f64>,
         edge_ids: Vec<EdgeId>,
     },
     CylindricalHole {
-        primary_face: FaceId,
+        primary_face: Option<FaceId>,
         coaxial_faces: Vec<FaceId>,
         center_wcs: DVec2,
         diameter_mm: f64,
@@ -171,6 +175,7 @@ pub fn extract_selection_features(
     let mut top_candidates = Vec::new();
     let mut bottom_candidates = Vec::new();
     let mut raw_hole_faces = Vec::new();
+    let wcs_origin_proj = setup.frame.origin_mm.dot(setup.frame.z_axis);
 
     for item in selections {
         match item {
@@ -196,8 +201,12 @@ pub fn extract_selection_features(
                 if let Some(origin_mm) = horizontal_plane {
                     let face_z_wcs = setup.frame.world_to_local_point(origin_mm).z;
                     let cls = classify_planar_face_loops(doc, fid, setup.frame.z_axis);
+                    let mut outer_edge_ids = Vec::new();
                     let (outer_boundary_wcs, open_outer_segments) = match face.outer_loop {
                         Some(lid) => {
+                            if let Some(lp) = doc.brep_loop(lid) {
+                                outer_edge_ids.extend(lp.edges.iter().map(|u| u.edge_id));
+                            }
                             let (p, flags, _, _) = project_loop_to_wcs_xy_with_open_flags(
                                 doc,
                                 &setup.frame,
@@ -220,11 +229,20 @@ pub fn extract_selection_features(
 
                     // Pocket Top Z inference: highest adjacent wall top Z in WCS (or Stock Top if open)
                     let inferred_top = highest_adjacent_wall_top(doc, fid, setup.frame.z_axis)
-                        .map(|world_proj| {
-                            let wcs_origin_proj = setup.frame.origin_mm.dot(setup.frame.z_axis);
-                            world_proj - wcs_origin_proj
-                        })
+                        .map(|world_proj| world_proj - wcs_origin_proj)
                         .unwrap_or(stock_top_z);
+
+                    let adjacent_lower_floor_z_wcs = if outer_edge_ids.is_empty() {
+                        None
+                    } else {
+                        highest_adjacent_lower_floor_proj(
+                            doc,
+                            &outer_edge_ids,
+                            face_z_wcs + wcs_origin_proj,
+                            setup.frame.z_axis,
+                        )
+                        .map(|p| p - wcs_origin_proj)
+                    };
 
                     if !highlight_faces.contains(&fid) {
                         highlight_faces.push(fid);
@@ -232,19 +250,19 @@ pub fn extract_selection_features(
                     top_candidates.push(inferred_top);
                     bottom_candidates.push(face_z_wcs);
                     features.push(ExtractedFeature25D::PlanarFace {
-                        face_id: fid,
+                        source_face_id: Some(fid),
                         outer_boundary_wcs,
                         open_outer_segments,
                         inner_islands_wcs,
                         raised_islands_wcs,
                         face_z_wcs,
                         inferred_top_z_wcs: inferred_top,
+                        adjacent_lower_floor_z_wcs,
                         area_mm2: face.area_mm2,
                     });
                 } else if let Some(strip) =
                     extract_modeled_chamfer_strip(doc, fid, setup.frame.z_axis)
                 {
-                    let wcs_origin_proj = setup.frame.origin_mm.dot(setup.frame.z_axis);
                     let top_z_wcs = strip.top_proj_mm - wcs_origin_proj;
                     let bottom_z_wcs = strip.bottom_proj_mm - wcs_origin_proj;
                     let upper_closed = is_oriented_uses_closed(doc, &strip.upper_edges);
@@ -277,13 +295,36 @@ pub fn extract_selection_features(
                             edge_ids.push(u.edge_id);
                         }
                     }
+                    let outward_normal_xy_wcs = match face.surface {
+                        SurfaceKind::Plane { normal, .. } => {
+                            let n_wcs = setup.frame.world_to_local_dir(normal.normalize_or_zero());
+                            let xy = DVec2::new(n_wcs.x, n_wcs.y).normalize_or_zero();
+                            if xy.length_squared() > 1e-12 {
+                                Some(xy)
+                            } else {
+                                None
+                            }
+                        }
+                        _ => None,
+                    };
+                    let adjacent_lower_floor_z_wcs = if edge_ids.is_empty() {
+                        None
+                    } else {
+                        highest_adjacent_lower_floor_proj(
+                            doc,
+                            &edge_ids,
+                            top_z_wcs + wcs_origin_proj,
+                            setup.frame.z_axis,
+                        )
+                        .map(|p| p - wcs_origin_proj)
+                    };
                     if !highlight_faces.contains(&fid) {
                         highlight_faces.push(fid);
                     }
                     top_candidates.push(top_z_wcs);
                     bottom_candidates.push(bottom_z_wcs);
                     features.push(ExtractedFeature25D::ModeledChamfer {
-                        face_id: fid,
+                        source_face_id: Some(fid),
                         upper_polyline_wcs,
                         lower_polyline_wcs,
                         radial_width_mm: strip.radial_width_mm,
@@ -291,6 +332,8 @@ pub fn extract_selection_features(
                         bevel_half_angle_rad: strip.bevel_half_angle_rad,
                         top_z_wcs,
                         bottom_z_wcs,
+                        outward_normal_xy_wcs,
+                        adjacent_lower_floor_z_wcs,
                         edge_ids,
                     });
                 } else {
@@ -348,6 +391,18 @@ pub fn extract_selection_features(
                     direction_arrows.push(arrow);
                 }
 
+                let adjacent_lower_floor_z_wcs = if source_edge_ids.is_empty() {
+                    None
+                } else {
+                    highest_adjacent_lower_floor_proj(
+                        doc,
+                        &source_edge_ids,
+                        max_z + wcs_origin_proj,
+                        setup.frame.z_axis,
+                    )
+                    .map(|p| p - wcs_origin_proj)
+                };
+
                 let top_z = if min_z < model_top_z - 1e-4 {
                     model_top_z
                 } else {
@@ -362,6 +417,7 @@ pub fn extract_selection_features(
                     reverse: *reverse,
                     side_flip: *side_flip,
                     source_edge_ids,
+                    adjacent_lower_floor_z_wcs,
                 });
             }
             GeometrySelectionItem::OpenChain {
@@ -394,6 +450,18 @@ pub fn extract_selection_features(
                     direction_arrows.push(arrow);
                 }
 
+                let adjacent_lower_floor_z_wcs = if source_edge_ids.is_empty() {
+                    None
+                } else {
+                    highest_adjacent_lower_floor_proj(
+                        doc,
+                        &source_edge_ids,
+                        max_z + wcs_origin_proj,
+                        setup.frame.z_axis,
+                    )
+                    .map(|p| p - wcs_origin_proj)
+                };
+
                 let top_z = if min_z < model_top_z - 1e-4 {
                     model_top_z
                 } else {
@@ -408,6 +476,7 @@ pub fn extract_selection_features(
                     reverse: *reverse,
                     side_flip: *side_flip,
                     source_edge_ids,
+                    adjacent_lower_floor_z_wcs,
                 });
             }
             GeometrySelectionItem::CylindricalHole { binding } => {
@@ -442,7 +511,6 @@ pub fn extract_selection_features(
     let mut primary_hole_diameter_mm = None;
     if !raw_hole_faces.is_empty() {
         let grouped = group_coaxial_holes(doc, &raw_hole_faces, setup.frame.z_axis);
-        let origin_proj = setup.frame.origin_mm.dot(setup.frame.z_axis);
         for h in grouped {
             for &gfid in &h.faces {
                 if !highlight_faces.contains(&gfid) {
@@ -450,8 +518,8 @@ pub fn extract_selection_features(
                 }
             }
             let c_wcs = setup.frame.world_to_local_point(h.axis_origin_mm);
-            let top_z_wcs = h.span.top_proj_mm - origin_proj;
-            let bottom_z_wcs = h.span.bottom_proj_mm - origin_proj;
+            let top_z_wcs = h.span.top_proj_mm - wcs_origin_proj;
+            let bottom_z_wcs = h.span.bottom_proj_mm - wcs_origin_proj;
             let diameter_mm = 2.0 * h.radius_mm;
             if primary_hole_diameter_mm.is_none() {
                 primary_hole_diameter_mm = Some(diameter_mm);
@@ -459,7 +527,7 @@ pub fn extract_selection_features(
             top_candidates.push(top_z_wcs);
             bottom_candidates.push(bottom_z_wcs);
             features.push(ExtractedFeature25D::CylindricalHole {
-                primary_face: h.primary_face,
+                primary_face: Some(h.primary_face),
                 coaxial_faces: h.faces,
                 center_wcs: DVec2::new(c_wcs.x, c_wcs.y),
                 diameter_mm,

@@ -6,7 +6,7 @@ use crate::{
     params::{DrillBoreParams, HoleMachiningMode},
     selection::ExtractedFeature25D,
     strategies::StrategyExecContext,
-    toolpath::ToolpathBuilder,
+    toolpath::{DrillCycleSpec, ToolpathBuilder, XyArcMove},
     wcs::CamError,
 };
 
@@ -17,6 +17,15 @@ struct ResolvedHoleTarget {
     top_z_wcs: f64,
     bottom_z_wcs: f64,
     is_through_hole: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct HelicalBoreSpec {
+    hole: ResolvedHoleTarget,
+    hole_top_z: f64,
+    hole_bottom_z: f64,
+    r_plane_z: f64,
+    retract_z: f64,
 }
 
 /// Generates a **Drilling** or **Helical Bore Milling** toolpath (`05-operations.md` §4).
@@ -101,11 +110,13 @@ pub fn generate_drill_bore(
                 ctx,
                 params,
                 builder,
-                *hole,
-                hole_top_z,
-                hole_bottom_z,
-                r_plane_z,
-                retract_z,
+                HelicalBoreSpec {
+                    hole: *hole,
+                    hole_top_z,
+                    hole_bottom_z,
+                    r_plane_z,
+                    retract_z,
+                },
             )?;
         } else {
             // Validate tool diameter against hole diameter unless spot-drilling / chamfering mouth!
@@ -137,35 +148,37 @@ pub fn generate_drill_bore(
             }
 
             builder.pass_count += 1;
-            builder.emit_drill_cycle(
-                params.cycle_kind,
-                DVec3::new(hole.center_wcs.x, hole.center_wcs.y, target_z),
-                r_plane_z,
-                retract_z,
-                params.peck_depth.value_mm.max(0.2),
-                params.decreasing_peck_factor,
-                params.min_peck_depth.value_mm.max(0.1),
-                params.chip_break_retract.value_mm.max(0.1),
-                params.dwell_seconds.max(0.0),
-                ctx.cutting.plunge_feed_mm_min,
-            );
+            builder.emit_drill_cycle(DrillCycleSpec {
+                kind: params.cycle_kind,
+                bottom_wcs: DVec3::new(hole.center_wcs.x, hole.center_wcs.y, target_z),
+                r_plane_z_wcs: r_plane_z,
+                clear_z_wcs: retract_z,
+                peck_q_mm: params.peck_depth.value_mm.max(0.2),
+                decreasing_factor: params.decreasing_peck_factor,
+                min_peck_mm: params.min_peck_depth.value_mm.max(0.1),
+                chip_break_retract_mm: params.chip_break_retract.value_mm.max(0.1),
+                dwell_sec: params.dwell_seconds.max(0.0),
+                feed_mm_min: ctx.cutting.plunge_feed_mm_min,
+            });
         }
     }
 
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 fn emit_helical_bore(
     ctx: &StrategyExecContext<'_>,
     params: &DrillBoreParams,
     builder: &mut ToolpathBuilder,
-    hole: ResolvedHoleTarget,
-    hole_top_z: f64,
-    hole_bottom_z: f64,
-    r_plane_z: f64,
-    retract_z: f64,
+    spec: HelicalBoreSpec,
 ) -> Result<(), CamError> {
+    let HelicalBoreSpec {
+        hole,
+        hole_top_z,
+        hole_bottom_z,
+        r_plane_z,
+        retract_z,
+    } = spec;
     let tool_d = ctx.tool.geometry.cutting_diameter_mm();
     let tool_r = 0.5 * tool_d;
     let radial_leave = ctx.passes.stock_to_leave_radial.value_mm;
@@ -253,24 +266,24 @@ fn emit_helical_bore(
             // Split each revolution into two 180° helical half-arcs so every controller handles it cleanly
             let opp_xy = c - DVec2::new(r_core, 0.0);
             let z_mid = 0.5 * (builder.current_pos().map_or(prev_z, |p| p.z) + z_rev);
-            builder.arc_xy_to(
-                DVec3::new(opp_xy.x, opp_xy.y, z_mid),
-                c,
-                r_core,
-                true,
-                0,
-                ctx.cutting.ramp_feed_mm_min,
-                MotionRole::Ramp,
-            );
-            builder.arc_xy_to(
-                DVec3::new(start_xy.x, start_xy.y, z_rev),
-                c,
-                r_core,
-                true,
-                0,
-                ctx.cutting.ramp_feed_mm_min,
-                MotionRole::Ramp,
-            );
+            builder.arc_xy_to(XyArcMove {
+                end_wcs: DVec3::new(opp_xy.x, opp_xy.y, z_mid),
+                center_xy: c,
+                radius_mm: r_core,
+                ccw: true,
+                turns: 0,
+                feed_mm_min: ctx.cutting.ramp_feed_mm_min,
+                role: MotionRole::Ramp,
+            });
+            builder.arc_xy_to(XyArcMove {
+                end_wcs: DVec3::new(start_xy.x, start_xy.y, z_rev),
+                center_xy: c,
+                radius_mm: r_core,
+                ccw: true,
+                turns: 0,
+                feed_mm_min: ctx.cutting.ramp_feed_mm_min,
+                role: MotionRole::Ramp,
+            });
         }
 
         // Flat 360° cleanup circle at `r_core`, `z_target`
@@ -299,43 +312,43 @@ fn emit_helical_bore(
                 // centered at `(c.x + 0.5*(cur_r - next_r), c.y)` with radius `0.5*(cur_r + next_r)`!
                 let trans_center = c + DVec2::new(0.5 * (cur_r - next_r), 0.0);
                 let trans_r = 0.5 * (cur_r + next_r);
-                builder.arc_xy_to(
-                    DVec3::new(c.x - next_r, c.y, z_target),
-                    trans_center,
-                    trans_r,
-                    true,
-                    0,
-                    ctx.cutting.lead_feed_mm_min,
-                    MotionRole::LinkTransition,
-                );
+                builder.arc_xy_to(XyArcMove {
+                    end_wcs: DVec3::new(c.x - next_r, c.y, z_target),
+                    center_xy: trans_center,
+                    radius_mm: trans_r,
+                    ccw: true,
+                    turns: 0,
+                    feed_mm_min: ctx.cutting.lead_feed_mm_min,
+                    role: MotionRole::LinkTransition,
+                });
                 // Complete full 360° circle at `next_r` starting from `-X` around to `+X`!
-                builder.arc_xy_to(
-                    DVec3::new(c.x + next_r, c.y, z_target),
-                    c,
-                    next_r,
-                    true,
-                    0,
-                    ctx.cutting.cutting_feed_mm_min,
-                    MotionRole::Cut,
-                );
-                builder.arc_xy_to(
-                    DVec3::new(c.x - next_r, c.y, z_target),
-                    c,
-                    next_r,
-                    true,
-                    0,
-                    ctx.cutting.cutting_feed_mm_min,
-                    MotionRole::Cut,
-                );
-                builder.arc_xy_to(
-                    DVec3::new(c.x + next_r, c.y, z_target),
-                    c,
-                    next_r,
-                    true,
-                    0,
-                    ctx.cutting.cutting_feed_mm_min,
-                    MotionRole::Cut,
-                );
+                builder.arc_xy_to(XyArcMove {
+                    end_wcs: DVec3::new(c.x + next_r, c.y, z_target),
+                    center_xy: c,
+                    radius_mm: next_r,
+                    ccw: true,
+                    turns: 0,
+                    feed_mm_min: ctx.cutting.cutting_feed_mm_min,
+                    role: MotionRole::Cut,
+                });
+                builder.arc_xy_to(XyArcMove {
+                    end_wcs: DVec3::new(c.x - next_r, c.y, z_target),
+                    center_xy: c,
+                    radius_mm: next_r,
+                    ccw: true,
+                    turns: 0,
+                    feed_mm_min: ctx.cutting.cutting_feed_mm_min,
+                    role: MotionRole::Cut,
+                });
+                builder.arc_xy_to(XyArcMove {
+                    end_wcs: DVec3::new(c.x + next_r, c.y, z_target),
+                    center_xy: c,
+                    radius_mm: next_r,
+                    ccw: true,
+                    turns: 0,
+                    feed_mm_min: ctx.cutting.cutting_feed_mm_min,
+                    role: MotionRole::Cut,
+                });
                 cur_r = next_r;
             }
             // Return smoothly toward `r_core` at `z_target` before starting the next Z stepdown!
@@ -356,62 +369,62 @@ fn emit_helical_bore(
         let cur_r = r_rough;
         let trans_center = c + DVec2::new(0.5 * (cur_r - r_final), 0.0);
         let trans_r = 0.5 * (cur_r + r_final);
-        builder.arc_xy_to(
-            DVec3::new(c.x - r_final, c.y, hole_bottom_z),
-            trans_center,
-            trans_r,
-            true,
-            0,
-            ctx.cutting.lead_feed_mm_min,
-            MotionRole::LeadIn,
-        );
+        builder.arc_xy_to(XyArcMove {
+            end_wcs: DVec3::new(c.x - r_final, c.y, hole_bottom_z),
+            center_xy: trans_center,
+            radius_mm: trans_r,
+            ccw: true,
+            turns: 0,
+            feed_mm_min: ctx.cutting.lead_feed_mm_min,
+            role: MotionRole::LeadIn,
+        });
         // Full 360° finish pass (plus optional spring pass)
         let laps = if params.bore_spring_pass { 2 } else { 1 };
         for _ in 0..laps {
-            builder.arc_xy_to(
-                DVec3::new(c.x + r_final, c.y, hole_bottom_z),
-                c,
-                r_final,
-                true,
-                0,
-                ctx.cutting.cutting_feed_mm_min,
-                MotionRole::FinishCut,
-            );
-            builder.arc_xy_to(
-                DVec3::new(c.x - r_final, c.y, hole_bottom_z),
-                c,
-                r_final,
-                true,
-                0,
-                ctx.cutting.cutting_feed_mm_min,
-                MotionRole::FinishCut,
-            );
+            builder.arc_xy_to(XyArcMove {
+                end_wcs: DVec3::new(c.x + r_final, c.y, hole_bottom_z),
+                center_xy: c,
+                radius_mm: r_final,
+                ccw: true,
+                turns: 0,
+                feed_mm_min: ctx.cutting.cutting_feed_mm_min,
+                role: MotionRole::FinishCut,
+            });
+            builder.arc_xy_to(XyArcMove {
+                end_wcs: DVec3::new(c.x - r_final, c.y, hole_bottom_z),
+                center_xy: c,
+                radius_mm: r_final,
+                ccw: true,
+                turns: 0,
+                feed_mm_min: ctx.cutting.cutting_feed_mm_min,
+                role: MotionRole::FinishCut,
+            });
         }
         // Smooth tangent arc-off toward hole center `(c.x, c.y)` so cutter never rubs bore wall on G0 retract!
         let lead_out_r = 0.5 * r_final;
         let lead_out_center = c - DVec2::new(lead_out_r, 0.0);
-        builder.arc_xy_to(
-            DVec3::new(c.x, c.y, hole_bottom_z),
-            lead_out_center,
-            lead_out_r,
-            true,
-            0,
-            ctx.cutting.lead_feed_mm_min,
-            MotionRole::LeadOut,
-        );
+        builder.arc_xy_to(XyArcMove {
+            end_wcs: DVec3::new(c.x, c.y, hole_bottom_z),
+            center_xy: lead_out_center,
+            radius_mm: lead_out_r,
+            ccw: true,
+            turns: 0,
+            feed_mm_min: ctx.cutting.lead_feed_mm_min,
+            role: MotionRole::LeadOut,
+        });
     } else {
         // Smooth arc-off from `(c.x + r_rough, c.y)` to bore center `(c.x, c.y)`!
         let lead_out_r = 0.5 * r_rough;
         let lead_out_center = c + DVec2::new(lead_out_r, 0.0);
-        builder.arc_xy_to(
-            DVec3::new(c.x, c.y, hole_bottom_z),
-            lead_out_center,
-            lead_out_r,
-            true,
-            0,
-            ctx.cutting.lead_feed_mm_min,
-            MotionRole::LeadOut,
-        );
+        builder.arc_xy_to(XyArcMove {
+            end_wcs: DVec3::new(c.x, c.y, hole_bottom_z),
+            center_xy: lead_out_center,
+            radius_mm: lead_out_r,
+            ccw: true,
+            turns: 0,
+            feed_mm_min: ctx.cutting.lead_feed_mm_min,
+            role: MotionRole::LeadOut,
+        });
     }
 
     builder.rapid_to(DVec3::new(c.x, c.y, retract_z));
@@ -428,24 +441,24 @@ fn emit_full_circle_ccw(
 ) {
     let p_pos = center + DVec2::new(radius, 0.0);
     let p_neg = center - DVec2::new(radius, 0.0);
-    builder.arc_xy_to(
-        DVec3::new(p_neg.x, p_neg.y, z),
-        center,
-        radius,
-        true,
-        0,
-        feed,
+    builder.arc_xy_to(XyArcMove {
+        end_wcs: DVec3::new(p_neg.x, p_neg.y, z),
+        center_xy: center,
+        radius_mm: radius,
+        ccw: true,
+        turns: 0,
+        feed_mm_min: feed,
         role,
-    );
-    builder.arc_xy_to(
-        DVec3::new(p_pos.x, p_pos.y, z),
-        center,
-        radius,
-        true,
-        0,
-        feed,
+    });
+    builder.arc_xy_to(XyArcMove {
+        end_wcs: DVec3::new(p_pos.x, p_pos.y, z),
+        center_xy: center,
+        radius_mm: radius,
+        ccw: true,
+        turns: 0,
+        feed_mm_min: feed,
         role,
-    );
+    });
 }
 
 /// Multi-start Nearest-Neighbor + Open-Path 2-Opt TSP hole ordering to minimize rapid travel.

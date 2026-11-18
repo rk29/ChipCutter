@@ -47,8 +47,9 @@ pub use strategies::{
     },
 };
 pub use toolpath::{
-    DEFAULT_RAPID_RATE_MM_MIN, GeneratedToolpath, SegmentMotion3D, TabMarker3D, ToolpathBuilder,
-    ToolpathSegment3D, ToolpathStats, expand_drill_cycle_segments,
+    DEFAULT_RAPID_RATE_MM_MIN, DrillCycleSpec, GeneratedToolpath, SegmentMotion3D, TabMarker3D,
+    ToolpathBuilder, ToolpathSegment3D, ToolpathStats, VerticalArcMove, XyArcMove,
+    expand_drill_cycle_segments,
 };
 pub use wcs::{
     AxisAnchor, BoxAnchor27, CamError, WcsAxisRef, WcsConfig, WcsFeaturePointRef,

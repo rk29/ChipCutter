@@ -171,6 +171,45 @@ pub struct GeneratedToolpath {
     pub warnings: Vec<String>,
 }
 
+/// Planar or helical `G17` XY circular arc specification passed to [`ToolpathBuilder::arc_xy_to`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct XyArcMove {
+    pub end_wcs: DVec3,
+    pub center_xy: DVec2,
+    pub radius_mm: f64,
+    pub ccw: bool,
+    pub turns: u32,
+    pub feed_mm_min: f64,
+    pub role: MotionRole,
+}
+
+/// Vertical `G18` (`XZ`) or `G19` (`YZ`) circular arc specification passed to [`ToolpathBuilder::arc_vertical_plane_to`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VerticalArcMove {
+    pub plane: ArcPlane,
+    pub end_wcs: DVec3,
+    pub center_wcs: DVec3,
+    pub radius_mm: f64,
+    pub signed_sweep_rad: f64,
+    pub feed_mm_min: f64,
+    pub role: MotionRole,
+}
+
+/// Parameters describing a canned or expanded drilling cycle (`G81`/`G82`/`G83`/`G73`).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct DrillCycleSpec {
+    pub kind: DrillCycleKind,
+    pub bottom_wcs: DVec3,
+    pub r_plane_z_wcs: f64,
+    pub clear_z_wcs: f64,
+    pub peck_q_mm: f64,
+    pub decreasing_factor: Option<f64>,
+    pub min_peck_mm: f64,
+    pub chip_break_retract_mm: f64,
+    pub dwell_sec: f64,
+    pub feed_mm_min: f64,
+}
+
 /// Stateful builder that emits synchronized [`ClEvent`]s and exact [`ToolpathSegment3D`] spans
 /// while guarding against `NaN`/`Inf`, zero-length segments, and zero-radius arcs.
 pub struct ToolpathBuilder {
@@ -255,37 +294,27 @@ impl ToolpathBuilder {
         });
     }
 
-    /// Emits a planar or helical XY arc (`G17` `G2`/`G3`) from `current_pos` to `end_wcs` around `center_xy`.
-    #[allow(clippy::too_many_arguments)]
-    pub fn arc_xy_to(
-        &mut self,
-        end_wcs: DVec3,
-        center_xy: DVec2,
-        radius_mm: f64,
-        ccw: bool,
-        turns: u32,
-        feed_mm_min: f64,
-        role: MotionRole,
-    ) {
+    /// Emits a planar or helical XY arc (`G17` `G2`/`G3`) from `current_pos` to `arc.end_wcs` around `arc.center_xy`.
+    pub fn arc_xy_to(&mut self, arc: XyArcMove) {
         let Some(prev) = self.current_wcs else {
             return;
         };
-        if !is_finite_vec3(end_wcs)
-            || !center_xy.is_finite()
-            || !radius_mm.is_finite()
-            || radius_mm <= 1e-5
-            || !feed_mm_min.is_finite()
-            || feed_mm_min <= 1e-6
+        if !is_finite_vec3(arc.end_wcs)
+            || !arc.center_xy.is_finite()
+            || !arc.radius_mm.is_finite()
+            || arc.radius_mm <= 1e-5
+            || !arc.feed_mm_min.is_finite()
+            || arc.feed_mm_min <= 1e-6
         {
             return;
         }
 
         let start_xy = DVec2::new(prev.x, prev.y);
-        let end_xy = DVec2::new(end_wcs.x, end_wcs.y);
-        let a0 = (start_xy.y - center_xy.y).atan2(start_xy.x - center_xy.x);
-        let a1 = (end_xy.y - center_xy.y).atan2(end_xy.x - center_xy.x);
+        let end_xy = DVec2::new(arc.end_wcs.x, arc.end_wcs.y);
+        let a0 = (start_xy.y - arc.center_xy.y).atan2(start_xy.x - arc.center_xy.x);
+        let a1 = (end_xy.y - arc.center_xy.y).atan2(end_xy.x - arc.center_xy.x);
 
-        let base_mag = if ccw {
+        let base_mag = if arc.ccw {
             let mut s = (a1 - a0).rem_euclid(std::f64::consts::TAU);
             if s <= 1e-9 {
                 if start_xy.distance(end_xy) <= 1e-5 {
@@ -308,93 +337,83 @@ impl ToolpathBuilder {
         };
 
         // If a full 360° circle has `turns >= 1`, `turns` counts EXTRA 360° revolutions beyond the base sweep
-        let total_mag = base_mag + f64::from(turns) * std::f64::consts::TAU;
-        if total_mag * radius_mm <= 1e-6 && (end_wcs.z - prev.z).abs() <= 1e-6 {
+        let total_mag = base_mag + f64::from(arc.turns) * std::f64::consts::TAU;
+        if total_mag * arc.radius_mm <= 1e-6 && (arc.end_wcs.z - prev.z).abs() <= 1e-6 {
             return;
         }
 
-        let signed_sweep_rad = if ccw { total_mag } else { -total_mag };
-        let dir = if ccw { ArcDir::CCW } else { ArcDir::CW };
-        let center_offset_ijk = DVec3::new(center_xy.x - prev.x, center_xy.y - prev.y, 0.0);
+        let signed_sweep_rad = if arc.ccw { total_mag } else { -total_mag };
+        let dir = if arc.ccw { ArcDir::CCW } else { ArcDir::CW };
+        let center_offset_ijk = DVec3::new(arc.center_xy.x - prev.x, arc.center_xy.y - prev.y, 0.0);
 
         self.segments_wcs.push(ToolpathSegment3D {
             start_wcs: prev,
-            end_wcs,
+            end_wcs: arc.end_wcs,
             motion: SegmentMotion3D::Arc {
                 plane: ArcPlane::XY,
                 dir,
-                center_wcs: DVec3::new(center_xy.x, center_xy.y, prev.z),
-                radius_mm,
+                center_wcs: DVec3::new(arc.center_xy.x, arc.center_xy.y, prev.z),
+                radius_mm: arc.radius_mm,
                 signed_sweep_rad,
-                feed_mm_min,
-                role,
+                feed_mm_min: arc.feed_mm_min,
+                role: arc.role,
             },
         });
-        self.current_wcs = Some(end_wcs);
+        self.current_wcs = Some(arc.end_wcs);
         self.events.push(ClEvent::ArcMove {
             plane: ArcPlane::XY,
             dir,
-            end_wcs,
+            end_wcs: arc.end_wcs,
             center_offset_ijk,
-            radius_mm,
-            turns,
-            feed_mm_min,
-            role,
+            radius_mm: arc.radius_mm,
+            turns: arc.turns,
+            feed_mm_min: arc.feed_mm_min,
+            role: arc.role,
         });
     }
 
     /// Emits a vertical `XZ` (`G18`) or `YZ` (`G19`) circular arc (used for vertical lead-in/lead-out when aligned).
-    #[allow(clippy::too_many_arguments)]
-    pub fn arc_vertical_plane_to(
-        &mut self,
-        plane: ArcPlane,
-        end_wcs: DVec3,
-        center_wcs: DVec3,
-        radius_mm: f64,
-        signed_sweep_rad: f64,
-        feed_mm_min: f64,
-        role: MotionRole,
-    ) {
+    pub fn arc_vertical_plane_to(&mut self, arc: VerticalArcMove) {
         let Some(prev) = self.current_wcs else {
             return;
         };
-        if !is_finite_vec3(end_wcs)
-            || !is_finite_vec3(center_wcs)
-            || radius_mm <= 1e-5
-            || signed_sweep_rad.abs() * radius_mm <= 1e-6
-            || feed_mm_min <= 1e-6
+        if !is_finite_vec3(arc.end_wcs)
+            || !is_finite_vec3(arc.center_wcs)
+            || arc.radius_mm <= 1e-5
+            || arc.signed_sweep_rad.abs() * arc.radius_mm <= 1e-6
+            || arc.feed_mm_min <= 1e-6
         {
             return;
         }
-        let dir = if signed_sweep_rad >= 0.0 {
+        let dir = if arc.signed_sweep_rad >= 0.0 {
             ArcDir::CCW
         } else {
             ArcDir::CW
         };
-        let center_offset_ijk = center_wcs - prev;
+        let center_offset_ijk = arc.center_wcs - prev;
         self.segments_wcs.push(ToolpathSegment3D {
             start_wcs: prev,
-            end_wcs,
+            end_wcs: arc.end_wcs,
             motion: SegmentMotion3D::Arc {
-                plane,
+                plane: arc.plane,
                 dir,
-                center_wcs,
-                radius_mm,
-                signed_sweep_rad,
-                feed_mm_min,
-                role,
+                center_wcs: arc.center_wcs,
+                radius_mm: arc.radius_mm,
+                signed_sweep_rad: arc.signed_sweep_rad,
+                feed_mm_min: arc.feed_mm_min,
+                role: arc.role,
             },
         });
-        self.current_wcs = Some(end_wcs);
+        self.current_wcs = Some(arc.end_wcs);
         self.events.push(ClEvent::ArcMove {
-            plane,
+            plane: arc.plane,
             dir,
-            end_wcs,
+            end_wcs: arc.end_wcs,
             center_offset_ijk,
-            radius_mm,
+            radius_mm: arc.radius_mm,
             turns: 0,
-            feed_mm_min,
-            role,
+            feed_mm_min: arc.feed_mm_min,
+            role: arc.role,
         });
     }
 
@@ -439,75 +458,55 @@ impl ToolpathBuilder {
                     ccw,
                     ..
                 } => {
-                    self.arc_xy_to(
-                        DVec3::new(end.x, end.y, z1),
-                        center,
-                        radius,
+                    self.arc_xy_to(XyArcMove {
+                        end_wcs: DVec3::new(end.x, end.y, z1),
+                        center_xy: center,
+                        radius_mm: radius,
                         ccw,
-                        0,
+                        turns: 0,
                         feed_mm_min,
                         role,
-                    );
+                    });
                 }
             }
         }
     }
 
     /// Emits a typed [`ClEvent::DrillCycle`] AND records its expanded physical peck/retract motions in `segments_wcs`.
-    #[allow(clippy::too_many_arguments)]
-    pub fn emit_drill_cycle(
-        &mut self,
-        kind: DrillCycleKind,
-        bottom_wcs: DVec3,
-        r_plane_z_wcs: f64,
-        clear_z_wcs: f64,
-        peck_q_mm: f64,
-        decreasing_factor: Option<f64>,
-        min_peck_mm: f64,
-        chip_break_retract_mm: f64,
-        dwell_sec: f64,
-        feed_mm_min: f64,
-    ) {
-        let hole_xy = DVec2::new(bottom_wcs.x, bottom_wcs.y);
-        let start_rapid = DVec3::new(hole_xy.x, hole_xy.y, clear_z_wcs.max(r_plane_z_wcs));
+    pub fn emit_drill_cycle(&mut self, spec: DrillCycleSpec) {
+        let hole_xy = DVec2::new(spec.bottom_wcs.x, spec.bottom_wcs.y);
+        let start_rapid = DVec3::new(
+            hole_xy.x,
+            hole_xy.y,
+            spec.clear_z_wcs.max(spec.r_plane_z_wcs),
+        );
         if self.current_wcs.is_none_or(|c| {
-            DVec2::new(c.x, c.y).distance(hole_xy) > 1e-5 || c.z < r_plane_z_wcs - 1e-5
+            DVec2::new(c.x, c.y).distance(hole_xy) > 1e-5 || c.z < spec.r_plane_z_wcs - 1e-5
         }) {
             self.rapid_to(start_rapid);
         }
 
         // Expand physical motions into `segments_wcs` for viewport visualization, time estimation, and crash checks
-        let expanded = expand_drill_cycle_segments(
-            self.current_wcs.unwrap_or(start_rapid),
-            kind,
-            bottom_wcs,
-            r_plane_z_wcs,
-            clear_z_wcs,
-            peck_q_mm,
-            decreasing_factor,
-            min_peck_mm,
-            chip_break_retract_mm,
-            feed_mm_min,
-        );
+        let expanded = expand_drill_cycle_segments(self.current_wcs.unwrap_or(start_rapid), spec);
         if let Some(last) = expanded.last() {
             self.current_wcs = Some(last.end_wcs);
         }
         self.segments_wcs.extend(expanded);
-        if dwell_sec.is_finite() && dwell_sec > 0.0 {
-            self.dwell_total_sec += dwell_sec;
+        if spec.dwell_sec.is_finite() && spec.dwell_sec > 0.0 {
+            self.dwell_total_sec += spec.dwell_sec;
         }
 
         self.events.push(ClEvent::DrillCycle {
-            kind,
-            bottom_wcs,
-            r_plane_z_wcs,
-            clear_z_wcs,
-            peck_q_mm,
-            decreasing_factor,
-            min_peck_mm,
-            chip_break_retract_mm,
-            dwell_sec,
-            feed_mm_min,
+            kind: spec.kind,
+            bottom_wcs: spec.bottom_wcs,
+            r_plane_z_wcs: spec.r_plane_z_wcs,
+            clear_z_wcs: spec.clear_z_wcs,
+            peck_q_mm: spec.peck_q_mm,
+            decreasing_factor: spec.decreasing_factor,
+            min_peck_mm: spec.min_peck_mm,
+            chip_break_retract_mm: spec.chip_break_retract_mm,
+            dwell_sec: spec.dwell_sec,
+            feed_mm_min: spec.feed_mm_min,
         });
     }
 
@@ -584,20 +583,23 @@ impl ToolpathBuilder {
     }
 }
 
-/// Expands a [`DrillCycleKind`] into explicit `Rapid` and `Linear` plunge/retract spans.
-#[allow(clippy::too_many_arguments)]
+/// Expands a [`DrillCycleSpec`] into explicit `Rapid` and `Linear` plunge/retract spans.
 pub fn expand_drill_cycle_segments(
     start_wcs: DVec3,
-    kind: DrillCycleKind,
-    bottom_wcs: DVec3,
-    r_plane_z_wcs: f64,
-    clear_z_wcs: f64,
-    peck_q_mm: f64,
-    decreasing_factor: Option<f64>,
-    min_peck_mm: f64,
-    chip_break_retract_mm: f64,
-    feed_mm_min: f64,
+    spec: DrillCycleSpec,
 ) -> Vec<ToolpathSegment3D> {
+    let DrillCycleSpec {
+        kind,
+        bottom_wcs,
+        r_plane_z_wcs,
+        clear_z_wcs,
+        peck_q_mm,
+        decreasing_factor,
+        min_peck_mm,
+        chip_break_retract_mm,
+        dwell_sec: _,
+        feed_mm_min,
+    } = spec;
     let mut out = Vec::new();
     let mut cur = start_wcs;
     let push_rapid = |out: &mut Vec<ToolpathSegment3D>, cur: &mut DVec3, dst: DVec3| {

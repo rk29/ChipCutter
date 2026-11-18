@@ -9,8 +9,9 @@ pub mod storage;
 
 pub use builtin::default_starter_tool_library;
 pub use feeds_speeds::{
-    ChipThinningHint, CuttingPreset, chipload_from_feed, compute_radial_chip_thinning,
-    feed_from_chipload, rpm_from_surface_speed, surface_speed_from_rpm,
+    ChipThinningHint, CuttingPreset, SurfaceSpeedPresetSpec, chipload_from_feed,
+    compute_radial_chip_thinning, feed_from_chipload, rpm_from_surface_speed,
+    surface_speed_from_rpm,
 };
 pub use fusion_import::{
     FusionImportError, FusionImportReport, import_fusion_library_bytes, import_fusion_library_path,
@@ -49,18 +50,18 @@ mod tests {
 
     #[test]
     fn coupled_sfm_chipload_and_radial_chip_thinning_are_exact() {
-        let mut preset = CuttingPreset::from_surface_speed(
-            "al",
-            "Al 6061",
-            "Aluminum",
-            10.0,
-            4,
-            314.159_265_358_979_3,
-            0.05,
-            5.0,
-            2.0,
-            None,
-        );
+        let mut preset = CuttingPreset::from_surface_speed(SurfaceSpeedPresetSpec {
+            id: "al",
+            name: "Al 6061",
+            material: "Aluminum",
+            diameter_mm: 10.0,
+            flutes: 4,
+            surface_speed_m_min: 314.159_265_358_979_3,
+            chipload_mm_tooth: 0.05,
+            default_stepdown_mm: 5.0,
+            default_stepover_mm: 2.0,
+            coolant_override: None,
+        });
         // Vc = 100 * pi m/min on D = 10mm => RPM = 10,000; Vf = 10,000 * 4 * 0.05 = 2,000 mm/min
         assert!(approx_eq(preset.spindle_rpm, 10_000.0, 1e-6));
         assert!(approx_eq(preset.cutting_feed_mm_min, 2_000.0, 1e-6));
