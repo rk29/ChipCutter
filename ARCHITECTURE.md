@@ -64,20 +64,20 @@ flowchart TD
 
 ---
 
-## 3. Concurrency, Caching, & Undo Model
+## 3. Concurrency, DAG Caching, & Undo Model
 
-- **Non-Blocking UI Thread:** STEP B-Rep loading/tessellation, parallel 2.5D toolpath generation (`Ctrl+G`), and Z-dexel heightmap simulation all execute on background `rayon` workers communicating via `crossbeam-channel` with `Arc<AtomicBool>` cancellation tokens.
-- **Content-Addressed Toolpath Cache:** Operations compute a deterministic hash over their geometry bindings, strategy/pass/height parameters, tool geometry, Setup WCS, and CAD revision. Editing one operation invalidates only that operation (`Dirty`) while unaffected operations remain `Clean`.
-- **Sub-Millisecond Undo / Redo:** `UndoHistory` snapshots lightweight `ProjectDocument` specs out-of-band from heavy B-Rep meshes and GPU buffers; pressing `Ctrl+Z` immediately reconciles against `ToolpathCache` to restore cached toolpaths without recalculation.
+- **Non-Blocking UI Thread & Zero Idle Clones:** STEP/DXF/SVG loading, tessellation, topological DAG toolpath generation (`Ctrl+G`), and Z-dexel heightmap simulation all execute on background `rayon` workers communicating via `crossbeam-channel` with `Arc<AtomicBool>` cancellation tokens. Per-frame Setup WCS + feature extraction is memoized in `CachedFrameGeo` so idle 60 FPS frames perform zero redundant B-Rep/sketch recomputations or document clones.
+- **Content-Addressed Toolpath Cache & DAG Waves:** Each operation computes a deterministic SHA-256 `OperationInputHash` over its CAD revision, `SketchLayer`s, Setup WCS/stock/heights, embedded primary + secondary `clearing_tool` definitions, strategy parameters, and recursive upstream Rest Machining hashes. `JobDispatcher` executes `RestMachiningMode::FromPrecedingOperations` dependencies in topological waves and automatically propagates `Dirty` invalidation to downstream Rest operations when an upstream operation is edited or reordered.
+- **Sub-Millisecond Undo / Redo:** `UndoHistory` snapshots lightweight `ProjectDocument` specs out-of-band from heavy B-Rep meshes and GPU buffers; pressing `Ctrl+Z` / `Ctrl+Y` immediately reconciles against `ToolpathCache` to restore cached toolpaths without recalculation.
 
 ---
 
-## 4. 3D `wgpu` Viewport Render Pipeline (`chip-gui`)
+## 4. 3D / 2D `wgpu` Viewport Render Pipeline (`chip-gui`)
 
-`ViewportRenderer` renders into an offscreen `4x MSAA` color + `Depth32Float` target composited into `egui`:
-1. **Pass #1 — Shaded B-Rep Faces:** Two-sided hemisphere + key-light Blinn-Phong shading with hover/selection/multi-face tinting and optional ghost-part translucency.
-2. **Pass #2 — Topological B-Rep Edges:** Depth-biased crisp edge wireframes highlighting hovered/selected loops and open chains.
-3. **Pass #3 — Setup WCS Grid & Origin Triad:** Active Setup XY workplane grid (`10 mm` minor / `50 mm` major) and RGB XYZ axis triad.
-4. **Pass #4 — Translucent Stock & Z-Height Planes:** Wireframe + translucent box/cylinder stock and interactive Clearance / Retract / Top / Bottom Z planes.
-5. **Pass #5 — Instanced Toolpaths & Holding Tabs:** Motion-colored `G0` rapid, `G1` cut, `G2`/`G3` arc, lead-in/out, and helix ribbons plus 3D holding-tab markers.
-6. **Pass #6 — 3D Machined Stock & Cutter Assembly:** Live Z-dexel machined stock mesh (colored by cutting operation) and revolved 3D flutes + shank + ER collet holder positioned along the active simulation timeline.
+`ViewportRenderer` renders into an offscreen `4x MSAA` color + `Depth32Float` target composited into `egui` across six ordered GPU draw stages (followed by `egui` HUD overlays):
+1. **Stage 1 — Studio Gradient & Adaptive WCS XY Grid (`bg_pipeline`):** Fullscreen studio background and active Setup XY workplane grid with auto-scaling metric (`mm`) / imperial (`in`) minor and major subdivisions.
+2. **Stage 2 — 3D Machined Stock Mesh (`sim_stock_pipeline`):** Live Z-dexel machined stock mesh colored by cutting operation when simulation stock view is active.
+3. **Stage 3 — Shaded B-Rep Solids (`solid_pipeline` / `solid_ghost_pipeline`):** Two-sided hemisphere + key-light Blinn-Phong CAD faces with hover/selection/multi-face tinting and optional translucent ghost-part comparison against machined stock.
+4. **Stage 4 — Animated 3D Cutter Assembly (`sim_tool_pipeline`):** Revolved 3D flutes, shank, and ER collet/holder positioned at the active timeline scrub point.
+5. **Stage 5 — Translucent Stock, Z-Height Planes, & 2D Sketch Fills (`overlay_pipeline`):** Translucent box/cylinder stock, interactive Clearance / Retract / Feed / Top / Bottom Z planes, and hovered/selected 2D `SketchLayer` planar region highlights.
+6. **Stage 6 — GPU-Instanced Screen-Space Ribbons (`edge_pipeline`):** Depth-biased B-Rep edges, 2D `SketchLayer` curves/typography/rubber-band previews, WCS triad, 3D chain arrows, holding-tab bridges, and cached `500,000+`-segment GPU-instanced toolpaths (`G0` rapids, `G1` cuts, `G2`/`G3` arcs, helices, and Two-Stage V-Carve clearing + bevel passes)—topped by the interactive ViewCube, 27-point WCS origin dots, and 2D Snap HUD badges.

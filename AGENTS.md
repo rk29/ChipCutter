@@ -24,7 +24,7 @@
 | `specs/07-post-processor.md` | Typed `ClEvent` IR, `.post.toml` profiles, ATC vs split-by-tool, GRBL & LinuxCNC dialects |
 | `specs/08-ui-viewport.md` | `eframe` + `wgpu` + `egui_tiles` layout, 3D CAD & 2D Sketch render passes, authoring UX, Undo/Redo |
 | `specs/09-persistence-cli.md` | `.chip.toml` (`v2` + seamless `v1` migration) & `.chipz` formats, headless CLI subcommands, testing |
-| `specs/10-roadmap.md` | Completed v1 milestones (M1–M5), active v2 milestones (M6–M9), and deferred v3+ horizon |
+| `specs/10-roadmap.md` | Completed v1 milestones (M1–M5), completed v2 milestones (M6–M9), and deferred v3+ horizon |
 | `specs/11-sketches-vectors.md` | `chip-sketch` 2D Sketch Layers, parametric shapes, DXF/SVG importers, TrueType & Hershey text |
 
 ---

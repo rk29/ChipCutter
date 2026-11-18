@@ -8,21 +8,21 @@ This document describes the toolchain, native libraries, and setup steps require
 
 ### Rust Toolchain
 - **Rust `1.85+` stable** (ChipCutter uses **Rust Edition 2024** and Cargo workspace resolver `"2"`).
-- **`rustfmt`** & **`clippy`**: Enforced across all crates (`#!-deny` on `unwrap_used` and `expect_used` in library code, `-D warnings` in CI).
-- **`cargo-deny`**: Enforces ChipCutter's permissive-only dependency policy (`MIT`, `Apache-2.0`, `BSD`, `MPL-2.0`, `ISC`, `Zlib`, `Unicode-3.0`) defined in `deny.toml`.
+- **`rustfmt`** & **`clippy`**: Enforced across all crates (`unsafe_code = "deny"`, `clippy::unwrap_used = "deny"`, and `clippy::expect_used = "deny"` across workspace crates, `-D warnings` in CI).
+- **`cargo-deny`**: Enforces security advisory checks and ChipCutter's permissive/weak-copyleft dependency policy (`MIT`, `MIT-0`, `Apache-2.0`, `BSD-2-Clause`, `BSD-3-Clause`, `MPL-2.0`, `BSL-1.0`, `ISC`, `Zlib`, `CC0-1.0`, `0BSD`, `Unicode-3.0`, plus `OFL-1.1` / `Ubuntu-font-1.0` bundled font exceptions) defined in [`deny.toml`](deny.toml).
 
-### Pure-Rust CAD & Geometry Kernel (No C++ CAD Dependencies)
-Unlike CAM tools built on C++ OpenCASCADE, ChipCutter's STEP B-Rep kernel (`monstertruck-*`) and arc-preserving 2D offsetter (`cavalier_contours`) are **100% pure Rust**. You do **not** need CMake, Ninja, OCCT, or CGAL installed.
+### Pure-Rust CAD, Vector, Typography, & CAM Kernels (No C/C++ CAD or Font Dependencies)
+Unlike CAM tools built on C++ OpenCASCADE, CGAL, or system FreeType/HarfBuzz, ChipCutter's entire geometry stack—STEP B-Rep kernel (`monstertruck-*`), arc-preserving 2D offsetter & booleans (`cavalier_contours`), segment Voronoi medial-axis builder (`boostvoronoi`), DXF/SVG vector importers & biarc fitter (`dxf`, `usvg`, `kurbo`), and TrueType/OpenType outline engine (`skrifa`)—is **100% pure Rust**. You do **not** need CMake, Ninja, OCCT, CGAL, or FreeType installed.
 
 ### Native Graphics, Windowing, & System Dependencies
 Only the `chip-gui` desktop shell (`eframe` / `winit` / `wgpu` / `rfd`) requires platform windowing and GPU libraries:
 
 | Dependency Category | Purpose in ChipCutter | Linux | macOS | Windows |
 |---|---|---|---|---|
-| **C Linker & `pkg-config`** | Linking Rust binaries & querying native library flags | `build-essential`, `pkg-config` | Xcode Command Line Tools | MSVC Build Tools |
+| **C Linker, `pkg-config`, & Debugger** | Linking Rust binaries, querying native library flags, & debugging (`rust-gdb`) | `build-essential`, `pkg-config`, `gdb` | Xcode Command Line Tools (`lldb`) | MSVC Build Tools |
 | **Windowing & Input** | Creating desktop windows, cursor icons, HiDPI, keyboard layouts (`eframe`/`winit`) | `libx11-dev`, `libxcb1-dev`, `libxcursor-dev`, `libxi-dev`, `libxrandr-dev`, `libxkbcommon-dev`, `libxkbcommon-x11-dev`, `libwayland-dev` | Built into Cocoa / AppKit | Built into Win32 |
-| **GPU Rendering (`wgpu 30`)** | 4x MSAA 3D CAD B-Rep & toolpath viewport | `libvulkan-dev` + Vulkan ICD driver | Built into Metal | Built into DirectX 12 / Vulkan |
-| **Native File Dialogs (`rfd`)** | Opening `.step` files and saving `.chip.toml` / `.nc` files | `libgtk-3-dev` (or XDG Desktop Portal) | Built into AppKit | Built into Common Item Dialog |
+| **GPU Rendering (`wgpu 30`)** | 4x MSAA 3D CAD B-Rep, 2D Sketch, & instanced toolpath viewport | `libvulkan-dev` + Vulkan ICD driver | Built into Metal | Built into DirectX 12 / Vulkan |
+| **Native File Dialogs (`rfd`)** | Opening/saving `.chip.toml`, `.chipz`, `.step`, `.dxf`, `.svg`, `.ttf`/`.otf`, `.tools.toml`, & `.nc`/`.ngc` files | `libgtk-3-dev` (or XDG Desktop Portal) | Built into AppKit | Built into Common Item Dialog |
 | **Headless GPU Testing *(Optional / CI)*** | Running offscreen `wgpu` tests & GUI screenshots without a physical GPU/monitor | `mesa-vulkan-drivers` (**Lavapipe** software Vulkan) + `xvfb` | Not needed on desktop | WARP DX12 software adapter |
 
 ---
@@ -34,7 +34,7 @@ Only the `chip-gui` desktop shell (`eframe` / `winit` / `wgpu` / `rfd`) requires
 # 1. Install compiler toolchain, X11/Wayland/Vulkan headers, GTK3 file-dialog headers,
 #    and Mesa Lavapipe + Xvfb for headless GPU testing
 sudo apt-get update && sudo apt-get install -y --no-install-recommends \
-  ca-certificates curl git build-essential pkg-config libssl-dev \
+  ca-certificates curl git build-essential gdb pkg-config libssl-dev \
   libx11-dev libxcb1-dev libxcursor-dev libxi-dev libxrandr-dev \
   libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan-dev libgtk-3-dev \
   mesa-vulkan-drivers xvfb
@@ -112,18 +112,18 @@ rustc --version
 cargo --version
 cargo deny --version
 
-# Check permissive license compliance across the entire dependency graph
-cargo deny check licenses
+# Check advisories, bans, sources, and permissive license compliance across the dependency graph
+cargo deny check
 
 # Check formatting and strict Clippy lints
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 
-# Run all unit, STEP round-trip, picking, and offscreen GPU render tests
-cargo test --workspace
+# Run all unit, STEP/DXF/SVG/typography, heightmap oracle, golden G-code, and offscreen GPU render tests
+WGPU_BACKEND=vulkan cargo test --workspace
 
 # Run the headless CLI (no window server or GPU required):
-#   STEP generation, inspection, validation, heightmap simulation, G-code build, & .chipz bundling
+#   STEP & 2D DXF/SVG inspection, validation, heightmap simulation, G-code build, & .chipz bundling
 cargo run -p chip-cli -- generate-sample-step /tmp/torture.step --cam-torture --project-out /tmp/torture.chip.toml
 cargo run -p chip-cli -- inspect /tmp/torture.step
 cargo run -p chip-cli -- validate --generate /tmp/torture.chip.toml
@@ -132,8 +132,11 @@ cargo run -p chip-cli -- build /tmp/torture.chip.toml -o /tmp/gcode_out --post l
 cargo run -p chip-cli -- bundle pack /tmp/torture.chip.toml -o /tmp/torture.chipz
 cargo run -p chip-cli -- build /tmp/torture.chipz -o /tmp/from_bundle --post grbl
 
-# Launch the interactive desktop CAM application (optional .chip.toml, .chipz, or .step path)
+# Launch the interactive desktop CAM application (or directly into built-in v2 demos)
 cargo run -p chip-gui
+cargo run -p chip-gui -- --demo-pure-2d
+cargo run -p chip-gui -- --demo-nameplate
+cargo run -p chip-gui -- --demo-vcarve
 ```
 
 ### Running GUI / Viewport Checks in Headless Linux Environments (CI / Containers)
@@ -145,6 +148,7 @@ WGPU_BACKEND=vulkan cargo test -p chip-gui
 
 # Full eframe window launch + automated screenshot self-test under Xvfb:
 WGPU_BACKEND=vulkan xvfb-run -a cargo run -p chip-gui -- --self-test-screenshot /tmp/preview.png
+WGPU_BACKEND=vulkan xvfb-run -a cargo run -p chip-gui -- --demo-vcarve --self-test-screenshot /tmp/vcarve_preview.png
 ```
 
 ---
