@@ -12,9 +12,10 @@ use std::{
 
 use chip_cad::{CadDocument, CadPicker, PickFilter, TopologyGraph};
 use chip_cam::{
-    ExtractedSelectionSummary, OperationStatus, ResolvedSetup, extract_selection_features,
+    ExtractedSelectionSummary, OperationStatus, ResolvedSetup,
+    extract_selection_features_with_sketches,
 };
-use chip_math::EvalContext;
+use chip_math::{Aabb3, DVec3, EvalContext};
 use chip_project::{JobDispatcher, ProjectDocument, ToolpathCache, UndoHistory, is_chipz_path};
 use chip_sim::SimDiagnostic;
 use chip_tools::{ToolLibrary, load_or_default_global_library};
@@ -29,6 +30,7 @@ use crate::{
         gcode_preview::GCodePreviewPanelState,
         simulation::{SimTriggerArgs, SimulationPanelState},
         tool_library::ToolLibraryModalState,
+        vector_import_modal::{VectorImportModalState, VectorModalAction, VectorModalCtx},
     },
     viewport::{HighlightState, ViewportRenderer},
     widgets::ExpressionInput,
@@ -87,6 +89,7 @@ pub struct ChipCutterApp {
     pub(crate) dispatcher: JobDispatcher,
     pub(crate) global_tools: ToolLibrary,
     pub(crate) tool_library_modal: ToolLibraryModalState,
+    pub(crate) vector_import_modal: VectorImportModalState,
     pub(crate) sim_panel: SimulationPanelState,
     pub(crate) gcode_panel: GCodePreviewPanelState,
     pub(crate) auto_sim_after_gen: bool,
@@ -102,6 +105,7 @@ pub struct ChipCutterApp {
     pub(crate) show_all_setup_toolpaths: bool,
 
     pub(crate) model: Option<LoadedModelState>,
+    pub(crate) empty_cad: Arc<CadDocument>,
     pub(crate) next_revision: u64,
     pub(crate) loading_in_flight: bool,
     pub(crate) job_tx: Sender<LoadJobResult>,
@@ -137,6 +141,15 @@ impl ChipCutterApp {
         initial_path: Option<PathBuf>,
         self_test: Option<SelfTestConfig>,
     ) -> Self {
+        Self::new_with_mode(cc, initial_path, false, self_test)
+    }
+
+    pub fn new_with_mode(
+        cc: &eframe::CreationContext<'_>,
+        initial_path: Option<PathBuf>,
+        demo_pure_2d: bool,
+        self_test: Option<SelfTestConfig>,
+    ) -> Self {
         let mut visuals = egui::Visuals::dark();
         visuals.panel_fill = egui::Color32::from_rgb(24, 27, 32);
         visuals.window_fill = egui::Color32::from_rgb(28, 32, 38);
@@ -169,6 +182,7 @@ impl ChipCutterApp {
             dispatcher,
             global_tools,
             tool_library_modal: ToolLibraryModalState::new(),
+            vector_import_modal: VectorImportModalState::default(),
             sim_panel: SimulationPanelState::default(),
             gcode_panel: GCodePreviewPanelState::default(),
             auto_sim_after_gen: true,
@@ -182,6 +196,7 @@ impl ChipCutterApp {
             show_z_planes: true,
             show_all_setup_toolpaths: true,
             model: None,
+            empty_cad: Arc::new(CadDocument::empty()),
             next_revision: 1,
             loading_in_flight: false,
             job_tx,
@@ -212,8 +227,20 @@ impl ChipCutterApp {
             {
                 app.load_project_from_disk(&path, cc.egui_ctx.clone());
             } else {
-                app.spawn_step_file_load(path, cc.egui_ctx.clone());
+                let ext_low = path
+                    .extension()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or_default()
+                    .to_ascii_lowercase();
+                if ext_low == "dxf" || ext_low == "svg" {
+                    app.vector_import_modal.load_from_disk_path(path);
+                    app.vector_import_modal.open = true;
+                } else {
+                    app.spawn_step_file_load(path, cc.egui_ctx.clone());
+                }
             }
+        } else if demo_pure_2d {
+            app.load_pure2d_router_panel_demo(&cc.egui_ctx);
         } else {
             app.spawn_cam_torture_sample_load(true, cc.egui_ctx.clone());
         }
@@ -267,12 +294,53 @@ impl ChipCutterApp {
         self.wb_clearance_z.refresh(&ctx);
     }
 
+    pub(crate) fn has_geometry(&self) -> bool {
+        self.model.is_some() || !self.project.sketches.is_empty()
+    }
+
+    /// Returns `(Arc<CadDocument>, cad_revision)` for either the loaded 3D STEP model OR Pure-2D (`empty_cad`).
+    pub(crate) fn effective_cad_arc(&self) -> Option<(Arc<CadDocument>, u64)> {
+        if let Some(m) = &self.model {
+            Some((Arc::clone(&m.doc), m.revision))
+        } else if !self.project.sketches.is_empty() {
+            Some((Arc::clone(&self.empty_cad), 0))
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn fit_scene_to_viewport(&mut self) {
+        if let Some(m) = &self.model {
+            self.camera.fit_aabb(&m.doc.aabb_mm);
+        } else if let Some(Ok(rs)) = self.active_resolved_setup() {
+            let b = rs.stock.aabb_wcs();
+            let mut world_aabb = Aabb3::EMPTY;
+            for x in [b.min.x, b.max.x] {
+                for y in [b.min.y, b.max.y] {
+                    for z in [b.min.z, b.max.z] {
+                        world_aabb.extend_point(rs.frame.local_to_world_point(DVec3::new(x, y, z)));
+                    }
+                }
+            }
+            if world_aabb.is_valid() {
+                self.camera.fit_aabb(&world_aabb);
+            }
+        }
+    }
+
     fn compute_frame_geo_signature(&self) -> u64 {
         let mut h = std::collections::hash_map::DefaultHasher::new();
         self.model.as_ref().map_or(0, |m| m.revision).hash(&mut h);
         self.active_setup_idx.hash(&mut h);
         format!("{:?}", self.project.display_units).hash(&mut h);
         format!("{:?}", self.inspector_focus).hash(&mut h);
+        for sk in &self.project.sketches {
+            sk.id.hash(&mut h);
+            sk.visible.hash(&mut h);
+            format!("{:?}", sk.anchor).hash(&mut h);
+            sk.entities.len().hash(&mut h);
+            sk.regions.len().hash(&mut h);
+        }
         if let Some(setup) = self.project.setups.get(self.active_setup_idx) {
             format!("{:?}", setup.wcs).hash(&mut h);
             format!("{:?}", setup.stock).hash(&mut h);
@@ -291,25 +359,38 @@ impl ChipCutterApp {
     pub(crate) fn ensure_frame_geo_cached(&mut self) -> &CachedFrameGeo {
         let sig = self.compute_frame_geo_signature();
         if self.cached_frame_geo.as_ref().map(|c| c.sig) != Some(sig) {
-            let resolved_setup = match (&self.model, self.project.setups.get(self.active_setup_idx))
-            {
-                (Some(m), Some(setup)) => Some(
+            let eff_cad = self.effective_cad_arc();
+            let resolved_setup = match (
+                eff_cad.as_ref(),
+                self.project.setups.get(self.active_setup_idx),
+            ) {
+                (Some((doc, _)), Some(setup)) => Some(
                     setup
-                        .resolve_immutable(&m.doc, self.project.display_units)
+                        .resolve_with_sketches(
+                            doc,
+                            &self.project.sketches,
+                            self.project.display_units,
+                        )
                         .map_err(|e| e.to_string()),
                 ),
                 _ => None,
             };
 
-            let focused_extracted = match (&self.model, &resolved_setup, self.inspector_focus) {
-                (Some(m), Some(Ok(rs)), InspectorFocus::Operation { setup_idx, op_idx }) => {
+            let focused_extracted = match (eff_cad.as_ref(), &resolved_setup, self.inspector_focus)
+            {
+                (Some((doc, _)), Some(Ok(rs)), InspectorFocus::Operation { setup_idx, op_idx }) => {
                     if let Some(setup) = self.project.setups.get(setup_idx)
                         && let Some(op) = setup.operations.get(op_idx)
                         && !matches!(op.runtime_status, OperationStatus::NeedsRepick { .. })
                     {
                         Some(
-                            extract_selection_features(&m.doc, rs, &op.selections)
-                                .map_err(|e| e.to_string()),
+                            extract_selection_features_with_sketches(
+                                doc,
+                                &self.project.sketches,
+                                rs,
+                                &op.selections,
+                            )
+                            .map_err(|e| e.to_string()),
                         )
                     } else {
                         None
@@ -342,9 +423,9 @@ impl ChipCutterApp {
     }
 
     pub(crate) fn trigger_active_setup_simulation(&mut self, egui_ctx: &egui::Context) {
-        let Some(m) = &self.model else {
+        let Some((cad_doc, cad_rev)) = self.effective_cad_arc() else {
             self.logs
-                .push("Cannot simulate: load a STEP model first.".to_string());
+                .push("Cannot simulate: load a STEP model or 2D Sketch first.".to_string());
             return;
         };
         let proj_dir = self
@@ -355,8 +436,8 @@ impl ChipCutterApp {
         self.sim_panel.trigger_simulation(SimTriggerArgs {
             project: &self.project,
             setup_idx: self.active_setup_idx,
-            cad_doc: Arc::clone(&m.doc),
-            cad_revision: m.revision,
+            cad_doc,
+            cad_revision: cad_rev,
             cache: &self.toolpath_cache,
             project_dir: proj_dir,
             egui_ctx: egui_ctx.clone(),
@@ -377,15 +458,16 @@ impl ChipCutterApp {
         only_setup_idx: Option<usize>,
         only_op_id: Option<&str>,
     ) {
-        let Some(m) = &self.model else {
-            self.logs
-                .push("Cannot generate toolpaths: load a STEP model first.".to_string());
+        let Some((cad_doc, cad_rev)) = self.effective_cad_arc() else {
+            self.logs.push(
+                "Cannot generate toolpaths: load a STEP model or 2D Sketch first.".to_string(),
+            );
             return;
         };
         let spawned = self.dispatcher.dispatch_operations(
             &mut self.project,
-            Arc::clone(&m.doc),
-            m.revision,
+            cad_doc,
+            cad_rev,
             &self.toolpath_cache,
             only_setup_idx,
             only_op_id,
@@ -402,30 +484,32 @@ impl ChipCutterApp {
 
     pub(crate) fn perform_undo(&mut self) {
         if let Some(lbl) = self.history.undo(&mut self.project) {
-            if let Some(m) = &self.model {
-                self.dispatcher.cancel_stale_jobs(&self.project, m.revision);
+            if let Some((_, cad_rev)) = self.effective_cad_arc() {
+                self.dispatcher.cancel_stale_jobs(&self.project, cad_rev);
                 let inflight = self.dispatcher.in_flight_ids();
                 self.toolpath_cache.reconcile_project_statuses(
                     &mut self.project,
-                    m.revision,
+                    cad_rev,
                     &inflight,
                 );
             }
+            self.cached_frame_geo = None;
             self.logs.push(format!("Undo: {lbl}"));
         }
     }
 
     pub(crate) fn perform_redo(&mut self) {
         if let Some(lbl) = self.history.redo(&mut self.project) {
-            if let Some(m) = &self.model {
-                self.dispatcher.cancel_stale_jobs(&self.project, m.revision);
+            if let Some((_, cad_rev)) = self.effective_cad_arc() {
+                self.dispatcher.cancel_stale_jobs(&self.project, cad_rev);
                 let inflight = self.dispatcher.in_flight_ids();
                 self.toolpath_cache.reconcile_project_statuses(
                     &mut self.project,
-                    m.revision,
+                    cad_rev,
                     &inflight,
                 );
             }
+            self.cached_frame_geo = None;
             self.logs.push(format!("Redo: {lbl}"));
         }
     }
@@ -446,6 +530,43 @@ impl eframe::App for ChipCutterApp {
             &mut self.history,
             &mut self.logs,
         );
+
+        let proj_path_clone = self.project_file_path.clone();
+        if let Some(vec_act) = self.vector_import_modal.show(
+            &ctx,
+            VectorModalCtx {
+                project: &mut self.project,
+                project_file_path: proj_path_clone.as_deref(),
+                active_setup_idx: self.active_setup_idx,
+                global_tools: &self.global_tools,
+                history: &mut self.history,
+                logs: &mut self.logs,
+            },
+        ) {
+            match vec_act {
+                VectorModalAction::AppendedSketch { .. } => {
+                    self.cached_frame_geo = None;
+                    if self.model.is_none() {
+                        self.fit_scene_to_viewport();
+                    }
+                }
+                VectorModalAction::CreatedPure2dJob { .. } => {
+                    self.dispatcher.cancel_all();
+                    self.sim_panel.cancel_in_flight();
+                    self.sim_panel.active_result = None;
+                    self.gcode_panel.invalidate_preview();
+                    self.clear_bundle_extract_dir();
+                    self.project_file_path = None;
+                    self.history.clear();
+                    self.clean_undo_len = Some(0);
+                    self.model = None;
+                    self.active_setup_idx = 0;
+                    self.inspector_focus = InspectorFocus::Sketch { sketch_idx: 0 };
+                    self.cached_frame_geo = None;
+                    self.fit_scene_to_viewport();
+                }
+            }
+        }
 
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(egui::Color32::from_rgb(18, 20, 24)))

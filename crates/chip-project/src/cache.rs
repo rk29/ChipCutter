@@ -85,6 +85,17 @@ pub fn compute_operation_input_hash(
         hasher.update(s.as_bytes());
     }
 
+    // Fold 2D SketchLayers when present (skipped when `sketches.is_empty()` so v1 hashes stay bit-identical!)
+    if !project.sketches.is_empty() {
+        hasher.update(b"|sketches_v2:");
+        for sk in &project.sketches {
+            if let Ok(s) = toml::to_string(sk) {
+                hasher.update(s.as_bytes());
+                hasher.update(b";");
+            }
+        }
+    }
+
     // Fold upstream Rest Machining operation hashes recursively (`u_idx < op_idx` guarantees DAG acyclicity;
     // skipped completely when `rest_machining` is disabled or `FromPreviousTool` so v1 hashes stay bit-identical!)
     let upstream_indices = resolve_upstream_rest_op_indices(setup, op_idx);

@@ -38,6 +38,12 @@ pub enum CamError {
     HoleNotAlignedWithWcsZ { face_id: u32, cos_z: f64 },
     #[error("selected entity #{index} could not be resolved in the current CAD document")]
     MissingSelectedEntity { index: u32 },
+    #[error("selected sketch item '{sketch_id}/{item_id}' could not be resolved")]
+    MissingSelectedSketch { sketch_id: String, item_id: String },
+    #[error(
+        "pure-2D setup (no 3D STEP model) cannot reference 3D B-Rep faces/edges for WCS orientation or origin"
+    )]
+    Pure2dRequiresBoxWcs,
     #[error(
         "height hierarchy violation: {upper_name} ({upper_z:.3} mm) must be >= {lower_name} ({lower_z:.3} mm)"
     )]

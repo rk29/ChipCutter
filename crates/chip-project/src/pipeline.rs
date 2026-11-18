@@ -99,7 +99,11 @@ pub fn simulate_project_setup(req: &SetupSimRequest<'_>) -> Result<SetupSimulati
         .get(req.setup_idx)
         .ok_or_else(|| format!("invalid setup index {}", req.setup_idx))?;
     let resolved = setup
-        .resolve_immutable(req.cad_doc, req.project.display_units)
+        .resolve_with_sketches(
+            req.cad_doc,
+            &req.project.sketches,
+            req.project.display_units,
+        )
         .map_err(|e| e.to_string())?;
     let ready =
         collect_ready_setup_operations(req.project, req.setup_idx, req.cache, req.cad_revision);
@@ -143,7 +147,11 @@ pub fn post_process_project_setup(
         .get(req.setup_idx)
         .ok_or_else(|| format!("invalid setup index {}", req.setup_idx))?;
     let resolved = setup
-        .resolve_immutable(req.cad_doc, req.project.display_units)
+        .resolve_with_sketches(
+            req.cad_doc,
+            &req.project.sketches,
+            req.project.display_units,
+        )
         .map_err(|e| format!("Setup WCS error: {e}"))?;
     let ready =
         collect_ready_setup_operations(req.project, req.setup_idx, req.cache, req.cad_revision);

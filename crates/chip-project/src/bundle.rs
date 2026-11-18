@@ -55,7 +55,18 @@ pub enum BundleError {
 pub struct ChipzExportSummary {
     pub archive_size_bytes: usize,
     pub model_files: Vec<String>,
+    #[serde(default)]
+    pub vector_files: Vec<String>,
     pub custom_post_files: Vec<String>,
+}
+
+/// Input configuration for [`pack_chipz_bundle_with_options`] and [`export_chipz_bundle_with_options`].
+pub struct ChipzPackOptions<'a> {
+    pub project: &'a ProjectDocument,
+    pub project_dir: Option<&'a Path>,
+    pub fallback_model_bytes: &'a [(&'a str, &'a [u8])],
+    pub fallback_vector_bytes: &'a [(&'a str, &'a [u8])],
+    pub extra_custom_posts: &'a [PostProfile],
 }
 
 /// Extracted `.chipz` bundle metadata returned by [`unpack_chipz_bundle`].
@@ -78,6 +89,27 @@ pub fn pack_chipz_bundle_bytes(
     fallback_model_bytes: &[(&str, &[u8])],
     extra_custom_posts: &[PostProfile],
 ) -> Result<(Vec<u8>, ChipzExportSummary), BundleError> {
+    pack_chipz_bundle_with_options(&ChipzPackOptions {
+        project,
+        project_dir,
+        fallback_model_bytes,
+        fallback_vector_bytes: &[],
+        extra_custom_posts,
+    })
+}
+
+/// Packs `project`, STEP models (`models/*`), imported DXF/SVG vector assets (`vectors/*`),
+/// and custom `.post.toml` files (`posts/*`) into a deterministic `.chipz` archive.
+pub fn pack_chipz_bundle_with_options(
+    opts_in: &ChipzPackOptions<'_>,
+) -> Result<(Vec<u8>, ChipzExportSummary), BundleError> {
+    let ChipzPackOptions {
+        project,
+        project_dir,
+        fallback_model_bytes,
+        fallback_vector_bytes,
+        extra_custom_posts,
+    } = *opts_in;
     let mut bundled_proj = project.clone();
     // Map archive entry path -> raw bytes in deterministic BTreeMap order
     let mut entries: BTreeMap<String, Vec<u8>> = BTreeMap::new();
@@ -127,6 +159,66 @@ pub fn pack_chipz_bundle_bytes(
         model.path = bundle_rel.clone();
         model_files.push(bundle_rel.clone());
         entries.insert(bundle_rel, raw_bytes);
+    }
+
+    // Bundle any imported DXF / SVG vector source assets referenced by `SketchLayer`s under `vectors/*`!
+    let mut vector_files = Vec::new();
+    let mut used_vector_names: Vec<String> = Vec::new();
+    for sk in &mut bundled_proj.sketches {
+        let Some(asset) = sk.source_asset.as_mut() else {
+            continue;
+        };
+        let raw_opt: Option<Vec<u8>> = if let Some((_, mem_bytes)) = fallback_vector_bytes
+            .iter()
+            .find(|(key, _)| *key == sk.id || *key == asset.path)
+        {
+            Some(mem_bytes.to_vec())
+        } else {
+            let disk_path = resolve_model_path(project_dir, &asset.path);
+            match std::fs::read(&disk_path) {
+                Ok(b) => Some(b),
+                Err(source)
+                    if source.kind() == std::io::ErrorKind::NotFound && project_dir.is_none() =>
+                {
+                    // Unsaved in-memory demo sketch already carries healed `entities` & `regions` inside `project.chip.toml`
+                    None
+                }
+                Err(source) => {
+                    return Err(BundleError::Io {
+                        path: disk_path.display().to_string(),
+                        source,
+                    });
+                }
+            }
+        };
+
+        if let Some(raw_bytes) = raw_opt {
+            let ext = match asset.format {
+                chip_sketch::VectorAssetFormat::Dxf => "dxf",
+                chip_sketch::VectorAssetFormat::Svg => "svg",
+            };
+            let base_fname = Path::new(&asset.path)
+                .file_name()
+                .and_then(|s| s.to_str())
+                .map(sanitize_bundle_filename)
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| format!("{}.{ext}", sanitize_bundle_filename(&sk.id)));
+            let mut unique_fname = base_fname.clone();
+            let mut suffix = 2usize;
+            while used_vector_names.contains(&unique_fname) {
+                unique_fname = format!("{suffix}_{base_fname}");
+                suffix += 1;
+            }
+            used_vector_names.push(unique_fname.clone());
+
+            let bundle_rel = format!("vectors/{unique_fname}");
+            asset.sha256 = compute_sha256_hex(&raw_bytes);
+            asset.path = bundle_rel.clone();
+            vector_files.push(bundle_rel.clone());
+            entries.insert(bundle_rel, raw_bytes);
+        } else {
+            sk.source_asset = None;
+        }
     }
 
     // Bundle any non-builtin custom `.post.toml` profiles referenced by Setups!
@@ -191,6 +283,7 @@ pub fn pack_chipz_bundle_bytes(
     let summary = ChipzExportSummary {
         archive_size_bytes: archive_bytes.len(),
         model_files,
+        vector_files,
         custom_post_files,
     };
     Ok((archive_bytes, summary))
@@ -204,12 +297,24 @@ pub fn export_chipz_bundle(
     extra_custom_posts: &[PostProfile],
     dest_chipz: &Path,
 ) -> Result<ChipzExportSummary, BundleError> {
-    let (bytes, summary) = pack_chipz_bundle_bytes(
-        project,
-        project_dir,
-        fallback_model_bytes,
-        extra_custom_posts,
-    )?;
+    export_chipz_bundle_with_options(
+        &ChipzPackOptions {
+            project,
+            project_dir,
+            fallback_model_bytes,
+            fallback_vector_bytes: &[],
+            extra_custom_posts,
+        },
+        dest_chipz,
+    )
+}
+
+/// Exports a `.chipz` archive (including optional in-memory fallback vector bytes) directly to `dest_chipz`.
+pub fn export_chipz_bundle_with_options(
+    opts: &ChipzPackOptions<'_>,
+    dest_chipz: &Path,
+) -> Result<ChipzExportSummary, BundleError> {
+    let (bytes, summary) = pack_chipz_bundle_with_options(opts)?;
     if let Some(parent) = dest_chipz.parent()
         && !parent.as_os_str().is_empty()
     {
@@ -301,7 +406,7 @@ pub fn unpack_chipz_bytes(
     let project_toml_path = dest_dir.join("project.chip.toml");
     let project = ProjectDocument::load_from_path(&project_toml_path)?;
 
-    // Verify SHA-256 of every bundled STEP model
+    // Verify SHA-256 of every bundled STEP model and DXF/SVG vector asset
     for model in &project.models {
         let model_rel = validate_safe_relative_entry_path(&model.path)?;
         let model_path = dest_dir.join(model_rel);
@@ -316,6 +421,24 @@ pub fn unpack_chipz_bytes(
                 expected: model.sha256.clone(),
                 actual: actual_sha,
             });
+        }
+    }
+    for sk in &project.sketches {
+        if let Some(asset) = &sk.source_asset {
+            let vec_rel = validate_safe_relative_entry_path(&asset.path)?;
+            let vec_path = dest_dir.join(vec_rel);
+            let vec_bytes = std::fs::read(&vec_path).map_err(|source| BundleError::Io {
+                path: vec_path.display().to_string(),
+                source,
+            })?;
+            let actual_sha = compute_sha256_hex(&vec_bytes);
+            if !asset.sha256.is_empty() && !actual_sha.eq_ignore_ascii_case(&asset.sha256) {
+                return Err(BundleError::ModelHashMismatch {
+                    path: asset.path.clone(),
+                    expected: asset.sha256.clone(),
+                    actual: actual_sha,
+                });
+            }
         }
     }
 

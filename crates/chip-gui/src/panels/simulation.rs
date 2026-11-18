@@ -206,13 +206,14 @@ impl SimulationPanelState {
         let Some(setup) = project.setups.get(setup_idx) else {
             return;
         };
-        let resolved = match setup.resolve_immutable(&cad_doc, project.display_units) {
-            Ok(r) => r,
-            Err(e) => {
-                logs.push(format!("Cannot simulate Setup '{}': {e}", setup.name));
-                return;
-            }
-        };
+        let resolved =
+            match setup.resolve_with_sketches(&cad_doc, &project.sketches, project.display_units) {
+                Ok(r) => r,
+                Err(e) => {
+                    logs.push(format!("Cannot simulate Setup '{}': {e}", setup.name));
+                    return;
+                }
+            };
 
         let ready = collect_ready_setup_operations(project, setup_idx, cache, cad_revision);
         let owned_ops: Vec<OwnedSimOp> = ready

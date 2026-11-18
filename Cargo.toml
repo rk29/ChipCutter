@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/chip-math",
     "crates/chip-cad",
+    "crates/chip-sketch",
     "crates/chip-tools",
     "crates/chip-cam",
     "crates/chip-sim",
@@ -27,6 +28,7 @@ expect_used = "deny"
 [workspace.dependencies]
 chip-math = { version = "0.1.0", path = "crates/chip-math" }
 chip-cad = { version = "0.1.0", path = "crates/chip-cad" }
+chip-sketch = { version = "0.1.0", path = "crates/chip-sketch" }
 chip-tools = { version = "0.1.0", path = "crates/chip-tools" }
 chip-cam = { version = "0.1.0", path = "crates/chip-cam" }
 chip-sim = { version = "0.1.0", path = "crates/chip-sim" }
@@ -56,6 +58,9 @@ monstertruck-meshing = "0.4"
 monstertruck-modeling = "0.4"
 cavalier_contours = "0.9"
 boostvoronoi = "0.12"
+dxf = "0.6"
+usvg = { version = "0.50", default-features = false }
+kurbo = "0.13"
 
 eframe = { version = "0.37", default-features = false, features = ["wgpu", "default_fonts", "wayland", "x11"] }
 egui = "0.37"

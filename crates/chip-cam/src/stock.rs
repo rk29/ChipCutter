@@ -59,6 +59,14 @@ fn default_true() -> bool {
     true
 }
 
+fn default_sheet_thickness() -> ParamLength {
+    ParamLength::from_mm(12.0)
+}
+
+fn is_default_sheet_thickness(p: &ParamLength) -> bool {
+    p.expr.as_deref().is_none_or(|s| s.trim().is_empty()) && (p.value_mm - 12.0).abs() <= 1e-9
+}
+
 /// Parametric Stock definition in oriented Setup WCS axes (`03-setups-wcs.md`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -72,6 +80,12 @@ pub enum StockConfig {
         symmetric_xy: bool,
         top_offset_z: ParamLength,
         bottom_offset_z: ParamLength,
+        /// Nominal sheet Z thickness (`mm`) used when resolving Pure-2D projects (`models = []`).
+        #[serde(
+            default = "default_sheet_thickness",
+            skip_serializing_if = "is_default_sheet_thickness"
+        )]
+        sheet_thickness_z: ParamLength,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         round_increment_mm: Option<f64>,
     },
@@ -110,6 +124,7 @@ impl Default for StockConfig {
             symmetric_xy: true,
             top_offset_z: ParamLength::from_mm(1.0),
             bottom_offset_z: ParamLength::from_mm(0.0),
+            sheet_thickness_z: default_sheet_thickness(),
             round_increment_mm: None,
         }
     }
@@ -125,6 +140,44 @@ impl StockConfig {
         }
     }
 
+    /// Evaluates the nominal Z sheet thickness (`mm`) used to form the virtual part Z span
+    /// `[-thickness, 0]` in Pure-2D projects (`doc.bodies.is_empty()`).
+    pub fn pure_2d_sheet_thickness_mm(&self, display_unit: chip_math::DisplayUnit) -> f64 {
+        let ctx = EvalContext::new(display_unit);
+        match self {
+            Self::RelativeBox {
+                sheet_thickness_z, ..
+            } => {
+                let mut p = sheet_thickness_z.clone();
+                let _ = p.reevaluate(&ctx);
+                if p.value_mm.is_finite() && p.value_mm > 0.05 {
+                    p.value_mm
+                } else {
+                    12.0
+                }
+            }
+            Self::FixedBox { height_z, .. } => {
+                let mut p = height_z.clone();
+                let _ = p.reevaluate(&ctx);
+                if p.value_mm.is_finite() && p.value_mm > 0.05 {
+                    p.value_mm
+                } else {
+                    12.0
+                }
+            }
+            Self::FixedCylinder { length, .. } => {
+                let mut p = length.clone();
+                let _ = p.reevaluate(&ctx);
+                if p.value_mm.is_finite() && p.value_mm > 0.05 {
+                    p.value_mm
+                } else {
+                    12.0
+                }
+            }
+            Self::RelativeCylinder { .. } => 12.0,
+        }
+    }
+
     pub fn reevaluate(&mut self, ctx: &EvalContext) {
         match self {
             Self::RelativeBox {
@@ -134,6 +187,7 @@ impl StockConfig {
                 side_neg_y,
                 top_offset_z,
                 bottom_offset_z,
+                sheet_thickness_z,
                 ..
             } => {
                 for p in [
@@ -143,6 +197,7 @@ impl StockConfig {
                     side_neg_y,
                     top_offset_z,
                     bottom_offset_z,
+                    sheet_thickness_z,
                 ] {
                     let _ = p.reevaluate(ctx);
                 }
@@ -210,6 +265,7 @@ impl StockConfig {
                 top_offset_z,
                 bottom_offset_z,
                 round_increment_mm,
+                ..
             } => {
                 let px = side_pos_x.value_mm.max(0.0);
                 let nx = if *symmetric_xy {

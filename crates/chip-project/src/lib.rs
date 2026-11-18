@@ -13,9 +13,9 @@ pub mod toml_io;
 pub mod validation;
 
 pub use bundle::{
-    BundleError, ChipzExportSummary, MAX_CHIPZ_UNPACK_BYTES, UnpackedChipzBundle,
-    export_chipz_bundle, is_chipz_path, pack_chipz_bundle_bytes, unpack_chipz_bundle,
-    unpack_chipz_bytes,
+    BundleError, ChipzExportSummary, ChipzPackOptions, MAX_CHIPZ_UNPACK_BYTES, UnpackedChipzBundle,
+    export_chipz_bundle, export_chipz_bundle_with_options, is_chipz_path, pack_chipz_bundle_bytes,
+    pack_chipz_bundle_with_options, unpack_chipz_bundle, unpack_chipz_bytes,
 };
 pub use cache::{
     OperationInputHash, ToolpathCache, compute_operation_input_hash,
@@ -23,7 +23,8 @@ pub use cache::{
 };
 pub use demos::{
     build_adaptive_rest_demo_project, build_cam_torture_project,
-    build_multi_feature_bracket_project, build_revision_v1_demo_project,
+    build_multi_feature_bracket_project, build_pure2d_router_panel_demo_project,
+    build_revision_v1_demo_project,
 };
 pub use dispatcher::{
     BatchGenerationReport, DispatcherEvent, JobDispatcher, generate_project_blocking,
@@ -680,5 +681,85 @@ mod tests {
                 .iter()
                 .all(|o| o.runtime_status == OperationStatus::Clean)
         );
+    }
+
+    #[test]
+    fn pure2d_dxf_router_panel_migrates_v1_schema_packs_vectors_and_passes_sim_oracle() {
+        use chip_cad::CadDocument;
+        use chip_sim::SimResolution;
+        use chip_sketch::sample_router_panel_dxf;
+
+        // 1. Verify lossless v1 -> v2 schema migration
+        let v1_toml = r#"
+schema_version = 1
+project_name = "Legacy V1 Job"
+display_units = "mm"
+models = []
+tools = []
+setups = []
+"#;
+        let migrated = ProjectDocument::from_toml_str(v1_toml).unwrap();
+        assert_eq!(migrated.schema_version, 2);
+        assert!(migrated.sketches.is_empty());
+
+        // 2. Build Pure-2D Router Panel demo (`models = []`, 0 STEP files!)
+        let starter = default_starter_tool_library();
+        let dxf_bytes = sample_router_panel_dxf();
+        let mut proj =
+            build_pure2d_router_panel_demo_project(Some("panel.dxf".to_string()), &starter.tools);
+        assert!(proj.models.is_empty());
+        assert_eq!(proj.sketches.len(), 1);
+        assert_eq!(proj.setups[0].operations.len(), 4);
+
+        let empty_cad = CadDocument::empty();
+        let val = validate_project(&proj, None, Some(&empty_cad));
+        assert!(
+            val.is_valid(),
+            "pure-2D validation errors: {:?}",
+            val.diagnostics
+        );
+
+        let mut cache = ToolpathCache::new(32);
+        let batch = generate_project_blocking(&mut proj, &empty_cad, &mut cache, 1);
+        assert!(batch.is_ok(), "pure-2D batch errors: {:?}", batch.errors);
+        assert_eq!(batch.generated.len(), 4);
+
+        // 3. Verify 0 crashes/gouges in `chip-sim` against the 6mm 2D sheet stock!
+        let sim = simulate_project_setup(&SetupSimRequest {
+            project: &proj,
+            setup_idx: 0,
+            cad_doc: &empty_cad,
+            cad_revision: 1,
+            cache: &cache,
+            kinematics: resolve_kinematics_for_key("grbl", None),
+            resolution: SimResolution::Standard,
+            cancel: None,
+        })
+        .unwrap();
+        assert!(
+            !sim.has_critical_errors(),
+            "Pure-2D DXF panel must pass heightmap verification with 0 critical errors, got: {:?}",
+            sim.diagnostics
+        );
+
+        // 4. Verify `.chipz` packs `vectors/panel.dxf` deterministically and verifies SHA-256 on unpack!
+        let (bundle_bytes, sum) = pack_chipz_bundle_with_options(&ChipzPackOptions {
+            project: &proj,
+            project_dir: None,
+            fallback_model_bytes: &[],
+            fallback_vector_bytes: &[("sketch_panel", &dxf_bytes)],
+            extra_custom_posts: &[],
+        })
+        .unwrap();
+        assert!(sum.model_files.is_empty());
+        assert_eq!(sum.vector_files, vec!["vectors/panel.dxf".to_string()]);
+
+        let tmp = std::env::temp_dir().join(format!("chipz_pure2d_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let unpacked = unpack_chipz_bytes(&bundle_bytes, &tmp).unwrap();
+        assert!(unpacked.project.models.is_empty());
+        assert_eq!(unpacked.project.sketches.len(), 1);
+        assert!(tmp.join("vectors/panel.dxf").is_file());
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

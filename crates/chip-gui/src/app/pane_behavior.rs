@@ -1,8 +1,9 @@
 use std::path::Path;
 
 use chip_cad::{CurveKind, PickFilter, PickTarget, SurfaceKind};
-use chip_cam::WcsOriginMode;
+use chip_cam::{GeometrySelectionItem, WcsOriginMode};
 use chip_sim::SimDiagnostic;
+use chip_sketch::{SketchAnchor, SketchPlaneRef};
 
 use crate::{
     app::ChipCutterApp,
@@ -50,8 +51,9 @@ impl PaneBehavior<'_> {
     fn ui_cam_browser(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         egui::Frame::NONE.inner_margin(8.0).show(ui, |ui| {
+            let eff_cad = self.app.effective_cad_arc();
             let cad_ref = self.app.model.as_ref().map(|m| m.doc.as_ref());
-            let cad_rev = self.app.model.as_ref().map_or(0, |m| m.revision);
+            let cad_rev = eff_cad.as_ref().map_or(0, |(_, r)| *r);
             let action = show_cam_browser(
                 ui,
                 CamBrowserCtx {
@@ -71,6 +73,13 @@ impl PaneBehavior<'_> {
             if let Some(act) = action {
                 match act {
                     BrowserAction::OpenStepDialog => self.app.open_step_dialog(&ctx),
+                    BrowserAction::OpenVectorImportModal { browse_file } => {
+                        if browse_file {
+                            self.app.vector_import_modal.open_with_file_picker();
+                        } else {
+                            self.app.vector_import_modal.open = true;
+                        }
+                    }
                     BrowserAction::ReloadStepModel => self.app.reload_active_step_model(&ctx),
                     BrowserAction::ReplaceStepDialog => self.app.replace_step_dialog(&ctx),
                     BrowserAction::LoadMultiFeatureSample { tilted } => {
@@ -82,6 +91,9 @@ impl PaneBehavior<'_> {
                     }
                     BrowserAction::LoadAdaptiveRestDemo => {
                         self.app.spawn_adaptive_rest_demo_load(ctx.clone());
+                    }
+                    BrowserAction::LoadPure2dPanelDemo => {
+                        self.app.load_pure2d_router_panel_demo(&ctx);
                     }
                     BrowserAction::LoadRevisionDemoV1 => {
                         self.app.spawn_revision_demo_load(false, ctx.clone());
@@ -136,24 +148,38 @@ impl PaneBehavior<'_> {
         } else {
             let filter = self.app.effective_pick_filter();
             let mut clicked_target = None;
+            let mut clicked_sketch = None;
             let mut was_primary_click = false;
 
-            if let Some(m) = &self.app.model {
-                if let Some(cursor_pos) = response.hover_pos()
-                    && let Some(ray) = self.app.camera.screen_ray(cursor_pos, avail)
-                {
-                    let mm_per_px = self.app.camera.mm_per_pixel(avail.height());
+            if let Some(cursor_pos) = response.hover_pos()
+                && let Some(ray) = self.app.camera.screen_ray(cursor_pos, avail)
+            {
+                let mm_per_px = self.app.camera.mm_per_pixel(avail.height());
+                let sketch_hit = self.app.pick_sketch_in_viewport(&ray, mm_per_px);
+                self.app.highlight.hovered_sketch = sketch_hit;
+
+                if let Some(m) = &self.app.model {
                     let hit = m.picker.pick(&m.doc, &ray, mm_per_px, filter);
                     self.app.highlight.hovered = hit.map(|h| h.target);
-                }
-                if response.clicked_by(egui::PointerButton::Primary) {
-                    was_primary_click = true;
-                    clicked_target = self.app.highlight.hovered.clone();
+                } else {
+                    self.app.highlight.hovered = None;
                 }
             }
 
+            if response.clicked_by(egui::PointerButton::Primary) {
+                was_primary_click = true;
+                clicked_sketch = self.app.highlight.hovered_sketch.clone();
+                clicked_target = self.app.highlight.hovered.clone();
+            }
+
             if was_primary_click {
-                self.app.handle_viewport_pick_click(clicked_target);
+                if let Some(sk_hit) = clicked_sketch {
+                    self.app.handle_viewport_sketch_click(sk_hit);
+                } else if self.app.model.is_some() {
+                    self.app.handle_viewport_pick_click(clicked_target);
+                } else if self.app.pick_mode == ViewportPickMode::InspectEntity {
+                    self.app.highlight.selected_sketch = None;
+                }
                 self.app.sync_viewport_scene_state();
             }
         }
@@ -330,6 +356,9 @@ impl PaneBehavior<'_> {
                 InspectorFocus::CadEntity => {
                     self.ui_cad_entity_inspector(ui);
                 }
+                InspectorFocus::Sketch { sketch_idx } => {
+                    self.ui_sketch_inspector(ui, sketch_idx);
+                }
             });
 
         if self.app.cached_frame_geo.is_none() {
@@ -464,11 +493,173 @@ impl PaneBehavior<'_> {
         });
     }
 
+    fn ui_sketch_inspector(&mut self, ui: &mut egui::Ui, sketch_idx: usize) {
+        let u = self.app.project.display_units;
+        if sketch_idx >= self.app.project.sketches.len() {
+            ui.weak("No Sketch Layer selected.");
+            return;
+        }
+
+        let eval_ctx = self.app.eval_context();
+        let pre_sketch = self.app.project.sketches[sketch_idx].clone();
+        let mut mutated: Option<&'static str> = None;
+        let mut add_to_new_op = false;
+
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            {
+                let sk = &mut self.app.project.sketches[sketch_idx];
+                ui.horizontal(|ui| {
+                    ui.heading("2D Sketch Layer");
+                    if ui.checkbox(&mut sk.visible, "Visible").changed() {
+                        mutated = Some("Toggle Sketch Visibility");
+                    }
+                });
+                ui.separator();
+
+                ui.horizontal(|ui| {
+                    ui.label("Name:");
+                    if ui.text_edit_singleline(&mut sk.name).lost_focus()
+                        && sk.name != pre_sketch.name
+                    {
+                        mutated = Some("Rename Sketch Layer");
+                    }
+                });
+
+                let SketchAnchor::SetupXy {
+                    plane_ref,
+                    z_offset,
+                    ..
+                } = &mut sk.anchor;
+                ui.horizontal(|ui| {
+                    ui.label("Anchor Plane:");
+                    egui::ComboBox::from_id_salt(("sk_plane_ref", sketch_idx))
+                        .selected_text(plane_ref.label())
+                        .show_ui(ui, |ui| {
+                            for r in SketchPlaneRef::ALL {
+                                if ui.selectable_value(plane_ref, r, r.label()).changed() {
+                                    mutated = Some("Change Sketch Plane Reference");
+                                }
+                            }
+                        });
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Z Offset:");
+                    if crate::widgets::edit_param_length(
+                        ui,
+                        ("sk_z_off", sketch_idx),
+                        z_offset,
+                        &eval_ctx,
+                        115.0,
+                    ) {
+                        mutated = Some("Edit Sketch Z Offset");
+                    }
+                });
+            }
+
+            let sk = &self.app.project.sketches[sketch_idx];
+            let aabb = sk.exact_aabb();
+            let sz = aabb.size();
+            let islands: usize = sk.regions.iter().map(|r| r.islands_cw.len()).sum();
+
+            ui.separator();
+            ui.strong("Evaluated 2D Geometry");
+            ui.label(format!(
+                "2D Bounds:   {} × {}",
+                u.format_length(sz.x),
+                u.format_length(sz.y)
+            ));
+            ui.label(format!(
+                "Entities:    {} ({} circles, {} closed loops, {} open chains)",
+                sk.entities.len(),
+                sk.circle_count(),
+                sk.closed_loop_count(),
+                sk.open_chain_count()
+            ));
+            ui.label(format!(
+                "Regions:     {} planar region(s) ({islands} interior island(s))",
+                sk.regions.len()
+            ));
+            let layers = sk.sub_layer_names();
+            if !layers.is_empty() {
+                ui.label(format!("Sub-Layers:  {}", layers.join(", ")));
+            }
+            if let Some(asset) = &sk.source_asset {
+                ui.weak(format!("Source {}: {}", asset.format.label(), asset.path));
+            }
+
+            if !sk.diagnostics.is_empty() {
+                ui.separator();
+                ui.strong(format!("Import Diagnostics ({})", sk.diagnostics.len()));
+                for d in &sk.diagnostics {
+                    ui.small(format!("• {}", d.message));
+                }
+            }
+
+            ui.separator();
+            if ui
+                .button("+ Create 2D Contour Op on Sketch")
+                .on_hover_text(
+                    "Create a new 2D Contour operation pre-populated with this Sketch Layer",
+                )
+                .clicked()
+            {
+                add_to_new_op = true;
+            }
+        });
+
+        if let Some(action) = mutated {
+            let mut pre_doc = self.app.project.clone();
+            pre_doc.sketches[sketch_idx] = pre_sketch;
+            self.app.history.record_before_edit(action, None, &pre_doc);
+            self.app.cached_frame_geo = None;
+        }
+
+        if add_to_new_op && self.app.active_setup_idx < self.app.project.setups.len() {
+            let sk_id = self.app.project.sketches[sketch_idx].id.clone();
+            let sk_name = self.app.project.sketches[sketch_idx].name.clone();
+            let s_idx = self.app.active_setup_idx;
+            self.app.history.record_before_edit(
+                "Add 2D Sketch Contour Op",
+                None,
+                &self.app.project,
+            );
+            let n = self.app.project.setups[s_idx].operations.len() + 1;
+            let mut op = chip_cam::Operation::new(
+                format!("op_{s_idx}_{n}_sketch"),
+                format!("2D Contour — {sk_name}"),
+                chip_cam::OperationKind::Contour2D,
+            );
+            if let Some(t) = self
+                .app
+                .project
+                .tools
+                .iter()
+                .find(|t| chip_cam::OperationKind::Contour2D.is_compatible_with_tool(t))
+            {
+                op.tool_id = Some(t.id.clone());
+                op.preset_id = t.presets.first().map(|p| p.id.clone());
+            }
+            op.selections.push(GeometrySelectionItem::SketchLayerAll {
+                sketch_id: sk_id,
+                sub_layer: None,
+                reverse: false,
+                side_flip: false,
+            });
+            self.app.project.setups[s_idx].operations.push(op);
+            let o_idx = self.app.project.setups[s_idx].operations.len() - 1;
+            self.app.inspector_focus = InspectorFocus::Operation {
+                setup_idx: s_idx,
+                op_idx: o_idx,
+            };
+        }
+    }
+
     fn ui_simulation(&mut self, ui: &mut egui::Ui) {
         let mut pending_action: Option<SimulationUiAction> = None;
         egui::Frame::NONE.inner_margin(6.0).show(ui, |ui| {
-            let cad_doc = self.app.model.as_ref().map(|m| &m.doc);
-            let cad_rev = self.app.model.as_ref().map_or(0, |m| m.revision);
+            let eff_cad = self.app.effective_cad_arc();
+            let cad_doc = eff_cad.as_ref().map(|(d, _)| d);
+            let cad_rev = eff_cad.as_ref().map_or(0, |(_, r)| *r);
             let proj_dir = self
                 .app
                 .project_file_path
@@ -506,8 +697,9 @@ impl PaneBehavior<'_> {
         let ctx = ui.ctx().clone();
         let mut pending_action: Option<GCodeUiAction> = None;
         egui::Frame::NONE.inner_margin(6.0).show(ui, |ui| {
-            let cad_doc = self.app.model.as_ref().map(|m| &m.doc);
-            let cad_rev = self.app.model.as_ref().map_or(0, |m| m.revision);
+            let eff_cad = self.app.effective_cad_arc();
+            let cad_doc = eff_cad.as_ref().map(|(d, _)| d);
+            let cad_rev = eff_cad.as_ref().map_or(0, |(_, r)| *r);
             let virtual_proj_path = self.app.virtual_project_file_path();
             pending_action = self.app.gcode_panel.show_ui(
                 ui,
@@ -540,7 +732,7 @@ impl PaneBehavior<'_> {
     fn ui_diagnostics(&mut self, ui: &mut egui::Ui) {
         let mut jump_diag: Option<SimDiagnostic> = None;
         egui::Frame::NONE.inner_margin(6.0).show(ui, |ui| {
-            let cad_rev = self.app.model.as_ref().map_or(0, |m| m.revision);
+            let cad_rev = self.app.effective_cad_arc().map_or(0, |(_, r)| r);
             jump_diag = show_diagnostics_panel(
                 ui,
                 &self.app.project,
@@ -560,13 +752,14 @@ impl PaneBehavior<'_> {
 impl ChipCutterApp {
     pub(crate) fn handle_self_test(&mut self, ctx: &egui::Context) {
         let is_busy = self.dispatcher.is_busy() || self.sim_panel.is_busy();
+        let has_geom = self.has_geometry();
         let Some(st) = &mut self.self_test else {
             if is_busy {
                 ctx.request_repaint();
             }
             return;
         };
-        if self.loading_in_flight || self.model.is_none() || is_busy {
+        if self.loading_in_flight || !has_geom || is_busy {
             ctx.request_repaint();
             return;
         }

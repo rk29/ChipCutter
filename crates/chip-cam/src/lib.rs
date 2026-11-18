@@ -41,9 +41,9 @@ pub use rest2d::{
 };
 pub use selection::{
     ChainDirectionArrow3D, ExtractedFeature25D, ExtractedSelectionSummary, GeometrySelectionItem,
-    extract_selection_features,
+    extract_selection_features, extract_selection_features_with_sketches,
 };
-pub use setup::{ResolvedSetup, Setup};
+pub use setup::{ResolvedSetup, Setup, resolve_sketch_world_frame};
 pub use stock::{
     FixedBoxXyAlign, FixedBoxZAlign, ResolvedStockGeometry, StockAxis, StockConfig,
     compute_tight_oriented_model_aabb,
@@ -128,6 +128,7 @@ mod tests {
             symmetric_xy: true,
             top_offset_z: ParamLength::from_mm(1.0),
             bottom_offset_z: ParamLength::from_mm(0.0),
+            sheet_thickness_z: ParamLength::from_mm(12.0),
             round_increment_mm: None,
         };
 

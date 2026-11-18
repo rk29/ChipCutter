@@ -266,6 +266,25 @@ pub struct CadDocument {
 }
 
 impl CadDocument {
+    /// Returns an empty canonical `CadDocument` with zero 3D solid bodies (used for Pure-2D projects).
+    pub fn empty() -> Self {
+        Self {
+            source_name: String::new(),
+            detected_unit: StepUnitKind::Millimeter,
+            bodies: Vec::new(),
+            faces: Vec::new(),
+            loops: Vec::new(),
+            edges: Vec::new(),
+            aabb_mm: Aabb3::EMPTY,
+            render_mesh: RenderMesh {
+                vertices: Vec::new(),
+                indices: Vec::new(),
+                pick_triangles: Vec::new(),
+                edge_polylines: Vec::new(),
+            },
+        }
+    }
+
     #[inline]
     pub fn face(&self, id: FaceId) -> Option<&BRepFace> {
         self.faces.get(id.0 as usize)

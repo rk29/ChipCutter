@@ -457,3 +457,105 @@ fn cli_reload_step_handles_v1_to_v2_rebind_and_deleted_hole_flagging() {
     );
     assert!(v2_build_out.join("rev_job_v2.ngc").is_file());
 }
+
+#[test]
+fn cli_pure2d_inspect_import_bundle_simulate_and_build_work_end_to_end() {
+    use chip_project::build_pure2d_router_panel_demo_project;
+    use chip_sketch::{sample_badge_logo_svg, sample_router_panel_dxf};
+
+    let tmp = TempTestDir::new("pure2d");
+    let dxf_path = tmp.path().join("router_panel.dxf");
+    let svg_path = tmp.path().join("badge_logo.svg");
+    std::fs::write(&dxf_path, sample_router_panel_dxf()).unwrap();
+    std::fs::write(&svg_path, sample_badge_logo_svg()).unwrap();
+
+    // 1. `chipcutter inspect` on both `.dxf` and `.svg`
+    let insp_dxf = Command::new(cli_bin())
+        .args(["inspect", dxf_path.to_str().unwrap()])
+        .output()
+        .expect("inspect dxf");
+    assert!(insp_dxf.status.success());
+    let dxf_out = String::from_utf8_lossy(&insp_dxf.stdout);
+    assert!(dxf_out.contains("AutoCAD DXF"));
+    assert!(dxf_out.contains("4 Circles"));
+
+    let insp_svg = Command::new(cli_bin())
+        .args(["inspect", svg_path.to_str().unwrap()])
+        .output()
+        .expect("inspect svg");
+    assert!(insp_svg.status.success());
+    let svg_out = String::from_utf8_lossy(&insp_svg.stdout);
+    assert!(svg_out.contains("W3C SVG"));
+
+    // 2. `chipcutter import-2d` initializes a fresh Pure-2D `.chip.toml`
+    let imported_toml = tmp.path().join("imported_svg.chip.toml");
+    let imp_status = Command::new(cli_bin())
+        .args([
+            "import-2d",
+            svg_path.to_str().unwrap(),
+            "-o",
+            imported_toml.to_str().unwrap(),
+            "--thickness",
+            "8.0",
+        ])
+        .status()
+        .expect("import-2d svg");
+    assert!(imp_status.success());
+    let loaded_imp = ProjectDocument::load_from_path(&imported_toml).unwrap();
+    assert!(loaded_imp.models.is_empty());
+    assert_eq!(loaded_imp.sketches.len(), 1);
+
+    // 3. Full Pure-2D Router Panel `.chip.toml` -> `bundle pack` -> `simulate` -> `build`!
+    let starter = default_starter_tool_library();
+    let pure2d_proj = build_pure2d_router_panel_demo_project(
+        Some("router_panel.dxf".to_string()),
+        &starter.tools,
+    );
+    let pure2d_toml = tmp.path().join("panel_job.chip.toml");
+    pure2d_proj.save_to_path(&pure2d_toml).unwrap();
+
+    let chipz_path = tmp.path().join("panel_job.chipz");
+    assert!(
+        Command::new(cli_bin())
+            .args([
+                "bundle",
+                "pack",
+                pure2d_toml.to_str().unwrap(),
+                "-o",
+                chipz_path.to_str().unwrap(),
+            ])
+            .status()
+            .unwrap()
+            .success()
+    );
+
+    let out_dir = tmp.path().join("nc_pure2d");
+    let build_res = Command::new(cli_bin())
+        .args([
+            "build",
+            chipz_path.to_str().unwrap(),
+            "-o",
+            out_dir.to_str().unwrap(),
+            "--post",
+            "grbl",
+        ])
+        .output()
+        .expect("build pure-2d chipz");
+    assert!(
+        build_res.status.success(),
+        "pure-2d build failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&build_res.stdout),
+        String::from_utf8_lossy(&build_res.stderr)
+    );
+    assert!(
+        out_dir
+            .join("panel_job_01_T6_6_0mm_118_carbide_stub_d.nc")
+            .is_file()
+    );
+    assert!(
+        out_dir
+            .join("panel_job_02_T1_6mm_3fl_carbide_flat_end.nc")
+            .is_file()
+    );
+    assert!(out_dir.join("build_summary.json").is_file());
+}

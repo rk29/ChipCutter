@@ -1,0 +1,20 @@
+[package]
+name = "chip-sketch"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+chip-math.workspace = true
+glam.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+rstar.workspace = true
+cavalier_contours.workspace = true
+dxf.workspace = true
+usvg.workspace = true
+kurbo.workspace = true
+sha2.workspace = true

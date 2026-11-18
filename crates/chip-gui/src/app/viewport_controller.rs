@@ -2,20 +2,25 @@ use chip_cad::{CurveKind, PickFilter, PickTarget, SurfaceKind};
 use chip_cam::{
     ExtractedFeature25D, GeometrySelectionItem, ManualTabAnchor, OperationStatus, ResolvedHeights,
     StrategyParams, TabMarker3D, TabPlacementMode, TabProfileKind, WcsAxisRef, WcsFeaturePointRef,
-    WcsOrientationMode, WcsOriginMode, extract_selection_features,
+    WcsOrientationMode, WcsOriginMode, extract_selection_features_with_sketches,
+    resolve_sketch_world_frame,
 };
 use chip_math::{DVec2, DVec3, Ray3, RigidFrame3};
+use chip_sketch::{SketchPickHit, pick_sketch_layer_2d};
 
 use crate::{
     app::ChipCutterApp,
     panels::{InspectorFocus, OperationTab, SetupTab, ViewportPickMode},
-    viewport::{ToolpathRenderEntry, ZPlaneVisual},
+    viewport::{SketchLayerVisual, ToolpathRenderEntry, ZPlaneVisual},
 };
 
 impl ChipCutterApp {
     pub(crate) fn sync_viewport_scene_state(&mut self) {
         self.highlight.extra_selected_faces.clear();
         self.highlight.extra_selected_edges.clear();
+        self.highlight.extra_selected_sketch_regions.clear();
+        self.highlight.extra_selected_sketch_entities.clear();
+        self.highlight.sketch_visuals.clear();
         self.highlight.chain_arrows.clear();
         self.highlight.z_planes_wcs.clear();
 
@@ -26,6 +31,16 @@ impl ChipCutterApp {
             self.highlight.wcs_frame = rs.frame;
             self.camera.turntable_frame = rs.frame;
             self.highlight.stock = Some(rs.stock);
+            let doc_has_bodies = self.model.is_some();
+            for sk in &self.project.sketches {
+                if sk.visible {
+                    let wf = resolve_sketch_world_frame(doc_has_bodies, sk, rs);
+                    self.highlight.sketch_visuals.push(SketchLayerVisual {
+                        sketch: sk.clone(),
+                        world_frame: wf,
+                    });
+                }
+            }
         } else {
             self.highlight.wcs_frame = RigidFrame3::IDENTITY;
             self.highlight.stock = None;
@@ -60,6 +75,12 @@ impl ChipCutterApp {
                     }
                     for eid in sum.highlight_edges {
                         self.highlight.extra_selected_edges.insert(eid);
+                    }
+                    for rkey in sum.highlight_sketch_regions {
+                        self.highlight.extra_selected_sketch_regions.insert(rkey);
+                    }
+                    for ekey in sum.highlight_sketch_entities {
+                        self.highlight.extra_selected_sketch_entities.insert(ekey);
                     }
                     self.highlight.chain_arrows = sum.direction_arrows;
 
@@ -114,7 +135,7 @@ impl ChipCutterApp {
                     }
                 }
             }
-            InspectorFocus::CadEntity => {}
+            InspectorFocus::CadEntity | InspectorFocus::Sketch { .. } => {}
         }
 
         if let ViewportPickMode::OpOpenChain {
@@ -126,7 +147,7 @@ impl ChipCutterApp {
         }
 
         self.highlight.toolpaths.clear();
-        if let Some(m) = &self.model
+        if let Some((_, cad_rev)) = self.effective_cad_arc()
             && let Some(setup) = self.project.setups.get(self.active_setup_idx)
         {
             let focused_op_idx = match self.inspector_focus {
@@ -150,7 +171,7 @@ impl ChipCutterApp {
                     &self.project,
                     self.active_setup_idx,
                     o_idx,
-                    m.revision,
+                    cad_rev,
                 ) {
                     self.highlight.toolpaths.push(ToolpathRenderEntry {
                         op_id: op.id.clone(),
@@ -165,7 +186,7 @@ impl ChipCutterApp {
                 &self.project,
                 self.active_setup_idx,
                 &self.toolpath_cache,
-                m.revision,
+                cad_rev,
             );
             self.highlight.sim_stock_mesh = vis.stock;
             self.highlight.sim_tool_mesh = vis.cutter;
@@ -192,6 +213,140 @@ impl ChipCutterApp {
                 PickFilter::EdgesOnly
             }
             ViewportPickMode::OpCylindricalHoles { .. } => PickFilter::CylindricalHolesOnly,
+        }
+    }
+
+    /// Ray-plane hit-testing against visible 2D [`chip_sketch::SketchLayer`]s in the active Setup.
+    pub(crate) fn pick_sketch_in_viewport(
+        &mut self,
+        ray: &Ray3,
+        mm_per_px: f64,
+    ) -> Option<SketchPickHit> {
+        if self.project.sketches.is_empty() {
+            return None;
+        }
+        let Some(Ok(rs)) = self.active_resolved_setup() else {
+            return None;
+        };
+        let doc_has_bodies = self.model.is_some();
+        let edge_tol_mm = (10.0 * mm_per_px).clamp(0.4, 8.0);
+        let prefer_regions = matches!(self.pick_mode, ViewportPickMode::OpPlanarFaces { .. });
+
+        let mut best_t = f64::INFINITY;
+        let mut best_hit: Option<SketchPickHit> = None;
+
+        for sk in &self.project.sketches {
+            if !sk.visible {
+                continue;
+            }
+            let wf = resolve_sketch_world_frame(doc_has_bodies, sk, &rs);
+            let denom = ray.dir.dot(wf.z_axis);
+            if denom.abs() <= 1e-6 {
+                continue;
+            }
+            let t = (wf.origin_mm - ray.origin).dot(wf.z_axis) / denom;
+            if t <= 0.0 || t >= best_t {
+                continue;
+            }
+            let hit_world = ray.origin + ray.dir * t;
+            let hit_local = wf.world_to_local_point(hit_world);
+            let query_xy = DVec2::new(hit_local.x, hit_local.y);
+            if let Some(hit) = pick_sketch_layer_2d(sk, query_xy, edge_tol_mm, prefer_regions) {
+                best_t = t;
+                best_hit = Some(hit);
+            }
+        }
+        best_hit
+    }
+
+    pub(crate) fn handle_viewport_sketch_click(&mut self, hit: SketchPickHit) {
+        match self.pick_mode {
+            ViewportPickMode::InspectEntity => {
+                let sk_id = match &hit {
+                    SketchPickHit::Entity { sketch_id, .. }
+                    | SketchPickHit::Region { sketch_id, .. } => sketch_id.clone(),
+                };
+                if let Some(idx) = self.project.sketches.iter().position(|s| s.id == sk_id) {
+                    self.inspector_focus = InspectorFocus::Sketch { sketch_idx: idx };
+                }
+                self.highlight.selected_sketch = Some(hit);
+            }
+            ViewportPickMode::OpPlanarFaces { setup_idx, op_idx }
+            | ViewportPickMode::OpClosedLoops { setup_idx, op_idx }
+            | ViewportPickMode::OpCylindricalHoles { setup_idx, op_idx }
+            | ViewportPickMode::OpOpenChain {
+                setup_idx, op_idx, ..
+            } => {
+                let Some(setup) = self.project.setups.get(setup_idx) else {
+                    return;
+                };
+                if op_idx >= setup.operations.len() {
+                    return;
+                }
+                let new_item = match hit {
+                    SketchPickHit::Region {
+                        sketch_id,
+                        region_id,
+                        ..
+                    } => GeometrySelectionItem::SketchRegion {
+                        sketch_id,
+                        region_id,
+                    },
+                    SketchPickHit::Entity {
+                        sketch_id,
+                        entity_id,
+                        ..
+                    } => GeometrySelectionItem::SketchEntity {
+                        sketch_id,
+                        entity_id,
+                        reverse: false,
+                        side_flip: false,
+                    },
+                };
+
+                self.history
+                    .record_before_edit("Toggle 2D Sketch Selection", None, &self.project);
+                let op_mut = &mut self.project.setups[setup_idx].operations[op_idx];
+                if matches!(op_mut.runtime_status, OperationStatus::NeedsRepick { .. }) {
+                    op_mut.selections.clear();
+                }
+                if let Some(pos) =
+                    op_mut
+                        .selections
+                        .iter()
+                        .position(|existing| match (existing, &new_item) {
+                            (
+                                GeometrySelectionItem::SketchRegion {
+                                    sketch_id: a,
+                                    region_id: ra,
+                                },
+                                GeometrySelectionItem::SketchRegion {
+                                    sketch_id: b,
+                                    region_id: rb,
+                                },
+                            ) => a == b && ra == rb,
+                            (
+                                GeometrySelectionItem::SketchEntity {
+                                    sketch_id: a,
+                                    entity_id: ea,
+                                    ..
+                                },
+                                GeometrySelectionItem::SketchEntity {
+                                    sketch_id: b,
+                                    entity_id: eb,
+                                    ..
+                                },
+                            ) => a == b && ea == eb,
+                            _ => false,
+                        })
+                {
+                    op_mut.selections.remove(pos);
+                } else {
+                    op_mut.selections.push(new_item);
+                }
+                op_mut.mark_dirty();
+            }
+            _ => {}
         }
     }
 
@@ -481,7 +636,7 @@ impl ChipCutterApp {
         let Some(Ok(rs)) = self.active_resolved_setup() else {
             return;
         };
-        let Some(m) = &self.model else {
+        let Some((cad_doc, _)) = self.effective_cad_arc() else {
             return;
         };
         let Some(setup) = self.project.setups.get(setup_idx) else {
@@ -490,7 +645,12 @@ impl ChipCutterApp {
         let Some(op) = setup.operations.get(op_idx) else {
             return;
         };
-        let Ok(sum) = extract_selection_features(&m.doc, &rs, &op.selections) else {
+        let Ok(sum) = extract_selection_features_with_sketches(
+            &cad_doc,
+            &self.project.sketches,
+            &rs,
+            &op.selections,
+        ) else {
             return;
         };
 

@@ -9,8 +9,11 @@ use chip_cam::{
     ChainDirectionArrow3D, GeneratedToolpath, MotionRole, ResolvedStockGeometry, SegmentMotion3D,
     StockAxis, TabMarker3D,
 };
-use chip_math::{Aabb3, DMat4, DVec2, DVec3, DisplayUnit, MM_PER_INCH, RigidFrame3};
+use chip_math::{
+    Aabb3, ArcPolyline2D, ArcSegment2D, DMat4, DVec2, DVec3, DisplayUnit, MM_PER_INCH, RigidFrame3,
+};
 use chip_sim::{SimStockMesh, SimToolMesh};
+use chip_sketch::{SketchDiagnosticKind, SketchEntity, SketchLayer, SketchPickHit};
 
 use super::gpu_types::{EdgeInstanceGpu, OverlayVertexGpu};
 use crate::camera::CadCamera;
@@ -32,13 +35,25 @@ pub struct ToolpathRenderEntry {
     pub is_focused: bool,
 }
 
-/// Active hover, multi-selection, WCS, Stock, Z-plane, and Toolpath scene state fed into the 3D CAD/CAM viewport.
+/// Visible 2D [`SketchLayer`] paired with its resolved 3D World [`RigidFrame3`] for GPU curve rendering.
+#[derive(Debug, Clone)]
+pub struct SketchLayerVisual {
+    pub sketch: SketchLayer,
+    pub world_frame: RigidFrame3,
+}
+
+/// Active hover, multi-selection, WCS, Stock, Z-plane, 2D Sketch, and Toolpath scene state fed into the 3D CAD/CAM viewport.
 #[derive(Debug, Clone)]
 pub struct HighlightState {
     pub hovered: Option<PickTarget>,
     pub selected: Option<PickTarget>,
+    pub hovered_sketch: Option<SketchPickHit>,
+    pub selected_sketch: Option<SketchPickHit>,
     pub extra_selected_faces: HashSet<FaceId>,
     pub extra_selected_edges: HashSet<EdgeId>,
+    pub extra_selected_sketch_regions: HashSet<(String, String)>,
+    pub extra_selected_sketch_entities: HashSet<(String, String)>,
+    pub sketch_visuals: Vec<SketchLayerVisual>,
     pub chain_arrows: Vec<ChainDirectionArrow3D>,
     pub wcs_frame: RigidFrame3,
     pub stock: Option<ResolvedStockGeometry>,
@@ -63,8 +78,13 @@ impl Default for HighlightState {
         Self {
             hovered: None,
             selected: None,
+            hovered_sketch: None,
+            selected_sketch: None,
             extra_selected_faces: HashSet::new(),
             extra_selected_edges: HashSet::new(),
+            extra_selected_sketch_regions: HashSet::new(),
+            extra_selected_sketch_entities: HashSet::new(),
+            sketch_visuals: Vec::new(),
             chain_arrows: Vec::new(),
             wcs_frame: RigidFrame3::IDENTITY,
             stock: None,
@@ -226,6 +246,11 @@ pub(crate) fn build_edge_and_scene_instances(
         }
     }
 
+    // 1b. 2D Vector Sketch Layers (`chip-sketch`, rendered in both Pure-2D and Hybrid 3D+2D modes)
+    if !highlight.sketch_visuals.is_empty() {
+        emit_sketch_layer_visuals(highlight, camera, &mut out);
+    }
+
     // 2. Stock translucent shell + wireframe in active Setup WCS (when not replaced by 3D machined stock)
     if highlight.show_stock
         && highlight.sim_stock_mesh.is_none()
@@ -377,6 +402,164 @@ pub(crate) fn build_edge_and_scene_instances(
     }
 
     out
+}
+
+fn emit_sketch_layer_visuals(
+    highlight: &HighlightState,
+    camera: &CadCamera,
+    out: &mut Vec<EdgeInstanceGpu>,
+) {
+    let diag_tick = (camera.scene_radius_mm * 0.025).clamp(0.8, 4.0);
+    for vis in &highlight.sketch_visuals {
+        let sk = &vis.sketch;
+        if !sk.visible {
+            continue;
+        }
+        let wf = &vis.world_frame;
+        // Slight +0.04 mm lift along sketch +Z normal so 2D curves sit crisply above Stock Top / Machined Stock!
+        let lift = wf.z_axis * 0.04;
+
+        // 1. Base sketch entities (circles, closed loops, open chains)
+        for ent in &sk.entities {
+            if ent.is_construction {
+                continue;
+            }
+            let key = (sk.id.clone(), ent.id.clone());
+            let is_sel = highlight.extra_selected_sketch_entities.contains(&key)
+                || matches!(
+                    &highlight.selected_sketch,
+                    Some(SketchPickHit::Entity {
+                        sketch_id,
+                        entity_id,
+                        ..
+                    }) if sketch_id == &sk.id && entity_id == &ent.id
+                );
+            let is_hov = matches!(
+                &highlight.hovered_sketch,
+                Some(SketchPickHit::Entity {
+                    sketch_id,
+                    entity_id,
+                    ..
+                }) if sketch_id == &sk.id && entity_id == &ent.id
+            );
+
+            let poly = ent.entity.to_arc_polyline();
+            let (col, width_px) = if is_sel {
+                ([1.0, 0.80, 0.20, 1.0], 3.4)
+            } else if is_hov {
+                ([0.25, 0.96, 1.0, 1.0], 3.1)
+            } else if matches!(ent.entity, SketchEntity::Circle { .. }) {
+                ([0.42, 0.92, 0.78, 0.96], 2.2)
+            } else if poly.closed {
+                ([0.38, 0.78, 0.98, 0.94], 2.05)
+            } else {
+                ([1.0, 0.56, 0.34, 0.96], 2.2)
+            };
+            emit_arc_polyline_edges(&poly, wf, lift, col, width_px, out);
+        }
+
+        // 2. Highlighted / hovered `PlanarVectorRegion` outer + island boundaries
+        for reg in &sk.regions {
+            let key = (sk.id.clone(), reg.id.clone());
+            let is_sel = highlight.extra_selected_sketch_regions.contains(&key)
+                || matches!(
+                    &highlight.selected_sketch,
+                    Some(SketchPickHit::Region {
+                        sketch_id,
+                        region_id,
+                        ..
+                    }) if sketch_id == &sk.id && region_id == &reg.id
+                );
+            let is_hov = matches!(
+                &highlight.hovered_sketch,
+                Some(SketchPickHit::Region {
+                    sketch_id,
+                    region_id,
+                    ..
+                }) if sketch_id == &sk.id && region_id == &reg.id
+            );
+            if !is_sel && !is_hov {
+                continue;
+            }
+            let (col, width_px) = if is_sel {
+                ([1.0, 0.80, 0.20, 1.0], 3.5)
+            } else {
+                ([0.25, 0.96, 1.0, 1.0], 3.2)
+            };
+            emit_arc_polyline_edges(&reg.outer_ccw, wf, lift, col, width_px, out);
+            for isl in &reg.islands_cw {
+                emit_arc_polyline_edges(isl, wf, lift, col, width_px, out);
+            }
+        }
+
+        // 3. Diagnostic markers at remaining unclosed open-chain endpoints
+        for diag in &sk.diagnostics {
+            if diag.kind == SketchDiagnosticKind::OpenChainRemaining
+                && let Some(pt) = diag.location_xy
+            {
+                let c = wf.local_to_world_point(DVec3::new(pt.x, pt.y, 0.0)) + lift;
+                let dx = wf.x_axis * diag_tick;
+                let dy = wf.y_axis * diag_tick;
+                for (a, b) in [
+                    (c - dx, c + dy),
+                    (c + dy, c + dx),
+                    (c + dx, c - dy),
+                    (c - dy, c - dx),
+                ] {
+                    out.push(EdgeInstanceGpu {
+                        p0_mm: dvec3_f32(a),
+                        p1_mm: dvec3_f32(b),
+                        color: [1.0, 0.36, 0.36, 1.0],
+                        width_px: 2.3,
+                    });
+                }
+            }
+        }
+    }
+}
+
+fn emit_arc_polyline_edges(
+    poly: &ArcPolyline2D,
+    wf: &RigidFrame3,
+    lift: DVec3,
+    color: [f32; 4],
+    width_px: f32,
+    out: &mut Vec<EdgeInstanceGpu>,
+) {
+    let to_w = |p: DVec2| wf.local_to_world_point(DVec3::new(p.x, p.y, 0.0)) + lift;
+    for seg in &poly.segments {
+        match *seg {
+            ArcSegment2D::Line { start, end } => {
+                out.push(EdgeInstanceGpu {
+                    p0_mm: dvec3_f32(to_w(start)),
+                    p1_mm: dvec3_f32(to_w(end)),
+                    color,
+                    width_px,
+                });
+            }
+            ArcSegment2D::Arc { start, end, .. } => {
+                let sweep = seg.signed_sweep_rad().abs();
+                let steps = ((sweep / (7.5_f64.to_radians())).ceil() as usize).clamp(4, 64);
+                let mut prev = to_w(start);
+                for k in 1..=steps {
+                    let next = if k == steps {
+                        to_w(end)
+                    } else if let Some((pt, _)) = seg.eval_at((k as f64) / (steps as f64)) {
+                        to_w(pt)
+                    } else {
+                        to_w(end)
+                    };
+                    out.push(EdgeInstanceGpu {
+                        p0_mm: dvec3_f32(prev),
+                        p1_mm: dvec3_f32(next),
+                        color,
+                        width_px,
+                    });
+                    prev = next;
+                }
+            }
+        }
+    }
 }
 
 fn emit_tab_marker_visual(

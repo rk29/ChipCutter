@@ -29,14 +29,17 @@ impl ProjectDocument {
         Ok(toml::to_string_pretty(&normalized)?)
     }
 
-    /// Parses a `.chip.toml` manifest from TOML text and checks `schema_version`.
+    /// Parses a `.chip.toml` manifest from TOML text and auto-migrates `schema_version = 1 -> 2`.
     pub fn from_toml_str(toml_text: &str) -> Result<Self, ProjectIoError> {
-        let doc: Self = toml::from_str(toml_text)?;
-        if doc.schema_version > Self::CURRENT_SCHEMA_VERSION {
+        let mut doc: Self = toml::from_str(toml_text)?;
+        if doc.schema_version == 0 || doc.schema_version > Self::CURRENT_SCHEMA_VERSION {
             return Err(ProjectIoError::UnsupportedSchema {
                 found: doc.schema_version,
                 supported: Self::CURRENT_SCHEMA_VERSION,
             });
+        }
+        if doc.schema_version < Self::CURRENT_SCHEMA_VERSION {
+            doc.schema_version = Self::CURRENT_SCHEMA_VERSION;
         }
         Ok(doc)
     }

@@ -2,6 +2,7 @@ use std::path::{Component, Path, PathBuf};
 
 use chip_cam::{Setup, WorkOffsetSlot};
 use chip_math::DisplayUnit;
+use chip_sketch::SketchLayer;
 use chip_tools::{Tool, ToolId};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -14,7 +15,7 @@ pub struct ModelEntry {
     pub sha256: String,
 }
 
-/// Top-level ChipCutter `.chip.toml` project document (`schema_version = 1`).
+/// Top-level ChipCutter `.chip.toml` project document (`schema_version = 2`, backward-compatible with `1`).
 ///
 /// Kept lightweight and free of binary/tessellation blobs so `git diff` stays clean and
 /// in-memory Undo/Redo snapshots take `< 1 ms`.
@@ -26,6 +27,9 @@ pub struct ProjectDocument {
     pub display_units: DisplayUnit,
     #[serde(default)]
     pub models: Vec<ModelEntry>,
+    /// Planar 2D Sketch Layers (DXF/SVG imports, 2D CAM shapes, & Pure-2D job geometry; `11-sketches-vectors.md`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sketches: Vec<SketchLayer>,
     /// Project-embedded snapshots of tools referenced by operations (`04-tool-library.md`).
     #[serde(default)]
     pub tools: Vec<Tool>,
@@ -40,7 +44,7 @@ impl Default for ProjectDocument {
 }
 
 impl ProjectDocument {
-    pub const CURRENT_SCHEMA_VERSION: u32 = 1;
+    pub const CURRENT_SCHEMA_VERSION: u32 = 2;
 
     /// Creates a fresh project initialized with `Setup 1 — Op 1 (G54)`.
     pub fn new(project_name: impl Into<String>) -> Self {
@@ -49,6 +53,7 @@ impl ProjectDocument {
             project_name: project_name.into(),
             display_units: DisplayUnit::Millimeter,
             models: Vec::new(),
+            sketches: Vec::new(),
             tools: Vec::new(),
             setups: vec![Setup::new(
                 "setup_1",
@@ -56,6 +61,14 @@ impl ProjectDocument {
                 WorkOffsetSlot::G54,
             )],
         }
+    }
+
+    pub fn sketch(&self, id: &str) -> Option<&SketchLayer> {
+        self.sketches.iter().find(|s| s.id == id)
+    }
+
+    pub fn sketch_mut(&mut self, id: &str) -> Option<&mut SketchLayer> {
+        self.sketches.iter_mut().find(|s| s.id == id)
     }
 
     pub fn tool(&self, id: &ToolId) -> Option<&Tool> {

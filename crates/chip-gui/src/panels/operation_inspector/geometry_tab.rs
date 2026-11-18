@@ -3,11 +3,13 @@ use chip_cam::{
     ExtractedFeature25D, ExtractedSelectionSummary, GeometrySelectionItem, Operation, OperationKind,
 };
 use chip_math::{ArcSegment2D, DisplayUnit};
+use chip_sketch::SketchLayer;
 
 use crate::panels::ViewportPickMode;
 
 pub struct GeometryTabCtx<'a> {
     pub op: &'a mut Operation,
+    pub sketches: &'a [SketchLayer],
     pub setup_idx: usize,
     pub op_idx: usize,
     pub display_unit: DisplayUnit,
@@ -20,6 +22,7 @@ pub struct GeometryTabCtx<'a> {
 pub fn show_geometry_tab(ui: &mut egui::Ui, ctx: GeometryTabCtx<'_>) {
     let GeometryTabCtx {
         op,
+        sketches,
         setup_idx,
         op_idx,
         display_unit,
@@ -119,6 +122,46 @@ pub fn show_geometry_tab(ui: &mut egui::Ui, ctx: GeometryTabCtx<'_>) {
                 *mutated_label = Some("Clear Operation Selections");
             }
         });
+    } else if !op.selections.is_empty() && ui.small_button("Clear All").clicked() {
+        op.selections.clear();
+        *mutated_label = Some("Clear Operation Selections");
+    }
+
+    if !sketches.is_empty() {
+        ui.separator();
+        ui.strong("2D Sketch Layers & Quick Select");
+        ui.small("Click 2D curves/regions in the viewport above, or add a full layer below:");
+        for sk in sketches {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(format!("• {}:", sk.name));
+                if ui.small_button("+ All").clicked() {
+                    let item = GeometrySelectionItem::SketchLayerAll {
+                        sketch_id: sk.id.clone(),
+                        sub_layer: None,
+                        reverse: false,
+                        side_flip: false,
+                    };
+                    if !op.selections.contains(&item) {
+                        op.selections.push(item);
+                        *mutated_label = Some("Add Sketch Layer");
+                    }
+                }
+                for lname in sk.sub_layer_names() {
+                    if ui.small_button(format!("+ [{lname}]")).clicked() {
+                        let item = GeometrySelectionItem::SketchLayerAll {
+                            sketch_id: sk.id.clone(),
+                            sub_layer: Some(lname),
+                            reverse: false,
+                            side_flip: false,
+                        };
+                        if !op.selections.contains(&item) {
+                            op.selections.push(item);
+                            *mutated_label = Some("Add Sketch Sub-Layer");
+                        }
+                    }
+                }
+            });
+        }
     }
 
     ui.separator();
@@ -134,7 +177,20 @@ pub fn show_geometry_tab(ui: &mut egui::Ui, ctx: GeometryTabCtx<'_>) {
         let mut remove_idx: Option<usize> = None;
         for (idx, item) in op.selections.iter_mut().enumerate() {
             ui.horizontal(|ui| {
-                ui.label(format!("• {}", item.short_label()));
+                let has_chain_btns = matches!(
+                    item,
+                    GeometrySelectionItem::ClosedLoop { .. }
+                        | GeometrySelectionItem::OpenChain { .. }
+                        | GeometrySelectionItem::SketchEntity { .. }
+                        | GeometrySelectionItem::SketchLayerAll { .. }
+                );
+                let reserve_w = if has_chain_btns { 116.0 } else { 28.0 };
+                let lbl_w = (ui.available_width() - reserve_w).max(56.0);
+                ui.add_sized(
+                    [lbl_w, 18.0],
+                    egui::Label::new(format!("• {}", item.short_label())).truncate(),
+                )
+                .on_hover_text(item.short_label());
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.small_button("×").clicked() {
                         remove_idx = Some(idx);
@@ -144,6 +200,12 @@ pub fn show_geometry_tab(ui: &mut egui::Ui, ctx: GeometryTabCtx<'_>) {
                             reverse, side_flip, ..
                         }
                         | GeometrySelectionItem::OpenChain {
+                            reverse, side_flip, ..
+                        }
+                        | GeometrySelectionItem::SketchEntity {
+                            reverse, side_flip, ..
+                        }
+                        | GeometrySelectionItem::SketchLayerAll {
                             reverse, side_flip, ..
                         } => {
                             if ui

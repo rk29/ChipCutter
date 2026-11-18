@@ -91,10 +91,8 @@ impl ChipCutterApp {
             if ctx.input(|i| i.key_pressed(egui::Key::P)) {
                 self.camera.toggle_projection();
             }
-            if ctx.input(|i| i.key_pressed(egui::Key::F))
-                && let Some(m) = &self.model
-            {
-                self.camera.fit_aabb(&m.doc.aabb_mm);
+            if ctx.input(|i| i.key_pressed(egui::Key::F)) {
+                self.fit_scene_to_viewport();
             }
         }
     }
@@ -126,6 +124,11 @@ impl ChipCutterApp {
                             m.doc.source_name,
                             m.doc.faces.len(),
                             m.doc.edges.len()
+                        ));
+                    } else if !self.project.sketches.is_empty() {
+                        ui.weak(format!(
+                            "Pure-2D Job | {} sketch layer(s)",
+                            self.project.sketches.len()
                         ));
                     }
                 });
@@ -187,6 +190,16 @@ impl ChipCutterApp {
                 self.open_step_dialog(ctx);
             }
             if ui
+                .button("Import 2D Vector (.dxf / .svg)…")
+                .on_hover_text(
+                    "Import AutoCAD DXF or W3C SVG 2D vector artwork into a Sketch Layer or Pure-2D CNC job",
+                )
+                .clicked()
+            {
+                ui.close();
+                self.vector_import_modal.open_with_file_picker();
+            }
+            if ui
                 .add_enabled(
                     self.model.is_some(),
                     egui::Button::new("Reload STEP Model (Ctrl+R)"),
@@ -210,6 +223,13 @@ impl ChipCutterApp {
             if ui.button("Load CAM Torture Block").clicked() {
                 ui.close();
                 self.spawn_cam_torture_sample_load(true, ctx.clone());
+            }
+            if ui
+                .button("Demo: Load Pure-2D Router Panel (.dxf)")
+                .clicked()
+            {
+                ui.close();
+                self.load_pure2d_router_panel_demo(ctx);
             }
             if ui.button("Load Multi-Feature Sample Bracket").clicked() {
                 ui.close();
@@ -535,9 +555,7 @@ impl ChipCutterApp {
                 ui.close();
             }
             if ui.button("Fit Model to Viewport (F)").clicked() {
-                if let Some(m) = &self.model {
-                    self.camera.fit_aabb(&m.doc.aabb_mm);
-                }
+                self.fit_scene_to_viewport();
                 ui.close();
             }
             if ui.button("Align View to Active Setup Top (+Z)").clicked() {
@@ -570,6 +588,13 @@ impl ChipCutterApp {
                     .clicked()
                 {
                     self.export_chipz_dialog();
+                }
+                if ui
+                    .button("DXF/SVG")
+                    .on_hover_text("Import 2D Vector Drawing (.dxf / .svg) or Start Pure-2D Job")
+                    .clicked()
+                {
+                    self.vector_import_modal.open = true;
                 }
                 if ui
                     .add_enabled(self.model.is_some(), egui::Button::new("Reload CAD"))
@@ -656,10 +681,8 @@ impl ChipCutterApp {
                 if ui.button(proj_label).clicked() {
                     self.camera.toggle_projection();
                 }
-                if ui.button("Fit (F)").clicked()
-                    && let Some(m) = &self.model
-                {
-                    self.camera.fit_aabb(&m.doc.aabb_mm);
+                if ui.button("Fit (F)").clicked() {
+                    self.fit_scene_to_viewport();
                 }
 
                 ui.separator();
@@ -757,8 +780,9 @@ impl ChipCutterApp {
 
     pub(crate) fn trigger_gcode_export_from_menu(&mut self) {
         focus_workspace_pane(&mut self.tree, WorkspacePane::GCodePreview);
-        let cad_doc = self.model.as_ref().map(|m| &m.doc);
-        let cad_rev = self.model.as_ref().map_or(0, |m| m.revision);
+        let eff = self.effective_cad_arc();
+        let cad_doc = eff.as_ref().map(|(d, _)| d);
+        let cad_rev = eff.as_ref().map_or(0, |(_, r)| *r);
         let virtual_proj_path = self.virtual_project_file_path();
         let proj_dir = virtual_proj_path.as_deref().and_then(Path::parent);
         self.gcode_panel.ensure_profiles_loaded(proj_dir);

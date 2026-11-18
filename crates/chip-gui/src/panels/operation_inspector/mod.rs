@@ -196,6 +196,7 @@ pub fn show_operation_inspector(ui: &mut egui::Ui, ctx: OperationInspectorCtx<'_
                 ui,
                 geometry_tab::GeometryTabCtx {
                     op: &mut project.setups[setup_idx].operations[op_idx],
+                    sketches: &project.sketches,
                     setup_idx,
                     op_idx,
                     display_unit,

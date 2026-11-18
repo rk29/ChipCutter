@@ -126,7 +126,7 @@ impl GCodePreviewPanelState {
         self.last_error = None;
 
         let Some(doc) = cad_doc else {
-            self.last_error = Some("Load a STEP model first.".to_string());
+            self.last_error = Some("Load a STEP model or 2D Sketch first.".to_string());
             return;
         };
         let Some(setup) = project.setups.get(setup_idx) else {

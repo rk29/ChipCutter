@@ -5,6 +5,7 @@ pub mod operation_inspector;
 pub mod setup_inspector;
 pub mod simulation;
 pub mod tool_library;
+pub mod vector_import_modal;
 
 use chip_cad::EdgeId;
 
@@ -12,6 +13,7 @@ use chip_cad::EdgeId;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InspectorFocus {
     CadEntity,
+    Sketch { sketch_idx: usize },
     Setup { setup_idx: usize },
     Operation { setup_idx: usize, op_idx: usize },
 }

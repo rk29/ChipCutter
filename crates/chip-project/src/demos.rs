@@ -2,11 +2,13 @@ use chip_cad::{
     CadDocument, OrientedEdgeUse, SurfaceKind, TopologyGraph, find_same_diameter_holes,
 };
 use chip_cam::{
-    AdaptiveClearingParams, ChamferSourceMode, ChamferTraceMode, GeometrySelectionItem,
-    HeightReference, HeightSpec, HoleMachiningMode, Operation, OperationKind, PocketStrategyKind,
-    RestMachiningConfig, RestMachiningMode, StrategyParams, TabProfileKind,
+    AdaptiveClearingParams, BoxAnchor27, ChamferSourceMode, ChamferTraceMode,
+    GeometrySelectionItem, HeightReference, HeightSpec, HoleMachiningMode, Operation,
+    OperationKind, PocketStrategyKind, RestMachiningConfig, RestMachiningMode, StockConfig,
+    StrategyParams, TabProfileKind, WcsOriginMode,
 };
 use chip_math::{DisplayUnit, ParamLength, approx_eq};
+use chip_sketch::{DxfImportOptions, import_dxf_bytes, sample_router_panel_dxf};
 use chip_tools::{
     CoolantMode, CutterGeometry, CuttingPreset, SpindleDirection, SurfaceSpeedPresetSpec, Tool,
     ToolId,
@@ -727,6 +729,158 @@ pub fn build_revision_v1_demo_project(
             };
         }
         proj.setups[0].operations.push(op);
+    }
+
+    proj
+}
+
+/// Builds a Milestone 7 **Pure-2D CNC Router Front Panel (DXF)** [`ProjectDocument`] (`models = []`, zero `.step` files!)
+/// seeded from [`sample_router_panel_dxf`]:
+/// 1. `Op 1` (`T6` Ø6mm Twist Drill): **4x Ø6mm Corner Mounting Holes** (`HOLES` DXF layer).
+/// 2. `Op 2` (`T1` Ø6mm Flat Endmill): **Display Recess Pocket + Boss Island** (`POCKETS` DXF layer, `3.0 mm` deep).
+/// 3. `Op 3` (`T1` Ø6mm Flat Endmill): **Vent Slot Through-Cutout** (`CUTOUTS` `INSERT`ed block layer).
+/// 4. `Op 4` (`T1` Ø6mm Flat Endmill): **Outer Rounded Panel Profile + Triangular Holding Tabs** (`OUTLINE` DXF layer).
+pub fn build_pure2d_router_panel_demo_project(
+    source_dxf_path: Option<String>,
+    available_tools: &[Tool],
+) -> ProjectDocument {
+    let mut proj = ProjectDocument::new("2D Router Electronics Panel (DXF)");
+    proj.models.clear();
+
+    let dxf_bytes = sample_router_panel_dxf();
+    let opts = DxfImportOptions {
+        sketch_id: "sketch_panel".to_string(),
+        sketch_name: "Router Front Panel (DXF)".to_string(),
+        setup_id: "setup_1".to_string(),
+        source_path: source_dxf_path,
+        ..DxfImportOptions::default()
+    };
+    if let Ok(rep) = import_dxf_bytes(&dxf_bytes, &opts) {
+        proj.sketches.push(rep.sketch);
+    }
+
+    // Configure 6.0 mm sheet stock (`168 × 108 × 6 mm`, `4 mm` XY perimeter margin for clean air-entry)
+    proj.setups[0].name = "Setup 1 — 6mm Aluminum Sheet (G54)".to_string();
+    proj.setups[0].wcs.origin = WcsOriginMode::StockBoxPoint {
+        anchor: BoxAnchor27::TOP_FRONT_LEFT,
+    };
+    proj.setups[0].stock = StockConfig::RelativeBox {
+        side_pos_x: ParamLength::from_mm(4.0),
+        side_neg_x: ParamLength::from_mm(4.0),
+        side_pos_y: ParamLength::from_mm(4.0),
+        side_neg_y: ParamLength::from_mm(4.0),
+        symmetric_xy: true,
+        top_offset_z: ParamLength::from_mm(0.0),
+        bottom_offset_z: ParamLength::from_mm(0.0),
+        sheet_thickness_z: ParamLength::from_mm(6.0),
+        round_increment_mm: None,
+    };
+
+    let flat_6mm = available_tools
+        .iter()
+        .find(|t| {
+            matches!(
+                t.geometry,
+                CutterGeometry::FlatEndmill { diameter_mm, .. }
+                if (diameter_mm - 6.0).abs() < 0.05
+            )
+        })
+        .cloned();
+    let drill_6mm = available_tools
+        .iter()
+        .find(|t| matches!(t.geometry, CutterGeometry::TwistDrill { .. }))
+        .cloned();
+
+    if let Some(em) = &flat_6mm {
+        proj.ensure_tool_embedded(em);
+    }
+    if let Some(dr) = &drill_6mm {
+        proj.ensure_tool_embedded(dr);
+    }
+
+    // Op 1: 4x Ø6mm Corner Mounting Holes (`HOLES` layer)
+    if let Some(dr) = &drill_6mm {
+        let mut op_holes = Operation::new(
+            "op_1_panel_holes",
+            "4x Ø6mm Mounting Holes",
+            OperationKind::DrillBore,
+        );
+        op_holes.tool_id = Some(dr.id.clone());
+        op_holes.preset_id = dr.presets.first().map(|p| p.id.clone());
+        op_holes
+            .selections
+            .push(GeometrySelectionItem::SketchLayerAll {
+                sketch_id: "sketch_panel".to_string(),
+                sub_layer: Some("HOLES".to_string()),
+                reverse: false,
+                side_flip: false,
+            });
+        proj.setups[0].operations.push(op_holes);
+    }
+
+    // Op 2: Central Display Recess Pocket + Boss Island (`POCKETS` layer, 3.0 mm deep)
+    if let Some(em) = &flat_6mm {
+        let mut op_pkt = Operation::new(
+            "op_2_display_pocket",
+            "Display Recess + Boss Island",
+            OperationKind::Pocket2D,
+        );
+        op_pkt.tool_id = Some(em.id.clone());
+        op_pkt.preset_id = em.presets.first().map(|p| p.id.clone());
+        op_pkt.heights.bottom = HeightSpec::new(HeightReference::StockTop, -3.0);
+        op_pkt
+            .selections
+            .push(GeometrySelectionItem::SketchLayerAll {
+                sketch_id: "sketch_panel".to_string(),
+                sub_layer: Some("POCKETS".to_string()),
+                reverse: false,
+                side_flip: false,
+            });
+        proj.setups[0].operations.push(op_pkt);
+
+        // Op 3: Vent Slot Cutout (`CUTOUTS` layer, full 6.0 mm sheet depth via helical-entry pocket)
+        let mut op_slot = Operation::new(
+            "op_3_vent_slot",
+            "Vent Slot Through-Cutout",
+            OperationKind::Pocket2D,
+        );
+        op_slot.tool_id = Some(em.id.clone());
+        op_slot.preset_id = em.presets.first().map(|p| p.id.clone());
+        op_slot.heights.bottom = HeightSpec::new(HeightReference::StockBottom, 0.0);
+        op_slot
+            .selections
+            .push(GeometrySelectionItem::SketchLayerAll {
+                sketch_id: "sketch_panel".to_string(),
+                sub_layer: Some("CUTOUTS".to_string()),
+                reverse: false,
+                side_flip: false,
+            });
+        proj.setups[0].operations.push(op_slot);
+
+        // Op 4: Outer Rounded Panel Profile + Triangular Holding Tabs (`OUTLINE` layer)
+        let mut op_outer = Operation::new(
+            "op_4_panel_outline",
+            "Outer Panel Profile + Tabs",
+            OperationKind::Contour2D,
+        );
+        op_outer.tool_id = Some(em.id.clone());
+        op_outer.preset_id = em.presets.first().map(|p| p.id.clone());
+        op_outer.heights.bottom = HeightSpec::new(HeightReference::StockBottom, 0.0);
+        op_outer
+            .selections
+            .push(GeometrySelectionItem::SketchLayerAll {
+                sketch_id: "sketch_panel".to_string(),
+                sub_layer: Some("OUTLINE".to_string()),
+                reverse: false,
+                side_flip: false,
+            });
+        if let StrategyParams::Contour2D(p) = op_outer.strategy_mut() {
+            p.tabs.enabled = true;
+            p.tabs.profile = TabProfileKind::Triangular {
+                ramp_angle_deg: 25.0,
+            };
+        }
+        proj.setups[0].operations.push(op_outer);
     }
 
     proj

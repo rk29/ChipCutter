@@ -6,7 +6,10 @@ use clap::{Parser, Subcommand};
 
 use crate::commands::{
     bundle_reload_tools::{run_bundle_pack, run_bundle_unpack, run_import_fusion, run_reload_step},
-    inspect_sample::{GenerateSampleArgs, run_generate_sample_step, run_inspect},
+    inspect_sample::{
+        GenerateSampleArgs, Import2dArgs, InspectArgs, run_generate_sample_step, run_import_2d,
+        run_inspect,
+    },
     validate_sim_build::{BuildArgs, run_build, run_simulate, run_validate},
 };
 
@@ -23,13 +26,43 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
-    /// Inspect an ISO 10303-21 STEP file, reporting normalized dimensions and B-Rep features.
+    /// Inspect a 3D STEP (`.step`/`.stp`) or 2D Vector (`.dxf`/`.svg`) file, reporting dimensions and CAM features.
     Inspect {
-        /// Path to `.step` or `.stp` CAD model.
+        /// Path to `.step`, `.stp`, `.dxf`, or `.svg` file.
         path: PathBuf,
         /// Display unit for dimensions (`mm` or `in`).
         #[arg(long, default_value = "mm")]
         units: String,
+        /// SVG unitless pixel DPI (`96` CSS/Inkscape, `72` Illustrator, `90` legacy Inkscape).
+        #[arg(long, default_value_t = 96.0)]
+        svg_dpi: f64,
+        /// Endpoint gap-healing join tolerance in millimeters (`0.0` disables gap healing).
+        #[arg(long, default_value_t = 0.05)]
+        join_tol: f64,
+    },
+    /// Import a 2D `.dxf` or `.svg` vector file into a new Pure-2D `.chip.toml` job (or append to `--project`).
+    #[command(name = "import-2d")]
+    Import2d {
+        /// Input `.dxf` or `.svg` vector file.
+        input: PathBuf,
+        /// Destination `.chip.toml` project file.
+        #[arg(short, long)]
+        output: PathBuf,
+        /// Optional existing `.chip.toml` project to append the `SketchLayer` onto.
+        #[arg(long)]
+        project: Option<PathBuf>,
+        /// Vector unit override (`auto`, `auto_in`, `mm`, `in`, `cm`).
+        #[arg(long, default_value = "auto")]
+        units: String,
+        /// SVG unitless pixel DPI (`96` CSS/Inkscape, `72` Illustrator, `90` legacy Inkscape).
+        #[arg(long, default_value_t = 96.0)]
+        svg_dpi: f64,
+        /// Endpoint gap-healing join tolerance in millimeters (`0.05` default).
+        #[arg(long, default_value_t = 0.05)]
+        join_tol: f64,
+        /// Sheet Z thickness (`mm`) when initializing a new Pure-2D project.
+        #[arg(long, default_value_t = 6.0)]
+        thickness: f64,
     },
     /// Write ChipCutter's programmatic machined sample STEP file (and optional `.chip.toml` job) to disk.
     GenerateSampleStep {
@@ -164,7 +197,34 @@ fn main() -> ExitCode {
 fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     match cli.command {
-        Commands::Inspect { path, units } => run_inspect(path, units),
+        Commands::Inspect {
+            path,
+            units,
+            svg_dpi,
+            join_tol,
+        } => run_inspect(InspectArgs {
+            path,
+            units,
+            svg_dpi,
+            join_tol,
+        }),
+        Commands::Import2d {
+            input,
+            output,
+            project,
+            units,
+            svg_dpi,
+            join_tol,
+            thickness,
+        } => run_import_2d(Import2dArgs {
+            input,
+            output,
+            existing_project: project,
+            units,
+            svg_dpi,
+            join_tol,
+            sheet_thickness_mm: thickness,
+        }),
         Commands::GenerateSampleStep {
             output,
             multi_feature,

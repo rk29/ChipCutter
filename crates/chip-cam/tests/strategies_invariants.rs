@@ -74,6 +74,7 @@ fn verifies_all_five_v1_strategies_against_torture_block_invariants() {
         symmetric_xy: true,
         top_offset_z: ParamLength::from_mm(1.0),
         bottom_offset_z: ParamLength::from_mm(0.0),
+        sheet_thickness_z: ParamLength::from_mm(12.0),
         round_increment_mm: None,
     };
     let resolved_setup = setup.resolve(&doc, DisplayUnit::Millimeter).unwrap();
@@ -979,6 +980,7 @@ fn verifies_adaptive_clearing_and_rest_machining_against_sim_oracle() {
     }];
     let tp_rest_3 = generate_operation_toolpath_with_rest(&OperationGenRequest {
         doc: &doc,
+        sketches: &[],
         setup: &resolved_setup,
         op: &op_rest_3,
         tool: &tool_3mm,

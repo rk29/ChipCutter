@@ -10,11 +10,13 @@ use crate::panels::{
 #[derive(Debug, Clone)]
 pub enum BrowserAction {
     OpenStepDialog,
+    OpenVectorImportModal { browse_file: bool },
     ReloadStepModel,
     ReplaceStepDialog,
     LoadMultiFeatureSample { tilted: bool },
     LoadCamTortureBlock,
     LoadAdaptiveRestDemo,
+    LoadPure2dPanelDemo,
     LoadRevisionDemoV1,
     ReloadRevisionDemoV2,
     OpenToolLibrary,
@@ -168,6 +170,15 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                             emitted_action = Some(BrowserAction::LoadAdaptiveRestDemo);
                         }
                         if ui
+                            .small_button("2D Panel (DXF)")
+                            .on_hover_text(
+                                "Load Milestone 7 Pure-2D CNC Router Front Panel (.dxf, zero STEP files!)",
+                            )
+                            .clicked()
+                        {
+                            emitted_action = Some(BrowserAction::LoadPure2dPanelDemo);
+                        }
+                        if ui
                             .small_button("Bracket")
                             .on_hover_text("Load M2 prismatic bracket")
                             .clicked()
@@ -196,6 +207,87 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                             .clicked()
                         {
                             emitted_action = Some(BrowserAction::ReloadRevisionDemoV2);
+                        }
+                    });
+                });
+
+            ui.add_space(4.0);
+
+            // 1b. 2D Sketches section (`11-sketches-vectors.md`)
+            egui::CollapsingHeader::new(format!("2D Sketches ({})", project.sketches.len()))
+                .default_open(!project.sketches.is_empty())
+                .show(ui, |ui| {
+                    if project.sketches.is_empty() {
+                        ui.weak("No 2D vector sketches imported yet.");
+                    } else {
+                        let mut del_sketch: Option<usize> = None;
+                        let mut vis_toggle: Option<usize> = None;
+                        for (sk_idx, sk) in project.sketches.iter().enumerate() {
+                            let is_sel = *focus == InspectorFocus::Sketch { sketch_idx: sk_idx };
+                            ui.horizontal(|ui| {
+                                let mut v = sk.visible;
+                                if ui
+                                    .checkbox(&mut v, "")
+                                    .on_hover_text("Toggle 2D Sketch visibility in 3D viewport")
+                                    .changed()
+                                {
+                                    vis_toggle = Some(sk_idx);
+                                }
+                                let lbl = format!(
+                                    "{} ({} rgn, {} ent)",
+                                    sk.name,
+                                    sk.regions.len(),
+                                    sk.entities.len()
+                                );
+                                if ui.selectable_label(is_sel, lbl).clicked() {
+                                    *focus = InspectorFocus::Sketch { sketch_idx: sk_idx };
+                                    *pick_mode = ViewportPickMode::InspectEntity;
+                                }
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        if ui
+                                            .small_button("×")
+                                            .on_hover_text("Delete Sketch Layer")
+                                            .clicked()
+                                        {
+                                            del_sketch = Some(sk_idx);
+                                        }
+                                    },
+                                );
+                            });
+                        }
+                        if let Some(ti) = vis_toggle {
+                            history.record_before_edit("Toggle Sketch Visibility", None, project);
+                            project.sketches[ti].visible = !project.sketches[ti].visible;
+                        }
+                        if let Some(di) = del_sketch {
+                            history.record_before_edit("Delete Sketch Layer", None, project);
+                            project.sketches.remove(di);
+                            if matches!(*focus, InspectorFocus::Sketch { .. }) {
+                                *focus = InspectorFocus::Setup {
+                                    setup_idx: *active_setup_idx,
+                                };
+                            }
+                        }
+                    }
+
+                    ui.horizontal_wrapped(|ui| {
+                        if ui
+                            .small_button("+ Import DXF/SVG…")
+                            .on_hover_text("Import AutoCAD .dxf or W3C .svg 2D vector artwork")
+                            .clicked()
+                        {
+                            emitted_action =
+                                Some(BrowserAction::OpenVectorImportModal { browse_file: true });
+                        }
+                        if ui
+                            .small_button("Sample DXF/SVG…")
+                            .on_hover_text("Open interactive 2D Vector Importer with built-in DXF/SVG fixtures")
+                            .clicked()
+                        {
+                            emitted_action =
+                                Some(BrowserAction::OpenVectorImportModal { browse_file: false });
                         }
                     });
                 });

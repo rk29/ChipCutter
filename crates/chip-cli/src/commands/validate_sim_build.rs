@@ -28,8 +28,9 @@ pub fn run_validate(
         proj_doc.project_name
     );
     println!(
-        "Models: {} | Tools: {} | Setups: {}",
+        "Models: {} | Sketches: {} | Tools: {} | Setups: {}",
         proj_doc.models.len(),
+        proj_doc.sketches.len(),
         proj_doc.tools.len(),
         proj_doc.setups.len()
     );

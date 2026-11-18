@@ -151,10 +151,13 @@ pub fn show_setup_inspector(ui: &mut egui::Ui, ctx: SetupInspectorCtx<'_>) -> bo
                 SetupTab::Stock => show_stock_tab(
                     ui,
                     setup,
-                    setup_idx,
-                    &eval_ctx,
-                    display_unit,
-                    resolved,
+                    StockTabView {
+                        setup_idx,
+                        is_pure_2d: cad_doc.is_none(),
+                        eval_ctx: &eval_ctx,
+                        display_unit,
+                        resolved,
+                    },
                     &mut mutated_label,
                 ),
                 SetupTab::Heights => show_heights_tab(
@@ -464,15 +467,28 @@ fn show_wcs_tab(
     }
 }
 
+#[derive(Clone, Copy)]
+struct StockTabView<'a> {
+    setup_idx: usize,
+    is_pure_2d: bool,
+    eval_ctx: &'a EvalContext,
+    display_unit: DisplayUnit,
+    resolved: Option<Result<&'a ResolvedSetup, &'a str>>,
+}
+
 fn show_stock_tab(
     ui: &mut egui::Ui,
     setup: &mut Setup,
-    setup_idx: usize,
-    eval_ctx: &EvalContext,
-    display_unit: DisplayUnit,
-    resolved: Option<Result<&ResolvedSetup, &str>>,
+    view: StockTabView<'_>,
     mutated_label: &mut Option<&'static str>,
 ) {
+    let StockTabView {
+        setup_idx,
+        is_pure_2d,
+        eval_ctx,
+        display_unit,
+        resolved,
+    } = view;
     ui.strong("Stock Geometry Mode");
     let cur_kind = setup.stock.kind_label();
     egui::ComboBox::from_id_salt(("stock_mode_cb", setup_idx))
@@ -551,8 +567,22 @@ fn show_stock_tab(
             symmetric_xy,
             top_offset_z,
             bottom_offset_z,
+            sheet_thickness_z,
             round_increment_mm,
         } => {
+            if is_pure_2d {
+                ui.label("Pure-2D Sheet Thickness (Z):");
+                if edit_param_length(
+                    ui,
+                    ("stk_sheet_z", setup_idx),
+                    sheet_thickness_z,
+                    eval_ctx,
+                    115.0,
+                ) {
+                    *mutated_label = Some("Edit Pure-2D Sheet Thickness");
+                }
+                ui.add_space(2.0);
+            }
             if ui.checkbox(symmetric_xy, "Symmetric XY Margins").changed() {
                 *mutated_label = Some("Toggle Symmetric Stock Margins");
             }

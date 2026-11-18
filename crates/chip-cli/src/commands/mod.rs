@@ -55,10 +55,9 @@ pub fn load_primary_cad_for_project(
     proj: &ProjectDocument,
     proj_dir: Option<&Path>,
 ) -> Result<CadDocument, Box<dyn std::error::Error>> {
-    let first = proj
-        .models
-        .first()
-        .ok_or("project contains no CAD [[models]] entry")?;
+    let Some(first) = proj.models.first() else {
+        return Ok(CadDocument::empty());
+    };
     let step_path = resolve_model_path(proj_dir, &first.path);
     let bytes = std::fs::read(&step_path)
         .map_err(|e| format!("failed to read STEP model '{}': {e}", step_path.display()))?;

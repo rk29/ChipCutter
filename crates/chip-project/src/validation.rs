@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use chip_cad::CadDocument;
-use chip_cam::{ResolvedHeights, RestMachiningMode, extract_selection_features};
+use chip_cam::{ResolvedHeights, RestMachiningMode, extract_selection_features_with_sketches};
 
 use crate::document::{ProjectDocument, compute_sha256_hex, resolve_model_path};
 
@@ -98,6 +98,40 @@ pub fn validate_project(
                 }
             }
         }
+        for sk in &project.sketches {
+            if let Some(asset) = &sk.source_asset {
+                let resolved_path = resolve_model_path(Some(dir), &asset.path);
+                match std::fs::read(&resolved_path) {
+                    Ok(bytes) => {
+                        let actual_sha = compute_sha256_hex(&bytes);
+                        if !asset.sha256.is_empty()
+                            && !actual_sha.eq_ignore_ascii_case(&asset.sha256)
+                        {
+                            report.push_warning(
+                                format!("Sketch '{}'", sk.name),
+                                format!(
+                                    "{} file '{}' SHA-256 changed on disk (expected {}…, found {}…).",
+                                    asset.format.label(),
+                                    asset.path,
+                                    &asset.sha256[..asset.sha256.len().min(12)],
+                                    &actual_sha[..12]
+                                ),
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        report.push_warning(
+                            format!("Sketch '{}'", sk.name),
+                            format!(
+                                "source {} file '{}' not found on disk ({e}); using cached sketch geometry.",
+                                asset.format.label(),
+                                resolved_path.display()
+                            ),
+                        );
+                    }
+                }
+            }
+        }
     }
 
     // 2. Validate embedded tools
@@ -110,11 +144,24 @@ pub fn validate_project(
         }
     }
 
-    // 3. Validate Setups & Operations against loaded CAD geometry
-    if let Some(cad_doc) = loaded_cad {
+    // 3. Validate Setups & Operations against loaded CAD geometry (or Pure-2D empty CAD when `models.is_empty()`)
+    let empty_cad = CadDocument::empty();
+    let effective_cad: Option<&CadDocument> = if let Some(cad_doc) = loaded_cad {
+        Some(cad_doc)
+    } else if project.models.is_empty() {
+        Some(&empty_cad)
+    } else {
+        None
+    };
+
+    if let Some(cad_doc) = effective_cad {
         for setup in &project.setups {
             let setup_scope = format!("Setup '{}'", setup.name);
-            let resolved_setup = match setup.resolve_immutable(cad_doc, project.display_units) {
+            let resolved_setup = match setup.resolve_with_sketches(
+                cad_doc,
+                &project.sketches,
+                project.display_units,
+            ) {
                 Ok(rs) => rs,
                 Err(err) => {
                     report.push_error(setup_scope, err.to_string());
@@ -189,14 +236,18 @@ pub fn validate_project(
                 }
 
                 // Validate selections & Z-height hierarchy
-                let summary =
-                    match extract_selection_features(cad_doc, &resolved_setup, &op.selections) {
-                        Ok(s) => s,
-                        Err(err) => {
-                            report.push_error(&op_scope, err.to_string());
-                            continue;
-                        }
-                    };
+                let summary = match extract_selection_features_with_sketches(
+                    cad_doc,
+                    &project.sketches,
+                    &resolved_setup,
+                    &op.selections,
+                ) {
+                    Ok(s) => s,
+                    Err(err) => {
+                        report.push_error(&op_scope, err.to_string());
+                        continue;
+                    }
+                };
 
                 eval_ctx.set_var("feature_top_z", summary.inferred_top_z_wcs);
                 eval_ctx.set_var("feature_bottom_z", summary.inferred_bottom_z_wcs);

@@ -6,11 +6,15 @@ use chip_cad::{
     highest_adjacent_lower_floor_proj, highest_adjacent_wall_top,
 };
 use chip_math::{ArcPolyline2D, ArcSegment2D, DVec2, DVec3, RigidFrame3};
+use chip_sketch::{PlanarVectorRegion, SketchEntity, SketchEntityEntry, SketchLayer};
 use serde::{Deserialize, Serialize};
 
-use crate::{setup::ResolvedSetup, wcs::CamError};
+use crate::{
+    setup::{ResolvedSetup, resolve_sketch_world_frame},
+    wcs::CamError,
+};
 
-/// Persistent interactive 3D geometry selection item inside an [`crate::operation::Operation`].
+/// Persistent interactive 3D B-Rep or 2D Sketch geometry selection item inside an [`crate::operation::Operation`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum GeometrySelectionItem {
@@ -36,6 +40,27 @@ pub enum GeometrySelectionItem {
     },
     CylindricalHole {
         binding: SelectionBinding,
+    },
+    SketchRegion {
+        sketch_id: String,
+        region_id: String,
+    },
+    SketchEntity {
+        sketch_id: String,
+        entity_id: String,
+        #[serde(default)]
+        reverse: bool,
+        #[serde(default)]
+        side_flip: bool,
+    },
+    SketchLayerAll {
+        sketch_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sub_layer: Option<String>,
+        #[serde(default)]
+        reverse: bool,
+        #[serde(default)]
+        side_flip: bool,
     },
 }
 
@@ -71,6 +96,33 @@ impl GeometrySelectionItem {
             }
             Self::CylindricalHole { binding } => {
                 format!("Cylindrical Hole #{}", binding.last_index)
+            }
+            Self::SketchRegion {
+                sketch_id,
+                region_id,
+            } => format!("Sketch Region {sketch_id}/{region_id}"),
+            Self::SketchEntity {
+                sketch_id,
+                entity_id,
+                reverse,
+                side_flip,
+            } => {
+                let dir = if *reverse { "Rev" } else { "Fwd" };
+                let side = if *side_flip { "Right" } else { "Left" };
+                format!("Sketch Curve {sketch_id}/{entity_id} ({dir}, {side})")
+            }
+            Self::SketchLayerAll {
+                sketch_id,
+                sub_layer,
+                reverse,
+                side_flip,
+            } => {
+                let dir = if *reverse { "Rev" } else { "Fwd" };
+                let side = if *side_flip { "Right" } else { "Left" };
+                match sub_layer {
+                    Some(layer) => format!("Sketch Layer {sketch_id} [{layer}] ({dir}, {side})"),
+                    None => format!("All of Sketch {sketch_id} ({dir}, {side})"),
+                }
             }
         }
     }
@@ -139,6 +191,8 @@ pub struct ExtractedSelectionSummary {
     pub features: Vec<ExtractedFeature25D>,
     pub highlight_faces: Vec<FaceId>,
     pub highlight_edges: Vec<EdgeId>,
+    pub highlight_sketch_regions: Vec<(String, String)>,
+    pub highlight_sketch_entities: Vec<(String, String)>,
     pub direction_arrows: Vec<ChainDirectionArrow3D>,
     pub inferred_top_z_wcs: f64,
     pub inferred_bottom_z_wcs: f64,
@@ -153,14 +207,27 @@ pub fn extract_selection_features(
     setup: &ResolvedSetup,
     selections: &[GeometrySelectionItem],
 ) -> Result<ExtractedSelectionSummary, CamError> {
+    extract_selection_features_with_sketches(doc, &[], setup, selections)
+}
+
+/// Projects both 3D B-Rep and 2D [`SketchLayer`] selections into unified [`ExtractedFeature25D`]s.
+pub fn extract_selection_features_with_sketches(
+    doc: &CadDocument,
+    sketches: &[SketchLayer],
+    setup: &ResolvedSetup,
+    selections: &[GeometrySelectionItem],
+) -> Result<ExtractedSelectionSummary, CamError> {
     let stock_top_z = setup.stock.aabb_wcs().max.z;
     let model_top_z = setup.model_aabb_wcs.max.z;
+    let doc_has_bodies = !doc.bodies.is_empty();
 
     if selections.is_empty() {
         return Ok(ExtractedSelectionSummary {
             features: Vec::new(),
             highlight_faces: Vec::new(),
             highlight_edges: Vec::new(),
+            highlight_sketch_regions: Vec::new(),
+            highlight_sketch_entities: Vec::new(),
             direction_arrows: Vec::new(),
             inferred_top_z_wcs: stock_top_z,
             inferred_bottom_z_wcs: model_top_z,
@@ -171,10 +238,13 @@ pub fn extract_selection_features(
     let mut features = Vec::new();
     let mut highlight_faces = Vec::new();
     let mut highlight_edges = Vec::new();
+    let mut highlight_sketch_regions = Vec::new();
+    let mut highlight_sketch_entities = Vec::new();
     let mut direction_arrows = Vec::new();
     let mut top_candidates = Vec::new();
     let mut bottom_candidates = Vec::new();
     let mut raw_hole_faces = Vec::new();
+    let mut primary_hole_diameter_mm: Option<f64> = None;
     let wcs_origin_proj = setup.frame.origin_mm.dot(setup.frame.z_axis);
 
     for item in selections {
@@ -504,11 +574,112 @@ pub fn extract_selection_features(
                 }
                 raw_hole_faces.push(fid);
             }
+            GeometrySelectionItem::SketchRegion {
+                sketch_id,
+                region_id,
+            } => {
+                let sk = sketches
+                    .iter()
+                    .find(|s| s.id == *sketch_id)
+                    .ok_or_else(|| CamError::MissingSelectedSketch {
+                        sketch_id: sketch_id.clone(),
+                        item_id: region_id.clone(),
+                    })?;
+                let reg = sk
+                    .regions
+                    .iter()
+                    .find(|r| r.id == *region_id)
+                    .ok_or_else(|| CamError::MissingSelectedSketch {
+                        sketch_id: sketch_id.clone(),
+                        item_id: region_id.clone(),
+                    })?;
+                let mut acc = SketchExtractAccum {
+                    doc_has_bodies,
+                    setup,
+                    features: &mut features,
+                    direction_arrows: &mut direction_arrows,
+                    top_candidates: &mut top_candidates,
+                    bottom_candidates: &mut bottom_candidates,
+                    primary_hole_diameter_mm: &mut primary_hole_diameter_mm,
+                };
+                extract_sketch_region(&mut acc, sk, reg);
+                let key = (sketch_id.clone(), region_id.clone());
+                if !highlight_sketch_regions.contains(&key) {
+                    highlight_sketch_regions.push(key);
+                }
+            }
+            GeometrySelectionItem::SketchEntity {
+                sketch_id,
+                entity_id,
+                reverse,
+                side_flip,
+            } => {
+                let sk = sketches
+                    .iter()
+                    .find(|s| s.id == *sketch_id)
+                    .ok_or_else(|| CamError::MissingSelectedSketch {
+                        sketch_id: sketch_id.clone(),
+                        item_id: entity_id.clone(),
+                    })?;
+                let ent = sk
+                    .entities
+                    .iter()
+                    .find(|e| e.id == *entity_id)
+                    .ok_or_else(|| CamError::MissingSelectedSketch {
+                        sketch_id: sketch_id.clone(),
+                        item_id: entity_id.clone(),
+                    })?;
+                let mut acc = SketchExtractAccum {
+                    doc_has_bodies,
+                    setup,
+                    features: &mut features,
+                    direction_arrows: &mut direction_arrows,
+                    top_candidates: &mut top_candidates,
+                    bottom_candidates: &mut bottom_candidates,
+                    primary_hole_diameter_mm: &mut primary_hole_diameter_mm,
+                };
+                extract_sketch_entity(&mut acc, sk, ent, *reverse, *side_flip, true);
+                let key = (sketch_id.clone(), entity_id.clone());
+                if !highlight_sketch_entities.contains(&key) {
+                    highlight_sketch_entities.push(key);
+                }
+            }
+            GeometrySelectionItem::SketchLayerAll {
+                sketch_id,
+                sub_layer,
+                reverse,
+                side_flip,
+            } => {
+                let sk = sketches
+                    .iter()
+                    .find(|s| s.id == *sketch_id)
+                    .ok_or_else(|| CamError::MissingSelectedSketch {
+                        sketch_id: sketch_id.clone(),
+                        item_id: sub_layer.clone().unwrap_or_else(|| "*".to_string()),
+                    })?;
+                let mut acc = SketchExtractAccum {
+                    doc_has_bodies,
+                    setup,
+                    features: &mut features,
+                    direction_arrows: &mut direction_arrows,
+                    top_candidates: &mut top_candidates,
+                    bottom_candidates: &mut bottom_candidates,
+                    primary_hole_diameter_mm: &mut primary_hole_diameter_mm,
+                };
+                extract_sketch_layer_all(
+                    &mut acc,
+                    sk,
+                    sub_layer.as_deref(),
+                    *reverse,
+                    *side_flip,
+                    &mut highlight_sketch_regions,
+                    &mut highlight_sketch_entities,
+                );
+            }
         }
     }
 
     // Group coaxial half-cylinder hole faces so split STEP holes produce 1 logical Hole25D!
-    let mut primary_hole_diameter_mm = None;
     if !raw_hole_faces.is_empty() {
         let grouped = group_coaxial_holes(doc, &raw_hole_faces, setup.frame.z_axis);
         for h in grouped {
@@ -551,11 +722,315 @@ pub fn extract_selection_features(
         features,
         highlight_faces,
         highlight_edges,
+        highlight_sketch_regions,
+        highlight_sketch_entities,
         direction_arrows,
         inferred_top_z_wcs,
         inferred_bottom_z_wcs,
         primary_hole_diameter_mm,
     })
+}
+
+struct SketchExtractAccum<'a> {
+    doc_has_bodies: bool,
+    setup: &'a ResolvedSetup,
+    features: &'a mut Vec<ExtractedFeature25D>,
+    direction_arrows: &'a mut Vec<ChainDirectionArrow3D>,
+    top_candidates: &'a mut Vec<f64>,
+    bottom_candidates: &'a mut Vec<f64>,
+    primary_hole_diameter_mm: &'a mut Option<f64>,
+}
+
+fn transform_sketch_polyline_to_wcs(
+    poly: &ArcPolyline2D,
+    sk_world_frame: &RigidFrame3,
+    setup_frame: &RigidFrame3,
+) -> (ArcPolyline2D, f64) {
+    let map_pt = |p: DVec2| -> (DVec2, f64) {
+        let w = sk_world_frame.local_to_world_point(DVec3::new(p.x, p.y, 0.0));
+        let l = setup_frame.world_to_local_point(w);
+        (DVec2::new(l.x, l.y), l.z)
+    };
+    let z_orient = sk_world_frame.z_axis.dot(setup_frame.z_axis);
+    let flip_ccw = z_orient < 0.0;
+    let mut z_val = 0.0;
+    let mut segs = Vec::with_capacity(poly.segments.len());
+    for seg in &poly.segments {
+        match *seg {
+            ArcSegment2D::Line { start, end } => {
+                let (s, zs) = map_pt(start);
+                let (e, _) = map_pt(end);
+                z_val = zs;
+                segs.push(ArcSegment2D::Line { start: s, end: e });
+            }
+            ArcSegment2D::Arc {
+                start,
+                end,
+                center,
+                radius,
+                ccw,
+            } => {
+                let (s, zs) = map_pt(start);
+                let (e, _) = map_pt(end);
+                let (c, _) = map_pt(center);
+                z_val = zs;
+                segs.push(ArcSegment2D::Arc {
+                    start: s,
+                    end: e,
+                    center: c,
+                    radius,
+                    ccw: if flip_ccw { !ccw } else { ccw },
+                });
+            }
+        }
+    }
+    (
+        ArcPolyline2D {
+            segments: segs,
+            closed: poly.closed,
+        },
+        z_val,
+    )
+}
+
+fn infer_sketch_z_span(
+    doc_has_bodies: bool,
+    setup: &ResolvedSetup,
+    plane_z_wcs: f64,
+) -> (f64, f64) {
+    let stock_aabb = setup.stock.aabb_wcs();
+    let stock_top_z = stock_aabb.max.z;
+    let top_z = if plane_z_wcs <= stock_top_z + 1e-4 {
+        stock_top_z
+    } else {
+        plane_z_wcs
+    };
+    let bottom_z = if plane_z_wcs < stock_top_z - 1e-4 {
+        plane_z_wcs
+    } else if !doc_has_bodies {
+        setup.model_aabb_wcs.min.z.min(top_z - 0.5)
+    } else {
+        (top_z - 1.0).max(stock_aabb.min.z)
+    };
+    (top_z, bottom_z)
+}
+
+fn extract_sketch_region(
+    acc: &mut SketchExtractAccum<'_>,
+    sk: &SketchLayer,
+    reg: &PlanarVectorRegion,
+) {
+    let sk_frame = resolve_sketch_world_frame(acc.doc_has_bodies, sk, acc.setup);
+    let (outer_raw, plane_z_wcs) =
+        transform_sketch_polyline_to_wcs(&reg.outer_ccw, &sk_frame, &acc.setup.frame);
+    let outer_boundary_wcs = outer_raw.ensure_orientation(true);
+    let open_outer_segments = vec![false; outer_boundary_wcs.segments.len()];
+    let mut inner_islands_wcs = Vec::with_capacity(reg.islands_cw.len());
+    for isl in &reg.islands_cw {
+        let (isl_raw, _) = transform_sketch_polyline_to_wcs(isl, &sk_frame, &acc.setup.frame);
+        inner_islands_wcs.push(isl_raw.ensure_orientation(false));
+    }
+    let raised_islands_wcs = inner_islands_wcs.clone();
+    let (inferred_top, inferred_bot) =
+        infer_sketch_z_span(acc.doc_has_bodies, acc.setup, plane_z_wcs);
+    acc.top_candidates.push(inferred_top);
+    acc.bottom_candidates.push(inferred_bot);
+    acc.features.push(ExtractedFeature25D::PlanarFace {
+        source_face_id: None,
+        outer_boundary_wcs,
+        open_outer_segments,
+        inner_islands_wcs,
+        raised_islands_wcs,
+        face_z_wcs: inferred_bot,
+        inferred_top_z_wcs: inferred_top,
+        adjacent_lower_floor_z_wcs: None,
+        area_mm2: reg.area_mm2,
+    });
+}
+
+fn extract_sketch_entity(
+    acc: &mut SketchExtractAccum<'_>,
+    sk: &SketchLayer,
+    entry: &SketchEntityEntry,
+    reverse: bool,
+    side_flip: bool,
+    emit_contour_for_circle: bool,
+) {
+    let sk_frame = resolve_sketch_world_frame(acc.doc_has_bodies, sk, acc.setup);
+    match &entry.entity {
+        SketchEntity::Circle {
+            center_xy,
+            diameter,
+        } => {
+            let d_mm = diameter.value_mm;
+            if d_mm <= 1e-4 {
+                return;
+            }
+            let c_world = sk_frame.local_to_world_point(DVec3::new(center_xy.x, center_xy.y, 0.0));
+            let c_wcs3 = acc.setup.frame.world_to_local_point(c_world);
+            let (top_z, bot_z) = infer_sketch_z_span(acc.doc_has_bodies, acc.setup, c_wcs3.z);
+            let hole_bot_z = if !acc.doc_has_bodies {
+                acc.setup.stock.aabb_wcs().min.z
+            } else {
+                bot_z
+            };
+            if acc.primary_hole_diameter_mm.is_none() {
+                *acc.primary_hole_diameter_mm = Some(d_mm);
+            }
+            acc.top_candidates.push(top_z);
+            acc.bottom_candidates.push(hole_bot_z);
+            acc.features.push(ExtractedFeature25D::CylindricalHole {
+                primary_face: None,
+                coaxial_faces: Vec::new(),
+                center_wcs: DVec2::new(c_wcs3.x, c_wcs3.y),
+                diameter_mm: d_mm,
+                top_z_wcs: top_z,
+                bottom_z_wcs: hole_bot_z,
+                is_through_hole: !acc.doc_has_bodies,
+            });
+            if emit_contour_for_circle {
+                let raw_poly = entry.entity.to_arc_polyline();
+                let (mut poly_wcs, _) =
+                    transform_sketch_polyline_to_wcs(&raw_poly, &sk_frame, &acc.setup.frame);
+                poly_wcs = poly_wcs.ensure_orientation(false);
+                if reverse {
+                    poly_wcs = poly_wcs.reverse();
+                }
+                if let Some(arrow) =
+                    build_chain_arrow(&poly_wcs, c_wcs3.z, side_flip, &acc.setup.frame)
+                {
+                    acc.direction_arrows.push(arrow);
+                }
+                acc.features.push(ExtractedFeature25D::Contour {
+                    polyline_wcs: poly_wcs,
+                    min_z_wcs: bot_z,
+                    max_z_wcs: top_z,
+                    reverse,
+                    side_flip,
+                    source_edge_ids: Vec::new(),
+                    adjacent_lower_floor_z_wcs: None,
+                });
+            }
+        }
+        SketchEntity::Polyline { polyline } => {
+            if polyline.segments.is_empty() {
+                return;
+            }
+            let (mut poly_wcs, plane_z_wcs) =
+                transform_sketch_polyline_to_wcs(polyline, &sk_frame, &acc.setup.frame);
+            if poly_wcs.closed && poly_wcs.signed_area().abs() > 1e-6 {
+                // Default closed sketch contour winds CW so `LeftClimb` profiles outside in Climb Milling!
+                poly_wcs = poly_wcs.ensure_orientation(false);
+            }
+            if reverse {
+                poly_wcs = poly_wcs.reverse();
+            }
+            if let Some(arrow) =
+                build_chain_arrow(&poly_wcs, plane_z_wcs, side_flip, &acc.setup.frame)
+            {
+                acc.direction_arrows.push(arrow);
+            }
+            let (top_z, bot_z) = infer_sketch_z_span(acc.doc_has_bodies, acc.setup, plane_z_wcs);
+            acc.top_candidates.push(top_z);
+            acc.bottom_candidates.push(bot_z);
+            acc.features.push(ExtractedFeature25D::Contour {
+                polyline_wcs: poly_wcs,
+                min_z_wcs: bot_z,
+                max_z_wcs: top_z,
+                reverse,
+                side_flip,
+                source_edge_ids: Vec::new(),
+                adjacent_lower_floor_z_wcs: None,
+            });
+        }
+    }
+}
+
+fn extract_sketch_layer_all(
+    acc: &mut SketchExtractAccum<'_>,
+    sk: &SketchLayer,
+    sub_layer_filter: Option<&str>,
+    reverse: bool,
+    side_flip: bool,
+    highlight_regions: &mut Vec<(String, String)>,
+    highlight_entities: &mut Vec<(String, String)>,
+) {
+    let matches_layer = |item_layer: Option<&str>| -> bool {
+        match sub_layer_filter {
+            Some(target) => item_layer.is_some_and(|l| l.eq_ignore_ascii_case(target)),
+            None => true,
+        }
+    };
+
+    // 1. Emit `CylindricalHole` for all circles on the layer (enables 1-click Drilling of `HOLES` layer!)
+    for ent in &sk.entities {
+        if ent.is_construction || !matches_layer(ent.sub_layer.as_deref()) {
+            continue;
+        }
+        if matches!(ent.entity, SketchEntity::Circle { .. }) {
+            extract_sketch_entity(acc, sk, ent, reverse, side_flip, false);
+            let key = (sk.id.clone(), ent.id.clone());
+            if !highlight_entities.contains(&key) {
+                highlight_entities.push(key);
+            }
+        }
+    }
+
+    // 2. Closed planar regions on the layer: if `reverse || side_flip` is requested, emit oriented
+    //    `Contour`s so inside/outside profile direction is honored; otherwise emit `PlanarFace`s!
+    let sk_frame = resolve_sketch_world_frame(acc.doc_has_bodies, sk, acc.setup);
+    for reg in &sk.regions {
+        if !matches_layer(reg.sub_layer.as_deref()) {
+            continue;
+        }
+        if reverse || side_flip {
+            let (mut poly_wcs, plane_z_wcs) =
+                transform_sketch_polyline_to_wcs(&reg.outer_ccw, &sk_frame, &acc.setup.frame);
+            poly_wcs = poly_wcs.ensure_orientation(false);
+            if reverse {
+                poly_wcs = poly_wcs.reverse();
+            }
+            if let Some(arrow) =
+                build_chain_arrow(&poly_wcs, plane_z_wcs, side_flip, &acc.setup.frame)
+            {
+                acc.direction_arrows.push(arrow);
+            }
+            let (top_z, bot_z) = infer_sketch_z_span(acc.doc_has_bodies, acc.setup, plane_z_wcs);
+            acc.top_candidates.push(top_z);
+            acc.bottom_candidates.push(bot_z);
+            acc.features.push(ExtractedFeature25D::Contour {
+                polyline_wcs: poly_wcs,
+                min_z_wcs: bot_z,
+                max_z_wcs: top_z,
+                reverse,
+                side_flip,
+                source_edge_ids: Vec::new(),
+                adjacent_lower_floor_z_wcs: None,
+            });
+        } else {
+            extract_sketch_region(acc, sk, reg);
+        }
+        let key = (sk.id.clone(), reg.id.clone());
+        if !highlight_regions.contains(&key) {
+            highlight_regions.push(key);
+        }
+    }
+
+    // 3. Open chains on the layer -> emit `Contour`s
+    for ent in &sk.entities {
+        if ent.is_construction || !matches_layer(ent.sub_layer.as_deref()) {
+            continue;
+        }
+        if let SketchEntity::Polyline { polyline } = &ent.entity
+            && !polyline.closed
+        {
+            extract_sketch_entity(acc, sk, ent, reverse, side_flip, false);
+            let key = (sk.id.clone(), ent.id.clone());
+            if !highlight_entities.contains(&key) {
+                highlight_entities.push(key);
+            }
+        }
+    }
 }
 
 fn build_chain_arrow(

@@ -92,10 +92,11 @@ pub fn run_bundle_pack(
     let proj_doc = ProjectDocument::load_from_path(&project)?;
     let sum = export_chipz_bundle(&proj_doc, project.parent(), &[], &[], &output)?;
     println!(
-        "Packed portable bundle '{}' ({} bytes, {} model(s), {} custom post(s)).",
+        "Packed portable bundle '{}' ({} bytes, {} model(s), {} vector(s), {} custom post(s)).",
         output.display(),
         sum.archive_size_bytes,
         sum.model_files.len(),
+        sum.vector_files.len(),
         sum.custom_post_files.len()
     );
     Ok(ExitCode::SUCCESS)

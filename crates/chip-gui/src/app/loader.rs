@@ -12,9 +12,10 @@ use chip_cad::{
 use chip_math::DEFAULT_TESS_CHORD_TOL_MM;
 use chip_project::{
     ModelEntry, OperationReloadOutcome, ProjectDocument, build_adaptive_rest_demo_project,
-    build_cam_torture_project, build_multi_feature_bracket_project, build_revision_v1_demo_project,
-    compute_sha256_hex, export_chipz_bundle, is_chipz_path, portable_model_path,
-    rebind_project_to_reloaded_cad, resolve_model_path, unpack_chipz_bundle,
+    build_cam_torture_project, build_multi_feature_bracket_project,
+    build_pure2d_router_panel_demo_project, build_revision_v1_demo_project, compute_sha256_hex,
+    export_chipz_bundle, is_chipz_path, portable_model_path, rebind_project_to_reloaded_cad,
+    resolve_model_path, unpack_chipz_bundle,
 };
 
 use crate::{
@@ -113,6 +114,10 @@ impl ChipCutterApp {
                         },
                         egui_ctx,
                     );
+                } else {
+                    self.model = None;
+                    self.cached_frame_geo = None;
+                    self.fit_scene_to_viewport();
                 }
             }
             Err(err) => {
@@ -158,6 +163,10 @@ impl ChipCutterApp {
                         },
                         egui_ctx,
                     );
+                } else {
+                    self.model = None;
+                    self.cached_frame_geo = None;
+                    self.fit_scene_to_viewport();
                 }
             }
             Err(err) => {
@@ -175,6 +184,14 @@ impl ChipCutterApp {
             let cur = PathBuf::from(&entry.path);
             if cur.is_absolute() {
                 entry.path = portable_model_path(Some(path), &cur);
+            }
+        }
+        for sk in &mut self.project.sketches {
+            if let Some(asset) = &mut sk.source_asset {
+                let cur = PathBuf::from(&asset.path);
+                if cur.is_absolute() {
+                    asset.path = portable_model_path(Some(path), &cur);
+                }
             }
         }
         match self.project.save_to_path(path) {
@@ -226,10 +243,11 @@ impl ChipCutterApp {
         ) {
             Ok(sum) => {
                 self.logs.push(format!(
-                    "Exported portable bundle '{}' ({} bytes, {} model(s), {} custom post(s)).",
+                    "Exported portable bundle '{}' ({} bytes, {} model(s), {} vector(s), {} custom post(s)).",
                     dest_path.display(),
                     sum.archive_size_bytes,
                     sum.model_files.len(),
+                    sum.vector_files.len(),
                     sum.custom_post_files.len()
                 ));
             }
@@ -440,6 +458,42 @@ impl ChipCutterApp {
         });
     }
 
+    pub fn load_pure2d_router_panel_demo(&mut self, egui_ctx: &egui::Context) {
+        self.loading_in_flight = false;
+        while self.job_rx.try_recv().is_ok() {}
+        self.dispatcher.cancel_all();
+        self.sim_panel.cancel_in_flight();
+        self.sim_panel.active_result = None;
+        self.gcode_panel.invalidate_preview();
+        self.clear_bundle_extract_dir();
+        self.project_file_path = None;
+        self.history.clear();
+        self.clean_undo_len = Some(0);
+        self.last_reload_banner = None;
+        self.external_step_modified = false;
+        self.model = None;
+        self.project = build_pure2d_router_panel_demo_project(None, &self.global_tools.tools);
+        self.active_setup_idx = 0;
+        self.inspector_focus = InspectorFocus::Operation {
+            setup_idx: 0,
+            op_idx: 1,
+        };
+        self.op_tab = OperationTab::Geometry;
+        self.highlight.hovered = None;
+        self.highlight.selected = None;
+        self.highlight.hovered_sketch = None;
+        self.highlight.selected_sketch = None;
+        self.cached_frame_geo = None;
+        self.fit_scene_to_viewport();
+        self.logs.push(
+            "Loaded Pure-2D CNC Router Front Panel (.dxf, zero STEP files — 4 operations: Holes, Island Pocket, Vent Slot, Outer Profile + Tabs)."
+                .to_string(),
+        );
+        self.auto_sim_after_gen = true;
+        self.trigger_generate_dirty(None, None);
+        egui_ctx.request_repaint();
+    }
+
     pub(crate) fn spawn_revision_demo_load(
         &mut self,
         load_v2_rebind: bool,
@@ -481,6 +535,9 @@ impl ChipCutterApp {
 
     pub(crate) fn poll_background_jobs(&mut self, egui_ctx: &egui::Context) {
         while let Ok(msg) = self.job_rx.try_recv() {
+            if !self.loading_in_flight {
+                continue;
+            }
             self.loading_in_flight = false;
             match msg {
                 LoadJobResult::Loaded {
@@ -511,13 +568,11 @@ impl ChipCutterApp {
         }
 
         // Poll background toolpath generation worker events (`JobDispatcher`)
-        if let Some(m) = &self.model {
-            self.dispatcher.cancel_stale_jobs(&self.project, m.revision);
-            let gen_logs = self.dispatcher.poll_events(
-                &mut self.project,
-                &mut self.toolpath_cache,
-                m.revision,
-            );
+        if let Some((_, cad_rev)) = self.effective_cad_arc() {
+            self.dispatcher.cancel_stale_jobs(&self.project, cad_rev);
+            let gen_logs =
+                self.dispatcher
+                    .poll_events(&mut self.project, &mut self.toolpath_cache, cad_rev);
             let had_gen_completion = !gen_logs.is_empty();
             self.logs.extend(gen_logs);
 

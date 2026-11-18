@@ -12,6 +12,7 @@ use chip_cam::{
     UpstreamSweptInput, generate_operation_toolpath_with_rest,
 };
 use chip_math::DisplayUnit;
+use chip_sketch::SketchLayer;
 use chip_tools::{CutterGeometry, Tool};
 use crossbeam_channel::{Receiver, Sender};
 use rayon::prelude::*;
@@ -50,6 +51,7 @@ pub enum DispatcherEvent {
 #[derive(Clone)]
 struct QueuedOpTask {
     setup: Setup,
+    sketches: Arc<Vec<SketchLayer>>,
     op: Operation,
     tool: Option<Tool>,
     display_unit: DisplayUnit,
@@ -235,6 +237,7 @@ impl JobDispatcher {
         only_op_id: Option<&str>,
     ) -> usize {
         self.active_cad = Some((Arc::clone(&cad_doc), cad_revision));
+        let shared_sketches = Arc::new(project.sketches.clone());
         let mut tasks = Vec::new();
         let mut queued_count = 0usize;
 
@@ -314,6 +317,7 @@ impl JobDispatcher {
 
                         tasks.push(QueuedOpTask {
                             setup: project.setups[s_idx].clone(),
+                            sketches: Arc::clone(&shared_sketches),
                             op: project.setups[s_idx].operations[o_idx].clone(),
                             tool,
                             display_unit: project.display_units,
@@ -459,6 +463,7 @@ impl JobDispatcher {
             && let Some((cad_doc, saved_rev)) = self.active_cad.clone()
             && saved_rev == cad_revision
         {
+            let shared_sketches = Arc::new(project.sketches.clone());
             let mut next_tasks = Vec::new();
             for s_idx in 0..project.setups.len() {
                 let mut seen_tool = false;
@@ -493,6 +498,7 @@ impl JobDispatcher {
                                 .and_then(|tid| project.tool(tid).cloned());
                             next_tasks.push(QueuedOpTask {
                                 setup: project.setups[s_idx].clone(),
+                                sketches: Arc::clone(&shared_sketches),
                                 op: project.setups[s_idx].operations[o_idx].clone(),
                                 tool,
                                 display_unit: project.display_units,
@@ -545,12 +551,15 @@ fn execute_single_task(
     cad: &CadDocument,
     task: &QueuedOpTask,
 ) -> Result<GeneratedToolpath, CamError> {
-    let resolved_setup = task.setup.resolve_immutable(cad, task.display_unit)?;
+    let resolved_setup =
+        task.setup
+            .resolve_with_sketches(cad, &task.sketches, task.display_unit)?;
     let tool = task.tool.as_ref().ok_or_else(|| CamError::MissingTool {
         op_name: task.op.name.clone(),
     })?;
     generate_operation_toolpath_with_rest(&OperationGenRequest {
         doc: cad,
+        sketches: &task.sketches,
         setup: &resolved_setup,
         op: &task.op,
         tool,
@@ -602,6 +611,7 @@ pub fn generate_project_blocking(
     }
 
     let mut processed: HashSet<(usize, usize)> = HashSet::new();
+    let shared_sketches = Arc::new(project.sketches.clone());
 
     for _wave in 0..=total_ops {
         if processed.len() >= total_ops {
@@ -655,6 +665,7 @@ pub fn generate_project_blocking(
                             scope,
                             QueuedOpTask {
                                 setup: project.setups[s_idx].clone(),
+                                sketches: Arc::clone(&shared_sketches),
                                 op: op.clone(),
                                 tool,
                                 display_unit: project.display_units,

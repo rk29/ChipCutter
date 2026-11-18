@@ -6,7 +6,7 @@ use chip_cad::{
 };
 use chip_cam::{
     GeometrySelectionItem, OperationStatus, WcsAxisRef, WcsFeaturePointRef, WcsOrientationMode,
-    WcsOriginMode, extract_selection_features,
+    WcsOriginMode, extract_selection_features_with_sketches,
 };
 use serde::{Deserialize, Serialize};
 
@@ -105,6 +105,7 @@ pub fn rebind_project_to_reloaded_cad(
 
     let display_unit = project.display_units;
     let project_tools = project.tools.clone();
+    let project_sketches = project.sketches.clone();
 
     for setup in &mut project.setups {
         // Clamp target_bodies if body count shrank
@@ -115,7 +116,9 @@ pub fn rebind_project_to_reloaded_cad(
         // Step 1: Re-bind Setup WCS orientation & origin feature references first
         rebind_setup_wcs(setup, new_doc, &mut report.setup_wcs_warnings);
 
-        let resolved_setup_opt = setup.resolve_immutable(new_doc, display_unit).ok();
+        let resolved_setup_opt = setup
+            .resolve_with_sketches(new_doc, &project_sketches, display_unit)
+            .ok();
 
         // Step 2: Re-bind Operation geometry selections
         for op in &mut setup.operations {
@@ -323,6 +326,11 @@ pub fn rebind_project_to_reloaded_cad(
                             }
                         }
                     }
+                    GeometrySelectionItem::SketchRegion { .. }
+                    | GeometrySelectionItem::SketchEntity { .. }
+                    | GeometrySelectionItem::SketchLayerAll { .. } => {
+                        updated_selections.push(item.clone());
+                    }
                 }
             }
 
@@ -339,7 +347,12 @@ pub fn rebind_project_to_reloaded_cad(
                     {
                         t.populate_eval_context(&mut eval_ctx);
                     }
-                    if let Ok(sum) = extract_selection_features(new_doc, rs, &op.selections) {
+                    if let Ok(sum) = extract_selection_features_with_sketches(
+                        new_doc,
+                        &project_sketches,
+                        rs,
+                        &op.selections,
+                    ) {
                         eval_ctx.set_var("feature_top_z", sum.inferred_top_z_wcs);
                         eval_ctx.set_var("feature_bottom_z", sum.inferred_bottom_z_wcs);
                         if let Some(hd) = sum.primary_hole_diameter_mm {

@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use chip_cad::CadDocument;
 use chip_math::{DisplayUnit, EvalContext};
+use chip_sketch::SketchLayer;
 use chip_tools::Tool;
 
 use crate::{
@@ -17,7 +18,7 @@ use crate::{
     operation::{EffectiveCuttingParams, Operation, OperationKind},
     params::{LinkingParams, PassesParams, RetractPolicy, StrategyParams},
     rest2d::UpstreamSweptInput,
-    selection::{ExtractedSelectionSummary, extract_selection_features},
+    selection::{ExtractedSelectionSummary, extract_selection_features_with_sketches},
     setup::ResolvedSetup,
     toolpath::{GeneratedToolpath, ToolpathBuilder},
     wcs::CamError,
@@ -56,9 +57,10 @@ impl StrategyExecContext<'_> {
     }
 }
 
-/// Input bundle for [`generate_operation_toolpath_with_rest`] (supporting upstream Rest Machining).
+/// Input bundle for [`generate_operation_toolpath_with_rest`] (supporting 2D sketches & upstream Rest Machining).
 pub struct OperationGenRequest<'a> {
     pub doc: &'a CadDocument,
+    pub sketches: &'a [SketchLayer],
     pub setup: &'a ResolvedSetup,
     pub op: &'a Operation,
     pub tool: &'a Tool,
@@ -81,6 +83,7 @@ pub fn generate_operation_toolpath(
 ) -> Result<GeneratedToolpath, CamError> {
     generate_operation_toolpath_with_rest(&OperationGenRequest {
         doc,
+        sketches: &[],
         setup,
         op,
         tool,
@@ -91,13 +94,14 @@ pub fn generate_operation_toolpath(
     })
 }
 
-/// Generates a verified [`GeneratedToolpath`] with optional upstream 2D swept coverage for
+/// Generates a verified [`GeneratedToolpath`] with optional 2D sketches and upstream 2D swept coverage for
 /// `RestMachiningMode::FromPrecedingOperations` (`05-operations.md` §Rest Machining).
 pub fn generate_operation_toolpath_with_rest(
     req: &OperationGenRequest<'_>,
 ) -> Result<GeneratedToolpath, CamError> {
     let &OperationGenRequest {
         doc,
+        sketches,
         setup,
         op,
         tool,
@@ -119,8 +123,8 @@ pub fn generate_operation_toolpath_with_rest(
         });
     }
 
-    // 1. Extract B-Rep features in Setup WCS coordinates
-    let selection = extract_selection_features(doc, setup, &op.selections)?;
+    // 1. Extract 3D B-Rep + 2D Sketch features in Setup WCS coordinates
+    let selection = extract_selection_features_with_sketches(doc, sketches, setup, &op.selections)?;
     if op.kind != OperationKind::Facing && selection.features.is_empty() {
         return Err(CamError::EmptySelection {
             op_name: op.name.clone(),

@@ -1,5 +1,6 @@
 use chip_cad::{BodyId, CadDocument};
-use chip_math::{Aabb3, DVec3, DisplayUnit, EvalContext, RigidFrame3};
+use chip_math::{Aabb2, Aabb3, DVec2, DVec3, DisplayUnit, EvalContext, RigidFrame3};
+use chip_sketch::{SketchAnchor, SketchLayer, SketchPlaneRef};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -64,12 +65,35 @@ impl Setup {
         doc: &CadDocument,
         display_unit: DisplayUnit,
     ) -> Result<ResolvedSetup, CamError> {
-        // 1. Orthonormal rotation frame at world origin (0, 0, 0)
-        let rot_frame = self.wcs.orientation.resolve_rotation(doc)?;
+        self.resolve_with_sketches(doc, &[], display_unit)
+    }
 
-        // 2. Tight bounding box of target B-Rep body/bodies in rotated axes
-        let model_rot_aabb =
-            compute_tight_oriented_model_aabb(doc, &self.target_bodies, &rot_frame)?;
+    /// Resolves this Setup against either a 3D [`CadDocument`] OR, when `doc.bodies.is_empty()`,
+    /// a Pure-2D virtual sheet bounded by `sketches` and `self.stock`'s sheet Z thickness.
+    pub fn resolve_with_sketches(
+        &self,
+        doc: &CadDocument,
+        sketches: &[SketchLayer],
+        display_unit: DisplayUnit,
+    ) -> Result<ResolvedSetup, CamError> {
+        // 1. Orthonormal rotation frame at world origin (0, 0, 0)
+        let rot_frame = match self.wcs.orientation.resolve_rotation(doc) {
+            Ok(f) => f,
+            Err(_) if doc.bodies.is_empty() => return Err(CamError::Pure2dRequiresBoxWcs),
+            Err(e) => return Err(e),
+        };
+
+        // 2. Tight bounding box of target B-Rep body/bodies OR Pure-2D virtual sheet in rotated axes
+        let model_rot_aabb = if !doc.bodies.is_empty() {
+            compute_tight_oriented_model_aabb(doc, &self.target_bodies, &rot_frame)?
+        } else {
+            compute_pure_2d_sheet_rot_aabb(
+                &self.id,
+                sketches,
+                self.stock.pure_2d_sheet_thickness_mm(display_unit),
+                &rot_frame,
+            )
+        };
 
         // 3. Re-evaluate stock expressions with model dimensions
         let mut stock_clone = self.stock.clone();
@@ -85,6 +109,9 @@ impl Setup {
             WcsOriginMode::StockBoxPoint { anchor } => anchor.eval_on_aabb(&stock_rot_aabb),
             WcsOriginMode::ModelBoxPoint { anchor } => anchor.eval_on_aabb(&model_rot_aabb),
             WcsOriginMode::SelectedCadFeature { feature } => {
+                if doc.bodies.is_empty() {
+                    return Err(CamError::Pure2dRequiresBoxWcs);
+                }
                 let pt_world = feature.resolve_world_point(doc, rot_frame.z_axis)?;
                 rot_frame.world_to_local_point(pt_world)
             }
@@ -164,4 +191,99 @@ fn build_setup_eval_context(
         .with_var("stock_z", sz.z)
         .with_var("model_top_z", model_aabb_wcs.max.z)
         .with_var("model_bottom_z", model_aabb_wcs.min.z)
+}
+
+fn compute_pure_2d_sheet_rot_aabb(
+    setup_id: &str,
+    sketches: &[SketchLayer],
+    sheet_thickness_mm: f64,
+    rot_frame: &RigidFrame3,
+) -> Aabb3 {
+    let mut xy = Aabb2::EMPTY;
+    for sk in sketches {
+        let SketchAnchor::SetupXy {
+            setup_id: sk_setup_id,
+            ..
+        } = &sk.anchor;
+        if sk.visible && (sk_setup_id == setup_id || sk_setup_id.is_empty()) {
+            let b = sk.exact_aabb();
+            if b.is_valid() {
+                xy.extend_point(b.min);
+                xy.extend_point(b.max);
+            }
+        }
+    }
+    if !xy.is_valid() {
+        for sk in sketches {
+            if sk.visible {
+                let b = sk.exact_aabb();
+                if b.is_valid() {
+                    xy.extend_point(b.min);
+                    xy.extend_point(b.max);
+                }
+            }
+        }
+    }
+    if !xy.is_valid() {
+        xy = Aabb2 {
+            min: DVec2::ZERO,
+            max: DVec2::new(100.0, 100.0),
+        };
+    }
+    let thick = sheet_thickness_mm.max(0.1);
+    let mut aabb = Aabb3::EMPTY;
+    for z in [-thick, 0.0] {
+        for p2 in [
+            xy.min,
+            DVec2::new(xy.max.x, xy.min.y),
+            xy.max,
+            DVec2::new(xy.min.x, xy.max.y),
+        ] {
+            aabb.extend_point(rot_frame.world_to_local_point(DVec3::new(p2.x, p2.y, z)));
+        }
+    }
+    aabb
+}
+
+/// Resolves the canonical 3D World [`RigidFrame3`] of a [`SketchLayer`] inside `setup`!
+///
+/// - Mapping `(x_sketch, y_sketch, 0.0)` via `frame.local_to_world_point(...)` yields the 3D World
+///   point for viewport rendering and ray-plane hit testing.
+/// - Mapping that 3D World point via `setup.frame.world_to_local_point(...)` yields the exact
+///   Setup WCS `(x_wcs, y_wcs, z_wcs)` coordinate for CAM toolpaths!
+pub fn resolve_sketch_world_frame(
+    doc_has_bodies: bool,
+    sketch: &SketchLayer,
+    setup: &ResolvedSetup,
+) -> RigidFrame3 {
+    let SketchAnchor::SetupXy {
+        plane_ref,
+        z_offset,
+        ..
+    } = &sketch.anchor;
+    let stock_aabb = setup.stock.aabb_wcs();
+    let base_z_wcs = match plane_ref {
+        SketchPlaneRef::StockTop => stock_aabb.max.z,
+        SketchPlaneRef::ModelTop => setup.model_aabb_wcs.max.z,
+        SketchPlaneRef::StockBottom => stock_aabb.min.z,
+        SketchPlaneRef::WcsOrigin => 0.0,
+    };
+    let z_wcs = base_z_wcs + z_offset.value_mm;
+
+    if !doc_has_bodies {
+        // Pure-2D mode: `sketch` XY coordinates define the virtual sheet in rotated world XY!
+        let rot_only = setup.frame.with_origin(DVec3::ZERO);
+        let origin_rot = rot_only.world_to_local_point(setup.frame.origin_mm);
+        let world_origin =
+            setup
+                .frame
+                .local_to_world_point(DVec3::new(-origin_rot.x, -origin_rot.y, z_wcs));
+        setup.frame.with_origin(world_origin)
+    } else {
+        // Hybrid 3D STEP + SetupXY mode: `sketch` XY coordinates are anchored directly at Setup WCS `(0, 0)`!
+        let world_origin = setup
+            .frame
+            .local_to_world_point(DVec3::new(0.0, 0.0, z_wcs));
+        setup.frame.with_origin(world_origin)
+    }
 }

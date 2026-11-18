@@ -10,9 +10,13 @@ use clap::Parser;
     about = "ChipCutter Desktop CAM Application"
 )]
 struct GuiArgs {
-    /// Optional `.chip.toml` project, `.chipz` bundle, or `.step`/`.stp` model to load on startup.
+    /// Optional `.chip.toml` project, `.chipz` bundle, `.dxf`/`.svg` vector, or `.step`/`.stp` model to load on startup.
     #[arg(value_name = "PATH")]
     step_file: Option<PathBuf>,
+
+    /// Launch directly into the Milestone 7 Pure-2D CNC Router Front Panel (.dxf) demo job.
+    #[arg(long)]
+    demo_pure_2d: bool,
 
     /// Render the sample part, capture a full-window PNG screenshot to this path, and exit.
     #[arg(long)]
@@ -42,6 +46,13 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "ChipCutter",
         native_options,
-        Box::new(move |cc| Ok(Box::new(ChipCutterApp::new(cc, args.step_file, self_test)))),
+        Box::new(move |cc| {
+            Ok(Box::new(ChipCutterApp::new_with_mode(
+                cc,
+                args.step_file,
+                args.demo_pure_2d,
+                self_test,
+            )))
+        }),
     )
 }
