@@ -619,6 +619,178 @@ fn build_plate_step_with_scale(
     Ok(step_text)
 }
 
+/// Builds a `"v1 -> v2"` revised STEP pair (`09-persistence-cli.md` §2 & `02-cad-selection.md` §CAD Reload)
+/// specifically designed to verify `GeometricSignature` associative re-matching:
+/// - **v1 (`90 × 70 × 20 mm`):**
+///   - Blind rectangular pocket `[14..46] × [16..54]` at `Z = 12.0 mm`
+///   - `Ø14.0 mm` (`R = 7.0 mm`) precision bore through-hole at `(68.0, 24.0)`
+///   - `2x Ø6.0 mm` (`R = 3.0 mm`) mounting through-holes at `(68.0, 48.0)` and `(68.0, 60.0)`
+/// - **v2 (`92 × 70 × 20 mm`, permuted face/edge topology order):**
+///   - Pocket resized & deepened to `[12..48] × [15..55]` at `Z = 11.0 mm`
+///   - `Ø14.0 mm` bore shifted to `(71.0, 26.0)`
+///   - First `Ø6.0 mm` mounting hole shifted to `(70.0, 47.0)`
+///   - Second `Ø6.0 mm` mounting hole at `(68.0, 60.0)` **deleted** (triggers `NeedsRepick`!)
+pub fn sample_revised_part_pair_step() -> std::result::Result<(String, String), SampleStepError> {
+    let v1 = build_revision_block_step(
+        "revision_v1.step",
+        90.0,
+        (14.0, 16.0, 46.0, 54.0, 12.0),
+        &[(68.0, 24.0, 7.0), (68.0, 48.0, 3.0), (68.0, 60.0, 3.0)],
+        false,
+    )?;
+    let v2 = build_revision_block_step(
+        "revision_v2.step",
+        92.0,
+        (12.0, 15.0, 48.0, 55.0, 11.0),
+        &[(71.0, 26.0, 7.0), (70.0, 47.0, 3.0)],
+        true,
+    )?;
+    Ok((v1, v2))
+}
+
+/// Builds a revised STEP variant where `v1`'s single `Ø14.0 mm` bore at `(68.0, 24.0)` is replaced
+/// by two symmetric twin `Ø14.0 mm` bores equidistant at `(68.0, 16.0)` and `(68.0, 32.0)` to test
+/// deterministic ambiguity detection (`RematchOutcome::Ambiguous`).
+pub fn sample_ambiguous_twin_hole_step() -> std::result::Result<String, SampleStepError> {
+    build_revision_block_step(
+        "revision_ambiguous_twins.step",
+        90.0,
+        (14.0, 16.0, 46.0, 54.0, 12.0),
+        &[
+            (68.0, 16.0, 7.0),
+            (68.0, 32.0, 7.0),
+            (68.0, 48.0, 3.0),
+            (68.0, 60.0, 3.0),
+        ],
+        true,
+    )
+}
+
+fn build_revision_block_step(
+    file_name: &str,
+    width_x: f64,
+    pocket_x0_y0_x1_y1_z: (f64, f64, f64, f64, f64),
+    through_holes_xyr: &[(f64, f64, f64)],
+    permute_shell_order: bool,
+) -> std::result::Result<String, SampleStepError> {
+    let v0 = builder::vertex(Point3::new(0.0, 0.0, 0.0));
+    let v1 = builder::vertex(Point3::new(width_x - 10.0, 0.0, 0.0));
+    let v2 = builder::vertex(Point3::new(width_x, 10.0, 0.0));
+    let v3 = builder::vertex(Point3::new(width_x, 70.0, 0.0));
+    let v4 = builder::vertex(Point3::new(10.0, 70.0, 0.0));
+    let v5 = builder::vertex(Point3::new(0.0, 60.0, 0.0));
+
+    let inv_sqrt2 = std::f64::consts::FRAC_1_SQRT_2;
+    let fillet_mid = Point3::new(10.0 - 10.0 * inv_sqrt2, 60.0 + 10.0 * inv_sqrt2, 0.0);
+    let fillet_edge = builder::try_circle_arc(&v4, &v5, fillet_mid)
+        .map_err(|e| SampleStepError::Modeling(e.to_string()))?;
+
+    let outer_wire: Wire = vec![
+        builder::line(&v0, &v1),
+        builder::line(&v1, &v2),
+        builder::line(&v2, &v3),
+        builder::line(&v3, &v4),
+        fillet_edge,
+        builder::line(&v5, &v0),
+    ]
+    .into();
+
+    let mut bottom_wires = vec![outer_wire];
+    for &(cx, cy, r) in through_holes_xyr {
+        let seed = builder::vertex(Point3::new(cx + r, cy, 0.0));
+        let wire_ccw: Wire = builder::revolve(
+            &seed,
+            Point3::new(cx, cy, 0.0),
+            Vector3::unit_z(),
+            SweepAngle::Closed,
+            2,
+        );
+        bottom_wires.push(wire_ccw.inverse());
+    }
+
+    let base_face_z0 = builder::try_attach_plane(bottom_wires)
+        .map_err(|e| SampleStepError::Modeling(e.to_string()))?;
+    let base_solid = builder::extrude(&base_face_z0, Vector3::new(0.0, 0.0, 20.0));
+    let mut base_faces: Vec<Face> = base_solid
+        .into_boundaries()
+        .into_iter()
+        .next()
+        .ok_or_else(|| SampleStepError::Modeling("missing extruded shell".to_string()))?
+        .into_iter()
+        .collect();
+
+    let old_top_face = base_faces
+        .pop()
+        .ok_or_else(|| SampleStepError::Modeling("empty shell".to_string()))?;
+    let mut top_wires: Vec<Wire> = old_top_face.boundaries();
+
+    let (px0, py0, px1, py1, pz) = pocket_x0_y0_x1_y1_z;
+    let pa = builder::vertex(Point3::new(px0, py0, pz));
+    let pb = builder::vertex(Point3::new(px1, py0, pz));
+    let pc = builder::vertex(Point3::new(px1, py1, pz));
+    let pd = builder::vertex(Point3::new(px0, py1, pz));
+    let pkt_wire: Wire = vec![
+        builder::line(&pa, &pb),
+        builder::line(&pb, &pc),
+        builder::line(&pc, &pd),
+        builder::line(&pd, &pa),
+    ]
+    .into();
+    let pkt_floor_proto = builder::try_attach_plane(vec![pkt_wire])
+        .map_err(|e| SampleStepError::Modeling(e.to_string()))?;
+    let pkt_plug = builder::extrude(&pkt_floor_proto, Vector3::new(0.0, 0.0, 20.0 - pz));
+    let mut pkt_faces: Vec<Face> = pkt_plug
+        .into_boundaries()
+        .into_iter()
+        .next()
+        .ok_or_else(|| SampleStepError::Modeling("missing pocket plug".to_string()))?
+        .into_iter()
+        .collect();
+    let pkt_top = pkt_faces
+        .pop()
+        .ok_or_else(|| SampleStepError::Modeling("empty pocket plug".to_string()))?;
+    let pkt_mouth = pkt_top
+        .boundaries()
+        .into_iter()
+        .next()
+        .ok_or_else(|| SampleStepError::Modeling("missing pocket mouth".to_string()))?;
+    top_wires.push(pkt_mouth.inverse());
+
+    let new_top_face = builder::try_attach_plane(top_wires)
+        .map_err(|e| SampleStepError::Modeling(e.to_string()))?;
+
+    let mut all_faces: Vec<Face> = Vec::new();
+    if permute_shell_order {
+        // Deliberately emit pocket cavity faces & top face BEFORE base walls so every FaceId/LoopId/EdgeId shifts!
+        all_faces.push(new_top_face);
+        for pf in pkt_faces {
+            all_faces.push(pf.inverse());
+        }
+        all_faces.extend(base_faces);
+    } else {
+        all_faces.extend(base_faces);
+        for pf in pkt_faces {
+            all_faces.push(pf.inverse());
+        }
+        all_faces.push(new_top_face);
+    }
+
+    let shell: Shell = all_faces.into();
+    let solid =
+        Solid::try_new(vec![shell]).map_err(|e| SampleStepError::Modeling(e.to_string()))?;
+    let compressed = solid.compress();
+    let models: StepModels<'_, _, _, _> = [&compressed].into_iter().collect();
+    let header = StepHeaderDescriptor {
+        file_name: file_name.to_string(),
+        time_stamp: "2026-11-18T00:00:00".to_string(),
+        authors: vec!["ChipCutter".to_string()],
+        organization: vec!["ChipCutter CAM".to_string()],
+        organization_system: "monstertruck".to_string(),
+        authorization: String::new(),
+    };
+    Ok(CompleteStepDisplay::new(models, header).to_string())
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {

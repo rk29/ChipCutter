@@ -645,21 +645,25 @@ fn build_face_signature(
             aabb_mm,
         },
         SurfaceKind::Cylinder {
+            axis_origin_mm,
             axis_dir,
             radius_mm,
             is_internal,
-            ..
-        } => GeometricSignature {
-            kind: if is_internal {
-                EntitySignatureKind::InternalCylinderFace
-            } else {
-                EntitySignatureKind::ExternalCylinderFace
-            },
-            normal_or_axis: axis_dir,
-            centroid_mm,
-            characteristic_measure: radius_mm,
-            aabb_mm,
-        },
+        } => {
+            let u = axis_dir.normalize_or_zero();
+            let axis_mid_mm = axis_origin_mm + u * (centroid_mm - axis_origin_mm).dot(u);
+            GeometricSignature {
+                kind: if is_internal {
+                    EntitySignatureKind::InternalCylinderFace
+                } else {
+                    EntitySignatureKind::ExternalCylinderFace
+                },
+                normal_or_axis: axis_dir,
+                centroid_mm: axis_mid_mm,
+                characteristic_measure: radius_mm,
+                aabb_mm,
+            }
+        }
         SurfaceKind::Cone { axis_dir, .. } => GeometricSignature {
             kind: EntitySignatureKind::ConicalFace,
             normal_or_axis: axis_dir,

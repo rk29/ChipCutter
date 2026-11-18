@@ -10,8 +10,12 @@ use crate::panels::{
 #[derive(Debug, Clone)]
 pub enum BrowserAction {
     OpenStepDialog,
+    ReloadStepModel,
+    ReplaceStepDialog,
     LoadMultiFeatureSample { tilted: bool },
     LoadCamTortureBlock,
+    LoadRevisionDemoV1,
+    ReloadRevisionDemoV2,
     OpenToolLibrary,
     AlignCameraToActiveSetup,
     GenerateSetup(usize),
@@ -115,6 +119,26 @@ pub fn show_cam_browser(
                         if ui.small_button("Import STEP…").clicked() {
                             emitted_action = Some(BrowserAction::OpenStepDialog);
                         }
+                        if cad_doc.is_some() {
+                            if ui
+                                .small_button("Reload (Ctrl+R)")
+                                .on_hover_text(
+                                    "Re-read the active STEP model from disk and associatively re-match CAM operations",
+                                )
+                                .clicked()
+                            {
+                                emitted_action = Some(BrowserAction::ReloadStepModel);
+                            }
+                            if ui
+                                .small_button("Replace…")
+                                .on_hover_text(
+                                    "Pick a revised STEP file on disk and associatively re-bind Setups & Operations",
+                                )
+                                .clicked()
+                            {
+                                emitted_action = Some(BrowserAction::ReplaceStepDialog);
+                            }
+                        }
                         if ui
                             .small_button("CAM Torture")
                             .on_hover_text("Load M3 CAM Torture Block (island pocket, open step, Ø18 bore, 45° bevel)")
@@ -137,6 +161,20 @@ pub fn show_cam_browser(
                         {
                             emitted_action =
                                 Some(BrowserAction::LoadMultiFeatureSample { tilted: true });
+                        }
+                        if ui
+                            .small_button("Rev v1")
+                            .on_hover_text("Load Milestone 5 CAD Revision v1 demo job")
+                            .clicked()
+                        {
+                            emitted_action = Some(BrowserAction::LoadRevisionDemoV1);
+                        }
+                        if ui
+                            .small_button("-> Rev v2")
+                            .on_hover_text("Associatively reload CAD Revision v2 (resized pocket, moved/deleted holes)")
+                            .clicked()
+                        {
+                            emitted_action = Some(BrowserAction::ReloadRevisionDemoV2);
                         }
                     });
                 });
@@ -276,11 +314,15 @@ pub fn show_cam_browser(
                                         egui::Color32::from_rgb(90, 190, 250),
                                         Some("Generating on background thread…".to_string()),
                                     ),
-                                    OperationStatus::Error { message }
-                                    | OperationStatus::NeedsRepick { message } => (
+                                    OperationStatus::Error { message } => (
                                         "[!]",
                                         egui::Color32::from_rgb(248, 92, 92),
                                         Some(message.clone()),
+                                    ),
+                                    OperationStatus::NeedsRepick { message } => (
+                                        "[?]",
+                                        egui::Color32::from_rgb(255, 146, 72),
+                                        Some(format!("Needs Re-Pick: {message}")),
                                     ),
                                 }
                             };
@@ -295,6 +337,8 @@ pub fn show_cam_browser(
                             let op_id_clone = op.id.clone();
                             let op_kind_val = op.kind;
                             let is_sup = op.suppressed;
+                            let is_needs_repick = !is_sup
+                                && matches!(op.runtime_status, OperationStatus::NeedsRepick { .. });
                             let is_gen = !is_sup
                                 && matches!(op.runtime_status, OperationStatus::Generating);
 
@@ -319,6 +363,9 @@ pub fn show_cam_browser(
                                         setup_idx: s_idx,
                                         op_idx: o_idx,
                                     };
+                                    if is_needs_repick {
+                                        *op_tab = OperationTab::Geometry;
+                                    }
                                     *pick_mode = default_pick_mode_for_op(
                                         s_idx,
                                         o_idx,

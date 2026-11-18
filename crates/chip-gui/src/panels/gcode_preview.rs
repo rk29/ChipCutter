@@ -54,6 +54,18 @@ impl GCodePreviewPanelState {
         self.cached_sig = None;
     }
 
+    pub fn custom_profiles(&self) -> &[PostProfile] {
+        &self.custom_loaded_profiles
+    }
+
+    pub fn available_profiles(&self) -> &[PostProfile] {
+        &self.available_profiles
+    }
+
+    pub fn invalidate_preview(&mut self) {
+        self.cached_sig = None;
+    }
+
     fn compute_preview_signature(
         &self,
         project: &ProjectDocument,

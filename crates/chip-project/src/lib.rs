@@ -1,13 +1,20 @@
 //! Project document state, deterministic `.chip.toml` serialization, CAD SHA-256 verification,
 //! project invariant validation, and instant Undo/Redo history (`chip-project`).
 
+pub mod bundle;
 pub mod cache;
 pub mod dispatcher;
 pub mod document;
 pub mod history;
+pub mod reload;
 pub mod toml_io;
 pub mod validation;
 
+pub use bundle::{
+    BundleError, ChipzExportSummary, MAX_CHIPZ_UNPACK_BYTES, UnpackedChipzBundle,
+    export_chipz_bundle, is_chipz_path, pack_chipz_bundle_bytes, unpack_chipz_bundle,
+    unpack_chipz_bytes,
+};
 pub use cache::{OperationInputHash, ToolpathCache, compute_operation_input_hash};
 pub use dispatcher::{
     BatchGenerationReport, DispatcherEvent, JobDispatcher, generate_project_blocking,
@@ -16,6 +23,7 @@ pub use document::{
     ModelEntry, ProjectDocument, compute_sha256_hex, portable_model_path, resolve_model_path,
 };
 pub use history::UndoHistory;
+pub use reload::{CadReloadReport, OperationReloadOutcome, rebind_project_to_reloaded_cad};
 pub use toml_io::ProjectIoError;
 pub use validation::{
     DiagnosticSeverity, ProjectValidationReport, ValidationDiagnostic, validate_project,
@@ -253,5 +261,339 @@ mod tests {
             OperationStatus::Clean
         );
         assert!(cache.get_for_operation(&proj, 0, 1, 1).is_some());
+    }
+
+    #[test]
+    fn associative_step_reload_v1_to_v2_rebinds_dirty_flags_deleted_needs_repick_and_passes_sim_oracle()
+     {
+        use chip_cad::{TopologyGraph, sample_revised_part_pair_step};
+        use chip_cam::{
+            ChamferSourceMode, ChamferTraceMode, HoleMachiningMode, OperationStatus, StrategyParams,
+        };
+        use chip_math::{ParamLength, approx_eq};
+        use chip_sim::{
+            MachineKinematicsConfig, SimOperationInput, SimResolution, SimVerificationConfig,
+            run_setup_simulation,
+        };
+
+        let (v1_step, v2_step) = sample_revised_part_pair_step().unwrap();
+        let doc_v1 = MonstertruckKernel
+            .load_step_bytes("v1.step", v1_step.as_bytes(), DEFAULT_TESS_CHORD_TOL_MM)
+            .unwrap();
+        let doc_v2 = MonstertruckKernel
+            .load_step_bytes("v2.step", v2_step.as_bytes(), DEFAULT_TESS_CHORD_TOL_MM)
+            .unwrap();
+        let topo_v1 = TopologyGraph::build(&doc_v1);
+        let topo_v2 = TopologyGraph::build(&doc_v2);
+
+        let starter = default_starter_tool_library();
+        let flat_6mm = &starter.tools[0];
+        let drill_6mm = &starter.tools[5];
+        let chamf_90 = &starter.tools[4];
+        let face_38mm = &starter.tools[6];
+
+        let mut proj = ProjectDocument::new("Associative Reload v1 -> v2");
+        proj.models.push(ModelEntry {
+            id: "model_1".to_string(),
+            path: "cad/part.step".to_string(),
+            sha256: compute_sha256_hex(v1_step.as_bytes()),
+        });
+        for t in [flat_6mm, drill_6mm, chamf_90, face_38mm] {
+            proj.ensure_tool_embedded(t);
+        }
+
+        // Op 0: Facing Top Stock
+        let mut op_face = Operation::new("op_0_face", "Face Top", OperationKind::Facing);
+        op_face.tool_id = Some(face_38mm.id.clone());
+
+        // Op 1: Blind Pocket (`Z = 12.0` on v1 -> `Z = 11.0` on v2!)
+        let v1_pkt = doc_v1
+            .faces
+            .iter()
+            .find(|f| {
+                matches!(
+                    f.surface,
+                    SurfaceKind::Plane { origin_mm, normal }
+                    if normal.z > 0.99 && approx_eq(origin_mm.z, 12.0, 1e-2)
+                )
+            })
+            .unwrap()
+            .id;
+        let mut op_pkt = Operation::new("op_1_pkt", "Resized Pocket", OperationKind::Pocket2D);
+        op_pkt.tool_id = Some(flat_6mm.id.clone());
+        op_pkt.selections.push(GeometrySelectionItem::PlanarFace {
+            binding: doc_v1.bind_face(v1_pkt).unwrap(),
+        });
+
+        // Op 2: Ø14mm Helical Bore (`(68, 24)` on v1 -> `(71, 26)` on v2!)
+        let v1_bore = doc_v1
+            .faces
+            .iter()
+            .find(|f| {
+                matches!(
+                    f.surface,
+                    SurfaceKind::Cylinder {
+                        radius_mm,
+                        is_internal: true,
+                        ..
+                    } if approx_eq(radius_mm, 7.0, 1e-2)
+                )
+            })
+            .unwrap()
+            .id;
+        let mut op_bore = Operation::new("op_2_bore", "Shifted Ø14 Bore", OperationKind::DrillBore);
+        op_bore.tool_id = Some(flat_6mm.id.clone());
+        if let StrategyParams::DrillBore(p) = op_bore.strategy_mut() {
+            p.mode = HoleMachiningMode::HelicalBore;
+        }
+        op_bore
+            .selections
+            .push(GeometrySelectionItem::CylindricalHole {
+                binding: doc_v1.bind_face(v1_bore).unwrap(),
+            });
+
+        // Op 3: Surviving Ø6mm Hole at `(68, 48)` -> `(70, 47)` on v2
+        let v1_h1 = doc_v1
+            .faces
+            .iter()
+            .find(|f| {
+                matches!(
+                    f.surface,
+                    SurfaceKind::Cylinder {
+                        axis_origin_mm,
+                        radius_mm,
+                        is_internal: true,
+                        ..
+                    } if approx_eq(radius_mm, 3.0, 1e-2) && approx_eq(axis_origin_mm.y, 48.0, 0.2)
+                )
+            })
+            .unwrap()
+            .id;
+        let mut op_h1 =
+            Operation::new("op_3_hole_keep", "Surviving Hole", OperationKind::DrillBore);
+        op_h1.tool_id = Some(drill_6mm.id.clone());
+        op_h1
+            .selections
+            .push(GeometrySelectionItem::CylindricalHole {
+                binding: doc_v1.bind_face(v1_h1).unwrap(),
+            });
+
+        // Op 4: Deleted Ø6mm Hole at `(68, 60)` -> DELETED on v2 -> must become NeedsRepick while preserving tool & overrides!
+        let v1_h2 = doc_v1
+            .faces
+            .iter()
+            .find(|f| {
+                matches!(
+                    f.surface,
+                    SurfaceKind::Cylinder {
+                        axis_origin_mm,
+                        radius_mm,
+                        is_internal: true,
+                        ..
+                    } if approx_eq(radius_mm, 3.0, 1e-2) && approx_eq(axis_origin_mm.y, 60.0, 0.2)
+                )
+            })
+            .unwrap()
+            .id;
+        let mut op_h2 = Operation::new("op_4_hole_del", "Deleted Hole", OperationKind::DrillBore);
+        op_h2.tool_id = Some(drill_6mm.id.clone());
+        op_h2.feed_overrides.spindle_rpm = Some(5_123.0);
+        op_h2
+            .selections
+            .push(GeometrySelectionItem::CylindricalHole {
+                binding: doc_v1.bind_face(v1_h2).unwrap(),
+            });
+
+        // Op 5: Multi-edge Open Chain Chamfer along top front -> angled chamfer edge (`X=80..90` -> `X=82..92` on v2!)
+        let e_front = doc_v1
+            .edges
+            .iter()
+            .find(|e| {
+                approx_eq(e.aabb_mm.min.z, 20.0, 1e-2)
+                    && approx_eq(e.aabb_mm.max.y, 0.0, 1e-2)
+                    && approx_eq(e.aabb_mm.max.x, 80.0, 1e-2)
+            })
+            .unwrap()
+            .id;
+        let e_ang = doc_v1
+            .edges
+            .iter()
+            .find(|e| {
+                approx_eq(e.aabb_mm.min.z, 20.0, 1e-2)
+                    && approx_eq(e.aabb_mm.min.x, 80.0, 1e-2)
+                    && approx_eq(e.aabb_mm.max.x, 90.0, 1e-2)
+            })
+            .unwrap()
+            .id;
+        let chain_v1 = topo_v1
+            .find_open_edge_chain(&doc_v1, e_front, e_ang)
+            .unwrap();
+        let mut op_chamf = Operation::new(
+            "op_5_chamf",
+            "Front Chamfer Chain",
+            OperationKind::ChamferTrace,
+        );
+        op_chamf.tool_id = Some(chamf_90.id.clone());
+        op_chamf.selections.push(GeometrySelectionItem::OpenChain {
+            body_id: doc_v1.bodies[0].id,
+            start_edge: doc_v1.bind_edge(e_front).unwrap(),
+            end_edge: doc_v1.bind_edge(e_ang).unwrap(),
+            resolved_edges: chain_v1,
+            reverse: false,
+            side_flip: true,
+        });
+        if let StrategyParams::ChamferTrace(p) = op_chamf.strategy_mut() {
+            p.mode = ChamferTraceMode::EdgeChamfer;
+            p.chamfer_source = ChamferSourceMode::SharpEdge {
+                width: ParamLength::from_mm(0.5),
+            };
+        }
+
+        proj.setups[0].operations = vec![op_face, op_pkt, op_bore, op_h1, op_h2, op_chamf];
+
+        // Generate cleanly on v1 first
+        let mut cache = ToolpathCache::new(64);
+        let batch_v1 = generate_project_blocking(&mut proj, &doc_v1, &mut cache, 1);
+        assert!(
+            batch_v1.errors.is_empty(),
+            "v1 generation errors: {:?}",
+            batch_v1.errors
+        );
+
+        // Reload v2 STEP and run WCS-first associative re-binding!
+        let sha_v2 = compute_sha256_hex(v2_step.as_bytes());
+        let reload_rep =
+            rebind_project_to_reloaded_cad(&mut proj, 0, &doc_v2, &topo_v2, &sha_v2, None);
+        assert_eq!(reload_rep.rebound_dirty_count, 5);
+        assert_eq!(reload_rep.needs_repick_count, 1);
+        assert!(reload_rep.setup_wcs_warnings.is_empty());
+
+        // Verify Op 4 (`Deleted Hole`) transitioned to `NeedsRepick` while preserving its tool & RPM override!
+        assert!(matches!(
+            proj.setups[0].operations[4].runtime_status,
+            OperationStatus::NeedsRepick { .. }
+        ));
+        assert_eq!(
+            proj.setups[0].operations[4].feed_overrides.spindle_rpm,
+            Some(5_123.0)
+        );
+
+        // Suppress the orphaned deleted hole, regenerate the 5 re-bound operations on v2, and verify via `chip-sim`!
+        proj.setups[0].operations[4].suppressed = true;
+        let batch_v2 = generate_project_blocking(&mut proj, &doc_v2, &mut cache, 2);
+        assert!(
+            batch_v2.errors.is_empty(),
+            "v2 generation errors: {:?}",
+            batch_v2.errors
+        );
+        assert_eq!(batch_v2.generated.len(), 5);
+
+        let resolved_v2 = proj.setups[0]
+            .resolve_immutable(&doc_v2, proj.display_units)
+            .unwrap();
+        let mut op_refs = Vec::new();
+        for (o_idx, op) in proj.setups[0].operations.iter().enumerate() {
+            if op.suppressed {
+                continue;
+            }
+            let tool = proj.tool(op.tool_id.as_ref().unwrap()).unwrap();
+            let (_, tp) = cache.get_for_operation(&proj, 0, o_idx, 2).unwrap();
+            op_refs.push((op, tool, tp));
+        }
+        let sim_inputs: Vec<SimOperationInput<'_>> = op_refs
+            .iter()
+            .map(|(op, tool, tp)| SimOperationInput::from_operation(op, tool, tp.as_ref()))
+            .collect();
+
+        let sim_v2 = run_setup_simulation(
+            &doc_v2,
+            &resolved_v2,
+            &proj.setups[0].target_bodies,
+            &sim_inputs,
+            SimResolution::Standard,
+            MachineKinematicsConfig::default(),
+            SimVerificationConfig::default(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            sim_v2.critical_error_count(),
+            0,
+            "re-bound v2 operations must pass physical heightmap verification with 0 crashes/gouges, got: {:#?}",
+            sim_v2.diagnostics
+        );
+    }
+
+    #[test]
+    fn chipz_bundle_packs_deterministically_embeds_custom_posts_verifies_sha256_and_blocks_zip_slip()
+     {
+        use std::io::Write as _;
+
+        use chip_post::{BUILTIN_GRBL_TOML, PostProfile};
+
+        let step_bytes = sample_multi_feature_bracket_step(false)
+            .unwrap()
+            .into_bytes();
+        let mut proj = ProjectDocument::new("Portable Bundle Job");
+        proj.models.push(ModelEntry {
+            id: "model_1".to_string(),
+            path: "bracket.step".to_string(),
+            sha256: compute_sha256_hex(&step_bytes),
+        });
+        let starter = default_starter_tool_library();
+        proj.ensure_tool_embedded(&starter.tools[0]);
+        proj.setups[0].post_profile = "shop_custom_grbl".to_string();
+
+        let mut custom_post = PostProfile::from_toml_str("custom", BUILTIN_GRBL_TOML).unwrap();
+        custom_post.id = "shop_custom_grbl".to_string();
+        custom_post.name = "Shop Custom GRBL".to_string();
+
+        // 1. Byte-for-byte deterministic `.chipz` archive generation
+        let (bytes_1, sum_1) = pack_chipz_bundle_bytes(
+            &proj,
+            None,
+            &[("model_1", &step_bytes)],
+            std::slice::from_ref(&custom_post),
+        )
+        .unwrap();
+        let (bytes_2, _) = pack_chipz_bundle_bytes(
+            &proj,
+            None,
+            &[("model_1", &step_bytes)],
+            std::slice::from_ref(&custom_post),
+        )
+        .unwrap();
+        assert_eq!(
+            bytes_1, bytes_2,
+            ".chipz archive output must be byte-for-byte deterministic"
+        );
+        assert_eq!(sum_1.model_files, vec!["models/bracket.step".to_string()]);
+        assert_eq!(
+            sum_1.custom_post_files,
+            vec!["posts/shop_custom_grbl.post.toml".to_string()]
+        );
+
+        // 2. Unpack into temp folder and verify SHA-256 + custom post extraction
+        let tmp_dir = std::env::temp_dir().join(format!("chipz_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        let unpacked = unpack_chipz_bytes(&bytes_1, &tmp_dir).unwrap();
+        assert_eq!(unpacked.project.project_name, "Portable Bundle Job");
+        assert!(tmp_dir.join("models/bracket.step").is_file());
+        assert!(tmp_dir.join("posts/shop_custom_grbl.post.toml").is_file());
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+
+        // 3. Reject malicious `../evil` zip-slip entry!
+        let mut bad_zip = std::io::Cursor::new(Vec::new());
+        {
+            let mut zw = zip::ZipWriter::new(&mut bad_zip);
+            let opts = zip::write::SimpleFileOptions::default();
+            zw.start_file("../evil_escape.toml", opts).unwrap();
+            zw.write_all(b"malicious").unwrap();
+            zw.finish().unwrap();
+        }
+        let slip_dir = std::env::temp_dir().join(format!("chipz_slip_{}", std::process::id()));
+        let err = unpack_chipz_bytes(&bad_zip.into_inner(), &slip_dir).unwrap_err();
+        assert!(matches!(err, BundleError::UnsafeEntryPath { .. }));
+        let _ = std::fs::remove_dir_all(&slip_dir);
     }
 }

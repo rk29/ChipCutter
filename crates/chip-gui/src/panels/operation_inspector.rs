@@ -2,8 +2,8 @@ use chip_cad::{CadDocument, find_coplanar_faces, find_same_diameter_holes};
 use chip_cam::{
     ChamferSourceMode, ChamferTraceMode, ContourCompensation, DrillCycleKind, EntryStrategy,
     ExtractedFeature25D, FacingCutMode, GeometrySelectionItem, HeightReference, HoleMachiningMode,
-    PocketPassOrder, PocketStrategyKind, ResolvedHeights, ResolvedSetup, RetractPolicy,
-    StrategyParams, TabPlacementMode, TabProfileKind, extract_selection_features,
+    OperationStatus, PocketPassOrder, PocketStrategyKind, ResolvedHeights, ResolvedSetup,
+    RetractPolicy, StrategyParams, TabPlacementMode, TabProfileKind, extract_selection_features,
 };
 use chip_math::{EvalContext, ParamLength};
 use chip_project::{ProjectDocument, UndoHistory};
@@ -90,6 +90,44 @@ pub fn show_operation_inspector(
         }
     });
     ui.separator();
+
+    if let OperationStatus::NeedsRepick { message } = project.setups[setup_idx].operations[op_idx]
+        .runtime_status
+        .clone()
+    {
+        egui::Frame::NONE
+            .fill(egui::Color32::from_rgb(56, 30, 24))
+            .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(235, 118, 68)))
+            .inner_margin(8.0)
+            .corner_radius(4.0)
+            .show(ui, |ui| {
+                ui.colored_label(
+                    egui::Color32::from_rgb(255, 168, 96),
+                    "[!] CAD Feature Needs Re-Pick (Associative Reload)",
+                );
+                ui.add_space(2.0);
+                ui.small(&message);
+                ui.add_space(4.0);
+                ui.horizontal_wrapped(|ui| {
+                    if ui
+                        .button("Clear Orphaned & Re-Pick in 3D")
+                        .on_hover_text(
+                            "Clears orphaned selections and activates 3D picking while preserving tool, speeds/feeds, heights, passes, and tabs.",
+                        )
+                        .clicked()
+                    {
+                        project.setups[setup_idx].operations[op_idx]
+                            .selections
+                            .clear();
+                        *tab = OperationTab::Geometry;
+                        *pick_mode =
+                            default_pick_mode_for_op(setup_idx, op_idx, op_kind, OperationTab::Geometry);
+                        mutated_label = Some("Clear Orphaned Feature for Re-Pick");
+                    }
+                });
+            });
+        ui.add_space(6.0);
+    }
 
     // Pre-compute extracted selection features + scoped EvalContext
     let extracted = match (cad_doc, resolved_setup) {

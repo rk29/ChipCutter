@@ -4,8 +4,9 @@ use std::{
 };
 
 use chip_cad::{
-    CadDocument, CadKernel, CurveKind, MonstertruckKernel, SurfaceKind, find_same_diameter_holes,
-    sample_cam_torture_block_step, sample_machined_plate_step, sample_multi_feature_bracket_step,
+    CadDocument, CadKernel, CurveKind, MonstertruckKernel, SurfaceKind, TopologyGraph,
+    find_same_diameter_holes, sample_cam_torture_block_step, sample_machined_plate_step,
+    sample_multi_feature_bracket_step, sample_revised_part_pair_step,
 };
 use chip_cam::{
     ChamferSourceMode, ChamferTraceMode, GeometrySelectionItem, HeightReference, HeightSpec,
@@ -17,8 +18,10 @@ use chip_post::{
     resolve_post_profile,
 };
 use chip_project::{
-    DiagnosticSeverity, ModelEntry, ProjectDocument, ToolpathCache, compute_sha256_hex,
-    generate_project_blocking, portable_model_path, resolve_model_path, validate_project,
+    DiagnosticSeverity, ModelEntry, OperationReloadOutcome, ProjectDocument, ToolpathCache,
+    compute_sha256_hex, export_chipz_bundle, generate_project_blocking, is_chipz_path,
+    portable_model_path, rebind_project_to_reloaded_cad, resolve_model_path, unpack_chipz_bundle,
+    validate_project,
 };
 use chip_sim::{
     MachineKinematicsConfig, SimDiagnostic, SimOperationInput, SimResolution, SimSeverity,
@@ -62,6 +65,12 @@ enum Commands {
         /// Generate the Milestone 3 CAM torture block (island pocket, open step, wide bore, 45° bevel).
         #[arg(long)]
         cam_torture: bool,
+        /// Generate v1 of the Milestone 5 associative reload revision pair.
+        #[arg(long)]
+        revision_v1: bool,
+        /// Generate v2 of the Milestone 5 associative reload revision pair (resized pocket, moved/deleted holes).
+        #[arg(long)]
+        revision_v2: bool,
         /// Optional path to also write a seeded `.chip.toml` CAM project referencing `output`.
         #[arg(long)]
         project_out: Option<PathBuf>,
@@ -102,10 +111,49 @@ enum Commands {
         #[arg(long)]
         allow_warnings: bool,
     },
+    /// Reload an updated STEP model into a `.chip.toml` project and re-bind selections via `GeometricSignature`.
+    ReloadStep {
+        /// Path to `.chip.toml` project file.
+        project: PathBuf,
+        /// Path to revised `.step` / `.stp` model (defaults to re-reading the project's existing model path if omitted).
+        #[arg(long)]
+        step: Option<PathBuf>,
+        /// Optional output `.chip.toml` path (updates `project` in-place if omitted).
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        /// Exit 0 even if one or more deleted/ambiguous features require manual re-pick.
+        #[arg(long)]
+        allow_needs_repick: bool,
+    },
+    /// Portable `.chipz` archive utilities (`pack` / `unpack`, `09-persistence-cli.md` §2).
+    Bundle {
+        #[command(subcommand)]
+        action: BundleCommands,
+    },
     /// Tool library utilities (`import-fusion`).
     Tools {
         #[command(subcommand)]
         action: ToolCommands,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum BundleCommands {
+    /// Pack a `.chip.toml` project, its STEP models, and custom `.post.toml` files into a portable `.chipz` archive.
+    Pack {
+        /// Input `.chip.toml` project file.
+        project: PathBuf,
+        /// Destination `.chipz` bundle file.
+        #[arg(short, long)]
+        output: PathBuf,
+    },
+    /// Unpack a `.chipz` bundle archive into a directory on disk.
+    Unpack {
+        /// Input `.chipz` bundle file.
+        archive: PathBuf,
+        /// Destination directory to extract `project.chip.toml`, `models/`, and `posts/`.
+        #[arg(short, long)]
+        output_dir: PathBuf,
     },
 }
 
@@ -186,9 +234,15 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
             multi_feature,
             tilted,
             cam_torture,
+            revision_v1,
+            revision_v2,
             project_out,
         } => {
-            let step = if cam_torture {
+            let step = if revision_v1 {
+                sample_revised_part_pair_step()?.0
+            } else if revision_v2 {
+                sample_revised_part_pair_step()?.1
+            } else if cam_torture {
                 sample_cam_torture_block_step()?
             } else if multi_feature || tilted {
                 sample_multi_feature_bracket_step(tilted)?
@@ -300,8 +354,9 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
             Ok(ExitCode::SUCCESS)
         }
         Commands::Validate { project, generate } => {
-            let mut proj_doc = ProjectDocument::load_from_path(&project)?;
-            let proj_dir = project.parent();
+            let loaded = load_project_or_chipz(&project)?;
+            let mut proj_doc = loaded.proj;
+            let proj_dir = loaded.dir.as_deref();
             let loaded_cad = load_primary_cad_for_project(&proj_doc, proj_dir).ok();
 
             let report = validate_project(&proj_doc, proj_dir, loaded_cad.as_ref());
@@ -376,8 +431,9 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
             report,
         } => {
             let sim_res_enum = parse_sim_resolution(&resolution);
-            let mut proj_doc = ProjectDocument::load_from_path(&project)?;
-            let proj_dir = project.parent();
+            let loaded = load_project_or_chipz(&project)?;
+            let mut proj_doc = loaded.proj;
+            let proj_dir = loaded.dir.as_deref();
             let cad_doc = load_primary_cad_for_project(&proj_doc, proj_dir)?;
 
             let val_report = validate_project(&proj_doc, proj_dir, Some(&cad_doc));
@@ -533,8 +589,9 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
             post: post_override,
             allow_warnings,
         } => {
-            let mut proj_doc = ProjectDocument::load_from_path(&project)?;
-            let proj_dir = project.parent();
+            let loaded = load_project_or_chipz(&project)?;
+            let mut proj_doc = loaded.proj;
+            let proj_dir = loaded.dir.as_deref();
             let cad_doc = load_primary_cad_for_project(&proj_doc, proj_dir)?;
 
             let val_report = validate_project(&proj_doc, proj_dir, Some(&cad_doc));
@@ -556,10 +613,7 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
 
             std::fs::create_dir_all(&output_dir)?;
 
-            let proj_file_name = project
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or(&proj_doc.project_name);
+            let proj_file_name = proj_doc.project_name.as_str();
             let proj_stem = project
                 .file_stem()
                 .and_then(|s| s.to_str())
@@ -731,6 +785,115 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
             );
             Ok(ExitCode::SUCCESS)
         }
+        Commands::ReloadStep {
+            project,
+            step,
+            output,
+            allow_needs_repick,
+        } => {
+            let mut proj_doc = ProjectDocument::load_from_path(&project)?;
+            let dest_proj = output.unwrap_or_else(|| project.clone());
+            let step_path = match step {
+                Some(s) => s,
+                None => {
+                    let first = proj_doc
+                        .models
+                        .first()
+                        .ok_or("project has no [[models]] entry")?;
+                    resolve_model_path(project.parent(), &first.path)
+                }
+            };
+            let step_bytes = std::fs::read(&step_path)?;
+            let sha = compute_sha256_hex(&step_bytes);
+            let name = step_path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("model.step");
+            let new_doc =
+                MonstertruckKernel.load_step_bytes(name, &step_bytes, DEFAULT_TESS_CHORD_TOL_MM)?;
+            let topo = TopologyGraph::build(&new_doc);
+            let new_rel = portable_model_path(Some(&dest_proj), &step_path);
+
+            let report = rebind_project_to_reloaded_cad(
+                &mut proj_doc,
+                0,
+                &new_doc,
+                &topo,
+                &sha,
+                Some(new_rel),
+            );
+            println!("=== ChipCutter Associative STEP Reload ===");
+            println!("{}", report.summary_line());
+            for w in &report.setup_wcs_warnings {
+                println!("  [WCS WARN] {w}");
+            }
+            for out in &report.operation_outcomes {
+                match out {
+                    OperationReloadOutcome::ReboundDirty {
+                        setup_name,
+                        op_name,
+                        updated_indices,
+                        ..
+                    } => {
+                        println!(
+                            "  [REBOUND ] {setup_name} -> {op_name} ({updated_indices} topology index update(s))"
+                        );
+                    }
+                    OperationReloadOutcome::NeedsRepick {
+                        setup_name,
+                        op_name,
+                        reason,
+                        ..
+                    } => {
+                        println!("  [REPICK! ] {setup_name} -> {op_name}: {reason}");
+                    }
+                    OperationReloadOutcome::SuppressedSkipped {
+                        setup_name,
+                        op_name,
+                        ..
+                    } => {
+                        println!("  [SKIPPED ] {setup_name} -> {op_name} (Suppressed)");
+                    }
+                }
+            }
+            proj_doc.save_to_path(&dest_proj)?;
+            println!("Saved updated project to {}", dest_proj.display());
+
+            if (report.needs_repick_count > 0 || !report.setup_wcs_warnings.is_empty())
+                && !allow_needs_repick
+            {
+                Ok(ExitCode::FAILURE)
+            } else {
+                Ok(ExitCode::SUCCESS)
+            }
+        }
+        Commands::Bundle { action } => match action {
+            BundleCommands::Pack { project, output } => {
+                let proj_doc = ProjectDocument::load_from_path(&project)?;
+                let sum = export_chipz_bundle(&proj_doc, project.parent(), &[], &[], &output)?;
+                println!(
+                    "Packed portable bundle '{}' ({} bytes, {} model(s), {} custom post(s)).",
+                    output.display(),
+                    sum.archive_size_bytes,
+                    sum.model_files.len(),
+                    sum.custom_post_files.len()
+                );
+                Ok(ExitCode::SUCCESS)
+            }
+            BundleCommands::Unpack {
+                archive,
+                output_dir,
+            } => {
+                let unpacked = unpack_chipz_bundle(&archive, &output_dir)?;
+                println!(
+                    "Unpacked '{}' ({} file(s)) -> '{}'.",
+                    unpacked.project.project_name,
+                    unpacked.extracted_files.len(),
+                    unpacked.project_toml_path.display()
+                );
+                Ok(ExitCode::SUCCESS)
+            }
+        },
         Commands::Tools { action } => match action {
             ToolCommands::ImportFusion {
                 input,
@@ -752,6 +915,47 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
                 Ok(ExitCode::SUCCESS)
             }
         },
+    }
+}
+
+struct TempExtractGuard(PathBuf);
+
+impl Drop for TempExtractGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+struct LoadedCliInput {
+    proj: ProjectDocument,
+    dir: Option<PathBuf>,
+    _guard: Option<TempExtractGuard>,
+}
+
+fn load_project_or_chipz(path: &Path) -> Result<LoadedCliInput, Box<dyn std::error::Error>> {
+    if is_chipz_path(path) {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        let temp_dir = std::env::temp_dir().join(format!(
+            "chipcutter_cli_chipz_{}_{nanos}",
+            std::process::id()
+        ));
+        let unpacked = unpack_chipz_bundle(path, &temp_dir)?;
+        let guard = TempExtractGuard(temp_dir.clone());
+        Ok(LoadedCliInput {
+            proj: unpacked.project,
+            dir: Some(temp_dir),
+            _guard: Some(guard),
+        })
+    } else {
+        let proj = ProjectDocument::load_from_path(path)?;
+        let dir = path.parent().map(Path::to_path_buf);
+        Ok(LoadedCliInput {
+            proj,
+            dir,
+            _guard: None,
+        })
     }
 }
 

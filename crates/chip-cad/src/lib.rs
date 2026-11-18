@@ -11,11 +11,13 @@ pub mod kernel;
 pub mod model;
 pub mod monstertruck_kernel;
 pub mod picking;
+pub mod rematch;
 pub mod topology;
 
 pub use fixtures::{
-    SampleStepError, sample_cam_torture_block_step, sample_machined_plate_step,
-    sample_machined_plate_step_inches, sample_multi_feature_bracket_step,
+    SampleStepError, sample_ambiguous_twin_hole_step, sample_cam_torture_block_step,
+    sample_machined_plate_step, sample_machined_plate_step_inches,
+    sample_multi_feature_bracket_step, sample_revised_part_pair_step,
 };
 pub use kernel::{CadError, CadKernel};
 pub use model::{
@@ -25,6 +27,7 @@ pub use model::{
 };
 pub use monstertruck_kernel::MonstertruckKernel;
 pub use picking::{CadPicker, PickFilter, PickHit, PickTarget};
+pub use rematch::{RematchOutcome, rematch_edge, rematch_face, rematch_loop};
 pub use topology::{
     CylindricalHoleSpan, EdgeEndpointInfo, LogicalCylindricalHole, ModeledChamferStrip,
     PlanarFaceLoopClassification, TopologyGraph, VertexId, analyze_cylindrical_hole,

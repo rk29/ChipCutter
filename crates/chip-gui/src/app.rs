@@ -1,26 +1,30 @@
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
+    time::Instant,
 };
 
 use chip_cad::{
     CadDocument, CadKernel, CadPicker, CurveKind, MonstertruckKernel, PickFilter, PickTarget,
     SurfaceKind, TopologyGraph, find_same_diameter_holes, sample_cam_torture_block_step,
-    sample_machined_plate_step, sample_multi_feature_bracket_step,
+    sample_machined_plate_step, sample_multi_feature_bracket_step, sample_revised_part_pair_step,
 };
 use chip_cam::{
     ChamferSourceMode, ChamferTraceMode, ExtractedFeature25D, GeometrySelectionItem,
     HeightReference, HeightSpec, HoleMachiningMode, ManualTabAnchor, Operation, OperationKind,
-    ResolvedHeights, ResolvedSetup, Setup, StrategyParams, TabMarker3D, TabProfileKind, WcsAxisRef,
-    WcsFeaturePointRef, WcsOrientationMode, WcsOriginMode, WorkOffsetSlot,
-    extract_selection_features,
+    OperationStatus, ResolvedHeights, ResolvedSetup, Setup, StrategyParams, TabMarker3D,
+    TabProfileKind, WcsAxisRef, WcsFeaturePointRef, WcsOrientationMode, WcsOriginMode,
+    WorkOffsetSlot, extract_selection_features,
 };
-use chip_math::{DEFAULT_TESS_CHORD_TOL_MM, DVec2, DisplayUnit, EvalContext, ParamLength};
+use chip_math::{
+    DEFAULT_TESS_CHORD_TOL_MM, DVec2, DisplayUnit, EvalContext, ParamLength, approx_eq,
+};
 use chip_project::{
-    JobDispatcher, ModelEntry, ProjectDocument, ToolpathCache, UndoHistory, compute_sha256_hex,
-    portable_model_path, resolve_model_path, validate_project,
+    JobDispatcher, ModelEntry, OperationReloadOutcome, ProjectDocument, ToolpathCache, UndoHistory,
+    compute_sha256_hex, export_chipz_bundle, is_chipz_path, portable_model_path,
+    rebind_project_to_reloaded_cad, resolve_model_path, unpack_chipz_bundle, validate_project,
 };
-use chip_sim::SimDiagnostic;
+use chip_sim::{SimDiagnostic, SimResolution};
 use chip_tools::{ToolLibrary, load_or_default_global_library};
 use crossbeam_channel::{Receiver, Sender};
 
@@ -45,19 +49,22 @@ use crate::{
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum SeedDemoKind {
-    None,
-    MultiFeatureBracket,
-    CamTortureBlock,
+enum LoadPurpose {
+    FreshImport { update_model_entry: bool },
+    SeedMultiFeatureBracket,
+    SeedCamTortureBlock,
+    SeedRevisionDemoV1,
+    ReloadRebind { update_path: bool },
 }
 
 struct LoadedPayload {
     doc: CadDocument,
     picker: CadPicker,
     topo: TopologyGraph,
+    raw_step_bytes: Vec<u8>,
     source_path: Option<PathBuf>,
     sha256_hex: String,
-    seed_demo: SeedDemoKind,
+    purpose: LoadPurpose,
 }
 
 enum LoadJobResult {
@@ -72,6 +79,8 @@ struct LoadedModelState {
     doc: Arc<CadDocument>,
     picker: CadPicker,
     topo: TopologyGraph,
+    raw_step_bytes: Vec<u8>,
+    source_path: Option<PathBuf>,
     revision: u64,
 }
 
@@ -101,6 +110,10 @@ pub struct ChipCutterApp {
 
     project: ProjectDocument,
     project_file_path: Option<PathBuf>,
+    bundle_extract_dir: Option<PathBuf>,
+    clean_undo_len: Option<usize>,
+    last_window_title: String,
+
     history: UndoHistory,
     toolpath_cache: ToolpathCache,
     dispatcher: JobDispatcher,
@@ -126,6 +139,10 @@ pub struct ChipCutterApp {
     job_tx: Sender<LoadJobResult>,
     job_rx: Receiver<LoadJobResult>,
 
+    last_disk_check: Instant,
+    external_step_modified: bool,
+    last_reload_banner: Option<(String, bool)>,
+
     pick_filter: PickFilter,
     highlight: HighlightState,
 
@@ -135,6 +152,14 @@ pub struct ChipCutterApp {
 
     logs: Vec<String>,
     self_test: Option<SelfTestConfig>,
+}
+
+impl Drop for ChipCutterApp {
+    fn drop(&mut self) {
+        if let Some(dir) = self.bundle_extract_dir.take() {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
 }
 
 impl ChipCutterApp {
@@ -167,6 +192,9 @@ impl ChipCutterApp {
             wgpu_render_state,
             project: ProjectDocument::new("CAM Torture Block Job"),
             project_file_path: None,
+            bundle_extract_dir: None,
+            clean_undo_len: Some(0),
+            last_window_title: String::new(),
             history: UndoHistory::new(100),
             toolpath_cache: ToolpathCache::new(128),
             dispatcher,
@@ -189,24 +217,29 @@ impl ChipCutterApp {
             loading_in_flight: false,
             job_tx,
             job_rx,
+            last_disk_check: Instant::now(),
+            external_step_modified: false,
+            last_reload_banner: None,
             pick_filter: PickFilter::Any,
             highlight: HighlightState::default(),
             wb_tool_dia: ExpressionInput::new(6.35, Some("1/4 in")),
             wb_stepover: ExpressionInput::new(2.54, Some("tool_d * 0.4")),
             wb_clearance_z: ExpressionInput::new(26.0, Some("model_top_z + 10 mm")),
             logs: vec![
-                "ChipCutter v0.1.0 initialized (Milestone 4: Heightmap Simulation, Crash Verifier, & TOML Post-Processors)."
+                "ChipCutter v0.1.0 initialized (v1 Complete: Associative STEP Reload, .chipz Bundles, Heightmap Verifier, & Post-Processors)."
                     .to_string(),
             ],
             self_test,
         };
 
         if let Some(path) = initial_path {
-            let is_chip_proj = path
+            if is_chipz_path(&path) {
+                app.load_chipz_from_disk(&path, cc.egui_ctx.clone());
+            } else if path
                 .to_string_lossy()
                 .to_ascii_lowercase()
-                .ends_with(".toml");
-            if is_chip_proj {
+                .ends_with(".toml")
+            {
                 app.load_project_from_disk(&path, cc.egui_ctx.clone());
             } else {
                 app.spawn_step_file_load(path, cc.egui_ctx.clone());
@@ -216,6 +249,19 @@ impl ChipCutterApp {
         }
 
         app
+    }
+
+    fn active_project_dir(&self) -> Option<&Path> {
+        self.project_file_path
+            .as_deref()
+            .and_then(Path::parent)
+            .or(self.bundle_extract_dir.as_deref())
+    }
+
+    fn clear_bundle_extract_dir(&mut self) {
+        if let Some(dir) = self.bundle_extract_dir.take() {
+            let _ = std::fs::remove_dir_all(dir);
+        }
     }
 
     fn eval_context(&self) -> EvalContext {
@@ -246,22 +292,81 @@ impl ChipCutterApp {
     fn load_project_from_disk(&mut self, path: &Path, egui_ctx: egui::Context) {
         match ProjectDocument::load_from_path(path) {
             Ok(doc) => {
+                self.clear_bundle_extract_dir();
                 self.history.clear();
+                self.clean_undo_len = Some(0);
+                self.external_step_modified = false;
+                self.last_reload_banner = None;
                 self.project = doc;
                 self.project_file_path = Some(path.to_path_buf());
                 self.active_setup_idx = 0;
                 self.inspector_focus = InspectorFocus::Setup { setup_idx: 0 };
                 self.pick_mode = ViewportPickMode::InspectEntity;
+                self.gcode_panel.refresh_profiles(path.parent());
                 self.logs
                     .push(format!("Opened project '{}'.", path.display()));
                 if let Some(first_model) = self.project.models.first() {
                     let step_path = resolve_model_path(path.parent(), &first_model.path);
-                    self.spawn_step_file_load_internal(step_path, false, egui_ctx);
+                    self.spawn_step_file_load_with_purpose(
+                        step_path,
+                        LoadPurpose::FreshImport {
+                            update_model_entry: false,
+                        },
+                        egui_ctx,
+                    );
                 }
             }
             Err(err) => {
                 self.logs
                     .push(format!("ERROR opening project '{}': {err}", path.display()));
+            }
+        }
+    }
+
+    fn load_chipz_from_disk(&mut self, archive_path: &Path, egui_ctx: egui::Context) {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        let extract_dir = std::env::temp_dir().join(format!(
+            "chipcutter_gui_chipz_{}_{nanos}",
+            std::process::id()
+        ));
+        match unpack_chipz_bundle(archive_path, &extract_dir) {
+            Ok(unpacked) => {
+                self.clear_bundle_extract_dir();
+                self.bundle_extract_dir = Some(extract_dir.clone());
+                self.history.clear();
+                self.clean_undo_len = Some(0);
+                self.external_step_modified = false;
+                self.last_reload_banner = None;
+                self.project = unpacked.project;
+                self.project_file_path = None;
+                self.active_setup_idx = 0;
+                self.inspector_focus = InspectorFocus::Setup { setup_idx: 0 };
+                self.pick_mode = ViewportPickMode::InspectEntity;
+                self.gcode_panel.refresh_profiles(Some(&extract_dir));
+                self.logs.push(format!(
+                    "Unpacked portable bundle '{}' ({} file(s)).",
+                    archive_path.display(),
+                    unpacked.extracted_files.len()
+                ));
+                if let Some(first_model) = self.project.models.first() {
+                    let step_path = resolve_model_path(Some(&extract_dir), &first_model.path);
+                    self.spawn_step_file_load_with_purpose(
+                        step_path,
+                        LoadPurpose::FreshImport {
+                            update_model_entry: false,
+                        },
+                        egui_ctx,
+                    );
+                }
+            }
+            Err(err) => {
+                let _ = std::fs::remove_dir_all(&extract_dir);
+                self.logs.push(format!(
+                    "ERROR unpacking portable bundle '{}': {err}",
+                    archive_path.display()
+                ));
             }
         }
     }
@@ -276,6 +381,7 @@ impl ChipCutterApp {
         match self.project.save_to_path(path) {
             Ok(()) => {
                 self.project_file_path = Some(path.to_path_buf());
+                self.clean_undo_len = Some(self.history.undo_len());
                 self.logs
                     .push(format!("Saved project to '{}'.", path.display()));
             }
@@ -286,14 +392,110 @@ impl ChipCutterApp {
         }
     }
 
-    fn spawn_step_file_load(&mut self, path: PathBuf, egui_ctx: egui::Context) {
-        self.spawn_step_file_load_internal(path, true, egui_ctx);
+    fn export_chipz_dialog(&mut self) {
+        let default_stem = self
+            .project_file_path
+            .as_deref()
+            .and_then(Path::file_stem)
+            .and_then(|s| s.to_str())
+            .map(|s| s.trim_end_matches(".chip"))
+            .unwrap_or("job");
+        let Some(dest_path) = rfd::FileDialog::new()
+            .add_filter("ChipCutter Portable Bundle (.chipz)", &["chipz"])
+            .set_file_name(format!("{default_stem}.chipz"))
+            .save_file()
+        else {
+            return;
+        };
+
+        let mut fallback: Vec<(&str, &[u8])> = Vec::new();
+        if let (Some(m), Some(first)) = (&self.model, self.project.models.first()) {
+            fallback.push((first.id.as_str(), m.raw_step_bytes.as_slice()));
+            fallback.push((first.path.as_str(), m.raw_step_bytes.as_slice()));
+        }
+        let proj_dir = self
+            .project_file_path
+            .as_deref()
+            .and_then(Path::parent)
+            .or(self.bundle_extract_dir.as_deref());
+        match export_chipz_bundle(
+            &self.project,
+            proj_dir,
+            &fallback,
+            self.gcode_panel.custom_profiles(),
+            &dest_path,
+        ) {
+            Ok(sum) => {
+                self.logs.push(format!(
+                    "Exported portable bundle '{}' ({} bytes, {} model(s), {} custom post(s)).",
+                    dest_path.display(),
+                    sum.archive_size_bytes,
+                    sum.model_files.len(),
+                    sum.custom_post_files.len()
+                ));
+            }
+            Err(err) => {
+                self.logs.push(format!(
+                    "ERROR exporting portable bundle '{}': {err}",
+                    dest_path.display()
+                ));
+            }
+        }
     }
 
-    fn spawn_step_file_load_internal(
+    fn reload_active_step_model(&mut self, egui_ctx: &egui::Context) {
+        let disk_path = self
+            .model
+            .as_ref()
+            .and_then(|m| m.source_path.clone())
+            .or_else(|| {
+                let first = self.project.models.first()?;
+                let resolved = resolve_model_path(self.active_project_dir(), &first.path);
+                resolved.is_file().then_some(resolved)
+            });
+
+        if let Some(step_path) = disk_path {
+            self.spawn_step_file_load_with_purpose(
+                step_path,
+                LoadPurpose::ReloadRebind { update_path: false },
+                egui_ctx.clone(),
+            );
+        } else {
+            self.logs.push(
+                "Current STEP model is an in-memory sample; choose a STEP file on disk to associatively re-bind (or try '-> Rev v2')."
+                    .to_string(),
+            );
+            self.replace_step_dialog(egui_ctx);
+        }
+    }
+
+    fn replace_step_dialog(&mut self, ctx: &egui::Context) {
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("STEP 3D Models", &["step", "stp", "STEP", "STP"])
+            .pick_file()
+        {
+            self.spawn_step_file_load_with_purpose(
+                path,
+                LoadPurpose::ReloadRebind { update_path: true },
+                ctx.clone(),
+            );
+        }
+    }
+
+    fn spawn_step_file_load(&mut self, path: PathBuf, egui_ctx: egui::Context) {
+        self.spawn_step_file_load_with_purpose(
+            path,
+            LoadPurpose::FreshImport {
+                update_model_entry: true,
+            },
+            egui_ctx,
+        );
+    }
+
+    fn spawn_step_file_load_with_purpose(
         &mut self,
         path: PathBuf,
-        update_model_entry: bool,
+        purpose: LoadPurpose,
         egui_ctx: egui::Context,
     ) {
         self.loading_in_flight = true;
@@ -303,7 +505,7 @@ impl ChipCutterApp {
         ));
         let tx = self.job_tx.clone();
         rayon::spawn(move || {
-            let t0 = std::time::Instant::now();
+            let t0 = Instant::now();
             let res = match std::fs::read(&path) {
                 Ok(bytes) => {
                     let sha256_hex = compute_sha256_hex(&bytes);
@@ -325,9 +527,10 @@ impl ChipCutterApp {
                                     doc,
                                     picker,
                                     topo,
-                                    source_path: if update_model_entry { Some(path) } else { None },
+                                    raw_step_bytes: bytes,
+                                    source_path: Some(path),
                                     sha256_hex,
-                                    seed_demo: SeedDemoKind::None,
+                                    purpose,
                                 }),
                                 elapsed_ms: t0.elapsed().as_millis(),
                             }
@@ -348,13 +551,14 @@ impl ChipCutterApp {
             .push("Generating & tessellating sample CNC mounting plate STEP model…".to_string());
         let tx = self.job_tx.clone();
         rayon::spawn(move || {
-            let t0 = std::time::Instant::now();
+            let t0 = Instant::now();
             let res = match sample_machined_plate_step() {
                 Ok(step_str) => {
-                    let sha256_hex = compute_sha256_hex(step_str.as_bytes());
+                    let raw_bytes = step_str.into_bytes();
+                    let sha256_hex = compute_sha256_hex(&raw_bytes);
                     match MonstertruckKernel.load_step_bytes(
                         "sample_machined_plate.step",
-                        step_str.as_bytes(),
+                        &raw_bytes,
                         DEFAULT_TESS_CHORD_TOL_MM,
                     ) {
                         Ok(doc) => {
@@ -365,9 +569,12 @@ impl ChipCutterApp {
                                     doc,
                                     picker,
                                     topo,
+                                    raw_step_bytes: raw_bytes,
                                     source_path: None,
                                     sha256_hex,
-                                    seed_demo: SeedDemoKind::None,
+                                    purpose: LoadPurpose::FreshImport {
+                                        update_model_entry: false,
+                                    },
                                 }),
                                 elapsed_ms: t0.elapsed().as_millis(),
                             }
@@ -394,10 +601,11 @@ impl ChipCutterApp {
         ));
         let tx = self.job_tx.clone();
         rayon::spawn(move || {
-            let t0 = std::time::Instant::now();
+            let t0 = Instant::now();
             let res = match sample_multi_feature_bracket_step(tilted) {
                 Ok(step_str) => {
-                    let sha256_hex = compute_sha256_hex(step_str.as_bytes());
+                    let raw_bytes = step_str.into_bytes();
+                    let sha256_hex = compute_sha256_hex(&raw_bytes);
                     let name = if tilted {
                         "sample_multi_feature_tilted.step"
                     } else {
@@ -405,7 +613,7 @@ impl ChipCutterApp {
                     };
                     match MonstertruckKernel.load_step_bytes(
                         name,
-                        step_str.as_bytes(),
+                        &raw_bytes,
                         DEFAULT_TESS_CHORD_TOL_MM,
                     ) {
                         Ok(doc) => {
@@ -416,12 +624,15 @@ impl ChipCutterApp {
                                     doc,
                                     picker,
                                     topo,
+                                    raw_step_bytes: raw_bytes,
                                     source_path: None,
                                     sha256_hex,
-                                    seed_demo: if seed_demo_ops {
-                                        SeedDemoKind::MultiFeatureBracket
+                                    purpose: if seed_demo_ops {
+                                        LoadPurpose::SeedMultiFeatureBracket
                                     } else {
-                                        SeedDemoKind::None
+                                        LoadPurpose::FreshImport {
+                                            update_model_entry: false,
+                                        }
                                     },
                                 }),
                                 elapsed_ms: t0.elapsed().as_millis(),
@@ -445,13 +656,14 @@ impl ChipCutterApp {
         );
         let tx = self.job_tx.clone();
         rayon::spawn(move || {
-            let t0 = std::time::Instant::now();
+            let t0 = Instant::now();
             let res = match sample_cam_torture_block_step() {
                 Ok(step_str) => {
-                    let sha256_hex = compute_sha256_hex(step_str.as_bytes());
+                    let raw_bytes = step_str.into_bytes();
+                    let sha256_hex = compute_sha256_hex(&raw_bytes);
                     match MonstertruckKernel.load_step_bytes(
                         "sample_cam_torture_block.step",
-                        step_str.as_bytes(),
+                        &raw_bytes,
                         DEFAULT_TESS_CHORD_TOL_MM,
                     ) {
                         Ok(doc) => {
@@ -462,13 +674,75 @@ impl ChipCutterApp {
                                     doc,
                                     picker,
                                     topo,
+                                    raw_step_bytes: raw_bytes,
                                     source_path: None,
                                     sha256_hex,
-                                    seed_demo: if seed_demo_ops {
-                                        SeedDemoKind::CamTortureBlock
+                                    purpose: if seed_demo_ops {
+                                        LoadPurpose::SeedCamTortureBlock
                                     } else {
-                                        SeedDemoKind::None
+                                        LoadPurpose::FreshImport {
+                                            update_model_entry: false,
+                                        }
                                     },
+                                }),
+                                elapsed_ms: t0.elapsed().as_millis(),
+                            }
+                        }
+                        Err(e) => LoadJobResult::Failed(e.to_string()),
+                    }
+                }
+                Err(e) => LoadJobResult::Failed(e.to_string()),
+            };
+            let _ = tx.send(res);
+            egui_ctx.request_repaint();
+        });
+    }
+
+    fn spawn_revision_demo_load(&mut self, load_v2_rebind: bool, egui_ctx: egui::Context) {
+        self.loading_in_flight = true;
+        self.logs.push(if load_v2_rebind {
+            "Reloading CAD Revision v2 STEP fixture (resized pocket, shifted Ø14 bore, 1 deleted Ø6 hole)…"
+                .to_string()
+        } else {
+            "Generating Milestone 5 CAD Revision v1 STEP fixture & seeding CAM job…".to_string()
+        });
+        let tx = self.job_tx.clone();
+        rayon::spawn(move || {
+            let t0 = Instant::now();
+            let res = match sample_revised_part_pair_step() {
+                Ok((v1_str, v2_str)) => {
+                    let (name, step_str, purpose) = if load_v2_rebind {
+                        (
+                            "sample_revision_part_v2.step",
+                            v2_str,
+                            LoadPurpose::ReloadRebind { update_path: false },
+                        )
+                    } else {
+                        (
+                            "sample_revision_part_v1.step",
+                            v1_str,
+                            LoadPurpose::SeedRevisionDemoV1,
+                        )
+                    };
+                    let raw_bytes = step_str.into_bytes();
+                    let sha256_hex = compute_sha256_hex(&raw_bytes);
+                    match MonstertruckKernel.load_step_bytes(
+                        name,
+                        &raw_bytes,
+                        DEFAULT_TESS_CHORD_TOL_MM,
+                    ) {
+                        Ok(doc) => {
+                            let picker = CadPicker::build(&doc);
+                            let topo = TopologyGraph::build(&doc);
+                            LoadJobResult::Loaded {
+                                payload: Box::new(LoadedPayload {
+                                    doc,
+                                    picker,
+                                    topo,
+                                    raw_step_bytes: raw_bytes,
+                                    source_path: None,
+                                    sha256_hex,
+                                    purpose,
                                 }),
                                 elapsed_ms: t0.elapsed().as_millis(),
                             }
@@ -495,9 +769,10 @@ impl ChipCutterApp {
                         doc,
                         picker,
                         topo,
+                        raw_step_bytes,
                         source_path,
                         sha256_hex,
-                        seed_demo,
+                        purpose,
                     } = *payload;
                     let size = doc.aabb_mm.size();
                     self.logs.push(format!(
@@ -514,34 +789,142 @@ impl ChipCutterApp {
                     ));
 
                     self.dispatcher.cancel_all();
+                    self.external_step_modified = false;
 
-                    match seed_demo {
-                        SeedDemoKind::MultiFeatureBracket => {
+                    let was_model_empty = self.model.is_none();
+                    let mut fit_camera = true;
+
+                    match purpose {
+                        LoadPurpose::SeedMultiFeatureBracket => {
+                            self.history.clear();
+                            self.clean_undo_len = Some(0);
+                            self.last_reload_banner = None;
                             self.seed_initial_demo_job(&doc);
+                            self.project.models = vec![ModelEntry {
+                                id: "model_1".to_string(),
+                                path: doc.source_name.clone(),
+                                sha256: sha256_hex.clone(),
+                            }];
                         }
-                        SeedDemoKind::CamTortureBlock => {
+                        LoadPurpose::SeedCamTortureBlock => {
+                            self.history.clear();
+                            self.clean_undo_len = Some(0);
+                            self.last_reload_banner = None;
                             self.seed_cam_torture_demo_job(&doc, &sha256_hex);
                         }
-                        SeedDemoKind::None => {}
+                        LoadPurpose::SeedRevisionDemoV1 => {
+                            self.history.clear();
+                            self.clean_undo_len = Some(0);
+                            self.last_reload_banner = None;
+                            self.seed_revision_v1_demo_job(&doc, &topo, &sha256_hex);
+                        }
+                        LoadPurpose::FreshImport { update_model_entry } => {
+                            self.last_reload_banner = None;
+                            if update_model_entry {
+                                if let Some(step_path) = &source_path {
+                                    let rel = portable_model_path(
+                                        self.project_file_path.as_deref(),
+                                        step_path,
+                                    );
+                                    self.project.models = vec![ModelEntry {
+                                        id: "model_1".to_string(),
+                                        path: rel,
+                                        sha256: sha256_hex.clone(),
+                                    }];
+                                }
+                            } else if self.project.models.is_empty() {
+                                self.project.models = vec![ModelEntry {
+                                    id: "model_1".to_string(),
+                                    path: doc.source_name.clone(),
+                                    sha256: sha256_hex.clone(),
+                                }];
+                            }
+                        }
+                        LoadPurpose::ReloadRebind { update_path } => {
+                            fit_camera = was_model_empty;
+                            self.history.record_before_edit(
+                                "Reload STEP Model",
+                                None,
+                                &self.project,
+                            );
+                            let new_rel = if update_path {
+                                source_path.as_ref().map(|sp| {
+                                    portable_model_path(self.project_file_path.as_deref(), sp)
+                                })
+                            } else {
+                                None
+                            };
+                            let report = rebind_project_to_reloaded_cad(
+                                &mut self.project,
+                                0,
+                                &doc,
+                                &topo,
+                                &sha256_hex,
+                                new_rel,
+                            );
+                            let summary = report.summary_line();
+                            let has_warn = report.needs_repick_count > 0
+                                || !report.setup_wcs_warnings.is_empty();
+                            self.logs.push(summary.clone());
+                            for w in &report.setup_wcs_warnings {
+                                self.logs.push(format!("  [WCS WARN] {w}"));
+                            }
+                            let mut first_repick: Option<(usize, usize)> = None;
+                            for out in &report.operation_outcomes {
+                                match out {
+                                    OperationReloadOutcome::ReboundDirty {
+                                        setup_name,
+                                        op_name,
+                                        updated_indices,
+                                        ..
+                                    } => {
+                                        self.logs.push(format!(
+                                            "  [REBOUND ] {setup_name} -> {op_name} ({updated_indices} topology update(s))"
+                                        ));
+                                    }
+                                    OperationReloadOutcome::NeedsRepick {
+                                        setup_name,
+                                        op_id,
+                                        op_name,
+                                        reason,
+                                    } => {
+                                        self.logs.push(format!(
+                                            "  [REPICK! ] {setup_name} -> {op_name}: {reason}"
+                                        ));
+                                        if first_repick.is_none() {
+                                            for (si, s) in self.project.setups.iter().enumerate() {
+                                                if let Some(oi) = s
+                                                    .operations
+                                                    .iter()
+                                                    .position(|op| &op.id == op_id)
+                                                {
+                                                    first_repick = Some((si, oi));
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    }
+                                    OperationReloadOutcome::SuppressedSkipped { .. } => {}
+                                }
+                            }
+                            if let Some((si, oi)) = first_repick {
+                                self.active_setup_idx = si;
+                                self.inspector_focus = InspectorFocus::Operation {
+                                    setup_idx: si,
+                                    op_idx: oi,
+                                };
+                                self.op_tab = OperationTab::Geometry;
+                            }
+                            self.sim_panel.cancel_in_flight();
+                            self.sim_panel.active_result = None;
+                            self.gcode_panel.invalidate_preview();
+                            self.last_reload_banner = Some((summary, has_warn));
+                        }
                     }
 
-                    if let Some(step_path) = source_path {
-                        let rel =
-                            portable_model_path(self.project_file_path.as_deref(), &step_path);
-                        self.project.models = vec![ModelEntry {
-                            id: "model_1".to_string(),
-                            path: rel,
-                            sha256: sha256_hex,
-                        }];
-                    } else if self.project.models.is_empty() {
-                        self.project.models = vec![ModelEntry {
-                            id: "model_1".to_string(),
-                            path: doc.source_name.clone(),
-                            sha256: sha256_hex,
-                        }];
+                    if fit_camera {
+                        self.camera.fit_aabb(&doc.aabb_mm);
                     }
-
-                    self.camera.fit_aabb(&doc.aabb_mm);
                     self.highlight.hovered = None;
                     self.highlight.selected = None;
 
@@ -551,11 +934,16 @@ impl ChipCutterApp {
                         doc: Arc::new(doc),
                         picker,
                         topo,
+                        raw_step_bytes,
+                        source_path,
                         revision: rev,
                     });
                     self.refresh_dependent_expressions();
 
-                    if seed_demo == SeedDemoKind::CamTortureBlock {
+                    if matches!(
+                        purpose,
+                        LoadPurpose::SeedCamTortureBlock | LoadPurpose::SeedRevisionDemoV1
+                    ) {
                         self.auto_sim_after_gen = true;
                         self.trigger_generate_dirty(None, None);
                     }
@@ -563,6 +951,21 @@ impl ChipCutterApp {
                 LoadJobResult::Failed(err) => {
                     self.logs.push(format!("ERROR loading STEP model: {err}"));
                 }
+            }
+        }
+
+        // Throttled (every 2s) external STEP modification check on disk (`09-persistence-cli.md` §1)
+        if !self.loading_in_flight && self.last_disk_check.elapsed().as_secs_f32() >= 2.0 {
+            self.last_disk_check = Instant::now();
+            if let (Some(m), Some(first)) = (&self.model, self.project.models.first())
+                && let Some(disk_path) = &m.source_path
+                && let Ok(meta) = std::fs::metadata(disk_path)
+                && meta.is_file()
+                && meta.len() <= 64 * 1024 * 1024
+                && let Ok(bytes) = std::fs::read(disk_path)
+            {
+                let disk_sha = compute_sha256_hex(&bytes);
+                self.external_step_modified = disk_sha != first.sha256;
             }
         }
 
@@ -593,7 +996,11 @@ impl ChipCutterApp {
                 .push("Cannot simulate: load a STEP model first.".to_string());
             return;
         };
-        let proj_dir = self.project_file_path.as_deref().and_then(Path::parent);
+        let proj_dir = self
+            .project_file_path
+            .as_deref()
+            .and_then(Path::parent)
+            .or(self.bundle_extract_dir.as_deref());
         self.sim_panel.trigger_simulation(
             &self.project,
             self.active_setup_idx,
@@ -981,6 +1388,206 @@ impl ChipCutterApp {
         self.history.clear();
     }
 
+    fn seed_revision_v1_demo_job(
+        &mut self,
+        doc: &CadDocument,
+        topo: &TopologyGraph,
+        sha256_hex: &str,
+    ) {
+        self.project = ProjectDocument::new("CAD Revision Demo (v1 -> v2)");
+        self.project_file_path = None;
+        self.clear_bundle_extract_dir();
+        self.project.models = vec![ModelEntry {
+            id: "model_1".to_string(),
+            path: doc.source_name.clone(),
+            sha256: sha256_hex.to_string(),
+        }];
+
+        for t in &self.global_tools.tools {
+            self.project.ensure_tool_embedded(t);
+        }
+
+        let flat_6mm = self
+            .project
+            .tools
+            .iter()
+            .find(|t| {
+                matches!(
+                    t.geometry,
+                    chip_tools::CutterGeometry::FlatEndmill { diameter_mm, .. }
+                    if (diameter_mm - 6.0).abs() < 0.05
+                )
+            })
+            .cloned();
+        let face_38mm = self
+            .project
+            .tools
+            .iter()
+            .find(|t| matches!(t.geometry, chip_tools::CutterGeometry::FaceMill { .. }))
+            .cloned();
+        let drill_6mm = self
+            .project
+            .tools
+            .iter()
+            .find(|t| matches!(t.geometry, chip_tools::CutterGeometry::TwistDrill { .. }))
+            .cloned();
+        let chamf_90 = self
+            .project
+            .tools
+            .iter()
+            .find(|t| matches!(t.geometry, chip_tools::CutterGeometry::ChamferMill { .. }))
+            .cloned();
+
+        if let Some(fm) = &face_38mm {
+            let mut op = Operation::new("op_0_face", "Face Stock Top", OperationKind::Facing);
+            op.tool_id = Some(fm.id.clone());
+            op.preset_id = fm.presets.first().map(|p| p.id.clone());
+            self.project.setups[0].operations.push(op);
+        }
+
+        if let Some(pkt_face) = doc.faces.iter().find(|f| {
+            matches!(
+                f.surface,
+                SurfaceKind::Plane { origin_mm, normal }
+                if normal.z > 0.99 && approx_eq(origin_mm.z, 12.0, 1e-2)
+            )
+        }) && let Some(bind) = doc.bind_face(pkt_face.id)
+            && let Some(em) = &flat_6mm
+        {
+            let mut op =
+                Operation::new("op_1_pkt", "Resized Blind Pocket", OperationKind::Pocket2D);
+            op.tool_id = Some(em.id.clone());
+            op.preset_id = em.presets.first().map(|p| p.id.clone());
+            op.selections
+                .push(GeometrySelectionItem::PlanarFace { binding: bind });
+            self.project.setups[0].operations.push(op);
+        }
+
+        if let Some(bore_face) = doc.faces.iter().find(|f| {
+            matches!(
+                f.surface,
+                SurfaceKind::Cylinder {
+                    radius_mm,
+                    is_internal: true,
+                    ..
+                } if approx_eq(radius_mm, 7.0, 1e-2)
+            )
+        }) && let Some(bind) = doc.bind_face(bore_face.id)
+            && let Some(em) = &flat_6mm
+        {
+            let mut op = Operation::new(
+                "op_2_bore",
+                "Shifted Ø14mm Helical Bore",
+                OperationKind::DrillBore,
+            );
+            op.tool_id = Some(em.id.clone());
+            op.preset_id = em.presets.first().map(|p| p.id.clone());
+            if let StrategyParams::DrillBore(p) = op.strategy_mut() {
+                p.mode = HoleMachiningMode::HelicalBore;
+            }
+            op.selections
+                .push(GeometrySelectionItem::CylindricalHole { binding: bind });
+            self.project.setups[0].operations.push(op);
+        }
+
+        if let Some(h_keep) = doc.faces.iter().find(|f| {
+            matches!(
+                f.surface,
+                SurfaceKind::Cylinder {
+                    axis_origin_mm,
+                    radius_mm,
+                    is_internal: true,
+                    ..
+                } if approx_eq(radius_mm, 3.0, 1e-2) && approx_eq(axis_origin_mm.y, 48.0, 0.2)
+            )
+        }) && let Some(bind) = doc.bind_face(h_keep.id)
+            && let Some(dr) = &drill_6mm
+        {
+            let mut op = Operation::new(
+                "op_3_hole_keep",
+                "Surviving Ø6mm Hole",
+                OperationKind::DrillBore,
+            );
+            op.tool_id = Some(dr.id.clone());
+            op.preset_id = dr.presets.first().map(|p| p.id.clone());
+            op.selections
+                .push(GeometrySelectionItem::CylindricalHole { binding: bind });
+            self.project.setups[0].operations.push(op);
+        }
+
+        if let Some(h_del) = doc.faces.iter().find(|f| {
+            matches!(
+                f.surface,
+                SurfaceKind::Cylinder {
+                    axis_origin_mm,
+                    radius_mm,
+                    is_internal: true,
+                    ..
+                } if approx_eq(radius_mm, 3.0, 1e-2) && approx_eq(axis_origin_mm.y, 60.0, 0.2)
+            )
+        }) && let Some(bind) = doc.bind_face(h_del.id)
+            && let Some(dr) = &drill_6mm
+        {
+            let mut op = Operation::new(
+                "op_4_hole_deleted",
+                "Mounting Hole (Deleted in v2)",
+                OperationKind::DrillBore,
+            );
+            op.tool_id = Some(dr.id.clone());
+            op.preset_id = dr.presets.first().map(|p| p.id.clone());
+            op.selections
+                .push(GeometrySelectionItem::CylindricalHole { binding: bind });
+            self.project.setups[0].operations.push(op);
+        }
+
+        if let (Some(e_front), Some(e_ang), Some(cm)) = (
+            doc.edges.iter().find(|e| {
+                approx_eq(e.aabb_mm.min.z, 20.0, 1e-2)
+                    && approx_eq(e.aabb_mm.max.y, 0.0, 1e-2)
+                    && approx_eq(e.aabb_mm.max.x, 80.0, 1e-2)
+            }),
+            doc.edges.iter().find(|e| {
+                approx_eq(e.aabb_mm.min.z, 20.0, 1e-2)
+                    && approx_eq(e.aabb_mm.min.x, 80.0, 1e-2)
+                    && approx_eq(e.aabb_mm.max.x, 90.0, 1e-2)
+            }),
+            &chamf_90,
+        ) && let Some(chain_uses) = topo.find_open_edge_chain(doc, e_front.id, e_ang.id)
+            && let (Some(sb), Some(eb)) = (doc.bind_edge(e_front.id), doc.bind_edge(e_ang.id))
+        {
+            let mut op = Operation::new(
+                "op_5_front_chamf",
+                "Front Chamfer Open Chain",
+                OperationKind::ChamferTrace,
+            );
+            op.tool_id = Some(cm.id.clone());
+            op.preset_id = cm.presets.first().map(|p| p.id.clone());
+            op.selections.push(GeometrySelectionItem::OpenChain {
+                body_id: doc.bodies[0].id,
+                start_edge: sb,
+                end_edge: eb,
+                resolved_edges: chain_uses,
+                reverse: false,
+                side_flip: true,
+            });
+            if let StrategyParams::ChamferTrace(p) = op.strategy_mut() {
+                p.mode = ChamferTraceMode::EdgeChamfer;
+                p.chamfer_source = ChamferSourceMode::SharpEdge {
+                    width: ParamLength::from_mm(0.5),
+                };
+            }
+            self.project.setups[0].operations.push(op);
+        }
+
+        self.active_setup_idx = 0;
+        self.inspector_focus = InspectorFocus::Operation {
+            setup_idx: 0,
+            op_idx: 1,
+        };
+        self.op_tab = OperationTab::Passes;
+        self.history.clear();
+    }
+
     fn active_resolved_setup(&self) -> Option<Result<ResolvedSetup, String>> {
         let m = self.model.as_ref()?;
         let setup = self.project.setups.get(self.active_setup_idx)?;
@@ -1038,6 +1645,7 @@ impl ChipCutterApp {
                 if let (Some(m), Some(rs)) = (&self.model, &resolved_opt)
                     && let Some(setup) = self.project.setups.get(setup_idx)
                     && let Some(op) = setup.operations.get(op_idx)
+                    && !matches!(op.runtime_status, OperationStatus::NeedsRepick { .. })
                     && let Ok(sum) = extract_selection_features(&m.doc, rs, &op.selections)
                 {
                     for fid in sum.highlight_faces {
@@ -1316,7 +1924,11 @@ impl ChipCutterApp {
                         None,
                         &self.project,
                     );
-                    let sels = &mut self.project.setups[setup_idx].operations[op_idx].selections;
+                    let op_mut = &mut self.project.setups[setup_idx].operations[op_idx];
+                    if matches!(op_mut.runtime_status, OperationStatus::NeedsRepick { .. }) {
+                        op_mut.selections.clear();
+                    }
+                    let sels = &mut op_mut.selections;
                     if let Some(pos) = sels.iter().position(|s| {
                         matches!(s, GeometrySelectionItem::PlanarFace { binding } if binding.last_index == fid.0)
                     }) {
@@ -1324,7 +1936,7 @@ impl ChipCutterApp {
                     } else {
                         sels.push(GeometrySelectionItem::PlanarFace { binding: bind });
                     }
-                    self.project.setups[setup_idx].operations[op_idx].mark_dirty();
+                    op_mut.mark_dirty();
                 }
             }
             ViewportPickMode::OpClosedLoops { setup_idx, op_idx } => {
@@ -1343,7 +1955,11 @@ impl ChipCutterApp {
                         None,
                         &self.project,
                     );
-                    let sels = &mut self.project.setups[setup_idx].operations[op_idx].selections;
+                    let op_mut = &mut self.project.setups[setup_idx].operations[op_idx];
+                    if matches!(op_mut.runtime_status, OperationStatus::NeedsRepick { .. }) {
+                        op_mut.selections.clear();
+                    }
+                    let sels = &mut op_mut.selections;
                     if let Some(pos) = sels.iter().position(|s| {
                         matches!(s, GeometrySelectionItem::ClosedLoop { binding, .. } if binding.last_index == lid.0)
                     }) {
@@ -1355,7 +1971,7 @@ impl ChipCutterApp {
                             side_flip: false,
                         });
                     }
-                    self.project.setups[setup_idx].operations[op_idx].mark_dirty();
+                    op_mut.mark_dirty();
                 }
             }
             ViewportPickMode::OpOpenChain {
@@ -1389,17 +2005,22 @@ impl ChipCutterApp {
                                     None,
                                     &self.project,
                                 );
-                                self.project.setups[setup_idx].operations[op_idx]
-                                    .selections
-                                    .push(GeometrySelectionItem::OpenChain {
-                                        body_id: s_rec.body_id,
-                                        start_edge: sb,
-                                        end_edge: eb,
-                                        resolved_edges: chain_uses,
-                                        reverse: false,
-                                        side_flip: false,
-                                    });
-                                self.project.setups[setup_idx].operations[op_idx].mark_dirty();
+                                let op_mut = &mut self.project.setups[setup_idx].operations[op_idx];
+                                if matches!(
+                                    op_mut.runtime_status,
+                                    OperationStatus::NeedsRepick { .. }
+                                ) {
+                                    op_mut.selections.clear();
+                                }
+                                op_mut.selections.push(GeometrySelectionItem::OpenChain {
+                                    body_id: s_rec.body_id,
+                                    start_edge: sb,
+                                    end_edge: eb,
+                                    resolved_edges: chain_uses,
+                                    reverse: false,
+                                    side_flip: false,
+                                });
+                                op_mut.mark_dirty();
                             } else {
                                 self.logs.push(format!(
                                     "Could not find connected open edge path from Edge #{} to Edge #{}.",
@@ -1423,7 +2044,11 @@ impl ChipCutterApp {
                 {
                     self.history
                         .record_before_edit("Toggle Cylindrical Hole", None, &self.project);
-                    let sels = &mut self.project.setups[setup_idx].operations[op_idx].selections;
+                    let op_mut = &mut self.project.setups[setup_idx].operations[op_idx];
+                    if matches!(op_mut.runtime_status, OperationStatus::NeedsRepick { .. }) {
+                        op_mut.selections.clear();
+                    }
+                    let sels = &mut op_mut.selections;
                     if let Some(pos) = sels.iter().position(|s| {
                         matches!(s, GeometrySelectionItem::CylindricalHole { binding } if binding.last_index == fid.0)
                     }) {
@@ -1431,7 +2056,7 @@ impl ChipCutterApp {
                     } else {
                         sels.push(GeometrySelectionItem::CylindricalHole { binding: bind });
                     }
-                    self.project.setups[setup_idx].operations[op_idx].mark_dirty();
+                    op_mut.mark_dirty();
                 }
             }
             ViewportPickMode::PlaceContourTab { .. } => {}
@@ -1587,10 +2212,17 @@ impl ChipCutterApp {
 
     fn open_project_dialog(&mut self, ctx: &egui::Context) {
         if let Some(path) = rfd::FileDialog::new()
-            .add_filter("ChipCutter Project (.chip.toml)", &["toml"])
+            .add_filter(
+                "ChipCutter Project & Portable Bundle (.chip.toml, .chipz)",
+                &["toml", "chipz", "CHIPZ"],
+            )
             .pick_file()
         {
-            self.load_project_from_disk(&path, ctx.clone());
+            if is_chipz_path(&path) {
+                self.load_chipz_from_disk(&path, ctx.clone());
+            } else {
+                self.load_project_from_disk(&path, ctx.clone());
+            }
         }
     }
 
@@ -1638,23 +2270,46 @@ impl ChipCutterApp {
     fn draw_top_bars(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
 
-        // Global shortcuts (`Ctrl+G`, `Ctrl+Z`, `Ctrl+Y`, `Ctrl+S`, `Ctrl+O`, `Esc`, `P`, `F`)
-        let (gen_shortcut, undo_shortcut, redo_shortcut, save_shortcut, open_shortcut, esc_key) =
-            ctx.input(|i| {
-                let cmd = i.modifiers.command || i.modifiers.ctrl;
-                (
-                    cmd && i.key_pressed(egui::Key::G),
-                    cmd && !i.modifiers.shift && i.key_pressed(egui::Key::Z),
-                    (cmd && i.key_pressed(egui::Key::Y))
-                        || (cmd && i.modifiers.shift && i.key_pressed(egui::Key::Z)),
-                    cmd && i.key_pressed(egui::Key::S),
-                    cmd && i.key_pressed(egui::Key::O),
-                    i.key_pressed(egui::Key::Escape),
-                )
-            });
+        // Update viewport window title when project name or dirty state changes
+        let is_dirty_doc = self.clean_undo_len != Some(self.history.undo_len());
+        let desired_title = format!(
+            "ChipCutter — {}{}",
+            self.project.project_name,
+            if is_dirty_doc { "*" } else { "" }
+        );
+        if desired_title != self.last_window_title {
+            self.last_window_title = desired_title.clone();
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(desired_title));
+        }
+
+        // Global shortcuts (`Ctrl+G`, `Ctrl+R`, `Ctrl+Z`, `Ctrl+Y`, `Ctrl+S`, `Ctrl+O`, `Esc`, `P`, `F`)
+        let (
+            gen_shortcut,
+            reload_shortcut,
+            undo_shortcut,
+            redo_shortcut,
+            save_shortcut,
+            open_shortcut,
+            esc_key,
+        ) = ctx.input(|i| {
+            let cmd = i.modifiers.command || i.modifiers.ctrl;
+            (
+                cmd && i.key_pressed(egui::Key::G),
+                cmd && i.key_pressed(egui::Key::R),
+                cmd && !i.modifiers.shift && i.key_pressed(egui::Key::Z),
+                (cmd && i.key_pressed(egui::Key::Y))
+                    || (cmd && i.modifiers.shift && i.key_pressed(egui::Key::Z)),
+                cmd && i.key_pressed(egui::Key::S),
+                cmd && i.key_pressed(egui::Key::O),
+                i.key_pressed(egui::Key::Escape),
+            )
+        });
 
         if gen_shortcut {
             self.trigger_generate_dirty(Some(self.active_setup_idx), None);
+        }
+        if reload_shortcut {
+            self.reload_active_step_model(&ctx);
         }
         if undo_shortcut && !ctx.egui_wants_keyboard_input() {
             self.perform_undo();
@@ -1694,14 +2349,21 @@ impl ChipCutterApp {
             egui::MenuBar::new().ui(ui, |ui| {
                 ui.menu_button("File", |ui| {
                     if ui.button("New Project").clicked() {
+                        self.clear_bundle_extract_dir();
                         self.history.clear();
+                        self.clean_undo_len = Some(0);
+                        self.last_reload_banner = None;
+                        self.external_step_modified = false;
                         self.project = ProjectDocument::new("Untitled Job");
                         self.project_file_path = None;
                         self.active_setup_idx = 0;
                         self.inspector_focus = InspectorFocus::Setup { setup_idx: 0 };
                         ui.close();
                     }
-                    if ui.button("Open Project (.chip.toml)… (Ctrl+O)").clicked() {
+                    if ui
+                        .button("Open Project / Bundle (.chip.toml, .chipz)… (Ctrl+O)")
+                        .clicked()
+                    {
                         ui.close();
                         self.open_project_dialog(&ctx);
                     }
@@ -1718,35 +2380,46 @@ impl ChipCutterApp {
                             self.save_project_to_disk(&path);
                         }
                     }
+                    if ui
+                        .button("Export Portable Bundle (.chipz)…")
+                        .on_hover_text(
+                            "Pack project.chip.toml + STEP models + custom .post.toml into a deterministic self-contained .chipz archive",
+                        )
+                        .clicked()
+                    {
+                        ui.close();
+                        self.export_chipz_dialog();
+                    }
                     if ui.button("Export G-Code (.nc / .ngc)…").clicked() {
                         ui.close();
-                        focus_workspace_pane(&mut self.tree, WorkspacePane::GCodePreview);
-                        let cad_doc = self.model.as_ref().map(|m| &m.doc);
-                        let cad_rev = self.model.as_ref().map_or(0, |m| m.revision);
-                        let proj_dir = self.project_file_path.as_deref().and_then(Path::parent);
-                        self.gcode_panel.ensure_profiles_loaded(proj_dir);
-                        self.gcode_panel.rebuild_preview_if_needed(
-                            &self.project,
-                            self.active_setup_idx,
-                            cad_doc,
-                            cad_rev,
-                            &self.toolpath_cache,
-                            self.project_file_path.as_deref(),
-                        );
-                        self.gcode_panel.trigger_export_action(
-                            &self.project,
-                            self.active_setup_idx,
-                            &self.toolpath_cache,
-                            cad_rev,
-                            &self.sim_panel,
-                            &mut self.logs,
-                        );
+                        self.trigger_gcode_export_from_menu();
                     }
                     ui.separator();
                     if ui.button("Import STEP Model…").clicked() {
                         ui.close();
                         self.open_step_dialog(&ctx);
                     }
+                    if ui
+                        .add_enabled(
+                            self.model.is_some(),
+                            egui::Button::new("Reload STEP Model (Ctrl+R)"),
+                        )
+                        .clicked()
+                    {
+                        ui.close();
+                        self.reload_active_step_model(&ctx);
+                    }
+                    if ui
+                        .add_enabled(
+                            self.model.is_some(),
+                            egui::Button::new("Replace STEP Model (Associative Re-Bind)…"),
+                        )
+                        .clicked()
+                    {
+                        ui.close();
+                        self.replace_step_dialog(&ctx);
+                    }
+                    ui.separator();
                     if ui.button("Load CAM Torture Block").clicked() {
                         ui.close();
                         self.spawn_cam_torture_sample_load(true, ctx.clone());
@@ -1762,6 +2435,18 @@ impl ChipCutterApp {
                     if ui.button("Load M1 Sample Plate").clicked() {
                         ui.close();
                         self.spawn_sample_plate_load(ctx.clone());
+                    }
+                    ui.separator();
+                    if ui.button("Demo: Load CAD Revision v1").clicked() {
+                        ui.close();
+                        self.spawn_revision_demo_load(false, ctx.clone());
+                    }
+                    if ui
+                        .button("Demo: Reload Revised Part (v1 -> v2)")
+                        .clicked()
+                    {
+                        ui.close();
+                        self.spawn_revision_demo_load(true, ctx.clone());
                     }
                     ui.separator();
                     if ui.button("Quit").clicked() {
@@ -1817,7 +2502,7 @@ impl ChipCutterApp {
                     if ui.button("Validate Project Invariants").clicked() {
                         let rep = validate_project(
                             &self.project,
-                            self.project_file_path.as_deref().and_then(Path::parent),
+                            self.active_project_dir(),
                             self.model.as_ref().map(|m| m.doc.as_ref()),
                         );
                         self.logs.push(format!(
@@ -1900,6 +2585,103 @@ impl ChipCutterApp {
                     }
                 });
 
+                ui.menu_button("Simulate", |ui| {
+                    if ui.button("Run / Refresh Heightmap Simulation").clicked() {
+                        focus_workspace_pane(&mut self.tree, WorkspacePane::SimulationTimeline);
+                        self.trigger_active_setup_simulation(&ctx);
+                        ui.close();
+                    }
+                    let play_lbl = if self.sim_panel.is_playing {
+                        "Pause Scrubbing (Space)"
+                    } else {
+                        "Play Scrubbing (Space)"
+                    };
+                    if ui
+                        .add_enabled(
+                            self.sim_panel.active_result.is_some(),
+                            egui::Button::new(play_lbl),
+                        )
+                        .clicked()
+                    {
+                        self.sim_panel.is_playing = !self.sim_panel.is_playing;
+                        ui.close();
+                    }
+                    if ui
+                        .add_enabled(
+                            self.sim_panel.active_result.is_some(),
+                            egui::Button::new("Jump to Final Machined Stock"),
+                        )
+                        .clicked()
+                    {
+                        if let Some(res) = &self.sim_panel.active_result {
+                            self.sim_panel.current_time_sec = res.timeline.total_time_sec;
+                            self.sim_panel.is_playing = false;
+                        }
+                        ui.close();
+                    }
+                    ui.separator();
+                    ui.label("Resolution:");
+                    for res in SimResolution::ALL {
+                        ui.radio_value(&mut self.sim_panel.resolution, res, res.label());
+                    }
+                    ui.separator();
+                    ui.checkbox(
+                        &mut self.sim_panel.show_machined_stock,
+                        "Show 3D Machined Stock",
+                    );
+                    ui.checkbox(
+                        &mut self.sim_panel.color_by_operation,
+                        "Color Cuts by Operation",
+                    );
+                    ui.checkbox(
+                        &mut self.sim_panel.show_cutter_assembly,
+                        "Show 3D Cutter & Holder",
+                    );
+                });
+
+                ui.menu_button("Post", |ui| {
+                    if ui.button("Open G-Code Preview Tab").clicked() {
+                        focus_workspace_pane(&mut self.tree, WorkspacePane::GCodePreview);
+                        ui.close();
+                    }
+                    if ui.button("Export G-Code (.nc / .ngc)…").clicked() {
+                        ui.close();
+                        self.trigger_gcode_export_from_menu();
+                    }
+                    ui.separator();
+                    let proj_dir = self
+                        .project_file_path
+                        .as_deref()
+                        .and_then(Path::parent)
+                        .or(self.bundle_extract_dir.as_deref());
+                    self.gcode_panel.ensure_profiles_loaded(proj_dir);
+                    if self.active_setup_idx < self.project.setups.len() {
+                        ui.label("Active Setup Post Profile:");
+                        let cur_id = self.project.setups[self.active_setup_idx]
+                            .post_profile
+                            .clone();
+                        let profiles: Vec<(String, String)> = self
+                            .gcode_panel
+                            .available_profiles()
+                            .iter()
+                            .map(|p| (p.id.clone(), p.name.clone()))
+                            .collect();
+                        for (pid, pname) in profiles {
+                            let is_sel = cur_id.eq_ignore_ascii_case(&pid);
+                            if ui.selectable_label(is_sel, pname).clicked() && !is_sel {
+                                self.history.record_before_edit(
+                                    "Change Post Profile",
+                                    None,
+                                    &self.project,
+                                );
+                                self.project.setups[self.active_setup_idx].post_profile = pid;
+                                self.gcode_panel.invalidate_preview();
+                                ui.close();
+                            }
+                        }
+                    }
+                });
+
                 ui.menu_button("View", |ui| {
                     if ui.button("Reset Default Workspace Layout").clicked() {
                         self.tree = create_default_workspace_tree();
@@ -1963,7 +2745,7 @@ impl ChipCutterApp {
             ui.horizontal_wrapped(|ui| {
                 if ui
                     .button("Open")
-                    .on_hover_text("Open .chip.toml Project (Ctrl+O)")
+                    .on_hover_text("Open .chip.toml Project or .chipz Bundle (Ctrl+O)")
                     .clicked()
                 {
                     self.open_project_dialog(&ctx);
@@ -1974,6 +2756,20 @@ impl ChipCutterApp {
                     .clicked()
                 {
                     self.save_project_dialog();
+                }
+                if ui
+                    .button(".chipz")
+                    .on_hover_text("Export Self-Contained Portable Bundle (.chipz)")
+                    .clicked()
+                {
+                    self.export_chipz_dialog();
+                }
+                if ui
+                    .add_enabled(self.model.is_some(), egui::Button::new("Reload CAD"))
+                    .on_hover_text("Associatively reload active STEP model (Ctrl+R)")
+                    .clicked()
+                {
+                    self.reload_active_step_model(&ctx);
                 }
                 if ui
                     .add_enabled(self.history.can_undo(), egui::Button::new("Undo"))
@@ -2087,6 +2883,91 @@ impl ChipCutterApp {
                 }
             });
         });
+
+        // External STEP disk-modification notification banner (`09-persistence-cli.md` §1)
+        if self.external_step_modified {
+            egui::Panel::top("chip_external_step_banner")
+                .frame(
+                    egui::Frame::NONE
+                        .fill(egui::Color32::from_rgb(54, 42, 18))
+                        .inner_margin(egui::Margin::symmetric(10, 4)),
+                )
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.colored_label(
+                            egui::Color32::from_rgb(255, 206, 86),
+                            "[*] External STEP file updated on disk — CAD revision change detected.",
+                        );
+                        if ui.small_button("Reload & Re-Match (Ctrl+R)").clicked() {
+                            self.reload_active_step_model(&ctx);
+                        }
+                        if ui.small_button("Dismiss").clicked() {
+                            self.external_step_modified = false;
+                        }
+                    });
+                });
+        }
+
+        // Associative STEP Reload summary banner
+        if let Some((msg, has_warn)) = self.last_reload_banner.clone() {
+            let bg = if has_warn {
+                egui::Color32::from_rgb(56, 32, 24)
+            } else {
+                egui::Color32::from_rgb(22, 48, 34)
+            };
+            let fg = if has_warn {
+                egui::Color32::from_rgb(255, 172, 98)
+            } else {
+                egui::Color32::from_rgb(112, 232, 154)
+            };
+            egui::Panel::top("chip_reload_summary_banner")
+                .frame(
+                    egui::Frame::NONE
+                        .fill(bg)
+                        .inner_margin(egui::Margin::symmetric(10, 4)),
+                )
+                .show(ui, |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.colored_label(fg, &msg);
+                        if ui.small_button("Regenerate Dirty (Ctrl+G)").clicked() {
+                            self.auto_sim_after_gen = true;
+                            self.trigger_generate_dirty(None, None);
+                        }
+                        if ui.small_button("Dismiss").clicked() {
+                            self.last_reload_banner = None;
+                        }
+                    });
+                });
+        }
+    }
+
+    fn trigger_gcode_export_from_menu(&mut self) {
+        focus_workspace_pane(&mut self.tree, WorkspacePane::GCodePreview);
+        let cad_doc = self.model.as_ref().map(|m| &m.doc);
+        let cad_rev = self.model.as_ref().map_or(0, |m| m.revision);
+        let virtual_proj_path = self.project_file_path.clone().or_else(|| {
+            self.bundle_extract_dir
+                .as_ref()
+                .map(|d| d.join("project.chip.toml"))
+        });
+        let proj_dir = virtual_proj_path.as_deref().and_then(Path::parent);
+        self.gcode_panel.ensure_profiles_loaded(proj_dir);
+        self.gcode_panel.rebuild_preview_if_needed(
+            &self.project,
+            self.active_setup_idx,
+            cad_doc,
+            cad_rev,
+            &self.toolpath_cache,
+            virtual_proj_path.as_deref(),
+        );
+        self.gcode_panel.trigger_export_action(
+            &self.project,
+            self.active_setup_idx,
+            &self.toolpath_cache,
+            cad_rev,
+            &self.sim_panel,
+            &mut self.logs,
+        );
     }
 
     fn handle_self_test(&mut self, ctx: &egui::Context) {
@@ -2221,12 +3102,20 @@ impl PaneBehavior<'_> {
             if let Some(act) = action {
                 match act {
                     BrowserAction::OpenStepDialog => self.app.open_step_dialog(&ctx),
+                    BrowserAction::ReloadStepModel => self.app.reload_active_step_model(&ctx),
+                    BrowserAction::ReplaceStepDialog => self.app.replace_step_dialog(&ctx),
                     BrowserAction::LoadMultiFeatureSample { tilted } => {
                         self.app
                             .spawn_multi_feature_sample_load(tilted, !tilted, ctx.clone());
                     }
                     BrowserAction::LoadCamTortureBlock => {
                         self.app.spawn_cam_torture_sample_load(true, ctx.clone());
+                    }
+                    BrowserAction::LoadRevisionDemoV1 => {
+                        self.app.spawn_revision_demo_load(false, ctx.clone());
+                    }
+                    BrowserAction::ReloadRevisionDemoV2 => {
+                        self.app.spawn_revision_demo_load(true, ctx.clone());
                     }
                     BrowserAction::OpenToolLibrary => {
                         self.app.tool_library_modal.open = true;
@@ -2590,7 +3479,12 @@ impl PaneBehavior<'_> {
         egui::Frame::NONE.inner_margin(6.0).show(ui, |ui| {
             let cad_doc = self.app.model.as_ref().map(|m| &m.doc);
             let cad_rev = self.app.model.as_ref().map_or(0, |m| m.revision);
-            let proj_dir = self.app.project_file_path.as_deref().and_then(Path::parent);
+            let proj_dir = self
+                .app
+                .project_file_path
+                .as_deref()
+                .and_then(Path::parent)
+                .or(self.app.bundle_extract_dir.as_deref());
             pending_action = self.app.sim_panel.show_ui(
                 ui,
                 &self.app.project,
@@ -2622,6 +3516,12 @@ impl PaneBehavior<'_> {
         egui::Frame::NONE.inner_margin(6.0).show(ui, |ui| {
             let cad_doc = self.app.model.as_ref().map(|m| &m.doc);
             let cad_rev = self.app.model.as_ref().map_or(0, |m| m.revision);
+            let virtual_proj_path = self.app.project_file_path.clone().or_else(|| {
+                self.app
+                    .bundle_extract_dir
+                    .as_ref()
+                    .map(|d| d.join("project.chip.toml"))
+            });
             pending_action = self.app.gcode_panel.show_ui(
                 ui,
                 &mut self.app.project,
@@ -2630,7 +3530,7 @@ impl PaneBehavior<'_> {
                 cad_doc,
                 cad_rev,
                 &self.app.toolpath_cache,
-                self.app.project_file_path.as_deref(),
+                virtual_proj_path.as_deref(),
                 &self.app.sim_panel,
                 &mut self.app.logs,
             );

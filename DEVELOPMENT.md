@@ -122,11 +122,17 @@ cargo clippy --workspace --all-targets -- -D warnings
 # Run all unit, STEP round-trip, picking, and offscreen GPU render tests
 cargo test --workspace
 
-# Run the headless CLI (no window server or GPU required)
-cargo run -p chip-cli -- generate-sample-step /tmp/sample_bracket.step
-cargo run -p chip-cli -- inspect /tmp/sample_bracket.step
+# Run the headless CLI (no window server or GPU required):
+#   STEP generation, inspection, validation, heightmap simulation, G-code build, & .chipz bundling
+cargo run -p chip-cli -- generate-sample-step /tmp/torture.step --cam-torture --project-out /tmp/torture.chip.toml
+cargo run -p chip-cli -- inspect /tmp/torture.step
+cargo run -p chip-cli -- validate --generate /tmp/torture.chip.toml
+cargo run -p chip-cli -- simulate /tmp/torture.chip.toml --resolution fine --report /tmp/sim_report.json
+cargo run -p chip-cli -- build /tmp/torture.chip.toml -o /tmp/gcode_out --post linuxcnc
+cargo run -p chip-cli -- bundle pack /tmp/torture.chip.toml -o /tmp/torture.chipz
+cargo run -p chip-cli -- build /tmp/torture.chipz -o /tmp/from_bundle --post grbl
 
-# Launch the interactive desktop CAM application
+# Launch the interactive desktop CAM application (optional .chip.toml, .chipz, or .step path)
 cargo run -p chip-gui
 ```
 

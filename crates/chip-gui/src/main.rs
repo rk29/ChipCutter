@@ -10,8 +10,8 @@ use clap::Parser;
     about = "ChipCutter Desktop CAM Application"
 )]
 struct GuiArgs {
-    /// Optional `.step` / `.stp` model to load on startup.
-    #[arg(value_name = "STEP_FILE")]
+    /// Optional `.chip.toml` project, `.chipz` bundle, or `.step`/`.stp` model to load on startup.
+    #[arg(value_name = "PATH")]
     step_file: Option<PathBuf>,
 
     /// Render the sample part, capture a full-window PNG screenshot to this path, and exit.

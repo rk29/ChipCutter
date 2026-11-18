@@ -1,7 +1,7 @@
 # 10 — Implementation Roadmap & v2+ Horizon
 
-## Phased v1 Milestones
-To keep risk low and maintain a runnable, testable vertical slice early, v1 implementation is structured into five sequential milestones:
+## Phased v1 Milestones (Completed)
+To keep risk low and maintain a runnable, testable vertical slice early, v1 implementation was completed across five sequential milestones:
 
 ```mermaid
 flowchart TD

@@ -57,9 +57,14 @@ Binary name: `chipcutter`
 
 | Subcommand | Purpose |
 |---|---|
-| `chipcutter validate [--generate] <project.chip.toml>` | Loads project + STEP models, checks CAD SHA-256 / geometric signature bindings, validates height/tool/parameter invariants (and optionally generates all enabled 2.5D toolpaths in parallel when `--generate` is passed), exiting non-zero on error. |
-| `chipcutter build <project.chip.toml> [-o <out_dir>] [--setup <name>] [--post <profile>]` | Generates all enabled operations in parallel, runs crash/gouge verification (failing the build on critical crashes unless `--allow-warnings`), and writes `.nc`/`.ngc` G-code files + JSON summary stats. |
-| `chipcutter simulate <project.chip.toml> [--resolution fine] [--report report.json]` | Runs headless heightmap stock removal & gouge/crash checks, outputting cycle times, remaining stock volume, and any collision diagnostics. |
+| `chipcutter inspect <part.step> [--units mm\|in]` | Inspects an ISO 10303-21 STEP file, reporting detected units, bounding box, and analytic B-Rep face/edge counts. |
+| `chipcutter generate-sample-step <out.step> [--cam-torture \| --multi-feature \| --tilted \| --revision-v1 \| --revision-v2] [--project-out <job.chip.toml>]` | Writes deterministic programmatic STEP fixtures (and optional seeded `.chip.toml` jobs) to disk. |
+| `chipcutter validate [--generate] <project.chip.toml \| bundle.chipz>` | Loads project (or `.chipz` bundle) + STEP models, checks CAD SHA-256 / geometric signature bindings, validates height/tool/parameter invariants (and optionally generates all enabled 2.5D toolpaths in parallel when `--generate` is passed), exiting non-zero on error. |
+| `chipcutter simulate <project.chip.toml \| bundle.chipz> [--resolution standard\|fine\|ultra] [--report report.json]` | Runs headless heightmap stock removal & 5-rule gouge/crash checks, outputting cycle times, remaining stock volume, and structured collision diagnostics. |
+| `chipcutter build <project.chip.toml \| bundle.chipz> [-o <out_dir>] [--setup <name>] [--post <profile>] [--allow-warnings]` | Generates all enabled operations in parallel, runs mandatory heightmap crash/gouge verification (aborting non-zero on critical crashes/gouges), and writes `.nc`/`.ngc` G-code files + `build_summary.json`. |
+| `chipcutter reload-step <project.chip.toml> [--step <revised.step>] [-o <out.chip.toml>] [--allow-needs-repick]` | Reloads a revised STEP file and associatively re-binds Setup WCS references and Operation selections via `GeometricSignature` fuzzy matching (`Dirty` vs `NeedsRepick`). |
+| `chipcutter bundle pack <project.chip.toml> -o <bundle.chipz>` | Packs `project.chip.toml`, `models/*.step`, and non-builtin `posts/*.post.toml` into a byte-deterministic `.chipz` archive. |
+| `chipcutter bundle unpack <bundle.chipz> -o <out_dir>` | Safely extracts a `.chipz` archive (with zip-slip & SHA-256 verification) to `<out_dir>`. |
 | `chipcutter tools import-fusion <input.json> -o <output.tools.toml>` | Converts a Fusion 360 JSON/tools library into a native ChipCutter `.tools.toml` library. |
 
 ---
