@@ -1,40 +1,41 @@
 # 08 — User Interface (`egui`) & 3D/2D Viewport (`wgpu`)
 
-## Workspace Shell (`chip-gui`)
-ChipCutter uses `eframe` with the `wgpu` backend and `egui_tiles` for a responsive, high-DPI, dark/light-theme CAD/CAM workspace with a **1-click "Reset Default Layout"** action in the View menu.
+## Workspace Shell & Design System (`chip-gui`)
+ChipCutter uses `eframe` with the `wgpu` backend and `egui_tiles` for a responsive, high-DPI, **Studio Dark / Daylight Light** CAD/CAM workspace backed by centralized semantic `ThemeTokens`, procedural vector iconography, persistent user preferences (`prefs.toml`), and a **1-click "Reset Default Layout"** action in the View menu.
 
-### Default Multi-Pane Layout
+### Default Multi-Pane Layout & Floating Viewport HUDs
 ```text
 ┌──────────────────────────────────────────────────────────────────────────────┐
-│ Menu Bar: File | Edit | Sketch | Setup | Operations | Tools | Simulate | Post│
+│ Menu Bar: File | Edit | Setup | Operations | Tools | Simulate | Post | View  │
 ├──────────────────────────────────────────────────────────────────────────────┤
-│ Contextual Toolbar: [Import STEP] [Import DXF/SVG] [New Sketch] | [Face]     │
-│   [Adaptive][Pocket][Contour][Drill][Chamfer][V-Carve] | [Gen (Ctrl+G)] [Sim]│
+│ Single-Row Workflow Toolbar: [Open][Save][.chipz][DXF/SVG] | [+ Sketch]      │
+│   [+ Adaptive][+ V-Carve] | [Generate (Ctrl+G)] [Simulate] [Post] | [Ctrl+K] │
 ├────────────────────┬────────────────────────────────────┬────────────────────┤
-│ CAM Browser        │                                    │ Inspector          │
+│ CAM Browser        │  [Active Pick / Sketch Banner HUD] │ Inspector          │
 │ (Left Tile)        │                                    │ (Right Tile)       │
-│                    │                                    │                    │
-│ ▼ Models           │       3D CAD / 2D Sketch           │ [Tool] [Geometry]  │
-│   • bracket.step   │       Viewport (`egui_wgpu`)       │ [Heights] [Passes] │
-│ ▼ Sketches (v2)    │                                    │ [Linking]          │
-│   • Top Logo.svg   │   (Or Interactive Sketch Toolbar:  │                    │
-│   • Serial Text    │    Rect | Circle | Slot | Poly |   │ Parametric fields  │
-│ ▼ Setup 1 (G54)    │    Line/Arc | Holes | Text)        │ w/ inline math &   │
-│   • Stock & WCS    │                                    │ unit expressions   │
-│   ✓ 1. Adaptive    │                                    │           [ViewCube]│
-│   ✓ 2. Rest Cont.  │                                    │                    │
-│   ✓ 3. V-Carve     │                                    │                    │
+│                    │       3D CAD / 2D Sketch           │ [Tool] [Geometry]  │
+│ ▼ Models           │       Viewport (`egui_wgpu`)       │ [Heights] [Passes] │
+│   • bracket.step   │                                    │ [Linking]          │
+│ ▼ 2D Sketches      │                            [ViewCube]                   │
+│   • Top Logo.svg   │                                    │ Two-column aligned │
+│ ▼ Setup 1 [G54]    │                                    │ property grids &   │
+│   • Stock & WCS    │                                    │ formula autocomplete│
+│   ✓ 1. Adaptive T1 │                                    │                    │
+│   ✓ 2. V-Carve  T8 │  [Floating View / Layer / Unit HUD]│                    │
 ├────────────────────┴────────────────────────────────────┴────────────────────┤
 │ Bottom Tile Tabs: [Simulation Timeline] | [G-Code Preview] | [Diagnostics]   │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Status Badges in CAM Browser
-- `✓` **Clean** (green): Up-to-date cached toolpath.
-- `⟳` **Dirty** (amber): Parameters, tool, setup, upstream Rest Machining op, CAD, or Sketch changed; awaits `Ctrl+G`.
-- `◐` **Generating** (animated spinner): Background `rayon` task in flight.
-- `⚠` **Error / Needs Re-pick** (red): Validation error, empty cut, crash detected, or orphaned B-Rep selection after STEP reload.
-- `⊘` **Suppressed** (dimmed strikethrough): Skipped in generation, Rest Machining coverage, and post output.
+### Design System, Vector Icons, & Status Badges *(v3)*
+- **Semantic Theme Tokens (`ThemeTokens`):** All panel backgrounds, card borders, accent highlights, semantic status colors, and 3D viewport background/grid colors derive from `ThemeTokens` (`AppTheme::Dark` and `AppTheme::Light`)—never scattered ad-hoc RGB literals.
+- **Procedural Vector Icons:** Crisp HiDPI `egui::Painter` vector glyphs for operations, toolbar actions, visibility toggles, and browser status badges:
+  - **Clean** (emerald check): Up-to-date cached toolpath, paired with `T#` and estimated cycle-time pill.
+  - **Dirty** (amber refresh): Parameters, tool, setup, upstream Rest Machining op, CAD, or Sketch changed; awaits `Ctrl+G`.
+  - **Generating** (animated spinner): Background `rayon` task in flight.
+  - **Error / Needs Re-Pick** (coral warning): Validation error, empty cut, crash detected, or orphaned B-Rep selection after STEP reload.
+  - **Suppressed** (muted slash-circle + strikethrough): Skipped in generation, Rest Machining coverage, and post output.
+- **Drag & Keyboard Browser Ergonomics:** Operations support drag-and-drop and `Ctrl+Up` / `Ctrl+Down` reordering, `Ctrl+D` duplication, `Delete` removal, and hover-revealed row actions so operation names remain readable even in narrow left panes.
 
 ---
 
@@ -79,9 +80,16 @@ Integrated into the central `egui` panel via `egui_wgpu::CallbackTrait` renderin
 
 ---
 
-## Parametric Input Widgets & Zero-Idle-Clone Undo/Redo
-- **Expression-Aware Numeric Widget:**
-  - Displays resolved value in preferred display units (`mm` or `in`), expands to show raw formula when focused (e.g., `tool_d * 0.20`), validates syntax live, and commits on `Enter` or focus loss.
+## Parametric Input Widgets, Discoverability, & Persistent Preferences
+- **Two-Column Aligned Inspector Grids & Expression-Aware Inputs *(v3)*:**
+  - Inspector forms use aligned two-column property grids (`inspector_row`) and collapsible section cards with uniform input widths and unit suffix badges.
+  - Expression fields display resolved values in preferred display units (`mm` or `in`), offer a live scoped variable reference/autocomplete popover (`tool_d`, `tool_r`, `stock_x`, `feature_top_z`, etc.), support `Up`/`Down` arrow-key nudging and drag-scrubbing on plain numbers, validate syntax live, and commit on `Enter` or focus loss.
+- **Active Pick / Sketch Guidance HUD, Welcome Overlay, & Command Palette *(v3)*:**
+  - Whenever a 3D B-Rep pick mode, manual tab placement, or 2D sketch tool is active, a prominent floating guidance banner at the top-center of the viewport explains the expected next click and provides `[Done]` / `[Cancel (Esc)]` controls.
+  - Launching `chip-gui` with no file argument opens a clean **Welcome / Quick-Start Overlay** (`Import 3D STEP`, `Import 2D DXF / SVG`, `Start Pure-2D Sketch`, `Recent Projects`, and a **Sample Projects Gallery** modal).
+  - **`Ctrl+K` Command Palette** provides instant fuzzy search across all menu, view, sample, and operation-creation actions, paired with a **`?` / `F1` Keyboard Shortcut Cheat-Sheet**.
+- **Persistent User Preferences (`prefs.toml` — *v3*):**
+  - Stored in the user's platform config directory alongside the global tool library, persisting `AppTheme` (`Dark`/`Light`), default display units, mouse navigation preset, orbit mode, viewport visibility toggles, `egui_tiles` pane shares, and recent project paths across sessions.
 - **Document Undo / Redo (`Ctrl+Z` / `Ctrl+Y`):**
   - Every committed mutation to Setups, Sketches, Selections, Operations, or Project Tools pushes a compact document state snapshot onto an Undo stack (default depth `100` steps, captured lazily only on actual mutation so idle 60 FPS frames perform zero document clones).
   - Heavy cached data (B-Rep meshes, generated toolpaths, swept 2D Rest polygons, heightmaps) is stored out-of-band by revision/key so Undo/Redo is instantaneous (`< 1 ms`).

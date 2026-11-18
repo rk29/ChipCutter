@@ -57,17 +57,36 @@ ChipCutter v2 extended the engine across four vertical-slice milestones with hig
 
 ---
 
-## Deferred Horizon (v3 and Beyond)
-1. **UI Polish & Usability Phase (v3):**
-   - Visual refinement, typography/iconography consistency, streamlined inspector/dialog ergonomics, keyboard-first workflows, onboarding guidance, and viewport interaction polish across high-DPI displays.
-2. **Functional & Behavioral User-Level Testing Phase (v3):**
+## Phased v3 Milestones — UI Polish & Usability (Active — M10–M12)
+
+ChipCutter v3 focuses exclusively on **Desktop UI Polish, Visual Consistency, & Machinist Workflow Usability** across `chip-gui` while keeping all core geometry, CAM, simulation, and post-processing crates untouched:
+
+### Milestone 10 — Design System, Dark/Light Themes, Vector Iconography, & Single-Row Chrome (`plans/10-milestone-10-plan.md`)
+- **Centralized Design System & Dual Themes (`ThemeTokens`):** Semantic color, spacing, corner-radius, and typography tokens powering both **Studio Dark** and **Daylight High-Contrast Light** themes (including theme-matched 3D `wgpu` viewport background gradients and grid contrast).
+- **Procedural Vector Iconography:** Resolution-independent `egui::Painter` vector icons for operation types, status badges (`Clean`, `Dirty`, `Generating`, `Error / Needs Re-Pick`, `Suppressed`), transport controls, and view toggles—eliminating ASCII bracket placeholders (`[OK]`, `[*]`, `^`, `v`).
+- **Single-Row Workflow Toolbar & Floating Viewport View Bar:** Decluttered single-row top action toolbar (`File/Import | Sketch & Operations | Generate / Simulate / Post`) paired with a compact floating viewport HUD pill for camera projection, standard views, mouse preset, and layer visibility toggles.
+
+### Milestone 11 — CAM Browser Ergonomics, Two-Column Inspector Grids, & Expression UX (`plans/11-milestone-11-plan.md`)
+- **Refined CAM Browser Tree:** Clean single-line operation rows with vector status/strategy icons, `T#` tool + estimated cycle-time badges, hover-revealed quick actions, drag-and-drop + keyboard (`Ctrl+Up`/`Ctrl+Down`) reordering, `Ctrl+D` duplication, `Delete` removal, and deduplicated Setup WCS headers.
+- **Two-Column Aligned Inspector Grids:** Standardized `inspector_row` two-column property grids, collapsible section cards, uniform control widths, and contextual inline validation banners across Setup, Sketch, Operation, Tool Library, Simulation, and G-Code panels.
+- **Upgraded Parametric Expression Inputs:** Live variable reference/autocomplete popover (`tool_d`, `tool_r`, `stock_x`, `feature_top_z`, etc.), `Up`/`Down` arrow-key nudging, drag-scrubbing on numeric literals, and explicit unit suffix pills.
+
+### Milestone 12 — Interactive Viewport Guidance HUD, Welcome Gallery, Command Palette, & Preferences (`plans/12-milestone-12-plan.md`)
+- **Active Pick & Sketch Guidance HUD:** Top-center floating viewport banner whenever a 3D B-Rep pick mode, manual tab placement, or 2D sketch authoring tool is active—displaying step-by-step click instructions, selection counts, and `[Done]` / `[Cancel (Esc)]` actions.
+- **Welcome Overlay & Sample Projects Gallery:** Clean Quick-Start welcome overlay on bare `chip-gui` launch (`Import 3D STEP`, `Import 2D DXF / SVG`, `New Pure-2D Sketch`, `Recent Projects`, and a dedicated **Sample Projects Gallery** modal replacing the inline demo buttons previously inside the `Models` tree).
+- **Command Palette, Shortcut Cheat-Sheet, & Persistent Preferences:** Fuzzy-searchable **Command Palette (`Ctrl+K`)**, **Keyboard Shortcut Cheat-Sheet (`?` / `F1`)**, and cross-session **`prefs.toml`** persistence for theme, display units, mouse navigation preset, orbit mode, viewport visibility toggles, workspace pane layout, and recent files.
+
+---
+
+## Deferred Horizon (v4 and Beyond)
+1. **Functional & Behavioral User-Level Testing Phase (v4):**
    - Durable end-to-end user-journey and GUI behavioral test harness (`egui_kittest` / headless interactive workflows + CLI workflows) verifying every feature from a machinist's point of view without brittle coupling to internal implementation details.
-3. **3-Axis Surface Milling & Mesh Support (v3):**
+2. **3-Axis Surface Milling & Mesh Support (v4):**
    - Importing **STL / OBJ / 3MF** meshes alongside STEP solids.
    - 3D Waterline (Z-level), Parallel/Raster 3D finishing, Scallop, Pencil, and 3D Adaptive roughing strategies.
-4. **Advanced Workholding & Multi-Setup Volumetric Stock (v3):**
+3. **Advanced Workholding & Multi-Setup Volumetric Stock (v4):**
    - 3D fixture/vise/clamp collision bodies with automatic safe-rapid routing.
    - Carrying simulated stock across flipped setups via tri-dexel volumetric stock.
-5. **Ecosystem & Extensibility (v3+):**
+4. **Ecosystem & Extensibility (v4+):**
    - Optional OpenCASCADE (`opencascade-rs`) `CadKernel` feature backend.
-   - Additional controller dialects (Fanuc/Haas, Mach4, Masso, Centroid), thread milling, and printable HTML/PDF setup sheets.
+   - Thread milling (`ThreadMill` single/multi-form cutter geometry, ISO Metric & Unified thread tables, radial arc-in/out helical passes), additional controller dialects (Fanuc/Haas, Mach4, Masso, Centroid), and printable HTML/PDF setup sheets.

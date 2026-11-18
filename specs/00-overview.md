@@ -5,8 +5,8 @@
 
 ---
 
-## Scope Summary (v1 & v2 Completed)
-- **Machining Paradigm:** 2.5D CNC milling, high-efficiency adaptive roughing, routing, engraving, and V-carving (architected cleanly to extend to 3-axis surface milling in v3+).
+## Scope Summary (v1 & v2 Completed + v3 UI Polish Active)
+- **Machining Paradigm:** 2.5D CNC milling, high-efficiency adaptive roughing, routing, engraving, and V-carving (architected cleanly to extend to 3-axis surface milling in v4+).
 - **CAD & 2D Vector Input:**
   - **3D B-Rep Solids (`chip-cad`):** ISO 10303-21 **STEP** (AP203 / AP214 / AP242) via pure-Rust `monstertruck` behind the `CadKernel` trait.
   - **2D Sketches, Vectors, & Typography (`chip-sketch` — *v2*):** Standalone pure-2D router/panel projects (no STEP required) AND associative 2D Sketch Layers on Setup XY or planar STEP faces, supporting **DXF** & **SVG** imports (with gap-healing & biarc fitting), parametric 2D shapes (rectangles, circles, slots, polygons, polylines, hole patterns), **TrueType/OpenType** outline text, and **Hershey** single-line engraving fonts.
@@ -28,12 +28,12 @@
 
 ---
 
-## Explicit Non-Goals (Deferred to v3+)
-- **No 3D triangle mesh inputs or 3-axis surfacing in v2:** STL, OBJ, and 3MF meshes plus 3D Waterline/Scallop/Raster surfacing are deferred to v3.
+## Explicit Non-Goals (Deferred to v4+)
+- **No 3D triangle mesh inputs or 3-axis surfacing in v3:** STL, OBJ, and 3MF meshes plus 3D Waterline/Scallop/Raster surfacing are deferred to v4.
 - **No nonlinear 2D CAD constraint solver:** Built-in 2D Sketch tools use direct parametric expressions and viewport snapping rather than a parametric CAD sketch solver.
 - **No machine control / G-code streaming:** ChipCutter is pure offline CAM; jogging, probing, and streaming stay in dedicated senders (LinuxCNC, gSender, FluidNC UI, etc.).
-- **No standalone printable HTML/PDF setup sheets in v2:** Operator summary metadata is emitted directly as structured G-code header comments.
-- **No 3D fixture/clamp collision bodies or tri-dexel flip stock in v2:** Workholding clearance uses Setup-level Safe/Clearance Z planes and contour holding tabs; volumetric multi-setup stock carry-over is deferred to v3.
+- **No standalone printable HTML/PDF setup sheets in v3:** Operator summary metadata is emitted directly as structured G-code header comments.
+- **No 3D fixture/clamp collision bodies, thread milling, or tri-dexel flip stock in v3:** Workholding clearance uses Setup-level Safe/Clearance Z planes and contour holding tabs; thread milling and volumetric multi-setup stock carry-over are deferred to v4.
 - **No WebAssembly/browser target:** Native desktop + headless CLI only.
 - **No copyleft dependencies:** Third-party crates must use permissive or weak-copyleft licenses (`MIT`, `Apache-2.0`, `BSD`, `MPL-2.0`, `BSL-1.0`, `Zlib`, `ISC`).
 
@@ -42,7 +42,7 @@
 ## Specification Index
 | Document | Scope |
 |---|---|
-| [00-overview.md](file:///workspace/ChipCutter/specs/00-overview.md) | Vision, v1+v2 scope boundaries, non-goals, and spec map |
+| [00-overview.md](file:///workspace/ChipCutter/specs/00-overview.md) | Vision, v1–v3 scope boundaries, non-goals, and spec map |
 | [01-architecture.md](file:///workspace/ChipCutter/specs/01-architecture.md) | Cargo workspace crates, data pipeline, units/expressions, DAG threading, licensing |
 | [02-cad-selection.md](file:///workspace/ChipCutter/specs/02-cad-selection.md) | `CadKernel` trait, STEP pipeline, unified B-Rep + Sketch picking, reload re-matching |
 | [03-setups-wcs.md](file:///workspace/ChipCutter/specs/03-setups-wcs.md) | Multi-setup model, pure-2D & 3D stock geometry, WCS orientation/origin, Z planes |
@@ -50,7 +50,7 @@
 | [05-operations.md](file:///workspace/ChipCutter/specs/05-operations.md) | Operation lifecycle, Adaptive roughing, 2.5D Rest Machining, V-Carving, and v1 strategies |
 | [06-simulation.md](file:///workspace/ChipCutter/specs/06-simulation.md) | Toolpath playback, cycle time model, heightmap stock removal, crash/gouge checks |
 | [07-post-processor.md](file:///workspace/ChipCutter/specs/07-post-processor.md) | Typed CL-data IR, TOML post configs, ATC vs split-per-tool, GRBL & LinuxCNC posts |
-| [08-ui-viewport.md](file:///workspace/ChipCutter/specs/08-ui-viewport.md) | `eframe` + `wgpu` + `egui_tiles` workspace, 3D/2D Sketch viewport, Undo/Redo |
+| [08-ui-viewport.md](file:///workspace/ChipCutter/specs/08-ui-viewport.md) | `eframe` + `wgpu` + `egui_tiles` shell, Dark/Light design system, Viewport HUDs, Command Palette, Undo/Redo |
 | [09-persistence-cli.md](file:///workspace/ChipCutter/specs/09-persistence-cli.md) | `.chip.toml` (`v2`) & `.chipz` formats, headless CLI subcommands, testing strategy |
-| [10-roadmap.md](file:///workspace/ChipCutter/specs/10-roadmap.md) | Completed v1 milestones (M1–M5), completed v2 milestones (M6–M9), and v3+ horizon |
+| [10-roadmap.md](file:///workspace/ChipCutter/specs/10-roadmap.md) | Completed v1 (M1–M5) & v2 (M6–M9) milestones, active v3 UI Polish milestones (M10–M12), and v4+ horizon |
 | [11-sketches-vectors.md](file:///workspace/ChipCutter/specs/11-sketches-vectors.md) | `chip-sketch` 2D Sketch Layers, parametric shapes, DXF/SVG importers, TrueType & Hershey text |

@@ -142,7 +142,7 @@ All core geometry, CAM, simulation, post-processing, and project persistence cra
 - [**`ARCHITECTURE.md`**](ARCHITECTURE.md) — End-to-end data pipeline, crate dependency graph, threading/caching model, and 3D render passes
 - [**`DEVELOPMENT.md`**](DEVELOPMENT.md) — Platform build prerequisites, native Linux/macOS/Windows setup, and headless CI instructions
 - [**`specs/00-overview.md`**](specs/00-overview.md) — Product scope, non-goals, and full specification index (`00` through `11`)
-- [**`specs/10-roadmap.md`**](specs/10-roadmap.md) — Completed v1 (`M1`–`M5`) & v2 (`M6`–`M9`) milestones and v3+ horizon (UI/usability polish, user-level behavioral testing, 3-axis surface milling, meshes, & workholding)
+- [**`specs/10-roadmap.md`**](specs/10-roadmap.md) — Completed v1 (`M1`–`M5`) & v2 (`M6`–`M9`) milestones, active v3 UI Polish & Usability milestones (`M10`–`M12`), and v4+ horizon
 - [**`AGENTS.md`**](AGENTS.md) — Architectural invariants and contributor guidelines
 
 ---
