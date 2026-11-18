@@ -1,90 +1,73 @@
 # 10 — Implementation Roadmap & Horizon
 
 ## Phased v1 Milestones (Completed — M1–M5)
-ChipCutter v1 was delivered across five sequential vertical-slice milestones, followed by a comprehensive pre-v2 workspace modularization and CAD-decoupling refactor:
 
-```mermaid
-flowchart LR
-    M1["M1: STEP Kernel & Viewport"] --> M2["M2: Setups, WCS, & Tools"]
-    M2 --> M3["M3: 5 Core 2.5D Strategies"]
-    M3 --> M4["M4: Heightmap Sim & Posts"]
-    M4 --> M5["M5: Reload, .chipz, & CLI"]
-```
+ChipCutter v1 delivered a complete offline 3D STEP-to-G-code 2.5D CAM pipeline across five vertical-slice milestones, followed by a pre-v2 workspace modularization and CAD-decoupling refactor:
 
-- **Milestone 1:** `chip-math`, `chip-cad` (`monstertruck` STEP loader + analytic classifier + BVH ray-picker), and `chip-gui` (`eframe` + `wgpu` + `egui_tiles` 3D viewport).
-- **Milestone 2:** Multi-Setup WCS & 27-point stock, interactive 3D feature picking, `chip-tools` (SFM/chipload + Fusion 360 import), `.chip.toml` v1, and instant Undo/Redo.
-- **Milestone 3:** Background `rayon` dispatcher + Facing, Drilling/Helical Bore, 2D Contour (with ramps & holding tabs), 2D Pocket (offset + zig-zag), and Edge Chamfer/Trace.
-- **Milestone 4:** `chip-sim` trapezoidal timeline, 2.5D Z-heightmap stock removal & 5-rule crash/gouge oracle, and `chip-post` (GRBL, grblHAL ATC, LinuxCNC).
-- **Milestone 5:** Associative `GeometricSignature` STEP reload (`v1 -> v2`), `.chipz` portable bundles, headless `chipcutter` CLI, and golden G-code snapshot suite.
+### Milestone 1 — STEP B-Rep Kernel, Units/Expressions, & 3D `wgpu` Viewport (`plans/01-milestone-1-plan.md`)
+- **Math & Unit Foundation (`chip-math`):** Canonical `f64` millimeter geometry, orthonormal `RigidFrame3` frames, exact 2D line/arc polylines (`ArcPolyline2D`), and machinist unit/fraction expression evaluation.
+- **STEP B-Rep Kernel (`chip-cad`):** Pure-Rust `monstertruck` ISO 10303-21 STEP importer behind the `CadKernel` trait, analytic surface/curve classification (planes, cylinders, cones, lines, circular arcs), and R-tree BVH 3D ray picking.
+- **Desktop Shell & 3D Viewport (`chip-gui`):** `eframe` + `egui_tiles` docking workspace, `4x MSAA` offscreen `wgpu` B-Rep face/edge renderer, turntable/trackball camera presets, ViewCube, and `chipcutter inspect` CLI.
+
+### Milestone 2 — Multi-Setup WCS, Feature Picking, Tool Library, & Undo/Redo (`plans/02-milestone-2-plan.md`)
+- **Setups, Stock, & WCS (`chip-cam`):** Multi-setup workflow (`G54`–`G59.3`), box and cylindrical stock sizing, B-Rep face/edge WCS axis alignment (including tilted parts), 3D 27-point WCS origin picking, and Z-height hierarchy resolution.
+- **Interactive Feature Extraction:** 3D viewport selection of planar faces, closed edge loops, shortest-path open edge chains, coplanar faces, and same-diameter holes with automatic Z-top / Z-bottom inference.
+- **Tool Library & Persistence (`chip-tools`, `chip-project`):** Six cutter geometries, material presets, coupled SFM/chipload calculator, Fusion 360 `.json`/`.tools` importer, deterministic `.chip.toml` (`v1`) persistence, and `< 1 ms` 100-step Undo/Redo.
+
+### Milestone 3 — Parallel Dispatcher & Five Core 2.5D Machining Strategies (`plans/03-milestone-3-plan.md`)
+- **Offsetting & Background Execution:** Exact arc-preserving 2D parallel offsetting (`cavalier_contours`), typed `ClEvent` IR, content-addressed `ToolpathCache`, and non-blocking `rayon` `JobDispatcher` with `Esc` cancellation.
+- **Core 2.5D Strategies (`chip-cam`):** **Facing** (stock surfacing), **Drilling & Helical Bore Milling** (`G81`/`G83`/`G73` + multi-pitch helical interpolation), and **2D Contour** (helical/linear ramps, tangent lead-in/out arcs, rough/finish passes, and rectangular/triangular holding tabs).
+- **Pocketing & Chamfering (`chip-cam`):** **2D Pocket** (closed multi-island region trees, open-shoulder air overhang expansion, contour-parallel & zig-zag clearing) and **Edge Chamfer / 2D Curve Trace** (modeled bevels, sharp CAD edges, and centerline engraving).
+
+### Milestone 4 — Z-Dexel Heightmap Simulation, Crash Verifier, & Post-Processors (`plans/04-milestone-4-plan.md`)
+- **Timeline & Cycle-Time Engine (`chip-sim`):** Trapezoidal acceleration motion planner (`G0`/`G1`/`G2`/`G3`), dwell/ATC accounting, timeline scrubbing, and revolved 3D cutter/shank/holder meshes.
+- **2.5D Stock Removal & 5-Rule Crash Gate (`chip-sim`):** Multi-threaded Z-dexel stock heightmap sweeper and mandatory physical verification catching rapid-into-stock crashes, target B-Rep gouges, flute-length/shank rubs, holder collisions, and non-center-cutting plunges.
+- **Configurable Post-Processors (`chip-post`):** Modal G-code state machine, quadrant arc & peck-drill expansion, ATC (`M6`) vs. split-file-per-tool emission, and built-in **Grbl / FluidNC**, **grblHAL ATC**, and **LinuxCNC (RS274NGC)** `.post.toml` profiles.
+
+### Milestone 5 — Associative STEP Reload, `.chipz` Bundles, & Headless CLI (`plans/05-milestone-5-plan.md`)
+- **Associative CAD Revision Re-Matching (`chip-cad`, `chip-project`):** WCS-first `GeometricSignature` fuzzy re-matching across revised STEP files (`Ctrl+R` / `reload-step`), healing open edge chains, marking matched operations `Dirty`, and flagging deleted/ambiguous features for 1-click re-pick.
+- **Portable `.chipz` Archives (`chip-project`):** Byte-deterministic, zip-slip-hardened self-contained project bundles packing `project.chip.toml`, STEP models, and custom `.post.toml` profiles with SHA-256 integrity checks.
+- **Headless CLI & v1 Hardening (`chip-cli`):** Complete headless `chipcutter` CLI (`inspect`, `validate`, `simulate`, `build`, `reload-step`, `bundle`, `tools`) and byte-for-byte golden G-code regression snapshots.
 
 ---
 
-## Phased v2 Engineering Milestones (Active — M6–M9)
+## Phased v2 Milestones (Completed — M6–M9)
 
-ChipCutter v2 delivers **High-Efficiency 2D Adaptive Roughing + 2.5D Rest Machining** and **Complete 2D Vector / Sketch / Typography / V-Carving Workflows** (including standalone pure-2D router/panel projects without requiring a 3D STEP model) across four sequential milestones stored in `plans/`:
-
-```mermaid
-flowchart TD
-    M6["M6: 2D Adaptive / Trochoidal Roughing & Exact 2.5D Rest Machining"] --> M7["M7: chip-sketch Foundation, Pure-2D Setups, & DXF / SVG Importers"]
-    M7 --> M8["M8: Interactive 2D Sketch Primitives, Snapping, & TrueType / Hershey Text"]
-    M8 --> M9["M9: V-Carving, Flat-Bottom Two-Tool Clearance, V-Inlays, & v2 Hardening"]
-```
+ChipCutter v2 extended the engine across four vertical-slice milestones with high-efficiency 2D adaptive roughing, exact 2.5D rest machining, standalone pure-2D vector/sketch/typography workflows, and two-tool V-carving & V-inlays:
 
 ### Milestone 6 — 2D Adaptive / Trochoidal Roughing & 2.5D Rest Machining (`plans/06-milestone-6-plan.md`)
-- **`chip-tools`:** Add optional `optimal_load` (`ae_adaptive`) to `CuttingPreset` + radial chip-thinning feedrate compensation helper (`max_thinning_feed_multiplier`).
-- **`chip-cam` — 2D Adaptive Clearing (`PocketStrategy::Adaptive`):**
-  - Medial-axis (`boostvoronoi`) maximum inscribed circle helical entry (plus open-edge horizontal air entry).
-  - Engagement-bounded wavefront / trochoidal crescent peel generator maintaining radial width of cut $\le a_{e,\text{opt}} + \varepsilon$ with zero `180°` corner-burying spikes.
-  - Micro-lift low-clearance linking (`micro_lift_z`, tangential lead-out/in arcs, island-safe `no_engagement_feedrate` return traverses).
-- **`chip-cam` & `chip-project` — Exact 2.5D Rest Machining:**
-  - `RestMachiningMode::FromPreviousTool` (stateless analytic `cavalier_contours` coverage subtraction with `rest_overlap_mm` on 2D Pocket/Adaptive and 2D Contour).
-  - `RestMachiningMode::FromPrecedingOperations` (exact 2D swept toolpath coverage extraction, topological DAG wave scheduling in `JobDispatcher`, and automatic downstream `Dirty` invalidation when upstream operations change or reorder).
-- **`chip-gui` & Verification:** `2D Adaptive` toolbar shortcut, Adaptive & Rest Machining Inspector UI, and `chip-sim` oracle tests verifying bounded radial engagement, rapid-safe micro-lifts, and complete corner cleanup.
+- **High-Speed 2D Adaptive Clearing (`chip-cam`, `chip-tools`):** Constant-engagement wavefront / trochoidal pocketing (`optimal_load` `ae`) with medial-axis maximum-inscribed-circle helical entry, open-edge air entry, micro-lift low-clearance linking, and radial chip-thinning feedrate compensation.
+- **Exact 2.5D Rest Machining (`chip-cam`, `chip-project`):** Exact 2D boolean rest machining (`RegionSet2D`) supporting both stateless `FromPreviousTool` corner cleanup and multi-operation `FromPrecedingOperations` swept-toolpath subtraction.
+- **Topological DAG Wave Execution (`chip-project`, `chip-gui`):** Multi-wave `JobDispatcher` scheduling with automatic downstream `Dirty` invalidation on upstream edits/reorders, Adaptive + Rest Inspector controls, and heightmap engagement/cleanup verification.
 
 ### Milestone 7 — `chip-sketch` Foundation, Pure-2D Projects, & DXF / SVG Import (`plans/07-milestone-7-plan.md`)
-- **Workspace & Schema (`schema_version = 2`):**
-  - Create pure-Rust `chip-sketch` crate (`dxf`, `usvg`, `kurbo`, `rstar`, `cavalier_contours`) with zero UI dependencies.
-  - Upgrade `.chip.toml` to `schema_version = 2` with lossless `v1 -> v2` auto-migration and `.chipz` `vectors/` asset bundling.
-- **Pure-2D Setups (`models = []`):**
-  - Support projects with zero STEP models: `Model / Sheet XY` WCS orientation, Fixed Sheet Stock and Relative-to-Sketch-Bounds Stock (+ explicit `Sheet Thickness Z`), and `chip-sim` pure-2D stock simulation.
-- **DXF & SVG Import Engine:**
-  - DXF importer (`LINE`, `ARC`, `CIRCLE`, `LWPOLYLINE` bulge arcs, `SPLINE`, `ELLIPSE`, `INSERT` blocks, `$INSUNITS`, layer preservation).
-  - SVG importer (`usvg` path/shape/transform flattening, physical units + `96`/`72`/`90` DPI scaling, `+Y up` normalization).
-  - Shared `kurbo` cubic-Bézier-to-biarc `ArcPolyline2D` fitter, duplicate segment remover, R-tree gap-healing chainer (`join_tolerance_mm`), and outer-loop + island `PlanarVectorRegion` hierarchy.
-- **CLI & GUI Integration:**
-  - `chipcutter inspect <file.dxf|file.svg>` and `chipcutter import-2d` CLI subcommands.
-  - `wgpu` 2D Sketch curve/region rendering pass, unified 2D region/loop/chain picking into `ExtractedFeature25D`, and GUI DXF/SVG Import Modal with live scale & gap-healing preview.
+- **Pure-2D Setups & Schema v2 (`chip-sketch`, `chip-project`):** UI-agnostic `chip-sketch` crate, lossless `.chip.toml` `v1 -> v2` migration, `.chipz` `vectors/*` bundling, and zero-STEP sheet setups with fixed or sketch-relative stock sizing.
+- **DXF & SVG Vector Importers (`chip-sketch`):** Pure-Rust AutoCAD DXF and W3C SVG importers with unit/DPI normalization, cubic-Bézier-to-biarc fitting, duplicate removal, R-tree endpoint gap healing, and even-odd outer-loop + island planarization.
+- **CLI & Viewport Integration (`chip-cli`, `chip-gui`):** `chipcutter inspect` (`.dxf`/`.svg`) and `import-2d` CLI subcommands, live DXF/SVG Import Modal, 2D sketch `wgpu` rendering, and unified 2D region/loop/chain viewport picking.
 
 ### Milestone 8 — Interactive 2D Sketch Primitives & CAM Typography (`plans/08-milestone-8-plan.md`)
-- **Parametric 2D Sketch Entities (`chip-sketch`):**
-  - Expression-driven `Rectangle` (with corner fillets), `Circle`, `Slot`, `RegularPolygon`, `Polyline`, and `PointPattern` (single, linear grid, and bolt-circle feeding directly into Drilling & Helical Bore).
-  - Associative `SketchAnchor::PlanarFace` anchoring onto 3D STEP faces (including `GeometricSignature` re-binding on STEP reload!).
-- **Dual-Mode Typography (`ttf-parser` + Hershey):**
-  - Bundled OFL sans-serif outline font + custom `.ttf`/`.otf` loading (`.chipz` `fonts/` bundling), kerning, alignment, Bézier-to-arc conversion, and boolean counter-island classification.
-  - Built-in public-domain single-line Hershey engraving fonts (`SimplexSans`, `DuplexRoman`, `Mono`, `Script`) for 1-pass `2D Trace` part numbering.
-- **Interactive Viewport Sketching (`chip-gui`):**
-  - `Sketches` browser tree, `Look At Active Sketch` camera action, interactive viewport creation tools with Grid/Origin/Endpoint/Midpoint/Center/Stock snapping, and expression-backed Entity Inspector.
+- **Parametric 2D Sketch Entities (`chip-sketch`, `chip-cam`):** Expression-driven `Rectangle` (with fillets), `Circle`, `Slot`, `RegularPolygon`, `Polyline`, and `PointPattern` (linear grids & bolt circles), plus associative `SketchAnchor::PlanarFace` sketching on 3D STEP faces that re-binds across STEP reloads.
+- **Dual-Mode CAM Typography (`chip-sketch`, `chip-project`):** Pure-Rust TrueType/OpenType outline text (`skrifa` + bundled `DejaVuSans-Bold` + `.chipz` `fonts/*` bundling) with kerning, biarc fitting, and counter-island classification, alongside single-line Hershey engraving stroke fonts.
+- **Interactive Viewport Authoring (`chip-gui`):** `2D Sketches` browser tree, orthographic `Look At Sketch` camera alignment, interactive rubber-band drawing tools with a screen-space 2D Snap HUD, and a parametric Sketch Inspector.
 
-### Milestone 9 — V-Carving, Flat-Bottom Clearance, V-Inlays, & v2 Release Hardening (`plans/09-milestone-9-plan.md`)
-- **V-Carve & Bevel Inlay Engine (`chip-cam` — `OperationKind::VCarve`):**
-  - Interior Segment Voronoi / 2D Medial Axis construction (`boostvoronoi`) over closed outer + island vector/text regions.
-  - Variable-depth 3D V-bit toolpath generation with razor-sharp corner-climb kinematics and multi-stepdown `max_stepdown` Z layering.
-  - `flat_depth` clamping + **Optional Two-Stage Flat Endmill Area Clearance** (`clearing_tool_id` pocket clearing Stage 1 + Rest-Machined V-bit bevel/corner Stage 2, seamlessly handled by `chip-sim` and `chip-post` ATC / split-file modes!).
-  - **V-Inlay Plug Mode** (`start_depth` + `glue_gap_bottom` male inlay generation).
-- **v2 End-to-End Verification & Documentation:**
-  - `chip-sim` sloped V-carve heightmap verification (Fine/Ultra resolution) asserting zero rapid crashes and exact bevel geometry.
-  - New v2 golden G-code snapshots (Adaptive + Rest Machining + Pure-2D DXF/Text Two-Tool V-Carve) while keeping all v1 golden snapshots byte-for-byte intact.
-  - Updated `README.md`, `ARCHITECTURE.md`, and v2 sample demo projects in `chip-project::demos`.
+### Milestone 9 — V-Carving, Flat-Bottom Clearance, V-Inlays, & v2 Hardening (`plans/09-milestone-9-plan.md`)
+- **3D Medial-Axis V-Carving (`chip-tools`, `chip-cam`):** Starter `60°` V-Bit (`T8`), pruned `boostvoronoi` interior medial-axis chain extraction with exact parabolic sampling, simultaneous 3-axis `(X, Y, Z)` V-bit toolpaths, sharp 3D corner climbs, and multi-pass stepdowns.
+- **Two-Stage Flat Clearance & Mated V-Inlays (`chip-cam`, `chip-project`):** `flat_depth` clamping with optional Stage 1 Flat Endmill Pocket/Adaptive clearing + Stage 2 rest-machined V-Bit bevels/corners (across both ATC `M6` and split-file GRBL posts), plus mirrored **Male V-Inlay Plug** generation.
+- **Analytical Conical Sweeper & v2 Release Hardening (`chip-sim`, `chip-cli`, `chip-gui`):** Closed-form sloped 3D conical V-bit heightmap sweeper, V-Carve & Inlay Inspector UI (`--demo-vcarve`), new v2 golden G-code snapshots alongside byte-identical v1 goldens, and updated release documentation.
 
 ---
 
 ## Deferred Horizon (v3 and Beyond)
-1. **3-Axis Surface Milling & Mesh Support (v3):**
+1. **UI Polish & Usability Phase (v3):**
+   - Visual refinement, typography/iconography consistency, streamlined inspector/dialog ergonomics, keyboard-first workflows, onboarding guidance, and viewport interaction polish across high-DPI displays.
+2. **Functional & Behavioral User-Level Testing Phase (v3):**
+   - Durable end-to-end user-journey and GUI behavioral test harness (`egui_kittest` / headless interactive workflows + CLI workflows) verifying every feature from a machinist's point of view without brittle coupling to internal implementation details.
+3. **3-Axis Surface Milling & Mesh Support (v3):**
    - Importing **STL / OBJ / 3MF** meshes alongside STEP solids.
    - 3D Waterline (Z-level), Parallel/Raster 3D finishing, Scallop, Pencil, and 3D Adaptive roughing strategies.
-2. **Advanced Workholding & Multi-Setup Volumetric Stock (v3):**
+4. **Advanced Workholding & Multi-Setup Volumetric Stock (v3):**
    - 3D fixture/vise/clamp collision bodies with automatic safe-rapid routing.
    - Carrying simulated stock across flipped setups via tri-dexel volumetric stock.
-3. **Ecosystem & Extensibility (v3+):**
+5. **Ecosystem & Extensibility (v3+):**
    - Optional OpenCASCADE (`opencascade-rs`) `CadKernel` feature backend.
    - Additional controller dialects (Fanuc/Haas, Mach4, Masso, Centroid), thread milling, and printable HTML/PDF setup sheets.

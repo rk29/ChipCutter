@@ -132,7 +132,7 @@ All core geometry, CAM, simulation, post-processing, and project persistence cra
 | [`crates/chip-cli`](crates/chip-cli) | `chipcutter` headless CLI binary and v1 + v2 golden end-to-end G-code snapshot suite |
 | [`crates/chip-gui`](crates/chip-gui) | `eframe` + `egui_tiles` + `wgpu` 4x MSAA 3D/2D CAD/CAM desktop application |
 | [`posts/`](posts) | Built-in TOML post-processor profiles (`grbl.post.toml`, `grblhal_atc.post.toml`, `linuxcnc.post.toml`) |
-| [`specs/`](specs) | Authoritative subsystem architecture & algorithm specifications (`00-overview.md` – `10-roadmap.md`) |
+| [`specs/`](specs) | Authoritative subsystem architecture & algorithm specifications (`00-overview.md` – `11-sketches-vectors.md`) |
 | [`plans/`](plans) | Milestone 1–9 engineering implementation plans (`01-milestone-1-plan.md` – `09-milestone-9-plan.md`) |
 
 ---
@@ -141,8 +141,8 @@ All core geometry, CAM, simulation, post-processing, and project persistence cra
 
 - [**`ARCHITECTURE.md`**](ARCHITECTURE.md) — End-to-end data pipeline, crate dependency graph, threading/caching model, and 3D render passes
 - [**`DEVELOPMENT.md`**](DEVELOPMENT.md) — Platform build prerequisites, native Linux/macOS/Windows setup, and headless CI instructions
-- [**`specs/00-overview.md`**](specs/00-overview.md) — Product scope, non-goals, and full specification index (`00` through `10`)
-- [**`specs/10-roadmap.md`**](specs/10-roadmap.md) — Completed v1 milestones and v2+ roadmap (Adaptive roughing, 2D DXF/SVG & V-carving, 3-axis surface milling)
+- [**`specs/00-overview.md`**](specs/00-overview.md) — Product scope, non-goals, and full specification index (`00` through `11`)
+- [**`specs/10-roadmap.md`**](specs/10-roadmap.md) — Completed v1 (`M1`–`M5`) & v2 (`M6`–`M9`) milestones and v3+ horizon (UI/usability polish, user-level behavioral testing, 3-axis surface milling, meshes, & workholding)
 - [**`AGENTS.md`**](AGENTS.md) — Architectural invariants and contributor guidelines
 
 ---

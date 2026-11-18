@@ -5,7 +5,7 @@
 
 ---
 
-## Scope Summary (v1 Completed + v2 Active)
+## Scope Summary (v1 & v2 Completed)
 - **Machining Paradigm:** 2.5D CNC milling, high-efficiency adaptive roughing, routing, engraving, and V-carving (architected cleanly to extend to 3-axis surface milling in v3+).
 - **CAD & 2D Vector Input:**
   - **3D B-Rep Solids (`chip-cad`):** ISO 10303-21 **STEP** (AP203 / AP214 / AP242) via pure-Rust `monstertruck` behind the `CadKernel` trait.
@@ -52,5 +52,5 @@
 | [07-post-processor.md](file:///workspace/ChipCutter/specs/07-post-processor.md) | Typed CL-data IR, TOML post configs, ATC vs split-per-tool, GRBL & LinuxCNC posts |
 | [08-ui-viewport.md](file:///workspace/ChipCutter/specs/08-ui-viewport.md) | `eframe` + `wgpu` + `egui_tiles` workspace, 3D/2D Sketch viewport, Undo/Redo |
 | [09-persistence-cli.md](file:///workspace/ChipCutter/specs/09-persistence-cli.md) | `.chip.toml` (`v2`) & `.chipz` formats, headless CLI subcommands, testing strategy |
-| [10-roadmap.md](file:///workspace/ChipCutter/specs/10-roadmap.md) | Completed v1 milestones (M1–M5), phased v2 milestones (M6–M9), and v3+ horizon |
+| [10-roadmap.md](file:///workspace/ChipCutter/specs/10-roadmap.md) | Completed v1 milestones (M1–M5), completed v2 milestones (M6–M9), and v3+ horizon |
 | [11-sketches-vectors.md](file:///workspace/ChipCutter/specs/11-sketches-vectors.md) | `chip-sketch` 2D Sketch Layers, parametric shapes, DXF/SVG importers, TrueType & Hershey text |
