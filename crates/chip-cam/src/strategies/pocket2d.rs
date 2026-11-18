@@ -9,8 +9,16 @@ use crate::{
         find_helical_entry_pole,
     },
     params::{EntryStrategy, Pocket2DParams, PocketPassOrder, PocketStrategyKind},
+    rest2d::{
+        ContourRestClipQuery, PocketRestQuery, RegionSet2D, clip_contour_path_to_rest,
+        compute_rest_pocket_work_items,
+    },
     selection::ExtractedFeature25D,
-    strategies::{StrategyExecContext, compute_z_levels},
+    strategies::{
+        StrategyExecContext,
+        adaptive2d::{AdaptiveSliceSpec, generate_adaptive_region_slice},
+        compute_z_levels,
+    },
     toolpath::{ToolpathBuilder, XyArcMove},
     wcs::CamError,
 };
@@ -362,8 +370,26 @@ pub fn generate_pocket2d(
                 ..
             } => {
                 let has_open = open_outer_segments.iter().any(|&b| b);
+                let is_adaptive = matches!(params.strategy, PocketStrategyKind::Adaptive(_));
                 let open_shift = if has_open {
-                    tool_r + radial_leave + params.open_edge_overhang.value_mm.max(0.2)
+                    let stock_aabb = ctx.setup.stock.aabb_wcs();
+                    let feat_aabb = outer_boundary_wcs.exact_aabb();
+                    let extra_stock_margin =
+                        if is_adaptive && stock_aabb.is_valid() && feat_aabb.is_valid() {
+                            (stock_aabb.max.x - feat_aabb.max.x)
+                                .max(feat_aabb.min.x - stock_aabb.min.x)
+                                .max(stock_aabb.max.y - feat_aabb.max.y)
+                                .max(feat_aabb.min.y - stock_aabb.min.y)
+                                .clamp(0.0, 25.0)
+                        } else {
+                            0.0
+                        };
+                    let base_r = if is_adaptive {
+                        2.0 * tool_r + extra_stock_margin
+                    } else {
+                        tool_r
+                    };
+                    base_r + radial_leave + params.open_edge_overhang.value_mm.max(0.2)
                 } else {
                     0.0
                 };
@@ -394,11 +420,12 @@ pub fn generate_pocket2d(
         });
     }
 
-    let strategy_impl: Box<dyn PocketStrategy> = match params.strategy {
-        PocketStrategyKind::ContourParallel => Box::new(ContourParallelStrategy),
-        PocketStrategyKind::ZigZag { pass_angle_deg } => {
-            Box::new(ZigZagPocketStrategy { pass_angle_deg })
-        }
+    let legacy_strategy_impl: Option<Box<dyn PocketStrategy>> = match &params.strategy {
+        PocketStrategyKind::ContourParallel => Some(Box::new(ContourParallelStrategy)),
+        PocketStrategyKind::ZigZag { pass_angle_deg } => Some(Box::new(ZigZagPocketStrategy {
+            pass_angle_deg: *pass_angle_deg,
+        })),
+        PocketStrategyKind::Adaptive(_) => None,
     };
 
     let finish_allowance = if params.finish_wall_pass {
@@ -454,87 +481,139 @@ pub fn generate_pocket2d(
                 z_levels[lvl_idx - 1]
             };
 
-            for sub_reg in effective_rough {
-                let subpaths = strategy_impl.generate_level_passes(
-                    sub_reg,
-                    raw_floor_outer_ccw,
-                    &engagement,
-                    ctx.cancel,
-                )?;
+            let rest_enabled = !ctx.passes.rest_machining.is_disabled();
+            let work_items: Vec<(PocketRegion2D, RegionSet2D)> = if rest_enabled {
+                compute_rest_pocket_work_items(&PocketRestQuery {
+                    raw_pocket: pkt_region,
+                    safe_tool_regions: effective_rough,
+                    current_tool_radius_mm: tool_r,
+                    radial_stock_to_leave_mm: radial_leave,
+                    rest_cfg: &ctx.passes.rest_machining,
+                    upstream: ctx.upstream_rest,
+                    z_level_wcs: z_cut,
+                })
+                .into_iter()
+                .map(|w| (w.rest_tool_region, w.cleared_air_centers))
+                .collect()
+            } else {
+                effective_rough
+                    .iter()
+                    .cloned()
+                    .map(|r| (r, RegionSet2D::empty()))
+                    .collect()
+            };
 
-                for sp in &subpaths {
-                    ctx.check_cancel()?;
-                    if sp.polyline.segments.is_empty() {
-                        continue;
-                    }
-                    builder.pass_count += 1;
-
-                    // Rotate closed ring seam to the closest point to `current_pos` when staying down!
-                    let poly = if sp.polyline.closed
-                        && !sp.prefer_air_entry
-                        && let Some(cur) = builder.current_pos()
-                        && (cur.z - z_cut).abs() <= 1e-4
-                        && let Some(proj) = sp.polyline.project_point(DVec2::new(cur.x, cur.y))
-                    {
-                        sp.polyline.rotate_closed_seam(proj.s_mm)
-                    } else {
-                        sp.polyline.clone()
+            if let PocketStrategyKind::Adaptive(adaptive_params) = &params.strategy {
+                for (sub_reg, cleared_air) in &work_items {
+                    generate_adaptive_region_slice(
+                        ctx,
+                        &AdaptiveSliceSpec {
+                            sub_reg,
+                            finish_reg: None,
+                            raw_floor_outer_ccw,
+                            has_open_air: *has_open,
+                            cleared_air_centers: cleared_air,
+                            pocket_params: params,
+                            adaptive_params,
+                            prev_level_z,
+                            z_cut,
+                        },
+                        builder,
+                    )?;
+                }
+            } else if let Some(strategy_impl) = &legacy_strategy_impl {
+                for (sub_reg, cleared_air) in &work_items {
+                    let item_eng = PocketEngagementParams {
+                        has_open_air_edges: engagement.has_open_air_edges
+                            || !cleared_air.is_empty(),
+                        inside_out: if !cleared_air.is_empty() {
+                            false
+                        } else {
+                            engagement.inside_out
+                        },
+                        ..engagement
                     };
+                    let subpaths = strategy_impl.generate_level_passes(
+                        sub_reg,
+                        raw_floor_outer_ccw,
+                        &item_eng,
+                        ctx.cancel,
+                    )?;
 
-                    let Some((start_xy, _)) = poly.sample_at_fraction(0.0) else {
-                        continue;
-                    };
+                    for sp in &subpaths {
+                        ctx.check_cancel()?;
+                        if sp.polyline.segments.is_empty() {
+                            continue;
+                        }
+                        builder.pass_count += 1;
 
-                    // Can we stay down from the previous pass at `z_cut` without retracting?
-                    let can_stay_down = if let Some(cur) = builder.current_pos()
-                        && (cur.z - z_cut).abs() <= 1e-4
-                    {
-                        let cur_xy = DVec2::new(cur.x, cur.y);
-                        let dist = cur_xy.distance(start_xy);
-                        dist <= stay_down_limit && is_chord_inside_region(cur_xy, start_xy, sub_reg)
-                    } else {
-                        false
-                    };
+                        // Rotate closed ring seam onto `cleared_air` (when Rest Machining) or closest cursor point!
+                        let poly = if sp.polyline.closed && !cleared_air.is_empty() {
+                            rotate_seam_to_cleared_air(&sp.polyline, cleared_air)
+                        } else if sp.polyline.closed
+                            && !sp.prefer_air_entry
+                            && let Some(cur) = builder.current_pos()
+                            && (cur.z - z_cut).abs() <= 1e-4
+                            && let Some(proj) = sp.polyline.project_point(DVec2::new(cur.x, cur.y))
+                        {
+                            sp.polyline.rotate_closed_seam(proj.s_mm)
+                        } else {
+                            sp.polyline.clone()
+                        };
 
-                    if can_stay_down {
-                        builder.linear_to(
-                            DVec3::new(start_xy.x, start_xy.y, z_cut),
-                            ctx.cutting.lead_feed_mm_min,
-                            MotionRole::LinkTransition,
+                        let Some((start_xy, _)) = poly.sample_at_fraction(0.0) else {
+                            continue;
+                        };
+
+                        let can_stay_down = if let Some(cur) = builder.current_pos()
+                            && (cur.z - z_cut).abs() <= 1e-4
+                        {
+                            let cur_xy = DVec2::new(cur.x, cur.y);
+                            let dist = cur_xy.distance(start_xy);
+                            dist <= stay_down_limit
+                                && is_chord_inside_region(cur_xy, start_xy, sub_reg)
+                        } else {
+                            false
+                        };
+
+                        if can_stay_down {
+                            builder.linear_to(
+                                DVec3::new(start_xy.x, start_xy.y, z_cut),
+                                ctx.cutting.lead_feed_mm_min,
+                                MotionRole::LinkTransition,
+                            );
+                        } else if sp.prefer_air_entry || cleared_air.contains_point(start_xy) {
+                            retract_and_plunge(ctx, builder, start_xy, z_cut, retract_z);
+                        } else if let Some(entry_reg) = &sp.entry_region {
+                            emit_pocket_cavity_entry(
+                                ctx,
+                                builder,
+                                &PocketCavityEntrySpec {
+                                    entry_region: entry_reg,
+                                    first_ring: &poly,
+                                    ring_start_xy: start_xy,
+                                    prev_level_z,
+                                    z_cut,
+                                    retract_z,
+                                },
+                            );
+                        } else {
+                            retract_and_plunge(ctx, builder, start_xy, z_cut, retract_z);
+                        }
+
+                        builder.emit_polyline_2d_z_interp(
+                            &poly,
+                            z_cut,
+                            z_cut,
+                            ctx.cutting.cutting_feed_mm_min,
+                            sp.role,
                         );
-                    } else if sp.prefer_air_entry {
-                        // Open-edge pocket: plunge safely in open air outside stock!
-                        retract_and_plunge(ctx, builder, start_xy, z_cut, retract_z);
-                    } else if let Some(entry_reg) = &sp.entry_region {
-                        emit_pocket_cavity_entry(
-                            ctx,
-                            builder,
-                            &PocketCavityEntrySpec {
-                                entry_region: entry_reg,
-                                first_ring: &poly,
-                                ring_start_xy: start_xy,
-                                prev_level_z,
-                                z_cut,
-                                retract_z,
-                            },
-                        );
-                    } else {
-                        // Island or secondary cleanup loop inside already-cleared cavity!
-                        retract_and_plunge(ctx, builder, start_xy, z_cut, retract_z);
                     }
-
-                    builder.emit_polyline_2d_z_interp(
-                        &poly,
-                        z_cut,
-                        z_cut,
-                        ctx.cutting.cutting_feed_mm_min,
-                        sp.role,
-                    );
                 }
             }
 
             // Optional Finish Wall Pass around outer boundary & islands (`MotionRole::FinishCut`)
-            if params.finish_wall_pass && !rough_regions.is_empty() {
+            if params.finish_wall_pass && !rough_regions.is_empty() && !work_items.is_empty() {
                 for fin_reg in &finish_regions {
                     let outer_fin = if *has_open {
                         rotate_seam_to_air_overhang(&fin_reg.outer_ccw, raw_floor_outer_ccw)
@@ -547,32 +626,61 @@ pub fn generate_pocket2d(
                         fin_reg.outer_ccw.clone()
                     };
 
-                    for loop_poly in std::iter::once(&outer_fin).chain(fin_reg.islands_cw.iter()) {
-                        let Some((s_xy, _)) = loop_poly.sample_at_fraction(0.0) else {
-                            continue;
-                        };
-                        let stay = builder.current_pos().is_some_and(|cur| {
-                            (cur.z - z_cut).abs() <= 1e-4
-                                && DVec2::new(cur.x, cur.y).distance(s_xy) <= stay_down_limit
-                                && is_chord_inside_region(DVec2::new(cur.x, cur.y), s_xy, fin_reg)
-                        });
-                        if stay {
-                            builder.linear_to(
-                                DVec3::new(s_xy.x, s_xy.y, z_cut),
-                                ctx.cutting.lead_feed_mm_min,
-                                MotionRole::LeadIn,
-                            );
+                    for (loop_idx, loop_poly) in std::iter::once(&outer_fin)
+                        .chain(fin_reg.islands_cw.iter())
+                        .enumerate()
+                    {
+                        let raw_wall = if loop_idx == 0 {
+                            raw_floor_outer_ccw
                         } else {
-                            retract_and_plunge(ctx, builder, s_xy, z_cut, retract_z);
+                            &pkt_region.islands_cw
+                                [(loop_idx - 1).min(pkt_region.islands_cw.len().saturating_sub(1))]
+                        };
+                        let finish_spans = if rest_enabled {
+                            clip_contour_path_to_rest(&ContourRestClipQuery {
+                                raw_contour: raw_wall,
+                                offset_sign: 1.0,
+                                candidate_path: loop_poly,
+                                current_tool_radius_mm: tool_r,
+                                rest_cfg: &ctx.passes.rest_machining,
+                                upstream: ctx.upstream_rest,
+                                z_level_wcs: z_cut,
+                            })
+                        } else {
+                            vec![loop_poly.clone()]
+                        };
+
+                        for span in &finish_spans {
+                            let Some((s_xy, _)) = span.sample_at_fraction(0.0) else {
+                                continue;
+                            };
+                            let stay = builder.current_pos().is_some_and(|cur| {
+                                (cur.z - z_cut).abs() <= 1e-4
+                                    && DVec2::new(cur.x, cur.y).distance(s_xy) <= stay_down_limit
+                                    && is_chord_inside_region(
+                                        DVec2::new(cur.x, cur.y),
+                                        s_xy,
+                                        fin_reg,
+                                    )
+                            });
+                            if stay {
+                                builder.linear_to(
+                                    DVec3::new(s_xy.x, s_xy.y, z_cut),
+                                    ctx.cutting.lead_feed_mm_min,
+                                    MotionRole::LeadIn,
+                                );
+                            } else {
+                                retract_and_plunge(ctx, builder, s_xy, z_cut, retract_z);
+                            }
+                            builder.pass_count += 1;
+                            builder.emit_polyline_2d_z_interp(
+                                span,
+                                z_cut,
+                                z_cut,
+                                ctx.cutting.cutting_feed_mm_min,
+                                MotionRole::FinishCut,
+                            );
                         }
-                        builder.pass_count += 1;
-                        builder.emit_polyline_2d_z_interp(
-                            loop_poly,
-                            z_cut,
-                            z_cut,
-                            ctx.cutting.cutting_feed_mm_min,
-                            MotionRole::FinishCut,
-                        );
                     }
                 }
             }
@@ -590,6 +698,29 @@ pub fn generate_pocket2d(
     }
 
     Ok(())
+}
+
+fn rotate_seam_to_cleared_air(poly: &ArcPolyline2D, cleared_air: &RegionSet2D) -> ArcPolyline2D {
+    let perim = poly.perimeter();
+    if perim <= 1e-4 {
+        return poly.clone();
+    }
+    let mut best_s = 0.0_f64;
+    let mut best_dist = f64::INFINITY;
+    for i in 0..48 {
+        let frac = (i as f64 + 0.5) / 48.0;
+        if let Some((pt, _)) = poly.sample_at_fraction(frac) {
+            if cleared_air.contains_point(pt) {
+                return poly.rotate_closed_seam(frac * perim);
+            }
+            let d = cleared_air.min_distance_to_boundary(pt);
+            if d < best_dist {
+                best_dist = d;
+                best_s = frac * perim;
+            }
+        }
+    }
+    poly.rotate_closed_seam(best_s)
 }
 
 fn rotate_seam_to_air_overhang(

@@ -546,6 +546,33 @@ impl ToolLibraryModalState {
                                     &mut preset.default_stepover_mm,
                                     unit,
                                 );
+                                let mut has_opt = preset.optimal_load_mm.is_some();
+                                ui.horizontal(|ui| {
+                                    if ui
+                                        .checkbox(&mut has_opt, "Adaptive Optimal Load:")
+                                        .changed()
+                                    {
+                                        preset.optimal_load_mm = if has_opt {
+                                            Some((0.20 * dia_mm).max(0.1))
+                                        } else {
+                                            None
+                                        };
+                                    }
+                                    if let Some(opt_mm) = &mut preset.optimal_load_mm {
+                                        let mut disp = unit.from_mm(*opt_mm);
+                                        if ui
+                                            .add(
+                                                egui::DragValue::new(&mut disp)
+                                                    .speed(0.05)
+                                                    .range(0.01..=200.0)
+                                                    .suffix(format!(" {}", unit.suffix())),
+                                            )
+                                            .changed()
+                                        {
+                                            *opt_mm = unit.to_mm(disp);
+                                        }
+                                    }
+                                });
                             }
                         });
                 });

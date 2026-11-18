@@ -17,9 +17,13 @@ pub use bundle::{
     export_chipz_bundle, is_chipz_path, pack_chipz_bundle_bytes, unpack_chipz_bundle,
     unpack_chipz_bytes,
 };
-pub use cache::{OperationInputHash, ToolpathCache, compute_operation_input_hash};
+pub use cache::{
+    OperationInputHash, ToolpathCache, compute_operation_input_hash,
+    resolve_upstream_rest_op_indices,
+};
 pub use demos::{
-    build_cam_torture_project, build_multi_feature_bracket_project, build_revision_v1_demo_project,
+    build_adaptive_rest_demo_project, build_cam_torture_project,
+    build_multi_feature_bracket_project, build_revision_v1_demo_project,
 };
 pub use dispatcher::{
     BatchGenerationReport, DispatcherEvent, JobDispatcher, generate_project_blocking,
@@ -585,5 +589,96 @@ mod tests {
         let err = unpack_chipz_bytes(&bad_zip.into_inner(), &slip_dir).unwrap_err();
         assert!(matches!(err, BundleError::UnsafeEntryPath { .. }));
         let _ = std::fs::remove_dir_all(&slip_dir);
+    }
+
+    #[test]
+    fn adaptive_and_rest_machining_dag_waves_dirty_propagation_and_undo_work() {
+        use chip_cad::sample_cam_torture_block_step;
+        use chip_cam::OperationStatus;
+        use chip_math::ParamLength;
+        use chip_sim::SimResolution;
+
+        let step = sample_cam_torture_block_step().unwrap();
+        let doc = MonstertruckKernel
+            .load_step_bytes("torture.step", step.as_bytes(), DEFAULT_TESS_CHORD_TOL_MM)
+            .unwrap();
+        let sha = compute_sha256_hex(step.as_bytes());
+        let starter = default_starter_tool_library();
+
+        let mut proj = build_adaptive_rest_demo_project(
+            &doc,
+            "models/torture.step".to_string(),
+            &sha,
+            &starter.tools,
+        );
+        assert_eq!(proj.setups[0].operations.len(), 5);
+        let val = validate_project(&proj, None, Some(&doc));
+        assert!(val.is_valid(), "validation errors: {:?}", val.diagnostics);
+
+        let mut cache = ToolpathCache::new(32);
+        let mut history = UndoHistory::new(32);
+
+        // Wave 0 generates independent operations in parallel;
+        // Wave 1 generates `op_2_adaptive_rest_3mm` using `op_1_adaptive_rough_10mm`'s swept coverage!
+        let batch = generate_project_blocking(&mut proj, &doc, &mut cache, 1);
+        assert!(batch.is_ok(), "batch errors: {:?}", batch.errors);
+        assert_eq!(batch.generated.len(), 5);
+        assert!(
+            proj.setups[0]
+                .operations
+                .iter()
+                .all(|o| o.runtime_status == OperationStatus::Clean)
+        );
+
+        // Verify the entire Adaptive + Rest setup passes `chip-sim` with 0 crashes and 0 gouges!
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let sim = simulate_project_setup(&SetupSimRequest {
+            project: &proj,
+            cad_doc: &doc,
+            cache: &cache,
+            setup_idx: 0,
+            cad_revision: 1,
+            resolution: SimResolution::Standard,
+            kinematics: resolve_kinematics_for_key("grbl", None),
+            cancel: Some(&cancel),
+        })
+        .unwrap();
+        assert!(
+            !sim.has_critical_errors(),
+            "Adaptive + Rest demo must have 0 critical simulation errors, got: {:?}",
+            sim.diagnostics
+        );
+
+        // Editing upstream Roughing Op (`operations[2]`, `op_1_adaptive_rough_10mm`) MUST automatically
+        // mark BOTH `operations[2]` AND downstream Rest `operations[3]` (`op_2_adaptive_rest_3mm`) `Dirty`
+        // while leaving independent `operations[4]` (`op_3_open_shoulder_adaptive`) `Clean`!
+        history.record_before_edit("Change Rough Stock to Leave", None, &proj);
+        proj.setups[0].operations[2].passes.stock_to_leave_radial = ParamLength::from_mm(0.5);
+        cache.reconcile_project_statuses(&mut proj, 1, &std::collections::HashSet::new());
+
+        assert_eq!(
+            proj.setups[0].operations[2].runtime_status,
+            OperationStatus::Dirty
+        );
+        assert_eq!(
+            proj.setups[0].operations[3].runtime_status,
+            OperationStatus::Dirty,
+            "Downstream FromPrecedingOperations Rest op must auto-invalidate when upstream changes"
+        );
+        assert_eq!(
+            proj.setups[0].operations[4].runtime_status,
+            OperationStatus::Clean,
+            "Independent operation must remain Clean"
+        );
+
+        // `Ctrl+Z` Undo restores BOTH Op 1 and downstream Rest Op 2 back to `Clean` instantaneously!
+        assert!(history.undo(&mut proj).is_some());
+        cache.reconcile_project_statuses(&mut proj, 1, &std::collections::HashSet::new());
+        assert!(
+            proj.setups[0]
+                .operations
+                .iter()
+                .all(|o| o.runtime_status == OperationStatus::Clean)
+        );
     }
 }

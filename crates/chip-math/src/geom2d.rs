@@ -58,6 +58,25 @@ impl Aabb2 {
             DVec2::ZERO
         }
     }
+
+    #[inline]
+    pub fn contains_point(&self, p: DVec2) -> bool {
+        self.is_valid()
+            && p.x >= self.min.x
+            && p.x <= self.max.x
+            && p.y >= self.min.y
+            && p.y <= self.max.y
+    }
+
+    #[inline]
+    pub fn overlaps(&self, other: &Self) -> bool {
+        self.is_valid()
+            && other.is_valid()
+            && self.min.x <= other.max.x
+            && self.max.x >= other.min.x
+            && self.min.y <= other.max.y
+            && self.max.y >= other.min.y
+    }
 }
 
 /// Exact 2D analytic curve segment preserving true circular arcs (`G2`/`G3`).

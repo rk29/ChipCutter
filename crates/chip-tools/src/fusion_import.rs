@@ -161,6 +161,8 @@ struct FusionPresetRaw {
     stepdown: Option<f64>,
     #[serde(default)]
     stepover: Option<f64>,
+    #[serde(rename = "optimal-load", alias = "v_ae", default)]
+    optimal_load: Option<f64>,
     #[serde(rename = "tool-coolant", default)]
     tool_coolant: Option<String>,
 }
@@ -444,6 +446,10 @@ pub fn import_fusion_library_bytes(
                         .filter(|&v| v > 0.0)
                         .map(|v| v * len_scale)
                         .unwrap_or(0.4 * dc_mm),
+                    optimal_load_mm: p
+                        .optimal_load
+                        .filter(|&v| v.is_finite() && v > 0.0)
+                        .map(|v| v * len_scale),
                     coolant_override: parse_fusion_coolant(p.tool_coolant.as_deref()),
                 });
             }

@@ -7,6 +7,7 @@ use crate::{
         Contour2DParams, ContourCompensation, EntryStrategy, HoldingTabsConfig, LeadConfig,
         TabPlacementMode, TabProfileKind,
     },
+    rest2d::{ContourRestClipQuery, clip_contour_path_to_rest},
     selection::ExtractedFeature25D,
     strategies::{StrategyExecContext, compute_z_levels},
     toolpath::{TabMarker3D, ToolpathBuilder, VerticalArcMove, XyArcMove},
@@ -223,7 +224,12 @@ pub fn generate_contour2d(
                         Vec::new()
                     };
 
-                if params.continuous_spiral_ramp && poly.closed && loop_tabs_s_mm.is_empty() {
+                let rest_enabled = !ctx.passes.rest_machining.is_disabled();
+                if params.continuous_spiral_ramp
+                    && poly.closed
+                    && loop_tabs_s_mm.is_empty()
+                    && !rest_enabled
+                {
                     emit_continuous_spiral_contour(
                         ctx,
                         params,
@@ -237,6 +243,44 @@ pub fn generate_contour2d(
                             cut_role,
                         },
                     );
+                } else if rest_enabled {
+                    for &z_cut in &z_levels {
+                        ctx.check_cancel()?;
+                        let rest_spans = clip_contour_path_to_rest(&ContourRestClipQuery {
+                            raw_contour: &src.poly_wcs,
+                            offset_sign: base_sign,
+                            candidate_path: &poly,
+                            current_tool_radius_mm: tool_r,
+                            rest_cfg: &ctx.passes.rest_machining,
+                            upstream: ctx.upstream_rest,
+                            z_level_wcs: z_cut,
+                        });
+                        for span in &rest_spans {
+                            let span_tabs: Vec<f64> = if !src_tab_s_norms.is_empty()
+                                && extra_radial <= 1e-4
+                                && span.closed
+                            {
+                                loop_tabs_s_mm.clone()
+                            } else {
+                                Vec::new()
+                            };
+                            emit_single_depth_contour_pass(
+                                ctx,
+                                params,
+                                builder,
+                                &SingleDepthContourPassSpec {
+                                    poly: span,
+                                    base_sign,
+                                    z_cut,
+                                    target_bottom_z,
+                                    tab_centers_s_mm: &span_tabs,
+                                    tool_r,
+                                    cut_feed,
+                                    cut_role,
+                                },
+                            );
+                        }
+                    }
                 } else {
                     for &z_cut in &z_levels {
                         ctx.check_cancel()?;

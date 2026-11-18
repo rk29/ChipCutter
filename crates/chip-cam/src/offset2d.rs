@@ -227,6 +227,21 @@ impl PocketRegion2D {
         d
     }
 
+    /// Dilates this region outward by `outward_dist_mm` (`outer` expands outward, `islands` shrink inward).
+    pub fn dilate_outward(&self, outward_dist_mm: f64) -> Vec<Self> {
+        if !outward_dist_mm.is_finite() {
+            return Vec::new();
+        }
+        self.erode_inward(-outward_dist_mm)
+    }
+
+    /// Approximate net planar area (`mm²`) of `outer_ccw` minus all `islands_cw`.
+    pub fn net_area_mm2(&self) -> f64 {
+        let outer_a = self.outer_ccw.signed_area().abs();
+        let isl_a: f64 = self.islands_cw.iter().map(|i| i.signed_area().abs()).sum();
+        (outer_a - isl_a).max(0.0)
+    }
+
     /// Erodes this region inward by `inward_dist_mm` (`outer` shrinks inward, `islands` expand outward),
     /// returning 0, 1, or multiple disconnected [`PocketRegion2D`] sub-regions.
     pub fn erode_inward(&self, inward_dist_mm: f64) -> Vec<Self> {

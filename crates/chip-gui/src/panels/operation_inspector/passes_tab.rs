@@ -1,22 +1,39 @@
 use chip_cam::{
-    ChamferSourceMode, ChamferTraceMode, ChamferTraceParams, Contour2DParams, ContourCompensation,
-    DrillBoreParams, DrillCycleKind, FacingCutMode, FacingParams, HoleMachiningMode, Operation,
-    Pocket2DParams, PocketPassOrder, PocketStrategyKind, StrategyParams, TabPlacementMode,
-    TabProfileKind,
+    AdaptiveClearingParams, AdaptiveCutDirection, ChamferSourceMode, ChamferTraceMode,
+    ChamferTraceParams, Contour2DParams, ContourCompensation, DrillBoreParams, DrillCycleKind,
+    FacingCutMode, FacingParams, HoleMachiningMode, Operation, OperationKind, Pocket2DParams,
+    PocketPassOrder, PocketStrategyKind, RestMachiningConfig, RestMachiningMode, StrategyParams,
+    TabPlacementMode, TabProfileKind,
 };
-use chip_math::{EvalContext, ParamLength};
+use chip_math::{DisplayUnit, EvalContext, ParamLength};
+use chip_tools::compute_adaptive_thinning_feed;
 
 use crate::{panels::ViewportPickMode, widgets::edit_param_length};
 
-pub fn show_passes_tab(
-    ui: &mut egui::Ui,
-    op: &mut Operation,
-    setup_idx: usize,
-    op_idx: usize,
-    eval_ctx: &EvalContext,
-    pick_mode: &mut ViewportPickMode,
-    mutated_label: &mut Option<&'static str>,
-) {
+pub struct PassesTabCtx<'a> {
+    pub op: &'a mut Operation,
+    pub preceding_ops: &'a [(String, String)],
+    pub tool_feed_preview: Option<(f64, f64)>,
+    pub display_unit: DisplayUnit,
+    pub setup_idx: usize,
+    pub op_idx: usize,
+    pub eval_ctx: &'a EvalContext,
+    pub pick_mode: &'a mut ViewportPickMode,
+    pub mutated_label: &'a mut Option<&'static str>,
+}
+
+pub fn show_passes_tab(ui: &mut egui::Ui, ctx: PassesTabCtx<'_>) {
+    let PassesTabCtx {
+        op,
+        preceding_ops,
+        tool_feed_preview,
+        display_unit,
+        setup_idx,
+        op_idx,
+        eval_ctx,
+        pick_mode,
+        mutated_label,
+    } = ctx;
     ui.strong("Depth Passes & Stock to Leave");
     if ui
         .checkbox(&mut op.passes.multiple_depths, "Multiple Z Stepdowns")
@@ -65,6 +82,19 @@ pub fn show_passes_tab(
         *mutated_label = Some("Edit Axial Stock to Leave");
     }
 
+    if matches!(op.kind, OperationKind::Pocket2D | OperationKind::Contour2D) {
+        ui.separator();
+        show_rest_machining_section(
+            ui,
+            &mut op.passes.rest_machining,
+            preceding_ops,
+            setup_idx,
+            op_idx,
+            eval_ctx,
+            mutated_label,
+        );
+    }
+
     ui.separator();
     ui.strong("Strategy Parameters");
 
@@ -76,13 +106,163 @@ pub fn show_passes_tab(
             show_contour2d_params(ui, p, setup_idx, op_idx, eval_ctx, pick_mode, mutated_label);
         }
         StrategyParams::Pocket2D(p) => {
-            show_pocket2d_params(ui, p, setup_idx, op_idx, eval_ctx, mutated_label);
+            show_pocket2d_params(
+                ui,
+                PocketParamsUiCtx {
+                    p,
+                    tool_feed_preview,
+                    display_unit,
+                    setup_idx,
+                    op_idx,
+                    eval_ctx,
+                    mutated_label,
+                },
+            );
         }
         StrategyParams::DrillBore(p) => {
             show_drill_bore_params(ui, p, setup_idx, op_idx, eval_ctx, mutated_label);
         }
         StrategyParams::ChamferTrace(p) => {
             show_chamfer_trace_params(ui, p, setup_idx, op_idx, eval_ctx, mutated_label);
+        }
+    }
+}
+
+fn show_rest_machining_section(
+    ui: &mut egui::Ui,
+    rest: &mut RestMachiningConfig,
+    preceding_ops: &[(String, String)],
+    setup_idx: usize,
+    op_idx: usize,
+    eval_ctx: &EvalContext,
+    mutated_label: &mut Option<&'static str>,
+) {
+    ui.strong("2.5D Rest Machining");
+    let cur_mode = match &rest.mode {
+        RestMachiningMode::Disabled => 0_u8,
+        RestMachiningMode::FromPreviousTool { .. } => 1_u8,
+        RestMachiningMode::FromPrecedingOperations { .. } => 2_u8,
+    };
+    let mut sel_mode = cur_mode;
+    ui.horizontal_wrapped(|ui| {
+        if ui.selectable_value(&mut sel_mode, 0, "Disabled").clicked() && cur_mode != 0 {
+            rest.mode = RestMachiningMode::Disabled;
+            *mutated_label = Some("Disable Rest Machining");
+        }
+        if ui
+            .selectable_value(&mut sel_mode, 1, "Previous Tool")
+            .on_hover_text(
+                "Compute uncut corners analytically from a larger reference cutter diameter",
+            )
+            .clicked()
+            && cur_mode != 1
+        {
+            rest.mode = RestMachiningMode::FromPreviousTool {
+                prev_tool_diameter: ParamLength {
+                    expr: Some("tool_d * 2.0".to_string()),
+                    value_mm: 12.0,
+                },
+                prev_stock_to_leave: ParamLength::from_mm(0.0),
+            };
+            rest.reevaluate(eval_ctx);
+            *mutated_label = Some("Set Rest Mode: Previous Tool");
+        }
+        if ui
+            .selectable_value(&mut sel_mode, 2, "Preceding Ops")
+            .on_hover_text("Subtract exact 2D swept footprints of earlier operations in this Setup")
+            .clicked()
+            && cur_mode != 2
+        {
+            rest.mode = RestMachiningMode::FromPrecedingOperations {
+                source_op_ids: Vec::new(),
+            };
+            *mutated_label = Some("Set Rest Mode: Preceding Operations");
+        }
+    });
+
+    match &mut rest.mode {
+        RestMachiningMode::Disabled => {}
+        RestMachiningMode::FromPreviousTool {
+            prev_tool_diameter,
+            prev_stock_to_leave,
+        } => {
+            ui.label("Previous Tool Diameter:");
+            if edit_param_length(
+                ui,
+                ("rest_prev_d", setup_idx, op_idx),
+                prev_tool_diameter,
+                eval_ctx,
+                120.0,
+            ) {
+                *mutated_label = Some("Edit Rest Previous Tool Diameter");
+            }
+            ui.label("Previous Radial Stock to Leave:");
+            if edit_param_length(
+                ui,
+                ("rest_prev_stl", setup_idx, op_idx),
+                prev_stock_to_leave,
+                eval_ctx,
+                120.0,
+            ) {
+                *mutated_label = Some("Edit Rest Previous Stock to Leave");
+            }
+        }
+        RestMachiningMode::FromPrecedingOperations { source_op_ids } => {
+            if preceding_ops.is_empty() {
+                ui.colored_label(
+                    egui::Color32::from_rgb(245, 190, 66),
+                    "No enabled operations precede this operation in the Setup.",
+                );
+            } else {
+                let mut all_preceding = source_op_ids.is_empty();
+                if ui
+                    .checkbox(&mut all_preceding, "All Enabled Preceding Operations")
+                    .changed()
+                {
+                    if all_preceding {
+                        source_op_ids.clear();
+                    } else if let Some((first_id, _)) = preceding_ops.first() {
+                        source_op_ids.push(first_id.clone());
+                    }
+                    *mutated_label = Some("Toggle All Preceding Rest Ops");
+                }
+                if !all_preceding {
+                    for (uid, uname) in preceding_ops {
+                        let mut checked = source_op_ids.iter().any(|x| x == uid);
+                        if ui.checkbox(&mut checked, uname).changed() {
+                            if checked {
+                                source_op_ids.push(uid.clone());
+                            } else {
+                                source_op_ids.retain(|x| x != uid);
+                            }
+                            *mutated_label = Some("Update Rest Source Operations");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if !rest.is_disabled() {
+        ui.label("Rest Blend Overlap:");
+        if edit_param_length(
+            ui,
+            ("rest_ovlp", setup_idx, op_idx),
+            &mut rest.rest_overlap,
+            eval_ctx,
+            120.0,
+        ) {
+            *mutated_label = Some("Edit Rest Overlap");
+        }
+        ui.label("Minimum Uncut Thickness:");
+        if edit_param_length(
+            ui,
+            ("rest_min_t", setup_idx, op_idx),
+            &mut rest.min_rest_thickness,
+            eval_ctx,
+            120.0,
+        ) {
+            *mutated_label = Some("Edit Minimum Rest Thickness");
         }
     }
 }
@@ -381,70 +561,197 @@ fn show_contour2d_params(
     }
 }
 
-fn show_pocket2d_params(
-    ui: &mut egui::Ui,
-    p: &mut Pocket2DParams,
+struct PocketParamsUiCtx<'a> {
+    p: &'a mut Pocket2DParams,
+    tool_feed_preview: Option<(f64, f64)>,
+    display_unit: DisplayUnit,
     setup_idx: usize,
     op_idx: usize,
-    eval_ctx: &EvalContext,
-    mutated_label: &mut Option<&'static str>,
-) {
-    let mut is_zigzag = matches!(p.strategy, PocketStrategyKind::ZigZag { .. });
-    ui.horizontal(|ui| {
+    eval_ctx: &'a EvalContext,
+    mutated_label: &'a mut Option<&'static str>,
+}
+
+fn show_pocket2d_params(ui: &mut egui::Ui, ctx: PocketParamsUiCtx<'_>) {
+    let PocketParamsUiCtx {
+        p,
+        tool_feed_preview,
+        display_unit,
+        setup_idx,
+        op_idx,
+        eval_ctx,
+        mutated_label,
+    } = ctx;
+    let cur_strat = match &p.strategy {
+        PocketStrategyKind::ContourParallel => 0_u8,
+        PocketStrategyKind::ZigZag { .. } => 1_u8,
+        PocketStrategyKind::Adaptive(_) => 2_u8,
+    };
+    let mut sel_strat = cur_strat;
+    ui.horizontal_wrapped(|ui| {
         ui.label("Clearing:");
         if ui
-            .selectable_value(&mut is_zigzag, false, "Contour-Parallel")
+            .selectable_value(&mut sel_strat, 0, "Contour-Parallel")
             .clicked()
+            && cur_strat != 0
         {
             p.strategy = PocketStrategyKind::ContourParallel;
             *mutated_label = Some("Select Contour-Parallel Pocket");
         }
         if ui
-            .selectable_value(&mut is_zigzag, true, "Zig-Zag Raster")
+            .selectable_value(&mut sel_strat, 1, "Zig-Zag Raster")
             .clicked()
+            && cur_strat != 1
         {
             p.strategy = PocketStrategyKind::ZigZag {
                 pass_angle_deg: 0.0,
             };
             *mutated_label = Some("Select Zig-Zag Pocket");
         }
+        if ui
+            .selectable_value(&mut sel_strat, 2, "2D Adaptive")
+            .on_hover_text("Constant radial engagement trochoidal clearing with micro-lift linking")
+            .clicked()
+            && cur_strat != 2
+        {
+            let mut adaptive = AdaptiveClearingParams::default();
+            adaptive.reevaluate(eval_ctx);
+            p.strategy = PocketStrategyKind::Adaptive(adaptive);
+            *mutated_label = Some("Select 2D Adaptive Clearing");
+        }
     });
-    if let PocketStrategyKind::ZigZag { pass_angle_deg } = &mut p.strategy {
-        ui.horizontal(|ui| {
-            ui.label("Raster Angle (°):");
-            if ui
-                .add(egui::DragValue::new(pass_angle_deg).speed(1.0))
-                .changed()
-            {
-                *mutated_label = Some("Edit Pocket Raster Angle");
-            }
-        });
-    }
 
-    ui.label("Stepover (`ae`):");
-    if edit_param_length(
-        ui,
-        ("pkt_ae", setup_idx, op_idx),
-        &mut p.stepover,
-        eval_ctx,
-        120.0,
-    ) {
-        *mutated_label = Some("Edit Pocket Stepover");
-    }
-
-    ui.label("Pass Ordering:");
-    egui::ComboBox::from_id_salt(("pkt_ord", setup_idx, op_idx))
-        .selected_text(p.pass_order.label())
-        .show_ui(ui, |ui| {
-            for o in PocketPassOrder::ALL {
+    match &mut p.strategy {
+        PocketStrategyKind::ZigZag { pass_angle_deg } => {
+            ui.horizontal(|ui| {
+                ui.label("Raster Angle (°):");
                 if ui
-                    .selectable_value(&mut p.pass_order, o, o.label())
+                    .add(egui::DragValue::new(pass_angle_deg).speed(1.0))
                     .changed()
                 {
-                    *mutated_label = Some("Change Pocket Pass Order");
+                    *mutated_label = Some("Edit Pocket Raster Angle");
+                }
+            });
+        }
+        PocketStrategyKind::Adaptive(adaptive) => {
+            ui.label("Optimal Load (`ae`):");
+            if edit_param_length(
+                ui,
+                ("adp_ae", setup_idx, op_idx),
+                &mut adaptive.optimal_load,
+                eval_ctx,
+                120.0,
+            ) {
+                *mutated_label = Some("Edit Adaptive Optimal Load");
+            }
+
+            ui.label("Cut Direction:");
+            egui::ComboBox::from_id_salt(("adp_dir", setup_idx, op_idx))
+                .selected_text(adaptive.cut_direction.label())
+                .show_ui(ui, |ui| {
+                    for d in AdaptiveCutDirection::ALL {
+                        if ui
+                            .selectable_value(&mut adaptive.cut_direction, d, d.label())
+                            .changed()
+                        {
+                            *mutated_label = Some("Change Adaptive Cut Direction");
+                        }
+                    }
+                });
+
+            ui.label("Micro-Lift Clearance (`Z`):");
+            if edit_param_length(
+                ui,
+                ("adp_mlift", setup_idx, op_idx),
+                &mut adaptive.micro_lift_z,
+                eval_ctx,
+                120.0,
+            ) {
+                *mutated_label = Some("Edit Adaptive Micro-Lift Z");
+            }
+
+            ui.horizontal(|ui| {
+                ui.label("Stay-Down Feed Multiplier:");
+                if ui
+                    .add(
+                        egui::DragValue::new(&mut adaptive.no_engagement_feed_multiplier)
+                            .speed(0.1)
+                            .range(1.0..=5.0)
+                            .suffix("x"),
+                    )
+                    .changed()
+                {
+                    *mutated_label = Some("Edit Stay-Down Feed Multiplier");
+                }
+            });
+
+            if ui
+                .checkbox(
+                    &mut adaptive.auto_chip_thinning,
+                    "Auto Radial Chip-Thinning Feed Boost",
+                )
+                .changed()
+            {
+                *mutated_label = Some("Toggle Adaptive Chip-Thinning");
+            }
+            if adaptive.auto_chip_thinning {
+                ui.horizontal(|ui| {
+                    ui.label("Max Feed Boost:");
+                    if ui
+                        .add(
+                            egui::DragValue::new(&mut adaptive.max_thinning_feed_multiplier)
+                                .speed(0.05)
+                                .range(1.0..=3.5)
+                                .suffix("x"),
+                        )
+                        .changed()
+                    {
+                        *mutated_label = Some("Edit Max Chip-Thinning Multiplier");
+                    }
+                });
+                if let Some((tool_d, nom_feed)) = tool_feed_preview {
+                    let comp_feed = compute_adaptive_thinning_feed(
+                        tool_d,
+                        adaptive.optimal_load.value_mm,
+                        nom_feed,
+                        adaptive.max_thinning_feed_multiplier,
+                    );
+                    ui.weak(format!(
+                        "Effective Feed: {:.0} {}",
+                        display_unit.feed_from_mm_min(comp_feed),
+                        display_unit.feed_suffix()
+                    ));
                 }
             }
-        });
+        }
+        PocketStrategyKind::ContourParallel => {}
+    }
+
+    if !matches!(p.strategy, PocketStrategyKind::Adaptive(_)) {
+        ui.label("Stepover (`ae`):");
+        if edit_param_length(
+            ui,
+            ("pkt_ae", setup_idx, op_idx),
+            &mut p.stepover,
+            eval_ctx,
+            120.0,
+        ) {
+            *mutated_label = Some("Edit Pocket Stepover");
+        }
+
+        ui.label("Pass Ordering:");
+        egui::ComboBox::from_id_salt(("pkt_ord", setup_idx, op_idx))
+            .selected_text(p.pass_order.label())
+            .show_ui(ui, |ui| {
+                for o in PocketPassOrder::ALL {
+                    if ui
+                        .selectable_value(&mut p.pass_order, o, o.label())
+                        .changed()
+                    {
+                        *mutated_label = Some("Change Pocket Pass Order");
+                    }
+                }
+            });
+    }
 
     ui.label("Open-Edge Overhang:");
     if edit_param_length(

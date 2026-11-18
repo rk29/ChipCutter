@@ -26,7 +26,79 @@ fn default_lead_sweep_deg() -> f64 {
     90.0
 }
 
-/// Common multi-depth stepdown, stock-to-leave, and tolerance parameters (`05-operations.md`).
+/// 2.5D Rest Machining mode (`05-operations.md` §Rest Machining).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum RestMachiningMode {
+    #[default]
+    Disabled,
+    FromPreviousTool {
+        #[serde(default = "default_prev_tool_dia")]
+        prev_tool_diameter: ParamLength,
+        #[serde(default = "default_zero_len")]
+        prev_stock_to_leave: ParamLength,
+    },
+    FromPrecedingOperations {
+        /// Optional explicit upstream `Operation::id` list within the same Setup;
+        /// when empty, uses all enabled preceding operations in the Setup (`0..op_idx`).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        source_op_ids: Vec<String>,
+    },
+}
+
+fn default_prev_tool_dia() -> ParamLength {
+    param_expr("tool_d * 2.0", 12.0)
+}
+
+fn default_rest_overlap() -> ParamLength {
+    ParamLength::from_mm(0.25)
+}
+
+fn default_min_rest_thickness() -> ParamLength {
+    ParamLength::from_mm(0.05)
+}
+
+/// Exact 2.5D Rest Machining configuration shared by Pocket/Adaptive and Contour (`05-operations.md`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RestMachiningConfig {
+    #[serde(default)]
+    pub mode: RestMachiningMode,
+    #[serde(default = "default_rest_overlap")]
+    pub rest_overlap: ParamLength,
+    #[serde(default = "default_min_rest_thickness")]
+    pub min_rest_thickness: ParamLength,
+}
+
+impl Default for RestMachiningConfig {
+    fn default() -> Self {
+        Self {
+            mode: RestMachiningMode::Disabled,
+            rest_overlap: default_rest_overlap(),
+            min_rest_thickness: default_min_rest_thickness(),
+        }
+    }
+}
+
+impl RestMachiningConfig {
+    pub fn is_disabled(&self) -> bool {
+        matches!(self.mode, RestMachiningMode::Disabled)
+    }
+
+    pub fn reevaluate(&mut self, ctx: &EvalContext) {
+        if let RestMachiningMode::FromPreviousTool {
+            prev_tool_diameter,
+            prev_stock_to_leave,
+        } = &mut self.mode
+        {
+            let _ = prev_tool_diameter.reevaluate(ctx);
+            let _ = prev_stock_to_leave.reevaluate(ctx);
+        }
+        let _ = self.rest_overlap.reevaluate(ctx);
+        let _ = self.min_rest_thickness.reevaluate(ctx);
+    }
+}
+
+/// Common multi-depth stepdown, stock-to-leave, Rest Machining, and tolerance parameters (`05-operations.md`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PassesParams {
     #[serde(default = "default_true")]
@@ -39,6 +111,8 @@ pub struct PassesParams {
     pub stock_to_leave_radial: ParamLength,
     #[serde(default = "default_zero_len")]
     pub stock_to_leave_axial: ParamLength,
+    #[serde(default, skip_serializing_if = "RestMachiningConfig::is_disabled")]
+    pub rest_machining: RestMachiningConfig,
     #[serde(default = "default_tolerance_mm")]
     pub tolerance_mm: f64,
 }
@@ -59,6 +133,7 @@ impl Default for PassesParams {
             even_stepdowns: true,
             stock_to_leave_radial: default_zero_len(),
             stock_to_leave_axial: default_zero_len(),
+            rest_machining: RestMachiningConfig::default(),
             tolerance_mm: default_tolerance_mm(),
         }
     }
@@ -69,6 +144,7 @@ impl PassesParams {
         let _ = self.max_stepdown.reevaluate(ctx);
         let _ = self.stock_to_leave_radial.reevaluate(ctx);
         let _ = self.stock_to_leave_axial.reevaluate(ctx);
+        self.rest_machining.reevaluate(ctx);
     }
 }
 
@@ -490,8 +566,91 @@ impl Contour2DParams {
     }
 }
 
+/// Cut direction policy for **2D Adaptive / Trochoidal Clearing** (`05-operations.md` §3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdaptiveCutDirection {
+    #[default]
+    Climb,
+    Conventional,
+    BothWays,
+}
+
+impl AdaptiveCutDirection {
+    pub const ALL: [Self; 3] = [Self::Climb, Self::Conventional, Self::BothWays];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Climb => "Climb (Down-Milling)",
+            Self::Conventional => "Conventional (Up-Milling)",
+            Self::BothWays => "Both Ways (Alternating)",
+        }
+    }
+}
+
+fn default_adaptive_optimal_load() -> ParamLength {
+    param_expr("tool_d * 0.2", 1.2)
+}
+
+fn default_micro_lift_z() -> ParamLength {
+    ParamLength::from_mm(0.25)
+}
+
+fn default_no_eng_feed_mult() -> f64 {
+    2.5
+}
+
+fn default_min_trochoid_r() -> ParamLength {
+    param_expr("tool_d * 0.1", 0.6)
+}
+
+fn default_max_thinning_mult() -> f64 {
+    2.0
+}
+
+/// Constant-engagement **2D Adaptive / Trochoidal Clearing** parameters (`05-operations.md` §3).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AdaptiveClearingParams {
+    #[serde(default = "default_adaptive_optimal_load")]
+    pub optimal_load: ParamLength,
+    #[serde(default)]
+    pub cut_direction: AdaptiveCutDirection,
+    #[serde(default = "default_micro_lift_z")]
+    pub micro_lift_z: ParamLength,
+    #[serde(default = "default_no_eng_feed_mult")]
+    pub no_engagement_feed_multiplier: f64,
+    #[serde(default = "default_min_trochoid_r")]
+    pub min_trochoid_radius: ParamLength,
+    #[serde(default = "default_true")]
+    pub auto_chip_thinning: bool,
+    #[serde(default = "default_max_thinning_mult")]
+    pub max_thinning_feed_multiplier: f64,
+}
+
+impl Default for AdaptiveClearingParams {
+    fn default() -> Self {
+        Self {
+            optimal_load: default_adaptive_optimal_load(),
+            cut_direction: AdaptiveCutDirection::Climb,
+            micro_lift_z: default_micro_lift_z(),
+            no_engagement_feed_multiplier: default_no_eng_feed_mult(),
+            min_trochoid_radius: default_min_trochoid_r(),
+            auto_chip_thinning: true,
+            max_thinning_feed_multiplier: default_max_thinning_mult(),
+        }
+    }
+}
+
+impl AdaptiveClearingParams {
+    pub fn reevaluate(&mut self, ctx: &EvalContext) {
+        let _ = self.optimal_load.reevaluate(ctx);
+        let _ = self.micro_lift_z.reevaluate(ctx);
+        let _ = self.min_trochoid_radius.reevaluate(ctx);
+    }
+}
+
 /// 2D Pocket clearing algorithm selector (`05-operations.md` §3).
-#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum PocketStrategyKind {
     #[default]
@@ -500,6 +659,7 @@ pub enum PocketStrategyKind {
         #[serde(default)]
         pass_angle_deg: f64,
     },
+    Adaptive(AdaptiveClearingParams),
 }
 
 impl PocketStrategyKind {
@@ -507,6 +667,7 @@ impl PocketStrategyKind {
         match self {
             Self::ContourParallel => "Contour-Parallel Offset",
             Self::ZigZag { .. } => "Zig-Zag / Raster",
+            Self::Adaptive(_) => "2D Adaptive / Trochoidal",
         }
     }
 }
@@ -573,6 +734,9 @@ impl Default for Pocket2DParams {
 
 impl Pocket2DParams {
     pub fn reevaluate(&mut self, ctx: &EvalContext) {
+        if let PocketStrategyKind::Adaptive(adaptive) = &mut self.strategy {
+            adaptive.reevaluate(ctx);
+        }
         let _ = self.stepover.reevaluate(ctx);
         let _ = self.open_edge_overhang.reevaluate(ctx);
         let _ = self.finish_wall_stepover.reevaluate(ctx);

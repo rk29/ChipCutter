@@ -14,6 +14,7 @@ pub enum BrowserAction {
     ReplaceStepDialog,
     LoadMultiFeatureSample { tilted: bool },
     LoadCamTortureBlock,
+    LoadAdaptiveRestDemo,
     LoadRevisionDemoV1,
     ReloadRevisionDemoV2,
     OpenToolLibrary,
@@ -160,6 +161,13 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                             emitted_action = Some(BrowserAction::LoadCamTortureBlock);
                         }
                         if ui
+                            .small_button("Adaptive + Rest")
+                            .on_hover_text("Load Milestone 6 2D Adaptive Roughing + Rest Machining demo job")
+                            .clicked()
+                        {
+                            emitted_action = Some(BrowserAction::LoadAdaptiveRestDemo);
+                        }
+                        if ui
                             .small_button("Bracket")
                             .on_hover_text("Load M2 prismatic bracket")
                             .clicked()
@@ -221,6 +229,7 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
             // 3. Setups & Operations tree
             let mut deferred_setup_delete: Option<usize> = None;
             let mut deferred_op_add: Option<(usize, OperationKind)> = None;
+            let mut deferred_adaptive_add: Option<usize> = None;
             let mut deferred_op_move: Option<(usize, usize, isize)> = None;
             let mut deferred_op_delete: Option<(usize, usize)> = None;
             let mut deferred_op_duplicate: Option<(usize, usize)> = None;
@@ -277,6 +286,13 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                         // Quick Add Operation bar
                         ui.horizontal_wrapped(|ui| {
                             ui.weak("+ Op:");
+                            if ui
+                                .small_button("Adaptive")
+                                .on_hover_text("Add 2D Adaptive / Trochoidal Clearing operation")
+                                .clicked()
+                            {
+                                deferred_adaptive_add = Some(s_idx);
+                            }
                             for (short, kind) in [
                                 ("Face", OperationKind::Facing),
                                 ("Contour", OperationKind::Contour2D),
@@ -340,7 +356,13 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                                 }
                             };
 
-                            let label_txt = format!("{}. {}", o_idx + 1, op.name);
+                            let mode_tag = match (op.is_adaptive_2d(), op.has_rest_machining()) {
+                                (true, true) => " [Adp+Rest]",
+                                (true, false) => " [Adp]",
+                                (false, true) => " [Rest]",
+                                (false, false) => "",
+                            };
+                            let label_txt = format!("{}. {}{mode_tag}", o_idx + 1, op.name);
                             let rich = if op.suppressed {
                                 egui::RichText::new(label_txt).strikethrough().weak()
                             } else {
@@ -453,6 +475,33 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                 *focus = InspectorFocus::Setup {
                     setup_idx: *active_setup_idx,
                 };
+            }
+
+            if let Some(s_idx) = deferred_adaptive_add {
+                history.record_before_edit("Add 2D Adaptive Clearing", None, project);
+                let next_op_num = project.setups[s_idx].operations.len() + 1;
+                let mut op = Operation::new_adaptive_2d(
+                    format!("op_{s_idx}_{next_op_num}_adaptive"),
+                    format!("2D Adaptive {next_op_num}"),
+                );
+                if let Some(first_compat) = project
+                    .tools
+                    .iter()
+                    .find(|t| OperationKind::Pocket2D.is_compatible_with_tool(t))
+                {
+                    op.tool_id = Some(first_compat.id.clone());
+                    op.preset_id = first_compat.presets.first().map(|p| p.id.clone());
+                }
+                project.setups[s_idx].operations.push(op);
+                let o_idx = project.setups[s_idx].operations.len() - 1;
+                *active_setup_idx = s_idx;
+                *focus = InspectorFocus::Operation {
+                    setup_idx: s_idx,
+                    op_idx: o_idx,
+                };
+                *op_tab = OperationTab::Geometry;
+                *pick_mode =
+                    default_pick_mode_for_op(s_idx, o_idx, OperationKind::Pocket2D, *op_tab);
             }
 
             if let Some((s_idx, kind)) = deferred_op_add {

@@ -80,6 +80,9 @@ impl PaneBehavior<'_> {
                     BrowserAction::LoadCamTortureBlock => {
                         self.app.spawn_cam_torture_sample_load(true, ctx.clone());
                     }
+                    BrowserAction::LoadAdaptiveRestDemo => {
+                        self.app.spawn_adaptive_rest_demo_load(ctx.clone());
+                    }
                     BrowserAction::LoadRevisionDemoV1 => {
                         self.app.spawn_revision_demo_load(false, ctx.clone());
                     }

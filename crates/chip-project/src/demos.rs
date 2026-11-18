@@ -2,11 +2,15 @@ use chip_cad::{
     CadDocument, OrientedEdgeUse, SurfaceKind, TopologyGraph, find_same_diameter_holes,
 };
 use chip_cam::{
-    ChamferSourceMode, ChamferTraceMode, GeometrySelectionItem, HeightReference, HeightSpec,
-    HoleMachiningMode, Operation, OperationKind, StrategyParams, TabProfileKind,
+    AdaptiveClearingParams, ChamferSourceMode, ChamferTraceMode, GeometrySelectionItem,
+    HeightReference, HeightSpec, HoleMachiningMode, Operation, OperationKind, PocketStrategyKind,
+    RestMachiningConfig, RestMachiningMode, StrategyParams, TabProfileKind,
 };
-use chip_math::{ParamLength, approx_eq};
-use chip_tools::{CutterGeometry, Tool};
+use chip_math::{DisplayUnit, ParamLength, approx_eq};
+use chip_tools::{
+    CoolantMode, CutterGeometry, CuttingPreset, SpindleDirection, SurfaceSpeedPresetSpec, Tool,
+    ToolId,
+};
 
 use crate::document::{ModelEntry, ProjectDocument};
 
@@ -337,6 +341,203 @@ pub fn build_cam_torture_project(
             p.tip_offset = ParamLength::from_mm(0.8);
         }
         proj.setups[0].operations.push(op);
+    }
+
+    proj
+}
+
+/// Builds a Milestone 6 **2D Adaptive + Rest Machining** [`ProjectDocument`] on the CAM Torture Block:
+/// 1. `Op 1` (`Ø10 mm` 3FL Flat Endmill): Deep-axial **2D Adaptive Roughing** on the Island Cavity (`Z = 12.0 mm`).
+/// 2. `Op 2` (`Ø3 mm` 3FL Flat Endmill): **2D Adaptive Rest Machining** (`FromPrecedingOperations`) cleaning out
+///    the tight pocket corners and narrow island-wall channel skipped by the `Ø10 mm` rougher.
+/// 3. `Op 3` (`Ø6 mm` 3FL Flat Endmill): **Open Shoulder 2D Adaptive** entering horizontally from outside-stock air.
+pub fn build_adaptive_rest_demo_project(
+    doc: &CadDocument,
+    model_path: String,
+    sha256_hex: &str,
+    available_tools: &[Tool],
+) -> ProjectDocument {
+    let mut proj = ProjectDocument::new("Adaptive & Rest Machining Demo");
+    proj.models = vec![ModelEntry {
+        id: "model_1".to_string(),
+        path: model_path,
+        sha256: sha256_hex.to_string(),
+    }];
+
+    // T10: Ø10.0 mm 3FL Rougher + T8: Ø3.0 mm 3FL Rest Endmill + starter T1 Ø6.0 mm
+    let t10_rough = Tool {
+        id: ToolId("t10_10mm_adaptive_3fl".to_string()),
+        tool_number: 10,
+        length_offset_number: 10,
+        diameter_offset_number: 10,
+        name: "10mm 3FL Carbide Adaptive Rougher".to_string(),
+        vendor: Some("Generic Carbide".to_string()),
+        product_id: None,
+        native_unit: DisplayUnit::Millimeter,
+        spindle_direction: SpindleDirection::Cw,
+        default_coolant: CoolantMode::AirBlast,
+        stickout_length_mm: 30.0,
+        geometry: CutterGeometry::FlatEndmill {
+            diameter_mm: 10.0,
+            flute_length_mm: 22.0,
+            overall_length_mm: 65.0,
+            shank_diameter_mm: 10.0,
+            flutes: 3,
+        },
+        presets: vec![
+            CuttingPreset::from_surface_speed(SurfaceSpeedPresetSpec {
+                id: "al6061_adaptive",
+                name: "Aluminum 6061 - Adaptive Roughing",
+                material: "Aluminum 6061",
+                diameter_mm: 10.0,
+                flutes: 3,
+                surface_speed_m_min: 280.0,
+                chipload_mm_tooth: 0.055,
+                default_stepdown_mm: 12.0,
+                default_stepover_mm: 2.0,
+                coolant_override: Some(CoolantMode::AirBlast),
+            })
+            .with_optimal_load_mm(2.0),
+        ],
+    };
+
+    let t8_rest = Tool {
+        id: ToolId("t8_3mm_rest_3fl".to_string()),
+        tool_number: 8,
+        length_offset_number: 8,
+        diameter_offset_number: 8,
+        name: "3mm 3FL Carbide Rest Endmill".to_string(),
+        vendor: Some("Generic Carbide".to_string()),
+        product_id: None,
+        native_unit: DisplayUnit::Millimeter,
+        spindle_direction: SpindleDirection::Cw,
+        default_coolant: CoolantMode::AirBlast,
+        stickout_length_mm: 18.0,
+        geometry: CutterGeometry::FlatEndmill {
+            diameter_mm: 3.0,
+            flute_length_mm: 12.0,
+            overall_length_mm: 45.0,
+            shank_diameter_mm: 3.0,
+            flutes: 3,
+        },
+        presets: vec![
+            CuttingPreset::from_surface_speed(SurfaceSpeedPresetSpec {
+                id: "al6061_rest",
+                name: "Aluminum 6061 - Rest Cleanup",
+                material: "Aluminum 6061",
+                diameter_mm: 3.0,
+                flutes: 3,
+                surface_speed_m_min: 200.0,
+                chipload_mm_tooth: 0.022,
+                default_stepdown_mm: 4.5,
+                default_stepover_mm: 0.6,
+                coolant_override: Some(CoolantMode::AirBlast),
+            })
+            .with_optimal_load_mm(0.6),
+        ],
+    };
+
+    proj.ensure_tool_embedded(&t10_rough);
+    proj.ensure_tool_embedded(&t8_rest);
+    if let Some(fm) = available_tools
+        .iter()
+        .find(|t| matches!(t.geometry, CutterGeometry::FaceMill { .. }))
+    {
+        proj.ensure_tool_embedded(fm);
+        let mut op_face = Operation::new("op_0_face_top", "Face Stock Top", OperationKind::Facing);
+        op_face.tool_id = Some(fm.id.clone());
+        op_face.preset_id = fm.presets.first().map(|p| p.id.clone());
+        proj.setups[0].operations.push(op_face);
+    }
+    if let Some(t1) = available_tools.first() {
+        proj.ensure_tool_embedded(t1);
+    }
+
+    // Plateau Deck around Z=22 Boss Pad (`Z = 22 -> 20 mm`) — Open-Air 2D Adaptive!
+    if let Some(plat_face) = doc.faces.iter().find(|f| {
+        matches!(
+            f.surface,
+            SurfaceKind::Plane { origin_mm, normal }
+            if normal.z > 0.99 && (origin_mm.z - 20.0).abs() < 0.05 && f.area_mm2 > 1500.0
+        )
+    }) && let Some(bind) = doc.bind_face(plat_face.id)
+    {
+        let mut op_plat = Operation::new_adaptive_2d(
+            "op_0b_plateau_adaptive",
+            "Plateau Deck — Ø10mm Open Adaptive",
+        );
+        op_plat.tool_id = Some(t10_rough.id.clone());
+        op_plat.preset_id = Some("al6061_adaptive".to_string());
+        op_plat
+            .selections
+            .push(GeometrySelectionItem::PlanarFace { binding: bind });
+        proj.setups[0].operations.push(op_plat);
+    }
+
+    // Island Cavity floor (`Z = 12.0 mm`)
+    if let Some(island_floor) = doc.faces.iter().find(|f| {
+        matches!(
+            f.surface,
+            SurfaceKind::Plane { origin_mm, normal }
+            if normal.z > 0.99 && approx_eq(origin_mm.z, 12.0, 1e-2)
+        )
+    }) && let Some(bind) = doc.bind_face(island_floor.id)
+    {
+        // Op 1: Ø10mm 2D Adaptive Roughing (single full-depth 8mm axial cut!)
+        let mut op_rough = Operation::new_adaptive_2d(
+            "op_1_adaptive_rough_10mm",
+            "Island Cavity — Ø10mm Adaptive Rough",
+        );
+        op_rough.tool_id = Some(t10_rough.id.clone());
+        op_rough.preset_id = Some("al6061_adaptive".to_string());
+        op_rough.selections.push(GeometrySelectionItem::PlanarFace {
+            binding: bind.clone(),
+        });
+        proj.setups[0].operations.push(op_rough);
+
+        // Op 2: Ø3mm 2D Adaptive Rest Cleanup (`FromPrecedingOperations`)
+        let mut op_rest = Operation::new_adaptive_2d(
+            "op_2_adaptive_rest_3mm",
+            "Island Cavity — Ø3mm Rest Corners",
+        );
+        op_rest.tool_id = Some(t8_rest.id.clone());
+        op_rest.preset_id = Some("al6061_rest".to_string());
+        op_rest
+            .selections
+            .push(GeometrySelectionItem::PlanarFace { binding: bind });
+        op_rest.passes.rest_machining = RestMachiningConfig {
+            mode: RestMachiningMode::FromPrecedingOperations {
+                source_op_ids: vec!["op_1_adaptive_rough_10mm".to_string()],
+            },
+            rest_overlap: ParamLength::from_mm(0.30),
+            min_rest_thickness: ParamLength::from_mm(0.08),
+        };
+        if let StrategyParams::Pocket2D(p) = op_rest.strategy_mut() {
+            p.strategy = PocketStrategyKind::Adaptive(AdaptiveClearingParams::default());
+        }
+        proj.setups[0].operations.push(op_rest);
+    }
+
+    // Open Shoulder floor (`Z = 14.0 mm`): Ø6mm Open-Air 2D Adaptive
+    if let Some(open_floor) = doc.faces.iter().find(|f| {
+        matches!(
+            f.surface,
+            SurfaceKind::Plane { origin_mm, normal }
+            if normal.z > 0.99 && approx_eq(origin_mm.z, 14.0, 1e-2)
+        )
+    }) && let Some(bind) = doc.bind_face(open_floor.id)
+        && let Some(t1) = available_tools.first()
+    {
+        let mut op_open = Operation::new_adaptive_2d(
+            "op_3_open_shoulder_adaptive",
+            "Open Shoulder — Ø6mm Air-Entry Adaptive",
+        );
+        op_open.tool_id = Some(t1.id.clone());
+        op_open.preset_id = t1.presets.first().map(|p| p.id.clone());
+        op_open
+            .selections
+            .push(GeometrySelectionItem::PlanarFace { binding: bind });
+        proj.setups[0].operations.push(op_open);
     }
 
     proj

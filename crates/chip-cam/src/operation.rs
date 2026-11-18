@@ -199,6 +199,37 @@ impl Operation {
         }
     }
 
+    /// Creates a **2D Adaptive Clearing** operation (`OperationKind::Pocket2D` pre-configured
+    /// with `PocketStrategyKind::Adaptive`, deep axial engagement `tool_d * 1.5`, and `tool_d * 0.20` radial load).
+    pub fn new_adaptive_2d(id: impl Into<String>, name: impl Into<String>) -> Self {
+        let mut op = Self::new(id, name, OperationKind::Pocket2D);
+        op.passes.max_stepdown = chip_math::ParamLength {
+            expr: Some("tool_d * 1.5".to_string()),
+            value_mm: 9.0,
+        };
+        op.strategy = Some(StrategyParams::Pocket2D(crate::params::Pocket2DParams {
+            strategy: crate::params::PocketStrategyKind::Adaptive(
+                crate::params::AdaptiveClearingParams::default(),
+            ),
+            ..crate::params::Pocket2DParams::default()
+        }));
+        op
+    }
+
+    /// Returns `true` when this operation is a `2D Pocket` using `PocketStrategyKind::Adaptive`.
+    pub fn is_adaptive_2d(&self) -> bool {
+        matches!(
+            &self.strategy,
+            Some(StrategyParams::Pocket2D(p))
+                if matches!(p.strategy, crate::params::PocketStrategyKind::Adaptive(_))
+        )
+    }
+
+    /// Returns `true` when 2.5D Rest Machining is enabled on this operation.
+    pub fn has_rest_machining(&self) -> bool {
+        !self.passes.rest_machining.is_disabled()
+    }
+
     pub fn mark_dirty(&mut self) {
         self.runtime_status = OperationStatus::Dirty;
     }

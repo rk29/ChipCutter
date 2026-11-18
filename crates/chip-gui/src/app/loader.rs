@@ -11,10 +11,10 @@ use chip_cad::{
 };
 use chip_math::DEFAULT_TESS_CHORD_TOL_MM;
 use chip_project::{
-    ModelEntry, OperationReloadOutcome, ProjectDocument, build_cam_torture_project,
-    build_multi_feature_bracket_project, build_revision_v1_demo_project, compute_sha256_hex,
-    export_chipz_bundle, is_chipz_path, portable_model_path, rebind_project_to_reloaded_cad,
-    resolve_model_path, unpack_chipz_bundle,
+    ModelEntry, OperationReloadOutcome, ProjectDocument, build_adaptive_rest_demo_project,
+    build_cam_torture_project, build_multi_feature_bracket_project, build_revision_v1_demo_project,
+    compute_sha256_hex, export_chipz_bundle, is_chipz_path, portable_model_path,
+    rebind_project_to_reloaded_cad, resolve_model_path, unpack_chipz_bundle,
 };
 
 use crate::{
@@ -27,6 +27,7 @@ pub(crate) enum LoadPurpose {
     FreshImport { update_model_entry: bool },
     SeedMultiFeatureBracket,
     SeedCamTortureBlock,
+    SeedAdaptiveRestDemo,
     SeedRevisionDemoV1,
     ReloadRebind { update_path: bool },
 }
@@ -417,6 +418,28 @@ impl ChipCutterApp {
         });
     }
 
+    pub(crate) fn spawn_adaptive_rest_demo_load(&mut self, egui_ctx: egui::Context) {
+        self.loading_in_flight = true;
+        self.logs
+            .push("Generating Milestone 6 2D Adaptive + Rest Machining STEP job…".to_string());
+        let tx = self.job_tx.clone();
+        rayon::spawn(move || {
+            let t0 = Instant::now();
+            let res = match sample_cam_torture_block_step() {
+                Ok(step_str) => parse_step_bytes_job(
+                    "sample_cam_torture_block.step".to_string(),
+                    step_str.into_bytes(),
+                    None,
+                    LoadPurpose::SeedAdaptiveRestDemo,
+                    t0,
+                ),
+                Err(e) => LoadJobResult::Failed(e.to_string()),
+            };
+            let _ = tx.send(res);
+            egui_ctx.request_repaint();
+        });
+    }
+
     pub(crate) fn spawn_revision_demo_load(
         &mut self,
         load_v2_rebind: bool,
@@ -579,6 +602,27 @@ impl ChipCutterApp {
                     self.op_tab = OperationTab::Passes;
                 }
             }
+            LoadPurpose::SeedAdaptiveRestDemo => {
+                self.clear_bundle_extract_dir();
+                self.project_file_path = None;
+                self.history.clear();
+                self.clean_undo_len = Some(0);
+                self.last_reload_banner = None;
+                self.project = build_adaptive_rest_demo_project(
+                    &doc,
+                    doc.source_name.clone(),
+                    &sha256_hex,
+                    &self.global_tools.tools,
+                );
+                self.active_setup_idx = 0;
+                if self.project.setups[0].operations.len() > 3 {
+                    self.inspector_focus = InspectorFocus::Operation {
+                        setup_idx: 0,
+                        op_idx: 3,
+                    };
+                    self.op_tab = OperationTab::Passes;
+                }
+            }
             LoadPurpose::SeedRevisionDemoV1 => {
                 self.clear_bundle_extract_dir();
                 self.project_file_path = None;
@@ -651,7 +695,9 @@ impl ChipCutterApp {
 
         if matches!(
             purpose,
-            LoadPurpose::SeedCamTortureBlock | LoadPurpose::SeedRevisionDemoV1
+            LoadPurpose::SeedCamTortureBlock
+                | LoadPurpose::SeedAdaptiveRestDemo
+                | LoadPurpose::SeedRevisionDemoV1
         ) {
             self.auto_sim_after_gen = true;
             self.trigger_generate_dirty(None, None);

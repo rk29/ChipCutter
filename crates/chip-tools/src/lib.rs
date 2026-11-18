@@ -10,8 +10,8 @@ pub mod storage;
 pub use builtin::default_starter_tool_library;
 pub use feeds_speeds::{
     ChipThinningHint, CuttingPreset, SurfaceSpeedPresetSpec, chipload_from_feed,
-    compute_radial_chip_thinning, feed_from_chipload, rpm_from_surface_speed,
-    surface_speed_from_rpm,
+    compute_adaptive_thinning_feed, compute_radial_chip_thinning, feed_from_chipload,
+    rpm_from_surface_speed, surface_speed_from_rpm,
 };
 pub use fusion_import::{
     FusionImportError, FusionImportReport, import_fusion_library_bytes, import_fusion_library_path,
@@ -88,6 +88,24 @@ mod tests {
         assert!(approx_eq(rct.actual_hex_mm, 0.03, 1e-9));
         assert!(approx_eq(rct.compensated_feed_mm_min, 2_000.0, 1e-6));
         assert!(compute_radial_chip_thinning(10.0, 6.0, 0.05, 1_200.0).is_none());
+
+        // Adaptive thinning helper respects `max_multiplier` cap and `ae >= 0.5 D` identity:
+        assert!(approx_eq(
+            compute_adaptive_thinning_feed(10.0, 1.0, 1_200.0, 2.0),
+            2_000.0,
+            1e-6
+        ));
+        // At ae = 0.25 mm on D = 10 mm, raw 1/ratio > 3.2x, clamped to `max_multiplier = 1.8x`
+        assert!(approx_eq(
+            compute_adaptive_thinning_feed(10.0, 0.25, 1_000.0, 1.8),
+            1_800.0,
+            1e-6
+        ));
+        assert!(approx_eq(
+            compute_adaptive_thinning_feed(10.0, 5.0, 1_000.0, 2.0),
+            1_000.0,
+            1e-6
+        ));
     }
 
     #[test]
@@ -113,7 +131,8 @@ mod tests {
                     "v_f": 72.0,
                     "f_z": 0.002,
                     "stepdown": 0.125,
-                    "stepover": 0.1
+                    "stepover": 0.1,
+                    "optimal-load": 0.05
                   }
                 ]
               }
@@ -152,6 +171,11 @@ mod tests {
         assert!(approx_eq(
             t1.presets[0].chipload_mm_tooth,
             0.002 * 25.4,
+            1e-6
+        ));
+        assert!(approx_eq(
+            t1.presets[0].optimal_load_mm.unwrap(),
+            0.05 * 25.4,
             1e-6
         ));
 

@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use chip_cad::CadDocument;
-use chip_cam::{ResolvedHeights, extract_selection_features};
+use chip_cam::{ResolvedHeights, RestMachiningMode, extract_selection_features};
 
 use crate::document::{ProjectDocument, compute_sha256_hex, resolve_model_path};
 
@@ -122,12 +122,41 @@ pub fn validate_project(
                 }
             };
 
-            for op in &setup.operations {
+            for (op_idx, op) in setup.operations.iter().enumerate() {
                 if op.suppressed {
                     continue;
                 }
                 let op_scope = format!("Setup '{}' -> Op '{}'", setup.name, op.name);
                 let mut eval_ctx = resolved_setup.eval_context(project.display_units);
+
+                // Validate `FromPrecedingOperations` Rest Machining references (`05-operations.md`)
+                if let RestMachiningMode::FromPrecedingOperations { source_op_ids } =
+                    &op.passes.rest_machining.mode
+                {
+                    let any_preceding_enabled = setup.operations[..op_idx]
+                        .iter()
+                        .any(|prev| !prev.suppressed);
+                    if !any_preceding_enabled {
+                        report.push_error(
+                            &op_scope,
+                            "Rest Machining 'From Preceding Operations' requires at least one enabled preceding operation in the Setup.",
+                        );
+                    }
+                    for ref_id in source_op_ids {
+                        let found_before = setup.operations[..op_idx]
+                            .iter()
+                            .any(|prev| prev.id == *ref_id && !prev.suppressed);
+                        if !found_before {
+                            report.push_error(
+                                &op_scope,
+                                format!(
+                                    "Rest Machining source operation '{ref_id}' is missing, suppressed, or ordered after '{}'.",
+                                    op.name
+                                ),
+                            );
+                        }
+                    }
+                }
 
                 // Validate assigned tool & compatibility
                 if let Some(tid) = &op.tool_id {

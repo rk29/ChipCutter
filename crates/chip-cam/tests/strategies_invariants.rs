@@ -293,6 +293,7 @@ fn verifies_all_five_v1_strategies_against_torture_block_invariants() {
         PocketStrategyKind::ZigZag {
             pass_angle_deg: 0.0,
         },
+        PocketStrategyKind::Adaptive(chip_cam::AdaptiveClearingParams::default()),
     ] {
         let mut op_pkt = Operation::new("op_pkt", "Island Cavity", OperationKind::Pocket2D);
         op_pkt.tool_id = Some(flat_6mm.id.clone());
@@ -300,7 +301,7 @@ fn verifies_all_five_v1_strategies_against_torture_block_invariants() {
             binding: doc.bind_face(island_pkt_floor).unwrap(),
         }];
         if let StrategyParams::Pocket2D(p) = op_pkt.strategy_mut() {
-            p.strategy = strat_kind;
+            p.strategy = strat_kind.clone();
         }
 
         let tp_pkt = generate_operation_toolpath(
@@ -750,4 +751,387 @@ fn verifies_all_five_v1_strategies_against_torture_block_invariants() {
         approx_eq(z_boss_pad, 22.0, 0.02),
         "Chamfered boss pad top should be at Z = 22.00 mm, got {z_boss_pad:.4}"
     );
+}
+
+#[test]
+fn verifies_adaptive_clearing_and_rest_machining_against_sim_oracle() {
+    use std::sync::Arc;
+
+    use chip_cam::{
+        OperationGenRequest, RestMachiningConfig, RestMachiningMode, UpstreamSweptInput,
+        generate_operation_toolpath_with_rest,
+    };
+    use chip_tools::{
+        CoolantMode, CuttingPreset, SpindleDirection, SurfaceSpeedPresetSpec, Tool, ToolId,
+    };
+
+    let step = sample_cam_torture_block_step().unwrap();
+    let doc = MonstertruckKernel
+        .load_step_bytes("torture.step", step.as_bytes(), DEFAULT_TESS_CHORD_TOL_MM)
+        .unwrap();
+    let starter = default_starter_tool_library();
+    let face_mill_38mm = starter
+        .tools
+        .iter()
+        .find(|t| matches!(t.geometry, CutterGeometry::FaceMill { .. }))
+        .unwrap();
+    let flat_6mm = &starter.tools[0];
+
+    let tool_10mm = Tool {
+        id: ToolId("t10_rough".to_string()),
+        tool_number: 10,
+        length_offset_number: 10,
+        diameter_offset_number: 10,
+        name: "10mm 3FL Rougher".to_string(),
+        vendor: None,
+        product_id: None,
+        native_unit: DisplayUnit::Millimeter,
+        spindle_direction: SpindleDirection::Cw,
+        default_coolant: CoolantMode::AirBlast,
+        stickout_length_mm: 28.0,
+        geometry: CutterGeometry::FlatEndmill {
+            diameter_mm: 10.0,
+            flute_length_mm: 22.0,
+            overall_length_mm: 65.0,
+            shank_diameter_mm: 10.0,
+            flutes: 3,
+        },
+        presets: vec![CuttingPreset::from_surface_speed(SurfaceSpeedPresetSpec {
+            id: "al_rough",
+            name: "Al Rough",
+            material: "Al 6061",
+            diameter_mm: 10.0,
+            flutes: 3,
+            surface_speed_m_min: 260.0,
+            chipload_mm_tooth: 0.05,
+            default_stepdown_mm: 10.0,
+            default_stepover_mm: 2.0,
+            coolant_override: None,
+        })],
+    };
+
+    let tool_3mm = Tool {
+        id: ToolId("t8_rest_3mm".to_string()),
+        tool_number: 8,
+        length_offset_number: 8,
+        diameter_offset_number: 8,
+        name: "3mm 3FL Rest".to_string(),
+        vendor: None,
+        product_id: None,
+        native_unit: DisplayUnit::Millimeter,
+        spindle_direction: SpindleDirection::Cw,
+        default_coolant: CoolantMode::AirBlast,
+        stickout_length_mm: 18.0,
+        geometry: CutterGeometry::FlatEndmill {
+            diameter_mm: 3.0,
+            flute_length_mm: 12.0,
+            overall_length_mm: 45.0,
+            shank_diameter_mm: 3.0,
+            flutes: 3,
+        },
+        presets: vec![CuttingPreset::from_surface_speed(SurfaceSpeedPresetSpec {
+            id: "al_rest",
+            name: "Al Rest",
+            material: "Al 6061",
+            diameter_mm: 3.0,
+            flutes: 3,
+            surface_speed_m_min: 200.0,
+            chipload_mm_tooth: 0.02,
+            default_stepdown_mm: 4.5,
+            default_stepover_mm: 0.6,
+            coolant_override: None,
+        })],
+    };
+
+    let mut setup = Setup::new("setup_adp", "Op 1", WorkOffsetSlot::G54);
+    setup.wcs.origin = WcsOriginMode::ModelBoxPoint {
+        anchor: BoxAnchor27::BOTTOM_FRONT_LEFT,
+    };
+    let resolved_setup = setup.resolve(&doc, DisplayUnit::Millimeter).unwrap();
+    let cancel = AtomicBool::new(false);
+
+    // 1. Face Stock Top + Clear Z=20 Plateau around Boss Pad
+    let mut op_face = Operation::new("op_face", "Face Top", OperationKind::Facing);
+    op_face.tool_id = Some(face_mill_38mm.id.clone());
+    let tp_face = generate_operation_toolpath(
+        &doc,
+        &resolved_setup,
+        &op_face,
+        face_mill_38mm,
+        DisplayUnit::Millimeter,
+        true,
+        &cancel,
+    )
+    .unwrap();
+
+    let plateau_face = doc
+        .faces
+        .iter()
+        .find(|f| {
+            matches!(
+                f.surface,
+                SurfaceKind::Plane { origin_mm, normal }
+                if normal.z > 0.99 && approx_eq(origin_mm.z, 20.0, 1e-2) && f.area_mm2 > 1500.0
+            )
+        })
+        .unwrap()
+        .id;
+    let mut op_plat = Operation::new_adaptive_2d("op_plat", "Plateau Adaptive");
+    op_plat.tool_id = Some(flat_6mm.id.clone());
+    op_plat.selections = vec![GeometrySelectionItem::PlanarFace {
+        binding: doc.bind_face(plateau_face).unwrap(),
+    }];
+    let tp_plat = generate_operation_toolpath(
+        &doc,
+        &resolved_setup,
+        &op_plat,
+        flat_6mm,
+        DisplayUnit::Millimeter,
+        false,
+        &cancel,
+    )
+    .unwrap();
+
+    // 2. Ø10 mm 2D Adaptive Roughing on Island Cavity `[12..46] x [16..64]` at Z = 12.0 mm
+    let island_pkt_floor = doc
+        .faces
+        .iter()
+        .find(|f| {
+            matches!(
+                f.surface,
+                SurfaceKind::Plane { origin_mm, normal }
+                if normal.z > 0.99 && approx_eq(origin_mm.z, 12.0, 1e-2)
+            )
+        })
+        .unwrap()
+        .id;
+    let pkt_binding = doc.bind_face(island_pkt_floor).unwrap();
+
+    let mut op_rough_10 = Operation::new_adaptive_2d("op_rough_10", "Island Ø10mm Adaptive");
+    op_rough_10.tool_id = Some(tool_10mm.id.clone());
+    op_rough_10.selections = vec![GeometrySelectionItem::PlanarFace {
+        binding: pkt_binding.clone(),
+    }];
+    let tp_rough_10 = Arc::new(
+        generate_operation_toolpath(
+            &doc,
+            &resolved_setup,
+            &op_rough_10,
+            &tool_10mm,
+            DisplayUnit::Millimeter,
+            false,
+            &cancel,
+        )
+        .unwrap(),
+    );
+
+    // Verify radial chip-thinning boosted the cutting feedrate above nominal (`ae = 0.2 * D` -> `ratio = 0.8` -> `1.25x` boost!)
+    let nom_feed_10 = op_rough_10
+        .effective_cutting_params(&tool_10mm)
+        .cutting_feed_mm_min;
+    let has_boosted_cut = tp_rough_10.segments_wcs.iter().any(|s| {
+        matches!(
+            s.motion,
+            SegmentMotion3D::Linear { feed_mm_min, role: chip_cam::MotionRole::Cut }
+            | SegmentMotion3D::Arc { feed_mm_min, role: chip_cam::MotionRole::Cut, .. }
+            if feed_mm_min > nom_feed_10 * 1.20
+        )
+    });
+    assert!(
+        has_boosted_cut,
+        "2D Adaptive with auto_chip_thinning must apply ~1.25x feedrate compensation at ae = 0.20 * D"
+    );
+
+    // Compare full Ø3 mm Adaptive clear vs `FromPrecedingOperations` Ø3 mm Rest Adaptive clear!
+    let mut op_full_3 = Operation::new_adaptive_2d("op_full_3", "Full Ø3mm Adaptive");
+    op_full_3.tool_id = Some(tool_3mm.id.clone());
+    op_full_3.selections = vec![GeometrySelectionItem::PlanarFace {
+        binding: pkt_binding.clone(),
+    }];
+    let tp_full_3 = generate_operation_toolpath(
+        &doc,
+        &resolved_setup,
+        &op_full_3,
+        &tool_3mm,
+        DisplayUnit::Millimeter,
+        false,
+        &cancel,
+    )
+    .unwrap();
+
+    let mut op_rest_3 = Operation::new_adaptive_2d("op_rest_3", "Rest Ø3mm Adaptive");
+    op_rest_3.tool_id = Some(tool_3mm.id.clone());
+    op_rest_3.selections = vec![GeometrySelectionItem::PlanarFace {
+        binding: pkt_binding.clone(),
+    }];
+    op_rest_3.passes.rest_machining = RestMachiningConfig {
+        mode: RestMachiningMode::FromPrecedingOperations {
+            source_op_ids: vec!["op_rough_10".to_string()],
+        },
+        rest_overlap: ParamLength::from_mm(0.25),
+        min_rest_thickness: ParamLength::from_mm(0.06),
+    };
+    let upstream = [UpstreamSweptInput {
+        op_id: "op_rough_10".to_string(),
+        tool_diameter_mm: 10.0,
+        corner_radius_mm: 0.0,
+        toolpath: Arc::clone(&tp_rough_10),
+    }];
+    let tp_rest_3 = generate_operation_toolpath_with_rest(&OperationGenRequest {
+        doc: &doc,
+        setup: &resolved_setup,
+        op: &op_rest_3,
+        tool: &tool_3mm,
+        display_unit: DisplayUnit::Millimeter,
+        is_first_tool_in_setup: false,
+        upstream_rest: &upstream,
+        cancel: &cancel,
+    })
+    .unwrap();
+
+    assert!(
+        tp_rest_3.stats.cutting_distance_mm < 0.35 * tp_full_3.stats.cutting_distance_mm,
+        "Rest Machining cutting distance ({:.1} mm) must be < 35% of full Ø3mm clear ({:.1} mm)",
+        tp_rest_3.stats.cutting_distance_mm,
+        tp_full_3.stats.cutting_distance_mm,
+    );
+
+    // Also verify 2D Contour Rest Machining (`FromPreviousTool`) on the pocket outer loop cuts only the 4 corners!
+    let pkt_outer_loop = doc.face(island_pkt_floor).unwrap().outer_loop.unwrap();
+    let mut op_cnt_full =
+        Operation::new("op_cnt_full", "Full Ø3mm Contour", OperationKind::Contour2D);
+    op_cnt_full.tool_id = Some(tool_3mm.id.clone());
+    op_cnt_full.selections = vec![GeometrySelectionItem::ClosedLoop {
+        binding: doc.bind_loop(pkt_outer_loop).unwrap(),
+        reverse: true,
+        side_flip: false,
+    }];
+    if let StrategyParams::Contour2D(cp) = op_cnt_full.strategy_mut() {
+        cp.compensation = ContourCompensation::LeftClimb;
+    }
+    let tp_cnt_full = generate_operation_toolpath(
+        &doc,
+        &resolved_setup,
+        &op_cnt_full,
+        &tool_3mm,
+        DisplayUnit::Millimeter,
+        false,
+        &cancel,
+    )
+    .unwrap();
+
+    let mut op_cnt_rest = op_cnt_full.clone();
+    op_cnt_rest.passes.rest_machining = RestMachiningConfig {
+        mode: RestMachiningMode::FromPreviousTool {
+            prev_tool_diameter: ParamLength::from_mm(10.0),
+            prev_stock_to_leave: ParamLength::from_mm(0.0),
+        },
+        rest_overlap: ParamLength::from_mm(0.30),
+        min_rest_thickness: ParamLength::from_mm(0.05),
+    };
+    let tp_cnt_rest = generate_operation_toolpath(
+        &doc,
+        &resolved_setup,
+        &op_cnt_rest,
+        &tool_3mm,
+        DisplayUnit::Millimeter,
+        false,
+        &cancel,
+    )
+    .unwrap();
+    let cut_only_len = |tp: &chip_cam::GeneratedToolpath| -> f64 {
+        tp.segments_wcs
+            .iter()
+            .filter(|s| {
+                matches!(
+                    s.motion,
+                    SegmentMotion3D::Linear {
+                        role: chip_cam::MotionRole::Cut | chip_cam::MotionRole::FinishCut,
+                        ..
+                    } | SegmentMotion3D::Arc {
+                        role: chip_cam::MotionRole::Cut | chip_cam::MotionRole::FinishCut,
+                        ..
+                    }
+                )
+            })
+            .map(|s| s.start_wcs.distance(s.end_wcs))
+            .sum()
+    };
+    let full_cut_len = cut_only_len(&tp_cnt_full);
+    let rest_cut_len = cut_only_len(&tp_cnt_rest);
+    assert!(
+        rest_cut_len < 0.30 * full_cut_len,
+        "2D Contour Rest active wall cut distance ({rest_cut_len:.1} mm) must be < 30% of full contour ({full_cut_len:.1} mm)"
+    );
+    assert!(
+        tp_cnt_rest.stats.cutting_distance_mm < 0.50 * tp_cnt_full.stats.cutting_distance_mm,
+        "2D Contour Rest total feed distance ({:.1} mm) must be < 50% of full contour ({:.1} mm)",
+        tp_cnt_rest.stats.cutting_distance_mm,
+        tp_cnt_full.stats.cutting_distance_mm,
+    );
+
+    // 3. Sweep before & after Rest through `chip-sim` at Fine resolution!
+    let sim_before_rest = chip_sim::run_setup_simulation(&chip_sim::SetupSimulationInput {
+        doc: &doc,
+        setup: &resolved_setup,
+        target_bodies: &setup.target_bodies,
+        operations: &[
+            chip_sim::SimOperationInput::from_operation(&op_face, face_mill_38mm, &tp_face),
+            chip_sim::SimOperationInput::from_operation(&op_plat, flat_6mm, &tp_plat),
+            chip_sim::SimOperationInput::from_operation(&op_rough_10, &tool_10mm, &tp_rough_10),
+        ],
+        resolution: chip_sim::SimResolution::Fine,
+        kinematics: chip_sim::MachineKinematicsConfig::default(),
+        verify_config: chip_sim::SimVerificationConfig::default(),
+        cancel: None,
+    })
+    .unwrap();
+    assert_eq!(sim_before_rest.critical_error_count(), 0);
+    // Tight corner `(13.6, 17.6)` is inside the R=5 cusp of Ø10mm (`(17-13.6)^2 + (21-17.6)^2 = 23.12 < 25` -> Wait: `sqrt(23.12) = 4.81 < 5.0`? Wait: at `(13.0, 17.0)`, `sqrt(4^2 + 4^2) = 5.657 > 5.0` -> uncut at Z=20!)
+    let z_corner_before = sim_before_rest
+        .final_stock
+        .sample_stock_z(13.0, 17.0)
+        .unwrap();
+    assert!(
+        z_corner_before > 19.5,
+        "Tight corner (13.0, 17.0) is unreachable by Ø10mm rougher (`d=5.66 > R=5`), expected Z ~ 20, got {z_corner_before:.3}"
+    );
+
+    let sim_after_rest = chip_sim::run_setup_simulation(&chip_sim::SetupSimulationInput {
+        doc: &doc,
+        setup: &resolved_setup,
+        target_bodies: &setup.target_bodies,
+        operations: &[
+            chip_sim::SimOperationInput::from_operation(&op_face, face_mill_38mm, &tp_face),
+            chip_sim::SimOperationInput::from_operation(&op_plat, flat_6mm, &tp_plat),
+            chip_sim::SimOperationInput::from_operation(&op_rough_10, &tool_10mm, &tp_rough_10),
+            chip_sim::SimOperationInput::from_operation(&op_rest_3, &tool_3mm, &tp_rest_3),
+        ],
+        resolution: chip_sim::SimResolution::Fine,
+        kinematics: chip_sim::MachineKinematicsConfig::default(),
+        verify_config: chip_sim::SimVerificationConfig::default(),
+        cancel: None,
+    })
+    .unwrap();
+    assert_eq!(
+        sim_after_rest.critical_error_count(),
+        0,
+        "Expected 0 critical errors after Adaptive + Rest sequence, got: {:#?}",
+        sim_after_rest.diagnostics
+    );
+    // Corner `(13.0, 17.0)` IS reachable by Ø3mm (`R=1.5`, center at `(13.5, 17.5)` has `sqrt(0.5^2+0.5^2) = 0.71 <= 1.5`!), so it MUST now be at Z = 12.00 mm!
+    let z_corner_after = sim_after_rest
+        .final_stock
+        .sample_stock_z(13.0, 17.0)
+        .unwrap();
+    assert!(
+        approx_eq(z_corner_after, 12.0, 0.03),
+        "Ø3mm Adaptive Rest must clear tight corner (13.0, 17.0) down to Z = 12.00 mm, got {z_corner_after:.4}"
+    );
+    // Central Ø10mm raised island boss at (29, 40) must remain untouched at Z = 20.00 mm!
+    let z_island_after = sim_after_rest
+        .final_stock
+        .sample_stock_z(29.0, 40.0)
+        .unwrap();
+    assert!(approx_eq(z_island_after, 20.0, 0.02));
 }

@@ -55,6 +55,7 @@ monstertruck-io = { version = "0.4", features = ["step"] }
 monstertruck-meshing = "0.4"
 monstertruck-modeling = "0.4"
 cavalier_contours = "0.9"
+boostvoronoi = "0.12"
 
 eframe = { version = "0.37", default-features = false, features = ["wgpu", "default_fonts", "wayland", "x11"] }
 egui = "0.37"

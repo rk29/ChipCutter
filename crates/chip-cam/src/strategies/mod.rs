@@ -1,3 +1,4 @@
+pub mod adaptive2d;
 pub mod chamfer_trace;
 pub mod contour2d;
 pub mod drill_bore;
@@ -15,6 +16,7 @@ use crate::{
     heights::ResolvedHeights,
     operation::{EffectiveCuttingParams, Operation, OperationKind},
     params::{LinkingParams, PassesParams, RetractPolicy, StrategyParams},
+    rest2d::UpstreamSweptInput,
     selection::{ExtractedSelectionSummary, extract_selection_features},
     setup::ResolvedSetup,
     toolpath::{GeneratedToolpath, ToolpathBuilder},
@@ -31,6 +33,7 @@ pub struct StrategyExecContext<'a> {
     pub passes: PassesParams,
     pub linking: LinkingParams,
     pub selection: ExtractedSelectionSummary,
+    pub upstream_rest: &'a [UpstreamSweptInput],
     pub cancel: &'a AtomicBool,
 }
 
@@ -53,6 +56,18 @@ impl StrategyExecContext<'_> {
     }
 }
 
+/// Input bundle for [`generate_operation_toolpath_with_rest`] (supporting upstream Rest Machining).
+pub struct OperationGenRequest<'a> {
+    pub doc: &'a CadDocument,
+    pub setup: &'a ResolvedSetup,
+    pub op: &'a Operation,
+    pub tool: &'a Tool,
+    pub display_unit: DisplayUnit,
+    pub is_first_tool_in_setup: bool,
+    pub upstream_rest: &'a [UpstreamSweptInput],
+    pub cancel: &'a AtomicBool,
+}
+
 /// Generates a verified [`GeneratedToolpath`] (typed `ClEvent` stream + exact 3D WCS motion segments)
 /// for a single [`Operation`] (`05-operations.md`).
 pub fn generate_operation_toolpath(
@@ -64,6 +79,33 @@ pub fn generate_operation_toolpath(
     is_first_tool_in_setup: bool,
     cancel: &AtomicBool,
 ) -> Result<GeneratedToolpath, CamError> {
+    generate_operation_toolpath_with_rest(&OperationGenRequest {
+        doc,
+        setup,
+        op,
+        tool,
+        display_unit,
+        is_first_tool_in_setup,
+        upstream_rest: &[],
+        cancel,
+    })
+}
+
+/// Generates a verified [`GeneratedToolpath`] with optional upstream 2D swept coverage for
+/// `RestMachiningMode::FromPrecedingOperations` (`05-operations.md` §Rest Machining).
+pub fn generate_operation_toolpath_with_rest(
+    req: &OperationGenRequest<'_>,
+) -> Result<GeneratedToolpath, CamError> {
+    let &OperationGenRequest {
+        doc,
+        setup,
+        op,
+        tool,
+        display_unit,
+        is_first_tool_in_setup,
+        upstream_rest,
+        cancel,
+    } = req;
     if cancel.load(Ordering::Relaxed) {
         return Err(CamError::Cancelled);
     }
@@ -141,6 +183,7 @@ pub fn generate_operation_toolpath(
         passes,
         linking,
         selection,
+        upstream_rest,
         cancel,
     };
 

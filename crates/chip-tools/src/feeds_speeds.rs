@@ -78,6 +78,39 @@ pub fn compute_radial_chip_thinning(
     })
 }
 
+/// Computes the radial chip-thinning compensated cutting feedrate (`mm/min`) for constant-engagement
+/// **2D Adaptive Clearing** (`04-tool-library.md` & `05-operations.md` §3):
+/// - When `0 < optimal_load_mm < 0.5 * diameter_mm`, scales `nominal_feed_mm_min` by
+///   `D / (2 * sqrt(ae * (D - ae)))` clamped to `[1.0, max_multiplier]`.
+/// - Returns `nominal_feed_mm_min` unchanged when `optimal_load_mm >= 0.5 * diameter_mm`.
+pub fn compute_adaptive_thinning_feed(
+    diameter_mm: f64,
+    optimal_load_mm: f64,
+    nominal_feed_mm_min: f64,
+    max_multiplier: f64,
+) -> f64 {
+    if !nominal_feed_mm_min.is_finite() || nominal_feed_mm_min <= 0.0 {
+        return 0.0;
+    }
+    let cap = if max_multiplier.is_finite() {
+        max_multiplier.clamp(1.0, 5.0)
+    } else {
+        1.0
+    };
+    if !diameter_mm.is_finite()
+        || !optimal_load_mm.is_finite()
+        || diameter_mm <= 1e-6
+        || optimal_load_mm <= 1e-6
+        || optimal_load_mm >= 0.5 * diameter_mm - 1e-6
+    {
+        return nominal_feed_mm_min;
+    }
+    let ae_over_d = (optimal_load_mm / diameter_mm).clamp(1e-6, 0.5);
+    let ratio = (2.0 * (ae_over_d * (1.0 - ae_over_d)).sqrt()).clamp(0.05, 1.0);
+    let boost = (1.0 / ratio).clamp(1.0, cap);
+    nominal_feed_mm_min * boost
+}
+
 /// Input parameters for constructing a [`CuttingPreset`] from surface speed (`m/min`) and chipload (`mm/tooth`).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SurfaceSpeedPresetSpec<'a> {
@@ -109,6 +142,8 @@ pub struct CuttingPreset {
     pub default_stepdown_mm: f64,
     pub default_stepover_mm: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub optimal_load_mm: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub coolant_override: Option<CoolantMode>,
 }
 
@@ -132,8 +167,17 @@ impl CuttingPreset {
             plunge_feed_mm_min: (feed / 3.0).max(10.0),
             default_stepdown_mm: spec.default_stepdown_mm,
             default_stepover_mm: spec.default_stepover_mm,
+            optimal_load_mm: None,
             coolant_override: spec.coolant_override,
         }
+    }
+
+    /// Builder helper attaching an optional Adaptive Clearing `optimal_load_mm` (`ae_adaptive`) target.
+    pub fn with_optimal_load_mm(mut self, optimal_load_mm: f64) -> Self {
+        if optimal_load_mm.is_finite() && optimal_load_mm > 0.0 {
+            self.optimal_load_mm = Some(optimal_load_mm);
+        }
+        self
     }
 
     /// Updates **Surface Speed (`m/min`)**, recalculating **Spindle RPM** and either preserving

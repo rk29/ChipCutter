@@ -3,9 +3,11 @@
 
 pub mod cl_data;
 pub mod heights;
+pub mod medial;
 pub mod offset2d;
 pub mod operation;
 pub mod params;
+pub mod rest2d;
 pub mod selection;
 pub mod setup;
 pub mod stock;
@@ -15,6 +17,7 @@ pub mod wcs;
 
 pub use cl_data::{ArcDir, ArcPlane, ClEvent, CutterCompMode, DrillCycleKind, MotionRole};
 pub use heights::{HeightReference, HeightSpec, OperationHeights, ResolvedHeights, SetupHeights};
+pub use medial::{MedialNode2D, extract_interior_medial_nodes, find_medial_inscribed_pole};
 pub use offset2d::{
     HelicalEntryPole, OffsetRegionNode, PocketRegion2D, build_offset_region_tree,
     clip_scanline_to_region, find_helical_entry_pole, from_cavalier_polyline, offset_polyline,
@@ -24,11 +27,17 @@ pub use operation::{
     EffectiveCuttingParams, Operation, OperationFeedOverrides, OperationKind, OperationStatus,
 };
 pub use params::{
-    ChamferSourceMode, ChamferTraceMode, ChamferTraceParams, Contour2DParams, ContourCompensation,
-    DrillBoreParams, EntryStrategy, FacingCutMode, FacingParams, HoldingTabsConfig,
-    HoleMachiningMode, LeadConfig, LinkingParams, ManualTabAnchor, PassesParams, Pocket2DParams,
-    PocketPassOrder, PocketStrategyKind, RetractPolicy, StrategyParams, TabPlacementMode,
+    AdaptiveClearingParams, AdaptiveCutDirection, ChamferSourceMode, ChamferTraceMode,
+    ChamferTraceParams, Contour2DParams, ContourCompensation, DrillBoreParams, EntryStrategy,
+    FacingCutMode, FacingParams, HoldingTabsConfig, HoleMachiningMode, LeadConfig, LinkingParams,
+    ManualTabAnchor, PassesParams, Pocket2DParams, PocketPassOrder, PocketStrategyKind,
+    RestMachiningConfig, RestMachiningMode, RetractPolicy, StrategyParams, TabPlacementMode,
     TabProfileKind,
+};
+pub use rest2d::{
+    ContourRestClipQuery, PocketRestQuery, RegionSet2D, RestPocketWorkItem, UpstreamSweptInput,
+    clip_contour_path_to_rest, clip_polyline_outside_region_set, compute_rest_pocket_work_items,
+    swept_segment_capsule_2d, swept_toolpath_coverage_2d,
 };
 pub use selection::{
     ChainDirectionArrow3D, ExtractedFeature25D, ExtractedSelectionSummary, GeometrySelectionItem,
@@ -40,7 +49,8 @@ pub use stock::{
     compute_tight_oriented_model_aabb,
 };
 pub use strategies::{
-    compute_z_levels, generate_operation_toolpath,
+    OperationGenRequest, compute_z_levels, generate_operation_toolpath,
+    generate_operation_toolpath_with_rest,
     pocket2d::{
         ContourParallelStrategy, PocketEngagementParams, PocketStrategy, PocketSubpath2D,
         ZigZagPocketStrategy,

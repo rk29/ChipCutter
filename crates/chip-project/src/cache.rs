@@ -3,15 +3,40 @@ use std::{
     sync::Arc,
 };
 
-use chip_cam::{GeneratedToolpath, OperationStatus};
+use chip_cam::{GeneratedToolpath, OperationStatus, RestMachiningMode, Setup};
 use sha2::{Digest, Sha256};
 
 use crate::document::ProjectDocument;
 
 /// Deterministic 256-bit content digest of all inputs affecting a single operation's toolpath
-/// (`CAD revision + Setup WCS/Stock/Heights + Embedded Tool + Operation params`).
+/// (`CAD revision + Setup WCS/Stock/Heights + Embedded Tool + Operation params + Upstream Rest Hashes`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct OperationInputHash(pub [u8; 32]);
+
+/// Resolves the ordered indices `u_idx in 0..op_idx` of non-suppressed preceding operations within
+/// `setup` referenced by `setup.operations[op_idx]` when `RestMachiningMode::FromPrecedingOperations`
+/// is active (empty slice when Rest Machining is `Disabled` or `FromPreviousTool`).
+pub fn resolve_upstream_rest_op_indices(setup: &Setup, op_idx: usize) -> Vec<usize> {
+    let Some(op) = setup.operations.get(op_idx) else {
+        return Vec::new();
+    };
+    let RestMachiningMode::FromPrecedingOperations { source_op_ids } =
+        &op.passes.rest_machining.mode
+    else {
+        return Vec::new();
+    };
+
+    let mut indices = Vec::new();
+    for (u_idx, u_op) in setup.operations.iter().enumerate().take(op_idx) {
+        if u_op.suppressed {
+            continue;
+        }
+        if source_op_ids.is_empty() || source_op_ids.iter().any(|id| id == &u_op.id) {
+            indices.push(u_idx);
+        }
+    }
+    indices
+}
 
 /// Computes the [`OperationInputHash`] for `project.setups[setup_idx].operations[op_idx]`.
 pub fn compute_operation_input_hash(
@@ -58,6 +83,23 @@ pub fn compute_operation_input_hash(
     }
     if let Ok(s) = toml::to_string(op) {
         hasher.update(s.as_bytes());
+    }
+
+    // Fold upstream Rest Machining operation hashes recursively (`u_idx < op_idx` guarantees DAG acyclicity;
+    // skipped completely when `rest_machining` is disabled or `FromPreviousTool` so v1 hashes stay bit-identical!)
+    let upstream_indices = resolve_upstream_rest_op_indices(setup, op_idx);
+    if !upstream_indices.is_empty() {
+        hasher.update(b"|rest_upstream:");
+        for u_idx in upstream_indices {
+            hasher.update(setup.operations[u_idx].id.as_bytes());
+            hasher.update(b"=");
+            if let Some(u_hash) =
+                compute_operation_input_hash(project, setup_idx, u_idx, cad_revision)
+            {
+                hasher.update(u_hash.0);
+            }
+            hasher.update(b";");
+        }
     }
 
     let digest = hasher.finalize();
@@ -144,6 +186,12 @@ impl ToolpathCache {
         message: impl Into<String>,
     ) {
         self.errors.insert((op_id.into(), hash), message.into());
+    }
+
+    pub fn get_error(&self, op_id: &str, hash: OperationInputHash) -> Option<&str> {
+        self.errors
+            .get(&(op_id.to_string(), hash))
+            .map(String::as_str)
     }
 
     /// Synchronizes every operation's runtime `Clean` / `Dirty` / `Generating` / `Error` status

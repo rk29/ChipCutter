@@ -325,6 +325,10 @@ impl ChipCutterApp {
                 ui.close();
             }
             ui.separator();
+            if ui.button("+ 2D Adaptive / Trochoidal Clearing").clicked() {
+                self.create_new_adaptive_operation();
+                ui.close();
+            }
             for kind in OperationKind::ALL {
                 if ui.button(format!("+ {}", kind.label())).clicked()
                     && self.active_setup_idx < self.project.setups.len()
@@ -366,6 +370,38 @@ impl ChipCutterApp {
                 }
             }
         });
+    }
+
+    fn create_new_adaptive_operation(&mut self) {
+        if self.active_setup_idx >= self.project.setups.len() {
+            return;
+        }
+        self.history
+            .record_before_edit("Add 2D Adaptive Clearing", None, &self.project);
+        let s_idx = self.active_setup_idx;
+        let n = self.project.setups[s_idx].operations.len() + 1;
+        let mut op = Operation::new_adaptive_2d(
+            format!("op_{s_idx}_{n}_adaptive"),
+            format!("2D Adaptive {n}"),
+        );
+        if let Some(t) = self
+            .project
+            .tools
+            .iter()
+            .find(|t| OperationKind::Pocket2D.is_compatible_with_tool(t))
+        {
+            op.tool_id = Some(t.id.clone());
+            op.preset_id = t.presets.first().map(|p| p.id.clone());
+        }
+        self.project.setups[s_idx].operations.push(op);
+        let o_idx = self.project.setups[s_idx].operations.len() - 1;
+        self.inspector_focus = InspectorFocus::Operation {
+            setup_idx: s_idx,
+            op_idx: o_idx,
+        };
+        self.op_tab = OperationTab::Geometry;
+        self.pick_mode =
+            default_pick_mode_for_op(s_idx, o_idx, OperationKind::Pocket2D, self.op_tab);
     }
 
     fn draw_simulate_menu(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
@@ -556,6 +592,13 @@ impl ChipCutterApp {
                 }
 
                 ui.separator();
+                if ui
+                    .button("+ Adaptive")
+                    .on_hover_text("Add a new 2D Adaptive / Trochoidal Clearing operation")
+                    .clicked()
+                {
+                    self.create_new_adaptive_operation();
+                }
                 if self.dispatcher.is_busy() {
                     ui.spinner();
                     if ui

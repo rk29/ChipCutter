@@ -220,15 +220,37 @@ pub fn show_operation_inspector(ui: &mut egui::Ui, ctx: OperationInspectorCtx<'_
                     mutated_label: &mut mutated_label,
                 },
             ),
-            OperationTab::Passes => passes_tab::show_passes_tab(
-                ui,
-                &mut project.setups[setup_idx].operations[op_idx],
-                setup_idx,
-                op_idx,
-                &eval_ctx,
-                pick_mode,
-                &mut mutated_label,
-            ),
+            OperationTab::Passes => {
+                let preceding_ops: Vec<(String, String)> = project.setups[setup_idx].operations
+                    [..op_idx]
+                    .iter()
+                    .filter(|o| !o.suppressed)
+                    .map(|o| (o.id.clone(), o.name.clone()))
+                    .collect();
+                let tool_feed_preview = project.setups[setup_idx].operations[op_idx]
+                    .tool_id
+                    .as_ref()
+                    .and_then(|tid| project.tool(tid).or_else(|| global_tools.tool(tid)))
+                    .map(|t| {
+                        let eff = project.setups[setup_idx].operations[op_idx]
+                            .effective_cutting_params(t);
+                        (t.geometry.cutting_diameter_mm(), eff.cutting_feed_mm_min)
+                    });
+                passes_tab::show_passes_tab(
+                    ui,
+                    passes_tab::PassesTabCtx {
+                        op: &mut project.setups[setup_idx].operations[op_idx],
+                        preceding_ops: &preceding_ops,
+                        tool_feed_preview,
+                        display_unit,
+                        setup_idx,
+                        op_idx,
+                        eval_ctx: &eval_ctx,
+                        pick_mode,
+                        mutated_label: &mut mutated_label,
+                    },
+                );
+            }
             OperationTab::Linking => linking_tab::show_linking_tab(
                 ui,
                 &mut project.setups[setup_idx].operations[op_idx],
