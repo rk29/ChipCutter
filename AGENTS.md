@@ -7,7 +7,7 @@
 ## 1. Spec-First Workflow
 - **Authoritative Source of Truth:** All product, algorithmic, and architectural decisions live in `specs/`. Before proposing changes or writing code for any subsystem, read its corresponding spec document below.
 - **Build & Environment Setup:** Contributor toolchain, native dependencies, and headless test setup live in `DEVELOPMENT.md`.
-- **Implementation Plans Location:** Store milestone and feature implementation plans in `/workspace/ChipCutter_plans/` (outside the repository code tree so plans can be reviewed and iterated cleanly).
+- **Implementation Plans Location:** Store milestone and feature implementation plans in `plans/` (`01-milestone-1-plan.md`, `02-milestone-2-plan.md`, etc.).
 - **No Unsolicited Code Generation:** While iterating on specifications, do **not** scaffold `Cargo.toml` or `.rs` files until the user explicitly asks to begin implementation.
 - **Keep Specs Synchronized:** Whenever an architectural decision, file schema, or scope boundary changes during implementation, update the relevant `specs/*.md` file in the same task.
 
