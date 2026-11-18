@@ -2,53 +2,57 @@
 
 ## Project Persistence (`chip-project`)
 
-### 1. Human-Readable `.chip.toml` Format
+### 1. Human-Readable `.chip.toml` Format (`schema_version = 2`)
 The primary project file is a clean, deterministic, Git-diff-friendly `.chip.toml` manifest:
 - **Deterministic Ordering:** Maps and lists serialize in stable order so minor parameter edits produce minimal, readable `git diff`s.
-- **Relative CAD Paths:** Imported STEP file paths are stored relative to the `.chip.toml` directory whenever under the same project tree (plus SHA-256 content hash to detect external CAD file updates on load!).
-- **No Binary Blobs in `.chip.toml`:** Ephemeral cached toolpaths and tessellations are NOT dumped into `.chip.toml` (optional local cache in `.chipcutter-cache/` ignored by Git, or regenerated cleanly via `Ctrl+G`).
-- **Schema Versioning:** Top-level `schema_version = 1` field with explicit migration hooks for future releases.
+- **Relative Asset Paths:** Imported `.step`, `.dxf`, `.svg`, and custom `.ttf`/`.otf` paths are stored relative to the `.chip.toml` directory whenever under the same project tree (plus SHA-256 content hashes to detect external updates).
+- **No Binary Blobs in `.chip.toml`:** Ephemeral cached toolpaths, Voronoi graphs, and tessellations are NOT dumped into `.chip.toml`.
+- **Backward-Compatible Schema Migration (`v1 -> v2`):**
+  - `schema_version = 2` adds optional `[[sketches]]` layers, Pure-2D (`models = []`) setups, `PocketStrategy::Adaptive`, `RestMachiningConfig`, and `OperationKind::VCarve`.
+  - **100% Seamless v1 Compatibility:** Loading any `schema_version = 1` `.chip.toml` or `.chipz` file migrates cleanly in memory with defaulted `sketches = []` and `rest_machining = "disabled"`, preserving identical generated toolpaths and G-code.
 
-#### Example `.chip.toml` Excerpt
+#### Example `.chip.toml` (`v2`) Excerpt
 ```toml
-schema_version = 1
-project_name = "Motor Mount Plate"
+schema_version = 2
+project_name = "Front Panel & V-Carve Badge"
 display_units = "mm"
+models = [] # Optional in v2 for pure-2D router/panel projects!
 
-[[models]]
-id = "model_1"
-path = "cad/motor_mount_v3.step"
-sha256 = "8f434346648f6b96df89dda901c5176b10a6d83961dd3c1ac88b59b2dc327aa4"
+[[sketches]]
+id = "sketch_1_panel"
+name = "Panel Cutouts & Text"
+anchor = { kind = "setup_xy", setup_id = "setup_1", plane_ref = "stock_top", z_offset_mm = 0.0 }
+source_asset = { path = "vectors/panel_outline.dxf", sha256 = "...", import_units = "mm", join_tolerance_mm = 0.05 }
 
-[[tools]]
-id = "t1_6mm_flat_3fl"
-tool_number = 1
-length_offset_number = 1
-diameter_offset_number = 1
-name = "6mm 3FL Carbide Flat Endmill"
-stickout_length_mm = 24.0
-geometry = { type = "flat_endmill", diameter_mm = 6.0, flute_length_mm = 18.0, overall_length_mm = 50.0, shank_diameter_mm = 6.0, flutes = 3 }
+[[sketches.entities]]
+id = "ent_badge_title"
+kind = "text"
+content = "CHIPCUTTER V2"
+font = { mode = "bundled_outline_sans" }
+cap_height_mm = 12.0
 
 [[setups]]
 id = "setup_1"
-name = "Setup 1 — Top Op"
+name = "Setup 1 — Sheet Top"
 wcs_slot = "G54"
 post_profile = "grbl"
 
 [[setups.operations]]
-id = "op_1_pocket"
-name = "Center Cavity Pocket"
-kind = "pocket_2d"
-tool_id = "t1_6mm_flat_3fl"
+id = "op_1_vcarve"
+name = "Badge Title V-Carve"
+kind = "v_carve"
+tool_id = "t4_6mm_90deg_vbit"
+clearing_tool_id = "t2_3mm_flat_2fl"
 ```
 
 ### 2. Portable `.chipz` Bundle Archive
 For sharing self-contained bug reports, archiving shop jobs, or moving projects across machines:
-- **File -> Export Portable Bundle (`.chipz`):** Creates a standard ZIP archive containing:
+- **File -> Export Portable Bundle (`.chipz`):** Creates a deterministic, zip-slip-safe ZIP archive containing:
   - `project.chip.toml`
-  - `models/<imported_step_files>.step`
+  - `models/<imported_step_files>.step` (if any)
+  - `vectors/<imported_dxf_or_svg_files>` (if referenced by `SketchLayer`s)
+  - `fonts/<custom_font_files>.ttf` (if using non-bundled outline fonts)
   - `posts/<custom_post_profiles>.post.toml` (if using a non-builtin post)
-- ChipCutter can open `.chipz` archives directly (prompting where to unpack or editing in-place and re-saving the bundle).
 
 ---
 
@@ -57,34 +61,32 @@ Binary name: `chipcutter`
 
 | Subcommand | Purpose |
 |---|---|
-| `chipcutter inspect <part.step> [--units mm\|in]` | Inspects an ISO 10303-21 STEP file, reporting detected units, bounding box, and analytic B-Rep face/edge counts. |
-| `chipcutter generate-sample-step <out.step> [--cam-torture \| --multi-feature \| --tilted \| --revision-v1 \| --revision-v2] [--project-out <job.chip.toml>]` | Writes deterministic programmatic STEP fixtures (and optional seeded `.chip.toml` jobs) to disk. |
-| `chipcutter validate [--generate] <project.chip.toml \| bundle.chipz>` | Loads project (or `.chipz` bundle) + STEP models, checks CAD SHA-256 / geometric signature bindings, validates height/tool/parameter invariants (and optionally generates all enabled 2.5D toolpaths in parallel when `--generate` is passed), exiting non-zero on error. |
-| `chipcutter simulate <project.chip.toml \| bundle.chipz> [--resolution standard\|fine\|ultra] [--report report.json]` | Runs headless heightmap stock removal & 5-rule gouge/crash checks, outputting cycle times, remaining stock volume, and structured collision diagnostics. |
-| `chipcutter build <project.chip.toml \| bundle.chipz> [-o <out_dir>] [--setup <name>] [--post <profile>] [--allow-warnings]` | Generates all enabled operations in parallel, runs mandatory heightmap crash/gouge verification (aborting non-zero on critical crashes/gouges), and writes `.nc`/`.ngc` G-code files + `build_summary.json`. |
-| `chipcutter reload-step <project.chip.toml> [--step <revised.step>] [-o <out.chip.toml>] [--allow-needs-repick]` | Reloads a revised STEP file and associatively re-binds Setup WCS references and Operation selections via `GeometricSignature` fuzzy matching (`Dirty` vs `NeedsRepick`). |
-| `chipcutter bundle pack <project.chip.toml> -o <bundle.chipz>` | Packs `project.chip.toml`, `models/*.step`, and non-builtin `posts/*.post.toml` into a byte-deterministic `.chipz` archive. |
-| `chipcutter bundle unpack <bundle.chipz> -o <out_dir>` | Safely extracts a `.chipz` archive (with zip-slip & SHA-256 verification) to `<out_dir>`. |
+| `chipcutter inspect <file.step \| file.dxf \| file.svg> [--units mm\|in] [--dpi 96]` | Inspects a 3D STEP solid or 2D DXF/SVG vector file, reporting detected units, bounding box, layers, and entity/loop/open-chain counts. |
+| `chipcutter generate-sample-step <out.step> [...] [--project-out <job.chip.toml>]` | Writes deterministic programmatic STEP fixtures (and optional seeded `.chip.toml` jobs) to disk. |
+| `chipcutter import-2d <input.dxf \| input.svg> -o <project.chip.toml> [--units mm\|in] [--dpi 96] [--join-tol 0.05] [--stock-z 12.0]` *(v2)* | Creates or appends a `SketchLayer` from a DXF/SVG file (with gap-healing & biarc fitting) into a pure-2D or hybrid `.chip.toml` project. |
+| `chipcutter validate [--generate] <project.chip.toml \| bundle.chipz>` | Loads project + STEP/vector assets, checks SHA-256 / signature bindings, validates height/tool/parameter/DAG invariants, and optionally generates all enabled toolpaths. |
+| `chipcutter simulate <project.chip.toml \| bundle.chipz> [--resolution standard\|fine\|ultra] [--report report.json]` | Runs headless heightmap stock removal & 5-rule gouge/crash checks across all operations (including Adaptive, Rest Machining, and two-stage V-Carve). |
+| `chipcutter build <project.chip.toml \| bundle.chipz> [-o <out_dir>] [--setup <name>] [--post <profile>] [--allow-warnings]` | Generates all enabled operations in topological DAG order, runs mandatory heightmap crash/gouge verification, and writes `.nc`/`.ngc` G-code files + `build_summary.json`. |
+| `chipcutter reload-step <project.chip.toml> [--step <revised.step>] [-o <out.chip.toml>] [--allow-needs-repick]` | Reloads a revised STEP file and associatively re-binds Setup WCS, face-anchored `SketchLayer`s, and Operation selections. |
+| `chipcutter bundle pack / unpack ...` | Packs or safely extracts deterministic `.chipz` archives (including `models/`, `vectors/`, `fonts/`, and `posts/`). |
 | `chipcutter tools import-fusion <input.json> -o <output.tools.toml>` | Converts a Fusion 360 JSON/tools library into a native ChipCutter `.tools.toml` library. |
 
 ---
 
 ## Verification & Testing Strategy
-Because subtle CAM bugs break physical cutters and scrap workpieces, every crate in the workspace enforces layered automated verification:
+Every crate in the workspace enforces layered automated verification:
 
-1. **Unit & Property Tests (`chip-math`, `chip-tools`, `chip-post`):**
+1. **Unit & Property Tests (`chip-math`, `chip-sketch`, `chip-tools`, `chip-post`):**
    - Expression parser & mixed-unit round-trip accuracy (`1/4 in == 6.35 mm`).
-   - Chamfer tip-offset trigonometry, drill breakthrough math, SFM/chipload coupling.
-   - Post-processor modal state machine, quadrant arc splitting, line-length limits (GRBL `<= 80` chars), and comment sanitization.
-2. **Synthetic STEP Fixture Suite (`chip-cad`, `chip-cam`):**
-   - Programmatically constructed (via `truck-modeling`) and CAD-exported STEP test parts stored in `tests/fixtures/step/`:
-     - Prismatic block with blind pocket + circular island + open step + counterbored holes + `45°` chamfers.
-     - Rotated/tilted CAD body testing Setup WCS alignment and Z-height inference.
-     - "v1 -> v2 revised STEP" pair testing geometric signature re-matching after moving a hole and resizing a pocket.
+   - DXF bulge/block parsing, SVG DPI/transform flattening, cubic Bézier biarc approximation error $\le \text{tol}$, gap-healing chainer, TrueType island classification, and Hershey stroke metrics.
+   - Radial chip-thinning math, chamfer/V-carve trigonometry, and post-processor modal/splitting invariants.
+2. **Synthetic 3D STEP & 2D Vector Fixture Suite (`chip-cad`, `chip-sketch`, `chip-cam`):**
+   - Prismatic torture block, tilted WCS block, `v1 -> v2` revised STEP pair, plus synthetic DXF (with deliberate `0.03 mm` open micro-gaps, `INSERT` blocks, and islands) and SVG/Typography V-carve fixtures.
 3. **Physical Invariant Tests (`chip-sim` as Test Oracle!):**
-   - Every generated toolpath in integration tests is automatically swept through `chip-sim`'s heightmap verifier asserting:
-     - **Zero `G0` rapid collisions** with remaining stock.
+   - Every generated toolpath (including **2D Adaptive**, **Rest Machining**, and **Two-Stage V-Carving**) is swept through `chip-sim`'s heightmap verifier asserting:
+     - **Zero `G0` rapid collisions** with remaining stock (strictly validating Adaptive `micro_lift_z` traverses and Rest Machining entries!).
      - **Zero target B-Rep model gouges** beyond `0.02 mm`.
-     - **Pocket floor completeness:** target pocket region cells reach `Bottom Z ± tolerance` with no uncut slivers when `pocket_width >= tool_d`.
+     - **Instantaneous Engagement Bound (Adaptive):** Radial engagement width along cutting passes stays bounded by `optimal_load + tolerance` even into sharp `90°`/acute corners.
+     - **Pocket & Rest Completeness:** Roughing + Rest Machining leaves zero uncut corner material outside the final tool's physical corner radius.
 4. **Golden G-Code Snapshot Tests (`chip-cli`):**
-   - End-to-end `chipcutter build` snapshots comparing emitted `.nc` (GRBL) and `.ngc` (LinuxCNC) outputs against reviewed golden files.
+   - All v1 golden `.nc` (GRBL) and `.ngc` (LinuxCNC) snapshots remain byte-for-byte pinned alongside new v2 golden snapshots covering Adaptive + Rest Machining and Pure-2D DXF/Text V-Carving.
