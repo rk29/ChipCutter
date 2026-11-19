@@ -52,5 +52,5 @@
 | [07-post-processor.md](file:///workspace/ChipCutter/specs/07-post-processor.md) | Typed CL-data IR, TOML post configs, ATC vs split-per-tool, GRBL & LinuxCNC posts |
 | [08-ui-viewport.md](file:///workspace/ChipCutter/specs/08-ui-viewport.md) | `eframe` + `wgpu` + `egui_tiles` shell, Dark/Light design system, Viewport HUDs, Command Palette, Undo/Redo |
 | [09-persistence-cli.md](file:///workspace/ChipCutter/specs/09-persistence-cli.md) | `.chip.toml` (`schema_version = 2`) & `.chipz` formats, headless CLI subcommands, testing strategy |
-| [10-roadmap.md](file:///workspace/ChipCutter/specs/10-roadmap.md) | Completed Phase 1 (M1–M5), Phase 2 (M6–M9), & Phase 3 (M10–M12) milestones, plus future phases |
+| [10-roadmap.md](file:///workspace/ChipCutter/specs/10-roadmap.md) | Completed Phase 1 (M1–M5), Phase 2 (M6–M9), & Phase 3 (M10–M12) milestones, active Phase 4 (M13–M15) tutorials, and future phases |
 | [11-sketches-vectors.md](file:///workspace/ChipCutter/specs/11-sketches-vectors.md) | `chip-sketch` 2D Sketch Layers, parametric shapes, DXF/SVG importers, TrueType & Hershey text |

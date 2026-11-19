@@ -78,25 +78,39 @@ Phase 3 focused exclusively on **Desktop UI Polish, Visual Consistency, & Machin
 
 ---
 
+## Phase 4 — Illustrated Toolpath Strategy Tutorials (Active — M13–M15)
+
+Phase 4 delivers a complete set of illustrated Markdown tutorials in `docs/tutorials/` (with step-by-step instructions and screenshots in `docs/images/tutorials/`) walking users end-to-end through setup, geometry selection, parameters, toolpath generation (`Ctrl+G`), 3D heightmap simulation, and verified G-code post-processing for every ChipCutter machining strategy—without modifying core CAM, simulation, post-processing, or UI architecture:
+
+### Milestone 13 — Tutorial Framework, Screenshot Capture Pipeline, & Getting Started Guide (`plans/13-milestone-13-plan.md`)
+- **Tutorials Index & Standardized Structure (`docs/tutorials/README.md`):** Establish the tutorials index, learning progression, and consistent per-guide layout (Goal & Result Preview, Starter Model/Project, Step-by-Step GUI Walkthrough with parameter tables, `Ctrl+G` & 3D Simulation checks, GRBL/LinuxCNC Post-Processing, and equivalent `chipcutter` CLI commands).
+- **Reproducible Starter Assets & Headless Screenshot Pipeline (`docs/images/tutorials/`, `chip-gui`):** Map each tutorial to a reproducible built-in sample or generated starter model and provide repeatable headless Vulkan/Xvfb screenshot capture helpers (building on `chip-gui --self-test-screenshot`) so viewport, inspector, toolpath, and simulated-stock screenshots stay sharp and consistent.
+- **Getting Started & Workspace Orientation (`docs/tutorials/00-getting-started.md`):** Illustrated introductory guide covering launching `chip-gui`, 3D/2D viewport navigation & camera presets, importing STEP/DXF/SVG files, Setup WCS & stock sizing, Tool Library basics, and the Generate (`Ctrl+G`) → Simulate → Post workflow.
+
+### Milestone 14 — Core 2.5D Milling Tutorials: Facing, 2D Contour, 2D Pocket, & Drilling/Boring (`plans/14-milestone-14-plan.md`)
+- **Facing (`docs/tutorials/01-facing.md`):** Illustrated step-by-step guide to stock top surfacing—stock allowance & WCS origin, face/flat mill selection, pass extension, stepover, zig-zag vs. one-way cutting, 3D simulation check, and G-code inspection.
+- **2D Contour / Profile & Holding Tabs (`docs/tutorials/02-2d-contour-tabs.md`):** Illustrated guide covering closed outer profiles and open edge chains, multi-depth stepdowns, helical/linear ramps, tangent lead-in/out arcs, rough/finish wall passes, and automatic + manual rectangular/triangular holding tabs.
+- **2D Pocket (`docs/tutorials/03-2d-pocket.md`):** Illustrated guide covering closed multi-island cavities and open-shoulder pockets, contour-parallel vs. zig-zag clearing, overhang air-entry expansion, and radial/axial stock-to-leave (`wall`/`floor`) followed by a finishing pass.
+- **Drilling & Helical Bore Milling (`docs/tutorials/04-drilling-helical-bore.md`):** Illustrated guide covering 3D cylindrical holes and 2D bolt-circle point patterns, spot drilling, peck cycles (`G83`/`G73`), multi-pitch helical bore interpolation + flat-bottom cleanup, and comparing LinuxCNC canned cycles against expanded GRBL G-code.
+
+### Milestone 15 — Advanced & Specialty Tutorials: Adaptive/Rest, Chamfer/Trace, V-Carving/Inlays, & Verification (`plans/15-milestone-15-plan.md`)
+- **2D Adaptive Clearing & 2.5D Rest Machining (`docs/tutorials/05-adaptive-rest-machining.md`):** Illustrated guide to constant-engagement trochoidal roughing (`optimal_load` `ae`, `both_ways`, micro-lift linking, radial chip-thinning compensation) chained into smaller-tool `FromPrecedingOperations` Rest Machining, showing DAG wave regeneration and heightmap corner cleanup.
+- **Edge Chamfering & 2D Curve Trace / Engraving (`docs/tutorials/06-chamfer-curve-trace.md`):** Illustrated guide to chamfer-mill tip-offset kinematics (`tip_dia`, included angle, `tip_offset`) on sharp unmodeled CAD edges and modeled `45°` bevel faces, plus authoring and 1-pass tracing single-line Hershey engraving text.
+- **3D Medial-Axis V-Carving, Two-Tool Flat Clearance, & Mated V-Inlays (`docs/tutorials/07-vcarve-inlays.md`):** Illustrated guide to TrueType/SVG artwork setup, variable-depth `60°` V-Bit medial-axis carving with sharp 3D corner climbs, `flat_depth` Stage 1 Flat Endmill clearing + Stage 2 V-Bit bevels (ATC `M6` vs. split-file GRBL), and mirrored Male V-Inlay plugs (`start_depth` + `glue_gap_bottom`).
+- **End-to-End Verification & Docs Polish (`README.md`, `docs/tutorials/`):** Verify every tutorial's referenced commands/projects pass `chip-sim` with zero crashes/gouges and emit valid GRBL + LinuxCNC G-code, audit all Markdown links and images, and link `docs/tutorials/` from `README.md`.
+
+---
+
 ## Future Phases
 
-1. **Guided Toolpath Strategy Tutorials:**
-   - Step-by-step interactive in-app tutorials (accessible from the Welcome Overlay, Help menu, and `docs/tutorials/`) that walk users through configuring, generating (`Ctrl+G`), 3D-simulating, and post-processing every available toolpath type end-to-end:
-     - **Facing** (stock surfacing, pass extension, zig-zag vs. one-way),
-     - **2D Contour / Profile** (closed/open loops, lead-in/out arcs, helical/linear ramps, rough/finish passes, and holding tabs),
-     - **2D Pocket** (closed multi-island cavities, open-shoulder pockets, and radial/axial stock-to-leave),
-     - **2D Adaptive Clearing & 2.5D Rest Machining** (constant-engagement trochoidal roughing, optimal load & chip-thinning, and small-tool Rest cleanup),
-     - **Drilling & Helical Bore Milling** (spot, peck drilling `G83`/`G73`, and multi-pitch helical bore interpolation),
-     - **Edge Chamfering & 2D Curve Trace** (sharp unmodeled CAD edges, modeled `45°` bevels, and 1-pass Hershey/curve engraving), and
-     - **3D Medial-Axis V-Carving, Two-Tool Flat Clearance, & Mated V-Inlays** (3D corner climbs, Stage 1 Flat Endmill + Stage 2 V-Bit flat-bottom clearance, and mirrored Male V-Inlay plugs).
-2. **Functional & Behavioral User-Level Testing:**
+1. **Functional & Behavioral User-Level Testing:**
    - Durable end-to-end user-journey and GUI behavioral test harness (`egui_kittest` / headless interactive workflows + CLI workflows) verifying every feature from a machinist's point of view without brittle coupling to internal implementation details.
-3. **3-Axis Surface Milling & Mesh Support:**
+2. **3-Axis Surface Milling & Mesh Support:**
    - Importing **STL / OBJ / 3MF** meshes alongside STEP solids.
    - 3D Waterline (Z-level), Parallel/Raster 3D finishing, Scallop, Pencil, and 3D Adaptive roughing strategies.
-4. **Advanced Workholding & Multi-Setup Volumetric Stock:**
+3. **Advanced Workholding & Multi-Setup Volumetric Stock:**
    - 3D fixture/vise/clamp collision bodies with automatic safe-rapid routing.
    - Carrying simulated stock across flipped setups via tri-dexel volumetric stock.
-5. **Ecosystem & Extensibility:**
+4. **Ecosystem & Extensibility:**
    - Optional OpenCASCADE (`opencascade-rs`) `CadKernel` feature backend.
    - Thread milling (`ThreadMill` single/multi-form cutter geometry, ISO Metric & Unified thread tables, radial arc-in/out helical passes), additional controller dialects (Fanuc/Haas, Mach4, Masso, Centroid), and printable HTML/PDF setup sheets.

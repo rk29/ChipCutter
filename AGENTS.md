@@ -7,7 +7,7 @@
 ## 1. Spec-First Workflow
 - **Authoritative Source of Truth:** All product, algorithmic, and architectural decisions live in `specs/`. Before proposing changes or writing code for any subsystem, read its corresponding spec document below.
 - **Build & Environment Setup:** Contributor toolchain, native dependencies, and headless test setup live in `DEVELOPMENT.md`.
-- **Implementation Plans Location:** Store milestone and feature implementation plans in `plans/` (`01`..`05` for Phase 1; `06`..`09` for Phase 2; `10`..`12` for Phase 3 UI Polish & Usability).
+- **Implementation Plans Location:** Store milestone and feature implementation plans in `plans/` (`01`..`05` for Phase 1; `06`..`09` for Phase 2; `10`..`12` for Phase 3 UI Polish & Usability; `13`..`15` for Phase 4 Illustrated Toolpath Strategy Tutorials).
 - **No Unsolicited Code Generation:** While iterating on specifications or plans, do **not** scaffold `Cargo.toml` or `.rs` files until the user explicitly asks to begin implementation.
 - **Keep Specs Synchronized:** Whenever an architectural decision, file schema, or scope boundary changes during implementation, update the relevant `specs/*.md` file in the same task.
 
@@ -24,7 +24,7 @@
 | `specs/07-post-processor.md` | Typed `ClEvent` IR, `.post.toml` profiles, ATC vs split-by-tool, GRBL & LinuxCNC dialects |
 | `specs/08-ui-viewport.md` | `eframe` + `wgpu` + `egui_tiles` shell, Dark/Light design system, Viewport HUDs, Command Palette, Undo/Redo |
 | `specs/09-persistence-cli.md` | `.chip.toml` (`schema_version = 1 / 2`) & `.chipz` formats, headless CLI subcommands, testing |
-| `specs/10-roadmap.md` | Completed Phase 1 (M1–M5), Phase 2 (M6–M9), & Phase 3 (M10–M12) milestones, plus future phases |
+| `specs/10-roadmap.md` | Completed Phase 1 (M1–M5), Phase 2 (M6–M9), & Phase 3 (M10–M12) milestones, active Phase 4 (M13–M15) tutorial milestones, and future phases |
 | `specs/11-sketches-vectors.md` | `chip-sketch` 2D Sketch Layers, parametric shapes, DXF/SVG importers, TrueType & Hershey text |
 
 ---
