@@ -43,7 +43,7 @@ It turns 3D **STEP** B-Rep CAD solids (`AP203` / `AP214` / `AP242`), 2D **DXF / 
   - Ships with built-in **Grbl 1.1 / FluidNC** (automatic file-per-tool splitting—including Two-Stage Flat Endmill + V-Bit V-Carve operations—`<= 80`-char line guard, quadrant arc splitting, expanded peck drills), **grblHAL / FluidNC ATC**, and **LinuxCNC (RS274NGC)** (`M6` + `G43 H`, `G64 P`, native canned cycles) profiles in [`posts/`](posts/).
   - Git-diff-friendly `.chip.toml` project manifests (`schema_version = 2`, backward-compatible with `v1`) plus byte-deterministic, self-contained **`.chipz`** portable bundles (`project.chip.toml` + `models/*.step` + `vectors/*.{dxf,svg}` + `fonts/*.{ttf,otf}` + custom `posts/*.post.toml`).
 
-- **Studio Dark / Daylight Light Desktop UX & Persistent Preferences (`v3`):**
+- **Studio Dark / Daylight Light Desktop UX & Persistent Preferences:**
   - Centralized `ThemeTokens` design system with WCAG-verified **Studio Dark** and **Daylight High-Contrast Light** themes (including theme-coupled 3D `wgpu` studio background & WCS grid), zero-dependency procedural HiDPI vector iconography, aligned two-column Inspector property grids, and `fx` scoped-variable expression autocomplete & nudging.
   - **Quick-Start Welcome Overlay & Sample Projects Gallery**, fuzzy **`Ctrl+K` Command Palette**, **`F1` / `?` Keyboard Shortcut Cheat-Sheet**, active 3D/2D viewport pick guidance HUD, drag-and-drop operation reordering, and cross-session **`~/.config/chipcutter/prefs.toml`** persistence.
 
@@ -140,8 +140,8 @@ All core geometry, CAM, simulation, post-processing, and project persistence cra
 | [`crates/chip-cam`](crates/chip-cam) | Setups, stock, WCS, `cavalier_contours` offsetting & 2D booleans, `boostvoronoi` medial axis, and all 6 machining strategies (incl. 2D Adaptive, Rest, & Two-Tool V-Carving / V-Inlays) |
 | [`crates/chip-sim`](crates/chip-sim) | Trapezoidal motion timeline, revolved cutter profiles/meshes, analytical 3D conical V-bit sweeper, 2.5D Z-dexel stock heightmap, and 5-rule crash/gouge verifier |
 | [`crates/chip-post`](crates/chip-post) | Typed `ClEvent` consumer, modal state machine, quadrant arc & peck-drill expansion, and `.post.toml` G-code emitter |
-| [`crates/chip-project`](crates/chip-project) | Deterministic `.chip.toml` (`v1`/`v2`), `.chipz` portable bundles, associative STEP + face-sketch reload, DAG wave `JobDispatcher`, and Undo/Redo |
-| [`crates/chip-cli`](crates/chip-cli) | `chipcutter` headless CLI binary and v1 + v2 golden end-to-end G-code snapshot suite |
+| [`crates/chip-project`](crates/chip-project) | Deterministic `.chip.toml` (`schema_version = 1 / 2`), `.chipz` portable bundles, associative STEP + face-sketch reload, DAG wave `JobDispatcher`, and Undo/Redo |
+| [`crates/chip-cli`](crates/chip-cli) | `chipcutter` headless CLI binary and Phase 1 + Phase 2 golden end-to-end G-code snapshot suite |
 | [`crates/chip-gui`](crates/chip-gui) | `eframe` + `egui_tiles` + `wgpu` 4x MSAA 3D/2D CAD/CAM desktop application |
 | [`posts/`](posts) | Built-in TOML post-processor profiles (`grbl.post.toml`, `grblhal_atc.post.toml`, `linuxcnc.post.toml`) |
 | [`specs/`](specs) | Authoritative subsystem architecture & algorithm specifications (`00-overview.md` – `11-sketches-vectors.md`) |
@@ -154,7 +154,7 @@ All core geometry, CAM, simulation, post-processing, and project persistence cra
 - [**`ARCHITECTURE.md`**](ARCHITECTURE.md) — End-to-end data pipeline, crate dependency graph, threading/caching model, and 3D render passes
 - [**`DEVELOPMENT.md`**](DEVELOPMENT.md) — Platform build prerequisites, native Linux/macOS/Windows setup, and headless CI instructions
 - [**`specs/00-overview.md`**](specs/00-overview.md) — Product scope, non-goals, and full specification index (`00` through `11`)
-- [**`specs/10-roadmap.md`**](specs/10-roadmap.md) — Completed v1 (`M1`–`M5`) & v2 (`M6`–`M9`) milestones, active v3 UI Polish & Usability milestones (`M10`–`M12`), and v4+ horizon
+- [**`specs/10-roadmap.md`**](specs/10-roadmap.md) — Completed Phase 1 (`M1`–`M5`), Phase 2 (`M6`–`M9`), & Phase 3 (`M10`–`M12`) milestones, and future phases
 - [**`AGENTS.md`**](AGENTS.md) — Architectural invariants and contributor guidelines
 
 ---

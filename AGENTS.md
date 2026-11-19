@@ -7,14 +7,14 @@
 ## 1. Spec-First Workflow
 - **Authoritative Source of Truth:** All product, algorithmic, and architectural decisions live in `specs/`. Before proposing changes or writing code for any subsystem, read its corresponding spec document below.
 - **Build & Environment Setup:** Contributor toolchain, native dependencies, and headless test setup live in `DEVELOPMENT.md`.
-- **Implementation Plans Location:** Store milestone and feature implementation plans in `plans/` (`01`..`05` for v1; `06`..`09` for v2; `10`..`12` for v3 UI Polish & Usability).
+- **Implementation Plans Location:** Store milestone and feature implementation plans in `plans/` (`01`..`05` for Phase 1; `06`..`09` for Phase 2; `10`..`12` for Phase 3 UI Polish & Usability).
 - **No Unsolicited Code Generation:** While iterating on specifications or plans, do **not** scaffold `Cargo.toml` or `.rs` files until the user explicitly asks to begin implementation.
 - **Keep Specs Synchronized:** Whenever an architectural decision, file schema, or scope boundary changes during implementation, update the relevant `specs/*.md` file in the same task.
 
 ### Specification Map
 | File | Subsystem |
 |---|---|
-| `specs/00-overview.md` | Vision, v1+v2 scope boundaries, and explicit v3+ non-goals |
+| `specs/00-overview.md` | Vision, Phase 1–3 scope boundaries, and future-phase non-goals |
 | `specs/01-architecture.md` | Cargo workspace layout, data pipeline, units/expressions, DAG `rayon` threading, licensing |
 | `specs/02-cad-selection.md` | `CadKernel` trait, `monstertruck` STEP pipeline, unified 3D B-Rep & 2D Sketch picking, reload re-matching |
 | `specs/03-setups-wcs.md` | Multi-setup & pure-2D job model, box/cylinder stock, WCS orientation & origin, Z clearance hierarchy |
@@ -23,8 +23,8 @@
 | `specs/06-simulation.md` | Playback timeline, cycle time estimation, 2.5D Z-heightmap stock removal & crash/gouge checks |
 | `specs/07-post-processor.md` | Typed `ClEvent` IR, `.post.toml` profiles, ATC vs split-by-tool, GRBL & LinuxCNC dialects |
 | `specs/08-ui-viewport.md` | `eframe` + `wgpu` + `egui_tiles` shell, Dark/Light design system, Viewport HUDs, Command Palette, Undo/Redo |
-| `specs/09-persistence-cli.md` | `.chip.toml` (`v2` + seamless `v1` migration) & `.chipz` formats, headless CLI subcommands, testing |
-| `specs/10-roadmap.md` | Completed v1 (M1–M5) & v2 (M6–M9) milestones, active v3 UI Polish milestones (M10–M12), and deferred v4+ horizon |
+| `specs/09-persistence-cli.md` | `.chip.toml` (`schema_version = 1 / 2`) & `.chipz` formats, headless CLI subcommands, testing |
+| `specs/10-roadmap.md` | Completed Phase 1 (M1–M5), Phase 2 (M6–M9), & Phase 3 (M10–M12) milestones, plus future phases |
 | `specs/11-sketches-vectors.md` | `chip-sketch` 2D Sketch Layers, parametric shapes, DXF/SVG importers, TrueType & Hershey text |
 
 ---
@@ -48,16 +48,16 @@
 
 ---
 
-## 3. v3 Scope & Deferred v4+ Guardrails
+## 3. Scope & Future-Phase Guardrails
 
 - **Permissive Licenses Only:** Third-party crates must use permissive or weak-copyleft licenses (`MIT`, `Apache-2.0`, `BSD-2-Clause`, `BSD-3-Clause`, `MPL-2.0`, `BSL-1.0`, `ISC`, `Zlib`, `Unicode-3.0`). Do **not** add `GPL`, `LGPL`, or `AGPL` dependencies (enforced via `deny.toml`).
-- **Backward Compatibility:** Preserve lossless loading of `schema_version = 1` and `schema_version = 2` `.chip.toml`/`.chipz` projects and byte-for-byte parity on existing v1 and v2 golden G-code tests unless an intentional bugfix is approved.
-- **v3 Focus (UI Polish & Usability Only):** v3 (`M10`–`M12`) refines `chip-gui` visual design, ergonomics, onboarding, HUD guidance, and user preferences. Do **not** introduce deferred v4+ scope into v3:
+- **Backward Compatibility:** Preserve lossless loading of `schema_version = 1` and `schema_version = 2` `.chip.toml`/`.chipz` projects and byte-for-byte parity on existing Phase 1 and Phase 2 golden G-code tests unless an intentional bugfix is approved.
+- **Unplanned Scope Guardrails:** Do **not** introduce deferred future-phase features without an approved milestone plan:
   - No 3D triangle mesh imports (`STL`, `OBJ`, `3MF`) or 3-axis surface milling (`Waterline`, `Scallop`, `3D Raster`).
   - No nonlinear 2D CAD geometric constraint solver (keep 2D sketches direct, parametric, and expression-driven).
   - No USB/serial/network machine streaming or jogging (pure offline CAM).
   - No standalone HTML/PDF setup sheets (emit operator setup/tool summaries as structured G-code header comments).
-  - No 3D fixture/clamp collision bodies, thread milling, or volumetric tri-dexel flip stock in v3.
+  - No 3D fixture/clamp collision bodies, thread milling, or volumetric tri-dexel flip stock until scheduled.
 
 ---
 
