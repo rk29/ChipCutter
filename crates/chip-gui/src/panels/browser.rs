@@ -1,13 +1,16 @@
 use chip_cad::CadDocument;
-use chip_cam::{Operation, OperationKind, OperationStatus, Setup, WorkOffsetSlot};
-use chip_project::{ProjectDocument, ToolpathCache, UndoHistory};
+use chip_cam::{
+    Operation, OperationKind, OperationStatus, RestMachiningMode, Setup, WorkOffsetSlot,
+};
+use chip_project::{ProjectDocument, ToolpathCache, UndoHistory, resolve_upstream_rest_op_indices};
+use egui::{CornerRadius, CursorIcon, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 
 use crate::{
     panels::{
         InspectorFocus, OperationTab, SetupTab, ViewportPickMode, diagnostics::format_cycle_time,
     },
     theme::ThemeTokens,
-    widgets::{IconKind, StatusBadgeKind, icon_button, inline_icon, status_badge_icon},
+    widgets::{IconKind, StatusBadgeKind, inline_icon, small_icon_button, status_badge_icon},
 };
 
 /// High-level UI actions emitted by the CAM Browser pane.
@@ -46,6 +49,149 @@ pub struct CamBrowserCtx<'a> {
     pub setup_tab: &'a mut SetupTab,
     pub op_tab: &'a mut OperationTab,
     pub pick_mode: &'a mut ViewportPickMode,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DraggedOpState {
+    setup_idx: usize,
+    op_idx: usize,
+}
+
+fn snapshot_rest_upstream_ids(setup: &Setup) -> Vec<(String, Vec<String>)> {
+    setup
+        .operations
+        .iter()
+        .enumerate()
+        .filter(|(_, op)| {
+            matches!(
+                op.passes.rest_machining.mode,
+                RestMachiningMode::FromPrecedingOperations { .. }
+            )
+        })
+        .map(|(idx, op)| {
+            let upstream_ids = resolve_upstream_rest_op_indices(setup, idx)
+                .into_iter()
+                .map(|u| setup.operations[u].id.clone())
+                .collect();
+            (op.id.clone(), upstream_ids)
+        })
+        .collect()
+}
+
+fn invalidate_changed_rest_dependents(setup: &mut Setup, before: &[(String, Vec<String>)]) {
+    for idx in 0..setup.operations.len() {
+        if !matches!(
+            setup.operations[idx].passes.rest_machining.mode,
+            RestMachiningMode::FromPrecedingOperations { .. }
+        ) {
+            continue;
+        }
+        let after_ids: Vec<String> = resolve_upstream_rest_op_indices(setup, idx)
+            .into_iter()
+            .map(|u| setup.operations[u].id.clone())
+            .collect();
+        let op_id = &setup.operations[idx].id;
+        let unchanged = before
+            .iter()
+            .find(|(id, _)| id == op_id)
+            .is_some_and(|(_, prev)| prev == &after_ids);
+        if !unchanged {
+            setup.operations[idx].mark_dirty();
+        }
+    }
+}
+
+/// Moves `setup.operations[from_idx]` to insertion slot `to_slot` (`0..=operations.len()`),
+/// returning the new operation index if its position actually changed, and marking any affected
+/// `FromPrecedingOperations` Rest Machining dependents `Dirty`.
+pub fn move_operation_to_slot(setup: &mut Setup, from_idx: usize, to_slot: usize) -> Option<usize> {
+    let len = setup.operations.len();
+    if from_idx >= len || to_slot > len || to_slot == from_idx || to_slot == from_idx + 1 {
+        return None;
+    }
+    let before_rest = snapshot_rest_upstream_ids(setup);
+    let moved = setup.operations.remove(from_idx);
+    let dst_idx = if to_slot > from_idx {
+        to_slot - 1
+    } else {
+        to_slot
+    };
+    setup.operations.insert(dst_idx, moved);
+    invalidate_changed_rest_dependents(setup, &before_rest);
+    Some(dst_idx)
+}
+
+/// Duplicates `setup.operations[op_idx]` immediately below `op_idx`, returning the new index and
+/// propagating Rest Machining dirty invalidation to downstream dependents.
+pub fn duplicate_operation_in_setup(setup: &mut Setup, op_idx: usize) -> Option<usize> {
+    if op_idx >= setup.operations.len() {
+        return None;
+    }
+    let before_rest = snapshot_rest_upstream_ids(setup);
+    let mut dup = setup.operations[op_idx].clone();
+    dup.id = format!("{}_copy_{}", dup.id, setup.operations.len() + 1);
+    dup.name = format!("{} (Copy)", dup.name);
+    dup.mark_dirty();
+    let new_idx = op_idx + 1;
+    setup.operations.insert(new_idx, dup);
+    invalidate_changed_rest_dependents(setup, &before_rest);
+    Some(new_idx)
+}
+
+/// Removes `setup.operations[op_idx]`, propagating Rest Machining dirty invalidation to downstream
+/// dependents.
+pub fn delete_operation_in_setup(setup: &mut Setup, op_idx: usize) -> bool {
+    if op_idx >= setup.operations.len() {
+        return false;
+    }
+    let before_rest = snapshot_rest_upstream_ids(setup);
+    setup.operations.remove(op_idx);
+    invalidate_changed_rest_dependents(setup, &before_rest);
+    true
+}
+
+/// Formats an estimated operation cycle time into a compact browser badge (`42s`, `1m12s`, `1h04m`).
+pub fn format_compact_cycle_time(seconds: f64) -> String {
+    if !seconds.is_finite() || seconds <= 0.0 {
+        return "0s".to_string();
+    }
+    let total = seconds.round().max(1.0) as u64;
+    if total < 60 {
+        format!("{total}s")
+    } else if total < 3_600 {
+        format!("{}m{:02}s", total / 60, total % 60)
+    } else {
+        format!("{}h{:02}m", total / 3_600, (total % 3_600) / 60)
+    }
+}
+
+fn format_operation_badge(
+    project: &ProjectDocument,
+    op: &Operation,
+    est_time_sec: Option<f64>,
+) -> Option<String> {
+    let primary_t = op
+        .tool_id
+        .as_ref()
+        .and_then(|id| project.tool(id))
+        .map(|t| t.tool_number);
+    let clearing_t = op
+        .clearing_tool_id()
+        .and_then(|id| project.tool(id))
+        .map(|t| t.tool_number);
+
+    let tool_part = match (clearing_t, primary_t) {
+        (Some(ct), Some(pt)) if ct != pt => Some(format!("T{ct}+T{pt}")),
+        (_, Some(pt)) => Some(format!("T{pt}")),
+        _ => None,
+    };
+
+    match (tool_part, est_time_sec) {
+        (Some(tp), Some(sec)) => Some(format!("{tp} · {}", format_compact_cycle_time(sec))),
+        (Some(tp), None) => Some(tp),
+        (None, Some(sec)) => Some(format_compact_cycle_time(sec)),
+        (None, None) => None,
+    }
 }
 
 /// Renders the left-hand hierarchical **CAM Browser** (`08-ui-viewport.md`).
@@ -108,6 +254,11 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
     });
     ui.separator();
 
+    let drag_state_id = ui.scope_id().with("cam_browser_op_drag");
+    let mut active_drag: Option<DraggedOpState> = ui
+        .ctx()
+        .data_mut(|d| d.get_temp::<DraggedOpState>(drag_state_id));
+
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
@@ -163,77 +314,65 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                                 emitted_action = Some(BrowserAction::ReplaceStepDialog);
                             }
                         }
-                        if ui
-                            .small_button("CAM Torture")
-                            .on_hover_text("Load M3 CAM Torture Block (island pocket, open step, Ø18 bore, 45° bevel)")
-                            .clicked()
-                        {
-                            emitted_action = Some(BrowserAction::LoadCamTortureBlock);
-                        }
-                        if ui
-                            .small_button("Adaptive + Rest")
-                            .on_hover_text("Load Milestone 6 2D Adaptive Roughing + Rest Machining demo job")
-                            .clicked()
-                        {
-                            emitted_action = Some(BrowserAction::LoadAdaptiveRestDemo);
-                        }
-                        if ui
-                            .small_button("2D Panel (DXF)")
-                            .on_hover_text(
-                                "Load Milestone 7 Pure-2D CNC Router Front Panel (.dxf, zero STEP files!)",
-                            )
-                            .clicked()
-                        {
-                            emitted_action = Some(BrowserAction::LoadPure2dPanelDemo);
-                        }
-                        if ui
-                            .small_button("Nameplate + Text")
-                            .on_hover_text(
-                                "Load Milestone 8 Engraved Nameplate (Bolt Circle, DejaVuSans-Bold Outline Text, Hershey 1-Pass Serial Trace, R10 Fillets)",
-                            )
-                            .clicked()
-                        {
-                            emitted_action = Some(BrowserAction::LoadNameplateDemo);
-                        }
-                        if ui
-                            .small_button("V-Carve + Inlay")
-                            .on_hover_text(
-                                "Load Milestone 9 V-Carved Hardwood Sign & Mated V-Inlay Plug (Two-Stage Flat Clearance + 3D Medial Corner Climbs)",
-                            )
-                            .clicked()
-                        {
-                            emitted_action = Some(BrowserAction::LoadVCarveDemo);
-                        }
-                        if ui
-                            .small_button("Bracket")
-                            .on_hover_text("Load M2 prismatic bracket")
-                            .clicked()
-                        {
-                            emitted_action =
-                                Some(BrowserAction::LoadMultiFeatureSample { tilted: false });
-                        }
-                        if ui
-                            .small_button("Tilted 30°")
-                            .on_hover_text("Load 30°-tilted STEP bracket")
-                            .clicked()
-                        {
-                            emitted_action =
-                                Some(BrowserAction::LoadMultiFeatureSample { tilted: true });
-                        }
-                        if ui
-                            .small_button("Rev v1")
-                            .on_hover_text("Load Milestone 5 CAD Revision v1 demo job")
-                            .clicked()
-                        {
-                            emitted_action = Some(BrowserAction::LoadRevisionDemoV1);
-                        }
-                        if ui
-                            .small_button("-> Rev v2")
-                            .on_hover_text("Associatively reload CAD Revision v2 (resized pocket, moved/deleted holes)")
-                            .clicked()
-                        {
-                            emitted_action = Some(BrowserAction::ReloadRevisionDemoV2);
-                        }
+                        ui.menu_button("Samples…", |ui| {
+                            if ui
+                                .button("CAM Torture Block (3D STEP)")
+                                .on_hover_text(
+                                    "Load M3 CAM Torture Block (island pocket, open step, Ø18 bore, 45° bevel)",
+                                )
+                                .clicked()
+                            {
+                                emitted_action = Some(BrowserAction::LoadCamTortureBlock);
+                                ui.close();
+                            }
+                            if ui
+                                .button("2D Adaptive + Rest Machining")
+                                .clicked()
+                            {
+                                emitted_action = Some(BrowserAction::LoadAdaptiveRestDemo);
+                                ui.close();
+                            }
+                            if ui
+                                .button("Pure-2D Router Panel (.dxf)")
+                                .clicked()
+                            {
+                                emitted_action = Some(BrowserAction::LoadPure2dPanelDemo);
+                                ui.close();
+                            }
+                            if ui
+                                .button("Engraved Nameplate (TrueType + Hershey)")
+                                .clicked()
+                            {
+                                emitted_action = Some(BrowserAction::LoadNameplateDemo);
+                                ui.close();
+                            }
+                            if ui
+                                .button("V-Carve Sign & Mated V-Inlay")
+                                .clicked()
+                            {
+                                emitted_action = Some(BrowserAction::LoadVCarveDemo);
+                                ui.close();
+                            }
+                            ui.separator();
+                            if ui.button("Prismatic Bracket").clicked() {
+                                emitted_action =
+                                    Some(BrowserAction::LoadMultiFeatureSample { tilted: false });
+                                ui.close();
+                            }
+                            if ui.button("30°-Tilted Bracket").clicked() {
+                                emitted_action =
+                                    Some(BrowserAction::LoadMultiFeatureSample { tilted: true });
+                                ui.close();
+                            }
+                            if ui.button("CAD Revision v1").clicked() {
+                                emitted_action = Some(BrowserAction::LoadRevisionDemoV1);
+                                ui.close();
+                            }
+                            if ui.button("Reload CAD Revision v2").clicked() {
+                                emitted_action = Some(BrowserAction::ReloadRevisionDemoV2);
+                                ui.close();
+                            }
+                        });
                     });
                 });
 
@@ -265,10 +404,10 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                                     sk.regions.len(),
                                     sk.entities.len()
                                 );
-                                let sk_w = (ui.available_width() - 28.0).max(48.0);
+                                let sk_w = (ui.available_width() - 26.0).max(48.0);
                                 if ui
                                     .add_sized(
-                                        [sk_w, 18.0],
+                                        [sk_w, 20.0],
                                         egui::Button::selectable(is_sel, lbl).truncate(),
                                     )
                                     .clicked()
@@ -279,10 +418,12 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                                 ui.with_layout(
                                     egui::Layout::right_to_left(egui::Align::Center),
                                     |ui| {
-                                        if ui
-                                            .small_button("×")
-                                            .on_hover_text("Delete Sketch Layer")
-                                            .clicked()
+                                        if small_icon_button(
+                                            ui,
+                                            IconKind::Trash,
+                                            "Delete Sketch Layer",
+                                        )
+                                        .clicked()
                                         {
                                             del_sketch = Some(sk_idx);
                                         }
@@ -315,9 +456,9 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                         }
                         if cad_doc.is_some()
                             && ui
-                                .small_button("+ On 3D Face")
+                                .small_button("+ Sketch on Face")
                                 .on_hover_text(
-                                    "Click a planar STEP B-Rep face in the 3D viewport to attach an associative 2D Sketch",
+                                    "Click any planar 3D STEP face to anchor an associative 2D Sketch",
                                 )
                                 .clicked()
                         {
@@ -325,19 +466,11 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                         }
                         if ui
                             .small_button("+ Import DXF/SVG…")
-                            .on_hover_text("Import AutoCAD .dxf or W3C .svg 2D vector artwork")
+                            .on_hover_text("Import AutoCAD DXF or W3C SVG vector drawing")
                             .clicked()
                         {
                             emitted_action =
                                 Some(BrowserAction::OpenVectorImportModal { browse_file: true });
-                        }
-                        if ui
-                            .small_button("Sample DXF/SVG…")
-                            .on_hover_text("Open interactive 2D Vector Importer with built-in DXF/SVG fixtures")
-                            .clicked()
-                        {
-                            emitted_action =
-                                Some(BrowserAction::OpenVectorImportModal { browse_file: false });
                         }
                     });
                 });
@@ -372,7 +505,7 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
             let mut deferred_setup_delete: Option<usize> = None;
             let mut deferred_op_add: Option<(usize, OperationKind)> = None;
             let mut deferred_adaptive_add: Option<usize> = None;
-            let mut deferred_op_move: Option<(usize, usize, isize)> = None;
+            let mut deferred_op_move_slot: Option<(usize, usize, usize)> = None;
             let mut deferred_op_delete: Option<(usize, usize)> = None;
             let mut deferred_op_duplicate: Option<(usize, usize)> = None;
             let mut deferred_op_toggle_suppress: Option<(usize, usize)> = None;
@@ -398,8 +531,10 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                     .id_salt(("setup_hdr", s_idx))
                     .default_open(true)
                     .show(ui, |ui| {
-                        ui.horizontal_wrapped(|ui| {
-                            let stock_selected = *focus == InspectorFocus::Setup { setup_idx: s_idx };
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 4.0;
+                            let stock_selected =
+                                *focus == InspectorFocus::Setup { setup_idx: s_idx };
                             if ui
                                 .selectable_label(stock_selected, "Stock & WCS")
                                 .clicked()
@@ -409,57 +544,88 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                                 *pick_mode = ViewportPickMode::InspectEntity;
                             }
                             if ui
-                                .small_button("Gen (Ctrl+G)")
-                                .on_hover_text("Generate dirty toolpaths in this Setup")
+                                .small_button("Gen")
+                                .on_hover_text("Generate dirty toolpaths in this Setup (Ctrl+G)")
                                 .clicked()
                             {
                                 *active_setup_idx = s_idx;
                                 emitted_action = Some(BrowserAction::GenerateSetup(s_idx));
                             }
                             if ui
-                                .small_button("Top View")
-                                .on_hover_text("Align camera straight down this Setup's +Z spindle axis")
+                                .small_button("Top")
+                                .on_hover_text(
+                                    "Align camera straight down this Setup's +Z spindle axis",
+                                )
                                 .clicked()
                             {
                                 *active_setup_idx = s_idx;
                                 emitted_action = Some(BrowserAction::AlignCameraToActiveSetup);
                             }
-                            if project.setups.len() > 1
-                                && ui
-                                    .small_button("Del")
-                                    .on_hover_text("Delete Setup")
-                                    .clicked()
-                            {
-                                deferred_setup_delete = Some(s_idx);
+                            if project.setups.len() > 1 {
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        if small_icon_button(
+                                            ui,
+                                            IconKind::Trash,
+                                            "Delete Setup",
+                                        )
+                                        .clicked()
+                                        {
+                                            deferred_setup_delete = Some(s_idx);
+                                        }
+                                    },
+                                );
                             }
                         });
 
-                        // Quick Add Operation bar
-                        ui.horizontal_wrapped(|ui| {
-                            ui.weak("+ Op:");
+                        // Streamlined single-row Operation creation bar
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 3.0;
                             if ui
-                                .small_button("Adaptive")
+                                .small_button("+ Adap")
                                 .on_hover_text("Add 2D Adaptive / Trochoidal Clearing operation")
                                 .clicked()
                             {
                                 deferred_adaptive_add = Some(s_idx);
                             }
-                            for (short, kind) in [
-                                ("Face", OperationKind::Facing),
-                                ("Contour", OperationKind::Contour2D),
-                                ("Pocket", OperationKind::Pocket2D),
-                                ("Drill/Bore", OperationKind::DrillBore),
-                                ("Chamfer", OperationKind::ChamferTrace),
-                                ("V-Carve", OperationKind::VCarve),
-                            ] {
-                                if ui.small_button(short).clicked() {
-                                    deferred_op_add = Some((s_idx, kind));
-                                }
+                            if ui
+                                .small_button("+ Cont")
+                                .on_hover_text("Add 2D Contour / Profile operation")
+                                .clicked()
+                            {
+                                deferred_op_add = Some((s_idx, OperationKind::Contour2D));
                             }
+                            if ui
+                                .small_button("+ VCarve")
+                                .on_hover_text("Add 3D V-Carve / Bevel Inlay operation")
+                                .clicked()
+                            {
+                                deferred_op_add = Some((s_idx, OperationKind::VCarve));
+                            }
+                            ui.menu_button("+ Op…", |ui| {
+                                for (lbl, kind) in [
+                                    ("Facing", OperationKind::Facing),
+                                    ("2D Pocket", OperationKind::Pocket2D),
+                                    ("Drill / Helical Bore", OperationKind::DrillBore),
+                                    ("Edge Chamfer / Trace", OperationKind::ChamferTrace),
+                                ] {
+                                    if ui.button(lbl).clicked() {
+                                        deferred_op_add = Some((s_idx, kind));
+                                        ui.close();
+                                    }
+                                }
+                            });
                         });
 
-                        // Operations list
+                        ui.add_space(2.0);
+
+                        // Operations list with full-width readable names, `T# · <time>` metadata
+                        // pills at rest, hover-revealed quick actions, and drag-and-drop reordering
                         let op_len = project.setups[s_idx].operations.len();
+                        let mut row_rects: Vec<Rect> = Vec::with_capacity(op_len);
+                        let tok = ThemeTokens::from_ui(ui);
+
                         for o_idx in 0..op_len {
                             let is_sel = *focus
                                 == InspectorFocus::Operation {
@@ -470,17 +636,26 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                                 .get_for_operation(project, s_idx, o_idx, cad_revision);
                             let op = &project.setups[s_idx].operations[o_idx];
 
+                            let est_sec = cached_tp.as_ref().map(|(_, tp)| {
+                                tp.stats.total_est_time_sec
+                                    + tp.clearing_stage
+                                        .as_ref()
+                                        .map_or(0.0, |c| c.toolpath.stats.total_est_time_sec)
+                            });
+
                             let (status_kind, hover_note) = if op.suppressed {
                                 (StatusBadgeKind::Suppressed, Some("Suppressed".to_string()))
                             } else {
                                 match &op.runtime_status {
                                     OperationStatus::Clean => (
                                         StatusBadgeKind::Clean,
-                                        cached_tp.as_ref().map(|(_, tp)| {
+                                        est_sec.map(|sec| {
+                                            let passes = cached_tp
+                                                .as_ref()
+                                                .map_or(0, |(_, tp)| tp.stats.pass_count);
                                             format!(
-                                                "Clean: {} passes, est. {}",
-                                                tp.stats.pass_count,
-                                                format_cycle_time(tp.stats.total_est_time_sec)
+                                                "Clean: {passes} pass(es), est. {} (drag or Ctrl+Up/Down to reorder)",
+                                                format_cycle_time(sec)
                                             )
                                         }),
                                     ),
@@ -502,10 +677,16 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                                 }
                             };
 
+                            let badge_txt = if op.suppressed {
+                                None
+                            } else {
+                                format_operation_badge(project, op, est_sec)
+                            };
+
                             let mode_tag = match (op.is_adaptive_2d(), op.has_rest_machining()) {
-                                (true, true) => " [Adp+Rest]",
-                                (true, false) => " [Adp]",
-                                (false, true) => " [Rest]",
+                                (true, true) => " · Adp+Rest",
+                                (true, false) => "",
+                                (false, true) => " · Rest",
                                 (false, false) => "",
                             };
                             let label_txt = format!("{}. {}{mode_tag}", o_idx + 1, op.name);
@@ -523,9 +704,19 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                                 && matches!(op.runtime_status, OperationStatus::NeedsRepick { .. });
                             let is_gen = !is_sup
                                 && matches!(op.runtime_status, OperationStatus::Generating);
-                            let tok = ThemeTokens::from_ui(ui);
 
-                            ui.horizontal(|ui| {
+                            let row_h = 24.0;
+                            let full_w = ui.available_width().max(110.0);
+                            let preview_rect =
+                                Rect::from_min_size(ui.cursor().min, Vec2::new(full_w, row_h));
+                            let row_hovered = active_drag.is_none()
+                                && ui.rect_contains_pointer(preview_rect);
+
+                            let is_being_dragged = active_drag.is_some_and(|d| {
+                                d.setup_idx == s_idx && d.op_idx == o_idx
+                            });
+
+                            let row_resp = ui.horizontal(|ui| {
                                 ui.spacing_mut().item_spacing.x = 4.0;
                                 if is_gen {
                                     ui.add(egui::Spinner::new().size(13.0));
@@ -537,16 +728,40 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                                     IconKind::for_operation(op_kind_val, op_is_adap),
                                     if is_sup {
                                         tok.suppressed_fg
+                                    } else if is_sel {
+                                        tok.accent
                                     } else {
                                         tok.text_secondary
                                     },
-                                    13.0,
+                                    13.5,
                                 );
 
-                                let max_lbl_w = (ui.available_width() - 96.0).max(48.0);
+                                // Measure exact `T# · <time>` pill width against `clip_rect` so it
+                                // aligns cleanly inside narrow CAM Browser panes without clipping!
+                                let measured_pill_w = badge_txt.as_ref().map(|b| {
+                                    ui.painter()
+                                        .layout_no_wrap(
+                                            b.clone(),
+                                            egui::FontId::proportional(10.5),
+                                            tok.text_muted,
+                                        )
+                                        .size()
+                                        .x
+                                        + 10.0
+                                });
+                                let visible_right = ui.clip_rect().right() - 8.0;
+                                let right_w = if row_hovered {
+                                    66.0
+                                } else {
+                                    measured_pill_w.unwrap_or(0.0)
+                                };
+                                let lbl_w =
+                                    (visible_right - ui.cursor().min.x - right_w - 4.0).max(36.0);
                                 let mut resp = ui.add_sized(
-                                    [max_lbl_w, 20.0],
-                                    egui::Button::selectable(is_sel, rich).truncate(),
+                                    [lbl_w, 22.0],
+                                    egui::Button::selectable(is_sel || is_being_dragged, rich)
+                                        .sense(Sense::click_and_drag())
+                                        .truncate(),
                                 );
                                 if let Some(tip) = hover_note {
                                     resp = resp.on_hover_text(tip);
@@ -567,6 +782,14 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                                         *op_tab,
                                     );
                                 }
+                                if resp.drag_started() && op_len > 1 {
+                                    let st = DraggedOpState {
+                                        setup_idx: s_idx,
+                                        op_idx: o_idx,
+                                    };
+                                    active_drag = Some(st);
+                                    ui.ctx().data_mut(|d| d.insert_temp(drag_state_id, st));
+                                }
 
                                 resp.context_menu(|ui| {
                                     if ui.button("Generate Toolpath").clicked() {
@@ -576,10 +799,32 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                                         });
                                         ui.close();
                                     }
-                                    if ui.button("Duplicate Operation").clicked() {
+                                    if ui.button("Duplicate Operation (Ctrl+D)").clicked() {
                                         deferred_op_duplicate = Some((s_idx, o_idx));
                                         ui.close();
                                     }
+                                    ui.separator();
+                                    if ui
+                                        .add_enabled(
+                                            o_idx > 0,
+                                            egui::Button::new("Move Up (Ctrl+Up)"),
+                                        )
+                                        .clicked()
+                                    {
+                                        deferred_op_move_slot = Some((s_idx, o_idx, o_idx - 1));
+                                        ui.close();
+                                    }
+                                    if ui
+                                        .add_enabled(
+                                            o_idx + 1 < op_len,
+                                            egui::Button::new("Move Down (Ctrl+Down)"),
+                                        )
+                                        .clicked()
+                                    {
+                                        deferred_op_move_slot = Some((s_idx, o_idx, o_idx + 2));
+                                        ui.close();
+                                    }
+                                    ui.separator();
                                     if ui
                                         .button(if is_sup {
                                             "Enable Operation"
@@ -591,66 +836,124 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                                         deferred_op_toggle_suppress = Some((s_idx, o_idx));
                                         ui.close();
                                     }
-                                    if ui.button("Delete Operation").clicked() {
+                                    if ui.button("Delete Operation (Del)").clicked() {
                                         deferred_op_delete = Some((s_idx, o_idx));
                                         ui.close();
                                     }
                                 });
 
-                                ui.with_layout(
-                                    egui::Layout::right_to_left(egui::Align::Center),
-                                    |ui| {
-                                        ui.spacing_mut().item_spacing.x = 3.0;
-                                        if icon_button(
-                                            ui,
-                                            IconKind::Trash,
-                                            None,
-                                            "Delete Operation",
-                                        )
-                                        .clicked()
-                                        {
-                                            deferred_op_delete = Some((s_idx, o_idx));
-                                        }
-                                        if icon_button(
-                                            ui,
-                                            if is_sup {
-                                                IconKind::EyeOff
-                                            } else {
-                                                IconKind::Eye
-                                            },
-                                            None,
-                                            if is_sup {
-                                                "Enable Operation"
-                                            } else {
-                                                "Suppress Operation"
-                                            },
-                                        )
-                                        .clicked()
-                                        {
-                                            deferred_op_toggle_suppress = Some((s_idx, o_idx));
-                                        }
-                                        if o_idx + 1 < op_len
-                                            && icon_button(
-                                                ui,
-                                                IconKind::ArrowDown,
-                                                None,
-                                                "Move Down",
-                                            )
-                                            .clicked()
-                                        {
-                                            deferred_op_move = Some((s_idx, o_idx, 1));
-                                        }
-                                        if o_idx > 0
-                                            && icon_button(ui, IconKind::ArrowUp, None, "Move Up")
-                                                .clicked()
-                                        {
-                                            deferred_op_move = Some((s_idx, o_idx, -1));
-                                        }
-                                    },
-                                );
+                                if row_hovered {
+                                    ui.spacing_mut().item_spacing.x = 2.0;
+                                    if small_icon_button(
+                                        ui,
+                                        IconKind::Duplicate,
+                                        "Duplicate Operation (Ctrl+D)",
+                                    )
+                                    .clicked()
+                                    {
+                                        deferred_op_duplicate = Some((s_idx, o_idx));
+                                    }
+                                    if small_icon_button(
+                                        ui,
+                                        if is_sup {
+                                            IconKind::EyeOff
+                                        } else {
+                                            IconKind::Eye
+                                        },
+                                        if is_sup {
+                                            "Enable Operation"
+                                        } else {
+                                            "Suppress Operation"
+                                        },
+                                    )
+                                    .clicked()
+                                    {
+                                        deferred_op_toggle_suppress = Some((s_idx, o_idx));
+                                    }
+                                    if small_icon_button(
+                                        ui,
+                                        IconKind::Trash,
+                                        "Delete Operation (Del)",
+                                    )
+                                    .clicked()
+                                    {
+                                        deferred_op_delete = Some((s_idx, o_idx));
+                                    }
+                                } else if let (Some(badge), Some(pill_w)) =
+                                    (&badge_txt, measured_pill_w)
+                                {
+                                    let (p_rect, _) = ui.allocate_exact_size(
+                                        Vec2::new(pill_w, 17.0),
+                                        Sense::hover(),
+                                    );
+                                    if ui.is_rect_visible(p_rect) {
+                                        ui.painter().rect(
+                                            p_rect,
+                                            CornerRadius::same(4),
+                                            tok.elevated_bg,
+                                            Stroke::new(1.0, tok.border),
+                                            StrokeKind::Inside,
+                                        );
+                                        ui.painter().text(
+                                            p_rect.center(),
+                                            egui::Align2::CENTER_CENTER,
+                                            badge,
+                                            egui::FontId::proportional(10.5),
+                                            tok.text_muted,
+                                        );
+                                    }
+                                }
                             });
+
+                            row_rects.push(row_resp.response.rect);
+                        }
+
+                        // Handle live drag-and-drop insertion indicator & drop within this Setup
+                        if let Some(drag) = active_drag
+                            && drag.setup_idx == s_idx
+                            && !row_rects.is_empty()
+                        {
+                            ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
+                            if let Some(ptr) = ui.input(|i| i.pointer.interact_pos()) {
+                                let mut slot = op_len;
+                                for (idx, r) in row_rects.iter().enumerate() {
+                                    if ptr.y < r.center().y {
+                                        slot = idx;
+                                        break;
+                                    }
+                                }
+                                if slot != drag.op_idx && slot != drag.op_idx + 1 {
+                                    let y_line = if slot == 0 {
+                                        row_rects[0].top() - 1.0
+                                    } else if slot >= row_rects.len() {
+                                        row_rects[row_rects.len() - 1].bottom() + 1.0
+                                    } else {
+                                        0.5 * (row_rects[slot - 1].bottom() + row_rects[slot].top())
+                                    };
+                                    let x_left = row_rects[0].left() + 4.0;
+                                    let x_right = row_rects[0].right() - 4.0;
+                                    ui.painter().line_segment(
+                                        [Pos2::new(x_left, y_line), Pos2::new(x_right, y_line)],
+                                        Stroke::new(2.0, tok.accent),
+                                    );
+                                    ui.painter().circle_filled(
+                                        Pos2::new(x_left, y_line),
+                                        3.2,
+                                        tok.accent,
+                                    );
+                                }
+                                if ui.input(|i| i.pointer.any_released()) {
+                                    deferred_op_move_slot = Some((s_idx, drag.op_idx, slot));
+                                    active_drag = None;
+                                    ui.ctx().data_mut(|d| d.remove::<DraggedOpState>(drag_state_id));
+                                }
+                            }
                         }
                     });
+            }
+
+            if active_drag.is_some() && ui.input(|i| i.pointer.any_released()) {
+                ui.ctx().data_mut(|d| d.remove::<DraggedOpState>(drag_state_id));
             }
 
             if let Some(del_idx) = deferred_setup_delete {
@@ -693,7 +996,10 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                 history.record_before_edit(format!("Add {}", kind.label()), None, project);
                 let next_op_num = project.setups[s_idx].operations.len() + 1;
                 let mut op = Operation::new(
-                    format!("op_{s_idx}_{next_op_num}_{}", project.setups[s_idx].operations.len()),
+                    format!(
+                        "op_{s_idx}_{next_op_num}_{}",
+                        project.setups[s_idx].operations.len()
+                    ),
                     format!("{} {}", kind.default_name(), next_op_num),
                     kind,
                 );
@@ -722,38 +1028,53 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
 
             if let Some((s_idx, o_idx)) = deferred_op_duplicate {
                 history.record_before_edit("Duplicate Operation", None, project);
-                let mut dup = project.setups[s_idx].operations[o_idx].clone();
-                dup.id = format!("{}_copy_{}", dup.id, project.setups[s_idx].operations.len() + 1);
-                dup.name = format!("{} (Copy)", dup.name);
-                dup.mark_dirty();
-                project.setups[s_idx].operations.insert(o_idx + 1, dup);
-                *focus = InspectorFocus::Operation {
-                    setup_idx: s_idx,
-                    op_idx: o_idx + 1,
-                };
+                if let Some(new_idx) =
+                    duplicate_operation_in_setup(&mut project.setups[s_idx], o_idx)
+                {
+                    *focus = InspectorFocus::Operation {
+                        setup_idx: s_idx,
+                        op_idx: new_idx,
+                    };
+                }
             }
 
-            if let Some((s_idx, o_idx, dir)) = deferred_op_move {
-                let target = (o_idx as isize + dir) as usize;
+            if let Some((s_idx, o_idx, slot)) = deferred_op_move_slot
+                && slot != o_idx
+                && slot != o_idx + 1
+            {
                 history.record_before_edit("Reorder Operation", None, project);
-                project.setups[s_idx].operations.swap(o_idx, target);
-                *focus = InspectorFocus::Operation {
-                    setup_idx: s_idx,
-                    op_idx: target,
-                };
+                if let Some(dst_idx) =
+                    move_operation_to_slot(&mut project.setups[s_idx], o_idx, slot)
+                {
+                    *focus = InspectorFocus::Operation {
+                        setup_idx: s_idx,
+                        op_idx: dst_idx,
+                    };
+                }
             }
 
             if let Some((s_idx, o_idx)) = deferred_op_toggle_suppress {
                 history.record_before_edit("Toggle Suppress Operation", None, project);
+                let before_rest = snapshot_rest_upstream_ids(&project.setups[s_idx]);
                 let op = &mut project.setups[s_idx].operations[o_idx];
                 op.suppressed = !op.suppressed;
+                invalidate_changed_rest_dependents(&mut project.setups[s_idx], &before_rest);
             }
 
             if let Some((s_idx, o_idx)) = deferred_op_delete {
                 history.record_before_edit("Delete Operation", None, project);
-                project.setups[s_idx].operations.remove(o_idx);
-                *focus = InspectorFocus::Setup { setup_idx: s_idx };
-                *pick_mode = ViewportPickMode::InspectEntity;
+                if delete_operation_in_setup(&mut project.setups[s_idx], o_idx) {
+                    let rem = project.setups[s_idx].operations.len();
+                    *focus = if rem > 0 {
+                        InspectorFocus::Operation {
+                            setup_idx: s_idx,
+                            op_idx: o_idx.min(rem - 1),
+                        }
+                    } else {
+                        InspectorFocus::Setup { setup_idx: s_idx }
+                    };
+                    *pick_mode = ViewportPickMode::InspectEntity;
+                }
                 let _ = setup_tab;
             }
         });
@@ -778,5 +1099,62 @@ pub fn default_pick_mode_for_op(
             ViewportPickMode::OpClosedLoops { setup_idx, op_idx }
         }
         OperationKind::DrillBore => ViewportPickMode::OpCylindricalHoles { setup_idx, op_idx },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn move_duplicate_and_delete_propagate_rest_machining_dirty_state() {
+        let mut setup = Setup::new("s1", "Setup 1", WorkOffsetSlot::G54);
+        let mut op1 = Operation::new("op_1", "Rough 1", OperationKind::Pocket2D);
+        op1.runtime_status = OperationStatus::Clean;
+        let mut op2 = Operation::new("op_2", "Rough 2", OperationKind::Pocket2D);
+        op2.runtime_status = OperationStatus::Clean;
+        let mut op3 = Operation::new("op_3", "Rest Finish", OperationKind::Contour2D);
+        op3.passes.rest_machining.mode = RestMachiningMode::FromPrecedingOperations {
+            source_op_ids: Vec::new(),
+        };
+        op3.runtime_status = OperationStatus::Clean;
+
+        setup.operations = vec![op1, op2, op3];
+
+        // No-op drag onto own slot returns None and preserves Clean
+        assert_eq!(move_operation_to_slot(&mut setup, 1, 1), None);
+        assert_eq!(move_operation_to_slot(&mut setup, 1, 2), None);
+        assert_eq!(setup.operations[2].runtime_status, OperationStatus::Clean);
+
+        // Moving `op_2` AFTER `op_3` (slot 3) changes `op_3`'s upstream Rest coverage -> `op_3` becomes Dirty!
+        let dst = move_operation_to_slot(&mut setup, 1, 3);
+        assert_eq!(dst, Some(2));
+        assert_eq!(setup.operations[0].id, "op_1");
+        assert_eq!(setup.operations[1].id, "op_3");
+        assert_eq!(setup.operations[2].id, "op_2");
+        assert_eq!(setup.operations[1].runtime_status, OperationStatus::Dirty);
+
+        // Reset Clean and test duplication before `op_3`
+        setup.operations[1].runtime_status = OperationStatus::Clean;
+        let dup_idx = duplicate_operation_in_setup(&mut setup, 0);
+        assert_eq!(dup_idx, Some(1));
+        assert_eq!(setup.operations.len(), 4);
+        // `op_3` is now at index 2 and gained a new preceding op -> marked Dirty!
+        assert_eq!(setup.operations[2].id, "op_3");
+        assert_eq!(setup.operations[2].runtime_status, OperationStatus::Dirty);
+
+        // Reset Clean and delete preceding duplicate -> `op_3` marked Dirty again
+        setup.operations[2].runtime_status = OperationStatus::Clean;
+        assert!(delete_operation_in_setup(&mut setup, 1));
+        assert_eq!(setup.operations[1].id, "op_3");
+        assert_eq!(setup.operations[1].runtime_status, OperationStatus::Dirty);
+    }
+
+    #[test]
+    fn formats_compact_cycle_time_cleanly() {
+        assert_eq!(format_compact_cycle_time(0.2), "1s");
+        assert_eq!(format_compact_cycle_time(42.4), "42s");
+        assert_eq!(format_compact_cycle_time(72.0), "1m12s");
+        assert_eq!(format_compact_cycle_time(3_840.0), "1h04m");
     }
 }

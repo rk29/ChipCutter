@@ -69,6 +69,8 @@ pub enum IconKind {
     TopView,
     OrthoCube,
     Trash,
+    Duplicate,
+    InfoCircle,
     ArrowUp,
     ArrowDown,
 }
@@ -553,6 +555,25 @@ pub fn paint_icon(painter: &egui::Painter, rect: Rect, icon: IconKind, color: Co
             ));
             painter.line_segment([p(0.40, 0.16), p(0.60, 0.16)], thin);
         }
+        IconKind::Duplicate => {
+            let front = Rect::from_min_max(p(0.32, 0.32), p(0.82, 0.82));
+            painter.rect_stroke(front, CornerRadius::same(2), stroke, StrokeKind::Inside);
+            painter.add(egui::Shape::line(
+                vec![
+                    p(0.66, 0.32),
+                    p(0.66, 0.18),
+                    p(0.18, 0.18),
+                    p(0.18, 0.66),
+                    p(0.32, 0.66),
+                ],
+                thin,
+            ));
+        }
+        IconKind::InfoCircle => {
+            painter.circle_stroke(sq.center(), s * 0.42, thin);
+            painter.circle_filled(p(0.50, 0.31), sw * 0.65, color);
+            painter.line_segment([p(0.50, 0.45), p(0.50, 0.73)], stroke);
+        }
         IconKind::ArrowUp => {
             painter.add(egui::Shape::line(
                 vec![p(0.22, 0.64), p(0.50, 0.32), p(0.78, 0.64)],
@@ -598,6 +619,57 @@ pub fn status_badge_icon(ui: &mut Ui, status: StatusBadgeKind, tooltip: Option<&
 /// Renders a toolbar/panel button combining a procedural vector icon with an optional text label.
 pub fn icon_button(ui: &mut Ui, icon: IconKind, label: Option<&str>, tooltip: &str) -> Response {
     icon_button_styled(ui, icon, label, tooltip, false)
+}
+
+/// Renders a compact `20×20` px icon-only button used for hover-revealed tree/row quick actions.
+pub fn small_icon_button(ui: &mut Ui, icon: IconKind, tooltip: &str) -> Response {
+    let tok = ThemeTokens::from_ui(ui);
+    let enabled = ui.is_enabled();
+    let (rect, resp) = ui.allocate_exact_size(
+        Vec2::splat(20.0),
+        if enabled {
+            Sense::click()
+        } else {
+            Sense::hover()
+        },
+    );
+    if ui.is_rect_visible(rect) {
+        let hovered = enabled && resp.hovered();
+        let active = enabled && resp.is_pointer_button_down_on();
+        let fg = if !enabled {
+            tok.text_muted.gamma_multiply(0.55)
+        } else if active {
+            tok.accent_on_fg
+        } else if hovered {
+            tok.text_primary
+        } else {
+            tok.text_secondary
+        };
+        if active {
+            ui.painter().rect(
+                rect,
+                CornerRadius::same(4),
+                tok.accent,
+                Stroke::new(1.0, tok.accent_hover),
+                StrokeKind::Inside,
+            );
+        } else if hovered {
+            ui.painter().rect(
+                rect,
+                CornerRadius::same(4),
+                ui.visuals().widgets.hovered.bg_fill,
+                Stroke::new(1.0, tok.accent),
+                StrokeKind::Inside,
+            );
+        }
+        let icon_rect = Rect::from_center_size(rect.center(), Vec2::splat(12.5));
+        paint_icon(ui.painter(), icon_rect, icon, fg);
+    }
+    if tooltip.is_empty() {
+        resp
+    } else {
+        resp.on_hover_text(tooltip)
+    }
 }
 
 /// Renders a primary accent-filled button (used for high-priority workflow actions like `Generate`).

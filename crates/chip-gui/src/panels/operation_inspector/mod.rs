@@ -10,7 +10,10 @@ use chip_math::EvalContext;
 use chip_project::{ProjectDocument, UndoHistory};
 use chip_tools::{ToolId, ToolLibrary, ToolOperationClass};
 
-use crate::panels::{OperationTab, ViewportPickMode, browser::default_pick_mode_for_op};
+use crate::{
+    panels::{OperationTab, ViewportPickMode, browser::default_pick_mode_for_op},
+    widgets::{BannerKind, inline_banner, static_card},
+};
 
 /// Context passed to [`show_operation_inspector`].
 pub struct OperationInspectorCtx<'a> {
@@ -48,7 +51,7 @@ pub fn show_operation_inspector(ui: &mut egui::Ui, ctx: OperationInspectorCtx<'_
     } = ctx;
 
     if setup_idx >= project.setups.len() || op_idx >= project.setups[setup_idx].operations.len() {
-        ui.weak("No Operation selected.");
+        inline_banner(ui, BannerKind::Info, "No Operation selected.");
         return;
     }
 
@@ -59,108 +62,93 @@ pub fn show_operation_inspector(ui: &mut egui::Ui, ctx: OperationInspectorCtx<'_
     let mut mutated_label: Option<&'static str> = None;
 
     let op_kind = project.setups[setup_idx].operations[op_idx].kind;
-    ui.horizontal(|ui| {
-        ui.strong(op_kind.label());
-        let name_ref = &mut project.setups[setup_idx].operations[op_idx].name;
-        let resp = ui.text_edit_singleline(name_ref);
-        if resp.lost_focus() && project.setups[setup_idx].operations[op_idx].name != pre_op.name {
-            mutated_label = Some("Rename Operation");
-        }
+    static_card(ui, None, |ui| {
+        ui.horizontal(|ui| {
+            ui.strong(op_kind.label());
+            let name_ref = &mut project.setups[setup_idx].operations[op_idx].name;
+            let resp = ui.add(
+                egui::TextEdit::singleline(name_ref).desired_width(ui.available_width().max(80.0)),
+            );
+            if resp.lost_focus() && project.setups[setup_idx].operations[op_idx].name != pre_op.name
+            {
+                mutated_label = Some("Rename Operation");
+            }
+        });
+        ui.add_space(4.0);
+        ui.separator();
+        ui.add_space(2.0);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            if ui
+                .selectable_value(tab, OperationTab::Tool, "Tool")
+                .clicked()
+            {
+                *pick_mode = ViewportPickMode::InspectEntity;
+            }
+            if ui
+                .selectable_value(tab, OperationTab::Geometry, "Geometry")
+                .clicked()
+            {
+                *pick_mode = default_pick_mode_for_op(setup_idx, op_idx, op_kind, *tab);
+            }
+            if ui
+                .selectable_value(tab, OperationTab::Heights, "Heights")
+                .clicked()
+            {
+                *pick_mode = ViewportPickMode::InspectEntity;
+            }
+            if ui
+                .selectable_value(tab, OperationTab::Passes, "Passes")
+                .clicked()
+            {
+                *pick_mode = ViewportPickMode::InspectEntity;
+            }
+            if ui
+                .selectable_value(tab, OperationTab::Linking, "Linking")
+                .clicked()
+            {
+                *pick_mode = ViewportPickMode::InspectEntity;
+            }
+        });
     });
-
-    ui.separator();
-    ui.horizontal_wrapped(|ui| {
-        if ui
-            .selectable_value(tab, OperationTab::Tool, "Tool")
-            .clicked()
-        {
-            *pick_mode = ViewportPickMode::InspectEntity;
-        }
-        if ui
-            .selectable_value(tab, OperationTab::Geometry, "Geometry")
-            .clicked()
-        {
-            *pick_mode = default_pick_mode_for_op(setup_idx, op_idx, op_kind, *tab);
-        }
-        if ui
-            .selectable_value(tab, OperationTab::Heights, "Heights")
-            .clicked()
-        {
-            *pick_mode = ViewportPickMode::InspectEntity;
-        }
-        if ui
-            .selectable_value(tab, OperationTab::Passes, "Passes")
-            .clicked()
-        {
-            *pick_mode = ViewportPickMode::InspectEntity;
-        }
-        if ui
-            .selectable_value(tab, OperationTab::Linking, "Linking")
-            .clicked()
-        {
-            *pick_mode = ViewportPickMode::InspectEntity;
-        }
-    });
-    ui.separator();
 
     if let OperationStatus::NeedsRepick { message } = project.setups[setup_idx].operations[op_idx]
         .runtime_status
         .clone()
     {
-        let tok = crate::theme::ThemeTokens::from_ui(ui);
-        egui::Frame::NONE
-            .fill(tok.warn_bg)
-            .stroke(egui::Stroke::new(1.0, tok.warn_border))
-            .inner_margin(8.0)
-            .corner_radius(4.0)
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    crate::widgets::status_badge_icon(
-                        ui,
-                        crate::widgets::StatusBadgeKind::NeedsRepick,
-                        None,
-                    );
-                    ui.colored_label(
-                        tok.warn_fg,
-                        "CAD Feature Needs Re-Pick (Associative Reload)",
-                    );
-                });
-                ui.add_space(2.0);
-                ui.small(&message);
-                ui.add_space(4.0);
-                ui.horizontal_wrapped(|ui| {
-                    if ui
-                        .button("Clear Orphaned & Re-Pick in 3D")
-                        .on_hover_text(
-                            "Clears orphaned selections and activates 3D picking while preserving tool, speeds/feeds, heights, passes, and tabs.",
-                        )
-                        .clicked()
-                    {
-                        project.setups[setup_idx].operations[op_idx]
-                            .selections
-                            .clear();
-                        *tab = OperationTab::Geometry;
-                        *pick_mode = default_pick_mode_for_op(
-                            setup_idx,
-                            op_idx,
-                            op_kind,
-                            OperationTab::Geometry,
-                        );
-                        mutated_label = Some("Clear Orphaned Feature for Re-Pick");
-                    }
-                });
-            });
-        ui.add_space(6.0);
+        static_card(ui, Some("CAD Feature Needs Re-Pick"), |ui| {
+            inline_banner(ui, BannerKind::Warn, &message);
+            ui.add_space(4.0);
+            if ui
+                .button("Clear Orphaned & Re-Pick in 3D")
+                .on_hover_text(
+                    "Clears orphaned selections and activates 3D picking while preserving tool, speeds/feeds, heights, passes, and tabs.",
+                )
+                .clicked()
+            {
+                project.setups[setup_idx].operations[op_idx]
+                    .selections
+                    .clear();
+                *tab = OperationTab::Geometry;
+                *pick_mode = default_pick_mode_for_op(
+                    setup_idx,
+                    op_idx,
+                    op_kind,
+                    OperationTab::Geometry,
+                );
+                mutated_label = Some("Clear Orphaned Feature for Re-Pick");
+            }
+        });
     }
 
     let mut eval_ctx = resolved_setup
         .map(|rs| rs.eval_context(display_unit))
         .unwrap_or_else(|| EvalContext::new(display_unit));
 
-    if let Some(tid) = project.setups[setup_idx].operations[op_idx]
+    if let Some(tool) = project.setups[setup_idx].operations[op_idx]
         .tool_id
         .as_ref()
-        && let Some(tool) = project.tool(tid).or_else(|| global_tools.tool(tid))
+        .and_then(|tid| project.tool(tid).or_else(|| global_tools.tool(tid)))
     {
         tool.populate_eval_context(&mut eval_ctx);
     }
@@ -291,13 +279,13 @@ pub fn show_operation_inspector(ui: &mut egui::Ui, ctx: OperationInspectorCtx<'_
         });
 
     if let Some(action) = mutated_label {
-        if let Some(ctid) = project.setups[setup_idx].operations[op_idx]
+        let maybe_embed = project.setups[setup_idx].operations[op_idx]
             .clearing_tool_id()
-            .cloned()
-            && project.tool(&ctid).is_none()
-            && let Some(gt) = global_tools.tool(&ctid)
-        {
-            project.ensure_tool_embedded(gt);
+            .filter(|ctid| project.tool(ctid).is_none())
+            .and_then(|ctid| global_tools.tool(ctid))
+            .cloned();
+        if let Some(gt) = maybe_embed {
+            project.ensure_tool_embedded(&gt);
         }
         let mut pre_doc = project.clone();
         pre_doc.tools.truncate(pre_tools_len);

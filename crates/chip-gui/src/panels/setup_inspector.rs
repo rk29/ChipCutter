@@ -1,3 +1,6 @@
+use std::fmt::Debug;
+use std::hash::Hash;
+
 use chip_cad::CadDocument;
 use chip_cam::{
     AxisAnchor, BoxAnchor27, FixedBoxXyAlign, FixedBoxZAlign, HeightReference, ResolvedSetup,
@@ -5,11 +8,16 @@ use chip_cam::{
     WcsOrientationMode, WcsOriginMode, WorkOffsetSlot,
 };
 use chip_math::{DisplayUnit, EvalContext, ParamLength};
+use chip_post::builtin_post_profiles;
 use chip_project::{ProjectDocument, UndoHistory};
 
 use crate::{
     panels::{SetupTab, ViewportPickMode},
-    widgets::edit_param_length,
+    theme::ThemeTokens,
+    widgets::{
+        BannerKind, INPUT_COL_WIDTH, edit_param_length, grid_row, inline_banner, inspector_grid,
+        section_card, static_card,
+    },
 };
 
 /// Context passed to [`show_setup_inspector`].
@@ -25,11 +33,12 @@ pub struct SetupInspectorCtx<'a> {
     pub show_z_planes: &'a mut bool,
 }
 
-/// Lightweight (~200-byte) pre-edit snapshot of only the Setup's header & WCS/Stock/Heights fields
-/// (never cloning `project.tools` or `setup.operations` on idle 60 FPS frames!).
+/// Lightweight (~200-byte) pre-edit snapshot of only the Setup's header & WCS/Stock/Post/Heights
+/// fields (never cloning `project.tools` or `setup.operations` on idle 60 FPS frames!).
 struct SetupParamsSnapshot {
     name: String,
     wcs_slot: WorkOffsetSlot,
+    post_profile: String,
     wcs: WcsConfig,
     stock: StockConfig,
     heights: SetupHeights,
@@ -40,6 +49,7 @@ impl SetupParamsSnapshot {
         Self {
             name: setup.name.clone(),
             wcs_slot: setup.wcs_slot,
+            post_profile: setup.post_profile.clone(),
             wcs: setup.wcs.clone(),
             stock: setup.stock.clone(),
             heights: setup.heights.clone(),
@@ -49,9 +59,56 @@ impl SetupParamsSnapshot {
     fn restore_into(self, setup: &mut Setup) {
         setup.name = self.name;
         setup.wcs_slot = self.wcs_slot;
+        setup.post_profile = self.post_profile;
         setup.wcs = self.wcs;
         setup.stock = self.stock;
         setup.heights = self.heights;
+    }
+}
+
+fn setup_field_tip(key: &str) -> &'static str {
+    match key {
+        "stk_sheet_z" => "Nominal flat stock Z thickness for Pure-2D sketch jobs",
+        "fbox_x" | "fbox_y" | "fbox_z" => "Total fixed-size stock blank dimension in Setup WCS",
+        "fcyl_d" => "Outer diameter of cylindrical bar stock",
+        "fcyl_l" => "Total axial length of cylindrical bar stock",
+        "stk_px" | "stk_nx" | "stk_py" | "stk_ny" => "Extra raw side stock outside model XY bounds",
+        "stk_tz" | "rcyl_t" | "fcyl_to" => "Facing stock allowance above model top (+Z)",
+        "stk_bz" | "rcyl_b" => "Vise, chuck, or sacrificial tab stock below model bottom (-Z)",
+        "fbox_dx" | "fbox_dy" => "Model XY offset from fixed stock front-left (-X, -Y) corner",
+        "fbox_ta" => "Distance from fixed stock top down to model top",
+        "fbox_ba" => "Distance from fixed stock bottom up to model bottom",
+        "rcyl_r" => "Extra radial stock outside part bounding radius",
+        "setup_clr_off" => "Signed Z offset added to Clearance datum plane",
+        "setup_ret_off" => "Signed Z offset added to Retract datum plane",
+        _ => "Additional WCS shift from anchor datum",
+    }
+}
+
+struct SetupGrid<'a> {
+    ui: &'a mut egui::Ui,
+    setup_idx: usize,
+    eval_ctx: &'a EvalContext,
+    mutated: &'a mut Option<&'static str>,
+}
+
+impl SetupGrid<'_> {
+    fn len(
+        &mut self,
+        label: &str,
+        key: &'static str,
+        p: &mut ParamLength,
+        undo: &'static str,
+    ) -> bool {
+        let salt = (key, self.setup_idx);
+        let ctx = self.eval_ctx;
+        let changed = grid_row(self.ui, label, Some(setup_field_tip(key)), |ui| {
+            edit_param_length(ui, salt, p, ctx, INPUT_COL_WIDTH)
+        });
+        if changed {
+            *self.mutated = Some(undo);
+        }
+        changed
     }
 }
 
@@ -79,47 +136,43 @@ pub fn show_setup_inspector(ui: &mut egui::Ui, ctx: SetupInspectorCtx<'_>) -> bo
     let pre_setup = SetupParamsSnapshot::capture(&project.setups[setup_idx]);
     let mut mutated_label: Option<&'static str> = None;
 
-    {
+    static_card(ui, None, |ui| {
         let setup = &mut project.setups[setup_idx];
-        ui.horizontal(|ui| {
-            ui.strong("Setup:");
-            let resp = ui.text_edit_singleline(&mut setup.name);
-            if resp.lost_focus() && setup.name != pre_setup.name {
-                mutated_label = Some("Rename Setup");
-            }
-        });
-
-        ui.horizontal(|ui| {
-            ui.label("Work Offset:");
-            egui::ComboBox::from_id_salt(("wcs_slot_cb", setup_idx))
-                .selected_text(setup.wcs_slot.label())
-                .show_ui(ui, |ui| {
-                    for slot in WorkOffsetSlot::ALL {
-                        if ui
-                            .selectable_value(&mut setup.wcs_slot, slot, slot.label())
-                            .changed()
-                        {
-                            mutated_label = Some("Change Work Offset Slot");
-                        }
+        inspector_grid(ui, ("setup_hdr_grid", setup_idx), |ui| {
+            grid_row(
+                ui,
+                "Setup Name",
+                Some("Clamping setup title emitted in G-code headers"),
+                |ui| {
+                    let resp = ui.add(
+                        egui::TextEdit::singleline(&mut setup.name).desired_width(INPUT_COL_WIDTH),
+                    );
+                    if resp.lost_focus() && setup.name != pre_setup.name {
+                        mutated_label = Some("Rename Setup");
                     }
-                });
-            if ui
-                .small_button("Align Top")
-                .on_hover_text("Align viewport camera to this Setup's +Z axis")
-                .clicked()
-            {
-                align_camera_requested = true;
-            }
+                    let tip = "Align viewport camera to this Setup's +Z axis";
+                    if ui.small_button("Align Top").on_hover_text(tip).clicked() {
+                        align_camera_requested = true;
+                    }
+                },
+            );
+            render_work_offset_row(
+                ui,
+                ("wcs_slot_hdr_cb", setup_idx),
+                &mut setup.wcs_slot,
+                &mut mutated_label,
+            );
         });
-    }
 
-    ui.separator();
-    ui.horizontal(|ui| {
-        ui.selectable_value(tab, SetupTab::Wcs, "WCS");
-        ui.selectable_value(tab, SetupTab::Stock, "Stock");
-        ui.selectable_value(tab, SetupTab::Heights, "Heights");
+        ui.add_space(4.0);
+        ui.separator();
+        ui.add_space(2.0);
+        ui.horizontal(|ui| {
+            ui.selectable_value(tab, SetupTab::Wcs, "WCS & Post");
+            ui.selectable_value(tab, SetupTab::Stock, "Stock");
+            ui.selectable_value(tab, SetupTab::Heights, "Heights");
+        });
     });
-    ui.separator();
 
     let eval_ctx = match resolved {
         Some(Ok(rs)) => rs.eval_context(display_unit),
@@ -130,28 +183,29 @@ pub fn show_setup_inspector(ui: &mut egui::Ui, ctx: SetupInspectorCtx<'_>) -> bo
         .auto_shrink([false, false])
         .show(ui, |ui| {
             if let Some(Err(err_msg)) = &resolved {
-                let tok = crate::theme::ThemeTokens::from_ui(ui);
-                ui.horizontal(|ui| {
-                    crate::widgets::status_badge_icon(
-                        ui,
-                        crate::widgets::StatusBadgeKind::Error,
-                        None,
-                    );
-                    ui.colored_label(tok.error_fg, *err_msg);
-                });
-                ui.separator();
+                inline_banner(ui, BannerKind::Error, *err_msg);
+                ui.add_space(5.0);
+            }
+            if is_setup_wcs_pick_mode(*pick_mode, setup_idx)
+                && let Some(msg) = pick_mode.banner_text()
+            {
+                inline_banner(ui, BannerKind::Info, msg);
+                ui.add_space(5.0);
             }
 
             let setup = &mut project.setups[setup_idx];
             match *tab {
                 SetupTab::Wcs => show_wcs_tab(
                     ui,
-                    (setup, setup_idx),
-                    cad_doc,
-                    &eval_ctx,
-                    pick_mode,
-                    show_27pt_dots,
-                    &mut mutated_label,
+                    WcsTabCtx {
+                        setup,
+                        setup_idx,
+                        cad_doc,
+                        eval_ctx: &eval_ctx,
+                        pick_mode,
+                        show_27pt_dots,
+                        mutated_label: &mut mutated_label,
+                    },
                 ),
                 SetupTab::Stock => show_stock_tab(
                     ui,
@@ -167,308 +221,611 @@ pub fn show_setup_inspector(ui: &mut egui::Ui, ctx: SetupInspectorCtx<'_>) -> bo
                 ),
                 SetupTab::Heights => show_heights_tab(
                     ui,
-                    (setup, setup_idx),
-                    &eval_ctx,
-                    display_unit,
-                    resolved,
-                    show_z_planes,
-                    &mut mutated_label,
+                    HeightsTabCtx {
+                        setup,
+                        setup_idx,
+                        eval_ctx: &eval_ctx,
+                        display_unit,
+                        resolved,
+                        show_z_planes,
+                        mutated_label: &mut mutated_label,
+                    },
                 ),
             }
         });
 
     if let Some(action) = mutated_label {
+        let post_only = action == "Change Post Profile" || action == "Rename Setup";
         let mut pre_doc = project.clone();
         pre_setup.restore_into(&mut pre_doc.setups[setup_idx]);
         history.record_before_edit(action, None, &pre_doc);
-        for op in &mut project.setups[setup_idx].operations {
-            op.mark_dirty();
+        if !post_only {
+            for op in &mut project.setups[setup_idx].operations {
+                op.mark_dirty();
+            }
         }
     }
 
     align_camera_requested
 }
 
-fn show_wcs_tab(
+fn render_work_offset_row(
     ui: &mut egui::Ui,
-    (setup, setup_idx): (&mut Setup, usize),
-    cad_doc: Option<&CadDocument>,
-    eval_ctx: &EvalContext,
-    pick_mode: &mut ViewportPickMode,
-    show_27pt_dots: &mut bool,
+    id_salt: impl Hash + Debug,
+    wcs_slot: &mut WorkOffsetSlot,
     mutated_label: &mut Option<&'static str>,
 ) {
-    ui.strong("1. Machine Orientation (T_body_to_wcs)");
+    grid_row(
+        ui,
+        "Work Offset",
+        Some("Controller work coordinate slot (G54..G59.3)"),
+        |ui| {
+            egui::ComboBox::from_id_salt(id_salt)
+                .width(INPUT_COL_WIDTH)
+                .selected_text(wcs_slot.label())
+                .show_ui(ui, |ui| {
+                    for slot in WorkOffsetSlot::ALL {
+                        if ui.selectable_value(wcs_slot, slot, slot.label()).changed() {
+                            *mutated_label = Some("Change Work Offset Slot");
+                        }
+                    }
+                });
+        },
+    );
+}
+
+fn is_setup_wcs_pick_mode(mode: ViewportPickMode, setup_idx: usize) -> bool {
+    matches!(
+        mode,
+        ViewportPickMode::SetupWcsZ { setup_idx: s }
+            | ViewportPickMode::SetupWcsX { setup_idx: s }
+            | ViewportPickMode::SetupWcsXyPlane { setup_idx: s }
+            | ViewportPickMode::SetupWcsOriginFeature { setup_idx: s }
+            if s == setup_idx
+    )
+}
+
+struct WcsTabCtx<'a> {
+    setup: &'a mut Setup,
+    setup_idx: usize,
+    cad_doc: Option<&'a CadDocument>,
+    eval_ctx: &'a EvalContext,
+    pick_mode: &'a mut ViewportPickMode,
+    show_27pt_dots: &'a mut bool,
+    mutated_label: &'a mut Option<&'static str>,
+}
+
+fn show_wcs_tab(ui: &mut egui::Ui, mut ctx: WcsTabCtx<'_>) {
+    let idx = ctx.setup_idx;
+    section_card(
+        ui,
+        ("wcs_orient_card", idx),
+        "Work Offset & Orientation",
+        true,
+        |ui| {
+            render_wcs_orient_body(ui, &mut ctx);
+        },
+    );
+    section_card(
+        ui,
+        ("wcs_origin_card", idx),
+        "WCS Origin (X0 Y0 Z0)",
+        true,
+        |ui| {
+            render_wcs_origin_body(ui, &mut ctx);
+        },
+    );
+    section_card(
+        ui,
+        ("setup_post_card", idx),
+        "Post-Processor & Output",
+        true,
+        |ui| {
+            render_post_body(ui, ctx.setup, idx, ctx.mutated_label);
+        },
+    );
+}
+
+fn render_wcs_orient_body(ui: &mut egui::Ui, ctx: &mut WcsTabCtx<'_>) {
+    let setup_idx = ctx.setup_idx;
+    let tok = ThemeTokens::from_ui(ui);
     let is_model = matches!(
-        setup.wcs.orientation,
+        ctx.setup.wcs.orientation,
         WcsOrientationMode::ModelOrientation { .. }
     );
     let is_zx = matches!(
-        setup.wcs.orientation,
+        ctx.setup.wcs.orientation,
         WcsOrientationMode::SelectZAndX { .. }
     );
     let is_xy = matches!(
-        setup.wcs.orientation,
+        ctx.setup.wcs.orientation,
         WcsOrientationMode::SelectXYPlane { .. }
     );
 
-    ui.horizontal_wrapped(|ui| {
-        if ui.selectable_label(is_model, "Model XYZ").clicked() && !is_model {
-            setup.wcs.orientation = WcsOrientationMode::default();
-            *pick_mode = ViewportPickMode::InspectEntity;
-            *mutated_label = Some("Reset WCS to Model Orientation");
-        }
-        if ui.selectable_label(is_zx, "Select Z & X").clicked()
-            && !is_zx
-            && let Some(doc) = cad_doc
-            && let Some(default_face) = doc.faces.first()
-            && let Some(bind) = doc.bind_face(default_face.id)
-        {
-            setup.wcs.orientation = WcsOrientationMode::SelectZAndX {
-                z_ref: WcsAxisRef::FaceAxis(bind),
-                flip_z: false,
-                x_ref: None,
-                flip_x: false,
-                clock_90: 0,
-            };
-            *pick_mode = ViewportPickMode::SetupWcsZ { setup_idx };
-            *mutated_label = Some("Switch WCS to Select Z & X");
-        }
-        if ui.selectable_label(is_xy, "Select XY Plane").clicked()
-            && !is_xy
-            && let Some(doc) = cad_doc
-            && let Some(default_face) = doc.faces.first()
-            && let Some(bind) = doc.bind_face(default_face.id)
-        {
-            setup.wcs.orientation = WcsOrientationMode::SelectXYPlane {
-                face_ref: bind,
-                flip_z: false,
-                x_edge_ref: None,
-                clock_90: 0,
-            };
-            *pick_mode = ViewportPickMode::SetupWcsXyPlane { setup_idx };
-            *mutated_label = Some("Switch WCS to Select XY Plane");
-        }
-    });
+    inspector_grid(ui, ("wcs_orient_grid", setup_idx), |ui| {
+        render_work_offset_row(
+            ui,
+            ("wcs_slot_cb", setup_idx),
+            &mut ctx.setup.wcs_slot,
+            ctx.mutated_label,
+        );
 
-    match &mut setup.wcs.orientation {
-        WcsOrientationMode::ModelOrientation {
-            flip_z,
-            flip_x,
-            clock_90,
-        } => {
-            ui.horizontal(|ui| {
-                if ui.checkbox(flip_z, "Flip +Z").changed() {
-                    *mutated_label = Some("Flip WCS Z Axis");
+        grid_row(
+            ui,
+            "Orientation Mode",
+            Some("Align spindle +Z and table +X to CAD geometry"),
+            |ui| {
+                if ui.selectable_label(is_model, "Model XYZ").clicked() && !is_model {
+                    ctx.setup.wcs.orientation = WcsOrientationMode::default();
+                    *ctx.pick_mode = ViewportPickMode::InspectEntity;
+                    *ctx.mutated_label = Some("Reset WCS to Model Orientation");
                 }
-                if ui.checkbox(flip_x, "Flip +X").changed() {
-                    *mutated_label = Some("Flip WCS X Axis");
-                }
-                if ui.small_button("Clock X 90°").clicked() {
-                    *clock_90 = (*clock_90 + 1) % 4;
-                    *mutated_label = Some("Clock WCS X Axis 90°");
-                }
-            });
-        }
-        WcsOrientationMode::SelectZAndX {
-            z_ref,
-            flip_z,
-            x_ref,
-            flip_x,
-            clock_90,
-        } => {
-            let picking_z = *pick_mode == ViewportPickMode::SetupWcsZ { setup_idx };
-            let picking_x = *pick_mode == ViewportPickMode::SetupWcsX { setup_idx };
-
-            ui.horizontal(|ui| {
-                let z_desc = match z_ref {
-                    WcsAxisRef::FaceAxis(b) => format!("Face #{}", b.last_index),
-                    WcsAxisRef::EdgeDirection(b) => format!("Edge #{}", b.last_index),
-                };
-                ui.label(format!("+Z Axis: {z_desc}"));
-                if ui.selectable_label(picking_z, "Pick Z").clicked() {
-                    *pick_mode = if picking_z {
-                        ViewportPickMode::InspectEntity
-                    } else {
-                        ViewportPickMode::SetupWcsZ { setup_idx }
-                    };
-                }
-                if ui.checkbox(flip_z, "Flip Z").changed() {
-                    *mutated_label = Some("Flip WCS Z Axis");
-                }
-            });
-
-            ui.horizontal(|ui| {
-                let x_desc = match x_ref {
-                    Some(WcsAxisRef::FaceAxis(b)) => format!("Face #{}", b.last_index),
-                    Some(WcsAxisRef::EdgeDirection(b)) => format!("Edge #{}", b.last_index),
-                    None => "Auto".to_string(),
-                };
-                ui.label(format!("+X Axis: {x_desc}"));
-                if ui.selectable_label(picking_x, "Pick X").clicked() {
-                    *pick_mode = if picking_x {
-                        ViewportPickMode::InspectEntity
-                    } else {
-                        ViewportPickMode::SetupWcsX { setup_idx }
-                    };
-                }
-                if ui.checkbox(flip_x, "Flip X").changed() {
-                    *mutated_label = Some("Flip WCS X Axis");
-                }
-            });
-
-            if ui.small_button("Clock X 90°").clicked() {
-                *clock_90 = (*clock_90 + 1) % 4;
-                *mutated_label = Some("Clock WCS X Axis 90°");
-            }
-        }
-        WcsOrientationMode::SelectXYPlane {
-            face_ref,
-            flip_z,
-            clock_90,
-            ..
-        } => {
-            let picking_xy = *pick_mode == ViewportPickMode::SetupWcsXyPlane { setup_idx };
-            ui.horizontal(|ui| {
-                ui.label(format!("XY Face: #{}", face_ref.last_index));
-                if ui.selectable_label(picking_xy, "Pick Face").clicked() {
-                    *pick_mode = if picking_xy {
-                        ViewportPickMode::InspectEntity
-                    } else {
-                        ViewportPickMode::SetupWcsXyPlane { setup_idx }
-                    };
-                }
-                if ui.checkbox(flip_z, "Flip +Z").changed() {
-                    *mutated_label = Some("Flip WCS Z Axis");
-                }
-                if ui.small_button("Clock 90°").clicked() {
-                    *clock_90 = (*clock_90 + 1) % 4;
-                    *mutated_label = Some("Clock WCS X Axis 90°");
-                }
-            });
-        }
-    }
-
-    ui.separator();
-    ui.strong("2. WCS Origin (X0 Y0 Z0)");
-
-    let is_stock_pt = matches!(setup.wcs.origin, WcsOriginMode::StockBoxPoint { .. });
-    let is_model_pt = matches!(setup.wcs.origin, WcsOriginMode::ModelBoxPoint { .. });
-    let is_cad_pt = matches!(setup.wcs.origin, WcsOriginMode::SelectedCadFeature { .. });
-
-    ui.horizontal_wrapped(|ui| {
-        if ui.selectable_label(is_stock_pt, "Stock 27-Pt").clicked() && !is_stock_pt {
-            setup.wcs.origin = WcsOriginMode::StockBoxPoint {
-                anchor: BoxAnchor27::TOP_FRONT_LEFT,
-            };
-            *mutated_label = Some("Set WCS Origin to Stock Box");
-        }
-        if ui.selectable_label(is_model_pt, "Model 27-Pt").clicked() && !is_model_pt {
-            setup.wcs.origin = WcsOriginMode::ModelBoxPoint {
-                anchor: BoxAnchor27::TOP_FRONT_LEFT,
-            };
-            *mutated_label = Some("Set WCS Origin to Model Box");
-        }
-        if ui.selectable_label(is_cad_pt, "CAD Feature").clicked()
-            && !is_cad_pt
-            && let Some(doc) = cad_doc
-        {
-            if let Some(hole) = doc.faces.iter().find(|f| {
-                matches!(
-                    f.surface,
-                    chip_cad::SurfaceKind::Cylinder {
-                        is_internal: true,
-                        ..
-                    }
-                )
-            }) && let Some(b) = doc.bind_face(hole.id)
-            {
-                setup.wcs.origin = WcsOriginMode::SelectedCadFeature {
-                    feature: WcsFeaturePointRef::HoleAxisCenter {
-                        hole_face: b,
-                        top_rim: true,
-                    },
-                };
-            } else if let Some(edge) = doc.edges.first()
-                && let Some(b) = doc.bind_edge(edge.id)
-            {
-                setup.wcs.origin = WcsOriginMode::SelectedCadFeature {
-                    feature: WcsFeaturePointRef::EdgeMidpoint(b),
-                };
-            }
-            *pick_mode = ViewportPickMode::SetupWcsOriginFeature { setup_idx };
-            *mutated_label = Some("Set WCS Origin to CAD Feature");
-        }
-    });
-
-    match &mut setup.wcs.origin {
-        WcsOriginMode::StockBoxPoint { anchor } | WcsOriginMode::ModelBoxPoint { anchor } => {
-            ui.checkbox(
-                show_27pt_dots,
-                "Show interactive 27-point dots in 3D viewport",
-            );
-            ui.label(format!("Active Point: {}", anchor.label()));
-            if show_27pt_grid_selector(ui, anchor) {
-                *mutated_label = Some("Change 27-Point WCS Origin");
-            }
-        }
-        WcsOriginMode::SelectedCadFeature { feature } => {
-            let picking_feat = *pick_mode == ViewportPickMode::SetupWcsOriginFeature { setup_idx };
-            let desc = match feature {
-                WcsFeaturePointRef::HoleAxisCenter { hole_face, top_rim } => {
-                    format!(
-                        "Bore #{} ({})",
-                        hole_face.last_index,
-                        if *top_rim {
-                            "Top Center"
-                        } else {
-                            "Bottom Center"
-                        }
-                    )
-                }
-                WcsFeaturePointRef::CircleCenter(b) => {
-                    format!("Circle Edge #{} Center", b.last_index)
-                }
-                WcsFeaturePointRef::EdgeStart(b) => format!("Edge #{} Start", b.last_index),
-                WcsFeaturePointRef::EdgeMidpoint(b) => format!("Edge #{} Midpoint", b.last_index),
-                WcsFeaturePointRef::EdgeEnd(b) => format!("Edge #{} End", b.last_index),
-            };
-            ui.label(format!("Anchor: {desc}"));
-            ui.horizontal(|ui| {
+                let has_cad = ctx.cad_doc.is_some();
                 if ui
-                    .selectable_label(picking_feat, "Pick CAD Feature")
+                    .add_enabled_ui(has_cad, |ui| ui.selectable_label(is_zx, "Z & X"))
+                    .inner
                     .clicked()
+                    && !is_zx
+                    && let Some(bind) = ctx
+                        .cad_doc
+                        .and_then(|d| d.faces.first().and_then(|f| d.bind_face(f.id)))
                 {
-                    *pick_mode = if picking_feat {
-                        ViewportPickMode::InspectEntity
-                    } else {
-                        ViewportPickMode::SetupWcsOriginFeature { setup_idx }
+                    ctx.setup.wcs.orientation = WcsOrientationMode::SelectZAndX {
+                        z_ref: WcsAxisRef::FaceAxis(bind),
+                        flip_z: false,
+                        x_ref: None,
+                        flip_x: false,
+                        clock_90: 0,
                     };
+                    *ctx.pick_mode = ViewportPickMode::SetupWcsZ { setup_idx };
+                    *ctx.mutated_label = Some("Switch WCS to Select Z & X");
                 }
-                if let WcsFeaturePointRef::HoleAxisCenter { top_rim, .. } = feature
-                    && ui.checkbox(top_rim, "Top Rim").changed()
+                if ui
+                    .add_enabled_ui(has_cad, |ui| ui.selectable_label(is_xy, "XY Plane"))
+                    .inner
+                    .clicked()
+                    && !is_xy
+                    && let Some(bind) = ctx
+                        .cad_doc
+                        .and_then(|d| d.faces.first().and_then(|f| d.bind_face(f.id)))
                 {
-                    *mutated_label = Some("Toggle Bore Top/Bottom Origin");
+                    ctx.setup.wcs.orientation = WcsOrientationMode::SelectXYPlane {
+                        face_ref: bind,
+                        flip_z: false,
+                        x_edge_ref: None,
+                        clock_90: 0,
+                    };
+                    *ctx.pick_mode = ViewportPickMode::SetupWcsXyPlane { setup_idx };
+                    *ctx.mutated_label = Some("Switch WCS to Select XY Plane");
                 }
-            });
+            },
+        );
+
+        match &mut ctx.setup.wcs.orientation {
+            WcsOrientationMode::ModelOrientation {
+                flip_z,
+                flip_x,
+                clock_90,
+            } => {
+                grid_row(
+                    ui,
+                    "Axis Controls",
+                    Some("Invert +Z/+X or rotate +X by 90°"),
+                    |ui| {
+                        if ui.checkbox(flip_z, "Flip +Z").changed() {
+                            *ctx.mutated_label = Some("Flip WCS Z Axis");
+                        }
+                        if ui.checkbox(flip_x, "Flip +X").changed() {
+                            *ctx.mutated_label = Some("Flip WCS X Axis");
+                        }
+                        if ui.small_button("Clock X 90°").clicked() {
+                            *clock_90 = (*clock_90 + 1) % 4;
+                            *ctx.mutated_label = Some("Clock WCS X Axis 90°");
+                        }
+                        if *clock_90 > 0 {
+                            ui.colored_label(
+                                tok.text_muted,
+                                format!("{}°", u16::from(*clock_90) * 90),
+                            );
+                        }
+                    },
+                );
+            }
+            WcsOrientationMode::SelectZAndX {
+                z_ref,
+                flip_z,
+                x_ref,
+                flip_x,
+                clock_90,
+            } => {
+                let z_desc = describe_axis_ref(Some(z_ref));
+                render_axis_pick_spec_row(
+                    ui,
+                    AxisPickSpec {
+                        label: "+Z Axis",
+                        desc: &z_desc,
+                        pick_btn: "Pick Z",
+                        target_mode: ViewportPickMode::SetupWcsZ { setup_idx },
+                        flip_lbl: "Flip Z",
+                        flip_undo: "Flip WCS Z Axis",
+                    },
+                    ctx.pick_mode,
+                    flip_z,
+                    ctx.mutated_label,
+                );
+                let x_desc = describe_axis_ref(x_ref.as_ref());
+                render_axis_pick_spec_row(
+                    ui,
+                    AxisPickSpec {
+                        label: "+X Axis",
+                        desc: &x_desc,
+                        pick_btn: "Pick X",
+                        target_mode: ViewportPickMode::SetupWcsX { setup_idx },
+                        flip_lbl: "Flip X",
+                        flip_undo: "Flip WCS X Axis",
+                    },
+                    ctx.pick_mode,
+                    flip_x,
+                    ctx.mutated_label,
+                );
+                grid_row(
+                    ui,
+                    "X Clocking",
+                    Some("Rotate +X in 90° steps around +Z"),
+                    |ui| {
+                        if ui.small_button("Clock X 90°").clicked() {
+                            *clock_90 = (*clock_90 + 1) % 4;
+                            *ctx.mutated_label = Some("Clock WCS X Axis 90°");
+                        }
+                        ui.colored_label(tok.text_muted, format!("{}°", u16::from(*clock_90) * 90));
+                    },
+                );
+            }
+            WcsOrientationMode::SelectXYPlane {
+                face_ref,
+                flip_z,
+                clock_90,
+                ..
+            } => {
+                let target = ViewportPickMode::SetupWcsXyPlane { setup_idx };
+                grid_row(
+                    ui,
+                    "XY Plane Face",
+                    Some("Planar B-Rep face defining Setup XY"),
+                    |ui| {
+                        ui.label(format!("Face #{}", face_ref.last_index));
+                        let on = *ctx.pick_mode == target;
+                        if ui.selectable_label(on, "Pick Face").clicked() {
+                            *ctx.pick_mode = if on {
+                                ViewportPickMode::InspectEntity
+                            } else {
+                                target
+                            };
+                        }
+                    },
+                );
+                grid_row(
+                    ui,
+                    "Axis Controls",
+                    Some("Flip +Z normal or rotate +X by 90°"),
+                    |ui| {
+                        if ui.checkbox(flip_z, "Flip +Z").changed() {
+                            *ctx.mutated_label = Some("Flip WCS Z Axis");
+                        }
+                        if ui.small_button("Clock 90°").clicked() {
+                            *clock_90 = (*clock_90 + 1) % 4;
+                            *ctx.mutated_label = Some("Clock WCS X Axis 90°");
+                        }
+                        if *clock_90 > 0 {
+                            ui.colored_label(
+                                tok.text_muted,
+                                format!("{}°", u16::from(*clock_90) * 90),
+                            );
+                        }
+                    },
+                );
+            }
+        }
+    });
+}
+
+struct AxisPickSpec<'a> {
+    label: &'static str,
+    desc: &'a str,
+    pick_btn: &'static str,
+    target_mode: ViewportPickMode,
+    flip_lbl: &'static str,
+    flip_undo: &'static str,
+}
+
+fn render_axis_pick_spec_row(
+    ui: &mut egui::Ui,
+    spec: AxisPickSpec<'_>,
+    pick_mode: &mut ViewportPickMode,
+    flip: &mut bool,
+    mutated: &mut Option<&'static str>,
+) {
+    grid_row(
+        ui,
+        spec.label,
+        Some("Reference B-Rep face normal or straight edge"),
+        |ui| {
+            ui.label(spec.desc);
+            let on = *pick_mode == spec.target_mode;
+            if ui.selectable_label(on, spec.pick_btn).clicked() {
+                *pick_mode = if on {
+                    ViewportPickMode::InspectEntity
+                } else {
+                    spec.target_mode
+                };
+            }
+            if ui.checkbox(flip, spec.flip_lbl).changed() {
+                *mutated = Some(spec.flip_undo);
+            }
+        },
+    );
+}
+
+fn describe_axis_ref(axis_ref: Option<&WcsAxisRef>) -> String {
+    match axis_ref {
+        Some(WcsAxisRef::FaceAxis(b)) => format!("Face #{}", b.last_index),
+        Some(WcsAxisRef::EdgeDirection(b)) => format!("Edge #{}", b.last_index),
+        None => "Auto".to_string(),
+    }
+}
+
+fn render_wcs_origin_body(ui: &mut egui::Ui, ctx: &mut WcsTabCtx<'_>) {
+    let setup_idx = ctx.setup_idx;
+    let is_stock_pt = matches!(ctx.setup.wcs.origin, WcsOriginMode::StockBoxPoint { .. });
+    let is_model_pt = matches!(ctx.setup.wcs.origin, WcsOriginMode::ModelBoxPoint { .. });
+    let is_cad_pt = matches!(
+        ctx.setup.wcs.origin,
+        WcsOriginMode::SelectedCadFeature { .. }
+    );
+
+    inspector_grid(ui, ("wcs_origin_top_grid", setup_idx), |ui| {
+        grid_row(
+            ui,
+            "Origin Reference",
+            Some("Datum probed for X0 Y0 Z0 on the machine"),
+            |ui| {
+                if ui.selectable_label(is_stock_pt, "Stock 27-Pt").clicked() && !is_stock_pt {
+                    ctx.setup.wcs.origin = WcsOriginMode::StockBoxPoint {
+                        anchor: BoxAnchor27::TOP_FRONT_LEFT,
+                    };
+                    *ctx.mutated_label = Some("Set WCS Origin to Stock Box");
+                }
+                if ui.selectable_label(is_model_pt, "Model 27-Pt").clicked() && !is_model_pt {
+                    ctx.setup.wcs.origin = WcsOriginMode::ModelBoxPoint {
+                        anchor: BoxAnchor27::TOP_FRONT_LEFT,
+                    };
+                    *ctx.mutated_label = Some("Set WCS Origin to Model Box");
+                }
+                let has_cad = ctx.cad_doc.is_some();
+                if ui
+                    .add_enabled_ui(has_cad, |ui| ui.selectable_label(is_cad_pt, "CAD Feature"))
+                    .inner
+                    .clicked()
+                    && !is_cad_pt
+                    && let Some(doc) = ctx.cad_doc
+                {
+                    select_default_cad_origin_feature(doc, &mut ctx.setup.wcs.origin);
+                    *ctx.pick_mode = ViewportPickMode::SetupWcsOriginFeature { setup_idx };
+                    *ctx.mutated_label = Some("Set WCS Origin to CAD Feature");
+                }
+            },
+        );
+
+        match &mut ctx.setup.wcs.origin {
+            WcsOriginMode::StockBoxPoint { anchor } | WcsOriginMode::ModelBoxPoint { anchor } => {
+                grid_row(
+                    ui,
+                    "Active Anchor",
+                    Some("Selected 27-point bounding-box datum"),
+                    |ui| {
+                        ui.strong(anchor.label());
+                    },
+                );
+                grid_row(
+                    ui,
+                    "3D Viewport Dots",
+                    Some("Show clickable 27-point origin dots"),
+                    |ui| {
+                        ui.checkbox(ctx.show_27pt_dots, "Interactive 27-pt overlay");
+                    },
+                );
+            }
+            WcsOriginMode::SelectedCadFeature { feature } => {
+                let target = ViewportPickMode::SetupWcsOriginFeature { setup_idx };
+                let desc = describe_origin_feature(feature);
+                grid_row(
+                    ui,
+                    "CAD Anchor",
+                    Some("Associative B-Rep hole or edge datum"),
+                    |ui| {
+                        ui.label(desc);
+                    },
+                );
+                grid_row(
+                    ui,
+                    "Feature Pick",
+                    Some("Click a hole wall or edge in 3D viewport"),
+                    |ui| {
+                        let on = *ctx.pick_mode == target;
+                        if ui.selectable_label(on, "Pick CAD Feature").clicked() {
+                            *ctx.pick_mode = if on {
+                                ViewportPickMode::InspectEntity
+                            } else {
+                                target
+                            };
+                        }
+                        if let WcsFeaturePointRef::HoleAxisCenter { top_rim, .. } = feature
+                            && ui.checkbox(top_rim, "Top Rim").changed()
+                        {
+                            *ctx.mutated_label = Some("Toggle Bore Top/Bottom Origin");
+                        }
+                    },
+                );
+            }
+        }
+    });
+
+    if let WcsOriginMode::StockBoxPoint { anchor } | WcsOriginMode::ModelBoxPoint { anchor } =
+        &mut ctx.setup.wcs.origin
+    {
+        ui.add_space(4.0);
+        if show_27pt_grid_selector(ui, anchor) {
+            *ctx.mutated_label = Some("Change 27-Point WCS Origin");
         }
     }
 
     ui.add_space(4.0);
-    ui.strong("3. Additional XYZ Offset (WCS)");
-    for (axis_i, lbl) in [(0, "ΔX:"), (1, "ΔY:"), (2, "ΔZ:")] {
-        ui.horizontal(|ui| {
-            ui.label(lbl);
-            if edit_param_length(
-                ui,
-                ("wcs_off", setup_idx, axis_i),
-                &mut setup.wcs.additional_offset_wcs[axis_i],
-                eval_ctx,
-                110.0,
-            ) {
-                *mutated_label = Some("Edit WCS Origin Offset");
+    ui.separator();
+    ui.add_space(3.0);
+
+    inspector_grid(ui, ("wcs_origin_offset_grid", setup_idx), |ui| {
+        let mut g = SetupGrid {
+            ui,
+            setup_idx,
+            eval_ctx: ctx.eval_ctx,
+            mutated: ctx.mutated_label,
+        };
+        g.len(
+            "ΔX Offset",
+            "wcs_off_x",
+            &mut ctx.setup.wcs.additional_offset_wcs[0],
+            "Edit WCS Origin Offset",
+        );
+        g.len(
+            "ΔY Offset",
+            "wcs_off_y",
+            &mut ctx.setup.wcs.additional_offset_wcs[1],
+            "Edit WCS Origin Offset",
+        );
+        g.len(
+            "ΔZ Offset",
+            "wcs_off_z",
+            &mut ctx.setup.wcs.additional_offset_wcs[2],
+            "Edit WCS Origin Offset",
+        );
+    });
+}
+
+fn select_default_cad_origin_feature(doc: &CadDocument, origin: &mut WcsOriginMode) {
+    if let Some(hole) = doc.faces.iter().find(|f| {
+        matches!(
+            f.surface,
+            chip_cad::SurfaceKind::Cylinder {
+                is_internal: true,
+                ..
             }
-        });
+        )
+    }) && let Some(b) = doc.bind_face(hole.id)
+    {
+        *origin = WcsOriginMode::SelectedCadFeature {
+            feature: WcsFeaturePointRef::HoleAxisCenter {
+                hole_face: b,
+                top_rim: true,
+            },
+        };
+    } else if let Some(edge) = doc.edges.first()
+        && let Some(b) = doc.bind_edge(edge.id)
+    {
+        *origin = WcsOriginMode::SelectedCadFeature {
+            feature: WcsFeaturePointRef::EdgeMidpoint(b),
+        };
+    }
+}
+
+fn describe_origin_feature(feature: &WcsFeaturePointRef) -> String {
+    match feature {
+        WcsFeaturePointRef::HoleAxisCenter { hole_face, top_rim } => format!(
+            "Bore #{} ({})",
+            hole_face.last_index,
+            if *top_rim {
+                "Top Center"
+            } else {
+                "Bottom Center"
+            }
+        ),
+        WcsFeaturePointRef::CircleCenter(b) => format!("Circle Edge #{} Center", b.last_index),
+        WcsFeaturePointRef::EdgeStart(b) => format!("Edge #{} Start", b.last_index),
+        WcsFeaturePointRef::EdgeMidpoint(b) => format!("Edge #{} Midpoint", b.last_index),
+        WcsFeaturePointRef::EdgeEnd(b) => format!("Edge #{} End", b.last_index),
+    }
+}
+
+fn render_post_body(
+    ui: &mut egui::Ui,
+    setup: &mut Setup,
+    setup_idx: usize,
+    mutated_label: &mut Option<&'static str>,
+) {
+    inspector_grid(ui, ("setup_post_grid", setup_idx), |ui| {
+        grid_row(
+            ui,
+            "Post Profile",
+            Some("Target CNC controller dialect (.post.toml)"),
+            |ui| {
+                egui::ComboBox::from_id_salt(("setup_post_cb", setup_idx))
+                    .width(INPUT_COL_WIDTH + 44.0)
+                    .selected_text(post_profile_short_label(&setup.post_profile))
+                    .show_ui(ui, |ui| {
+                        for prof in builtin_post_profiles() {
+                            let lbl = format!("{} ({})", prof.name, prof.id);
+                            if ui
+                                .selectable_value(&mut setup.post_profile, prof.id, lbl)
+                                .changed()
+                            {
+                                *mutated_label = Some("Change Post Profile");
+                            }
+                        }
+                    });
+            },
+        );
+    });
+
+    ui.add_space(4.0);
+    let extended_slot = matches!(
+        setup.wcs_slot,
+        WorkOffsetSlot::G59_1 | WorkOffsetSlot::G59_2 | WorkOffsetSlot::G59_3
+    );
+    if extended_slot && setup.post_profile == "grbl" {
+        inline_banner(
+            ui,
+            BannerKind::Warn,
+            "Standard GRBL 1.1 only supports G54–G59; switch to grblHAL or LinuxCNC for G59.1–G59.3.",
+        );
+    } else {
+        inline_banner(
+            ui,
+            BannerKind::Info,
+            post_profile_summary(&setup.post_profile),
+        );
+    }
+}
+
+fn post_profile_short_label(profile_id: &str) -> &str {
+    match profile_id {
+        "grbl" => "GRBL 1.1 / FluidNC",
+        "grblhal_atc" => "grblHAL / FluidNC ATC",
+        "linuxcnc" => "LinuxCNC (RS274NGC)",
+        other => other,
+    }
+}
+
+fn post_profile_summary(profile_id: &str) -> &'static str {
+    match profile_id {
+        "grbl" => {
+            "Splits multi-tool jobs into separate .nc files; <=80 chars/line, expanded peck cycles."
+        }
+        "grblhal_atc" => {
+            "Single .nc program with M6 tool-setter macro changes and expanded drill cycles."
+        }
+        "linuxcnc" => {
+            "RS274NGC (.ngc) with T# M6, G43 H# length offsets, G64 blending, and canned cycles."
+        }
+        _ => "Custom TOML post-processor profile configured for this Setup.",
     }
 }
 
@@ -487,6 +844,33 @@ fn show_stock_tab(
     view: StockTabView<'_>,
     mutated_label: &mut Option<&'static str>,
 ) {
+    let idx = view.setup_idx;
+    section_card(
+        ui,
+        ("stock_geom_card", idx),
+        "Stock Geometry & Dimensions",
+        true,
+        |ui| {
+            render_stock_geom_body(ui, setup, view, mutated_label);
+        },
+    );
+    section_card(
+        ui,
+        ("stock_offsets_card", idx),
+        "Stock Offsets",
+        true,
+        |ui| {
+            render_stock_offsets_body(ui, setup, view, mutated_label);
+        },
+    );
+}
+
+fn render_stock_geom_body(
+    ui: &mut egui::Ui,
+    setup: &mut Setup,
+    view: StockTabView<'_>,
+    mutated_label: &mut Option<&'static str>,
+) {
     let StockTabView {
         setup_idx,
         is_pure_2d,
@@ -494,350 +878,476 @@ fn show_stock_tab(
         display_unit,
         resolved,
     } = view;
-    ui.strong("Stock Geometry Mode");
-    let cur_kind = setup.stock.kind_label();
+
+    inspector_grid(ui, ("stock_geom_grid", setup_idx), |ui| {
+        grid_row(
+            ui,
+            "Stock Mode",
+            Some("Raw stock blank shape and sizing mode"),
+            |ui| {
+                render_stock_mode_combo(ui, setup_idx, &mut setup.stock, mutated_label);
+            },
+        );
+
+        let mut g = SetupGrid {
+            ui,
+            setup_idx,
+            eval_ctx,
+            mutated: mutated_label,
+        };
+        match &mut setup.stock {
+            StockConfig::RelativeBox {
+                sheet_thickness_z,
+                round_increment_mm,
+                ..
+            } => {
+                if is_pure_2d {
+                    g.len(
+                        "Sheet Thickness (Z)",
+                        "stk_sheet_z",
+                        sheet_thickness_z,
+                        "Edit Pure-2D Sheet Thickness",
+                    );
+                }
+                let mut round_on = round_increment_mm.is_some();
+                if grid_row(
+                    g.ui,
+                    "Round Saw Blank",
+                    Some("Round total stock up to 5 mm step"),
+                    |ui| ui.checkbox(&mut round_on, "Up to 5 mm step").changed(),
+                ) {
+                    *round_increment_mm = round_on.then_some(5.0);
+                    *g.mutated = Some("Toggle Stock Rounding");
+                }
+            }
+            StockConfig::FixedBox {
+                width_x,
+                depth_y,
+                height_z,
+                ..
+            } => {
+                g.len("Width (WCS X)", "fbox_x", width_x, "Edit Fixed Stock Width");
+                g.len("Depth (WCS Y)", "fbox_y", depth_y, "Edit Fixed Stock Depth");
+                g.len(
+                    "Height (WCS Z)",
+                    "fbox_z",
+                    height_z,
+                    "Edit Fixed Stock Height",
+                );
+            }
+            StockConfig::RelativeCylinder { axis, .. } => {
+                render_cyl_axis_row(g.ui, ("rcyl_axis", setup_idx), axis, g.mutated);
+            }
+            StockConfig::FixedCylinder {
+                axis,
+                diameter,
+                length,
+                ..
+            } => {
+                render_cyl_axis_row(g.ui, ("fcyl_axis", setup_idx), axis, g.mutated);
+                g.len("Bar Diameter", "fcyl_d", diameter, "Edit Cylinder Diameter");
+                g.len("Bar Length", "fcyl_l", length, "Edit Cylinder Length");
+            }
+        }
+    });
+
+    if let Some(Ok(rs)) = resolved {
+        let s = rs.stock.aabb_wcs().size();
+        let m = rs.model_aabb_wcs.size();
+        let fmt = |v| display_unit.format_length(v);
+        ui.add_space(5.0);
+        inline_banner(
+            ui,
+            BannerKind::Info,
+            format!(
+                "Model: {} × {} × {}\nStock: {} × {} × {}",
+                fmt(m.x),
+                fmt(m.y),
+                fmt(m.z),
+                fmt(s.x),
+                fmt(s.y),
+                fmt(s.z)
+            ),
+        );
+    }
+}
+
+fn render_stock_mode_combo(
+    ui: &mut egui::Ui,
+    setup_idx: usize,
+    stock: &mut StockConfig,
+    mutated_label: &mut Option<&'static str>,
+) {
+    let mm = ParamLength::from_mm;
     egui::ComboBox::from_id_salt(("stock_mode_cb", setup_idx))
-        .selected_text(cur_kind)
+        .width(INPUT_COL_WIDTH + 44.0)
+        .selected_text(stock.kind_label())
         .show_ui(ui, |ui| {
-            if ui
-                .selectable_label(
-                    matches!(setup.stock, StockConfig::RelativeBox { .. }),
-                    "Relative Box Stock",
-                )
-                .clicked()
-                && !matches!(setup.stock, StockConfig::RelativeBox { .. })
-            {
-                setup.stock = StockConfig::default();
+            let is_rbox = matches!(stock, StockConfig::RelativeBox { .. });
+            if ui.selectable_label(is_rbox, "Relative Box Stock").clicked() && !is_rbox {
+                *stock = StockConfig::default();
                 *mutated_label = Some("Change Stock Mode to Relative Box");
             }
+            let is_fbox = matches!(stock, StockConfig::FixedBox { .. });
             if ui
-                .selectable_label(
-                    matches!(setup.stock, StockConfig::FixedBox { .. }),
-                    "Fixed-Size Box Stock",
-                )
+                .selectable_label(is_fbox, "Fixed-Size Box Stock")
                 .clicked()
-                && !matches!(setup.stock, StockConfig::FixedBox { .. })
+                && !is_fbox
             {
-                setup.stock = StockConfig::FixedBox {
-                    width_x: ParamLength::from_mm(100.0),
-                    depth_y: ParamLength::from_mm(80.0),
-                    height_z: ParamLength::from_mm(25.0),
+                *stock = StockConfig::FixedBox {
+                    width_x: mm(100.0),
+                    depth_y: mm(80.0),
+                    height_z: mm(25.0),
                     xy_align: FixedBoxXyAlign::CenterXy,
                     z_align: FixedBoxZAlign::default(),
                 };
                 *mutated_label = Some("Change Stock Mode to Fixed Box");
             }
+            let is_rcyl = matches!(stock, StockConfig::RelativeCylinder { .. });
             if ui
-                .selectable_label(
-                    matches!(setup.stock, StockConfig::RelativeCylinder { .. }),
-                    "Relative Cylindrical Stock",
-                )
+                .selectable_label(is_rcyl, "Relative Cylindrical Stock")
                 .clicked()
-                && !matches!(setup.stock, StockConfig::RelativeCylinder { .. })
+                && !is_rcyl
             {
-                setup.stock = StockConfig::RelativeCylinder {
+                *stock = StockConfig::RelativeCylinder {
                     axis: StockAxis::Z,
-                    radial_offset: ParamLength::from_mm(3.0),
-                    top_offset: ParamLength::from_mm(1.0),
-                    bottom_offset: ParamLength::from_mm(5.0),
+                    radial_offset: mm(3.0),
+                    top_offset: mm(1.0),
+                    bottom_offset: mm(5.0),
                 };
                 *mutated_label = Some("Change Stock Mode to Relative Cylinder");
             }
+            let is_fcyl = matches!(stock, StockConfig::FixedCylinder { .. });
             if ui
-                .selectable_label(
-                    matches!(setup.stock, StockConfig::FixedCylinder { .. }),
-                    "Fixed Cylindrical Stock",
-                )
+                .selectable_label(is_fcyl, "Fixed Cylindrical Stock")
                 .clicked()
-                && !matches!(setup.stock, StockConfig::FixedCylinder { .. })
+                && !is_fcyl
             {
-                setup.stock = StockConfig::FixedCylinder {
+                *stock = StockConfig::FixedCylinder {
                     axis: StockAxis::Z,
-                    diameter: ParamLength::from_mm(130.0),
-                    length: ParamLength::from_mm(30.0),
-                    axial_top_offset: ParamLength::from_mm(1.0),
+                    diameter: mm(130.0),
+                    length: mm(30.0),
+                    axial_top_offset: mm(1.0),
                 };
                 *mutated_label = Some("Change Stock Mode to Fixed Cylinder");
             }
         });
-
-    ui.separator();
-
-    match &mut setup.stock {
-        StockConfig::RelativeBox {
-            side_pos_x,
-            side_neg_x,
-            side_pos_y,
-            side_neg_y,
-            symmetric_xy,
-            top_offset_z,
-            bottom_offset_z,
-            sheet_thickness_z,
-            round_increment_mm,
-        } => {
-            if is_pure_2d {
-                ui.label("Pure-2D Sheet Thickness (Z):");
-                if edit_param_length(
-                    ui,
-                    ("stk_sheet_z", setup_idx),
-                    sheet_thickness_z,
-                    eval_ctx,
-                    115.0,
-                ) {
-                    *mutated_label = Some("Edit Pure-2D Sheet Thickness");
-                }
-                ui.add_space(2.0);
-            }
-            if ui.checkbox(symmetric_xy, "Symmetric XY Margins").changed() {
-                *mutated_label = Some("Toggle Symmetric Stock Margins");
-            }
-            ui.label("Side X Margin (+X):");
-            if edit_param_length(ui, ("stk_px", setup_idx), side_pos_x, eval_ctx, 115.0) {
-                if *symmetric_xy {
-                    *side_neg_x = side_pos_x.clone();
-                }
-                *mutated_label = Some("Edit Stock Side Margin");
-            }
-            if !*symmetric_xy {
-                ui.label("Side -X Margin:");
-                if edit_param_length(ui, ("stk_nx", setup_idx), side_neg_x, eval_ctx, 115.0) {
-                    *mutated_label = Some("Edit Stock -X Margin");
-                }
-            }
-            ui.label("Side Y Margin (+Y):");
-            if edit_param_length(ui, ("stk_py", setup_idx), side_pos_y, eval_ctx, 115.0) {
-                if *symmetric_xy {
-                    *side_neg_y = side_pos_y.clone();
-                }
-                *mutated_label = Some("Edit Stock Y Margin");
-            }
-            if !*symmetric_xy {
-                ui.label("Side -Y Margin:");
-                if edit_param_length(ui, ("stk_ny", setup_idx), side_neg_y, eval_ctx, 115.0) {
-                    *mutated_label = Some("Edit Stock -Y Margin");
-                }
-            }
-            ui.label("Top Facing Allowance (+Z):");
-            if edit_param_length(ui, ("stk_tz", setup_idx), top_offset_z, eval_ctx, 115.0) {
-                *mutated_label = Some("Edit Stock Top Offset");
-            }
-            ui.label("Bottom Vise/Tab Holding (-Z):");
-            if edit_param_length(ui, ("stk_bz", setup_idx), bottom_offset_z, eval_ctx, 115.0) {
-                *mutated_label = Some("Edit Stock Bottom Offset");
-            }
-
-            let mut round_on = round_increment_mm.is_some();
-            if ui
-                .checkbox(&mut round_on, "Round total stock up to 5 mm increment")
-                .changed()
-            {
-                *round_increment_mm = if round_on { Some(5.0) } else { None };
-                *mutated_label = Some("Toggle Stock Rounding");
-            }
-        }
-        StockConfig::FixedBox {
-            width_x,
-            depth_y,
-            height_z,
-            z_align,
-            ..
-        } => {
-            ui.label("Width (WCS X):");
-            if edit_param_length(ui, ("fbox_x", setup_idx), width_x, eval_ctx, 115.0) {
-                *mutated_label = Some("Edit Fixed Stock Width");
-            }
-            ui.label("Depth (WCS Y):");
-            if edit_param_length(ui, ("fbox_y", setup_idx), depth_y, eval_ctx, 115.0) {
-                *mutated_label = Some("Edit Fixed Stock Depth");
-            }
-            ui.label("Height (WCS Z):");
-            if edit_param_length(ui, ("fbox_z", setup_idx), height_z, eval_ctx, 115.0) {
-                *mutated_label = Some("Edit Fixed Stock Height");
-            }
-            if let FixedBoxZAlign::OffsetFromTop { top_allowance } = z_align {
-                ui.label("Model Offset from Stock Top:");
-                if edit_param_length(ui, ("fbox_ta", setup_idx), top_allowance, eval_ctx, 115.0) {
-                    *mutated_label = Some("Edit Fixed Stock Top Allowance");
-                }
-            }
-        }
-        StockConfig::RelativeCylinder {
-            axis,
-            radial_offset,
-            top_offset,
-            bottom_offset,
-        } => {
-            egui::ComboBox::from_label("Bar Axis")
-                .selected_text(axis.label())
-                .show_ui(ui, |ui| {
-                    for a in StockAxis::ALL {
-                        if ui.selectable_value(axis, a, a.label()).changed() {
-                            *mutated_label = Some("Change Cylinder Stock Axis");
-                        }
-                    }
-                });
-            ui.label("Radial Margin:");
-            if edit_param_length(ui, ("rcyl_r", setup_idx), radial_offset, eval_ctx, 115.0) {
-                *mutated_label = Some("Edit Cylinder Radial Offset");
-            }
-            ui.label("Top Margin:");
-            if edit_param_length(ui, ("rcyl_t", setup_idx), top_offset, eval_ctx, 115.0) {
-                *mutated_label = Some("Edit Cylinder Top Offset");
-            }
-            ui.label("Bottom Chuck Margin:");
-            if edit_param_length(ui, ("rcyl_b", setup_idx), bottom_offset, eval_ctx, 115.0) {
-                *mutated_label = Some("Edit Cylinder Bottom Offset");
-            }
-        }
-        StockConfig::FixedCylinder {
-            axis,
-            diameter,
-            length,
-            axial_top_offset,
-        } => {
-            egui::ComboBox::from_label("Bar Axis")
-                .selected_text(axis.label())
-                .show_ui(ui, |ui| {
-                    for a in StockAxis::ALL {
-                        if ui.selectable_value(axis, a, a.label()).changed() {
-                            *mutated_label = Some("Change Cylinder Stock Axis");
-                        }
-                    }
-                });
-            ui.label("Bar Diameter:");
-            if edit_param_length(ui, ("fcyl_d", setup_idx), diameter, eval_ctx, 115.0) {
-                *mutated_label = Some("Edit Cylinder Diameter");
-            }
-            ui.label("Bar Length:");
-            if edit_param_length(ui, ("fcyl_l", setup_idx), length, eval_ctx, 115.0) {
-                *mutated_label = Some("Edit Cylinder Length");
-            }
-            ui.label("Top Facing Offset:");
-            if edit_param_length(
-                ui,
-                ("fcyl_to", setup_idx),
-                axial_top_offset,
-                eval_ctx,
-                115.0,
-            ) {
-                *mutated_label = Some("Edit Cylinder Top Offset");
-            }
-        }
-    }
-
-    if let Some(Ok(rs)) = resolved {
-        ui.separator();
-        let s_sz = rs.stock.aabb_wcs().size();
-        let m_sz = rs.model_aabb_wcs.size();
-        ui.strong("Resolved WCS Dimensions");
-        ui.label(format!(
-            "Model: {} × {} × {}",
-            display_unit.format_length(m_sz.x),
-            display_unit.format_length(m_sz.y),
-            display_unit.format_length(m_sz.z),
-        ));
-        ui.label(format!(
-            "Stock: {} × {} × {}",
-            display_unit.format_length(s_sz.x),
-            display_unit.format_length(s_sz.y),
-            display_unit.format_length(s_sz.z),
-        ));
-    }
 }
 
-fn show_heights_tab(
+fn render_cyl_axis_row(
     ui: &mut egui::Ui,
-    (setup, setup_idx): (&mut Setup, usize),
-    eval_ctx: &EvalContext,
-    display_unit: DisplayUnit,
-    resolved: Option<Result<&ResolvedSetup, &str>>,
-    show_z_planes: &mut bool,
+    id_salt: impl Hash + Debug,
+    axis: &mut StockAxis,
     mutated_label: &mut Option<&'static str>,
 ) {
-    ui.checkbox(
-        show_z_planes,
-        "Preview translucent Z-height planes in 3D viewport",
+    grid_row(
+        ui,
+        "Bar Axis",
+        Some("Principal WCS axis of round bar stock"),
+        |ui| {
+            egui::ComboBox::from_id_salt(id_salt)
+                .width(INPUT_COL_WIDTH + 44.0)
+                .selected_text(axis.label())
+                .show_ui(ui, |ui| {
+                    for a in StockAxis::ALL {
+                        if ui.selectable_value(axis, a, a.label()).changed() {
+                            *mutated_label = Some("Change Cylinder Stock Axis");
+                        }
+                    }
+                });
+        },
     );
-    ui.separator();
+}
 
-    ui.strong("Clearance Height (First/Last G0 Rapids)");
-    egui::ComboBox::from_id_salt(("setup_clr_ref", setup_idx))
-        .selected_text(setup.heights.clearance.reference.label())
-        .show_ui(ui, |ui| {
-            for r in HeightReference::SETUP_REFS {
-                if ui
-                    .selectable_value(&mut setup.heights.clearance.reference, r, r.label())
-                    .changed()
-                {
-                    *mutated_label = Some("Change Setup Clearance Reference");
+fn render_stock_offsets_body(
+    ui: &mut egui::Ui,
+    setup: &mut Setup,
+    view: StockTabView<'_>,
+    mutated_label: &mut Option<&'static str>,
+) {
+    let setup_idx = view.setup_idx;
+    inspector_grid(ui, ("stock_offsets_grid", setup_idx), |ui| {
+        let mut g = SetupGrid {
+            ui,
+            setup_idx,
+            eval_ctx: view.eval_ctx,
+            mutated: mutated_label,
+        };
+        match &mut setup.stock {
+            StockConfig::RelativeBox {
+                side_pos_x,
+                side_neg_x,
+                side_pos_y,
+                side_neg_y,
+                symmetric_xy,
+                top_offset_z,
+                bottom_offset_z,
+                ..
+            } => {
+                if grid_row(
+                    g.ui,
+                    "Symmetric XY",
+                    Some("Apply identical side stock on ±X and ±Y"),
+                    |ui| ui.checkbox(symmetric_xy, "Mirror ±X / ±Y").changed(),
+                ) {
+                    if *symmetric_xy {
+                        *side_neg_x = side_pos_x.clone();
+                        *side_neg_y = side_pos_y.clone();
+                    }
+                    *g.mutated = Some("Toggle Symmetric Stock Margins");
+                }
+                let px_lbl = if *symmetric_xy {
+                    "Side X Margin (±X)"
+                } else {
+                    "Side +X Margin"
+                };
+                if g.len(px_lbl, "stk_px", side_pos_x, "Edit Stock Side Margin") && *symmetric_xy {
+                    *side_neg_x = side_pos_x.clone();
+                }
+                if !*symmetric_xy {
+                    g.len(
+                        "Side -X Margin",
+                        "stk_nx",
+                        side_neg_x,
+                        "Edit Stock -X Margin",
+                    );
+                }
+                let py_lbl = if *symmetric_xy {
+                    "Side Y Margin (±Y)"
+                } else {
+                    "Side +Y Margin"
+                };
+                if g.len(py_lbl, "stk_py", side_pos_y, "Edit Stock Y Margin") && *symmetric_xy {
+                    *side_neg_y = side_pos_y.clone();
+                }
+                if !*symmetric_xy {
+                    g.len(
+                        "Side -Y Margin",
+                        "stk_ny",
+                        side_neg_y,
+                        "Edit Stock -Y Margin",
+                    );
+                }
+                g.len(
+                    "Top Allowance (+Z)",
+                    "stk_tz",
+                    top_offset_z,
+                    "Edit Stock Top Offset",
+                );
+                g.len(
+                    "Bottom Holding (-Z)",
+                    "stk_bz",
+                    bottom_offset_z,
+                    "Edit Stock Bottom Offset",
+                );
+            }
+            StockConfig::FixedBox {
+                xy_align, z_align, ..
+            } => {
+                match xy_align {
+                    FixedBoxXyAlign::CenterXy => {
+                        grid_row(
+                            g.ui,
+                            "XY Alignment",
+                            Some("Part XY placement inside fixed stock"),
+                            |ui| {
+                                ui.label("Centered in XY");
+                            },
+                        );
+                    }
+                    FixedBoxXyAlign::OffsetFromFrontLeft { dx, dy } => {
+                        g.len("Front-Left ΔX", "fbox_dx", dx, "Edit Fixed Stock XY Offset");
+                        g.len("Front-Left ΔY", "fbox_dy", dy, "Edit Fixed Stock XY Offset");
+                    }
+                }
+                match z_align {
+                    FixedBoxZAlign::OffsetFromTop { top_allowance } => {
+                        g.len(
+                            "Top Allowance (+Z)",
+                            "fbox_ta",
+                            top_allowance,
+                            "Edit Fixed Stock Top Allowance",
+                        );
+                    }
+                    FixedBoxZAlign::OffsetFromBottom { bottom_allowance } => {
+                        g.len(
+                            "Bottom Allowance (-Z)",
+                            "fbox_ba",
+                            bottom_allowance,
+                            "Edit Fixed Stock Bottom Allowance",
+                        );
+                    }
+                    FixedBoxZAlign::CenterZ => {
+                        grid_row(g.ui, "Z Alignment", None, |ui| {
+                            ui.label("Centered in Z");
+                        });
+                    }
                 }
             }
-        });
-    if edit_param_length(
-        ui,
-        ("setup_clr_off", setup_idx),
-        &mut setup.heights.clearance.offset,
-        eval_ctx,
-        120.0,
-    ) {
-        *mutated_label = Some("Edit Setup Clearance Offset");
-    }
-
-    ui.add_space(6.0);
-    ui.strong("Retract Height (Local G0 Jumps)");
-    egui::ComboBox::from_id_salt(("setup_ret_ref", setup_idx))
-        .selected_text(setup.heights.retract.reference.label())
-        .show_ui(ui, |ui| {
-            for r in HeightReference::SETUP_REFS {
-                if ui
-                    .selectable_value(&mut setup.heights.retract.reference, r, r.label())
-                    .changed()
-                {
-                    *mutated_label = Some("Change Setup Retract Reference");
-                }
+            StockConfig::RelativeCylinder {
+                radial_offset,
+                top_offset,
+                bottom_offset,
+                ..
+            } => {
+                g.len(
+                    "Radial Margin",
+                    "rcyl_r",
+                    radial_offset,
+                    "Edit Cylinder Radial Offset",
+                );
+                g.len(
+                    "Top Margin (+Z)",
+                    "rcyl_t",
+                    top_offset,
+                    "Edit Cylinder Top Offset",
+                );
+                g.len(
+                    "Bottom Chuck (-Z)",
+                    "rcyl_b",
+                    bottom_offset,
+                    "Edit Cylinder Bottom Offset",
+                );
             }
-        });
-    if edit_param_length(
-        ui,
-        ("setup_ret_off", setup_idx),
-        &mut setup.heights.retract.offset,
-        eval_ctx,
-        120.0,
-    ) {
-        *mutated_label = Some("Edit Setup Retract Offset");
-    }
+            StockConfig::FixedCylinder {
+                axial_top_offset, ..
+            } => {
+                g.len(
+                    "Top Facing Offset",
+                    "fcyl_to",
+                    axial_top_offset,
+                    "Edit Cylinder Top Offset",
+                );
+            }
+        }
+    });
+}
 
-    if let Some(Ok(rs)) = resolved {
-        ui.separator();
-        ui.strong("Resolved WCS Z Planes");
-        ui.label(format!(
-            "• Clearance Z: {}",
-            display_unit.format_length(rs.clearance_z_wcs)
-        ));
-        ui.label(format!(
-            "• Retract Z:   {}",
-            display_unit.format_length(rs.retract_z_wcs)
-        ));
-        ui.label(format!(
-            "• Stock Top:   {}",
-            display_unit.format_length(rs.stock.aabb_wcs().max.z)
-        ));
-        ui.label(format!(
-            "• Model Top:   {}",
-            display_unit.format_length(rs.model_aabb_wcs.max.z)
-        ));
-        ui.label(format!(
-            "• Stock Bot:   {}",
-            display_unit.format_length(rs.stock.aabb_wcs().min.z)
-        ));
-    }
+struct HeightsTabCtx<'a> {
+    setup: &'a mut Setup,
+    setup_idx: usize,
+    eval_ctx: &'a EvalContext,
+    display_unit: DisplayUnit,
+    resolved: Option<Result<&'a ResolvedSetup, &'a str>>,
+    show_z_planes: &'a mut bool,
+    mutated_label: &'a mut Option<&'static str>,
+}
+
+fn show_heights_tab(ui: &mut egui::Ui, ctx: HeightsTabCtx<'_>) {
+    let HeightsTabCtx {
+        setup,
+        setup_idx,
+        eval_ctx,
+        display_unit,
+        resolved,
+        show_z_planes,
+        mutated_label,
+    } = ctx;
+
+    section_card(
+        ui,
+        ("setup_safe_z_card", setup_idx),
+        "Safe Z Clearance & Retract",
+        true,
+        |ui| {
+            inspector_grid(ui, ("setup_heights_grid", setup_idx), |ui| {
+                grid_row(
+                    ui,
+                    "3D Z Planes",
+                    Some("Render translucent Z planes in 3D viewport"),
+                    |ui| {
+                        ui.checkbox(show_z_planes, "Preview in viewport");
+                    },
+                );
+
+                render_setup_height_ref_row(
+                    ui,
+                    "Clearance Datum",
+                    ("setup_clr_ref", setup_idx),
+                    &mut setup.heights.clearance.reference,
+                    "Change Setup Clearance Reference",
+                    mutated_label,
+                );
+                let mut g = SetupGrid {
+                    ui,
+                    setup_idx,
+                    eval_ctx,
+                    mutated: mutated_label,
+                };
+                g.len(
+                    "Clearance Offset",
+                    "setup_clr_off",
+                    &mut setup.heights.clearance.offset,
+                    "Edit Setup Clearance Offset",
+                );
+                render_setup_height_ref_row(
+                    g.ui,
+                    "Retract Datum",
+                    ("setup_ret_ref", setup_idx),
+                    &mut setup.heights.retract.reference,
+                    "Change Setup Retract Reference",
+                    g.mutated,
+                );
+                g.len(
+                    "Retract Offset",
+                    "setup_ret_off",
+                    &mut setup.heights.retract.offset,
+                    "Edit Setup Retract Offset",
+                );
+            });
+
+            if let Some(Ok(rs)) = resolved {
+                let fmt = |v| display_unit.format_length(v);
+                ui.add_space(5.0);
+                inline_banner(
+                    ui,
+                    BannerKind::Info,
+                    format!(
+                        "Clearance Z: {}  ·  Retract Z: {}\nStock Top: {}  ·  Model Top: {}  ·  Stock Bot: {}",
+                        fmt(rs.clearance_z_wcs),
+                        fmt(rs.retract_z_wcs),
+                        fmt(rs.stock.aabb_wcs().max.z),
+                        fmt(rs.model_aabb_wcs.max.z),
+                        fmt(rs.stock.aabb_wcs().min.z),
+                    ),
+                );
+            }
+        },
+    );
+}
+
+fn render_setup_height_ref_row(
+    ui: &mut egui::Ui,
+    label: &str,
+    salt: (&str, usize),
+    val: &mut HeightReference,
+    undo: &'static str,
+    mutated: &mut Option<&'static str>,
+) {
+    grid_row(
+        ui,
+        label,
+        Some("Reference datum plane for Setup Z rapid moves"),
+        |ui| {
+            egui::ComboBox::from_id_salt(salt)
+                .width(INPUT_COL_WIDTH + 30.0)
+                .selected_text(val.label())
+                .show_ui(ui, |ui| {
+                    for r in HeightReference::SETUP_REFS {
+                        if ui.selectable_value(val, r, r.label()).changed() {
+                            *mutated = Some(undo);
+                        }
+                    }
+                });
+        },
+    );
 }
 
 fn show_27pt_grid_selector(ui: &mut egui::Ui, anchor: &mut BoxAnchor27) -> bool {
     let mut changed = false;
 
     ui.horizontal(|ui| {
-        ui.weak("Z Plane:");
+        ui.weak("Z Level:");
         for (lbl, z_a) in [
             ("Top", AxisAnchor::Max),
             ("Mid-Z", AxisAnchor::Center),

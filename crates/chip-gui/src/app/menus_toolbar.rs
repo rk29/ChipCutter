@@ -9,7 +9,13 @@ use crate::{
     app::ChipCutterApp,
     camera::{MousePreset, OrbitMode},
     layout::{WorkspacePane, create_default_workspace_tree, focus_workspace_pane},
-    panels::{InspectorFocus, OperationTab, ViewportPickMode, browser::default_pick_mode_for_op},
+    panels::{
+        InspectorFocus, OperationTab, ViewportPickMode,
+        browser::{
+            default_pick_mode_for_op, delete_operation_in_setup, duplicate_operation_in_setup,
+            move_operation_to_slot,
+        },
+    },
     theme::{AppTheme, ThemeTokens},
     widgets::{IconKind, StatusBadgeKind, icon_button, primary_icon_button, status_badge_icon},
 };
@@ -92,10 +98,34 @@ impl ChipCutterApp {
         }
 
         if !ctx.egui_wants_keyboard_input() {
-            if ctx.input(|i| i.key_pressed(egui::Key::P)) {
+            let (dup_op, move_up, move_down, delete_key) = ctx.input(|i| {
+                let cmd = i.modifiers.command || i.modifiers.ctrl;
+                (
+                    cmd && i.key_pressed(egui::Key::D),
+                    cmd && i.key_pressed(egui::Key::ArrowUp),
+                    cmd && i.key_pressed(egui::Key::ArrowDown),
+                    !cmd && (i.key_pressed(egui::Key::Delete)
+                        || (i.key_pressed(egui::Key::Backspace)
+                            && self.pick_mode == ViewportPickMode::InspectEntity
+                            && self.sketch_author_start_xy.is_none())),
+                )
+            });
+            if dup_op {
+                self.duplicate_focused_operation();
+            }
+            if move_up {
+                self.move_focused_operation(-1);
+            }
+            if move_down {
+                self.move_focused_operation(1);
+            }
+            if delete_key {
+                self.delete_focused_item();
+            }
+            if ctx.input(|i| !i.modifiers.any() && i.key_pressed(egui::Key::P)) {
                 self.camera.toggle_projection();
             }
-            if ctx.input(|i| i.key_pressed(egui::Key::F)) {
+            if ctx.input(|i| !i.modifiers.any() && i.key_pressed(egui::Key::F)) {
                 self.fit_scene_to_viewport();
             }
         }
@@ -309,7 +339,157 @@ impl ChipCutterApp {
                 self.perform_redo();
                 ui.close();
             }
+
+            let focused_op = match self.inspector_focus {
+                InspectorFocus::Operation { setup_idx, op_idx }
+                    if setup_idx < self.project.setups.len()
+                        && op_idx < self.project.setups[setup_idx].operations.len() =>
+                {
+                    Some((setup_idx, op_idx))
+                }
+                _ => None,
+            };
+            let can_delete = focused_op.is_some()
+                || matches!(
+                    (self.inspector_focus, self.selected_sketch_entity_idx),
+                    (InspectorFocus::Sketch { sketch_idx }, Some(e_idx))
+                        if sketch_idx < self.project.sketches.len()
+                            && e_idx < self.project.sketches[sketch_idx].entities.len()
+                );
+
+            ui.separator();
+            if ui
+                .add_enabled(
+                    focused_op.is_some(),
+                    egui::Button::new("Duplicate Operation (Ctrl+D)"),
+                )
+                .clicked()
+            {
+                self.duplicate_focused_operation();
+                ui.close();
+            }
+            if ui
+                .add_enabled(
+                    focused_op.is_some_and(|(_, o)| o > 0),
+                    egui::Button::new("Move Operation Up (Ctrl+Up)"),
+                )
+                .clicked()
+            {
+                self.move_focused_operation(-1);
+                ui.close();
+            }
+            if ui
+                .add_enabled(
+                    focused_op
+                        .is_some_and(|(s, o)| o + 1 < self.project.setups[s].operations.len()),
+                    egui::Button::new("Move Operation Down (Ctrl+Down)"),
+                )
+                .clicked()
+            {
+                self.move_focused_operation(1);
+                ui.close();
+            }
+            if ui
+                .add_enabled(can_delete, egui::Button::new("Delete Selected (Del)"))
+                .clicked()
+            {
+                self.delete_focused_item();
+                ui.close();
+            }
         });
+    }
+
+    pub(crate) fn duplicate_focused_operation(&mut self) {
+        if let InspectorFocus::Operation { setup_idx, op_idx } = self.inspector_focus
+            && setup_idx < self.project.setups.len()
+            && op_idx < self.project.setups[setup_idx].operations.len()
+        {
+            self.history
+                .record_before_edit("Duplicate Operation", None, &self.project);
+            if let Some(new_idx) =
+                duplicate_operation_in_setup(&mut self.project.setups[setup_idx], op_idx)
+            {
+                self.inspector_focus = InspectorFocus::Operation {
+                    setup_idx,
+                    op_idx: new_idx,
+                };
+            }
+        }
+    }
+
+    pub(crate) fn move_focused_operation(&mut self, delta: isize) {
+        if let InspectorFocus::Operation { setup_idx, op_idx } = self.inspector_focus
+            && setup_idx < self.project.setups.len()
+        {
+            let len = self.project.setups[setup_idx].operations.len();
+            let slot_opt = if delta < 0 && op_idx > 0 {
+                Some(op_idx - 1)
+            } else if delta > 0 && op_idx + 1 < len {
+                Some(op_idx + 2)
+            } else {
+                None
+            };
+            if let Some(slot) = slot_opt {
+                self.history
+                    .record_before_edit("Reorder Operation", None, &self.project);
+                if let Some(dst_idx) =
+                    move_operation_to_slot(&mut self.project.setups[setup_idx], op_idx, slot)
+                {
+                    self.inspector_focus = InspectorFocus::Operation {
+                        setup_idx,
+                        op_idx: dst_idx,
+                    };
+                }
+            }
+        }
+    }
+
+    pub(crate) fn delete_focused_item(&mut self) {
+        match self.inspector_focus {
+            InspectorFocus::Operation { setup_idx, op_idx }
+                if setup_idx < self.project.setups.len()
+                    && op_idx < self.project.setups[setup_idx].operations.len() =>
+            {
+                self.history
+                    .record_before_edit("Delete Operation", None, &self.project);
+                if delete_operation_in_setup(&mut self.project.setups[setup_idx], op_idx) {
+                    let rem = self.project.setups[setup_idx].operations.len();
+                    self.inspector_focus = if rem > 0 {
+                        InspectorFocus::Operation {
+                            setup_idx,
+                            op_idx: op_idx.min(rem - 1),
+                        }
+                    } else {
+                        InspectorFocus::Setup { setup_idx }
+                    };
+                    self.pick_mode = ViewportPickMode::InspectEntity;
+                }
+            }
+            InspectorFocus::Sketch { sketch_idx } if sketch_idx < self.project.sketches.len() => {
+                if let Some(e_idx) = self.selected_sketch_entity_idx
+                    && e_idx < self.project.sketches[sketch_idx].entities.len()
+                {
+                    self.history
+                        .record_before_edit("Delete Sketch Entity", None, &self.project);
+                    let eval_ctx = self.eval_context();
+                    let project_dir = self.active_project_dir();
+                    let font_map = self.project.load_custom_fonts(project_dir);
+                    let fonts_opt = (!font_map.is_empty()).then_some(&font_map);
+                    let sk = &mut self.project.sketches[sketch_idx];
+                    sk.entities.remove(e_idx);
+                    sk.reevaluate(&eval_ctx);
+                    sk.rebuild_regions(fonts_opt);
+                    let rem = sk.entities.len();
+                    self.selected_sketch_entity_idx = if rem > 0 {
+                        Some(e_idx.min(rem - 1))
+                    } else {
+                        None
+                    };
+                    self.cached_frame_geo = None;
+                }
+            }
+            _ => {}
+        }
     }
 
     fn draw_setup_menu(&mut self, ui: &mut egui::Ui) {

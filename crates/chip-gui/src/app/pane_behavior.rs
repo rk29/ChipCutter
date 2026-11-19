@@ -324,7 +324,7 @@ impl PaneBehavior<'_> {
             ui.painter().text(
                 banner_pos,
                 egui::Align2::LEFT_TOP,
-                format!("▸ {banner}"),
+                format!("• {banner}"),
                 egui::FontId::proportional(13.0),
                 tok.pick_banner_fg,
             );
