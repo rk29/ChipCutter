@@ -108,9 +108,13 @@ Phase 4 delivered a complete set of illustrated Markdown tutorials in `docs/tuto
 2. **3-Axis Surface Milling & Mesh Support:**
    - Importing **STL / OBJ / 3MF** meshes alongside STEP solids.
    - 3D Waterline (Z-level), Parallel/Raster 3D finishing, Scallop, Pencil, and 3D Adaptive roughing strategies.
-3. **Advanced Workholding & Multi-Setup Volumetric Stock:**
+3. **4th-Axis Rotary Milling:**
+   - **Configurable Rotary Axis:** Configurable rotary axis aligned along different machine axes (`A` around `X`, `B` around `Y`, or `C` around `Z`) with configurable rotation direction, centerline offset, and post-processor axis letter mapping.
+   - **2-Linear + Rotary Mode (`Z + X + Rotary` or `Z + Y + Rotary`):** Dedicated rotary mode operating the rotary axis alongside two linear axes (`Z + X` or `Z + Y`, locking the cross-axis on centerline) for cylindrical wrapping, rotary engraving/pocketing, indexed (`3+1`) machining, and continuous spiral/parallel rotary cutting.
+   - **Simultaneous 4-Axis Milling (`X + Y + Z + Rotary`):** Operating all three linear axes and the rotary axis together simultaneously for continuous 4-axis surfacing, undercuts, and sculpted rotary parts, with rotary feed / inverse-time (`G93`) compensation, rotary stock simulation, and 4-axis post-processor support (`LinuxCNC`, `grblHAL` / `FluidNC`).
+4. **Advanced Workholding & Multi-Setup Volumetric Stock:**
    - 3D fixture/vise/clamp collision bodies with automatic safe-rapid routing.
    - Carrying simulated stock across flipped setups via tri-dexel volumetric stock.
-4. **Ecosystem & Extensibility:**
+5. **Ecosystem & Extensibility:**
    - Optional OpenCASCADE (`opencascade-rs`) `CadKernel` feature backend.
    - Thread milling (`ThreadMill` single/multi-form cutter geometry, ISO Metric & Unified thread tables, radial arc-in/out helical passes), additional controller dialects (Fanuc/Haas, Mach4, Masso, Centroid), and printable HTML/PDF setup sheets.
