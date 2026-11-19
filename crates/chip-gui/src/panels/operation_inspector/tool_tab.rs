@@ -91,15 +91,19 @@ pub fn show_tool_tab(ui: &mut egui::Ui, ctx: ToolTabCtx<'_>) {
         return;
     };
 
+    let tok = crate::theme::ThemeTokens::from_ui(ui);
     if !op_kind.is_compatible_with_tool(&active_tool) {
-        ui.colored_label(
-            egui::Color32::from_rgb(245, 96, 96),
-            format!(
-                "[!] '{}' is not compatible with {}!",
-                active_tool.geometry.kind_label(),
-                op_kind.label()
-            ),
-        );
+        ui.horizontal(|ui| {
+            crate::widgets::status_badge_icon(ui, crate::widgets::StatusBadgeKind::Error, None);
+            ui.colored_label(
+                tok.error_fg,
+                format!(
+                    "'{}' is not compatible with {}!",
+                    active_tool.geometry.kind_label(),
+                    op_kind.label()
+                ),
+            );
+        });
     }
 
     // Material Preset selector
@@ -164,7 +168,7 @@ pub fn show_tool_tab(ui: &mut egui::Ui, ctx: ToolTabCtx<'_>) {
                 .suffix(" RPM"),
         );
         if op.feed_overrides.spindle_rpm.is_some() {
-            ui.colored_label(egui::Color32::from_rgb(245, 190, 66), "*")
+            ui.colored_label(tok.dirty_fg, "*")
                 .on_hover_text("Overridden from preset");
         }
         if r.changed() {
@@ -220,7 +224,7 @@ pub fn show_tool_tab(ui: &mut egui::Ui, ctx: ToolTabCtx<'_>) {
                 .suffix(format!(" {}", display_unit.feed_suffix())),
         );
         if op.feed_overrides.cutting_feed_mm_min.is_some() {
-            ui.colored_label(egui::Color32::from_rgb(245, 190, 66), "*");
+            ui.colored_label(tok.dirty_fg, "*");
         }
         if r.changed() {
             op.feed_overrides.cutting_feed_mm_min = Some(display_unit.feed_to_mm_min(vf_disp));
@@ -273,7 +277,7 @@ pub fn show_tool_tab(ui: &mut egui::Ui, ctx: ToolTabCtx<'_>) {
         eff2.cutting_feed_mm_min,
     ) {
         ui.colored_label(
-            egui::Color32::from_rgb(110, 212, 248),
+            tok.info_fg,
             format!(
                 "RCT ({:.0}% engagement): actual hex = {:.4} {} — RCT feed hint: {:.0} {}",
                 (eff2.stepover_mm / dia_mm) * 100.0,

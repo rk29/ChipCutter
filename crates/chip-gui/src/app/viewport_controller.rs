@@ -32,6 +32,7 @@ pub(crate) struct SketchAuthorInteractionInput {
 
 impl ChipCutterApp {
     pub(crate) fn sync_viewport_scene_state(&mut self) {
+        self.highlight.theme = self.theme;
         self.highlight.extra_selected_faces.clear();
         self.highlight.extra_selected_edges.clear();
         self.highlight.extra_selected_sketch_regions.clear();

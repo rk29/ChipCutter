@@ -10,6 +10,8 @@ use crate::{
     camera::{MousePreset, OrbitMode},
     layout::{WorkspacePane, create_default_workspace_tree, focus_workspace_pane},
     panels::{InspectorFocus, OperationTab, ViewportPickMode, browser::default_pick_mode_for_op},
+    theme::{AppTheme, ThemeTokens},
+    widgets::{IconKind, StatusBadgeKind, icon_button, primary_icon_button, status_badge_icon},
 };
 
 impl ChipCutterApp {
@@ -100,42 +102,50 @@ impl ChipCutterApp {
     }
 
     fn draw_menu_bar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        egui::Panel::top("chip_menu_bar").show(ui, |ui| {
-            egui::MenuBar::new().ui(ui, |ui| {
-                self.draw_file_menu(ui, ctx);
-                self.draw_edit_menu(ui);
-                self.draw_setup_menu(ui);
-                self.draw_operations_menu(ui);
-                ui.menu_button("Tools", |ui| {
-                    if ui.button("Tool Library Manager…").clicked() {
-                        self.tool_library_modal.open = true;
-                        ui.close();
-                    }
-                });
-                self.draw_simulate_menu(ui, ctx);
-                self.draw_post_menu(ui);
-                self.draw_view_menu(ui);
+        let tok = ThemeTokens::for_theme(self.theme);
+        egui::Panel::top("chip_menu_bar")
+            .frame(
+                egui::Frame::NONE
+                    .fill(tok.menubar_bg)
+                    .stroke(egui::Stroke::new(1.0, tok.border))
+                    .inner_margin(egui::Margin::symmetric(8, 3)),
+            )
+            .show(ui, |ui| {
+                egui::MenuBar::new().ui(ui, |ui| {
+                    self.draw_file_menu(ui, ctx);
+                    self.draw_edit_menu(ui);
+                    self.draw_setup_menu(ui);
+                    self.draw_operations_menu(ui);
+                    ui.menu_button("Tools", |ui| {
+                        if ui.button("Tool Library Manager…").clicked() {
+                            self.tool_library_modal.open = true;
+                            ui.close();
+                        }
+                    });
+                    self.draw_simulate_menu(ui, ctx);
+                    self.draw_post_menu(ui);
+                    self.draw_view_menu(ui, ctx);
 
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if self.loading_in_flight {
-                        ui.label("Loading STEP…");
-                        ui.spinner();
-                    } else if let Some(m) = &self.model {
-                        ui.weak(format!(
-                            "{} | {} faces, {} edges",
-                            m.doc.source_name,
-                            m.doc.faces.len(),
-                            m.doc.edges.len()
-                        ));
-                    } else if !self.project.sketches.is_empty() {
-                        ui.weak(format!(
-                            "Pure-2D Job | {} sketch layer(s)",
-                            self.project.sketches.len()
-                        ));
-                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if self.loading_in_flight {
+                            ui.label("Loading STEP…");
+                            ui.spinner();
+                        } else if let Some(m) = &self.model {
+                            ui.weak(format!(
+                                "{} · {} faces · {} edges",
+                                m.doc.source_name,
+                                m.doc.faces.len(),
+                                m.doc.edges.len()
+                            ));
+                        } else if !self.project.sketches.is_empty() {
+                            ui.weak(format!(
+                                "Pure-2D Job · {} sketch layer(s)",
+                                self.project.sketches.len()
+                            ));
+                        }
+                    });
                 });
             });
-        });
     }
 
     fn draw_file_menu(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
@@ -554,8 +564,17 @@ impl ChipCutterApp {
         });
     }
 
-    fn draw_view_menu(&mut self, ui: &mut egui::Ui) {
+    fn draw_view_menu(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.menu_button("View", |ui| {
+            ui.label("Workspace Theme:");
+            for t in AppTheme::ALL {
+                let is_sel = self.theme == t;
+                if ui.selectable_label(is_sel, t.label()).clicked() && !is_sel {
+                    self.set_theme(ctx, t);
+                    ui.close();
+                }
+            }
+            ui.separator();
             if ui.button("Reset Default Workspace Layout").clicked() {
                 self.tree = create_default_workspace_tree();
                 ui.close();
@@ -594,218 +613,276 @@ impl ChipCutterApp {
                 self.align_camera_to_active_setup();
                 ui.close();
             }
-        });
-    }
-
-    fn draw_quick_toolbar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        egui::Panel::top("chip_toolbar").show(ui, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                if ui
-                    .button("Open")
-                    .on_hover_text("Open .chip.toml Project or .chipz Bundle (Ctrl+O)")
-                    .clicked()
-                {
-                    self.open_project_dialog(ctx);
+            ui.separator();
+            ui.menu_button("Mouse Navigation Preset", |ui| {
+                for preset in MousePreset::ALL {
+                    ui.selectable_value(&mut self.camera.mouse_preset, preset, preset.label());
                 }
-                if ui
-                    .button("Save")
-                    .on_hover_text("Save .chip.toml Project (Ctrl+S)")
-                    .clicked()
-                {
-                    self.save_project_dialog();
-                }
-                if ui
-                    .button(".chipz")
-                    .on_hover_text("Export Self-Contained Portable Bundle (.chipz)")
-                    .clicked()
-                {
-                    self.export_chipz_dialog();
-                }
-                if ui
-                    .button("DXF/SVG")
-                    .on_hover_text("Import 2D Vector Drawing (.dxf / .svg) or Start Pure-2D Job")
-                    .clicked()
-                {
-                    self.vector_import_modal.open = true;
-                }
-                if ui
-                    .add_enabled(self.model.is_some(), egui::Button::new("Reload CAD"))
-                    .on_hover_text("Associatively reload active STEP model (Ctrl+R)")
-                    .clicked()
-                {
-                    self.reload_active_step_model(ctx);
-                }
-                if ui
-                    .add_enabled(self.history.can_undo(), egui::Button::new("Undo"))
-                    .clicked()
-                {
-                    self.perform_undo();
-                }
-                if ui
-                    .add_enabled(self.history.can_redo(), egui::Button::new("Redo"))
-                    .clicked()
-                {
-                    self.perform_redo();
-                }
-
                 ui.separator();
-                if ui
-                    .button("+ Adaptive")
-                    .on_hover_text("Add a new 2D Adaptive / Trochoidal Clearing operation")
-                    .clicked()
-                {
-                    self.create_new_adaptive_operation();
-                }
-                if ui
-                    .button("+ V-Carve")
-                    .on_hover_text(
-                        "Add a new 3D Medial-Axis V-Carve / Flat Clearance / V-Inlay operation",
-                    )
-                    .clicked()
-                    && self.active_setup_idx < self.project.setups.len()
-                {
-                    self.history
-                        .record_before_edit("Add V-Carve", None, &self.project);
-                    let s_idx = self.active_setup_idx;
-                    let n = self.project.setups[s_idx].operations.len() + 1;
-                    let mut op = Operation::new(
-                        format!("op_{s_idx}_{n}_vcarve"),
-                        format!("V-Carve {n}"),
-                        OperationKind::VCarve,
-                    );
-                    if let Some(t) = self
-                        .project
-                        .tools
-                        .iter()
-                        .chain(self.global_tools.tools.iter())
-                        .find(|t| OperationKind::VCarve.is_compatible_with_tool(t))
-                        .cloned()
-                    {
-                        self.project.ensure_tool_embedded(&t);
-                        op.tool_id = Some(t.id);
-                        op.preset_id = t.presets.first().map(|p| p.id.clone());
+                for om in [OrbitMode::TurntableZUp, OrbitMode::FreeTrackball] {
+                    let is_sel = self.camera.orbit_mode == om;
+                    if ui.selectable_label(is_sel, om.label()).clicked() && !is_sel {
+                        self.camera.set_orbit_mode(om);
+                        ui.close();
                     }
-                    self.project.setups[s_idx].operations.push(op);
-                    let o_idx = self.project.setups[s_idx].operations.len() - 1;
-                    self.inspector_focus = InspectorFocus::Operation {
-                        setup_idx: s_idx,
-                        op_idx: o_idx,
-                    };
-                    self.op_tab = OperationTab::Geometry;
-                    self.pick_mode =
-                        default_pick_mode_for_op(s_idx, o_idx, OperationKind::VCarve, self.op_tab);
-                }
-                if self.dispatcher.is_busy() {
-                    ui.spinner();
-                    if ui
-                        .button(format!("Cancel ({})", self.dispatcher.in_flight_count()))
-                        .on_hover_text("Cancel in-flight toolpath generation (Esc)")
-                        .clicked()
-                    {
-                        self.dispatcher.cancel_all();
-                    }
-                } else if ui
-                    .button("Generate (Ctrl+G)")
-                    .on_hover_text("Generate dirty 2.5D toolpaths in active Setup on rayon pool")
-                    .clicked()
-                {
-                    self.trigger_generate_dirty(Some(self.active_setup_idx), None);
-                }
-
-                if ui
-                    .button("Simulate")
-                    .on_hover_text("Run 2.5D Z-Dexel Heightmap Stock Removal & Crash Checks")
-                    .clicked()
-                {
-                    focus_workspace_pane(&mut self.tree, WorkspacePane::SimulationTimeline);
-                    self.trigger_active_setup_simulation(ctx);
-                }
-                if ui
-                    .button("Post G-Code")
-                    .on_hover_text("Open G-Code Preview & Safety-Gated Export")
-                    .clicked()
-                {
-                    focus_workspace_pane(&mut self.tree, WorkspacePane::GCodePreview);
-                }
-
-                if ui.button("Tool Library").clicked() {
-                    self.tool_library_modal.open = true;
-                }
-                if ui
-                    .button("Setup Top")
-                    .on_hover_text("Align camera straight down Active Setup +Z")
-                    .clicked()
-                {
-                    self.align_camera_to_active_setup();
-                }
-                ui.toggle_value(&mut self.highlight.show_toolpaths, "Toolpaths");
-                ui.toggle_value(&mut self.highlight.show_rapids, "Rapids");
-                ui.toggle_value(&mut self.highlight.show_stock, "Stock");
-                ui.toggle_value(&mut self.highlight.ghost_part, "Ghost");
-
-                ui.separator();
-                let proj_label = if self.camera.projection.is_orthographic() {
-                    "Ortho (P)"
-                } else {
-                    "Persp (P)"
-                };
-                if ui.button(proj_label).clicked() {
-                    self.camera.toggle_projection();
-                }
-                if ui.button("Fit (F)").clicked() {
-                    self.fit_scene_to_viewport();
-                }
-
-                ui.separator();
-                ui.label("Mouse:");
-                egui::ComboBox::from_id_salt("mouse_preset_combo")
-                    .selected_text(self.camera.mouse_preset.short_label())
-                    .show_ui(ui, |ui| {
-                        for preset in MousePreset::ALL {
-                            ui.selectable_value(
-                                &mut self.camera.mouse_preset,
-                                preset,
-                                preset.label(),
-                            );
-                        }
-                    });
-
-                let next_orbit = match self.camera.orbit_mode {
-                    OrbitMode::TurntableZUp => OrbitMode::FreeTrackball,
-                    OrbitMode::FreeTrackball => OrbitMode::TurntableZUp,
-                };
-                if ui.button(self.camera.orbit_mode.label()).clicked() {
-                    self.camera.set_orbit_mode(next_orbit);
-                }
-
-                ui.separator();
-                ui.label("Units:");
-                let mut u_sel = self.project.display_units;
-                ui.selectable_value(&mut u_sel, DisplayUnit::Millimeter, "mm");
-                ui.selectable_value(&mut u_sel, DisplayUnit::Inch, "in");
-                if u_sel != self.project.display_units {
-                    self.history
-                        .record_before_edit("Change Display Units", None, &self.project);
-                    self.project.display_units = u_sel;
-                    self.refresh_dependent_expressions();
                 }
             });
         });
     }
 
+    fn draw_quick_toolbar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        let tok = ThemeTokens::for_theme(self.theme);
+        egui::Panel::top("chip_toolbar")
+            .frame(
+                egui::Frame::NONE
+                    .fill(tok.toolbar_bg)
+                    .stroke(egui::Stroke::new(1.0, tok.border))
+                    .inner_margin(egui::Margin::symmetric(8, 5)),
+            )
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 5.0;
+
+                    if icon_button(
+                        ui,
+                        IconKind::FolderOpen,
+                        Some("Open"),
+                        "Open .chip.toml Project or .chipz Bundle (Ctrl+O)",
+                    )
+                    .clicked()
+                    {
+                        self.open_project_dialog(ctx);
+                    }
+                    if icon_button(
+                        ui,
+                        IconKind::Save,
+                        Some("Save"),
+                        "Save .chip.toml Project (Ctrl+S)",
+                    )
+                    .clicked()
+                    {
+                        self.save_project_dialog();
+                    }
+                    if icon_button(
+                        ui,
+                        IconKind::BundleZip,
+                        Some(".chipz"),
+                        "Export Self-Contained Portable Bundle (.chipz)",
+                    )
+                    .clicked()
+                    {
+                        self.export_chipz_dialog();
+                    }
+                    if icon_button(
+                        ui,
+                        IconKind::VectorImport,
+                        Some("DXF/SVG"),
+                        "Import 2D Vector Drawing (.dxf / .svg) or Start Pure-2D Job",
+                    )
+                    .clicked()
+                    {
+                        self.vector_import_modal.open = true;
+                    }
+                    if self.model.is_some()
+                        && icon_button(
+                            ui,
+                            IconKind::Reload,
+                            None,
+                            "Associatively Reload Active STEP Model (Ctrl+R)",
+                        )
+                        .clicked()
+                    {
+                        self.reload_active_step_model(ctx);
+                    }
+
+                    ui.add_enabled_ui(self.history.can_undo(), |ui| {
+                        if icon_button(ui, IconKind::Undo, None, "Undo (Ctrl+Z)").clicked() {
+                            self.perform_undo();
+                        }
+                    });
+                    ui.add_enabled_ui(self.history.can_redo(), |ui| {
+                        if icon_button(ui, IconKind::Redo, None, "Redo (Ctrl+Y)").clicked() {
+                            self.perform_redo();
+                        }
+                    });
+
+                    ui.separator();
+
+                    if icon_button(
+                        ui,
+                        IconKind::Sketch2D,
+                        Some("+ Sketch"),
+                        "Create a New 2D Sketch Layer on Active Setup XY",
+                    )
+                    .clicked()
+                    {
+                        self.create_new_setup_xy_sketch();
+                    }
+                    if icon_button(
+                        ui,
+                        IconKind::Adaptive2D,
+                        Some("+ Adaptive"),
+                        "Add a 2D Adaptive / Trochoidal Clearing Operation",
+                    )
+                    .clicked()
+                    {
+                        self.create_new_adaptive_operation();
+                    }
+                    if icon_button(
+                        ui,
+                        IconKind::VCarve,
+                        Some("+ V-Carve"),
+                        "Add a 3D Medial-Axis V-Carve / Flat Clearance / V-Inlay Operation",
+                    )
+                    .clicked()
+                    {
+                        self.create_new_vcarve_operation();
+                    }
+
+                    ui.separator();
+
+                    if self.dispatcher.is_busy() {
+                        ui.spinner();
+                        let cancel_lbl = format!("Cancel ({})", self.dispatcher.in_flight_count());
+                        if icon_button(
+                            ui,
+                            IconKind::CancelStop,
+                            Some(&cancel_lbl),
+                            "Cancel In-Flight Toolpath Generation (Esc)",
+                        )
+                        .clicked()
+                        {
+                            self.dispatcher.cancel_all();
+                        }
+                    } else if primary_icon_button(
+                        ui,
+                        IconKind::Generate,
+                        "Generate",
+                        "Generate Dirty Toolpaths in Active Setup (Ctrl+G)",
+                    )
+                    .clicked()
+                    {
+                        self.trigger_generate_dirty(Some(self.active_setup_idx), None);
+                    }
+
+                    if icon_button(
+                        ui,
+                        IconKind::Simulate,
+                        Some("Simulate"),
+                        "Run 2.5D Z-Dexel Heightmap Stock Removal & 5-Rule Crash Verification",
+                    )
+                    .clicked()
+                    {
+                        focus_workspace_pane(&mut self.tree, WorkspacePane::SimulationTimeline);
+                        self.trigger_active_setup_simulation(ctx);
+                    }
+                    if icon_button(
+                        ui,
+                        IconKind::PostGCode,
+                        Some("Post"),
+                        "Open G-Code Preview & Safety-Gated Export",
+                    )
+                    .clicked()
+                    {
+                        focus_workspace_pane(&mut self.tree, WorkspacePane::GCodePreview);
+                    }
+                    if icon_button(
+                        ui,
+                        IconKind::Tool,
+                        Some("Tools"),
+                        "Open Tool Library Manager",
+                    )
+                    .clicked()
+                    {
+                        self.tool_library_modal.open = true;
+                    }
+
+                    // Right-aligned Theme & Display Units controls
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.spacing_mut().item_spacing.x = 5.0;
+                        let (theme_icon, theme_tip) = match self.theme {
+                            AppTheme::Dark => (
+                                IconKind::Sun,
+                                "Switch to Daylight High-Contrast Light Theme",
+                            ),
+                            AppTheme::Light => (IconKind::Moon, "Switch to Studio Dark Theme"),
+                        };
+                        if icon_button(ui, theme_icon, Some(self.theme.short_label()), theme_tip)
+                            .clicked()
+                        {
+                            self.set_theme(ctx, self.theme.toggled());
+                        }
+
+                        ui.separator();
+
+                        let mut u_sel = self.project.display_units;
+                        ui.selectable_value(&mut u_sel, DisplayUnit::Inch, "in");
+                        ui.selectable_value(&mut u_sel, DisplayUnit::Millimeter, "mm");
+                        if u_sel != self.project.display_units {
+                            self.history.record_before_edit(
+                                "Change Display Units",
+                                None,
+                                &self.project,
+                            );
+                            self.project.display_units = u_sel;
+                            self.refresh_dependent_expressions();
+                        }
+                    });
+                });
+            });
+    }
+
+    fn create_new_vcarve_operation(&mut self) {
+        if self.active_setup_idx >= self.project.setups.len() {
+            return;
+        }
+        self.history
+            .record_before_edit("Add V-Carve", None, &self.project);
+        let s_idx = self.active_setup_idx;
+        let n = self.project.setups[s_idx].operations.len() + 1;
+        let mut op = Operation::new(
+            format!("op_{s_idx}_{n}_vcarve"),
+            format!("V-Carve {n}"),
+            OperationKind::VCarve,
+        );
+        if let Some(t) = self
+            .project
+            .tools
+            .iter()
+            .chain(self.global_tools.tools.iter())
+            .find(|t| OperationKind::VCarve.is_compatible_with_tool(t))
+            .cloned()
+        {
+            self.project.ensure_tool_embedded(&t);
+            op.tool_id = Some(t.id);
+            op.preset_id = t.presets.first().map(|p| p.id.clone());
+        }
+        self.project.setups[s_idx].operations.push(op);
+        let o_idx = self.project.setups[s_idx].operations.len() - 1;
+        self.inspector_focus = InspectorFocus::Operation {
+            setup_idx: s_idx,
+            op_idx: o_idx,
+        };
+        self.op_tab = OperationTab::Geometry;
+        self.pick_mode = default_pick_mode_for_op(s_idx, o_idx, OperationKind::VCarve, self.op_tab);
+    }
+
     fn draw_status_banners(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        let tok = ThemeTokens::for_theme(self.theme);
         if self.external_step_modified {
             egui::Panel::top("chip_external_step_banner")
                 .frame(
                     egui::Frame::NONE
-                        .fill(egui::Color32::from_rgb(54, 42, 18))
+                        .fill(tok.dirty_bg)
+                        .stroke(egui::Stroke::new(1.0, tok.dirty_border))
                         .inner_margin(egui::Margin::symmetric(10, 4)),
                 )
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
+                        status_badge_icon(ui, StatusBadgeKind::Dirty, None);
                         ui.colored_label(
-                            egui::Color32::from_rgb(255, 206, 86),
-                            "[*] External STEP file updated on disk — CAD revision change detected.",
+                            tok.dirty_fg,
+                            "External STEP file updated on disk — CAD revision change detected.",
                         );
                         if ui.small_button("Reload & Re-Match (Ctrl+R)").clicked() {
                             self.reload_active_step_model(ctx);
@@ -818,24 +895,31 @@ impl ChipCutterApp {
         }
 
         if let Some((msg, has_warn)) = self.last_reload_banner.clone() {
-            let bg = if has_warn {
-                egui::Color32::from_rgb(56, 32, 24)
+            let (bg, border, fg, badge) = if has_warn {
+                (
+                    tok.warn_bg,
+                    tok.warn_border,
+                    tok.warn_fg,
+                    StatusBadgeKind::NeedsRepick,
+                )
             } else {
-                egui::Color32::from_rgb(22, 48, 34)
-            };
-            let fg = if has_warn {
-                egui::Color32::from_rgb(255, 172, 98)
-            } else {
-                egui::Color32::from_rgb(112, 232, 154)
+                (
+                    tok.clean_bg,
+                    tok.clean_border,
+                    tok.clean_fg,
+                    StatusBadgeKind::Clean,
+                )
             };
             egui::Panel::top("chip_reload_summary_banner")
                 .frame(
                     egui::Frame::NONE
                         .fill(bg)
+                        .stroke(egui::Stroke::new(1.0, border))
                         .inner_margin(egui::Margin::symmetric(10, 4)),
                 )
                 .show(ui, |ui| {
                     ui.horizontal_wrapped(|ui| {
+                        status_badge_icon(ui, badge, None);
                         ui.colored_label(fg, &msg);
                         if ui.small_button("Regenerate Dirty (Ctrl+G)").clicked() {
                             self.auto_sim_after_gen = true;

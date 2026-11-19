@@ -130,10 +130,15 @@ pub fn show_setup_inspector(ui: &mut egui::Ui, ctx: SetupInspectorCtx<'_>) -> bo
         .auto_shrink([false, false])
         .show(ui, |ui| {
             if let Some(Err(err_msg)) = &resolved {
-                ui.colored_label(
-                    egui::Color32::from_rgb(248, 98, 98),
-                    format!("[!] {err_msg}"),
-                );
+                let tok = crate::theme::ThemeTokens::from_ui(ui);
+                ui.horizontal(|ui| {
+                    crate::widgets::status_badge_icon(
+                        ui,
+                        crate::widgets::StatusBadgeKind::Error,
+                        None,
+                    );
+                    ui.colored_label(tok.error_fg, *err_msg);
+                });
                 ui.separator();
             }
 

@@ -266,21 +266,19 @@ impl GCodePreviewPanelState {
                 .as_ref()
                 .map_or(0, |r| r.critical_error_count());
 
+            let tok = crate::theme::ThemeTokens::from_ui(ui);
             if verified && crit_count == 0 {
-                ui.colored_label(
-                    egui::Color32::from_rgb(86, 224, 134),
-                    "[OK] Sim Verified (0 Crashes)",
-                );
+                crate::widgets::status_badge_icon(ui, crate::widgets::StatusBadgeKind::Clean, None);
+                ui.colored_label(tok.clean_fg, "Sim Verified (0 Crashes)");
             } else if crit_count > 0 {
+                crate::widgets::status_badge_icon(ui, crate::widgets::StatusBadgeKind::Error, None);
                 ui.colored_label(
-                    egui::Color32::from_rgb(252, 92, 92),
-                    format!("[!] {crit_count} Critical Crash/Gouge(s)!"),
+                    tok.error_fg,
+                    format!("{crit_count} Critical Crash/Gouge(s)!"),
                 );
             } else {
-                ui.colored_label(
-                    egui::Color32::from_rgb(244, 188, 76),
-                    "[*] Unverified — Run Simulation before machining",
-                );
+                crate::widgets::status_badge_icon(ui, crate::widgets::StatusBadgeKind::Dirty, None);
+                ui.colored_label(tok.dirty_fg, "Unverified — Run Simulation before machining");
             }
 
             let can_export = !self.cached_files.is_empty();
@@ -315,17 +313,18 @@ impl GCodePreviewPanelState {
             egui::Window::new(if self.pending_unverified_warning {
                 "Simulation Not Yet Verified"
             } else {
-                "[!] CRITICAL CRASH / GOUGE DETECTED — EXPORT BLOCKED"
+                "CRITICAL CRASH / GOUGE DETECTED — EXPORT BLOCKED"
             })
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .open(&mut open)
             .show(ui.ctx(), |ui| {
+                let tok = crate::theme::ThemeTokens::from_ui(ui);
                 ui.set_max_width(480.0);
                 if self.pending_unverified_warning {
                     ui.colored_label(
-                        egui::Color32::from_rgb(248, 198, 78),
+                        tok.warn_fg,
                         "Heightmap crash & gouge verification has not been run on the current toolpaths.",
                     );
                     ui.label("Run Simulation first to verify zero G0 rapid crashes, gouges, or holder collisions.");
@@ -342,7 +341,7 @@ impl GCodePreviewPanelState {
                     });
                 } else {
                     ui.colored_label(
-                        egui::Color32::from_rgb(255, 96, 96),
+                        tok.error_fg,
                         "ChipCutter detected critical physical collisions or part gouges in this Setup:",
                     );
                     let mut first_crit: Option<SimDiagnostic> = None;
@@ -369,7 +368,7 @@ impl GCodePreviewPanelState {
                         if ui
                             .button(
                                 egui::RichText::new("Acknowledge Risk & Override Export")
-                                    .color(egui::Color32::from_rgb(255, 110, 110)),
+                                    .color(tok.error_fg),
                             )
                             .clicked()
                         {
@@ -412,19 +411,27 @@ impl GCodePreviewPanelState {
 
         // Virtualized 60-FPS Monospace G-Code Viewer (`show_rows`)
         if let Some(lines) = self.cached_lines_per_file.get(self.selected_file_tab) {
-            let row_h = ui.text_style_height(&egui::TextStyle::Monospace);
-            egui::ScrollArea::vertical()
-                .id_salt(("gcode_preview_scroll", self.selected_file_tab))
-                .auto_shrink([false, false])
-                .show_rows(ui, row_h, lines.len(), |ui, row_range| {
-                    for line_idx in row_range {
-                        let line = &lines[line_idx];
-                        let col = gcode_line_color(line);
-                        ui.horizontal(|ui| {
-                            ui.weak(format!("{:>5} ", line_idx + 1));
-                            ui.colored_label(col, egui::RichText::new(line).monospace());
+            let tok = crate::theme::ThemeTokens::from_ui(ui);
+            egui::Frame::NONE
+                .fill(tok.code_bg)
+                .stroke(egui::Stroke::new(1.0, tok.border))
+                .inner_margin(4.0)
+                .corner_radius(4.0)
+                .show(ui, |ui| {
+                    let row_h = ui.text_style_height(&egui::TextStyle::Monospace);
+                    egui::ScrollArea::vertical()
+                        .id_salt(("gcode_preview_scroll", self.selected_file_tab))
+                        .auto_shrink([false, false])
+                        .show_rows(ui, row_h, lines.len(), |ui, row_range| {
+                            for line_idx in row_range {
+                                let line = &lines[line_idx];
+                                let col = gcode_line_color(line, &tok);
+                                ui.horizontal(|ui| {
+                                    ui.weak(format!("{:>5} ", line_idx + 1));
+                                    ui.colored_label(col, egui::RichText::new(line).monospace());
+                                });
+                            }
                         });
-                    }
                 });
         }
 
@@ -491,24 +498,30 @@ impl GCodePreviewPanelState {
     }
 }
 
-fn gcode_line_color(line: &str) -> egui::Color32 {
+fn gcode_line_color(line: &str, tok: &crate::theme::ThemeTokens) -> egui::Color32 {
     let t = line.trim_start();
     if t.starts_with('(') || t.starts_with(';') || t == "%" {
-        egui::Color32::from_rgb(132, 146, 166)
+        tok.gcode_comment
     } else if t.contains("G0 ") || t.ends_with("G0") {
-        egui::Color32::from_rgb(248, 198, 76)
-    } else if t.contains("G2 ") || t.contains("G3 ") {
-        egui::Color32::from_rgb(92, 228, 158)
-    } else if t.contains("G81") || t.contains("G82") || t.contains("G83") || t.contains("G73") {
-        egui::Color32::from_rgb(238, 138, 248)
+        tok.gcode_rapid
+    } else if t.contains("G1 ") || t.ends_with("G1") {
+        tok.gcode_feed
+    } else if t.contains("G2 ")
+        || t.contains("G3 ")
+        || t.contains("G81")
+        || t.contains("G82")
+        || t.contains("G83")
+        || t.contains("G73")
+    {
+        tok.gcode_arc
     } else if t.contains("M6")
         || t.contains("M3")
         || t.contains("M5")
         || t.contains("M30")
         || t.contains("M2")
     {
-        egui::Color32::from_rgb(248, 132, 118)
+        tok.gcode_spindle
     } else {
-        egui::Color32::from_rgb(150, 208, 252)
+        tok.gcode_coord
     }
 }

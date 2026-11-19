@@ -61,6 +61,9 @@ cargo run --release -p chip-gui -- --demo-pure-2d
 cargo run --release -p chip-gui -- --demo-nameplate
 cargo run --release -p chip-gui -- --demo-vcarve
 
+# Launch in Daylight Light shop-floor theme (`dark` is the default):
+cargo run --release -p chip-gui -- --theme light
+
 # Or open an existing .chip.toml project, .chipz bundle, .dxf/.svg vector, or .step model directly:
 cargo run --release -p chip-gui -- path/to/part.step
 ```

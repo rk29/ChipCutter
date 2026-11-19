@@ -18,6 +18,9 @@ pub(crate) struct ViewportUniformsGpu {
     pub(crate) viewport_and_grid: [f32; 4],
     pub(crate) pick_flags: [u32; 4],
     pub(crate) sim_tool_tip_wcs: [f32; 4],
+    pub(crate) bg_top_rgb: [f32; 4],
+    pub(crate) bg_bottom_rgb: [f32; 4],
+    pub(crate) grid_rgb_and_scale: [f32; 4],
 }
 
 #[repr(C)]

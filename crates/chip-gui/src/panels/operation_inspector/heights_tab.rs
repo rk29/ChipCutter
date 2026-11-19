@@ -81,6 +81,7 @@ pub fn show_heights_tab(ui: &mut egui::Ui, ctx: HeightsTabCtx<'_>) {
         ui.separator();
         let mut h_eval = op.heights.clone();
         h_eval.reevaluate(eval_ctx);
+        let tok = crate::theme::ThemeTokens::from_ui(ui);
         match ResolvedHeights::resolve(
             &h_eval,
             &rs.model_aabb_wcs,
@@ -91,10 +92,14 @@ pub fn show_heights_tab(ui: &mut egui::Ui, ctx: HeightsTabCtx<'_>) {
             inf_bot,
         ) {
             Ok(rh) => {
-                ui.colored_label(
-                    egui::Color32::from_rgb(92, 218, 128),
-                    "[OK] Z-Height Hierarchy Valid",
-                );
+                ui.horizontal(|ui| {
+                    crate::widgets::status_badge_icon(
+                        ui,
+                        crate::widgets::StatusBadgeKind::Clean,
+                        None,
+                    );
+                    ui.colored_label(tok.clean_fg, "Z-Height Hierarchy Valid");
+                });
                 ui.label(format!(
                     "Clearance: {}  |  Retract: {}",
                     display_unit.format_length(rh.clearance_z_wcs),
@@ -111,7 +116,14 @@ pub fn show_heights_tab(ui: &mut egui::Ui, ctx: HeightsTabCtx<'_>) {
                 ));
             }
             Err(err) => {
-                ui.colored_label(egui::Color32::from_rgb(248, 92, 92), format!("[!] {err}"));
+                ui.horizontal(|ui| {
+                    crate::widgets::status_badge_icon(
+                        ui,
+                        crate::widgets::StatusBadgeKind::Error,
+                        None,
+                    );
+                    ui.colored_label(tok.error_fg, err.to_string());
+                });
             }
         }
     }

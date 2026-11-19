@@ -334,7 +334,11 @@ pub fn show_geometry_tab(ui: &mut egui::Ui, ctx: GeometryTabCtx<'_>) {
             }
         }
         Some(Err(err)) => {
-            ui.colored_label(egui::Color32::from_rgb(245, 96, 96), format!("[!] {err}"));
+            let tok = crate::theme::ThemeTokens::from_ui(ui);
+            ui.horizontal(|ui| {
+                crate::widgets::status_badge_icon(ui, crate::widgets::StatusBadgeKind::Error, None);
+                ui.colored_label(tok.error_fg, err);
+            });
         }
         None => {}
     }

@@ -580,6 +580,7 @@ impl ViewportRenderer {
         let wcs_l2w = dmat4_to_f32_2d(highlight.wcs_frame.to_dmat4_local_to_world());
         let wcs_w2l = dmat4_to_f32_2d(highlight.wcs_frame.to_dmat4_world_to_local());
 
+        let tok = crate::theme::ThemeTokens::for_theme(highlight.theme);
         let uniforms = ViewportUniformsGpu {
             view_proj: vp.to_cols_array_2d(),
             inv_view_proj: inv_vp.to_cols_array_2d(),
@@ -595,6 +596,24 @@ impl ViewportRenderer {
                 u32::from(camera.projection.is_orthographic()),
             ],
             sim_tool_tip_wcs: tool_tip_wcs,
+            bg_top_rgb: [
+                tok.vp_bg_top_rgb[0],
+                tok.vp_bg_top_rgb[1],
+                tok.vp_bg_top_rgb[2],
+                1.0,
+            ],
+            bg_bottom_rgb: [
+                tok.vp_bg_bottom_rgb[0],
+                tok.vp_bg_bottom_rgb[1],
+                tok.vp_bg_bottom_rgb[2],
+                1.0,
+            ],
+            grid_rgb_and_scale: [
+                tok.vp_grid_rgb[0],
+                tok.vp_grid_rgb[1],
+                tok.vp_grid_rgb[2],
+                tok.vp_grid_alpha_scale,
+            ],
         };
         queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&uniforms));
 
@@ -1138,5 +1157,42 @@ mod tests {
         let png = render_offscreen_png(&doc, &cam, &highlight, 640, 480).unwrap();
         assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"));
         assert!(png.len() > 10_000);
+    }
+
+    #[test]
+    fn renders_offscreen_viewport_in_both_dark_and_light_themes() {
+        use crate::theme::AppTheme;
+
+        let step_str = sample_machined_plate_step().unwrap();
+        let doc = MonstertruckKernel
+            .load_step_bytes("plate.step", step_str.as_bytes(), DEFAULT_TESS_CHORD_TOL_MM)
+            .unwrap();
+        let mut cam = CadCamera::default();
+        cam.fit_aabb(&doc.aabb_mm);
+
+        let dark_hl = HighlightState {
+            theme: AppTheme::Dark,
+            ..HighlightState::default()
+        };
+        let light_hl = HighlightState {
+            theme: AppTheme::Light,
+            ..HighlightState::default()
+        };
+
+        let dark_png = render_offscreen_png(&doc, &cam, &dark_hl, 320, 240).unwrap();
+        let light_png = render_offscreen_png(&doc, &cam, &light_hl, 320, 240).unwrap();
+
+        let dark_img = image::load_from_memory(&dark_png).unwrap().to_rgba8();
+        let light_img = image::load_from_memory(&light_png).unwrap().to_rgba8();
+
+        // Corner pixel `(4, 4)` samples the studio background gradient directly
+        let dp = dark_img.get_pixel(4, 4);
+        let lp = light_img.get_pixel(4, 4);
+        assert!(
+            dp[0] < 80 && lp[0] > 180,
+            "expected dark corner {:?} < 80 and light corner {:?} > 180",
+            dp,
+            lp
+        );
     }
 }

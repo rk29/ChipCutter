@@ -2,6 +2,11 @@ use chip_cam::OperationStatus;
 use chip_project::{ProjectDocument, ToolpathCache};
 use chip_sim::{SetupSimulationResult, SimDiagnostic, SimSeverity};
 
+use crate::{
+    theme::ThemeTokens,
+    widgets::{StatusBadgeKind, status_badge_icon},
+};
+
 /// Formats estimated cycle seconds as `Xm YYs` or `YY.Ys`.
 pub fn format_cycle_time(sec: f64) -> String {
     if !sec.is_finite() || sec <= 0.0 {
@@ -27,6 +32,7 @@ pub fn show_diagnostics_panel(
     sim_result: Option<&SetupSimulationResult>,
     logs: &[String],
 ) -> Option<SimDiagnostic> {
+    let tok = ThemeTokens::from_ui(ui);
     let u = project.display_units;
     let mut jump_target: Option<SimDiagnostic> = None;
 
@@ -43,19 +49,25 @@ pub fn show_diagnostics_panel(
                 .show(&mut cols[0], |ui| {
                     if let Some(sim) = sim_result {
                         if sim.diagnostics.is_empty() {
-                            ui.colored_label(
-                                egui::Color32::from_rgb(86, 224, 134),
-                                "[OK] Simulation Verified: 0 crashes, 0 gouges, 0 warnings.",
-                            );
+                            ui.horizontal(|ui| {
+                                status_badge_icon(ui, StatusBadgeKind::Clean, None);
+                                ui.colored_label(
+                                    tok.clean_fg,
+                                    "Simulation Verified: 0 crashes, 0 gouges, 0 warnings.",
+                                );
+                            });
                         } else {
                             for diag in &sim.diagnostics {
-                                let col = match diag.severity {
+                                let (col, badge) = match diag.severity {
                                     SimSeverity::CriticalError => {
-                                        egui::Color32::from_rgb(252, 92, 92)
+                                        (tok.error_fg, StatusBadgeKind::Error)
                                     }
-                                    SimSeverity::Warning => egui::Color32::from_rgb(248, 198, 76),
+                                    SimSeverity::Warning => {
+                                        (tok.warn_fg, StatusBadgeKind::NeedsRepick)
+                                    }
                                 };
                                 ui.horizontal_wrapped(|ui| {
+                                    status_badge_icon(ui, badge, None);
                                     if ui
                                         .small_button("Jump to Move")
                                         .on_hover_text(
@@ -68,8 +80,7 @@ pub fn show_diagnostics_panel(
                                     ui.colored_label(
                                         col,
                                         format!(
-                                            "{} [{}] {} (Seg #{}, t={:.2}s): {}",
-                                            diag.severity.badge(),
+                                            "[{}] {} (Seg #{}, t={:.2}s): {}",
                                             diag.kind.label(),
                                             diag.op_name,
                                             diag.global_seg_idx + 1,
@@ -85,7 +96,10 @@ pub fn show_diagnostics_panel(
 
                     for (o_idx, op) in setup.operations.iter().enumerate() {
                         if op.suppressed {
-                            ui.weak(format!("[-] {}. {} (Suppressed)", o_idx + 1, op.name));
+                            ui.horizontal(|ui| {
+                                status_badge_icon(ui, StatusBadgeKind::Suppressed, None);
+                                ui.weak(format!("{}. {} (Suppressed)", o_idx + 1, op.name));
+                            });
                             continue;
                         }
                         if let Some((_, tp)) =
@@ -94,12 +108,13 @@ pub fn show_diagnostics_panel(
                             total_sec += tp.stats.total_est_time_sec;
                             total_cut_mm += tp.stats.cutting_distance_mm;
                             ui.horizontal_wrapped(|ui| {
+                                status_badge_icon(ui, StatusBadgeKind::Clean, None);
                                 ui.colored_label(
-                                    egui::Color32::from_rgb(86, 224, 134),
-                                    format!("[OK] {}. {}", o_idx + 1, op.name),
+                                    tok.clean_fg,
+                                    format!("{}. {}", o_idx + 1, op.name),
                                 );
                                 ui.weak(format!(
-                                    "— {} pass(es) | {} G1 | {} G2/G3 | Cut {} | Rapid {} | Est {}",
+                                    "— {} pass(es) · {} G1 · {} G2/G3 · Cut {} · Rapid {} · Est {}",
                                     tp.stats.pass_count,
                                     tp.stats.linear_move_count,
                                     tp.stats.arc_move_count,
@@ -109,19 +124,19 @@ pub fn show_diagnostics_panel(
                                 ));
                             });
                             for w in &tp.warnings {
-                                ui.colored_label(
-                                    egui::Color32::from_rgb(248, 196, 76),
-                                    format!("   [WARN] {w}"),
-                                );
+                                ui.colored_label(tok.warn_fg, format!("   • {w}"));
                             }
                         } else {
                             match &op.runtime_status {
                                 OperationStatus::Error { message }
                                 | OperationStatus::NeedsRepick { message } => {
-                                    ui.colored_label(
-                                        egui::Color32::from_rgb(248, 96, 96),
-                                        format!("[!] {}. {}: {message}", o_idx + 1, op.name),
-                                    );
+                                    ui.horizontal_wrapped(|ui| {
+                                        status_badge_icon(ui, StatusBadgeKind::Error, None);
+                                        ui.colored_label(
+                                            tok.error_fg,
+                                            format!("{}. {}: {message}", o_idx + 1, op.name),
+                                        );
+                                    });
                                 }
                                 OperationStatus::Generating => {
                                     ui.horizontal(|ui| {
@@ -134,14 +149,17 @@ pub fn show_diagnostics_panel(
                                     });
                                 }
                                 _ => {
-                                    ui.colored_label(
-                                        egui::Color32::from_rgb(244, 188, 76),
-                                        format!(
-                                            "[*] {}. {} — Dirty (press Ctrl+G to generate)",
-                                            o_idx + 1,
-                                            op.name
-                                        ),
-                                    );
+                                    ui.horizontal_wrapped(|ui| {
+                                        status_badge_icon(ui, StatusBadgeKind::Dirty, None);
+                                        ui.colored_label(
+                                            tok.dirty_fg,
+                                            format!(
+                                                "{}. {} — Dirty (press Ctrl+G to generate)",
+                                                o_idx + 1,
+                                                op.name
+                                            ),
+                                        );
+                                    });
                                 }
                             }
                         }

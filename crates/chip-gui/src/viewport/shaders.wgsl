@@ -11,6 +11,9 @@ struct ViewportUniforms {
     pick_flags: vec4<u32>,
     // xyz = active 3D cutter tip position in Setup WCS (mm)
     sim_tool_tip_wcs: vec4<f32>,
+    bg_top_rgb: vec4<f32>,
+    bg_bottom_rgb: vec4<f32>,
+    grid_rgb_and_scale: vec4<f32>,
 };
 
 @group(0) @binding(0)
@@ -50,8 +53,8 @@ struct BgFragOut {
 @fragment
 fn fs_background(in: BgOut) -> BgFragOut {
     let t = clamp(0.5 * (in.ndc.y + 1.0), 0.0, 1.0);
-    let top_col = vec3<f32>(0.155, 0.178, 0.212);
-    let bot_col = vec3<f32>(0.088, 0.098, 0.116);
+    let top_col = u_vp.bg_top_rgb.xyz;
+    let bot_col = u_vp.bg_bottom_rgb.xyz;
     var col = mix(bot_col, top_col, t);
     var out_depth = 1.0;
 
@@ -94,8 +97,8 @@ fn fs_background(in: BgOut) -> BgFragOut {
                     let dist_from_origin = length(hit_wcs.xy);
                     let fade = 1.0 - smoothstep(major_step * 8.0, major_step * 28.0, dist_from_origin);
 
-                    var grid_rgb = vec3<f32>(0.24, 0.27, 0.32);
-                    var alpha = line_minor * 0.22 + line_major * 0.42;
+                    var grid_rgb = u_vp.grid_rgb_and_scale.xyz;
+                    var alpha = (line_minor * 0.22 + line_major * 0.42) * u_vp.grid_rgb_and_scale.w;
 
                     if (x_axis > 0.01 && hit_wcs.x >= -major_step * 2.0) {
                         grid_rgb = mix(grid_rgb, vec3<f32>(0.85, 0.28, 0.28), x_axis);

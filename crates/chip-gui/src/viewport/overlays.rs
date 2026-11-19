@@ -1,7 +1,19 @@
 use chip_cam::BoxAnchor27;
 use chip_math::{Aabb3, RigidFrame3};
 
-use crate::camera::{CadCamera, StandardView};
+use crate::{
+    camera::{CadCamera, MousePreset, OrbitMode, StandardView},
+    theme::ThemeTokens,
+    viewport::HighlightState,
+    widgets::{IconKind, hud_toggle_pill, icon_button},
+};
+
+/// Action emitted by the Floating Viewport View HUD.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ViewportHudAction {
+    FitToViewport,
+    AlignToSetupTop,
+}
 
 /// Interactive 27-point 3D anchor dot overlay for picking a Stock or Model WCS Origin directly
 /// inside the 3D viewport (`03-setups-wcs.md`).
@@ -16,6 +28,7 @@ pub fn draw_wcs_origin_27pt_overlay(
     if !box_wcs.is_valid() {
         return None;
     }
+    let tok = ThemeTokens::from_ui(ui);
     let painter = ui.painter_at(viewport_rect);
     let mut picked = None;
 
@@ -39,23 +52,11 @@ pub fn draw_wcs_origin_27pt_overlay(
         let is_active = anchor == active_anchor;
         let hovered = resp.hovered();
         let (radius, fill, stroke_col) = if is_active {
-            (
-                6.2,
-                egui::Color32::from_rgb(255, 204, 56),
-                egui::Color32::WHITE,
-            )
+            (6.2, tok.dirty_fg, tok.card_bg)
         } else if hovered {
-            (
-                5.8,
-                egui::Color32::from_rgb(92, 224, 255),
-                egui::Color32::WHITE,
-            )
+            (5.8, tok.accent_hover, tok.accent_on_fg)
         } else {
-            (
-                4.0,
-                egui::Color32::from_rgba_unmultiplied(215, 225, 240, 175),
-                egui::Color32::from_rgb(28, 34, 42),
-            )
+            (4.0, tok.card_bg.gamma_multiply(0.88), tok.border_strong)
         };
 
         painter.circle(screen_pt, radius, fill, egui::Stroke::new(1.3, stroke_col));
@@ -92,12 +93,13 @@ pub fn draw_view_cube_overlay(
         egui::vec2(box_w, box_h),
     );
 
+    let tok = ThemeTokens::from_ui(ui);
     let painter = ui.painter_at(overlay_rect);
     painter.rect(
         overlay_rect,
         6.0,
-        egui::Color32::from_rgba_unmultiplied(20, 24, 30, 210),
-        egui::Stroke::new(1.0, egui::Color32::from_rgb(58, 66, 78)),
+        tok.hud_bg,
+        egui::Stroke::new(1.0, tok.hud_border),
         egui::StrokeKind::Inside,
     );
 
@@ -204,4 +206,175 @@ pub fn draw_view_cube_overlay(
     if let Some(v) = clicked_view {
         camera.set_standard_view(v);
     }
+}
+
+/// Draws the translucent **Floating Viewport View HUD** anchored along the bottom center of
+/// `viewport_rect`, plus the non-overlapping Setup / WCS / Units pill in the bottom-left or top-left.
+pub fn draw_viewport_bottom_hud(
+    ui: &mut egui::Ui,
+    viewport_rect: egui::Rect,
+    camera: &mut CadCamera,
+    highlight: &mut HighlightState,
+    setup_summary_label: &str,
+) -> Option<ViewportHudAction> {
+    let tok = ThemeTokens::from_ui(ui);
+    let mut emitted = None;
+
+    // 1. Subtle Setup + WCS + Units pill in top-left
+    if viewport_rect.width() > 260.0 && viewport_rect.height() > 120.0 {
+        let galley = ui.painter().layout_no_wrap(
+            setup_summary_label.to_string(),
+            egui::FontId::proportional(11.5),
+            tok.text_secondary,
+        );
+        let pill_size = egui::vec2(galley.size().x + 16.0, 22.0);
+        let resolved_pill_rect = egui::Rect::from_min_size(
+            egui::pos2(viewport_rect.left() + 10.0, viewport_rect.top() + 10.0),
+            pill_size,
+        );
+        let p = ui.painter_at(viewport_rect);
+        p.rect(
+            resolved_pill_rect,
+            egui::CornerRadius::same(5),
+            tok.hud_bg,
+            egui::Stroke::new(1.0, tok.hud_border),
+            egui::StrokeKind::Inside,
+        );
+        p.text(
+            resolved_pill_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            setup_summary_label,
+            egui::FontId::proportional(11.5),
+            tok.text_secondary,
+        );
+    }
+
+    if viewport_rect.width() < 520.0 || viewport_rect.height() < 90.0 {
+        return None;
+    }
+
+    // 2. Centered Floating Camera & Visibility HUD Bar along bottom edge
+    let bar_w = (viewport_rect.width() - 24.0).min(640.0);
+    let bar_h = 32.0;
+    let bar_rect = egui::Rect::from_center_size(
+        egui::pos2(viewport_rect.center().x, viewport_rect.bottom() - 21.0),
+        egui::vec2(bar_w, bar_h),
+    );
+
+    ui.painter_at(viewport_rect).rect(
+        bar_rect,
+        egui::CornerRadius::same(7),
+        tok.hud_bg,
+        egui::Stroke::new(1.0, tok.hud_border),
+        egui::StrokeKind::Inside,
+    );
+
+    let inner = bar_rect.shrink2(egui::vec2(8.0, 4.0));
+    let mut hud_ui = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(inner)
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    );
+    hud_ui.spacing_mut().item_spacing = egui::vec2(5.0, 2.0);
+
+    let proj_lbl = if camera.projection.is_orthographic() {
+        "Ortho"
+    } else {
+        "Persp"
+    };
+    if icon_button(
+        &mut hud_ui,
+        IconKind::OrthoCube,
+        Some(proj_lbl),
+        "Toggle Orthographic / Perspective Camera (P)",
+    )
+    .clicked()
+    {
+        camera.toggle_projection();
+    }
+    if icon_button(
+        &mut hud_ui,
+        IconKind::FitView,
+        Some("Fit"),
+        "Fit Scene to Viewport (F)",
+    )
+    .clicked()
+    {
+        emitted = Some(ViewportHudAction::FitToViewport);
+    }
+    if icon_button(
+        &mut hud_ui,
+        IconKind::TopView,
+        Some("Top"),
+        "Align Camera to Active Setup +Z Top",
+    )
+    .clicked()
+    {
+        emitted = Some(ViewportHudAction::AlignToSetupTop);
+    }
+
+    hud_ui.separator();
+
+    let paths_icon = if highlight.show_toolpaths {
+        IconKind::Eye
+    } else {
+        IconKind::EyeOff
+    };
+    let _ = hud_toggle_pill(
+        &mut hud_ui,
+        &mut highlight.show_toolpaths,
+        Some(paths_icon),
+        "Paths",
+        "Toggle 3D Generated Toolpaths",
+    );
+    let _ = hud_toggle_pill(
+        &mut hud_ui,
+        &mut highlight.show_rapids,
+        None,
+        "Rapids",
+        "Toggle G0 Rapid Moves",
+    );
+    let _ = hud_toggle_pill(
+        &mut hud_ui,
+        &mut highlight.show_stock,
+        None,
+        "Stock",
+        "Toggle Translucent Setup Stock",
+    );
+    let _ = hud_toggle_pill(
+        &mut hud_ui,
+        &mut highlight.ghost_part,
+        None,
+        "Ghost",
+        "Toggle Translucent Target Part Overlay",
+    );
+
+    if bar_w >= 580.0 {
+        hud_ui.separator();
+        egui::ComboBox::from_id_salt("vp_hud_mouse_preset")
+            .selected_text(camera.mouse_preset.short_label())
+            .width(86.0)
+            .show_ui(&mut hud_ui, |ui| {
+                for preset in MousePreset::ALL {
+                    ui.selectable_value(&mut camera.mouse_preset, preset, preset.label());
+                }
+            });
+        let orbit_short = match camera.orbit_mode {
+            OrbitMode::TurntableZUp => "+Z Up",
+            OrbitMode::FreeTrackball => "Free",
+        };
+        let next_orbit = match camera.orbit_mode {
+            OrbitMode::TurntableZUp => OrbitMode::FreeTrackball,
+            OrbitMode::FreeTrackball => OrbitMode::TurntableZUp,
+        };
+        if hud_ui
+            .small_button(orbit_short)
+            .on_hover_text(camera.orbit_mode.label())
+            .clicked()
+        {
+            camera.set_orbit_mode(next_orbit);
+        }
+    }
+
+    emitted
 }

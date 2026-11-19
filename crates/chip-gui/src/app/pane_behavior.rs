@@ -17,7 +17,10 @@ use crate::{
         simulation::{SimPanelCtx, SimulationUiAction},
         sketch_inspector::{SketchInspectorAction, SketchInspectorCtx, show_sketch_inspector},
     },
-    viewport::{draw_view_cube_overlay, draw_wcs_origin_27pt_overlay},
+    viewport::{
+        ViewportHudAction, draw_view_cube_overlay, draw_viewport_bottom_hud,
+        draw_wcs_origin_27pt_overlay,
+    },
 };
 
 pub(crate) struct PaneBehavior<'a> {
@@ -297,6 +300,7 @@ impl PaneBehavior<'_> {
 
         draw_view_cube_overlay(ui, avail, &mut self.app.camera);
 
+        let tok = crate::theme::ThemeTokens::from_ui(ui);
         if let Some((snap_world, badge, xy_mm)) = self.app.highlight.sketch_snap_marker
             && let Some(screen_pt) = self.app.camera.project_world_to_screen(snap_world, avail)
         {
@@ -311,18 +315,18 @@ impl PaneBehavior<'_> {
                 egui::Align2::LEFT_BOTTOM,
                 lbl,
                 egui::FontId::monospace(12.0),
-                egui::Color32::from_rgb(255, 218, 64),
+                tok.snap_badge_fg,
             );
         }
 
         if let Some(banner) = self.app.pick_mode.banner_text() {
-            let banner_pos = egui::pos2(avail.left() + 12.0, avail.top() + 14.0);
+            let banner_pos = egui::pos2(avail.left() + 12.0, avail.top() + 38.0);
             ui.painter().text(
                 banner_pos,
                 egui::Align2::LEFT_TOP,
-                format!(">> {banner}"),
+                format!("▸ {banner}"),
                 egui::FontId::proportional(13.0),
-                egui::Color32::from_rgb(108, 224, 255),
+                tok.pick_banner_fg,
             );
         }
 
@@ -331,26 +335,33 @@ impl PaneBehavior<'_> {
             .project
             .setups
             .get(self.app.active_setup_idx)
-            .map(|s| format!("{} [{}]", s.name, s.wcs_slot.short_code()))
+            .map(|s| {
+                let code = s.wcs_slot.short_code();
+                if s.name.contains(code) {
+                    format!("{} · {}", s.name, self.app.project.display_units.suffix())
+                } else {
+                    format!(
+                        "{} [{}] · {}",
+                        s.name,
+                        code,
+                        self.app.project.display_units.suffix()
+                    )
+                }
+            })
             .unwrap_or_else(|| "No Setup".to_string());
 
-        let hud_pos = egui::pos2(avail.left() + 10.0, avail.bottom() - 24.0);
-        ui.painter().text(
-            hud_pos,
-            egui::Align2::LEFT_CENTER,
-            format!(
-                "{setup_lbl} | {} | {} | Units: {}",
-                if self.app.camera.projection.is_orthographic() {
-                    "Ortho"
-                } else {
-                    "Persp"
-                },
-                self.app.camera.mouse_preset.short_label(),
-                self.app.project.display_units.suffix()
-            ),
-            egui::FontId::proportional(11.5),
-            egui::Color32::from_rgba_unmultiplied(210, 220, 232, 195),
-        );
+        if let Some(hud_act) = draw_viewport_bottom_hud(
+            ui,
+            avail,
+            &mut self.app.camera,
+            &mut self.app.highlight,
+            &setup_lbl,
+        ) {
+            match hud_act {
+                ViewportHudAction::FitToViewport => self.app.fit_scene_to_viewport(),
+                ViewportHudAction::AlignToSetupTop => self.app.align_camera_to_active_setup(),
+            }
+        }
     }
 
     fn ui_inspector(&mut self, ui: &mut egui::Ui) {

@@ -16,7 +16,7 @@ use chip_sim::{SimStockMesh, SimToolMesh};
 use chip_sketch::{SketchDiagnosticKind, SketchEntity, SketchLayer, SketchPickHit};
 
 use super::gpu_types::{EdgeInstanceGpu, OverlayVertexGpu};
-use crate::camera::CadCamera;
+use crate::{camera::CadCamera, theme::AppTheme};
 
 /// Visual Z-height reference plane rendered across the active Setup's stock XY footprint.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -45,6 +45,7 @@ pub struct SketchLayerVisual {
 /// Active hover, multi-selection, WCS, Stock, Z-plane, 2D Sketch, and Toolpath scene state fed into the 3D CAD/CAM viewport.
 #[derive(Debug, Clone)]
 pub struct HighlightState {
+    pub theme: AppTheme,
     pub hovered: Option<PickTarget>,
     pub selected: Option<PickTarget>,
     pub hovered_sketch: Option<SketchPickHit>,
@@ -78,6 +79,7 @@ pub struct HighlightState {
 impl Default for HighlightState {
     fn default() -> Self {
         Self {
+            theme: AppTheme::Dark,
             hovered: None,
             selected: None,
             hovered_sketch: None,
@@ -260,7 +262,13 @@ pub(crate) fn build_edge_and_scene_instances(
         && highlight.sim_stock_mesh.is_none()
         && let Some(stock) = &highlight.stock
     {
-        emit_stock_visuals(stock, &highlight.wcs_frame, overlay_tris, &mut out);
+        emit_stock_visuals(
+            stock,
+            &highlight.wcs_frame,
+            highlight.theme.is_light(),
+            overlay_tris,
+            &mut out,
+        );
     }
 
     // 3. Translucent Z-Height reference planes across Stock XY footprint
@@ -444,20 +452,43 @@ fn emit_sketch_layer_visuals(
                 }) if sketch_id == &sk.id && entity_id == &ent.id
             );
 
+            let is_light = highlight.theme.is_light();
             for poly in ent.entity.to_arc_polylines(None) {
                 let (col, width_px) = if is_sel {
-                    ([1.0, 0.80, 0.20, 1.0], 3.4)
+                    if is_light {
+                        ([0.86, 0.48, 0.02, 1.0], 3.4)
+                    } else {
+                        ([1.0, 0.80, 0.20, 1.0], 3.4)
+                    }
                 } else if is_hov {
-                    ([0.25, 0.96, 1.0, 1.0], 3.1)
+                    if is_light {
+                        ([0.04, 0.56, 0.88, 1.0], 3.1)
+                    } else {
+                        ([0.25, 0.96, 1.0, 1.0], 3.1)
+                    }
                 } else if ent.is_construction {
-                    ([0.56, 0.65, 0.78, 0.65], 1.65)
+                    if is_light {
+                        ([0.40, 0.47, 0.58, 0.72], 1.65)
+                    } else {
+                        ([0.56, 0.65, 0.78, 0.65], 1.65)
+                    }
                 } else if matches!(
                     ent.entity,
                     SketchEntity::Circle { .. } | SketchEntity::PointPattern(_)
                 ) {
-                    ([0.42, 0.92, 0.78, 0.96], 2.2)
+                    if is_light {
+                        ([0.06, 0.54, 0.44, 0.96], 2.2)
+                    } else {
+                        ([0.42, 0.92, 0.78, 0.96], 2.2)
+                    }
                 } else if poly.closed {
-                    ([0.38, 0.78, 0.98, 0.94], 2.05)
+                    if is_light {
+                        ([0.08, 0.42, 0.80, 0.96], 2.05)
+                    } else {
+                        ([0.38, 0.78, 0.98, 0.94], 2.05)
+                    }
+                } else if is_light {
+                    ([0.82, 0.34, 0.12, 0.96], 2.2)
                 } else {
                     ([1.0, 0.56, 0.34, 0.96], 2.2)
                 };
@@ -690,6 +721,7 @@ fn emit_tab_marker_visual(
 
 pub(crate) fn compute_toolpath_gpu_signature(highlight: &HighlightState) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
+    highlight.theme.hash(&mut h);
     highlight.show_toolpaths.hash(&mut h);
     highlight.show_rapids.hash(&mut h);
     highlight.sim_trail_limit.hash(&mut h);
@@ -723,8 +755,9 @@ pub(crate) fn build_toolpath_gpu_instances(highlight: &HighlightState) -> Vec<Ed
     let frame = &highlight.wcs_frame;
     let mut global_seg_counter = 0usize;
 
+    let is_light = highlight.theme.is_light();
     for entry in &highlight.toolpaths {
-        let alpha = if entry.is_focused { 0.96_f32 } else { 0.36_f32 };
+        let alpha = if entry.is_focused { 0.96_f32 } else { 0.42_f32 };
         let width_scale = if entry.is_focused { 1.0_f32 } else { 0.80_f32 };
 
         for seg in &entry.toolpath.segments_wcs {
@@ -740,10 +773,15 @@ pub(crate) fn build_toolpath_gpu_instances(highlight: &HighlightState) -> Vec<Ed
                     if !highlight.show_rapids {
                         continue;
                     }
-                    ([0.98, 0.75, 0.16, 0.82 * alpha], 1.5 * width_scale, 1usize)
+                    let r_col = if is_light {
+                        [0.82, 0.48, 0.04, 0.86 * alpha]
+                    } else {
+                        [0.98, 0.75, 0.16, 0.82 * alpha]
+                    };
+                    (r_col, 1.5 * width_scale, 1usize)
                 }
                 SegmentMotion3D::Linear { role, .. } => {
-                    let (rgb, w) = role_color_and_width(role);
+                    let (rgb, w) = role_color_and_width(role, is_light);
                     ([rgb[0], rgb[1], rgb[2], alpha], w * width_scale, 1usize)
                 }
                 SegmentMotion3D::Arc {
@@ -752,7 +790,7 @@ pub(crate) fn build_toolpath_gpu_instances(highlight: &HighlightState) -> Vec<Ed
                     role,
                     ..
                 } => {
-                    let (rgb, w) = role_color_and_width(role);
+                    let (rgb, w) = role_color_and_width(role, is_light);
                     // Discretize circular/helical arcs strictly on GPU upload to <= ~0.025 mm chord error
                     let step_angle = if radius_mm > 0.05 {
                         (2.0 * (1.0 - (0.025 / radius_mm).min(0.5)).acos()).clamp(0.06, 0.32)
@@ -793,14 +831,25 @@ pub(crate) fn build_toolpath_gpu_instances(highlight: &HighlightState) -> Vec<Ed
     out
 }
 
-fn role_color_and_width(role: MotionRole) -> ([f32; 3], f32) {
-    match role {
-        MotionRole::Cut => ([0.22, 0.74, 0.98], 2.25),
-        MotionRole::FinishCut => ([0.14, 0.90, 0.94], 2.45),
-        MotionRole::LeadIn | MotionRole::LeadOut => ([0.20, 0.84, 0.60], 1.95),
-        MotionRole::Plunge | MotionRole::Ramp => ([0.98, 0.44, 0.52], 2.15),
-        MotionRole::TabRamp => ([0.98, 0.80, 0.24], 2.35),
-        MotionRole::LinkTransition => ([0.56, 0.78, 0.98], 1.75),
+fn role_color_and_width(role: MotionRole, is_light: bool) -> ([f32; 3], f32) {
+    if is_light {
+        match role {
+            MotionRole::Cut => ([0.04, 0.44, 0.84], 2.3),
+            MotionRole::FinishCut => ([0.02, 0.58, 0.66], 2.5),
+            MotionRole::LeadIn | MotionRole::LeadOut => ([0.06, 0.56, 0.36], 2.0),
+            MotionRole::Plunge | MotionRole::Ramp => ([0.82, 0.18, 0.28], 2.2),
+            MotionRole::TabRamp => ([0.82, 0.50, 0.04], 2.4),
+            MotionRole::LinkTransition => ([0.18, 0.46, 0.80], 1.8),
+        }
+    } else {
+        match role {
+            MotionRole::Cut => ([0.22, 0.74, 0.98], 2.25),
+            MotionRole::FinishCut => ([0.14, 0.90, 0.94], 2.45),
+            MotionRole::LeadIn | MotionRole::LeadOut => ([0.20, 0.84, 0.60], 1.95),
+            MotionRole::Plunge | MotionRole::Ramp => ([0.98, 0.44, 0.52], 2.15),
+            MotionRole::TabRamp => ([0.98, 0.80, 0.24], 2.35),
+            MotionRole::LinkTransition => ([0.56, 0.78, 0.98], 1.75),
+        }
     }
 }
 
@@ -823,11 +872,20 @@ fn push_quad_tris(
 fn emit_stock_visuals(
     stock: &ResolvedStockGeometry,
     wcs_frame: &RigidFrame3,
+    is_light: bool,
     overlay_tris: &mut Vec<OverlayVertexGpu>,
     edges: &mut Vec<EdgeInstanceGpu>,
 ) {
-    let fill_col = [0.92, 0.74, 0.28, 0.085];
-    let wire_col = [0.95, 0.78, 0.32, 0.62];
+    let fill_col = if is_light {
+        [0.84, 0.58, 0.10, 0.095]
+    } else {
+        [0.92, 0.74, 0.28, 0.085]
+    };
+    let wire_col = if is_light {
+        [0.72, 0.46, 0.06, 0.78]
+    } else {
+        [0.95, 0.78, 0.32, 0.62]
+    };
 
     match *stock {
         ResolvedStockGeometry::Box { aabb_wcs } => {

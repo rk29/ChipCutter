@@ -471,8 +471,16 @@ impl VectorImportModalState {
                 }
 
                 ui.separator();
+                let tok = crate::theme::ThemeTokens::from_ui(ui);
                 if let Some(err) = &self.preview_error {
-                    ui.colored_label(egui::Color32::from_rgb(248, 96, 96), format!("[!] {err}"));
+                    ui.horizontal(|ui| {
+                        crate::widgets::status_badge_icon(
+                            ui,
+                            crate::widgets::StatusBadgeKind::Error,
+                            None,
+                        );
+                        ui.colored_label(tok.error_fg, err);
+                    });
                 } else if let Some(sk) = &self.preview_sketch {
                     let aabb = sk.exact_aabb();
                     let sz = aabb.size();
@@ -484,8 +492,8 @@ impl VectorImportModalState {
                         .count();
 
                     egui::Frame::NONE
-                        .fill(egui::Color32::from_rgb(22, 28, 36))
-                        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(56, 78, 108)))
+                        .fill(tok.card_bg)
+                        .stroke(egui::Stroke::new(1.0, tok.border_strong))
                         .inner_margin(8.0)
                         .corner_radius(4.0)
                         .show(ui, |ui| {
@@ -510,13 +518,13 @@ impl VectorImportModalState {
                             ));
                             if healed_gaps > 0 {
                                 ui.colored_label(
-                                    egui::Color32::from_rgb(106, 224, 152),
+                                    tok.clean_fg,
                                     format!("Gap-Healer: closed {healed_gaps} micro-gap(s) within {:.3} mm.", self.join_tolerance_mm),
                                 );
                             }
                             if sk.open_chain_count() > 0 {
                                 ui.colored_label(
-                                    egui::Color32::from_rgb(248, 186, 78),
+                                    tok.warn_fg,
                                     format!(
                                         "Note: {} unclosed open chain(s) remain (usable for 2D Contour / Engraving).",
                                         sk.open_chain_count()

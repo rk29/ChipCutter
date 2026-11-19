@@ -224,8 +224,9 @@ fn show_rest_machining_section(
         }
         RestMachiningMode::FromPrecedingOperations { source_op_ids } => {
             if preceding_ops.is_empty() {
+                let tok = crate::theme::ThemeTokens::from_ui(ui);
                 ui.colored_label(
-                    egui::Color32::from_rgb(245, 190, 66),
+                    tok.warn_fg,
                     "No enabled operations precede this operation in the Setup.",
                 );
             } else {

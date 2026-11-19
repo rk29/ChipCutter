@@ -572,6 +572,7 @@ impl SimulationPanelState {
             ui.checkbox(&mut self.trail_up_to_cutter, "Progressive Trail");
 
             ui.separator();
+            let tok = crate::theme::ThemeTokens::from_ui(ui);
             let up_to_date = self.is_verified_up_to_date(project, setup_idx, cache, cad_revision);
             if let Some(res) = &self.active_result
                 && self.active_setup_idx == setup_idx
@@ -579,10 +580,15 @@ impl SimulationPanelState {
                 let crit = res.critical_error_count();
                 let warn = res.warning_count();
                 if crit > 0 {
+                    crate::widgets::status_badge_icon(
+                        ui,
+                        crate::widgets::StatusBadgeKind::Error,
+                        None,
+                    );
                     if ui
                         .button(
-                            egui::RichText::new(format!("[!] {crit} CRASH/GOUGE(S) — Inspect"))
-                                .color(egui::Color32::from_rgb(255, 102, 102))
+                            egui::RichText::new(format!("{crit} CRASH/GOUGE(S) — Inspect"))
+                                .color(tok.error_fg)
                                 .strong(),
                         )
                         .clicked()
@@ -590,25 +596,34 @@ impl SimulationPanelState {
                         action = Some(SimulationUiAction::FocusDiagnosticsTab);
                     }
                 } else if !up_to_date {
-                    ui.colored_label(
-                        egui::Color32::from_rgb(244, 188, 76),
-                        "[*] Toolpaths changed — Refresh Simulation",
+                    crate::widgets::status_badge_icon(
+                        ui,
+                        crate::widgets::StatusBadgeKind::Dirty,
+                        None,
                     );
+                    ui.colored_label(tok.dirty_fg, "Toolpaths changed — Refresh Simulation");
                 } else if warn > 0 {
+                    crate::widgets::status_badge_icon(
+                        ui,
+                        crate::widgets::StatusBadgeKind::NeedsRepick,
+                        None,
+                    );
                     if ui
                         .button(
-                            egui::RichText::new(format!("[OK] 0 Crashes ({warn} Warning)"))
-                                .color(egui::Color32::from_rgb(248, 200, 82)),
+                            egui::RichText::new(format!("0 Crashes ({warn} Warning)"))
+                                .color(tok.warn_fg),
                         )
                         .clicked()
                     {
                         action = Some(SimulationUiAction::FocusDiagnosticsTab);
                     }
                 } else {
-                    ui.colored_label(
-                        egui::Color32::from_rgb(86, 224, 134),
-                        "[OK] Verified Crash-Free",
+                    crate::widgets::status_badge_icon(
+                        ui,
+                        crate::widgets::StatusBadgeKind::Clean,
+                        None,
                     );
+                    ui.colored_label(tok.clean_fg, "Verified Crash-Free");
                 }
             } else {
                 ui.weak("Click 'Run Simulation' to compute 3D material removal & crash checks.");
@@ -629,63 +644,82 @@ impl SimulationPanelState {
         let snap: Option<ScrubSnapshot> = res.timeline.sample_at_time(self.current_time_sec);
         let cur_seg = snap.as_ref().map_or(0, |s| s.global_seg_idx);
 
-        // Middle Row: Transport Controls + Speed + Continuous Scrubber Slider
+        // Middle Row: Vector Transport Controls + Speed + Continuous Scrubber Slider
         ui.horizontal_wrapped(|ui| {
-            if ui
-                .small_button("|<")
-                .on_hover_text("Jump to Start")
-                .clicked()
-            {
+            use crate::widgets::{IconKind, icon_button};
+            if icon_button(ui, IconKind::SkipStart, None, "Jump to Start").clicked() {
                 self.is_playing = false;
                 self.current_time_sec = 0.0;
             }
-            if ui
-                .small_button("< Seg")
-                .on_hover_text("Step Backward 1 Segment (Left Arrow)")
-                .clicked()
+            if icon_button(
+                ui,
+                IconKind::StepBack,
+                Some("Seg"),
+                "Step Backward 1 Segment (Left Arrow)",
+            )
+            .clicked()
             {
                 self.is_playing = false;
                 self.current_time_sec = res.timeline.step_segment_time(cur_seg, -1);
             }
-            let play_txt = if self.is_playing {
-                "Pause [Space]"
+            let (play_icon, play_txt) = if self.is_playing {
+                (IconKind::Pause, "Pause")
             } else {
-                "Play [Space]"
+                (IconKind::Play, "Play")
             };
-            if ui.button(play_txt).clicked() {
+            if icon_button(
+                ui,
+                play_icon,
+                Some(play_txt),
+                "Play / Pause Scrubbing (Space)",
+            )
+            .clicked()
+            {
                 if !self.is_playing && self.current_time_sec >= res.timeline.total_time_sec - 1e-4 {
                     self.current_time_sec = 0.0;
                 }
                 self.is_playing = !self.is_playing;
             }
-            if ui
-                .small_button("Seg >")
-                .on_hover_text("Step Forward 1 Segment (Right Arrow)")
-                .clicked()
+            if icon_button(
+                ui,
+                IconKind::StepForward,
+                Some("Seg"),
+                "Step Forward 1 Segment (Right Arrow)",
+            )
+            .clicked()
             {
                 self.is_playing = false;
                 self.current_time_sec = res.timeline.step_segment_time(cur_seg, 1);
             }
-            if ui
-                .small_button("Next Op >>")
-                .on_hover_text("Jump to Next Operation")
-                .clicked()
+            if icon_button(
+                ui,
+                IconKind::SkipNextOp,
+                Some("Next Op"),
+                "Jump to Next Operation",
+            )
+            .clicked()
             {
                 self.is_playing = false;
                 self.current_time_sec = res.timeline.next_operation_time(self.current_time_sec);
             }
-            if ui
-                .small_button("Next Tool")
-                .on_hover_text("Jump to Next Tool Change")
-                .clicked()
+            if icon_button(
+                ui,
+                IconKind::Tool,
+                Some("Next Tool"),
+                "Jump to Next Tool Change",
+            )
+            .clicked()
             {
                 self.is_playing = false;
                 self.current_time_sec = res.timeline.next_tool_change_time(self.current_time_sec);
             }
-            if ui
-                .small_button(">| End")
-                .on_hover_text("Instant Jump to Machined Final Stock")
-                .clicked()
+            if icon_button(
+                ui,
+                IconKind::SkipEnd,
+                Some("End"),
+                "Instant Jump to Final Machined Stock",
+            )
+            .clicked()
             {
                 self.is_playing = false;
                 self.current_time_sec = res.timeline.total_time_sec;

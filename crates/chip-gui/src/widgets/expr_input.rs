@@ -61,8 +61,11 @@ pub fn edit_param_length(
                 ui.weak(format!("= {}", ctx.default_unit.format_length(mm)));
             }
             Err(err) if resp.has_focus() => {
-                ui.colored_label(egui::Color32::from_rgb(240, 92, 92), "[!]")
-                    .on_hover_text(err.to_string());
+                crate::widgets::status_badge_icon(
+                    ui,
+                    crate::widgets::StatusBadgeKind::Error,
+                    Some(&err.to_string()),
+                );
             }
             Err(_) => {
                 ui.weak(format!(
@@ -155,8 +158,11 @@ impl ExpressionInput {
 
             let preview_mm = live_eval.unwrap_or(self.param.value_mm);
             if let Some(err) = &self.last_error {
-                ui.colored_label(egui::Color32::from_rgb(240, 92, 92), "[!]")
-                    .on_hover_text(err);
+                crate::widgets::status_badge_icon(
+                    ui,
+                    crate::widgets::StatusBadgeKind::Error,
+                    Some(err),
+                );
             } else {
                 ui.weak(format!("= {}", ctx.default_unit.format_length(preview_mm)));
             }

@@ -32,6 +32,7 @@ use crate::{
         tool_library::ToolLibraryModalState,
         vector_import_modal::{VectorImportModalState, VectorModalAction, VectorModalCtx},
     },
+    theme::{AppTheme, ThemeTokens, apply_theme},
     viewport::{HighlightState, ViewportRenderer},
     widgets::ExpressionInput,
 };
@@ -84,6 +85,7 @@ impl SelfTestConfig {
 /// Main ChipCutter desktop application state (`eframe` + `wgpu` + `egui_tiles`).
 pub struct ChipCutterApp {
     pub(crate) tree: egui_tiles::Tree<WorkspacePane>,
+    pub(crate) theme: AppTheme,
     pub(crate) camera: CadCamera,
     pub(crate) viewport_renderer: Option<ViewportRenderer>,
     pub(crate) wgpu_render_state: Option<egui_wgpu::RenderState>,
@@ -177,10 +179,17 @@ impl ChipCutterApp {
         demo_mode: StartupDemoMode,
         self_test: Option<SelfTestConfig>,
     ) -> Self {
-        let mut visuals = egui::Visuals::dark();
-        visuals.panel_fill = egui::Color32::from_rgb(24, 27, 32);
-        visuals.window_fill = egui::Color32::from_rgb(28, 32, 38);
-        cc.egui_ctx.set_visuals(visuals);
+        Self::new_with_demo_and_theme(cc, initial_path, demo_mode, AppTheme::Dark, self_test)
+    }
+
+    pub fn new_with_demo_and_theme(
+        cc: &eframe::CreationContext<'_>,
+        initial_path: Option<PathBuf>,
+        demo_mode: StartupDemoMode,
+        initial_theme: AppTheme,
+        self_test: Option<SelfTestConfig>,
+    ) -> Self {
+        apply_theme(&cc.egui_ctx, initial_theme);
 
         let wgpu_render_state = cc.wgpu_render_state.clone();
         let viewport_renderer = wgpu_render_state
@@ -196,6 +205,7 @@ impl ChipCutterApp {
 
         let mut app = Self {
             tree: create_default_workspace_tree(),
+            theme: initial_theme,
             camera: CadCamera::default(),
             viewport_renderer,
             wgpu_render_state,
@@ -236,7 +246,10 @@ impl ChipCutterApp {
             last_reload_banner: None,
             cached_frame_geo: None,
             pick_filter: PickFilter::Any,
-            highlight: HighlightState::default(),
+            highlight: HighlightState {
+                theme: initial_theme,
+                ..HighlightState::default()
+            },
             wb_tool_dia: ExpressionInput::new(6.35, Some("1/4 in")),
             wb_stepover: ExpressionInput::new(2.54, Some("tool_d * 0.4")),
             wb_clearance_z: ExpressionInput::new(26.0, Some("model_top_z + 10 mm")),
@@ -283,6 +296,13 @@ impl ChipCutterApp {
         }
 
         app
+    }
+
+    pub fn set_theme(&mut self, ctx: &egui::Context, theme: AppTheme) {
+        self.theme = theme;
+        self.highlight.theme = theme;
+        apply_theme(ctx, theme);
+        ctx.request_repaint();
     }
 
     pub(crate) fn active_project_dir(&self) -> Option<&Path> {
@@ -652,8 +672,9 @@ impl eframe::App for ChipCutterApp {
             }
         }
 
+        let tok = ThemeTokens::for_theme(self.theme);
         egui::CentralPanel::default()
-            .frame(egui::Frame::NONE.fill(egui::Color32::from_rgb(18, 20, 24)))
+            .frame(egui::Frame::NONE.fill(tok.app_bg))
             .show(ui, |ui| {
                 let mut tree = std::mem::replace(
                     &mut self.tree,

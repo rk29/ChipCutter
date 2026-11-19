@@ -1,6 +1,9 @@
 use std::path::PathBuf;
 
-use chip_gui::app::{ChipCutterApp, SelfTestConfig, StartupDemoMode};
+use chip_gui::{
+    app::{ChipCutterApp, SelfTestConfig, StartupDemoMode},
+    theme::AppTheme,
+};
 use clap::Parser;
 
 #[derive(Debug, Parser)]
@@ -25,6 +28,10 @@ struct GuiArgs {
     /// Launch directly into the Milestone 9 V-Carve Sign & Mated V-Inlay Plug demo job.
     #[arg(long)]
     demo_vcarve: bool,
+
+    /// Initial workspace color theme (`dark` or `light`).
+    #[arg(long, default_value = "dark")]
+    theme: String,
 
     /// Render the sample part, capture a full-window PNG screenshot to this path, and exit.
     #[arg(long)]
@@ -51,9 +58,15 @@ fn main() -> eframe::Result {
         StartupDemoMode::None
     };
 
+    let initial_theme = if args.theme.eq_ignore_ascii_case("light") {
+        AppTheme::Light
+    } else {
+        AppTheme::Dark
+    };
+
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("ChipCutter — 2.5D CAM")
+            .with_title("ChipCutter — 2.5D & V-Carve CAM")
             .with_inner_size([1360.0, 840.0])
             .with_min_inner_size([900.0, 560.0]),
         renderer: eframe::Renderer::Wgpu,
@@ -64,10 +77,11 @@ fn main() -> eframe::Result {
         "ChipCutter",
         native_options,
         Box::new(move |cc| {
-            Ok(Box::new(ChipCutterApp::new_with_demo(
+            Ok(Box::new(ChipCutterApp::new_with_demo_and_theme(
                 cc,
                 args.step_file,
                 demo_mode,
+                initial_theme,
                 self_test,
             )))
         }),

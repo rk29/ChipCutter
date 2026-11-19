@@ -2,8 +2,12 @@ use chip_cad::CadDocument;
 use chip_cam::{Operation, OperationKind, OperationStatus, Setup, WorkOffsetSlot};
 use chip_project::{ProjectDocument, ToolpathCache, UndoHistory};
 
-use crate::panels::{
-    InspectorFocus, OperationTab, SetupTab, ViewportPickMode, diagnostics::format_cycle_time,
+use crate::{
+    panels::{
+        InspectorFocus, OperationTab, SetupTab, ViewportPickMode, diagnostics::format_cycle_time,
+    },
+    theme::ThemeTokens,
+    widgets::{IconKind, StatusBadgeKind, icon_button, inline_icon, status_badge_icon},
 };
 
 /// High-level UI actions emitted by the CAM Browser pane.
@@ -377,8 +381,17 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                 let is_active_setup = *active_setup_idx == s_idx;
                 let setup_header = {
                     let s = &project.setups[s_idx];
-                    let marker = if is_active_setup { "> " } else { "  " };
-                    format!("{marker}{} [{}]", s.name, s.wcs_slot.short_code())
+                    let slot = s.wcs_slot.short_code();
+                    let base = if s.name.contains(slot) {
+                        s.name.clone()
+                    } else {
+                        format!("{} [{slot}]", s.name)
+                    };
+                    if is_active_setup {
+                        format!("• {base}")
+                    } else {
+                        base
+                    }
                 };
 
                 egui::CollapsingHeader::new(egui::RichText::new(setup_header).strong())
@@ -457,13 +470,12 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                                 .get_for_operation(project, s_idx, o_idx, cad_revision);
                             let op = &project.setups[s_idx].operations[o_idx];
 
-                            let (badge_str, badge_col, hover_note) = if op.suppressed {
-                                ("[-]", egui::Color32::from_gray(120), Some("Suppressed".to_string()))
+                            let (status_kind, hover_note) = if op.suppressed {
+                                (StatusBadgeKind::Suppressed, Some("Suppressed".to_string()))
                             } else {
                                 match &op.runtime_status {
                                     OperationStatus::Clean => (
-                                        "[OK]",
-                                        egui::Color32::from_rgb(86, 224, 134),
+                                        StatusBadgeKind::Clean,
                                         cached_tp.as_ref().map(|(_, tp)| {
                                             format!(
                                                 "Clean: {} passes, est. {}",
@@ -473,23 +485,18 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                                         }),
                                     ),
                                     OperationStatus::Dirty => (
-                                        "[*]",
-                                        egui::Color32::from_rgb(245, 190, 66),
+                                        StatusBadgeKind::Dirty,
                                         Some("Dirty — press Ctrl+G to regenerate".to_string()),
                                     ),
                                     OperationStatus::Generating => (
-                                        "..",
-                                        egui::Color32::from_rgb(90, 190, 250),
+                                        StatusBadgeKind::Dirty,
                                         Some("Generating on background thread…".to_string()),
                                     ),
-                                    OperationStatus::Error { message } => (
-                                        "[!]",
-                                        egui::Color32::from_rgb(248, 92, 92),
-                                        Some(message.clone()),
-                                    ),
+                                    OperationStatus::Error { message } => {
+                                        (StatusBadgeKind::Error, Some(message.clone()))
+                                    }
                                     OperationStatus::NeedsRepick { message } => (
-                                        "[?]",
-                                        egui::Color32::from_rgb(255, 146, 72),
+                                        StatusBadgeKind::NeedsRepick,
                                         Some(format!("Needs Re-Pick: {message}")),
                                     ),
                                 }
@@ -510,22 +517,35 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
 
                             let op_id_clone = op.id.clone();
                             let op_kind_val = op.kind;
+                            let op_is_adap = op.is_adaptive_2d();
                             let is_sup = op.suppressed;
                             let is_needs_repick = !is_sup
                                 && matches!(op.runtime_status, OperationStatus::NeedsRepick { .. });
                             let is_gen = !is_sup
                                 && matches!(op.runtime_status, OperationStatus::Generating);
+                            let tok = ThemeTokens::from_ui(ui);
 
                             ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 4.0;
                                 if is_gen {
-                                    ui.add(egui::Spinner::new().size(12.0));
+                                    ui.add(egui::Spinner::new().size(13.0));
                                 } else {
-                                    ui.colored_label(badge_col, badge_str);
+                                    status_badge_icon(ui, status_kind, hover_note.as_deref());
                                 }
+                                inline_icon(
+                                    ui,
+                                    IconKind::for_operation(op_kind_val, op_is_adap),
+                                    if is_sup {
+                                        tok.suppressed_fg
+                                    } else {
+                                        tok.text_secondary
+                                    },
+                                    13.0,
+                                );
 
-                                let max_lbl_w = (ui.available_width() - 106.0).max(48.0);
+                                let max_lbl_w = (ui.available_width() - 96.0).max(48.0);
                                 let mut resp = ui.add_sized(
-                                    [max_lbl_w, 18.0],
+                                    [max_lbl_w, 20.0],
                                     egui::Button::selectable(is_sel, rich).truncate(),
                                 );
                                 if let Some(tip) = hover_note {
@@ -580,24 +600,50 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                                 ui.with_layout(
                                     egui::Layout::right_to_left(egui::Align::Center),
                                     |ui| {
-                                        if ui
-                                            .small_button("×")
-                                            .on_hover_text("Delete Operation")
-                                            .clicked()
+                                        ui.spacing_mut().item_spacing.x = 3.0;
+                                        if icon_button(
+                                            ui,
+                                            IconKind::Trash,
+                                            None,
+                                            "Delete Operation",
+                                        )
+                                        .clicked()
                                         {
                                             deferred_op_delete = Some((s_idx, o_idx));
                                         }
-                                        if ui
-                                            .small_button(if is_sup { "On" } else { "Off" })
-                                            .on_hover_text("Toggle Suppressed")
-                                            .clicked()
+                                        if icon_button(
+                                            ui,
+                                            if is_sup {
+                                                IconKind::EyeOff
+                                            } else {
+                                                IconKind::Eye
+                                            },
+                                            None,
+                                            if is_sup {
+                                                "Enable Operation"
+                                            } else {
+                                                "Suppress Operation"
+                                            },
+                                        )
+                                        .clicked()
                                         {
                                             deferred_op_toggle_suppress = Some((s_idx, o_idx));
                                         }
-                                        if o_idx + 1 < op_len && ui.small_button("v").clicked() {
+                                        if o_idx + 1 < op_len
+                                            && icon_button(
+                                                ui,
+                                                IconKind::ArrowDown,
+                                                None,
+                                                "Move Down",
+                                            )
+                                            .clicked()
+                                        {
                                             deferred_op_move = Some((s_idx, o_idx, 1));
                                         }
-                                        if o_idx > 0 && ui.small_button("^").clicked() {
+                                        if o_idx > 0
+                                            && icon_button(ui, IconKind::ArrowUp, None, "Move Up")
+                                                .clicked()
+                                        {
                                             deferred_op_move = Some((s_idx, o_idx, -1));
                                         }
                                     },

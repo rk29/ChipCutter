@@ -107,19 +107,24 @@ pub fn show_operation_inspector(ui: &mut egui::Ui, ctx: OperationInspectorCtx<'_
         .runtime_status
         .clone()
     {
+        let tok = crate::theme::ThemeTokens::from_ui(ui);
         egui::Frame::NONE
-            .fill(egui::Color32::from_rgb(56, 30, 24))
-            .stroke(egui::Stroke::new(
-                1.0,
-                egui::Color32::from_rgb(235, 118, 68),
-            ))
+            .fill(tok.warn_bg)
+            .stroke(egui::Stroke::new(1.0, tok.warn_border))
             .inner_margin(8.0)
             .corner_radius(4.0)
             .show(ui, |ui| {
-                ui.colored_label(
-                    egui::Color32::from_rgb(255, 168, 96),
-                    "[!] CAD Feature Needs Re-Pick (Associative Reload)",
-                );
+                ui.horizontal(|ui| {
+                    crate::widgets::status_badge_icon(
+                        ui,
+                        crate::widgets::StatusBadgeKind::NeedsRepick,
+                        None,
+                    );
+                    ui.colored_label(
+                        tok.warn_fg,
+                        "CAD Feature Needs Re-Pick (Associative Reload)",
+                    );
+                });
                 ui.add_space(2.0);
                 ui.small(&message);
                 ui.add_space(4.0);

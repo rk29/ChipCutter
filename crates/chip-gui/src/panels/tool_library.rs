@@ -178,7 +178,8 @@ impl ToolLibraryModalState {
                 });
 
                 if let Some(banner) = &self.status_banner {
-                    ui.colored_label(egui::Color32::from_rgb(130, 215, 250), banner);
+                    let tok = crate::theme::ThemeTokens::from_ui(ui);
+                    ui.colored_label(tok.info_fg, banner);
                 }
                 ui.separator();
 
@@ -385,18 +386,27 @@ impl ToolLibraryModalState {
                             edit_cutter_geometry_fields(ui, &mut tool.geometry, unit);
                             edit_mm_drag(ui, "Holder Stickout:", &mut tool.stickout_length_mm, unit);
 
+                            let tok = crate::theme::ThemeTokens::from_ui(ui);
                             match tool.validate() {
                                 Ok(()) => {
-                                    ui.colored_label(
-                                        egui::Color32::from_rgb(90, 215, 128),
-                                        "[OK] Geometry Valid",
-                                    );
+                                    ui.horizontal(|ui| {
+                                        crate::widgets::status_badge_icon(
+                                            ui,
+                                            crate::widgets::StatusBadgeKind::Clean,
+                                            None,
+                                        );
+                                        ui.colored_label(tok.clean_fg, "Geometry Valid");
+                                    });
                                 }
                                 Err(err) => {
-                                    ui.colored_label(
-                                        egui::Color32::from_rgb(248, 92, 92),
-                                        format!("[!] {err}"),
-                                    );
+                                    ui.horizontal(|ui| {
+                                        crate::widgets::status_badge_icon(
+                                            ui,
+                                            crate::widgets::StatusBadgeKind::Error,
+                                            None,
+                                        );
+                                        ui.colored_label(tok.error_fg, err.to_string());
+                                    });
                                 }
                             }
 
@@ -720,9 +730,16 @@ fn edit_cutter_geometry_fields(ui: &mut egui::Ui, geom: &mut CutterGeometry, uni
 }
 
 fn draw_cutter_schematic(ui: &mut egui::Ui, tool: &Tool) {
+    let tok = crate::theme::ThemeTokens::from_ui(ui);
     let (rect, _) = ui.allocate_exact_size(egui::vec2(260.0, 128.0), egui::Sense::hover());
     let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, 4.0, egui::Color32::from_rgb(18, 21, 26));
+    painter.rect(
+        rect,
+        4.0,
+        tok.code_bg,
+        egui::Stroke::new(1.0, tok.border),
+        egui::StrokeKind::Inside,
+    );
 
     let d = tool.geometry.cutting_diameter_mm().max(1.0) as f32;
     let shk = tool.geometry.shank_diameter_mm().max(1.0) as f32;
