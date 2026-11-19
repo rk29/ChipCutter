@@ -24,6 +24,7 @@ use crossbeam_channel::{Receiver, Sender};
 use crate::{
     app::{loader::LoadJobResult, pane_behavior::PaneBehavior},
     camera::CadCamera,
+    capture::CaptureSpec,
     layout::{
         WorkspacePane, create_workspace_tree_with_shares, extract_workspace_shares,
         focus_workspace_pane,
@@ -67,7 +68,7 @@ pub(crate) struct CachedFrameGeo {
     pub focused_extracted: Option<Result<ExtractedSelectionSummary, String>>,
 }
 
-/// Optional startup demo mode for CLI flags (`--demo-torture`, `--demo-pure-2d`, `--demo-nameplate`, `--demo-vcarve`, `--welcome`).
+/// Optional startup demo mode for CLI flags (`--sample`, `--demo-*`, `--welcome`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum StartupDemoMode {
     #[default]
@@ -76,23 +77,34 @@ pub enum StartupDemoMode {
     Pure2dPanel,
     EngravedNameplate,
     VCarveSign,
+    Sample(SampleProjectId),
     WelcomeScreen,
 }
 
-/// Self-test automation configuration for headless CI screenshot capture.
+/// Self-test automation configuration for headless CI & tutorial screenshot capture.
 pub struct SelfTestConfig {
     pub screenshot_path: PathBuf,
+    pub capture: CaptureSpec,
     pub(crate) frames_rendered: u32,
     pub(crate) idle_wait_frames: u32,
+    pub(crate) generate_triggered: bool,
+    pub(crate) capture_applied: bool,
     pub(crate) requested: bool,
 }
 
 impl SelfTestConfig {
     pub fn new(screenshot_path: PathBuf) -> Self {
+        Self::with_capture(screenshot_path, CaptureSpec::default())
+    }
+
+    pub fn with_capture(screenshot_path: PathBuf, capture: CaptureSpec) -> Self {
         Self {
             screenshot_path,
+            capture,
             frames_rendered: 0,
             idle_wait_frames: 0,
+            generate_triggered: false,
+            capture_applied: false,
             requested: false,
         }
     }
@@ -336,6 +348,9 @@ impl ChipCutterApp {
                 StartupDemoMode::VCarveSign => app.load_vcarve_sign_demo(&cc.egui_ctx),
                 StartupDemoMode::CamTorture => {
                     app.spawn_cam_torture_sample_load(true, cc.egui_ctx.clone())
+                }
+                StartupDemoMode::Sample(sample_id) => {
+                    app.load_sample_project(sample_id, &cc.egui_ctx)
                 }
                 StartupDemoMode::WelcomeScreen => {
                     app.welcome_modal.open = true;

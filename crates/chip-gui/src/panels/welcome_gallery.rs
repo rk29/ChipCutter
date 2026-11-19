@@ -25,6 +25,27 @@ pub enum SampleProjectId {
     SamplePlate,
 }
 
+impl SampleProjectId {
+    /// Parse a CLI `--sample <SLUG>` identifier into a built-in [`SampleProjectId`].
+    pub fn from_cli_slug(raw: &str) -> Result<Self, String> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "cam-torture" | "torture" => Ok(Self::CamTortureBlock),
+            "adaptive-rest" | "adaptive" => Ok(Self::AdaptiveRest),
+            "pure-2d" | "pure2d" | "panel" => Ok(Self::Pure2dPanel),
+            "nameplate" | "engraved-nameplate" => Ok(Self::EngravedNameplate),
+            "vcarve" | "vcarve-sign" => Ok(Self::VCarveSignInlay),
+            "multi-feature" | "bracket" => Ok(Self::MultiFeatureBracket),
+            "tilted-bracket" | "tilted" => Ok(Self::Tilted30Bracket),
+            "revision-v1" => Ok(Self::CadRevisionV1),
+            "revision-v2" => Ok(Self::CadRevisionV2Reload),
+            "sample-plate" | "plate" => Ok(Self::SamplePlate),
+            other => Err(format!(
+                "invalid --sample '{other}'; expected one of: cam-torture, adaptive-rest, pure-2d, nameplate, vcarve, multi-feature, tilted-bracket, revision-v1, revision-v2, sample-plate"
+            )),
+        }
+    }
+}
+
 /// Filter categories in the Sample Projects Gallery modal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SampleCategory {
@@ -500,5 +521,55 @@ fn truncate_left(s: &str, max_chars: usize) -> String {
     } else {
         let tail: String = s.chars().skip(count - max_chars).collect();
         format!("…{tail}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_all_sample_cli_slugs() {
+        assert_eq!(
+            SampleProjectId::from_cli_slug("cam-torture"),
+            Ok(SampleProjectId::CamTortureBlock)
+        );
+        assert_eq!(
+            SampleProjectId::from_cli_slug("adaptive-rest"),
+            Ok(SampleProjectId::AdaptiveRest)
+        );
+        assert_eq!(
+            SampleProjectId::from_cli_slug("pure-2d"),
+            Ok(SampleProjectId::Pure2dPanel)
+        );
+        assert_eq!(
+            SampleProjectId::from_cli_slug("nameplate"),
+            Ok(SampleProjectId::EngravedNameplate)
+        );
+        assert_eq!(
+            SampleProjectId::from_cli_slug("vcarve"),
+            Ok(SampleProjectId::VCarveSignInlay)
+        );
+        assert_eq!(
+            SampleProjectId::from_cli_slug("multi-feature"),
+            Ok(SampleProjectId::MultiFeatureBracket)
+        );
+        assert_eq!(
+            SampleProjectId::from_cli_slug("tilted-bracket"),
+            Ok(SampleProjectId::Tilted30Bracket)
+        );
+        assert_eq!(
+            SampleProjectId::from_cli_slug("revision-v1"),
+            Ok(SampleProjectId::CadRevisionV1)
+        );
+        assert_eq!(
+            SampleProjectId::from_cli_slug("revision-v2"),
+            Ok(SampleProjectId::CadRevisionV2Reload)
+        );
+        assert_eq!(
+            SampleProjectId::from_cli_slug("sample-plate"),
+            Ok(SampleProjectId::SamplePlate)
+        );
+        assert!(SampleProjectId::from_cli_slug("nonexistent").is_err());
     }
 }

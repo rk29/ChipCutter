@@ -741,9 +741,11 @@ impl PaneBehavior<'_> {
 impl ChipCutterApp {
     pub(crate) fn handle_self_test(&mut self, ctx: &egui::Context) {
         let is_busy = self.dispatcher.is_busy() || self.sim_panel.is_busy();
-        let ready = self.has_geometry()
+        let has_geo = self.has_geometry();
+        let ready = has_geo
             || self.welcome_modal.open
             || self.sample_gallery_modal.open
+            || self.tool_library_modal.open
             || self.command_palette.open
             || self.shortcut_cheatsheet.open;
         let Some(st) = &mut self.self_test else {
@@ -761,13 +763,29 @@ impl ChipCutterApp {
             ctx.request_repaint();
             return;
         }
-        st.frames_rendered += 1;
-        if st.frames_rendered == 1
-            && let Some(res) = &self.sim_panel.active_result
-        {
-            self.sim_panel.current_time_sec = res.timeline.total_time_sec * 0.82;
+        if st.capture.auto_generate && !st.generate_triggered && has_geo {
+            st.generate_triggered = true;
+            self.auto_sim_after_gen = true;
+            self.trigger_generate_dirty(None, None);
+            ctx.request_repaint();
+            return;
         }
-        if st.frames_rendered < 5 {
+        let capture_to_apply = if !st.capture_applied {
+            st.capture_applied = true;
+            Some(st.capture.clone())
+        } else {
+            None
+        };
+        if let Some(capture) = capture_to_apply {
+            self.apply_capture_spec(&capture);
+            ctx.request_repaint();
+            return;
+        }
+        let Some(st) = &mut self.self_test else {
+            return;
+        };
+        st.frames_rendered += 1;
+        if st.frames_rendered < 6 {
             ctx.request_repaint();
             return;
         }
@@ -798,6 +816,99 @@ impl ChipCutterApp {
             ctx.request_repaint();
         } else {
             ctx.request_repaint();
+        }
+    }
+
+    fn apply_capture_spec(&mut self, capture: &crate::capture::CaptureSpec) {
+        use crate::capture::{CaptureFocus, CaptureModal, CapturePane, CaptureView};
+
+        if let Some(focus) = capture.focus {
+            match focus {
+                CaptureFocus::Setup { setup_idx, tab } => {
+                    if setup_idx < self.project.setups.len() {
+                        self.active_setup_idx = setup_idx;
+                        self.inspector_focus = InspectorFocus::Setup { setup_idx };
+                        self.setup_tab = tab;
+                        self.cached_frame_geo = None;
+                    }
+                }
+                CaptureFocus::Operation {
+                    setup_idx,
+                    op_idx,
+                    tab,
+                } => {
+                    if let Some(setup) = self.project.setups.get(setup_idx)
+                        && op_idx < setup.operations.len()
+                    {
+                        self.active_setup_idx = setup_idx;
+                        self.inspector_focus = InspectorFocus::Operation { setup_idx, op_idx };
+                        self.op_tab = tab;
+                        self.cached_frame_geo = None;
+                    }
+                }
+                CaptureFocus::Sketch { sketch_idx } => {
+                    if sketch_idx < self.project.sketches.len() {
+                        self.inspector_focus = InspectorFocus::Sketch { sketch_idx };
+                        self.cached_frame_geo = None;
+                    }
+                }
+            }
+        }
+
+        if capture.isolate_op {
+            self.show_all_setup_toolpaths = false;
+        }
+        if let Some(z_planes) = capture.show_z_planes {
+            self.show_z_planes = z_planes;
+        }
+        if let Some(dots) = capture.show_27pt_dots {
+            self.show_27pt_dots = dots;
+        }
+        if let Some(ghost) = capture.ghost_part {
+            self.highlight.ghost_part = ghost;
+        }
+        if let Some(show_stock) = capture.show_sim_stock {
+            self.sim_panel.show_machined_stock = show_stock;
+        }
+        if let Some(res) = &self.sim_panel.active_result {
+            self.sim_panel.current_time_sec =
+                res.timeline.total_time_sec * capture.effective_sim_progress();
+        }
+
+        if let Some(pane) = capture.pane {
+            crate::layout::focus_workspace_pane(&mut self.tree, pane.to_workspace_pane());
+            if pane == CapturePane::GCode {
+                let proj_dir = self
+                    .project_file_path
+                    .as_deref()
+                    .and_then(std::path::Path::parent)
+                    .or(self.bundle_extract_dir.as_deref());
+                self.gcode_panel.ensure_profiles_loaded(proj_dir);
+            }
+        }
+
+        if let Some(modal) = capture.modal {
+            self.welcome_modal.open = modal == CaptureModal::Welcome;
+            self.sample_gallery_modal.open = modal == CaptureModal::SampleGallery;
+            self.tool_library_modal.open = modal == CaptureModal::ToolLibrary;
+            self.shortcut_cheatsheet.open = modal == CaptureModal::ShortcutCheatsheet;
+        }
+
+        if let Some(view) = capture.view {
+            match view {
+                CaptureView::Standard(v) => {
+                    self.camera.set_standard_view(v);
+                    self.fit_scene_to_viewport();
+                }
+                CaptureView::SetupTop => self.align_camera_to_active_setup(),
+                CaptureView::ActiveSketch => {
+                    let sk_idx = match self.inspector_focus {
+                        InspectorFocus::Sketch { sketch_idx } => sketch_idx,
+                        _ => 0,
+                    };
+                    self.align_camera_to_sketch(sk_idx);
+                }
+            }
         }
     }
 }

@@ -2,6 +2,7 @@
 
 pub mod app;
 pub mod camera;
+pub mod capture;
 pub mod layout;
 pub mod panels;
 pub mod prefs;

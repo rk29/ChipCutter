@@ -151,6 +151,7 @@ All core geometry, CAM, simulation, post-processing, and project persistence cra
 
 ## Documentation
 
+- [**`docs/tutorials/`**](docs/tutorials/README.md) — Illustrated step-by-step Getting Started & toolpath strategy tutorials
 - [**`ARCHITECTURE.md`**](ARCHITECTURE.md) — End-to-end data pipeline, crate dependency graph, threading/caching model, and 3D render passes
 - [**`DEVELOPMENT.md`**](DEVELOPMENT.md) — Platform build prerequisites, native Linux/macOS/Windows setup, and headless CI instructions
 - [**`specs/00-overview.md`**](specs/00-overview.md) — Product scope, non-goals, and full specification index (`00` through `11`)

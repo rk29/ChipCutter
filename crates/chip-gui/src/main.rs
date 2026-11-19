@@ -2,6 +2,8 @@ use std::path::PathBuf;
 
 use chip_gui::{
     app::{ChipCutterApp, SelfTestConfig, StartupDemoMode},
+    capture::{CaptureFocus, CaptureModal, CapturePane, CaptureSpec, CaptureView},
+    panels::welcome_gallery::SampleProjectId,
     theme::AppTheme,
 };
 use clap::Parser;
@@ -16,6 +18,10 @@ struct GuiArgs {
     /// Optional `.chip.toml` project, `.chipz` bundle, `.dxf`/`.svg` vector, or `.step`/`.stp` model to load on startup.
     #[arg(value_name = "PATH")]
     step_file: Option<PathBuf>,
+
+    /// Launch directly into any built-in sample project (`cam-torture`, `adaptive-rest`, `pure-2d`, `nameplate`, `vcarve`, `multi-feature`, `tilted-bracket`, `revision-v1`, `revision-v2`, `sample-plate`).
+    #[arg(long, value_parser = SampleProjectId::from_cli_slug)]
+    sample: Option<SampleProjectId>,
 
     /// Launch directly into the 3D STEP CAM Torture Block demo job.
     #[arg(long)]
@@ -44,6 +50,50 @@ struct GuiArgs {
     /// Render the workspace, capture a full-window PNG screenshot to this path, and exit.
     #[arg(long)]
     self_test_screenshot: Option<PathBuf>,
+
+    /// Headless capture camera view (`iso`, `top`, `bottom`, `front`, `back`, `right`, `left`, `setup-top`, `sketch`).
+    #[arg(long, value_parser = CaptureView::parse)]
+    capture_view: Option<CaptureView>,
+
+    /// Headless capture inspector focus (`setup:<wcs|stock|heights>`, `op:<idx>:<tab>`, `sketch:<idx>`).
+    #[arg(long, value_parser = CaptureFocus::parse)]
+    capture_focus: Option<CaptureFocus>,
+
+    /// Headless capture bottom workspace tab (`sim`, `gcode`, `diagnostics`).
+    #[arg(long, value_parser = CapturePane::parse)]
+    capture_pane: Option<CapturePane>,
+
+    /// Headless capture modal overlay (`welcome`, `samples`, `tools`, `shortcuts`).
+    #[arg(long, value_parser = CaptureModal::parse)]
+    capture_modal: Option<CaptureModal>,
+
+    /// Hide other setup operations' toolpaths so only the focused operation is displayed during capture.
+    #[arg(long)]
+    capture_isolate_op: bool,
+
+    /// Show or hide the 3D simulated machined stock mesh during capture (`true` / `false`).
+    #[arg(long)]
+    capture_sim_stock: Option<bool>,
+
+    /// Scrub simulation timeline progress in `[0.0, 1.0]` during capture (default `0.82`).
+    #[arg(long)]
+    capture_sim_progress: Option<f64>,
+
+    /// Auto-dispatch toolpath generation (`Ctrl+G`) and simulation after loading a project before capture.
+    #[arg(long)]
+    capture_generate: bool,
+
+    /// Show or hide Z-height reference planes during capture (`true` / `false`).
+    #[arg(long)]
+    capture_z_planes: Option<bool>,
+
+    /// Show or hide 27-point WCS origin dots during capture (`true` / `false`).
+    #[arg(long)]
+    capture_27pt_dots: Option<bool>,
+
+    /// Show or hide translucent ghost-part comparison during capture (`true` / `false`).
+    #[arg(long)]
+    capture_ghost_part: Option<bool>,
 }
 
 fn main() -> eframe::Result {
@@ -55,9 +105,26 @@ fn main() -> eframe::Result {
         .init();
 
     let args = GuiArgs::parse();
-    let self_test = args.self_test_screenshot.map(SelfTestConfig::new);
+    let capture_spec = CaptureSpec {
+        view: args.capture_view,
+        focus: args.capture_focus,
+        pane: args.capture_pane,
+        modal: args.capture_modal,
+        isolate_op: args.capture_isolate_op,
+        show_sim_stock: args.capture_sim_stock,
+        sim_progress: args.capture_sim_progress,
+        auto_generate: args.capture_generate,
+        show_z_planes: args.capture_z_planes,
+        show_27pt_dots: args.capture_27pt_dots,
+        ghost_part: args.capture_ghost_part,
+    };
+    let self_test = args
+        .self_test_screenshot
+        .map(|path| SelfTestConfig::with_capture(path, capture_spec));
     let demo_mode = if args.welcome {
         StartupDemoMode::WelcomeScreen
+    } else if let Some(sample_id) = args.sample {
+        StartupDemoMode::Sample(sample_id)
     } else if args.demo_vcarve {
         StartupDemoMode::VCarveSign
     } else if args.demo_nameplate {
