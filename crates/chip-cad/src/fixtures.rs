@@ -1090,6 +1090,131 @@ pub fn tutorial_drill_bore_plate_step() -> std::result::Result<String, SampleSte
     serialize_tutorial_solid(solid, "04-drill-bore-plate.step")
 }
 
+/// Minimal Tutorial 05 (2D Adaptive Clearing & 2.5D Rest Machining) starter part (`100 × 80 × 20 mm`)
+/// containing ONLY one deep `10 mm` closed sharp-corner pocket `[14..86] × [14..66]` (`Z = 10..20 mm`)
+/// with a raised `Ø16 mm` central boss at `(50, 40)`—ideal for `Ø10 mm` full-depth Adaptive roughing
+/// followed by `Ø3 mm` Rest Machining in the 4 sharp corners.
+pub fn tutorial_adaptive_pocket_step() -> std::result::Result<String, SampleStepError> {
+    let v0 = builder::vertex(Point3::new(0.0, 0.0, 0.0));
+    let v1 = builder::vertex(Point3::new(100.0, 0.0, 0.0));
+    let v2 = builder::vertex(Point3::new(100.0, 80.0, 0.0));
+    let v3 = builder::vertex(Point3::new(0.0, 80.0, 0.0));
+    let outer_z0: Wire = vec![
+        builder::line(&v0, &v1),
+        builder::line(&v1, &v2),
+        builder::line(&v2, &v3),
+        builder::line(&v3, &v0),
+    ]
+    .into();
+    let base_face_z0 = builder::try_attach_plane(vec![outer_z0])
+        .map_err(|e| SampleStepError::Modeling(e.to_string()))?;
+    let base_solid = builder::extrude(&base_face_z0, Vector3::new(0.0, 0.0, 20.0));
+    let mut shell_faces: Vec<Face> = base_solid
+        .into_boundaries()
+        .into_iter()
+        .next()
+        .ok_or_else(|| SampleStepError::Modeling("missing adaptive block shell".to_string()))?
+        .into_iter()
+        .collect();
+    let old_top_z20 = shell_faces
+        .pop()
+        .ok_or_else(|| SampleStepError::Modeling("empty adaptive block shell".to_string()))?;
+    let mut top_wires = old_top_z20.boundaries();
+
+    // Closed sharp-corner pocket [14..86] x [14..66] at Z = 10..20 with raised Ø16 mm (R = 8 mm) island at (50, 40)
+    let p_a = builder::vertex(Point3::new(14.0, 14.0, 10.0));
+    let p_b = builder::vertex(Point3::new(86.0, 14.0, 10.0));
+    let p_c = builder::vertex(Point3::new(86.0, 66.0, 10.0));
+    let p_d = builder::vertex(Point3::new(14.0, 66.0, 10.0));
+    let pkt_outer_z10: Wire = vec![
+        builder::line(&p_a, &p_b),
+        builder::line(&p_b, &p_c),
+        builder::line(&p_c, &p_d),
+        builder::line(&p_d, &p_a),
+    ]
+    .into();
+    let island_seed_z10 = builder::vertex(Point3::new(50.0 + 8.0, 40.0, 10.0));
+    let island_wire_z10: Wire = builder::revolve(
+        &island_seed_z10,
+        Point3::new(50.0, 40.0, 10.0),
+        Vector3::unit_z(),
+        SweepAngle::Closed,
+        2,
+    );
+    let annular_floor = builder::try_attach_plane(vec![pkt_outer_z10, island_wire_z10.inverse()])
+        .map_err(|e| SampleStepError::Modeling(e.to_string()))?;
+    let annular_plug = builder::extrude(&annular_floor, Vector3::new(0.0, 0.0, 10.0));
+    let mut annular_faces: Vec<Face> = annular_plug
+        .into_boundaries()
+        .into_iter()
+        .next()
+        .ok_or_else(|| SampleStepError::Modeling("missing annular pocket plug".to_string()))?
+        .into_iter()
+        .collect();
+    let annular_top_z20 = annular_faces
+        .pop()
+        .ok_or_else(|| SampleStepError::Modeling("empty annular plug".to_string()))?;
+    let mut annular_top_wires = annular_top_z20.boundaries();
+    if annular_top_wires.len() != 2 {
+        return Err(SampleStepError::Modeling(
+            "expected outer + island wire on adaptive pocket plug".to_string(),
+        ));
+    }
+    let pkt_mouth_z20 = annular_top_wires.remove(0);
+    let island_top_cw_z20 = annular_top_wires.remove(0);
+    for f in annular_faces {
+        shell_faces.push(f.inverse());
+    }
+    let island_top_cap_z20 = builder::try_attach_plane(vec![island_top_cw_z20.inverse()])
+        .map_err(|e| SampleStepError::Modeling(e.to_string()))?;
+    shell_faces.push(island_top_cap_z20);
+    top_z20_wires_push(&mut top_wires, pkt_mouth_z20.inverse());
+
+    let new_top_z20 = builder::try_attach_plane(top_wires)
+        .map_err(|e| SampleStepError::Modeling(e.to_string()))?;
+    shell_faces.push(new_top_z20);
+
+    let shell: Shell = shell_faces.into();
+    let solid =
+        Solid::try_new(vec![shell]).map_err(|e| SampleStepError::Modeling(e.to_string()))?;
+    serialize_tutorial_solid(solid, "05-adaptive-pocket.step")
+}
+
+fn top_z20_wires_push(wires: &mut Vec<Wire>, wire: Wire) {
+    wires.push(wire);
+}
+
+/// Minimal Tutorial 06 (Edge Chamfering & 2D Curve Trace / Engraving) starter part (`100 × 70 × 18 mm`)
+/// with pre-squared `Z = 18 mm` top surface containing ONLY:
+/// - A modeled `45° × 1.5 mm` sloped bevel face along the front top edge (`Y = 0..1.5`, `Z = 16.5..18`),
+/// - A crisp sharp `90°` unmodeled back top edge (`Y = 70, Z = 18`) for sharp-edge deburring, and
+/// - A clean flat `Z = 18 mm` top face ready for associative single-line Hershey text engraving.
+pub fn tutorial_chamfer_engrave_block_step() -> std::result::Result<String, SampleStepError> {
+    // Extrude the YZ cross-section (a 70 × 18 mm rectangle with its top-front corner beveled 45° × 1.5 mm)
+    // along +X from X = 0 to X = 100!
+    // Cross-section vertices in the X = 0 plane (oriented CCW when viewed from +X so +X extrusion has outward normals):
+    let v0 = builder::vertex(Point3::new(0.0, 0.0, 0.0));
+    let v1 = builder::vertex(Point3::new(0.0, 0.0, 16.5));
+    let v2 = builder::vertex(Point3::new(0.0, 1.5, 18.0));
+    let v3 = builder::vertex(Point3::new(0.0, 70.0, 18.0));
+    let v4 = builder::vertex(Point3::new(0.0, 70.0, 0.0));
+
+    let profile_x0: Wire = vec![
+        builder::line(&v0, &v1),
+        builder::line(&v1, &v2), // 45° x 1.5 mm beveled front edge
+        builder::line(&v2, &v3), // Z = 18.0 flat top face
+        builder::line(&v3, &v4), // Y = 70.0 sharp back wall
+        builder::line(&v4, &v0), // Z = 0.0 bottom face
+    ]
+    .into();
+    // In `monstertruck`, `profile_x0` above is CW viewed from +X (normal -X); inverting it gives
+    // normal (+1, 0, 0) aligned with the (+100, 0, 0) extrusion vector so all solid normals point outward!
+    let end_face_x0 = builder::try_attach_plane(vec![profile_x0.inverse()])
+        .map_err(|e| SampleStepError::Modeling(e.to_string()))?;
+    let solid = builder::extrude(&end_face_x0, Vector3::new(100.0, 0.0, 0.0));
+    serialize_tutorial_solid(solid, "06-chamfer-engrave-block.step")
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -1574,5 +1699,63 @@ mod tests {
             })
             .collect();
         assert!(!r9_faces.is_empty());
+
+        // 05 Adaptive Pocket Block: 100 x 80 x 20 mm with 1 deep Z=10mm island pocket
+        let adp_step = tutorial_adaptive_pocket_step().unwrap();
+        let adp_doc = kernel
+            .load_step_bytes(
+                "05-adaptive-pocket.step",
+                adp_step.as_bytes(),
+                DEFAULT_TESS_CHORD_TOL_MM,
+            )
+            .unwrap();
+        assert!(approx_eq(adp_doc.aabb_mm.size().x, 100.0, 1e-2));
+        assert!(approx_eq(adp_doc.aabb_mm.size().y, 80.0, 1e-2));
+        assert!(approx_eq(adp_doc.aabb_mm.size().z, 20.0, 1e-2));
+        let adp_floor = adp_doc
+            .faces
+            .iter()
+            .find(|f| {
+                matches!(
+                    f.surface,
+                    SurfaceKind::Plane { origin_mm, normal }
+                    if normal.z > 0.99 && approx_eq(origin_mm.z, 10.0, 1e-2)
+                )
+            })
+            .unwrap();
+        assert_eq!(adp_floor.inner_loops.len(), 1);
+
+        // 06 Chamfer & Engrave Block: 100 x 70 x 18 mm with 1 modeled 45° x 1.5 mm front bevel
+        let ch_step = tutorial_chamfer_engrave_block_step().unwrap();
+        let ch_doc = kernel
+            .load_step_bytes(
+                "06-chamfer-engrave-block.step",
+                ch_step.as_bytes(),
+                DEFAULT_TESS_CHORD_TOL_MM,
+            )
+            .unwrap();
+        assert!(approx_eq(ch_doc.aabb_mm.size().x, 100.0, 1e-2));
+        assert!(approx_eq(ch_doc.aabb_mm.size().y, 70.0, 1e-2));
+        assert!(approx_eq(ch_doc.aabb_mm.size().z, 18.0, 1e-2));
+        let bevel_face = ch_doc
+            .faces
+            .iter()
+            .find(|f| {
+                matches!(
+                    f.surface,
+                    SurfaceKind::Plane { normal, .. }
+                    if normal.z > 0.65 && normal.z < 0.76
+                )
+            })
+            .unwrap()
+            .id;
+        let strip = crate::extract_modeled_chamfer_strip(&ch_doc, bevel_face, DVec3::Z).unwrap();
+        assert!(approx_eq(
+            strip.bevel_half_angle_rad,
+            std::f64::consts::FRAC_PI_4,
+            1e-2
+        ));
+        assert!(approx_eq(strip.radial_width_mm, 1.5, 2e-2));
+        assert!(approx_eq(strip.axial_drop_mm, 1.5, 2e-2));
     }
 }

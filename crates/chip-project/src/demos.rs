@@ -1726,3 +1726,492 @@ pub fn build_tutorial_drill_bore_project(
 
     proj
 }
+
+/// Builds the minimal **Tutorial 05 — 2D Adaptive Clearing & 2.5D Rest Machining** project for
+/// `05-adaptive-pocket.step` (`100 × 80 × 20 mm` pre-squared block with one deep `10 mm` sharp-corner
+/// pocket + `Ø16 mm` central boss):
+/// - `Op 1`: `Ø10mm Adaptive Rough` (single full-depth `10 mm` axial cut, `Optimal Load = 2.0 mm`, `Radial Stock = 0.2 mm`, RCT enabled),
+/// - `Op 2`: `Ø3mm Rest Corners` (`FromPrecedingOperations`, clearing only the 4 uncut `R5 mm` corner wedges & wall stock).
+pub fn build_tutorial_adaptive_rest_project(
+    doc: &CadDocument,
+    model_path: String,
+    sha256_hex: &str,
+    empty_ops: bool,
+) -> ProjectDocument {
+    let mut proj = init_tutorial_step_project(
+        "Tutorial 05 — 2D Adaptive & Rest",
+        model_path,
+        sha256_hex,
+        0.0,
+        0.0,
+    );
+    if empty_ops {
+        return proj;
+    }
+
+    let t10_rough = Tool {
+        id: ToolId("t10_10mm_adaptive_3fl".to_string()),
+        tool_number: 10,
+        length_offset_number: 10,
+        diameter_offset_number: 10,
+        name: "10mm 3FL Carbide Adaptive Rougher".to_string(),
+        vendor: Some("Generic Carbide".to_string()),
+        product_id: None,
+        native_unit: DisplayUnit::Millimeter,
+        spindle_direction: SpindleDirection::Cw,
+        default_coolant: CoolantMode::AirBlast,
+        stickout_length_mm: 30.0,
+        geometry: CutterGeometry::FlatEndmill {
+            diameter_mm: 10.0,
+            flute_length_mm: 22.0,
+            overall_length_mm: 65.0,
+            shank_diameter_mm: 10.0,
+            flutes: 3,
+        },
+        presets: vec![
+            CuttingPreset::from_surface_speed(SurfaceSpeedPresetSpec {
+                id: "al6061_adaptive",
+                name: "Aluminum 6061 - Adaptive Roughing",
+                material: "Aluminum 6061",
+                diameter_mm: 10.0,
+                flutes: 3,
+                surface_speed_m_min: 280.0,
+                chipload_mm_tooth: 0.055,
+                default_stepdown_mm: 12.0,
+                default_stepover_mm: 2.0,
+                coolant_override: Some(CoolantMode::AirBlast),
+            })
+            .with_optimal_load_mm(2.0),
+        ],
+    };
+
+    let t3_rest = Tool {
+        id: ToolId("t3_3mm_rest_3fl".to_string()),
+        tool_number: 3,
+        length_offset_number: 3,
+        diameter_offset_number: 3,
+        name: "3mm 3FL Carbide Rest Endmill".to_string(),
+        vendor: Some("Generic Carbide".to_string()),
+        product_id: None,
+        native_unit: DisplayUnit::Millimeter,
+        spindle_direction: SpindleDirection::Cw,
+        default_coolant: CoolantMode::AirBlast,
+        stickout_length_mm: 18.0,
+        geometry: CutterGeometry::FlatEndmill {
+            diameter_mm: 3.0,
+            flute_length_mm: 12.0,
+            overall_length_mm: 45.0,
+            shank_diameter_mm: 3.0,
+            flutes: 3,
+        },
+        presets: vec![
+            CuttingPreset::from_surface_speed(SurfaceSpeedPresetSpec {
+                id: "al6061_rest",
+                name: "Aluminum 6061 - Rest Cleanup",
+                material: "Aluminum 6061",
+                diameter_mm: 3.0,
+                flutes: 3,
+                surface_speed_m_min: 200.0,
+                chipload_mm_tooth: 0.022,
+                default_stepdown_mm: 5.0,
+                default_stepover_mm: 0.6,
+                coolant_override: Some(CoolantMode::AirBlast),
+            })
+            .with_optimal_load_mm(0.6),
+        ],
+    };
+
+    proj.ensure_tool_embedded(&t10_rough);
+    proj.ensure_tool_embedded(&t3_rest);
+
+    if let Some(pkt_floor) = doc.faces.iter().find(|f| {
+        matches!(
+            f.surface,
+            SurfaceKind::Plane { origin_mm, normal }
+            if normal.z > 0.99 && approx_eq(origin_mm.z, 10.0, 1e-2)
+        )
+    }) && let Some(bind) = doc.bind_face(pkt_floor.id)
+    {
+        // Op 1: Ø10mm 2D Adaptive Roughing (single full-depth 10mm axial cut + 0.2mm wall allowance)
+        let mut op_rough =
+            Operation::new_adaptive_2d("op_1_adaptive_rough_10mm", "Ø10mm Adaptive Rough");
+        op_rough.tool_id = Some(t10_rough.id.clone());
+        op_rough.preset_id = Some("al6061_adaptive".to_string());
+        op_rough.passes.stock_to_leave_radial = ParamLength::from_mm(0.2);
+        op_rough.selections.push(GeometrySelectionItem::PlanarFace {
+            binding: bind.clone(),
+        });
+        proj.setups[0].operations.push(op_rough);
+
+        // Op 2: Ø3mm 2D Adaptive Rest Cleanup (`FromPrecedingOperations`)
+        let mut op_rest = Operation::new_adaptive_2d("op_2_adaptive_rest_3mm", "Ø3mm Rest Corners");
+        op_rest.tool_id = Some(t3_rest.id.clone());
+        op_rest.preset_id = Some("al6061_rest".to_string());
+        op_rest
+            .selections
+            .push(GeometrySelectionItem::PlanarFace { binding: bind });
+        op_rest.passes.rest_machining = RestMachiningConfig {
+            mode: RestMachiningMode::FromPrecedingOperations {
+                source_op_ids: vec!["op_1_adaptive_rough_10mm".to_string()],
+            },
+            rest_overlap: ParamLength::from_mm(0.30),
+            min_rest_thickness: ParamLength::from_mm(0.08),
+        };
+        if let StrategyParams::Pocket2D(p) = op_rest.strategy_mut() {
+            p.strategy = PocketStrategyKind::Adaptive(AdaptiveClearingParams::default());
+        }
+        proj.setups[0].operations.push(op_rest);
+    }
+
+    proj
+}
+
+/// Builds the minimal **Tutorial 06 — Edge Chamfering & 2D Curve Trace / Engraving** project for
+/// `06-chamfer-engrave-block.step` (`100 × 70 × 18 mm` pre-squared block with a modeled `45° × 1.5 mm`
+/// front bevel, sharp `90°` back edge, and clean top face):
+/// - `Op 1`: `Modeled 45° Front Bevel` (`EdgeChamfer`, `ModeledFace`, `T5`),
+/// - `Op 2`: `Sharp Back Edge Deburr` (`EdgeChamfer`, `SharpEdge { width: 0.75 mm }`, `T5`),
+/// - `Op 3`: `Hershey Text Engraving` (`CurveTrace`, `CenterOff`, `0.4 mm` deep single-line `"CHIP-06"`, `T5`).
+pub fn build_tutorial_chamfer_trace_project(
+    doc: &CadDocument,
+    model_path: String,
+    sha256_hex: &str,
+    available_tools: &[Tool],
+    empty_ops: bool,
+) -> ProjectDocument {
+    let mut proj = init_tutorial_step_project(
+        "Tutorial 06 — Chamfer & Trace",
+        model_path,
+        sha256_hex,
+        0.0,
+        0.0,
+    );
+    if empty_ops {
+        return proj;
+    }
+
+    let chamf_90 = available_tools
+        .iter()
+        .find(|t| {
+            matches!(
+                t.geometry,
+                CutterGeometry::ChamferMill {
+                    included_angle_deg,
+                    ..
+                } if (included_angle_deg - 90.0).abs() < 1.0
+            )
+        })
+        .or_else(|| {
+            available_tools
+                .iter()
+                .find(|t| matches!(t.geometry, CutterGeometry::ChamferMill { .. }))
+        });
+
+    // Attach 1 single-line Hershey engraving sketch on Setup XY (which coincides with the Z=18 top face!)
+    let mut sk = SketchLayer::new("sketch_hershey_label", "Top Face Engraving", "setup_1");
+    sk.entities.push(SketchEntityEntry {
+        id: "ent_hershey_chip06".to_string(),
+        name: "Serial 'CHIP-06' (Hershey 1-Line)".to_string(),
+        sub_layer: Some("ENGRAVE".to_string()),
+        is_construction: false,
+        entity: SketchEntity::Text(SketchTextSpec {
+            content: "CHIP-06".to_string(),
+            font: SketchFontSource::Hershey {
+                font: HersheyFontKind::SimplexSans,
+            },
+            cap_height: ParamLength::from_mm(12.0),
+            x: ParamLength::from_mm(50.0),
+            y: ParamLength::from_mm(36.0),
+            h_align: TextHAlign::Center,
+            v_align: TextVAlign::Middle,
+            letter_spacing: ParamLength::from_mm(1.2),
+            ..SketchTextSpec::default()
+        }),
+    });
+    sk.rebuild_regions(None);
+    proj.sketches.push(sk);
+
+    let Some(ch) = chamf_90 else {
+        return proj;
+    };
+    proj.ensure_tool_embedded(ch);
+
+    // Op 1: Modeled 45° x 1.5 mm front bevel face
+    if let Some(bevel_face) = doc.faces.iter().find(|f| {
+        matches!(
+            f.surface,
+            SurfaceKind::Plane { normal, .. }
+            if normal.z > 0.65 && normal.z < 0.76
+        )
+    }) && let Some(bind) = doc.bind_face(bevel_face.id)
+    {
+        let mut op = Operation::new(
+            "op_1_modeled_bevel",
+            "Modeled 45° Front Bevel",
+            OperationKind::ChamferTrace,
+        );
+        op.tool_id = Some(ch.id.clone());
+        op.preset_id = ch.presets.first().map(|p| p.id.clone());
+        if let StrategyParams::ChamferTrace(p) = op.strategy_mut() {
+            p.mode = ChamferTraceMode::EdgeChamfer;
+            p.chamfer_source = ChamferSourceMode::ModeledFace;
+            p.tip_offset = ParamLength::from_mm(0.5);
+            p.check_adjacent_walls = true;
+        }
+        op.selections
+            .push(GeometrySelectionItem::PlanarFace { binding: bind });
+        proj.setups[0].operations.push(op);
+    }
+
+    // Op 2: Sharp unmodeled back edge deburr (Y = 70, Z = 18)
+    if let Some(back_edge) = doc.edges.iter().find(|e| {
+        approx_eq(e.aabb_mm.min.z, 18.0, 1e-2)
+            && approx_eq(e.aabb_mm.max.z, 18.0, 1e-2)
+            && approx_eq(e.aabb_mm.min.y, 70.0, 1e-2)
+            && approx_eq(e.aabb_mm.max.y, 70.0, 1e-2)
+    }) && let Some(b) = doc.bind_edge(back_edge.id)
+    {
+        let mut op = Operation::new(
+            "op_2_sharp_deburr",
+            "Sharp Back Edge Deburr",
+            OperationKind::ChamferTrace,
+        );
+        op.tool_id = Some(ch.id.clone());
+        op.preset_id = ch.presets.first().map(|p| p.id.clone());
+        if let StrategyParams::ChamferTrace(p) = op.strategy_mut() {
+            p.mode = ChamferTraceMode::EdgeChamfer;
+            p.chamfer_source = ChamferSourceMode::SharpEdge {
+                width: ParamLength::from_mm(0.75),
+            };
+            p.tip_offset = ParamLength::from_mm(0.5);
+            p.check_adjacent_walls = true;
+        }
+        op.selections.push(GeometrySelectionItem::OpenChain {
+            body_id: doc.bodies[0].id,
+            start_edge: b.clone(),
+            end_edge: b,
+            resolved_edges: vec![chip_cad::OrientedEdgeUse {
+                edge_id: back_edge.id,
+                forward: true,
+            }],
+            reverse: false,
+            side_flip: false,
+        });
+        proj.setups[0].operations.push(op);
+    }
+
+    // Op 3: 1-Pass Single-Line Hershey Text Engraving (`CurveTrace`, `CenterOff`, `0.4 mm` deep)
+    let mut op_trace = Operation::new(
+        "op_3_hershey_trace",
+        "Hershey Text Engraving",
+        OperationKind::ChamferTrace,
+    );
+    op_trace.tool_id = Some(ch.id.clone());
+    op_trace.preset_id = ch.presets.first().map(|p| p.id.clone());
+    op_trace.heights.bottom = HeightSpec::new(HeightReference::StockTop, -0.4);
+    op_trace
+        .selections
+        .push(GeometrySelectionItem::SketchEntity {
+            sketch_id: "sketch_hershey_label".to_string(),
+            entity_id: "ent_hershey_chip06".to_string(),
+            reverse: false,
+            side_flip: false,
+        });
+    if let StrategyParams::ChamferTrace(p) = op_trace.strategy_mut() {
+        p.mode = ChamferTraceMode::CurveTrace;
+        p.trace_compensation = ContourCompensation::CenterOff;
+        p.trace_axial_offset = ParamLength::from_mm(0.0);
+    }
+    proj.setups[0].operations.push(op_trace);
+
+    proj
+}
+
+/// Builds the minimal Pure-2D **Tutorial 07 — 3D V-Carving, Flat Clearance, & Mated V-Inlays**
+/// project (`models = []`) with a single clean TrueType `"CHIP"` sketch on `120 × 55 × 15 mm` stock:
+/// - When `medial_only = true`: Setup 1 (`G54`) has ONLY `1. Full-Depth Medial V-Carve` (`T8` `60° V-Bit`).
+/// - When `medial_only = false`:
+///   - `Setup 1 [G54]`: ONLY `1. Two-Stage Flat V-Carve` (`T8` `60° V-Bit` + `T3` `1/8 in` Flat Endmill at `flat_depth = 3.0 mm`).
+///   - `Setup 2 [G55]`: ONLY `1. Male V-Inlay Plug` (`T8` + `T3`, `start_depth = 2.0 mm`, `glue_gap = 1.0 mm`, `auto_mirror_x = true`).
+pub fn build_tutorial_vcarve_inlay_project(
+    available_tools: &[Tool],
+    medial_only: bool,
+) -> ProjectDocument {
+    let mut proj = ProjectDocument::new(if medial_only {
+        "Tutorial 07 — Medial V-Carve"
+    } else {
+        "Tutorial 07 — V-Carve & V-Inlay"
+    });
+    proj.models.clear();
+
+    let stock_cfg = StockConfig::FixedBox {
+        width_x: ParamLength::from_mm(120.0),
+        depth_y: ParamLength::from_mm(55.0),
+        height_z: ParamLength::from_mm(15.0),
+        xy_align: FixedBoxXyAlign::CenterXy,
+        z_align: FixedBoxZAlign::OffsetFromTop {
+            top_allowance: ParamLength::from_mm(0.0),
+        },
+    };
+
+    proj.setups[0].name = "Setup 1 — Female Plaque (G54)".to_string();
+    proj.setups[0].wcs_slot = WorkOffsetSlot::G54;
+    proj.setups[0].wcs.origin = WcsOriginMode::StockBoxPoint {
+        anchor: BoxAnchor27::TOP_CENTER,
+    };
+    proj.setups[0].stock = stock_cfg.clone();
+
+    let mut sk = SketchLayer::new("sketch_vcarve_word", "V-Carve Text 'CHIP'", "setup_1");
+    sk.entities.push(SketchEntityEntry {
+        id: "ent_vcarve_chip".to_string(),
+        name: "Title 'CHIP' (24mm Bold)".to_string(),
+        sub_layer: Some("VCARVE".to_string()),
+        is_construction: false,
+        entity: SketchEntity::Text(SketchTextSpec {
+            content: "CHIP".to_string(),
+            font: SketchFontSource::BuiltinSansBold,
+            cap_height: ParamLength::from_mm(24.0),
+            x: ParamLength::from_mm(0.0),
+            y: ParamLength::from_mm(0.0),
+            h_align: TextHAlign::Center,
+            v_align: TextVAlign::Middle,
+            letter_spacing: ParamLength::from_mm(1.5),
+            ..SketchTextSpec::default()
+        }),
+    });
+    sk.rebuild_regions(None);
+    proj.sketches.push(sk);
+
+    let flat_clearing = available_tools
+        .iter()
+        .find(|t| {
+            matches!(
+                t.geometry,
+                CutterGeometry::FlatEndmill { diameter_mm, .. }
+                if (diameter_mm - 3.175).abs() < 0.2
+            )
+        })
+        .or_else(|| {
+            available_tools
+                .iter()
+                .find(|t| matches!(t.geometry, CutterGeometry::FlatEndmill { .. }))
+        })
+        .cloned();
+    let vbit_60 = available_tools
+        .iter()
+        .find(|t| {
+            matches!(
+                t.geometry,
+                CutterGeometry::ChamferMill {
+                    tip_diameter_mm,
+                    included_angle_deg,
+                    ..
+                } if tip_diameter_mm <= 0.05 && (included_angle_deg - 60.0).abs() < 1.0
+            )
+        })
+        .cloned();
+
+    let Some(vb) = vbit_60 else {
+        return proj;
+    };
+    proj.ensure_tool_embedded(&vb);
+
+    if medial_only {
+        let mut op_medial = Operation::new(
+            "op_1_medial_vcarve",
+            "Full-Depth Medial V-Carve",
+            OperationKind::VCarve,
+        );
+        op_medial.tool_id = Some(vb.id.clone());
+        op_medial.preset_id = vb.presets.first().map(|p| p.id.clone());
+        op_medial
+            .selections
+            .push(GeometrySelectionItem::SketchLayerAll {
+                sketch_id: "sketch_vcarve_word".to_string(),
+                sub_layer: Some("VCARVE".to_string()),
+                reverse: false,
+                side_flip: false,
+            });
+        if let StrategyParams::VCarve(p) = op_medial.strategy_mut() {
+            p.flat_depth = None;
+            p.clearing_tool_id = None;
+        }
+        proj.setups[0].operations.push(op_medial);
+        return proj;
+    }
+
+    if let Some(em) = &flat_clearing {
+        proj.ensure_tool_embedded(em);
+    }
+
+    // Setup 1 Op 1: Two-Stage Flat-Bottom V-Carve (`T3` clearing + `T8` 60° V-Bit)
+    let mut op_female = Operation::new(
+        "op_1_two_stage_vcarve",
+        "Two-Stage Flat V-Carve",
+        OperationKind::VCarve,
+    );
+    op_female.tool_id = Some(vb.id.clone());
+    op_female.preset_id = vb.presets.first().map(|p| p.id.clone());
+    op_female
+        .selections
+        .push(GeometrySelectionItem::SketchLayerAll {
+            sketch_id: "sketch_vcarve_word".to_string(),
+            sub_layer: Some("VCARVE".to_string()),
+            reverse: false,
+            side_flip: false,
+        });
+    if let StrategyParams::VCarve(p) = op_female.strategy_mut() {
+        p.flat_depth = Some(ParamLength::from_mm(3.0));
+        if let Some(em) = &flat_clearing {
+            p.clearing_tool_id = Some(em.id.clone());
+            p.clearing_preset_id = em.presets.first().map(|pr| pr.id.clone());
+        }
+        p.clearing_strategy = VCarveClearingKind::ContourParallel;
+    }
+    proj.setups[0].operations.push(op_female);
+
+    // Setup 2 (G55): Mirrored Mated Male V-Inlay Plug
+    let mut setup_plug = Setup::new(
+        "setup_2_plug",
+        "Setup 2 — Male V-Inlay Plug (G55)",
+        WorkOffsetSlot::G55,
+    );
+    setup_plug.wcs.origin = WcsOriginMode::StockBoxPoint {
+        anchor: BoxAnchor27::TOP_CENTER,
+    };
+    setup_plug.stock = stock_cfg;
+
+    let mut op_plug = Operation::new(
+        "op_1_male_v_inlay",
+        "Male V-Inlay Plug (Mirrored)",
+        OperationKind::VCarve,
+    );
+    op_plug.tool_id = Some(vb.id.clone());
+    op_plug.preset_id = vb.presets.first().map(|p| p.id.clone());
+    op_plug
+        .selections
+        .push(GeometrySelectionItem::SketchLayerAll {
+            sketch_id: "sketch_vcarve_word".to_string(),
+            sub_layer: Some("VCARVE".to_string()),
+            reverse: false,
+            side_flip: false,
+        });
+    if let StrategyParams::VCarve(p) = op_plug.strategy_mut() {
+        p.flat_depth = Some(ParamLength::from_mm(3.0));
+        if let Some(em) = &flat_clearing {
+            p.clearing_tool_id = Some(em.id.clone());
+            p.clearing_preset_id = em.presets.first().map(|pr| pr.id.clone());
+        }
+        p.clearing_strategy = VCarveClearingKind::ContourParallel;
+        p.inlay_mode = VCarveInlayMode::MalePlug {
+            start_depth: ParamLength::from_mm(2.0),
+            glue_gap_bottom: ParamLength::from_mm(1.0),
+            border_margin: ParamLength::from_mm(5.0),
+            auto_mirror_x: true,
+        };
+    }
+    setup_plug.operations.push(op_plug);
+    proj.setups.push(setup_plug);
+
+    proj
+}

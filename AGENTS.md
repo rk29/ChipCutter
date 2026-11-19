@@ -14,7 +14,7 @@
 ### Specification Map
 | File | Subsystem |
 |---|---|
-| `specs/00-overview.md` | Vision, Phase 1–3 scope boundaries, and future-phase non-goals |
+| `specs/00-overview.md` | Vision, Phase 1–4 scope boundaries, and future-phase non-goals |
 | `specs/01-architecture.md` | Cargo workspace layout, data pipeline, units/expressions, DAG `rayon` threading, licensing |
 | `specs/02-cad-selection.md` | `CadKernel` trait, `monstertruck` STEP pipeline, unified 3D B-Rep & 2D Sketch picking, reload re-matching |
 | `specs/03-setups-wcs.md` | Multi-setup & pure-2D job model, box/cylinder stock, WCS orientation & origin, Z clearance hierarchy |
@@ -24,7 +24,7 @@
 | `specs/07-post-processor.md` | Typed `ClEvent` IR, `.post.toml` profiles, ATC vs split-by-tool, GRBL & LinuxCNC dialects |
 | `specs/08-ui-viewport.md` | `eframe` + `wgpu` + `egui_tiles` shell, Dark/Light design system, Viewport HUDs, Command Palette, Undo/Redo |
 | `specs/09-persistence-cli.md` | `.chip.toml` (`schema_version = 1 / 2`) & `.chipz` formats, headless CLI subcommands, testing |
-| `specs/10-roadmap.md` | Completed Phase 1 (M1–M5), Phase 2 (M6–M9), & Phase 3 (M10–M12) milestones, active Phase 4 (M13–M15) tutorial milestones, and future phases |
+| `specs/10-roadmap.md` | Completed Phase 1 (M1–M5), Phase 2 (M6–M9), Phase 3 (M10–M12), & Phase 4 (M13–M15) milestones, plus future phases |
 | `specs/11-sketches-vectors.md` | `chip-sketch` 2D Sketch Layers, parametric shapes, DXF/SVG importers, TrueType & Hershey text |
 
 ---

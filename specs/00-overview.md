@@ -5,7 +5,7 @@
 
 ---
 
-## Scope Summary (Phases 1–3 Completed)
+## Scope Summary (Phases 1–4 Completed)
 - **Machining Paradigm:** 2.5D CNC milling, high-efficiency adaptive roughing, routing, engraving, and V-carving (architected cleanly to extend to 3-axis surface milling in future phases).
 - **CAD & 2D Vector Input:**
   - **3D B-Rep Solids (`chip-cad`):** ISO 10303-21 **STEP** (AP203 / AP214 / AP242) via `monstertruck` behind the `CadKernel` trait.
@@ -42,7 +42,7 @@
 ## Specification Index
 | Document | Scope |
 |---|---|
-| [00-overview.md](file:///workspace/ChipCutter/specs/00-overview.md) | Vision, Phase 1–3 scope boundaries, non-goals, and spec map |
+| [00-overview.md](file:///workspace/ChipCutter/specs/00-overview.md) | Vision, Phase 1–4 scope boundaries, non-goals, and spec map |
 | [01-architecture.md](file:///workspace/ChipCutter/specs/01-architecture.md) | Cargo workspace crates, data pipeline, units/expressions, DAG threading, licensing |
 | [02-cad-selection.md](file:///workspace/ChipCutter/specs/02-cad-selection.md) | `CadKernel` trait, STEP pipeline, unified B-Rep + Sketch picking, reload re-matching |
 | [03-setups-wcs.md](file:///workspace/ChipCutter/specs/03-setups-wcs.md) | Multi-setup model, pure-2D & 3D stock geometry, WCS orientation/origin, Z planes |
@@ -52,5 +52,5 @@
 | [07-post-processor.md](file:///workspace/ChipCutter/specs/07-post-processor.md) | Typed CL-data IR, TOML post configs, ATC vs split-per-tool, GRBL & LinuxCNC posts |
 | [08-ui-viewport.md](file:///workspace/ChipCutter/specs/08-ui-viewport.md) | `eframe` + `wgpu` + `egui_tiles` shell, Dark/Light design system, Viewport HUDs, Command Palette, Undo/Redo |
 | [09-persistence-cli.md](file:///workspace/ChipCutter/specs/09-persistence-cli.md) | `.chip.toml` (`schema_version = 2`) & `.chipz` formats, headless CLI subcommands, testing strategy |
-| [10-roadmap.md](file:///workspace/ChipCutter/specs/10-roadmap.md) | Completed Phase 1 (M1–M5), Phase 2 (M6–M9), & Phase 3 (M10–M12) milestones, active Phase 4 (M13–M15) tutorials, and future phases |
+| [10-roadmap.md](file:///workspace/ChipCutter/specs/10-roadmap.md) | Completed Phase 1 (M1–M5), Phase 2 (M6–M9), Phase 3 (M10–M12), & Phase 4 (M13–M15) milestones, plus future phases |
 | [11-sketches-vectors.md](file:///workspace/ChipCutter/specs/11-sketches-vectors.md) | `chip-sketch` 2D Sketch Layers, parametric shapes, DXF/SVG importers, TrueType & Hershey text |

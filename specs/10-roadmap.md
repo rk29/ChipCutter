@@ -78,9 +78,9 @@ Phase 3 focused exclusively on **Desktop UI Polish, Visual Consistency, & Machin
 
 ---
 
-## Phase 4 — Illustrated Toolpath Strategy Tutorials (Active — M13–M15)
+## Phase 4 — Illustrated Toolpath Strategy Tutorials (Completed — M13–M15)
 
-Phase 4 delivers a complete set of illustrated Markdown tutorials in `docs/tutorials/` (with step-by-step instructions and screenshots in `docs/images/tutorials/`) walking users end-to-end through setup, geometry selection, parameters, toolpath generation (`Ctrl+G`), 3D heightmap simulation, and verified G-code post-processing for every ChipCutter machining strategy—without modifying core CAM, simulation, post-processing, or UI architecture:
+Phase 4 delivered a complete set of illustrated Markdown tutorials in `docs/tutorials/` (with step-by-step instructions, minimal single-purpose `.step` starter assets in `docs/tutorials/assets/`, and 41 repeatable headless screenshots in `docs/images/tutorials/`) walking users end-to-end through setup, geometry selection, parameters, toolpath generation (`Ctrl+G`), 3D heightmap simulation, and verified G-code post-processing for every ChipCutter machining strategy—without modifying core CAM, simulation, post-processing, or UI architecture:
 
 ### Milestone 13 — Tutorial Framework, Screenshot Capture Pipeline, & Getting Started Guide (`plans/13-milestone-13-plan.md`)
 - **Tutorials Index & Standardized Structure (`docs/tutorials/README.md`):** Establish the tutorials index, learning progression, and consistent per-guide layout (Goal & Result Preview, Starter Model/Project, Step-by-Step GUI Walkthrough with parameter tables, `Ctrl+G` & 3D Simulation checks, GRBL/LinuxCNC Post-Processing, and equivalent `chipcutter` CLI commands).

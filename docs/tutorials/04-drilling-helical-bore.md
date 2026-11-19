@@ -125,4 +125,5 @@ cargo run -p chip-cli -- build /tmp/04-drill-bore.chip.toml -o /tmp/drill_grbl -
 ## Next Steps
 
 - **Previous:** [Tutorial 03 — 2D Pocket (Multi-Island & Open-Shoulder)](03-2d-pocket.md)
-- **Index:** [All Tutorials](README.md) — continue into **2D Adaptive Clearing & 2.5D Rest Machining**, **Edge Chamfering & Curve Trace**, and **3D V-Carving & V-Inlays** in Milestone 15.
+- **Next:** [Tutorial 05 — 2D Adaptive Clearing & 2.5D Rest Machining](05-adaptive-rest-machining.md)
+- **Index:** [All Tutorials](README.md)

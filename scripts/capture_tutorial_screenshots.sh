@@ -2,7 +2,7 @@
 # Repeatable headless tutorial screenshot capture pipeline for ChipCutter Phase 4.
 #
 # Usage:
-#   ./scripts/capture_tutorial_screenshots.sh [--milestone 13|14|all] [--tutorial <slug>] [--theme dark|light] [--debug]
+#   ./scripts/capture_tutorial_screenshots.sh [--milestone 13|14|15|all] [--tutorial <slug>] [--theme dark|light] [--debug]
 #
 # Renders offscreen inside Xvfb using Vulkan Lavapipe (never opens windows on a host Wayland session).
 
@@ -354,6 +354,189 @@ capture_04_drilling_helical_bore() {
     --capture-sim-progress 1.0
 }
 
+capture_05_adaptive_rest_machining() {
+  local dir="docs/images/tutorials/05-adaptive-rest-machining"
+  local step="$REPO_ROOT/docs/tutorials/assets/05-adaptive-pocket.step"
+  local proj_full="$TMP_PROJ_DIR/05-adaptive-rest.chip.toml"
+
+  "$CLI_BIN" generate-sample-step "$step" --tutorial 05-adaptive-rest --project-out "$proj_full"
+
+  # 1. Deep pocket floor selection on minimal 100x80x20mm block (ONLY 2 ops)
+  capture_shot "$dir/01-adaptive-geometry.png" \
+    "$proj_full" \
+    --capture-generate \
+    --capture-view iso \
+    --capture-focus op:0:geometry \
+    --capture-isolate-op \
+    --capture-sim-stock false \
+    --capture-sim-cutter false
+
+  # 2. 2D Adaptive Clearing Passes tab (Optimal Load, Micro-Lift Z, Chip Thinning RCT banner)
+  capture_shot "$dir/02-adaptive-passes.png" \
+    "$proj_full" \
+    --capture-generate \
+    --capture-view iso \
+    --capture-focus op:0:passes \
+    --capture-isolate-op \
+    --capture-sim-stock false \
+    --capture-sim-cutter false
+
+  # 3. 2.5D Rest Machining Passes tab (Rest Mode: Preceding, Ø3mm corner-only cleanup)
+  capture_shot "$dir/03-rest-machining-passes.png" \
+    "$proj_full" \
+    --capture-generate \
+    --capture-view iso \
+    --capture-focus op:1:passes \
+    --capture-isolate-op \
+    --capture-sim-stock false \
+    --capture-sim-cutter false
+
+  # 4. 3D Simulation (Color by Op): Ø10mm Adaptive bulk roughing vs. Ø3mm Rest corner cleanup
+  capture_shot "$dir/04-adaptive-rest-simulation.png" \
+    "$proj_full" \
+    --capture-generate \
+    --capture-view iso \
+    --capture-focus op:1:passes \
+    --capture-pane sim \
+    --capture-sim-stock true \
+    --capture-sim-cutter true \
+    --capture-sim-progress 0.98
+
+  # 5. Verified LinuxCNC G-code preview (Tools: [10, 3])
+  capture_shot "$dir/05-adaptive-rest-gcode.png" \
+    "$proj_full" \
+    --capture-generate \
+    --capture-view iso \
+    --capture-focus op:1:passes \
+    --capture-pane gcode \
+    --capture-post linuxcnc \
+    --capture-sim-stock true \
+    --capture-sim-cutter true \
+    --capture-sim-progress 1.0
+}
+
+capture_06_chamfer_curve_trace() {
+  local dir="docs/images/tutorials/06-chamfer-curve-trace"
+  local step="$REPO_ROOT/docs/tutorials/assets/06-chamfer-engrave-block.step"
+  local proj_full="$TMP_PROJ_DIR/06-chamfer-trace.chip.toml"
+
+  "$CLI_BIN" generate-sample-step "$step" --tutorial 06-chamfer-trace --project-out "$proj_full"
+
+  # 1. Modeled 45° x 1.5 mm front bevel chamfer (Passes tab + isolated path)
+  capture_shot "$dir/01-modeled-chamfer-passes.png" \
+    "$proj_full" \
+    --capture-generate \
+    --capture-view iso \
+    --capture-focus op:0:passes \
+    --capture-isolate-op \
+    --capture-sim-stock false \
+    --capture-sim-cutter false
+
+  # 2. Sharp unmodeled back edge deburr (Sharp Edge, Chamfer Width, Tip Offset, Floor Guard)
+  capture_shot "$dir/02-sharp-edge-chamfer.png" \
+    "$proj_full" \
+    --capture-generate \
+    --capture-view iso \
+    --capture-focus op:1:passes \
+    --capture-isolate-op \
+    --capture-sim-stock false \
+    --capture-sim-cutter false
+
+  # 3. 1-Pass Single-Line Hershey Text Engraving (`2D Curve Trace`, Center compensation)
+  capture_shot "$dir/03-hershey-sketch-trace.png" \
+    "$proj_full" \
+    --capture-generate \
+    --capture-view iso \
+    --capture-focus op:2:passes \
+    --capture-isolate-op \
+    --capture-sim-stock false \
+    --capture-sim-cutter false
+
+  # 4. 3D Simulation of all 3 T5 operations (front bevel, back deburr, engraved CHIP-06)
+  capture_shot "$dir/04-chamfer-trace-simulation.png" \
+    "$proj_full" \
+    --capture-generate \
+    --capture-view iso \
+    --capture-focus op:2:passes \
+    --capture-pane sim \
+    --capture-sim-stock true \
+    --capture-sim-cutter true \
+    --capture-sim-progress 0.95
+
+  # 5. Verified GRBL single-tool T5 G-code preview
+  capture_shot "$dir/05-chamfer-trace-gcode.png" \
+    "$proj_full" \
+    --capture-generate \
+    --capture-view iso \
+    --capture-focus op:2:passes \
+    --capture-pane gcode \
+    --capture-post grbl \
+    --capture-sim-stock true \
+    --capture-sim-cutter true \
+    --capture-sim-progress 1.0
+}
+
+capture_07_vcarve_inlays() {
+  local dir="docs/images/tutorials/07-vcarve-inlays"
+  local proj_medial="$TMP_PROJ_DIR/07-vcarve-medial.chip.toml"
+  local proj_inlay="$TMP_PROJ_DIR/07-vcarve-inlay.chip.toml"
+
+  "$CLI_BIN" generate-sample-step "$proj_medial" --tutorial 07-vcarve-medial
+  "$CLI_BIN" generate-sample-step "$proj_inlay" --tutorial 07-vcarve-inlay
+
+  # 1. Pure Full-Depth Medial-Axis V-Carving (Voronoi bisectors + sharp 3D corner climbs)
+  capture_shot "$dir/01-vcarve-medial-axis.png" \
+    "$proj_medial" \
+    --capture-generate \
+    --capture-view iso \
+    --capture-focus op:0:passes \
+    --capture-sim-stock false \
+    --capture-sim-cutter false
+
+  # 2. Two-Stage Flat Area Clearance (Flat Depth = 3.0 mm, Stage 1 T3 + Stage 2 T8 V-Bit)
+  capture_shot "$dir/02-vcarve-two-stage-clearance.png" \
+    "$proj_inlay" \
+    --capture-generate \
+    --capture-view iso \
+    --capture-focus op:0:0:passes \
+    --capture-sim-stock false \
+    --capture-sim-cutter false
+
+  # 3. 3D Simulation of Female Plaque (crisp 60° beveled walls & flat letter bottoms)
+  capture_shot "$dir/03-vcarve-simulation-female.png" \
+    "$proj_inlay" \
+    --capture-generate \
+    --capture-view iso \
+    --capture-focus op:0:0:passes \
+    --capture-pane sim \
+    --capture-sim-stock true \
+    --capture-sim-cutter true \
+    --capture-sim-progress 0.96
+
+  # 4. Setup 2 (G55): Mirrored Mated Male V-Inlay Plug (Start Depth, Glue Gap, Auto-Mirror X)
+  capture_shot "$dir/04-vcarve-male-inlay-plug.png" \
+    "$proj_inlay" \
+    --capture-generate \
+    --capture-view iso \
+    --capture-focus op:1:0:passes \
+    --capture-pane sim \
+    --capture-sim-stock true \
+    --capture-sim-cutter true \
+    --capture-sim-progress 0.96
+
+  # 5. Verified GRBL Split-by-Tool G-code preview (automatic Stage 1 T3 + Stage 2 T8 two-file split)
+  capture_shot "$dir/05-vcarve-gcode-grbl-split.png" \
+    "$proj_inlay" \
+    --capture-generate \
+    --capture-view iso \
+    --capture-focus op:0:0:passes \
+    --capture-pane gcode \
+    --capture-post grbl \
+    --capture-sim-stock true \
+    --capture-sim-cutter true \
+    --capture-sim-progress 1.0
+}
+
 if [[ -n "$TUTORIAL" ]]; then
   case "$TUTORIAL" in
     00-getting-started)
@@ -371,6 +554,15 @@ if [[ -n "$TUTORIAL" ]]; then
     04-drilling-helical-bore)
       capture_04_drilling_helical_bore
       ;;
+    05-adaptive-rest-machining)
+      capture_05_adaptive_rest_machining
+      ;;
+    06-chamfer-curve-trace)
+      capture_06_chamfer_curve_trace
+      ;;
+    07-vcarve-inlays)
+      capture_07_vcarve_inlays
+      ;;
     *)
       echo "Unknown tutorial slug: $TUTORIAL" >&2
       exit 2
@@ -387,15 +579,23 @@ else
       capture_03_2d_pocket
       capture_04_drilling_helical_bore
       ;;
+    15)
+      capture_05_adaptive_rest_machining
+      capture_06_chamfer_curve_trace
+      capture_07_vcarve_inlays
+      ;;
     all)
       capture_00_getting_started
       capture_01_facing
       capture_02_2d_contour_tabs
       capture_03_2d_pocket
       capture_04_drilling_helical_bore
+      capture_05_adaptive_rest_machining
+      capture_06_chamfer_curve_trace
+      capture_07_vcarve_inlays
       ;;
     *)
-      echo "Unsupported milestone: $MILESTONE (available: 13, 14, all)" >&2
+      echo "Unsupported milestone: $MILESTONE (available: 13, 14, 15, all)" >&2
       exit 2
       ;;
   esac

@@ -828,6 +828,7 @@ impl ChipCutterApp {
     fn apply_capture_spec(&mut self, capture: &crate::capture::CaptureSpec) -> bool {
         use crate::capture::{CaptureFocus, CaptureModal, CapturePane, CaptureView};
         let mut needs_resim = false;
+        let prev_setup_idx = self.active_setup_idx;
 
         if let Some(focus) = capture.focus {
             match focus {
@@ -862,6 +863,9 @@ impl ChipCutterApp {
             }
         }
 
+        if self.active_setup_idx != prev_setup_idx && self.sim_panel.active_result.is_some() {
+            needs_resim = true;
+        }
         if capture.isolate_op {
             self.show_all_setup_toolpaths = false;
         }

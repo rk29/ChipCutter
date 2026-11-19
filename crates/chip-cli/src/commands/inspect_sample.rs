@@ -3,15 +3,18 @@ use std::{path::PathBuf, process::ExitCode};
 use chip_cad::{
     CadKernel, CurveKind, MonstertruckKernel, SurfaceKind, sample_cam_torture_block_step,
     sample_machined_plate_step, sample_multi_feature_bracket_step, sample_revised_part_pair_step,
+    tutorial_adaptive_pocket_step, tutorial_chamfer_engrave_block_step,
     tutorial_contour_plate_step, tutorial_drill_bore_plate_step, tutorial_facing_billet_step,
     tutorial_pocket_block_step,
 };
 use chip_cam::{BoxAnchor27, StockConfig, WcsOriginMode};
 use chip_math::{ArcSegment2D, DEFAULT_TESS_CHORD_TOL_MM, DisplayUnit, ParamLength};
 use chip_project::{
-    ProjectDocument, build_cam_torture_project, build_tutorial_contour_project,
+    ProjectDocument, build_cam_torture_project, build_tutorial_adaptive_rest_project,
+    build_tutorial_chamfer_trace_project, build_tutorial_contour_project,
     build_tutorial_drill_bore_project, build_tutorial_facing_project,
-    build_tutorial_pocket_project, compute_sha256_hex, portable_model_path,
+    build_tutorial_pocket_project, build_tutorial_vcarve_inlay_project, compute_sha256_hex,
+    portable_model_path,
 };
 use chip_sketch::{
     DxfImportOptions, SketchLayer, SvgImportOptions, VectorImportUnits, import_dxf_path,
@@ -38,6 +41,32 @@ pub fn run_generate_sample_step(
         .tutorial
         .as_deref()
         .map(|s| s.trim().to_ascii_lowercase());
+
+    if matches!(
+        tutorial_slug.as_deref(),
+        Some("07-vcarve-medial" | "07-vcarve-inlay" | "vcarve-medial" | "vcarve-inlay")
+    ) {
+        let medial_only = matches!(
+            tutorial_slug.as_deref(),
+            Some("07-vcarve-medial" | "vcarve-medial")
+        );
+        let starter = default_starter_tool_library();
+        let proj = build_tutorial_vcarve_inlay_project(&starter.tools, medial_only);
+        let dest = args.project_out.unwrap_or(args.output);
+        if let Some(parent) = dest.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent)?;
+        }
+        proj.save_to_path(&dest)?;
+        println!(
+            "Wrote Pure-2D V-Carve tutorial project ({} setup(s)) to {}",
+            proj.setups.len(),
+            dest.display()
+        );
+        return Ok(ExitCode::SUCCESS);
+    }
+
     let step = if let Some(slug) = tutorial_slug.as_deref() {
         match slug {
             "01-facing" | "facing" => tutorial_facing_billet_step()?,
@@ -46,9 +75,15 @@ pub fn run_generate_sample_step(
             "04-drill-bore" | "04-drilling-helical-bore" | "drill-bore" => {
                 tutorial_drill_bore_plate_step()?
             }
+            "05-adaptive-rest" | "05-adaptive-rest-machining" | "adaptive-rest" => {
+                tutorial_adaptive_pocket_step()?
+            }
+            "06-chamfer-trace" | "06-chamfer-curve-trace" | "chamfer-trace" => {
+                tutorial_chamfer_engrave_block_step()?
+            }
             other => {
                 return Err(format!(
-                    "unknown --tutorial '{other}'; expected one of: 01-facing, 02-contour, 03-pocket, 04-drill-bore"
+                    "unknown --tutorial '{other}'; expected one of: 01-facing, 02-contour, 03-pocket, 04-drill-bore, 05-adaptive-rest, 06-chamfer-trace, 07-vcarve-medial, 07-vcarve-inlay"
                 )
                 .into());
             }
@@ -107,6 +142,18 @@ pub fn run_generate_sample_step(
             ),
             Some("04-drill-bore" | "04-drilling-helical-bore" | "drill-bore") => {
                 build_tutorial_drill_bore_project(
+                    &doc,
+                    rel_path,
+                    &sha,
+                    &starter.tools,
+                    args.empty_project,
+                )
+            }
+            Some("05-adaptive-rest" | "05-adaptive-rest-machining" | "adaptive-rest") => {
+                build_tutorial_adaptive_rest_project(&doc, rel_path, &sha, args.empty_project)
+            }
+            Some("06-chamfer-trace" | "06-chamfer-curve-trace" | "chamfer-trace") => {
+                build_tutorial_chamfer_trace_project(
                     &doc,
                     rel_path,
                     &sha,

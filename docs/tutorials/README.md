@@ -29,15 +29,15 @@ Work through the guides in order if you are new to ChipCutter, or jump directly 
 | 02 | [**2D Contour / Profile & Holding Tabs**](02-2d-contour-tabs.md) | Closed outer profiles & open edge chains, stepdowns, helical/linear ramps, lead-in/out arcs, rough/finish passes, holding tabs | [`assets/02-contour-plate.step`](assets/02-contour-plate.step) (`100×70×12 mm` rounded/chamfered plate) | **Available** |
 | 03 | [**2D Pocket (Multi-Island & Open-Shoulder)**](03-2d-pocket.md) | Closed multi-island cavities, open-shoulder overhang air entry, contour-parallel vs. zig-zag, radial/axial stock-to-leave | [`assets/03-pocket-block.step`](assets/03-pocket-block.step) (1 island pocket + 1 open step) | **Available** |
 | 04 | [**Drilling & Helical Bore Milling**](04-drilling-helical-bore.md) | 3D cylindrical holes (`+ Same Ø`), spot/peck cycles (`G81`/`G83`/`G73`), breakthrough, helical bore interpolation + floor cleanup | [`assets/04-drill-bore-plate.step`](assets/04-drill-bore-plate.step) (4× Ø6mm holes + 1× Ø18mm bore) | **Available** |
-| 05 | 2D Adaptive Clearing & 2.5D Rest Machining | Constant-engagement trochoidal roughing (`optimal_load`), radial chip-thinning, `FromPrecedingOperations` DAG waves | Minimal deep-pocket STEP (M15) | Planned (Milestone 15) |
-| 06 | Edge Chamfering & 2D Curve Trace / Engraving | Sharp unmodeled CAD edges vs. modeled `45°` bevel faces (`tip_offset`), 1-pass single-line Hershey text engraving | Minimal chamfer & engraving STEP (M15) | Planned (Milestone 15) |
-| 07 | 3D V-Carving, Two-Tool Flat Clearance, & Mated V-Inlays | TrueType/SVG contours, medial-axis 3D corner climbs, Stage 1 Flat + Stage 2 V-Bit clearance, mirrored Male V-Inlay plugs | Minimal Pure-2D V-Carve starter (M15) | Planned (Milestone 15) |
+| 05 | [**2D Adaptive Clearing & 2.5D Rest Machining**](05-adaptive-rest-machining.md) | Constant-engagement trochoidal roughing (`optimal_load`), radial chip-thinning, `FromPrecedingOperations` DAG waves | [`assets/05-adaptive-pocket.step`](assets/05-adaptive-pocket.step) (`100×80×20 mm` deep sharp-corner pocket) | **Available** |
+| 06 | [**Edge Chamfering & 2D Curve Trace / Engraving**](06-chamfer-curve-trace.md) | Modeled `45°` bevel faces vs. sharp unmodeled edges (`tip_offset`, `Floor Guard`), 1-pass single-line Hershey engraving | [`assets/06-chamfer-engrave-block.step`](assets/06-chamfer-engrave-block.step) (`45°` front bevel + sharp back edge) | **Available** |
+| 07 | [**3D V-Carving, Two-Tool Flat Clearance, & Mated V-Inlays**](07-vcarve-inlays.md) | TrueType outline text, medial-axis 3D corner climbs, Stage 1 Flat + Stage 2 V-Bit clearance, mirrored Male V-Inlay plugs | Blank Pure-2D Sketch (`"CHIP"` TrueType text) | **Available** |
 
 ---
 
 ## Minimal Tutorial STEP Assets (`docs/tutorials/assets/`)
 
-Each operation tutorial starts from an **empty project** and loads a minimal STEP model containing only the geometric features required to practice that strategy—keeping the CAM Browser uncluttered:
+Each 3D operation tutorial starts from an **empty project** and loads a minimal STEP model containing only the geometric features required to practice that strategy—keeping the CAM Browser uncluttered:
 
 | Asset File | Dimensions & Features | Reproducible CLI Generator |
 |---|---|---|
@@ -45,6 +45,8 @@ Each operation tutorial starts from an **empty project** and loads a minimal STE
 | [`02-contour-plate.step`](assets/02-contour-plate.step) | `100 × 70 × 12 mm` plate with 1× `R10` fillet & 1× `45°` chamfer | `chipcutter generate-sample-step <out.step> --tutorial 02-contour` |
 | [`03-pocket-block.step`](assets/03-pocket-block.step) | `100 × 80 × 20 mm` block with 1 closed `Ø14 mm` island pocket + 1 open step | `chipcutter generate-sample-step <out.step> --tutorial 03-pocket` |
 | [`04-drill-bore-plate.step`](assets/04-drill-bore-plate.step) | `100 × 70 × 16 mm` plate with 4× `Ø6 mm` through-holes + 1× `Ø18 mm` blind bore | `chipcutter generate-sample-step <out.step> --tutorial 04-drill-bore` |
+| [`05-adaptive-pocket.step`](assets/05-adaptive-pocket.step) | `100 × 80 × 20 mm` block with 1 deep `10 mm` sharp-corner pocket + `Ø16 mm` boss | `chipcutter generate-sample-step <out.step> --tutorial 05-adaptive-rest` |
+| [`06-chamfer-engrave-block.step`](assets/06-chamfer-engrave-block.step) | `100 × 70 × 18 mm` block with 1 modeled `45° × 1.5 mm` front bevel & sharp back edge | `chipcutter generate-sample-step <out.step> --tutorial 06-chamfer-trace` |
 
 You can launch any starter STEP model directly into an empty ChipCutter workspace:
 
@@ -71,10 +73,9 @@ All Phase 4 guides follow a uniform 7-part structure so machinists and contribut
 Screenshots are stored under `docs/images/tutorials/<nn>-<slug>/<step>-<name>.png` and captured deterministically via `chip-gui --self-test-screenshot` under headless Xvfb + Vulkan Lavapipe:
 
 ```bash
-# Capture screenshots for Milestone 13 (00-getting-started) or Milestone 14 (01–04):
-./scripts/capture_tutorial_screenshots.sh --milestone 13
-./scripts/capture_tutorial_screenshots.sh --milestone 14
+# Capture screenshots for all Phase 4 tutorials (41 PNGs across Milestones 13–15):
+./scripts/capture_tutorial_screenshots.sh --milestone all
 
 # Or capture a single tutorial in Daylight Light theme:
-./scripts/capture_tutorial_screenshots.sh --tutorial 01-facing --theme light
+./scripts/capture_tutorial_screenshots.sh --tutorial 05-adaptive-rest-machining --theme light
 ```

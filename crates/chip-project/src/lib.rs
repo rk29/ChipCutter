@@ -25,9 +25,10 @@ pub use demos::{
     build_adaptive_rest_demo_project, build_cam_torture_project,
     build_engraved_nameplate_demo_project, build_multi_feature_bracket_project,
     build_pure2d_router_panel_demo_project, build_revision_v1_demo_project,
+    build_tutorial_adaptive_rest_project, build_tutorial_chamfer_trace_project,
     build_tutorial_contour_project, build_tutorial_drill_bore_project,
     build_tutorial_facing_project, build_tutorial_pocket_project,
-    build_vcarve_sign_and_inlay_demo_project,
+    build_tutorial_vcarve_inlay_project, build_vcarve_sign_and_inlay_demo_project,
 };
 pub use dispatcher::{
     BatchGenerationReport, DispatcherEvent, JobDispatcher, generate_project_blocking,
@@ -1114,6 +1115,7 @@ setups = []
     #[test]
     fn minimal_tutorial_projects_pass_heightmap_sim_with_zero_crashes() {
         use chip_cad::{
+            tutorial_adaptive_pocket_step, tutorial_chamfer_engrave_block_step,
             tutorial_contour_plate_step, tutorial_drill_bore_plate_step,
             tutorial_facing_billet_step, tutorial_pocket_block_step,
         };
@@ -1133,6 +1135,16 @@ setups = []
                 "04-drill-bore",
                 tutorial_drill_bore_plate_step().unwrap(),
                 2,
+            ),
+            (
+                "05-adaptive-rest",
+                tutorial_adaptive_pocket_step().unwrap(),
+                2,
+            ),
+            (
+                "06-chamfer-trace",
+                tutorial_chamfer_engrave_block_step().unwrap(),
+                3,
             ),
         ];
 
@@ -1160,6 +1172,16 @@ setups = []
                     false,
                 ),
                 "04-drill-bore" => build_tutorial_drill_bore_project(
+                    &doc,
+                    slug.to_string(),
+                    &sha,
+                    &starter.tools,
+                    false,
+                ),
+                "05-adaptive-rest" => {
+                    build_tutorial_adaptive_rest_project(&doc, slug.to_string(), &sha, false)
+                }
+                "06-chamfer-trace" => build_tutorial_chamfer_trace_project(
                     &doc,
                     slug.to_string(),
                     &sha,
@@ -1208,6 +1230,57 @@ setups = []
                 })
                 .unwrap();
                 assert!(!files.is_empty());
+            }
+        }
+
+        // 07 V-Carve (pure medial-axis + two-stage flat clearance & mated Male V-Inlay plug)
+        let empty_cad = chip_cad::CadDocument::empty();
+        for medial_only in [true, false] {
+            let mut vc_proj = build_tutorial_vcarve_inlay_project(&starter.tools, medial_only);
+            let mut cache = ToolpathCache::new(32);
+            let report = generate_project_blocking(&mut vc_proj, &empty_cad, &mut cache, 1);
+            assert!(
+                report.errors.is_empty(),
+                "tutorial 07 (medial_only={medial_only}) generation failed: {:?}",
+                report.errors
+            );
+            for setup_idx in 0..vc_proj.setups.len() {
+                let sim = simulate_project_setup(&SetupSimRequest {
+                    project: &vc_proj,
+                    setup_idx,
+                    cad_doc: &empty_cad,
+                    cad_revision: 1,
+                    cache: &cache,
+                    kinematics: resolve_kinematics_for_key("linuxcnc", None),
+                    resolution: SimResolution::Standard,
+                    cancel: None,
+                })
+                .unwrap();
+                assert!(
+                    !sim.has_critical_errors(),
+                    "tutorial 07 (medial_only={medial_only}, setup={setup_idx}) sim errors: {:?}",
+                    sim.diagnostics
+                );
+                let grbl_files = post_process_project_setup(&SetupPostRequest {
+                    project: &vc_proj,
+                    setup_idx,
+                    cad_doc: &empty_cad,
+                    cad_revision: 1,
+                    cache: &cache,
+                    post_profile: &grbl,
+                    project_label: &vc_proj.project_name,
+                    program_stem: "07_vcarve",
+                })
+                .unwrap();
+                if medial_only {
+                    assert_eq!(grbl_files.len(), 1);
+                } else {
+                    assert_eq!(
+                        grbl_files.len(),
+                        2,
+                        "GRBL must split Two-Stage V-Carve into Stage 1 clearing + Stage 2 V-bit files"
+                    );
+                }
             }
         }
     }
