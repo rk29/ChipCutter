@@ -17,6 +17,10 @@ struct GuiArgs {
     #[arg(value_name = "PATH")]
     step_file: Option<PathBuf>,
 
+    /// Launch directly into the 3D STEP CAM Torture Block demo job.
+    #[arg(long)]
+    demo_torture: bool,
+
     /// Launch directly into the Milestone 7 Pure-2D CNC Router Front Panel (.dxf) demo job.
     #[arg(long)]
     demo_pure_2d: bool,
@@ -29,11 +33,15 @@ struct GuiArgs {
     #[arg(long)]
     demo_vcarve: bool,
 
-    /// Initial workspace color theme (`dark` or `light`).
-    #[arg(long, default_value = "dark")]
-    theme: String,
+    /// Force-open the Welcome & Quick-Start Overlay on startup (useful with `--self-test-screenshot`).
+    #[arg(long)]
+    welcome: bool,
 
-    /// Render the sample part, capture a full-window PNG screenshot to this path, and exit.
+    /// Optional workspace color theme override (`dark` or `light`); defaults to `prefs.toml` (`dark`).
+    #[arg(long)]
+    theme: Option<String>,
+
+    /// Render the workspace, capture a full-window PNG screenshot to this path, and exit.
     #[arg(long)]
     self_test_screenshot: Option<PathBuf>,
 }
@@ -48,23 +56,30 @@ fn main() -> eframe::Result {
 
     let args = GuiArgs::parse();
     let self_test = args.self_test_screenshot.map(SelfTestConfig::new);
-    let demo_mode = if args.demo_vcarve {
+    let demo_mode = if args.welcome {
+        StartupDemoMode::WelcomeScreen
+    } else if args.demo_vcarve {
         StartupDemoMode::VCarveSign
     } else if args.demo_nameplate {
         StartupDemoMode::EngravedNameplate
     } else if args.demo_pure_2d {
         StartupDemoMode::Pure2dPanel
+    } else if args.demo_torture {
+        StartupDemoMode::CamTorture
     } else {
         StartupDemoMode::None
     };
 
-    let initial_theme = if args.theme.eq_ignore_ascii_case("light") {
-        AppTheme::Light
-    } else {
-        AppTheme::Dark
-    };
+    let theme_override = args.theme.as_deref().map(|t| {
+        if t.eq_ignore_ascii_case("light") {
+            AppTheme::Light
+        } else {
+            AppTheme::Dark
+        }
+    });
 
-    let native_options = eframe::NativeOptions {
+    let is_self_test = self_test.is_some();
+    let mut native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("ChipCutter — 2.5D & V-Carve CAM")
             .with_inner_size([1360.0, 840.0])
@@ -73,15 +88,25 @@ fn main() -> eframe::Result {
         ..Default::default()
     };
 
+    #[cfg(target_os = "linux")]
+    if is_self_test && std::env::var_os("DISPLAY").is_some() {
+        // When running under `xvfb-run` in a host session that also exports `WAYLAND_DISPLAY`,
+        // `winit` defaults to Wayland unless explicitly bound to X11, which would open visible
+        // windows on the user's desktop instead of inside Xvfb.
+        native_options.event_loop_builder = Some(Box::new(|builder| {
+            winit::platform::x11::EventLoopBuilderExtX11::with_x11(builder);
+        }));
+    }
+
     eframe::run_native(
         "ChipCutter",
         native_options,
         Box::new(move |cc| {
-            Ok(Box::new(ChipCutterApp::new_with_demo_and_theme(
+            Ok(Box::new(ChipCutterApp::new_with_options(
                 cc,
                 args.step_file,
                 demo_mode,
-                initial_theme,
+                theme_override,
                 self_test,
             )))
         }),

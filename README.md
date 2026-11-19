@@ -1,8 +1,8 @@
 # ChipCutter
 
-**ChipCutter** is an offline desktop 2.5D & V-Carve Computer-Aided Manufacturing (CAM) application (`chip-gui`) and headless CLI (`chipcutter`) written in **100% pure Rust** (`eframe` + `egui` + `wgpu` + `monstertruck` + `cavalier_contours` + `boostvoronoi` + `skrifa`).
+**ChipCutter** is an offline desktop 2.5D & V-Carve Computer-Aided Manufacturing (CAM) application (`chip-gui`) and headless CLI (`chipcutter`).
 
-It turns 3D **STEP** B-Rep CAD solids (`AP203` / `AP214` / `AP242`), 2D **DXF / SVG** vector drawings, and parametric 2D sketches & typography into physically verified, arc-accurate (`G2`/`G3`) CNC milling, routing, engraving, and V-inlay G-code—without C++ OpenCASCADE/CGAL build dependencies, cloud accounts, or copyleft libraries.
+It turns 3D **STEP** B-Rep CAD solids (`AP203` / `AP214` / `AP242`), 2D **DXF / SVG** vector drawings, and parametric 2D sketches & typography into physically verified, arc-accurate (`G2`/`G3`) CNC milling, routing, engraving, and V-inlay G-code—without external CAD build dependencies, cloud accounts, or copyleft libraries.
 
 ![ChipCutter Desktop CAM Interface](docs/images/chipcutter-gui.png)
 
@@ -10,7 +10,7 @@ It turns 3D **STEP** B-Rep CAD solids (`AP203` / `AP214` / `AP242`), 2D **DXF / 
 
 ## Highlights
 
-- **Pure-Rust STEP B-Rep Kernel & Associative Reload (`Ctrl+R`):**
+- **STEP B-Rep Kernel & Associative Reload (`Ctrl+R`):**
   - Imports ISO 10303-21 `.step`/`.stp` solids via `monstertruck`, automatically normalizing units (`mm` / `in`) into a canonical `f64` millimeter kernel and classifying analytic planar faces, cylindrical holes/bosses, cones, lines, and circular arcs.
   - Interactive 3D BVH ray-picking of planar faces, closed edge loops, shortest-path open edge chains, coplanar faces, and same-diameter holes with automatic Z-top / Z-bottom inference.
   - **Associative CAD Revision Re-Matching:** Reloading an edited STEP model (`Ctrl+R` or `chipcutter reload-step`) re-binds Setup WCS references first, fuzzy-matches modified/shifted features via `GeometricSignature`, heals open edge chains, marks matched operations `Dirty`, and flags deleted or ambiguous features for 1-click recovery while preserving all tool, feed/speed, height, pass, and holding-tab settings.
@@ -43,6 +43,10 @@ It turns 3D **STEP** B-Rep CAD solids (`AP203` / `AP214` / `AP242`), 2D **DXF / 
   - Ships with built-in **Grbl 1.1 / FluidNC** (automatic file-per-tool splitting—including Two-Stage Flat Endmill + V-Bit V-Carve operations—`<= 80`-char line guard, quadrant arc splitting, expanded peck drills), **grblHAL / FluidNC ATC**, and **LinuxCNC (RS274NGC)** (`M6` + `G43 H`, `G64 P`, native canned cycles) profiles in [`posts/`](posts/).
   - Git-diff-friendly `.chip.toml` project manifests (`schema_version = 2`, backward-compatible with `v1`) plus byte-deterministic, self-contained **`.chipz`** portable bundles (`project.chip.toml` + `models/*.step` + `vectors/*.{dxf,svg}` + `fonts/*.{ttf,otf}` + custom `posts/*.post.toml`).
 
+- **Studio Dark / Daylight Light Desktop UX & Persistent Preferences (`v3`):**
+  - Centralized `ThemeTokens` design system with WCAG-verified **Studio Dark** and **Daylight High-Contrast Light** themes (including theme-coupled 3D `wgpu` studio background & WCS grid), zero-dependency procedural HiDPI vector iconography, aligned two-column Inspector property grids, and `fx` scoped-variable expression autocomplete & nudging.
+  - **Quick-Start Welcome Overlay & Sample Projects Gallery**, fuzzy **`Ctrl+K` Command Palette**, **`F1` / `?` Keyboard Shortcut Cheat-Sheet**, active 3D/2D viewport pick guidance HUD, drag-and-drop operation reordering, and cross-session **`~/.config/chipcutter/prefs.toml`** persistence.
+
 ---
 
 ## Quickstart
@@ -53,15 +57,16 @@ It turns 3D **STEP** B-Rep CAD solids (`AP203` / `AP214` / `AP242`), 2D **DXF / 
 
 ### 2. Launch the Desktop CAM Application (`chip-gui`)
 ```bash
-# Launch with the built-in seeded CAM Torture Block demo job:
+# Launch the desktop CAM workspace (opens the Quick-Start Welcome Overlay on bare launch):
 cargo run --release -p chip-gui
 
-# Launch directly into built-in v2 Pure-2D, Typography, or V-Carve & V-Inlay demos:
+# Launch directly into built-in 3D STEP, Pure-2D, Typography, or V-Carve & V-Inlay demos:
+cargo run --release -p chip-gui -- --demo-torture
 cargo run --release -p chip-gui -- --demo-pure-2d
 cargo run --release -p chip-gui -- --demo-nameplate
 cargo run --release -p chip-gui -- --demo-vcarve
 
-# Launch in Daylight Light shop-floor theme (`dark` is the default):
+# Launch in Daylight Light shop-floor theme (theme choice persists in prefs.toml):
 cargo run --release -p chip-gui -- --theme light
 
 # Or open an existing .chip.toml project, .chipz bundle, .dxf/.svg vector, or .step model directly:
@@ -71,13 +76,17 @@ cargo run --release -p chip-gui -- path/to/part.step
 #### Essential Desktop Shortcuts
 | Shortcut | Action |
 |---|---|
-| `Ctrl+G` | Generate dirty 2.5D toolpaths on background `rayon` pool |
+| `Ctrl+K` | Open fuzzy **Command Palette** across all actions, views, & sample jobs |
+| `F1` / `?` | Open **Keyboard Shortcut & Mouse Reference** cheat-sheet |
+| `Ctrl+G` | Generate dirty 2.5D / 3D V-Carve toolpaths on background `rayon` pool |
+| `Ctrl+D` / `Del` | Duplicate focused operation / Delete focused operation or sketch entity |
+| `Ctrl+Up` / `Ctrl+Down` | Reorder focused operation within its Setup (or drag-and-drop row) |
 | `Ctrl+R` | Reload active STEP model & associatively re-match CAM features |
 | `Ctrl+O` / `Ctrl+S` | Open (`.chip.toml` / `.chipz`) / Save (`.chip.toml`) project |
 | `Ctrl+Z` / `Ctrl+Y` | Instant Undo / Redo (`100` steps) |
 | `Space` | Play / Pause 3D simulation timeline scrubbing |
 | `P` / `F` | Toggle Orthographic vs. Perspective camera / Fit model to viewport |
-| `Esc` | Exit active 3D picking mode or cancel in-flight generation |
+| `Esc` | Exit active 3D picking / sketch mode or cancel in-flight generation |
 
 ### 3. Headless CLI Workflow (`chipcutter`)
 Every CAD, toolpath, simulation, post-processing, associative reload, and bundling feature works headlessly without a GPU or display server:
@@ -126,7 +135,7 @@ All core geometry, CAM, simulation, post-processing, and project persistence cra
 |---|---|
 | [`crates/chip-math`](crates/chip-math) | Canonical `f64` millimeter types, `RigidFrame3` WCS math, 2D arc polylines, and machinist unit/expression evaluator |
 | [`crates/chip-cad`](crates/chip-cad) | `CadKernel` trait, `monstertruck` STEP B-Rep loader/tessellator, R-tree ray picker, topology graph, and `GeometricSignature` reload re-matching |
-| [`crates/chip-sketch`](crates/chip-sketch) | Pure-Rust DXF & SVG importers, gap-healing planarizer, parametric 2D sketch primitives, and TrueType (`skrifa`) + Hershey CAM typography |
+| [`crates/chip-sketch`](crates/chip-sketch) | DXF & SVG importers, gap-healing planarizer, parametric 2D sketch primitives, and TrueType (`skrifa`) + Hershey CAM typography |
 | [`crates/chip-tools`](crates/chip-tools) | 6 cutter geometries (incl. sharp V-bits), material presets, coupled SFM/chipload & chip-thinning math, `.tools.toml` I/O, and Fusion 360 importer |
 | [`crates/chip-cam`](crates/chip-cam) | Setups, stock, WCS, `cavalier_contours` offsetting & 2D booleans, `boostvoronoi` medial axis, and all 6 machining strategies (incl. 2D Adaptive, Rest, & Two-Tool V-Carving / V-Inlays) |
 | [`crates/chip-sim`](crates/chip-sim) | Trapezoidal motion timeline, revolved cutter profiles/meshes, analytical 3D conical V-bit sweeper, 2.5D Z-dexel stock heightmap, and 5-rule crash/gouge verifier |
@@ -136,7 +145,7 @@ All core geometry, CAM, simulation, post-processing, and project persistence cra
 | [`crates/chip-gui`](crates/chip-gui) | `eframe` + `egui_tiles` + `wgpu` 4x MSAA 3D/2D CAD/CAM desktop application |
 | [`posts/`](posts) | Built-in TOML post-processor profiles (`grbl.post.toml`, `grblhal_atc.post.toml`, `linuxcnc.post.toml`) |
 | [`specs/`](specs) | Authoritative subsystem architecture & algorithm specifications (`00-overview.md` – `11-sketches-vectors.md`) |
-| [`plans/`](plans) | Milestone 1–9 engineering implementation plans (`01-milestone-1-plan.md` – `09-milestone-9-plan.md`) |
+| [`plans/`](plans) | Milestone 1–12 engineering implementation plans (`01-milestone-1-plan.md` – `12-milestone-12-plan.md`) |
 
 ---
 

@@ -1,4 +1,5 @@
 pub mod browser;
+pub mod command_palette;
 pub mod diagnostics;
 pub mod gcode_preview;
 pub mod operation_inspector;
@@ -7,6 +8,7 @@ pub mod simulation;
 pub mod sketch_inspector;
 pub mod tool_library;
 pub mod vector_import_modal;
+pub mod welcome_gallery;
 
 use chip_cad::EdgeId;
 
@@ -179,6 +181,84 @@ impl ViewportPickMode {
             Self::SketchAuthor { tool, .. } => Some(format!(
                 "2D Sketch Draw [{}]: Click on the Sketch plane (2D Snapping active; Right-Click / Esc to exit)",
                 tool.short_label()
+            )),
+        }
+    }
+
+    /// Returns `(title, instruction, supports_done_button)` for the Top-Center Floating Guidance HUD.
+    pub fn guidance_info(self) -> Option<(&'static str, String, bool)> {
+        match self {
+            Self::InspectEntity => None,
+            Self::SetupWcsZ { .. } => Some((
+                "Setup WCS +Z Axis",
+                "Click a planar face, cylinder wall, or straight edge in 3D".to_string(),
+                false,
+            )),
+            Self::SetupWcsX { .. } => Some((
+                "Setup WCS +X Axis",
+                "Click a perpendicular straight edge or planar face in 3D".to_string(),
+                false,
+            )),
+            Self::SetupWcsXyPlane { .. } => Some((
+                "Setup WCS XY Plane",
+                "Click a planar B-Rep face to align WCS Z & origin".to_string(),
+                false,
+            )),
+            Self::SetupWcsOriginFeature { .. } => Some((
+                "Pick WCS Origin Feature",
+                "Click a hole wall, circular edge, or straight edge midpoint".to_string(),
+                false,
+            )),
+            Self::OpPlanarFaces { .. } => Some((
+                "Pick Planar Faces",
+                "Click horizontal planar faces in 3D to add/remove machining regions".to_string(),
+                true,
+            )),
+            Self::OpClosedLoops { .. } => Some((
+                "Pick Closed Boundary Loops",
+                "Click B-Rep edges in 3D to toggle closed contour/chamfer loops".to_string(),
+                true,
+            )),
+            Self::OpOpenChain {
+                start_edge: None, ..
+            } => Some((
+                "Open Edge Chain · Step 1/2",
+                "Click the START edge of the open profile in 3D".to_string(),
+                true,
+            )),
+            Self::OpOpenChain {
+                start_edge: Some(e),
+                ..
+            } => Some((
+                "Open Edge Chain · Step 2/2",
+                format!(
+                    "Start Edge #{} locked — click the END edge on the same body",
+                    e.0
+                ),
+                true,
+            )),
+            Self::OpCylindricalHoles { .. } => Some((
+                "Pick Cylindrical Holes",
+                "Click cylindrical hole walls in 3D to toggle drill/bore targets".to_string(),
+                true,
+            )),
+            Self::PlaceContourTab { .. } => Some((
+                "Manual Holding Tabs",
+                "Click selected contour to place tab · Right-click near tab to delete".to_string(),
+                true,
+            )),
+            Self::PickSketchHostFace { .. } | Self::RebindSketchHostFace { .. } => Some((
+                "Attach Sketch to 3D Face",
+                "Click any planar B-Rep face in 3D to anchor the associative 2D Sketch".to_string(),
+                false,
+            )),
+            Self::SketchAuthor { tool, .. } => Some((
+                "2D Sketch Authoring",
+                format!(
+                    "[{}] Click on Sketch plane (2D Snap active · Right-Click or Esc to finish)",
+                    tool.short_label()
+                ),
+                true,
             )),
         }
     }

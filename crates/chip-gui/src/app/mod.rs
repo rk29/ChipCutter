@@ -24,14 +24,26 @@ use crossbeam_channel::{Receiver, Sender};
 use crate::{
     app::{loader::LoadJobResult, pane_behavior::PaneBehavior},
     camera::CadCamera,
-    layout::{WorkspacePane, create_default_workspace_tree, focus_workspace_pane},
+    layout::{
+        WorkspacePane, create_workspace_tree_with_shares, extract_workspace_shares,
+        focus_workspace_pane,
+    },
     panels::{
         InspectorFocus, OperationTab, SetupTab, ViewportPickMode,
+        command_palette::{
+            CommandPaletteState, ShortcutCheatsheetState, show_command_palette,
+            show_shortcut_cheatsheet_modal,
+        },
         gcode_preview::GCodePreviewPanelState,
         simulation::{SimTriggerArgs, SimulationPanelState},
         tool_library::ToolLibraryModalState,
         vector_import_modal::{VectorImportModalState, VectorModalAction, VectorModalCtx},
+        welcome_gallery::{
+            SampleGalleryModalState, SampleProjectId, WelcomeGalleryAction, WelcomeModalState,
+            show_sample_gallery_modal, show_welcome_modal,
+        },
     },
+    prefs::{UserPreferences, load_or_default_prefs, save_prefs},
     theme::{AppTheme, ThemeTokens, apply_theme},
     viewport::{HighlightState, ViewportRenderer},
     widgets::ExpressionInput,
@@ -55,20 +67,23 @@ pub(crate) struct CachedFrameGeo {
     pub focused_extracted: Option<Result<ExtractedSelectionSummary, String>>,
 }
 
-/// Optional startup demo mode for CLI flags (`--demo-pure-2d`, `--demo-nameplate`, `--demo-vcarve`).
+/// Optional startup demo mode for CLI flags (`--demo-torture`, `--demo-pure-2d`, `--demo-nameplate`, `--demo-vcarve`, `--welcome`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum StartupDemoMode {
     #[default]
     None,
+    CamTorture,
     Pure2dPanel,
     EngravedNameplate,
     VCarveSign,
+    WelcomeScreen,
 }
 
 /// Self-test automation configuration for headless CI screenshot capture.
 pub struct SelfTestConfig {
     pub screenshot_path: PathBuf,
     pub(crate) frames_rendered: u32,
+    pub(crate) idle_wait_frames: u32,
     pub(crate) requested: bool,
 }
 
@@ -77,6 +92,7 @@ impl SelfTestConfig {
         Self {
             screenshot_path,
             frames_rendered: 0,
+            idle_wait_frames: 0,
             requested: false,
         }
     }
@@ -100,8 +116,14 @@ pub struct ChipCutterApp {
     pub(crate) toolpath_cache: ToolpathCache,
     pub(crate) dispatcher: JobDispatcher,
     pub(crate) global_tools: ToolLibrary,
+    pub(crate) prefs: UserPreferences,
+    pub(crate) last_saved_prefs: UserPreferences,
     pub(crate) tool_library_modal: ToolLibraryModalState,
     pub(crate) vector_import_modal: VectorImportModalState,
+    pub(crate) welcome_modal: WelcomeModalState,
+    pub(crate) sample_gallery_modal: SampleGalleryModalState,
+    pub(crate) command_palette: CommandPaletteState,
+    pub(crate) shortcut_cheatsheet: ShortcutCheatsheetState,
     pub(crate) sim_panel: SimulationPanelState,
     pub(crate) gcode_panel: GCodePreviewPanelState,
     pub(crate) auto_sim_after_gen: bool,
@@ -179,7 +201,7 @@ impl ChipCutterApp {
         demo_mode: StartupDemoMode,
         self_test: Option<SelfTestConfig>,
     ) -> Self {
-        Self::new_with_demo_and_theme(cc, initial_path, demo_mode, AppTheme::Dark, self_test)
+        Self::new_with_options(cc, initial_path, demo_mode, None, self_test)
     }
 
     pub fn new_with_demo_and_theme(
@@ -189,7 +211,24 @@ impl ChipCutterApp {
         initial_theme: AppTheme,
         self_test: Option<SelfTestConfig>,
     ) -> Self {
-        apply_theme(&cc.egui_ctx, initial_theme);
+        Self::new_with_options(cc, initial_path, demo_mode, Some(initial_theme), self_test)
+    }
+
+    pub fn new_with_options(
+        cc: &eframe::CreationContext<'_>,
+        initial_path: Option<PathBuf>,
+        demo_mode: StartupDemoMode,
+        theme_override: Option<AppTheme>,
+        self_test: Option<SelfTestConfig>,
+    ) -> Self {
+        let mut prefs = if self_test.is_some() {
+            UserPreferences::default()
+        } else {
+            load_or_default_prefs()
+        };
+        let active_theme = theme_override.unwrap_or(prefs.theme);
+        prefs.theme = active_theme;
+        apply_theme(&cc.egui_ctx, active_theme);
 
         let wgpu_render_state = cc.wgpu_render_state.clone();
         let viewport_renderer = wgpu_render_state
@@ -203,13 +242,25 @@ impl ChipCutterApp {
             repaint_ctx.request_repaint();
         })));
 
+        let mut camera = CadCamera {
+            mouse_preset: prefs.mouse_preset,
+            ..CadCamera::default()
+        };
+        camera.set_orbit_mode(prefs.orbit_mode);
+        if !prefs.orthographic && camera.projection.is_orthographic() {
+            camera.toggle_projection();
+        }
+
+        let mut initial_project = ProjectDocument::new("Untitled Job");
+        initial_project.display_units = prefs.default_units;
+
         let mut app = Self {
-            tree: create_default_workspace_tree(),
-            theme: initial_theme,
-            camera: CadCamera::default(),
+            tree: create_workspace_tree_with_shares(prefs.layout_shares),
+            theme: active_theme,
+            camera,
             viewport_renderer,
             wgpu_render_state,
-            project: ProjectDocument::new("CAM Torture Block Job"),
+            project: initial_project,
             project_file_path: None,
             bundle_extract_dir: None,
             clean_undo_len: Some(0),
@@ -218,8 +269,14 @@ impl ChipCutterApp {
             toolpath_cache: ToolpathCache::new(128),
             dispatcher,
             global_tools,
+            last_saved_prefs: prefs.clone(),
+            prefs,
             tool_library_modal: ToolLibraryModalState::new(),
             vector_import_modal: VectorImportModalState::default(),
+            welcome_modal: WelcomeModalState::default(),
+            sample_gallery_modal: SampleGalleryModalState::default(),
+            command_palette: CommandPaletteState::default(),
+            shortcut_cheatsheet: ShortcutCheatsheetState::default(),
             sim_panel: SimulationPanelState::default(),
             gcode_panel: GCodePreviewPanelState::default(),
             auto_sim_after_gen: true,
@@ -247,41 +304,29 @@ impl ChipCutterApp {
             cached_frame_geo: None,
             pick_filter: PickFilter::Any,
             highlight: HighlightState {
-                theme: initial_theme,
+                theme: active_theme,
+                show_toolpaths: true,
+                show_rapids: true,
+                show_stock: true,
+                ghost_part: false,
                 ..HighlightState::default()
             },
             wb_tool_dia: ExpressionInput::new(6.35, Some("1/4 in")),
             wb_stepover: ExpressionInput::new(2.54, Some("tool_d * 0.4")),
             wb_clearance_z: ExpressionInput::new(26.0, Some("model_top_z + 10 mm")),
             logs: vec![
-                "ChipCutter v0.2.0 initialized (v2 Complete: 2D Adaptive & Rest, DXF/SVG & Sketches, CAM Typography, Two-Tool V-Carving & V-Inlays)."
+                "ChipCutter v0.3.0 initialized (v3 Complete: Studio Dark & Daylight Light Themes, Two-Column Inspector Grids, Command Palette & Preferences)."
                     .to_string(),
             ],
             self_test,
         };
+        app.highlight.show_toolpaths = app.prefs.show_toolpaths;
+        app.highlight.show_rapids = app.prefs.show_rapids;
+        app.highlight.show_stock = app.prefs.show_stock;
+        app.highlight.ghost_part = app.prefs.ghost_part;
 
         if let Some(path) = initial_path {
-            if is_chipz_path(&path) {
-                app.load_chipz_from_disk(&path, cc.egui_ctx.clone());
-            } else if path
-                .to_string_lossy()
-                .to_ascii_lowercase()
-                .ends_with(".toml")
-            {
-                app.load_project_from_disk(&path, cc.egui_ctx.clone());
-            } else {
-                let ext_low = path
-                    .extension()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or_default()
-                    .to_ascii_lowercase();
-                if ext_low == "dxf" || ext_low == "svg" {
-                    app.vector_import_modal.load_from_disk_path(path);
-                    app.vector_import_modal.open = true;
-                } else {
-                    app.spawn_step_file_load(path, cc.egui_ctx.clone());
-                }
-            }
+            app.open_any_path(&path, cc.egui_ctx.clone());
         } else {
             match demo_mode {
                 StartupDemoMode::Pure2dPanel => app.load_pure2d_router_panel_demo(&cc.egui_ctx),
@@ -289,13 +334,114 @@ impl ChipCutterApp {
                     app.load_engraved_nameplate_demo(&cc.egui_ctx)
                 }
                 StartupDemoMode::VCarveSign => app.load_vcarve_sign_demo(&cc.egui_ctx),
-                StartupDemoMode::None => {
+                StartupDemoMode::CamTorture => {
                     app.spawn_cam_torture_sample_load(true, cc.egui_ctx.clone())
+                }
+                StartupDemoMode::WelcomeScreen => {
+                    app.welcome_modal.open = true;
+                }
+                StartupDemoMode::None => {
+                    if app.self_test.is_some() {
+                        app.spawn_cam_torture_sample_load(true, cc.egui_ctx.clone());
+                    } else if app.prefs.show_welcome_on_startup {
+                        app.welcome_modal.open = true;
+                    }
                 }
             }
         }
 
         app
+    }
+
+    pub(crate) fn open_any_path(&mut self, path: &Path, egui_ctx: egui::Context) {
+        if is_chipz_path(path) {
+            self.load_chipz_from_disk(path, egui_ctx);
+        } else if path
+            .to_string_lossy()
+            .to_ascii_lowercase()
+            .ends_with(".toml")
+        {
+            self.load_project_from_disk(path, egui_ctx);
+        } else {
+            let ext_low = path
+                .extension()
+                .and_then(|s| s.to_str())
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            if ext_low == "dxf" || ext_low == "svg" {
+                self.record_recent_file(path);
+                self.vector_import_modal
+                    .load_from_disk_path(path.to_path_buf());
+                self.vector_import_modal.open = true;
+            } else {
+                self.spawn_step_file_load(path.to_path_buf(), egui_ctx);
+            }
+        }
+    }
+
+    pub(crate) fn record_recent_file(&mut self, path: &Path) {
+        self.prefs.push_recent_file(path);
+        if self.self_test.is_none() {
+            let _ = save_prefs(&self.prefs);
+            self.last_saved_prefs = self.prefs.clone();
+        }
+    }
+
+    pub(crate) fn load_sample_project(&mut self, id: SampleProjectId, ctx: &egui::Context) {
+        match id {
+            SampleProjectId::CamTortureBlock => {
+                self.spawn_cam_torture_sample_load(true, ctx.clone());
+            }
+            SampleProjectId::AdaptiveRest => {
+                self.spawn_adaptive_rest_demo_load(ctx.clone());
+            }
+            SampleProjectId::Pure2dPanel => {
+                self.load_pure2d_router_panel_demo(ctx);
+            }
+            SampleProjectId::EngravedNameplate => {
+                self.load_engraved_nameplate_demo(ctx);
+            }
+            SampleProjectId::VCarveSignInlay => {
+                self.load_vcarve_sign_demo(ctx);
+            }
+            SampleProjectId::MultiFeatureBracket => {
+                self.spawn_multi_feature_sample_load(false, true, ctx.clone());
+            }
+            SampleProjectId::Tilted30Bracket => {
+                self.spawn_multi_feature_sample_load(true, false, ctx.clone());
+            }
+            SampleProjectId::CadRevisionV1 => {
+                self.spawn_revision_demo_load(false, ctx.clone());
+            }
+            SampleProjectId::CadRevisionV2Reload => {
+                self.spawn_revision_demo_load(true, ctx.clone());
+            }
+            SampleProjectId::SamplePlate => {
+                self.spawn_sample_plate_load(ctx.clone());
+            }
+        }
+    }
+
+    pub(crate) fn sync_and_save_prefs_if_changed(&mut self, pointer_down: bool) {
+        if self.self_test.is_some() || pointer_down {
+            return;
+        }
+        self.prefs.theme = self.theme;
+        self.prefs.mouse_preset = self.camera.mouse_preset;
+        self.prefs.orbit_mode = self.camera.orbit_mode;
+        self.prefs.orthographic = self.camera.projection.is_orthographic();
+        self.prefs.show_toolpaths = self.highlight.show_toolpaths;
+        self.prefs.show_rapids = self.highlight.show_rapids;
+        self.prefs.show_stock = self.highlight.show_stock;
+        self.prefs.ghost_part = self.highlight.ghost_part;
+        let shares = extract_workspace_shares(&self.tree);
+        if !shares.approx_eq(self.prefs.layout_shares) {
+            self.prefs.layout_shares = shares;
+        }
+        if self.prefs != self.last_saved_prefs {
+            let _ = save_prefs(&self.prefs);
+            self.last_saved_prefs = self.prefs.clone();
+        }
     }
 
     pub fn set_theme(&mut self, ctx: &egui::Context, theme: AppTheme) {
@@ -685,6 +831,54 @@ impl eframe::App for ChipCutterApp {
                 self.tree = tree;
             });
 
+        // Welcome Overlay, Sample Projects Gallery, Command Palette (Ctrl+K), & Shortcut Cheat-Sheet (F1 / ?)
+        if let Some(w_act) = show_welcome_modal(&ctx, &mut self.welcome_modal, &mut self.prefs) {
+            match w_act {
+                WelcomeGalleryAction::OpenProjectDialog => self.open_project_dialog(&ctx),
+                WelcomeGalleryAction::ImportStepDialog => self.open_step_dialog(&ctx),
+                WelcomeGalleryAction::ImportVectorDialog => {
+                    self.vector_import_modal.open_with_file_picker();
+                }
+                WelcomeGalleryAction::StartPure2dSketchJob => {
+                    self.reset_blank_project("Pure-2D Sketch Job");
+                    self.create_new_setup_xy_sketch();
+                    self.fit_scene_to_viewport();
+                }
+                WelcomeGalleryAction::OpenSampleGallery => {
+                    self.sample_gallery_modal.open = true;
+                }
+                WelcomeGalleryAction::LoadSample(id) => self.load_sample_project(id, &ctx),
+                WelcomeGalleryAction::OpenRecentPath(path) => {
+                    self.open_any_path(&path, ctx.clone());
+                }
+                WelcomeGalleryAction::ClearRecentFiles => {
+                    self.prefs.clear_recent_files();
+                    if self.self_test.is_none() {
+                        let _ = save_prefs(&self.prefs);
+                        self.last_saved_prefs = self.prefs.clone();
+                    }
+                }
+                WelcomeGalleryAction::PrefsChanged => {
+                    if self.self_test.is_none() {
+                        let _ = save_prefs(&self.prefs);
+                        self.last_saved_prefs = self.prefs.clone();
+                    }
+                }
+            }
+        }
+
+        if let Some(sample_id) = show_sample_gallery_modal(&ctx, &mut self.sample_gallery_modal) {
+            self.load_sample_project(sample_id, &ctx);
+        }
+
+        if let Some(cmd) = show_command_palette(&ctx, self.theme, &mut self.command_palette) {
+            self.execute_palette_command(cmd, &ctx);
+        }
+
+        show_shortcut_cheatsheet_modal(&ctx, &mut self.shortcut_cheatsheet);
+
+        let ptr_down = ctx.input(|i| i.pointer.any_down());
+        self.sync_and_save_prefs_if_changed(ptr_down);
         self.handle_self_test(&ctx);
     }
 }

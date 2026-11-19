@@ -74,3 +74,4 @@
   - `cargo test --workspace`
   - `cargo deny check`
   - Every new or modified toolpath strategy must include integration tests verified against `chip-sim`'s heightmap oracle asserting **zero `G0` rapid-into-stock collisions** and **zero target B-Rep gouges** beyond tolerance.
+  - When capturing headless GUI screenshots via `xvfb-run` on Linux, always pass `WAYLAND_DISPLAY= WINIT_UNIX_BACKEND=x11 WGPU_BACKEND=vulkan xvfb-run -a` so `winit` renders strictly inside Xvfb rather than opening visible windows on a host Wayland session.

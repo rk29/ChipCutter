@@ -1,7 +1,7 @@
 # 01 — System Architecture & Workspace Design
 
 ## Architectural Principles
-1. **UI-Agnostic Core:** All CAD loading, 2D sketch/vector processing, coordinate transforms, toolpath generation, simulation, and post-processing live in pure-Rust library crates with zero `egui` or `wgpu` dependencies. Both the desktop GUI and headless CLI consume the exact same engine.
+1. **UI-Agnostic Core:** All CAD loading, 2D sketch/vector processing, coordinate transforms, toolpath generation, simulation, and post-processing live in standalone library crates with zero `egui` or `wgpu` dependencies. Both the desktop GUI and headless CLI consume the exact same engine.
 2. **Canonical `f64` Millimeter Kernel:** Every internal coordinate, vector, tolerance, arc radius, and feedrate (mm/min) is stored and computed in `f64` millimeters. Unit conversion happens strictly at UI display/input boundaries, DXF/SVG import boundaries, and post-processor emission (`G20` vs `G21`).
 3. **True Arc Preservation:** 2D boundaries, Bézier biarc fits (`kurbo`), parallel offsets (`cavalier_contours`), trochoidal peel arcs, helical bores, and lead-ins preserve analytic line and circular arc segments (`ArcPolyline2D`) all the way through Cutter Location (CL) output so controllers receive smooth `G2`/`G3` moves rather than faceted micro-segments.
 4. **CAD-Agnostic 2.5D Strategy Boundary:** `chip-cam` strategies operate exclusively on canonical WCS `ExtractedFeature25D` geometry—never directly on 3D `CadDocument` topology—allowing 3D STEP B-Rep selections and 2D `chip-sketch` vector/text entities to share identical machining algorithms.

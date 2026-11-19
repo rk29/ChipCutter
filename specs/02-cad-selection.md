@@ -1,7 +1,7 @@
 # 02 — CAD Import, B-Rep Kernel, & Unified 3D/2D Selection
 
 ## CAD Kernel Abstraction (`chip-cad`)
-All interaction with STEP files and B-Rep topology goes through an internal trait boundary (`CadKernel`) so `chip-cam` and `chip-gui` never depend directly on `monstertruck` data structures. This keeps `cargo build` 100% pure-Rust while permitting an optional OpenCASCADE (`opencascade-rs`) backend behind a Cargo feature flag in future versions if needed.
+All interaction with STEP files and B-Rep topology goes through an internal trait boundary (`CadKernel`) so `chip-cam` and `chip-gui` never depend directly on `monstertruck` data structures. This keeps `cargo build` self-contained while permitting an optional OpenCASCADE (`opencascade-rs`) backend behind a Cargo feature flag in future versions if needed.
 
 ### Core Domain Types
 ```text

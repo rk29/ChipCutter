@@ -71,6 +71,10 @@ pub enum IconKind {
     Trash,
     Duplicate,
     InfoCircle,
+    Search,
+    Sparkles,
+    Keyboard,
+    Crosshair,
     ArrowUp,
     ArrowDown,
 }
@@ -573,6 +577,40 @@ pub fn paint_icon(painter: &egui::Painter, rect: Rect, icon: IconKind, color: Co
             painter.circle_stroke(sq.center(), s * 0.42, thin);
             painter.circle_filled(p(0.50, 0.31), sw * 0.65, color);
             painter.line_segment([p(0.50, 0.45), p(0.50, 0.73)], stroke);
+        }
+        IconKind::Search => {
+            painter.circle_stroke(p(0.43, 0.43), s * 0.25, stroke);
+            painter.line_segment([p(0.61, 0.61), p(0.84, 0.84)], stroke);
+        }
+        IconKind::Sparkles => {
+            painter.add(egui::Shape::closed_line(
+                vec![
+                    p(0.50, 0.14),
+                    p(0.60, 0.40),
+                    p(0.86, 0.50),
+                    p(0.60, 0.60),
+                    p(0.50, 0.86),
+                    p(0.40, 0.60),
+                    p(0.14, 0.50),
+                    p(0.40, 0.40),
+                ],
+                thin,
+            ));
+        }
+        IconKind::Keyboard => {
+            let r = Rect::from_min_max(p(0.14, 0.26), p(0.86, 0.76));
+            painter.rect_stroke(r, CornerRadius::same(2), thin, StrokeKind::Inside);
+            for u in [0.30, 0.50, 0.70] {
+                painter.circle_filled(p(u, 0.43), sw * 0.48, color);
+            }
+            painter.line_segment([p(0.32, 0.62), p(0.68, 0.62)], thin);
+        }
+        IconKind::Crosshair => {
+            painter.circle_stroke(sq.center(), s * 0.28, thin);
+            painter.line_segment([p(0.50, 0.12), p(0.50, 0.32)], thin);
+            painter.line_segment([p(0.50, 0.68), p(0.50, 0.88)], thin);
+            painter.line_segment([p(0.12, 0.50), p(0.32, 0.50)], thin);
+            painter.line_segment([p(0.68, 0.50), p(0.88, 0.50)], thin);
         }
         IconKind::ArrowUp => {
             painter.add(egui::Shape::line(

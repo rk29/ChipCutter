@@ -1,14 +1,14 @@
 # 00 — ChipCutter Overview
 
 ## Vision
-**ChipCutter** is a desktop Computer-Aided Manufacturing (CAM) application and headless CLI written in **Rust** with an **egui** (`eframe` + `wgpu`) user interface. It bridges 3D parametric **STEP** models, **2D DXF/SVG vector drawings**, and built-in **2D Sketch/Text layouts** into verified, arc-accurate CNC milling and routing G-code.
+**ChipCutter** is an offline desktop Computer-Aided Manufacturing (CAM) application (`eframe` + `wgpu`) and headless CLI. It bridges 3D parametric **STEP** models, **2D DXF/SVG vector drawings**, and built-in **2D Sketch/Text layouts** into verified, arc-accurate CNC milling and routing G-code.
 
 ---
 
 ## Scope Summary (v1 & v2 Completed + v3 UI Polish Active)
 - **Machining Paradigm:** 2.5D CNC milling, high-efficiency adaptive roughing, routing, engraving, and V-carving (architected cleanly to extend to 3-axis surface milling in v4+).
 - **CAD & 2D Vector Input:**
-  - **3D B-Rep Solids (`chip-cad`):** ISO 10303-21 **STEP** (AP203 / AP214 / AP242) via pure-Rust `monstertruck` behind the `CadKernel` trait.
+  - **3D B-Rep Solids (`chip-cad`):** ISO 10303-21 **STEP** (AP203 / AP214 / AP242) via `monstertruck` behind the `CadKernel` trait.
   - **2D Sketches, Vectors, & Typography (`chip-sketch` — *v2*):** Standalone pure-2D router/panel projects (no STEP required) AND associative 2D Sketch Layers on Setup XY or planar STEP faces, supporting **DXF** & **SVG** imports (with gap-healing & biarc fitting), parametric 2D shapes (rectangles, circles, slots, polygons, polylines, hole patterns), **TrueType/OpenType** outline text, and **Hershey** single-line engraving fonts.
 - **Geometry Selection:** Unified interactive 3D/2D picking of planar B-Rep faces, closed/open edge loops, cylindrical holes, 2D Sketch regions/loops/chains, and 2D hole patterns, with automatic Z-top / Z-bottom inference and manual overrides.
 - **Setups & WCS:** Multi-setup workflow (`Op1`, `Op2`, …) per project with box/cylinder stock (from 3D model bounds, 2D sketch bounds, or fixed dimensions), B-Rep-driven axis alignment, WCS origin placement, and setup-level safe retract planes.

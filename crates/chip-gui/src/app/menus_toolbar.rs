@@ -15,6 +15,7 @@ use crate::{
             default_pick_mode_for_op, delete_operation_in_setup, duplicate_operation_in_setup,
             move_operation_to_slot,
         },
+        command_palette::CommandId,
     },
     theme::{AppTheme, ThemeTokens},
     widgets::{IconKind, StatusBadgeKind, icon_button, primary_icon_button, status_badge_icon},
@@ -45,6 +46,8 @@ impl ChipCutterApp {
 
     fn handle_global_shortcuts(&mut self, ctx: &egui::Context) {
         let (
+            palette_shortcut,
+            f1_shortcut,
             gen_shortcut,
             reload_shortcut,
             undo_shortcut,
@@ -55,6 +58,8 @@ impl ChipCutterApp {
         ) = ctx.input(|i| {
             let cmd = i.modifiers.command || i.modifiers.ctrl;
             (
+                cmd && i.key_pressed(egui::Key::K),
+                i.key_pressed(egui::Key::F1),
                 cmd && i.key_pressed(egui::Key::G),
                 cmd && i.key_pressed(egui::Key::R),
                 cmd && !i.modifiers.shift && i.key_pressed(egui::Key::Z),
@@ -65,6 +70,22 @@ impl ChipCutterApp {
                 i.key_pressed(egui::Key::Escape),
             )
         });
+
+        if palette_shortcut {
+            if self.command_palette.open {
+                self.command_palette.open = false;
+            } else {
+                self.command_palette.open_fresh();
+            }
+            return;
+        }
+        if f1_shortcut {
+            self.shortcut_cheatsheet.open = !self.shortcut_cheatsheet.open;
+            return;
+        }
+        if self.command_palette.open {
+            return;
+        }
 
         if gen_shortcut {
             self.trigger_generate_dirty(Some(self.active_setup_idx), None);
@@ -128,6 +149,14 @@ impl ChipCutterApp {
             if ctx.input(|i| !i.modifiers.any() && i.key_pressed(egui::Key::F)) {
                 self.fit_scene_to_viewport();
             }
+            let typed_question = ctx.input(|i| {
+                i.events
+                    .iter()
+                    .any(|ev| matches!(ev, egui::Event::Text(t) if t == "?"))
+            });
+            if typed_question {
+                self.shortcut_cheatsheet.open = !self.shortcut_cheatsheet.open;
+            }
         }
     }
 
@@ -155,6 +184,7 @@ impl ChipCutterApp {
                     self.draw_simulate_menu(ui, ctx);
                     self.draw_post_menu(ui);
                     self.draw_view_menu(ui, ctx);
+                    self.draw_help_menu(ui);
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if self.loading_in_flight {
@@ -181,15 +211,7 @@ impl ChipCutterApp {
     fn draw_file_menu(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.menu_button("File", |ui| {
             if ui.button("New Project").clicked() {
-                self.clear_bundle_extract_dir();
-                self.history.clear();
-                self.clean_undo_len = Some(0);
-                self.last_reload_banner = None;
-                self.external_step_modified = false;
-                self.project = ProjectDocument::new("Untitled Job");
-                self.project_file_path = None;
-                self.active_setup_idx = 0;
-                self.inspector_focus = InspectorFocus::Setup { setup_idx: 0 };
+                self.reset_blank_project("Untitled Job");
                 ui.close();
             }
             if ui
@@ -199,6 +221,29 @@ impl ChipCutterApp {
                 ui.close();
                 self.open_project_dialog(ctx);
             }
+            ui.menu_button("Open Recent", |ui| {
+                if self.prefs.recent_files.is_empty() {
+                    ui.weak("No recent projects.");
+                } else {
+                    let recents = self.prefs.recent_files.clone();
+                    for p in recents {
+                        let exists = p.exists();
+                        let lbl = p.display().to_string();
+                        if ui
+                            .add_enabled(exists, egui::Button::new(lbl))
+                            .clicked()
+                        {
+                            ui.close();
+                            self.open_any_path(&p, ctx.clone());
+                        }
+                    }
+                    ui.separator();
+                    if ui.button("Clear Recent Files").clicked() {
+                        self.prefs.clear_recent_files();
+                        ui.close();
+                    }
+                }
+            });
             if ui.button("Save Project (Ctrl+S)").clicked() {
                 ui.close();
                 self.save_project_dialog();
@@ -262,51 +307,13 @@ impl ChipCutterApp {
                 self.replace_step_dialog(ctx);
             }
             ui.separator();
-            if ui.button("Load CAM Torture Block").clicked() {
+            if ui.button("Sample Projects Gallery…").clicked() {
+                self.sample_gallery_modal.open = true;
                 ui.close();
-                self.spawn_cam_torture_sample_load(true, ctx.clone());
             }
-            if ui
-                .button("Demo: Load Pure-2D Router Panel (.dxf)")
-                .clicked()
-            {
+            if ui.button("Welcome & Quick-Start…").clicked() {
+                self.welcome_modal.open = true;
                 ui.close();
-                self.load_pure2d_router_panel_demo(ctx);
-            }
-            if ui
-                .button("Demo: Load Engraved Nameplate (Sketch + Text)")
-                .clicked()
-            {
-                ui.close();
-                self.load_engraved_nameplate_demo(ctx);
-            }
-            if ui
-                .button("Demo: Load V-Carve Sign & V-Inlay Plug")
-                .clicked()
-            {
-                ui.close();
-                self.load_vcarve_sign_demo(ctx);
-            }
-            if ui.button("Load Multi-Feature Sample Bracket").clicked() {
-                ui.close();
-                self.spawn_multi_feature_sample_load(false, true, ctx.clone());
-            }
-            if ui.button("Load 30°-Tilted Sample Bracket").clicked() {
-                ui.close();
-                self.spawn_multi_feature_sample_load(true, false, ctx.clone());
-            }
-            if ui.button("Load M1 Sample Plate").clicked() {
-                ui.close();
-                self.spawn_sample_plate_load(ctx.clone());
-            }
-            ui.separator();
-            if ui.button("Demo: Load CAD Revision v1").clicked() {
-                ui.close();
-                self.spawn_revision_demo_load(false, ctx.clone());
-            }
-            if ui.button("Demo: Reload Revised Part (v1 -> v2)").clicked() {
-                ui.close();
-                self.spawn_revision_demo_load(true, ctx.clone());
             }
             ui.separator();
             if ui.button("Quit").clicked() {
@@ -1005,11 +1012,210 @@ impl ChipCutterApp {
                                 &self.project,
                             );
                             self.project.display_units = u_sel;
+                            self.prefs.default_units = u_sel;
                             self.refresh_dependent_expressions();
+                        }
+
+                        ui.separator();
+
+                        if icon_button(
+                            ui,
+                            IconKind::Search,
+                            Some("Ctrl+K"),
+                            "Open Fuzzy Command Palette (Ctrl+K)",
+                        )
+                        .clicked()
+                        {
+                            self.command_palette.open_fresh();
                         }
                     });
                 });
             });
+    }
+
+    fn draw_help_menu(&mut self, ui: &mut egui::Ui) {
+        ui.menu_button("Help", |ui| {
+            if ui.button("Command Palette… (Ctrl+K)").clicked() {
+                self.command_palette.open_fresh();
+                ui.close();
+            }
+            if ui.button("Keyboard Shortcuts (F1 / ?)").clicked() {
+                self.shortcut_cheatsheet.open = true;
+                ui.close();
+            }
+            ui.separator();
+            if ui.button("Sample Projects Gallery…").clicked() {
+                self.sample_gallery_modal.open = true;
+                ui.close();
+            }
+            if ui.button("Welcome & Quick-Start…").clicked() {
+                self.welcome_modal.open = true;
+                ui.close();
+            }
+        });
+    }
+
+    pub(crate) fn reset_blank_project(&mut self, name: &str) {
+        self.dispatcher.cancel_all();
+        self.sim_panel.cancel_in_flight();
+        self.sim_panel.active_result = None;
+        self.gcode_panel.invalidate_preview();
+        self.clear_bundle_extract_dir();
+        self.history.clear();
+        self.clean_undo_len = Some(0);
+        self.last_reload_banner = None;
+        self.external_step_modified = false;
+        let mut doc = ProjectDocument::new(name);
+        doc.display_units = self.prefs.default_units;
+        self.project = doc;
+        self.project_file_path = None;
+        self.model = None;
+        self.active_setup_idx = 0;
+        self.inspector_focus = InspectorFocus::Setup { setup_idx: 0 };
+        self.cached_frame_geo = None;
+    }
+
+    pub(crate) fn add_standard_operation(&mut self, kind: OperationKind) {
+        if self.active_setup_idx >= self.project.setups.len() {
+            return;
+        }
+        self.history
+            .record_before_edit(format!("Add {}", kind.label()), None, &self.project);
+        let s_idx = self.active_setup_idx;
+        let n = self.project.setups[s_idx].operations.len() + 1;
+        let mut op = Operation::new(
+            format!("op_{s_idx}_{n}"),
+            format!("{} {n}", kind.default_name()),
+            kind,
+        );
+        if let Some(t) = self
+            .project
+            .tools
+            .iter()
+            .chain(self.global_tools.tools.iter())
+            .find(|t| kind.is_compatible_with_tool(t))
+            .cloned()
+        {
+            self.project.ensure_tool_embedded(&t);
+            op.tool_id = Some(t.id);
+            op.preset_id = t.presets.first().map(|p| p.id.clone());
+        }
+        self.project.setups[s_idx].operations.push(op);
+        let o_idx = self.project.setups[s_idx].operations.len() - 1;
+        self.inspector_focus = InspectorFocus::Operation {
+            setup_idx: s_idx,
+            op_idx: o_idx,
+        };
+        self.op_tab = if kind == OperationKind::Facing {
+            OperationTab::Passes
+        } else {
+            OperationTab::Geometry
+        };
+        self.pick_mode = default_pick_mode_for_op(s_idx, o_idx, kind, self.op_tab);
+    }
+
+    pub(crate) fn execute_palette_command(&mut self, cmd: CommandId, ctx: &egui::Context) {
+        if let Some(sample_id) = cmd.as_sample() {
+            self.load_sample_project(sample_id, ctx);
+            return;
+        }
+        match cmd {
+            CommandId::NewProject => self.reset_blank_project("Untitled Job"),
+            CommandId::OpenProject => self.open_project_dialog(ctx),
+            CommandId::SaveProject => self.save_project_dialog(),
+            CommandId::ExportChipzBundle => self.export_chipz_dialog(),
+            CommandId::ImportStepModel => self.open_step_dialog(ctx),
+            CommandId::ReloadStepModel => self.reload_active_step_model(ctx),
+            CommandId::ImportVector2D => self.vector_import_modal.open_with_file_picker(),
+            CommandId::OpenWelcomeScreen => self.welcome_modal.open = true,
+            CommandId::OpenSampleGallery => self.sample_gallery_modal.open = true,
+            CommandId::NewSetup => {
+                self.history
+                    .record_before_edit("Add Setup", None, &self.project);
+                let n = self.project.setups.len() + 1;
+                self.project.setups.push(Setup::new(
+                    format!("setup_{n}"),
+                    format!("Setup {n} — Op {n}"),
+                    WorkOffsetSlot::G55,
+                ));
+                self.active_setup_idx = self.project.setups.len() - 1;
+                self.inspector_focus = InspectorFocus::Setup {
+                    setup_idx: self.active_setup_idx,
+                };
+            }
+            CommandId::NewSketchSetupXy => self.create_new_setup_xy_sketch(),
+            CommandId::NewSketchOn3dFace => {
+                if self.model.is_some() {
+                    self.pick_mode = ViewportPickMode::PickSketchHostFace {
+                        setup_idx: self.active_setup_idx,
+                    };
+                }
+            }
+            CommandId::AddOpAdaptive2D => self.create_new_adaptive_operation(),
+            CommandId::AddOpFacing => self.add_standard_operation(OperationKind::Facing),
+            CommandId::AddOpContour2D => self.add_standard_operation(OperationKind::Contour2D),
+            CommandId::AddOpPocket2D => self.add_standard_operation(OperationKind::Pocket2D),
+            CommandId::AddOpDrillBore => self.add_standard_operation(OperationKind::DrillBore),
+            CommandId::AddOpChamferTrace => {
+                self.add_standard_operation(OperationKind::ChamferTrace)
+            }
+            CommandId::AddOpVCarve => self.create_new_vcarve_operation(),
+            CommandId::DuplicateOperation => self.duplicate_focused_operation(),
+            CommandId::MoveOperationUp => self.move_focused_operation(-1),
+            CommandId::MoveOperationDown => self.move_focused_operation(1),
+            CommandId::DeleteSelected => self.delete_focused_item(),
+            CommandId::Undo => self.perform_undo(),
+            CommandId::Redo => self.perform_redo(),
+            CommandId::GenerateActiveSetup => {
+                self.trigger_generate_dirty(Some(self.active_setup_idx), None);
+            }
+            CommandId::GenerateAllSetups => self.trigger_generate_dirty(None, None),
+            CommandId::RunSimulation => {
+                focus_workspace_pane(&mut self.tree, WorkspacePane::SimulationTimeline);
+                self.trigger_active_setup_simulation(ctx);
+            }
+            CommandId::OpenGCodePreview => {
+                focus_workspace_pane(&mut self.tree, WorkspacePane::GCodePreview);
+            }
+            CommandId::ExportGCode => self.trigger_gcode_export_from_menu(),
+            CommandId::OpenToolLibrary => self.tool_library_modal.open = true,
+            CommandId::OpenDiagnosticsLog => {
+                focus_workspace_pane(&mut self.tree, WorkspacePane::DiagnosticsLog);
+            }
+            CommandId::FitToViewport => self.fit_scene_to_viewport(),
+            CommandId::ToggleOrthoPerspective => self.camera.toggle_projection(),
+            CommandId::AlignViewSetupTop => self.align_camera_to_active_setup(),
+            CommandId::ResetWorkspaceLayout => {
+                self.tree = create_default_workspace_tree();
+                self.prefs.layout_shares = Default::default();
+            }
+            CommandId::ToggleThemeDarkLight => self.set_theme(ctx, self.theme.toggled()),
+            CommandId::SwitchUnitsMillimeter => {
+                if self.project.display_units != DisplayUnit::Millimeter {
+                    self.history
+                        .record_before_edit("Set Units to mm", None, &self.project);
+                    self.project.display_units = DisplayUnit::Millimeter;
+                    self.prefs.default_units = DisplayUnit::Millimeter;
+                    self.refresh_dependent_expressions();
+                }
+            }
+            CommandId::SwitchUnitsInch => {
+                if self.project.display_units != DisplayUnit::Inch {
+                    self.history
+                        .record_before_edit("Set Units to in", None, &self.project);
+                    self.project.display_units = DisplayUnit::Inch;
+                    self.prefs.default_units = DisplayUnit::Inch;
+                    self.refresh_dependent_expressions();
+                }
+            }
+            CommandId::OpenShortcutCheatsheet => self.shortcut_cheatsheet.open = true,
+            CommandId::SampleCamTorture
+            | CommandId::SampleAdaptiveRest
+            | CommandId::SampleVCarveInlay
+            | CommandId::SampleEngravedNameplate
+            | CommandId::SamplePure2dPanel
+            | CommandId::SampleRevisionReloadV2 => {}
+        }
     }
 
     fn create_new_vcarve_operation(&mut self) {

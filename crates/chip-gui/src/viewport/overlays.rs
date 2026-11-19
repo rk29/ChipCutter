@@ -3,9 +3,10 @@ use chip_math::{Aabb3, RigidFrame3};
 
 use crate::{
     camera::{CadCamera, MousePreset, OrbitMode, StandardView},
+    panels::ViewportPickMode,
     theme::ThemeTokens,
     viewport::HighlightState,
-    widgets::{IconKind, hud_toggle_pill, icon_button},
+    widgets::{IconKind, hud_toggle_pill, icon_button, inline_icon, primary_icon_button},
 };
 
 /// Action emitted by the Floating Viewport View HUD.
@@ -13,6 +14,14 @@ use crate::{
 pub enum ViewportHudAction {
     FitToViewport,
     AlignToSetupTop,
+}
+
+/// Action emitted by the Top-Center Active Pick / Sketch Guidance HUD.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GuidanceHudAction {
+    Done,
+    ResetChainStart,
+    Cancel,
 }
 
 /// Interactive 27-point 3D anchor dot overlay for picking a Stock or Model WCS Origin directly
@@ -377,4 +386,103 @@ pub fn draw_viewport_bottom_hud(
     }
 
     emitted
+}
+
+/// Draws a prominent top-center **Active Pick & Sketch Guidance HUD** whenever a 3D B-Rep pick mode,
+/// manual holding-tab mode, or 2D sketch authoring tool is active (`08-ui-viewport.md`).
+pub fn draw_viewport_guidance_hud(
+    ui: &mut egui::Ui,
+    viewport_rect: egui::Rect,
+    pick_mode: ViewportPickMode,
+    context_badge: Option<&str>,
+) -> Option<GuidanceHudAction> {
+    let (title, instruction, supports_done) = pick_mode.guidance_info()?;
+    if viewport_rect.width() < 340.0 || viewport_rect.height() < 120.0 {
+        return None;
+    }
+
+    let tok = ThemeTokens::from_ui(ui);
+    // Reserve space for top-left Setup pill and top-right ViewCube (`162px`)
+    let max_card_w = (viewport_rect.width() - 340.0).clamp(290.0, 560.0);
+    let card_h = 48.0;
+    let cx = (viewport_rect.center().x).min(viewport_rect.right() - 168.0 - 0.5 * max_card_w);
+    let card_rect = egui::Rect::from_center_size(
+        egui::pos2(
+            cx.max(viewport_rect.left() + 0.5 * max_card_w + 10.0),
+            viewport_rect.top() + 34.0,
+        ),
+        egui::vec2(max_card_w, card_h),
+    );
+
+    ui.painter_at(viewport_rect).rect(
+        card_rect,
+        egui::CornerRadius::same(7),
+        tok.hud_bg,
+        egui::Stroke::new(1.2, tok.accent),
+        egui::StrokeKind::Inside,
+    );
+
+    let inner = card_rect.shrink2(egui::vec2(10.0, 5.0));
+    let mut hud_ui = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(inner)
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+    );
+    hud_ui.spacing_mut().item_spacing = egui::vec2(6.0, 2.0);
+
+    let mut action = None;
+    let icon = match pick_mode {
+        ViewportPickMode::SketchAuthor { .. } => IconKind::Sketch2D,
+        _ => IconKind::Crosshair,
+    };
+    let has_chain_start = matches!(
+        pick_mode,
+        ViewportPickMode::OpOpenChain {
+            start_edge: Some(_),
+            ..
+        }
+    );
+
+    hud_ui.horizontal(|ui| {
+        inline_icon(ui, icon, tok.accent, 14.0);
+        ui.strong(title);
+        if let Some(badge) = context_badge {
+            ui.colored_label(tok.info_fg, format!("· {badge}"));
+        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            if ui
+                .small_button("Cancel (Esc)")
+                .on_hover_text("Exit active pick/draw mode (Esc)")
+                .clicked()
+            {
+                action = Some(GuidanceHudAction::Cancel);
+            }
+            if has_chain_start
+                && ui
+                    .small_button("Reset 1st")
+                    .on_hover_text("Clear first chain edge and re-pick Start Edge")
+                    .clicked()
+            {
+                action = Some(GuidanceHudAction::ResetChainStart);
+            }
+            if supports_done
+                && primary_icon_button(ui, IconKind::StatusClean, "Done", "Finish selection")
+                    .clicked()
+            {
+                action = Some(GuidanceHudAction::Done);
+            }
+        });
+    });
+
+    hud_ui.add(
+        egui::Label::new(
+            egui::RichText::new(instruction)
+                .size(11.5)
+                .color(tok.text_secondary),
+        )
+        .truncate(),
+    );
+
+    action
 }

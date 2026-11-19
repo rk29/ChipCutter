@@ -691,6 +691,7 @@ dependencies = [
  "chip-tools",
  "clap",
  "crossbeam-channel",
+ "dirs",
  "eframe",
  "egui",
  "egui-wgpu",
@@ -701,9 +702,11 @@ dependencies = [
  "rayon",
  "rfd",
  "serde",
+ "toml",
  "tracing",
  "tracing-subscriber",
  "wgpu",
+ "winit",
 ]
 
 [[package]]

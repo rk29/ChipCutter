@@ -11,8 +11,8 @@ This document describes the toolchain, native libraries, and setup steps require
 - **`rustfmt`** & **`clippy`**: Enforced across all crates (`unsafe_code = "deny"`, `clippy::unwrap_used = "deny"`, and `clippy::expect_used = "deny"` across workspace crates, `-D warnings` in CI).
 - **`cargo-deny`**: Enforces security advisory checks and ChipCutter's permissive/weak-copyleft dependency policy (`MIT`, `MIT-0`, `Apache-2.0`, `BSD-2-Clause`, `BSD-3-Clause`, `MPL-2.0`, `BSL-1.0`, `ISC`, `Zlib`, `CC0-1.0`, `0BSD`, `Unicode-3.0`, plus `OFL-1.1` / `Ubuntu-font-1.0` bundled font exceptions) defined in [`deny.toml`](deny.toml).
 
-### Pure-Rust CAD, Vector, Typography, & CAM Kernels (No C/C++ CAD or Font Dependencies)
-Unlike CAM tools built on C++ OpenCASCADE, CGAL, or system FreeType/HarfBuzz, ChipCutter's entire geometry stack—STEP B-Rep kernel (`monstertruck-*`), arc-preserving 2D offsetter & booleans (`cavalier_contours`), segment Voronoi medial-axis builder (`boostvoronoi`), DXF/SVG vector importers & biarc fitter (`dxf`, `usvg`, `kurbo`), and TrueType/OpenType outline engine (`skrifa`)—is **100% pure Rust**. You do **not** need CMake, Ninja, OCCT, CGAL, or FreeType installed.
+### Self-Contained CAD, Vector, Typography, & CAM Kernels
+ChipCutter's geometry stack—STEP B-Rep kernel (`monstertruck-*`), arc-preserving 2D offsetter & booleans (`cavalier_contours`), segment Voronoi medial-axis builder (`boostvoronoi`), DXF/SVG vector importers & biarc fitter (`dxf`, `usvg`, `kurbo`), and TrueType/OpenType outline engine (`skrifa`)—builds directly via Cargo without external CMake, Ninja, OpenCASCADE, CGAL, or FreeType system installations.
 
 ### Native Graphics, Windowing, & System Dependencies
 Only the `chip-gui` desktop shell (`eframe` / `winit` / `wgpu` / `rfd`) requires platform windowing and GPU libraries:
@@ -132,11 +132,13 @@ cargo run -p chip-cli -- build /tmp/torture.chip.toml -o /tmp/gcode_out --post l
 cargo run -p chip-cli -- bundle pack /tmp/torture.chip.toml -o /tmp/torture.chipz
 cargo run -p chip-cli -- build /tmp/torture.chipz -o /tmp/from_bundle --post grbl
 
-# Launch the interactive desktop CAM application (or directly into built-in v2 demos)
+# Launch the interactive desktop CAM application (Welcome Overlay on bare launch, or built-in demos)
 cargo run -p chip-gui
+cargo run -p chip-gui -- --demo-torture
 cargo run -p chip-gui -- --demo-pure-2d
 cargo run -p chip-gui -- --demo-nameplate
 cargo run -p chip-gui -- --demo-vcarve
+cargo run -p chip-gui -- --theme light
 ```
 
 ### Running GUI / Viewport Checks in Headless Linux Environments (CI / Containers)
@@ -146,9 +148,11 @@ When no physical monitor or `DISPLAY` is attached on Linux, Mesa's `mesa-vulkan-
 # Offscreen wgpu unit tests work directly without X11:
 WGPU_BACKEND=vulkan cargo test -p chip-gui
 
-# Full eframe window launch + automated screenshot self-test under Xvfb:
-WGPU_BACKEND=vulkan xvfb-run -a cargo run -p chip-gui -- --self-test-screenshot /tmp/preview.png
-WGPU_BACKEND=vulkan xvfb-run -a cargo run -p chip-gui -- --demo-vcarve --self-test-screenshot /tmp/vcarve_preview.png
+# Full eframe window launch + automated screenshot self-test under Xvfb
+# (`WAYLAND_DISPLAY= WINIT_UNIX_BACKEND=x11` ensures winit stays inside Xvfb even on a Wayland host):
+WAYLAND_DISPLAY= WINIT_UNIX_BACKEND=x11 WGPU_BACKEND=vulkan xvfb-run -a cargo run -p chip-gui -- --self-test-screenshot /tmp/preview.png
+WAYLAND_DISPLAY= WINIT_UNIX_BACKEND=x11 WGPU_BACKEND=vulkan xvfb-run -a cargo run -p chip-gui -- --welcome --self-test-screenshot /tmp/welcome_preview.png
+WAYLAND_DISPLAY= WINIT_UNIX_BACKEND=x11 WGPU_BACKEND=vulkan xvfb-run -a cargo run -p chip-gui -- --demo-vcarve --theme light --self-test-screenshot /tmp/vcarve_light.png
 ```
 
 ---

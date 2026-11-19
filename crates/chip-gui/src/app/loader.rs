@@ -98,6 +98,7 @@ impl ChipCutterApp {
                 self.last_reload_banner = None;
                 self.project = doc;
                 self.project_file_path = Some(path.to_path_buf());
+                self.record_recent_file(path);
                 self.active_setup_idx = 0;
                 self.inspector_focus = InspectorFocus::Setup { setup_idx: 0 };
                 self.setup_tab = SetupTab::Wcs;
@@ -145,6 +146,7 @@ impl ChipCutterApp {
                 self.last_reload_banner = None;
                 self.project = unpacked.project;
                 self.project_file_path = None;
+                self.record_recent_file(archive_path);
                 self.active_setup_idx = 0;
                 self.inspector_focus = InspectorFocus::Setup { setup_idx: 0 };
                 self.pick_mode = ViewportPickMode::InspectEntity;
@@ -197,6 +199,7 @@ impl ChipCutterApp {
         match self.project.save_to_path(path) {
             Ok(()) => {
                 self.project_file_path = Some(path.to_path_buf());
+                self.record_recent_file(path);
                 self.clean_undo_len = Some(self.history.undo_len());
                 self.logs
                     .push(format!("Saved project to '{}'.", path.display()));
@@ -300,6 +303,7 @@ impl ChipCutterApp {
     }
 
     pub(crate) fn spawn_step_file_load(&mut self, path: PathBuf, egui_ctx: egui::Context) {
+        self.record_recent_file(&path);
         self.spawn_step_file_load_with_purpose(
             path,
             LoadPurpose::FreshImport {

@@ -20,16 +20,9 @@ pub enum BrowserAction {
     OpenVectorImportModal { browse_file: bool },
     ReloadStepModel,
     ReplaceStepDialog,
-    LoadMultiFeatureSample { tilted: bool },
-    LoadCamTortureBlock,
-    LoadAdaptiveRestDemo,
-    LoadPure2dPanelDemo,
-    LoadNameplateDemo,
-    LoadVCarveDemo,
+    OpenSampleGallery,
     NewSetupXySketch,
     StartPickSketchHostFace,
-    LoadRevisionDemoV1,
-    ReloadRevisionDemoV2,
     OpenToolLibrary,
     AlignCameraToActiveSetup,
     GenerateSetup(usize),
@@ -314,65 +307,15 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                                 emitted_action = Some(BrowserAction::ReplaceStepDialog);
                             }
                         }
-                        ui.menu_button("Samples…", |ui| {
-                            if ui
-                                .button("CAM Torture Block (3D STEP)")
-                                .on_hover_text(
-                                    "Load M3 CAM Torture Block (island pocket, open step, Ø18 bore, 45° bevel)",
-                                )
-                                .clicked()
-                            {
-                                emitted_action = Some(BrowserAction::LoadCamTortureBlock);
-                                ui.close();
-                            }
-                            if ui
-                                .button("2D Adaptive + Rest Machining")
-                                .clicked()
-                            {
-                                emitted_action = Some(BrowserAction::LoadAdaptiveRestDemo);
-                                ui.close();
-                            }
-                            if ui
-                                .button("Pure-2D Router Panel (.dxf)")
-                                .clicked()
-                            {
-                                emitted_action = Some(BrowserAction::LoadPure2dPanelDemo);
-                                ui.close();
-                            }
-                            if ui
-                                .button("Engraved Nameplate (TrueType + Hershey)")
-                                .clicked()
-                            {
-                                emitted_action = Some(BrowserAction::LoadNameplateDemo);
-                                ui.close();
-                            }
-                            if ui
-                                .button("V-Carve Sign & Mated V-Inlay")
-                                .clicked()
-                            {
-                                emitted_action = Some(BrowserAction::LoadVCarveDemo);
-                                ui.close();
-                            }
-                            ui.separator();
-                            if ui.button("Prismatic Bracket").clicked() {
-                                emitted_action =
-                                    Some(BrowserAction::LoadMultiFeatureSample { tilted: false });
-                                ui.close();
-                            }
-                            if ui.button("30°-Tilted Bracket").clicked() {
-                                emitted_action =
-                                    Some(BrowserAction::LoadMultiFeatureSample { tilted: true });
-                                ui.close();
-                            }
-                            if ui.button("CAD Revision v1").clicked() {
-                                emitted_action = Some(BrowserAction::LoadRevisionDemoV1);
-                                ui.close();
-                            }
-                            if ui.button("Reload CAD Revision v2").clicked() {
-                                emitted_action = Some(BrowserAction::ReloadRevisionDemoV2);
-                                ui.close();
-                            }
-                        });
+                        if ui
+                            .small_button("Sample Gallery…")
+                            .on_hover_text(
+                                "Browse built-in 3D STEP, 2D Adaptive+Rest, Typography, and V-Carve & Inlay sample projects",
+                            )
+                            .clicked()
+                        {
+                            emitted_action = Some(BrowserAction::OpenSampleGallery);
+                        }
                     });
                 });
 

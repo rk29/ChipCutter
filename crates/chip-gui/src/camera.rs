@@ -1,5 +1,6 @@
 use chip_math::{Aabb3, DMat4, DVec3, DVec4, Ray3, RigidFrame3};
 use glam::{Mat4, Vec3};
+use serde::{Deserialize, Serialize};
 
 /// Camera projection mode. Orthographic is the default for CAD/CAM inspection.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -21,7 +22,8 @@ impl ProjectionMode {
 }
 
 /// Mouse navigation binding presets matching mainstream CAD/CAM packages.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum MousePreset {
     #[default]
     Fusion360,
@@ -50,7 +52,8 @@ impl MousePreset {
 }
 
 /// Orbit constraint mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum OrbitMode {
     /// Keeps `+Z` spindle axis upright on screen (default CAM turntable).
     #[default]

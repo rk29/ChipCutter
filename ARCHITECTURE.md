@@ -52,15 +52,15 @@ flowchart TD
 | Crate | Role |
 |---|---|
 | [`crates/chip-math`](crates/chip-math) | `f64` millimeter units, machinist expression & fraction parser (`1/4 in`, `tool_d * 0.4`), orthonormal `RigidFrame3`, and `ArcPolyline2D` |
-| [`crates/chip-cad`](crates/chip-cad) | `CadKernel` trait, pure-Rust `monstertruck` STEP importer/tessellator, R-tree spatial ray picker, B-Rep adjacency graph, and `GeometricSignature` fuzzy re-matching |
-| [`crates/chip-sketch`](crates/chip-sketch) | Pure-Rust DXF & SVG importers, gap-healing loop planarizer, parametric 2D primitives (`Rectangle`, `Circle`, `Slot`, `Polygon`, `PointPattern`, `Polyline`), and TrueType (`skrifa`) + Hershey CAM typography |
+| [`crates/chip-cad`](crates/chip-cad) | `CadKernel` trait, `monstertruck` STEP importer/tessellator, R-tree spatial ray picker, B-Rep adjacency graph, and `GeometricSignature` fuzzy re-matching |
+| [`crates/chip-sketch`](crates/chip-sketch) | DXF & SVG importers, gap-healing loop planarizer, parametric 2D primitives (`Rectangle`, `Circle`, `Slot`, `Polygon`, `PointPattern`, `Polyline`), and TrueType (`skrifa`) + Hershey CAM typography |
 | [`crates/chip-tools`](crates/chip-tools) | 6 cutter geometries (incl. sharp V-bits), per-material feeds/speeds presets, coupled SFM/chipload & radial chip-thinning math, `.tools.toml` persistence, and Fusion 360 `.json`/`.tools` importer |
 | [`crates/chip-cam`](crates/chip-cam) | Multi-Setup WCS & box/cylinder/sketch stock, B-Rep + 2D sketch feature extraction, `cavalier_contours` offsetting & 2D booleans (`RegionSet2D`), `boostvoronoi` medial-axis chains, Facing, 2D Contour (+ tabs), 2D Pocket & 2D Adaptive Clearing, 2.5D Rest Machining, Drill/Helical Bore, Chamfer/Trace, and Two-Stage V-Carving & V-Inlays |
 | [`crates/chip-sim`](crates/chip-sim) | Trapezoidal acceleration timeline & cycle-time estimator, analytic cutter/shank/holder radial profiles, closed-form sloped 3D conical V-bit sweeper, 2.5D Z-dexel stock heightmap, and 5-rule collision/gouge verifier |
 | [`crates/chip-post`](crates/chip-post) | Typed `ClEvent` IR consumer, modal G-code state machine, quadrant arc & peck-drill expansion, ATC vs. split-file-per-tool partitioning (incl. Two-Tool V-Carve), and `.post.toml` dialect profiles |
 | [`crates/chip-project`](crates/chip-project) | Deterministic `.chip.toml` manifest (`v1`/`v2`), zip-slip-safe `.chipz` portable bundles (STEP + DXF/SVG + TTF/OTF + `.post.toml`), WCS-first associative STEP + face-sketch reload, topological DAG wave `JobDispatcher`, LRU toolpath cache, and `100`-step `< 1 ms` Undo/Redo |
 | [`crates/chip-cli`](crates/chip-cli) | Headless `chipcutter` CLI (`inspect`, `import-2d`, `generate-sample-step`, `validate`, `simulate`, `build`, `reload-step`, `bundle`, `tools`) & v1 + v2 golden G-code regression tests |
-| [`crates/chip-gui`](crates/chip-gui) | Native desktop CAM application (`eframe` + `egui_tiles` docking + `wgpu` 4x MSAA 3D/2D viewport) |
+| [`crates/chip-gui`](crates/chip-gui) | Native desktop CAM application (`eframe` + `egui_tiles` docking + `wgpu` 4x MSAA 3D/2D viewport, `ThemeTokens` Studio Dark & Daylight Light design system, procedural vector icons, two-column Inspector grids, `Ctrl+K` Command Palette, Welcome & Sample Gallery, and `prefs.toml` user preferences) |
 
 ---
 
@@ -75,9 +75,9 @@ flowchart TD
 ## 4. 3D / 2D `wgpu` Viewport Render Pipeline (`chip-gui`)
 
 `ViewportRenderer` renders into an offscreen `4x MSAA` color + `Depth32Float` target composited into `egui` across six ordered GPU draw stages (followed by `egui` HUD overlays):
-1. **Stage 1 — Studio Gradient & Adaptive WCS XY Grid (`bg_pipeline`):** Fullscreen studio background and active Setup XY workplane grid with auto-scaling metric (`mm`) / imperial (`in`) minor and major subdivisions.
+1. **Stage 1 — Studio Gradient & Adaptive WCS XY Grid (`bg_pipeline`):** Theme-coupled Studio Dark / Daylight Light background gradient and active Setup XY workplane grid with auto-scaling metric (`mm`) / imperial (`in`) minor and major subdivisions.
 2. **Stage 2 — 3D Machined Stock Mesh (`sim_stock_pipeline`):** Live Z-dexel machined stock mesh colored by cutting operation when simulation stock view is active.
 3. **Stage 3 — Shaded B-Rep Solids (`solid_pipeline` / `solid_ghost_pipeline`):** Two-sided hemisphere + key-light Blinn-Phong CAD faces with hover/selection/multi-face tinting and optional translucent ghost-part comparison against machined stock.
 4. **Stage 4 — Animated 3D Cutter Assembly (`sim_tool_pipeline`):** Revolved 3D flutes, shank, and ER collet/holder positioned at the active timeline scrub point.
 5. **Stage 5 — Translucent Stock, Z-Height Planes, & 2D Sketch Fills (`overlay_pipeline`):** Translucent box/cylinder stock, interactive Clearance / Retract / Feed / Top / Bottom Z planes, and hovered/selected 2D `SketchLayer` planar region highlights.
-6. **Stage 6 — GPU-Instanced Screen-Space Ribbons (`edge_pipeline`):** Depth-biased B-Rep edges, 2D `SketchLayer` curves/typography/rubber-band previews, WCS triad, 3D chain arrows, holding-tab bridges, and cached `500,000+`-segment GPU-instanced toolpaths (`G0` rapids, `G1` cuts, `G2`/`G3` arcs, helices, and Two-Stage V-Carve clearing + bevel passes)—topped by the interactive ViewCube, 27-point WCS origin dots, and 2D Snap HUD badges.
+6. **Stage 6 — GPU-Instanced Screen-Space Ribbons (`edge_pipeline`):** Depth-biased B-Rep edges, 2D `SketchLayer` curves/typography/rubber-band previews, WCS triad, 3D chain arrows, holding-tab bridges, and cached `500,000+`-segment GPU-instanced toolpaths (`G0` rapids, `G1` cuts, `G2`/`G3` arcs, helices, and Two-Stage V-Carve clearing + bevel passes)—topped by the Floating Bottom Viewport View HUD, Active Pick & Sketch Guidance HUD, interactive ViewCube, 27-point WCS origin dots, and 2D Snap HUD badges.

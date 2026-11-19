@@ -18,8 +18,8 @@ use crate::{
         sketch_inspector::{SketchInspectorAction, SketchInspectorCtx, show_sketch_inspector},
     },
     viewport::{
-        ViewportHudAction, draw_view_cube_overlay, draw_viewport_bottom_hud,
-        draw_wcs_origin_27pt_overlay,
+        GuidanceHudAction, ViewportHudAction, draw_view_cube_overlay, draw_viewport_bottom_hud,
+        draw_viewport_guidance_hud, draw_wcs_origin_27pt_overlay,
     },
 };
 
@@ -85,24 +85,8 @@ impl PaneBehavior<'_> {
                     }
                     BrowserAction::ReloadStepModel => self.app.reload_active_step_model(&ctx),
                     BrowserAction::ReplaceStepDialog => self.app.replace_step_dialog(&ctx),
-                    BrowserAction::LoadMultiFeatureSample { tilted } => {
-                        self.app
-                            .spawn_multi_feature_sample_load(tilted, !tilted, ctx.clone());
-                    }
-                    BrowserAction::LoadCamTortureBlock => {
-                        self.app.spawn_cam_torture_sample_load(true, ctx.clone());
-                    }
-                    BrowserAction::LoadAdaptiveRestDemo => {
-                        self.app.spawn_adaptive_rest_demo_load(ctx.clone());
-                    }
-                    BrowserAction::LoadPure2dPanelDemo => {
-                        self.app.load_pure2d_router_panel_demo(&ctx);
-                    }
-                    BrowserAction::LoadNameplateDemo => {
-                        self.app.load_engraved_nameplate_demo(&ctx);
-                    }
-                    BrowserAction::LoadVCarveDemo => {
-                        self.app.load_vcarve_sign_demo(&ctx);
+                    BrowserAction::OpenSampleGallery => {
+                        self.app.sample_gallery_modal.open = true;
                     }
                     BrowserAction::NewSetupXySketch => {
                         self.app.create_new_setup_xy_sketch();
@@ -111,12 +95,6 @@ impl PaneBehavior<'_> {
                         self.app.pick_mode = ViewportPickMode::PickSketchHostFace {
                             setup_idx: self.app.active_setup_idx,
                         };
-                    }
-                    BrowserAction::LoadRevisionDemoV1 => {
-                        self.app.spawn_revision_demo_load(false, ctx.clone());
-                    }
-                    BrowserAction::ReloadRevisionDemoV2 => {
-                        self.app.spawn_revision_demo_load(true, ctx.clone());
                     }
                     BrowserAction::OpenToolLibrary => {
                         self.app.tool_library_modal.open = true;
@@ -319,15 +297,64 @@ impl PaneBehavior<'_> {
             );
         }
 
-        if let Some(banner) = self.app.pick_mode.banner_text() {
-            let banner_pos = egui::pos2(avail.left() + 12.0, avail.top() + 38.0);
-            ui.painter().text(
-                banner_pos,
-                egui::Align2::LEFT_TOP,
-                format!("• {banner}"),
-                egui::FontId::proportional(13.0),
-                tok.pick_banner_fg,
-            );
+        let guidance_badge = match self.app.pick_mode {
+            ViewportPickMode::OpPlanarFaces { setup_idx, op_idx }
+            | ViewportPickMode::OpClosedLoops { setup_idx, op_idx }
+            | ViewportPickMode::OpOpenChain {
+                setup_idx, op_idx, ..
+            }
+            | ViewportPickMode::OpCylindricalHoles { setup_idx, op_idx } => self
+                .app
+                .project
+                .setups
+                .get(setup_idx)
+                .and_then(|s| s.operations.get(op_idx))
+                .map(|op| format!("{} selected", op.selections.len())),
+            ViewportPickMode::PlaceContourTab { setup_idx, op_idx } => self
+                .app
+                .project
+                .setups
+                .get(setup_idx)
+                .and_then(|s| s.operations.get(op_idx))
+                .and_then(|op| match &op.strategy {
+                    Some(chip_cam::StrategyParams::Contour2D(p)) => {
+                        Some(format!("{} tab(s)", p.tabs.manual_anchors.len()))
+                    }
+                    _ => None,
+                }),
+            ViewportPickMode::SketchAuthor { .. } => {
+                if self.app.sketch_author_start_xy.is_some() {
+                    Some("1st point set".to_string())
+                } else {
+                    self.app
+                        .sketch_snap_grid_mm
+                        .map(|g| format!("Grid: {g} mm"))
+                }
+            }
+            _ => None,
+        };
+        if let Some(g_act) =
+            draw_viewport_guidance_hud(ui, avail, self.app.pick_mode, guidance_badge.as_deref())
+        {
+            match g_act {
+                GuidanceHudAction::Done | GuidanceHudAction::Cancel => {
+                    self.app.sketch_author_start_xy = None;
+                    self.app.pick_mode = ViewportPickMode::InspectEntity;
+                    self.app.highlight.preview_tab_marker_wcs = None;
+                }
+                GuidanceHudAction::ResetChainStart => {
+                    if let ViewportPickMode::OpOpenChain {
+                        setup_idx, op_idx, ..
+                    } = self.app.pick_mode
+                    {
+                        self.app.pick_mode = ViewportPickMode::OpOpenChain {
+                            setup_idx,
+                            op_idx,
+                            start_edge: None,
+                        };
+                    }
+                }
+            }
         }
 
         let setup_lbl = self
@@ -714,14 +741,23 @@ impl PaneBehavior<'_> {
 impl ChipCutterApp {
     pub(crate) fn handle_self_test(&mut self, ctx: &egui::Context) {
         let is_busy = self.dispatcher.is_busy() || self.sim_panel.is_busy();
-        let has_geom = self.has_geometry();
+        let ready = self.has_geometry()
+            || self.welcome_modal.open
+            || self.sample_gallery_modal.open
+            || self.command_palette.open
+            || self.shortcut_cheatsheet.open;
         let Some(st) = &mut self.self_test else {
             if is_busy {
                 ctx.request_repaint();
             }
             return;
         };
-        if self.loading_in_flight || !has_geom || is_busy {
+        if self.loading_in_flight || is_busy {
+            ctx.request_repaint();
+            return;
+        }
+        if !ready && st.idle_wait_frames < 8 {
+            st.idle_wait_frames += 1;
             ctx.request_repaint();
             return;
         }
@@ -757,7 +793,11 @@ impl ChipCutterApp {
                     tracing::error!("failed to save screenshot: {e}");
                 }
                 ctx_clone.send_viewport_cmd(egui::ViewportCommand::Close);
+                ctx_clone.request_repaint();
             });
+            ctx.request_repaint();
+        } else {
+            ctx.request_repaint();
         }
     }
 }
