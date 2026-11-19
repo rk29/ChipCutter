@@ -17,7 +17,8 @@ pub mod topology;
 pub use fixtures::{
     SampleStepError, sample_ambiguous_twin_hole_step, sample_cam_torture_block_step,
     sample_machined_plate_step, sample_machined_plate_step_inches,
-    sample_multi_feature_bracket_step, sample_revised_part_pair_step,
+    sample_multi_feature_bracket_step, sample_revised_part_pair_step, tutorial_contour_plate_step,
+    tutorial_drill_bore_plate_step, tutorial_facing_billet_step, tutorial_pocket_block_step,
 };
 pub use kernel::{CadError, CadKernel};
 pub use model::{

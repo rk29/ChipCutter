@@ -25,6 +25,8 @@ pub use demos::{
     build_adaptive_rest_demo_project, build_cam_torture_project,
     build_engraved_nameplate_demo_project, build_multi_feature_bracket_project,
     build_pure2d_router_panel_demo_project, build_revision_v1_demo_project,
+    build_tutorial_contour_project, build_tutorial_drill_bore_project,
+    build_tutorial_facing_project, build_tutorial_pocket_project,
     build_vcarve_sign_and_inlay_demo_project,
 };
 pub use dispatcher::{
@@ -1107,5 +1109,106 @@ setups = []
         );
         assert!(grbl_files[0].filename.contains("T1"));
         assert!(grbl_files[1].filename.contains("T8"));
+    }
+
+    #[test]
+    fn minimal_tutorial_projects_pass_heightmap_sim_with_zero_crashes() {
+        use chip_cad::{
+            tutorial_contour_plate_step, tutorial_drill_bore_plate_step,
+            tutorial_facing_billet_step, tutorial_pocket_block_step,
+        };
+        use chip_post::resolve_post_profile;
+        use chip_sim::SimResolution;
+
+        let kernel = MonstertruckKernel;
+        let starter = default_starter_tool_library();
+        let grbl = resolve_post_profile("grbl", None).unwrap();
+        let linuxcnc = resolve_post_profile("linuxcnc", None).unwrap();
+
+        let cases: Vec<(&str, String, usize)> = vec![
+            ("01-facing", tutorial_facing_billet_step().unwrap(), 1),
+            ("02-contour", tutorial_contour_plate_step().unwrap(), 1),
+            ("03-pocket", tutorial_pocket_block_step().unwrap(), 2),
+            (
+                "04-drill-bore",
+                tutorial_drill_bore_plate_step().unwrap(),
+                2,
+            ),
+        ];
+
+        for (slug, step, expected_ops) in cases {
+            let doc = kernel
+                .load_step_bytes(slug, step.as_bytes(), DEFAULT_TESS_CHORD_TOL_MM)
+                .unwrap();
+            let sha = compute_sha256_hex(step.as_bytes());
+            let mut proj = match slug {
+                "01-facing" => {
+                    build_tutorial_facing_project(slug.to_string(), &sha, &starter.tools, false)
+                }
+                "02-contour" => build_tutorial_contour_project(
+                    &doc,
+                    slug.to_string(),
+                    &sha,
+                    &starter.tools,
+                    false,
+                ),
+                "03-pocket" => build_tutorial_pocket_project(
+                    &doc,
+                    slug.to_string(),
+                    &sha,
+                    &starter.tools,
+                    false,
+                ),
+                "04-drill-bore" => build_tutorial_drill_bore_project(
+                    &doc,
+                    slug.to_string(),
+                    &sha,
+                    &starter.tools,
+                    false,
+                ),
+                _ => unreachable!(),
+            };
+            assert_eq!(proj.setups[0].operations.len(), expected_ops);
+
+            let mut cache = ToolpathCache::new(32);
+            let report = generate_project_blocking(&mut proj, &doc, &mut cache, 1);
+            assert!(
+                report.errors.is_empty(),
+                "tutorial '{slug}' generation failed: {:?}",
+                report.errors
+            );
+
+            let sim = simulate_project_setup(&SetupSimRequest {
+                project: &proj,
+                setup_idx: 0,
+                cad_doc: &doc,
+                cad_revision: 1,
+                cache: &cache,
+                kinematics: resolve_kinematics_for_key("linuxcnc", None),
+                resolution: SimResolution::Standard,
+                cancel: None,
+            })
+            .unwrap();
+            assert!(
+                !sim.has_critical_errors(),
+                "tutorial '{slug}' must pass heightmap sim with 0 crashes/gouges, got: {:?}",
+                sim.diagnostics
+            );
+
+            for profile in [&grbl, &linuxcnc] {
+                let files = post_process_project_setup(&SetupPostRequest {
+                    project: &proj,
+                    setup_idx: 0,
+                    cad_doc: &doc,
+                    cad_revision: 1,
+                    cache: &cache,
+                    post_profile: profile,
+                    project_label: &proj.project_name,
+                    program_stem: slug,
+                })
+                .unwrap();
+                assert!(!files.is_empty());
+            }
+        }
     }
 }

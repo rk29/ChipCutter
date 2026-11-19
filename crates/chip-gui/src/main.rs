@@ -2,7 +2,10 @@ use std::path::PathBuf;
 
 use chip_gui::{
     app::{ChipCutterApp, SelfTestConfig, StartupDemoMode},
-    capture::{CaptureFocus, CaptureModal, CapturePane, CaptureSpec, CaptureView},
+    capture::{
+        CaptureFocus, CaptureModal, CapturePane, CaptureSpec, CaptureView,
+        parse_capture_post_profile,
+    },
     panels::welcome_gallery::SampleProjectId,
     theme::AppTheme,
 };
@@ -75,9 +78,17 @@ struct GuiArgs {
     #[arg(long)]
     capture_sim_stock: Option<bool>,
 
+    /// Show or hide the animated 3D cutter & holder assembly during capture (`true` / `false`).
+    #[arg(long)]
+    capture_sim_cutter: Option<bool>,
+
     /// Scrub simulation timeline progress in `[0.0, 1.0]` during capture (default `0.82`).
     #[arg(long)]
     capture_sim_progress: Option<f64>,
+
+    /// Override active setup post-processor profile for G-Code Preview capture (`grbl`, `grblhal_atc`, `linuxcnc`).
+    #[arg(long, value_parser = parse_capture_post_profile)]
+    capture_post: Option<String>,
 
     /// Auto-dispatch toolpath generation (`Ctrl+G`) and simulation after loading a project before capture.
     #[arg(long)]
@@ -112,7 +123,9 @@ fn main() -> eframe::Result {
         modal: args.capture_modal,
         isolate_op: args.capture_isolate_op,
         show_sim_stock: args.capture_sim_stock,
+        show_sim_cutter: args.capture_sim_cutter,
         sim_progress: args.capture_sim_progress,
+        post_profile: args.capture_post,
         auto_generate: args.capture_generate,
         show_z_planes: args.capture_z_planes,
         show_27pt_dots: args.capture_27pt_dots,

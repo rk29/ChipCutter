@@ -1456,3 +1456,273 @@ pub fn build_vcarve_sign_and_inlay_demo_project(available_tools: &[Tool]) -> Pro
     proj.setups.push(setup_plug);
     proj
 }
+
+/// Helper to initialize a clean single-model tutorial [`ProjectDocument`] with exact stock margins
+/// and zero operations.
+fn init_tutorial_step_project(
+    name: &str,
+    model_path: String,
+    sha256_hex: &str,
+    side_margin_mm: f64,
+    top_allowance_mm: f64,
+) -> ProjectDocument {
+    let mut proj = ProjectDocument::new(name);
+    proj.models = vec![ModelEntry {
+        id: "model_1".to_string(),
+        path: model_path,
+        sha256: sha256_hex.to_string(),
+    }];
+    proj.setups[0].stock = StockConfig::RelativeBox {
+        symmetric_xy: true,
+        side_pos_x: ParamLength::from_mm(side_margin_mm),
+        side_neg_x: ParamLength::from_mm(side_margin_mm),
+        side_pos_y: ParamLength::from_mm(side_margin_mm),
+        side_neg_y: ParamLength::from_mm(side_margin_mm),
+        top_offset_z: ParamLength::from_mm(top_allowance_mm),
+        bottom_offset_z: ParamLength::from_mm(0.0),
+        sheet_thickness_z: ParamLength::from_mm(12.0),
+        round_increment_mm: None,
+    };
+    proj
+}
+
+/// Builds the minimal **Tutorial 01 — Facing** project for `01-facing-billet.step`
+/// (`100 × 80 × 20 mm` plain billet, `2.0 mm` stock top allowance, ONLY `1. Face Stock Top` using `T7`).
+/// When `empty_ops = true`, returns a 0-operation starter project for the initial Stock setup screenshot.
+pub fn build_tutorial_facing_project(
+    model_path: String,
+    sha256_hex: &str,
+    available_tools: &[Tool],
+    empty_ops: bool,
+) -> ProjectDocument {
+    let mut proj =
+        init_tutorial_step_project("Tutorial 01 — Facing", model_path, sha256_hex, 0.0, 2.0);
+    if empty_ops {
+        return proj;
+    }
+    if let Some(fm) = available_tools
+        .iter()
+        .find(|t| matches!(t.geometry, CutterGeometry::FaceMill { .. }))
+    {
+        proj.ensure_tool_embedded(fm);
+        let mut op = Operation::new("op_1_face", "Face Stock Top", OperationKind::Facing);
+        op.tool_id = Some(fm.id.clone());
+        op.preset_id = fm.presets.first().map(|p| p.id.clone());
+        proj.setups[0].operations.push(op);
+    }
+    proj
+}
+
+/// Builds the minimal **Tutorial 02 — 2D Contour & Holding Tabs** project for `02-contour-plate.step`
+/// (`100 × 70 × 12 mm` rounded/chamfered plate inside `4.0 mm` side stock margin, ONLY `1. Outer Profile + Tabs`).
+pub fn build_tutorial_contour_project(
+    doc: &CadDocument,
+    model_path: String,
+    sha256_hex: &str,
+    available_tools: &[Tool],
+    empty_ops: bool,
+) -> ProjectDocument {
+    let mut proj = init_tutorial_step_project(
+        "Tutorial 02 — 2D Contour & Tabs",
+        model_path,
+        sha256_hex,
+        4.0,
+        0.0,
+    );
+    if empty_ops {
+        return proj;
+    }
+    if let Some(em) = available_tools
+        .iter()
+        .find(|t| matches!(t.geometry, CutterGeometry::FlatEndmill { diameter_mm, .. } if (diameter_mm - 6.0).abs() < 0.2))
+        && let Some(bot_face) = doc.faces.iter().find(|f| {
+            matches!(
+                f.surface,
+                SurfaceKind::Plane { origin_mm, normal }
+                if normal.z < -0.99 && origin_mm.z.abs() < 0.05
+            )
+        })
+        && let Some(outer_lid) = bot_face.outer_loop
+        && let Some(bind) = doc.bind_loop(outer_lid)
+    {
+        proj.ensure_tool_embedded(em);
+        let mut op = Operation::new(
+            "op_1_outer_contour",
+            "Outer Profile + Tabs",
+            OperationKind::Contour2D,
+        );
+        op.tool_id = Some(em.id.clone());
+        op.preset_id = em.presets.first().map(|p| p.id.clone());
+        op.heights.top = HeightSpec::new(HeightReference::ModelTop, 0.0);
+        op.heights.bottom = HeightSpec::new(HeightReference::ModelBottom, 0.0);
+        op.selections.push(GeometrySelectionItem::ClosedLoop {
+            binding: bind,
+            reverse: false,
+            side_flip: false,
+        });
+        if let StrategyParams::Contour2D(p) = op.strategy_mut() {
+            p.tabs.enabled = true;
+            p.tabs.profile = TabProfileKind::Triangular {
+                ramp_angle_deg: 25.0,
+            };
+        }
+        proj.setups[0].operations.push(op);
+    }
+    proj
+}
+
+/// Builds the minimal **Tutorial 03 — 2D Pocket** project for `03-pocket-block.step`
+/// (`100 × 80 × 20 mm` pre-squared block, ONLY `1. Island Cavity Pocket` and `2. Open Shoulder Step`).
+pub fn build_tutorial_pocket_project(
+    doc: &CadDocument,
+    model_path: String,
+    sha256_hex: &str,
+    available_tools: &[Tool],
+    empty_ops: bool,
+) -> ProjectDocument {
+    let mut proj =
+        init_tutorial_step_project("Tutorial 03 — 2D Pocket", model_path, sha256_hex, 0.0, 0.0);
+    if empty_ops {
+        return proj;
+    }
+    let flat_6mm = available_tools.iter().find(|t| {
+        matches!(t.geometry, CutterGeometry::FlatEndmill { diameter_mm, .. } if (diameter_mm - 6.0).abs() < 0.2)
+    });
+    if let Some(em) = flat_6mm {
+        proj.ensure_tool_embedded(em);
+
+        // Op 1: Closed multi-island pocket (Z = 12 mm with raised Ø14mm island)
+        if let Some(pkt_face) = doc.faces.iter().find(|f| {
+            matches!(
+                f.surface,
+                SurfaceKind::Plane { origin_mm, normal }
+                if normal.z > 0.99 && (origin_mm.z - 12.0).abs() < 0.05
+            )
+        }) && let Some(bind) = doc.bind_face(pkt_face.id)
+        {
+            let mut op = Operation::new(
+                "op_1_island_pocket",
+                "Island Cavity Pocket",
+                OperationKind::Pocket2D,
+            );
+            op.tool_id = Some(em.id.clone());
+            op.preset_id = em.presets.first().map(|p| p.id.clone());
+            op.selections
+                .push(GeometrySelectionItem::PlanarFace { binding: bind });
+            proj.setups[0].operations.push(op);
+        }
+
+        // Op 2: Open-shoulder step shelf (Z = 14 mm, open on 3 air sides)
+        if let Some(step_face) = doc.faces.iter().find(|f| {
+            matches!(
+                f.surface,
+                SurfaceKind::Plane { origin_mm, normal }
+                if normal.z > 0.99 && (origin_mm.z - 14.0).abs() < 0.05
+            )
+        }) && let Some(bind) = doc.bind_face(step_face.id)
+        {
+            let mut op = Operation::new(
+                "op_2_open_step",
+                "Open Shoulder Step",
+                OperationKind::Pocket2D,
+            );
+            op.tool_id = Some(em.id.clone());
+            op.preset_id = em.presets.first().map(|p| p.id.clone());
+            op.selections
+                .push(GeometrySelectionItem::PlanarFace { binding: bind });
+            proj.setups[0].operations.push(op);
+        }
+    }
+    proj
+}
+
+/// Builds the minimal **Tutorial 04 — Drilling & Helical Bore** project for `04-drill-bore-plate.step`
+/// (`100 × 70 × 16 mm` pre-squared plate, ONLY `1. 4x Ø6mm Through-Holes` and `2. Ø18mm Helical Counterbore`).
+pub fn build_tutorial_drill_bore_project(
+    doc: &CadDocument,
+    model_path: String,
+    sha256_hex: &str,
+    available_tools: &[Tool],
+    empty_ops: bool,
+) -> ProjectDocument {
+    let mut proj = init_tutorial_step_project(
+        "Tutorial 04 — Drilling & Helical Bore",
+        model_path,
+        sha256_hex,
+        0.0,
+        0.0,
+    );
+    if empty_ops {
+        return proj;
+    }
+
+    let drill_6mm = available_tools
+        .iter()
+        .find(|t| matches!(t.geometry, CutterGeometry::TwistDrill { .. }));
+    let flat_6mm = available_tools.iter().find(|t| {
+        matches!(t.geometry, CutterGeometry::FlatEndmill { diameter_mm, .. } if (diameter_mm - 6.0).abs() < 0.2)
+    });
+
+    // Op 1: 4x Ø6mm corner through-holes (`T6` 6.0mm 118° Stub Drill)
+    if let Some(dr) = drill_6mm
+        && let Some(r3_seed) = doc.faces.iter().find(|f| {
+            matches!(
+                f.surface,
+                SurfaceKind::Cylinder {
+                    radius_mm,
+                    is_internal: true,
+                    ..
+                } if (radius_mm - 3.0).abs() < 0.05
+            )
+        })
+    {
+        proj.ensure_tool_embedded(dr);
+        let mut op = Operation::new(
+            "op_1_through_holes",
+            "4x Ø6mm Through-Holes",
+            OperationKind::DrillBore,
+        );
+        op.tool_id = Some(dr.id.clone());
+        op.preset_id = dr.presets.first().map(|p| p.id.clone());
+        for fid in find_same_diameter_holes(doc, r3_seed.id, 1e-3, 1e-3) {
+            if let Some(b) = doc.bind_face(fid) {
+                op.selections
+                    .push(GeometrySelectionItem::CylindricalHole { binding: b });
+            }
+        }
+        proj.setups[0].operations.push(op);
+    }
+
+    // Op 2: Central Ø18mm blind counterbore (`T1` 6mm Flat Endmill in Helical Bore mode)
+    if let Some(em) = flat_6mm
+        && let Some(r9_bore) = doc.faces.iter().find(|f| {
+            matches!(
+                f.surface,
+                SurfaceKind::Cylinder {
+                    radius_mm,
+                    is_internal: true,
+                    ..
+                } if (radius_mm - 9.0).abs() < 0.05
+            )
+        })
+        && let Some(bind) = doc.bind_face(r9_bore.id)
+    {
+        proj.ensure_tool_embedded(em);
+        let mut op = Operation::new(
+            "op_2_helical_bore",
+            "Ø18mm Helical Counterbore",
+            OperationKind::DrillBore,
+        );
+        op.tool_id = Some(em.id.clone());
+        op.preset_id = em.presets.first().map(|p| p.id.clone());
+        if let StrategyParams::DrillBore(p) = op.strategy_mut() {
+            p.mode = HoleMachiningMode::HelicalBore;
+            p.tip_breakthrough = false;
+        }
+        op.selections
+            .push(GeometrySelectionItem::CylindricalHole { binding: bind });
+        proj.setups[0].operations.push(op);
+    }
+
+    proj
+}

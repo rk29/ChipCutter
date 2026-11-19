@@ -777,7 +777,13 @@ impl ChipCutterApp {
             None
         };
         if let Some(capture) = capture_to_apply {
-            self.apply_capture_spec(&capture);
+            let needs_resim = self.apply_capture_spec(&capture);
+            if needs_resim {
+                if let Some(st) = &mut self.self_test {
+                    st.capture_applied = false;
+                }
+                self.trigger_active_setup_simulation(ctx);
+            }
             ctx.request_repaint();
             return;
         }
@@ -819,8 +825,9 @@ impl ChipCutterApp {
         }
     }
 
-    fn apply_capture_spec(&mut self, capture: &crate::capture::CaptureSpec) {
+    fn apply_capture_spec(&mut self, capture: &crate::capture::CaptureSpec) -> bool {
         use crate::capture::{CaptureFocus, CaptureModal, CapturePane, CaptureView};
+        let mut needs_resim = false;
 
         if let Some(focus) = capture.focus {
             match focus {
@@ -870,9 +877,20 @@ impl ChipCutterApp {
         if let Some(show_stock) = capture.show_sim_stock {
             self.sim_panel.show_machined_stock = show_stock;
         }
+        if let Some(show_cutter) = capture.show_sim_cutter {
+            self.sim_panel.show_cutter_assembly = show_cutter;
+        }
         if let Some(res) = &self.sim_panel.active_result {
             self.sim_panel.current_time_sec =
                 res.timeline.total_time_sec * capture.effective_sim_progress();
+        }
+        if let Some(post_id) = &capture.post_profile
+            && let Some(setup) = self.project.setups.get_mut(self.active_setup_idx)
+            && !setup.post_profile.eq_ignore_ascii_case(post_id)
+        {
+            setup.post_profile = post_id.clone();
+            self.gcode_panel.invalidate_preview();
+            needs_resim = self.sim_panel.active_result.is_some();
         }
 
         if let Some(pane) = capture.pane {
@@ -910,5 +928,6 @@ impl ChipCutterApp {
                 }
             }
         }
+        needs_resim
     }
 }

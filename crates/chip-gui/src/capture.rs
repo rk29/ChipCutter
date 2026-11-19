@@ -173,6 +173,18 @@ impl CaptureModal {
     }
 }
 
+/// Parse and normalize a built-in post-processor profile identifier for `--capture-post`.
+pub fn parse_capture_post_profile(raw: &str) -> Result<String, String> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "grbl" => Ok("grbl".to_string()),
+        "grblhal_atc" | "grblhal-atc" | "grblhal" => Ok("grblhal_atc".to_string()),
+        "linuxcnc" => Ok("linuxcnc".to_string()),
+        other => Err(format!(
+            "invalid --capture-post '{other}'; expected one of: grbl, grblhal_atc, linuxcnc"
+        )),
+    }
+}
+
 /// Structured options controlling headless UI state before PNG capture.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct CaptureSpec {
@@ -182,7 +194,9 @@ pub struct CaptureSpec {
     pub modal: Option<CaptureModal>,
     pub isolate_op: bool,
     pub show_sim_stock: Option<bool>,
+    pub show_sim_cutter: Option<bool>,
     pub sim_progress: Option<f64>,
+    pub post_profile: Option<String>,
     pub auto_generate: bool,
     pub show_z_planes: Option<bool>,
     pub show_27pt_dots: Option<bool>,
@@ -312,5 +326,19 @@ mod tests {
             ..CaptureSpec::default()
         };
         assert!((nan.effective_sim_progress() - 0.82).abs() < 1e-12);
+    }
+
+    #[test]
+    fn parses_capture_post_profiles() {
+        assert_eq!(parse_capture_post_profile("grbl"), Ok("grbl".to_string()));
+        assert_eq!(
+            parse_capture_post_profile("GRBLHAL-ATC"),
+            Ok("grblhal_atc".to_string())
+        );
+        assert_eq!(
+            parse_capture_post_profile("LinuxCNC"),
+            Ok("linuxcnc".to_string())
+        );
+        assert!(parse_capture_post_profile("unknown_post").is_err());
     }
 }

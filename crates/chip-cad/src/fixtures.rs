@@ -791,6 +791,305 @@ fn build_revision_block_step(
     Ok(CompleteStepDisplay::new(models, header).to_string())
 }
 
+fn serialize_tutorial_solid(
+    solid: Solid,
+    file_name: &str,
+) -> std::result::Result<String, SampleStepError> {
+    let compressed = solid.compress();
+    let models: StepModels<'_, _, _, _> = [&compressed].into_iter().collect();
+    let header = StepHeaderDescriptor {
+        file_name: file_name.to_string(),
+        time_stamp: "2026-11-19T00:00:00".to_string(),
+        authors: vec!["ChipCutter".to_string()],
+        organization: vec!["ChipCutter CAM".to_string()],
+        organization_system: "monstertruck".to_string(),
+        authorization: String::new(),
+    };
+    Ok(CompleteStepDisplay::new(models, header).to_string())
+}
+
+/// Minimal Tutorial 01 (Facing) starter part: plain flat rectangular billet (`100 × 80 × 20 mm`,
+/// 6 planar faces, zero holes/pockets/bosses).
+pub fn tutorial_facing_billet_step() -> std::result::Result<String, SampleStepError> {
+    let v0 = builder::vertex(Point3::new(0.0, 0.0, 0.0));
+    let v1 = builder::vertex(Point3::new(100.0, 0.0, 0.0));
+    let v2 = builder::vertex(Point3::new(100.0, 80.0, 0.0));
+    let v3 = builder::vertex(Point3::new(0.0, 80.0, 0.0));
+    let outer: Wire = vec![
+        builder::line(&v0, &v1),
+        builder::line(&v1, &v2),
+        builder::line(&v2, &v3),
+        builder::line(&v3, &v0),
+    ]
+    .into();
+    let base = builder::try_attach_plane(vec![outer])
+        .map_err(|e| SampleStepError::Modeling(e.to_string()))?;
+    let solid = builder::extrude(&base, Vector3::new(0.0, 0.0, 20.0));
+    serialize_tutorial_solid(solid, "01-facing-billet.step")
+}
+
+/// Minimal Tutorial 02 (2D Contour & Holding Tabs) starter part: clean flat mounting plate
+/// (`100 × 70 × 12 mm`) with one `R10 mm` rounded corner and one `10 × 10 mm` 45° chamfered corner
+/// (zero pockets, holes, or bosses).
+pub fn tutorial_contour_plate_step() -> std::result::Result<String, SampleStepError> {
+    let v0 = builder::vertex(Point3::new(0.0, 0.0, 0.0));
+    let v1 = builder::vertex(Point3::new(90.0, 0.0, 0.0));
+    let v2 = builder::vertex(Point3::new(100.0, 10.0, 0.0));
+    let v3 = builder::vertex(Point3::new(100.0, 70.0, 0.0));
+    let v4 = builder::vertex(Point3::new(10.0, 70.0, 0.0));
+    let v5 = builder::vertex(Point3::new(0.0, 60.0, 0.0));
+
+    let inv_sqrt2 = std::f64::consts::FRAC_1_SQRT_2;
+    let fillet_mid = Point3::new(10.0 - 10.0 * inv_sqrt2, 60.0 + 10.0 * inv_sqrt2, 0.0);
+    let fillet_edge = builder::try_circle_arc(&v4, &v5, fillet_mid)
+        .map_err(|e| SampleStepError::Modeling(e.to_string()))?;
+
+    let outer: Wire = vec![
+        builder::line(&v0, &v1),
+        builder::line(&v1, &v2),
+        builder::line(&v2, &v3),
+        builder::line(&v3, &v4),
+        fillet_edge,
+        builder::line(&v5, &v0),
+    ]
+    .into();
+    let base = builder::try_attach_plane(vec![outer])
+        .map_err(|e| SampleStepError::Modeling(e.to_string()))?;
+    let solid = builder::extrude(&base, Vector3::new(0.0, 0.0, 12.0));
+    serialize_tutorial_solid(solid, "02-contour-plate.step")
+}
+
+/// Minimal Tutorial 03 (2D Pocket) starter part (`100 × 80 × 20 mm`) containing ONLY:
+/// - Closed pocket `[12..56] × [16..64]` (`Z = 12..20 mm`) with one raised `Ø14 mm` island boss at `(34, 40)`,
+/// - Open-shoulder step shelf `[74..100] × [0..80]` at `Z = 14 mm` (open on 3 air sides).
+pub fn tutorial_pocket_block_step() -> std::result::Result<String, SampleStepError> {
+    let v0 = builder::vertex(Point3::new(0.0, 0.0, 0.0));
+    let v_f74 = builder::vertex(Point3::new(74.0, 0.0, 0.0));
+    let v1 = builder::vertex(Point3::new(100.0, 0.0, 0.0));
+    let v2 = builder::vertex(Point3::new(100.0, 80.0, 0.0));
+    let v_b74 = builder::vertex(Point3::new(74.0, 80.0, 0.0));
+    let v3 = builder::vertex(Point3::new(0.0, 80.0, 0.0));
+
+    let base_outer_z0: Wire = vec![
+        builder::line(&v0, &v_f74), // [0] front-left (0..74, 0)
+        builder::line(&v_f74, &v1), // [1] front-right step (74..100, 0)
+        builder::line(&v1, &v2),    // [2] right step (100, 0..80)
+        builder::line(&v2, &v_b74), // [3] back-right step (100..74, 80)
+        builder::line(&v_b74, &v3), // [4] back-left (74..0, 80)
+        builder::line(&v3, &v0),    // [5] left (0, 80..0)
+    ]
+    .into();
+
+    let base_face_z0 = builder::try_attach_plane(vec![base_outer_z0])
+        .map_err(|e| SampleStepError::Modeling(e.to_string()))?;
+    let base_solid_z14 = builder::extrude(&base_face_z0, Vector3::new(0.0, 0.0, 14.0));
+    let mut shell_faces: Vec<Face> = base_solid_z14
+        .into_boundaries()
+        .into_iter()
+        .next()
+        .ok_or_else(|| SampleStepError::Modeling("missing pocket base shell".to_string()))?
+        .into_iter()
+        .collect();
+
+    let old_z14_cap = shell_faces
+        .pop()
+        .ok_or_else(|| SampleStepError::Modeling("empty z14 shell".to_string()))?;
+    let mut z14_wires = old_z14_cap.boundaries();
+    let z14_outer: Vec<Edge> = z14_wires.remove(0).into_iter().collect();
+    if z14_outer.len() != 6 {
+        return Err(SampleStepError::Modeling(format!(
+            "expected 6 outer edges on Z=14 cap, got {}",
+            z14_outer.len()
+        )));
+    }
+    let v_f74_z14 = z14_outer[0].back().clone();
+    let v_b74_z14 = z14_outer[3].back().clone();
+    let e_div_z14 = builder::line(&v_f74_z14, &v_b74_z14);
+
+    // Right open-shoulder shelf at Z = 14 mm
+    let step_outer_z14: Wire = vec![
+        z14_outer[1].clone(),
+        z14_outer[2].clone(),
+        z14_outer[3].clone(),
+        e_div_z14.inverse(),
+    ]
+    .into();
+    let step_floor_z14 = builder::try_attach_plane(vec![step_outer_z14])
+        .map_err(|e| SampleStepError::Modeling(e.to_string()))?;
+    shell_faces.push(step_floor_z14);
+
+    // Left main block extruded Z = 14 -> 20 mm
+    let plateau_wire_z14: Wire = vec![
+        z14_outer[0].clone(),
+        e_div_z14,
+        z14_outer[4].clone(),
+        z14_outer[5].clone(),
+    ]
+    .into();
+    let plateau_base_z14 = builder::try_attach_plane(vec![plateau_wire_z14])
+        .map_err(|e| SampleStepError::Modeling(e.to_string()))?;
+    let plateau_solid = builder::extrude(&plateau_base_z14, Vector3::new(0.0, 0.0, 6.0));
+    let mut plateau_faces: Vec<Face> = plateau_solid
+        .into_boundaries()
+        .into_iter()
+        .next()
+        .ok_or_else(|| SampleStepError::Modeling("missing plateau shell".to_string()))?
+        .into_iter()
+        .collect();
+    let plateau_top_z20 = plateau_faces
+        .pop()
+        .ok_or_else(|| SampleStepError::Modeling("empty plateau shell".to_string()))?;
+    for wf in plateau_faces.into_iter().skip(1) {
+        shell_faces.push(wf);
+    }
+    let mut top_z20_wires = plateau_top_z20.boundaries();
+
+    // Closed pocket [12..56] x [16..64] at Z = 12..20 with raised Ø14 mm (R = 7 mm) island at (34, 40)
+    let p_a = builder::vertex(Point3::new(12.0, 16.0, 12.0));
+    let p_b = builder::vertex(Point3::new(56.0, 16.0, 12.0));
+    let p_c = builder::vertex(Point3::new(56.0, 64.0, 12.0));
+    let p_d = builder::vertex(Point3::new(12.0, 64.0, 12.0));
+    let pkt_outer_z12: Wire = vec![
+        builder::line(&p_a, &p_b),
+        builder::line(&p_b, &p_c),
+        builder::line(&p_c, &p_d),
+        builder::line(&p_d, &p_a),
+    ]
+    .into();
+    let island_seed_z12 = builder::vertex(Point3::new(34.0 + 7.0, 40.0, 12.0));
+    let island_wire_z12: Wire = builder::revolve(
+        &island_seed_z12,
+        Point3::new(34.0, 40.0, 12.0),
+        Vector3::unit_z(),
+        SweepAngle::Closed,
+        2,
+    );
+    let annular_floor = builder::try_attach_plane(vec![pkt_outer_z12, island_wire_z12.inverse()])
+        .map_err(|e| SampleStepError::Modeling(e.to_string()))?;
+    let annular_plug = builder::extrude(&annular_floor, Vector3::new(0.0, 0.0, 8.0));
+    let mut annular_faces: Vec<Face> = annular_plug
+        .into_boundaries()
+        .into_iter()
+        .next()
+        .ok_or_else(|| SampleStepError::Modeling("missing annular pocket plug".to_string()))?
+        .into_iter()
+        .collect();
+    let annular_top_z20 = annular_faces
+        .pop()
+        .ok_or_else(|| SampleStepError::Modeling("empty annular plug".to_string()))?;
+    let mut annular_top_wires = annular_top_z20.boundaries();
+    if annular_top_wires.len() != 2 {
+        return Err(SampleStepError::Modeling(
+            "expected outer + island wire on annular pocket plug".to_string(),
+        ));
+    }
+    let pkt_mouth_z20 = annular_top_wires.remove(0);
+    let island_top_cw_z20 = annular_top_wires.remove(0);
+    for f in annular_faces {
+        shell_faces.push(f.inverse());
+    }
+    let island_top_cap_z20 = builder::try_attach_plane(vec![island_top_cw_z20.inverse()])
+        .map_err(|e| SampleStepError::Modeling(e.to_string()))?;
+    shell_faces.push(island_top_cap_z20);
+    top_z20_wires.push(pkt_mouth_z20.inverse());
+
+    let new_top_z20 = builder::try_attach_plane(top_z20_wires)
+        .map_err(|e| SampleStepError::Modeling(e.to_string()))?;
+    shell_faces.push(new_top_z20);
+
+    let shell: Shell = shell_faces.into();
+    let solid =
+        Solid::try_new(vec![shell]).map_err(|e| SampleStepError::Modeling(e.to_string()))?;
+    serialize_tutorial_solid(solid, "03-pocket-block.step")
+}
+
+/// Minimal Tutorial 04 (Drilling & Helical Bore) starter part (`100 × 70 × 16 mm`) containing ONLY:
+/// - 4x `Ø6.0 mm` corner mounting through-holes (`Z = 0..16 mm`),
+/// - 1x `Ø18.0 mm` central blind counterbore (`Z = 6..16 mm`).
+pub fn tutorial_drill_bore_plate_step() -> std::result::Result<String, SampleStepError> {
+    let v0 = builder::vertex(Point3::new(0.0, 0.0, 0.0));
+    let v1 = builder::vertex(Point3::new(100.0, 0.0, 0.0));
+    let v2 = builder::vertex(Point3::new(100.0, 70.0, 0.0));
+    let v3 = builder::vertex(Point3::new(0.0, 70.0, 0.0));
+    let outer_z0: Wire = vec![
+        builder::line(&v0, &v1),
+        builder::line(&v1, &v2),
+        builder::line(&v2, &v3),
+        builder::line(&v3, &v0),
+    ]
+    .into();
+
+    let hole_centers = [(14.0, 14.0), (86.0, 14.0), (86.0, 56.0), (14.0, 56.0)];
+    let mut bottom_wires = vec![outer_z0];
+    for (cx, cy) in hole_centers {
+        let seed = builder::vertex(Point3::new(cx + 3.0, cy, 0.0));
+        let w_ccw: Wire = builder::revolve(
+            &seed,
+            Point3::new(cx, cy, 0.0),
+            Vector3::unit_z(),
+            SweepAngle::Closed,
+            2,
+        );
+        bottom_wires.push(w_ccw.inverse());
+    }
+
+    let base_face_z0 = builder::try_attach_plane(bottom_wires)
+        .map_err(|e| SampleStepError::Modeling(e.to_string()))?;
+    let base_solid = builder::extrude(&base_face_z0, Vector3::new(0.0, 0.0, 16.0));
+    let mut shell_faces: Vec<Face> = base_solid
+        .into_boundaries()
+        .into_iter()
+        .next()
+        .ok_or_else(|| SampleStepError::Modeling("missing drill plate shell".to_string()))?
+        .into_iter()
+        .collect();
+    let old_top_z16 = shell_faces
+        .pop()
+        .ok_or_else(|| SampleStepError::Modeling("empty drill plate shell".to_string()))?;
+    let mut top_wires = old_top_z16.boundaries();
+
+    // Central Ø18.0 mm (R = 9.0 mm) blind counterbore at (50, 35), Z = 6..16 mm
+    let cb_seed = builder::vertex(Point3::new(50.0 + 9.0, 35.0, 6.0));
+    let cb_wire_z6: Wire = builder::revolve(
+        &cb_seed,
+        Point3::new(50.0, 35.0, 6.0),
+        Vector3::unit_z(),
+        SweepAngle::Closed,
+        2,
+    );
+    let cb_floor = builder::try_attach_plane(vec![cb_wire_z6])
+        .map_err(|e| SampleStepError::Modeling(e.to_string()))?;
+    let cb_plug = builder::extrude(&cb_floor, Vector3::new(0.0, 0.0, 10.0));
+    let mut cb_faces: Vec<Face> = cb_plug
+        .into_boundaries()
+        .into_iter()
+        .next()
+        .ok_or_else(|| SampleStepError::Modeling("missing counterbore plug".to_string()))?
+        .into_iter()
+        .collect();
+    let cb_top_z16 = cb_faces
+        .pop()
+        .ok_or_else(|| SampleStepError::Modeling("empty counterbore plug".to_string()))?;
+    let cb_mouth_z16 = cb_top_z16
+        .boundaries()
+        .into_iter()
+        .next()
+        .ok_or_else(|| SampleStepError::Modeling("missing counterbore mouth".to_string()))?;
+    for f in cb_faces {
+        shell_faces.push(f.inverse());
+    }
+    top_wires.push(cb_mouth_z16.inverse());
+
+    let new_top_z16 = builder::try_attach_plane(top_wires)
+        .map_err(|e| SampleStepError::Modeling(e.to_string()))?;
+    shell_faces.push(new_top_z16);
+
+    let shell: Shell = shell_faces.into();
+    let solid =
+        Solid::try_new(vec![shell]).map_err(|e| SampleStepError::Modeling(e.to_string()))?;
+    serialize_tutorial_solid(solid, "04-drill-bore-plate.step")
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -1156,5 +1455,124 @@ mod tests {
         let lower_floor =
             highest_adjacent_lower_floor_proj(&doc, &[step_top_edge], 20.0, DVec3::Z).unwrap();
         assert!(approx_eq(lower_floor, 14.0, 2e-2));
+    }
+
+    #[test]
+    fn tutorial_minimal_step_fixtures_roundtrip_with_exact_minimal_features() {
+        let kernel = MonstertruckKernel;
+
+        // 01 Facing Billet: 100 x 80 x 20 mm plain box (6 planar faces, zero holes)
+        let facing_step = tutorial_facing_billet_step().unwrap();
+        let facing_doc = kernel
+            .load_step_bytes(
+                "01-facing-billet.step",
+                facing_step.as_bytes(),
+                DEFAULT_TESS_CHORD_TOL_MM,
+            )
+            .unwrap();
+        assert!(approx_eq(facing_doc.aabb_mm.size().x, 100.0, 1e-2));
+        assert!(approx_eq(facing_doc.aabb_mm.size().y, 80.0, 1e-2));
+        assert!(approx_eq(facing_doc.aabb_mm.size().z, 20.0, 1e-2));
+        assert_eq!(facing_doc.faces.len(), 6);
+
+        // 02 Contour Plate: 100 x 70 x 12 mm with 1 external R10 fillet & 1 45° chamfer (zero holes)
+        let contour_step = tutorial_contour_plate_step().unwrap();
+        let contour_doc = kernel
+            .load_step_bytes(
+                "02-contour-plate.step",
+                contour_step.as_bytes(),
+                DEFAULT_TESS_CHORD_TOL_MM,
+            )
+            .unwrap();
+        assert!(approx_eq(contour_doc.aabb_mm.size().x, 100.0, 1e-2));
+        assert!(approx_eq(contour_doc.aabb_mm.size().y, 70.0, 1e-2));
+        assert!(approx_eq(contour_doc.aabb_mm.size().z, 12.0, 1e-2));
+        assert_eq!(
+            contour_doc
+                .faces
+                .iter()
+                .filter(|f| matches!(
+                    f.surface,
+                    SurfaceKind::Cylinder {
+                        is_internal: true,
+                        ..
+                    }
+                ))
+                .count(),
+            0
+        );
+
+        // 03 Pocket Block: 100 x 80 x 20 mm with 1 closed island pocket (Z=12) + 1 open step (Z=14)
+        let pocket_step = tutorial_pocket_block_step().unwrap();
+        let pocket_doc = kernel
+            .load_step_bytes(
+                "03-pocket-block.step",
+                pocket_step.as_bytes(),
+                DEFAULT_TESS_CHORD_TOL_MM,
+            )
+            .unwrap();
+        assert!(approx_eq(pocket_doc.aabb_mm.size().x, 100.0, 1e-2));
+        assert!(approx_eq(pocket_doc.aabb_mm.size().y, 80.0, 1e-2));
+        assert!(approx_eq(pocket_doc.aabb_mm.size().z, 20.0, 1e-2));
+        let pkt_floor = pocket_doc
+            .faces
+            .iter()
+            .find(|f| {
+                matches!(
+                    f.surface,
+                    SurfaceKind::Plane { origin_mm, normal }
+                    if normal.z > 0.99 && approx_eq(origin_mm.z, 12.0, 1e-2)
+                )
+            })
+            .unwrap();
+        assert_eq!(pkt_floor.inner_loops.len(), 1);
+        assert!(pocket_doc.faces.iter().any(|f| matches!(
+            f.surface,
+            SurfaceKind::Plane { origin_mm, normal }
+            if normal.z > 0.99 && approx_eq(origin_mm.z, 14.0, 1e-2)
+        )));
+
+        // 04 Drill & Bore Plate: 100 x 70 x 16 mm with 4x Ø6mm through-holes + 1x Ø18mm blind bore
+        let drill_step = tutorial_drill_bore_plate_step().unwrap();
+        let drill_doc = kernel
+            .load_step_bytes(
+                "04-drill-bore-plate.step",
+                drill_step.as_bytes(),
+                DEFAULT_TESS_CHORD_TOL_MM,
+            )
+            .unwrap();
+        assert!(approx_eq(drill_doc.aabb_mm.size().x, 100.0, 1e-2));
+        assert!(approx_eq(drill_doc.aabb_mm.size().y, 70.0, 1e-2));
+        assert!(approx_eq(drill_doc.aabb_mm.size().z, 16.0, 1e-2));
+        let r3_faces: Vec<_> = drill_doc
+            .faces
+            .iter()
+            .filter(|f| {
+                matches!(
+                    f.surface,
+                    SurfaceKind::Cylinder {
+                        radius_mm,
+                        is_internal: true,
+                        ..
+                    } if approx_eq(radius_mm, 3.0, 1e-2)
+                )
+            })
+            .collect();
+        assert!(!r3_faces.is_empty());
+        let r9_faces: Vec<_> = drill_doc
+            .faces
+            .iter()
+            .filter(|f| {
+                matches!(
+                    f.surface,
+                    SurfaceKind::Cylinder {
+                        radius_mm,
+                        is_internal: true,
+                        ..
+                    } if approx_eq(radius_mm, 9.0, 1e-2)
+                )
+            })
+            .collect();
+        assert!(!r9_faces.is_empty());
     }
 }

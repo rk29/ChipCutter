@@ -3,11 +3,15 @@ use std::{path::PathBuf, process::ExitCode};
 use chip_cad::{
     CadKernel, CurveKind, MonstertruckKernel, SurfaceKind, sample_cam_torture_block_step,
     sample_machined_plate_step, sample_multi_feature_bracket_step, sample_revised_part_pair_step,
+    tutorial_contour_plate_step, tutorial_drill_bore_plate_step, tutorial_facing_billet_step,
+    tutorial_pocket_block_step,
 };
 use chip_cam::{BoxAnchor27, StockConfig, WcsOriginMode};
 use chip_math::{ArcSegment2D, DEFAULT_TESS_CHORD_TOL_MM, DisplayUnit, ParamLength};
 use chip_project::{
-    ProjectDocument, build_cam_torture_project, compute_sha256_hex, portable_model_path,
+    ProjectDocument, build_cam_torture_project, build_tutorial_contour_project,
+    build_tutorial_drill_bore_project, build_tutorial_facing_project,
+    build_tutorial_pocket_project, compute_sha256_hex, portable_model_path,
 };
 use chip_sketch::{
     DxfImportOptions, SketchLayer, SvgImportOptions, VectorImportUnits, import_dxf_path,
@@ -22,13 +26,34 @@ pub struct GenerateSampleArgs {
     pub cam_torture: bool,
     pub revision_v1: bool,
     pub revision_v2: bool,
+    pub tutorial: Option<String>,
     pub project_out: Option<PathBuf>,
+    pub empty_project: bool,
 }
 
 pub fn run_generate_sample_step(
     args: GenerateSampleArgs,
 ) -> Result<ExitCode, Box<dyn std::error::Error>> {
-    let step = if args.revision_v1 {
+    let tutorial_slug = args
+        .tutorial
+        .as_deref()
+        .map(|s| s.trim().to_ascii_lowercase());
+    let step = if let Some(slug) = tutorial_slug.as_deref() {
+        match slug {
+            "01-facing" | "facing" => tutorial_facing_billet_step()?,
+            "02-contour" | "02-2d-contour-tabs" | "contour" => tutorial_contour_plate_step()?,
+            "03-pocket" | "03-2d-pocket" | "pocket" => tutorial_pocket_block_step()?,
+            "04-drill-bore" | "04-drilling-helical-bore" | "drill-bore" => {
+                tutorial_drill_bore_plate_step()?
+            }
+            other => {
+                return Err(format!(
+                    "unknown --tutorial '{other}'; expected one of: 01-facing, 02-contour, 03-pocket, 04-drill-bore"
+                )
+                .into());
+            }
+        }
+    } else if args.revision_v1 {
         sample_revised_part_pair_step()?.0
     } else if args.revision_v2 {
         sample_revised_part_pair_step()?.1
@@ -60,7 +85,42 @@ pub fn run_generate_sample_step(
         let sha = compute_sha256_hex(step.as_bytes());
         let starter = default_starter_tool_library();
         let rel_path = portable_model_path(Some(&proj_path), &args.output);
-        let proj = build_cam_torture_project(&doc, rel_path, &sha, &starter.tools);
+        let proj = match tutorial_slug.as_deref() {
+            Some("01-facing" | "facing") => {
+                build_tutorial_facing_project(rel_path, &sha, &starter.tools, args.empty_project)
+            }
+            Some("02-contour" | "02-2d-contour-tabs" | "contour") => {
+                build_tutorial_contour_project(
+                    &doc,
+                    rel_path,
+                    &sha,
+                    &starter.tools,
+                    args.empty_project,
+                )
+            }
+            Some("03-pocket" | "03-2d-pocket" | "pocket") => build_tutorial_pocket_project(
+                &doc,
+                rel_path,
+                &sha,
+                &starter.tools,
+                args.empty_project,
+            ),
+            Some("04-drill-bore" | "04-drilling-helical-bore" | "drill-bore") => {
+                build_tutorial_drill_bore_project(
+                    &doc,
+                    rel_path,
+                    &sha,
+                    &starter.tools,
+                    args.empty_project,
+                )
+            }
+            _ => build_cam_torture_project(&doc, rel_path, &sha, &starter.tools),
+        };
+        if let Some(parent) = proj_path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent)?;
+        }
         proj.save_to_path(&proj_path)?;
         println!(
             "Wrote seeded CAM project ({} operations) to {}",

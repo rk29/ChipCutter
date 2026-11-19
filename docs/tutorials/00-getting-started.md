@@ -199,5 +199,5 @@ cargo run -p chip-cli -- build /tmp/bracket.chip.toml -o /tmp/out_linuxcnc --pos
 
 ## Next Steps
 
-- Return to the [**Tutorials Index**](README.md) to browse the full toolpath strategy curriculum.
-- Ready to dive into your first dedicated cutting strategy? Continue with **Facing**, **2D Contour & Holding Tabs**, **2D Pocket**, and **Drilling & Helical Bore Milling** as they are added in Milestone 14.
+- **Next:** [Tutorial 01 — Facing (Stock Surfacing)](01-facing.md)
+- **Index:** [Tutorials Index](README.md) — browse all Core 2.5D Milling tutorials (**Facing**, **2D Contour & Holding Tabs**, **2D Pocket**, and **Drilling & Helical Bore Milling**).

@@ -83,9 +83,15 @@ enum Commands {
         /// Generate v2 of the Milestone 5 associative reload revision pair (resized pocket, moved/deleted holes).
         #[arg(long)]
         revision_v2: bool,
+        /// Generate a minimal Phase 4 tutorial STEP model (`01-facing`, `02-contour`, `03-pocket`, `04-drill-bore`).
+        #[arg(long)]
+        tutorial: Option<String>,
         /// Optional path to also write a seeded `.chip.toml` CAM project referencing `output`.
         #[arg(long)]
         project_out: Option<PathBuf>,
+        /// When combined with `--tutorial` and `--project-out`, write an empty 0-operation starter project (Stock & WCS only).
+        #[arg(long)]
+        empty_project: bool,
     },
     /// Validate a `.chip.toml` project's STEP hashes, tools, Setups, WCS, selections, and Z heights.
     Validate {
@@ -232,7 +238,9 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
             cam_torture,
             revision_v1,
             revision_v2,
+            tutorial,
             project_out,
+            empty_project,
         } => run_generate_sample_step(GenerateSampleArgs {
             output,
             multi_feature,
@@ -240,7 +248,9 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
             cam_torture,
             revision_v1,
             revision_v2,
+            tutorial,
             project_out,
+            empty_project,
         }),
         Commands::Validate { project, generate } => run_validate(project, generate),
         Commands::Simulate {

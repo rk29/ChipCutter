@@ -22,36 +22,34 @@ Welcome to the **ChipCutter Tutorials** library. Each tutorial is a self-contain
 
 Work through the guides in order if you are new to ChipCutter, or jump directly to the machining strategy you need:
 
-| # | Tutorial | Strategies & Concepts Covered | Starter Sample / Asset | Status |
+| # | Tutorial | Strategies & Concepts Covered | Starter Model / Asset | Status |
 |---|---|---|---|---|
 | 00 | [**Getting Started & Workspace Orientation**](00-getting-started.md) | Welcome Overlay, Viewport Navigation, Setup WCS & Stock, Tool Library, `Ctrl+G`, 3D Simulation, & Post-Processing | `Prismatic Multi-Feature Bracket` (Sample Gallery) | **Available** |
-| 01 | Facing (Stock Surfacing) | Stock top allowance, WCS origin, face/flat mills, pass extension, stepover, zig-zag vs. one-way cutting | `CAM Torture Block` / `Multi-Feature Bracket` | Planned (Milestone 14) |
-| 02 | 2D Contour / Profile & Holding Tabs | Closed outer profiles & open edge chains, stepdowns, helical/linear ramps, lead-in/out arcs, rough/finish passes, holding tabs | `Pure-2D Router Panel` & `CAM Torture Block` | Planned (Milestone 14) |
-| 03 | 2D Pocket (Multi-Island & Open-Shoulder) | Closed multi-island cavities, open-shoulder overhang air entry, contour-parallel vs. zig-zag, radial/axial stock-to-leave | `CAM Torture Block` | Planned (Milestone 14) |
-| 04 | Drilling & Helical Bore Milling | 3D cylindrical holes & 2D bolt circles, spot/peck cycles (`G81`/`G83`/`G73`), helical bore interpolation + floor cleanup | `CAM Torture Block` & `Engraved Nameplate` | Planned (Milestone 14) |
-| 05 | 2D Adaptive Clearing & 2.5D Rest Machining | Constant-engagement trochoidal roughing (`optimal_load`), radial chip-thinning, `FromPrecedingOperations` DAG waves | `2D Adaptive Clearing + Rest Machining` | Planned (Milestone 15) |
-| 06 | Edge Chamfering & 2D Curve Trace / Engraving | Sharp unmodeled CAD edges vs. modeled `45°` bevel faces (`tip_offset`), 1-pass single-line Hershey text engraving | `CAM Torture Block` & `Engraved Nameplate` | Planned (Milestone 15) |
-| 07 | 3D V-Carving, Two-Tool Flat Clearance, & Mated V-Inlays | TrueType/SVG contours, medial-axis 3D corner climbs, Stage 1 Flat + Stage 2 V-Bit clearance, mirrored Male V-Inlay plugs | `V-Carve Sign & Mated Male V-Inlay` | Planned (Milestone 15) |
+| 01 | [**Facing (Stock Surfacing)**](01-facing.md) | Stock top allowance, WCS origin, face/flat mills, pass extension, stepover, zig-zag vs. one-way cutting | [`assets/01-facing-billet.step`](assets/01-facing-billet.step) (`100×80×20 mm` plain billet) | **Available** |
+| 02 | [**2D Contour / Profile & Holding Tabs**](02-2d-contour-tabs.md) | Closed outer profiles & open edge chains, stepdowns, helical/linear ramps, lead-in/out arcs, rough/finish passes, holding tabs | [`assets/02-contour-plate.step`](assets/02-contour-plate.step) (`100×70×12 mm` rounded/chamfered plate) | **Available** |
+| 03 | [**2D Pocket (Multi-Island & Open-Shoulder)**](03-2d-pocket.md) | Closed multi-island cavities, open-shoulder overhang air entry, contour-parallel vs. zig-zag, radial/axial stock-to-leave | [`assets/03-pocket-block.step`](assets/03-pocket-block.step) (1 island pocket + 1 open step) | **Available** |
+| 04 | [**Drilling & Helical Bore Milling**](04-drilling-helical-bore.md) | 3D cylindrical holes (`+ Same Ø`), spot/peck cycles (`G81`/`G83`/`G73`), breakthrough, helical bore interpolation + floor cleanup | [`assets/04-drill-bore-plate.step`](assets/04-drill-bore-plate.step) (4× Ø6mm holes + 1× Ø18mm bore) | **Available** |
+| 05 | 2D Adaptive Clearing & 2.5D Rest Machining | Constant-engagement trochoidal roughing (`optimal_load`), radial chip-thinning, `FromPrecedingOperations` DAG waves | Minimal deep-pocket STEP (M15) | Planned (Milestone 15) |
+| 06 | Edge Chamfering & 2D Curve Trace / Engraving | Sharp unmodeled CAD edges vs. modeled `45°` bevel faces (`tip_offset`), 1-pass single-line Hershey text engraving | Minimal chamfer & engraving STEP (M15) | Planned (Milestone 15) |
+| 07 | 3D V-Carving, Two-Tool Flat Clearance, & Mated V-Inlays | TrueType/SVG contours, medial-axis 3D corner climbs, Stage 1 Flat + Stage 2 V-Bit clearance, mirrored Male V-Inlay plugs | Minimal Pure-2D V-Carve starter (M15) | Planned (Milestone 15) |
 
 ---
 
-## Starter Models & Reproducible Assets
+## Minimal Tutorial STEP Assets (`docs/tutorials/assets/`)
 
-Every tutorial uses either a built-in **Sample Projects Gallery** entry (accessible from the Welcome Overlay, `Models → Sample Gallery…`, or `Help → Sample Projects Gallery…`) or a deterministic model written by `chipcutter generate-sample-step`:
+Each operation tutorial starts from an **empty project** and loads a minimal STEP model containing only the geometric features required to practice that strategy—keeping the CAM Browser uncluttered:
 
-| Built-In Sample (`Sample Projects Gallery`) | CLI `--sample` Slug | Primary Tutorials |
+| Asset File | Dimensions & Features | Reproducible CLI Generator |
 |---|---|---|
-| **Prismatic Multi-Feature Bracket** | `multi-feature` | `00` (Getting Started), `01` (Facing) |
-| **CAM Torture Block (8 Operations)** | `cam-torture` | `01` (Facing), `02` (Contour), `03` (Pocket), `04` (Drill/Bore), `06` (Chamfer) |
-| **Pure-2D CNC Router Front Panel (.dxf)** | `pure-2d` | `02` (2D Contour & Holding Tabs) |
-| **Engraved Nameplate (TrueType + Hershey)** | `nameplate` | `04` (2D Bolt Circles), `06` (Curve Trace / Hershey Engraving) |
-| **2D Adaptive Clearing + Rest Machining** | `adaptive-rest` | `05` (Adaptive Clearing & 2.5D Rest Machining) |
-| **V-Carve Sign & Mated Male V-Inlay** | `vcarve` | `07` (3D V-Carving, Flat Clearance, & V-Inlays) |
+| [`01-facing-billet.step`](assets/01-facing-billet.step) | `100 × 80 × 20 mm` plain billet (6 planar faces, zero holes/pockets) | `chipcutter generate-sample-step <out.step> --tutorial 01-facing` |
+| [`02-contour-plate.step`](assets/02-contour-plate.step) | `100 × 70 × 12 mm` plate with 1× `R10` fillet & 1× `45°` chamfer | `chipcutter generate-sample-step <out.step> --tutorial 02-contour` |
+| [`03-pocket-block.step`](assets/03-pocket-block.step) | `100 × 80 × 20 mm` block with 1 closed `Ø14 mm` island pocket + 1 open step | `chipcutter generate-sample-step <out.step> --tutorial 03-pocket` |
+| [`04-drill-bore-plate.step`](assets/04-drill-bore-plate.step) | `100 × 70 × 16 mm` plate with 4× `Ø6 mm` through-holes + 1× `Ø18 mm` blind bore | `chipcutter generate-sample-step <out.step> --tutorial 04-drill-bore` |
 
-You can also launch any sample directly from the command line:
+You can launch any starter STEP model directly into an empty ChipCutter workspace:
 
 ```bash
-cargo run --release -p chip-gui -- --sample multi-feature
+cargo run --release -p chip-gui -- docs/tutorials/assets/01-facing-billet.step
 ```
 
 ---
@@ -73,9 +71,10 @@ All Phase 4 guides follow a uniform 7-part structure so machinists and contribut
 Screenshots are stored under `docs/images/tutorials/<nn>-<slug>/<step>-<name>.png` and captured deterministically via `chip-gui --self-test-screenshot` under headless Xvfb + Vulkan Lavapipe:
 
 ```bash
-# Capture screenshots for Milestone 13 (00-getting-started):
+# Capture screenshots for Milestone 13 (00-getting-started) or Milestone 14 (01–04):
 ./scripts/capture_tutorial_screenshots.sh --milestone 13
+./scripts/capture_tutorial_screenshots.sh --milestone 14
 
 # Or capture a single tutorial in Daylight Light theme:
-./scripts/capture_tutorial_screenshots.sh --tutorial 00-getting-started --theme light
+./scripts/capture_tutorial_screenshots.sh --tutorial 01-facing --theme light
 ```
