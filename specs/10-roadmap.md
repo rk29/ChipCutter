@@ -185,6 +185,27 @@ Phase 7 automated cross-platform CI and tag-driven **GitHub Releases** so machin
 
 ---
 
+## Phase 8 — Machine Definitions & Per-Machine Tool Libraries (Planned — M29–M31)
+
+Phase 8 introduces first-class **Machine Definitions** (`*.machine.toml`) so machinists can configure each CNC machine's physical envelope, spindle limits, kinematics, default post-processor, optional 4th-axis rotary module, and **its own dedicated set of tools**—shipping with ready-to-use profiles for a **`generic`** baseline machine (used across existing tests and tutorials), the **Millennium Machines Milo v1.5 (LDO Kit)**, and the **Makera Carvera Air**:
+
+### Milestone 29 — Machine Definition Schema, Persistence, & Per-Machine Tool Libraries (`plans/29-milestone-29-plan.md`)
+- **Core `MachineDefinition` Model & TOML Storage (`machines/*.machine.toml`, `~/.config/chipcutter/machines/`):** Define machine ID/name, XYZ travel envelope (`mm`), max rapid/cutting feedrates & acceleration (`MachineKinematicsConfig`), spindle RPM min/max & power, collet/tool-change workflow (manual, quick-change, ATC), optional 4th-axis rotary module defaults (axis, max stock diameter/length, chuck dimensions), default post-processor profile ID, and a **machine-scoped tool library** (`Vec<Tool>` / linked `*.tools.toml`).
+- **Project, Setup, & `.chipz` Integration:** Associate projects/setups with a `machine_id` (defaulting cleanly to `generic` for full backward compatibility), bundle custom machine definitions & their tool sets inside portable `.chipz` archives, and add validation checks flagging toolpaths that exceed the active machine's XYZ travel envelope or spindle RPM limits.
+- **CLI Support (`chipcutter`):** Add `chipcutter machines list`, `chipcutter machines inspect <id>`, and `--machine <id>` options for inspecting and validating jobs against specific machine definitions.
+
+### Milestone 30 — Built-In Machine Profiles: Generic, Millennium Milo v1.5 (LDO Kit), & Makera Carvera Air (`plans/30-milestone-30-plan.md`)
+- **`generic` (`Generic 3/4-Axis CNC Mill`):** Canonical baseline machine preserving the existing starter tool library and 100% compatibility across unit tests, golden G-code snapshots, and tutorials.
+- **`milo-1.5` (`Millennium Machines Milo v1.5 — LDO Kit`):** `340 × 160 × 120 mm` working envelope, 1.5 kW `10,000–24,000 RPM` ER16 spindle (`3 mm` & `6 mm` collets), `2,000 / 2,000 / 1,000 mm/min` rapids, toolsetter workflow, default post profile, and the **LDO DLC-coated starter tool set** (`Ø6×12 mm` 1FL Flat, `Ø6×22 mm` 1FL Flat, `Ø3×12 mm` 1FL Flat, `Ø3 mm` 2FL Ball, `Ø6 mm 90°` 2FL Chamfer).
+- **`carvera-air` (`Makera Carvera Air`):** `300 × 200 × 130 mm` working envelope, 200 W `0–13,000 RPM` lever quick-change spindle (`1/8" / 3.175 mm` collet), `4,000 mm/min` max rapid, optional harmonic-drive **4th-Axis Rotary Module** (`X/A`, up to `Ø92 mm × 200 mm` stock), `grblhal_4axis` / Carvera post defaults, and the **Makera Carvera Air starter bit set** (`Ø3.175 mm` 1FL 'O'-flute spiral endmills, `Ø2 mm` & `Ø1 mm` micro endmills, `Ø3.175 mm` ball nose, `30°`/`60°` V-engraving bits, and `90°` chamfer bit).
+
+### Milestone 31 — Machine Manager GUI, Per-Machine Tool Library Switching, & Verification (`plans/31-milestone-31-plan.md`)
+- **Machine Selector & Editor UI (`chip-gui`):** Add a machine selector in Setup / New Project / Preferences (remembering the user's preferred default machine in `prefs.toml`), plus a **Machine Manager** modal to inspect, clone, edit, and import/export custom `*.machine.toml` profiles alongside each machine's tool list.
+- **Scoped Tool Library & Kinematics Auto-Wiring:** Selecting a machine scopes the Tool Library modal and operation tool picker to that machine's tools (with easy copy/import from other machines), automatically syncs simulation kinematics, default post-processor, and 4th-axis rotary defaults, and surfaces machine-envelope/RPM warnings in Diagnostics.
+- **Tests & Documentation:** End-to-end roundtrip, envelope/RPM validation, and `.chipz` portability tests covering `generic`, `milo-1.5`, and `carvera-air`, plus documentation on configuring custom machines and starter tool libraries.
+
+---
+
 ## Future Phases
 
 1. **Functional & Behavioral User-Level Testing:**
