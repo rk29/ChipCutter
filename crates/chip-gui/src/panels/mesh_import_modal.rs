@@ -1,10 +1,10 @@
 use std::path::PathBuf;
 
 use chip_cad::{
-    MeshImportOptions, MeshUnitKind, TriangleMeshBody, load_mesh_bytes,
-    sample_relief_wave_obj_text, sample_sculpted_dome_stl_bytes,
+    MAX_MODEL_SCALE, MIN_MODEL_SCALE, MeshImportOptions, MeshUnitKind, ModelTransform,
+    TriangleMeshBody, load_mesh_bytes, sample_relief_wave_obj_text, sample_sculpted_dome_stl_bytes,
 };
-use chip_math::DisplayUnit;
+use chip_math::{Aabb3, DVec3, DisplayUnit};
 
 use crate::{
     theme::ThemeTokens,
@@ -17,6 +17,7 @@ pub struct MeshImportCommit {
     pub source_path: Option<PathBuf>,
     pub raw_bytes: Vec<u8>,
     pub unit_override: Option<MeshUnitKind>,
+    pub transform: ModelTransform,
 }
 
 /// Modal dialog for importing `.stl`, `.obj`, and `.3mf` 3D triangle meshes with live physical
@@ -31,6 +32,10 @@ pub struct MeshImportModalState {
     preview_mesh: Option<TriangleMeshBody>,
     preview_error: Option<String>,
     dirty_preview: bool,
+    rotate_deg: [f64; 3],
+    uniform_scale: f64,
+    center_xy: bool,
+    drop_z0: bool,
 }
 
 impl Default for MeshImportModalState {
@@ -45,6 +50,10 @@ impl Default for MeshImportModalState {
             preview_mesh: None,
             preview_error: None,
             dirty_preview: true,
+            rotate_deg: [0.0; 3],
+            uniform_scale: 1.0,
+            center_xy: false,
+            drop_z0: false,
         }
     }
 }
@@ -99,6 +108,10 @@ impl MeshImportModalState {
     }
 
     fn probe_initial_unit(&mut self) {
+        self.rotate_deg = [0.0; 3];
+        self.uniform_scale = 1.0;
+        self.center_xy = false;
+        self.drop_z0 = false;
         match load_mesh_bytes(
             &self.source_label,
             &self.raw_bytes,
@@ -144,6 +157,38 @@ impl MeshImportModalState {
             }
         }
         self.dirty_preview = false;
+    }
+
+    fn compute_effective_transform_and_aabb(
+        &self,
+        mesh: &TriangleMeshBody,
+    ) -> (ModelTransform, Aabb3) {
+        let mut xf = ModelTransform {
+            translate_mm: [0.0; 3],
+            rotate_deg: self.rotate_deg,
+            scale: [self.uniform_scale; 3],
+        };
+        let mut aabb = Aabb3::EMPTY;
+        for v in &mesh.vertices_mm {
+            aabb.extend_point(xf.transform_point(*v));
+        }
+        if aabb.is_valid() {
+            if self.center_xy {
+                xf = xf.centered_xy_for_aabb(aabb);
+                let shift = DVec3::new(
+                    -0.5 * (aabb.min.x + aabb.max.x),
+                    -0.5 * (aabb.min.y + aabb.max.y),
+                    0.0,
+                );
+                aabb = Aabb3::new(aabb.min + shift, aabb.max + shift);
+            }
+            if self.drop_z0 {
+                xf = xf.dropped_bottom_to_z0_for_aabb(aabb);
+                let shift = DVec3::new(0.0, 0.0, -aabb.min.z);
+                aabb = Aabb3::new(aabb.min + shift, aabb.max + shift);
+            }
+        }
+        (xf, aabb)
     }
 
     /// Renders the **Import 3D Mesh (STL / OBJ / 3MF)** preview modal.
@@ -251,11 +296,69 @@ impl MeshImportModalState {
 
                 ui.add_space(4.0);
 
+                static_card(ui, Some("Initial Orientation, Scale, & Placement"), |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.spacing_mut().item_spacing.x = 4.0;
+                        if ui
+                            .selectable_label(self.rotate_deg == [0.0, 0.0, 0.0], "As-Is")
+                            .clicked()
+                        {
+                            self.rotate_deg = [0.0, 0.0, 0.0];
+                        }
+                        if ui
+                            .selectable_label(
+                                (self.rotate_deg[0] - 90.0).abs() < 1e-3
+                                    && self.rotate_deg[1].abs() < 1e-3
+                                    && self.rotate_deg[2].abs() < 1e-3,
+                                "Y-Up -> Z-Up (+90° X)",
+                            )
+                            .on_hover_text("Convert Y-up Blender / 3D-print STLs to CNC Z-up")
+                            .clicked()
+                        {
+                            self.rotate_deg = [90.0, 0.0, 0.0];
+                        }
+                        if ui.small_button("+90° X").clicked() {
+                            self.rotate_deg[0] = (self.rotate_deg[0] + 90.0) % 360.0;
+                        }
+                        if ui.small_button("+90° Y").clicked() {
+                            self.rotate_deg[1] = (self.rotate_deg[1] + 90.0) % 360.0;
+                        }
+                        if ui.small_button("+90° Z").clicked() {
+                            self.rotate_deg[2] = (self.rotate_deg[2] + 90.0) % 360.0;
+                        }
+                    });
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        ui.label("Scale:");
+                        ui.add(
+                            egui::DragValue::new(&mut self.uniform_scale)
+                                .speed(0.01)
+                                .range(MIN_MODEL_SCALE..=MAX_MODEL_SCALE)
+                                .suffix("×")
+                                .max_decimals(4),
+                        );
+                        if (self.uniform_scale - 1.0).abs() > 1e-6 && ui.small_button("1.0×").clicked()
+                        {
+                            self.uniform_scale = 1.0;
+                        }
+                        ui.add_space(8.0);
+                        ui.checkbox(&mut self.center_xy, "Center XY");
+                        ui.checkbox(&mut self.drop_z0, "Drop Bottom to Z = 0");
+                    });
+                });
+
+                ui.add_space(4.0);
+
                 static_card(ui, Some("Physical Size & Mesh Diagnostics"), |ui| {
                     if let Some(err) = &self.preview_error {
                         ui.colored_label(tok.error_fg, format!("Parse error: {err}"));
                     } else if let Some(mesh) = &self.preview_mesh {
-                        let sz = mesh.aabb_mm.size();
+                        let (_, eff_aabb) = self.compute_effective_transform_and_aabb(mesh);
+                        let sz = if eff_aabb.is_valid() {
+                            eff_aabb.size()
+                        } else {
+                            mesh.aabb_mm.size()
+                        };
                         let d = &mesh.diagnostics;
                         egui::Grid::new("mesh_import_diag_grid")
                             .num_columns(2)
@@ -347,11 +450,18 @@ impl MeshImportModalState {
                                 } else {
                                     Some(self.selected_unit)
                                 };
+                                let transform = self
+                                    .preview_mesh
+                                    .as_ref()
+                                    .map_or(ModelTransform::IDENTITY, |m| {
+                                        self.compute_effective_transform_and_aabb(m).0
+                                    });
                                 commit = Some(MeshImportCommit {
                                     source_name: self.source_label.clone(),
                                     source_path: self.source_path.clone(),
                                     raw_bytes: self.raw_bytes.clone(),
                                     unit_override,
+                                    transform,
                                 });
                             }
                         });

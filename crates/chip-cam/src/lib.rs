@@ -141,6 +141,7 @@ mod tests {
             )),
             flip_x: false,
             clock_90: 0,
+            extra_z_rot_deg: 0.0,
         };
         setup.wcs.origin = WcsOriginMode::StockBoxPoint {
             anchor: BoxAnchor27::TOP_CENTER,

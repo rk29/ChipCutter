@@ -12,6 +12,7 @@ use crate::{
         browser::{BrowserAction, CamBrowserCtx, show_cam_browser},
         diagnostics::show_diagnostics_panel,
         gcode_preview::{GCodePanelCtx, GCodeUiAction},
+        model_inspector::{ModelInspectorCtx, show_model_inspector},
         operation_inspector::{OperationInspectorCtx, show_operation_inspector},
         setup_inspector::{SetupInspectorCtx, show_setup_inspector},
         simulation::{SimPanelCtx, SimulationUiAction},
@@ -167,6 +168,24 @@ impl PaneBehavior<'_> {
                     });
                 if primary_click || right_click {
                     self.app.sync_viewport_scene_state();
+                }
+            }
+        } else if let ViewportPickMode::PickModelLayFlatFace { model_idx } = self.app.pick_mode {
+            if let Some(cursor_pos) = response.hover_pos()
+                && let Some(ray) = self.app.camera.screen_ray(cursor_pos, avail)
+            {
+                let mm_per_px = self.app.camera.mm_per_pixel(avail.height());
+                if let Some(m) = &self.app.model {
+                    let hit = m
+                        .picker
+                        .pick(&m.doc, &ray, mm_per_px, PickFilter::FacesOnly);
+                    self.app.highlight.hovered = hit.map(|h| h.target);
+                    if response.clicked_by(egui::PointerButton::Primary)
+                        && let Some((_, normal)) = m.picker.pick_surface_normal(&m.doc, &ray)
+                    {
+                        self.app.apply_lay_flat_face_normal(model_idx, normal);
+                        self.app.sync_viewport_scene_state();
+                    }
                 }
             }
         } else {
@@ -490,6 +509,28 @@ impl PaneBehavior<'_> {
                 }
                 InspectorFocus::CadEntity => {
                     self.ui_cad_entity_inspector(ui);
+                }
+                InspectorFocus::Model { model_idx } => {
+                    let cad_ref = self.app.model.as_ref().map(|m| m.doc.as_ref());
+                    let res = show_model_inspector(
+                        ui,
+                        ModelInspectorCtx {
+                            project: &mut self.app.project,
+                            model_idx,
+                            history: &mut self.app.history,
+                            cad_doc: cad_ref,
+                            lock_uniform_scale: &mut self.app.lock_model_uniform_scale,
+                            pick_mode: &mut self.app.pick_mode,
+                            focus: &mut self.app.inspector_focus,
+                        },
+                    );
+                    if res.transform_changed {
+                        self.app.sync_loaded_model_transform();
+                        frame_geo = None;
+                    }
+                    if res.fit_camera_requested {
+                        self.app.fit_scene_to_viewport();
+                    }
                 }
                 InspectorFocus::Sketch { sketch_idx } => {
                     let invalidated = self.ui_sketch_inspector(ui, sketch_idx);
@@ -947,6 +988,12 @@ impl ChipCutterApp {
                 CaptureFocus::Sketch { sketch_idx } => {
                     if sketch_idx < self.project.sketches.len() {
                         self.inspector_focus = InspectorFocus::Sketch { sketch_idx };
+                        self.cached_frame_geo = None;
+                    }
+                }
+                CaptureFocus::Model { model_idx } => {
+                    if model_idx < self.project.models.len() {
+                        self.inspector_focus = InspectorFocus::Model { model_idx };
                         self.cached_frame_geo = None;
                     }
                 }

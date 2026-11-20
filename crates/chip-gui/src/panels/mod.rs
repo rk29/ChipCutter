@@ -5,6 +5,7 @@ pub mod diagnostics;
 pub mod gcode_preview;
 pub mod machine_manager;
 pub mod mesh_import_modal;
+pub mod model_inspector;
 pub mod operation_inspector;
 pub mod setup_inspector;
 pub mod simulation;
@@ -63,6 +64,7 @@ impl SketchAuthorTool {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InspectorFocus {
     CadEntity,
+    Model { model_idx: usize },
     Sketch { sketch_idx: usize },
     Setup { setup_idx: usize },
     Operation { setup_idx: usize, op_idx: usize },
@@ -137,6 +139,9 @@ pub enum ViewportPickMode {
         sketch_idx: usize,
         tool: SketchAuthorTool,
     },
+    PickModelLayFlatFace {
+        model_idx: usize,
+    },
 }
 
 impl ViewportPickMode {
@@ -186,6 +191,10 @@ impl ViewportPickMode {
                 "2D Sketch Draw [{}]: Click on the Sketch plane (2D Snapping active; Right-Click / Esc to exit)",
                 tool.short_label()
             )),
+            Self::PickModelLayFlatFace { .. } => Some(
+                "Lay Flat on Face: Click any planar STEP face or STL triangle to lay it flat (-Z) on Z=0 (Esc to cancel)"
+                    .to_string(),
+            ),
         }
     }
 
@@ -263,6 +272,12 @@ impl ViewportPickMode {
                     tool.short_label()
                 ),
                 true,
+            )),
+            Self::PickModelLayFlatFace { .. } => Some((
+                "Lay Model Flat on Face",
+                "Click any planar STEP face or STL triangle in 3D to place it flat (-Z) on Z = 0"
+                    .to_string(),
+                false,
             )),
         }
     }

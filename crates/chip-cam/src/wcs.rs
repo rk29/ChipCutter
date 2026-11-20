@@ -330,6 +330,25 @@ impl WcsAxisRef {
     }
 }
 
+fn is_zero_angle(v: &f64) -> bool {
+    v.abs() <= 1e-12
+}
+
+fn apply_extra_z_rot(frame: RigidFrame3, extra_z_rot_deg: f64) -> RigidFrame3 {
+    if !extra_z_rot_deg.is_finite() || extra_z_rot_deg.abs() <= 1e-12 {
+        return frame;
+    }
+    let (s, c) = extra_z_rot_deg.to_radians().sin_cos();
+    let new_x = (frame.x_axis * c + frame.y_axis * s).normalize_or_zero();
+    let new_y = frame.z_axis.cross(new_x).normalize_or_zero();
+    RigidFrame3 {
+        origin_mm: frame.origin_mm,
+        x_axis: new_x,
+        y_axis: new_y,
+        z_axis: frame.z_axis,
+    }
+}
+
 /// WCS machine axis alignment mode (`T_body_to_wcs` rotation).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "mode", rename_all = "snake_case")]
@@ -341,6 +360,8 @@ pub enum WcsOrientationMode {
         flip_x: bool,
         #[serde(default)]
         clock_90: u8,
+        #[serde(default, skip_serializing_if = "is_zero_angle")]
+        extra_z_rot_deg: f64,
     },
     SelectZAndX {
         z_ref: WcsAxisRef,
@@ -352,6 +373,8 @@ pub enum WcsOrientationMode {
         flip_x: bool,
         #[serde(default)]
         clock_90: u8,
+        #[serde(default, skip_serializing_if = "is_zero_angle")]
+        extra_z_rot_deg: f64,
     },
     SelectXYPlane {
         face_ref: SelectionBinding,
@@ -361,6 +384,8 @@ pub enum WcsOrientationMode {
         x_edge_ref: Option<SelectionBinding>,
         #[serde(default)]
         clock_90: u8,
+        #[serde(default, skip_serializing_if = "is_zero_angle")]
+        extra_z_rot_deg: f64,
     },
 }
 
@@ -370,6 +395,7 @@ impl Default for WcsOrientationMode {
             flip_z: false,
             flip_x: false,
             clock_90: 0,
+            extra_z_rot_deg: 0.0,
         }
     }
 }
@@ -382,40 +408,49 @@ impl WcsOrientationMode {
                 flip_z,
                 flip_x,
                 clock_90,
-            } => Ok(RigidFrame3::from_z_and_x_hint(
-                DVec3::ZERO,
-                DVec3::Z,
-                Some(DVec3::X),
-                *flip_z,
-                *flip_x,
-                *clock_90,
-            )?),
+                extra_z_rot_deg,
+            } => Ok(apply_extra_z_rot(
+                RigidFrame3::from_z_and_x_hint(
+                    DVec3::ZERO,
+                    DVec3::Z,
+                    Some(DVec3::X),
+                    *flip_z,
+                    *flip_x,
+                    *clock_90,
+                )?,
+                *extra_z_rot_deg,
+            )),
             Self::SelectZAndX {
                 z_ref,
                 flip_z,
                 x_ref,
                 flip_x,
                 clock_90,
+                extra_z_rot_deg,
             } => {
                 let raw_z = z_ref.resolve_world_dir(doc)?;
                 let raw_x = match x_ref {
                     Some(xr) => Some(xr.resolve_world_dir(doc)?),
                     None => None,
                 };
-                Ok(RigidFrame3::from_z_and_x_hint(
-                    DVec3::ZERO,
-                    raw_z,
-                    raw_x,
-                    *flip_z,
-                    *flip_x,
-                    *clock_90,
-                )?)
+                Ok(apply_extra_z_rot(
+                    RigidFrame3::from_z_and_x_hint(
+                        DVec3::ZERO,
+                        raw_z,
+                        raw_x,
+                        *flip_z,
+                        *flip_x,
+                        *clock_90,
+                    )?,
+                    *extra_z_rot_deg,
+                ))
             }
             Self::SelectXYPlane {
                 face_ref,
                 flip_z,
                 x_edge_ref,
                 clock_90,
+                extra_z_rot_deg,
             } => {
                 let face =
                     doc.face(FaceId(face_ref.last_index))
@@ -445,14 +480,17 @@ impl WcsOrientationMode {
                     }
                     None => None,
                 };
-                Ok(RigidFrame3::from_z_and_x_hint(
-                    DVec3::ZERO,
-                    normal,
-                    x_hint,
-                    *flip_z,
-                    false,
-                    *clock_90,
-                )?)
+                Ok(apply_extra_z_rot(
+                    RigidFrame3::from_z_and_x_hint(
+                        DVec3::ZERO,
+                        normal,
+                        x_hint,
+                        *flip_z,
+                        false,
+                        *clock_90,
+                    )?,
+                    *extra_z_rot_deg,
+                ))
             }
         }
     }
@@ -614,5 +652,51 @@ impl WcsConfig {
         for off in &mut self.additional_offset_wcs {
             let _ = off.reevaluate(ctx);
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wcs_extra_z_rot_zero_is_identity_and_rotates_xy_around_z() {
+        let doc = CadDocument::empty();
+
+        let zero = WcsOrientationMode::default();
+        let f_zero = zero.resolve_rotation(&doc).unwrap();
+        assert_eq!(f_zero, RigidFrame3::IDENTITY);
+
+        let rot45 = WcsOrientationMode::ModelOrientation {
+            flip_z: false,
+            flip_x: false,
+            clock_90: 0,
+            extra_z_rot_deg: 45.0,
+        };
+        let f_45 = rot45.resolve_rotation(&doc).unwrap();
+        let s2 = std::f64::consts::FRAC_1_SQRT_2;
+        assert!((f_45.x_axis - DVec3::new(s2, s2, 0.0)).length() < 1e-12);
+        assert!((f_45.y_axis - DVec3::new(-s2, s2, 0.0)).length() < 1e-12);
+        assert!((f_45.z_axis - DVec3::Z).length() < 1e-12);
+
+        // 90° extra_z_rot matches clock_90 = 1
+        let rot90 = WcsOrientationMode::ModelOrientation {
+            flip_z: false,
+            flip_x: false,
+            clock_90: 0,
+            extra_z_rot_deg: 90.0,
+        };
+        let clk1 = WcsOrientationMode::ModelOrientation {
+            flip_z: false,
+            flip_x: false,
+            clock_90: 1,
+            extra_z_rot_deg: 0.0,
+        };
+        let f_90 = rot90.resolve_rotation(&doc).unwrap();
+        let f_clk = clk1.resolve_rotation(&doc).unwrap();
+        assert!((f_90.x_axis - f_clk.x_axis).length() < 1e-12);
+        assert!((f_90.y_axis - f_clk.y_axis).length() < 1e-12);
+        assert!((f_90.z_axis - f_clk.z_axis).length() < 1e-12);
     }
 }

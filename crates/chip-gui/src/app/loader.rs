@@ -48,6 +48,7 @@ pub(crate) struct LoadedPayload {
     pub raw_step_bytes: Vec<u8>,
     pub source_path: Option<PathBuf>,
     pub unit_override: Option<MeshUnitKind>,
+    pub initial_transform: Option<chip_cad::ModelTransform>,
     pub sha256_hex: String,
     pub purpose: LoadPurpose,
     pub pre_seeded_project: Option<ProjectDocument>,
@@ -392,6 +393,7 @@ impl ChipCutterApp {
         raw_bytes: Vec<u8>,
         source_path: Option<PathBuf>,
         unit_override: Option<MeshUnitKind>,
+        initial_transform: chip_cad::ModelTransform,
         egui_ctx: egui::Context,
     ) {
         if let Some(p) = &source_path {
@@ -404,7 +406,7 @@ impl ChipCutterApp {
         let tx = self.job_tx.clone();
         rayon::spawn(move || {
             let t0 = Instant::now();
-            let res = parse_model_bytes_job(
+            let mut res = parse_model_bytes_job(
                 source_name,
                 raw_bytes,
                 source_path,
@@ -414,6 +416,9 @@ impl ChipCutterApp {
                 },
                 t0,
             );
+            if let LoadJobResult::Loaded { payload, .. } = &mut res {
+                payload.initial_transform = Some(initial_transform);
+            }
             let _ = tx.send(res);
             egui_ctx.request_repaint();
         });
@@ -911,6 +916,7 @@ impl ChipCutterApp {
             raw_step_bytes,
             source_path,
             unit_override,
+            initial_transform,
             sha256_hex,
             purpose,
             pre_seeded_project,
@@ -1126,6 +1132,7 @@ impl ChipCutterApp {
             }
             LoadPurpose::FreshImport { update_model_entry } => {
                 self.last_reload_banner = None;
+                let init_xf = initial_transform.unwrap_or(chip_cad::ModelTransform::IDENTITY);
                 if update_model_entry {
                     let stored_path = if let Some(model_path) = &source_path {
                         portable_model_path(self.project_file_path.as_deref(), model_path)
@@ -1137,7 +1144,7 @@ impl ChipCutterApp {
                         path: stored_path,
                         sha256: sha256_hex.clone(),
                         unit_override,
-                        transform: chip_cad::ModelTransform::IDENTITY,
+                        transform: init_xf,
                     }];
                 } else if self.project.models.is_empty() {
                     self.project.models = vec![ModelEntry {
@@ -1145,7 +1152,7 @@ impl ChipCutterApp {
                         path: doc.source_name.clone(),
                         sha256: sha256_hex.clone(),
                         unit_override,
-                        transform: chip_cad::ModelTransform::IDENTITY,
+                        transform: init_xf,
                     }];
                 }
             }
@@ -1159,18 +1166,50 @@ impl ChipCutterApp {
                     self.active_setup_idx = 0;
                 }
                 fit_camera = was_model_empty;
-                self.apply_associative_reload_rebind(
-                    &doc,
-                    &topo,
-                    &sha256_hex,
-                    source_path.as_deref(),
-                    update_path,
-                );
+                let preserved_xf = self
+                    .project
+                    .models
+                    .first()
+                    .map_or(chip_cad::ModelTransform::IDENTITY, |m| m.transform);
+                if preserved_xf.is_identity() {
+                    self.apply_associative_reload_rebind(
+                        &doc,
+                        &topo,
+                        &sha256_hex,
+                        source_path.as_deref(),
+                        update_path,
+                    );
+                } else {
+                    let transformed_for_rebind = doc.transformed(&preserved_xf);
+                    let transformed_topo = TopologyGraph::build(&transformed_for_rebind);
+                    self.apply_associative_reload_rebind(
+                        &transformed_for_rebind,
+                        &transformed_topo,
+                        &sha256_hex,
+                        source_path.as_deref(),
+                        update_path,
+                    );
+                }
             }
         }
 
+        let raw_doc = Arc::new(doc);
+        let applied_transform = self
+            .project
+            .models
+            .first()
+            .map_or(chip_cad::ModelTransform::IDENTITY, |m| m.transform);
+        let (final_doc, final_picker, final_topo) = if applied_transform.is_identity() {
+            (Arc::clone(&raw_doc), picker, topo)
+        } else {
+            let td = Arc::new(raw_doc.transformed(&applied_transform));
+            let tp = CadPicker::build(&td);
+            let tt = TopologyGraph::build(&td);
+            (td, tp, tt)
+        };
+
         if fit_camera {
-            self.camera.fit_aabb(&doc.aabb_mm);
+            self.camera.fit_aabb(&final_doc.aabb_mm);
         }
         self.highlight.hovered = None;
         self.highlight.selected = None;
@@ -1178,9 +1217,11 @@ impl ChipCutterApp {
         let rev = self.next_revision;
         self.next_revision += 1;
         self.model = Some(LoadedModelState {
-            doc: Arc::new(doc),
-            picker,
-            topo,
+            raw_doc,
+            applied_transform,
+            doc: final_doc,
+            picker: final_picker,
+            topo: final_topo,
             raw_step_bytes,
             source_path,
             revision: rev,
@@ -1305,6 +1346,7 @@ fn parse_model_bytes_job(
                     raw_step_bytes,
                     source_path,
                     unit_override,
+                    initial_transform: None,
                     sha256_hex,
                     purpose,
                     pre_seeded_project: None,

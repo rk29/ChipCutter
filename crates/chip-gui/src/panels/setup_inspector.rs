@@ -480,6 +480,7 @@ fn render_wcs_orient_body(ui: &mut egui::Ui, ctx: &mut WcsTabCtx<'_>) {
                         x_ref: None,
                         flip_x: false,
                         clock_90: 0,
+                        extra_z_rot_deg: 0.0,
                     };
                     *ctx.pick_mode = ViewportPickMode::SetupWcsZ { setup_idx };
                     *ctx.mutated_label = Some("Switch WCS to Select Z & X");
@@ -498,6 +499,7 @@ fn render_wcs_orient_body(ui: &mut egui::Ui, ctx: &mut WcsTabCtx<'_>) {
                         flip_z: false,
                         x_edge_ref: None,
                         clock_90: 0,
+                        extra_z_rot_deg: 0.0,
                     };
                     *ctx.pick_mode = ViewportPickMode::SetupWcsXyPlane { setup_idx };
                     *ctx.mutated_label = Some("Switch WCS to Select XY Plane");
@@ -505,11 +507,12 @@ fn render_wcs_orient_body(ui: &mut egui::Ui, ctx: &mut WcsTabCtx<'_>) {
             },
         );
 
-        match &mut ctx.setup.wcs.orientation {
+        let extra_z_rot = match &mut ctx.setup.wcs.orientation {
             WcsOrientationMode::ModelOrientation {
                 flip_z,
                 flip_x,
                 clock_90,
+                extra_z_rot_deg,
             } => {
                 grid_row(
                     ui,
@@ -534,6 +537,7 @@ fn render_wcs_orient_body(ui: &mut egui::Ui, ctx: &mut WcsTabCtx<'_>) {
                         }
                     },
                 );
+                extra_z_rot_deg
             }
             WcsOrientationMode::SelectZAndX {
                 z_ref,
@@ -541,6 +545,7 @@ fn render_wcs_orient_body(ui: &mut egui::Ui, ctx: &mut WcsTabCtx<'_>) {
                 x_ref,
                 flip_x,
                 clock_90,
+                extra_z_rot_deg,
             } => {
                 let z_desc = describe_axis_ref(Some(z_ref));
                 render_axis_pick_spec_row(
@@ -584,11 +589,13 @@ fn render_wcs_orient_body(ui: &mut egui::Ui, ctx: &mut WcsTabCtx<'_>) {
                         ui.colored_label(tok.text_muted, format!("{}°", u16::from(*clock_90) * 90));
                     },
                 );
+                extra_z_rot_deg
             }
             WcsOrientationMode::SelectXYPlane {
                 face_ref,
                 flip_z,
                 clock_90,
+                extra_z_rot_deg,
                 ..
             } => {
                 let target = ViewportPickMode::SetupWcsXyPlane { setup_idx };
@@ -628,8 +635,34 @@ fn render_wcs_orient_body(ui: &mut egui::Ui, ctx: &mut WcsTabCtx<'_>) {
                         }
                     },
                 );
+                extra_z_rot_deg
             }
-        }
+        };
+
+        grid_row(
+            ui,
+            "Fine Z Rot (°)",
+            Some("Additional arbitrary rotation around Setup +Z (e.g., 15° or 45° vise clocking)"),
+            |ui| {
+                let resp = ui.add(
+                    egui::DragValue::new(extra_z_rot)
+                        .speed(0.5)
+                        .range(-360.0..=360.0)
+                        .suffix("°")
+                        .max_decimals(2),
+                );
+                if resp.changed() {
+                    if !extra_z_rot.is_finite() {
+                        *extra_z_rot = 0.0;
+                    }
+                    *ctx.mutated_label = Some("Adjust WCS Fine Z Rotation");
+                }
+                if extra_z_rot.abs() > 1e-6 && ui.small_button("0°").clicked() {
+                    *extra_z_rot = 0.0;
+                    *ctx.mutated_label = Some("Reset WCS Fine Z Rotation");
+                }
+            },
+        );
     });
 }
 

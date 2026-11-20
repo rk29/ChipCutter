@@ -261,18 +261,37 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                 .default_open(true)
                 .show(ui, |ui| {
                     if let Some(doc) = cad_doc {
-                        let sel = *focus == InspectorFocus::CadEntity;
+                        let sel = matches!(
+                            *focus,
+                            InspectorFocus::Model { model_idx: 0 } | InspectorFocus::CadEntity
+                        );
+                        let has_xf = project
+                            .models
+                            .first()
+                            .is_some_and(|m| !m.transform.is_identity());
                         let body_summary = if !doc.meshes.is_empty() && doc.bodies.is_empty() {
                             format!(
-                                "• {} ({} mesh)",
+                                "• {} ({} mesh){}",
                                 doc.source_name,
-                                doc.meshes.len()
+                                doc.meshes.len(),
+                                if has_xf { " · Xf" } else { "" }
                             )
                         } else {
-                            format!("• {} ({} body)", doc.source_name, doc.bodies.len())
+                            format!(
+                                "• {} ({} body){}",
+                                doc.source_name,
+                                doc.bodies.len(),
+                                if has_xf { " · Xf" } else { "" }
+                            )
                         };
-                        if ui.selectable_label(sel, body_summary).clicked() {
-                            *focus = InspectorFocus::CadEntity;
+                        if ui
+                            .selectable_label(sel, body_summary)
+                            .on_hover_text(
+                                "Click to open Model Transform, Orientation, & Scaling Inspector",
+                            )
+                            .clicked()
+                        {
+                            *focus = InspectorFocus::Model { model_idx: 0 };
                             *pick_mode = ViewportPickMode::InspectEntity;
                         }
                         ui.indent("model_stats", |ui| {
@@ -303,6 +322,17 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                     }
 
                     ui.horizontal_wrapped(|ui| {
+                        if cad_doc.is_some()
+                            && ui
+                                .small_button("Orient / Scale")
+                                .on_hover_text(
+                                    "Rotate, lay flat on a face, scale, or move the loaded 3D model",
+                                )
+                                .clicked()
+                        {
+                            *focus = InspectorFocus::Model { model_idx: 0 };
+                            *pick_mode = ViewportPickMode::InspectEntity;
+                        }
                         if ui.small_button("Import STEP…").clicked() {
                             emitted_action = Some(BrowserAction::OpenStepDialog);
                         }

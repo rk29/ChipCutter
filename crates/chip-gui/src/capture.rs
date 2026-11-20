@@ -52,6 +52,9 @@ pub enum CaptureFocus {
     Sketch {
         sketch_idx: usize,
     },
+    Model {
+        model_idx: usize,
+    },
 }
 
 impl CaptureFocus {
@@ -59,6 +62,7 @@ impl CaptureFocus {
     /// - `setup:<wcs|stock|heights>` or `setup:<setup_idx>:<wcs|stock|heights>`
     /// - `op:<op_idx>:<tool|geometry|heights|passes|linking>` or `op:<setup_idx>:<op_idx>:<tab>`
     /// - `sketch:<sketch_idx>`
+    /// - `model` or `model:<model_idx>`
     pub fn parse(raw: &str) -> Result<Self, String> {
         let trimmed = raw.trim();
         let parts: Vec<&str> = trimmed.split(':').collect();
@@ -84,8 +88,12 @@ impl CaptureFocus {
             ["sketch", sketch_str] => Ok(Self::Sketch {
                 sketch_idx: parse_index(sketch_str, "sketch index")?,
             }),
+            ["model"] => Ok(Self::Model { model_idx: 0 }),
+            ["model", model_str] => Ok(Self::Model {
+                model_idx: parse_index(model_str, "model index")?,
+            }),
             _ => Err(format!(
-                "invalid --capture-focus '{trimmed}'; expected 'setup:<wcs|stock|heights>', 'op:<idx>:<tool|geometry|heights|passes|linking>', or 'sketch:<idx>'"
+                "invalid --capture-focus '{trimmed}'; expected 'setup:<wcs|stock|heights>', 'op:<idx>:<tool|geometry|heights|passes|linking>', 'sketch:<idx>', or 'model[:idx]'"
             )),
         }
     }
@@ -279,6 +287,14 @@ mod tests {
         assert_eq!(
             CaptureFocus::parse("sketch:0"),
             Ok(CaptureFocus::Sketch { sketch_idx: 0 })
+        );
+        assert_eq!(
+            CaptureFocus::parse("model"),
+            Ok(CaptureFocus::Model { model_idx: 0 })
+        );
+        assert_eq!(
+            CaptureFocus::parse("model:0"),
+            Ok(CaptureFocus::Model { model_idx: 0 })
         );
         assert!(CaptureFocus::parse("op:abc:passes").is_err());
         assert!(CaptureFocus::parse("setup:unknown").is_err());

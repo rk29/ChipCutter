@@ -56,6 +56,8 @@ use crate::{
 };
 
 pub(crate) struct LoadedModelState {
+    pub raw_doc: Arc<CadDocument>,
+    pub applied_transform: chip_cad::ModelTransform,
     pub doc: Arc<CadDocument>,
     pub picker: CadPicker,
     pub topo: TopologyGraph,
@@ -158,6 +160,7 @@ pub struct ChipCutterApp {
     pub(crate) sketch_snap_grid_mm: Option<f64>,
     pub(crate) sketch_author_start_xy: Option<chip_math::DVec2>,
     pub(crate) lock_chipload: bool,
+    pub(crate) lock_model_uniform_scale: bool,
     pub(crate) show_27pt_dots: bool,
     pub(crate) show_z_planes: bool,
     pub(crate) show_all_setup_toolpaths: bool,
@@ -327,6 +330,7 @@ impl ChipCutterApp {
             sketch_snap_grid_mm: None,
             sketch_author_start_xy: None,
             lock_chipload: true,
+            lock_model_uniform_scale: true,
             show_27pt_dots: true,
             show_z_planes: true,
             show_all_setup_toolpaths: true,
@@ -808,9 +812,48 @@ impl ChipCutterApp {
         }
     }
 
+    pub(crate) fn sync_loaded_model_transform(&mut self) -> bool {
+        let Some(desired_xf) = self.project.models.first().map(|m| m.transform) else {
+            return false;
+        };
+        let needs_rebuild = self
+            .model
+            .as_ref()
+            .is_some_and(|m| m.applied_transform != desired_xf);
+        if !needs_rebuild {
+            return false;
+        }
+        let Some(loaded) = self.model.as_mut() else {
+            return false;
+        };
+        let new_doc = if desired_xf.is_identity() {
+            Arc::clone(&loaded.raw_doc)
+        } else {
+            Arc::new(loaded.raw_doc.transformed(&desired_xf))
+        };
+        loaded.picker = CadPicker::build(&new_doc);
+        loaded.topo = TopologyGraph::build(&new_doc);
+        loaded.doc = new_doc;
+        loaded.applied_transform = desired_xf;
+        loaded.revision = self.next_revision;
+        self.next_revision += 1;
+
+        let new_rev = loaded.revision;
+        self.dispatcher.cancel_stale_jobs(&self.project, new_rev);
+        self.sim_panel.cancel_in_flight();
+        self.sim_panel.active_result = None;
+        self.gcode_panel.invalidate_preview();
+        self.highlight.hovered = None;
+        self.highlight.selected = None;
+        self.cached_frame_geo = None;
+        self.refresh_dependent_expressions();
+        true
+    }
+
     pub(crate) fn perform_undo(&mut self) {
         if let Some(lbl) = self.history.undo(&mut self.project) {
             self.sync_active_machine_tools();
+            self.sync_loaded_model_transform();
             if let Some((_, cad_rev)) = self.effective_cad_arc() {
                 self.dispatcher.cancel_stale_jobs(&self.project, cad_rev);
                 let inflight = self.dispatcher.in_flight_ids();
@@ -828,6 +871,7 @@ impl ChipCutterApp {
     pub(crate) fn perform_redo(&mut self) {
         if let Some(lbl) = self.history.redo(&mut self.project) {
             self.sync_active_machine_tools();
+            self.sync_loaded_model_transform();
             if let Some((_, cad_rev)) = self.effective_cad_arc() {
                 self.dispatcher.cancel_stale_jobs(&self.project, cad_rev);
                 let inflight = self.dispatcher.in_flight_ids();
@@ -847,6 +891,7 @@ impl eframe::App for ChipCutterApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.poll_background_jobs(&ctx);
+        self.sync_loaded_model_transform();
         self.sim_panel.update_playback_and_shortcuts(&ctx);
         self.sync_viewport_scene_state();
         self.draw_top_bars(ui);
@@ -969,6 +1014,7 @@ impl eframe::App for ChipCutterApp {
                 mesh_commit.raw_bytes,
                 mesh_commit.source_path,
                 mesh_commit.unit_override,
+                mesh_commit.transform,
                 ctx.clone(),
             );
         }

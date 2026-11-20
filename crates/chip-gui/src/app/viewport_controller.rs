@@ -162,7 +162,9 @@ impl ChipCutterApp {
                     }
                 }
             }
-            InspectorFocus::CadEntity | InspectorFocus::Sketch { .. } => {}
+            InspectorFocus::CadEntity
+            | InspectorFocus::Model { .. }
+            | InspectorFocus::Sketch { .. } => {}
         }
 
         if let ViewportPickMode::OpOpenChain {
@@ -244,7 +246,8 @@ impl ChipCutterApp {
             ViewportPickMode::SetupWcsXyPlane { .. }
             | ViewportPickMode::OpPlanarFaces { .. }
             | ViewportPickMode::PickSketchHostFace { .. }
-            | ViewportPickMode::RebindSketchHostFace { .. } => PickFilter::FacesOnly,
+            | ViewportPickMode::RebindSketchHostFace { .. }
+            | ViewportPickMode::PickModelLayFlatFace { .. } => PickFilter::FacesOnly,
             ViewportPickMode::SetupWcsOriginFeature { .. } => PickFilter::Any,
             ViewportPickMode::OpClosedLoops { .. } => PickFilter::EdgeLoops,
             ViewportPickMode::OpOpenChain { .. } | ViewportPickMode::PlaceContourTab { .. } => {
@@ -738,7 +741,48 @@ impl ChipCutterApp {
                     self.align_camera_to_sketch(sketch_idx);
                 }
             }
+            ViewportPickMode::PickModelLayFlatFace { .. } => {}
         }
+    }
+
+    pub(crate) fn apply_lay_flat_face_normal(&mut self, model_idx: usize, normal: DVec3) {
+        if model_idx >= self.project.models.len() {
+            return;
+        }
+        let Some(m) = &self.model else {
+            return;
+        };
+        let pivot = if m.doc.aabb_mm.is_valid() {
+            m.doc.aabb_mm.center()
+        } else {
+            DVec3::ZERO
+        };
+        let old_xf = self.project.models[model_idx].transform;
+        let laid_xf = old_xf.laid_flat_normal_to_neg_z(normal, pivot);
+        let laid_doc = m.raw_doc.transformed(&laid_xf);
+        let final_xf = if laid_doc.aabb_mm.is_valid() {
+            laid_xf.dropped_bottom_to_z0_for_aabb(laid_doc.aabb_mm)
+        } else {
+            laid_xf
+        };
+        if final_xf.validate().is_err() {
+            return;
+        }
+        self.history
+            .record_before_edit("Lay Model Flat on Face", None, &self.project);
+        self.project.models[model_idx].transform = final_xf;
+        for setup in &mut self.project.setups {
+            for op in &mut setup.operations {
+                op.mark_dirty();
+            }
+        }
+        self.pick_mode = ViewportPickMode::InspectEntity;
+        self.sync_loaded_model_transform();
+        self.fit_scene_to_viewport();
+        self.logs.push(format!(
+            "Laid model flat on clicked face (normal {:+.3}, {:+.3}, {:+.3}) and dropped bottom to Z = 0.",
+            normal.x, normal.y, normal.z
+        ));
     }
 
     pub(crate) fn handle_sketch_author_viewport_interaction(

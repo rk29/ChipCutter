@@ -2389,6 +2389,7 @@ fn rotary2linear_spiral_and_axial_parallel_on_x_and_y_axes_are_centerline_locked
         flip_z: false,
         flip_x: false,
         clock_90: 1,
+        extra_z_rot_deg: 0.0,
     };
     setup_y.wcs.origin = WcsOriginMode::StockBoxPoint {
         anchor: BoxAnchor27 {
@@ -2974,6 +2975,7 @@ fn rotary4axis_sim_off_centerline_helical_flutes_on_x_and_y_are_smooth_and_crash
         flip_z: false,
         flip_x: false,
         clock_90: 1,
+        extra_z_rot_deg: 0.0,
     };
     setup_y.wcs.origin = WcsOriginMode::StockBoxPoint {
         anchor: BoxAnchor27::VOLUMETRIC_CENTER,

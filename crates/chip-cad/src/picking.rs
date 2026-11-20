@@ -254,4 +254,43 @@ impl CadPicker {
 
         None
     }
+
+    /// Casts a ray against both B-Rep faces and triangle meshes (`render_mesh.pick_triangles`)
+    /// and returns `(hit_point_mm, outward_normal)` for the closest surface intersection.
+    ///
+    /// For planar B-Rep faces, the exact analytic plane normal is returned; for mesh triangles
+    /// (STL/OBJ/3MF) or curved faces, the triangle geometric normal is returned.
+    pub fn pick_surface_normal(&self, doc: &CadDocument, ray: &Ray3) -> Option<(DVec3, DVec3)> {
+        let mut best: Option<(&TriEntry, f64)> = None;
+        for tri in self.tri_tree.iter() {
+            let min = DVec3::from(tri.envelope.lower());
+            let max = DVec3::from(tri.envelope.upper());
+            let aabb = chip_math::Aabb3::new(min, max);
+            let Some(box_t) = ray.intersect_aabb(&aabb, 1e-4) else {
+                continue;
+            };
+            if best.is_some_and(|(_, best_t)| box_t > best_t) {
+                continue;
+            }
+            if let Some(t) = ray.intersect_triangle(tri.v0, tri.v1, tri.v2)
+                && best.is_none_or(|(_, best_t)| t < best_t)
+            {
+                best = Some((tri, t));
+            }
+        }
+        let (tri, ray_t) = best?;
+        let hit_pt = ray.at(ray_t);
+        let normal = if let Some(face) = doc.face(tri.face_id) {
+            match face.surface {
+                SurfaceKind::Plane { normal, .. } => normal.normalize_or_zero(),
+                _ => (tri.v1 - tri.v0).cross(tri.v2 - tri.v0).normalize_or_zero(),
+            }
+        } else {
+            (tri.v1 - tri.v0).cross(tri.v2 - tri.v0).normalize_or_zero()
+        };
+        if normal.length_squared() < 1e-12 {
+            return None;
+        }
+        Some((hit_pt, normal))
+    }
 }
