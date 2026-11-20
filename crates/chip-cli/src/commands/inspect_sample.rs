@@ -29,7 +29,7 @@ use chip_sketch::{
     DxfImportOptions, SketchLayer, SvgImportOptions, VectorImportUnits, import_dxf_path,
     import_svg_path, sample_router_panel_dxf,
 };
-use chip_tools::{default_starter_tool_library, resolve_machine_definition};
+use chip_tools::{default_starter_tool_library, resolve_machine_definition_cli_override};
 
 pub struct GenerateSampleArgs {
     pub output: PathBuf,
@@ -48,7 +48,7 @@ pub fn run_generate_sample_step(
     args: GenerateSampleArgs,
 ) -> Result<ExitCode, Box<dyn std::error::Error>> {
     let explicit_machine = match args.machine.as_deref() {
-        Some(mid) => Some(resolve_machine_definition(mid, None)?),
+        Some(mid) => Some(resolve_machine_definition_cli_override(mid, None)?),
         None => None,
     };
     let tutorial_slug = args

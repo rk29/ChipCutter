@@ -10,7 +10,10 @@ use crate::{
         ArcEmitSpec, DrillEmitSpec, ToolChangeEmitSpec, emit_drill_cycle, emit_split_arc_move,
         handle_tool_change,
     },
-    modal::{LineWriter, ModalState, collapse_spaces, emit_linear_or_rapid, format_decimal},
+    modal::{
+        LineWriter, ModalState, collapse_spaces, emit_linear_or_rapid, format_decimal,
+        format_finite_decimal, sanitize_comment_ascii,
+    },
     partition::{PostOutputFile, PostPartition, SetupPostInput, partition_operations},
     profile::{PostError, PostProfile, SwapAxisTarget},
 };
@@ -178,10 +181,12 @@ fn emit_partition(
                     strategy_name,
                     ..
                 } => {
+                    let safe_op = sanitize_comment_ascii(op_name);
+                    let safe_strat = sanitize_comment_ascii(strategy_name);
                     for tmpl in &profile.operation_header {
                         let line = tmpl
-                            .replace("{op_name}", op_name)
-                            .replace("{strategy_name}", strategy_name);
+                            .replace("{op_name}", &safe_op)
+                            .replace("{strategy_name}", &safe_strat);
                         writer.push_code_line(&line)?;
                     }
                     modal.force_full_next_move();
@@ -213,11 +218,15 @@ fn emit_partition(
                         SpindleDirection::Cw => "M3",
                         SpindleDirection::Ccw => "M4",
                     };
-                    let rpm_str = format_decimal(
+                    if !rpm.is_finite() {
+                        return Err(PostError::NonFiniteValue { field: "S" });
+                    }
+                    let rpm_str = format_finite_decimal(
+                        "S",
                         rpm.max(0.0),
                         profile.spindle_decimals,
                         profile.suppress_trailing_zeros,
-                    );
+                    )?;
                     if profile.spindle_start_block.is_empty() {
                         writer.push_code_line(&format!("S{rpm_str} {m_dir}"))?;
                     } else {
@@ -419,10 +428,13 @@ fn emit_partition(
                     cur_rotary_deg = target_deg;
                 }
                 ClEvent::Dwell { seconds } => {
+                    if !seconds.is_finite() {
+                        return Err(PostError::NonFiniteValue { field: "P" });
+                    }
                     if *seconds > 1e-4 {
                         writer.push_code_line(&format!(
                             "G4 P{}",
-                            format_decimal(*seconds, 2, true)
+                            format_finite_decimal("P", *seconds, 2, true)?
                         ))?;
                     }
                 }
@@ -682,11 +694,12 @@ fn emit_rotary_index(
         return emit_linear_or_rapid(writer, profile, modal, mapped_wcs, feed_mm);
     }
 
-    let a_str = format_decimal(
+    let a_str = format_finite_decimal(
+        "rotary_angle",
         target_deg,
         profile.rotary.angle_decimals,
         profile.suppress_trailing_zeros,
-    );
+    )?;
     if modal.rotary_word.as_deref() == Some(a_str.as_str()) {
         return Ok(());
     }
@@ -702,11 +715,12 @@ fn emit_rotary_index(
         let f_deg = feed_deg_min
             .unwrap_or(profile.rotary.max_rotary_feed_deg_min)
             .clamp(1.0, profile.rotary.max_rotary_feed_deg_min.max(1.0));
-        let fs = format_decimal(
+        let fs = format_finite_decimal(
+            "F",
             f_deg,
             profile.feed_decimals,
             profile.suppress_trailing_zeros,
-        );
+        )?;
         if modal.f_word.as_deref() != Some(fs.as_str()) {
             words.push(format!("F{fs}"));
             modal.f_word = Some(fs);
@@ -740,10 +754,15 @@ fn emit_rotary_motion(
 
     let c_dec = profile.coord_decimals;
     let strip = profile.suppress_trailing_zeros;
-    let xs = format_decimal(profile.units.scale_from_mm(end_wcs.x), c_dec, strip);
-    let ys = format_decimal(profile.units.scale_from_mm(end_wcs.y), c_dec, strip);
-    let zs = format_decimal(profile.units.scale_from_mm(end_wcs.z), c_dec, strip);
-    let as_ = format_decimal(end_deg, profile.rotary.angle_decimals, strip);
+    let xs = format_finite_decimal("X", profile.units.scale_from_mm(end_wcs.x), c_dec, strip)?;
+    let ys = format_finite_decimal("Y", profile.units.scale_from_mm(end_wcs.y), c_dec, strip)?;
+    let zs = format_finite_decimal("Z", profile.units.scale_from_mm(end_wcs.z), c_dec, strip)?;
+    let as_ = format_finite_decimal(
+        "rotary_angle",
+        end_deg,
+        profile.rotary.angle_decimals,
+        strip,
+    )?;
 
     let x_changed = modal.x_word.as_deref() != Some(xs.as_str());
     let y_changed = modal.y_word.as_deref() != Some(ys.as_str());

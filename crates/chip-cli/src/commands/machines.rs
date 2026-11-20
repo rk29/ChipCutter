@@ -2,7 +2,7 @@ use std::{path::PathBuf, process::ExitCode};
 
 use chip_tools::{
     clone_machine_definition, export_machine_to_path, import_machine_from_path,
-    load_available_machines, resolve_machine_definition, save_user_machine,
+    load_available_machines, resolve_machine_definition_cli_override, save_user_machine,
 };
 
 pub fn run_machines_list() -> Result<ExitCode, Box<dyn std::error::Error>> {
@@ -38,7 +38,7 @@ pub fn run_machines_list() -> Result<ExitCode, Box<dyn std::error::Error>> {
 }
 
 pub fn run_machines_inspect(id_or_path: String) -> Result<ExitCode, Box<dyn std::error::Error>> {
-    let m = resolve_machine_definition(&id_or_path, None)?;
+    let m = resolve_machine_definition_cli_override(&id_or_path, None)?;
     println!("=== Machine Definition: '{}' ({}) ===", m.name, m.id);
     println!(
         "Source:       {}",
@@ -118,7 +118,7 @@ pub fn run_machines_clone(
     new_id: String,
     name: Option<String>,
 ) -> Result<ExitCode, Box<dyn std::error::Error>> {
-    let source = resolve_machine_definition(&source_id, None)?;
+    let source = resolve_machine_definition_cli_override(&source_id, None)?;
     let display_name = name.unwrap_or_else(|| format!("{} (Custom)", source.name));
     let cloned = clone_machine_definition(&source, &new_id, display_name)?;
     let saved = save_user_machine(&cloned)?;
@@ -136,7 +136,7 @@ pub fn run_machines_export(
     id_or_path: String,
     output: PathBuf,
 ) -> Result<ExitCode, Box<dyn std::error::Error>> {
-    let machine = resolve_machine_definition(&id_or_path, None)?;
+    let machine = resolve_machine_definition_cli_override(&id_or_path, None)?;
     export_machine_to_path(&machine, &output)?;
     println!(
         "Exported machine '{}' ({} tools) to {}",

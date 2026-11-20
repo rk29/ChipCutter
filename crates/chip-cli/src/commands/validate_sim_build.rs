@@ -1,6 +1,9 @@
 use std::{path::PathBuf, process::ExitCode};
 
-use chip_post::resolve_post_profile;
+use chip_post::{
+    PostProfileSource, resolve_post_profile, resolve_post_profile_cli_override,
+    validate_safe_output_filename,
+};
 use chip_project::{
     DiagnosticSeverity, SetupPostRequest, SetupSimRequest, ToolpathCache,
     generate_project_blocking, kinematics_for_post_profile, post_process_project_setup,
@@ -8,7 +11,7 @@ use chip_project::{
     validate_project_with_machine,
 };
 use chip_sim::{SetupSimulationResult, SimResolution, format_cycle_time_hms};
-use chip_tools::resolve_machine_definition;
+use chip_tools::resolve_machine_definition_cli_override;
 
 use crate::commands::{
     BuildFileSummaryJson, BuildSummaryJson, ProjectSimReportJson, SetupSimReportJson,
@@ -25,7 +28,7 @@ pub fn run_validate(
     let proj_dir = loaded.dir.as_deref();
     let loaded_cad = load_primary_cad_for_project(&proj_doc, proj_dir).ok();
     let explicit_machine = match machine_override.as_deref() {
-        Some(mid) => Some(resolve_machine_definition(mid, proj_dir)?),
+        Some(mid) => Some(resolve_machine_definition_cli_override(mid, proj_dir)?),
         None => None,
     };
 
@@ -280,8 +283,17 @@ pub fn run_build(args: BuildArgs) -> Result<ExitCode, Box<dyn std::error::Error>
         }
         matched_any_setup = true;
 
-        let profile_key = args.post_override.as_deref().unwrap_or(&setup.post_profile);
-        let post_profile = resolve_post_profile(profile_key, proj_dir)?;
+        let post_profile = if let Some(cli_post) = args.post_override.as_deref() {
+            resolve_post_profile_cli_override(cli_post, proj_dir)?
+        } else {
+            resolve_post_profile(&setup.post_profile, proj_dir)?
+        };
+        if post_profile.source == PostProfileSource::ProjectOrBundle {
+            eprintln!(
+                "  [POST WARN] Setup '{}' uses custom post profile '{}' loaded from project/bundle directory; review emitted header/footer G-code before machining.",
+                setup.name, post_profile.id
+            );
+        }
         let kin = kinematics_for_post_profile(&post_profile);
 
         // Mandatory pre-post physical heightmap crash & gouge gate (`06-simulation.md` §4)!
@@ -338,7 +350,8 @@ pub fn run_build(args: BuildArgs) -> Result<ExitCode, Box<dyn std::error::Error>
         })?;
 
         for nc in nc_files {
-            let out_path = args.output_dir.join(&nc.filename);
+            let safe_name = validate_safe_output_filename(&nc.filename)?;
+            let out_path = args.output_dir.join(safe_name);
             std::fs::write(&out_path, &nc.content)?;
             println!(
                 "  [NC  ] Wrote {} ({} lines, max {} chars/line, tools {:?})",

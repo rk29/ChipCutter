@@ -8,13 +8,17 @@ pub mod partition;
 pub mod profile;
 
 pub use emitter::post_process_setup;
-pub use partition::{OperationPostInput, PostOutputFile, SetupPostInput, describe_wcs_origin};
+pub use partition::{
+    OperationPostInput, PostOutputFile, SetupPostInput, describe_wcs_origin,
+    sanitize_file_extension, validate_safe_output_filename,
+};
 pub use profile::{
     ArcCenterMode, BUILTIN_GRBL_ROTARY_WRAP_TOML, BUILTIN_GRBL_TOML, BUILTIN_GRBLHAL_4AXIS_TOML,
     BUILTIN_GRBLHAL_ATC_TOML, BUILTIN_LINUXCNC_4AXIS_TOML, BUILTIN_LINUXCNC_TOML, CommentStyle,
-    LineNumberConfig, PostError, PostProfile, PostUnits, RotaryPostConfig, SwapAxisTarget,
-    ToolChangeMode, builtin_post_profiles, load_available_post_profiles, resolve_post_profile,
-    user_post_profiles_dir,
+    LineNumberConfig, PostError, PostProfile, PostProfileSource, PostUnits, RotaryPostConfig,
+    SwapAxisTarget, ToolChangeMode, builtin_post_profiles, is_builtin_post_id,
+    load_available_post_profiles, resolve_post_profile, resolve_post_profile_cli_override,
+    user_post_profiles_dir, validate_post_id,
 };
 
 #[cfg(test)]
@@ -591,6 +595,139 @@ mod tests {
             count_arc_lines(90.05),
             2,
             "genuinely >90° arc must split into 2 blocks for GRBL"
+        );
+    }
+
+    #[test]
+    fn milestone_32_security_sanitizes_extensions_protects_builtins_and_blocks_gcode_injection() {
+        // 1. Path traversal in PostProfile::extension is stripped to safe alphanumerics
+        assert_eq!(sanitize_file_extension("../../evil.sh"), "evilsh");
+        assert_eq!(sanitize_file_extension("/etc/passwd"), "etcpasswd");
+        assert_eq!(sanitize_file_extension("..."), "nc");
+        assert_eq!(sanitize_file_extension(".ngc"), "ngc");
+        assert!(validate_safe_output_filename("job_01.nc").is_ok());
+        assert!(validate_safe_output_filename("../escape.nc").is_err());
+        assert!(validate_safe_output_filename("sub/file.nc").is_err());
+        assert!(validate_safe_output_filename("sub\\file.nc").is_err());
+        assert!(validate_safe_output_filename("..").is_err());
+
+        // 2. Untrusted project/bundle directory cannot shadow built-in post IDs
+        let tmp_dir =
+            std::env::temp_dir().join(format!("chip_post_m32_shadow_{}", std::process::id()));
+        let posts_dir = tmp_dir.join("posts");
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        std::fs::create_dir_all(&posts_dir).unwrap();
+        let mut fake_grbl = resolve_post_profile("grbl", None).unwrap();
+        fake_grbl.program_header = vec!["G0 Z-999".to_string()];
+        std::fs::write(
+            posts_dir.join("grbl.post.toml"),
+            fake_grbl.to_toml_string().unwrap(),
+        )
+        .unwrap();
+
+        let resolved_grbl = resolve_post_profile("grbl", Some(&tmp_dir)).unwrap();
+        assert!(resolved_grbl.is_builtin);
+        assert_eq!(resolved_grbl.source, PostProfileSource::BuiltIn);
+        assert!(
+            !resolved_grbl
+                .program_header
+                .iter()
+                .any(|l| l.contains("-999")),
+            "untrusted project posts/grbl.post.toml must never shadow built-in grbl"
+        );
+
+        // 3. ID-only resolve_post_profile refuses arbitrary filesystem paths
+        let custom_file = posts_dir.join("grbl.post.toml");
+        assert!(
+            resolve_post_profile(&custom_file.display().to_string(), Some(&tmp_dir)).is_err(),
+            "untrusted project ID lookup must not read arbitrary file paths"
+        );
+        // Explicit CLI override still allows operator-chosen file path
+        let cli_prof =
+            resolve_post_profile_cli_override(&custom_file.display().to_string(), None).unwrap();
+        assert_eq!(cli_prof.source, PostProfileSource::ExplicitFile);
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+
+        // 4. Operation/tool names with newlines and closing parens cannot inject raw G-code
+        let lib = default_starter_tool_library();
+        let mut t1 = lib.tools[0].clone();
+        t1.name = "Flat)\nG0 Z-50\n(Endmill".to_string();
+        let mut op = Operation::new(
+            "op_inj",
+            "Pocket)\nM3 S99999\n(Pass",
+            OperationKind::Pocket2D,
+        );
+        op.tool_id = Some(t1.id.clone());
+        let mut b = ToolpathBuilder::new("op_inj");
+        b.push_event(ClEvent::OperationStart {
+            op_id: op.id.clone(),
+            op_name: op.name.clone(),
+            strategy_name: "Pocket)\nG0 X-999".to_string(),
+            est_time_sec: 1.0,
+        });
+        b.push_event(ClEvent::ToolChange {
+            tool_number: t1.tool_number,
+            length_offset: t1.length_offset_number,
+            diameter_offset: t1.diameter_offset_number,
+            tool_desc: t1.name.clone(),
+            is_first_tool: true,
+        });
+        b.rapid_to(DVec3::new(0.0, 0.0, 5.0));
+        b.push_event(ClEvent::OperationEnd);
+        let tp = b.finish();
+
+        let mut custom_post = resolve_post_profile("linuxcnc", None).unwrap();
+        custom_post.extension = "../../evil.sh".to_string();
+        custom_post.operation_header = vec!["M0 ({op_name} - {strategy_name})".to_string()];
+        custom_post.tool_change_block = vec!["T{tool_number} M6 ({tool_desc})".to_string()];
+
+        let input = SetupPostInput {
+            project_name: "inj_test",
+            setup_name: "Setup 1",
+            wcs_slot: WorkOffsetSlot::G54,
+            wcs_origin_description: "Top".to_string(),
+            stock: ResolvedStockGeometry::Box {
+                aabb_wcs: Aabb3::new(DVec3::new(0.0, 0.0, -10.0), DVec3::new(50.0, 50.0, 0.0)),
+            },
+            rotary: None,
+            clearance_z_wcs: 10.0,
+            retract_z_wcs: 5.0,
+            operations: vec![OperationPostInput {
+                op: &op,
+                tool: &t1,
+                toolpath: &tp,
+            }],
+        };
+        let files = post_process_setup(&input, &custom_post, "inj_job").unwrap();
+        assert_eq!(files[0].filename, "inj_job.evilsh");
+        assert!(validate_safe_output_filename(&files[0].filename).is_ok());
+        for line in files[0].content.lines() {
+            assert!(
+                !line.trim_start().starts_with("G0 Z-50")
+                    && !line.trim_start().starts_with("M3 S99999")
+                    && !line.trim_start().starts_with("G0 X-999"),
+                "injected G-code block detected: {line}"
+            );
+        }
+
+        // 5. Non-finite coordinates fail closed instead of emitting NaN/inf
+        let mut b_nan = ToolpathBuilder::new("op_nan");
+        b_nan.push_event(ClEvent::RapidMove {
+            end_wcs: DVec3::new(f64::NAN, 0.0, 5.0),
+        });
+        let tp_nan = b_nan.finish();
+        let nan_input = SetupPostInput {
+            operations: vec![OperationPostInput {
+                op: &op,
+                tool: &t1,
+                toolpath: &tp_nan,
+            }],
+            ..input
+        };
+        let err = post_process_setup(&nan_input, &custom_post, "nan_job").unwrap_err();
+        assert!(
+            matches!(err, PostError::NonFiniteValue { .. }),
+            "expected NonFiniteValue error, got {err:?}"
         );
     }
 }

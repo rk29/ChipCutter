@@ -13,6 +13,16 @@ pub const BUILTIN_GRBLHAL_4AXIS_TOML: &str = include_str!("../../../posts/grblha
 pub const BUILTIN_GRBL_ROTARY_WRAP_TOML: &str =
     include_str!("../../../posts/grbl_rotary_wrap.post.toml");
 
+/// Origin of a resolved [`PostProfile`] so UI and CLI can flag untrusted project/bundle posts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum PostProfileSource {
+    #[default]
+    BuiltIn,
+    UserConfig,
+    ProjectOrBundle,
+    ExplicitFile,
+}
+
 /// Errors raised during post-profile loading or G-code emission (`chip-post`).
 #[derive(Debug, Clone, PartialEq, Error)]
 pub enum PostError {
@@ -25,6 +35,14 @@ pub enum PostError {
     },
     #[error("unknown post-processor profile '{id_or_path}'")]
     UnknownProfile { id_or_path: String },
+    #[error("invalid post-processor profile id '{id}'")]
+    InvalidProfileId { id: String },
+    #[error("unsafe output filename '{filename}' rejected")]
+    UnsafeOutputFilename { filename: String },
+    #[error("unsafe G-code line rejected: {reason}")]
+    UnsafeGCodeLine { reason: String },
+    #[error("non-finite numeric value in '{field}' cannot be emitted to G-code")]
+    NonFiniteValue { field: &'static str },
     #[error("setup '{setup_name}' has no enabled operations to post-process")]
     NoOperations { setup_name: String },
     #[error("emitted G-code line ({len} chars) exceeds profile max_line_length ({max}): {line}")]
@@ -281,14 +299,22 @@ pub struct PostProfile {
 
     #[serde(default, skip_serializing_if = "RotaryPostConfig::is_disabled")]
     pub rotary: RotaryPostConfig,
+
+    #[serde(skip)]
+    pub is_builtin: bool,
+    #[serde(skip)]
+    pub source: PostProfileSource,
 }
 
 impl PostProfile {
     pub fn from_toml_str(source_name: &str, toml_str: &str) -> Result<Self, PostError> {
-        toml::from_str(toml_str).map_err(|e| PostError::Parse {
+        let mut prof: Self = toml::from_str(toml_str).map_err(|e| PostError::Parse {
             source_name: source_name.to_string(),
             message: e.to_string(),
-        })
+        })?;
+        prof.is_builtin = false;
+        prof.source = PostProfileSource::ExplicitFile;
+        Ok(prof)
     }
 
     pub fn load_from_path(path: &Path) -> Result<Self, PostError> {
@@ -319,11 +345,35 @@ pub fn builtin_post_profiles() -> Vec<PostProfile> {
         ("grblhal_4axis.post.toml", BUILTIN_GRBLHAL_4AXIS_TOML),
         ("grbl_rotary_wrap.post.toml", BUILTIN_GRBL_ROTARY_WRAP_TOML),
     ] {
-        if let Ok(p) = PostProfile::from_toml_str(name, src) {
+        if let Ok(mut p) = PostProfile::from_toml_str(name, src) {
+            p.is_builtin = true;
+            p.source = PostProfileSource::BuiltIn;
             out.push(p);
         }
     }
     out
+}
+
+/// Returns `true` if `id` matches a reserved read-only built-in post-processor ID.
+pub fn is_builtin_post_id(id: &str) -> bool {
+    let needle = id.trim();
+    builtin_post_profiles()
+        .iter()
+        .any(|p| p.id.eq_ignore_ascii_case(needle))
+}
+
+/// Validates a custom post profile slug ID (`[A-Za-z0-9._-]`, non-empty, no leading `.`, no `..`).
+pub fn validate_post_id(id: &str) -> Result<(), PostError> {
+    if id.is_empty()
+        || id.starts_with('.')
+        || id.contains("..")
+        || !id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+    {
+        return Err(PostError::InvalidProfileId { id: id.to_string() });
+    }
+    Ok(())
 }
 
 /// Returns the user override post directory (`~/.config/chipcutter/posts` on Linux).
@@ -331,21 +381,24 @@ pub fn user_post_profiles_dir() -> Option<PathBuf> {
     dirs::config_dir().map(|d| d.join("chipcutter").join("posts"))
 }
 
-/// Discovers all available post profiles, merging built-in profiles with `.post.toml` files
-/// in `./posts/`, `extra_search_dir`, and `~/.config/chipcutter/posts/`.
+/// Discovers all available post profiles, merging compiled-in read-only built-in profiles
+/// with `.post.toml` files in `extra_search_dir` (project / `.chipz`) and `~/.config/chipcutter/posts/`.
+///
+/// Built-in post IDs are strictly read-only and can never be shadowed by untrusted project,
+/// `.chipz`, or user files; user config profiles take precedence over untrusted project/bundle posts.
 pub fn load_available_post_profiles(extra_search_dir: Option<&Path>) -> Vec<PostProfile> {
     let mut profiles = builtin_post_profiles();
 
-    let mut search_dirs: Vec<PathBuf> = vec![PathBuf::from("posts")];
+    let mut search_dirs: Vec<(PathBuf, PostProfileSource)> = Vec::new();
     if let Some(extra) = extra_search_dir {
-        search_dirs.push(extra.to_path_buf());
-        search_dirs.push(extra.join("posts"));
+        search_dirs.push((extra.to_path_buf(), PostProfileSource::ProjectOrBundle));
+        search_dirs.push((extra.join("posts"), PostProfileSource::ProjectOrBundle));
     }
     if let Some(user_dir) = user_post_profiles_dir() {
-        search_dirs.push(user_dir);
+        search_dirs.push((user_dir, PostProfileSource::UserConfig));
     }
 
-    for dir in search_dirs {
+    for (dir, source) in search_dirs {
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
         };
@@ -360,8 +413,16 @@ pub fn load_available_post_profiles(extra_search_dir: Option<&Path>) -> Vec<Post
         paths.sort();
 
         for p in paths {
-            if let Ok(prof) = PostProfile::load_from_path(&p) {
-                if let Some(existing) = profiles.iter_mut().find(|x| x.id == prof.id) {
+            if let Ok(mut prof) = PostProfile::load_from_path(&p) {
+                if validate_post_id(&prof.id).is_err() || is_builtin_post_id(&prof.id) {
+                    continue;
+                }
+                prof.is_builtin = false;
+                prof.source = source;
+                if let Some(existing) = profiles
+                    .iter_mut()
+                    .find(|x| !x.is_builtin && x.id.eq_ignore_ascii_case(&prof.id))
+                {
                     *existing = prof;
                 } else {
                     profiles.push(prof);
@@ -373,21 +434,34 @@ pub fn load_available_post_profiles(extra_search_dir: Option<&Path>) -> Vec<Post
     profiles
 }
 
-/// Resolves a post profile either from a file path (`*.toml`) or by profile ID (`grbl`, `grblhal_atc`, `linuxcnc`).
+/// Resolves a post profile strictly by profile ID (`grbl`, `grblhal_atc`, `linuxcnc`, or a
+/// discovered custom ID) without probing arbitrary filesystem paths from untrusted project data.
 pub fn resolve_post_profile(
-    id_or_path: &str,
+    id: &str,
     extra_search_dir: Option<&Path>,
 ) -> Result<PostProfile, PostError> {
-    let candidate_path = Path::new(id_or_path);
-    if candidate_path.is_file() {
-        return PostProfile::load_from_path(candidate_path);
-    }
-    let needle = id_or_path.trim().to_ascii_lowercase();
+    let needle = id.trim().to_ascii_lowercase();
     let available = load_available_post_profiles(extra_search_dir);
     available
         .into_iter()
         .find(|p| p.id.to_ascii_lowercase() == needle)
         .ok_or_else(|| PostError::UnknownProfile {
-            id_or_path: id_or_path.to_string(),
+            id_or_path: id.to_string(),
         })
+}
+
+/// Resolves an explicit CLI `--post` override, accepting either a profile ID or an explicit
+/// `.post.toml` file path on disk chosen directly by the operator.
+pub fn resolve_post_profile_cli_override(
+    id_or_path: &str,
+    extra_search_dir: Option<&Path>,
+) -> Result<PostProfile, PostError> {
+    let candidate_path = Path::new(id_or_path);
+    if candidate_path.is_file() {
+        let mut prof = PostProfile::load_from_path(candidate_path)?;
+        prof.is_builtin = false;
+        prof.source = PostProfileSource::ExplicitFile;
+        return Ok(prof);
+    }
+    resolve_post_profile(id_or_path, extra_search_dir)
 }

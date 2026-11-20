@@ -29,6 +29,7 @@ pub use machine::{
     clone_machine_definition, delete_user_machine, delete_user_machine_in, export_machine_to_path,
     import_machine_from_path, import_machine_from_path_in, is_builtin_machine_id,
     load_available_machines, load_available_machines_in, resolve_machine_definition,
+    resolve_machine_definition_cli_override, resolve_machine_definition_cli_override_in,
     resolve_machine_definition_in, sanitize_machine_id, save_user_machine, save_user_machine_in,
     user_machines_dir, validate_machine_id,
 };
@@ -406,6 +407,23 @@ mod tests {
             assert_eq!(resolved.id, id);
             assert!(resolved.is_builtin);
         }
+        let resolved_milo_path = repo_machines_dir.join("milo-1.5.machine.toml");
+        assert!(
+            resolve_machine_definition_in(
+                &resolved_milo_path.display().to_string(),
+                Some(&empty),
+                None,
+            )
+            .is_err(),
+            "ID-only resolve_machine_definition_in must not read arbitrary file paths"
+        );
+        let cli_loaded = resolve_machine_definition_cli_override_in(
+            &resolved_milo_path.display().to_string(),
+            Some(&empty),
+            None,
+        )
+        .unwrap();
+        assert_eq!(cli_loaded.id, MILO_1_5_MACHINE_ID);
         let _ = std::fs::remove_dir_all(&empty);
     }
 }

@@ -555,8 +555,34 @@ pub fn load_available_machines(extra_search_dir: Option<&Path>) -> Vec<MachineDe
     load_available_machines_in(udir.as_deref(), extra_search_dir)
 }
 
-/// Resolves a machine definition either from a `.machine.toml` path on disk or by ID.
+/// Resolves a machine definition strictly by ID (`generic`, `milo-1.5`, `carvera-air`, or a
+/// discovered custom ID) without probing arbitrary filesystem paths from untrusted project files.
 pub fn resolve_machine_definition_in(
+    id: &str,
+    user_dir: Option<&Path>,
+    extra_search_dir: Option<&Path>,
+) -> Result<MachineDefinition, MachineStorageError> {
+    let needle = id.trim().to_ascii_lowercase();
+    load_available_machines_in(user_dir, extra_search_dir)
+        .into_iter()
+        .find(|m| m.id.to_ascii_lowercase() == needle)
+        .ok_or_else(|| MachineStorageError::UnknownMachine {
+            id_or_path: id.to_string(),
+        })
+}
+
+/// Resolves a machine definition strictly by ID using the default OS user config directory.
+pub fn resolve_machine_definition(
+    id: &str,
+    extra_search_dir: Option<&Path>,
+) -> Result<MachineDefinition, MachineStorageError> {
+    let udir = user_machines_dir();
+    resolve_machine_definition_in(id, udir.as_deref(), extra_search_dir)
+}
+
+/// Resolves an explicit CLI `--machine` / `machines inspect` argument, accepting either a
+/// machine ID or an explicit `.machine.toml` file path provided directly by the operator.
+pub fn resolve_machine_definition_cli_override_in(
     id_or_path: &str,
     user_dir: Option<&Path>,
     extra_search_dir: Option<&Path>,
@@ -565,22 +591,16 @@ pub fn resolve_machine_definition_in(
     if candidate.is_file() {
         return MachineDefinition::load_from_path(candidate);
     }
-    let needle = id_or_path.trim().to_ascii_lowercase();
-    load_available_machines_in(user_dir, extra_search_dir)
-        .into_iter()
-        .find(|m| m.id.to_ascii_lowercase() == needle)
-        .ok_or_else(|| MachineStorageError::UnknownMachine {
-            id_or_path: id_or_path.to_string(),
-        })
+    resolve_machine_definition_in(id_or_path, user_dir, extra_search_dir)
 }
 
-/// Resolves a machine definition using the default OS user config directory.
-pub fn resolve_machine_definition(
+/// Resolves an explicit CLI machine override using the default OS user config directory.
+pub fn resolve_machine_definition_cli_override(
     id_or_path: &str,
     extra_search_dir: Option<&Path>,
 ) -> Result<MachineDefinition, MachineStorageError> {
     let udir = user_machines_dir();
-    resolve_machine_definition_in(id_or_path, udir.as_deref(), extra_search_dir)
+    resolve_machine_definition_cli_override_in(id_or_path, udir.as_deref(), extra_search_dir)
 }
 
 /// Clones any built-in or custom machine (including its complete tool set) into a new

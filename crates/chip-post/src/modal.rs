@@ -65,6 +65,11 @@ impl<'a> LineWriter<'a> {
     }
 
     pub(crate) fn push_code_line(&mut self, raw_line: &str) -> Result<(), PostError> {
+        if raw_line.contains('\r') || raw_line.contains('\n') || raw_line.contains('\0') {
+            return Err(PostError::UnsafeGCodeLine {
+                reason: "control character (newline or NUL) inside single G-code block".to_string(),
+            });
+        }
         let trimmed = raw_line.trim();
         if trimmed.is_empty() {
             return Ok(());
@@ -145,9 +150,9 @@ pub(crate) fn emit_linear_or_rapid(
     let c_dec = profile.coord_decimals;
     let strip = profile.suppress_trailing_zeros;
 
-    let xs = format_decimal(profile.units.scale_from_mm(end_wcs_mm.x), c_dec, strip);
-    let ys = format_decimal(profile.units.scale_from_mm(end_wcs_mm.y), c_dec, strip);
-    let zs = format_decimal(profile.units.scale_from_mm(end_wcs_mm.z), c_dec, strip);
+    let xs = format_finite_decimal("X", profile.units.scale_from_mm(end_wcs_mm.x), c_dec, strip)?;
+    let ys = format_finite_decimal("Y", profile.units.scale_from_mm(end_wcs_mm.y), c_dec, strip)?;
+    let zs = format_finite_decimal("Z", profile.units.scale_from_mm(end_wcs_mm.z), c_dec, strip)?;
 
     let x_changed = modal.x_word.as_deref() != Some(xs.as_str());
     let y_changed = modal.y_word.as_deref() != Some(ys.as_str());
@@ -175,8 +180,11 @@ pub(crate) fn emit_linear_or_rapid(
         modal.z_word = Some(zs);
     }
     if let Some(f_mm) = feed_mm_min {
+        if !f_mm.is_finite() {
+            return Err(PostError::NonFiniteValue { field: "F" });
+        }
         let f_scaled = profile.units.scale_from_mm(f_mm).max(0.1);
-        let fs = format_decimal(f_scaled, profile.feed_decimals, strip);
+        let fs = format_finite_decimal("F", f_scaled, profile.feed_decimals, strip)?;
         if modal.f_word.as_deref() != Some(fs.as_str()) {
             words.push(format!("F{fs}"));
             modal.f_word = Some(fs);
@@ -186,7 +194,22 @@ pub(crate) fn emit_linear_or_rapid(
     writer.push_code_line(&words.join(" "))
 }
 
+pub(crate) fn format_finite_decimal(
+    field: &'static str,
+    val: f64,
+    decimals: usize,
+    suppress_trailing_zeros: bool,
+) -> Result<String, PostError> {
+    if !val.is_finite() {
+        return Err(PostError::NonFiniteValue { field });
+    }
+    Ok(format_decimal(val, decimals, suppress_trailing_zeros))
+}
+
 pub(crate) fn format_decimal(val: f64, decimals: usize, suppress_trailing_zeros: bool) -> String {
+    if !val.is_finite() {
+        return "0".to_string();
+    }
     let clean_val = if val.abs() < 0.5 * 10_f64.powi(-(decimals as i32)) {
         0.0
     } else {
@@ -211,7 +234,7 @@ pub(crate) fn format_decimal(val: f64, decimals: usize, suppress_trailing_zeros:
     }
 }
 
-fn sanitize_comment_ascii(raw: &str) -> String {
+pub(crate) fn sanitize_comment_ascii(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
     for ch in raw.chars() {
         match ch {

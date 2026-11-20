@@ -1,3 +1,5 @@
+use std::path::{Component, Path};
+
 use chip_cam::{
     GeneratedToolpath, Operation, ResolvedRotaryConfig, ResolvedStockGeometry, WcsConfig,
     WcsOriginMode, WorkOffsetSlot,
@@ -5,7 +7,7 @@ use chip_cam::{
 use chip_tools::Tool;
 use serde::{Deserialize, Serialize};
 
-use crate::profile::{PostProfile, ToolChangeMode};
+use crate::profile::{PostError, PostProfile, ToolChangeMode};
 
 /// Single enabled operation + tool + clean toolpath passed to `chip-post`.
 #[derive(Debug, Clone, Copy)]
@@ -94,13 +96,59 @@ pub(crate) fn sanitize_filename_slug(raw: &str) -> String {
     }
 }
 
+/// Sanitizes a post-processor output file extension to strict ASCII alphanumerics (`1..=16` chars),
+/// preventing path-traversal characters (`/`, `\`, `..`) from entering emitted G-code filenames.
+pub fn sanitize_file_extension(raw: &str) -> String {
+    let clean: String = raw
+        .trim()
+        .trim_start_matches('.')
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .take(16)
+        .collect();
+    if clean.is_empty() {
+        "nc".to_string()
+    } else {
+        clean
+    }
+}
+
+/// Validates that `filename` is a single safe basename with no path separators or traversal segments.
+pub fn validate_safe_output_filename(filename: &str) -> Result<&str, PostError> {
+    if filename.is_empty()
+        || filename.contains('/')
+        || filename.contains('\\')
+        || filename.contains('\0')
+    {
+        return Err(PostError::UnsafeOutputFilename {
+            filename: filename.to_string(),
+        });
+    }
+    let mut comps = Path::new(filename).components();
+    match (comps.next(), comps.next()) {
+        (Some(Component::Normal(seg)), None) => {
+            let s = seg.to_string_lossy();
+            if s.is_empty() || s == "." || s == ".." {
+                Err(PostError::UnsafeOutputFilename {
+                    filename: filename.to_string(),
+                })
+            } else {
+                Ok(filename)
+            }
+        }
+        _ => Err(PostError::UnsafeOutputFilename {
+            filename: filename.to_string(),
+        }),
+    }
+}
+
 pub(crate) fn partition_operations<'a>(
     ops: &[OperationPostInput<'a>],
     profile: &PostProfile,
     stem: &str,
 ) -> Vec<PostPartition<'a>> {
     let clean_stem = sanitize_filename_slug(stem);
-    let ext = profile.extension.trim_start_matches('.');
+    let ext = sanitize_file_extension(&profile.extension);
 
     // Count distinct tool numbers across all operations
     let mut unique_tools: Vec<u32> = Vec::new();

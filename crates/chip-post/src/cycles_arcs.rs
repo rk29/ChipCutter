@@ -5,7 +5,10 @@ use chip_cam::{
 use chip_math::DVec3;
 
 use crate::{
-    modal::{LineWriter, ModalState, collapse_spaces, emit_linear_or_rapid, format_decimal},
+    modal::{
+        LineWriter, ModalState, collapse_spaces, emit_linear_or_rapid, format_finite_decimal,
+        sanitize_comment_ascii,
+    },
     profile::{ArcCenterMode, PostError, PostProfile, PostUnits},
 };
 
@@ -70,13 +73,15 @@ pub(crate) fn handle_tool_change(
             writer.push_code_line(&format!("G43 H{}", spec.length_offset))?;
         }
     } else {
+        let safe_desc = sanitize_comment_ascii(spec.tool_desc);
         for tmpl in &profile.tool_change_block {
             if tmpl.contains("G43") && !profile.use_g43_length_offset {
                 continue;
             }
             let line = tmpl
                 .replace("{tool_number}", &spec.tool_number.to_string())
-                .replace("{length_offset}", &spec.length_offset.to_string());
+                .replace("{length_offset}", &spec.length_offset.to_string())
+                .replace("{tool_desc}", &safe_desc);
             let collapsed = collapse_spaces(&line);
             if !collapsed.is_empty() {
                 writer.push_code_line(&collapsed)?;
@@ -180,9 +185,9 @@ pub(crate) fn emit_split_arc_move(
             full_seg.sample_point(k as f64 / sub_count as f64)
         };
 
-        let xs = format_decimal(profile.units.scale_from_mm(sub_end.x), c_dec, strip);
-        let ys = format_decimal(profile.units.scale_from_mm(sub_end.y), c_dec, strip);
-        let zs = format_decimal(profile.units.scale_from_mm(sub_end.z), c_dec, strip);
+        let xs = format_finite_decimal("X", profile.units.scale_from_mm(sub_end.x), c_dec, strip)?;
+        let ys = format_finite_decimal("Y", profile.units.scale_from_mm(sub_end.y), c_dec, strip)?;
+        let zs = format_finite_decimal("Z", profile.units.scale_from_mm(sub_end.z), c_dec, strip)?;
 
         let mut words: Vec<String> = Vec::with_capacity(8);
         if modal.motion_code != Some(g_arc) {
@@ -215,7 +220,7 @@ pub(crate) fn emit_split_arc_move(
         match profile.arc_center_mode {
             ArcCenterMode::IncrementalIjk => {
                 let ijk = center_wcs - sub_start;
-                push_plane_ijk(&mut words, spec.plane, ijk, profile.units, c_dec, strip);
+                push_plane_ijk(&mut words, spec.plane, ijk, profile.units, c_dec, strip)?;
             }
             ArcCenterMode::AbsoluteIjk => {
                 push_plane_ijk(
@@ -225,16 +230,24 @@ pub(crate) fn emit_split_arc_move(
                     profile.units,
                     c_dec,
                     strip,
-                );
+                )?;
             }
             ArcCenterMode::Radius => {
-                let rs = format_decimal(profile.units.scale_from_mm(spec.radius_mm), c_dec, strip);
+                let rs = format_finite_decimal(
+                    "R",
+                    profile.units.scale_from_mm(spec.radius_mm),
+                    c_dec,
+                    strip,
+                )?;
                 words.push(format!("R{rs}"));
             }
         }
 
+        if !spec.feed_mm_min.is_finite() {
+            return Err(PostError::NonFiniteValue { field: "F" });
+        }
         let f_scaled = profile.units.scale_from_mm(spec.feed_mm_min).max(0.1);
-        let fs = format_decimal(f_scaled, profile.feed_decimals, strip);
+        let fs = format_finite_decimal("F", f_scaled, profile.feed_decimals, strip)?;
         if modal.f_word.as_deref() != Some(fs.as_str()) {
             words.push(format!("F{fs}"));
             modal.f_word = Some(fs);
@@ -296,7 +309,7 @@ pub(crate) fn emit_drill_cycle(
                     {
                         writer.push_code_line(&format!(
                             "G4 P{}",
-                            format_decimal(spec.dwell_sec, 2, true)
+                            format_finite_decimal("P", spec.dwell_sec, 2, true)?
                         ))?;
                         emitted_dwell = true;
                     }
@@ -333,19 +346,39 @@ fn emit_native_drill_cycle(
 
     let c_dec = profile.coord_decimals;
     let strip = profile.suppress_trailing_zeros;
-    let xs = format_decimal(profile.units.scale_from_mm(spec.bottom_wcs.x), c_dec, strip);
-    let ys = format_decimal(profile.units.scale_from_mm(spec.bottom_wcs.y), c_dec, strip);
-    let zs = format_decimal(profile.units.scale_from_mm(spec.bottom_wcs.z), c_dec, strip);
-    let rs = format_decimal(
+    let xs = format_finite_decimal(
+        "X",
+        profile.units.scale_from_mm(spec.bottom_wcs.x),
+        c_dec,
+        strip,
+    )?;
+    let ys = format_finite_decimal(
+        "Y",
+        profile.units.scale_from_mm(spec.bottom_wcs.y),
+        c_dec,
+        strip,
+    )?;
+    let zs = format_finite_decimal(
+        "Z",
+        profile.units.scale_from_mm(spec.bottom_wcs.z),
+        c_dec,
+        strip,
+    )?;
+    let rs = format_finite_decimal(
+        "R",
         profile.units.scale_from_mm(spec.r_plane_z_wcs),
         c_dec,
         strip,
-    );
-    let fs = format_decimal(
+    )?;
+    if !spec.feed_mm_min.is_finite() {
+        return Err(PostError::NonFiniteValue { field: "F" });
+    }
+    let fs = format_finite_decimal(
+        "F",
         profile.units.scale_from_mm(spec.feed_mm_min).max(0.1),
         profile.feed_decimals,
         strip,
-    );
+    )?;
 
     let mut words = vec![
         retract_mode.to_string(),
@@ -359,15 +392,22 @@ fn emit_native_drill_cycle(
         spec.kind,
         DrillCycleKind::ChipBreak | DrillCycleKind::DeepPeck
     ) {
-        let qs = format_decimal(
+        if !spec.peck_q_mm.is_finite() {
+            return Err(PostError::NonFiniteValue { field: "Q" });
+        }
+        let qs = format_finite_decimal(
+            "Q",
             profile.units.scale_from_mm(spec.peck_q_mm.max(0.05)),
             c_dec,
             strip,
-        );
+        )?;
         words.push(format!("Q{qs}"));
     }
     if cycle_code == "G82" {
-        words.push(format!("P{}", format_decimal(spec.dwell_sec, 2, true)));
+        words.push(format!(
+            "P{}",
+            format_finite_decimal("P", spec.dwell_sec, 2, true)?
+        ));
     }
     words.push(format!("F{fs}"));
 
@@ -376,13 +416,14 @@ fn emit_native_drill_cycle(
     modal.motion_code = Some(cycle_code);
     modal.x_word = Some(xs);
     modal.y_word = Some(ys);
-    modal.z_word = Some(format_decimal(
+    modal.z_word = Some(format_finite_decimal(
+        "Z",
         profile
             .units
             .scale_from_mm(spec.clear_z_wcs.max(spec.r_plane_z_wcs)),
         c_dec,
         strip,
-    ));
+    )?);
     modal.f_word = Some(fs);
     Ok(())
 }
@@ -394,39 +435,40 @@ fn push_plane_ijk(
     units: PostUnits,
     c_dec: usize,
     strip: bool,
-) {
+) -> Result<(), PostError> {
     match plane {
         ArcPlane::XY => {
             words.push(format!(
                 "I{}",
-                format_decimal(units.scale_from_mm(ijk_mm.x), c_dec, strip)
+                format_finite_decimal("I", units.scale_from_mm(ijk_mm.x), c_dec, strip)?
             ));
             words.push(format!(
                 "J{}",
-                format_decimal(units.scale_from_mm(ijk_mm.y), c_dec, strip)
+                format_finite_decimal("J", units.scale_from_mm(ijk_mm.y), c_dec, strip)?
             ));
         }
         ArcPlane::XZ => {
             words.push(format!(
                 "I{}",
-                format_decimal(units.scale_from_mm(ijk_mm.x), c_dec, strip)
+                format_finite_decimal("I", units.scale_from_mm(ijk_mm.x), c_dec, strip)?
             ));
             words.push(format!(
                 "K{}",
-                format_decimal(units.scale_from_mm(ijk_mm.z), c_dec, strip)
+                format_finite_decimal("K", units.scale_from_mm(ijk_mm.z), c_dec, strip)?
             ));
         }
         ArcPlane::YZ => {
             words.push(format!(
                 "J{}",
-                format_decimal(units.scale_from_mm(ijk_mm.y), c_dec, strip)
+                format_finite_decimal("J", units.scale_from_mm(ijk_mm.y), c_dec, strip)?
             ));
             words.push(format!(
                 "K{}",
-                format_decimal(units.scale_from_mm(ijk_mm.z), c_dec, strip)
+                format_finite_decimal("K", units.scale_from_mm(ijk_mm.z), c_dec, strip)?
             ));
         }
     }
+    Ok(())
 }
 
 fn compute_arc_signed_sweep(

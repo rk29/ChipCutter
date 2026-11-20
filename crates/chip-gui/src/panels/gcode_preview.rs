@@ -5,7 +5,10 @@ use std::{
 };
 
 use chip_cad::CadDocument;
-use chip_post::{PostOutputFile, PostProfile, load_available_post_profiles};
+use chip_post::{
+    PostOutputFile, PostProfile, PostProfileSource, load_available_post_profiles,
+    validate_safe_output_filename,
+};
 use chip_project::{
     ProjectDocument, SetupPostRequest, ToolpathCache, UndoHistory, post_process_project_setup,
 };
@@ -385,6 +388,31 @@ impl GCodePreviewPanelState {
 
         ui.separator();
 
+        if let Some(setup) = project.setups.get(setup_idx)
+            && let Some(active_prof) = self
+                .available_profiles
+                .iter()
+                .find(|p| p.id.eq_ignore_ascii_case(&setup.post_profile))
+            && active_prof.source == PostProfileSource::ProjectOrBundle
+        {
+            let tok = crate::theme::ThemeTokens::from_ui(ui);
+            ui.horizontal_wrapped(|ui| {
+                crate::widgets::status_badge_icon(
+                    ui,
+                    crate::widgets::StatusBadgeKind::NeedsRepick,
+                    None,
+                );
+                ui.colored_label(
+                    tok.warn_fg,
+                    format!(
+                        "Custom post profile '{}' was loaded from this project/bundle — review header, tool-change, and footer G-code before machining.",
+                        active_prof.id
+                    ),
+                );
+            });
+            ui.separator();
+        }
+
         if let Some(err) = &self.last_error {
             ui.weak(err);
             return action;
@@ -484,7 +512,14 @@ impl GCodePreviewPanelState {
             }
         } else if let Some(dir) = rfd::FileDialog::new().pick_folder() {
             for f in &self.cached_files {
-                let dest = dir.join(&f.filename);
+                let safe_name = match validate_safe_output_filename(&f.filename) {
+                    Ok(name) => name,
+                    Err(e) => {
+                        logs.push(format!("ERROR skipping unsafe filename: {e}"));
+                        continue;
+                    }
+                };
+                let dest = dir.join(safe_name);
                 match std::fs::write(&dest, &f.content) {
                     Ok(()) => logs.push(format!(
                         "Exported '{}' ({} lines).",

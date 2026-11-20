@@ -12,7 +12,7 @@
 ( ========================================================== )
 G90 G94 G17 G21
 G54
-( 4-Axis Helical Finishing [Auto-Tilt] - Simultaneous 4-Axis [X+Y+Z+A )
+( 4-Axis Helical Finishing [Auto-Tilt] - Simultaneous 4-Axis [X+Y+Z+A] )
 ( Tool T4: 6mm 2FL Carbide Ball Endmill [D6.000 mm] )
 M5
 T4 M6
