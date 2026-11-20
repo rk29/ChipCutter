@@ -21,7 +21,7 @@ pub use fixtures::{
     sample_multi_feature_bracket_step, sample_revised_part_pair_step,
     tutorial_adaptive_pocket_step, tutorial_chamfer_engrave_block_step,
     tutorial_contour_plate_step, tutorial_drill_bore_plate_step, tutorial_facing_billet_step,
-    tutorial_pocket_block_step,
+    tutorial_indexed_4side_block_step, tutorial_pocket_block_step,
 };
 pub use kernel::{CadError, CadKernel};
 pub use mesh::{

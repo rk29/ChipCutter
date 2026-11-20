@@ -150,17 +150,17 @@ All core geometry, CAM, simulation, post-processing, and project persistence cra
 | [`crates/chip-gui`](crates/chip-gui) | `eframe` + `egui_tiles` + `wgpu` 4x MSAA 3D/2D CAD/CAM desktop application |
 | [`posts/`](posts) | Built-in TOML post-processor profiles (`grbl`, `grblhal_atc`, `linuxcnc`, `linuxcnc_4axis`, `grblhal_4axis`, `grbl_rotary_wrap`) |
 | [`specs/`](specs) | Authoritative subsystem architecture & algorithm specifications (`00-overview.md` – `11-sketches-vectors.md`) |
-| [`plans/`](plans) | Milestone 1–21 engineering implementation plans (`01-milestone-1-plan.md` – `21-milestone-21-plan.md`) |
+| [`plans/`](plans) | Milestone 1–24 engineering implementation plans (`01-milestone-1-plan.md` – `24-milestone-24-plan.md`) |
 
 ---
 
 ## Documentation
 
-- [**`docs/tutorials/`**](docs/tutorials/README.md) — Illustrated step-by-step Getting Started, 2.5D, 3D Mesh Surfacing, & 4th-Axis Rotary tutorials (`00`–`10`)
+- [**`docs/tutorials/`**](docs/tutorials/README.md) — Illustrated step-by-step Getting Started, 2.5D, 3-Axis Surface, 4th-Axis Rotary, & Production Workflow tutorials (`00`–`14`)
 - [**`ARCHITECTURE.md`**](ARCHITECTURE.md) — End-to-end data pipeline, crate dependency graph, threading/caching model, and 3D render passes
 - [**`DEVELOPMENT.md`**](DEVELOPMENT.md) — Platform build prerequisites, native Linux/macOS/Windows setup, and headless CI instructions
 - [**`specs/00-overview.md`**](specs/00-overview.md) — Product scope, non-goals, and full specification index (`00` through `11`)
-- [**`specs/10-roadmap.md`**](specs/10-roadmap.md) — Completed Phase 1–5 (`M1`–`M21`) milestones and future phases
+- [**`specs/10-roadmap.md`**](specs/10-roadmap.md) — Completed Phase 1–6 (`M1`–`M24`) milestones and future phases
 - [**`AGENTS.md`**](AGENTS.md) — Architectural invariants and contributor guidelines
 
 ---

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Repeatable headless tutorial screenshot capture pipeline for ChipCutter Phase 4.
+# Repeatable headless tutorial screenshot capture pipeline for ChipCutter Phases 4 & 6.
 #
 # Usage:
-#   ./scripts/capture_tutorial_screenshots.sh [--milestone 13|14|15|all] [--tutorial <slug>] [--theme dark|light] [--debug]
+#   ./scripts/capture_tutorial_screenshots.sh [--milestone 13|14|15|22|23|24|all] [--tutorial <slug>] [--theme dark|light] [--debug]
 #
 # Renders offscreen inside Xvfb using Vulkan Lavapipe (never opens windows on a host Wayland session).
 
@@ -537,6 +537,418 @@ capture_07_vcarve_inlays() {
     --capture-sim-progress 1.0
 }
 
+capture_08_3d_adaptive_waterline() {
+  local dir="docs/images/tutorials/08-3d-adaptive-waterline"
+  local mesh="$REPO_ROOT/docs/tutorials/assets/08-sculpted-dome.stl"
+  local proj_empty="$TMP_PROJ_DIR/08-adaptive-waterline-empty.chip.toml"
+  local proj_full="$TMP_PROJ_DIR/08-adaptive-waterline.chip.toml"
+
+  "$CLI_BIN" generate-sample-step "$mesh" --tutorial 08-3d-adaptive-waterline --empty-project --project-out "$proj_empty"
+  "$CLI_BIN" generate-sample-step "$mesh" --tutorial 08-3d-adaptive-waterline --project-out "$proj_full"
+
+  # 1. Bare 08-sculpted-dome.stl imported with Setup Stock/WCS
+  capture_shot "$dir/01-mesh-import-stock.png" \
+    "$proj_empty" \
+    --capture-view iso \
+    --capture-focus setup:stock \
+    --capture-sim-stock false \
+    --capture-sim-cutter false
+
+  # 2. Op 1: 3D Adaptive Roughing Passes tab + generated trochoidal roughing toolpath
+  capture_shot "$dir/02-adaptive3d-passes.png" \
+    "$proj_full" \
+    --capture-generate \
+    --capture-view iso \
+    --capture-focus op:0:passes \
+    --capture-isolate-op \
+    --capture-sim-stock false \
+    --capture-sim-cutter false
+
+  # 3. Op 2: 3D Waterline / Z-Level Passes tab + dense contour Z-level toolpath
+  capture_shot "$dir/03-waterline3d-passes.png" \
+    "$proj_full" \
+    --capture-generate \
+    --capture-view iso \
+    --capture-focus op:1:passes \
+    --capture-isolate-op \
+    --capture-sim-stock false \
+    --capture-sim-cutter false
+
+  # 4. 3D Z-dexel machined stock colored by operation with Verified Crash-Free
+  capture_shot "$dir/04-simulation-verified.png" \
+    "$proj_full" \
+    --capture-generate \
+    --capture-view iso \
+    --capture-focus op:1:passes \
+    --capture-pane sim \
+    --capture-sim-stock true \
+    --capture-sim-cutter true \
+    --capture-sim-progress 0.98
+
+  # 5. Bottom G-Code Preview tab (LinuxCNC ATC T1 -> T4)
+  capture_shot "$dir/05-gcode-preview.png" \
+    "$proj_full" \
+    --capture-generate \
+    --capture-view iso \
+    --capture-focus op:1:passes \
+    --capture-pane gcode \
+    --capture-post linuxcnc \
+    --capture-sim-stock true \
+    --capture-sim-cutter true \
+    --capture-sim-progress 1.0
+}
+
+capture_09_3d_surface_finishing() {
+  local dir="docs/images/tutorials/09-3d-surface-finishing"
+  local mesh="$REPO_ROOT/docs/tutorials/assets/09-relief-wave.obj"
+  local proj_empty="$TMP_PROJ_DIR/09-surface-finishing-empty.chip.toml"
+  local proj_full="$TMP_PROJ_DIR/09-surface-finishing.chip.toml"
+
+  "$CLI_BIN" generate-sample-step "$mesh" --tutorial 09-3d-surface-finishing --empty-project --project-out "$proj_empty"
+  "$CLI_BIN" generate-sample-step "$mesh" --tutorial 09-3d-surface-finishing --project-out "$proj_full"
+
+  # 1. 09-relief-wave.obj imported in Setup 1 with stock & WCS
+  capture_shot "$dir/01-relief-wave-import.png" \
+    "$proj_empty" \
+    --capture-view iso \
+    --capture-focus setup:stock \
+    --capture-sim-stock false \
+    --capture-sim-cutter false
+
+  # 2. 3D Parallel Finishing Inspector + raster finishing paths
+  capture_shot "$dir/02-parallel3d-passes.png" \
+    "$proj_full" \
+    --capture-generate \
+    --capture-view iso \
+    --capture-focus op:1:passes \
+    --capture-isolate-op \
+    --capture-sim-stock false \
+    --capture-sim-cutter false
+
+  # 3. 3D Constant-Scallop Inspector + geodesic iso-contours & 3D Rest Machining card
+  capture_shot "$dir/03-scallop3d-rest.png" \
+    "$proj_full" \
+    --capture-generate \
+    --capture-view iso \
+    --capture-focus op:2:passes \
+    --capture-isolate-op \
+    --capture-sim-stock false \
+    --capture-sim-cutter false
+
+  # 4. 3D Pencil Cleanup on 08-sculpted-dome.stl (bi-tangent pedestal-dome crease path)
+  capture_shot "$dir/04-pencil3d-fillet.png" \
+    --sample mesh-dome \
+    --capture-generate \
+    --capture-view iso \
+    --capture-focus op:2:passes \
+    --capture-isolate-op \
+    --capture-sim-stock false \
+    --capture-sim-cutter false
+
+  # 5. Final machined Relief Wave Z-dexel stock with Verified Crash-Free
+  capture_shot "$dir/05-finishing-simulation.png" \
+    "$proj_full" \
+    --capture-generate \
+    --capture-view iso \
+    --capture-focus op:2:passes \
+    --capture-pane sim \
+    --capture-sim-stock true \
+    --capture-sim-cutter true \
+    --capture-sim-progress 1.0
+}
+
+capture_10_rotary_wrapping_surfacing() {
+  local dir="docs/images/tutorials/10-rotary-wrapping-surfacing"
+  local shaft="$REPO_ROOT/docs/tutorials/assets/09-rotary-shaft.stl"
+  local proj_wrap="$TMP_PROJ_DIR/10-rotary-wrap.chip.toml"
+  local proj_axial="$TMP_PROJ_DIR/10-rotary-axial.chip.toml"
+
+  "$CLI_BIN" generate-sample-step "$proj_wrap" --tutorial 10-rotary-wrap
+  "$CLI_BIN" generate-sample-step "$shaft" --tutorial 10-rotary-axial --project-out "$proj_axial"
+
+  # 1. Setup 1 -> Rotary tab showing 2-Linear + Rotary, X-Axis (A), chuck & clearance gizmo
+  capture_shot "$dir/01-setup-rotary-tab.png" \
+    "$proj_wrap" \
+    --capture-view iso \
+    --capture-focus setup:rotary \
+    --capture-sim-stock false \
+    --capture-sim-cutter false
+
+  # 2. Wrapped V-Carve 'CHIP' with Wrap 2D card + wrapped 3D toolpath
+  capture_shot "$dir/02-wrap2d-vcarve-inspector.png" \
+    "$proj_wrap" \
+    --capture-generate \
+    --capture-view iso \
+    --capture-focus op:0:passes \
+    --capture-isolate-op \
+    --capture-sim-stock false \
+    --capture-sim-cutter false
+
+  # 3. CylindricalStock simulation of wrapped 'CHIP' + flute pocket
+  capture_shot "$dir/03-wrap2d-sim-and-m6.png" \
+    "$proj_wrap" \
+    --capture-generate \
+    --capture-view iso \
+    --capture-focus op:0:passes \
+    --capture-pane sim \
+    --capture-sim-stock true \
+    --capture-sim-cutter true \
+    --capture-sim-progress 0.96
+
+  # 4. 4th-Axis Rotary Surfacing Inspector in Axial Parallel + partial angular sector
+  capture_shot "$dir/04-rotary2linear-axial-parallel.png" \
+    "$proj_axial" \
+    --capture-generate \
+    --capture-view iso \
+    --capture-focus op:0:passes \
+    --capture-isolate-op \
+    --capture-sim-stock false \
+    --capture-sim-cutter false
+
+  # 5. G-Code Preview set to grbl_rotary_wrap (swapped Y axis, zero A words)
+  capture_shot "$dir/05-gcode-grbl-wrap.png" \
+    "$proj_wrap" \
+    --capture-generate \
+    --capture-view iso \
+    --capture-focus op:0:passes \
+    --capture-pane gcode \
+    --capture-post grbl_rotary_wrap \
+    --capture-sim-stock true \
+    --capture-sim-cutter true \
+    --capture-sim-progress 1.0
+}
+
+capture_11_indexed_3plus1_milling() {
+  local dir="docs/images/tutorials/11-indexed-3plus1-milling"
+  local step_block="$REPO_ROOT/docs/tutorials/assets/11-indexed-multiface-block.step"
+  local shaft="$REPO_ROOT/docs/tutorials/assets/09-rotary-shaft.stl"
+  local proj_step_empty="$TMP_PROJ_DIR/11-indexed-step-empty.chip.toml"
+  local proj_step_full="$TMP_PROJ_DIR/11-indexed-step.chip.toml"
+  local proj_shaft="$TMP_PROJ_DIR/11-indexed-shaft.chip.toml"
+
+  "$CLI_BIN" generate-sample-step "$step_block" --tutorial 11-indexed-step --empty-project --project-out "$proj_step_empty"
+  "$CLI_BIN" generate-sample-step "$step_block" --tutorial 11-indexed-step --project-out "$proj_step_full"
+  "$CLI_BIN" generate-sample-step "$shaft" --tutorial 11-indexed-shaft --project-out "$proj_shaft"
+
+  # 1. 11-indexed-multiface-block.step chucked in square bar stock with rotary centerline & clearance cage
+  capture_shot "$dir/01-indexed-step-setup.png" \
+    "$proj_step_empty" \
+    --capture-view iso \
+    --capture-focus setup:rotary \
+    --capture-sim-stock false \
+    --capture-sim-cutter false
+
+  # 2. 4th-Axis Indexing / Wrapping card highlighting Quick Index and Align to Selected 3D Face
+  capture_shot "$dir/02-align-3d-face-inspector.png" \
+    "$proj_step_full" \
+    --capture-generate \
+    --capture-view iso \
+    --capture-focus op:1:geometry \
+    --capture-sim-stock false \
+    --capture-sim-cutter false
+
+  # 3. Generated multi-face 3+1 pockets & holes around all indexed faces
+  capture_shot "$dir/03-multi-face-toolpaths.png" \
+    "$proj_step_full" \
+    --capture-generate \
+    --capture-view iso \
+    --capture-focus op:0:passes \
+    --capture-sim-stock false \
+    --capture-sim-cutter false
+
+  # 4. CylindricalStock simulation of 4 wrenching flats + continuous spiral collar/cam
+  capture_shot "$dir/04-rotary-shaft-flats-sim.png" \
+    "$proj_shaft" \
+    --capture-generate \
+    --capture-view iso \
+    --capture-focus op:1:passes \
+    --capture-pane sim \
+    --capture-sim-stock true \
+    --capture-sim-cutter true \
+    --capture-sim-progress 0.98
+
+  # 5. G-Code Preview (linuxcnc_4axis) showing clearance retracts + G0 A90/A180/A270 index blocks
+  capture_shot "$dir/05-gcode-indexed-linuxcnc.png" \
+    "$proj_step_full" \
+    --capture-generate \
+    --capture-view iso \
+    --capture-focus op:0:passes \
+    --capture-pane gcode \
+    --capture-post linuxcnc_4axis \
+    --capture-sim-stock true \
+    --capture-sim-cutter true \
+    --capture-sim-progress 1.0
+}
+
+capture_12_simultaneous_4axis_milling() {
+  local dir="docs/images/tutorials/12-simultaneous-4axis-milling"
+  local mesh="$REPO_ROOT/docs/tutorials/assets/10-helical-flute-shaft.stl"
+  local proj_empty="$TMP_PROJ_DIR/12-sim-4axis-empty.chip.toml"
+  local proj_full="$TMP_PROJ_DIR/12-sim-4axis.chip.toml"
+
+  "$CLI_BIN" generate-sample-step "$mesh" --tutorial 12-simultaneous-4axis --empty-project --project-out "$proj_empty"
+  "$CLI_BIN" generate-sample-step "$mesh" --tutorial 12-simultaneous-4axis --project-out "$proj_full"
+
+  # 1. 10-helical-flute-shaft.stl in Simultaneous 4-Axis (X+Y+Z+Rotary) Setup
+  capture_shot "$dir/01-helical-setup-sim4ax.png" \
+    "$proj_empty" \
+    --capture-view iso \
+    --capture-focus setup:rotary \
+    --capture-sim-stock false \
+    --capture-sim-cutter false
+
+  # 2. Simultaneous 4-Axis Inspector (Auto Surface-Normal Tilt + Simultaneous Spiral)
+  capture_shot "$dir/02-auto-tilt-spiral-passes.png" \
+    "$proj_full" \
+    --capture-generate \
+    --capture-view iso \
+    --capture-focus op:0:passes \
+    --capture-isolate-op \
+    --capture-sim-stock false \
+    --capture-sim-cutter false
+
+  # 3. Simultaneous 4-Axis Inspector (Axial / Helical Flowline + Fixed Lateral Offset)
+  capture_shot "$dir/03-fixed-offset-flowline.png" \
+    "$proj_full" \
+    --capture-generate \
+    --capture-view iso \
+    --capture-focus op:1:passes \
+    --capture-isolate-op \
+    --capture-sim-stock false \
+    --capture-sim-cutter false
+
+  # 4. Live cylindrical simulation highlighting off-centerline X, Y != 0, Z, A HUD readout
+  capture_shot "$dir/04-simulation-xyza-hud.png" \
+    "$proj_full" \
+    --capture-generate \
+    --capture-view iso \
+    --capture-focus op:0:passes \
+    --capture-pane sim \
+    --capture-sim-stock true \
+    --capture-sim-cutter true \
+    --capture-sim-progress 0.85
+
+  # 5. G-Code Preview (grblhal_4axis) inspecting G93 inverse-time X/Y/Z/A blocks
+  capture_shot "$dir/05-gcode-g93-grblhal.png" \
+    "$proj_full" \
+    --capture-generate \
+    --capture-view iso \
+    --capture-focus op:0:passes \
+    --capture-pane gcode \
+    --capture-post grblhal_4axis \
+    --capture-sim-stock true \
+    --capture-sim-cutter true \
+    --capture-sim-progress 1.0
+}
+
+capture_13_pure2d_dxf_svg_workflow() {
+  local dir="docs/images/tutorials/13-pure2d-dxf-svg-workflow"
+  local dxf="$REPO_ROOT/docs/tutorials/assets/13-router-panel.dxf"
+  local proj_empty="$TMP_PROJ_DIR/13-pure2d-empty.chip.toml"
+  local proj_full="$TMP_PROJ_DIR/13-pure2d.chip.toml"
+
+  "$CLI_BIN" generate-sample-step "$dxf" --tutorial 13-pure2d-dxf --empty-project --project-out "$proj_empty"
+  "$CLI_BIN" generate-sample-step "$dxf" --tutorial 13-pure2d-dxf --project-out "$proj_full"
+
+  # 1. Imported 13-router-panel.dxf in Pure-2D job with Sketch Inspector focused
+  capture_shot "$dir/01-dxf-import-inspector.png" \
+    "$proj_empty" \
+    --capture-view top \
+    --capture-focus sketch:0 \
+    --capture-sim-stock false \
+    --capture-sim-cutter false
+
+  # 2. Setup 1 -> Stock showing Pure-2D virtual sheet Z thickness (6.0 mm) & Stock Top WCS origin
+  capture_shot "$dir/02-pure2d-sheet-stock.png" \
+    "$proj_empty" \
+    --capture-view iso \
+    --capture-focus setup:stock \
+    --capture-sim-stock false \
+    --capture-sim-cutter false \
+    --capture-z-planes true
+
+  # 3. All 4 Pure-2D operations generated with clean arc toolpaths (Drilling, Island Pocket, Vent Slot, Outer Profile + Tabs)
+  capture_shot "$dir/03-operations-assigned.png" \
+    "$proj_full" \
+    --capture-generate \
+    --capture-view iso \
+    --capture-focus op:3:passes \
+    --capture-sim-stock false \
+    --capture-sim-cutter false
+
+  # 4. 3D Z-dexel virtual-sheet stock removal with Verified Crash-Free
+  capture_shot "$dir/04-pure2d-simulation.png" \
+    "$proj_full" \
+    --capture-generate \
+    --capture-view iso \
+    --capture-focus op:3:passes \
+    --capture-pane sim \
+    --capture-sim-stock true \
+    --capture-sim-cutter true \
+    --capture-sim-progress 0.96
+
+  # 5. G-Code Preview tab (grbl) + portable .chipz bundle workflow
+  capture_shot "$dir/05-gcode-and-chipz.png" \
+    "$proj_full" \
+    --capture-generate \
+    --capture-view iso \
+    --capture-focus op:3:passes \
+    --capture-pane gcode \
+    --capture-post grbl \
+    --capture-sim-stock true \
+    --capture-sim-cutter true \
+    --capture-sim-progress 1.0
+}
+
+capture_14_associative_step_reload() {
+  local dir="docs/images/tutorials/14-associative-step-reload"
+  local step_v1="$REPO_ROOT/docs/tutorials/assets/14-bracket-v1.step"
+  local step_v2="$REPO_ROOT/docs/tutorials/assets/14-bracket-v2.step"
+  local proj_v1="$TMP_PROJ_DIR/14-bracket-v1.chip.toml"
+  local proj_v2="$TMP_PROJ_DIR/14-bracket-v2.chip.toml"
+
+  "$CLI_BIN" generate-sample-step "$step_v1" --tutorial 14-reload-v1 --project-out "$proj_v1"
+  "$CLI_BIN" generate-sample-step "$step_v2" --tutorial 14-reload-v2 --project-out "$proj_v2"
+
+  # 1. revision-v1 loaded and generated with all operations Clean and Verified Crash-Free
+  capture_shot "$dir/01-revision-v1-clean.png" \
+    "$proj_v1" \
+    --capture-generate \
+    --capture-view iso \
+    --capture-focus op:1:passes \
+    --capture-pane sim \
+    --capture-sim-stock true \
+    --capture-sim-cutter true \
+    --capture-sim-progress 1.0
+
+  # 2. After associative reload to revision-v2 showing non-blocking reload summary banner, Dirty ops, & NeedsRepick
+  capture_shot "$dir/02-revision-v2-rebind-banner.png" \
+    --sample revision-v2 \
+    --capture-view iso \
+    --capture-focus op:1:passes \
+    --capture-sim-stock false \
+    --capture-sim-cutter false
+
+  # 3. Focusing the NeedsRepick operation showing Clear Orphaned & Re-Pick in 3D recovery card
+  capture_shot "$dir/03-needs-repick-inspector.png" \
+    --sample revision-v2 \
+    --capture-view iso \
+    --capture-focus op:4:geometry \
+    --capture-sim-stock false \
+    --capture-sim-cutter false
+
+  # 4. Regenerated v2 toolpaths verified crash-free on the updated STEP solid
+  capture_shot "$dir/04-rebuilt-v2-simulation.png" \
+    "$proj_v2" \
+    --capture-generate \
+    --capture-view iso \
+    --capture-focus op:1:passes \
+    --capture-pane sim \
+    --capture-sim-stock true \
+    --capture-sim-cutter true \
+    --capture-sim-progress 1.0
+}
+
 if [[ -n "$TUTORIAL" ]]; then
   case "$TUTORIAL" in
     00-getting-started)
@@ -563,6 +975,27 @@ if [[ -n "$TUTORIAL" ]]; then
     07-vcarve-inlays)
       capture_07_vcarve_inlays
       ;;
+    08-3d-adaptive-waterline)
+      capture_08_3d_adaptive_waterline
+      ;;
+    09-3d-surface-finishing)
+      capture_09_3d_surface_finishing
+      ;;
+    10-rotary-wrapping-surfacing)
+      capture_10_rotary_wrapping_surfacing
+      ;;
+    11-indexed-3plus1-milling)
+      capture_11_indexed_3plus1_milling
+      ;;
+    12-simultaneous-4axis-milling)
+      capture_12_simultaneous_4axis_milling
+      ;;
+    13-pure2d-dxf-svg-workflow)
+      capture_13_pure2d_dxf_svg_workflow
+      ;;
+    14-associative-step-reload)
+      capture_14_associative_step_reload
+      ;;
     *)
       echo "Unknown tutorial slug: $TUTORIAL" >&2
       exit 2
@@ -584,6 +1017,19 @@ else
       capture_06_chamfer_curve_trace
       capture_07_vcarve_inlays
       ;;
+    22)
+      capture_08_3d_adaptive_waterline
+      capture_09_3d_surface_finishing
+      ;;
+    23)
+      capture_10_rotary_wrapping_surfacing
+      capture_11_indexed_3plus1_milling
+      capture_12_simultaneous_4axis_milling
+      ;;
+    24)
+      capture_13_pure2d_dxf_svg_workflow
+      capture_14_associative_step_reload
+      ;;
     all)
       capture_00_getting_started
       capture_01_facing
@@ -593,9 +1039,16 @@ else
       capture_05_adaptive_rest_machining
       capture_06_chamfer_curve_trace
       capture_07_vcarve_inlays
+      capture_08_3d_adaptive_waterline
+      capture_09_3d_surface_finishing
+      capture_10_rotary_wrapping_surfacing
+      capture_11_indexed_3plus1_milling
+      capture_12_simultaneous_4axis_milling
+      capture_13_pure2d_dxf_svg_workflow
+      capture_14_associative_step_reload
       ;;
     *)
-      echo "Unsupported milestone: $MILESTONE (available: 13, 14, 15, all)" >&2
+      echo "Unsupported milestone: $MILESTONE (available: 13, 14, 15, 22, 23, 24, all)" >&2
       exit 2
       ;;
   esac

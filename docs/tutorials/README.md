@@ -32,15 +32,19 @@ Work through the guides in order if you are new to ChipCutter, or jump directly 
 | 05 | [**2D Adaptive Clearing & 2.5D Rest Machining**](05-adaptive-rest-machining.md) | Constant-engagement trochoidal roughing (`optimal_load`), radial chip-thinning, `FromPrecedingOperations` DAG waves | [`assets/05-adaptive-pocket.step`](assets/05-adaptive-pocket.step) (`100×80×20 mm` deep sharp-corner pocket) | **Available** |
 | 06 | [**Edge Chamfering & 2D Curve Trace / Engraving**](06-chamfer-curve-trace.md) | Modeled `45°` bevel faces vs. sharp unmodeled edges (`tip_offset`, `Floor Guard`), 1-pass single-line Hershey engraving | [`assets/06-chamfer-engrave-block.step`](assets/06-chamfer-engrave-block.step) (`45°` front bevel + sharp back edge) | **Available** |
 | 07 | [**3D V-Carving, Two-Tool Flat Clearance, & Mated V-Inlays**](07-vcarve-inlays.md) | TrueType outline text, medial-axis 3D corner climbs, Stage 1 Flat + Stage 2 V-Bit clearance, mirrored Male V-Inlay plugs | Blank Pure-2D Sketch (`"CHIP"` TrueType text) | **Available** |
-| 08 | [**3D Mesh Surfacing (`STL` / `OBJ` / `3MF`)**](08-3d-mesh-surfacing.md) | Triangle mesh import, 3D Adaptive Roughing, 3D Waterline, 3D Parallel Raster, 3D Constant-Scallop, & 3D Pencil Cleanup | [`assets/08-sculpted-dome.stl`](assets/08-sculpted-dome.stl) (`Ø50 mm` dome on `80×80 mm` pedestal) | **Available** |
-| 09 | [**4th-Axis Rotary Wrapping, Spiral Surfacing, & Indexed `3+1`**](09-4th-axis-rotary-wrapping-indexing.md) | Rotary Setup (`A`/`B`/`C`, chuck & clearance), `Z+X+A` 2D cylindrical wrapping (`grbl_rotary_wrap`), continuous rotary spiral, `Indexed 3+1` flats | [`assets/09-rotary-shaft.stl`](assets/09-rotary-shaft.stl) (`Ø40×80 mm` shaft w/ flats, groove, & 3-lobe cam) | **Available** |
-| 10 | [**Simultaneous 4-Axis Milling (`X + Y + Z + A/B`)**](10-simultaneous-4axis-milling.md) | Full simultaneous `X+Y+Z+A` off-centerline auto surface-normal tilt smoothing, `G93` inverse-time feeds, cylindrical gouge/holder verification | [`assets/10-helical-flute-shaft.stl`](assets/10-helical-flute-shaft.stl) (`Ø40×80 mm` 3-start helical flute shaft) | **Available** |
+| 08 | [**3D Adaptive Roughing & 3D Waterline / Z-Level**](08-3d-adaptive-waterline.md) | Triangle mesh import (`STL`/`OBJ`/`3MF`), watertightness diagnostics, `Adaptive3D` + 2D sketch containment, `Waterline3D` adaptive shallow Z-stepdowns | [`assets/08-sculpted-dome.stl`](assets/08-sculpted-dome.stl) (`Ø50 mm` dome on `80×80 mm` pedestal) | **Available** |
+| 09 | [**3D Surface Finishing: Parallel Raster, Constant-Scallop, & Pencil Cleanup**](09-3d-surface-finishing.md) | `Parallel3D` (`Pass Angle`, `Cross-Pass +90°`, `Slope Range`), `Scallop3D` (`Inside-Out`, `Min/Max Stepover`), 3D Rest Machining, `Pencil3D` fillet cleanup | [`assets/09-relief-wave.obj`](assets/09-relief-wave.obj) (`80×60×15 mm` relief wave) & [`assets/08-sculpted-dome.stl`](assets/08-sculpted-dome.stl) | **Available** |
+| 10 | [**4th-Axis Rotary Wrapping & Continuous Surfacing (`Z+X+A` / `Z+Y+B`)**](10-rotary-wrapping-surfacing.md) | Setup Rotary (`X/A` & `Y/B`, chuck & clearance), `WrapCylinder` (V-Carve/Pocket/Contour on `linuxcnc_4axis` & `grbl_rotary_wrap`), `Rotary2Linear` (`ContinuousSpiral` & `AxialParallel`) | Pure-2D Cylinder Sketch & [`assets/09-rotary-shaft.stl`](assets/09-rotary-shaft.stl) | **Available** |
+| 11 | [**Indexed `3+1` Multi-Face Milling (STEP Face Alignment & Rotary Flats)**](11-indexed-3plus1-milling.md) | Cardinal `0°/90°/180°/270°` wrench flats, prismatic & angled STEP multi-face chucking, **Align to Selected 3D Face**, safe clearance-radius retracts | [`assets/11-indexed-multiface-block.step`](assets/11-indexed-multiface-block.step) & [`assets/09-rotary-shaft.stl`](assets/09-rotary-shaft.stl) | **Available** |
+| 12 | [**Simultaneous 4-Axis Milling (`X + Y + Z + A/B`)**](12-simultaneous-4axis-milling.md) | Full simultaneous `X+Y+Z+A/B` (`Rotary4AxisSim`), `Auto Surface-Normal Tilt` vs. `Fixed Lateral Offset`, `SimultaneousSpiral` vs. `HelicalFlowline`, `G93` inverse-time feeds | [`assets/10-helical-flute-shaft.stl`](assets/10-helical-flute-shaft.stl) (`Ø40×80 mm` 3-start helical flute shaft) | **Available** |
+| 13 | [**Pure-2D `DXF` / `SVG` Vector Import & Portable `.chipz` Bundles**](13-pure2d-dxf-svg-workflow.md) | Zero-STEP Pure-2D jobs, `.dxf`/`.svg` units & SVG DPI, sub-layers, `0.05 mm` gap healing, island nesting, virtual sheet stock, `.chipz` bundle packing & headless build | [`assets/13-router-panel.dxf`](assets/13-router-panel.dxf) (`160×100 mm` multi-layer router front panel) | **Available** |
+| 14 | [**Associative STEP Revision Reload (`Ctrl+R`) & Re-Pick Recovery**](14-associative-step-reload.md) | Associative STEP reload (`Ctrl+R` / `reload-step`), WCS-first `GeometricSignature` fuzzy re-matching, selective `Dirty` regeneration, 1-click `NeedsRepick` recovery | [`assets/14-bracket-v1.step`](assets/14-bracket-v1.step) → [`assets/14-bracket-v2.step`](assets/14-bracket-v2.step) | **Available** |
 
 ---
 
-## Minimal Tutorial STEP Assets (`docs/tutorials/assets/`)
+## Minimal Tutorial Starter Assets (`docs/tutorials/assets/`)
 
-Each 3D operation tutorial starts from an **empty project** and loads a minimal STEP model containing only the geometric features required to practice that strategy—keeping the CAM Browser uncluttered:
+Each tutorial starts from an **empty project** (or a clean seeded revision) and loads a minimal STEP solid, 3D triangle mesh, or 2D DXF drawing containing only the geometric features required to practice that strategy—keeping the CAM Browser uncluttered:
 
 | Asset File | Dimensions & Features | Reproducible CLI Generator |
 |---|---|---|
@@ -50,11 +54,16 @@ Each 3D operation tutorial starts from an **empty project** and loads a minimal 
 | [`04-drill-bore-plate.step`](assets/04-drill-bore-plate.step) | `100 × 70 × 16 mm` plate with 4× `Ø6 mm` through-holes + 1× `Ø18 mm` blind bore | `chipcutter generate-sample-step <out.step> --tutorial 04-drill-bore` |
 | [`05-adaptive-pocket.step`](assets/05-adaptive-pocket.step) | `100 × 80 × 20 mm` block with 1 deep `10 mm` sharp-corner pocket + `Ø16 mm` boss | `chipcutter generate-sample-step <out.step> --tutorial 05-adaptive-rest` |
 | [`06-chamfer-engrave-block.step`](assets/06-chamfer-engrave-block.step) | `100 × 70 × 18 mm` block with 1 modeled `45° × 1.5 mm` front bevel & sharp back edge | `chipcutter generate-sample-step <out.step> --tutorial 06-chamfer-trace` |
-| [`08-sculpted-dome.stl`](assets/08-sculpted-dome.stl) | Watertight `80 × 80 × 25 mm` sculpted dome on pedestal (`STL` mesh) | `chipcutter generate-sample-step <out.stl> --tutorial 08-mesh-surfacing` |
-| [`09-rotary-shaft.stl`](assets/09-rotary-shaft.stl) | Watertight `Ø40 × 80 mm` shaft with 4 wrench flats, collar groove, & 3-lobe cam | `chipcutter generate-sample-step <out.stl> --tutorial 09-rotary-shaft` |
-| [`10-helical-flute-shaft.stl`](assets/10-helical-flute-shaft.stl) | Watertight `Ø40 × 80 mm` 3-start helical impeller/flute shaft | `chipcutter generate-sample-step <out.stl> --tutorial 10-simultaneous-4axis` |
+| [`08-sculpted-dome.stl`](assets/08-sculpted-dome.stl) | Watertight `80 × 80 × 25 mm` sculpted dome on pedestal (`STL` mesh) | `chipcutter generate-sample-step <out.stl> --tutorial 08-3d-adaptive-waterline` |
+| [`09-relief-wave.obj`](assets/09-relief-wave.obj) | Watertight `80 × 60 × 15 mm` sinusoidal sculpted relief wave (`OBJ` mesh) | `chipcutter generate-sample-step <out.obj> --tutorial 09-3d-surface-finishing` |
+| [`09-rotary-shaft.stl`](assets/09-rotary-shaft.stl) | Watertight `Ø40 × 80 mm` shaft with 4 wrench flats, collar groove, & 3-lobe cam | `chipcutter generate-sample-step <out.stl> --tutorial 10-rotary-axial` |
+| [`11-indexed-multiface-block.step`](assets/11-indexed-multiface-block.step) | `70 × 32 × 32 mm` prismatic STEP block with cardinal & `45°` angled faces | `chipcutter generate-sample-step <out.step> --tutorial 11-indexed-step` |
+| [`10-helical-flute-shaft.stl`](assets/10-helical-flute-shaft.stl) | Watertight `Ø40 × 80 mm` 3-start helical impeller/flute shaft | `chipcutter generate-sample-step <out.stl> --tutorial 12-simultaneous-4axis` |
+| [`13-router-panel.dxf`](assets/13-router-panel.dxf) | `160 × 100 mm` multi-layer router front panel (`OUTLINE`, `HOLES`, `POCKETS`, `CUTOUTS`) | `chipcutter generate-sample-step <out.dxf> --tutorial 13-pure2d-dxf` |
+| [`14-bracket-v1.step`](assets/14-bracket-v1.step) | `90 × 70 × 20 mm` Revision v1 bracket (blind pocket, `Ø14 mm` bore, 2× `Ø6 mm` holes) | `chipcutter generate-sample-step <out.step> --tutorial 14-reload-v1` |
+| [`14-bracket-v2.step`](assets/14-bracket-v2.step) | `92 × 70 × 20 mm` Revision v2 bracket (resized pocket, shifted bore/hole, 1 deleted hole) | `chipcutter generate-sample-step <out.step> --tutorial 14-reload-v2` |
 
-You can launch any starter STEP model directly into an empty ChipCutter workspace:
+You can launch any starter STEP, mesh, or DXF model directly into an empty ChipCutter workspace:
 
 ```bash
 cargo run --release -p chip-gui -- docs/tutorials/assets/01-facing-billet.step
@@ -64,14 +73,14 @@ cargo run --release -p chip-gui -- docs/tutorials/assets/01-facing-billet.step
 
 ## Tutorial Authoring & Screenshot Conventions
 
-All Phase 4 guides follow a uniform 7-part structure so machinists and contributors can scan any strategy quickly:
+All Phase 4 and Phase 6 guides (`00`–`14`) follow a uniform 7-part structure so machinists and contributors can scan any strategy quickly:
 
 1. **Goal & What You'll Learn** — Target machining outcome and key takeaways.
 2. **Prerequisites & Starter Project** — How to open the exact starter model or sample job.
 3. **Step-by-Step GUI Walkthrough** — Numbered steps with exact menu/tab names, keyboard shortcuts, and annotated screenshots.
 4. **Key Parameters Reference** — Concise table explaining the strategy's most important fields and safe starting values.
-5. **Generate (`Ctrl+G`) & 3D Simulation Verification** — Inspecting toolpaths, Z-dexel machined stock, and the 5-rule crash/gouge gate.
-6. **Post-Processing (GRBL & LinuxCNC)** — Reviewing emitted G-code (`ATC M6` vs. split-file-per-tool).
+5. **Generate (`Ctrl+G`) & 3D Simulation Verification** — Inspecting toolpaths, Z-dexel / cylindrical machined stock, and the 5-rule crash/gouge gate.
+6. **Post-Processing (GRBL & LinuxCNC)** — Reviewing emitted G-code (`ATC M6` vs. split-file-per-tool, `G93` inverse-time, or `.chipz` bundle export).
 7. **Headless CLI Equivalent (`chipcutter`)** — Copy-pasteable commands that reproduce validation, simulation, and G-code build from the terminal.
 
 ### Regenerating Tutorial Screenshots
@@ -79,9 +88,12 @@ All Phase 4 guides follow a uniform 7-part structure so machinists and contribut
 Screenshots are stored under `docs/images/tutorials/<nn>-<slug>/<step>-<name>.png` and captured deterministically via `chip-gui --self-test-screenshot` under headless Xvfb + Vulkan Lavapipe:
 
 ```bash
-# Capture screenshots for all Phase 4 tutorials (41 PNGs across Milestones 13–15):
+# Capture screenshots for all 15 tutorials across Phases 4 & 6 (Milestones 13–15 & 22–24):
 ./scripts/capture_tutorial_screenshots.sh --milestone all
 
+# Capture only a single milestone (13, 14, 15, 22, 23, or 24):
+./scripts/capture_tutorial_screenshots.sh --milestone 24
+
 # Or capture a single tutorial in Daylight Light theme:
-./scripts/capture_tutorial_screenshots.sh --tutorial 05-adaptive-rest-machining --theme light
+./scripts/capture_tutorial_screenshots.sh --tutorial 13-pure2d-dxf-svg-workflow --theme light
 ```

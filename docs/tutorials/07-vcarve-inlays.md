@@ -125,4 +125,5 @@ cargo run -p chip-cli -- build /tmp/07-vcarve-inlay.chip.toml -o /tmp/vcarve_lin
 ## Next Steps
 
 - **Previous:** [Tutorial 06 — Edge Chamfering & 2D Curve Trace / Engraving](06-chamfer-curve-trace.md)
-- **Index:** [All Tutorials](README.md) — you've completed every ChipCutter toolpath strategy tutorial!
+- **Next:** [Tutorial 08 — 3D Adaptive Roughing & Waterline / Z-Level Surfacing](08-3d-adaptive-waterline.md)
+- **Index:** [All Tutorials](README.md)

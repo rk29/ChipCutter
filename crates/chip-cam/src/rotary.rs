@@ -281,7 +281,11 @@ pub fn compute_index_angle_for_normal(
     }
     let phi_deg = c2.atan2(c1).to_degrees();
     let idx = (-phi_deg).rem_euclid(360.0);
-    Some(if (idx - 360.0).abs() < 1e-7 { 0.0 } else { idx })
+    Some(if idx.abs() < 1e-7 || (idx - 360.0).abs() < 1e-7 {
+        0.0
+    } else {
+        idx
+    })
 }
 
 /// Constructs a virtual [`ResolvedSetup`] whose WCS frame is rotated by `-angle_deg` around

@@ -2478,6 +2478,291 @@ pub fn build_relief_wave_mesh_project(
     proj
 }
 
+/// Builds the dedicated **Tutorial 08 — 3D Adaptive Roughing & Waterline / Z-Level**
+/// [`ProjectDocument`] for `08-sculpted-dome.stl` (`70 × 70 × 33 mm` watertight hemisphere
+/// `R = 25 mm` on an `8 mm` square pedestal):
+/// - 2D `SetupXy` containment sketch (`Dome Window`, `68 × 68 mm` rounded rectangle centered on WCS),
+/// - **Op 1:** `3D Adaptive Roughing` (`T1` Ø6 mm Flat Endmill, `SelectedRegions`, flat-area
+///   detection, `0.4 mm` radial / `0.25 mm` axial stock-to-leave),
+/// - **Op 2:** `3D Waterline Finishing` (`T4` Ø6 mm Ball Endmill, `Adaptive Shallow Z-Stepdowns = true`,
+///   `WaterlineOrderMode::ByLevel` top-down, `0.0 mm` stock-to-leave).
+pub fn build_tutorial_3d_adaptive_waterline_project(
+    model_path: String,
+    sha256_hex: &str,
+    available_tools: &[Tool],
+) -> ProjectDocument {
+    let mut proj = ProjectDocument::new("Tutorial 08 — 3D Adaptive & Waterline");
+    proj.models = vec![ModelEntry {
+        id: "model_1".to_string(),
+        path: model_path,
+        sha256: sha256_hex.to_string(),
+        unit_override: None,
+    }];
+    let setup_id = proj.setups[0].id.clone();
+    proj.setups[0].name = "Setup 1 — Sculpted Dome (3D Mesh)".to_string();
+    proj.setups[0].wcs.origin = WcsOriginMode::StockBoxPoint {
+        anchor: BoxAnchor27::TOP_CENTER,
+    };
+    proj.setups[0].stock = StockConfig::RelativeBox {
+        symmetric_xy: true,
+        side_pos_x: ParamLength::from_mm(2.0),
+        side_neg_x: ParamLength::from_mm(2.0),
+        side_pos_y: ParamLength::from_mm(2.0),
+        side_neg_y: ParamLength::from_mm(2.0),
+        top_offset_z: ParamLength::from_mm(1.0),
+        bottom_offset_z: ParamLength::from_mm(0.0),
+        sheet_thickness_z: ParamLength::from_mm(12.0),
+        round_increment_mm: None,
+    };
+    for t in available_tools {
+        proj.ensure_tool_embedded(t);
+    }
+
+    // 2D SetupXy containment boundary sketch centered on the dome pedestal
+    let mut sk_window = SketchLayer::new("sketch_dome_window", "Dome Window", setup_id);
+    sk_window.entities.push(SketchEntityEntry {
+        id: "ent_dome_window".to_string(),
+        name: "Dome Containment Window (68x68mm)".to_string(),
+        sub_layer: Some("BOUNDARY".to_string()),
+        is_construction: false,
+        entity: SketchEntity::Rectangle {
+            anchor: RectAnchorMode::Center,
+            x: ParamLength::from_mm(0.0),
+            y: ParamLength::from_mm(0.0),
+            width: ParamLength::from_mm(68.0),
+            height: ParamLength::from_mm(68.0),
+            corner_radius: ParamLength::from_mm(4.0),
+            rotation_deg: 0.0,
+        },
+    });
+    sk_window.rebuild_regions(None);
+    proj.sketches.push(sk_window);
+
+    let flat_6mm = proj
+        .tools
+        .iter()
+        .find(|t| {
+            matches!(
+                t.geometry,
+                CutterGeometry::FlatEndmill { diameter_mm, .. } if (diameter_mm - 6.0).abs() < 0.5
+            )
+        })
+        .or_else(|| proj.tools.first())
+        .cloned();
+    let ball_6mm = proj
+        .tools
+        .iter()
+        .find(|t| {
+            matches!(
+                t.geometry,
+                CutterGeometry::BallEndmill { diameter_mm, .. } if (diameter_mm - 6.0).abs() < 0.5
+            )
+        })
+        .cloned();
+
+    // Op 1: 3D Adaptive Roughing constrained by the 2D `Dome Window` sketch
+    let mut op_rough = Operation::new(
+        "op_1_adaptive_3d",
+        "3D Adaptive Roughing",
+        OperationKind::Adaptive3D,
+    );
+    if let Some(t) = &flat_6mm {
+        op_rough.tool_id = Some(t.id.clone());
+        op_rough.preset_id = t.presets.first().map(|p| p.id.clone());
+    }
+    op_rough.heights.bottom = HeightSpec::new(HeightReference::ModelTop, -25.0);
+    op_rough.passes.stock_to_leave_radial = ParamLength::from_mm(0.4);
+    op_rough.passes.stock_to_leave_axial = ParamLength::from_mm(0.25);
+    op_rough
+        .selections
+        .push(GeometrySelectionItem::SketchLayerAll {
+            sketch_id: "sketch_dome_window".to_string(),
+            sub_layer: None,
+            reverse: false,
+            side_flip: false,
+        });
+    if let StrategyParams::Adaptive3D(p) = op_rough.strategy_mut() {
+        p.boundary_mode = chip_cam::MachiningBoundaryMode::SelectedRegions;
+        p.tool_containment = chip_cam::ToolContainmentMode::ToolOutsideBoundary;
+        p.boundary_offset = ParamLength::from_mm(0.5);
+        p.max_roughing_stepdown = ParamLength::from_mm(5.0);
+        p.fine_stepdown = ParamLength::from_mm(1.5);
+        p.adaptive.optimal_load = ParamLength::from_mm(1.8);
+        p.detect_flats = true;
+    }
+
+    // Op 2: 3D Waterline / Z-Level Finishing (`Adaptive Stepdown = true`, `ByLevel` top-down)
+    let mut op_wl = Operation::new(
+        "op_2_waterline_3d",
+        "3D Waterline Finishing",
+        OperationKind::Waterline3D,
+    );
+    if let Some(t) = ball_6mm.as_ref().or(flat_6mm.as_ref()) {
+        op_wl.tool_id = Some(t.id.clone());
+        op_wl.preset_id = t.presets.first().map(|p| p.id.clone());
+    }
+    op_wl.heights.bottom = HeightSpec::new(HeightReference::ModelTop, -25.0);
+    op_wl.passes.max_stepdown = ParamLength::from_mm(1.5);
+    op_wl.passes.stock_to_leave_radial = ParamLength::from_mm(0.0);
+    op_wl.passes.stock_to_leave_axial = ParamLength::from_mm(0.0);
+    if let StrategyParams::Waterline3D(p) = op_wl.strategy_mut() {
+        p.boundary_mode = chip_cam::MachiningBoundaryMode::ModelSilhouette;
+        p.tool_containment = chip_cam::ToolContainmentMode::ToolOutsideBoundary;
+        p.boundary_offset = ParamLength::from_mm(0.5);
+        p.adaptive_stepdown = true;
+        p.min_stepdown = ParamLength::from_mm(0.4);
+        p.max_cusp_height = ParamLength::from_mm(0.05);
+        p.detect_flats = true;
+        p.order_mode = chip_cam::WaterlineOrderMode::ByLevel;
+        p.min_slope_deg = 0.0;
+        p.max_slope_deg = 90.0;
+        p.climb_milling = true;
+    }
+
+    proj.setups[0].operations = vec![op_rough, op_wl];
+    proj
+}
+
+/// Builds the dedicated **Tutorial 09 — 3D Surface Finishing (`Parallel3D`, `Scallop3D`, & 3D Rest)**
+/// [`ProjectDocument`] for `09-relief-wave.obj` (`80 × 60 × 13.5 mm` sculpted sinusoidal relief):
+/// - **Op 1:** `3D Adaptive Roughing` (`T1` Ø6 mm Flat Endmill, `0.4 mm` radial / `0.25 mm` axial stock-to-leave),
+/// - **Op 2:** `3D Parallel Finishing (45° + Cross)` (`T4` Ø6 mm Ball Endmill, `Use Target Cusp Height = 0.04 mm`,
+///   `Pass Angle = 45°`, `Cross-Pass +90° = true`, `Slope Range 0°–60°`),
+/// - **Op 3:** `3D Constant-Scallop (Rest)` (`T4` Ø6 mm Ball Endmill, `Inside -> Out = true`,
+///   `Min/Max Stepover = 0.25 / 1.5 mm`, and `3D Rest Machining` `FromPreviousTool`).
+pub fn build_tutorial_3d_surface_finishing_project(
+    model_path: String,
+    sha256_hex: &str,
+    available_tools: &[Tool],
+) -> ProjectDocument {
+    let mut proj = ProjectDocument::new("Tutorial 09 — 3D Surface Finishing");
+    proj.models = vec![ModelEntry {
+        id: "model_1".to_string(),
+        path: model_path,
+        sha256: sha256_hex.to_string(),
+        unit_override: None,
+    }];
+    proj.setups[0].name = "Setup 1 — Relief Wave (3D Finishing)".to_string();
+    proj.setups[0].wcs.origin = WcsOriginMode::StockBoxPoint {
+        anchor: BoxAnchor27::TOP_CENTER,
+    };
+    proj.setups[0].stock = StockConfig::RelativeBox {
+        symmetric_xy: true,
+        side_pos_x: ParamLength::from_mm(2.0),
+        side_neg_x: ParamLength::from_mm(2.0),
+        side_pos_y: ParamLength::from_mm(2.0),
+        side_neg_y: ParamLength::from_mm(2.0),
+        top_offset_z: ParamLength::from_mm(1.0),
+        bottom_offset_z: ParamLength::from_mm(0.0),
+        sheet_thickness_z: ParamLength::from_mm(12.0),
+        round_increment_mm: None,
+    };
+    for t in available_tools {
+        proj.ensure_tool_embedded(t);
+    }
+
+    let flat_6mm = proj
+        .tools
+        .iter()
+        .find(|t| {
+            matches!(
+                t.geometry,
+                CutterGeometry::FlatEndmill { diameter_mm, .. } if (diameter_mm - 6.0).abs() < 0.5
+            )
+        })
+        .or_else(|| proj.tools.first())
+        .cloned();
+    let ball_6mm = proj
+        .tools
+        .iter()
+        .find(|t| {
+            matches!(
+                t.geometry,
+                CutterGeometry::BallEndmill { diameter_mm, .. } if (diameter_mm - 6.0).abs() < 0.5
+            )
+        })
+        .cloned();
+
+    // Op 1: 3D Adaptive Roughing down to wave trough depth (`ModelTop - 9.0 mm`)
+    let mut op_rough = Operation::new(
+        "op_1_wave_adaptive_3d",
+        "3D Adaptive Roughing",
+        OperationKind::Adaptive3D,
+    );
+    if let Some(t) = &flat_6mm {
+        op_rough.tool_id = Some(t.id.clone());
+        op_rough.preset_id = t.presets.first().map(|p| p.id.clone());
+    }
+    op_rough.heights.bottom = HeightSpec::new(HeightReference::ModelTop, -9.0);
+    op_rough.passes.stock_to_leave_radial = ParamLength::from_mm(0.4);
+    op_rough.passes.stock_to_leave_axial = ParamLength::from_mm(0.25);
+    if let StrategyParams::Adaptive3D(p) = op_rough.strategy_mut() {
+        p.max_roughing_stepdown = ParamLength::from_mm(4.0);
+        p.fine_stepdown = ParamLength::from_mm(2.0);
+        p.adaptive.optimal_load = ParamLength::from_mm(1.5);
+        p.detect_flats = true;
+    }
+
+    // Op 2: 3D Parallel Finishing (`45°`, cusp height `0.04 mm`, `Cross-Pass +90°`, `0°–60°` slope)
+    let mut op_par = Operation::new(
+        "op_2_wave_parallel_3d",
+        "3D Parallel Finishing (45° + Cross)",
+        OperationKind::Parallel3D,
+    );
+    if let Some(t) = ball_6mm.as_ref().or(flat_6mm.as_ref()) {
+        op_par.tool_id = Some(t.id.clone());
+        op_par.preset_id = t.presets.first().map(|p| p.id.clone());
+    }
+    op_par.heights.bottom = HeightSpec::new(HeightReference::ModelTop, -10.0);
+    op_par.passes.stock_to_leave_radial = ParamLength::from_mm(0.0);
+    op_par.passes.stock_to_leave_axial = ParamLength::from_mm(0.0);
+    if let StrategyParams::Parallel3D(p) = op_par.strategy_mut() {
+        p.boundary_mode = chip_cam::MachiningBoundaryMode::ModelSilhouette;
+        p.tool_containment = chip_cam::ToolContainmentMode::ToolCenterOnBoundary;
+        p.use_cusp_height = true;
+        p.cusp_height = ParamLength::from_mm(0.04);
+        p.pass_angle_deg = 45.0;
+        p.cross_pass = true;
+        p.cut_direction = chip_cam::ParallelCutDirection::ZigZag;
+        p.min_slope_deg = 0.0;
+        p.max_slope_deg = 60.0;
+    }
+
+    // Op 3: 3D Constant-Scallop (`Inside -> Out`, `Min/Max Stepover`, `3D Rest Machining` `FromPreviousTool`)
+    let mut op_scallop = Operation::new(
+        "op_3_wave_scallop_3d",
+        "3D Constant-Scallop (Rest)",
+        OperationKind::Scallop3D,
+    );
+    if let Some(t) = ball_6mm.as_ref().or(flat_6mm.as_ref()) {
+        op_scallop.tool_id = Some(t.id.clone());
+        op_scallop.preset_id = t.presets.first().map(|p| p.id.clone());
+    }
+    op_scallop.heights.bottom = HeightSpec::new(HeightReference::ModelTop, -10.0);
+    op_scallop.passes.stock_to_leave_radial = ParamLength::from_mm(0.0);
+    op_scallop.passes.stock_to_leave_axial = ParamLength::from_mm(0.0);
+    op_scallop.passes.rest_machining = RestMachiningConfig {
+        mode: RestMachiningMode::FromPreviousTool {
+            prev_tool_diameter: ParamLength::from_mm(12.0),
+            prev_stock_to_leave: ParamLength::from_mm(0.25),
+        },
+        rest_overlap: ParamLength::from_mm(0.5),
+        min_rest_thickness: ParamLength::from_mm(0.05),
+    };
+    if let StrategyParams::Scallop3D(p) = op_scallop.strategy_mut() {
+        p.boundary_mode = chip_cam::MachiningBoundaryMode::ModelSilhouette;
+        p.tool_containment = chip_cam::ToolContainmentMode::ToolCenterOnBoundary;
+        p.cusp_height = ParamLength::from_mm(0.04);
+        p.max_stepover = ParamLength::from_mm(1.5);
+        p.min_stepover = ParamLength::from_mm(0.25);
+        p.inside_out = true;
+        p.climb_milling = true;
+    }
+
+    proj.setups[0].operations = vec![op_rough, op_par, op_scallop];
+    proj
+}
+
 /// Builds the Phase 5 **Rotary Indexed Shaft (4th-Axis A)** [`ProjectDocument`]
 /// (`Ø40 mm × 80 mm` shaft aligned along WCS `X / A-Axis`, chucked in `Ø42 × 80 mm` cylindrical
 /// bar stock with `linuxcnc_4axis` post profile, continuous `Z+X+A` spiral surfacing across the
@@ -2855,5 +3140,442 @@ pub fn build_rotary_helical_flute_project(
     }
 
     proj.setups[0].operations = vec![op_rough, op_finish];
+    proj
+}
+
+/// Builds the Milestone 23 **Tutorial 10 — Rotary Wrapping & Surfacing (`AxialParallel` +
+/// `ContinuousSpiral`)** [`ProjectDocument`] on `09-rotary-shaft.stl` (`Ø40 × 80 mm` shaft in
+/// `Ø42 × 80 mm` cylindrical stock on `X/A`, `TwoLinearPlusRotary`, `linuxcnc_4axis`):
+/// - **Op 1:** `Rotary Continuous Spiral (360°)` roughing & finishing the collar + 3-lobe cam,
+/// - **Op 2:** `Rotary Axial Parallel (-60°..+60°)` lengthwise raster finishing over a partial
+///   angular sector (`-60°` to `+60°`).
+pub fn build_tutorial_rotary_axial_parallel_project(
+    model_path: String,
+    sha256_hex: &str,
+    available_tools: &[Tool],
+) -> ProjectDocument {
+    let mut proj = ProjectDocument::new("Tutorial 10 — Rotary Axial Parallel & Spiral");
+    proj.models = vec![ModelEntry {
+        id: "model_1".to_string(),
+        path: model_path,
+        sha256: sha256_hex.to_string(),
+        unit_override: None,
+    }];
+
+    let setup = &mut proj.setups[0];
+    setup.name = "Setup 1 — 2-Linear Rotary (Z+X+A)".to_string();
+    setup.post_profile = "linuxcnc_4axis".to_string();
+    setup.wcs.origin = WcsOriginMode::StockBoxPoint {
+        anchor: BoxAnchor27::VOLUMETRIC_CENTER,
+    };
+    setup.stock = StockConfig::FixedCylinder {
+        axis: chip_cam::StockAxis::X,
+        diameter: ParamLength::from_mm(42.0),
+        length: ParamLength::from_mm(80.0),
+        axial_top_offset: ParamLength::from_mm(0.0),
+    };
+    setup.rotary.mode = chip_cam::RotaryDriveMode::TwoLinearPlusRotary;
+    setup.rotary.axis = chip_cam::RotaryAxisKind::XAxis;
+    setup.rotary.direction = chip_cam::RotaryDirection::RightHandCcw;
+    setup.rotary.clearance_radial_offset = ParamLength::from_mm(12.0);
+    setup.rotary.chuck_length = ParamLength::from_mm(20.0);
+    setup.rotary.chuck_diameter = ParamLength::from_mm(65.0);
+
+    for t in available_tools {
+        proj.ensure_tool_embedded(t);
+    }
+
+    let ball_6mm = available_tools
+        .iter()
+        .find(|t| {
+            matches!(
+                t.geometry,
+                CutterGeometry::BallEndmill { diameter_mm, .. } if approx_eq(diameter_mm, 6.0, 0.5)
+            )
+        })
+        .or_else(|| {
+            available_tools
+                .iter()
+                .find(|t| matches!(t.geometry, CutterGeometry::BallEndmill { .. }))
+        })
+        .map(|t| t.id.clone());
+
+    // Op 1: Full-circumference Continuous Helical Spiral (0°..360°)
+    let mut op_spiral = Operation::new(
+        "op_1_rotary_spiral",
+        "Rotary Continuous Spiral (360°)",
+        OperationKind::Rotary2Linear,
+    );
+    op_spiral.tool_id = ball_6mm.clone();
+    op_spiral.passes.multiple_depths = true;
+    op_spiral.passes.max_stepdown = ParamLength::from_mm(3.0);
+    if let StrategyParams::Rotary2Linear(p) = op_spiral.strategy_mut() {
+        p.pattern = chip_cam::RotaryPatternMode::ContinuousSpiral;
+        p.cut_direction = chip_cam::RotaryCutDirection::ZigZag;
+        p.stepover = ParamLength::from_mm(1.6);
+        p.start_angle_deg = 0.0;
+        p.end_angle_deg = 360.0;
+        p.axial_margin_start = ParamLength::from_mm(34.0);
+        p.axial_margin_end = ParamLength::from_mm(8.0);
+        p.angular_sample_deg = 5.0;
+        p.axial_sample_step = ParamLength::from_mm(1.0);
+    }
+
+    // Op 2: Partial-sector Axial Parallel lengthwise raster (-60°..+60°)
+    let mut op_axial = Operation::new(
+        "op_2_rotary_axial_sector",
+        "Rotary Axial Parallel (-60°..+60°)",
+        OperationKind::Rotary2Linear,
+    );
+    op_axial.tool_id = ball_6mm;
+    op_axial.passes.multiple_depths = false;
+    if let StrategyParams::Rotary2Linear(p) = op_axial.strategy_mut() {
+        p.pattern = chip_cam::RotaryPatternMode::AxialParallel;
+        p.cut_direction = chip_cam::RotaryCutDirection::ZigZag;
+        p.stepover = ParamLength::from_mm(1.2);
+        p.start_angle_deg = -60.0;
+        p.end_angle_deg = 60.0;
+        p.axial_margin_start = ParamLength::from_mm(34.0);
+        p.axial_margin_end = ParamLength::from_mm(8.0);
+        p.angular_sample_deg = 4.0;
+        p.axial_sample_step = ParamLength::from_mm(1.0);
+    }
+
+    proj.setups[0].operations = vec![op_spiral, op_axial];
+    proj
+}
+
+/// Builds the Milestone 23 **Tutorial 11 — Indexed `3+1` Multi-Face STEP Block** [`ProjectDocument`]
+/// for `11-indexed-multiface-block.step` (`70 × 32 × 32 mm` prismatic block with 4 cardinal faces
+/// plus a `45°` beveled mounting facet) chucked in `90 × 36 × 36 mm` square bar stock on `X/A`
+/// (`Indexed3Plus1`, `linuxcnc_4axis`).
+///
+/// Every operation's rotary index angle (`0°`, `45°`, `90°`, `180°`, `270°`) is computed directly
+/// from the STEP face normal via [`chip_cam::compute_index_angle_for_normal`].
+pub fn build_tutorial_indexed_step_multiface_project(
+    doc: &CadDocument,
+    model_path: String,
+    sha256_hex: &str,
+    available_tools: &[Tool],
+) -> ProjectDocument {
+    let mut proj = ProjectDocument::new("Tutorial 11 — Indexed 3+1 Multi-Face STEP");
+    proj.models = vec![ModelEntry {
+        id: "model_1".to_string(),
+        path: model_path,
+        sha256: sha256_hex.to_string(),
+        unit_override: None,
+    }];
+
+    {
+        let setup = &mut proj.setups[0];
+        setup.name = "Setup 1 — Indexed 3+1 Square Bar (X/A)".to_string();
+        setup.post_profile = "linuxcnc_4axis".to_string();
+        setup.wcs.origin = WcsOriginMode::StockBoxPoint {
+            anchor: BoxAnchor27::VOLUMETRIC_CENTER,
+        };
+        setup.stock = StockConfig::FixedBox {
+            width_x: ParamLength::from_mm(90.0),
+            depth_y: ParamLength::from_mm(36.0),
+            height_z: ParamLength::from_mm(36.0),
+            xy_align: FixedBoxXyAlign::CenterXy,
+            z_align: FixedBoxZAlign::CenterZ,
+        };
+        setup.rotary.mode = chip_cam::RotaryDriveMode::Indexed3Plus1;
+        setup.rotary.axis = chip_cam::RotaryAxisKind::XAxis;
+        setup.rotary.direction = chip_cam::RotaryDirection::RightHandCcw;
+        setup.rotary.clearance_radial_offset = ParamLength::from_mm(10.0);
+        setup.rotary.chuck_length = ParamLength::from_mm(20.0);
+        setup.rotary.chuck_diameter = ParamLength::from_mm(65.0);
+    }
+
+    for t in available_tools {
+        proj.ensure_tool_embedded(t);
+    }
+
+    let flat_6mm = available_tools
+        .iter()
+        .find(|t| {
+            matches!(
+                t.geometry,
+                CutterGeometry::FlatEndmill { diameter_mm, .. } if approx_eq(diameter_mm, 6.0, 0.5)
+            )
+        })
+        .or_else(|| {
+            available_tools
+                .iter()
+                .find(|t| matches!(t.geometry, CutterGeometry::FlatEndmill { .. }))
+        })
+        .cloned();
+
+    let resolved = proj.setups[0].resolve(doc, DisplayUnit::Millimeter).ok();
+    let rot_cfg = resolved.as_ref().and_then(|r| r.rotary);
+    let setup_frame = resolved.as_ref().map(|r| r.frame);
+
+    let index_angle_for_world_normal = |world_n: chip_math::DVec3, fallback_deg: f64| -> f64 {
+        match (setup_frame, rot_cfg) {
+            (Some(frame), Some(rot)) => {
+                let n_wcs = frame.world_to_local_dir(world_n);
+                chip_cam::compute_index_angle_for_normal(n_wcs, &rot).unwrap_or(fallback_deg)
+            }
+            _ => fallback_deg,
+        }
+    };
+
+    let Some(em) = flat_6mm else {
+        return proj;
+    };
+
+    let mut ops = Vec::new();
+
+    // Op 1 (0°): Face +Z top land (Z = +16 mm) removing 2 mm bar-stock allowance
+    if let Some((face_id, world_n)) = doc.faces.iter().find_map(|f| match f.surface {
+        SurfaceKind::Plane { origin_mm, normal }
+            if normal.z > 0.99 && approx_eq(origin_mm.z, 16.0, 0.05) =>
+        {
+            Some((f.id, normal))
+        }
+        _ => None,
+    }) && let Some(bind) = doc.bind_face(face_id)
+    {
+        let angle_deg = index_angle_for_world_normal(world_n, 0.0);
+        let mut op = Operation::new(
+            "op_1_face_plus_z_0deg",
+            "Indexed 0° — Face +Z Top",
+            OperationKind::Pocket2D,
+        );
+        op.tool_id = Some(em.id.clone());
+        op.preset_id = em.presets.first().map(|p| p.id.clone());
+        op.selections
+            .push(GeometrySelectionItem::PlanarFace { binding: bind });
+        op.passes.multiple_depths = true;
+        op.passes.max_stepdown = ParamLength::from_mm(2.0);
+        op.rotary = chip_cam::OperationRotaryMode::Indexed3Plus1 { angle_deg };
+        ops.push(op);
+    }
+
+    // Op 2 (45°): Mill angled 45° beveled mounting facet via `compute_index_angle_for_normal`!
+    if let Some((face_id, world_n)) = doc.faces.iter().find_map(|f| match f.surface {
+        SurfaceKind::Plane { normal, .. } if normal.y > 0.65 && normal.z > 0.65 => {
+            Some((f.id, normal))
+        }
+        _ => None,
+    }) && let Some(bind) = doc.bind_face(face_id)
+    {
+        let angle_deg = index_angle_for_world_normal(world_n, 45.0);
+        let mut op = Operation::new(
+            "op_2_bevel_45deg",
+            "Indexed 45° — Angled Mounting Bevel",
+            OperationKind::Pocket2D,
+        );
+        op.tool_id = Some(em.id.clone());
+        op.preset_id = em.presets.first().map(|p| p.id.clone());
+        op.selections
+            .push(GeometrySelectionItem::PlanarFace { binding: bind });
+        op.passes.multiple_depths = true;
+        op.passes.max_stepdown = ParamLength::from_mm(2.5);
+        op.rotary = chip_cam::OperationRotaryMode::Indexed3Plus1 { angle_deg };
+        ops.push(op);
+    }
+
+    // Op 3 (90°): Mill +Y cardinal face (Y = +16 mm)
+    if let Some((face_id, world_n)) = doc.faces.iter().find_map(|f| match f.surface {
+        SurfaceKind::Plane { origin_mm, normal }
+            if normal.y > 0.99 && approx_eq(origin_mm.y, 16.0, 0.05) =>
+        {
+            Some((f.id, normal))
+        }
+        _ => None,
+    }) && let Some(bind) = doc.bind_face(face_id)
+    {
+        let angle_deg = index_angle_for_world_normal(world_n, 90.0);
+        let mut op = Operation::new(
+            "op_3_face_plus_y_90deg",
+            "Indexed 90° — Face +Y Side",
+            OperationKind::Pocket2D,
+        );
+        op.tool_id = Some(em.id.clone());
+        op.preset_id = em.presets.first().map(|p| p.id.clone());
+        op.selections
+            .push(GeometrySelectionItem::PlanarFace { binding: bind });
+        op.passes.multiple_depths = true;
+        op.passes.max_stepdown = ParamLength::from_mm(2.0);
+        op.rotary = chip_cam::OperationRotaryMode::Indexed3Plus1 { angle_deg };
+        ops.push(op);
+    }
+
+    // Op 4 (180°): Mill -Z cardinal face (Z = -16 mm)
+    if let Some((face_id, world_n)) = doc.faces.iter().find_map(|f| match f.surface {
+        SurfaceKind::Plane { origin_mm, normal }
+            if normal.z < -0.99 && approx_eq(origin_mm.z, -16.0, 0.05) =>
+        {
+            Some((f.id, normal))
+        }
+        _ => None,
+    }) && let Some(bind) = doc.bind_face(face_id)
+    {
+        let angle_deg = index_angle_for_world_normal(world_n, 180.0);
+        let mut op = Operation::new(
+            "op_4_face_minus_z_180deg",
+            "Indexed 180° — Face -Z Bottom",
+            OperationKind::Pocket2D,
+        );
+        op.tool_id = Some(em.id.clone());
+        op.preset_id = em.presets.first().map(|p| p.id.clone());
+        op.selections
+            .push(GeometrySelectionItem::PlanarFace { binding: bind });
+        op.passes.multiple_depths = true;
+        op.passes.max_stepdown = ParamLength::from_mm(2.0);
+        op.rotary = chip_cam::OperationRotaryMode::Indexed3Plus1 { angle_deg };
+        ops.push(op);
+    }
+
+    // Op 5 (270°): Mill -Y cardinal face (Y = -16 mm)
+    if let Some((face_id, world_n)) = doc.faces.iter().find_map(|f| match f.surface {
+        SurfaceKind::Plane { origin_mm, normal }
+            if normal.y < -0.99 && approx_eq(origin_mm.y, -16.0, 0.05) =>
+        {
+            Some((f.id, normal))
+        }
+        _ => None,
+    }) && let Some(bind) = doc.bind_face(face_id)
+    {
+        let angle_deg = index_angle_for_world_normal(world_n, 270.0);
+        let mut op = Operation::new(
+            "op_5_face_minus_y_270deg",
+            "Indexed 270° — Face -Y Side",
+            OperationKind::Pocket2D,
+        );
+        op.tool_id = Some(em.id.clone());
+        op.preset_id = em.presets.first().map(|p| p.id.clone());
+        op.selections
+            .push(GeometrySelectionItem::PlanarFace { binding: bind });
+        op.passes.multiple_depths = true;
+        op.passes.max_stepdown = ParamLength::from_mm(2.0);
+        op.rotary = chip_cam::OperationRotaryMode::Indexed3Plus1 { angle_deg };
+        ops.push(op);
+    }
+
+    proj.setups[0].operations = ops;
+    proj
+}
+
+/// Builds the Milestone 23 **Tutorial 12 — Simultaneous 4-Axis Milling (`Auto Surface-Normal Tilt`
+/// vs. `Fixed Lateral Offset` & `SimultaneousSpiral` vs. `HelicalFlowline`)** [`ProjectDocument`]
+/// on `10-helical-flute-shaft.stl` (`Ø40 × 80 mm` 3-start helical flutes in `Ø42 × 80 mm` stock):
+/// - **Op 1:** `4-Axis Helical Roughing (Auto-Tilt)` (`SimultaneousSpiral`, `16°` max auto tilt, `3 mm` stepdowns),
+/// - **Op 2:** `4-Axis Spiral Finish (Auto-Tilt 18°)` (`SimultaneousSpiral`, `SurfaceNormalAutoTilt`, `18°`, `3 cells`),
+/// - **Op 3:** `4-Axis Flowline (Fixed Offset 2.5 mm)` (`HelicalFlowline`, `FixedLateralOffset = 2.5 mm`).
+pub fn build_tutorial_rotary_4axis_flowline_project(
+    model_path: String,
+    sha256_hex: &str,
+    available_tools: &[Tool],
+) -> ProjectDocument {
+    let mut proj = ProjectDocument::new("Tutorial 12 — Simultaneous 4-Axis Auto-Tilt & Flowline");
+    proj.models = vec![ModelEntry {
+        id: "model_1".to_string(),
+        path: model_path,
+        sha256: sha256_hex.to_string(),
+        unit_override: None,
+    }];
+
+    let setup = &mut proj.setups[0];
+    setup.name = "Setup 1 — Simultaneous 4-Axis A-Chuck".to_string();
+    setup.post_profile = "grblhal_4axis".to_string();
+    setup.wcs.origin = WcsOriginMode::StockBoxPoint {
+        anchor: BoxAnchor27::VOLUMETRIC_CENTER,
+    };
+    setup.stock = StockConfig::FixedCylinder {
+        axis: chip_cam::StockAxis::X,
+        diameter: ParamLength::from_mm(42.0),
+        length: ParamLength::from_mm(80.0),
+        axial_top_offset: ParamLength::from_mm(0.0),
+    };
+    setup.rotary.mode = chip_cam::RotaryDriveMode::Simultaneous4Axis;
+    setup.rotary.axis = chip_cam::RotaryAxisKind::XAxis;
+    setup.rotary.direction = chip_cam::RotaryDirection::RightHandCcw;
+    setup.rotary.clearance_radial_offset = ParamLength::from_mm(12.0);
+    setup.rotary.chuck_length = ParamLength::from_mm(20.0);
+    setup.rotary.chuck_diameter = ParamLength::from_mm(65.0);
+
+    for t in available_tools {
+        proj.ensure_tool_embedded(t);
+    }
+
+    let ball_6mm = available_tools
+        .iter()
+        .find(|t| {
+            matches!(
+                t.geometry,
+                CutterGeometry::BallEndmill { diameter_mm, .. } if approx_eq(diameter_mm, 6.0, 0.5)
+            )
+        })
+        .or_else(|| {
+            available_tools
+                .iter()
+                .find(|t| matches!(t.geometry, CutterGeometry::BallEndmill { .. }))
+        })
+        .map(|t| t.id.clone());
+
+    // Op 1: Multi-depth Simultaneous 4-Axis Helical Roughing
+    let mut op_rough = Operation::new(
+        "op_1_4ax_rough_spiral",
+        "4-Axis Helical Roughing (Auto-Tilt)",
+        OperationKind::Rotary4AxisSim,
+    );
+    op_rough.tool_id = ball_6mm.clone();
+    op_rough.passes.multiple_depths = true;
+    op_rough.passes.max_stepdown = ParamLength::from_mm(3.0);
+    op_rough.passes.stock_to_leave_radial = ParamLength::from_mm(0.25);
+    op_rough.passes.stock_to_leave_axial = ParamLength::from_mm(0.25);
+    if let StrategyParams::Rotary4AxisSim(p) = op_rough.strategy_mut() {
+        p.pattern = chip_cam::Rotary4AxisPattern::SimultaneousSpiral;
+        p.tilt_mode = chip_cam::RotaryTiltMode::SurfaceNormalAutoTilt;
+        p.max_tilt_deg = 16.0;
+        p.tilt_smoothing_window = 3;
+        p.stepover = ParamLength::from_mm(2.6);
+        p.axial_margin_start = ParamLength::from_mm(11.0);
+        p.axial_margin_end = ParamLength::from_mm(11.0);
+    }
+
+    // Op 2: Simultaneous Helical Spiral Finish with Auto Surface-Normal Tilt (18°, 3 cells)
+    let mut op_spiral_fin = Operation::new(
+        "op_2_4ax_finish_spiral",
+        "4-Axis Spiral Finish (Auto-Tilt 18°)",
+        OperationKind::Rotary4AxisSim,
+    );
+    op_spiral_fin.tool_id = ball_6mm.clone();
+    op_spiral_fin.passes.multiple_depths = false;
+    op_spiral_fin.passes.stock_to_leave_radial = ParamLength::from_mm(0.0);
+    op_spiral_fin.passes.stock_to_leave_axial = ParamLength::from_mm(0.0);
+    if let StrategyParams::Rotary4AxisSim(p) = op_spiral_fin.strategy_mut() {
+        p.pattern = chip_cam::Rotary4AxisPattern::SimultaneousSpiral;
+        p.tilt_mode = chip_cam::RotaryTiltMode::SurfaceNormalAutoTilt;
+        p.max_tilt_deg = 18.0;
+        p.tilt_smoothing_window = 3;
+        p.stepover = ParamLength::from_mm(1.5);
+        p.axial_margin_start = ParamLength::from_mm(11.0);
+        p.axial_margin_end = ParamLength::from_mm(11.0);
+    }
+
+    // Op 3: Axial / Helical Flowline with Fixed Lateral Offset (2.5 mm off centerline)
+    let mut op_flowline = Operation::new(
+        "op_3_4ax_flowline_offset",
+        "4-Axis Flowline (Fixed Offset 2.5 mm)",
+        OperationKind::Rotary4AxisSim,
+    );
+    op_flowline.tool_id = ball_6mm;
+    op_flowline.passes.multiple_depths = false;
+    op_flowline.passes.stock_to_leave_radial = ParamLength::from_mm(0.0);
+    op_flowline.passes.stock_to_leave_axial = ParamLength::from_mm(0.0);
+    if let StrategyParams::Rotary4AxisSim(p) = op_flowline.strategy_mut() {
+        p.pattern = chip_cam::Rotary4AxisPattern::HelicalFlowline;
+        p.tilt_mode = chip_cam::RotaryTiltMode::FixedLateralOffset;
+        p.lateral_offset = ParamLength::from_mm(2.5);
+        p.stepover = ParamLength::from_mm(2.2);
+        p.axial_margin_start = ParamLength::from_mm(11.0);
+        p.axial_margin_end = ParamLength::from_mm(11.0);
+    }
+
+    proj.setups[0].operations = vec![op_rough, op_spiral_fin, op_flowline];
     proj
 }

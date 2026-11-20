@@ -1,7 +1,10 @@
-use std::path::Path;
+use std::{borrow::Cow, path::Path};
 
 use chip_cad::CadDocument;
-use chip_cam::{ResolvedHeights, RestMachiningMode, extract_selection_features_with_sketches};
+use chip_cam::{
+    OperationRotaryMode, ResolvedHeights, RestMachiningMode, build_indexed_virtual_setup,
+    extract_selection_features_with_sketches,
+};
 
 use crate::document::{ProjectDocument, compute_sha256_hex, resolve_model_path};
 
@@ -320,11 +323,17 @@ pub fn validate_project(
                     continue;
                 }
 
-                // Validate selections & Z-height hierarchy
+                // Validate selections & Z-height hierarchy (in rotated virtual Setup for Indexed 3+1)
+                let effective_setup = match (&op.rotary, resolved_setup.rotary) {
+                    (OperationRotaryMode::Indexed3Plus1 { angle_deg }, Some(rot)) => Cow::Owned(
+                        build_indexed_virtual_setup(&resolved_setup, &rot, *angle_deg),
+                    ),
+                    _ => Cow::Borrowed(&resolved_setup),
+                };
                 let summary = match extract_selection_features_with_sketches(
                     cad_doc,
                     &project.sketches,
-                    &resolved_setup,
+                    &effective_setup,
                     &op.selections,
                 ) {
                     Ok(s) => s,
@@ -337,8 +346,8 @@ pub fn validate_project(
                 let (inf_top_z, inf_bot_z) =
                     if op.kind.is_3d_surface() && summary.features.is_empty() {
                         (
-                            resolved_setup.stock.aabb_wcs().max.z,
-                            resolved_setup.model_aabb_wcs.min.z,
+                            effective_setup.stock.aabb_wcs().max.z,
+                            effective_setup.model_aabb_wcs.min.z,
                         )
                     } else {
                         (summary.inferred_top_z_wcs, summary.inferred_bottom_z_wcs)
@@ -354,10 +363,10 @@ pub fn validate_project(
                 heights.reevaluate(&eval_ctx);
                 if let Err(err) = ResolvedHeights::resolve(
                     &heights,
-                    &resolved_setup.model_aabb_wcs,
-                    &resolved_setup.stock.aabb_wcs(),
-                    resolved_setup.clearance_z_wcs,
-                    resolved_setup.retract_z_wcs,
+                    &effective_setup.model_aabb_wcs,
+                    &effective_setup.stock.aabb_wcs(),
+                    effective_setup.clearance_z_wcs,
+                    effective_setup.retract_z_wcs,
                     inf_top_z,
                     inf_bot_z,
                 ) {

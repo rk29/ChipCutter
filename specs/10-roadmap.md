@@ -139,7 +139,7 @@ Phase 5 extends ChipCutter beyond 2.5D prismatic and V-carve machining into **tr
 
 ---
 
-## Phase 6 — Deep-Dive 3-Axis, 4th-Axis, & Production Workflow Tutorials (Active — M22–M24)
+## Phase 6 — Deep-Dive 3-Axis, 4th-Axis, & Production Workflow Tutorials (Completed — M22–M24)
 
 Phase 6 brings every Phase 5 3-axis surfacing strategy, 4th-axis rotary mode, and core production workflow (`DXF`/`SVG` Pure-2D and associative STEP revision reload) up to the same dedicated, step-by-step illustrated tutorial standard as Phase 4's 2.5D guides (`01`–`07`), complete with focused starter models, multi-step headless Vulkan screenshots, and verified CLI equivalents:
 

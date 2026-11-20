@@ -1215,6 +1215,37 @@ pub fn tutorial_chamfer_engrave_block_step() -> std::result::Result<String, Samp
     serialize_tutorial_solid(solid, "06-chamfer-engrave-block.step")
 }
 
+/// Minimal Tutorial 11 (**Indexed `3+1` Multi-Face Milling**) prismatic STEP part aligned along
+/// WCS `X` (`70 × 32 × 32 mm`, `X ∈ [-35, +35]`, `Y ∈ [-16, +16]`, `Z ∈ [-16, +16]`) containing:
+/// - **4 cardinal planar faces**: `+Z` (`0°`), `+Y` (`90°`), `-Z` (`180°`), and `-Y` (`270°`), and
+/// - **1 generous `45°` beveled mounting facet** along the `(+Y, +Z)` corner (`Y + Z = 22`,
+///   `14.14 × 70 mm`, outward normal `(0, +1/√2, +1/√2)` -> exact `45.0°` `A`-axis index angle),
+///
+/// allowing machinists to click any planar face in 3D and click **Align to Selected 3D Face** to
+/// compute exact `0°`, `45°`, `90°`, `180°`, and `270°` rotary index angles in a single chucking.
+pub fn tutorial_indexed_4side_block_step() -> std::result::Result<String, SampleStepError> {
+    // YZ cross-section at X = -35 mm oriented CCW viewed from +X (normal +X, aligned with +70 X extrusion):
+    //   (-16, -16) -> (+16, -16) -> (+16, +6) -> [45° bevel] (+6, +16) -> (-16, +16) -> (-16, -16)
+    let v0 = builder::vertex(Point3::new(-35.0, -16.0, -16.0));
+    let v1 = builder::vertex(Point3::new(-35.0, 16.0, -16.0));
+    let v2 = builder::vertex(Point3::new(-35.0, 16.0, 6.0));
+    let v3 = builder::vertex(Point3::new(-35.0, 6.0, 16.0));
+    let v4 = builder::vertex(Point3::new(-35.0, -16.0, 16.0));
+
+    let profile_x_neg: Wire = vec![
+        builder::line(&v0, &v1), // Z = -16 (-Z face, 180°)
+        builder::line(&v1, &v2), // Y = +16 (+Y face, 90°)
+        builder::line(&v2, &v3), // 45° corner bevel (+Y/+Z, 45°)
+        builder::line(&v3, &v4), // Z = +16 (+Z face, 0°)
+        builder::line(&v4, &v0), // Y = -16 (-Y face, 270°)
+    ]
+    .into();
+    let end_face_x_neg = builder::try_attach_plane(vec![profile_x_neg])
+        .map_err(|e| SampleStepError::Modeling(e.to_string()))?;
+    let solid = builder::extrude(&end_face_x_neg, Vector3::new(70.0, 0.0, 0.0));
+    serialize_tutorial_solid(solid, "11-indexed-multiface-block.step")
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -1757,5 +1788,60 @@ mod tests {
         ));
         assert!(approx_eq(strip.radial_width_mm, 1.5, 2e-2));
         assert!(approx_eq(strip.axial_drop_mm, 1.5, 2e-2));
+    }
+
+    #[test]
+    fn tutorial_indexed_4side_block_step_roundtrips_with_exact_face_normals_and_angles() {
+        let step = tutorial_indexed_4side_block_step().unwrap();
+        let doc = MonstertruckKernel
+            .load_step_bytes(
+                "11-indexed-multiface-block.step",
+                step.as_bytes(),
+                DEFAULT_TESS_CHORD_TOL_MM,
+            )
+            .unwrap();
+
+        assert_eq!(doc.bodies.len(), 1);
+        let size = doc.aabb_mm.size();
+        assert!(approx_eq(size.x, 70.0, 1e-2));
+        assert!(approx_eq(size.y, 32.0, 1e-2));
+        assert!(approx_eq(size.z, 32.0, 1e-2));
+        assert!(approx_eq(doc.aabb_mm.min.x, -35.0, 1e-2));
+        assert!(approx_eq(doc.aabb_mm.max.x, 35.0, 1e-2));
+        assert!(approx_eq(doc.aabb_mm.min.y, -16.0, 1e-2));
+        assert!(approx_eq(doc.aabb_mm.max.y, 16.0, 1e-2));
+        assert!(approx_eq(doc.aabb_mm.min.z, -16.0, 1e-2));
+        assert!(approx_eq(doc.aabb_mm.max.z, 16.0, 1e-2));
+
+        // Verify exact right-hand X/A index angles for all 5 radial planar faces: 0°, 45°, 90°, 180°, 270°
+        // (For XAxis RightHandCcw: e1 = +Z, e2 = -Y -> angle = (-atan2(-n.y, n.z)).rem_euclid(360))
+        let mut radial_angles: Vec<f64> = doc
+            .faces
+            .iter()
+            .filter_map(|f| match f.surface {
+                SurfaceKind::Plane { normal, .. } if normal.x.abs() < 1e-3 => {
+                    let c1 = normal.z;
+                    let c2 = -normal.y;
+                    if c1.hypot(c2) > 0.5 {
+                        let a = (-c2.atan2(c1).to_degrees()).rem_euclid(360.0);
+                        Some(if (a - 360.0).abs() < 1e-6 { 0.0 } else { a })
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            })
+            .collect();
+        radial_angles.sort_by(f64::total_cmp);
+
+        for expected_deg in [0.0_f64, 45.0, 90.0, 180.0, 270.0] {
+            assert!(
+                radial_angles
+                    .iter()
+                    .any(|&a| approx_eq(a, expected_deg, 1e-2)),
+                "expected planar face at index angle {expected_deg}°, found angles: {radial_angles:?}"
+            );
+        }
+        assert_eq!(doc.faces.len(), 7, "expected clean 7-face chamfered prism");
     }
 }

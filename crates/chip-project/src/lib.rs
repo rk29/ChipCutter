@@ -27,11 +27,13 @@ pub use demos::{
     build_pure2d_router_panel_demo_project, build_relief_wave_mesh_project,
     build_revision_v1_demo_project, build_rotary_helical_flute_project,
     build_rotary_shaft_preview_project, build_rotary_wrapped_engraving_project,
-    build_sculpted_mesh_dome_project, build_tutorial_adaptive_rest_project,
+    build_sculpted_mesh_dome_project, build_tutorial_3d_adaptive_waterline_project,
+    build_tutorial_3d_surface_finishing_project, build_tutorial_adaptive_rest_project,
     build_tutorial_chamfer_trace_project, build_tutorial_contour_project,
     build_tutorial_drill_bore_project, build_tutorial_facing_project,
-    build_tutorial_pocket_project, build_tutorial_vcarve_inlay_project,
-    build_vcarve_sign_and_inlay_demo_project,
+    build_tutorial_indexed_step_multiface_project, build_tutorial_pocket_project,
+    build_tutorial_rotary_4axis_flowline_project, build_tutorial_rotary_axial_parallel_project,
+    build_tutorial_vcarve_inlay_project, build_vcarve_sign_and_inlay_demo_project,
 };
 pub use dispatcher::{
     BatchGenerationReport, DispatcherEvent, JobDispatcher, generate_project_blocking,
@@ -1579,6 +1581,201 @@ sha256 = "abc"
     }
 
     #[test]
+    fn tutorial_3d_surfacing_projects_roundtrip_simulate_crash_free_and_post() {
+        use chip_cad::{
+            MeshImportOptions, load_mesh_cad_document, sample_relief_wave_obj_text,
+            sample_sculpted_dome_stl_bytes,
+        };
+        use chip_post::builtin_post_profiles;
+        use chip_sim::SimResolution;
+
+        let starter = default_starter_tool_library();
+        let profiles = builtin_post_profiles();
+        let grbl = profiles.iter().find(|p| p.id == "grbl").unwrap();
+        let linuxcnc = profiles.iter().find(|p| p.id == "linuxcnc").unwrap();
+
+        // ── Tutorial 08: 3D Adaptive Roughing & Waterline / Z-Level (08-sculpted-dome.stl) ──
+        let dome_bytes = sample_sculpted_dome_stl_bytes();
+        let dome_doc = load_mesh_cad_document(
+            "08-sculpted-dome.stl",
+            &dome_bytes,
+            &MeshImportOptions::default(),
+        )
+        .unwrap();
+        let dome_sha = compute_sha256_hex(&dome_bytes);
+        let mut proj_08 = build_tutorial_3d_adaptive_waterline_project(
+            "08-sculpted-dome.stl".to_string(),
+            &dome_sha,
+            &starter.tools,
+        );
+        assert_eq!(proj_08.schema_version, 3);
+        assert_eq!(proj_08.sketches.len(), 1);
+        assert_eq!(proj_08.setups[0].operations.len(), 2);
+
+        let toml_08_a = proj_08.to_toml_string().unwrap();
+        let toml_08_b = ProjectDocument::from_toml_str(&toml_08_a)
+            .unwrap()
+            .to_toml_string()
+            .unwrap();
+        assert_eq!(toml_08_a, toml_08_b);
+
+        let val_08 = validate_project(&proj_08, None, Some(&dome_doc));
+        assert!(
+            val_08.is_valid(),
+            "Tutorial 08 validation errors: {:?}",
+            val_08.diagnostics
+        );
+
+        let mut cache_08 = ToolpathCache::new(16);
+        let batch_08 = generate_project_blocking(&mut proj_08, &dome_doc, &mut cache_08, 1);
+        assert!(
+            batch_08.is_ok(),
+            "Tutorial 08 generation errors: {:?}",
+            batch_08.errors
+        );
+        assert_eq!(batch_08.generated.len(), 2);
+
+        let sim_08 = simulate_project_setup(&SetupSimRequest {
+            project: &proj_08,
+            setup_idx: 0,
+            cad_doc: &dome_doc,
+            cad_revision: 1,
+            cache: &cache_08,
+            kinematics: resolve_kinematics_for_key("grbl", None),
+            resolution: SimResolution::Standard,
+            cancel: None,
+        })
+        .unwrap();
+        assert_eq!(
+            sim_08.critical_error_count(),
+            0,
+            "Tutorial 08 must simulate crash-free with 0 critical errors, got: {:#?}",
+            sim_08.diagnostics
+        );
+
+        let grbl_08 = post_process_project_setup(&SetupPostRequest {
+            project: &proj_08,
+            setup_idx: 0,
+            cad_doc: &dome_doc,
+            cad_revision: 1,
+            cache: &cache_08,
+            post_profile: grbl,
+            project_label: &proj_08.project_name,
+            program_stem: "08_adaptive_waterline",
+        })
+        .unwrap();
+        assert_eq!(
+            grbl_08.len(),
+            2,
+            "GRBL must split T1 Adaptive3D and T4 Waterline3D into 2 separate .nc files"
+        );
+
+        let lcnc_08 = post_process_project_setup(&SetupPostRequest {
+            project: &proj_08,
+            setup_idx: 0,
+            cad_doc: &dome_doc,
+            cad_revision: 1,
+            cache: &cache_08,
+            post_profile: linuxcnc,
+            project_label: &proj_08.project_name,
+            program_stem: "08_adaptive_waterline",
+        })
+        .unwrap();
+        assert_eq!(lcnc_08.len(), 1);
+        assert!(lcnc_08[0].content.contains("M6"));
+
+        // ── Tutorial 09: 3D Surface Finishing (09-relief-wave.obj) ──
+        let wave_text = sample_relief_wave_obj_text();
+        let wave_bytes = wave_text.as_bytes();
+        let wave_doc = load_mesh_cad_document(
+            "09-relief-wave.obj",
+            wave_bytes,
+            &MeshImportOptions::default(),
+        )
+        .unwrap();
+        let wave_sha = compute_sha256_hex(wave_bytes);
+        let mut proj_09 = build_tutorial_3d_surface_finishing_project(
+            "09-relief-wave.obj".to_string(),
+            &wave_sha,
+            &starter.tools,
+        );
+        assert_eq!(proj_09.schema_version, 3);
+        assert_eq!(proj_09.setups[0].operations.len(), 3);
+
+        let toml_09_a = proj_09.to_toml_string().unwrap();
+        let toml_09_b = ProjectDocument::from_toml_str(&toml_09_a)
+            .unwrap()
+            .to_toml_string()
+            .unwrap();
+        assert_eq!(toml_09_a, toml_09_b);
+
+        let val_09 = validate_project(&proj_09, None, Some(&wave_doc));
+        assert!(
+            val_09.is_valid(),
+            "Tutorial 09 validation errors: {:?}",
+            val_09.diagnostics
+        );
+
+        let mut cache_09 = ToolpathCache::new(16);
+        let batch_09 = generate_project_blocking(&mut proj_09, &wave_doc, &mut cache_09, 1);
+        assert!(
+            batch_09.is_ok(),
+            "Tutorial 09 generation errors: {:?}",
+            batch_09.errors
+        );
+        assert_eq!(batch_09.generated.len(), 3);
+
+        let sim_09 = simulate_project_setup(&SetupSimRequest {
+            project: &proj_09,
+            setup_idx: 0,
+            cad_doc: &wave_doc,
+            cad_revision: 1,
+            cache: &cache_09,
+            kinematics: resolve_kinematics_for_key("grbl", None),
+            resolution: SimResolution::Standard,
+            cancel: None,
+        })
+        .unwrap();
+        assert_eq!(
+            sim_09.critical_error_count(),
+            0,
+            "Tutorial 09 must simulate crash-free with 0 critical errors, got: {:#?}",
+            sim_09.diagnostics
+        );
+
+        let grbl_09 = post_process_project_setup(&SetupPostRequest {
+            project: &proj_09,
+            setup_idx: 0,
+            cad_doc: &wave_doc,
+            cad_revision: 1,
+            cache: &cache_09,
+            post_profile: grbl,
+            project_label: &proj_09.project_name,
+            program_stem: "09_surface_finishing",
+        })
+        .unwrap();
+        assert_eq!(
+            grbl_09.len(),
+            2,
+            "GRBL must split T1 Adaptive3D and T4 Parallel3D/Scallop3D into 2 separate .nc files"
+        );
+
+        let lcnc_09 = post_process_project_setup(&SetupPostRequest {
+            project: &proj_09,
+            setup_idx: 0,
+            cad_doc: &wave_doc,
+            cad_revision: 1,
+            cache: &cache_09,
+            post_profile: linuxcnc,
+            project_label: &proj_09.project_name,
+            program_stem: "09_surface_finishing",
+        })
+        .unwrap();
+        assert_eq!(lcnc_09.len(), 1);
+        assert!(lcnc_09[0].content.contains("M6"));
+    }
+
+    #[test]
     fn rotary_setup_roundtrips_toml_omits_when_disabled_and_validates_post_compatibility() {
         use chip_cad::{
             CadDocument, MeshImportOptions, load_mesh_cad_document, sample_rotary_shaft_stl_bytes,
@@ -1850,6 +2047,276 @@ sha256 = "abc"
             });
             assert!(
                 has_simultaneous_xyza,
+                "{} must emit simultaneous X Y Z A F blocks",
+                prof.id
+            );
+        }
+    }
+
+    #[test]
+    fn tutorial_rotary_projects_roundtrip_simulate_crash_free_and_post() {
+        use chip_cad::{
+            MeshImportOptions, load_mesh_cad_document, sample_helical_flute_shaft_stl_bytes,
+            sample_rotary_shaft_stl_bytes, tutorial_indexed_4side_block_step,
+        };
+        use chip_post::builtin_post_profiles;
+        use chip_sim::SimResolution;
+
+        let starter = default_starter_tool_library();
+        let profiles = builtin_post_profiles();
+        let linux_4ax = profiles.iter().find(|p| p.id == "linuxcnc_4axis").unwrap();
+        let grblhal_4ax = profiles.iter().find(|p| p.id == "grblhal_4axis").unwrap();
+        let grbl_wrap = profiles
+            .iter()
+            .find(|p| p.id == "grbl_rotary_wrap")
+            .unwrap();
+
+        // 1. Tutorial 10 — Rotary Axial Parallel (-60°..+60°) + Continuous Spiral (Z+X+A)
+        let shaft_stl = sample_rotary_shaft_stl_bytes();
+        let shaft_doc = load_mesh_cad_document(
+            "09-rotary-shaft.stl",
+            &shaft_stl,
+            &MeshImportOptions::default(),
+        )
+        .unwrap();
+        let shaft_sha = compute_sha256_hex(&shaft_stl);
+        let mut axial_proj = build_tutorial_rotary_axial_parallel_project(
+            "09-rotary-shaft.stl".to_string(),
+            &shaft_sha,
+            &starter.tools,
+        );
+        let axial_toml = axial_proj.to_toml_string().unwrap();
+        assert!(axial_toml.contains("axial_parallel"));
+        assert!(axial_toml.contains("continuous_spiral"));
+        assert_eq!(
+            axial_toml,
+            ProjectDocument::from_toml_str(&axial_toml)
+                .unwrap()
+                .to_toml_string()
+                .unwrap()
+        );
+        let axial_val = validate_project(&axial_proj, None, Some(&shaft_doc));
+        assert!(
+            axial_val.is_valid() && axial_val.warning_count() == 0,
+            "Tutorial 10 Axial Parallel validation issues: {:?}",
+            axial_val.diagnostics
+        );
+        let mut axial_cache = ToolpathCache::new(16);
+        let axial_batch =
+            generate_project_blocking(&mut axial_proj, &shaft_doc, &mut axial_cache, 1);
+        assert!(
+            axial_batch.is_ok() && axial_batch.generated.len() == 2,
+            "Tutorial 10 Axial Parallel generation errors: {:?}",
+            axial_batch.errors
+        );
+        let axial_sim = simulate_project_setup(&SetupSimRequest {
+            project: &axial_proj,
+            setup_idx: 0,
+            cad_doc: &shaft_doc,
+            cad_revision: 1,
+            cache: &axial_cache,
+            kinematics: resolve_kinematics_for_key("linuxcnc_4axis", None),
+            resolution: SimResolution::Standard,
+            cancel: None,
+        })
+        .unwrap();
+        assert!(
+            !axial_sim.has_critical_errors(),
+            "Tutorial 10 Axial Parallel must have 0 critical errors in CylindricalStock: {:#?}",
+            axial_sim.diagnostics
+        );
+        let axial_post_lcnc = post_process_project_setup(&SetupPostRequest {
+            project: &axial_proj,
+            setup_idx: 0,
+            cad_doc: &shaft_doc,
+            cad_revision: 1,
+            cache: &axial_cache,
+            post_profile: linux_4ax,
+            project_label: &axial_proj.project_name,
+            program_stem: "rotary_axial",
+        })
+        .unwrap();
+        assert!(axial_post_lcnc[0].content.contains("G93"));
+        let axial_post_wrap = post_process_project_setup(&SetupPostRequest {
+            project: &axial_proj,
+            setup_idx: 0,
+            cad_doc: &shaft_doc,
+            cad_revision: 1,
+            cache: &axial_cache,
+            post_profile: grbl_wrap,
+            project_label: &axial_proj.project_name,
+            program_stem: "rotary_axial",
+        })
+        .unwrap();
+        assert!(!axial_post_wrap.is_empty());
+        for f in &axial_post_wrap {
+            let has_a_word = f.content.lines().any(|line| {
+                let t = line.trim();
+                !t.starts_with('(')
+                    && !t.starts_with(';')
+                    && t.split_whitespace().any(|tok| tok.starts_with('A'))
+            });
+            assert!(
+                !has_a_word && f.content.contains('Y'),
+                "grbl_rotary_wrap must swap A onto Y with zero A words in {}",
+                f.filename
+            );
+        }
+
+        // 2. Tutorial 11 — Indexed 3+1 Multi-Face STEP Block (0°, 45°, 90°, 180°, 270°)
+        let block_step = tutorial_indexed_4side_block_step().unwrap();
+        let block_doc = MonstertruckKernel
+            .load_step_bytes(
+                "11-indexed-multiface-block.step",
+                block_step.as_bytes(),
+                DEFAULT_TESS_CHORD_TOL_MM,
+            )
+            .unwrap();
+        let block_sha = compute_sha256_hex(block_step.as_bytes());
+        let mut idx_proj = build_tutorial_indexed_step_multiface_project(
+            &block_doc,
+            "11-indexed-multiface-block.step".to_string(),
+            &block_sha,
+            &starter.tools,
+        );
+        assert_eq!(idx_proj.setups[0].operations.len(), 5);
+        let idx_toml = idx_proj.to_toml_string().unwrap();
+        assert!(idx_toml.contains("indexed3_plus1"));
+        assert_eq!(
+            idx_toml,
+            ProjectDocument::from_toml_str(&idx_toml)
+                .unwrap()
+                .to_toml_string()
+                .unwrap()
+        );
+        let idx_val = validate_project(&idx_proj, None, Some(&block_doc));
+        assert!(
+            idx_val.is_valid() && idx_val.warning_count() == 0,
+            "Tutorial 11 Indexed STEP validation issues: {:?}",
+            idx_val.diagnostics
+        );
+        let mut idx_cache = ToolpathCache::new(16);
+        let idx_batch = generate_project_blocking(&mut idx_proj, &block_doc, &mut idx_cache, 1);
+        assert!(
+            idx_batch.is_ok() && idx_batch.generated.len() == 5,
+            "Tutorial 11 Indexed STEP generation errors: {:?}",
+            idx_batch.errors
+        );
+        let idx_sim = simulate_project_setup(&SetupSimRequest {
+            project: &idx_proj,
+            setup_idx: 0,
+            cad_doc: &block_doc,
+            cad_revision: 1,
+            cache: &idx_cache,
+            kinematics: resolve_kinematics_for_key("linuxcnc_4axis", None),
+            resolution: SimResolution::Standard,
+            cancel: None,
+        })
+        .unwrap();
+        assert!(
+            !idx_sim.has_critical_errors(),
+            "Tutorial 11 Indexed STEP must have 0 critical errors in CylindricalStock: {:#?}",
+            idx_sim.diagnostics
+        );
+        let idx_post = post_process_project_setup(&SetupPostRequest {
+            project: &idx_proj,
+            setup_idx: 0,
+            cad_doc: &block_doc,
+            cad_revision: 1,
+            cache: &idx_cache,
+            post_profile: linux_4ax,
+            project_label: &idx_proj.project_name,
+            program_stem: "indexed_multiface",
+        })
+        .unwrap();
+        assert_eq!(idx_post.len(), 1);
+        for word in ["A45.000", "A90.000", "A180.000", "A270.000"] {
+            assert!(
+                idx_post[0].content.contains(word),
+                "Tutorial 11 Indexed STEP G-code must contain {word}"
+            );
+        }
+
+        // 3. Tutorial 12 — Simultaneous 4-Axis Auto-Tilt Spiral vs. Fixed-Offset Helical Flowline
+        let flute_stl = sample_helical_flute_shaft_stl_bytes();
+        let flute_doc = load_mesh_cad_document(
+            "10-helical-flute-shaft.stl",
+            &flute_stl,
+            &MeshImportOptions::default(),
+        )
+        .unwrap();
+        let flute_sha = compute_sha256_hex(&flute_stl);
+        let mut flow_proj = build_tutorial_rotary_4axis_flowline_project(
+            "10-helical-flute-shaft.stl".to_string(),
+            &flute_sha,
+            &starter.tools,
+        );
+        assert_eq!(flow_proj.setups[0].operations.len(), 3);
+        let flow_toml = flow_proj.to_toml_string().unwrap();
+        assert!(flow_toml.contains("surface_normal_auto_tilt"));
+        assert!(flow_toml.contains("fixed_lateral_offset"));
+        assert!(flow_toml.contains("helical_flowline"));
+        assert_eq!(
+            flow_toml,
+            ProjectDocument::from_toml_str(&flow_toml)
+                .unwrap()
+                .to_toml_string()
+                .unwrap()
+        );
+        let flow_val = validate_project(&flow_proj, None, Some(&flute_doc));
+        assert!(
+            flow_val.is_valid() && flow_val.warning_count() == 0,
+            "Tutorial 12 4-Axis Flowline validation issues: {:?}",
+            flow_val.diagnostics
+        );
+        let mut flow_cache = ToolpathCache::new(16);
+        let flow_batch = generate_project_blocking(&mut flow_proj, &flute_doc, &mut flow_cache, 1);
+        assert!(
+            flow_batch.is_ok() && flow_batch.generated.len() == 3,
+            "Tutorial 12 4-Axis Flowline generation errors: {:?}",
+            flow_batch.errors
+        );
+        let flow_sim = simulate_project_setup(&SetupSimRequest {
+            project: &flow_proj,
+            setup_idx: 0,
+            cad_doc: &flute_doc,
+            cad_revision: 1,
+            cache: &flow_cache,
+            kinematics: resolve_kinematics_for_key("grblhal_4axis", None),
+            resolution: SimResolution::Standard,
+            cancel: None,
+        })
+        .unwrap();
+        assert!(
+            !flow_sim.has_critical_errors(),
+            "Tutorial 12 4-Axis Flowline must have 0 critical errors in CylindricalStock: {:#?}",
+            flow_sim.diagnostics
+        );
+        for prof in [linux_4ax, grblhal_4ax] {
+            let files = post_process_project_setup(&SetupPostRequest {
+                project: &flow_proj,
+                setup_idx: 0,
+                cad_doc: &flute_doc,
+                cad_revision: 1,
+                cache: &flow_cache,
+                post_profile: prof,
+                project_label: &flow_proj.project_name,
+                program_stem: "rotary_4axis_flowline",
+            })
+            .unwrap();
+            assert_eq!(files.len(), 1);
+            assert!(files[0].content.contains("G93"));
+            assert!(
+                files[0].content.lines().any(|line| {
+                    let t = line.trim();
+                    !t.starts_with('(')
+                        && !t.starts_with(';')
+                        && t.contains('X')
+                        && t.contains('Y')
+                        && t.contains('Z')
+                        && t.contains('A')
+                        && t.contains('F')
+                }),
                 "{} must emit simultaneous X Y Z A F blocks",
                 prof.id
             );

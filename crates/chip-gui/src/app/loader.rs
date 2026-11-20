@@ -49,6 +49,7 @@ pub(crate) struct LoadedPayload {
     pub unit_override: Option<MeshUnitKind>,
     pub sha256_hex: String,
     pub purpose: LoadPurpose,
+    pub pre_seeded_project: Option<ProjectDocument>,
 }
 
 pub(crate) enum LoadJobResult {
@@ -760,11 +761,44 @@ impl ChipCutterApp {
         } else {
             "Generating Milestone 5 CAD Revision v1 STEP fixture & seeding CAM job…".to_string()
         });
+        let seed_v1_tools =
+            if load_v2_rebind && self.project.setups.iter().all(|s| s.operations.is_empty()) {
+                Some(self.global_tools.tools.clone())
+            } else {
+                None
+            };
         let tx = self.job_tx.clone();
         rayon::spawn(move || {
             let t0 = Instant::now();
             let res = match sample_revised_part_pair_step() {
                 Ok((v1_str, v2_str)) => {
+                    let pre_seeded = if let Some(tools) = seed_v1_tools {
+                        let v1_bytes = v1_str.as_bytes();
+                        let v1_sha = compute_sha256_hex(v1_bytes);
+                        match load_model_bytes_cad_doc(
+                            "sample_revision_part_v1.step",
+                            v1_bytes,
+                            None,
+                        ) {
+                            Ok(v1_doc) => {
+                                let v1_topo = TopologyGraph::build(&v1_doc);
+                                Some(build_revision_v1_demo_project(
+                                    &v1_doc,
+                                    &v1_topo,
+                                    "sample_revision_part_v1.step".to_string(),
+                                    &v1_sha,
+                                    &tools,
+                                ))
+                            }
+                            Err(e) => {
+                                let _ = tx.send(LoadJobResult::Failed(e.to_string()));
+                                egui_ctx.request_repaint();
+                                return;
+                            }
+                        }
+                    } else {
+                        None
+                    };
                     let (name, step_str, purpose) = if load_v2_rebind {
                         (
                             "sample_revision_part_v2.step",
@@ -778,7 +812,17 @@ impl ChipCutterApp {
                             LoadPurpose::SeedRevisionDemoV1,
                         )
                     };
-                    parse_step_bytes_job(name.to_string(), step_str.into_bytes(), None, purpose, t0)
+                    let mut job = parse_step_bytes_job(
+                        name.to_string(),
+                        step_str.into_bytes(),
+                        None,
+                        purpose,
+                        t0,
+                    );
+                    if let LoadJobResult::Loaded { payload, .. } = &mut job {
+                        payload.pre_seeded_project = pre_seeded;
+                    }
+                    job
                 }
                 Err(e) => LoadJobResult::Failed(e.to_string()),
             };
@@ -849,6 +893,7 @@ impl ChipCutterApp {
             unit_override,
             sha256_hex,
             purpose,
+            pre_seeded_project,
         } = payload;
         let size = doc.aabb_mm.size();
         if let Some(mesh) = doc.meshes.first() {
@@ -1083,6 +1128,14 @@ impl ChipCutterApp {
                 }
             }
             LoadPurpose::ReloadRebind { update_path } => {
+                if let Some(seeded) = pre_seeded_project {
+                    self.clear_bundle_extract_dir();
+                    self.project_file_path = None;
+                    self.history.clear();
+                    self.clean_undo_len = Some(0);
+                    self.project = seeded;
+                    self.active_setup_idx = 0;
+                }
                 fit_camera = was_model_empty;
                 self.apply_associative_reload_rebind(
                     &doc,
@@ -1232,6 +1285,7 @@ fn parse_model_bytes_job(
                     unit_override,
                     sha256_hex,
                     purpose,
+                    pre_seeded_project: None,
                 }),
                 elapsed_ms: t0.elapsed().as_millis(),
             }
