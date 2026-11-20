@@ -7,7 +7,13 @@
 ## 1. Spec-First Workflow
 - **Authoritative Source of Truth:** All product, algorithmic, and architectural decisions live in `specs/`. Before proposing changes or writing code for any subsystem, read its corresponding spec document below.
 - **Build & Environment Setup:** Contributor toolchain, native dependencies, and headless test setup live in `DEVELOPMENT.md`.
-- **Implementation Plans Location:** Store milestone and feature implementation plans in `plans/` (`01`..`05` for Phase 1; `06`..`09` for Phase 2; `10`..`12` for Phase 3 UI Polish & Usability; `13`..`15` for Phase 4 Illustrated Toolpath Strategy Tutorials; `16`..`21` for Phase 5 3-Axis Surface Milling, Mesh Support, & 4th-Axis Rotary Milling).
+- **Implementation Plans Location:** Store milestone and feature implementation plans in `plans/` (`<nn>-milestone-<nn>-plan.md`, numbered sequentially across phases).
+- **Phase Git & Delivery Workflow (Normal Mode of Operation):**
+  1. Commit and push roadmap (`specs/10-roadmap.md`) and milestone plans (`plans/`) on `main` first.
+  2. Create a local phase branch from `main` (e.g., `phase-<N>-<slug>`) for implementation—do not push the temporary phase branch.
+  3. Land **each milestone in its own verified commit** on the local phase branch.
+  4. When ready to publish (after user confirmation), `git fetch origin`, rebase the phase branch cleanly onto `origin/main`, fast-forward `main`, delete the local phase branch, and push `main`.
+- **Phase-Matched Versioning:** Workspace minor versions track the completed phase number (`0.<phase>.0`, tag `v0.<phase>.0`). When bumping versions, synchronize `Cargo.toml`, `Cargo.lock`, golden G-code header comments (`crates/chip-cli/tests/golden/`), `packaging/flatpak/io.github.rk29.ChipCutter.metainfo.xml`, `.github/workflows/release.yml`, and `scripts/package_windows.ps1` in a dedicated commit before tagging.
 - **No Unsolicited Code Generation:** While iterating on specifications or plans, do **not** scaffold `Cargo.toml` or `.rs` files until the user explicitly asks to begin implementation.
 - **Keep Specs Synchronized:** Whenever an architectural decision, file schema, or scope boundary changes during implementation, update the relevant `specs/*.md` file in the same task.
 
@@ -24,7 +30,7 @@
 | `specs/07-post-processor.md` | Typed `ClEvent` IR, `.post.toml` profiles, ATC vs split-by-tool, GRBL & LinuxCNC dialects |
 | `specs/08-ui-viewport.md` | `eframe` + `wgpu` + `egui_tiles` shell, Dark/Light design system, Viewport HUDs, Command Palette, Undo/Redo |
 | `specs/09-persistence-cli.md` | `.chip.toml` (`schema_version = 1 / 2`) & `.chipz` formats, headless CLI subcommands, testing |
-| `specs/10-roadmap.md` | Completed Phase 1–4 (M1–M15) milestones, active Phase 5 (M16–M21) 3-axis mesh & 4th-axis rotary milestones, and future phases |
+| `specs/10-roadmap.md` | Completed phases/milestones (`M1`+), active phase plans, and future phases |
 | `specs/11-sketches-vectors.md` | `chip-sketch` 2D Sketch Layers, parametric shapes, DXF/SVG importers, TrueType & Hershey text |
 
 ---
@@ -45,6 +51,8 @@
    Editing parameters, sketches, tools, or setups mutates lightweight document state immediately (for `< 1 ms` Undo/Redo with zero idle per-frame document clones) and marks affected + downstream Rest Machining operations `Dirty`. Never run STEP/DXF/SVG loading, tessellation, polygon offsetting, Voronoi construction, or simulation synchronously on the `egui` thread; dispatch background `rayon` jobs with cancellation tokens.
 7. **Typed CL-Data Post Boundary:**
    Toolpath generators in `chip-cam` emit typed `ClEvent` streams—never G-code strings. Dialect formatting, modal tracking, canned-cycle expansion, and ATC (`M6`) vs. split-file-per-tool partitioning belong exclusively in `chip-post`.
+8. **Read-Only Built-In Presets & Upgrade-Safe User Config Space:**
+   Compiled-in built-in presets (machine definitions in `chip-tools`, post-processor profiles in `chip-post`) are strictly **read-only** and must never be shadowed or overwritten by project, `.chipz`, or user files so application upgrades update them cleanly. User clones, edits, and imported `.machine.toml` / `.post.toml` files live in OS user configuration space (`dirs::config_dir()/chipcutter/`).
 
 ---
 
@@ -69,8 +77,9 @@
 - **Deterministic Persistence:** Ensure `.chip.toml` and `.post.toml` serialization uses deterministic ordering (`BTreeMap` / sorted slices) so `git diff` stays clean.
 - **Verification Checklist:**
   - `cargo fmt --all -- --check`
-  - `cargo clippy --workspace --all-targets -- -D warnings`
-  - `cargo test --workspace`
-  - `cargo deny check`
+  - `cargo clippy --locked --workspace --all-targets -- -D warnings`
+  - `cargo clippy --locked -p chip-gui --no-default-features --features flatpak-portal --all-targets -- -D warnings`
+  - `WGPU_BACKEND=vulkan cargo test --locked --workspace`
+  - `cargo deny check` and `cargo deny --no-default-features --features chip-gui/flatpak-portal check`
   - Every new or modified toolpath strategy must include integration tests verified against `chip-sim`'s heightmap oracle asserting **zero `G0` rapid-into-stock collisions** and **zero target B-Rep gouges** beyond tolerance.
   - When capturing headless GUI screenshots via `xvfb-run` on Linux, always pass `WAYLAND_DISPLAY= WINIT_UNIX_BACKEND=x11 WGPU_BACKEND=vulkan xvfb-run -a` so `winit` renders strictly inside Xvfb rather than opening visible windows on a host Wayland session.
