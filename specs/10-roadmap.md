@@ -139,6 +139,26 @@ Phase 5 extends ChipCutter beyond 2.5D prismatic and V-carve machining into **tr
 
 ---
 
+## Phase 6 — Deep-Dive 3-Axis, 4th-Axis, & Production Workflow Tutorials (Active — M22–M24)
+
+Phase 6 brings every Phase 5 3-axis surfacing strategy, 4th-axis rotary mode, and core production workflow (`DXF`/`SVG` Pure-2D and associative STEP revision reload) up to the same dedicated, step-by-step illustrated tutorial standard as Phase 4's 2.5D guides (`01`–`07`), complete with focused starter models, multi-step headless Vulkan screenshots, and verified CLI equivalents:
+
+### Milestone 22 — Dedicated 3-Axis Surface Milling Tutorials (`plans/22-milestone-22-plan.md`)
+- **3D Adaptive Roughing & 3D Waterline / Z-Level (`docs/tutorials/08-3d-adaptive-waterline.md`):** Dedicated step-by-step guide covering `STL`/`OBJ`/`3MF` mesh import & watertightness diagnostics, `Adaptive3D` (`optimal_load`, flat-area detection, 2D sketch containment boundaries, stock-to-leave), and a full **`Waterline3D`** walkthrough (`WaterlineOrderMode`, `Adaptive Shallow Z-Stepdowns`, steep-slope filtering, and smooth helical ramp entry) with multi-step Vulkan screenshots.
+- **3D Surface Finishing: Parallel Raster, Constant-Scallop, & Pencil Cleanup (`docs/tutorials/09-3d-surface-finishing.md`):** Dedicated finishing walkthrough comparing `Parallel3D` (`Pass Angle`, `Cross-Pass +90°`, `Slope Range`), `Scallop3D` (target cusp height, `Inside-Out`, `Min/Max Stepover`), 3D Rest Machining (`FromPreviousTool` / `FromPrecedingOperations`), and `Pencil3D` multi-offset concave fillet cleanup on sculpted meshes and STEP solids.
+
+### Milestone 23 — Deep-Dive 4th-Axis Rotary Tutorials: Wrapping, Indexing, & Simultaneous 4-Axis (`plans/23-milestone-23-plan.md`)
+- **2-Linear + Rotary Wrapping & Surfacing (`docs/tutorials/10-rotary-wrapping-surfacing.md`):** Step-by-step walkthrough of `Z+X+A` and `Z+Y+B` rotary Setups, `WrapCylinder` (wrapping 2D V-Carve, Pocket, and Contour sketches onto `linuxcnc_4axis` and 3-axis swapped-axis `grbl_rotary_wrap`), and `Rotary2Linear` covering both `ContinuousSpiral` and **`AxialParallel`** patterns plus partial angular sectors (`Start°..End°`).
+- **Indexed `3+1` Multi-Face Machining on STEP & Mesh Parts (`docs/tutorials/11-indexed-3plus1-milling.md`):** Multi-face chucking guide covering cardinal `0°/90°/180°/270°` wrench flats plus a dedicated prismatic/angled **STEP solid** starter model demonstrating **Align to Selected 3D Face** for drilling and pocketing angled faces in a single chucking with safe clearance-radius retracts.
+- **Simultaneous 4-Axis Milling (`X + Y + Z + A/B`) (`docs/tutorials/12-simultaneous-4axis-milling.md`):** Deep-dive guide comparing **`Auto Surface-Normal Tilt`** (`Max Auto Tilt`, `Tilt Smoothing`) vs. **`Fixed Lateral Offset`**, and **`SimultaneousSpiral`** vs. **`HelicalFlowline`**, with off-centerline `CylindricalStock` verification and `G93` inverse-time inspection on `linuxcnc_4axis` and `grblhal_4axis`.
+
+### Milestone 24 — Production Workflow Tutorials (`DXF`/`SVG`, Associative Reload, `.chipz`) & Screenshot Harness (`plans/24-milestone-24-plan.md`)
+- **Pure-2D DXF / SVG Vector Import & Portable `.chipz` Bundles (`docs/tutorials/13-pure2d-dxf-svg-workflow.md`):** End-to-end Pure-2D job walkthrough covering `.dxf` and `.svg` import (units, SVG DPI, sub-layers, endpoint gap healing, island nesting), assigning operations without a 3D STEP model, and packing/building self-contained `.chipz` archives.
+- **Associative STEP Revision Reload (`Ctrl+R`) & Re-Pick Recovery (`docs/tutorials/14-associative-step-reload.md`):** Hands-on workflow (`revision-v1` → `revision-v2`) demonstrating automatic `GeometricSignature` re-matching, selective `Dirty` regeneration, and 1-click `NeedsRepick` recovery for deleted or modified CAD features while preserving tool/pass/tab settings.
+- **Automated Screenshot Harness & Verification (`scripts/capture_tutorial_screenshots.sh`, `docs/tutorials/README.md`, `README.md`):** Extend the deterministic headless Vulkan screenshot harness to cover all Phase 4 + Phase 6 tutorials, verify every tutorial's CLI commands/projects pass `chip-sim` with zero crashes/gouges, and audit all Markdown links and images.
+
+---
+
 ## Future Phases
 
 1. **Functional & Behavioral User-Level Testing:**
@@ -149,3 +169,5 @@ Phase 5 extends ChipCutter beyond 2.5D prismatic and V-carve machining into **tr
 3. **Ecosystem & Extensibility:**
    - Optional OpenCASCADE (`opencascade-rs`) `CadKernel` feature backend.
    - Thread milling (`ThreadMill` single/multi-form cutter geometry, ISO Metric & Unified thread tables, radial arc-in/out helical passes), additional controller dialects (Fanuc/Haas, Mach4, Masso, Centroid), and printable HTML/PDF setup sheets.
+4. **Tutorials for Upcoming Future-Phase Capabilities:**
+   - Dedicated illustrated guides accompanying new future-phase strategies (thread milling, 3D fixture/vise collision avoidance, and multi-setup volumetric stock workflows).
