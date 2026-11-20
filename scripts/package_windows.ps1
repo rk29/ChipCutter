@@ -9,7 +9,7 @@
     WiX v5 MSI installer from packaging/windows/chipcutter.wxs.
 
 .PARAMETER Version
-    Release semantic version (e.g. "0.9.0" or "0.9.0-rc.1"). Defaults to [workspace.package].version in Cargo.toml.
+    Release semantic version (e.g. "0.10.0" or "0.10.0-rc.1"). Defaults to [workspace.package].version in Cargo.toml.
 
 .PARAMETER TargetDir
     Directory containing compiled chip-gui.exe and chipcutter.exe.
