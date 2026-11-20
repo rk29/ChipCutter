@@ -185,7 +185,7 @@ Phase 7 automated cross-platform CI and tag-driven **GitHub Releases** so machin
 
 ---
 
-## Phase 8 — Machine Definitions & Per-Machine Tool Libraries (Planned — M29–M31)
+## Phase 8 — Machine Definitions & Per-Machine Tool Libraries (Completed — M29–M31)
 
 Phase 8 introduces first-class **Machine Definitions** (`*.machine.toml`) so machinists can configure each CNC machine's physical envelope, spindle limits, kinematics, default post-processor, optional 4th-axis rotary module, and **its own dedicated set of tools**—shipping with ready-to-use profiles for a **`generic`** baseline machine (used across existing tests and tutorials), the **Millennium Machines Milo v1.5 (LDO Kit)**, and the **Makera Carvera Air**:
 

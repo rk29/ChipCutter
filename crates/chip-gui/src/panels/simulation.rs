@@ -244,7 +244,13 @@ impl SimulationPanelState {
         let signature = self.compute_setup_sim_signature(project, setup_idx, cache, cad_revision);
         let resolution = self.resolution;
         let target_bodies = setup.target_bodies.clone();
-        let kin = resolve_kinematics_for_key(&setup.post_profile, project_dir);
+        let kin = if let Some(mid) = project.machine_id.as_deref()
+            && let Ok(machine) = chip_tools::resolve_machine_definition(mid, project_dir)
+        {
+            chip_sim::MachineKinematicsConfig::from_machine_spec(&machine.kinematics)
+        } else {
+            resolve_kinematics_for_key(&setup.post_profile, project_dir)
+        };
 
         logs.push(format!(
             "Simulating Setup '{}' at {} resolution on background worker…",

@@ -8,9 +8,9 @@ use chip_cad::{
     is_mesh_extension, load_mesh_cad_document,
 };
 use chip_cam::{Setup, WorkOffsetSlot};
-use chip_math::{DEFAULT_TESS_CHORD_TOL_MM, DisplayUnit};
+use chip_math::{DEFAULT_TESS_CHORD_TOL_MM, DisplayUnit, ParamLength};
 use chip_sketch::{CustomFontMap, SketchEntity, SketchFontSource, SketchLayer};
-use chip_tools::{Tool, ToolId};
+use chip_tools::{DEFAULT_MACHINE_ID, MachineDefinition, Tool, ToolId};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -48,6 +48,10 @@ pub struct ProjectDocument {
     pub project_name: String,
     #[serde(default)]
     pub display_units: DisplayUnit,
+    /// Optional target CNC machine definition ID (`machines/<id>.machine.toml`);
+    /// omitted when `None` (defaults cleanly to `"generic"` for full backward compatibility).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine_id: Option<String>,
     #[serde(default)]
     pub models: Vec<ModelEntry>,
     /// Planar 2D Sketch Layers (DXF/SVG imports, 2D CAM shapes, & Pure-2D job geometry; `11-sketches-vectors.md`).
@@ -75,6 +79,7 @@ impl ProjectDocument {
             schema_version: Self::CURRENT_SCHEMA_VERSION,
             project_name: project_name.into(),
             display_units: DisplayUnit::Millimeter,
+            machine_id: None,
             models: Vec::new(),
             sketches: Vec::new(),
             tools: Vec::new(),
@@ -83,6 +88,36 @@ impl ProjectDocument {
                 "Setup 1 — Top Op",
                 WorkOffsetSlot::G54,
             )],
+        }
+    }
+
+    /// Returns the effective target machine ID (`"generic"` when omitted).
+    pub fn effective_machine_id(&self) -> &str {
+        self.machine_id
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or(DEFAULT_MACHINE_ID)
+    }
+
+    /// Associates this project with `machine` and optionally syncs each setup's
+    /// default post-processor (and 4th-axis chuck defaults when rotary is enabled)
+    /// without removing already-embedded project tools.
+    pub fn apply_machine_defaults(&mut self, machine: &MachineDefinition, sync_setups: bool) {
+        self.machine_id = Some(machine.id.clone());
+        if sync_setups {
+            for setup in &mut self.setups {
+                if !setup.rotary.is_disabled() {
+                    if let Some(rot) = &machine.rotary {
+                        if let Some(post4) = &rot.default_post_profile_4axis {
+                            setup.post_profile = post4.clone();
+                        }
+                        setup.rotary.chuck_diameter = ParamLength::from_mm(rot.chuck_diameter_mm);
+                        setup.rotary.chuck_length = ParamLength::from_mm(rot.chuck_length_mm);
+                    }
+                } else {
+                    setup.post_profile = machine.default_post_profile.clone();
+                }
+            }
         }
     }
 

@@ -154,4 +154,5 @@ cargo run -p chip-cli -- build /tmp/14-bracket-v2-clean.chip.toml \
 ## Next Steps
 
 - **Previous:** [Tutorial 13 — Pure-2D `DXF` / `SVG` Vector Import & Portable `.chipz` Bundles](13-pure2d-dxf-svg-workflow.md)
-- **Index:** [All Tutorials](README.md) — you have completed the entire ChipCutter `00`–`14` curriculum!
+- **Next:** [Tutorial 15 — Machine Definitions, Per-Machine Tool Sets, & Sharing](15-machine-definitions-tool-sets.md)
+- **Index:** [All Tutorials](README.md)

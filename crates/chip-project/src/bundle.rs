@@ -5,6 +5,7 @@ use std::{
 };
 
 use chip_post::{PostProfile, builtin_post_profiles, resolve_post_profile};
+use chip_tools::{is_builtin_machine_id, resolve_machine_definition};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use zip::{CompressionMethod, DateTime, ZipArchive, ZipWriter, write::SimpleFileOptions};
@@ -60,6 +61,8 @@ pub struct ChipzExportSummary {
     #[serde(default)]
     pub font_files: Vec<String>,
     pub custom_post_files: Vec<String>,
+    #[serde(default)]
+    pub custom_machine_files: Vec<String>,
 }
 
 /// Input configuration for [`pack_chipz_bundle_with_options`] and [`export_chipz_bundle_with_options`].
@@ -297,6 +300,27 @@ pub fn pack_chipz_bundle_with_options(
         }
     }
 
+    // Bundle any custom (non-builtin) `.machine.toml` referenced by the project!
+    let mut custom_machine_files = Vec::new();
+    if let Some(mid) = bundled_proj
+        .machine_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        && !is_builtin_machine_id(mid)
+        && let Ok(custom_machine) = resolve_machine_definition(mid, project_dir)
+        && let Ok(toml_text) = custom_machine.to_toml_string()
+    {
+        let fname = format!(
+            "machines/{}.machine.toml",
+            sanitize_bundle_filename(&custom_machine.id)
+        );
+        if let std::collections::btree_map::Entry::Vacant(vac) = entries.entry(fname.clone()) {
+            custom_machine_files.push(fname);
+            vac.insert(toml_text.into_bytes());
+        }
+    }
+
     let proj_toml = bundled_proj.to_toml_string()?;
     entries.insert("project.chip.toml".to_string(), proj_toml.into_bytes());
 
@@ -334,6 +358,7 @@ pub fn pack_chipz_bundle_with_options(
         vector_files,
         font_files,
         custom_post_files,
+        custom_machine_files,
     };
     Ok((archive_bytes, summary))
 }

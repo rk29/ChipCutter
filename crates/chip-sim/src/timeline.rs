@@ -3,7 +3,7 @@ use chip_cam::{
     OperationKind, SegmentMotion3D, StrategyParams, ToolpathSegment3D,
 };
 use chip_math::DVec3;
-use chip_tools::{Tool, ToolId};
+use chip_tools::{MachineKinematicsSpec, Tool, ToolId};
 use serde::{Deserialize, Serialize};
 
 fn default_max_rotary_rate_deg_min() -> f64 {
@@ -35,6 +35,25 @@ impl Default for MachineKinematicsConfig {
             tool_change_time_sec: 15.0,
             max_rotary_rate_deg_min: default_max_rotary_rate_deg_min(),
         }
+    }
+}
+
+impl MachineKinematicsConfig {
+    /// Builds simulation kinematics directly from a [`MachineKinematicsSpec`].
+    pub fn from_machine_spec(spec: &MachineKinematicsSpec) -> Self {
+        Self {
+            rapid_rate_mm_min: spec.max_rapid_xy_mm_min.max(100.0),
+            accel_mm_s2: spec.accel_mm_s2.max(10.0),
+            junction_deviation_mm: spec.junction_deviation_mm.max(0.0),
+            tool_change_time_sec: spec.tool_change_time_sec.max(0.0),
+            max_rotary_rate_deg_min: spec.max_rotary_rate_deg_min.max(60.0),
+        }
+    }
+}
+
+impl From<&MachineKinematicsSpec> for MachineKinematicsConfig {
+    fn from(spec: &MachineKinematicsSpec) -> Self {
+        Self::from_machine_spec(spec)
     }
 }
 

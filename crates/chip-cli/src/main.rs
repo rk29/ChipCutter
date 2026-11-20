@@ -10,6 +10,10 @@ use crate::commands::{
         GenerateSampleArgs, Import2dArgs, ImportMeshArgs, InspectArgs, run_generate_sample_step,
         run_import_2d, run_import_mesh, run_inspect,
     },
+    machines::{
+        run_machines_clone, run_machines_export, run_machines_import, run_machines_inspect,
+        run_machines_list,
+    },
     validate_sim_build::{BuildArgs, run_build, run_simulate, run_validate},
 };
 
@@ -107,14 +111,20 @@ enum Commands {
         /// When combined with `--tutorial` and `--project-out`, write an empty 0-operation starter project (Stock & WCS only).
         #[arg(long)]
         empty_project: bool,
+        /// Optional target CNC machine definition ID (e.g. `generic`, `milo-1.5`, `carvera-air`) to record on the generated project.
+        #[arg(long)]
+        machine: Option<String>,
     },
-    /// Validate a `.chip.toml` project's STEP hashes, tools, Setups, WCS, selections, and Z heights.
+    /// Validate a `.chip.toml` project's STEP hashes, tools, Setups, WCS, selections, Z heights, and machine limits.
     Validate {
         /// Path to `.chip.toml` project file (or `.chipz` bundle).
         project: PathBuf,
         /// Also generate all enabled 2.5D toolpaths in parallel and verify non-empty CL-data output.
         #[arg(long)]
         generate: bool,
+        /// Optional target machine definition ID or `.machine.toml` path override for validation.
+        #[arg(long)]
+        machine: Option<String>,
     },
     /// Run headless 2.5D Z-dexel heightmap stock removal & 5-rule crash/gouge verification (`06-simulation.md`).
     Simulate {
@@ -168,6 +178,11 @@ enum Commands {
         #[command(subcommand)]
         action: ToolCommands,
     },
+    /// Machine definition utilities (`list`, `inspect`, `clone`, `export`, `import`).
+    Machines {
+        #[command(subcommand)]
+        action: MachineCommands,
+    },
     /// List all built-in and discovered custom post-processor profiles.
     ListPosts,
 }
@@ -204,6 +219,43 @@ enum ToolCommands {
         /// Optional custom library name.
         #[arg(long)]
         name: Option<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum MachineCommands {
+    /// List all built-in (read-only) and custom user machine definitions.
+    List,
+    /// Print full specifications and tool library for a machine ID or `.machine.toml` path.
+    Inspect {
+        /// Machine ID (e.g. `generic`, `milo-1.5`, `carvera-air`) or `.machine.toml` path.
+        id: String,
+    },
+    /// Clone any built-in or custom machine (plus its tool set) into user configuration space.
+    Clone {
+        /// Source machine ID or `.machine.toml` path to clone.
+        source: String,
+        /// New custom machine slug ID (e.g. `my-milo`).
+        new_id: String,
+        /// Optional display name for the cloned machine.
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// Export any machine definition and its full tool set as a shareable `.machine.toml`.
+    Export {
+        /// Machine ID or `.machine.toml` path to export.
+        id: String,
+        /// Output `.machine.toml` destination path.
+        #[arg(short, long)]
+        output: PathBuf,
+    },
+    /// Validate and import a shared `.machine.toml` into user configuration space.
+    Import {
+        /// Input `.machine.toml` file path.
+        input: PathBuf,
+        /// Optional explicit custom machine ID override (auto-disambiguated if omitted).
+        #[arg(long)]
+        id: Option<String>,
     },
 }
 
@@ -269,6 +321,7 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
             tutorial,
             project_out,
             empty_project,
+            machine,
         } => run_generate_sample_step(GenerateSampleArgs {
             output,
             multi_feature,
@@ -279,8 +332,13 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
             tutorial,
             project_out,
             empty_project,
+            machine,
         }),
-        Commands::Validate { project, generate } => run_validate(project, generate),
+        Commands::Validate {
+            project,
+            generate,
+            machine,
+        } => run_validate(project, generate, machine),
         Commands::Simulate {
             project,
             resolution,
@@ -318,6 +376,17 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
                 output,
                 name,
             } => run_import_fusion(input, output, name),
+        },
+        Commands::Machines { action } => match action {
+            MachineCommands::List => run_machines_list(),
+            MachineCommands::Inspect { id } => run_machines_inspect(id),
+            MachineCommands::Clone {
+                source,
+                new_id,
+                name,
+            } => run_machines_clone(source, new_id, name),
+            MachineCommands::Export { id, output } => run_machines_export(id, output),
+            MachineCommands::Import { input, id } => run_machines_import(input, id),
         },
         Commands::ListPosts => {
             for profile in chip_post::load_available_post_profiles(None) {

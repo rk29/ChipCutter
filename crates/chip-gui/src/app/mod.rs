@@ -39,9 +39,10 @@ use crate::{
             show_shortcut_cheatsheet_modal,
         },
         gcode_preview::GCodePreviewPanelState,
+        machine_manager::MachineManagerModalState,
         mesh_import_modal::MeshImportModalState,
         simulation::{SimTriggerArgs, SimulationPanelState},
-        tool_library::ToolLibraryModalState,
+        tool_library::{ToolLibraryMachineContext, ToolLibraryModalState},
         vector_import_modal::{VectorImportModalState, VectorModalAction, VectorModalCtx},
         welcome_gallery::{
             SampleGalleryModalState, SampleProjectId, WelcomeGalleryAction, WelcomeModalState,
@@ -131,10 +132,12 @@ pub struct ChipCutterApp {
     pub(crate) history: UndoHistory,
     pub(crate) toolpath_cache: ToolpathCache,
     pub(crate) dispatcher: JobDispatcher,
+    pub(crate) machines: Vec<chip_tools::MachineDefinition>,
     pub(crate) global_tools: ToolLibrary,
     pub(crate) prefs: UserPreferences,
     pub(crate) last_saved_prefs: UserPreferences,
     pub(crate) tool_library_modal: ToolLibraryModalState,
+    pub(crate) machine_manager_modal: MachineManagerModalState,
     pub(crate) mesh_import_modal: MeshImportModalState,
     pub(crate) vector_import_modal: VectorImportModalState,
     pub(crate) welcome_modal: WelcomeModalState,
@@ -254,7 +257,15 @@ impl ChipCutterApp {
             .map(|rs| ViewportRenderer::new(&rs.device));
 
         let (job_tx, job_rx) = crossbeam_channel::unbounded();
-        let global_tools = load_or_default_global_library();
+        let machines = chip_tools::load_available_machines(None);
+        let default_mid = prefs.default_machine_id.clone();
+        let initial_machine = machines
+            .iter()
+            .find(|m| m.id.eq_ignore_ascii_case(&default_mid))
+            .or_else(|| machines.first());
+        let global_tools = initial_machine
+            .map(chip_tools::MachineDefinition::to_tool_library)
+            .unwrap_or_else(load_or_default_global_library);
         let repaint_ctx = cc.egui_ctx.clone();
         let dispatcher = JobDispatcher::new(Some(Arc::new(move || {
             repaint_ctx.request_repaint();
@@ -271,6 +282,11 @@ impl ChipCutterApp {
 
         let mut initial_project = ProjectDocument::new("Untitled Job");
         initial_project.display_units = prefs.default_units;
+        if let Some(m) = initial_machine
+            && m.id != chip_tools::DEFAULT_MACHINE_ID
+        {
+            initial_project.apply_machine_defaults(m, true);
+        }
 
         let mut app = Self {
             tree: create_workspace_tree_with_shares(prefs.layout_shares),
@@ -286,10 +302,12 @@ impl ChipCutterApp {
             history: UndoHistory::new(100),
             toolpath_cache: ToolpathCache::new(128),
             dispatcher,
+            machines,
             global_tools,
             last_saved_prefs: prefs.clone(),
             prefs,
             tool_library_modal: ToolLibraryModalState::new(),
+            machine_manager_modal: MachineManagerModalState::new(),
             mesh_import_modal: MeshImportModalState::default(),
             vector_import_modal: VectorImportModalState::default(),
             welcome_modal: WelcomeModalState::default(),
@@ -776,8 +794,23 @@ impl ChipCutterApp {
         }
     }
 
+    pub(crate) fn active_machine(&self) -> Option<&chip_tools::MachineDefinition> {
+        let mid = self.project.effective_machine_id();
+        self.machines
+            .iter()
+            .find(|m| m.id.eq_ignore_ascii_case(mid))
+            .or_else(|| self.machines.first())
+    }
+
+    pub(crate) fn sync_active_machine_tools(&mut self) {
+        if let Some(m) = self.active_machine().cloned() {
+            self.global_tools = m.to_tool_library();
+        }
+    }
+
     pub(crate) fn perform_undo(&mut self) {
         if let Some(lbl) = self.history.undo(&mut self.project) {
+            self.sync_active_machine_tools();
             if let Some((_, cad_rev)) = self.effective_cad_arc() {
                 self.dispatcher.cancel_stale_jobs(&self.project, cad_rev);
                 let inflight = self.dispatcher.in_flight_ids();
@@ -794,6 +827,7 @@ impl ChipCutterApp {
 
     pub(crate) fn perform_redo(&mut self) {
         if let Some(lbl) = self.history.redo(&mut self.project) {
+            self.sync_active_machine_tools();
             if let Some((_, cad_rev)) = self.effective_cad_arc() {
                 self.dispatcher.cancel_stale_jobs(&self.project, cad_rev);
                 let inflight = self.dispatcher.in_flight_ids();
@@ -817,13 +851,114 @@ impl eframe::App for ChipCutterApp {
         self.sync_viewport_scene_state();
         self.draw_top_bars(ui);
 
-        self.tool_library_modal.show(
+        let active_mid = self.project.effective_machine_id().to_string();
+        let tl_actions = self.tool_library_modal.show_with_machine(
             &ctx,
             &mut self.global_tools,
             &mut self.project,
             &mut self.history,
             &mut self.logs,
+            Some(ToolLibraryMachineContext {
+                machines: &self.machines,
+                active_machine_id: &active_mid,
+            }),
         );
+        if let Some(new_mid) = tl_actions.switch_machine_id {
+            self.history
+                .record_before_edit("Switch Target Machine", None, &self.project);
+            self.project.machine_id = Some(new_mid);
+            self.sync_active_machine_tools();
+        }
+        if tl_actions.clone_active_machine {
+            let src_id = self.project.effective_machine_id().to_string();
+            if let Some(src) = self
+                .machines
+                .iter()
+                .find(|m| m.id.eq_ignore_ascii_case(&src_id))
+                .cloned()
+            {
+                let existing: Vec<String> = self.machines.iter().map(|m| m.id.clone()).collect();
+                let new_id = chip_tools::allocate_unique_custom_machine_id(&src.id, &existing);
+                let new_name = format!("{} (Custom)", src.name);
+                match chip_tools::clone_machine_definition(&src, &new_id, &new_name).and_then(
+                    |cloned| {
+                        chip_tools::save_user_machine(&cloned)?;
+                        Ok(cloned)
+                    },
+                ) {
+                    Ok(cloned) => {
+                        let msg = format!(
+                            "Cloned '{}' -> editable custom machine '{}' ({}).",
+                            src.name, cloned.name, cloned.id
+                        );
+                        self.logs.push(format!("[MACHINES] {msg}"));
+                        self.tool_library_modal.status_banner = Some(msg);
+                        self.project.machine_id = Some(cloned.id.clone());
+                        self.machines.push(cloned);
+                        self.sync_active_machine_tools();
+                    }
+                    Err(err) => {
+                        self.tool_library_modal.status_banner = Some(format!("Clone error: {err}"));
+                    }
+                }
+            }
+        }
+        if tl_actions.save_active_machine_tools {
+            let cur_id = self.project.effective_machine_id().to_string();
+            if let Some(m) = self
+                .machines
+                .iter_mut()
+                .find(|m| !m.is_builtin && m.id.eq_ignore_ascii_case(&cur_id))
+            {
+                m.tools = self.global_tools.tools.clone();
+                m.sort_tools_deterministically();
+                if let Err(err) = chip_tools::save_user_machine(m) {
+                    self.tool_library_modal.status_banner =
+                        Some(format!("Save machine tools failed: {err}"));
+                }
+            }
+        }
+        if tl_actions.open_machine_manager {
+            let cur_id = self.project.effective_machine_id().to_string();
+            self.machine_manager_modal
+                .open_selecting(&self.machines, &cur_id);
+        }
+
+        let active_mid_now = self.project.effective_machine_id().to_string();
+        let default_pref_mid = self.prefs.default_machine_id.clone();
+        let mm_actions = self.machine_manager_modal.show(
+            &ctx,
+            &mut self.machines,
+            &active_mid_now,
+            &default_pref_mid,
+            &mut self.logs,
+        );
+        if let Some((mid, sync_setups)) = mm_actions.select_project_machine {
+            self.history
+                .record_before_edit("Change Target Machine", None, &self.project);
+            if let Some(m) = self
+                .machines
+                .iter()
+                .find(|m| m.id.eq_ignore_ascii_case(&mid))
+                .cloned()
+            {
+                self.project.apply_machine_defaults(&m, sync_setups);
+            } else {
+                self.project.machine_id = Some(mid);
+            }
+            self.sync_active_machine_tools();
+        }
+        if let Some(def_mid) = mm_actions.set_default_machine_id {
+            self.prefs.default_machine_id = def_mid;
+        }
+        if let Some(tl_mid) = mm_actions.open_tool_library_for_machine {
+            self.project.machine_id = Some(tl_mid);
+            self.sync_active_machine_tools();
+            self.tool_library_modal.open = true;
+        }
+        if mm_actions.machines_modified {
+            self.sync_active_machine_tools();
+        }
 
         if let Some(mesh_commit) = self
             .mesh_import_modal

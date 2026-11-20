@@ -5,8 +5,10 @@ use chip_project::{
     DiagnosticSeverity, SetupPostRequest, SetupSimRequest, ToolpathCache,
     generate_project_blocking, kinematics_for_post_profile, post_process_project_setup,
     resolve_kinematics_for_key, simulate_project_setup, validate_project,
+    validate_project_with_machine,
 };
 use chip_sim::{SetupSimulationResult, SimResolution, format_cycle_time_hms};
+use chip_tools::resolve_machine_definition;
 
 use crate::commands::{
     BuildFileSummaryJson, BuildSummaryJson, ProjectSimReportJson, SetupSimReportJson,
@@ -16,19 +18,33 @@ use crate::commands::{
 pub fn run_validate(
     project: PathBuf,
     generate: bool,
+    machine_override: Option<String>,
 ) -> Result<ExitCode, Box<dyn std::error::Error>> {
     let loaded = load_project_or_chipz(&project)?;
     let mut proj_doc = loaded.proj;
     let proj_dir = loaded.dir.as_deref();
     let loaded_cad = load_primary_cad_for_project(&proj_doc, proj_dir).ok();
+    let explicit_machine = match machine_override.as_deref() {
+        Some(mid) => Some(resolve_machine_definition(mid, proj_dir)?),
+        None => None,
+    };
 
-    let report = validate_project(&proj_doc, proj_dir, loaded_cad.as_ref());
+    let report = validate_project_with_machine(
+        &proj_doc,
+        proj_dir,
+        loaded_cad.as_ref(),
+        explicit_machine.as_ref(),
+    );
     println!(
         "=== ChipCutter Project Validation: '{}' ===",
         proj_doc.project_name
     );
+    let active_machine_label = explicit_machine
+        .as_ref()
+        .map_or(proj_doc.effective_machine_id(), |m| m.id.as_str());
     println!(
-        "Models: {} | Sketches: {} | Tools: {} | Setups: {}",
+        "Machine: {} | Models: {} | Sketches: {} | Tools: {} | Setups: {}",
+        active_machine_label,
         proj_doc.models.len(),
         proj_doc.sketches.len(),
         proj_doc.tools.len(),

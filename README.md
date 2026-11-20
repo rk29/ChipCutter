@@ -97,8 +97,13 @@ Get-FileHash .\ChipCutter-<version>-windows-x86_64.msi -Algorithm SHA256
   7. **3-Axis Surface Milling over `STL` / `OBJ` / `3MF` Meshes & STEP Solids** — Pure-Rust `MeshBvh` exact `f64` Drop-Cutter & Push-Cutter kernel powering **3D Adaptive Roughing**, **3D Waterline / Z-Level**, **3D Parallel Raster Finishing**, **3D Constant-Scallop Finishing** (Sethian Fast-Marching Eikonal), and **3D Pencil Cleanup** (morphological ball-in-ball Minkowski rest residual).
   8. **4th-Axis Rotary Milling (`A` / `B` / `C`)** — Configurable rotary setups with chuck/clearance visualization and polar `CylindricalStock` 5-rule verification supporting **2-Linear + Rotary Cylindrical Wrapping (`Z+X+A` / `Z+Y+B`)**, **Continuous Rotary Spiral & Axial Surfacing**, **Indexed `3+1` Multi-Face Milling** (with B-Rep face-normal alignment), and **Simultaneous 4-Axis (`X+Y+Z+A/B`)** off-centerline auto-tilted helical milling with `G93` inverse-time feedrates (`linuxcnc_4axis`, `grblhal_4axis`, and swapped-axis `grbl_rotary_wrap`).
 
+- **Machine Definitions & Per-Machine Tool Libraries (`machines/`):**
+  - Ships with read-only built-in profiles for **`Generic 3/4-Axis CNC Mill`**, **`Millennium Machines Milo v1.5 (LDO Kit)`** (with the 5-tool LDO DLC starter endmill set), and **`Makera Carvera Air`** (with its 8-tool `1/8"` starter bit set and optional harmonic-drive 4th-axis rotary module).
+  - Each machine carries its own travel envelope, spindle RPM limits, simulation kinematics, default post-processor, rotary capacity, and dedicated tool library—with non-blocking envelope/RPM/feedrate diagnostics in GUI & CLI.
+  - Built-in profiles remain read-only so application upgrades stay clean; clone any machine into upgrade-safe user configuration space (`~/.config/chipcutter/machines/*.machine.toml`), or export/share and import single-file `.machine.toml` bundles via the **Machine Manager** (`Tools → Machine Manager…`) or `chipcutter machines`.
+
 - **Tool Library & Coupled SFM / Chipload Calculator:**
-  - Supports Flat, Ball, Bull-Nose, Chamfer, Face Mill, and Twist Drill geometries with per-material cutting presets (`Aluminum 6061`, `Mild Steel`, `Hardwood`, `Acrylic`, etc.), radial chip-thinning compensation, `.tools.toml` libraries, and a **Fusion 360 `.json` / `.tools` (ZIP)** importer.
+  - Supports Flat, Ball, Bull-Nose, Chamfer, Face Mill, and Twist Drill geometries with per-material cutting presets (`Aluminum 6061`, `Mild Steel`, `Hardwood`, `Acrylic`, etc.), radial chip-thinning compensation, machine-scoped tool switching, `.tools.toml` libraries, and a **Fusion 360 `.json` / `.tools` (ZIP)** importer.
 
 - **2.5D Z-Dexel Heightmap Stock Simulation & Mandatory Crash Gate:**
   - Multi-threaded `rayon` toolpath generation (`Ctrl+G`) and `< 1 ms` `100`-step Undo/Redo (`Ctrl+Z` / `Ctrl+Y`).
@@ -107,7 +112,7 @@ Get-FileHash .\ChipCutter-<version>-windows-x86_64.msi -Algorithm SHA256
 
 - **Configurable TOML Post-Processors & Portable `.chipz` Bundles:**
   - Ships with built-in **Grbl 1.1 / FluidNC** (automatic file-per-tool splitting—including Two-Stage Flat Endmill + V-Bit V-Carve operations—`<= 80`-char line guard, quadrant arc splitting, expanded peck drills), **grblHAL / FluidNC ATC**, and **LinuxCNC (RS274NGC)** (`M6` + `G43 H`, `G64 P`, native canned cycles) profiles in [`posts/`](posts/).
-  - Git-diff-friendly `.chip.toml` project manifests (`schema_version = 2`, backward-compatible with `v1`) plus byte-deterministic, self-contained **`.chipz`** portable bundles (`project.chip.toml` + `models/*.step` + `vectors/*.{dxf,svg}` + `fonts/*.{ttf,otf}` + custom `posts/*.post.toml`).
+  - Git-diff-friendly `.chip.toml` project manifests (`schema_version = 2`, backward-compatible with `v1`) plus byte-deterministic, self-contained **`.chipz`** portable bundles (`project.chip.toml` + `models/*.step` + `vectors/*.{dxf,svg}` + `fonts/*.{ttf,otf}` + custom `posts/*.post.toml` + custom `machines/*.machine.toml`).
 
 - **Studio Dark / Daylight Light Desktop UX & Persistent Preferences:**
   - Centralized `ThemeTokens` design system with WCAG-verified **Studio Dark** and **Daylight High-Contrast Light** themes (including theme-coupled 3D `wgpu` studio background & WCS grid), zero-dependency procedural HiDPI vector iconography, aligned two-column Inspector property grids, and `fx` scoped-variable expression autocomplete & nudging.
@@ -190,17 +195,23 @@ cargo run -p chip-cli -- import-2d panel.dxf -o /tmp/panel.chip.toml --thickness
 
 # 9. Convert a Fusion 360 tool library (.json or .tools) into native .tools.toml
 cargo run -p chip-cli -- tools import-fusion shop_tools.json -o shop.tools.toml
+
+# 10. List, inspect, clone, export, and import machine definitions (Generic, Milo v1.5, Carvera Air)
+cargo run -p chip-cli -- machines list
+cargo run -p chip-cli -- machines inspect milo-1.5
+cargo run -p chip-cli -- machines clone carvera-air my-carvera --name "My Carvera Air"
+cargo run -p chip-cli -- machines export my-carvera -o my-carvera.machine.toml
 ```
 
 ---
 
 ## Documentation
 
-- [**`docs/tutorials/`**](docs/tutorials/README.md) — Illustrated step-by-step Getting Started, 2.5D, 3-Axis Surface, 4th-Axis Rotary, & Production Workflow tutorials (`00`–`14`)
+- [**`docs/tutorials/`**](docs/tutorials/README.md) — Illustrated step-by-step Getting Started, 2.5D, 3-Axis Surface, 4th-Axis Rotary, Machine Definitions, & Production Workflow tutorials (`00`–`15`)
 - [**`ARCHITECTURE.md`**](ARCHITECTURE.md) — End-to-end data pipeline, crate dependency graph, threading/caching model, and 3D render passes
 - [**`DEVELOPMENT.md`**](DEVELOPMENT.md) — Workspace layout, platform build prerequisites, native Linux/macOS/Windows setup, and headless CI instructions
 - [**`specs/00-overview.md`**](specs/00-overview.md) — Product scope, non-goals, and full specification index (`00` through `11`)
-- [**`specs/10-roadmap.md`**](specs/10-roadmap.md) — Completed Phase 1–7 (`M1`–`M28`) milestones and future phases
+- [**`specs/10-roadmap.md`**](specs/10-roadmap.md) — Completed Phase 1–8 (`M1`–`M31`) milestones and future phases
 - [**`AGENTS.md`**](AGENTS.md) — Architectural invariants and contributor guidelines
 
 ---

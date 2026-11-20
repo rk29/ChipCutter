@@ -56,6 +56,7 @@ pub enum CommandId {
     OpenGCodePreview,
     ExportGCode,
     OpenToolLibrary,
+    OpenMachineManager,
     OpenDiagnosticsLog,
 
     // View, Camera, Theme, & Units
@@ -349,6 +350,13 @@ pub const PALETTE_COMMANDS: &[PaletteEntry] = &[
         category: "Tools",
         label: "Open Tool Library & SFM/Chipload Manager…",
         keywords: "tools cutter endmill vbit drill fusion library",
+        shortcut: None,
+    },
+    PaletteEntry {
+        id: CommandId::OpenMachineManager,
+        category: "Tools",
+        label: "Open Machine Manager (Milo 1.5, Carvera Air, Custom)…",
+        keywords: "machine milo carvera air generic definition envelope spindle clone export import",
         shortcut: None,
     },
     PaletteEntry {

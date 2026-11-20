@@ -11,6 +11,7 @@ use chip_cam::{
 use chip_math::{DisplayUnit, EvalContext, ParamLength};
 use chip_post::builtin_post_profiles;
 use chip_project::{ProjectDocument, UndoHistory};
+use chip_tools::MachineDefinition;
 
 use crate::{
     panels::{SetupTab, ViewportPickMode},
@@ -32,6 +33,9 @@ pub struct SetupInspectorCtx<'a> {
     pub pick_mode: &'a mut ViewportPickMode,
     pub show_27pt_dots: &'a mut bool,
     pub show_z_planes: &'a mut bool,
+    pub machines: &'a [MachineDefinition],
+    pub open_machine_manager: &'a mut bool,
+    pub machine_changed: &'a mut bool,
 }
 
 /// Lightweight (~200-byte) pre-edit snapshot of only the Setup's header & WCS/Stock/Post/Heights
@@ -128,6 +132,9 @@ pub fn show_setup_inspector(ui: &mut egui::Ui, ctx: SetupInspectorCtx<'_>) -> bo
         pick_mode,
         show_27pt_dots,
         show_z_planes,
+        machines,
+        open_machine_manager,
+        machine_changed,
     } = ctx;
 
     if setup_idx >= project.setups.len() {
@@ -196,6 +203,89 @@ pub fn show_setup_inspector(ui: &mut egui::Ui, ctx: SetupInspectorCtx<'_>) -> bo
             {
                 inline_banner(ui, BannerKind::Info, msg);
                 ui.add_space(5.0);
+            }
+
+            if *tab == SetupTab::Wcs && !machines.is_empty() {
+                let current_mid = project.effective_machine_id().to_string();
+                let current_machine = machines
+                    .iter()
+                    .find(|m| m.id.eq_ignore_ascii_case(&current_mid))
+                    .or_else(|| machines.first());
+                let mut picked_machine: Option<String> = None;
+                let mut apply_defaults_clicked = false;
+                static_card(ui, Some("Target CNC Machine"), |ui| {
+                    inspector_grid(ui, ("setup_machine_grid", setup_idx), |ui| {
+                        grid_row(
+                            ui,
+                            "Machine",
+                            Some("Target CNC machine envelope, spindle limits, kinematics, & tool set"),
+                            |ui| {
+                                let label = current_machine
+                                    .map_or(current_mid.as_str(), |m| m.name.as_str());
+                                egui::ComboBox::from_id_salt(("setup_machine_cb", setup_idx))
+                                    .width(INPUT_COL_WIDTH)
+                                    .selected_text(label)
+                                    .show_ui(ui, |ui| {
+                                        for m in machines {
+                                            let tag = if m.is_builtin {
+                                                "[Built-In]"
+                                            } else {
+                                                "[Custom]"
+                                            };
+                                            if ui
+                                                .selectable_label(
+                                                    m.id.eq_ignore_ascii_case(&current_mid),
+                                                    format!("{} {}", m.name, tag),
+                                                )
+                                                .clicked()
+                                            {
+                                                picked_machine = Some(m.id.clone());
+                                            }
+                                        }
+                                    });
+                            },
+                        );
+                    });
+                    if let Some(m) = current_machine {
+                        ui.small(format!(
+                            "Travel {:.0}×{:.0}×{:.0} mm  |  {:.0}–{:.0} RPM  |  {} tools  |  Post: {}",
+                            m.travel_mm.x_mm,
+                            m.travel_mm.y_mm,
+                            m.travel_mm.z_mm,
+                            m.spindle.min_rpm,
+                            m.spindle.max_rpm,
+                            m.tools.len(),
+                            m.default_post_profile
+                        ));
+                    }
+                    ui.horizontal(|ui| {
+                        if ui
+                            .small_button("Apply Machine Defaults")
+                            .on_hover_text(
+                                "Apply this machine's default post-processor and 4th-axis chuck dimensions to setups",
+                            )
+                            .clicked()
+                        {
+                            apply_defaults_clicked = true;
+                        }
+                        if ui.small_button("Manage Machines…").clicked() {
+                            *open_machine_manager = true;
+                        }
+                    });
+                });
+                ui.add_space(5.0);
+
+                if let Some(new_mid) = picked_machine {
+                    history.record_before_edit("Change Target Machine", None, project);
+                    project.machine_id = Some(new_mid);
+                    *machine_changed = true;
+                } else if apply_defaults_clicked
+                    && let Some(m) = current_machine
+                {
+                    history.record_before_edit("Apply Machine Defaults", None, project);
+                    project.apply_machine_defaults(m, true);
+                    *machine_changed = true;
+                }
             }
 
             let setup = &mut project.setups[setup_idx];

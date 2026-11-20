@@ -29,7 +29,7 @@ use chip_sketch::{
     DxfImportOptions, SketchLayer, SvgImportOptions, VectorImportUnits, import_dxf_path,
     import_svg_path, sample_router_panel_dxf,
 };
-use chip_tools::default_starter_tool_library;
+use chip_tools::{default_starter_tool_library, resolve_machine_definition};
 
 pub struct GenerateSampleArgs {
     pub output: PathBuf,
@@ -41,11 +41,16 @@ pub struct GenerateSampleArgs {
     pub tutorial: Option<String>,
     pub project_out: Option<PathBuf>,
     pub empty_project: bool,
+    pub machine: Option<String>,
 }
 
 pub fn run_generate_sample_step(
     args: GenerateSampleArgs,
 ) -> Result<ExitCode, Box<dyn std::error::Error>> {
+    let explicit_machine = match args.machine.as_deref() {
+        Some(mid) => Some(resolve_machine_definition(mid, None)?),
+        None => None,
+    };
     let tutorial_slug = args
         .tutorial
         .as_deref()
@@ -60,7 +65,10 @@ pub fn run_generate_sample_step(
             Some("07-vcarve-medial" | "vcarve-medial")
         );
         let starter = default_starter_tool_library();
-        let proj = build_tutorial_vcarve_inlay_project(&starter.tools, medial_only);
+        let mut proj = build_tutorial_vcarve_inlay_project(&starter.tools, medial_only);
+        if let Some(m) = explicit_machine.as_ref() {
+            proj.apply_machine_defaults(m, false);
+        }
         let dest = args.project_out.unwrap_or(args.output);
         if let Some(parent) = dest.parent()
             && !parent.as_os_str().is_empty()
@@ -100,6 +108,9 @@ pub fn run_generate_sample_step(
             let mut proj = build_rotary_wrapped_engraving_project(&starter.tools);
             if args.empty_project {
                 proj.setups[0].operations.clear();
+            }
+            if let Some(m) = explicit_machine.as_ref() {
+                proj.apply_machine_defaults(m, false);
             }
             let dest = args.project_out.unwrap_or(args.output);
             if let Some(parent) = dest.parent()
@@ -167,6 +178,9 @@ pub fn run_generate_sample_step(
                 proj.setups[0].operations.clear();
                 proj.sketches.clear();
             }
+            if let Some(m) = explicit_machine.as_ref() {
+                proj.apply_machine_defaults(m, false);
+            }
             if let Some(parent) = proj_path.parent()
                 && !parent.as_os_str().is_empty()
             {
@@ -214,6 +228,9 @@ pub fn run_generate_sample_step(
                 && let Some(setup) = proj.setups.first_mut()
             {
                 setup.operations.clear();
+            }
+            if let Some(m) = explicit_machine.as_ref() {
+                proj.apply_machine_defaults(m, false);
             }
             if let Some(parent) = proj_path.parent()
                 && !parent.as_os_str().is_empty()
@@ -288,7 +305,7 @@ pub fn run_generate_sample_step(
         let sha = compute_sha256_hex(step.as_bytes());
         let starter = default_starter_tool_library();
         let rel_path = portable_model_path(Some(&proj_path), &args.output);
-        let proj = match tutorial_slug.as_deref() {
+        let mut proj = match tutorial_slug.as_deref() {
             Some("01-facing" | "facing") => {
                 build_tutorial_facing_project(rel_path, &sha, &starter.tools, args.empty_project)
             }
@@ -394,6 +411,9 @@ pub fn run_generate_sample_step(
             }
             _ => build_cam_torture_project(&doc, rel_path, &sha, &starter.tools),
         };
+        if let Some(m) = explicit_machine.as_ref() {
+            proj.apply_machine_defaults(m, false);
+        }
         if let Some(parent) = proj_path.parent()
             && !parent.as_os_str().is_empty()
         {

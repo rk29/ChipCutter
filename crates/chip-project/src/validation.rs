@@ -5,6 +5,7 @@ use chip_cam::{
     OperationRotaryMode, ResolvedHeights, RestMachiningMode, build_indexed_virtual_setup,
     extract_selection_features_with_sketches,
 };
+use chip_tools::{MachineDefinition, builtin_generic_machine, resolve_machine_definition};
 
 use crate::document::{ProjectDocument, compute_sha256_hex, resolve_model_path};
 
@@ -66,13 +67,43 @@ impl ProjectValidationReport {
 }
 
 /// Validates a [`ProjectDocument`]'s model files/hashes, embedded tools, Setups, WCS frames,
-/// Stock bounds, B-Rep selections, and Z-height hierarchies (`09-persistence-cli.md`).
+/// Stock bounds, B-Rep selections, Z-height hierarchies, and target machine envelope/spindle
+/// limits (`09-persistence-cli.md`).
 pub fn validate_project(
     project: &ProjectDocument,
     project_dir: Option<&Path>,
     loaded_cad: Option<&CadDocument>,
 ) -> ProjectValidationReport {
+    validate_project_with_machine(project, project_dir, loaded_cad, None)
+}
+
+/// Validates a [`ProjectDocument`] against an explicit [`MachineDefinition`] override (or the
+/// project's own `machine_id`, falling back to `"generic"` with a warning if unknown).
+pub fn validate_project_with_machine(
+    project: &ProjectDocument,
+    project_dir: Option<&Path>,
+    loaded_cad: Option<&CadDocument>,
+    machine_override: Option<&MachineDefinition>,
+) -> ProjectValidationReport {
     let mut report = ProjectValidationReport::default();
+
+    let resolved_machine: Cow<'_, MachineDefinition> = if let Some(m) = machine_override {
+        Cow::Borrowed(m)
+    } else {
+        let mid = project.effective_machine_id();
+        match resolve_machine_definition(mid, project_dir) {
+            Ok(m) => Cow::Owned(m),
+            Err(_) => {
+                report.push_warning(
+                    "Machine",
+                    format!(
+                        "unknown machine_id '{mid}'; falling back to built-in 'generic' limits."
+                    ),
+                );
+                Cow::Owned(builtin_generic_machine())
+            }
+        }
+    };
 
     // 1. Check model files and SHA-256 content hashes when project_dir is on disk
     if let Some(dir) = project_dir {
@@ -172,7 +203,29 @@ pub fn validate_project(
                 }
             };
 
-            // Validate 4th-axis rotary kinematics & post-processor compatibility
+            // Validate stock bounds against active machine XYZ travel envelope
+            let stock_size = resolved_setup.stock.aabb_wcs().size();
+            let travel = &resolved_machine.travel_mm;
+            if stock_size.x > travel.x_mm + 0.01
+                || stock_size.y > travel.y_mm + 0.01
+                || stock_size.z > travel.z_mm + 0.01
+            {
+                report.push_warning(
+                    &setup_scope,
+                    format!(
+                        "stock dimensions ({:.1} × {:.1} × {:.1} mm) exceed machine '{}' travel envelope ({:.1} × {:.1} × {:.1} mm).",
+                        stock_size.x,
+                        stock_size.y,
+                        stock_size.z,
+                        resolved_machine.name,
+                        travel.x_mm,
+                        travel.y_mm,
+                        travel.z_mm,
+                    ),
+                );
+            }
+
+            // Validate 4th-axis rotary kinematics, machine rotary capability, & post compatibility
             if let Some(rot) = resolved_setup.rotary {
                 if rot.clearance_radius_mm <= rot.stock_outer_radius_mm + 1e-4 {
                     report.push_error(
@@ -182,6 +235,36 @@ pub fn validate_project(
                             rot.clearance_radius_mm, rot.stock_outer_radius_mm
                         ),
                     );
+                }
+                match &resolved_machine.rotary {
+                    None => {
+                        report.push_warning(
+                            &setup_scope,
+                            format!(
+                                "4th-axis rotary is active ({}-Axis), but machine '{}' is configured as 3-axis only.",
+                                rot.axis_letter, resolved_machine.name
+                            ),
+                        );
+                    }
+                    Some(mrot) => {
+                        let stock_dia = rot.stock_outer_radius_mm * 2.0;
+                        let stock_len = (rot.stock_u_max - rot.stock_u_min).abs();
+                        if stock_dia > mrot.max_stock_diameter_mm + 0.01
+                            || stock_len > mrot.max_stock_length_mm + 0.01
+                        {
+                            report.push_warning(
+                                &setup_scope,
+                                format!(
+                                    "rotary stock (Ø{:.1} × {:.1} mm) exceeds machine '{}' 4th-axis capacity (max Ø{:.1} × {:.1} mm).",
+                                    stock_dia,
+                                    stock_len,
+                                    resolved_machine.name,
+                                    mrot.max_stock_diameter_mm,
+                                    mrot.max_stock_length_mm,
+                                ),
+                            );
+                        }
+                    }
                 }
                 if let Ok(prof) = chip_post::resolve_post_profile(&setup.post_profile, project_dir)
                     && !prof.rotary.enabled
@@ -245,6 +328,45 @@ pub fn validate_project(
                                         tool.name,
                                         tool.geometry.kind_label(),
                                         op.kind.label()
+                                    ),
+                                );
+                            }
+                            let eff = op.effective_cutting_params(tool);
+                            let sp = &resolved_machine.spindle;
+                            if eff.spindle_rpm < sp.min_rpm - 0.5
+                                || eff.spindle_rpm > sp.max_rpm + 0.5
+                            {
+                                report.push_warning(
+                                    &op_scope,
+                                    format!(
+                                        "spindle speed {:.0} RPM is outside machine '{}' spindle range ({:.0}–{:.0} RPM).",
+                                        eff.spindle_rpm,
+                                        resolved_machine.name,
+                                        sp.min_rpm,
+                                        sp.max_rpm,
+                                    ),
+                                );
+                            }
+                            let kin = &resolved_machine.kinematics;
+                            if eff.cutting_feed_mm_min > kin.max_cut_feed_xy_mm_min + 0.5 {
+                                report.push_warning(
+                                    &op_scope,
+                                    format!(
+                                        "cutting feedrate {:.0} mm/min exceeds machine '{}' XY limit ({:.0} mm/min).",
+                                        eff.cutting_feed_mm_min,
+                                        resolved_machine.name,
+                                        kin.max_cut_feed_xy_mm_min,
+                                    ),
+                                );
+                            }
+                            if eff.plunge_feed_mm_min > kin.max_cut_feed_z_mm_min + 0.5 {
+                                report.push_warning(
+                                    &op_scope,
+                                    format!(
+                                        "plunge feedrate {:.0} mm/min exceeds machine '{}' Z limit ({:.0} mm/min).",
+                                        eff.plunge_feed_mm_min,
+                                        resolved_machine.name,
+                                        kin.max_cut_feed_z_mm_min,
                                     ),
                                 );
                             }

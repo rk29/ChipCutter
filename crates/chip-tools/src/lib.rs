@@ -2,12 +2,18 @@
 //! `.tools.toml` persistence, and Fusion 360 JSON / `.tools` importer (`chip-tools`).
 
 pub mod builtin;
+pub mod builtin_machines;
 pub mod feeds_speeds;
 pub mod fusion_import;
+pub mod machine;
 pub mod model;
 pub mod storage;
 
 pub use builtin::default_starter_tool_library;
+pub use builtin_machines::{
+    CARVERA_AIR_MACHINE_ID, MILO_1_5_MACHINE_ID, builtin_carvera_air_machine,
+    builtin_milo_1_5_machine,
+};
 pub use feeds_speeds::{
     ChipThinningHint, CuttingPreset, SurfaceSpeedPresetSpec, chipload_from_feed,
     compute_adaptive_thinning_feed, compute_radial_chip_thinning, feed_from_chipload,
@@ -15,6 +21,16 @@ pub use feeds_speeds::{
 };
 pub use fusion_import::{
     FusionImportError, FusionImportReport, import_fusion_library_bytes, import_fusion_library_path,
+};
+pub use machine::{
+    DEFAULT_MACHINE_ID, MachineDefinition, MachineKinematicsSpec, MachineRotaryDefaults,
+    MachineSpindleSpec, MachineStorageError, MachineToolChangeKind, MachineTravelEnvelope,
+    allocate_unique_custom_machine_id, builtin_generic_machine, builtin_machine_definitions,
+    clone_machine_definition, delete_user_machine, delete_user_machine_in, export_machine_to_path,
+    import_machine_from_path, import_machine_from_path_in, is_builtin_machine_id,
+    load_available_machines, load_available_machines_in, resolve_machine_definition,
+    resolve_machine_definition_in, sanitize_machine_id, save_user_machine, save_user_machine_in,
+    user_machines_dir, validate_machine_id,
 };
 pub use model::{
     CoolantMode, CutterGeometry, SpindleDirection, Tool, ToolId, ToolOperationClass,
@@ -202,5 +218,194 @@ mod tests {
         let zip_report =
             import_fusion_library_bytes(&zip_buf.into_inner(), "Zipped Fusion").unwrap();
         assert_eq!(zip_report.imported_tool_count, 2);
+    }
+
+    #[test]
+    fn machine_definition_roundtrips_protects_builtins_and_supports_clone_export_import() {
+        let generic = builtin_generic_machine();
+        assert!(generic.is_builtin);
+        generic.validate().unwrap();
+        assert_eq!(generic.tools.len(), 8);
+
+        // Deterministic TOML roundtrip
+        let toml_1 = generic.to_toml_string().unwrap();
+        let parsed = MachineDefinition::from_toml_str(&toml_1).unwrap();
+        assert!(!parsed.is_builtin);
+        let toml_2 = parsed.to_toml_string().unwrap();
+        assert_eq!(toml_1, toml_2);
+
+        // Validation catches bad travel & inverted RPM range
+        let mut bad = parsed.clone();
+        bad.spindle.min_rpm = 25_000.0;
+        bad.spindle.max_rpm = 10_000.0;
+        assert!(matches!(
+            bad.validate(),
+            Err(MachineStorageError::Validation { .. })
+        ));
+        bad.spindle.min_rpm = 1_000.0;
+        bad.travel_mm.z_mm = 0.0;
+        assert!(matches!(
+            bad.validate(),
+            Err(MachineStorageError::Validation { .. })
+        ));
+
+        let tmp = std::env::temp_dir().join(format!(
+            "chipcutter_machine_storage_test_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let user_dir = tmp.join("user_machines");
+        std::fs::create_dir_all(&user_dir).unwrap();
+
+        // Built-ins are strictly read-only: cannot be saved, shadowed, or deleted!
+        assert!(matches!(
+            save_user_machine_in(&generic, &user_dir),
+            Err(MachineStorageError::BuiltInReadOnly { .. })
+        ));
+        assert!(matches!(
+            delete_user_machine_in(DEFAULT_MACHINE_ID, &user_dir),
+            Err(MachineStorageError::BuiltInReadOnly { .. })
+        ));
+        assert!(matches!(
+            clone_machine_definition(&generic, DEFAULT_MACHINE_ID, "Shadow"),
+            Err(MachineStorageError::BuiltInReadOnly { .. })
+        ));
+
+        // Clone into a mutable custom machine with full tool library preserved
+        let mut cloned = clone_machine_definition(&generic, "shop-mill-1", "My Shop Mill").unwrap();
+        assert!(!cloned.is_builtin);
+        assert_eq!(cloned.tools.len(), generic.tools.len());
+        cloned.travel_mm.x_mm = 320.0;
+        let saved_path = save_user_machine_in(&cloned, &user_dir).unwrap();
+        assert!(saved_path.is_file());
+
+        // Discovery returns read-only built-in + saved custom machine
+        let all = load_available_machines_in(Some(&user_dir), None);
+        assert!(
+            all.iter()
+                .any(|m| m.id == DEFAULT_MACHINE_ID && m.is_builtin)
+        );
+        let found = all.iter().find(|m| m.id == "shop-mill-1").unwrap();
+        assert!(!found.is_builtin);
+        assert!(approx_eq(found.travel_mm.x_mm, 320.0, 1e-9));
+
+        // Export built-in -> import auto-disambiguates away from reserved built-in ID
+        let share_file = tmp.join("shared_generic.machine.toml");
+        export_machine_to_path(&generic, &share_file).unwrap();
+        let existing_ids: Vec<String> = all.iter().map(|m| m.id.clone()).collect();
+        let imported =
+            import_machine_from_path_in(&share_file, &user_dir, &existing_ids, None).unwrap();
+        assert_eq!(imported.id, "generic-custom");
+        assert!(!imported.is_builtin);
+        assert_eq!(imported.tools.len(), generic.tools.len());
+
+        // Second import without override allocates next unique suffix (`generic-2`)
+        let mut existing_ids_2 = existing_ids;
+        existing_ids_2.push(imported.id.clone());
+        let imported_2 =
+            import_machine_from_path_in(&share_file, &user_dir, &existing_ids_2, None).unwrap();
+        assert_eq!(imported_2.id, "generic-2");
+
+        // Deleting custom machine works cleanly
+        delete_user_machine_in("shop-mill-1", &user_dir).unwrap();
+        assert!(resolve_machine_definition_in("shop-mill-1", Some(&user_dir), None).is_err());
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn builtin_machines_validate_conform_to_spindle_and_feed_limits_and_match_reference_toml() {
+        let builtins = builtin_machine_definitions();
+        let ids: Vec<&str> = builtins.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec![
+                DEFAULT_MACHINE_ID,
+                MILO_1_5_MACHINE_ID,
+                CARVERA_AIR_MACHINE_ID
+            ]
+        );
+
+        let repo_machines_dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../machines");
+
+        for m in &builtins {
+            assert!(m.is_builtin);
+            m.validate().unwrap();
+            assert!(
+                !m.tools.is_empty(),
+                "machine '{}' must have starter tools",
+                m.id
+            );
+
+            // Every cutting preset on every tool must sit strictly inside the machine's RPM & feed envelope!
+            for tool in &m.tools {
+                assert!(
+                    !tool.presets.is_empty(),
+                    "tool '{}' on '{}' must have presets",
+                    tool.name,
+                    m.id
+                );
+                for preset in &tool.presets {
+                    assert!(
+                        preset.spindle_rpm >= m.spindle.min_rpm - 0.5
+                            && preset.spindle_rpm <= m.spindle.max_rpm + 0.5,
+                        "preset '{}' on '{}' ({}) has RPM {:.1} outside [{}, {}]",
+                        preset.name,
+                        tool.name,
+                        m.id,
+                        preset.spindle_rpm,
+                        m.spindle.min_rpm,
+                        m.spindle.max_rpm
+                    );
+                    assert!(
+                        preset.cutting_feed_mm_min <= m.kinematics.max_cut_feed_xy_mm_min + 0.5,
+                        "preset '{}' on '{}' ({}) has XY feed {:.1} > max {:.1}",
+                        preset.name,
+                        tool.name,
+                        m.id,
+                        preset.cutting_feed_mm_min,
+                        m.kinematics.max_cut_feed_xy_mm_min
+                    );
+                    assert!(
+                        preset.plunge_feed_mm_min <= m.kinematics.max_cut_feed_z_mm_min + 0.5,
+                        "preset '{}' on '{}' ({}) has Z plunge {:.1} > max {:.1}",
+                        preset.name,
+                        tool.name,
+                        m.id,
+                        preset.plunge_feed_mm_min,
+                        m.kinematics.max_cut_feed_z_mm_min
+                    );
+                }
+            }
+
+            // Reference `machines/<id>.machine.toml` stays byte-for-byte synced with embedded built-ins
+            let ref_path = repo_machines_dir.join(format!("{}.machine.toml", m.id));
+            let expected_toml = m.to_toml_string().unwrap();
+            let on_disk = std::fs::read_to_string(&ref_path)
+                .unwrap_or_else(|e| panic!("missing reference {}: {e}", ref_path.display()))
+                .replace("\r\n", "\n");
+            assert_eq!(
+                on_disk,
+                expected_toml,
+                "reference {} drifted from built-in definition",
+                ref_path.display()
+            );
+        }
+
+        // Verify installed-bundle resolution works from an empty temp directory
+        let empty =
+            std::env::temp_dir().join(format!("chipcutter_empty_machines_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&empty);
+        for id in [
+            DEFAULT_MACHINE_ID,
+            MILO_1_5_MACHINE_ID,
+            CARVERA_AIR_MACHINE_ID,
+        ] {
+            let resolved = resolve_machine_definition_in(id, Some(&empty), None).unwrap();
+            assert_eq!(resolved.id, id);
+            assert!(resolved.is_builtin);
+        }
+        let _ = std::fs::remove_dir_all(&empty);
     }
 }

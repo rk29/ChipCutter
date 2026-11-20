@@ -1,9 +1,25 @@
 use chip_math::DisplayUnit;
 use chip_project::{ProjectDocument, UndoHistory};
 use chip_tools::{
-    CoolantMode, CutterGeometry, CuttingPreset, SpindleDirection, SurfaceSpeedPresetSpec, Tool,
-    ToolId, ToolLibrary, default_global_tool_library_path, import_fusion_library_path,
+    CoolantMode, CutterGeometry, CuttingPreset, MachineDefinition, SpindleDirection,
+    SurfaceSpeedPresetSpec, Tool, ToolId, ToolLibrary, default_global_tool_library_path,
+    import_fusion_library_path,
 };
+
+/// Borrowed machine context for machine-scoped Tool Library display and read-only built-in protection.
+pub struct ToolLibraryMachineContext<'a> {
+    pub machines: &'a [MachineDefinition],
+    pub active_machine_id: &'a str,
+}
+
+/// Actions emitted by [`ToolLibraryModalState::show_with_machine`] back to the app.
+#[derive(Debug, Default)]
+pub struct ToolLibraryMachineActions {
+    pub switch_machine_id: Option<String>,
+    pub clone_active_machine: bool,
+    pub open_machine_manager: bool,
+    pub save_active_machine_tools: bool,
+}
 
 const TOOL_NUMBER_LABEL: &str = "Tool Number (T#):";
 const TOOL_NUMBER_TOOLTIP: &str =
@@ -47,19 +63,98 @@ impl ToolLibraryModalState {
         history: &mut UndoHistory,
         logs: &mut Vec<String>,
     ) {
+        let _ = self.show_with_machine(ctx, global_lib, project, history, logs, None);
+    }
+
+    /// Shows the floating **Tool Library Manager** scoped to the active [`MachineDefinition`].
+    pub fn show_with_machine(
+        &mut self,
+        ctx: &egui::Context,
+        global_lib: &mut ToolLibrary,
+        project: &mut ProjectDocument,
+        history: &mut UndoHistory,
+        logs: &mut Vec<String>,
+        machine_ctx: Option<ToolLibraryMachineContext<'_>>,
+    ) -> ToolLibraryMachineActions {
+        let mut actions = ToolLibraryMachineActions::default();
         if !self.open {
-            return;
+            return actions;
         }
         let mut keep_open = self.open;
+        let active_machine_opt = machine_ctx.as_ref().and_then(|mc| {
+            mc.machines
+                .iter()
+                .find(|m| m.id.eq_ignore_ascii_case(mc.active_machine_id))
+                .or_else(|| mc.machines.first())
+        });
+        let is_readonly_builtin = active_machine_opt.is_some_and(|m| m.is_builtin);
 
         egui::Window::new("ChipCutter Tool Library & Cutting Presets")
             .open(&mut keep_open)
-            .default_size([840.0, 560.0])
+            .default_size([860.0, 590.0])
             .resizable(true)
             .show(ctx, |ui| {
+                // Machine Scope Bar
+                if let Some(mc) = &machine_ctx {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.strong("Machine:");
+                        let active_label = active_machine_opt
+                            .map_or(mc.active_machine_id, |m| m.name.as_str());
+                        egui::ComboBox::from_id_salt("tool_lib_machine_scope")
+                            .selected_text(active_label)
+                            .show_ui(ui, |ui| {
+                                for m in mc.machines {
+                                    let tag = if m.is_builtin {
+                                        "[Built-In]"
+                                    } else {
+                                        "[Custom]"
+                                    };
+                                    if ui
+                                        .selectable_label(
+                                            m.id.eq_ignore_ascii_case(mc.active_machine_id),
+                                            format!("{}  {} ({} tools)", m.name, tag, m.tools.len()),
+                                        )
+                                        .clicked()
+                                    {
+                                        actions.switch_machine_id = Some(m.id.clone());
+                                        self.selected_tool_idx = 0;
+                                        self.selected_preset_idx = 0;
+                                    }
+                                }
+                            });
+                        if is_readonly_builtin {
+                            ui.colored_label(
+                                egui::Color32::from_rgb(250, 204, 21),
+                                "Read-Only Built-In",
+                            );
+                            if ui
+                                .button("Clone Machine to Edit Tools")
+                                .on_hover_text(
+                                    "Clone this built-in machine into your user configuration folder to customize its tools.",
+                                )
+                                .clicked()
+                            {
+                                actions.clone_active_machine = true;
+                            }
+                        } else {
+                            ui.colored_label(
+                                egui::Color32::from_rgb(56, 189, 248),
+                                "Custom (Editable)",
+                            );
+                        }
+                        if ui.button("Manage Machines...").clicked() {
+                            actions.open_machine_manager = true;
+                        }
+                    });
+                    ui.separator();
+                }
+
                 // Top toolbar: Import Fusion 360, Load/Save `.tools.toml`, Add Tool
                 ui.horizontal_wrapped(|ui| {
-                    if ui.button("+ New Cutter").clicked() {
+                    if ui
+                        .add_enabled(!is_readonly_builtin, egui::Button::new("+ New Cutter"))
+                        .clicked()
+                    {
                         let next_n = global_lib
                             .tools
                             .iter()
@@ -103,10 +198,14 @@ impl ToolLibraryModalState {
                         });
                         self.selected_tool_idx = global_lib.tools.len() - 1;
                         self.selected_preset_idx = 0;
+                        actions.save_active_machine_tools = true;
                     }
 
                     if ui
-                        .button("Import Fusion 360 (.json / .tools)…")
+                        .add_enabled(
+                            !is_readonly_builtin,
+                            egui::Button::new("Import Fusion 360 (.json / .tools)…"),
+                        )
                         .clicked()
                         && let Some(path) = rfd::FileDialog::new()
                             .add_filter("Fusion 360 Tool Library", &["json", "tools"])
@@ -122,6 +221,7 @@ impl ToolLibraryModalState {
                                     }
                                 }
                                 global_lib.sort_deterministically();
+                                actions.save_active_machine_tools = true;
                                 let msg = format!(
                                     "Imported {} tool(s) & {} preset(s) from '{}' ({} warning(s)).",
                                     rep.imported_tool_count,
@@ -138,7 +238,12 @@ impl ToolLibraryModalState {
                         }
                     }
 
-                    if ui.button("Load .tools.toml…").clicked()
+                    if ui
+                        .add_enabled(
+                            !is_readonly_builtin,
+                            egui::Button::new("Load .tools.toml…"),
+                        )
+                        .clicked()
                         && let Some(path) = rfd::FileDialog::new()
                             .add_filter("ChipCutter Tool Library", &["toml"])
                             .pick_file()
@@ -147,6 +252,7 @@ impl ToolLibraryModalState {
                             Ok(loaded) => {
                                 *global_lib = loaded;
                                 self.selected_tool_idx = 0;
+                                actions.save_active_machine_tools = true;
                                 self.status_banner =
                                     Some(format!("Loaded library '{}'.", path.display()));
                             }
@@ -156,7 +262,21 @@ impl ToolLibraryModalState {
                         }
                     }
 
-                    if ui.button("Save Global Library").clicked()
+                    if machine_ctx.is_some() {
+                        if ui
+                            .add_enabled(
+                                !is_readonly_builtin,
+                                egui::Button::new("Save Machine Tools"),
+                            )
+                            .clicked()
+                        {
+                            actions.save_active_machine_tools = true;
+                            self.status_banner = Some(
+                                "Saved updated tool library to custom machine definition."
+                                    .to_string(),
+                            );
+                        }
+                    } else if ui.button("Save Global Library").clicked()
                         && let Some(def_path) = default_global_tool_library_path()
                     {
                         match global_lib.save_to_path(&def_path) {
@@ -248,6 +368,7 @@ impl ToolLibraryModalState {
                     egui::ScrollArea::vertical()
                         .id_salt("tool_lib_right_editor")
                         .show(&mut cols[1], |ui| {
+                            ui.add_enabled_ui(!is_readonly_builtin, |ui| {
                             ui.strong("Cutter Identity & Offsets");
                             egui::Grid::new("tool_identity_offsets_grid")
                                 .num_columns(2)
@@ -612,11 +733,13 @@ impl ToolLibraryModalState {
                                     }
                                 });
                             }
+                            });
                         });
                 });
             });
 
         self.open = keep_open;
+        actions
     }
 }
 

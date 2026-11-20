@@ -177,6 +177,12 @@ impl ChipCutterApp {
                             self.tool_library_modal.open = true;
                             ui.close();
                         }
+                        if ui.button("Machine Manager…").clicked() {
+                            let active_mid = self.project.effective_machine_id().to_string();
+                            self.machine_manager_modal
+                                .open_selecting(&self.machines, &active_mid);
+                            ui.close();
+                        }
                     });
                     self.draw_simulate_menu(ui, ctx);
                     self.draw_post_menu(ui);
@@ -1092,12 +1098,22 @@ impl ChipCutterApp {
         self.external_step_modified = false;
         let mut doc = ProjectDocument::new(name);
         doc.display_units = self.prefs.default_units;
+        if self.prefs.default_machine_id != chip_tools::DEFAULT_MACHINE_ID
+            && let Some(m) = self
+                .machines
+                .iter()
+                .find(|m| m.id.eq_ignore_ascii_case(&self.prefs.default_machine_id))
+                .cloned()
+        {
+            doc.apply_machine_defaults(&m, true);
+        }
         self.project = doc;
         self.project_file_path = None;
         self.model = None;
         self.active_setup_idx = 0;
         self.inspector_focus = InspectorFocus::Setup { setup_idx: 0 };
         self.cached_frame_geo = None;
+        self.sync_active_machine_tools();
     }
 
     pub(crate) fn add_standard_operation(&mut self, kind: OperationKind) {
@@ -1216,6 +1232,11 @@ impl ChipCutterApp {
             }
             CommandId::ExportGCode => self.trigger_gcode_export_from_menu(),
             CommandId::OpenToolLibrary => self.tool_library_modal.open = true,
+            CommandId::OpenMachineManager => {
+                let active_mid = self.project.effective_machine_id().to_string();
+                self.machine_manager_modal
+                    .open_selecting(&self.machines, &active_mid);
+            }
             CommandId::OpenDiagnosticsLog => {
                 focus_workspace_pane(&mut self.tree, WorkspacePane::DiagnosticsLog);
             }

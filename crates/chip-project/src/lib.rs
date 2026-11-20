@@ -55,6 +55,7 @@ pub use reload::{
 pub use toml_io::ProjectIoError;
 pub use validation::{
     DiagnosticSeverity, ProjectValidationReport, ValidationDiagnostic, validate_project,
+    validate_project_with_machine,
 };
 
 #[cfg(test)]
@@ -2322,5 +2323,252 @@ sha256 = "abc"
                 prof.id
             );
         }
+    }
+
+    #[test]
+    fn machine_id_roundtrip_validation_warnings_and_chipz_bundling() {
+        use chip_tools::{
+            DEFAULT_MACHINE_ID, builtin_generic_machine, clone_machine_definition,
+            save_user_machine_in,
+        };
+
+        let starter = default_starter_tool_library();
+        let mut proj =
+            build_tutorial_facing_project("billet.step".to_string(), "", &starter.tools, false);
+        // 1. Default `machine_id: None` omits field in TOML and resolves to `"generic"`
+        assert_eq!(proj.effective_machine_id(), DEFAULT_MACHINE_ID);
+        let toml_no_machine = proj.to_toml_string().unwrap();
+        assert!(
+            !toml_no_machine.contains("machine_id"),
+            "machine_id must be omitted when None for backward compatibility"
+        );
+
+        // 2. Validate against a compact 3-axis custom machine -> catches travel, RPM, feed, & rotary!
+        let generic = builtin_generic_machine();
+        let mut tiny = clone_machine_definition(&generic, "tiny-3ax", "Tiny 3-Axis Mill").unwrap();
+        tiny.travel_mm.x_mm = 50.0;
+        tiny.spindle.min_rpm = 10_000.0;
+        tiny.spindle.max_rpm = 12_000.0;
+        tiny.kinematics.max_cut_feed_xy_mm_min = 400.0;
+        tiny.kinematics.max_cut_feed_z_mm_min = 100.0;
+        tiny.rotary = None;
+
+        // Force op feeds above tiny machine's limits
+        let op = &mut proj.setups[0].operations[0];
+        op.feed_overrides.spindle_rpm = Some(20_000.0);
+        op.feed_overrides.cutting_feed_mm_min = Some(1_200.0);
+        op.feed_overrides.plunge_feed_mm_min = Some(300.0);
+
+        let step = chip_cad::tutorial_facing_billet_step().unwrap();
+        let doc = MonstertruckKernel
+            .load_step_bytes("billet.step", step.as_bytes(), DEFAULT_TESS_CHORD_TOL_MM)
+            .unwrap();
+        let report = validate_project_with_machine(&proj, None, Some(&doc), Some(&tiny));
+        assert!(
+            report.is_valid(),
+            "machine checks must be non-blocking warnings"
+        );
+        let msgs: Vec<&str> = report
+            .diagnostics
+            .iter()
+            .map(|d| d.message.as_str())
+            .collect();
+        assert!(
+            msgs.iter().any(|m| m.contains("travel envelope")),
+            "expected travel envelope warning in {msgs:?}"
+        );
+        assert!(
+            msgs.iter().any(|m| m.contains("spindle range")),
+            "expected spindle RPM warning in {msgs:?}"
+        );
+        assert!(
+            msgs.iter().any(|m| m.contains("XY limit")),
+            "expected XY feedrate warning in {msgs:?}"
+        );
+        assert!(
+            msgs.iter().any(|m| m.contains("Z limit")),
+            "expected Z plunge feedrate warning in {msgs:?}"
+        );
+
+        // 3. Rotary enabled on 3-axis-only machine -> emits rotary capability warning
+        let rot_proj = build_rotary_wrapped_engraving_project(&starter.tools);
+        let rot_report = validate_project_with_machine(&rot_proj, None, None, Some(&tiny));
+        assert!(
+            rot_report
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains("3-axis only")),
+            "expected 3-axis-only rotary warning: {:?}",
+            rot_report.diagnostics
+        );
+
+        // 4. Custom machine `.machine.toml` is bundled cleanly into `.chipz` and resolved on unpack
+        let tmp =
+            std::env::temp_dir().join(format!("chipcutter_m29_bundle_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let proj_dir = tmp.join("job");
+        let machines_dir = proj_dir.join("machines");
+        std::fs::create_dir_all(&machines_dir).unwrap();
+        save_user_machine_in(&tiny, &machines_dir).unwrap();
+        std::fs::write(proj_dir.join("billet.step"), step.as_bytes()).unwrap();
+
+        proj.apply_machine_defaults(&tiny, false);
+        assert_eq!(proj.effective_machine_id(), "tiny-3ax");
+        let (zip_bytes, summary) =
+            pack_chipz_bundle_bytes(&proj, Some(&proj_dir), &[], &[]).unwrap();
+        assert_eq!(
+            summary.custom_machine_files,
+            vec!["machines/tiny-3ax.machine.toml".to_string()]
+        );
+
+        let unpacked_dir = tmp.join("unpacked");
+        let unpacked = unpack_chipz_bytes(&zip_bytes, &unpacked_dir).unwrap();
+        assert_eq!(unpacked.project.effective_machine_id(), "tiny-3ax");
+        assert!(
+            unpacked_dir
+                .join("machines/tiny-3ax.machine.toml")
+                .is_file()
+        );
+        let resolved =
+            chip_tools::resolve_machine_definition("tiny-3ax", Some(&unpacked_dir)).unwrap();
+        assert_eq!(resolved.id, "tiny-3ax");
+        assert_eq!(resolved.tools.len(), tiny.tools.len());
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn milo_1_5_and_carvera_air_end_to_end_machining_simulates_crash_free_with_zero_warnings() {
+        use chip_cad::{sample_rotary_shaft_stl_bytes, tutorial_contour_plate_step};
+        use chip_cam::{OperationKind, StrategyParams};
+        use chip_math::ParamLength;
+        use chip_sim::{MachineKinematicsConfig, SimResolution};
+        use chip_tools::{builtin_carvera_air_machine, builtin_milo_1_5_machine};
+
+        // 1. Millennium Milo v1.5 (LDO Kit): 2D Contour plate using Milo T1 (Ø6mm 1FL DLC Flat)
+        let milo = builtin_milo_1_5_machine();
+        let plate_step = tutorial_contour_plate_step().unwrap();
+        let plate_doc = MonstertruckKernel
+            .load_step_bytes(
+                "plate.step",
+                plate_step.as_bytes(),
+                DEFAULT_TESS_CHORD_TOL_MM,
+            )
+            .unwrap();
+        let mut milo_proj = build_tutorial_contour_project(
+            &plate_doc,
+            "plate.step".to_string(),
+            "",
+            &milo.tools,
+            false,
+        );
+        milo_proj.tools.clear();
+        let milo_t1 = &milo.tools[0];
+        milo_proj.ensure_tool_embedded(milo_t1);
+        milo_proj.setups[0].operations[0].tool_id = Some(milo_t1.id.clone());
+        milo_proj.setups[0].operations[0].preset_id = Some(milo_t1.presets[0].id.clone());
+        milo_proj.setups[0].operations[0].feed_overrides.clear_all();
+        milo_proj.apply_machine_defaults(&milo, true);
+
+        let milo_val = validate_project(&milo_proj, None, Some(&plate_doc));
+        assert!(
+            milo_val.is_valid() && milo_val.warning_count() == 0,
+            "Milo v1.5 job must pass with 0 errors and 0 warnings, got: {:?}",
+            milo_val.diagnostics
+        );
+        let mut milo_cache = ToolpathCache::new(16);
+        let milo_batch = generate_project_blocking(&mut milo_proj, &plate_doc, &mut milo_cache, 1);
+        assert!(
+            milo_batch.errors.is_empty(),
+            "Milo gen errors: {:?}",
+            milo_batch.errors
+        );
+        let milo_sim = simulate_project_setup(&SetupSimRequest {
+            project: &milo_proj,
+            setup_idx: 0,
+            cad_doc: &plate_doc,
+            cad_revision: 1,
+            cache: &milo_cache,
+            resolution: SimResolution::Standard,
+            kinematics: MachineKinematicsConfig::from_machine_spec(&milo.kinematics),
+            cancel: None,
+        })
+        .unwrap();
+        assert_eq!(
+            milo_sim.critical_error_count(),
+            0,
+            "Milo simulation must be crash-free: {:?}",
+            milo_sim.diagnostics
+        );
+
+        // 2. Makera Carvera Air: 4th-Axis Rotary Surfacing using Carvera T5 (Ø3.175mm 2FL Ball)
+        let carvera = builtin_carvera_air_machine();
+        let shaft_stl = sample_rotary_shaft_stl_bytes();
+        let shaft_doc = load_model_bytes_cad_doc("shaft.stl", &shaft_stl, None).unwrap();
+        let mut carvera_proj = build_tutorial_rotary_axial_parallel_project(
+            "shaft.stl".to_string(),
+            "",
+            &carvera.tools,
+        );
+        carvera_proj.tools.clear();
+        let carvera_ball = carvera.tools.iter().find(|t| t.tool_number == 5).unwrap();
+        carvera_proj.ensure_tool_embedded(carvera_ball);
+        let rot_op = &mut carvera_proj.setups[0].operations[0];
+        assert_eq!(rot_op.kind, OperationKind::Rotary2Linear);
+        rot_op.tool_id = Some(carvera_ball.id.clone());
+        rot_op.preset_id = Some(carvera_ball.presets[0].id.clone());
+        rot_op.feed_overrides.clear_all();
+        if let StrategyParams::Rotary2Linear(p) = rot_op.strategy_mut() {
+            p.stepover = ParamLength::from_mm(4.0);
+        }
+        carvera_proj.apply_machine_defaults(&carvera, true);
+
+        let carvera_val = validate_project(&carvera_proj, None, Some(&shaft_doc));
+        assert!(
+            carvera_val.is_valid() && carvera_val.warning_count() == 0,
+            "Carvera Air 4th-axis job must pass with 0 errors and 0 warnings, got: {:?}",
+            carvera_val.diagnostics
+        );
+        let mut carvera_cache = ToolpathCache::new(16);
+        let carvera_batch =
+            generate_project_blocking(&mut carvera_proj, &shaft_doc, &mut carvera_cache, 1);
+        assert!(
+            carvera_batch.errors.is_empty(),
+            "Carvera gen errors: {:?}",
+            carvera_batch.errors
+        );
+        let carvera_sim = simulate_project_setup(&SetupSimRequest {
+            project: &carvera_proj,
+            setup_idx: 0,
+            cad_doc: &shaft_doc,
+            cad_revision: 1,
+            cache: &carvera_cache,
+            resolution: SimResolution::Standard,
+            kinematics: MachineKinematicsConfig::from_machine_spec(&carvera.kinematics),
+            cancel: None,
+        })
+        .unwrap();
+        assert_eq!(
+            carvera_sim.critical_error_count(),
+            0,
+            "Carvera Air 4th-axis simulation must be crash-free: {:?}",
+            carvera_sim.diagnostics
+        );
+        let post4 =
+            chip_post::resolve_post_profile(&carvera_proj.setups[0].post_profile, None).unwrap();
+        assert_eq!(post4.id, "grblhal_4axis");
+        let files = post_process_project_setup(&SetupPostRequest {
+            project: &carvera_proj,
+            setup_idx: 0,
+            cad_doc: &shaft_doc,
+            cad_revision: 1,
+            cache: &carvera_cache,
+            post_profile: &post4,
+            project_label: &carvera_proj.project_name,
+            program_stem: "carvera_rotary",
+        })
+        .unwrap();
+        assert_eq!(files.len(), 1);
+        assert!(files[0].content.contains("G93"));
     }
 }

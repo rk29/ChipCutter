@@ -22,6 +22,10 @@ fn default_true() -> bool {
     true
 }
 
+fn default_machine_id() -> String {
+    chip_tools::DEFAULT_MACHINE_ID.to_string()
+}
+
 /// Persistent user preferences stored in `prefs.toml` (`08-ui-viewport.md` §Persistent User Preferences).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -30,6 +34,8 @@ pub struct UserPreferences {
     pub schema_version: u32,
     pub theme: AppTheme,
     pub default_units: DisplayUnit,
+    #[serde(default = "default_machine_id")]
+    pub default_machine_id: String,
     pub mouse_preset: MousePreset,
     pub orbit_mode: OrbitMode,
     #[serde(default = "default_true")]
@@ -53,6 +59,7 @@ impl Default for UserPreferences {
             schema_version: 1,
             theme: AppTheme::Dark,
             default_units: DisplayUnit::Millimeter,
+            default_machine_id: default_machine_id(),
             mouse_preset: MousePreset::Fusion360,
             orbit_mode: OrbitMode::TurntableZUp,
             orthographic: true,
@@ -148,6 +155,7 @@ mod tests {
         let mut prefs = UserPreferences {
             theme: AppTheme::Light,
             default_units: DisplayUnit::Inch,
+            default_machine_id: "milo-1.5".to_string(),
             mouse_preset: MousePreset::SolidWorks,
             orbit_mode: OrbitMode::FreeTrackball,
             orthographic: false,
@@ -179,6 +187,7 @@ mod tests {
         "#;
         let partial = UserPreferences::from_toml_str(minimal).unwrap();
         assert_eq!(partial.theme, AppTheme::Light);
+        assert_eq!(partial.default_machine_id, chip_tools::DEFAULT_MACHINE_ID);
         assert!(partial.show_toolpaths);
         assert!(partial.show_welcome_on_startup);
         assert!(partial.layout_shares.top_row_share <= 0.88 + 1e-6);

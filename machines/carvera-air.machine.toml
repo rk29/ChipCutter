@@ -1,0 +1,437 @@
+schema_version = 1
+id = "carvera-air"
+name = "Makera Carvera Air"
+manufacturer = "Makera"
+description = 'Desktop smart CNC with lever quick-change 1/8" spindle, auto-probe/leveling, optional harmonic-drive 4th-axis rotary module, and Makera starter bit set.'
+tool_change = "quick_change"
+has_toolsetter = true
+default_post_profile = "grblhal_atc"
+
+[travel_mm]
+x_mm = 300.0
+y_mm = 200.0
+z_mm = 130.0
+
+[spindle]
+min_rpm = 1000.0
+max_rpm = 13000.0
+power_watts = 200.0
+collet_type = 'Quick-Change 1/8" (3.175mm) Collet'
+supported_shank_diameters_mm = [3.175]
+
+[kinematics]
+max_rapid_xy_mm_min = 4000.0
+max_rapid_z_mm_min = 2000.0
+max_cut_feed_xy_mm_min = 2000.0
+max_cut_feed_z_mm_min = 800.0
+accel_mm_s2 = 500.0
+junction_deviation_mm = 0.05
+tool_change_time_sec = 12.0
+max_rotary_rate_deg_min = 3600.0
+
+[rotary]
+axis = "A"
+max_stock_diameter_mm = 92.0
+max_stock_length_mm = 200.0
+chuck_diameter_mm = 50.0
+chuck_length_mm = 20.0
+default_post_profile_4axis = "grblhal_4axis"
+
+[[tools]]
+id = "carvera_t1_3175mm_12loc_1fl"
+tool_number = 1
+length_offset_number = 1
+diameter_offset_number = 1
+name = '3.175mm (1/8") x 12mm 1FL O-Flute Flat'
+vendor = "Makera (Carvera Air Starter Kit)"
+product_id = "MAKERA-3175x12-1FL"
+native_unit = "millimeter"
+spindle_direction = "cw"
+default_coolant = "air_blast"
+stickout_length_mm = 18.0
+
+[tools.geometry]
+type = "flat_endmill"
+diameter_mm = 3.175
+flute_length_mm = 12.0
+overall_length_mm = 38.0
+shank_diameter_mm = 3.175
+flutes = 1
+
+[[tools.presets]]
+id = "carvera_al6061"
+name = "Aluminum 6061"
+material = "Aluminum 6061"
+spindle_rpm = 11529.334460200293
+surface_speed_m_min = 115.0
+cutting_feed_mm_min = 403.5267061070103
+chipload_mm_tooth = 0.035
+lead_feed_mm_min = 322.82136488560826
+ramp_feed_mm_min = 201.76335305350514
+plunge_feed_mm_min = 134.5089020356701
+default_stepdown_mm = 0.5
+default_stepover_mm = 1.0
+coolant_override = "air_blast"
+
+[[tools.presets]]
+id = "carvera_plastic"
+name = "Acetal / Acrylic"
+material = "Engineering Plastic"
+spindle_rpm = 12030.609871513348
+surface_speed_m_min = 120.0
+cutting_feed_mm_min = 781.9896416483676
+chipload_mm_tooth = 0.065
+lead_feed_mm_min = 625.5917133186941
+ramp_feed_mm_min = 390.9948208241838
+plunge_feed_mm_min = 260.6632138827892
+default_stepdown_mm = 1.5
+default_stepover_mm = 1.4
+coolant_override = "air_blast"
+
+[[tools.presets]]
+id = "carvera_wood"
+name = "Hardwood / Epoxy Board"
+material = "Hardwood / Tooling Board"
+spindle_rpm = 12531.885282826406
+surface_speed_m_min = 125.0
+cutting_feed_mm_min = 1002.5508226261126
+chipload_mm_tooth = 0.08
+lead_feed_mm_min = 802.0406581008901
+ramp_feed_mm_min = 501.2754113130563
+plunge_feed_mm_min = 334.1836075420375
+default_stepdown_mm = 2.0
+default_stepover_mm = 1.6
+coolant_override = "disabled"
+
+[[tools]]
+id = "carvera_t2_3175mm_25loc_1fl"
+tool_number = 2
+length_offset_number = 2
+diameter_offset_number = 2
+name = '3.175mm (1/8") x 25mm 1FL O-Flute Flat'
+vendor = "Makera (Carvera Air Starter Kit)"
+product_id = "MAKERA-3175x25-1FL"
+native_unit = "millimeter"
+spindle_direction = "cw"
+default_coolant = "air_blast"
+stickout_length_mm = 28.0
+
+[tools.geometry]
+type = "flat_endmill"
+diameter_mm = 3.175
+flute_length_mm = 25.0
+overall_length_mm = 50.0
+shank_diameter_mm = 3.175
+flutes = 1
+
+[[tools.presets]]
+id = "carvera_al6061_deep"
+name = "Aluminum 6061 - Deep"
+material = "Aluminum 6061"
+spindle_rpm = 11028.059048887237
+surface_speed_m_min = 110.0
+cutting_feed_mm_min = 308.78565336884265
+chipload_mm_tooth = 0.028
+lead_feed_mm_min = 247.02852269507412
+ramp_feed_mm_min = 154.39282668442132
+plunge_feed_mm_min = 102.92855112294755
+default_stepdown_mm = 0.4
+default_stepover_mm = 0.8
+coolant_override = "air_blast"
+
+[[tools.presets]]
+id = "carvera_wood_deep"
+name = "Hardwood / Epoxy Board - Deep"
+material = "Hardwood / Tooling Board"
+spindle_rpm = 12030.609871513348
+surface_speed_m_min = 120.0
+cutting_feed_mm_min = 781.9896416483676
+chipload_mm_tooth = 0.065
+lead_feed_mm_min = 625.5917133186941
+ramp_feed_mm_min = 390.9948208241838
+plunge_feed_mm_min = 260.6632138827892
+default_stepdown_mm = 1.5
+default_stepover_mm = 1.2
+coolant_override = "disabled"
+
+[[tools]]
+id = "carvera_t3_2mm_8loc_1fl"
+tool_number = 3
+length_offset_number = 3
+diameter_offset_number = 3
+name = '2.0mm x 8mm 1FL Flat (1/8" Shank)'
+vendor = "Makera (Carvera Air Starter Kit)"
+product_id = "MAKERA-2x8-1FL"
+native_unit = "millimeter"
+spindle_direction = "cw"
+default_coolant = "air_blast"
+stickout_length_mm = 16.0
+
+[tools.geometry]
+type = "flat_endmill"
+diameter_mm = 2.0
+flute_length_mm = 8.0
+overall_length_mm = 38.0
+shank_diameter_mm = 3.175
+flutes = 1
+
+[[tools.presets]]
+id = "carvera_2mm_al"
+name = "Aluminum 6061 - Fine"
+material = "Aluminum 6061"
+spindle_rpm = 11936.620731892152
+surface_speed_m_min = 75.0
+cutting_feed_mm_min = 262.60565610162735
+chipload_mm_tooth = 0.022
+lead_feed_mm_min = 210.0845248813019
+ramp_feed_mm_min = 131.30282805081367
+plunge_feed_mm_min = 87.53521870054244
+default_stepdown_mm = 0.35
+default_stepover_mm = 0.7
+coolant_override = "air_blast"
+
+[[tools.presets]]
+id = "carvera_2mm_plastic"
+name = "Acetal / Hardwood - Fine"
+material = "Plastic / Hardwood"
+spindle_rpm = 12414.085561167836
+surface_speed_m_min = 78.0
+cutting_feed_mm_min = 558.6338502525526
+chipload_mm_tooth = 0.045
+lead_feed_mm_min = 446.90708020204215
+ramp_feed_mm_min = 279.3169251262763
+plunge_feed_mm_min = 186.21128341751754
+default_stepdown_mm = 1.0
+default_stepover_mm = 0.9
+coolant_override = "disabled"
+
+[[tools]]
+id = "carvera_t4_1mm_3loc_1fl"
+tool_number = 4
+length_offset_number = 4
+diameter_offset_number = 4
+name = '1.0mm x 3mm 1FL Micro Flat (1/8" Shank)'
+vendor = "Makera (Carvera Air Starter Kit)"
+product_id = "MAKERA-1x3-1FL"
+native_unit = "millimeter"
+spindle_direction = "cw"
+default_coolant = "air_blast"
+stickout_length_mm = 14.0
+
+[tools.geometry]
+type = "flat_endmill"
+diameter_mm = 1.0
+flute_length_mm = 3.0
+overall_length_mm = 38.0
+shank_diameter_mm = 3.175
+flutes = 1
+
+[[tools.presets]]
+id = "carvera_1mm_al"
+name = "Aluminum 6061 - Micro"
+material = "Aluminum 6061"
+spindle_rpm = 12095.775674984046
+surface_speed_m_min = 38.0
+cutting_feed_mm_min = 145.14930809980856
+chipload_mm_tooth = 0.012
+lead_feed_mm_min = 116.11944647984686
+ramp_feed_mm_min = 72.57465404990428
+plunge_feed_mm_min = 48.38310269993619
+default_stepdown_mm = 0.15
+default_stepover_mm = 0.35
+coolant_override = "air_blast"
+
+[[tools.presets]]
+id = "carvera_1mm_pcb"
+name = "PCB / Plastic - Micro"
+material = "FR4 PCB / Plastic"
+spindle_rpm = 12414.085561167836
+surface_speed_m_min = 39.0
+cutting_feed_mm_min = 248.28171122335672
+chipload_mm_tooth = 0.02
+lead_feed_mm_min = 198.6253689786854
+ramp_feed_mm_min = 124.14085561167836
+plunge_feed_mm_min = 82.76057040778558
+default_stepdown_mm = 0.4
+default_stepover_mm = 0.4
+coolant_override = "disabled"
+
+[[tools]]
+id = "carvera_t5_3175mm_2fl_ball"
+tool_number = 5
+length_offset_number = 5
+diameter_offset_number = 5
+name = '3.175mm (1/8") 2FL Ball Nose Endmill'
+vendor = "Makera (Carvera Air Starter Kit)"
+product_id = "MAKERA-3175-2FL-BALL"
+native_unit = "millimeter"
+spindle_direction = "cw"
+default_coolant = "air_blast"
+stickout_length_mm = 20.0
+
+[tools.geometry]
+type = "ball_endmill"
+diameter_mm = 3.175
+flute_length_mm = 12.0
+overall_length_mm = 38.0
+shank_diameter_mm = 3.175
+flutes = 2
+
+[[tools.presets]]
+id = "carvera_ball_al"
+name = "Aluminum 6061 - 3D / 4-Axis"
+material = "Aluminum 6061"
+spindle_rpm = 11529.334460200293
+surface_speed_m_min = 115.0
+cutting_feed_mm_min = 461.17337840801173
+chipload_mm_tooth = 0.02
+lead_feed_mm_min = 368.9387027264094
+ramp_feed_mm_min = 230.58668920400586
+plunge_feed_mm_min = 153.72445946933723
+default_stepdown_mm = 0.4
+default_stepover_mm = 0.3
+coolant_override = "air_blast"
+
+[[tools.presets]]
+id = "carvera_ball_wood"
+name = "Hardwood / Epoxy - 3D / 4-Axis"
+material = "Hardwood / Tooling Board"
+spindle_rpm = 12531.885282826406
+surface_speed_m_min = 125.0
+cutting_feed_mm_min = 1002.5508226261126
+chipload_mm_tooth = 0.04
+lead_feed_mm_min = 802.0406581008901
+ramp_feed_mm_min = 501.2754113130563
+plunge_feed_mm_min = 334.1836075420375
+default_stepdown_mm = 1.0
+default_stepover_mm = 0.4
+coolant_override = "disabled"
+
+[[tools]]
+id = "carvera_t6_30deg_02mm_engrave"
+tool_number = 6
+length_offset_number = 6
+diameter_offset_number = 6
+name = '30° 0.2mm Tip V-Engraving Bit (1/8")'
+vendor = "Makera (Carvera Air Starter Kit)"
+product_id = "MAKERA-V30-02"
+native_unit = "millimeter"
+spindle_direction = "cw"
+default_coolant = "disabled"
+stickout_length_mm = 16.0
+
+[tools.geometry]
+type = "chamfer_mill"
+diameter_mm = 3.175
+tip_diameter_mm = 0.2
+included_angle_deg = 30.0
+flute_length_mm = 8.0
+overall_length_mm = 38.0
+shank_diameter_mm = 3.175
+flutes = 1
+
+[[tools.presets]]
+id = "carvera_v30_metal"
+name = "Aluminum / Brass - Fine Engraving"
+material = "Aluminum / Brass"
+spindle_rpm = 11028.059048887237
+surface_speed_m_min = 110.0
+cutting_feed_mm_min = 275.70147622218093
+chipload_mm_tooth = 0.025
+lead_feed_mm_min = 220.56118097774475
+ramp_feed_mm_min = 137.85073811109046
+plunge_feed_mm_min = 91.90049207406031
+default_stepdown_mm = 0.2
+default_stepover_mm = 0.2
+coolant_override = "air_blast"
+
+[[tools.presets]]
+id = "carvera_v30_pcb"
+name = "PCB Isolation / Plastic"
+material = "FR4 PCB / Plastic"
+spindle_rpm = 12030.609871513348
+surface_speed_m_min = 120.0
+cutting_feed_mm_min = 421.07134550296723
+chipload_mm_tooth = 0.035
+lead_feed_mm_min = 336.8570764023738
+ramp_feed_mm_min = 210.53567275148362
+plunge_feed_mm_min = 140.35711516765573
+default_stepdown_mm = 0.15
+default_stepover_mm = 0.2
+coolant_override = "disabled"
+
+[[tools]]
+id = "carvera_t7_60deg_01mm_vcarve"
+tool_number = 7
+length_offset_number = 7
+diameter_offset_number = 7
+name = '60° 0.1mm Tip V-Carve Bit (1/8")'
+vendor = "Makera (Carvera Air Starter Kit)"
+product_id = "MAKERA-V60-01"
+native_unit = "millimeter"
+spindle_direction = "cw"
+default_coolant = "disabled"
+stickout_length_mm = 16.0
+
+[tools.geometry]
+type = "chamfer_mill"
+diameter_mm = 3.175
+tip_diameter_mm = 0.1
+included_angle_deg = 60.0
+flute_length_mm = 6.0
+overall_length_mm = 38.0
+shank_diameter_mm = 3.175
+flutes = 1
+
+[[tools.presets]]
+id = "carvera_v60_wood"
+name = "Hardwood / Epoxy V-Carve"
+material = "Hardwood / Tooling Board"
+spindle_rpm = 12030.609871513348
+surface_speed_m_min = 120.0
+cutting_feed_mm_min = 541.3774442181007
+chipload_mm_tooth = 0.045
+lead_feed_mm_min = 433.10195537448055
+ramp_feed_mm_min = 270.68872210905033
+plunge_feed_mm_min = 180.45914807270023
+default_stepdown_mm = 1.5
+default_stepover_mm = 0.5
+coolant_override = "disabled"
+
+[[tools]]
+id = "carvera_t8_3175mm_90deg_chamfer"
+tool_number = 8
+length_offset_number = 8
+diameter_offset_number = 8
+name = '3.175mm (1/8") 90° Chamfer Bit'
+vendor = "Makera (Carvera Air Starter Kit)"
+product_id = "MAKERA-3175-90-CHAMFER"
+native_unit = "millimeter"
+spindle_direction = "cw"
+default_coolant = "air_blast"
+stickout_length_mm = 16.0
+
+[tools.geometry]
+type = "chamfer_mill"
+diameter_mm = 3.175
+tip_diameter_mm = 0.2
+included_angle_deg = 90.0
+flute_length_mm = 5.0
+overall_length_mm = 38.0
+shank_diameter_mm = 3.175
+flutes = 2
+
+[[tools.presets]]
+id = "carvera_chamfer_al"
+name = "Aluminum 6061 - Edge Break"
+material = "Aluminum 6061"
+spindle_rpm = 11028.059048887237
+surface_speed_m_min = 110.0
+cutting_feed_mm_min = 441.12236195548945
+chipload_mm_tooth = 0.02
+lead_feed_mm_min = 352.89788956439156
+ramp_feed_mm_min = 220.56118097774473
+plunge_feed_mm_min = 147.04078731849648
+default_stepdown_mm = 0.4
+default_stepover_mm = 0.4
+coolant_override = "air_blast"

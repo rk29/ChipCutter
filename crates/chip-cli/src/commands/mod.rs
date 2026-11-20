@@ -1,5 +1,6 @@
 pub mod bundle_reload_tools;
 pub mod inspect_sample;
+pub mod machines;
 pub mod validate_sim_build;
 
 use std::path::{Path, PathBuf};

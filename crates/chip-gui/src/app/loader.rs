@@ -113,6 +113,8 @@ impl ChipCutterApp {
                 self.setup_tab = SetupTab::Wcs;
                 self.pick_mode = ViewportPickMode::InspectEntity;
                 self.gcode_panel.refresh_profiles(path.parent());
+                self.machines = chip_tools::load_available_machines(path.parent());
+                self.sync_active_machine_tools();
                 self.logs
                     .push(format!("Opened project '{}'.", path.display()));
                 if let Some(first_model) = self.project.models.first() {
@@ -162,6 +164,8 @@ impl ChipCutterApp {
                 self.inspector_focus = InspectorFocus::Setup { setup_idx: 0 };
                 self.pick_mode = ViewportPickMode::InspectEntity;
                 self.gcode_panel.refresh_profiles(Some(&extract_dir));
+                self.machines = chip_tools::load_available_machines(Some(&extract_dir));
+                self.sync_active_machine_tools();
                 self.logs.push(format!(
                     "Unpacked portable bundle '{}' ({} file(s)).",
                     archive_path.display(),
@@ -259,12 +263,13 @@ impl ChipCutterApp {
         ) {
             Ok(sum) => {
                 self.logs.push(format!(
-                    "Exported portable bundle '{}' ({} bytes, {} model(s), {} vector(s), {} custom post(s)).",
+                    "Exported portable bundle '{}' ({} bytes, {} model(s), {} vector(s), {} custom post(s), {} custom machine(s)).",
                     dest_path.display(),
                     sum.archive_size_bytes,
                     sum.model_files.len(),
                     sum.vector_files.len(),
-                    sum.custom_post_files.len()
+                    sum.custom_post_files.len(),
+                    sum.custom_machine_files.len()
                 ));
             }
             Err(err) => {

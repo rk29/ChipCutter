@@ -413,6 +413,8 @@ impl PaneBehavior<'_> {
                         .as_ref()
                         .and_then(|fg| fg.resolved_setup.as_ref())
                         .map(|r| r.as_ref().map_err(String::as_str));
+                    let mut open_machine_manager = false;
+                    let mut machine_changed = false;
                     let align = show_setup_inspector(
                         ui,
                         SetupInspectorCtx {
@@ -425,8 +427,20 @@ impl PaneBehavior<'_> {
                             pick_mode: &mut self.app.pick_mode,
                             show_27pt_dots: &mut self.app.show_27pt_dots,
                             show_z_planes: &mut self.app.show_z_planes,
+                            machines: &self.app.machines,
+                            open_machine_manager: &mut open_machine_manager,
+                            machine_changed: &mut machine_changed,
                         },
                     );
+                    if machine_changed {
+                        self.app.sync_active_machine_tools();
+                    }
+                    if open_machine_manager {
+                        let active_mid = self.app.project.effective_machine_id().to_string();
+                        self.app
+                            .machine_manager_modal
+                            .open_selecting(&self.app.machines, &active_mid);
+                    }
                     if align {
                         self.app.cached_frame_geo = frame_geo.take();
                         self.app.align_camera_to_active_setup();
@@ -791,6 +805,8 @@ impl PaneBehavior<'_> {
 
     fn ui_diagnostics(&mut self, ui: &mut egui::Ui) {
         let mut jump_diag: Option<SimDiagnostic> = None;
+        let active_machine = self.app.active_machine().cloned();
+        let loaded_cad = self.app.model.as_ref().map(|m| m.doc.as_ref());
         egui::Frame::NONE.inner_margin(6.0).show(ui, |ui| {
             let cad_rev = self.app.effective_cad_arc().map_or(0, |(_, r)| r);
             jump_diag = show_diagnostics_panel(
@@ -800,6 +816,8 @@ impl PaneBehavior<'_> {
                 &self.app.toolpath_cache,
                 cad_rev,
                 self.app.sim_panel.active_result.as_deref(),
+                active_machine.as_ref(),
+                loaded_cad,
                 &self.app.logs,
             );
         });
@@ -817,6 +835,7 @@ impl ChipCutterApp {
             || self.welcome_modal.open
             || self.sample_gallery_modal.open
             || self.tool_library_modal.open
+            || self.machine_manager_modal.open
             || self.command_palette.open
             || self.shortcut_cheatsheet.open;
         let Some(st) = &mut self.self_test else {
@@ -984,6 +1003,13 @@ impl ChipCutterApp {
             self.welcome_modal.open = modal == CaptureModal::Welcome;
             self.sample_gallery_modal.open = modal == CaptureModal::SampleGallery;
             self.tool_library_modal.open = modal == CaptureModal::ToolLibrary;
+            if modal == CaptureModal::Machines {
+                let mid = self.project.effective_machine_id().to_string();
+                self.machine_manager_modal
+                    .open_selecting(&self.machines, &mid);
+            } else {
+                self.machine_manager_modal.open = false;
+            }
             self.shortcut_cheatsheet.open = modal == CaptureModal::ShortcutCheatsheet;
             self.about_modal.open = modal == CaptureModal::About;
         }
