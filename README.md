@@ -185,3 +185,9 @@ Licensed under either of:
 - **MIT License** (`http://opensource.org/licenses/MIT`)
 
 at your option. All third-party dependencies are verified permissive-only via [`deny.toml`](deny.toml) (`cargo deny check licenses`).
+
+## Disclaimers
+
+This is a personal project. The views, code, and opinions expressed here are my own and do not represent those of my current or past employers.
+
+This software is currently, at best, alpha quality. Do not trust the output it generates without manually verifying it yourself. Using the generated gcode output could result in damage to your CNC machine.
