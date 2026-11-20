@@ -2767,3 +2767,272 @@ fn indexed_3plus1_four_flats_on_rotary_shaft_retract_safely_and_verify_crash_fre
         sim.removed_volume_mm3
     );
 }
+
+#[test]
+fn rotary4axis_sim_off_centerline_helical_flutes_on_x_and_y_are_smooth_and_crash_free() {
+    use chip_cad::{
+        MeshImportOptions, load_mesh_cad_document, sample_helical_flute_shaft_stl_bytes,
+    };
+    use chip_cam::{
+        OperationGenRequest, Rotary4AxisPattern, RotaryAxisKind, RotaryCutDirection,
+        RotaryDriveMode, RotaryTiltMode, StockAxis, generate_operation_toolpath_with_rest,
+    };
+    use chip_sim::{
+        MachineKinematicsConfig, SetupSimulationInput, SimOperationInput, SimResolution,
+        SimVerificationConfig, run_setup_simulation,
+    };
+
+    let stl = sample_helical_flute_shaft_stl_bytes();
+    let doc = load_mesh_cad_document(
+        "helical_flute_shaft.stl",
+        &stl,
+        &MeshImportOptions::default(),
+    )
+    .unwrap();
+    assert!(doc.meshes[0].diagnostics.is_watertight);
+
+    let lib = default_starter_tool_library();
+    let ball_6mm = lib
+        .tools
+        .iter()
+        .find(|t| {
+            matches!(
+                t.geometry,
+                CutterGeometry::BallEndmill { diameter_mm, .. } if approx_eq(diameter_mm, 6.0, 1e-3)
+            )
+        })
+        .expect("6mm ball endmill in starter library")
+        .clone();
+
+    let cancel = AtomicBool::new(false);
+
+    // 1. Verify Rotary4AxisSim cleanly rejects TwoLinearPlusRotary Setup
+    let mut setup_2lin = Setup::new("s_2lin_reject", "2-Linear Only", WorkOffsetSlot::G54);
+    setup_2lin.wcs.origin = WcsOriginMode::StockBoxPoint {
+        anchor: BoxAnchor27::VOLUMETRIC_CENTER,
+    };
+    setup_2lin.stock = StockConfig::FixedCylinder {
+        axis: StockAxis::X,
+        diameter: ParamLength::from_mm(42.0),
+        length: ParamLength::from_mm(80.0),
+        axial_top_offset: ParamLength::from_mm(0.0),
+    };
+    setup_2lin.rotary.mode = RotaryDriveMode::TwoLinearPlusRotary;
+    setup_2lin.rotary.axis = RotaryAxisKind::XAxis;
+    let res_2lin = setup_2lin.resolve(&doc, DisplayUnit::Millimeter).unwrap();
+
+    let mut op_spiral = Operation::new(
+        "op_4ax_spiral",
+        "Simultaneous 4-Axis Spiral",
+        OperationKind::Rotary4AxisSim,
+    );
+    op_spiral.tool_id = Some(ball_6mm.id.clone());
+    op_spiral.passes.multiple_depths = true;
+    op_spiral.passes.max_stepdown = ParamLength::from_mm(3.0);
+    if let StrategyParams::Rotary4AxisSim(p) = op_spiral.strategy_mut() {
+        p.pattern = Rotary4AxisPattern::SimultaneousSpiral;
+        p.tilt_mode = RotaryTiltMode::SurfaceNormalAutoTilt;
+        p.max_tilt_deg = 18.0;
+        p.tilt_smoothing_window = 3;
+        p.stepover = ParamLength::from_mm(2.0);
+        p.axial_margin_start = ParamLength::from_mm(12.0);
+        p.axial_margin_end = ParamLength::from_mm(12.0);
+    }
+
+    let err = generate_operation_toolpath_with_rest(&OperationGenRequest {
+        doc: &doc,
+        sketches: &[],
+        setup: &res_2lin,
+        op: &op_spiral,
+        tool: &ball_6mm,
+        clearing_tool: None,
+        display_unit: DisplayUnit::Millimeter,
+        is_first_tool_in_setup: true,
+        upstream_rest: &[],
+        cancel: &cancel,
+    })
+    .unwrap_err();
+    assert!(
+        matches!(err, CamError::InvalidRotarySetup { .. }),
+        "Expected InvalidRotarySetup for TwoLinearPlusRotary, got: {err:?}"
+    );
+
+    // 2. Full Simultaneous 4-Axis X/A (`X+Y+Z+A`) — Spiral + HelicalFlowline
+    let mut setup_x = Setup::new("s_4ax_x", "Simultaneous 4-Axis X/A", WorkOffsetSlot::G54);
+    setup_x.wcs.origin = WcsOriginMode::StockBoxPoint {
+        anchor: BoxAnchor27::VOLUMETRIC_CENTER,
+    };
+    setup_x.stock = StockConfig::FixedCylinder {
+        axis: StockAxis::X,
+        diameter: ParamLength::from_mm(42.0),
+        length: ParamLength::from_mm(80.0),
+        axial_top_offset: ParamLength::from_mm(0.0),
+    };
+    setup_x.rotary.mode = RotaryDriveMode::Simultaneous4Axis;
+    setup_x.rotary.axis = RotaryAxisKind::XAxis;
+    setup_x.rotary.clearance_radial_offset = ParamLength::from_mm(12.0);
+    let resolved_x = setup_x.resolve(&doc, DisplayUnit::Millimeter).unwrap();
+    let rot_x = resolved_x.rotary.unwrap();
+
+    let tp_spiral = generate_operation_toolpath_with_rest(&OperationGenRequest {
+        doc: &doc,
+        sketches: &[],
+        setup: &resolved_x,
+        op: &op_spiral,
+        tool: &ball_6mm,
+        clearing_tool: None,
+        display_unit: DisplayUnit::Millimeter,
+        is_first_tool_in_setup: true,
+        upstream_rest: &[],
+        cancel: &cancel,
+    })
+    .unwrap();
+
+    let mut max_abs_y = 0.0_f64;
+    let mut max_dy_cut = 0.0_f64;
+    for seg in &tp_spiral.segments_wcs {
+        max_abs_y = max_abs_y
+            .max((seg.start_wcs.y - rot_x.center_wcs.y).abs())
+            .max((seg.end_wcs.y - rot_x.center_wcs.y).abs());
+        if !matches!(seg.motion, SegmentMotion3D::Rapid) {
+            max_dy_cut = max_dy_cut.max((seg.end_wcs.y - seg.start_wcs.y).abs());
+        }
+    }
+    assert!(
+        max_abs_y > 1.5,
+        "Simultaneous 4-Axis auto-tilt must actively move cross-axis Y off centerline, got max |Y| = {max_abs_y:.3} mm"
+    );
+    assert!(
+        max_dy_cut < 2.5,
+        "Smoothed cross-axis Y step per segment must stay smooth, got max |dY| = {max_dy_cut:.3} mm"
+    );
+
+    let mut op_flow = Operation::new(
+        "op_4ax_flow",
+        "Simultaneous 4-Axis Flowline",
+        OperationKind::Rotary4AxisSim,
+    );
+    op_flow.tool_id = Some(ball_6mm.id.clone());
+    op_flow.passes.multiple_depths = false;
+    if let StrategyParams::Rotary4AxisSim(p) = op_flow.strategy_mut() {
+        p.pattern = Rotary4AxisPattern::HelicalFlowline;
+        p.cut_direction = RotaryCutDirection::ZigZag;
+        p.tilt_mode = RotaryTiltMode::FixedLateralOffset;
+        p.lateral_offset = ParamLength::from_mm(2.5);
+        p.stepover = ParamLength::from_mm(4.0);
+        p.axial_margin_start = ParamLength::from_mm(12.0);
+        p.axial_margin_end = ParamLength::from_mm(12.0);
+    }
+    let tp_flow = generate_operation_toolpath_with_rest(&OperationGenRequest {
+        doc: &doc,
+        sketches: &[],
+        setup: &resolved_x,
+        op: &op_flow,
+        tool: &ball_6mm,
+        clearing_tool: None,
+        display_unit: DisplayUnit::Millimeter,
+        is_first_tool_in_setup: false,
+        upstream_rest: &[],
+        cancel: &cancel,
+    })
+    .unwrap();
+    assert!(tp_flow.segments_wcs.iter().all(|s| approx_eq(
+        s.start_wcs.y,
+        rot_x.center_wcs.y + 2.5,
+        1e-6
+    )));
+
+    let sim_x = run_setup_simulation(&SetupSimulationInput {
+        doc: &doc,
+        setup: &resolved_x,
+        target_bodies: &[],
+        operations: &[
+            SimOperationInput::from_operation(&op_spiral, &ball_6mm, &tp_spiral),
+            SimOperationInput::from_operation(&op_flow, &ball_6mm, &tp_flow),
+        ],
+        kinematics: MachineKinematicsConfig::default(),
+        resolution: SimResolution::Standard,
+        verify_config: SimVerificationConfig::default(),
+        cancel: None,
+    })
+    .unwrap();
+    assert_eq!(
+        sim_x.critical_error_count(),
+        0,
+        "Simultaneous 4-Axis X/A Spiral + Flowline must verify crash-free & gouge-free, got: {:#?}",
+        sim_x.diagnostics
+    );
+    assert!(
+        sim_x.removed_volume_mm3 > 2_500.0,
+        "Expected substantial helical flute volume removal, got {:.1} mm3",
+        sim_x.removed_volume_mm3
+    );
+
+    // 3. Simultaneous 4-Axis Y/B (`X+Y+Z+B`) via 90-degree WCS clock
+    let mut setup_y = Setup::new("s_4ax_y", "Simultaneous 4-Axis Y/B", WorkOffsetSlot::G54);
+    setup_y.wcs.orientation = chip_cam::WcsOrientationMode::ModelOrientation {
+        flip_z: false,
+        flip_x: false,
+        clock_90: 1,
+    };
+    setup_y.wcs.origin = WcsOriginMode::StockBoxPoint {
+        anchor: BoxAnchor27::VOLUMETRIC_CENTER,
+    };
+    setup_y.stock = StockConfig::FixedCylinder {
+        axis: StockAxis::Y,
+        diameter: ParamLength::from_mm(42.0),
+        length: ParamLength::from_mm(80.0),
+        axial_top_offset: ParamLength::from_mm(0.0),
+    };
+    setup_y.rotary.mode = RotaryDriveMode::Simultaneous4Axis;
+    setup_y.rotary.axis = RotaryAxisKind::YAxis;
+    setup_y.rotary.clearance_radial_offset = ParamLength::from_mm(12.0);
+    let resolved_y = setup_y.resolve(&doc, DisplayUnit::Millimeter).unwrap();
+    let rot_y = resolved_y.rotary.unwrap();
+
+    let tp_y = generate_operation_toolpath_with_rest(&OperationGenRequest {
+        doc: &doc,
+        sketches: &[],
+        setup: &resolved_y,
+        op: &op_spiral,
+        tool: &ball_6mm,
+        clearing_tool: None,
+        display_unit: DisplayUnit::Millimeter,
+        is_first_tool_in_setup: true,
+        upstream_rest: &[],
+        cancel: &cancel,
+    })
+    .unwrap();
+    let max_abs_x = tp_y
+        .segments_wcs
+        .iter()
+        .map(|s| {
+            (s.start_wcs.x - rot_y.center_wcs.x)
+                .abs()
+                .max((s.end_wcs.x - rot_y.center_wcs.x).abs())
+        })
+        .fold(0.0_f64, f64::max);
+    assert!(
+        max_abs_x > 1.5,
+        "Simultaneous 4-Axis Y/B must actively move cross-axis X off centerline, got {max_abs_x:.3} mm"
+    );
+    let sim_y = run_setup_simulation(&SetupSimulationInput {
+        doc: &doc,
+        setup: &resolved_y,
+        target_bodies: &[],
+        operations: &[SimOperationInput::from_operation(
+            &op_spiral, &ball_6mm, &tp_y,
+        )],
+        kinematics: MachineKinematicsConfig::default(),
+        resolution: SimResolution::Standard,
+        verify_config: SimVerificationConfig::default(),
+        cancel: None,
+    })
+    .unwrap();
+    assert_eq!(
+        sim_y.critical_error_count(),
+        0,
+        "Simultaneous 4-Axis Y/B must verify crash-free & gouge-free, got: {:#?}",
+        sim_y.diagnostics
+    );
+}

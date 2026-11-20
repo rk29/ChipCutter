@@ -101,7 +101,7 @@ Phase 4 delivered a complete set of illustrated Markdown tutorials in `docs/tuto
 
 ---
 
-## Phase 5 — 3-Axis Surface Milling, Mesh Support, & 4th-Axis Rotary Milling (Active — M16–M21)
+## Phase 5 — 3-Axis Surface Milling, Mesh Support, & 4th-Axis Rotary Milling (Completed — M16–M21)
 
 Phase 5 extends ChipCutter beyond 2.5D prismatic and V-carve machining into **triangle mesh imports (`STL`/`OBJ`/`3MF`)**, full **3-axis sculpted surface roughing & finishing**, and **4th-axis rotary milling** (supporting configurable `A`/`B`/`C` rotary axes, 2-linear + rotary `Z+X`/`Z+Y` workflows, indexed `3+1` positioning, and full simultaneous `X+Y+Z+Rotary` machining)—while preserving all UI-agnostic crate boundaries, `f64` millimeter accuracy, lossless `schema_version = 1/2` compatibility, and existing Phase 1–2 golden G-code parity:
 

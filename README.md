@@ -1,8 +1,8 @@
 # ChipCutter
 
-**ChipCutter** is an offline desktop 2.5D & V-Carve Computer-Aided Manufacturing (CAM) application (`chip-gui`) and headless CLI (`chipcutter`).
+**ChipCutter** is an offline desktop 2.5D, 3-Axis Surface, V-Carve, & 4th-Axis Rotary Computer-Aided Manufacturing (CAM) application (`chip-gui`) and headless CLI (`chipcutter`).
 
-It turns 3D **STEP** B-Rep CAD solids (`AP203` / `AP214` / `AP242`), 2D **DXF / SVG** vector drawings, and parametric 2D sketches & typography into physically verified, arc-accurate (`G2`/`G3`) CNC milling, routing, engraving, and V-inlay G-code—without external CAD build dependencies, cloud accounts, or copyleft libraries.
+It turns 3D **STEP** B-Rep CAD solids (`AP203` / `AP214` / `AP242`), 3D triangle meshes (**STL**, **OBJ**, **3MF**), 2D **DXF / SVG** vector drawings, and parametric 2D sketches & typography into physically verified, arc-accurate (`G2`/`G3`) and inverse-time 4-axis (`G93`) CNC milling, routing, engraving, surfacing, and rotary G-code—without external CAD build dependencies, cloud accounts, or copyleft libraries.
 
 ![ChipCutter Desktop CAM Interface](docs/images/chipcutter-gui.png)
 
@@ -23,13 +23,15 @@ It turns 3D **STEP** B-Rep CAD solids (`AP203` / `AP214` / `AP242`), 2D **DXF / 
   - **Zero-STEP Pure-2D CNC Jobs & Associative 3D Face Sketches:** Import AutoCAD **DXF** (`LINE`, `ARC`, `CIRCLE`, `LWPOLYLINE` with true bulge arcs, `SPLINE`, `INSERT` blocks) and W3C **SVG** (`path` Béziers/arcs, shapes, `viewBox`, CSS/physical units) with endpoint gap healing (`0.05 mm`) and even-odd island nesting, or author parametric **Rectangles** (with fillets), **Circles**, **Slots**, **Regular Polygons**, **Bolt Circles / Linear Grids**, and **Polylines** directly on Setup XY or any planar 3D STEP face.
   - **Dual-Mode CAM Typography:** TrueType / OpenType (`.ttf`/`.otf`) closed-outline text (`skrifa` + bundled `DejaVuSans-Bold` + custom fonts packed inside `.chipz` `fonts/*`) for pocketing and V-carving, plus built-in **Hershey** single-line stroke fonts (`SimplexSans`, `EngineeringRoman`) for fast 1-pass part-number engraving.
 
-- **Six Arc-Preserving 2.5D & 3D V-Carve Machining Strategies:**
+- **2.5D, 3-Axis Surface, V-Carve, & 4th-Axis Rotary Machining Strategies:**
   1. **Facing** — Zig-zag or one-way surfacing across stock XY bounds with pass extension and corner roll arcs.
   2. **2D Contour / Profile** — Exact circular-arc offsetting (`cavalier_contours`), multi-depth stepdowns, helical/linear ramps, horizontal + vertical tangent lead-in/out arcs, rough/finish wall passes, 2.5D Rest Machining, and automatic or click-on-contour rectangular/triangular holding tabs.
   3. **2D Pocket & High-Speed 2D Adaptive Clearing** — Closed pockets with arbitrary islands and open-shoulder air-entry pockets using either contour-parallel/zig-zag clearing OR constant-engagement **2D Adaptive / Trochoidal Clearing** (`optimal_load` `ae`, `both_ways` dynamic Climb/Conventional feed, micro-lift smooth arcs, radial chip-thinning feed boost) plus exact **2.5D Rest Machining** (`FromPreviousTool` & multi-operation `FromPrecedingOperations` DAG waves).
   4. **Drilling & Helical Bore Milling** — Spot, simple drill (`G81`), peck drill (`G83`/`G73`), and multi-pitch helical interpolation + flat-bottom cleanup circle for oversized bores and counterbores.
   5. **Edge Chamfering & 2D Curve Trace** — Exact chamfer-mill tip-offset kinematics (`tip_dia`, included angle, `tip_offset`) for both sharp unmodeled CAD edges and modeled `45°` bevel faces, plus 1-pass centerline curve/Hershey engraving.
-  6. **3D Medial-Axis V-Carving, Two-Tool Flat Clearance, & Mated V-Inlays** — Simultaneous 3-axis `(X, Y, Z)` Voronoi medial-axis V-carving (`boostvoronoi`) with razor-sharp 3D corner climbs, optional `flat_depth` clamping with **Two-Stage Flat Endmill Area Clearance** (Stage 1 Flat Endmill Pocket/Adaptive + Stage 2 rest-machined V-Bit bevels & tight corners), and mirrored **Male V-Inlay Plug** generation (`start_depth` engagement + `glue_gap_bottom`).
+  6. **3D Medial-Axis V-Carving, Two-Tool Flat Clearance, & Mated V-Inlays** — Simultaneous 3-axis `(X, Y, Z)` Voronoi medial-axis V-carving (`boostvoronoi`) with razor-sharp 3D corner climbs, optional `flat_depth` clamping with **Two-Stage Flat Endmill Area Clearance**, and mirrored **Male V-Inlay Plug** generation (`start_depth` engagement + `glue_gap_bottom`).
+  7. **3-Axis Surface Milling over `STL` / `OBJ` / `3MF` Meshes & STEP Solids** — Pure-Rust `MeshBvh` exact `f64` Drop-Cutter & Push-Cutter kernel powering **3D Adaptive Roughing**, **3D Waterline / Z-Level**, **3D Parallel Raster Finishing**, **3D Constant-Scallop Finishing** (Sethian Fast-Marching Eikonal), and **3D Pencil Cleanup** (morphological ball-in-ball Minkowski rest residual).
+  8. **4th-Axis Rotary Milling (`A` / `B` / `C`)** — Configurable rotary setups with chuck/clearance visualization and polar `CylindricalStock` 5-rule verification supporting **2-Linear + Rotary Cylindrical Wrapping (`Z+X+A` / `Z+Y+B`)**, **Continuous Rotary Spiral & Axial Surfacing**, **Indexed `3+1` Multi-Face Milling** (with B-Rep face-normal alignment), and **Simultaneous 4-Axis (`X+Y+Z+A/B`)** off-centerline auto-tilted helical milling with `G93` inverse-time feedrates (`linuxcnc_4axis`, `grblhal_4axis`, and swapped-axis `grbl_rotary_wrap`).
 
 - **Tool Library & Coupled SFM / Chipload Calculator:**
   - Supports Flat, Ball, Bull-Nose, Chamfer, Face Mill, and Twist Drill geometries with per-material cutting presets (`Aluminum 6061`, `Mild Steel`, `Hardwood`, `Acrylic`, etc.), radial chip-thinning compensation, `.tools.toml` libraries, and a **Fusion 360 `.json` / `.tools` (ZIP)** importer.
@@ -60,11 +62,14 @@ It turns 3D **STEP** B-Rep CAD solids (`AP203` / `AP214` / `AP242`), 2D **DXF / 
 # Launch the desktop CAM workspace (opens the Quick-Start Welcome Overlay on bare launch):
 cargo run --release -p chip-gui
 
-# Launch directly into built-in 3D STEP, Pure-2D, Typography, or V-Carve & V-Inlay demos:
-cargo run --release -p chip-gui -- --demo-torture
-cargo run --release -p chip-gui -- --demo-pure-2d
-cargo run --release -p chip-gui -- --demo-nameplate
-cargo run --release -p chip-gui -- --demo-vcarve
+# Launch directly into built-in 3D STEP, Mesh, 4th-Axis Rotary, Pure-2D, or V-Carve samples:
+cargo run --release -p chip-gui -- --sample cam-torture
+cargo run --release -p chip-gui -- --sample mesh-dome
+cargo run --release -p chip-gui -- --sample rotary-wrap
+cargo run --release -p chip-gui -- --sample rotary-shaft
+cargo run --release -p chip-gui -- --sample rotary-4axis
+cargo run --release -p chip-gui -- --sample pure-2d
+cargo run --release -p chip-gui -- --sample vcarve
 
 # Launch in Daylight Light shop-floor theme (theme choice persists in prefs.toml):
 cargo run --release -p chip-gui -- --theme light
@@ -140,22 +145,22 @@ All core geometry, CAM, simulation, post-processing, and project persistence cra
 | [`crates/chip-cam`](crates/chip-cam) | Setups, stock, WCS, `cavalier_contours` offsetting & 2D booleans, `boostvoronoi` medial axis, and all 6 machining strategies (incl. 2D Adaptive, Rest, & Two-Tool V-Carving / V-Inlays) |
 | [`crates/chip-sim`](crates/chip-sim) | Trapezoidal motion timeline, revolved cutter profiles/meshes, analytical 3D conical V-bit sweeper, 2.5D Z-dexel stock heightmap, and 5-rule crash/gouge verifier |
 | [`crates/chip-post`](crates/chip-post) | Typed `ClEvent` consumer, modal state machine, quadrant arc & peck-drill expansion, and `.post.toml` G-code emitter |
-| [`crates/chip-project`](crates/chip-project) | Deterministic `.chip.toml` (`schema_version = 1 / 2`), `.chipz` portable bundles, associative STEP + face-sketch reload, DAG wave `JobDispatcher`, and Undo/Redo |
-| [`crates/chip-cli`](crates/chip-cli) | `chipcutter` headless CLI binary and Phase 1 + Phase 2 golden end-to-end G-code snapshot suite |
+| [`crates/chip-project`](crates/chip-project) | Deterministic `.chip.toml` (`schema_version = 1 / 2 / 3`), `.chipz` portable bundles (incl. meshes/vectors/fonts), associative STEP + face-sketch reload, DAG wave `JobDispatcher`, and Undo/Redo |
+| [`crates/chip-cli`](crates/chip-cli) | `chipcutter` headless CLI binary and Phase 1–5 golden end-to-end G-code snapshot suite |
 | [`crates/chip-gui`](crates/chip-gui) | `eframe` + `egui_tiles` + `wgpu` 4x MSAA 3D/2D CAD/CAM desktop application |
-| [`posts/`](posts) | Built-in TOML post-processor profiles (`grbl.post.toml`, `grblhal_atc.post.toml`, `linuxcnc.post.toml`) |
+| [`posts/`](posts) | Built-in TOML post-processor profiles (`grbl`, `grblhal_atc`, `linuxcnc`, `linuxcnc_4axis`, `grblhal_4axis`, `grbl_rotary_wrap`) |
 | [`specs/`](specs) | Authoritative subsystem architecture & algorithm specifications (`00-overview.md` – `11-sketches-vectors.md`) |
-| [`plans/`](plans) | Milestone 1–12 engineering implementation plans (`01-milestone-1-plan.md` – `12-milestone-12-plan.md`) |
+| [`plans/`](plans) | Milestone 1–21 engineering implementation plans (`01-milestone-1-plan.md` – `21-milestone-21-plan.md`) |
 
 ---
 
 ## Documentation
 
-- [**`docs/tutorials/`**](docs/tutorials/README.md) — Illustrated step-by-step Getting Started & toolpath strategy tutorials
+- [**`docs/tutorials/`**](docs/tutorials/README.md) — Illustrated step-by-step Getting Started, 2.5D, 3D Mesh Surfacing, & 4th-Axis Rotary tutorials (`00`–`10`)
 - [**`ARCHITECTURE.md`**](ARCHITECTURE.md) — End-to-end data pipeline, crate dependency graph, threading/caching model, and 3D render passes
 - [**`DEVELOPMENT.md`**](DEVELOPMENT.md) — Platform build prerequisites, native Linux/macOS/Windows setup, and headless CI instructions
 - [**`specs/00-overview.md`**](specs/00-overview.md) — Product scope, non-goals, and full specification index (`00` through `11`)
-- [**`specs/10-roadmap.md`**](specs/10-roadmap.md) — Completed Phase 1–4 (`M1`–`M15`) milestones, active Phase 5 (`M16`–`M21`) 3-axis mesh & 4th-axis rotary milestones, and future phases
+- [**`specs/10-roadmap.md`**](specs/10-roadmap.md) — Completed Phase 1–5 (`M1`–`M21`) milestones and future phases
 - [**`AGENTS.md`**](AGENTS.md) — Architectural invariants and contributor guidelines
 
 ---

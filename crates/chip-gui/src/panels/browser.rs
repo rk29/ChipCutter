@@ -585,6 +585,10 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                                     ("3D Constant-Scallop", OperationKind::Scallop3D),
                                     ("3D Pencil Cleanup", OperationKind::Pencil3D),
                                     ("4th-Axis Rotary Surfacing", OperationKind::Rotary2Linear),
+                                    (
+                                        "Simultaneous 4-Axis (X+Y+Z+A)",
+                                        OperationKind::Rotary4AxisSim,
+                                    ),
                                 ] {
                                     if ui.button(lbl).clicked() {
                                         deferred_op_add = Some((s_idx, kind));
@@ -1080,7 +1084,8 @@ pub fn default_pick_mode_for_op(
         | OperationKind::Parallel3D
         | OperationKind::Scallop3D
         | OperationKind::Pencil3D
-        | OperationKind::Rotary2Linear => ViewportPickMode::InspectEntity,
+        | OperationKind::Rotary2Linear
+        | OperationKind::Rotary4AxisSim => ViewportPickMode::InspectEntity,
     }
 }
 

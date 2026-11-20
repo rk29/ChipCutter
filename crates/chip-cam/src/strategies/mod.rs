@@ -8,6 +8,7 @@ pub mod parallel3d;
 pub mod pencil3d;
 pub mod pocket2d;
 pub mod rotary2linear;
+pub mod rotary4axis_sim;
 pub mod rotary_wrap;
 pub mod scallop3d;
 pub mod vcarve;
@@ -397,6 +398,9 @@ pub fn generate_operation_toolpath_with_rest(
         }
         StrategyParams::Rotary2Linear(p) => {
             rotary2linear::generate_rotary2linear(&ctx, p, &mut builder)?;
+        }
+        StrategyParams::Rotary4AxisSim(p) => {
+            rotary4axis_sim::generate_rotary4axis_sim(&ctx, p, &mut builder)?;
         }
     }
 

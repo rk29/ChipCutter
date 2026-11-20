@@ -460,6 +460,9 @@ impl ChipCutterApp {
             SampleProjectId::RotaryWrappedEngraving => {
                 self.load_rotary_wrapped_engraving_demo(ctx);
             }
+            SampleProjectId::RotaryHelicalFlute => {
+                self.spawn_rotary_helical_flute_load(ctx.clone());
+            }
         }
     }
 

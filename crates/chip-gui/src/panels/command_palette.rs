@@ -41,6 +41,7 @@ pub enum CommandId {
     AddOpScallop3D,
     AddOpPencil3D,
     AddOpRotary2Linear,
+    AddOpRotary4AxisSim,
     DuplicateOperation,
     MoveOperationUp,
     MoveOperationDown,
@@ -77,6 +78,7 @@ pub enum CommandId {
     SampleReliefWaveMesh,
     SampleRotaryIndexedShaft,
     SampleRotaryWrappedEngraving,
+    SampleRotaryHelicalFlute,
     SampleRevisionReloadV2,
 }
 
@@ -293,6 +295,13 @@ pub const PALETTE_COMMANDS: &[PaletteEntry] = &[
         shortcut: None,
     },
     PaletteEntry {
+        id: CommandId::AddOpRotary4AxisSim,
+        category: "Operation",
+        label: "Add Simultaneous 4-Axis (X+Y+Z+A) Operation",
+        keywords: "add operation simultaneous 4-axis rotary helical flute off-centerline auto tilt g93",
+        shortcut: None,
+    },
+    PaletteEntry {
         id: CommandId::DuplicateOperation,
         category: "Edit",
         label: "Duplicate Focused Operation",
@@ -482,6 +491,13 @@ pub const PALETTE_COMMANDS: &[PaletteEntry] = &[
         shortcut: None,
     },
     PaletteEntry {
+        id: CommandId::SampleRotaryHelicalFlute,
+        category: "Samples",
+        label: "Sample: Load Simultaneous 4-Axis Helical Flute (X+Y+Z+A)",
+        keywords: "sample demo simultaneous 4-axis rotary helical flute auger tilt xyza g93",
+        shortcut: None,
+    },
+    PaletteEntry {
         id: CommandId::SampleRevisionReloadV2,
         category: "Samples",
         label: "Sample: Associatively Reload CAD Revision v2",
@@ -502,6 +518,7 @@ impl CommandId {
             Self::SampleReliefWaveMesh => Some(SampleProjectId::ReliefWaveMesh),
             Self::SampleRotaryIndexedShaft => Some(SampleProjectId::RotaryIndexedShaft),
             Self::SampleRotaryWrappedEngraving => Some(SampleProjectId::RotaryWrappedEngraving),
+            Self::SampleRotaryHelicalFlute => Some(SampleProjectId::RotaryHelicalFlute),
             Self::SampleRevisionReloadV2 => Some(SampleProjectId::CadRevisionV2Reload),
             _ => None,
         }

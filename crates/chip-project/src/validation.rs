@@ -298,7 +298,17 @@ pub fn validate_project(
                 if op.kind.is_rotary_native() && resolved_setup.rotary.is_none() {
                     report.push_error(
                         &op_scope,
-                        "4th-Axis Rotary Surfacing requires 4th-Axis Rotary to be enabled on this Setup.",
+                        "4th-Axis Rotary operations require 4th-Axis Rotary to be enabled on this Setup.",
+                    );
+                    continue;
+                }
+                if op.kind == chip_cam::OperationKind::Rotary4AxisSim
+                    && let Some(rot) = resolved_setup.rotary
+                    && rot.mode != chip_cam::RotaryDriveMode::Simultaneous4Axis
+                {
+                    report.push_error(
+                        &op_scope,
+                        "Simultaneous 4-Axis Milling requires Setup Rotary Mode 'Simultaneous 4-Axis (X+Y+Z+Rotary)'.",
                     );
                     continue;
                 }

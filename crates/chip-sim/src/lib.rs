@@ -184,6 +184,40 @@ mod tests {
             tc_late.tip_pos_wcs.z > 10.5,
             "incoming tool should lower smoothly during second half of M6"
         );
+
+        // Verify 4-axis circumferential surface feedrate cycle-time accuracy:
+        // Pure 90° rotary cut at R = 20 mm (arc = 31.416 mm) @ 600 mm/min (10 mm/s) -> >= 3.14 s!
+        let mut b_rot = ToolpathBuilder::new("op_rot_time");
+        b_rot.rotary_rapid_to(DVec3::new(0.0, 0.0, 20.0), 0.0);
+        b_rot.rotary_linear_to(
+            DVec3::new(0.0, 0.0, 20.0),
+            90.0,
+            600.0,
+            20.0,
+            MotionRole::Cut,
+        );
+        let tp_rot = b_rot.finish();
+        let tl_rot = SimulationTimeline::from_operations(
+            &[SimOperationInput {
+                op_id: "op_rot_time",
+                op_name: "Rotary Arc Timing",
+                tool: t1,
+                fallback_spindle_rpm: 10_000.0,
+                intentional_edge_break_mm: 0.0,
+                toolpath: &tp_rot,
+            }],
+            kin,
+        );
+        let expected_arc_sec = (20.0 * std::f64::consts::FRAC_PI_2) / 10.0; // 3.1416 s
+        assert!(
+            approx_eq(
+                tl_rot.operations[0].cutting_time_sec,
+                expected_arc_sec,
+                0.05
+            ),
+            "4-axis circumferential cut should take ~{expected_arc_sec:.3}s, got {:.3}s",
+            tl_rot.operations[0].cutting_time_sec
+        );
     }
 
     #[test]

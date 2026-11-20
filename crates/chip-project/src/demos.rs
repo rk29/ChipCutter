@@ -2758,3 +2758,102 @@ pub fn build_rotary_wrapped_engraving_project(available_tools: &[Tool]) -> Proje
     proj.setups[0].operations = vec![op_vcarve, op_flute];
     proj
 }
+
+/// Builds the Phase 5 **Simultaneous 4-Axis Helical Flute (`X+Y+Z+A`)** [`ProjectDocument`]:
+/// `Ø40 × 80 mm` 3-start helical flute shaft chucked on `X / A` (`Simultaneous4Axis`,
+/// `linuxcnc_4axis`) with simultaneous off-centerline auto-tilted roughing and finishing passes.
+pub fn build_rotary_helical_flute_project(
+    model_path: String,
+    sha256_hex: &str,
+    available_tools: &[Tool],
+) -> ProjectDocument {
+    let mut proj = ProjectDocument::new("Simultaneous 4-Axis Helical Flute (X+Y+Z+A)");
+    proj.models = vec![ModelEntry {
+        id: "model_1".to_string(),
+        path: model_path,
+        sha256: sha256_hex.to_string(),
+        unit_override: None,
+    }];
+
+    let setup = &mut proj.setups[0];
+    setup.name = "Setup 1 — Simultaneous 4-Axis A-Chuck".to_string();
+    setup.post_profile = "linuxcnc_4axis".to_string();
+    setup.wcs.origin = WcsOriginMode::StockBoxPoint {
+        anchor: BoxAnchor27::VOLUMETRIC_CENTER,
+    };
+    setup.stock = StockConfig::FixedCylinder {
+        axis: chip_cam::StockAxis::X,
+        diameter: ParamLength::from_mm(42.0),
+        length: ParamLength::from_mm(80.0),
+        axial_top_offset: ParamLength::from_mm(0.0),
+    };
+    setup.rotary.mode = chip_cam::RotaryDriveMode::Simultaneous4Axis;
+    setup.rotary.axis = chip_cam::RotaryAxisKind::XAxis;
+    setup.rotary.direction = chip_cam::RotaryDirection::RightHandCcw;
+    setup.rotary.clearance_radial_offset = ParamLength::from_mm(12.0);
+    setup.rotary.chuck_length = ParamLength::from_mm(20.0);
+    setup.rotary.chuck_diameter = ParamLength::from_mm(65.0);
+
+    for t in available_tools {
+        proj.ensure_tool_embedded(t);
+    }
+
+    let ball_6mm = available_tools
+        .iter()
+        .find(|t| {
+            matches!(
+                t.geometry,
+                CutterGeometry::BallEndmill { diameter_mm, .. } if approx_eq(diameter_mm, 6.0, 0.5)
+            )
+        })
+        .or_else(|| {
+            available_tools
+                .iter()
+                .find(|t| matches!(t.geometry, CutterGeometry::BallEndmill { .. }))
+        })
+        .map(|t| t.id.clone());
+
+    // Op 1: Multi-depth Simultaneous 4-Axis Helical Roughing
+    let mut op_rough = Operation::new(
+        "op_1_4ax_rough",
+        "4-Axis Helical Roughing (Auto-Tilt)",
+        OperationKind::Rotary4AxisSim,
+    );
+    op_rough.tool_id = ball_6mm.clone();
+    op_rough.passes.multiple_depths = true;
+    op_rough.passes.max_stepdown = ParamLength::from_mm(3.0);
+    op_rough.passes.stock_to_leave_radial = ParamLength::from_mm(0.25);
+    op_rough.passes.stock_to_leave_axial = ParamLength::from_mm(0.25);
+    if let StrategyParams::Rotary4AxisSim(p) = op_rough.strategy_mut() {
+        p.pattern = chip_cam::Rotary4AxisPattern::SimultaneousSpiral;
+        p.tilt_mode = chip_cam::RotaryTiltMode::SurfaceNormalAutoTilt;
+        p.max_tilt_deg = 16.0;
+        p.tilt_smoothing_window = 3;
+        p.stepover = ParamLength::from_mm(2.6);
+        p.axial_margin_start = ParamLength::from_mm(11.0);
+        p.axial_margin_end = ParamLength::from_mm(11.0);
+    }
+
+    // Op 2: Simultaneous 4-Axis Helical Finishing (off-centerline smoothed auto-tilt)
+    let mut op_finish = Operation::new(
+        "op_2_4ax_finish",
+        "4-Axis Helical Finishing (Auto-Tilt)",
+        OperationKind::Rotary4AxisSim,
+    );
+    op_finish.tool_id = ball_6mm;
+    op_finish.passes.multiple_depths = false;
+    op_finish.passes.stock_to_leave_radial = ParamLength::from_mm(0.0);
+    op_finish.passes.stock_to_leave_axial = ParamLength::from_mm(0.0);
+    if let StrategyParams::Rotary4AxisSim(p) = op_finish.strategy_mut() {
+        p.pattern = chip_cam::Rotary4AxisPattern::SimultaneousSpiral;
+        p.tilt_mode = chip_cam::RotaryTiltMode::SurfaceNormalAutoTilt;
+        p.max_tilt_deg = 18.0;
+        p.tilt_smoothing_window = 3;
+        p.stepover = ParamLength::from_mm(1.5);
+        p.axial_margin_start = ParamLength::from_mm(11.0);
+        p.axial_margin_end = ParamLength::from_mm(11.0);
+    }
+
+    proj.setups[0].operations = vec![op_rough, op_finish];
+    proj
+}

@@ -391,6 +391,88 @@ pub fn sample_rotary_shaft_stl_bytes() -> Vec<u8> {
     encode_binary_stl("ChipCutter Rotary Indexed Shaft Fixture (mm)", &tris)
 }
 
+/// Generates a deterministic, 100% watertight binary STL of a **Simultaneous 4-Axis Helical
+/// Flute / Impeller Shaft** (`Ø40 mm × 80 mm` aligned along WCS `X / A`, `X ∈ [-40, +40]`):
+/// - Left & right `R = 20 mm` cylindrical journals (`X ∈ [-40, -28]` and `[+28, +40]`),
+/// - A smoothly blended **3-start helical flute section** (`120°` twist across `X ∈ [-24, +24]`)
+///   with sculpted asymmetric flank walls and concave roots down to `R = 13.5 mm`, designed for
+///   simultaneous `X+Y+Z+A` off-centerline tilted milling and cylindrical gouge verification.
+pub fn sample_helical_flute_shaft_stl_bytes() -> Vec<u8> {
+    let n_theta: usize = 96;
+    let mut x_stations: Vec<f64> = Vec::with_capacity(42);
+    x_stations.push(-40.0);
+    x_stations.push(-30.0);
+    let n_helical = 36usize;
+    for i in 0..=n_helical {
+        let t = i as f64 / n_helical as f64;
+        x_stations.push(-28.0 + t * 56.0);
+    }
+    x_stations.push(30.0);
+    x_stations.push(40.0);
+
+    let smoothstep = |edge0: f64, edge1: f64, x: f64| -> f64 {
+        let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+        t * t * (3.0 - 2.0 * t)
+    };
+
+    let profile_radius = |x: f64, theta: f64| -> f64 {
+        let r_outer = 20.0_f64;
+        let env = smoothstep(-28.0, -21.0, x) * smoothstep(28.0, 21.0, x);
+        if env <= 1e-6 {
+            return r_outer;
+        }
+        let twist = (x / 48.0) * (2.0 * PI / 3.0);
+        let phi = 3.0 * (theta - twist);
+        // Asymmetric helical impeller flute wave in [0, 1]
+        let wave = (0.5 * (1.0 - phi.cos()) + 0.14 * (2.0 * phi).sin()).clamp(0.0, 1.0);
+        let depth = 6.5 * env * wave;
+        (r_outer - depth).max(12.0)
+    };
+
+    let mut rings: Vec<Vec<DVec3>> = Vec::with_capacity(x_stations.len());
+    for &x in &x_stations {
+        let mut ring = Vec::with_capacity(n_theta);
+        for k in 0..n_theta {
+            let theta = (k as f64 / n_theta as f64) * (2.0 * PI);
+            let r = profile_radius(x, theta);
+            ring.push(DVec3::new(x, -r * theta.sin(), r * theta.cos()));
+        }
+        rings.push(ring);
+    }
+
+    let mut tris: Vec<[DVec3; 3]> = Vec::with_capacity(n_theta * (2 * x_stations.len() + 2));
+    for s in 0..(rings.len() - 1) {
+        for k in 0..n_theta {
+            let kn = (k + 1) % n_theta;
+            let a = rings[s][k];
+            let b = rings[s + 1][k];
+            let c = rings[s + 1][kn];
+            let d = rings[s][kn];
+            tris.push([a, b, c]);
+            tris.push([a, c, d]);
+        }
+    }
+
+    let left_center = DVec3::new(x_stations[0], 0.0, 0.0);
+    let left_ring = &rings[0];
+    for k in 0..n_theta {
+        let kn = (k + 1) % n_theta;
+        tris.push([left_center, left_ring[k], left_ring[kn]]);
+    }
+
+    let right_center = DVec3::new(x_stations[x_stations.len() - 1], 0.0, 0.0);
+    let right_ring = &rings[rings.len() - 1];
+    for k in 0..n_theta {
+        let kn = (k + 1) % n_theta;
+        tris.push([right_center, right_ring[kn], right_ring[k]]);
+    }
+
+    encode_binary_stl(
+        "ChipCutter Simultaneous 4-Axis Helical Flute Shaft (mm)",
+        &tris,
+    )
+}
+
 fn encode_binary_stl(header_text: &str, tris: &[[DVec3; 3]]) -> Vec<u8> {
     let mut buf = Vec::with_capacity(84 + tris.len() * 50);
     let mut header = [0u8; 80];

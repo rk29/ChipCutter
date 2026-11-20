@@ -377,14 +377,21 @@ impl CylindricalStock {
         let iu_max = (((u_hi - self.u_min) / self.du).ceil() as isize)
             .clamp(0, self.nu as isize - 1) as usize;
 
-        // Angular wedge range around `theta_tip` (full circle if cutter approaches centerline)
+        // Angular wedge range around `theta_tip` (full circle if cutter approaches centerline,
+        // and expanded for off-centerline simultaneous 4-axis poses where the spindle axis sweeps
+        // angularly from `tip_part` up through the stock outer envelope).
         let (e1, e2, _) = self.rotary.axis.basis();
         let pol = self.rotary.direction.sign();
+        let rel_tip = tip_part - self.rotary.center_wcs;
+        let radial_tip = rel_tip - u_vec * rel_tip.dot(u_vec);
+        let c_off_center = radial_tip.cross(spindle_part).length();
         let full_circle = r_tip <= r_footprint + 1.0 || self.rotary.axis == RotaryAxisKind::ZAxis;
         let (it_center, it_half_span) = if full_circle {
             (0isize, self.ntheta as isize)
         } else {
-            let half_angle = ((r_footprint + 1.0) / r_tip).clamp(0.0, 1.0).asin() + 0.12;
+            let off_center_extra = (c_off_center / r_tip.max(1.0)).clamp(0.0, 1.0).asin();
+            let half_angle =
+                ((r_footprint + 1.0) / r_tip).clamp(0.0, 1.0).asin() + off_center_extra + 0.12;
             let center_norm = theta_tip.rem_euclid(TAU);
             let ic = (center_norm / self.dtheta).round() as isize;
             let hs = (half_angle / self.dtheta).ceil() as isize + 1;
@@ -1091,6 +1098,92 @@ mod tests {
                 .iter()
                 .any(|d| d.kind == SimIssueKind::HolderCollision),
             "Must detect rotary chuck HolderCollision, got: {:#?}",
+            sim.diagnostics
+        );
+    }
+
+    #[test]
+    fn off_centerline_simultaneous_4axis_fault_injection_catches_flank_gouge_and_holder_crash() {
+        let stl = chip_cad::sample_helical_flute_shaft_stl_bytes();
+        let doc = load_mesh_cad_document(
+            "helical_flute_shaft.stl",
+            &stl,
+            &MeshImportOptions::default(),
+        )
+        .unwrap();
+        assert!(doc.meshes[0].diagnostics.is_watertight);
+        let lib = default_starter_tool_library();
+        let flat_6mm = &lib.tools[0];
+
+        let mut setup = Setup::new("s_helical", "Helical Shaft", WorkOffsetSlot::G54);
+        setup.wcs.origin = WcsOriginMode::ModelBoxPoint {
+            anchor: BoxAnchor27::VOLUMETRIC_CENTER,
+        };
+        setup.stock = StockConfig::FixedCylinder {
+            axis: StockAxis::X,
+            diameter: ParamLength::from_mm(42.0),
+            length: ParamLength::from_mm(80.0),
+            axial_top_offset: ParamLength::from_mm(0.0),
+        };
+        setup.rotary.mode = RotaryDriveMode::Simultaneous4Axis;
+        setup.rotary.axis = RotaryAxisKind::XAxis;
+        let resolved = setup.resolve(&doc, DisplayUnit::Millimeter).unwrap();
+
+        // Off-centerline simultaneous 4-axis fault injection:
+        // (1) Sideways off-centerline cut at Y=+8mm, Z=9mm (gouges helical flute core!)
+        // (2) Deep off-centerline plunge at Y=-7mm, Z=-25mm driving tool holder straight into Ø42 bar!
+        let mut b = ToolpathBuilder::new("op_4ax_fault");
+        b.rotary_rapid_to(DVec3::new(0.0, 8.0, 35.0), 0.0);
+        b.rotary_linear_to(DVec3::new(0.0, 8.0, 9.0), 0.0, 400.0, 12.0, MotionRole::Cut);
+        b.rotary_linear_to(
+            DVec3::new(10.0, 8.0, 9.0),
+            45.0,
+            400.0,
+            12.0,
+            MotionRole::Cut,
+        );
+        b.rotary_rapid_to(DVec3::new(10.0, 8.0, 35.0), 45.0);
+        b.rotary_rapid_to(DVec3::new(-32.0, -7.0, 35.0), 45.0);
+        b.rotary_linear_to(
+            DVec3::new(-32.0, -7.0, -25.0),
+            45.0,
+            300.0,
+            20.0,
+            MotionRole::Plunge,
+        );
+        let tp = b.finish();
+
+        let sim = run_setup_simulation(&SetupSimulationInput {
+            doc: &doc,
+            setup: &resolved,
+            target_bodies: &[],
+            operations: &[SimOperationInput {
+                op_id: "op_4ax_fault",
+                op_name: "Off-Centerline Faults",
+                tool: flat_6mm,
+                fallback_spindle_rpm: 10_000.0,
+                intentional_edge_break_mm: 0.0,
+                toolpath: &tp,
+            }],
+            resolution: SimResolution::Standard,
+            kinematics: MachineKinematicsConfig::default(),
+            verify_config: SimVerificationConfig::default(),
+            cancel: None,
+        })
+        .unwrap();
+
+        assert!(
+            sim.diagnostics
+                .iter()
+                .any(|d| d.kind == SimIssueKind::TargetModelGouge),
+            "Off-centerline 4-axis verifier must catch helical flank gouge, got: {:#?}",
+            sim.diagnostics
+        );
+        assert!(
+            sim.diagnostics
+                .iter()
+                .any(|d| d.kind == SimIssueKind::HolderCollision),
+            "Off-centerline 4-axis verifier must catch deep holder crash, got: {:#?}",
             sim.diagnostics
         );
     }

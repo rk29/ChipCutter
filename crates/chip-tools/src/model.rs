@@ -77,6 +77,7 @@ pub enum ToolOperationClass {
     Scallop3D,
     Pencil3D,
     Rotary2Linear,
+    Rotary4AxisSim,
 }
 
 /// Physical cutter geometry stored in canonical `f64` millimeters.
@@ -270,6 +271,7 @@ impl CutterGeometry {
                     | ToolOperationClass::Scallop3D
                     | ToolOperationClass::Pencil3D
                     | ToolOperationClass::Rotary2Linear
+                    | ToolOperationClass::Rotary4AxisSim
             ),
             Self::BullNoseEndmill { .. } => matches!(
                 op_class,
@@ -284,6 +286,7 @@ impl CutterGeometry {
                     | ToolOperationClass::Scallop3D
                     | ToolOperationClass::Pencil3D
                     | ToolOperationClass::Rotary2Linear
+                    | ToolOperationClass::Rotary4AxisSim
             ),
             Self::BallEndmill { .. } => matches!(
                 op_class,
@@ -296,6 +299,7 @@ impl CutterGeometry {
                     | ToolOperationClass::Scallop3D
                     | ToolOperationClass::Pencil3D
                     | ToolOperationClass::Rotary2Linear
+                    | ToolOperationClass::Rotary4AxisSim
             ),
             Self::ChamferMill {
                 included_angle_deg, ..
@@ -306,7 +310,8 @@ impl CutterGeometry {
                 | ToolOperationClass::Drill
                 | ToolOperationClass::Parallel3D
                 | ToolOperationClass::Pencil3D
-                | ToolOperationClass::Rotary2Linear => true,
+                | ToolOperationClass::Rotary2Linear
+                | ToolOperationClass::Rotary4AxisSim => true,
                 _ => false,
             },
             Self::TwistDrill { .. } => matches!(op_class, ToolOperationClass::Drill),

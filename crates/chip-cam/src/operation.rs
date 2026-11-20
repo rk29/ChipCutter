@@ -34,10 +34,12 @@ pub enum OperationKind {
     Pencil3D,
     #[serde(rename = "rotary_2linear")]
     Rotary2Linear,
+    #[serde(rename = "rotary_4axis_sim")]
+    Rotary4AxisSim,
 }
 
 impl OperationKind {
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 13] = [
         Self::Facing,
         Self::Contour2D,
         Self::Pocket2D,
@@ -50,6 +52,7 @@ impl OperationKind {
         Self::Scallop3D,
         Self::Pencil3D,
         Self::Rotary2Linear,
+        Self::Rotary4AxisSim,
     ];
 
     pub const fn label(self) -> &'static str {
@@ -66,6 +69,7 @@ impl OperationKind {
             Self::Scallop3D => "3D Constant-Scallop",
             Self::Pencil3D => "3D Pencil Cleanup",
             Self::Rotary2Linear => "4th-Axis Rotary Surfacing",
+            Self::Rotary4AxisSim => "Simultaneous 4-Axis (X+Y+Z+A)",
         }
     }
 
@@ -83,6 +87,7 @@ impl OperationKind {
             Self::Scallop3D => "3D Scallop",
             Self::Pencil3D => "3D Pencil",
             Self::Rotary2Linear => "4th-Axis Rotary",
+            Self::Rotary4AxisSim => "Simultaneous 4-Axis",
         }
     }
 
@@ -96,12 +101,13 @@ impl OperationKind {
                 | Self::Scallop3D
                 | Self::Pencil3D
                 | Self::Rotary2Linear
+                | Self::Rotary4AxisSim
         )
     }
 
     /// Returns `true` for native 4th-axis rotary machining strategies.
     pub const fn is_rotary_native(self) -> bool {
-        matches!(self, Self::Rotary2Linear)
+        matches!(self, Self::Rotary2Linear | Self::Rotary4AxisSim)
     }
 
     pub fn is_compatible_with_tool(self, tool: &Tool) -> bool {
@@ -143,6 +149,9 @@ impl OperationKind {
             Self::Rotary2Linear => tool
                 .geometry
                 .supports_operation(ToolOperationClass::Rotary2Linear),
+            Self::Rotary4AxisSim => tool
+                .geometry
+                .supports_operation(ToolOperationClass::Rotary4AxisSim),
         }
     }
 }
@@ -291,7 +300,7 @@ impl Operation {
                 passes.stock_to_leave_radial = chip_math::ParamLength::from_mm(0.0);
                 passes.stock_to_leave_axial = chip_math::ParamLength::from_mm(0.0);
             }
-            OperationKind::Rotary2Linear => {
+            OperationKind::Rotary2Linear | OperationKind::Rotary4AxisSim => {
                 heights.top =
                     crate::heights::HeightSpec::new(crate::heights::HeightReference::StockTop, 0.0);
                 heights.bottom = crate::heights::HeightSpec::new(

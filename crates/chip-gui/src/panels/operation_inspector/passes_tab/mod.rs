@@ -324,6 +324,7 @@ pub fn show_passes_tab(ui: &mut egui::Ui, ctx: PassesTabCtx<'_>) {
         StrategyParams::Scallop3D(p) => surface_3d::show_scallop3d_params(ui, p, item),
         StrategyParams::Pencil3D(p) => surface_3d::show_pencil3d_params(ui, p, item),
         StrategyParams::Rotary2Linear(p) => surface_3d::show_rotary2linear_params(ui, p, item),
+        StrategyParams::Rotary4AxisSim(p) => surface_3d::show_rotary4axis_sim_params(ui, p, item),
     }
 }
 

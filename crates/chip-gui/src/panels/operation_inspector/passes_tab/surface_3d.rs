@@ -1,7 +1,8 @@
 use chip_cam::{
     Adaptive3DParams, AdaptiveCutDirection, MachiningBoundaryMode, Parallel3DParams,
-    ParallelCutDirection, Pencil3DParams, Rotary2LinearParams, RotaryCutDirection,
-    RotaryPatternMode, Scallop3DParams, ToolContainmentMode, Waterline3DParams, WaterlineOrderMode,
+    ParallelCutDirection, Pencil3DParams, Rotary2LinearParams, Rotary4AxisPattern,
+    Rotary4AxisSimParams, RotaryCutDirection, RotaryPatternMode, RotaryTiltMode, Scallop3DParams,
+    ToolContainmentMode, Waterline3DParams, WaterlineOrderMode,
 };
 
 use super::{COMBO_COL_WIDTH, PassItemCtx};
@@ -621,6 +622,144 @@ pub(super) fn show_rotary2linear_params(
                     "Smoothing Tol",
                     &mut p.smoothing_tolerance,
                     "Edit Rotary Smoothing Tolerance",
+                );
+            });
+        },
+    );
+}
+
+pub(super) fn show_rotary4axis_sim_params(
+    ui: &mut egui::Ui,
+    p: &mut Rotary4AxisSimParams,
+    mut item: PassItemCtx<'_>,
+) {
+    let (setup_idx, op_idx) = item.ids();
+
+    section_card(
+        ui,
+        ("rot4ax_passes_card", setup_idx, op_idx),
+        "Simultaneous 4-Axis (X+Y+Z+A/B)",
+        true,
+        |ui| {
+            item.grid(ui, "rot4ax_passes_grid", |f| {
+                f.set_tip("Continuous 4-axis simultaneous helical spiral or axial/helical flowline lanes");
+                f.combo(
+                    "Pattern",
+                    &mut p.pattern,
+                    (&Rotary4AxisPattern::ALL, Rotary4AxisPattern::label),
+                    "Change Simultaneous 4-Axis Pattern",
+                );
+                f.set_tip("How off-centerline lateral cross-axis shift is computed during 4-axis motion");
+                f.combo(
+                    "Tilt / Offset",
+                    &mut p.tilt_mode,
+                    (&RotaryTiltMode::ALL, RotaryTiltMode::label),
+                    "Change Simultaneous 4-Axis Tilt Mode",
+                );
+                match p.tilt_mode {
+                    RotaryTiltMode::SurfaceNormalAutoTilt => {
+                        f.set_tip("Maximum effective off-centerline tilt angle aligned with local helical flank normals");
+                        f.drag(
+                            "Max Auto Tilt",
+                            &mut p.max_tilt_deg,
+                            0.0..=40.0,
+                            (0.5, "°"),
+                            "Edit 4-Axis Max Auto Tilt",
+                        );
+                        f.set_tip("Multi-pass smoothing radius keeping simultaneous cross-axis Y/X and rotary motion chatter-free");
+                        f.drag(
+                            "Tilt Smoothing",
+                            &mut p.tilt_smoothing_window,
+                            0..=12,
+                            (0.2, " cells"),
+                            "Edit 4-Axis Tilt Smoothing",
+                        );
+                    }
+                    RotaryTiltMode::FixedLateralOffset => {
+                        f.set_tip("Fixed cross-axis offset off the rotary centerline (cuts with cutter periphery instead of tip center)");
+                        f.len(
+                            "Lateral Offset",
+                            &mut p.lateral_offset,
+                            "Edit 4-Axis Lateral Offset",
+                        );
+                    }
+                }
+                f.set_tip("Pass traversal ordering");
+                f.combo(
+                    "Cut Direction",
+                    &mut p.cut_direction,
+                    (&RotaryCutDirection::ALL, RotaryCutDirection::label),
+                    "Change 4-Axis Cut Direction",
+                );
+                f.set_tip("Derive stepover automatically from target ball/bull-nose cusp height");
+                f.check(
+                    "Stepover Mode",
+                    &mut p.use_cusp_height,
+                    "Use Target Cusp Height",
+                    "Toggle 4-Axis Cusp Stepover",
+                );
+                if p.use_cusp_height {
+                    f.set_tip("Target surface cusp height across helical flanks");
+                    f.len("Target Cusp", &mut p.cusp_height, "Edit 4-Axis Cusp Height");
+                } else {
+                    f.set_tip("Axial pitch per revolution (Spiral) or circumferential spacing (Flowline)");
+                    f.len("Stepover", &mut p.stepover, "Edit 4-Axis Stepover");
+                }
+                f.set_tip("Angular machining range around the rotary axis (0° to 360° = full circumference)");
+                f.row("Angle Window (°)", |ui, mutated| {
+                    ui.horizontal(|ui| {
+                        let r0 = ui.add(
+                            egui::DragValue::new(&mut p.start_angle_deg)
+                                .speed(2.0)
+                                .range(-360.0..=360.0)
+                                .suffix("°"),
+                        );
+                        ui.label("to");
+                        let r1 = ui.add(
+                            egui::DragValue::new(&mut p.end_angle_deg)
+                                .speed(2.0)
+                                .range((p.start_angle_deg + 1.0)..=720.0)
+                                .suffix("°"),
+                        );
+                        if r0.changed() || r1.changed() {
+                            if p.end_angle_deg <= p.start_angle_deg + 1.0 {
+                                p.end_angle_deg = p.start_angle_deg + 1.0;
+                            }
+                            *mutated = Some("Edit 4-Axis Angle Window");
+                        }
+                    });
+                });
+                f.set_tip("Inward axial trim margin from the -U stock end (chuck side)");
+                f.len(
+                    "Start Margin (-U)",
+                    &mut p.axial_margin_start,
+                    "Edit 4-Axis Start Margin",
+                );
+                f.set_tip("Inward axial trim margin from the +U stock end (tailstock side)");
+                f.len(
+                    "End Margin (+U)",
+                    &mut p.axial_margin_end,
+                    "Edit 4-Axis End Margin",
+                );
+                f.set_tip("Angular Drop-Cutter sampling resolution around the rotary axis");
+                f.drag(
+                    "Angular Sample",
+                    &mut p.angular_sample_deg,
+                    0.5..=15.0,
+                    (0.25, "°"),
+                    "Edit 4-Axis Angular Sample",
+                );
+                f.set_tip("Axial Drop-Cutter sampling pitch along the rotary axis");
+                f.len(
+                    "Axial Sample",
+                    &mut p.axial_sample_step,
+                    "Edit 4-Axis Axial Sample",
+                );
+                f.set_tip("Chord decimation tolerance keeping simultaneous G93 G-code smooth and compact");
+                f.len(
+                    "Smoothing Tol",
+                    &mut p.smoothing_tolerance,
+                    "Edit 4-Axis Smoothing Tolerance",
                 );
             });
         },

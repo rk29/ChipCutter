@@ -320,13 +320,18 @@ impl SimulationTimeline {
                         accel,
                     );
                     let d_deg = (seg.end_rotary_deg - seg.start_rotary_deg).abs();
-                    let dt_rotary = if d_deg > 1e-6 {
+                    let (dt, eff_dist) = if d_deg > 1e-6 {
                         let rot_rate_deg_s = (kinematics.max_rotary_rate_deg_min.max(60.0)) / 60.0;
-                        d_deg / rot_rate_deg_s
+                        let dt_rotary = d_deg / rot_rate_deg_s;
+                        // Effective workpiece-surface arc travel for G93/G94 rotary cycle-time accuracy
+                        let r_eff = (0.5 * (seg.start_wcs.z.abs() + seg.end_wcs.z.abs())).max(1.0);
+                        let s_arc = r_eff * d_deg.to_radians();
+                        let s_comb = len.hypot(s_arc);
+                        let dt_surface = s_comb / target_v[local_idx].max(1e-3);
+                        (dt_linear.max(dt_rotary).max(dt_surface), s_comb)
                     } else {
-                        0.0
+                        (dt_linear, len)
                     };
-                    let dt = dt_linear.max(dt_rotary);
                     let commanded_feed_mm_min = match seg.motion {
                         SegmentMotion3D::Rapid => kinematics.rapid_rate_mm_min,
                         SegmentMotion3D::Linear { feed_mm_min, .. }
@@ -335,17 +340,17 @@ impl SimulationTimeline {
 
                     if matches!(seg.motion, SegmentMotion3D::Rapid) {
                         op_rapid_time += dt;
-                        op_rapid_dist += len;
+                        op_rapid_dist += eff_dist;
                     } else {
                         op_cut_time += dt;
-                        op_cut_dist += len;
+                        op_cut_dist += eff_dist;
                     }
 
                     let global_seg_idx = timeline.motion_spans.len();
                     let t0 = cur_time_sec;
                     let t1 = t0 + dt;
                     let d0 = cur_dist_mm;
-                    let d1 = d0 + len;
+                    let d1 = d0 + eff_dist;
 
                     timeline.motion_spans.push(MotionSpan {
                         global_seg_idx,

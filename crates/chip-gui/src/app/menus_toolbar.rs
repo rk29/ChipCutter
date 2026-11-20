@@ -1192,6 +1192,9 @@ impl ChipCutterApp {
             CommandId::AddOpRotary2Linear => {
                 self.add_standard_operation(OperationKind::Rotary2Linear);
             }
+            CommandId::AddOpRotary4AxisSim => {
+                self.add_standard_operation(OperationKind::Rotary4AxisSim);
+            }
             CommandId::DuplicateOperation => self.duplicate_focused_operation(),
             CommandId::MoveOperationUp => self.move_focused_operation(-1),
             CommandId::MoveOperationDown => self.move_focused_operation(1),
@@ -1250,6 +1253,7 @@ impl ChipCutterApp {
             | CommandId::SampleReliefWaveMesh
             | CommandId::SampleRotaryIndexedShaft
             | CommandId::SampleRotaryWrappedEngraving
+            | CommandId::SampleRotaryHelicalFlute
             | CommandId::SampleRevisionReloadV2 => {}
         }
     }

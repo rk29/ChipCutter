@@ -25,12 +25,13 @@ pub use demos::{
     build_adaptive_rest_demo_project, build_cam_torture_project,
     build_engraved_nameplate_demo_project, build_multi_feature_bracket_project,
     build_pure2d_router_panel_demo_project, build_relief_wave_mesh_project,
-    build_revision_v1_demo_project, build_rotary_shaft_preview_project,
-    build_rotary_wrapped_engraving_project, build_sculpted_mesh_dome_project,
-    build_tutorial_adaptive_rest_project, build_tutorial_chamfer_trace_project,
-    build_tutorial_contour_project, build_tutorial_drill_bore_project,
-    build_tutorial_facing_project, build_tutorial_pocket_project,
-    build_tutorial_vcarve_inlay_project, build_vcarve_sign_and_inlay_demo_project,
+    build_revision_v1_demo_project, build_rotary_helical_flute_project,
+    build_rotary_shaft_preview_project, build_rotary_wrapped_engraving_project,
+    build_sculpted_mesh_dome_project, build_tutorial_adaptive_rest_project,
+    build_tutorial_chamfer_trace_project, build_tutorial_contour_project,
+    build_tutorial_drill_bore_project, build_tutorial_facing_project,
+    build_tutorial_pocket_project, build_tutorial_vcarve_inlay_project,
+    build_vcarve_sign_and_inlay_demo_project,
 };
 pub use dispatcher::{
     BatchGenerationReport, DispatcherEvent, JobDispatcher, generate_project_blocking,
@@ -1764,6 +1765,93 @@ sha256 = "abc"
                 !motion_lines_have_a && f.content.contains('Y'),
                 "grbl_rotary_wrap must swap A onto Y and emit zero A motion words in {}",
                 f.filename
+            );
+        }
+
+        // 6. Simultaneous 4-Axis Helical Flute (`X+Y+Z+A`) round-trips, validates, simulates
+        //    crash-free, and posts simultaneous `G93 X Y Z A` G-code on linuxcnc_4axis & grblhal_4axis!
+        let flute_stl = chip_cad::sample_helical_flute_shaft_stl_bytes();
+        let flute_doc = load_mesh_cad_document(
+            "helical_flute_shaft.stl",
+            &flute_stl,
+            &MeshImportOptions::default(),
+        )
+        .unwrap();
+        let flute_sha = compute_sha256_hex(&flute_stl);
+        let mut flute_proj = build_rotary_helical_flute_project(
+            "helical_flute_shaft.stl".to_string(),
+            &flute_sha,
+            &starter.tools,
+        );
+        let flute_toml = flute_proj.to_toml_string().unwrap();
+        assert!(flute_toml.contains("rotary_4axis_sim"));
+        assert_eq!(
+            flute_toml,
+            ProjectDocument::from_toml_str(&flute_toml)
+                .unwrap()
+                .to_toml_string()
+                .unwrap()
+        );
+        let flute_val = validate_project(&flute_proj, None, Some(&flute_doc));
+        assert!(
+            flute_val.is_valid() && flute_val.warning_count() == 0,
+            "Simultaneous 4-Axis Helical Flute should validate cleanly: {:?}",
+            flute_val.diagnostics
+        );
+        let mut flute_cache = ToolpathCache::new(16);
+        let flute_batch =
+            generate_project_blocking(&mut flute_proj, &flute_doc, &mut flute_cache, 1);
+        assert!(
+            flute_batch.is_ok() && flute_batch.generated.len() == 2,
+            "Expected both simultaneous 4-axis ops to generate cleanly: {:?}",
+            flute_batch.errors
+        );
+        let flute_sim = simulate_project_setup(&SetupSimRequest {
+            project: &flute_proj,
+            setup_idx: 0,
+            cad_doc: &flute_doc,
+            cad_revision: 1,
+            cache: &flute_cache,
+            kinematics: resolve_kinematics_for_key("linuxcnc_4axis", None),
+            resolution: SimResolution::Standard,
+            cancel: None,
+        })
+        .unwrap();
+        assert!(
+            !flute_sim.has_critical_errors(),
+            "Simultaneous 4-Axis Helical Flute must verify crash-free, got: {:#?}",
+            flute_sim.diagnostics
+        );
+        let grblhal_4ax = profiles.iter().find(|p| p.id == "grblhal_4axis").unwrap();
+        for prof in [linux_4ax, grblhal_4ax] {
+            let files = post_process_project_setup(&SetupPostRequest {
+                project: &flute_proj,
+                setup_idx: 0,
+                cad_doc: &flute_doc,
+                cad_revision: 1,
+                cache: &flute_cache,
+                post_profile: prof,
+                project_label: &flute_proj.project_name,
+                program_stem: "helical_flute",
+            })
+            .unwrap();
+            assert_eq!(files.len(), 1);
+            let gcode = &files[0].content;
+            assert!(gcode.contains("G93"), "{} must emit G93", prof.id);
+            let has_simultaneous_xyza = gcode.lines().any(|line| {
+                let t = line.trim();
+                !t.starts_with('(')
+                    && !t.starts_with(';')
+                    && t.contains('X')
+                    && t.contains('Y')
+                    && t.contains('Z')
+                    && t.contains('A')
+                    && t.contains('F')
+            });
+            assert!(
+                has_simultaneous_xyza,
+                "{} must emit simultaneous X Y Z A F blocks",
+                prof.id
             );
         }
     }

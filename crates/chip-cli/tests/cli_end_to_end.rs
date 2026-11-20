@@ -921,3 +921,184 @@ fn v3_golden_3axis_mesh_surfacing_snapshots_match_byte_for_byte() {
         assert_eq!(actual, expected, "{fname} drifted from golden snapshot");
     }
 }
+
+#[test]
+fn phase_5_v3_rotary_golden_gcode_snapshots_match_exact_expected_output() {
+    use chip_cad::{sample_helical_flute_shaft_stl_bytes, sample_rotary_shaft_stl_bytes};
+    use chip_cam::StrategyParams;
+    use chip_math::ParamLength;
+    use chip_project::{
+        build_rotary_helical_flute_project, build_rotary_shaft_preview_project,
+        build_rotary_wrapped_engraving_project, compute_sha256_hex,
+    };
+    use chip_tools::default_starter_tool_library;
+
+    let tmp = TempTestDir::new("phase5_v3_rotary_goldens");
+    let update_goldens = std::env::var("CHIPCUTTER_UPDATE_GOLDENS").is_ok();
+    let starter = default_starter_tool_library();
+
+    // 1. Rotary Indexed Shaft (`linuxcnc_4axis`: continuous Z+X+A spiral + 4× Indexed 3+1 flats)
+    let shaft_stl = sample_rotary_shaft_stl_bytes();
+    std::fs::write(tmp.path().join("rotary_shaft.stl"), &shaft_stl).unwrap();
+    let shaft_sha = compute_sha256_hex(&shaft_stl);
+    let mut shaft_proj = build_rotary_shaft_preview_project(
+        "rotary_shaft.stl".to_string(),
+        &shaft_sha,
+        &starter.tools,
+    );
+    // Keep golden snapshot compact while preserving full continuous spiral + 4 indexed faces
+    shaft_proj.setups[0].operations[0].passes.multiple_depths = false;
+    if let StrategyParams::Rotary2Linear(p) = shaft_proj.setups[0].operations[0].strategy_mut() {
+        p.stepover = ParamLength::from_mm(8.0);
+    }
+    for op in &mut shaft_proj.setups[0].operations[1..] {
+        op.passes.multiple_depths = false;
+    }
+    let shaft_toml = tmp.path().join("v3_rotary_indexed_shaft.chip.toml");
+    shaft_proj.save_to_path(&shaft_toml).unwrap();
+
+    let shaft_out = tmp.path().join("out_rotary_shaft");
+    let shaft_res = Command::new(cli_bin())
+        .args([
+            "build",
+            shaft_toml.to_str().unwrap(),
+            "-o",
+            shaft_out.to_str().unwrap(),
+            "--post",
+            "linuxcnc_4axis",
+        ])
+        .output()
+        .expect("build v3_rotary_indexed_shaft");
+    assert!(
+        shaft_res.status.success(),
+        "rotary shaft build failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&shaft_res.stdout),
+        String::from_utf8_lossy(&shaft_res.stderr)
+    );
+    let actual_shaft =
+        std::fs::read_to_string(shaft_out.join("v3_rotary_indexed_shaft.ngc")).unwrap();
+    assert!(actual_shaft.contains("G93") && actual_shaft.contains("A90.000"));
+    let golden_shaft = golden_dir().join("linuxcnc/v3_rotary_indexed_shaft.ngc");
+    if update_goldens {
+        std::fs::write(&golden_shaft, &actual_shaft).unwrap();
+    }
+    let expected_shaft = std::fs::read_to_string(&golden_shaft).unwrap();
+    assert_eq!(
+        actual_shaft, expected_shaft,
+        "v3_rotary_indexed_shaft.ngc drifted from golden snapshot"
+    );
+
+    // 2. Wrapped Rotary Engraving (`grbl_rotary_wrap`: Y-swapped, zero A motion words)
+    let mut wrap_proj = build_rotary_wrapped_engraving_project(&starter.tools);
+    // Keep the flute pocket op for a crisp single-file swapped-axis golden
+    wrap_proj.setups[0].operations.remove(0);
+    let wrap_toml = tmp.path().join("v3_rotary_wrapped.chip.toml");
+    wrap_proj.save_to_path(&wrap_toml).unwrap();
+
+    let wrap_out = tmp.path().join("out_rotary_wrap");
+    let wrap_res = Command::new(cli_bin())
+        .args([
+            "build",
+            wrap_toml.to_str().unwrap(),
+            "-o",
+            wrap_out.to_str().unwrap(),
+            "--post",
+            "grbl_rotary_wrap",
+        ])
+        .output()
+        .expect("build v3_rotary_wrapped");
+    assert!(
+        wrap_res.status.success(),
+        "rotary wrap build failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&wrap_res.stdout),
+        String::from_utf8_lossy(&wrap_res.stderr)
+    );
+    let mut wrap_files: Vec<String> = std::fs::read_dir(&wrap_out)
+        .unwrap()
+        .filter_map(|e| {
+            let name = e.ok()?.file_name().to_string_lossy().into_owned();
+            name.ends_with(".nc").then_some(name)
+        })
+        .collect();
+    wrap_files.sort();
+    assert_eq!(wrap_files.len(), 1);
+    let actual_wrap = std::fs::read_to_string(wrap_out.join(&wrap_files[0])).unwrap();
+    assert!(
+        actual_wrap.lines().all(|line| {
+            let t = line.trim();
+            t.starts_with('(')
+                || t.starts_with(';')
+                || !t.split_whitespace().any(|tok| tok.starts_with('A'))
+        }),
+        "grbl_rotary_wrap golden must contain zero A motion words"
+    );
+    let golden_wrap = golden_dir().join("grbl/v3_rotary_wrapped.nc");
+    if update_goldens {
+        std::fs::write(&golden_wrap, &actual_wrap).unwrap();
+    }
+    let expected_wrap = std::fs::read_to_string(&golden_wrap).unwrap();
+    assert_eq!(
+        actual_wrap, expected_wrap,
+        "v3_rotary_wrapped.nc drifted from golden snapshot"
+    );
+
+    // 3. Simultaneous 4-Axis Helical Flute (`grblhal_4axis`: simultaneous G93 G1 X Y Z A)
+    let flute_stl = sample_helical_flute_shaft_stl_bytes();
+    std::fs::write(tmp.path().join("helical_flute_shaft.stl"), &flute_stl).unwrap();
+    let flute_sha = compute_sha256_hex(&flute_stl);
+    let mut flute_proj = build_rotary_helical_flute_project(
+        "helical_flute_shaft.stl".to_string(),
+        &flute_sha,
+        &starter.tools,
+    );
+    // Keep finishing pass with coarse stepover for a compact simultaneous 4-axis golden
+    flute_proj.setups[0].operations.remove(0);
+    if let StrategyParams::Rotary4AxisSim(p) = flute_proj.setups[0].operations[0].strategy_mut() {
+        p.stepover = ParamLength::from_mm(12.0);
+    }
+    let flute_toml = tmp.path().join("v3_rotary_4axis_sim.chip.toml");
+    flute_proj.save_to_path(&flute_toml).unwrap();
+
+    let flute_out = tmp.path().join("out_rotary_4ax");
+    let flute_res = Command::new(cli_bin())
+        .args([
+            "build",
+            flute_toml.to_str().unwrap(),
+            "-o",
+            flute_out.to_str().unwrap(),
+            "--post",
+            "grblhal_4axis",
+        ])
+        .output()
+        .expect("build v3_rotary_4axis_sim");
+    assert!(
+        flute_res.status.success(),
+        "rotary 4-axis sim build failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&flute_res.stdout),
+        String::from_utf8_lossy(&flute_res.stderr)
+    );
+    let actual_flute = std::fs::read_to_string(flute_out.join("v3_rotary_4axis_sim.nc")).unwrap();
+    assert!(
+        actual_flute.contains("G93")
+            && actual_flute.lines().any(|l| {
+                let t = l.trim();
+                !t.starts_with('(')
+                    && !t.starts_with(';')
+                    && t.contains('X')
+                    && t.contains('Y')
+                    && t.contains('Z')
+                    && t.contains('A')
+                    && t.contains('F')
+            }),
+        "grblhal_4axis golden must emit simultaneous G93 X Y Z A F blocks"
+    );
+    let golden_flute = golden_dir().join("grbl/v3_rotary_4axis_sim.nc");
+    if update_goldens {
+        std::fs::write(&golden_flute, &actual_flute).unwrap();
+    }
+    let expected_flute = std::fs::read_to_string(&golden_flute).unwrap();
+    assert_eq!(
+        actual_flute, expected_flute,
+        "v3_rotary_4axis_sim.nc drifted from golden snapshot"
+    );
+}

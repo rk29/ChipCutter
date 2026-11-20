@@ -1629,6 +1629,138 @@ impl Rotary2LinearParams {
     }
 }
 
+/// Toolpath traversal pattern for **Simultaneous 4-Axis Milling** (`OperationKind::Rotary4AxisSim`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Rotary4AxisPattern {
+    /// Continuous 4-axis simultaneous helical spiral (`X + Y + Z + A` or `X + Y + Z + B`).
+    #[default]
+    SimultaneousSpiral,
+    /// Axial/helical flowline strips stepped circumferentially around the workpiece.
+    HelicalFlowline,
+}
+
+impl Rotary4AxisPattern {
+    pub const ALL: [Self; 2] = [Self::SimultaneousSpiral, Self::HelicalFlowline];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::SimultaneousSpiral => "Simultaneous Helical Spiral",
+            Self::HelicalFlowline => "Axial / Helical Flowline",
+        }
+    }
+}
+
+/// Off-centerline lateral tilt control mode for **Simultaneous 4-Axis Milling**.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RotaryTiltMode {
+    /// Automatically computes smoothed off-centerline lateral cross-axis shift from local
+    /// circumferential surface normals (engaging the side/ball flank on steep helical walls).
+    #[default]
+    SurfaceNormalAutoTilt,
+    /// Applies a fixed cross-axis lateral offset (`lateral_offset`) off the rotary centerline.
+    FixedLateralOffset,
+}
+
+impl RotaryTiltMode {
+    pub const ALL: [Self; 2] = [Self::SurfaceNormalAutoTilt, Self::FixedLateralOffset];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::SurfaceNormalAutoTilt => "Auto Surface-Normal Tilt",
+            Self::FixedLateralOffset => "Fixed Lateral Offset",
+        }
+    }
+}
+
+fn default_rotary4_lateral_offset() -> ParamLength {
+    ParamLength::from_mm(2.5)
+}
+
+fn default_rotary4_max_tilt_deg() -> f64 {
+    18.0
+}
+
+fn default_rotary4_tilt_smooth() -> u32 {
+    3
+}
+
+/// Strategy parameters for **Simultaneous 4-Axis Milling (`X + Y + Z + A/B`)** (`OperationKind::Rotary4AxisSim`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Rotary4AxisSimParams {
+    #[serde(default)]
+    pub pattern: Rotary4AxisPattern,
+    #[serde(default)]
+    pub cut_direction: RotaryCutDirection,
+    #[serde(default)]
+    pub tilt_mode: RotaryTiltMode,
+    /// Fixed cross-axis lateral offset (`mm`) used in [`RotaryTiltMode::FixedLateralOffset`].
+    #[serde(default = "default_rotary4_lateral_offset")]
+    pub lateral_offset: ParamLength,
+    /// Maximum effective off-centerline tilt angle (`deg`, `0..40°`) in [`RotaryTiltMode::SurfaceNormalAutoTilt`].
+    #[serde(default = "default_rotary4_max_tilt_deg")]
+    pub max_tilt_deg: f64,
+    /// Multi-pass grid smoothing radius keeping cross-axis `Y`/`X` and rotary motion smooth.
+    #[serde(default = "default_rotary4_tilt_smooth")]
+    pub tilt_smoothing_window: u32,
+    #[serde(default = "default_rotary_stepover")]
+    pub stepover: ParamLength,
+    #[serde(default)]
+    pub use_cusp_height: bool,
+    #[serde(default = "default_finishing_cusp_height")]
+    pub cusp_height: ParamLength,
+    #[serde(default)]
+    pub start_angle_deg: f64,
+    #[serde(default = "default_rotary_end_angle_deg")]
+    pub end_angle_deg: f64,
+    #[serde(default = "default_zero_length")]
+    pub axial_margin_start: ParamLength,
+    #[serde(default = "default_zero_length")]
+    pub axial_margin_end: ParamLength,
+    #[serde(default = "default_rotary_angular_sample_deg")]
+    pub angular_sample_deg: f64,
+    #[serde(default = "default_rotary_axial_sample")]
+    pub axial_sample_step: ParamLength,
+    #[serde(default = "default_finishing_smooth_tol")]
+    pub smoothing_tolerance: ParamLength,
+}
+
+impl Default for Rotary4AxisSimParams {
+    fn default() -> Self {
+        Self {
+            pattern: Rotary4AxisPattern::SimultaneousSpiral,
+            cut_direction: RotaryCutDirection::ZigZag,
+            tilt_mode: RotaryTiltMode::SurfaceNormalAutoTilt,
+            lateral_offset: default_rotary4_lateral_offset(),
+            max_tilt_deg: default_rotary4_max_tilt_deg(),
+            tilt_smoothing_window: default_rotary4_tilt_smooth(),
+            stepover: default_rotary_stepover(),
+            use_cusp_height: false,
+            cusp_height: default_finishing_cusp_height(),
+            start_angle_deg: 0.0,
+            end_angle_deg: 360.0,
+            axial_margin_start: ParamLength::from_mm(0.0),
+            axial_margin_end: ParamLength::from_mm(0.0),
+            angular_sample_deg: default_rotary_angular_sample_deg(),
+            axial_sample_step: default_rotary_axial_sample(),
+            smoothing_tolerance: default_finishing_smooth_tol(),
+        }
+    }
+}
+
+impl Rotary4AxisSimParams {
+    pub fn reevaluate(&mut self, ctx: &EvalContext) {
+        let _ = self.lateral_offset.reevaluate(ctx);
+        let _ = self.stepover.reevaluate(ctx);
+        let _ = self.cusp_height.reevaluate(ctx);
+        let _ = self.axial_margin_start.reevaluate(ctx);
+        let _ = self.axial_margin_end.reevaluate(ctx);
+        let _ = self.axial_sample_step.reevaluate(ctx);
+        let _ = self.smoothing_tolerance.reevaluate(ctx);
+    }
+}
+
 /// Strategy-specific parameter block inside [`crate::operation::Operation`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "strategy_kind", rename_all = "snake_case")]
@@ -1654,6 +1786,8 @@ pub enum StrategyParams {
     Pencil3D(Pencil3DParams),
     #[serde(rename = "rotary_2linear")]
     Rotary2Linear(Rotary2LinearParams),
+    #[serde(rename = "rotary_4axis_sim")]
+    Rotary4AxisSim(Rotary4AxisSimParams),
 }
 
 impl StrategyParams {
@@ -1671,6 +1805,7 @@ impl StrategyParams {
             OperationKind::Scallop3D => Self::Scallop3D(Scallop3DParams::default()),
             OperationKind::Pencil3D => Self::Pencil3D(Pencil3DParams::default()),
             OperationKind::Rotary2Linear => Self::Rotary2Linear(Rotary2LinearParams::default()),
+            OperationKind::Rotary4AxisSim => Self::Rotary4AxisSim(Rotary4AxisSimParams::default()),
         }
     }
 
@@ -1689,6 +1824,7 @@ impl StrategyParams {
                 | (OperationKind::Scallop3D, Self::Scallop3D(_))
                 | (OperationKind::Pencil3D, Self::Pencil3D(_))
                 | (OperationKind::Rotary2Linear, Self::Rotary2Linear(_))
+                | (OperationKind::Rotary4AxisSim, Self::Rotary4AxisSim(_))
         );
         if !matches {
             *self = Self::default_for_kind(kind);
@@ -1709,6 +1845,7 @@ impl StrategyParams {
             Self::Scallop3D(p) => p.reevaluate(ctx),
             Self::Pencil3D(p) => p.reevaluate(ctx),
             Self::Rotary2Linear(p) => p.reevaluate(ctx),
+            Self::Rotary4AxisSim(p) => p.reevaluate(ctx),
         }
     }
 }

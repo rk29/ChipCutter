@@ -37,10 +37,10 @@ pub use params::{
     EntryStrategy, FacingCutMode, FacingParams, HoldingTabsConfig, HoleMachiningMode, LeadConfig,
     LinkingParams, MachiningBoundaryMode, ManualTabAnchor, Parallel3DParams, ParallelCutDirection,
     PassesParams, Pencil3DParams, Pocket2DParams, PocketPassOrder, PocketStrategyKind,
-    RestMachiningConfig, RestMachiningMode, RetractPolicy, Rotary2LinearParams, RotaryCutDirection,
-    RotaryPatternMode, Scallop3DParams, StrategyParams, TabPlacementMode, TabProfileKind,
-    ToolContainmentMode, VCarveClearingKind, VCarveInlayMode, VCarveParams, Waterline3DParams,
-    WaterlineOrderMode,
+    RestMachiningConfig, RestMachiningMode, RetractPolicy, Rotary2LinearParams, Rotary4AxisPattern,
+    Rotary4AxisSimParams, RotaryCutDirection, RotaryPatternMode, RotaryTiltMode, Scallop3DParams,
+    StrategyParams, TabPlacementMode, TabProfileKind, ToolContainmentMode, VCarveClearingKind,
+    VCarveInlayMode, VCarveParams, Waterline3DParams, WaterlineOrderMode,
 };
 pub use rest2d::{
     ContourRestClipQuery, PocketRestQuery, RegionSet2D, RestPocketWorkItem, UpstreamSweptInput,
@@ -51,8 +51,8 @@ pub use rotary::{
     OperationRotaryMode, ResolvedRotaryConfig, RotaryAxisKind, RotaryConfig, RotaryDirection,
     RotaryDriveMode, RotaryUnwindMode, build_indexed_virtual_setup, compute_index_angle_for_normal,
     compute_inverse_time_feed_g93, compute_rotary_angular_feed_deg_min,
-    compute_stock_rotary_envelope, cylindrical_to_wcs, resolve_rotary_target_deg,
-    rotate_point_about_axis, wcs_to_cylindrical,
+    compute_stock_rotary_envelope, compute_workpiece_arc_distance_mm, cylindrical_to_wcs,
+    resolve_rotary_target_deg, rotate_point_about_axis, wcs_to_cylindrical,
 };
 pub use selection::{
     ChainDirectionArrow3D, ExtractedFeature25D, ExtractedSelectionSummary, GeometrySelectionItem,

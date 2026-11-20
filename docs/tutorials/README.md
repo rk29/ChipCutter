@@ -32,6 +32,9 @@ Work through the guides in order if you are new to ChipCutter, or jump directly 
 | 05 | [**2D Adaptive Clearing & 2.5D Rest Machining**](05-adaptive-rest-machining.md) | Constant-engagement trochoidal roughing (`optimal_load`), radial chip-thinning, `FromPrecedingOperations` DAG waves | [`assets/05-adaptive-pocket.step`](assets/05-adaptive-pocket.step) (`100×80×20 mm` deep sharp-corner pocket) | **Available** |
 | 06 | [**Edge Chamfering & 2D Curve Trace / Engraving**](06-chamfer-curve-trace.md) | Modeled `45°` bevel faces vs. sharp unmodeled edges (`tip_offset`, `Floor Guard`), 1-pass single-line Hershey engraving | [`assets/06-chamfer-engrave-block.step`](assets/06-chamfer-engrave-block.step) (`45°` front bevel + sharp back edge) | **Available** |
 | 07 | [**3D V-Carving, Two-Tool Flat Clearance, & Mated V-Inlays**](07-vcarve-inlays.md) | TrueType outline text, medial-axis 3D corner climbs, Stage 1 Flat + Stage 2 V-Bit clearance, mirrored Male V-Inlay plugs | Blank Pure-2D Sketch (`"CHIP"` TrueType text) | **Available** |
+| 08 | [**3D Mesh Surfacing (`STL` / `OBJ` / `3MF`)**](08-3d-mesh-surfacing.md) | Triangle mesh import, 3D Adaptive Roughing, 3D Waterline, 3D Parallel Raster, 3D Constant-Scallop, & 3D Pencil Cleanup | [`assets/08-sculpted-dome.stl`](assets/08-sculpted-dome.stl) (`Ø50 mm` dome on `80×80 mm` pedestal) | **Available** |
+| 09 | [**4th-Axis Rotary Wrapping, Spiral Surfacing, & Indexed `3+1`**](09-4th-axis-rotary-wrapping-indexing.md) | Rotary Setup (`A`/`B`/`C`, chuck & clearance), `Z+X+A` 2D cylindrical wrapping (`grbl_rotary_wrap`), continuous rotary spiral, `Indexed 3+1` flats | [`assets/09-rotary-shaft.stl`](assets/09-rotary-shaft.stl) (`Ø40×80 mm` shaft w/ flats, groove, & 3-lobe cam) | **Available** |
+| 10 | [**Simultaneous 4-Axis Milling (`X + Y + Z + A/B`)**](10-simultaneous-4axis-milling.md) | Full simultaneous `X+Y+Z+A` off-centerline auto surface-normal tilt smoothing, `G93` inverse-time feeds, cylindrical gouge/holder verification | [`assets/10-helical-flute-shaft.stl`](assets/10-helical-flute-shaft.stl) (`Ø40×80 mm` 3-start helical flute shaft) | **Available** |
 
 ---
 
@@ -47,6 +50,9 @@ Each 3D operation tutorial starts from an **empty project** and loads a minimal 
 | [`04-drill-bore-plate.step`](assets/04-drill-bore-plate.step) | `100 × 70 × 16 mm` plate with 4× `Ø6 mm` through-holes + 1× `Ø18 mm` blind bore | `chipcutter generate-sample-step <out.step> --tutorial 04-drill-bore` |
 | [`05-adaptive-pocket.step`](assets/05-adaptive-pocket.step) | `100 × 80 × 20 mm` block with 1 deep `10 mm` sharp-corner pocket + `Ø16 mm` boss | `chipcutter generate-sample-step <out.step> --tutorial 05-adaptive-rest` |
 | [`06-chamfer-engrave-block.step`](assets/06-chamfer-engrave-block.step) | `100 × 70 × 18 mm` block with 1 modeled `45° × 1.5 mm` front bevel & sharp back edge | `chipcutter generate-sample-step <out.step> --tutorial 06-chamfer-trace` |
+| [`08-sculpted-dome.stl`](assets/08-sculpted-dome.stl) | Watertight `80 × 80 × 25 mm` sculpted dome on pedestal (`STL` mesh) | `chipcutter generate-sample-step <out.stl> --tutorial 08-mesh-surfacing` |
+| [`09-rotary-shaft.stl`](assets/09-rotary-shaft.stl) | Watertight `Ø40 × 80 mm` shaft with 4 wrench flats, collar groove, & 3-lobe cam | `chipcutter generate-sample-step <out.stl> --tutorial 09-rotary-shaft` |
+| [`10-helical-flute-shaft.stl`](assets/10-helical-flute-shaft.stl) | Watertight `Ø40 × 80 mm` 3-start helical impeller/flute shaft | `chipcutter generate-sample-step <out.stl> --tutorial 10-simultaneous-4axis` |
 
 You can launch any starter STEP model directly into an empty ChipCutter workspace:
 

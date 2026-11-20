@@ -6,17 +6,19 @@ use std::{
 
 use chip_cad::{
     CadDocument, CadPicker, MeshUnitKind, TopologyGraph, sample_cam_torture_block_step,
-    sample_machined_plate_step, sample_multi_feature_bracket_step, sample_relief_wave_obj_text,
-    sample_revised_part_pair_step, sample_rotary_shaft_stl_bytes, sample_sculpted_dome_stl_bytes,
+    sample_helical_flute_shaft_stl_bytes, sample_machined_plate_step,
+    sample_multi_feature_bracket_step, sample_relief_wave_obj_text, sample_revised_part_pair_step,
+    sample_rotary_shaft_stl_bytes, sample_sculpted_dome_stl_bytes,
 };
 use chip_project::{
     ModelEntry, OperationReloadOutcome, ProjectDocument, build_adaptive_rest_demo_project,
     build_cam_torture_project, build_multi_feature_bracket_project,
     build_pure2d_router_panel_demo_project, build_relief_wave_mesh_project,
-    build_revision_v1_demo_project, build_rotary_shaft_preview_project,
-    build_rotary_wrapped_engraving_project, build_sculpted_mesh_dome_project, compute_sha256_hex,
-    export_chipz_bundle, is_chipz_path, load_model_bytes_cad_doc, portable_model_path,
-    rebind_project_to_reloaded_cad, resolve_model_path, unpack_chipz_bundle,
+    build_revision_v1_demo_project, build_rotary_helical_flute_project,
+    build_rotary_shaft_preview_project, build_rotary_wrapped_engraving_project,
+    build_sculpted_mesh_dome_project, compute_sha256_hex, export_chipz_bundle, is_chipz_path,
+    load_model_bytes_cad_doc, portable_model_path, rebind_project_to_reloaded_cad,
+    resolve_model_path, unpack_chipz_bundle,
 };
 
 use crate::{
@@ -34,6 +36,7 @@ pub(crate) enum LoadPurpose {
     SeedSculptedMeshDome,
     SeedReliefWaveMesh,
     SeedRotaryIndexedShaft,
+    SeedRotaryHelicalFlute,
     ReloadRebind { update_path: bool },
 }
 
@@ -451,6 +454,27 @@ impl ChipCutterApp {
                 None,
                 None,
                 LoadPurpose::SeedRotaryIndexedShaft,
+                t0,
+            );
+            let _ = tx.send(res);
+            egui_ctx.request_repaint();
+        });
+    }
+
+    pub(crate) fn spawn_rotary_helical_flute_load(&mut self, egui_ctx: egui::Context) {
+        self.loading_in_flight = true;
+        self.logs
+            .push("Generating Simultaneous 4-Axis Helical Flute (X+Y+Z+A) sample…".to_string());
+        let tx = self.job_tx.clone();
+        rayon::spawn(move || {
+            let t0 = Instant::now();
+            let stl_bytes = sample_helical_flute_shaft_stl_bytes();
+            let res = parse_model_bytes_job(
+                "helical_flute_shaft.stl".to_string(),
+                stl_bytes,
+                None,
+                None,
+                LoadPurpose::SeedRotaryHelicalFlute,
                 t0,
             );
             let _ = tx.send(res);
@@ -1016,6 +1040,25 @@ impl ChipCutterApp {
                 self.op_tab = OperationTab::Passes;
                 self.show_27pt_dots = false;
             }
+            LoadPurpose::SeedRotaryHelicalFlute => {
+                self.clear_bundle_extract_dir();
+                self.project_file_path = None;
+                self.history.clear();
+                self.clean_undo_len = Some(0);
+                self.last_reload_banner = None;
+                self.project = build_rotary_helical_flute_project(
+                    doc.source_name.clone(),
+                    &sha256_hex,
+                    &self.global_tools.tools,
+                );
+                self.active_setup_idx = 0;
+                self.inspector_focus = InspectorFocus::Operation {
+                    setup_idx: 0,
+                    op_idx: 1,
+                };
+                self.op_tab = OperationTab::Passes;
+                self.show_27pt_dots = false;
+            }
             LoadPurpose::FreshImport { update_model_entry } => {
                 self.last_reload_banner = None;
                 if update_model_entry {
@@ -1078,6 +1121,7 @@ impl ChipCutterApp {
                 | LoadPurpose::SeedSculptedMeshDome
                 | LoadPurpose::SeedReliefWaveMesh
                 | LoadPurpose::SeedRotaryIndexedShaft
+                | LoadPurpose::SeedRotaryHelicalFlute
         ) {
             self.auto_sim_after_gen = true;
             self.trigger_generate_dirty(None, None);

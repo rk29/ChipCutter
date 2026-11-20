@@ -27,6 +27,7 @@ pub enum SampleProjectId {
     ReliefWaveMesh,
     RotaryIndexedShaft,
     RotaryWrappedEngraving,
+    RotaryHelicalFlute,
 }
 
 impl SampleProjectId {
@@ -49,8 +50,9 @@ impl SampleProjectId {
             "rotary-wrap" | "wrap-cylinder" | "wrapped-engraving" => {
                 Ok(Self::RotaryWrappedEngraving)
             }
+            "rotary-4axis" | "helical-flute" | "4axis-sim" => Ok(Self::RotaryHelicalFlute),
             other => Err(format!(
-                "invalid --sample '{other}'; expected one of: cam-torture, adaptive-rest, pure-2d, nameplate, vcarve, multi-feature, tilted-bracket, revision-v1, revision-v2, sample-plate, mesh-dome, mesh-wave, rotary-shaft, rotary-wrap"
+                "invalid --sample '{other}'; expected one of: cam-torture, adaptive-rest, pure-2d, nameplate, vcarve, multi-feature, tilted-bracket, revision-v1, revision-v2, sample-plate, mesh-dome, mesh-wave, rotary-shaft, rotary-wrap, rotary-4axis"
             )),
         }
     }
@@ -201,6 +203,14 @@ pub const SAMPLE_CATALOG: &[SampleCardSpec] = &[
         title: "Wrapped Rotary Engraving (Z+X+A)",
         badge: "Wrap 2D · 2 Ops",
         summary: "Wraps bold TrueType 'CHIP' V-Carving and a rounded circumferential flute onto a Ø40×80mm cylinder for 4-axis G93 or swapped-axis GRBL rotaries.",
+    },
+    SampleCardSpec {
+        id: SampleProjectId::RotaryHelicalFlute,
+        category: SampleCategory::Mesh3D,
+        icon: IconKind::OrthoCube,
+        title: "Simultaneous 4-Axis Helical Flute",
+        badge: "X+Y+Z+A · 2 Ops",
+        summary: "Ø40×80mm 3-start helical flute shaft machined with simultaneous X+Y+Z+A off-centerline auto-tilted roughing and finishing (G93).",
     },
 ];
 
@@ -640,6 +650,10 @@ mod tests {
         assert_eq!(
             SampleProjectId::from_cli_slug("rotary-wrap"),
             Ok(SampleProjectId::RotaryWrappedEngraving)
+        );
+        assert_eq!(
+            SampleProjectId::from_cli_slug("rotary-4axis"),
+            Ok(SampleProjectId::RotaryHelicalFlute)
         );
         assert!(SampleProjectId::from_cli_slug("nonexistent").is_err());
     }

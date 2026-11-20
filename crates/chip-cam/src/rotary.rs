@@ -716,6 +716,22 @@ pub fn resolve_rotary_target_deg(
     }
 }
 
+/// Computes the combined workpiece-surface travel distance (`mm`) for a simultaneous linear +
+/// rotary motion segment from `(start_wcs, start_deg)` to `(end_wcs, end_deg)` at `effective_radius_mm`.
+#[inline]
+pub fn compute_workpiece_arc_distance_mm(
+    start_wcs: DVec3,
+    end_wcs: DVec3,
+    start_deg: f64,
+    end_deg: f64,
+    effective_radius_mm: f64,
+) -> f64 {
+    let linear_dist = start_wcs.distance(end_wcs);
+    let d_rad = (end_deg - start_deg).abs().to_radians();
+    let rotary_arc_dist = effective_radius_mm.max(0.0) * d_rad;
+    linear_dist.hypot(rotary_arc_dist)
+}
+
 /// Computes the exact NIST RS274NGC / LinuxCNC / grblHAL **`G93` Inverse-Time Feedrate** (`1/min`)
 /// for a combined linear + rotary motion segment so the cutter moves along the workpiece surface
 /// at `target_surface_feed_mm_min`.
@@ -733,12 +749,14 @@ pub fn compute_inverse_time_feed_g93(
     if !target_surface_feed_mm_min.is_finite() || target_surface_feed_mm_min <= 1e-6 {
         return None;
     }
-    let linear_dist = start_wcs.distance(end_wcs);
     let d_deg = (end_deg - start_deg).abs();
-    let d_rad = d_deg.to_radians();
-    let r_eff = effective_radius_mm.max(0.0);
-    let rotary_arc_dist = r_eff * d_rad;
-    let combined_dist = linear_dist.hypot(rotary_arc_dist);
+    let combined_dist = compute_workpiece_arc_distance_mm(
+        start_wcs,
+        end_wcs,
+        start_deg,
+        end_deg,
+        effective_radius_mm,
+    );
 
     let dt_surface_min = combined_dist / target_surface_feed_mm_min;
     let dt_rotary_min = if d_deg > 1e-9 && max_rotary_feed_deg_min > 1e-6 {
