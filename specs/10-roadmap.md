@@ -206,6 +206,26 @@ Phase 8 introduces first-class **Machine Definitions** (`*.machine.toml`) so mac
 
 ---
 
+## Phase 9 — Security Hardening & Safe Untrusted-File Handling (Planned — M32–M34)
+
+Phase 9 addresses every finding from the codebase security evaluation so machinists can safely inspect, simulate, and post-process untrusted `.chipz` bundles, `.chip.toml` projects, shared `.machine.toml` / `.post.toml` files, Fusion 360 `.tools` archives, `.3mf` meshes, and `.dxf` drawings—and ensures CI/CD release pipelines enforce least privilege and immutable action pinning:
+
+### Milestone 32 — Post-Processor Integrity, Safe Output Paths, & G-Code Injection Defense (`plans/32-milestone-32-plan.md`)
+- **Safe Output Filenames (`chip-post`, `chip-cli`, `chip-gui`):** Sanitize `PostProfile::extension` to strict ASCII alphanumerics (`[A-Za-z0-9]{1,16}`, fallback `nc`) and enforce single-component filename validation before writing emitted G-code in both `chipcutter build` and multi-file GUI export—eliminating arbitrary file-write path traversal.
+- **Read-Only Built-In Post-Processors & Explicit Path Resolution (`chip-post`, `chip-tools`, `chip-cli`, `chip-gui`):** Prevent untrusted `.chipz` bundles, project directories, or CWD `./posts/` from shadowing built-in post profiles (`grbl`, `grblhal_atc`, `linuxcnc`, etc.); separate explicit CLI file-path loading from untrusted project IDs (`setup.post_profile`, `project.machine_id`); and display an explicit warning banner whenever a project uses a custom bundled `.post.toml`.
+- **G-Code Injection & Non-Finite Guard (`chip-post`):** Sanitize `{op_name}`, `{strategy_name}`, and `{tool_desc}` via `sanitize_comment_ascii` prior to template interpolation, reject embedded `\r`/`\n` inside `LineWriter::push_code_line`, and fail closed on non-finite (`NaN`/`±Inf`) values in `format_decimal`.
+
+### Milestone 33 — Untrusted Archive, Parser DoS, Temp Directory, & `.chipz` Packing Hardening (`plans/33-milestone-33-plan.md`)
+- **Cumulative Zip-Bomb Defenses (`chip-project`, `chip-tools`):** Enforce strict actual-bytes-read cumulative decompression budgets, entry-count caps, and symlink rejection in both `.chipz` unpacking (`unpack_chipz_bytes`) and Fusion 360 `.tools` ZIP import (`import_fusion_library_bytes`)—never trusting ZIP central directory `entry.size()` headers alone.
+- **Bounded Recursion & Expansion Caps (`chip-math`, `chip-cad`, `chip-sketch`):** Add explicit nesting-depth (`MAX_EXPR_DEPTH`) and token-count (`MAX_EXPR_TOKENS`) limits to the parametric expression evaluator (`chip-math::expr`), cumulative triangle cap (`MAX_3MF_TRIANGLES`) to 3MF component instantiation (`chip-cad::mesh::threemf`), and cumulative entity cap (`MAX_DXF_ITEMS`) to DXF `INSERT` block expansion (`chip-sketch::dxf_import`).
+- **Exclusive `0o700` Temp Extraction & Out-of-Project `.chipz` Packing Guard (`chip-project`, `chip-cli`, `chip-gui`):** Replace predictable `/tmp` `create_dir_all` extraction directories with exclusive, private (`0o700` on Unix) temporary directory creation, and guard `.chipz` packing against silently exfiltrating out-of-project local files referenced by untrusted `.chip.toml` manifests.
+
+### Milestone 34 — CI/CD Hardening, Packaging Semver Validation, & Security Policy (`plans/34-milestone-34-plan.md`)
+- **Expression-Injection Elimination & Least-Privilege Tokens (`.github/workflows/`):** Route all workflow inputs and job outputs (`inputs.tag`, `needs.prepare.outputs.version`) exclusively through `env:` blocks, enforce strict semver regex validation in `prepare`, `scripts/package_macos.sh`, and `scripts/build_flatpak.sh`, and restrict `permissions: contents: write` strictly to `publish-release` (`contents: read` everywhere else).
+- **Immutable Supply-Chain Pinning & Security Documentation:** Pin third-party GitHub Actions in `.github/workflows/release.yml` and `.github/workflows/ci.yml` to immutable 40-character commit SHAs (with version comments) and publish `SECURITY.md` documenting vulnerability reporting and ChipCutter's threat model for untrusted CAM files.
+
+---
+
 ## Future Phases
 
 1. **Functional & Behavioral User-Level Testing:**
