@@ -130,35 +130,11 @@ cargo run -p chip-cli -- tools import-fusion shop_tools.json -o shop.tools.toml
 
 ---
 
-## Workspace Layout
-
-See [**`ARCHITECTURE.md`**](ARCHITECTURE.md) for the end-to-end CAM data pipeline, crate dependency diagrams, concurrency model, and 3D `wgpu` viewport render passes.
-
-All core geometry, CAM, simulation, post-processing, and project persistence crates are strictly **UI-agnostic** (`#![deny(unsafe_code)]`, `clippy::unwrap_used = "deny"`, `clippy::expect_used = "deny"`):
-
-| Path | Description |
-|---|---|
-| [`crates/chip-math`](crates/chip-math) | Canonical `f64` millimeter types, `RigidFrame3` WCS math, 2D arc polylines, and machinist unit/expression evaluator |
-| [`crates/chip-cad`](crates/chip-cad) | `CadKernel` trait, `monstertruck` STEP B-Rep loader/tessellator, R-tree ray picker, topology graph, and `GeometricSignature` reload re-matching |
-| [`crates/chip-sketch`](crates/chip-sketch) | DXF & SVG importers, gap-healing planarizer, parametric 2D sketch primitives, and TrueType (`skrifa`) + Hershey CAM typography |
-| [`crates/chip-tools`](crates/chip-tools) | 6 cutter geometries (incl. sharp V-bits), material presets, coupled SFM/chipload & chip-thinning math, `.tools.toml` I/O, and Fusion 360 importer |
-| [`crates/chip-cam`](crates/chip-cam) | Setups, stock, WCS, `cavalier_contours` offsetting & 2D booleans, `boostvoronoi` medial axis, and all 6 machining strategies (incl. 2D Adaptive, Rest, & Two-Tool V-Carving / V-Inlays) |
-| [`crates/chip-sim`](crates/chip-sim) | Trapezoidal motion timeline, revolved cutter profiles/meshes, analytical 3D conical V-bit sweeper, 2.5D Z-dexel stock heightmap, and 5-rule crash/gouge verifier |
-| [`crates/chip-post`](crates/chip-post) | Typed `ClEvent` consumer, modal state machine, quadrant arc & peck-drill expansion, and `.post.toml` G-code emitter |
-| [`crates/chip-project`](crates/chip-project) | Deterministic `.chip.toml` (`schema_version = 1 / 2 / 3`), `.chipz` portable bundles (incl. meshes/vectors/fonts), associative STEP + face-sketch reload, DAG wave `JobDispatcher`, and Undo/Redo |
-| [`crates/chip-cli`](crates/chip-cli) | `chipcutter` headless CLI binary and Phase 1–5 golden end-to-end G-code snapshot suite |
-| [`crates/chip-gui`](crates/chip-gui) | `eframe` + `egui_tiles` + `wgpu` 4x MSAA 3D/2D CAD/CAM desktop application |
-| [`posts/`](posts) | Built-in TOML post-processor profiles (`grbl`, `grblhal_atc`, `linuxcnc`, `linuxcnc_4axis`, `grblhal_4axis`, `grbl_rotary_wrap`) |
-| [`specs/`](specs) | Authoritative subsystem architecture & algorithm specifications (`00-overview.md` – `11-sketches-vectors.md`) |
-| [`plans/`](plans) | Milestone 1–24 engineering implementation plans (`01-milestone-1-plan.md` – `24-milestone-24-plan.md`) |
-
----
-
 ## Documentation
 
 - [**`docs/tutorials/`**](docs/tutorials/README.md) — Illustrated step-by-step Getting Started, 2.5D, 3-Axis Surface, 4th-Axis Rotary, & Production Workflow tutorials (`00`–`14`)
 - [**`ARCHITECTURE.md`**](ARCHITECTURE.md) — End-to-end data pipeline, crate dependency graph, threading/caching model, and 3D render passes
-- [**`DEVELOPMENT.md`**](DEVELOPMENT.md) — Platform build prerequisites, native Linux/macOS/Windows setup, and headless CI instructions
+- [**`DEVELOPMENT.md`**](DEVELOPMENT.md) — Workspace layout, platform build prerequisites, native Linux/macOS/Windows setup, and headless CI instructions
 - [**`specs/00-overview.md`**](specs/00-overview.md) — Product scope, non-goals, and full specification index (`00` through `11`)
 - [**`specs/10-roadmap.md`**](specs/10-roadmap.md) — Completed Phase 1–6 (`M1`–`M24`) milestones and future phases
 - [**`AGENTS.md`**](AGENTS.md) — Architectural invariants and contributor guidelines
