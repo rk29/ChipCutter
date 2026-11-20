@@ -37,6 +37,9 @@ pub enum CommandId {
     AddOpVCarve,
     AddOpAdaptive3D,
     AddOpWaterline3D,
+    AddOpParallel3D,
+    AddOpScallop3D,
+    AddOpPencil3D,
     DuplicateOperation,
     MoveOperationUp,
     MoveOperationDown,
@@ -70,6 +73,7 @@ pub enum CommandId {
     SampleEngravedNameplate,
     SamplePure2dPanel,
     SampleSculptedMeshDome,
+    SampleReliefWaveMesh,
     SampleRevisionReloadV2,
 }
 
@@ -258,6 +262,27 @@ pub const PALETTE_COMMANDS: &[PaletteEntry] = &[
         shortcut: None,
     },
     PaletteEntry {
+        id: CommandId::AddOpParallel3D,
+        category: "Operation",
+        label: "Add 3D Parallel / Raster Finishing Operation",
+        keywords: "add operation 3d parallel raster scanline finishing mesh surface cusp",
+        shortcut: None,
+    },
+    PaletteEntry {
+        id: CommandId::AddOpScallop3D,
+        category: "Operation",
+        label: "Add 3D Constant-Scallop Finishing Operation",
+        keywords: "add operation 3d scallop constant cusp geodesic finishing mesh surface",
+        shortcut: None,
+    },
+    PaletteEntry {
+        id: CommandId::AddOpPencil3D,
+        category: "Operation",
+        label: "Add 3D Pencil / Fillet Cleanup Operation",
+        keywords: "add operation 3d pencil valley crease fillet cleanup corner finishing mesh",
+        shortcut: None,
+    },
+    PaletteEntry {
         id: CommandId::DuplicateOperation,
         category: "Edit",
         label: "Duplicate Focused Operation",
@@ -426,6 +451,13 @@ pub const PALETTE_COMMANDS: &[PaletteEntry] = &[
         shortcut: None,
     },
     PaletteEntry {
+        id: CommandId::SampleReliefWaveMesh,
+        category: "Samples",
+        label: "Sample: Load Relief Wave (OBJ Mesh)",
+        keywords: "sample demo obj mesh relief wave 3d parallel scallop finishing",
+        shortcut: None,
+    },
+    PaletteEntry {
         id: CommandId::SampleRevisionReloadV2,
         category: "Samples",
         label: "Sample: Associatively Reload CAD Revision v2",
@@ -443,6 +475,7 @@ impl CommandId {
             Self::SampleEngravedNameplate => Some(SampleProjectId::EngravedNameplate),
             Self::SamplePure2dPanel => Some(SampleProjectId::Pure2dPanel),
             Self::SampleSculptedMeshDome => Some(SampleProjectId::SculptedMeshDome),
+            Self::SampleReliefWaveMesh => Some(SampleProjectId::ReliefWaveMesh),
             Self::SampleRevisionReloadV2 => Some(SampleProjectId::CadRevisionV2Reload),
             _ => None,
         }

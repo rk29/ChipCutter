@@ -795,3 +795,129 @@ fn cli_inspect_import_mesh_validate_and_bundle_roundtrip_for_stl_obj_3mf() {
         String::from_utf8_lossy(&val_chipz.stderr)
     );
 }
+
+#[test]
+fn v3_golden_3axis_mesh_surfacing_snapshots_match_byte_for_byte() {
+    use chip_cad::sample_sculpted_dome_stl_bytes;
+    use chip_cam::{
+        HeightReference, HeightSpec, MachiningBoundaryMode, Operation, OperationKind,
+        ParallelCutDirection, StrategyParams, ToolContainmentMode,
+    };
+    use chip_math::ParamLength;
+    use chip_project::build_sculpted_mesh_dome_project;
+
+    let tmp = TempTestDir::new("v3_goldens");
+    let starter = default_starter_tool_library();
+    let update_goldens = std::env::var_os("UPDATE_V3_GOLDENS").is_some();
+
+    let stl_bytes = sample_sculpted_dome_stl_bytes();
+    let stl_path = tmp.path().join("sculpted_dome.stl");
+    std::fs::write(&stl_path, &stl_bytes).unwrap();
+    let sha = compute_sha256_hex(&stl_bytes);
+
+    let mut proj =
+        build_sculpted_mesh_dome_project("sculpted_dome.stl".to_string(), &sha, &starter.tools);
+    // Replace Op 2 (Waterline) with a crisp 3D Parallel Raster finish pass so this golden exercises
+    // Adaptive3D + Parallel3D + Pencil3D together while keeping golden files concise and deterministic.
+    let ball_6_id = proj.setups[0].operations[1].tool_id.clone();
+    let ball_6_preset = proj.setups[0].operations[1].preset_id.clone();
+    let mut op_par = Operation::new(
+        "op_2_parallel_3d",
+        "3D Parallel Finish",
+        OperationKind::Parallel3D,
+    );
+    op_par.tool_id = ball_6_id;
+    op_par.preset_id = ball_6_preset;
+    op_par.heights.bottom = HeightSpec::new(HeightReference::ModelTop, -25.0);
+    if let StrategyParams::Parallel3D(p) = op_par.strategy_mut() {
+        p.boundary_mode = MachiningBoundaryMode::ModelSilhouette;
+        p.tool_containment = ToolContainmentMode::ToolInsideBoundary;
+        p.use_cusp_height = false;
+        p.stepover = ParamLength::from_mm(3.0);
+        p.pass_angle_deg = 0.0;
+        p.cut_direction = ParallelCutDirection::ZigZag;
+    }
+    proj.setups[0].operations[1] = op_par;
+    // Keep Adaptive3D coarse enough for compact deterministic golden snapshots
+    if let StrategyParams::Adaptive3D(p) = proj.setups[0].operations[0].strategy_mut() {
+        p.max_roughing_stepdown = ParamLength::from_mm(8.0);
+        p.fine_stepdown = ParamLength::from_mm(4.0);
+        p.adaptive.optimal_load = ParamLength::from_mm(2.0);
+    }
+
+    let proj_toml = tmp.path().join("v3_mesh_dome_3axis.chip.toml");
+    proj.save_to_path(&proj_toml).unwrap();
+
+    // 1. LinuxCNC ATC single-file 3-axis golden (`linuxcnc/v3_mesh_dome_3axis.ngc`)
+    let lcnc_out = tmp.path().join("out_v3_lcnc");
+    let lcnc_res = Command::new(cli_bin())
+        .args([
+            "build",
+            proj_toml.to_str().unwrap(),
+            "-o",
+            lcnc_out.to_str().unwrap(),
+            "--post",
+            "linuxcnc",
+        ])
+        .output()
+        .expect("build v3_mesh_dome_3axis linuxcnc");
+    assert!(
+        lcnc_res.status.success(),
+        "v3 LinuxCNC build failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&lcnc_res.stdout),
+        String::from_utf8_lossy(&lcnc_res.stderr)
+    );
+    let actual_lcnc = std::fs::read_to_string(lcnc_out.join("v3_mesh_dome_3axis.ngc")).unwrap();
+    let golden_lcnc = golden_dir().join("linuxcnc/v3_mesh_dome_3axis.ngc");
+    if update_goldens {
+        std::fs::write(&golden_lcnc, &actual_lcnc).unwrap();
+    }
+    let expected_lcnc = std::fs::read_to_string(&golden_lcnc).unwrap();
+    assert_eq!(
+        actual_lcnc, expected_lcnc,
+        "v3_mesh_dome_3axis.ngc drifted from golden snapshot"
+    );
+
+    // 2. GRBL 3-tool split golden (`grbl/v3_mesh_dome_3axis_01..03`)
+    let grbl_out = tmp.path().join("out_v3_grbl");
+    let grbl_res = Command::new(cli_bin())
+        .args([
+            "build",
+            proj_toml.to_str().unwrap(),
+            "-o",
+            grbl_out.to_str().unwrap(),
+            "--post",
+            "grbl",
+        ])
+        .output()
+        .expect("build v3_mesh_dome_3axis grbl");
+    assert!(
+        grbl_res.status.success(),
+        "v3 GRBL build failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&grbl_res.stdout),
+        String::from_utf8_lossy(&grbl_res.stderr)
+    );
+
+    let mut nc_files: Vec<String> = std::fs::read_dir(&grbl_out)
+        .unwrap()
+        .filter_map(|e| {
+            let name = e.ok()?.file_name().to_string_lossy().into_owned();
+            name.ends_with(".nc").then_some(name)
+        })
+        .collect();
+    nc_files.sort();
+    assert_eq!(
+        nc_files.len(),
+        3,
+        "Expected 3 split GRBL files (T1 Adaptive3D, T4 Parallel3D, T11 Pencil3D), got: {nc_files:?}"
+    );
+    for fname in nc_files {
+        let actual = std::fs::read_to_string(grbl_out.join(&fname)).unwrap();
+        let golden = golden_dir().join("grbl").join(&fname);
+        if update_goldens {
+            std::fs::write(&golden, &actual).unwrap();
+        }
+        let expected = std::fs::read_to_string(&golden).unwrap();
+        assert_eq!(actual, expected, "{fname} drifted from golden snapshot");
+    }
+}

@@ -1,6 +1,7 @@
 use chip_cam::{
-    Adaptive3DParams, AdaptiveCutDirection, MachiningBoundaryMode, ToolContainmentMode,
-    Waterline3DParams, WaterlineOrderMode,
+    Adaptive3DParams, AdaptiveCutDirection, MachiningBoundaryMode, Parallel3DParams,
+    ParallelCutDirection, Pencil3DParams, Scallop3DParams, ToolContainmentMode, Waterline3DParams,
+    WaterlineOrderMode,
 };
 
 use super::{COMBO_COL_WIDTH, PassItemCtx};
@@ -196,6 +197,273 @@ pub(super) fn show_adaptive3d_params(
     show_3d_boundary_card(
         ui,
         ("a3d_boundary_card", setup_idx, op_idx),
+        &mut p.boundary_mode,
+        &mut p.tool_containment,
+        &mut p.boundary_offset,
+        &mut item,
+    );
+}
+
+pub(super) fn show_parallel3d_params(
+    ui: &mut egui::Ui,
+    p: &mut Parallel3DParams,
+    mut item: PassItemCtx<'_>,
+) {
+    let (setup_idx, op_idx) = item.ids();
+
+    section_card(
+        ui,
+        ("par3d_passes_card", setup_idx, op_idx),
+        "3D Parallel / Raster Finishing",
+        true,
+        |ui| {
+            item.grid(ui, "par3d_passes_grid", |f| {
+                f.set_tip("Automatically compute raster stepover from target surface cusp height and ball/corner radius");
+                f.check(
+                    "Cusp Stepover",
+                    &mut p.use_cusp_height,
+                    "Use Cusp Height",
+                    "Toggle Parallel Cusp-Driven Stepover",
+                );
+                if p.use_cusp_height {
+                    f.set_tip("Target maximum scallop/cusp height between parallel raster passes");
+                    f.len(
+                        "Target Cusp Height",
+                        &mut p.cusp_height,
+                        "Edit Parallel Cusp Height",
+                    );
+                } else {
+                    f.set_tip("Explicit horizontal XY spacing between consecutive raster scanlines");
+                    f.len("Stepover", &mut p.stepover, "Edit Parallel Stepover");
+                }
+                f.set_tip("Scanline orientation angle in degrees (0° = along +X, 90° = along +Y)");
+                f.row("Pass Angle", |ui, mutated| {
+                    if ui
+                        .add(
+                            egui::DragValue::new(&mut p.pass_angle_deg)
+                                .speed(1.0)
+                                .range(-180.0..=180.0)
+                                .suffix("°"),
+                        )
+                        .changed()
+                    {
+                        *mutated = Some("Edit Parallel Pass Angle");
+                    }
+                });
+                f.set_tip("Add a second perpendicular raster pass at Pass Angle + 90°");
+                f.check(
+                    "Cross-Pass (+90°)",
+                    &mut p.cross_pass,
+                    "Add +90° Pass",
+                    "Toggle Parallel Cross-Pass",
+                );
+                f.set_tip("Traversal direction along consecutive raster scanlines");
+                f.row("Cut Direction", |ui, mutated| {
+                    let prev = p.cut_direction;
+                    egui::ComboBox::from_id_salt(("par3d_dir_cb", setup_idx, op_idx))
+                        .width(COMBO_COL_WIDTH)
+                        .selected_text(p.cut_direction.label())
+                        .show_ui(ui, |ui| {
+                            for d in ParallelCutDirection::ALL {
+                                ui.selectable_value(&mut p.cut_direction, d, d.label());
+                            }
+                        });
+                    if p.cut_direction != prev {
+                        *mutated = Some("Change Parallel Cut Direction");
+                    }
+                });
+                f.set_tip("Restrict raster finishing to shallow or steep slope ranges (0° = flat, 90° = vertical)");
+                f.row("Slope Range (°)", |ui, mutated| {
+                    ui.horizontal(|ui| {
+                        let r_min = ui.add(
+                            egui::DragValue::new(&mut p.min_slope_deg)
+                                .speed(1.0)
+                                .range(0.0..=89.0)
+                                .suffix("°"),
+                        );
+                        ui.label("to");
+                        let r_max = ui.add(
+                            egui::DragValue::new(&mut p.max_slope_deg)
+                                .speed(1.0)
+                                .range(p.min_slope_deg.max(1.0)..=90.0)
+                                .suffix("°"),
+                        );
+                        if r_min.changed() || r_max.changed() {
+                            if p.max_slope_deg < p.min_slope_deg {
+                                p.max_slope_deg = p.min_slope_deg;
+                            }
+                            *mutated = Some("Edit Parallel Slope Range");
+                        }
+                    });
+                });
+                f.set_tip("Along-pass Drop-Cutter sampling pitch");
+                f.len("Sample Pitch", &mut p.sample_step, "Edit Parallel Sample Pitch");
+                f.set_tip("3D chord decimation tolerance keeping G-code compact while preserving smooth curves");
+                f.len(
+                    "Smoothing Tol",
+                    &mut p.smoothing_tolerance,
+                    "Edit Parallel Smoothing Tolerance",
+                );
+            });
+        },
+    );
+
+    show_3d_boundary_card(
+        ui,
+        ("par3d_boundary_card", setup_idx, op_idx),
+        &mut p.boundary_mode,
+        &mut p.tool_containment,
+        &mut p.boundary_offset,
+        &mut item,
+    );
+}
+
+pub(super) fn show_scallop3d_params(
+    ui: &mut egui::Ui,
+    p: &mut Scallop3DParams,
+    mut item: PassItemCtx<'_>,
+) {
+    let (setup_idx, op_idx) = item.ids();
+
+    section_card(
+        ui,
+        ("sc3d_passes_card", setup_idx, op_idx),
+        "3D Constant-Scallop Finishing",
+        true,
+        |ui| {
+            item.grid(ui, "sc3d_passes_grid", |f| {
+                f.set_tip("Target uniform 3D scallop/cusp height across shallow crests and steep walls");
+                f.len(
+                    "Target Cusp Height",
+                    &mut p.cusp_height,
+                    "Edit Scallop Cusp Height",
+                );
+                f.set_tip("Maximum 3D surface arc-length stepover clamp");
+                f.len(
+                    "Max Stepover",
+                    &mut p.max_stepover,
+                    "Edit Scallop Max Stepover",
+                );
+                f.set_tip("Minimum 3D surface arc-length stepover clamp");
+                f.len(
+                    "Min Stepover",
+                    &mut p.min_stepover,
+                    "Edit Scallop Min Stepover",
+                );
+                f.set_tip("Order iso-contours from interior peaks outward instead of boundary inward");
+                f.check(
+                    "Ordering",
+                    &mut p.inside_out,
+                    "Inside -> Out",
+                    "Toggle Scallop Inside-Out Ordering",
+                );
+                f.set_tip("Climb milling keeps workpiece material to the right of tool travel");
+                f.check(
+                    "Cut Direction",
+                    &mut p.climb_milling,
+                    "Climb Milling",
+                    "Toggle Scallop Climb Milling",
+                );
+                f.set_tip("Restrict finishing to specific surface slope angles (0° = flat, 90° = vertical)");
+                f.row("Slope Range (°)", |ui, mutated| {
+                    ui.horizontal(|ui| {
+                        let r_min = ui.add(
+                            egui::DragValue::new(&mut p.min_slope_deg)
+                                .speed(1.0)
+                                .range(0.0..=89.0)
+                                .suffix("°"),
+                        );
+                        ui.label("to");
+                        let r_max = ui.add(
+                            egui::DragValue::new(&mut p.max_slope_deg)
+                                .speed(1.0)
+                                .range(p.min_slope_deg.max(1.0)..=90.0)
+                                .suffix("°"),
+                        );
+                        if r_min.changed() || r_max.changed() {
+                            if p.max_slope_deg < p.min_slope_deg {
+                                p.max_slope_deg = p.min_slope_deg;
+                            }
+                            *mutated = Some("Edit Scallop Slope Range");
+                        }
+                    });
+                });
+                f.set_tip("3D chord decimation tolerance keeping G-code compact");
+                f.len(
+                    "Smoothing Tol",
+                    &mut p.smoothing_tolerance,
+                    "Edit Scallop Smoothing Tolerance",
+                );
+            });
+        },
+    );
+
+    show_3d_boundary_card(
+        ui,
+        ("sc3d_boundary_card", setup_idx, op_idx),
+        &mut p.boundary_mode,
+        &mut p.tool_containment,
+        &mut p.boundary_offset,
+        &mut item,
+    );
+}
+
+pub(super) fn show_pencil3d_params(
+    ui: &mut egui::Ui,
+    p: &mut Pencil3DParams,
+    mut item: PassItemCtx<'_>,
+) {
+    let (setup_idx, op_idx) = item.ids();
+
+    section_card(
+        ui,
+        ("pen3d_passes_card", setup_idx, op_idx),
+        "3D Pencil / Fillet Cleanup",
+        true,
+        |ui| {
+            item.grid(ui, "pen3d_passes_grid", |f| {
+                f.set_tip("Diameter of the larger previous/reference ball endmill used to detect unmachined concave creases");
+                f.len(
+                    "Reference Tool Ø",
+                    &mut p.reference_tool_diameter,
+                    "Edit Pencil Reference Tool Diameter",
+                );
+                f.set_tip("Minimum residual fillet thickness required to trigger a concave valley pass");
+                f.len(
+                    "Valley Threshold",
+                    &mut p.valley_threshold,
+                    "Edit Pencil Valley Threshold",
+                );
+                f.set_tip("Optional extra lateral cleanup passes offset on each side of detected valley centerlines (0 = centerline only)");
+                f.row("Offset Passes", |ui, mutated| {
+                    if ui
+                        .add(egui::DragValue::new(&mut p.num_offset_passes).range(0..=4))
+                        .changed()
+                    {
+                        *mutated = Some("Edit Pencil Offset Pass Count");
+                    }
+                });
+                if p.num_offset_passes > 0 {
+                    f.set_tip("Lateral stepover distance between multi-pass pencil offsets");
+                    f.len(
+                        "Offset Stepover",
+                        &mut p.offset_stepover,
+                        "Edit Pencil Offset Stepover",
+                    );
+                }
+                f.set_tip("3D chord decimation tolerance keeping G-code compact");
+                f.len(
+                    "Smoothing Tol",
+                    &mut p.smoothing_tolerance,
+                    "Edit Pencil Smoothing Tolerance",
+                );
+            });
+        },
+    );
+
+    show_3d_boundary_card(
+        ui,
+        ("pen3d_boundary_card", setup_idx, op_idx),
         &mut p.boundary_mode,
         &mut p.tool_containment,
         &mut p.boundary_offset,

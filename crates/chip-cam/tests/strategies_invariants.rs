@@ -1729,3 +1729,492 @@ fn verifies_adaptive_3d_and_waterline_3d_on_stl_obj_and_step_against_sim_oracle(
     .unwrap();
     assert!(!tp_step_wl.segments_wcs.is_empty());
 }
+
+#[test]
+fn milestone_18_3d_finishing_parallel_scallop_pencil_and_rest_oracles() {
+    use chip_cad::{
+        MeshImportOptions, load_mesh_cad_document, sample_relief_wave_obj_text,
+        sample_sculpted_dome_stl_bytes,
+    };
+    use chip_cam::{
+        MachiningBoundaryMode, OperationGenRequest, ParallelCutDirection, RestMachiningConfig,
+        RestMachiningMode, ToolContainmentMode, generate_operation_toolpath_with_rest,
+    };
+    use chip_sim::{
+        MachineKinematicsConfig, SetupSimulationInput, SimOperationInput, SimResolution,
+        SimVerificationConfig, run_setup_simulation,
+    };
+    use chip_tools::{
+        CoolantMode, CutterGeometry, CuttingPreset, SpindleDirection, SurfaceSpeedPresetSpec, Tool,
+        ToolId,
+    };
+
+    let mut ball_6mm = default_starter_tool_library()
+        .tools
+        .iter()
+        .find(|t| matches!(t.geometry, CutterGeometry::BallEndmill { .. }))
+        .unwrap()
+        .clone();
+    ball_6mm.stickout_length_mm = 32.0;
+
+    let ball_3mm = Tool {
+        id: ToolId("t_3mm_ball_finish".to_string()),
+        tool_number: 11,
+        length_offset_number: 11,
+        diameter_offset_number: 11,
+        name: "3mm 2FL Carbide Ball Endmill".to_string(),
+        vendor: None,
+        product_id: None,
+        native_unit: DisplayUnit::Millimeter,
+        spindle_direction: SpindleDirection::Cw,
+        default_coolant: CoolantMode::AirBlast,
+        stickout_length_mm: 32.0,
+        geometry: CutterGeometry::BallEndmill {
+            diameter_mm: 3.0,
+            flute_length_mm: 16.0,
+            overall_length_mm: 55.0,
+            shank_diameter_mm: 3.0,
+            flutes: 2,
+        },
+        presets: vec![CuttingPreset::from_surface_speed(SurfaceSpeedPresetSpec {
+            id: "al6061_finish",
+            name: "Aluminum 6061 - 3D Finish",
+            material: "Aluminum 6061",
+            diameter_mm: 3.0,
+            flutes: 2,
+            surface_speed_m_min: 220.0,
+            chipload_mm_tooth: 0.020,
+            default_stepdown_mm: 0.8,
+            default_stepover_mm: 0.5,
+            coolant_override: Some(CoolantMode::Mist),
+        })],
+    };
+
+    let cancel = AtomicBool::new(false);
+
+    // === 1. Sculpted Dome (STL): Parallel3D (45°, cross_pass, shallow slope limit) ===
+    let dome_stl = sample_sculpted_dome_stl_bytes();
+    let dome_doc = load_mesh_cad_document(
+        "sculpted_dome.stl",
+        &dome_stl,
+        &MeshImportOptions::default(),
+    )
+    .unwrap();
+    let mut dome_setup = Setup::new("setup_dome_m18", "Dome M18 Setup", WorkOffsetSlot::G54);
+    dome_setup.wcs.origin = WcsOriginMode::StockBoxPoint {
+        anchor: BoxAnchor27::TOP_CENTER,
+    };
+    dome_setup.stock = StockConfig::RelativeBox {
+        symmetric_xy: true,
+        side_pos_x: ParamLength::from_mm(2.0),
+        side_neg_x: ParamLength::from_mm(2.0),
+        side_pos_y: ParamLength::from_mm(2.0),
+        side_neg_y: ParamLength::from_mm(2.0),
+        top_offset_z: ParamLength::from_mm(1.0),
+        bottom_offset_z: ParamLength::from_mm(0.0),
+        sheet_thickness_z: ParamLength::from_mm(12.0),
+        round_increment_mm: None,
+    };
+    let resolved_dome = dome_setup
+        .resolve(&dome_doc, DisplayUnit::Millimeter)
+        .unwrap();
+
+    // 1A. Parallel3D single direction vs cross_pass (doubles cutting distance)
+    let mut op_par = Operation::new("op_par3d", "3D Parallel 45°", OperationKind::Parallel3D);
+    op_par.tool_id = Some(ball_6mm.id.clone());
+    op_par.heights.bottom = HeightSpec::new(HeightReference::ModelTop, -25.0);
+    if let StrategyParams::Parallel3D(p) = op_par.strategy_mut() {
+        p.boundary_mode = MachiningBoundaryMode::ModelSilhouette;
+        p.tool_containment = ToolContainmentMode::ToolInsideBoundary;
+        p.use_cusp_height = true;
+        p.cusp_height = ParamLength::from_mm(0.08);
+        p.pass_angle_deg = 45.0;
+        p.cross_pass = false;
+        p.cut_direction = ParallelCutDirection::ZigZag;
+    }
+    let tp_par_single = generate_operation_toolpath_with_rest(&OperationGenRequest {
+        doc: &dome_doc,
+        sketches: &[],
+        setup: &resolved_dome,
+        op: &op_par,
+        tool: &ball_6mm,
+        clearing_tool: None,
+        display_unit: DisplayUnit::Millimeter,
+        is_first_tool_in_setup: true,
+        upstream_rest: &[],
+        cancel: &cancel,
+    })
+    .unwrap();
+
+    let mut op_par_cross = op_par.clone();
+    op_par_cross.id = "op_par3d_cross".to_string();
+    if let StrategyParams::Parallel3D(p) = op_par_cross.strategy_mut() {
+        p.cross_pass = true;
+    }
+    let tp_par_cross = generate_operation_toolpath_with_rest(&OperationGenRequest {
+        doc: &dome_doc,
+        sketches: &[],
+        setup: &resolved_dome,
+        op: &op_par_cross,
+        tool: &ball_6mm,
+        clearing_tool: None,
+        display_unit: DisplayUnit::Millimeter,
+        is_first_tool_in_setup: true,
+        upstream_rest: &[],
+        cancel: &cancel,
+    })
+    .unwrap();
+    assert!(
+        tp_par_cross.stats.cutting_distance_mm > 1.8 * tp_par_single.stats.cutting_distance_mm,
+        "cross_pass=true should roughly double Parallel3D cutting distance ({:.1} vs {:.1})",
+        tp_par_cross.stats.cutting_distance_mm,
+        tp_par_single.stats.cutting_distance_mm
+    );
+
+    // 1B. Shallow slope filter (`0°..40°`) skips steep dome equator walls
+    let mut op_par_shallow = op_par.clone();
+    op_par_shallow.id = "op_par3d_shallow".to_string();
+    if let StrategyParams::Parallel3D(p) = op_par_shallow.strategy_mut() {
+        p.min_slope_deg = 0.0;
+        p.max_slope_deg = 40.0;
+    }
+    let tp_par_shallow = generate_operation_toolpath_with_rest(&OperationGenRequest {
+        doc: &dome_doc,
+        sketches: &[],
+        setup: &resolved_dome,
+        op: &op_par_shallow,
+        tool: &ball_6mm,
+        clearing_tool: None,
+        display_unit: DisplayUnit::Millimeter,
+        is_first_tool_in_setup: true,
+        upstream_rest: &[],
+        cancel: &cancel,
+    })
+    .unwrap();
+    let finish_dist = |tp: &chip_cam::GeneratedToolpath| -> f64 {
+        tp.segments_wcs
+            .iter()
+            .filter(|s| {
+                matches!(
+                    s.motion,
+                    SegmentMotion3D::Linear {
+                        role: chip_cam::MotionRole::FinishCut,
+                        ..
+                    }
+                )
+            })
+            .map(chip_cam::ToolpathSegment3D::length_mm)
+            .sum()
+    };
+    let shallow_fin = finish_dist(&tp_par_shallow);
+    let full_fin = finish_dist(&tp_par_single);
+    assert!(
+        shallow_fin < 0.80 * full_fin,
+        "Shallow slope filter 0..40° should skip steep dome walls (finish_dist {shallow_fin:.1} vs {full_fin:.1})"
+    );
+    // Verify no FinishCut midpoints fall on the steep 60°..80° dome band (`r ∈ [21.5..24.5 mm]`)
+    for seg in &tp_par_shallow.segments_wcs {
+        if matches!(
+            seg.motion,
+            SegmentMotion3D::Linear {
+                role: chip_cam::MotionRole::FinishCut,
+                ..
+            }
+        ) {
+            let mid = seg.start_wcs.lerp(seg.end_wcs, 0.5);
+            let r = mid.x.hypot(mid.y);
+            assert!(
+                !(21.5..=24.5).contains(&r),
+                "Shallow 0..40° Parallel3D cut steep dome wall at r={r:.2}, z={:.2}",
+                mid.z
+            );
+        }
+    }
+
+    // 1C. 3D Rest Machining (`FromPreviousTool` Ø12mm -> Ø3mm) dramatically trims flat/convex areas
+    let mut op_par_full_3mm = Operation::new(
+        "op_par_full3",
+        "Full 3mm Parallel",
+        OperationKind::Parallel3D,
+    );
+    op_par_full_3mm.tool_id = Some(ball_3mm.id.clone());
+    op_par_full_3mm.heights.bottom = HeightSpec::new(HeightReference::ModelTop, -25.0);
+    if let StrategyParams::Parallel3D(p) = op_par_full_3mm.strategy_mut() {
+        p.use_cusp_height = false;
+        p.stepover = ParamLength::from_mm(1.2);
+    }
+    let tp_full_3mm = generate_operation_toolpath_with_rest(&OperationGenRequest {
+        doc: &dome_doc,
+        sketches: &[],
+        setup: &resolved_dome,
+        op: &op_par_full_3mm,
+        tool: &ball_3mm,
+        clearing_tool: None,
+        display_unit: DisplayUnit::Millimeter,
+        is_first_tool_in_setup: true,
+        upstream_rest: &[],
+        cancel: &cancel,
+    })
+    .unwrap();
+
+    let mut op_par_rest_3mm = op_par_full_3mm.clone();
+    op_par_rest_3mm.id = "op_par_rest3".to_string();
+    op_par_rest_3mm.passes.rest_machining = RestMachiningConfig {
+        mode: RestMachiningMode::FromPreviousTool {
+            prev_tool_diameter: ParamLength::from_mm(12.0),
+            prev_stock_to_leave: ParamLength::from_mm(0.0),
+        },
+        rest_overlap: ParamLength::from_mm(0.5),
+        min_rest_thickness: ParamLength::from_mm(0.1),
+    };
+    let tp_rest_3mm = generate_operation_toolpath_with_rest(&OperationGenRequest {
+        doc: &dome_doc,
+        sketches: &[],
+        setup: &resolved_dome,
+        op: &op_par_rest_3mm,
+        tool: &ball_3mm,
+        clearing_tool: None,
+        display_unit: DisplayUnit::Millimeter,
+        is_first_tool_in_setup: true,
+        upstream_rest: &[],
+        cancel: &cancel,
+    })
+    .unwrap();
+    assert!(
+        tp_rest_3mm.stats.cutting_distance_mm > 50.0
+            && tp_rest_3mm.stats.cutting_distance_mm < 0.55 * tp_full_3mm.stats.cutting_distance_mm,
+        "3D Rest Machining should focus only on unmachined concave crease ({:.1} vs full {:.1})",
+        tp_rest_3mm.stats.cutting_distance_mm,
+        tp_full_3mm.stats.cutting_distance_mm
+    );
+
+    // === 2. Scallop3D Slope-Adaptive Spacing Oracle on Sculpted Dome ===
+    let mut op_scallop = Operation::new("op_scallop3d", "3D Scallop", OperationKind::Scallop3D);
+    op_scallop.tool_id = Some(ball_6mm.id.clone());
+    op_scallop.heights.bottom = HeightSpec::new(HeightReference::ModelTop, -25.0);
+    if let StrategyParams::Scallop3D(p) = op_scallop.strategy_mut() {
+        p.boundary_mode = MachiningBoundaryMode::ModelSilhouette;
+        p.tool_containment = ToolContainmentMode::ToolInsideBoundary;
+        p.cusp_height = ParamLength::from_mm(0.08);
+        p.max_stepover = ParamLength::from_mm(2.0);
+        p.min_stepover = ParamLength::from_mm(0.2);
+    }
+    let tp_scallop = generate_operation_toolpath_with_rest(&OperationGenRequest {
+        doc: &dome_doc,
+        sketches: &[],
+        setup: &resolved_dome,
+        op: &op_scallop,
+        tool: &ball_6mm,
+        clearing_tool: None,
+        display_unit: DisplayUnit::Millimeter,
+        is_first_tool_in_setup: true,
+        upstream_rest: &[],
+        cancel: &cancel,
+    })
+    .unwrap();
+
+    // Measure radial pass density along the +X axis (`|y| < 1.5 mm`, `x > 0`):
+    // Steep wall annulus `r ∈ [16..26 mm]` must have noticeably tighter XY spacing (more ring crossings per mm)
+    // than the shallow dome crest `r ∈ [2..12 mm]`!
+    let mut steep_xs: Vec<f64> = Vec::new();
+    let mut shallow_xs: Vec<f64> = Vec::new();
+    for seg in &tp_scallop.segments_wcs {
+        if matches!(
+            seg.motion,
+            SegmentMotion3D::Linear {
+                role: chip_cam::MotionRole::FinishCut,
+                ..
+            }
+        ) && (seg.start_wcs.y * seg.end_wcs.y <= 0.0)
+            && seg.start_wcs.x > 0.0
+            && seg.end_wcs.x > 0.0
+        {
+            let x_cross = 0.5 * (seg.start_wcs.x + seg.end_wcs.x);
+            if (16.0..=26.0).contains(&x_cross) {
+                steep_xs.push(x_cross);
+            } else if (2.0..=12.0).contains(&x_cross) {
+                shallow_xs.push(x_cross);
+            }
+        }
+    }
+    assert!(
+        steep_xs.len() > shallow_xs.len(),
+        "Scallop3D must pack tighter XY rings on steep dome wall (r=16..26: {} crossings) than shallow crest (r=2..12: {} crossings)",
+        steep_xs.len(),
+        shallow_xs.len()
+    );
+
+    // === 3. Pencil3D Exact Crease Radius Oracle on Sculpted Dome ===
+    // Dome hemisphere R_d = 25 mm meets flat pedestal -> Ø3mm ball (R = 1.5 mm) exact bi-tangent
+    // crease radius is `r = sqrt(25^2 + 2 * 25 * 1.5) = 26.46 mm`!
+    let mut op_pencil = Operation::new("op_pencil3d", "3D Pencil Crease", OperationKind::Pencil3D);
+    op_pencil.tool_id = Some(ball_3mm.id.clone());
+    op_pencil.heights.bottom = HeightSpec::new(HeightReference::ModelTop, -25.0);
+    if let StrategyParams::Pencil3D(p) = op_pencil.strategy_mut() {
+        p.boundary_mode = MachiningBoundaryMode::ModelSilhouette;
+        p.tool_containment = ToolContainmentMode::ToolInsideBoundary;
+        p.reference_tool_diameter = ParamLength::from_mm(6.0);
+        p.valley_threshold = ParamLength::from_mm(0.15);
+        p.num_offset_passes = 0;
+    }
+    let tp_pencil = generate_operation_toolpath_with_rest(&OperationGenRequest {
+        doc: &dome_doc,
+        sketches: &[],
+        setup: &resolved_dome,
+        op: &op_pencil,
+        tool: &ball_3mm,
+        clearing_tool: None,
+        display_unit: DisplayUnit::Millimeter,
+        is_first_tool_in_setup: false,
+        upstream_rest: &[],
+        cancel: &cancel,
+    })
+    .unwrap();
+
+    let mut pencil_radii = Vec::new();
+    for seg in &tp_pencil.segments_wcs {
+        if matches!(
+            seg.motion,
+            SegmentMotion3D::Linear {
+                role: chip_cam::MotionRole::FinishCut,
+                ..
+            }
+        ) {
+            pencil_radii.push(seg.end_wcs.x.hypot(seg.end_wcs.y));
+        }
+    }
+    assert!(
+        pencil_radii.len() >= 20,
+        "Pencil3D should trace the full circular dome-pedestal crease, got {} segments",
+        pencil_radii.len()
+    );
+    let mean_r = pencil_radii.iter().sum::<f64>() / pencil_radii.len() as f64;
+    let exact_crease_r = (25.0_f64 * 25.0 + 2.0 * 25.0 * 1.5).sqrt(); // 26.4575 mm
+    assert!(
+        (mean_r - exact_crease_r).abs() < 0.6,
+        "Pencil3D crease radius mean {mean_r:.3} mm should match exact bi-tangent radius {exact_crease_r:.3} mm"
+    );
+
+    // 3B. Pencil3D multi-pass lateral offsets (`num_offset_passes = 2`) increases cutting coverage cleanly
+    let mut op_pencil_multi = op_pencil.clone();
+    op_pencil_multi.id = "op_pencil3d_multi".to_string();
+    if let StrategyParams::Pencil3D(p) = op_pencil_multi.strategy_mut() {
+        p.num_offset_passes = 2;
+        p.offset_stepover = ParamLength::from_mm(0.5);
+    }
+    let tp_pencil_multi = generate_operation_toolpath_with_rest(&OperationGenRequest {
+        doc: &dome_doc,
+        sketches: &[],
+        setup: &resolved_dome,
+        op: &op_pencil_multi,
+        tool: &ball_3mm,
+        clearing_tool: None,
+        display_unit: DisplayUnit::Millimeter,
+        is_first_tool_in_setup: false,
+        upstream_rest: &[],
+        cancel: &cancel,
+    })
+    .unwrap();
+    assert!(
+        tp_pencil_multi.stats.cutting_distance_mm > 3.0 * tp_pencil.stats.cutting_distance_mm,
+        "Pencil3D num_offset_passes=2 should emit 5 passes (center + 2 each side), got {:.1} vs {:.1}",
+        tp_pencil_multi.stats.cutting_distance_mm,
+        tp_pencil.stats.cutting_distance_mm
+    );
+
+    // === 4. Full 5-Rule `chip-sim` Physical Verification (0 crashes / 0 gouges) ===
+    // Verify Parallel3D + Pencil3D on Sculpted Dome, and Scallop3D on Relief Wave (OBJ)!
+    let sim_dome = run_setup_simulation(&SetupSimulationInput {
+        doc: &dome_doc,
+        setup: &resolved_dome,
+        target_bodies: &[],
+        operations: &[
+            SimOperationInput::from_operation(&op_par, &ball_6mm, &tp_par_single),
+            SimOperationInput::from_operation(&op_pencil, &ball_3mm, &tp_pencil),
+        ],
+        kinematics: MachineKinematicsConfig::default(),
+        resolution: SimResolution::Standard,
+        verify_config: SimVerificationConfig::default(),
+        cancel: None,
+    })
+    .unwrap();
+    assert_eq!(
+        sim_dome.critical_error_count(),
+        0,
+        "Dome Parallel3D + Pencil3D must pass 5-rule simulation with 0 crashes/gouges, got: {:#?}",
+        sim_dome.diagnostics
+    );
+
+    let wave_obj = sample_relief_wave_obj_text();
+    let wave_doc = load_mesh_cad_document(
+        "relief_wave.obj",
+        wave_obj.as_bytes(),
+        &MeshImportOptions::default(),
+    )
+    .unwrap();
+    let mut wave_setup = Setup::new("setup_wave_m18", "Wave M18", WorkOffsetSlot::G54);
+    let resolved_wave = wave_setup
+        .resolve(&wave_doc, DisplayUnit::Millimeter)
+        .unwrap();
+
+    let mut op_wave_par = Operation::new("op_wave_par", "Wave Parallel", OperationKind::Parallel3D);
+    op_wave_par.tool_id = Some(ball_6mm.id.clone());
+    if let StrategyParams::Parallel3D(p) = op_wave_par.strategy_mut() {
+        p.use_cusp_height = true;
+        p.cusp_height = ParamLength::from_mm(0.06);
+        p.pass_angle_deg = 30.0;
+    }
+    let tp_wave_par = generate_operation_toolpath_with_rest(&OperationGenRequest {
+        doc: &wave_doc,
+        sketches: &[],
+        setup: &resolved_wave,
+        op: &op_wave_par,
+        tool: &ball_6mm,
+        clearing_tool: None,
+        display_unit: DisplayUnit::Millimeter,
+        is_first_tool_in_setup: true,
+        upstream_rest: &[],
+        cancel: &cancel,
+    })
+    .unwrap();
+
+    let mut op_wave_sc = Operation::new("op_wave_sc", "Wave Scallop", OperationKind::Scallop3D);
+    op_wave_sc.tool_id = Some(ball_6mm.id.clone());
+    if let StrategyParams::Scallop3D(p) = op_wave_sc.strategy_mut() {
+        p.cusp_height = ParamLength::from_mm(0.06);
+    }
+    let tp_wave_sc = generate_operation_toolpath_with_rest(&OperationGenRequest {
+        doc: &wave_doc,
+        sketches: &[],
+        setup: &resolved_wave,
+        op: &op_wave_sc,
+        tool: &ball_6mm,
+        clearing_tool: None,
+        display_unit: DisplayUnit::Millimeter,
+        is_first_tool_in_setup: false,
+        upstream_rest: &[],
+        cancel: &cancel,
+    })
+    .unwrap();
+
+    let sim_wave = run_setup_simulation(&SetupSimulationInput {
+        doc: &wave_doc,
+        setup: &resolved_wave,
+        target_bodies: &[],
+        operations: &[
+            SimOperationInput::from_operation(&op_wave_par, &ball_6mm, &tp_wave_par),
+            SimOperationInput::from_operation(&op_wave_sc, &ball_6mm, &tp_wave_sc),
+        ],
+        kinematics: MachineKinematicsConfig::default(),
+        resolution: SimResolution::Standard,
+        verify_config: SimVerificationConfig::default(),
+        cancel: None,
+    })
+    .unwrap();
+    assert_eq!(
+        sim_wave.critical_error_count(),
+        0,
+        "Wave Parallel3D + Scallop3D must pass 5-rule simulation with 0 crashes/gouges, got: {:#?}",
+        sim_wave.diagnostics
+    );
+}

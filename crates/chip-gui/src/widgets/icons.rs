@@ -93,6 +93,9 @@ impl IconKind {
             OperationKind::VCarve => Self::VCarve,
             OperationKind::Adaptive3D => Self::Adaptive2D,
             OperationKind::Waterline3D => Self::Contour2D,
+            OperationKind::Parallel3D => Self::Facing,
+            OperationKind::Scallop3D => Self::Pocket2D,
+            OperationKind::Pencil3D => Self::ChamferTrace,
         }
     }
 

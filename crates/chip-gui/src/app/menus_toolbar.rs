@@ -632,7 +632,7 @@ impl ChipCutterApp {
                         setup_idx: s_idx,
                         op_idx: o_idx,
                     };
-                    self.op_tab = if kind == OperationKind::Facing {
+                    self.op_tab = if kind == OperationKind::Facing || kind.is_3d_surface() {
                         OperationTab::Passes
                     } else {
                         OperationTab::Geometry
@@ -1186,6 +1186,9 @@ impl ChipCutterApp {
             CommandId::AddOpVCarve => self.create_new_vcarve_operation(),
             CommandId::AddOpAdaptive3D => self.add_standard_operation(OperationKind::Adaptive3D),
             CommandId::AddOpWaterline3D => self.add_standard_operation(OperationKind::Waterline3D),
+            CommandId::AddOpParallel3D => self.add_standard_operation(OperationKind::Parallel3D),
+            CommandId::AddOpScallop3D => self.add_standard_operation(OperationKind::Scallop3D),
+            CommandId::AddOpPencil3D => self.add_standard_operation(OperationKind::Pencil3D),
             CommandId::DuplicateOperation => self.duplicate_focused_operation(),
             CommandId::MoveOperationUp => self.move_focused_operation(-1),
             CommandId::MoveOperationDown => self.move_focused_operation(1),
@@ -1241,6 +1244,7 @@ impl ChipCutterApp {
             | CommandId::SampleEngravedNameplate
             | CommandId::SamplePure2dPanel
             | CommandId::SampleSculptedMeshDome
+            | CommandId::SampleReliefWaveMesh
             | CommandId::SampleRevisionReloadV2 => {}
         }
     }

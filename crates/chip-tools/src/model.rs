@@ -73,6 +73,9 @@ pub enum ToolOperationClass {
     VCarveFlatClearance,
     Waterline3D,
     Adaptive3D,
+    Parallel3D,
+    Scallop3D,
+    Pencil3D,
 }
 
 /// Physical cutter geometry stored in canonical `f64` millimeters.
@@ -262,6 +265,9 @@ impl CutterGeometry {
                     | ToolOperationClass::VCarveFlatClearance
                     | ToolOperationClass::Waterline3D
                     | ToolOperationClass::Adaptive3D
+                    | ToolOperationClass::Parallel3D
+                    | ToolOperationClass::Scallop3D
+                    | ToolOperationClass::Pencil3D
             ),
             Self::BullNoseEndmill { .. } => matches!(
                 op_class,
@@ -272,6 +278,9 @@ impl CutterGeometry {
                     | ToolOperationClass::Trace
                     | ToolOperationClass::Waterline3D
                     | ToolOperationClass::Adaptive3D
+                    | ToolOperationClass::Parallel3D
+                    | ToolOperationClass::Scallop3D
+                    | ToolOperationClass::Pencil3D
             ),
             Self::BallEndmill { .. } => matches!(
                 op_class,
@@ -280,6 +289,9 @@ impl CutterGeometry {
                     | ToolOperationClass::Trace
                     | ToolOperationClass::Waterline3D
                     | ToolOperationClass::Adaptive3D
+                    | ToolOperationClass::Parallel3D
+                    | ToolOperationClass::Scallop3D
+                    | ToolOperationClass::Pencil3D
             ),
             Self::ChamferMill {
                 included_angle_deg, ..
@@ -287,7 +299,9 @@ impl CutterGeometry {
                 ToolOperationClass::VCarve => (10.0..=160.0).contains(included_angle_deg),
                 ToolOperationClass::Chamfer
                 | ToolOperationClass::Trace
-                | ToolOperationClass::Drill => true,
+                | ToolOperationClass::Drill
+                | ToolOperationClass::Parallel3D
+                | ToolOperationClass::Pencil3D => true,
                 _ => false,
             },
             Self::TwistDrill { .. } => matches!(op_class, ToolOperationClass::Drill),

@@ -1262,6 +1262,245 @@ impl Adaptive3DParams {
     }
 }
 
+/// Cutting traversal direction across parallel raster lines in [`OperationKind::Parallel3D`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ParallelCutDirection {
+    #[default]
+    ZigZag,
+    OneWayClimb,
+    OneWayConventional,
+}
+
+impl ParallelCutDirection {
+    pub const ALL: [Self; 3] = [Self::ZigZag, Self::OneWayClimb, Self::OneWayConventional];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::ZigZag => "Both Ways (Zig-Zag)",
+            Self::OneWayClimb => "One-Way (Climb)",
+            Self::OneWayConventional => "One-Way (Conventional)",
+        }
+    }
+}
+
+fn default_parallel3d_stepover() -> ParamLength {
+    ParamLength::from_mm(0.8)
+}
+
+fn default_finishing_cusp_height() -> ParamLength {
+    ParamLength::from_mm(0.025)
+}
+
+fn default_parallel3d_sample_step() -> ParamLength {
+    ParamLength::from_mm(0.35)
+}
+
+fn default_finishing_smooth_tol() -> ParamLength {
+    ParamLength::from_mm(0.005)
+}
+
+/// Strategy parameters for **3D Parallel / Raster Finishing** (`OperationKind::Parallel3D`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Parallel3DParams {
+    #[serde(default)]
+    pub boundary_mode: MachiningBoundaryMode,
+    #[serde(default)]
+    pub tool_containment: ToolContainmentMode,
+    #[serde(default = "default_zero_length")]
+    pub boundary_offset: ParamLength,
+    /// Explicit XY raster stepover (`mm`) when `use_cusp_height == false`.
+    #[serde(default = "default_parallel3d_stepover")]
+    pub stepover: ParamLength,
+    /// Automatically compute stepover from `cusp_height` and cutter ball/corner radius.
+    #[serde(default = "default_true")]
+    pub use_cusp_height: bool,
+    /// Target surface scallop / cusp height (`mm`) when `use_cusp_height == true`.
+    #[serde(default = "default_finishing_cusp_height")]
+    pub cusp_height: ParamLength,
+    /// Raster scanline orientation angle in degrees (`0°` = parallel to +X, `90°` = parallel to +Y).
+    #[serde(default)]
+    pub pass_angle_deg: f64,
+    /// Emit an additional perpendicular cross-finishing pass at `pass_angle_deg + 90°`.
+    #[serde(default)]
+    pub cross_pass: bool,
+    #[serde(default)]
+    pub cut_direction: ParallelCutDirection,
+    /// Minimum surface slope angle (`0°` = horizontal flat, `90°` = vertical wall).
+    #[serde(default)]
+    pub min_slope_deg: f64,
+    /// Maximum surface slope angle (`90°` default; e.g. `45°` for shallow finishing paired with Waterline).
+    #[serde(default = "default_slope_max_deg")]
+    pub max_slope_deg: f64,
+    /// Along-pass Drop-Cutter sampling pitch (`mm`).
+    #[serde(default = "default_parallel3d_sample_step")]
+    pub sample_step: ParamLength,
+    /// 3D Ramer–Douglas–Peucker chord decimation tolerance (`mm`).
+    #[serde(default = "default_finishing_smooth_tol")]
+    pub smoothing_tolerance: ParamLength,
+}
+
+impl Default for Parallel3DParams {
+    fn default() -> Self {
+        Self {
+            boundary_mode: MachiningBoundaryMode::ModelSilhouette,
+            tool_containment: ToolContainmentMode::ToolCenterOnBoundary,
+            boundary_offset: ParamLength::from_mm(0.0),
+            stepover: default_parallel3d_stepover(),
+            use_cusp_height: true,
+            cusp_height: default_finishing_cusp_height(),
+            pass_angle_deg: 0.0,
+            cross_pass: false,
+            cut_direction: ParallelCutDirection::ZigZag,
+            min_slope_deg: 0.0,
+            max_slope_deg: 90.0,
+            sample_step: default_parallel3d_sample_step(),
+            smoothing_tolerance: default_finishing_smooth_tol(),
+        }
+    }
+}
+
+impl Parallel3DParams {
+    pub fn reevaluate(&mut self, ctx: &EvalContext) {
+        let _ = self.boundary_offset.reevaluate(ctx);
+        let _ = self.stepover.reevaluate(ctx);
+        let _ = self.cusp_height.reevaluate(ctx);
+        let _ = self.sample_step.reevaluate(ctx);
+        let _ = self.smoothing_tolerance.reevaluate(ctx);
+    }
+}
+
+fn default_scallop3d_max_stepover() -> ParamLength {
+    ParamLength::from_mm(1.5)
+}
+
+fn default_scallop3d_min_stepover() -> ParamLength {
+    ParamLength::from_mm(0.15)
+}
+
+/// Strategy parameters for **3D Constant-Scallop Finishing** (`OperationKind::Scallop3D`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Scallop3DParams {
+    #[serde(default)]
+    pub boundary_mode: MachiningBoundaryMode,
+    #[serde(default)]
+    pub tool_containment: ToolContainmentMode,
+    #[serde(default = "default_zero_length")]
+    pub boundary_offset: ParamLength,
+    /// Target constant 3D scallop / cusp height (`mm`) across both shallow crests and steep walls.
+    #[serde(default = "default_finishing_cusp_height")]
+    pub cusp_height: ParamLength,
+    /// Upper clamp on 3D surface arc-length stepover (`mm`).
+    #[serde(default = "default_scallop3d_max_stepover")]
+    pub max_stepover: ParamLength,
+    /// Lower clamp on 3D surface arc-length stepover (`mm`).
+    #[serde(default = "default_scallop3d_min_stepover")]
+    pub min_stepover: ParamLength,
+    #[serde(default = "default_true")]
+    pub climb_milling: bool,
+    #[serde(default)]
+    pub min_slope_deg: f64,
+    #[serde(default = "default_slope_max_deg")]
+    pub max_slope_deg: f64,
+    /// Traverse iso-contours from interior peaks outward (`true`) or boundary inward (`false`).
+    #[serde(default)]
+    pub inside_out: bool,
+    /// 3D Ramer–Douglas–Peucker chord decimation tolerance (`mm`).
+    #[serde(default = "default_finishing_smooth_tol")]
+    pub smoothing_tolerance: ParamLength,
+}
+
+impl Default for Scallop3DParams {
+    fn default() -> Self {
+        Self {
+            boundary_mode: MachiningBoundaryMode::ModelSilhouette,
+            tool_containment: ToolContainmentMode::ToolCenterOnBoundary,
+            boundary_offset: ParamLength::from_mm(0.0),
+            cusp_height: default_finishing_cusp_height(),
+            max_stepover: default_scallop3d_max_stepover(),
+            min_stepover: default_scallop3d_min_stepover(),
+            climb_milling: true,
+            min_slope_deg: 0.0,
+            max_slope_deg: 90.0,
+            inside_out: false,
+            smoothing_tolerance: default_finishing_smooth_tol(),
+        }
+    }
+}
+
+impl Scallop3DParams {
+    pub fn reevaluate(&mut self, ctx: &EvalContext) {
+        let _ = self.boundary_offset.reevaluate(ctx);
+        let _ = self.cusp_height.reevaluate(ctx);
+        let _ = self.max_stepover.reevaluate(ctx);
+        let _ = self.min_stepover.reevaluate(ctx);
+        let _ = self.smoothing_tolerance.reevaluate(ctx);
+    }
+}
+
+fn default_pencil3d_ref_tool_dia() -> ParamLength {
+    param_expr("tool_d * 2.0", 6.0)
+}
+
+fn default_pencil3d_valley_threshold() -> ParamLength {
+    ParamLength::from_mm(0.08)
+}
+
+fn default_pencil3d_offset_stepover() -> ParamLength {
+    ParamLength::from_mm(0.35)
+}
+
+/// Strategy parameters for **3D Pencil / Concave Fillet Cleanup** (`OperationKind::Pencil3D`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Pencil3DParams {
+    #[serde(default)]
+    pub boundary_mode: MachiningBoundaryMode,
+    #[serde(default)]
+    pub tool_containment: ToolContainmentMode,
+    #[serde(default = "default_zero_length")]
+    pub boundary_offset: ParamLength,
+    /// Virtual larger reference ball diameter (`mm`) used to detect unmachined concave valleys & creases.
+    #[serde(default = "default_pencil3d_ref_tool_dia")]
+    pub reference_tool_diameter: ParamLength,
+    /// Minimum residual stock height `z_drop(ref_ball) - z_drop(current_tool)` (`mm`) to trace a valley.
+    #[serde(default = "default_pencil3d_valley_threshold")]
+    pub valley_threshold: ParamLength,
+    /// Number of extra lateral cleanup offset passes on each side of detected valley centerlines (`0..=4`).
+    #[serde(default)]
+    pub num_offset_passes: u32,
+    /// Lateral stepover (`mm`) between extra multi-pass pencil offsets.
+    #[serde(default = "default_pencil3d_offset_stepover")]
+    pub offset_stepover: ParamLength,
+    /// 3D Ramer–Douglas–Peucker chord decimation tolerance (`mm`).
+    #[serde(default = "default_finishing_smooth_tol")]
+    pub smoothing_tolerance: ParamLength,
+}
+
+impl Default for Pencil3DParams {
+    fn default() -> Self {
+        Self {
+            boundary_mode: MachiningBoundaryMode::ModelSilhouette,
+            tool_containment: ToolContainmentMode::ToolCenterOnBoundary,
+            boundary_offset: ParamLength::from_mm(0.0),
+            reference_tool_diameter: default_pencil3d_ref_tool_dia(),
+            valley_threshold: default_pencil3d_valley_threshold(),
+            num_offset_passes: 0,
+            offset_stepover: default_pencil3d_offset_stepover(),
+            smoothing_tolerance: default_finishing_smooth_tol(),
+        }
+    }
+}
+
+impl Pencil3DParams {
+    pub fn reevaluate(&mut self, ctx: &EvalContext) {
+        let _ = self.boundary_offset.reevaluate(ctx);
+        let _ = self.reference_tool_diameter.reevaluate(ctx);
+        let _ = self.valley_threshold.reevaluate(ctx);
+        let _ = self.offset_stepover.reevaluate(ctx);
+        let _ = self.smoothing_tolerance.reevaluate(ctx);
+    }
+}
+
 /// Strategy-specific parameter block inside [`crate::operation::Operation`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "strategy_kind", rename_all = "snake_case")]
@@ -1279,6 +1518,12 @@ pub enum StrategyParams {
     Waterline3D(Waterline3DParams),
     #[serde(rename = "adaptive_3d")]
     Adaptive3D(Adaptive3DParams),
+    #[serde(rename = "parallel_3d")]
+    Parallel3D(Parallel3DParams),
+    #[serde(rename = "scallop_3d")]
+    Scallop3D(Scallop3DParams),
+    #[serde(rename = "pencil_3d")]
+    Pencil3D(Pencil3DParams),
 }
 
 impl StrategyParams {
@@ -1292,6 +1537,9 @@ impl StrategyParams {
             OperationKind::VCarve => Self::VCarve(VCarveParams::default()),
             OperationKind::Waterline3D => Self::Waterline3D(Waterline3DParams::default()),
             OperationKind::Adaptive3D => Self::Adaptive3D(Adaptive3DParams::default()),
+            OperationKind::Parallel3D => Self::Parallel3D(Parallel3DParams::default()),
+            OperationKind::Scallop3D => Self::Scallop3D(Scallop3DParams::default()),
+            OperationKind::Pencil3D => Self::Pencil3D(Pencil3DParams::default()),
         }
     }
 
@@ -1306,6 +1554,9 @@ impl StrategyParams {
                 | (OperationKind::VCarve, Self::VCarve(_))
                 | (OperationKind::Waterline3D, Self::Waterline3D(_))
                 | (OperationKind::Adaptive3D, Self::Adaptive3D(_))
+                | (OperationKind::Parallel3D, Self::Parallel3D(_))
+                | (OperationKind::Scallop3D, Self::Scallop3D(_))
+                | (OperationKind::Pencil3D, Self::Pencil3D(_))
         );
         if !matches {
             *self = Self::default_for_kind(kind);
@@ -1322,6 +1573,9 @@ impl StrategyParams {
             Self::VCarve(p) => p.reevaluate(ctx),
             Self::Waterline3D(p) => p.reevaluate(ctx),
             Self::Adaptive3D(p) => p.reevaluate(ctx),
+            Self::Parallel3D(p) => p.reevaluate(ctx),
+            Self::Scallop3D(p) => p.reevaluate(ctx),
+            Self::Pencil3D(p) => p.reevaluate(ctx),
         }
     }
 }

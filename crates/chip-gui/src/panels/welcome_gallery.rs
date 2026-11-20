@@ -24,6 +24,7 @@ pub enum SampleProjectId {
     CadRevisionV2Reload,
     SamplePlate,
     SculptedMeshDome,
+    ReliefWaveMesh,
 }
 
 impl SampleProjectId {
@@ -41,8 +42,9 @@ impl SampleProjectId {
             "revision-v2" => Ok(Self::CadRevisionV2Reload),
             "sample-plate" | "plate" => Ok(Self::SamplePlate),
             "mesh-dome" | "sculpted-dome" | "dome" => Ok(Self::SculptedMeshDome),
+            "mesh-wave" | "relief-wave" | "wave" => Ok(Self::ReliefWaveMesh),
             other => Err(format!(
-                "invalid --sample '{other}'; expected one of: cam-torture, adaptive-rest, pure-2d, nameplate, vcarve, multi-feature, tilted-bracket, revision-v1, revision-v2, sample-plate, mesh-dome"
+                "invalid --sample '{other}'; expected one of: cam-torture, adaptive-rest, pure-2d, nameplate, vcarve, multi-feature, tilted-bracket, revision-v1, revision-v2, sample-plate, mesh-dome, mesh-wave"
             )),
         }
     }
@@ -167,8 +169,16 @@ pub const SAMPLE_CATALOG: &[SampleCardSpec] = &[
         category: SampleCategory::Mesh3D,
         icon: IconKind::StepModel,
         title: "Sculpted Dome (Watertight STL Mesh)",
-        badge: "3D STL Mesh · G54",
-        summary: "R25mm hemisphere seated on a 70×70×8mm base pedestal demonstrating pure-Rust STL import, crease-angle shading, and 3D stock/WCS setup.",
+        badge: "3D STL · 3 Ops",
+        summary: "R25mm hemisphere seated on a 70×70×8mm pedestal with 3D Adaptive Roughing, 3D Waterline Semi-Finish, and Ø3mm 3D Pencil Fillet Cleanup.",
+    },
+    SampleCardSpec {
+        id: SampleProjectId::ReliefWaveMesh,
+        category: SampleCategory::Mesh3D,
+        icon: IconKind::Facing,
+        title: "Relief Wave (OBJ Mesh Finishing)",
+        badge: "3D OBJ · 3 Ops",
+        summary: "80×60×15mm sculpted wave relief showcasing 3D Adaptive Roughing, 45° 3D Parallel Raster Finishing, and 3D Constant-Scallop Finishing.",
     },
 ];
 
@@ -596,6 +606,10 @@ mod tests {
         assert_eq!(
             SampleProjectId::from_cli_slug("mesh-dome"),
             Ok(SampleProjectId::SculptedMeshDome)
+        );
+        assert_eq!(
+            SampleProjectId::from_cli_slug("mesh-wave"),
+            Ok(SampleProjectId::ReliefWaveMesh)
         );
         assert!(SampleProjectId::from_cli_slug("nonexistent").is_err());
     }

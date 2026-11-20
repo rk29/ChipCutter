@@ -6,16 +6,16 @@ use std::{
 
 use chip_cad::{
     CadDocument, CadPicker, MeshUnitKind, TopologyGraph, sample_cam_torture_block_step,
-    sample_machined_plate_step, sample_multi_feature_bracket_step, sample_revised_part_pair_step,
-    sample_sculpted_dome_stl_bytes,
+    sample_machined_plate_step, sample_multi_feature_bracket_step, sample_relief_wave_obj_text,
+    sample_revised_part_pair_step, sample_sculpted_dome_stl_bytes,
 };
 use chip_project::{
     ModelEntry, OperationReloadOutcome, ProjectDocument, build_adaptive_rest_demo_project,
     build_cam_torture_project, build_multi_feature_bracket_project,
-    build_pure2d_router_panel_demo_project, build_revision_v1_demo_project,
-    build_sculpted_mesh_dome_project, compute_sha256_hex, export_chipz_bundle, is_chipz_path,
-    load_model_bytes_cad_doc, portable_model_path, rebind_project_to_reloaded_cad,
-    resolve_model_path, unpack_chipz_bundle,
+    build_pure2d_router_panel_demo_project, build_relief_wave_mesh_project,
+    build_revision_v1_demo_project, build_sculpted_mesh_dome_project, compute_sha256_hex,
+    export_chipz_bundle, is_chipz_path, load_model_bytes_cad_doc, portable_model_path,
+    rebind_project_to_reloaded_cad, resolve_model_path, unpack_chipz_bundle,
 };
 
 use crate::{
@@ -31,6 +31,7 @@ pub(crate) enum LoadPurpose {
     SeedAdaptiveRestDemo,
     SeedRevisionDemoV1,
     SeedSculptedMeshDome,
+    SeedReliefWaveMesh,
     ReloadRebind { update_path: bool },
 }
 
@@ -406,6 +407,27 @@ impl ChipCutterApp {
                 None,
                 None,
                 LoadPurpose::SeedSculptedMeshDome,
+                t0,
+            );
+            let _ = tx.send(res);
+            egui_ctx.request_repaint();
+        });
+    }
+
+    pub(crate) fn spawn_relief_wave_mesh_load(&mut self, egui_ctx: egui::Context) {
+        self.loading_in_flight = true;
+        self.logs
+            .push("Generating Relief Wave (OBJ Mesh) 3D finishing sample…".to_string());
+        let tx = self.job_tx.clone();
+        rayon::spawn(move || {
+            let t0 = Instant::now();
+            let obj_bytes = sample_relief_wave_obj_text().into_bytes();
+            let res = parse_model_bytes_job(
+                "relief_wave.obj".to_string(),
+                obj_bytes,
+                None,
+                None,
+                LoadPurpose::SeedReliefWaveMesh,
                 t0,
             );
             let _ = tx.send(res);
@@ -883,7 +905,31 @@ impl ChipCutterApp {
                 if !self.project.setups[0].operations.is_empty() {
                     self.inspector_focus = InspectorFocus::Operation {
                         setup_idx: 0,
-                        op_idx: 0,
+                        op_idx: self.project.setups[0].operations.len().saturating_sub(1),
+                    };
+                    self.op_tab = OperationTab::Passes;
+                } else {
+                    self.inspector_focus = InspectorFocus::Setup { setup_idx: 0 };
+                    self.setup_tab = SetupTab::Wcs;
+                }
+                self.show_27pt_dots = false;
+            }
+            LoadPurpose::SeedReliefWaveMesh => {
+                self.clear_bundle_extract_dir();
+                self.project_file_path = None;
+                self.history.clear();
+                self.clean_undo_len = Some(0);
+                self.last_reload_banner = None;
+                self.project = build_relief_wave_mesh_project(
+                    doc.source_name.clone(),
+                    &sha256_hex,
+                    &self.global_tools.tools,
+                );
+                self.active_setup_idx = 0;
+                if self.project.setups[0].operations.len() > 1 {
+                    self.inspector_focus = InspectorFocus::Operation {
+                        setup_idx: 0,
+                        op_idx: 1,
                     };
                     self.op_tab = OperationTab::Passes;
                 } else {
@@ -952,6 +998,7 @@ impl ChipCutterApp {
                 | LoadPurpose::SeedAdaptiveRestDemo
                 | LoadPurpose::SeedRevisionDemoV1
                 | LoadPurpose::SeedSculptedMeshDome
+                | LoadPurpose::SeedReliefWaveMesh
         ) {
             self.auto_sim_after_gen = true;
             self.trigger_generate_dirty(None, None);

@@ -25,10 +25,16 @@ pub enum OperationKind {
     Waterline3D,
     #[serde(rename = "adaptive_3d")]
     Adaptive3D,
+    #[serde(rename = "parallel_3d")]
+    Parallel3D,
+    #[serde(rename = "scallop_3d")]
+    Scallop3D,
+    #[serde(rename = "pencil_3d")]
+    Pencil3D,
 }
 
 impl OperationKind {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 11] = [
         Self::Facing,
         Self::Contour2D,
         Self::Pocket2D,
@@ -37,6 +43,9 @@ impl OperationKind {
         Self::VCarve,
         Self::Adaptive3D,
         Self::Waterline3D,
+        Self::Parallel3D,
+        Self::Scallop3D,
+        Self::Pencil3D,
     ];
 
     pub const fn label(self) -> &'static str {
@@ -49,6 +58,9 @@ impl OperationKind {
             Self::VCarve => "V-Carve / Bevel Inlay",
             Self::Waterline3D => "3D Waterline / Z-Level",
             Self::Adaptive3D => "3D Adaptive Roughing",
+            Self::Parallel3D => "3D Parallel Finishing",
+            Self::Scallop3D => "3D Constant-Scallop",
+            Self::Pencil3D => "3D Pencil Cleanup",
         }
     }
 
@@ -62,12 +74,22 @@ impl OperationKind {
             Self::VCarve => "V-Carve",
             Self::Waterline3D => "3D Waterline",
             Self::Adaptive3D => "3D Adaptive",
+            Self::Parallel3D => "3D Parallel",
+            Self::Scallop3D => "3D Scallop",
+            Self::Pencil3D => "3D Pencil",
         }
     }
 
     /// Returns `true` for 3-axis surface operations operating on the full 3D model / mesh.
     pub const fn is_3d_surface(self) -> bool {
-        matches!(self, Self::Waterline3D | Self::Adaptive3D)
+        matches!(
+            self,
+            Self::Waterline3D
+                | Self::Adaptive3D
+                | Self::Parallel3D
+                | Self::Scallop3D
+                | Self::Pencil3D
+        )
     }
 
     pub fn is_compatible_with_tool(self, tool: &Tool) -> bool {
@@ -97,6 +119,15 @@ impl OperationKind {
             Self::Adaptive3D => tool
                 .geometry
                 .supports_operation(ToolOperationClass::Adaptive3D),
+            Self::Parallel3D => tool
+                .geometry
+                .supports_operation(ToolOperationClass::Parallel3D),
+            Self::Scallop3D => tool
+                .geometry
+                .supports_operation(ToolOperationClass::Scallop3D),
+            Self::Pencil3D => tool
+                .geometry
+                .supports_operation(ToolOperationClass::Pencil3D),
         }
     }
 }
@@ -231,6 +262,17 @@ impl Operation {
                     0.0,
                 );
                 passes.max_stepdown = chip_math::ParamLength::from_mm(1.25);
+            }
+            OperationKind::Parallel3D | OperationKind::Scallop3D | OperationKind::Pencil3D => {
+                heights.top =
+                    crate::heights::HeightSpec::new(crate::heights::HeightReference::ModelTop, 0.0);
+                heights.bottom = crate::heights::HeightSpec::new(
+                    crate::heights::HeightReference::ModelBottom,
+                    0.0,
+                );
+                passes.multiple_depths = false;
+                passes.stock_to_leave_radial = chip_math::ParamLength::from_mm(0.0);
+                passes.stock_to_leave_axial = chip_math::ParamLength::from_mm(0.0);
             }
             _ => {}
         }

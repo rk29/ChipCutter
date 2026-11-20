@@ -24,12 +24,12 @@ pub use cache::{
 pub use demos::{
     build_adaptive_rest_demo_project, build_cam_torture_project,
     build_engraved_nameplate_demo_project, build_multi_feature_bracket_project,
-    build_pure2d_router_panel_demo_project, build_revision_v1_demo_project,
-    build_sculpted_mesh_dome_project, build_tutorial_adaptive_rest_project,
-    build_tutorial_chamfer_trace_project, build_tutorial_contour_project,
-    build_tutorial_drill_bore_project, build_tutorial_facing_project,
-    build_tutorial_pocket_project, build_tutorial_vcarve_inlay_project,
-    build_vcarve_sign_and_inlay_demo_project,
+    build_pure2d_router_panel_demo_project, build_relief_wave_mesh_project,
+    build_revision_v1_demo_project, build_sculpted_mesh_dome_project,
+    build_tutorial_adaptive_rest_project, build_tutorial_chamfer_trace_project,
+    build_tutorial_contour_project, build_tutorial_drill_bore_project,
+    build_tutorial_facing_project, build_tutorial_pocket_project,
+    build_tutorial_vcarve_inlay_project, build_vcarve_sign_and_inlay_demo_project,
 };
 pub use dispatcher::{
     BatchGenerationReport, DispatcherEvent, JobDispatcher, generate_project_blocking,
@@ -1409,7 +1409,7 @@ sha256 = "abc"
         let mut proj =
             build_sculpted_mesh_dome_project("sculpted_dome.stl".to_string(), &sha, &starter.tools);
         assert_eq!(proj.schema_version, 3);
-        assert_eq!(proj.setups[0].operations.len(), 2);
+        assert_eq!(proj.setups[0].operations.len(), 3);
 
         // 1. Deterministic Schema v3 TOML round-trip
         let toml_1 = proj.to_toml_string().unwrap();
@@ -1428,7 +1428,7 @@ sha256 = "abc"
         let mut cache = ToolpathCache::new(16);
         let batch = generate_project_blocking(&mut proj, &cad_doc, &mut cache, 1);
         assert!(batch.is_ok(), "dome generation errors: {:?}", batch.errors);
-        assert_eq!(batch.generated.len(), 2);
+        assert_eq!(batch.generated.len(), 3);
 
         let sim = simulate_project_setup(&SetupSimRequest {
             project: &proj,
@@ -1447,7 +1447,7 @@ sha256 = "abc"
             sim.diagnostics
         );
 
-        // 4. Both GRBL (2 split tool files: T1 Flat + T4 Ball) and LinuxCNC (1 ATC file) post cleanly
+        // 4. Both GRBL (3 split tool files: T1 Flat + T4 Ø6mm Ball + T11 Ø3mm Ball) and LinuxCNC (1 ATC file) post cleanly
         let profiles = builtin_post_profiles();
         let grbl = profiles.iter().find(|p| p.id == "grbl").unwrap();
         let linuxcnc = profiles.iter().find(|p| p.id == "linuxcnc").unwrap();
@@ -1465,8 +1465,8 @@ sha256 = "abc"
         .unwrap();
         assert_eq!(
             grbl_files.len(),
-            2,
-            "GRBL must split T1 Adaptive3D and T4 Waterline3D into 2 separate .nc files"
+            3,
+            "GRBL must split T1 Adaptive3D, T4 Waterline3D, and T11 Pencil3D into 3 separate .nc files"
         );
 
         let lcnc_files = post_process_project_setup(&SetupPostRequest {
@@ -1478,6 +1478,98 @@ sha256 = "abc"
             post_profile: linuxcnc,
             project_label: &proj.project_name,
             program_stem: "sculpted_dome",
+        })
+        .unwrap();
+        assert_eq!(lcnc_files.len(), 1);
+        assert!(lcnc_files[0].content.contains("M6"));
+    }
+
+    #[test]
+    fn relief_wave_mesh_sample_round_trips_simulates_and_posts_cleanly() {
+        use chip_cad::{MeshImportOptions, load_mesh_cad_document, sample_relief_wave_obj_text};
+        use chip_post::builtin_post_profiles;
+        use chip_sim::SimResolution;
+
+        let obj_text = sample_relief_wave_obj_text();
+        let obj_bytes = obj_text.as_bytes();
+        let cad_doc =
+            load_mesh_cad_document("relief_wave.obj", obj_bytes, &MeshImportOptions::default())
+                .unwrap();
+        let sha = compute_sha256_hex(obj_bytes);
+        let starter = default_starter_tool_library();
+
+        let mut proj =
+            build_relief_wave_mesh_project("relief_wave.obj".to_string(), &sha, &starter.tools);
+        assert_eq!(proj.schema_version, 3);
+        assert_eq!(proj.setups[0].operations.len(), 3);
+
+        // 1. Deterministic Schema v3 TOML round-trip
+        let toml_1 = proj.to_toml_string().unwrap();
+        let reparsed = ProjectDocument::from_toml_str(&toml_1).unwrap();
+        assert_eq!(toml_1, reparsed.to_toml_string().unwrap());
+
+        // 2. Project validation passes with 0 errors
+        let val = validate_project(&proj, None, Some(&cad_doc));
+        assert!(
+            val.is_valid(),
+            "wave validation errors: {:?}",
+            val.diagnostics
+        );
+
+        // 3. Generation & 5-rule heightmap simulation pass with 0 critical errors
+        let mut cache = ToolpathCache::new(16);
+        let batch = generate_project_blocking(&mut proj, &cad_doc, &mut cache, 1);
+        assert!(batch.is_ok(), "wave generation errors: {:?}", batch.errors);
+        assert_eq!(batch.generated.len(), 3);
+
+        let sim = simulate_project_setup(&SetupSimRequest {
+            project: &proj,
+            setup_idx: 0,
+            cad_doc: &cad_doc,
+            cad_revision: 1,
+            cache: &cache,
+            kinematics: resolve_kinematics_for_key("grbl", None),
+            resolution: SimResolution::Standard,
+            cancel: None,
+        })
+        .unwrap();
+        assert!(
+            !sim.has_critical_errors(),
+            "Relief Wave sample must pass simulation with 0 critical errors, got: {:#?}",
+            sim.diagnostics
+        );
+
+        // 4. Both GRBL (2 split tool files: T1 Flat + T4 Ball) and LinuxCNC post cleanly
+        let profiles = builtin_post_profiles();
+        let grbl = profiles.iter().find(|p| p.id == "grbl").unwrap();
+        let linuxcnc = profiles.iter().find(|p| p.id == "linuxcnc").unwrap();
+
+        let grbl_files = post_process_project_setup(&SetupPostRequest {
+            project: &proj,
+            setup_idx: 0,
+            cad_doc: &cad_doc,
+            cad_revision: 1,
+            cache: &cache,
+            post_profile: grbl,
+            project_label: &proj.project_name,
+            program_stem: "relief_wave",
+        })
+        .unwrap();
+        assert_eq!(
+            grbl_files.len(),
+            2,
+            "GRBL must split T1 Adaptive3D and T4 Parallel3D/Scallop3D into 2 separate .nc files"
+        );
+
+        let lcnc_files = post_process_project_setup(&SetupPostRequest {
+            project: &proj,
+            setup_idx: 0,
+            cad_doc: &cad_doc,
+            cad_revision: 1,
+            cache: &cache,
+            post_profile: linuxcnc,
+            project_label: &proj.project_name,
+            program_stem: "relief_wave",
         })
         .unwrap();
         assert_eq!(lcnc_files.len(), 1);

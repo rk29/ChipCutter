@@ -4,7 +4,10 @@ pub mod chamfer_trace;
 pub mod contour2d;
 pub mod drill_bore;
 pub mod facing;
+pub mod parallel3d;
+pub mod pencil3d;
 pub mod pocket2d;
+pub mod scallop3d;
 pub mod vcarve;
 pub mod waterline3d;
 
@@ -248,6 +251,15 @@ pub fn generate_operation_toolpath_with_rest(
         }
         StrategyParams::Adaptive3D(p) => {
             adaptive3d::generate_adaptive3d(&ctx, p, &mut builder)?;
+        }
+        StrategyParams::Parallel3D(p) => {
+            parallel3d::generate_parallel3d(&ctx, p, &mut builder)?;
+        }
+        StrategyParams::Scallop3D(p) => {
+            scallop3d::generate_scallop3d(&ctx, p, &mut builder)?;
+        }
+        StrategyParams::Pencil3D(p) => {
+            pencil3d::generate_pencil3d(&ctx, p, &mut builder)?;
         }
     }
 

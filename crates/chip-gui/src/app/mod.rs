@@ -451,6 +451,9 @@ impl ChipCutterApp {
             SampleProjectId::SculptedMeshDome => {
                 self.spawn_sculpted_mesh_dome_load(ctx.clone());
             }
+            SampleProjectId::ReliefWaveMesh => {
+                self.spawn_relief_wave_mesh_load(ctx.clone());
+            }
         }
     }
 

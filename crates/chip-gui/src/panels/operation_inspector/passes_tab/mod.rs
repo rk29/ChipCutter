@@ -256,9 +256,24 @@ pub fn show_passes_tab(ui: &mut egui::Ui, ctx: PassesTabCtx<'_>) {
 
     if matches!(
         op.kind,
-        OperationKind::Pocket2D | OperationKind::Contour2D | OperationKind::Adaptive3D
+        OperationKind::Pocket2D
+            | OperationKind::Contour2D
+            | OperationKind::Adaptive3D
+            | OperationKind::Parallel3D
+            | OperationKind::Scallop3D
     ) {
-        show_rest_machining_card(ui, &mut op.passes.rest_machining, preceding_ops, &mut item);
+        let rest_title = if op.kind.is_3d_surface() {
+            "3D Rest Machining"
+        } else {
+            "2.5D Rest Machining"
+        };
+        show_rest_machining_card(
+            ui,
+            rest_title,
+            &mut op.passes.rest_machining,
+            preceding_ops,
+            &mut item,
+        );
     }
 
     match op.strategy_mut() {
@@ -285,11 +300,15 @@ pub fn show_passes_tab(ui: &mut egui::Ui, ctx: PassesTabCtx<'_>) {
         ),
         StrategyParams::Waterline3D(p) => surface_3d::show_waterline3d_params(ui, p, item),
         StrategyParams::Adaptive3D(p) => surface_3d::show_adaptive3d_params(ui, p, item),
+        StrategyParams::Parallel3D(p) => surface_3d::show_parallel3d_params(ui, p, item),
+        StrategyParams::Scallop3D(p) => surface_3d::show_scallop3d_params(ui, p, item),
+        StrategyParams::Pencil3D(p) => surface_3d::show_pencil3d_params(ui, p, item),
     }
 }
 
 fn show_rest_machining_card(
     ui: &mut egui::Ui,
+    title: &str,
     rest: &mut RestMachiningConfig,
     preceding_ops: &[(String, String)],
     item: &mut PassItemCtx<'_>,
@@ -299,7 +318,7 @@ fn show_rest_machining_card(
     section_card(
         ui,
         ("passes_rest_card", setup_idx, op_idx),
-        "2.5D Rest Machining",
+        title,
         true,
         |ui| {
             let cur_mode = match &rest.mode {
