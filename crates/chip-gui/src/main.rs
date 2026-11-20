@@ -1,5 +1,8 @@
 use std::path::PathBuf;
 
+#[cfg(target_os = "linux")]
+mod linux_gsettings;
+
 use chip_gui::{
     app::{ChipCutterApp, SelfTestConfig, StartupDemoMode},
     capture::{
@@ -112,6 +115,9 @@ struct GuiArgs {
 }
 
 fn main() -> eframe::Result {
+    #[cfg(target_os = "linux")]
+    linux_gsettings::configure_gsettings_backend_for_gtk();
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
