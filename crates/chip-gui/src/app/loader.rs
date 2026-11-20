@@ -1137,6 +1137,7 @@ impl ChipCutterApp {
                         path: stored_path,
                         sha256: sha256_hex.clone(),
                         unit_override,
+                        transform: chip_cad::ModelTransform::IDENTITY,
                     }];
                 } else if self.project.models.is_empty() {
                     self.project.models = vec![ModelEntry {
@@ -1144,6 +1145,7 @@ impl ChipCutterApp {
                         path: doc.source_name.clone(),
                         sha256: sha256_hex.clone(),
                         unit_override,
+                        transform: chip_cad::ModelTransform::IDENTITY,
                     }];
                 }
             }

@@ -33,8 +33,18 @@ pub fn run_reload_step(
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or("model.step");
-    let new_doc =
+    let raw_doc =
         MonstertruckKernel.load_step_bytes(name, &step_bytes, DEFAULT_TESS_CHORD_TOL_MM)?;
+    let existing_xf = proj_doc
+        .models
+        .first()
+        .map_or(chip_cad::ModelTransform::IDENTITY, |m| m.transform);
+    existing_xf.validate()?;
+    let new_doc = if existing_xf.is_identity() {
+        raw_doc
+    } else {
+        raw_doc.transformed(&existing_xf)
+    };
     let topo = TopologyGraph::build(&new_doc);
     let new_rel = portable_model_path(Some(&dest_proj), &step_path);
 

@@ -105,7 +105,12 @@ pub fn validate_project_with_machine(
         }
     };
 
-    // 1. Check model files and SHA-256 content hashes when project_dir is on disk
+    // 1. Validate model transforms & check model files/hashes when project_dir is on disk
+    for model in &project.models {
+        if let Err(err) = model.transform.validate() {
+            report.push_error(format!("Model '{}'", model.id), err.to_string());
+        }
+    }
     if let Some(dir) = project_dir {
         for model in &project.models {
             let resolved_path = resolve_model_path(Some(dir), &model.path);

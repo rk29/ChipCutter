@@ -14,6 +14,7 @@ pub mod monstertruck_kernel;
 pub mod picking;
 pub mod rematch;
 pub mod topology;
+pub mod transform;
 
 pub use fixtures::{
     SampleStepError, sample_ambiguous_twin_hole_step, sample_cam_torture_block_step,
@@ -46,4 +47,7 @@ pub use topology::{
     classify_planar_face_loops, expand_coaxial_hole_faces, extract_modeled_chamfer_strip,
     find_coplanar_faces, find_same_diameter_holes, group_coaxial_holes,
     highest_adjacent_lower_floor_proj, highest_adjacent_wall_top,
+};
+pub use transform::{
+    MAX_MODEL_SCALE, MIN_MODEL_SCALE, ModelTransform, rotation_matrix_to_xyz_euler_deg,
 };

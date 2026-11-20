@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 
 use chip_cad::CadDocument;
 use chip_project::{
-    ProjectDocument, create_private_temp_extract_dir, is_chipz_path, load_model_entry_cad_doc,
-    resolve_model_path, unpack_chipz_bundle,
+    ProjectDocument, create_private_temp_extract_dir, is_chipz_path,
+    load_model_entry_cad_doc_transformed, resolve_model_path, unpack_chipz_bundle,
 };
 use chip_sim::{SimDiagnostic, SimResolution};
 use serde::Serialize;
@@ -56,8 +56,10 @@ pub fn load_primary_cad_for_project(
         return Ok(CadDocument::empty());
     };
     let model_path = resolve_model_path(proj_dir, &first.path);
-    Ok(load_model_entry_cad_doc(&model_path, first.unit_override)
-        .map_err(|e| format!("failed to load model '{}': {e}", model_path.display()))?)
+    Ok(
+        load_model_entry_cad_doc_transformed(&model_path, first.unit_override, &first.transform)
+            .map_err(|e| format!("failed to load model '{}': {e}", model_path.display()))?,
+    )
 }
 
 pub fn parse_sim_resolution(raw: &str) -> SimResolution {

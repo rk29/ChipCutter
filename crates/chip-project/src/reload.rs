@@ -114,6 +114,7 @@ pub fn rebind_project_to_reloaded_cad(
             path: new_stored_path.unwrap_or_else(|| new_doc.source_name.clone()),
             sha256: new_sha256.to_string(),
             unit_override: None,
+            transform: chip_cad::ModelTransform::IDENTITY,
         });
     } else if let Some(entry) = project.models.get_mut(model_idx) {
         entry.sha256 = new_sha256.to_string();

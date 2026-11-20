@@ -7,8 +7,8 @@ use clap::{Parser, Subcommand};
 use crate::commands::{
     bundle_reload_tools::{run_bundle_pack, run_bundle_unpack, run_import_fusion, run_reload_step},
     inspect_sample::{
-        GenerateSampleArgs, Import2dArgs, ImportMeshArgs, InspectArgs, run_generate_sample_step,
-        run_import_2d, run_import_mesh, run_inspect,
+        GenerateSampleArgs, Import2dArgs, ImportMeshArgs, InspectArgs, TransformModelArgs,
+        run_generate_sample_step, run_import_2d, run_import_mesh, run_inspect, run_transform_model,
     },
     machines::{
         run_machines_clone, run_machines_export, run_machines_import, run_machines_inspect,
@@ -58,6 +58,90 @@ enum Commands {
         /// Mesh unit override (`auto`, `mm`, `in`, `cm`, `m`, `ft`, `um`).
         #[arg(long, default_value = "auto")]
         mesh_units: String,
+        /// Rotate imported mesh around X axis (degrees).
+        #[arg(long, default_value_t = 0.0, allow_hyphen_values = true)]
+        rot_x: f64,
+        /// Rotate imported mesh around Y axis (degrees).
+        #[arg(long, default_value_t = 0.0, allow_hyphen_values = true)]
+        rot_y: f64,
+        /// Rotate imported mesh around Z axis (degrees).
+        #[arg(long, default_value_t = 0.0, allow_hyphen_values = true)]
+        rot_z: f64,
+        /// Uniform scale factor applied to imported mesh (`1.0` default).
+        #[arg(long, default_value_t = 1.0)]
+        scale: f64,
+        /// Convert Y-up mesh to Z-up (`+90°` around X).
+        #[arg(long)]
+        y_up_to_z_up: bool,
+        /// Center transformed mesh XY bounds on `(0, 0)`.
+        #[arg(long)]
+        center_xy: bool,
+        /// Drop bottom of transformed mesh to `Z = 0`.
+        #[arg(long)]
+        drop_z0: bool,
+    },
+    /// Non-destructively rotate, scale, or translate the primary 3D model (STEP or STL/OBJ/3MF) in a `.chip.toml` project.
+    #[command(name = "transform-model")]
+    TransformModel {
+        /// Path to `.chip.toml` project file.
+        project: PathBuf,
+        /// Optional output `.chip.toml` path (overwrites `project` in place if omitted).
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        /// Set X rotation angle (degrees).
+        #[arg(long, allow_hyphen_values = true)]
+        rot_x: Option<f64>,
+        /// Set Y rotation angle (degrees).
+        #[arg(long, allow_hyphen_values = true)]
+        rot_y: Option<f64>,
+        /// Set Z rotation angle (degrees).
+        #[arg(long, allow_hyphen_values = true)]
+        rot_z: Option<f64>,
+        /// Set uniform scale factor across X, Y, and Z.
+        #[arg(long)]
+        scale: Option<f64>,
+        /// Set X scale factor.
+        #[arg(long)]
+        scale_x: Option<f64>,
+        /// Set Y scale factor.
+        #[arg(long)]
+        scale_y: Option<f64>,
+        /// Set Z scale factor.
+        #[arg(long)]
+        scale_z: Option<f64>,
+        /// Uniformly scale so transformed X span equals `<mm>`.
+        #[arg(long)]
+        fit_size_x: Option<f64>,
+        /// Uniformly scale so transformed Y span equals `<mm>`.
+        #[arg(long)]
+        fit_size_y: Option<f64>,
+        /// Uniformly scale so transformed Z span equals `<mm>`.
+        #[arg(long)]
+        fit_size_z: Option<f64>,
+        /// Set X translation (`mm`).
+        #[arg(long, allow_hyphen_values = true)]
+        move_x: Option<f64>,
+        /// Set Y translation (`mm`).
+        #[arg(long, allow_hyphen_values = true)]
+        move_y: Option<f64>,
+        /// Set Z translation (`mm`).
+        #[arg(long, allow_hyphen_values = true)]
+        move_z: Option<f64>,
+        /// Apply `+90° X` (`Y-Up -> Z-Up`) world rotation around model center.
+        #[arg(long)]
+        y_up_to_z_up: bool,
+        /// Center transformed XY bounds on `(0, 0)`.
+        #[arg(long)]
+        center_xy: bool,
+        /// Drop bottom (`min Z`) to `Z = 0`.
+        #[arg(long)]
+        drop_z0: bool,
+        /// Align top (`max Z`) to `Z = 0`.
+        #[arg(long)]
+        align_top_z0: bool,
+        /// Reset transform to identity before applying any other flags.
+        #[arg(long)]
+        reset: bool,
     },
     /// Import a 2D `.dxf` or `.svg` vector file into a new Pure-2D `.chip.toml` job (or append to `--project`).
     #[command(name = "import-2d")]
@@ -292,10 +376,67 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
             input,
             output,
             mesh_units,
+            rot_x,
+            rot_y,
+            rot_z,
+            scale,
+            y_up_to_z_up,
+            center_xy,
+            drop_z0,
         } => run_import_mesh(ImportMeshArgs {
             input,
             output,
             mesh_units,
+            rot_x,
+            rot_y,
+            rot_z,
+            scale,
+            y_up_to_z_up,
+            center_xy,
+            drop_z0,
+        }),
+        Commands::TransformModel {
+            project,
+            output,
+            rot_x,
+            rot_y,
+            rot_z,
+            scale,
+            scale_x,
+            scale_y,
+            scale_z,
+            fit_size_x,
+            fit_size_y,
+            fit_size_z,
+            move_x,
+            move_y,
+            move_z,
+            y_up_to_z_up,
+            center_xy,
+            drop_z0,
+            align_top_z0,
+            reset,
+        } => run_transform_model(TransformModelArgs {
+            project,
+            output,
+            rot_x,
+            rot_y,
+            rot_z,
+            scale,
+            scale_x,
+            scale_y,
+            scale_z,
+            fit_size_x,
+            fit_size_y,
+            fit_size_z,
+            move_x,
+            move_y,
+            move_z,
+            y_up_to_z_up,
+            center_xy,
+            drop_z0,
+            align_top_z0,
+            reset,
         }),
         Commands::Import2d {
             input,

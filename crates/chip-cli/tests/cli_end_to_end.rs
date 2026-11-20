@@ -322,6 +322,7 @@ fn cli_reload_step_handles_v1_to_v2_rebind_and_deleted_hole_flagging() {
         path: "part_v1.step".to_string(),
         sha256: compute_sha256_hex(&v1_bytes),
         unit_override: None,
+        transform: chip_cad::ModelTransform::IDENTITY,
     });
     proj.ensure_tool_embedded(flat_6mm);
     proj.ensure_tool_embedded(drill_6mm);
@@ -1105,5 +1106,93 @@ fn phase_5_v3_rotary_golden_gcode_snapshots_match_exact_expected_output() {
     assert_eq!(
         actual_flute, expected_flute,
         "v3_rotary_4axis_sim.nc drifted from golden snapshot"
+    );
+}
+
+#[test]
+fn cli_transform_model_and_import_mesh_transform_flags_work_end_to_end() {
+    use chip_cad::{ModelTransform, sample_sculpted_dome_stl_bytes};
+
+    let tmp = TempTestDir::new("transform_model_m35");
+    let stl_path = tmp.path().join("dome.stl");
+    std::fs::write(&stl_path, sample_sculpted_dome_stl_bytes()).unwrap();
+
+    // 1. `import-mesh` with orientation, scale, and placement flags
+    let proj_path = tmp.path().join("dome_oriented.chip.toml");
+    let imp = Command::new(cli_bin())
+        .args([
+            "import-mesh",
+            stl_path.to_str().unwrap(),
+            "-o",
+            proj_path.to_str().unwrap(),
+            "--mesh-units",
+            "mm",
+            "--y-up-to-z-up",
+            "--scale",
+            "1.5",
+            "--center-xy",
+            "--drop-z0",
+        ])
+        .output()
+        .expect("import-mesh with transform flags");
+    assert!(
+        imp.status.success(),
+        "import-mesh failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&imp.stdout),
+        String::from_utf8_lossy(&imp.stderr)
+    );
+    let proj = ProjectDocument::load_from_path(&proj_path).unwrap();
+    let xf = proj.models[0].transform;
+    assert!((xf.rotate_deg[0] - 90.0).abs() < 1e-4, "xf={xf:?}");
+    assert!((xf.scale[0] - 1.5).abs() < 1e-6, "xf={xf:?}");
+
+    // 2. `transform-model` --fit-size-x 120 --center-xy --drop-z0
+    let tr = Command::new(cli_bin())
+        .args([
+            "transform-model",
+            proj_path.to_str().unwrap(),
+            "--fit-size-x",
+            "120",
+            "--center-xy",
+            "--drop-z0",
+        ])
+        .output()
+        .expect("transform-model fit-size-x");
+    assert!(
+        tr.status.success(),
+        "transform-model failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&tr.stdout),
+        String::from_utf8_lossy(&tr.stderr)
+    );
+    let tr_stdout = String::from_utf8_lossy(&tr.stdout);
+    assert!(
+        tr_stdout.contains("120.00"),
+        "expected fitted X size 120.00 in stdout:\n{tr_stdout}"
+    );
+
+    // 3. `validate` succeeds on the transformed project
+    let val = Command::new(cli_bin())
+        .args(["validate", proj_path.to_str().unwrap()])
+        .output()
+        .expect("validate transformed project");
+    assert!(
+        val.status.success(),
+        "validate failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&val.stdout),
+        String::from_utf8_lossy(&val.stderr)
+    );
+
+    // 4. `transform-model --reset` returns transform to identity and omits it from TOML
+    let rst = Command::new(cli_bin())
+        .args(["transform-model", proj_path.to_str().unwrap(), "--reset"])
+        .output()
+        .expect("transform-model reset");
+    assert!(rst.status.success());
+    let proj_reset = ProjectDocument::load_from_path(&proj_path).unwrap();
+    assert_eq!(proj_reset.models[0].transform, ModelTransform::IDENTITY);
+    let raw_toml = std::fs::read_to_string(&proj_path).unwrap();
+    assert!(
+        !raw_toml.contains("transform"),
+        "identity transform should be omitted from TOML:\n{raw_toml}"
     );
 }

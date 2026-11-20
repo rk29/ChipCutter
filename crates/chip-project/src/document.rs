@@ -4,8 +4,8 @@ use std::{
 };
 
 use chip_cad::{
-    CadDocument, CadError, CadKernel, MeshImportOptions, MeshUnitKind, MonstertruckKernel,
-    is_mesh_extension, load_mesh_cad_document,
+    CadDocument, CadError, CadKernel, MeshImportOptions, MeshUnitKind, ModelTransform,
+    MonstertruckKernel, is_mesh_extension, load_mesh_cad_document,
 };
 use chip_cam::{Setup, WorkOffsetSlot};
 use chip_math::{DEFAULT_TESS_CHORD_TOL_MM, DisplayUnit, ParamLength};
@@ -16,7 +16,7 @@ use sha2::{Digest, Sha256};
 
 /// External 3D CAD (`.step`/`.stp`) or Triangle Mesh (`.stl`/`.obj`/`.3mf`) model reference
 /// stored in `.chip.toml` (`09-persistence-cli.md`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModelEntry {
     pub id: String,
     pub path: String,
@@ -25,6 +25,10 @@ pub struct ModelEntry {
     /// unit-aware 3MF files so existing `.chip.toml` diffs remain clean).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unit_override: Option<MeshUnitKind>,
+    /// Optional non-destructive model scale/rotation/translation applied in exact `f64` mm
+    /// after loading (omitted when identity for full backward compatibility).
+    #[serde(default, skip_serializing_if = "ModelTransform::is_identity")]
+    pub transform: ModelTransform,
 }
 
 impl ModelEntry {
@@ -34,6 +38,7 @@ impl ModelEntry {
             path: path.into(),
             sha256: sha256.into(),
             unit_override: None,
+            transform: ModelTransform::IDENTITY,
         }
     }
 }
@@ -325,6 +330,22 @@ pub fn load_model_bytes_cad_doc(
     }
 }
 
+/// Unified CAD/Mesh loader from in-memory bytes that validates and applies `transform`.
+pub fn load_model_bytes_cad_doc_transformed(
+    source_name: &str,
+    bytes: &[u8],
+    unit_override: Option<MeshUnitKind>,
+    transform: &ModelTransform,
+) -> Result<CadDocument, CadError> {
+    transform.validate()?;
+    let raw = load_model_bytes_cad_doc(source_name, bytes, unit_override)?;
+    if transform.is_identity() {
+        Ok(raw)
+    } else {
+        Ok(raw.transformed(transform))
+    }
+}
+
 /// Unified CAD/Mesh loader reading `path` from disk and dispatching STEP vs. STL/OBJ/3MF cleanly.
 pub fn load_model_entry_cad_doc(
     path: &Path,
@@ -336,4 +357,19 @@ pub fn load_model_entry_cad_doc(
         .and_then(|s| s.to_str())
         .unwrap_or("model.step");
     load_model_bytes_cad_doc(source_name, &bytes, unit_override)
+}
+
+/// Unified CAD/Mesh loader reading `path` from disk and applying `transform` in exact `f64` mm.
+pub fn load_model_entry_cad_doc_transformed(
+    path: &Path,
+    unit_override: Option<MeshUnitKind>,
+    transform: &ModelTransform,
+) -> Result<CadDocument, CadError> {
+    transform.validate()?;
+    let raw = load_model_entry_cad_doc(path, unit_override)?;
+    if transform.is_identity() {
+        Ok(raw)
+    } else {
+        Ok(raw.transformed(transform))
+    }
 }

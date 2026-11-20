@@ -26,6 +26,8 @@ pub enum CadError {
     UnsafeArchivePath { entry_path: String },
     #[error("3MF archive exceeds maximum allowed uncompressed size ({limit_bytes} bytes)")]
     ArchiveTooLarge { limit_bytes: u64 },
+    #[error("invalid model transform: {0}")]
+    InvalidTransform(String),
     #[error("I/O error reading CAD file: {0}")]
     Io(#[from] std::io::Error),
 }

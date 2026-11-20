@@ -34,6 +34,7 @@ pub fn build_multi_feature_bracket_project(
         path: model_path,
         sha256: sha256_hex.to_string(),
         unit_override: None,
+        transform: chip_cad::ModelTransform::IDENTITY,
     }];
 
     if let Some(t1) = available_tools.first() {
@@ -119,6 +120,7 @@ pub fn build_cam_torture_project(
         path: model_path,
         sha256: sha256_hex.to_string(),
         unit_override: None,
+        transform: chip_cad::ModelTransform::IDENTITY,
     }];
 
     for t in available_tools {
@@ -372,6 +374,7 @@ pub fn build_adaptive_rest_demo_project(
         path: model_path,
         sha256: sha256_hex.to_string(),
         unit_override: None,
+        transform: chip_cad::ModelTransform::IDENTITY,
     }];
 
     // T10: Ø10.0 mm 3FL Rougher + T8: Ø3.0 mm 3FL Rest Endmill + starter T1 Ø6.0 mm
@@ -567,6 +570,7 @@ pub fn build_revision_v1_demo_project(
         path: model_path,
         sha256: sha256_hex.to_string(),
         unit_override: None,
+        transform: chip_cad::ModelTransform::IDENTITY,
     }];
 
     for t in available_tools {
@@ -1476,6 +1480,7 @@ fn init_tutorial_step_project(
         path: model_path,
         sha256: sha256_hex.to_string(),
         unit_override: None,
+        transform: chip_cad::ModelTransform::IDENTITY,
     }];
     proj.setups[0].stock = StockConfig::RelativeBox {
         symmetric_xy: true,
@@ -2237,6 +2242,7 @@ pub fn build_sculpted_mesh_dome_project(
         path: model_path,
         sha256: sha256_hex.to_string(),
         unit_override: None,
+        transform: chip_cad::ModelTransform::IDENTITY,
     }];
     proj.setups[0].name = "Setup 1 — 3D Dome Mesh".to_string();
     proj.setups[0].wcs.origin = WcsOriginMode::StockBoxPoint {
@@ -2382,6 +2388,7 @@ pub fn build_relief_wave_mesh_project(
         path: model_path,
         sha256: sha256_hex.to_string(),
         unit_override: None,
+        transform: chip_cad::ModelTransform::IDENTITY,
     }];
     proj.setups[0].name = "Setup 1 — 3D Relief Wave (OBJ)".to_string();
     proj.setups[0].wcs.origin = WcsOriginMode::StockBoxPoint {
@@ -2497,6 +2504,7 @@ pub fn build_tutorial_3d_adaptive_waterline_project(
         path: model_path,
         sha256: sha256_hex.to_string(),
         unit_override: None,
+        transform: chip_cad::ModelTransform::IDENTITY,
     }];
     let setup_id = proj.setups[0].id.clone();
     proj.setups[0].name = "Setup 1 — Sculpted Dome (3D Mesh)".to_string();
@@ -2641,6 +2649,7 @@ pub fn build_tutorial_3d_surface_finishing_project(
         path: model_path,
         sha256: sha256_hex.to_string(),
         unit_override: None,
+        transform: chip_cad::ModelTransform::IDENTITY,
     }];
     proj.setups[0].name = "Setup 1 — Relief Wave (3D Finishing)".to_string();
     proj.setups[0].wcs.origin = WcsOriginMode::StockBoxPoint {
@@ -2779,6 +2788,7 @@ pub fn build_rotary_shaft_preview_project(
         path: model_path,
         sha256: sha256_hex.to_string(),
         unit_override: None,
+        transform: chip_cad::ModelTransform::IDENTITY,
     }];
     let setup_id = proj.setups[0].id.clone();
 
@@ -3058,6 +3068,7 @@ pub fn build_rotary_helical_flute_project(
         path: model_path,
         sha256: sha256_hex.to_string(),
         unit_override: None,
+        transform: chip_cad::ModelTransform::IDENTITY,
     }];
 
     let setup = &mut proj.setups[0];
@@ -3160,6 +3171,7 @@ pub fn build_tutorial_rotary_axial_parallel_project(
         path: model_path,
         sha256: sha256_hex.to_string(),
         unit_override: None,
+        transform: chip_cad::ModelTransform::IDENTITY,
     }];
 
     let setup = &mut proj.setups[0];
@@ -3264,6 +3276,7 @@ pub fn build_tutorial_indexed_step_multiface_project(
         path: model_path,
         sha256: sha256_hex.to_string(),
         unit_override: None,
+        transform: chip_cad::ModelTransform::IDENTITY,
     }];
 
     {
@@ -3476,6 +3489,7 @@ pub fn build_tutorial_rotary_4axis_flowline_project(
         path: model_path,
         sha256: sha256_hex.to_string(),
         unit_override: None,
+        transform: chip_cad::ModelTransform::IDENTITY,
     }];
 
     let setup = &mut proj.setups[0];

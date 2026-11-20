@@ -42,7 +42,8 @@ pub use dispatcher::{
 };
 pub use document::{
     ModelEntry, ProjectDocument, compute_sha256_hex, is_mesh_path, load_model_bytes_cad_doc,
-    load_model_entry_cad_doc, portable_model_path, resolve_model_path,
+    load_model_bytes_cad_doc_transformed, load_model_entry_cad_doc,
+    load_model_entry_cad_doc_transformed, portable_model_path, resolve_model_path,
 };
 pub use history::UndoHistory;
 pub use pipeline::{
@@ -93,6 +94,7 @@ mod tests {
             path: "cad/bracket.step".to_string(),
             sha256: compute_sha256_hex(step_str.as_bytes()),
             unit_override: None,
+            transform: chip_cad::ModelTransform::IDENTITY,
         });
         proj.ensure_tool_embedded(t1);
 
@@ -328,6 +330,7 @@ mod tests {
             path: "cad/part.step".to_string(),
             sha256: compute_sha256_hex(v1_step.as_bytes()),
             unit_override: None,
+            transform: chip_cad::ModelTransform::IDENTITY,
         });
         for t in [flat_6mm, drill_6mm, chamf_90, face_38mm] {
             proj.ensure_tool_embedded(t);
@@ -554,6 +557,7 @@ mod tests {
             path: "bracket.step".to_string(),
             sha256: compute_sha256_hex(&step_bytes),
             unit_override: None,
+            transform: chip_cad::ModelTransform::IDENTITY,
         });
         let starter = default_starter_tool_library();
         proj.ensure_tool_embedded(&starter.tools[0]);
@@ -812,6 +816,7 @@ setups = []
             path: "rev_v1.step".to_string(),
             sha256: compute_sha256_hex(step_v1.as_bytes()),
             unit_override: None,
+            transform: chip_cad::ModelTransform::IDENTITY,
         });
         let ch_tool = starter
             .tools
@@ -1345,18 +1350,21 @@ sha256 = "abc"
                 path: "sculpted_dome.stl".to_string(),
                 sha256: compute_sha256_hex(&stl_bytes),
                 unit_override: Some(MeshUnitKind::Millimeter),
+                transform: chip_cad::ModelTransform::IDENTITY,
             },
             ModelEntry {
                 id: "wave_obj".to_string(),
                 path: "relief_wave.obj".to_string(),
                 sha256: compute_sha256_hex(&obj_bytes),
                 unit_override: None,
+                transform: chip_cad::ModelTransform::IDENTITY,
             },
             ModelEntry {
                 id: "box_3mf".to_string(),
                 path: "box.3mf".to_string(),
                 sha256: compute_sha256_hex(&mf_bytes),
                 unit_override: None,
+                transform: chip_cad::ModelTransform::IDENTITY,
             },
         ];
 
@@ -2609,10 +2617,60 @@ sha256 = "abc"
             path: "/etc/passwd".to_string(),
             sha256: String::new(),
             unit_override: None,
+            transform: chip_cad::ModelTransform::IDENTITY,
         });
         let flagged = external_or_suspicious_assets_referenced(&proj, Some(&priv_dir));
         assert_eq!(flagged.len(), 1);
 
         let _ = std::fs::remove_dir_all(&priv_dir);
+    }
+
+    #[test]
+    fn milestone_35_model_transform_toml_omission_chipz_roundtrip_and_reload_preservation() {
+        // 1. Identity transform is omitted from `.chip.toml` for 100% backward compatibility
+        let mut proj = ProjectDocument::new("Transform Test");
+        proj.models.push(ModelEntry::new("m1", "part.step", "abc"));
+        let toml_id = proj.to_toml_string().unwrap();
+        assert!(
+            !toml_id.contains("transform"),
+            "identity transform must be omitted from TOML:\n{toml_id}"
+        );
+
+        // 2. Non-identity transform (scale + rotate + translate) roundtrips cleanly through TOML & `.chipz`
+        let xf = chip_cad::ModelTransform {
+            translate_mm: [12.5, -4.0, 2.0],
+            rotate_deg: [90.0, 0.0, 45.0],
+            scale: [1.5, 1.5, 1.5],
+        };
+        proj.models[0].transform = xf;
+        let toml_xf = proj.to_toml_string().unwrap();
+        let parsed = ProjectDocument::from_toml_str(&toml_xf).unwrap();
+        assert_eq!(parsed.models[0].transform, xf);
+
+        let step_text = sample_multi_feature_bracket_step(false).unwrap();
+        let step_bytes = step_text.as_bytes();
+        let (chipz_bytes, _sum) =
+            pack_chipz_bundle_bytes(&proj, None, &[("m1", step_bytes)], &[]).unwrap();
+        let tmp = create_private_temp_extract_dir("chipcutter_m35_chipz").unwrap();
+        let unpacked = unpack_chipz_bytes(&chipz_bytes, &tmp).unwrap();
+        assert_eq!(unpacked.project.models[0].transform, xf);
+
+        // 3. Associative reload preserves `ModelEntry.transform`
+        let raw_doc = MonstertruckKernel
+            .load_step_bytes("part.step", step_bytes, 0.05)
+            .unwrap();
+        let t_doc = raw_doc.transformed(&xf);
+        let topo = chip_cad::TopologyGraph::build(&t_doc);
+        let mut reloaded_proj = unpacked.project.clone();
+        let _rep = rebind_project_to_reloaded_cad(
+            &mut reloaded_proj,
+            0,
+            &t_doc,
+            &topo,
+            &compute_sha256_hex(step_bytes),
+            None,
+        );
+        assert_eq!(reloaded_proj.models[0].transform, xf);
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }
