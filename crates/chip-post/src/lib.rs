@@ -475,4 +475,34 @@ mod tests {
             "450 deg at R=20mm must map to Y157.080 mm:\n{nc}"
         );
     }
+
+    #[test]
+    fn builtin_post_profiles_resolve_without_repo_posts_directory() {
+        let empty_dir = std::env::temp_dir().join(format!(
+            "chipcutter_empty_posts_test_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::create_dir_all(&empty_dir);
+        let profiles = load_available_post_profiles(Some(&empty_dir));
+        let _ = std::fs::remove_dir_all(&empty_dir);
+
+        let ids: Vec<&str> = profiles.iter().map(|p| p.id.as_str()).collect();
+        for required in [
+            "grbl",
+            "grblhal_atc",
+            "linuxcnc",
+            "linuxcnc_4axis",
+            "grblhal_4axis",
+            "grbl_rotary_wrap",
+        ] {
+            assert!(
+                ids.contains(&required),
+                "missing built-in post profile '{required}' in {ids:?}"
+            );
+            assert!(
+                resolve_post_profile(required, None).is_ok(),
+                "resolve_post_profile failed for built-in '{required}'"
+            );
+        }
+    }
 }

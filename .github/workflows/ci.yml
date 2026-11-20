@@ -1,0 +1,98 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  lint-and-audit:
+    name: Format, Clippy, & Cargo Deny
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Linux GTK3 build headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libgtk-3-dev pkg-config
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run workspace clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Audit licenses & advisories (cargo-deny)
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+
+  build-and-test:
+    name: Build & Test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Linux GTK3 build headers
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libgtk-3-dev pkg-config
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run workspace clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Run core & CLI workspace tests
+        run: cargo test --workspace --exclude chip-gui
+
+      - name: Run chip-gui non-GPU unit tests
+        run: |
+          cargo test -p chip-gui --lib -- --skip renders_
+          cargo test -p chip-gui --bin chip-gui
+
+      - name: Smoke-test CLI outside repository directory
+        shell: bash
+        run: |
+          cargo build -p chip-cli
+          CLI_BIN="$(pwd)/target/debug/chipcutter"
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            CLI_BIN="${CLI_BIN}.exe"
+          fi
+          TMP_WORK="$(mktemp -d)"
+          (
+            cd "$TMP_WORK"
+            "$CLI_BIN" --version
+            "$CLI_BIN" list-posts
+          )
+          rm -rf "$TMP_WORK"

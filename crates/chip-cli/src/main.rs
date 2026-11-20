@@ -168,6 +168,8 @@ enum Commands {
         #[command(subcommand)]
         action: ToolCommands,
     },
+    /// List all built-in and discovered custom post-processor profiles.
+    ListPosts,
 }
 
 #[derive(Debug, Subcommand)]
@@ -317,5 +319,11 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
                 name,
             } => run_import_fusion(input, output, name),
         },
+        Commands::ListPosts => {
+            for profile in chip_post::load_available_post_profiles(None) {
+                println!("{}\t{} (.{})", profile.id, profile.name, profile.extension);
+            }
+            Ok(ExitCode::SUCCESS)
+        }
     }
 }

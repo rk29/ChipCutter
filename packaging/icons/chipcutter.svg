@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1E2738"/>
+      <stop offset="100%" stop-color="#111722"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#4A5D7A"/>
+      <stop offset="100%" stop-color="#222C3D"/>
+    </linearGradient>
+    <linearGradient id="steel" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#94A3B8"/>
+      <stop offset="35%" stop-color="#F1F5F9"/>
+      <stop offset="70%" stop-color="#CBD5E1"/>
+      <stop offset="100%" stop-color="#64748B"/>
+    </linearGradient>
+    <linearGradient id="amber" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#FFB84D"/>
+      <stop offset="55%" stop-color="#F97316"/>
+      <stop offset="100%" stop-color="#EA580C"/>
+    </linearGradient>
+    <linearGradient id="cyan" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#0EA5E9"/>
+      <stop offset="50%" stop-color="#38BDF8"/>
+      <stop offset="100%" stop-color="#0284C7"/>
+    </linearGradient>
+  </defs>
+  <!-- Rounded badge background -->
+  <rect x="24" y="24" width="464" height="464" rx="108" fill="url(#bg)" stroke="url(#rim)" stroke-width="10"/>
+  <!-- Machined cyan stock contour arc at base -->
+  <path d="M 116 372 A 164 62 0 0 0 396 372" fill="none" stroke="url(#cyan)" stroke-width="20" stroke-linecap="round" opacity="0.92"/>
+  <path d="M 156 396 A 120 42 0 0 0 356 396" fill="none" stroke="#38BDF8" stroke-width="10" stroke-linecap="round" opacity="0.45"/>
+  <!-- Dynamic amber-orange cutting chip & toolpath sweep -->
+  <path d="M 134 268 A 126 126 0 1 0 368 220" fill="none" stroke="url(#amber)" stroke-width="26" stroke-linecap="round"/>
+  <!-- Flying chip sparks -->
+  <circle cx="386" cy="186" r="14" fill="#FFB84D"/>
+  <circle cx="412" cy="150" r="8" fill="#FDE68A"/>
+  <!-- CNC Endmill body -->
+  <g>
+    <!-- Shank & collar -->
+    <rect x="216" y="76" width="80" height="72" rx="12" fill="url(#steel)"/>
+    <rect x="206" y="138" width="100" height="22" rx="8" fill="#475569"/>
+    <!-- Fluted body -->
+    <path d="M 218 160 L 294 160 L 294 316 L 256 356 L 218 316 Z" fill="url(#steel)"/>
+    <!-- Helical flute cutouts -->
+    <path d="M 218 192 L 294 168 L 294 196 L 218 220 Z" fill="#1E293B"/>
+    <path d="M 218 248 L 294 224 L 294 252 L 218 276 Z" fill="#1E293B"/>
+    <path d="M 218 304 L 294 280 L 294 308 L 256 322 L 218 316 Z" fill="#1E293B"/>
+  </g>
+</svg>

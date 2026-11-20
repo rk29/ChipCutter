@@ -114,6 +114,20 @@ struct GuiArgs {
     capture_ghost_part: Option<bool>,
 }
 
+const APP_ID: &str = "io.github.rk29.ChipCutter";
+const APP_ICON_PNG: &[u8] = include_bytes!("../../../packaging/icons/chipcutter-256.png");
+
+fn load_app_icon() -> Option<egui::IconData> {
+    let img = image::load_from_memory_with_format(APP_ICON_PNG, image::ImageFormat::Png).ok()?;
+    let rgba = img.to_rgba8();
+    let (width, height) = rgba.dimensions();
+    Some(egui::IconData {
+        rgba: rgba.into_raw(),
+        width,
+        height,
+    })
+}
+
 fn main() -> eframe::Result {
     #[cfg(target_os = "linux")]
     linux_gsettings::configure_gsettings_backend_for_gtk();
@@ -170,25 +184,36 @@ fn main() -> eframe::Result {
         }
     });
 
-    let is_self_test = self_test.is_some();
-    let mut native_options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("ChipCutter — 2.5D & V-Carve CAM")
-            .with_inner_size([1360.0, 840.0])
-            .with_min_inner_size([900.0, 560.0]),
-        renderer: eframe::Renderer::Wgpu,
-        ..Default::default()
-    };
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_app_id(APP_ID)
+        .with_title("ChipCutter — 2.5D, 3-Axis, & 4th-Axis CAM")
+        .with_inner_size([1360.0, 840.0])
+        .with_min_inner_size([900.0, 560.0]);
+    if let Some(icon) = load_app_icon() {
+        viewport = viewport.with_icon(std::sync::Arc::new(icon));
+    }
 
     #[cfg(target_os = "linux")]
-    if is_self_test && std::env::var_os("DISPLAY").is_some() {
-        // When running under `xvfb-run` in a host session that also exports `WAYLAND_DISPLAY`,
-        // `winit` defaults to Wayland unless explicitly bound to X11, which would open visible
-        // windows on the user's desktop instead of inside Xvfb.
-        native_options.event_loop_builder = Some(Box::new(|builder| {
-            winit::platform::x11::EventLoopBuilderExtX11::with_x11(builder);
-        }));
-    }
+    let event_loop_builder: Option<eframe::EventLoopBuilderHook> =
+        if self_test.is_some() && std::env::var_os("DISPLAY").is_some() {
+            // When running under `xvfb-run` in a host session that also exports `WAYLAND_DISPLAY`,
+            // `winit` defaults to Wayland unless explicitly bound to X11, which would open visible
+            // windows on the user's desktop instead of inside Xvfb.
+            Some(Box::new(|builder| {
+                winit::platform::x11::EventLoopBuilderExtX11::with_x11(builder);
+            }))
+        } else {
+            None
+        };
+    #[cfg(not(target_os = "linux"))]
+    let event_loop_builder: Option<eframe::EventLoopBuilderHook> = None;
+
+    let native_options = eframe::NativeOptions {
+        viewport,
+        renderer: eframe::Renderer::Wgpu,
+        event_loop_builder,
+        ..Default::default()
+    };
 
     eframe::run_native(
         "ChipCutter",

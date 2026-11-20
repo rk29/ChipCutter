@@ -17,6 +17,13 @@ members = [
 version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
+description = "Open-source 2.5D, 3-axis, and 4th-axis desktop CAM and G-code verification suite"
+repository = "https://github.com/rk29/ChipCutter"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
 
 [workspace.lints.rust]
 unsafe_code = "deny"

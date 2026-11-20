@@ -1,0 +1,135 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build and verify release artifacts without publishing a GitHub Release"
+        type: boolean
+        default: true
+      tag:
+        description: "Optional version tag override for dry-run (e.g. v0.1.0); defaults to Cargo.toml version"
+        type: string
+        default: ""
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  prepare:
+    name: Validate Version & Prepare Release
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      tag: ${{ steps.meta.outputs.tag }}
+      is_prerelease: ${{ steps.meta.outputs.is_prerelease }}
+      should_publish: ${{ steps.meta.outputs.should_publish }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Resolve & validate release version
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          CARGO_VERSION="$(python3 - <<'PY'
+          import tomllib
+          with open("Cargo.toml", "rb") as f:
+              data = tomllib.load(f)
+          print(data["workspace"]["package"]["version"])
+          PY
+          )"
+
+          if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
+            TAG="${GITHUB_REF_NAME}"
+            TAG_VERSION="${TAG#v}"
+            if [[ "${TAG_VERSION}" != "${CARGO_VERSION}" ]]; then
+              echo "::error::Tag '${TAG}' (${TAG_VERSION}) does not match Cargo.toml workspace version (${CARGO_VERSION})."
+              exit 1
+            fi
+            SHOULD_PUBLISH="true"
+          else
+            INPUT_TAG="${{ inputs.tag }}"
+            if [[ -n "${INPUT_TAG}" ]]; then
+              TAG="${INPUT_TAG}"
+            else
+              TAG="v${CARGO_VERSION}"
+            fi
+            TAG_VERSION="${TAG#v}"
+            if [[ "${{ inputs.dry_run }}" == "true" ]]; then
+              SHOULD_PUBLISH="false"
+            else
+              SHOULD_PUBLISH="true"
+            fi
+          fi
+
+          if [[ "${TAG_VERSION}" == *"-"* ]]; then
+            IS_PRERELEASE="true"
+          else
+            IS_PRERELEASE="false"
+          fi
+
+          echo "version=${TAG_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "is_prerelease=${IS_PRERELEASE}" >> "$GITHUB_OUTPUT"
+          echo "should_publish=${SHOULD_PUBLISH}" >> "$GITHUB_OUTPUT"
+          echo "Prepared release tag=${TAG} version=${TAG_VERSION} prerelease=${IS_PRERELEASE} publish=${SHOULD_PUBLISH}"
+
+  # Platform packaging jobs are wired in Milestones 26 (linux-flatpak),
+  # 27 (windows-x64), and 28 (macos-universal), uploading files with the
+  # artifact prefix `release-asset-*` for unified checksum publishing below.
+
+  publish-release:
+    name: Checksums & GitHub Release
+    needs: [prepare]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download platform release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-asset-*
+          path: dist
+          merge-multiple: true
+
+      - name: Generate unified SHA256SUMS.txt
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          shopt -s nullglob
+          FILES=(dist/*)
+          if (( ${#FILES[@]} > 0 )); then
+            (
+              cd dist
+              LC_ALL=C sha256sum * > SHA256SUMS.txt
+              cat SHA256SUMS.txt
+            )
+          else
+            echo "No platform artifacts produced yet (skeleton release dry-run)."
+          fi
+
+      - name: Upload checksum bundle artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-checksums-${{ needs.prepare.outputs.version }}
+          path: dist/SHA256SUMS.txt
+          if-no-files-found: ignore
+
+      - name: Publish GitHub Release
+        if: needs.prepare.outputs.should_publish == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          name: ChipCutter ${{ needs.prepare.outputs.tag }}
+          prerelease: ${{ needs.prepare.outputs.is_prerelease == 'true' }}
+          generate_release_notes: true
+          files: dist/*
+          fail_on_unmatched_files: false
