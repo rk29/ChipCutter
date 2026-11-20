@@ -7,7 +7,7 @@
 ## 1. Spec-First Workflow
 - **Authoritative Source of Truth:** All product, algorithmic, and architectural decisions live in `specs/`. Before proposing changes or writing code for any subsystem, read its corresponding spec document below.
 - **Build & Environment Setup:** Contributor toolchain, native dependencies, and headless test setup live in `DEVELOPMENT.md`.
-- **Implementation Plans Location:** Store milestone and feature implementation plans in `plans/` (`01`..`05` for Phase 1; `06`..`09` for Phase 2; `10`..`12` for Phase 3 UI Polish & Usability; `13`..`15` for Phase 4 Illustrated Toolpath Strategy Tutorials).
+- **Implementation Plans Location:** Store milestone and feature implementation plans in `plans/` (`01`..`05` for Phase 1; `06`..`09` for Phase 2; `10`..`12` for Phase 3 UI Polish & Usability; `13`..`15` for Phase 4 Illustrated Toolpath Strategy Tutorials; `16`..`21` for Phase 5 3-Axis Surface Milling, Mesh Support, & 4th-Axis Rotary Milling).
 - **No Unsolicited Code Generation:** While iterating on specifications or plans, do **not** scaffold `Cargo.toml` or `.rs` files until the user explicitly asks to begin implementation.
 - **Keep Specs Synchronized:** Whenever an architectural decision, file schema, or scope boundary changes during implementation, update the relevant `specs/*.md` file in the same task.
 
@@ -24,7 +24,7 @@
 | `specs/07-post-processor.md` | Typed `ClEvent` IR, `.post.toml` profiles, ATC vs split-by-tool, GRBL & LinuxCNC dialects |
 | `specs/08-ui-viewport.md` | `eframe` + `wgpu` + `egui_tiles` shell, Dark/Light design system, Viewport HUDs, Command Palette, Undo/Redo |
 | `specs/09-persistence-cli.md` | `.chip.toml` (`schema_version = 1 / 2`) & `.chipz` formats, headless CLI subcommands, testing |
-| `specs/10-roadmap.md` | Completed Phase 1 (M1–M5), Phase 2 (M6–M9), Phase 3 (M10–M12), & Phase 4 (M13–M15) milestones, plus future phases |
+| `specs/10-roadmap.md` | Completed Phase 1–4 (M1–M15) milestones, active Phase 5 (M16–M21) 3-axis mesh & 4th-axis rotary milestones, and future phases |
 | `specs/11-sketches-vectors.md` | `chip-sketch` 2D Sketch Layers, parametric shapes, DXF/SVG importers, TrueType & Hershey text |
 
 ---
@@ -53,7 +53,6 @@
 - **Permissive Licenses Only:** Third-party crates must use permissive or weak-copyleft licenses (`MIT`, `Apache-2.0`, `BSD-2-Clause`, `BSD-3-Clause`, `MPL-2.0`, `BSL-1.0`, `ISC`, `Zlib`, `Unicode-3.0`). Do **not** add `GPL`, `LGPL`, or `AGPL` dependencies (enforced via `deny.toml`).
 - **Backward Compatibility:** Preserve lossless loading of `schema_version = 1` and `schema_version = 2` `.chip.toml`/`.chipz` projects and byte-for-byte parity on existing Phase 1 and Phase 2 golden G-code tests unless an intentional bugfix is approved.
 - **Unplanned Scope Guardrails:** Do **not** introduce deferred future-phase features without an approved milestone plan:
-  - No 3D triangle mesh imports (`STL`, `OBJ`, `3MF`) or 3-axis surface milling (`Waterline`, `Scallop`, `3D Raster`).
   - No nonlinear 2D CAD geometric constraint solver (keep 2D sketches direct, parametric, and expression-driven).
   - No USB/serial/network machine streaming or jogging (pure offline CAM).
   - No standalone HTML/PDF setup sheets (emit operator setup/tool summaries as structured G-code header comments).

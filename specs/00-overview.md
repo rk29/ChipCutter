@@ -29,7 +29,6 @@
 ---
 
 ## Explicit Non-Goals (Deferred to Future Phases)
-- **No 3D triangle mesh inputs or 3-axis surfacing yet:** STL, OBJ, and 3MF meshes plus 3D Waterline/Scallop/Raster surfacing belong to future phases.
 - **No nonlinear 2D CAD constraint solver:** Built-in 2D Sketch tools use direct parametric expressions and viewport snapping rather than a parametric CAD sketch solver.
 - **No machine control / G-code streaming:** ChipCutter is pure offline CAM; jogging, probing, and streaming stay in dedicated senders (LinuxCNC, gSender, FluidNC UI, etc.).
 - **No standalone printable HTML/PDF setup sheets yet:** Operator summary metadata is emitted directly as structured G-code header comments.
@@ -52,5 +51,5 @@
 | [07-post-processor.md](file:///workspace/ChipCutter/specs/07-post-processor.md) | Typed CL-data IR, TOML post configs, ATC vs split-per-tool, GRBL & LinuxCNC posts |
 | [08-ui-viewport.md](file:///workspace/ChipCutter/specs/08-ui-viewport.md) | `eframe` + `wgpu` + `egui_tiles` shell, Dark/Light design system, Viewport HUDs, Command Palette, Undo/Redo |
 | [09-persistence-cli.md](file:///workspace/ChipCutter/specs/09-persistence-cli.md) | `.chip.toml` (`schema_version = 2`) & `.chipz` formats, headless CLI subcommands, testing strategy |
-| [10-roadmap.md](file:///workspace/ChipCutter/specs/10-roadmap.md) | Completed Phase 1 (M1–M5), Phase 2 (M6–M9), Phase 3 (M10–M12), & Phase 4 (M13–M15) milestones, plus future phases |
+| [10-roadmap.md](file:///workspace/ChipCutter/specs/10-roadmap.md) | Completed Phase 1–4 (M1–M15) milestones, active Phase 5 (M16–M21) 3-axis mesh & 4th-axis rotary milestones, and future phases |
 | [11-sketches-vectors.md](file:///workspace/ChipCutter/specs/11-sketches-vectors.md) | `chip-sketch` 2D Sketch Layers, parametric shapes, DXF/SVG importers, TrueType & Hershey text |

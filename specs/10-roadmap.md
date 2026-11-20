@@ -101,20 +101,51 @@ Phase 4 delivered a complete set of illustrated Markdown tutorials in `docs/tuto
 
 ---
 
+## Phase 5 — 3-Axis Surface Milling, Mesh Support, & 4th-Axis Rotary Milling (Active — M16–M21)
+
+Phase 5 extends ChipCutter beyond 2.5D prismatic and V-carve machining into **triangle mesh imports (`STL`/`OBJ`/`3MF`)**, full **3-axis sculpted surface roughing & finishing**, and **4th-axis rotary milling** (supporting configurable `A`/`B`/`C` rotary axes, 2-linear + rotary `Z+X`/`Z+Y` workflows, indexed `3+1` positioning, and full simultaneous `X+Y+Z+Rotary` machining)—while preserving all UI-agnostic crate boundaries, `f64` millimeter accuracy, lossless `schema_version = 1/2` compatibility, and existing Phase 1–2 golden G-code parity:
+
+### Milestone 16 — Triangle Mesh Import (`STL` / `OBJ` / `3MF`), BVH Surface Kernel, & Schema v3 (`plans/16-milestone-16-plan.md`)
+- **Pure-Rust Mesh Importers & `MeshBvh` (`chip-cad`, `chip-math`):** Permissively licensed importers for binary/ASCII **STL**, Wavefront **OBJ**, and **3MF** with unit normalization into canonical `f64` millimeters, vertex welding, winding/manifold diagnostics, and an `f64` triangle BVH (`MeshBvh`) coexisting cleanly with STEP B-Rep solids.
+- **Analytical Drop-Cutter & Push-Cutter Kernel (`chip-cam`):** Exact `f64` drop-cutter (`z_contact(x, y)`) and push-cutter contact solvers over `MeshBvh` and high-resolution STEP B-Rep surfaces supporting Flat, Ball, Bull-Nose, and Tapered/V-Bit cutters with radial/axial stock-to-leave and 2D containment boundary clipping.
+- **Schema v3, `.chipz` Mesh Bundling, CLI, & Viewport (`chip-project`, `chip-cli`, `chip-gui`):** Lossless `.chip.toml` `schema_version = 2 -> 3` migration supporting `.stl`/`.obj`/`.3mf` model entries (SHA-256 + `.chipz` `models/*` bundling), `chipcutter inspect` mesh support, `wgpu` shaded mesh rendering, and Setup stock/WCS alignment on imported meshes.
+
+### Milestone 17 — 3D Adaptive Roughing & 3D Waterline (Z-Level) Machining (`plans/17-milestone-17-plan.md`)
+- **3D Waterline / Z-Level Slicing (`chip-cam`):** Horizontal Z-level contour slicing across triangle meshes and STEP solids (`OperationKind::Waterline3D`) with steep-slope filtering, adaptive intermediate Z-stepdowns on shallow plateaus, closed/open boundary support, and smooth helical/ramp entry.
+- **3D Adaptive Clearing / Roughing (`chip-cam`):** Multi-level constant-engagement 3D trochoidal roughing (`OperationKind::Adaptive3D`) combining Z-level slices, intermediate flat-step detection, stock-to-leave allowances, micro-lift stay-down linking, and radial chip-thinning feed compensation for sculpted 3D cavities and bosses.
+- **3D Target Gouge Verification & UI (`chip-sim`, `chip-gui`):** 2D sketch/silhouette containment boundaries, 3D target-mesh gouge checking in `chip-sim`'s 5-rule verifier (including analytical Ball & Bull-Nose sweepers), and `3D Waterline` / `3D Adaptive` Inspector controls.
+
+### Milestone 18 — 3D Surface Finishing: Parallel Raster, Constant-Scallop, & Pencil Cleanup (`plans/18-milestone-18-plan.md`)
+- **3D Parallel / Raster Finishing (`chip-cam`):** Exact drop-cutter 3D parallel surfacing (`OperationKind::Parallel3D`) with configurable pass angle, shallow-area slope limits, optional perpendicular cross-finishing pass, smooth arc linking, and cusp-height stepover control.
+- **Constant-Scallop & 3D Pencil Finishing (`chip-cam`):** Constant-cusp-height **3D Scallop** (`OperationKind::Scallop3D`) generating surface-projected offset contours across variable slopes for uniform finish, paired with **3D Pencil** (`OperationKind::Pencil3D`) bi-tangent valley/fillet tracing to clean concave corners after larger ball-nose passes.
+- **3D Rest Boundaries, Viewport Showcase, & CLI Goldens (`chip-sim`, `chip-gui`, `chip-cli`):** Rest-machining containment derived from preceding 3D roughing/finishing operations, 3D Finishing Inspector UI + built-in sculpted 3D sample project, and headless `chipcutter` 3-axis golden G-code verification.
+
+### Milestone 19 — 4th-Axis Machine Kinematics, Rotary Stock/WCS, & Rotary CL-Data / Posts (`plans/19-milestone-19-plan.md`)
+- **Configurable Rotary Axis & Setup Model (`chip-cam`, `chip-project`):** Setup-level 4th-axis configuration aligning the rotary axis along **`X` (`A`-axis)**, **`Y` (`B`-axis)**, or **`Z` (`C`-axis)** with configurable rotation direction (`CW`/`CCW`), centerline origin/offset, cylindrical rotary stock sizing, and configurable post-processor axis letter mapping.
+- **Rotary `ClEvent` IR & 4-Axis Post-Processors (`chip-cam`, `chip-post`):** Extend typed `ClEvent` with rotary angular coordinates, inverse-time feed (`G93`) vs. surface/angular feed (`G94`), continuous multi-turn unwinding / shortest-path indexing, and built-in 4-axis `.post.toml` profiles (`linuxcnc_4axis`, `grblhal_4axis`, plus swapped-axis rotary wrapping output).
+- **Polar Stock Simulation & Rotary Viewport Gizmo (`chip-sim`, `chip-gui`):** Polar/cylindrical heightmap `(u, θ) -> r` material-removal sweeper and 5-rule collision/gouge verifier, 3D viewport rotary axis centerline/chuck gizmo with animated rotating workpiece/tool playback, and Setup Rotary Inspector controls.
+
+### Milestone 20 — 2-Linear + Rotary (`Z + X` / `Z + Y`) & Indexed `3+1` Multi-Face Milling (`plans/20-milestone-20-plan.md`)
+- **2-Linear + Rotary Mode (`Z + X + Rotary` or `Z + Y + Rotary`) (`chip-cam`):** Dedicated centerline-locked rotary mode driving only two linear axes plus the rotary axis (`Z + X` or `Z + Y`, locking the cross-axis at centerline):
+  - **Cylindrical Wrapping:** Wrapping 2D Sketch/DXF/SVG contours, pockets, curve traces, and V-carving onto a target cylinder radius.
+  - **Continuous Rotary Spiral & Axial Surfacing:** Continuous helical spiral and axial parallel 3D clearing/finishing over arbitrary STEP/STL/OBJ/3MF solids (ideal for 3-axis controllers with a swapped axis or 4-axis machines).
+- **Indexed `3+1` Positional Multi-Face Milling (`chip-cam`, `chip-project`):** Orientation-indexed operations (arbitrary rotary angle or B-Rep face normal alignment) executing all existing 2.5D & 3-axis strategies across multiple sides of a part in one chucking with safe rotary-clearance retracts between index rotations.
+- **Rotary Preview & Cylindrical Oracle Verification (`chip-sim`, `chip-gui`):** Cylindrical heightmap crash/gouge verification for wrapped, spiral, and indexed toolpaths, live wrapped-path 3D viewport rendering, and Rotary Mode / Index Angle Inspector UI.
+
+### Milestone 21 — Simultaneous 4-Axis Milling (`X + Y + Z + Rotary`), Phase 5 Tutorials, & Hardening (`plans/21-milestone-21-plan.md`)
+- **Simultaneous 4-Axis Surface & Undercut Milling (`chip-cam`):** Full simultaneous 4-axis motion operating all three linear axes (`X`, `Y`, `Z`) together with the rotary axis (`A`/`B`/`C`) for off-centerline walls, undercuts, helical flutes/cams, and continuous rotary flowline/swarf finishing with gouge-free tool-axis tilt smoothing.
+- **Full 4-Axis Verification & `G93` Feed Control (`chip-sim`, `chip-post`):** Off-centerline shank/holder and target-model collision checks, exact `G93` inverse-time feedrate calculation over simultaneous `(X, Y, Z, A/B/C)` moves, and 4-axis cycle-time estimation.
+- **Phase 5 Goldens, Illustrated Tutorials, & Release Hardening (`chip-cli`, `docs/tutorials/`):** End-to-end golden G-code regression suites covering 3-axis mesh surfacing, `Z+X`/`Z+Y` rotary wrapping & spiral surfacing, `3+1` indexed machining, and simultaneous 4-axis milling (preserving Phase 1–2 goldens byte-for-byte), new illustrated Markdown tutorials (`docs/tutorials/`) with minimal starter models & screenshots, and synchronized documentation.
+
+---
+
 ## Future Phases
 
 1. **Functional & Behavioral User-Level Testing:**
    - Durable end-to-end user-journey and GUI behavioral test harness (`egui_kittest` / headless interactive workflows + CLI workflows) verifying every feature from a machinist's point of view without brittle coupling to internal implementation details.
-2. **3-Axis Surface Milling & Mesh Support:**
-   - Importing **STL / OBJ / 3MF** meshes alongside STEP solids.
-   - 3D Waterline (Z-level), Parallel/Raster 3D finishing, Scallop, Pencil, and 3D Adaptive roughing strategies.
-3. **4th-Axis Rotary Milling:**
-   - **Configurable Rotary Axis:** Configurable rotary axis aligned along different machine axes (`A` around `X`, `B` around `Y`, or `C` around `Z`) with configurable rotation direction, centerline offset, and post-processor axis letter mapping.
-   - **2-Linear + Rotary Mode (`Z + X + Rotary` or `Z + Y + Rotary`):** Dedicated rotary mode operating the rotary axis alongside two linear axes (`Z + X` or `Z + Y`, locking the cross-axis on centerline) for cylindrical wrapping, rotary engraving/pocketing, indexed (`3+1`) machining, and continuous spiral/parallel rotary cutting.
-   - **Simultaneous 4-Axis Milling (`X + Y + Z + Rotary`):** Operating all three linear axes and the rotary axis together simultaneously for continuous 4-axis surfacing, undercuts, and sculpted rotary parts, with rotary feed / inverse-time (`G93`) compensation, rotary stock simulation, and 4-axis post-processor support (`LinuxCNC`, `grblHAL` / `FluidNC`).
-4. **Advanced Workholding & Multi-Setup Volumetric Stock:**
+2. **Advanced Workholding & Multi-Setup Volumetric Stock:**
    - 3D fixture/vise/clamp collision bodies with automatic safe-rapid routing.
    - Carrying simulated stock across flipped setups via tri-dexel volumetric stock.
-5. **Ecosystem & Extensibility:**
+3. **Ecosystem & Extensibility:**
    - Optional OpenCASCADE (`opencascade-rs`) `CadKernel` feature backend.
    - Thread milling (`ThreadMill` single/multi-form cutter geometry, ISO Metric & Unified thread tables, radial arc-in/out helical passes), additional controller dialects (Fanuc/Haas, Mach4, Masso, Centroid), and printable HTML/PDF setup sheets.
