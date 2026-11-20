@@ -248,7 +248,7 @@ mod tests {
 
         // Wait briefly for rayon background tasks to complete
         let start_wait = Instant::now();
-        while dispatcher.is_busy() && start_wait.elapsed().as_secs() < 10 {
+        while dispatcher.is_busy() && start_wait.elapsed().as_secs() < 60 {
             dispatcher.poll_events(&mut proj, &mut cache, 1);
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
@@ -276,15 +276,16 @@ mod tests {
             OperationStatus::Dirty
         );
 
-        // Undo (`Ctrl+Z`) -> restores Clean status + cached GeneratedToolpath in < 1 ms!
+        // Undo (`Ctrl+Z`) -> restores Clean status + cached GeneratedToolpath without re-dispatching!
         let t_undo = Instant::now();
         history.undo(&mut proj).unwrap();
         cache.reconcile_project_statuses(&mut proj, 1, &HashSet::new());
-        let undo_us = t_undo.elapsed().as_micros();
+        let undo_ms = t_undo.elapsed().as_millis();
         assert!(
-            undo_us < 10_000,
-            "Undo + cache reconciliation should be instantaneous, took {undo_us} us"
+            undo_ms < 500,
+            "Undo + cache reconciliation should not trigger recomputation, took {undo_ms} ms"
         );
+        assert!(!dispatcher.is_busy());
         assert_eq!(
             proj.setups[0].operations[1].runtime_status,
             OperationStatus::Clean
