@@ -32,7 +32,7 @@ jobs:
       should_publish: ${{ steps.meta.outputs.should_publish }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Resolve & validate release version
         id: meta
@@ -91,7 +91,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install Flatpak & metadata validation tools
         run: |
@@ -166,7 +166,7 @@ jobs:
           ls -lh dist/
 
       - name: Upload Linux release artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: release-asset-linux-flatpak
           path: |
@@ -180,7 +180,7 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -300,7 +300,7 @@ jobs:
           }
 
       - name: Upload Windows release assets
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: release-asset-windows-x64
           path: |
@@ -316,7 +316,7 @@ jobs:
       MACOSX_DEPLOYMENT_TARGET: "12.0"
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Rust toolchain (arm64 + x86_64)
         uses: dtolnay/rust-toolchain@stable
@@ -419,7 +419,7 @@ jobs:
           fi
 
       - name: Upload macOS release assets
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: release-asset-macos-universal
           path: |
@@ -433,7 +433,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Download platform release artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: release-asset-*
           path: dist
@@ -458,7 +458,7 @@ jobs:
 
       - name: Upload checksum bundle artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: release-checksums-${{ needs.prepare.outputs.version }}
           path: dist/SHA256SUMS.txt
@@ -466,7 +466,7 @@ jobs:
 
       - name: Publish GitHub Release
         if: needs.prepare.outputs.should_publish == 'true'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.prepare.outputs.tag }}
           name: ChipCutter ${{ needs.prepare.outputs.tag }}
