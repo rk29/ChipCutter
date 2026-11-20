@@ -2,12 +2,17 @@
 //! 3D cutter/stock mesh builders, and 5-rule crash & gouge verifier (`chip-sim`).
 
 pub mod cutter_profile;
+pub mod cylindrical;
 pub mod heightmap;
 pub mod timeline;
 pub mod verifier;
 
 pub use cutter_profile::{
     RadialCutterProfile, SimColoredVertex, SimToolMesh, ToolMeshZone, build_cutter_assembly_mesh,
+};
+pub use cylindrical::{
+    CylindricalCheckpoint, CylindricalStock, run_cylindrical_setup_simulation,
+    tessellate_cylindrical_stock_mesh,
 };
 pub use heightmap::{
     HeightfieldStock, OPERATION_STOCK_PALETTE, SetupSimulationInput, SetupSimulationResult,

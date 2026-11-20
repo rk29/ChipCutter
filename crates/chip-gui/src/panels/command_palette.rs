@@ -74,6 +74,7 @@ pub enum CommandId {
     SamplePure2dPanel,
     SampleSculptedMeshDome,
     SampleReliefWaveMesh,
+    SampleRotaryIndexedShaft,
     SampleRevisionReloadV2,
 }
 
@@ -458,6 +459,13 @@ pub const PALETTE_COMMANDS: &[PaletteEntry] = &[
         shortcut: None,
     },
     PaletteEntry {
+        id: CommandId::SampleRotaryIndexedShaft,
+        category: "Samples",
+        label: "Sample: Load Rotary Indexed Shaft (4th-Axis A)",
+        keywords: "sample demo 4th axis rotary shaft chuck a-axis g93",
+        shortcut: None,
+    },
+    PaletteEntry {
         id: CommandId::SampleRevisionReloadV2,
         category: "Samples",
         label: "Sample: Associatively Reload CAD Revision v2",
@@ -476,6 +484,7 @@ impl CommandId {
             Self::SamplePure2dPanel => Some(SampleProjectId::Pure2dPanel),
             Self::SampleSculptedMeshDome => Some(SampleProjectId::SculptedMeshDome),
             Self::SampleReliefWaveMesh => Some(SampleProjectId::ReliefWaveMesh),
+            Self::SampleRotaryIndexedShaft => Some(SampleProjectId::RotaryIndexedShaft),
             Self::SampleRevisionReloadV2 => Some(SampleProjectId::CadRevisionV2Reload),
             _ => None,
         }

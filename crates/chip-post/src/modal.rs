@@ -10,7 +10,9 @@ pub(crate) struct ModalState {
     pub x_word: Option<String>,
     pub y_word: Option<String>,
     pub z_word: Option<String>,
+    pub rotary_word: Option<String>,
     pub f_word: Option<String>,
+    pub feed_mode_g93: bool,
     pub canned_active: bool,
     pub cutter_comp: CutterCompMode,
     pub coolant_on: bool,
@@ -24,7 +26,9 @@ impl Default for ModalState {
             x_word: None,
             y_word: None,
             z_word: None,
+            rotary_word: None,
             f_word: None,
+            feed_mode_g93: false,
             canned_active: false,
             cutter_comp: CutterCompMode::Off,
             coolant_on: false,
@@ -38,6 +42,7 @@ impl ModalState {
         self.x_word = None;
         self.y_word = None;
         self.z_word = None;
+        self.rotary_word = None;
         self.f_word = None;
     }
 }

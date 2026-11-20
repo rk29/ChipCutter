@@ -10,9 +10,10 @@ pub mod profile;
 pub use emitter::post_process_setup;
 pub use partition::{OperationPostInput, PostOutputFile, SetupPostInput, describe_wcs_origin};
 pub use profile::{
-    ArcCenterMode, BUILTIN_GRBL_TOML, BUILTIN_GRBLHAL_ATC_TOML, BUILTIN_LINUXCNC_TOML,
-    CommentStyle, LineNumberConfig, PostError, PostProfile, PostUnits, ToolChangeMode,
-    builtin_post_profiles, load_available_post_profiles, resolve_post_profile,
+    ArcCenterMode, BUILTIN_GRBL_ROTARY_WRAP_TOML, BUILTIN_GRBL_TOML, BUILTIN_GRBLHAL_4AXIS_TOML,
+    BUILTIN_GRBLHAL_ATC_TOML, BUILTIN_LINUXCNC_4AXIS_TOML, BUILTIN_LINUXCNC_TOML, CommentStyle,
+    LineNumberConfig, PostError, PostProfile, PostUnits, RotaryPostConfig, SwapAxisTarget,
+    ToolChangeMode, builtin_post_profiles, load_available_post_profiles, resolve_post_profile,
     user_post_profiles_dir,
 };
 
@@ -177,6 +178,7 @@ mod tests {
             stock: ResolvedStockGeometry::Box {
                 aabb_wcs: Aabb3::new(DVec3::new(0.0, 0.0, -15.0), DVec3::new(104.0, 84.0, 0.0)),
             },
+            rotary: None,
             clearance_z_wcs: 25.0,
             retract_z_wcs: 15.0,
             operations: vec![
@@ -289,6 +291,7 @@ mod tests {
             stock: ResolvedStockGeometry::Box {
                 aabb_wcs: Aabb3::new(DVec3::new(0.0, 0.0, -25.4), DVec3::new(50.8, 25.4, 0.0)),
             },
+            rotary: None,
             clearance_z_wcs: 25.4,
             retract_z_wcs: 12.7,
             operations: vec![
@@ -339,5 +342,137 @@ mod tests {
         assert!(inch_ngc.contains("G17 G20 G40 G49 G54 G80 G90 G94 G64 P0.0010"));
         assert!(inch_ngc.contains("Stock:        X=2.0000  Y=1.0000  Z=1.0000 in"));
         assert!(inch_ngc.contains("F59.1")); // 1500 / 25.4 = 59.055 ipm
+    }
+
+    #[test]
+    fn four_axis_posts_emit_g93_inverse_time_g94_restore_and_swapped_axis_wrapping() {
+        use chip_cam::{
+            ResolvedRotaryConfig, RotaryAxisKind, RotaryDirection, RotaryDriveMode,
+            RotaryUnwindMode, StockAxis,
+        };
+
+        let lib = default_starter_tool_library();
+        let t1 = &lib.tools[0];
+        let mut op = Operation::new("op_rot_1", "Rotary Spiral Test", OperationKind::Facing);
+        op.tool_id = Some(t1.id.clone());
+
+        let mut b = ToolpathBuilder::new("op_rot_1");
+        b.push_event(ClEvent::OperationStart {
+            op_id: op.id.clone(),
+            op_name: op.name.clone(),
+            strategy_name: "Rotary Test".to_string(),
+            est_time_sec: 10.0,
+        });
+        b.push_event(ClEvent::ToolChange {
+            tool_number: t1.tool_number,
+            length_offset: t1.length_offset_number,
+            diameter_offset: t1.diameter_offset_number,
+            tool_desc: t1.name.clone(),
+            is_first_tool: true,
+        });
+        b.push_event(ClEvent::SpindleStart {
+            rpm: 12_000.0,
+            direction: SpindleDirection::Cw,
+        });
+        b.rapid_to(DVec3::new(-30.0, 0.0, 32.0));
+        b.rotary_index_to(90.0, true, None);
+        b.linear_to(DVec3::new(-30.0, 0.0, 20.0), 300.0, MotionRole::Plunge);
+        // Simultaneous X + A helical cut at R = 20 mm, surface feed 600 mm/min
+        b.rotary_linear_to(
+            DVec3::new(30.0, 0.0, 20.0),
+            450.0,
+            600.0,
+            20.0,
+            MotionRole::Cut,
+        );
+        // Return to pure linear move -> post MUST restore G94!
+        b.linear_to(DVec3::new(30.0, 0.0, 32.0), 1_200.0, MotionRole::LeadOut);
+        b.push_event(ClEvent::OperationEnd);
+        let tp = b.finish();
+
+        let rotary_x = ResolvedRotaryConfig {
+            mode: RotaryDriveMode::Simultaneous4Axis,
+            axis: RotaryAxisKind::XAxis,
+            direction: RotaryDirection::RightHandCcw,
+            axis_letter: 'A',
+            center_wcs: DVec3::ZERO,
+            stock_u_min: -40.0,
+            stock_u_max: 40.0,
+            stock_outer_radius_mm: 22.0,
+            clearance_radius_mm: 32.0,
+            chuck_end_positive: false,
+            chuck_u_min: -60.0,
+            chuck_u_max: -40.0,
+            chuck_radius_mm: 32.5,
+            unwind_mode: RotaryUnwindMode::ContinuousMultiTurn,
+        };
+
+        let input = SetupPostInput {
+            project_name: "rotary_shaft.chip.toml",
+            setup_name: "Setup 1 - A-Axis",
+            wcs_slot: WorkOffsetSlot::G54,
+            wcs_origin_description: "Stock Center".to_string(),
+            stock: ResolvedStockGeometry::Cylinder {
+                axis: StockAxis::X,
+                center_wcs: DVec3::ZERO,
+                radius_mm: 22.0,
+                min_axial_mm: -40.0,
+                max_axial_mm: 40.0,
+                aabb_wcs: Aabb3::new(
+                    DVec3::new(-40.0, -22.0, -22.0),
+                    DVec3::new(40.0, 22.0, 22.0),
+                ),
+            },
+            rotary: Some(rotary_x),
+            clearance_z_wcs: 35.0,
+            retract_z_wcs: 32.0,
+            operations: vec![OperationPostInput {
+                op: &op,
+                tool: t1,
+                toolpath: &tp,
+            }],
+        };
+
+        // 1. LinuxCNC 4-Axis: emits A90.000 index, G93 + A450.000 + F<inv>, then restores G94!
+        let lc4 = resolve_post_profile("linuxcnc_4axis", None).unwrap();
+        let lc4_out = post_process_setup(&input, &lc4, "rotary_shaft").unwrap();
+        assert_eq!(lc4_out.len(), 1);
+        let ngc = &lc4_out[0].content;
+        assert!(ngc.contains("Rotary 4th:   A-Axis"));
+        assert!(ngc.contains("A90.000"), "missing A90 index:\n{ngc}");
+        assert!(
+            ngc.contains("G93 G1 X30.0000 A450.000 F"),
+            "missing G93 simultaneous cut:\n{ngc}"
+        );
+        let g93_pos = ngc.find("G93 G1").unwrap();
+        let g94_after = ngc[g93_pos..].find("\nG94\n");
+        assert!(
+            g94_after.is_some(),
+            "G94 must be restored immediately after G93 block:\n{ngc}"
+        );
+
+        // 2. grblHAL 4-Axis: stays <= 80 chars/line with G93 + A450
+        let gh4 = resolve_post_profile("grblhal_4axis", None).unwrap();
+        let gh4_out = post_process_setup(&input, &gh4, "rotary_shaft").unwrap();
+        assert_eq!(gh4_out.len(), 1);
+        assert!(gh4_out[0].max_line_chars <= 80);
+        assert!(gh4_out[0].content.contains("G93 G1 X30 A450 F"));
+
+        // 3. GRBL 3-Axis Swapped-Axis Rotary Wrap: maps A450 deg @ R=20mm -> Y = 2.5*pi*20 = 157.080 mm, zero A words!
+        let wrap = resolve_post_profile("grbl_rotary_wrap", None).unwrap();
+        let wrap_out = post_process_setup(&input, &wrap, "rotary_shaft").unwrap();
+        assert_eq!(wrap_out.len(), 1);
+        assert!(wrap_out[0].max_line_chars <= 80);
+        let nc = &wrap_out[0].content;
+        assert!(
+            !nc.lines()
+                .filter(|l| !l.starts_with('('))
+                .any(|l| l.contains('A')),
+            "swapped-axis wrap must never emit A word:\n{nc}"
+        );
+        assert!(
+            nc.contains("Y157.08"),
+            "450 deg at R=20mm must map to Y157.080 mm:\n{nc}"
+        );
     }
 }

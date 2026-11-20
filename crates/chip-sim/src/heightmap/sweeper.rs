@@ -766,6 +766,9 @@ pub fn run_setup_simulation(
     };
 
     check_cancel()?;
+    if let Some(rotary) = input.setup.rotary {
+        return crate::cylindrical::run_cylindrical_setup_simulation(input, rotary);
+    }
     let timeline = SimulationTimeline::from_operations(input.operations, input.kinematics);
     let mut stock = HeightfieldStock::from_setup_stock(&input.setup.stock, input.resolution)?;
     let initial_stock_volume_mm3 = stock.compute_volume_mm3();
@@ -843,7 +846,9 @@ pub fn run_setup_simulation(
         remaining_stock_volume_mm3,
         removed_volume_mm3,
         final_stock: stock,
+        final_cylindrical_stock: None,
         checkpoints,
+        cylindrical_checkpoints: Vec::new(),
         diagnostics,
     })
 }

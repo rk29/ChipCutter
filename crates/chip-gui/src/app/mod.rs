@@ -454,6 +454,9 @@ impl ChipCutterApp {
             SampleProjectId::ReliefWaveMesh => {
                 self.spawn_relief_wave_mesh_load(ctx.clone());
             }
+            SampleProjectId::RotaryIndexedShaft => {
+                self.spawn_rotary_shaft_load(ctx.clone());
+            }
         }
     }
 

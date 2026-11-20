@@ -136,6 +136,27 @@ pub enum ClEvent {
         dwell_sec: f64,
         feed_mm_min: f64,
     },
+    /// Pure angular 4th-axis positioning / indexing move (at safe rotary clearance height).
+    RotaryIndex {
+        angle_deg: f64,
+        rapid: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        feed_deg_min: Option<f64>,
+    },
+    /// Coordinated 4-axis rapid traverse (`X/Y/Z` + rotary axis).
+    RotaryRapidMove {
+        end_wcs: DVec3,
+        rotary_deg: f64,
+    },
+    /// Coordinated 4-axis linear + rotary cutting or linking move (post computes `G93` or `G94`).
+    RotaryLinearMove {
+        end_wcs: DVec3,
+        rotary_deg: f64,
+        feed_mm_min: f64,
+        /// Effective cutting radius (`mm`) from rotary centerline used to compute `G93` inverse-time feed.
+        effective_radius_mm: f64,
+        role: MotionRole,
+    },
     Dwell {
         seconds: f64,
     },

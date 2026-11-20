@@ -72,6 +72,7 @@ pub enum SetupTab {
     #[default]
     Wcs,
     Stock,
+    Rotary,
     Heights,
 }
 

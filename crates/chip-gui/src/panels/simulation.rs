@@ -16,7 +16,8 @@ use chip_project::{
 use chip_sim::{
     ScrubSnapshot, SetupSimulationInput, SetupSimulationResult, SimError, SimOperationInput,
     SimResolution, SimStockMesh, SimToolMesh, SimVerificationConfig, build_cutter_assembly_mesh,
-    format_cycle_time_hms, run_setup_simulation, tessellate_stock_mesh,
+    format_cycle_time_hms, run_setup_simulation, tessellate_cylindrical_stock_mesh,
+    tessellate_stock_mesh,
 };
 use chip_tools::{Tool, ToolId};
 use crossbeam_channel::{Receiver, Sender, unbounded};
@@ -59,7 +60,7 @@ pub struct SimulationPanelState {
     active_signature: u64,
     pub active_result: Option<Arc<SetupSimulationResult>>,
 
-    cached_stock_key: Option<(u64, usize, bool)>,
+    cached_stock_key: Option<(u64, usize, bool, i32)>,
     cached_stock_rev: u64,
     cached_stock_mesh: Option<Arc<SimStockMesh>>,
     last_playback_remesh: Instant,
@@ -423,7 +424,18 @@ impl SimulationPanelState {
                     s.completed_segments
                 }
             });
-            let desired_key = (self.active_run_id, completed_key, self.color_by_operation);
+            let rotary_deg = snap.as_ref().map_or(0.0, |s| s.rotary_deg);
+            let rotary_deg_tenths = if res.final_cylindrical_stock.is_some() {
+                (rotary_deg * 10.0).round() as i32
+            } else {
+                0
+            };
+            let desired_key = (
+                self.active_run_id,
+                completed_key,
+                self.color_by_operation,
+                rotary_deg_tenths,
+            );
 
             // Throttle intermediate stock remeshing to ~14 Hz while actively playing fast so 60 FPS stays silky
             let allow_remesh = !self.is_playing
@@ -432,7 +444,30 @@ impl SimulationPanelState {
                 || self.last_playback_remesh.elapsed().as_millis() >= 70;
 
             if self.cached_stock_key != Some(desired_key) && allow_remesh {
-                let mesh = if completed_key == usize::MAX {
+                let mesh = if let Some(cyl_final) = &res.final_cylindrical_stock {
+                    if completed_key == usize::MAX || res.cylindrical_checkpoints.is_empty() {
+                        tessellate_cylindrical_stock_mesh(
+                            cyl_final,
+                            self.color_by_operation,
+                            rotary_deg,
+                        )
+                    } else {
+                        let ckpt = res
+                            .cylindrical_checkpoints
+                            .iter()
+                            .rev()
+                            .find(|c| c.completed_segments <= completed_key)
+                            .unwrap_or(&res.cylindrical_checkpoints[0]);
+                        let mut cyl_snap = cyl_final.clone();
+                        cyl_snap.r_stock = ckpt.r_stock.clone();
+                        cyl_snap.last_op_idx = ckpt.last_op_idx.clone();
+                        tessellate_cylindrical_stock_mesh(
+                            &cyl_snap,
+                            self.color_by_operation,
+                            rotary_deg,
+                        )
+                    }
+                } else if completed_key == usize::MAX {
                     tessellate_stock_mesh(&res.final_stock, self.color_by_operation)
                 } else {
                     let ready =
@@ -791,12 +826,23 @@ impl SimulationPanelState {
                 ui.separator();
                 ui.monospace(format!("T{} ({})", s.tool_number, s.tool_name));
                 ui.separator();
-                ui.monospace(format!(
-                    "WCS X={} Y={} Z={}",
-                    display_unit.format_length(s.tip_pos_wcs.x),
-                    display_unit.format_length(s.tip_pos_wcs.y),
-                    display_unit.format_length(s.tip_pos_wcs.z),
-                ));
+                if let Some(cyl) = &res.final_cylindrical_stock {
+                    ui.monospace(format!(
+                        "WCS X={} Y={} Z={} {}={:.1}°",
+                        display_unit.format_length(s.tip_pos_wcs.x),
+                        display_unit.format_length(s.tip_pos_wcs.y),
+                        display_unit.format_length(s.tip_pos_wcs.z),
+                        cyl.rotary.axis_letter,
+                        s.rotary_deg,
+                    ));
+                } else {
+                    ui.monospace(format!(
+                        "WCS X={} Y={} Z={}",
+                        display_unit.format_length(s.tip_pos_wcs.x),
+                        display_unit.format_length(s.tip_pos_wcs.y),
+                        display_unit.format_length(s.tip_pos_wcs.z),
+                    ));
+                }
                 ui.separator();
                 ui.monospace(format!(
                     "{} | F={} | S={:.0} RPM | Seg {}/{}",

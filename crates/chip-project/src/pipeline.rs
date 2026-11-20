@@ -80,6 +80,7 @@ pub fn kinematics_for_post_profile(profile: &PostProfile) -> MachineKinematicsCo
         accel_mm_s2: profile.accel_mm_s2,
         junction_deviation_mm: 0.05,
         tool_change_time_sec: profile.tool_change_time_sec,
+        max_rotary_rate_deg_min: profile.rotary.max_rotary_feed_deg_min.max(60.0),
     }
 }
 
@@ -188,6 +189,7 @@ pub fn post_process_project_setup(
         wcs_slot: setup.wcs_slot,
         wcs_origin_description: describe_wcs_origin(&setup.wcs),
         stock: resolved.stock,
+        rotary: resolved.rotary,
         clearance_z_wcs: resolved.clearance_z_wcs,
         retract_z_wcs: resolved.retract_z_wcs,
         operations: post_ops,

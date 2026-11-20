@@ -2477,3 +2477,47 @@ pub fn build_relief_wave_mesh_project(
     proj.setups[0].operations = vec![op_rough, op_par, op_scallop];
     proj
 }
+
+/// Builds the Phase 5 **Rotary Indexed Shaft (STL Mesh)** 4th-axis preview [`ProjectDocument`]
+/// (`Ø40 mm × 80 mm` shaft aligned along WCS `X / A-Axis`, chucked in `Ø44 × 84 mm` cylindrical
+/// bar stock with `linuxcnc_4axis` post profile and active 4th-axis rotary kinematics).
+pub fn build_rotary_shaft_preview_project(
+    model_path: String,
+    sha256_hex: &str,
+    available_tools: &[Tool],
+) -> ProjectDocument {
+    let mut proj = ProjectDocument::new("Rotary Indexed Shaft (4th-Axis A)");
+    proj.models = vec![ModelEntry {
+        id: "model_1".to_string(),
+        path: model_path,
+        sha256: sha256_hex.to_string(),
+        unit_override: None,
+    }];
+    let setup = &mut proj.setups[0];
+    setup.name = "Setup 1 — 4th-Axis A-Chuck (X-Axis)".to_string();
+    setup.post_profile = "linuxcnc_4axis".to_string();
+    setup.wcs.origin = WcsOriginMode::ModelBoxPoint {
+        anchor: BoxAnchor27 {
+            x: chip_cam::AxisAnchor::Center,
+            y: chip_cam::AxisAnchor::Center,
+            z: chip_cam::AxisAnchor::Center,
+        },
+    };
+    setup.stock = StockConfig::RelativeCylinder {
+        axis: chip_cam::StockAxis::X,
+        radial_offset: ParamLength::from_mm(2.0),
+        top_offset: ParamLength::from_mm(2.0),
+        bottom_offset: ParamLength::from_mm(2.0),
+    };
+    setup.rotary.mode = chip_cam::RotaryDriveMode::Indexed3Plus1;
+    setup.rotary.axis = chip_cam::RotaryAxisKind::XAxis;
+    setup.rotary.direction = chip_cam::RotaryDirection::RightHandCcw;
+    setup.rotary.clearance_radial_offset = ParamLength::from_mm(10.0);
+    setup.rotary.chuck_length = ParamLength::from_mm(20.0);
+    setup.rotary.chuck_diameter = ParamLength::from_mm(65.0);
+
+    for t in available_tools {
+        proj.ensure_tool_embedded(t);
+    }
+    proj
+}

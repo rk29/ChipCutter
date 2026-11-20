@@ -118,6 +118,8 @@ pub(crate) fn emit_split_arc_move(
             feed_mm_min: spec.feed_mm_min,
             role: MotionRole::Cut,
         },
+        start_rotary_deg: 0.0,
+        end_rotary_deg: 0.0,
     };
 
     let axial_delta = match spec.plane {

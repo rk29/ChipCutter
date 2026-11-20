@@ -4,7 +4,8 @@ use std::hash::Hash;
 use chip_cad::CadDocument;
 use chip_cam::{
     AxisAnchor, BoxAnchor27, FixedBoxXyAlign, FixedBoxZAlign, HeightReference, ResolvedSetup,
-    Setup, SetupHeights, StockAxis, StockConfig, WcsAxisRef, WcsConfig, WcsFeaturePointRef,
+    RotaryAxisKind, RotaryConfig, RotaryDirection, RotaryDriveMode, RotaryUnwindMode, Setup,
+    SetupHeights, StockAxis, StockConfig, WcsAxisRef, WcsConfig, WcsFeaturePointRef,
     WcsOrientationMode, WcsOriginMode, WorkOffsetSlot,
 };
 use chip_math::{DisplayUnit, EvalContext, ParamLength};
@@ -41,6 +42,7 @@ struct SetupParamsSnapshot {
     post_profile: String,
     wcs: WcsConfig,
     stock: StockConfig,
+    rotary: RotaryConfig,
     heights: SetupHeights,
 }
 
@@ -52,6 +54,7 @@ impl SetupParamsSnapshot {
             post_profile: setup.post_profile.clone(),
             wcs: setup.wcs.clone(),
             stock: setup.stock.clone(),
+            rotary: setup.rotary.clone(),
             heights: setup.heights.clone(),
         }
     }
@@ -62,6 +65,7 @@ impl SetupParamsSnapshot {
         setup.post_profile = self.post_profile;
         setup.wcs = self.wcs;
         setup.stock = self.stock;
+        setup.rotary = self.rotary;
         setup.heights = self.heights;
     }
 }
@@ -170,6 +174,7 @@ pub fn show_setup_inspector(ui: &mut egui::Ui, ctx: SetupInspectorCtx<'_>) -> bo
         ui.horizontal(|ui| {
             ui.selectable_value(tab, SetupTab::Wcs, "WCS & Post");
             ui.selectable_value(tab, SetupTab::Stock, "Stock");
+            ui.selectable_value(tab, SetupTab::Rotary, "4th Axis");
             ui.selectable_value(tab, SetupTab::Heights, "Heights");
         });
     });
@@ -217,6 +222,15 @@ pub fn show_setup_inspector(ui: &mut egui::Ui, ctx: SetupInspectorCtx<'_>) -> bo
                         display_unit,
                         resolved,
                     },
+                    &mut mutated_label,
+                ),
+                SetupTab::Rotary => show_rotary_tab(
+                    ui,
+                    setup,
+                    setup_idx,
+                    &eval_ctx,
+                    display_unit,
+                    resolved,
                     &mut mutated_label,
                 ),
                 SetupTab::Heights => show_heights_tab(
@@ -1390,4 +1404,280 @@ fn show_27pt_grid_selector(ui: &mut egui::Ui, anchor: &mut BoxAnchor27) -> bool 
         });
 
     changed
+}
+
+fn show_rotary_tab(
+    ui: &mut egui::Ui,
+    setup: &mut Setup,
+    setup_idx: usize,
+    eval_ctx: &EvalContext,
+    display_unit: DisplayUnit,
+    resolved: Option<Result<&ResolvedSetup, &str>>,
+    mutated_label: &mut Option<&'static str>,
+) {
+    section_card(
+        ui,
+        ("setup_rotary_kinematics", setup_idx),
+        "4th-Axis Rotary Kinematics",
+        true,
+        |ui| {
+            inspector_grid(ui, ("setup_rotary_grid", setup_idx), |ui| {
+                grid_row(
+                    ui,
+                    "Rotary Mode",
+                    Some(
+                        "Select 3-axis (disabled), 2-linear + rotary (Z+X/Z+Y), indexed 3+1, or full simultaneous 4-axis",
+                    ),
+                    |ui| {
+                        let prev = setup.rotary.mode;
+                        egui::ComboBox::from_id_salt(("rot_mode_cb", setup_idx))
+                            .width(INPUT_COL_WIDTH)
+                            .selected_text(setup.rotary.mode.label())
+                            .show_ui(ui, |ui| {
+                                for m in RotaryDriveMode::ALL {
+                                    ui.selectable_value(&mut setup.rotary.mode, m, m.label());
+                                }
+                            });
+                        if setup.rotary.mode != prev {
+                            *mutated_label = Some("Change Rotary Drive Mode");
+                        }
+                    },
+                );
+
+                if setup.rotary.is_enabled() {
+                    grid_row(
+                        ui,
+                        "Rotary Axis",
+                        Some("Principal Setup WCS axis aligned with the rotary chuck centerline"),
+                        |ui| {
+                            let prev = setup.rotary.axis;
+                            egui::ComboBox::from_id_salt(("rot_axis_cb", setup_idx))
+                                .width(INPUT_COL_WIDTH)
+                                .selected_text(setup.rotary.axis.label())
+                                .show_ui(ui, |ui| {
+                                    for a in RotaryAxisKind::ALL {
+                                        ui.selectable_value(&mut setup.rotary.axis, a, a.label());
+                                    }
+                                });
+                            if setup.rotary.axis != prev {
+                                *mutated_label = Some("Change Rotary Axis");
+                            }
+                        },
+                    );
+
+                    grid_row(
+                        ui,
+                        "Direction",
+                        Some("Positive rotation polarity around the rotary axis"),
+                        |ui| {
+                            let prev = setup.rotary.direction;
+                            egui::ComboBox::from_id_salt(("rot_dir_cb", setup_idx))
+                                .width(INPUT_COL_WIDTH)
+                                .selected_text(setup.rotary.direction.label())
+                                .show_ui(ui, |ui| {
+                                    for d in RotaryDirection::ALL {
+                                        ui.selectable_value(
+                                            &mut setup.rotary.direction,
+                                            d,
+                                            d.label(),
+                                        );
+                                    }
+                                });
+                            if setup.rotary.direction != prev {
+                                *mutated_label = Some("Change Rotary Polarity");
+                            }
+                        },
+                    );
+
+                    grid_row(
+                        ui,
+                        "G-Code Letter",
+                        Some("Rotary axis address word emitted by 4-axis post-processors"),
+                        |ui| {
+                            let cur_letter = setup.rotary.effective_axis_letter();
+                            let prev = setup.rotary.axis_letter_override;
+                            egui::ComboBox::from_id_salt(("rot_letter_cb", setup_idx))
+                                .width(92.0)
+                                .selected_text(format!("{cur_letter}-Axis"))
+                                .show_ui(ui, |ui| {
+                                    let def = setup.rotary.axis.default_letter();
+                                    ui.selectable_value(
+                                        &mut setup.rotary.axis_letter_override,
+                                        None,
+                                        format!("Auto ({def})"),
+                                    );
+                                    for c in ['A', 'B', 'C'] {
+                                        ui.selectable_value(
+                                            &mut setup.rotary.axis_letter_override,
+                                            Some(c),
+                                            format!("{c}-Axis"),
+                                        );
+                                    }
+                                });
+                            if setup.rotary.axis_letter_override != prev {
+                                *mutated_label = Some("Change Rotary Axis Letter");
+                            }
+                        },
+                    );
+
+                    grid_row(
+                        ui,
+                        "Unwind Mode",
+                        Some(
+                            "Angular rollover policy for multi-turn spirals vs. shortest-path indexing",
+                        ),
+                        |ui| {
+                            let prev = setup.rotary.unwind_mode;
+                            egui::ComboBox::from_id_salt(("rot_unwind_cb", setup_idx))
+                                .width(INPUT_COL_WIDTH)
+                                .selected_text(setup.rotary.unwind_mode.label())
+                                .show_ui(ui, |ui| {
+                                    for u in RotaryUnwindMode::ALL {
+                                        ui.selectable_value(
+                                            &mut setup.rotary.unwind_mode,
+                                            u,
+                                            u.label(),
+                                        );
+                                    }
+                                });
+                            if setup.rotary.unwind_mode != prev {
+                                *mutated_label = Some("Change Rotary Unwind Mode");
+                            }
+                        },
+                    );
+                }
+            });
+        },
+    );
+
+    if !setup.rotary.is_enabled() {
+        ui.add_space(4.0);
+        inline_banner(
+            ui,
+            BannerKind::Info,
+            "Enable 4th-Axis Rotary above to configure A/B/C centerline kinematics, chuck clearance, polar stock simulation, and 4-axis G-code output.",
+        );
+        return;
+    }
+
+    ui.add_space(5.0);
+    let (off0_lbl, off1_lbl) = setup.rotary.axis.offset_axis_labels();
+    section_card(
+        ui,
+        ("setup_rotary_chuck_card", setup_idx),
+        "Centerline, Clearance & Chuck",
+        true,
+        |ui| {
+            inspector_grid(ui, ("setup_rotary_chuck_grid", setup_idx), |ui| {
+                let mut sg = SetupGrid {
+                    ui,
+                    setup_idx,
+                    eval_ctx,
+                    mutated: mutated_label,
+                };
+                sg.len(
+                    off0_lbl,
+                    "rot_off0",
+                    &mut setup.rotary.center_offset_wcs[0],
+                    "Edit Rotary Center Offset",
+                );
+                sg.len(
+                    off1_lbl,
+                    "rot_off1",
+                    &mut setup.rotary.center_offset_wcs[1],
+                    "Edit Rotary Center Offset",
+                );
+                sg.len(
+                    "Clearance Margin",
+                    "rot_clr_off",
+                    &mut setup.rotary.clearance_radial_offset,
+                    "Edit Rotary Clearance Offset",
+                );
+                sg.len(
+                    "Chuck Diameter",
+                    "rot_chuck_d",
+                    &mut setup.rotary.chuck_diameter,
+                    "Edit Rotary Chuck Diameter",
+                );
+                sg.len(
+                    "Chuck Length",
+                    "rot_chuck_l",
+                    &mut setup.rotary.chuck_length,
+                    "Edit Rotary Chuck Length",
+                );
+                grid_row(
+                    sg.ui,
+                    "Chuck Side",
+                    Some("Place rotary chuck at the negative or positive end of the stock axis"),
+                    |ui| {
+                        let prev = setup.rotary.chuck_end_positive;
+                        ui.horizontal(|ui| {
+                            ui.selectable_value(
+                                &mut setup.rotary.chuck_end_positive,
+                                false,
+                                "-End",
+                            );
+                            ui.selectable_value(&mut setup.rotary.chuck_end_positive, true, "+End");
+                        });
+                        if setup.rotary.chuck_end_positive != prev {
+                            *sg.mutated = Some("Flip Rotary Chuck End");
+                        }
+                    },
+                );
+            });
+
+            ui.add_space(4.0);
+            if ui
+                .button("Align Cylindrical Stock to Rotary Axis")
+                .on_hover_text(
+                    "Switch Setup stock to a Relative Cylinder concentric with the configured rotary axis and WCS center",
+                )
+                .clicked()
+            {
+                setup.stock = StockConfig::RelativeCylinder {
+                    axis: setup.rotary.axis.to_stock_axis(),
+                    radial_offset: ParamLength::from_mm(2.0),
+                    top_offset: ParamLength::from_mm(2.0),
+                    bottom_offset: ParamLength::from_mm(2.0),
+                };
+                setup.wcs.origin = WcsOriginMode::ModelBoxPoint {
+                    anchor: BoxAnchor27 {
+                        x: AxisAnchor::Center,
+                        y: AxisAnchor::Center,
+                        z: AxisAnchor::Center,
+                    },
+                };
+                *mutated_label = Some("Align Cylindrical Stock to Rotary Axis");
+            }
+        },
+    );
+
+    if let Some(Ok(rs)) = resolved
+        && let Some(rot) = rs.rotary
+    {
+        ui.add_space(5.0);
+        static_card(ui, Some("Resolved Rotary Envelope"), |ui| {
+            ui.monospace(format!(
+                "Axis:      {}-Axis ({})",
+                rot.axis_letter,
+                rot.axis.label()
+            ));
+            ui.monospace(format!(
+                "Stock R:   {}   Clearance R: {}",
+                display_unit.format_length(rot.stock_outer_radius_mm),
+                display_unit.format_length(rot.clearance_radius_mm)
+            ));
+            ui.monospace(format!(
+                "Axial U:   {} .. {}",
+                display_unit.format_length(rot.stock_u_min),
+                display_unit.format_length(rot.stock_u_max)
+            ));
+            ui.monospace(format!(
+                "Chuck:     {} .. {} (Ø{})",
+                display_unit.format_length(rot.chuck_u_min),
+                display_unit.format_length(rot.chuck_u_max),
+                display_unit.format_length(2.0 * rot.chuck_radius_mm)
+            ));
+        });
+    }
 }

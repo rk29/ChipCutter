@@ -169,6 +169,30 @@ pub fn validate_project(
                 }
             };
 
+            // Validate 4th-axis rotary kinematics & post-processor compatibility
+            if let Some(rot) = resolved_setup.rotary {
+                if rot.clearance_radius_mm <= rot.stock_outer_radius_mm + 1e-4 {
+                    report.push_error(
+                        &setup_scope,
+                        format!(
+                            "rotary clearance radius ({:.2} mm) must exceed stock outer radius ({:.2} mm)",
+                            rot.clearance_radius_mm, rot.stock_outer_radius_mm
+                        ),
+                    );
+                }
+                if let Ok(prof) = chip_post::resolve_post_profile(&setup.post_profile, project_dir)
+                    && !prof.rotary.enabled
+                {
+                    report.push_warning(
+                        &setup_scope,
+                        format!(
+                            "4th-axis rotary is active ({}-Axis), but selected post profile '{}' is 3-axis only (consider 'linuxcnc_4axis', 'grblhal_4axis', or 'grbl_rotary_wrap').",
+                            rot.axis_letter, prof.id
+                        ),
+                    );
+                }
+            }
+
             for (op_idx, op) in setup.operations.iter().enumerate() {
                 if op.suppressed {
                     continue;

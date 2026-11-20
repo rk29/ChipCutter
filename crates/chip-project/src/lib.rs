@@ -25,11 +25,12 @@ pub use demos::{
     build_adaptive_rest_demo_project, build_cam_torture_project,
     build_engraved_nameplate_demo_project, build_multi_feature_bracket_project,
     build_pure2d_router_panel_demo_project, build_relief_wave_mesh_project,
-    build_revision_v1_demo_project, build_sculpted_mesh_dome_project,
-    build_tutorial_adaptive_rest_project, build_tutorial_chamfer_trace_project,
-    build_tutorial_contour_project, build_tutorial_drill_bore_project,
-    build_tutorial_facing_project, build_tutorial_pocket_project,
-    build_tutorial_vcarve_inlay_project, build_vcarve_sign_and_inlay_demo_project,
+    build_revision_v1_demo_project, build_rotary_shaft_preview_project,
+    build_sculpted_mesh_dome_project, build_tutorial_adaptive_rest_project,
+    build_tutorial_chamfer_trace_project, build_tutorial_contour_project,
+    build_tutorial_drill_bore_project, build_tutorial_facing_project,
+    build_tutorial_pocket_project, build_tutorial_vcarve_inlay_project,
+    build_vcarve_sign_and_inlay_demo_project,
 };
 pub use dispatcher::{
     BatchGenerationReport, DispatcherEvent, JobDispatcher, generate_project_blocking,
@@ -1574,5 +1575,60 @@ sha256 = "abc"
         .unwrap();
         assert_eq!(lcnc_files.len(), 1);
         assert!(lcnc_files[0].content.contains("M6"));
+    }
+
+    #[test]
+    fn rotary_setup_roundtrips_toml_omits_when_disabled_and_validates_post_compatibility() {
+        use chip_cad::{MeshImportOptions, load_mesh_cad_document, sample_rotary_shaft_stl_bytes};
+
+        let stl_bytes = sample_rotary_shaft_stl_bytes();
+        let cad_doc = load_mesh_cad_document(
+            "rotary_shaft.stl",
+            &stl_bytes,
+            &MeshImportOptions::default(),
+        )
+        .unwrap();
+        assert!(cad_doc.meshes[0].diagnostics.is_watertight);
+        let sha = compute_sha256_hex(&stl_bytes);
+        let starter = default_starter_tool_library();
+
+        // 1. 3-axis default project omits `[setups.rotary]` completely (zero diff for existing files)
+        let plain = ProjectDocument::new("Plain 3-Axis");
+        let plain_toml = plain.to_toml_string().unwrap();
+        assert!(
+            !plain_toml.contains("rotary"),
+            "Disabled rotary must be omitted from .chip.toml:\n{plain_toml}"
+        );
+
+        // 2. Rotary Shaft preview project round-trips deterministically & validates cleanly with `linuxcnc_4axis`
+        let mut proj = build_rotary_shaft_preview_project(
+            "rotary_shaft.stl".to_string(),
+            &sha,
+            &starter.tools,
+        );
+        let toml_1 = proj.to_toml_string().unwrap();
+        assert!(toml_1.contains("indexed3_plus1"));
+        let reparsed = ProjectDocument::from_toml_str(&toml_1).unwrap();
+        assert_eq!(toml_1, reparsed.to_toml_string().unwrap());
+
+        let val_ok = validate_project(&proj, None, Some(&cad_doc));
+        assert!(
+            val_ok.is_valid() && val_ok.warning_count() == 0,
+            "Rotary shaft with linuxcnc_4axis should have 0 errors/warnings: {:?}",
+            val_ok.diagnostics
+        );
+
+        // 3. Switching to 3-axis `grbl` post triggers a helpful compatibility warning
+        proj.setups[0].post_profile = "grbl".to_string();
+        let val_warn = validate_project(&proj, None, Some(&cad_doc));
+        assert!(val_warn.is_valid());
+        assert!(
+            val_warn
+                .diagnostics
+                .iter()
+                .any(|d| d.severity == DiagnosticSeverity::Warning && d.message.contains("3-axis")),
+            "Expected 3-axis post warning on rotary setup: {:?}",
+            val_warn.diagnostics
+        );
     }
 }

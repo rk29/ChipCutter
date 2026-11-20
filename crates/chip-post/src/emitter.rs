@@ -1,4 +1,7 @@
-use chip_cam::{ClEvent, CutterCompMode, ResolvedStockGeometry, WorkOffsetSlot};
+use chip_cam::{
+    ClEvent, CutterCompMode, ResolvedRotaryConfig, ResolvedStockGeometry, WorkOffsetSlot,
+    compute_inverse_time_feed_g93, compute_rotary_angular_feed_deg_min, resolve_rotary_target_deg,
+};
 use chip_math::DVec3;
 use chip_tools::{CoolantMode, SpindleDirection, Tool};
 
@@ -9,7 +12,7 @@ use crate::{
     },
     modal::{LineWriter, ModalState, collapse_spaces, emit_linear_or_rapid, format_decimal},
     partition::{PostOutputFile, PostPartition, SetupPostInput, partition_operations},
-    profile::{PostError, PostProfile},
+    profile::{PostError, PostProfile, SwapAxisTarget},
 };
 
 /// Converts a Setup's clean operations into one or more dialect-specific G-code files (`07-post-processor.md`).
@@ -99,7 +102,29 @@ fn emit_partition(
 
     let mut modal = ModalState::default();
     let mut cur_wcs = DVec3::new(0.0, 0.0, setup_in.clearance_z_wcs);
+    let mut cur_rotary_deg = 0.0_f64;
     let mut active_tool_num: Option<u32> = None;
+
+    let effective_rotary_letter = setup_in
+        .rotary
+        .map(|r| r.axis_letter)
+        .unwrap_or(profile.rotary.axis_letter)
+        .to_ascii_uppercase();
+    let default_wrap_radius_mm = setup_in
+        .rotary
+        .map_or(20.0, |r| r.stock_outer_radius_mm.max(1.0));
+    if let Some(swap) = profile.rotary.swap_linear_axis
+        && setup_in.rotary.is_some()
+    {
+        let target_lbl = match swap {
+            SwapAxisTarget::ReplaceY => "Y",
+            SwapAxisTarget::ReplaceX => "X",
+        };
+        warnings.push(format!(
+            "Profile '{}' maps rotary angular commands onto linear axis {target_lbl} at wrap radius {:.3} mm.",
+            profile.id, default_wrap_radius_mm
+        ));
+    }
 
     // 3. Process each operation's typed `ClEvent` stream in order
     for (local_op_idx, item) in part.ops.iter().enumerate() {
@@ -235,6 +260,7 @@ fn emit_partition(
                     }
                 }
                 ClEvent::RapidMove { end_wcs } => {
+                    ensure_g94_mode(&mut writer, &mut modal)?;
                     emit_linear_or_rapid(&mut writer, profile, &mut modal, *end_wcs, None)?;
                     cur_wcs = *end_wcs;
                 }
@@ -243,6 +269,7 @@ fn emit_partition(
                     feed_mm_min,
                     ..
                 } => {
+                    ensure_g94_mode(&mut writer, &mut modal)?;
                     emit_linear_or_rapid(
                         &mut writer,
                         profile,
@@ -262,6 +289,7 @@ fn emit_partition(
                     feed_mm_min,
                     ..
                 } => {
+                    ensure_g94_mode(&mut writer, &mut modal)?;
                     emit_split_arc_move(
                         &mut writer,
                         profile,
@@ -291,6 +319,7 @@ fn emit_partition(
                     dwell_sec,
                     feed_mm_min,
                 } => {
+                    ensure_g94_mode(&mut writer, &mut modal)?;
                     cur_wcs = emit_drill_cycle(
                         &mut writer,
                         profile,
@@ -309,6 +338,85 @@ fn emit_partition(
                             feed_mm_min: *feed_mm_min,
                         },
                     )?;
+                }
+                ClEvent::RotaryIndex {
+                    angle_deg,
+                    rapid,
+                    feed_deg_min,
+                } => {
+                    let target_deg = resolve_rotary_target_deg(
+                        cur_rotary_deg,
+                        *angle_deg,
+                        effective_unwind_mode(setup_in.rotary.as_ref(), profile),
+                    );
+                    emit_rotary_index(
+                        &mut writer,
+                        profile,
+                        &mut modal,
+                        effective_rotary_letter,
+                        cur_wcs,
+                        target_deg,
+                        *rapid,
+                        *feed_deg_min,
+                        default_wrap_radius_mm,
+                    )?;
+                    cur_rotary_deg = target_deg;
+                }
+                ClEvent::RotaryRapidMove {
+                    end_wcs,
+                    rotary_deg,
+                } => {
+                    let target_deg = resolve_rotary_target_deg(
+                        cur_rotary_deg,
+                        *rotary_deg,
+                        effective_unwind_mode(setup_in.rotary.as_ref(), profile),
+                    );
+                    emit_rotary_motion(
+                        &mut writer,
+                        profile,
+                        &mut modal,
+                        effective_rotary_letter,
+                        cur_wcs,
+                        *end_wcs,
+                        cur_rotary_deg,
+                        target_deg,
+                        None,
+                        default_wrap_radius_mm,
+                    )?;
+                    cur_wcs = *end_wcs;
+                    cur_rotary_deg = target_deg;
+                }
+                ClEvent::RotaryLinearMove {
+                    end_wcs,
+                    rotary_deg,
+                    feed_mm_min,
+                    effective_radius_mm,
+                    ..
+                } => {
+                    let target_deg = resolve_rotary_target_deg(
+                        cur_rotary_deg,
+                        *rotary_deg,
+                        effective_unwind_mode(setup_in.rotary.as_ref(), profile),
+                    );
+                    let eff_r = if *effective_radius_mm > 1e-4 {
+                        *effective_radius_mm
+                    } else {
+                        default_wrap_radius_mm
+                    };
+                    emit_rotary_motion(
+                        &mut writer,
+                        profile,
+                        &mut modal,
+                        effective_rotary_letter,
+                        cur_wcs,
+                        *end_wcs,
+                        cur_rotary_deg,
+                        target_deg,
+                        Some(*feed_mm_min),
+                        eff_r,
+                    )?;
+                    cur_wcs = *end_wcs;
+                    cur_rotary_deg = target_deg;
                 }
                 ClEvent::Dwell { seconds } => {
                     if *seconds > 1e-4 {
@@ -341,6 +449,15 @@ fn emit_partition(
     if modal.canned_active {
         writer.push_code_line("G80")?;
         modal.canned_active = false;
+    }
+    if modal.feed_mode_g93
+        && !profile
+            .program_footer
+            .iter()
+            .any(|l| l.split_whitespace().any(|w| w == "G94"))
+    {
+        writer.push_code_line("G94")?;
+        modal.feed_mode_g93 = false;
     }
     if modal.coolant_on
         && !profile
@@ -446,6 +563,20 @@ fn emit_structured_header(
         setup_in.wcs_origin_description
     ))?;
     writer.push_comment_text(&format!("Stock:        {stock_desc}"))?;
+    if let Some(rot) = setup_in.rotary {
+        let mode_str = rot.mode.label();
+        let clr_r = format_decimal(
+            profile.units.scale_from_mm(rot.clearance_radius_mm),
+            c_dec,
+            true,
+        );
+        writer.push_comment_text(&format!(
+            "Rotary 4th:   {}-Axis ({}) | {} | Clearance R={clr_r}{u_lbl}",
+            rot.axis_letter,
+            rot.axis.label(),
+            mode_str
+        ))?;
+    }
     writer.push_comment_text(&format!("Safe Z:       {safe_z_desc}"))?;
     writer.push_comment_text("Tools Used:")?;
     for tool in tools_used {
@@ -496,4 +627,206 @@ fn resolve_wcs_code(
             }
         }
     }
+}
+
+fn effective_unwind_mode(
+    setup_rotary: Option<&ResolvedRotaryConfig>,
+    profile: &PostProfile,
+) -> chip_cam::RotaryUnwindMode {
+    setup_rotary
+        .map(|r| r.unwind_mode)
+        .unwrap_or(profile.rotary.unwind_mode)
+}
+
+fn ensure_g94_mode(writer: &mut LineWriter<'_>, modal: &mut ModalState) -> Result<(), PostError> {
+    if modal.feed_mode_g93 {
+        writer.push_code_line("G94")?;
+        modal.feed_mode_g93 = false;
+        modal.motion_code = None;
+        modal.f_word = None;
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_rotary_index(
+    writer: &mut LineWriter<'_>,
+    profile: &PostProfile,
+    modal: &mut ModalState,
+    axis_letter: char,
+    cur_wcs: DVec3,
+    target_deg: f64,
+    rapid: bool,
+    feed_deg_min: Option<f64>,
+    wrap_radius_mm: f64,
+) -> Result<(), PostError> {
+    ensure_g94_mode(writer, modal)?;
+
+    if let Some(swap) = profile.rotary.swap_linear_axis {
+        let lin_mm = target_deg.to_radians() * wrap_radius_mm.max(1.0);
+        let mapped_wcs = match swap {
+            SwapAxisTarget::ReplaceY => DVec3::new(cur_wcs.x, lin_mm, cur_wcs.z),
+            SwapAxisTarget::ReplaceX => DVec3::new(lin_mm, cur_wcs.y, cur_wcs.z),
+        };
+        let feed_mm = if rapid {
+            None
+        } else {
+            let deg_m = feed_deg_min
+                .unwrap_or(profile.rotary.max_rotary_feed_deg_min)
+                .clamp(1.0, profile.rotary.max_rotary_feed_deg_min.max(1.0));
+            Some(deg_m.to_radians() * wrap_radius_mm.max(1.0))
+        };
+        return emit_linear_or_rapid(writer, profile, modal, mapped_wcs, feed_mm);
+    }
+
+    let a_str = format_decimal(
+        target_deg,
+        profile.rotary.angle_decimals,
+        profile.suppress_trailing_zeros,
+    );
+    if modal.rotary_word.as_deref() == Some(a_str.as_str()) {
+        return Ok(());
+    }
+    let g_code = if rapid { "G0" } else { "G1" };
+    let mut words = Vec::with_capacity(4);
+    if modal.motion_code != Some(g_code) {
+        words.push(g_code.to_string());
+        modal.motion_code = Some(g_code);
+    }
+    words.push(format!("{axis_letter}{a_str}"));
+    modal.rotary_word = Some(a_str);
+    if !rapid {
+        let f_deg = feed_deg_min
+            .unwrap_or(profile.rotary.max_rotary_feed_deg_min)
+            .clamp(1.0, profile.rotary.max_rotary_feed_deg_min.max(1.0));
+        let fs = format_decimal(
+            f_deg,
+            profile.feed_decimals,
+            profile.suppress_trailing_zeros,
+        );
+        if modal.f_word.as_deref() != Some(fs.as_str()) {
+            words.push(format!("F{fs}"));
+            modal.f_word = Some(fs);
+        }
+    }
+    writer.push_code_line(&words.join(" "))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_rotary_motion(
+    writer: &mut LineWriter<'_>,
+    profile: &PostProfile,
+    modal: &mut ModalState,
+    axis_letter: char,
+    start_wcs: DVec3,
+    end_wcs: DVec3,
+    start_deg: f64,
+    end_deg: f64,
+    feed_mm_min: Option<f64>,
+    effective_radius_mm: f64,
+) -> Result<(), PostError> {
+    if let Some(swap) = profile.rotary.swap_linear_axis {
+        ensure_g94_mode(writer, modal)?;
+        let lin_mm = end_deg.to_radians() * effective_radius_mm.max(1.0);
+        let mapped_wcs = match swap {
+            SwapAxisTarget::ReplaceY => DVec3::new(end_wcs.x, lin_mm, end_wcs.z),
+            SwapAxisTarget::ReplaceX => DVec3::new(lin_mm, end_wcs.y, end_wcs.z),
+        };
+        return emit_linear_or_rapid(writer, profile, modal, mapped_wcs, feed_mm_min);
+    }
+
+    let c_dec = profile.coord_decimals;
+    let strip = profile.suppress_trailing_zeros;
+    let xs = format_decimal(profile.units.scale_from_mm(end_wcs.x), c_dec, strip);
+    let ys = format_decimal(profile.units.scale_from_mm(end_wcs.y), c_dec, strip);
+    let zs = format_decimal(profile.units.scale_from_mm(end_wcs.z), c_dec, strip);
+    let as_ = format_decimal(end_deg, profile.rotary.angle_decimals, strip);
+
+    let x_changed = modal.x_word.as_deref() != Some(xs.as_str());
+    let y_changed = modal.y_word.as_deref() != Some(ys.as_str());
+    let z_changed = modal.z_word.as_deref() != Some(zs.as_str());
+    let a_changed = modal.rotary_word.as_deref() != Some(as_.as_str());
+
+    if !x_changed && !y_changed && !z_changed && !a_changed {
+        return Ok(());
+    }
+
+    let has_rot_delta = (end_deg - start_deg).abs() > 1e-6;
+    let use_g93 = feed_mm_min.is_some()
+        && has_rot_delta
+        && profile.rotary.supports_g93_inverse_time
+        && profile.rotary.use_g93_for_simultaneous;
+
+    let mut words: Vec<String> = Vec::with_capacity(7);
+    if use_g93 {
+        if !modal.feed_mode_g93 {
+            words.push("G93".to_string());
+            modal.feed_mode_g93 = true;
+            modal.motion_code = None;
+            modal.f_word = None;
+        }
+    } else {
+        ensure_g94_mode(writer, modal)?;
+    }
+
+    let g_target = if feed_mm_min.is_some() { "G1" } else { "G0" };
+    if modal.motion_code != Some(g_target) {
+        words.push(g_target.to_string());
+        modal.motion_code = Some(g_target);
+    }
+    if x_changed {
+        words.push(format!("X{xs}"));
+        modal.x_word = Some(xs);
+    }
+    if y_changed {
+        words.push(format!("Y{ys}"));
+        modal.y_word = Some(ys);
+    }
+    if z_changed {
+        words.push(format!("Z{zs}"));
+        modal.z_word = Some(zs);
+    }
+    if a_changed {
+        words.push(format!("{axis_letter}{as_}"));
+        modal.rotary_word = Some(as_);
+    }
+
+    if let Some(f_mm) = feed_mm_min {
+        if use_g93 {
+            let f_inv = compute_inverse_time_feed_g93(
+                start_wcs,
+                end_wcs,
+                start_deg,
+                end_deg,
+                effective_radius_mm,
+                f_mm,
+                profile.rotary.max_rotary_feed_deg_min,
+            )
+            .unwrap_or(60.0);
+            // RS274NGC mandates an explicit F word on EVERY G93 block
+            let fs = format_decimal(f_inv, profile.feed_decimals.max(2), strip);
+            words.push(format!("F{fs}"));
+            modal.f_word = Some(fs);
+        } else if !x_changed && !y_changed && !z_changed && has_rot_delta {
+            let f_deg = compute_rotary_angular_feed_deg_min(
+                f_mm,
+                effective_radius_mm,
+                profile.rotary.max_rotary_feed_deg_min,
+            );
+            let fs = format_decimal(f_deg, profile.feed_decimals, strip);
+            if modal.f_word.as_deref() != Some(fs.as_str()) {
+                words.push(format!("F{fs}"));
+                modal.f_word = Some(fs);
+            }
+        } else {
+            let f_scaled = profile.units.scale_from_mm(f_mm).max(0.1);
+            let fs = format_decimal(f_scaled, profile.feed_decimals, strip);
+            if modal.f_word.as_deref() != Some(fs.as_str()) {
+                words.push(format!("F{fs}"));
+                modal.f_word = Some(fs);
+            }
+        }
+    }
+
+    writer.push_code_line(&words.join(" "))
 }

@@ -8,6 +8,7 @@ pub mod offset2d;
 pub mod operation;
 pub mod params;
 pub mod rest2d;
+pub mod rotary;
 pub mod selection;
 pub mod setup;
 pub mod stock;
@@ -44,6 +45,12 @@ pub use rest2d::{
     ContourRestClipQuery, PocketRestQuery, RegionSet2D, RestPocketWorkItem, UpstreamSweptInput,
     clip_contour_path_to_rest, clip_polyline_outside_region_set, compute_rest_pocket_work_items,
     swept_segment_capsule_2d, swept_toolpath_coverage_2d,
+};
+pub use rotary::{
+    ResolvedRotaryConfig, RotaryAxisKind, RotaryConfig, RotaryDirection, RotaryDriveMode,
+    RotaryUnwindMode, compute_inverse_time_feed_g93, compute_rotary_angular_feed_deg_min,
+    compute_stock_rotary_envelope, cylindrical_to_wcs, resolve_rotary_target_deg,
+    rotate_point_about_axis, wcs_to_cylindrical,
 };
 pub use selection::{
     ChainDirectionArrow3D, ExtractedFeature25D, ExtractedSelectionSummary, GeometrySelectionItem,

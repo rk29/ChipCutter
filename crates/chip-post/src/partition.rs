@@ -1,5 +1,6 @@
 use chip_cam::{
-    GeneratedToolpath, Operation, ResolvedStockGeometry, WcsConfig, WcsOriginMode, WorkOffsetSlot,
+    GeneratedToolpath, Operation, ResolvedRotaryConfig, ResolvedStockGeometry, WcsConfig,
+    WcsOriginMode, WorkOffsetSlot,
 };
 use chip_tools::Tool;
 use serde::{Deserialize, Serialize};
@@ -22,6 +23,7 @@ pub struct SetupPostInput<'a> {
     pub wcs_slot: WorkOffsetSlot,
     pub wcs_origin_description: String,
     pub stock: ResolvedStockGeometry,
+    pub rotary: Option<ResolvedRotaryConfig>,
     pub clearance_z_wcs: f64,
     pub retract_z_wcs: f64,
     pub operations: Vec<OperationPostInput<'a>>,

@@ -295,6 +295,102 @@ pub fn sample_box_3mf_bytes(unit: MeshUnitKind, transform_str: Option<&str>) -> 
     cursor.into_inner()
 }
 
+/// Generates a deterministic, 100% watertight binary STL of a **4th-Axis Rotary Shaft**
+/// (`Ø40 mm × 80 mm` aligned along the WCS `X / A` axis, `X ∈ [-40, +40]`) combining:
+/// - Left & right `R = 20 mm` cylindrical journals,
+/// - A 4-flat indexed wrench section (`±15 mm` flats at `90°` intervals),
+/// - A reduced turned central collar groove (`R = 14 mm`), and
+/// - A sculpted 3-lobe cam section (`R = 17.5 + 2.0 * cos(3θ)`) for polar target-gouge testing.
+pub fn sample_rotary_shaft_stl_bytes() -> Vec<u8> {
+    let n_theta: usize = 96;
+    let x_stations: &[f64] = &[
+        -40.0, -26.0, -25.0, -6.0, -5.0, -2.5, 7.5, 10.0, 12.0, 28.0, 30.0, 40.0,
+    ];
+
+    let profile_radius = |x: f64, theta: f64| -> f64 {
+        let r_outer = 20.0_f64;
+        if x <= -26.0 || x >= 30.0 {
+            r_outer
+        } else if (-25.0..=-6.0).contains(&x) {
+            let denom = theta.cos().abs().max(theta.sin().abs()).max(1e-6);
+            (15.0 / denom).min(r_outer)
+        } else if (-26.0..-25.0).contains(&x) {
+            let t = x + 26.0;
+            let denom = theta.cos().abs().max(theta.sin().abs()).max(1e-6);
+            let r_sq = (15.0 / denom).min(r_outer);
+            r_outer + (r_sq - r_outer) * t
+        } else if (-6.0..-5.0).contains(&x) {
+            let t = x + 6.0;
+            let denom = theta.cos().abs().max(theta.sin().abs()).max(1e-6);
+            let r_sq = (15.0 / denom).min(r_outer);
+            r_sq + (r_outer - r_sq) * t
+        } else if (-5.0..-2.5).contains(&x) {
+            let t = (x + 5.0) / 2.5;
+            r_outer + (14.0 - r_outer) * t
+        } else if (-2.5..=7.5).contains(&x) {
+            14.0
+        } else if (7.5..10.0).contains(&x) {
+            let t = (x - 7.5) / 2.5;
+            14.0 + (r_outer - 14.0) * t
+        } else if (10.0..12.0).contains(&x) {
+            let t = (x - 10.0) / 2.0;
+            let r_cam = 17.5 + 2.0 * (3.0 * theta).cos();
+            r_outer + (r_cam - r_outer) * t
+        } else if (12.0..=28.0).contains(&x) {
+            17.5 + 2.0 * (3.0 * theta).cos()
+        } else {
+            let t = (x - 28.0) / 2.0;
+            let r_cam = 17.5 + 2.0 * (3.0 * theta).cos();
+            r_cam + (r_outer - r_cam) * t
+        }
+    };
+
+    let mut rings: Vec<Vec<DVec3>> = Vec::with_capacity(x_stations.len());
+    for &x in x_stations {
+        let mut ring = Vec::with_capacity(n_theta);
+        for k in 0..n_theta {
+            let theta = (k as f64 / n_theta as f64) * (2.0 * PI);
+            let r = profile_radius(x, theta);
+            // Match `RotaryAxisKind::XAxis`: e1 = +Z, e2 = -Y -> p = (x, -r sin θ, r cos θ)
+            ring.push(DVec3::new(x, -r * theta.sin(), r * theta.cos()));
+        }
+        rings.push(ring);
+    }
+
+    let mut tris: Vec<[DVec3; 3]> = Vec::with_capacity(n_theta * (2 * x_stations.len() + 2));
+
+    // Lateral skin (outward radial normals)
+    for s in 0..(rings.len() - 1) {
+        for k in 0..n_theta {
+            let kn = (k + 1) % n_theta;
+            let a = rings[s][k];
+            let b = rings[s + 1][k];
+            let c = rings[s + 1][kn];
+            let d = rings[s][kn];
+            tris.push([a, b, c]);
+            tris.push([a, c, d]);
+        }
+    }
+
+    // Left end cap (`X = -40`, outward normal `-X`)
+    let left_center = DVec3::new(x_stations[0], 0.0, 0.0);
+    let left_ring = &rings[0];
+    for k in 0..n_theta {
+        let kn = (k + 1) % n_theta;
+        tris.push([left_center, left_ring[k], left_ring[kn]]);
+    }
+
+    // Right end cap (`X = +40`, outward normal `+X`)
+    let right_center = DVec3::new(x_stations[x_stations.len() - 1], 0.0, 0.0);
+    let right_ring = &rings[rings.len() - 1];
+    for k in 0..n_theta {
+        let kn = (k + 1) % n_theta;
+        tris.push([right_center, right_ring[kn], right_ring[k]]);
+    }
+
+    encode_binary_stl("ChipCutter Rotary Indexed Shaft Fixture (mm)", &tris)
+}
+
 fn encode_binary_stl(header_text: &str, tris: &[[DVec3; 3]]) -> Vec<u8> {
     let mut buf = Vec::with_capacity(84 + tris.len() * 50);
     let mut header = [0u8; 80];

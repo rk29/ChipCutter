@@ -16,6 +16,7 @@ use thiserror::Error;
 
 use crate::{
     cutter_profile::SimColoredVertex,
+    cylindrical::{CylindricalCheckpoint, CylindricalStock},
     timeline::{MachineKinematicsConfig, SimOperationInput, SimulationTimeline},
     verifier::{SimDiagnostic, SimSeverity, SimVerificationConfig},
 };
@@ -100,7 +101,9 @@ pub struct SetupSimulationResult {
     pub remaining_stock_volume_mm3: f64,
     pub removed_volume_mm3: f64,
     pub final_stock: HeightfieldStock,
+    pub final_cylindrical_stock: Option<CylindricalStock>,
     pub checkpoints: Vec<StockCheckpoint>,
+    pub cylindrical_checkpoints: Vec<CylindricalCheckpoint>,
     pub diagnostics: Vec<SimDiagnostic>,
 }
 

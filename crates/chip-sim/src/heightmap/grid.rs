@@ -288,5 +288,7 @@ fn slice_segment_prefix(seg: &ToolpathSegment3D, u: f64) -> Option<ToolpathSegme
         start_wcs: seg.start_wcs,
         end_wcs,
         motion,
+        start_rotary_deg: seg.start_rotary_deg,
+        end_rotary_deg: seg.sample_rotary_deg(u_clamped),
     })
 }

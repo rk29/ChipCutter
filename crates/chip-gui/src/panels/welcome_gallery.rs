@@ -25,6 +25,7 @@ pub enum SampleProjectId {
     SamplePlate,
     SculptedMeshDome,
     ReliefWaveMesh,
+    RotaryIndexedShaft,
 }
 
 impl SampleProjectId {
@@ -43,8 +44,9 @@ impl SampleProjectId {
             "sample-plate" | "plate" => Ok(Self::SamplePlate),
             "mesh-dome" | "sculpted-dome" | "dome" => Ok(Self::SculptedMeshDome),
             "mesh-wave" | "relief-wave" | "wave" => Ok(Self::ReliefWaveMesh),
+            "rotary-shaft" | "rotary" | "4th-axis" => Ok(Self::RotaryIndexedShaft),
             other => Err(format!(
-                "invalid --sample '{other}'; expected one of: cam-torture, adaptive-rest, pure-2d, nameplate, vcarve, multi-feature, tilted-bracket, revision-v1, revision-v2, sample-plate, mesh-dome, mesh-wave"
+                "invalid --sample '{other}'; expected one of: cam-torture, adaptive-rest, pure-2d, nameplate, vcarve, multi-feature, tilted-bracket, revision-v1, revision-v2, sample-plate, mesh-dome, mesh-wave, rotary-shaft"
             )),
         }
     }
@@ -179,6 +181,14 @@ pub const SAMPLE_CATALOG: &[SampleCardSpec] = &[
         title: "Relief Wave (OBJ Mesh Finishing)",
         badge: "3D OBJ · 3 Ops",
         summary: "80×60×15mm sculpted wave relief showcasing 3D Adaptive Roughing, 45° 3D Parallel Raster Finishing, and 3D Constant-Scallop Finishing.",
+    },
+    SampleCardSpec {
+        id: SampleProjectId::RotaryIndexedShaft,
+        category: SampleCategory::Mesh3D,
+        icon: IconKind::OrthoCube,
+        title: "Rotary Indexed Shaft (4th-Axis A)",
+        badge: "4th-Axis · A / G93",
+        summary: "Ø40×80mm shaft with 4 wrenching flats, turned collar groove, and 3-lobe cam chucked on an X/A rotary axis with LinuxCNC 4-Axis post.",
     },
 ];
 
@@ -610,6 +620,10 @@ mod tests {
         assert_eq!(
             SampleProjectId::from_cli_slug("mesh-wave"),
             Ok(SampleProjectId::ReliefWaveMesh)
+        );
+        assert_eq!(
+            SampleProjectId::from_cli_slug("rotary-shaft"),
+            Ok(SampleProjectId::RotaryIndexedShaft)
         );
         assert!(SampleProjectId::from_cli_slug("nonexistent").is_err());
     }

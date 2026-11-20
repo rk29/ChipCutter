@@ -7,6 +7,11 @@ use thiserror::Error;
 pub const BUILTIN_GRBL_TOML: &str = include_str!("../../../posts/grbl.post.toml");
 pub const BUILTIN_GRBLHAL_ATC_TOML: &str = include_str!("../../../posts/grblhal_atc.post.toml");
 pub const BUILTIN_LINUXCNC_TOML: &str = include_str!("../../../posts/linuxcnc.post.toml");
+pub const BUILTIN_LINUXCNC_4AXIS_TOML: &str =
+    include_str!("../../../posts/linuxcnc_4axis.post.toml");
+pub const BUILTIN_GRBLHAL_4AXIS_TOML: &str = include_str!("../../../posts/grblhal_4axis.post.toml");
+pub const BUILTIN_GRBL_ROTARY_WRAP_TOML: &str =
+    include_str!("../../../posts/grbl_rotary_wrap.post.toml");
 
 /// Errors raised during post-profile loading or G-code emission (`chip-post`).
 #[derive(Debug, Clone, PartialEq, Error)]
@@ -137,6 +142,66 @@ fn default_accel() -> f64 {
 fn default_tool_change_sec() -> f64 {
     15.0
 }
+fn default_rotary_axis_letter() -> char {
+    'A'
+}
+fn default_angle_decimals() -> usize {
+    3
+}
+fn default_max_rotary_feed() -> f64 {
+    3_600.0
+}
+
+/// Optional linear axis replacement target for 3-axis controllers running a swapped-axis rotary chuck.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SwapAxisTarget {
+    ReplaceY,
+    ReplaceX,
+}
+
+/// Optional 4th-axis rotary post-processor dialect block (`[rotary]` in `*.post.toml`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RotaryPostConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_rotary_axis_letter")]
+    pub axis_letter: char,
+    #[serde(default = "default_angle_decimals")]
+    pub angle_decimals: usize,
+    #[serde(default)]
+    pub supports_g93_inverse_time: bool,
+    #[serde(default)]
+    pub use_g93_for_simultaneous: bool,
+    #[serde(default = "default_max_rotary_feed")]
+    pub max_rotary_feed_deg_min: f64,
+    #[serde(default)]
+    pub unwind_mode: chip_cam::RotaryUnwindMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub swap_linear_axis: Option<SwapAxisTarget>,
+}
+
+impl Default for RotaryPostConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            axis_letter: default_rotary_axis_letter(),
+            angle_decimals: default_angle_decimals(),
+            supports_g93_inverse_time: false,
+            use_g93_for_simultaneous: false,
+            max_rotary_feed_deg_min: default_max_rotary_feed(),
+            unwind_mode: chip_cam::RotaryUnwindMode::ContinuousMultiTurn,
+            swap_linear_axis: None,
+        }
+    }
+}
+
+impl RotaryPostConfig {
+    #[inline]
+    pub const fn is_disabled(&self) -> bool {
+        !self.enabled
+    }
+}
 
 /// User-editable TOML Post-Processor Profile (`posts/*.post.toml`, `07-post-processor.md`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -213,6 +278,9 @@ pub struct PostProfile {
     pub operation_footer: Vec<String>,
     #[serde(default)]
     pub program_footer: Vec<String>,
+
+    #[serde(default, skip_serializing_if = "RotaryPostConfig::is_disabled")]
+    pub rotary: RotaryPostConfig,
 }
 
 impl PostProfile {
@@ -239,13 +307,17 @@ impl PostProfile {
     }
 }
 
-/// Returns the 3 built-in v1 post profiles (`grbl`, `grblhal_atc`, `linuxcnc`).
+/// Returns all built-in post profiles (`grbl`, `grblhal_atc`, `linuxcnc`, `linuxcnc_4axis`,
+/// `grblhal_4axis`, and `grbl_rotary_wrap`).
 pub fn builtin_post_profiles() -> Vec<PostProfile> {
-    let mut out = Vec::with_capacity(3);
+    let mut out = Vec::with_capacity(6);
     for (name, src) in [
         ("grbl.post.toml", BUILTIN_GRBL_TOML),
         ("grblhal_atc.post.toml", BUILTIN_GRBLHAL_ATC_TOML),
         ("linuxcnc.post.toml", BUILTIN_LINUXCNC_TOML),
+        ("linuxcnc_4axis.post.toml", BUILTIN_LINUXCNC_4AXIS_TOML),
+        ("grblhal_4axis.post.toml", BUILTIN_GRBLHAL_4AXIS_TOML),
+        ("grbl_rotary_wrap.post.toml", BUILTIN_GRBL_ROTARY_WRAP_TOML),
     ] {
         if let Ok(p) = PostProfile::from_toml_str(name, src) {
             out.push(p);

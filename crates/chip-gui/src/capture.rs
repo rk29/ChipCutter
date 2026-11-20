@@ -101,9 +101,10 @@ fn parse_setup_tab(raw: &str) -> Result<SetupTab, String> {
     match raw.trim().to_ascii_lowercase().as_str() {
         "wcs" => Ok(SetupTab::Wcs),
         "stock" => Ok(SetupTab::Stock),
+        "rotary" | "4th" | "4axis" => Ok(SetupTab::Rotary),
         "heights" => Ok(SetupTab::Heights),
         other => Err(format!(
-            "invalid Setup tab '{other}'; expected one of: wcs, stock, heights"
+            "invalid Setup tab '{other}'; expected one of: wcs, stock, rotary, heights"
         )),
     }
 }
@@ -179,6 +180,9 @@ pub fn parse_capture_post_profile(raw: &str) -> Result<String, String> {
         "grbl" => Ok("grbl".to_string()),
         "grblhal_atc" | "grblhal-atc" | "grblhal" => Ok("grblhal_atc".to_string()),
         "linuxcnc" => Ok("linuxcnc".to_string()),
+        "linuxcnc_4axis" | "linuxcnc-4axis" => Ok("linuxcnc_4axis".to_string()),
+        "grblhal_4axis" | "grblhal-4axis" => Ok("grblhal_4axis".to_string()),
+        "grbl_rotary_wrap" | "grbl-rotary-wrap" => Ok("grbl_rotary_wrap".to_string()),
         other => Err(format!(
             "invalid --capture-post '{other}'; expected one of: grbl, grblhal_atc, linuxcnc"
         )),

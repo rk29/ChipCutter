@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     heights::SetupHeights,
     operation::Operation,
+    rotary::{ResolvedRotaryConfig, RotaryConfig},
     stock::{ResolvedStockGeometry, StockConfig, compute_tight_oriented_model_aabb},
     wcs::{CamError, WcsConfig, WcsOriginMode, WorkOffsetSlot},
 };
@@ -31,6 +32,8 @@ pub struct Setup {
     pub wcs: WcsConfig,
     #[serde(default)]
     pub stock: StockConfig,
+    #[serde(default, skip_serializing_if = "RotaryConfig::is_disabled")]
+    pub rotary: RotaryConfig,
     #[serde(default)]
     pub heights: SetupHeights,
     #[serde(default)]
@@ -47,6 +50,7 @@ impl Setup {
             post_profile: default_post_profile(),
             wcs: WcsConfig::default(),
             stock: StockConfig::default(),
+            rotary: RotaryConfig::default(),
             heights: SetupHeights::default(),
             operations: Vec::new(),
         }
@@ -146,38 +150,47 @@ impl Setup {
         let stock = stock_rot.shifted_by(shift_wcs);
         let stock_aabb_wcs = stock.aabb_wcs();
 
-        // 5. Resolve Setup Clearance & Retract heights
+        // 5. Resolve Setup Clearance & Retract heights and optional 4th-axis rotary kinematics
         let mut heights_clone = self.heights.clone();
         let setup_eval = build_setup_eval_context(display_unit, &model_aabb_wcs, &stock_aabb_wcs);
         heights_clone.reevaluate(&setup_eval);
         let (clearance_z_wcs, retract_z_wcs) =
             heights_clone.resolve(&model_aabb_wcs, &stock_aabb_wcs)?;
+        let rotary = self.rotary.resolve(&stock, &setup_eval);
 
         Ok(ResolvedSetup {
             frame,
             model_aabb_wcs,
             stock,
+            rotary,
             clearance_z_wcs,
             retract_z_wcs,
         })
     }
 }
 
-/// Concrete evaluated Setup WCS frame, bounds, stock geometry, and Z planes.
+/// Concrete evaluated Setup WCS frame, bounds, stock geometry, optional rotary axis, and Z planes.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ResolvedSetup {
     pub frame: RigidFrame3,
     pub model_aabb_wcs: Aabb3,
     pub stock: ResolvedStockGeometry,
+    pub rotary: Option<ResolvedRotaryConfig>,
     pub clearance_z_wcs: f64,
     pub retract_z_wcs: f64,
 }
 
 impl ResolvedSetup {
     /// Builds an [`EvalContext`] populated with Setup-scoped variables (`stock_x`, `stock_y`,
-    /// `stock_z`, `model_top_z`, `model_bottom_z`).
+    /// `stock_z`, `model_top_z`, `model_bottom_z`, plus `rotary_radius` when rotary is active).
     pub fn eval_context(&self, display_unit: DisplayUnit) -> EvalContext {
-        build_setup_eval_context(display_unit, &self.model_aabb_wcs, &self.stock.aabb_wcs())
+        let mut ctx =
+            build_setup_eval_context(display_unit, &self.model_aabb_wcs, &self.stock.aabb_wcs());
+        if let Some(rot) = self.rotary {
+            ctx.set_var("rotary_radius", rot.stock_outer_radius_mm);
+            ctx.set_var("rotary_clearance_r", rot.clearance_radius_mm);
+        }
+        ctx
     }
 }
 

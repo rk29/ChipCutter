@@ -6,6 +6,10 @@ use chip_math::DVec3;
 use chip_tools::{Tool, ToolId};
 use serde::{Deserialize, Serialize};
 
+fn default_max_rotary_rate_deg_min() -> f64 {
+    3_600.0
+}
+
 /// Machine velocity, acceleration, cornering, and ATC parameters for cycle-time estimation (`06-simulation.md`).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct MachineKinematicsConfig {
@@ -17,6 +21,9 @@ pub struct MachineKinematicsConfig {
     pub junction_deviation_mm: f64,
     /// Tool change duration (`s`) added whenever `tool_number` changes after the first tool. Default: `15.0`.
     pub tool_change_time_sec: f64,
+    /// Maximum 4th-axis rotary angular slew rate (`deg/min`). Default: `3600.0`.
+    #[serde(default = "default_max_rotary_rate_deg_min")]
+    pub max_rotary_rate_deg_min: f64,
 }
 
 impl Default for MachineKinematicsConfig {
@@ -26,6 +33,7 @@ impl Default for MachineKinematicsConfig {
             accel_mm_s2: 500.0,
             junction_deviation_mm: 0.05,
             tool_change_time_sec: 15.0,
+            max_rotary_rate_deg_min: default_max_rotary_rate_deg_min(),
         }
     }
 }
@@ -157,6 +165,8 @@ pub struct ScrubSnapshot {
     pub seg_progress_t: f64,
     pub completed_segments: usize,
     pub tip_pos_wcs: DVec3,
+    #[serde(default)]
+    pub rotary_deg: f64,
     pub motion_code: &'static str,
     pub commanded_feed_mm_min: f64,
     pub spindle_rpm: f64,
@@ -287,13 +297,21 @@ impl SimulationTimeline {
                 // Distribute any operation dwell evenly at the end of the operation
                 for (local_idx, seg) in segs.iter().enumerate() {
                     let len = lengths[local_idx];
-                    let dt = trapezoidal_segment_duration(
+                    let dt_linear = trapezoidal_segment_duration(
                         len,
                         v_j[local_idx],
                         v_j[local_idx + 1],
                         target_v[local_idx],
                         accel,
                     );
+                    let d_deg = (seg.end_rotary_deg - seg.start_rotary_deg).abs();
+                    let dt_rotary = if d_deg > 1e-6 {
+                        let rot_rate_deg_s = (kinematics.max_rotary_rate_deg_min.max(60.0)) / 60.0;
+                        d_deg / rot_rate_deg_s
+                    } else {
+                        0.0
+                    };
+                    let dt = dt_linear.max(dt_rotary);
                     let commanded_feed_mm_min = match seg.motion {
                         SegmentMotion3D::Rapid => kinematics.rapid_rate_mm_min,
                         SegmentMotion3D::Linear { feed_mm_min, .. }
@@ -484,6 +502,7 @@ impl SimulationTimeline {
     ) -> ScrubSnapshot {
         let op_meta = &self.operations[span.op_idx];
         let tip_pos_wcs = span.segment.sample_point(u);
+        let rotary_deg = span.segment.sample_rotary_deg(u);
         let distance_mm =
             span.dist_start_mm + (span.dist_end_mm - span.dist_start_mm) * u.clamp(0.0, 1.0);
         let motion_code = match span.segment.motion {
@@ -517,6 +536,7 @@ impl SimulationTimeline {
             seg_progress_t: u.clamp(0.0, 1.0),
             completed_segments,
             tip_pos_wcs,
+            rotary_deg,
             motion_code,
             commanded_feed_mm_min: span.commanded_feed_mm_min,
             spindle_rpm: span.spindle_rpm,

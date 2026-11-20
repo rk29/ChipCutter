@@ -27,15 +27,33 @@ pub enum SegmentMotion3D {
     },
 }
 
-/// Connected 3D geometric motion span in canonical `f64` Setup WCS millimeters.
+/// Connected 3D geometric motion span in canonical `f64` Setup WCS millimeters (with optional
+/// synchronized 4th-axis rotary angles in degrees).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct ToolpathSegment3D {
     pub start_wcs: DVec3,
     pub end_wcs: DVec3,
     pub motion: SegmentMotion3D,
+    #[serde(default)]
+    pub start_rotary_deg: f64,
+    #[serde(default)]
+    pub end_rotary_deg: f64,
 }
 
 impl ToolpathSegment3D {
+    /// Evaluates the interpolated 4th-axis rotary angle (`deg`) at normalized parameter `t ∈ [0, 1]`.
+    #[inline]
+    pub fn sample_rotary_deg(&self, t: f64) -> f64 {
+        let u = t.clamp(0.0, 1.0);
+        self.start_rotary_deg + (self.end_rotary_deg - self.start_rotary_deg) * u
+    }
+
+    /// Returns `true` when this segment involves non-zero 4th-axis angular rotation.
+    #[inline]
+    pub fn has_rotary_motion(&self) -> bool {
+        (self.end_rotary_deg - self.start_rotary_deg).abs() > 1e-6
+    }
+
     /// Evaluates exact 3D WCS tool tip position at normalized parameter `t ∈ [0, 1]`.
     pub fn sample_point(&self, t: f64) -> DVec3 {
         let u = t.clamp(0.0, 1.0);
@@ -225,6 +243,7 @@ pub struct DrillCycleSpec {
 pub struct ToolpathBuilder {
     op_id: String,
     current_wcs: Option<DVec3>,
+    current_rotary_deg: f64,
     pub events: Vec<ClEvent>,
     pub segments_wcs: Vec<ToolpathSegment3D>,
     pub tab_markers_wcs: Vec<TabMarker3D>,
@@ -239,6 +258,7 @@ impl ToolpathBuilder {
         Self {
             op_id: op_id.into(),
             current_wcs: None,
+            current_rotary_deg: 0.0,
             events: Vec::new(),
             segments_wcs: Vec::new(),
             tab_markers_wcs: Vec::new(),
@@ -252,6 +272,11 @@ impl ToolpathBuilder {
     #[inline]
     pub fn current_pos(&self) -> Option<DVec3> {
         self.current_wcs
+    }
+
+    #[inline]
+    pub fn current_rotary_deg(&self) -> f64 {
+        self.current_rotary_deg
     }
 
     pub fn push_event(&mut self, event: ClEvent) {
@@ -276,6 +301,8 @@ impl ToolpathBuilder {
                 start_wcs: prev,
                 end_wcs: target_wcs,
                 motion: SegmentMotion3D::Rapid,
+                start_rotary_deg: self.current_rotary_deg,
+                end_rotary_deg: self.current_rotary_deg,
             });
         }
         self.current_wcs = Some(target_wcs);
@@ -296,12 +323,113 @@ impl ToolpathBuilder {
                 start_wcs: prev,
                 end_wcs: target_wcs,
                 motion: SegmentMotion3D::Linear { feed_mm_min, role },
+                start_rotary_deg: self.current_rotary_deg,
+                end_rotary_deg: self.current_rotary_deg,
             });
         }
         self.current_wcs = Some(target_wcs);
         self.events.push(ClEvent::LinearMove {
             end_wcs: target_wcs,
             feed_mm_min,
+            role,
+        });
+    }
+
+    /// Emits a pure 4th-axis angular positioning move (`ClEvent::RotaryIndex`) at the current WCS XYZ.
+    pub fn rotary_index_to(&mut self, angle_deg: f64, rapid: bool, feed_deg_min: Option<f64>) {
+        if !angle_deg.is_finite() {
+            return;
+        }
+        let prev_rot = self.current_rotary_deg;
+        if let Some(cur) = self.current_wcs
+            && (angle_deg - prev_rot).abs() > 1e-6
+        {
+            let motion = if rapid {
+                SegmentMotion3D::Rapid
+            } else {
+                SegmentMotion3D::Linear {
+                    feed_mm_min: feed_deg_min.unwrap_or(1_800.0).max(1.0),
+                    role: MotionRole::LinkTransition,
+                }
+            };
+            self.segments_wcs.push(ToolpathSegment3D {
+                start_wcs: cur,
+                end_wcs: cur,
+                motion,
+                start_rotary_deg: prev_rot,
+                end_rotary_deg: angle_deg,
+            });
+        }
+        self.current_rotary_deg = angle_deg;
+        self.events.push(ClEvent::RotaryIndex {
+            angle_deg,
+            rapid,
+            feed_deg_min,
+        });
+    }
+
+    /// Emits a coordinated 4-axis rapid traverse (`ClEvent::RotaryRapidMove`).
+    pub fn rotary_rapid_to(&mut self, target_wcs: DVec3, rotary_deg: f64) {
+        if !is_finite_vec3(target_wcs) || !rotary_deg.is_finite() {
+            return;
+        }
+        let prev_rot = self.current_rotary_deg;
+        if let Some(prev) = self.current_wcs {
+            if prev.distance(target_wcs) <= 1e-7 && (rotary_deg - prev_rot).abs() <= 1e-6 {
+                return;
+            }
+            self.segments_wcs.push(ToolpathSegment3D {
+                start_wcs: prev,
+                end_wcs: target_wcs,
+                motion: SegmentMotion3D::Rapid,
+                start_rotary_deg: prev_rot,
+                end_rotary_deg: rotary_deg,
+            });
+        }
+        self.current_wcs = Some(target_wcs);
+        self.current_rotary_deg = rotary_deg;
+        self.events.push(ClEvent::RotaryRapidMove {
+            end_wcs: target_wcs,
+            rotary_deg,
+        });
+    }
+
+    /// Emits a coordinated 4-axis linear + rotary cutting/linking move (`ClEvent::RotaryLinearMove`).
+    pub fn rotary_linear_to(
+        &mut self,
+        target_wcs: DVec3,
+        rotary_deg: f64,
+        feed_mm_min: f64,
+        effective_radius_mm: f64,
+        role: MotionRole,
+    ) {
+        if !is_finite_vec3(target_wcs)
+            || !rotary_deg.is_finite()
+            || !feed_mm_min.is_finite()
+            || feed_mm_min <= 1e-6
+        {
+            return;
+        }
+        let prev_rot = self.current_rotary_deg;
+        if let Some(prev) = self.current_wcs {
+            if prev.distance(target_wcs) <= 1e-7 && (rotary_deg - prev_rot).abs() <= 1e-6 {
+                return;
+            }
+            self.segments_wcs.push(ToolpathSegment3D {
+                start_wcs: prev,
+                end_wcs: target_wcs,
+                motion: SegmentMotion3D::Linear { feed_mm_min, role },
+                start_rotary_deg: prev_rot,
+                end_rotary_deg: rotary_deg,
+            });
+        }
+        self.current_wcs = Some(target_wcs);
+        self.current_rotary_deg = rotary_deg;
+        self.events.push(ClEvent::RotaryLinearMove {
+            end_wcs: target_wcs,
+            rotary_deg,
+            feed_mm_min,
+            effective_radius_mm: effective_radius_mm.max(0.0),
             role,
         });
     }
@@ -370,6 +498,8 @@ impl ToolpathBuilder {
                 feed_mm_min: arc.feed_mm_min,
                 role: arc.role,
             },
+            start_rotary_deg: self.current_rotary_deg,
+            end_rotary_deg: self.current_rotary_deg,
         });
         self.current_wcs = Some(arc.end_wcs);
         self.events.push(ClEvent::ArcMove {
@@ -415,6 +545,8 @@ impl ToolpathBuilder {
                 feed_mm_min: arc.feed_mm_min,
                 role: arc.role,
             },
+            start_rotary_deg: self.current_rotary_deg,
+            end_rotary_deg: self.current_rotary_deg,
         });
         self.current_wcs = Some(arc.end_wcs);
         self.events.push(ClEvent::ArcMove {
@@ -499,7 +631,12 @@ impl ToolpathBuilder {
         }
 
         // Expand physical motions into `segments_wcs` for viewport visualization, time estimation, and crash checks
-        let expanded = expand_drill_cycle_segments(self.current_wcs.unwrap_or(start_rapid), spec);
+        let mut expanded =
+            expand_drill_cycle_segments(self.current_wcs.unwrap_or(start_rapid), spec);
+        for seg in &mut expanded {
+            seg.start_rotary_deg = self.current_rotary_deg;
+            seg.end_rotary_deg = self.current_rotary_deg;
+        }
         if let Some(last) = expanded.last() {
             self.current_wcs = Some(last.end_wcs);
         }
@@ -559,7 +696,9 @@ impl ToolpathBuilder {
         let mut drill_cycle_count = 0usize;
         for ev in &self.events {
             match ev {
-                ClEvent::LinearMove { .. } => linear_move_count += 1,
+                ClEvent::LinearMove { .. } | ClEvent::RotaryLinearMove { .. } => {
+                    linear_move_count += 1;
+                }
                 ClEvent::ArcMove { .. } => arc_move_count += 1,
                 ClEvent::DrillCycle { .. } => drill_cycle_count += 1,
                 _ => {}
@@ -621,6 +760,8 @@ pub fn expand_drill_cycle_segments(
                 start_wcs: *cur,
                 end_wcs: dst,
                 motion: SegmentMotion3D::Rapid,
+                start_rotary_deg: 0.0,
+                end_rotary_deg: 0.0,
             });
             *cur = dst;
         }
@@ -634,6 +775,8 @@ pub fn expand_drill_cycle_segments(
                     feed_mm_min,
                     role: MotionRole::Plunge,
                 },
+                start_rotary_deg: 0.0,
+                end_rotary_deg: 0.0,
             });
             *cur = dst;
         }

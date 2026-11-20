@@ -1245,6 +1245,7 @@ impl ChipCutterApp {
             | CommandId::SamplePure2dPanel
             | CommandId::SampleSculptedMeshDome
             | CommandId::SampleReliefWaveMesh
+            | CommandId::SampleRotaryIndexedShaft
             | CommandId::SampleRevisionReloadV2 => {}
         }
     }

@@ -48,6 +48,7 @@ impl ChipCutterApp {
             self.highlight.wcs_frame = rs.frame;
             self.camera.turntable_frame = rs.frame;
             self.highlight.stock = Some(rs.stock);
+            self.highlight.rotary = rs.rotary;
             for (si, sk) in self.project.sketches.iter().enumerate() {
                 if sk.visible {
                     let wf = if let Some(m) = &self.model {
@@ -69,6 +70,7 @@ impl ChipCutterApp {
         } else {
             self.highlight.wcs_frame = RigidFrame3::IDENTITY;
             self.highlight.stock = None;
+            self.highlight.rotary = None;
         }
 
         match self.inspector_focus {
