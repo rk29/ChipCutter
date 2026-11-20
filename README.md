@@ -162,8 +162,8 @@ WGPU_BACKEND=vulkan xvfb-run -a cargo run -p chip-gui -- --self-test-screenshot 
 
 Licensed under either of:
 
-- **Apache License, Version 2.0** (`http://www.apache.org/licenses/LICENSE-2.0`)
-- **MIT License** (`http://opensource.org/licenses/MIT`)
+- **Apache License, Version 2.0** ([`LICENSE-APACHE`](LICENSE-APACHE) or <http://www.apache.org/licenses/LICENSE-2.0>)
+- **MIT License** ([`LICENSE-MIT`](LICENSE-MIT) or <http://opensource.org/licenses/MIT>)
 
 at your option. All third-party dependencies are verified permissive-only via [`deny.toml`](deny.toml) (`cargo deny check licenses`).
 
