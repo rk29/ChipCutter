@@ -13,6 +13,7 @@ glam.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 rstar.workspace = true
+zip.workspace = true
 monstertruck-io.workspace = true
 monstertruck-meshing.workspace = true
 monstertruck-modeling.workspace = true

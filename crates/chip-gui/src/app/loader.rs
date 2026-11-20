@@ -5,16 +5,16 @@ use std::{
 };
 
 use chip_cad::{
-    CadDocument, CadKernel, CadPicker, MonstertruckKernel, TopologyGraph,
-    sample_cam_torture_block_step, sample_machined_plate_step, sample_multi_feature_bracket_step,
-    sample_revised_part_pair_step,
+    CadDocument, CadPicker, MeshUnitKind, TopologyGraph, sample_cam_torture_block_step,
+    sample_machined_plate_step, sample_multi_feature_bracket_step, sample_revised_part_pair_step,
+    sample_sculpted_dome_stl_bytes,
 };
-use chip_math::DEFAULT_TESS_CHORD_TOL_MM;
 use chip_project::{
     ModelEntry, OperationReloadOutcome, ProjectDocument, build_adaptive_rest_demo_project,
     build_cam_torture_project, build_multi_feature_bracket_project,
-    build_pure2d_router_panel_demo_project, build_revision_v1_demo_project, compute_sha256_hex,
-    export_chipz_bundle, is_chipz_path, portable_model_path, rebind_project_to_reloaded_cad,
+    build_pure2d_router_panel_demo_project, build_revision_v1_demo_project,
+    build_sculpted_mesh_dome_project, compute_sha256_hex, export_chipz_bundle, is_chipz_path,
+    load_model_bytes_cad_doc, portable_model_path, rebind_project_to_reloaded_cad,
     resolve_model_path, unpack_chipz_bundle,
 };
 
@@ -30,6 +30,7 @@ pub(crate) enum LoadPurpose {
     SeedCamTortureBlock,
     SeedAdaptiveRestDemo,
     SeedRevisionDemoV1,
+    SeedSculptedMeshDome,
     ReloadRebind { update_path: bool },
 }
 
@@ -39,6 +40,7 @@ pub(crate) struct LoadedPayload {
     pub topo: TopologyGraph,
     pub raw_step_bytes: Vec<u8>,
     pub source_path: Option<PathBuf>,
+    pub unit_override: Option<MeshUnitKind>,
     pub sha256_hex: String,
     pub purpose: LoadPurpose,
 }
@@ -108,8 +110,10 @@ impl ChipCutterApp {
                     .push(format!("Opened project '{}'.", path.display()));
                 if let Some(first_model) = self.project.models.first() {
                     let step_path = resolve_model_path(path.parent(), &first_model.path);
-                    self.spawn_step_file_load_with_purpose(
+                    let unit_override = first_model.unit_override;
+                    self.spawn_model_file_load_with_options(
                         step_path,
+                        unit_override,
                         LoadPurpose::FreshImport {
                             update_model_entry: false,
                         },
@@ -158,8 +162,10 @@ impl ChipCutterApp {
                 ));
                 if let Some(first_model) = self.project.models.first() {
                     let step_path = resolve_model_path(Some(&extract_dir), &first_model.path);
-                    self.spawn_step_file_load_with_purpose(
+                    let unit_override = first_model.unit_override;
+                    self.spawn_model_file_load_with_options(
                         step_path,
+                        unit_override,
                         LoadPurpose::FreshImport {
                             update_model_entry: false,
                         },
@@ -319,9 +325,19 @@ impl ChipCutterApp {
         purpose: LoadPurpose,
         egui_ctx: egui::Context,
     ) {
+        self.spawn_model_file_load_with_options(path, None, purpose, egui_ctx);
+    }
+
+    pub(crate) fn spawn_model_file_load_with_options(
+        &mut self,
+        path: PathBuf,
+        unit_override: Option<MeshUnitKind>,
+        purpose: LoadPurpose,
+        egui_ctx: egui::Context,
+    ) {
         self.loading_in_flight = true;
         self.logs.push(format!(
-            "Loading STEP file '{}' on background worker…",
+            "Loading 3D model '{}' on background worker…",
             path.display()
         ));
         let tx = self.job_tx.clone();
@@ -334,10 +350,64 @@ impl ChipCutterApp {
                         .and_then(|s| s.to_str())
                         .unwrap_or("part.step")
                         .to_string();
-                    parse_step_bytes_job(name, bytes, Some(path), purpose, t0)
+                    parse_model_bytes_job(name, bytes, Some(path), unit_override, purpose, t0)
                 }
                 Err(e) => LoadJobResult::Failed(format!("failed to read {}: {e}", path.display())),
             };
+            let _ = tx.send(res);
+            egui_ctx.request_repaint();
+        });
+    }
+
+    pub(crate) fn spawn_mesh_bytes_load(
+        &mut self,
+        source_name: String,
+        raw_bytes: Vec<u8>,
+        source_path: Option<PathBuf>,
+        unit_override: Option<MeshUnitKind>,
+        egui_ctx: egui::Context,
+    ) {
+        if let Some(p) = &source_path {
+            self.record_recent_file(p);
+        }
+        self.loading_in_flight = true;
+        self.logs.push(format!(
+            "Importing 3D mesh '{source_name}' on background worker…"
+        ));
+        let tx = self.job_tx.clone();
+        rayon::spawn(move || {
+            let t0 = Instant::now();
+            let res = parse_model_bytes_job(
+                source_name,
+                raw_bytes,
+                source_path,
+                unit_override,
+                LoadPurpose::FreshImport {
+                    update_model_entry: true,
+                },
+                t0,
+            );
+            let _ = tx.send(res);
+            egui_ctx.request_repaint();
+        });
+    }
+
+    pub(crate) fn spawn_sculpted_mesh_dome_load(&mut self, egui_ctx: egui::Context) {
+        self.loading_in_flight = true;
+        self.logs
+            .push("Generating watertight Sculpted Dome (STL Mesh) sample…".to_string());
+        let tx = self.job_tx.clone();
+        rayon::spawn(move || {
+            let t0 = Instant::now();
+            let stl_bytes = sample_sculpted_dome_stl_bytes();
+            let res = parse_model_bytes_job(
+                "sculpted_dome.stl".to_string(),
+                stl_bytes,
+                None,
+                None,
+                LoadPurpose::SeedSculptedMeshDome,
+                t0,
+            );
             let _ = tx.send(res);
             egui_ctx.request_repaint();
         });
@@ -671,22 +741,43 @@ impl ChipCutterApp {
             topo,
             raw_step_bytes,
             source_path,
+            unit_override,
             sha256_hex,
             purpose,
         } = payload;
         let size = doc.aabb_mm.size();
-        self.logs.push(format!(
-            "Loaded '{}' [{}] in {} ms — {} faces, {} loops, {} edges (X={:.2} Y={:.2} Z={:.2} mm).",
-            doc.source_name,
-            doc.detected_unit.label(),
-            elapsed_ms,
-            doc.faces.len(),
-            doc.loops.len(),
-            doc.edges.len(),
-            size.x,
-            size.y,
-            size.z,
-        ));
+        if let Some(mesh) = doc.meshes.first() {
+            self.logs.push(format!(
+                "Loaded {} '{}' [{}] in {} ms — {} triangles, {} vertices, {} (X={:.2} Y={:.2} Z={:.2} mm).",
+                mesh.format.label(),
+                doc.source_name,
+                mesh.applied_unit.label(),
+                elapsed_ms,
+                mesh.diagnostics.valid_triangle_count,
+                mesh.diagnostics.welded_vertex_count,
+                if mesh.diagnostics.is_watertight {
+                    "Watertight"
+                } else {
+                    "Open/Non-Manifold"
+                },
+                size.x,
+                size.y,
+                size.z,
+            ));
+        } else {
+            self.logs.push(format!(
+                "Loaded '{}' [{}] in {} ms — {} faces, {} loops, {} edges (X={:.2} Y={:.2} Z={:.2} mm).",
+                doc.source_name,
+                doc.detected_unit.label(),
+                elapsed_ms,
+                doc.faces.len(),
+                doc.loops.len(),
+                doc.edges.len(),
+                size.x,
+                size.y,
+                size.z,
+            ));
+        }
 
         self.dispatcher.cancel_all();
         self.external_step_modified = false;
@@ -777,22 +868,42 @@ impl ChipCutterApp {
                 };
                 self.op_tab = OperationTab::Passes;
             }
+            LoadPurpose::SeedSculptedMeshDome => {
+                self.clear_bundle_extract_dir();
+                self.project_file_path = None;
+                self.history.clear();
+                self.clean_undo_len = Some(0);
+                self.last_reload_banner = None;
+                self.project = build_sculpted_mesh_dome_project(
+                    doc.source_name.clone(),
+                    &sha256_hex,
+                    &self.global_tools.tools,
+                );
+                self.active_setup_idx = 0;
+                self.inspector_focus = InspectorFocus::Setup { setup_idx: 0 };
+                self.setup_tab = SetupTab::Wcs;
+                self.show_27pt_dots = true;
+            }
             LoadPurpose::FreshImport { update_model_entry } => {
                 self.last_reload_banner = None;
                 if update_model_entry {
-                    if let Some(step_path) = &source_path {
-                        let rel = portable_model_path(self.project_file_path.as_deref(), step_path);
-                        self.project.models = vec![ModelEntry {
-                            id: "model_1".to_string(),
-                            path: rel,
-                            sha256: sha256_hex.clone(),
-                        }];
-                    }
+                    let stored_path = if let Some(model_path) = &source_path {
+                        portable_model_path(self.project_file_path.as_deref(), model_path)
+                    } else {
+                        doc.source_name.clone()
+                    };
+                    self.project.models = vec![ModelEntry {
+                        id: "model_1".to_string(),
+                        path: stored_path,
+                        sha256: sha256_hex.clone(),
+                        unit_override,
+                    }];
                 } else if self.project.models.is_empty() {
                     self.project.models = vec![ModelEntry {
                         id: "model_1".to_string(),
                         path: doc.source_name.clone(),
                         sha256: sha256_hex.clone(),
+                        unit_override,
                     }];
                 }
             }
@@ -916,8 +1027,19 @@ fn parse_step_bytes_job(
     purpose: LoadPurpose,
     t0: Instant,
 ) -> LoadJobResult {
+    parse_model_bytes_job(name, raw_step_bytes, source_path, None, purpose, t0)
+}
+
+fn parse_model_bytes_job(
+    name: String,
+    raw_step_bytes: Vec<u8>,
+    source_path: Option<PathBuf>,
+    unit_override: Option<MeshUnitKind>,
+    purpose: LoadPurpose,
+    t0: Instant,
+) -> LoadJobResult {
     let sha256_hex = compute_sha256_hex(&raw_step_bytes);
-    match MonstertruckKernel.load_step_bytes(&name, &raw_step_bytes, DEFAULT_TESS_CHORD_TOL_MM) {
+    match load_model_bytes_cad_doc(&name, &raw_step_bytes, unit_override) {
         Ok(doc) => {
             let picker = CadPicker::build(&doc);
             let topo = TopologyGraph::build(&doc);
@@ -928,6 +1050,7 @@ fn parse_step_bytes_job(
                     topo,
                     raw_step_bytes,
                     source_path,
+                    unit_override,
                     sha256_hex,
                     purpose,
                 }),

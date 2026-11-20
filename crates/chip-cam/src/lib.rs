@@ -12,6 +12,7 @@ pub mod selection;
 pub mod setup;
 pub mod stock;
 pub mod strategies;
+pub mod surface3d;
 pub mod toolpath;
 pub mod wcs;
 
@@ -60,6 +61,10 @@ pub use strategies::{
         ContourParallelStrategy, PocketEngagementParams, PocketStrategy, PocketSubpath2D,
         ZigZagPocketStrategy,
     },
+};
+pub use surface3d::{
+    SurfaceCutterProfile, SurfaceCutterShape, SurfaceMesh3D, drop_cutter_points_parallel,
+    drop_cutter_z, drop_cutter_z_with_scratch, push_cutter_region_z, slice_surface_contours_z,
 };
 pub use toolpath::{
     ClearingSubToolpath, DEFAULT_RAPID_RATE_MM_MIN, DrillCycleSpec, GeneratedToolpath,

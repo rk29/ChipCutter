@@ -315,6 +315,7 @@ fn cli_reload_step_handles_v1_to_v2_rebind_and_deleted_hole_flagging() {
         id: "model_1".to_string(),
         path: "part_v1.step".to_string(),
         sha256: compute_sha256_hex(&v1_bytes),
+        unit_override: None,
     });
     proj.ensure_tool_embedded(flat_6mm);
     proj.ensure_tool_embedded(drill_6mm);
@@ -669,4 +670,128 @@ fn v2_golden_adaptive_rest_and_two_tool_vcarve_snapshots_match_byte_for_byte() {
             .unwrap_or_else(|e| panic!("missing golden v2 Grbl file {fname}: {e}"));
         assert_eq!(actual, expected, "{fname} drifted from golden snapshot");
     }
+}
+
+#[test]
+fn cli_inspect_import_mesh_validate_and_bundle_roundtrip_for_stl_obj_3mf() {
+    use chip_cad::{
+        MeshUnitKind, sample_box_3mf_bytes, sample_relief_wave_obj_text,
+        sample_sculpted_dome_stl_bytes,
+    };
+
+    let tmp = TempTestDir::new("mesh_m16");
+    let stl_path = tmp.path().join("dome.stl");
+    let obj_path = tmp.path().join("wave.obj");
+    let mf_path = tmp.path().join("box.3mf");
+
+    std::fs::write(&stl_path, sample_sculpted_dome_stl_bytes()).unwrap();
+    std::fs::write(&obj_path, sample_relief_wave_obj_text()).unwrap();
+    std::fs::write(&mf_path, sample_box_3mf_bytes(MeshUnitKind::Inch, None)).unwrap();
+
+    // 1. Inspect STL, OBJ, and 3MF
+    for (p, expected_fmt) in [
+        (&stl_path, "Binary STL"),
+        (&obj_path, "Wavefront OBJ"),
+        (&mf_path, "3MF (OPC Archive)"),
+    ] {
+        let out = Command::new(cli_bin())
+            .args(["inspect", p.to_str().unwrap()])
+            .output()
+            .expect("inspect mesh");
+        assert!(
+            out.status.success(),
+            "inspect {} failed:\n{}",
+            p.display(),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            stdout.contains(expected_fmt),
+            "missing {expected_fmt} in:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("Watertight"),
+            "expected Watertight in:\n{stdout}"
+        );
+    }
+
+    // 2. `chipcutter import-mesh` -> `schema_version = 3` project
+    let proj_path = tmp.path().join("dome.chip.toml");
+    let imp = Command::new(cli_bin())
+        .args([
+            "import-mesh",
+            stl_path.to_str().unwrap(),
+            "-o",
+            proj_path.to_str().unwrap(),
+            "--mesh-units",
+            "mm",
+        ])
+        .output()
+        .expect("import-mesh");
+    assert!(
+        imp.status.success(),
+        "import-mesh failed:\n{}",
+        String::from_utf8_lossy(&imp.stderr)
+    );
+    let proj = ProjectDocument::load_from_path(&proj_path).unwrap();
+    assert_eq!(proj.schema_version, 3);
+    assert_eq!(proj.models.len(), 1);
+    assert_eq!(proj.models[0].unit_override, Some(MeshUnitKind::Millimeter));
+
+    // 3. `chipcutter validate` on imported mesh project succeeds with 0 errors
+    let val = Command::new(cli_bin())
+        .args(["validate", proj_path.to_str().unwrap()])
+        .output()
+        .expect("validate mesh project");
+    assert!(
+        val.status.success(),
+        "validate mesh project failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&val.stdout),
+        String::from_utf8_lossy(&val.stderr)
+    );
+
+    // 4. `chipcutter bundle pack` & `unpack` round-trip preserves STL mesh + SHA-256
+    let chipz_path = tmp.path().join("dome.chipz");
+    let pack = Command::new(cli_bin())
+        .args([
+            "bundle",
+            "pack",
+            proj_path.to_str().unwrap(),
+            "-o",
+            chipz_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("bundle pack mesh");
+    assert!(
+        pack.status.success(),
+        "bundle pack mesh failed:\n{}",
+        String::from_utf8_lossy(&pack.stderr)
+    );
+
+    let unpack_dir = tmp.path().join("unpacked_dome");
+    let unpack = Command::new(cli_bin())
+        .args([
+            "bundle",
+            "unpack",
+            chipz_path.to_str().unwrap(),
+            "-o",
+            unpack_dir.to_str().unwrap(),
+        ])
+        .output()
+        .expect("bundle unpack mesh");
+    assert!(
+        unpack.status.success(),
+        "bundle unpack mesh failed:\n{}",
+        String::from_utf8_lossy(&unpack.stderr)
+    );
+    assert!(unpack_dir.join("models/dome.stl").is_file());
+    let val_chipz = Command::new(cli_bin())
+        .args(["validate", chipz_path.to_str().unwrap()])
+        .output()
+        .expect("validate mesh chipz");
+    assert!(
+        val_chipz.status.success(),
+        "validate mesh .chipz failed:\n{}",
+        String::from_utf8_lossy(&val_chipz.stderr)
+    );
 }

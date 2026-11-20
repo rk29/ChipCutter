@@ -8,6 +8,7 @@
 
 pub mod fixtures;
 pub mod kernel;
+pub mod mesh;
 pub mod model;
 pub mod monstertruck_kernel;
 pub mod picking;
@@ -23,10 +24,17 @@ pub use fixtures::{
     tutorial_pocket_block_step,
 };
 pub use kernel::{CadError, CadKernel};
+pub use mesh::{
+    MeshBvh, MeshDiagnostics, MeshFormat, MeshImportOptions, MeshRayHit, MeshTriangle,
+    MeshUnitKind, TriangleMeshBody, build_render_mesh_for_triangle_mesh, is_mesh_extension,
+    load_mesh_bytes, load_mesh_cad_document, sample_box_3mf_bytes, sample_relief_wave_obj_text,
+    sample_sculpted_dome_stl_bytes,
+};
 pub use model::{
     BRepEdge, BRepFace, BRepLoop, BodyId, CadDocument, CurveKind, EdgeId, EdgePolyline,
-    EntitySignatureKind, FaceId, FaceTriangle, GeometricSignature, LoopId, OrientedEdgeUse,
-    RenderMesh, RenderVertex, SelectionBinding, SolidBody, StepUnitKind, SurfaceKind,
+    EntitySignatureKind, FaceId, FaceTriangle, GeometricSignature, LoopId, MESH_FACE_SENTINEL,
+    OrientedEdgeUse, RenderMesh, RenderVertex, SelectionBinding, SolidBody, StepUnitKind,
+    SurfaceKind,
 };
 pub use monstertruck_kernel::MonstertruckKernel;
 pub use picking::{CadPicker, PickFilter, PickHit, PickTarget};

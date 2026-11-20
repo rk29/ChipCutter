@@ -23,6 +23,7 @@ pub enum SampleProjectId {
     CadRevisionV1,
     CadRevisionV2Reload,
     SamplePlate,
+    SculptedMeshDome,
 }
 
 impl SampleProjectId {
@@ -39,8 +40,9 @@ impl SampleProjectId {
             "revision-v1" => Ok(Self::CadRevisionV1),
             "revision-v2" => Ok(Self::CadRevisionV2Reload),
             "sample-plate" | "plate" => Ok(Self::SamplePlate),
+            "mesh-dome" | "sculpted-dome" | "dome" => Ok(Self::SculptedMeshDome),
             other => Err(format!(
-                "invalid --sample '{other}'; expected one of: cam-torture, adaptive-rest, pure-2d, nameplate, vcarve, multi-feature, tilted-bracket, revision-v1, revision-v2, sample-plate"
+                "invalid --sample '{other}'; expected one of: cam-torture, adaptive-rest, pure-2d, nameplate, vcarve, multi-feature, tilted-bracket, revision-v1, revision-v2, sample-plate, mesh-dome"
             )),
         }
     }
@@ -52,14 +54,16 @@ pub enum SampleCategory {
     #[default]
     All,
     Step3D,
+    Mesh3D,
     Pure2dSketch,
     VCarveTypography,
 }
 
 impl SampleCategory {
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::All,
         Self::Step3D,
+        Self::Mesh3D,
         Self::Pure2dSketch,
         Self::VCarveTypography,
     ];
@@ -68,6 +72,7 @@ impl SampleCategory {
         match self {
             Self::All => "All Samples",
             Self::Step3D => "3D STEP Solids",
+            Self::Mesh3D => "3D Meshes",
             Self::Pure2dSketch => "Pure-2D & DXF",
             Self::VCarveTypography => "V-Carve & Text",
         }
@@ -157,6 +162,14 @@ pub const SAMPLE_CATALOG: &[SampleCardSpec] = &[
         badge: "Unseeded 3D STEP",
         summary: "Clean unseeded machined STEP mounting plate for practicing interactive 3D face, loop, and hole picking from scratch.",
     },
+    SampleCardSpec {
+        id: SampleProjectId::SculptedMeshDome,
+        category: SampleCategory::Mesh3D,
+        icon: IconKind::StepModel,
+        title: "Sculpted Dome (Watertight STL Mesh)",
+        badge: "3D STL Mesh · G54",
+        summary: "R25mm hemisphere seated on a 70×70×8mm base pedestal demonstrating pure-Rust STL import, crease-angle shading, and 3D stock/WCS setup.",
+    },
 ];
 
 /// High-level action emitted by either the Welcome Overlay or the Sample Projects Gallery.
@@ -164,6 +177,7 @@ pub const SAMPLE_CATALOG: &[SampleCardSpec] = &[
 pub enum WelcomeGalleryAction {
     OpenProjectDialog,
     ImportStepDialog,
+    ImportMeshDialog,
     ImportVectorDialog,
     StartPure2dSketchJob,
     OpenSampleGallery,
@@ -239,6 +253,14 @@ pub fn show_welcome_modal(
                         "Load an ISO 10303-21 (.step / .stp) CAD part and initialize Stock & G54 WCS",
                     ) {
                         action = Some(WelcomeGalleryAction::ImportStepDialog);
+                    }
+                    if welcome_action_row(
+                        ui,
+                        IconKind::StepModel,
+                        "Import 3D Mesh (STL / OBJ / 3MF)…",
+                        "Preview physical size & units on sculpted .stl, .obj, or .3mf triangle meshes",
+                    ) {
+                        action = Some(WelcomeGalleryAction::ImportMeshDialog);
                     }
                     if welcome_action_row(
                         ui,
@@ -371,6 +393,7 @@ pub fn show_welcome_modal(
             Some(
                 WelcomeGalleryAction::OpenProjectDialog
                     | WelcomeGalleryAction::ImportStepDialog
+                    | WelcomeGalleryAction::ImportMeshDialog
                     | WelcomeGalleryAction::ImportVectorDialog
                     | WelcomeGalleryAction::StartPure2dSketchJob
                     | WelcomeGalleryAction::OpenSampleGallery
@@ -569,6 +592,10 @@ mod tests {
         assert_eq!(
             SampleProjectId::from_cli_slug("sample-plate"),
             Ok(SampleProjectId::SamplePlate)
+        );
+        assert_eq!(
+            SampleProjectId::from_cli_slug("mesh-dome"),
+            Ok(SampleProjectId::SculptedMeshDome)
         );
         assert!(SampleProjectId::from_cli_slug("nonexistent").is_err());
     }

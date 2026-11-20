@@ -18,6 +18,7 @@ pub enum CommandId {
     SaveProject,
     ExportChipzBundle,
     ImportStepModel,
+    ImportMesh3D,
     ReloadStepModel,
     ImportVector2D,
     OpenWelcomeScreen,
@@ -66,6 +67,7 @@ pub enum CommandId {
     SampleVCarveInlay,
     SampleEngravedNameplate,
     SamplePure2dPanel,
+    SampleSculptedMeshDome,
     SampleRevisionReloadV2,
 }
 
@@ -146,6 +148,13 @@ pub const PALETTE_COMMANDS: &[PaletteEntry] = &[
         category: "Import",
         label: "Import 3D STEP Solid (.step / .stp)…",
         keywords: "import step stp cad brep 3d solid model",
+        shortcut: None,
+    },
+    PaletteEntry {
+        id: CommandId::ImportMesh3D,
+        category: "Import",
+        label: "Import 3D Mesh (.stl / .obj / .3mf)…",
+        keywords: "import mesh stl obj 3mf 3d surface relief sculpted",
         shortcut: None,
     },
     PaletteEntry {
@@ -394,6 +403,13 @@ pub const PALETTE_COMMANDS: &[PaletteEntry] = &[
         shortcut: None,
     },
     PaletteEntry {
+        id: CommandId::SampleSculptedMeshDome,
+        category: "Samples",
+        label: "Sample: Load Sculpted Dome (STL Mesh)",
+        keywords: "sample demo stl mesh dome 3d surface sculpted",
+        shortcut: None,
+    },
+    PaletteEntry {
         id: CommandId::SampleRevisionReloadV2,
         category: "Samples",
         label: "Sample: Associatively Reload CAD Revision v2",
@@ -410,6 +426,7 @@ impl CommandId {
             Self::SampleVCarveInlay => Some(SampleProjectId::VCarveSignInlay),
             Self::SampleEngravedNameplate => Some(SampleProjectId::EngravedNameplate),
             Self::SamplePure2dPanel => Some(SampleProjectId::Pure2dPanel),
+            Self::SampleSculptedMeshDome => Some(SampleProjectId::SculptedMeshDome),
             Self::SampleRevisionReloadV2 => Some(SampleProjectId::CadRevisionV2Reload),
             _ => None,
         }

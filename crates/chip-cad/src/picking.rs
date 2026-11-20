@@ -167,7 +167,7 @@ impl CadPicker {
                     closest_any_face_t = t;
                 }
                 let matches_face_filter = match filter {
-                    PickFilter::Any | PickFilter::FacesOnly => true,
+                    PickFilter::Any | PickFilter::FacesOnly => doc.face(tri.face_id).is_some(),
                     PickFilter::CylindricalHolesOnly => doc.face(tri.face_id).is_some_and(|f| {
                         matches!(
                             f.surface,

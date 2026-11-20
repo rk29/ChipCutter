@@ -484,6 +484,7 @@ dependencies = [
  "rstar",
  "serde",
  "thiserror 2.0.21",
+ "zip",
 ]
 
 [[package]]
@@ -498,6 +499,7 @@ dependencies = [
  "chip-sketch",
  "chip-tools",
  "glam",
+ "rayon",
  "serde",
  "thiserror 2.0.21",
 ]

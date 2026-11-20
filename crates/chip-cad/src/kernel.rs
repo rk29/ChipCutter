@@ -15,6 +15,17 @@ pub enum CadError {
     TopologyConversion { shell_id: u64, detail: String },
     #[error("tessellation produced zero renderable triangles")]
     EmptyTessellation,
+    #[error("failed to parse triangle mesh ({format}): {detail}")]
+    MeshParse {
+        format: &'static str,
+        detail: String,
+    },
+    #[error("unsupported mesh file format '{extension}' (expected .stl, .obj, or .3mf)")]
+    UnsupportedMeshFormat { extension: String },
+    #[error("unsafe archive entry path '{entry_path}' rejected in 3MF container")]
+    UnsafeArchivePath { entry_path: String },
+    #[error("3MF archive exceeds maximum allowed uncompressed size ({limit_bytes} bytes)")]
+    ArchiveTooLarge { limit_bytes: u64 },
     #[error("I/O error reading CAD file: {0}")]
     Io(#[from] std::io::Error),
 }

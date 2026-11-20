@@ -29,7 +29,7 @@ impl ProjectDocument {
         Ok(toml::to_string_pretty(&normalized)?)
     }
 
-    /// Parses a `.chip.toml` manifest from TOML text and auto-migrates `schema_version = 1 -> 2`.
+    /// Parses a `.chip.toml` manifest from TOML text and auto-migrates `schema_version = 1` / `2` -> `3`.
     pub fn from_toml_str(toml_text: &str) -> Result<Self, ProjectIoError> {
         let mut doc: Self = toml::from_str(toml_text)?;
         if doc.schema_version == 0 || doc.schema_version > Self::CURRENT_SCHEMA_VERSION {

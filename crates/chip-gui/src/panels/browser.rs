@@ -17,6 +17,7 @@ use crate::{
 #[derive(Debug, Clone)]
 pub enum BrowserAction {
     OpenStepDialog,
+    OpenMeshImportModal { browse_file: bool },
     OpenVectorImportModal { browse_file: bool },
     ReloadStepModel,
     ReplaceStepDialog,
@@ -261,33 +262,59 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                 .show(ui, |ui| {
                     if let Some(doc) = cad_doc {
                         let sel = *focus == InspectorFocus::CadEntity;
-                        if ui
-                            .selectable_label(
-                                sel,
-                                format!("• {} ({} body)", doc.source_name, doc.bodies.len()),
+                        let body_summary = if !doc.meshes.is_empty() && doc.bodies.is_empty() {
+                            format!(
+                                "• {} ({} mesh)",
+                                doc.source_name,
+                                doc.meshes.len()
                             )
-                            .clicked()
-                        {
+                        } else {
+                            format!("• {} ({} body)", doc.source_name, doc.bodies.len())
+                        };
+                        if ui.selectable_label(sel, body_summary).clicked() {
                             *focus = InspectorFocus::CadEntity;
                             *pick_mode = ViewportPickMode::InspectEntity;
                         }
                         ui.indent("model_stats", |ui| {
-                            ui.weak(format!(
-                                "{} faces · {} loops · {} edges",
-                                doc.faces.len(),
-                                doc.loops.len(),
-                                doc.edges.len()
-                            ));
+                            if let Some(mesh) = doc.meshes.first() {
+                                let d = &mesh.diagnostics;
+                                let status = if d.is_watertight {
+                                    "Watertight"
+                                } else {
+                                    "Open edges"
+                                };
+                                ui.weak(format!(
+                                    "{} · {} tris · {} verts · {status}",
+                                    mesh.format.label(),
+                                    d.valid_triangle_count,
+                                    d.welded_vertex_count
+                                ));
+                            } else {
+                                ui.weak(format!(
+                                    "{} faces · {} loops · {} edges",
+                                    doc.faces.len(),
+                                    doc.loops.len(),
+                                    doc.edges.len()
+                                ));
+                            }
                         });
                     } else {
-                        ui.weak("No STEP model loaded.");
+                        ui.weak("No 3D STEP or mesh model loaded.");
                     }
 
                     ui.horizontal_wrapped(|ui| {
                         if ui.small_button("Import STEP…").clicked() {
                             emitted_action = Some(BrowserAction::OpenStepDialog);
                         }
-                        if cad_doc.is_some() {
+                        if ui
+                            .small_button("Import Mesh…")
+                            .on_hover_text("Import a 3D triangle mesh (.stl, .obj, .3mf) with physical unit preview")
+                            .clicked()
+                        {
+                            emitted_action =
+                                Some(BrowserAction::OpenMeshImportModal { browse_file: true });
+                        }
+                        if cad_doc.is_some_and(|d| !d.bodies.is_empty()) {
                             if ui
                                 .small_button("Reload (Ctrl+R)")
                                 .on_hover_text(

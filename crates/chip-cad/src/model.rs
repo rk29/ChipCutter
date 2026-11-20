@@ -1,6 +1,12 @@
 use chip_math::{Aabb3, DVec3};
 use serde::{Deserialize, Serialize};
 
+use crate::mesh::{TriangleMeshBody, build_render_mesh_for_triangle_mesh};
+
+/// Sentinel [`FaceId`] attached to [`RenderVertex::face_id`] for imported triangle meshes
+/// (distinct from `u32::MAX` "no hovered face" and valid B-Rep face indices).
+pub const MESH_FACE_SENTINEL: FaceId = FaceId(u32::MAX - 1);
+
 /// Identifier of a solid or shell body within a [`CadDocument`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct BodyId(pub u32);
@@ -258,6 +264,7 @@ pub struct CadDocument {
     pub source_name: String,
     pub detected_unit: StepUnitKind,
     pub bodies: Vec<SolidBody>,
+    pub meshes: Vec<TriangleMeshBody>,
     pub faces: Vec<BRepFace>,
     pub loops: Vec<BRepLoop>,
     pub edges: Vec<BRepEdge>,
@@ -266,12 +273,13 @@ pub struct CadDocument {
 }
 
 impl CadDocument {
-    /// Returns an empty canonical `CadDocument` with zero 3D solid bodies (used for Pure-2D projects).
+    /// Returns an empty canonical `CadDocument` with zero 3D solid or mesh bodies (used for Pure-2D projects).
     pub fn empty() -> Self {
         Self {
             source_name: String::new(),
             detected_unit: StepUnitKind::Millimeter,
             bodies: Vec::new(),
+            meshes: Vec::new(),
             faces: Vec::new(),
             loops: Vec::new(),
             edges: Vec::new(),
@@ -283,6 +291,31 @@ impl CadDocument {
                 edge_polylines: Vec::new(),
             },
         }
+    }
+
+    /// Constructs a [`CadDocument`] wrapping a single imported [`TriangleMeshBody`] (`STL`/`OBJ`/`3MF`)
+    /// with crease-angle viewport shading (`35°`) and unified `aabb_mm`.
+    pub fn from_mesh(source_name: String, mesh: TriangleMeshBody) -> Self {
+        let detected_unit = mesh.applied_unit.to_step_unit_kind();
+        let aabb_mm = mesh.aabb_mm;
+        let render_mesh = build_render_mesh_for_triangle_mesh(&mesh, 35.0, MESH_FACE_SENTINEL);
+        Self {
+            source_name,
+            detected_unit,
+            bodies: Vec::new(),
+            meshes: vec![mesh],
+            faces: Vec::new(),
+            loops: Vec::new(),
+            edges: Vec::new(),
+            aabb_mm,
+            render_mesh,
+        }
+    }
+
+    /// Returns `true` if this document holds at least one 3D B-Rep solid body or imported triangle mesh.
+    #[inline]
+    pub fn has_3d_geometry(&self) -> bool {
+        !self.bodies.is_empty() || !self.meshes.is_empty()
     }
 
     #[inline]

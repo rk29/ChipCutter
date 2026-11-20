@@ -82,7 +82,7 @@ pub fn validate_project(
                         report.push_warning(
                             format!("Model '{}'", model.id),
                             format!(
-                                "STEP file '{}' SHA-256 changed on disk (expected {}…, found {}…). Reload STEP model to re-bind selections.",
+                                "model file '{}' SHA-256 changed on disk (expected {}…, found {}…). Reload model to refresh geometry.",
                                 model.path,
                                 &model.sha256[..model.sha256.len().min(12)],
                                 &actual_sha[..12]
@@ -93,7 +93,7 @@ pub fn validate_project(
                 Err(e) => {
                     report.push_error(
                         format!("Model '{}'", model.id),
-                        format!("cannot read STEP file '{}': {e}", resolved_path.display()),
+                        format!("cannot read model file '{}': {e}", resolved_path.display()),
                     );
                 }
             }

@@ -1,8 +1,9 @@
 use std::{path::PathBuf, process::ExitCode};
 
 use chip_cad::{
-    CadKernel, CurveKind, MonstertruckKernel, SurfaceKind, sample_cam_torture_block_step,
-    sample_machined_plate_step, sample_multi_feature_bracket_step, sample_revised_part_pair_step,
+    CadKernel, CurveKind, MeshImportOptions, MeshUnitKind, MonstertruckKernel, SurfaceKind,
+    is_mesh_extension, load_mesh_bytes, sample_cam_torture_block_step, sample_machined_plate_step,
+    sample_multi_feature_bracket_step, sample_revised_part_pair_step,
     tutorial_adaptive_pocket_step, tutorial_chamfer_engrave_block_step,
     tutorial_contour_plate_step, tutorial_drill_bore_plate_step, tutorial_facing_billet_step,
     tutorial_pocket_block_step,
@@ -10,7 +11,7 @@ use chip_cad::{
 use chip_cam::{BoxAnchor27, StockConfig, WcsOriginMode};
 use chip_math::{ArcSegment2D, DEFAULT_TESS_CHORD_TOL_MM, DisplayUnit, ParamLength};
 use chip_project::{
-    ProjectDocument, build_cam_torture_project, build_tutorial_adaptive_rest_project,
+    ModelEntry, ProjectDocument, build_cam_torture_project, build_tutorial_adaptive_rest_project,
     build_tutorial_chamfer_trace_project, build_tutorial_contour_project,
     build_tutorial_drill_bore_project, build_tutorial_facing_project,
     build_tutorial_pocket_project, build_tutorial_vcarve_inlay_project, compute_sha256_hex,
@@ -182,8 +183,114 @@ pub fn run_generate_sample_step(
 pub struct InspectArgs {
     pub path: PathBuf,
     pub units: String,
+    pub mesh_units: String,
     pub svg_dpi: f64,
     pub join_tol: f64,
+}
+
+pub struct ImportMeshArgs {
+    pub input: PathBuf,
+    pub output: PathBuf,
+    pub mesh_units: String,
+}
+
+fn parse_mesh_unit_override(raw: &str) -> Result<Option<MeshUnitKind>, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("auto") {
+        return Ok(None);
+    }
+    MeshUnitKind::from_str_loose(trimmed)
+        .map(Some)
+        .ok_or_else(|| {
+            format!("invalid --mesh-units '{raw}' (expected auto, mm, in, cm, m, ft, or um)")
+        })
+}
+
+pub fn run_import_mesh(args: ImportMeshArgs) -> Result<ExitCode, Box<dyn std::error::Error>> {
+    let ext = args
+        .input
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default();
+    if !is_mesh_extension(ext) {
+        return Err(format!(
+            "unsupported 3D mesh file extension '{}' (expected .stl, .obj, or .3mf)",
+            args.input.display()
+        )
+        .into());
+    }
+    let unit_override = parse_mesh_unit_override(&args.mesh_units)?;
+    let bytes = std::fs::read(&args.input)?;
+    let source_name = args
+        .input
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("mesh.stl");
+    let mesh = load_mesh_bytes(
+        source_name,
+        &bytes,
+        &MeshImportOptions {
+            unit_override,
+            ..MeshImportOptions::default()
+        },
+    )?;
+
+    let stem = args
+        .input
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("Mesh Job");
+    let mut proj = ProjectDocument::new(stem);
+    let rel_path = portable_model_path(Some(&args.output), &args.input);
+    proj.models = vec![ModelEntry {
+        id: "model_1".to_string(),
+        path: rel_path,
+        sha256: compute_sha256_hex(&bytes),
+        unit_override,
+    }];
+    proj.setups[0].wcs.origin = WcsOriginMode::StockBoxPoint {
+        anchor: BoxAnchor27::TOP_CENTER,
+    };
+    proj.setups[0].stock = StockConfig::RelativeBox {
+        side_pos_x: ParamLength::from_mm(2.0),
+        side_neg_x: ParamLength::from_mm(2.0),
+        side_pos_y: ParamLength::from_mm(2.0),
+        side_neg_y: ParamLength::from_mm(2.0),
+        symmetric_xy: true,
+        top_offset_z: ParamLength::from_mm(1.0),
+        bottom_offset_z: ParamLength::from_mm(0.0),
+        sheet_thickness_z: ParamLength::from_mm(12.0),
+        round_increment_mm: None,
+    };
+    let starter = default_starter_tool_library();
+    for t in &starter.tools {
+        proj.ensure_tool_embedded(t);
+    }
+
+    proj.save_to_path(&args.output)?;
+    let sz = mesh.aabb_mm.size();
+    println!(
+        "Imported {} '{}' ({}, {} triangles, {} vertices, {:.2} × {:.2} × {:.2} mm, {}).",
+        mesh.format.label(),
+        args.input.display(),
+        mesh.applied_unit.short_label(),
+        mesh.diagnostics.valid_triangle_count,
+        mesh.diagnostics.welded_vertex_count,
+        sz.x,
+        sz.y,
+        sz.z,
+        if mesh.diagnostics.is_watertight {
+            "Watertight"
+        } else {
+            "Open/Non-Manifold"
+        }
+    );
+    println!(
+        "Saved schema v{} project to {}",
+        proj.schema_version,
+        args.output.display()
+    );
+    Ok(ExitCode::SUCCESS)
 }
 
 pub struct Import2dArgs {
@@ -318,6 +425,7 @@ pub fn run_inspect(args: InspectArgs) -> Result<ExitCode, Box<dyn std::error::Er
     let InspectArgs {
         path,
         units,
+        mesh_units,
         svg_dpi,
         join_tol,
     } = args;
@@ -333,6 +441,10 @@ pub fn run_inspect(args: InspectArgs) -> Result<ExitCode, Box<dyn std::error::Er
         .to_ascii_lowercase();
     if ext == "dxf" || ext == "svg" {
         return inspect_2d_vector(&path, &ext, display_unit, svg_dpi, join_tol);
+    }
+    if is_mesh_extension(&ext) {
+        let unit_override = parse_mesh_unit_override(&mesh_units)?;
+        return inspect_3d_mesh(&path, display_unit, unit_override);
     }
 
     let bytes = std::fs::read(&path)?;
@@ -489,5 +601,65 @@ fn inspect_2d_vector(
     for d in &sketch.diagnostics {
         println!("  [DIAG] {}", d.message);
     }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn inspect_3d_mesh(
+    path: &std::path::Path,
+    display_unit: DisplayUnit,
+    unit_override: Option<MeshUnitKind>,
+) -> Result<ExitCode, Box<dyn std::error::Error>> {
+    let bytes = std::fs::read(path)?;
+    let source_name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("mesh.stl");
+    let mesh = load_mesh_bytes(
+        source_name,
+        &bytes,
+        &MeshImportOptions {
+            unit_override,
+            ..MeshImportOptions::default()
+        },
+    )?;
+    let sz = mesh.aabb_mm.size();
+    let d = &mesh.diagnostics;
+    let detected_str = mesh
+        .detected_unit
+        .map_or("None (unitless)", MeshUnitKind::label);
+
+    println!("=== ChipCutter 3D Mesh Inspection ===");
+    println!(
+        "Source:         {} ({})",
+        path.display(),
+        mesh.format.label()
+    );
+    println!("Mesh Name:      {}", mesh.name);
+    println!("Detected Unit:  {detected_str}");
+    println!("Applied Unit:   {}", mesh.applied_unit.label());
+    println!(
+        "Bounding Box:   X={}  Y={}  Z={}",
+        display_unit.format_length(sz.x),
+        display_unit.format_length(sz.y),
+        display_unit.format_length(sz.z),
+    );
+    println!(
+        "Topology:       {} triangles ({} raw, {} degenerate removed), {} welded vertices",
+        d.valid_triangle_count,
+        d.raw_triangle_count,
+        d.degenerate_triangles_removed,
+        d.welded_vertex_count
+    );
+    println!(
+        "Manifold Check: {} (open boundary edges: {}, non-manifold edges: {})",
+        if d.is_watertight {
+            "Watertight"
+        } else {
+            "Not Watertight"
+        },
+        d.open_boundary_edges,
+        d.non_manifold_edges
+    );
+    println!("Signed Volume:  {:.2} mm³", d.signed_volume_mm3);
     Ok(ExitCode::SUCCESS)
 }

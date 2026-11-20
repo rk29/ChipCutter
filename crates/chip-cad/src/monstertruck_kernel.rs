@@ -322,6 +322,7 @@ impl CadKernel for MonstertruckKernel {
             source_name: source_name.to_string(),
             detected_unit,
             bodies,
+            meshes: Vec::new(),
             faces,
             loops,
             edges,

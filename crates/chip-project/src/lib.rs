@@ -25,16 +25,18 @@ pub use demos::{
     build_adaptive_rest_demo_project, build_cam_torture_project,
     build_engraved_nameplate_demo_project, build_multi_feature_bracket_project,
     build_pure2d_router_panel_demo_project, build_revision_v1_demo_project,
-    build_tutorial_adaptive_rest_project, build_tutorial_chamfer_trace_project,
-    build_tutorial_contour_project, build_tutorial_drill_bore_project,
-    build_tutorial_facing_project, build_tutorial_pocket_project,
-    build_tutorial_vcarve_inlay_project, build_vcarve_sign_and_inlay_demo_project,
+    build_sculpted_mesh_dome_project, build_tutorial_adaptive_rest_project,
+    build_tutorial_chamfer_trace_project, build_tutorial_contour_project,
+    build_tutorial_drill_bore_project, build_tutorial_facing_project,
+    build_tutorial_pocket_project, build_tutorial_vcarve_inlay_project,
+    build_vcarve_sign_and_inlay_demo_project,
 };
 pub use dispatcher::{
     BatchGenerationReport, DispatcherEvent, JobDispatcher, generate_project_blocking,
 };
 pub use document::{
-    ModelEntry, ProjectDocument, compute_sha256_hex, portable_model_path, resolve_model_path,
+    ModelEntry, ProjectDocument, compute_sha256_hex, is_mesh_path, load_model_bytes_cad_doc,
+    load_model_entry_cad_doc, portable_model_path, resolve_model_path,
 };
 pub use history::UndoHistory;
 pub use pipeline::{
@@ -83,6 +85,7 @@ mod tests {
             id: "model_1".to_string(),
             path: "cad/bracket.step".to_string(),
             sha256: compute_sha256_hex(step_str.as_bytes()),
+            unit_override: None,
         });
         proj.ensure_tool_embedded(t1);
 
@@ -316,6 +319,7 @@ mod tests {
             id: "model_1".to_string(),
             path: "cad/part.step".to_string(),
             sha256: compute_sha256_hex(v1_step.as_bytes()),
+            unit_override: None,
         });
         for t in [flat_6mm, drill_6mm, chamf_90, face_38mm] {
             proj.ensure_tool_embedded(t);
@@ -541,6 +545,7 @@ mod tests {
             id: "model_1".to_string(),
             path: "bracket.step".to_string(),
             sha256: compute_sha256_hex(&step_bytes),
+            unit_override: None,
         });
         let starter = default_starter_tool_library();
         proj.ensure_tool_embedded(&starter.tools[0]);
@@ -706,7 +711,7 @@ tools = []
 setups = []
 "#;
         let migrated = ProjectDocument::from_toml_str(v1_toml).unwrap();
-        assert_eq!(migrated.schema_version, 2);
+        assert_eq!(migrated.schema_version, 3);
         assert!(migrated.sketches.is_empty());
 
         // 2. Build Pure-2D Router Panel demo (`models = []`, 0 STEP files!)
@@ -798,6 +803,7 @@ setups = []
             id: "model_1".to_string(),
             path: "rev_v1.step".to_string(),
             sha256: compute_sha256_hex(step_v1.as_bytes()),
+            unit_override: None,
         });
         let ch_tool = starter
             .tools
@@ -1283,5 +1289,104 @@ setups = []
                 }
             }
         }
+    }
+
+    #[test]
+    fn schema_v3_migrates_v1_and_v2_and_bundles_stl_obj_3mf_meshes() {
+        use chip_cad::{
+            MeshUnitKind, sample_box_3mf_bytes, sample_relief_wave_obj_text,
+            sample_sculpted_dome_stl_bytes,
+        };
+
+        // 1. Lossless v1 -> v3 and v2 -> v3 migration
+        for ver in [1u32, 2u32] {
+            let legacy_toml = format!(
+                r#"
+schema_version = {ver}
+project_name = "Legacy v{ver}"
+display_units = "mm"
+tools = []
+setups = []
+
+[[models]]
+id = "model_1"
+path = "part.step"
+sha256 = "abc"
+"#
+            );
+            let parsed = ProjectDocument::from_toml_str(&legacy_toml).unwrap();
+            assert_eq!(
+                parsed.schema_version,
+                ProjectDocument::CURRENT_SCHEMA_VERSION
+            );
+            assert_eq!(parsed.models[0].unit_override, None);
+            // STEP ModelEntry must omit `unit_override` from serialized TOML
+            let reserialized = parsed.to_toml_string().unwrap();
+            assert!(!reserialized.contains("unit_override"));
+        }
+
+        // 2. Mesh ModelEntry with explicit `unit_override = "inch"` serializes cleanly
+        let stl_bytes = sample_sculpted_dome_stl_bytes();
+        let obj_bytes = sample_relief_wave_obj_text().into_bytes();
+        let mf_bytes = sample_box_3mf_bytes(MeshUnitKind::Inch, None);
+
+        let mut proj = ProjectDocument::new("Phase 5 Mesh Bundle");
+        proj.models = vec![
+            ModelEntry {
+                id: "dome_stl".to_string(),
+                path: "sculpted_dome.stl".to_string(),
+                sha256: compute_sha256_hex(&stl_bytes),
+                unit_override: Some(MeshUnitKind::Millimeter),
+            },
+            ModelEntry {
+                id: "wave_obj".to_string(),
+                path: "relief_wave.obj".to_string(),
+                sha256: compute_sha256_hex(&obj_bytes),
+                unit_override: None,
+            },
+            ModelEntry {
+                id: "box_3mf".to_string(),
+                path: "box.3mf".to_string(),
+                sha256: compute_sha256_hex(&mf_bytes),
+                unit_override: None,
+            },
+        ];
+
+        let toml_out = proj.to_toml_string().unwrap();
+        assert!(toml_out.contains("unit_override = \"millimeter\""));
+        let reparsed = ProjectDocument::from_toml_str(&toml_out).unwrap();
+        assert_eq!(
+            reparsed.models[0].unit_override,
+            Some(MeshUnitKind::Millimeter)
+        );
+        assert_eq!(reparsed.models[1].unit_override, None);
+
+        // 3. `.chipz` bundle packs all 3 mesh formats under `models/*` and verifies SHA-256 on unpack!
+        let (chipz_bytes, summary) = pack_chipz_bundle_bytes(
+            &proj,
+            None,
+            &[
+                ("dome_stl", stl_bytes.as_slice()),
+                ("wave_obj", obj_bytes.as_slice()),
+                ("box_3mf", mf_bytes.as_slice()),
+            ],
+            &[],
+        )
+        .unwrap();
+        assert_eq!(summary.model_files.len(), 3);
+
+        let tmp = std::env::temp_dir().join(format!("chipz_mesh_v3_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let unpacked = unpack_chipz_bytes(&chipz_bytes, &tmp).unwrap();
+        assert_eq!(unpacked.project.schema_version, 3);
+        for entry in &unpacked.project.models {
+            let p = tmp.join(&entry.path);
+            assert!(is_mesh_path(&p));
+            let doc = load_model_entry_cad_doc(&p, entry.unit_override).unwrap();
+            assert!(doc.has_3d_geometry());
+            assert_eq!(doc.meshes.len(), 1);
+            assert!(doc.meshes[0].diagnostics.is_watertight);
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

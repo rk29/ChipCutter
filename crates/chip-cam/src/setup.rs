@@ -81,12 +81,12 @@ impl Setup {
         // 1. Orthonormal rotation frame at world origin (0, 0, 0)
         let rot_frame = match self.wcs.orientation.resolve_rotation(doc) {
             Ok(f) => f,
-            Err(_) if doc.bodies.is_empty() => return Err(CamError::Pure2dRequiresBoxWcs),
+            Err(_) if !doc.has_3d_geometry() => return Err(CamError::Pure2dRequiresBoxWcs),
             Err(e) => return Err(e),
         };
 
-        // 2. Tight bounding box of target B-Rep body/bodies OR Pure-2D virtual sheet in rotated axes
-        let model_rot_aabb = if !doc.bodies.is_empty() {
+        // 2. Tight bounding box of target B-Rep/mesh body/bodies OR Pure-2D virtual sheet in rotated axes
+        let model_rot_aabb = if doc.has_3d_geometry() {
             compute_tight_oriented_model_aabb(doc, &self.target_bodies, &rot_frame)?
         } else {
             compute_pure_2d_sheet_rot_aabb(
@@ -256,7 +256,7 @@ pub fn resolve_sketch_world_frame_with_doc(
     sketch: &SketchLayer,
     setup: &ResolvedSetup,
 ) -> RigidFrame3 {
-    resolve_sketch_world_frame_inner(!doc.bodies.is_empty(), Some(doc), sketch, setup)
+    resolve_sketch_world_frame_inner(doc.has_3d_geometry(), Some(doc), sketch, setup)
 }
 
 /// Resolves the canonical 3D World [`RigidFrame3`] of a [`SketchLayer`] inside `setup`!

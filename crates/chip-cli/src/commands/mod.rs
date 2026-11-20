@@ -4,9 +4,11 @@ pub mod validate_sim_build;
 
 use std::path::{Path, PathBuf};
 
-use chip_cad::{CadDocument, CadKernel, MonstertruckKernel};
-use chip_math::DEFAULT_TESS_CHORD_TOL_MM;
-use chip_project::{ProjectDocument, is_chipz_path, resolve_model_path, unpack_chipz_bundle};
+use chip_cad::CadDocument;
+use chip_project::{
+    ProjectDocument, is_chipz_path, load_model_entry_cad_doc, resolve_model_path,
+    unpack_chipz_bundle,
+};
 use chip_sim::{SimDiagnostic, SimResolution};
 use serde::Serialize;
 
@@ -58,14 +60,9 @@ pub fn load_primary_cad_for_project(
     let Some(first) = proj.models.first() else {
         return Ok(CadDocument::empty());
     };
-    let step_path = resolve_model_path(proj_dir, &first.path);
-    let bytes = std::fs::read(&step_path)
-        .map_err(|e| format!("failed to read STEP model '{}': {e}", step_path.display()))?;
-    let name = step_path
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("model.step");
-    Ok(MonstertruckKernel.load_step_bytes(name, &bytes, DEFAULT_TESS_CHORD_TOL_MM)?)
+    let model_path = resolve_model_path(proj_dir, &first.path);
+    Ok(load_model_entry_cad_doc(&model_path, first.unit_override)
+        .map_err(|e| format!("failed to load model '{}': {e}", model_path.display()))?)
 }
 
 pub fn parse_sim_resolution(raw: &str) -> SimResolution {

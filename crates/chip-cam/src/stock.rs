@@ -545,14 +545,14 @@ pub fn compute_tight_oriented_model_aabb(
     target_bodies: &[BodyId],
     rot_frame: &RigidFrame3,
 ) -> Result<Aabb3, CamError> {
-    if doc.bodies.is_empty() {
+    if !doc.has_3d_geometry() {
         return Err(CamError::EmptyCadDocument);
     }
 
     let include_body = |bid: BodyId| target_bodies.is_empty() || target_bodies.contains(&bid);
     let mut aabb = Aabb3::EMPTY;
 
-    // 1. Exact `f64` triangle mesh vertices belonging to target bodies
+    // 1. Exact `f64` triangle mesh vertices belonging to target B-Rep bodies
     for tri in &doc.render_mesh.pick_triangles {
         if let Some(face) = doc.face(tri.face_id)
             && include_body(face.body_id)
@@ -560,6 +560,15 @@ pub fn compute_tight_oriented_model_aabb(
             aabb.extend_point(rot_frame.world_to_local_point(tri.v0_mm));
             aabb.extend_point(rot_frame.world_to_local_point(tri.v1_mm));
             aabb.extend_point(rot_frame.world_to_local_point(tri.v2_mm));
+        }
+    }
+
+    // 1b. Exact `f64` vertices from imported triangle mesh bodies (`STL` / `OBJ` / `3MF`)
+    for mesh in &doc.meshes {
+        if include_body(mesh.id) {
+            for &v in &mesh.vertices_mm {
+                aabb.extend_point(rot_frame.world_to_local_point(v));
+            }
         }
     }
 

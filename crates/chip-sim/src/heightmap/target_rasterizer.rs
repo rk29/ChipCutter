@@ -203,5 +203,66 @@ impl HeightfieldStock {
                 }
             }
         }
+
+        // 3. Rasterize upward-facing triangles from imported triangle mesh bodies (`STL`/`OBJ`/`3MF`)
+        for mesh in &doc.meshes {
+            if !include_body(mesh.id) {
+                continue;
+            }
+            for tri in &mesh.triangles {
+                let [i0, i1, i2] = tri.indices;
+                let v0 = setup
+                    .frame
+                    .world_to_local_point(mesh.vertices_mm[i0 as usize]);
+                let v1 = setup
+                    .frame
+                    .world_to_local_point(mesh.vertices_mm[i1 as usize]);
+                let v2 = setup
+                    .frame
+                    .world_to_local_point(mesh.vertices_mm[i2 as usize]);
+
+                let tri_n = (v1 - v0).cross(v2 - v0);
+                let area2_xy = tri_n.z;
+                if area2_xy.abs() <= 1e-8 {
+                    continue;
+                }
+                let n_unit = tri_n.normalize_or_zero();
+                if n_unit.z <= 1e-4 {
+                    continue;
+                }
+
+                let min_x = v0.x.min(v1.x).min(v2.x);
+                let max_x = v0.x.max(v1.x).max(v2.x);
+                let min_y = v0.y.min(v1.y).min(v2.y);
+                let max_y = v0.y.max(v1.y).max(v2.y);
+
+                let (Some((i0x, i1x)), Some((j0y, j1y))) = (
+                    self.index_span_x(min_x, max_x),
+                    self.index_span_y(min_y, max_y),
+                ) else {
+                    continue;
+                };
+
+                let inv_area2 = 1.0 / area2_xy;
+                for j in j0y..=j1y {
+                    let py = self.origin_y_mm + (j as f64 + 0.5) * self.dy_mm;
+                    let row = j * self.nx;
+                    for i in i0x..=i1x {
+                        let px = self.origin_x_mm + (i as f64 + 0.5) * self.dx_mm;
+                        let w0 =
+                            ((v1.x - px) * (v2.y - py) - (v1.y - py) * (v2.x - px)) * inv_area2;
+                        let w1 =
+                            ((v2.x - px) * (v0.y - py) - (v2.y - py) * (v0.x - px)) * inv_area2;
+                        let w2 = 1.0 - w0 - w1;
+                        if w0 >= -1e-6 && w1 >= -1e-6 && w2 >= -1e-6 {
+                            let zf = (w0 * v0.z + w1 * v1.z + w2 * v2.z) as f32;
+                            if zf > self.z_target[row + i] {
+                                self.z_target[row + i] = zf;
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }

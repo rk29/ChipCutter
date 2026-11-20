@@ -17,6 +17,7 @@ serde.workspace = true
 thiserror.workspace = true
 cavalier_contours.workspace = true
 boostvoronoi.workspace = true
+rayon.workspace = true
 
 [dev-dependencies]
 chip-sim.workspace = true

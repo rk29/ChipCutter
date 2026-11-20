@@ -7,8 +7,8 @@ use clap::{Parser, Subcommand};
 use crate::commands::{
     bundle_reload_tools::{run_bundle_pack, run_bundle_unpack, run_import_fusion, run_reload_step},
     inspect_sample::{
-        GenerateSampleArgs, Import2dArgs, InspectArgs, run_generate_sample_step, run_import_2d,
-        run_inspect,
+        GenerateSampleArgs, Import2dArgs, ImportMeshArgs, InspectArgs, run_generate_sample_step,
+        run_import_2d, run_import_mesh, run_inspect,
     },
     validate_sim_build::{BuildArgs, run_build, run_simulate, run_validate},
 };
@@ -26,19 +26,34 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
-    /// Inspect a 3D STEP (`.step`/`.stp`) or 2D Vector (`.dxf`/`.svg`) file, reporting dimensions and CAM features.
+    /// Inspect a 3D STEP (`.step`/`.stp`), Triangle Mesh (`.stl`/`.obj`/`.3mf`), or 2D Vector (`.dxf`/`.svg`) file.
     Inspect {
-        /// Path to `.step`, `.stp`, `.dxf`, or `.svg` file.
+        /// Path to `.step`, `.stp`, `.stl`, `.obj`, `.3mf`, `.dxf`, or `.svg` file.
         path: PathBuf,
         /// Display unit for dimensions (`mm` or `in`).
         #[arg(long, default_value = "mm")]
         units: String,
+        /// Optional mesh unit override (`auto`, `mm`, `in`, `cm`, `m`, `ft`, `um`) for `.stl`/`.obj`/`.3mf`.
+        #[arg(long, default_value = "auto")]
+        mesh_units: String,
         /// SVG unitless pixel DPI (`96` CSS/Inkscape, `72` Illustrator, `90` legacy Inkscape).
         #[arg(long, default_value_t = 96.0)]
         svg_dpi: f64,
         /// Endpoint gap-healing join tolerance in millimeters (`0.0` disables gap healing).
         #[arg(long, default_value_t = 0.05)]
         join_tol: f64,
+    },
+    /// Import a 3D triangle mesh (`.stl`, `.obj`, or `.3mf`) into a new `schema_version = 3` `.chip.toml` project.
+    #[command(name = "import-mesh")]
+    ImportMesh {
+        /// Input `.stl`, `.obj`, or `.3mf` mesh file.
+        input: PathBuf,
+        /// Destination `.chip.toml` project file.
+        #[arg(short, long)]
+        output: PathBuf,
+        /// Mesh unit override (`auto`, `mm`, `in`, `cm`, `m`, `ft`, `um`).
+        #[arg(long, default_value = "auto")]
+        mesh_units: String,
     },
     /// Import a 2D `.dxf` or `.svg` vector file into a new Pure-2D `.chip.toml` job (or append to `--project`).
     #[command(name = "import-2d")]
@@ -206,13 +221,24 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         Commands::Inspect {
             path,
             units,
+            mesh_units,
             svg_dpi,
             join_tol,
         } => run_inspect(InspectArgs {
             path,
             units,
+            mesh_units,
             svg_dpi,
             join_tol,
+        }),
+        Commands::ImportMesh {
+            input,
+            output,
+            mesh_units,
+        } => run_import_mesh(ImportMeshArgs {
+            input,
+            output,
+            mesh_units,
         }),
         Commands::Import2d {
             input,

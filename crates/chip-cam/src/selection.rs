@@ -219,7 +219,7 @@ pub fn extract_selection_features_with_sketches(
 ) -> Result<ExtractedSelectionSummary, CamError> {
     let stock_top_z = setup.stock.aabb_wcs().max.z;
     let model_top_z = setup.model_aabb_wcs.max.z;
-    let doc_has_bodies = !doc.bodies.is_empty();
+    let doc_has_bodies = doc.has_3d_geometry();
 
     if selections.is_empty() {
         return Ok(ExtractedSelectionSummary {

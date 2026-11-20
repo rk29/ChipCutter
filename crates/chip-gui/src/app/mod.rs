@@ -16,7 +16,9 @@ use chip_cam::{
     extract_selection_features_with_sketches,
 };
 use chip_math::{Aabb3, DVec3, EvalContext};
-use chip_project::{JobDispatcher, ProjectDocument, ToolpathCache, UndoHistory, is_chipz_path};
+use chip_project::{
+    JobDispatcher, ProjectDocument, ToolpathCache, UndoHistory, is_chipz_path, is_mesh_path,
+};
 use chip_sim::SimDiagnostic;
 use chip_tools::{ToolLibrary, load_or_default_global_library};
 use crossbeam_channel::{Receiver, Sender};
@@ -36,6 +38,7 @@ use crate::{
             show_shortcut_cheatsheet_modal,
         },
         gcode_preview::GCodePreviewPanelState,
+        mesh_import_modal::MeshImportModalState,
         simulation::{SimTriggerArgs, SimulationPanelState},
         tool_library::ToolLibraryModalState,
         vector_import_modal::{VectorImportModalState, VectorModalAction, VectorModalCtx},
@@ -131,6 +134,7 @@ pub struct ChipCutterApp {
     pub(crate) prefs: UserPreferences,
     pub(crate) last_saved_prefs: UserPreferences,
     pub(crate) tool_library_modal: ToolLibraryModalState,
+    pub(crate) mesh_import_modal: MeshImportModalState,
     pub(crate) vector_import_modal: VectorImportModalState,
     pub(crate) welcome_modal: WelcomeModalState,
     pub(crate) sample_gallery_modal: SampleGalleryModalState,
@@ -284,6 +288,7 @@ impl ChipCutterApp {
             last_saved_prefs: prefs.clone(),
             prefs,
             tool_library_modal: ToolLibraryModalState::new(),
+            mesh_import_modal: MeshImportModalState::default(),
             vector_import_modal: VectorImportModalState::default(),
             welcome_modal: WelcomeModalState::default(),
             sample_gallery_modal: SampleGalleryModalState::default(),
@@ -388,6 +393,15 @@ impl ChipCutterApp {
                 self.vector_import_modal
                     .load_from_disk_path(path.to_path_buf());
                 self.vector_import_modal.open = true;
+            } else if is_mesh_path(path) {
+                if self.self_test.is_some() {
+                    self.spawn_step_file_load(path.to_path_buf(), egui_ctx);
+                } else {
+                    self.record_recent_file(path);
+                    self.mesh_import_modal
+                        .load_from_disk_path(path.to_path_buf());
+                    self.mesh_import_modal.open = true;
+                }
             } else {
                 self.spawn_step_file_load(path.to_path_buf(), egui_ctx);
             }
@@ -433,6 +447,9 @@ impl ChipCutterApp {
             }
             SampleProjectId::SamplePlate => {
                 self.spawn_sample_plate_load(ctx.clone());
+            }
+            SampleProjectId::SculptedMeshDome => {
+                self.spawn_sculpted_mesh_dome_load(ctx.clone());
             }
         }
     }
@@ -796,6 +813,19 @@ impl eframe::App for ChipCutterApp {
             &mut self.logs,
         );
 
+        if let Some(mesh_commit) = self
+            .mesh_import_modal
+            .show(&ctx, self.project.display_units)
+        {
+            self.spawn_mesh_bytes_load(
+                mesh_commit.source_name,
+                mesh_commit.raw_bytes,
+                mesh_commit.source_path,
+                mesh_commit.unit_override,
+                ctx.clone(),
+            );
+        }
+
         let proj_path_clone = self.project_file_path.clone();
         if let Some(vec_act) = self.vector_import_modal.show(
             &ctx,
@@ -851,6 +881,9 @@ impl eframe::App for ChipCutterApp {
             match w_act {
                 WelcomeGalleryAction::OpenProjectDialog => self.open_project_dialog(&ctx),
                 WelcomeGalleryAction::ImportStepDialog => self.open_step_dialog(&ctx),
+                WelcomeGalleryAction::ImportMeshDialog => {
+                    self.mesh_import_modal.open_with_file_picker();
+                }
                 WelcomeGalleryAction::ImportVectorDialog => {
                     self.vector_import_modal.open_with_file_picker();
                 }

@@ -188,15 +188,28 @@ impl ChipCutterApp {
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if self.loading_in_flight {
-                            ui.label("Loading STEP…");
+                            ui.label("Loading 3D Model…");
                             ui.spinner();
                         } else if let Some(m) = &self.model {
-                            ui.weak(format!(
-                                "{} · {} faces · {} edges",
-                                m.doc.source_name,
-                                m.doc.faces.len(),
-                                m.doc.edges.len()
-                            ));
+                            if let Some(mesh) = m.doc.meshes.first() {
+                                ui.weak(format!(
+                                    "{} · {} tris · {}",
+                                    m.doc.source_name,
+                                    mesh.diagnostics.valid_triangle_count,
+                                    if mesh.diagnostics.is_watertight {
+                                        "Watertight"
+                                    } else {
+                                        "Open edges"
+                                    }
+                                ));
+                            } else {
+                                ui.weak(format!(
+                                    "{} · {} faces · {} edges",
+                                    m.doc.source_name,
+                                    m.doc.faces.len(),
+                                    m.doc.edges.len()
+                                ));
+                            }
                         } else if !self.project.sketches.is_empty() {
                             ui.weak(format!(
                                 "Pure-2D Job · {} sketch layer(s)",
@@ -275,6 +288,16 @@ impl ChipCutterApp {
             if ui.button("Import STEP Model…").clicked() {
                 ui.close();
                 self.open_step_dialog(ctx);
+            }
+            if ui
+                .button("Import 3D Mesh (.stl / .obj / .3mf)…")
+                .on_hover_text(
+                    "Import a sculpted 3D triangle mesh with live physical unit & manifold preview",
+                )
+                .clicked()
+            {
+                ui.close();
+                self.mesh_import_modal.open_with_file_picker();
             }
             if ui
                 .button("Import 2D Vector (.dxf / .svg)…")
@@ -1125,6 +1148,7 @@ impl ChipCutterApp {
             CommandId::SaveProject => self.save_project_dialog(),
             CommandId::ExportChipzBundle => self.export_chipz_dialog(),
             CommandId::ImportStepModel => self.open_step_dialog(ctx),
+            CommandId::ImportMesh3D => self.mesh_import_modal.open_with_file_picker(),
             CommandId::ReloadStepModel => self.reload_active_step_model(ctx),
             CommandId::ImportVector2D => self.vector_import_modal.open_with_file_picker(),
             CommandId::OpenWelcomeScreen => self.welcome_modal.open = true,
@@ -1214,6 +1238,7 @@ impl ChipCutterApp {
             | CommandId::SampleVCarveInlay
             | CommandId::SampleEngravedNameplate
             | CommandId::SamplePure2dPanel
+            | CommandId::SampleSculptedMeshDome
             | CommandId::SampleRevisionReloadV2 => {}
         }
     }

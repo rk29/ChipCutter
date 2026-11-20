@@ -18,13 +18,17 @@ use clap::Parser;
     about = "ChipCutter Desktop CAM Application"
 )]
 struct GuiArgs {
-    /// Optional `.chip.toml` project, `.chipz` bundle, `.dxf`/`.svg` vector, or `.step`/`.stp` model to load on startup.
+    /// Optional `.chip.toml` project, `.chipz` bundle, `.dxf`/`.svg` vector, `.stl`/`.obj`/`.3mf` mesh, or `.step`/`.stp` model to load on startup.
     #[arg(value_name = "PATH")]
     step_file: Option<PathBuf>,
 
-    /// Launch directly into any built-in sample project (`cam-torture`, `adaptive-rest`, `pure-2d`, `nameplate`, `vcarve`, `multi-feature`, `tilted-bracket`, `revision-v1`, `revision-v2`, `sample-plate`).
+    /// Launch directly into any built-in sample project (`cam-torture`, `adaptive-rest`, `pure-2d`, `nameplate`, `vcarve`, `multi-feature`, `tilted-bracket`, `revision-v1`, `revision-v2`, `sample-plate`, `mesh-dome`).
     #[arg(long, value_parser = SampleProjectId::from_cli_slug)]
     sample: Option<SampleProjectId>,
+
+    /// Launch directly into the Phase 5 Sculpted Dome (STL Mesh) sample preview.
+    #[arg(long)]
+    demo_mesh_dome: bool,
 
     /// Launch directly into the 3D STEP CAM Torture Block demo job.
     #[arg(long)]
@@ -138,6 +142,8 @@ fn main() -> eframe::Result {
         StartupDemoMode::WelcomeScreen
     } else if let Some(sample_id) = args.sample {
         StartupDemoMode::Sample(sample_id)
+    } else if args.demo_mesh_dome {
+        StartupDemoMode::Sample(SampleProjectId::SculptedMeshDome)
     } else if args.demo_vcarve {
         StartupDemoMode::VCarveSign
     } else if args.demo_nameplate {

@@ -33,6 +33,7 @@ pub fn build_multi_feature_bracket_project(
         id: "model_1".to_string(),
         path: model_path,
         sha256: sha256_hex.to_string(),
+        unit_override: None,
     }];
 
     if let Some(t1) = available_tools.first() {
@@ -117,6 +118,7 @@ pub fn build_cam_torture_project(
         id: "model_1".to_string(),
         path: model_path,
         sha256: sha256_hex.to_string(),
+        unit_override: None,
     }];
 
     for t in available_tools {
@@ -369,6 +371,7 @@ pub fn build_adaptive_rest_demo_project(
         id: "model_1".to_string(),
         path: model_path,
         sha256: sha256_hex.to_string(),
+        unit_override: None,
     }];
 
     // T10: Ø10.0 mm 3FL Rougher + T8: Ø3.0 mm 3FL Rest Endmill + starter T1 Ø6.0 mm
@@ -563,6 +566,7 @@ pub fn build_revision_v1_demo_project(
         id: "model_1".to_string(),
         path: model_path,
         sha256: sha256_hex.to_string(),
+        unit_override: None,
     }];
 
     for t in available_tools {
@@ -1471,6 +1475,7 @@ fn init_tutorial_step_project(
         id: "model_1".to_string(),
         path: model_path,
         sha256: sha256_hex.to_string(),
+        unit_override: None,
     }];
     proj.setups[0].stock = StockConfig::RelativeBox {
         symmetric_xy: true,
@@ -2213,5 +2218,41 @@ pub fn build_tutorial_vcarve_inlay_project(
     setup_plug.operations.push(op_plug);
     proj.setups.push(setup_plug);
 
+    proj
+}
+
+/// Builds the Phase 5 **Sculpted Dome (STL Mesh)** sample [`ProjectDocument`] (`70 × 70 × 33 mm`
+/// watertight `R = 25 mm` hemisphere seated on an `8 mm` base pedestal), initialized with
+/// Relative Box Stock (`+2 mm` XY, `+1 mm` top Z), `G54` WCS at Stock Top Center, and starter tools.
+pub fn build_sculpted_mesh_dome_project(
+    model_path: String,
+    sha256_hex: &str,
+    available_tools: &[Tool],
+) -> ProjectDocument {
+    let mut proj = ProjectDocument::new("Sculpted Dome (STL Mesh)");
+    proj.models = vec![ModelEntry {
+        id: "model_1".to_string(),
+        path: model_path,
+        sha256: sha256_hex.to_string(),
+        unit_override: None,
+    }];
+    proj.setups[0].name = "Setup 1 — 3D Dome Mesh".to_string();
+    proj.setups[0].wcs.origin = WcsOriginMode::StockBoxPoint {
+        anchor: BoxAnchor27::TOP_CENTER,
+    };
+    proj.setups[0].stock = StockConfig::RelativeBox {
+        symmetric_xy: true,
+        side_pos_x: ParamLength::from_mm(2.0),
+        side_neg_x: ParamLength::from_mm(2.0),
+        side_pos_y: ParamLength::from_mm(2.0),
+        side_neg_y: ParamLength::from_mm(2.0),
+        top_offset_z: ParamLength::from_mm(1.0),
+        bottom_offset_z: ParamLength::from_mm(0.0),
+        sheet_thickness_z: ParamLength::from_mm(12.0),
+        round_increment_mm: None,
+    };
+    for t in available_tools {
+        proj.ensure_tool_embedded(t);
+    }
     proj
 }

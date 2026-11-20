@@ -76,6 +76,13 @@ impl PaneBehavior<'_> {
             if let Some(act) = action {
                 match act {
                     BrowserAction::OpenStepDialog => self.app.open_step_dialog(&ctx),
+                    BrowserAction::OpenMeshImportModal { browse_file } => {
+                        if browse_file {
+                            self.app.mesh_import_modal.open_with_file_picker();
+                        } else {
+                            self.app.mesh_import_modal.open = true;
+                        }
+                    }
                     BrowserAction::OpenVectorImportModal { browse_file } => {
                         if browse_file {
                             self.app.vector_import_modal.open_with_file_picker();
@@ -484,6 +491,57 @@ impl PaneBehavior<'_> {
                     });
             });
             ui.separator();
+
+            if let Some(m) = &self.app.model
+                && !m.doc.meshes.is_empty()
+                && m.doc.bodies.is_empty()
+            {
+                for mesh in &m.doc.meshes {
+                    let sz = mesh.aabb_mm.size();
+                    let d = &mesh.diagnostics;
+                    ui.strong(format!("{} ({})", mesh.name, mesh.format.label()));
+                    ui.add_space(4.0);
+                    egui::Grid::new(format!("mesh_props_grid_{}", mesh.id.0))
+                        .num_columns(2)
+                        .spacing([12.0, 4.0])
+                        .show(ui, |ui| {
+                            ui.label("Applied Unit:");
+                            ui.monospace(mesh.applied_unit.label());
+                            ui.end_row();
+                            ui.label("Dimensions:");
+                            ui.monospace(format!(
+                                "{} × {} × {}",
+                                u.format_length(sz.x),
+                                u.format_length(sz.y),
+                                u.format_length(sz.z)
+                            ));
+                            ui.end_row();
+                            ui.label("Triangles:");
+                            ui.monospace(format!(
+                                "{} ({} degenerate removed)",
+                                d.valid_triangle_count, d.degenerate_triangles_removed
+                            ));
+                            ui.end_row();
+                            ui.label("Welded Vertices:");
+                            ui.monospace(format!("{}", d.welded_vertex_count));
+                            ui.end_row();
+                            ui.label("Manifold Check:");
+                            ui.monospace(if d.is_watertight {
+                                "Watertight (0 open, 0 non-manifold)".to_string()
+                            } else {
+                                format!(
+                                    "{} open, {} non-manifold edges",
+                                    d.open_boundary_edges, d.non_manifold_edges
+                                )
+                            });
+                            ui.end_row();
+                            ui.label("Signed Volume:");
+                            ui.monospace(format!("{:.2} cm³", d.signed_volume_mm3 / 1000.0));
+                            ui.end_row();
+                        });
+                }
+                return;
+            }
 
             match (&self.app.model, &self.app.highlight.selected) {
                 (Some(m), Some(PickTarget::Face(fid))) => {

@@ -2,6 +2,7 @@ pub mod browser;
 pub mod command_palette;
 pub mod diagnostics;
 pub mod gcode_preview;
+pub mod mesh_import_modal;
 pub mod operation_inspector;
 pub mod setup_inspector;
 pub mod simulation;

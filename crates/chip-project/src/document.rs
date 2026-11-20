@@ -3,23 +3,42 @@ use std::{
     sync::Arc,
 };
 
-use chip_cad::CadDocument;
+use chip_cad::{
+    CadDocument, CadError, CadKernel, MeshImportOptions, MeshUnitKind, MonstertruckKernel,
+    is_mesh_extension, load_mesh_cad_document,
+};
 use chip_cam::{Setup, WorkOffsetSlot};
-use chip_math::DisplayUnit;
+use chip_math::{DEFAULT_TESS_CHORD_TOL_MM, DisplayUnit};
 use chip_sketch::{CustomFontMap, SketchEntity, SketchFontSource, SketchLayer};
 use chip_tools::{Tool, ToolId};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-/// External STEP CAD model reference stored in `.chip.toml` (`09-persistence-cli.md`).
+/// External 3D CAD (`.step`/`.stp`) or Triangle Mesh (`.stl`/`.obj`/`.3mf`) model reference
+/// stored in `.chip.toml` (`09-persistence-cli.md`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelEntry {
     pub id: String,
     pub path: String,
     pub sha256: String,
+    /// Optional explicit unit override for imported triangle meshes (omitted for STEP and
+    /// unit-aware 3MF files so existing `.chip.toml` diffs remain clean).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit_override: Option<MeshUnitKind>,
 }
 
-/// Top-level ChipCutter `.chip.toml` project document (`schema_version = 2`, backward-compatible with `1`).
+impl ModelEntry {
+    pub fn new(id: impl Into<String>, path: impl Into<String>, sha256: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            path: path.into(),
+            sha256: sha256.into(),
+            unit_override: None,
+        }
+    }
+}
+
+/// Top-level ChipCutter `.chip.toml` project document (`schema_version = 3`, backward-compatible with `1` and `2`).
 ///
 /// Kept lightweight and free of binary/tessellation blobs so `git diff` stays clean and
 /// in-memory Undo/Redo snapshots take `< 1 ms`.
@@ -48,7 +67,7 @@ impl Default for ProjectDocument {
 }
 
 impl ProjectDocument {
-    pub const CURRENT_SCHEMA_VERSION: u32 = 2;
+    pub const CURRENT_SCHEMA_VERSION: u32 = 3;
 
     /// Creates a fresh project initialized with `Setup 1 — Op 1 (G54)`.
     pub fn new(project_name: impl Into<String>) -> Self {
@@ -241,4 +260,45 @@ pub fn resolve_model_path(project_dir: Option<&Path>, stored_path: &str) -> Path
 
 fn normalize_slashes(raw: &str) -> String {
     raw.replace('\\', "/")
+}
+
+/// Returns `true` if `path` has a supported 3D triangle mesh extension (`.stl`, `.obj`, `.3mf`).
+pub fn is_mesh_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|s| s.to_str())
+        .is_some_and(is_mesh_extension)
+}
+
+/// Unified CAD/Mesh loader from in-memory bytes, dispatching `.stl`/`.obj`/`.3mf` to
+/// [`load_mesh_cad_document`] and STEP files to [`MonstertruckKernel::load_step_bytes`].
+pub fn load_model_bytes_cad_doc(
+    source_name: &str,
+    bytes: &[u8],
+    unit_override: Option<MeshUnitKind>,
+) -> Result<CadDocument, CadError> {
+    if is_mesh_path(Path::new(source_name)) {
+        load_mesh_cad_document(
+            source_name,
+            bytes,
+            &MeshImportOptions {
+                unit_override,
+                ..MeshImportOptions::default()
+            },
+        )
+    } else {
+        MonstertruckKernel.load_step_bytes(source_name, bytes, DEFAULT_TESS_CHORD_TOL_MM)
+    }
+}
+
+/// Unified CAD/Mesh loader reading `path` from disk and dispatching STEP vs. STL/OBJ/3MF cleanly.
+pub fn load_model_entry_cad_doc(
+    path: &Path,
+    unit_override: Option<MeshUnitKind>,
+) -> Result<CadDocument, CadError> {
+    let bytes = std::fs::read(path)?;
+    let source_name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("model.step");
+    load_model_bytes_cad_doc(source_name, &bytes, unit_override)
 }
