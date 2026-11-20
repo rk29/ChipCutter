@@ -140,8 +140,9 @@ fn check_upstream_readiness(
 /// Rest operations wait in `pending_wave` until their upstream roughing toolpaths complete, then
 /// automatically spawn with exact 2D swept coverage inputs.
 pub struct JobDispatcher {
-    tx: Sender<DispatcherEvent>,
-    rx: Receiver<DispatcherEvent>,
+    tx: Sender<(u64, DispatcherEvent)>,
+    rx: Receiver<(u64, DispatcherEvent)>,
+    epoch: u64,
     in_flight: HashMap<String, (OperationInputHash, Arc<AtomicBool>)>,
     pending_wave: HashSet<String>,
     active_cad: Option<(Arc<CadDocument>, u64)>,
@@ -160,6 +161,7 @@ impl JobDispatcher {
         Self {
             tx,
             rx,
+            epoch: 0,
             in_flight: HashMap::new(),
             pending_wave: HashSet::new(),
             active_cad: None,
@@ -200,6 +202,15 @@ impl JobDispatcher {
             token.store(true, Ordering::Relaxed);
         }
         count
+    }
+
+    /// Cancels all in-flight and queued wave jobs, drops the active CAD reference, advances the
+    /// dispatcher epoch so stale worker completions are ignored, and drains pending channel events.
+    pub fn reset(&mut self) {
+        self.cancel_all();
+        self.active_cad = None;
+        self.epoch = self.epoch.wrapping_add(1);
+        while self.rx.try_recv().is_ok() {}
     }
 
     /// Cancels any in-flight job whose `OperationInputHash` no longer matches `project`
@@ -348,6 +359,7 @@ impl JobDispatcher {
     }
 
     fn spawn_rayon_tasks(&self, cad_doc: &Arc<CadDocument>, tasks: Vec<QueuedOpTask>) {
+        let epoch = self.epoch;
         for task in tasks {
             let tx = self.tx.clone();
             let wakeup = self.wakeup_cb.clone();
@@ -355,16 +367,22 @@ impl JobDispatcher {
 
             rayon::spawn(move || {
                 let op_id = task.op.id.clone();
-                let _ = tx.send(DispatcherEvent::Started {
-                    op_id: op_id.clone(),
-                    input_hash: task.input_hash,
-                });
+                let _ = tx.send((
+                    epoch,
+                    DispatcherEvent::Started {
+                        op_id: op_id.clone(),
+                        input_hash: task.input_hash,
+                    },
+                ));
 
                 if task.cancel_token.load(Ordering::Relaxed) {
-                    let _ = tx.send(DispatcherEvent::Cancelled {
-                        op_id,
-                        input_hash: task.input_hash,
-                    });
+                    let _ = tx.send((
+                        epoch,
+                        DispatcherEvent::Cancelled {
+                            op_id,
+                            input_hash: task.input_hash,
+                        },
+                    ));
                     if let Some(cb) = &wakeup {
                         cb();
                     }
@@ -374,24 +392,33 @@ impl JobDispatcher {
                 let res = execute_single_task(&cad, &task);
                 match res {
                     Ok(tp) => {
-                        let _ = tx.send(DispatcherEvent::Completed {
-                            op_id,
-                            input_hash: task.input_hash,
-                            toolpath: Arc::new(tp),
-                        });
+                        let _ = tx.send((
+                            epoch,
+                            DispatcherEvent::Completed {
+                                op_id,
+                                input_hash: task.input_hash,
+                                toolpath: Arc::new(tp),
+                            },
+                        ));
                     }
                     Err(CamError::Cancelled) => {
-                        let _ = tx.send(DispatcherEvent::Cancelled {
-                            op_id,
-                            input_hash: task.input_hash,
-                        });
+                        let _ = tx.send((
+                            epoch,
+                            DispatcherEvent::Cancelled {
+                                op_id,
+                                input_hash: task.input_hash,
+                            },
+                        ));
                     }
                     Err(err) => {
-                        let _ = tx.send(DispatcherEvent::Failed {
-                            op_id,
-                            input_hash: task.input_hash,
-                            message: err.to_string(),
-                        });
+                        let _ = tx.send((
+                            epoch,
+                            DispatcherEvent::Failed {
+                                op_id,
+                                input_hash: task.input_hash,
+                                message: err.to_string(),
+                            },
+                        ));
                     }
                 }
 
@@ -411,7 +438,10 @@ impl JobDispatcher {
         cad_revision: u64,
     ) -> Vec<String> {
         let mut logs = Vec::new();
-        while let Ok(ev) = self.rx.try_recv() {
+        while let Ok((ev_epoch, ev)) = self.rx.try_recv() {
+            if ev_epoch != self.epoch {
+                continue;
+            }
             match ev {
                 DispatcherEvent::Started { .. } => {}
                 DispatcherEvent::Completed {
@@ -754,4 +784,55 @@ pub fn generate_project_blocking(
 
     cache.reconcile_project_statuses(project, cad_revision, &HashSet::new());
     report
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use chip_cam::ToolpathBuilder;
+
+    #[test]
+    fn reset_discards_stale_events_from_previous_epoch() {
+        let mut dispatcher = JobDispatcher::new(None);
+        let mut project = ProjectDocument::new("Next Project");
+        let mut cache = ToolpathCache::new(16);
+
+        let stale_epoch = dispatcher.epoch;
+        let stale_hash = OperationInputHash([0xAB; 32]);
+        let stale_tp = Arc::new(ToolpathBuilder::new("stale_op").finish());
+
+        // Simulate a project switch via reset() before a stale background worker posts its result.
+        dispatcher.reset();
+        assert!(!dispatcher.is_busy());
+        assert!(dispatcher.active_cad.is_none());
+
+        let _ = dispatcher.tx.send((
+            stale_epoch,
+            DispatcherEvent::Completed {
+                op_id: "stale_op".to_string(),
+                input_hash: stale_hash,
+                toolpath: stale_tp,
+            },
+        ));
+        let _ = dispatcher.tx.send((
+            stale_epoch,
+            DispatcherEvent::Failed {
+                op_id: "stale_err".to_string(),
+                input_hash: stale_hash,
+                message: "stale failure".to_string(),
+            },
+        ));
+
+        let logs = dispatcher.poll_events(&mut project, &mut cache, 1);
+        assert!(logs.is_empty(), "stale events must not log: {logs:?}");
+        assert!(
+            cache.get("stale_op", stale_hash).is_none(),
+            "stale Completed event must not populate ToolpathCache"
+        );
+        assert!(
+            cache.get_error("stale_err", stale_hash).is_none(),
+            "stale Failed event must not populate ToolpathCache errors"
+        );
+    }
 }

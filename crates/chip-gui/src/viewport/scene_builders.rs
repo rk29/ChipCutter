@@ -115,6 +115,33 @@ impl Default for HighlightState {
 }
 
 impl HighlightState {
+    /// Clears all project-scoped selection, overlay, toolpath, sketch, and simulation visual state
+    /// while preserving user viewport display toggles and theme settings.
+    pub fn clear_project_scene_state(&mut self) {
+        self.hovered = None;
+        self.selected = None;
+        self.hovered_sketch = None;
+        self.selected_sketch = None;
+        self.extra_selected_faces.clear();
+        self.extra_selected_edges.clear();
+        self.extra_selected_sketch_regions.clear();
+        self.extra_selected_sketch_entities.clear();
+        self.sketch_visuals.clear();
+        self.sketch_preview_polys.clear();
+        self.sketch_snap_marker = None;
+        self.chain_arrows.clear();
+        self.wcs_frame = RigidFrame3::IDENTITY;
+        self.stock = None;
+        self.rotary = None;
+        self.z_planes_wcs.clear();
+        self.toolpaths.clear();
+        self.preview_tab_marker_wcs = None;
+        self.sim_stock_mesh = None;
+        self.sim_tool_mesh = None;
+        self.sim_trail_limit = None;
+        self.sim_rotary_deg = 0.0;
+    }
+
     pub(crate) fn build_face_states(&self, doc: Option<&CadDocument>) -> (u32, Vec<u32>) {
         let face_count = doc.map_or(64, |d| d.faces.len().max(64));
         let mut states = vec![0_u32; face_count];

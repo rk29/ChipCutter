@@ -1087,15 +1087,7 @@ impl ChipCutterApp {
     }
 
     pub(crate) fn reset_blank_project(&mut self, name: &str) {
-        self.dispatcher.cancel_all();
-        self.sim_panel.cancel_in_flight();
-        self.sim_panel.active_result = None;
-        self.gcode_panel.invalidate_preview();
-        self.clear_bundle_extract_dir();
-        self.history.clear();
-        self.clean_undo_len = Some(0);
-        self.last_reload_banner = None;
-        self.external_step_modified = false;
+        self.prepare_for_project_replacement(None, None);
         let mut doc = ProjectDocument::new(name);
         doc.display_units = self.prefs.default_units;
         if self.prefs.default_machine_id != chip_tools::DEFAULT_MACHINE_ID
@@ -1109,11 +1101,8 @@ impl ChipCutterApp {
         }
         self.project = doc;
         self.project_file_path = None;
-        self.model = None;
-        self.active_setup_idx = 0;
-        self.inspector_focus = InspectorFocus::Setup { setup_idx: 0 };
-        self.cached_frame_geo = None;
         self.sync_active_machine_tools();
+        self.refresh_dependent_expressions();
     }
 
     pub(crate) fn add_standard_operation(&mut self, kind: OperationKind) {

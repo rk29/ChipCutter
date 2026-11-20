@@ -169,6 +169,7 @@ pub struct ChipCutterApp {
     pub(crate) empty_cad: Arc<CadDocument>,
     pub(crate) next_revision: u64,
     pub(crate) loading_in_flight: bool,
+    pub(crate) load_generation: u64,
     pub(crate) job_tx: Sender<LoadJobResult>,
     pub(crate) job_rx: Receiver<LoadJobResult>,
 
@@ -338,6 +339,7 @@ impl ChipCutterApp {
             empty_cad: Arc::new(CadDocument::empty()),
             next_revision: 1,
             loading_in_flight: false,
+            load_generation: 0,
             job_tx,
             job_rx,
             last_disk_check: Instant::now(),
@@ -430,9 +432,95 @@ impl ChipCutterApp {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn new_headless_for_test(egui_ctx: &egui::Context) -> Self {
+        let prefs = UserPreferences::default();
+        let active_theme = prefs.theme;
+        let (job_tx, job_rx) = crossbeam_channel::unbounded();
+        let machines = chip_tools::load_available_machines(None);
+        let global_tools = machines
+            .first()
+            .map(chip_tools::MachineDefinition::to_tool_library)
+            .unwrap_or_else(load_or_default_global_library);
+        let repaint_ctx = egui_ctx.clone();
+        let dispatcher = JobDispatcher::new(Some(Arc::new(move || {
+            repaint_ctx.request_repaint();
+        })));
+        let initial_project = ProjectDocument::new("Untitled Job");
+        Self {
+            tree: create_workspace_tree_with_shares(prefs.layout_shares),
+            theme: active_theme,
+            camera: CadCamera::default(),
+            viewport_renderer: None,
+            wgpu_render_state: None,
+            project: initial_project,
+            project_file_path: None,
+            bundle_extract_dir: None,
+            clean_undo_len: Some(0),
+            last_window_title: String::new(),
+            history: UndoHistory::new(100),
+            toolpath_cache: ToolpathCache::new(128),
+            dispatcher,
+            machines,
+            global_tools,
+            last_saved_prefs: prefs.clone(),
+            prefs,
+            tool_library_modal: ToolLibraryModalState::new(),
+            machine_manager_modal: MachineManagerModalState::new(),
+            mesh_import_modal: MeshImportModalState::default(),
+            vector_import_modal: VectorImportModalState::default(),
+            welcome_modal: WelcomeModalState::default(),
+            sample_gallery_modal: SampleGalleryModalState::default(),
+            command_palette: CommandPaletteState::default(),
+            shortcut_cheatsheet: ShortcutCheatsheetState::default(),
+            about_modal: AboutModalState::default(),
+            sim_panel: SimulationPanelState::default(),
+            gcode_panel: GCodePreviewPanelState::default(),
+            auto_sim_after_gen: false,
+            active_setup_idx: 0,
+            inspector_focus: InspectorFocus::Setup { setup_idx: 0 },
+            setup_tab: SetupTab::Wcs,
+            op_tab: OperationTab::Passes,
+            pick_mode: ViewportPickMode::InspectEntity,
+            selected_sketch_entity_idx: None,
+            sketch_snap_grid_mm: None,
+            sketch_author_start_xy: None,
+            lock_chipload: true,
+            lock_model_uniform_scale: true,
+            show_27pt_dots: true,
+            show_z_planes: true,
+            show_all_setup_toolpaths: true,
+            model: None,
+            empty_cad: Arc::new(CadDocument::empty()),
+            next_revision: 1,
+            loading_in_flight: false,
+            load_generation: 0,
+            job_tx,
+            job_rx,
+            last_disk_check: Instant::now(),
+            external_step_modified: false,
+            last_reload_banner: None,
+            cached_frame_geo: None,
+            pick_filter: PickFilter::Any,
+            highlight: HighlightState {
+                theme: active_theme,
+                show_toolpaths: true,
+                show_rapids: true,
+                show_stock: true,
+                ghost_part: false,
+                ..HighlightState::default()
+            },
+            wb_tool_dia: ExpressionInput::new(6.35, Some("1/4 in")),
+            wb_stepover: ExpressionInput::new(2.54, Some("tool_d * 0.4")),
+            wb_clearance_z: ExpressionInput::new(26.0, Some("model_top_z + 10 mm")),
+            logs: Vec::new(),
+            self_test: None,
+        }
+    }
+
     pub(crate) fn record_recent_file(&mut self, path: &Path) {
         self.prefs.push_recent_file(path);
-        if self.self_test.is_none() {
+        if self.self_test.is_none() && !cfg!(test) {
             let _ = save_prefs(&self.prefs);
             self.last_saved_prefs = self.prefs.clone();
         }
@@ -489,7 +577,7 @@ impl ChipCutterApp {
     }
 
     pub(crate) fn sync_and_save_prefs_if_changed(&mut self, pointer_down: bool) {
-        if self.self_test.is_some() || pointer_down {
+        if self.self_test.is_some() || pointer_down || cfg!(test) {
             return;
         }
         self.prefs.theme = self.theme;
@@ -1039,18 +1127,11 @@ impl eframe::App for ChipCutterApp {
                     }
                 }
                 VectorModalAction::CreatedPure2dJob { .. } => {
-                    self.dispatcher.cancel_all();
-                    self.sim_panel.cancel_in_flight();
-                    self.sim_panel.active_result = None;
-                    self.gcode_panel.invalidate_preview();
-                    self.clear_bundle_extract_dir();
+                    self.prepare_for_project_replacement(None, None);
                     self.project_file_path = None;
-                    self.history.clear();
-                    self.clean_undo_len = Some(0);
-                    self.model = None;
-                    self.active_setup_idx = 0;
                     self.inspector_focus = InspectorFocus::Sketch { sketch_idx: 0 };
-                    self.cached_frame_geo = None;
+                    self.sync_active_machine_tools();
+                    self.refresh_dependent_expressions();
                     self.fit_scene_to_viewport();
                 }
             }

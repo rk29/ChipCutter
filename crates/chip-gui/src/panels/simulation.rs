@@ -159,6 +159,22 @@ impl SimulationPanelState {
         }
     }
 
+    /// Cancels any in-flight simulation worker and clears all cached simulation results,
+    /// machined stock meshes, playback state, and cutter visuals when switching projects or models.
+    pub fn reset_for_new_project(&mut self) {
+        self.cancel_in_flight();
+        while self.rx.try_recv().is_ok() {}
+        self.is_playing = false;
+        self.current_time_sec = 0.0;
+        self.active_run_id = 0;
+        self.active_setup_idx = 0;
+        self.active_signature = 0;
+        self.active_result = None;
+        self.clear_stock_display_cache();
+        self.cached_tool_key = None;
+        self.cached_tool_mesh = None;
+    }
+
     /// Computes a deterministic signature of `(setup_idx, resolution, clean toolpath hashes)`
     /// so we know immediately whether `active_result` matches the current Setup toolpaths!
     pub fn compute_setup_sim_signature(
@@ -315,6 +331,8 @@ impl SimulationPanelState {
                 } => {
                     if self.in_flight.as_ref().is_some_and(|(id, _)| *id == run_id) {
                         self.in_flight = None;
+                    } else {
+                        continue;
                     }
                     match result {
                         Ok(sim) => {
@@ -1202,5 +1220,84 @@ mod tests {
             vol_75 < vol_25 - 100.0,
             "cylindrical stock volume must decrease as cutter advances mid-segment (vol_25={vol_25:.1}, vol_75={vol_75:.1})"
         );
+    }
+
+    #[test]
+    fn reset_for_new_project_clears_visuals_and_ignores_stale_worker_results() {
+        let mut project = ProjectDocument::new("Stale Sim Test");
+        let lib = default_starter_tool_library();
+        project.tools = lib.tools.clone();
+        let flat_6mm = &lib.tools[0];
+
+        let mut setup = Setup::new("s1", "Setup 1", WorkOffsetSlot::G54);
+        setup.stock = StockConfig::FixedBox {
+            width_x: ParamLength::from_mm(100.0),
+            depth_y: ParamLength::from_mm(100.0),
+            height_z: ParamLength::from_mm(20.0),
+            xy_align: chip_cam::FixedBoxXyAlign::CenterXy,
+            z_align: chip_cam::FixedBoxZAlign::CenterZ,
+        };
+        let doc = CadDocument::empty();
+        let resolved = setup.resolve(&doc, DisplayUnit::Millimeter).unwrap();
+
+        let mut b = ToolpathBuilder::new("op_cut");
+        b.rapid_to(DVec3::new(-15.0, 0.0, 10.0));
+        b.linear_to(DVec3::new(-15.0, 0.0, -3.0), 300.0, MotionRole::Plunge);
+        b.linear_to(DVec3::new(15.0, 0.0, -3.0), 600.0, MotionRole::Cut);
+        b.rapid_to(DVec3::new(15.0, 0.0, 10.0));
+        let tp = b.finish();
+
+        let sim = Arc::new(
+            run_setup_simulation(&SetupSimulationInput {
+                doc: &doc,
+                setup: &resolved,
+                target_bodies: &[],
+                operations: &[SimOperationInput {
+                    op_id: "op_cut",
+                    op_name: "Cut",
+                    tool: flat_6mm,
+                    fallback_spindle_rpm: 12_000.0,
+                    intentional_edge_break_mm: 0.0,
+                    toolpath: &tp,
+                }],
+                resolution: SimResolution::Standard,
+                kinematics: MachineKinematicsConfig::default(),
+                verify_config: SimVerificationConfig::default(),
+                cancel: None,
+            })
+            .unwrap(),
+        );
+
+        let mut panel = SimulationPanelState {
+            active_run_id: 7,
+            active_setup_idx: 0,
+            active_result: Some(Arc::clone(&sim)),
+            is_playing: true,
+            current_time_sec: 1.0,
+            ..Default::default()
+        };
+        let before = panel.resolve_viewport_visuals(&project, 0);
+        assert!(before.stock.is_some());
+
+        panel.reset_for_new_project();
+        assert!(panel.active_result.is_none());
+        assert!(!panel.is_playing);
+        assert_eq!(panel.current_time_sec, 0.0);
+        let after = panel.resolve_viewport_visuals(&project, 0);
+        assert!(after.stock.is_none());
+        assert!(after.cutter.is_none());
+
+        // A stale worker completion arriving after reset_for_new_project must be ignored.
+        let _ = panel.tx.send(super::SimWorkerMsg::Finished {
+            run_id: 7,
+            setup_idx: 0,
+            signature: 42,
+            elapsed_ms: 5,
+            result: Ok(sim),
+        });
+        let mut logs = Vec::new();
+        assert!(!panel.poll_worker(&mut logs));
+        assert!(panel.active_result.is_none());
+        assert!(logs.is_empty());
     }
 }

@@ -79,6 +79,20 @@ impl GCodePreviewPanelState {
 
     pub fn invalidate_preview(&mut self) {
         self.cached_sig = None;
+        self.cached_files.clear();
+        self.cached_lines_per_file.clear();
+        self.last_error = None;
+        self.selected_file_tab = 0;
+        self.show_safety_gate_modal = false;
+        self.pending_unverified_warning = false;
+    }
+
+    /// Clears cached G-code preview state, safety-gate modal flags, and project-loaded custom
+    /// post profiles when switching projects, then refreshes available profiles for `project_dir`.
+    pub fn reset_for_project(&mut self, project_dir: Option<&Path>) {
+        self.custom_loaded_profiles.clear();
+        self.invalidate_preview();
+        self.refresh_profiles(project_dir);
     }
 
     fn compute_preview_signature(
