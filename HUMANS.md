@@ -1,4 +1,4 @@
-# Information for human readers
+# Information for humans
 
 ## Introduction
 
