@@ -40,6 +40,7 @@ pub enum CommandId {
     AddOpParallel3D,
     AddOpScallop3D,
     AddOpPencil3D,
+    AddOpRotary2Linear,
     DuplicateOperation,
     MoveOperationUp,
     MoveOperationDown,
@@ -75,6 +76,7 @@ pub enum CommandId {
     SampleSculptedMeshDome,
     SampleReliefWaveMesh,
     SampleRotaryIndexedShaft,
+    SampleRotaryWrappedEngraving,
     SampleRevisionReloadV2,
 }
 
@@ -284,6 +286,13 @@ pub const PALETTE_COMMANDS: &[PaletteEntry] = &[
         shortcut: None,
     },
     PaletteEntry {
+        id: CommandId::AddOpRotary2Linear,
+        category: "Operation",
+        label: "Add 4th-Axis Rotary Surfacing Operation",
+        keywords: "add operation 4th axis rotary spiral axial parallel surfacing a-axis b-axis g93",
+        shortcut: None,
+    },
+    PaletteEntry {
         id: CommandId::DuplicateOperation,
         category: "Edit",
         label: "Duplicate Focused Operation",
@@ -462,7 +471,14 @@ pub const PALETTE_COMMANDS: &[PaletteEntry] = &[
         id: CommandId::SampleRotaryIndexedShaft,
         category: "Samples",
         label: "Sample: Load Rotary Indexed Shaft (4th-Axis A)",
-        keywords: "sample demo 4th axis rotary shaft chuck a-axis g93",
+        keywords: "sample demo 4th axis rotary shaft chuck a-axis g93 indexed 3+1 spiral",
+        shortcut: None,
+    },
+    PaletteEntry {
+        id: CommandId::SampleRotaryWrappedEngraving,
+        category: "Samples",
+        label: "Sample: Load Wrapped Rotary Engraving (Z+X+A)",
+        keywords: "sample demo 4th axis rotary wrap cylinder engraving vcarve pocket grbl a-axis",
         shortcut: None,
     },
     PaletteEntry {
@@ -485,6 +501,7 @@ impl CommandId {
             Self::SampleSculptedMeshDome => Some(SampleProjectId::SculptedMeshDome),
             Self::SampleReliefWaveMesh => Some(SampleProjectId::ReliefWaveMesh),
             Self::SampleRotaryIndexedShaft => Some(SampleProjectId::RotaryIndexedShaft),
+            Self::SampleRotaryWrappedEngraving => Some(SampleProjectId::RotaryWrappedEngraving),
             Self::SampleRevisionReloadV2 => Some(SampleProjectId::CadRevisionV2Reload),
             _ => None,
         }

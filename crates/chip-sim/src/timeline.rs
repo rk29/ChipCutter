@@ -148,6 +148,19 @@ pub struct MotionSpan {
     pub spindle_rpm: f64,
 }
 
+/// Live metadata while scrubbing or playing through an `M6` tool-change window between operations.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ToolChangeSnapshot {
+    pub from_tool_number: u32,
+    pub to_tool_number: u32,
+    pub to_tool_name: String,
+    pub next_op_idx: usize,
+    pub next_op_name: String,
+    pub progress_t: f64,
+    pub remaining_sec: f64,
+    pub end_time_sec: f64,
+}
+
 /// Live state interpolated at any scrub timestamp or path distance (`06-simulation.md` §1).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScrubSnapshot {
@@ -170,6 +183,8 @@ pub struct ScrubSnapshot {
     pub motion_code: &'static str,
     pub commanded_feed_mm_min: f64,
     pub spindle_rpm: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_change: Option<ToolChangeSnapshot>,
 }
 
 /// Unified Setup-wide timeline with trapezoidal corner-limited cycle time and `O(log N)` scrub queries.
@@ -409,11 +424,51 @@ impl SimulationTimeline {
 
         let span = &self.motion_spans[idx];
         if t_clamped < span.t_start_sec {
-            // Inside a tool-change or dwell pause between `idx - 1` and `idx`
+            // Inside a tool-change (`M6`) or dwell (`G4`) window between `idx - 1` and `idx`
             if idx > 0 {
                 let prev = &self.motion_spans[idx - 1];
+                let prev_op = &self.operations[prev.op_idx];
+                let next_op = &self.operations[span.op_idx];
+                let gap_dur = (span.t_start_sec - prev.t_end_sec).max(1e-9);
+                let gap_t = ((t_clamped - prev.t_end_sec) / gap_dur).clamp(0.0, 1.0);
+                let is_tool_change =
+                    prev.op_idx != span.op_idx && prev_op.tool_number != next_op.tool_number;
+
+                if is_tool_change {
+                    let lift_mm = 35.0;
+                    let smooth = |u: f64| u * u * (3.0 - 2.0 * u);
+                    let mut snap = if gap_t < 0.5 {
+                        let s = smooth(gap_t * 2.0);
+                        let mut sn = self.snapshot_for_span(prev, 1.0, t_clamped, true);
+                        sn.tip_pos_wcs.z += lift_mm * s;
+                        sn
+                    } else {
+                        let s = smooth((gap_t - 0.5) * 2.0);
+                        let mut sn = self.snapshot_for_span(span, 0.0, t_clamped, false);
+                        sn.completed_segments = prev.global_seg_idx + 1;
+                        sn.tip_pos_wcs.z += lift_mm * (1.0 - s);
+                        sn.rotary_deg = prev.segment.end_rotary_deg
+                            + (span.segment.start_rotary_deg - prev.segment.end_rotary_deg) * s;
+                        sn
+                    };
+                    snap.motion_code = "M6";
+                    snap.commanded_feed_mm_min = 0.0;
+                    snap.spindle_rpm = 0.0;
+                    snap.tool_change = Some(ToolChangeSnapshot {
+                        from_tool_number: prev_op.tool_number,
+                        to_tool_number: next_op.tool_number,
+                        to_tool_name: next_op.tool_name.clone(),
+                        next_op_idx: span.op_idx,
+                        next_op_name: next_op.op_name.clone(),
+                        progress_t: gap_t,
+                        remaining_sec: (span.t_start_sec - t_clamped).max(0.0),
+                        end_time_sec: span.t_start_sec,
+                    });
+                    return Some(snap);
+                }
+
                 let mut snap = self.snapshot_for_span(prev, 1.0, t_clamped, true);
-                snap.motion_code = "M6/G4";
+                snap.motion_code = "G4";
                 snap.commanded_feed_mm_min = 0.0;
                 return Some(snap);
             }
@@ -540,6 +595,7 @@ impl SimulationTimeline {
             motion_code,
             commanded_feed_mm_min: span.commanded_feed_mm_min,
             spindle_rpm: span.spindle_rpm,
+            tool_change: None,
         }
     }
 }

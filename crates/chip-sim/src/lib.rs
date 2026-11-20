@@ -21,7 +21,7 @@ pub use heightmap::{
 };
 pub use timeline::{
     MachineKinematicsConfig, MotionSpan, OperationTimelineSummary, ScrubSnapshot,
-    SimOperationInput, SimulationTimeline, format_cycle_time_hms,
+    SimOperationInput, SimulationTimeline, ToolChangeSnapshot, format_cycle_time_hms,
 };
 pub use verifier::{SimDiagnostic, SimIssueKind, SimSeverity, SimVerificationConfig};
 
@@ -165,6 +165,25 @@ mod tests {
         let next_op_t = tl.next_operation_time(0.0);
         assert!(next_op_t > 6.5);
         assert_eq!(format_cycle_time_hms(65.0), "00:01:05");
+
+        // Verify M6 tool-change window animates retract, tool swap at midpoint, and descent
+        let tc_start = tl.tool_change_times_sec[0];
+        let tc_early = tl.sample_at_time(tc_start + 3.0).unwrap();
+        assert_eq!(tc_early.motion_code, "M6");
+        assert!(tc_early.tool_change.is_some());
+        assert_eq!(tc_early.tool_number, t1.tool_number);
+        assert!(
+            tc_early.tip_pos_wcs.z > 15.0,
+            "outgoing tool should lift smoothly during first half of M6"
+        );
+        let tc_late = tl.sample_at_time(tc_start + 12.0).unwrap();
+        assert_eq!(tc_late.motion_code, "M6");
+        assert!(tc_late.tool_change.is_some());
+        assert_eq!(tc_late.tool_number, t5.tool_number);
+        assert!(
+            tc_late.tip_pos_wcs.z > 10.5,
+            "incoming tool should lower smoothly during second half of M6"
+        );
     }
 
     #[test]

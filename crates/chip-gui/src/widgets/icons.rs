@@ -96,6 +96,7 @@ impl IconKind {
             OperationKind::Parallel3D => Self::Facing,
             OperationKind::Scallop3D => Self::Pocket2D,
             OperationKind::Pencil3D => Self::ChamferTrace,
+            OperationKind::Rotary2Linear => Self::OrthoCube,
         }
     }
 

@@ -1501,6 +1501,134 @@ impl Pencil3DParams {
     }
 }
 
+/// Machining pattern for centerline-locked 2-linear + rotary 3D surfacing (`OperationKind::Rotary2Linear`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RotaryPatternMode {
+    /// Continuous multi-turn helical spiral along the rotary axis (zero stepover retracts).
+    #[default]
+    ContinuousSpiral,
+    /// Axial raster passes sweeping back and forth along `u_axial`, stepping around `θ`.
+    AxialParallel,
+}
+
+impl RotaryPatternMode {
+    pub const ALL: [Self; 2] = [Self::ContinuousSpiral, Self::AxialParallel];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::ContinuousSpiral => "Continuous Helical Spiral",
+            Self::AxialParallel => "Axial Parallel (Index & Sweep)",
+        }
+    }
+}
+
+/// Traversal direction for [`OperationKind::Rotary2Linear`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RotaryCutDirection {
+    #[default]
+    ZigZag,
+    Climb,
+    Conventional,
+}
+
+impl RotaryCutDirection {
+    pub const ALL: [Self; 3] = [Self::ZigZag, Self::Climb, Self::Conventional];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::ZigZag => "Both Ways (Zig-Zag)",
+            Self::Climb => "Climb (One-Way)",
+            Self::Conventional => "Conventional (One-Way)",
+        }
+    }
+}
+
+fn default_rotary_stepover() -> ParamLength {
+    ParamLength::from_mm(1.2)
+}
+
+fn default_rotary_end_angle_deg() -> f64 {
+    360.0
+}
+
+fn default_rotary_angular_sample_deg() -> f64 {
+    2.5
+}
+
+fn default_rotary_axial_sample() -> ParamLength {
+    ParamLength::from_mm(0.5)
+}
+
+/// Strategy parameters for **4th-Axis 2-Linear + Rotary 3D Surfacing** (`OperationKind::Rotary2Linear`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Rotary2LinearParams {
+    #[serde(default)]
+    pub pattern: RotaryPatternMode,
+    #[serde(default)]
+    pub cut_direction: RotaryCutDirection,
+    /// Axial pitch per revolution (`ContinuousSpiral`) or circumferential surface stepover (`AxialParallel`).
+    #[serde(default = "default_rotary_stepover")]
+    pub stepover: ParamLength,
+    /// Derive stepover automatically from `cusp_height` and cutter ball/corner radius.
+    #[serde(default)]
+    pub use_cusp_height: bool,
+    #[serde(default = "default_finishing_cusp_height")]
+    pub cusp_height: ParamLength,
+    /// Start angular boundary (`deg`, used by `AxialParallel` or partial-sector spiral).
+    #[serde(default)]
+    pub start_angle_deg: f64,
+    /// End angular boundary (`deg`, `360.0` default for full circumference).
+    #[serde(default = "default_rotary_end_angle_deg")]
+    pub end_angle_deg: f64,
+    /// Inward trim margin (`mm`) from the `-u` stock end (e.g. to stay clear of the rotary chuck!).
+    #[serde(default = "default_zero_length")]
+    pub axial_margin_start: ParamLength,
+    /// Inward trim margin (`mm`) from the `+u` stock end (e.g. to clear a live tailstock center).
+    #[serde(default = "default_zero_length")]
+    pub axial_margin_end: ParamLength,
+    /// Angular drop-cutter sampling resolution (`deg`).
+    #[serde(default = "default_rotary_angular_sample_deg")]
+    pub angular_sample_deg: f64,
+    /// Axial drop-cutter sampling pitch (`mm`).
+    #[serde(default = "default_rotary_axial_sample")]
+    pub axial_sample_step: ParamLength,
+    /// Chord decimation tolerance (`mm`) keeping 4-axis G-code smooth and compact.
+    #[serde(default = "default_finishing_smooth_tol")]
+    pub smoothing_tolerance: ParamLength,
+}
+
+impl Default for Rotary2LinearParams {
+    fn default() -> Self {
+        Self {
+            pattern: RotaryPatternMode::ContinuousSpiral,
+            cut_direction: RotaryCutDirection::ZigZag,
+            stepover: default_rotary_stepover(),
+            use_cusp_height: false,
+            cusp_height: default_finishing_cusp_height(),
+            start_angle_deg: 0.0,
+            end_angle_deg: 360.0,
+            axial_margin_start: ParamLength::from_mm(0.0),
+            axial_margin_end: ParamLength::from_mm(0.0),
+            angular_sample_deg: default_rotary_angular_sample_deg(),
+            axial_sample_step: default_rotary_axial_sample(),
+            smoothing_tolerance: default_finishing_smooth_tol(),
+        }
+    }
+}
+
+impl Rotary2LinearParams {
+    pub fn reevaluate(&mut self, ctx: &EvalContext) {
+        let _ = self.stepover.reevaluate(ctx);
+        let _ = self.cusp_height.reevaluate(ctx);
+        let _ = self.axial_margin_start.reevaluate(ctx);
+        let _ = self.axial_margin_end.reevaluate(ctx);
+        let _ = self.axial_sample_step.reevaluate(ctx);
+        let _ = self.smoothing_tolerance.reevaluate(ctx);
+    }
+}
+
 /// Strategy-specific parameter block inside [`crate::operation::Operation`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "strategy_kind", rename_all = "snake_case")]
@@ -1524,6 +1652,8 @@ pub enum StrategyParams {
     Scallop3D(Scallop3DParams),
     #[serde(rename = "pencil_3d")]
     Pencil3D(Pencil3DParams),
+    #[serde(rename = "rotary_2linear")]
+    Rotary2Linear(Rotary2LinearParams),
 }
 
 impl StrategyParams {
@@ -1540,6 +1670,7 @@ impl StrategyParams {
             OperationKind::Parallel3D => Self::Parallel3D(Parallel3DParams::default()),
             OperationKind::Scallop3D => Self::Scallop3D(Scallop3DParams::default()),
             OperationKind::Pencil3D => Self::Pencil3D(Pencil3DParams::default()),
+            OperationKind::Rotary2Linear => Self::Rotary2Linear(Rotary2LinearParams::default()),
         }
     }
 
@@ -1557,6 +1688,7 @@ impl StrategyParams {
                 | (OperationKind::Parallel3D, Self::Parallel3D(_))
                 | (OperationKind::Scallop3D, Self::Scallop3D(_))
                 | (OperationKind::Pencil3D, Self::Pencil3D(_))
+                | (OperationKind::Rotary2Linear, Self::Rotary2Linear(_))
         );
         if !matches {
             *self = Self::default_for_kind(kind);
@@ -1576,6 +1708,7 @@ impl StrategyParams {
             Self::Parallel3D(p) => p.reevaluate(ctx),
             Self::Scallop3D(p) => p.reevaluate(ctx),
             Self::Pencil3D(p) => p.reevaluate(ctx),
+            Self::Rotary2Linear(p) => p.reevaluate(ctx),
         }
     }
 }

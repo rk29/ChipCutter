@@ -295,6 +295,21 @@ pub fn validate_project(
                     continue;
                 }
 
+                if op.kind.is_rotary_native() && resolved_setup.rotary.is_none() {
+                    report.push_error(
+                        &op_scope,
+                        "4th-Axis Rotary Surfacing requires 4th-Axis Rotary to be enabled on this Setup.",
+                    );
+                    continue;
+                }
+                if !op.rotary.is_none() && resolved_setup.rotary.is_none() {
+                    report.push_error(
+                        &op_scope,
+                        "Operation 4th-axis indexing/wrapping requires 4th-Axis Rotary to be enabled on this Setup.",
+                    );
+                    continue;
+                }
+
                 // Validate selections & Z-height hierarchy
                 let summary = match extract_selection_features_with_sketches(
                     cad_doc,

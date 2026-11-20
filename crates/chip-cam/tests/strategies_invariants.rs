@@ -2218,3 +2218,552 @@ fn milestone_18_3d_finishing_parallel_scallop_pencil_and_rest_oracles() {
         sim_wave.diagnostics
     );
 }
+
+#[test]
+fn rotary2linear_spiral_and_axial_parallel_on_x_and_y_axes_are_centerline_locked_and_crash_free() {
+    use chip_cad::{MeshImportOptions, load_mesh_cad_document, sample_rotary_shaft_stl_bytes};
+    use chip_cam::{
+        AxisAnchor, OperationGenRequest, RotaryAxisKind, RotaryCutDirection, RotaryDriveMode,
+        RotaryPatternMode, StockAxis, generate_operation_toolpath_with_rest,
+    };
+    use chip_sim::{
+        MachineKinematicsConfig, SetupSimulationInput, SimOperationInput, SimResolution,
+        SimVerificationConfig, run_setup_simulation,
+    };
+
+    let stl = sample_rotary_shaft_stl_bytes();
+    let doc =
+        load_mesh_cad_document("rotary_shaft.stl", &stl, &MeshImportOptions::default()).unwrap();
+
+    let lib = default_starter_tool_library();
+    let ball_6mm = lib
+        .tools
+        .iter()
+        .find(|t| {
+            matches!(
+                t.geometry,
+                CutterGeometry::BallEndmill { diameter_mm, .. } if approx_eq(diameter_mm, 6.0, 1e-3)
+            )
+        })
+        .expect("6mm ball endmill in starter library")
+        .clone();
+
+    // 1. X-Axis (A) 2-Linear + Rotary Setup (Z+X+A)
+    let mut setup_x = Setup::new("setup_rot_x", "Rotary Shaft X/A", WorkOffsetSlot::G54);
+    setup_x.wcs.origin = WcsOriginMode::StockBoxPoint {
+        anchor: BoxAnchor27 {
+            x: AxisAnchor::Center,
+            y: AxisAnchor::Center,
+            z: AxisAnchor::Center,
+        },
+    };
+    setup_x.stock = StockConfig::FixedCylinder {
+        axis: StockAxis::X,
+        diameter: ParamLength::from_mm(42.0),
+        length: ParamLength::from_mm(80.0),
+        axial_top_offset: ParamLength::from_mm(0.0),
+    };
+    setup_x.rotary.mode = RotaryDriveMode::TwoLinearPlusRotary;
+    setup_x.rotary.axis = RotaryAxisKind::XAxis;
+    setup_x.rotary.clearance_radial_offset = ParamLength::from_mm(12.0);
+    let resolved_x = setup_x.resolve(&doc, DisplayUnit::Millimeter).unwrap();
+    let rot_x = resolved_x.rotary.unwrap();
+
+    let cancel = AtomicBool::new(false);
+
+    // Op A: Continuous Spiral over the turned central collar & 3-lobe cam (X in [-6..+32])
+    let mut op_spiral = Operation::new(
+        "op_rot_spiral",
+        "Rotary Spiral",
+        OperationKind::Rotary2Linear,
+    );
+    op_spiral.tool_id = Some(ball_6mm.id.clone());
+    op_spiral.passes.multiple_depths = true;
+    op_spiral.passes.max_stepdown = ParamLength::from_mm(3.0);
+    if let StrategyParams::Rotary2Linear(p) = op_spiral.strategy_mut() {
+        p.pattern = RotaryPatternMode::ContinuousSpiral;
+        p.stepover = ParamLength::from_mm(1.5);
+        p.axial_margin_start = ParamLength::from_mm(34.0);
+        p.axial_margin_end = ParamLength::from_mm(8.0);
+        p.angular_sample_deg = 5.0;
+        p.axial_sample_step = ParamLength::from_mm(1.0);
+    }
+    let tp_spiral = generate_operation_toolpath_with_rest(&OperationGenRequest {
+        doc: &doc,
+        sketches: &[],
+        setup: &resolved_x,
+        op: &op_spiral,
+        tool: &ball_6mm,
+        clearing_tool: None,
+        display_unit: DisplayUnit::Millimeter,
+        is_first_tool_in_setup: true,
+        upstream_rest: &[],
+        cancel: &cancel,
+    })
+    .unwrap();
+
+    assert!(
+        tp_spiral.segments_wcs.len() > 200,
+        "spiral should produce dense rotary motion, got {}",
+        tp_spiral.segments_wcs.len()
+    );
+    for seg in &tp_spiral.segments_wcs {
+        assert!(
+            (seg.start_wcs.y - rot_x.center_wcs.y).abs() < 1e-9
+                && (seg.end_wcs.y - rot_x.center_wcs.y).abs() < 1e-9,
+            "Z+X+A spiral violated strict Y centerline lock: {:?} -> {:?}",
+            seg.start_wcs,
+            seg.end_wcs
+        );
+    }
+
+    // Op B: Axial Parallel ZigZag
+    let mut op_axial = Operation::new(
+        "op_rot_axial",
+        "Rotary Axial Parallel",
+        OperationKind::Rotary2Linear,
+    );
+    op_axial.tool_id = Some(ball_6mm.id.clone());
+    if let StrategyParams::Rotary2Linear(p) = op_axial.strategy_mut() {
+        p.pattern = RotaryPatternMode::AxialParallel;
+        p.cut_direction = RotaryCutDirection::ZigZag;
+        p.stepover = ParamLength::from_mm(3.0);
+        p.axial_margin_start = ParamLength::from_mm(34.0);
+        p.axial_margin_end = ParamLength::from_mm(8.0);
+        p.angular_sample_deg = 5.0;
+        p.axial_sample_step = ParamLength::from_mm(1.0);
+    }
+    let tp_axial = generate_operation_toolpath_with_rest(&OperationGenRequest {
+        doc: &doc,
+        sketches: &[],
+        setup: &resolved_x,
+        op: &op_axial,
+        tool: &ball_6mm,
+        clearing_tool: None,
+        display_unit: DisplayUnit::Millimeter,
+        is_first_tool_in_setup: false,
+        upstream_rest: &[],
+        cancel: &cancel,
+    })
+    .unwrap();
+
+    for seg in &tp_axial.segments_wcs {
+        assert!(
+            (seg.start_wcs.y - rot_x.center_wcs.y).abs() < 1e-9
+                && (seg.end_wcs.y - rot_x.center_wcs.y).abs() < 1e-9,
+            "Z+X+A axial parallel violated strict Y centerline lock: {:?} -> {:?}",
+            seg.start_wcs,
+            seg.end_wcs
+        );
+    }
+
+    let sim_x = run_setup_simulation(&SetupSimulationInput {
+        doc: &doc,
+        setup: &resolved_x,
+        target_bodies: &[],
+        operations: &[
+            SimOperationInput::from_operation(&op_spiral, &ball_6mm, &tp_spiral),
+            SimOperationInput::from_operation(&op_axial, &ball_6mm, &tp_axial),
+        ],
+        kinematics: MachineKinematicsConfig::default(),
+        resolution: SimResolution::Standard,
+        verify_config: SimVerificationConfig::default(),
+        cancel: None,
+    })
+    .unwrap();
+    assert_eq!(
+        sim_x.critical_error_count(),
+        0,
+        "Rotary2Linear Spiral + AxialParallel must pass CylindricalStock verification crash-free, got: {:#?}",
+        sim_x.diagnostics
+    );
+    assert!(
+        sim_x.removed_volume_mm3 > 1_500.0,
+        "Expected substantial material removal on rotary shaft, got {:.1} mm3",
+        sim_x.removed_volume_mm3
+    );
+
+    // 2. Y-Axis (B) 2-Linear + Rotary Setup (Z+Y+B) via 90-degree WCS clock
+    let mut setup_y = Setup::new("setup_rot_y", "Rotary Shaft Y/B", WorkOffsetSlot::G54);
+    setup_y.wcs.orientation = chip_cam::WcsOrientationMode::ModelOrientation {
+        flip_z: false,
+        flip_x: false,
+        clock_90: 1,
+    };
+    setup_y.wcs.origin = WcsOriginMode::StockBoxPoint {
+        anchor: BoxAnchor27 {
+            x: AxisAnchor::Center,
+            y: AxisAnchor::Center,
+            z: AxisAnchor::Center,
+        },
+    };
+    setup_y.stock = StockConfig::FixedCylinder {
+        axis: StockAxis::Y,
+        diameter: ParamLength::from_mm(42.0),
+        length: ParamLength::from_mm(80.0),
+        axial_top_offset: ParamLength::from_mm(0.0),
+    };
+    setup_y.rotary.mode = RotaryDriveMode::TwoLinearPlusRotary;
+    setup_y.rotary.axis = RotaryAxisKind::YAxis;
+    setup_y.rotary.clearance_radial_offset = ParamLength::from_mm(12.0);
+    let resolved_y = setup_y.resolve(&doc, DisplayUnit::Millimeter).unwrap();
+    let rot_y = resolved_y.rotary.unwrap();
+
+    let tp_y = generate_operation_toolpath_with_rest(&OperationGenRequest {
+        doc: &doc,
+        sketches: &[],
+        setup: &resolved_y,
+        op: &op_spiral,
+        tool: &ball_6mm,
+        clearing_tool: None,
+        display_unit: DisplayUnit::Millimeter,
+        is_first_tool_in_setup: true,
+        upstream_rest: &[],
+        cancel: &cancel,
+    })
+    .unwrap();
+    for seg in &tp_y.segments_wcs {
+        assert!(
+            (seg.start_wcs.x - rot_y.center_wcs.x).abs() < 1e-9
+                && (seg.end_wcs.x - rot_y.center_wcs.x).abs() < 1e-9,
+            "Z+Y+B spiral violated strict X centerline lock: {:?} -> {:?}",
+            seg.start_wcs,
+            seg.end_wcs
+        );
+    }
+    let sim_y = run_setup_simulation(&SetupSimulationInput {
+        doc: &doc,
+        setup: &resolved_y,
+        target_bodies: &[],
+        operations: &[SimOperationInput::from_operation(
+            &op_spiral, &ball_6mm, &tp_y,
+        )],
+        kinematics: MachineKinematicsConfig::default(),
+        resolution: SimResolution::Standard,
+        verify_config: SimVerificationConfig::default(),
+        cancel: None,
+    })
+    .unwrap();
+    assert_eq!(
+        sim_y.critical_error_count(),
+        0,
+        "Z+Y+B Rotary2Linear must pass CylindricalStock verification crash-free, got: {:#?}",
+        sim_y.diagnostics
+    );
+}
+
+#[test]
+fn wrap_cylinder_2d_pocket_respects_centerline_lock_arc_mapping_and_simulates_cleanly() {
+    use chip_cad::CadDocument;
+    use chip_cam::{
+        AxisAnchor, OperationGenRequest, OperationRotaryMode, RotaryAxisKind, RotaryDriveMode,
+        StockAxis, generate_operation_toolpath_with_rest,
+    };
+    use chip_sim::{
+        MachineKinematicsConfig, SetupSimulationInput, SimOperationInput, SimResolution,
+        SimVerificationConfig, run_setup_simulation,
+    };
+    use chip_sketch::{RectAnchorMode, SketchEntity, SketchEntityEntry, SketchLayer};
+
+    let doc = CadDocument::empty();
+    let mut setup = Setup::new("setup_wrap_2d", "Wrapped Cylinder", WorkOffsetSlot::G54);
+    setup.wcs.origin = WcsOriginMode::StockBoxPoint {
+        anchor: BoxAnchor27 {
+            x: AxisAnchor::Center,
+            y: AxisAnchor::Center,
+            z: AxisAnchor::Center,
+        },
+    };
+    setup.stock = StockConfig::FixedCylinder {
+        axis: StockAxis::X,
+        diameter: ParamLength::from_mm(40.0),
+        length: ParamLength::from_mm(80.0),
+        axial_top_offset: ParamLength::from_mm(0.0),
+    };
+    setup.rotary.mode = RotaryDriveMode::TwoLinearPlusRotary;
+    setup.rotary.axis = RotaryAxisKind::XAxis;
+    setup.rotary.clearance_radial_offset = ParamLength::from_mm(10.0);
+
+    // 2D rectangular slot spanning X in [-12, +12], Y (circumferential arc) in [-10, +10]
+    let mut sketch = SketchLayer::new("sk_wrap_slot", "Wrap Slot", setup.id.clone());
+    sketch.entities.push(SketchEntityEntry {
+        id: "slot_rect".to_string(),
+        name: "Slot".to_string(),
+        sub_layer: None,
+        is_construction: false,
+        entity: SketchEntity::Rectangle {
+            anchor: RectAnchorMode::Center,
+            x: ParamLength::from_mm(0.0),
+            y: ParamLength::from_mm(0.0),
+            width: ParamLength::from_mm(24.0),
+            height: ParamLength::from_mm(20.0),
+            corner_radius: ParamLength::from_mm(0.0),
+            rotation_deg: 0.0,
+        },
+    });
+    sketch.rebuild_regions(None);
+    let sketches = vec![sketch];
+
+    let resolved = setup
+        .resolve_with_sketches(&doc, &sketches, DisplayUnit::Millimeter)
+        .unwrap();
+    let rot = resolved.rotary.unwrap();
+
+    let lib = default_starter_tool_library();
+    let flat_3mm = lib
+        .tools
+        .iter()
+        .find(|t| {
+            matches!(
+                t.geometry,
+                CutterGeometry::FlatEndmill { diameter_mm, .. } if diameter_mm < 4.0
+            )
+        })
+        .expect("small flat endmill in starter library")
+        .clone();
+    let tool_r = 0.5 * flat_3mm.geometry.cutting_diameter_mm();
+
+    let mut op = Operation::new("op_wrap_pocket", "Wrapped Slot", OperationKind::Pocket2D);
+    op.tool_id = Some(flat_3mm.id.clone());
+    op.selections.push(GeometrySelectionItem::SketchLayerAll {
+        sketch_id: "sk_wrap_slot".to_string(),
+        sub_layer: None,
+        reverse: false,
+        side_flip: false,
+    });
+    op.heights.top = HeightSpec::new(HeightReference::StockTop, 0.0);
+    op.heights.bottom = HeightSpec::new(HeightReference::StockTop, -2.0);
+    op.rotary = OperationRotaryMode::WrapCylinder {
+        wrap_radius: ParamLength::from_mm(20.0),
+        axial_offset: ParamLength::from_mm(0.0),
+        angle_offset_deg: 0.0,
+    };
+
+    let cancel = AtomicBool::new(false);
+    let tp = generate_operation_toolpath_with_rest(&OperationGenRequest {
+        doc: &doc,
+        sketches: &sketches,
+        setup: &resolved,
+        op: &op,
+        tool: &flat_3mm,
+        clearing_tool: None,
+        display_unit: DisplayUnit::Millimeter,
+        is_first_tool_in_setup: true,
+        upstream_rest: &[],
+        cancel: &cancel,
+    })
+    .unwrap();
+
+    let mut min_deg = f64::INFINITY;
+    let mut max_deg = f64::NEG_INFINITY;
+    let mut min_r = f64::INFINITY;
+    for seg in &tp.segments_wcs {
+        assert!(
+            (seg.start_wcs.y - rot.center_wcs.y).abs() < 1e-9
+                && (seg.end_wcs.y - rot.center_wcs.y).abs() < 1e-9,
+            "WrapCylinder violated strict Y centerline lock: {:?} -> {:?}",
+            seg.start_wcs,
+            seg.end_wcs
+        );
+        min_deg = min_deg.min(seg.start_rotary_deg).min(seg.end_rotary_deg);
+        max_deg = max_deg.max(seg.start_rotary_deg).max(seg.end_rotary_deg);
+        min_r = min_r
+            .min(seg.start_wcs.z - rot.center_wcs.z)
+            .min(seg.end_wcs.z - rot.center_wcs.z);
+    }
+    // Pocket half-width = 10 - tool_r -> angle = ±((10 - tool_r)/20 rad)
+    let expected_deg = ((10.0 - tool_r) / 20.0).to_degrees();
+    assert!(
+        (max_deg - expected_deg).abs() < 1.0 && (min_deg + expected_deg).abs() < 1.0,
+        "Expected wrapped angular span approx ±{expected_deg:.2}°, got [{min_deg:.2}°, {max_deg:.2}°]"
+    );
+    assert!(
+        (min_r - 18.0).abs() < 0.05,
+        "Expected cut floor radius 18.0 mm (R20 - 2mm depth), got {min_r:.3}"
+    );
+
+    let sim = run_setup_simulation(&SetupSimulationInput {
+        doc: &doc,
+        setup: &resolved,
+        target_bodies: &[],
+        operations: &[SimOperationInput::from_operation(&op, &flat_3mm, &tp)],
+        kinematics: MachineKinematicsConfig::default(),
+        resolution: SimResolution::Standard,
+        verify_config: SimVerificationConfig::default(),
+        cancel: None,
+    })
+    .unwrap();
+    assert_eq!(
+        sim.critical_error_count(),
+        0,
+        "WrapCylinder 2D pocket must simulate with 0 critical errors, got: {:#?}",
+        sim.diagnostics
+    );
+    assert!(
+        sim.removed_volume_mm3 > 500.0,
+        "Expected > 500 mm3 removed by wrapped pocket, got {:.1}",
+        sim.removed_volume_mm3
+    );
+}
+
+#[test]
+fn indexed_3plus1_four_flats_on_rotary_shaft_retract_safely_and_verify_crash_free() {
+    use chip_cad::{MeshImportOptions, load_mesh_cad_document, sample_rotary_shaft_stl_bytes};
+    use chip_cam::{
+        AxisAnchor, OperationGenRequest, OperationRotaryMode, RotaryAxisKind, RotaryDriveMode,
+        StockAxis, generate_operation_toolpath_with_rest,
+    };
+    use chip_sim::{
+        MachineKinematicsConfig, SetupSimulationInput, SimOperationInput, SimResolution,
+        SimVerificationConfig, run_setup_simulation,
+    };
+    use chip_sketch::{RectAnchorMode, SketchEntity, SketchEntityEntry, SketchLayer};
+
+    let stl = sample_rotary_shaft_stl_bytes();
+    let doc =
+        load_mesh_cad_document("rotary_shaft.stl", &stl, &MeshImportOptions::default()).unwrap();
+
+    let mut setup = Setup::new("setup_idx_3p1", "Indexed Shaft", WorkOffsetSlot::G54);
+    setup.wcs.origin = WcsOriginMode::StockBoxPoint {
+        anchor: BoxAnchor27 {
+            x: AxisAnchor::Center,
+            y: AxisAnchor::Center,
+            z: AxisAnchor::Center,
+        },
+    };
+    setup.stock = StockConfig::FixedCylinder {
+        axis: StockAxis::X,
+        diameter: ParamLength::from_mm(40.0),
+        length: ParamLength::from_mm(80.0),
+        axial_top_offset: ParamLength::from_mm(0.0),
+    };
+    setup.rotary.mode = RotaryDriveMode::Simultaneous4Axis;
+    setup.rotary.axis = RotaryAxisKind::XAxis;
+    setup.rotary.clearance_radial_offset = ParamLength::from_mm(12.0);
+
+    // 2D SetupXy pocket window strictly inside the 4-flat wrenching section (X in [-25, -6])
+    let mut sketch = SketchLayer::new("sk_flats", "Wrench Flats", setup.id.clone());
+    sketch.entities.push(SketchEntityEntry {
+        id: "flat_rect".to_string(),
+        name: "Flat Window".to_string(),
+        sub_layer: None,
+        is_construction: false,
+        entity: SketchEntity::Rectangle {
+            anchor: RectAnchorMode::Center,
+            x: ParamLength::from_mm(-15.5),
+            y: ParamLength::from_mm(0.0),
+            width: ParamLength::from_mm(18.0),
+            height: ParamLength::from_mm(36.0),
+            corner_radius: ParamLength::from_mm(0.0),
+            rotation_deg: 0.0,
+        },
+    });
+    sketch.rebuild_regions(None);
+    let sketches = vec![sketch];
+
+    let resolved = setup
+        .resolve_with_sketches(&doc, &sketches, DisplayUnit::Millimeter)
+        .unwrap();
+    let rot = resolved.rotary.unwrap();
+    let safe_z = rot.center_wcs.z + rot.clearance_radius_mm;
+
+    let lib = default_starter_tool_library();
+    let flat_6mm = lib
+        .tools
+        .iter()
+        .find(|t| {
+            matches!(
+                t.geometry,
+                CutterGeometry::FlatEndmill { diameter_mm, .. } if approx_eq(diameter_mm, 6.0, 1e-3)
+            )
+        })
+        .expect("6mm flat endmill in starter library")
+        .clone();
+
+    let cancel = AtomicBool::new(false);
+    let mut ops = Vec::new();
+    let mut tps = Vec::new();
+
+    for (idx, &angle_deg) in [0.0_f64, 90.0, 180.0, 270.0].iter().enumerate() {
+        let mut op = Operation::new(
+            format!("op_flat_{idx}"),
+            format!("Indexed Flat {angle_deg:.0}°"),
+            OperationKind::Pocket2D,
+        );
+        op.tool_id = Some(flat_6mm.id.clone());
+        op.selections.push(GeometrySelectionItem::SketchLayerAll {
+            sketch_id: "sk_flats".to_string(),
+            sub_layer: None,
+            reverse: false,
+            side_flip: false,
+        });
+        op.heights.top = HeightSpec::new(HeightReference::StockTop, 0.5);
+        op.heights.bottom = HeightSpec::new(HeightReference::StockTop, -5.0);
+        op.passes.multiple_depths = true;
+        op.passes.max_stepdown = ParamLength::from_mm(2.0);
+        op.rotary = OperationRotaryMode::Indexed3Plus1 { angle_deg };
+
+        let tp = generate_operation_toolpath_with_rest(&OperationGenRequest {
+            doc: &doc,
+            sketches: &sketches,
+            setup: &resolved,
+            op: &op,
+            tool: &flat_6mm,
+            clearing_tool: None,
+            display_unit: DisplayUnit::Millimeter,
+            is_first_tool_in_setup: idx == 0,
+            upstream_rest: &[],
+            cancel: &cancel,
+        })
+        .unwrap();
+
+        // Must emit ClEvent::RotaryIndex with exact target angle
+        assert!(
+            tp.events.iter().any(|e| matches!(
+                e,
+                ClEvent::RotaryIndex { angle_deg: a, .. } if (a - angle_deg).abs() < 1e-6
+            )),
+            "Indexed op at {angle_deg}° must emit ClEvent::RotaryIndex"
+        );
+        // Must enter and exit at or above rotary clearance radius
+        assert!(tp.segments_wcs.first().unwrap().start_wcs.z >= safe_z - 1e-3);
+        assert!(tp.segments_wcs.last().unwrap().end_wcs.z >= safe_z - 1e-3);
+        // Every segment must carry constant angle_deg
+        for seg in &tp.segments_wcs {
+            assert!((seg.start_rotary_deg - angle_deg).abs() < 1e-9);
+            assert!((seg.end_rotary_deg - angle_deg).abs() < 1e-9);
+        }
+
+        ops.push(op);
+        tps.push(tp);
+    }
+
+    let sim_ops: Vec<SimOperationInput<'_>> = ops
+        .iter()
+        .zip(tps.iter())
+        .map(|(op, tp)| SimOperationInput::from_operation(op, &flat_6mm, tp))
+        .collect();
+
+    let sim = run_setup_simulation(&SetupSimulationInput {
+        doc: &doc,
+        setup: &resolved,
+        target_bodies: &[],
+        operations: &sim_ops,
+        kinematics: MachineKinematicsConfig::default(),
+        resolution: SimResolution::Standard,
+        verify_config: SimVerificationConfig::default(),
+        cancel: None,
+    })
+    .unwrap();
+    assert_eq!(
+        sim.critical_error_count(),
+        0,
+        "4-sided Indexed 3+1 flat milling must pass CylindricalStock verification crash-free, got: {:#?}",
+        sim.diagnostics
+    );
+    assert!(
+        sim.removed_volume_mm3 > 3_500.0,
+        "Expected substantial material removed across 4 wrenching flats, got {:.1} mm3",
+        sim.removed_volume_mm3
+    );
+}

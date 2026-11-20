@@ -4,8 +4,11 @@ pub mod vcarve;
 
 use std::ops::RangeInclusive;
 
-use chip_cam::{Operation, OperationKind, RestMachiningConfig, RestMachiningMode, StrategyParams};
-use chip_math::{DisplayUnit, EvalContext, ParamLength};
+use chip_cam::{
+    Operation, OperationKind, OperationRotaryMode, ResolvedRotaryConfig, RestMachiningConfig,
+    RestMachiningMode, StrategyParams, compute_index_angle_for_normal,
+};
+use chip_math::{DVec3, DisplayUnit, EvalContext, ParamLength};
 use chip_tools::ToolId;
 
 use crate::{
@@ -187,6 +190,8 @@ pub struct PassesTabCtx<'a> {
     pub setup_idx: usize,
     pub op_idx: usize,
     pub eval_ctx: &'a EvalContext,
+    pub resolved_rotary: Option<ResolvedRotaryConfig>,
+    pub selected_face_normal_wcs: Option<DVec3>,
     pub pick_mode: &'a mut ViewportPickMode,
     pub mutated_label: &'a mut Option<&'static str>,
 }
@@ -201,6 +206,8 @@ pub fn show_passes_tab(ui: &mut egui::Ui, ctx: PassesTabCtx<'_>) {
         setup_idx,
         op_idx,
         eval_ctx,
+        resolved_rotary,
+        selected_face_normal_wcs,
         pick_mode,
         mutated_label,
     } = ctx;
@@ -276,6 +283,19 @@ pub fn show_passes_tab(ui: &mut egui::Ui, ctx: PassesTabCtx<'_>) {
         );
     }
 
+    if let Some(rot) = resolved_rotary
+        && !op.kind.is_rotary_native()
+    {
+        show_operation_rotary_card(
+            ui,
+            &mut op.rotary,
+            op.kind,
+            rot,
+            selected_face_normal_wcs,
+            &mut item,
+        );
+    }
+
     match op.strategy_mut() {
         StrategyParams::Facing(p) => milling_2d::show_facing_params(ui, p, item),
         StrategyParams::Contour2D(p) => milling_2d::show_contour2d_params(ui, p, item, pick_mode),
@@ -303,7 +323,161 @@ pub fn show_passes_tab(ui: &mut egui::Ui, ctx: PassesTabCtx<'_>) {
         StrategyParams::Parallel3D(p) => surface_3d::show_parallel3d_params(ui, p, item),
         StrategyParams::Scallop3D(p) => surface_3d::show_scallop3d_params(ui, p, item),
         StrategyParams::Pencil3D(p) => surface_3d::show_pencil3d_params(ui, p, item),
+        StrategyParams::Rotary2Linear(p) => surface_3d::show_rotary2linear_params(ui, p, item),
     }
+}
+
+fn show_operation_rotary_card(
+    ui: &mut egui::Ui,
+    rotary_mode: &mut OperationRotaryMode,
+    op_kind: OperationKind,
+    rot: ResolvedRotaryConfig,
+    selected_face_normal_wcs: Option<DVec3>,
+    item: &mut PassItemCtx<'_>,
+) {
+    let (setup_idx, op_idx) = item.ids();
+    let eval_ctx = item.eval_ctx;
+    let supports_wrap = matches!(
+        op_kind,
+        OperationKind::Contour2D
+            | OperationKind::Pocket2D
+            | OperationKind::ChamferTrace
+            | OperationKind::VCarve
+            | OperationKind::DrillBore
+    );
+
+    section_card(
+        ui,
+        ("passes_rotary_card", setup_idx, op_idx),
+        "4th-Axis Indexing / Wrapping",
+        true,
+        |ui| {
+            let cur_mode = match rotary_mode {
+                OperationRotaryMode::None => 0_u8,
+                OperationRotaryMode::Indexed3Plus1 { .. } => 1_u8,
+                OperationRotaryMode::WrapCylinder { .. } => 2_u8,
+            };
+            let mut sel_mode = cur_mode;
+
+            item.grid(ui, "passes_rotary_grid", |f| {
+                f.set_tip("Position the rotary chuck at a fixed 3+1 index angle or wrap a 2D sketch onto a cylinder");
+                f.row("Rotary Mode", |ui, mutated| {
+                    if ui.selectable_value(&mut sel_mode, 0, "None").clicked() && cur_mode != 0 {
+                        *rotary_mode = OperationRotaryMode::None;
+                        *mutated = Some("Set Operation Rotary Mode: None");
+                    }
+                    if ui
+                        .selectable_value(&mut sel_mode, 1, "Indexed 3+1")
+                        .on_hover_text(
+                            "Index rotary axis at safe clearance radius, then mill along +Z",
+                        )
+                        .clicked()
+                        && cur_mode != 1
+                    {
+                        *rotary_mode = OperationRotaryMode::Indexed3Plus1 { angle_deg: 0.0 };
+                        *mutated = Some("Set Operation Rotary Mode: Indexed 3+1");
+                    }
+                    if supports_wrap
+                        && ui
+                            .selectable_value(&mut sel_mode, 2, "Wrap 2D")
+                            .on_hover_text(
+                                "Wrap flat 2D XY sketch toolpaths onto a cylinder (Z+X+A / Z+Y+B)",
+                            )
+                            .clicked()
+                        && cur_mode != 2
+                    {
+                        let mut m = OperationRotaryMode::WrapCylinder {
+                            wrap_radius: ParamLength {
+                                expr: Some("rotary_radius".to_string()),
+                                value_mm: rot.stock_outer_radius_mm.max(1.0),
+                            },
+                            axial_offset: ParamLength::from_mm(0.0),
+                            angle_offset_deg: 0.0,
+                        };
+                        m.reevaluate(eval_ctx);
+                        *rotary_mode = m;
+                        *mutated = Some("Set Operation Rotary Mode: Wrap 2D on Cylinder");
+                    }
+                });
+
+                match rotary_mode {
+                    OperationRotaryMode::None => {}
+                    OperationRotaryMode::Indexed3Plus1 { angle_deg } => {
+                        let axis_lbl = format!("{}-Axis Index", rot.axis_letter);
+                        f.set_tip("Target rotary index angle rotated at safe clearance radius before cutting");
+                        f.row(&axis_lbl, |ui, mutated| {
+                            if ui
+                                .add(
+                                    egui::DragValue::new(angle_deg)
+                                        .speed(1.0)
+                                        .range(-360.0..=360.0)
+                                        .suffix("°"),
+                                )
+                                .changed()
+                            {
+                                *mutated = Some("Edit Indexed 3+1 Angle");
+                            }
+                        });
+                        f.set_tip("Snap rotary index angle to standard 90° cardinal faces");
+                        f.row("Quick Index", |ui, mutated| {
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 4.0;
+                                for quick in [0.0_f64, 90.0, 180.0, 270.0] {
+                                    let active = (*angle_deg - quick).abs() < 0.05;
+                                    if ui
+                                        .selectable_label(active, format!("{quick:.0}°"))
+                                        .clicked()
+                                    {
+                                        *angle_deg = quick;
+                                        *mutated = Some("Set Cardinal 3+1 Index Angle");
+                                    }
+                                }
+                            });
+                        });
+                        let face_angle = selected_face_normal_wcs
+                            .and_then(|n| compute_index_angle_for_normal(n, &rot));
+                        f.set_tip("Automatically compute the index angle that aims the selected 3D planar face straight up at the +Z spindle");
+                        f.row("3D Face Align", |ui, mutated| {
+                            let label = if let Some(a) = face_angle {
+                                format!("Align to Face ({a:.1}°)")
+                            } else {
+                                "Align to Selected 3D Face".to_string()
+                            };
+                            let btn = ui
+                                .add_enabled(face_angle.is_some(), egui::Button::new(label))
+                                .on_disabled_hover_text(
+                                    "Click any planar 3D face in the viewport first to align the 4th axis to its normal.",
+                                );
+                            if btn.clicked()
+                                && let Some(a) = face_angle
+                            {
+                                *angle_deg = a;
+                                *mutated = Some("Align 3+1 Index to Selected 3D Face");
+                            }
+                        });
+                    }
+                    OperationRotaryMode::WrapCylinder {
+                        wrap_radius,
+                        axial_offset,
+                        angle_offset_deg,
+                    } => {
+                        f.set_tip("Target cylinder outer radius onto which the 2D sketch (Z=0) is wrapped");
+                        f.len("Wrap Radius", wrap_radius, "Edit Cylinder Wrap Radius");
+                        f.set_tip("Axial shift along the rotary axis applied to the wrapped 2D sketch");
+                        f.len("Axial Offset", axial_offset, "Edit Cylinder Axial Offset");
+                        f.set_tip("Starting angular orientation around the cylinder");
+                        f.drag(
+                            "Angle Offset",
+                            angle_offset_deg,
+                            -360.0..=360.0,
+                            (1.0, "°"),
+                            "Edit Cylinder Angle Offset",
+                        );
+                    }
+                }
+            });
+        },
+    );
 }
 
 fn show_rest_machining_card(

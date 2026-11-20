@@ -25,7 +25,7 @@ struct GuiArgs {
     #[arg(value_name = "PATH")]
     step_file: Option<PathBuf>,
 
-    /// Launch directly into any built-in sample project (`cam-torture`, `adaptive-rest`, `pure-2d`, `nameplate`, `vcarve`, `multi-feature`, `tilted-bracket`, `revision-v1`, `revision-v2`, `sample-plate`, `mesh-dome`, `mesh-wave`, `rotary-shaft`).
+    /// Launch directly into any built-in sample project (`cam-torture`, `adaptive-rest`, `pure-2d`, `nameplate`, `vcarve`, `multi-feature`, `tilted-bracket`, `revision-v1`, `revision-v2`, `sample-plate`, `mesh-dome`, `mesh-wave`, `rotary-shaft`, `rotary-wrap`).
     #[arg(long, value_parser = SampleProjectId::from_cli_slug)]
     sample: Option<SampleProjectId>,
 

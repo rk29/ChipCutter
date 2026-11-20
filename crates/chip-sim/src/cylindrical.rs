@@ -349,8 +349,24 @@ impl CylindricalStock {
             return;
         }
 
+        // Only expand the radial/axial cell search window to `r_holder` when the holder bottom
+        // actually descends into the stock's outer radial envelope; otherwise `r_cut` is exact!
+        let holder_can_reach_stock =
+            (tip_h_above_axis + stickout) <= self.rotary.stock_outer_radius_mm + 1.0;
+        let r_footprint = if holder_can_reach_stock {
+            r_holder
+        } else {
+            r_cut
+        };
+
         // Axial cell range `[iu_min..=iu_max]`
-        let u_reach = r_holder + (stickout + 10.0) * spindle_part.dot(u_vec).abs() + self.du;
+        let u_reach = r_footprint
+            + if holder_can_reach_stock {
+                (stickout + 10.0) * spindle_part.dot(u_vec).abs()
+            } else {
+                profile.flute_length_mm * spindle_part.dot(u_vec).abs()
+            }
+            + self.du;
         let u_lo = (u_tip - u_reach).max(self.u_min);
         let u_hi = (u_tip + u_reach).min(self.u_max);
         if u_lo > u_hi {
@@ -364,11 +380,11 @@ impl CylindricalStock {
         // Angular wedge range around `theta_tip` (full circle if cutter approaches centerline)
         let (e1, e2, _) = self.rotary.axis.basis();
         let pol = self.rotary.direction.sign();
-        let full_circle = r_tip <= r_holder + 2.0 || self.rotary.axis == RotaryAxisKind::ZAxis;
+        let full_circle = r_tip <= r_footprint + 1.0 || self.rotary.axis == RotaryAxisKind::ZAxis;
         let (it_center, it_half_span) = if full_circle {
             (0isize, self.ntheta as isize)
         } else {
-            let half_angle = ((r_holder + 1.5) / r_tip).clamp(0.0, 1.0).asin() + 0.15;
+            let half_angle = ((r_footprint + 1.0) / r_tip).clamp(0.0, 1.0).asin() + 0.12;
             let center_norm = theta_tip.rem_euclid(TAU);
             let ic = (center_norm / self.dtheta).round() as isize;
             let hs = (half_angle / self.dtheta).ceil() as isize + 1;

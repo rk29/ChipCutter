@@ -88,6 +88,7 @@ pub struct SimViewportVisuals {
     pub stock: Option<(u64, Arc<SimStockMesh>)>,
     pub cutter: Option<(u64, Arc<SimToolMesh>, DVec3)>,
     pub trail_limit: Option<usize>,
+    pub rotary_deg: f64,
 }
 
 /// Context references passed to [`SimulationPanelState::show_ui`].
@@ -380,7 +381,23 @@ impl SimulationPanelState {
 
         if self.is_playing {
             let dt = f64::from(ctx.input(|i| i.stable_dt.clamp(0.001, 0.1)));
-            self.current_time_sec += dt * self.speed_multiplier;
+            // Fast-forward long M6 tool-change pauses to ~1.5 s visual duration while preserving
+            // exact shop-floor cycle time and smooth animated tool retract/swap/descent.
+            let tc_end = res
+                .timeline
+                .sample_at_time(self.current_time_sec)
+                .and_then(|s| s.tool_change.map(|tc| tc.end_time_sec));
+            if let Some(end_t) = tc_end {
+                let tc_speed = self.speed_multiplier.max(10.0);
+                let next_t = self.current_time_sec + dt * tc_speed;
+                self.current_time_sec = if self.speed_multiplier < 10.0 {
+                    next_t.min(end_t)
+                } else {
+                    next_t
+                };
+            } else {
+                self.current_time_sec += dt * self.speed_multiplier;
+            }
             if self.current_time_sec >= res.timeline.total_time_sec {
                 self.current_time_sec = res.timeline.total_time_sec;
                 self.is_playing = false;
@@ -403,6 +420,7 @@ impl SimulationPanelState {
                 stock: None,
                 cutter: None,
                 trail_limit: None,
+                rotary_deg: 0.0,
             };
         };
         if self.active_setup_idx != setup_idx {
@@ -410,6 +428,7 @@ impl SimulationPanelState {
                 stock: None,
                 cutter: None,
                 trail_limit: None,
+                rotary_deg: 0.0,
             };
         }
 
@@ -533,10 +552,17 @@ impl SimulationPanelState {
             None
         };
 
+        let sim_rot_deg = if self.show_machined_stock && res.final_cylindrical_stock.is_some() {
+            snap.as_ref().map_or(0.0, |s| s.rotary_deg)
+        } else {
+            0.0
+        };
+
         SimViewportVisuals {
             stock: stock_out,
             cutter: tool_out,
             trail_limit: trail_out,
+            rotary_deg: sim_rot_deg,
         }
     }
 
@@ -817,45 +843,95 @@ impl SimulationPanelState {
 
         // Bottom Live Controller HUD Readout (`Op`, `Tool`, `WCS X/Y/Z`, `G0..G3`, `Feed`, `RPM`, `Seg`)
         if let Some(s) = snap {
-            let feed_disp = match display_unit {
-                DisplayUnit::Millimeter => format!("{:.0} mm/min", s.commanded_feed_mm_min),
-                DisplayUnit::Inch => format!("{:.1} ipm", s.commanded_feed_mm_min / MM_PER_INCH),
-            };
-            ui.horizontal_wrapped(|ui| {
-                ui.strong(format!("Op {}: {}", s.op_idx + 1, s.op_name));
-                ui.separator();
-                ui.monospace(format!("T{} ({})", s.tool_number, s.tool_name));
-                ui.separator();
-                if let Some(cyl) = &res.final_cylindrical_stock {
-                    ui.monospace(format!(
-                        "WCS X={} Y={} Z={} {}={:.1}°",
-                        display_unit.format_length(s.tip_pos_wcs.x),
-                        display_unit.format_length(s.tip_pos_wcs.y),
-                        display_unit.format_length(s.tip_pos_wcs.z),
-                        cyl.rotary.axis_letter,
-                        s.rotary_deg,
+            if let Some(tc) = &s.tool_change {
+                let tok = crate::theme::ThemeTokens::from_ui(ui);
+                ui.horizontal_wrapped(|ui| {
+                    ui.colored_label(
+                        tok.warn_fg,
+                        egui::RichText::new(format!(
+                            "M6 Tool Change: T{} -> T{} ({}) · {:.1}s left",
+                            tc.from_tool_number,
+                            tc.to_tool_number,
+                            tc.to_tool_name,
+                            tc.remaining_sec
+                        ))
+                        .strong(),
+                    );
+                    ui.separator();
+                    ui.label(format!(
+                        "Next: Op {}: {}",
+                        tc.next_op_idx + 1,
+                        tc.next_op_name
                     ));
-                } else {
+                    ui.separator();
+                    if let Some(cyl) = &res.final_cylindrical_stock {
+                        ui.monospace(format!(
+                            "WCS X={} Y={} Z={} {}={:.1}°",
+                            display_unit.format_length(s.tip_pos_wcs.x),
+                            display_unit.format_length(s.tip_pos_wcs.y),
+                            display_unit.format_length(s.tip_pos_wcs.z),
+                            cyl.rotary.axis_letter,
+                            s.rotary_deg,
+                        ));
+                    } else {
+                        ui.monospace(format!(
+                            "WCS X={} Y={} Z={}",
+                            display_unit.format_length(s.tip_pos_wcs.x),
+                            display_unit.format_length(s.tip_pos_wcs.y),
+                            display_unit.format_length(s.tip_pos_wcs.z),
+                        ));
+                    }
+                    if ui
+                        .small_button("Skip Tool Change")
+                        .on_hover_text("Jump immediately to the first move of the next operation")
+                        .clicked()
+                    {
+                        self.current_time_sec = tc.end_time_sec;
+                    }
+                });
+            } else {
+                let feed_disp = match display_unit {
+                    DisplayUnit::Millimeter => format!("{:.0} mm/min", s.commanded_feed_mm_min),
+                    DisplayUnit::Inch => {
+                        format!("{:.1} ipm", s.commanded_feed_mm_min / MM_PER_INCH)
+                    }
+                };
+                ui.horizontal_wrapped(|ui| {
+                    ui.strong(format!("Op {}: {}", s.op_idx + 1, s.op_name));
+                    ui.separator();
+                    ui.monospace(format!("T{} ({})", s.tool_number, s.tool_name));
+                    ui.separator();
+                    if let Some(cyl) = &res.final_cylindrical_stock {
+                        ui.monospace(format!(
+                            "WCS X={} Y={} Z={} {}={:.1}°",
+                            display_unit.format_length(s.tip_pos_wcs.x),
+                            display_unit.format_length(s.tip_pos_wcs.y),
+                            display_unit.format_length(s.tip_pos_wcs.z),
+                            cyl.rotary.axis_letter,
+                            s.rotary_deg,
+                        ));
+                    } else {
+                        ui.monospace(format!(
+                            "WCS X={} Y={} Z={}",
+                            display_unit.format_length(s.tip_pos_wcs.x),
+                            display_unit.format_length(s.tip_pos_wcs.y),
+                            display_unit.format_length(s.tip_pos_wcs.z),
+                        ));
+                    }
+                    ui.separator();
                     ui.monospace(format!(
-                        "WCS X={} Y={} Z={}",
-                        display_unit.format_length(s.tip_pos_wcs.x),
-                        display_unit.format_length(s.tip_pos_wcs.y),
-                        display_unit.format_length(s.tip_pos_wcs.z),
+                        "{} | F={} | S={:.0} RPM | Seg {}/{}",
+                        s.motion_code,
+                        feed_disp,
+                        s.spindle_rpm,
+                        s.global_seg_idx + 1,
+                        res.timeline.motion_spans.len()
                     ));
-                }
-                ui.separator();
-                ui.monospace(format!(
-                    "{} | F={} | S={:.0} RPM | Seg {}/{}",
-                    s.motion_code,
-                    feed_disp,
-                    s.spindle_rpm,
-                    s.global_seg_idx + 1,
-                    res.timeline.motion_spans.len()
-                ));
-                if ui.small_button("Center on Tool").clicked() {
-                    action = Some(SimulationUiAction::CenterCameraWcs(s.tip_pos_wcs));
-                }
-            });
+                    if ui.small_button("Center on Tool").clicked() {
+                        action = Some(SimulationUiAction::CenterCameraWcs(s.tip_pos_wcs));
+                    }
+                });
+            }
         }
 
         action

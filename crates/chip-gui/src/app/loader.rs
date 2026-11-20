@@ -14,9 +14,9 @@ use chip_project::{
     build_cam_torture_project, build_multi_feature_bracket_project,
     build_pure2d_router_panel_demo_project, build_relief_wave_mesh_project,
     build_revision_v1_demo_project, build_rotary_shaft_preview_project,
-    build_sculpted_mesh_dome_project, compute_sha256_hex, export_chipz_bundle, is_chipz_path,
-    load_model_bytes_cad_doc, portable_model_path, rebind_project_to_reloaded_cad,
-    resolve_model_path, unpack_chipz_bundle,
+    build_rotary_wrapped_engraving_project, build_sculpted_mesh_dome_project, compute_sha256_hex,
+    export_chipz_bundle, is_chipz_path, load_model_bytes_cad_doc, portable_model_path,
+    rebind_project_to_reloaded_cad, resolve_model_path, unpack_chipz_bundle,
 };
 
 use crate::{
@@ -577,6 +577,42 @@ impl ChipCutterApp {
         });
     }
 
+    pub fn load_rotary_wrapped_engraving_demo(&mut self, egui_ctx: &egui::Context) {
+        self.loading_in_flight = false;
+        while self.job_rx.try_recv().is_ok() {}
+        self.dispatcher.cancel_all();
+        self.sim_panel.cancel_in_flight();
+        self.sim_panel.active_result = None;
+        self.gcode_panel.invalidate_preview();
+        self.clear_bundle_extract_dir();
+        self.project_file_path = None;
+        self.history.clear();
+        self.clean_undo_len = Some(0);
+        self.last_reload_banner = None;
+        self.external_step_modified = false;
+        self.model = None;
+        self.project = build_rotary_wrapped_engraving_project(&self.global_tools.tools);
+        self.active_setup_idx = 0;
+        self.inspector_focus = InspectorFocus::Operation {
+            setup_idx: 0,
+            op_idx: 0,
+        };
+        self.op_tab = OperationTab::Passes;
+        self.highlight.hovered = None;
+        self.highlight.selected = None;
+        self.highlight.hovered_sketch = None;
+        self.highlight.selected_sketch = None;
+        self.cached_frame_geo = None;
+        self.fit_scene_to_viewport();
+        self.logs.push(
+            "Loaded Wrapped Rotary Engraving (Z+X+A — Ø40×80mm cylinder, wrapped 'CHIP' V-Carve + circumferential flute pocket)."
+                .to_string(),
+        );
+        self.auto_sim_after_gen = true;
+        self.trigger_generate_dirty(None, None);
+        egui_ctx.request_repaint();
+    }
+
     pub fn load_pure2d_router_panel_demo(&mut self, egui_ctx: &egui::Context) {
         self.loading_in_flight = false;
         while self.job_rx.try_recv().is_ok() {}
@@ -973,8 +1009,11 @@ impl ChipCutterApp {
                     &self.global_tools.tools,
                 );
                 self.active_setup_idx = 0;
-                self.inspector_focus = InspectorFocus::Setup { setup_idx: 0 };
-                self.setup_tab = SetupTab::Rotary;
+                self.inspector_focus = InspectorFocus::Operation {
+                    setup_idx: 0,
+                    op_idx: 0,
+                };
+                self.op_tab = OperationTab::Passes;
                 self.show_27pt_dots = false;
             }
             LoadPurpose::FreshImport { update_model_entry } => {
@@ -1038,6 +1077,7 @@ impl ChipCutterApp {
                 | LoadPurpose::SeedRevisionDemoV1
                 | LoadPurpose::SeedSculptedMeshDome
                 | LoadPurpose::SeedReliefWaveMesh
+                | LoadPurpose::SeedRotaryIndexedShaft
         ) {
             self.auto_sim_after_gen = true;
             self.trigger_generate_dirty(None, None);

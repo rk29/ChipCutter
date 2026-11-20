@@ -457,6 +457,9 @@ impl ChipCutterApp {
             SampleProjectId::RotaryIndexedShaft => {
                 self.spawn_rotary_shaft_load(ctx.clone());
             }
+            SampleProjectId::RotaryWrappedEngraving => {
+                self.load_rotary_wrapped_engraving_demo(ctx);
+            }
         }
     }
 

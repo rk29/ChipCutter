@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     heights::OperationHeights,
     params::{LinkingParams, PassesParams, StrategyParams},
+    rotary::OperationRotaryMode,
     selection::GeometrySelectionItem,
 };
 
@@ -31,10 +32,12 @@ pub enum OperationKind {
     Scallop3D,
     #[serde(rename = "pencil_3d")]
     Pencil3D,
+    #[serde(rename = "rotary_2linear")]
+    Rotary2Linear,
 }
 
 impl OperationKind {
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
         Self::Facing,
         Self::Contour2D,
         Self::Pocket2D,
@@ -46,6 +49,7 @@ impl OperationKind {
         Self::Parallel3D,
         Self::Scallop3D,
         Self::Pencil3D,
+        Self::Rotary2Linear,
     ];
 
     pub const fn label(self) -> &'static str {
@@ -61,6 +65,7 @@ impl OperationKind {
             Self::Parallel3D => "3D Parallel Finishing",
             Self::Scallop3D => "3D Constant-Scallop",
             Self::Pencil3D => "3D Pencil Cleanup",
+            Self::Rotary2Linear => "4th-Axis Rotary Surfacing",
         }
     }
 
@@ -77,10 +82,11 @@ impl OperationKind {
             Self::Parallel3D => "3D Parallel",
             Self::Scallop3D => "3D Scallop",
             Self::Pencil3D => "3D Pencil",
+            Self::Rotary2Linear => "4th-Axis Rotary",
         }
     }
 
-    /// Returns `true` for 3-axis surface operations operating on the full 3D model / mesh.
+    /// Returns `true` for 3-axis surface or 4th-axis rotary operations operating on the full 3D model / mesh.
     pub const fn is_3d_surface(self) -> bool {
         matches!(
             self,
@@ -89,7 +95,13 @@ impl OperationKind {
                 | Self::Parallel3D
                 | Self::Scallop3D
                 | Self::Pencil3D
+                | Self::Rotary2Linear
         )
+    }
+
+    /// Returns `true` for native 4th-axis rotary machining strategies.
+    pub const fn is_rotary_native(self) -> bool {
+        matches!(self, Self::Rotary2Linear)
     }
 
     pub fn is_compatible_with_tool(self, tool: &Tool) -> bool {
@@ -128,6 +140,9 @@ impl OperationKind {
             Self::Pencil3D => tool
                 .geometry
                 .supports_operation(ToolOperationClass::Pencil3D),
+            Self::Rotary2Linear => tool
+                .geometry
+                .supports_operation(ToolOperationClass::Rotary2Linear),
         }
     }
 }
@@ -232,6 +247,8 @@ pub struct Operation {
     pub passes: PassesParams,
     #[serde(default)]
     pub linking: LinkingParams,
+    #[serde(default, skip_serializing_if = "OperationRotaryMode::is_none")]
+    pub rotary: OperationRotaryMode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub strategy: Option<StrategyParams>,
     #[serde(skip)]
@@ -274,6 +291,18 @@ impl Operation {
                 passes.stock_to_leave_radial = chip_math::ParamLength::from_mm(0.0);
                 passes.stock_to_leave_axial = chip_math::ParamLength::from_mm(0.0);
             }
+            OperationKind::Rotary2Linear => {
+                heights.top =
+                    crate::heights::HeightSpec::new(crate::heights::HeightReference::StockTop, 0.0);
+                heights.bottom = crate::heights::HeightSpec::new(
+                    crate::heights::HeightReference::ModelBottom,
+                    0.0,
+                );
+                passes.multiple_depths = true;
+                passes.max_stepdown = chip_math::ParamLength::from_mm(3.0);
+                passes.stock_to_leave_radial = chip_math::ParamLength::from_mm(0.0);
+                passes.stock_to_leave_axial = chip_math::ParamLength::from_mm(0.0);
+            }
             _ => {}
         }
         Self {
@@ -288,6 +317,7 @@ impl Operation {
             heights,
             passes,
             linking: LinkingParams::default(),
+            rotary: OperationRotaryMode::None,
             strategy: Some(StrategyParams::default_for_kind(kind)),
             runtime_status: OperationStatus::Dirty,
         }
@@ -362,6 +392,7 @@ impl Operation {
         self.heights.reevaluate(ctx);
         self.passes.reevaluate(ctx);
         self.linking.reevaluate(ctx);
+        self.rotary.reevaluate(ctx);
         if let Some(s) = &mut self.strategy {
             s.reevaluate(ctx);
         }

@@ -1,7 +1,7 @@
 use chip_cam::{
     Adaptive3DParams, AdaptiveCutDirection, MachiningBoundaryMode, Parallel3DParams,
-    ParallelCutDirection, Pencil3DParams, Scallop3DParams, ToolContainmentMode, Waterline3DParams,
-    WaterlineOrderMode,
+    ParallelCutDirection, Pencil3DParams, Rotary2LinearParams, RotaryCutDirection,
+    RotaryPatternMode, Scallop3DParams, ToolContainmentMode, Waterline3DParams, WaterlineOrderMode,
 };
 
 use super::{COMBO_COL_WIDTH, PassItemCtx};
@@ -522,4 +522,107 @@ fn show_3d_boundary_card(
             );
         });
     });
+}
+
+pub(super) fn show_rotary2linear_params(
+    ui: &mut egui::Ui,
+    p: &mut Rotary2LinearParams,
+    mut item: PassItemCtx<'_>,
+) {
+    let (setup_idx, op_idx) = item.ids();
+
+    section_card(
+        ui,
+        ("rot2lin_passes_card", setup_idx, op_idx),
+        "4th-Axis Rotary Surfacing (Z+X / Z+Y)",
+        true,
+        |ui| {
+            item.grid(ui, "rot2lin_passes_grid", |f| {
+                f.set_tip("Continuous helical spiral around the shaft or lengthwise axial parallel passes");
+                f.combo(
+                    "Pattern",
+                    &mut p.pattern,
+                    (&RotaryPatternMode::ALL, RotaryPatternMode::label),
+                    "Change Rotary Surfacing Pattern",
+                );
+                f.set_tip("Pass traversal ordering (Zig-Zag minimizes retracts; Climb/Conventional are unidirectional)");
+                f.combo(
+                    "Cut Direction",
+                    &mut p.cut_direction,
+                    (&RotaryCutDirection::ALL, RotaryCutDirection::label),
+                    "Change Rotary Cut Direction",
+                );
+                f.set_tip("Derive helical/angular stepover automatically from target ball/bull-nose cusp height");
+                f.check(
+                    "Stepover Mode",
+                    &mut p.use_cusp_height,
+                    "Use Target Cusp Height",
+                    "Toggle Rotary Cusp Stepover",
+                );
+                if p.use_cusp_height {
+                    f.set_tip("Target surface scallop/cusp height across the cylindrical profile");
+                    f.len("Target Cusp", &mut p.cusp_height, "Edit Rotary Cusp Height");
+                } else {
+                    f.set_tip("Axial pitch per revolution (Spiral) or circumferential lane spacing (Axial Parallel)");
+                    f.len("Stepover", &mut p.stepover, "Edit Rotary Stepover");
+                }
+                f.set_tip("Angular machining range around the rotary axis (0° to 360° = full circumference)");
+                f.row("Angle Window (°)", |ui, mutated| {
+                    ui.horizontal(|ui| {
+                        let r0 = ui.add(
+                            egui::DragValue::new(&mut p.start_angle_deg)
+                                .speed(2.0)
+                                .range(-360.0..=360.0)
+                                .suffix("°"),
+                        );
+                        ui.label("to");
+                        let r1 = ui.add(
+                            egui::DragValue::new(&mut p.end_angle_deg)
+                                .speed(2.0)
+                                .range((p.start_angle_deg + 1.0)..=720.0)
+                                .suffix("°"),
+                        );
+                        if r0.changed() || r1.changed() {
+                            if p.end_angle_deg <= p.start_angle_deg + 1.0 {
+                                p.end_angle_deg = p.start_angle_deg + 1.0;
+                            }
+                            *mutated = Some("Edit Rotary Angle Window");
+                        }
+                    });
+                });
+                f.set_tip("Inward axial trim margin from the -U stock end (keeps cutter clear of the chuck)");
+                f.len(
+                    "Start Margin (-U)",
+                    &mut p.axial_margin_start,
+                    "Edit Rotary Start Margin",
+                );
+                f.set_tip("Inward axial trim margin from the +U stock end (e.g. tailstock clearance)");
+                f.len(
+                    "End Margin (+U)",
+                    &mut p.axial_margin_end,
+                    "Edit Rotary End Margin",
+                );
+                f.set_tip("Angular Drop-Cutter sampling resolution around the rotary axis");
+                f.drag(
+                    "Angular Sample",
+                    &mut p.angular_sample_deg,
+                    0.5..=15.0,
+                    (0.25, "°"),
+                    "Edit Rotary Angular Sample",
+                );
+                f.set_tip("Axial Drop-Cutter sampling pitch along the rotary axis");
+                f.len(
+                    "Axial Sample",
+                    &mut p.axial_sample_step,
+                    "Edit Rotary Axial Sample",
+                );
+                f.set_tip("Chord decimation tolerance keeping G93 4-axis code smooth and compact");
+                f.len(
+                    "Smoothing Tol",
+                    &mut p.smoothing_tolerance,
+                    "Edit Rotary Smoothing Tolerance",
+                );
+            });
+        },
+    );
 }

@@ -26,6 +26,7 @@ pub enum SampleProjectId {
     SculptedMeshDome,
     ReliefWaveMesh,
     RotaryIndexedShaft,
+    RotaryWrappedEngraving,
 }
 
 impl SampleProjectId {
@@ -45,8 +46,11 @@ impl SampleProjectId {
             "mesh-dome" | "sculpted-dome" | "dome" => Ok(Self::SculptedMeshDome),
             "mesh-wave" | "relief-wave" | "wave" => Ok(Self::ReliefWaveMesh),
             "rotary-shaft" | "rotary" | "4th-axis" => Ok(Self::RotaryIndexedShaft),
+            "rotary-wrap" | "wrap-cylinder" | "wrapped-engraving" => {
+                Ok(Self::RotaryWrappedEngraving)
+            }
             other => Err(format!(
-                "invalid --sample '{other}'; expected one of: cam-torture, adaptive-rest, pure-2d, nameplate, vcarve, multi-feature, tilted-bracket, revision-v1, revision-v2, sample-plate, mesh-dome, mesh-wave, rotary-shaft"
+                "invalid --sample '{other}'; expected one of: cam-torture, adaptive-rest, pure-2d, nameplate, vcarve, multi-feature, tilted-bracket, revision-v1, revision-v2, sample-plate, mesh-dome, mesh-wave, rotary-shaft, rotary-wrap"
             )),
         }
     }
@@ -187,8 +191,16 @@ pub const SAMPLE_CATALOG: &[SampleCardSpec] = &[
         category: SampleCategory::Mesh3D,
         icon: IconKind::OrthoCube,
         title: "Rotary Indexed Shaft (4th-Axis A)",
-        badge: "4th-Axis · A / G93",
-        summary: "Ø40×80mm shaft with 4 wrenching flats, turned collar groove, and 3-lobe cam chucked on an X/A rotary axis with LinuxCNC 4-Axis post.",
+        badge: "4th-Axis · 5 Ops",
+        summary: "Ø40×80mm shaft with continuous Z+X+A spiral surfacing over a collar & 3-lobe cam plus 4-sided Indexed 3+1 wrenching flats (0°/90°/180°/270°).",
+    },
+    SampleCardSpec {
+        id: SampleProjectId::RotaryWrappedEngraving,
+        category: SampleCategory::VCarveTypography,
+        icon: IconKind::VCarve,
+        title: "Wrapped Rotary Engraving (Z+X+A)",
+        badge: "Wrap 2D · 2 Ops",
+        summary: "Wraps bold TrueType 'CHIP' V-Carving and a rounded circumferential flute onto a Ø40×80mm cylinder for 4-axis G93 or swapped-axis GRBL rotaries.",
     },
 ];
 
@@ -624,6 +636,10 @@ mod tests {
         assert_eq!(
             SampleProjectId::from_cli_slug("rotary-shaft"),
             Ok(SampleProjectId::RotaryIndexedShaft)
+        );
+        assert_eq!(
+            SampleProjectId::from_cli_slug("rotary-wrap"),
+            Ok(SampleProjectId::RotaryWrappedEngraving)
         );
         assert!(SampleProjectId::from_cli_slug("nonexistent").is_err());
     }

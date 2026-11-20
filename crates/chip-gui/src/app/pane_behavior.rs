@@ -442,6 +442,18 @@ impl PaneBehavior<'_> {
                         .as_ref()
                         .and_then(|fg| fg.focused_extracted.as_ref())
                         .map(|r| r.as_ref().map_err(String::as_str));
+                    let selected_face_normal_wcs =
+                        match (&self.app.highlight.selected, cad_ref, resolved_opt) {
+                            (Some(chip_cad::PickTarget::Face(fid)), Some(doc), Some(rs)) => {
+                                doc.face(*fid).and_then(|f| match f.surface {
+                                    chip_cad::SurfaceKind::Plane { normal, .. } => Some(
+                                        rs.frame.world_to_local_dir(normal).normalize_or_zero(),
+                                    ),
+                                    _ => None,
+                                })
+                            }
+                            _ => None,
+                        };
                     show_operation_inspector(
                         ui,
                         OperationInspectorCtx {
@@ -452,6 +464,7 @@ impl PaneBehavior<'_> {
                             history: &mut self.app.history,
                             cad_doc: cad_ref,
                             resolved_setup: resolved_opt,
+                            selected_face_normal_wcs,
                             extracted: extracted_ref,
                             tab: &mut self.app.op_tab,
                             pick_mode: &mut self.app.pick_mode,

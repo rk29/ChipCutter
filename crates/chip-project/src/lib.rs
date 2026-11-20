@@ -26,11 +26,11 @@ pub use demos::{
     build_engraved_nameplate_demo_project, build_multi_feature_bracket_project,
     build_pure2d_router_panel_demo_project, build_relief_wave_mesh_project,
     build_revision_v1_demo_project, build_rotary_shaft_preview_project,
-    build_sculpted_mesh_dome_project, build_tutorial_adaptive_rest_project,
-    build_tutorial_chamfer_trace_project, build_tutorial_contour_project,
-    build_tutorial_drill_bore_project, build_tutorial_facing_project,
-    build_tutorial_pocket_project, build_tutorial_vcarve_inlay_project,
-    build_vcarve_sign_and_inlay_demo_project,
+    build_rotary_wrapped_engraving_project, build_sculpted_mesh_dome_project,
+    build_tutorial_adaptive_rest_project, build_tutorial_chamfer_trace_project,
+    build_tutorial_contour_project, build_tutorial_drill_bore_project,
+    build_tutorial_facing_project, build_tutorial_pocket_project,
+    build_tutorial_vcarve_inlay_project, build_vcarve_sign_and_inlay_demo_project,
 };
 pub use dispatcher::{
     BatchGenerationReport, DispatcherEvent, JobDispatcher, generate_project_blocking,
@@ -1579,7 +1579,11 @@ sha256 = "abc"
 
     #[test]
     fn rotary_setup_roundtrips_toml_omits_when_disabled_and_validates_post_compatibility() {
-        use chip_cad::{MeshImportOptions, load_mesh_cad_document, sample_rotary_shaft_stl_bytes};
+        use chip_cad::{
+            CadDocument, MeshImportOptions, load_mesh_cad_document, sample_rotary_shaft_stl_bytes,
+        };
+        use chip_post::builtin_post_profiles;
+        use chip_sim::SimResolution;
 
         let stl_bytes = sample_rotary_shaft_stl_bytes();
         let cad_doc = load_mesh_cad_document(
@@ -1607,6 +1611,8 @@ sha256 = "abc"
             &starter.tools,
         );
         let toml_1 = proj.to_toml_string().unwrap();
+        assert!(toml_1.contains("simultaneous4_axis"));
+        assert!(toml_1.contains("rotary_2linear"));
         assert!(toml_1.contains("indexed3_plus1"));
         let reparsed = ProjectDocument::from_toml_str(&toml_1).unwrap();
         assert_eq!(toml_1, reparsed.to_toml_string().unwrap());
@@ -1618,7 +1624,55 @@ sha256 = "abc"
             val_ok.diagnostics
         );
 
-        // 3. Switching to 3-axis `grbl` post triggers a helpful compatibility warning
+        // 3. Generate all 5 ops (Rotary Spiral + 4 Indexed 3+1 Flats), verify 0 sim crashes, and post-process!
+        let mut cache = ToolpathCache::new(16);
+        let batch = generate_project_blocking(&mut proj, &cad_doc, &mut cache, 1);
+        assert!(
+            batch.is_ok() && batch.generated.len() == 5,
+            "Expected all 5 rotary shaft ops to generate cleanly, got errors={:?}, gen={}",
+            batch.errors,
+            batch.generated.len()
+        );
+        let sim = simulate_project_setup(&SetupSimRequest {
+            project: &proj,
+            setup_idx: 0,
+            cad_doc: &cad_doc,
+            cad_revision: 1,
+            cache: &cache,
+            kinematics: resolve_kinematics_for_key("linuxcnc_4axis", None),
+            resolution: SimResolution::Standard,
+            cancel: None,
+        })
+        .unwrap();
+        assert!(
+            !sim.has_critical_errors(),
+            "Rotary Indexed Shaft sample must verify crash-free in CylindricalStock, got: {:#?}",
+            sim.diagnostics
+        );
+        let profiles = builtin_post_profiles();
+        let linux_4ax = profiles.iter().find(|p| p.id == "linuxcnc_4axis").unwrap();
+        let grbl_wrap = profiles
+            .iter()
+            .find(|p| p.id == "grbl_rotary_wrap")
+            .unwrap();
+        let post_files = post_process_project_setup(&SetupPostRequest {
+            project: &proj,
+            setup_idx: 0,
+            cad_doc: &cad_doc,
+            cad_revision: 1,
+            cache: &cache,
+            post_profile: linux_4ax,
+            project_label: &proj.project_name,
+            program_stem: "rotary_shaft",
+        })
+        .unwrap();
+        assert_eq!(post_files.len(), 1);
+        assert!(
+            post_files[0].content.contains("G93") && post_files[0].content.contains("A90.000"),
+            "Expected G93 inverse-time and A90.000 indexed moves in LinuxCNC 4-axis output"
+        );
+
+        // 4. Switching to 3-axis `grbl` post triggers a helpful compatibility warning
         proj.setups[0].post_profile = "grbl".to_string();
         let val_warn = validate_project(&proj, None, Some(&cad_doc));
         assert!(val_warn.is_valid());
@@ -1630,5 +1684,87 @@ sha256 = "abc"
             "Expected 3-axis post warning on rotary setup: {:?}",
             val_warn.diagnostics
         );
+
+        // 5. Wrapped Rotary Engraving (`Z+X+A`) round-trips, validates, simulates crash-free,
+        //    and posts cleanly to both `linuxcnc_4axis` (G93) and `grbl_rotary_wrap` (Y-swapped)!
+        let mut wrap_proj = build_rotary_wrapped_engraving_project(&starter.tools);
+        let wrap_toml = wrap_proj.to_toml_string().unwrap();
+        assert!(wrap_toml.contains("wrap_cylinder"));
+        assert_eq!(
+            wrap_toml,
+            ProjectDocument::from_toml_str(&wrap_toml)
+                .unwrap()
+                .to_toml_string()
+                .unwrap()
+        );
+        let empty_cad = CadDocument::empty();
+        let wrap_val = validate_project(&wrap_proj, None, Some(&empty_cad));
+        assert!(
+            wrap_val.is_valid() && wrap_val.warning_count() == 0,
+            "Wrapped Rotary Engraving sample should validate cleanly: {:?}",
+            wrap_val.diagnostics
+        );
+        let mut wrap_cache = ToolpathCache::new(16);
+        let wrap_batch = generate_project_blocking(&mut wrap_proj, &empty_cad, &mut wrap_cache, 1);
+        assert!(
+            wrap_batch.is_ok() && wrap_batch.generated.len() == 2,
+            "Expected both wrapped rotary ops to generate cleanly, got errors={:?}, gen={}",
+            wrap_batch.errors,
+            wrap_batch.generated.len()
+        );
+        let wrap_sim = simulate_project_setup(&SetupSimRequest {
+            project: &wrap_proj,
+            setup_idx: 0,
+            cad_doc: &empty_cad,
+            cad_revision: 1,
+            cache: &wrap_cache,
+            kinematics: resolve_kinematics_for_key("linuxcnc_4axis", None),
+            resolution: SimResolution::Standard,
+            cancel: None,
+        })
+        .unwrap();
+        assert!(
+            !wrap_sim.has_critical_errors(),
+            "Wrapped Rotary Engraving sample must verify crash-free, got: {:#?}",
+            wrap_sim.diagnostics
+        );
+        let wrap_post_linux = post_process_project_setup(&SetupPostRequest {
+            project: &wrap_proj,
+            setup_idx: 0,
+            cad_doc: &empty_cad,
+            cad_revision: 1,
+            cache: &wrap_cache,
+            post_profile: linux_4ax,
+            project_label: &wrap_proj.project_name,
+            program_stem: "rotary_wrap",
+        })
+        .unwrap();
+        assert!(wrap_post_linux.iter().any(|f| f.content.contains("G93")));
+
+        let wrap_post_grbl = post_process_project_setup(&SetupPostRequest {
+            project: &wrap_proj,
+            setup_idx: 0,
+            cad_doc: &empty_cad,
+            cad_revision: 1,
+            cache: &wrap_cache,
+            post_profile: grbl_wrap,
+            project_label: &wrap_proj.project_name,
+            program_stem: "rotary_wrap",
+        })
+        .unwrap();
+        assert!(!wrap_post_grbl.is_empty());
+        for f in &wrap_post_grbl {
+            let motion_lines_have_a = f.content.lines().any(|line| {
+                let trimmed = line.trim();
+                !trimmed.starts_with('(')
+                    && !trimmed.starts_with(';')
+                    && trimmed.split_whitespace().any(|tok| tok.starts_with('A'))
+            });
+            assert!(
+                !motion_lines_have_a && f.content.contains('Y'),
+                "grbl_rotary_wrap must swap A onto Y and emit zero A motion words in {}",
+                f.filename
+            );
+        }
     }
 }

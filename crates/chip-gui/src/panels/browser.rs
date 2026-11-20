@@ -584,6 +584,7 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                                     ("3D Parallel Finishing", OperationKind::Parallel3D),
                                     ("3D Constant-Scallop", OperationKind::Scallop3D),
                                     ("3D Pencil Cleanup", OperationKind::Pencil3D),
+                                    ("4th-Axis Rotary Surfacing", OperationKind::Rotary2Linear),
                                 ] {
                                     if ui.button(lbl).clicked() {
                                         deferred_op_add = Some((s_idx, kind));
@@ -1078,7 +1079,8 @@ pub fn default_pick_mode_for_op(
         | OperationKind::Waterline3D
         | OperationKind::Parallel3D
         | OperationKind::Scallop3D
-        | OperationKind::Pencil3D => ViewportPickMode::InspectEntity,
+        | OperationKind::Pencil3D
+        | OperationKind::Rotary2Linear => ViewportPickMode::InspectEntity,
     }
 }
 

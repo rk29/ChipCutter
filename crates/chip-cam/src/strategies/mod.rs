@@ -7,6 +7,8 @@ pub mod facing;
 pub mod parallel3d;
 pub mod pencil3d;
 pub mod pocket2d;
+pub mod rotary2linear;
+pub mod rotary_wrap;
 pub mod scallop3d;
 pub mod vcarve;
 pub mod waterline3d;
@@ -14,7 +16,7 @@ pub mod waterline3d;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use chip_cad::CadDocument;
-use chip_math::{DisplayUnit, EvalContext};
+use chip_math::{Aabb3, DVec3, DisplayUnit, EvalContext};
 use chip_sketch::SketchLayer;
 use chip_tools::Tool;
 
@@ -24,8 +26,10 @@ use crate::{
     operation::{EffectiveCuttingParams, Operation, OperationKind},
     params::{LinkingParams, PassesParams, RetractPolicy, StrategyParams},
     rest2d::UpstreamSweptInput,
+    rotary::{OperationRotaryMode, RotaryAxisKind, build_indexed_virtual_setup},
     selection::{ExtractedSelectionSummary, extract_selection_features_with_sketches},
     setup::ResolvedSetup,
+    stock::ResolvedStockGeometry,
     toolpath::{GeneratedToolpath, ToolpathBuilder},
     wcs::CamError,
 };
@@ -133,6 +137,136 @@ pub fn generate_operation_toolpath_with_rest(
             tool_name: tool.name.clone(),
             tool_kind: tool.geometry.kind_label(),
         });
+    }
+
+    // 0. Per-operation 4th-axis rotary wrappers (Indexed 3+1 & 2D Cylindrical Wrapping)
+    if !op.kind.is_rotary_native() {
+        match &op.rotary {
+            OperationRotaryMode::None => {}
+            OperationRotaryMode::Indexed3Plus1 { angle_deg } => {
+                let Some(rot) = setup.rotary else {
+                    return Err(CamError::InvalidRotarySetup {
+                        op_name: op.name.clone(),
+                        reason:
+                            "Indexed 3+1 machining requires a Setup with 4th-Axis Rotary enabled"
+                                .to_string(),
+                    });
+                };
+                let virtual_setup = build_indexed_virtual_setup(setup, &rot, *angle_deg);
+                let mut inner_op = op.clone();
+                inner_op.rotary = OperationRotaryMode::None;
+                let local_tp = generate_operation_toolpath_with_rest(&OperationGenRequest {
+                    doc,
+                    sketches,
+                    setup: &virtual_setup,
+                    op: &inner_op,
+                    tool,
+                    clearing_tool,
+                    display_unit,
+                    is_first_tool_in_setup,
+                    upstream_rest,
+                    cancel,
+                })?;
+                return Ok(rotary_wrap::wrap_indexed_3plus1_toolpath(
+                    &local_tp, &rot, *angle_deg,
+                ));
+            }
+            OperationRotaryMode::WrapCylinder {
+                wrap_radius,
+                axial_offset,
+                angle_offset_deg,
+            } => {
+                let Some(rot) = setup.rotary else {
+                    return Err(CamError::InvalidRotarySetup {
+                        op_name: op.name.clone(),
+                        reason:
+                            "2D Cylindrical Wrapping requires a Setup with 4th-Axis Rotary enabled"
+                                .to_string(),
+                    });
+                };
+                if rot.axis == RotaryAxisKind::ZAxis {
+                    return Err(CamError::InvalidRotarySetup {
+                        op_name: op.name.clone(),
+                        reason:
+                            "2D Cylindrical Wrapping requires a horizontal rotary axis (A/X or B/Y)"
+                                .to_string(),
+                    });
+                }
+                let mut r_ctx = setup.eval_context(display_unit);
+                tool.populate_eval_context(&mut r_ctx);
+                let mut wr = wrap_radius.clone();
+                let _ = wr.reevaluate(&r_ctx);
+                let mut ao = axial_offset.clone();
+                let _ = ao.reevaluate(&r_ctx);
+                let r_wrap = wr.value_mm.max(1.0);
+                let ax_off = ao.value_mm;
+
+                // Build an unwrapped planar virtual Setup with Z=0 at cylinder OD (R = r_wrap)
+                // and Z=-r_wrap at the rotary centerline, spanning the cylinder & sketch footprint.
+                let half_u = ((rot.stock_u_max - rot.stock_u_min).abs() * 0.5).max(50.0);
+                let half_circ = (std::f64::consts::PI * r_wrap).max(50.0);
+                let (mut min_x, mut max_x, mut min_y, mut max_y) = match rot.axis {
+                    RotaryAxisKind::XAxis | RotaryAxisKind::ZAxis => (
+                        rot.stock_u_min.min(-half_u),
+                        rot.stock_u_max.max(half_u),
+                        -half_circ,
+                        half_circ,
+                    ),
+                    RotaryAxisKind::YAxis => (
+                        -half_circ,
+                        half_circ,
+                        rot.stock_u_min.min(-half_u),
+                        rot.stock_u_max.max(half_u),
+                    ),
+                };
+                for sk in sketches {
+                    let b = sk.exact_aabb();
+                    if b.is_valid() {
+                        min_x = min_x.min(b.min.x - 5.0);
+                        max_x = max_x.max(b.max.x + 5.0);
+                        min_y = min_y.min(b.min.y - 5.0);
+                        max_y = max_y.max(b.max.y + 5.0);
+                    }
+                }
+                let flat_aabb = Aabb3::new(
+                    DVec3::new(min_x, min_y, -r_wrap),
+                    DVec3::new(max_x, max_y, 0.0),
+                );
+                let flat_clearance = (rot.clearance_radius_mm - r_wrap).max(5.0);
+                let flat_retract = 3.0_f64.min(flat_clearance);
+                let flat_setup = ResolvedSetup {
+                    frame: setup.frame,
+                    model_aabb_wcs: flat_aabb,
+                    stock: ResolvedStockGeometry::Box {
+                        aabb_wcs: flat_aabb,
+                    },
+                    rotary: None,
+                    clearance_z_wcs: flat_clearance,
+                    retract_z_wcs: flat_retract,
+                };
+                let mut inner_op = op.clone();
+                inner_op.rotary = OperationRotaryMode::None;
+                let flat_tp = generate_operation_toolpath_with_rest(&OperationGenRequest {
+                    doc,
+                    sketches,
+                    setup: &flat_setup,
+                    op: &inner_op,
+                    tool,
+                    clearing_tool,
+                    display_unit,
+                    is_first_tool_in_setup,
+                    upstream_rest,
+                    cancel,
+                })?;
+                return Ok(rotary_wrap::wrap_planar_toolpath_to_cylinder(
+                    &flat_tp,
+                    &rot,
+                    r_wrap,
+                    ax_off,
+                    *angle_offset_deg,
+                ));
+            }
+        }
     }
 
     // 1. Extract 3D B-Rep + 2D Sketch features in Setup WCS coordinates
@@ -261,6 +395,9 @@ pub fn generate_operation_toolpath_with_rest(
         StrategyParams::Pencil3D(p) => {
             pencil3d::generate_pencil3d(&ctx, p, &mut builder)?;
         }
+        StrategyParams::Rotary2Linear(p) => {
+            rotary2linear::generate_rotary2linear(&ctx, p, &mut builder)?;
+        }
     }
 
     ctx.check_cancel()?;
@@ -269,11 +406,18 @@ pub fn generate_operation_toolpath_with_rest(
     if let Some(last_pos) = builder.current_pos()
         && last_pos.z < ctx.heights.clearance_z_wcs - 1e-6
     {
-        builder.rapid_to(chip_math::DVec3::new(
-            last_pos.x,
-            last_pos.y,
-            ctx.heights.clearance_z_wcs,
-        ));
+        if op.kind.is_rotary_native() {
+            builder.rotary_rapid_to(
+                DVec3::new(last_pos.x, last_pos.y, ctx.heights.clearance_z_wcs),
+                builder.current_rotary_deg(),
+            );
+        } else {
+            builder.rapid_to(DVec3::new(
+                last_pos.x,
+                last_pos.y,
+                ctx.heights.clearance_z_wcs,
+            ));
+        }
     }
     builder.push_event(ClEvent::OperationEnd);
 

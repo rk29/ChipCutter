@@ -6,7 +6,7 @@ pub mod tool_tab;
 
 use chip_cad::CadDocument;
 use chip_cam::{ExtractedSelectionSummary, OperationStatus, ResolvedSetup};
-use chip_math::EvalContext;
+use chip_math::{DVec3, EvalContext};
 use chip_project::{ProjectDocument, UndoHistory};
 use chip_tools::{ToolId, ToolLibrary, ToolOperationClass};
 
@@ -24,6 +24,7 @@ pub struct OperationInspectorCtx<'a> {
     pub history: &'a mut UndoHistory,
     pub cad_doc: Option<&'a CadDocument>,
     pub resolved_setup: Option<&'a ResolvedSetup>,
+    pub selected_face_normal_wcs: Option<DVec3>,
     pub extracted: Option<Result<&'a ExtractedSelectionSummary, &'a str>>,
     pub tab: &'a mut OperationTab,
     pub pick_mode: &'a mut ViewportPickMode,
@@ -42,6 +43,7 @@ pub fn show_operation_inspector(ui: &mut egui::Ui, ctx: OperationInspectorCtx<'_
         history,
         cad_doc,
         resolved_setup,
+        selected_face_normal_wcs,
         extracted,
         tab,
         pick_mode,
@@ -263,6 +265,8 @@ pub fn show_operation_inspector(ui: &mut egui::Ui, ctx: OperationInspectorCtx<'_
                         setup_idx,
                         op_idx,
                         eval_ctx: &eval_ctx,
+                        resolved_rotary: resolved_setup.and_then(|rs| rs.rotary),
+                        selected_face_normal_wcs,
                         pick_mode,
                         mutated_label: &mut mutated_label,
                     },

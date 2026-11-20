@@ -75,6 +75,8 @@ pub struct HighlightState {
     pub sim_tool_mesh: Option<(u64, Arc<SimToolMesh>, DVec3)>,
     /// Optional global motion segment limit for progressive toolpath trail during playback.
     pub sim_trail_limit: Option<usize>,
+    /// Current 4th-axis rotary angle (`deg`) during simulation playback (rotates wrapped toolpaths in sync with stock).
+    pub sim_rotary_deg: f64,
 }
 
 impl Default for HighlightState {
@@ -107,6 +109,7 @@ impl Default for HighlightState {
             sim_stock_mesh: None,
             sim_tool_mesh: None,
             sim_trail_limit: None,
+            sim_rotary_deg: 0.0,
         }
     }
 }
@@ -938,6 +941,17 @@ pub(crate) fn compute_toolpath_gpu_signature(highlight: &HighlightState) -> u64 
     highlight.show_toolpaths.hash(&mut h);
     highlight.show_rapids.hash(&mut h);
     highlight.sim_trail_limit.hash(&mut h);
+    highlight.sim_rotary_deg.to_bits().hash(&mut h);
+    if let Some(rot) = highlight.rotary {
+        true.hash(&mut h);
+        rot.axis.hash(&mut h);
+        rot.direction.hash(&mut h);
+        rot.center_wcs.x.to_bits().hash(&mut h);
+        rot.center_wcs.y.to_bits().hash(&mut h);
+        rot.center_wcs.z.to_bits().hash(&mut h);
+    } else {
+        false.hash(&mut h);
+    }
     for v in [
         highlight.wcs_frame.origin_mm,
         highlight.wcs_frame.x_axis,
@@ -1015,9 +1029,35 @@ pub(crate) fn build_toolpath_gpu_instances(highlight: &HighlightState) -> Vec<Ed
                 }
             };
 
-            if arc_steps <= 1 {
-                let p0 = frame.local_to_world_point(seg.start_wcs);
-                let p1 = frame.local_to_world_point(seg.end_wcs);
+            let rot_steps = if highlight.rotary.is_some() {
+                let d_deg = (seg.end_rotary_deg - seg.start_rotary_deg).abs();
+                if d_deg > 2.5 {
+                    ((d_deg / 2.5).ceil() as usize).clamp(2, 128)
+                } else {
+                    1
+                }
+            } else {
+                1
+            };
+            let steps = arc_steps.max(rot_steps);
+            let sim_rot = highlight.sim_rotary_deg;
+            let map_wcs = |p_wcs: DVec3, seg_rot_deg: f64| -> DVec3 {
+                let pt = if let Some(rot) = highlight.rotary {
+                    let net_deg = -seg_rot_deg + sim_rot;
+                    if net_deg.abs() > 1e-6 {
+                        rot.rotate_point_wcs(p_wcs, net_deg)
+                    } else {
+                        p_wcs
+                    }
+                } else {
+                    p_wcs
+                };
+                frame.local_to_world_point(pt)
+            };
+
+            if steps <= 1 {
+                let p0 = map_wcs(seg.start_wcs, seg.start_rotary_deg);
+                let p1 = map_wcs(seg.end_wcs, seg.end_rotary_deg);
                 out.push(EdgeInstanceGpu {
                     p0_mm: dvec3_f32(p0),
                     p1_mm: dvec3_f32(p1),
@@ -1025,10 +1065,10 @@ pub(crate) fn build_toolpath_gpu_instances(highlight: &HighlightState) -> Vec<Ed
                     width_px,
                 });
             } else {
-                let mut prev = frame.local_to_world_point(seg.start_wcs);
-                for k in 1..=arc_steps {
-                    let t = (k as f64) / (arc_steps as f64);
-                    let cur = frame.local_to_world_point(seg.sample_point(t));
+                let mut prev = map_wcs(seg.start_wcs, seg.start_rotary_deg);
+                for k in 1..=steps {
+                    let t = (k as f64) / (steps as f64);
+                    let cur = map_wcs(seg.sample_point(t), seg.sample_rotary_deg(t));
                     out.push(EdgeInstanceGpu {
                         p0_mm: dvec3_f32(prev),
                         p1_mm: dvec3_f32(cur),

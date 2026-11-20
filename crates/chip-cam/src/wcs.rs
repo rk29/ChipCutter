@@ -102,6 +102,8 @@ pub enum CamError {
         "operation '{op_name}' produced an empty toolpath (check heights, stepover, and stock-to-leave)"
     )]
     EmptyToolpath { op_name: String },
+    #[error("invalid 4th-axis rotary configuration for '{op_name}': {reason}")]
+    InvalidRotarySetup { op_name: String, reason: String },
 }
 
 /// Controller work coordinate offset slot (`G54`..`G59`, `G59.1`..`G59.3`).
