@@ -226,6 +226,26 @@ Phase 9 addresses every finding from the codebase security evaluation so machini
 
 ---
 
+## Phase 10 — Model Orientation, Positioning, Scaling, & Setup Alignment (Planned — M35–M37)
+
+Phase 10 gives machinists full, non-destructive control over rotating, laying flat, scaling, and translating imported **STEP** solids and **STL / OBJ / 3MF** triangle meshes after import—preserving exact `f64` B-Rep/mesh geometry and associative `Ctrl+R` reload—paired with an illustrated tutorial covering both per-model transforms and multi-setup WCS alignment:
+
+### Milestone 35 — Non-Destructive `ModelTransform` Kernel (Rotate, Scale, Move), Persistence, & CLI (`plans/35-milestone-35-plan.md`)
+- **Exact `f64` `ModelTransform` Model (`chip-cad`, `chip-project`):** Persist optional non-destructive `transform: ModelTransform` (`translate_mm: [f64; 3]`, `rotate_deg: [f64; 3]`, `scale: [f64; 3]`, omitted in `.chip.toml` when identity for 100% backward compatibility) on `ModelEntry`, applying exact `f64` Scale → Rotate → Translate transforms across STEP B-Rep surfaces/curves/normals/loops/`TopologyGraph` (exact analytic radius scaling for uniform scale; clean polyline/freeform degradation for stretched arcs/cylinders under non-uniform scale) and `TriangleMeshBody` vertices/normals/`MeshBvh`/`RenderMesh`.
+- **Orientation, Scaling, & Placement Presets + Associative Reload Preservation:** Provide deterministic helpers (`y_up_to_z_up`, `rotate_90_{x,y,z}`, `lay_flat_on_normal` for both STEP faces and mesh triangles, `uniform_scale`, `fit_to_target_dimension_{x,y,z}`, `center_xy_on_origin`, `drop_bottom_to_z0`, `align_top_to_z0`, `reset`) and retain `ModelEntry.transform` automatically across associative `Ctrl+R` / `reload-step` CAD revisions and `.chipz` roundtrips.
+- **Headless CLI Support (`chipcutter`):** Add `chipcutter transform-model <project.chip.toml>` (`--rot-x`, `--rot-y`, `--rot-z`, `--scale`, `--scale-x/--scale-y/--scale-z`, `--fit-size-x/--fit-size-y/--fit-size-z`, `--move-x`, `--move-y`, `--move-z`, `--y-up-to-z-up`, `--center-xy`, `--drop-z0`, `--reset`) and optional `--rot-x/--rot-y/--rot-z` / `--scale` flags on `import-mesh`.
+
+### Milestone 36 — Interactive Model Positioning & Scaling UI, Mesh Import Orientation, & Setup WCS Alignment Polish (`plans/36-milestone-36-plan.md`)
+- **Model Transform Inspector (`chip-gui`):** Clicking a model in the CAM Browser opens a dedicated **Model Transform & Orientation** inspector panel with 1-click **`Y-Up → Z-Up (+90° X)`**, **`±90° X / Y / Z`**, interactive 3D **`Lay Flat on Clicked Face…`** (supporting both STEP planar faces and STL/OBJ/3MF mesh triangles), **`Center XY`**, **`Drop Bottom to Z=0`**, **`Align Top to Z=0`**, **`Reset`**, exact expression-capable `Rotate X/Y/Z (°)`, `Move X/Y/Z`, **`Scale` (Uniform Lock or Independent X/Y/Z)** + **`Target Size X/Y/Z`** (auto-computing exact uniform scale to fit a stock plaque), live transformed bounding-box readout, full `< 1 ms` Undo/Redo, and automatic `Dirty` invalidation on dependent setups/operations.
+- **Mesh Import Orientation & Scale Preview (`mesh_import_modal.rs`):** Add quick orientation buttons (`Keep As-Is`, `Y-Up → Z-Up`, `±90° X/Y/Z`) and uniform **`Scale` / `Target Size`** controls directly inside the **Import 3D Mesh (STL / OBJ / 3MF)** modal with live physical bounding-box updates before import.
+- **Setup WCS Orientation Polish (`setup_inspector.rs`):** Add optional arbitrary X-axis clocking angle (`°`) alongside `Clock X 90°` on `WcsOrientationMode` (for angled vise setups without modifying model transforms) plus clear UI tooltips explaining when to use *Model Transform* vs. *Setup WCS*.
+
+### Milestone 37 — Illustrated Tutorial 16: Rotating, Laying Flat, Scaling, & Moving STEP & STL Models (`plans/37-milestone-37-plan.md`)
+- **Minimal Starter Fixtures (`docs/tutorials/assets/`):** Add reproducible CLI tutorial generators (`--tutorial 16-orient-stl` Y-up/rotated STL mesh and `--tutorial 16-orient-step` tilted/off-origin STEP bracket).
+- **Tutorial 16 (`docs/tutorials/16-model-orientation-positioning.md`):** Publish a complete 7-part illustrated guide with visually verified headless Vulkan screenshots covering (1) fixing a Y-up STL mesh on import and via Model Transform (`Y-Up → Z-Up`, `Lay Flat on Face`, uniform **`Scale` / `Target Size`**, `Center XY`, `Drop to Z=0`), (2) rotating, scaling, and moving a STEP solid while preserving associative `Ctrl+R` reload, (3) aligning a tilted STEP part via Setup WCS (`Z & X`, `XY Plane`, `Flip +Z`, `Clock X 90°`, 27-point origin, `Additional Offset`) and creating an Op-2 flipped Setup (`G55`), and (4) headless `chipcutter` CLI equivalents.
+
+---
+
 ## Future Phases
 
 1. **Functional & Behavioral User-Level Testing:**
