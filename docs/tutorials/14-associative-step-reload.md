@@ -31,7 +31,7 @@ Two matching STEP revisions are included in `docs/tutorials/assets/`:
 
 Open the starter `Revision v1` job in `chip-gui`:
 
-- **From the Sample Projects Gallery:** Launch `cargo run --release -p chip-gui`, open **`Sample Projects Gallery…`**, and load **`CAD Revision Demo (v1 → v2)`**.
+- **From the Sample Projects Gallery:** Launch `cargo run --release -p chip-gui`, click **`Browse Sample Projects Gallery…`** on the **Welcome to ChipCutter** overlay (or **`File → Sample Projects Gallery…`** / **`Help → Sample Projects Gallery…`** in the **top menu bar**, or **`Sample Gallery…`** under **`Models`** in the left **CAM Browser**), find the **`Associative CAD Revision Reload (v1 -> v2)`** card, and click **`Open Sample`**.
 - **Or launch directly from the terminal:**
   ```bash
   cargo run --release -p chip-gui -- --sample revision-v1
@@ -43,41 +43,41 @@ Open the starter `Revision v1` job in `chip-gui`:
 
 ### Step 1 — Inspect & Simulate the Clean `Revision v1` Baseline
 
-With `14-bracket-v1.step` loaded, press **`Ctrl+G`** and open **`Simulation Timeline`** (`Simulate`) to confirm the baseline `v1` job:
+With `14-bracket-v1.step` loaded, press **`Ctrl+G`** (or click **`Generate`** in the **top toolbar**) and click **`Simulate`** in the **top toolbar** (opening the bottom **`Simulation Timeline`** tab) to confirm the baseline `v1` job:
 
 ![Revision v1 Bracket Loaded, Generated Clean, and Simulated with Zero Crashes](../images/tutorials/14-associative-step-reload/01-revision-v1-clean.png)
 
-All `6` operations show green **`Clean`** badges (`Face Stock Top`, `Resized Blind Pocket` at `1m13s`, `Shifted Ø14mm Helical Bore`, `Surviving Ø6mm Hole`, `Mounting Hole (Deleted in v2)`, and `Front Chamfer Open Chain`), and the 3D simulation confirms **`0 Crashes`** across the `90 × 70 × 20 mm` bracket.
+All `6` operations show green **`Clean`** badges in the left **CAM Browser** (`Face Stock Top`, `Resized Blind Pocket` at `1m13s`, `Shifted Ø14mm Helical Bore`, `Surviving Ø6mm Hole`, `Mounting Hole (Deleted in v2)`, and `Front Chamfer Open Chain`), and **`Simulation Timeline`** confirms **`Verified Crash-Free`** across the `90 × 70 × 20 mm` bracket.
 
 ### Step 2 — Reload `Revision v2` (`Ctrl+R` / `Replace…`) & Review the Reload Banner
 
-In production, you either overwrite the STEP file on disk and press **`Ctrl+R`** (ChipCutter also watches the active STEP file SHA-256 every 2 seconds and highlights a reload prompt when CAD changes on disk), or click **`Replace…`** in the **`Models`** panel and select `docs/tutorials/assets/14-bracket-v2.step`.
+In production, you either overwrite the STEP file on disk and press **`Ctrl+R`** (or click **`Reload (Ctrl+R)`** under **`Models`** in the left **CAM Browser** or **`File → Reload STEP Model (Ctrl+R)`** in the **top menu bar**; ChipCutter also watches the active STEP file SHA-256 every 2 seconds and displays an alert banner with **`Reload & Re-Match (Ctrl+R)`** when CAD changes on disk), or click **`Replace…`** under **`Models`** in the left **CAM Browser** (or **`File → Replace STEP Model (Associative Re-Bind)…`** in the **top menu bar**) and select `docs/tutorials/assets/14-bracket-v2.step`. *(Note: **`Reload (Ctrl+R)`** and **`Replace…`** appear only when a 3D STEP solid is loaded.)*
 
 > [!TIP]
-> You can test the exact `v1 → v2` associative reload in one command via `cargo run --release -p chip-gui -- --sample revision-v2`, or click **`Reload v2`** on the Revision Demo card inside **`Sample Projects Gallery…`**.
+> You can test the exact `v1 → v2` associative reload in one command via `cargo run --release -p chip-gui -- --sample revision-v2`, or click **`Reload Rev v2`** on the **`Associative CAD Revision Reload (v1 -> v2)`** card inside **`Sample Projects Gallery`**.
 
-Immediately after loading `v2`, ChipCutter displays the non-blocking **Reload Summary Banner** across the top of the workspace:
+Immediately after loading `v2`, ChipCutter displays the non-blocking **Reload Summary Banner** across the top of the workspace (below the **top toolbar**):
 
 ![After Associative Reload to Revision v2 Showing Non-Blocking Rebind Banner and Dirty Operations](../images/tutorials/14-associative-step-reload/02-revision-v2-rebind-banner.png)
 
 Look closely at what happened automatically—even though **every single STEP face and edge index was permuted** in `v2`:
-1. **Top Summary Banner:** `Reloaded CAD: 5 operation(s) re-bound cleanly, 1 need re-pick (0 WCS warning(s)).` with a direct **`Regenerate Dirty (Ctrl+G)`** button.
-2. **Selective `Dirty` Status:** Operations `1`, `2`, `3`, `4`, and `6` are marked **`Dirty`** and re-bound to the updated `v2` geometry—notice the enlarged pocket floor highlighted in gold in the 3D viewport!
-3. **All CAM Parameters Preserved:** Clicking **`2. Resized Blind Pocket → Passes`** confirms that `T1`, `Maximum Stepdown = tool_d * 0.5 (3.000 mm)`, `Stepover = tool_d * 0.4 (2.400 mm)`, and `Overhang = 0.8 mm` remained completely untouched.
+1. **Top Summary Banner:** `Reloaded CAD: 5 operation(s) re-bound cleanly, 1 need re-pick (0 WCS warning(s)).` with direct **`Regenerate Dirty (Ctrl+G)`** and **`Dismiss`** buttons.
+2. **Selective `Dirty` Status:** Operations `1`, `2`, `3`, `4`, and `6` are marked **`Dirty`** in the left **CAM Browser** and re-bound to the updated `v2` geometry—notice the enlarged pocket floor highlighted in gold in the **3D CAD Viewport**!
+3. **All CAM Parameters Preserved:** Clicking **`2. Resized Blind Pocket`** in the left **CAM Browser** and opening the **`Passes`** tab in the right **Inspector** confirms that `T1`, `Maximum Stepdown = tool_d * 0.5 (3.000 mm)`, `Stepover = tool_d * 0.4 (2.400 mm)`, and `Overhang = 0.8 mm` remained completely untouched.
 4. **Full Undo Safety:** Associative reload is recorded as a single Undo transaction (`Ctrl+Z` restores the exact pre-reload project state if needed).
 
 ### Step 3 — Recover the Flagged `NeedsRepick` Operation (`Op 5 → Geometry`)
 
-Click **`5. Mounting Hole (Deleted in v2)`** in the CAM Browser (ChipCutter automatically focuses the first `NeedsRepick` operation after reload):
+Click **`5. Mounting Hole (Deleted in v2)`** in the left **CAM Browser** (ChipCutter automatically focuses the first `NeedsRepick` operation after reload):
 
 ![Operation Inspector Showing CAD Feature Needs Re-Pick Recovery Card](../images/tutorials/14-associative-step-reload/03-needs-repick-inspector.png)
 
-The **`CAD Feature Needs Re-Pick`** card explains the exact cause:
+At the top of the right **Inspector** (above the scrollable tab content), the **`CAD Feature Needs Re-Pick`** card explains the exact cause:
 > `Face #11 (InternalCylinderFace) no longer exists in revised STEP model.`
 
 You now have two clean recovery paths depending on the engineering change:
-- **If the feature moved drastically or was replaced by a different face/hole:** Click **`Clear Orphaned & Re-Pick in 3D`**. ChipCutter clears only the broken selection, activates the appropriate 3D picking mode (`Cylindrical Holes`, `Planar Faces`, etc.), and preserves your tool, speeds/feeds, heights, passes, and holding tabs—click the replacement feature in 3D and press **`Ctrl+G`**.
-- **If the feature was intentionally deleted in `v2` (as in this ECO):** Right-click **`5. Mounting Hole (Deleted in v2)`** and choose **Suppress** (to retain the operation for audit history) or press **`Del`** to remove it.
+- **If the feature moved drastically or was replaced by a different face/hole:** Click **`Clear Orphaned & Re-Pick in 3D`** inside the **`CAD Feature Needs Re-Pick`** card. ChipCutter clears only the broken selection, activates the appropriate 3D picking mode (`Cylindrical Holes`, `Planar Faces`, etc.), and preserves your tool, speeds/feeds, heights, passes, and holding tabs—click the replacement feature in the **3D CAD Viewport** and press **`Ctrl+G`**.
+- **If the feature was intentionally deleted in `v2` (as in this ECO):** Right-click **`5. Mounting Hole (Deleted in v2)`** in the left **CAM Browser** and click **`Suppress Operation`** (or hover the row and click the eye icon) to retain the operation for audit history, or press **`Del`** (or **`Edit → Delete Selected (Del)`** in the **top menu bar**) to remove it.
 
 ---
 
@@ -85,27 +85,27 @@ You now have two clean recovery paths depending on the engineering change:
 
 | Concept / Control | Location | Behavior & Best Practices |
 |---|---|---|
-| **Reload (`Ctrl+R`) / `Replace…`** | `Models` tree / `File` menu | Re-reads the current STEP file (`Ctrl+R`) or swaps in a new revision path (`Replace…`) and runs WCS-first associative re-matching. |
+| **`Reload (Ctrl+R)`** / **`Replace…`** | `Left CAM Browser → Models` (or `Top Menu Bar → File → Reload STEP Model (Ctrl+R)` / `Replace STEP Model (Associative Re-Bind)…`) | Shown/enabled when a 3D STEP model is loaded. Re-reads the current STEP file (`Ctrl+R`) or swaps in a new revision path and runs WCS-first associative re-matching. |
 | **WCS-First Re-Binding** | Automatic during reload | Re-binds Setup WCS face/edge orientation and origin references **before** evaluating operation signatures so rotated or shifted parts re-match accurately in Setup coordinates. |
 | **`GeometricSignature` Matching** | `chip-cad` / `chip-project` | Scores candidate faces/edges by surface/curve kind, normal direction, centroid proximity, area/radius similarity, and local topology—immune to STEP ID shuffling. |
 | **Open-Chain Healing** | Automatic for `OpenChain` selections | Re-matches start and end edges independently and runs shortest-path topology search to heal intermediate edges when a chain splits or changes edge count. |
-| **`NeedsRepick` Recovery Card** | `Op → Geometry` | Appears whenever a referenced feature was deleted or has two geometrically identical ambiguous candidates; offers 1-click **`Clear Orphaned & Re-Pick in 3D`** while keeping all parameters intact. |
+| **`CAD Feature Needs Re-Pick`** card | `Right Inspector` (above operation tabs whenever an op is `NeedsRepick`) | Offers 1-click **`Clear Orphaned & Re-Pick in 3D`** while keeping all parameters intact. |
 | **Strict CLI Exit Gate** | `chipcutter reload-step` | Exits non-zero by default if any operation enters `NeedsRepick` or produces a WCS warning (catching breaking CAD revisions in CI); pass `--allow-needs-repick` to save the rebound manifest with exit code `0`. |
 
 ---
 
 ## 5. Generate (`Ctrl+G`) & 3D Simulation Verification on `Revision v2`
 
-After suppressing **`5. Mounting Hole (Deleted in v2)`**, press **`Ctrl+G`** (or click **`Regenerate Dirty (Ctrl+G)`** in the reload banner) and run **`Simulate`** to verify the rebuilt `v2` toolpaths on the updated solid:
+After suppressing **`5. Mounting Hole (Deleted in v2)`**, press **`Ctrl+G`** (or click **`Regenerate Dirty (Ctrl+G)`** in the top reload banner, or **`Generate`** in the **top toolbar**) and click **`Simulate`** in the **top toolbar** (opening the bottom **`Simulation Timeline`** tab) to verify the rebuilt `v2` toolpaths on the updated solid:
 
 ![Rebuilt Revision v2 Toolpaths Simulated Crash-Free on Updated STEP Solid](../images/tutorials/14-associative-step-reload/04-rebuilt-v2-simulation.png)
 
-Compare `v1` vs. `v2` in the CAM Browser and Simulation Timeline:
+Compare `v1` vs. `v2` in the left **CAM Browser** and bottom **`Simulation Timeline`** tab:
 - **`5. Mounting Hole (Deleted in v2)`** displays a muted suppressed icon and is cleanly skipped during generation and post-processing.
 - **`2. Resized Blind Pocket`** automatically adjusted to the enlarged `[12..48] × [15..55]` boundary and deepened `Z = 11.0 mm` floor (`24` passes, `1m26s` vs. `1m13s` in `v1`).
 - **`3. Shifted Ø14mm Helical Bore`** and **`4. Surviving Ø6mm Hole`** tracked their new `v2` centers `(71.0, 26.0)` and `(70.0, 47.0)` automatically.
 - **`6. Front Chamfer Open Chain`** expanded smoothly to match the wider `92 mm` front bevel (`103.5 mm` cut length vs. `101.5 mm` in `v1`).
-- Verification reports **`0 Crashes`**! (The single advisory `1 Warning` notes that `T1`'s `18 mm` flute length is `2 mm` shy of the `20 mm`-deep through-bore—a helpful reminder to switch to a longer-flute endmill in production, without blocking verification.)
+- Verification in **`Simulation Timeline`** reports **`0 Crashes (1 Warning)`**! (Clicking it opens the bottom **`Diagnostics & Log`** tab, where the advisory warning notes that `T1`'s `18 mm` flute length is `2 mm` shy of the `20 mm`-deep through-bore—a helpful reminder to switch to a longer-flute endmill in production, without blocking verification.)
 
 ---
 
@@ -113,8 +113,8 @@ Compare `v1` vs. `v2` in the CAM Browser and Simulation Timeline:
 
 Once `v2` passes simulation with `0 Crashes`:
 
-- Switch to **`G-Code Preview`** and export **`LinuxCNC (RS274NGC)`** (`459` lines, single ATC `.ngc` file covering `Tools: [7, 1, 6, 5]`) or **`GRBL 1.1 / FluidNC (Split by Tool)`** (4 sequential `.nc` files for manual tool changes).
-- Save the updated `.chip.toml` (`Ctrl+S`) so the new `14-bracket-v2.step` SHA-256 hash and updated `GeometricSignature` bindings are committed cleanly to version control (or pack a fresh `.chipz` release bundle).
+- Click **`Post`** in the **top toolbar** (or select the bottom **`G-Code Preview`** tab), choose **`LinuxCNC (RS274NGC)`** (`459` lines, single ATC `.ngc` file covering `Tools: [7, 1, 6, 5]`) or **`GRBL 1.1 / FluidNC (Split by Tool)`** (4 sequential `.nc` files for manual tool changes) in **`Post Profile:`**, and click **`Export G-Code…`**.
+- Save the updated `.chip.toml` via **`File → Save Project (Ctrl+S)`** in the **top menu bar** (or **`Save`** in the **top toolbar**) so the new `14-bracket-v2.step` SHA-256 hash and updated `GeometricSignature` bindings are committed cleanly to version control (or pack a fresh `.chipz` release bundle).
 
 ---
 

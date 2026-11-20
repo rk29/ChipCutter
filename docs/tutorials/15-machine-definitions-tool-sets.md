@@ -33,58 +33,58 @@ ChipCutter ships with three embedded, read-only machine definitions (also mirror
 
 ### Step 1 — Open the Machine Manager (`Tools → Machine Manager…`)
 
-1. Launch ChipCutter (`chip-gui`) and open any project (or press **`Ctrl+K`** and run **Open Machine Manager**).
-2. Alternatively, choose **`Tools → Machine Manager…`** from the top menu bar, or click **`Manage Machines…`** inside any Setup's **Target CNC Machine** card.
+1. Launch ChipCutter (`chip-gui`) and open any project (or press **`Ctrl+K`** to open the Command Palette and run **`Open Machine Manager (Milo 1.5, Carvera Air, Custom)…`**).
+2. Alternatively, choose **`Tools → Machine Manager…`** from the **top menu bar**, or click **`Manage Machines…`** inside the **`Target CNC Machine`** card on a Setup's **`WCS & Post`** tab in the right **Inspector**.
 
 ![ChipCutter Machine Manager showing built-in Generic, Milo v1.5 (LDO Kit), and Carvera Air definitions](../images/tutorials/15-machine-definitions-tool-sets/01-machine-manager-modal.png)
 
-3. Click **`Millennium Machines Milo v1.5 (LDO Kit)`** in the left pane to inspect its **Specs & Kinematics**, **4th Axis**, and **Tools (5)** tabs.
-4. Notice the amber **`Built-in preset (read-only)`** banner at the top of the right pane:
-   - Click **`Use in Current Project`** to bind the active project to this machine (updating its `machine_id`, default post-processor, simulation kinematics, and scoped tool library).
-   - Click **`Set as Default`** to remember this machine in `prefs.toml` so every new project starts preconfigured for your shop's primary CNC.
+3. In the left **`Machines`** column of the **ChipCutter Machine Manager** window, click **`Millennium Machines Milo v1.5 (LDO Kit)`** to inspect its **`Specs & Kinematics`**, **`4th Axis`**, and **`Tools (5)`** tabs in the right column.
+4. Notice the amber **`Built-in preset (read-only)`** banner at the top of the right column, and the action toolbar across the top of the window:
+   - Click **`Use in Current Project`** in the top action bar to bind the active project to this machine (updating its `machine_id`, default post-processor, simulation kinematics, and scoped tool library).
+   - Click **`Set as Default`** in the top action bar to remember this machine in `prefs.toml` so every new project starts preconfigured for your shop's primary CNC.
 
 ### Step 2 — Clone a Built-In Machine to Customize & Add Your Own Cutters
 
-1. With **`Millennium Machines Milo v1.5 (LDO Kit)`** (or **`Makera Carvera Air`**) selected, click **`Clone to Customize…`** in the toolbar (or inside the read-only banner).
-2. Enter a custom ID (e.g. `milo-1.5-shop`) and display name (e.g. `Shop Milo v1.5 (ER16 + 2.2kW)`), then click **`Create Editable Clone`**.
-3. ChipCutter writes a brand-new, upgrade-safe `~/.config/chipcutter/machines/milo-1.5-shop.machine.toml` containing a full copy of the machine specs **and** all 5 LDO starter tools.
-4. You can now edit XYZ travel, spindle RPM limits, max rapid/cutting feeds, acceleration, toolsetter flag, 4th-axis limits, and default post-processor—changes persist automatically when you click **`Save Changes`**.
+1. With **`Millennium Machines Milo v1.5 (LDO Kit)`** (or **`Makera Carvera Air`**) selected in the left **`Machines`** column of **ChipCutter Machine Manager**, click **`Clone to Customize...`** in the window's top toolbar (or **`Clone to Customize`** inside the amber read-only banner) **first** so the inline **`Clone Machine:`** prompt opens below the toolbar.
+2. In the **`Clone Machine:`** prompt, enter a custom **`ID:`** (e.g. `milo-1.5-shop`) and **`Name:`** (e.g. `Shop Milo v1.5 (ER16 + 2.2kW)`), then click **`Create Clone`**.
+3. ChipCutter writes a brand-new, upgrade-safe `~/.config/chipcutter/machines/milo-1.5-shop.machine.toml` containing a full copy of the machine specs **and** all 5 LDO starter tools, and automatically selects your new custom machine in the list.
+4. You can now edit fields directly on the **`Specs & Kinematics`** tab (`Display Name:`, `Travel X / Y / Z (mm):`, `Spindle RPM (Min / Max):`, `Collet / Holder:`, `Tool Change:`, `Toolsetter / Probe:`, `Max Rapid XY / Z (mm/min):`, `Max Cut Feed XY / Z (mm/min):`, `Accel / Tool Change Time:`, `Default Post Profile:`) and the **`4th Axis`** tab (check **`Equipped with 4th-Axis Rotary Module`** first to reveal rotary limits and `Default 4-Axis Post:`)—every change saves automatically to disk immediately as you edit.
 
 ### Step 3 — Inspect & Manage Per-Machine Tool Sets
 
-1. Open the **Tool Library** from the toolbar (**`Tools`** button) or click **`Open in Tool Library →`** inside the Machine Manager's **`Tools`** tab.
+1. Open the **ChipCutter Tool Library & Cutting Presets** window via **`Tools`** in the **top toolbar** (or **`Tools → Tool Library Manager…`** in the **top menu bar**), or click **`Open in Tool Library →`** inside the **ChipCutter Machine Manager**'s **`Tools`** tab.
 
 ![Tool Library modal scoped to the Millennium Machines Milo v1.5 (LDO Kit) LDO DLC starter endmills](../images/tutorials/15-machine-definitions-tool-sets/02-machine-scoped-tool-library.png)
 
-2. Use the **`Machine:`** dropdown at the top of the Tool Library to switch between any installed machine's cutter set:
-   - On a **built-in** machine (`Read-Only Built-In`), you can browse every cutter's geometry, cutting presets, and 2D profile preview, and click **`Sync / Embed into Active Project`** to copy a cutter into your project—or click **`Clone Machine to Edit Tools`** to fork an editable custom copy in one click.
-   - On a **custom** machine, **`+ New Cutter`**, **Fusion 360 `.json` / `.tools` import**, **`.tools.toml` load**, and **`Save Machine Tools`** are all enabled and persist directly inside your custom `.machine.toml` file.
-   - Inside Machine Manager's **`Tools`** tab, you can also **`Copy Tool From Machine`** to pull a single cutter (for example a `30°` V-bit from `carvera-air`) into your custom machine.
+2. Use the **`Machine:`** dropdown at the top of the **ChipCutter Tool Library & Cutting Presets** window to switch between any installed machine's cutter set:
+   - On a **built-in** machine (**`Read-Only Built-In`**), you can browse every cutter's geometry, cutting presets, and **`2D Cutter Profile Preview`**, and click **`Sync / Embed into Active Project`** (bottom-left) to copy a cutter into your project—or click **`Clone Machine to Edit Tools`** (top bar) to fork an editable custom copy in one click.
+   - On a **custom** machine (**`Custom (Editable)`**), **`+ New Cutter`**, **`Import Fusion 360 (.json / .tools)…`**, **`Load .tools.toml…`**, and **`Save Machine Tools`** in the top toolbar are all enabled and persist directly inside your custom `.machine.toml` file.
+   - Inside **ChipCutter Machine Manager**'s **`Tools`** tab (when a **custom** machine is selected), you can also choose another machine in the **`Copy tool from:`** dropdown and click **`+ Add Tool`** to copy a single cutter (for example a `30°` V-bit from `Makera Carvera Air`) into your custom machine.
 
 ### Step 4 — Switch Target Machine per Project in the Setup Inspector
 
-1. Select **`Setup 1`** in the CAM Browser and open the **`WCS & Post`** tab on the right-hand Inspector.
+1. In the left **CAM Browser**, click **`Stock & WCS`** under `Setup 1`, and open the **`WCS & Post`** tab in the right **Inspector**.
 
 ![Setup Inspector Target CNC Machine card showing Makera Carvera Air travel, spindle, tool count, and default post](../images/tutorials/15-machine-definitions-tool-sets/03-setup-target-machine.png)
 
-2. In the **`Target CNC Machine`** card:
+2. In the **`Target CNC Machine`** card at the top of the **`WCS & Post`** tab:
    - Pick any built-in or custom machine from the **`Machine`** dropdown (for example **`Makera Carvera Air`**).
    - Click **`Apply Machine Defaults`** to align Setup post-processors (and rotary defaults when 4th-axis is active) with the chosen machine.
-   - Every operation's **`Tool`** picker now offers that machine's dedicated tool library alongside the project's embedded tools, and **3D Simulation** automatically adopts the machine's rapid feeds, acceleration, and tool-change time for realistic cycle-time estimation.
+   - Every operation's **`Tool`** tab (**`Active Cutter`** dropdown) now offers that machine's dedicated tool library alongside the project's embedded tools, and **3D Simulation** automatically adopts the machine's rapid feeds, acceleration, and tool-change time for realistic cycle-time estimation.
 
 ### Step 5 — Export, Share, & Import `.machine.toml` Files
 
 Because each `.machine.toml` file embeds **both** machine parameters and its complete `[[tools]]` array with per-material presets, sharing a complete shop setup is a single-file transfer:
 
-- **Export / Share:** Open **Machine Manager**, select any built-in or custom machine, and click **`Export / Share (.machine.toml)…`**. Send that file to a friend, makerspace member, or another workstation.
-- **Import:** On the receiving workstation, click **`Import (.machine.toml)…`** in **Machine Manager**. ChipCutter validates the schema and every tool, automatically picks a non-colliding custom ID if needed, marks it editable (`is_builtin = false`), and saves it into the recipient's upgrade-safe user configuration directory.
-- **Portable `.chipz` Bundles:** Whenever you export a project using a custom machine (`File → Export Portable Bundle (.chipz)…`), ChipCutter automatically packs `machines/<machine_id>.machine.toml` inside the archive so collaborators can open and build the exact same job offline.
+- **Export / Share:** Open **ChipCutter Machine Manager** (**`Tools → Machine Manager…`** in the **top menu bar**), select any built-in or custom machine in the left **`Machines`** list, and click **`Export / Share (.machine.toml)...`** in the window's top toolbar. Send that file to a friend, makerspace member, or another workstation.
+- **Import:** On the receiving workstation, open **ChipCutter Machine Manager** and click **`Import (.machine.toml)...`** in the window's top toolbar. ChipCutter validates the schema and every tool, automatically picks a non-colliding custom ID if needed, marks it editable (`is_builtin = false`), and saves it into the recipient's upgrade-safe user configuration directory.
+- **Portable `.chipz` Bundles:** Whenever you export a project using a custom machine (**`File → Export Portable Bundle (.chipz)…`** in the **top menu bar**, or **`.chipz`** in the **top toolbar**), ChipCutter automatically packs `machines/<machine_id>.machine.toml` inside the archive so collaborators can open and build the exact same job offline.
 
 ---
 
 ## 4. Machine Limit Diagnostics
 
-ChipCutter checks your active project against the target machine's physical envelope and limits (shown as non-blocking **`[Machine Limit]`** warnings in the **Diagnostics & Log** pane and via `chipcutter validate`):
+ChipCutter checks your active project against the target machine's physical envelope and limits (shown as non-blocking **`[Machine Limit]`** warnings in the bottom **`Diagnostics & Log`** tab and via `chipcutter validate`):
 
 | Check | Trigger Condition |
 |---|---|

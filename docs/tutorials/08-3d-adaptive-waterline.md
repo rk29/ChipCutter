@@ -18,7 +18,7 @@ In this tutorial you will start from a bare binary STL mesh ([`08-sculpted-dome.
 
 Start with an **empty project** and load the watertight binary STL starter model included with this tutorial ([`08-sculpted-dome.stl`](assets/08-sculpted-dome.stl) — `70.000 × 70.000 × 33.000 mm`, `6,528 triangles`, `3,266 welded vertices`, `Watertight`):
 
-- **From the Welcome Overlay or Browser:** Launch `cargo run --release -p chip-gui`, click **Import Mesh…** (or **`File → Import 3D Mesh (STL / OBJ / 3MF)…`**), and select `docs/tutorials/assets/08-sculpted-dome.stl`.
+- **From the Welcome Overlay or Menu:** Launch `cargo run --release -p chip-gui`, click **`Import 3D Mesh (STL / OBJ / 3MF)…`** on the **Welcome to ChipCutter** overlay (or **`File → Import 3D Mesh (.stl / .obj / .3mf)…`** in the **top menu bar**, or **`Import Mesh…`** under **`Models`** in the left **CAM Browser**), select `docs/tutorials/assets/08-sculpted-dome.stl`, verify **`Interpret coordinates as:`** = **`Millimeters (mm)`** in the **Import 3D Mesh (STL / OBJ / 3MF)** modal, and click **`Import 3D Mesh`**.
 - **Or open directly from the terminal:**
   ```bash
   cargo run --release -p chip-gui -- docs/tutorials/assets/08-sculpted-dome.stl
@@ -30,10 +30,10 @@ Start with an **empty project** and load the watertight binary STL starter model
 
 ### Step 1 — Inspect Imported Mesh & Configure Setup Stock / WCS (`Setup 1 → Stock`)
 
-1. Check the **Models** section in the left **CAM Browser** (and the top-right status bar): ChipCutter confirms `Binary STL · 6528 tris · 3266 verts · Watertight`. Because binary STL files are unitless, ChipCutter defaults to millimeters (`70.000 × 70.000 × 33.000 mm`), and you can override mesh units (`in`, `cm`, `m`) per model whenever needed.
-2. Select **`Setup 1 → Stock & WCS`**:
-   - In **`WCS & Post`**, set **WCS Origin** to **`Stock Box Point → Top Center`** (`Z = 0` sits on top of the billet, centered directly over the dome apex).
-   - Switch to **`Stock`**, choose **`Relative Box Stock`**, and set **`Side X Margin (±X)`** = `2 mm`, **`Side Y Margin (±Y)`** = `2 mm`, **`Top Allowance (+Z)`** = `1 mm`, and **`Bottom Holding (-Z)`** = `0 mm` (producing a `74.000 × 74.000 × 34.000 mm` stock billet):
+1. Check the **`Models`** section in the left **CAM Browser** (and the right side of the **top menu bar**): ChipCutter confirms `Binary STL · 6528 tris · 3266 verts · Watertight`. Because binary STL files are unitless, ChipCutter defaults to **`Millimeters (mm)`** (`70.000 × 70.000 × 33.000 mm`), and you can override mesh units in the **Import 3D Mesh (STL / OBJ / 3MF)** modal whenever needed.
+2. Click **`Stock & WCS`** under `Setup 1` in the left **CAM Browser**:
+   - In the right **Inspector** **`WCS & Post`** tab (`WCS Origin (X0 Y0 Z0)` card), select **`Origin Reference`** = **`Stock 27-Pt`**, set **`Z Level:`** = **`Top`**, and click **`C`** in the **`Center Y`** row so **`Active Anchor`** shows `Top Center` (`Z = 0` sits on top of the billet, centered directly over the dome apex).
+   - Switch to the **`Stock`** tab in the right **Inspector**, keep **`Stock Mode`** = **`Relative Box Stock`** under **`Stock Geometry & Dimensions`**, and under **`Stock Offsets`** (confirm **`Symmetric XY`** / `Mirror ±X / ±Y` is checked) set **`Side X Margin (±X)`** = `2 mm`, **`Side Y Margin (±Y)`** = `2 mm`, **`Top Allowance (+Z)`** = `1 mm`, and **`Bottom Holding (-Z)`** = `0 mm` (producing a `74.000 × 74.000 × 34.000 mm` stock billet):
 
 ![Imported Sculpted Dome STL with Watertightness Diagnostics and Relative Box Stock](../images/tutorials/08-3d-adaptive-waterline/01-mesh-import-stock.png)
 
@@ -41,17 +41,17 @@ Start with an **empty project** and load the watertight binary STL starter model
 
 Before roughing, add a lightweight 2D containment boundary on the Setup XY plane so you can control exactly where the roughing cutter is allowed to travel:
 
-1. Click **`+ New Sketch`** in the left **CAM Browser** (under **`2D Sketches`**) and name it **`Dome Window`**.
-2. Add a centered **`Rectangle`** (`X = 0 mm`, `Y = 0 mm`, `Width = 68 mm`, `Height = 68 mm`, `Corner Radius = 4 mm`) enclosing the dome and pedestal top flange.
-3. Click **`+ Op…` → `3D Adaptive Roughing`** (or **`Operations → 3D Adaptive Roughing`**) to add **`1. 3D Adaptive Roughing`**.
-4. In **`Tool`**, select **`T1 — 6mm 3FL Carbide Flat Endmill`**.
-5. In **`Geometry`**, select the **`Dome Window`** sketch layer.
-6. In **`Heights`**, set **`Bottom Height`** to **`Model Top`** with offset **`-25.0 mm`** so roughing stops cleanly at the flat `Z = 8 mm` pedestal top flange (`33 mm - 25 mm = 8 mm`).
-7. Switch to **`Passes`**:
+1. Click **`+ Sketch`** in the **top toolbar** (or expand **`2D Sketches (0)`** in the left **CAM Browser** and click **`+ New Sketch`**). In the right **Inspector** (**2D Sketch Layer** → **`Sketch Anchor & Snap Grid`** card), set **`Sketch Name`** = **`Dome Window`**.
+2. Under **`Interactive Authoring Tools` → `Quick Insert at (0, 0):`**, click **`Rect`**. In the **`Parametric Rectangle Editor`** card below, keep **`Anchor Mode`** = **`Center (X, Y)`** and set **`Position X`** = `0 mm`, **`Position Y`** = `0 mm`, **`Width`** = `68 mm`, **`Height`** = `68 mm`, and **`Fillet R`** = `4 mm` enclosing the dome and pedestal top flange.
+3. Click **`+ Op… → 3D Adaptive Roughing`** under `Setup 1` in the left **CAM Browser** (or **`Operations → + 3D Adaptive Roughing`** in the **top menu bar**) to add **`1. 3D Adaptive 1`**.
+4. In the right **Inspector** **`Tool`** tab (`Cutter & Material Preset`), select **`T1 — 6mm 3FL Carbide Flat Endmill`** in **`Active Cutter`**.
+5. In the **`Geometry`** tab (`2D Sketch Layers & Quick Select` card), click **`+ All`** on the **`Dome Window`** row.
+6. In the **`Heights`** tab (`Z-Height Planes & Offsets` card), set **`Bottom Ref`** = **`Model Top`** and **`Bottom Offset`** = `-25.0 mm` so roughing stops cleanly at the flat `Z = 8 mm` pedestal top flange (`33 mm - 25 mm = 8 mm`).
+7. Switch to the **`Passes`** tab in the right **Inspector**:
    - Under **`Depth Passes & Stock to Leave`**, set **`Radial Stock`** = `0.4 mm` and **`Axial Stock`** = `0.25 mm` to leave a clean, uniform finishing allowance over the dome and pedestal.
    - Under **`3D Adaptive Roughing`**, set **`Optimal Load (ae)`** = `1.8 mm` (`30%` of cutter diameter), **`Rough Stepdown`** = `5 mm`, **`Fine Step-Up`** = `1.5 mm`, and check **`Detect Flats`** (`Land on flat plateaus`).
    - Scroll to **`3D Machining Boundary`**, set **`Boundary Source`** = **`Selected 2D Contours`**, **`Tool Containment`** = **`Tool Outside Boundary`**, and **`Boundary Offset`** = `0.5 mm`.
-8. Press **`Ctrl+G`** to generate the constant-load 3D trochoidal roughing toolpath:
+8. Press **`Ctrl+G`** (or click **`Generate`** in the **top toolbar**) to generate the constant-load 3D trochoidal roughing toolpath:
 
 ![3D Adaptive Roughing Passes Tab and Trochoidal Roughing Toolpath with 2D Sketch Containment](../images/tutorials/08-3d-adaptive-waterline/02-adaptive3d-passes.png)
 
@@ -61,16 +61,16 @@ Notice how `Adaptive3D` clears coarse `5 mm` axial tiers first, then climbs upwa
 
 With bulk stock cleared down to a thin `0.4 / 0.25 mm` skin, add a ball-endmill waterline operation to slice clean concentric Z-level contours across the dome:
 
-1. Click **`+ Op…` → `3D Waterline / Z-Level`** to add **`2. 3D Waterline Finishing`**.
-2. In **`Tool`**, select **`T4 — 6mm 2FL Carbide Ball Endmill`**.
-3. In **`Heights`**, set **`Bottom Height`** to **`Model Top - 25.0 mm`**.
-4. Switch to **`Passes`**:
-   - Under **`Depth Passes & Stock to Leave`**, set **`Maximum Stepdown`** = `1.5 mm`, **`Radial Stock`** = `0 mm`, and **`Axial Stock`** = `0 mm`.
+1. Click **`+ Op… → 3D Waterline / Z-Level`** under `Setup 1` in the left **CAM Browser** (or **`Operations → + 3D Waterline / Z-Level`** in the **top menu bar**).
+2. In the right **Inspector** **`Tool`** tab, select **`T4 — 6mm 2FL Carbide Ball Endmill`** in **`Active Cutter`**.
+3. In the **`Heights`** tab (`Z-Height Planes & Offsets` card), set **`Bottom Ref`** = **`Model Top`** and **`Bottom Offset`** = `-25.0 mm`.
+4. Switch to the **`Passes`** tab in the right **Inspector**:
+   - Under **`Depth Passes & Stock to Leave`**, keep **`Multiple Depths`** (`Enable Z Stepdowns`) checked so **`Maximum Stepdown`** is displayed, then set **`Maximum Stepdown`** = `1.5 mm`, **`Radial Stock`** = `0 mm`, and **`Axial Stock`** = `0 mm`.
    - Under **`3D Waterline / Z-Level Passes`**:
-     - Check **`Adaptive Stepdown`** (`Subdivide shallow Z bands`), set **`Min Stepdown`** = `0.4 mm`, and **`Max Cusp Height`** = `0.05 mm`.
+     - Keep **`Adaptive Stepdown`** (`Subdivide shallow Z bands`) checked **first** so **`Min Stepdown`** and **`Max Cusp Height`** are displayed, then set **`Min Stepdown`** = `0.4 mm` and **`Max Cusp Height`** = `0.05 mm`.
      - Check **`Detect Flats`** (`Land on flat plateaus`).
      - Keep **`Slope Range (°)`** = `0°` to `90°` to finish the full dome in one operation (or narrow to `35°–90°` when pairing steep Waterline walls with shallow `Parallel3D` crests—covered in Tutorial 09).
-     - Set **`Pass Ordering`** = **`Order by Level (Top-Down)`** and keep **`Cut Direction`** = **`Climb Milling`**.
+     - Set **`Pass Ordering`** = **`Order by Level (Top-Down)`** and keep **`Cut Direction`** (`Climb Milling`) checked.
    - Under **`3D Machining Boundary`**, set **`Boundary Source`** = **`Model Silhouette`**, **`Tool Containment`** = **`Tool Outside Boundary`**, and **`Boundary Offset`** = `0.5 mm`.
 5. Press **`Ctrl+G`**:
 
@@ -82,33 +82,33 @@ Look closely at the contour spacing near the top of the hemisphere: on the steep
 
 ## 4. Key Parameters Reference
 
-| Parameter | Strategy & Card | Purpose & Recommended Starting Values |
+| Parameter | Location | Purpose & Recommended Starting Values |
 |---|---|---|
-| **Optimal Load (`ae`)** | `Adaptive3D → 3D Adaptive Roughing` | Maximum radial engagement maintained by trochoidal peels. Start at **`0.20–0.35 × tool_d`** (`1.5–2.0 mm` for a `Ø6 mm` endmill in aluminum). |
-| **Rough Stepdown / Fine Step-Up** | `Adaptive3D → 3D Adaptive Roughing` | Coarse axial depth (`4–6 mm`) paired with intermediate upward terrace step-ups (`1.0–2.0 mm`) that eliminate heavy stair-steps before finishing. |
-| **Detect Flats** | `Adaptive3D` & `Waterline3D` | Detects horizontal upward plateaus (`normal.z > 0.995`) directly from the mesh and injects exact Z levels (`plateau Z + Axial Stock`). |
-| **Radial / Axial Stock** | `Depth Passes & Stock to Leave` | Roughing allowance (`0.3–0.5 mm` radial, `0.2–0.3 mm` axial for `Adaptive3D`; **`0.0 mm / 0.0 mm`** for finishing). |
-| **Adaptive Stepdown & Max Cusp Height** | `Waterline3D → 3D Waterline / Z-Level Passes` | Automatically inserts extra Z-level contours across shallow slopes until cusp height stays within **`Max Cusp Height`** (`0.03–0.08 mm`), clamped by **`Min Stepdown`**. |
-| **Pass Ordering** | `Waterline3D → 3D Waterline / Z-Level Passes` | **`Order by Level (Top-Down)`** completes each Z slice across the whole part before stepping down; **`Order by Depth / Island`** finishes each boss/pocket completely to minimize retracts. |
-| **Boundary Source & Containment** | `3D Machining Boundary` | Constrains XY travel to **`Stock Bounds`**, **`Model Silhouette`**, or **`Selected 2D Contours`** (`Tool Inside`, `Center on`, or `Outside Boundary` + optional `Boundary Offset`). |
+| **`Optimal Load (ae)`** | `Right Inspector → Passes → 3D Adaptive Roughing` | Maximum radial engagement maintained by trochoidal peels. Start at **`0.20–0.35 × tool_d`** (`1.5–2.0 mm` for a `Ø6 mm` endmill in aluminum). |
+| **`Rough Stepdown`** / **`Fine Step-Up`** | `Right Inspector → Passes → 3D Adaptive Roughing` | Coarse axial depth (`4–6 mm`) paired with intermediate upward terrace step-ups (`1.0–2.0 mm`) that eliminate heavy stair-steps before finishing. |
+| **`Detect Flats`** | `Right Inspector → Passes` (`3D Adaptive Roughing` & `3D Waterline / Z-Level Passes`) | Detects horizontal upward plateaus (`normal.z > 0.995`) directly from the mesh and injects exact Z levels (`plateau Z + Axial Stock`). |
+| **`Radial Stock`** / **`Axial Stock`** | `Right Inspector → Passes → Depth Passes & Stock to Leave` | Roughing allowance (`0.3–0.5 mm` radial, `0.2–0.3 mm` axial for `Adaptive3D`; **`0.0 mm / 0.0 mm`** for finishing). |
+| **`Adaptive Stepdown`**, **`Min Stepdown`**, **`Max Cusp Height`** | `Right Inspector → Passes → 3D Waterline / Z-Level Passes` | Check **`Adaptive Stepdown`** (`Subdivide shallow Z bands`) to reveal **`Min Stepdown`** and **`Max Cusp Height`** (`0.03–0.08 mm`). |
+| **`Pass Ordering`** | `Right Inspector → Passes → 3D Waterline / Z-Level Passes` | **`Order by Level (Top-Down)`** completes each Z slice across the whole part before stepping down; **`Order by Depth / Island`** finishes each boss/pocket completely to minimize retracts. |
+| **`Boundary Source`** & **`Tool Containment`** | `Right Inspector → Passes → 3D Machining Boundary` | Constrains XY travel to **`Stock Bounds`**, **`Model Silhouette`**, or **`Selected 2D Contours`** (**`Tool Inside Boundary`**, **`Tool Center on Boundary`**, or **`Tool Outside Boundary`** + **`Boundary Offset`**). |
 
 ---
 
 ## 5. Generate (`Ctrl+G`) & 3D Simulation Verification
 
-Press **`Ctrl+G`**, open the bottom **`Simulation Timeline`** tab, and check **`3D Stock`**, **`Color by Op`**, and **`3D Cutter`**, scrubbing to `96%`:
+Press **`Ctrl+G`** (or click **`Generate`** in the **top toolbar**), click **`Simulate`** in the **top toolbar** (opening the bottom **`Simulation Timeline`** tab), confirm **`3D Stock`**, **`Color by Op`**, and **`3D Cutter`** are checked in the **`Simulation Timeline`** top bar, and scrub to `96%`:
 
 ![3D Z-Dexel Machined Stock Simulation Showing Adaptive Roughing and Smooth Waterline Dome Finish](../images/tutorials/08-3d-adaptive-waterline/04-simulation-verified.png)
 
 ChipCutter's 5-rule simulation oracle checks every move against both the evolving 3D heightmap stock and the exact `MeshBvh` target surface:
 - Confirm the smooth spherical contour carved by `Op 2` (`T4` Ø6 mm Ball) inside the roughing envelope cleared by `Op 1` (`T1` Ø6 mm Flat).
-- Verify the green **`✓ Verified Crash-Free`** badge confirming **zero rapid-into-stock collisions**, **zero shank/holder interference**, and **zero target-mesh gouges**.
+- Verify the green **`Verified Crash-Free`** badge in **`Simulation Timeline`** confirming **zero rapid-into-stock collisions**, **zero shank/holder interference**, and **zero target-mesh gouges**.
 
 ---
 
 ## 6. Post-Processing (LinuxCNC & GRBL)
 
-Switch to the bottom **`G-Code Preview`** tab with **`LinuxCNC (RS274NGC)`** selected:
+Click **`Post`** in the **top toolbar** (or select the bottom **`G-Code Preview`** tab) with **`LinuxCNC (RS274NGC)`** selected in **`Post Profile:`**:
 
 ![LinuxCNC ATC G-Code Preview Showing Verified Multi-Tool T1 and T4 Program](../images/tutorials/08-3d-adaptive-waterline/05-gcode-preview.png)
 
