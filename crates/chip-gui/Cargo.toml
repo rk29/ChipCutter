@@ -9,6 +9,11 @@ repository.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = ["gtk3"]
+gtk3 = ["rfd/gtk3"]
+flatpak-portal = ["rfd/xdg-portal", "rfd/async-std"]
+
 [dependencies]
 chip-math.workspace = true
 chip-cad.workspace = true
@@ -39,3 +44,6 @@ toml.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 winit.workspace = true
+
+[target.'cfg(windows)'.build-dependencies]
+winresource.workspace = true

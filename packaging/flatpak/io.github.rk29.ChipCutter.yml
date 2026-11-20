@@ -1,0 +1,53 @@
+id: io.github.rk29.ChipCutter
+runtime: org.freedesktop.Platform
+runtime-version: '24.08'
+sdk: org.freedesktop.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: chip-gui
+finish-args:
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin
+  env:
+    CARGO_HOME: /run/build/chipcutter/cargo
+    RUST_BACKTRACE: '1'
+
+modules:
+  - name: chipcutter
+    buildsystem: simple
+    build-options:
+      build-args:
+        - --share=network
+    build-commands:
+      - |
+        cargo build --release --locked \
+          --package chip-gui --no-default-features --features flatpak-portal
+      - |
+        cargo build --release --locked \
+          --package chip-cli
+      - install -Dm755 target/release/chip-gui /app/bin/chip-gui
+      - install -Dm755 target/release/chipcutter /app/bin/chipcutter
+      - install -Dm644 packaging/flatpak/io.github.rk29.ChipCutter.desktop /app/share/applications/io.github.rk29.ChipCutter.desktop
+      - install -Dm644 packaging/flatpak/io.github.rk29.ChipCutter.metainfo.xml /app/share/metainfo/io.github.rk29.ChipCutter.metainfo.xml
+      - install -Dm644 packaging/flatpak/io.github.rk29.ChipCutter.xml /app/share/mime/packages/io.github.rk29.ChipCutter.xml
+      - install -Dm644 packaging/icons/chipcutter.svg /app/share/icons/hicolor/scalable/apps/io.github.rk29.ChipCutter.svg
+      - install -Dm644 packaging/icons/hicolor/64x64/apps/chipcutter.png /app/share/icons/hicolor/64x64/apps/io.github.rk29.ChipCutter.png
+      - install -Dm644 packaging/icons/hicolor/128x128/apps/chipcutter.png /app/share/icons/hicolor/128x128/apps/io.github.rk29.ChipCutter.png
+      - install -Dm644 packaging/icons/hicolor/256x256/apps/chipcutter.png /app/share/icons/hicolor/256x256/apps/io.github.rk29.ChipCutter.png
+      - install -Dm644 packaging/icons/hicolor/512x512/apps/chipcutter.png /app/share/icons/hicolor/512x512/apps/io.github.rk29.ChipCutter.png
+      - install -Dm644 LICENSE-MIT /app/share/licenses/io.github.rk29.ChipCutter/LICENSE-MIT
+      - install -Dm644 LICENSE-APACHE /app/share/licenses/io.github.rk29.ChipCutter/LICENSE-APACHE
+    sources:
+      - type: dir
+        path: ../..
+        skip:
+          - .git
+          - target
+          - dist
+          - .flatpak-builder
+          - .chipcutter-cache

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-chipcutter-project">
+    <comment>ChipCutter CAM Project</comment>
+    <sub-class-of type="application/toml"/>
+    <glob pattern="*.chip.toml" weight="60"/>
+    <icon name="io.github.rk29.ChipCutter"/>
+  </mime-type>
+  <mime-type type="application/x-chipcutter-bundle">
+    <comment>ChipCutter Portable CAM Bundle</comment>
+    <sub-class-of type="application/zip"/>
+    <glob pattern="*.chipz" weight="60"/>
+    <icon name="io.github.rk29.ChipCutter"/>
+  </mime-type>
+</mime-info>

@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.rk29.ChipCutter</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT OR Apache-2.0</project_license>
+  <name>ChipCutter</name>
+  <summary>Open-source 2.5D, 3-axis, and 4th-axis desktop CAM suite</summary>
+  <developer id="io.github.rk29">
+    <name>ChipCutter Contributors</name>
+  </developer>
+  <description>
+    <p>ChipCutter is an offline desktop Computer-Aided Manufacturing (CAM) application and headless CLI written in Rust that converts 3D STEP B-Rep models, triangle meshes (STL, OBJ, 3MF), 2D DXF/SVG vector drawings, and built-in parametric 2D sketches into verified CNC milling, routing, V-carving, and 4th-axis rotary G-code.</p>
+    <ul>
+      <li>Exact f64 B-Rep, mesh, and 2D vector toolpath generation with true circular arc preservation</li>
+      <li>2.5D Facing, 2D Contour with tabs, 2D Pocket, Adaptive roughing, Rest Machining, Drilling, Helical Bore, Chamfer, Trace, and V-Carving</li>
+      <li>3-axis surface milling (Waterline, Parallel, Scallop, Pencil) and 4th-axis indexed/wrapped/simultaneous rotary milling</li>
+      <li>Interactive 3D stock-removal simulation with rapid-into-stock and gouge verification</li>
+      <li>Configurable GRBL, grblHAL ATC, and LinuxCNC G-code post-processors plus headless CLI batch builds</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">io.github.rk29.ChipCutter.desktop</launchable>
+  <url type="homepage">https://github.com/rk29/ChipCutter</url>
+  <url type="bugtracker">https://github.com/rk29/ChipCutter/issues</url>
+  <url type="vcs-browser">https://github.com/rk29/ChipCutter</url>
+  <url type="help">https://github.com/rk29/ChipCutter/tree/main/docs/tutorials</url>
+  <provides>
+    <binary>chip-gui</binary>
+    <binary>chipcutter</binary>
+  </provides>
+  <recommends>
+    <control>pointing</control>
+    <control>keyboard</control>
+  </recommends>
+  <requires>
+    <display_length compare="ge">900</display_length>
+  </requires>
+  <screenshots>
+    <screenshot type="default">
+      <caption>ChipCutter 3D CAM workspace with toolpath preview and operation inspector</caption>
+      <image type="source" width="1360" height="840">https://raw.githubusercontent.com/rk29/ChipCutter/main/docs/images/chipcutter-gui.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Interactive stock-removal simulation with animated cutter and holder</caption>
+      <image type="source" width="1360" height="840">https://raw.githubusercontent.com/rk29/ChipCutter/main/docs/images/tutorials/00-getting-started/06-simulation-stock.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Adaptive clearing and rest machining toolpaths</caption>
+      <image type="source" width="1360" height="840">https://raw.githubusercontent.com/rk29/ChipCutter/main/docs/images/tutorials/05-adaptive-rest-machining/02-adaptive-passes.png</image>
+    </screenshot>
+  </screenshots>
+  <content_rating type="oars-1.1" />
+  <releases>
+    <release version="0.1.0" date="2026-04-01">
+      <description>
+        <p>Initial release of ChipCutter with 2.5D milling, 3-axis mesh finishing, 4th-axis rotary toolpaths, stock-removal simulation, and verified GRBL/LinuxCNC G-code post-processing.</p>
+      </description>
+    </release>
+  </releases>
+</component>

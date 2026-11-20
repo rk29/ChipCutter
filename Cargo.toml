@@ -76,4 +76,5 @@ egui-wgpu = "0.37"
 egui_tiles = "0.18"
 wgpu = "30"
 winit = { version = "0.30", default-features = false, features = ["x11"] }
-rfd = { version = "0.15", default-features = false, features = ["gtk3", "common-controls-v6"] }
+rfd = { version = "0.15", default-features = false, features = ["common-controls-v6"] }
+winresource = "0.1"

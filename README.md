@@ -8,6 +8,70 @@ It turns 3D **STEP** B-Rep CAD solids (`AP203` / `AP214` / `AP242`), 3D triangle
 
 ---
 
+## Download & Install (Prebuilt Releases)
+
+Ready-to-run desktop & CLI packages for Linux, Windows, and macOS are published on the [**GitHub Releases**](https://github.com/rk29/ChipCutter/releases) page alongside a unified `SHA256SUMS.txt` checksum manifest.
+
+### Linux (Flatpak & Standalone CLI)
+
+Install the sandboxed desktop + CLI Flatpak bundle (`x86_64`):
+
+```bash
+# Install for the current user (requires Flathub / Freedesktop runtime):
+flatpak install --user ChipCutter-<version>-linux-x86_64.flatpak
+
+# Launch the desktop CAM application:
+flatpak run io.github.rk29.ChipCutter
+
+# Run the bundled headless CLI:
+flatpak run --command=chipcutter io.github.rk29.ChipCutter --version
+flatpak run --command=chipcutter io.github.rk29.ChipCutter list-posts
+```
+
+For headless servers, CI pipelines, or non-Flatpak workflows, download the standalone CLI archive `chipcutter-<version>-linux-x86_64.tar.gz`, extract it, and place `chipcutter` on your `PATH`.
+
+### Windows (`x86_64`)
+
+- **Installer (recommended):** Download and run `ChipCutter-<version>-windows-x86_64.msi`. This installs `chip-gui.exe` and `chipcutter.exe`, adds Start Menu shortcuts, registers `.chip.toml` / `.chipz` file associations, and optionally adds `chipcutter.exe` to your `PATH`.
+- **Portable archive:** Download and extract `ChipCutter-<version>-windows-x86_64.zip` anywhere and launch `chip-gui.exe` (or run `chipcutter.exe` from PowerShell / Command Prompt).
+
+> **Windows SmartScreen note:** Unsigned community releases may trigger a *"Windows protected your PC"* prompt on first launch. Verify the download against `SHA256SUMS.txt` below, then click **More info** → **Run anyway**.
+
+### macOS (Universal2 — Apple Silicon & Intel)
+
+- **Desktop App (`.dmg`):** Download `ChipCutter-<version>-macos-universal.dmg` (macOS `12.0+`, native `arm64` + `x86_64`), open the disk image, and drag **`ChipCutter.app`** into **`Applications`**.
+- **Optional CLI symlink:** Expose the bundled `chipcutter` CLI in your terminal:
+  ```bash
+  ln -s /Applications/ChipCutter.app/Contents/MacOS/chipcutter /usr/local/bin/chipcutter
+  chipcutter --version
+  ```
+  A standalone Universal2 CLI archive (`chipcutter-<version>-macos-universal.tar.gz`) is also attached to each release for terminal-only setups.
+
+> **macOS Gatekeeper note:** Community releases that are ad-hoc signed (not Apple-notarized) may show a Gatekeeper warning on first launch. After verifying `SHA256SUMS.txt`, either **right-click `ChipCutter.app` → Open** in Finder or clear the download quarantine attribute:
+> ```bash
+> xattr -dr com.apple.quarantine /Applications/ChipCutter.app
+> ```
+
+### Verifying Checksums
+
+Download `SHA256SUMS.txt` from the same GitHub Release alongside your installer/archive and verify its SHA-256 digest before running:
+
+```bash
+# Linux (ignores artifacts you did not download):
+sha256sum -c --ignore-missing SHA256SUMS.txt
+
+# macOS (check a specific downloaded file against SHA256SUMS.txt):
+grep "ChipCutter-<version>-macos-universal.dmg" SHA256SUMS.txt | shasum -a 256 -c -
+```
+
+```powershell
+# Windows (PowerShell):
+Get-FileHash .\ChipCutter-<version>-windows-x86_64.msi -Algorithm SHA256
+# Compare the Hash output with the matching line in SHA256SUMS.txt
+```
+
+---
+
 ## Highlights
 
 - **STEP B-Rep Kernel & Associative Reload (`Ctrl+R`):**
@@ -136,7 +200,7 @@ cargo run -p chip-cli -- tools import-fusion shop_tools.json -o shop.tools.toml
 - [**`ARCHITECTURE.md`**](ARCHITECTURE.md) — End-to-end data pipeline, crate dependency graph, threading/caching model, and 3D render passes
 - [**`DEVELOPMENT.md`**](DEVELOPMENT.md) — Workspace layout, platform build prerequisites, native Linux/macOS/Windows setup, and headless CI instructions
 - [**`specs/00-overview.md`**](specs/00-overview.md) — Product scope, non-goals, and full specification index (`00` through `11`)
-- [**`specs/10-roadmap.md`**](specs/10-roadmap.md) — Completed Phase 1–6 (`M1`–`M24`) milestones and future phases
+- [**`specs/10-roadmap.md`**](specs/10-roadmap.md) — Completed Phase 1–7 (`M1`–`M28`) milestones and future phases
 - [**`AGENTS.md`**](AGENTS.md) — Architectural invariants and contributor guidelines
 
 ---

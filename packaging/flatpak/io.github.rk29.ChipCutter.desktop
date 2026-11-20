@@ -1,0 +1,14 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=ChipCutter
+GenericName=Desktop CAM & G-Code Suite
+Comment=Open-source 2.5D, 3-axis, and 4th-axis desktop CAM and G-code verification suite
+Exec=chip-gui %f
+Icon=io.github.rk29.ChipCutter
+Terminal=false
+Categories=Graphics;3DGraphics;Engineering;Science;
+Keywords=CAM;CNC;G-code;STEP;STL;DXF;SVG;Milling;Router;GRBL;LinuxCNC;
+MimeType=application/x-chipcutter-project;application/x-chipcutter-bundle;model/step;model/stl;model/obj;image/vnd.dxf;image/svg+xml;
+StartupNotify=true
+StartupWMClass=io.github.rk29.ChipCutter

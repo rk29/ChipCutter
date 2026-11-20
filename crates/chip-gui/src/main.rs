@@ -1,6 +1,8 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 use std::path::PathBuf;
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "gtk3"))]
 mod linux_gsettings;
 
 use chip_gui::{
@@ -129,7 +131,7 @@ fn load_app_icon() -> Option<egui::IconData> {
 }
 
 fn main() -> eframe::Result {
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", feature = "gtk3"))]
     linux_gsettings::configure_gsettings_backend_for_gtk();
 
     tracing_subscriber::fmt()

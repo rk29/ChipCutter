@@ -82,13 +82,354 @@ jobs:
           echo "should_publish=${SHOULD_PUBLISH}" >> "$GITHUB_OUTPUT"
           echo "Prepared release tag=${TAG} version=${TAG_VERSION} prerelease=${IS_PRERELEASE} publish=${SHOULD_PUBLISH}"
 
-  # Platform packaging jobs are wired in Milestones 26 (linux-flatpak),
-  # 27 (windows-x64), and 28 (macos-universal), uploading files with the
-  # artifact prefix `release-asset-*` for unified checksum publishing below.
+  # Platform packaging jobs upload files with the artifact prefix
+  # `release-asset-*` for unified checksum publishing below.
+
+  linux-flatpak:
+    name: Linux Flatpak & CLI Bundle (x86_64)
+    needs: [prepare]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Flatpak & metadata validation tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            flatpak \
+            flatpak-builder \
+            appstream \
+            desktop-file-utils \
+            libxml2-utils
+
+      - name: Validate Flatpak desktop, AppStream, and MIME metadata
+        run: |
+          desktop-file-validate packaging/flatpak/io.github.rk29.ChipCutter.desktop
+          appstreamcli validate --pedantic --no-net packaging/flatpak/io.github.rk29.ChipCutter.metainfo.xml
+          xmllint --noout packaging/flatpak/io.github.rk29.ChipCutter.xml
+
+      - name: Install Freedesktop runtime, SDK, and rust-stable extension
+        run: |
+          flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+          flatpak install --user --noninteractive flathub \
+            org.freedesktop.Platform//24.08 \
+            org.freedesktop.Sdk//24.08 \
+            org.freedesktop.Sdk.Extension.rust-stable//24.08
+
+      - name: Build and export Linux Flatpak bundle
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          ./scripts/build_flatpak.sh \
+            --version "${VERSION}" \
+            --out-dir dist \
+            --arch x86_64 \
+            --install-user
+
+      - name: Smoke-test installed Flatpak sandbox
+        run: |
+          set -euo pipefail
+          flatpak run --command=chipcutter io.github.rk29.ChipCutter --version
+          flatpak run --command=chipcutter io.github.rk29.ChipCutter list-posts
+          SMOKE_DIR="$(mktemp -d)"
+          trap 'rm -rf "${SMOKE_DIR}"' EXIT
+          flatpak run --command=chipcutter --filesystem="${SMOKE_DIR}" io.github.rk29.ChipCutter \
+            generate-sample-step "${SMOKE_DIR}/01-facing.step" \
+            --tutorial 01-facing \
+            --project-out "${SMOKE_DIR}/01-facing.chip.toml"
+          flatpak run --command=chipcutter --filesystem="${SMOKE_DIR}" io.github.rk29.ChipCutter \
+            validate "${SMOKE_DIR}/01-facing.chip.toml" --generate
+
+      - name: Setup Rust toolchain for standalone CLI archive
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build and package standalone Linux CLI tarball
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          cargo build --release --locked --package chip-cli
+          ./target/release/chipcutter --version
+          STAGE_PARENT="$(mktemp -d)"
+          trap 'rm -rf "${STAGE_PARENT}"' EXIT
+          STAGE_DIR="${STAGE_PARENT}/chipcutter-${VERSION}-linux-x86_64"
+          mkdir -p "${STAGE_DIR}" dist
+          cp target/release/chipcutter "${STAGE_DIR}/chipcutter"
+          cp LICENSE-MIT LICENSE-APACHE README.md "${STAGE_DIR}/"
+          tar -czf "dist/chipcutter-${VERSION}-linux-x86_64.tar.gz" \
+            -C "${STAGE_PARENT}" \
+            "chipcutter-${VERSION}-linux-x86_64"
+          ls -lh dist/
+
+      - name: Upload Linux release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-asset-linux-flatpak
+          path: |
+            dist/ChipCutter-${{ needs.prepare.outputs.version }}-linux-x86_64.flatpak
+            dist/chipcutter-${{ needs.prepare.outputs.version }}-linux-x86_64.tar.gz
+          if-no-files-found: error
+
+  windows-x64:
+    name: Windows x86_64 (Portable ZIP & MSI)
+    needs: [prepare]
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install WiX Toolset v5 CLI
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          dotnet tool update --global wix --version 5.*
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $dotnetTools = Join-Path $env:USERPROFILE ".dotnet\tools"
+          if (Test-Path -LiteralPath $dotnetTools) {
+            Add-Content -Path $env:GITHUB_PATH -Value $dotnetTools
+            $env:PATH = "$dotnetTools;$env:PATH"
+          }
+          wix --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build Windows release binaries
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          cargo build --release --locked --target x86_64-pc-windows-msvc -p chip-gui -p chip-cli
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Run Windows CLI smoke tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $cli = (Resolve-Path "target/x86_64-pc-windows-msvc/release/chipcutter.exe").Path
+          $gui = (Resolve-Path "target/x86_64-pc-windows-msvc/release/chip-gui.exe").Path
+          if (-not (Test-Path -LiteralPath $gui)) {
+            throw "Missing built GUI binary: $gui"
+          }
+
+          $smokeDir = Join-Path $env:TEMP ("chipcutter-smoke-" + [guid]::NewGuid().ToString("N"))
+          New-Item -ItemType Directory -Path $smokeDir -Force | Out-Null
+          try {
+            & $cli --version
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+            & $cli list-posts
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+            $stepPath = Join-Path $smokeDir "smoke.step"
+            $projPath = Join-Path $smokeDir "smoke.chip.toml"
+            $outDir = Join-Path $smokeDir "smoke_out"
+
+            & $cli generate-sample-step $stepPath --tutorial 01-facing --project-out $projPath
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+            & $cli validate --generate $projPath
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+            & $cli build $projPath -o $outDir --post grbl
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+            $gcodeFiles = Get-ChildItem -Path $outDir -Filter "*.nc"
+            if ($gcodeFiles.Count -lt 1) {
+              throw "Expected at least one .nc G-code output file in $outDir"
+            }
+          } finally {
+            Remove-Item -Path $smokeDir -Recurse -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Package Windows ZIP and MSI installer
+        shell: pwsh
+        env:
+          WINDOWS_SIGN_PFX_BASE64: ${{ secrets.WINDOWS_SIGN_PFX_BASE64 }}
+          WINDOWS_SIGN_PASSWORD: ${{ secrets.WINDOWS_SIGN_PASSWORD }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/package_windows.ps1 `
+            -Version "${{ needs.prepare.outputs.version }}"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Verify MSI installer administrative extract
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $version = "${{ needs.prepare.outputs.version }}"
+          $msi = (Resolve-Path "dist/ChipCutter-$version-windows-x86_64.msi").Path
+          $zip = (Resolve-Path "dist/ChipCutter-$version-windows-x86_64.zip").Path
+          if (-not (Test-Path -LiteralPath $zip)) {
+            throw "Missing portable ZIP archive: $zip"
+          }
+
+          $extractDir = Join-Path $env:TEMP ("chipcutter-msi-verify-" + [guid]::NewGuid().ToString("N"))
+          New-Item -ItemType Directory -Path $extractDir -Force | Out-Null
+          try {
+            $proc = Start-Process -FilePath "msiexec.exe" `
+              -ArgumentList "/a", "`"$msi`"", "/qn", "TARGETDIR=`"$extractDir`"" `
+              -Wait -PassThru
+            if ($proc.ExitCode -ne 0) {
+              throw "msiexec /a failed with exit code $($proc.ExitCode)"
+            }
+
+            $guiExtracted = Get-ChildItem -Path $extractDir -Recurse -Filter "chip-gui.exe" | Select-Object -First 1
+            $cliExtracted = Get-ChildItem -Path $extractDir -Recurse -Filter "chipcutter.exe" | Select-Object -First 1
+            if (-not $guiExtracted) {
+              throw "chip-gui.exe not found in extracted MSI at $extractDir"
+            }
+            if (-not $cliExtracted) {
+              throw "chipcutter.exe not found in extracted MSI at $extractDir"
+            }
+
+            Write-Host "Verified MSI extract: $($guiExtracted.FullName) and $($cliExtracted.FullName)"
+            & $cliExtracted.FullName --version
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          } finally {
+            Remove-Item -Path $extractDir -Recurse -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Upload Windows release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-asset-windows-x64
+          path: |
+            dist/ChipCutter-*-windows-x86_64.zip
+            dist/ChipCutter-*-windows-x86_64.msi
+          if-no-files-found: error
+
+  macos-universal:
+    name: macOS Universal2 (.dmg & CLI)
+    needs: [prepare]
+    runs-on: macos-latest
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "12.0"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain (arm64 + x86_64)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build Universal2 release binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --release --locked --target aarch64-apple-darwin -p chip-gui -p chip-cli
+          cargo build --release --locked --target x86_64-apple-darwin -p chip-gui -p chip-cli
+
+      - name: Import Apple Developer ID certificate (optional)
+        shell: bash
+        env:
+          MACOS_SIGN_P12_BASE64: ${{ secrets.MACOS_SIGN_P12_BASE64 }}
+          MACOS_SIGN_P12_PASSWORD: ${{ secrets.MACOS_SIGN_P12_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${MACOS_SIGN_P12_BASE64}" ]]; then
+            echo "MACOS_SIGN_P12_BASE64 not set; continuing with ad-hoc signing."
+            exit 0
+          fi
+
+          KEYCHAIN_PATH="${RUNNER_TEMP}/chipcutter-signing.keychain-db"
+          KEYCHAIN_PASS="$(openssl rand -hex 24)"
+          CERT_PATH="${RUNNER_TEMP}/developer-id.p12"
+
+          printf '%s' "${MACOS_SIGN_P12_BASE64}" | base64 --decode > "${CERT_PATH}"
+          security create-keychain -p "${KEYCHAIN_PASS}" "${KEYCHAIN_PATH}"
+          security set-keychain-settings -lut 21600 "${KEYCHAIN_PATH}"
+          security unlock-keychain -p "${KEYCHAIN_PASS}" "${KEYCHAIN_PATH}"
+          security import "${CERT_PATH}" \
+            -P "${MACOS_SIGN_P12_PASSWORD}" \
+            -A -t cert -f pkcs12 \
+            -k "${KEYCHAIN_PATH}"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "${KEYCHAIN_PASS}" "${KEYCHAIN_PATH}"
+          security list-keychains -d user -s "${KEYCHAIN_PATH}" login.keychain-db
+          rm -f "${CERT_PATH}"
+
+      - name: Package macOS Universal2 .app, .dmg, & CLI archive
+        shell: bash
+        env:
+          MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: |
+          set -euo pipefail
+          ./scripts/package_macos.sh "${{ needs.prepare.outputs.version }}" --out-dir dist
+
+      - name: Verify Universal2 bundle & CLI smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP_BUNDLE="dist/ChipCutter.app"
+          GUI_BIN="${APP_BUNDLE}/Contents/MacOS/chip-gui"
+          CLI_BIN="$(pwd)/${APP_BUNDLE}/Contents/MacOS/chipcutter"
+
+          for bin in "${GUI_BIN}" "${CLI_BIN}"; do
+            ARCHS="$(lipo -info "${bin}")"
+            echo "${ARCHS}"
+            if [[ "${ARCHS}" != *"arm64"* || "${ARCHS}" != *"x86_64"* ]]; then
+              echo "::error::Expected Universal2 (arm64 + x86_64) binary for ${bin}, got: ${ARCHS}"
+              exit 1
+            fi
+          done
+
+          plutil -lint "${APP_BUNDLE}/Contents/Info.plist"
+          codesign --verify --deep --strict --verbose=2 "${APP_BUNDLE}"
+
+          SMOKE_DIR="$(mktemp -d /tmp/chipcutter-macos-smoke.XXXXXX)"
+          trap 'rm -rf "${SMOKE_DIR}"' EXIT
+          (
+            cd "${SMOKE_DIR}"
+            "${CLI_BIN}" --version
+            "${CLI_BIN}" list-posts
+            "${CLI_BIN}" generate-sample-step "${SMOKE_DIR}/facing.step" \
+              --tutorial 01-facing \
+              --project-out "${SMOKE_DIR}/facing.chip.toml"
+            "${CLI_BIN}" validate --generate "${SMOKE_DIR}/facing.chip.toml"
+            "${CLI_BIN}" build "${SMOKE_DIR}/facing.chip.toml" \
+              -o "${SMOKE_DIR}/out_grbl" \
+              --post grbl
+            ls -la "${SMOKE_DIR}/out_grbl"
+            test -f "${SMOKE_DIR}/out_grbl/build_summary.json"
+          )
+
+      - name: Clean up temporary signing keychain
+        if: always()
+        shell: bash
+        run: |
+          rm -f "${RUNNER_TEMP}/developer-id.p12"
+          if [[ -f "${RUNNER_TEMP}/chipcutter-signing.keychain-db" ]]; then
+            security delete-keychain "${RUNNER_TEMP}/chipcutter-signing.keychain-db" || true
+          fi
+
+      - name: Upload macOS release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-asset-macos-universal
+          path: |
+            dist/ChipCutter-*.dmg
+            dist/chipcutter-*.tar.gz
+          if-no-files-found: error
 
   publish-release:
     name: Checksums & GitHub Release
-    needs: [prepare]
+    needs: [prepare, linux-flatpak, windows-x64, macos-universal]
     runs-on: ubuntu-latest
     steps:
       - name: Download platform release artifacts
