@@ -505,4 +505,92 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn quadrant_arc_with_one_ulp_overshoot_does_not_spuriously_split() {
+        let lib = default_starter_tool_library();
+        let t1 = &lib.tools[0];
+        let mut op = Operation::new("op_arc", "Arc Boundary Test", OperationKind::Contour2D);
+        op.tool_id = Some(t1.id.clone());
+        let grbl = resolve_post_profile("grbl", None).unwrap();
+
+        let count_arc_lines = |angle_deg: f64| -> usize {
+            let r = 10.0_f64;
+            let theta = angle_deg.to_radians();
+            let start = DVec3::new(r, 0.0, -2.0);
+            let end = DVec3::new(r * theta.cos(), r * theta.sin(), -2.0);
+            let mut b = ToolpathBuilder::new("op_arc");
+            b.push_event(ClEvent::OperationStart {
+                op_id: op.id.clone(),
+                op_name: op.name.clone(),
+                strategy_name: "2D Contour".to_string(),
+                est_time_sec: 1.0,
+            });
+            b.push_event(ClEvent::ToolChange {
+                tool_number: t1.tool_number,
+                length_offset: t1.length_offset_number,
+                diameter_offset: t1.diameter_offset_number,
+                tool_desc: t1.name.clone(),
+                is_first_tool: true,
+            });
+            b.push_event(ClEvent::SpindleStart {
+                rpm: 12_000.0,
+                direction: SpindleDirection::Cw,
+            });
+            b.rapid_to(DVec3::new(r, 0.0, 5.0));
+            b.rapid_to(DVec3::new(r, 0.0, 2.0));
+            b.linear_to(start, 300.0, MotionRole::Plunge);
+            b.arc_xy_to(XyArcMove {
+                end_wcs: end,
+                center_xy: DVec2::ZERO,
+                radius_mm: r,
+                ccw: true,
+                turns: 0,
+                feed_mm_min: 1000.0,
+                role: MotionRole::Cut,
+            });
+            b.rapid_to(DVec3::new(end.x, end.y, 5.0));
+            b.push_event(ClEvent::OperationEnd);
+            let tp = b.finish();
+
+            let input = SetupPostInput {
+                project_name: "arc_boundary.chip.toml",
+                setup_name: "Setup 1",
+                wcs_slot: WorkOffsetSlot::G54,
+                wcs_origin_description: "Stock Top Center".to_string(),
+                stock: ResolvedStockGeometry::Box {
+                    aabb_wcs: Aabb3::new(
+                        DVec3::new(-20.0, -20.0, -10.0),
+                        DVec3::new(20.0, 20.0, 0.0),
+                    ),
+                },
+                rotary: None,
+                clearance_z_wcs: 10.0,
+                retract_z_wcs: 5.0,
+                operations: vec![OperationPostInput {
+                    op: &op,
+                    tool: t1,
+                    toolpath: &tp,
+                }],
+            };
+            let files = post_process_setup(&input, &grbl, "arc_boundary").unwrap();
+            files[0]
+                .content
+                .lines()
+                .filter(|l| !l.starts_with('(') && l.contains('I') && l.contains('J'))
+                .count()
+        };
+
+        assert_eq!(count_arc_lines(90.0), 1, "exact 90° arc must stay 1 block");
+        assert_eq!(
+            count_arc_lines(90.0 + 1e-11),
+            1,
+            "1-ULP overshoot past 90° must not split into two 45° halves"
+        );
+        assert_eq!(
+            count_arc_lines(90.05),
+            2,
+            "genuinely >90° arc must split into 2 blocks for GRBL"
+        );
+    }
 }

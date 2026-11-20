@@ -158,7 +158,12 @@ pub(crate) fn emit_split_arc_move(
     } else {
         profile.max_arc_sweep_deg.clamp(15.0, 360.0)
     };
-    let sub_count = ((signed_sweep_rad.abs().to_degrees() / max_sweep_deg).ceil() as usize).max(1);
+    // Subtract a tiny tolerance before `ceil()` so exact quadrant/semicircle arcs
+    // (e.g. `90.00000000000001°` due to 1-ULP trig differences between x86_64 and ARM64)
+    // do not spuriously split into two 45° halves.
+    const ARC_SWEEP_RATIO_EPS: f64 = 1e-6;
+    let sweep_ratio = signed_sweep_rad.abs().to_degrees() / max_sweep_deg;
+    let sub_count = ((sweep_ratio - ARC_SWEEP_RATIO_EPS).ceil() as usize).max(1);
 
     let g_arc = match spec.dir {
         ArcDir::CW => "G2",
