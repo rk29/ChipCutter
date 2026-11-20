@@ -50,6 +50,11 @@
   </screenshots>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="0.8.0" date="2026-11-20">
+      <description>
+        <p>Added Machine Definitions and per-machine tool libraries (Generic, Millennium Machines Milo v1.5 LDO Kit, Makera Carvera Air), upgrade-safe cloning and .machine.toml export/import, machine envelope/RPM diagnostics, and the Help -> About dialog.</p>
+      </description>
+    </release>
     <release version="0.7.0" date="2026-04-01">
       <description>
         <p>Initial release of ChipCutter with 2.5D milling, 3-axis mesh finishing, 4th-axis rotary toolpaths, stock-removal simulation, and verified GRBL/LinuxCNC G-code post-processing.</p>
