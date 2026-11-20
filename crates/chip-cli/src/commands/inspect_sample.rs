@@ -8,7 +8,7 @@ use chip_cad::{
     sample_rotary_shaft_stl_bytes, sample_sculpted_dome_stl_bytes, tutorial_adaptive_pocket_step,
     tutorial_chamfer_engrave_block_step, tutorial_contour_plate_step,
     tutorial_drill_bore_plate_step, tutorial_facing_billet_step, tutorial_indexed_4side_block_step,
-    tutorial_pocket_block_step,
+    tutorial_pocket_block_step, tutorial_yup_bracket_stl_bytes,
 };
 use chip_cam::{BoxAnchor27, OperationStatus, StockConfig, WcsOriginMode};
 use chip_math::{ArcSegment2D, DEFAULT_TESS_CHORD_TOL_MM, DisplayUnit, ParamLength};
@@ -17,7 +17,8 @@ use chip_project::{
     build_revision_v1_demo_project, build_rotary_helical_flute_project,
     build_rotary_shaft_preview_project, build_rotary_wrapped_engraving_project,
     build_sculpted_mesh_dome_project, build_tutorial_3d_adaptive_waterline_project,
-    build_tutorial_3d_surface_finishing_project, build_tutorial_adaptive_rest_project,
+    build_tutorial_3d_surface_finishing_project, build_tutorial_16_tilted_step_project,
+    build_tutorial_16_yup_stl_project, build_tutorial_adaptive_rest_project,
     build_tutorial_chamfer_trace_project, build_tutorial_contour_project,
     build_tutorial_drill_bore_project, build_tutorial_facing_project,
     build_tutorial_indexed_step_multiface_project, build_tutorial_pocket_project,
@@ -247,6 +248,46 @@ pub fn run_generate_sample_step(
         return Ok(ExitCode::SUCCESS);
     }
 
+    // Phase 10 Tutorial 16 Y-Up STL starter asset (`16-orient-stl`)
+    if let Some(slug) = tutorial_slug.as_deref()
+        && matches!(slug, "16-orient-stl" | "16-yup-stl" | "orient-stl")
+    {
+        let stl_bytes = tutorial_yup_bracket_stl_bytes();
+        if let Some(parent) = args.output.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&args.output, &stl_bytes)?;
+        println!(
+            "Wrote Tutorial 16 Y-up STL mesh ({} bytes) to {}",
+            stl_bytes.len(),
+            args.output.display()
+        );
+        if let Some(proj_path) = args.project_out {
+            let starter = default_starter_tool_library();
+            let sha = compute_sha256_hex(&stl_bytes);
+            let rel = portable_model_path(Some(&proj_path), &args.output);
+            let mut proj =
+                build_tutorial_16_yup_stl_project(rel, &sha, &starter.tools, !args.empty_project);
+            if let Some(m) = explicit_machine.as_ref() {
+                proj.apply_machine_defaults(m, false);
+            }
+            if let Some(parent) = proj_path.parent()
+                && !parent.as_os_str().is_empty()
+            {
+                std::fs::create_dir_all(parent)?;
+            }
+            proj.save_to_path(&proj_path)?;
+            println!(
+                "Wrote Tutorial 16 STL project ({} ops) to {}",
+                proj.setups[0].operations.len(),
+                proj_path.display()
+            );
+        }
+        return Ok(ExitCode::SUCCESS);
+    }
+
     let step = if let Some(slug) = tutorial_slug.as_deref() {
         match slug {
             "01-facing" | "facing" => tutorial_facing_billet_step()?,
@@ -266,9 +307,12 @@ pub fn run_generate_sample_step(
                 sample_revised_part_pair_step()?.0
             }
             "14-reload-v2" | "reload-v2" => sample_revised_part_pair_step()?.1,
+            "16-orient-step" | "16-tilted-step" | "orient-step" => {
+                sample_multi_feature_bracket_step(true)?
+            }
             other => {
                 return Err(format!(
-                    "unknown --tutorial '{other}'; expected one of: 01-facing, 02-contour, 03-pocket, 04-drill-bore, 05-adaptive-rest, 06-chamfer-trace, 07-vcarve-medial, 07-vcarve-inlay, 08-3d-adaptive-waterline, 08-mesh-surfacing, 09-3d-surface-finishing, 09-rotary-shaft, 09-rotary-wrap, 10-rotary-wrap, 10-rotary-axial, 10-simultaneous-4axis, 11-indexed-step, 11-indexed-shaft, 12-simultaneous-4axis, 13-pure2d-dxf, 14-reload-v1, 14-reload-v2"
+                    "unknown --tutorial '{other}'; expected one of: 01-facing, 02-contour, 03-pocket, 04-drill-bore, 05-adaptive-rest, 06-chamfer-trace, 07-vcarve-medial, 07-vcarve-inlay, 08-3d-adaptive-waterline, 08-mesh-surfacing, 09-3d-surface-finishing, 09-rotary-shaft, 09-rotary-wrap, 10-rotary-wrap, 10-rotary-axial, 10-simultaneous-4axis, 11-indexed-step, 11-indexed-shaft, 12-simultaneous-4axis, 13-pure2d-dxf, 14-reload-v1, 14-reload-v2, 16-orient-stl, 16-orient-step"
                 )
                 .into());
             }
@@ -366,6 +410,16 @@ pub fn run_generate_sample_step(
                     && let Some(setup) = proj.setups.first_mut()
                 {
                     setup.operations.clear();
+                }
+                proj
+            }
+            Some("16-orient-step" | "16-tilted-step" | "orient-step") => {
+                let mut proj =
+                    build_tutorial_16_tilted_step_project(&doc, rel_path, &sha, &starter.tools);
+                if args.empty_project {
+                    for s in &mut proj.setups {
+                        s.operations.clear();
+                    }
                 }
                 proj
             }

@@ -79,8 +79,9 @@ Get-FileHash .\ChipCutter-<version>-windows-x86_64.msi -Algorithm SHA256
   - Interactive 3D BVH ray-picking of planar faces, closed edge loops, shortest-path open edge chains, coplanar faces, and same-diameter holes with automatic Z-top / Z-bottom inference.
   - **Associative CAD Revision Re-Matching:** Reloading an edited STEP model (`Ctrl+R` or `chipcutter reload-step`) re-binds Setup WCS references first, fuzzy-matches modified/shifted features via `GeometricSignature`, heals open edge chains, marks matched operations `Dirty`, and flags deleted or ambiguous features for 1-click recovery while preserving all tool, feed/speed, height, pass, and holding-tab settings.
 
-- **Multi-Setup WCS & Parametric Machinist Expressions:**
-  - Multiple Setups (`G54`–`G59.3`) per project with box or cylindrical stock, B-Rep face/edge WCS orientation alignment (supporting tilted/rotated parts), and an interactive 3D **27-point** stock/model WCS origin picker.
+- **Multi-Setup WCS, Non-Destructive Model Orientation/Scaling, & Parametric Machinist Expressions:**
+  - Non-destructive per-model **`ModelTransform`** for both **STEP** solids and **STL / OBJ / 3MF** meshes (`Y-Up -> Z-Up`, `±90° X/Y/Z`, 3D viewport **`Lay Flat on Clicked Face…`**, uniform/non-uniform **Scale** & **`Target Size X/Y/Z`**, `Center XY`, `Drop Bottom to Z=0`, preserved across `Ctrl+R` reload and `.chipz` bundles, plus `chipcutter transform-model`).
+  - Multiple Setups (`G54`–`G59.3`) per project with box or cylindrical stock, B-Rep face/edge WCS orientation alignment (including tilted parts, Op-2 `Flip +Z`, `Clock X 90°`, and arbitrary `Fine Z Rot (°)`), and an interactive 3D **27-point** stock/model WCS origin picker.
   - Every dimensional input accepts mixed-unit formulas and variables (`1/4 in`, `tool_d * 0.4`, `model_top_z + 10 mm`, `hole_d / 2`).
 
 - **Pure-2D DXF / SVG Vector Import, Parametric Sketches, & Dual-Mode CAM Typography (`chip-sketch`):**
@@ -207,11 +208,11 @@ cargo run -p chip-cli -- machines export my-carvera -o my-carvera.machine.toml
 
 ## Documentation
 
-- [**`docs/tutorials/`**](docs/tutorials/README.md) — Illustrated step-by-step Getting Started, 2.5D, 3-Axis Surface, 4th-Axis Rotary, Machine Definitions, & Production Workflow tutorials (`00`–`15`)
+- [**`docs/tutorials/`**](docs/tutorials/README.md) — Illustrated step-by-step Getting Started, 2.5D, 3-Axis Surface, 4th-Axis Rotary, Machine Definitions, Model Orientation/Scaling, & Production Workflow tutorials (`00`–`16`)
 - [**`ARCHITECTURE.md`**](ARCHITECTURE.md) — End-to-end data pipeline, crate dependency graph, threading/caching model, and 3D render passes
 - [**`DEVELOPMENT.md`**](DEVELOPMENT.md) — Workspace layout, platform build prerequisites, native Linux/macOS/Windows setup, and headless CI instructions
 - [**`specs/00-overview.md`**](specs/00-overview.md) — Product scope, non-goals, and full specification index (`00` through `11`)
-- [**`specs/10-roadmap.md`**](specs/10-roadmap.md) — Completed Phase 1–8 (`M1`–`M31`) milestones and future phases
+- [**`specs/10-roadmap.md`**](specs/10-roadmap.md) — Completed Phase 1–10 (`M1`–`M37`) milestones and future phases
 - [**`AGENTS.md`**](AGENTS.md) — Architectural invariants and contributor guidelines
 
 ---

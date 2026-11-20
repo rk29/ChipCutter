@@ -473,6 +473,109 @@ pub fn sample_helical_flute_shaft_stl_bytes() -> Vec<u8> {
     )
 }
 
+/// Generates a deterministic, 100% watertight binary STL of a **Sculpted Mounting Boss**
+/// (`60 × 40 × 18 mm` when upright: `60 × 40 × 6 mm` rectangular flange with an `R = 12 mm`
+/// smooth hemispherical boss on top), exported **Y-up** (lying sideways along `+Y`, rotated
+/// `-90° X`) and shifted off-origin (`X ∈ [15, 75]`, `Y ∈ [12, 30]`, `Z ∈ [-50, -10]`).
+///
+/// Used in **Tutorial 16** (`16-yup-bracket.stl`) to practice `Y-Up -> Z-Up (+90° X)`,
+/// `Lay Flat on Clicked Face…`, `Scale` / `Target Size`, `Center XY`, and `Drop Bottom to Z=0`.
+pub fn tutorial_yup_bracket_stl_bytes() -> Vec<u8> {
+    let n_theta: usize = 48; // multiple of 4 so rectangle corners hit exact rays
+    let n_phi: usize = 12;
+    let radius = 12.0f64;
+    let base_h = 6.0f64;
+    let half_x = 30.0f64;
+    let half_y = 20.0f64;
+
+    let mut upright_tris: Vec<[DVec3; 3]> = Vec::with_capacity(n_theta * (2 * n_phi + 5));
+
+    let mut rings: Vec<Vec<DVec3>> = Vec::with_capacity(n_phi);
+    for j in 0..n_phi {
+        let phi = (j as f64 / n_phi as f64) * (0.5 * PI);
+        let r = radius * phi.cos();
+        let z = base_h + radius * phi.sin();
+        let mut ring = Vec::with_capacity(n_theta);
+        for k in 0..n_theta {
+            let theta = (k as f64 / n_theta as f64) * (2.0 * PI);
+            ring.push(DVec3::new(r * theta.cos(), r * theta.sin(), z));
+        }
+        rings.push(ring);
+    }
+    let apex = DVec3::new(0.0, 0.0, base_h + radius);
+
+    for j in 0..(n_phi - 1) {
+        for k in 0..n_theta {
+            let kn = (k + 1) % n_theta;
+            let a = rings[j][k];
+            let b = rings[j][kn];
+            let c = rings[j + 1][kn];
+            let d = rings[j + 1][k];
+            upright_tris.push([a, b, c]);
+            upright_tris.push([a, c, d]);
+        }
+    }
+    let top_ring = &rings[n_phi - 1];
+    for k in 0..n_theta {
+        let kn = (k + 1) % n_theta;
+        upright_tris.push([top_ring[k], top_ring[kn], apex]);
+    }
+
+    let mut rect_top = Vec::with_capacity(n_theta);
+    let mut rect_bot = Vec::with_capacity(n_theta);
+    for k in 0..n_theta {
+        let theta = (k as f64 / n_theta as f64) * (2.0 * PI);
+        let c = theta.cos();
+        let s = theta.sin();
+        let tx = if c.abs() > 1e-12 {
+            half_x / c.abs()
+        } else {
+            f64::INFINITY
+        };
+        let ty = if s.abs() > 1e-12 {
+            half_y / s.abs()
+        } else {
+            f64::INFINITY
+        };
+        let scale = tx.min(ty);
+        let x = scale * c;
+        let y = scale * s;
+        rect_top.push(DVec3::new(x, y, base_h));
+        rect_bot.push(DVec3::new(x, y, 0.0));
+    }
+
+    let equator = &rings[0];
+    for k in 0..n_theta {
+        let kn = (k + 1) % n_theta;
+        upright_tris.push([equator[k], rect_top[k], rect_top[kn]]);
+        upright_tris.push([equator[k], rect_top[kn], equator[kn]]);
+    }
+    for k in 0..n_theta {
+        let kn = (k + 1) % n_theta;
+        upright_tris.push([rect_bot[k], rect_bot[kn], rect_top[kn]]);
+        upright_tris.push([rect_bot[k], rect_top[kn], rect_top[k]]);
+    }
+    let bot_center = DVec3::ZERO;
+    for k in 0..n_theta {
+        let kn = (k + 1) % n_theta;
+        upright_tris.push([bot_center, rect_bot[kn], rect_bot[k]]);
+    }
+
+    // Export Y-up (rotate -90° around X: (x, y, z) -> (x, z, -y)) and offset off-origin
+    // so `+90° X` (Y-Up -> Z-Up) restores exact upright Z-up orientation!
+    let offset = DVec3::new(45.0, 12.0, -30.0);
+    let to_yup = |p: DVec3| DVec3::new(p.x, p.z, -p.y) + offset;
+    let yup_tris: Vec<[DVec3; 3]> = upright_tris
+        .into_iter()
+        .map(|[a, b, c]| [to_yup(a), to_yup(b), to_yup(c)])
+        .collect();
+
+    encode_binary_stl(
+        "ChipCutter Tutorial 16 Y-Up Sculpted Mounting Boss (mm)",
+        &yup_tris,
+    )
+}
+
 fn encode_binary_stl(header_text: &str, tris: &[[DVec3; 3]]) -> Vec<u8> {
     let mut buf = Vec::with_capacity(84 + tris.len() * 50);
     let mut header = [0u8; 80];

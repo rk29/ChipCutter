@@ -127,4 +127,5 @@ chipcutter validate /tmp/job.chip.toml --machine milo-1.5
 ## Navigation
 
 - **Previous:** [Tutorial 14 — Associative STEP Revision Reload (`Ctrl+R`) & Re-Pick Recovery](14-associative-step-reload.md)
-- **Index:** [All Tutorials](README.md) — you have completed the entire ChipCutter `00`–`15` curriculum!
+- **Next:** [Tutorial 16 — Rotating, Laying Flat, Scaling, & Moving STEP & STL Models](16-model-orientation-positioning.md)
+- **Index:** [All Tutorials](README.md)

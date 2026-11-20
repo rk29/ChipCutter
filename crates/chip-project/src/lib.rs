@@ -30,7 +30,8 @@ pub use demos::{
     build_revision_v1_demo_project, build_rotary_helical_flute_project,
     build_rotary_shaft_preview_project, build_rotary_wrapped_engraving_project,
     build_sculpted_mesh_dome_project, build_tutorial_3d_adaptive_waterline_project,
-    build_tutorial_3d_surface_finishing_project, build_tutorial_adaptive_rest_project,
+    build_tutorial_3d_surface_finishing_project, build_tutorial_16_tilted_step_project,
+    build_tutorial_16_yup_stl_project, build_tutorial_adaptive_rest_project,
     build_tutorial_chamfer_trace_project, build_tutorial_contour_project,
     build_tutorial_drill_bore_project, build_tutorial_facing_project,
     build_tutorial_indexed_step_multiface_project, build_tutorial_pocket_project,
@@ -2672,5 +2673,122 @@ sha256 = "abc"
         );
         assert_eq!(reloaded_proj.models[0].transform, xf);
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn milestone_37_tutorial_16_yup_stl_and_tilted_step_simulate_crash_free() {
+        use chip_cad::{MeshImportOptions, load_mesh_cad_document, tutorial_yup_bracket_stl_bytes};
+        use chip_sim::{MachineKinematicsConfig, SimResolution};
+
+        let starter = default_starter_tool_library();
+
+        // 1. Verify Tutorial 16 Y-up STL fixture is watertight, transforms to 90x60x27 mm at Z>=0,
+        // validates cleanly, and simulates crash-free with 0 errors.
+        let stl_bytes = tutorial_yup_bracket_stl_bytes();
+        let raw_stl = load_mesh_cad_document(
+            "16-yup-bracket.stl",
+            &stl_bytes,
+            &MeshImportOptions::default(),
+        )
+        .unwrap();
+        assert!(raw_stl.meshes[0].diagnostics.is_watertight);
+        let sha_stl = compute_sha256_hex(&stl_bytes);
+        let mut stl_proj = build_tutorial_16_yup_stl_project(
+            "16-yup-bracket.stl".to_string(),
+            &sha_stl,
+            &starter.tools,
+            true,
+        );
+        let transformed_stl = raw_stl.transformed(&stl_proj.models[0].transform);
+        let sz = transformed_stl.aabb_mm.size();
+        assert!((sz.x - 90.0).abs() < 0.05, "sz={sz:?}");
+        assert!((sz.y - 60.0).abs() < 0.05, "sz={sz:?}");
+        assert!((sz.z - 27.0).abs() < 0.05, "sz={sz:?}");
+        assert!(transformed_stl.aabb_mm.min.z.abs() < 1e-4);
+
+        let val_stl = validate_project(&stl_proj, None, Some(&transformed_stl));
+        assert_eq!(
+            val_stl.error_count(),
+            0,
+            "Tutorial 16 STL validation failed: {:?}",
+            val_stl.diagnostics
+        );
+        let mut cache_stl = ToolpathCache::new(32);
+        let gen_stl = generate_project_blocking(&mut stl_proj, &transformed_stl, &mut cache_stl, 1);
+        assert!(
+            gen_stl.errors.is_empty(),
+            "STL generation errors: {gen_stl:?}"
+        );
+        let sim_stl = simulate_project_setup(&SetupSimRequest {
+            project: &stl_proj,
+            setup_idx: 0,
+            cad_doc: &transformed_stl,
+            cad_revision: 1,
+            cache: &cache_stl,
+            kinematics: MachineKinematicsConfig::default(),
+            resolution: SimResolution::Standard,
+            cancel: None,
+        })
+        .unwrap();
+        assert!(
+            !sim_stl.has_critical_errors(),
+            "STL sim diagnostics: {:?}",
+            sim_stl.diagnostics
+        );
+
+        // 2. Verify Tutorial 16 Tilted STEP 2-Setup project (Setup 1 G54 + Setup 2 G55 flip)
+        // omits zero extra_z_rot_deg in TOML, validates cleanly, and simulates both Setups crash-free.
+        let step_str = sample_multi_feature_bracket_step(true).unwrap();
+        let step_doc = MonstertruckKernel
+            .load_step_bytes(
+                "16-tilted-bracket.step",
+                step_str.as_bytes(),
+                DEFAULT_TESS_CHORD_TOL_MM,
+            )
+            .unwrap();
+        let sha_step = compute_sha256_hex(step_str.as_bytes());
+        let mut step_proj = build_tutorial_16_tilted_step_project(
+            &step_doc,
+            "16-tilted-bracket.step".to_string(),
+            &sha_step,
+            &starter.tools,
+        );
+        let toml_step = step_proj.to_toml_string().unwrap();
+        assert!(
+            !toml_step.contains("extra_z_rot_deg"),
+            "zero extra_z_rot_deg should be omitted from TOML"
+        );
+        assert_eq!(step_proj.setups.len(), 2);
+        let val_step = validate_project(&step_proj, None, Some(&step_doc));
+        assert_eq!(
+            val_step.error_count(),
+            0,
+            "Tutorial 16 STEP validation failed: {:?}",
+            val_step.diagnostics
+        );
+        let mut cache_step = ToolpathCache::new(32);
+        let gen_step = generate_project_blocking(&mut step_proj, &step_doc, &mut cache_step, 1);
+        assert!(
+            gen_step.errors.is_empty(),
+            "STEP generation errors: {gen_step:?}"
+        );
+        for s_idx in 0..2 {
+            let sim_step = simulate_project_setup(&SetupSimRequest {
+                project: &step_proj,
+                setup_idx: s_idx,
+                cad_doc: &step_doc,
+                cad_revision: 1,
+                cache: &cache_step,
+                kinematics: MachineKinematicsConfig::default(),
+                resolution: SimResolution::Standard,
+                cancel: None,
+            })
+            .unwrap();
+            assert!(
+                !sim_step.has_critical_errors(),
+                "STEP setup {s_idx} sim diagnostics: {:?}",
+                sim_step.diagnostics
+            );
+        }
     }
 }

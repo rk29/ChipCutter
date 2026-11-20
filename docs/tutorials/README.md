@@ -40,6 +40,7 @@ Work through the guides in order if you are new to ChipCutter, or jump directly 
 | 13 | [**Pure-2D `DXF` / `SVG` Vector Import & Portable `.chipz` Bundles**](13-pure2d-dxf-svg-workflow.md) | Zero-STEP Pure-2D jobs, `.dxf`/`.svg` units & SVG Pixel DPI, sub-layers, `0.05 mm` gap healing, island nesting, virtual sheet stock, `.chipz` bundle packing & headless build | [`assets/13-router-panel.dxf`](assets/13-router-panel.dxf) (`160×100 mm` multi-layer router front panel) | **Available** |
 | 14 | [**Associative STEP Revision Reload (`Ctrl+R`) & Re-Pick Recovery**](14-associative-step-reload.md) | Associative STEP reload (`Ctrl+R` / `reload-step`), WCS-first `GeometricSignature` fuzzy re-matching, selective `Dirty` regeneration, 1-click `NeedsRepick` recovery | [`assets/14-bracket-v1.step`](assets/14-bracket-v1.step) → [`assets/14-bracket-v2.step`](assets/14-bracket-v2.step) | **Available** |
 | 15 | [**Machine Definitions, Per-Machine Tool Sets, & Sharing**](15-machine-definitions-tool-sets.md) | Built-in read-only profiles (**Generic 3/4-Axis CNC Mill**, **Millennium Machines Milo v1.5 (LDO Kit)**, **Makera Carvera Air**), upgrade-safe cloning, per-machine tool libraries, `.machine.toml` export/import, envelope/RPM diagnostics | [`machines/*.machine.toml`](../../machines/) | **Available** |
+| 16 | [**Rotating, Laying Flat, Scaling, & Moving STEP & STL Models**](16-model-orientation-positioning.md) | Non-destructive `ModelTransform` (`Y-Up -> Z-Up`, `Lay Flat on Clicked Face…`, uniform/non-uniform `Scale` & `Target Size`, `Center XY`, `Drop Bottom to Z=0`, preserved across `Ctrl+R`), Mesh Import orientation, Setup WCS (`Z & X`, `Flip +Z`, `Fine Z Rot`, Op-2 `G55` flip), & `chipcutter transform-model` | [`assets/16-yup-bracket.stl`](assets/16-yup-bracket.stl) & [`assets/16-tilted-bracket.step`](assets/16-tilted-bracket.step) | **Available** |
 
 ---
 
@@ -63,6 +64,8 @@ Each tutorial starts from an **empty project** (or a clean seeded revision) and 
 | [`13-router-panel.dxf`](assets/13-router-panel.dxf) | `160 × 100 mm` multi-layer router front panel (`OUTLINE`, `HOLES`, `POCKETS`, `CUTOUTS`) | `chipcutter generate-sample-step <out.dxf> --tutorial 13-pure2d-dxf` |
 | [`14-bracket-v1.step`](assets/14-bracket-v1.step) | `90 × 70 × 20 mm` Revision v1 bracket (blind pocket, `Ø14 mm` bore, 2× `Ø6 mm` holes) | `chipcutter generate-sample-step <out.step> --tutorial 14-reload-v1` |
 | [`14-bracket-v2.step`](assets/14-bracket-v2.step) | `92 × 70 × 20 mm` Revision v2 bracket (resized pocket, shifted bore/hole, 1 deleted hole) | `chipcutter generate-sample-step <out.step> --tutorial 14-reload-v2` |
+| [`16-yup-bracket.stl`](assets/16-yup-bracket.stl) | Watertight `60 × 40 × 18 mm` sculpted mounting boss exported **Y-up** & off-origin (`STL`) | `chipcutter generate-sample-step <out.stl> --tutorial 16-orient-stl` |
+| [`16-tilted-bracket.step`](assets/16-tilted-bracket.step) | `90 × 70 × 20 mm` prismatic bracket tilted `30° X / 25° Z` for Setup WCS & Op-2 flip | `chipcutter generate-sample-step <out.step> --tutorial 16-orient-step` |
 
 You can launch any starter STEP, mesh, or DXF model directly into an empty ChipCutter workspace:
 

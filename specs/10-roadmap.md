@@ -226,7 +226,7 @@ Phase 9 addresses every finding from the codebase security evaluation so machini
 
 ---
 
-## Phase 10 — Model Orientation, Positioning, Scaling, & Setup Alignment (Planned — M35–M37)
+## Phase 10 — Model Orientation, Positioning, Scaling, & Setup Alignment (Completed — M35–M37)
 
 Phase 10 gives machinists full, non-destructive control over rotating, laying flat, scaling, and translating imported **STEP** solids and **STL / OBJ / 3MF** triangle meshes after import—preserving exact `f64` B-Rep/mesh geometry and associative `Ctrl+R` reload—paired with an illustrated tutorial covering both per-model transforms and multi-setup WCS alignment:
 
