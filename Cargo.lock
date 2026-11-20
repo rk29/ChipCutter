@@ -662,7 +662,7 @@ dependencies = [
 
 [[package]]
 name = "chip-cad"
-version = "0.28.0"
+version = "0.7.0"
 dependencies = [
  "chip-math",
  "glam",
@@ -677,7 +677,7 @@ dependencies = [
 
 [[package]]
 name = "chip-cam"
-version = "0.28.0"
+version = "0.7.0"
 dependencies = [
  "boostvoronoi",
  "cavalier_contours",
@@ -694,7 +694,7 @@ dependencies = [
 
 [[package]]
 name = "chip-cli"
-version = "0.28.0"
+version = "0.7.0"
 dependencies = [
  "chip-cad",
  "chip-cam",
@@ -713,7 +713,7 @@ dependencies = [
 
 [[package]]
 name = "chip-gui"
-version = "0.28.0"
+version = "0.7.0"
 dependencies = [
  "bytemuck",
  "chip-cad",
@@ -747,7 +747,7 @@ dependencies = [
 
 [[package]]
 name = "chip-math"
-version = "0.28.0"
+version = "0.7.0"
 dependencies = [
  "glam",
  "serde",
@@ -756,7 +756,7 @@ dependencies = [
 
 [[package]]
 name = "chip-post"
-version = "0.28.0"
+version = "0.7.0"
 dependencies = [
  "chip-cam",
  "chip-math",
@@ -769,7 +769,7 @@ dependencies = [
 
 [[package]]
 name = "chip-project"
-version = "0.28.0"
+version = "0.7.0"
 dependencies = [
  "chip-cad",
  "chip-cam",
@@ -789,7 +789,7 @@ dependencies = [
 
 [[package]]
 name = "chip-sim"
-version = "0.28.0"
+version = "0.7.0"
 dependencies = [
  "chip-cad",
  "chip-cam",
@@ -803,7 +803,7 @@ dependencies = [
 
 [[package]]
 name = "chip-sketch"
-version = "0.28.0"
+version = "0.7.0"
 dependencies = [
  "cavalier_contours",
  "chip-math",
@@ -821,7 +821,7 @@ dependencies = [
 
 [[package]]
 name = "chip-tools"
-version = "0.28.0"
+version = "0.7.0"
 dependencies = [
  "chip-math",
  "dirs",
