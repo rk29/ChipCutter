@@ -16,7 +16,8 @@ use chip_project::{
     build_pure2d_router_panel_demo_project, build_relief_wave_mesh_project,
     build_revision_v1_demo_project, build_rotary_helical_flute_project,
     build_rotary_shaft_preview_project, build_rotary_wrapped_engraving_project,
-    build_sculpted_mesh_dome_project, compute_sha256_hex, export_chipz_bundle, is_chipz_path,
+    build_sculpted_mesh_dome_project, compute_sha256_hex, create_private_temp_extract_dir,
+    export_chipz_bundle, external_or_suspicious_assets_referenced, is_chipz_path,
     load_model_bytes_cad_doc, portable_model_path, rebind_project_to_reloaded_cad,
     resolve_model_path, unpack_chipz_bundle,
 };
@@ -142,13 +143,16 @@ impl ChipCutterApp {
     }
 
     pub(crate) fn load_chipz_from_disk(&mut self, archive_path: &Path, egui_ctx: egui::Context) {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_nanos());
-        let extract_dir = std::env::temp_dir().join(format!(
-            "chipcutter_gui_chipz_{}_{nanos}",
-            std::process::id()
-        ));
+        let extract_dir = match create_private_temp_extract_dir("chipcutter_gui_chipz") {
+            Ok(dir) => dir,
+            Err(err) => {
+                self.logs.push(format!(
+                    "ERROR creating private temp directory for '{}': {err}",
+                    archive_path.display()
+                ));
+                return;
+            }
+        };
         match unpack_chipz_bundle(archive_path, &extract_dir) {
             Ok(unpacked) => {
                 self.clear_bundle_extract_dir();
@@ -254,6 +258,17 @@ impl ChipCutterApp {
             .as_deref()
             .and_then(Path::parent)
             .or(self.bundle_extract_dir.as_deref());
+        let external_assets = external_or_suspicious_assets_referenced(&self.project, proj_dir);
+        if !external_assets.is_empty() {
+            let names: Vec<String> = external_assets
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect();
+            self.logs.push(format!(
+                "WARN exporting .chipz: project references external/non-standard local file(s): {}",
+                names.join(", ")
+            ));
+        }
         match export_chipz_bundle(
             &self.project,
             proj_dir,

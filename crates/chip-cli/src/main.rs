@@ -196,6 +196,9 @@ enum BundleCommands {
         /// Destination `.chipz` bundle file.
         #[arg(short, long)]
         output: PathBuf,
+        /// Explicitly allow packing asset files located outside the project directory or with non-standard extensions.
+        #[arg(long)]
+        allow_external_assets: bool,
     },
     /// Unpack a `.chipz` bundle archive into a directory on disk.
     Unpack {
@@ -364,7 +367,11 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
             allow_needs_repick,
         } => run_reload_step(project, step, output, allow_needs_repick),
         Commands::Bundle { action } => match action {
-            BundleCommands::Pack { project, output } => run_bundle_pack(project, output),
+            BundleCommands::Pack {
+                project,
+                output,
+                allow_external_assets,
+            } => run_bundle_pack(project, output, allow_external_assets),
             BundleCommands::Unpack {
                 archive,
                 output_dir,

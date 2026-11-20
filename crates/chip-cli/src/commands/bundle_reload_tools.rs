@@ -3,8 +3,9 @@ use std::{path::PathBuf, process::ExitCode};
 use chip_cad::{CadKernel, MonstertruckKernel, TopologyGraph};
 use chip_math::DEFAULT_TESS_CHORD_TOL_MM;
 use chip_project::{
-    OperationReloadOutcome, ProjectDocument, compute_sha256_hex, export_chipz_bundle,
-    portable_model_path, rebind_project_to_reloaded_cad, resolve_model_path, unpack_chipz_bundle,
+    BundleError, OperationReloadOutcome, ProjectDocument, compute_sha256_hex, export_chipz_bundle,
+    external_or_suspicious_assets_referenced, portable_model_path, rebind_project_to_reloaded_cad,
+    resolve_model_path, unpack_chipz_bundle,
 };
 use chip_tools::import_fusion_library_path;
 
@@ -88,8 +89,14 @@ pub fn run_reload_step(
 pub fn run_bundle_pack(
     project: PathBuf,
     output: PathBuf,
+    allow_external_assets: bool,
 ) -> Result<ExitCode, Box<dyn std::error::Error>> {
     let proj_doc = ProjectDocument::load_from_path(&project)?;
+    let flagged = external_or_suspicious_assets_referenced(&proj_doc, project.parent());
+    if !flagged.is_empty() && !allow_external_assets {
+        let first = flagged[0].display().to_string();
+        return Err(Box::new(BundleError::ExternalAssetBlocked { path: first }));
+    }
     let sum = export_chipz_bundle(&proj_doc, project.parent(), &[], &[], &output)?;
     println!(
         "Packed portable bundle '{}' ({} bytes, {} model(s), {} vector(s), {} custom post(s)).",

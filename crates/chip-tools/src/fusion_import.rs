@@ -13,6 +13,11 @@ use crate::{
     storage::ToolLibrary,
 };
 
+/// Maximum allowed Fusion 360 `.json` / `.tools` uncompressed payload (`32 MiB`).
+pub const MAX_FUSION_JSON_BYTES: u64 = 32 * 1024 * 1024;
+/// Maximum allowed ZIP entries inside a Fusion 360 `.tools` archive.
+pub const MAX_FUSION_ARCHIVE_ENTRIES: usize = 256;
+
 /// Errors reading or decoding a Fusion 360 `.json` or `.tools` (ZIP) tool library.
 #[derive(Debug, Error)]
 pub enum FusionImportError {
@@ -24,6 +29,10 @@ pub enum FusionImportError {
     },
     #[error("failed to read `.tools` ZIP archive: {0}")]
     Zip(#[from] zip::result::ZipError),
+    #[error("Fusion 360 library exceeds maximum allowed size ({limit_bytes} bytes)")]
+    ArchiveTooLarge { limit_bytes: u64 },
+    #[error("unsafe entry '{entry_path}' rejected in `.tools` archive")]
+    UnsafeArchiveEntry { entry_path: String },
     #[error("`.tools` archive did not contain a JSON tool library entry")]
     MissingJsonInArchive,
     #[error("invalid Fusion 360 JSON syntax: {0}")]
@@ -192,23 +201,50 @@ pub fn import_fusion_library_bytes(
     let json_bytes: Vec<u8> = if bytes.starts_with(b"PK\x03\x04") {
         let cursor = std::io::Cursor::new(bytes);
         let mut archive = zip::ZipArchive::new(cursor)?;
+        if archive.len() > MAX_FUSION_ARCHIVE_ENTRIES {
+            return Err(FusionImportError::ArchiveTooLarge {
+                limit_bytes: MAX_FUSION_JSON_BYTES,
+            });
+        }
         let mut extracted = None;
         for i in 0..archive.len() {
             let mut file = archive.by_index(i)?;
             let entry_name = file.name()?.into_owned();
+            if file.is_symlink() {
+                return Err(FusionImportError::UnsafeArchiveEntry {
+                    entry_path: entry_name,
+                });
+            }
             if entry_name.ends_with(".json") {
-                let mut buf = Vec::new();
-                file.read_to_end(&mut buf)
+                if file.size() > MAX_FUSION_JSON_BYTES {
+                    return Err(FusionImportError::ArchiveTooLarge {
+                        limit_bytes: MAX_FUSION_JSON_BYTES,
+                    });
+                }
+                let mut buf = Vec::with_capacity((file.size() as usize).min(4 * 1024 * 1024));
+                file.by_ref()
+                    .take(MAX_FUSION_JSON_BYTES + 1)
+                    .read_to_end(&mut buf)
                     .map_err(|source| FusionImportError::Io {
                         path: entry_name,
                         source,
                     })?;
+                if buf.len() as u64 > MAX_FUSION_JSON_BYTES {
+                    return Err(FusionImportError::ArchiveTooLarge {
+                        limit_bytes: MAX_FUSION_JSON_BYTES,
+                    });
+                }
                 extracted = Some(buf);
                 break;
             }
         }
         extracted.ok_or(FusionImportError::MissingJsonInArchive)?
     } else {
+        if bytes.len() as u64 > MAX_FUSION_JSON_BYTES {
+            return Err(FusionImportError::ArchiveTooLarge {
+                limit_bytes: MAX_FUSION_JSON_BYTES,
+            });
+        }
         bytes.to_vec()
     };
 

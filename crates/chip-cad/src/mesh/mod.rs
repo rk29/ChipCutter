@@ -624,6 +624,47 @@ f -5/1/1 -4/2/1 -3/3/1 -2/4/1 -1/5/1
         )
         .unwrap_err();
         assert!(matches!(err, CadError::UnsafeArchivePath { .. }));
+
+        // Milestone 33: Exponential diamond <component> DAG in 3MF is stopped by MAX_3MF_TRIANGLES
+        let mut xml = String::from(
+            r#"<?xml version="1.0" encoding="UTF-8"?><model unit="millimeter"><resources>"#,
+        );
+        xml.push_str(r#"<object id="1" type="model"><mesh><vertices>"#);
+        xml.push_str(
+            r#"<vertex x="0" y="0" z="0"/><vertex x="1" y="0" z="0"/><vertex x="0" y="1" z="0"/>"#,
+        );
+        xml.push_str("</vertices><triangles>");
+        for _ in 0..200 {
+            xml.push_str(r#"<triangle v1="0" v2="1" v3="2"/>"#);
+        }
+        xml.push_str("</triangles></mesh></object>");
+        // 16 levels of 2x fan-out => 200 * 2^16 = 13.1M triangles > MAX_3MF_TRIANGLES (5M)
+        for lvl in 2..=17 {
+            let prev = lvl - 1;
+            xml.push_str(&format!(
+                r#"<object id="{lvl}" type="model"><components><component objectid="{prev}"/><component objectid="{prev}"/></components></object>"#
+            ));
+        }
+        xml.push_str(r#"</resources><build><item objectid="17"/></build></model>"#);
+
+        let mut dag_zip = std::io::Cursor::new(Vec::new());
+        {
+            let mut zw = zip::ZipWriter::new(&mut dag_zip);
+            let opts = zip::write::SimpleFileOptions::default();
+            zw.start_file("3D/3dmodel.model", opts).unwrap();
+            zw.write_all(xml.as_bytes()).unwrap();
+            zw.finish().unwrap();
+        }
+        let dag_err = load_mesh_bytes(
+            "dag.3mf",
+            &dag_zip.into_inner(),
+            &MeshImportOptions::default(),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(dag_err, CadError::MeshParse { .. }),
+            "expected MeshParse triangle-cap error, got {dag_err:?}"
+        );
     }
 
     #[test]

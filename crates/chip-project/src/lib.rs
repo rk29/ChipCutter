@@ -13,9 +13,11 @@ pub mod toml_io;
 pub mod validation;
 
 pub use bundle::{
-    BundleError, ChipzExportSummary, ChipzPackOptions, MAX_CHIPZ_UNPACK_BYTES, UnpackedChipzBundle,
-    export_chipz_bundle, export_chipz_bundle_with_options, is_chipz_path, pack_chipz_bundle_bytes,
-    pack_chipz_bundle_with_options, unpack_chipz_bundle, unpack_chipz_bytes,
+    BundleError, ChipzExportSummary, ChipzPackOptions, MAX_CHIPZ_ENTRIES, MAX_CHIPZ_UNPACK_BYTES,
+    UnpackedChipzBundle, create_private_temp_extract_dir, export_chipz_bundle,
+    export_chipz_bundle_with_options, external_or_suspicious_assets_referenced, is_chipz_path,
+    pack_chipz_bundle_bytes, pack_chipz_bundle_with_options, unpack_chipz_bundle,
+    unpack_chipz_bytes,
 };
 pub use cache::{
     OperationInputHash, ToolpathCache, compute_operation_input_hash,
@@ -2570,5 +2572,47 @@ sha256 = "abc"
         .unwrap();
         assert_eq!(files.len(), 1);
         assert!(files[0].content.contains("G93"));
+    }
+
+    #[test]
+    fn milestone_33_private_temp_dir_and_external_asset_detection_and_entry_cap() {
+        use std::io::Write as _;
+
+        // 1. Private exclusive temp dir creation (`0o700` on Unix)
+        let priv_dir = create_private_temp_extract_dir("chipcutter_m33_test").unwrap();
+        assert!(priv_dir.is_dir());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(&priv_dir).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o700, "temp extract dir must be owner-only 0700");
+        }
+
+        // 2. Archive with > MAX_CHIPZ_ENTRIES is rejected cleanly
+        let mut many_zip = std::io::Cursor::new(Vec::new());
+        {
+            let mut zw = zip::ZipWriter::new(&mut many_zip);
+            let opts = zip::write::SimpleFileOptions::default();
+            for i in 0..=MAX_CHIPZ_ENTRIES {
+                zw.start_file(format!("f_{i}.txt"), opts).unwrap();
+                zw.write_all(b"x").unwrap();
+            }
+            zw.finish().unwrap();
+        }
+        let err = unpack_chipz_bytes(&many_zip.into_inner(), &priv_dir).unwrap_err();
+        assert!(matches!(err, BundleError::ArchiveTooLarge));
+
+        // 3. External / non-standard assets are flagged before packing
+        let mut proj = ProjectDocument::new("Untrusted Project");
+        proj.models.push(ModelEntry {
+            id: "m_ext".to_string(),
+            path: "/etc/passwd".to_string(),
+            sha256: String::new(),
+            unit_override: None,
+        });
+        let flagged = external_or_suspicious_assets_referenced(&proj, Some(&priv_dir));
+        assert_eq!(flagged.len(), 1);
+
+        let _ = std::fs::remove_dir_all(&priv_dir);
     }
 }

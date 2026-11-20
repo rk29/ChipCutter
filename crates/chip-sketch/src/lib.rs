@@ -394,4 +394,30 @@ diameter = { expr = "8", value_mm = 8.0 }
         assert_eq!(s_grid.kind, Some(SnapKind::Grid));
         assert_eq!(s_grid.point_xy, DVec2::new(65.0, 55.0));
     }
+
+    #[test]
+    fn milestone_33_dxf_import_caps_nested_insert_grid_expansion() {
+        // 3-level nested INSERT grid (20x20 per level = 400^3 = 64M expansions) must fail cleanly
+        let dxf_text = concat!(
+            "0\nSECTION\n2\nBLOCKS\n",
+            "0\nBLOCK\n8\n0\n2\nB0\n70\n0\n10\n0.0\n20\n0.0\n30\n0.0\n",
+            "0\nLINE\n8\n0\n10\n0.0\n20\n0.0\n11\n1.0\n21\n0.0\n",
+            "0\nENDBLK\n",
+            "0\nBLOCK\n8\n0\n2\nB1\n70\n0\n10\n0.0\n20\n0.0\n30\n0.0\n",
+            "0\nINSERT\n8\n0\n2\nB0\n10\n0.0\n20\n0.0\n70\n20\n71\n20\n44\n1.0\n45\n1.0\n",
+            "0\nENDBLK\n",
+            "0\nBLOCK\n8\n0\n2\nB2\n70\n0\n10\n0.0\n20\n0.0\n30\n0.0\n",
+            "0\nINSERT\n8\n0\n2\nB1\n10\n0.0\n20\n0.0\n70\n20\n71\n20\n44\n1.0\n45\n1.0\n",
+            "0\nENDBLK\n",
+            "0\nENDSEC\n",
+            "0\nSECTION\n2\nENTITIES\n",
+            "0\nINSERT\n8\n0\n2\nB2\n10\n0.0\n20\n0.0\n70\n20\n71\n20\n44\n1.0\n45\n1.0\n",
+            "0\nENDSEC\n0\nEOF\n",
+        );
+        let err = import_dxf_bytes(dxf_text.as_bytes(), &DxfImportOptions::default()).unwrap_err();
+        assert!(
+            matches!(err, DxfImportError::DxfParse(_)),
+            "expected DxfParse complexity-limit error, got {err:?}"
+        );
+    }
 }

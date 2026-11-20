@@ -5,11 +5,18 @@ use thiserror::Error;
 
 use crate::units::{DisplayUnit, MM_PER_INCH};
 
+/// Maximum allowed recursive nesting depth in parametric expressions.
+pub const MAX_EXPR_DEPTH: usize = 64;
+/// Maximum allowed token count in a single parametric expression.
+pub const MAX_EXPR_TOKENS: usize = 4_096;
+
 /// Errors produced while tokenizing or evaluating a parametric math/unit expression.
 #[derive(Debug, Clone, PartialEq, Error)]
 pub enum ExprError {
     #[error("expression cannot be empty")]
     EmptyExpression,
+    #[error("expression too complex: {detail}")]
+    TooComplex { detail: &'static str },
     #[error("unexpected character '{ch}' at byte {pos}")]
     UnexpectedChar { ch: char, pos: usize },
     #[error("invalid number literal '{literal}'")]
@@ -140,6 +147,7 @@ pub fn evaluate_length_mm(input: &str, ctx: &EvalContext) -> Result<f64, ExprErr
     let mut parser = Parser {
         tokens: &tokens,
         pos: 0,
+        depth: 0,
         ctx,
     };
     let val = parser.parse_expr()?;
@@ -234,6 +242,11 @@ fn tokenize(s: &str) -> Result<Vec<Token>, ExprError> {
     let mut i = 0;
 
     while i < bytes.len() {
+        if tokens.len() >= MAX_EXPR_TOKENS {
+            return Err(ExprError::TooComplex {
+                detail: "token limit exceeded",
+            });
+        }
         let ch = s[i..].chars().next().unwrap_or('\0');
         if ch.is_whitespace() {
             i += ch.len_utf8();
@@ -334,6 +347,7 @@ fn tokenize(s: &str) -> Result<Vec<Token>, ExprError> {
 struct Parser<'a> {
     tokens: &'a [Token],
     pos: usize,
+    depth: usize,
     ctx: &'a EvalContext,
 }
 
@@ -342,20 +356,40 @@ impl<'a> Parser<'a> {
         self.tokens.get(self.pos)
     }
 
+    fn enter_depth(&mut self) -> Result<(), ExprError> {
+        self.depth += 1;
+        if self.depth > MAX_EXPR_DEPTH {
+            self.depth -= 1;
+            return Err(ExprError::TooComplex {
+                detail: "maximum nesting depth exceeded",
+            });
+        }
+        Ok(())
+    }
+
+    fn leave_depth(&mut self) {
+        self.depth = self.depth.saturating_sub(1);
+    }
+
     /// `expr := add_sub`
     fn parse_expr(&mut self) -> Result<Val, ExprError> {
-        let mut lhs = self.parse_mul_div()?;
-        while let Some(tok) = self.peek() {
-            let is_add = match tok {
-                Token::Plus => true,
-                Token::Minus => false,
-                _ => break,
-            };
-            self.pos += 1;
-            let rhs = self.parse_mul_div()?;
-            lhs = self.combine_additive(lhs, rhs, is_add);
-        }
-        Ok(lhs)
+        self.enter_depth()?;
+        let res = (|| {
+            let mut lhs = self.parse_mul_div()?;
+            while let Some(tok) = self.peek() {
+                let is_add = match tok {
+                    Token::Plus => true,
+                    Token::Minus => false,
+                    _ => break,
+                };
+                self.pos += 1;
+                let rhs = self.parse_mul_div()?;
+                lhs = self.combine_additive(lhs, rhs, is_add);
+            }
+            Ok(lhs)
+        })();
+        self.leave_depth();
+        res
     }
 
     fn combine_additive(&self, lhs: Val, rhs: Val, is_add: bool) -> Val {
@@ -433,7 +467,8 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_unary(&mut self) -> Result<Val, ExprError> {
-        match self.peek() {
+        self.enter_depth()?;
+        let res = match self.peek() {
             Some(Token::Plus) => {
                 self.pos += 1;
                 self.parse_unary()
@@ -445,7 +480,9 @@ impl<'a> Parser<'a> {
                 Ok(inner)
             }
             _ => self.parse_primary(),
-        }
+        };
+        self.leave_depth();
+        res
     }
 
     fn parse_primary(&mut self) -> Result<Val, ExprError> {
@@ -704,5 +741,22 @@ mod tests {
             evaluate_length_mm("(1 + 2", &ctx),
             Err(ExprError::MissingCloseParen)
         );
+
+        // Milestone 33: Deep nesting, long unary chains, and excessive tokens fail cleanly
+        let deep_parens = format!("{}1{}", "(".repeat(256), ")".repeat(256));
+        assert!(matches!(
+            evaluate_length_mm(&deep_parens, &ctx),
+            Err(ExprError::TooComplex { .. })
+        ));
+        let deep_unary = format!("{}1", "-".repeat(256));
+        assert!(matches!(
+            evaluate_length_mm(&deep_unary, &ctx),
+            Err(ExprError::TooComplex { .. })
+        ));
+        let huge_tokens = "1+".repeat(MAX_EXPR_TOKENS) + "1";
+        assert!(matches!(
+            evaluate_length_mm(&huge_tokens, &ctx),
+            Err(ExprError::TooComplex { .. })
+        ));
     }
 }

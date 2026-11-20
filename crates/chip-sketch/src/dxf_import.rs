@@ -25,6 +25,11 @@ use crate::{
     },
 };
 
+/// Maximum allowed geometric items emitted during a single DXF import (guards nested `INSERT` bombs).
+pub const MAX_DXF_IMPORTED_ITEMS: usize = 250_000;
+/// Maximum allowed recursive `INSERT` grid cell expansions during a single DXF import.
+pub const MAX_DXF_INSERT_EXPANSIONS: usize = 100_000;
+
 /// Errors encountered while reading or converting a `.dxf` drawing.
 #[derive(Debug, Error)]
 pub enum DxfImportError {
@@ -185,8 +190,24 @@ pub fn import_dxf_bytes(
         hidden_layers: &hidden_layers,
         opts,
     };
+    let mut insert_expansions = 0usize;
+    let mut limit_exceeded = false;
     for ent in drawing.entities() {
-        collect_dxf_entity_with_env(&env, ent, None, &root_xf, 0, &mut raw_items);
+        collect_dxf_entity_with_env(
+            &env,
+            ent,
+            None,
+            &root_xf,
+            0,
+            &mut insert_expansions,
+            &mut limit_exceeded,
+            &mut raw_items,
+        );
+        if limit_exceeded {
+            return Err(DxfImportError::DxfParse(format!(
+                "DXF exceeds complexity limit ({MAX_DXF_IMPORTED_ITEMS} items / {MAX_DXF_INSERT_EXPANSIONS} INSERT expansions)"
+            )));
+        }
     }
 
     let healed = heal_and_classify_sketch_geometry(raw_items, opts.join_tolerance_mm);
@@ -264,17 +285,24 @@ struct DxfTraverseEnv<'a> {
     opts: &'a DxfImportOptions,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn collect_dxf_entity_with_env(
     env: &DxfTraverseEnv<'_>,
     ent: &Entity,
     inherited_layer: Option<&str>,
     xf: &Affine2D,
     depth: u32,
+    insert_expansions: &mut usize,
+    limit_exceeded: &mut bool,
     out: &mut Vec<RawImportedItem>,
 ) {
     let drawing = env.drawing;
     let hidden_layers = env.hidden_layers;
     let opts = env.opts;
+    if *limit_exceeded || out.len() >= MAX_DXF_IMPORTED_ITEMS {
+        *limit_exceeded = true;
+        return;
+    }
     if depth > 8 {
         return;
     }
@@ -313,6 +341,13 @@ fn collect_dxf_entity_with_env(
 
             for r in 0..rows.min(64) {
                 for c in 0..cols.min(64) {
+                    *insert_expansions = insert_expansions.saturating_add(1);
+                    if *insert_expansions > MAX_DXF_INSERT_EXPANSIONS
+                        || out.len() >= MAX_DXF_IMPORTED_ITEMS
+                    {
+                        *limit_exceeded = true;
+                        return;
+                    }
                     let local_offset = DVec2::new(
                         ins.location.x + (c as f64) * ins.column_spacing,
                         ins.location.y + (r as f64) * ins.row_spacing,
@@ -333,8 +368,13 @@ fn collect_dxf_entity_with_env(
                             Some(eff_layer),
                             &ins_xf,
                             depth + 1,
+                            insert_expansions,
+                            limit_exceeded,
                             out,
                         );
+                        if *limit_exceeded {
+                            return;
+                        }
                     }
                 }
             }

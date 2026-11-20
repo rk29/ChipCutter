@@ -14,6 +14,10 @@ use crate::{
 
 /// Maximum allowed total uncompressed bytes read from a 3MF OPC ZIP archive (`128 MiB`).
 pub const MAX_MESH_UNPACK_BYTES: u64 = 128 * 1024 * 1024;
+/// Maximum allowed ZIP entries inside a 3MF container.
+pub const MAX_3MF_ARCHIVE_ENTRIES: usize = 1_024;
+/// Maximum allowed instantiated triangles emitted from a 3MF `<build>` / `<components>` DAG.
+pub const MAX_3MF_TRIANGLES: usize = 5_000_000;
 
 const MAX_COMPONENT_RECURSION_DEPTH: usize = 32;
 
@@ -132,6 +136,11 @@ pub(crate) fn parse_3mf(source_name: &str, bytes: &[u8]) -> Result<RawMeshData, 
     })?;
 
     // 1. Validate every entry path against zip-slip / symlinks and total unpack size ceiling.
+    if archive.len() > MAX_3MF_ARCHIVE_ENTRIES {
+        return Err(CadError::ArchiveTooLarge {
+            limit_bytes: MAX_MESH_UNPACK_BYTES,
+        });
+    }
     let mut entry_names: Vec<String> = Vec::with_capacity(archive.len());
     let mut total_uncompressed: u64 = 0;
     for idx in 0..archive.len() {
@@ -162,12 +171,13 @@ pub(crate) fn parse_3mf(source_name: &str, bytes: &[u8]) -> Result<RawMeshData, 
     }
 
     // 2. Discover primary 3D model path via `_rels/.rels`, falling back to `3D/3dmodel.model`.
+    let mut actual_bytes_read: u64 = 0;
     let mut model_target: Option<String> = None;
     if let Some(rels_name) = entry_names
         .iter()
         .find(|n| n.eq_ignore_ascii_case("_rels/.rels"))
     {
-        let rels_xml = read_archive_entry_utf8(&mut archive, rels_name)?;
+        let rels_xml = read_archive_entry_utf8(&mut archive, rels_name, &mut actual_bytes_read)?;
         model_target = extract_3dmodel_target_from_rels(&rels_xml);
     }
 
@@ -196,7 +206,8 @@ pub(crate) fn parse_3mf(source_name: &str, bytes: &[u8]) -> Result<RawMeshData, 
             detail: "3MF archive does not contain a `.model` XML payload".to_string(),
         })?;
 
-    let model_xml = read_archive_entry_utf8(&mut archive, &resolved_model_entry)?;
+    let model_xml =
+        read_archive_entry_utf8(&mut archive, &resolved_model_entry, &mut actual_bytes_read)?;
     parse_3mf_model_xml(source_name, &model_xml)
 }
 
@@ -232,6 +243,7 @@ fn validate_safe_archive_path(raw: &str) -> Result<(), CadError> {
 fn read_archive_entry_utf8(
     archive: &mut ZipArchive<std::io::Cursor<&[u8]>>,
     entry_name: &str,
+    actual_bytes_read: &mut u64,
 ) -> Result<String, CadError> {
     let mut entry = archive
         .by_name(entry_name)
@@ -239,17 +251,19 @@ fn read_archive_entry_utf8(
             format: "3MF",
             detail: format!("failed to open archive entry '{entry_name}': {e}"),
         })?;
-    let mut buf = Vec::with_capacity((entry.size() as usize).min(16 * 1024 * 1024));
+    let remaining = MAX_MESH_UNPACK_BYTES.saturating_sub(*actual_bytes_read);
+    let mut buf = Vec::with_capacity((entry.size().min(remaining) as usize).min(16 * 1024 * 1024));
     entry
         .by_ref()
-        .take(MAX_MESH_UNPACK_BYTES + 1)
+        .take(remaining.saturating_add(1))
         .read_to_end(&mut buf)
         .map_err(CadError::Io)?;
-    if buf.len() as u64 > MAX_MESH_UNPACK_BYTES {
+    if buf.len() as u64 > remaining {
         return Err(CadError::ArchiveTooLarge {
             limit_bytes: MAX_MESH_UNPACK_BYTES,
         });
     }
+    *actual_bytes_read = actual_bytes_read.saturating_add(buf.len() as u64);
     String::from_utf8(buf).map_err(|e| CadError::MeshParse {
         format: "3MF",
         detail: format!("entry '{entry_name}' is not valid UTF-8 XML: {e}"),
@@ -447,6 +461,15 @@ fn emit_object_triangles(
             detail: format!("referenced objectid='{object_id}' not found in <resources>"),
         });
     };
+
+    if out.len().saturating_add(obj.triangles.len()) > MAX_3MF_TRIANGLES {
+        return Err(CadError::MeshParse {
+            format: "3MF",
+            detail: format!(
+                "instantiated 3MF triangle count exceeds maximum allowed limit ({MAX_3MF_TRIANGLES})"
+            ),
+        });
+    }
 
     let flip_winding = world_mat.determinant() < 0.0;
     for &[i0, i1, i2] in &obj.triangles {

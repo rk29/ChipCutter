@@ -2,6 +2,7 @@ use std::{
     collections::BTreeMap,
     io::{Read as _, Write as _},
     path::{Component, Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
 };
 
 use chip_post::{PostProfile, builtin_post_profiles, resolve_post_profile};
@@ -17,6 +18,10 @@ use crate::{
 
 /// Maximum allowed total uncompressed payload when unpacking a `.chipz` archive (`256 MiB`).
 pub const MAX_CHIPZ_UNPACK_BYTES: u64 = 256 * 1024 * 1024;
+/// Maximum allowed ZIP entries inside a single `.chipz` archive.
+pub const MAX_CHIPZ_ENTRIES: usize = 1_024;
+
+static TEMP_EXTRACT_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Errors raised when packing or unpacking a portable `.chipz` bundle (`09-persistence-cli.md` §2).
 #[derive(Debug, Error)]
@@ -36,9 +41,13 @@ pub enum BundleError {
     )]
     UnsafeEntryPath { entry_path: String },
     #[error(
-        "`.chipz` archive exceeds maximum allowed uncompressed size ({MAX_CHIPZ_UNPACK_BYTES} bytes)"
+        "`.chipz` archive exceeds maximum allowed uncompressed size ({MAX_CHIPZ_UNPACK_BYTES} bytes) or entry limit ({MAX_CHIPZ_ENTRIES})"
     )]
     ArchiveTooLarge,
+    #[error(
+        "external or unexpected asset path '{path}' is outside the project directory (pass --allow-external-assets to override)"
+    )]
+    ExternalAssetBlocked { path: String },
     #[error("`.chipz` archive does not contain `project.chip.toml`")]
     MissingProjectToml,
     #[error("missing STEP model bytes for '{model_id}' ('{path}') while packing `.chipz`")]
@@ -417,8 +426,11 @@ pub fn unpack_chipz_bytes(
 
     let cursor = std::io::Cursor::new(bytes);
     let mut archive = ZipArchive::new(cursor)?;
+    if archive.len() > MAX_CHIPZ_ENTRIES {
+        return Err(BundleError::ArchiveTooLarge);
+    }
 
-    let mut total_unpacked: u64 = 0;
+    let mut actual_unpacked_bytes: u64 = 0;
     let mut extracted_files = Vec::new();
     let mut found_project_toml = false;
 
@@ -436,10 +448,25 @@ pub fn unpack_chipz_bytes(
         }
 
         let clean_rel = validate_safe_relative_entry_path(&raw_name)?;
-        total_unpacked = total_unpacked.saturating_add(entry.size());
-        if total_unpacked > MAX_CHIPZ_UNPACK_BYTES {
+        let remaining = MAX_CHIPZ_UNPACK_BYTES.saturating_sub(actual_unpacked_bytes);
+        if entry.size() > remaining {
             return Err(BundleError::ArchiveTooLarge);
         }
+
+        let mut buf =
+            Vec::with_capacity((entry.size().min(remaining) as usize).min(16 * 1024 * 1024));
+        entry
+            .by_ref()
+            .take(remaining.saturating_add(1))
+            .read_to_end(&mut buf)
+            .map_err(|source| BundleError::Io {
+                path: raw_name.clone(),
+                source,
+            })?;
+        if buf.len() as u64 > remaining {
+            return Err(BundleError::ArchiveTooLarge);
+        }
+        actual_unpacked_bytes = actual_unpacked_bytes.saturating_add(buf.len() as u64);
 
         let out_path = dest_dir.join(&clean_rel);
         if let Some(parent) = out_path.parent() {
@@ -447,19 +474,6 @@ pub fn unpack_chipz_bytes(
                 path: parent.display().to_string(),
                 source,
             })?;
-        }
-
-        let mut buf = Vec::with_capacity((entry.size() as usize).min(16 * 1024 * 1024));
-        entry
-            .by_ref()
-            .take(MAX_CHIPZ_UNPACK_BYTES + 1)
-            .read_to_end(&mut buf)
-            .map_err(|source| BundleError::Io {
-                path: raw_name.clone(),
-                source,
-            })?;
-        if buf.len() as u64 > MAX_CHIPZ_UNPACK_BYTES {
-            return Err(BundleError::ArchiveTooLarge);
         }
 
         std::fs::write(&out_path, &buf).map_err(|source| BundleError::Io {
@@ -577,6 +591,133 @@ pub fn is_chipz_path(path: &Path) -> bool {
     path.extension()
         .and_then(|s| s.to_str())
         .is_some_and(|ext| ext.eq_ignore_ascii_case("chipz"))
+}
+
+/// Creates a new, non-predictable, private (`0o700` on Unix) temporary directory exclusively via
+/// `std::fs::create_dir` (refusing pre-existing directories/symlinks to prevent CWE-377 races).
+pub fn create_private_temp_extract_dir(prefix: &str) -> Result<PathBuf, BundleError> {
+    let base = std::env::temp_dir();
+    let clean_prefix = sanitize_bundle_filename(prefix);
+    let pid = std::process::id();
+
+    for attempt in 0..32u64 {
+        let seq = TEMP_EXTRACT_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0u128, |d| d.as_nanos());
+        let stack_addr = (&attempt as *const u64) as usize;
+        let entropy_seed = format!("{clean_prefix}:{pid}:{nanos}:{seq}:{attempt}:{stack_addr:x}");
+        let tag = &compute_sha256_hex(entropy_seed.as_bytes())[..20];
+        let candidate = base.join(format!("{clean_prefix}_{tag}"));
+        match std::fs::create_dir(&candidate) {
+            Ok(()) => {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt as _;
+                    let perms = std::fs::Permissions::from_mode(0o700);
+                    std::fs::set_permissions(&candidate, perms).map_err(|source| {
+                        let _ = std::fs::remove_dir(&candidate);
+                        BundleError::Io {
+                            path: candidate.display().to_string(),
+                            source,
+                        }
+                    })?;
+                }
+                return Ok(candidate);
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(source) => {
+                return Err(BundleError::Io {
+                    path: candidate.display().to_string(),
+                    source,
+                });
+            }
+        }
+    }
+
+    Err(BundleError::Io {
+        path: base.display().to_string(),
+        source: std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "failed to allocate unique private temp directory after 32 attempts",
+        ),
+    })
+}
+
+fn is_expected_asset_extension(path: &Path, allowed_exts: &[&str]) -> bool {
+    path.extension()
+        .and_then(|s| s.to_str())
+        .is_some_and(|ext| allowed_exts.iter().any(|a| ext.eq_ignore_ascii_case(a)))
+}
+
+fn is_path_outside_project_dir(
+    project_dir: Option<&Path>,
+    stored_path: &str,
+    resolved: &Path,
+) -> bool {
+    let raw = Path::new(stored_path);
+    let has_parent_hop = raw.components().any(|c| {
+        matches!(
+            c,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        )
+    });
+    let Some(dir) = project_dir else {
+        return raw.is_absolute() || has_parent_hop;
+    };
+    if let (Ok(canon_dir), Ok(canon_file)) =
+        (std::fs::canonicalize(dir), std::fs::canonicalize(resolved))
+    {
+        return !canon_file.starts_with(&canon_dir);
+    }
+    raw.is_absolute() || has_parent_hop
+}
+
+/// Inspects a [`ProjectDocument`] and returns any referenced model, vector, or custom font paths
+/// that either resolve outside `project_dir` or carry an unexpected non-CAD/vector/font extension.
+///
+/// Callers packing untrusted `.chip.toml` files into `.chipz` should warn or block on a non-empty
+/// result unless the operator explicitly approves bundling external local files.
+pub fn external_or_suspicious_assets_referenced(
+    project: &ProjectDocument,
+    project_dir: Option<&Path>,
+) -> Vec<PathBuf> {
+    let mut flagged = Vec::new();
+    const MODEL_EXTS: &[&str] = &["step", "stp", "stl", "obj", "3mf"];
+    const VECTOR_EXTS: &[&str] = &["dxf", "svg"];
+    const FONT_EXTS: &[&str] = &["ttf", "otf", "ttc"];
+
+    for model in &project.models {
+        let resolved = resolve_model_path(project_dir, &model.path);
+        if is_path_outside_project_dir(project_dir, &model.path, &resolved)
+            || !is_expected_asset_extension(&resolved, MODEL_EXTS)
+        {
+            flagged.push(resolved);
+        }
+    }
+    for sk in &project.sketches {
+        if let Some(asset) = &sk.source_asset {
+            let resolved = resolve_model_path(project_dir, &asset.path);
+            if is_path_outside_project_dir(project_dir, &asset.path, &resolved)
+                || !is_expected_asset_extension(&resolved, VECTOR_EXTS)
+            {
+                flagged.push(resolved);
+            }
+        }
+        for ent in &sk.entities {
+            if let chip_sketch::SketchEntity::Text(txt) = &ent.entity
+                && let chip_sketch::SketchFontSource::CustomFile { path, .. } = &txt.font
+            {
+                let resolved = resolve_model_path(project_dir, path);
+                if is_path_outside_project_dir(project_dir, path, &resolved)
+                    || !is_expected_asset_extension(&resolved, FONT_EXTS)
+                {
+                    flagged.push(resolved);
+                }
+            }
+        }
+    }
+    flagged
 }
 
 fn validate_safe_relative_entry_path(raw: &str) -> Result<PathBuf, BundleError> {

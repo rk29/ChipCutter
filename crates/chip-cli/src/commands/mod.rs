@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 
 use chip_cad::CadDocument;
 use chip_project::{
-    ProjectDocument, is_chipz_path, load_model_entry_cad_doc, resolve_model_path,
-    unpack_chipz_bundle,
+    ProjectDocument, create_private_temp_extract_dir, is_chipz_path, load_model_entry_cad_doc,
+    resolve_model_path, unpack_chipz_bundle,
 };
 use chip_sim::{SimDiagnostic, SimResolution};
 use serde::Serialize;
@@ -29,15 +29,9 @@ pub struct LoadedCliInput {
 
 pub fn load_project_or_chipz(path: &Path) -> Result<LoadedCliInput, Box<dyn std::error::Error>> {
     if is_chipz_path(path) {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_nanos());
-        let temp_dir = std::env::temp_dir().join(format!(
-            "chipcutter_cli_chipz_{}_{nanos}",
-            std::process::id()
-        ));
-        let unpacked = unpack_chipz_bundle(path, &temp_dir)?;
+        let temp_dir = create_private_temp_extract_dir("chipcutter_cli_chipz")?;
         let guard = TempExtractGuard(temp_dir.clone());
+        let unpacked = unpack_chipz_bundle(path, &temp_dir)?;
         Ok(LoadedCliInput {
             proj: unpacked.project,
             dir: Some(temp_dir),

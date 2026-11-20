@@ -426,4 +426,34 @@ mod tests {
         assert_eq!(cli_loaded.id, MILO_1_5_MACHINE_ID);
         let _ = std::fs::remove_dir_all(&empty);
     }
+
+    #[test]
+    fn milestone_33_fusion_import_rejects_oversized_and_too_many_entries_archives() {
+        use std::io::Write as _;
+
+        // 1. Oversized bare JSON rejected before parsing
+        let big_bare = vec![b' '; (fusion_import::MAX_FUSION_JSON_BYTES as usize) + 1];
+        assert!(matches!(
+            import_fusion_library_bytes(&big_bare, "oversized"),
+            Err(FusionImportError::ArchiveTooLarge { .. })
+        ));
+
+        // 2. Oversized compressed JSON entry inside a `.tools` ZIP rejected via size cap
+        let mut cursor = std::io::Cursor::new(Vec::new());
+        {
+            let mut zw = zip::ZipWriter::new(&mut cursor);
+            let opts = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Deflated);
+            zw.start_file("tools.json", opts).unwrap();
+            let chunk = vec![b' '; 1024 * 1024];
+            for _ in 0..33 {
+                zw.write_all(&chunk).unwrap();
+            }
+            zw.finish().unwrap();
+        }
+        assert!(matches!(
+            import_fusion_library_bytes(&cursor.into_inner(), "zip_bomb"),
+            Err(FusionImportError::ArchiveTooLarge { .. })
+        ));
+    }
 }
