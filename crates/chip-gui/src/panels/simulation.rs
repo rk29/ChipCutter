@@ -14,10 +14,10 @@ use chip_project::{
     ProjectDocument, ToolpathCache, collect_ready_setup_operations, resolve_kinematics_for_key,
 };
 use chip_sim::{
-    ScrubSnapshot, SetupSimulationInput, SetupSimulationResult, SimError, SimOperationInput,
-    SimResolution, SimStockMesh, SimToolMesh, SimVerificationConfig, build_cutter_assembly_mesh,
-    format_cycle_time_hms, run_setup_simulation, tessellate_cylindrical_stock_mesh,
-    tessellate_stock_mesh,
+    CylindricalStock, HeightfieldStock, ScrubSnapshot, SetupSimulationInput, SetupSimulationResult,
+    SimError, SimOperationInput, SimResolution, SimStockMesh, SimToolMesh, SimVerificationConfig,
+    StockPlaybackCursor, build_cutter_assembly_mesh, format_cycle_time_hms, run_setup_simulation,
+    tessellate_cylindrical_stock_mesh, tessellate_stock_mesh,
 };
 use chip_tools::{Tool, ToolId};
 use crossbeam_channel::{Receiver, Sender, unbounded};
@@ -60,10 +60,14 @@ pub struct SimulationPanelState {
     active_signature: u64,
     pub active_result: Option<Arc<SetupSimulationResult>>,
 
-    cached_stock_key: Option<(u64, usize, bool, i32)>,
+    working_stock_identity: Option<(u64, usize)>,
+    working_stock_cursor: Option<StockPlaybackCursor>,
+    working_heightfield: Option<HeightfieldStock>,
+    working_cylindrical: Option<CylindricalStock>,
+
+    cached_stock_meta: Option<(u64, usize, bool, i32)>,
     cached_stock_rev: u64,
     cached_stock_mesh: Option<Arc<SimStockMesh>>,
-    last_playback_remesh: Instant,
 
     cached_tool_key: Option<(ToolId, bool)>,
     cached_tool_rev: u64,
@@ -129,10 +133,13 @@ impl Default for SimulationPanelState {
             active_setup_idx: 0,
             active_signature: 0,
             active_result: None,
-            cached_stock_key: None,
+            working_stock_identity: None,
+            working_stock_cursor: None,
+            working_heightfield: None,
+            working_cylindrical: None,
+            cached_stock_meta: None,
             cached_stock_rev: 0,
             cached_stock_mesh: None,
-            last_playback_remesh: Instant::now(),
             cached_tool_key: None,
             cached_tool_rev: 0,
             cached_tool_mesh: None,
@@ -324,7 +331,7 @@ impl SimulationPanelState {
                             self.active_setup_idx = setup_idx;
                             self.active_signature = signature;
                             self.active_result = Some(sim);
-                            self.cached_stock_key = None;
+                            self.clear_stock_display_cache();
                             completed_new = true;
                         }
                         Err(err) => {
@@ -413,15 +420,25 @@ impl SimulationPanelState {
         }
     }
 
+    fn clear_stock_display_cache(&mut self) {
+        self.working_stock_identity = None;
+        self.working_stock_cursor = None;
+        self.working_heightfield = None;
+        self.working_cylindrical = None;
+        self.cached_stock_meta = None;
+        self.cached_stock_mesh = None;
+    }
+
     /// Produces the cached Pass #6 GPU stock mesh, 3D revolved cutter mesh + tip position, and trail limit.
     pub fn resolve_viewport_visuals(
         &mut self,
         project: &ProjectDocument,
         setup_idx: usize,
-        cache: &ToolpathCache,
-        cad_revision: u64,
     ) -> SimViewportVisuals {
-        let Some(res) = &self.active_result else {
+        let Some(res) = self.active_result.as_ref().map(Arc::clone) else {
+            if self.working_stock_identity.is_some() || self.cached_stock_mesh.is_some() {
+                self.clear_stock_display_cache();
+            }
             return SimViewportVisuals {
                 stock: None,
                 cutter: None,
@@ -439,81 +456,75 @@ impl SimulationPanelState {
         }
 
         let snap = res.timeline.sample_at_time(self.current_time_sec);
+        let result_ptr = Arc::as_ptr(&res) as usize;
+        let run_identity = (self.active_run_id, result_ptr);
 
-        // 1. 3D Machined Stock Mesh
+        // 1. 3D Machined Stock Mesh (synchronized to exact cutter timestamp on every frame)
         let stock_out = if self.show_machined_stock {
-            let completed_key = snap.as_ref().map_or(res.timeline.motion_spans.len(), |s| {
-                if self.current_time_sec >= res.timeline.total_time_sec - 1e-4 {
-                    usize::MAX
-                } else {
-                    s.completed_segments
-                }
-            });
             let rotary_deg = snap.as_ref().map_or(0.0, |s| s.rotary_deg);
-            let rotary_deg_tenths = if res.final_cylindrical_stock.is_some() {
-                (rotary_deg * 10.0).round() as i32
+            let rotary_deg_hundredths = if res.final_cylindrical_stock.is_some() {
+                (rotary_deg * 100.0).round() as i32
             } else {
                 0
             };
-            let desired_key = (
+            let desired_meta = (
                 self.active_run_id,
-                completed_key,
+                result_ptr,
                 self.color_by_operation,
-                rotary_deg_tenths,
+                rotary_deg_hundredths,
             );
 
-            // Throttle intermediate stock remeshing to ~14 Hz while actively playing fast so 60 FPS stays silky
-            let allow_remesh = !self.is_playing
-                || completed_key == usize::MAX
-                || self.cached_stock_mesh.is_none()
-                || self.last_playback_remesh.elapsed().as_millis() >= 70;
-
-            if self.cached_stock_key != Some(desired_key) && allow_remesh {
-                let mesh = if let Some(cyl_final) = &res.final_cylindrical_stock {
-                    if completed_key == usize::MAX || res.cylindrical_checkpoints.is_empty() {
-                        tessellate_cylindrical_stock_mesh(
-                            cyl_final,
-                            self.color_by_operation,
-                            rotary_deg,
-                        )
-                    } else {
-                        let ckpt = res
-                            .cylindrical_checkpoints
-                            .iter()
-                            .rev()
-                            .find(|c| c.completed_segments <= completed_key)
-                            .unwrap_or(&res.cylindrical_checkpoints[0]);
-                        let mut cyl_snap = cyl_final.clone();
-                        cyl_snap.r_stock = ckpt.r_stock.clone();
-                        cyl_snap.last_op_idx = ckpt.last_op_idx.clone();
-                        tessellate_cylindrical_stock_mesh(
-                            &cyl_snap,
-                            self.color_by_operation,
-                            rotary_deg,
-                        )
-                    }
-                } else if completed_key == usize::MAX {
-                    tessellate_stock_mesh(&res.final_stock, self.color_by_operation)
+            if self.working_stock_identity != Some(run_identity) {
+                self.working_stock_identity = Some(run_identity);
+                self.working_stock_cursor = Some(StockPlaybackCursor {
+                    seg_idx: res.timeline.motion_spans.len(),
+                    seg_u: 0.0,
+                });
+                if let Some(cyl_final) = &res.final_cylindrical_stock {
+                    self.working_cylindrical = Some(cyl_final.clone());
+                    self.working_heightfield = None;
                 } else {
-                    let ready =
-                        collect_ready_setup_operations(project, setup_idx, cache, cad_revision);
-                    let inputs: Vec<SimOperationInput<'_>> = ready
-                        .iter()
-                        .map(|r| {
-                            SimOperationInput::from_operation(r.op, r.tool, r.toolpath.as_ref())
-                        })
-                        .collect();
-                    let intermediate =
-                        res.reconstruct_stock_at_time(&inputs, self.current_time_sec);
-                    tessellate_stock_mesh(&intermediate, self.color_by_operation)
+                    self.working_heightfield = Some(res.final_stock.clone());
+                    self.working_cylindrical = None;
+                }
+                self.cached_stock_mesh = None;
+                self.cached_stock_meta = None;
+            }
+
+            let stock_changed = if let Some(cyl_work) = self.working_cylindrical.as_mut() {
+                res.sync_cylindrical_stock_to_time(
+                    cyl_work,
+                    &mut self.working_stock_cursor,
+                    self.current_time_sec,
+                )
+            } else if let Some(hf_work) = self.working_heightfield.as_mut() {
+                res.sync_stock_to_time(
+                    hf_work,
+                    &mut self.working_stock_cursor,
+                    self.current_time_sec,
+                )
+            } else {
+                false
+            };
+
+            let needs_remesh = stock_changed
+                || self.cached_stock_mesh.is_none()
+                || self.cached_stock_meta != Some(desired_meta);
+
+            if needs_remesh {
+                let mesh = if let Some(cyl_work) = self.working_cylindrical.as_ref() {
+                    tessellate_cylindrical_stock_mesh(cyl_work, self.color_by_operation, rotary_deg)
+                } else if let Some(hf_work) = self.working_heightfield.as_ref() {
+                    tessellate_stock_mesh(hf_work, self.color_by_operation)
+                } else {
+                    SimStockMesh::default()
                 };
 
                 let rev = self.next_gpu_mesh_rev;
                 self.next_gpu_mesh_rev += 1;
-                self.cached_stock_key = Some(desired_key);
+                self.cached_stock_meta = Some(desired_meta);
                 self.cached_stock_rev = rev;
                 self.cached_stock_mesh = Some(Arc::new(mesh));
-                self.last_playback_remesh = Instant::now();
             }
 
             self.cached_stock_mesh
@@ -589,6 +600,13 @@ impl SimulationPanelState {
         } = ctx;
         let mut action: Option<SimulationUiAction> = None;
         let display_unit = project.display_units;
+        let prev_time_sec = self.current_time_sec;
+        let prev_vis_flags = (
+            self.show_machined_stock,
+            self.color_by_operation,
+            self.show_cutter_assembly,
+            self.trail_up_to_cutter,
+        );
 
         // Top Control Bar: Run Simulation, Resolution, Visual Toggles, Verification Status
         ui.horizontal_wrapped(|ui| {
@@ -940,6 +958,249 @@ impl SimulationPanelState {
             }
         }
 
+        if (self.current_time_sec - prev_time_sec).abs() > 1e-9
+            || (
+                self.show_machined_stock,
+                self.color_by_operation,
+                self.show_cutter_assembly,
+                self.trail_up_to_cutter,
+            ) != prev_vis_flags
+        {
+            ui.ctx().request_repaint();
+        }
+
         action
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use std::sync::Arc;
+
+    use chip_cad::CadDocument;
+    use chip_cam::{
+        AxisAnchor, BoxAnchor27, MotionRole, RotaryAxisKind, RotaryDriveMode, Setup, StockAxis,
+        StockConfig, ToolpathBuilder, WcsOriginMode, WorkOffsetSlot,
+    };
+    use chip_math::{DVec3, DisplayUnit, ParamLength};
+    use chip_project::ProjectDocument;
+    use chip_sim::{
+        MachineKinematicsConfig, SetupSimulationInput, SimOperationInput, SimResolution,
+        SimVerificationConfig, run_setup_simulation,
+    };
+    use chip_tools::default_starter_tool_library;
+
+    use super::SimulationPanelState;
+
+    #[test]
+    fn playback_updates_stock_every_frame_within_single_cutting_segment_without_lag() {
+        let mut project = ProjectDocument::new("Sim Sync Test");
+        let lib = default_starter_tool_library();
+        project.tools = lib.tools.clone();
+        let flat_6mm = &lib.tools[0];
+
+        let mut setup = Setup::new("s1", "Setup 1", WorkOffsetSlot::G54);
+        setup.wcs.origin = WcsOriginMode::StockBoxPoint {
+            anchor: BoxAnchor27::TOP_CENTER,
+        };
+        setup.stock = StockConfig::FixedBox {
+            width_x: ParamLength::from_mm(100.0),
+            depth_y: ParamLength::from_mm(100.0),
+            height_z: ParamLength::from_mm(20.0),
+            xy_align: chip_cam::FixedBoxXyAlign::CenterXy,
+            z_align: chip_cam::FixedBoxZAlign::CenterZ,
+        };
+        let doc = CadDocument::empty();
+        let resolved = setup.resolve(&doc, DisplayUnit::Millimeter).unwrap();
+
+        // Seg 0: air rapid above stock; Seg 1: plunge; Seg 2: single long 80 mm cut across X; Seg 3: retract in air.
+        let mut b = ToolpathBuilder::new("op_slot");
+        b.rapid_to(DVec3::new(-40.0, 0.0, 10.0));
+        b.rapid_to(DVec3::new(-40.0, 0.0, 2.0));
+        b.linear_to(DVec3::new(-40.0, 0.0, -5.0), 300.0, MotionRole::Plunge);
+        b.linear_to(DVec3::new(40.0, 0.0, -5.0), 600.0, MotionRole::Cut);
+        b.rapid_to(DVec3::new(40.0, 0.0, 10.0));
+        b.rapid_to(DVec3::new(-40.0, 0.0, 10.0));
+        let tp = b.finish();
+
+        let sim = run_setup_simulation(&SetupSimulationInput {
+            doc: &doc,
+            setup: &resolved,
+            target_bodies: &[],
+            operations: &[SimOperationInput {
+                op_id: "op_slot",
+                op_name: "Long Slot Cut",
+                tool: flat_6mm,
+                fallback_spindle_rpm: 12_000.0,
+                intentional_edge_break_mm: 0.0,
+                toolpath: &tp,
+            }],
+            resolution: SimResolution::Standard,
+            kinematics: MachineKinematicsConfig::default(),
+            verify_config: SimVerificationConfig::default(),
+            cancel: None,
+        })
+        .unwrap();
+
+        let cut_start = sim.timeline.motion_spans[2].t_start_sec;
+        let cut_dur = sim.timeline.motion_spans[2].t_end_sec - cut_start;
+        assert!(cut_dur > 5.0);
+        let air_start = sim.timeline.motion_spans[4].t_start_sec;
+        let air_end = sim.timeline.motion_spans[4].t_end_sec;
+
+        let mut panel = SimulationPanelState {
+            active_run_id: 1,
+            active_setup_idx: 0,
+            active_result: Some(Arc::new(sim)),
+            is_playing: true,
+            ..Default::default()
+        };
+
+        // Advance through 4 consecutive frames inside the SAME cutting segment (0 ms wall clock apart!)
+        let mut prev_rev = 0u64;
+        for frac in [0.15_f64, 0.40, 0.65, 0.90] {
+            panel.current_time_sec = cut_start + cut_dur * frac;
+            let vis = panel.resolve_viewport_visuals(&project, 0);
+            let (rev, _mesh) = vis.stock.expect("stock mesh should be present");
+            let (_, _, tip_wcs) = vis.cutter.expect("cutter visual should be present");
+
+            assert!(
+                rev > prev_rev,
+                "stock mesh revision must advance immediately at frac={frac} (prev={prev_rev}, got={rev})"
+            );
+            prev_rev = rev;
+
+            // Working heightfield must already be cut directly beneath the cutter tip,
+            // and remain uncut well ahead of the cutter!
+            let hf = panel.working_heightfield.as_ref().unwrap();
+            let z_at_tip = hf.sample_stock_z(tip_wcs.x, 0.0).unwrap();
+            assert!(
+                (z_at_tip - (-5.0)).abs() < 0.05,
+                "stock directly beneath cutter at x={:.2} must be cut to -5.0, got {z_at_tip:.2}",
+                tip_wcs.x
+            );
+            if tip_wcs.x + 8.0 < 48.0 {
+                let z_ahead = hf.sample_stock_z(tip_wcs.x + 8.0, 0.0).unwrap();
+                assert!(
+                    z_ahead > -0.1,
+                    "stock ahead of cutter at x={:.2} must still be uncut, got {z_ahead:.2}",
+                    tip_wcs.x + 8.0
+                );
+            }
+        }
+
+        // Subsequent air-only rapid move must NOT trigger unnecessary stock remeshing
+        panel.current_time_sec = 0.5 * (air_start + air_end);
+        let vis_air1 = panel.resolve_viewport_visuals(&project, 0);
+        let rev_after_cut = vis_air1.stock.unwrap().0;
+        panel.current_time_sec = air_start + 0.85 * (air_end - air_start);
+        let vis_air2 = panel.resolve_viewport_visuals(&project, 0);
+        assert_eq!(
+            vis_air2.stock.unwrap().0,
+            rev_after_cut,
+            "air rapid move should not unnecessarily remesh unchanged stock"
+        );
+    }
+
+    #[test]
+    fn playback_updates_4th_axis_cylindrical_stock_between_checkpoints_without_lag() {
+        let mut project = ProjectDocument::new("Rotary Sync Test");
+        let lib = default_starter_tool_library();
+        project.tools = lib.tools.clone();
+        let flat_6mm = &lib.tools[0];
+
+        let mut setup = Setup::new("s_rot", "Rotary A", WorkOffsetSlot::G54);
+        setup.wcs.origin = WcsOriginMode::StockBoxPoint {
+            anchor: BoxAnchor27 {
+                x: AxisAnchor::Center,
+                y: AxisAnchor::Center,
+                z: AxisAnchor::Center,
+            },
+        };
+        setup.stock = StockConfig::FixedCylinder {
+            axis: StockAxis::X,
+            diameter: ParamLength::from_mm(40.0),
+            length: ParamLength::from_mm(80.0),
+            axial_top_offset: ParamLength::from_mm(0.0),
+        };
+        setup.rotary.mode = RotaryDriveMode::TwoLinearPlusRotary;
+        setup.rotary.axis = RotaryAxisKind::XAxis;
+
+        let doc = CadDocument::empty();
+        let resolved = setup.resolve(&doc, DisplayUnit::Millimeter).unwrap();
+
+        let mut b = ToolpathBuilder::new("op_rot");
+        b.rotary_rapid_to(DVec3::new(-25.0, 0.0, 28.0), 0.0);
+        b.rotary_linear_to(
+            DVec3::new(-25.0, 0.0, 16.0),
+            0.0,
+            400.0,
+            16.0,
+            MotionRole::Plunge,
+        );
+        b.rotary_linear_to(
+            DVec3::new(25.0, 0.0, 16.0),
+            0.0,
+            600.0,
+            16.0,
+            MotionRole::Cut,
+        );
+        let tp = b.finish();
+
+        let sim = run_setup_simulation(&SetupSimulationInput {
+            doc: &doc,
+            setup: &resolved,
+            target_bodies: &[],
+            operations: &[SimOperationInput {
+                op_id: "op_rot",
+                op_name: "Rotary Axial Flute",
+                tool: flat_6mm,
+                fallback_spindle_rpm: 12_000.0,
+                intentional_edge_break_mm: 0.0,
+                toolpath: &tp,
+            }],
+            resolution: SimResolution::Standard,
+            kinematics: MachineKinematicsConfig::default(),
+            verify_config: SimVerificationConfig::default(),
+            cancel: None,
+        })
+        .unwrap();
+
+        let cut_start = sim.timeline.motion_spans[1].t_start_sec;
+        let cut_dur = sim.timeline.motion_spans[1].t_end_sec - cut_start;
+
+        let mut panel = SimulationPanelState {
+            active_run_id: 1,
+            active_setup_idx: 0,
+            active_result: Some(Arc::new(sim)),
+            is_playing: true,
+            ..Default::default()
+        };
+
+        panel.current_time_sec = cut_start + cut_dur * 0.25;
+        let rev_25 = panel.resolve_viewport_visuals(&project, 0).stock.unwrap().0;
+        let vol_25 = panel
+            .working_cylindrical
+            .as_ref()
+            .unwrap()
+            .current_volume_mm3();
+
+        panel.current_time_sec = cut_start + cut_dur * 0.75;
+        let rev_75 = panel.resolve_viewport_visuals(&project, 0).stock.unwrap().0;
+        let vol_75 = panel
+            .working_cylindrical
+            .as_ref()
+            .unwrap()
+            .current_volume_mm3();
+
+        assert!(
+            rev_75 > rev_25,
+            "cylindrical stock mesh must update smoothly mid-segment (rev_25={rev_25}, rev_75={rev_75})"
+        );
+        assert!(
+            vol_75 < vol_25 - 100.0,
+            "cylindrical stock volume must decrease as cutter advances mid-segment (vol_25={vol_25:.1}, vol_75={vol_75:.1})"
+        );
     }
 }

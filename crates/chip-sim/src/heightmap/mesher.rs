@@ -200,28 +200,25 @@ pub fn tessellate_stock_mesh(stock: &HeightfieldStock, color_by_op: bool) -> Sim
     }
 
     // 2. Crisp vertical step risers & outer stock/hole walls
-    // -X / +X vertical risers (normal `[-1, 0, 0]` and `[+1, 0, 0]`)
-    for vi in 0..=vx {
-        let x = (stock.origin_x_mm + (vi as f64) * vdx) as f32;
-        for vj in 0..vy {
-            let y0 = (stock.origin_y_mm + (vj as f64) * vdy) as f32;
-            let y1 = (stock.origin_y_mm + ((vj + 1) as f64) * vdy) as f32;
+    // -X / +X vertical risers (normal `[-1, 0, 0]` and `[+1, 0, 0]`) — row-major for cache locality
+    for vj in 0..vy {
+        let y0 = (stock.origin_y_mm + (vj as f64) * vdy) as f32;
+        let y1 = (stock.origin_y_mm + ((vj + 1) as f64) * vdy) as f32;
+        let row = vj * vx;
+        for vi in 0..=vx {
+            let x = (stock.origin_x_mm + (vi as f64) * vdx) as f32;
 
-            let left = if vi > 0 && v_active[vj * vx + (vi - 1)] {
+            let left = if vi > 0 && v_active[row + (vi - 1)] {
                 Some((
-                    v_zbot[vj * vx + (vi - 1)],
-                    v_ztop[vj * vx + (vi - 1)],
-                    v_op[vj * vx + (vi - 1)],
+                    v_zbot[row + (vi - 1)],
+                    v_ztop[row + (vi - 1)],
+                    v_op[row + (vi - 1)],
                 ))
             } else {
                 None
             };
-            let right = if vi < vx && v_active[vj * vx + vi] {
-                Some((
-                    v_zbot[vj * vx + vi],
-                    v_ztop[vj * vx + vi],
-                    v_op[vj * vx + vi],
-                ))
+            let right = if vi < vx && v_active[row + vi] {
+                Some((v_zbot[row + vi], v_ztop[row + vi], v_op[row + vi]))
             } else {
                 None
             };
@@ -251,7 +248,7 @@ pub fn tessellate_stock_mesh(stock: &HeightfieldStock, color_by_op: bool) -> Sim
                         col,
                     );
                 }
-                (Some((lb, lt, _lop)), Some((rb, rt, rop))) => {
+                (Some((lb, lt, lop)), Some((rb, rt, rop))) => {
                     if lt > rt + 2e-4 {
                         let z_lo = rt.max(lb);
                         let col = stock_cell_color(rop, color_by_op, false);
@@ -266,8 +263,7 @@ pub fn tessellate_stock_mesh(stock: &HeightfieldStock, color_by_op: bool) -> Sim
                         );
                     } else if rt > lt + 2e-4 {
                         let z_lo = lt.max(rb);
-                        let l_op = v_op[vj * vx + (vi - 1)];
-                        let col = stock_cell_color(l_op, color_by_op, false);
+                        let col = stock_cell_color(lop, color_by_op, false);
                         push_quad(
                             &mut mesh,
                             [x, y1, z_lo],

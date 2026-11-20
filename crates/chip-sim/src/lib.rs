@@ -16,8 +16,8 @@ pub use cylindrical::{
 };
 pub use heightmap::{
     HeightfieldStock, OPERATION_STOCK_PALETTE, SetupSimulationInput, SetupSimulationResult,
-    SimError, SimResolution, SimStockMesh, StockCheckpoint, UNCUT_OP_IDX, run_setup_simulation,
-    tessellate_stock_mesh,
+    SimError, SimResolution, SimStockMesh, StockCheckpoint, StockPlaybackCursor, UNCUT_OP_IDX,
+    run_setup_simulation, tessellate_stock_mesh,
 };
 pub use timeline::{
     MachineKinematicsConfig, MotionSpan, OperationTimelineSummary, ScrubSnapshot,
@@ -415,5 +415,115 @@ mod tests {
             "expected ~0.6 mm dome apex gouge, got {:.3} mm",
             gouge_diag.max_excess_mm
         );
+    }
+
+    #[test]
+    fn incremental_sync_stock_matches_full_reconstruction_mid_segment_and_across_scrubs() {
+        use chip_cad::CadDocument;
+        use chip_cam::{
+            BoxAnchor27, MotionRole, Setup, StockConfig, ToolpathBuilder, WcsOriginMode,
+            WorkOffsetSlot, XyArcMove,
+        };
+        use chip_math::{DVec2, DVec3, DisplayUnit, ParamLength};
+        use chip_tools::default_starter_tool_library;
+
+        let lib = default_starter_tool_library();
+        let flat_6mm = &lib.tools[0];
+
+        let mut setup = Setup::new("s_inc", "Incremental Sync", WorkOffsetSlot::G54);
+        setup.wcs.origin = WcsOriginMode::StockBoxPoint {
+            anchor: BoxAnchor27::TOP_CENTER,
+        };
+        setup.stock = StockConfig::FixedBox {
+            width_x: ParamLength::from_mm(100.0),
+            depth_y: ParamLength::from_mm(100.0),
+            height_z: ParamLength::from_mm(20.0),
+            xy_align: chip_cam::FixedBoxXyAlign::CenterXy,
+            z_align: chip_cam::FixedBoxZAlign::CenterZ,
+        };
+        let doc = CadDocument::empty();
+        let resolved = setup.resolve(&doc, DisplayUnit::Millimeter).unwrap();
+
+        let mut b = ToolpathBuilder::new("op_inc");
+        b.rapid_to(DVec3::new(-30.0, 0.0, 10.0));
+        b.linear_to(DVec3::new(-30.0, 0.0, -4.0), 300.0, MotionRole::Plunge);
+        // Long linear cut along X
+        b.linear_to(DVec3::new(30.0, 0.0, -4.0), 600.0, MotionRole::Cut);
+        // Semicircular XY arc around (0, 0) of radius 30 mm
+        b.arc_xy_to(XyArcMove {
+            end_wcs: DVec3::new(-30.0, 0.0, -4.0),
+            center_xy: DVec2::new(0.0, 0.0),
+            radius_mm: 30.0,
+            ccw: true,
+            turns: 0,
+            feed_mm_min: 600.0,
+            role: MotionRole::Cut,
+        });
+        // Retract in air
+        b.rapid_to(DVec3::new(-30.0, 0.0, 10.0));
+        let tp = b.finish();
+
+        let ops = [SimOperationInput {
+            op_id: "op_inc",
+            op_name: "Linear + Arc Cut",
+            tool: flat_6mm,
+            fallback_spindle_rpm: 12_000.0,
+            intentional_edge_break_mm: 0.0,
+            toolpath: &tp,
+        }];
+        let sim = run_setup_simulation(&SetupSimulationInput {
+            doc: &doc,
+            setup: &resolved,
+            target_bodies: &[],
+            operations: &ops,
+            resolution: SimResolution::Standard,
+            kinematics: MachineKinematicsConfig::default(),
+            verify_config: SimVerificationConfig::default(),
+            cancel: None,
+        })
+        .unwrap();
+
+        let mut working = sim.final_stock.clone();
+        let mut cursor: Option<StockPlaybackCursor> = None;
+
+        // Sweep forward across both linear and arc segments, then scrub backward and forward again
+        let total_t = sim.timeline.total_time_sec;
+        let sample_times = [
+            0.0,
+            total_t * 0.12,
+            total_t * 0.25,
+            total_t * 0.38,
+            total_t * 0.55,
+            total_t * 0.72,
+            total_t * 0.88,
+            total_t * 0.30, // backward scrub
+            total_t * 0.65, // forward jump
+            total_t,
+        ];
+
+        for &t in &sample_times {
+            let _ = sim.sync_stock_to_time(&mut working, &mut cursor, t);
+            let reference = sim.reconstruct_stock_at_time(&ops, t);
+            assert_eq!(
+                working.z_stock.len(),
+                reference.z_stock.len(),
+                "grid dimensions must match"
+            );
+            for (i, (&w_z, &r_z)) in working
+                .z_stock
+                .iter()
+                .zip(reference.z_stock.iter())
+                .enumerate()
+            {
+                assert!(
+                    (w_z - r_z).abs() < 1e-4 || (w_z.is_infinite() && r_z.is_infinite()),
+                    "incremental sync diverged from full reconstruction at t={t:.3}s cell {i}: working={w_z}, ref={r_z}"
+                );
+            }
+            assert_eq!(
+                working.last_op_idx, reference.last_op_idx,
+                "last_op_idx mismatch at t={t:.3}s"
+            );
+        }
     }
 }

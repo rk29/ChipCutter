@@ -52,17 +52,20 @@ struct RowCellsMut<'a> {
 
 impl HeightfieldStock {
     /// Fast mutation-only sweep used when reconstructing intermediate timeline scrub positions.
+    /// Returns `true` if at least one heightmap cell decreased in height.
     pub fn sweep_segment_mutate_only(
         &mut self,
         seg: &ToolpathSegment3D,
         prof: &RadialCutterProfile,
         is_flat_endmill: bool,
         op_idx: u16,
-    ) {
+    ) -> bool {
         let primitives = decompose_segment_primitives(seg);
+        let mut mutated = false;
         for prim in primitives {
-            self.apply_primitive_mutate(&prim, prof, is_flat_endmill, op_idx);
+            mutated |= self.apply_primitive_mutate(&prim, prof, is_flat_endmill, op_idx);
         }
+        mutated
     }
 
     fn apply_primitive_mutate(
@@ -71,17 +74,18 @@ impl HeightfieldStock {
         prof: &RadialCutterProfile,
         is_flat_endmill: bool,
         op_idx: u16,
-    ) {
+    ) -> bool {
         let r_cut = prof.cutting_radius_mm;
         let aabb = prim.xy_bounds(r_cut);
         let (Some((i0, i1)), Some((j0, j1))) = (
             self.index_span_x(aabb.min.x, aabb.max.x),
             self.index_span_y(aabb.min.y, aabb.max.y),
         ) else {
-            return;
+            return false;
         };
 
         let min_possible_z = prim.min_tip_z() as f32;
+        let mut mutated = false;
         for j in j0..=j1 {
             let py = self.origin_y_mm + (j as f64 + 0.5) * self.dy_mm;
             let row = j * self.nx;
@@ -101,10 +105,12 @@ impl HeightfieldStock {
                             z_cut_f
                         };
                         self.last_op_idx[idx] = op_idx;
+                        mutated = true;
                     }
                 }
             }
         }
+        mutated
     }
 
     /// Sweeps a single [`MotionSpan`] across `self`, evaluating all 5 safety checks (`06-simulation.md` §4)
@@ -849,6 +855,7 @@ pub fn run_setup_simulation(
         final_cylindrical_stock: None,
         checkpoints,
         cylindrical_checkpoints: Vec::new(),
+        operation_profiles: profiles,
         diagnostics,
     })
 }

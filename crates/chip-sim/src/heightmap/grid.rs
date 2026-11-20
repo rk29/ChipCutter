@@ -5,7 +5,9 @@ use rayon::prelude::*;
 
 use crate::{cutter_profile::RadialCutterProfile, timeline::SimOperationInput};
 
-use super::{SetupSimulationResult, SimError, SimResolution};
+use super::{
+    SetupSimulationResult, SimError, SimResolution, StockPlaybackCursor, target_cursor_from_snap,
+};
 
 pub const UNCUT_OP_IDX: u16 = u16::MAX;
 
@@ -204,63 +206,162 @@ impl SetupSimulationResult {
         ops: &[SimOperationInput<'_>],
         time_sec: f64,
     ) -> HeightfieldStock {
-        let Some(snap) = self.timeline.sample_at_time(time_sec) else {
-            return self.final_stock.clone();
-        };
-        if snap.completed_segments >= self.timeline.motion_spans.len() {
-            return self.final_stock.clone();
+        let mut stock = self.final_stock.clone();
+        let mut cursor = None;
+        if self.operation_profiles.is_empty() && !ops.is_empty() {
+            let profiles: Vec<(RadialCutterProfile, bool)> = ops
+                .iter()
+                .map(|o| {
+                    (
+                        RadialCutterProfile::from_tool(o.tool),
+                        matches!(o.tool.geometry, CutterGeometry::FlatEndmill { .. }),
+                    )
+                })
+                .collect();
+            self.sync_stock_to_time_with_profiles(&mut stock, &mut cursor, &profiles, time_sec);
+        } else {
+            self.sync_stock_to_time(&mut stock, &mut cursor, time_sec);
+        }
+        stock
+    }
+
+    /// Synchronizes a reusable working [`HeightfieldStock`] to the exact timeline state at
+    /// `time_sec`, advancing incrementally when moving forward along the timeline and restoring
+    /// from the nearest [`StockCheckpoint`] when scrubbing backward or jumping past a checkpoint.
+    ///
+    /// Returns `true` if `stock` changed (and any display mesh should be re-tessellated).
+    pub fn sync_stock_to_time(
+        &self,
+        stock: &mut HeightfieldStock,
+        cursor: &mut Option<StockPlaybackCursor>,
+        time_sec: f64,
+    ) -> bool {
+        self.sync_stock_to_time_with_profiles(stock, cursor, &self.operation_profiles, time_sec)
+    }
+
+    fn sync_stock_to_time_with_profiles(
+        &self,
+        stock: &mut HeightfieldStock,
+        cursor: &mut Option<StockPlaybackCursor>,
+        profiles: &[(RadialCutterProfile, bool)],
+        time_sec: f64,
+    ) -> bool {
+        let total_spans = self.timeline.motion_spans.len();
+        let target = self.timeline.sample_at_time(time_sec).map_or(
+            StockPlaybackCursor {
+                seg_idx: total_spans,
+                seg_u: 0.0,
+            },
+            |s| target_cursor_from_snap(&s, total_spans),
+        );
+
+        if let Some(cur) = *cursor
+            && cur.seg_idx == target.seg_idx
+            && (target.seg_u - cur.seg_u).abs() <= 1e-6
+        {
+            return false;
         }
 
-        let target_full_segs = snap.global_seg_idx;
+        if target.seg_idx >= total_spans {
+            stock.z_stock.clone_from(&self.final_stock.z_stock);
+            stock.last_op_idx.clone_from(&self.final_stock.last_op_idx);
+            *cursor = Some(StockPlaybackCursor {
+                seg_idx: total_spans,
+                seg_u: 0.0,
+            });
+            return true;
+        }
+
         let cp = self
             .checkpoints
             .iter()
-            .rfind(|c| c.completed_segments <= target_full_segs);
+            .rfind(|c| c.completed_segments <= target.seg_idx);
 
-        let mut stock = self.final_stock.clone();
-        let start_seg = if let Some(cp) = cp {
+        let (mut cur_seg, cur_u, mut changed) = if let Some(cur) = *cursor
+            && (target.seg_idx > cur.seg_idx
+                || (target.seg_idx == cur.seg_idx && target.seg_u >= cur.seg_u))
+        {
+            if let Some(cp) = cp
+                && cp.completed_segments > cur.seg_idx
+            {
+                stock.z_stock.clone_from(&cp.z_stock);
+                stock.last_op_idx.clone_from(&cp.last_op_idx);
+                (cp.completed_segments, 0.0, true)
+            } else {
+                (cur.seg_idx, cur.seg_u, false)
+            }
+        } else if let Some(cp) = cp {
             stock.z_stock.clone_from(&cp.z_stock);
             stock.last_op_idx.clone_from(&cp.last_op_idx);
-            cp.completed_segments
+            (cp.completed_segments, 0.0, true)
         } else {
-            0
+            stock.z_stock.clone_from(&self.final_stock.z_stock);
+            stock.last_op_idx.clone_from(&self.final_stock.last_op_idx);
+            (0, 0.0, true)
         };
 
-        let profiles: Vec<(RadialCutterProfile, bool)> = ops
-            .iter()
-            .map(|o| {
-                (
-                    RadialCutterProfile::from_tool(o.tool),
-                    matches!(o.tool.geometry, CutterGeometry::FlatEndmill { .. }),
-                )
-            })
-            .collect();
+        if cur_seg == target.seg_idx {
+            if let Some(span) = self.timeline.motion_spans.get(cur_seg)
+                && let Some(&(prof, is_flat)) = profiles.get(span.op_idx)
+                && let Some(sub_seg) = slice_segment_range(&span.segment, cur_u, target.seg_u)
+            {
+                changed |=
+                    stock.sweep_segment_mutate_only(&sub_seg, &prof, is_flat, span.op_idx as u16);
+            }
+        } else {
+            if cur_u > 1e-6 {
+                if let Some(span) = self.timeline.motion_spans.get(cur_seg)
+                    && let Some(&(prof, is_flat)) = profiles.get(span.op_idx)
+                    && let Some(sub_seg) = slice_segment_range(&span.segment, cur_u, 1.0)
+                {
+                    changed |= stock.sweep_segment_mutate_only(
+                        &sub_seg,
+                        &prof,
+                        is_flat,
+                        span.op_idx as u16,
+                    );
+                }
+                cur_seg += 1;
+            }
 
-        for span in &self.timeline.motion_spans[start_seg..target_full_segs] {
-            if let Some(&(prof, is_flat)) = profiles.get(span.op_idx) {
-                stock.sweep_segment_mutate_only(&span.segment, &prof, is_flat, span.op_idx as u16);
+            for span in &self.timeline.motion_spans[cur_seg..target.seg_idx] {
+                if let Some(&(prof, is_flat)) = profiles.get(span.op_idx) {
+                    changed |= stock.sweep_segment_mutate_only(
+                        &span.segment,
+                        &prof,
+                        is_flat,
+                        span.op_idx as u16,
+                    );
+                }
+            }
+
+            if target.seg_u > 1e-6
+                && let Some(span) = self.timeline.motion_spans.get(target.seg_idx)
+                && let Some(&(prof, is_flat)) = profiles.get(span.op_idx)
+                && let Some(sub_seg) = slice_segment_range(&span.segment, 0.0, target.seg_u)
+            {
+                changed |=
+                    stock.sweep_segment_mutate_only(&sub_seg, &prof, is_flat, span.op_idx as u16);
             }
         }
 
-        // Apply fractional active segment `(0 .. seg_progress_t)` if mid-move
-        if snap.seg_progress_t > 1e-4
-            && let Some(span) = self.timeline.motion_spans.get(snap.global_seg_idx)
-            && let Some(&(prof, is_flat)) = profiles.get(span.op_idx)
-            && let Some(sub_seg) = slice_segment_prefix(&span.segment, snap.seg_progress_t)
-        {
-            stock.sweep_segment_mutate_only(&sub_seg, &prof, is_flat, span.op_idx as u16);
-        }
-
-        stock
+        *cursor = Some(target);
+        changed
     }
 }
 
-fn slice_segment_prefix(seg: &ToolpathSegment3D, u: f64) -> Option<ToolpathSegment3D> {
-    let u_clamped = u.clamp(0.0, 1.0);
-    if u_clamped <= 1e-6 {
+pub(crate) fn slice_segment_range(
+    seg: &ToolpathSegment3D,
+    u_start: f64,
+    u_end: f64,
+) -> Option<ToolpathSegment3D> {
+    let a = u_start.clamp(0.0, 1.0);
+    let b = u_end.clamp(0.0, 1.0);
+    if b - a <= 1e-6 {
         return None;
     }
-    let end_wcs = seg.sample_point(u_clamped);
+    let start_wcs = seg.sample_point(a);
+    let end_wcs = seg.sample_point(b);
     let motion = match seg.motion {
         SegmentMotion3D::Rapid => SegmentMotion3D::Rapid,
         SegmentMotion3D::Linear { feed_mm_min, role } => {
@@ -279,16 +380,16 @@ fn slice_segment_prefix(seg: &ToolpathSegment3D, u: f64) -> Option<ToolpathSegme
             dir,
             center_wcs,
             radius_mm,
-            signed_sweep_rad: signed_sweep_rad * u_clamped,
+            signed_sweep_rad: signed_sweep_rad * (b - a),
             feed_mm_min,
             role,
         },
     };
     Some(ToolpathSegment3D {
-        start_wcs: seg.start_wcs,
+        start_wcs,
         end_wcs,
         motion,
-        start_rotary_deg: seg.start_rotary_deg,
-        end_rotary_deg: seg.sample_rotary_deg(u_clamped),
+        start_rotary_deg: seg.sample_rotary_deg(a),
+        end_rotary_deg: seg.sample_rotary_deg(b),
     })
 }

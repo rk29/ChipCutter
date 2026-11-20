@@ -3,6 +3,7 @@ mod mesher;
 mod sweeper;
 mod target_rasterizer;
 
+pub(crate) use grid::slice_segment_range;
 pub use grid::{HeightfieldStock, UNCUT_OP_IDX};
 pub use mesher::{OPERATION_STOCK_PALETTE, tessellate_stock_mesh};
 pub use sweeper::run_setup_simulation;
@@ -15,9 +16,9 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
-    cutter_profile::SimColoredVertex,
+    cutter_profile::{RadialCutterProfile, SimColoredVertex},
     cylindrical::{CylindricalCheckpoint, CylindricalStock},
-    timeline::{MachineKinematicsConfig, SimOperationInput, SimulationTimeline},
+    timeline::{MachineKinematicsConfig, ScrubSnapshot, SimOperationInput, SimulationTimeline},
     verifier::{SimDiagnostic, SimSeverity, SimVerificationConfig},
 };
 
@@ -92,6 +93,44 @@ pub struct StockCheckpoint {
     pub last_op_idx: Vec<u16>,
 }
 
+/// Tracks the exact timeline position `(seg_idx, seg_u)` of an incrementally synchronized
+/// [`HeightfieldStock`] or [`CylindricalStock`]: all segments `0..seg_idx` are fully swept,
+/// plus the prefix `[0.0 .. seg_u]` of segment `seg_idx`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StockPlaybackCursor {
+    pub seg_idx: usize,
+    pub seg_u: f64,
+}
+
+pub(crate) fn target_cursor_from_snap(
+    snap: &ScrubSnapshot,
+    total_spans: usize,
+) -> StockPlaybackCursor {
+    if snap.completed_segments >= total_spans {
+        return StockPlaybackCursor {
+            seg_idx: total_spans,
+            seg_u: 0.0,
+        };
+    }
+    let u = snap.seg_progress_t.clamp(0.0, 1.0);
+    if u >= 1.0 - 1e-9 {
+        StockPlaybackCursor {
+            seg_idx: (snap.global_seg_idx + 1).min(total_spans),
+            seg_u: 0.0,
+        }
+    } else if u <= 1e-6 {
+        StockPlaybackCursor {
+            seg_idx: snap.global_seg_idx.min(total_spans),
+            seg_u: 0.0,
+        }
+    } else {
+        StockPlaybackCursor {
+            seg_idx: snap.global_seg_idx,
+            seg_u: u,
+        }
+    }
+}
+
 /// Complete output of simulating a Setup (`timeline`, `final_stock`, `checkpoints`, `diagnostics`).
 #[derive(Debug, Clone)]
 pub struct SetupSimulationResult {
@@ -104,6 +143,9 @@ pub struct SetupSimulationResult {
     pub final_cylindrical_stock: Option<CylindricalStock>,
     pub checkpoints: Vec<StockCheckpoint>,
     pub cylindrical_checkpoints: Vec<CylindricalCheckpoint>,
+    /// Per-operation `(RadialCutterProfile, is_flat_endmill)` captured during simulation for exact
+    /// interactive timeline reconstruction even if project operations are later edited.
+    pub operation_profiles: Vec<(RadialCutterProfile, bool)>,
     pub diagnostics: Vec<SimDiagnostic>,
 }
 

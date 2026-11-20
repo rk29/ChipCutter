@@ -15,13 +15,15 @@ use chip_cam::{
     SegmentMotion3D, SurfaceMesh3D, ToolpathSegment3D, rotate_point_about_axis,
 };
 use chip_math::{Aabb3, DVec3, Ray3};
+use chip_tools::CutterGeometry;
 use rayon::prelude::*;
 
 use crate::{
     cutter_profile::{RadialCutterProfile, SimColoredVertex},
     heightmap::{
         HeightfieldStock, OPERATION_STOCK_PALETTE, SetupSimulationInput, SetupSimulationResult,
-        SimError, SimResolution, SimStockMesh, UNCUT_OP_IDX,
+        SimError, SimResolution, SimStockMesh, StockPlaybackCursor, UNCUT_OP_IDX,
+        slice_segment_range, target_cursor_from_snap,
     },
     timeline::{SimOperationInput, SimulationTimeline},
     verifier::{SimDiagnostic, SimIssueKind, SimSeverity, SimVerificationConfig},
@@ -305,6 +307,32 @@ impl CylindricalStock {
         }
     }
 
+    /// Fast mutation-only polar sweep used when reconstructing intermediate timeline scrub
+    /// positions. Returns `true` if at least one cell's outer radius decreased.
+    pub fn sweep_segment_mutate_only(
+        &mut self,
+        seg: &ToolpathSegment3D,
+        profile: &RadialCutterProfile,
+        op_idx: usize,
+    ) -> bool {
+        let lin_len = seg.length_mm();
+        let d_deg = (seg.end_rotary_deg - seg.start_rotary_deg).abs();
+        let step_u = (0.5 * self.du).max(0.15);
+        let step_deg = (0.5 * self.dtheta.to_degrees()).max(0.75);
+        let n_lin = (lin_len / step_u).ceil() as usize;
+        let n_rot = (d_deg / step_deg).ceil() as usize;
+        let n_steps = n_lin.max(n_rot).clamp(1, 2_000);
+
+        let mut mutated = false;
+        for k in 0..=n_steps {
+            let t = k as f64 / n_steps as f64;
+            let tip_wcs = seg.sample_point(t);
+            let rot_deg = seg.sample_rotary_deg(t);
+            mutated |= self.sweep_pose_inner(tip_wcs, rot_deg, profile, op_idx, None);
+        }
+        mutated
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn sweep_pose_at(
         &mut self,
@@ -320,6 +348,26 @@ impl CylindricalStock {
         worst_flute: &mut Option<(f64, DVec3)>,
         worst_holder: &mut Option<(f64, DVec3)>,
     ) {
+        let mut verify = PoseVerifyCtx {
+            is_rapid,
+            edge_break_mm,
+            verify_cfg,
+            worst_rapid,
+            worst_gouge,
+            worst_flute,
+            worst_holder,
+        };
+        let _ = self.sweep_pose_inner(tip_wcs, rot_deg, profile, op_idx, Some(&mut verify));
+    }
+
+    fn sweep_pose_inner(
+        &mut self,
+        tip_wcs: DVec3,
+        rot_deg: f64,
+        profile: &RadialCutterProfile,
+        op_idx: usize,
+        mut verify: Option<&mut PoseVerifyCtx<'_>>,
+    ) -> bool {
         // Transform cutter tip and spindle up-axis (+Z_wcs) into workpiece-fixed coordinates (`-rot_deg`)
         let tip_part = self.rotary.rotate_point_wcs(tip_wcs, -rot_deg);
         let spindle_part =
@@ -331,28 +379,32 @@ impl CylindricalStock {
         let u_vec = self.rotary.axis.axis_unit();
         let (u_tip, theta_tip, r_tip) = self.rotary.wcs_to_cylindrical(tip_part);
 
-        // 1. Check direct collision with the rotary chuck keep-out cylinder
-        if self.rotary.chuck_u_max > self.rotary.chuck_u_min + 1e-4 {
+        // 1. Check direct collision with the rotary chuck keep-out cylinder (verification mode only)
+        if let Some(v) = verify.as_deref_mut()
+            && self.rotary.chuck_u_max > self.rotary.chuck_u_min + 1e-4
+        {
             let chuck_clearance_r = self.rotary.chuck_radius_mm + r_cut;
             let u_overlaps_chuck = (u_tip + r_cut) >= self.rotary.chuck_u_min
                 && (u_tip - r_cut) <= self.rotary.chuck_u_max;
             if u_overlaps_chuck && r_tip < chuck_clearance_r - 0.05 {
                 let excess = chuck_clearance_r - r_tip;
-                update_worst(worst_holder, excess, tip_wcs);
+                update_worst(v.worst_holder, excess, tip_wcs);
             }
         }
 
         // Fast reject if tool tip is completely outside stock radial envelope + tool radius
-        let max_possible_r = self.rotary.stock_outer_radius_mm + r_holder + 2.0;
+        let check_holder = verify.is_some();
+        let max_possible_r =
+            self.rotary.stock_outer_radius_mm + if check_holder { r_holder } else { r_cut } + 2.0;
         let tip_h_above_axis = (tip_part - self.rotary.center_wcs).dot(spindle_part);
         if tip_h_above_axis > max_possible_r {
-            return;
+            return false;
         }
 
-        // Only expand the radial/axial cell search window to `r_holder` when the holder bottom
-        // actually descends into the stock's outer radial envelope; otherwise `r_cut` is exact!
-        let holder_can_reach_stock =
-            (tip_h_above_axis + stickout) <= self.rotary.stock_outer_radius_mm + 1.0;
+        // Only expand the radial/axial cell search window to `r_holder` when verifying and the
+        // holder bottom actually descends into the stock's outer radial envelope.
+        let holder_can_reach_stock = check_holder
+            && (tip_h_above_axis + stickout) <= self.rotary.stock_outer_radius_mm + 1.0;
         let r_footprint = if holder_can_reach_stock {
             r_holder
         } else {
@@ -370,7 +422,7 @@ impl CylindricalStock {
         let u_lo = (u_tip - u_reach).max(self.u_min);
         let u_hi = (u_tip + u_reach).min(self.u_max);
         if u_lo > u_hi {
-            return;
+            return false;
         }
         let iu_min = (((u_lo - self.u_min) / self.du).floor() as isize)
             .clamp(0, self.nu as isize - 1) as usize;
@@ -398,8 +450,6 @@ impl CylindricalStock {
             (ic, hs.min((self.ntheta / 2) as isize))
         };
 
-        let gouge_tol = verify_cfg.gouge_tol_mm + edge_break_mm;
-        let rapid_tol = verify_cfg.rapid_crash_tol_mm;
         let op_tag = op_idx.min(u16::MAX as usize - 1) as u16;
         let u_center = self.rotary.center_wcs.dot(u_vec);
 
@@ -414,6 +464,7 @@ impl CylindricalStock {
             it_center + it_half_span
         };
 
+        let mut mutated = false;
         for iu in iu_min..=iu_max {
             let u = self.u_min + (iu as f64 + 0.5) * self.du;
             let axis_pt = self.rotary.center_wcs + u_vec * (u - u_center);
@@ -443,7 +494,8 @@ impl CylindricalStock {
                 let c = (v0_sq - h0 * h0).max(0.0);
 
                 // Holder collision check against outer holder cylinder `rho <= r_holder` above `stickout`
-                if let Some((hr_lo, hr_hi)) = solve_cylinder_ray_interval(a, b, c, r_holder)
+                if let Some(v) = verify.as_deref_mut()
+                    && let Some((hr_lo, hr_hi)) = solve_cylinder_ray_interval(a, b, c, r_holder)
                     && hr_hi > 0.0
                     && hr_lo < r_cur
                 {
@@ -452,7 +504,7 @@ impl CylindricalStock {
                     if h_chk > stickout + 0.05 {
                         let excess = (r_cur - hr_lo.max(0.0)).min(h_chk - stickout);
                         if excess > 0.05 {
-                            update_worst(worst_holder, excess, tip_wcs);
+                            update_worst(v.worst_holder, excess, tip_wcs);
                         }
                     }
                 }
@@ -486,9 +538,11 @@ impl CylindricalStock {
                 }
 
                 // Check flute-length engagement on outer uncut stock surface
-                let h_enter = h0 + r_enter * d_dot_s;
-                if h_enter > profile.flute_length_mm + 0.05 {
-                    update_worst(worst_flute, h_enter - profile.flute_length_mm, tip_wcs);
+                if let Some(v) = verify.as_deref_mut() {
+                    let h_enter = h0 + r_enter * d_dot_s;
+                    if h_enter > profile.flute_length_mm + 0.05 {
+                        update_worst(v.worst_flute, h_enter - profile.flute_length_mm, tip_wcs);
+                    }
                 }
 
                 // Find exact lowest radius `r_new` where `eval_clearance(r) == 0` via fast bisection
@@ -510,20 +564,153 @@ impl CylindricalStock {
                 };
 
                 if r_new < r_cur - 1e-5 {
-                    let cut_depth = r_cur - r_new;
-                    if is_rapid && cut_depth > rapid_tol {
-                        update_worst(worst_rapid, cut_depth, tip_wcs);
-                    }
-                    let r_tgt = f64::from(self.r_target[idx]);
-                    if r_tgt >= 0.0 && r_new < r_tgt - gouge_tol {
-                        update_worst(worst_gouge, r_tgt - r_new, tip_wcs);
+                    if let Some(v) = verify.as_deref_mut() {
+                        let cut_depth = r_cur - r_new;
+                        if v.is_rapid && cut_depth > v.verify_cfg.rapid_crash_tol_mm {
+                            update_worst(v.worst_rapid, cut_depth, tip_wcs);
+                        }
+                        let gouge_tol = v.verify_cfg.gouge_tol_mm + v.edge_break_mm;
+                        let r_tgt = f64::from(self.r_target[idx]);
+                        if r_tgt >= 0.0 && r_new < r_tgt - gouge_tol {
+                            update_worst(v.worst_gouge, r_tgt - r_new, tip_wcs);
+                        }
                     }
 
                     self.r_stock[idx] = r_new.max(0.0) as f32;
                     self.last_op_idx[idx] = op_tag;
+                    mutated = true;
                 }
             }
         }
+        mutated
+    }
+}
+
+struct PoseVerifyCtx<'a> {
+    is_rapid: bool,
+    edge_break_mm: f64,
+    verify_cfg: &'a SimVerificationConfig,
+    worst_rapid: &'a mut Option<(f64, DVec3)>,
+    worst_gouge: &'a mut Option<(f64, DVec3)>,
+    worst_flute: &'a mut Option<(f64, DVec3)>,
+    worst_holder: &'a mut Option<(f64, DVec3)>,
+}
+
+impl SetupSimulationResult {
+    /// Reconstructs the exact 4th-axis [`CylindricalStock`] state at `time_sec` by restoring the
+    /// nearest preceding [`CylindricalCheckpoint`] and sweeping the remaining segments up to
+    /// `time_sec` (including fractional intra-segment motion).
+    pub fn reconstruct_cylindrical_stock_at_time(&self, time_sec: f64) -> Option<CylindricalStock> {
+        let mut stock = self.final_cylindrical_stock.as_ref()?.clone();
+        let mut cursor = None;
+        self.sync_cylindrical_stock_to_time(&mut stock, &mut cursor, time_sec);
+        Some(stock)
+    }
+
+    /// Synchronizes a reusable working [`CylindricalStock`] to the exact timeline state at
+    /// `time_sec`, advancing incrementally when moving forward and restoring from the nearest
+    /// [`CylindricalCheckpoint`] when scrubbing backward or jumping past a checkpoint.
+    ///
+    /// Returns `true` if `stock` changed (and any display mesh should be re-tessellated).
+    pub fn sync_cylindrical_stock_to_time(
+        &self,
+        stock: &mut CylindricalStock,
+        cursor: &mut Option<StockPlaybackCursor>,
+        time_sec: f64,
+    ) -> bool {
+        let Some(cyl_final) = &self.final_cylindrical_stock else {
+            return false;
+        };
+        let total_spans = self.timeline.motion_spans.len();
+        let target = self.timeline.sample_at_time(time_sec).map_or(
+            StockPlaybackCursor {
+                seg_idx: total_spans,
+                seg_u: 0.0,
+            },
+            |s| target_cursor_from_snap(&s, total_spans),
+        );
+
+        if let Some(cur) = *cursor
+            && cur.seg_idx == target.seg_idx
+            && (target.seg_u - cur.seg_u).abs() <= 1e-6
+        {
+            return false;
+        }
+
+        if target.seg_idx >= total_spans {
+            stock.r_stock.clone_from(&cyl_final.r_stock);
+            stock.last_op_idx.clone_from(&cyl_final.last_op_idx);
+            *cursor = Some(StockPlaybackCursor {
+                seg_idx: total_spans,
+                seg_u: 0.0,
+            });
+            return true;
+        }
+
+        let cp = self
+            .cylindrical_checkpoints
+            .iter()
+            .rfind(|c| c.completed_segments <= target.seg_idx);
+
+        let (mut cur_seg, cur_u, mut changed) = if let Some(cur) = *cursor
+            && (target.seg_idx > cur.seg_idx
+                || (target.seg_idx == cur.seg_idx && target.seg_u >= cur.seg_u))
+        {
+            if let Some(cp) = cp
+                && cp.completed_segments > cur.seg_idx
+            {
+                stock.r_stock.clone_from(&cp.r_stock);
+                stock.last_op_idx.clone_from(&cp.last_op_idx);
+                (cp.completed_segments, 0.0, true)
+            } else {
+                (cur.seg_idx, cur.seg_u, false)
+            }
+        } else if let Some(cp) = cp {
+            stock.r_stock.clone_from(&cp.r_stock);
+            stock.last_op_idx.clone_from(&cp.last_op_idx);
+            (cp.completed_segments, 0.0, true)
+        } else {
+            stock.r_stock.clone_from(&cyl_final.r_stock);
+            stock.last_op_idx.clone_from(&cyl_final.last_op_idx);
+            (0, 0.0, true)
+        };
+
+        let profiles = &self.operation_profiles;
+        if cur_seg == target.seg_idx {
+            if let Some(span) = self.timeline.motion_spans.get(cur_seg)
+                && let Some(&(prof, _)) = profiles.get(span.op_idx)
+                && let Some(sub_seg) = slice_segment_range(&span.segment, cur_u, target.seg_u)
+            {
+                changed |= stock.sweep_segment_mutate_only(&sub_seg, &prof, span.op_idx);
+            }
+        } else {
+            if cur_u > 1e-6 {
+                if let Some(span) = self.timeline.motion_spans.get(cur_seg)
+                    && let Some(&(prof, _)) = profiles.get(span.op_idx)
+                    && let Some(sub_seg) = slice_segment_range(&span.segment, cur_u, 1.0)
+                {
+                    changed |= stock.sweep_segment_mutate_only(&sub_seg, &prof, span.op_idx);
+                }
+                cur_seg += 1;
+            }
+
+            for span in &self.timeline.motion_spans[cur_seg..target.seg_idx] {
+                if let Some(&(prof, _)) = profiles.get(span.op_idx) {
+                    changed |= stock.sweep_segment_mutate_only(&span.segment, &prof, span.op_idx);
+                }
+            }
+
+            if target.seg_u > 1e-6
+                && let Some(span) = self.timeline.motion_spans.get(target.seg_idx)
+                && let Some(&(prof, _)) = profiles.get(span.op_idx)
+                && let Some(sub_seg) = slice_segment_range(&span.segment, 0.0, target.seg_u)
+            {
+                changed |= stock.sweep_segment_mutate_only(&sub_seg, &prof, span.op_idx);
+            }
+        }
+
+        *cursor = Some(target);
+        changed
     }
 }
 
@@ -547,10 +734,15 @@ pub fn run_cylindrical_setup_simulation(
     }];
     let mut diagnostics = Vec::new();
 
-    let profiles: Vec<RadialCutterProfile> = input
+    let profiles: Vec<(RadialCutterProfile, bool)> = input
         .operations
         .iter()
-        .map(|op| RadialCutterProfile::from_tool(op.tool))
+        .map(|op| {
+            (
+                RadialCutterProfile::from_tool(op.tool),
+                matches!(op.tool.geometry, CutterGeometry::FlatEndmill { .. }),
+            )
+        })
         .collect();
 
     for (span_idx, span) in timeline.motion_spans.iter().enumerate() {
@@ -560,7 +752,7 @@ pub fn run_cylindrical_setup_simulation(
         let op = &input.operations[span.op_idx];
         stock.sweep_segment(
             &span.segment,
-            &profiles[span.op_idx],
+            &profiles[span.op_idx].0,
             span.op_idx,
             op,
             span.global_seg_idx,
@@ -604,6 +796,7 @@ pub fn run_cylindrical_setup_simulation(
         final_cylindrical_stock: Some(stock),
         checkpoints: Vec::new(),
         cylindrical_checkpoints: checkpoints,
+        operation_profiles: profiles,
         diagnostics,
     })
 }

@@ -220,12 +220,9 @@ impl ChipCutterApp {
                 }
             }
 
-            let vis = self.sim_panel.resolve_viewport_visuals(
-                &self.project,
-                self.active_setup_idx,
-                &self.toolpath_cache,
-                cad_rev,
-            );
+            let vis = self
+                .sim_panel
+                .resolve_viewport_visuals(&self.project, self.active_setup_idx);
             self.highlight.sim_stock_mesh = vis.stock;
             self.highlight.sim_tool_mesh = vis.cutter;
             self.highlight.sim_trail_limit = vis.trail_limit;
