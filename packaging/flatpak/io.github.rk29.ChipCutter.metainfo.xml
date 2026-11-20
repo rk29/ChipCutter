@@ -50,6 +50,11 @@
   </screenshots>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="0.9.0" date="2026-11-20">
+      <description>
+        <p>Security hardening release: read-only built-in post-processors, sanitized G-code output paths and metadata, cumulative zip-bomb and parser complexity caps, private temporary extraction directories, and SHA-pinned release workflows.</p>
+      </description>
+    </release>
     <release version="0.8.0" date="2026-11-20">
       <description>
         <p>Added Machine Definitions and per-machine tool libraries (Generic, Millennium Machines Milo v1.5 LDO Kit, Makera Carvera Air), upgrade-safe cloning and .machine.toml export/import, machine envelope/RPM diagnostics, and the Help -> About dialog.</p>
