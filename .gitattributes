@@ -1,0 +1,19 @@
+# Ensure consistent LF line endings across Linux, macOS, and Windows checkouts
+# (especially golden G-code snapshots, shell scripts, and packaging metadata).
+* text=auto eol=lf
+
+# PowerShell scripts prefer CRLF on Windows
+*.ps1 text eol=crlf
+
+# Binary assets
+*.png binary
+*.ico binary
+*.icns binary
+*.stl binary
+*.3mf binary
+*.chipz binary
+*.flatpak binary
+*.dmg binary
+*.msi binary
+*.zip binary
+*.gz binary

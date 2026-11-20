@@ -19,6 +19,14 @@ fn golden_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/golden")
 }
 
+/// Reads a checked-in golden snapshot normalizing CRLF -> LF so byte-for-byte
+/// comparisons stay platform-independent even on Windows `core.autocrlf=true` checkouts.
+fn read_golden_normalized(path: &Path) -> String {
+    std::fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("missing golden file {}: {e}", path.display()))
+        .replace("\r\n", "\n")
+}
+
 struct TempTestDir(PathBuf);
 
 impl TempTestDir {
@@ -98,8 +106,7 @@ fn golden_gcode_snapshots_and_chipz_portable_build_match_byte_for_byte() {
     for fname in expected_grbl_files {
         let actual = std::fs::read_to_string(grbl_out_dir.join(fname))
             .unwrap_or_else(|e| panic!("missing emitted Grbl file {fname}: {e}"));
-        let golden = std::fs::read_to_string(golden_dir().join("grbl").join(fname))
-            .unwrap_or_else(|e| panic!("missing golden Grbl file {fname}: {e}"));
+        let golden = read_golden_normalized(&golden_dir().join("grbl").join(fname));
         assert_eq!(
             actual, golden,
             "emitted Grbl file '{fname}' drifted from golden snapshot"
@@ -127,8 +134,7 @@ fn golden_gcode_snapshots_and_chipz_portable_build_match_byte_for_byte() {
         String::from_utf8_lossy(&build_lcnc.stderr)
     );
 
-    let golden_lcnc = std::fs::read_to_string(golden_dir().join("linuxcnc/torture.ngc"))
-        .expect("read golden torture.ngc");
+    let golden_lcnc = read_golden_normalized(&golden_dir().join("linuxcnc/torture.ngc"));
     let actual_lcnc =
         std::fs::read_to_string(lcnc_out_dir.join("torture.ngc")).expect("read actual torture.ngc");
     assert_eq!(
@@ -620,7 +626,7 @@ fn v2_golden_adaptive_rest_and_two_tool_vcarve_snapshots_match_byte_for_byte() {
     if update_goldens {
         std::fs::write(&golden_adap_path, &actual_adap).unwrap();
     }
-    let expected_adap = std::fs::read_to_string(&golden_adap_path).unwrap();
+    let expected_adap = read_golden_normalized(&golden_adap_path);
     assert_eq!(
         actual_adap, expected_adap,
         "v2_adaptive_rest.ngc drifted from golden snapshot"
@@ -666,8 +672,7 @@ fn v2_golden_adaptive_rest_and_two_tool_vcarve_snapshots_match_byte_for_byte() {
         if update_goldens {
             std::fs::write(&gpath, &actual).unwrap();
         }
-        let expected = std::fs::read_to_string(&gpath)
-            .unwrap_or_else(|e| panic!("missing golden v2 Grbl file {fname}: {e}"));
+        let expected = read_golden_normalized(&gpath);
         assert_eq!(actual, expected, "{fname} drifted from golden snapshot");
     }
 }
@@ -872,7 +877,7 @@ fn v3_golden_3axis_mesh_surfacing_snapshots_match_byte_for_byte() {
     if update_goldens {
         std::fs::write(&golden_lcnc, &actual_lcnc).unwrap();
     }
-    let expected_lcnc = std::fs::read_to_string(&golden_lcnc).unwrap();
+    let expected_lcnc = read_golden_normalized(&golden_lcnc);
     assert_eq!(
         actual_lcnc, expected_lcnc,
         "v3_mesh_dome_3axis.ngc drifted from golden snapshot"
@@ -917,7 +922,7 @@ fn v3_golden_3axis_mesh_surfacing_snapshots_match_byte_for_byte() {
         if update_goldens {
             std::fs::write(&golden, &actual).unwrap();
         }
-        let expected = std::fs::read_to_string(&golden).unwrap();
+        let expected = read_golden_normalized(&golden);
         assert_eq!(actual, expected, "{fname} drifted from golden snapshot");
     }
 }
@@ -982,7 +987,7 @@ fn phase_5_v3_rotary_golden_gcode_snapshots_match_exact_expected_output() {
     if update_goldens {
         std::fs::write(&golden_shaft, &actual_shaft).unwrap();
     }
-    let expected_shaft = std::fs::read_to_string(&golden_shaft).unwrap();
+    let expected_shaft = read_golden_normalized(&golden_shaft);
     assert_eq!(
         actual_shaft, expected_shaft,
         "v3_rotary_indexed_shaft.ngc drifted from golden snapshot"
@@ -1036,7 +1041,7 @@ fn phase_5_v3_rotary_golden_gcode_snapshots_match_exact_expected_output() {
     if update_goldens {
         std::fs::write(&golden_wrap, &actual_wrap).unwrap();
     }
-    let expected_wrap = std::fs::read_to_string(&golden_wrap).unwrap();
+    let expected_wrap = read_golden_normalized(&golden_wrap);
     assert_eq!(
         actual_wrap, expected_wrap,
         "v3_rotary_wrapped.nc drifted from golden snapshot"
@@ -1096,7 +1101,7 @@ fn phase_5_v3_rotary_golden_gcode_snapshots_match_exact_expected_output() {
     if update_goldens {
         std::fs::write(&golden_flute, &actual_flute).unwrap();
     }
-    let expected_flute = std::fs::read_to_string(&golden_flute).unwrap();
+    let expected_flute = read_golden_normalized(&golden_flute);
     assert_eq!(
         actual_flute, expected_flute,
         "v3_rotary_4axis_sim.nc drifted from golden snapshot"
