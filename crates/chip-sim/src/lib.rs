@@ -290,4 +290,72 @@ mod tests {
         assert!(!mesh_neutral.vertices.is_empty());
         assert_eq!(mesh_colored.indices.len() % 3, 0);
     }
+
+    #[test]
+    fn fault_injection_catches_3d_ball_endmill_gouge_on_sculpted_dome_mesh() {
+        use chip_cad::{MeshImportOptions, load_mesh_cad_document, sample_sculpted_dome_stl_bytes};
+        use chip_cam::{
+            BoxAnchor27, MotionRole, Setup, ToolpathBuilder, WcsOriginMode, WorkOffsetSlot,
+        };
+        use chip_math::{DVec3, DisplayUnit};
+        use chip_tools::default_starter_tool_library;
+
+        let stl = sample_sculpted_dome_stl_bytes();
+        let cad_doc =
+            load_mesh_cad_document("sculpted_dome.stl", &stl, &MeshImportOptions::default())
+                .unwrap();
+
+        let mut setup = Setup::new("s_dome", "Dome Sim", WorkOffsetSlot::G54);
+        setup.wcs.origin = WcsOriginMode::StockBoxPoint {
+            anchor: BoxAnchor27::TOP_CENTER,
+        };
+        let resolved = setup.resolve(&cad_doc, DisplayUnit::Millimeter).unwrap();
+        // Stock top = 0.0, Dome apex = -1.0 mm
+
+        let starter = default_starter_tool_library();
+        let ball_6mm = starter
+            .tools
+            .iter()
+            .find(|t| matches!(t.geometry, chip_tools::CutterGeometry::BallEndmill { .. }))
+            .unwrap();
+
+        // Deliberate 0.6 mm ball-endmill gouge straight across the dome apex (`Z = -1.6 mm` < `-1.0 mm`)!
+        let mut b = ToolpathBuilder::new("op_gouge_dome");
+        b.rapid_to(DVec3::new(-40.0, 0.0, resolved.retract_z_wcs));
+        b.linear_to(DVec3::new(-40.0, 0.0, -1.6), 300.0, MotionRole::Plunge);
+        b.linear_to(DVec3::new(40.0, 0.0, -1.6), 800.0, MotionRole::FinishCut);
+        b.rapid_to(DVec3::new(40.0, 0.0, resolved.clearance_z_wcs));
+        let tp_gouge = b.finish();
+
+        let res = run_setup_simulation(&SetupSimulationInput {
+            doc: &cad_doc,
+            setup: &resolved,
+            target_bodies: &[],
+            operations: &[SimOperationInput {
+                op_id: "op_gouge_dome",
+                op_name: "Intentional Dome Gouge",
+                tool: ball_6mm,
+                fallback_spindle_rpm: 12_000.0,
+                intentional_edge_break_mm: 0.0,
+                toolpath: &tp_gouge,
+            }],
+            resolution: SimResolution::Standard,
+            kinematics: MachineKinematicsConfig::default(),
+            verify_config: SimVerificationConfig::default(),
+            cancel: None,
+        })
+        .unwrap();
+
+        assert!(res.has_critical_errors());
+        let gouge_diag = res
+            .diagnostics
+            .iter()
+            .find(|d| d.kind == SimIssueKind::TargetModelGouge)
+            .expect("3D target-mesh verifier must catch ball-endmill gouge on dome apex");
+        assert!(
+            (gouge_diag.max_excess_mm - 0.6).abs() < 0.08,
+            "expected ~0.6 mm dome apex gouge, got {:.3} mm",
+            gouge_diag.max_excess_mm
+        );
+    }
 }

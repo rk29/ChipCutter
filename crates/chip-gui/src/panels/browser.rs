@@ -579,6 +579,8 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                                     ("2D Pocket", OperationKind::Pocket2D),
                                     ("Drill / Helical Bore", OperationKind::DrillBore),
                                     ("Edge Chamfer / Trace", OperationKind::ChamferTrace),
+                                    ("3D Adaptive Roughing", OperationKind::Adaptive3D),
+                                    ("3D Waterline / Z-Level", OperationKind::Waterline3D),
                                 ] {
                                     if ui.button(lbl).clicked() {
                                         deferred_op_add = Some((s_idx, kind));
@@ -1069,6 +1071,7 @@ pub fn default_pick_mode_for_op(
             ViewportPickMode::OpClosedLoops { setup_idx, op_idx }
         }
         OperationKind::DrillBore => ViewportPickMode::OpCylindricalHoles { setup_idx, op_idx },
+        OperationKind::Adaptive3D | OperationKind::Waterline3D => ViewportPickMode::InspectEntity,
     }
 }
 

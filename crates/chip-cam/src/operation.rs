@@ -8,7 +8,7 @@ use crate::{
     selection::GeometrySelectionItem,
 };
 
-/// Supported 2.5D CAM operation types (`05-operations.md`).
+/// Supported 2.5D and 3-axis CAM operation types (`05-operations.md`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OperationKind {
@@ -21,16 +21,22 @@ pub enum OperationKind {
     ChamferTrace,
     #[serde(rename = "vcarve")]
     VCarve,
+    #[serde(rename = "waterline_3d")]
+    Waterline3D,
+    #[serde(rename = "adaptive_3d")]
+    Adaptive3D,
 }
 
 impl OperationKind {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 8] = [
         Self::Facing,
         Self::Contour2D,
         Self::Pocket2D,
         Self::DrillBore,
         Self::ChamferTrace,
         Self::VCarve,
+        Self::Adaptive3D,
+        Self::Waterline3D,
     ];
 
     pub const fn label(self) -> &'static str {
@@ -41,6 +47,8 @@ impl OperationKind {
             Self::DrillBore => "Drill / Helical Bore",
             Self::ChamferTrace => "Edge Chamfer / Trace",
             Self::VCarve => "V-Carve / Bevel Inlay",
+            Self::Waterline3D => "3D Waterline / Z-Level",
+            Self::Adaptive3D => "3D Adaptive Roughing",
         }
     }
 
@@ -52,7 +60,14 @@ impl OperationKind {
             Self::DrillBore => "Holes / Bore",
             Self::ChamferTrace => "Edge Chamfer",
             Self::VCarve => "V-Carve",
+            Self::Waterline3D => "3D Waterline",
+            Self::Adaptive3D => "3D Adaptive",
         }
+    }
+
+    /// Returns `true` for 3-axis surface operations operating on the full 3D model / mesh.
+    pub const fn is_3d_surface(self) -> bool {
+        matches!(self, Self::Waterline3D | Self::Adaptive3D)
     }
 
     pub fn is_compatible_with_tool(self, tool: &Tool) -> bool {
@@ -76,6 +91,12 @@ impl OperationKind {
                     || tool.geometry.supports_operation(ToolOperationClass::Trace)
             }
             Self::VCarve => tool.geometry.supports_operation(ToolOperationClass::VCarve),
+            Self::Waterline3D => tool
+                .geometry
+                .supports_operation(ToolOperationClass::Waterline3D),
+            Self::Adaptive3D => tool
+                .geometry
+                .supports_operation(ToolOperationClass::Adaptive3D),
         }
     }
 }
@@ -188,6 +209,31 @@ pub struct Operation {
 
 impl Operation {
     pub fn new(id: impl Into<String>, name: impl Into<String>, kind: OperationKind) -> Self {
+        let mut heights = OperationHeights::default();
+        let mut passes = PassesParams::default();
+        match kind {
+            OperationKind::Adaptive3D => {
+                heights.top =
+                    crate::heights::HeightSpec::new(crate::heights::HeightReference::StockTop, 0.0);
+                heights.bottom = crate::heights::HeightSpec::new(
+                    crate::heights::HeightReference::ModelBottom,
+                    0.0,
+                );
+                passes.max_stepdown = chip_math::ParamLength::from_mm(5.0);
+                passes.stock_to_leave_radial = chip_math::ParamLength::from_mm(0.5);
+                passes.stock_to_leave_axial = chip_math::ParamLength::from_mm(0.3);
+            }
+            OperationKind::Waterline3D => {
+                heights.top =
+                    crate::heights::HeightSpec::new(crate::heights::HeightReference::ModelTop, 0.0);
+                heights.bottom = crate::heights::HeightSpec::new(
+                    crate::heights::HeightReference::ModelBottom,
+                    0.0,
+                );
+                passes.max_stepdown = chip_math::ParamLength::from_mm(1.25);
+            }
+            _ => {}
+        }
         Self {
             id: id.into(),
             name: name.into(),
@@ -197,8 +243,8 @@ impl Operation {
             preset_id: None,
             feed_overrides: OperationFeedOverrides::default(),
             selections: Vec::new(),
-            heights: OperationHeights::default(),
-            passes: PassesParams::default(),
+            heights,
+            passes,
             linking: LinkingParams::default(),
             strategy: Some(StrategyParams::default_for_kind(kind)),
             runtime_status: OperationStatus::Dirty,

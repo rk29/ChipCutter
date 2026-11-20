@@ -450,6 +450,7 @@ fn try_generate_flat_clearing_stage(
     stage1_passes.rest_machining = crate::params::RestMachiningConfig::default();
 
     let stage1_ctx = StrategyExecContext {
+        doc: ctx.doc,
         setup: ctx.setup,
         op: ctx.op,
         tool: clear_tool,

@@ -1184,6 +1184,8 @@ impl ChipCutterApp {
                 self.add_standard_operation(OperationKind::ChamferTrace)
             }
             CommandId::AddOpVCarve => self.create_new_vcarve_operation(),
+            CommandId::AddOpAdaptive3D => self.add_standard_operation(OperationKind::Adaptive3D),
+            CommandId::AddOpWaterline3D => self.add_standard_operation(OperationKind::Waterline3D),
             CommandId::DuplicateOperation => self.duplicate_focused_operation(),
             CommandId::MoveOperationUp => self.move_focused_operation(-1),
             CommandId::MoveOperationDown => self.move_focused_operation(1),

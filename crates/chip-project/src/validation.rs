@@ -263,6 +263,14 @@ pub fn validate_project(
                     }
                 }
 
+                if op.kind.is_3d_surface() && !cad_doc.has_3d_geometry() {
+                    report.push_error(
+                        &op_scope,
+                        "3D surface operations require a loaded 3D STEP solid or STL/OBJ/3MF mesh.",
+                    );
+                    continue;
+                }
+
                 // Validate selections & Z-height hierarchy
                 let summary = match extract_selection_features_with_sketches(
                     cad_doc,
@@ -277,8 +285,18 @@ pub fn validate_project(
                     }
                 };
 
-                eval_ctx.set_var("feature_top_z", summary.inferred_top_z_wcs);
-                eval_ctx.set_var("feature_bottom_z", summary.inferred_bottom_z_wcs);
+                let (inf_top_z, inf_bot_z) =
+                    if op.kind.is_3d_surface() && summary.features.is_empty() {
+                        (
+                            resolved_setup.stock.aabb_wcs().max.z,
+                            resolved_setup.model_aabb_wcs.min.z,
+                        )
+                    } else {
+                        (summary.inferred_top_z_wcs, summary.inferred_bottom_z_wcs)
+                    };
+
+                eval_ctx.set_var("feature_top_z", inf_top_z);
+                eval_ctx.set_var("feature_bottom_z", inf_bot_z);
                 if let Some(hd) = summary.primary_hole_diameter_mm {
                     eval_ctx.set_var("hole_d", hd);
                 }
@@ -291,8 +309,8 @@ pub fn validate_project(
                     &resolved_setup.stock.aabb_wcs(),
                     resolved_setup.clearance_z_wcs,
                     resolved_setup.retract_z_wcs,
-                    summary.inferred_top_z_wcs,
-                    summary.inferred_bottom_z_wcs,
+                    inf_top_z,
+                    inf_bot_z,
                 ) {
                     report.push_error(&op_scope, err.to_string());
                 }

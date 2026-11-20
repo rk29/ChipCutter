@@ -880,9 +880,17 @@ impl ChipCutterApp {
                     &self.global_tools.tools,
                 );
                 self.active_setup_idx = 0;
-                self.inspector_focus = InspectorFocus::Setup { setup_idx: 0 };
-                self.setup_tab = SetupTab::Wcs;
-                self.show_27pt_dots = true;
+                if !self.project.setups[0].operations.is_empty() {
+                    self.inspector_focus = InspectorFocus::Operation {
+                        setup_idx: 0,
+                        op_idx: 0,
+                    };
+                    self.op_tab = OperationTab::Passes;
+                } else {
+                    self.inspector_focus = InspectorFocus::Setup { setup_idx: 0 };
+                    self.setup_tab = SetupTab::Wcs;
+                }
+                self.show_27pt_dots = false;
             }
             LoadPurpose::FreshImport { update_model_entry } => {
                 self.last_reload_banner = None;
@@ -943,6 +951,7 @@ impl ChipCutterApp {
             LoadPurpose::SeedCamTortureBlock
                 | LoadPurpose::SeedAdaptiveRestDemo
                 | LoadPurpose::SeedRevisionDemoV1
+                | LoadPurpose::SeedSculptedMeshDome
         ) {
             self.auto_sim_after_gen = true;
             self.trigger_generate_dirty(None, None);

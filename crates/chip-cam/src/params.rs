@@ -1051,6 +1051,217 @@ impl VCarveParams {
     }
 }
 
+/// 2D XY machining containment boundary source for 3-axis surface operations (`Waterline3D`, `Adaptive3D`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MachiningBoundaryMode {
+    #[default]
+    StockBox,
+    ModelSilhouette,
+    SelectedRegions,
+}
+
+impl MachiningBoundaryMode {
+    pub const ALL: [Self; 3] = [Self::StockBox, Self::ModelSilhouette, Self::SelectedRegions];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::StockBox => "Stock Bounds",
+            Self::ModelSilhouette => "Model Silhouette",
+            Self::SelectedRegions => "Selected 2D Contours",
+        }
+    }
+}
+
+/// How the cutter is constrained relative to the 2D machining boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolContainmentMode {
+    #[default]
+    ToolCenterOnBoundary,
+    ToolInsideBoundary,
+    ToolOutsideBoundary,
+}
+
+impl ToolContainmentMode {
+    pub const ALL: [Self; 3] = [
+        Self::ToolCenterOnBoundary,
+        Self::ToolInsideBoundary,
+        Self::ToolOutsideBoundary,
+    ];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::ToolCenterOnBoundary => "Tool Center on Boundary",
+            Self::ToolInsideBoundary => "Tool Inside Boundary",
+            Self::ToolOutsideBoundary => "Tool Outside Boundary",
+        }
+    }
+}
+
+/// Contour ordering strategy across Z levels in [`OperationKind::Waterline3D`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WaterlineOrderMode {
+    #[default]
+    ByLevel,
+    ByDepthRegion,
+}
+
+impl WaterlineOrderMode {
+    pub const ALL: [Self; 2] = [Self::ByLevel, Self::ByDepthRegion];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::ByLevel => "Order by Level (Top-Down)",
+            Self::ByDepthRegion => "Order by Depth / Island",
+        }
+    }
+}
+
+fn default_slope_max_deg() -> f64 {
+    90.0
+}
+
+fn default_waterline_ramp_deg() -> f64 {
+    3.0
+}
+
+fn default_flat_area_min_mm2() -> f64 {
+    4.0
+}
+
+fn default_zero_length() -> ParamLength {
+    ParamLength::from_mm(0.0)
+}
+
+/// Strategy parameters for **3D Waterline / Z-Level Machining** (`OperationKind::Waterline3D`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Waterline3DParams {
+    #[serde(default)]
+    pub boundary_mode: MachiningBoundaryMode,
+    #[serde(default)]
+    pub tool_containment: ToolContainmentMode,
+    #[serde(default = "default_zero_length")]
+    pub boundary_offset: ParamLength,
+    /// Minimum surface steepness (`0° = flat horizontal`, `90° = vertical wall`) machined by waterline passes.
+    #[serde(default)]
+    pub min_slope_deg: f64,
+    /// Maximum surface steepness (`90°` default).
+    #[serde(default = "default_slope_max_deg")]
+    pub max_slope_deg: f64,
+    /// Subdivide coarse Z levels on shallow slopes to keep surface cusp height below `max_cusp_height`.
+    #[serde(default = "default_true")]
+    pub adaptive_stepdown: bool,
+    /// Minimum adaptive Z stepdown clamp (`mm`).
+    #[serde(default = "default_waterline_min_stepdown")]
+    pub min_stepdown: ParamLength,
+    /// Target maximum scallop / cusp height (`mm`) driving adaptive intermediate Z slices.
+    #[serde(default = "default_waterline_max_cusp")]
+    pub max_cusp_height: ParamLength,
+    /// Automatically inject exact Z-levels at detected horizontal flat plateaus (`+ stock_axial_mm`).
+    #[serde(default = "default_true")]
+    pub detect_flats: bool,
+    #[serde(default)]
+    pub order_mode: WaterlineOrderMode,
+    #[serde(default = "default_true")]
+    pub climb_milling: bool,
+    #[serde(default = "default_waterline_ramp_deg")]
+    pub ramp_angle_deg: f64,
+}
+
+fn default_waterline_min_stepdown() -> ParamLength {
+    ParamLength::from_mm(0.35)
+}
+
+fn default_waterline_max_cusp() -> ParamLength {
+    ParamLength::from_mm(0.05)
+}
+
+impl Default for Waterline3DParams {
+    fn default() -> Self {
+        Self {
+            boundary_mode: MachiningBoundaryMode::ModelSilhouette,
+            tool_containment: ToolContainmentMode::ToolOutsideBoundary,
+            boundary_offset: ParamLength::from_mm(0.5),
+            min_slope_deg: 0.0,
+            max_slope_deg: 90.0,
+            adaptive_stepdown: true,
+            min_stepdown: default_waterline_min_stepdown(),
+            max_cusp_height: default_waterline_max_cusp(),
+            detect_flats: true,
+            order_mode: WaterlineOrderMode::ByLevel,
+            climb_milling: true,
+            ramp_angle_deg: 3.0,
+        }
+    }
+}
+
+impl Waterline3DParams {
+    pub fn reevaluate(&mut self, ctx: &EvalContext) {
+        let _ = self.boundary_offset.reevaluate(ctx);
+        let _ = self.min_stepdown.reevaluate(ctx);
+        let _ = self.max_cusp_height.reevaluate(ctx);
+    }
+}
+
+/// Strategy parameters for **3D Adaptive Clearing / Roughing** (`OperationKind::Adaptive3D`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Adaptive3DParams {
+    #[serde(default)]
+    pub boundary_mode: MachiningBoundaryMode,
+    #[serde(default)]
+    pub tool_containment: ToolContainmentMode,
+    #[serde(default = "default_zero_length")]
+    pub boundary_offset: ParamLength,
+    #[serde(default)]
+    pub adaptive: AdaptiveClearingParams,
+    /// Primary coarse roughing Z stepdown (`mm`).
+    #[serde(default = "default_adaptive3d_rough_stepdown")]
+    pub max_roughing_stepdown: ParamLength,
+    /// Intermediate fine step-up height (`mm`) climbing sloped terraces between coarse levels.
+    #[serde(default = "default_adaptive3d_fine_stepdown")]
+    pub fine_stepdown: ParamLength,
+    /// Automatically inject exact Z-levels at detected horizontal flat plateaus (`+ stock_axial_mm`).
+    #[serde(default = "default_true")]
+    pub detect_flats: bool,
+    /// Minimum horizontal plateau area (`mm²`) considered for flat-level detection.
+    #[serde(default = "default_flat_area_min_mm2")]
+    pub flat_area_min_mm2: f64,
+}
+
+fn default_adaptive3d_rough_stepdown() -> ParamLength {
+    ParamLength::from_mm(5.0)
+}
+
+fn default_adaptive3d_fine_stepdown() -> ParamLength {
+    ParamLength::from_mm(1.5)
+}
+
+impl Default for Adaptive3DParams {
+    fn default() -> Self {
+        Self {
+            boundary_mode: MachiningBoundaryMode::StockBox,
+            tool_containment: ToolContainmentMode::ToolCenterOnBoundary,
+            boundary_offset: ParamLength::from_mm(0.5),
+            adaptive: AdaptiveClearingParams::default(),
+            max_roughing_stepdown: default_adaptive3d_rough_stepdown(),
+            fine_stepdown: default_adaptive3d_fine_stepdown(),
+            detect_flats: true,
+            flat_area_min_mm2: 4.0,
+        }
+    }
+}
+
+impl Adaptive3DParams {
+    pub fn reevaluate(&mut self, ctx: &EvalContext) {
+        let _ = self.boundary_offset.reevaluate(ctx);
+        self.adaptive.reevaluate(ctx);
+        let _ = self.max_roughing_stepdown.reevaluate(ctx);
+        let _ = self.fine_stepdown.reevaluate(ctx);
+    }
+}
+
 /// Strategy-specific parameter block inside [`crate::operation::Operation`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "strategy_kind", rename_all = "snake_case")]
@@ -1064,6 +1275,10 @@ pub enum StrategyParams {
     ChamferTrace(ChamferTraceParams),
     #[serde(rename = "vcarve")]
     VCarve(VCarveParams),
+    #[serde(rename = "waterline_3d")]
+    Waterline3D(Waterline3DParams),
+    #[serde(rename = "adaptive_3d")]
+    Adaptive3D(Adaptive3DParams),
 }
 
 impl StrategyParams {
@@ -1075,6 +1290,8 @@ impl StrategyParams {
             OperationKind::DrillBore => Self::DrillBore(DrillBoreParams::default()),
             OperationKind::ChamferTrace => Self::ChamferTrace(ChamferTraceParams::default()),
             OperationKind::VCarve => Self::VCarve(VCarveParams::default()),
+            OperationKind::Waterline3D => Self::Waterline3D(Waterline3DParams::default()),
+            OperationKind::Adaptive3D => Self::Adaptive3D(Adaptive3DParams::default()),
         }
     }
 
@@ -1087,6 +1304,8 @@ impl StrategyParams {
                 | (OperationKind::DrillBore, Self::DrillBore(_))
                 | (OperationKind::ChamferTrace, Self::ChamferTrace(_))
                 | (OperationKind::VCarve, Self::VCarve(_))
+                | (OperationKind::Waterline3D, Self::Waterline3D(_))
+                | (OperationKind::Adaptive3D, Self::Adaptive3D(_))
         );
         if !matches {
             *self = Self::default_for_kind(kind);
@@ -1101,6 +1320,8 @@ impl StrategyParams {
             Self::DrillBore(p) => p.reevaluate(ctx),
             Self::ChamferTrace(p) => p.reevaluate(ctx),
             Self::VCarve(p) => p.reevaluate(ctx),
+            Self::Waterline3D(p) => p.reevaluate(ctx),
+            Self::Adaptive3D(p) => p.reevaluate(ctx),
         }
     }
 }

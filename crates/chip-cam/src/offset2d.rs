@@ -147,7 +147,35 @@ pub fn offset_polyline(poly: &ArcPolyline2D, signed_left_offset_mm: f64) -> Vec<
         ..Default::default()
     };
 
-    pl.parallel_offset_opt(signed_left_offset_mm, &opts)
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        pl.parallel_offset_opt(signed_left_offset_mm, &opts)
+    }));
+    let raw_offsets = match res {
+        Ok(list) => list,
+        Err(_) => {
+            // Fallback for degenerate sliced-mesh micro-arcs/collinear segments:
+            // snap micro-bulges, remove redundant vertices, and retry with relaxed eps.
+            let mut clean_pl = pl.clone();
+            for v in &mut clean_pl.vertex_data {
+                if v.bulge.abs() < 1e-5 {
+                    v.bulge = 0.0;
+                }
+            }
+            let relaxed_pl = clean_pl.remove_redundant(1e-3).unwrap_or(clean_pl);
+            let relaxed_opts = PlineOffsetOptions {
+                handle_self_intersects: true,
+                pos_equal_eps: 1e-4,
+                offset_dist_eps: 5e-4,
+                ..Default::default()
+            };
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                relaxed_pl.parallel_offset_opt(signed_left_offset_mm, &relaxed_opts)
+            }))
+            .unwrap_or_default()
+        }
+    };
+
+    raw_offsets
         .iter()
         .map(from_cavalier_polyline)
         .filter(|r| !r.segments.is_empty() && r.perimeter() > 1e-4)

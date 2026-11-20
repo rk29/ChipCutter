@@ -1402,3 +1402,330 @@ fn verifies_vcarve_medial_corner_climbs_two_tool_flat_clearance_and_male_inlay_p
     assert!(approx_eq(tp_plug.stats.bounds_wcs.min.z, -2.2, 0.05));
     assert!(tp_plug.clearing_stage.is_some());
 }
+
+#[test]
+fn verifies_adaptive_3d_and_waterline_3d_on_stl_obj_and_step_against_sim_oracle() {
+    use chip_cad::{
+        MeshImportOptions, load_mesh_cad_document, sample_relief_wave_obj_text,
+        sample_sculpted_dome_stl_bytes,
+    };
+    use chip_cam::{
+        HeightReference, HeightSpec, MachiningBoundaryMode, OperationGenRequest, SegmentMotion3D,
+        StockConfig, StrategyParams, ToolContainmentMode, WaterlineOrderMode,
+        generate_operation_toolpath_with_rest,
+    };
+    use chip_sim::{
+        MachineKinematicsConfig, SetupSimulationInput, SimOperationInput, SimResolution,
+        SimVerificationConfig, run_setup_simulation,
+    };
+    use chip_sketch::{RectAnchorMode, SketchEntity, SketchEntityEntry, SketchLayer};
+
+    let starter = default_starter_tool_library();
+    let flat_6mm = &starter.tools[0]; // 6mm flat endmill
+    let ball_6mm = starter
+        .tools
+        .iter()
+        .find(|t| matches!(t.geometry, chip_tools::CutterGeometry::BallEndmill { .. }))
+        .unwrap();
+    let cancel = AtomicBool::new(false);
+
+    // === 1. Sculpted Dome (STL Mesh): Op 1 Adaptive3D (Flat) + Op 2 Waterline3D (Ball) ===
+    let dome_stl = sample_sculpted_dome_stl_bytes();
+    let dome_doc = load_mesh_cad_document(
+        "sculpted_dome.stl",
+        &dome_stl,
+        &MeshImportOptions::default(),
+    )
+    .unwrap();
+    let mut setup = Setup::new("setup_dome", "3D Dome Setup", WorkOffsetSlot::G54);
+    setup.wcs.origin = WcsOriginMode::StockBoxPoint {
+        anchor: BoxAnchor27::TOP_CENTER,
+    };
+    setup.stock = StockConfig::RelativeBox {
+        symmetric_xy: true,
+        side_pos_x: ParamLength::from_mm(2.0),
+        side_neg_x: ParamLength::from_mm(2.0),
+        side_pos_y: ParamLength::from_mm(2.0),
+        side_neg_y: ParamLength::from_mm(2.0),
+        top_offset_z: ParamLength::from_mm(1.0),
+        bottom_offset_z: ParamLength::from_mm(0.0),
+        sheet_thickness_z: ParamLength::from_mm(12.0),
+        round_increment_mm: None,
+    };
+    let resolved_dome = setup.resolve(&dome_doc, DisplayUnit::Millimeter).unwrap();
+    // Stock top = 0.0, Model top (dome apex) = -1.0, Pedestal flat top = -26.0, Model bottom = -34.0
+
+    let mut op_adap3d = Operation::new("op_adap3d", "3D Adaptive Rough", OperationKind::Adaptive3D);
+    op_adap3d.tool_id = Some(flat_6mm.id.clone());
+    op_adap3d.heights.bottom = HeightSpec::new(HeightReference::ModelTop, -25.0);
+    op_adap3d.passes.stock_to_leave_radial = ParamLength::from_mm(0.5);
+    op_adap3d.passes.stock_to_leave_axial = ParamLength::from_mm(0.3);
+    if let StrategyParams::Adaptive3D(p) = op_adap3d.strategy_mut() {
+        p.max_roughing_stepdown = ParamLength::from_mm(6.0);
+        p.fine_stepdown = ParamLength::from_mm(2.0);
+        p.adaptive.optimal_load = ParamLength::from_mm(1.5);
+        p.detect_flats = true;
+    }
+
+    let tp_adap3d = generate_operation_toolpath_with_rest(&OperationGenRequest {
+        doc: &dome_doc,
+        sketches: &[],
+        setup: &resolved_dome,
+        op: &op_adap3d,
+        tool: flat_6mm,
+        clearing_tool: None,
+        display_unit: DisplayUnit::Millimeter,
+        is_first_tool_in_setup: true,
+        upstream_rest: &[],
+        cancel: &cancel,
+    })
+    .unwrap();
+    assert!(
+        tp_adap3d.segments_wcs.len() > 40,
+        "Adaptive3D should generate rich multi-level trochoidal passes"
+    );
+
+    // Verify flat-plateau landing near pedestal top `Z = -26.0 + 0.3 = -25.7 mm`
+    let landed_on_pedestal = tp_adap3d.segments_wcs.iter().any(|s| {
+        matches!(s.motion, SegmentMotion3D::Linear { .. }) && (s.end_wcs.z - (-25.7)).abs() < 0.08
+    });
+    assert!(
+        landed_on_pedestal,
+        "Adaptive3D with detect_flats=true must land cleanly on pedestal plateau (-25.7 mm)"
+    );
+
+    let mut op_wl3d = Operation::new(
+        "op_wl3d",
+        "3D Waterline Semi-Finish",
+        OperationKind::Waterline3D,
+    );
+    op_wl3d.tool_id = Some(ball_6mm.id.clone());
+    op_wl3d.heights.bottom = HeightSpec::new(HeightReference::ModelTop, -25.0);
+    op_wl3d.passes.max_stepdown = ParamLength::from_mm(2.0);
+    if let StrategyParams::Waterline3D(p) = op_wl3d.strategy_mut() {
+        p.adaptive_stepdown = true;
+        p.detect_flats = true;
+        p.order_mode = WaterlineOrderMode::ByLevel;
+    }
+
+    let tp_wl3d = generate_operation_toolpath_with_rest(&OperationGenRequest {
+        doc: &dome_doc,
+        sketches: &[],
+        setup: &resolved_dome,
+        op: &op_wl3d,
+        tool: ball_6mm,
+        clearing_tool: None,
+        display_unit: DisplayUnit::Millimeter,
+        is_first_tool_in_setup: false,
+        upstream_rest: &[],
+        cancel: &cancel,
+    })
+    .unwrap();
+    assert!(
+        tp_wl3d.segments_wcs.len() > 40,
+        "Waterline3D should emit smooth Z-level dome contours"
+    );
+
+    // Run full 5-rule `chip-sim` physical verification on Adaptive3D + Waterline3D together!
+    let sim_ops = vec![
+        SimOperationInput::from_operation(&op_adap3d, flat_6mm, &tp_adap3d),
+        SimOperationInput::from_operation(&op_wl3d, ball_6mm, &tp_wl3d),
+    ];
+    let sim_res = run_setup_simulation(&SetupSimulationInput {
+        doc: &dome_doc,
+        setup: &resolved_dome,
+        target_bodies: &[],
+        operations: &sim_ops,
+        kinematics: MachineKinematicsConfig::default(),
+        resolution: SimResolution::Standard,
+        verify_config: SimVerificationConfig::default(),
+        cancel: None,
+    })
+    .unwrap();
+    assert_eq!(
+        sim_res.critical_error_count(),
+        0,
+        "Sculpted Dome Adaptive3D + Waterline3D must pass 5-rule simulation with 0 crashes/gouges, got: {:#?}",
+        sim_res.diagnostics
+    );
+    assert!(
+        sim_res.removed_volume_mm3 > 25_000.0,
+        "Expected substantial 3D stock removal around dome, got {:.1} mm³",
+        sim_res.removed_volume_mm3
+    );
+
+    // === 2. Steep-Slope Filtering + 2D Sketch Containment Clipping on Waterline3D ===
+    let mut sk = SketchLayer::new("sk_bound", "2D Window", "setup_dome");
+    sk.entities.push(SketchEntityEntry {
+        id: "rect_clip".to_string(),
+        name: "Clip Rect".to_string(),
+        is_construction: false,
+        sub_layer: Some("DEFAULT".to_string()),
+        entity: SketchEntity::Rectangle {
+            x: ParamLength::from_mm(0.0),
+            y: ParamLength::from_mm(0.0),
+            width: ParamLength::from_mm(40.0),
+            height: ParamLength::from_mm(40.0),
+            corner_radius: ParamLength::from_mm(0.0),
+            rotation_deg: 0.0,
+            anchor: RectAnchorMode::Center,
+        },
+    });
+    sk.rebuild_regions(None);
+
+    let mut op_wl_clip = Operation::new(
+        "op_wl_clip",
+        "Steep Clipped Waterline",
+        OperationKind::Waterline3D,
+    );
+    op_wl_clip.tool_id = Some(ball_6mm.id.clone());
+    op_wl_clip.heights.bottom = HeightSpec::new(HeightReference::ModelTop, -24.0);
+    op_wl_clip.passes.max_stepdown = ParamLength::from_mm(2.0);
+    op_wl_clip
+        .selections
+        .push(GeometrySelectionItem::SketchLayerAll {
+            sketch_id: "sk_bound".to_string(),
+            sub_layer: None,
+            reverse: false,
+            side_flip: false,
+        });
+    if let StrategyParams::Waterline3D(p) = op_wl_clip.strategy_mut() {
+        p.boundary_mode = MachiningBoundaryMode::SelectedRegions;
+        p.tool_containment = ToolContainmentMode::ToolInsideBoundary;
+        p.boundary_offset = ParamLength::from_mm(0.0);
+        p.min_slope_deg = 35.0;
+        p.max_slope_deg = 90.0;
+        p.adaptive_stepdown = false;
+    }
+
+    let tp_clip = generate_operation_toolpath_with_rest(&OperationGenRequest {
+        doc: &dome_doc,
+        sketches: &[sk],
+        setup: &resolved_dome,
+        op: &op_wl_clip,
+        tool: ball_6mm,
+        clearing_tool: None,
+        display_unit: DisplayUnit::Millimeter,
+        is_first_tool_in_setup: true,
+        upstream_rest: &[],
+        cancel: &cancel,
+    })
+    .unwrap();
+    // With 40×40 rect (`±20 mm`) and `ToolInsideBoundary` (`R = 3 mm`), every cutting XY must stay inside `±17.1 mm`!
+    for seg in &tp_clip.segments_wcs {
+        if !matches!(seg.motion, SegmentMotion3D::Rapid) {
+            assert!(
+                seg.end_wcs.x.abs() <= 17.2 && seg.end_wcs.y.abs() <= 17.2,
+                "Clipped Waterline3D escaped ToolInsideBoundary (±17 mm): {:?}",
+                seg.end_wcs
+            );
+        }
+    }
+    // Slope >= 35° must skip shallow dome apex (`Z > -5 mm` has slope < 35°)
+    let max_cut_z = tp_clip
+        .segments_wcs
+        .iter()
+        .filter(|s| {
+            matches!(
+                s.motion,
+                SegmentMotion3D::Linear {
+                    role: chip_cam::MotionRole::FinishCut,
+                    ..
+                } | SegmentMotion3D::Arc {
+                    role: chip_cam::MotionRole::FinishCut,
+                    ..
+                }
+            )
+        })
+        .map(|s| s.end_wcs.z)
+        .fold(f64::NEG_INFINITY, f64::max);
+    assert!(
+        max_cut_z < -3.0,
+        "min_slope_deg=35° should skip shallow dome apex, got max_cut_z={max_cut_z:.2}"
+    );
+
+    // === 3. Relief Wave (OBJ) + 3D STEP Solid (`sample_cam_torture_block_step`) ===
+    let wave_obj = sample_relief_wave_obj_text();
+    let wave_doc = load_mesh_cad_document(
+        "relief_wave.obj",
+        wave_obj.as_bytes(),
+        &MeshImportOptions::default(),
+    )
+    .unwrap();
+    let mut wave_setup = Setup::new("setup_wave", "Wave Setup", WorkOffsetSlot::G54);
+    let resolved_wave = wave_setup
+        .resolve(&wave_doc, DisplayUnit::Millimeter)
+        .unwrap();
+    let mut op_wave = Operation::new("op_wave_a3d", "Wave 3D Adaptive", OperationKind::Adaptive3D);
+    op_wave.tool_id = Some(flat_6mm.id.clone());
+    op_wave.heights.bottom = HeightSpec::new(HeightReference::ModelTop, -8.0);
+    if let StrategyParams::Adaptive3D(p) = op_wave.strategy_mut() {
+        p.max_roughing_stepdown = ParamLength::from_mm(4.0);
+        p.fine_stepdown = ParamLength::from_mm(2.0);
+        p.adaptive.optimal_load = ParamLength::from_mm(1.5);
+    }
+    let tp_wave = generate_operation_toolpath_with_rest(&OperationGenRequest {
+        doc: &wave_doc,
+        sketches: &[],
+        setup: &resolved_wave,
+        op: &op_wave,
+        tool: flat_6mm,
+        clearing_tool: None,
+        display_unit: DisplayUnit::Millimeter,
+        is_first_tool_in_setup: true,
+        upstream_rest: &[],
+        cancel: &cancel,
+    })
+    .unwrap();
+    let sim_wave = run_setup_simulation(&SetupSimulationInput {
+        doc: &wave_doc,
+        setup: &resolved_wave,
+        target_bodies: &[],
+        operations: &[SimOperationInput::from_operation(
+            &op_wave, flat_6mm, &tp_wave,
+        )],
+        kinematics: MachineKinematicsConfig::default(),
+        resolution: SimResolution::Standard,
+        verify_config: SimVerificationConfig::default(),
+        cancel: None,
+    })
+    .unwrap();
+    assert_eq!(
+        sim_wave.critical_error_count(),
+        0,
+        "OBJ Relief Wave Adaptive3D sim errors: {:#?}",
+        sim_wave.diagnostics
+    );
+
+    // 3D Waterline on STEP B-Rep solid (`sample_cam_torture_block_step`)
+    let step_str = sample_cam_torture_block_step().unwrap();
+    let step_doc = MonstertruckKernel
+        .load_step_bytes(
+            "torture.step",
+            step_str.as_bytes(),
+            DEFAULT_TESS_CHORD_TOL_MM,
+        )
+        .unwrap();
+    let mut step_setup = Setup::new("setup_step3d", "STEP 3D", WorkOffsetSlot::G54);
+    let resolved_step = step_setup
+        .resolve(&step_doc, DisplayUnit::Millimeter)
+        .unwrap();
+    let mut op_step_wl = Operation::new("op_step_wl", "STEP Waterline", OperationKind::Waterline3D);
+    op_step_wl.tool_id = Some(ball_6mm.id.clone());
+    op_step_wl.heights.bottom = HeightSpec::new(HeightReference::ModelTop, -8.0);
+    op_step_wl.passes.max_stepdown = ParamLength::from_mm(2.5);
+    let tp_step_wl = generate_operation_toolpath_with_rest(&OperationGenRequest {
+        doc: &step_doc,
+        sketches: &[],
+        setup: &resolved_step,
+        op: &op_step_wl,
+        tool: ball_6mm,
+        clearing_tool: None,
+        display_unit: DisplayUnit::Millimeter,
+        is_first_tool_in_setup: true,
+        upstream_rest: &[],
+        cancel: &cancel,
+    })
+    .unwrap();
+    assert!(!tp_step_wl.segments_wcs.is_empty());
+}

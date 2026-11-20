@@ -71,6 +71,8 @@ pub enum ToolOperationClass {
     Trace,
     VCarve,
     VCarveFlatClearance,
+    Waterline3D,
+    Adaptive3D,
 }
 
 /// Physical cutter geometry stored in canonical `f64` millimeters.
@@ -258,6 +260,8 @@ impl CutterGeometry {
                     | ToolOperationClass::HelicalBore
                     | ToolOperationClass::Trace
                     | ToolOperationClass::VCarveFlatClearance
+                    | ToolOperationClass::Waterline3D
+                    | ToolOperationClass::Adaptive3D
             ),
             Self::BullNoseEndmill { .. } => matches!(
                 op_class,
@@ -266,12 +270,16 @@ impl CutterGeometry {
                     | ToolOperationClass::Pocket2D
                     | ToolOperationClass::HelicalBore
                     | ToolOperationClass::Trace
+                    | ToolOperationClass::Waterline3D
+                    | ToolOperationClass::Adaptive3D
             ),
             Self::BallEndmill { .. } => matches!(
                 op_class,
                 ToolOperationClass::Contour2D
                     | ToolOperationClass::Pocket2D
                     | ToolOperationClass::Trace
+                    | ToolOperationClass::Waterline3D
+                    | ToolOperationClass::Adaptive3D
             ),
             Self::ChamferMill {
                 included_angle_deg, ..

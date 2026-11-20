@@ -2222,8 +2222,9 @@ pub fn build_tutorial_vcarve_inlay_project(
 }
 
 /// Builds the Phase 5 **Sculpted Dome (STL Mesh)** sample [`ProjectDocument`] (`70 × 70 × 33 mm`
-/// watertight `R = 25 mm` hemisphere seated on an `8 mm` base pedestal), initialized with
-/// Relative Box Stock (`+2 mm` XY, `+1 mm` top Z), `G54` WCS at Stock Top Center, and starter tools.
+/// watertight `R = 25 mm` hemisphere seated on an `8 mm` base pedestal), seeded with:
+/// - **Op 1:** `3D Adaptive Roughing` (Ø6 mm Flat Endmill, `6 mm` rough / `2 mm` fine step-up, `0.5 mm` radial / `0.3 mm` axial stock-to-leave),
+/// - **Op 2:** `3D Waterline Semi-Finish` (Ø6 mm Ball Endmill, `1.5 mm` adaptive Z-level contours with flat-plateau detection).
 pub fn build_sculpted_mesh_dome_project(
     model_path: String,
     sha256_hex: &str,
@@ -2254,5 +2255,58 @@ pub fn build_sculpted_mesh_dome_project(
     for t in available_tools {
         proj.ensure_tool_embedded(t);
     }
+
+    let flat_6mm = proj
+        .tools
+        .iter()
+        .find(|t| matches!(t.geometry, CutterGeometry::FlatEndmill { diameter_mm, .. } if (diameter_mm - 6.0).abs() < 0.5))
+        .or_else(|| proj.tools.first())
+        .cloned();
+    let ball_6mm = proj
+        .tools
+        .iter()
+        .find(|t| matches!(t.geometry, CutterGeometry::BallEndmill { .. }))
+        .cloned();
+
+    // Op 1: 3D Adaptive Roughing down to the `Z = 8 mm` pedestal top (`ModelTop - 25.0 mm`)
+    let mut op_rough = Operation::new(
+        "op_1_adaptive_3d",
+        "3D Adaptive Roughing",
+        OperationKind::Adaptive3D,
+    );
+    if let Some(t) = &flat_6mm {
+        op_rough.tool_id = Some(t.id.clone());
+        op_rough.preset_id = t.presets.first().map(|p| p.id.clone());
+    }
+    op_rough.heights.bottom = HeightSpec::new(HeightReference::ModelTop, -25.0);
+    op_rough.passes.stock_to_leave_radial = ParamLength::from_mm(0.5);
+    op_rough.passes.stock_to_leave_axial = ParamLength::from_mm(0.3);
+    if let StrategyParams::Adaptive3D(p) = op_rough.strategy_mut() {
+        p.max_roughing_stepdown = ParamLength::from_mm(6.0);
+        p.fine_stepdown = ParamLength::from_mm(2.0);
+        p.adaptive.optimal_load = ParamLength::from_mm(1.5);
+        p.detect_flats = true;
+    }
+
+    // Op 2: 3D Waterline Semi-Finish across the sculpted dome
+    let mut op_wl = Operation::new(
+        "op_2_waterline_3d",
+        "3D Waterline Semi-Finish",
+        OperationKind::Waterline3D,
+    );
+    if let Some(t) = ball_6mm.as_ref().or(flat_6mm.as_ref()) {
+        op_wl.tool_id = Some(t.id.clone());
+        op_wl.preset_id = t.presets.first().map(|p| p.id.clone());
+    }
+    op_wl.heights.bottom = HeightSpec::new(HeightReference::ModelTop, -25.0);
+    op_wl.passes.max_stepdown = ParamLength::from_mm(1.75);
+    if let StrategyParams::Waterline3D(p) = op_wl.strategy_mut() {
+        p.adaptive_stepdown = true;
+        p.min_stepdown = ParamLength::from_mm(0.5);
+        p.max_cusp_height = ParamLength::from_mm(0.08);
+        p.detect_flats = true;
+    }
+
+    proj.setups[0].operations = vec![op_rough, op_wl];
     proj
 }

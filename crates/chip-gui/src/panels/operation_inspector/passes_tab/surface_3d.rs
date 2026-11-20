@@ -1,0 +1,257 @@
+use chip_cam::{
+    Adaptive3DParams, AdaptiveCutDirection, MachiningBoundaryMode, ToolContainmentMode,
+    Waterline3DParams, WaterlineOrderMode,
+};
+
+use super::{COMBO_COL_WIDTH, PassItemCtx};
+use crate::widgets::section_card;
+
+pub(super) fn show_waterline3d_params(
+    ui: &mut egui::Ui,
+    p: &mut Waterline3DParams,
+    mut item: PassItemCtx<'_>,
+) {
+    let (setup_idx, op_idx) = item.ids();
+
+    section_card(
+        ui,
+        ("wl3d_passes_card", setup_idx, op_idx),
+        "3D Waterline / Z-Level Passes",
+        true,
+        |ui| {
+            item.grid(ui, "wl3d_passes_grid", |f| {
+                f.set_tip("Subdivide Z-levels automatically on shallow slopes to keep cusp height within target");
+                f.check(
+                    "Adaptive Stepdown",
+                    &mut p.adaptive_stepdown,
+                    "Subdivide shallow Z bands",
+                    "Toggle Waterline Adaptive Stepdown",
+                );
+                if p.adaptive_stepdown {
+                    f.set_tip("Minimum vertical Z-step clamp when subdividing shallow slopes");
+                    f.len(
+                        "Min Stepdown",
+                        &mut p.min_stepdown,
+                        "Edit Waterline Min Stepdown",
+                    );
+                    f.set_tip("Target maximum scallop/cusp height driving adaptive Z refinement");
+                    f.len(
+                        "Max Cusp Height",
+                        &mut p.max_cusp_height,
+                        "Edit Waterline Max Cusp Height",
+                    );
+                }
+                f.set_tip("Automatically inject exact Z-levels on detected horizontal flat plateaus");
+                f.check(
+                    "Detect Flats",
+                    &mut p.detect_flats,
+                    "Land on flat plateaus",
+                    "Toggle Waterline Detect Flats",
+                );
+                f.set_tip("Filter out shallow or vertical zones by surface slope angle (0° = flat, 90° = vertical)");
+                f.row("Slope Range (°)", |ui, mutated| {
+                    ui.horizontal(|ui| {
+                        let r_min = ui.add(
+                            egui::DragValue::new(&mut p.min_slope_deg)
+                                .speed(1.0)
+                                .range(0.0..=89.0)
+                                .suffix("°"),
+                        );
+                        ui.label("to");
+                        let r_max = ui.add(
+                            egui::DragValue::new(&mut p.max_slope_deg)
+                                .speed(1.0)
+                                .range(p.min_slope_deg.max(1.0)..=90.0)
+                                .suffix("°"),
+                        );
+                        if r_min.changed() || r_max.changed() {
+                            if p.max_slope_deg < p.min_slope_deg {
+                                p.max_slope_deg = p.min_slope_deg;
+                            }
+                            *mutated = Some("Edit Waterline Slope Range");
+                        }
+                    });
+                });
+                f.set_tip("Order waterline contours top-down by Z level or finish each island/boss before retracting");
+                f.row("Pass Ordering", |ui, mutated| {
+                    let prev = p.order_mode;
+                    egui::ComboBox::from_id_salt(("wl3d_order_cb", setup_idx, op_idx))
+                        .width(COMBO_COL_WIDTH)
+                        .selected_text(p.order_mode.label())
+                        .show_ui(ui, |ui| {
+                            for m in WaterlineOrderMode::ALL {
+                                ui.selectable_value(&mut p.order_mode, m, m.label());
+                            }
+                        });
+                    if p.order_mode != prev {
+                        *mutated = Some("Change Waterline Ordering");
+                    }
+                });
+                f.set_tip("Climb milling keeps workpiece material to the right of tool travel");
+                f.check(
+                    "Cut Direction",
+                    &mut p.climb_milling,
+                    "Climb Milling",
+                    "Toggle Waterline Climb Milling",
+                );
+                f.set_tip("Helical / contour-following ramp angle when descending to each Z level");
+                f.row("Ramp Angle", |ui, mutated| {
+                    if ui
+                        .add(
+                            egui::DragValue::new(&mut p.ramp_angle_deg)
+                                .speed(0.25)
+                                .range(0.5..=20.0)
+                                .suffix("°"),
+                        )
+                        .changed()
+                    {
+                        *mutated = Some("Edit Waterline Ramp Angle");
+                    }
+                });
+            });
+        },
+    );
+
+    show_3d_boundary_card(
+        ui,
+        ("wl3d_boundary_card", setup_idx, op_idx),
+        &mut p.boundary_mode,
+        &mut p.tool_containment,
+        &mut p.boundary_offset,
+        &mut item,
+    );
+}
+
+pub(super) fn show_adaptive3d_params(
+    ui: &mut egui::Ui,
+    p: &mut Adaptive3DParams,
+    mut item: PassItemCtx<'_>,
+) {
+    let (setup_idx, op_idx) = item.ids();
+
+    section_card(
+        ui,
+        ("a3d_passes_card", setup_idx, op_idx),
+        "3D Adaptive Roughing",
+        true,
+        |ui| {
+            item.grid(ui, "a3d_passes_grid", |f| {
+                f.set_tip("Maximum radial engagement (ae) maintained across constant-load trochoidal peels");
+                f.len(
+                    "Optimal Load (ae)",
+                    &mut p.adaptive.optimal_load,
+                    "Edit 3D Adaptive Optimal Load",
+                );
+                f.set_tip("Primary coarse roughing Z stepdown (ap)");
+                f.len(
+                    "Rough Stepdown",
+                    &mut p.max_roughing_stepdown,
+                    "Edit 3D Adaptive Rough Stepdown",
+                );
+                f.set_tip("Intermediate fine Z step-up height peeling sloped terraces between coarse levels");
+                f.len(
+                    "Fine Step-Up",
+                    &mut p.fine_stepdown,
+                    "Edit 3D Adaptive Fine Step-Up",
+                );
+                f.set_tip("Automatically inject exact Z-levels on detected horizontal flat plateaus");
+                f.check(
+                    "Detect Flats",
+                    &mut p.detect_flats,
+                    "Land on flat plateaus",
+                    "Toggle 3D Adaptive Detect Flats",
+                );
+                f.set_tip("Small Z micro-lift during high-speed non-cutting stay-down links");
+                f.len(
+                    "Micro-Lift Z",
+                    &mut p.adaptive.micro_lift_z,
+                    "Edit 3D Adaptive Micro-Lift",
+                );
+                f.set_tip("Boost feedrate automatically to maintain constant chip thickness at light radial loads");
+                f.check(
+                    "Chip Thinning",
+                    &mut p.adaptive.auto_chip_thinning,
+                    "Compensate Feedrate",
+                    "Toggle 3D Adaptive Chip Thinning",
+                );
+                f.set_tip("Preferred milling direction along trochoidal peels");
+                f.row("Cut Direction", |ui, mutated| {
+                    let prev = p.adaptive.cut_direction;
+                    egui::ComboBox::from_id_salt(("a3d_dir_cb", setup_idx, op_idx))
+                        .width(COMBO_COL_WIDTH)
+                        .selected_text(p.adaptive.cut_direction.label())
+                        .show_ui(ui, |ui| {
+                            for d in AdaptiveCutDirection::ALL {
+                                ui.selectable_value(&mut p.adaptive.cut_direction, d, d.label());
+                            }
+                        });
+                    if p.adaptive.cut_direction != prev {
+                        *mutated = Some("Change 3D Adaptive Cut Direction");
+                    }
+                });
+            });
+        },
+    );
+
+    show_3d_boundary_card(
+        ui,
+        ("a3d_boundary_card", setup_idx, op_idx),
+        &mut p.boundary_mode,
+        &mut p.tool_containment,
+        &mut p.boundary_offset,
+        &mut item,
+    );
+}
+
+fn show_3d_boundary_card(
+    ui: &mut egui::Ui,
+    card_id: (&'static str, usize, usize),
+    boundary_mode: &mut MachiningBoundaryMode,
+    tool_containment: &mut ToolContainmentMode,
+    boundary_offset: &mut chip_math::ParamLength,
+    item: &mut PassItemCtx<'_>,
+) {
+    let (setup_idx, op_idx) = item.ids();
+    section_card(ui, card_id, "3D Machining Boundary", true, |ui| {
+        item.grid(ui, card_id.0, |f| {
+            f.set_tip("2D XY containment boundary constraining 3D roughing/waterline motion");
+            f.row("Boundary Source", |ui, mutated| {
+                let prev = *boundary_mode;
+                egui::ComboBox::from_id_salt((card_id.0, "bmode", setup_idx, op_idx))
+                    .width(COMBO_COL_WIDTH)
+                    .selected_text(boundary_mode.label())
+                    .show_ui(ui, |ui| {
+                        for m in MachiningBoundaryMode::ALL {
+                            ui.selectable_value(boundary_mode, m, m.label());
+                        }
+                    });
+                if *boundary_mode != prev {
+                    *mutated = Some("Change 3D Boundary Source");
+                }
+            });
+            f.set_tip("How the tool perimeter is positioned relative to the 2D boundary");
+            f.row("Tool Containment", |ui, mutated| {
+                let prev = *tool_containment;
+                egui::ComboBox::from_id_salt((card_id.0, "tcont", setup_idx, op_idx))
+                    .width(COMBO_COL_WIDTH)
+                    .selected_text(tool_containment.label())
+                    .show_ui(ui, |ui| {
+                        for c in ToolContainmentMode::ALL {
+                            ui.selectable_value(tool_containment, c, c.label());
+                        }
+                    });
+                if *tool_containment != prev {
+                    *mutated = Some("Change 3D Tool Containment");
+                }
+            });
+            f.set_tip(
+                "Additional outward (+) or inward (-) XY margin applied to the machining boundary",
+            );
+            f.len(
+                "Boundary Offset",
+                boundary_offset,
+                "Edit 3D Boundary Offset",
+            );
+        });
+    });
+}

@@ -5,6 +5,7 @@
 
 pub mod cutter;
 pub mod drop_cutter;
+pub mod levels;
 pub mod push_cutter;
 
 use chip_cad::{BodyId, CadDocument, MeshBvh, MeshTriangle, TriangleMeshBody};
@@ -12,6 +13,10 @@ use chip_math::{Aabb3, DVec3, RigidFrame3};
 
 pub use cutter::{SurfaceCutterProfile, SurfaceCutterShape};
 pub use drop_cutter::{drop_cutter_points_parallel, drop_cutter_z, drop_cutter_z_with_scratch};
+pub use levels::{
+    clip_polyline_to_region, detect_flat_plateaus, rect_region_2d, resolve_3d_containment_region,
+    sample_surface_slope_deg, stock_xy_region,
+};
 pub use push_cutter::{push_cutter_region_z, slice_surface_contours_z};
 
 /// WCS-space canonical `f64` triangle surface mesh accelerated by a [`MeshBvh`].

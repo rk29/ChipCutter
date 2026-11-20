@@ -1,4 +1,5 @@
 pub mod milling_2d;
+pub mod surface_3d;
 pub mod vcarve;
 
 use std::ops::RangeInclusive;
@@ -253,7 +254,10 @@ pub fn show_passes_tab(ui: &mut egui::Ui, ctx: PassesTabCtx<'_>) {
         },
     );
 
-    if matches!(op.kind, OperationKind::Pocket2D | OperationKind::Contour2D) {
+    if matches!(
+        op.kind,
+        OperationKind::Pocket2D | OperationKind::Contour2D | OperationKind::Adaptive3D
+    ) {
         show_rest_machining_card(ui, &mut op.passes.rest_machining, preceding_ops, &mut item);
     }
 
@@ -279,6 +283,8 @@ pub fn show_passes_tab(ui: &mut egui::Ui, ctx: PassesTabCtx<'_>) {
                 item,
             },
         ),
+        StrategyParams::Waterline3D(p) => surface_3d::show_waterline3d_params(ui, p, item),
+        StrategyParams::Adaptive3D(p) => surface_3d::show_adaptive3d_params(ui, p, item),
     }
 }
 

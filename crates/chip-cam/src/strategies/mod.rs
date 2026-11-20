@@ -1,10 +1,12 @@
 pub mod adaptive2d;
+pub mod adaptive3d;
 pub mod chamfer_trace;
 pub mod contour2d;
 pub mod drill_bore;
 pub mod facing;
 pub mod pocket2d;
 pub mod vcarve;
+pub mod waterline3d;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -25,8 +27,9 @@ use crate::{
     wcs::CamError,
 };
 
-/// Resolved immutable context passed into each 2.5D toolpath strategy generator.
+/// Resolved immutable context passed into each 2.5D / 3-axis toolpath strategy generator.
 pub struct StrategyExecContext<'a> {
+    pub doc: &'a CadDocument,
     pub setup: &'a ResolvedSetup,
     pub op: &'a Operation,
     pub tool: &'a Tool,
@@ -131,7 +134,8 @@ pub fn generate_operation_toolpath_with_rest(
 
     // 1. Extract 3D B-Rep + 2D Sketch features in Setup WCS coordinates
     let selection = extract_selection_features_with_sketches(doc, sketches, setup, &op.selections)?;
-    if op.kind != OperationKind::Facing && selection.features.is_empty() {
+    if op.kind != OperationKind::Facing && !op.kind.is_3d_surface() && selection.features.is_empty()
+    {
         return Err(CamError::EmptySelection {
             op_name: op.name.clone(),
             op_kind: op.kind.label(),
@@ -144,6 +148,8 @@ pub fn generate_operation_toolpath_with_rest(
     let (inferred_top_z, inferred_bottom_z) =
         if op.kind == OperationKind::Facing && selection.features.is_empty() {
             (setup.stock.aabb_wcs().max.z, setup.model_aabb_wcs.max.z)
+        } else if op.kind.is_3d_surface() && selection.features.is_empty() {
+            (setup.stock.aabb_wcs().max.z, setup.model_aabb_wcs.min.z)
         } else {
             (
                 selection.inferred_top_z_wcs,
@@ -185,6 +191,7 @@ pub fn generate_operation_toolpath_with_rest(
     }
 
     let ctx = StrategyExecContext {
+        doc,
         setup,
         op,
         tool,
@@ -235,6 +242,12 @@ pub fn generate_operation_toolpath_with_rest(
         }
         StrategyParams::VCarve(p) => {
             vcarve::generate_vcarve(&ctx, p, &mut builder)?;
+        }
+        StrategyParams::Waterline3D(p) => {
+            waterline3d::generate_waterline3d(&ctx, p, &mut builder)?;
+        }
+        StrategyParams::Adaptive3D(p) => {
+            adaptive3d::generate_adaptive3d(&ctx, p, &mut builder)?;
         }
     }
 

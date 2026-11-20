@@ -35,6 +35,15 @@ pub fn show_geometry_tab(ui: &mut egui::Ui, ctx: GeometryTabCtx<'_>) {
         mutated_label,
     } = ctx;
 
+    if op.kind.is_3d_surface() {
+        inline_banner(
+            ui,
+            BannerKind::Info,
+            "3D Surface Operation: machines the active 3D mesh or STEP solid automatically inside Stock Bounds / Model Silhouette. Optionally pick 2D Sketch regions or B-Rep loops below and choose 'Selected 2D Contours' in Passes to constrain XY machining.",
+        );
+        ui.add_space(4.0);
+    }
+
     section_card(
         ui,
         ("geom_pick_card", setup_idx, op_idx),
