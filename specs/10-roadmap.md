@@ -159,6 +159,32 @@ Phase 6 brings every Phase 5 3-axis surfacing strategy, 4th-axis rotary mode, an
 
 ---
 
+## Phase 7 — GitHub Releases & Cross-Platform Distribution (Planned — M25–M28)
+
+Phase 7 automates cross-platform CI and tag-driven **GitHub Releases** so machinists can download ready-to-run **Linux (Flatpak)**, **Windows**, and **macOS** installers and binaries directly from GitHub without compiling from source:
+
+### Milestone 25 — Release Engineering, App Metadata, & GitHub Actions CI/Release Foundation (`plans/25-milestone-25-plan.md`)
+- **Shared Packaging & Branding Assets (`packaging/`):** Vector SVG + multi-resolution PNG app icons, Windows `.ico`, macOS `.icns`, desktop window icon embedding in `chip-gui`, consistent `--version` output for both `chip-gui` and `chipcutter`, and tuned `[profile.release]` settings (LTO, stripped symbols).
+- **Installed-Bundle Runtime Safety:** Ensure built-in post-processors, starter libraries, and user config/state directories (`dirs`) resolve reliably when launched from read-only installed locations (Flatpak `/app`, Windows `Program Files`, macOS `.app/Contents/Resources`) rather than a repository working directory.
+- **GitHub Actions CI & Release Skeleton (`.github/workflows/ci.yml`, `.github/workflows/release.yml`):** Multi-OS PR/push CI (`ubuntu-latest`, `windows-latest`, `macos-latest`) running `cargo fmt`, `cargo clippy`, `cargo deny`, and core tests; tag-triggered (`v*.*.*`) release workflow with draft/published GitHub Release creation, auto-generated changelog notes, and unified `SHA256SUMS.txt` checksum publishing.
+
+### Milestone 26 — Linux Flatpak Packaging & Release Bundle (`plans/26-milestone-26-plan.md`)
+- **Flatpak Sandbox & Portal Readiness:** Configure `rfd` / desktop file-chooser support for `xdg-desktop-portal` so sandboxed users can open/save `.step`, `.stl`, `.obj`, `.3mf`, `.dxf`, `.svg`, `.chip.toml`, `.chipz`, and G-code files cleanly without broad host filesystem access; verify Wayland (`--socket=wayland`), X11 fallback (`--socket=fallback-x11`), and GPU/Vulkan (`--device=dri`) permissions.
+- **Manifest, Desktop Entry, & AppStream Metadata (`packaging/flatpak/`):** Author reverse-DNS Flatpak manifest (Freedesktop/GNOME runtime + `rust-stable` SDK extension, bundling both `chip-gui` and `chipcutter` CLI), `.desktop` launcher with `.chip.toml` / `.chipz` MIME associations, and AppStream `.metainfo.xml` validated via `appstreamcli validate`.
+- **Automated Flatpak CI Build & Release Upload:** Add a GitHub Actions job building the Flatpak with `flatpak-builder`, smoke-testing installation/CLI execution, exporting a single-file `ChipCutter-<version>-linux-x86_64.flatpak` bundle (plus companion Linux CLI tarball), and attaching it to the GitHub Release.
+
+### Milestone 27 — Windows Release Binaries & Installer (`plans/27-milestone-27-plan.md`)
+- **Native Windows Build Polish (`x86_64-pc-windows-msvc`):** Embed Windows PE icon and version metadata into `chip-gui.exe` and `chipcutter.exe`, enable `#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]` on release GUI builds (no stray console window), and verify `wgpu` DX12/Vulkan startup and native Windows file dialogs (`common-controls-v6`).
+- **Portable ZIP & Installer (`packaging/windows/`):** Package both a portable `ChipCutter-<version>-windows-x86_64.zip` (`chip-gui.exe`, `chipcutter.exe`, license/README) and a Windows installer (`ChipCutter-<version>-windows-x86_64.msi` via WiX or `.exe` via NSIS) adding Start Menu shortcuts, optional `PATH` registration for `chipcutter.exe`, and `.chip.toml` / `.chipz` file associations.
+- **Automated Windows CI Job & Signing Hooks:** Wire the Windows build, packaging, headless CLI smoke test, optional Authenticode signing (guarded by GitHub Actions secrets), and GitHub Release upload into `.github/workflows/release.yml`.
+
+### Milestone 28 — macOS App Bundle, Universal DMG, & Release Docs (`plans/28-milestone-28-plan.md`)
+- **macOS `.app` Bundle & Architecture Targets (`packaging/macos/`):** Build native Apple Silicon (`aarch64-apple-darwin`) and Intel (`x86_64-apple-darwin`) binaries (packaged per-architecture or combined into a `lipo` Universal2 bundle) inside `ChipCutter.app` with `Info.plist`, `.icns` icon, `UTExportedTypeDeclarations` for `.chip.toml` / `.chipz`, bundled `chipcutter` CLI, and verified Metal `wgpu` rendering & macOS native dialogs.
+- **DMG Disk Image & Optional Signing/Notarization:** Generate a polished `ChipCutter-<version>-macos-<arch>.dmg` installer (with `Applications` symlink) in `.github/workflows/release.yml`, with optional Apple Developer ID `codesign` + `notarytool` notarization driven by GitHub Actions secrets and a clean ad-hoc signed fallback for unsigned builds.
+- **End-to-End Release Verification & Install Documentation:** Run a full multi-OS dry-run of `.github/workflows/release.yml`, verify checksums and asset naming across all three platforms, and add clear Linux (Flatpak), Windows, and macOS installation & verification instructions to `README.md`.
+
+---
+
 ## Future Phases
 
 1. **Functional & Behavioral User-Level Testing:**
