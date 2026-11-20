@@ -6,7 +6,7 @@ ChipCutter uses `eframe` with the `wgpu` backend and `egui_tiles` for a responsi
 ### Default Multi-Pane Layout & Floating Viewport HUDs
 ```text
 ┌──────────────────────────────────────────────────────────────────────────────┐
-│ Menu Bar: File | Edit | Setup | Operations | Tools | Simulate | Post | View  │
+│ Menu Bar: File | Edit | Setup | Operations | Tools | Simulate | Post | View | Help │
 ├──────────────────────────────────────────────────────────────────────────────┤
 │ Single-Row Workflow Toolbar: [Open][Save][.chipz][DXF/SVG] | [+ Sketch]      │
 │   [+ Adaptive][+ V-Carve] | [Generate (Ctrl+G)] [Simulate] [Post] | [Ctrl+K] │
@@ -87,7 +87,7 @@ Integrated into the central `egui` panel via `egui_wgpu::CallbackTrait` renderin
 - **Active Pick / Sketch Guidance HUD, Welcome Overlay, & Command Palette *(v3)*:**
   - Whenever a 3D B-Rep pick mode, manual tab placement, or 2D sketch tool is active, a prominent floating guidance banner at the top-center of the viewport explains the expected next click and provides `[Done]` / `[Cancel (Esc)]` controls.
   - Launching `chip-gui` with no file argument opens a clean **Welcome / Quick-Start Overlay** (`Import 3D STEP`, `Import 2D DXF / SVG`, `Start Pure-2D Sketch`, `Recent Projects`, and a **Sample Projects Gallery** modal).
-  - **`Ctrl+K` Command Palette** provides instant fuzzy search across all menu, view, sample, and operation-creation actions, paired with a **`?` / `F1` Keyboard Shortcut Cheat-Sheet**.
+  - **`Ctrl+K` Command Palette** provides instant fuzzy search across all menu, view, sample, and operation-creation actions, paired with a **`?` / `F1` Keyboard Shortcut Cheat-Sheet** and **`Help → About ChipCutter…`** version/build info modal.
 - **Persistent User Preferences (`prefs.toml` — *v3*):**
   - Stored in the user's platform config directory alongside the global tool library, persisting `AppTheme` (`Dark`/`Light`), default display units, mouse navigation preset, orbit mode, viewport visibility toggles, `egui_tiles` pane shares, and recent project paths across sessions.
 - **Document Undo / Redo (`Ctrl+Z` / `Ctrl+Y`):**

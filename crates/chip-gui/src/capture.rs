@@ -158,6 +158,7 @@ pub enum CaptureModal {
     SampleGallery,
     ToolLibrary,
     ShortcutCheatsheet,
+    About,
 }
 
 impl CaptureModal {
@@ -167,8 +168,9 @@ impl CaptureModal {
             "samples" | "sample-gallery" | "gallery" => Ok(Self::SampleGallery),
             "tools" | "tool-library" => Ok(Self::ToolLibrary),
             "shortcuts" | "cheatsheet" => Ok(Self::ShortcutCheatsheet),
+            "about" => Ok(Self::About),
             other => Err(format!(
-                "invalid --capture-modal '{other}'; expected one of: welcome, samples, tools, shortcuts"
+                "invalid --capture-modal '{other}'; expected one of: welcome, samples, tools, shortcuts, about"
             )),
         }
     }
@@ -305,6 +307,7 @@ mod tests {
             CaptureModal::parse("shortcuts"),
             Ok(CaptureModal::ShortcutCheatsheet)
         );
+        assert_eq!(CaptureModal::parse("about"), Ok(CaptureModal::About));
         assert!(CaptureModal::parse("nope").is_err());
     }
 

@@ -75,7 +75,7 @@ struct GuiArgs {
     #[arg(long, value_parser = CapturePane::parse)]
     capture_pane: Option<CapturePane>,
 
-    /// Headless capture modal overlay (`welcome`, `samples`, `tools`, `shortcuts`).
+    /// Headless capture modal overlay (`welcome`, `samples`, `tools`, `shortcuts`, `about`).
     #[arg(long, value_parser = CaptureModal::parse)]
     capture_modal: Option<CaptureModal>,
 
@@ -188,7 +188,10 @@ fn main() -> eframe::Result {
 
     let mut viewport = egui::ViewportBuilder::default()
         .with_app_id(APP_ID)
-        .with_title("ChipCutter — 2.5D, 3-Axis, & 4th-Axis CAM")
+        .with_title(format!(
+            "ChipCutter v{} — 2.5D, 3-Axis, & 4th-Axis CAM",
+            chip_gui::panels::about::APP_VERSION
+        ))
         .with_inner_size([1360.0, 840.0])
         .with_min_inner_size([900.0, 560.0]);
     if let Some(icon) = load_app_icon() {

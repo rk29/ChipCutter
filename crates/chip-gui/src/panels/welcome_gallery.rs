@@ -271,6 +271,12 @@ pub fn show_welcome_modal(
                 inline_icon(ui, IconKind::Sparkles, tok.accent, 16.0);
                 ui.strong("2.5D Milling, Routing, & 3D V-Carve CAM");
                 ui.weak("· Offline STEP, DXF/SVG, Parametric Sketches, Stock Sim & Post");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.weak(
+                        egui::RichText::new(format!("v{}", crate::panels::about::APP_VERSION))
+                            .monospace(),
+                    );
+                });
             });
             ui.add_space(4.0);
             ui.separator();

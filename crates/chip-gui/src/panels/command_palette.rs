@@ -67,6 +67,7 @@ pub enum CommandId {
     SwitchUnitsMillimeter,
     SwitchUnitsInch,
     OpenShortcutCheatsheet,
+    OpenAboutModal,
 
     // Quick-Load Samples
     SampleCamTorture,
@@ -426,6 +427,13 @@ pub const PALETTE_COMMANDS: &[PaletteEntry] = &[
         label: "Keyboard Shortcut Cheat-Sheet",
         keywords: "shortcuts keys hotkeys help reference",
         shortcut: Some("F1 / ?"),
+    },
+    PaletteEntry {
+        id: CommandId::OpenAboutModal,
+        category: "Help",
+        label: "About ChipCutter (Version & Build Info)…",
+        keywords: "about version release build info license credits",
+        shortcut: None,
     },
     PaletteEntry {
         id: CommandId::SampleCamTorture,
@@ -885,5 +893,16 @@ mod tests {
             fuzzy_match_score("adap rest", "Sample: Load 2D Adaptive + Rest Machining").is_some()
         );
         assert!(fuzzy_match_score("zzzz_no_such_cmd", "Generate Dirty Toolpaths").is_none());
+    }
+
+    #[test]
+    fn command_palette_matches_about_and_version_queries() {
+        let entry = PALETTE_COMMANDS
+            .iter()
+            .find(|e| e.id == CommandId::OpenAboutModal)
+            .expect("OpenAboutModal entry present");
+        let searchable = format!("{} {} {}", entry.category, entry.label, entry.keywords);
+        assert!(fuzzy_match_score("about", &searchable).is_some());
+        assert!(fuzzy_match_score("version", &searchable).is_some());
     }
 }

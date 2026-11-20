@@ -33,11 +33,8 @@ impl ChipCutterApp {
 
     fn sync_window_title(&mut self, ctx: &egui::Context) {
         let is_dirty_doc = self.clean_undo_len != Some(self.history.undo_len());
-        let desired_title = format!(
-            "ChipCutter — {}{}",
-            self.project.project_name,
-            if is_dirty_doc { "*" } else { "" }
-        );
+        let desired_title =
+            crate::panels::about::format_window_title(&self.project.project_name, is_dirty_doc);
         if desired_title != self.last_window_title {
             self.last_window_title = desired_title.clone();
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(desired_title));
@@ -1075,6 +1072,11 @@ impl ChipCutterApp {
                 self.welcome_modal.open = true;
                 ui.close();
             }
+            ui.separator();
+            if ui.button("About ChipCutter…").clicked() {
+                self.about_modal.open = true;
+                ui.close();
+            }
         });
     }
 
@@ -1244,6 +1246,7 @@ impl ChipCutterApp {
                 }
             }
             CommandId::OpenShortcutCheatsheet => self.shortcut_cheatsheet.open = true,
+            CommandId::OpenAboutModal => self.about_modal.open = true,
             CommandId::SampleCamTorture
             | CommandId::SampleAdaptiveRest
             | CommandId::SampleVCarveInlay

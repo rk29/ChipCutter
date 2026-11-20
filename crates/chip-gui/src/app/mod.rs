@@ -33,6 +33,7 @@ use crate::{
     },
     panels::{
         InspectorFocus, OperationTab, SetupTab, ViewportPickMode,
+        about::{APP_VERSION, AboutModalState, show_about_modal},
         command_palette::{
             CommandPaletteState, ShortcutCheatsheetState, show_command_palette,
             show_shortcut_cheatsheet_modal,
@@ -140,6 +141,7 @@ pub struct ChipCutterApp {
     pub(crate) sample_gallery_modal: SampleGalleryModalState,
     pub(crate) command_palette: CommandPaletteState,
     pub(crate) shortcut_cheatsheet: ShortcutCheatsheetState,
+    pub(crate) about_modal: AboutModalState,
     pub(crate) sim_panel: SimulationPanelState,
     pub(crate) gcode_panel: GCodePreviewPanelState,
     pub(crate) auto_sim_after_gen: bool,
@@ -294,6 +296,7 @@ impl ChipCutterApp {
             sample_gallery_modal: SampleGalleryModalState::default(),
             command_palette: CommandPaletteState::default(),
             shortcut_cheatsheet: ShortcutCheatsheetState::default(),
+            about_modal: AboutModalState::default(),
             sim_panel: SimulationPanelState::default(),
             gcode_panel: GCodePreviewPanelState::default(),
             auto_sim_after_gen: true,
@@ -331,10 +334,7 @@ impl ChipCutterApp {
             wb_tool_dia: ExpressionInput::new(6.35, Some("1/4 in")),
             wb_stepover: ExpressionInput::new(2.54, Some("tool_d * 0.4")),
             wb_clearance_z: ExpressionInput::new(26.0, Some("model_top_z + 10 mm")),
-            logs: vec![
-                "ChipCutter v0.3.0 initialized (v3 Complete: Studio Dark & Daylight Light Themes, Two-Column Inspector Grids, Command Palette & Preferences)."
-                    .to_string(),
-            ],
+            logs: vec![format!("ChipCutter v{APP_VERSION} initialized.")],
             self_test,
         };
         app.highlight.show_toolpaths = app.prefs.show_toolpaths;
@@ -936,6 +936,12 @@ impl eframe::App for ChipCutterApp {
         }
 
         show_shortcut_cheatsheet_modal(&ctx, &mut self.shortcut_cheatsheet);
+
+        let graphics_backend = self.wgpu_render_state.as_ref().map(|rs| {
+            let info = rs.adapter.get_info();
+            format!("{:?} ({})", info.backend, info.name)
+        });
+        show_about_modal(&ctx, &mut self.about_modal, graphics_backend.as_deref());
 
         let ptr_down = ctx.input(|i| i.pointer.any_down());
         self.sync_and_save_prefs_if_changed(ptr_down);

@@ -985,6 +985,7 @@ impl ChipCutterApp {
             self.sample_gallery_modal.open = modal == CaptureModal::SampleGallery;
             self.tool_library_modal.open = modal == CaptureModal::ToolLibrary;
             self.shortcut_cheatsheet.open = modal == CaptureModal::ShortcutCheatsheet;
+            self.about_modal.open = modal == CaptureModal::About;
         }
 
         if let Some(view) = capture.view {

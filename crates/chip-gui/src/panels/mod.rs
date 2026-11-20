@@ -1,3 +1,4 @@
+pub mod about;
 pub mod browser;
 pub mod command_palette;
 pub mod diagnostics;
