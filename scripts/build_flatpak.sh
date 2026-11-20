@@ -101,8 +101,13 @@ PY
   fi
 fi
 
+VERSION="${VERSION#v}"
 if [[ -z "${VERSION}" ]]; then
   echo "Error: could not determine ChipCutter version from Cargo.toml; pass --version <ver>" >&2
+  exit 1
+fi
+if [[ ! "${VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+  echo "Error: invalid semantic version '${VERSION}'" >&2
   exit 1
 fi
 

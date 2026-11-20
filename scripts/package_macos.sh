@@ -90,6 +90,10 @@ if [[ -z "${VERSION}" ]]; then
   usage >&2
   exit 1
 fi
+if [[ ! "${VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+  echo "error: invalid semantic version '${VERSION}'" >&2
+  exit 1
+fi
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 if [[ -z "${TARGET_DIR}" ]]; then

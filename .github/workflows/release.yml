@@ -16,7 +16,7 @@ on:
         default: ""
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -32,11 +32,14 @@ jobs:
       should_publish: ${{ steps.meta.outputs.should_publish }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Resolve & validate release version
         id: meta
         shell: bash
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
         run: |
           set -euo pipefail
           CARGO_VERSION="$(python3 - <<'PY'
@@ -56,18 +59,22 @@ jobs:
             fi
             SHOULD_PUBLISH="true"
           else
-            INPUT_TAG="${{ inputs.tag }}"
             if [[ -n "${INPUT_TAG}" ]]; then
               TAG="${INPUT_TAG}"
             else
               TAG="v${CARGO_VERSION}"
             fi
             TAG_VERSION="${TAG#v}"
-            if [[ "${{ inputs.dry_run }}" == "true" ]]; then
+            if [[ "${INPUT_DRY_RUN}" == "true" ]]; then
               SHOULD_PUBLISH="false"
             else
               SHOULD_PUBLISH="true"
             fi
+          fi
+
+          if [[ ! "${TAG_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Invalid semantic version '${TAG_VERSION}' derived from tag '${TAG}'."
+            exit 1
           fi
 
           if [[ "${TAG_VERSION}" == *"-"* ]]; then
@@ -91,7 +98,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Install Flatpak & metadata validation tools
         run: |
@@ -142,10 +149,10 @@ jobs:
             validate "${SMOKE_DIR}/01-facing.chip.toml" --generate
 
       - name: Setup Rust toolchain for standalone CLI archive
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
 
       - name: Cache Cargo artifacts
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
 
       - name: Build and package standalone Linux CLI tarball
         env:
@@ -166,7 +173,7 @@ jobs:
           ls -lh dist/
 
       - name: Upload Linux release artifacts
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: release-asset-linux-flatpak
           path: |
@@ -180,15 +187,15 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
           targets: x86_64-pc-windows-msvc
 
       - name: Cache Cargo artifacts
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
 
       - name: Install WiX Toolset v5 CLI
         shell: pwsh
@@ -254,19 +261,22 @@ jobs:
       - name: Package Windows ZIP and MSI installer
         shell: pwsh
         env:
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
           WINDOWS_SIGN_PFX_BASE64: ${{ secrets.WINDOWS_SIGN_PFX_BASE64 }}
           WINDOWS_SIGN_PASSWORD: ${{ secrets.WINDOWS_SIGN_PASSWORD }}
         run: |
           $ErrorActionPreference = "Stop"
           pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/package_windows.ps1 `
-            -Version "${{ needs.prepare.outputs.version }}"
+            -Version $env:RELEASE_VERSION
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Verify MSI installer administrative extract
         shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           $ErrorActionPreference = "Stop"
-          $version = "${{ needs.prepare.outputs.version }}"
+          $version = $env:RELEASE_VERSION
           $msi = (Resolve-Path "dist/ChipCutter-$version-windows-x86_64.msi").Path
           $zip = (Resolve-Path "dist/ChipCutter-$version-windows-x86_64.zip").Path
           if (-not (Test-Path -LiteralPath $zip)) {
@@ -300,7 +310,7 @@ jobs:
           }
 
       - name: Upload Windows release assets
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: release-asset-windows-x64
           path: |
@@ -316,15 +326,15 @@ jobs:
       MACOSX_DEPLOYMENT_TARGET: "12.0"
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Setup Rust toolchain (arm64 + x86_64)
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
 
       - name: Cache Cargo artifacts
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
 
       - name: Build Universal2 release binaries
         shell: bash
@@ -364,13 +374,14 @@ jobs:
       - name: Package macOS Universal2 .app, .dmg, & CLI archive
         shell: bash
         env:
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
           MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
         run: |
           set -euo pipefail
-          ./scripts/package_macos.sh "${{ needs.prepare.outputs.version }}" --out-dir dist
+          ./scripts/package_macos.sh "${RELEASE_VERSION}" --out-dir dist
 
       - name: Verify Universal2 bundle & CLI smoke test
         shell: bash
@@ -419,7 +430,7 @@ jobs:
           fi
 
       - name: Upload macOS release assets
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: release-asset-macos-universal
           path: |
@@ -431,9 +442,11 @@ jobs:
     name: Checksums & GitHub Release
     needs: [prepare, linux-flatpak, windows-x64, macos-universal]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Download platform release artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: release-asset-*
           path: dist
@@ -458,7 +471,7 @@ jobs:
 
       - name: Upload checksum bundle artifact
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: release-checksums-${{ needs.prepare.outputs.version }}
           path: dist/SHA256SUMS.txt
@@ -466,7 +479,7 @@ jobs:
 
       - name: Publish GitHub Release
         if: needs.prepare.outputs.should_publish == 'true'
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3
         with:
           tag_name: ${{ needs.prepare.outputs.tag }}
           name: ChipCutter ${{ needs.prepare.outputs.tag }}

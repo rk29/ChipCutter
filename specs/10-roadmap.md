@@ -206,7 +206,7 @@ Phase 8 introduces first-class **Machine Definitions** (`*.machine.toml`) so mac
 
 ---
 
-## Phase 9 — Security Hardening & Safe Untrusted-File Handling (Planned — M32–M34)
+## Phase 9 — Security Hardening & Safe Untrusted-File Handling (Completed — M32–M34)
 
 Phase 9 addresses every finding from the codebase security evaluation so machinists can safely inspect, simulate, and post-process untrusted `.chipz` bundles, `.chip.toml` projects, shared `.machine.toml` / `.post.toml` files, Fusion 360 `.tools` archives, `.3mf` meshes, and `.dxf` drawings—and ensures CI/CD release pipelines enforce least privilege and immutable action pinning:
 
