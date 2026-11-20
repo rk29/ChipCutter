@@ -5,6 +5,18 @@ use chip_tools::{
     ToolId, ToolLibrary, default_global_tool_library_path, import_fusion_library_path,
 };
 
+const TOOL_NUMBER_LABEL: &str = "Tool Number (T#):";
+const TOOL_NUMBER_TOOLTIP: &str =
+    "Tool slot / pocket number emitted in tool-change G-code (e.g., T1 M6).";
+
+const LENGTH_OFFSET_LABEL: &str = "Length Offset (H#):";
+const LENGTH_OFFSET_TOOLTIP: &str = "Tool length offset register emitted with G43 H# (e.g., G43 H1) for Z height compensation. Typically matches Tool Number (T#).";
+
+const DIAMETER_OFFSET_LABEL: &str = "Diameter Offset (D#):";
+const DIAMETER_OFFSET_TOOLTIP: &str = "Cutter diameter/radius wear compensation register emitted with G41/G42 D# (e.g., G41 D1). Typically matches Tool Number (T#).";
+
+const NATIVE_UNIT_TOOLTIP: &str = "Preferred display unit for this cutter's dimensions and presets (stored internally in millimeters).";
+
 /// Persistent UI state for the modal/floating **Tool Library Manager** window (`04-tool-library.md`).
 #[derive(Debug, Default)]
 pub struct ToolLibraryModalState {
@@ -237,35 +249,51 @@ impl ToolLibraryModalState {
                         .id_salt("tool_lib_right_editor")
                         .show(&mut cols[1], |ui| {
                             ui.strong("Cutter Identity & Offsets");
-                            ui.horizontal(|ui| {
-                                ui.label("Name:");
-                                ui.text_edit_singleline(&mut tool.name);
-                            });
-                            ui.horizontal(|ui| {
-                                ui.label("T#:");
-                                ui.add(egui::DragValue::new(&mut tool.tool_number).range(1..=999));
-                                ui.label("H#:");
-                                ui.add(
-                                    egui::DragValue::new(&mut tool.length_offset_number)
-                                        .range(1..=999),
-                                );
-                                ui.label("D#:");
-                                ui.add(
-                                    egui::DragValue::new(&mut tool.diameter_offset_number)
-                                        .range(1..=999),
-                                );
-                                ui.label("Unit:");
-                                ui.selectable_value(
-                                    &mut tool.native_unit,
-                                    DisplayUnit::Millimeter,
-                                    "mm",
-                                );
-                                ui.selectable_value(
-                                    &mut tool.native_unit,
-                                    DisplayUnit::Inch,
-                                    "in",
-                                );
-                            });
+                            egui::Grid::new("tool_identity_offsets_grid")
+                                .num_columns(2)
+                                .spacing([10.0, 4.0])
+                                .show(ui, |ui| {
+                                    ui.label("Name:");
+                                    ui.text_edit_singleline(&mut tool.name);
+                                    ui.end_row();
+
+                                    edit_offset_number_row(
+                                        ui,
+                                        TOOL_NUMBER_LABEL,
+                                        TOOL_NUMBER_TOOLTIP,
+                                        &mut tool.tool_number,
+                                    );
+                                    edit_offset_number_row(
+                                        ui,
+                                        LENGTH_OFFSET_LABEL,
+                                        LENGTH_OFFSET_TOOLTIP,
+                                        &mut tool.length_offset_number,
+                                    );
+                                    edit_offset_number_row(
+                                        ui,
+                                        DIAMETER_OFFSET_LABEL,
+                                        DIAMETER_OFFSET_TOOLTIP,
+                                        &mut tool.diameter_offset_number,
+                                    );
+
+                                    ui.add(egui::Label::new("Unit:").sense(egui::Sense::hover()))
+                                        .on_hover_text(NATIVE_UNIT_TOOLTIP);
+                                    ui.horizontal(|ui| {
+                                        ui.selectable_value(
+                                            &mut tool.native_unit,
+                                            DisplayUnit::Millimeter,
+                                            "mm",
+                                        )
+                                        .on_hover_text(NATIVE_UNIT_TOOLTIP);
+                                        ui.selectable_value(
+                                            &mut tool.native_unit,
+                                            DisplayUnit::Inch,
+                                            "in",
+                                        )
+                                        .on_hover_text(NATIVE_UNIT_TOOLTIP);
+                                    });
+                                    ui.end_row();
+                                });
 
                             let unit = tool.native_unit;
                             ui.separator();
@@ -592,6 +620,14 @@ impl ToolLibraryModalState {
     }
 }
 
+fn edit_offset_number_row(ui: &mut egui::Ui, label: &str, tooltip: &str, value: &mut u32) {
+    ui.add(egui::Label::new(label).sense(egui::Sense::hover()))
+        .on_hover_text(tooltip);
+    ui.add(egui::DragValue::new(value).range(1..=999))
+        .on_hover_text(tooltip);
+    ui.end_row();
+}
+
 fn edit_mm_drag(ui: &mut egui::Ui, label: &str, val_mm: &mut f64, unit: DisplayUnit) {
     let mut disp = unit.from_mm(*val_mm);
     ui.horizontal(|ui| {
@@ -827,6 +863,184 @@ fn draw_cutter_schematic(ui: &mut egui::Ui, tool: &Tool) {
                 1.5,
                 flute_col,
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chip_tools::default_starter_tool_library;
+
+    fn collect_text_shapes(shapes: &[egui::epaint::ClippedShape]) -> Vec<(String, egui::Rect)> {
+        fn visit(shape: &egui::Shape, out: &mut Vec<(String, egui::Rect)>) {
+            match shape {
+                egui::Shape::Text(text_shape) => {
+                    let rect = text_shape.visual_bounding_rect();
+                    out.push((text_shape.galley.text().to_owned(), rect));
+                }
+                egui::Shape::Vec(children) => {
+                    for child in children {
+                        visit(child, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let mut out = Vec::new();
+        for clipped in shapes {
+            visit(&clipped.shape, &mut out);
+        }
+        out
+    }
+
+    fn run_modal_frame(
+        ctx: &egui::Context,
+        input: egui::RawInput,
+        modal: &mut ToolLibraryModalState,
+        global_lib: &mut ToolLibrary,
+        project: &mut ProjectDocument,
+        history: &mut UndoHistory,
+        logs: &mut Vec<String>,
+    ) -> egui::FullOutput {
+        let mut out = ctx.run_ui(input, |ui| {
+            modal.show(ui.ctx(), global_lib, project, history, logs);
+        });
+        out.textures_delta.clear();
+        out
+    }
+
+    #[test]
+    fn offset_fields_show_descriptive_labels_and_hover_tooltips() {
+        let ctx = egui::Context::default();
+        for theme in [egui::Theme::Dark, egui::Theme::Light] {
+            ctx.style_mut_of(theme, |s| s.interaction.tooltip_delay = 0.0);
+        }
+
+        let mut modal = ToolLibraryModalState::new();
+        modal.open = true;
+        let mut global_lib = default_starter_tool_library();
+        if let Some(first_tool) = global_lib.tools.first_mut() {
+            first_tool.tool_number = 11;
+            first_tool.length_offset_number = 22;
+            first_tool.diameter_offset_number = 33;
+        }
+        let mut project = ProjectDocument::new("test");
+        let mut history = UndoHistory::new(8);
+        let mut logs = Vec::new();
+
+        let base_input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 800.0),
+            )),
+            ..Default::default()
+        };
+
+        // Run two layout frames so window & grid geometry settles.
+        let _ = run_modal_frame(
+            &ctx,
+            base_input.clone(),
+            &mut modal,
+            &mut global_lib,
+            &mut project,
+            &mut history,
+            &mut logs,
+        );
+        let settled = run_modal_frame(
+            &ctx,
+            base_input.clone(),
+            &mut modal,
+            &mut global_lib,
+            &mut project,
+            &mut history,
+            &mut logs,
+        );
+
+        let texts = collect_text_shapes(&settled.shapes);
+        let mut t = 1.0;
+        for &(expected_label, value_text, expected_tooltip) in &[
+            (TOOL_NUMBER_LABEL, "11", TOOL_NUMBER_TOOLTIP),
+            (LENGTH_OFFSET_LABEL, "22", LENGTH_OFFSET_TOOLTIP),
+            (DIAMETER_OFFSET_LABEL, "33", DIAMETER_OFFSET_TOOLTIP),
+        ] {
+            let label_rect = texts
+                .iter()
+                .find(|(text, _)| text == expected_label)
+                .map(|(_, rect)| *rect);
+            assert!(
+                label_rect.is_some(),
+                "expected descriptive label '{expected_label}' to be rendered in Tool Library Manager"
+            );
+            let value_rect = texts
+                .iter()
+                .find(|(text, _)| text == value_text)
+                .map(|(_, rect)| *rect);
+            assert!(
+                value_rect.is_some(),
+                "expected DragValue '{value_text}' for '{expected_label}' to be rendered"
+            );
+
+            for (target_kind, rect_opt) in [("label", label_rect), ("input", value_rect)] {
+                let Some(rect) = rect_opt else {
+                    return;
+                };
+
+                // Clear prior hover state by moving pointer off the window before hovering target.
+                let mut clear_input = base_input.clone();
+                clear_input.time = Some(t);
+                clear_input
+                    .events
+                    .push(egui::Event::PointerMoved(egui::pos2(1270.0, 790.0)));
+                t += 1.0;
+                let _ = run_modal_frame(
+                    &ctx,
+                    clear_input,
+                    &mut modal,
+                    &mut global_lib,
+                    &mut project,
+                    &mut history,
+                    &mut logs,
+                );
+
+                let mut hover_input = base_input.clone();
+                hover_input.time = Some(t);
+                hover_input
+                    .events
+                    .push(egui::Event::PointerMoved(rect.center()));
+                t += 1.0;
+
+                let _ = run_modal_frame(
+                    &ctx,
+                    hover_input,
+                    &mut modal,
+                    &mut global_lib,
+                    &mut project,
+                    &mut history,
+                    &mut logs,
+                );
+                let mut still_input = base_input.clone();
+                still_input.time = Some(t);
+                t += 1.0;
+                let hovered_out = run_modal_frame(
+                    &ctx,
+                    still_input,
+                    &mut modal,
+                    &mut global_lib,
+                    &mut project,
+                    &mut history,
+                    &mut logs,
+                );
+                let hovered_texts = collect_text_shapes(&hovered_out.shapes);
+                assert!(
+                    hovered_texts
+                        .iter()
+                        .any(|(txt, _)| txt.contains(expected_tooltip)),
+                    "hovering {target_kind} at {:?} for '{expected_label}' should render tooltip containing '{expected_tooltip}'",
+                    rect.center(),
+                );
+            }
         }
     }
 }
