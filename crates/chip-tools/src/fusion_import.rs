@@ -116,6 +116,21 @@ struct FusionGeomRaw {
     /// Outside diameter on face mills (`OD` / `DCON`)
     #[serde(rename = "OD", default)]
     od: Option<f64>,
+    /// Thread pitch (`TP`) on thread mills
+    #[serde(rename = "TP", default)]
+    tp: Option<f64>,
+    /// Thread profile included angle in degrees (`thread-profile-angle`)
+    #[serde(rename = "thread-profile-angle", default)]
+    thread_profile_angle: Option<f64>,
+    /// Relieved neck diameter (`ND` / `NDC`) on thread mills
+    #[serde(rename = "ND", alias = "NDC", default)]
+    nd: Option<f64>,
+    /// Relieved neck / shoulder reach length (`LN` / `LBS`) on thread mills
+    #[serde(rename = "LN", alias = "LBS", default)]
+    ln: Option<f64>,
+    /// Number of cutting teeth (`NOT` / `number-of-teeth`) on thread mills
+    #[serde(rename = "NOT", alias = "number-of-teeth", default)]
+    not: Option<f64>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -287,7 +302,7 @@ pub fn import_fusion_library_bytes(
         let lcf_mm = (g.lcf.map(|v| v * len_scale).unwrap_or(dc_mm * 3.0)).max(0.5);
         let oal_mm = (g.oal.map(|v| v * len_scale).unwrap_or(dc_mm * 8.0)).max(lcf_mm);
         let sfdm_mm = (g.sfdm.map(|v| v * len_scale).unwrap_or(dc_mm)).max(0.5);
-        let stickout_mm =
+        let mut stickout_mm =
             g.lb.map(|v| v * len_scale)
                 .unwrap_or(lcf_mm * 1.25)
                 .max(lcf_mm)
@@ -357,6 +372,70 @@ pub fn import_fusion_library_bytes(
                     corner_radius_mm: re_mm,
                     flute_length_mm: lcf_mm,
                     overall_length_mm: oal_mm,
+                    shank_diameter_mm: sfdm_mm,
+                    flutes,
+                }
+            }
+            "thread mill" => {
+                let pitch_mm =
+                    g.tp.filter(|&v| v.is_finite() && v > 0.0)
+                        .map(|v| v * len_scale)
+                        .unwrap_or_else(|| (dc_mm * 0.25).clamp(0.4, 2.0));
+                let raw_lcf_opt = g
+                    .lcf
+                    .filter(|&v| v.is_finite() && v > 0.0)
+                    .map(|v| v * len_scale);
+                let teeth_count = if let Some(n) = g.not.filter(|&v| v.is_finite() && v >= 1.0) {
+                    (n.round() as i64).max(1) as u32
+                } else if let Some(raw_lcf) = raw_lcf_opt {
+                    let ratio = raw_lcf / pitch_mm;
+                    if ratio >= 1.5 {
+                        (ratio.round() as i64).max(1) as u32
+                    } else {
+                        1
+                    }
+                } else {
+                    1
+                };
+                let flute_len = raw_lcf_opt
+                    .unwrap_or_else(|| pitch_mm * f64::from(teeth_count))
+                    .max(0.2);
+                let neck_dia =
+                    g.nd.filter(|&v| v.is_finite() && v > 0.0)
+                        .map(|v| v * len_scale)
+                        .unwrap_or(0.65 * dc_mm)
+                        .clamp(0.1 * dc_mm, 0.95 * dc_mm);
+                let default_neck_len =
+                    g.lb.filter(|&v| v.is_finite() && v > 0.0)
+                        .map(|v| v * len_scale)
+                        .unwrap_or_else(|| (dc_mm * 3.0).max(flute_len));
+                let neck_len =
+                    g.ln.filter(|&v| v.is_finite() && v > 0.0)
+                        .map(|v| v * len_scale)
+                        .unwrap_or(default_neck_len)
+                        .max(flute_len);
+                let adj_oal = oal_mm.max(neck_len + 5.0);
+                stickout_mm =
+                    g.lb.filter(|&v| v.is_finite() && v > 0.0)
+                        .map(|v| v * len_scale)
+                        .unwrap_or(neck_len * 1.25)
+                        .max(flute_len)
+                        .min(adj_oal);
+                let thread_angle_deg = g
+                    .thread_profile_angle
+                    .or(g.sig)
+                    .or_else(|| g.ta.map(|half| 2.0 * half))
+                    .unwrap_or(60.0)
+                    .clamp(29.0, 90.0);
+                CutterGeometry::ThreadMill {
+                    diameter_mm: dc_mm,
+                    neck_diameter_mm: neck_dia,
+                    neck_length_mm: neck_len,
+                    pitch_mm,
+                    teeth_count,
+                    thread_angle_deg,
+                    flute_length_mm: flute_len,
+                    overall_length_mm: adj_oal,
                     shank_diameter_mm: sfdm_mm,
                     flutes,
                 }

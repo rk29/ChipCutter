@@ -2791,4 +2791,135 @@ sha256 = "abc"
             );
         }
     }
+
+    #[test]
+    fn milestone_45_thread_mill_project_roundtrips_toml_validates_and_generates_helical_toolpath() {
+        use chip_cam::{
+            GeometrySelectionItem, HeightReference, HeightSpec, Operation, OperationKind, Setup,
+            StrategyParams, ThreadCutDirection, ThreadFormKind, ThreadHandedness, ThreadMillParams,
+            WorkOffsetSlot,
+        };
+        use chip_math::ParamLength;
+        use chip_sketch::{SketchEntity, SketchEntityEntry, SketchLayer};
+
+        let starter = default_starter_tool_library();
+        let tm_475 = starter
+            .tools
+            .iter()
+            .find(|t| t.tool_number == 9)
+            .unwrap()
+            .clone();
+
+        let mut proj = ProjectDocument::new("M45 Thread Mill Roundtrip");
+        proj.ensure_tool_embedded(&tm_475);
+
+        let mut setup = Setup::new("setup_tm", "Setup 1 - Threading", WorkOffsetSlot::G54);
+        let mut sk = SketchLayer::new("sk_holes", "M8 Pilot Holes", &setup.id);
+        sk.entities.push(SketchEntityEntry {
+            id: "h1".to_string(),
+            name: "M8 Hole 1".to_string(),
+            sub_layer: None,
+            is_construction: false,
+            entity: SketchEntity::Circle {
+                center_x: ParamLength::from_mm(25.0),
+                center_y: ParamLength::from_mm(25.0),
+                center_xy: None,
+                diameter: ParamLength::from_mm(6.8),
+            },
+        });
+
+        let mut op = Operation::new(
+            "op_tm_m8",
+            "M8 x 1.25 Thread Mill",
+            OperationKind::ThreadMill,
+        );
+        op.tool_id = Some(tm_475.id.clone());
+        op.preset_id = Some(tm_475.presets[0].id.clone());
+        op.selections.push(GeometrySelectionItem::SketchEntity {
+            sketch_id: sk.id.clone(),
+            entity_id: "h1".to_string(),
+            reverse: false,
+            side_flip: false,
+        });
+        op.heights.top = HeightSpec::new(HeightReference::StockTop, 0.0);
+        op.heights.bottom = HeightSpec::new(HeightReference::StockTop, -10.0);
+        op.strategy = Some(StrategyParams::ThreadMill(ThreadMillParams {
+            form: ThreadFormKind::InternalHole,
+            handedness: ThreadHandedness::RightHand,
+            cut_direction: ThreadCutDirection::Climb,
+            standard_preset: Some("M8 x 1.25".to_string()),
+            major_diameter: ParamLength::from_mm(8.0),
+            pitch: ParamLength::from_mm(1.25),
+            pitch_diameter_offset: ParamLength::from_mm(0.02),
+            radial_passes: 2,
+            spring_passes: 1,
+            lead_in_clearance: ParamLength::from_mm(0.5),
+            compensate_centerline_feed: true,
+            optimize_hole_order: true,
+        }));
+        setup.operations.push(op);
+        proj.sketches.push(sk);
+        proj.setups = vec![setup];
+
+        // Deterministic `.chip.toml` serialization roundtrip
+        let toml_1 = proj.to_toml_string().unwrap();
+        assert!(toml_1.contains("type = \"thread_mill\""));
+        assert!(toml_1.contains("kind = \"thread_mill\""));
+        assert!(toml_1.contains("strategy_kind = \"thread_mill\""));
+        let mut reloaded = ProjectDocument::from_toml_str(&toml_1).unwrap();
+        let toml_2 = reloaded.to_toml_string().unwrap();
+        assert_eq!(toml_1, toml_2);
+
+        // Validate and generate toolpath cleanly in pure-2D mode
+        let empty_cad = chip_cad::CadDocument::empty();
+        let val = validate_project(&reloaded, None, Some(&empty_cad));
+        assert!(
+            val.is_valid(),
+            "thread mill project validation failed: {:?}",
+            val.diagnostics
+        );
+        let mut cache = ToolpathCache::new(16);
+        let batch = generate_project_blocking(&mut reloaded, &empty_cad, &mut cache, 1);
+        assert!(
+            batch.errors.is_empty(),
+            "thread mill generation errors: {:?}",
+            batch.errors
+        );
+        assert_eq!(batch.generated.len(), 1);
+        let tp = &batch.generated[0].2;
+        assert_eq!(tp.stats.pass_count, 3); // 2 radial passes + 1 spring pass
+        assert!(tp.stats.arc_move_count >= 24);
+
+        // Post-process real generated ThreadMill toolpath through grbl, grblhal_atc, and linuxcnc!
+        let resolved_setup = reloaded.setups[0]
+            .resolve_with_sketches(&empty_cad, &reloaded.sketches, reloaded.display_units)
+            .unwrap();
+        let post_in = chip_post::SetupPostInput {
+            project_name: "m45_thread.chip.toml",
+            setup_name: &reloaded.setups[0].name,
+            wcs_slot: reloaded.setups[0].wcs_slot,
+            wcs_origin_description: "Stock Top Front-Left".to_string(),
+            stock: resolved_setup.stock,
+            rotary: None,
+            clearance_z_wcs: resolved_setup.clearance_z_wcs,
+            retract_z_wcs: resolved_setup.retract_z_wcs,
+            operations: vec![chip_post::OperationPostInput {
+                op: &reloaded.setups[0].operations[0],
+                tool: &reloaded.tools[0],
+                toolpath: tp,
+            }],
+        };
+        for post_id in ["grbl", "grblhal_atc", "linuxcnc"] {
+            let prof = chip_post::resolve_post_profile(post_id, None).unwrap();
+            let files = chip_post::post_process_setup(&post_in, &prof, "m45_thread").unwrap();
+            assert_eq!(files.len(), 1);
+            let gcode = &files[0].content;
+            assert!(gcode.contains("G3 "), "{post_id} missing G3 helical arc");
+            if post_id != "linuxcnc" {
+                assert!(files[0].max_line_chars <= 80);
+            } else {
+                assert!(gcode.contains("T9 M6\nG43 H9"));
+            }
+        }
+    }
 }

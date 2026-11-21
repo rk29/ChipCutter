@@ -164,6 +164,14 @@ impl RadialCutterProfile {
                         },
                     )
                 }
+                CutterGeometry::ThreadMill {
+                    diameter_mm,
+                    neck_length_mm,
+                    ..
+                } => {
+                    let r = (0.5 * diameter_mm).max(0.05);
+                    (r, false, neck_length_mm, TipEnvelopeKind::Flat)
+                }
             };
 
         let holder_radius_mm = (shank_radius_mm * 2.2).max(12.0).max(shank_radius_mm + 4.0);

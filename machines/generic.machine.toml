@@ -432,3 +432,128 @@ plunge_feed_mm_min = 127.32395447351628
 default_stepdown_mm = 0.8
 default_stepover_mm = 0.35
 coolant_override = "air_blast"
+
+[[tools]]
+id = "t9_475mm_single_thread_mill"
+tool_number = 9
+length_offset_number = 9
+diameter_offset_number = 9
+name = "4.75mm 3FL 60° Single-Point Thread Mill (M6–M12)"
+vendor = "Generic Carbide"
+native_unit = "millimeter"
+spindle_direction = "cw"
+default_coolant = "air_blast"
+stickout_length_mm = 22.0
+
+[tools.geometry]
+type = "thread_mill"
+diameter_mm = 4.75
+neck_diameter_mm = 2.85
+neck_length_mm = 16.0
+pitch_mm = 1.0
+teeth_count = 1
+thread_angle_deg = 60.0
+flute_length_mm = 1.2
+overall_length_mm = 50.0
+shank_diameter_mm = 6.0
+flutes = 3
+
+[[tools.presets]]
+id = "al6061_thread"
+name = "Aluminum 6061 - Helical Threading"
+material = "Aluminum 6061"
+spindle_rpm = 12062.269371175227
+surface_speed_m_min = 180.0
+cutting_feed_mm_min = 723.7361622705137
+chipload_mm_tooth = 0.02
+lead_feed_mm_min = 578.988929816411
+ramp_feed_mm_min = 361.86808113525683
+plunge_feed_mm_min = 241.24538742350455
+default_stepdown_mm = 1.0
+default_stepover_mm = 0.5
+coolant_override = "mist"
+
+[[tools.presets]]
+id = "delrin_thread"
+name = "Acetal / Delrin - Helical Threading"
+material = "Engineering Plastic"
+spindle_rpm = 13402.52152352803
+surface_speed_m_min = 200.0
+cutting_feed_mm_min = 1005.1891142646023
+chipload_mm_tooth = 0.025
+lead_feed_mm_min = 804.1512914116819
+ramp_feed_mm_min = 502.59455713230113
+plunge_feed_mm_min = 335.06303808820076
+default_stepdown_mm = 1.0
+default_stepover_mm = 0.6
+coolant_override = "air_blast"
+
+[[tools.presets]]
+id = "steel1018_thread"
+name = "Mild Steel 1018 - Helical Threading"
+material = "Mild Steel"
+spindle_rpm = 5025.945571323011
+surface_speed_m_min = 75.0
+cutting_feed_mm_min = 180.9340405676284
+chipload_mm_tooth = 0.012
+lead_feed_mm_min = 144.74723245410271
+ramp_feed_mm_min = 90.4670202838142
+plunge_feed_mm_min = 60.31134685587613
+default_stepdown_mm = 1.0
+default_stepover_mm = 0.35
+coolant_override = "flood"
+
+[[tools]]
+id = "t10_310mm_micro_thread_mill"
+tool_number = 10
+length_offset_number = 10
+diameter_offset_number = 10
+name = "3.10mm 3FL 60° Micro Single-Point Thread Mill (M4–M6)"
+vendor = "Generic Carbide"
+native_unit = "millimeter"
+spindle_direction = "cw"
+default_coolant = "air_blast"
+stickout_length_mm = 18.0
+
+[tools.geometry]
+type = "thread_mill"
+diameter_mm = 3.1
+neck_diameter_mm = 1.85
+neck_length_mm = 12.0
+pitch_mm = 0.7
+teeth_count = 1
+thread_angle_deg = 60.0
+flute_length_mm = 0.9
+overall_length_mm = 50.0
+shank_diameter_mm = 4.0
+flutes = 3
+
+[[tools.presets]]
+id = "al6061_micro_thread"
+name = "Aluminum 6061 - Micro Threading"
+material = "Aluminum 6061"
+spindle_rpm = 13348.479098029931
+surface_speed_m_min = 130.0
+cutting_feed_mm_min = 600.6815594113469
+chipload_mm_tooth = 0.015
+lead_feed_mm_min = 480.5452475290776
+ramp_feed_mm_min = 300.34077970567347
+plunge_feed_mm_min = 200.22718647044897
+default_stepdown_mm = 0.7
+default_stepover_mm = 0.35
+coolant_override = "mist"
+
+[[tools.presets]]
+id = "delrin_micro_thread"
+name = "Acetal / Delrin - Micro Threading"
+material = "Engineering Plastic"
+spindle_rpm = 14888.688224725693
+surface_speed_m_min = 145.0
+cutting_feed_mm_min = 893.3212934835416
+chipload_mm_tooth = 0.02
+lead_feed_mm_min = 714.6570347868333
+ramp_feed_mm_min = 446.6606467417708
+plunge_feed_mm_min = 297.77376449451384
+default_stepdown_mm = 0.7
+default_stepover_mm = 0.4
+coolant_override = "air_blast"

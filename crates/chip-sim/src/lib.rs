@@ -50,7 +50,7 @@ mod tests {
     #[test]
     fn radial_cutter_profiles_and_3d_revolved_meshes_are_exact_for_all_six_types() {
         let lib = default_starter_tool_library();
-        assert_eq!(lib.tools.len(), 8);
+        assert_eq!(lib.tools.len(), 10);
 
         // T1: 6mm Flat Endmill -> P(r) == 0 for 0 <= r <= 3
         let flat = RadialCutterProfile::from_tool(&lib.tools[0]);

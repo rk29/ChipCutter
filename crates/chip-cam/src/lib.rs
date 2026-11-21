@@ -14,6 +14,7 @@ pub mod setup;
 pub mod stock;
 pub mod strategies;
 pub mod surface3d;
+pub mod thread_tables;
 pub mod toolpath;
 pub mod wcs;
 
@@ -39,8 +40,9 @@ pub use params::{
     PassesParams, Pencil3DParams, Pocket2DParams, PocketPassOrder, PocketStrategyKind,
     RestMachiningConfig, RestMachiningMode, RetractPolicy, Rotary2LinearParams, Rotary4AxisPattern,
     Rotary4AxisSimParams, RotaryCutDirection, RotaryPatternMode, RotaryTiltMode, Scallop3DParams,
-    StrategyParams, TabPlacementMode, TabProfileKind, ToolContainmentMode, VCarveClearingKind,
-    VCarveInlayMode, VCarveParams, Waterline3DParams, WaterlineOrderMode,
+    StrategyParams, TabPlacementMode, TabProfileKind, ThreadCutDirection, ThreadFormKind,
+    ThreadHandedness, ThreadMillParams, ToolContainmentMode, VCarveClearingKind, VCarveInlayMode,
+    VCarveParams, Waterline3DParams, WaterlineOrderMode,
 };
 pub use rest2d::{
     ContourRestClipQuery, PocketRestQuery, RegionSet2D, RestPocketWorkItem, UpstreamSweptInput,
@@ -72,6 +74,10 @@ pub use strategies::{
         ContourParallelStrategy, PocketEngagementParams, PocketStrategy, PocketSubpath2D,
         ZigZagPocketStrategy,
     },
+    thread_mill::{
+        ThreadHelixKinematics, compute_thread_mill_centerline_feed,
+        compute_thread_minor_diameter_mm, resolve_thread_helix_kinematics,
+    },
 };
 pub use surface3d::{
     RestMaskGrid2D, SurfaceCutterProfile, SurfaceCutterShape, SurfaceLinkConfig, SurfaceMesh3D,
@@ -80,6 +86,11 @@ pub use surface3d::{
     push_cutter_region_z, rect_region_2d, refine_convex_chords_3d, region_aabb_2d,
     resolve_3d_containment_region, sample_surface_slope_deg, simplify_3d_polyline_rdp,
     slice_surface_contours_z, stepover_for_cusp_height, stock_xy_region,
+};
+pub use thread_tables::{
+    ISO_60_H_OVER_P, ThreadSpecEntry, ThreadStandardKind, all_thread_specs, find_thread_spec,
+    iso60_minor_diameter_external_mm, iso60_minor_diameter_internal_mm, iso60_pitch_diameter_mm,
+    suggest_thread_for_hole_diameter, thread_specs_for_standard,
 };
 pub use toolpath::{
     ClearingSubToolpath, DEFAULT_RAPID_RATE_MM_MIN, DrillCycleSpec, GeneratedToolpath,

@@ -730,4 +730,242 @@ mod tests {
             "expected NonFiniteValue error, got {err:?}"
         );
     }
+
+    #[test]
+    fn milestone_45_thread_mill_helical_arcs_emit_cleanly_for_grbl_grblhal_atc_and_linuxcnc() {
+        let lib = default_starter_tool_library();
+        let tm_475 = &lib.tools[8]; // T9: Ø4.75mm single-point 60° thread mill
+        let stock_aabb = Aabb3::new(DVec3::new(0.0, 0.0, -20.0), DVec3::new(100.0, 100.0, 0.0));
+        let cx = 30.0_f64;
+        let cy = 40.0_f64;
+        let pitch = 1.25_f64;
+
+        // Op 1: Internal M8 x 1.25 RH Climb -> Bottom-Up CCW (`G3`, `+Z` by `pitch` per 360°)
+        let mut op_int = Operation::new(
+            "op_tm_int",
+            "M8x1.25 Internal Thread",
+            OperationKind::ThreadMill,
+        );
+        op_int.tool_id = Some(tm_475.id.clone());
+        let r_int = 0.5 * (8.0 - 4.75); // 1.625 mm
+        let mut b_int = ToolpathBuilder::new("op_tm_int");
+        b_int.push_event(ClEvent::OperationStart {
+            op_id: op_int.id.clone(),
+            op_name: op_int.name.clone(),
+            strategy_name: "Thread Mill".to_string(),
+            est_time_sec: 15.0,
+        });
+        b_int.push_event(ClEvent::ToolChange {
+            tool_number: tm_475.tool_number,
+            length_offset: tm_475.length_offset_number,
+            diameter_offset: tm_475.diameter_offset_number,
+            tool_desc: tm_475.name.clone(),
+            is_first_tool: true,
+        });
+        b_int.push_event(ClEvent::SpindleStart {
+            rpm: 12_062.0,
+            direction: SpindleDirection::Cw,
+        });
+        b_int.rapid_to(DVec3::new(cx, cy, 15.0));
+        b_int.rapid_to(DVec3::new(cx, cy, 5.0));
+        b_int.linear_to(DVec3::new(cx, cy, -6.0), 240.0, MotionRole::Plunge);
+        // 180° helical lead-in arc (+pitch/2) from centerline to `(cx + r_int, cy)`
+        b_int.arc_xy_to(XyArcMove {
+            end_wcs: DVec3::new(cx + r_int, cy, -6.0 + 0.5 * pitch),
+            center_xy: DVec2::new(cx + 0.5 * r_int, cy),
+            radius_mm: 0.5 * r_int,
+            ccw: true,
+            turns: 0,
+            feed_mm_min: 235.0,
+            role: MotionRole::LeadIn,
+        });
+        // 4 full 360° CCW bottom-up helical revolutions (`+Z` by `pitch` per rev)
+        let mut z = -6.0 + 0.5 * pitch;
+        for _ in 0..4 {
+            for (ex, ey, dz) in [
+                (cx, cy + r_int, 0.25 * pitch),
+                (cx - r_int, cy, 0.25 * pitch),
+                (cx, cy - r_int, 0.25 * pitch),
+                (cx + r_int, cy, 0.25 * pitch),
+            ] {
+                z += dz;
+                b_int.arc_xy_to(XyArcMove {
+                    end_wcs: DVec3::new(ex, ey, z),
+                    center_xy: DVec2::new(cx, cy),
+                    radius_mm: r_int,
+                    ccw: true,
+                    turns: 0,
+                    feed_mm_min: 294.0,
+                    role: MotionRole::FinishCut,
+                });
+            }
+        }
+        // 180° helical arc-out back to centerline `(cx, cy)`
+        b_int.arc_xy_to(XyArcMove {
+            end_wcs: DVec3::new(cx, cy, z + 0.5 * pitch),
+            center_xy: DVec2::new(cx + 0.5 * r_int, cy),
+            radius_mm: 0.5 * r_int,
+            ccw: true,
+            turns: 0,
+            feed_mm_min: 235.0,
+            role: MotionRole::LeadOut,
+        });
+        b_int.rapid_to(DVec3::new(cx, cy, 15.0));
+        b_int.push_event(ClEvent::OperationEnd);
+        let tp_int = b_int.finish();
+
+        // Op 2: External M8 x 1.25 RH Climb -> Top-Down CW (`G2`, `-Z` by `pitch` per 360°)
+        let mut op_ext = Operation::new(
+            "op_tm_ext",
+            "M8x1.25 External Thread",
+            OperationKind::ThreadMill,
+        );
+        op_ext.tool_id = Some(tm_475.id.clone());
+        let r_ext = 0.5 * (6.466 + 4.75); // 5.608 mm
+        let mut b_ext = ToolpathBuilder::new("op_tm_ext");
+        b_ext.push_event(ClEvent::OperationStart {
+            op_id: op_ext.id.clone(),
+            op_name: op_ext.name.clone(),
+            strategy_name: "Thread Mill".to_string(),
+            est_time_sec: 15.0,
+        });
+        b_ext.push_event(ClEvent::ToolChange {
+            tool_number: tm_475.tool_number,
+            length_offset: tm_475.length_offset_number,
+            diameter_offset: tm_475.diameter_offset_number,
+            tool_desc: tm_475.name.clone(),
+            is_first_tool: false,
+        });
+        b_ext.push_event(ClEvent::SpindleStart {
+            rpm: 12_062.0,
+            direction: SpindleDirection::Cw,
+        });
+        b_ext.rapid_to(DVec3::new(cx + r_ext, cy, 15.0));
+        b_ext.linear_to(DVec3::new(cx + r_ext, cy, 0.0), 240.0, MotionRole::Plunge);
+        // 4 full 360° CW top-down helical revolutions (`-Z` by `pitch` per rev)
+        let mut z_ext = 0.0;
+        for _ in 0..4 {
+            for (ex, ey, dz) in [
+                (cx, cy - r_ext, -0.25 * pitch),
+                (cx - r_ext, cy, -0.25 * pitch),
+                (cx, cy + r_ext, -0.25 * pitch),
+                (cx + r_ext, cy, -0.25 * pitch),
+            ] {
+                z_ext += dz;
+                b_ext.arc_xy_to(XyArcMove {
+                    end_wcs: DVec3::new(ex, ey, z_ext),
+                    center_xy: DVec2::new(cx, cy),
+                    radius_mm: r_ext,
+                    ccw: false,
+                    turns: 0,
+                    feed_mm_min: 1_255.0,
+                    role: MotionRole::FinishCut,
+                });
+            }
+        }
+        b_ext.rapid_to(DVec3::new(cx + r_ext + 2.0, cy, 15.0));
+        b_ext.push_event(ClEvent::OperationEnd);
+        let tp_ext = b_ext.finish();
+
+        let input = SetupPostInput {
+            project_name: "thread_mill_job.chip.toml",
+            setup_name: "Setup 1 - Threads",
+            wcs_slot: WorkOffsetSlot::G54,
+            wcs_origin_description: "Stock Top Front-Left".to_string(),
+            stock: ResolvedStockGeometry::Box {
+                aabb_wcs: stock_aabb,
+            },
+            rotary: None,
+            clearance_z_wcs: 15.0,
+            retract_z_wcs: 5.0,
+            operations: vec![
+                OperationPostInput {
+                    op: &op_int,
+                    tool: tm_475,
+                    toolpath: &tp_int,
+                },
+                OperationPostInput {
+                    op: &op_ext,
+                    tool: tm_475,
+                    toolpath: &tp_ext,
+                },
+            ],
+        };
+
+        // 1. GRBL & grblHAL ATC: quadrant-split helical G2/G3 arcs with simultaneous Z, strictly <= 80 chars/line
+        for post_id in ["grbl", "grblhal_atc"] {
+            let profile = resolve_post_profile(post_id, None).unwrap();
+            let files = post_process_setup(&input, &profile, "thread_mill_job").unwrap();
+            assert_eq!(files.len(), 1);
+            let nc = &files[0].content;
+            assert!(
+                files[0].max_line_chars <= 80,
+                "{post_id} exceeded 80 chars: {}",
+                files[0].max_line_chars
+            );
+            for line in nc.lines() {
+                assert!(line.len() <= 80, "{post_id} line > 80 chars: {line}");
+            }
+            let helical_arcs: Vec<&str> = nc
+                .lines()
+                .filter(|l| {
+                    !l.starts_with('(')
+                        && l.contains('X')
+                        && l.contains('Y')
+                        && l.contains('Z')
+                        && l.contains('I')
+                        && l.contains('J')
+                })
+                .collect();
+            assert!(
+                helical_arcs.len() >= 32,
+                "{post_id} expected >= 32 quadrant-split helical arcs across internal+external ops, got {}:\n{nc}",
+                helical_arcs.len()
+            );
+            assert!(
+                nc.contains("G3 "),
+                "{post_id} missing G3 internal helical cut"
+            );
+            assert!(
+                nc.contains("G2 "),
+                "{post_id} missing G2 external helical cut"
+            );
+            if post_id == "grblhal_atc" {
+                assert!(nc.contains("T9 M6"), "grblhal_atc missing T9 M6:\n{nc}");
+            }
+        }
+
+        // 2. LinuxCNC: exact helical G2/G3 arcs with X, Y, Z, I, J, T9 M6, and G43 H9
+        let linuxcnc = resolve_post_profile("linuxcnc", None).unwrap();
+        let lc_files = post_process_setup(&input, &linuxcnc, "thread_mill_job").unwrap();
+        assert_eq!(lc_files.len(), 1);
+        let ngc = &lc_files[0].content;
+        assert!(
+            ngc.contains("T9 M6\nG43 H9"),
+            "linuxcnc missing T9 M6 + G43 H9:\n{ngc}"
+        );
+        assert!(
+            ngc.contains("G3 "),
+            "linuxcnc missing G3 internal helical arc:\n{ngc}"
+        );
+        assert!(
+            ngc.contains("G2 "),
+            "linuxcnc missing G2 external helical arc:\n{ngc}"
+        );
+        let lc_helical_xy_z_ij = ngc
+            .lines()
+            .filter(|l| {
+                !l.starts_with('(')
+                    && l.contains('X')
+                    && l.contains('Y')
+                    && l.contains('Z')
+                    && l.contains('I')
+                    && l.contains('J')
+            })
+            .count();
+        assert!(
+            lc_helical_xy_z_ij >= 32,
+            "linuxcnc expected >= 32 helical X/Y/Z/I/J arcs, got {lc_helical_xy_z_ij}:\n{ngc}"
+        );
+    }
 }

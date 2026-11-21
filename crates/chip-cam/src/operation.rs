@@ -36,14 +36,17 @@ pub enum OperationKind {
     Rotary2Linear,
     #[serde(rename = "rotary_4axis_sim")]
     Rotary4AxisSim,
+    #[serde(rename = "thread_mill")]
+    ThreadMill,
 }
 
 impl OperationKind {
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 14] = [
         Self::Facing,
         Self::Contour2D,
         Self::Pocket2D,
         Self::DrillBore,
+        Self::ThreadMill,
         Self::ChamferTrace,
         Self::VCarve,
         Self::Adaptive3D,
@@ -61,6 +64,7 @@ impl OperationKind {
             Self::Contour2D => "2D Contour / Profile",
             Self::Pocket2D => "2D Pocket",
             Self::DrillBore => "Drill / Helical Bore",
+            Self::ThreadMill => "Thread Mill",
             Self::ChamferTrace => "Edge Chamfer / Trace",
             Self::VCarve => "V-Carve / Bevel Inlay",
             Self::Waterline3D => "3D Waterline / Z-Level",
@@ -79,6 +83,7 @@ impl OperationKind {
             Self::Contour2D => "2D Profile",
             Self::Pocket2D => "2D Pocket",
             Self::DrillBore => "Holes / Bore",
+            Self::ThreadMill => "Thread Mill",
             Self::ChamferTrace => "Edge Chamfer",
             Self::VCarve => "V-Carve",
             Self::Waterline3D => "3D Waterline",
@@ -152,6 +157,9 @@ impl OperationKind {
             Self::Rotary4AxisSim => tool
                 .geometry
                 .supports_operation(ToolOperationClass::Rotary4AxisSim),
+            Self::ThreadMill => tool
+                .geometry
+                .supports_operation(ToolOperationClass::ThreadMill),
         }
     }
 }
@@ -309,6 +317,11 @@ impl Operation {
                 );
                 passes.multiple_depths = true;
                 passes.max_stepdown = chip_math::ParamLength::from_mm(3.0);
+                passes.stock_to_leave_radial = chip_math::ParamLength::from_mm(0.0);
+                passes.stock_to_leave_axial = chip_math::ParamLength::from_mm(0.0);
+            }
+            OperationKind::ThreadMill => {
+                passes.multiple_depths = false;
                 passes.stock_to_leave_radial = chip_math::ParamLength::from_mm(0.0);
                 passes.stock_to_leave_axial = chip_math::ParamLength::from_mm(0.0);
             }

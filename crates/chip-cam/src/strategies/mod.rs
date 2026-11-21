@@ -11,6 +11,7 @@ pub mod rotary2linear;
 pub mod rotary4axis_sim;
 pub mod rotary_wrap;
 pub mod scallop3d;
+pub mod thread_mill;
 pub mod vcarve;
 pub mod waterline3d;
 
@@ -401,6 +402,9 @@ pub fn generate_operation_toolpath_with_rest(
         }
         StrategyParams::Rotary4AxisSim(p) => {
             rotary4axis_sim::generate_rotary4axis_sim(&ctx, p, &mut builder)?;
+        }
+        StrategyParams::ThreadMill(p) => {
+            thread_mill::generate_thread_mill(&ctx, p, &mut builder)?;
         }
     }
 

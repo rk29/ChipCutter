@@ -950,6 +950,47 @@ fn edit_cutter_geometry_fields(ui: &mut egui::Ui, geom: &mut CutterGeometry, uni
                     .on_hover_text("Number of carbide inserts or cutting teeth on the face mill");
             });
         }
+        CutterGeometry::ThreadMill {
+            diameter_mm,
+            neck_diameter_mm,
+            neck_length_mm,
+            pitch_mm,
+            teeth_count,
+            thread_angle_deg,
+            flute_length_mm,
+            overall_length_mm,
+            shank_diameter_mm,
+            flutes,
+        } => {
+            edit_mm_drag(ui, "Cutting Diameter:", diameter_mm, unit);
+            edit_mm_drag(ui, "Neck Diameter:", neck_diameter_mm, unit);
+            edit_mm_drag(ui, "Neck Length (Reach):", neck_length_mm, unit);
+            edit_mm_drag(ui, "Pitch:", pitch_mm, unit);
+            ui.horizontal(|ui| {
+                ui.label("Teeth Count:");
+                ui.add(egui::DragValue::new(teeth_count).range(1..=32))
+                    .on_hover_text("1 = Single-Point thread mill, >1 = Multi-Form thread mill");
+            });
+            ui.horizontal(|ui| {
+                ui.label("Thread Angle:");
+                ui.add(
+                    egui::DragValue::new(thread_angle_deg)
+                        .range(29.0..=90.0)
+                        .suffix("°"),
+                )
+                .on_hover_text(
+                    "Included thread flank angle (60° for ISO Metric & Unified UNC/UNF)",
+                );
+            });
+            edit_mm_drag(ui, "Flute Length:", flute_length_mm, unit);
+            edit_mm_drag(ui, "Overall Length:", overall_length_mm, unit);
+            edit_mm_drag(ui, "Shank Diameter:", shank_diameter_mm, unit);
+            ui.horizontal(|ui| {
+                ui.label("Flutes:");
+                ui.add(egui::DragValue::new(flutes).range(1..=12))
+                    .on_hover_text("Number of cutting flutes on the thread mill");
+            });
+        }
     }
 }
 

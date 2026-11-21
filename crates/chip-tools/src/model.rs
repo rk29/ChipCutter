@@ -78,6 +78,7 @@ pub enum ToolOperationClass {
     Pencil3D,
     Rotary2Linear,
     Rotary4AxisSim,
+    ThreadMill,
 }
 
 /// Physical cutter geometry stored in canonical `f64` millimeters.
@@ -132,6 +133,19 @@ pub enum CutterGeometry {
         shank_diameter_mm: f64,
         flutes: u32,
     },
+    #[serde(rename = "thread_mill")]
+    ThreadMill {
+        diameter_mm: f64,
+        neck_diameter_mm: f64,
+        neck_length_mm: f64,
+        pitch_mm: f64,
+        teeth_count: u32,
+        thread_angle_deg: f64,
+        flute_length_mm: f64,
+        overall_length_mm: f64,
+        shank_diameter_mm: f64,
+        flutes: u32,
+    },
 }
 
 impl CutterGeometry {
@@ -143,6 +157,7 @@ impl CutterGeometry {
             Self::ChamferMill { .. } => "Chamfer / Spot Mill",
             Self::TwistDrill { .. } => "Twist Drill",
             Self::FaceMill { .. } => "Face / Fly Cutter",
+            Self::ThreadMill { .. } => "Thread Mill",
         }
     }
 
@@ -152,7 +167,8 @@ impl CutterGeometry {
             | Self::BullNoseEndmill { diameter_mm, .. }
             | Self::BallEndmill { diameter_mm, .. }
             | Self::ChamferMill { diameter_mm, .. }
-            | Self::TwistDrill { diameter_mm, .. } => diameter_mm,
+            | Self::TwistDrill { diameter_mm, .. }
+            | Self::ThreadMill { diameter_mm, .. } => diameter_mm,
             Self::FaceMill {
                 cutting_diameter_mm,
                 ..
@@ -179,6 +195,9 @@ impl CutterGeometry {
             }
             | Self::FaceMill {
                 flute_length_mm, ..
+            }
+            | Self::ThreadMill {
+                flute_length_mm, ..
             } => flute_length_mm,
         }
     }
@@ -201,6 +220,9 @@ impl CutterGeometry {
                 overall_length_mm, ..
             }
             | Self::FaceMill {
+                overall_length_mm, ..
+            }
+            | Self::ThreadMill {
                 overall_length_mm, ..
             } => overall_length_mm,
         }
@@ -225,6 +247,9 @@ impl CutterGeometry {
             }
             | Self::FaceMill {
                 shank_diameter_mm, ..
+            }
+            | Self::ThreadMill {
+                shank_diameter_mm, ..
             } => shank_diameter_mm,
         }
     }
@@ -236,7 +261,8 @@ impl CutterGeometry {
             | Self::BallEndmill { flutes, .. }
             | Self::ChamferMill { flutes, .. }
             | Self::TwistDrill { flutes, .. }
-            | Self::FaceMill { flutes, .. } => flutes,
+            | Self::FaceMill { flutes, .. }
+            | Self::ThreadMill { flutes, .. } => flutes,
         }
     }
 
@@ -319,6 +345,7 @@ impl CutterGeometry {
                 op_class,
                 ToolOperationClass::Facing | ToolOperationClass::Contour2D
             ),
+            Self::ThreadMill { .. } => matches!(op_class, ToolOperationClass::ThreadMill),
         }
     }
 }
@@ -373,6 +400,29 @@ pub enum ToolValidationError {
         name: String,
         cutting_mm: f64,
         outside_mm: f64,
+    },
+    #[error(
+        "thread mill '{name}' neck diameter ({neck_diameter_mm} mm) must satisfy 0 < neck < cutting diameter ({diameter_mm} mm)"
+    )]
+    InvalidThreadMillNeck {
+        name: String,
+        neck_diameter_mm: f64,
+        diameter_mm: f64,
+    },
+    #[error("thread mill '{name}' pitch ({pitch_mm} mm) must be finite and > 0")]
+    InvalidThreadMillPitch { name: String, pitch_mm: f64 },
+    #[error("thread mill '{name}' teeth count must be >= 1")]
+    InvalidThreadMillTeethCount { name: String },
+    #[error("thread mill '{name}' thread angle ({angle_deg}°) must be within 29°..=90°")]
+    InvalidThreadMillAngle { name: String, angle_deg: f64 },
+    #[error(
+        "thread mill '{name}' neck length ({neck_length_mm} mm) must satisfy flute length ({flute_mm} mm) <= neck length < overall length ({overall_mm} mm)"
+    )]
+    InvalidThreadMillReach {
+        name: String,
+        flute_mm: f64,
+        neck_length_mm: f64,
+        overall_mm: f64,
     },
 }
 
@@ -511,6 +561,56 @@ impl Tool {
                         name: self.name.clone(),
                         cutting_mm: cutting_diameter_mm,
                         outside_mm: outside_diameter_mm,
+                    });
+                }
+            }
+            CutterGeometry::ThreadMill {
+                diameter_mm,
+                neck_diameter_mm,
+                neck_length_mm,
+                pitch_mm,
+                teeth_count,
+                thread_angle_deg,
+                flute_length_mm,
+                overall_length_mm,
+                ..
+            } => {
+                if !neck_diameter_mm.is_finite()
+                    || neck_diameter_mm <= 0.0
+                    || neck_diameter_mm >= diameter_mm - 1e-6
+                {
+                    return Err(ToolValidationError::InvalidThreadMillNeck {
+                        name: self.name.clone(),
+                        neck_diameter_mm,
+                        diameter_mm,
+                    });
+                }
+                if !pitch_mm.is_finite() || pitch_mm <= 0.0 {
+                    return Err(ToolValidationError::InvalidThreadMillPitch {
+                        name: self.name.clone(),
+                        pitch_mm,
+                    });
+                }
+                if teeth_count == 0 {
+                    return Err(ToolValidationError::InvalidThreadMillTeethCount {
+                        name: self.name.clone(),
+                    });
+                }
+                if !thread_angle_deg.is_finite() || !(29.0..=90.0).contains(&thread_angle_deg) {
+                    return Err(ToolValidationError::InvalidThreadMillAngle {
+                        name: self.name.clone(),
+                        angle_deg: thread_angle_deg,
+                    });
+                }
+                if !neck_length_mm.is_finite()
+                    || neck_length_mm + 1e-6 < flute_length_mm
+                    || overall_length_mm <= neck_length_mm + 1e-6
+                {
+                    return Err(ToolValidationError::InvalidThreadMillReach {
+                        name: self.name.clone(),
+                        flute_mm: flute_length_mm,
+                        neck_length_mm,
+                        overall_mm: overall_length_mm,
                     });
                 }
             }

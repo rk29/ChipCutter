@@ -131,6 +131,9 @@ impl SurfaceCutterProfile {
                     half_angle_rad,
                 }
             }
+            CutterGeometry::ThreadMill { diameter_mm, .. } => SurfaceCutterShape::Flat {
+                radius_mm: (0.5 * diameter_mm).max(1e-4) + sr,
+            },
         };
 
         Self {

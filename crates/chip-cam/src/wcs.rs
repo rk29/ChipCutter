@@ -94,6 +94,8 @@ pub enum CamError {
     },
     #[error("invalid chamfer configuration: {reason}")]
     InvalidChamferGeometry { reason: String },
+    #[error("invalid thread mill configuration: {reason}")]
+    InvalidThreadMillGeometry { reason: String },
     #[error(
         "chamfer tip Z ({tip_z_wcs:.3} mm) collides with adjacent lower floor at Z = {floor_z_wcs:.3} mm (reduce tip_offset)"
     )]

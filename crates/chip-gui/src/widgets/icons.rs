@@ -89,6 +89,7 @@ impl IconKind {
             OperationKind::Contour2D => Self::Contour2D,
             OperationKind::Pocket2D => Self::Pocket2D,
             OperationKind::DrillBore => Self::DrillBore,
+            OperationKind::ThreadMill => Self::DrillBore,
             OperationKind::ChamferTrace => Self::ChamferTrace,
             OperationKind::VCarve => Self::VCarve,
             OperationKind::Adaptive3D => Self::Adaptive2D,

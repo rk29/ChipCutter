@@ -1195,7 +1195,9 @@ pub fn default_pick_mode_for_op(
         OperationKind::Contour2D | OperationKind::ChamferTrace => {
             ViewportPickMode::OpClosedLoops { setup_idx, op_idx }
         }
-        OperationKind::DrillBore => ViewportPickMode::OpCylindricalHoles { setup_idx, op_idx },
+        OperationKind::DrillBore | OperationKind::ThreadMill => {
+            ViewportPickMode::OpCylindricalHoles { setup_idx, op_idx }
+        }
         OperationKind::Adaptive3D
         | OperationKind::Waterline3D
         | OperationKind::Parallel3D

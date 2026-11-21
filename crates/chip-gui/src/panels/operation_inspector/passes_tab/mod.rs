@@ -338,6 +338,15 @@ pub fn show_passes_tab(ui: &mut egui::Ui, ctx: PassesTabCtx<'_>) {
         StrategyParams::Pencil3D(p) => surface_3d::show_pencil3d_params(ui, p, item),
         StrategyParams::Rotary2Linear(p) => surface_3d::show_rotary2linear_params(ui, p, item),
         StrategyParams::Rotary4AxisSim(p) => surface_3d::show_rotary4axis_sim_params(ui, p, item),
+        StrategyParams::ThreadMill(p) => {
+            ui.label(format!(
+                "Thread Mill ({}, {}, Ø{:.2} × {:.2} mm)",
+                p.form.label(),
+                p.handedness.label(),
+                p.major_diameter.value_mm,
+                p.pitch.value_mm
+            ));
+        }
     }
 }
 

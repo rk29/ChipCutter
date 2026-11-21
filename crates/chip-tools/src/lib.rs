@@ -56,7 +56,14 @@ mod tests {
     fn starter_library_validates_and_roundtrips_toml_deterministically() {
         let lib = default_starter_tool_library();
         lib.validate_all().unwrap();
-        assert_eq!(lib.tools.len(), 8);
+        assert_eq!(lib.tools.len(), 10);
+        assert!(
+            lib.tools
+                .iter()
+                .filter(|t| matches!(t.geometry, CutterGeometry::ThreadMill { .. }))
+                .count()
+                == 2
+        );
 
         let toml_1 = lib.to_toml_string().unwrap();
         let reloaded = ToolLibrary::from_toml_str(&toml_1).unwrap();
@@ -228,7 +235,7 @@ mod tests {
         let generic = builtin_generic_machine();
         assert!(generic.is_builtin);
         generic.validate().unwrap();
-        assert_eq!(generic.tools.len(), 8);
+        assert_eq!(generic.tools.len(), 10);
 
         // Deterministic TOML roundtrip
         let toml_1 = generic.to_toml_string().unwrap();
@@ -494,5 +501,203 @@ mod tests {
             import_fusion_library_bytes(&cursor.into_inner(), "zip_bomb"),
             Err(FusionImportError::ArchiveTooLarge { .. })
         ));
+    }
+
+    #[test]
+    fn thread_mill_geometry_validates_invariants_roundtrips_toml_and_imports_from_fusion() {
+        let valid_tm = Tool {
+            id: ToolId("tm_m8_multi".to_string()),
+            tool_number: 11,
+            length_offset_number: 11,
+            diameter_offset_number: 11,
+            name: "6.0mm 4-Tooth M8x1.25 Thread Mill".to_string(),
+            vendor: Some("Harvey Tool".to_string()),
+            product_id: Some("HT-M8-125".to_string()),
+            native_unit: DisplayUnit::Millimeter,
+            spindle_direction: SpindleDirection::Cw,
+            default_coolant: CoolantMode::Mist,
+            stickout_length_mm: 24.0,
+            geometry: CutterGeometry::ThreadMill {
+                diameter_mm: 6.0,
+                neck_diameter_mm: 3.6,
+                neck_length_mm: 18.0,
+                pitch_mm: 1.25,
+                teeth_count: 4,
+                thread_angle_deg: 60.0,
+                flute_length_mm: 5.0,
+                overall_length_mm: 57.0,
+                shank_diameter_mm: 6.0,
+                flutes: 3,
+            },
+            presets: Vec::new(),
+        };
+        valid_tm.validate().unwrap();
+        assert!(
+            valid_tm
+                .geometry
+                .supports_operation(ToolOperationClass::ThreadMill)
+        );
+        assert!(
+            !valid_tm
+                .geometry
+                .supports_operation(ToolOperationClass::Pocket2D)
+        );
+
+        // Deterministic TOML roundtrip with `type = "thread_mill"`
+        let lib = ToolLibrary {
+            schema_version: ToolLibrary::CURRENT_SCHEMA_VERSION,
+            name: "Thread Mill Test".to_string(),
+            tools: vec![valid_tm.clone()],
+        };
+        let toml_text = lib.to_toml_string().unwrap();
+        assert!(toml_text.contains("type = \"thread_mill\""));
+        let reloaded = ToolLibrary::from_toml_str(&toml_text).unwrap();
+        assert_eq!(reloaded.tools[0], valid_tm);
+
+        // Validation rejects bad neck diameter, zero pitch, zero teeth, bad angle, bad reach
+        let mut bad_neck = valid_tm.clone();
+        if let CutterGeometry::ThreadMill {
+            neck_diameter_mm, ..
+        } = &mut bad_neck.geometry
+        {
+            *neck_diameter_mm = 6.0;
+        }
+        assert!(matches!(
+            bad_neck.validate(),
+            Err(ToolValidationError::InvalidThreadMillNeck { .. })
+        ));
+
+        let mut bad_pitch = valid_tm.clone();
+        if let CutterGeometry::ThreadMill { pitch_mm, .. } = &mut bad_pitch.geometry {
+            *pitch_mm = 0.0;
+        }
+        assert!(matches!(
+            bad_pitch.validate(),
+            Err(ToolValidationError::InvalidThreadMillPitch { .. })
+        ));
+
+        let mut bad_teeth = valid_tm.clone();
+        if let CutterGeometry::ThreadMill { teeth_count, .. } = &mut bad_teeth.geometry {
+            *teeth_count = 0;
+        }
+        assert!(matches!(
+            bad_teeth.validate(),
+            Err(ToolValidationError::InvalidThreadMillTeethCount { .. })
+        ));
+
+        let mut bad_angle = valid_tm.clone();
+        if let CutterGeometry::ThreadMill {
+            thread_angle_deg, ..
+        } = &mut bad_angle.geometry
+        {
+            *thread_angle_deg = 20.0;
+        }
+        assert!(matches!(
+            bad_angle.validate(),
+            Err(ToolValidationError::InvalidThreadMillAngle { .. })
+        ));
+
+        let mut bad_reach = valid_tm.clone();
+        if let CutterGeometry::ThreadMill { neck_length_mm, .. } = &mut bad_reach.geometry {
+            *neck_length_mm = 3.0; // < flute_length_mm (5.0)
+        }
+        assert!(matches!(
+            bad_reach.validate(),
+            Err(ToolValidationError::InvalidThreadMillReach { .. })
+        ));
+
+        // Fusion 360 `"thread mill"` import (metric single-point + imperial multi-form)
+        let fusion_tm_json = r#"{
+          "version": 16,
+          "data": [
+            {
+              "type": "thread mill",
+              "unit": "millimeters",
+              "description": "4.75mm Single-Point 60deg Thread Mill",
+              "vendor": "Harvey Tool",
+              "guid": "tm-sp-475",
+              "geometry": {
+                "DC": 4.75,
+                "ND": 2.85,
+                "LN": 16.0,
+                "TP": 1.0,
+                "NOT": 1,
+                "thread-profile-angle": 60.0,
+                "LCF": 1.2,
+                "LB": 22.0,
+                "OAL": 50.0,
+                "SFDM": 6.0,
+                "NOF": 3
+              },
+              "post-process": { "number": 9, "clockwise": true, "coolant": "mist" }
+            },
+            {
+              "type": "thread mill",
+              "unit": "inches",
+              "description": "1/4-20 Multi-Form Thread Mill",
+              "guid": "tm-mf-qtr20",
+              "geometry": {
+                "DC": 0.185,
+                "TP": 0.05,
+                "LCF": 0.25,
+                "LB": 0.625,
+                "OAL": 2.5,
+                "SFDM": 0.25,
+                "NOF": 4
+              },
+              "post-process": { "number": 10 }
+            }
+          ]
+        }"#;
+
+        let report =
+            import_fusion_library_bytes(fusion_tm_json.as_bytes(), "Fusion Thread Mills").unwrap();
+        assert_eq!(report.imported_tool_count, 2);
+        assert!(
+            report.warnings.is_empty(),
+            "unexpected warnings: {:?}",
+            report.warnings
+        );
+
+        let sp = &report.library.tools[0];
+        match sp.geometry {
+            CutterGeometry::ThreadMill {
+                diameter_mm,
+                neck_diameter_mm,
+                neck_length_mm,
+                pitch_mm,
+                teeth_count,
+                thread_angle_deg,
+                flutes,
+                ..
+            } => {
+                assert!(approx_eq(diameter_mm, 4.75, 1e-6));
+                assert!(approx_eq(neck_diameter_mm, 2.85, 1e-6));
+                assert!(approx_eq(neck_length_mm, 16.0, 1e-6));
+                assert!(approx_eq(pitch_mm, 1.0, 1e-6));
+                assert_eq!(teeth_count, 1);
+                assert!(approx_eq(thread_angle_deg, 60.0, 1e-6));
+                assert_eq!(flutes, 3);
+            }
+            ref other => panic!("expected ThreadMill, got {other:?}"),
+        }
+
+        let mf = &report.library.tools[1];
+        assert_eq!(mf.native_unit, DisplayUnit::Inch);
+        match mf.geometry {
+            CutterGeometry::ThreadMill {
+                diameter_mm,
+                pitch_mm,
+                teeth_count,
+                flutes,
+                ..
+            } => {
+                assert!(approx_eq(diameter_mm, 0.185 * 25.4, 1e-6));
+                assert!(approx_eq(pitch_mm, 0.05 * 25.4, 1e-6));
+                assert_eq!(teeth_count, 5); // 0.25 / 0.05 = 5 teeth inferred cleanly
+                assert_eq!(flutes, 4);
+            }
+            ref other => panic!("expected ThreadMill, got {other:?}"),
+        }
     }
 }
