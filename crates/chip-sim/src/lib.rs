@@ -14,7 +14,7 @@ pub use cutter_profile::{
 };
 pub use cylindrical::{
     CylindricalCheckpoint, CylindricalStock, run_cylindrical_setup_simulation,
-    tessellate_cylindrical_stock_mesh,
+    tessellate_cylindrical_stock_mesh, tessellate_cylindrical_stock_mesh_colored,
 };
 pub use heightmap::{
     HeightfieldStock, OPERATION_STOCK_PALETTE, SetupSimulationInput, SetupSimulationResult,

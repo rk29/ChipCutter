@@ -7,7 +7,7 @@ use crate::{
     tridexel::{DexelSpan, TriDexelStock, spans_difference_length},
 };
 
-/// Visual coloring mode for simulated 3D stock meshes (`Heightmap` and `TriDexel`).
+/// Visual coloring mode for simulated 3D stock meshes (`Heightmap`, `TriDexel`, and 4th-axis `CylindricalStock`).
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SimStockColorMode {

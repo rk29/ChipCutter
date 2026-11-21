@@ -25,6 +25,7 @@ use crate::{
         SimError, SimResolution, SimStockMesh, StockPlaybackCursor, UNCUT_OP_IDX,
         slice_segment_range, target_cursor_from_snap,
     },
+    metrics::{SimStockColorMode, deviation_to_heatmap_rgba},
     timeline::{SimOperationInput, SimulationTimeline},
     verifier::{SimDiagnostic, SimIssueKind, SimSeverity, SimVerificationConfig},
 };
@@ -849,6 +850,22 @@ pub fn tessellate_cylindrical_stock_mesh(
     color_by_op: bool,
     rotary_angle_deg: f64,
 ) -> SimStockMesh {
+    let mode = if color_by_op {
+        SimStockColorMode::ByOperation
+    } else {
+        SimStockColorMode::Metallic
+    };
+    tessellate_cylindrical_stock_mesh_colored(stock, mode, rotary_angle_deg)
+}
+
+/// Tessellates a [`CylindricalStock`] into a smooth, watertight 3D [`SimStockMesh`] with
+/// selectable [`SimStockColorMode`] (`Metallic`, `ByOperation`, or signed `ErrorHeatmap`
+/// comparing `r_stock` against `r_target`).
+pub fn tessellate_cylindrical_stock_mesh_colored(
+    stock: &CylindricalStock,
+    color_mode: SimStockColorMode,
+    rotary_angle_deg: f64,
+) -> SimStockMesh {
     let nu = stock.nu;
     let nt = stock.ntheta;
     if nu < 2 || nt < 3 {
@@ -861,22 +878,44 @@ pub fn tessellate_cylindrical_stock_mesh(
     let su = nu.div_ceil(step_u);
     let st = nt.div_ceil(step_t);
 
+    let heatmap_active = matches!(color_mode, SimStockColorMode::ErrorHeatmap { .. })
+        && stock.r_target.iter().any(|&r| r >= 0.0 && r.is_finite());
+
     let sample_r = |iu: usize, it: usize| -> f64 {
         let cu = (iu * step_u).min(nu - 1);
         let ct = (it * step_t) % nt;
         f64::from(stock.r_stock[cu * nt + ct].max(0.0))
     };
     let sample_color = |iu: usize, it: usize| -> [f32; 4] {
-        if !color_by_op {
-            return UNCUT_STOCK_RGBA;
-        }
         let cu = (iu * step_u).min(nu - 1);
         let ct = (it * step_t) % nt;
-        let op_idx = stock.last_op_idx[cu * nt + ct];
-        if op_idx == UNCUT_OP_IDX {
-            UNCUT_STOCK_RGBA
-        } else {
-            OPERATION_STOCK_PALETTE[usize::from(op_idx) % OPERATION_STOCK_PALETTE.len()]
+        let idx = cu * nt + ct;
+        match color_mode {
+            SimStockColorMode::Metallic => UNCUT_STOCK_RGBA,
+            SimStockColorMode::ByOperation => {
+                let op_idx = stock.last_op_idx[idx];
+                if op_idx == UNCUT_OP_IDX {
+                    UNCUT_STOCK_RGBA
+                } else {
+                    OPERATION_STOCK_PALETTE[usize::from(op_idx) % OPERATION_STOCK_PALETTE.len()]
+                }
+            }
+            SimStockColorMode::ErrorHeatmap {
+                tolerance_mm,
+                max_scale_mm,
+            } => {
+                if !heatmap_active {
+                    return UNCUT_STOCK_RGBA;
+                }
+                let r_tgt = stock.r_target[idx];
+                if r_tgt >= 0.0 && r_tgt.is_finite() {
+                    let dev = f64::from(stock.r_stock[idx].max(0.0)) - f64::from(r_tgt);
+                    deviation_to_heatmap_rgba(dev, tolerance_mm, max_scale_mm)
+                } else {
+                    // Outside target axial silhouette -> uncut excess stock
+                    deviation_to_heatmap_rgba(max_scale_mm, tolerance_mm, max_scale_mm)
+                }
+            }
         }
     };
 
@@ -958,6 +997,19 @@ pub fn tessellate_cylindrical_stock_mesh(
         } else {
             c_part
         };
+        let center_color = if heatmap_active {
+            let mut acc = [0.0_f32; 4];
+            for it in 0..st {
+                let c = colors[ring_iu * st + it];
+                for ch in 0..4 {
+                    acc[ch] += c[ch];
+                }
+            }
+            let inv = 1.0 / (st as f32);
+            [acc[0] * inv, acc[1] * inv, acc[2] * inv, 1.0]
+        } else {
+            UNCUT_STOCK_RGBA
+        };
         let center_idx = vertices.len() as u32;
         vertices.push(SimColoredVertex {
             pos_mm: [c_rot.x as f32, c_rot.y as f32, c_rot.z as f32],
@@ -966,12 +1018,17 @@ pub fn tessellate_cylindrical_stock_mesh(
                 cap_normal.y as f32,
                 cap_normal.z as f32,
             ],
-            color_rgba: UNCUT_STOCK_RGBA,
+            color_rgba: center_color,
         });
 
         let ring_base = vertices.len() as u32;
         for it in 0..st {
             let p = positions[ring_iu * st + it];
+            let ring_color = if heatmap_active {
+                colors[ring_iu * st + it]
+            } else {
+                UNCUT_STOCK_RGBA
+            };
             vertices.push(SimColoredVertex {
                 pos_mm: [p.x as f32, p.y as f32, p.z as f32],
                 normal: [
@@ -979,7 +1036,7 @@ pub fn tessellate_cylindrical_stock_mesh(
                     cap_normal.y as f32,
                     cap_normal.z as f32,
                 ],
-                color_rgba: UNCUT_STOCK_RGBA,
+                color_rgba: ring_color,
             });
         }
         for it in 0..st {
@@ -1506,6 +1563,76 @@ mod tests {
             "loose tol ({:.2}%) should be >= tight tol ({:.2}%)",
             loose.in_tolerance_surface_pct,
             tight.in_tolerance_surface_pct
+        );
+    }
+
+    #[test]
+    fn cylindrical_error_heatmap_tessellation_colors_in_tol_excess_and_gouge_bands() {
+        let mut setup = Setup::new("s_hm", "Rotary Heatmap", WorkOffsetSlot::G54);
+        setup.wcs.origin = WcsOriginMode::StockBoxPoint {
+            anchor: BoxAnchor27::VOLUMETRIC_CENTER,
+        };
+        setup.stock = StockConfig::FixedCylinder {
+            axis: StockAxis::X,
+            diameter: ParamLength::from_mm(40.0),
+            length: ParamLength::from_mm(60.0),
+            axial_top_offset: ParamLength::from_mm(0.0),
+        };
+        setup.rotary.mode = RotaryDriveMode::Simultaneous4Axis;
+        setup.rotary.axis = RotaryAxisKind::XAxis;
+
+        let doc = CadDocument::empty();
+        let resolved = setup.resolve(&doc, DisplayUnit::Millimeter).unwrap();
+        let mut stock = CylindricalStock::from_setup(
+            &resolved,
+            resolved.rotary.unwrap(),
+            SimResolution::Standard,
+        )
+        .unwrap();
+
+        // Populate 3 axial bands: left = excess (+1.0 mm), middle = in-tol (0.0 mm), right = gouge (-1.0 mm)
+        let nu = stock.nu;
+        let nt = stock.ntheta;
+        for iu in 0..nu {
+            for it in 0..nt {
+                let idx = iu * nt + it;
+                stock.r_target[idx] = 18.0_f32;
+                stock.r_stock[idx] = if iu < nu / 3 {
+                    19.0_f32
+                } else if iu < (2 * nu) / 3 {
+                    18.0_f32
+                } else {
+                    17.0_f32
+                };
+            }
+        }
+
+        let hm_mesh = tessellate_cylindrical_stock_mesh_colored(
+            &stock,
+            SimStockColorMode::ErrorHeatmap {
+                tolerance_mm: 0.05,
+                max_scale_mm: 1.0,
+            },
+            0.0,
+        );
+        let green = deviation_to_heatmap_rgba(0.0, 0.05, 1.0);
+        let blue = deviation_to_heatmap_rgba(1.0, 0.05, 1.0);
+        let red = deviation_to_heatmap_rgba(-1.0, 0.05, 1.0);
+        let close = |a: [f32; 4], b: [f32; 4]| {
+            (a[0] - b[0]).abs() < 1e-3 && (a[1] - b[1]).abs() < 1e-3 && (a[2] - b[2]).abs() < 1e-3
+        };
+        assert!(hm_mesh.vertices.iter().any(|v| close(v.color_rgba, green)));
+        assert!(hm_mesh.vertices.iter().any(|v| close(v.color_rgba, blue)));
+        assert!(hm_mesh.vertices.iter().any(|v| close(v.color_rgba, red)));
+
+        // Metallic mode must ignore target deviation and produce uniform raw stock gray
+        let metal_mesh =
+            tessellate_cylindrical_stock_mesh_colored(&stock, SimStockColorMode::Metallic, 0.0);
+        assert!(
+            metal_mesh
+                .vertices
+                .iter()
+                .all(|v| close(v.color_rgba, UNCUT_STOCK_RGBA))
         );
     }
 }

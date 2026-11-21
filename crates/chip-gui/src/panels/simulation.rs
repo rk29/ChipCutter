@@ -18,7 +18,7 @@ use chip_sim::{
     SimEngineKind, SimError, SimOperationInput, SimResolution, SimStockColorMode, SimStockMesh,
     SimToolMesh, SimVerificationConfig, StockErrorReport, StockPlaybackCursor, TriDexelStock,
     build_cutter_assembly_mesh, deviation_to_heatmap_rgba, format_cycle_time_hms,
-    run_setup_simulation_with_engine, tessellate_cylindrical_stock_mesh,
+    run_setup_simulation_with_engine, tessellate_cylindrical_stock_mesh_colored,
     tessellate_stock_mesh_colored, tessellate_tridexel_stock_mesh_colored,
 };
 use chip_tools::{Tool, ToolId};
@@ -623,7 +623,7 @@ impl SimulationPanelState {
             if needs_remesh {
                 let color_mode = self.active_stock_color_mode();
                 let mesh = if let Some(cyl_work) = self.working_cylindrical.as_ref() {
-                    tessellate_cylindrical_stock_mesh(cyl_work, self.color_by_operation, rotary_deg)
+                    tessellate_cylindrical_stock_mesh_colored(cyl_work, color_mode, rotary_deg)
                 } else if let Some(td_work) = self.working_tridexel.as_ref() {
                     tessellate_tridexel_stock_mesh_colored(
                         td_work,
@@ -1901,5 +1901,112 @@ mod tests {
             .clone();
         assert!((rep_loose.tolerance_mm - 2.0).abs() < 1e-6);
         assert!(rep_loose.in_tolerance_surface_pct >= rep_default.in_tolerance_surface_pct);
+    }
+
+    #[test]
+    fn rotary_simulation_panel_renders_error_heatmap_even_when_color_by_op_disabled() {
+        let mut project = ProjectDocument::new("4th Axis Heatmap Test");
+        let lib = default_starter_tool_library();
+        project.tools = lib.tools.clone();
+        let ball_6mm = &lib.tools[3];
+
+        let stl = chip_cad::sample_helical_flute_shaft_stl_bytes();
+        let doc = chip_cad::load_mesh_cad_document(
+            "helical_flute_shaft.stl",
+            &stl,
+            &chip_cad::MeshImportOptions::default(),
+        )
+        .unwrap();
+
+        let mut setup = Setup::new("s_helical_hm", "Helical A", WorkOffsetSlot::G54);
+        setup.wcs.origin = WcsOriginMode::ModelBoxPoint {
+            anchor: BoxAnchor27::VOLUMETRIC_CENTER,
+        };
+        setup.stock = StockConfig::FixedCylinder {
+            axis: StockAxis::X,
+            diameter: ParamLength::from_mm(42.0),
+            length: ParamLength::from_mm(80.0),
+            axial_top_offset: ParamLength::from_mm(0.0),
+        };
+        setup.rotary.mode = RotaryDriveMode::Simultaneous4Axis;
+        setup.rotary.axis = RotaryAxisKind::XAxis;
+        let resolved = setup.resolve(&doc, DisplayUnit::Millimeter).unwrap();
+
+        let mut b = ToolpathBuilder::new("op_helical");
+        b.rotary_rapid_to(DVec3::new(-20.0, 0.0, 28.0), 0.0);
+        b.rotary_linear_to(
+            DVec3::new(-20.0, 0.0, 18.0),
+            0.0,
+            400.0,
+            18.0,
+            MotionRole::Plunge,
+        );
+        b.rotary_linear_to(
+            DVec3::new(20.0, 0.0, 18.0),
+            360.0,
+            800.0,
+            18.0,
+            MotionRole::Cut,
+        );
+        let tp = b.finish();
+
+        let sim = chip_sim::run_setup_simulation_with_engine(
+            &SetupSimulationInput {
+                doc: &doc,
+                setup: &resolved,
+                target_bodies: &[],
+                operations: &[SimOperationInput {
+                    op_id: "op_helical",
+                    op_name: "4-Axis Helical",
+                    tool: ball_6mm,
+                    fallback_spindle_rpm: 12_000.0,
+                    intentional_edge_break_mm: 0.0,
+                    toolpath: &tp,
+                }],
+                resolution: SimResolution::Standard,
+                kinematics: MachineKinematicsConfig::default(),
+                verify_config: SimVerificationConfig::default(),
+                cancel: None,
+            },
+            chip_sim::SimEngineKind::TriDexel,
+        )
+        .unwrap();
+
+        let mut panel = SimulationPanelState {
+            engine: chip_sim::SimEngineKind::TriDexel,
+            color_by_operation: false,
+            show_error_heatmap: false,
+            active_run_id: 1,
+            active_setup_idx: 0,
+            active_result: Some(Arc::new(sim)),
+            ..Default::default()
+        };
+
+        // Baseline metallic mesh with Color by Op disabled & Error Heatmap disabled
+        let (rev_metal, mesh_metal) = panel.resolve_viewport_visuals(&project, 0).stock.unwrap();
+        let metal_first = mesh_metal.vertices[0].color_rgba;
+        assert!(
+            mesh_metal
+                .vertices
+                .iter()
+                .all(|v| (v.color_rgba[0] - metal_first[0]).abs() < 1e-4
+                    && (v.color_rgba[1] - metal_first[1]).abs() < 1e-4
+                    && (v.color_rgba[2] - metal_first[2]).abs() < 1e-4),
+            "baseline metallic cylindrical stock should have uniform gray vertex color"
+        );
+
+        // Enable Error Heatmap (keeping Color by Op = false, matching user repro in Issue #13)
+        panel.show_error_heatmap = true;
+        let (rev_hm, mesh_hm) = panel.resolve_viewport_visuals(&project, 0).stock.unwrap();
+        assert!(rev_hm > rev_metal);
+        let has_vivid_heatmap_color = mesh_hm.vertices.iter().any(|v| {
+            let max_c = v.color_rgba[0].max(v.color_rgba[1]).max(v.color_rgba[2]);
+            let min_c = v.color_rgba[0].min(v.color_rgba[1]).min(v.color_rgba[2]);
+            (max_c - min_c) > 0.25
+        });
+        assert!(
+            has_vivid_heatmap_color,
+            "4th-axis cylindrical stock must display vivid heatmap colors when Error Heatmap is enabled"
+        );
     }
 }
