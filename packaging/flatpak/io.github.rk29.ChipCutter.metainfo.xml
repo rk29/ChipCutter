@@ -50,6 +50,11 @@
   </screenshots>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="0.10.1" date="2026-11-21">
+      <description>
+        <p>Bug-fix release: reset all active project, model, simulation, G-code preview, and cached geometry state cleanly when opening or switching projects.</p>
+      </description>
+    </release>
     <release version="0.10.0" date="2026-11-20">
       <description>
         <p>Added non-destructive per-model orientation, lay-flat, scaling, target-size fitting, and positioning for STEP solids and STL/OBJ/3MF meshes (GUI Model Transform Inspector, Mesh Import orientation preview, CLI transform-model, and associative Ctrl+R reload preservation), Setup WCS fine Z-axis clocking, and illustrated Tutorial 16.</p>

@@ -11,7 +11,7 @@ on:
         type: boolean
         default: true
       tag:
-        description: "Optional version tag override for dry-run (e.g. v0.10.0); defaults to Cargo.toml version"
+        description: "Optional version tag override for dry-run (e.g. v0.10.1); defaults to Cargo.toml version"
         type: string
         default: ""
 
