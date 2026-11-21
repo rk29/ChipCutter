@@ -140,44 +140,77 @@ pub fn offset_polyline(poly: &ArcPolyline2D, signed_left_offset_mm: f64) -> Vec<
         return Vec::new();
     }
 
+    // Scale coordinates by an exact power of two (`16.0`, bulge is dimensionless) before invoking
+    // `cavalier_contours::parallel_offset_opt`:
+    // 1. Power-of-two scaling is bit-exact in IEEE-754 mantissa bits (zero rounding noise on
+    //    symmetric geometry).
+    // 2. `cavalier_contours`'s `PlineViewData::validate_for_source` hardcodes
+    //    `VALIDATION_EPS = 1e-5`, so keeping `pos_equal_eps = 1e-5` in working units avoids
+    //    `EndPointOnFinalOffsetVertex` mismatches.
+    // 3. Meanwhile `cavalier_contours::line_line_intr` compares unnormalized `perp_dot` (`O(S²)`)
+    //    directly against `pos_equal_eps`. Scaling by `S = 16` increases `perp_dot` by `256×`,
+    //    preventing short raw-offset segments near evolute cusps from being misclassified as
+    //    collinear (`EndPointNotOnSegment`).
+    const WORK_SCALE: f64 = 16.0;
+    const INV_WORK_SCALE: f64 = 1.0 / WORK_SCALE;
+    let scale_pline = |src: &Polyline<f64>, s: f64| -> Polyline<f64> {
+        let mut dst = if src.is_closed() {
+            Polyline::new_closed()
+        } else {
+            Polyline::new()
+        };
+        for v in &src.vertex_data {
+            dst.add(v.x * s, v.y * s, v.bulge);
+        }
+        dst
+    };
+
+    let scaled_pl = scale_pline(&pl, WORK_SCALE);
+    let scaled_offset = signed_left_offset_mm * WORK_SCALE;
     let opts = PlineOffsetOptions {
         handle_self_intersects: true,
         pos_equal_eps: 1e-5,
-        offset_dist_eps: 1e-4,
+        offset_dist_eps: 1e-4 * WORK_SCALE,
         ..Default::default()
     };
 
     let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        pl.parallel_offset_opt(signed_left_offset_mm, &opts)
+        scaled_pl.parallel_offset_opt(scaled_offset, &opts)
     }));
     let raw_offsets = match res {
         Ok(list) => list,
         Err(_) => {
-            // Fallback for degenerate sliced-mesh micro-arcs/collinear segments:
-            // snap micro-bulges, remove redundant vertices, and retry with relaxed eps.
+            // Last-resort fallback for adversarial degenerate inputs: snap micro-bulges,
+            // remove redundant vertices, and retry at higher power-of-two scale (`1024×`).
+            const FALLBACK_SCALE: f64 = 1024.0;
             let mut clean_pl = pl.clone();
             for v in &mut clean_pl.vertex_data {
                 if v.bulge.abs() < 1e-5 {
                     v.bulge = 0.0;
                 }
             }
-            let relaxed_pl = clean_pl.remove_redundant(1e-3).unwrap_or(clean_pl);
-            let relaxed_opts = PlineOffsetOptions {
+            let cleaned_pl = clean_pl.remove_redundant(1e-4).unwrap_or(clean_pl);
+            let fb_pl = scale_pline(&cleaned_pl, FALLBACK_SCALE);
+            let fb_opts = PlineOffsetOptions {
                 handle_self_intersects: true,
-                pos_equal_eps: 1e-4,
+                pos_equal_eps: 1e-5,
                 offset_dist_eps: 5e-4,
                 ..Default::default()
             };
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                relaxed_pl.parallel_offset_opt(signed_left_offset_mm, &relaxed_opts)
+                fb_pl.parallel_offset_opt(signed_left_offset_mm * FALLBACK_SCALE, &fb_opts)
             }))
             .unwrap_or_default()
+            .into_iter()
+            .map(|p| scale_pline(&p, WORK_SCALE / FALLBACK_SCALE))
+            .collect()
         }
     };
 
     raw_offsets
         .iter()
-        .map(from_cavalier_polyline)
+        .map(|p| scale_pline(p, INV_WORK_SCALE))
+        .map(|p| from_cavalier_polyline(&p))
         .filter(|r| !r.segments.is_empty() && r.perimeter() > 1e-4)
         .collect()
 }
@@ -848,5 +881,137 @@ mod tests {
         assert!(tr_aabb.max.x > 100.8);
         assert!(tr_aabb.min.y < -0.8);
         assert!(tr_aabb.max.y > 80.8);
+    }
+
+    #[test]
+    fn offset_polyline_handles_relief_wave_evolute_cusp_without_panicking() {
+        // Regression test for issue #12: sliced/dilated Relief Wave (OBJ Mesh) trough contour
+        // eroded near its evolute radius of curvature (~11.36 mm), where cavalier_contours 0.9
+        // previously tripped `PlineViewData::validate_for_source` (`EndPointNotOnSegment`) with
+        // `pos_equal_eps = 1e-5` and `1e-4`.
+        let verts: &[(f64, f64, f64)] = &[
+            (14.921886483395925, -16.942821493575728, 0.0),
+            (
+                15.363759412579782,
+                -17.281434683017782,
+                -0.01868544958960922,
+            ),
+            (15.56092229613518, -17.444567386858548, 0.0),
+            (16.990294645294718, -18.720121435668982, 0.0),
+            (18.406492729519904, -19.49836686893146, -0.02976113027081174),
+            (18.751205334214237, -19.715440183561295, 0.0),
+            (18.952568850689502, -19.85964970291973, 0.0),
+            (20.0, -20.112937007834, 0.0),
+            (21.047431149310498, -19.85964970291973, 0.0),
+            (
+                21.248794665785763,
+                -19.715440183561295,
+                -0.029761130270811714,
+            ),
+            (21.593507270480096, -19.49836686893146, 0.0),
+            (23.00970535470528, -18.720121435668982, 0.0),
+            (
+                24.439077703864818,
+                -17.444567386858548,
+                -0.01868544958960922,
+            ),
+            (24.636240587420218, -17.281434683017785, 0.0),
+            (25.21663776378103, -16.836668493349435, 0.0),
+            (26.885365834585116, -15.11573890396788, -0.00882098186881961),
+            (26.971002634102014, -15.030485325100415, 0.0),
+            (27.505092517009828, -14.517223720490986, 0.0),
+            (29.82400842288955, -11.801808961493505, 0.0),
+            (30.803283990053547, -10.493528606482332, 0.0),
+            (32.15387555565232, -8.557226853678866, 0.0),
+            (32.354959654496724, -8.244415964847102, 0.0),
+            (33.59365324073867, -6.000449127237978, 0.0),
+            (34.336976651187044, -4.2455606492378015, 0.0),
+            (34.46782675207222, -3.924294553393522, 0.0),
+            (34.980385413380965, -1.9224012042478065, 0.0),
+            (35.14826635733737, 4.440892098500626e-16, 0.0),
+            (34.980385413380965, 1.9224012042478067, 0.0),
+            (34.46782675207222, 3.924294553393522, 0.0),
+            (34.336976651187044, 4.245560649237797, 0.0),
+            (33.59365324073867, 6.000449127237975, 0.0),
+            (32.354959654496724, 8.2444159648471, 0.0),
+            (32.15387555565232, 8.557226853678868, 0.0),
+            (30.80328399005354, 10.493528606482341, 0.0),
+            (29.824008422889545, 11.80180896149351, 0.0),
+            (27.505092517009828, 14.517223720490986, 0.0),
+            (26.971002634102014, 15.030485325100415, -0.00882098186881961),
+            (26.885365834585116, 15.11573890396788, 0.0),
+            (25.216637763781033, 16.836668493349432, 0.0),
+            (24.636240587420218, 17.281434683017785, -0.01868544958960922),
+            (24.439077703864818, 17.444567386858548, 0.0),
+            (23.009705354705282, 18.720121435668982, 0.0),
+            (21.593507270480096, 19.49836686893146, -0.029761130270811714),
+            (21.248794665785763, 19.715440183561295, 0.0),
+            (21.047431149310498, 19.85964970291973, 0.0),
+            (20.0, 20.112937007834, 0.0),
+            (18.952568850689502, 19.85964970291973, 0.0),
+            (18.751205334214237, 19.715440183561295, -0.02976113027081174),
+            (18.406492729519904, 19.49836686893146, 0.0),
+            (16.990294645294718, 18.720121435668982, 0.0),
+            (15.56092229613518, 17.444567386858548, -0.018685449589609052),
+            (15.363759412579784, 17.281434683017785, 0.0),
+            (14.783362236218963, 16.83666849334943, 0.0),
+            (13.114634165414882, 15.11573890396788, -0.0088209818688195),
+            (13.028997365897986, 15.030485325100416, 0.0),
+            (12.49490748299016, 14.517223720490971, 0.0),
+            (10.175991577110448, 11.801808961493503, 0.0),
+            (9.196716009946435, 10.493528606482304, 0.0),
+            (7.846124444347728, 8.55722685367894, 0.0),
+            (7.645040345503231, 8.244415964847034, 0.0),
+            (6.406346759261349, 6.00044912723801, 0.0),
+            (5.663023348812862, 4.24556064923757, 0.0),
+            (5.532173247927786, 3.9242945533935356, 0.0),
+            (5.019614586619035, 1.9224012042478242, 0.0),
+            (4.851733642662628, -4.440892098500626e-16, 0.0),
+            (5.019614586619035, -1.922401204247824, 0.0),
+            (5.532173247927786, -3.924294553393535, 0.0),
+            (5.663023348812859, -4.245560649237563, 0.0),
+            (6.40634675926135, -6.000449127238012, 0.0),
+            (7.645040345503231, -8.244415964847034, 0.0),
+            (7.846124444347731, -8.557226853678944, 0.0),
+            (9.196716009946435, -10.493528606482306, 0.0),
+            (10.175991577110448, -11.801808961493503, 0.0),
+            (12.494907482990161, -14.517223720490971, 0.0),
+            (13.028997365897986, -15.030485325100416, -0.0088209818688195),
+            (13.114634165414882, -15.11573890396788, 0.0),
+            (14.783362236218954, -16.83666849334942, 0.0),
+        ];
+        let mut pl = Polyline::new_closed();
+        for &(x, y, b) in verts {
+            pl.add(x, y, b);
+        }
+        let arc_poly = from_cavalier_polyline(&pl);
+        let critical_offset = 11.361199768003027;
+
+        // `offset_polyline` must return valid, strictly shrinking eroded loops across the entire
+        // evolute band without tripping `cavalier_contours` debug assertions.
+        let mut prev_area = arc_poly.signed_area().abs();
+        for &d in &[2.0, 6.0, 11.30, 11.35, critical_offset, 11.37, 11.40, 13.0] {
+            let eroded = offset_polyline(&arc_poly, d);
+            assert_eq!(
+                eroded.len(),
+                1,
+                "expected 1 valid eroded loop at offset {d}"
+            );
+            let area = eroded[0].signed_area().abs();
+            assert!(
+                area > 1.0 && area < prev_area,
+                "expected strictly decreasing positive area at offset {d}: got {area} vs prev {prev_area}"
+            );
+            prev_area = area;
+        }
+
+        // Dense sweep across the evolute cusp `[11.335 .. 11.385]` (where `pos_equal_eps = 1e-5`
+        // at 1× scale previously panicked 318/501 times) must produce valid loops with zero panics.
+        for k in -100..=100 {
+            let d = critical_offset + (k as f64) * 2.5e-4;
+            let eroded = offset_polyline(&arc_poly, d);
+            assert_eq!(eroded.len(), 1, "expected 1 eroded loop at offset {d}");
+            assert!(eroded[0].signed_area().abs() > 40.0);
+        }
     }
 }
