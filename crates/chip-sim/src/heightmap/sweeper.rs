@@ -816,6 +816,8 @@ pub fn run_setup_simulation_with_engine(
         .collect();
 
     let mut raw_hits: Vec<SegmentRuleHit> = Vec::new();
+    let mut per_op_errors: Vec<crate::metrics::OperationErrorSnapshot> = Vec::new();
+    let mut prev_vol = initial_stock_volume_mm3;
 
     for (idx, span) in timeline.motion_spans.iter().enumerate() {
         if idx % 32 == 0 {
@@ -841,6 +843,25 @@ pub fn run_setup_simulation_with_engine(
 
         let completed = idx + 1;
         let is_op_end = timeline.operations[span.op_idx].end_global_seg == completed;
+        if is_op_end {
+            let cur_vol = stock.compute_volume_mm3();
+            let op_removed = (prev_vol - cur_vol).max(0.0);
+            prev_vol = cur_vol;
+            if let Some((ex_v, g_v, rms)) =
+                crate::metrics::compute_heightmap_quick_error_summary(&stock)
+            {
+                per_op_errors.push(crate::metrics::OperationErrorSnapshot {
+                    op_idx: span.op_idx,
+                    op_id: op_in.op_id.to_string(),
+                    op_name: op_in.op_name.to_string(),
+                    removed_volume_mm3: op_removed,
+                    excess_volume_mm3: ex_v,
+                    gouge_volume_mm3: g_v,
+                    total_error_volume_mm3: ex_v + g_v,
+                    rms_error_mm: rms,
+                });
+            }
+        }
         if (completed % checkpoint_stride == 0 || is_op_end) && completed < total_segs {
             checkpoints.push(StockCheckpoint {
                 completed_segments: completed,
@@ -852,6 +873,12 @@ pub fn run_setup_simulation_with_engine(
 
     let remaining_stock_volume_mm3 = stock.compute_volume_mm3();
     let removed_volume_mm3 = (initial_stock_volume_mm3 - remaining_stock_volume_mm3).max(0.0);
+    let error_report = crate::metrics::compute_heightmap_error_report(
+        &stock,
+        initial_stock_volume_mm3,
+        0.05,
+        per_op_errors,
+    );
 
     // Coalesce consecutive segment hits of the same `(op_idx, kind)` so each physical crash/gouge
     // produces a crisp clickable diagnostic pointing to its onset while reporting peak depth!
@@ -873,6 +900,7 @@ pub fn run_setup_simulation_with_engine(
         tridexel_checkpoints: Vec::new(),
         operation_profiles: profiles,
         diagnostics,
+        error_report,
     })
 }
 

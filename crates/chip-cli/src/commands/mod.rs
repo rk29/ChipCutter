@@ -10,7 +10,7 @@ use chip_project::{
     ProjectDocument, create_private_temp_extract_dir, is_chipz_path,
     load_model_entry_cad_doc_transformed, resolve_model_path, unpack_chipz_bundle,
 };
-use chip_sim::{SimDiagnostic, SimResolution};
+use chip_sim::{SimDiagnostic, SimEngineKind, SimResolution, StockErrorReport};
 use serde::Serialize;
 
 pub struct TempExtractGuard(PathBuf);
@@ -70,10 +70,21 @@ pub fn parse_sim_resolution(raw: &str) -> SimResolution {
     }
 }
 
+pub fn parse_sim_engine(raw: &str) -> Result<SimEngineKind, String> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "heightmap" | "2.5d" | "z-dexel" | "zdexel" => Ok(SimEngineKind::Heightmap),
+        "tri-dexel" | "tridexel" | "tri_dexel" | "3d" => Ok(SimEngineKind::TriDexel),
+        other => Err(format!(
+            "unknown simulation engine '{other}'; expected 'heightmap' or 'tri-dexel'"
+        )),
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct SetupSimReportJson {
     pub setup_id: String,
     pub setup_name: String,
+    pub engine: SimEngineKind,
     pub resolution: SimResolution,
     pub total_time_sec: f64,
     pub total_time_hms: String,
@@ -86,6 +97,8 @@ pub struct SetupSimReportJson {
     pub critical_error_count: usize,
     pub warning_count: usize,
     pub diagnostics: Vec<SimDiagnostic>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_report: Option<StockErrorReport>,
 }
 
 #[derive(Debug, Serialize)]

@@ -186,7 +186,7 @@ pub(crate) fn intersect_horizontal_line_with_capsule_2d(
 fn eval_horizontal_ray_cut_interval(
     span: LinearSpan3D,
     prof: &RadialCutterProfile,
-    radius_override: Option<f64>,
+    radial_shrink_mm: f64,
     pz: f64,
     fixed_v: f64,
     swap_xy: bool,
@@ -206,17 +206,14 @@ fn eval_horizontal_ray_cut_interval(
     };
 
     let dz_span = span.p1.z - span.p0.z;
-    // Fast exact path for level moves (or when radius_override is fixed e.g. shank/holder).
+    // Fast exact path for level moves.
     // Half-open lower bound (`dz > 1e-9`) avoids double-counting a ray lying exactly on a flat floor.
     if dz_span.abs() <= 1e-7 {
         let dz = pz - span.p0.z;
         if dz <= 1e-9 || dz > max_h + 1e-9 {
             return None;
         }
-        let r = match radius_override {
-            Some(ro) => ro,
-            None => prof.radius_at_height_dz(dz)?,
-        };
+        let r = (prof.radius_at_height_dz(dz)? - radial_shrink_mm).max(0.0);
         if r <= 1e-9 {
             return None;
         }
@@ -241,10 +238,7 @@ fn eval_horizontal_ray_cut_interval(
     let q0 = span.p0.lerp(span.p1, t0);
     let q1 = span.p0.lerp(span.p1, t1);
     let r_at = |z_tip: f64| -> f64 {
-        match radius_override {
-            Some(ro) => ro,
-            None => prof.radius_at_height_dz(pz - z_tip).unwrap_or(0.0),
-        }
+        (prof.radius_at_height_dz(pz - z_tip).unwrap_or(0.0) - radial_shrink_mm).max(0.0)
     };
 
     let r0 = r_at(q0.z);
@@ -421,7 +415,7 @@ impl TriDexelStock {
         is_flat_endmill: bool,
         op_idx: u16,
     ) -> bool {
-        let max_sag = (0.2 * self.mean_pitch_mm()).clamp(0.01, 0.2);
+        let max_sag = 0.005;
         let chords = decompose_to_linear_chords(seg, max_sag);
         let mut mutated = false;
         let cfg = SimVerificationConfig::default();
@@ -618,7 +612,7 @@ impl TriDexelStock {
                         }
                         let py = oy + (j as f64 + 0.5) * dy;
                         if let Some((x_lo, x_hi)) = eval_horizontal_ray_cut_interval(
-                            chord, ctx.prof, None, pz, py, false, dz_step,
+                            chord, ctx.prof, 0.0, pz, py, false, dz_step,
                         ) {
                             if verify && ctx.is_rapid {
                                 let ov = query_overlap_length(spans, x_lo, x_hi);
@@ -630,11 +624,21 @@ impl TriDexelStock {
                                 }
                             }
                             if verify
+                                && pz >= chord.min_z() + ctx.cfg.gouge_tol_mm
                                 && let Some(tx_all) = target_x_rays
+                                && let Some((x_lo_in, x_hi_in)) = eval_horizontal_ray_cut_interval(
+                                    chord,
+                                    ctx.prof,
+                                    ctx.cfg.radial_wall_skin_mm,
+                                    pz,
+                                    py,
+                                    false,
+                                    dz_step,
+                                )
                                 && let Some((pen, x_at)) = query_target_gouge_depth(
                                     &tx_all[row_base + j],
-                                    x_lo,
-                                    x_hi,
+                                    x_lo_in,
+                                    x_hi_in,
                                     wall_skin,
                                 )
                                 && rv.worst_gouge.is_none_or(|(b, _)| pen > b)
@@ -691,7 +695,7 @@ impl TriDexelStock {
                         }
                         let px = ox + (i as f64 + 0.5) * dx;
                         if let Some((y_lo, y_hi)) = eval_horizontal_ray_cut_interval(
-                            chord, ctx.prof, None, pz, px, true, dz_step,
+                            chord, ctx.prof, 0.0, pz, px, true, dz_step,
                         ) {
                             if verify && ctx.is_rapid {
                                 let ov = query_overlap_length(spans, y_lo, y_hi);
@@ -703,11 +707,21 @@ impl TriDexelStock {
                                 }
                             }
                             if verify
+                                && pz >= chord.min_z() + ctx.cfg.gouge_tol_mm
                                 && let Some(ty_all) = target_y_rays
+                                && let Some((y_lo_in, y_hi_in)) = eval_horizontal_ray_cut_interval(
+                                    chord,
+                                    ctx.prof,
+                                    ctx.cfg.radial_wall_skin_mm,
+                                    pz,
+                                    px,
+                                    true,
+                                    dz_step,
+                                )
                                 && let Some((pen, y_at)) = query_target_gouge_depth(
                                     &ty_all[row_base + i],
-                                    y_lo,
-                                    y_hi,
+                                    y_lo_in,
+                                    y_hi_in,
                                     wall_skin,
                                 )
                                 && rv.worst_gouge.is_none_or(|(b, _)| pen > b)
@@ -902,9 +916,11 @@ pub fn run_tridexel_setup_simulation(
         stock: stock.clone(),
     }];
 
-    let max_sag = (0.2 * stock.mean_pitch_mm()).clamp(0.01, 0.2);
+    let max_sag = 0.005;
     let mut diagnostics: Vec<SimDiagnostic> = Vec::new();
     let mut recorded_op_kinds: Vec<(usize, SimIssueKind)> = Vec::new();
+    let mut per_op_errors: Vec<crate::metrics::OperationErrorSnapshot> = Vec::new();
+    let mut prev_vol = initial_vol;
 
     for (span_idx, span) in timeline.motion_spans.iter().enumerate() {
         if let Some(cancel) = input.cancel
@@ -1045,7 +1061,27 @@ pub fn run_tridexel_setup_simulation(
         }
 
         let completed = span_idx + 1;
-        if completed < total_spans && completed % checkpoint_interval == 0 {
+        let is_op_end = timeline.operations[span.op_idx].end_global_seg == completed;
+        if is_op_end {
+            let cur_vol = stock.compute_volume_mm3();
+            let op_removed = (prev_vol - cur_vol).max(0.0);
+            prev_vol = cur_vol;
+            if let Some(target_ref) = target_stock.as_ref() {
+                let (ex_v, g_v, rms) =
+                    crate::metrics::compute_tridexel_quick_error_summary(&stock, target_ref);
+                per_op_errors.push(crate::metrics::OperationErrorSnapshot {
+                    op_idx: span.op_idx,
+                    op_id: op_in.op_id.to_string(),
+                    op_name: op_in.op_name.to_string(),
+                    removed_volume_mm3: op_removed,
+                    excess_volume_mm3: ex_v,
+                    gouge_volume_mm3: g_v,
+                    total_error_volume_mm3: ex_v + g_v,
+                    rms_error_mm: rms,
+                });
+            }
+        }
+        if (completed % checkpoint_interval == 0 || is_op_end) && completed < total_spans {
             tridexel_checkpoints.push(TriDexelCheckpoint {
                 completed_segments: completed,
                 stock: stock.clone(),
@@ -1055,6 +1091,15 @@ pub fn run_tridexel_setup_simulation(
 
     let remaining_vol = stock.compute_volume_mm3();
     let removed_vol = (initial_vol - remaining_vol).max(0.0);
+    let error_report = target_stock.as_ref().map(|target_ref| {
+        crate::metrics::compute_tridexel_error_report(
+            &stock,
+            target_ref,
+            initial_vol,
+            0.05,
+            per_op_errors,
+        )
+    });
     let projected_hf = stock.to_projected_heightfield();
 
     Ok(SetupSimulationResult {
@@ -1073,6 +1118,7 @@ pub fn run_tridexel_setup_simulation(
         tridexel_checkpoints,
         operation_profiles,
         diagnostics,
+        error_report,
     })
 }
 

@@ -14,7 +14,7 @@ pub use grid::{
     query_target_gouge_depth, spans_contain_coord, spans_difference_length,
     subtract_dexel_interval,
 };
-pub use mesher::tessellate_tridexel_stock_mesh;
+pub use mesher::{tessellate_tridexel_stock_mesh, tessellate_tridexel_stock_mesh_colored};
 pub use sweep::run_tridexel_setup_simulation;
 
 #[cfg(test)]

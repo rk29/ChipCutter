@@ -5,7 +5,7 @@ mod target_rasterizer;
 
 pub(crate) use grid::slice_segment_range;
 pub use grid::{HeightfieldStock, UNCUT_OP_IDX};
-pub use mesher::{OPERATION_STOCK_PALETTE, tessellate_stock_mesh};
+pub use mesher::{OPERATION_STOCK_PALETTE, tessellate_stock_mesh, tessellate_stock_mesh_colored};
 pub use sweeper::{run_setup_simulation, run_setup_simulation_with_engine};
 
 use std::sync::atomic::AtomicBool;
@@ -18,6 +18,7 @@ use thiserror::Error;
 use crate::{
     cutter_profile::{RadialCutterProfile, SimColoredVertex},
     cylindrical::{CylindricalCheckpoint, CylindricalStock},
+    metrics::StockErrorReport,
     timeline::{MachineKinematicsConfig, ScrubSnapshot, SimOperationInput, SimulationTimeline},
     tridexel::{SimEngineKind, TriDexelCheckpoint, TriDexelStock},
     verifier::{SimDiagnostic, SimSeverity, SimVerificationConfig},
@@ -152,6 +153,8 @@ pub struct SetupSimulationResult {
     /// interactive timeline reconstruction even if project operations are later edited.
     pub operation_profiles: Vec<(RadialCutterProfile, bool)>,
     pub diagnostics: Vec<SimDiagnostic>,
+    /// Quantitative stock-vs-target error volume & surface deviation metrics (when 3D target model exists).
+    pub error_report: Option<StockErrorReport>,
 }
 
 impl SetupSimulationResult {
@@ -171,5 +174,33 @@ impl SetupSimulationResult {
 
     pub fn has_critical_errors(&self) -> bool {
         self.critical_error_count() > 0
+    }
+
+    /// Recomputes [`StockErrorReport`] for an arbitrary `tolerance_mm` band (`in_tolerance_surface_pct`)
+    /// without re-running the toolpath sweep.
+    pub fn compute_error_report_at_tolerance(&self, tolerance_mm: f64) -> Option<StockErrorReport> {
+        let per_op = self
+            .error_report
+            .as_ref()
+            .map_or_else(Vec::new, |r| r.per_operation.clone());
+        if let (Some(td_stock), Some(td_target)) = (
+            self.final_tridexel_stock.as_ref(),
+            self.target_tridexel_stock.as_ref(),
+        ) {
+            Some(crate::metrics::compute_tridexel_error_report(
+                td_stock,
+                td_target,
+                self.initial_stock_volume_mm3,
+                tolerance_mm,
+                per_op,
+            ))
+        } else {
+            crate::metrics::compute_heightmap_error_report(
+                &self.final_stock,
+                self.initial_stock_volume_mm3,
+                tolerance_mm,
+                per_op,
+            )
+        }
     }
 }

@@ -7,15 +7,15 @@ use chip_post::{
 use chip_project::{
     DiagnosticSeverity, SetupPostRequest, SetupSimRequest, ToolpathCache,
     generate_project_blocking, kinematics_for_post_profile, post_process_project_setup,
-    resolve_kinematics_for_key, simulate_project_setup, validate_project,
-    validate_project_with_machine,
+    resolve_kinematics_for_key, simulate_project_setup, simulate_project_setup_with_engine,
+    validate_project, validate_project_with_machine,
 };
 use chip_sim::{SetupSimulationResult, SimResolution, format_cycle_time_hms};
 use chip_tools::resolve_machine_definition_cli_override;
 
 use crate::commands::{
     BuildFileSummaryJson, BuildSummaryJson, ProjectSimReportJson, SetupSimReportJson,
-    load_primary_cad_for_project, load_project_or_chipz, parse_sim_resolution,
+    load_primary_cad_for_project, load_project_or_chipz, parse_sim_engine, parse_sim_resolution,
 };
 
 pub fn run_validate(
@@ -111,10 +111,14 @@ pub fn run_validate(
 
 pub fn run_simulate(
     project: PathBuf,
+    engine: String,
     resolution: String,
+    tolerance: f64,
     report: Option<PathBuf>,
 ) -> Result<ExitCode, Box<dyn std::error::Error>> {
+    let sim_engine = parse_sim_engine(&engine)?;
     let sim_res_enum = parse_sim_resolution(&resolution);
+    let tolerance_mm = tolerance.abs().max(1e-4);
     let loaded = load_project_or_chipz(&project)?;
     let mut proj_doc = loaded.proj;
     let proj_dir = loaded.dir.as_deref();
@@ -147,7 +151,8 @@ pub fn run_simulate(
     }
 
     println!(
-        "=== ChipCutter Heightmap Simulation: '{}' [{}] ===",
+        "=== ChipCutter {} Simulation: '{}' [{}] ===",
+        sim_engine.label(),
         proj_doc.project_name,
         sim_res_enum.label()
     );
@@ -157,22 +162,31 @@ pub fn run_simulate(
 
     for (s_idx, setup) in proj_doc.setups.iter().enumerate() {
         let kin = resolve_kinematics_for_key(&setup.post_profile, proj_dir);
-        let sim = simulate_project_setup(&SetupSimRequest {
-            project: &proj_doc,
-            setup_idx: s_idx,
-            cad_doc: &cad_doc,
-            cad_revision: 1,
-            cache: &cache,
-            kinematics: kin,
-            resolution: sim_res_enum,
-            cancel: None,
-        })?;
+        let mut sim = simulate_project_setup_with_engine(
+            &SetupSimRequest {
+                project: &proj_doc,
+                setup_idx: s_idx,
+                cad_doc: &cad_doc,
+                cad_revision: 1,
+                cache: &cache,
+                kinematics: kin,
+                resolution: sim_res_enum,
+                cancel: None,
+            },
+            sim_engine,
+        )?;
+        if (tolerance_mm - 0.05).abs() > 1e-6
+            && let Some(recomputed) = sim.compute_error_report_at_tolerance(tolerance_mm)
+        {
+            sim.error_report = Some(recomputed);
+        }
 
         let hms = format_cycle_time_hms(sim.timeline.total_time_sec);
         println!(
-            "Setup '{}' [{}]: Cycle = {} ({:.1}s cut, {:.1}s rapid, {:.1}s ATC) | Stock: {:.0} -> {:.0} mm^3 (removed {:.0} mm^3)",
+            "Setup '{}' [{}] ({}): Cycle = {} ({:.1}s cut, {:.1}s rapid, {:.1}s ATC) | Stock: {:.0} -> {:.0} mm^3 (removed {:.0} mm^3)",
             setup.name,
             setup.wcs_slot.short_code(),
+            sim.engine.short_slug(),
             hms,
             sim.timeline.total_cutting_time_sec,
             sim.timeline.total_rapid_time_sec,
@@ -181,6 +195,28 @@ pub fn run_simulate(
             sim.remaining_stock_volume_mm3,
             sim.removed_volume_mm3
         );
+        if let Some(err) = &sim.error_report {
+            println!(
+                "  Error Volume: total={:.2} mm^3 ({:.2}% of target) | excess={:.2} mm^3 | gouge={:.2} mm^3 | efficiency={:.1}%",
+                err.total_error_volume_mm3,
+                err.error_volume_pct_of_target,
+                err.excess_volume_mm3,
+                err.gouge_volume_mm3,
+                err.material_removal_efficiency_pct
+            );
+            println!(
+                "  Surface Deviation (±{:.3} mm): RMS={:.4} mm | MAE={:.4} mm | Bias={:+.4} mm | P95={:.4} mm | P99={:.4} mm | In-Tol={:.1}% | MaxExcess=+{:.4} mm | MaxGouge=-{:.4} mm",
+                err.tolerance_mm,
+                err.rms_error_mm,
+                err.mean_abs_error_mm,
+                err.mean_signed_error_mm,
+                err.p95_abs_error_mm,
+                err.p99_abs_error_mm,
+                err.in_tolerance_surface_pct,
+                err.max_excess_mm,
+                err.max_gouge_mm
+            );
+        }
         for d in &sim.diagnostics {
             println!(
                 "  {} [{}] {} (seg #{}, t={:.2}s): {}",
@@ -411,6 +447,7 @@ fn build_sim_report_json(
     SetupSimReportJson {
         setup_id: setup_id.to_string(),
         setup_name: setup_name.to_string(),
+        engine: sim.engine,
         resolution,
         total_time_sec: sim.timeline.total_time_sec,
         total_time_hms: hms,
@@ -423,5 +460,6 @@ fn build_sim_report_json(
         critical_error_count: crit,
         warning_count: warn,
         diagnostics: sim.diagnostics,
+        error_report: sim.error_report,
     }
 }

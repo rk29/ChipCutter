@@ -1196,3 +1196,130 @@ fn cli_transform_model_and_import_mesh_transform_flags_work_end_to_end() {
         "identity transform should be omitted from TOML:\n{raw_toml}"
     );
 }
+
+#[test]
+fn cli_simulate_heightmap_and_tridexel_emit_error_volume_and_rms_reports() {
+    let tmp = TempTestDir::new("sim_tridexel_metrics_m39");
+    let step_path = tmp.path().join("multi_feature.step");
+    let proj_path = tmp.path().join("multi_feature.chip.toml");
+
+    let gen_out = Command::new(cli_bin())
+        .args([
+            "generate-sample-step",
+            step_path.to_str().unwrap(),
+            "--multi-feature",
+            "--project-out",
+            proj_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("generate multi-feature project");
+    assert!(
+        gen_out.status.success(),
+        "generate-sample-step failed:\n{}",
+        String::from_utf8_lossy(&gen_out.stderr)
+    );
+
+    // 1. Heightmap simulation JSON report with quantitative error metrics
+    let hm_report_path = tmp.path().join("sim_heightmap.json");
+    let hm_out = Command::new(cli_bin())
+        .args([
+            "simulate",
+            proj_path.to_str().unwrap(),
+            "--engine",
+            "heightmap",
+            "--resolution",
+            "standard",
+            "--tolerance",
+            "0.05",
+            "--report",
+            hm_report_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run simulate --engine heightmap");
+    assert!(
+        hm_out.status.success(),
+        "heightmap simulate failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&hm_out.stdout),
+        String::from_utf8_lossy(&hm_out.stderr)
+    );
+    let hm_stdout = String::from_utf8_lossy(&hm_out.stdout);
+    assert!(hm_stdout.contains("Error Volume:"));
+    assert!(hm_stdout.contains("RMS="));
+
+    let hm_json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&hm_report_path).unwrap()).unwrap();
+    assert_eq!(hm_json["passed"], true);
+    let hm_setup = &hm_json["setups"][0];
+    assert_eq!(hm_setup["engine"], "heightmap");
+    let hm_err = &hm_setup["error_report"];
+    assert!(
+        hm_err.is_object(),
+        "heightmap error_report missing: {hm_setup}"
+    );
+    assert!(hm_err["total_error_volume_mm3"].as_f64().unwrap() >= 0.0);
+    assert!(hm_err["rms_error_mm"].as_f64().unwrap() >= 0.0);
+    assert!(
+        hm_err["per_operation"].as_array().unwrap().len() >= 2,
+        "expected per_operation progression"
+    );
+
+    // 2. Tri-Dexel 3D volumetric simulation JSON report with custom tolerance
+    let td_report_path = tmp.path().join("sim_tridexel.json");
+    let td_out = Command::new(cli_bin())
+        .args([
+            "simulate",
+            proj_path.to_str().unwrap(),
+            "--engine",
+            "tri-dexel",
+            "--resolution",
+            "standard",
+            "--tolerance",
+            "0.10",
+            "--report",
+            td_report_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run simulate --engine tri-dexel");
+    assert!(
+        td_out.status.success(),
+        "tri-dexel simulate failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&td_out.stdout),
+        String::from_utf8_lossy(&td_out.stderr)
+    );
+    let td_stdout = String::from_utf8_lossy(&td_out.stdout);
+    assert!(td_stdout.contains("Tri-Dexel"));
+    assert!(td_stdout.contains("Error Volume:"));
+    assert!(td_stdout.contains("RMS="));
+
+    let td_json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&td_report_path).unwrap()).unwrap();
+    assert_eq!(td_json["passed"], true);
+    let td_setup = &td_json["setups"][0];
+    assert_eq!(td_setup["engine"], "tri_dexel");
+    let td_err = &td_setup["error_report"];
+    assert!(
+        td_err.is_object(),
+        "tri-dexel error_report missing: {td_setup}"
+    );
+    assert!((td_err["tolerance_mm"].as_f64().unwrap() - 0.10).abs() < 1e-6);
+    assert!(td_err["target_volume_mm3"].as_f64().unwrap() > 1000.0);
+    assert!(td_err["total_error_volume_mm3"].as_f64().unwrap() >= 0.0);
+    assert!(td_err["rms_error_mm"].as_f64().unwrap() >= 0.0);
+    assert!(td_err["in_tolerance_surface_pct"].as_f64().unwrap() >= 0.0);
+
+    let per_op = td_err["per_operation"].as_array().unwrap();
+    assert!(
+        per_op.len() >= 2,
+        "expected multi-op progression: {per_op:?}"
+    );
+    let first_err = per_op.first().unwrap()["total_error_volume_mm3"]
+        .as_f64()
+        .unwrap();
+    let last_err = per_op.last().unwrap()["total_error_volume_mm3"]
+        .as_f64()
+        .unwrap();
+    assert!(
+        last_err < first_err,
+        "subsequent operations should reduce total error volume: first={first_err:.2}, last={last_err:.2}"
+    );
+}

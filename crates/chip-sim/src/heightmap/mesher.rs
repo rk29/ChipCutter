@@ -1,4 +1,7 @@
-use crate::cutter_profile::SimColoredVertex;
+use crate::{
+    cutter_profile::SimColoredVertex,
+    metrics::{SimStockColorMode, deviation_to_heatmap_rgba},
+};
 
 use super::{HeightfieldStock, SimStockMesh, UNCUT_OP_IDX};
 
@@ -36,6 +39,21 @@ fn stock_cell_color(op_idx: u16, color_by_op: bool, is_side_wall: bool) -> [f32;
 /// Triangulates a [`HeightfieldStock`] into a crisp-walled 3D solid mesh with greedy X-row quad
 /// merging on flat regions, sharp vertical step risers on pocket/boss/tab walls, and outer side walls.
 pub fn tessellate_stock_mesh(stock: &HeightfieldStock, color_by_op: bool) -> SimStockMesh {
+    let mode = if color_by_op {
+        SimStockColorMode::ByOperation
+    } else {
+        SimStockColorMode::Metallic
+    };
+    tessellate_stock_mesh_colored(stock, mode)
+}
+
+/// Triangulates a [`HeightfieldStock`] with selectable [`SimStockColorMode`] (`Metallic`,
+/// `ByOperation`, or `ErrorHeatmap` comparing `z_stock` against `z_target`).
+pub fn tessellate_stock_mesh_colored(
+    stock: &HeightfieldStock,
+    color_mode: SimStockColorMode,
+) -> SimStockMesh {
+    let color_by_op = matches!(color_mode, SimStockColorMode::ByOperation);
     const MAX_VISUAL_DIM: usize = 512;
     let stride = (stock.nx.max(stock.ny)).div_ceil(MAX_VISUAL_DIM).max(1);
     let vx = stock.nx / stride;
@@ -52,6 +70,7 @@ pub fn tessellate_stock_mesh(stock: &HeightfieldStock, color_by_op: bool) -> Sim
     let mut v_active = vec![false; vtotal];
     let mut v_ztop = vec![f32::NEG_INFINITY; vtotal];
     let mut v_zbot = vec![f32::NEG_INFINITY; vtotal];
+    let mut v_ztgt = vec![f32::NEG_INFINITY; vtotal];
     let mut v_op = vec![UNCUT_OP_IDX; vtotal];
 
     for vj in 0..vy {
@@ -66,10 +85,32 @@ pub fn tessellate_stock_mesh(stock: &HeightfieldStock, color_by_op: bool) -> Sim
                 v_active[vidx] = true;
                 v_ztop[vidx] = zt;
                 v_zbot[vidx] = zb;
+                v_ztgt[vidx] = stock.z_target[sidx];
                 v_op[vidx] = stock.last_op_idx[sidx];
             }
         }
     }
+
+    let cell_top_color = |vidx: usize, is_side: bool| -> [f32; 4] {
+        match color_mode {
+            SimStockColorMode::Metallic => stock_cell_color(v_op[vidx], false, is_side),
+            SimStockColorMode::ByOperation => stock_cell_color(v_op[vidx], true, is_side),
+            SimStockColorMode::ErrorHeatmap {
+                tolerance_mm,
+                max_scale_mm,
+            } => {
+                let zt = v_ztgt[vidx];
+                if zt.is_finite() && zt > v_zbot[vidx] + 1e-5 {
+                    let dev = f64::from(v_ztop[vidx]) - f64::from(zt);
+                    deviation_to_heatmap_rgba(dev, tolerance_mm, max_scale_mm)
+                } else {
+                    // Outside target silhouette -> uncut excess stock
+                    deviation_to_heatmap_rgba(max_scale_mm, tolerance_mm, max_scale_mm)
+                }
+            }
+        }
+    };
+    let is_heatmap = matches!(color_mode, SimStockColorMode::ErrorHeatmap { .. });
 
     let mut mesh = SimStockMesh {
         vertices: Vec::with_capacity(vtotal / 2),
@@ -160,15 +201,22 @@ pub fn tessellate_stock_mesh(stock: &HeightfieldStock, color_by_op: bool) -> Sim
             let dz_dy = (zu - zd) / (2.0 * vdy as f32);
             let is_flat = dz_dx.abs() < 1e-3 && dz_dy.abs() < 1e-3;
 
+            let col = cell_top_color(idx, false);
             let mut run_end = vi + 1;
             if is_flat {
                 while run_end < vx {
                     let r_idx = row + run_end;
-                    if !v_active[r_idx]
-                        || (v_ztop[r_idx] - z0).abs() > 2e-4
-                        || (color_by_op && v_op[r_idx] != op0)
-                        || (!color_by_op && (v_op[r_idx] == UNCUT_OP_IDX) != (op0 == UNCUT_OP_IDX))
-                    {
+                    let same_col = if is_heatmap {
+                        let rc = cell_top_color(r_idx, false);
+                        (rc[0] - col[0]).abs() < 0.02
+                            && (rc[1] - col[1]).abs() < 0.02
+                            && (rc[2] - col[2]).abs() < 0.02
+                    } else if color_by_op {
+                        v_op[r_idx] == op0
+                    } else {
+                        (v_op[r_idx] == UNCUT_OP_IDX) == (op0 == UNCUT_OP_IDX)
+                    };
+                    if !v_active[r_idx] || (v_ztop[r_idx] - z0).abs() > 2e-4 || !same_col {
                         break;
                     }
                     run_end += 1;
@@ -184,7 +232,6 @@ pub fn tessellate_stock_mesh(stock: &HeightfieldStock, color_by_op: bool) -> Sim
 
             let x0 = (stock.origin_x_mm + (vi as f64) * vdx) as f32;
             let x1 = (stock.origin_x_mm + (run_end as f64) * vdx) as f32;
-            let col = stock_cell_color(op0, color_by_op, false);
             push_quad(
                 &mut mesh,
                 [x0, y0, z0],
@@ -212,20 +259,20 @@ pub fn tessellate_stock_mesh(stock: &HeightfieldStock, color_by_op: bool) -> Sim
                 Some((
                     v_zbot[row + (vi - 1)],
                     v_ztop[row + (vi - 1)],
-                    v_op[row + (vi - 1)],
+                    row + (vi - 1),
                 ))
             } else {
                 None
             };
             let right = if vi < vx && v_active[row + vi] {
-                Some((v_zbot[row + vi], v_ztop[row + vi], v_op[row + vi]))
+                Some((v_zbot[row + vi], v_ztop[row + vi], row + vi))
             } else {
                 None
             };
 
             match (left, right) {
-                (Some((lb, lt, lop)), None) => {
-                    let col = stock_cell_color(lop, color_by_op, true);
+                (Some((lb, lt, lidx)), None) => {
+                    let col = cell_top_color(lidx, true);
                     push_quad(
                         &mut mesh,
                         [x, y0, lb],
@@ -236,8 +283,8 @@ pub fn tessellate_stock_mesh(stock: &HeightfieldStock, color_by_op: bool) -> Sim
                         col,
                     );
                 }
-                (None, Some((rb, rt, rop))) => {
-                    let col = stock_cell_color(rop, color_by_op, true);
+                (None, Some((rb, rt, ridx))) => {
+                    let col = cell_top_color(ridx, true);
                     push_quad(
                         &mut mesh,
                         [x, y1, rb],
@@ -248,10 +295,10 @@ pub fn tessellate_stock_mesh(stock: &HeightfieldStock, color_by_op: bool) -> Sim
                         col,
                     );
                 }
-                (Some((lb, lt, lop)), Some((rb, rt, rop))) => {
+                (Some((lb, lt, lidx)), Some((rb, rt, ridx))) => {
                     if lt > rt + 2e-4 {
                         let z_lo = rt.max(lb);
-                        let col = stock_cell_color(rop, color_by_op, false);
+                        let col = cell_top_color(ridx, false);
                         push_quad(
                             &mut mesh,
                             [x, y0, z_lo],
@@ -263,7 +310,7 @@ pub fn tessellate_stock_mesh(stock: &HeightfieldStock, color_by_op: bool) -> Sim
                         );
                     } else if rt > lt + 2e-4 {
                         let z_lo = lt.max(rb);
-                        let col = stock_cell_color(lop, color_by_op, false);
+                        let col = cell_top_color(lidx, false);
                         push_quad(
                             &mut mesh,
                             [x, y1, z_lo],
@@ -288,27 +335,21 @@ pub fn tessellate_stock_mesh(stock: &HeightfieldStock, color_by_op: bool) -> Sim
             let x1 = (stock.origin_x_mm + ((vi + 1) as f64) * vdx) as f32;
 
             let front = if vj > 0 && v_active[(vj - 1) * vx + vi] {
-                Some((
-                    v_zbot[(vj - 1) * vx + vi],
-                    v_ztop[(vj - 1) * vx + vi],
-                    v_op[(vj - 1) * vx + vi],
-                ))
+                let idx = (vj - 1) * vx + vi;
+                Some((v_zbot[idx], v_ztop[idx], idx))
             } else {
                 None
             };
             let back = if vj < vy && v_active[vj * vx + vi] {
-                Some((
-                    v_zbot[vj * vx + vi],
-                    v_ztop[vj * vx + vi],
-                    v_op[vj * vx + vi],
-                ))
+                let idx = vj * vx + vi;
+                Some((v_zbot[idx], v_ztop[idx], idx))
             } else {
                 None
             };
 
             match (front, back) {
-                (Some((fb, ft, fop)), None) => {
-                    let col = stock_cell_color(fop, color_by_op, true);
+                (Some((fb, ft, fidx)), None) => {
+                    let col = cell_top_color(fidx, true);
                     push_quad(
                         &mut mesh,
                         [x1, y, fb],
@@ -319,8 +360,8 @@ pub fn tessellate_stock_mesh(stock: &HeightfieldStock, color_by_op: bool) -> Sim
                         col,
                     );
                 }
-                (None, Some((bb, bt, bop))) => {
-                    let col = stock_cell_color(bop, color_by_op, true);
+                (None, Some((bb, bt, bidx))) => {
+                    let col = cell_top_color(bidx, true);
                     push_quad(
                         &mut mesh,
                         [x0, y, bb],
@@ -331,10 +372,10 @@ pub fn tessellate_stock_mesh(stock: &HeightfieldStock, color_by_op: bool) -> Sim
                         col,
                     );
                 }
-                (Some((fb, ft, _fop)), Some((bb, bt, bop))) => {
+                (Some((fb, ft, fidx)), Some((bb, bt, bidx))) => {
                     if ft > bt + 2e-4 {
                         let z_lo = bt.max(fb);
-                        let col = stock_cell_color(bop, color_by_op, false);
+                        let col = cell_top_color(bidx, false);
                         push_quad(
                             &mut mesh,
                             [x1, y, z_lo],
@@ -346,8 +387,7 @@ pub fn tessellate_stock_mesh(stock: &HeightfieldStock, color_by_op: bool) -> Sim
                         );
                     } else if bt > ft + 2e-4 {
                         let z_lo = ft.max(bb);
-                        let f_op = v_op[(vj - 1) * vx + vi];
-                        let col = stock_cell_color(f_op, color_by_op, false);
+                        let col = cell_top_color(fidx, false);
                         push_quad(
                             &mut mesh,
                             [x0, y, z_lo],

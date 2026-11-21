@@ -802,6 +802,7 @@ pub fn run_cylindrical_setup_simulation(
         tridexel_checkpoints: Vec::new(),
         operation_profiles: profiles,
         diagnostics,
+        error_report: None,
     })
 }
 

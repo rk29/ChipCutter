@@ -4,6 +4,7 @@
 pub mod cutter_profile;
 pub mod cylindrical;
 pub mod heightmap;
+pub mod metrics;
 pub mod timeline;
 pub mod tridexel;
 pub mod verifier;
@@ -19,6 +20,11 @@ pub use heightmap::{
     HeightfieldStock, OPERATION_STOCK_PALETTE, SetupSimulationInput, SetupSimulationResult,
     SimError, SimResolution, SimStockMesh, StockCheckpoint, StockPlaybackCursor, UNCUT_OP_IDX,
     run_setup_simulation, run_setup_simulation_with_engine, tessellate_stock_mesh,
+    tessellate_stock_mesh_colored,
+};
+pub use metrics::{
+    OperationErrorSnapshot, SimStockColorMode, StockErrorReport, compute_heightmap_error_report,
+    compute_tridexel_error_report, deviation_to_heatmap_rgba,
 };
 pub use timeline::{
     MachineKinematicsConfig, MotionSpan, OperationTimelineSummary, ScrubSnapshot,
@@ -27,6 +33,7 @@ pub use timeline::{
 pub use tridexel::{
     DexelPlane, DexelSpan, SimEngineKind, TriDexelCheckpoint, TriDexelStock,
     run_tridexel_setup_simulation, tessellate_tridexel_stock_mesh,
+    tessellate_tridexel_stock_mesh_colored,
 };
 pub use verifier::{SimDiagnostic, SimIssueKind, SimSeverity, SimVerificationConfig};
 

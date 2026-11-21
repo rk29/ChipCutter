@@ -3,6 +3,9 @@ use chip_math::DVec3;
 use crate::{
     cutter_profile::SimColoredVertex,
     heightmap::{OPERATION_STOCK_PALETTE, SimStockMesh, UNCUT_OP_IDX},
+    metrics::{
+        SimStockColorMode, deviation_to_heatmap_rgba, signed_deviation_at_machined_endpoint,
+    },
 };
 
 use super::grid::{DexelSpan, TriDexelStock};
@@ -59,6 +62,23 @@ fn nearest_ray_endpoint(
 /// - Curved ball-nose, chamfer, and undercut surfaces interpolate smoothly from sub-voxel dexel
 ///   endpoints with exact geometric face normals.
 pub fn tessellate_tridexel_stock_mesh(stock: &TriDexelStock, color_by_op: bool) -> SimStockMesh {
+    let mode = if color_by_op {
+        SimStockColorMode::ByOperation
+    } else {
+        SimStockColorMode::Metallic
+    };
+    tessellate_tridexel_stock_mesh_colored(stock, None, mode)
+}
+
+/// Extracts a watertight, sharp-feature-preserving 3D [`SimStockMesh`] from a [`TriDexelStock`]
+/// with selectable [`SimStockColorMode`] (`Metallic`, `ByOperation`, or signed `ErrorHeatmap`
+/// comparing against `target_stock`).
+pub fn tessellate_tridexel_stock_mesh_colored(
+    stock: &TriDexelStock,
+    target_stock: Option<&TriDexelStock>,
+    color_mode: SimStockColorMode,
+) -> SimStockMesh {
+    let color_by_op = matches!(color_mode, SimStockColorMode::ByOperation);
     let nx = stock.nx;
     let ny = stock.ny;
     let nz = stock.nz;
@@ -308,9 +328,25 @@ pub fn tessellate_tridexel_stock_mesh(stock: &TriDexelStock, color_by_op: bool) 
                     continue;
                 }
                 let want_min = !lo && hi;
-                let op = nearest_ray_endpoint(stock.z_rays.ray(i, j), base_z, want_min, max_dz)
-                    .map_or(UNCUT_OP_IDX, |(_, o)| o);
-                let col = op_color(op, color_by_op, false);
+                let hit_z = nearest_ray_endpoint(stock.z_rays.ray(i, j), base_z, want_min, max_dz);
+                let (coord_z, op) = hit_z.unwrap_or((base_z, UNCUT_OP_IDX));
+                let col = match (color_mode, target_stock) {
+                    (
+                        SimStockColorMode::ErrorHeatmap {
+                            tolerance_mm,
+                            max_scale_mm,
+                        },
+                        Some(tgt),
+                    ) => {
+                        let dev = signed_deviation_at_machined_endpoint(
+                            tgt.z_rays.ray(i, j),
+                            coord_z,
+                            want_min,
+                        );
+                        deviation_to_heatmap_rgba(dev, tolerance_mm, max_scale_mm)
+                    }
+                    _ => op_color(op, color_by_op, false),
+                };
                 let a = dual_pos[dual_idx(i, j, dk)];
                 let b = dual_pos[dual_idx(i + 1, j, dk)];
                 let c = dual_pos[dual_idx(i + 1, j + 1, dk)];
@@ -335,9 +371,25 @@ pub fn tessellate_tridexel_stock_mesh(stock: &TriDexelStock, color_by_op: bool) 
                     continue;
                 }
                 let want_min = !lo && hi;
-                let op = nearest_ray_endpoint(stock.x_rays.ray(j, k), base_x, want_min, max_dx)
-                    .map_or(UNCUT_OP_IDX, |(_, o)| o);
-                let col = op_color(op, color_by_op, true);
+                let hit_x = nearest_ray_endpoint(stock.x_rays.ray(j, k), base_x, want_min, max_dx);
+                let (coord_x, op) = hit_x.unwrap_or((base_x, UNCUT_OP_IDX));
+                let col = match (color_mode, target_stock) {
+                    (
+                        SimStockColorMode::ErrorHeatmap {
+                            tolerance_mm,
+                            max_scale_mm,
+                        },
+                        Some(tgt),
+                    ) => {
+                        let dev = signed_deviation_at_machined_endpoint(
+                            tgt.x_rays.ray(j, k),
+                            coord_x,
+                            want_min,
+                        );
+                        deviation_to_heatmap_rgba(dev, tolerance_mm, max_scale_mm)
+                    }
+                    _ => op_color(op, color_by_op, true),
+                };
                 let a = dual_pos[dual_idx(di, j, k)];
                 let b = dual_pos[dual_idx(di, j + 1, k)];
                 let c = dual_pos[dual_idx(di, j + 1, k + 1)];
@@ -362,9 +414,25 @@ pub fn tessellate_tridexel_stock_mesh(stock: &TriDexelStock, color_by_op: bool) 
                     continue;
                 }
                 let want_min = !lo && hi;
-                let op = nearest_ray_endpoint(stock.y_rays.ray(i, k), base_y, want_min, max_dy)
-                    .map_or(UNCUT_OP_IDX, |(_, o)| o);
-                let col = op_color(op, color_by_op, true);
+                let hit_y = nearest_ray_endpoint(stock.y_rays.ray(i, k), base_y, want_min, max_dy);
+                let (coord_y, op) = hit_y.unwrap_or((base_y, UNCUT_OP_IDX));
+                let col = match (color_mode, target_stock) {
+                    (
+                        SimStockColorMode::ErrorHeatmap {
+                            tolerance_mm,
+                            max_scale_mm,
+                        },
+                        Some(tgt),
+                    ) => {
+                        let dev = signed_deviation_at_machined_endpoint(
+                            tgt.y_rays.ray(i, k),
+                            coord_y,
+                            want_min,
+                        );
+                        deviation_to_heatmap_rgba(dev, tolerance_mm, max_scale_mm)
+                    }
+                    _ => op_color(op, color_by_op, true),
+                };
                 let a = dual_pos[dual_idx(i, dj, k)];
                 let b = dual_pos[dual_idx(i, dj, k + 1)];
                 let c = dual_pos[dual_idx(i + 1, dj, k + 1)];

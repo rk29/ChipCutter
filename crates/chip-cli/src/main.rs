@@ -210,14 +210,20 @@ enum Commands {
         #[arg(long)]
         machine: Option<String>,
     },
-    /// Run headless 2.5D Z-dexel heightmap stock removal & 5-rule crash/gouge verification (`06-simulation.md`).
+    /// Run headless CAM stock removal (Heightmap or Tri-Dexel) & 5-rule crash/gouge + error-volume verification.
     Simulate {
         /// Path to `.chip.toml` project file (or `.chipz` bundle).
         project: PathBuf,
-        /// Heightmap resolution (`standard` = 512, `fine` = 1024, `ultra` = 2048).
+        /// Simulation engine (`heightmap` fast 2.5D Z-dexel, or `tri-dexel` true 3D volumetric).
+        #[arg(long, default_value = "heightmap")]
+        engine: String,
+        /// Simulation resolution (`standard`, `fine`, `ultra`).
         #[arg(long, default_value = "standard")]
         resolution: String,
-        /// Optional path to write structured JSON simulation report.
+        /// Surface deviation pass tolerance band in millimeters for error metrics (`±tolerance`).
+        #[arg(long, default_value_t = 0.05)]
+        tolerance: f64,
+        /// Optional path to write structured JSON simulation & error-volume report.
         #[arg(long)]
         report: Option<PathBuf>,
     },
@@ -485,9 +491,11 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         } => run_validate(project, generate, machine),
         Commands::Simulate {
             project,
+            engine,
             resolution,
+            tolerance,
             report,
-        } => run_simulate(project, resolution, report),
+        } => run_simulate(project, engine, resolution, tolerance, report),
         Commands::Build {
             project,
             output_dir,
