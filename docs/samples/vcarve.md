@@ -5,7 +5,7 @@
 **Category:** V-Carve & CAM Typography · **Setups:** 2 (`G54` Female Sign Plaque + `G55` Male V-Inlay Plug) · **Operations:** 4
 
 ```bash
-cargo run --release -p chip-gui -- --sample vcarve
+chip-gui --sample vcarve
 ```
 
 ![V-Carve Sign & Mated Male V-Inlay — Finished Simulation](../images/samples/vcarve/hero.png)

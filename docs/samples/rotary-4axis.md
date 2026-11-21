@@ -5,7 +5,7 @@
 **Category:** 4th-Axis Rotary (`A`-Axis) · **Setups:** 1 (`G54` Simultaneous 4-Axis) · **Operations:** 2
 
 ```bash
-cargo run --release -p chip-gui -- --sample rotary-4axis
+chip-gui --sample rotary-4axis
 ```
 
 ![Simultaneous 4-Axis Helical Flute — Finished Simulation](../images/samples/rotary-4axis/hero.png)

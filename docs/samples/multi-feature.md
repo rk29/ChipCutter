@@ -5,7 +5,7 @@
 **Category:** 3D STEP Solid · **Setups:** 1 (`G54`) · **Operations:** 2
 
 ```bash
-cargo run --release -p chip-gui -- --sample multi-feature
+chip-gui --sample multi-feature
 ```
 
 ![Prismatic Multi-Feature Bracket — Finished Simulation](../images/samples/multi-feature/hero.png)

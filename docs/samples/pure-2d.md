@@ -5,7 +5,7 @@
 **Category:** Pure-2D & DXF · **Setups:** 1 (`G54`) · **Operations:** 4
 
 ```bash
-cargo run --release -p chip-gui -- --sample pure-2d
+chip-gui --sample pure-2d
 ```
 
 ![Pure-2D CNC Router Front Panel — Finished Simulation](../images/samples/pure-2d/hero.png)

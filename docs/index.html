@@ -59,13 +59,13 @@ layout: null
         <div class="section-header">
           <div>
             <h2>Key Capabilities</h2>
-            <p class="section-sub">Zero cloud lock-in, zero copyleft dependencies, native on Linux, Windows, and macOS.</p>
+            <p class="section-sub">Offline-first, open-source, and native on Linux, Windows, and macOS.</p>
           </div>
         </div>
         <div class="grid-3">
           <div class="card">
             <h3>STEP B-Rep &amp; Associative Reload</h3>
-            <p>Imports ISO 10303 STEP solids with analytic plane, cylinder, cone, and arc classification, BVH 3D picking, non-destructive model transforms, and fuzzy <code>Ctrl+R</code> revision re-matching.</p>
+            <p>Imports ISO 10303 STEP solids with analytic plane, cylinder, cone, and arc classification, interactive 3D picking, non-destructive model transforms, and associative <code>Ctrl+R</code> revision re-matching.</p>
           </div>
           <div class="card">
             <h3>2.5D Milling &amp; Adaptive Rest</h3>
@@ -73,7 +73,7 @@ layout: null
           </div>
           <div class="card">
             <h3>3-Axis Mesh Surfacing</h3>
-            <p>Exact <code>f64</code> Drop-Cutter &amp; Push-Cutter over STL, OBJ, and 3MF meshes for 3D Adaptive Roughing, 3D Waterline, Parallel Raster, Constant-Scallop, and Pencil Fillet Cleanup.</p>
+            <p>High-precision 3-axis drop-cutter and push-cutter machining over STL, OBJ, and 3MF meshes for 3D Adaptive Roughing, 3D Waterline, Parallel Raster, Constant-Scallop, and Pencil Fillet Cleanup.</p>
           </div>
           <div class="card">
             <h3>4th-Axis Rotary (A / B / C)</h3>
@@ -177,19 +177,15 @@ chipcutter.exe --version</code></pre>
           </div>
           <div class="card install-card">
             <h3>macOS (Universal2)</h3>
-            <p>Native Apple Silicon (<code>arm64</code>) + Intel (<code>x86_64</code>) <code>.dmg</code> app bundle.</p>
+            <p>Native Apple Silicon &amp; Intel <code>.dmg</code> app bundle (macOS 12+).</p>
             <pre><code># Drag ChipCutter.app into Applications
 # Optional CLI symlink:
 ln -s /Applications/ChipCutter.app/Contents/MacOS/chipcutter /usr/local/bin/chipcutter</code></pre>
           </div>
-          <div class="card install-card">
-            <h3>Build from Source</h3>
-            <p>Requires Rust 1.85+ (Edition 2024). Launch any built-in sample directly:</p>
-            <pre><code>git clone https://github.com/rk29/ChipCutter.git
-cd ChipCutter
-cargo run --release -p chip-gui -- --sample rotary-4axis</code></pre>
-          </div>
         </div>
+        <p class="section-sub" style="margin-top: 1rem;">
+          Looking to compile from source or contribute? See <a href="https://github.com/rk29/ChipCutter/blob/main/DEVELOPMENT.md" target="_blank" rel="noopener">DEVELOPMENT.md</a> on GitHub.
+        </p>
 
         <div class="disclaimer">
           <strong>Safety &amp; Alpha Notice:</strong> ChipCutter is alpha-quality personal open-source software. Always verify <code>0 Crashes</code> in 3D simulation, inspect generated G-code, confirm physical <code>G54</code> zero and workholding clearances, and perform an air-cut before machining.

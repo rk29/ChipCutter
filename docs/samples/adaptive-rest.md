@@ -5,7 +5,7 @@
 **Category:** 3D STEP Solid · **Setups:** 1 (`G54`) · **Operations:** 5
 
 ```bash
-cargo run --release -p chip-gui -- --sample adaptive-rest
+chip-gui --sample adaptive-rest
 ```
 
 ![2D Adaptive Clearing + Rest Machining — Finished Simulation](../images/samples/adaptive-rest/hero.png)

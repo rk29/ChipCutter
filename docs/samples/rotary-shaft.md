@@ -5,7 +5,7 @@
 **Category:** 4th-Axis Rotary (`A`-Axis) · **Setups:** 1 (`G54` Rotary) · **Operations:** 5
 
 ```bash
-cargo run --release -p chip-gui -- --sample rotary-shaft
+chip-gui --sample rotary-shaft
 ```
 
 ![Rotary Indexed Shaft — Finished Simulation](../images/samples/rotary-shaft/hero.png)

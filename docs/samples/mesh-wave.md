@@ -5,7 +5,7 @@
 **Category:** 3D Mesh (`OBJ`) · **Setups:** 1 (`G54`) · **Operations:** 3
 
 ```bash
-cargo run --release -p chip-gui -- --sample mesh-wave
+chip-gui --sample mesh-wave
 ```
 
 ![Relief Wave OBJ — Finished Simulation](../images/samples/mesh-wave/hero.png)
@@ -15,7 +15,7 @@ cargo run --release -p chip-gui -- --sample mesh-wave
 The **Relief Wave** (`80 × 60 × 15 mm` sculpted sinusoidal OBJ relief) showcases ChipCutter's 3-axis surface finishing strategies on organic freeform relief geometry:
 
 - **3D Adaptive Roughing:** Clears bulk stock above the undulating wave crests and troughs.
-- **3D Parallel Raster Finish (`45°`):** Sweeps ball-endmill scanlines at `45°` across the relief using exact `f64` drop-cutter contact elevation.
+- **3D Parallel Raster Finish (`45°`):** Sweeps ball-endmill scanlines at `45°` across the relief using exact drop-cutter contact elevation.
 - **3D Constant-Scallop Finish:** Uses Sethian Fast-Marching Eikonal iso-contours to maintain uniform 3D scallop/cusp height across both shallow crests and steeper troughs.
 
 Related step-by-step guide: [Tutorial 09 (3D Surface Finishing: Parallel Raster, Constant-Scallop, & Pencil Cleanup)](../tutorials/09-3d-surface-finishing.md).

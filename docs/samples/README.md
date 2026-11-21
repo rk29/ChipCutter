@@ -5,7 +5,7 @@ Browse every built-in sample project included in **ChipCutter**. Click any thumb
 > [!TIP]
 > You can launch any sample directly from the desktop **Welcome / Sample Projects Gallery** (`File -> Sample Projects Gallery...`) or from your terminal with:
 > ```bash
-> cargo run --release -p chip-gui -- --sample <slug>
+> chip-gui --sample <slug>
 > ```
 
 ---

@@ -5,7 +5,7 @@
 **Category:** 3D STEP Solid · **Setups:** 1 (`G54`) · **Operations:** 8
 
 ```bash
-cargo run --release -p chip-gui -- --sample cam-torture
+chip-gui --sample cam-torture
 ```
 
 ![CAM Torture Block — Finished Simulation](../images/samples/cam-torture/hero.png)

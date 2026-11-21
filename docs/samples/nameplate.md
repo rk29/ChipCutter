@@ -5,7 +5,7 @@
 **Category:** V-Carve & CAM Typography · **Setups:** 1 (`G54`) · **Operations:** 5
 
 ```bash
-cargo run --release -p chip-gui -- --sample nameplate
+chip-gui --sample nameplate
 ```
 
 ![Engraved Nameplate — Finished Simulation](../images/samples/nameplate/hero.png)

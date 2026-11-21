@@ -5,7 +5,7 @@
 **Category:** 3D STEP Solid · **Setups:** 1 (`G54`) · **Operations:** Sandbox (0 pre-seeded ops)
 
 ```bash
-cargo run --release -p chip-gui -- --sample tilted-bracket
+chip-gui --sample tilted-bracket
 ```
 
 ![30°-Tilted WCS Alignment Bracket](../images/samples/tilted-bracket/hero.png)

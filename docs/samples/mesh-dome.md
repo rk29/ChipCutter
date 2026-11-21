@@ -5,14 +5,14 @@
 **Category:** 3D Mesh (`STL`) · **Setups:** 1 (`G54`) · **Operations:** 3
 
 ```bash
-cargo run --release -p chip-gui -- --sample mesh-dome
+chip-gui --sample mesh-dome
 ```
 
 ![Sculpted Dome STL — Finished Simulation](../images/samples/mesh-dome/hero.png)
 
 ## Overview & What It Demonstrates
 
-The **Sculpted Dome** demonstrates ChipCutter's pure-Rust `MeshBvh` exact `f64` 3-axis surface milling pipeline on a watertight STL triangle mesh (`R25 mm` hemisphere seated on a `70 × 70 × 8 mm` pedestal):
+The **Sculpted Dome** demonstrates ChipCutter's 3-axis surface milling pipeline on a watertight STL triangle mesh (`R25 mm` hemisphere seated on a `70 × 70 × 8 mm` pedestal):
 
 - **3D Adaptive Roughing:** Removes bulk raw stock around the hemisphere using constant-engagement trochoidal peels with coarse stepdowns and intermediate fine step-ups to eliminate steep staircase terraces.
 - **3D Waterline Semi-Finish:** Traces constant-Z contour levels around the dome using adaptive Z-stepdowns on shallower slopes.

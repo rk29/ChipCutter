@@ -5,7 +5,7 @@
 **Category:** 4th-Axis Rotary (`A`-Axis) · **Setups:** 1 (`G54` Rotary) · **Operations:** 2
 
 ```bash
-cargo run --release -p chip-gui -- --sample rotary-wrap
+chip-gui --sample rotary-wrap
 ```
 
 ![Wrapped Rotary Engraving — Finished Simulation](../images/samples/rotary-wrap/hero.png)

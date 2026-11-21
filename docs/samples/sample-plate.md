@@ -5,7 +5,7 @@
 **Category:** 3D STEP Solid · **Setups:** 1 (`G54`) · **Operations:** Sandbox (0 pre-seeded ops)
 
 ```bash
-cargo run --release -p chip-gui -- --sample sample-plate
+chip-gui --sample sample-plate
 ```
 
 ![CNC Mounting Plate — Blank STEP Sandbox](../images/samples/sample-plate/hero.png)

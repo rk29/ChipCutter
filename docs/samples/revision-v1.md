@@ -5,7 +5,7 @@
 **Category:** 3D STEP Solid · **Setups:** 1 (`G54`) · **Operations:** 6
 
 ```bash
-cargo run --release -p chip-gui -- --sample revision-v1
+chip-gui --sample revision-v1
 ```
 
 ![Associative CAD Revision v1 — Finished Simulation](../images/samples/revision-v1/hero.png)
