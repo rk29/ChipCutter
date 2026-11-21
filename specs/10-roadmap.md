@@ -277,7 +277,7 @@ Phase 11 introduces a true 3D **Tri-Dexel volumetric simulation engine** alongsi
    - Durable end-to-end user-journey and GUI behavioral test harness (`egui_kittest` / headless interactive workflows + CLI workflows) verifying every feature from a machinist's point of view without brittle coupling to internal implementation details.
 3. **Advanced Workholding & Multi-Setup Stock Carryover:**
    - 3D fixture/vise/clamp collision bodies with automatic safe-rapid routing.
-   - Carrying simulated Tri-Dexel volumetric stock seamlessly from Setup 1 (`G54`) into flipped Setup 2 (`G55`) for zero-air-cut multi-op machining.
+   - **In-Process Stock Carryover Across Setups:** Pass the exact remaining Tri-Dexel solid at the end of Setup 1 (`G54`) directly into Setup 2 (`G55`, e.g., after flipping the part upside down or re-clamping onto a side face) by transforming the in-process stock into Setup 2's WCS frame as its starting stock. Instead of starting Setup 2 from an unmachined raw block (which causes redundant air-cutting and inaccurate crash/error-volume checks), both simulation and rest-aware toolpaths know exactly which pockets, profiles, and faces were already cut in Op 1—enabling zero-air-cut multi-op roughing, accurate Op-2 collision verification against the half-machined part, and cumulative multi-setup error-volume metrics across the finished two-sided part.
 4. **Ecosystem & Extensibility:**
    - Optional OpenCASCADE (`opencascade-rs`) `CadKernel` feature backend.
    - Thread milling (`ThreadMill` single/multi-form cutter geometry, ISO Metric & Unified thread tables, radial arc-in/out helical passes), additional controller dialects (Fanuc/Haas, Mach4, Masso, Centroid), and printable HTML/PDF setup sheets.
