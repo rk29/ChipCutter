@@ -158,6 +158,39 @@ impl HeightfieldStock {
         if z <= zb + 1e-5 { None } else { Some(z) }
     }
 
+    /// Samples the maximum remaining `z_stock` height (`mm`) across all cells within `radius_mm`
+    /// of `(cx, cy)` (always including the center cell; `None` if all cells are empty/through-drilled).
+    pub fn sample_max_stock_z_in_disk(&self, cx: f64, cy: f64, radius_mm: f64) -> Option<f64> {
+        let mut best = self.sample_stock_z(cx, cy);
+        let r = radius_mm.max(0.0);
+        if let (Some((i0, i1)), Some((j0, j1))) = (
+            self.index_span_x(cx - r, cx + r),
+            self.index_span_y(cy - r, cy + r),
+        ) {
+            let r2 = r * r;
+            for j in j0..=j1 {
+                let py = self.origin_y_mm + (j as f64 + 0.5) * self.dy_mm;
+                let dy = py - cy;
+                let row = j * self.nx;
+                for i in i0..=i1 {
+                    let px = self.origin_x_mm + (i as f64 + 0.5) * self.dx_mm;
+                    let dx = px - cx;
+                    if dx * dx + dy * dy <= r2 + 1e-9 {
+                        let idx = row + i;
+                        if self.in_stock[idx] {
+                            let z = f64::from(self.z_stock[idx]);
+                            let zb = f64::from(self.z_bottom[idx]);
+                            if z > zb + 1e-5 && best.is_none_or(|b| z > b) {
+                                best = Some(z);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        best
+    }
+
     /// Computes total remaining stock volume (`mm³`) across all cells.
     pub fn compute_volume_mm3(&self) -> f64 {
         let cell_area = self.dx_mm * self.dy_mm;

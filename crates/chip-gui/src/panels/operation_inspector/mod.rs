@@ -5,14 +5,15 @@ pub mod passes_tab;
 pub mod tool_tab;
 
 use chip_cad::CadDocument;
-use chip_cam::{ExtractedSelectionSummary, OperationStatus, ResolvedSetup};
+use chip_cam::{ExtractedSelectionSummary, OperationStatus, ResolvedHeights, ResolvedSetup};
 use chip_math::{DVec3, EvalContext};
 use chip_project::{ProjectDocument, UndoHistory};
 use chip_tools::{ToolId, ToolLibrary, ToolOperationClass};
 
 use crate::{
     panels::{OperationTab, ViewportPickMode, browser::default_pick_mode_for_op},
-    widgets::{BannerKind, inline_banner, static_card},
+    theme::ThemeTokens,
+    widgets::{BannerKind, IconKind, inline_banner, inline_icon, static_card},
 };
 
 /// Context passed to [`show_operation_inspector`].
@@ -64,8 +65,16 @@ pub fn show_operation_inspector(ui: &mut egui::Ui, ctx: OperationInspectorCtx<'_
     let mut mutated_label: Option<&'static str> = None;
 
     let op_kind = project.setups[setup_idx].operations[op_idx].kind;
+    let op_is_adaptive = project.setups[setup_idx].operations[op_idx].is_adaptive_2d();
+    let tok = ThemeTokens::from_ui(ui);
     static_card(ui, None, |ui| {
         ui.horizontal(|ui| {
+            inline_icon(
+                ui,
+                IconKind::for_operation(op_kind, op_is_adaptive),
+                tok.accent,
+                15.0,
+            );
             ui.strong(op_kind.label());
             let name_ref = &mut project.setups[setup_idx].operations[op_idx].name;
             let resp = ui
@@ -233,6 +242,11 @@ pub fn show_operation_inspector(ui: &mut egui::Ui, ctx: OperationInspectorCtx<'_
                     .filter(|o| !o.suppressed)
                     .map(|o| (o.id.clone(), o.name.clone()))
                     .collect();
+                let assigned_tool_geom = project.setups[setup_idx].operations[op_idx]
+                    .tool_id
+                    .as_ref()
+                    .and_then(|tid| project.tool(tid).or_else(|| global_tools.tool(tid)))
+                    .map(|t| t.geometry.clone());
                 let tool_feed_preview = project.setups[setup_idx].operations[op_idx]
                     .tool_id
                     .as_ref()
@@ -241,6 +255,40 @@ pub fn show_operation_inspector(ui: &mut egui::Ui, ctx: OperationInspectorCtx<'_
                         let eff = project.setups[setup_idx].operations[op_idx]
                             .effective_cutting_params(t);
                         (t.geometry.cutting_diameter_mm(), eff.cutting_feed_mm_min)
+                    });
+                let resolved_thread_depth_mm = resolved_setup
+                    .and_then(|rs| {
+                        let mut h_eval =
+                            project.setups[setup_idx].operations[op_idx].heights.clone();
+                        h_eval.reevaluate(&eval_ctx);
+                        ResolvedHeights::resolve(
+                            &h_eval,
+                            &rs.model_aabb_wcs,
+                            &rs.stock.aabb_wcs(),
+                            rs.clearance_z_wcs,
+                            rs.retract_z_wcs,
+                            inf_top,
+                            inf_bot,
+                        )
+                        .ok()
+                        .map(|rh| {
+                            let axial_stock = project.setups[setup_idx].operations[op_idx]
+                                .passes
+                                .stock_to_leave_axial
+                                .value_mm;
+                            rh.top_z_wcs - (rh.bottom_z_wcs + axial_stock)
+                        })
+                    })
+                    .or_else(|| {
+                        extracted.and_then(|res| {
+                            res.ok().map(|sum| {
+                                let axial_stock = project.setups[setup_idx].operations[op_idx]
+                                    .passes
+                                    .stock_to_leave_axial
+                                    .value_mm;
+                                sum.inferred_top_z_wcs - (sum.inferred_bottom_z_wcs + axial_stock)
+                            })
+                        })
                     });
                 let mut clearing_tool_candidates: Vec<(ToolId, String, Option<String>)> =
                     Vec::new();
@@ -270,7 +318,9 @@ pub fn show_operation_inspector(ui: &mut egui::Ui, ctx: OperationInspectorCtx<'_
                         op: &mut project.setups[setup_idx].operations[op_idx],
                         preceding_ops: &preceding_ops,
                         clearing_tool_candidates: &clearing_tool_candidates,
+                        assigned_tool_geom: assigned_tool_geom.as_ref(),
                         tool_feed_preview,
+                        resolved_thread_depth_mm,
                         display_unit,
                         setup_idx,
                         op_idx,

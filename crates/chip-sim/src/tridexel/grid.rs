@@ -776,6 +776,56 @@ impl TriDexelStock {
             .map(|s| s.max_mm)
     }
 
+    /// Computes the maximum solid Z-ray overlap length (`mm`) inside `[z_lo, z_hi]` across all
+    /// `z_rays` within `radius_mm` of `(cx, cy)` (always including the exact center cell).
+    pub fn query_vertical_plunge_overlap(
+        &self,
+        cx: f64,
+        cy: f64,
+        radius_mm: f64,
+        z_lo: f64,
+        z_hi: f64,
+    ) -> f64 {
+        if z_hi <= z_lo + 1e-9 {
+            return 0.0;
+        }
+        let mut max_ov = 0.0_f64;
+        let r = radius_mm.max(0.0);
+        if let (Some((i0, i1)), Some((j0, j1))) = (
+            self.z_rays.index_span_u(cx - r, cx + r),
+            self.z_rays.index_span_v(cy - r, cy + r),
+        ) {
+            let r2 = r * r;
+            for j in j0..=j1 {
+                let py = self.z_rays.center_v(j);
+                let dy = py - cy;
+                for i in i0..=i1 {
+                    let px = self.z_rays.center_u(i);
+                    let dx = px - cx;
+                    if dx * dx + dy * dy <= r2 + 1e-9 {
+                        let ov = query_overlap_length(self.z_rays.ray(i, j), z_lo, z_hi);
+                        if ov > max_ov {
+                            max_ov = ov;
+                        }
+                    }
+                }
+            }
+        }
+        // Always include the exact center cell even when `radius_mm < dx_mm`
+        if cx >= self.origin_mm.x && cy >= self.origin_mm.y {
+            let ci = ((cx - self.origin_mm.x) / self.dx_mm).floor() as isize;
+            let cj = ((cy - self.origin_mm.y) / self.dy_mm).floor() as isize;
+            if ci >= 0 && cj >= 0 && (ci as usize) < self.nx && (cj as usize) < self.ny {
+                let ov =
+                    query_overlap_length(self.z_rays.ray(ci as usize, cj as usize), z_lo, z_hi);
+                if ov > max_ov {
+                    max_ov = ov;
+                }
+            }
+        }
+        max_ov
+    }
+
     /// Returns `true` if voxel center `(i, j, k)` is solid by majority vote across the 3 orthogonal
     /// dexel planes (eliminates single-axis grazing artifacts and guarantees watertight meshing).
     #[inline]

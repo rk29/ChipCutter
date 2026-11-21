@@ -215,6 +215,8 @@ pub fn show_geometry_tab(ui: &mut egui::Ui, ctx: GeometryTabCtx<'_>) {
             if op.selections.is_empty() {
                 let msg = if op.kind == OperationKind::Facing {
                     "Facing defaults automatically to the Setup XY Stock boundary."
+                } else if op.kind == OperationKind::ThreadMill {
+                    "Pick cylindrical holes/bosses in 3D or select circular 2D sketch contours."
                 } else {
                     "Click entities directly in the 3D viewport above to add geometry."
                 };

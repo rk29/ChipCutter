@@ -108,6 +108,10 @@ impl<'a> SimOperationInput<'a> {
             OperationKind::VCarve if toolpath.stats.bounds_wcs.is_valid() => {
                 (toolpath.stats.bounds_wcs.max.z - toolpath.stats.bounds_wcs.min.z).max(0.0) + 0.5
             }
+            // Thread milling intentionally cuts helical grooves radially into unmodeled CAD pilot/boss
+            // cylinder walls; `heightmap` and `tridexel` verifiers natively exempt the `(R_neck, R_cut]`
+            // tooth engagement band while preserving strict blind-floor & core collision checks.
+            OperationKind::ThreadMill => 0.0,
             _ => 0.0,
         };
 

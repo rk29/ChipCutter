@@ -12,7 +12,7 @@ use crate::{
         StockPlaybackCursor, UNCUT_OP_IDX, slice_segment_range, target_cursor_from_snap,
     },
     timeline::{MotionSpan, ScrubSnapshot, SimulationTimeline},
-    verifier::{SimDiagnostic, SimIssueKind, SimVerificationConfig},
+    verifier::{SimDiagnostic, SimIssueKind, SimSeverity, SimVerificationConfig},
 };
 
 use super::grid::{
@@ -144,6 +144,16 @@ pub(crate) fn intersect_horizontal_line_with_capsule_2d(
     }
 }
 
+#[inline]
+fn clamp_unit_interval(a: f64, b: f64) -> Option<(f64, f64)> {
+    let lo = a.min(b);
+    let hi = a.max(b);
+    if hi < 0.0 || lo > 1.0 {
+        return None;
+    }
+    Some((lo.max(0.0), hi.min(1.0)))
+}
+
 /// Computes the exact horizontal cut interval `[u_min, u_max]` along an X-ray (`swap_xy = false`,
 /// fixed `y = fixed_v, z = pz`) or Y-ray (`swap_xy = true`, fixed `x = fixed_v, z = pz`) for a
 /// vertical-spindle cutter moving linearly from `span.p0` to `span.p1`.
@@ -157,7 +167,7 @@ fn eval_horizontal_ray_cut_interval(
     swap_xy: bool,
     dz_step_mm: f64,
 ) -> Option<(f64, f64)> {
-    let max_h = prof.flute_length_mm;
+    let max_h = prof.effective_reach_mm();
     if pz < span.min_z() - 1e-9 || pz > span.max_z() + max_h + 1e-9 {
         return None;
     }
@@ -192,12 +202,96 @@ fn eval_horizontal_ray_cut_interval(
 
     // Sloped Z move: restrict parameter t ∈ [0, 1] to where 0 <= pz - z(t) <= max_h
     let t_at_z = |target_z: f64| (target_z - span.p0.z) / dz_span;
-    let t_low = t_at_z(pz - max_h);
-    let t_high = t_at_z(pz);
-    let t0 = t_low.min(t_high).clamp(0.0, 1.0);
-    let t1 = t_low.max(t_high).clamp(0.0, 1.0);
-    if t1 < t0 {
-        return None;
+    let (t0, t1) = clamp_unit_interval(t_at_z(pz - max_h), t_at_z(pz))?;
+
+    if prof.is_thread_mill {
+        let mut lo = f64::INFINITY;
+        let mut hi = f64::NEG_INFINITY;
+        let mut merge_hit = |cand: Option<(f64, f64)>| {
+            if let Some((c0, c1)) = cand {
+                lo = lo.min(c0);
+                hi = hi.max(c1);
+            }
+        };
+
+        // 1) Relieved neck band `(flute_length_mm, neck_length_mm]`: constant `neck_radius_mm`
+        let r_neck = (prof.neck_radius_mm - radial_shrink_mm).max(0.0);
+        if r_neck > 1e-9
+            && prof.neck_length_mm > prof.flute_length_mm + 1e-9
+            && let Some((n0, n1)) = clamp_unit_interval(
+                t_at_z(pz - prof.neck_length_mm),
+                t_at_z(pz - prof.flute_length_mm),
+            )
+        {
+            let qn0 = span.p0.lerp(span.p1, n0);
+            let qn1 = span.p0.lerp(span.p1, n1);
+            merge_hit(intersect_horizontal_line_with_capsule_2d(
+                proj2(qn0),
+                proj2(qn1),
+                r_neck,
+                fixed_v,
+            ));
+        }
+
+        // 2) Active V-tooth cutting band `[0, flute_length_mm]`: non-monotonic V-tooth profile!
+        if let Some((f0, f1)) = clamp_unit_interval(t_at_z(pz - prof.flute_length_mm), t_at_z(pz)) {
+            let qf0 = span.p0.lerp(span.p1, f0);
+            let qf1 = span.p0.lerp(span.p1, f1);
+            let sub_dz = (qf1.z - qf0.z).abs();
+            let (z_start, tooth_step, n_teeth, _tan_half) = prof.thread_mill_tooth_band_params();
+            if sub_dz <= 1e-7 {
+                let r_mid =
+                    (prof.thread_mill_tooth_radius_at_z(pz - qf0.z) - radial_shrink_mm).max(0.0);
+                if r_mid > 1e-9 {
+                    merge_hit(intersect_horizontal_line_with_capsule_2d(
+                        proj2(qf0),
+                        proj2(qf1),
+                        r_mid,
+                        fixed_v,
+                    ));
+                }
+            } else {
+                let step = dz_step_mm.min(0.15 * tooth_step).max(0.02);
+                let n_sub = ((sub_dz / step).ceil() as usize).clamp(2, 32);
+                for s in 0..n_sub {
+                    let u0 = s as f64 / n_sub as f64;
+                    let u1 = (s + 1) as f64 / n_sub as f64;
+                    let a = qf0.lerp(qf1, u0);
+                    let b = qf0.lerp(qf1, u1);
+                    let r_mid = (prof.thread_mill_tooth_radius_at_z(pz - 0.5 * (a.z + b.z))
+                        - radial_shrink_mm)
+                        .max(0.0);
+                    if r_mid > 1e-9 {
+                        merge_hit(intersect_horizontal_line_with_capsule_2d(
+                            proj2(a),
+                            proj2(b),
+                            r_mid,
+                            fixed_v,
+                        ));
+                    }
+                }
+                // Explicitly evaluate any V-tooth crest peak crossed inside `[f0, f1]`
+                let r_crest = (prof.cutting_radius_mm - radial_shrink_mm).max(0.0);
+                if r_crest > 1e-9 {
+                    for k in 0..n_teeth {
+                        let z_crest = z_start + (k as f64 + 0.5) * tooth_step;
+                        let tc = t_at_z(pz - z_crest);
+                        if tc >= f0 - 1e-9 && tc <= f1 + 1e-9 {
+                            let pt = proj2(span.p0.lerp(span.p1, tc.clamp(f0, f1)));
+                            merge_hit(intersect_horizontal_line_with_capsule_2d(
+                                pt, pt, r_crest, fixed_v,
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        return if lo.is_finite() && hi.is_finite() && hi > lo {
+            Some((lo, hi))
+        } else {
+            None
+        };
     }
 
     let q0 = span.p0.lerp(span.p1, t0);
@@ -237,6 +331,210 @@ fn eval_horizontal_ray_cut_interval(
         Some((lo, hi))
     } else {
         None
+    }
+}
+
+/// Evaluates a constant-radius horizontal cut interval `[u_min, u_max]` for a cylindrical core
+/// or relieved neck of radius `cyl_radius_mm` and height `cyl_height_mm` (used for thread-mill
+/// core/neck target-gouge verification so intentional tooth grooves on pilot walls are exempted).
+#[inline]
+fn eval_horizontal_ray_cylinder_interval(
+    span: LinearSpan3D,
+    cyl_radius_mm: f64,
+    cyl_height_mm: f64,
+    pz: f64,
+    fixed_v: f64,
+    swap_xy: bool,
+) -> Option<(f64, f64)> {
+    if cyl_radius_mm <= 1e-9 || pz < span.min_z() - 1e-9 || pz > span.max_z() + cyl_height_mm + 1e-9
+    {
+        return None;
+    }
+    let proj2 = |p: DVec3| -> DVec2 {
+        if swap_xy {
+            DVec2::new(p.y, p.x)
+        } else {
+            DVec2::new(p.x, p.y)
+        }
+    };
+    let dz_span = span.p1.z - span.p0.z;
+    if dz_span.abs() <= 1e-7 {
+        let dz = pz - span.p0.z;
+        if dz <= 1e-9 || dz > cyl_height_mm + 1e-9 {
+            return None;
+        }
+        return intersect_horizontal_line_with_capsule_2d(
+            proj2(span.p0),
+            proj2(span.p1),
+            cyl_radius_mm,
+            fixed_v,
+        );
+    }
+    let t_at_z = |target_z: f64| (target_z - span.p0.z) / dz_span;
+    let (t0, t1) = clamp_unit_interval(t_at_z(pz - cyl_height_mm), t_at_z(pz))?;
+    let q0 = span.p0.lerp(span.p1, t0);
+    let q1 = span.p0.lerp(span.p1, t1);
+    intersect_horizontal_line_with_capsule_2d(proj2(q0), proj2(q1), cyl_radius_mm, fixed_v)
+}
+
+/// Evaluates the exact Z-ray intersection interval `[z_lo, z_hi]` of a vertical cylinder of
+/// radius `cyl_radius_mm` and height `cyl_height_mm` swept linearly along `span`.
+#[inline]
+fn eval_z_ray_cylinder_interval(
+    span: LinearSpan3D,
+    px: f64,
+    py: f64,
+    cyl_radius_mm: f64,
+    cyl_height_mm: f64,
+) -> Option<(f64, f64)> {
+    if cyl_radius_mm <= 1e-9 {
+        return None;
+    }
+    let p0_xy = DVec2::new(span.p0.x, span.p0.y);
+    let p1_xy = DVec2::new(span.p1.x, span.p1.y);
+    let q_xy = DVec2::new(px, py);
+    let d_xy = p1_xy - p0_xy;
+    let len2 = d_xy.length_squared();
+
+    let (t0, t1) = if len2 <= 1e-12 {
+        if (q_xy - p0_xy).length() > cyl_radius_mm + 1e-9 {
+            return None;
+        }
+        (0.0, 1.0)
+    } else {
+        let f = p0_xy - q_xy;
+        let b = 2.0 * f.dot(d_xy);
+        let c = f.length_squared() - cyl_radius_mm * cyl_radius_mm;
+        let disc = b * b - 4.0 * len2 * c;
+        if disc < 0.0 {
+            return None;
+        }
+        let sq = disc.sqrt();
+        let inv2a = 0.5 / len2;
+        let raw_t0 = (-b - sq) * inv2a;
+        let raw_t1 = (-b + sq) * inv2a;
+        if raw_t1 < 0.0 || raw_t0 > 1.0 {
+            return None;
+        }
+        (raw_t0.max(0.0), raw_t1.min(1.0))
+    };
+
+    let dz_span = span.p1.z - span.p0.z;
+    let z0 = span.p0.z + t0 * dz_span;
+    let z1 = span.p0.z + t1 * dz_span;
+    Some((z0.min(z1), z0.max(z1) + cyl_height_mm))
+}
+
+/// Computes all exact vertical cut intervals `[z_lo, z_hi]` along a Z-ray at `(px, py)` for a
+/// relieved-neck [`CutterGeometry::ThreadMill`] moving linearly along `span`.
+///
+/// - In the thread-tooth undercut annulus (`neck_radius < r <= cutting_radius`), emits one
+///   separate V-tooth groove interval per tooth so upper thread crests remain intact!
+/// - Inside the relieved-neck core (`r <= neck_radius`), emits the full `[z_tip, z_tip + neck_length]` span.
+#[inline]
+fn eval_z_ray_thread_mill_intervals(
+    span: LinearSpan3D,
+    prof: &RadialCutterProfile,
+    px: f64,
+    py: f64,
+    radius_limit: f64,
+    out: &mut Vec<(f64, f64)>,
+) {
+    out.clear();
+    let p0_xy = DVec2::new(span.p0.x, span.p0.y);
+    let p1_xy = DVec2::new(span.p1.x, span.p1.y);
+    let q_xy = DVec2::new(px, py);
+    let d_xy = p1_xy - p0_xy;
+    let len2 = d_xy.length_squared();
+
+    let (t_enter, t_exit, t_closest) = if len2 <= 1e-12 {
+        let r = (q_xy - p0_xy).length();
+        if r > radius_limit + 1e-9 {
+            return;
+        }
+        (0.0, 1.0, 0.0)
+    } else {
+        let f = p0_xy - q_xy;
+        let b = 2.0 * f.dot(d_xy);
+        let c = f.length_squared() - radius_limit * radius_limit;
+        let disc = b * b - 4.0 * len2 * c;
+        if disc < 0.0 {
+            return;
+        }
+        let sq = disc.sqrt();
+        let inv2a = 0.5 / len2;
+        let raw_t0 = (-b - sq) * inv2a;
+        let raw_t1 = (-b + sq) * inv2a;
+        if raw_t1 < 0.0 || raw_t0 > 1.0 {
+            return;
+        }
+        let t0 = raw_t0.max(0.0);
+        let t1 = raw_t1.min(1.0);
+        let tc = (-f.dot(d_xy) / len2).clamp(t0, t1);
+        (t0, t1, tc)
+    };
+
+    let dz_span = span.p1.z - span.p0.z;
+    if len2 <= 1e-12 || dz_span.abs() <= 1e-7 {
+        let pt = p0_xy.lerp(p1_xy, t_closest);
+        let r = (q_xy - pt).length();
+        prof.thread_mill_axial_intervals_at_radius(r, out);
+        let z_lo_tip = span.min_z();
+        let z_hi_tip = span.max_z();
+        for (a, b) in out.iter_mut() {
+            *a += z_lo_tip;
+            *b += z_hi_tip;
+        }
+        return;
+    }
+
+    // Sloped 3D helical chord: sample 5 uniform stations + exact closest XY station `t_closest`
+    let ts = [
+        t_enter,
+        t_enter + 0.25 * (t_exit - t_enter),
+        t_enter + 0.50 * (t_exit - t_enter),
+        t_enter + 0.75 * (t_exit - t_enter),
+        t_exit,
+        t_closest,
+    ];
+    let mut samples = [(f64::INFINITY, 0.0_f64); 6];
+    let mut neck_lo = f64::INFINITY;
+    let mut neck_hi = f64::NEG_INFINITY;
+    for (idx, &t) in ts.iter().enumerate() {
+        let pt = p0_xy.lerp(p1_xy, t);
+        let r = (q_xy - pt).length();
+        let z_tip = span.p0.z + t * dz_span;
+        samples[idx] = (r, z_tip);
+        if r <= prof.neck_radius_mm + 1e-9 {
+            neck_lo = neck_lo.min(z_tip);
+            neck_hi = neck_hi.max(z_tip + prof.neck_length_mm);
+        }
+    }
+
+    let (z_start, tooth_step, n_teeth, tan_half) = prof.thread_mill_tooth_band_params();
+    for k in 0..n_teeth {
+        let z_k_lo = z_start + (k as f64) * tooth_step;
+        let z_k_hi = z_k_lo + tooth_step;
+        let z_crest = z_k_lo + 0.5 * tooth_step;
+        let mut t_lo = f64::INFINITY;
+        let mut t_hi = f64::NEG_INFINITY;
+        for &(r, z_tip) in &samples {
+            if r <= radius_limit + 1e-9 {
+                let half_w = (prof.cutting_radius_mm - r).max(0.0) * tan_half;
+                let lo = z_tip + (z_crest - half_w).max(z_k_lo);
+                let hi = z_tip + (z_crest + half_w).min(z_k_hi);
+                if hi > lo + 1e-9 {
+                    t_lo = t_lo.min(lo);
+                    t_hi = t_hi.max(hi);
+                }
+            }
+        }
+        if t_hi > t_lo + 1e-9 {
+            out.push((t_lo, t_hi));
+        }
+    }
+    if neck_hi > neck_lo + 1e-9 {
+        out.push((neck_lo, neck_hi));
     }
 }
 
@@ -344,6 +642,7 @@ struct SpanRuleViolations {
     worst_rapid: Option<(f64, DVec3)>,
     worst_gouge: Option<(f64, DVec3)>,
     worst_flute: Option<(f64, DVec3)>,
+    worst_neck: Option<(f64, DVec3)>,
     worst_holder: Option<(f64, DVec3)>,
 }
 
@@ -363,6 +662,11 @@ impl SpanRuleViolations {
             && self.worst_flute.is_none_or(|(b, _)| d > b)
         {
             self.worst_flute = Some((d, p));
+        }
+        if let Some((d, p)) = other.worst_neck
+            && self.worst_neck.is_none_or(|(b, _)| d > b)
+        {
+            self.worst_neck = Some((d, p));
         }
         if let Some((d, p)) = other.worst_holder
             && self.worst_holder.is_none_or(|(b, _)| d > b)
@@ -419,7 +723,9 @@ impl TriDexelStock {
         let min_y = chord.p0.y.min(chord.p1.y) - r_check;
         let max_y = chord.p0.y.max(chord.p1.y) + r_check;
         let min_z = chord.min_z();
-        let max_z = chord.max_z() + ctx.prof.flute_length_mm;
+        let max_z = chord.max_z() + ctx.prof.effective_reach_mm();
+        let neck_skin = (ctx.prof.neck_radius_mm - ctx.cfg.radial_wall_skin_mm).max(0.0);
+        let shank_skin = (ctx.prof.shank_radius_mm - ctx.cfg.radial_wall_skin_mm).max(0.0);
 
         let mut violations = SpanRuleViolations::default();
         let mut mutated = false;
@@ -446,6 +752,7 @@ impl TriDexelStock {
                     let mut row_mut = false;
                     let mut rv = SpanRuleViolations::default();
                     let row_base = j * nx;
+                    let mut tm_intervals: Vec<(f64, f64)> = Vec::new();
 
                     for (i, spans) in row.iter_mut().enumerate().take(i1 + 1).skip(i0) {
                         if spans.is_empty() {
@@ -453,7 +760,7 @@ impl TriDexelStock {
                         }
                         let px = ox + (i as f64 + 0.5) * dx;
 
-                        // Holder & shank checks (Rules 3 & 4)
+                        // Holder, shank, and thread-mill relieved-neck checks (Rules 3 & 4)
                         if verify {
                             let p0_xy = DVec2::new(chord.p0.x, chord.p0.y);
                             let p1_xy = DVec2::new(chord.p1.x, chord.p1.y);
@@ -477,18 +784,78 @@ impl TriDexelStock {
                                         rv.worst_holder = Some((pen, DVec3::new(px, py, holder_z)));
                                     }
                                 }
-                                // Rule 3: Flute length exceeded (non-cutting shank rub)
-                                if !ctx.is_rapid && dist_xy <= ctx.prof.shank_radius_mm {
-                                    let flute_top = z_tip_here + ctx.prof.flute_length_mm;
-                                    let rub = top_z - flute_top;
+                                // Rule 3: Shank rub above usable reach (`neck_length` for ThreadMill, `flute_length` otherwise)
+                                if !ctx.is_rapid && dist_xy <= shank_skin {
+                                    let reach_top = z_tip_here + ctx.prof.effective_reach_mm();
+                                    let rub = top_z - reach_top;
                                     if rub > 0.15 && rv.worst_flute.is_none_or(|(b, _)| rub > b) {
-                                        rv.worst_flute = Some((rub, DVec3::new(px, py, flute_top)));
+                                        rv.worst_flute = Some((rub, DVec3::new(px, py, reach_top)));
+                                    }
+                                }
+                            }
+                            // Relieved-neck clearance check for ThreadMill (`(flute_length, neck_length]`)
+                            if ctx.prof.is_thread_mill && !ctx.is_rapid && dist_xy <= neck_skin {
+                                let neck_lo = z_tip_here + ctx.prof.flute_length_mm + 0.05;
+                                let neck_hi = z_tip_here + ctx.prof.neck_length_mm;
+                                if neck_hi > neck_lo {
+                                    let ov = query_overlap_length(spans, neck_lo, neck_hi);
+                                    if ov > 0.10 && rv.worst_neck.is_none_or(|(b, _)| ov > b) {
+                                        rv.worst_neck = Some((ov, DVec3::new(px, py, neck_lo)));
                                     }
                                 }
                             }
                         }
 
-                        if let Some((z_lo, z_hi, _z_tip)) = eval_z_ray_cut_interval(
+                        if ctx.prof.is_thread_mill {
+                            eval_z_ray_thread_mill_intervals(
+                                chord,
+                                ctx.prof,
+                                px,
+                                py,
+                                r_cut,
+                                &mut tm_intervals,
+                            );
+                            if !tm_intervals.is_empty() {
+                                if verify && ctx.is_rapid {
+                                    for &(z_lo, z_hi) in &tm_intervals {
+                                        let ov = query_overlap_length(spans, z_lo, z_hi);
+                                        if ov > ctx.cfg.rapid_crash_tol_mm
+                                            && rv.worst_rapid.is_none_or(|(b, _)| ov > b)
+                                        {
+                                            rv.worst_rapid = Some((ov, DVec3::new(px, py, z_lo)));
+                                        }
+                                    }
+                                }
+                                // Rule 2 for ThreadMill: check only relieved-neck core against target solid
+                                // so intentional helical thread grooves on smooth pilot walls are exempted.
+                                if verify
+                                    && let Some(tz_all) = target_z_rays
+                                    && let Some((z_lo_in, z_hi_in)) = eval_z_ray_cylinder_interval(
+                                        chord,
+                                        px,
+                                        py,
+                                        neck_skin,
+                                        ctx.prof.neck_length_mm,
+                                    )
+                                    && let Some((pen, z_at)) = query_target_gouge_depth(
+                                        &tz_all[row_base + i],
+                                        z_lo_in,
+                                        z_hi_in,
+                                        ctx.cfg.gouge_tol_mm,
+                                    )
+                                    && rv.worst_gouge.is_none_or(|(b, _)| pen > b)
+                                {
+                                    rv.worst_gouge = Some((pen, DVec3::new(px, py, z_at)));
+                                }
+                                for &(z_lo, z_hi) in &tm_intervals {
+                                    let rem =
+                                        subtract_dexel_interval(spans, z_lo, z_hi, ctx.op_idx);
+                                    if rem > 0.0 {
+                                        row_mut = true;
+                                    }
+                                }
+                            }
+                        } else if let Some((z_lo, z_hi, _z_tip)) = eval_z_ray_cut_interval(
                             chord,
                             ctx.prof,
                             ctx.is_flat_endmill,
@@ -593,15 +960,26 @@ impl TriDexelStock {
                             if verify
                                 && pz >= chord.min_z() + ctx.cfg.gouge_tol_mm
                                 && let Some(tx_all) = target_x_rays
-                                && let Some((x_lo_in, x_hi_in)) = eval_horizontal_ray_cut_interval(
-                                    chord,
-                                    ctx.prof,
-                                    ctx.cfg.radial_wall_skin_mm,
-                                    pz,
-                                    py,
-                                    false,
-                                    dz_step,
-                                )
+                                && let Some((x_lo_in, x_hi_in)) = if ctx.prof.is_thread_mill {
+                                    eval_horizontal_ray_cylinder_interval(
+                                        chord,
+                                        neck_skin,
+                                        ctx.prof.neck_length_mm,
+                                        pz,
+                                        py,
+                                        false,
+                                    )
+                                } else {
+                                    eval_horizontal_ray_cut_interval(
+                                        chord,
+                                        ctx.prof,
+                                        ctx.cfg.radial_wall_skin_mm,
+                                        pz,
+                                        py,
+                                        false,
+                                        dz_step,
+                                    )
+                                }
                                 && let Some((pen, x_at)) = query_target_gouge_depth(
                                     &tx_all[row_base + j],
                                     x_lo_in,
@@ -676,15 +1054,26 @@ impl TriDexelStock {
                             if verify
                                 && pz >= chord.min_z() + ctx.cfg.gouge_tol_mm
                                 && let Some(ty_all) = target_y_rays
-                                && let Some((y_lo_in, y_hi_in)) = eval_horizontal_ray_cut_interval(
-                                    chord,
-                                    ctx.prof,
-                                    ctx.cfg.radial_wall_skin_mm,
-                                    pz,
-                                    px,
-                                    true,
-                                    dz_step,
-                                )
+                                && let Some((y_lo_in, y_hi_in)) = if ctx.prof.is_thread_mill {
+                                    eval_horizontal_ray_cylinder_interval(
+                                        chord,
+                                        neck_skin,
+                                        ctx.prof.neck_length_mm,
+                                        pz,
+                                        px,
+                                        true,
+                                    )
+                                } else {
+                                    eval_horizontal_ray_cut_interval(
+                                        chord,
+                                        ctx.prof,
+                                        ctx.cfg.radial_wall_skin_mm,
+                                        pz,
+                                        px,
+                                        true,
+                                        dz_step,
+                                    )
+                                }
                                 && let Some((pen, y_at)) = query_target_gouge_depth(
                                     &ty_all[row_base + i],
                                     y_lo_in,
@@ -907,44 +1296,70 @@ pub fn run_tridexel_setup_simulation(
         if !is_rapid {
             let dxy = (span.segment.end_wcs.x - span.segment.start_wcs.x)
                 .hypot(span.segment.end_wcs.y - span.segment.start_wcs.y);
-            if dxy <= 1e-4
-                && span.segment.end_wcs.z < span.segment.start_wcs.z - 1e-4
-                && let Some(top_z) =
-                    stock.sample_top_z(span.segment.start_wcs.x, span.segment.start_wcs.y)
-            {
-                let entry_z = top_z.min(span.segment.start_wcs.z);
-                let plunge_in_mat = entry_z - span.segment.end_wcs.z;
-                if plunge_in_mat > 0.05 {
-                    let trigger_detail = if !prof.is_center_cutting {
-                        Some((
-                            plunge_in_mat,
-                            format!(
-                                "Non-center-cutting tool T{} plunged vertically {plunge_in_mat:.2} mm into stock (use Helical or Linear ramp).",
-                                op_in.tool.tool_number
-                            ),
-                        ))
-                    } else if plunge_in_mat > prof.max_safe_plunge_depth_mm + 0.05 {
-                        Some((
-                            plunge_in_mat - prof.max_safe_plunge_depth_mm,
-                            format!(
-                                "Vertical plunge depth ({plunge_in_mat:.2} mm) exceeds safe axial plunge threshold ({:.2} mm) on T{}.",
-                                prof.max_safe_plunge_depth_mm, op_in.tool.tool_number
-                            ),
-                        ))
-                    } else {
-                        None
-                    };
-                    if let Some((excess, msg)) = trigger_detail {
+            if dxy <= 1e-4 && span.segment.end_wcs.z < span.segment.start_wcs.z - 1e-4 {
+                if prof.is_thread_mill {
+                    let check_r = (prof.cutting_radius_mm - op_cfg.radial_wall_skin_mm).max(0.0);
+                    let plunge_in_mat = stock.query_vertical_plunge_overlap(
+                        span.segment.start_wcs.x,
+                        span.segment.start_wcs.y,
+                        check_r,
+                        span.segment.end_wcs.z,
+                        span.segment.start_wcs.z,
+                    );
+                    if plunge_in_mat > 0.05 {
                         push_dedup_diag(
                             &mut diagnostics,
                             &mut recorded_op_kinds,
                             span,
                             op_in,
+                            SimSeverity::CriticalError,
                             SimIssueKind::UnsafeVerticalPlunge,
-                            excess,
+                            plunge_in_mat,
                             span.segment.end_wcs,
-                            msg,
+                            format!(
+                                "Thread mill T{} plunged vertically {plunge_in_mat:.2} mm into solid un-drilled stock (missing or undersized pilot hole).",
+                                op_in.tool.tool_number
+                            ),
                         );
+                    }
+                } else if let Some(top_z) =
+                    stock.sample_top_z(span.segment.start_wcs.x, span.segment.start_wcs.y)
+                {
+                    let entry_z = top_z.min(span.segment.start_wcs.z);
+                    let plunge_in_mat = entry_z - span.segment.end_wcs.z;
+                    if plunge_in_mat > 0.05 {
+                        let trigger_detail = if !prof.is_center_cutting {
+                            Some((
+                                plunge_in_mat,
+                                format!(
+                                    "Non-center-cutting tool T{} plunged vertically {plunge_in_mat:.2} mm into stock (use Helical or Linear ramp).",
+                                    op_in.tool.tool_number
+                                ),
+                            ))
+                        } else if plunge_in_mat > prof.max_safe_plunge_depth_mm + 0.05 {
+                            Some((
+                                plunge_in_mat - prof.max_safe_plunge_depth_mm,
+                                format!(
+                                    "Vertical plunge depth ({plunge_in_mat:.2} mm) exceeds safe axial plunge threshold ({:.2} mm) on T{}.",
+                                    prof.max_safe_plunge_depth_mm, op_in.tool.tool_number
+                                ),
+                            ))
+                        } else {
+                            None
+                        };
+                        if let Some((excess, msg)) = trigger_detail {
+                            push_dedup_diag(
+                                &mut diagnostics,
+                                &mut recorded_op_kinds,
+                                span,
+                                op_in,
+                                SimIssueKind::UnsafeVerticalPlunge.default_severity(),
+                                SimIssueKind::UnsafeVerticalPlunge,
+                                excess,
+                                span.segment.end_wcs,
+                                msg,
+                            );
+                        }
                     }
                 }
             }
@@ -972,6 +1387,7 @@ pub fn run_tridexel_setup_simulation(
                 &mut recorded_op_kinds,
                 span,
                 op_in,
+                SimIssueKind::RapidIntoStock.default_severity(),
                 SimIssueKind::RapidIntoStock,
                 pen,
                 loc,
@@ -987,6 +1403,7 @@ pub fn run_tridexel_setup_simulation(
                 &mut recorded_op_kinds,
                 span,
                 op_in,
+                SimIssueKind::TargetModelGouge.default_severity(),
                 SimIssueKind::TargetModelGouge,
                 pen,
                 loc,
@@ -996,18 +1413,41 @@ pub fn run_tridexel_setup_simulation(
                 ),
             );
         }
-        if let Some((rub, loc)) = span_viol.worst_flute {
+        if let Some((ov, loc)) = span_viol.worst_neck {
             push_dedup_diag(
                 &mut diagnostics,
                 &mut recorded_op_kinds,
                 span,
                 op_in,
+                SimSeverity::CriticalError,
+                SimIssueKind::FluteLengthExceeded,
+                ov,
+                loc,
+                format!(
+                    "Thread mill T{} relieved neck collided {ov:.2} mm with uncut stock (missing/undersized pilot hole or insufficient neck clearance).",
+                    op_in.tool.tool_number
+                ),
+            );
+        }
+        if let Some((rub, loc)) = span_viol.worst_flute {
+            let reach_label = if prof.is_thread_mill {
+                "usable neck length"
+            } else {
+                "flute length"
+            };
+            push_dedup_diag(
+                &mut diagnostics,
+                &mut recorded_op_kinds,
+                span,
+                op_in,
+                SimIssueKind::FluteLengthExceeded.default_severity(),
                 SimIssueKind::FluteLengthExceeded,
                 rub,
                 loc,
                 format!(
-                    "Cut depth exceeded T{} flute length ({:.2} mm) by {rub:.2} mm — non-cutting shank rub.",
-                    op_in.tool.tool_number, prof.flute_length_mm
+                    "Cut depth exceeded T{} {reach_label} ({:.2} mm) by {rub:.2} mm — non-cutting shank rub.",
+                    op_in.tool.tool_number,
+                    prof.effective_reach_mm()
                 ),
             );
         }
@@ -1017,6 +1457,7 @@ pub fn run_tridexel_setup_simulation(
                 &mut recorded_op_kinds,
                 span,
                 op_in,
+                SimIssueKind::HolderCollision.default_severity(),
                 SimIssueKind::HolderCollision,
                 pen,
                 loc,
@@ -1095,6 +1536,7 @@ fn push_dedup_diag(
     recorded_op_kinds: &mut Vec<(usize, SimIssueKind)>,
     span: &MotionSpan,
     op_in: &crate::timeline::SimOperationInput<'_>,
+    severity: SimSeverity,
     kind: SimIssueKind,
     excess_mm: f64,
     location_wcs: DVec3,
@@ -1104,7 +1546,12 @@ fn push_dedup_diag(
         .iter_mut()
         .find(|d| d.op_idx == span.op_idx && d.kind == kind)
     {
-        if excess_mm > existing.max_excess_mm {
+        let upgrades_severity = severity == SimSeverity::CriticalError
+            && existing.severity != SimSeverity::CriticalError;
+        if upgrades_severity
+            || (severity == existing.severity && excess_mm > existing.max_excess_mm)
+        {
+            existing.severity = severity;
             existing.max_excess_mm = excess_mm;
             existing.location_wcs = location_wcs;
             existing.global_seg_idx = span.global_seg_idx;
@@ -1115,7 +1562,7 @@ fn push_dedup_diag(
     }
     recorded_op_kinds.push((span.op_idx, kind));
     diagnostics.push(SimDiagnostic {
-        severity: kind.default_severity(),
+        severity,
         kind,
         op_idx: span.op_idx,
         op_id: op_in.op_id.to_string(),

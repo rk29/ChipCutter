@@ -62,6 +62,7 @@ impl PaneBehavior<'_> {
                 ui,
                 CamBrowserCtx {
                     project: &mut self.app.project,
+                    global_tools: &self.app.global_tools,
                     history: &mut self.app.history,
                     toolpath_cache: &self.app.toolpath_cache,
                     cad_doc: cad_ref,

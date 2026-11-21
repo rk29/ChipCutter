@@ -1,5 +1,6 @@
 pub mod milling_2d;
 pub mod surface_3d;
+pub mod thread_mill;
 pub mod vcarve;
 
 use std::ops::RangeInclusive;
@@ -9,7 +10,7 @@ use chip_cam::{
     RestMachiningMode, StrategyParams, compute_index_angle_for_normal,
 };
 use chip_math::{DVec3, DisplayUnit, EvalContext, ParamLength};
-use chip_tools::ToolId;
+use chip_tools::{CutterGeometry, ToolId};
 
 use crate::{
     panels::ViewportPickMode,
@@ -198,7 +199,9 @@ pub struct PassesTabCtx<'a> {
     pub op: &'a mut Operation,
     pub preceding_ops: &'a [(String, String)],
     pub clearing_tool_candidates: &'a [(ToolId, String, Option<String>)],
+    pub assigned_tool_geom: Option<&'a CutterGeometry>,
     pub tool_feed_preview: Option<(f64, f64)>,
+    pub resolved_thread_depth_mm: Option<f64>,
     pub display_unit: DisplayUnit,
     pub setup_idx: usize,
     pub op_idx: usize,
@@ -214,7 +217,9 @@ pub fn show_passes_tab(ui: &mut egui::Ui, ctx: PassesTabCtx<'_>) {
         op,
         preceding_ops,
         clearing_tool_candidates,
+        assigned_tool_geom,
         tool_feed_preview,
+        resolved_thread_depth_mm,
         display_unit,
         setup_idx,
         op_idx,
@@ -338,15 +343,17 @@ pub fn show_passes_tab(ui: &mut egui::Ui, ctx: PassesTabCtx<'_>) {
         StrategyParams::Pencil3D(p) => surface_3d::show_pencil3d_params(ui, p, item),
         StrategyParams::Rotary2Linear(p) => surface_3d::show_rotary2linear_params(ui, p, item),
         StrategyParams::Rotary4AxisSim(p) => surface_3d::show_rotary4axis_sim_params(ui, p, item),
-        StrategyParams::ThreadMill(p) => {
-            ui.label(format!(
-                "Thread Mill ({}, {}, Ø{:.2} × {:.2} mm)",
-                p.form.label(),
-                p.handedness.label(),
-                p.major_diameter.value_mm,
-                p.pitch.value_mm
-            ));
-        }
+        StrategyParams::ThreadMill(p) => thread_mill::show_thread_mill_params(
+            ui,
+            thread_mill::ThreadMillParamsUiCtx {
+                p,
+                assigned_tool_geom,
+                tool_feed_preview,
+                resolved_thread_depth_mm,
+                display_unit,
+                item,
+            },
+        ),
     }
 }
 

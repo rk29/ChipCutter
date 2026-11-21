@@ -552,8 +552,12 @@ impl CylindricalStock {
                 // Check flute-length engagement on outer uncut stock surface
                 if let Some(v) = verify.as_deref_mut() {
                     let h_enter = h0 + r_enter * d_dot_s;
-                    if h_enter > profile.flute_length_mm + 0.05 {
-                        update_worst(v.worst_flute, h_enter - profile.flute_length_mm, tip_wcs);
+                    if h_enter > profile.effective_reach_mm() + 0.05 {
+                        update_worst(
+                            v.worst_flute,
+                            h_enter - profile.effective_reach_mm(),
+                            tip_wcs,
+                        );
                     }
                 }
 

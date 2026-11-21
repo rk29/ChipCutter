@@ -33,6 +33,7 @@ pub enum CommandId {
     AddOpContour2D,
     AddOpPocket2D,
     AddOpDrillBore,
+    AddOpThreadMill,
     AddOpChamferTrace,
     AddOpVCarve,
     AddOpAdaptive3D,
@@ -238,6 +239,13 @@ pub const PALETTE_COMMANDS: &[PaletteEntry] = &[
         category: "Operation",
         label: "Add Drilling / Helical Bore Milling Operation",
         keywords: "add operation drill peck g81 g83 helical bore hole",
+        shortcut: None,
+    },
+    PaletteEntry {
+        id: CommandId::AddOpThreadMill,
+        category: "Operation",
+        label: "Add Helical Thread Milling Operation",
+        keywords: "add operation thread mill helix helical tap m6 m8 m10 unc unf iso metric internal external",
         shortcut: None,
     },
     PaletteEntry {
@@ -914,5 +922,20 @@ mod tests {
         let searchable = format!("{} {} {}", entry.category, entry.label, entry.keywords);
         assert!(fuzzy_match_score("about", &searchable).is_some());
         assert!(fuzzy_match_score("version", &searchable).is_some());
+    }
+
+    #[test]
+    fn command_palette_contains_and_matches_thread_mill_keywords() {
+        let entry = PALETTE_COMMANDS
+            .iter()
+            .find(|e| e.id == CommandId::AddOpThreadMill)
+            .expect("AddOpThreadMill entry present");
+        let searchable = format!("{} {} {}", entry.category, entry.label, entry.keywords);
+        for query in ["thread", "helix", "tap", "M6", "M8", "UNC"] {
+            assert!(
+                fuzzy_match_score(query, &searchable).is_some(),
+                "expected CommandPalette ThreadMill entry to match query '{query}'"
+            );
+        }
     }
 }

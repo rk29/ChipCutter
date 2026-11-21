@@ -31,6 +31,7 @@ pub enum IconKind {
     Pocket2D,
     Adaptive2D,
     DrillBore,
+    ThreadMill,
     ChamferTrace,
     VCarve,
     Sketch2D,
@@ -89,7 +90,7 @@ impl IconKind {
             OperationKind::Contour2D => Self::Contour2D,
             OperationKind::Pocket2D => Self::Pocket2D,
             OperationKind::DrillBore => Self::DrillBore,
-            OperationKind::ThreadMill => Self::DrillBore,
+            OperationKind::ThreadMill => Self::ThreadMill,
             OperationKind::ChamferTrace => Self::ChamferTrace,
             OperationKind::VCarve => Self::VCarve,
             OperationKind::Adaptive3D => Self::Adaptive2D,
@@ -247,6 +248,35 @@ pub fn paint_icon(painter: &egui::Painter, rect: Rect, icon: IconKind, color: Co
             painter.circle_stroke(sq.center(), s * 0.32, stroke);
             painter.line_segment([p(0.50, 0.10), p(0.50, 0.90)], thin);
             painter.line_segment([p(0.10, 0.50), p(0.90, 0.50)], thin);
+        }
+        IconKind::ThreadMill => {
+            // Shank collar
+            let shank = Rect::from_min_max(p(0.36, 0.10), p(0.64, 0.25));
+            painter.rect_stroke(shank, CornerRadius::ZERO, thin, StrokeKind::Inside);
+            // Slim relieved neck
+            painter.line_segment([p(0.44, 0.25), p(0.44, 0.46)], thin);
+            painter.line_segment([p(0.56, 0.25), p(0.56, 0.46)], thin);
+            // V-tooth cutting profile silhouette
+            painter.add(egui::Shape::closed_line(
+                vec![
+                    p(0.44, 0.46),
+                    p(0.24, 0.55),
+                    p(0.38, 0.64),
+                    p(0.24, 0.73),
+                    p(0.38, 0.82),
+                    p(0.38, 0.88),
+                    p(0.62, 0.88),
+                    p(0.62, 0.82),
+                    p(0.76, 0.73),
+                    p(0.62, 0.64),
+                    p(0.76, 0.55),
+                    p(0.56, 0.46),
+                ],
+                stroke,
+            ));
+            // Slanted helix pitch ridges across the cutting band
+            painter.line_segment([p(0.29, 0.57), p(0.71, 0.53)], thin);
+            painter.line_segment([p(0.29, 0.75), p(0.71, 0.71)], thin);
         }
         IconKind::ChamferTrace => {
             painter.add(egui::Shape::line(
@@ -873,4 +903,35 @@ pub fn hud_toggle_pill(
 
     let _ = resp.on_hover_text(tooltip);
     changed
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn thread_mill_icon_maps_operation_and_renders_without_panic() {
+        assert_eq!(
+            IconKind::for_operation(OperationKind::ThreadMill, false),
+            IconKind::ThreadMill
+        );
+
+        let ctx = egui::Context::default();
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 200.0))),
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
+                let (rect, _) = ui.allocate_exact_size(Vec2::splat(24.0), Sense::hover());
+                paint_icon(ui.painter(), rect, IconKind::ThreadMill, Color32::WHITE);
+                let _ = inline_icon(ui, IconKind::ThreadMill, Color32::LIGHT_GRAY, 14.0);
+            });
+        });
+        out.textures_delta.clear();
+        assert!(
+            !out.shapes.is_empty(),
+            "expected IconKind::ThreadMill to emit vector shapes"
+        );
+    }
 }

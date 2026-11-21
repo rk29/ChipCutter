@@ -562,6 +562,41 @@ impl ToolLibraryModalState {
                                             flutes: n,
                                         };
                                     }
+                                    if ui
+                                        .selectable_label(
+                                            matches!(
+                                                tool.geometry,
+                                                CutterGeometry::ThreadMill { .. }
+                                            ),
+                                            "Thread Mill",
+                                        )
+                                        .on_hover_text(
+                                            "Relieved-neck single-point or multi-form helical thread mill cutter",
+                                        )
+                                        .clicked()
+                                    {
+                                        let tm_d = d.max(1.0);
+                                        let tm_oal = oal.max(25.0);
+                                        let tm_fl = 1.25_f64.min(0.25 * tm_oal).max(0.5);
+                                        let tm_neck_len = fl
+                                            .max(tm_fl + 4.0)
+                                            .min(tm_oal - 4.0)
+                                            .max(tm_fl + 0.5);
+                                        let tm_neck_d =
+                                            (0.60 * tm_d).max(0.4).min(tm_d - 0.1);
+                                        tool.geometry = CutterGeometry::ThreadMill {
+                                            diameter_mm: tm_d,
+                                            neck_diameter_mm: tm_neck_d,
+                                            neck_length_mm: tm_neck_len,
+                                            pitch_mm: 1.0,
+                                            teeth_count: 1,
+                                            thread_angle_deg: 60.0,
+                                            flute_length_mm: tm_fl,
+                                            overall_length_mm: tm_oal,
+                                            shank_diameter_mm: shk.max(tm_neck_d),
+                                            flutes: n.clamp(1, 12),
+                                        };
+                                    }
                                 })
                                 .response
                                 .on_hover_text("Select physical cutter profile geometry");
@@ -804,14 +839,25 @@ fn edit_offset_number_row(ui: &mut egui::Ui, label: &str, tooltip: &str, value: 
 }
 
 fn edit_mm_drag(ui: &mut egui::Ui, label: &str, val_mm: &mut f64, unit: DisplayUnit) {
-    let mut disp = unit.from_mm(*val_mm);
     let tip = format!(
         "Edit {} in current tool units ({})",
         label.trim_end_matches(':'),
         unit.suffix()
     );
+    edit_mm_drag_with_tip(ui, label, &tip, val_mm, unit);
+}
+
+fn edit_mm_drag_with_tip(
+    ui: &mut egui::Ui,
+    label: &str,
+    tooltip: &str,
+    val_mm: &mut f64,
+    unit: DisplayUnit,
+) {
+    let mut disp = unit.from_mm(*val_mm);
     ui.horizontal(|ui| {
-        ui.label(label);
+        ui.add(egui::Label::new(label).sense(egui::Sense::hover()))
+            .on_hover_text(tooltip);
         if ui
             .add(
                 egui::DragValue::new(&mut disp)
@@ -820,7 +866,7 @@ fn edit_mm_drag(ui: &mut egui::Ui, label: &str, val_mm: &mut f64, unit: DisplayU
                     .range(0.0..=1_000.0)
                     .suffix(format!(" {}", unit.suffix())),
             )
-            .on_hover_text(tip)
+            .on_hover_text(tooltip)
             .changed()
         {
             *val_mm = unit.to_mm(disp);
@@ -962,33 +1008,86 @@ fn edit_cutter_geometry_fields(ui: &mut egui::Ui, geom: &mut CutterGeometry, uni
             shank_diameter_mm,
             flutes,
         } => {
-            edit_mm_drag(ui, "Cutting Diameter:", diameter_mm, unit);
-            edit_mm_drag(ui, "Neck Diameter:", neck_diameter_mm, unit);
-            edit_mm_drag(ui, "Neck Length (Reach):", neck_length_mm, unit);
-            edit_mm_drag(ui, "Pitch:", pitch_mm, unit);
+            edit_mm_drag_with_tip(
+                ui,
+                "Cutting Diameter:",
+                "Outer crest cutting diameter of the thread mill teeth (must be smaller than internal minor diameter)",
+                diameter_mm,
+                unit,
+            );
+            edit_mm_drag_with_tip(
+                ui,
+                "Neck Diameter:",
+                "Relieved slim neck diameter behind the cutting teeth for deep internal bore clearance",
+                neck_diameter_mm,
+                unit,
+            );
+            edit_mm_drag_with_tip(
+                ui,
+                "Neck Length (Reach):",
+                "Usable relieved reach from tip to shank taper (maximum thread depth without shank collision)",
+                neck_length_mm,
+                unit,
+            );
+            edit_mm_drag_with_tip(
+                ui,
+                "Cutter Pitch:",
+                "Nominal thread pitch spacing of the cutter form (multi-form cutters must match target pitch within 0.02 mm)",
+                pitch_mm,
+                unit,
+            );
             ui.horizontal(|ui| {
-                ui.label("Teeth Count:");
+                let teeth_tip = "Number of axial thread teeth: 1 = Single-Point (cuts any pitch), >1 = Multi-Form (cuts full depth in fewer turns)";
+                ui.add(egui::Label::new("Teeth Count:").sense(egui::Sense::hover()))
+                    .on_hover_text(teeth_tip);
                 ui.add(egui::DragValue::new(teeth_count).range(1..=32))
-                    .on_hover_text("1 = Single-Point thread mill, >1 = Multi-Form thread mill");
+                    .on_hover_text(teeth_tip);
+                let mode_tag = if *teeth_count <= 1 {
+                    "(Single-Point)"
+                } else {
+                    "(Multi-Form)"
+                };
+                ui.weak(mode_tag).on_hover_text(teeth_tip);
             });
             ui.horizontal(|ui| {
-                ui.label("Thread Angle:");
+                let ang_tip =
+                    "Included thread flank angle (60 deg for ISO Metric and Unified UNC/UNF)";
+                ui.add(egui::Label::new("Thread Angle:").sense(egui::Sense::hover()))
+                    .on_hover_text(ang_tip);
                 ui.add(
                     egui::DragValue::new(thread_angle_deg)
                         .range(29.0..=90.0)
                         .suffix("°"),
                 )
-                .on_hover_text(
-                    "Included thread flank angle (60° for ISO Metric & Unified UNC/UNF)",
-                );
+                .on_hover_text(ang_tip);
             });
-            edit_mm_drag(ui, "Flute Length:", flute_length_mm, unit);
-            edit_mm_drag(ui, "Overall Length:", overall_length_mm, unit);
-            edit_mm_drag(ui, "Shank Diameter:", shank_diameter_mm, unit);
+            edit_mm_drag_with_tip(
+                ui,
+                "Flute Length:",
+                "Axial length of the cutting tooth band at the cutter tip (must be <= Neck Length)",
+                flute_length_mm,
+                unit,
+            );
+            edit_mm_drag_with_tip(
+                ui,
+                "Overall Length:",
+                "Total overall length (OAL) of the thread mill from tip to shank end",
+                overall_length_mm,
+                unit,
+            );
+            edit_mm_drag_with_tip(
+                ui,
+                "Shank Diameter:",
+                "Cylindrical collet/holder shank diameter",
+                shank_diameter_mm,
+                unit,
+            );
             ui.horizontal(|ui| {
-                ui.label("Flutes:");
+                let fl_tip = "Number of radial cutting flutes around the thread mill circumference";
+                ui.add(egui::Label::new("Flutes:").sense(egui::Sense::hover()))
+                    .on_hover_text(fl_tip);
                 ui.add(egui::DragValue::new(flutes).range(1..=12))
-                    .on_hover_text("Number of cutting flutes on the thread mill");
+                    .on_hover_text(fl_tip);
             });
         }
     }
@@ -1021,15 +1120,47 @@ fn draw_cutter_schematic(ui: &mut egui::Ui, tool: &Tool) {
     let r_shk = 0.5 * shk * scale;
     let r_cut = 0.5 * d * scale;
 
+    // Fluted cutting body (gold/amber carbide tint)
+    let shank_col = egui::Color32::from_rgb(122, 130, 142);
+    let flute_col = egui::Color32::from_rgb(232, 182, 68);
+
+    if let CutterGeometry::ThreadMill {
+        neck_diameter_mm,
+        neck_length_mm,
+        pitch_mm,
+        teeth_count,
+        ..
+    } = tool.geometry
+    {
+        draw_thread_mill_schematic(
+            &painter,
+            ThreadMillSchematicSpec {
+                cx,
+                top_y,
+                tip_y,
+                scale,
+                oal,
+                flute_len: fl,
+                r_shk,
+                r_cut,
+                neck_diameter_mm: neck_diameter_mm as f32,
+                neck_length_mm: neck_length_mm as f32,
+                pitch_mm: pitch_mm as f32,
+                teeth_count,
+                shank_col,
+                flute_col,
+            },
+        );
+        return;
+    }
+
     // Shank rectangle (steel gray)
     let shank_rect = egui::Rect::from_min_max(
         egui::pos2(cx - r_shk, top_y),
         egui::pos2(cx + r_shk, shank_bot_y),
     );
-    painter.rect_filled(shank_rect, 1.0, egui::Color32::from_rgb(122, 130, 142));
+    painter.rect_filled(shank_rect, 1.0, shank_col);
 
-    // Fluted cutting body (gold/amber carbide tint)
-    let flute_col = egui::Color32::from_rgb(232, 182, 68);
     match tool.geometry {
         CutterGeometry::ChamferMill {
             tip_diameter_mm,
@@ -1093,6 +1224,122 @@ fn draw_cutter_schematic(ui: &mut egui::Ui, tool: &Tool) {
                 flute_col,
             );
         }
+    }
+}
+
+struct ThreadMillSchematicSpec {
+    cx: f32,
+    top_y: f32,
+    tip_y: f32,
+    scale: f32,
+    oal: f32,
+    flute_len: f32,
+    r_shk: f32,
+    r_cut: f32,
+    neck_diameter_mm: f32,
+    neck_length_mm: f32,
+    pitch_mm: f32,
+    teeth_count: u32,
+    shank_col: egui::Color32,
+    flute_col: egui::Color32,
+}
+
+fn draw_thread_mill_schematic(painter: &egui::Painter, s: ThreadMillSchematicSpec) {
+    let total_h = (s.tip_y - s.top_y).max(16.0);
+    let neck_len = s.neck_length_mm.clamp(s.flute_len.max(0.5), s.oal - 1.5);
+    let r_cut = s.r_cut.max(2.5);
+    let r_neck = (0.5 * s.neck_diameter_mm.max(0.4) * s.scale)
+        .max(1.2)
+        .min((r_cut - 0.6).max(1.0));
+    let r_root = r_neck.min(r_cut * 0.72);
+
+    let neck_top_y = (s.top_y + (s.oal - neck_len) * s.scale).clamp(s.top_y + 6.0, s.tip_y - 6.0);
+    let taper_h = (s.r_shk - r_neck)
+        .abs()
+        .clamp(2.5, 8.0)
+        .min((neck_top_y - s.top_y) * 0.45);
+    let shank_end_y = (neck_top_y - taper_h).max(s.top_y + 3.0);
+
+    // 1. Cylindrical shank
+    painter.rect_filled(
+        egui::Rect::from_min_max(
+            egui::pos2(s.cx - s.r_shk, s.top_y),
+            egui::pos2(s.cx + s.r_shk, shank_end_y),
+        ),
+        1.0,
+        s.shank_col,
+    );
+
+    // 2. Smooth shank-to-neck transition taper
+    painter.add(egui::Shape::convex_polygon(
+        vec![
+            egui::pos2(s.cx - s.r_shk, shank_end_y),
+            egui::pos2(s.cx + s.r_shk, shank_end_y),
+            egui::pos2(s.cx + r_neck, neck_top_y),
+            egui::pos2(s.cx - r_neck, neck_top_y),
+        ],
+        s.shank_col,
+        egui::Stroke::NONE,
+    ));
+
+    // 3. Cutting tooth band height (ensure crisp readability for both single-point and multi-form)
+    let teeth = s.teeth_count.clamp(1, 12) as usize;
+    let phys_band_h = (s.flute_len.max(s.pitch_mm * (teeth as f32))) * s.scale;
+    let min_band_h = if teeth == 1 {
+        5.0_f32
+    } else {
+        (teeth as f32 * 3.4).min(total_h * 0.42)
+    };
+    let max_band_h = (s.tip_y - neck_top_y).max(4.5);
+    let band_h = phys_band_h.max(min_band_h).min(max_band_h);
+    let cut_top_y = (s.tip_y - band_h).max(neck_top_y);
+
+    // 4. Relieved cylindrical neck
+    let neck_col = egui::Color32::from_rgb(164, 172, 184);
+    if cut_top_y > neck_top_y + 0.5 {
+        painter.rect_filled(
+            egui::Rect::from_min_max(
+                egui::pos2(s.cx - r_neck, neck_top_y),
+                egui::pos2(s.cx + r_neck, cut_top_y),
+            ),
+            0.0,
+            neck_col,
+        );
+    }
+
+    // 5. Core body behind V-teeth
+    painter.rect_filled(
+        egui::Rect::from_min_max(
+            egui::pos2(s.cx - r_root, cut_top_y),
+            egui::pos2(s.cx + r_root, s.tip_y),
+        ),
+        0.0,
+        s.flute_col,
+    );
+
+    // 6. Sharp V-tooth silhouette(s)
+    let tooth_h = (s.tip_y - cut_top_y) / (teeth as f32);
+    let crest_stroke = egui::Stroke::new(0.8, egui::Color32::from_rgb(150, 108, 24));
+    for i in 0..teeth {
+        let y0 = cut_top_y + (i as f32) * tooth_h;
+        let y1 = y0 + tooth_h;
+        let ym = 0.5 * (y0 + y1);
+        painter.add(egui::Shape::convex_polygon(
+            vec![
+                egui::pos2(s.cx - r_root, y0),
+                egui::pos2(s.cx + r_root, y0),
+                egui::pos2(s.cx + r_cut, ym),
+                egui::pos2(s.cx + r_root, y1),
+                egui::pos2(s.cx - r_root, y1),
+                egui::pos2(s.cx - r_cut, ym),
+            ],
+            s.flute_col,
+            egui::Stroke::NONE,
+        ));
+        painter.line_segment(
+            [egui::pos2(s.cx - r_cut, ym), egui::pos2(s.cx + r_cut, ym)],
+            crest_stroke,
+        );
     }
 }
 
@@ -1270,6 +1517,118 @@ mod tests {
                     rect.center(),
                 );
             }
+        }
+    }
+
+    #[test]
+    fn thread_mill_editor_and_schematic_render_single_point_and_multi_form() {
+        let ctx = egui::Context::default();
+        let mut global_lib = default_starter_tool_library();
+        let single_idx = global_lib.tools.len();
+        global_lib.tools.push(Tool {
+            id: ToolId("test_tm_single".to_string()),
+            tool_number: 20,
+            length_offset_number: 20,
+            diameter_offset_number: 20,
+            name: "T20 4.75mm Single-Point Thread Mill".to_string(),
+            vendor: None,
+            product_id: None,
+            native_unit: DisplayUnit::Millimeter,
+            spindle_direction: SpindleDirection::Cw,
+            default_coolant: CoolantMode::AirBlast,
+            stickout_length_mm: 24.0,
+            geometry: CutterGeometry::ThreadMill {
+                diameter_mm: 4.75,
+                neck_diameter_mm: 2.85,
+                neck_length_mm: 16.0,
+                pitch_mm: 1.0,
+                teeth_count: 1,
+                thread_angle_deg: 60.0,
+                flute_length_mm: 1.2,
+                overall_length_mm: 50.0,
+                shank_diameter_mm: 6.0,
+                flutes: 3,
+            },
+            presets: Vec::new(),
+        });
+        let multi_idx = global_lib.tools.len();
+        global_lib.tools.push(Tool {
+            id: ToolId("test_tm_multi".to_string()),
+            tool_number: 21,
+            length_offset_number: 21,
+            diameter_offset_number: 21,
+            name: "T21 M8x1.25 Multi-Form Thread Mill".to_string(),
+            vendor: None,
+            product_id: None,
+            native_unit: DisplayUnit::Millimeter,
+            spindle_direction: SpindleDirection::Cw,
+            default_coolant: CoolantMode::Flood,
+            stickout_length_mm: 26.0,
+            geometry: CutterGeometry::ThreadMill {
+                diameter_mm: 5.8,
+                neck_diameter_mm: 3.6,
+                neck_length_mm: 20.0,
+                pitch_mm: 1.25,
+                teeth_count: 6,
+                thread_angle_deg: 60.0,
+                flute_length_mm: 7.5,
+                overall_length_mm: 55.0,
+                shank_diameter_mm: 6.0,
+                flutes: 3,
+            },
+            presets: Vec::new(),
+        });
+
+        let mut modal = ToolLibraryModalState::new();
+        modal.open = true;
+        let mut project = ProjectDocument::new("test_tm");
+        let mut history = UndoHistory::new(8);
+        let mut logs = Vec::new();
+        let base_input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 900.0),
+            )),
+            ..Default::default()
+        };
+
+        for (idx, expected_mode) in [(single_idx, "(Single-Point)"), (multi_idx, "(Multi-Form)")] {
+            modal.selected_tool_idx = idx;
+            let _ = run_modal_frame(
+                &ctx,
+                base_input.clone(),
+                &mut modal,
+                &mut global_lib,
+                &mut project,
+                &mut history,
+                &mut logs,
+            );
+            let out = run_modal_frame(
+                &ctx,
+                base_input.clone(),
+                &mut modal,
+                &mut global_lib,
+                &mut project,
+                &mut history,
+                &mut logs,
+            );
+            let texts = collect_text_shapes(&out.shapes);
+            assert!(
+                texts.iter().any(|(t, _)| t == "Thread Mill"),
+                "expected cutter type selector to display 'Thread Mill'"
+            );
+            assert!(
+                texts.iter().any(|(t, _)| t == "Neck Length (Reach):"),
+                "expected Thread Mill geometry fields to render"
+            );
+            assert!(
+                texts.iter().any(|(t, _)| t == expected_mode),
+                "expected mode tag '{expected_mode}' to render"
+            );
+            assert!(
+                texts.iter().any(|(t, _)| t == "Geometry Valid"),
+                "expected Thread Mill tool to validate cleanly"
+            );
         }
     }
 }

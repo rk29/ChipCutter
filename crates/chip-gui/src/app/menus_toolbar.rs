@@ -12,8 +12,8 @@ use crate::{
     panels::{
         InspectorFocus, OperationTab, ViewportPickMode,
         browser::{
-            default_pick_mode_for_op, delete_operation_in_setup, duplicate_operation_in_setup,
-            move_operation_to_slot,
+            create_default_operation_in_setup, default_pick_mode_for_op, delete_operation_in_setup,
+            duplicate_operation_in_setup, move_operation_to_slot,
         },
         command_palette::CommandId,
     },
@@ -716,41 +716,8 @@ impl ChipCutterApp {
                     .button(format!("+ {}", kind.label()))
                     .on_hover_text(format!("Add a new {} operation to the active Setup", kind.label()))
                     .clicked()
-                    && self.active_setup_idx < self.project.setups.len()
                 {
-                    self.history.record_before_edit(
-                        format!("Add {}", kind.label()),
-                        None,
-                        &self.project,
-                    );
-                    let s_idx = self.active_setup_idx;
-                    let n = self.project.setups[s_idx].operations.len() + 1;
-                    let mut op = Operation::new(
-                        format!("op_{s_idx}_{n}"),
-                        format!("{} {n}", kind.default_name()),
-                        kind,
-                    );
-                    if let Some(t) = self
-                        .project
-                        .tools
-                        .iter()
-                        .find(|t| kind.is_compatible_with_tool(t))
-                    {
-                        op.tool_id = Some(t.id.clone());
-                        op.preset_id = t.presets.first().map(|p| p.id.clone());
-                    }
-                    self.project.setups[s_idx].operations.push(op);
-                    let o_idx = self.project.setups[s_idx].operations.len() - 1;
-                    self.inspector_focus = InspectorFocus::Operation {
-                        setup_idx: s_idx,
-                        op_idx: o_idx,
-                    };
-                    self.op_tab = if kind == OperationKind::Facing || kind.is_3d_surface() {
-                        OperationTab::Passes
-                    } else {
-                        OperationTab::Geometry
-                    };
-                    self.pick_mode = default_pick_mode_for_op(s_idx, o_idx, kind, self.op_tab);
+                    self.add_standard_operation(kind);
                     ui.close();
                 }
             }
@@ -1332,36 +1299,20 @@ impl ChipCutterApp {
         self.history
             .record_before_edit(format!("Add {}", kind.label()), None, &self.project);
         let s_idx = self.active_setup_idx;
-        let n = self.project.setups[s_idx].operations.len() + 1;
-        let mut op = Operation::new(
-            format!("op_{s_idx}_{n}"),
-            format!("{} {n}", kind.default_name()),
-            kind,
-        );
-        if let Some(t) = self
-            .project
-            .tools
-            .iter()
-            .chain(self.global_tools.tools.iter())
-            .find(|t| kind.is_compatible_with_tool(t))
-            .cloned()
+        if let Some(o_idx) =
+            create_default_operation_in_setup(&mut self.project, &self.global_tools, s_idx, kind)
         {
-            self.project.ensure_tool_embedded(&t);
-            op.tool_id = Some(t.id);
-            op.preset_id = t.presets.first().map(|p| p.id.clone());
+            self.inspector_focus = InspectorFocus::Operation {
+                setup_idx: s_idx,
+                op_idx: o_idx,
+            };
+            self.op_tab = if kind == OperationKind::Facing || kind.is_3d_surface() {
+                OperationTab::Passes
+            } else {
+                OperationTab::Geometry
+            };
+            self.pick_mode = default_pick_mode_for_op(s_idx, o_idx, kind, self.op_tab);
         }
-        self.project.setups[s_idx].operations.push(op);
-        let o_idx = self.project.setups[s_idx].operations.len() - 1;
-        self.inspector_focus = InspectorFocus::Operation {
-            setup_idx: s_idx,
-            op_idx: o_idx,
-        };
-        self.op_tab = if kind == OperationKind::Facing || kind.is_3d_surface() {
-            OperationTab::Passes
-        } else {
-            OperationTab::Geometry
-        };
-        self.pick_mode = default_pick_mode_for_op(s_idx, o_idx, kind, self.op_tab);
     }
 
     pub(crate) fn execute_palette_command(&mut self, cmd: CommandId, ctx: &egui::Context) {
@@ -1409,6 +1360,7 @@ impl ChipCutterApp {
             CommandId::AddOpContour2D => self.add_standard_operation(OperationKind::Contour2D),
             CommandId::AddOpPocket2D => self.add_standard_operation(OperationKind::Pocket2D),
             CommandId::AddOpDrillBore => self.add_standard_operation(OperationKind::DrillBore),
+            CommandId::AddOpThreadMill => self.add_standard_operation(OperationKind::ThreadMill),
             CommandId::AddOpChamferTrace => {
                 self.add_standard_operation(OperationKind::ChamferTrace)
             }

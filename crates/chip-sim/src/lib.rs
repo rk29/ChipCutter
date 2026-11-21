@@ -538,4 +538,862 @@ mod tests {
             );
         }
     }
+
+    fn make_test_multiform_thread_mill() -> chip_tools::Tool {
+        chip_tools::Tool {
+            id: chip_tools::ToolId("tm_m8_4tooth".to_string()),
+            tool_number: 11,
+            length_offset_number: 11,
+            diameter_offset_number: 11,
+            name: "6.0mm 4-Tooth M8x1.25 Multi-Form Thread Mill".to_string(),
+            vendor: Some("Test Carbide".to_string()),
+            product_id: None,
+            native_unit: DisplayUnit::Millimeter,
+            spindle_direction: chip_tools::SpindleDirection::Cw,
+            default_coolant: chip_tools::CoolantMode::Mist,
+            stickout_length_mm: 24.0,
+            geometry: CutterGeometry::ThreadMill {
+                diameter_mm: 6.0,
+                neck_diameter_mm: 3.6,
+                neck_length_mm: 18.0,
+                pitch_mm: 1.25,
+                teeth_count: 4,
+                thread_angle_deg: 60.0,
+                flute_length_mm: 5.0,
+                overall_length_mm: 57.0,
+                shank_diameter_mm: 6.0,
+                flutes: 3,
+            },
+            presets: Vec::new(),
+        }
+    }
+
+    fn make_test_drill_tool(diameter_mm: f64, flute_length_mm: f64) -> chip_tools::Tool {
+        chip_tools::Tool {
+            id: chip_tools::ToolId(format!("drill_{diameter_mm:.1}")),
+            tool_number: 6,
+            length_offset_number: 6,
+            diameter_offset_number: 6,
+            name: format!("{diameter_mm:.1}mm 118° Twist Drill"),
+            vendor: None,
+            product_id: None,
+            native_unit: DisplayUnit::Millimeter,
+            spindle_direction: chip_tools::SpindleDirection::Cw,
+            default_coolant: chip_tools::CoolantMode::Flood,
+            stickout_length_mm: flute_length_mm + 8.0,
+            geometry: CutterGeometry::TwistDrill {
+                diameter_mm,
+                point_angle_deg: 118.0,
+                flute_length_mm,
+                overall_length_mm: flute_length_mm + 24.0,
+                shank_diameter_mm: diameter_mm,
+                flutes: 2,
+            },
+            presets: Vec::new(),
+        }
+    }
+
+    fn build_internal_helical_thread_toolpath(
+        op_id: &str,
+        center: chip_math::DVec2,
+        r_path: f64,
+        pitch: f64,
+        z_bottom: f64,
+        n_turns: u32,
+    ) -> chip_cam::GeneratedToolpath {
+        use chip_cam::XyArcMove;
+        use chip_math::DVec2;
+
+        let mut b = ToolpathBuilder::new(op_id);
+        b.push_event(ClEvent::SpindleStart {
+            rpm: 10_000.0,
+            direction: chip_tools::SpindleDirection::Cw,
+        });
+        b.rapid_to(DVec3::new(center.x, center.y, 8.0));
+        b.rapid_to(DVec3::new(center.x, center.y, 2.0));
+        // Plunge down pre-drilled hole centerline to bottom Z
+        b.linear_to(
+            DVec3::new(center.x, center.y, z_bottom),
+            400.0,
+            MotionRole::Plunge,
+        );
+
+        // 180° helical tangent lead-in (CCW Bottom-Up G3 Climb)
+        let dz_lead = 0.5 * pitch;
+        let r_lead = 0.5 * r_path;
+        let c_lead = DVec2::new(center.x + r_lead, center.y);
+        let z_helix_start = z_bottom + dz_lead;
+        b.arc_xy_to(XyArcMove {
+            end_wcs: DVec3::new(center.x + r_path, center.y, z_helix_start),
+            center_xy: c_lead,
+            radius_mm: r_lead,
+            ccw: true,
+            turns: 0,
+            feed_mm_min: 300.0,
+            role: MotionRole::LeadIn,
+        });
+
+        let mut cur_z = z_helix_start;
+        for _ in 0..n_turns {
+            let quads = [
+                (
+                    DVec2::new(center.x, center.y + r_path),
+                    cur_z + 0.25 * pitch,
+                ),
+                (
+                    DVec2::new(center.x - r_path, center.y),
+                    cur_z + 0.50 * pitch,
+                ),
+                (
+                    DVec2::new(center.x, center.y - r_path),
+                    cur_z + 0.75 * pitch,
+                ),
+                (DVec2::new(center.x + r_path, center.y), cur_z + pitch),
+            ];
+            for (xy, z_end) in quads {
+                b.arc_xy_to(XyArcMove {
+                    end_wcs: DVec3::new(xy.x, xy.y, z_end),
+                    center_xy: center,
+                    radius_mm: r_path,
+                    ccw: true,
+                    turns: 0,
+                    feed_mm_min: 400.0,
+                    role: MotionRole::FinishCut,
+                });
+            }
+            cur_z += pitch;
+        }
+
+        // 180° helical tangent lead-out back to centerline
+        b.arc_xy_to(XyArcMove {
+            end_wcs: DVec3::new(center.x, center.y, cur_z + dz_lead),
+            center_xy: c_lead,
+            radius_mm: r_lead,
+            ccw: true,
+            turns: 0,
+            feed_mm_min: 300.0,
+            role: MotionRole::LeadOut,
+        });
+        b.rapid_to(DVec3::new(center.x, center.y, 8.0));
+        b.finish()
+    }
+
+    #[test]
+    fn thread_mill_3d_cutter_mesh_and_non_monotonic_profile_are_exact() {
+        let lib = default_starter_tool_library();
+        let sp_tool = &lib.tools[8]; // T9: Ø4.75mm single-point 60° thread mill
+        let mf_tool = make_test_multiform_thread_mill();
+
+        // 1. Verify single-point `RadialCutterProfile` & `cutter_radius_at_z`
+        let sp = RadialCutterProfile::from_tool(sp_tool);
+        assert!(sp.is_thread_mill);
+        assert!(!sp.is_center_cutting);
+        assert!(approx_eq(sp.cutting_radius_mm, 2.375, 1e-9));
+        assert!(approx_eq(sp.neck_radius_mm, 1.425, 1e-9));
+        assert!(approx_eq(sp.neck_length_mm, 16.0, 1e-9));
+        assert!(approx_eq(sp.effective_reach_mm(), 16.0, 1e-9));
+        assert_eq!(sp.teeth_count, 1);
+
+        assert!(sp.cutter_radius_at_z(-0.01).is_none());
+        assert!(sp.cutter_radius_at_z(25.0).is_none());
+        // Single-point crest at z = 0.6 mm reaches full cutting radius `2.375 mm`
+        assert!(approx_eq(sp.cutter_radius_at_z(0.6).unwrap(), 2.375, 1e-9));
+        // Flanks slope down smoothly at 60° toward `R_neck = 1.425 mm`
+        let r_flank = sp.cutter_radius_at_z(0.3).unwrap();
+        assert!(r_flank > sp.neck_radius_mm && r_flank < sp.cutting_radius_mm);
+        // Relieved neck (`1.2 < z <= 16.0`) drops strictly below cutting radius!
+        assert!(approx_eq(sp.cutter_radius_at_z(5.0).unwrap(), 1.425, 1e-9));
+        assert!(approx_eq(sp.cutter_radius_at_z(15.5).unwrap(), 1.425, 1e-9));
+        // Shank (`16.0 < z <= 22.0`) steps back up to `3.0 mm`
+        assert!(approx_eq(sp.cutter_radius_at_z(18.0).unwrap(), 3.0, 1e-9));
+
+        // 2. Verify multi-form 4-tooth `cutter_radius_at_z`
+        let mf = RadialCutterProfile::from_tool(&mf_tool);
+        assert!(mf.is_thread_mill);
+        assert_eq!(mf.teeth_count, 4);
+        for k in 0..4 {
+            let z_crest = (k as f64 + 0.5) * 1.25;
+            assert!(
+                approx_eq(mf.cutter_radius_at_z(z_crest).unwrap(), 3.0, 1e-9),
+                "multi-form tooth {k} crest at z={z_crest}"
+            );
+        }
+        // Valley between teeth dips sharply below cutting radius (`< 2.0 mm`)
+        let r_valley = mf.cutter_radius_at_z(1.25).unwrap();
+        assert!(r_valley < 2.0 && r_valley >= mf.neck_radius_mm);
+        // Relieved neck (`5.0 < z <= 18.0`) == `1.8 mm < 3.0 mm`
+        assert!(approx_eq(mf.cutter_radius_at_z(10.0).unwrap(), 1.8, 1e-9));
+        // Shank (`18.0 < z <= 24.0`) == `3.0 mm`
+        assert!(approx_eq(mf.cutter_radius_at_z(21.0).unwrap(), 3.0, 1e-9));
+
+        // 3. Verify 3D revolved cutter meshes for both single-point and multi-form
+        for (tool, prof, expected_crests) in [(sp_tool, sp, 1usize), (&mf_tool, mf, 4usize)] {
+            for crash_hl in [false, true] {
+                let mesh = build_cutter_assembly_mesh(tool, 32, crash_hl);
+                assert!(!mesh.vertices.is_empty());
+                assert_eq!(mesh.indices.len() % 3, 0);
+                for &idx in &mesh.indices {
+                    assert!((idx as usize) < mesh.vertices.len());
+                }
+
+                let mut max_r_flute = 0.0_f64;
+                let mut max_r_neck = 0.0_f64;
+                let mut max_r_shank = 0.0_f64;
+                let mut crest_z_levels: Vec<i32> = Vec::new();
+
+                for v in &mesh.vertices {
+                    let n_len = (f64::from(v.normal[0]).powi(2)
+                        + f64::from(v.normal[1]).powi(2)
+                        + f64::from(v.normal[2]).powi(2))
+                    .sqrt();
+                    assert!(
+                        (n_len - 1.0).abs() < 1e-3,
+                        "vertex normal must be unit length, got {n_len}"
+                    );
+                    let r = f64::from(v.pos_mm[0]).hypot(f64::from(v.pos_mm[1]));
+                    let z = f64::from(v.pos_mm[2]);
+                    if (0.0..=prof.flute_length_mm + 1e-4).contains(&z) {
+                        max_r_flute = max_r_flute.max(r);
+                        if (r - prof.cutting_radius_mm).abs() < 1e-3 {
+                            let z_bucket = (z * 100.0).round() as i32;
+                            if !crest_z_levels.contains(&z_bucket) {
+                                crest_z_levels.push(z_bucket);
+                            }
+                        }
+                    } else if (z - prof.neck_length_mm).abs() < 1e-3 {
+                        max_r_neck = max_r_neck.max(r);
+                    } else if (z - prof.stickout_length_mm).abs() < 1e-3
+                        && r <= prof.shank_radius_mm + 1e-3
+                    {
+                        max_r_shank = max_r_shank.max(r);
+                    }
+                }
+
+                assert!(
+                    approx_eq(max_r_flute, prof.cutting_radius_mm, 1e-3),
+                    "flute band max radius {max_r_flute} != {}",
+                    prof.cutting_radius_mm
+                );
+                assert!(
+                    approx_eq(max_r_neck, prof.neck_radius_mm, 1e-3),
+                    "relieved neck max radius {max_r_neck} != {}",
+                    prof.neck_radius_mm
+                );
+                assert!(
+                    max_r_neck < max_r_flute - 0.5,
+                    "relieved neck ({max_r_neck}) must be visibly narrower than tooth crest ({max_r_flute})"
+                );
+                assert!(
+                    approx_eq(max_r_shank, prof.shank_radius_mm, 1e-3),
+                    "shank max radius {max_r_shank} != {}",
+                    prof.shank_radius_mm
+                );
+                assert_eq!(
+                    crest_z_levels.len(),
+                    expected_crests,
+                    "expected {expected_crests} distinct V-tooth crest rings, got {crest_z_levels:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn tridexel_internal_m8_helical_thread_mill_carves_real_undercut_grooves_with_zero_crashes() {
+        use chip_cad::CadDocument;
+        use chip_cam::{ResolvedSetup, ResolvedStockGeometry};
+        use chip_math::{Aabb3, DVec2, RigidFrame3};
+
+        let lib = default_starter_tool_library();
+        let tm_475 = &lib.tools[8]; // T9: Ø4.75mm single-point 60° thread mill
+        let pilot_drill = make_test_drill_tool(6.8, 22.0);
+
+        // Compact 20 x 20 x 12 mm block centered at (0, 0), Z ∈ [-12, 0] -> ~0.125 mm Tri-Dexel pitch!
+        let aabb = Aabb3::new(DVec3::new(-10.0, -10.0, -12.0), DVec3::new(10.0, 10.0, 0.0));
+        let resolved = ResolvedSetup {
+            frame: RigidFrame3::IDENTITY,
+            model_aabb_wcs: aabb,
+            stock: ResolvedStockGeometry::Box { aabb_wcs: aabb },
+            rotary: None,
+            clearance_z_wcs: 12.0,
+            retract_z_wcs: 5.0,
+        };
+        let doc = CadDocument::empty();
+
+        // Op 1: Through-drill Ø6.8 mm pilot bore at (0, 0)
+        let mut b_drill = ToolpathBuilder::new("op_pilot");
+        b_drill.rapid_to(DVec3::new(0.0, 0.0, 8.0));
+        b_drill.linear_to(DVec3::new(0.0, 0.0, -15.0), 300.0, MotionRole::Plunge);
+        b_drill.rapid_to(DVec3::new(0.0, 0.0, 8.0));
+        let tp_drill = b_drill.finish();
+
+        // Op 2: Internal M8 x 1.25 helical thread mill (`r_path = (8.0 - 4.75) / 2 = 1.625 mm`)
+        let tp_thread = build_internal_helical_thread_toolpath(
+            "op_m8_thread",
+            DVec2::ZERO,
+            1.625,
+            1.25,
+            -10.0,
+            8,
+        );
+
+        let sim_drill_only = run_setup_simulation_with_engine(
+            &SetupSimulationInput {
+                doc: &doc,
+                setup: &resolved,
+                target_bodies: &[],
+                operations: &[SimOperationInput {
+                    op_id: "op_pilot",
+                    op_name: "Pilot Drill Ø6.8",
+                    tool: &pilot_drill,
+                    fallback_spindle_rpm: 3_500.0,
+                    intentional_edge_break_mm: 0.0,
+                    toolpath: &tp_drill,
+                }],
+                resolution: SimResolution::Standard,
+                kinematics: MachineKinematicsConfig::default(),
+                verify_config: SimVerificationConfig::default(),
+                cancel: None,
+            },
+            SimEngineKind::TriDexel,
+        )
+        .unwrap();
+
+        let sim = run_setup_simulation_with_engine(
+            &SetupSimulationInput {
+                doc: &doc,
+                setup: &resolved,
+                target_bodies: &[],
+                operations: &[
+                    SimOperationInput {
+                        op_id: "op_pilot",
+                        op_name: "Pilot Drill Ø6.8",
+                        tool: &pilot_drill,
+                        fallback_spindle_rpm: 3_500.0,
+                        intentional_edge_break_mm: 0.0,
+                        toolpath: &tp_drill,
+                    },
+                    SimOperationInput {
+                        op_id: "op_m8_thread",
+                        op_name: "M8x1.25 Thread Mill",
+                        tool: tm_475,
+                        fallback_spindle_rpm: 10_000.0,
+                        intentional_edge_break_mm: 0.0,
+                        toolpath: &tp_thread,
+                    },
+                ],
+                resolution: SimResolution::Standard,
+                kinematics: MachineKinematicsConfig::default(),
+                verify_config: SimVerificationConfig::default(),
+                cancel: None,
+            },
+            SimEngineKind::TriDexel,
+        )
+        .unwrap();
+
+        assert!(
+            sim.diagnostics.is_empty(),
+            "clean pre-drilled M8x1.25 thread mill must have 0 diagnostics, got: {:#?}",
+            sim.diagnostics
+        );
+        let thread_removed = sim.removed_volume_mm3 - sim_drill_only.removed_volume_mm3;
+        assert!(
+            thread_removed > 15.0,
+            "helical M8x1.25 thread grooves should remove > 15 mm³, removed {thread_removed:.2} mm³"
+        );
+
+        let td = sim.final_tridexel_stock.as_ref().unwrap();
+
+        // Verify Z-dexel overhang splitting inside the thread wall (`x ≈ 3.70 mm ∈ (3.40, 4.00)`, `y ≈ 0`)
+        let ix = ((3.70 - td.origin_mm.x) / td.dx_mm).floor() as usize;
+        let iy = ((0.0 - td.origin_mm.y) / td.dy_mm).floor() as usize;
+        let z_spans = td.z_rays.ray(ix, iy);
+        assert!(
+            z_spans.len() >= 5,
+            "Z-dexel inside internal thread wall must split into >= 5 overhanging thread crests, got {}: {:?}",
+            z_spans.len(),
+            z_spans
+        );
+
+        // Verify X-dexel radial thread profile oscillates between carved root (~4.0 mm) and retained crest (~3.4 mm)
+        let j_mid = ((0.0 - td.x_rays.origin_u_mm) / td.x_rays.du_mm).floor() as usize;
+        let mut min_wall_x = f64::INFINITY;
+        let mut max_wall_x = f64::NEG_INFINITY;
+        for k in 0..td.nz {
+            let pz = td.x_rays.center_v(k);
+            if !(-8.0..=-2.0).contains(&pz) {
+                continue;
+            }
+            let spans = td.x_rays.ray(j_mid, k);
+            // Positive-X solid wall starts after the hole gap (`min_mm > 0`)
+            if let Some(pos_wall) = spans.iter().find(|s| s.min_mm > 0.5) {
+                min_wall_x = min_wall_x.min(pos_wall.min_mm);
+                max_wall_x = max_wall_x.max(pos_wall.min_mm);
+            }
+        }
+        assert!(
+            max_wall_x > 3.80,
+            "carved thread root must reach > 3.80 mm (nominal 4.00 mm), got {max_wall_x:.3}"
+        );
+        assert!(
+            min_wall_x < 3.55,
+            "retained thread crest must stay < 3.55 mm (pilot 3.40 mm), got {min_wall_x:.3}"
+        );
+
+        let mesh = tessellate_tridexel_stock_mesh(td, true);
+        assert!(mesh.vertices.len() > 200);
+        assert_eq!(mesh.indices.len() % 3, 0);
+    }
+
+    #[test]
+    fn tridexel_external_m12_boss_thread_mill_carves_helical_grooves_with_zero_crashes() {
+        use chip_cad::CadDocument;
+        use chip_cam::{
+            ResolvedSetup, ResolvedStockGeometry, StockAxis, ThreadFormKind, XyArcMove,
+            compute_thread_minor_diameter_mm,
+        };
+        use chip_math::{Aabb3, DVec2, RigidFrame3};
+
+        // External thread mill with ample neck relief (`(6.0 - 3.4)/2 = 1.30 mm > 1.0735 mm` M12x1.75 depth)
+        let ext_tm = chip_tools::Tool {
+            id: chip_tools::ToolId("tm_ext_m12".to_string()),
+            tool_number: 12,
+            length_offset_number: 12,
+            diameter_offset_number: 12,
+            name: "6.0mm Single-Point External Thread Mill".to_string(),
+            vendor: None,
+            product_id: None,
+            native_unit: DisplayUnit::Millimeter,
+            spindle_direction: chip_tools::SpindleDirection::Cw,
+            default_coolant: chip_tools::CoolantMode::Mist,
+            stickout_length_mm: 24.0,
+            geometry: CutterGeometry::ThreadMill {
+                diameter_mm: 6.0,
+                neck_diameter_mm: 3.4,
+                neck_length_mm: 18.0,
+                pitch_mm: 1.75,
+                teeth_count: 1,
+                thread_angle_deg: 60.0,
+                flute_length_mm: 1.6,
+                overall_length_mm: 55.0,
+                shank_diameter_mm: 6.0,
+                flutes: 3,
+            },
+            presets: Vec::new(),
+        };
+
+        // Cylindrical boss stock: Ø12.0 mm (`R = 6.0 mm`), Z ∈ [-14.0, 0.0]
+        let boss_r = 6.0;
+        let boss_aabb = Aabb3::new(
+            DVec3::new(-boss_r, -boss_r, -14.0),
+            DVec3::new(boss_r, boss_r, 0.0),
+        );
+        let resolved = ResolvedSetup {
+            frame: RigidFrame3::IDENTITY,
+            model_aabb_wcs: boss_aabb,
+            stock: ResolvedStockGeometry::Cylinder {
+                axis: StockAxis::Z,
+                center_wcs: DVec3::ZERO,
+                radius_mm: boss_r,
+                min_axial_mm: -14.0,
+                max_axial_mm: 0.0,
+                aabb_wcs: boss_aabb,
+            },
+            rotary: None,
+            clearance_z_wcs: 12.0,
+            retract_z_wcs: 5.0,
+        };
+
+        let pitch = 1.75;
+        let d_minor =
+            compute_thread_minor_diameter_mm(ThreadFormKind::ExternalBoss, 12.0, pitch, 60.0);
+        let r_path = 0.5 * (d_minor + 6.0); // 4.927 + 3.0 = 7.927 mm
+        let r_lead = 1.5;
+        let center = DVec2::ZERO;
+        let c_lead = DVec2::new(r_path + r_lead, 0.0);
+
+        // Right-Hand External Climb = Top-Down CW (G2); external tangent lead-in bends CCW
+        let mut b = ToolpathBuilder::new("op_ext_m12");
+        b.rapid_to(DVec3::new(r_path + r_lead, r_lead, 8.0));
+        b.linear_to(
+            DVec3::new(r_path + r_lead, r_lead, 0.5),
+            400.0,
+            MotionRole::Plunge,
+        );
+        let z_helix_start = 0.5 - 0.25 * pitch;
+        b.arc_xy_to(XyArcMove {
+            end_wcs: DVec3::new(r_path, 0.0, z_helix_start),
+            center_xy: c_lead,
+            radius_mm: r_lead,
+            ccw: true,
+            turns: 0,
+            feed_mm_min: 350.0,
+            role: MotionRole::LeadIn,
+        });
+        let mut cur_z = z_helix_start;
+        for _ in 0..6 {
+            let quads = [
+                (DVec2::new(0.0, -r_path), cur_z - 0.25 * pitch),
+                (DVec2::new(-r_path, 0.0), cur_z - 0.50 * pitch),
+                (DVec2::new(0.0, r_path), cur_z - 0.75 * pitch),
+                (DVec2::new(r_path, 0.0), cur_z - pitch),
+            ];
+            for (xy, z_end) in quads {
+                b.arc_xy_to(XyArcMove {
+                    end_wcs: DVec3::new(xy.x, xy.y, z_end),
+                    center_xy: center,
+                    radius_mm: r_path,
+                    ccw: false,
+                    turns: 0,
+                    feed_mm_min: 450.0,
+                    role: MotionRole::FinishCut,
+                });
+            }
+            cur_z -= pitch;
+        }
+        b.arc_xy_to(XyArcMove {
+            end_wcs: DVec3::new(r_path + r_lead, -r_lead, cur_z - 0.25 * pitch),
+            center_xy: c_lead,
+            radius_mm: r_lead,
+            ccw: true,
+            turns: 0,
+            feed_mm_min: 350.0,
+            role: MotionRole::LeadOut,
+        });
+        b.rapid_to(DVec3::new(r_path + r_lead, -r_lead, 8.0));
+        let tp = b.finish();
+
+        let doc = CadDocument::empty();
+        let sim = run_setup_simulation_with_engine(
+            &SetupSimulationInput {
+                doc: &doc,
+                setup: &resolved,
+                target_bodies: &[],
+                operations: &[SimOperationInput {
+                    op_id: "op_ext_m12",
+                    op_name: "External M12x1.75 Thread",
+                    tool: &ext_tm,
+                    fallback_spindle_rpm: 10_000.0,
+                    intentional_edge_break_mm: 0.0,
+                    toolpath: &tp,
+                }],
+                resolution: SimResolution::Standard,
+                kinematics: MachineKinematicsConfig::default(),
+                verify_config: SimVerificationConfig::default(),
+                cancel: None,
+            },
+            SimEngineKind::TriDexel,
+        )
+        .unwrap();
+
+        assert!(
+            sim.diagnostics.is_empty(),
+            "external M12x1.75 boss thread mill must have 0 diagnostics, got: {:#?}",
+            sim.diagnostics
+        );
+        assert!(
+            sim.removed_volume_mm3 > 30.0,
+            "external M12x1.75 thread grooves should remove > 30 mm³, got {:.2}",
+            sim.removed_volume_mm3
+        );
+
+        let td = sim.final_tridexel_stock.as_ref().unwrap();
+        // Z-ray inside the boss outer thread shell (`x ≈ 5.45 mm ∈ (4.927, 6.000)`, `y ≈ 0`)
+        let ix = ((5.45 - td.origin_mm.x) / td.dx_mm).floor() as usize;
+        let iy = ((0.0 - td.origin_mm.y) / td.dy_mm).floor() as usize;
+        let z_spans = td.z_rays.ray(ix, iy);
+        assert!(
+            z_spans.len() >= 4,
+            "external boss Z-dexel must retain >= 4 overhanging thread crests, got {}: {:?}",
+            z_spans.len(),
+            z_spans
+        );
+
+        // X-ray outer boss radius along `y ≈ 0` oscillates between carved root (< 5.25) and crest (> 5.80)
+        let j_mid = ((0.0 - td.x_rays.origin_u_mm) / td.x_rays.du_mm).floor() as usize;
+        let mut min_outer_x = f64::INFINITY;
+        let mut max_outer_x = f64::NEG_INFINITY;
+        for k in 0..td.nz {
+            let pz = td.x_rays.center_v(k);
+            if !(-9.0..=-2.0).contains(&pz) {
+                continue;
+            }
+            if let Some(last) = td.x_rays.ray(j_mid, k).last() {
+                min_outer_x = min_outer_x.min(last.max_mm);
+                max_outer_x = max_outer_x.max(last.max_mm);
+            }
+        }
+        assert!(
+            min_outer_x < 5.25,
+            "external thread root must carve < 5.25 mm (minor 4.927 mm), got {min_outer_x:.3}"
+        );
+        assert!(
+            max_outer_x > 5.80,
+            "external thread crest must remain > 5.80 mm (major 6.00 mm), got {max_outer_x:.3}"
+        );
+    }
+
+    #[test]
+    fn thread_mill_fault_injection_catches_missing_pilot_plunge_and_neck_reach_exceeded_in_both_engines()
+     {
+        use chip_cad::CadDocument;
+        use chip_cam::{ResolvedSetup, ResolvedStockGeometry};
+        use chip_math::{Aabb3, DVec2, RigidFrame3};
+
+        let lib = default_starter_tool_library();
+        let tm_475 = &lib.tools[8]; // T9: Ø4.75mm, neck_length = 16.0mm, stickout = 22.0mm
+        let pilot_drill = make_test_drill_tool(6.8, 26.0);
+
+        let aabb = Aabb3::new(DVec3::new(-15.0, -15.0, -22.0), DVec3::new(15.0, 15.0, 0.0));
+        let resolved = ResolvedSetup {
+            frame: RigidFrame3::IDENTITY,
+            model_aabb_wcs: aabb,
+            stock: ResolvedStockGeometry::Box { aabb_wcs: aabb },
+            rotary: None,
+            clearance_z_wcs: 12.0,
+            retract_z_wcs: 5.0,
+        };
+        let doc = CadDocument::empty();
+
+        // Fault 1: Plunge straight into solid un-drilled stock (missing pilot drill!)
+        let tp_no_pilot = build_internal_helical_thread_toolpath(
+            "op_no_pilot",
+            DVec2::ZERO,
+            1.625,
+            1.25,
+            -8.0,
+            4,
+        );
+
+        // Fault 2: Pre-drill deep Ø6.8 hole, then thread down to Z = -18.5 mm (`> neck_length 16.0 mm`!)
+        let mut b_deep_drill = ToolpathBuilder::new("op_deep_pilot");
+        b_deep_drill.rapid_to(DVec3::new(0.0, 0.0, 8.0));
+        b_deep_drill.linear_to(DVec3::new(0.0, 0.0, -25.0), 300.0, MotionRole::Plunge);
+        b_deep_drill.rapid_to(DVec3::new(0.0, 0.0, 8.0));
+        let tp_deep_drill = b_deep_drill.finish();
+        let tp_too_deep = build_internal_helical_thread_toolpath(
+            "op_too_deep",
+            DVec2::ZERO,
+            1.625,
+            1.25,
+            -18.5,
+            2,
+        );
+
+        for engine in [SimEngineKind::Heightmap, SimEngineKind::TriDexel] {
+            let sim_no_pilot = run_setup_simulation_with_engine(
+                &SetupSimulationInput {
+                    doc: &doc,
+                    setup: &resolved,
+                    target_bodies: &[],
+                    operations: &[SimOperationInput {
+                        op_id: "op_no_pilot",
+                        op_name: "Un-Drilled Thread Plunge",
+                        tool: tm_475,
+                        fallback_spindle_rpm: 10_000.0,
+                        intentional_edge_break_mm: 0.0,
+                        toolpath: &tp_no_pilot,
+                    }],
+                    resolution: SimResolution::Standard,
+                    kinematics: MachineKinematicsConfig::default(),
+                    verify_config: SimVerificationConfig::default(),
+                    cancel: None,
+                },
+                engine,
+            )
+            .unwrap();
+
+            assert!(
+                sim_no_pilot.has_critical_errors(),
+                "{engine:?}: missing pilot drill plunge MUST raise a CriticalError, got: {:#?}",
+                sim_no_pilot.diagnostics
+            );
+            assert!(
+                sim_no_pilot.diagnostics.iter().any(|d| {
+                    d.kind == SimIssueKind::UnsafeVerticalPlunge
+                        && d.severity == SimSeverity::CriticalError
+                }),
+                "{engine:?}: expected CriticalError UnsafeVerticalPlunge, got: {:#?}",
+                sim_no_pilot.diagnostics
+            );
+
+            let sim_too_deep = run_setup_simulation_with_engine(
+                &SetupSimulationInput {
+                    doc: &doc,
+                    setup: &resolved,
+                    target_bodies: &[],
+                    operations: &[
+                        SimOperationInput {
+                            op_id: "op_deep_pilot",
+                            op_name: "Deep Pilot Drill",
+                            tool: &pilot_drill,
+                            fallback_spindle_rpm: 3_500.0,
+                            intentional_edge_break_mm: 0.0,
+                            toolpath: &tp_deep_drill,
+                        },
+                        SimOperationInput {
+                            op_id: "op_too_deep",
+                            op_name: "Over-Reach Thread Mill",
+                            tool: tm_475,
+                            fallback_spindle_rpm: 10_000.0,
+                            intentional_edge_break_mm: 0.0,
+                            toolpath: &tp_too_deep,
+                        },
+                    ],
+                    resolution: SimResolution::Standard,
+                    kinematics: MachineKinematicsConfig::default(),
+                    verify_config: SimVerificationConfig::default(),
+                    cancel: None,
+                },
+                engine,
+            )
+            .unwrap();
+
+            assert!(
+                sim_too_deep
+                    .diagnostics
+                    .iter()
+                    .any(|d| d.kind == SimIssueKind::FluteLengthExceeded),
+                "{engine:?}: threading past neck_length (18.5 > 16.0 mm) must flag shank rub, got: {:#?}",
+                sim_too_deep.diagnostics
+            );
+        }
+    }
+
+    #[test]
+    fn heightmap_and_tridexel_pre_drilled_step_hole_thread_mill_report_zero_critical_issues() {
+        use std::sync::atomic::AtomicBool;
+
+        use chip_cad::{SurfaceKind, sample_machined_plate_step};
+        use chip_cam::{
+            GeometrySelectionItem, HeightReference, HeightSpec, Operation, OperationGenRequest,
+            OperationKind, StrategyParams, ThreadCutDirection, ThreadFormKind, ThreadHandedness,
+            ThreadMillParams, generate_operation_toolpath_with_rest,
+        };
+        use chip_math::ParamLength;
+
+        // Load real STEP plate (80x60x16 mm) containing an exact Ø8.0 mm cylindrical through-hole
+        let step = sample_machined_plate_step().unwrap();
+        let doc = MonstertruckKernel
+            .load_step_bytes("plate.step", step.as_bytes(), DEFAULT_TESS_CHORD_TOL_MM)
+            .unwrap();
+
+        let setup = Setup::new("s_step_tm", "STEP Thread Setup", WorkOffsetSlot::G54);
+        let resolved = setup
+            .resolve_immutable(&doc, DisplayUnit::Millimeter)
+            .unwrap();
+
+        // Find the Ø8.0 mm cylindrical bore face in the STEP B-Rep
+        let hole_face = doc
+            .faces
+            .iter()
+            .find(|f| {
+                matches!(f.surface, SurfaceKind::Cylinder { radius_mm, .. } if (radius_mm - 4.0).abs() < 0.05)
+            })
+            .expect("sample_machined_plate_step must contain an Ø8.0 mm cylindrical hole");
+        let binding = doc.bind_face(hole_face.id).unwrap();
+        let hole_sel = vec![GeometrySelectionItem::CylindricalHole { binding }];
+
+        let drill_8mm = make_test_drill_tool(8.0, 28.0);
+        let lib = default_starter_tool_library();
+        let tm_475 = &lib.tools[8]; // Ø4.75mm, neck Ø2.85mm, neck_length 16.0mm
+        let cancel = AtomicBool::new(false);
+
+        // Op 1: Drill Ø8.0 mm through-hole
+        let mut op_drill =
+            Operation::new("op_drill_8", "Drill Ø8.0 Pilot", OperationKind::DrillBore);
+        op_drill.tool_id = Some(drill_8mm.id.clone());
+        op_drill.selections = hole_sel.clone();
+        op_drill.heights.bottom = HeightSpec::new(HeightReference::StockBottom, -3.5);
+
+        let tp_drill = generate_operation_toolpath_with_rest(&OperationGenRequest {
+            doc: &doc,
+            sketches: &[],
+            setup: &resolved,
+            op: &op_drill,
+            tool: &drill_8mm,
+            clearing_tool: None,
+            display_unit: DisplayUnit::Millimeter,
+            is_first_tool_in_setup: true,
+            upstream_rest: &[],
+            cancel: &cancel,
+        })
+        .unwrap();
+
+        // Op 2: Thread Mill M9x1.0 (pilot Ø8.0 -> major Ø9.0) inside the STEP hole
+        let mut op_tm = Operation::new("op_tm_m9", "Thread Mill M9x1.0", OperationKind::ThreadMill);
+        op_tm.tool_id = Some(tm_475.id.clone());
+        op_tm.selections = hole_sel;
+        op_tm.heights.top = HeightSpec::new(HeightReference::ModelTop, 0.0);
+        op_tm.heights.bottom = HeightSpec::new(HeightReference::ModelTop, -10.0);
+        op_tm.strategy = Some(StrategyParams::ThreadMill(ThreadMillParams {
+            form: ThreadFormKind::InternalHole,
+            handedness: ThreadHandedness::RightHand,
+            cut_direction: ThreadCutDirection::Climb,
+            standard_preset: None,
+            major_diameter: ParamLength::from_mm(9.0),
+            pitch: ParamLength::from_mm(1.0),
+            pitch_diameter_offset: ParamLength::from_mm(0.0),
+            radial_passes: 2,
+            spring_passes: 1,
+            lead_in_clearance: ParamLength::from_mm(0.5),
+            compensate_centerline_feed: true,
+            optimize_hole_order: true,
+        }));
+
+        let tp_tm = generate_operation_toolpath_with_rest(&OperationGenRequest {
+            doc: &doc,
+            sketches: &[],
+            setup: &resolved,
+            op: &op_tm,
+            tool: tm_475,
+            clearing_tool: None,
+            display_unit: DisplayUnit::Millimeter,
+            is_first_tool_in_setup: false,
+            upstream_rest: &[],
+            cancel: &cancel,
+        })
+        .unwrap();
+
+        let sim_ops = [
+            SimOperationInput::from_operation(&op_drill, &drill_8mm, &tp_drill),
+            SimOperationInput::from_operation(&op_tm, tm_475, &tp_tm),
+        ];
+
+        for engine in [SimEngineKind::Heightmap, SimEngineKind::TriDexel] {
+            let sim = run_setup_simulation_with_engine(
+                &SetupSimulationInput {
+                    doc: &doc,
+                    setup: &resolved,
+                    target_bodies: &[],
+                    operations: &sim_ops,
+                    resolution: SimResolution::Standard,
+                    kinematics: MachineKinematicsConfig::default(),
+                    verify_config: SimVerificationConfig::default(),
+                    cancel: None,
+                },
+                engine,
+            )
+            .unwrap();
+
+            assert!(
+                !sim.has_critical_errors(),
+                "{engine:?}: pre-drilled + thread-milled STEP setup must report 0 critical errors, got: {:#?}",
+                sim.diagnostics
+            );
+            assert!(
+                !sim.diagnostics
+                    .iter()
+                    .any(|d| d.op_id == "op_tm_m9" && d.kind == SimIssueKind::FluteLengthExceeded),
+                "{engine:?}: thread mill within neck_length must not report FluteLengthExceeded: {:#?}",
+                sim.diagnostics
+            );
+            assert!(
+                !sim.diagnostics
+                    .iter()
+                    .any(|d| d.op_id == "op_tm_m9" && d.kind == SimIssueKind::TargetModelGouge),
+                "{engine:?}: intentional thread groove into STEP pilot wall must not report TargetModelGouge: {:#?}",
+                sim.diagnostics
+            );
+        }
+    }
 }

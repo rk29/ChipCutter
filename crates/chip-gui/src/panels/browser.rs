@@ -3,6 +3,7 @@ use chip_cam::{
     Operation, OperationKind, OperationStatus, RestMachiningMode, Setup, WorkOffsetSlot,
 };
 use chip_project::{ProjectDocument, ToolpathCache, UndoHistory, resolve_upstream_rest_op_indices};
+use chip_tools::ToolLibrary;
 use egui::{CornerRadius, CursorIcon, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 
 use crate::{
@@ -36,6 +37,7 @@ pub enum BrowserAction {
 /// Context references passed to [`show_cam_browser`].
 pub struct CamBrowserCtx<'a> {
     pub project: &'a mut ProjectDocument,
+    pub global_tools: &'a ToolLibrary,
     pub history: &'a mut UndoHistory,
     pub toolpath_cache: &'a ToolpathCache,
     pub cad_doc: Option<&'a CadDocument>,
@@ -191,10 +193,46 @@ fn format_operation_badge(
     }
 }
 
+/// Creates a default [`Operation`] of `kind` inside `project.setups[setup_idx]`, automatically
+/// selecting and embedding the first compatible cutter from `project.tools` or `global_tools`.
+pub fn create_default_operation_in_setup(
+    project: &mut ProjectDocument,
+    global_tools: &ToolLibrary,
+    setup_idx: usize,
+    kind: OperationKind,
+) -> Option<usize> {
+    if setup_idx >= project.setups.len() {
+        return None;
+    }
+    let next_op_num = project.setups[setup_idx].operations.len() + 1;
+    let mut op = Operation::new(
+        format!(
+            "op_{setup_idx}_{next_op_num}_{}",
+            project.setups[setup_idx].operations.len()
+        ),
+        format!("{} {next_op_num}", kind.default_name()),
+        kind,
+    );
+    if let Some(compat) = project
+        .tools
+        .iter()
+        .chain(global_tools.tools.iter())
+        .find(|t| kind.is_compatible_with_tool(t))
+        .cloned()
+    {
+        project.ensure_tool_embedded(&compat);
+        op.tool_id = Some(compat.id);
+        op.preset_id = compat.presets.first().map(|p| p.id.clone());
+    }
+    project.setups[setup_idx].operations.push(op);
+    Some(project.setups[setup_idx].operations.len() - 1)
+}
+
 /// Renders the left-hand hierarchical **CAM Browser** (`08-ui-viewport.md`).
 pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<BrowserAction> {
     let CamBrowserCtx {
         project,
+        global_tools,
         history,
         toolpath_cache,
         cad_doc,
@@ -634,6 +672,7 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                                 ("Facing", OperationKind::Facing),
                                 ("2D Pocket", OperationKind::Pocket2D),
                                 ("Drill / Helical Bore", OperationKind::DrillBore),
+                                ("Thread Mill", OperationKind::ThreadMill),
                                 ("Edge Chamfer / Trace", OperationKind::ChamferTrace),
                                 ("3D Adaptive Roughing", OperationKind::Adaptive3D),
                                 ("3D Waterline / Z-Level", OperationKind::Waterline3D),
@@ -1072,9 +1111,12 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                 if let Some(first_compat) = project
                     .tools
                     .iter()
+                    .chain(global_tools.tools.iter())
                     .find(|t| OperationKind::Pocket2D.is_compatible_with_tool(t))
+                    .cloned()
                 {
-                    op.tool_id = Some(first_compat.id.clone());
+                    project.ensure_tool_embedded(&first_compat);
+                    op.tool_id = Some(first_compat.id);
                     op.preset_id = first_compat.presets.first().map(|p| p.id.clone());
                 }
                 project.setups[s_idx].operations.push(op);
@@ -1091,36 +1133,21 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
 
             if let Some((s_idx, kind)) = deferred_op_add {
                 history.record_before_edit(format!("Add {}", kind.label()), None, project);
-                let next_op_num = project.setups[s_idx].operations.len() + 1;
-                let mut op = Operation::new(
-                    format!(
-                        "op_{s_idx}_{next_op_num}_{}",
-                        project.setups[s_idx].operations.len()
-                    ),
-                    format!("{} {}", kind.default_name(), next_op_num),
-                    kind,
-                );
-                if let Some(first_compat) = project
-                    .tools
-                    .iter()
-                    .find(|t| kind.is_compatible_with_tool(t))
+                if let Some(o_idx) =
+                    create_default_operation_in_setup(project, global_tools, s_idx, kind)
                 {
-                    op.tool_id = Some(first_compat.id.clone());
-                    op.preset_id = first_compat.presets.first().map(|p| p.id.clone());
+                    *active_setup_idx = s_idx;
+                    *focus = InspectorFocus::Operation {
+                        setup_idx: s_idx,
+                        op_idx: o_idx,
+                    };
+                    *op_tab = if kind == OperationKind::Facing || kind.is_3d_surface() {
+                        OperationTab::Passes
+                    } else {
+                        OperationTab::Geometry
+                    };
+                    *pick_mode = default_pick_mode_for_op(s_idx, o_idx, kind, *op_tab);
                 }
-                project.setups[s_idx].operations.push(op);
-                let o_idx = project.setups[s_idx].operations.len() - 1;
-                *active_setup_idx = s_idx;
-                *focus = InspectorFocus::Operation {
-                    setup_idx: s_idx,
-                    op_idx: o_idx,
-                };
-                *op_tab = if kind == OperationKind::Facing {
-                    OperationTab::Passes
-                } else {
-                    OperationTab::Geometry
-                };
-                *pick_mode = default_pick_mode_for_op(s_idx, o_idx, kind, *op_tab);
             }
 
             if let Some((s_idx, o_idx)) = deferred_op_duplicate {
@@ -1262,5 +1289,75 @@ mod tests {
         assert_eq!(format_compact_cycle_time(42.4), "42s");
         assert_eq!(format_compact_cycle_time(72.0), "1m12s");
         assert_eq!(format_compact_cycle_time(3_840.0), "1h04m");
+    }
+
+    #[test]
+    fn creating_default_thread_mill_op_auto_selects_compatible_thread_mill_cutter() {
+        use chip_math::DisplayUnit;
+        use chip_tools::{CoolantMode, CutterGeometry, SpindleDirection, Tool, ToolId};
+
+        let mut project = ProjectDocument::new("thread_mill_test");
+        let mut global_lib = chip_tools::default_starter_tool_library();
+        // Ensure a known ThreadMill is present even if starter library changes
+        let expected_tm_id = if let Some(existing) = global_lib
+            .tools
+            .iter()
+            .find(|t| matches!(t.geometry, CutterGeometry::ThreadMill { .. }))
+        {
+            existing.id.clone()
+        } else {
+            let tid = ToolId("test_thread_mill_475".to_string());
+            global_lib.tools.push(Tool {
+                id: tid.clone(),
+                tool_number: 15,
+                length_offset_number: 15,
+                diameter_offset_number: 15,
+                name: "4.75mm Single-Point Thread Mill".to_string(),
+                vendor: None,
+                product_id: None,
+                native_unit: DisplayUnit::Millimeter,
+                spindle_direction: SpindleDirection::Cw,
+                default_coolant: CoolantMode::AirBlast,
+                stickout_length_mm: 22.0,
+                geometry: CutterGeometry::ThreadMill {
+                    diameter_mm: 4.75,
+                    neck_diameter_mm: 2.85,
+                    neck_length_mm: 16.0,
+                    pitch_mm: 1.0,
+                    teeth_count: 1,
+                    thread_angle_deg: 60.0,
+                    flute_length_mm: 1.2,
+                    overall_length_mm: 50.0,
+                    shank_diameter_mm: 6.0,
+                    flutes: 3,
+                },
+                presets: Vec::new(),
+            });
+            tid
+        };
+
+        let o_idx = create_default_operation_in_setup(
+            &mut project,
+            &global_lib,
+            0,
+            OperationKind::ThreadMill,
+        );
+        assert_eq!(o_idx, Some(0));
+
+        let op = &project.setups[0].operations[0];
+        assert_eq!(op.kind, OperationKind::ThreadMill);
+        assert_eq!(op.tool_id.as_ref(), Some(&expected_tm_id));
+        let embedded = project.tool(&expected_tm_id);
+        assert!(
+            embedded.is_some_and(|t| matches!(t.geometry, CutterGeometry::ThreadMill { .. })),
+            "expected compatible ThreadMill cutter to be embedded in project"
+        );
+        assert_eq!(
+            default_pick_mode_for_op(0, 0, OperationKind::ThreadMill, OperationTab::Geometry),
+            ViewportPickMode::OpCylindricalHoles {
+                setup_idx: 0,
+                op_idx: 0
+            }
+        );
     }
 }
