@@ -2,6 +2,7 @@ use chip_math::DVec3;
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    cylindrical::CylindricalStock,
     heightmap::HeightfieldStock,
     tridexel::{DexelSpan, TriDexelStock, spans_difference_length},
 };
@@ -72,7 +73,7 @@ pub struct OperationErrorSnapshot {
 }
 
 /// Quantitative stock-vs-target metrology report computed from simulated machined stock
-/// (`TriDexelStock` or `HeightfieldStock`) compared against the target 3D solid.
+/// (`TriDexelStock`, `HeightfieldStock`, or 4th-axis `CylindricalStock`) compared against the target 3D solid.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StockErrorReport {
     /// Reference tolerance band (`±tolerance_mm`) used for `in_tolerance_surface_pct`.
@@ -727,6 +728,94 @@ pub(crate) fn compute_heightmap_quick_error_summary(
     }
 }
 
+/// Computes polar/cylindrical 4th-axis [`StockErrorReport`] from a [`CylindricalStock`] whose
+/// `r_target` has been rasterized against the target B-Rep/mesh solid.
+///
+/// Returns `None` if no target cells were rasterized (e.g., empty CAD document with no 3D model).
+pub fn compute_cylindrical_error_report(
+    stock: &CylindricalStock,
+    initial_stock_vol_mm3: f64,
+    tolerance_mm: f64,
+    per_operation: Vec<OperationErrorSnapshot>,
+) -> Option<StockErrorReport> {
+    let factor = 0.5 * stock.du * stock.dtheta;
+    let mut target_vol = 0.0;
+    let mut excess_vol = 0.0;
+    let mut gouge_vol = 0.0;
+    let mut acc = DeviationStatsAcc::new(tolerance_mm, stock.nu * stock.ntheta / 2);
+
+    for iu in 0..stock.nu {
+        let u = stock.u_min + (iu as f64 + 0.5) * stock.du;
+        let row = iu * stock.ntheta;
+        for it in 0..stock.ntheta {
+            let idx = row + it;
+            let rm = f64::from(stock.r_stock[idx]).max(0.0);
+            let rt_f = stock.r_target[idx];
+            if rt_f >= 0.0 && rt_f.is_finite() {
+                let rt = f64::from(rt_f);
+                target_vol += factor * rt * rt;
+                let dev = rm - rt;
+                if dev > 0.0 {
+                    excess_vol += factor * (rm * rm - rt * rt);
+                } else {
+                    gouge_vol += factor * (rt * rt - rm * rm);
+                }
+                let theta = it as f64 * stock.dtheta;
+                let loc = stock.rotary.cylindrical_to_wcs(u, theta, rt);
+                acc.push(dev, loc);
+            } else if rm > 1e-6 {
+                excess_vol += factor * rm * rm;
+            }
+        }
+    }
+
+    if acc.abs_samples.is_empty() {
+        return None;
+    }
+
+    Some(acc.finish(
+        initial_stock_vol_mm3,
+        target_vol,
+        excess_vol,
+        gouge_vol,
+        per_operation,
+    ))
+}
+
+/// Fast per-operation polar/cylindrical summary `(excess_vol, gouge_vol, rms_mm)` for `per_operation` table.
+pub(crate) fn compute_cylindrical_quick_error_summary(
+    stock: &CylindricalStock,
+) -> Option<(f64, f64, f64)> {
+    let factor = 0.5 * stock.du * stock.dtheta;
+    let mut excess_vol = 0.0;
+    let mut gouge_vol = 0.0;
+    let mut sum_sq = 0.0;
+    let mut cnt = 0usize;
+
+    for idx in 0..stock.r_stock.len() {
+        let rm = f64::from(stock.r_stock[idx]).max(0.0);
+        let rt_f = stock.r_target[idx];
+        if rt_f >= 0.0 && rt_f.is_finite() {
+            let rt = f64::from(rt_f);
+            let dev = rm - rt;
+            if dev > 0.0 {
+                excess_vol += factor * (rm * rm - rt * rt);
+            } else {
+                gouge_vol += factor * (rt * rt - rm * rm);
+            }
+            sum_sq += dev * dev;
+            cnt += 1;
+        } else if rm > 1e-6 {
+            excess_vol += factor * rm * rm;
+        }
+    }
+    if cnt == 0 {
+        None
+    } else {
+        Some((excess_vol, gouge_vol, (sum_sq / cnt as f64).sqrt()))
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -856,5 +945,88 @@ mod tests {
         );
         assert!(rep_g.mean_signed_error_mm < 0.0);
         assert!(rep_g.max_gouge_location_wcs.is_some());
+    }
+
+    #[test]
+    fn cylindrical_error_report_matches_analytical_excess_and_gouge_shells() {
+        use std::f64::consts::PI;
+
+        use chip_cad::CadDocument;
+        use chip_cam::{
+            AxisAnchor, BoxAnchor27, RotaryAxisKind, RotaryDriveMode, Setup, StockAxis,
+            StockConfig, WcsOriginMode, WorkOffsetSlot,
+        };
+        use chip_math::{DisplayUnit, ParamLength};
+
+        let mut setup = Setup::new("s_cyl", "Cyl Metrics", WorkOffsetSlot::G54);
+        setup.wcs.origin = WcsOriginMode::StockBoxPoint {
+            anchor: BoxAnchor27 {
+                x: AxisAnchor::Center,
+                y: AxisAnchor::Center,
+                z: AxisAnchor::Center,
+            },
+        };
+        setup.stock = StockConfig::FixedCylinder {
+            axis: StockAxis::X,
+            diameter: ParamLength::from_mm(42.0), // R_stock = 21 mm
+            length: ParamLength::from_mm(80.0),
+            axial_top_offset: ParamLength::from_mm(0.0),
+        };
+        setup.rotary.mode = RotaryDriveMode::Simultaneous4Axis;
+        setup.rotary.axis = RotaryAxisKind::XAxis;
+
+        let doc = CadDocument::empty();
+        let resolved = setup.resolve(&doc, DisplayUnit::Millimeter).unwrap();
+        let mut stock = CylindricalStock::from_setup(
+            &resolved,
+            resolved.rotary.unwrap(),
+            SimResolution::Standard,
+        )
+        .unwrap();
+        let initial_vol = stock.initial_volume_mm3();
+
+        // With no target rasterized (`r_target == -1.0`), error report must be `None`.
+        assert!(compute_cylindrical_error_report(&stock, initial_vol, 0.05, Vec::new()).is_none());
+
+        // Set uniform cylindrical target R_target = 20.0 mm across entire length (uniform +1.0 mm excess shell).
+        stock.r_target.fill(20.0_f32);
+        let rep = compute_cylindrical_error_report(&stock, initial_vol, 0.05, Vec::new())
+            .expect("error report must be populated when target exists");
+        let exact_excess_vol = PI * (21.0_f64.powi(2) - 20.0_f64.powi(2)) * 80.0;
+        assert!(
+            (rep.rms_error_mm - 1.0).abs() < 1e-4,
+            "rms={}",
+            rep.rms_error_mm
+        );
+        assert!((rep.mean_abs_error_mm - 1.0).abs() < 1e-4);
+        assert!((rep.mean_signed_error_mm - 1.0).abs() < 1e-4);
+        assert!((rep.max_excess_mm - 1.0).abs() < 1e-4);
+        assert!(rep.max_gouge_mm < 1e-6);
+        assert!(rep.gouge_volume_mm3 < 1e-6);
+        assert!(rep.in_tolerance_surface_pct < 1e-6);
+        assert!(
+            (rep.excess_volume_mm3 - exact_excess_vol).abs() < 1.0,
+            "excess_vol={} vs exact={exact_excess_vol}",
+            rep.excess_volume_mm3
+        );
+
+        // Machine cylinder cleanly to R = 20.0 mm except a single gouged band at R = 19.5 mm (-0.5 mm).
+        stock.r_stock.fill(20.0_f32);
+        let gouge_iu = stock.nu / 2;
+        for it in 0..stock.ntheta {
+            stock.r_stock[gouge_iu * stock.ntheta + it] = 19.5_f32;
+        }
+        let rep_g = compute_cylindrical_error_report(&stock, initial_vol, 0.05, Vec::new())
+            .expect("gouged cylindrical error report");
+        assert!((rep_g.max_gouge_mm - 0.5).abs() < 1e-4);
+        assert!(rep_g.gouge_volume_mm3 > 10.0);
+        assert!(rep_g.max_gouge_location_wcs.is_some());
+        assert!(rep_g.in_tolerance_surface_pct > 99.0);
+        assert!(rep_g.mean_signed_error_mm < 0.0);
+
+        // Widening tolerance above 0.5 mm must bring 100% of surface in tolerance.
+        let rep_wide = compute_cylindrical_error_report(&stock, initial_vol, 0.6, Vec::new())
+            .expect("wide-tol report");
+        assert!((rep_wide.in_tolerance_surface_pct - 100.0).abs() < 1e-6);
     }
 }

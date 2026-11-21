@@ -9,7 +9,7 @@
 
 use std::{f64::consts::TAU, sync::atomic::Ordering};
 
-use chip_cad::CadDocument;
+use chip_cad::{BodyId, CadDocument};
 use chip_cam::{
     ResolvedRotaryConfig, ResolvedSetup, ResolvedStockGeometry, RotaryAxisKind, RotaryDirection,
     SegmentMotion3D, SurfaceMesh3D, ToolpathSegment3D, rotate_point_about_axis,
@@ -139,10 +139,21 @@ impl CylindricalStock {
 
     /// Rasterizes the target CAD/mesh solid (`doc`) into `self.r_target` via parallel inward raycasts.
     pub fn rasterize_target_surface(&mut self, doc: &CadDocument, setup: &ResolvedSetup) {
+        self.rasterize_target_surface_for_bodies(doc, setup, &[]);
+    }
+
+    /// Rasterizes the target CAD/mesh solid (`doc`, filtered to `target_bodies` when non-empty)
+    /// into `self.r_target` via parallel inward raycasts.
+    pub fn rasterize_target_surface_for_bodies(
+        &mut self,
+        doc: &CadDocument,
+        setup: &ResolvedSetup,
+        target_bodies: &[BodyId],
+    ) {
         if !doc.has_3d_geometry() {
             return;
         }
-        let surface = SurfaceMesh3D::from_cad_document(doc, &[], &setup.frame);
+        let surface = SurfaceMesh3D::from_cad_document(doc, target_bodies, &setup.frame);
         if surface.triangles.is_empty() {
             return;
         }
@@ -720,7 +731,7 @@ pub fn run_cylindrical_setup_simulation(
     rotary: ResolvedRotaryConfig,
 ) -> Result<SetupSimulationResult, SimError> {
     let mut stock = CylindricalStock::from_setup(input.setup, rotary, input.resolution)?;
-    stock.rasterize_target_surface(input.doc, input.setup);
+    stock.rasterize_target_surface_for_bodies(input.doc, input.setup, input.target_bodies);
     let initial_vol = stock.initial_volume_mm3();
 
     let timeline = SimulationTimeline::from_operations(input.operations, input.kinematics);
@@ -733,6 +744,8 @@ pub fn run_cylindrical_setup_simulation(
         last_op_idx: stock.last_op_idx.clone(),
     }];
     let mut diagnostics = Vec::new();
+    let mut per_op_errors: Vec<crate::metrics::OperationErrorSnapshot> = Vec::new();
+    let mut prev_vol = initial_vol;
 
     let profiles: Vec<(RadialCutterProfile, bool)> = input
         .operations
@@ -762,6 +775,26 @@ pub fn run_cylindrical_setup_simulation(
         );
 
         let completed = span_idx + 1;
+        let is_op_end = timeline.operations[span.op_idx].end_global_seg == completed;
+        if is_op_end {
+            let cur_vol = stock.current_volume_mm3();
+            let op_removed = (prev_vol - cur_vol).max(0.0);
+            prev_vol = cur_vol;
+            if let Some((ex_v, g_v, rms)) =
+                crate::metrics::compute_cylindrical_quick_error_summary(&stock)
+            {
+                per_op_errors.push(crate::metrics::OperationErrorSnapshot {
+                    op_idx: span.op_idx,
+                    op_id: op.op_id.to_string(),
+                    op_name: op.op_name.to_string(),
+                    removed_volume_mm3: op_removed,
+                    excess_volume_mm3: ex_v,
+                    gouge_volume_mm3: g_v,
+                    total_error_volume_mm3: ex_v + g_v,
+                    rms_error_mm: rms,
+                });
+            }
+        }
         if completed.is_multiple_of(checkpoint_stride) || completed == total_spans {
             checkpoints.push(CylindricalCheckpoint {
                 completed_segments: completed,
@@ -773,6 +806,8 @@ pub fn run_cylindrical_setup_simulation(
 
     let remaining_vol = stock.current_volume_mm3();
     let removed_vol = (initial_vol - remaining_vol).max(0.0);
+    let error_report =
+        crate::metrics::compute_cylindrical_error_report(&stock, initial_vol, 0.05, per_op_errors);
 
     // Minimal placeholder 3-axis heightfield so existing callers inspecting `final_stock` never panic
     let placeholder_hf =
@@ -802,7 +837,7 @@ pub fn run_cylindrical_setup_simulation(
         tridexel_checkpoints: Vec::new(),
         operation_profiles: profiles,
         diagnostics,
-        error_report: None,
+        error_report,
     })
 }
 
@@ -1383,6 +1418,94 @@ mod tests {
                 .any(|d| d.kind == SimIssueKind::HolderCollision),
             "Off-centerline 4-axis verifier must catch deep holder crash, got: {:#?}",
             sim.diagnostics
+        );
+    }
+
+    #[test]
+    fn rotary_setup_simulation_populates_error_report_per_op_and_tolerance_recompute() {
+        let stl = sample_rotary_shaft_stl_bytes();
+        let doc = load_mesh_cad_document("rotary_shaft.stl", &stl, &MeshImportOptions::default())
+            .unwrap();
+        let lib = default_starter_tool_library();
+        let flat_6mm = &lib.tools[0];
+
+        let mut setup = Setup::new("s_shaft_err", "Rotary Shaft Error", WorkOffsetSlot::G54);
+        setup.wcs.origin = WcsOriginMode::ModelBoxPoint {
+            anchor: BoxAnchor27::VOLUMETRIC_CENTER,
+        };
+        setup.stock = StockConfig::FixedCylinder {
+            axis: StockAxis::X,
+            diameter: ParamLength::from_mm(44.0),
+            length: ParamLength::from_mm(80.0),
+            axial_top_offset: ParamLength::from_mm(0.0),
+        };
+        setup.rotary.mode = RotaryDriveMode::Simultaneous4Axis;
+        setup.rotary.axis = RotaryAxisKind::XAxis;
+        let resolved = setup.resolve(&doc, DisplayUnit::Millimeter).unwrap();
+
+        let mut b = ToolpathBuilder::new("op_turn");
+        b.rotary_rapid_to(DVec3::new(-10.0, 0.0, 30.0), 0.0);
+        b.rotary_linear_to(
+            DVec3::new(-10.0, 0.0, 19.0),
+            0.0,
+            400.0,
+            19.0,
+            MotionRole::Plunge,
+        );
+        b.rotary_linear_to(
+            DVec3::new(10.0, 0.0, 19.0),
+            360.0,
+            800.0,
+            19.0,
+            MotionRole::Cut,
+        );
+        b.rotary_rapid_to(DVec3::new(10.0, 0.0, 30.0), 360.0);
+        let tp = b.finish();
+
+        let sim = crate::run_setup_simulation_with_engine(
+            &SetupSimulationInput {
+                doc: &doc,
+                setup: &resolved,
+                target_bodies: &[],
+                operations: &[SimOperationInput {
+                    op_id: "op_turn",
+                    op_name: "Rotary Rough",
+                    tool: flat_6mm,
+                    fallback_spindle_rpm: 10_000.0,
+                    intentional_edge_break_mm: 0.0,
+                    toolpath: &tp,
+                }],
+                resolution: SimResolution::Standard,
+                kinematics: MachineKinematicsConfig::default(),
+                verify_config: SimVerificationConfig::default(),
+                cancel: None,
+            },
+            crate::SimEngineKind::TriDexel,
+        )
+        .unwrap();
+
+        let rep = sim
+            .error_report
+            .as_ref()
+            .expect("4th-axis rotary simulation with 3D target must populate error_report");
+        assert!(rep.target_volume_mm3 > 10_000.0);
+        assert!(rep.sample_count > 1_000);
+        assert!(rep.rms_error_mm.is_finite() && rep.rms_error_mm >= 0.0);
+        assert!(rep.total_error_volume_mm3 > 0.0);
+        assert_eq!(rep.per_operation.len(), 1);
+        assert_eq!(rep.per_operation[0].op_name, "Rotary Rough");
+
+        let tight = sim
+            .compute_error_report_at_tolerance(0.01)
+            .expect("recompute_at_tolerance must succeed for cylindrical stock");
+        let loose = sim
+            .compute_error_report_at_tolerance(5.0)
+            .expect("recompute_at_tolerance must succeed for cylindrical stock");
+        assert!(
+            loose.in_tolerance_surface_pct >= tight.in_tolerance_surface_pct,
+            "loose tol ({:.2}%) should be >= tight tol ({:.2}%)",
+            loose.in_tolerance_surface_pct,
+            tight.in_tolerance_surface_pct
         );
     }
 }

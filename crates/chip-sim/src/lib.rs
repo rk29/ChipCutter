@@ -23,8 +23,8 @@ pub use heightmap::{
     tessellate_stock_mesh_colored,
 };
 pub use metrics::{
-    OperationErrorSnapshot, SimStockColorMode, StockErrorReport, compute_heightmap_error_report,
-    compute_tridexel_error_report, deviation_to_heatmap_rgba,
+    OperationErrorSnapshot, SimStockColorMode, StockErrorReport, compute_cylindrical_error_report,
+    compute_heightmap_error_report, compute_tridexel_error_report, deviation_to_heatmap_rgba,
 };
 pub use timeline::{
     MachineKinematicsConfig, MotionSpan, OperationTimelineSummary, ScrubSnapshot,

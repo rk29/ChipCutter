@@ -1087,7 +1087,7 @@ impl SimulationPanelState {
                 });
 
         // Bottom Live Controller HUD Readout (`Op`, `Tool`, `WCS X/Y/Z`, `G0..G3`, `Feed`, `RPM`, `Seg`)
-        if let Some(s) = snap {
+        if let Some(s) = &snap {
             if let Some(tc) = &s.tool_change {
                 let tok = crate::theme::ThemeTokens::from_ui(ui);
                 ui.horizontal_wrapped(|ui| {
@@ -1184,12 +1184,27 @@ impl SimulationPanelState {
         if let Some(rep) = &active_err_report {
             ui.add_space(1.0);
             let tok = crate::theme::ThemeTokens::from_ui(ui);
+            let snap_rot_deg = snap.as_ref().map_or(0.0, |s| s.rotary_deg);
+            let locate_wcs = |loc: DVec3| -> DVec3 {
+                if let Some(cyl) = &res.final_cylindrical_stock
+                    && snap_rot_deg.abs() > 1e-6
+                {
+                    cyl.rotary.rotate_point_wcs(loc, snap_rot_deg)
+                } else {
+                    loc
+                }
+            };
+            let engine_tag = if res.final_cylindrical_stock.is_some() {
+                "4-axis polar"
+            } else {
+                res.engine.short_slug()
+            };
             egui::Frame::group(ui.style())
                 .inner_margin(egui::Margin::symmetric(6, 3))
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 2.0;
                     ui.horizontal_wrapped(|ui| {
-                        ui.strong(format!("Error Metrics ({})", res.engine.short_slug()));
+                        ui.strong(format!("Error Metrics ({engine_tag})"));
                         ui.separator();
                         ui.monospace(format!(
                             "Err Vol: {:.1} mm^3 ({:.2}%) | Excess: {:.1} | Gouge: {:.1} | Eff: {:.1}%",
@@ -1259,7 +1274,7 @@ impl SimulationPanelState {
                                 ))
                                 .clicked()
                         {
-                            action = Some(SimulationUiAction::CenterCameraWcs(loc));
+                            action = Some(SimulationUiAction::CenterCameraWcs(locate_wcs(loc)));
                         }
                         ui.separator();
                         ui.monospace(format!("Max Gouge: -{:.3} mm", rep.max_gouge_mm));
@@ -1273,7 +1288,7 @@ impl SimulationPanelState {
                                 ))
                                 .clicked()
                         {
-                            action = Some(SimulationUiAction::CenterCameraWcs(loc));
+                            action = Some(SimulationUiAction::CenterCameraWcs(locate_wcs(loc)));
                         }
                     });
 
@@ -1796,5 +1811,95 @@ mod tests {
         ));
         let (rev_off, _) = panel.resolve_viewport_visuals(&project, 0).stock.unwrap();
         assert!(rev_off > rev_pause);
+    }
+
+    #[test]
+    fn rotary_simulation_panel_exposes_active_error_report_and_tolerance_updates() {
+        let stl = chip_cad::sample_rotary_shaft_stl_bytes();
+        let doc = chip_cad::load_mesh_cad_document(
+            "rotary_shaft.stl",
+            &stl,
+            &chip_cad::MeshImportOptions::default(),
+        )
+        .unwrap();
+        let lib = default_starter_tool_library();
+        let flat_6mm = &lib.tools[0];
+
+        let mut setup = Setup::new("s_rot_err", "Rotary A", WorkOffsetSlot::G54);
+        setup.wcs.origin = WcsOriginMode::ModelBoxPoint {
+            anchor: BoxAnchor27::VOLUMETRIC_CENTER,
+        };
+        setup.stock = StockConfig::FixedCylinder {
+            axis: StockAxis::X,
+            diameter: ParamLength::from_mm(44.0),
+            length: ParamLength::from_mm(80.0),
+            axial_top_offset: ParamLength::from_mm(0.0),
+        };
+        setup.rotary.mode = RotaryDriveMode::Simultaneous4Axis;
+        setup.rotary.axis = RotaryAxisKind::XAxis;
+        let resolved = setup.resolve(&doc, DisplayUnit::Millimeter).unwrap();
+
+        let mut b = ToolpathBuilder::new("op_rot_err");
+        b.rotary_rapid_to(DVec3::new(-15.0, 0.0, 28.0), 0.0);
+        b.rotary_linear_to(
+            DVec3::new(-15.0, 0.0, 19.0),
+            0.0,
+            400.0,
+            19.0,
+            MotionRole::Plunge,
+        );
+        b.rotary_linear_to(
+            DVec3::new(15.0, 0.0, 19.0),
+            360.0,
+            600.0,
+            19.0,
+            MotionRole::Cut,
+        );
+        let tp = b.finish();
+
+        let sim = chip_sim::run_setup_simulation_with_engine(
+            &SetupSimulationInput {
+                doc: &doc,
+                setup: &resolved,
+                target_bodies: &[],
+                operations: &[SimOperationInput {
+                    op_id: "op_rot_err",
+                    op_name: "Rotary Cut",
+                    tool: flat_6mm,
+                    fallback_spindle_rpm: 12_000.0,
+                    intentional_edge_break_mm: 0.0,
+                    toolpath: &tp,
+                }],
+                resolution: SimResolution::Standard,
+                kinematics: MachineKinematicsConfig::default(),
+                verify_config: SimVerificationConfig::default(),
+                cancel: None,
+            },
+            chip_sim::SimEngineKind::TriDexel,
+        )
+        .unwrap();
+
+        let mut panel = SimulationPanelState {
+            engine: chip_sim::SimEngineKind::TriDexel,
+            active_run_id: 1,
+            active_setup_idx: 0,
+            active_result: Some(Arc::new(sim)),
+            ..Default::default()
+        };
+
+        let rep_default = panel
+            .active_error_report()
+            .expect("4th-axis rotary simulation must expose Error Metrics in SimulationPanelState")
+            .clone();
+        assert!(rep_default.sample_count > 1_000);
+        assert!(rep_default.target_volume_mm3 > 10_000.0);
+
+        panel.heatmap_tolerance_mm = 2.0;
+        let rep_loose = panel
+            .active_error_report()
+            .expect("recomputed tolerance error report")
+            .clone();
+        assert!((rep_loose.tolerance_mm - 2.0).abs() < 1e-6);
+        assert!(rep_loose.in_tolerance_surface_pct >= rep_default.in_tolerance_surface_pct);
     }
 }

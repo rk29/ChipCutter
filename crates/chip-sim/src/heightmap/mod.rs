@@ -222,7 +222,14 @@ impl SetupSimulationResult {
             .error_report
             .as_ref()
             .map_or_else(Vec::new, |r| r.per_operation.clone());
-        if let (Some(td_stock), Some(td_target)) = (
+        if let Some(cyl_stock) = self.final_cylindrical_stock.as_ref() {
+            crate::metrics::compute_cylindrical_error_report(
+                cyl_stock,
+                self.initial_stock_volume_mm3,
+                tolerance_mm,
+                per_op,
+            )
+        } else if let (Some(td_stock), Some(td_target)) = (
             self.final_tridexel_stock.as_ref(),
             self.target_tridexel_stock.as_ref(),
         ) {
