@@ -50,6 +50,11 @@
   </screenshots>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="0.11.0" date="2026-11-21">
+      <description>
+        <p>Added selectable Tri-Dexel 3D volumetric CAM simulation alongside fast 2.5D heightmap simulation, quantitative stock-vs-target error-volume and RMS/MAE/P95/P99 surface deviation metrics, signed deviation Error Heatmap visualization, CLI --engine/--tolerance JSON benchmarking, and illustrated Tutorial 17.</p>
+      </description>
+    </release>
     <release version="0.10.1" date="2026-11-21">
       <description>
         <p>Bug-fix release: reset all active project, model, simulation, G-code preview, and cached geometry state cleanly when opening or switching projects.</p>
