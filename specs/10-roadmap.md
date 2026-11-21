@@ -289,6 +289,40 @@ Phase 12 focuses on desktop usability, visual consistency, responsiveness, and d
 
 ---
 
+## Phase 13 — Expanded Machine Definitions & Helical Thread Milling (Planned — M44–M47)
+
+Phase 13 expands ChipCutter's built-in desktop CNC machine catalog with four widely used maker/benchtop machines and introduces full end-to-end **Helical Thread Milling** (single-point and multi-form cutters, built-in ISO Metric & Unified thread tables, internal/external helical arc-in/out toolpaths, Tri-Dexel undercut simulation, Tool Library & Operation Inspector UI, a built-in sample project, and illustrated Tutorial 18):
+
+### Milestone 44 — Built-In Machine Definitions: Carvera, Carvera Z1, Milo 2.0, & Voron Cascade (`plans/44-milestone-44-plan.md`)
+- **Four New Read-Only Built-In Machine Profiles (`chip-tools`, `machines/`):**
+  - **`carvera` (`Makera Carvera`):** `360 × 240 × 140 mm` travel, `200 W` `1,000–15,000 RPM` `1/8"` spindle, 6-tool **`AutomaticAtc`** carousel + fixed toolsetter, `grblhal_atc`, optional 4th-axis rotary (`Ø92 × 240 mm`, `grblhal_4axis`), and Makera Carvera ATC starter tool set.
+  - **`carvera-z1` (`Makera Carvera Z1`):** `200 × 200 × 100 mm` travel, `150 W` `1,000–13,000 RPM` lever **`QuickChange`** `1/8"` spindle + auto tool-height probing, `grblhal_atc`, optional 4th-axis rotary (`Ø80 × 150 mm`, `grblhal_4axis`), and Z1 starter tool set tuned for the `150 W` spindle.
+  - **`milo-2.0` (`Millennium Machines Milo v2.0`):** `348 × 210 × 120 mm` travel, `1.5 kW` `10,000–24,000 RPM` `ER16` spindle, `Manual` + toolsetter, `linuxcnc`, and upgraded Milo 2.0 starter tool set (including starter single-point thread mill).
+  - **`voron-cascade` (`Voron Cascade`):** `275 × 220 × 90 mm` enclosed travel (`340 × 225 mm` tooling plate), `1.5 kW` `8,000–24,000 RPM` `ER16` VFD spindle, `Manual` + toolsetter, `grblhal_atc`, and aluminum/acetal starter tool set (including starter single-point thread mill).
+- **CLI, GUI, & Documentation Parity:** Checked-in reference TOML files under `machines/`, unit tests enforcing code-vs-TOML parity and envelope/spindle validation, and updated Machine Manager docs (`docs/tutorials/15-machine-definitions-tool-sets.md`, `README.md`).
+
+### Milestone 45 — `ThreadMill` Cutter Geometry, ISO Metric & Unified Thread Tables, & Helical Thread Milling Kernel (`plans/45-milestone-45-plan.md`)
+- **`ThreadMill` Cutter Geometry (`chip-tools`):** Add `CutterGeometry::ThreadMill` supporting both single-point (`teeth_count = 1`) and multi-form (`teeth_count > 1`) cutters with relieved neck (`neck_diameter_mm`, `neck_length_mm`), `pitch_mm`, and `thread_angle_deg` (`60°` default), plus validation and Fusion 360 `.tools` import mapping.
+- **Built-In Standard Thread Tables (`chip-cam`):** Deterministic lookup tables for **ISO Metric Coarse & Fine** (`M2`–`M24`) and **Unified UNC / UNF** (`#4-40`–`3/4-10`) providing major/minor/pitch diameters, standard pitch, and recommended pilot/tap-drill diameters.
+- **Helical Thread Milling Strategy (`OperationKind::ThreadMill` in `chip-cam`, `chip-post`):**
+  - Supports **Internal** (cylindrical B-Rep holes / sketch circles) and **External** (cylindrical bosses / closed circular loops), **Right-Hand** and **Left-Hand**, and **Climb** (bottom-up internal RH / top-down external RH) vs. **Conventional** direction.
+  - Emits exact helical `G2`/`G3` interpolation (`I`, `J`, `Z` pitch advance per `360°`) with smooth **radial tangent arc-in / arc-out** from centerline or outside clearance, multi-step **radial roughing passes**, **spring passes**, **pitch-diameter fit offset**, multi-form single-revolution optimization, and automatic **centerline-compensated feedrate scaling** (`F_center = F_edge * (D_major ± D_tool) / D_major`).
+  - Strict geometric safety guards (cutter diameter vs. minor diameter, neck reach vs. thread depth, multi-form pitch match) and verified `GRBL` quadrant-split helical arcs + `LinuxCNC` full helical `G2`/`G3` posting.
+
+### Milestone 46 — Thread Mill Simulation (Tri-Dexel Undercuts, 3D Cutter Mesh) & Desktop GUI (`plans/46-milestone-46-plan.md`)
+- **Simulation & 5-Rule Verification (`chip-sim`):**
+  - Add revolved 3D `ThreadMill` cutter geometry (relieved neck + 60° V-tooth profile) to `cutter_profile.rs`.
+  - Support true **3D helical undercut thread-groove subtraction** in **Tri-Dexel** mode (`X`/`Y`/`Z` dexels) alongside safe minor/major verification in **Heightmap** mode, updating the 5-rule verifier to recognize relieved-neck clearance inside pre-drilled pilot bores while still catching rapid crashes, un-drilled plunges, and shank/holder collisions.
+- **Tool Library & Operation Inspector UI (`chip-gui`):**
+  - Add **Thread Mill** cutter type and 2D relieved-neck schematic to **Tool Library Manager** (`tool_library.rs`).
+  - Add `+ Thread Mill` creation actions, `IconKind::ThreadMill`, and a strict two-column **Thread Mill Passes** card (Thread Standard preset picker `ISO Metric` / `UNC` / `UNF` / `Custom`, Internal/External, Right/Left Hand, Climb/Conventional, Pitch, Major/Minor Ø, Radial Passes, Spring Passes, Pitch-Diameter Fit Offset, Centerline Feed Compensation, and live clearance/tap-drill guidance banner) with universal hover tooltips.
+
+### Milestone 47 — Built-In Thread Milling Sample, Illustrated Tutorial 18, Gallery Update, & Golden Verification (`plans/47-milestone-47-plan.md`)
+- **Starter Fixture & Built-In Sample (`chip-cad`, `chip-project`, `chip-gui`, `chip-cli`):** Add `docs/tutorials/assets/18-threaded-manifold.step` (`chipcutter generate-sample-step --tutorial 18-thread-milling`) and built-in sample **`thread-mill`** (`SampleProjectId::ThreadMillManifold`) featuring Facing, pilot drilling/boring, internal `M8×1.25` & `1/4-20 UNC` thread milling, and external `M12×1.75` boss thread milling.
+- **Illustrated Tutorial 18 & Sample Gallery (`docs/tutorials/18-thread-milling.md`, `docs/samples/thread-mill.md`):** Publish a 7-part illustrated guide with headless Vulkan screenshots (including Tri-Dexel undercut thread-groove close-ups), add the new sample & per-operation completion screenshots to the Sample Projects Gallery and GitHub Pages site, and lock down `GRBL` + `LinuxCNC` golden G-code regression tests.
+
+---
+
 ## Future Phases
 
 1. **Toolpath Algorithm Quality Optimization (Driven by Phase 11 Error Metrics):**
@@ -301,8 +335,7 @@ Phase 12 focuses on desktop usability, visual consistency, responsiveness, and d
    - 3D fixture/vise/clamp collision bodies with automatic safe-rapid routing.
    - **In-Process Stock Carryover Across Setups:** Pass the exact remaining Tri-Dexel solid at the end of Setup 1 (`G54`) directly into Setup 2 (`G55`, e.g., after flipping the part upside down or re-clamping onto a side face) by transforming the in-process stock into Setup 2's WCS frame as its starting stock. Instead of starting Setup 2 from an unmachined raw block (which causes redundant air-cutting and inaccurate crash/error-volume checks), both simulation and rest-aware toolpaths know exactly which pockets, profiles, and faces were already cut in Op 1—enabling zero-air-cut multi-op roughing, accurate Op-2 collision verification against the half-machined part, and cumulative multi-setup error-volume metrics across the finished two-sided part.
 5. **Ecosystem & Extensibility:**
-   - Add built-in machine definitions (and starter tool sets) for **Carvera Z1**, **Carvera (original)**, **Millennium Milo 2.0**, and **Voron Cascade**.
    - Optional OpenCASCADE (`opencascade-rs`) `CadKernel` feature backend.
-   - Thread milling (`ThreadMill` single/multi-form cutter geometry, ISO Metric & Unified thread tables, radial arc-in/out helical passes), additional controller dialects (Fanuc/Haas, Mach4, Masso, Centroid), and printable HTML/PDF setup sheets.
+   - Additional controller dialects (Fanuc/Haas, Mach4, Masso, Centroid), and printable HTML/PDF setup sheets.
 6. **Tutorials for Upcoming Future-Phase Capabilities:**
-   - Dedicated illustrated guides accompanying new future-phase strategies (guided operation setup, thread milling, 3D fixture/vise collision avoidance, and multi-setup Tri-Dexel stock carryover workflows).
+   - Dedicated illustrated guides accompanying new future-phase strategies (guided operation setup, 3D fixture/vise collision avoidance, and multi-setup Tri-Dexel stock carryover workflows).
