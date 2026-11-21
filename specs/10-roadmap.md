@@ -295,12 +295,14 @@ Phase 12 focuses on desktop usability, visual consistency, responsiveness, and d
    - Use Tri-Dexel error-volume & RMS benchmarks across 2.5D, 3D surface (`Adaptive3D`, `Waterline3D`, `Parallel3D`, `Scallop3D`, `Pencil3D`), V-Carve, and 4th-axis rotary strategies to systematically eliminate residual scallops, corner overcuts, and uncut islands.
 2. **Functional & Behavioral User-Level Testing:**
    - Durable end-to-end user-journey and GUI behavioral test harness (`egui_kittest` / headless interactive workflows + CLI workflows) verifying every feature from a machinist's point of view without brittle coupling to internal implementation details.
-3. **Advanced Workholding & Multi-Setup Stock Carryover:**
+3. **Guided Operation Setup Mode (Automatic Feature Recognition & Operation Authoring):**
+   - Provide an interactive guided workflow that inspects imported STEP/mesh/sketch geometry against the active Setup WCS, stock, and target machine's tool library to automatically recognize machinable features and propose a sequenced operation plan—such as **Facing** for stock top allowance, **2D Adaptive / Pocket** for closed/open cavities and shelves, **Drill vs. Helical Bore** for cylindrical holes (matched by diameter to available drills/endmills), **2D Contour + Tabs** for outer profiles, **Edge Chamfer** for modeled bevels, and **3D Roughing/Finishing** for sculpted surfaces—letting the machinist review, tweak, accept, or skip each proposed operation step by step.
+4. **Advanced Workholding & Multi-Setup Stock Carryover:**
    - 3D fixture/vise/clamp collision bodies with automatic safe-rapid routing.
    - **In-Process Stock Carryover Across Setups:** Pass the exact remaining Tri-Dexel solid at the end of Setup 1 (`G54`) directly into Setup 2 (`G55`, e.g., after flipping the part upside down or re-clamping onto a side face) by transforming the in-process stock into Setup 2's WCS frame as its starting stock. Instead of starting Setup 2 from an unmachined raw block (which causes redundant air-cutting and inaccurate crash/error-volume checks), both simulation and rest-aware toolpaths know exactly which pockets, profiles, and faces were already cut in Op 1—enabling zero-air-cut multi-op roughing, accurate Op-2 collision verification against the half-machined part, and cumulative multi-setup error-volume metrics across the finished two-sided part.
-4. **Ecosystem & Extensibility:**
+5. **Ecosystem & Extensibility:**
    - Add built-in machine definitions (and starter tool sets) for **Carvera Z1**, **Carvera (original)**, **Millennium Milo 2.0**, and **Voron Cascade**.
    - Optional OpenCASCADE (`opencascade-rs`) `CadKernel` feature backend.
    - Thread milling (`ThreadMill` single/multi-form cutter geometry, ISO Metric & Unified thread tables, radial arc-in/out helical passes), additional controller dialects (Fanuc/Haas, Mach4, Masso, Centroid), and printable HTML/PDF setup sheets.
-5. **Tutorials for Upcoming Future-Phase Capabilities:**
-   - Dedicated illustrated guides accompanying new future-phase strategies (thread milling, 3D fixture/vise collision avoidance, and multi-setup Tri-Dexel stock carryover workflows).
+6. **Tutorials for Upcoming Future-Phase Capabilities:**
+   - Dedicated illustrated guides accompanying new future-phase strategies (guided operation setup, thread milling, 3D fixture/vise collision avoidance, and multi-setup Tri-Dexel stock carryover workflows).
