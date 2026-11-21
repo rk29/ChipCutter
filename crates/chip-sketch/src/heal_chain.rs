@@ -1,7 +1,7 @@
 //! Segment deduplication, R-tree (`rstar`) endpoint gap-healing chainer, and Even-Odd planar
 //! region + island hierarchy classification (`11-sketches-vectors.md`).
 
-use cavalier_contours::polyline::{PlineSource, PlineSourceMut, Polyline};
+use chip_geom2d::is_simple_closed_polyline;
 use chip_math::{ArcPolyline2D, ArcSegment2D, DVec2, ParamLength};
 use rstar::{AABB, PointDistance, RTree, RTreeObject};
 
@@ -441,9 +441,8 @@ pub fn classify_planar_regions_from_candidates(
         if abs_area <= 1e-4 {
             continue;
         }
-        // Skip self-intersecting figure-8 loops by checking `cavalier_contours` self-intersect flag
-        let cav = to_simple_cavalier_check(&ccw);
-        if !cav {
+        // Skip self-intersecting figure-8 loops by checking `chip_geom2d`'s canonical simplicity check
+        if !is_simple_closed_polyline(&ccw) {
             continue;
         }
         let Some((sample_pt, _)) = ccw.sample_at_fraction(0.137) else {
@@ -517,31 +516,4 @@ pub fn classify_planar_regions_from_candidates(
         }
     }
     regions
-}
-
-fn to_simple_cavalier_check(ccw: &ArcPolyline2D) -> bool {
-    let mut pl = Polyline::new_closed();
-    for seg in &ccw.segments {
-        let s = seg.start();
-        let bulge = match *seg {
-            ArcSegment2D::Line { .. } => 0.0,
-            ArcSegment2D::Arc { .. } => {
-                let sw = seg.signed_sweep_rad();
-                if sw.abs() > 3.10 {
-                    // Split near-180° arc midpoint for valid bulge
-                    if let Some((mid, _)) = seg.eval_at(0.5) {
-                        let b_half = (0.125 * sw).tan();
-                        pl.add(s.x, s.y, b_half);
-                        pl.add(mid.x, mid.y, b_half);
-                        continue;
-                    }
-                }
-                (0.25 * sw).tan()
-            }
-        };
-        if s.is_finite() && bulge.is_finite() {
-            pl.add(s.x, s.y, bulge);
-        }
-    }
-    pl.vertex_count() >= 2 && !pl.scan_for_self_intersect()
 }

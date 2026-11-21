@@ -2,6 +2,8 @@
 resolver = "2"
 members = [
     "crates/chip-math",
+    "crates/chip-bvh",
+    "crates/chip-geom2d",
     "crates/chip-cad",
     "crates/chip-sketch",
     "crates/chip-tools",
@@ -34,6 +36,8 @@ expect_used = "deny"
 
 [workspace.dependencies]
 chip-math = { version = "0.13.0", path = "crates/chip-math" }
+chip-bvh = { version = "0.13.0", path = "crates/chip-bvh" }
+chip-geom2d = { version = "0.13.0", path = "crates/chip-geom2d" }
 chip-cad = { version = "0.13.0", path = "crates/chip-cad" }
 chip-sketch = { version = "0.13.0", path = "crates/chip-sketch" }
 chip-tools = { version = "0.13.0", path = "crates/chip-tools" }

@@ -1,5 +1,5 @@
+use chip_bvh::{BvhSegment, SegmentBvh, TriMesh3D, ray_triangle_intersect};
 use chip_math::{DVec3, Ray3};
-use rstar::{AABB, RTree, RTreeObject};
 
 use crate::model::{CadDocument, EdgeId, FaceId, LoopId, SurfaceKind};
 
@@ -54,87 +54,47 @@ pub struct PickHit {
     pub ray_t: f64,
 }
 
-#[derive(Debug, Clone)]
-struct TriEntry {
-    face_id: FaceId,
-    v0: DVec3,
-    v1: DVec3,
-    v2: DVec3,
-    envelope: AABB<[f64; 3]>,
-}
-
-impl RTreeObject for TriEntry {
-    type Envelope = AABB<[f64; 3]>;
-    fn envelope(&self) -> Self::Envelope {
-        self.envelope
-    }
-}
-
-#[derive(Debug, Clone)]
-struct SegEntry {
-    edge_id: EdgeId,
-    a: DVec3,
-    b: DVec3,
-    envelope: AABB<[f64; 3]>,
-}
-
-impl RTreeObject for SegEntry {
-    type Envelope = AABB<[f64; 3]>;
-    fn envelope(&self) -> Self::Envelope {
-        self.envelope
-    }
-}
-
-/// R-tree spatial acceleration structure for sub-millisecond hover and click picking.
+/// Flat-BVH spatial acceleration structure for `O(log N)` sub-millisecond hover and click picking.
 #[derive(Debug, Clone, Default)]
 pub struct CadPicker {
-    tri_tree: RTree<TriEntry>,
-    seg_tree: RTree<SegEntry>,
+    tri_mesh: TriMesh3D,
+    seg_bvh: SegmentBvh,
 }
 
 impl CadPicker {
-    /// Builds spatial pick trees from an imported [`CadDocument`].
+    /// Builds flat SAH BVH spatial pick indexes from an imported [`CadDocument`].
     pub fn build(doc: &CadDocument) -> Self {
-        let tri_entries: Vec<TriEntry> = doc
+        let raw_tris: Vec<([DVec3; 3], u32)> = doc
             .render_mesh
             .pick_triangles
             .iter()
-            .map(|tri| {
-                let min = tri.v0_mm.min(tri.v1_mm).min(tri.v2_mm);
-                let max = tri.v0_mm.max(tri.v1_mm).max(tri.v2_mm);
-                TriEntry {
-                    face_id: tri.face_id,
-                    v0: tri.v0_mm,
-                    v1: tri.v1_mm,
-                    v2: tri.v2_mm,
-                    envelope: AABB::from_corners([min.x, min.y, min.z], [max.x, max.y, max.z]),
-                }
-            })
+            .map(|tri| ([tri.v0_mm, tri.v1_mm, tri.v2_mm], tri.face_id.0))
             .collect();
 
-        let mut seg_entries = Vec::new();
+        let seg_cap: usize = doc
+            .render_mesh
+            .edge_polylines
+            .iter()
+            .map(|p| p.points_mm.len().saturating_sub(1))
+            .sum();
+        let mut segments = Vec::with_capacity(seg_cap);
         for poly in &doc.render_mesh.edge_polylines {
             for w in poly.points_mm.windows(2) {
-                let a = w[0];
-                let b = w[1];
-                let min = a.min(b);
-                let max = a.max(b);
-                seg_entries.push(SegEntry {
-                    edge_id: poly.edge_id,
-                    a,
-                    b,
-                    envelope: AABB::from_corners([min.x, min.y, min.z], [max.x, max.y, max.z]),
+                segments.push(BvhSegment {
+                    a: w[0],
+                    b: w[1],
+                    user_id: poly.edge_id.0,
                 });
             }
         }
 
         Self {
-            tri_tree: RTree::bulk_load(tri_entries),
-            seg_tree: RTree::bulk_load(seg_entries),
+            tri_mesh: TriMesh3D::from_raw_triangles_with_faces(&raw_tris),
+            seg_bvh: SegmentBvh::build(segments),
         }
     }
 
-    /// Casts a 3D picking ray (`f64` mm) against the B-Rep model.
+    /// Casts a 3D picking ray (`f64` mm) against the B-Rep model in `O(log N)` time.
     ///
     /// `mm_per_pixel` gives the world-space scale at the camera target so thin topological edges
     /// have a crisp ~6-pixel hover radius and win cleanly over the underlying face without picking
@@ -152,35 +112,67 @@ impl CadPicker {
         let mut closest_any_face_t = f64::INFINITY;
         let mut best_filtered_face: Option<(FaceId, f64)> = None;
 
-        for tri in self.tri_tree.iter() {
-            let min = DVec3::from(tri.envelope.lower());
-            let max = DVec3::from(tri.envelope.upper());
-            let aabb = chip_math::Aabb3::new(min, max);
-            let Some(box_t) = ray.intersect_aabb(&aabb, 1e-4) else {
-                continue;
-            };
-            if box_t > closest_any_face_t && best_filtered_face.is_some_and(|(_, ft)| box_t > ft) {
-                continue;
-            }
-            if let Some(t) = ray.intersect_triangle(tri.v0, tri.v1, tri.v2) {
-                if t < closest_any_face_t {
-                    closest_any_face_t = t;
+        match filter {
+            PickFilter::CylindricalHolesOnly => {
+                if let Some((t, face_id)) = self.tri_mesh.bvh.traverse_ray_closest(
+                    ray.origin,
+                    ray.dir,
+                    f64::INFINITY,
+                    |tri_idx, best_t| {
+                        let tri = self.tri_mesh.triangles.get(tri_idx)?;
+                        let fid = FaceId(tri.face_id);
+                        let is_hole = doc.face(fid).is_some_and(|f| {
+                            matches!(
+                                f.surface,
+                                SurfaceKind::Cylinder {
+                                    is_internal: true,
+                                    ..
+                                }
+                            )
+                        });
+                        if !is_hole {
+                            return None;
+                        }
+                        let (v0, v1, v2) = self.tri_mesh.triangle_vertices(tri_idx)?;
+                        let (t, _, _) =
+                            ray_triangle_intersect(ray.origin, ray.dir, v0, v1, v2, best_t)?;
+                        Some((t, fid))
+                    },
+                ) {
+                    best_filtered_face = Some((face_id, t));
                 }
-                let matches_face_filter = match filter {
-                    PickFilter::Any | PickFilter::FacesOnly => doc.face(tri.face_id).is_some(),
-                    PickFilter::CylindricalHolesOnly => doc.face(tri.face_id).is_some_and(|f| {
-                        matches!(
-                            f.surface,
-                            SurfaceKind::Cylinder {
-                                is_internal: true,
-                                ..
-                            }
-                        )
-                    }),
-                    PickFilter::EdgesOnly | PickFilter::EdgeLoops => false,
-                };
-                if matches_face_filter && best_filtered_face.is_none_or(|(_, best_t)| t < best_t) {
-                    best_filtered_face = Some((tri.face_id, t));
+            }
+            PickFilter::EdgesOnly | PickFilter::EdgeLoops => {
+                if let Some(hit) = self.tri_mesh.raycast(ray.origin, ray.dir, f64::INFINITY) {
+                    closest_any_face_t = hit.t;
+                }
+            }
+            PickFilter::Any | PickFilter::FacesOnly => {
+                if doc.faces.is_empty() {
+                    if let Some(hit) = self.tri_mesh.raycast(ray.origin, ray.dir, f64::INFINITY) {
+                        closest_any_face_t = hit.t;
+                    }
+                } else if let Some((t, face_id)) = self.tri_mesh.bvh.traverse_ray_closest(
+                    ray.origin,
+                    ray.dir,
+                    f64::INFINITY,
+                    |tri_idx, best_t| {
+                        let tri = self.tri_mesh.triangles.get(tri_idx)?;
+                        let (v0, v1, v2) = self.tri_mesh.triangle_vertices(tri_idx)?;
+                        let (t, _, _) =
+                            ray_triangle_intersect(ray.origin, ray.dir, v0, v1, v2, best_t)?;
+                        if t < closest_any_face_t {
+                            closest_any_face_t = t;
+                        }
+                        let fid = FaceId(tri.face_id);
+                        if doc.face(fid).is_some() {
+                            Some((t, fid))
+                        } else {
+                            None
+                        }
+                    },
+                ) {
+                    best_filtered_face = Some((face_id, t));
                 }
             }
         }
@@ -198,30 +190,14 @@ impl CadPicker {
             closest_any_face_t + edge_radius_mm * 1.25
         };
 
-        let mut best_edge: Option<(EdgeId, f64, f64, DVec3)> = None; // (id, score, ray_t, pt)
-        if check_edges {
-            for seg in self.seg_tree.iter() {
-                let min = DVec3::from(seg.envelope.lower());
-                let max = DVec3::from(seg.envelope.upper());
-                let aabb = chip_math::Aabb3::new(min, max);
-                let Some(box_t) = ray.intersect_aabb(&aabb, edge_radius_mm) else {
-                    continue;
-                };
-                if box_t > occlusion_limit {
-                    continue;
-                }
-                let hit = ray.closest_to_segment(seg.a, seg.b);
-                if hit.distance_mm <= edge_radius_mm && hit.ray_t <= occlusion_limit {
-                    // Prefer closer screen-space hit + shallower ray depth
-                    let score = hit.distance_mm + hit.ray_t * 1e-3;
-                    if best_edge.is_none_or(|(_, best_s, _, _)| score < best_s) {
-                        best_edge = Some((seg.edge_id, score, hit.ray_t, hit.point_on_segment));
-                    }
-                }
-            }
-        }
+        let best_edge = if check_edges {
+            self.seg_bvh.pick_ray(ray, edge_radius_mm, occlusion_limit)
+        } else {
+            None
+        };
 
-        if let Some((edge_id, _, ray_t, point_mm)) = best_edge {
+        if let Some(edge_hit) = best_edge {
+            let edge_id = EdgeId(edge_hit.user_id);
             let target = if filter == PickFilter::EdgeLoops {
                 let edge_rec = doc.edge(edge_id)?;
                 if let Some(&loop_id) = edge_rec.loops.first() {
@@ -239,8 +215,8 @@ impl CadPicker {
             };
             return Some(PickHit {
                 target,
-                point_mm,
-                ray_t,
+                point_mm: edge_hit.hit.point_on_segment,
+                ray_t: edge_hit.hit.ray_t,
             });
         }
 
@@ -256,41 +232,25 @@ impl CadPicker {
     }
 
     /// Casts a ray against both B-Rep faces and triangle meshes (`render_mesh.pick_triangles`)
-    /// and returns `(hit_point_mm, outward_normal)` for the closest surface intersection.
+    /// in `O(log N)` time and returns `(hit_point_mm, outward_normal)` for the closest surface
+    /// intersection.
     ///
     /// For planar B-Rep faces, the exact analytic plane normal is returned; for mesh triangles
     /// (STL/OBJ/3MF) or curved faces, the triangle geometric normal is returned.
     pub fn pick_surface_normal(&self, doc: &CadDocument, ray: &Ray3) -> Option<(DVec3, DVec3)> {
-        let mut best: Option<(&TriEntry, f64)> = None;
-        for tri in self.tri_tree.iter() {
-            let min = DVec3::from(tri.envelope.lower());
-            let max = DVec3::from(tri.envelope.upper());
-            let aabb = chip_math::Aabb3::new(min, max);
-            let Some(box_t) = ray.intersect_aabb(&aabb, 1e-4) else {
-                continue;
-            };
-            if best.is_some_and(|(_, best_t)| box_t > best_t) {
-                continue;
-            }
-            if let Some(t) = ray.intersect_triangle(tri.v0, tri.v1, tri.v2)
-                && best.is_none_or(|(_, best_t)| t < best_t)
-            {
-                best = Some((tri, t));
-            }
-        }
-        let (tri, ray_t) = best?;
-        let hit_pt = ray.at(ray_t);
-        let normal = if let Some(face) = doc.face(tri.face_id) {
+        let hit = self.tri_mesh.raycast(ray.origin, ray.dir, f64::INFINITY)?;
+        let face_id = FaceId(hit.face_id);
+        let normal = if let Some(face) = doc.face(face_id) {
             match face.surface {
                 SurfaceKind::Plane { normal, .. } => normal.normalize_or_zero(),
-                _ => (tri.v1 - tri.v0).cross(tri.v2 - tri.v0).normalize_or_zero(),
+                _ => hit.normal,
             }
         } else {
-            (tri.v1 - tri.v0).cross(tri.v2 - tri.v0).normalize_or_zero()
+            hit.normal
         };
         if normal.length_squared() < 1e-12 {
             return None;
         }
-        Some((hit_pt, normal))
+        Some((hit.point, normal))
     }
 }

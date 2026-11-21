@@ -10,6 +10,7 @@ workspace = true
 [dependencies]
 bytemuck.workspace = true
 chip-math.workspace = true
+chip-bvh.workspace = true
 chip-cad.workspace = true
 chip-tools.workspace = true
 chip-cam.workspace = true

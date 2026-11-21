@@ -9,12 +9,13 @@
 
 use std::{f64::consts::TAU, sync::atomic::Ordering};
 
+use chip_bvh::TriMesh3D;
 use chip_cad::{BodyId, CadDocument};
 use chip_cam::{
     ResolvedRotaryConfig, ResolvedSetup, ResolvedStockGeometry, RotaryAxisKind, RotaryDirection,
-    SegmentMotion3D, SurfaceMesh3D, ToolpathSegment3D, rotate_point_about_axis,
+    SegmentMotion3D, ToolpathSegment3D, rotate_point_about_axis,
 };
-use chip_math::{Aabb3, DVec3, Ray3};
+use chip_math::{Aabb3, DVec3};
 use chip_tools::CutterGeometry;
 use rayon::prelude::*;
 
@@ -153,8 +154,8 @@ impl CylindricalStock {
         if !doc.has_3d_geometry() {
             return;
         }
-        let surface = SurfaceMesh3D::from_cad_document(doc, target_bodies, &setup.frame);
-        if surface.triangles.is_empty() {
+        let target_mesh: TriMesh3D = doc.build_wcs_tri_mesh(target_bodies, &setup.frame);
+        if target_mesh.is_empty() {
             return;
         }
         let r_cast = self.rotary.stock_outer_radius_mm + 5.0;
@@ -175,14 +176,8 @@ impl CylindricalStock {
                     let p_outer = rotary.cylindrical_to_wcs(u, theta, r_cast);
                     let p_axis = rotary.cylindrical_to_wcs(u, theta, 0.0);
                     let dir = (p_axis - p_outer).normalize_or_zero();
-                    if let Some(ray) = Ray3::new(p_outer, dir)
-                        && let Some(hit) =
-                            surface
-                                .bvh
-                                .raycast(&surface.vertices_wcs, &surface.triangles, &ray)
-                        && hit.ray_t <= r_cast
-                    {
-                        let r_hit = (r_cast - hit.ray_t).max(0.0);
+                    if let Some(hit) = target_mesh.raycast(p_outer, dir, r_cast) {
+                        let r_hit = (r_cast - hit.t).max(0.0);
                         *cell_r = r_hit as f32;
                     }
                 }

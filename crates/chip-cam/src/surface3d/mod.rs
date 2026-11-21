@@ -9,7 +9,10 @@ pub mod finishing;
 pub mod levels;
 pub mod push_cutter;
 
-use chip_cad::{BodyId, CadDocument, MeshBvh, MeshTriangle, TriangleMeshBody};
+use chip_bvh::{
+    ClosestPointHit, FlatBvh, RayHit, TriMesh3D, closest_point_on_triangle, ray_triangle_intersect,
+};
+use chip_cad::{BodyId, CadDocument, MeshTriangle, TriangleMeshBody};
 use chip_math::{Aabb3, DVec3, RigidFrame3};
 
 pub use cutter::{SurfaceCutterProfile, SurfaceCutterShape};
@@ -25,16 +28,51 @@ pub use levels::{
 };
 pub use push_cutter::{push_cutter_region_z, slice_surface_contours_z};
 
-/// WCS-space canonical `f64` triangle surface mesh accelerated by a [`MeshBvh`].
+/// WCS-space canonical `f64` triangle surface mesh accelerated by a [`chip_bvh::FlatBvh`].
 #[derive(Debug, Clone)]
 pub struct SurfaceMesh3D {
     pub vertices_wcs: Vec<DVec3>,
     pub triangles: Vec<MeshTriangle>,
     pub aabb_wcs: Aabb3,
-    pub bvh: MeshBvh,
+    pub bvh: FlatBvh,
 }
 
 impl SurfaceMesh3D {
+    /// Wraps a canonical [`chip_bvh::TriMesh3D`] as a [`SurfaceMesh3D`] without rebuilding the BVH.
+    pub fn from_tri_mesh(mesh: TriMesh3D) -> Self {
+        let triangles = mesh
+            .triangles
+            .into_iter()
+            .map(|tri| MeshTriangle {
+                indices: tri.indices,
+                normal: tri.normal,
+                aabb: tri.aabb,
+            })
+            .collect();
+        Self {
+            vertices_wcs: mesh.vertices,
+            triangles,
+            aabb_wcs: mesh.bounds,
+            bvh: mesh.bvh,
+        }
+    }
+
+    /// Builds a [`SurfaceMesh3D`] from pre-computed WCS vertices, triangles, and overall bounds.
+    pub fn from_indexed_triangles(
+        vertices_wcs: Vec<DVec3>,
+        triangles: Vec<MeshTriangle>,
+        aabb_wcs: Aabb3,
+    ) -> Self {
+        let aabbs: Vec<Aabb3> = triangles.iter().map(|t| t.aabb).collect();
+        let bvh = FlatBvh::build(&aabbs);
+        Self {
+            vertices_wcs,
+            triangles,
+            aabb_wcs,
+            bvh,
+        }
+    }
+
     /// Builds a [`SurfaceMesh3D`] from a single [`TriangleMeshBody`] transformed into `setup_frame`.
     pub fn from_triangle_mesh(mesh: &TriangleMeshBody, setup_frame: &RigidFrame3) -> Self {
         let vertices_wcs: Vec<DVec3> = mesh
@@ -43,29 +81,8 @@ impl SurfaceMesh3D {
             .map(|&v| setup_frame.world_to_local_point(v))
             .collect();
 
-        let mut aabb_wcs = Aabb3::EMPTY;
-        let mut triangles = Vec::with_capacity(mesh.triangles.len());
-        for tri in &mesh.triangles {
-            let [i0, i1, i2] = tri.indices;
-            let v0 = vertices_wcs[i0 as usize];
-            let v1 = vertices_wcs[i1 as usize];
-            let v2 = vertices_wcs[i2 as usize];
-            let n = (v1 - v0).cross(v2 - v0).normalize_or_zero();
-            let tri_aabb = Aabb3::new(v0.min(v1).min(v2), v0.max(v1).max(v2));
-            aabb_wcs = aabb_wcs.union(&tri_aabb);
-            triangles.push(MeshTriangle {
-                indices: tri.indices,
-                normal: n,
-                aabb: tri_aabb,
-            });
-        }
-        let bvh = MeshBvh::build(&triangles);
-        Self {
-            vertices_wcs,
-            triangles,
-            aabb_wcs,
-            bvh,
-        }
+        let indices: Vec<[u32; 3]> = mesh.triangles.iter().map(|t| t.indices).collect();
+        Self::from_tri_mesh(TriMesh3D::from_indexed(vertices_wcs, &indices))
     }
 
     /// Builds a unified [`SurfaceMesh3D`] in Setup WCS from all targeted bodies (`doc.meshes`
@@ -75,101 +92,62 @@ impl SurfaceMesh3D {
         target_bodies: &[BodyId],
         setup_frame: &RigidFrame3,
     ) -> Self {
-        let include_body = |bid: BodyId| target_bodies.is_empty() || target_bodies.contains(&bid);
-
-        let mut vertices_wcs: Vec<DVec3> = Vec::new();
-        let mut triangles: Vec<MeshTriangle> = Vec::new();
-        let mut aabb_wcs = Aabb3::EMPTY;
-
-        // 1. Imported triangle meshes (`STL` / `OBJ` / `3MF`)
-        for mesh in &doc.meshes {
-            if !include_body(mesh.id) {
-                continue;
-            }
-            let base = vertices_wcs.len() as u32;
-            vertices_wcs.extend(
-                mesh.vertices_mm
-                    .iter()
-                    .map(|&v| setup_frame.world_to_local_point(v)),
-            );
-            for tri in &mesh.triangles {
-                let i0 = base + tri.indices[0];
-                let i1 = base + tri.indices[1];
-                let i2 = base + tri.indices[2];
-                let v0 = vertices_wcs[i0 as usize];
-                let v1 = vertices_wcs[i1 as usize];
-                let v2 = vertices_wcs[i2 as usize];
-                let n = (v1 - v0).cross(v2 - v0).normalize_or_zero();
-                let tri_aabb = Aabb3::new(v0.min(v1).min(v2), v0.max(v1).max(v2));
-                aabb_wcs = aabb_wcs.union(&tri_aabb);
-                triangles.push(MeshTriangle {
-                    indices: [i0, i1, i2],
-                    normal: n,
-                    aabb: tri_aabb,
-                });
-            }
-        }
-
-        // 2. STEP B-Rep `pick_triangles` (exact `f64` surface tessellation)
-        for tri in &doc.render_mesh.pick_triangles {
-            let Some(face) = doc.face(tri.face_id) else {
-                continue;
-            };
-            if !include_body(face.body_id) {
-                continue;
-            }
-            let base = vertices_wcs.len() as u32;
-            let v0 = setup_frame.world_to_local_point(tri.v0_mm);
-            let v1 = setup_frame.world_to_local_point(tri.v1_mm);
-            let v2 = setup_frame.world_to_local_point(tri.v2_mm);
-            vertices_wcs.push(v0);
-            vertices_wcs.push(v1);
-            vertices_wcs.push(v2);
-            let n = (v1 - v0).cross(v2 - v0).normalize_or_zero();
-            let tri_aabb = Aabb3::new(v0.min(v1).min(v2), v0.max(v1).max(v2));
-            aabb_wcs = aabb_wcs.union(&tri_aabb);
-            triangles.push(MeshTriangle {
-                indices: [base, base + 1, base + 2],
-                normal: n,
-                aabb: tri_aabb,
-            });
-        }
-
-        let bvh = MeshBvh::build(&triangles);
-        Self {
-            vertices_wcs,
-            triangles,
-            aabb_wcs,
-            bvh,
-        }
+        Self::from_tri_mesh(doc.build_wcs_tri_mesh(target_bodies, setup_frame))
     }
 
     /// Builds a minimal [`SurfaceMesh3D`] directly from raw WCS triangles (useful for analytical unit tests).
     pub fn from_raw_triangles(raw_tris: &[[DVec3; 3]]) -> Self {
-        let mut vertices_wcs = Vec::with_capacity(raw_tris.len() * 3);
-        let mut triangles = Vec::with_capacity(raw_tris.len());
-        let mut aabb_wcs = Aabb3::EMPTY;
-        for &[v0, v1, v2] in raw_tris {
-            let base = vertices_wcs.len() as u32;
-            vertices_wcs.push(v0);
-            vertices_wcs.push(v1);
-            vertices_wcs.push(v2);
-            let n = (v1 - v0).cross(v2 - v0).normalize_or_zero();
-            let tri_aabb = Aabb3::new(v0.min(v1).min(v2), v0.max(v1).max(v2));
-            aabb_wcs = aabb_wcs.union(&tri_aabb);
-            triangles.push(MeshTriangle {
-                indices: [base, base + 1, base + 2],
-                normal: n,
-                aabb: tri_aabb,
-            });
-        }
-        let bvh = MeshBvh::build(&triangles);
-        Self {
-            vertices_wcs,
-            triangles,
-            aabb_wcs,
-            bvh,
-        }
+        Self::from_tri_mesh(TriMesh3D::from_raw_triangles(raw_tris))
+    }
+
+    /// Casts an exact `f64` ray against this surface mesh in `O(log N)` front-to-back order.
+    pub fn raycast(&self, origin: DVec3, dir: DVec3, max_t: f64) -> Option<RayHit> {
+        self.bvh
+            .traverse_ray_closest(origin, dir, max_t, |tri_idx, best_t| {
+                let tri = self.triangles.get(tri_idx)?;
+                let v0 = *self.vertices_wcs.get(tri.indices[0] as usize)?;
+                let v1 = *self.vertices_wcs.get(tri.indices[1] as usize)?;
+                let v2 = *self.vertices_wcs.get(tri.indices[2] as usize)?;
+                let (t, u, v) = ray_triangle_intersect(origin, dir, v0, v1, v2, best_t)?;
+                Some((
+                    t,
+                    RayHit {
+                        tri_index: tri_idx,
+                        face_id: 0,
+                        t,
+                        point: origin + dir * t,
+                        normal: tri.normal,
+                        bary_u: u,
+                        bary_v: v,
+                    },
+                ))
+            })
+            .map(|(_, hit)| hit)
+    }
+
+    /// Finds the exact `f64` closest point on this surface mesh to `point` in `O(log N)` time.
+    pub fn closest_point(&self, point: DVec3) -> Option<ClosestPointHit> {
+        self.bvh
+            .traverse_closest_point(point, |tri_idx, _best_d2| {
+                let tri = self.triangles.get(tri_idx)?;
+                let v0 = *self.vertices_wcs.get(tri.indices[0] as usize)?;
+                let v1 = *self.vertices_wcs.get(tri.indices[1] as usize)?;
+                let v2 = *self.vertices_wcs.get(tri.indices[2] as usize)?;
+                let (q, d2, u, v) = closest_point_on_triangle(point, v0, v1, v2);
+                Some((
+                    d2,
+                    ClosestPointHit {
+                        tri_index: tri_idx,
+                        face_id: 0,
+                        point: q,
+                        normal: tri.normal,
+                        distance: d2.sqrt(),
+                        bary_u: u,
+                        bary_v: v,
+                    },
+                ))
+            })
+            .map(|(_, hit)| hit)
     }
 }
 

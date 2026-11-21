@@ -2,7 +2,7 @@
 //! and angular (`G94`) feedrate helpers, and multi-turn / shortest-path unwinding (`03-setups-wcs.md`
 //! & Milestone 19).
 
-use chip_cad::{MeshBvh, MeshTriangle};
+use chip_cad::MeshTriangle;
 use chip_math::{Aabb3, DVec3, EvalContext, ParamLength, RigidFrame3};
 use serde::{Deserialize, Serialize};
 
@@ -904,13 +904,7 @@ pub fn build_rotated_strip_mesh(
             aabb: tri_aabb,
         });
     }
-    let bvh = MeshBvh::build(&triangles);
-    SurfaceMesh3D {
-        vertices_wcs,
-        triangles,
-        aabb_wcs,
-        bvh,
-    }
+    SurfaceMesh3D::from_indexed_triangles(vertices_wcs, triangles, aabb_wcs)
 }
 
 #[cfg(test)]

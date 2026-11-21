@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 
+use chip_geom2d::{contours_to_region_set, simplify_rdp_2d};
 use chip_math::{ArcPolyline2D, ArcSegment2D, DVec2, DVec3};
 
 use crate::{
-    offset2d::PocketRegion2D,
     rest2d::RegionSet2D,
     surface3d::{SurfaceMesh3D, cutter::SurfaceCutterProfile},
 };
@@ -125,61 +125,6 @@ pub fn push_cutter_region_z(
     }
 
     RegionSet2D::union_many(&mut dilated_sets)
-}
-
-/// Converts a list of closed 2D slice contours into a nested [`RegionSet2D`] using exact
-/// containment-depth parity (outer solids = even depth, interior cavities = odd depth).
-pub(crate) fn contours_to_region_set(contours: &[ArcPolyline2D]) -> RegionSet2D {
-    let mut closed_loops: Vec<(f64, ArcPolyline2D)> = contours
-        .iter()
-        .filter(|c| c.closed && c.segments.len() >= 3)
-        .filter_map(|c| {
-            let area = signed_area_polyline(c);
-            if area.abs() <= 1e-5 {
-                return None;
-            }
-            let ccw = if area > 0.0 {
-                c.clone()
-            } else {
-                reverse_polyline(c)
-            };
-            Some((area.abs(), ccw))
-        })
-        .collect();
-
-    if closed_loops.is_empty() {
-        return RegionSet2D::empty();
-    }
-
-    // Sort largest area first so parent loops always precede contained child loops
-    closed_loops.sort_by(|a, b| b.0.total_cmp(&a.0));
-
-    let mut depths = vec![0usize; closed_loops.len()];
-    for i in 0..closed_loops.len() {
-        let sample_pt = closed_loops[i].1.segments[0].start();
-        let mut depth = 0usize;
-        for (_, parent_loop) in closed_loops.iter().take(i) {
-            if parent_loop.contains_point(sample_pt) {
-                depth += 1;
-            }
-        }
-        depths[i] = depth;
-    }
-
-    let mut result = RegionSet2D::empty();
-    for (idx, (_, loop_ccw)) in closed_loops.into_iter().enumerate() {
-        let loop_reg = RegionSet2D::from_single(PocketRegion2D::new(loop_ccw, Vec::new()));
-        if depths[idx].is_multiple_of(2) {
-            result = if result.is_empty() {
-                loop_reg
-            } else {
-                result.union(&loop_reg)
-            };
-        } else {
-            result = result.difference(&loop_reg);
-        }
-    }
-    result
 }
 
 fn intersect_triangle_with_z_plane(
@@ -325,6 +270,14 @@ fn chain_slice_segments(segments: &[(DVec2, DVec2)]) -> Vec<ArcPolyline2D> {
         {
             pts.pop();
         }
+        if closed
+            && let Some((min_idx, _)) = pts
+                .iter()
+                .enumerate()
+                .min_by(|(_, a), (_, b)| a.x.total_cmp(&b.x).then_with(|| a.y.total_cmp(&b.y)))
+        {
+            pts.rotate_left(min_idx);
+        }
         if pts.len() >= 4 {
             pts = simplify_rdp_2d(&pts, closed, 0.005);
         }
@@ -355,118 +308,4 @@ fn chain_slice_segments(segments: &[(DVec2, DVec2)]) -> Vec<ArcPolyline2D> {
     }
 
     polylines
-}
-
-fn signed_area_polyline(poly: &ArcPolyline2D) -> f64 {
-    let mut area2 = 0.0f64;
-    for seg in &poly.segments {
-        let a = seg.start();
-        let b = seg.end();
-        area2 += a.x * b.y - b.x * a.y;
-    }
-    0.5 * area2
-}
-
-fn reverse_polyline(poly: &ArcPolyline2D) -> ArcPolyline2D {
-    let segments = poly
-        .segments
-        .iter()
-        .rev()
-        .map(|seg| match *seg {
-            ArcSegment2D::Line { start, end } => ArcSegment2D::Line {
-                start: end,
-                end: start,
-            },
-            ArcSegment2D::Arc {
-                start,
-                end,
-                center,
-                radius,
-                ccw,
-            } => ArcSegment2D::Arc {
-                start: end,
-                end: start,
-                center,
-                radius,
-                ccw: !ccw,
-            },
-        })
-        .collect();
-    ArcPolyline2D {
-        segments,
-        closed: poly.closed,
-    }
-}
-
-/// Ramer–Douglas–Peucker 2D polyline simplification preserving corners within `tol_mm`.
-fn simplify_rdp_2d(pts: &[DVec2], closed: bool, tol_mm: f64) -> Vec<DVec2> {
-    if pts.len() < 3 {
-        return pts.to_vec();
-    }
-    let tol_sq = tol_mm * tol_mm;
-    if closed {
-        // Split closed ring at the two farthest vertices so no seam bias occurs
-        let first = pts[0];
-        let split_idx = pts
-            .iter()
-            .enumerate()
-            .skip(1)
-            .max_by(|(_, a), (_, b)| {
-                a.distance_squared(first)
-                    .total_cmp(&b.distance_squared(first))
-            })
-            .map_or(pts.len() / 2, |(i, _)| i);
-        let mut h1 = Vec::new();
-        rdp_recurse(&pts[..=split_idx], tol_sq, &mut h1);
-        let mut second_slice = Vec::with_capacity(pts.len() - split_idx + 1);
-        second_slice.extend_from_slice(&pts[split_idx..]);
-        second_slice.push(first);
-        let mut h2 = Vec::new();
-        rdp_recurse(&second_slice, tol_sq, &mut h2);
-        let mut out = h1;
-        if h2.len() > 2 {
-            out.extend_from_slice(&h2[1..h2.len() - 1]);
-        }
-        if out.len() >= 3 { out } else { pts.to_vec() }
-    } else {
-        let mut out = Vec::new();
-        rdp_recurse(pts, tol_sq, &mut out);
-        out
-    }
-}
-
-fn rdp_recurse(pts: &[DVec2], tol_sq: f64, out: &mut Vec<DVec2>) {
-    if pts.len() <= 2 {
-        out.extend_from_slice(pts);
-        return;
-    }
-    let a = pts[0];
-    let b = pts[pts.len() - 1];
-    let ab = b - a;
-    let ab_len_sq = ab.length_squared();
-    let mut best_idx = 0usize;
-    let mut best_d_sq = -1.0f64;
-    for (i, &p) in pts.iter().enumerate().take(pts.len() - 1).skip(1) {
-        let d_sq = if ab_len_sq <= 1e-12 {
-            p.distance_squared(a)
-        } else {
-            let t = ((p - a).dot(ab) / ab_len_sq).clamp(0.0, 1.0);
-            p.distance_squared(a + ab * t)
-        };
-        if d_sq > best_d_sq {
-            best_d_sq = d_sq;
-            best_idx = i;
-        }
-    }
-    if best_d_sq > tol_sq && best_idx > 0 && best_idx + 1 < pts.len() {
-        let mut left = Vec::new();
-        rdp_recurse(&pts[..=best_idx], tol_sq, &mut left);
-        let mut right = Vec::new();
-        rdp_recurse(&pts[best_idx..], tol_sq, &mut right);
-        out.extend_from_slice(&left[..left.len() - 1]);
-        out.extend_from_slice(&right);
-    } else {
-        out.push(a);
-        out.push(b);
-    }
 }

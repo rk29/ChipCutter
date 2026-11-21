@@ -1,4 +1,5 @@
-use chip_math::{Aabb3, DVec3};
+use chip_bvh::TriMesh3D;
+use chip_math::{Aabb3, DVec3, RigidFrame3};
 use serde::{Deserialize, Serialize};
 
 use crate::mesh::{TriangleMeshBody, build_render_mesh_for_triangle_mesh};
@@ -375,5 +376,62 @@ impl CadDocument {
             return lp.edges.iter().map(|u| u.edge_id).collect();
         }
         vec![edge_id]
+    }
+
+    /// Builds a unified WCS-space [`chip_bvh::TriMesh3D`] from all targeted bodies (`self.meshes`
+    /// and/or `self.render_mesh.pick_triangles` for STEP B-Rep solids) transformed into `setup_frame`.
+    pub fn build_wcs_tri_mesh(
+        &self,
+        target_bodies: &[BodyId],
+        setup_frame: &RigidFrame3,
+    ) -> TriMesh3D {
+        let include_body = |bid: BodyId| target_bodies.is_empty() || target_bodies.contains(&bid);
+
+        let mut vertices: Vec<DVec3> = Vec::new();
+        let mut indexed_faces: Vec<([u32; 3], u32)> = Vec::new();
+
+        // 1. Imported triangle meshes (`STL` / `OBJ` / `3MF`)
+        for mesh in &self.meshes {
+            if !include_body(mesh.id) {
+                continue;
+            }
+            let Ok(base) = u32::try_from(vertices.len()) else {
+                break;
+            };
+            vertices.extend(
+                mesh.vertices_mm
+                    .iter()
+                    .map(|&v| setup_frame.world_to_local_point(v)),
+            );
+            for tri in &mesh.triangles {
+                indexed_faces.push((
+                    [
+                        base + tri.indices[0],
+                        base + tri.indices[1],
+                        base + tri.indices[2],
+                    ],
+                    MESH_FACE_SENTINEL.0,
+                ));
+            }
+        }
+
+        // 2. STEP B-Rep `pick_triangles` (exact `f64` surface tessellation)
+        for tri in &self.render_mesh.pick_triangles {
+            let Some(face) = self.face(tri.face_id) else {
+                continue;
+            };
+            if !include_body(face.body_id) {
+                continue;
+            }
+            let Ok(base) = u32::try_from(vertices.len()) else {
+                break;
+            };
+            vertices.push(setup_frame.world_to_local_point(tri.v0_mm));
+            vertices.push(setup_frame.world_to_local_point(tri.v1_mm));
+            vertices.push(setup_frame.world_to_local_point(tri.v2_mm));
+            indexed_faces.push(([base, base + 1, base + 2], tri.face_id.0));
+        }
+
+        TriMesh3D::from_indexed_with_faces(vertices, &indexed_faces)
     }
 }

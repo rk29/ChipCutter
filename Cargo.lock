@@ -661,15 +661,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "chip-bvh"
+version = "0.13.0"
+dependencies = [
+ "bytemuck",
+ "chip-math",
+ "glam",
+ "rayon",
+]
+
+[[package]]
 name = "chip-cad"
 version = "0.13.0"
 dependencies = [
+ "chip-bvh",
  "chip-math",
  "glam",
  "monstertruck-io",
  "monstertruck-meshing",
  "monstertruck-modeling",
- "rstar",
  "serde",
  "thiserror 2.0.21",
  "zip",
@@ -679,9 +689,9 @@ dependencies = [
 name = "chip-cam"
 version = "0.13.0"
 dependencies = [
- "boostvoronoi",
- "cavalier_contours",
+ "chip-bvh",
  "chip-cad",
+ "chip-geom2d",
  "chip-math",
  "chip-sim",
  "chip-sketch",
@@ -709,6 +719,16 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.21",
  "winresource",
+]
+
+[[package]]
+name = "chip-geom2d"
+version = "0.13.0"
+dependencies = [
+ "boostvoronoi",
+ "cavalier_contours",
+ "chip-math",
+ "glam",
 ]
 
 [[package]]
@@ -792,6 +812,7 @@ name = "chip-sim"
 version = "0.13.0"
 dependencies = [
  "bytemuck",
+ "chip-bvh",
  "chip-cad",
  "chip-cam",
  "chip-math",
@@ -807,6 +828,7 @@ name = "chip-sketch"
 version = "0.13.0"
 dependencies = [
  "cavalier_contours",
+ "chip-geom2d",
  "chip-math",
  "dxf",
  "glam",

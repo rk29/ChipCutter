@@ -4,11 +4,8 @@
 
 use std::{collections::HashMap, sync::Arc};
 
-use cavalier_contours::polyline::{
-    BooleanOp, PlineBooleanOptions, PlineSource, PlineSourceMut, Polyline,
-    seg_arc_radius_and_center,
-};
-use chip_math::{ArcPolyline2D, ArcSegment2D, DVec2};
+use chip_geom2d::try_union_overlapping_ccw_loops;
+use chip_math::{ArcPolyline2D, DVec2};
 use kurbo::{BezPath, Point as KPoint};
 use skrifa::{
     FontRef, GlyphId, MetadataProvider,
@@ -303,10 +300,6 @@ fn weld_inter_glyph_overlaps(
     if regions.len() <= 1 {
         return regions;
     }
-    let opts = PlineBooleanOptions {
-        pos_equal_eps: 1e-5,
-        ..Default::default()
-    };
 
     let mut acc: Vec<PlanarVectorRegion> = Vec::with_capacity(regions.len());
     for reg in regions {
@@ -317,22 +310,14 @@ fn weld_inter_glyph_overlaps(
             if !existing.outer_ccw.exact_aabb().overlaps(&r_aabb) {
                 continue;
             }
-            let pl_a = arc_poly_to_cavalier(&existing.outer_ccw);
-            let pl_b = arc_poly_to_cavalier(&reg.outer_ccw);
-            if pl_a.vertex_count() < 2 || pl_b.vertex_count() < 2 {
-                continue;
-            }
-            let res = pl_a.boolean_opt(&pl_b, BooleanOp::Or, &opts);
-            // If `pos_plines.len() == 1`, the two outer contours genuinely overlapped and welded!
-            if res.pos_plines.len() == 1 {
-                let new_outer = cavalier_to_arc_poly(&res.pos_plines[0].pline, true);
+            // If the two outer contours genuinely overlapped and welded into a single loop, rebuild region!
+            if let Some((new_outer, neg_holes)) =
+                try_union_overlapping_ccw_loops(&existing.outer_ccw, &reg.outer_ccw)
+            {
                 let mut candidates: Vec<(Option<String>, ArcPolyline2D)> =
                     vec![(sub_layer.map(str::to_string), new_outer)];
-                for neg in res.neg_plines {
-                    candidates.push((
-                        sub_layer.map(str::to_string),
-                        cavalier_to_arc_poly(&neg.pline, false),
-                    ));
+                for hole in neg_holes {
+                    candidates.push((sub_layer.map(str::to_string), hole));
                 }
                 for isl in &existing.islands_cw {
                     candidates.push((sub_layer.map(str::to_string), isl.clone()));
@@ -354,68 +339,4 @@ fn weld_inter_glyph_overlaps(
         }
     }
     acc
-}
-
-fn arc_poly_to_cavalier(poly: &ArcPolyline2D) -> Polyline<f64> {
-    let mut pl = Polyline::new_closed();
-    for seg in &poly.segments {
-        let s = seg.start();
-        let bulge = match *seg {
-            ArcSegment2D::Line { .. } => 0.0,
-            ArcSegment2D::Arc { .. } => {
-                let sw = seg.signed_sweep_rad();
-                if sw.abs() > 3.10
-                    && let Some((mid, _)) = seg.eval_at(0.5)
-                {
-                    let bh = (0.125 * sw).tan();
-                    pl.add(s.x, s.y, bh);
-                    pl.add(mid.x, mid.y, bh);
-                    continue;
-                }
-                (0.25 * sw).tan()
-            }
-        };
-        if s.is_finite() && bulge.is_finite() {
-            pl.add(s.x, s.y, bulge);
-        }
-    }
-    pl
-}
-
-fn cavalier_to_arc_poly(pl: &Polyline<f64>, want_ccw: bool) -> ArcPolyline2D {
-    let n = pl.vertex_count();
-    if n < 2 {
-        return ArcPolyline2D::default();
-    }
-    let mut segs = Vec::with_capacity(n);
-    for i in 0..n {
-        let v0 = pl.at(i);
-        let v1 = pl.at((i + 1) % n);
-        let p0 = DVec2::new(v0.x, v0.y);
-        let p1 = DVec2::new(v1.x, v1.y);
-        if p0.distance(p1) <= 1e-6 {
-            continue;
-        }
-        if v0.bulge_is_zero() {
-            segs.push(ArcSegment2D::Line { start: p0, end: p1 });
-        } else {
-            let (rad, c) = seg_arc_radius_and_center(v0, v1);
-            if rad.is_finite() && rad > 1e-5 {
-                segs.push(ArcSegment2D::Arc {
-                    start: p0,
-                    end: p1,
-                    center: DVec2::new(c.x, c.y),
-                    radius: rad,
-                    ccw: v0.bulge > 0.0,
-                });
-            } else {
-                segs.push(ArcSegment2D::Line { start: p0, end: p1 });
-            }
-        }
-    }
-    ArcPolyline2D {
-        segments: segs,
-        closed: true,
-    }
-    .ensure_orientation(want_ccw)
 }
