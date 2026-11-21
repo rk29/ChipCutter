@@ -123,6 +123,7 @@ pub fn show_tool_tab(ui: &mut egui::Ui, ctx: ToolTabCtx<'_>) {
                             |ui| {
                                 egui::ComboBox::from_id_salt(("op_preset_cb", setup_idx, op_idx))
                                     .width(COMBO_COL_WIDTH)
+                                    .truncate()
                                     .selected_text(cur_pname)
                                     .show_ui(ui, |ui| {
                                         for p in &active_tool.presets {

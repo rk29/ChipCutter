@@ -164,6 +164,7 @@ pub struct ChipCutterApp {
     pub(crate) show_27pt_dots: bool,
     pub(crate) show_z_planes: bool,
     pub(crate) show_all_setup_toolpaths: bool,
+    pub(crate) hidden_operation_ids: std::collections::HashSet<String>,
 
     pub(crate) model: Option<LoadedModelState>,
     pub(crate) empty_cad: Arc<CadDocument>,
@@ -335,6 +336,7 @@ impl ChipCutterApp {
             show_27pt_dots: true,
             show_z_planes: true,
             show_all_setup_toolpaths: true,
+            hidden_operation_ids: std::collections::HashSet::new(),
             model: None,
             empty_cad: Arc::new(CadDocument::empty()),
             next_revision: 1,
@@ -490,6 +492,7 @@ impl ChipCutterApp {
             show_27pt_dots: true,
             show_z_planes: true,
             show_all_setup_toolpaths: true,
+            hidden_operation_ids: std::collections::HashSet::new(),
             model: None,
             empty_cad: Arc::new(CadDocument::empty()),
             next_revision: 1,

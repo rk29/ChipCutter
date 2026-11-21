@@ -27,6 +27,7 @@ pub fn show_linking_tab(
                     |ui| {
                         egui::ComboBox::from_id_salt(("lnk_ret", setup_idx, op_idx))
                             .width(COMBO_COL_WIDTH)
+                            .truncate()
                             .selected_text(op.linking.retract_policy.label())
                             .show_ui(ui, |ui| {
                                 for r in RetractPolicy::ALL {
@@ -81,6 +82,7 @@ pub fn show_linking_tab(
                     |ui| {
                         egui::ComboBox::from_id_salt(("lnk_ent", setup_idx, op_idx))
                             .width(COMBO_COL_WIDTH)
+                            .truncate()
                             .selected_text(cur_lbl)
                             .show_ui(ui, |ui| {
                                 for (lbl, mode) in [

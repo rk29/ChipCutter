@@ -110,7 +110,11 @@ impl GridForm<'_, '_> {
         let tip = self.next_tip.take();
         let mutated: &mut Option<&'static str> = self.mutated_label;
         grid_row(self.ui, label, tip, |ui| {
-            if ui.checkbox(flag, checkbox_text).changed() {
+            let mut resp = ui.checkbox(flag, checkbox_text);
+            if let Some(t) = tip {
+                resp = resp.on_hover_text(t);
+            }
+            if resp.changed() {
                 *mutated = Some(undo_label);
             }
         });
@@ -137,7 +141,11 @@ impl GridForm<'_, '_> {
             if !speed_suffix.1.is_empty() {
                 dv = dv.suffix(speed_suffix.1);
             }
-            if ui.add(dv).changed() {
+            let mut resp = ui.add(dv);
+            if let Some(t) = tip {
+                resp = resp.on_hover_text(t);
+            }
+            if resp.changed() {
                 *mutated = Some(undo_label);
             }
         });
@@ -155,8 +163,9 @@ impl GridForm<'_, '_> {
         let mutated: &mut Option<&'static str> = self.mutated_label;
         let (items, fmt_fn) = options;
         grid_row(self.ui, label, tip, |ui| {
-            egui::ComboBox::from_id_salt(id)
+            let resp = egui::ComboBox::from_id_salt(id)
                 .width(COMBO_COL_WIDTH)
+                .truncate()
                 .selected_text(fmt_fn(*value))
                 .show_ui(ui, |ui| {
                     for &cand in items {
@@ -164,7 +173,11 @@ impl GridForm<'_, '_> {
                             *mutated = Some(undo_label);
                         }
                     }
-                });
+                })
+                .response;
+            if let Some(t) = tip {
+                resp.on_hover_text(t);
+            }
         });
     }
 

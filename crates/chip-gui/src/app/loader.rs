@@ -104,6 +104,7 @@ impl ChipCutterApp {
         self.model = None;
         self.cached_frame_geo = None;
         self.active_setup_idx = 0;
+        self.hidden_operation_ids.clear();
         self.inspector_focus = InspectorFocus::Setup { setup_idx: 0 };
         self.setup_tab = SetupTab::Wcs;
         self.op_tab = OperationTab::Passes;

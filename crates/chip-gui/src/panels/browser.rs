@@ -10,7 +10,9 @@ use crate::{
         InspectorFocus, OperationTab, SetupTab, ViewportPickMode, diagnostics::format_cycle_time,
     },
     theme::ThemeTokens,
-    widgets::{IconKind, StatusBadgeKind, inline_icon, small_icon_button, status_badge_icon},
+    widgets::{
+        IconKind, StatusBadgeKind, inline_icon, section_card, small_icon_button, status_badge_icon,
+    },
 };
 
 /// High-level UI actions emitted by the CAM Browser pane.
@@ -43,6 +45,7 @@ pub struct CamBrowserCtx<'a> {
     pub setup_tab: &'a mut SetupTab,
     pub op_tab: &'a mut OperationTab,
     pub pick_mode: &'a mut ViewportPickMode,
+    pub hidden_operation_ids: &'a mut std::collections::HashSet<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -201,6 +204,7 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
         setup_tab,
         op_tab,
         pick_mode,
+        hidden_operation_ids,
     } = ctx;
     let mut emitted_action = None;
 
@@ -209,7 +213,12 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
     }
 
     ui.horizontal(|ui| {
-        ui.strong(&project.project_name);
+        let title_w = (ui.available_width() - 108.0).max(60.0);
+        ui.add_sized(
+            [title_w, 18.0],
+            egui::Label::new(egui::RichText::new(&project.project_name).strong()).truncate(),
+        )
+        .on_hover_text(&project.project_name);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui
                 .small_button("Tools")
@@ -256,132 +265,139 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            // 1. Models section
-            egui::CollapsingHeader::new("Models")
-                .default_open(true)
-                .show(ui, |ui| {
-                    if let Some(doc) = cad_doc {
-                        let sel = matches!(
-                            *focus,
-                            InspectorFocus::Model { model_idx: 0 } | InspectorFocus::CadEntity
-                        );
-                        let has_xf = project
-                            .models
-                            .first()
-                            .is_some_and(|m| !m.transform.is_identity());
-                        let body_summary = if !doc.meshes.is_empty() && doc.bodies.is_empty() {
-                            format!(
-                                "• {} ({} mesh){}",
-                                doc.source_name,
-                                doc.meshes.len(),
-                                if has_xf { " · Xf" } else { "" }
-                            )
-                        } else {
-                            format!(
-                                "• {} ({} body){}",
-                                doc.source_name,
-                                doc.bodies.len(),
-                                if has_xf { " · Xf" } else { "" }
-                            )
-                        };
-                        if ui
-                            .selectable_label(sel, body_summary)
-                            .on_hover_text(
-                                "Click to open Model Transform, Orientation, & Scaling Inspector",
-                            )
-                            .clicked()
-                        {
-                            *focus = InspectorFocus::Model { model_idx: 0 };
-                            *pick_mode = ViewportPickMode::InspectEntity;
-                        }
-                        ui.indent("model_stats", |ui| {
-                            if let Some(mesh) = doc.meshes.first() {
-                                let d = &mesh.diagnostics;
-                                let status = if d.is_watertight {
-                                    "Watertight"
-                                } else {
-                                    "Open edges"
-                                };
-                                ui.weak(format!(
-                                    "{} · {} tris · {} verts · {status}",
-                                    mesh.format.label(),
-                                    d.valid_triangle_count,
-                                    d.welded_vertex_count
-                                ));
-                            } else {
-                                ui.weak(format!(
-                                    "{} faces · {} loops · {} edges",
-                                    doc.faces.len(),
-                                    doc.loops.len(),
-                                    doc.edges.len()
-                                ));
-                            }
-                        });
+            // 1. Models section (unified collapsible card matching right-side Inspector)
+            section_card(ui, "browser_models_card", "Models", true, |ui| {
+                if let Some(doc) = cad_doc {
+                    let sel = matches!(
+                        *focus,
+                        InspectorFocus::Model { model_idx: 0 } | InspectorFocus::CadEntity
+                    );
+                    let has_xf = project
+                        .models
+                        .first()
+                        .is_some_and(|m| !m.transform.is_identity());
+                    let body_summary = if !doc.meshes.is_empty() && doc.bodies.is_empty() {
+                        format!(
+                            "• {} ({} mesh){}",
+                            doc.source_name,
+                            doc.meshes.len(),
+                            if has_xf { " · Xf" } else { "" }
+                        )
                     } else {
-                        ui.weak("No 3D STEP or mesh model loaded.");
+                        format!(
+                            "• {} ({} body){}",
+                            doc.source_name,
+                            doc.bodies.len(),
+                            if has_xf { " · Xf" } else { "" }
+                        )
+                    };
+                    if ui
+                        .selectable_label(sel, body_summary)
+                        .on_hover_text(
+                            "Click to open Model Transform, Orientation, & Scaling Inspector",
+                        )
+                        .clicked()
+                    {
+                        *focus = InspectorFocus::Model { model_idx: 0 };
+                        *pick_mode = ViewportPickMode::InspectEntity;
                     }
-
-                    ui.horizontal_wrapped(|ui| {
-                        if cad_doc.is_some()
-                            && ui
-                                .small_button("Orient / Scale")
-                                .on_hover_text(
-                                    "Rotate, lay flat on a face, scale, or move the loaded 3D model",
-                                )
-                                .clicked()
-                        {
-                            *focus = InspectorFocus::Model { model_idx: 0 };
-                            *pick_mode = ViewportPickMode::InspectEntity;
-                        }
-                        if ui.small_button("Import STEP…").clicked() {
-                            emitted_action = Some(BrowserAction::OpenStepDialog);
-                        }
-                        if ui
-                            .small_button("Import Mesh…")
-                            .on_hover_text("Import a 3D triangle mesh (.stl, .obj, .3mf) with physical unit preview")
-                            .clicked()
-                        {
-                            emitted_action =
-                                Some(BrowserAction::OpenMeshImportModal { browse_file: true });
-                        }
-                        if cad_doc.is_some_and(|d| !d.bodies.is_empty()) {
-                            if ui
-                                .small_button("Reload (Ctrl+R)")
-                                .on_hover_text(
-                                    "Re-read the active STEP model from disk and associatively re-match CAM operations",
-                                )
-                                .clicked()
-                            {
-                                emitted_action = Some(BrowserAction::ReloadStepModel);
-                            }
-                            if ui
-                                .small_button("Replace…")
-                                .on_hover_text(
-                                    "Pick a revised STEP file on disk and associatively re-bind Setups & Operations",
-                                )
-                                .clicked()
-                            {
-                                emitted_action = Some(BrowserAction::ReplaceStepDialog);
-                            }
-                        }
-                        if ui
-                            .small_button("Sample Gallery…")
-                            .on_hover_text(
-                                "Browse built-in 3D STEP, 2D Adaptive+Rest, Typography, and V-Carve & Inlay sample projects",
-                            )
-                            .clicked()
-                        {
-                            emitted_action = Some(BrowserAction::OpenSampleGallery);
+                    ui.indent("model_stats", |ui| {
+                        if let Some(mesh) = doc.meshes.first() {
+                            let d = &mesh.diagnostics;
+                            let status = if d.is_watertight {
+                                "Watertight"
+                            } else {
+                                "Open edges"
+                            };
+                            ui.weak(format!(
+                                "{} · {} tris · {} verts · {status}",
+                                mesh.format.label(),
+                                d.valid_triangle_count,
+                                d.welded_vertex_count
+                            ));
+                        } else {
+                            ui.weak(format!(
+                                "{} faces · {} loops · {} edges",
+                                doc.faces.len(),
+                                doc.loops.len(),
+                                doc.edges.len()
+                            ));
                         }
                     });
+                } else {
+                    ui.weak("No 3D STEP or mesh model loaded.");
+                }
+
+                ui.add_space(2.0);
+                ui.horizontal_wrapped(|ui| {
+                    if cad_doc.is_some()
+                        && ui
+                            .small_button("Orient / Scale")
+                            .on_hover_text(
+                                "Rotate, lay flat on a face, scale, or move the loaded 3D model",
+                            )
+                            .clicked()
+                    {
+                        *focus = InspectorFocus::Model { model_idx: 0 };
+                        *pick_mode = ViewportPickMode::InspectEntity;
+                    }
+                    if ui
+                        .small_button("Import STEP…")
+                        .on_hover_text("Import a 3D STEP (.step / .stp) B-Rep solid model")
+                        .clicked()
+                    {
+                        emitted_action = Some(BrowserAction::OpenStepDialog);
+                    }
+                    if ui
+                        .small_button("Import Mesh…")
+                        .on_hover_text(
+                            "Import a 3D triangle mesh (.stl, .obj, .3mf) with physical unit preview",
+                        )
+                        .clicked()
+                    {
+                        emitted_action =
+                            Some(BrowserAction::OpenMeshImportModal { browse_file: true });
+                    }
+                    if cad_doc.is_some_and(|d| !d.bodies.is_empty()) {
+                        if ui
+                            .small_button("Reload (Ctrl+R)")
+                            .on_hover_text(
+                                "Re-read the active STEP model from disk and associatively re-match CAM operations",
+                            )
+                            .clicked()
+                        {
+                            emitted_action = Some(BrowserAction::ReloadStepModel);
+                        }
+                        if ui
+                            .small_button("Replace…")
+                            .on_hover_text(
+                                "Pick a revised STEP file on disk and associatively re-bind Setups & Operations",
+                            )
+                            .clicked()
+                        {
+                            emitted_action = Some(BrowserAction::ReplaceStepDialog);
+                        }
+                    }
+                    if ui
+                        .small_button("Sample Gallery…")
+                        .on_hover_text(
+                            "Browse built-in 3D STEP, Mesh, 4th-Axis Rotary, Pure-2D, and V-Carve sample projects",
+                        )
+                        .clicked()
+                    {
+                        emitted_action = Some(BrowserAction::OpenSampleGallery);
+                    }
                 });
+            });
 
-            ui.add_space(4.0);
-
-            // 1b. 2D Sketches section (`11-sketches-vectors.md`)
-            egui::CollapsingHeader::new(format!("2D Sketches ({})", project.sketches.len()))
-                .default_open(!project.sketches.is_empty())
-                .show(ui, |ui| {
+            // 1b. 2D Sketches section (`11-sketches-vectors.md`) — Eyeball = viewport visibility!
+            let sketches_title = format!("2D Sketches ({})", project.sketches.len());
+            section_card(
+                ui,
+                "browser_sketches_card",
+                &sketches_title,
+                !project.sketches.is_empty(),
+                |ui| {
                     if project.sketches.is_empty() {
                         ui.weak("No 2D vector sketches imported yet.");
                     } else {
@@ -390,11 +406,21 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                         for (sk_idx, sk) in project.sketches.iter().enumerate() {
                             let is_sel = *focus == InspectorFocus::Sketch { sketch_idx: sk_idx };
                             ui.horizontal(|ui| {
-                                let mut v = sk.visible;
-                                if ui
-                                    .checkbox(&mut v, "")
-                                    .on_hover_text("Toggle 2D Sketch visibility in 3D viewport")
-                                    .changed()
+                                ui.spacing_mut().item_spacing.x = 4.0;
+                                if small_icon_button(
+                                    ui,
+                                    if sk.visible {
+                                        IconKind::Eye
+                                    } else {
+                                        IconKind::EyeOff
+                                    },
+                                    if sk.visible {
+                                        "Hide 2D Sketch in 3D viewport"
+                                    } else {
+                                        "Show 2D Sketch in 3D viewport"
+                                    },
+                                )
+                                .clicked()
                                 {
                                     vis_toggle = Some(sk_idx);
                                 }
@@ -404,12 +430,18 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                                     sk.regions.len(),
                                     sk.entities.len()
                                 );
+                                let rich = if sk.visible {
+                                    egui::RichText::new(lbl)
+                                } else {
+                                    egui::RichText::new(lbl).weak()
+                                };
                                 let sk_w = (ui.available_width() - 26.0).max(48.0);
                                 if ui
                                     .add_sized(
                                         [sk_w, 20.0],
-                                        egui::Button::selectable(is_sel, lbl).truncate(),
+                                        egui::Button::selectable(is_sel, rich).truncate(),
                                     )
+                                    .on_hover_text("Click to inspect or edit this 2D Sketch layer")
                                     .clicked()
                                 {
                                     *focus = InspectorFocus::Sketch { sketch_idx: sk_idx };
@@ -446,6 +478,7 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                         }
                     }
 
+                    ui.add_space(2.0);
                     ui.horizontal_wrapped(|ui| {
                         if ui
                             .small_button("+ New Sketch")
@@ -473,35 +506,36 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                                 Some(BrowserAction::OpenVectorImportModal { browse_file: true });
                         }
                     });
-                });
-
-            ui.add_space(4.0);
+                },
+            );
 
             // 2. Project-Embedded Tools section
-            egui::CollapsingHeader::new(format!("Project Tools ({})", project.tools.len()))
-                .default_open(false)
-                .show(ui, |ui| {
-                    if project.tools.is_empty() {
-                        ui.weak("Tools are embedded automatically when assigned to operations.");
-                    } else {
-                        for tool in &project.tools {
-                            ui.label(format!(
-                                "• T{} — {} ({})",
-                                tool.tool_number,
-                                tool.name,
-                                tool.native_unit
-                                    .format_length(tool.geometry.cutting_diameter_mm())
-                            ));
-                        }
+            let tools_title = format!("Project Tools ({})", project.tools.len());
+            section_card(ui, "browser_tools_card", &tools_title, false, |ui| {
+                if project.tools.is_empty() {
+                    ui.weak("Tools are embedded automatically when assigned to operations.");
+                } else {
+                    for tool in &project.tools {
+                        ui.label(format!(
+                            "• T{} — {} ({})",
+                            tool.tool_number,
+                            tool.name,
+                            tool.native_unit
+                                .format_length(tool.geometry.cutting_diameter_mm())
+                        ));
                     }
-                    if ui.small_button("Manage Tool Library…").clicked() {
-                        emitted_action = Some(BrowserAction::OpenToolLibrary);
-                    }
-                });
+                }
+                ui.add_space(2.0);
+                if ui
+                    .small_button("Manage Tool Library…")
+                    .on_hover_text("Open the Tool Library manager to edit, add, or import tools")
+                    .clicked()
+                {
+                    emitted_action = Some(BrowserAction::OpenToolLibrary);
+                }
+            });
 
-            ui.add_space(6.0);
-
-            // 3. Setups & Operations tree
+            // 3. Setups & Operations tree (each Setup in a unified collapsible card)
             let mut deferred_setup_delete: Option<usize> = None;
             let mut deferred_op_add: Option<(usize, OperationKind)> = None;
             let mut deferred_adaptive_add: Option<usize> = None;
@@ -509,6 +543,7 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
             let mut deferred_op_delete: Option<(usize, usize)> = None;
             let mut deferred_op_duplicate: Option<(usize, usize)> = None;
             let mut deferred_op_toggle_suppress: Option<(usize, usize)> = None;
+            let mut deferred_op_toggle_visibility: Option<String> = None;
 
             for s_idx in 0..project.setups.len() {
                 let is_active_setup = *active_setup_idx == s_idx;
@@ -527,371 +562,398 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                     }
                 };
 
-                egui::CollapsingHeader::new(egui::RichText::new(setup_header).strong())
-                    .id_salt(("setup_hdr", s_idx))
-                    .default_open(true)
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 4.0;
-                            let stock_selected =
-                                *focus == InspectorFocus::Setup { setup_idx: s_idx };
-                            if ui
-                                .selectable_label(stock_selected, "Stock & WCS")
-                                .clicked()
-                            {
-                                *active_setup_idx = s_idx;
-                                *focus = InspectorFocus::Setup { setup_idx: s_idx };
-                                *pick_mode = ViewportPickMode::InspectEntity;
-                            }
-                            if ui
-                                .small_button("Gen")
-                                .on_hover_text("Generate dirty toolpaths in this Setup (Ctrl+G)")
-                                .clicked()
-                            {
-                                *active_setup_idx = s_idx;
-                                emitted_action = Some(BrowserAction::GenerateSetup(s_idx));
-                            }
-                            if ui
-                                .small_button("Top")
-                                .on_hover_text(
-                                    "Align camera straight down this Setup's +Z spindle axis",
-                                )
-                                .clicked()
-                            {
-                                *active_setup_idx = s_idx;
-                                emitted_action = Some(BrowserAction::AlignCameraToActiveSetup);
-                            }
-                            if project.setups.len() > 1 {
-                                ui.with_layout(
-                                    egui::Layout::right_to_left(egui::Align::Center),
-                                    |ui| {
-                                        if small_icon_button(
-                                            ui,
-                                            IconKind::Trash,
-                                            "Delete Setup",
-                                        )
+                section_card(ui, ("setup_hdr", s_idx), &setup_header, true, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 4.0;
+                        let stock_selected = *focus == InspectorFocus::Setup { setup_idx: s_idx };
+                        if ui
+                            .selectable_label(stock_selected, "Stock & WCS")
+                            .on_hover_text("Inspect and edit this Setup's WCS origin, orientation, stock, and post-processor")
+                            .clicked()
+                        {
+                            *active_setup_idx = s_idx;
+                            *focus = InspectorFocus::Setup { setup_idx: s_idx };
+                            *pick_mode = ViewportPickMode::InspectEntity;
+                        }
+                        if ui
+                            .small_button("Gen")
+                            .on_hover_text("Generate dirty toolpaths in this Setup (Ctrl+G)")
+                            .clicked()
+                        {
+                            *active_setup_idx = s_idx;
+                            emitted_action = Some(BrowserAction::GenerateSetup(s_idx));
+                        }
+                        if ui
+                            .small_button("Top")
+                            .on_hover_text("Align camera straight down this Setup's +Z spindle axis")
+                            .clicked()
+                        {
+                            *active_setup_idx = s_idx;
+                            emitted_action = Some(BrowserAction::AlignCameraToActiveSetup);
+                        }
+                        if project.setups.len() > 1 {
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if small_icon_button(ui, IconKind::Trash, "Delete Setup")
                                         .clicked()
-                                        {
-                                            deferred_setup_delete = Some(s_idx);
-                                        }
-                                    },
-                                );
-                            }
-                        });
-
-                        // Streamlined single-row Operation creation bar
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 3.0;
-                            if ui
-                                .small_button("+ Adap")
-                                .on_hover_text("Add 2D Adaptive / Trochoidal Clearing operation")
-                                .clicked()
-                            {
-                                deferred_adaptive_add = Some(s_idx);
-                            }
-                            if ui
-                                .small_button("+ Cont")
-                                .on_hover_text("Add 2D Contour / Profile operation")
-                                .clicked()
-                            {
-                                deferred_op_add = Some((s_idx, OperationKind::Contour2D));
-                            }
-                            if ui
-                                .small_button("+ VCarve")
-                                .on_hover_text("Add 3D V-Carve / Bevel Inlay operation")
-                                .clicked()
-                            {
-                                deferred_op_add = Some((s_idx, OperationKind::VCarve));
-                            }
-                            ui.menu_button("+ Op…", |ui| {
-                                for (lbl, kind) in [
-                                    ("Facing", OperationKind::Facing),
-                                    ("2D Pocket", OperationKind::Pocket2D),
-                                    ("Drill / Helical Bore", OperationKind::DrillBore),
-                                    ("Edge Chamfer / Trace", OperationKind::ChamferTrace),
-                                    ("3D Adaptive Roughing", OperationKind::Adaptive3D),
-                                    ("3D Waterline / Z-Level", OperationKind::Waterline3D),
-                                    ("3D Parallel Finishing", OperationKind::Parallel3D),
-                                    ("3D Constant-Scallop", OperationKind::Scallop3D),
-                                    ("3D Pencil Cleanup", OperationKind::Pencil3D),
-                                    ("4th-Axis Rotary Surfacing", OperationKind::Rotary2Linear),
-                                    (
-                                        "Simultaneous 4-Axis (X+Y+Z+A)",
-                                        OperationKind::Rotary4AxisSim,
-                                    ),
-                                ] {
-                                    if ui.button(lbl).clicked() {
-                                        deferred_op_add = Some((s_idx, kind));
-                                        ui.close();
+                                    {
+                                        deferred_setup_delete = Some(s_idx);
                                     }
+                                },
+                            );
+                        }
+                    });
+
+                    // Streamlined single-row Operation creation bar
+                    ui.horizontal_wrapped(|ui| {
+                        ui.spacing_mut().item_spacing.x = 3.0;
+                        if ui
+                            .small_button("+ Adap")
+                            .on_hover_text("Add 2D Adaptive / Trochoidal Clearing operation")
+                            .clicked()
+                        {
+                            deferred_adaptive_add = Some(s_idx);
+                        }
+                        if ui
+                            .small_button("+ Cont")
+                            .on_hover_text("Add 2D Contour / Profile operation")
+                            .clicked()
+                        {
+                            deferred_op_add = Some((s_idx, OperationKind::Contour2D));
+                        }
+                        if ui
+                            .small_button("+ VCarve")
+                            .on_hover_text("Add 3D V-Carve / Bevel Inlay operation")
+                            .clicked()
+                        {
+                            deferred_op_add = Some((s_idx, OperationKind::VCarve));
+                        }
+                        ui.menu_button("+ Op…", |ui| {
+                            for (lbl, kind) in [
+                                ("Facing", OperationKind::Facing),
+                                ("2D Pocket", OperationKind::Pocket2D),
+                                ("Drill / Helical Bore", OperationKind::DrillBore),
+                                ("Edge Chamfer / Trace", OperationKind::ChamferTrace),
+                                ("3D Adaptive Roughing", OperationKind::Adaptive3D),
+                                ("3D Waterline / Z-Level", OperationKind::Waterline3D),
+                                ("3D Parallel Finishing", OperationKind::Parallel3D),
+                                ("3D Constant-Scallop", OperationKind::Scallop3D),
+                                ("3D Pencil Cleanup", OperationKind::Pencil3D),
+                                ("4th-Axis Rotary Surfacing", OperationKind::Rotary2Linear),
+                                (
+                                    "Simultaneous 4-Axis (X+Y+Z+A)",
+                                    OperationKind::Rotary4AxisSim,
+                                ),
+                            ] {
+                                if ui.button(lbl).clicked() {
+                                    deferred_op_add = Some((s_idx, kind));
+                                    ui.close();
                                 }
-                            });
+                            }
+                        })
+                        .response
+                        .on_hover_text("Add another 2.5D, 3-axis surfacing, or 4th-axis rotary operation");
+                    });
+
+                    ui.add_space(2.0);
+
+                    // Operations list: Checkbox = Active/Suppressed, Eyeball = Viewport Toolpath Visibility
+                    let op_len = project.setups[s_idx].operations.len();
+                    let mut row_rects: Vec<Rect> = Vec::with_capacity(op_len);
+                    let tok = ThemeTokens::from_ui(ui);
+
+                    for o_idx in 0..op_len {
+                        let is_sel = *focus
+                            == InspectorFocus::Operation {
+                                setup_idx: s_idx,
+                                op_idx: o_idx,
+                            };
+                        let cached_tp =
+                            toolpath_cache.get_for_operation(project, s_idx, o_idx, cad_revision);
+                        let op = &project.setups[s_idx].operations[o_idx];
+
+                        let est_sec = cached_tp.as_ref().map(|(_, tp)| {
+                            tp.stats.total_est_time_sec
+                                + tp.clearing_stage
+                                    .as_ref()
+                                    .map_or(0.0, |c| c.toolpath.stats.total_est_time_sec)
                         });
 
-                        ui.add_space(2.0);
+                        let (status_kind, hover_note) = if op.suppressed {
+                            (StatusBadgeKind::Suppressed, Some("Suppressed (unchecked)".to_string()))
+                        } else {
+                            match &op.runtime_status {
+                                OperationStatus::Clean => (
+                                    StatusBadgeKind::Clean,
+                                    est_sec.map(|sec| {
+                                        let passes = cached_tp
+                                            .as_ref()
+                                            .map_or(0, |(_, tp)| tp.stats.pass_count);
+                                        format!(
+                                            "Clean: {passes} pass(es), est. {} (drag or Ctrl+Up/Down to reorder)",
+                                            format_cycle_time(sec)
+                                        )
+                                    }),
+                                ),
+                                OperationStatus::Dirty => (
+                                    StatusBadgeKind::Dirty,
+                                    Some("Dirty — press Ctrl+G to regenerate".to_string()),
+                                ),
+                                OperationStatus::Generating => (
+                                    StatusBadgeKind::Dirty,
+                                    Some("Generating on background thread…".to_string()),
+                                ),
+                                OperationStatus::Error { message } => {
+                                    (StatusBadgeKind::Error, Some(message.clone()))
+                                }
+                                OperationStatus::NeedsRepick { message } => (
+                                    StatusBadgeKind::NeedsRepick,
+                                    Some(format!("Needs Re-Pick: {message}")),
+                                ),
+                            }
+                        };
 
-                        // Operations list with full-width readable names, `T# · <time>` metadata
-                        // pills at rest, hover-revealed quick actions, and drag-and-drop reordering
-                        let op_len = project.setups[s_idx].operations.len();
-                        let mut row_rects: Vec<Rect> = Vec::with_capacity(op_len);
-                        let tok = ThemeTokens::from_ui(ui);
+                        let badge_txt = if op.suppressed {
+                            None
+                        } else {
+                            format_operation_badge(project, op, est_sec)
+                        };
 
-                        for o_idx in 0..op_len {
-                            let is_sel = *focus
-                                == InspectorFocus::Operation {
+                        let mode_tag = match (op.is_adaptive_2d(), op.has_rest_machining()) {
+                            (true, true) => " · Adp+Rest",
+                            (true, false) => "",
+                            (false, true) => " · Rest",
+                            (false, false) => "",
+                        };
+                        let label_txt = format!("{}. {}{mode_tag}", o_idx + 1, op.name);
+                        let rich = if op.suppressed {
+                            egui::RichText::new(label_txt).strikethrough().weak()
+                        } else {
+                            egui::RichText::new(label_txt)
+                        };
+
+                        let op_id_clone = op.id.clone();
+                        let op_kind_val = op.kind;
+                        let op_is_adap = op.is_adaptive_2d();
+                        let is_sup = op.suppressed;
+                        let is_hidden_in_vp = hidden_operation_ids.contains(&op_id_clone);
+                        let is_needs_repick = !is_sup
+                            && matches!(op.runtime_status, OperationStatus::NeedsRepick { .. });
+                        let is_gen = !is_sup
+                            && matches!(op.runtime_status, OperationStatus::Generating);
+
+                        let row_h = 24.0;
+                        let full_w = ui.available_width().max(110.0);
+                        let preview_rect =
+                            Rect::from_min_size(ui.cursor().min, Vec2::new(full_w, row_h));
+                        let row_hovered =
+                            active_drag.is_none() && ui.rect_contains_pointer(preview_rect);
+
+                        let is_being_dragged =
+                            active_drag.is_some_and(|d| d.setup_idx == s_idx && d.op_idx == o_idx);
+
+                        let row_resp = ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 3.0;
+                            // Checkbox = Active / Enabled (unchecked = suppressed)
+                            let mut active = !is_sup;
+                            if ui
+                                .checkbox(&mut active, "")
+                                .on_hover_text(if is_sup {
+                                    "Suppressed — check to re-enable this operation for simulation & G-code"
+                                } else {
+                                    "Active — uncheck to suppress this operation from simulation & G-code"
+                                })
+                                .changed()
+                            {
+                                deferred_op_toggle_suppress = Some((s_idx, o_idx));
+                            }
+                            if is_gen {
+                                ui.add(egui::Spinner::new().size(13.0));
+                            } else {
+                                status_badge_icon(ui, status_kind, hover_note.as_deref());
+                            }
+                            inline_icon(
+                                ui,
+                                IconKind::for_operation(op_kind_val, op_is_adap),
+                                if is_sup {
+                                    tok.suppressed_fg
+                                } else if is_sel {
+                                    tok.accent
+                                } else {
+                                    tok.text_secondary
+                                },
+                                13.5,
+                            );
+
+                            // Measure exact `T# · <time>` pill width against card right edge
+                            let measured_pill_w = badge_txt.as_ref().map(|b| {
+                                ui.painter()
+                                    .layout_no_wrap(
+                                        b.clone(),
+                                        egui::FontId::proportional(10.5),
+                                        tok.text_muted,
+                                    )
+                                    .size()
+                                    .x
+                                    + 10.0
+                            });
+                            let visible_right = ui.clip_rect().right() - 12.0;
+                            let right_w = if row_hovered {
+                                66.0
+                            } else if is_hidden_in_vp {
+                                22.0 + measured_pill_w.unwrap_or(0.0)
+                            } else {
+                                measured_pill_w.unwrap_or(0.0)
+                            };
+                            let lbl_w =
+                                (visible_right - ui.cursor().min.x - right_w - 4.0).max(36.0);
+                            let mut resp = ui.add_sized(
+                                [lbl_w, 22.0],
+                                egui::Button::selectable(is_sel || is_being_dragged, rich)
+                                    .sense(Sense::click_and_drag())
+                                    .truncate(),
+                            );
+                            if let Some(tip) = hover_note {
+                                resp = resp.on_hover_text(tip);
+                            }
+                            if resp.clicked() {
+                                *active_setup_idx = s_idx;
+                                *focus = InspectorFocus::Operation {
                                     setup_idx: s_idx,
                                     op_idx: o_idx,
                                 };
-                            let cached_tp = toolpath_cache
-                                .get_for_operation(project, s_idx, o_idx, cad_revision);
-                            let op = &project.setups[s_idx].operations[o_idx];
-
-                            let est_sec = cached_tp.as_ref().map(|(_, tp)| {
-                                tp.stats.total_est_time_sec
-                                    + tp.clearing_stage
-                                        .as_ref()
-                                        .map_or(0.0, |c| c.toolpath.stats.total_est_time_sec)
-                            });
-
-                            let (status_kind, hover_note) = if op.suppressed {
-                                (StatusBadgeKind::Suppressed, Some("Suppressed".to_string()))
-                            } else {
-                                match &op.runtime_status {
-                                    OperationStatus::Clean => (
-                                        StatusBadgeKind::Clean,
-                                        est_sec.map(|sec| {
-                                            let passes = cached_tp
-                                                .as_ref()
-                                                .map_or(0, |(_, tp)| tp.stats.pass_count);
-                                            format!(
-                                                "Clean: {passes} pass(es), est. {} (drag or Ctrl+Up/Down to reorder)",
-                                                format_cycle_time(sec)
-                                            )
-                                        }),
-                                    ),
-                                    OperationStatus::Dirty => (
-                                        StatusBadgeKind::Dirty,
-                                        Some("Dirty — press Ctrl+G to regenerate".to_string()),
-                                    ),
-                                    OperationStatus::Generating => (
-                                        StatusBadgeKind::Dirty,
-                                        Some("Generating on background thread…".to_string()),
-                                    ),
-                                    OperationStatus::Error { message } => {
-                                        (StatusBadgeKind::Error, Some(message.clone()))
-                                    }
-                                    OperationStatus::NeedsRepick { message } => (
-                                        StatusBadgeKind::NeedsRepick,
-                                        Some(format!("Needs Re-Pick: {message}")),
-                                    ),
+                                if is_needs_repick {
+                                    *op_tab = OperationTab::Geometry;
                                 }
-                            };
-
-                            let badge_txt = if op.suppressed {
-                                None
-                            } else {
-                                format_operation_badge(project, op, est_sec)
-                            };
-
-                            let mode_tag = match (op.is_adaptive_2d(), op.has_rest_machining()) {
-                                (true, true) => " · Adp+Rest",
-                                (true, false) => "",
-                                (false, true) => " · Rest",
-                                (false, false) => "",
-                            };
-                            let label_txt = format!("{}. {}{mode_tag}", o_idx + 1, op.name);
-                            let rich = if op.suppressed {
-                                egui::RichText::new(label_txt).strikethrough().weak()
-                            } else {
-                                egui::RichText::new(label_txt)
-                            };
-
-                            let op_id_clone = op.id.clone();
-                            let op_kind_val = op.kind;
-                            let op_is_adap = op.is_adaptive_2d();
-                            let is_sup = op.suppressed;
-                            let is_needs_repick = !is_sup
-                                && matches!(op.runtime_status, OperationStatus::NeedsRepick { .. });
-                            let is_gen = !is_sup
-                                && matches!(op.runtime_status, OperationStatus::Generating);
-
-                            let row_h = 24.0;
-                            let full_w = ui.available_width().max(110.0);
-                            let preview_rect =
-                                Rect::from_min_size(ui.cursor().min, Vec2::new(full_w, row_h));
-                            let row_hovered = active_drag.is_none()
-                                && ui.rect_contains_pointer(preview_rect);
-
-                            let is_being_dragged = active_drag.is_some_and(|d| {
-                                d.setup_idx == s_idx && d.op_idx == o_idx
-                            });
-
-                            let row_resp = ui.horizontal(|ui| {
-                                ui.spacing_mut().item_spacing.x = 4.0;
-                                if is_gen {
-                                    ui.add(egui::Spinner::new().size(13.0));
-                                } else {
-                                    status_badge_icon(ui, status_kind, hover_note.as_deref());
-                                }
-                                inline_icon(
-                                    ui,
-                                    IconKind::for_operation(op_kind_val, op_is_adap),
-                                    if is_sup {
-                                        tok.suppressed_fg
-                                    } else if is_sel {
-                                        tok.accent
-                                    } else {
-                                        tok.text_secondary
-                                    },
-                                    13.5,
+                                *pick_mode = default_pick_mode_for_op(
+                                    s_idx,
+                                    o_idx,
+                                    op_kind_val,
+                                    *op_tab,
                                 );
-
-                                // Measure exact `T# · <time>` pill width against `clip_rect` so it
-                                // aligns cleanly inside narrow CAM Browser panes without clipping!
-                                let measured_pill_w = badge_txt.as_ref().map(|b| {
-                                    ui.painter()
-                                        .layout_no_wrap(
-                                            b.clone(),
-                                            egui::FontId::proportional(10.5),
-                                            tok.text_muted,
-                                        )
-                                        .size()
-                                        .x
-                                        + 10.0
-                                });
-                                let visible_right = ui.clip_rect().right() - 8.0;
-                                let right_w = if row_hovered {
-                                    66.0
-                                } else {
-                                    measured_pill_w.unwrap_or(0.0)
+                            }
+                            if resp.drag_started() && op_len > 1 {
+                                let st = DraggedOpState {
+                                    setup_idx: s_idx,
+                                    op_idx: o_idx,
                                 };
-                                let lbl_w =
-                                    (visible_right - ui.cursor().min.x - right_w - 4.0).max(36.0);
-                                let mut resp = ui.add_sized(
-                                    [lbl_w, 22.0],
-                                    egui::Button::selectable(is_sel || is_being_dragged, rich)
-                                        .sense(Sense::click_and_drag())
-                                        .truncate(),
-                                );
-                                if let Some(tip) = hover_note {
-                                    resp = resp.on_hover_text(tip);
-                                }
-                                if resp.clicked() {
-                                    *active_setup_idx = s_idx;
-                                    *focus = InspectorFocus::Operation {
-                                        setup_idx: s_idx,
-                                        op_idx: o_idx,
-                                    };
-                                    if is_needs_repick {
-                                        *op_tab = OperationTab::Geometry;
-                                    }
-                                    *pick_mode = default_pick_mode_for_op(
-                                        s_idx,
-                                        o_idx,
-                                        op_kind_val,
-                                        *op_tab,
-                                    );
-                                }
-                                if resp.drag_started() && op_len > 1 {
-                                    let st = DraggedOpState {
-                                        setup_idx: s_idx,
-                                        op_idx: o_idx,
-                                    };
-                                    active_drag = Some(st);
-                                    ui.ctx().data_mut(|d| d.insert_temp(drag_state_id, st));
-                                }
+                                active_drag = Some(st);
+                                ui.ctx().data_mut(|d| d.insert_temp(drag_state_id, st));
+                            }
 
-                                resp.context_menu(|ui| {
-                                    if ui.button("Generate Toolpath").clicked() {
-                                        emitted_action = Some(BrowserAction::GenerateSingleOp {
-                                            setup_idx: s_idx,
-                                            op_id: op_id_clone.clone(),
-                                        });
-                                        ui.close();
-                                    }
-                                    if ui.button("Duplicate Operation (Ctrl+D)").clicked() {
-                                        deferred_op_duplicate = Some((s_idx, o_idx));
-                                        ui.close();
-                                    }
-                                    ui.separator();
-                                    if ui
-                                        .add_enabled(
-                                            o_idx > 0,
-                                            egui::Button::new("Move Up (Ctrl+Up)"),
-                                        )
-                                        .clicked()
-                                    {
-                                        deferred_op_move_slot = Some((s_idx, o_idx, o_idx - 1));
-                                        ui.close();
-                                    }
-                                    if ui
-                                        .add_enabled(
-                                            o_idx + 1 < op_len,
-                                            egui::Button::new("Move Down (Ctrl+Down)"),
-                                        )
-                                        .clicked()
-                                    {
-                                        deferred_op_move_slot = Some((s_idx, o_idx, o_idx + 2));
-                                        ui.close();
-                                    }
-                                    ui.separator();
-                                    if ui
-                                        .button(if is_sup {
-                                            "Enable Operation"
-                                        } else {
-                                            "Suppress Operation"
-                                        })
-                                        .clicked()
-                                    {
-                                        deferred_op_toggle_suppress = Some((s_idx, o_idx));
-                                        ui.close();
-                                    }
-                                    if ui.button("Delete Operation (Del)").clicked() {
-                                        deferred_op_delete = Some((s_idx, o_idx));
-                                        ui.close();
-                                    }
-                                });
-
-                                if row_hovered {
-                                    ui.spacing_mut().item_spacing.x = 2.0;
-                                    if small_icon_button(
-                                        ui,
-                                        IconKind::Duplicate,
-                                        "Duplicate Operation (Ctrl+D)",
+                            resp.context_menu(|ui| {
+                                if ui.button("Generate Toolpath").clicked() {
+                                    emitted_action = Some(BrowserAction::GenerateSingleOp {
+                                        setup_idx: s_idx,
+                                        op_id: op_id_clone.clone(),
+                                    });
+                                    ui.close();
+                                }
+                                if ui.button("Duplicate Operation (Ctrl+D)").clicked() {
+                                    deferred_op_duplicate = Some((s_idx, o_idx));
+                                    ui.close();
+                                }
+                                ui.separator();
+                                if ui
+                                    .add_enabled(
+                                        o_idx > 0,
+                                        egui::Button::new("Move Up (Ctrl+Up)"),
                                     )
                                     .clicked()
-                                    {
-                                        deferred_op_duplicate = Some((s_idx, o_idx));
-                                    }
-                                    if small_icon_button(
-                                        ui,
-                                        if is_sup {
-                                            IconKind::EyeOff
-                                        } else {
-                                            IconKind::Eye
-                                        },
-                                        if is_sup {
-                                            "Enable Operation"
-                                        } else {
-                                            "Suppress Operation"
-                                        },
-                                    )
-                                    .clicked()
-                                    {
-                                        deferred_op_toggle_suppress = Some((s_idx, o_idx));
-                                    }
-                                    if small_icon_button(
-                                        ui,
-                                        IconKind::Trash,
-                                        "Delete Operation (Del)",
-                                    )
-                                    .clicked()
-                                    {
-                                        deferred_op_delete = Some((s_idx, o_idx));
-                                    }
-                                } else if let (Some(badge), Some(pill_w)) =
-                                    (&badge_txt, measured_pill_w)
                                 {
+                                    deferred_op_move_slot = Some((s_idx, o_idx, o_idx - 1));
+                                    ui.close();
+                                }
+                                if ui
+                                    .add_enabled(
+                                        o_idx + 1 < op_len,
+                                        egui::Button::new("Move Down (Ctrl+Down)"),
+                                    )
+                                    .clicked()
+                                {
+                                    deferred_op_move_slot = Some((s_idx, o_idx, o_idx + 2));
+                                    ui.close();
+                                }
+                                ui.separator();
+                                if ui
+                                    .button(if is_hidden_in_vp {
+                                        "Show Toolpath in Viewport"
+                                    } else {
+                                        "Hide Toolpath in Viewport"
+                                    })
+                                    .clicked()
+                                {
+                                    deferred_op_toggle_visibility = Some(op_id_clone.clone());
+                                    ui.close();
+                                }
+                                if ui
+                                    .button(if is_sup {
+                                        "Enable Operation"
+                                    } else {
+                                        "Suppress Operation"
+                                    })
+                                    .clicked()
+                                {
+                                    deferred_op_toggle_suppress = Some((s_idx, o_idx));
+                                    ui.close();
+                                }
+                                if ui.button("Delete Operation (Del)").clicked() {
+                                    deferred_op_delete = Some((s_idx, o_idx));
+                                    ui.close();
+                                }
+                            });
+
+                            if row_hovered {
+                                ui.spacing_mut().item_spacing.x = 2.0;
+                                // Eyeball = Viewport Toolpath Visibility!
+                                if small_icon_button(
+                                    ui,
+                                    if is_hidden_in_vp {
+                                        IconKind::EyeOff
+                                    } else {
+                                        IconKind::Eye
+                                    },
+                                    if is_hidden_in_vp {
+                                        "Show operation toolpath in 3D viewport"
+                                    } else {
+                                        "Hide operation toolpath in 3D viewport (keeps operation active)"
+                                    },
+                                )
+                                .clicked()
+                                {
+                                    deferred_op_toggle_visibility = Some(op_id_clone.clone());
+                                }
+                                if small_icon_button(
+                                    ui,
+                                    IconKind::Duplicate,
+                                    "Duplicate Operation (Ctrl+D)",
+                                )
+                                .clicked()
+                                {
+                                    deferred_op_duplicate = Some((s_idx, o_idx));
+                                }
+                                if small_icon_button(
+                                    ui,
+                                    IconKind::Trash,
+                                    "Delete Operation (Del)",
+                                )
+                                .clicked()
+                                {
+                                    deferred_op_delete = Some((s_idx, o_idx));
+                                }
+                            } else {
+                                if is_hidden_in_vp
+                                    && small_icon_button(
+                                        ui,
+                                        IconKind::EyeOff,
+                                        "Toolpath hidden in 3D viewport — click to show",
+                                    )
+                                    .clicked()
+                                {
+                                    deferred_op_toggle_visibility = Some(op_id_clone.clone());
+                                }
+                                if let (Some(badge), Some(pill_w)) = (&badge_txt, measured_pill_w) {
                                     let (p_rect, _) = ui.allocate_exact_size(
                                         Vec2::new(pill_w, 17.0),
                                         Sense::hover(),
@@ -913,53 +975,60 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                                         );
                                     }
                                 }
-                            });
+                            }
+                        });
 
-                            row_rects.push(row_resp.response.rect);
-                        }
+                        row_rects.push(row_resp.response.rect);
+                    }
 
-                        // Handle live drag-and-drop insertion indicator & drop within this Setup
-                        if let Some(drag) = active_drag
-                            && drag.setup_idx == s_idx
-                            && !row_rects.is_empty()
-                        {
-                            ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
-                            if let Some(ptr) = ui.input(|i| i.pointer.interact_pos()) {
-                                let mut slot = op_len;
-                                for (idx, r) in row_rects.iter().enumerate() {
-                                    if ptr.y < r.center().y {
-                                        slot = idx;
-                                        break;
-                                    }
-                                }
-                                if slot != drag.op_idx && slot != drag.op_idx + 1 {
-                                    let y_line = if slot == 0 {
-                                        row_rects[0].top() - 1.0
-                                    } else if slot >= row_rects.len() {
-                                        row_rects[row_rects.len() - 1].bottom() + 1.0
-                                    } else {
-                                        0.5 * (row_rects[slot - 1].bottom() + row_rects[slot].top())
-                                    };
-                                    let x_left = row_rects[0].left() + 4.0;
-                                    let x_right = row_rects[0].right() - 4.0;
-                                    ui.painter().line_segment(
-                                        [Pos2::new(x_left, y_line), Pos2::new(x_right, y_line)],
-                                        Stroke::new(2.0, tok.accent),
-                                    );
-                                    ui.painter().circle_filled(
-                                        Pos2::new(x_left, y_line),
-                                        3.2,
-                                        tok.accent,
-                                    );
-                                }
-                                if ui.input(|i| i.pointer.any_released()) {
-                                    deferred_op_move_slot = Some((s_idx, drag.op_idx, slot));
-                                    active_drag = None;
-                                    ui.ctx().data_mut(|d| d.remove::<DraggedOpState>(drag_state_id));
+                    // Handle live drag-and-drop insertion indicator & drop within this Setup
+                    if let Some(drag) = active_drag
+                        && drag.setup_idx == s_idx
+                        && !row_rects.is_empty()
+                    {
+                        ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
+                        if let Some(ptr) = ui.input(|i| i.pointer.interact_pos()) {
+                            let mut slot = op_len;
+                            for (idx, r) in row_rects.iter().enumerate() {
+                                if ptr.y < r.center().y {
+                                    slot = idx;
+                                    break;
                                 }
                             }
+                            if slot != drag.op_idx && slot != drag.op_idx + 1 {
+                                let y_line = if slot == 0 {
+                                    row_rects[0].top() - 1.0
+                                } else if slot >= row_rects.len() {
+                                    row_rects[row_rects.len() - 1].bottom() + 1.0
+                                } else {
+                                    0.5 * (row_rects[slot - 1].bottom() + row_rects[slot].top())
+                                };
+                                let x_left = row_rects[0].left() + 4.0;
+                                let x_right = row_rects[0].right() - 4.0;
+                                ui.painter().line_segment(
+                                    [Pos2::new(x_left, y_line), Pos2::new(x_right, y_line)],
+                                    Stroke::new(2.0, tok.accent),
+                                );
+                                ui.painter().circle_filled(
+                                    Pos2::new(x_left, y_line),
+                                    3.2,
+                                    tok.accent,
+                                );
+                            }
+                            if ui.input(|i| i.pointer.any_released()) {
+                                deferred_op_move_slot = Some((s_idx, drag.op_idx, slot));
+                                active_drag = None;
+                                ui.ctx().data_mut(|d| d.remove::<DraggedOpState>(drag_state_id));
+                            }
                         }
-                    });
+                    }
+                });
+            }
+
+            if let Some(vis_op_id) = deferred_op_toggle_visibility
+                && !hidden_operation_ids.remove(&vis_op_id)
+            {
+                hidden_operation_ids.insert(vis_op_id);
             }
 
             if active_drag.is_some() && ui.input(|i| i.pointer.any_released()) {

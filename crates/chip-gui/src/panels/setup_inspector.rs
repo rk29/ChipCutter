@@ -213,67 +213,86 @@ pub fn show_setup_inspector(ui: &mut egui::Ui, ctx: SetupInspectorCtx<'_>) -> bo
                     .or_else(|| machines.first());
                 let mut picked_machine: Option<String> = None;
                 let mut apply_defaults_clicked = false;
-                static_card(ui, Some("Target CNC Machine"), |ui| {
-                    inspector_grid(ui, ("setup_machine_grid", setup_idx), |ui| {
-                        grid_row(
-                            ui,
-                            "Machine",
-                            Some("Target CNC machine envelope, spindle limits, kinematics, & tool set"),
-                            |ui| {
-                                let label = current_machine
-                                    .map_or(current_mid.as_str(), |m| m.name.as_str());
-                                egui::ComboBox::from_id_salt(("setup_machine_cb", setup_idx))
-                                    .width(INPUT_COL_WIDTH)
-                                    .selected_text(label)
-                                    .show_ui(ui, |ui| {
-                                        for m in machines {
-                                            let tag = if m.is_builtin {
-                                                "[Built-In]"
-                                            } else {
-                                                "[Custom]"
-                                            };
-                                            if ui
-                                                .selectable_label(
-                                                    m.id.eq_ignore_ascii_case(&current_mid),
-                                                    format!("{} {}", m.name, tag),
-                                                )
-                                                .clicked()
-                                            {
-                                                picked_machine = Some(m.id.clone());
+                section_card(
+                    ui,
+                    ("setup_machine_card", setup_idx),
+                    "Target CNC Machine",
+                    true,
+                    |ui| {
+                        inspector_grid(ui, ("setup_machine_grid", setup_idx), |ui| {
+                            grid_row(
+                                ui,
+                                "Machine",
+                                Some(
+                                    "Target CNC machine envelope, spindle limits, kinematics, & tool set",
+                                ),
+                                |ui| {
+                                    let label = current_machine
+                                        .map_or(current_mid.as_str(), |m| m.name.as_str());
+                                    egui::ComboBox::from_id_salt(("setup_machine_cb", setup_idx))
+                                        .width(INPUT_COL_WIDTH + 54.0)
+                                        .truncate()
+                                        .selected_text(label)
+                                        .show_ui(ui, |ui| {
+                                            for m in machines {
+                                                let tag = if m.is_builtin {
+                                                    "[Built-In]"
+                                                } else {
+                                                    "[Custom]"
+                                                };
+                                                if ui
+                                                    .selectable_label(
+                                                        m.id.eq_ignore_ascii_case(&current_mid),
+                                                        format!("{} {}", m.name, tag),
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    picked_machine = Some(m.id.clone());
+                                                }
                                             }
-                                        }
-                                    });
-                            },
-                        );
-                    });
-                    if let Some(m) = current_machine {
-                        ui.small(format!(
-                            "Travel {:.0}×{:.0}×{:.0} mm  |  {:.0}–{:.0} RPM  |  {} tools  |  Post: {}",
-                            m.travel_mm.x_mm,
-                            m.travel_mm.y_mm,
-                            m.travel_mm.z_mm,
-                            m.spindle.min_rpm,
-                            m.spindle.max_rpm,
-                            m.tools.len(),
-                            m.default_post_profile
-                        ));
-                    }
-                    ui.horizontal(|ui| {
-                        if ui
-                            .small_button("Apply Machine Defaults")
-                            .on_hover_text(
-                                "Apply this machine's default post-processor and 4th-axis chuck dimensions to setups",
-                            )
-                            .clicked()
-                        {
-                            apply_defaults_clicked = true;
+                                        })
+                                        .response
+                                        .on_hover_text(
+                                            "Select target CNC machine profile (travel limits, RPM range, kinematics, and machine tool set)",
+                                        );
+                                },
+                            );
+                        });
+                        if let Some(m) = current_machine {
+                            ui.small(format!(
+                                "Travel {:.0}×{:.0}×{:.0} mm | {:.0}–{:.0} RPM | {} tools | Post: {}",
+                                m.travel_mm.x_mm,
+                                m.travel_mm.y_mm,
+                                m.travel_mm.z_mm,
+                                m.spindle.min_rpm,
+                                m.spindle.max_rpm,
+                                m.tools.len(),
+                                m.default_post_profile
+                            ));
                         }
-                        if ui.small_button("Manage Machines…").clicked() {
-                            *open_machine_manager = true;
-                        }
-                    });
-                });
-                ui.add_space(5.0);
+                        ui.add_space(2.0);
+                        ui.horizontal_wrapped(|ui| {
+                            if ui
+                                .small_button("Apply Defaults")
+                                .on_hover_text(
+                                    "Apply this machine's default post-processor and 4th-axis chuck dimensions to setups",
+                                )
+                                .clicked()
+                            {
+                                apply_defaults_clicked = true;
+                            }
+                            if ui
+                                .small_button("Manage Machines…")
+                                .on_hover_text(
+                                    "Open Machine Manager to inspect, clone, export, or import .machine.toml profiles",
+                                )
+                                .clicked()
+                            {
+                                *open_machine_manager = true;
+                            }
+                        });
+                    },
+                );
 
                 if let Some(new_mid) = picked_machine {
                     history.record_before_edit("Change Target Machine", None, project);
@@ -456,54 +475,84 @@ fn render_wcs_orient_body(ui: &mut egui::Ui, ctx: &mut WcsTabCtx<'_>) {
 
         grid_row(
             ui,
-            "Orientation Mode",
+            "Orientation",
             Some("Align spindle +Z and table +X to CAD geometry"),
             |ui| {
-                if ui.selectable_label(is_model, "Model XYZ").clicked() && !is_model {
-                    ctx.setup.wcs.orientation = WcsOrientationMode::default();
-                    *ctx.pick_mode = ViewportPickMode::InspectEntity;
-                    *ctx.mutated_label = Some("Reset WCS to Model Orientation");
-                }
+                let orient_lbl = if is_model {
+                    "Model XYZ"
+                } else if is_zx {
+                    "Select Z & X Axes"
+                } else {
+                    "Select XY Plane"
+                };
                 let has_cad = ctx.cad_doc.is_some();
-                if ui
-                    .add_enabled_ui(has_cad, |ui| ui.selectable_label(is_zx, "Z & X"))
-                    .inner
-                    .clicked()
-                    && !is_zx
-                    && let Some(bind) = ctx
-                        .cad_doc
-                        .and_then(|d| d.faces.first().and_then(|f| d.bind_face(f.id)))
-                {
-                    ctx.setup.wcs.orientation = WcsOrientationMode::SelectZAndX {
-                        z_ref: WcsAxisRef::FaceAxis(bind),
-                        flip_z: false,
-                        x_ref: None,
-                        flip_x: false,
-                        clock_90: 0,
-                        extra_z_rot_deg: 0.0,
-                    };
-                    *ctx.pick_mode = ViewportPickMode::SetupWcsZ { setup_idx };
-                    *ctx.mutated_label = Some("Switch WCS to Select Z & X");
-                }
-                if ui
-                    .add_enabled_ui(has_cad, |ui| ui.selectable_label(is_xy, "XY Plane"))
-                    .inner
-                    .clicked()
-                    && !is_xy
-                    && let Some(bind) = ctx
-                        .cad_doc
-                        .and_then(|d| d.faces.first().and_then(|f| d.bind_face(f.id)))
-                {
-                    ctx.setup.wcs.orientation = WcsOrientationMode::SelectXYPlane {
-                        face_ref: bind,
-                        flip_z: false,
-                        x_edge_ref: None,
-                        clock_90: 0,
-                        extra_z_rot_deg: 0.0,
-                    };
-                    *ctx.pick_mode = ViewportPickMode::SetupWcsXyPlane { setup_idx };
-                    *ctx.mutated_label = Some("Switch WCS to Select XY Plane");
-                }
+                egui::ComboBox::from_id_salt(("wcs_orient_mode_cb", setup_idx))
+                    .width(INPUT_COL_WIDTH + 54.0)
+                    .truncate()
+                    .selected_text(orient_lbl)
+                    .show_ui(ui, |ui| {
+                        if ui
+                            .selectable_label(is_model, "Model XYZ")
+                            .on_hover_text("Use the model's native X, Y, Z axes directly")
+                            .clicked()
+                            && !is_model
+                        {
+                            ctx.setup.wcs.orientation = WcsOrientationMode::default();
+                            *ctx.pick_mode = ViewportPickMode::InspectEntity;
+                            *ctx.mutated_label = Some("Reset WCS to Model Orientation");
+                        }
+                        if ui
+                            .add_enabled_ui(has_cad, |ui| {
+                                ui.selectable_label(is_zx, "Select Z & X Axes")
+                                    .on_hover_text(
+                                        "Align +Z spindle and +X table axis to picked B-Rep faces or edges",
+                                    )
+                            })
+                            .inner
+                            .clicked()
+                            && !is_zx
+                            && let Some(bind) = ctx
+                                .cad_doc
+                                .and_then(|d| d.faces.first().and_then(|f| d.bind_face(f.id)))
+                        {
+                            ctx.setup.wcs.orientation = WcsOrientationMode::SelectZAndX {
+                                z_ref: WcsAxisRef::FaceAxis(bind),
+                                flip_z: false,
+                                x_ref: None,
+                                flip_x: false,
+                                clock_90: 0,
+                                extra_z_rot_deg: 0.0,
+                            };
+                            *ctx.pick_mode = ViewportPickMode::SetupWcsZ { setup_idx };
+                            *ctx.mutated_label = Some("Switch WCS to Select Z & X");
+                        }
+                        if ui
+                            .add_enabled_ui(has_cad, |ui| {
+                                ui.selectable_label(is_xy, "Select XY Plane")
+                                    .on_hover_text(
+                                        "Align Setup XY plane directly onto a picked planar B-Rep face",
+                                    )
+                            })
+                            .inner
+                            .clicked()
+                            && !is_xy
+                            && let Some(bind) = ctx
+                                .cad_doc
+                                .and_then(|d| d.faces.first().and_then(|f| d.bind_face(f.id)))
+                        {
+                            ctx.setup.wcs.orientation = WcsOrientationMode::SelectXYPlane {
+                                face_ref: bind,
+                                flip_z: false,
+                                x_edge_ref: None,
+                                clock_90: 0,
+                                extra_z_rot_deg: 0.0,
+                            };
+                            *ctx.pick_mode = ViewportPickMode::SetupWcsXyPlane { setup_idx };
+                            *ctx.mutated_label = Some("Switch WCS to Select XY Plane");
+                        }
+                    })
+                    .response
+                    .on_hover_text("Choose how Setup +Z spindle and +X table axes are oriented");
             },
         );
 
@@ -516,25 +565,48 @@ fn render_wcs_orient_body(ui: &mut egui::Ui, ctx: &mut WcsTabCtx<'_>) {
             } => {
                 grid_row(
                     ui,
-                    "Axis Controls",
-                    Some("Invert +Z/+X or rotate +X by 90°"),
+                    "Flip +Z",
+                    Some("Invert spindle +Z 180 degrees (e.g., flip part upside down for Op 2)"),
                     |ui| {
-                        if ui.checkbox(flip_z, "Flip +Z").changed() {
+                        if ui
+                            .checkbox(flip_z, "Invert Spindle (+Z)")
+                            .on_hover_text(
+                                "Flip the part upside down relative to the spindle +Z axis",
+                            )
+                            .changed()
+                        {
                             *ctx.mutated_label = Some("Flip WCS Z Axis");
                         }
-                        if ui.checkbox(flip_x, "Flip +X").changed() {
+                    },
+                );
+                grid_row(
+                    ui,
+                    "Flip +X",
+                    Some("Invert table +X direction 180 degrees"),
+                    |ui| {
+                        if ui
+                            .checkbox(flip_x, "Invert Table (+X)")
+                            .on_hover_text("Reverse Setup +X direction by 180 degrees")
+                            .changed()
+                        {
                             *ctx.mutated_label = Some("Flip WCS X Axis");
                         }
-                        if ui.small_button("Clock X 90°").clicked() {
+                    },
+                );
+                grid_row(
+                    ui,
+                    "X Clocking",
+                    Some("Rotate Setup +X/+Y around +Z in 90-degree increments"),
+                    |ui| {
+                        if ui
+                            .small_button("Clock +90°")
+                            .on_hover_text("Rotate Setup +X/+Y by 90 degrees around +Z")
+                            .clicked()
+                        {
                             *clock_90 = (*clock_90 + 1) % 4;
                             *ctx.mutated_label = Some("Clock WCS X Axis 90°");
                         }
-                        if *clock_90 > 0 {
-                            ui.colored_label(
-                                tok.text_muted,
-                                format!("{}°", u16::from(*clock_90) * 90),
-                            );
-                        }
+                        ui.colored_label(tok.text_muted, format!("{}°", u16::from(*clock_90) * 90));
                     },
                 );
                 extra_z_rot_deg
@@ -617,22 +689,32 @@ fn render_wcs_orient_body(ui: &mut egui::Ui, ctx: &mut WcsTabCtx<'_>) {
                 );
                 grid_row(
                     ui,
-                    "Axis Controls",
-                    Some("Flip +Z normal or rotate +X by 90°"),
+                    "Flip +Z",
+                    Some("Invert the picked plane's +Z spindle normal 180 degrees"),
                     |ui| {
-                        if ui.checkbox(flip_z, "Flip +Z").changed() {
+                        if ui
+                            .checkbox(flip_z, "Invert Spindle (+Z)")
+                            .on_hover_text("Flip the spindle +Z normal 180 degrees")
+                            .changed()
+                        {
                             *ctx.mutated_label = Some("Flip WCS Z Axis");
                         }
-                        if ui.small_button("Clock 90°").clicked() {
+                    },
+                );
+                grid_row(
+                    ui,
+                    "X Clocking",
+                    Some("Rotate Setup +X/+Y around +Z in 90-degree increments"),
+                    |ui| {
+                        if ui
+                            .small_button("Clock +90°")
+                            .on_hover_text("Rotate Setup +X/+Y by 90 degrees around +Z")
+                            .clicked()
+                        {
                             *clock_90 = (*clock_90 + 1) % 4;
                             *ctx.mutated_label = Some("Clock WCS X Axis 90°");
                         }
-                        if *clock_90 > 0 {
-                            ui.colored_label(
-                                tok.text_muted,
-                                format!("{}°", u16::from(*clock_90) * 90),
-                            );
-                        }
+                        ui.colored_label(tok.text_muted, format!("{}°", u16::from(*clock_90) * 90));
                     },
                 );
                 extra_z_rot_deg
@@ -723,33 +805,61 @@ fn render_wcs_origin_body(ui: &mut egui::Ui, ctx: &mut WcsTabCtx<'_>) {
     inspector_grid(ui, ("wcs_origin_top_grid", setup_idx), |ui| {
         grid_row(
             ui,
-            "Origin Reference",
+            "Origin Source",
             Some("Datum probed for X0 Y0 Z0 on the machine"),
             |ui| {
-                if ui.selectable_label(is_stock_pt, "Stock 27-Pt").clicked() && !is_stock_pt {
-                    ctx.setup.wcs.origin = WcsOriginMode::StockBoxPoint {
-                        anchor: BoxAnchor27::TOP_FRONT_LEFT,
-                    };
-                    *ctx.mutated_label = Some("Set WCS Origin to Stock Box");
-                }
-                if ui.selectable_label(is_model_pt, "Model 27-Pt").clicked() && !is_model_pt {
-                    ctx.setup.wcs.origin = WcsOriginMode::ModelBoxPoint {
-                        anchor: BoxAnchor27::TOP_FRONT_LEFT,
-                    };
-                    *ctx.mutated_label = Some("Set WCS Origin to Model Box");
-                }
+                let origin_lbl = if is_stock_pt {
+                    "Stock Box (27-Pt)"
+                } else if is_model_pt {
+                    "Model Box (27-Pt)"
+                } else {
+                    "CAD Feature"
+                };
                 let has_cad = ctx.cad_doc.is_some();
-                if ui
-                    .add_enabled_ui(has_cad, |ui| ui.selectable_label(is_cad_pt, "CAD Feature"))
-                    .inner
-                    .clicked()
-                    && !is_cad_pt
-                    && let Some(doc) = ctx.cad_doc
-                {
-                    select_default_cad_origin_feature(doc, &mut ctx.setup.wcs.origin);
-                    *ctx.pick_mode = ViewportPickMode::SetupWcsOriginFeature { setup_idx };
-                    *ctx.mutated_label = Some("Set WCS Origin to CAD Feature");
-                }
+                egui::ComboBox::from_id_salt(("wcs_origin_mode_cb", setup_idx))
+                    .width(INPUT_COL_WIDTH + 54.0)
+                    .truncate()
+                    .selected_text(origin_lbl)
+                    .show_ui(ui, |ui| {
+                        if ui
+                            .selectable_label(is_stock_pt, "Stock Box (27-Pt)")
+                            .on_hover_text("Place X0 Y0 Z0 on any corner, edge, face center, or center of the raw stock box")
+                            .clicked()
+                            && !is_stock_pt
+                        {
+                            ctx.setup.wcs.origin = WcsOriginMode::StockBoxPoint {
+                                anchor: BoxAnchor27::TOP_FRONT_LEFT,
+                            };
+                            *ctx.mutated_label = Some("Set WCS Origin to Stock Box");
+                        }
+                        if ui
+                            .selectable_label(is_model_pt, "Model Box (27-Pt)")
+                            .on_hover_text("Place X0 Y0 Z0 on any of the 27 bounding-box points of the target CAD model")
+                            .clicked()
+                            && !is_model_pt
+                        {
+                            ctx.setup.wcs.origin = WcsOriginMode::ModelBoxPoint {
+                                anchor: BoxAnchor27::TOP_FRONT_LEFT,
+                            };
+                            *ctx.mutated_label = Some("Set WCS Origin to Model Box");
+                        }
+                        if ui
+                            .add_enabled_ui(has_cad, |ui| {
+                                ui.selectable_label(is_cad_pt, "CAD Feature")
+                                    .on_hover_text("Anchor X0 Y0 Z0 directly to a B-Rep hole center or edge point")
+                            })
+                            .inner
+                            .clicked()
+                            && !is_cad_pt
+                            && let Some(doc) = ctx.cad_doc
+                        {
+                            select_default_cad_origin_feature(doc, &mut ctx.setup.wcs.origin);
+                            *ctx.pick_mode = ViewportPickMode::SetupWcsOriginFeature { setup_idx };
+                            *ctx.mutated_label = Some("Set WCS Origin to CAD Feature");
+                        }
+                    })
+                    .response
+                    .on_hover_text("Choose whether WCS zero (X0 Y0 Z0) is anchored to Stock bounds, Model bounds, or a CAD feature");
             },
         );
 
@@ -765,10 +875,45 @@ fn render_wcs_origin_body(ui: &mut egui::Ui, ctx: &mut WcsTabCtx<'_>) {
                 );
                 grid_row(
                     ui,
-                    "3D Viewport Dots",
-                    Some("Show clickable 27-point origin dots"),
+                    "Z Anchor",
+                    Some("Select Top, Mid-Z, or Bottom plane of the 27-point datum box"),
                     |ui| {
-                        ui.checkbox(ctx.show_27pt_dots, "Interactive 27-pt overlay");
+                        for (lbl, z_a) in [
+                            ("Top", AxisAnchor::Max),
+                            ("Mid", AxisAnchor::Center),
+                            ("Bot", AxisAnchor::Min),
+                        ] {
+                            if ui
+                                .selectable_label(anchor.z == z_a, lbl)
+                                .on_hover_text(format!("Set WCS Z0 plane to {lbl}"))
+                                .clicked()
+                                && anchor.z != z_a
+                            {
+                                anchor.z = z_a;
+                                *ctx.mutated_label = Some("Change 27-Point WCS Origin");
+                            }
+                        }
+                    },
+                );
+                grid_row(
+                    ui,
+                    "XY Anchor",
+                    Some("Pick any of the 9 XY positions (Left/Center/Right x Back/Center/Front)"),
+                    |ui| {
+                        if show_27pt_xy_matrix(ui, anchor) {
+                            *ctx.mutated_label = Some("Change 27-Point WCS Origin");
+                        }
+                    },
+                );
+                grid_row(
+                    ui,
+                    "3D Origin Dots",
+                    Some("Show clickable 27-point origin dots directly in the 3D viewport"),
+                    |ui| {
+                        ui.checkbox(ctx.show_27pt_dots, "Show 27-pt overlay")
+                            .on_hover_text(
+                                "Display clickable 27-point WCS anchor spheres in the 3D viewport",
+                            );
                     },
                 );
             }
@@ -789,32 +934,42 @@ fn render_wcs_origin_body(ui: &mut egui::Ui, ctx: &mut WcsTabCtx<'_>) {
                     Some("Click a hole wall or edge in 3D viewport"),
                     |ui| {
                         let on = *ctx.pick_mode == target;
-                        if ui.selectable_label(on, "Pick CAD Feature").clicked() {
+                        if ui
+                            .selectable_label(on, "Pick CAD Feature")
+                            .on_hover_text("Click a cylindrical hole or edge in the 3D viewport to anchor WCS zero")
+                            .clicked()
+                        {
                             *ctx.pick_mode = if on {
                                 ViewportPickMode::InspectEntity
                             } else {
                                 target
                             };
                         }
-                        if let WcsFeaturePointRef::HoleAxisCenter { top_rim, .. } = feature
-                            && ui.checkbox(top_rim, "Top Rim").changed()
-                        {
-                            *ctx.mutated_label = Some("Toggle Bore Top/Bottom Origin");
-                        }
                     },
                 );
+                if let WcsFeaturePointRef::HoleAxisCenter { top_rim, .. } = feature {
+                    grid_row(
+                        ui,
+                        "Bore Rim",
+                        Some(
+                            "Anchor WCS Z0 at the top rim or bottom floor of the cylindrical bore",
+                        ),
+                        |ui| {
+                            if ui
+                                .checkbox(top_rim, "Top Rim")
+                                .on_hover_text(
+                                    "Checked = top rim of bore; unchecked = bottom of bore",
+                                )
+                                .changed()
+                            {
+                                *ctx.mutated_label = Some("Toggle Bore Top/Bottom Origin");
+                            }
+                        },
+                    );
+                }
             }
         }
     });
-
-    if let WcsOriginMode::StockBoxPoint { anchor } | WcsOriginMode::ModelBoxPoint { anchor } =
-        &mut ctx.setup.wcs.origin
-    {
-        ui.add_space(4.0);
-        if show_27pt_grid_selector(ui, anchor) {
-            *ctx.mutated_label = Some("Change 27-Point WCS Origin");
-        }
-    }
 
     ui.add_space(4.0);
     ui.separator();
@@ -905,7 +1060,8 @@ fn render_post_body(
             Some("Target CNC controller dialect (.post.toml)"),
             |ui| {
                 egui::ComboBox::from_id_salt(("setup_post_cb", setup_idx))
-                    .width(INPUT_COL_WIDTH + 44.0)
+                    .width(INPUT_COL_WIDTH + 54.0)
+                    .truncate()
                     .selected_text(post_profile_short_label(&setup.post_profile))
                     .show_ui(ui, |ui| {
                         for prof in builtin_post_profiles() {
@@ -1480,40 +1636,25 @@ fn render_setup_height_ref_row(
     );
 }
 
-fn show_27pt_grid_selector(ui: &mut egui::Ui, anchor: &mut BoxAnchor27) -> bool {
+fn show_27pt_xy_matrix(ui: &mut egui::Ui, anchor: &mut BoxAnchor27) -> bool {
     let mut changed = false;
-
-    ui.horizontal(|ui| {
-        ui.weak("Z Level:");
-        for (lbl, z_a) in [
-            ("Top", AxisAnchor::Max),
-            ("Mid-Z", AxisAnchor::Center),
-            ("Bottom", AxisAnchor::Min),
-        ] {
-            if ui.selectable_label(anchor.z == z_a, lbl).clicked() && anchor.z != z_a {
-                anchor.z = z_a;
-                changed = true;
-            }
-        }
-    });
-
     egui::Grid::new("box_anchor_3x3_xy")
-        .spacing([4.0, 4.0])
+        .spacing([3.0, 3.0])
         .show(ui, |ui| {
-            for (y_lbl, y_a) in [
+            for (y_name, y_a) in [
                 ("Back (+Y)", AxisAnchor::Max),
                 ("Center Y", AxisAnchor::Center),
                 ("Front (-Y)", AxisAnchor::Min),
             ] {
-                ui.weak(y_lbl);
-                for (x_short, x_a) in [
-                    ("L", AxisAnchor::Min),
-                    ("C", AxisAnchor::Center),
-                    ("R", AxisAnchor::Max),
+                for (x_name, x_short, x_a) in [
+                    ("Left (-X)", "L", AxisAnchor::Min),
+                    ("Center X", "C", AxisAnchor::Center),
+                    ("Right (+X)", "R", AxisAnchor::Max),
                 ] {
                     let is_sel = anchor.x == x_a && anchor.y == y_a;
                     if ui
                         .selectable_label(is_sel, format!(" {x_short} "))
+                        .on_hover_text(format!("Set XY origin to {y_name}, {x_name}"))
                         .clicked()
                         && !is_sel
                     {
@@ -1525,7 +1666,6 @@ fn show_27pt_grid_selector(ui: &mut egui::Ui, anchor: &mut BoxAnchor27) -> bool 
                 ui.end_row();
             }
         });
-
     changed
 }
 

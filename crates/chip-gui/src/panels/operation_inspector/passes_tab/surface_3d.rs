@@ -50,29 +50,38 @@ pub(super) fn show_waterline3d_params(
                     "Land on flat plateaus",
                     "Toggle Waterline Detect Flats",
                 );
-                f.set_tip("Filter out shallow or vertical zones by surface slope angle (0° = flat, 90° = vertical)");
-                f.row("Slope Range (°)", |ui, mutated| {
-                    ui.horizontal(|ui| {
-                        let r_min = ui.add(
+                f.set_tip("Minimum surface slope angle included (0° = flat horizontal, 90° = vertical wall)");
+                f.row("Min Slope (°)", |ui, mutated| {
+                    if ui
+                        .add(
                             egui::DragValue::new(&mut p.min_slope_deg)
                                 .speed(1.0)
                                 .range(0.0..=89.0)
                                 .suffix("°"),
-                        );
-                        ui.label("to");
-                        let r_max = ui.add(
+                        )
+                        .on_hover_text("Minimum surface slope angle machined by this operation")
+                        .changed()
+                    {
+                        if p.max_slope_deg < p.min_slope_deg {
+                            p.max_slope_deg = p.min_slope_deg;
+                        }
+                        *mutated = Some("Edit Waterline Min Slope");
+                    }
+                });
+                f.set_tip("Maximum surface slope angle included (0° = flat horizontal, 90° = vertical wall)");
+                f.row("Max Slope (°)", |ui, mutated| {
+                    if ui
+                        .add(
                             egui::DragValue::new(&mut p.max_slope_deg)
                                 .speed(1.0)
                                 .range(p.min_slope_deg.max(1.0)..=90.0)
                                 .suffix("°"),
-                        );
-                        if r_min.changed() || r_max.changed() {
-                            if p.max_slope_deg < p.min_slope_deg {
-                                p.max_slope_deg = p.min_slope_deg;
-                            }
-                            *mutated = Some("Edit Waterline Slope Range");
-                        }
-                    });
+                        )
+                        .on_hover_text("Maximum surface slope angle machined by this operation")
+                        .changed()
+                    {
+                        *mutated = Some("Edit Waterline Max Slope");
+                    }
                 });
                 f.set_tip("Order waterline contours top-down by Z level or finish each island/boss before retracting");
                 f.row("Pass Ordering", |ui, mutated| {
@@ -273,29 +282,38 @@ pub(super) fn show_parallel3d_params(
                         *mutated = Some("Change Parallel Cut Direction");
                     }
                 });
-                f.set_tip("Restrict raster finishing to shallow or steep slope ranges (0° = flat, 90° = vertical)");
-                f.row("Slope Range (°)", |ui, mutated| {
-                    ui.horizontal(|ui| {
-                        let r_min = ui.add(
+                f.set_tip("Minimum surface slope angle included (0° = flat horizontal, 90° = vertical wall)");
+                f.row("Min Slope (°)", |ui, mutated| {
+                    if ui
+                        .add(
                             egui::DragValue::new(&mut p.min_slope_deg)
                                 .speed(1.0)
                                 .range(0.0..=89.0)
                                 .suffix("°"),
-                        );
-                        ui.label("to");
-                        let r_max = ui.add(
+                        )
+                        .on_hover_text("Minimum surface slope angle machined by Parallel 3D")
+                        .changed()
+                    {
+                        if p.max_slope_deg < p.min_slope_deg {
+                            p.max_slope_deg = p.min_slope_deg;
+                        }
+                        *mutated = Some("Edit Parallel Min Slope");
+                    }
+                });
+                f.set_tip("Maximum surface slope angle included (0° = flat horizontal, 90° = vertical wall)");
+                f.row("Max Slope (°)", |ui, mutated| {
+                    if ui
+                        .add(
                             egui::DragValue::new(&mut p.max_slope_deg)
                                 .speed(1.0)
                                 .range(p.min_slope_deg.max(1.0)..=90.0)
                                 .suffix("°"),
-                        );
-                        if r_min.changed() || r_max.changed() {
-                            if p.max_slope_deg < p.min_slope_deg {
-                                p.max_slope_deg = p.min_slope_deg;
-                            }
-                            *mutated = Some("Edit Parallel Slope Range");
-                        }
-                    });
+                        )
+                        .on_hover_text("Maximum surface slope angle machined by Parallel 3D")
+                        .changed()
+                    {
+                        *mutated = Some("Edit Parallel Max Slope");
+                    }
                 });
                 f.set_tip("Along-pass Drop-Cutter sampling pitch");
                 f.len("Sample Pitch", &mut p.sample_step, "Edit Parallel Sample Pitch");
@@ -365,29 +383,38 @@ pub(super) fn show_scallop3d_params(
                     "Climb Milling",
                     "Toggle Scallop Climb Milling",
                 );
-                f.set_tip("Restrict finishing to specific surface slope angles (0° = flat, 90° = vertical)");
-                f.row("Slope Range (°)", |ui, mutated| {
-                    ui.horizontal(|ui| {
-                        let r_min = ui.add(
+                f.set_tip("Minimum surface slope angle included (0° = flat horizontal, 90° = vertical wall)");
+                f.row("Min Slope (°)", |ui, mutated| {
+                    if ui
+                        .add(
                             egui::DragValue::new(&mut p.min_slope_deg)
                                 .speed(1.0)
                                 .range(0.0..=89.0)
                                 .suffix("°"),
-                        );
-                        ui.label("to");
-                        let r_max = ui.add(
+                        )
+                        .on_hover_text("Minimum surface slope angle machined by Constant-Scallop 3D")
+                        .changed()
+                    {
+                        if p.max_slope_deg < p.min_slope_deg {
+                            p.max_slope_deg = p.min_slope_deg;
+                        }
+                        *mutated = Some("Edit Scallop Min Slope");
+                    }
+                });
+                f.set_tip("Maximum surface slope angle included (0° = flat horizontal, 90° = vertical wall)");
+                f.row("Max Slope (°)", |ui, mutated| {
+                    if ui
+                        .add(
                             egui::DragValue::new(&mut p.max_slope_deg)
                                 .speed(1.0)
                                 .range(p.min_slope_deg.max(1.0)..=90.0)
                                 .suffix("°"),
-                        );
-                        if r_min.changed() || r_max.changed() {
-                            if p.max_slope_deg < p.min_slope_deg {
-                                p.max_slope_deg = p.min_slope_deg;
-                            }
-                            *mutated = Some("Edit Scallop Slope Range");
-                        }
-                    });
+                        )
+                        .on_hover_text("Maximum surface slope angle machined by Constant-Scallop 3D")
+                        .changed()
+                    {
+                        *mutated = Some("Edit Scallop Max Slope");
+                    }
                 });
                 f.set_tip("3D chord decimation tolerance keeping G-code compact");
                 f.len(
@@ -567,29 +594,38 @@ pub(super) fn show_rotary2linear_params(
                     f.set_tip("Axial pitch per revolution (Spiral) or circumferential lane spacing (Axial Parallel)");
                     f.len("Stepover", &mut p.stepover, "Edit Rotary Stepover");
                 }
-                f.set_tip("Angular machining range around the rotary axis (0° to 360° = full circumference)");
-                f.row("Angle Window (°)", |ui, mutated| {
-                    ui.horizontal(|ui| {
-                        let r0 = ui.add(
+                f.set_tip("Starting rotary angle around the axis (0° to 360° = full circumference)");
+                f.row("Start Angle (°)", |ui, mutated| {
+                    if ui
+                        .add(
                             egui::DragValue::new(&mut p.start_angle_deg)
                                 .speed(2.0)
                                 .range(-360.0..=360.0)
                                 .suffix("°"),
-                        );
-                        ui.label("to");
-                        let r1 = ui.add(
+                        )
+                        .on_hover_text("Start angle around the 4th rotary axis")
+                        .changed()
+                    {
+                        if p.end_angle_deg <= p.start_angle_deg + 1.0 {
+                            p.end_angle_deg = p.start_angle_deg + 1.0;
+                        }
+                        *mutated = Some("Edit Rotary Start Angle");
+                    }
+                });
+                f.set_tip("Ending rotary angle around the axis (0° to 360° = full circumference)");
+                f.row("End Angle (°)", |ui, mutated| {
+                    if ui
+                        .add(
                             egui::DragValue::new(&mut p.end_angle_deg)
                                 .speed(2.0)
                                 .range((p.start_angle_deg + 1.0)..=720.0)
                                 .suffix("°"),
-                        );
-                        if r0.changed() || r1.changed() {
-                            if p.end_angle_deg <= p.start_angle_deg + 1.0 {
-                                p.end_angle_deg = p.start_angle_deg + 1.0;
-                            }
-                            *mutated = Some("Edit Rotary Angle Window");
-                        }
-                    });
+                        )
+                        .on_hover_text("End angle around the 4th rotary axis")
+                        .changed()
+                    {
+                        *mutated = Some("Edit Rotary End Angle");
+                    }
                 });
                 f.set_tip("Inward axial trim margin from the -U stock end (keeps cutter clear of the chuck)");
                 f.len(
@@ -705,29 +741,38 @@ pub(super) fn show_rotary4axis_sim_params(
                     f.set_tip("Axial pitch per revolution (Spiral) or circumferential spacing (Flowline)");
                     f.len("Stepover", &mut p.stepover, "Edit 4-Axis Stepover");
                 }
-                f.set_tip("Angular machining range around the rotary axis (0° to 360° = full circumference)");
-                f.row("Angle Window (°)", |ui, mutated| {
-                    ui.horizontal(|ui| {
-                        let r0 = ui.add(
+                f.set_tip("Starting rotary angle around the axis (0° to 360° = full circumference)");
+                f.row("Start Angle (°)", |ui, mutated| {
+                    if ui
+                        .add(
                             egui::DragValue::new(&mut p.start_angle_deg)
                                 .speed(2.0)
                                 .range(-360.0..=360.0)
                                 .suffix("°"),
-                        );
-                        ui.label("to");
-                        let r1 = ui.add(
+                        )
+                        .on_hover_text("Start angle around the 4th rotary axis")
+                        .changed()
+                    {
+                        if p.end_angle_deg <= p.start_angle_deg + 1.0 {
+                            p.end_angle_deg = p.start_angle_deg + 1.0;
+                        }
+                        *mutated = Some("Edit 4-Axis Start Angle");
+                    }
+                });
+                f.set_tip("Ending rotary angle around the axis (0° to 360° = full circumference)");
+                f.row("End Angle (°)", |ui, mutated| {
+                    if ui
+                        .add(
                             egui::DragValue::new(&mut p.end_angle_deg)
                                 .speed(2.0)
                                 .range((p.start_angle_deg + 1.0)..=720.0)
                                 .suffix("°"),
-                        );
-                        if r0.changed() || r1.changed() {
-                            if p.end_angle_deg <= p.start_angle_deg + 1.0 {
-                                p.end_angle_deg = p.start_angle_deg + 1.0;
-                            }
-                            *mutated = Some("Edit 4-Axis Angle Window");
-                        }
-                    });
+                        )
+                        .on_hover_text("End angle around the 4th rotary axis")
+                        .changed()
+                    {
+                        *mutated = Some("Edit 4-Axis End Angle");
+                    }
                 });
                 f.set_tip("Inward axial trim margin from the -U stock end (chuck side)");
                 f.len(

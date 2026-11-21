@@ -92,6 +92,7 @@ pub fn show_heights_tab(ui: &mut egui::Ui, ctx: HeightsTabCtx<'_>) {
                     grid_row(ui, &ref_lbl, Some(tip), |ui| {
                         egui::ComboBox::from_id_salt(("op_h_ref", setup_idx, op_idx, which))
                             .width(COMBO_COL_WIDTH)
+                            .truncate()
                             .selected_text(spec.reference.label())
                             .show_ui(ui, |ui| {
                                 for r in HeightReference::OPERATION_REFS {

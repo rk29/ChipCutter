@@ -71,6 +71,7 @@ impl PaneBehavior<'_> {
                     setup_tab: &mut self.app.setup_tab,
                     op_tab: &mut self.app.op_tab,
                     pick_mode: &mut self.app.pick_mode,
+                    hidden_operation_ids: &mut self.app.hidden_operation_ids,
                 },
             );
 

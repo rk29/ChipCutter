@@ -189,7 +189,7 @@ impl ChipCutterApp {
             };
 
             for (o_idx, op) in setup.operations.iter().enumerate() {
-                if op.suppressed {
+                if op.suppressed || self.hidden_operation_ids.contains(&op.id) {
                     continue;
                 }
                 let is_focused = focused_op_idx.is_none_or(|f_idx| f_idx == o_idx);

@@ -94,6 +94,11 @@ pub fn section_card<R>(
             let hdr_w = ui.available_width().max(64.0);
             let (hdr_rect, hdr_resp) =
                 ui.allocate_exact_size(Vec2::new(hdr_w, hdr_h), Sense::click());
+            let hdr_resp = hdr_resp.on_hover_text(if is_open {
+                "Click to collapse section"
+            } else {
+                "Click to expand section"
+            });
             if hdr_resp.clicked() {
                 is_open = !is_open;
                 ui.data_mut(|d| d.insert_persisted(state_id, is_open));
