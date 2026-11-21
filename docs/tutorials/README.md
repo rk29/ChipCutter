@@ -2,6 +2,9 @@
 
 Welcome to the **ChipCutter Tutorials** library. Each tutorial is a self-contained, illustrated Markdown walkthrough that takes you from a starter 3D **STEP** solid, **DXF/SVG** drawing, or built-in **2D Sketch** all the way through setup, toolpath generation (`Ctrl+G`), 3D heightmap simulation, and safety-verified **GRBL / FluidNC** and **LinuxCNC** G-code.
 
+> [!TIP]
+> Want to browse finished visual previews of all 15 built-in projects first? Visit the [**Illustrated Sample Projects Gallery**](../samples/README.md) with thumbnails and operation-by-operation simulation screenshots.
+
 > [!WARNING]
 > **CNC Machine Safety First:** Simulation checks toolpaths against modeled stock and target B-Rep geometry, but it does **not** know where your clamps, vise jaws, or spoilboard fasteners sit. Always verify `0 Crashes` in ChipCutter's 3D Simulation, double-check your physical `G54` zero on the machine, and run an air-cut or single-block dry run on any new program.
 

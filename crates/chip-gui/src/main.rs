@@ -63,6 +63,10 @@ struct GuiArgs {
     #[arg(long)]
     self_test_screenshot: Option<PathBuf>,
 
+    /// Select a specific Setup (0-indexed) before generating & simulating for screenshot capture.
+    #[arg(long)]
+    capture_setup: Option<usize>,
+
     /// Headless capture camera view (`iso`, `top`, `bottom`, `front`, `back`, `right`, `left`, `setup-top`, `sketch`).
     #[arg(long, value_parser = CaptureView::parse)]
     capture_view: Option<CaptureView>,
@@ -95,6 +99,10 @@ struct GuiArgs {
     #[arg(long)]
     capture_sim_progress: Option<f64>,
 
+    /// Scrub simulation timeline to the exact completion timestamp of operation `OP_IDX` (0-indexed).
+    #[arg(long)]
+    capture_sim_after_op: Option<usize>,
+
     /// Select simulation engine during capture (`heightmap` or `tri-dexel`).
     #[arg(long, value_parser = parse_capture_sim_engine)]
     capture_sim_engine: Option<chip_sim::SimEngineKind>,
@@ -122,6 +130,10 @@ struct GuiArgs {
     /// Show or hide translucent ghost-part comparison during capture (`true` / `false`).
     #[arg(long)]
     capture_ghost_part: Option<bool>,
+
+    /// Also save a 480px-wide Lanczos3 thumbnail PNG of the captured screenshot to this path.
+    #[arg(long)]
+    capture_thumb: Option<PathBuf>,
 }
 
 const APP_ID: &str = "io.github.rk29.ChipCutter";
@@ -151,6 +163,7 @@ fn main() -> eframe::Result {
 
     let args = GuiArgs::parse();
     let capture_spec = CaptureSpec {
+        setup_idx: args.capture_setup,
         view: args.capture_view,
         focus: args.capture_focus,
         pane: args.capture_pane,
@@ -159,6 +172,7 @@ fn main() -> eframe::Result {
         show_sim_stock: args.capture_sim_stock,
         show_sim_cutter: args.capture_sim_cutter,
         sim_progress: args.capture_sim_progress,
+        sim_after_op: args.capture_sim_after_op,
         sim_engine: args.capture_sim_engine,
         sim_heatmap: args.capture_sim_heatmap,
         post_profile: args.capture_post,
@@ -166,6 +180,7 @@ fn main() -> eframe::Result {
         show_z_planes: args.capture_z_planes,
         show_27pt_dots: args.capture_27pt_dots,
         ghost_part: args.capture_ghost_part,
+        thumb_path: args.capture_thumb,
     };
     let self_test = args
         .self_test_screenshot

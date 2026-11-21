@@ -62,7 +62,7 @@ pub struct SimulationPanelState {
     rx: Receiver<SimWorkerMsg>,
 
     active_run_id: u64,
-    active_setup_idx: usize,
+    pub(crate) active_setup_idx: usize,
     active_signature: u64,
     pub active_result: Option<Arc<SetupSimulationResult>>,
 

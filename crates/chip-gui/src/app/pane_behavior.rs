@@ -901,6 +901,13 @@ impl ChipCutterApp {
         }
         if st.capture.auto_generate && !st.generate_triggered && has_geo {
             st.generate_triggered = true;
+            if let Some(si) = st.capture.setup_idx
+                && si < self.project.setups.len()
+            {
+                self.active_setup_idx = si;
+                self.inspector_focus = InspectorFocus::Setup { setup_idx: si };
+                self.cached_frame_geo = None;
+            }
             if let Some(eng) = st.capture.sim_engine {
                 self.sim_panel.engine = eng;
             }
@@ -938,6 +945,7 @@ impl ChipCutterApp {
         if !st.requested {
             st.requested = true;
             let out_path = st.screenshot_path.clone();
+            let thumb_path = st.capture.thumb_path.clone();
             let ctx_clone = ctx.clone();
             ctx.request_screenshot(move |image| {
                 let w = image.width() as u32;
@@ -956,6 +964,26 @@ impl ChipCutterApp {
                 {
                     tracing::error!("failed to save screenshot: {e}");
                 }
+                if let Some(t_path) = thumb_path
+                    && let Some(buf) = image::RgbaImage::from_raw(w, h, rgba)
+                {
+                    if let Some(parent) = t_path.parent()
+                        && !parent.as_os_str().is_empty()
+                    {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                    let tw = 480_u32.min(w.max(1));
+                    let th = ((u64::from(h) * u64::from(tw)) / u64::from(w.max(1))).max(1) as u32;
+                    let resized = image::imageops::resize(
+                        &buf,
+                        tw,
+                        th,
+                        image::imageops::FilterType::Lanczos3,
+                    );
+                    if let Err(e) = resized.save(&t_path) {
+                        tracing::error!("failed to save thumbnail: {e}");
+                    }
+                }
                 ctx_clone.send_viewport_cmd(egui::ViewportCommand::Close);
                 ctx_clone.request_repaint();
             });
@@ -969,6 +997,16 @@ impl ChipCutterApp {
         use crate::capture::{CaptureFocus, CaptureModal, CapturePane, CaptureView};
         let mut needs_resim = false;
         let prev_setup_idx = self.active_setup_idx;
+
+        if let Some(si) = capture.setup_idx
+            && si < self.project.setups.len()
+        {
+            self.active_setup_idx = si;
+            if capture.focus.is_none() {
+                self.inspector_focus = InspectorFocus::Setup { setup_idx: si };
+            }
+            self.cached_frame_geo = None;
+        }
 
         if let Some(focus) = capture.focus {
             match focus {
@@ -1009,7 +1047,14 @@ impl ChipCutterApp {
             }
         }
 
-        if self.active_setup_idx != prev_setup_idx && self.sim_panel.active_result.is_some() {
+        let wants_sim = capture.auto_generate
+            || capture.sim_after_op.is_some()
+            || capture.sim_progress.is_some();
+        let sim_matches_setup = self.sim_panel.active_result.is_some()
+            && self.sim_panel.active_setup_idx == self.active_setup_idx;
+        if (self.active_setup_idx != prev_setup_idx && self.sim_panel.active_result.is_some())
+            || (wants_sim && !sim_matches_setup)
+        {
             needs_resim = true;
         }
         if capture.isolate_op {
@@ -1045,8 +1090,16 @@ impl ChipCutterApp {
             {
                 needs_resim = true;
             }
+            let op_id_for_index = capture.sim_after_op.and_then(|oi| {
+                self.project
+                    .setups
+                    .get(self.active_setup_idx)
+                    .and_then(|s| s.operations.get(oi))
+                    .map(|op| op.id.as_str())
+            });
             self.sim_panel.current_time_sec =
-                res.timeline.total_time_sec * capture.effective_sim_progress();
+                capture.resolve_sim_timestamp(&res.timeline, op_id_for_index);
+            self.sim_panel.is_playing = false;
         }
         if let Some(post_id) = &capture.post_profile
             && let Some(setup) = self.project.setups.get_mut(self.active_setup_idx)

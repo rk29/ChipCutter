@@ -269,7 +269,7 @@ Phase 11 introduces a true 3D **Tri-Dexel volumetric simulation engine** alongsi
 
 ---
 
-## Phase 12 — GUI Polish, Consistent Panel UX, Unsaved-Changes Guard, & Illustrated Sample Gallery (Planned — M41–M43)
+## Phase 12 — GUI Polish, Consistent Panel UX, Unsaved-Changes Guard, & Illustrated Sample Gallery (Completed — M41–M43)
 
 Phase 12 focuses on desktop usability, visual consistency, responsiveness, and discoverability across the entire `chip-gui` workspace and sample-project documentation:
 

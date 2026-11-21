@@ -215,6 +215,7 @@ pub fn parse_capture_sim_engine(raw: &str) -> Result<chip_sim::SimEngineKind, St
 /// Structured options controlling headless UI state before PNG capture.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct CaptureSpec {
+    pub setup_idx: Option<usize>,
     pub view: Option<CaptureView>,
     pub focus: Option<CaptureFocus>,
     pub pane: Option<CapturePane>,
@@ -223,6 +224,7 @@ pub struct CaptureSpec {
     pub show_sim_stock: Option<bool>,
     pub show_sim_cutter: Option<bool>,
     pub sim_progress: Option<f64>,
+    pub sim_after_op: Option<usize>,
     pub sim_engine: Option<chip_sim::SimEngineKind>,
     pub sim_heatmap: bool,
     pub post_profile: Option<String>,
@@ -230,6 +232,7 @@ pub struct CaptureSpec {
     pub show_z_planes: Option<bool>,
     pub show_27pt_dots: Option<bool>,
     pub ghost_part: Option<bool>,
+    pub thumb_path: Option<std::path::PathBuf>,
 }
 
 impl CaptureSpec {
@@ -243,6 +246,30 @@ impl CaptureSpec {
                 0.82
             }
         })
+    }
+
+    /// Resolve the exact simulation timestamp (in seconds) for this capture spec.
+    ///
+    /// When `sim_after_op` is set, returns the exact `end_time_sec` of that operation in the
+    /// simulated timeline (matching `op_id_for_index` first so suppressed operations do not skew
+    /// indexing, then falling back to positional index and finally `total_time_sec`).
+    pub fn resolve_sim_timestamp(
+        &self,
+        timeline: &chip_sim::SimulationTimeline,
+        op_id_for_index: Option<&str>,
+    ) -> f64 {
+        if let Some(op_idx) = self.sim_after_op {
+            if let Some(op_id) = op_id_for_index
+                && let Some(entry) = timeline.operations.iter().rfind(|o| o.op_id == op_id)
+            {
+                return entry.end_time_sec.clamp(0.0, timeline.total_time_sec);
+            }
+            if let Some(entry) = timeline.operations.get(op_idx) {
+                return entry.end_time_sec.clamp(0.0, timeline.total_time_sec);
+            }
+            return timeline.total_time_sec;
+        }
+        timeline.total_time_sec * self.effective_sim_progress()
     }
 }
 
@@ -400,5 +427,79 @@ mod tests {
             Ok(chip_sim::SimEngineKind::TriDexel)
         );
         assert!(parse_capture_sim_engine("voxel").is_err());
+    }
+
+    #[test]
+    fn resolves_sim_timestamp_after_operation() {
+        let mut timeline = chip_sim::SimulationTimeline {
+            total_time_sec: 120.0,
+            ..Default::default()
+        };
+        timeline
+            .operations
+            .push(chip_sim::OperationTimelineSummary {
+                op_idx: 0,
+                op_id: "op_face".to_string(),
+                op_name: "Facing".to_string(),
+                tool_id: chip_tools::ToolId("t1".to_string()),
+                tool_number: 1,
+                tool_name: "T1".to_string(),
+                spindle_rpm: 10_000.0,
+                first_global_seg: 0,
+                end_global_seg: 5,
+                start_time_sec: 0.0,
+                end_time_sec: 35.5,
+                cutting_time_sec: 30.0,
+                rapid_time_sec: 5.5,
+                dwell_time_sec: 0.0,
+                tool_change_time_sec: 0.0,
+                cutting_distance_mm: 500.0,
+                rapid_distance_mm: 100.0,
+            });
+        timeline
+            .operations
+            .push(chip_sim::OperationTimelineSummary {
+                op_idx: 1,
+                op_id: "op_pocket".to_string(),
+                op_name: "Pocket".to_string(),
+                tool_id: chip_tools::ToolId("t2".to_string()),
+                tool_number: 2,
+                tool_name: "T2".to_string(),
+                spindle_rpm: 12_000.0,
+                first_global_seg: 5,
+                end_global_seg: 15,
+                start_time_sec: 35.5,
+                end_time_sec: 95.0,
+                cutting_time_sec: 50.0,
+                rapid_time_sec: 9.5,
+                dwell_time_sec: 0.0,
+                tool_change_time_sec: 0.0,
+                cutting_distance_mm: 900.0,
+                rapid_distance_mm: 120.0,
+            });
+
+        let by_id = CaptureSpec {
+            sim_after_op: Some(2),
+            ..CaptureSpec::default()
+        };
+        assert!((by_id.resolve_sim_timestamp(&timeline, Some("op_pocket")) - 95.0).abs() < 1e-12);
+
+        let by_pos = CaptureSpec {
+            sim_after_op: Some(0),
+            ..CaptureSpec::default()
+        };
+        assert!((by_pos.resolve_sim_timestamp(&timeline, None) - 35.5).abs() < 1e-12);
+
+        let oob = CaptureSpec {
+            sim_after_op: Some(9),
+            ..CaptureSpec::default()
+        };
+        assert!((oob.resolve_sim_timestamp(&timeline, None) - 120.0).abs() < 1e-12);
+
+        let progress = CaptureSpec {
+            sim_progress: Some(0.5),
+            ..CaptureSpec::default()
+        };
+        assert!((progress.resolve_sim_timestamp(&timeline, None) - 60.0).abs() < 1e-12);
     }
 }
