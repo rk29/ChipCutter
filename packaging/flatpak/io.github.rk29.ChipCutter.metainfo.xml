@@ -50,6 +50,11 @@
   </screenshots>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="0.13.0" date="2026-11-21">
+      <description>
+        <p>Phase 13 release: added four new built-in CNC machine profiles (Makera Carvera, Makera Carvera Z1, Millennium Machines Milo v2.0, and Voron Cascade) and full end-to-end Helical Thread Milling (single-point and multi-form cutters, ISO Metric and Unified UNC/UNF thread tables, internal holes and external bosses, radial tangent arc-in/out, Tri-Dexel 3D helical undercut simulation, Tool Library &amp; Passes Inspector UI, built-in thread-mill sample, and illustrated Tutorial 18).</p>
+      </description>
+    </release>
     <release version="0.12.1" date="2026-11-21">
       <description>
         <p>Bug-fix release: fixed a polyline offset panic on Relief Wave evolute cusps, enabled stock-vs-target error-volume and RMS metrics for 4th-axis cylindrical simulations, and added signed Error Heatmap rendering on 4th-axis cylindrical stock.</p>
