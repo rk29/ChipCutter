@@ -325,17 +325,35 @@ Phase 13 expands ChipCutter's built-in desktop CNC machine catalog with four wid
 
 ## Future Phases
 
-1. **Toolpath Algorithm Quality Optimization (Driven by Phase 11 Error Metrics):**
-   - Use Tri-Dexel error-volume & RMS benchmarks across 2.5D, 3D surface (`Adaptive3D`, `Waterline3D`, `Parallel3D`, `Scallop3D`, `Pencil3D`), V-Carve, and 4th-axis rotary strategies to systematically eliminate residual scallops, corner overcuts, and uncut islands.
-2. **Functional & Behavioral User-Level Testing:**
+ChipCutter's long-term roadmap focuses on bringing pro-grade CAM capabilities to hobby and benchtop machinists—making everyday job setup faster, safer, and easier to use without commercial CAM complexity or licensing cost.
+
+1. **Toolpath Algorithm Quality & Engagement-Aware Feedrate Optimization:**
+   - **Error-Metric-Driven Quality Polish:** Use Tri-Dexel error-volume & RMS benchmarks across 2.5D, 3D surface (`Adaptive3D`, `Waterline3D`, `Parallel3D`, `Scallop3D`, `Pencil3D`), V-Carve, Thread Milling, and 4th-axis rotary strategies to systematically eliminate residual scallops, corner overcuts, and uncut islands.
+   - **Constant-Chipload & Corner Slowdown Feedrate Optimization:** Automatically throttle feedrates inside tight internal corners where radial engagement spikes and accelerate through light-engagement cuts to extend endmill life on hobby-rigidity machines.
+2. **Physics-Backed Safety & Machinability Guardrails:**
+   - **Spindle Power, MRR, & Tool Deflection Advisor:** Compare each operation's material removal rate and estimated radial cutting force against the active machine's real spindle power curve (e.g. `150 W` Carvera Z1 vs. `1.5 kW` Milo/Cascade) and tool stickout—flagging stall risk, chatter, or excessive deflection before cutting.
+   - **In-Viewport Measurement & Machinability Inspector:** Click-to-measure distances, hole diameters, depths, and angles directly in the 3D viewport, plus a **Minimum-Radius & Reach Heatmap** highlighting tight internal corners smaller than the chosen cutter and pockets deeper than flute/neck reach.
+3. **Guided Operation Setup & Reusable Machining Recipes:**
+   - **Guided Operation Setup Mode (Automatic Feature Recognition):** Interactive workflow inspecting imported STEP/mesh/sketch geometry against the active Setup WCS, stock, and target machine's tool library to automatically recognize machinable features and propose a sequenced operation plan—**Facing**, **2D Adaptive / Pocket**, **Drill vs. Helical Bore / Thread Mill**, **2D Contour + Tabs**, **Edge Chamfer**, and **3D Roughing/Finishing**—letting the machinist review, tweak, accept, or skip each step.
+   - **Reusable Operation Templates & Recipes:** Save proven multi-op patterns (e.g., *"6061-T6 Pocket + Finish + Chamfer"* or *"M6 Counterbored Hole = Spot + Drill + Helical Bore"*) and apply them in one click to new parts.
+4. **Shop-Floor Workholding, Probing, & Multi-Setup Stock Carryover:**
+   - **Probing Operations (`G38.2`):** First-class WCS corner, bore/boss center, Z-surface, and 2-point rotation/skew probing cycles integrated directly into Setups for grblHAL/Carvera and LinuxCNC controllers.
+   - **3D Fixture, Vise, & Clamp Collision Bodies:** Automatic safe-rapid routing and crash verification against workholding solids.
+   - **In-Process Stock Carryover Across Setups (`G54` -> `G55`):** Pass the exact remaining Tri-Dexel solid from Setup 1 into Setup 2 (e.g. after flipping or re-clamping the part) so both simulation and rest-aware toolpaths know exactly which features were already machined—enabling zero-air-cut multi-op roughing, accurate Op-2 collision checks, and cumulative error-volume metrics.
+   - **Two-Sided Flip-Jig & Auto Soft-Jaw Wizards:** Automatically place symmetric registration dowel-pin holes for flip machining without a vise, or auto-generate ready-to-machine aluminum / 3D-printed vise soft-jaw pockets directly from the part's silhouette.
+5. **Expanded Machining Capabilities:**
+   - **4th-Axis Cylindrical Wrapping:** Wrap 2D sketches, SVG artwork, text, pockets, and V-carve paths cleanly onto cylindrical rotary stock (`A`-axis).
+   - **3D Edge Deburring & Non-Planar Chamfering:** Follow 3D B-Rep edges with a chamfer or lollipop cutter so curved and stepped parts come off the machine already deburred.
+   - **Undercuts, Keyways, T-Slots, & Dovetails:** Lollipop, slot-mill, T-slot, and dovetail cutter geometries + strategies backed by Tri-Dexel undercut simulation.
+   - **2D Sheet Nesting & Multi-Part Arrays:** Pack multiple parts onto plate, plywood, or composite sheets with tool-diameter spacing, grain-direction rules, and automatic tabs.
+   - **PCB Isolation Milling & Drilling (Gerber / Excellon):** Isolation routing, copper rub-out, Excellon drill import, and height-probe leveling hooks.
+6. **Frictionless CAD Prep, Verification, & Ecosystem:**
+   - **Live CAD Auto-Reload & Diff Preview:** Watch exported `.step`/`.dxf`/`.svg` files from FreeCAD/Fusion/Onshape, reload automatically on save, and visually highlight changed faces and re-matched selections.
+   - **STL / Mesh 2.5D Feature Extraction:** Auto-detect flat Z-planes, cylindrical holes, and outer silhouettes from triangle meshes so STL models can use fast 2.5D strategies in addition to 3D surface passes.
+   - **Standalone G-Code Backplot & Crash Verification Mode:** Open any external `.nc`/`.ngc` file and run ChipCutter's Tri-Dexel simulator and 5-rule crash verifier on it.
+   - **Broader Tool Library Interop & Printable Setup Sheets:** Import tool libraries from FreeCAD (`.fctb`), Carbide Create, and Vectric alongside Fusion 360; richer material presets (brass, acetal/Delrin, G10/carbon fiber, mild steel, hardwoods); and printable HTML/PDF setup sheets with isometric views, WCS origin diagrams, stock dimensions, tool stickout checklists, and cycle times.
+   - **Additional Controller Dialects & CAD Kernel Backends:** Fanuc/Haas, Mach4, Masso, and Centroid post dialects, plus an optional OpenCASCADE (`opencascade-rs`) `CadKernel` feature backend.
+7. **Functional & Behavioral User-Level Testing:**
    - Durable end-to-end user-journey and GUI behavioral test harness (`egui_kittest` / headless interactive workflows + CLI workflows) verifying every feature from a machinist's point of view without brittle coupling to internal implementation details.
-3. **Guided Operation Setup Mode (Automatic Feature Recognition & Operation Authoring):**
-   - Provide an interactive guided workflow that inspects imported STEP/mesh/sketch geometry against the active Setup WCS, stock, and target machine's tool library to automatically recognize machinable features and propose a sequenced operation plan—such as **Facing** for stock top allowance, **2D Adaptive / Pocket** for closed/open cavities and shelves, **Drill vs. Helical Bore** for cylindrical holes (matched by diameter to available drills/endmills), **2D Contour + Tabs** for outer profiles, **Edge Chamfer** for modeled bevels, and **3D Roughing/Finishing** for sculpted surfaces—letting the machinist review, tweak, accept, or skip each proposed operation step by step.
-4. **Advanced Workholding & Multi-Setup Stock Carryover:**
-   - 3D fixture/vise/clamp collision bodies with automatic safe-rapid routing.
-   - **In-Process Stock Carryover Across Setups:** Pass the exact remaining Tri-Dexel solid at the end of Setup 1 (`G54`) directly into Setup 2 (`G55`, e.g., after flipping the part upside down or re-clamping onto a side face) by transforming the in-process stock into Setup 2's WCS frame as its starting stock. Instead of starting Setup 2 from an unmachined raw block (which causes redundant air-cutting and inaccurate crash/error-volume checks), both simulation and rest-aware toolpaths know exactly which pockets, profiles, and faces were already cut in Op 1—enabling zero-air-cut multi-op roughing, accurate Op-2 collision verification against the half-machined part, and cumulative multi-setup error-volume metrics across the finished two-sided part.
-5. **Ecosystem & Extensibility:**
-   - Optional OpenCASCADE (`opencascade-rs`) `CadKernel` feature backend.
-   - Additional controller dialects (Fanuc/Haas, Mach4, Masso, Centroid), and printable HTML/PDF setup sheets.
-6. **Tutorials for Upcoming Future-Phase Capabilities:**
-   - Dedicated illustrated guides accompanying new future-phase strategies (guided operation setup, 3D fixture/vise collision avoidance, and multi-setup Tri-Dexel stock carryover workflows).
+8. **Tutorials for Upcoming Future-Phase Capabilities:**
+   - Dedicated illustrated guides accompanying new future-phase capabilities (guided operation setup, probing, 3D workholding & multi-setup Tri-Dexel stock carryover, soft jaws, 4th-axis wrapping, nesting, and PCB isolation milling).
