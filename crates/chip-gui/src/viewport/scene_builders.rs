@@ -10,7 +10,8 @@ use chip_cam::{
     ResolvedStockGeometry, SegmentMotion3D, StockAxis, TabMarker3D,
 };
 use chip_math::{
-    Aabb3, ArcPolyline2D, ArcSegment2D, DMat4, DVec2, DVec3, DisplayUnit, MM_PER_INCH, RigidFrame3,
+    Aabb3, ArcPolyline2D, ArcSegment2D, DMat4, DVec2, DVec3, DisplayUnit, MM_PER_INCH, Ray3,
+    RigidFrame3,
 };
 use chip_sim::{SimStockMesh, SimToolMesh};
 use chip_sketch::{SketchDiagnosticKind, SketchEntity, SketchLayer, SketchPickHit};
@@ -75,7 +76,8 @@ pub struct HighlightState {
     pub sim_tool_mesh: Option<(u64, Arc<SimToolMesh>, DVec3)>,
     /// Optional global motion segment limit for progressive toolpath trail during playback.
     pub sim_trail_limit: Option<usize>,
-    /// Current 4th-axis rotary angle (`deg`) during simulation playback (rotates wrapped toolpaths in sync with stock).
+    /// Current 4th-axis rotary angle (`deg`) during simulation playback (rotates wrapped toolpaths,
+    /// ghost/CAD solid, and B-Rep edges in sync with cylindrical machined stock).
     pub sim_rotary_deg: f64,
 }
 
@@ -140,6 +142,54 @@ impl HighlightState {
         self.sim_tool_mesh = None;
         self.sim_trail_limit = None;
         self.sim_rotary_deg = 0.0;
+    }
+
+    /// Returns `true` when 4th-axis simulation playback is currently rotating the workpiece
+    /// (and therefore the CAD/ghost model and its B-Rep edges) away from `0°`.
+    #[inline]
+    pub fn has_active_cad_rotary_transform(&self) -> bool {
+        self.rotary.is_some() && self.sim_rotary_deg.abs() > 1e-6
+    }
+
+    /// Rigid World-space transform applied to the CAD solid / ghost model and its B-Rep edges
+    /// so they rotate in exact lockstep with the 4th-axis rotary simulation stock and toolpaths.
+    pub fn cad_world_transform(&self) -> DMat4 {
+        if let Some(rot) = self.rotary
+            && self.sim_rotary_deg.abs() > 1e-6
+        {
+            let angle_rad = (self.sim_rotary_deg * rot.direction.sign()).to_radians();
+            let rot_wcs = DMat4::from_translation(rot.center_wcs)
+                * DMat4::from_axis_angle(rot.axis.axis_unit(), angle_rad)
+                * DMat4::from_translation(-rot.center_wcs);
+            self.wcs_frame.to_dmat4_local_to_world()
+                * rot_wcs
+                * self.wcs_frame.to_dmat4_world_to_local()
+        } else {
+            DMat4::IDENTITY
+        }
+    }
+
+    /// Maps a World-space picking ray into unrotated CAD model space by applying the inverse of
+    /// [`Self::cad_world_transform`], keeping hover/click raycasts aligned with a rotated ghost model.
+    pub fn world_ray_to_cad_model_space(&self, ray: &Ray3) -> Ray3 {
+        if let Some(rot) = self.rotary
+            && self.sim_rotary_deg.abs() > 1e-6
+        {
+            let inv_angle_rad = (-self.sim_rotary_deg * rot.direction.sign()).to_radians();
+            let inv_rot_wcs = DMat4::from_translation(rot.center_wcs)
+                * DMat4::from_axis_angle(rot.axis.axis_unit(), inv_angle_rad)
+                * DMat4::from_translation(-rot.center_wcs);
+            let inv_world = self.wcs_frame.to_dmat4_local_to_world()
+                * inv_rot_wcs
+                * self.wcs_frame.to_dmat4_world_to_local();
+            Ray3::new(
+                inv_world.transform_point3(ray.origin),
+                inv_world.transform_vector3(ray.dir),
+            )
+            .unwrap_or(*ray)
+        } else {
+            *ray
+        }
     }
 
     pub(crate) fn build_face_states(&self, doc: Option<&CadDocument>) -> (u32, Vec<u32>) {
@@ -264,6 +314,12 @@ pub(crate) fn build_edge_and_scene_instances(
     if (highlight.sim_stock_mesh.is_none() || highlight.ghost_part)
         && let Some(cad_doc) = doc
     {
+        let has_cad_xf = highlight.has_active_cad_rotary_transform();
+        let cad_xf = if has_cad_xf {
+            highlight.cad_world_transform()
+        } else {
+            DMat4::IDENTITY
+        };
         for poly in &cad_doc.render_mesh.edge_polylines {
             let (color, width_px) = if sel_edges.contains(&poly.edge_id) {
                 ([1.0, 0.78, 0.18, 1.0], 3.4)
@@ -274,9 +330,14 @@ pub(crate) fn build_edge_and_scene_instances(
             };
 
             for w in poly.points_mm.windows(2) {
+                let (p0, p1) = if has_cad_xf {
+                    (cad_xf.transform_point3(w[0]), cad_xf.transform_point3(w[1]))
+                } else {
+                    (w[0], w[1])
+                };
                 out.push(EdgeInstanceGpu {
-                    p0_mm: dvec3_f32(w[0]),
-                    p1_mm: dvec3_f32(w[1]),
+                    p0_mm: dvec3_f32(p0),
+                    p1_mm: dvec3_f32(p1),
                     color,
                     width_px,
                 });

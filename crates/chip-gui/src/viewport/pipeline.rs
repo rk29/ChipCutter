@@ -579,6 +579,7 @@ impl ViewportRenderer {
         let (minor_mm, major_mm) = adaptive_grid_steps(camera, h as f32, display_unit);
         let wcs_l2w = dmat4_to_f32_2d(highlight.wcs_frame.to_dmat4_local_to_world());
         let wcs_w2l = dmat4_to_f32_2d(highlight.wcs_frame.to_dmat4_world_to_local());
+        let cad_model = dmat4_to_f32_2d(highlight.cad_world_transform());
 
         let tok = crate::theme::ThemeTokens::for_theme(highlight.theme);
         let uniforms = ViewportUniformsGpu {
@@ -587,6 +588,7 @@ impl ViewportRenderer {
             view: view.to_cols_array_2d(),
             wcs_world_to_local: wcs_w2l,
             wcs_local_to_world: wcs_l2w,
+            cad_model,
             camera_pos: [eye.x, eye.y, eye.z, 1.0],
             viewport_and_grid: [w as f32, h as f32, minor_mm, major_mm],
             pick_flags: [
@@ -1193,6 +1195,207 @@ mod tests {
             "expected dark corner {:?} < 80 and light corner {:?} > 180",
             dp,
             lp
+        );
+    }
+
+    #[test]
+    fn cad_world_transform_matches_rotary_wcs_rotation_across_axes_directions_and_tilted_wcs() {
+        use chip_cam::{
+            ResolvedRotaryConfig, RotaryAxisKind, RotaryDirection, RotaryDriveMode,
+            RotaryUnwindMode,
+        };
+        use chip_math::{DMat3, DVec3, Ray3, RigidFrame3};
+
+        let basis = DMat3::from_axis_angle(DVec3::new(0.3, 0.5, 0.8).normalize(), 0.65);
+        let wcs_frame = RigidFrame3::from_z_and_x_hint(
+            DVec3::new(12.0, -7.5, 5.0),
+            basis.z_axis,
+            Some(basis.x_axis),
+            false,
+            false,
+            0,
+        )
+        .unwrap();
+
+        let sample_pts = [
+            DVec3::new(0.0, 0.0, 0.0),
+            DVec3::new(25.0, -14.0, 18.5),
+            DVec3::new(-9.25, 31.0, -6.75),
+        ];
+
+        for axis in RotaryAxisKind::ALL {
+            for direction in RotaryDirection::ALL {
+                let rot = ResolvedRotaryConfig {
+                    mode: RotaryDriveMode::Simultaneous4Axis,
+                    axis,
+                    axis_letter: axis.default_letter(),
+                    direction,
+                    center_wcs: DVec3::new(3.5, -2.0, 4.25),
+                    stock_u_min: -40.0,
+                    stock_u_max: 40.0,
+                    stock_outer_radius_mm: 22.0,
+                    clearance_radius_mm: 30.0,
+                    chuck_end_positive: false,
+                    chuck_u_min: -60.0,
+                    chuck_u_max: -40.0,
+                    chuck_radius_mm: 32.0,
+                    unwind_mode: RotaryUnwindMode::ContinuousMultiTurn,
+                };
+
+                let hl = HighlightState {
+                    wcs_frame,
+                    rotary: Some(rot),
+                    sim_rotary_deg: 127.5,
+                    ..HighlightState::default()
+                };
+                assert!(hl.has_active_cad_rotary_transform());
+
+                let mat = hl.cad_world_transform();
+                for p_world in sample_pts {
+                    let p_wcs = wcs_frame.world_to_local_point(p_world);
+                    let expected_world =
+                        wcs_frame.local_to_world_point(rot.rotate_point_wcs(p_wcs, 127.5));
+                    let actual_world = mat.transform_point3(p_world);
+                    assert!(
+                        actual_world.distance(expected_world) < 1e-9,
+                        "axis={axis:?} dir={direction:?}: actual={actual_world:?} expected={expected_world:?}"
+                    );
+                }
+
+                // Verify picking ray inverse round-trip
+                let ray_model = Ray3::new(
+                    DVec3::new(40.0, -20.0, 60.0),
+                    DVec3::new(-0.4, 0.25, -0.88).normalize(),
+                )
+                .unwrap();
+                let ray_world = Ray3::new(
+                    mat.transform_point3(ray_model.origin),
+                    mat.transform_vector3(ray_model.dir),
+                )
+                .unwrap();
+                let ray_back = hl.world_ray_to_cad_model_space(&ray_world);
+                assert!(ray_back.origin.distance(ray_model.origin) < 1e-9);
+                assert!(ray_back.dir.distance(ray_model.dir) < 1e-9);
+            }
+        }
+    }
+
+    #[test]
+    fn rotary_simulation_rotates_ghost_model_solid_and_brep_edges_in_sync() {
+        use chip_cam::{
+            ResolvedRotaryConfig, RotaryAxisKind, RotaryDirection, RotaryDriveMode,
+            RotaryUnwindMode,
+        };
+        use chip_math::{DVec3, RigidFrame3};
+
+        let step = sample_machined_plate_step().unwrap();
+        let doc = MonstertruckKernel
+            .load_step_bytes("plate.step", step.as_bytes(), DEFAULT_TESS_CHORD_TOL_MM)
+            .unwrap();
+
+        let rot = ResolvedRotaryConfig {
+            mode: RotaryDriveMode::Simultaneous4Axis,
+            axis: RotaryAxisKind::XAxis,
+            axis_letter: 'A',
+            direction: RotaryDirection::RightHandCcw,
+            center_wcs: DVec3::new(0.0, 20.0, 5.0),
+            stock_u_min: -60.0,
+            stock_u_max: 60.0,
+            stock_outer_radius_mm: 40.0,
+            clearance_radius_mm: 50.0,
+            chuck_end_positive: false,
+            chuck_u_min: -80.0,
+            chuck_u_max: -60.0,
+            chuck_radius_mm: 45.0,
+            unwind_mode: RotaryUnwindMode::ContinuousMultiTurn,
+        };
+
+        // Pre-rotate a reference copy of the CAD render mesh + B-Rep edge polylines by +90°
+        let angle_deg = 90.0;
+        let mut doc_rot90 = doc.clone();
+        for v in &mut doc_rot90.render_mesh.vertices {
+            let p = rot.rotate_point_wcs(
+                DVec3::new(
+                    f64::from(v.position_mm[0]),
+                    f64::from(v.position_mm[1]),
+                    f64::from(v.position_mm[2]),
+                ),
+                angle_deg,
+            );
+            let n_tip = rot.rotate_point_wcs(
+                rot.center_wcs
+                    + DVec3::new(
+                        f64::from(v.normal[0]),
+                        f64::from(v.normal[1]),
+                        f64::from(v.normal[2]),
+                    ),
+                angle_deg,
+            );
+            let n = (n_tip - rot.center_wcs).normalize_or_zero();
+            v.position_mm = [p.x as f32, p.y as f32, p.z as f32];
+            v.normal = [n.x as f32, n.y as f32, n.z as f32];
+        }
+        for poly in &mut doc_rot90.render_mesh.edge_polylines {
+            for pt in &mut poly.points_mm {
+                *pt = rot.rotate_point_wcs(*pt, angle_deg);
+            }
+        }
+
+        let mut cam = CadCamera::default();
+        cam.fit_aabb(&chip_math::Aabb3::new(
+            DVec3::new(-70.0, -70.0, -70.0),
+            DVec3::new(70.0, 70.0, 70.0),
+        ));
+
+        let base_hl = HighlightState {
+            wcs_frame: RigidFrame3::IDENTITY,
+            rotary: Some(rot),
+            ghost_part: true,
+            show_stock: false,
+            show_grid: false,
+            ..HighlightState::default()
+        };
+
+        let mut hl_sim90 = base_hl.clone();
+        hl_sim90.sim_rotary_deg = angle_deg;
+
+        let png_sim90 = render_offscreen_png(&doc, &cam, &hl_sim90, 320, 240).unwrap();
+        let png_ref90 = render_offscreen_png(&doc_rot90, &cam, &base_hl, 320, 240).unwrap();
+        let png_unrot = render_offscreen_png(&doc, &cam, &base_hl, 320, 240).unwrap();
+
+        let img_sim90 = image::load_from_memory(&png_sim90).unwrap().to_rgba8();
+        let img_ref90 = image::load_from_memory(&png_ref90).unwrap().to_rgba8();
+        let img_unrot = image::load_from_memory(&png_unrot).unwrap().to_rgba8();
+
+        let mut diff_vs_ref = 0usize;
+        let mut diff_vs_unrot = 0usize;
+        for (p_sim, (p_ref, p_unrot)) in img_sim90
+            .pixels()
+            .zip(img_ref90.pixels().zip(img_unrot.pixels()))
+        {
+            let max_d_ref = (0..4)
+                .map(|c| p_sim[c].abs_diff(p_ref[c]))
+                .max()
+                .unwrap_or(0);
+            if max_d_ref > 2 {
+                diff_vs_ref += 1;
+            }
+            let max_d_unrot = (0..4)
+                .map(|c| p_sim[c].abs_diff(p_unrot[c]))
+                .max()
+                .unwrap_or(0);
+            if max_d_unrot > 8 {
+                diff_vs_unrot += 1;
+            }
+        }
+
+        assert!(
+            diff_vs_unrot > 1_000,
+            "ghost model at 90° must move visibly relative to 0° (only {diff_vs_unrot} pixels changed)"
+        );
+        assert!(
+            diff_vs_ref <= 16,
+            "ghost model shaded solid + B-Rep edges at sim_rotary_deg=90° must match pre-rotated reference model (got {diff_vs_ref} differing pixels)"
         );
     }
 }

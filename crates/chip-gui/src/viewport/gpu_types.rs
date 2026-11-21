@@ -14,6 +14,7 @@ pub(crate) struct ViewportUniformsGpu {
     pub(crate) view: [[f32; 4]; 4],
     pub(crate) wcs_world_to_local: [[f32; 4]; 4],
     pub(crate) wcs_local_to_world: [[f32; 4]; 4],
+    pub(crate) cad_model: [[f32; 4]; 4],
     pub(crate) camera_pos: [f32; 4],
     pub(crate) viewport_and_grid: [f32; 4],
     pub(crate) pick_flags: [u32; 4],

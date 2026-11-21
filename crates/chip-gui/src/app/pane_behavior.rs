@@ -211,7 +211,8 @@ impl PaneBehavior<'_> {
                 self.app.highlight.hovered_sketch = sketch_hit;
 
                 if let Some(m) = &self.app.model {
-                    let hit = m.picker.pick(&m.doc, &ray, mm_per_px, filter);
+                    let pick_ray = self.app.highlight.world_ray_to_cad_model_space(&ray);
+                    let hit = m.picker.pick(&m.doc, &pick_ray, mm_per_px, filter);
                     self.app.highlight.hovered = hit.map(|h| h.target);
                 } else {
                     self.app.highlight.hovered = None;

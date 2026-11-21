@@ -4,6 +4,7 @@ struct ViewportUniforms {
     view: mat4x4<f32>,
     wcs_world_to_local: mat4x4<f32>,
     wcs_local_to_world: mat4x4<f32>,
+    cad_model: mat4x4<f32>,
     camera_pos: vec4<f32>,
     // x = width_px, y = height_px, z = grid_minor_mm, w = grid_major_mm
     viewport_and_grid: vec4<f32>,
@@ -144,9 +145,11 @@ struct SolidVertexOut {
 @vertex
 fn vs_solid(in: SolidVertexIn) -> SolidVertexOut {
     var out: SolidVertexOut;
-    out.clip_pos = u_vp.view_proj * vec4<f32>(in.pos_mm, 1.0);
-    out.world_normal = normalize(in.normal);
-    out.view_normal = normalize((u_vp.view * vec4<f32>(in.normal, 0.0)).xyz);
+    let world_pos = (u_vp.cad_model * vec4<f32>(in.pos_mm, 1.0)).xyz;
+    let world_n = normalize((u_vp.cad_model * vec4<f32>(in.normal, 0.0)).xyz);
+    out.clip_pos = u_vp.view_proj * vec4<f32>(world_pos, 1.0);
+    out.world_normal = world_n;
+    out.view_normal = normalize((u_vp.view * vec4<f32>(world_n, 0.0)).xyz);
     out.face_id = in.face_id;
     return out;
 }
