@@ -1,0 +1,413 @@
+schema_version = 1
+id = "milo-2.0"
+name = "Millennium Machines Milo v2.0"
+manufacturer = "Millennium Machines"
+description = "Open-source 3-axis benchtop CNC mill with expanded Y travel, ballscrew drive, fixed toolsetter, 1.5 kW ER16 spindle, and metric DLC carbide starter tool set."
+tool_change = "manual"
+has_toolsetter = true
+default_post_profile = "linuxcnc"
+
+[travel_mm]
+x_mm = 348.0
+y_mm = 210.0
+z_mm = 120.0
+
+[spindle]
+min_rpm = 10000.0
+max_rpm = 24000.0
+power_watts = 1500.0
+collet_type = "ER16 (3–8mm metric & imperial collets)"
+supported_shank_diameters_mm = [
+    3.0,
+    3.175,
+    4.0,
+    5.0,
+    6.0,
+    6.35,
+    8.0,
+]
+
+[kinematics]
+max_rapid_xy_mm_min = 3000.0
+max_rapid_z_mm_min = 1500.0
+max_cut_feed_xy_mm_min = 2000.0
+max_cut_feed_z_mm_min = 800.0
+accel_mm_s2 = 500.0
+junction_deviation_mm = 0.05
+tool_change_time_sec = 20.0
+max_rotary_rate_deg_min = 3600.0
+
+[[tools]]
+id = "milo2_t1_6mm_16loc_1fl_dlc"
+tool_number = 1
+length_offset_number = 1
+diameter_offset_number = 1
+name = "6mm x 16mm LOC 1FL DLC Flat Endmill"
+vendor = "Millennium Machines (Milo v2.0 Starter Set)"
+product_id = "MILO2-6x16-1FL-DLC"
+native_unit = "millimeter"
+spindle_direction = "cw"
+default_coolant = "air_blast"
+stickout_length_mm = 22.0
+
+[tools.geometry]
+type = "flat_endmill"
+diameter_mm = 6.0
+flute_length_mm = 16.0
+overall_length_mm = 50.0
+shank_diameter_mm = 6.0
+flutes = 1
+
+[[tools.presets]]
+id = "milo2_al6061_slot"
+name = "Aluminum 6061 - Slotting / Adaptive"
+material = "Aluminum 6061"
+spindle_rpm = 15915.494309189535
+surface_speed_m_min = 300.0
+cutting_feed_mm_min = 954.9296585513721
+chipload_mm_tooth = 0.06
+lead_feed_mm_min = 763.9437268410977
+ramp_feed_mm_min = 477.46482927568604
+plunge_feed_mm_min = 318.3098861837907
+default_stepdown_mm = 2.0
+default_stepover_mm = 2.2
+coolant_override = "air_blast"
+
+[[tools.presets]]
+id = "milo2_delrin"
+name = "Acetal / Delrin"
+material = "Engineering Plastic"
+spindle_rpm = 16976.527263135504
+surface_speed_m_min = 320.0
+cutting_feed_mm_min = 1188.3569084194853
+chipload_mm_tooth = 0.07
+lead_feed_mm_min = 950.6855267355883
+ramp_feed_mm_min = 594.1784542097427
+plunge_feed_mm_min = 396.11896947316177
+default_stepdown_mm = 3.5
+default_stepover_mm = 2.5
+coolant_override = "air_blast"
+
+[[tools.presets]]
+id = "milo2_hardwood"
+name = "Hardwood / Plywood"
+material = "Hardwood / Plywood"
+spindle_rpm = 19098.59317102744
+surface_speed_m_min = 360.0
+cutting_feed_mm_min = 1241.4085561167838
+chipload_mm_tooth = 0.065
+lead_feed_mm_min = 993.126844893427
+ramp_feed_mm_min = 620.7042780583919
+plunge_feed_mm_min = 413.80285203892794
+default_stepdown_mm = 4.5
+default_stepover_mm = 3.0
+coolant_override = "disabled"
+
+[[tools]]
+id = "milo2_t2_6mm_18loc_3fl_dlc"
+tool_number = 2
+length_offset_number = 2
+diameter_offset_number = 2
+name = "6mm x 18mm LOC 3FL DLC Flat Endmill"
+vendor = "Millennium Machines (Milo v2.0 Starter Set)"
+product_id = "MILO2-6x18-3FL-DLC"
+native_unit = "millimeter"
+spindle_direction = "cw"
+default_coolant = "mist"
+stickout_length_mm = 24.0
+
+[tools.geometry]
+type = "flat_endmill"
+diameter_mm = 6.0
+flute_length_mm = 18.0
+overall_length_mm = 50.0
+shank_diameter_mm = 6.0
+flutes = 3
+
+[[tools.presets]]
+id = "milo2_3fl_al6061_rough"
+name = "Aluminum 6061 - High-Speed Roughing"
+material = "Aluminum 6061"
+spindle_rpm = 14854.461355243566
+surface_speed_m_min = 280.0
+cutting_feed_mm_min = 1693.4085944977667
+chipload_mm_tooth = 0.038
+lead_feed_mm_min = 1354.7268755982134
+ramp_feed_mm_min = 846.7042972488833
+plunge_feed_mm_min = 564.4695314992556
+default_stepdown_mm = 2.5
+default_stepover_mm = 1.8
+coolant_override = "mist"
+
+[[tools.presets]]
+id = "milo2_3fl_al6061_finish"
+name = "Aluminum 6061 - Wall Finishing"
+material = "Aluminum 6061"
+spindle_rpm = 18037.56021708147
+surface_speed_m_min = 340.0
+cutting_feed_mm_min = 1515.1550582348436
+chipload_mm_tooth = 0.028
+lead_feed_mm_min = 1212.124046587875
+ramp_feed_mm_min = 757.5775291174218
+plunge_feed_mm_min = 505.0516860782812
+default_stepdown_mm = 8.0
+default_stepover_mm = 0.5
+coolant_override = "mist"
+
+[[tools]]
+id = "milo2_t3_3mm_12loc_1fl_dlc"
+tool_number = 3
+length_offset_number = 3
+diameter_offset_number = 3
+name = "3mm x 12mm LOC 1FL DLC Flat Endmill"
+vendor = "Millennium Machines (Milo v2.0 Starter Set)"
+product_id = "MILO2-3x12-1FL-DLC"
+native_unit = "millimeter"
+spindle_direction = "cw"
+default_coolant = "air_blast"
+stickout_length_mm = 18.0
+
+[tools.geometry]
+type = "flat_endmill"
+diameter_mm = 3.0
+flute_length_mm = 12.0
+overall_length_mm = 50.0
+shank_diameter_mm = 3.0
+flutes = 1
+
+[[tools.presets]]
+id = "milo2_3mm_al6061"
+name = "Aluminum 6061 - Fine Clearing"
+material = "Aluminum 6061"
+spindle_rpm = 20159.62612497341
+surface_speed_m_min = 190.0
+cutting_feed_mm_min = 705.5869143740694
+chipload_mm_tooth = 0.035
+lead_feed_mm_min = 564.4695314992555
+ramp_feed_mm_min = 352.7934571870347
+plunge_feed_mm_min = 235.1956381246898
+default_stepdown_mm = 1.0
+default_stepover_mm = 1.0
+coolant_override = "air_blast"
+
+[[tools.presets]]
+id = "milo2_3mm_delrin"
+name = "Acetal / Delrin - Fine"
+material = "Engineering Plastic"
+spindle_rpm = 22281.692032865347
+surface_speed_m_min = 210.0
+cutting_feed_mm_min = 1002.6761414789406
+chipload_mm_tooth = 0.045
+lead_feed_mm_min = 802.1409131831525
+ramp_feed_mm_min = 501.3380707394703
+plunge_feed_mm_min = 334.2253804929802
+default_stepdown_mm = 1.8
+default_stepover_mm = 1.2
+coolant_override = "air_blast"
+
+[[tools]]
+id = "milo2_t4_6mm_2fl_ball_dlc"
+tool_number = 4
+length_offset_number = 4
+diameter_offset_number = 4
+name = "6mm 2FL DLC Ball Endmill"
+vendor = "Millennium Machines (Milo v2.0 Starter Set)"
+product_id = "MILO2-6-2FL-BALL-DLC"
+native_unit = "millimeter"
+spindle_direction = "cw"
+default_coolant = "air_blast"
+stickout_length_mm = 24.0
+
+[tools.geometry]
+type = "ball_endmill"
+diameter_mm = 6.0
+flute_length_mm = 16.0
+overall_length_mm = 50.0
+shank_diameter_mm = 6.0
+flutes = 2
+
+[[tools.presets]]
+id = "milo2_6mm_ball_al"
+name = "Aluminum 6061 - 3D Surfacing"
+material = "Aluminum 6061"
+spindle_rpm = 14854.461355243566
+surface_speed_m_min = 280.0
+cutting_feed_mm_min = 950.6855267355883
+chipload_mm_tooth = 0.032
+lead_feed_mm_min = 760.5484213884706
+ramp_feed_mm_min = 475.34276336779413
+plunge_feed_mm_min = 316.8951755785294
+default_stepdown_mm = 1.0
+default_stepover_mm = 0.6
+coolant_override = "air_blast"
+
+[[tools.presets]]
+id = "milo2_6mm_ball_delrin"
+name = "Acetal / Delrin - 3D Surfacing"
+material = "Engineering Plastic"
+spindle_rpm = 16976.527263135504
+surface_speed_m_min = 320.0
+cutting_feed_mm_min = 1358.1221810508403
+chipload_mm_tooth = 0.04
+lead_feed_mm_min = 1086.4977448406723
+ramp_feed_mm_min = 679.0610905254201
+plunge_feed_mm_min = 452.7073936836134
+default_stepdown_mm = 1.5
+default_stepover_mm = 0.8
+coolant_override = "air_blast"
+
+[[tools]]
+id = "milo2_t5_3mm_2fl_ball_dlc"
+tool_number = 5
+length_offset_number = 5
+diameter_offset_number = 5
+name = "3mm 2FL DLC Ball Endmill"
+vendor = "Millennium Machines (Milo v2.0 Starter Set)"
+product_id = "MILO2-3-2FL-BALL-DLC"
+native_unit = "millimeter"
+spindle_direction = "cw"
+default_coolant = "air_blast"
+stickout_length_mm = 18.0
+
+[tools.geometry]
+type = "ball_endmill"
+diameter_mm = 3.0
+flute_length_mm = 12.0
+overall_length_mm = 50.0
+shank_diameter_mm = 3.0
+flutes = 2
+
+[[tools.presets]]
+id = "milo2_3mm_ball_al"
+name = "Aluminum 6061 - 3D Fine Finishing"
+material = "Aluminum 6061"
+spindle_rpm = 21220.65907891938
+surface_speed_m_min = 200.0
+cutting_feed_mm_min = 1018.5916357881302
+chipload_mm_tooth = 0.024
+lead_feed_mm_min = 814.8733086305042
+ramp_feed_mm_min = 509.2958178940651
+plunge_feed_mm_min = 339.53054526271006
+default_stepdown_mm = 0.6
+default_stepover_mm = 0.3
+coolant_override = "air_blast"
+
+[[tools.presets]]
+id = "milo2_3mm_ball_delrin"
+name = "Acetal / Delrin - 3D Fine Finishing"
+material = "Engineering Plastic"
+spindle_rpm = 22281.692032865347
+surface_speed_m_min = 210.0
+cutting_feed_mm_min = 1247.7747538404594
+chipload_mm_tooth = 0.028
+lead_feed_mm_min = 998.2198030723675
+ramp_feed_mm_min = 623.8873769202297
+plunge_feed_mm_min = 415.9249179468198
+default_stepdown_mm = 0.8
+default_stepover_mm = 0.4
+coolant_override = "air_blast"
+
+[[tools]]
+id = "milo2_t6_6mm_90deg_2fl_chamfer_dlc"
+tool_number = 6
+length_offset_number = 6
+diameter_offset_number = 6
+name = "6mm 90° 2FL DLC Chamfer Mill"
+vendor = "Millennium Machines (Milo v2.0 Starter Set)"
+product_id = "MILO2-6-90-2FL-DLC"
+native_unit = "millimeter"
+spindle_direction = "cw"
+default_coolant = "air_blast"
+stickout_length_mm = 20.0
+
+[tools.geometry]
+type = "chamfer_mill"
+diameter_mm = 6.0
+tip_diameter_mm = 0.2
+included_angle_deg = 90.0
+flute_length_mm = 6.0
+overall_length_mm = 50.0
+shank_diameter_mm = 6.0
+flutes = 2
+
+[[tools.presets]]
+id = "milo2_al6061_chamfer"
+name = "Aluminum 6061 - Edge Break"
+material = "Aluminum 6061"
+spindle_rpm = 12732.395447351628
+surface_speed_m_min = 240.0
+cutting_feed_mm_min = 763.9437268410976
+chipload_mm_tooth = 0.03
+lead_feed_mm_min = 611.1549814728781
+ramp_feed_mm_min = 381.9718634205488
+plunge_feed_mm_min = 254.64790894703253
+default_stepdown_mm = 0.5
+default_stepover_mm = 0.5
+coolant_override = "air_blast"
+
+[[tools.presets]]
+id = "milo2_delrin_chamfer"
+name = "Acetal / Delrin - Chamfer"
+material = "Engineering Plastic"
+spindle_rpm = 14854.461355243566
+surface_speed_m_min = 280.0
+cutting_feed_mm_min = 1039.8122948670498
+chipload_mm_tooth = 0.035
+lead_feed_mm_min = 831.8498358936399
+ramp_feed_mm_min = 519.9061474335249
+plunge_feed_mm_min = 346.6040982890166
+default_stepdown_mm = 0.8
+default_stepover_mm = 0.8
+coolant_override = "air_blast"
+
+[[tools]]
+id = "milo2_t7_5mm_118deg_stub_drill"
+tool_number = 7
+length_offset_number = 7
+diameter_offset_number = 7
+name = "5.0mm 118° Carbide Stub Drill"
+vendor = "Millennium Machines (Milo v2.0 Starter Set)"
+product_id = "MILO2-5-118-DRILL"
+native_unit = "millimeter"
+spindle_direction = "cw"
+default_coolant = "air_blast"
+stickout_length_mm = 28.0
+
+[tools.geometry]
+type = "twist_drill"
+diameter_mm = 5.0
+point_angle_deg = 118.0
+flute_length_mm = 24.0
+overall_length_mm = 62.0
+shank_diameter_mm = 5.0
+flutes = 2
+
+[[tools.presets]]
+id = "milo2_drill_al6061"
+name = "Aluminum 6061 - Peck Drill"
+material = "Aluminum 6061"
+spindle_rpm = 10504.226244065092
+surface_speed_m_min = 165.0
+cutting_feed_mm_min = 630.2535746439055
+chipload_mm_tooth = 0.03
+lead_feed_mm_min = 504.2028597151244
+ramp_feed_mm_min = 315.12678732195275
+plunge_feed_mm_min = 210.08452488130183
+default_stepdown_mm = 3.0
+default_stepover_mm = 5.0
+coolant_override = "air_blast"
+
+[[tools.presets]]
+id = "milo2_drill_delrin"
+name = "Acetal / Delrin - Peck Drill"
+material = "Engineering Plastic"
+spindle_rpm = 11140.846016432673
+surface_speed_m_min = 175.0
+cutting_feed_mm_min = 891.2676813146139
+chipload_mm_tooth = 0.04
+lead_feed_mm_min = 713.0141450516912
+ramp_feed_mm_min = 445.63384065730696
+plunge_feed_mm_min = 297.0892271048713
+default_stepdown_mm = 5.0
+default_stepover_mm = 5.0
+coolant_override = "air_blast"

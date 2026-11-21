@@ -355,8 +355,8 @@ pub const PALETTE_COMMANDS: &[PaletteEntry] = &[
     PaletteEntry {
         id: CommandId::OpenMachineManager,
         category: "Tools",
-        label: "Open Machine Manager (Milo 1.5, Carvera Air, Custom)…",
-        keywords: "machine milo carvera air generic definition envelope spindle clone export import",
+        label: "Open Machine Manager (Milo, Carvera, Voron Cascade, Custom)…",
+        keywords: "machine milo 1.5 2.0 carvera air z1 voron cascade generic definition envelope spindle clone export import",
         shortcut: None,
     },
     PaletteEntry {

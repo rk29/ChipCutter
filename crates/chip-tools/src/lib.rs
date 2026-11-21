@@ -11,8 +11,10 @@ pub mod storage;
 
 pub use builtin::default_starter_tool_library;
 pub use builtin_machines::{
-    CARVERA_AIR_MACHINE_ID, MILO_1_5_MACHINE_ID, builtin_carvera_air_machine,
-    builtin_milo_1_5_machine,
+    CARVERA_AIR_MACHINE_ID, CARVERA_MACHINE_ID, CARVERA_Z1_MACHINE_ID, MILO_1_5_MACHINE_ID,
+    MILO_2_0_MACHINE_ID, VORON_CASCADE_MACHINE_ID, builtin_carvera_air_machine,
+    builtin_carvera_machine, builtin_carvera_z1_machine, builtin_milo_1_5_machine,
+    builtin_milo_2_0_machine, builtin_voron_cascade_machine,
 };
 pub use feeds_speeds::{
     ChipThinningHint, CuttingPreset, SurfaceSpeedPresetSpec, chipload_from_feed,
@@ -318,20 +320,23 @@ mod tests {
     fn builtin_machines_validate_conform_to_spindle_and_feed_limits_and_match_reference_toml() {
         let builtins = builtin_machine_definitions();
         let ids: Vec<&str> = builtins.iter().map(|m| m.id.as_str()).collect();
-        assert_eq!(
-            ids,
-            vec![
-                DEFAULT_MACHINE_ID,
-                MILO_1_5_MACHINE_ID,
-                CARVERA_AIR_MACHINE_ID
-            ]
-        );
+        let expected_ids = vec![
+            DEFAULT_MACHINE_ID,
+            MILO_1_5_MACHINE_ID,
+            MILO_2_0_MACHINE_ID,
+            VORON_CASCADE_MACHINE_ID,
+            CARVERA_MACHINE_ID,
+            CARVERA_AIR_MACHINE_ID,
+            CARVERA_Z1_MACHINE_ID,
+        ];
+        assert_eq!(ids, expected_ids);
 
         let repo_machines_dir =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../machines");
 
         for m in &builtins {
             assert!(m.is_builtin);
+            assert!(is_builtin_machine_id(&m.id));
             m.validate().unwrap();
             assert!(
                 !m.tools.is_empty(),
@@ -339,8 +344,38 @@ mod tests {
                 m.id
             );
 
-            // Every cutting preset on every tool must sit strictly inside the machine's RPM & feed envelope!
+            // Every cutting preset on every tool must sit strictly inside the machine's RPM, feed, & collet envelope!
+            let mut seen_tool_ids = std::collections::BTreeSet::new();
+            let mut seen_tool_numbers = std::collections::BTreeSet::new();
             for tool in &m.tools {
+                assert!(
+                    seen_tool_ids.insert(tool.id.0.as_str()),
+                    "duplicate tool id '{}' on '{}'",
+                    tool.id.0,
+                    m.id
+                );
+                assert!(
+                    seen_tool_numbers.insert(tool.tool_number),
+                    "duplicate tool_number {} on '{}'",
+                    tool.tool_number,
+                    m.id
+                );
+                if !matches!(tool.geometry, CutterGeometry::FaceMill { .. })
+                    && !m.spindle.supported_shank_diameters_mm.is_empty()
+                {
+                    let shank = tool.geometry.shank_diameter_mm();
+                    assert!(
+                        m.spindle
+                            .supported_shank_diameters_mm
+                            .iter()
+                            .any(|&d| approx_eq(d, shank, 1e-3)),
+                        "tool '{}' on '{}' has shank {} mm not in supported_shank_diameters_mm {:?}",
+                        tool.name,
+                        m.id,
+                        shank,
+                        m.spindle.supported_shank_diameters_mm
+                    );
+                }
                 assert!(
                     !tool.presets.is_empty(),
                     "tool '{}' on '{}' must have presets",
@@ -394,18 +429,22 @@ mod tests {
             );
         }
 
-        // Verify installed-bundle resolution works from an empty temp directory
+        // Verify installed-bundle resolution & read-only protection works from an empty temp directory
         let empty =
             std::env::temp_dir().join(format!("chipcutter_empty_machines_{}", std::process::id()));
         let _ = std::fs::create_dir_all(&empty);
-        for id in [
-            DEFAULT_MACHINE_ID,
-            MILO_1_5_MACHINE_ID,
-            CARVERA_AIR_MACHINE_ID,
-        ] {
+        for id in &expected_ids {
             let resolved = resolve_machine_definition_in(id, Some(&empty), None).unwrap();
-            assert_eq!(resolved.id, id);
+            assert_eq!(resolved.id, *id);
             assert!(resolved.is_builtin);
+            assert!(matches!(
+                save_user_machine_in(&resolved, &empty),
+                Err(MachineStorageError::BuiltInReadOnly { .. })
+            ));
+            assert!(matches!(
+                delete_user_machine_in(id, &empty),
+                Err(MachineStorageError::BuiltInReadOnly { .. })
+            ));
         }
         let resolved_milo_path = repo_machines_dir.join("milo-1.5.machine.toml");
         assert!(

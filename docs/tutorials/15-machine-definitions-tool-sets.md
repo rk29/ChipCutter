@@ -6,7 +6,7 @@ Real workshops rarely own just one "generic" CNC. A **Millennium Machines Milo v
 
 In this tutorial you will learn how to:
 
-- Select a target CNC machine for your project (`Generic 3/4-Axis CNC Mill`, **Millennium Machines Milo v1.5 (LDO Kit)**, or **Makera Carvera Air**) and apply its default post-processor, 4th-axis rotary defaults, and simulation kinematics.
+- Select a target CNC machine for your project (`Generic 3/4-Axis CNC Mill`, **Millennium Machines Milo v1.5 (LDO Kit)**, **Millennium Machines Milo v2.0**, **Voron Cascade**, **Makera Carvera**, **Makera Carvera Air**, or **Makera Carvera Z1**) and apply its default post-processor, 4th-axis rotary defaults, and simulation kinematics.
 - Browse **machine-scoped Tool Libraries** so every machine displays only the cutters that fit its collets and spindle.
 - Understand why **built-in machine definitions are strictly read-only** (so application upgrades keep them up to date) and **clone any built-in machine** into your upgrade-safe user configuration directory (`~/.config/chipcutter/machines/*.machine.toml`).
 - **Export / Share** a single self-contained `.machine.toml` file (containing all machine specs + its entire tool library) and **Import** profiles shared by other machinists.
@@ -16,13 +16,17 @@ In this tutorial you will learn how to:
 
 ## 2. Built-In Machine Profiles
 
-ChipCutter ships with three embedded, read-only machine definitions (also mirrored as reference TOML snapshots in [`machines/`](../../machines/)):
+ChipCutter ships with seven embedded, read-only machine definitions (also mirrored as reference TOML snapshots in [`machines/`](../../machines/)):
 
 | Machine ID | Display Name | Travel X × Y × Z | Spindle | Tool Change | 4th Axis | Default Post | Starter Tools |
 |---|---|---|---|---|---|---|---|
-| `generic` | **Generic 3/4-Axis CNC Mill** | `400 × 300 × 150 mm` | `1,000–24,000 RPM` (1.5 kW, ER16/ER20) | Manual Collet | Optional `A` (`Ø100 × 250 mm`) | `grbl` | 8 general-purpose cutters |
+| `generic` | **Generic 3/4-Axis CNC Mill** | `400 × 300 × 150 mm` | `1,000–24,000 RPM` (1.5 kW, ER16/ER20) | Manual Collet | Optional `A` (`Ø120 × 250 mm`) | `grbl` (`linuxcnc_4axis` for rotary) | 8 general-purpose cutters |
 | `milo-1.5` | **Millennium Machines Milo v1.5 (LDO Kit)** | `340 × 160 × 120 mm` | `10,000–24,000 RPM` (1.5 kW, ER16 `3 mm` & `6 mm`) | Manual Collet + Fixed Toolsetter | 3-Axis only | `linuxcnc` | 5 LDO DLC-coated endmills (`Ø6×12`, `Ø6×22`, `Ø3×12` 1FL flats, `Ø3` 2FL ball, `Ø6 90°` chamfer) |
+| `milo-2.0` | **Millennium Machines Milo v2.0** | `348 × 210 × 120 mm` | `10,000–24,000 RPM` (1.5 kW, ER16 `3–8 mm`) | Manual Collet + Fixed Toolsetter | 3-Axis only | `linuxcnc` | 7 metric DLC cutters (`Ø6` 1FL/3FL flats, `Ø3` flat, `Ø6`/`Ø3` ball nose, `Ø6 90°` chamfer, `Ø5` stub drill) |
+| `voron-cascade` | **Voron Cascade** | `275 × 220 × 90 mm` | `8,000–24,000 RPM` (1.5 kW, ER16 `3–8 mm`) | Manual Collet + Fixed Toolsetter | 3-Axis only | `grblhal_atc` | 6 aluminum & plastic cutters (`Ø6` 3FL/1FL flats, `Ø3.175` O-flute flat & ball, `Ø6 90°` chamfer/spot, `Ø5` stub drill) |
+| `carvera` | **Makera Carvera** | `360 × 240 × 140 mm` | `1,000–15,000 RPM` (200 W, `1/8"` ATC; opt. `3/4/6/6.35 mm`) | 6-Tool ATC + Fixed Toolsetter | Harmonic `A` (`Ø92 × 240 mm`) | `grblhal_atc` (`grblhal_4axis` for rotary) | 8 Makera `1/8"` ATC starter bits (`Ø3.175×12/25` O-flutes, `Ø2`/`Ø1` flats, `Ø3.175` ball, `30°`/`60°` V-bits, `90°` chamfer/spot) |
 | `carvera-air` | **Makera Carvera Air** | `300 × 200 × 130 mm` | `1,000–13,000 RPM` (200 W, `1/8"` / `3.175 mm`) | Lever Quick-Change + Auto Probe | Harmonic `A` (`Ø92 × 200 mm`) | `grblhal_atc` (`grblhal_4axis` for rotary) | 8 Makera `1/8"` starter bits (`Ø3.175×12/25` O-flutes, `Ø2`/`Ø1` flats, `Ø3.175` ball, `30°`/`60°` V-bits, `90°` chamfer) |
+| `carvera-z1` | **Makera Carvera Z1** | `200 × 200 × 100 mm` | `1,000–13,000 RPM` (150 W, `1/8"` quick-change; opt. `3/4/6/6.35 mm`) | Lever Quick-Change + Auto Probe | Harmonic `A` (`Ø80 × 150 mm`) | `grblhal_atc` (`grblhal_4axis` for rotary) | 8 conservative `1/8"` starter bits tuned for the 150 W spindle (`Ø3.175×12/25` O-flutes, `Ø2`/`Ø1` flats, `Ø3.175` ball, `30°`/`60°` V-bits, `90°` chamfer) |
 
 > [!TIP]
 > **Why Built-Ins Are Read-Only:** Upgrading ChipCutter replaces built-in profiles cleanly with improvements or new starter presets without ever clobbering your shop's calibrated settings. Any **cloned** or **imported** custom machine is saved in your OS user configuration folder (`~/.config/chipcutter/machines/` on Linux, `~/Library/Application Support/chipcutter/machines/` on macOS, `%APPDATA%\chipcutter\machines\` on Windows) and is completely safe across upgrades.
@@ -33,7 +37,7 @@ ChipCutter ships with three embedded, read-only machine definitions (also mirror
 
 ### Step 1 — Open the Machine Manager (`Tools → Machine Manager…`)
 
-1. Launch ChipCutter (`chip-gui`) and open any project (or press **`Ctrl+K`** to open the Command Palette and run **`Open Machine Manager (Milo 1.5, Carvera Air, Custom)…`**).
+1. Launch ChipCutter (`chip-gui`) and open any project (or press **`Ctrl+K`** to open the Command Palette and run **`Open Machine Manager (Milo, Carvera, Voron Cascade, Custom)…`**).
 2. Alternatively, choose **`Tools → Machine Manager…`** from the **top menu bar**, or click **`Manage Machines…`** inside the **`Target CNC Machine`** card on a Setup's **`WCS & Post`** tab in the right **Inspector**.
 
 ![ChipCutter Machine Manager showing built-in Generic, Milo v1.5 (LDO Kit), and Carvera Air definitions](../images/tutorials/15-machine-definitions-tool-sets/01-machine-manager-modal.png)
@@ -104,9 +108,13 @@ Every Machine Manager workflow is available headlessly from the terminal:
 # 1. List all built-in and user custom machines (with travel, spindle, rotary, and tool count):
 chipcutter machines list
 
-# 2. Inspect full specifications and the complete starter tool table for Milo v1.5 or Carvera Air:
+# 2. Inspect full specifications and the complete starter tool table for any built-in machine:
 chipcutter machines inspect milo-1.5
+chipcutter machines inspect milo-2.0
+chipcutter machines inspect voron-cascade
+chipcutter machines inspect carvera
 chipcutter machines inspect carvera-air
+chipcutter machines inspect carvera-z1
 
 # 3. Clone a built-in machine into upgrade-safe user config space (~/.config/chipcutter/machines/):
 chipcutter machines clone milo-1.5 my-milo --name "My Shop Milo v1.5"

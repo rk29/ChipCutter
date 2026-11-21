@@ -101,7 +101,7 @@ Get-FileHash .\ChipCutter-<version>-windows-x86_64.msi -Algorithm SHA256
   8. **4th-Axis Rotary Milling (`A` / `B` / `C`)** — Configurable rotary setups with chuck/clearance visualization and polar `CylindricalStock` 5-rule verification supporting **2-Linear + Rotary Cylindrical Wrapping (`Z+X+A` / `Z+Y+B`)**, **Continuous Rotary Spiral & Axial Surfacing**, **Indexed `3+1` Multi-Face Milling** (with B-Rep face-normal alignment), and **Simultaneous 4-Axis (`X+Y+Z+A/B`)** off-centerline auto-tilted helical milling with `G93` inverse-time feedrates (`linuxcnc_4axis`, `grblhal_4axis`, and swapped-axis `grbl_rotary_wrap`).
 
 - **Machine Definitions & Per-Machine Tool Libraries (`machines/`):**
-  - Ships with read-only built-in profiles for **`Generic 3/4-Axis CNC Mill`**, **`Millennium Machines Milo v1.5 (LDO Kit)`** (with the 5-tool LDO DLC starter endmill set), and **`Makera Carvera Air`** (with its 8-tool `1/8"` starter bit set and optional harmonic-drive 4th-axis rotary module).
+  - Ships with 7 read-only built-in profiles: **`Generic 3/4-Axis CNC Mill`**, **`Millennium Machines Milo v1.5 (LDO Kit)`**, **`Millennium Machines Milo v2.0`**, **`Voron Cascade`**, **`Makera Carvera`** (6-tool ATC + 4th-axis rotary), **`Makera Carvera Air`**, and **`Makera Carvera Z1`**—each paired with a tailored starter cutter library validated against its spindle, collet, and feed limits.
   - Each machine carries its own travel envelope, spindle RPM limits, simulation kinematics, default post-processor, rotary capacity, and dedicated tool library—with non-blocking envelope/RPM/feedrate diagnostics in GUI & CLI.
   - Built-in profiles remain read-only so application upgrades stay clean; clone any machine into upgrade-safe user configuration space (`~/.config/chipcutter/machines/*.machine.toml`), or export/share and import single-file `.machine.toml` bundles via the **Machine Manager** (`Tools → Machine Manager…`) or `chipcutter machines`.
 
@@ -200,9 +200,11 @@ cargo run -p chip-cli -- import-2d panel.dxf -o /tmp/panel.chip.toml --thickness
 # 9. Convert a Fusion 360 tool library (.json or .tools) into native .tools.toml
 cargo run -p chip-cli -- tools import-fusion shop_tools.json -o shop.tools.toml
 
-# 10. List, inspect, clone, export, and import machine definitions (Generic, Milo v1.5, Carvera Air)
+# 10. List, inspect, clone, export, and import machine definitions (Generic, Milo v1.5/v2.0, Voron Cascade, Carvera / Air / Z1)
 cargo run -p chip-cli -- machines list
-cargo run -p chip-cli -- machines inspect milo-1.5
+cargo run -p chip-cli -- machines inspect milo-2.0
+cargo run -p chip-cli -- machines inspect voron-cascade
+cargo run -p chip-cli -- machines inspect carvera
 cargo run -p chip-cli -- machines clone carvera-air my-carvera --name "My Carvera Air"
 cargo run -p chip-cli -- machines export my-carvera -o my-carvera.machine.toml
 ```

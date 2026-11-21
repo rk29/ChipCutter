@@ -5,7 +5,10 @@ use thiserror::Error;
 
 use crate::{
     builtin::default_starter_tool_library,
-    builtin_machines::{builtin_carvera_air_machine, builtin_milo_1_5_machine},
+    builtin_machines::{
+        builtin_carvera_air_machine, builtin_carvera_machine, builtin_carvera_z1_machine,
+        builtin_milo_1_5_machine, builtin_milo_2_0_machine, builtin_voron_cascade_machine,
+    },
     model::{Tool, ToolId, ToolValidationError},
     storage::ToolLibrary,
 };
@@ -189,7 +192,8 @@ pub struct MachineDefinition {
     pub manufacturer: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    /// True for compiled-in read-only presets (`generic`, `milo-1.5`, `carvera-air`); never serialized.
+    /// True for compiled-in read-only presets (`generic`, `milo-1.5`, `milo-2.0`, `voron-cascade`,
+    /// `carvera`, `carvera-air`, `carvera-z1`); never serialized.
     #[serde(skip)]
     pub is_builtin: bool,
     #[serde(default)]
@@ -470,12 +474,16 @@ pub fn builtin_generic_machine() -> MachineDefinition {
 }
 
 /// Returns all compiled-in read-only [`MachineDefinition`] presets
-/// (`generic`, `milo-1.5`, and `carvera-air`).
+/// (`generic`, `milo-1.5`, `milo-2.0`, `voron-cascade`, `carvera`, `carvera-air`, and `carvera-z1`).
 pub fn builtin_machine_definitions() -> Vec<MachineDefinition> {
     vec![
         builtin_generic_machine(),
         builtin_milo_1_5_machine(),
+        builtin_milo_2_0_machine(),
+        builtin_voron_cascade_machine(),
+        builtin_carvera_machine(),
         builtin_carvera_air_machine(),
+        builtin_carvera_z1_machine(),
     ]
 }
 
@@ -555,8 +563,9 @@ pub fn load_available_machines(extra_search_dir: Option<&Path>) -> Vec<MachineDe
     load_available_machines_in(udir.as_deref(), extra_search_dir)
 }
 
-/// Resolves a machine definition strictly by ID (`generic`, `milo-1.5`, `carvera-air`, or a
-/// discovered custom ID) without probing arbitrary filesystem paths from untrusted project files.
+/// Resolves a machine definition strictly by ID (`generic`, `milo-1.5`, `milo-2.0`,
+/// `voron-cascade`, `carvera`, `carvera-air`, `carvera-z1`, or a discovered custom ID) without
+/// probing arbitrary filesystem paths from untrusted project files.
 pub fn resolve_machine_definition_in(
     id: &str,
     user_dir: Option<&Path>,

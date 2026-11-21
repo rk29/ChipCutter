@@ -1,0 +1,443 @@
+schema_version = 1
+id = "carvera-z1"
+name = "Makera Carvera Z1"
+manufacturer = "Makera"
+description = 'Compact desktop smart CNC with 150 W lever quick-change 1/8" spindle, auto tool-height probe, optional 4th-axis rotary module, and conservative starter bit set.'
+tool_change = "quick_change"
+has_toolsetter = true
+default_post_profile = "grblhal_atc"
+
+[travel_mm]
+x_mm = 200.0
+y_mm = 200.0
+z_mm = 100.0
+
+[spindle]
+min_rpm = 1000.0
+max_rpm = 13000.0
+power_watts = 150.0
+collet_type = 'Quick-Change 1/8" (3.175mm) Collet (opt. 3/4/6/6.35mm)'
+supported_shank_diameters_mm = [
+    3.0,
+    3.175,
+    4.0,
+    6.0,
+    6.35,
+]
+
+[kinematics]
+max_rapid_xy_mm_min = 4000.0
+max_rapid_z_mm_min = 1800.0
+max_cut_feed_xy_mm_min = 1800.0
+max_cut_feed_z_mm_min = 600.0
+accel_mm_s2 = 450.0
+junction_deviation_mm = 0.05
+tool_change_time_sec = 12.0
+max_rotary_rate_deg_min = 3600.0
+
+[rotary]
+axis = "A"
+max_stock_diameter_mm = 80.0
+max_stock_length_mm = 150.0
+chuck_diameter_mm = 50.0
+chuck_length_mm = 20.0
+default_post_profile_4axis = "grblhal_4axis"
+
+[[tools]]
+id = "carvera_z1_t1_3175mm_12loc_1fl"
+tool_number = 1
+length_offset_number = 1
+diameter_offset_number = 1
+name = '3.175mm (1/8") x 12mm 1FL O-Flute Flat'
+vendor = "Makera (Carvera Z1 Starter Kit)"
+product_id = "MAKERA-Z1-3175x12-1FL"
+native_unit = "millimeter"
+spindle_direction = "cw"
+default_coolant = "air_blast"
+stickout_length_mm = 18.0
+
+[tools.geometry]
+type = "flat_endmill"
+diameter_mm = 3.175
+flute_length_mm = 12.0
+overall_length_mm = 38.0
+shank_diameter_mm = 3.175
+flutes = 1
+
+[[tools.presets]]
+id = "carvera_z1_al6061"
+name = "Aluminum 6061"
+material = "Aluminum 6061"
+spindle_rpm = 10526.78363757418
+surface_speed_m_min = 105.0
+cutting_feed_mm_min = 263.1695909393545
+chipload_mm_tooth = 0.025
+lead_feed_mm_min = 210.53567275148362
+ramp_feed_mm_min = 131.58479546967726
+plunge_feed_mm_min = 87.72319697978484
+default_stepdown_mm = 0.3
+default_stepover_mm = 0.75
+coolant_override = "air_blast"
+
+[[tools.presets]]
+id = "carvera_z1_plastic"
+name = "Acetal / Acrylic"
+material = "Engineering Plastic"
+spindle_rpm = 11529.334460200293
+surface_speed_m_min = 115.0
+cutting_feed_mm_min = 634.1133953110161
+chipload_mm_tooth = 0.055
+lead_feed_mm_min = 507.29071624881294
+ramp_feed_mm_min = 317.05669765550806
+plunge_feed_mm_min = 211.3711317703387
+default_stepdown_mm = 1.0
+default_stepover_mm = 1.2
+coolant_override = "air_blast"
+
+[[tools.presets]]
+id = "carvera_z1_wood"
+name = "Hardwood / Epoxy Board"
+material = "Hardwood / Tooling Board"
+spindle_rpm = 12030.609871513348
+surface_speed_m_min = 120.0
+cutting_feed_mm_min = 818.0814712629077
+chipload_mm_tooth = 0.068
+lead_feed_mm_min = 654.4651770103262
+ramp_feed_mm_min = 409.04073563145386
+plunge_feed_mm_min = 272.69382375430257
+default_stepdown_mm = 1.5
+default_stepover_mm = 1.4
+coolant_override = "disabled"
+
+[[tools]]
+id = "carvera_z1_t2_3175mm_25loc_1fl"
+tool_number = 2
+length_offset_number = 2
+diameter_offset_number = 2
+name = '3.175mm (1/8") x 25mm 1FL O-Flute Flat'
+vendor = "Makera (Carvera Z1 Starter Kit)"
+product_id = "MAKERA-Z1-3175x25-1FL"
+native_unit = "millimeter"
+spindle_direction = "cw"
+default_coolant = "air_blast"
+stickout_length_mm = 28.0
+
+[tools.geometry]
+type = "flat_endmill"
+diameter_mm = 3.175
+flute_length_mm = 25.0
+overall_length_mm = 50.0
+shank_diameter_mm = 3.175
+flutes = 1
+
+[[tools.presets]]
+id = "carvera_z1_al6061_deep"
+name = "Aluminum 6061 - Deep"
+material = "Aluminum 6061"
+spindle_rpm = 10025.508226261125
+surface_speed_m_min = 100.0
+cutting_feed_mm_min = 200.5101645252225
+chipload_mm_tooth = 0.02
+lead_feed_mm_min = 160.408131620178
+ramp_feed_mm_min = 100.25508226261125
+plunge_feed_mm_min = 66.8367215084075
+default_stepdown_mm = 0.25
+default_stepover_mm = 0.6
+coolant_override = "air_blast"
+
+[[tools.presets]]
+id = "carvera_z1_wood_deep"
+name = "Hardwood / Epoxy Board - Deep"
+material = "Hardwood / Tooling Board"
+spindle_rpm = 11529.334460200293
+surface_speed_m_min = 115.0
+cutting_feed_mm_min = 634.1133953110161
+chipload_mm_tooth = 0.055
+lead_feed_mm_min = 507.29071624881294
+ramp_feed_mm_min = 317.05669765550806
+plunge_feed_mm_min = 211.3711317703387
+default_stepdown_mm = 1.2
+default_stepover_mm = 1.0
+coolant_override = "disabled"
+
+[[tools]]
+id = "carvera_z1_t3_2mm_8loc_1fl"
+tool_number = 3
+length_offset_number = 3
+diameter_offset_number = 3
+name = '2.0mm x 8mm 1FL Flat (1/8" Shank)'
+vendor = "Makera (Carvera Z1 Starter Kit)"
+product_id = "MAKERA-Z1-2x8-1FL"
+native_unit = "millimeter"
+spindle_direction = "cw"
+default_coolant = "air_blast"
+stickout_length_mm = 16.0
+
+[tools.geometry]
+type = "flat_endmill"
+diameter_mm = 2.0
+flute_length_mm = 8.0
+overall_length_mm = 38.0
+shank_diameter_mm = 3.175
+flutes = 1
+
+[[tools.presets]]
+id = "carvera_z1_2mm_al"
+name = "Aluminum 6061 - Fine"
+material = "Aluminum 6061"
+spindle_rpm = 11459.155902616465
+surface_speed_m_min = 72.0
+cutting_feed_mm_min = 206.26480624709635
+chipload_mm_tooth = 0.018
+lead_feed_mm_min = 165.0118449976771
+ramp_feed_mm_min = 103.13240312354817
+plunge_feed_mm_min = 68.75493541569878
+default_stepdown_mm = 0.25
+default_stepover_mm = 0.55
+coolant_override = "air_blast"
+
+[[tools.presets]]
+id = "carvera_z1_2mm_plastic"
+name = "Acetal / Hardwood - Fine"
+material = "Plastic / Hardwood"
+spindle_rpm = 12095.775674984046
+surface_speed_m_min = 76.0
+cutting_feed_mm_min = 459.6394756493938
+chipload_mm_tooth = 0.038
+lead_feed_mm_min = 367.71158051951505
+ramp_feed_mm_min = 229.8197378246969
+plunge_feed_mm_min = 153.21315854979792
+default_stepdown_mm = 0.8
+default_stepover_mm = 0.8
+coolant_override = "disabled"
+
+[[tools]]
+id = "carvera_z1_t4_1mm_3loc_1fl"
+tool_number = 4
+length_offset_number = 4
+diameter_offset_number = 4
+name = '1.0mm x 3mm 1FL Micro Flat (1/8" Shank)'
+vendor = "Makera (Carvera Z1 Starter Kit)"
+product_id = "MAKERA-Z1-1x3-1FL"
+native_unit = "millimeter"
+spindle_direction = "cw"
+default_coolant = "air_blast"
+stickout_length_mm = 14.0
+
+[tools.geometry]
+type = "flat_endmill"
+diameter_mm = 1.0
+flute_length_mm = 3.0
+overall_length_mm = 38.0
+shank_diameter_mm = 3.175
+flutes = 1
+
+[[tools.presets]]
+id = "carvera_z1_1mm_al"
+name = "Aluminum 6061 - Micro"
+material = "Aluminum 6061"
+spindle_rpm = 11459.155902616465
+surface_speed_m_min = 36.0
+cutting_feed_mm_min = 114.59155902616465
+chipload_mm_tooth = 0.01
+lead_feed_mm_min = 91.67324722093173
+ramp_feed_mm_min = 57.29577951308232
+plunge_feed_mm_min = 38.197186342054884
+default_stepdown_mm = 0.1
+default_stepover_mm = 0.25
+coolant_override = "air_blast"
+
+[[tools.presets]]
+id = "carvera_z1_1mm_pcb"
+name = "PCB / Plastic - Micro"
+material = "FR4 PCB / Plastic"
+spindle_rpm = 12095.775674984046
+surface_speed_m_min = 38.0
+cutting_feed_mm_min = 217.72396214971283
+chipload_mm_tooth = 0.018
+lead_feed_mm_min = 174.17916971977027
+ramp_feed_mm_min = 108.86198107485642
+plunge_feed_mm_min = 72.57465404990428
+default_stepdown_mm = 0.35
+default_stepover_mm = 0.35
+coolant_override = "disabled"
+
+[[tools]]
+id = "carvera_z1_t5_3175mm_2fl_ball"
+tool_number = 5
+length_offset_number = 5
+diameter_offset_number = 5
+name = '3.175mm (1/8") 2FL Ball Nose Endmill'
+vendor = "Makera (Carvera Z1 Starter Kit)"
+product_id = "MAKERA-Z1-3175-2FL-BALL"
+native_unit = "millimeter"
+spindle_direction = "cw"
+default_coolant = "air_blast"
+stickout_length_mm = 20.0
+
+[tools.geometry]
+type = "ball_endmill"
+diameter_mm = 3.175
+flute_length_mm = 12.0
+overall_length_mm = 38.0
+shank_diameter_mm = 3.175
+flutes = 2
+
+[[tools.presets]]
+id = "carvera_z1_ball_al"
+name = "Aluminum 6061 - 3D / 4-Axis"
+material = "Aluminum 6061"
+spindle_rpm = 10526.78363757418
+surface_speed_m_min = 105.0
+cutting_feed_mm_min = 315.8035091272254
+chipload_mm_tooth = 0.015
+lead_feed_mm_min = 252.64280730178035
+ramp_feed_mm_min = 157.9017545636127
+plunge_feed_mm_min = 105.26783637574181
+default_stepdown_mm = 0.25
+default_stepover_mm = 0.25
+coolant_override = "air_blast"
+
+[[tools.presets]]
+id = "carvera_z1_ball_wood"
+name = "Hardwood / Epoxy - 3D / 4-Axis"
+material = "Hardwood / Tooling Board"
+spindle_rpm = 12030.609871513348
+surface_speed_m_min = 120.0
+cutting_feed_mm_min = 769.9590317768543
+chipload_mm_tooth = 0.032
+lead_feed_mm_min = 615.9672254214835
+ramp_feed_mm_min = 384.97951588842716
+plunge_feed_mm_min = 256.6530105922848
+default_stepdown_mm = 0.8
+default_stepover_mm = 0.35
+coolant_override = "disabled"
+
+[[tools]]
+id = "carvera_z1_t6_30deg_02mm_engrave"
+tool_number = 6
+length_offset_number = 6
+diameter_offset_number = 6
+name = '30° 0.2mm Tip V-Engraving Bit (1/8")'
+vendor = "Makera (Carvera Z1 Starter Kit)"
+product_id = "MAKERA-Z1-V30-02"
+native_unit = "millimeter"
+spindle_direction = "cw"
+default_coolant = "disabled"
+stickout_length_mm = 16.0
+
+[tools.geometry]
+type = "chamfer_mill"
+diameter_mm = 3.175
+tip_diameter_mm = 0.2
+included_angle_deg = 30.0
+flute_length_mm = 8.0
+overall_length_mm = 38.0
+shank_diameter_mm = 3.175
+flutes = 1
+
+[[tools.presets]]
+id = "carvera_z1_v30_metal"
+name = "Aluminum / Brass - Fine Engraving"
+material = "Aluminum / Brass"
+spindle_rpm = 10526.78363757418
+surface_speed_m_min = 105.0
+cutting_feed_mm_min = 210.53567275148362
+chipload_mm_tooth = 0.02
+lead_feed_mm_min = 168.4285382011869
+ramp_feed_mm_min = 105.26783637574181
+plunge_feed_mm_min = 70.17855758382787
+default_stepdown_mm = 0.15
+default_stepover_mm = 0.15
+coolant_override = "air_blast"
+
+[[tools.presets]]
+id = "carvera_z1_v30_pcb"
+name = "PCB Isolation / Plastic"
+material = "FR4 PCB / Plastic"
+spindle_rpm = 11529.334460200293
+surface_speed_m_min = 115.0
+cutting_feed_mm_min = 345.8800338060088
+chipload_mm_tooth = 0.03
+lead_feed_mm_min = 276.70402704480705
+ramp_feed_mm_min = 172.9400169030044
+plunge_feed_mm_min = 115.29334460200293
+default_stepdown_mm = 0.12
+default_stepover_mm = 0.18
+coolant_override = "disabled"
+
+[[tools]]
+id = "carvera_z1_t7_60deg_01mm_vcarve"
+tool_number = 7
+length_offset_number = 7
+diameter_offset_number = 7
+name = '60° 0.1mm Tip V-Carve Bit (1/8")'
+vendor = "Makera (Carvera Z1 Starter Kit)"
+product_id = "MAKERA-Z1-V60-01"
+native_unit = "millimeter"
+spindle_direction = "cw"
+default_coolant = "disabled"
+stickout_length_mm = 16.0
+
+[tools.geometry]
+type = "chamfer_mill"
+diameter_mm = 3.175
+tip_diameter_mm = 0.1
+included_angle_deg = 60.0
+flute_length_mm = 6.0
+overall_length_mm = 38.0
+shank_diameter_mm = 3.175
+flutes = 1
+
+[[tools.presets]]
+id = "carvera_z1_v60_wood"
+name = "Hardwood / Epoxy V-Carve"
+material = "Hardwood / Tooling Board"
+spindle_rpm = 11529.334460200293
+surface_speed_m_min = 115.0
+cutting_feed_mm_min = 438.1147094876111
+chipload_mm_tooth = 0.038
+lead_feed_mm_min = 350.4917675900889
+ramp_feed_mm_min = 219.05735474380555
+plunge_feed_mm_min = 146.03823649587036
+default_stepdown_mm = 1.2
+default_stepover_mm = 0.4
+coolant_override = "disabled"
+
+[[tools]]
+id = "carvera_z1_t8_3175mm_90deg_chamfer"
+tool_number = 8
+length_offset_number = 8
+diameter_offset_number = 8
+name = '3.175mm (1/8") 90° Chamfer Bit'
+vendor = "Makera (Carvera Z1 Starter Kit)"
+product_id = "MAKERA-Z1-3175-90-CHAMFER"
+native_unit = "millimeter"
+spindle_direction = "cw"
+default_coolant = "air_blast"
+stickout_length_mm = 16.0
+
+[tools.geometry]
+type = "chamfer_mill"
+diameter_mm = 3.175
+tip_diameter_mm = 0.2
+included_angle_deg = 90.0
+flute_length_mm = 5.0
+overall_length_mm = 38.0
+shank_diameter_mm = 3.175
+flutes = 2
+
+[[tools.presets]]
+id = "carvera_z1_chamfer_al"
+name = "Aluminum 6061 - Edge Break"
+material = "Aluminum 6061"
+spindle_rpm = 10526.78363757418
+surface_speed_m_min = 105.0
+cutting_feed_mm_min = 315.8035091272254
+chipload_mm_tooth = 0.015
+lead_feed_mm_min = 252.64280730178035
+ramp_feed_mm_min = 157.9017545636127
+plunge_feed_mm_min = 105.26783637574181
+default_stepdown_mm = 0.3
+default_stepover_mm = 0.3
+coolant_override = "air_blast"

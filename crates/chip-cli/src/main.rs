@@ -195,7 +195,7 @@ enum Commands {
         /// When combined with `--tutorial` and `--project-out`, write an empty 0-operation starter project (Stock & WCS only).
         #[arg(long)]
         empty_project: bool,
-        /// Optional target CNC machine definition ID (e.g. `generic`, `milo-1.5`, `carvera-air`) to record on the generated project.
+        /// Optional target CNC machine definition ID (e.g. `generic`, `milo-1.5`, `milo-2.0`, `voron-cascade`, `carvera`, `carvera-air`, `carvera-z1`) to record on the generated project.
         #[arg(long)]
         machine: Option<String>,
     },
@@ -321,7 +321,7 @@ enum MachineCommands {
     List,
     /// Print full specifications and tool library for a machine ID or `.machine.toml` path.
     Inspect {
-        /// Machine ID (e.g. `generic`, `milo-1.5`, `carvera-air`) or `.machine.toml` path.
+        /// Machine ID (e.g. `generic`, `milo-1.5`, `milo-2.0`, `voron-cascade`, `carvera`, `carvera-air`, `carvera-z1`) or `.machine.toml` path.
         id: String,
     },
     /// Clone any built-in or custom machine (plus its tool set) into user configuration space.
