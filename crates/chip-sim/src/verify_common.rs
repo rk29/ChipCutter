@@ -1,0 +1,519 @@
+//! Shared verification & sweep helpers unified across Heightmap (`heightmap/sweeper.rs`),
+//! Tri-Dexel (`tridexel/sweep.rs`), and Cylindrical (`cylindrical.rs`) simulation engines:
+//! - Arc-to-chord decomposition (`decompose_segment_to_chords`)
+//! - Per-span Rule 1–4 violation accumulator (`SpanRuleViolations`)
+//! - Bounded diagnostic batch coalescer (`ViolationBatchCoalescer`)
+//! - Rule 5 vertical plunge validation (`evaluate_vertical_plunge_violation`)
+
+use chip_cam::{SegmentMotion3D, ToolpathSegment3D};
+use chip_math::DVec3;
+
+use crate::{
+    cutter_profile::RadialCutterProfile,
+    timeline::MotionSpan,
+    verifier::{SimDiagnostic, SimIssueKind, SimSeverity, SimVerificationConfig},
+};
+
+/// Linearized 3D micro-chord emitted by [`decompose_segment_to_chords`].
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct LinearChord3D {
+    pub(crate) p0: DVec3,
+    pub(crate) p1: DVec3,
+}
+
+impl LinearChord3D {
+    #[inline]
+    pub(crate) fn min_z(self) -> f64 {
+        self.p0.z.min(self.p1.z)
+    }
+
+    #[inline]
+    pub(crate) fn max_z(self) -> f64 {
+        self.p0.z.max(self.p1.z)
+    }
+}
+
+/// Decomposes a [`ToolpathSegment3D`] (linear or circular/helical arc) into linear micro-chords
+/// whose chord sag is at most `max_sag_mm` (capped at `<= 0.05 rad` per chord).
+pub(crate) fn decompose_segment_to_chords(
+    seg: &ToolpathSegment3D,
+    max_sag_mm: f64,
+) -> Vec<LinearChord3D> {
+    match seg.motion {
+        SegmentMotion3D::Rapid | SegmentMotion3D::Linear { .. } => {
+            vec![LinearChord3D {
+                p0: seg.start_wcs,
+                p1: seg.end_wcs,
+            }]
+        }
+        SegmentMotion3D::Arc {
+            radius_mm,
+            signed_sweep_rad,
+            ..
+        } => {
+            let r = radius_mm.max(1e-6);
+            // Chord sag s = r * (1 - cos(dtheta / 2)) <= max_sag_mm, capped at <= 0.05 rad (~3°)
+            let cos_half = (1.0 - (max_sag_mm.max(1e-6) / r).min(0.5)).clamp(-1.0, 1.0);
+            let max_dtheta = (2.0 * cos_half.acos()).clamp(0.02, 0.05);
+            let steps = ((signed_sweep_rad.abs() / max_dtheta).ceil() as usize).clamp(4, 2_048);
+
+            let mut out = Vec::with_capacity(steps);
+            let mut prev = seg.start_wcs;
+            for k in 1..=steps {
+                let u = k as f64 / steps as f64;
+                let next = if k == steps {
+                    seg.end_wcs
+                } else {
+                    seg.sample_point(u)
+                };
+                out.push(LinearChord3D { p0: prev, p1: next });
+                prev = next;
+            }
+            out
+        }
+    }
+}
+
+/// Per-span / per-row worst-case Rule 1–4 violation accumulator shared by all 3 stock engines.
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct SpanRuleViolations {
+    pub(crate) rapid: Option<(f64, DVec3)>,
+    pub(crate) gouge: Option<(f64, DVec3)>,
+    pub(crate) flute: Option<(f64, DVec3)>,
+    pub(crate) neck: Option<(f64, DVec3)>,
+    pub(crate) holder: Option<(f64, DVec3)>,
+}
+
+impl SpanRuleViolations {
+    #[inline]
+    pub(crate) fn update_slot(slot: &mut Option<(f64, DVec3)>, depth_mm: f64, loc_wcs: DVec3) {
+        if slot.is_none_or(|(cur, _)| depth_mm > cur) {
+            *slot = Some((depth_mm, loc_wcs));
+        }
+    }
+
+    #[inline]
+    pub(crate) fn record_rapid(&mut self, depth_mm: f64, loc_wcs: DVec3) {
+        Self::update_slot(&mut self.rapid, depth_mm, loc_wcs);
+    }
+
+    #[inline]
+    pub(crate) fn record_gouge(&mut self, depth_mm: f64, loc_wcs: DVec3) {
+        Self::update_slot(&mut self.gouge, depth_mm, loc_wcs);
+    }
+
+    #[inline]
+    pub(crate) fn record_flute(&mut self, depth_mm: f64, loc_wcs: DVec3) {
+        Self::update_slot(&mut self.flute, depth_mm, loc_wcs);
+    }
+
+    #[inline]
+    pub(crate) fn record_neck(&mut self, depth_mm: f64, loc_wcs: DVec3) {
+        Self::update_slot(&mut self.neck, depth_mm, loc_wcs);
+    }
+
+    #[inline]
+    pub(crate) fn record_holder(&mut self, depth_mm: f64, loc_wcs: DVec3) {
+        Self::update_slot(&mut self.holder, depth_mm, loc_wcs);
+    }
+
+    #[inline]
+    pub(crate) fn merge(&mut self, other: Self) {
+        if let Some((d, p)) = other.rapid {
+            self.record_rapid(d, p);
+        }
+        if let Some((d, p)) = other.gouge {
+            self.record_gouge(d, p);
+        }
+        if let Some((d, p)) = other.flute {
+            self.record_flute(d, p);
+        }
+        if let Some((d, p)) = other.neck {
+            self.record_neck(d, p);
+        }
+        if let Some((d, p)) = other.holder {
+            self.record_holder(d, p);
+        }
+    }
+}
+
+/// Uncoalesced per-span violation event emitted into [`ViolationBatchCoalescer`].
+#[derive(Debug, Clone)]
+pub(crate) struct RuleViolationHit {
+    pub(crate) severity: SimSeverity,
+    pub(crate) kind: SimIssueKind,
+    pub(crate) span_idx: usize,
+    pub(crate) op_idx: usize,
+    pub(crate) op_id: String,
+    pub(crate) op_name: String,
+    pub(crate) tool_number: u32,
+    pub(crate) time_sec: f64,
+    pub(crate) location_wcs: DVec3,
+    pub(crate) excess_mm: f64,
+    pub(crate) detail: String,
+}
+
+/// Bounded streaming diagnostic coalescer shared across Heightmap, Tri-Dexel, and Cylindrical
+/// verifiers.
+///
+/// Merges consecutive hits of the same `(op_idx, kind)` within `merge_gap_spans` (default `16`)
+/// and caps emitted diagnostics to at most `max_per_op_kind` (default `3`) per `(op_idx, kind)`
+/// while preserving onset timestamps, peak penetration depths, and critical severity upgrades.
+#[derive(Debug, Clone)]
+pub(crate) struct ViolationBatchCoalescer {
+    diagnostics: Vec<SimDiagnostic>,
+    last_seg_by_diag: Vec<usize>,
+    max_per_op_kind: usize,
+    merge_gap_spans: usize,
+}
+
+impl Default for ViolationBatchCoalescer {
+    fn default() -> Self {
+        Self::new(3, 16)
+    }
+}
+
+impl ViolationBatchCoalescer {
+    pub(crate) fn new(max_per_op_kind: usize, merge_gap_spans: usize) -> Self {
+        Self {
+            diagnostics: Vec::new(),
+            last_seg_by_diag: Vec::new(),
+            max_per_op_kind: max_per_op_kind.max(1),
+            merge_gap_spans,
+        }
+    }
+
+    pub(crate) fn push(&mut self, hit: RuleViolationHit) {
+        let existing_count = self
+            .diagnostics
+            .iter()
+            .filter(|d| d.op_idx == hit.op_idx && d.kind == hit.kind)
+            .count();
+
+        for (di, diag) in self.diagnostics.iter_mut().enumerate().rev() {
+            if diag.op_idx == hit.op_idx
+                && diag.kind == hit.kind
+                && (hit.span_idx <= self.last_seg_by_diag[di].saturating_add(self.merge_gap_spans)
+                    || existing_count >= self.max_per_op_kind)
+            {
+                self.last_seg_by_diag[di] = self.last_seg_by_diag[di].max(hit.span_idx);
+                let upgrades_severity = hit.severity == SimSeverity::CriticalError
+                    && diag.severity != SimSeverity::CriticalError;
+                if upgrades_severity
+                    || (hit.severity == diag.severity && hit.excess_mm > diag.max_excess_mm)
+                {
+                    diag.severity = hit.severity;
+                    diag.max_excess_mm = hit.excess_mm;
+                    diag.location_wcs = hit.location_wcs;
+                    diag.message = hit.detail;
+                }
+                return;
+            }
+        }
+
+        self.last_seg_by_diag.push(hit.span_idx);
+        self.diagnostics.push(SimDiagnostic {
+            severity: hit.severity,
+            kind: hit.kind,
+            op_idx: hit.op_idx,
+            op_id: hit.op_id,
+            op_name: hit.op_name,
+            tool_number: hit.tool_number,
+            global_seg_idx: hit.span_idx,
+            timeline_time_sec: hit.time_sec,
+            location_wcs: hit.location_wcs,
+            max_excess_mm: hit.excess_mm,
+            message: hit.detail,
+        });
+    }
+
+    /// Translates a [`SpanRuleViolations`] summary for `span` into bounded coalesced diagnostics.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn push_span_violations(
+        &mut self,
+        violations: &SpanRuleViolations,
+        span_idx: usize,
+        op_idx: usize,
+        op_id: &str,
+        op_name: &str,
+        tool_number: u32,
+        time_sec: f64,
+        prof: &RadialCutterProfile,
+    ) {
+        if let Some((depth, loc)) = violations.rapid {
+            self.push(RuleViolationHit {
+                severity: SimIssueKind::RapidIntoStock.default_severity(),
+                kind: SimIssueKind::RapidIntoStock,
+                span_idx,
+                op_idx,
+                op_id: op_id.to_string(),
+                op_name: op_name.to_string(),
+                tool_number,
+                time_sec,
+                location_wcs: loc,
+                excess_mm: depth,
+                detail: format!(
+                    "G0 rapid move crashed {depth:.3} mm into remaining stock at WCS ({:.2}, {:.2}, {:.2}).",
+                    loc.x, loc.y, loc.z
+                ),
+            });
+        }
+        if let Some((depth, loc)) = violations.gouge {
+            self.push(RuleViolationHit {
+                severity: SimIssueKind::TargetModelGouge.default_severity(),
+                kind: SimIssueKind::TargetModelGouge,
+                span_idx,
+                op_idx,
+                op_id: op_id.to_string(),
+                op_name: op_name.to_string(),
+                tool_number,
+                time_sec,
+                location_wcs: loc,
+                excess_mm: depth,
+                detail: format!(
+                    "Tool T{tool_number} gouged target model by {depth:.3} mm at WCS ({:.2}, {:.2}, {:.2}).",
+                    loc.x, loc.y, loc.z
+                ),
+            });
+        }
+        if let Some((depth, loc)) = violations.neck {
+            self.push(RuleViolationHit {
+                severity: SimSeverity::CriticalError,
+                kind: SimIssueKind::FluteLengthExceeded,
+                span_idx,
+                op_idx,
+                op_id: op_id.to_string(),
+                op_name: op_name.to_string(),
+                tool_number,
+                time_sec,
+                location_wcs: loc,
+                excess_mm: depth,
+                detail: format!(
+                    "Thread mill T{tool_number} relieved neck collided {depth:.2} mm with uncut stock (missing/undersized pilot hole or insufficient neck clearance)."
+                ),
+            });
+        }
+        if let Some((depth, loc)) = violations.flute {
+            let reach_label = if prof.is_thread_mill {
+                "usable neck length"
+            } else {
+                "flute length"
+            };
+            self.push(RuleViolationHit {
+                severity: SimIssueKind::FluteLengthExceeded.default_severity(),
+                kind: SimIssueKind::FluteLengthExceeded,
+                span_idx,
+                op_idx,
+                op_id: op_id.to_string(),
+                op_name: op_name.to_string(),
+                tool_number,
+                time_sec,
+                location_wcs: loc,
+                excess_mm: depth,
+                detail: format!(
+                    "Engagement depth exceeded T{tool_number} {reach_label} ({:.2} mm) by {depth:.2} mm (shank rub).",
+                    prof.effective_reach_mm()
+                ),
+            });
+        }
+        if let Some((depth, loc)) = violations.holder {
+            self.push(RuleViolationHit {
+                severity: SimIssueKind::HolderCollision.default_severity(),
+                kind: SimIssueKind::HolderCollision,
+                span_idx,
+                op_idx,
+                op_id: op_id.to_string(),
+                op_name: op_name.to_string(),
+                tool_number,
+                time_sec,
+                location_wcs: loc,
+                excess_mm: depth,
+                detail: format!(
+                    "Collet/holder of T{tool_number} collided {depth:.2} mm into stock (stickout {:.2} mm insufficient).",
+                    prof.stickout_length_mm
+                ),
+            });
+        }
+    }
+
+    pub(crate) fn into_diagnostics(self) -> Vec<SimDiagnostic> {
+        self.diagnostics
+    }
+}
+
+/// Evaluates Rule 5 (vertical plunge into uncut material: missing pilot hole on a thread mill,
+/// non-center-cutting cutter plunge, or excessive axial plunge depth) shared between Heightmap
+/// and Tri-Dexel engines.
+///
+/// `sample_plunge_depth_mm(x, y, z_start, z_end, thread_check_radius_mm)` returns the axial depth
+/// (`mm`) of solid stock penetrated during the vertical downward move.
+pub(crate) fn evaluate_vertical_plunge_violation(
+    span: &MotionSpan,
+    op_id: &str,
+    op_name: &str,
+    tool_number: u32,
+    prof: &RadialCutterProfile,
+    cfg: &SimVerificationConfig,
+    sample_plunge_depth_mm: impl FnOnce(f64, f64, f64, f64, Option<f64>) -> f64,
+) -> Option<RuleViolationHit> {
+    let seg = &span.segment;
+    if matches!(seg.motion, SegmentMotion3D::Rapid) {
+        return None;
+    }
+    let dxy = (seg.end_wcs.x - seg.start_wcs.x).hypot(seg.end_wcs.y - seg.start_wcs.y);
+    if dxy > 1e-4 || seg.end_wcs.z >= seg.start_wcs.z - 1e-4 {
+        return None;
+    }
+
+    let thread_check_r = prof
+        .is_thread_mill
+        .then(|| (prof.cutting_radius_mm - cfg.radial_wall_skin_mm).max(0.0));
+    let plunge_in_mat = sample_plunge_depth_mm(
+        seg.start_wcs.x,
+        seg.start_wcs.y,
+        seg.start_wcs.z,
+        seg.end_wcs.z,
+        thread_check_r,
+    );
+    if !plunge_in_mat.is_finite() || plunge_in_mat <= 0.05 {
+        return None;
+    }
+
+    let (severity, excess_mm, detail) = if prof.is_thread_mill {
+        (
+            SimSeverity::CriticalError,
+            plunge_in_mat,
+            format!(
+                "Thread mill T{tool_number} plunged vertically {plunge_in_mat:.2} mm into solid un-drilled stock (missing or undersized pilot hole)."
+            ),
+        )
+    } else if !prof.is_center_cutting {
+        (
+            SimIssueKind::UnsafeVerticalPlunge.default_severity(),
+            plunge_in_mat,
+            format!(
+                "Non-center-cutting tool T{tool_number} plunged vertically {plunge_in_mat:.2} mm into stock (use Helical or Linear ramp)."
+            ),
+        )
+    } else if plunge_in_mat > prof.max_safe_plunge_depth_mm + 0.05 {
+        (
+            SimIssueKind::UnsafeVerticalPlunge.default_severity(),
+            plunge_in_mat - prof.max_safe_plunge_depth_mm,
+            format!(
+                "Vertical plunge depth ({plunge_in_mat:.2} mm) exceeds safe axial plunge threshold ({:.2} mm) on T{tool_number}.",
+                prof.max_safe_plunge_depth_mm
+            ),
+        )
+    } else {
+        return None;
+    };
+
+    Some(RuleViolationHit {
+        severity,
+        kind: SimIssueKind::UnsafeVerticalPlunge,
+        span_idx: span.global_seg_idx,
+        op_idx: span.op_idx,
+        op_id: op_id.to_string(),
+        op_name: op_name.to_string(),
+        tool_number,
+        time_sec: span.t_start_sec,
+        location_wcs: seg.end_wcs,
+        excess_mm,
+        detail,
+    })
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use chip_cam::{ArcDir, ArcPlane, MotionRole};
+
+    use super::*;
+
+    #[test]
+    fn violation_batch_coalescer_merges_adjacent_hits_caps_count_and_upgrades_severity() {
+        let mut coal = ViolationBatchCoalescer::default();
+
+        // 5 consecutive hits within gap 16 -> coalesce to 1, keeping onset span=10 and peak excess=0.9
+        for (i, depth) in [0.2, 0.9, 0.4, 0.3, 0.5].iter().enumerate() {
+            coal.push(RuleViolationHit {
+                severity: SimSeverity::Warning,
+                kind: SimIssueKind::FluteLengthExceeded,
+                span_idx: 10 + i * 2,
+                op_idx: 0,
+                op_id: "op_1".to_string(),
+                op_name: "Op 1".to_string(),
+                tool_number: 1,
+                time_sec: 1.0 + i as f64,
+                location_wcs: DVec3::new(i as f64, 0.0, -5.0),
+                excess_mm: *depth,
+                detail: format!("rub {depth:.2}"),
+            });
+        }
+        // Severity upgrade on same pass replaces Warning with CriticalError even if smaller depth
+        coal.push(RuleViolationHit {
+            severity: SimSeverity::CriticalError,
+            kind: SimIssueKind::FluteLengthExceeded,
+            span_idx: 22,
+            op_idx: 0,
+            op_id: "op_1".to_string(),
+            op_name: "Op 1".to_string(),
+            tool_number: 1,
+            time_sec: 6.0,
+            location_wcs: DVec3::new(9.0, 0.0, -5.0),
+            excess_mm: 0.3,
+            detail: "neck collision".to_string(),
+        });
+
+        // 4 more well-separated passes -> capped at max_per_op_kind = 3 total!
+        for k in 1..=4 {
+            coal.push(RuleViolationHit {
+                severity: SimSeverity::Warning,
+                kind: SimIssueKind::FluteLengthExceeded,
+                span_idx: 10 + k * 100,
+                op_idx: 0,
+                op_id: "op_1".to_string(),
+                op_name: "Op 1".to_string(),
+                tool_number: 1,
+                time_sec: 10.0 * k as f64,
+                location_wcs: DVec3::new(0.0, 0.0, -5.0),
+                excess_mm: 0.1 * k as f64,
+                detail: format!("pass {k}"),
+            });
+        }
+
+        let diags = coal.into_diagnostics();
+        assert_eq!(
+            diags.len(),
+            3,
+            "bounded at 3 diagnostics per (op_idx, kind)"
+        );
+        assert_eq!(diags[0].global_seg_idx, 10);
+        assert_eq!(diags[0].severity, SimSeverity::CriticalError);
+        assert_eq!(diags[0].message, "neck collision");
+        assert!((diags[2].max_excess_mm - 0.4).abs() < 1e-9);
+    }
+
+    #[test]
+    fn decompose_segment_to_chords_bounds_arc_sagitta_and_preserves_endpoints() {
+        let seg = ToolpathSegment3D {
+            start_wcs: DVec3::new(10.0, 0.0, -2.0),
+            end_wcs: DVec3::new(-10.0, 0.0, -4.0),
+            start_rotary_deg: 0.0,
+            end_rotary_deg: 0.0,
+            motion: SegmentMotion3D::Arc {
+                plane: ArcPlane::XY,
+                dir: ArcDir::CCW,
+                center_wcs: DVec3::new(0.0, 0.0, -2.0),
+                radius_mm: 10.0,
+                signed_sweep_rad: std::f64::consts::PI,
+                feed_mm_min: 600.0,
+                role: MotionRole::Cut,
+            },
+        };
+        let chords = decompose_segment_to_chords(&seg, 0.005);
+        assert!(chords.len() >= 60);
+        assert_eq!(chords.first().unwrap().p0, seg.start_wcs);
+        assert_eq!(chords.last().unwrap().p1, seg.end_wcs);
+    }
+}

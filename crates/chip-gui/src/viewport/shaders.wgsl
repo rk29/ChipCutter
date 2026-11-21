@@ -5,6 +5,7 @@ struct ViewportUniforms {
     wcs_world_to_local: mat4x4<f32>,
     wcs_local_to_world: mat4x4<f32>,
     cad_model: mat4x4<f32>,
+    stock_model: mat4x4<f32>,
     camera_pos: vec4<f32>,
     // x = width_px, y = height_px, z = grid_minor_mm, w = grid_major_mm
     viewport_and_grid: vec4<f32>,
@@ -318,8 +319,10 @@ struct SimVertexOut {
 @vertex
 fn vs_sim_stock(in: SimVertexIn) -> SimVertexOut {
     var out: SimVertexOut;
-    let world_pos = (u_vp.wcs_local_to_world * vec4<f32>(in.pos_wcs_mm, 1.0)).xyz;
-    let world_n = normalize((u_vp.wcs_local_to_world * vec4<f32>(in.normal_wcs, 0.0)).xyz);
+    let stock_wcs_pos = (u_vp.stock_model * vec4<f32>(in.pos_wcs_mm, 1.0)).xyz;
+    let stock_wcs_n = (u_vp.stock_model * vec4<f32>(in.normal_wcs, 0.0)).xyz;
+    let world_pos = (u_vp.wcs_local_to_world * vec4<f32>(stock_wcs_pos, 1.0)).xyz;
+    let world_n = normalize((u_vp.wcs_local_to_world * vec4<f32>(stock_wcs_n, 0.0)).xyz);
     out.clip_pos = u_vp.view_proj * vec4<f32>(world_pos, 1.0);
     out.world_normal = world_n;
     out.view_normal = normalize((u_vp.view * vec4<f32>(world_n, 0.0)).xyz);

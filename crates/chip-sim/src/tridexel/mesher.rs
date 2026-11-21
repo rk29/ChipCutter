@@ -3,32 +3,14 @@ use rayon::prelude::*;
 
 use crate::{
     cutter_profile::SimColoredVertex,
-    heightmap::{OPERATION_STOCK_PALETTE, SimStockMesh, UNCUT_OP_IDX},
+    heightmap::{SimStockMesh, UNCUT_OP_IDX},
+    mesher_common::op_color,
     metrics::{
         SimStockColorMode, deviation_to_heatmap_rgba, signed_deviation_at_machined_endpoint,
     },
 };
 
 use super::grid::{DexelSpan, TriDexelStock};
-
-const RAW_STOCK_TOP_COLOR: [f32; 4] = [0.58, 0.62, 0.67, 1.0];
-const RAW_STOCK_SIDE_COLOR: [f32; 4] = [0.50, 0.54, 0.59, 1.0];
-const MACHINED_METAL_COLOR: [f32; 4] = [0.76, 0.80, 0.85, 1.0];
-
-#[inline]
-fn op_color(op_idx: u16, color_by_op: bool, is_side: bool) -> [f32; 4] {
-    if op_idx == UNCUT_OP_IDX {
-        if is_side {
-            RAW_STOCK_SIDE_COLOR
-        } else {
-            RAW_STOCK_TOP_COLOR
-        }
-    } else if color_by_op {
-        OPERATION_STOCK_PALETTE[(op_idx as usize) % OPERATION_STOCK_PALETTE.len()]
-    } else {
-        MACHINED_METAL_COLOR
-    }
-}
 
 /// Finds the dexel span endpoint (`min_mm` if `want_min` is true, else `max_mm`) closest to
 /// `target_coord` within `max_dist`, returning `(exact_coord, op_idx)`.

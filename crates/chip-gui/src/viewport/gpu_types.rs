@@ -1,6 +1,5 @@
 use bytemuck::{Pod, Zeroable};
 use chip_sim::SimColoredVertex;
-use wgpu::util::DeviceExt as _;
 
 pub(crate) const SAMPLE_COUNT: u32 = 4;
 pub(crate) const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
@@ -15,6 +14,7 @@ pub(crate) struct ViewportUniformsGpu {
     pub(crate) wcs_world_to_local: [[f32; 4]; 4],
     pub(crate) wcs_local_to_world: [[f32; 4]; 4],
     pub(crate) cad_model: [[f32; 4]; 4],
+    pub(crate) stock_model: [[f32; 4]; 4],
     pub(crate) camera_pos: [f32; 4],
     pub(crate) viewport_and_grid: [f32; 4],
     pub(crate) pick_flags: [u32; 4],
@@ -140,17 +140,17 @@ impl GrowableGpuBuffer {
         }
     }
 
-    pub(crate) fn upload_slice<T: Pod>(
+    pub(crate) fn upload_bytes(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        items: &[T],
+        bytes: &[u8],
+        item_count: u32,
     ) {
-        if items.is_empty() {
+        if item_count == 0 || bytes.is_empty() {
             self.count = 0;
             return;
         }
-        let bytes: &[u8] = bytemuck::cast_slice(items);
         let needed = bytes.len() as u64;
         if self.buf.is_none() || needed > self.capacity_bytes {
             let cap = needed.next_power_of_two().max(256);
@@ -165,8 +165,26 @@ impl GrowableGpuBuffer {
         }
         if let Some(buf) = &self.buf {
             queue.write_buffer(buf, 0, bytes);
-            self.count = items.len() as u32;
+            self.count = item_count;
         }
+    }
+
+    pub(crate) fn upload_slice<T: Pod>(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        items: &[T],
+    ) {
+        self.upload_bytes(
+            device,
+            queue,
+            bytemuck::cast_slice(items),
+            items.len() as u32,
+        );
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.count = 0;
     }
 
     pub(crate) fn active(&self) -> Option<(&wgpu::Buffer, u32)> {
@@ -267,45 +285,82 @@ pub(crate) struct UploadedToolpathsGpu {
     pub(crate) buf: Option<(wgpu::Buffer, u32)>,
 }
 
-pub(crate) struct UploadedSimIndexedMeshGpu {
-    pub(crate) revision: u64,
-    pub(crate) vertex_buf: wgpu::Buffer,
-    pub(crate) index_buf: wgpu::Buffer,
-    pub(crate) index_count: u32,
+/// Zero-copy view of `&[SimColoredVertex]` as tightly-packed GPU vertex bytes matching [`SimVertexGpu::layout`].
+pub(crate) fn sim_vertices_as_bytes(vertices: &[SimColoredVertex]) -> &[u8] {
+    const _: () = assert!(
+        std::mem::size_of::<SimColoredVertex>() == std::mem::size_of::<SimVertexGpu>(),
+        "SimColoredVertex layout must match SimVertexGpu"
+    );
+    bytemuck::cast_slice(vertices)
 }
 
-pub(crate) fn upload_sim_indexed_mesh(
-    device: &wgpu::Device,
-    revision: u64,
-    vertices: &[SimColoredVertex],
-    indices: &[u32],
-    label: &'static str,
-) -> Option<UploadedSimIndexedMeshGpu> {
-    if vertices.is_empty() || indices.is_empty() {
-        return None;
+/// Reusable GPU vertex + index buffer pair for Pass #6 simulation stock & cutter meshes.
+/// Eliminates per-revision `device.create_buffer_init` allocations and CPU vertex copies during scrubbing and playback.
+pub(crate) struct GrowableSimIndexedMeshGpu {
+    revision: Option<u64>,
+    vertex_buf: GrowableGpuBuffer,
+    index_buf: GrowableGpuBuffer,
+}
+
+impl GrowableSimIndexedMeshGpu {
+    pub(crate) fn new(vertex_label: &'static str, index_label: &'static str) -> Self {
+        Self {
+            revision: None,
+            vertex_buf: GrowableGpuBuffer::new(vertex_label, wgpu::BufferUsages::VERTEX),
+            index_buf: GrowableGpuBuffer::new(index_label, wgpu::BufferUsages::INDEX),
+        }
     }
-    let gpu_verts: Vec<SimVertexGpu> = vertices
-        .iter()
-        .map(|v| SimVertexGpu {
-            pos_wcs_mm: v.pos_mm,
-            normal_wcs: v.normal,
-            color_rgba: v.color_rgba,
-        })
-        .collect();
-    let vertex_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some(label),
-        contents: bytemuck::cast_slice(&gpu_verts),
-        usage: wgpu::BufferUsages::VERTEX,
-    });
-    let index_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some(label),
-        contents: bytemuck::cast_slice(indices),
-        usage: wgpu::BufferUsages::INDEX,
-    });
-    Some(UploadedSimIndexedMeshGpu {
-        revision,
-        vertex_buf,
-        index_buf,
-        index_count: indices.len() as u32,
-    })
+
+    pub(crate) fn sync(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        mesh: Option<(u64, &[SimColoredVertex], &[u32])>,
+    ) {
+        let Some((rev, vertices, indices)) = mesh else {
+            self.clear();
+            return;
+        };
+        if self.revision == Some(rev) {
+            return;
+        }
+        if vertices.is_empty() || indices.is_empty() {
+            self.vertex_buf.clear();
+            self.index_buf.clear();
+            self.revision = Some(rev);
+            return;
+        }
+        let vert_bytes = sim_vertices_as_bytes(vertices);
+        self.vertex_buf
+            .upload_bytes(device, queue, vert_bytes, vertices.len() as u32);
+        self.index_buf.upload_slice(device, queue, indices);
+        self.revision = Some(rev);
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.revision = None;
+        self.vertex_buf.clear();
+        self.index_buf.clear();
+    }
+
+    pub(crate) fn active(&self) -> Option<(&wgpu::Buffer, &wgpu::Buffer, u32)> {
+        let (vbuf, _) = self.vertex_buf.active()?;
+        let (ibuf, icount) = self.index_buf.active()?;
+        Some((vbuf, ibuf, icount))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn vertex_capacity_bytes(&self) -> u64 {
+        self.vertex_buf.capacity_bytes()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn index_capacity_bytes(&self) -> u64 {
+        self.index_buf.capacity_bytes()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn uploaded_revision(&self) -> Option<u64> {
+        self.revision
+    }
 }

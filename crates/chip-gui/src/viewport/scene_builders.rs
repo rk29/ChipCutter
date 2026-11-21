@@ -151,18 +151,32 @@ impl HighlightState {
         self.rotary.is_some() && self.sim_rotary_deg.abs() > 1e-6
     }
 
-    /// Rigid World-space transform applied to the CAD solid / ghost model and its B-Rep edges
-    /// so they rotate in exact lockstep with the 4th-axis rotary simulation stock and toolpaths.
-    pub fn cad_world_transform(&self) -> DMat4 {
+    /// Rigid Setup-WCS transform applied to the Pass #6 machined stock mesh on the GPU
+    /// (`stock_model` uniform in `vs_sim_stock`).
+    ///
+    /// Returns [`DMat4::IDENTITY`] for 3-axis Heightmap and Tri-Dexel setups (where `rotary` is
+    /// `None` or `sim_rotary_deg == 0.0`), and the exact rotary-axis rotation around
+    /// `rot.center_wcs` matching [`ResolvedRotaryConfig::rotate_point_wcs`] for 4th-axis
+    /// Cylindrical stock.
+    pub fn stock_model_wcs_transform(&self) -> DMat4 {
         if let Some(rot) = self.rotary
             && self.sim_rotary_deg.abs() > 1e-6
         {
             let angle_rad = (self.sim_rotary_deg * rot.direction.sign()).to_radians();
-            let rot_wcs = DMat4::from_translation(rot.center_wcs)
+            DMat4::from_translation(rot.center_wcs)
                 * DMat4::from_axis_angle(rot.axis.axis_unit(), angle_rad)
-                * DMat4::from_translation(-rot.center_wcs);
+                * DMat4::from_translation(-rot.center_wcs)
+        } else {
+            DMat4::IDENTITY
+        }
+    }
+
+    /// Rigid World-space transform applied to the CAD solid / ghost model and its B-Rep edges
+    /// so they rotate in exact lockstep with the 4th-axis rotary simulation stock and toolpaths.
+    pub fn cad_world_transform(&self) -> DMat4 {
+        if self.has_active_cad_rotary_transform() {
             self.wcs_frame.to_dmat4_local_to_world()
-                * rot_wcs
+                * self.stock_model_wcs_transform()
                 * self.wcs_frame.to_dmat4_world_to_local()
         } else {
             DMat4::IDENTITY

@@ -75,7 +75,7 @@ pub struct SimulationPanelState {
     cached_error_report_key: Option<(u64, u32)>,
     cached_error_report: Option<StockErrorReport>,
 
-    cached_stock_meta: Option<(u64, usize, bool, bool, u32, u32, i32)>,
+    cached_stock_meta: Option<(u64, usize, bool, bool, u32, u32)>,
     cached_stock_rev: u64,
     cached_stock_mesh: Option<Arc<SimStockMesh>>,
 
@@ -547,12 +547,6 @@ impl SimulationPanelState {
 
         // 1. 3D Machined Stock Mesh (synchronized to exact cutter timestamp on every frame)
         let stock_out = if self.show_machined_stock {
-            let rotary_deg = snap.as_ref().map_or(0.0, |s| s.rotary_deg);
-            let rotary_deg_hundredths = if res.final_cylindrical_stock.is_some() {
-                (rotary_deg * 100.0).round() as i32
-            } else {
-                0
-            };
             let tol_key = (self.heatmap_tolerance_mm.clamp(1e-4, 50.0) * 10_000.0).round() as u32;
             let scale_key = (self.heatmap_max_scale_mm.clamp(0.01, 100.0) * 1000.0).round() as u32;
             let desired_meta = (
@@ -562,7 +556,6 @@ impl SimulationPanelState {
                 self.show_error_heatmap && !self.is_playing,
                 tol_key,
                 scale_key,
-                rotary_deg_hundredths,
             );
 
             if self.working_stock_identity != Some(run_identity) {
@@ -623,7 +616,10 @@ impl SimulationPanelState {
             if needs_remesh {
                 let color_mode = self.active_stock_color_mode();
                 let mesh = if let Some(cyl_work) = self.working_cylindrical.as_ref() {
-                    tessellate_cylindrical_stock_mesh_colored(cyl_work, color_mode, rotary_deg)
+                    // Always tessellate in stock-local (0°) frame; the GPU rotates the stock
+                    // via the `stock_model` uniform in `vs_sim_stock` so rotary-only ticks never
+                    // re-tessellate on the CPU.
+                    tessellate_cylindrical_stock_mesh_colored(cyl_work, color_mode, 0.0)
                 } else if let Some(td_work) = self.working_tridexel.as_ref() {
                     tessellate_tridexel_stock_mesh_colored(
                         td_work,
@@ -1984,15 +1980,13 @@ mod tests {
 
         // Baseline metallic mesh with Color by Op disabled & Error Heatmap disabled
         let (rev_metal, mesh_metal) = panel.resolve_viewport_visuals(&project, 0).stock.unwrap();
-        let metal_first = mesh_metal.vertices[0].color_rgba;
         assert!(
-            mesh_metal
-                .vertices
-                .iter()
-                .all(|v| (v.color_rgba[0] - metal_first[0]).abs() < 1e-4
-                    && (v.color_rgba[1] - metal_first[1]).abs() < 1e-4
-                    && (v.color_rgba[2] - metal_first[2]).abs() < 1e-4),
-            "baseline metallic cylindrical stock should have uniform gray vertex color"
+            mesh_metal.vertices.iter().all(|v| {
+                let max_c = v.color_rgba[0].max(v.color_rgba[1]).max(v.color_rgba[2]);
+                let min_c = v.color_rgba[0].min(v.color_rgba[1]).min(v.color_rgba[2]);
+                (max_c - min_c) < 0.12
+            }),
+            "baseline metallic cylindrical stock should have neutral metallic gray vertex colors"
         );
 
         // Enable Error Heatmap (keeping Color by Op = false, matching user repro in Issue #13)
@@ -2008,5 +2002,131 @@ mod tests {
             has_vivid_heatmap_color,
             "4th-axis cylindrical stock must display vivid heatmap colors when Error Heatmap is enabled"
         );
+    }
+
+    #[test]
+    fn rotary_angle_only_scrub_updates_stock_model_without_remeshing_cylindrical_stock() {
+        let mut project = ProjectDocument::new("Rotary GPU Matrix Test");
+        let lib = default_starter_tool_library();
+        project.tools = lib.tools.clone();
+        let flat_6mm = &lib.tools[0];
+
+        let mut setup = Setup::new("s_rot_gpu", "Rotary A", WorkOffsetSlot::G54);
+        setup.wcs.origin = WcsOriginMode::StockBoxPoint {
+            anchor: BoxAnchor27 {
+                x: AxisAnchor::Center,
+                y: AxisAnchor::Center,
+                z: AxisAnchor::Center,
+            },
+        };
+        setup.stock = StockConfig::FixedCylinder {
+            axis: StockAxis::X,
+            diameter: ParamLength::from_mm(40.0),
+            length: ParamLength::from_mm(80.0),
+            axial_top_offset: ParamLength::from_mm(0.0),
+        };
+        setup.rotary.mode = RotaryDriveMode::TwoLinearPlusRotary;
+        setup.rotary.axis = RotaryAxisKind::XAxis;
+
+        let doc = CadDocument::empty();
+        let resolved = setup.resolve(&doc, DisplayUnit::Millimeter).unwrap();
+
+        // Seg 0: rapid to plunge; Seg 1: plunge; Seg 2: axial flute cut at A=0°;
+        // Seg 3: retract to safe clearance radius Z=28mm; Seg 4: rapid rotary indexing slew A=0° -> A=180° in air!
+        let mut b = ToolpathBuilder::new("op_rot_index");
+        b.rotary_rapid_to(DVec3::new(-25.0, 0.0, 28.0), 0.0);
+        b.rotary_linear_to(
+            DVec3::new(-25.0, 0.0, 16.0),
+            0.0,
+            400.0,
+            16.0,
+            MotionRole::Plunge,
+        );
+        b.rotary_linear_to(
+            DVec3::new(25.0, 0.0, 16.0),
+            0.0,
+            600.0,
+            16.0,
+            MotionRole::Cut,
+        );
+        b.rotary_rapid_to(DVec3::new(25.0, 0.0, 28.0), 0.0);
+        b.rotary_rapid_to(DVec3::new(25.0, 0.0, 28.0), 180.0);
+        let tp = b.finish();
+
+        let sim = run_setup_simulation(&SetupSimulationInput {
+            doc: &doc,
+            setup: &resolved,
+            target_bodies: &[],
+            operations: &[SimOperationInput {
+                op_id: "op_rot_index",
+                op_name: "Rotary Flute + Index",
+                tool: flat_6mm,
+                fallback_spindle_rpm: 12_000.0,
+                intentional_edge_break_mm: 0.0,
+                toolpath: &tp,
+            }],
+            resolution: SimResolution::Standard,
+            kinematics: MachineKinematicsConfig::default(),
+            verify_config: SimVerificationConfig::default(),
+            cancel: None,
+        })
+        .unwrap();
+
+        let index_span = sim
+            .timeline
+            .motion_spans
+            .iter()
+            .find(|sp| (sp.segment.end_rotary_deg - sp.segment.start_rotary_deg).abs() > 100.0)
+            .expect("expected rotary indexing span A=0°->180°");
+        let idx_start = index_span.t_start_sec;
+        let idx_dur = index_span.t_end_sec - idx_start;
+        assert!(idx_dur > 0.01);
+
+        let mut panel = SimulationPanelState {
+            active_run_id: 1,
+            active_setup_idx: 0,
+            active_result: Some(Arc::new(sim)),
+            is_playing: true,
+            ..Default::default()
+        };
+
+        // Prime working cylindrical stock at the start of the air indexing slew
+        panel.current_time_sec = idx_start + idx_dur * 0.10;
+        let vis_10 = panel.resolve_viewport_visuals(&project, 0);
+        let rev_10 = vis_10.stock.expect("stock mesh present").0;
+        let rot_10 = vis_10.rotary_deg;
+
+        let mut hl_10 = crate::viewport::HighlightState {
+            wcs_frame: resolved.frame,
+            rotary: resolved.rotary,
+            sim_rotary_deg: rot_10,
+            ..Default::default()
+        };
+        let mat_10 = hl_10.stock_model_wcs_transform();
+
+        // Advance through multiple rotary-only ticks where `r_stock` does NOT mutate:
+        // `vis.rotary_deg` and GPU `stock_model` MUST advance while CPU stock revision stays constant!
+        let mut prev_rot = rot_10;
+        for frac in [0.35_f64, 0.65, 0.90] {
+            panel.current_time_sec = idx_start + idx_dur * frac;
+            let vis = panel.resolve_viewport_visuals(&project, 0);
+            let rev = vis.stock.expect("stock mesh present").0;
+            assert_eq!(
+                rev, rev_10,
+                "rotary angle-only tick at frac={frac} must NOT re-tessellate CylindricalStock on CPU"
+            );
+            assert!(
+                vis.rotary_deg > prev_rot + 10.0,
+                "expected rotary angle to advance smoothly (prev={prev_rot:.1}, got={:.1})",
+                vis.rotary_deg
+            );
+            hl_10.sim_rotary_deg = vis.rotary_deg;
+            let mat = hl_10.stock_model_wcs_transform();
+            assert!(
+                !mat.abs_diff_eq(mat_10, 1e-4),
+                "GPU stock_model transform must update as rotary angle advances"
+            );
+            prev_rot = vis.rotary_deg;
+        }
     }
 }

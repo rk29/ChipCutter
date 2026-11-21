@@ -791,6 +791,7 @@ dependencies = [
 name = "chip-sim"
 version = "0.13.0"
 dependencies = [
+ "bytemuck",
  "chip-cad",
  "chip-cam",
  "chip-math",

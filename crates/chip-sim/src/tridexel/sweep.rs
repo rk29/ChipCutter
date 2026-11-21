@@ -11,70 +11,18 @@ use crate::{
         HeightfieldStock, SetupSimulationInput, SetupSimulationResult, SimError,
         StockPlaybackCursor, UNCUT_OP_IDX, slice_segment_range, target_cursor_from_snap,
     },
-    timeline::{MotionSpan, ScrubSnapshot, SimulationTimeline},
-    verifier::{SimDiagnostic, SimIssueKind, SimSeverity, SimVerificationConfig},
+    timeline::{ScrubSnapshot, SimulationTimeline},
+    verifier::SimVerificationConfig,
+    verify_common::{
+        LinearChord3D, SpanRuleViolations, ViolationBatchCoalescer, decompose_segment_to_chords,
+        evaluate_vertical_plunge_violation,
+    },
 };
 
 use super::grid::{
     SimEngineKind, TriDexelCheckpoint, TriDexelStock, query_overlap_length,
     query_target_gouge_depth, subtract_dexel_interval,
 };
-
-#[derive(Clone, Copy)]
-struct LinearSpan3D {
-    p0: DVec3,
-    p1: DVec3,
-}
-
-impl LinearSpan3D {
-    #[inline]
-    fn min_z(self) -> f64 {
-        self.p0.z.min(self.p1.z)
-    }
-
-    #[inline]
-    fn max_z(self) -> f64 {
-        self.p0.z.max(self.p1.z)
-    }
-}
-
-/// Decomposes a [`ToolpathSegment3D`] (linear or circular/helical arc) into linear micro-chords
-/// whose chord sag is at most `max_sag_mm`.
-fn decompose_to_linear_chords(seg: &ToolpathSegment3D, max_sag_mm: f64) -> Vec<LinearSpan3D> {
-    match seg.motion {
-        SegmentMotion3D::Rapid | SegmentMotion3D::Linear { .. } => {
-            vec![LinearSpan3D {
-                p0: seg.start_wcs,
-                p1: seg.end_wcs,
-            }]
-        }
-        SegmentMotion3D::Arc {
-            radius_mm,
-            signed_sweep_rad,
-            ..
-        } => {
-            let r = radius_mm.max(1e-6);
-            // Chord sag s = r * (1 - cos(dtheta / 2)) <= max_sag_mm, capped at <= 0.05 rad (~3°)
-            let cos_half = (1.0 - (max_sag_mm / r).min(0.5)).clamp(-1.0, 1.0);
-            let max_dtheta = (2.0 * cos_half.acos()).clamp(0.02, 0.05);
-            let steps = ((signed_sweep_rad.abs() / max_dtheta).ceil() as usize).clamp(4, 2_048);
-
-            let mut out = Vec::with_capacity(steps);
-            let mut prev = seg.start_wcs;
-            for k in 1..=steps {
-                let u = k as f64 / steps as f64;
-                let next = if k == steps {
-                    seg.end_wcs
-                } else {
-                    seg.sample_point(u)
-                };
-                out.push(LinearSpan3D { p0: prev, p1: next });
-                prev = next;
-            }
-            out
-        }
-    }
-}
 
 /// Exact closed-form intersection of horizontal line `y = y_line` with the 2D stadium/capsule
 /// of radius `r >= 0` swept along segment `p0 -> p1`.
@@ -159,7 +107,7 @@ fn clamp_unit_interval(a: f64, b: f64) -> Option<(f64, f64)> {
 /// vertical-spindle cutter moving linearly from `span.p0` to `span.p1`.
 #[inline]
 fn eval_horizontal_ray_cut_interval(
-    span: LinearSpan3D,
+    span: LinearChord3D,
     prof: &RadialCutterProfile,
     radial_shrink_mm: f64,
     pz: f64,
@@ -339,7 +287,7 @@ fn eval_horizontal_ray_cut_interval(
 /// core/neck target-gouge verification so intentional tooth grooves on pilot walls are exempted).
 #[inline]
 fn eval_horizontal_ray_cylinder_interval(
-    span: LinearSpan3D,
+    span: LinearChord3D,
     cyl_radius_mm: f64,
     cyl_height_mm: f64,
     pz: f64,
@@ -381,7 +329,7 @@ fn eval_horizontal_ray_cylinder_interval(
 /// radius `cyl_radius_mm` and height `cyl_height_mm` swept linearly along `span`.
 #[inline]
 fn eval_z_ray_cylinder_interval(
-    span: LinearSpan3D,
+    span: LinearChord3D,
     px: f64,
     py: f64,
     cyl_radius_mm: f64,
@@ -433,7 +381,7 @@ fn eval_z_ray_cylinder_interval(
 /// - Inside the relieved-neck core (`r <= neck_radius`), emits the full `[z_tip, z_tip + neck_length]` span.
 #[inline]
 fn eval_z_ray_thread_mill_intervals(
-    span: LinearSpan3D,
+    span: LinearChord3D,
     prof: &RadialCutterProfile,
     px: f64,
     py: f64,
@@ -542,7 +490,7 @@ fn eval_z_ray_thread_mill_intervals(
 /// for a vertical-spindle cutter moving linearly along `span`.
 #[inline]
 fn eval_z_ray_cut_interval(
-    span: LinearSpan3D,
+    span: LinearChord3D,
     prof: &RadialCutterProfile,
     is_flat_endmill: bool,
     px: f64,
@@ -637,45 +585,6 @@ struct SweepContext<'a> {
     target: Option<&'a TriDexelStock>,
 }
 
-#[derive(Default)]
-struct SpanRuleViolations {
-    worst_rapid: Option<(f64, DVec3)>,
-    worst_gouge: Option<(f64, DVec3)>,
-    worst_flute: Option<(f64, DVec3)>,
-    worst_neck: Option<(f64, DVec3)>,
-    worst_holder: Option<(f64, DVec3)>,
-}
-
-impl SpanRuleViolations {
-    fn merge(&mut self, other: Self) {
-        if let Some((d, p)) = other.worst_rapid
-            && self.worst_rapid.is_none_or(|(b, _)| d > b)
-        {
-            self.worst_rapid = Some((d, p));
-        }
-        if let Some((d, p)) = other.worst_gouge
-            && self.worst_gouge.is_none_or(|(b, _)| d > b)
-        {
-            self.worst_gouge = Some((d, p));
-        }
-        if let Some((d, p)) = other.worst_flute
-            && self.worst_flute.is_none_or(|(b, _)| d > b)
-        {
-            self.worst_flute = Some((d, p));
-        }
-        if let Some((d, p)) = other.worst_neck
-            && self.worst_neck.is_none_or(|(b, _)| d > b)
-        {
-            self.worst_neck = Some((d, p));
-        }
-        if let Some((d, p)) = other.worst_holder
-            && self.worst_holder.is_none_or(|(b, _)| d > b)
-        {
-            self.worst_holder = Some((d, p));
-        }
-    }
-}
-
 impl TriDexelStock {
     /// Mutation-only sweep of a single [`ToolpathSegment3D`] onto all 3 orthogonal dexel planes
     /// (used for interactive timeline scrubbing).
@@ -687,7 +596,7 @@ impl TriDexelStock {
         op_idx: u16,
     ) -> bool {
         let max_sag = 0.005;
-        let chords = decompose_to_linear_chords(seg, max_sag);
+        let chords = decompose_segment_to_chords(seg, max_sag);
         let mut mutated = false;
         let cfg = SimVerificationConfig::default();
         let ctx = SweepContext {
@@ -707,7 +616,7 @@ impl TriDexelStock {
 
     fn apply_linear_chord(
         &mut self,
-        chord: LinearSpan3D,
+        chord: LinearChord3D,
         ctx: &SweepContext<'_>,
         verify: bool,
     ) -> (bool, SpanRuleViolations) {
@@ -780,16 +689,16 @@ impl TriDexelStock {
                                 if dist_xy <= ctx.prof.holder_radius_mm {
                                     let holder_z = z_tip_here + ctx.prof.stickout_length_mm;
                                     let pen = top_z - holder_z;
-                                    if pen > 0.05 && rv.worst_holder.is_none_or(|(b, _)| pen > b) {
-                                        rv.worst_holder = Some((pen, DVec3::new(px, py, holder_z)));
+                                    if pen > 0.05 && rv.holder.is_none_or(|(b, _)| pen > b) {
+                                        rv.holder = Some((pen, DVec3::new(px, py, holder_z)));
                                     }
                                 }
                                 // Rule 3: Shank rub above usable reach (`neck_length` for ThreadMill, `flute_length` otherwise)
                                 if !ctx.is_rapid && dist_xy <= shank_skin {
                                     let reach_top = z_tip_here + ctx.prof.effective_reach_mm();
                                     let rub = top_z - reach_top;
-                                    if rub > 0.15 && rv.worst_flute.is_none_or(|(b, _)| rub > b) {
-                                        rv.worst_flute = Some((rub, DVec3::new(px, py, reach_top)));
+                                    if rub > 0.15 && rv.flute.is_none_or(|(b, _)| rub > b) {
+                                        rv.flute = Some((rub, DVec3::new(px, py, reach_top)));
                                     }
                                 }
                             }
@@ -799,8 +708,8 @@ impl TriDexelStock {
                                 let neck_hi = z_tip_here + ctx.prof.neck_length_mm;
                                 if neck_hi > neck_lo {
                                     let ov = query_overlap_length(spans, neck_lo, neck_hi);
-                                    if ov > 0.10 && rv.worst_neck.is_none_or(|(b, _)| ov > b) {
-                                        rv.worst_neck = Some((ov, DVec3::new(px, py, neck_lo)));
+                                    if ov > 0.10 && rv.neck.is_none_or(|(b, _)| ov > b) {
+                                        rv.neck = Some((ov, DVec3::new(px, py, neck_lo)));
                                     }
                                 }
                             }
@@ -820,9 +729,9 @@ impl TriDexelStock {
                                     for &(z_lo, z_hi) in &tm_intervals {
                                         let ov = query_overlap_length(spans, z_lo, z_hi);
                                         if ov > ctx.cfg.rapid_crash_tol_mm
-                                            && rv.worst_rapid.is_none_or(|(b, _)| ov > b)
+                                            && rv.rapid.is_none_or(|(b, _)| ov > b)
                                         {
-                                            rv.worst_rapid = Some((ov, DVec3::new(px, py, z_lo)));
+                                            rv.rapid = Some((ov, DVec3::new(px, py, z_lo)));
                                         }
                                     }
                                 }
@@ -843,9 +752,9 @@ impl TriDexelStock {
                                         z_hi_in,
                                         ctx.cfg.gouge_tol_mm,
                                     )
-                                    && rv.worst_gouge.is_none_or(|(b, _)| pen > b)
+                                    && rv.gouge.is_none_or(|(b, _)| pen > b)
                                 {
-                                    rv.worst_gouge = Some((pen, DVec3::new(px, py, z_at)));
+                                    rv.gouge = Some((pen, DVec3::new(px, py, z_at)));
                                 }
                                 for &(z_lo, z_hi) in &tm_intervals {
                                     let rem =
@@ -867,9 +776,9 @@ impl TriDexelStock {
                             if verify && ctx.is_rapid {
                                 let ov = query_overlap_length(spans, z_lo, z_hi);
                                 if ov > ctx.cfg.rapid_crash_tol_mm
-                                    && rv.worst_rapid.is_none_or(|(b, _)| ov > b)
+                                    && rv.rapid.is_none_or(|(b, _)| ov > b)
                                 {
-                                    rv.worst_rapid = Some((ov, DVec3::new(px, py, z_lo)));
+                                    rv.rapid = Some((ov, DVec3::new(px, py, z_lo)));
                                 }
                             }
 
@@ -890,9 +799,9 @@ impl TriDexelStock {
                                     z_hi_in,
                                     ctx.cfg.gouge_tol_mm,
                                 )
-                                && rv.worst_gouge.is_none_or(|(b, _)| pen > b)
+                                && rv.gouge.is_none_or(|(b, _)| pen > b)
                             {
-                                rv.worst_gouge = Some((pen, DVec3::new(px, py, z_at)));
+                                rv.gouge = Some((pen, DVec3::new(px, py, z_at)));
                             }
 
                             let rem = subtract_dexel_interval(spans, z_lo, z_hi, ctx.op_idx);
@@ -951,10 +860,9 @@ impl TriDexelStock {
                             if verify && ctx.is_rapid {
                                 let ov = query_overlap_length(spans, x_lo, x_hi);
                                 if ov > ctx.cfg.rapid_crash_tol_mm
-                                    && rv.worst_rapid.is_none_or(|(b, _)| ov > b)
+                                    && rv.rapid.is_none_or(|(b, _)| ov > b)
                                 {
-                                    rv.worst_rapid =
-                                        Some((ov, DVec3::new(0.5 * (x_lo + x_hi), py, pz)));
+                                    rv.rapid = Some((ov, DVec3::new(0.5 * (x_lo + x_hi), py, pz)));
                                 }
                             }
                             if verify
@@ -986,9 +894,9 @@ impl TriDexelStock {
                                     x_hi_in,
                                     wall_skin,
                                 )
-                                && rv.worst_gouge.is_none_or(|(b, _)| pen > b)
+                                && rv.gouge.is_none_or(|(b, _)| pen > b)
                             {
-                                rv.worst_gouge = Some((pen, DVec3::new(x_at, py, pz)));
+                                rv.gouge = Some((pen, DVec3::new(x_at, py, pz)));
                             }
                             let rem = subtract_dexel_interval(spans, x_lo, x_hi, ctx.op_idx);
                             if rem > 0.0 {
@@ -1045,10 +953,9 @@ impl TriDexelStock {
                             if verify && ctx.is_rapid {
                                 let ov = query_overlap_length(spans, y_lo, y_hi);
                                 if ov > ctx.cfg.rapid_crash_tol_mm
-                                    && rv.worst_rapid.is_none_or(|(b, _)| ov > b)
+                                    && rv.rapid.is_none_or(|(b, _)| ov > b)
                                 {
-                                    rv.worst_rapid =
-                                        Some((ov, DVec3::new(px, 0.5 * (y_lo + y_hi), pz)));
+                                    rv.rapid = Some((ov, DVec3::new(px, 0.5 * (y_lo + y_hi), pz)));
                                 }
                             }
                             if verify
@@ -1080,9 +987,9 @@ impl TriDexelStock {
                                     y_hi_in,
                                     wall_skin,
                                 )
-                                && rv.worst_gouge.is_none_or(|(b, _)| pen > b)
+                                && rv.gouge.is_none_or(|(b, _)| pen > b)
                             {
-                                rv.worst_gouge = Some((pen, DVec3::new(px, y_at, pz)));
+                                rv.gouge = Some((pen, DVec3::new(px, y_at, pz)));
                             }
                             let rem = subtract_dexel_interval(spans, y_lo, y_hi, ctx.op_idx);
                             if rem > 0.0 {
@@ -1273,8 +1180,7 @@ pub fn run_tridexel_setup_simulation(
     }];
 
     let max_sag = 0.005;
-    let mut diagnostics: Vec<SimDiagnostic> = Vec::new();
-    let mut recorded_op_kinds: Vec<(usize, SimIssueKind)> = Vec::new();
+    let mut coalescer = ViolationBatchCoalescer::default();
     let mut per_op_errors: Vec<crate::metrics::OperationErrorSnapshot> = Vec::new();
     let mut prev_vol = initial_vol;
 
@@ -1293,76 +1199,24 @@ pub fn run_tridexel_setup_simulation(
         let is_rapid = matches!(span.segment.motion, SegmentMotion3D::Rapid);
 
         // Rule 5: Vertical Plunge check
-        if !is_rapid {
-            let dxy = (span.segment.end_wcs.x - span.segment.start_wcs.x)
-                .hypot(span.segment.end_wcs.y - span.segment.start_wcs.y);
-            if dxy <= 1e-4 && span.segment.end_wcs.z < span.segment.start_wcs.z - 1e-4 {
-                if prof.is_thread_mill {
-                    let check_r = (prof.cutting_radius_mm - op_cfg.radial_wall_skin_mm).max(0.0);
-                    let plunge_in_mat = stock.query_vertical_plunge_overlap(
-                        span.segment.start_wcs.x,
-                        span.segment.start_wcs.y,
-                        check_r,
-                        span.segment.end_wcs.z,
-                        span.segment.start_wcs.z,
-                    );
-                    if plunge_in_mat > 0.05 {
-                        push_dedup_diag(
-                            &mut diagnostics,
-                            &mut recorded_op_kinds,
-                            span,
-                            op_in,
-                            SimSeverity::CriticalError,
-                            SimIssueKind::UnsafeVerticalPlunge,
-                            plunge_in_mat,
-                            span.segment.end_wcs,
-                            format!(
-                                "Thread mill T{} plunged vertically {plunge_in_mat:.2} mm into solid un-drilled stock (missing or undersized pilot hole).",
-                                op_in.tool.tool_number
-                            ),
-                        );
-                    }
-                } else if let Some(top_z) =
-                    stock.sample_top_z(span.segment.start_wcs.x, span.segment.start_wcs.y)
-                {
-                    let entry_z = top_z.min(span.segment.start_wcs.z);
-                    let plunge_in_mat = entry_z - span.segment.end_wcs.z;
-                    if plunge_in_mat > 0.05 {
-                        let trigger_detail = if !prof.is_center_cutting {
-                            Some((
-                                plunge_in_mat,
-                                format!(
-                                    "Non-center-cutting tool T{} plunged vertically {plunge_in_mat:.2} mm into stock (use Helical or Linear ramp).",
-                                    op_in.tool.tool_number
-                                ),
-                            ))
-                        } else if plunge_in_mat > prof.max_safe_plunge_depth_mm + 0.05 {
-                            Some((
-                                plunge_in_mat - prof.max_safe_plunge_depth_mm,
-                                format!(
-                                    "Vertical plunge depth ({plunge_in_mat:.2} mm) exceeds safe axial plunge threshold ({:.2} mm) on T{}.",
-                                    prof.max_safe_plunge_depth_mm, op_in.tool.tool_number
-                                ),
-                            ))
-                        } else {
-                            None
-                        };
-                        if let Some((excess, msg)) = trigger_detail {
-                            push_dedup_diag(
-                                &mut diagnostics,
-                                &mut recorded_op_kinds,
-                                span,
-                                op_in,
-                                SimIssueKind::UnsafeVerticalPlunge.default_severity(),
-                                SimIssueKind::UnsafeVerticalPlunge,
-                                excess,
-                                span.segment.end_wcs,
-                                msg,
-                            );
-                        }
-                    }
+        if let Some(hit) = evaluate_vertical_plunge_violation(
+            span,
+            op_in.op_id,
+            op_in.op_name,
+            op_in.tool.tool_number,
+            &prof,
+            &op_cfg,
+            |x, y, z_start, z_end, thread_check_r| {
+                if let Some(check_r) = thread_check_r {
+                    stock.query_vertical_plunge_overlap(x, y, check_r, z_end, z_start)
+                } else {
+                    stock
+                        .sample_top_z(x, y)
+                        .map_or(0.0, |top_z| top_z.min(z_start) - z_end)
                 }
-            }
+            },
+        ) {
+            coalescer.push(hit);
         }
 
         let ctx = SweepContext {
@@ -1374,99 +1228,23 @@ pub fn run_tridexel_setup_simulation(
             target: target_stock.as_ref(),
         };
 
-        let chords = decompose_to_linear_chords(&span.segment, max_sag);
+        let chords = decompose_segment_to_chords(&span.segment, max_sag);
         let mut span_viol = SpanRuleViolations::default();
         for ch in chords {
             let (_, v) = stock.apply_linear_chord(ch, &ctx, true);
             span_viol.merge(v);
         }
 
-        if let Some((pen, loc)) = span_viol.worst_rapid {
-            push_dedup_diag(
-                &mut diagnostics,
-                &mut recorded_op_kinds,
-                span,
-                op_in,
-                SimIssueKind::RapidIntoStock.default_severity(),
-                SimIssueKind::RapidIntoStock,
-                pen,
-                loc,
-                format!(
-                    "G0 rapid move crashed {pen:.2} mm into unmachined stock at WCS ({:.2}, {:.2}, {:.2}).",
-                    loc.x, loc.y, loc.z
-                ),
-            );
-        }
-        if let Some((pen, loc)) = span_viol.worst_gouge {
-            push_dedup_diag(
-                &mut diagnostics,
-                &mut recorded_op_kinds,
-                span,
-                op_in,
-                SimIssueKind::TargetModelGouge.default_severity(),
-                SimIssueKind::TargetModelGouge,
-                pen,
-                loc,
-                format!(
-                    "Tool T{} gouged target model by {pen:.3} mm (tolerance {:.3} mm) at WCS ({:.2}, {:.2}, {:.2}).",
-                    op_in.tool.tool_number, op_cfg.gouge_tol_mm, loc.x, loc.y, loc.z
-                ),
-            );
-        }
-        if let Some((ov, loc)) = span_viol.worst_neck {
-            push_dedup_diag(
-                &mut diagnostics,
-                &mut recorded_op_kinds,
-                span,
-                op_in,
-                SimSeverity::CriticalError,
-                SimIssueKind::FluteLengthExceeded,
-                ov,
-                loc,
-                format!(
-                    "Thread mill T{} relieved neck collided {ov:.2} mm with uncut stock (missing/undersized pilot hole or insufficient neck clearance).",
-                    op_in.tool.tool_number
-                ),
-            );
-        }
-        if let Some((rub, loc)) = span_viol.worst_flute {
-            let reach_label = if prof.is_thread_mill {
-                "usable neck length"
-            } else {
-                "flute length"
-            };
-            push_dedup_diag(
-                &mut diagnostics,
-                &mut recorded_op_kinds,
-                span,
-                op_in,
-                SimIssueKind::FluteLengthExceeded.default_severity(),
-                SimIssueKind::FluteLengthExceeded,
-                rub,
-                loc,
-                format!(
-                    "Cut depth exceeded T{} {reach_label} ({:.2} mm) by {rub:.2} mm — non-cutting shank rub.",
-                    op_in.tool.tool_number,
-                    prof.effective_reach_mm()
-                ),
-            );
-        }
-        if let Some((pen, loc)) = span_viol.worst_holder {
-            push_dedup_diag(
-                &mut diagnostics,
-                &mut recorded_op_kinds,
-                span,
-                op_in,
-                SimIssueKind::HolderCollision.default_severity(),
-                SimIssueKind::HolderCollision,
-                pen,
-                loc,
-                format!(
-                    "Collet/holder collided {pen:.2} mm with uncut stock above T{} stickout ({:.2} mm).",
-                    op_in.tool.tool_number, prof.stickout_length_mm
-                ),
-            );
-        }
+        coalescer.push_span_violations(
+            &span_viol,
+            span.global_seg_idx,
+            span.op_idx,
+            op_in.op_id,
+            op_in.op_name,
+            op_in.tool.tool_number,
+            span.t_start_sec,
+            &prof,
+        );
 
         let completed = span_idx + 1;
         let is_op_end = timeline.operations[span.op_idx].end_global_seg == completed;
@@ -1509,6 +1287,7 @@ pub fn run_tridexel_setup_simulation(
         )
     });
     let projected_hf = stock.to_projected_heightfield();
+    let diagnostics = coalescer.into_diagnostics();
 
     Ok(SetupSimulationResult {
         engine: SimEngineKind::TriDexel,
@@ -1528,50 +1307,4 @@ pub fn run_tridexel_setup_simulation(
         diagnostics,
         error_report,
     })
-}
-
-#[allow(clippy::too_many_arguments)]
-fn push_dedup_diag(
-    diagnostics: &mut Vec<SimDiagnostic>,
-    recorded_op_kinds: &mut Vec<(usize, SimIssueKind)>,
-    span: &MotionSpan,
-    op_in: &crate::timeline::SimOperationInput<'_>,
-    severity: SimSeverity,
-    kind: SimIssueKind,
-    excess_mm: f64,
-    location_wcs: DVec3,
-    message: String,
-) {
-    if let Some(existing) = diagnostics
-        .iter_mut()
-        .find(|d| d.op_idx == span.op_idx && d.kind == kind)
-    {
-        let upgrades_severity = severity == SimSeverity::CriticalError
-            && existing.severity != SimSeverity::CriticalError;
-        if upgrades_severity
-            || (severity == existing.severity && excess_mm > existing.max_excess_mm)
-        {
-            existing.severity = severity;
-            existing.max_excess_mm = excess_mm;
-            existing.location_wcs = location_wcs;
-            existing.global_seg_idx = span.global_seg_idx;
-            existing.timeline_time_sec = span.t_start_sec;
-            existing.message = message;
-        }
-        return;
-    }
-    recorded_op_kinds.push((span.op_idx, kind));
-    diagnostics.push(SimDiagnostic {
-        severity,
-        kind,
-        op_idx: span.op_idx,
-        op_id: op_in.op_id.to_string(),
-        op_name: op_in.op_name.to_string(),
-        tool_number: op_in.tool.tool_number,
-        global_seg_idx: span.global_seg_idx,
-        timeline_time_sec: span.t_start_sec,
-        location_wcs,
-        max_excess_mm: excess_mm,
-        message,
-    });
 }

@@ -8,7 +8,11 @@ use rayon::prelude::*;
 use crate::{
     cutter_profile::RadialCutterProfile,
     timeline::{MotionSpan, SimulationTimeline},
-    verifier::{SimDiagnostic, SimIssueKind, SimSeverity, SimVerificationConfig},
+    verifier::SimVerificationConfig,
+    verify_common::{
+        SpanRuleViolations, ViolationBatchCoalescer, decompose_segment_to_chords,
+        evaluate_vertical_plunge_violation,
+    },
 };
 
 use super::{
@@ -119,105 +123,35 @@ impl HeightfieldStock {
         &mut self,
         span: &MotionSpan,
         meta: &SegmentSweepMeta<'_>,
-        out_hits: &mut Vec<SegmentRuleHit>,
+        coalescer: &mut ViolationBatchCoalescer,
     ) {
         let seg = &span.segment;
         let is_rapid = matches!(seg.motion, SegmentMotion3D::Rapid);
 
         // Rule 5: Excessive / Non-Center-Cutting Vertical Plunge (`ΔXY == 0`)
-        if !is_rapid {
-            let dxy = (seg.end_wcs.x - seg.start_wcs.x).hypot(seg.end_wcs.y - seg.start_wcs.y);
-            if dxy <= 1e-4 && seg.end_wcs.z < seg.start_wcs.z - 1e-4 {
-                let stock_z_opt = if meta.prof.is_thread_mill {
-                    let check_r =
-                        (meta.prof.cutting_radius_mm - meta.cfg.radial_wall_skin_mm).max(0.0);
-                    self.sample_max_stock_z_in_disk(seg.start_wcs.x, seg.start_wcs.y, check_r)
+        if let Some(hit) = evaluate_vertical_plunge_violation(
+            span,
+            meta.op_id,
+            meta.op_name,
+            meta.tool_number,
+            meta.prof,
+            meta.cfg,
+            |x, y, z_start, z_end, thread_check_r| {
+                let stock_z_opt = if let Some(check_r) = thread_check_r {
+                    self.sample_max_stock_z_in_disk(x, y, check_r)
                 } else {
-                    self.sample_stock_z(seg.start_wcs.x, seg.start_wcs.y)
+                    self.sample_stock_z(x, y)
                 };
-                if let Some(stock_z_here) = stock_z_opt {
-                    let entry_z = stock_z_here.min(seg.start_wcs.z);
-                    let plunge_in_mat = entry_z - seg.end_wcs.z;
-                    if plunge_in_mat > 0.05 {
-                        if meta.prof.is_thread_mill {
-                            out_hits.push(SegmentRuleHit {
-                                severity: SimSeverity::CriticalError,
-                                kind: SimIssueKind::UnsafeVerticalPlunge,
-                                span_idx: span.global_seg_idx,
-                                op_idx: span.op_idx,
-                                op_id: meta.op_id.to_string(),
-                                op_name: meta.op_name.to_string(),
-                                tool_number: meta.tool_number,
-                                time_sec: span.t_start_sec,
-                                location_wcs: DVec3::new(
-                                    seg.end_wcs.x,
-                                    seg.end_wcs.y,
-                                    seg.end_wcs.z,
-                                ),
-                                excess_mm: plunge_in_mat,
-                                detail: format!(
-                                    "Thread mill T{} plunged vertically {plunge_in_mat:.2} mm into solid un-drilled stock (missing or undersized pilot hole).",
-                                    meta.tool_number
-                                ),
-                            });
-                        } else if !meta.prof.is_center_cutting {
-                            out_hits.push(SegmentRuleHit {
-                                severity: SimIssueKind::UnsafeVerticalPlunge.default_severity(),
-                                kind: SimIssueKind::UnsafeVerticalPlunge,
-                                span_idx: span.global_seg_idx,
-                                op_idx: span.op_idx,
-                                op_id: meta.op_id.to_string(),
-                                op_name: meta.op_name.to_string(),
-                                tool_number: meta.tool_number,
-                                time_sec: span.t_start_sec,
-                                location_wcs: DVec3::new(
-                                    seg.end_wcs.x,
-                                    seg.end_wcs.y,
-                                    seg.end_wcs.z,
-                                ),
-                                excess_mm: plunge_in_mat,
-                                detail: format!(
-                                    "Non-center-cutting tool T{} plunged vertically {plunge_in_mat:.2} mm into stock (use Helical or Linear ramp).",
-                                    meta.tool_number
-                                ),
-                            });
-                        } else if plunge_in_mat > meta.prof.max_safe_plunge_depth_mm + 0.05 {
-                            let excess = plunge_in_mat - meta.prof.max_safe_plunge_depth_mm;
-                            out_hits.push(SegmentRuleHit {
-                                severity: SimIssueKind::UnsafeVerticalPlunge.default_severity(),
-                                kind: SimIssueKind::UnsafeVerticalPlunge,
-                                span_idx: span.global_seg_idx,
-                                op_idx: span.op_idx,
-                                op_id: meta.op_id.to_string(),
-                                op_name: meta.op_name.to_string(),
-                                tool_number: meta.tool_number,
-                                time_sec: span.t_start_sec,
-                                location_wcs: DVec3::new(
-                                    seg.end_wcs.x,
-                                    seg.end_wcs.y,
-                                    seg.end_wcs.z,
-                                ),
-                                excess_mm: excess,
-                                detail: format!(
-                                    "Vertical plunge depth ({plunge_in_mat:.2} mm) exceeds safe axial plunge threshold ({:.2} mm) on T{}.",
-                                    meta.prof.max_safe_plunge_depth_mm,
-                                    meta.tool_number
-                                ),
-                            });
-                        }
-                    }
-                }
-            }
+                stock_z_opt.map_or(0.0, |stock_z| stock_z.min(z_start) - z_end)
+            },
+        ) {
+            coalescer.push(hit);
         }
 
         let primitives = decompose_segment_primitives(seg);
         let r_inner_skin = (meta.prof.cutting_radius_mm - meta.cfg.radial_wall_skin_mm).max(0.0);
 
-        let mut worst_rapid: Option<(f64, DVec3)> = None;
-        let mut worst_gouge: Option<(f64, DVec3)> = None;
-        let mut worst_flute: Option<(f64, DVec3)> = None;
-        let mut worst_neck: Option<(f64, DVec3)> = None;
-        let mut worst_holder: Option<(f64, DVec3)> = None;
+        let mut violations = SpanRuleViolations::default();
 
         for prim in &primitives {
             let check_holder =
@@ -266,7 +200,7 @@ impl HeightfieldStock {
                 let z_bot_ref = &self.z_bottom[j0 * nx..(j1 + 1) * nx];
                 let z_tgt_ref = &self.z_target[j0 * nx..(j1 + 1) * nx];
 
-                let row_reducers: Vec<RowViolationSummary> = z_stock_slice
+                let row_reducers: Vec<SpanRuleViolations> = z_stock_slice
                     .par_chunks_mut(nx)
                     .zip(last_op_slice.par_chunks_mut(nx))
                     .enumerate()
@@ -289,11 +223,7 @@ impl HeightfieldStock {
                     .collect();
 
                 for rr in row_reducers {
-                    merge_violation(&mut worst_rapid, rr.rapid);
-                    merge_violation(&mut worst_gouge, rr.gouge);
-                    merge_violation(&mut worst_flute, rr.flute);
-                    merge_violation(&mut worst_neck, rr.neck);
-                    merge_violation(&mut worst_holder, rr.holder);
+                    violations.merge(rr);
                 }
             } else {
                 for j in j0..=j1 {
@@ -310,133 +240,26 @@ impl HeightfieldStock {
                         },
                         &env,
                     );
-                    merge_violation(&mut worst_rapid, rr.rapid);
-                    merge_violation(&mut worst_gouge, rr.gouge);
-                    merge_violation(&mut worst_flute, rr.flute);
-                    merge_violation(&mut worst_neck, rr.neck);
-                    merge_violation(&mut worst_holder, rr.holder);
+                    violations.merge(rr);
                 }
             }
         }
 
-        if let Some((depth, loc)) = worst_rapid {
-            out_hits.push(SegmentRuleHit {
-                severity: SimIssueKind::RapidIntoStock.default_severity(),
-                kind: SimIssueKind::RapidIntoStock,
-                span_idx: span.global_seg_idx,
-                op_idx: span.op_idx,
-                op_id: meta.op_id.to_string(),
-                op_name: meta.op_name.to_string(),
-                tool_number: meta.tool_number,
-                time_sec: span.t_start_sec,
-                location_wcs: loc,
-                excess_mm: depth,
-                detail: format!(
-                    "G0 rapid move crashed {depth:.3} mm into remaining stock at WCS ({:.2}, {:.2}, {:.2}).",
-                    loc.x, loc.y, loc.z
-                ),
-            });
-        }
-        if let Some((depth, loc)) = worst_gouge {
-            out_hits.push(SegmentRuleHit {
-                severity: SimIssueKind::TargetModelGouge.default_severity(),
-                kind: SimIssueKind::TargetModelGouge,
-                span_idx: span.global_seg_idx,
-                op_idx: span.op_idx,
-                op_id: meta.op_id.to_string(),
-                op_name: meta.op_name.to_string(),
-                tool_number: meta.tool_number,
-                time_sec: span.t_start_sec,
-                location_wcs: loc,
-                excess_mm: depth,
-                detail: format!(
-                    "Tool T{} gouged target model by {depth:.3} mm at WCS ({:.2}, {:.2}, {:.2}).",
-                    meta.tool_number, loc.x, loc.y, loc.z
-                ),
-            });
-        }
-        if let Some((depth, loc)) = worst_neck {
-            out_hits.push(SegmentRuleHit {
-                severity: SimSeverity::CriticalError,
-                kind: SimIssueKind::FluteLengthExceeded,
-                span_idx: span.global_seg_idx,
-                op_idx: span.op_idx,
-                op_id: meta.op_id.to_string(),
-                op_name: meta.op_name.to_string(),
-                tool_number: meta.tool_number,
-                time_sec: span.t_start_sec,
-                location_wcs: loc,
-                excess_mm: depth,
-                detail: format!(
-                    "Thread mill T{} relieved neck collided {depth:.2} mm with uncut stock (missing/undersized pilot hole or insufficient neck clearance).",
-                    meta.tool_number
-                ),
-            });
-        }
-        if let Some((depth, loc)) = worst_flute {
-            let reach_label = if meta.prof.is_thread_mill {
-                "usable neck length"
-            } else {
-                "flute length"
-            };
-            out_hits.push(SegmentRuleHit {
-                severity: SimIssueKind::FluteLengthExceeded.default_severity(),
-                kind: SimIssueKind::FluteLengthExceeded,
-                span_idx: span.global_seg_idx,
-                op_idx: span.op_idx,
-                op_id: meta.op_id.to_string(),
-                op_name: meta.op_name.to_string(),
-                tool_number: meta.tool_number,
-                time_sec: span.t_start_sec,
-                location_wcs: loc,
-                excess_mm: depth,
-                detail: format!(
-                    "Engagement depth exceeded T{} {reach_label} ({:.2} mm) by {depth:.2} mm (shank rub).",
-                    meta.tool_number,
-                    meta.prof.effective_reach_mm()
-                ),
-            });
-        }
-        if let Some((depth, loc)) = worst_holder {
-            out_hits.push(SegmentRuleHit {
-                severity: SimIssueKind::HolderCollision.default_severity(),
-                kind: SimIssueKind::HolderCollision,
-                span_idx: span.global_seg_idx,
-                op_idx: span.op_idx,
-                op_id: meta.op_id.to_string(),
-                op_name: meta.op_name.to_string(),
-                tool_number: meta.tool_number,
-                time_sec: span.t_start_sec,
-                location_wcs: loc,
-                excess_mm: depth,
-                detail: format!(
-                    "Collet/holder of T{} collided {depth:.2} mm into stock (stickout {:.2} mm insufficient).",
-                    meta.tool_number, meta.prof.stickout_length_mm
-                ),
-            });
-        }
+        coalescer.push_span_violations(
+            &violations,
+            span.global_seg_idx,
+            span.op_idx,
+            meta.op_id,
+            meta.op_name,
+            meta.tool_number,
+            span.t_start_sec,
+            meta.prof,
+        );
     }
 }
 
-#[derive(Default)]
-struct RowViolationSummary {
-    rapid: Option<(f64, DVec3)>,
-    gouge: Option<(f64, DVec3)>,
-    flute: Option<(f64, DVec3)>,
-    neck: Option<(f64, DVec3)>,
-    holder: Option<(f64, DVec3)>,
-}
-
-fn merge_violation(dst: &mut Option<(f64, DVec3)>, cand: Option<(f64, DVec3)>) {
-    if let Some((c_val, c_loc)) = cand
-        && dst.is_none_or(|(cur, _)| c_val > cur)
-    {
-        *dst = Some((c_val, c_loc));
-    }
-}
-
-fn eval_row_cells(py: f64, row: RowCellsMut<'_>, env: &SweepEnv<'_>) -> RowViolationSummary {
-    let mut out = RowViolationSummary::default();
+fn eval_row_cells(py: f64, row: RowCellsMut<'_>, env: &SweepEnv<'_>) -> SpanRuleViolations {
+    let mut out = SpanRuleViolations::default();
     let shank_skin = (env.prof.shank_radius_mm - env.cfg.radial_wall_skin_mm).max(0.0);
     let neck_skin = (env.prof.neck_radius_mm - env.cfg.radial_wall_skin_mm).max(0.0);
     let holder_skin = (env.prof.holder_radius_mm - env.cfg.radial_wall_skin_mm).max(0.0);
@@ -462,7 +285,7 @@ fn eval_row_cells(py: f64, row: RowCellsMut<'_>, env: &SweepEnv<'_>) -> RowViola
             let holder_z = z_tip_min + env.prof.stickout_length_mm;
             let pen = f64::from(zs_before) - holder_z;
             if pen > 0.03 {
-                merge_violation(&mut out.holder, Some((pen, DVec3::new(px, py, holder_z))));
+                out.record_holder(pen, DVec3::new(px, py, holder_z));
             }
         }
 
@@ -483,7 +306,7 @@ fn eval_row_cells(py: f64, row: RowCellsMut<'_>, env: &SweepEnv<'_>) -> RowViola
             if has_target && hit.r_mm <= gouge_r_limit {
                 let gouge = f64::from(zt) - z_cut;
                 if gouge > env.cfg.gouge_tol_mm {
-                    merge_violation(&mut out.gouge, Some((gouge, DVec3::new(px, py, z_cut))));
+                    out.record_gouge(gouge, DVec3::new(px, py, z_cut));
                 }
             }
 
@@ -496,7 +319,7 @@ fn eval_row_cells(py: f64, row: RowCellsMut<'_>, env: &SweepEnv<'_>) -> RowViola
                     && hit.r_mm <= env.r_inner_skin
                     && cut_depth > env.cfg.rapid_crash_tol_mm
                 {
-                    merge_violation(&mut out.rapid, Some((cut_depth, DVec3::new(px, py, z_cut))));
+                    out.record_rapid(cut_depth, DVec3::new(px, py, z_cut));
                 }
 
                 // Relieved-neck clearance check for ThreadMill (`r <= neck_skin` above cutting teeth)
@@ -508,10 +331,7 @@ fn eval_row_cells(py: f64, row: RowCellsMut<'_>, env: &SweepEnv<'_>) -> RowViola
                     let neck_bottom_z = hit.z_tip_mm + env.prof.flute_length_mm;
                     let neck_pen = stock_z_f64 - neck_bottom_z;
                     if neck_pen > 0.15 {
-                        merge_violation(
-                            &mut out.neck,
-                            Some((neck_pen, DVec3::new(px, py, neck_bottom_z))),
-                        );
+                        out.record_neck(neck_pen, DVec3::new(px, py, neck_bottom_z));
                     }
                 }
 
@@ -520,10 +340,7 @@ fn eval_row_cells(py: f64, row: RowCellsMut<'_>, env: &SweepEnv<'_>) -> RowViola
                     let engagement = stock_z_f64 - hit.z_tip_mm;
                     let excess_flute = engagement - reach_mm;
                     if excess_flute > 0.05 {
-                        merge_violation(
-                            &mut out.flute,
-                            Some((excess_flute, DVec3::new(px, py, hit.z_tip_mm))),
-                        );
+                        out.record_flute(excess_flute, DVec3::new(px, py, hit.z_tip_mm));
                     }
                 }
 
@@ -546,10 +363,7 @@ fn eval_row_cells(py: f64, row: RowCellsMut<'_>, env: &SweepEnv<'_>) -> RowViola
                 let shank_bottom_z = z_tip_min + reach_mm;
                 let rub = f64::from(zs_before) - shank_bottom_z;
                 if rub > 0.05 {
-                    merge_violation(
-                        &mut out.flute,
-                        Some((rub, DVec3::new(px, py, shank_bottom_z))),
-                    );
+                    out.record_flute(rub, DVec3::new(px, py, shank_bottom_z));
                 }
             }
         }
@@ -795,60 +609,34 @@ fn planar_arc_xy_distance(px: f64, py: f64, arc: &PlanarArcGeom) -> f64 {
 }
 
 fn decompose_segment_primitives(seg: &ToolpathSegment3D) -> Vec<SweepPrimitive> {
-    match seg.motion {
-        SegmentMotion3D::Rapid | SegmentMotion3D::Linear { .. } => vec![SweepPrimitive::Line3D {
+    if let SegmentMotion3D::Arc {
+        plane: ArcPlane::XY,
+        center_wcs,
+        radius_mm,
+        signed_sweep_rad,
+        ..
+    } = seg.motion
+        && (seg.end_wcs.z - seg.start_wcs.z).abs() <= 1e-7
+    {
+        let c2 = DVec2::new(center_wcs.x, center_wcs.y);
+        let a0 = (seg.start_wcs.y - c2.y).atan2(seg.start_wcs.x - c2.x);
+        return vec![SweepPrimitive::PlanarArcXY(PlanarArcGeom {
             start: seg.start_wcs,
             end: seg.end_wcs,
-        }],
-        SegmentMotion3D::Arc {
-            plane,
-            center_wcs,
+            center_xy: c2,
             radius_mm,
+            a0_rad: a0,
             signed_sweep_rad,
-            ..
-        } => {
-            if plane == ArcPlane::XY && (seg.end_wcs.z - seg.start_wcs.z).abs() <= 1e-7 {
-                let c2 = DVec2::new(center_wcs.x, center_wcs.y);
-                let a0 = (seg.start_wcs.y - c2.y).atan2(seg.start_wcs.x - c2.x);
-                vec![SweepPrimitive::PlanarArcXY(PlanarArcGeom {
-                    start: seg.start_wcs,
-                    end: seg.end_wcs,
-                    center_xy: c2,
-                    radius_mm,
-                    a0_rad: a0,
-                    signed_sweep_rad,
-                })]
-            } else {
-                // Helical XY arc or vertical G18/G19 lead arc: subdivide at <= 3° (`0.05 rad`) so sagitta < 0.002 mm
-                let steps = ((signed_sweep_rad.abs() / 0.05).ceil() as usize).clamp(4, 2_048);
-                let mut out = Vec::with_capacity(steps);
-                let mut prev = seg.start_wcs;
-                for k in 1..=steps {
-                    let next = seg.sample_point(k as f64 / steps as f64);
-                    out.push(SweepPrimitive::Line3D {
-                        start: prev,
-                        end: next,
-                    });
-                    prev = next;
-                }
-                out
-            }
-        }
+        })];
     }
-}
 
-struct SegmentRuleHit {
-    severity: SimSeverity,
-    kind: SimIssueKind,
-    span_idx: usize,
-    op_idx: usize,
-    op_id: String,
-    op_name: String,
-    tool_number: u32,
-    time_sec: f64,
-    location_wcs: DVec3,
-    excess_mm: f64,
-    detail: String,
+    decompose_segment_to_chords(seg, 0.005)
+        .into_iter()
+        .map(|ch| SweepPrimitive::Line3D {
+            start: ch.p0,
+            end: ch.p1,
+        })
+        .collect()
 }
 
 /// Executes full heightmap stock removal, periodic checkpoint capture, and 5-rule crash/gouge
@@ -909,7 +697,7 @@ pub fn run_setup_simulation_with_engine(
         })
         .collect();
 
-    let mut raw_hits: Vec<SegmentRuleHit> = Vec::new();
+    let mut coalescer = ViolationBatchCoalescer::default();
     let mut per_op_errors: Vec<crate::metrics::OperationErrorSnapshot> = Vec::new();
     let mut prev_vol = initial_stock_volume_mm3;
 
@@ -932,7 +720,7 @@ pub fn run_setup_simulation_with_engine(
                 is_flat_endmill: is_flat,
                 cfg: &op_verify,
             },
-            &mut raw_hits,
+            &mut coalescer,
         );
 
         let completed = idx + 1;
@@ -974,9 +762,7 @@ pub fn run_setup_simulation_with_engine(
         per_op_errors,
     );
 
-    // Coalesce consecutive segment hits of the same `(op_idx, kind)` so each physical crash/gouge
-    // produces a crisp clickable diagnostic pointing to its onset while reporting peak depth!
-    let diagnostics = coalesce_rule_hits(raw_hits);
+    let diagnostics = coalescer.into_diagnostics();
 
     Ok(SetupSimulationResult {
         engine: crate::tridexel::SimEngineKind::Heightmap,
@@ -996,58 +782,4 @@ pub fn run_setup_simulation_with_engine(
         diagnostics,
         error_report,
     })
-}
-
-fn coalesce_rule_hits(hits: Vec<SegmentRuleHit>) -> Vec<SimDiagnostic> {
-    let mut out: Vec<SimDiagnostic> = Vec::new();
-    let mut last_seg_by_diag: Vec<usize> = Vec::new();
-
-    for hit in hits {
-        // Merge into an existing diagnostic of the same `(op_idx, kind)` if within 16 segments (same pass)
-        // or if we already emitted >= 3 diagnostics of that `(op_idx, kind)`!
-        let mut merged = false;
-        let existing_count = out
-            .iter()
-            .filter(|d| d.op_idx == hit.op_idx && d.kind == hit.kind)
-            .count();
-
-        for (di, diag) in out.iter_mut().enumerate().rev() {
-            if diag.op_idx == hit.op_idx
-                && diag.kind == hit.kind
-                && (hit.span_idx <= last_seg_by_diag[di] + 16 || existing_count >= 3)
-            {
-                last_seg_by_diag[di] = hit.span_idx;
-                let upgrades_severity = hit.severity == SimSeverity::CriticalError
-                    && diag.severity != SimSeverity::CriticalError;
-                if upgrades_severity
-                    || (hit.severity == diag.severity && hit.excess_mm > diag.max_excess_mm)
-                {
-                    diag.severity = hit.severity;
-                    diag.max_excess_mm = hit.excess_mm;
-                    diag.location_wcs = hit.location_wcs;
-                    diag.message = hit.detail.clone();
-                }
-                merged = true;
-                break;
-            }
-        }
-
-        if !merged {
-            last_seg_by_diag.push(hit.span_idx);
-            out.push(SimDiagnostic {
-                severity: hit.severity,
-                kind: hit.kind,
-                op_idx: hit.op_idx,
-                op_id: hit.op_id,
-                op_name: hit.op_name,
-                tool_number: hit.tool_number,
-                global_seg_idx: hit.span_idx,
-                timeline_time_sec: hit.time_sec,
-                location_wcs: hit.location_wcs,
-                max_excess_mm: hit.excess_mm,
-                message: hit.detail,
-            });
-        }
-    }
-    out
 }

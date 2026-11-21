@@ -21,17 +21,16 @@ use rayon::prelude::*;
 use crate::{
     cutter_profile::{RadialCutterProfile, SimColoredVertex},
     heightmap::{
-        HeightfieldStock, OPERATION_STOCK_PALETTE, SetupSimulationInput, SetupSimulationResult,
-        SimError, SimResolution, SimStockMesh, StockPlaybackCursor, UNCUT_OP_IDX,
-        slice_segment_range, target_cursor_from_snap,
+        HeightfieldStock, SetupSimulationInput, SetupSimulationResult, SimError, SimResolution,
+        SimStockMesh, StockPlaybackCursor, UNCUT_OP_IDX, slice_segment_range,
+        target_cursor_from_snap,
     },
+    mesher_common::{RAW_STOCK_SIDE_COLOR, RAW_STOCK_TOP_COLOR, op_color},
     metrics::{SimStockColorMode, deviation_to_heatmap_rgba},
     timeline::{SimOperationInput, SimulationTimeline},
-    verifier::{SimDiagnostic, SimIssueKind, SimSeverity, SimVerificationConfig},
+    verifier::{SimDiagnostic, SimVerificationConfig},
+    verify_common::{SpanRuleViolations, ViolationBatchCoalescer},
 };
-
-/// Uncut raw metallic aluminum color (sRGB RGBA) matching 3-axis heightmap stock.
-const UNCUT_STOCK_RGBA: [f32; 4] = [0.64, 0.67, 0.72, 1.0];
 
 /// Polar / cylindrical heightmap stock parameterized over `(u_axial, θ) -> r_stock(u, θ)`.
 #[derive(Debug, Clone)]
@@ -210,6 +209,32 @@ impl CylindricalStock {
         verify_cfg: &SimVerificationConfig,
         diagnostics: &mut Vec<SimDiagnostic>,
     ) {
+        let mut coalescer = ViolationBatchCoalescer::default();
+        self.sweep_segment_coalesced(
+            seg,
+            profile,
+            op_idx,
+            op,
+            global_seg_idx,
+            seg_start_time_sec,
+            verify_cfg,
+            &mut coalescer,
+        );
+        diagnostics.extend(coalescer.into_diagnostics());
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn sweep_segment_coalesced(
+        &mut self,
+        seg: &ToolpathSegment3D,
+        profile: &RadialCutterProfile,
+        op_idx: usize,
+        op: &SimOperationInput<'_>,
+        global_seg_idx: usize,
+        seg_start_time_sec: f64,
+        verify_cfg: &SimVerificationConfig,
+        coalescer: &mut ViolationBatchCoalescer,
+    ) {
         let is_rapid = matches!(seg.motion, SegmentMotion3D::Rapid);
         let lin_len = seg.length_mm();
         let d_deg = (seg.end_rotary_deg - seg.start_rotary_deg).abs();
@@ -219,104 +244,32 @@ impl CylindricalStock {
         let n_rot = (d_deg / step_deg).ceil() as usize;
         let n_steps = n_lin.max(n_rot).clamp(1, 2_000);
 
-        let mut worst_rapid: Option<(f64, DVec3)> = None;
-        let mut worst_gouge: Option<(f64, DVec3)> = None;
-        let mut worst_flute: Option<(f64, DVec3)> = None;
-        let mut worst_holder: Option<(f64, DVec3)> = None;
+        let mut violations = SpanRuleViolations::default();
 
         for k in 0..=n_steps {
             let t = k as f64 / n_steps as f64;
             let tip_wcs = seg.sample_point(t);
             let rot_deg = seg.sample_rotary_deg(t);
 
-            self.sweep_pose_at(
-                tip_wcs,
-                rot_deg,
-                profile,
-                op_idx,
+            let mut verify = PoseVerifyCtx {
                 is_rapid,
-                op.intentional_edge_break_mm,
+                edge_break_mm: op.intentional_edge_break_mm,
                 verify_cfg,
-                &mut worst_rapid,
-                &mut worst_gouge,
-                &mut worst_flute,
-                &mut worst_holder,
-            );
+                violations: &mut violations,
+            };
+            let _ = self.sweep_pose_inner(tip_wcs, rot_deg, profile, op_idx, Some(&mut verify));
         }
 
-        // Emit at most one diagnostic per issue kind per segment (matching 3-axis heightmap verifier)
-        if let Some((excess, loc)) = worst_rapid {
-            diagnostics.push(SimDiagnostic {
-                severity: SimSeverity::CriticalError,
-                kind: SimIssueKind::RapidIntoStock,
-                op_idx,
-                op_id: op.op_id.to_string(),
-                op_name: op.op_name.to_string(),
-                tool_number: op.tool.tool_number,
-                global_seg_idx,
-                timeline_time_sec: seg_start_time_sec,
-                location_wcs: loc,
-                max_excess_mm: excess,
-                message: format!(
-                    "G0 rapid collided with rotary stock by {excess:.3} mm at ({:.2}, {:.2}, {:.2}).",
-                    loc.x, loc.y, loc.z
-                ),
-            });
-        }
-        if let Some((excess, loc)) = worst_gouge {
-            diagnostics.push(SimDiagnostic {
-                severity: SimSeverity::CriticalError,
-                kind: SimIssueKind::TargetModelGouge,
-                op_idx,
-                op_id: op.op_id.to_string(),
-                op_name: op.op_name.to_string(),
-                tool_number: op.tool.tool_number,
-                global_seg_idx,
-                timeline_time_sec: seg_start_time_sec,
-                location_wcs: loc,
-                max_excess_mm: excess,
-                message: format!(
-                    "Cutter gouged rotary target model by {excess:.3} mm at ({:.2}, {:.2}, {:.2}).",
-                    loc.x, loc.y, loc.z
-                ),
-            });
-        }
-        if let Some((excess, loc)) = worst_holder {
-            diagnostics.push(SimDiagnostic {
-                severity: SimSeverity::CriticalError,
-                kind: SimIssueKind::HolderCollision,
-                op_idx,
-                op_id: op.op_id.to_string(),
-                op_name: op.op_name.to_string(),
-                tool_number: op.tool.tool_number,
-                global_seg_idx,
-                timeline_time_sec: seg_start_time_sec,
-                location_wcs: loc,
-                max_excess_mm: excess,
-                message: format!(
-                    "Tool holder / chuck collision by {excess:.3} mm at ({:.2}, {:.2}, {:.2}).",
-                    loc.x, loc.y, loc.z
-                ),
-            });
-        }
-        if let Some((excess, loc)) = worst_flute {
-            diagnostics.push(SimDiagnostic {
-                severity: SimSeverity::Warning,
-                kind: SimIssueKind::FluteLengthExceeded,
-                op_idx,
-                op_id: op.op_id.to_string(),
-                op_name: op.op_name.to_string(),
-                tool_number: op.tool.tool_number,
-                global_seg_idx,
-                timeline_time_sec: seg_start_time_sec,
-                location_wcs: loc,
-                max_excess_mm: excess,
-                message: format!(
-                    "Cutting depth exceeded flute length by {excess:.3} mm at ({:.2}, {:.2}, {:.2}).",
-                    loc.x, loc.y, loc.z
-                ),
-            });
-        }
+        coalescer.push_span_violations(
+            &violations,
+            global_seg_idx,
+            op_idx,
+            op.op_id,
+            op.op_name,
+            op.tool.tool_number,
+            seg_start_time_sec,
+            profile,
+        );
     }
 
     /// Fast mutation-only polar sweep used when reconstructing intermediate timeline scrub
@@ -343,33 +296,6 @@ impl CylindricalStock {
             mutated |= self.sweep_pose_inner(tip_wcs, rot_deg, profile, op_idx, None);
         }
         mutated
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn sweep_pose_at(
-        &mut self,
-        tip_wcs: DVec3,
-        rot_deg: f64,
-        profile: &RadialCutterProfile,
-        op_idx: usize,
-        is_rapid: bool,
-        edge_break_mm: f64,
-        verify_cfg: &SimVerificationConfig,
-        worst_rapid: &mut Option<(f64, DVec3)>,
-        worst_gouge: &mut Option<(f64, DVec3)>,
-        worst_flute: &mut Option<(f64, DVec3)>,
-        worst_holder: &mut Option<(f64, DVec3)>,
-    ) {
-        let mut verify = PoseVerifyCtx {
-            is_rapid,
-            edge_break_mm,
-            verify_cfg,
-            worst_rapid,
-            worst_gouge,
-            worst_flute,
-            worst_holder,
-        };
-        let _ = self.sweep_pose_inner(tip_wcs, rot_deg, profile, op_idx, Some(&mut verify));
     }
 
     fn sweep_pose_inner(
@@ -400,7 +326,7 @@ impl CylindricalStock {
                 && (u_tip - r_cut) <= self.rotary.chuck_u_max;
             if u_overlaps_chuck && r_tip < chuck_clearance_r - 0.05 {
                 let excess = chuck_clearance_r - r_tip;
-                update_worst(v.worst_holder, excess, tip_wcs);
+                v.violations.record_holder(excess, tip_wcs);
             }
         }
 
@@ -516,7 +442,7 @@ impl CylindricalStock {
                     if h_chk > stickout + 0.05 {
                         let excess = (r_cur - hr_lo.max(0.0)).min(h_chk - stickout);
                         if excess > 0.05 {
-                            update_worst(v.worst_holder, excess, tip_wcs);
+                            v.violations.record_holder(excess, tip_wcs);
                         }
                     }
                 }
@@ -553,11 +479,8 @@ impl CylindricalStock {
                 if let Some(v) = verify.as_deref_mut() {
                     let h_enter = h0 + r_enter * d_dot_s;
                     if h_enter > profile.effective_reach_mm() + 0.05 {
-                        update_worst(
-                            v.worst_flute,
-                            h_enter - profile.effective_reach_mm(),
-                            tip_wcs,
-                        );
+                        v.violations
+                            .record_flute(h_enter - profile.effective_reach_mm(), tip_wcs);
                     }
                 }
 
@@ -583,12 +506,12 @@ impl CylindricalStock {
                     if let Some(v) = verify.as_deref_mut() {
                         let cut_depth = r_cur - r_new;
                         if v.is_rapid && cut_depth > v.verify_cfg.rapid_crash_tol_mm {
-                            update_worst(v.worst_rapid, cut_depth, tip_wcs);
+                            v.violations.record_rapid(cut_depth, tip_wcs);
                         }
                         let gouge_tol = v.verify_cfg.gouge_tol_mm + v.edge_break_mm;
                         let r_tgt = f64::from(self.r_target[idx]);
                         if r_tgt >= 0.0 && r_new < r_tgt - gouge_tol {
-                            update_worst(v.worst_gouge, r_tgt - r_new, tip_wcs);
+                            v.violations.record_gouge(r_tgt - r_new, tip_wcs);
                         }
                     }
 
@@ -606,10 +529,7 @@ struct PoseVerifyCtx<'a> {
     is_rapid: bool,
     edge_break_mm: f64,
     verify_cfg: &'a SimVerificationConfig,
-    worst_rapid: &'a mut Option<(f64, DVec3)>,
-    worst_gouge: &'a mut Option<(f64, DVec3)>,
-    worst_flute: &'a mut Option<(f64, DVec3)>,
-    worst_holder: &'a mut Option<(f64, DVec3)>,
+    violations: &'a mut SpanRuleViolations,
 }
 
 impl SetupSimulationResult {
@@ -748,7 +668,7 @@ pub fn run_cylindrical_setup_simulation(
         r_stock: stock.r_stock.clone(),
         last_op_idx: stock.last_op_idx.clone(),
     }];
-    let mut diagnostics = Vec::new();
+    let mut coalescer = ViolationBatchCoalescer::default();
     let mut per_op_errors: Vec<crate::metrics::OperationErrorSnapshot> = Vec::new();
     let mut prev_vol = initial_vol;
 
@@ -768,7 +688,7 @@ pub fn run_cylindrical_setup_simulation(
             return Err(SimError::Cancelled);
         }
         let op = &input.operations[span.op_idx];
-        stock.sweep_segment(
+        stock.sweep_segment_coalesced(
             &span.segment,
             &profiles[span.op_idx].0,
             span.op_idx,
@@ -776,7 +696,7 @@ pub fn run_cylindrical_setup_simulation(
             span.global_seg_idx,
             span.t_start_sec,
             &input.verify_config,
-            &mut diagnostics,
+            &mut coalescer,
         );
 
         let completed = span_idx + 1;
@@ -825,6 +745,8 @@ pub fn run_cylindrical_setup_simulation(
                 )
                 .unwrap_or_else(|_| unreachable!())
             });
+
+    let diagnostics = coalescer.into_diagnostics();
 
     Ok(SetupSimulationResult {
         engine: crate::tridexel::SimEngineKind::Heightmap,
@@ -895,21 +817,14 @@ pub fn tessellate_cylindrical_stock_mesh_colored(
         let ct = (it * step_t) % nt;
         let idx = cu * nt + ct;
         match color_mode {
-            SimStockColorMode::Metallic => UNCUT_STOCK_RGBA,
-            SimStockColorMode::ByOperation => {
-                let op_idx = stock.last_op_idx[idx];
-                if op_idx == UNCUT_OP_IDX {
-                    UNCUT_STOCK_RGBA
-                } else {
-                    OPERATION_STOCK_PALETTE[usize::from(op_idx) % OPERATION_STOCK_PALETTE.len()]
-                }
-            }
+            SimStockColorMode::Metallic => op_color(stock.last_op_idx[idx], false, false),
+            SimStockColorMode::ByOperation => op_color(stock.last_op_idx[idx], true, false),
             SimStockColorMode::ErrorHeatmap {
                 tolerance_mm,
                 max_scale_mm,
             } => {
                 if !heatmap_active {
-                    return UNCUT_STOCK_RGBA;
+                    return RAW_STOCK_TOP_COLOR;
                 }
                 let r_tgt = stock.r_target[idx];
                 if r_tgt >= 0.0 && r_tgt.is_finite() {
@@ -1012,7 +927,7 @@ pub fn tessellate_cylindrical_stock_mesh_colored(
             let inv = 1.0 / (st as f32);
             [acc[0] * inv, acc[1] * inv, acc[2] * inv, 1.0]
         } else {
-            UNCUT_STOCK_RGBA
+            RAW_STOCK_SIDE_COLOR
         };
         let center_idx = vertices.len() as u32;
         vertices.push(SimColoredVertex {
@@ -1031,7 +946,7 @@ pub fn tessellate_cylindrical_stock_mesh_colored(
             let ring_color = if heatmap_active {
                 colors[ring_iu * st + it]
             } else {
-                UNCUT_STOCK_RGBA
+                RAW_STOCK_SIDE_COLOR
             };
             vertices.push(SimColoredVertex {
                 pos_mm: [p.x as f32, p.y as f32, p.z as f32],
@@ -1160,13 +1075,6 @@ fn rotate_vector_about_axis(
     rotate_point_about_axis(vec, DVec3::ZERO, axis, angle_deg, direction).normalize_or_zero()
 }
 
-#[inline]
-fn update_worst(slot: &mut Option<(f64, DVec3)>, excess: f64, loc: DVec3) {
-    if slot.is_none_or(|(prev, _)| excess > prev) {
-        *slot = Some((excess, loc));
-    }
-}
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -1183,7 +1091,9 @@ mod tests {
     use chip_tools::default_starter_tool_library;
 
     use super::*;
-    use crate::{MachineKinematicsConfig, SimVerificationConfig, run_setup_simulation};
+    use crate::{
+        MachineKinematicsConfig, SimIssueKind, SimVerificationConfig, run_setup_simulation,
+    };
 
     #[test]
     fn cylindrical_stock_turning_volume_and_chucked_square_bar_are_exact() {
@@ -1632,11 +1542,8 @@ mod tests {
         // Metallic mode must ignore target deviation and produce uniform raw stock gray
         let metal_mesh =
             tessellate_cylindrical_stock_mesh_colored(&stock, SimStockColorMode::Metallic, 0.0);
-        assert!(
-            metal_mesh
-                .vertices
-                .iter()
-                .all(|v| close(v.color_rgba, UNCUT_STOCK_RGBA))
-        );
+        assert!(metal_mesh.vertices.iter().all(|v| {
+            close(v.color_rgba, RAW_STOCK_TOP_COLOR) || close(v.color_rgba, RAW_STOCK_SIDE_COLOR)
+        }));
     }
 }

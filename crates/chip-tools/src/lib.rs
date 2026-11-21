@@ -3,6 +3,7 @@
 
 pub mod builtin;
 pub mod builtin_machines;
+pub mod envelope;
 pub mod feeds_speeds;
 pub mod fusion_import;
 pub mod machine;
@@ -16,6 +17,7 @@ pub use builtin_machines::{
     builtin_carvera_machine, builtin_carvera_z1_machine, builtin_milo_1_5_machine,
     builtin_milo_2_0_machine, builtin_voron_cascade_machine,
 };
+pub use envelope::{AnalyticCutterEnvelope, CutterEnvelopeShape};
 pub use feeds_speeds::{
     ChipThinningHint, CuttingPreset, SurfaceSpeedPresetSpec, chipload_from_feed,
     compute_adaptive_thinning_feed, compute_radial_chip_thinning, feed_from_chipload,

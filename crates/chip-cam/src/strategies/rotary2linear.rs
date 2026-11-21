@@ -5,14 +5,15 @@
 //! every angular station in parallel (`rayon`), generating crash-free continuous spiral or axial-parallel
 //! rotary toolpaths with multi-depth radial roughing.
 
-use chip_cad::{MeshBvh, MeshTriangle};
-use chip_math::{Aabb3, DVec3};
+use chip_math::DVec3;
 use rayon::prelude::*;
 
 use crate::{
     cl_data::MotionRole,
     params::{Rotary2LinearParams, RotaryCutDirection, RotaryPatternMode},
-    rotary::{ResolvedRotaryConfig, RotaryAxisKind},
+    rotary::{
+        ResolvedRotaryConfig, RotaryAxisKind, build_rotated_strip_mesh, resolve_rotary_axial_window,
+    },
     strategies::{StrategyExecContext, compute_z_levels},
     surface3d::{
         SurfaceCutterProfile, SurfaceMesh3D, drop_cutter_z_with_scratch, stepover_for_cusp_height,
@@ -52,40 +53,15 @@ pub fn generate_rotary2linear(
         });
     }
 
-    // Determine axial span [u_start, u_end] trimmed by margins, clamped to model & clear of chuck
-    let (_, _, u_vec) = rot.axis.basis();
-    let mut mesh_u_min = f64::INFINITY;
-    let mut mesh_u_max = f64::NEG_INFINITY;
-    for &v in &base_mesh.vertices_wcs {
-        let u = v.dot(u_vec);
-        mesh_u_min = mesh_u_min.min(u);
-        mesh_u_max = mesh_u_max.max(u);
-    }
-
     let tool_d = ctx.tool.geometry.cutting_diameter_mm().max(0.1);
-    let tool_r = 0.5 * tool_d;
-    let chuck_guard = tool_r + 0.5;
-
-    let mut u_start = rot.stock_u_min + params.axial_margin_start.value_mm.max(0.0);
-    let mut u_end = rot.stock_u_max - params.axial_margin_end.value_mm.max(0.0);
-    if mesh_u_min.is_finite() && mesh_u_max.is_finite() {
-        u_start = u_start.max(mesh_u_min);
-        u_end = u_end.min(mesh_u_max);
-    }
-    if rot.chuck_end_positive {
-        u_end = u_end.min(rot.chuck_u_min - chuck_guard);
-    } else {
-        u_start = u_start.max(rot.chuck_u_max + chuck_guard);
-    }
-
-    if !u_start.is_finite() || !u_end.is_finite() || u_end <= u_start + 1e-3 {
-        return Err(CamError::InvalidRotarySetup {
-            op_name: ctx.op.name.clone(),
-            reason: format!(
-                "Axial machining window [{u_start:.2}, {u_end:.2}] mm is empty after chuck clearance and margins"
-            ),
-        });
-    }
+    let (u_start, u_end) = resolve_rotary_axial_window(
+        &rot,
+        &base_mesh,
+        tool_d,
+        params.axial_margin_start.value_mm,
+        params.axial_margin_end.value_mm,
+        &ctx.op.name,
+    )?;
 
     // Angular window [start_deg, end_deg]
     let start_deg = params.start_angle_deg;
@@ -313,77 +289,6 @@ fn centerline_wcs(rot: &ResolvedRotaryConfig, u_axial: f64, radius_mm: f64) -> D
             DVec3::new(u_axial, rot.center_wcs.y, z_wcs)
         }
         RotaryAxisKind::YAxis => DVec3::new(rot.center_wcs.x, u_axial, z_wcs),
-    }
-}
-
-/// Builds a rotated [`SurfaceMesh3D`] pre-filtered to ONLY triangles intersecting the exact
-/// centerline cutter strip (`|cross - center| <= r_max`, `u ∈ [u_start - r_max, u_end + r_max]`,
-/// `max.z >= z_floor`), eliminating ~85% of unreachable triangles prior to BVH construction with
-/// zero approximation error.
-fn build_rotated_strip_mesh(
-    base: &SurfaceMesh3D,
-    rot: &ResolvedRotaryConfig,
-    theta_deg: f64,
-    u_start: f64,
-    u_end: f64,
-    r_max: f64,
-    z_floor: f64,
-) -> SurfaceMesh3D {
-    let vertices_wcs: Vec<DVec3> = base
-        .vertices_wcs
-        .iter()
-        .map(|&v| rot.rotate_point_wcs(v, theta_deg))
-        .collect();
-
-    let pad = r_max + 1e-4;
-    let u_lo = u_start - pad;
-    let u_hi = u_end + pad;
-    let z_lo = z_floor - 1e-4;
-
-    let mut aabb_wcs = Aabb3::EMPTY;
-    let mut triangles = Vec::with_capacity(base.triangles.len() / 4);
-    for tri in &base.triangles {
-        let [i0, i1, i2] = tri.indices;
-        let v0 = vertices_wcs[i0 as usize];
-        let v1 = vertices_wcs[i1 as usize];
-        let v2 = vertices_wcs[i2 as usize];
-        let tri_min = v0.min(v1).min(v2);
-        let tri_max = v0.max(v1).max(v2);
-        if tri_max.z < z_lo {
-            continue;
-        }
-        let overlaps_strip = match rot.axis {
-            RotaryAxisKind::XAxis | RotaryAxisKind::ZAxis => {
-                tri_max.x >= u_lo
-                    && tri_min.x <= u_hi
-                    && tri_max.y >= rot.center_wcs.y - pad
-                    && tri_min.y <= rot.center_wcs.y + pad
-            }
-            RotaryAxisKind::YAxis => {
-                tri_max.y >= u_lo
-                    && tri_min.y <= u_hi
-                    && tri_max.x >= rot.center_wcs.x - pad
-                    && tri_min.x <= rot.center_wcs.x + pad
-            }
-        };
-        if !overlaps_strip {
-            continue;
-        }
-        let n = (v1 - v0).cross(v2 - v0).normalize_or_zero();
-        let tri_aabb = Aabb3::new(tri_min, tri_max);
-        aabb_wcs = aabb_wcs.union(&tri_aabb);
-        triangles.push(MeshTriangle {
-            indices: tri.indices,
-            normal: n,
-            aabb: tri_aabb,
-        });
-    }
-    let bvh = MeshBvh::build(&triangles);
-    SurfaceMesh3D {
-        vertices_wcs,
-        triangles,
-        aabb_wcs,
-        bvh,
     }
 }
 

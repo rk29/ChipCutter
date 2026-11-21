@@ -1,40 +1,12 @@
 use crate::{
     cutter_profile::SimColoredVertex,
+    mesher_common::{RAW_STOCK_SIDE_COLOR, op_color as stock_cell_color},
     metrics::{SimStockColorMode, deviation_to_heatmap_rgba},
 };
 
+pub use crate::mesher_common::OPERATION_STOCK_PALETTE;
+
 use super::{HeightfieldStock, SimStockMesh, UNCUT_OP_IDX};
-
-/// Distinct operation color palette for **Color Stock by Operation / Tool** (`06-simulation.md` §3).
-pub const OPERATION_STOCK_PALETTE: [[f32; 4]; 8] = [
-    [0.34, 0.66, 0.94, 1.0], // Azure (Op 1 - e.g. Facing)
-    [0.24, 0.80, 0.62, 1.0], // Mint Emerald (Op 2 - Pocket)
-    [0.92, 0.64, 0.26, 1.0], // Warm Amber (Op 3 - Step)
-    [0.72, 0.48, 0.94, 1.0], // Violet (Op 4 - Bore)
-    [0.94, 0.44, 0.56, 1.0], // Coral Rose (Op 5 - Drill)
-    [0.28, 0.80, 0.86, 1.0], // Cyan Teal (Op 6 - Contour)
-    [0.86, 0.80, 0.30, 1.0], // Citrine (Op 7 - Chamfer)
-    [0.58, 0.78, 0.40, 1.0], // Lime Sage (Op 8+)
-];
-
-const RAW_STOCK_TOP_COLOR: [f32; 4] = [0.58, 0.62, 0.67, 1.0];
-const RAW_STOCK_SIDE_COLOR: [f32; 4] = [0.50, 0.54, 0.59, 1.0];
-const MACHINED_METAL_COLOR: [f32; 4] = [0.76, 0.80, 0.85, 1.0];
-
-#[inline]
-fn stock_cell_color(op_idx: u16, color_by_op: bool, is_side_wall: bool) -> [f32; 4] {
-    if op_idx == UNCUT_OP_IDX {
-        if is_side_wall {
-            RAW_STOCK_SIDE_COLOR
-        } else {
-            RAW_STOCK_TOP_COLOR
-        }
-    } else if color_by_op {
-        OPERATION_STOCK_PALETTE[(op_idx as usize) % OPERATION_STOCK_PALETTE.len()]
-    } else {
-        MACHINED_METAL_COLOR
-    }
-}
 
 /// Triangulates a [`HeightfieldStock`] into a crisp-walled 3D solid mesh with greedy X-row quad
 /// merging on flat regions, sharp vertical step risers on pocket/boss/tab walls, and outer side walls.

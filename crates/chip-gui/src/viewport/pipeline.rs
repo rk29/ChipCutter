@@ -5,9 +5,8 @@ use wgpu::util::DeviceExt as _;
 use super::{
     gpu_types::{
         COLOR_FORMAT, DEPTH_FORMAT, EdgeInstanceGpu, FrameTargets, GrowableGpuBuffer,
-        OverlayVertexGpu, SAMPLE_COUNT, SimVertexGpu, SolidVertexGpu, UploadedCadGpu,
-        UploadedSimIndexedMeshGpu, UploadedToolpathsGpu, ViewportUniformsGpu,
-        upload_sim_indexed_mesh,
+        GrowableSimIndexedMeshGpu, OverlayVertexGpu, SAMPLE_COUNT, SimVertexGpu, SolidVertexGpu,
+        UploadedCadGpu, UploadedToolpathsGpu, ViewportUniformsGpu,
     },
     scene_builders::{
         HighlightState, adaptive_grid_steps, build_edge_and_scene_instances,
@@ -34,8 +33,8 @@ pub struct ViewportRenderer {
     egui_tex_id: Option<egui::TextureId>,
     uploaded_cad: Option<UploadedCadGpu>,
     uploaded_toolpaths: Option<UploadedToolpathsGpu>,
-    uploaded_sim_stock: Option<UploadedSimIndexedMeshGpu>,
-    uploaded_sim_tool: Option<UploadedSimIndexedMeshGpu>,
+    uploaded_sim_stock: GrowableSimIndexedMeshGpu,
+    uploaded_sim_tool: GrowableSimIndexedMeshGpu,
     overlay_buf: GrowableGpuBuffer,
     edge_buf: GrowableGpuBuffer,
 }
@@ -367,8 +366,14 @@ impl ViewportRenderer {
             egui_tex_id: None,
             uploaded_cad: None,
             uploaded_toolpaths: None,
-            uploaded_sim_stock: None,
-            uploaded_sim_tool: None,
+            uploaded_sim_stock: GrowableSimIndexedMeshGpu::new(
+                "chip_sim_stock_vbuf",
+                "chip_sim_stock_ibuf",
+            ),
+            uploaded_sim_tool: GrowableSimIndexedMeshGpu::new(
+                "chip_sim_tool_vbuf",
+                "chip_sim_tool_ibuf",
+            ),
             overlay_buf: GrowableGpuBuffer::new("chip_overlay_tris", wgpu::BufferUsages::VERTEX),
             edge_buf: GrowableGpuBuffer::new("chip_edge_instances", wgpu::BufferUsages::VERTEX),
         }
@@ -530,49 +535,30 @@ impl ViewportRenderer {
             });
         }
 
-        // Upload Pass #6 3D machined stock mesh & 3D revolved cutter assembly when revision changes
-        match &highlight.sim_stock_mesh {
-            Some((rev, stock_mesh)) => {
-                if self
-                    .uploaded_sim_stock
-                    .as_ref()
-                    .is_none_or(|u| u.revision != *rev)
-                {
-                    self.uploaded_sim_stock = upload_sim_indexed_mesh(
-                        device,
-                        *rev,
-                        &stock_mesh.vertices,
-                        &stock_mesh.indices,
-                        "chip_sim_stock",
-                    );
-                }
-            }
-            None => {
-                self.uploaded_sim_stock = None;
-            }
-        }
+        // Upload Pass #6 3D machined stock mesh & 3D revolved cutter assembly into reusable GPU buffers
+        self.uploaded_sim_stock.sync(
+            device,
+            queue,
+            highlight
+                .sim_stock_mesh
+                .as_ref()
+                .map(|(rev, m)| (*rev, m.vertices.as_slice(), m.indices.as_slice())),
+        );
 
         let mut tool_tip_wcs = [0.0_f32; 4];
-        match &highlight.sim_tool_mesh {
-            Some((rev, tool_mesh, tip_wcs)) => {
-                tool_tip_wcs = [tip_wcs.x as f32, tip_wcs.y as f32, tip_wcs.z as f32, 1.0];
-                if self
-                    .uploaded_sim_tool
-                    .as_ref()
-                    .is_none_or(|u| u.revision != *rev)
-                {
-                    self.uploaded_sim_tool = upload_sim_indexed_mesh(
-                        device,
-                        *rev,
-                        &tool_mesh.vertices,
-                        &tool_mesh.indices,
-                        "chip_sim_tool",
-                    );
-                }
-            }
-            None => {
-                self.uploaded_sim_tool = None;
-            }
+        if let Some((rev, tool_mesh, tip_wcs)) = &highlight.sim_tool_mesh {
+            tool_tip_wcs = [tip_wcs.x as f32, tip_wcs.y as f32, tip_wcs.z as f32, 1.0];
+            self.uploaded_sim_tool.sync(
+                device,
+                queue,
+                Some((
+                    *rev,
+                    tool_mesh.vertices.as_slice(),
+                    tool_mesh.indices.as_slice(),
+                )),
+            );
+        } else {
+            self.uploaded_sim_tool.clear();
         }
 
         let (vp, inv_vp, eye, view) = camera.gpu_matrices(w, h);
@@ -580,6 +566,7 @@ impl ViewportRenderer {
         let wcs_l2w = dmat4_to_f32_2d(highlight.wcs_frame.to_dmat4_local_to_world());
         let wcs_w2l = dmat4_to_f32_2d(highlight.wcs_frame.to_dmat4_world_to_local());
         let cad_model = dmat4_to_f32_2d(highlight.cad_world_transform());
+        let stock_model = dmat4_to_f32_2d(highlight.stock_model_wcs_transform());
 
         let tok = crate::theme::ThemeTokens::for_theme(highlight.theme);
         let uniforms = ViewportUniformsGpu {
@@ -589,6 +576,7 @@ impl ViewportRenderer {
             wcs_world_to_local: wcs_w2l,
             wcs_local_to_world: wcs_l2w,
             cad_model,
+            stock_model,
             camera_pos: [eye.x, eye.y, eye.z, 1.0],
             viewport_and_grid: [w as f32, h as f32, minor_mm, major_mm],
             pick_flags: [
@@ -660,17 +648,16 @@ impl ViewportRenderer {
             pass.draw(0..3, 0..1);
 
             // 2A / Pass #6A: Shaded 3D Machined Stock Mesh (when simulation stock view is active)
-            let showing_sim_stock = if let Some(sim_stock_gpu) = &self.uploaded_sim_stock
-                && sim_stock_gpu.index_count > 0
-            {
-                pass.set_pipeline(&self.sim_stock_pipeline);
-                pass.set_vertex_buffer(0, sim_stock_gpu.vertex_buf.slice(..));
-                pass.set_index_buffer(sim_stock_gpu.index_buf.slice(..), wgpu::IndexFormat::Uint32);
-                pass.draw_indexed(0..sim_stock_gpu.index_count, 0, 0..1);
-                true
-            } else {
-                false
-            };
+            let showing_sim_stock =
+                if let Some((vbuf, ibuf, icount)) = self.uploaded_sim_stock.active() {
+                    pass.set_pipeline(&self.sim_stock_pipeline);
+                    pass.set_vertex_buffer(0, vbuf.slice(..));
+                    pass.set_index_buffer(ibuf.slice(..), wgpu::IndexFormat::Uint32);
+                    pass.draw_indexed(0..icount, 0, 0..1);
+                    true
+                } else {
+                    false
+                };
 
             // 2B. Shaded B-Rep solid (opaque normally, or translucent ghost when comparing against machined stock)
             if (!showing_sim_stock || highlight.ghost_part)
@@ -688,13 +675,11 @@ impl ViewportRenderer {
             }
 
             // Pass #6B: Animated 3D Revolved Cutter + Shank + Collet/Holder Assembly
-            if let Some(sim_tool_gpu) = &self.uploaded_sim_tool
-                && sim_tool_gpu.index_count > 0
-            {
+            if let Some((vbuf, ibuf, icount)) = self.uploaded_sim_tool.active() {
                 pass.set_pipeline(&self.sim_tool_pipeline);
-                pass.set_vertex_buffer(0, sim_tool_gpu.vertex_buf.slice(..));
-                pass.set_index_buffer(sim_tool_gpu.index_buf.slice(..), wgpu::IndexFormat::Uint32);
-                pass.draw_indexed(0..sim_tool_gpu.index_count, 0, 0..1);
+                pass.set_vertex_buffer(0, vbuf.slice(..));
+                pass.set_index_buffer(ibuf.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..icount, 0, 0..1);
             }
 
             // 3. Translucent Stock & Z-Height Planes
@@ -1396,6 +1381,238 @@ mod tests {
         assert!(
             diff_vs_ref <= 16,
             "ghost model shaded solid + B-Rep edges at sim_rotary_deg=90° must match pre-rotated reference model (got {diff_vs_ref} differing pixels)"
+        );
+    }
+
+    #[test]
+    fn growable_sim_stock_buffers_reuse_allocations_and_gpu_stock_model_rotates_cylindrical_stock()
+    {
+        use chip_cad::CadDocument;
+        use chip_cam::{
+            AxisAnchor, BoxAnchor27, MotionRole, RotaryAxisKind, RotaryDriveMode, StockAxis,
+            StockConfig, ToolpathBuilder, WcsOriginMode,
+        };
+        use chip_math::{DMat4, DVec3, ParamLength};
+        use chip_sim::{
+            MachineKinematicsConfig, SetupSimulationInput, SimOperationInput, SimResolution,
+            SimStockColorMode, SimVerificationConfig, run_setup_simulation,
+            tessellate_cylindrical_stock_mesh_colored,
+        };
+        use chip_tools::default_starter_tool_library;
+
+        let lib = default_starter_tool_library();
+        let flat_6mm = &lib.tools[0];
+
+        let mut setup = Setup::new("s_rot_gpu_test", "Rotary A", WorkOffsetSlot::G54);
+        setup.wcs.origin = WcsOriginMode::StockBoxPoint {
+            anchor: BoxAnchor27 {
+                x: AxisAnchor::Center,
+                y: AxisAnchor::Center,
+                z: AxisAnchor::Center,
+            },
+        };
+        setup.stock = StockConfig::FixedCylinder {
+            axis: StockAxis::X,
+            diameter: ParamLength::from_mm(40.0),
+            length: ParamLength::from_mm(80.0),
+            axial_top_offset: ParamLength::from_mm(0.0),
+        };
+        setup.rotary.mode = RotaryDriveMode::TwoLinearPlusRotary;
+        setup.rotary.axis = RotaryAxisKind::XAxis;
+
+        let doc = CadDocument::empty();
+        let resolved = setup.resolve(&doc, DisplayUnit::Millimeter).unwrap();
+
+        // Carve a deep asymmetric flat/flute along +Z (A=0°) so 0° vs +90° is strongly distinct
+        let mut b = ToolpathBuilder::new("op_rot_flat");
+        b.rotary_rapid_to(DVec3::new(-30.0, 0.0, 28.0), 0.0);
+        b.rotary_linear_to(
+            DVec3::new(-30.0, 0.0, 12.0),
+            0.0,
+            400.0,
+            12.0,
+            MotionRole::Plunge,
+        );
+        b.rotary_linear_to(
+            DVec3::new(30.0, 0.0, 12.0),
+            0.0,
+            600.0,
+            12.0,
+            MotionRole::Cut,
+        );
+        let tp = b.finish();
+
+        let sim = run_setup_simulation(&SetupSimulationInput {
+            doc: &doc,
+            setup: &resolved,
+            target_bodies: &[],
+            operations: &[SimOperationInput {
+                op_id: "op_rot_flat",
+                op_name: "Asymmetric Axial Flute",
+                tool: flat_6mm,
+                fallback_spindle_rpm: 12_000.0,
+                intentional_edge_break_mm: 0.0,
+                toolpath: &tp,
+            }],
+            resolution: SimResolution::Standard,
+            kinematics: MachineKinematicsConfig::default(),
+            verify_config: SimVerificationConfig::default(),
+            cancel: None,
+        })
+        .unwrap();
+
+        let cyl = sim
+            .final_cylindrical_stock
+            .as_ref()
+            .expect("expected CylindricalStock");
+        let angle_deg = 90.0;
+        let mesh_local_0 = Arc::new(tessellate_cylindrical_stock_mesh_colored(
+            cyl,
+            SimStockColorMode::ByOperation,
+            0.0,
+        ));
+        let mesh_cpu_rot90 = Arc::new(tessellate_cylindrical_stock_mesh_colored(
+            cyl,
+            SimStockColorMode::ByOperation,
+            angle_deg,
+        ));
+
+        // 1. Verify `stock_model_wcs_transform` is identity for 3-axis (rotary=None) and 0°,
+        // and rotates around the rotary centerline for 4th-axis Cylindrical stock.
+        let hl_3axis = HighlightState {
+            wcs_frame: resolved.frame,
+            rotary: None,
+            sim_rotary_deg: 90.0,
+            ..HighlightState::default()
+        };
+        assert_eq!(hl_3axis.stock_model_wcs_transform(), DMat4::IDENTITY);
+
+        let base_hl = HighlightState {
+            wcs_frame: resolved.frame,
+            rotary: resolved.rotary,
+            show_stock: false,
+            show_grid: false,
+            ..HighlightState::default()
+        };
+        assert_eq!(base_hl.stock_model_wcs_transform(), DMat4::IDENTITY);
+
+        // 2. Verify reusable `GrowableGpuBuffer` stock uploads on a live Vulkan `ViewportRenderer`
+        // across multiple frames & revisions without reallocating GPU buffers, and verify that
+        // GPU `stock_model` rotation matches CPU pre-rotated reference pixels!
+        let instance =
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::default(),
+            compatible_surface: None,
+            force_fallback_adapter: false,
+            apply_limit_buckets: false,
+        }))
+        .unwrap();
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).unwrap();
+
+        let mut vp = ViewportRenderer::new(&device);
+        vp.targets = Some(FrameTargets::create(&device, 320, 240));
+
+        let mut cam = CadCamera::default();
+        cam.fit_aabb(&chip_math::Aabb3::new(
+            DVec3::new(-50.0, -40.0, -40.0),
+            DVec3::new(50.0, 40.0, 40.0),
+        ));
+
+        let mut hl_unrot = base_hl.clone();
+        hl_unrot.sim_stock_mesh = Some((1, Arc::clone(&mesh_local_0)));
+        hl_unrot.sim_rotary_deg = 0.0;
+
+        let mut hl_gpu90 = base_hl.clone();
+        hl_gpu90.sim_stock_mesh = Some((1, Arc::clone(&mesh_local_0)));
+        hl_gpu90.sim_rotary_deg = angle_deg;
+
+        let mut hl_rev2 = hl_gpu90.clone();
+        hl_rev2.sim_stock_mesh = Some((2, Arc::clone(&mesh_local_0)));
+
+        // Frame 1: initial upload of rev 1
+        vp.render_internal(
+            &device,
+            &queue,
+            &cam,
+            Some((&doc, 1)),
+            &hl_unrot,
+            DisplayUnit::Millimeter,
+        );
+        let v_cap_1 = vp.uploaded_sim_stock.vertex_capacity_bytes();
+        let i_cap_1 = vp.uploaded_sim_stock.index_capacity_bytes();
+        assert!(v_cap_1 > 0 && i_cap_1 > 0);
+        assert_eq!(vp.uploaded_sim_stock.uploaded_revision(), Some(1));
+
+        // Frame 2: same rev 1 with `sim_rotary_deg = 90°` -> zero re-upload, zero reallocation!
+        vp.render_internal(
+            &device,
+            &queue,
+            &cam,
+            Some((&doc, 1)),
+            &hl_gpu90,
+            DisplayUnit::Millimeter,
+        );
+        assert_eq!(vp.uploaded_sim_stock.vertex_capacity_bytes(), v_cap_1);
+        assert_eq!(vp.uploaded_sim_stock.index_capacity_bytes(), i_cap_1);
+        assert_eq!(vp.uploaded_sim_stock.uploaded_revision(), Some(1));
+
+        // Frame 3: bumped rev 2 of equal size -> reuses existing GrowableGpuBuffer allocations!
+        vp.render_internal(
+            &device,
+            &queue,
+            &cam,
+            Some((&doc, 1)),
+            &hl_rev2,
+            DisplayUnit::Millimeter,
+        );
+        assert_eq!(vp.uploaded_sim_stock.vertex_capacity_bytes(), v_cap_1);
+        assert_eq!(vp.uploaded_sim_stock.index_capacity_bytes(), i_cap_1);
+        assert_eq!(vp.uploaded_sim_stock.uploaded_revision(), Some(2));
+
+        // Frame 4: pixel-accurate verification of GPU `stock_model` 90° vs CPU pre-rotated 90° & unrotated 0°
+        let mut hl_cpu90 = base_hl;
+        hl_cpu90.sim_stock_mesh = Some((1, mesh_cpu_rot90));
+        hl_cpu90.sim_rotary_deg = 0.0;
+
+        let png_gpu90 = render_offscreen_png(&doc, &cam, &hl_gpu90, 320, 240).unwrap();
+        let png_cpu90 = render_offscreen_png(&doc, &cam, &hl_cpu90, 320, 240).unwrap();
+        let png_unrot = render_offscreen_png(&doc, &cam, &hl_unrot, 320, 240).unwrap();
+
+        let img_gpu90 = image::load_from_memory(&png_gpu90).unwrap().to_rgba8();
+        let img_cpu90 = image::load_from_memory(&png_cpu90).unwrap().to_rgba8();
+        let img_unrot = image::load_from_memory(&png_unrot).unwrap().to_rgba8();
+
+        let mut diff_vs_cpu90 = 0usize;
+        let mut diff_vs_unrot = 0usize;
+        for (p_gpu, (p_cpu, p_unrot)) in img_gpu90
+            .pixels()
+            .zip(img_cpu90.pixels().zip(img_unrot.pixels()))
+        {
+            let max_d_cpu = (0..4)
+                .map(|c| p_gpu[c].abs_diff(p_cpu[c]))
+                .max()
+                .unwrap_or(0);
+            if max_d_cpu > 2 {
+                diff_vs_cpu90 += 1;
+            }
+            let max_d_unrot = (0..4)
+                .map(|c| p_gpu[c].abs_diff(p_unrot[c]))
+                .max()
+                .unwrap_or(0);
+            if max_d_unrot > 8 {
+                diff_vs_unrot += 1;
+            }
+        }
+
+        assert!(
+            diff_vs_unrot > 500,
+            "GPU stock_model rotation at 90° must visibly rotate machined flute relative to 0° (only {diff_vs_unrot} pixels changed)"
+        );
+        assert!(
+            diff_vs_cpu90 <= 16,
+            "GPU stock_model rotation at 90° must match CPU pre-rotated cylindrical stock reference (got {diff_vs_cpu90} differing pixels)"
         );
     }
 }

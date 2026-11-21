@@ -1,4 +1,4 @@
-use chip_tools::{CutterGeometry, Tool};
+use chip_tools::{AnalyticCutterEnvelope, CutterEnvelopeShape, CutterGeometry, Tool};
 use serde::{Deserialize, Serialize};
 
 /// Material zone of a 3D revolved cutter assembly mesh.
@@ -9,8 +9,10 @@ pub enum ToolMeshZone {
     ColletHolder,
 }
 
-/// UI-agnostic 3D lit vertex (`pos_mm`, `normal`, `color_rgba`) ready for direct GPU upload.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// UI-agnostic 3D lit vertex (`pos_mm`, `normal`, `color_rgba`, 40 bytes) ready for zero-copy
+/// `bytemuck::cast_slice` GPU upload.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct SimColoredVertex {
     pub pos_mm: [f32; 3],
     pub normal: [f32; 3],
@@ -24,32 +26,8 @@ pub struct SimToolMesh {
     pub indices: Vec<u32>,
 }
 
-#[derive(Debug, Clone, Copy)]
-enum TipEnvelopeKind {
-    Flat,
-    BullNose {
-        flat_r_mm: f64,
-        corner_r_mm: f64,
-    },
-    Ball {
-        ball_r_mm: f64,
-    },
-    Chamfer {
-        tip_r_mm: f64,
-        tan_half_angle: f64,
-    },
-    Drill {
-        tan_half_angle: f64,
-    },
-    Face {
-        flat_r_mm: f64,
-        bottom_r_mm: f64,
-        corner_r_mm: f64,
-    },
-    ThreadMill,
-}
-
-/// Exact `f64` radial profile `P(r)` and shank/holder envelope of a [`Tool`] (`06-simulation.md`).
+/// Exact `f64` radial profile `P(r)` and shank/holder envelope of a [`Tool`] (`06-simulation.md`),
+/// delegating all analytic cutter profile math to [`AnalyticCutterEnvelope`].
 #[derive(Debug, Clone, Copy)]
 pub struct RadialCutterProfile {
     pub cutting_radius_mm: f64,
@@ -74,141 +52,43 @@ pub struct RadialCutterProfile {
     pub thread_angle_deg: f64,
     /// `true` when constructed from [`CutterGeometry::ThreadMill`] (non-monotonic undercut profile).
     pub is_thread_mill: bool,
-    kind: TipEnvelopeKind,
+    envelope: AnalyticCutterEnvelope,
 }
 
 impl RadialCutterProfile {
     /// Builds the exact radial height function `P(r)` and holder clearance envelope for `tool`.
     pub fn from_tool(tool: &Tool) -> Self {
-        let flute_length_mm = tool.geometry.flute_length_mm().max(0.1);
-        let overall_length_mm = tool.geometry.overall_length_mm().max(flute_length_mm);
+        let envelope = AnalyticCutterEnvelope::from_geometry(&tool.geometry);
+        let flute_length_mm = envelope.flute_length_mm();
+        let overall_length_mm = envelope.overall_length_mm();
         let stickout_length_mm = tool.stickout_length_mm.max(flute_length_mm);
-        let shank_radius_mm = (0.5 * tool.geometry.shank_diameter_mm()).max(0.25);
+        let shank_radius_mm = envelope.shank_radius_mm();
+        let cutting_radius_mm = envelope.cutting_radius_mm();
+        let neck_radius_mm = envelope.neck_radius_mm();
+        let neck_length_mm = envelope.effective_reach_mm();
+        let is_thread_mill = envelope.is_thread_mill();
 
-        let mut neck_radius_mm = 0.0;
-        let mut neck_length_mm = flute_length_mm;
-        let mut thread_pitch_mm = 0.0;
-        let mut teeth_count = 0u32;
-        let mut thread_angle_deg = 0.0;
-        let mut is_thread_mill = false;
+        let (thread_pitch_mm, teeth_count, thread_angle_deg) = match envelope.shape() {
+            CutterEnvelopeShape::ThreadMill {
+                pitch_mm,
+                teeth_count,
+                thread_angle_deg,
+                ..
+            } => (pitch_mm, teeth_count, thread_angle_deg),
+            _ => (0.0, 0, 0.0),
+        };
 
-        let (cutting_radius_mm, is_center_cutting, max_safe_plunge_depth_mm, kind) =
-            match tool.geometry {
-                CutterGeometry::FlatEndmill { diameter_mm, .. } => {
-                    let r = (0.5 * diameter_mm).max(0.05);
-                    (
-                        r,
-                        true,
-                        (1.5 * diameter_mm).min(flute_length_mm),
-                        TipEnvelopeKind::Flat,
-                    )
-                }
-                CutterGeometry::BullNoseEndmill {
-                    diameter_mm,
-                    corner_radius_mm,
-                    ..
-                } => {
-                    let r = (0.5 * diameter_mm).max(0.05);
-                    let rc = corner_radius_mm.clamp(0.0, r);
-                    let flat_r = (r - rc).max(0.0);
-                    (
-                        r,
-                        true,
-                        (1.5 * diameter_mm).min(flute_length_mm),
-                        TipEnvelopeKind::BullNose {
-                            flat_r_mm: flat_r,
-                            corner_r_mm: rc,
-                        },
-                    )
-                }
-                CutterGeometry::BallEndmill { diameter_mm, .. } => {
-                    let r = (0.5 * diameter_mm).max(0.05);
-                    (
-                        r,
-                        true,
-                        (1.5 * diameter_mm).min(flute_length_mm),
-                        TipEnvelopeKind::Ball { ball_r_mm: r },
-                    )
-                }
-                CutterGeometry::ChamferMill {
-                    diameter_mm,
-                    tip_diameter_mm,
-                    included_angle_deg,
-                    ..
-                } => {
-                    let r = (0.5 * diameter_mm).max(0.05);
-                    let tip_r = (0.5 * tip_diameter_mm).clamp(0.0, r);
-                    let half_rad = (0.5 * included_angle_deg).clamp(1.0, 89.5).to_radians();
-                    (
-                        r,
-                        true,
-                        flute_length_mm,
-                        TipEnvelopeKind::Chamfer {
-                            tip_r_mm: tip_r,
-                            tan_half_angle: half_rad.tan().max(1e-6),
-                        },
-                    )
-                }
-                CutterGeometry::TwistDrill {
-                    diameter_mm,
-                    point_angle_deg,
-                    ..
-                } => {
-                    let r = (0.5 * diameter_mm).max(0.05);
-                    let half_rad = (0.5 * point_angle_deg).clamp(5.0, 89.5).to_radians();
-                    (
-                        r,
-                        true,
-                        flute_length_mm,
-                        TipEnvelopeKind::Drill {
-                            tan_half_angle: half_rad.tan().max(1e-6),
-                        },
-                    )
-                }
-                CutterGeometry::FaceMill {
-                    cutting_diameter_mm,
-                    outside_diameter_mm,
-                    corner_radius_mm,
-                    ..
-                } => {
-                    let bottom_r = (0.5 * cutting_diameter_mm).max(0.1);
-                    let outer_r = (0.5 * outside_diameter_mm).max(bottom_r);
-                    let rc = corner_radius_mm.clamp(0.0, bottom_r);
-                    let flat_r = (bottom_r - rc).max(0.0);
-                    (
-                        outer_r,
-                        false,
-                        0.0,
-                        TipEnvelopeKind::Face {
-                            flat_r_mm: flat_r,
-                            bottom_r_mm: bottom_r,
-                            corner_r_mm: rc,
-                        },
-                    )
-                }
-                CutterGeometry::ThreadMill {
-                    diameter_mm,
-                    neck_diameter_mm,
-                    neck_length_mm: tm_neck_len,
-                    pitch_mm,
-                    teeth_count: tm_teeth,
-                    thread_angle_deg: tm_angle,
-                    ..
-                } => {
-                    let r = (0.5 * diameter_mm).max(0.05);
-                    neck_radius_mm = (0.5 * neck_diameter_mm).clamp(0.02, r);
-                    neck_length_mm = tm_neck_len.max(flute_length_mm);
-                    thread_pitch_mm = pitch_mm.max(0.05);
-                    teeth_count = tm_teeth.max(1);
-                    thread_angle_deg = tm_angle.clamp(29.0, 90.0);
-                    is_thread_mill = true;
-                    (r, false, 0.0, TipEnvelopeKind::ThreadMill)
-                }
-            };
-
-        if !is_thread_mill {
-            neck_radius_mm = cutting_radius_mm;
-        }
+        let (is_center_cutting, max_safe_plunge_depth_mm) = match tool.geometry {
+            CutterGeometry::FlatEndmill { diameter_mm, .. }
+            | CutterGeometry::BullNoseEndmill { diameter_mm, .. }
+            | CutterGeometry::BallEndmill { diameter_mm, .. } => {
+                (true, (1.5 * diameter_mm).min(flute_length_mm))
+            }
+            CutterGeometry::ChamferMill { .. } | CutterGeometry::TwistDrill { .. } => {
+                (true, flute_length_mm)
+            }
+            CutterGeometry::FaceMill { .. } | CutterGeometry::ThreadMill { .. } => (false, 0.0),
+        };
 
         let holder_radius_mm = (shank_radius_mm * 2.2).max(12.0).max(shank_radius_mm + 4.0);
 
@@ -227,60 +107,35 @@ impl RadialCutterProfile {
             teeth_count,
             thread_angle_deg,
             is_thread_mill,
-            kind,
+            envelope,
         }
+    }
+
+    /// Underlying shared [`AnalyticCutterEnvelope`] from `chip-tools`.
+    #[inline]
+    pub const fn envelope(&self) -> &AnalyticCutterEnvelope {
+        &self.envelope
     }
 
     /// Maximum usable reach above the cutter tip before the non-cutting shank begins:
     /// `neck_length_mm` for relieved-neck thread mills, `flute_length_mm` for all other cutters.
     #[inline]
     pub fn effective_reach_mm(&self) -> f64 {
-        if self.is_thread_mill {
-            self.neck_length_mm
-        } else {
-            self.flute_length_mm
-        }
+        self.envelope.effective_reach_mm()
     }
 
     /// Returns `(z_start, tooth_step, n_teeth, tan_half_angle)` describing the periodic V-tooth
     /// cutting band of a [`CutterGeometry::ThreadMill`] within `z ∈ [0, flute_length_mm]`.
     #[inline]
     pub(crate) fn thread_mill_tooth_band_params(&self) -> (f64, f64, u32, f64) {
-        let n = self.teeth_count.max(1);
-        let lf = self.flute_length_mm.max(1e-4);
-        let pitch = self.thread_pitch_mm.max(0.05);
-        let tooth_step = if n == 1 {
-            lf
-        } else if (n as f64) * pitch <= lf + 1e-6 {
-            pitch
-        } else {
-            lf / (n as f64)
-        };
-        let band_h = (n as f64) * tooth_step;
-        let z_start = 0.5 * (lf - band_h).max(0.0);
-        let half_rad = (0.5 * self.thread_angle_deg.clamp(29.0, 90.0)).to_radians();
-        let tan_half = half_rad.tan().max(1e-6);
-        (z_start, tooth_step, n, tan_half)
+        self.envelope.thread_mill_tooth_band_params()
     }
 
     /// Evaluates the V-tooth radial envelope `R_tooth(z_local)` inside `[0, flute_length_mm]`
     /// for a [`CutterGeometry::ThreadMill`], clamped to `[neck_radius_mm, cutting_radius_mm]`.
     #[inline]
     pub fn thread_mill_tooth_radius_at_z(&self, z_local: f64) -> f64 {
-        if !self.is_thread_mill {
-            return self.cutting_radius_mm;
-        }
-        let (z_start, tooth_step, n, tan_half) = self.thread_mill_tooth_band_params();
-        let band_h = (n as f64) * tooth_step;
-        if z_local < z_start - 1e-9 || z_local > z_start + band_h + 1e-9 {
-            return self.neck_radius_mm;
-        }
-        let local = (z_local - z_start).clamp(0.0, band_h);
-        let idx = ((local / tooth_step).floor() as u32).min(n - 1);
-        let z_crest = z_start + (idx as f64 + 0.5) * tooth_step;
-        let dz_from_crest = (z_local - z_crest).abs();
-        let r_flank = self.cutting_radius_mm - dz_from_crest / tan_half;
-        r_flank.clamp(self.neck_radius_mm, self.cutting_radius_mm)
+        self.envelope.thread_mill_tooth_radius_at_z(z_local)
     }
 
     /// Evaluates the height-dependent cutter radius `R(z_local)` at axial height `z_local` above
@@ -294,23 +149,7 @@ impl RadialCutterProfile {
     #[inline]
     pub fn cutter_radius_at_z(&self, z_local: f64) -> Option<f64> {
         let max_z = self.stickout_length_mm.max(self.effective_reach_mm());
-        if !z_local.is_finite() || z_local < -1e-9 || z_local > max_z + 1e-9 {
-            return None;
-        }
-        let z = z_local.clamp(0.0, max_z);
-        if self.is_thread_mill {
-            if z <= self.flute_length_mm + 1e-9 {
-                Some(self.thread_mill_tooth_radius_at_z(z))
-            } else if z <= self.neck_length_mm + 1e-9 {
-                Some(self.neck_radius_mm)
-            } else {
-                Some(self.shank_radius_mm)
-            }
-        } else if z <= self.flute_length_mm + 1e-9 {
-            self.radius_at_height_dz(z)
-        } else {
-            Some(self.shank_radius_mm)
-        }
+        self.envelope.cutter_radius_at_z_within(z_local, max_z)
     }
 
     /// Pushes exact local axial intervals `(dz_lo, dz_hi)` where a [`CutterGeometry::ThreadMill`]
@@ -324,103 +163,22 @@ impl RadialCutterProfile {
         r_mm: f64,
         out: &mut Vec<(f64, f64)>,
     ) {
-        if !self.is_thread_mill || r_mm < 0.0 || r_mm > self.cutting_radius_mm + 1e-9 {
-            return;
-        }
-        if r_mm <= self.neck_radius_mm + 1e-9 {
-            out.push((0.0, self.neck_length_mm));
-            return;
-        }
-        let (z_start, tooth_step, n, tan_half) = self.thread_mill_tooth_band_params();
-        let half_w = (self.cutting_radius_mm - r_mm).max(0.0) * tan_half;
-        for k in 0..n {
-            let z_k_lo = z_start + (k as f64) * tooth_step;
-            let z_k_hi = z_k_lo + tooth_step;
-            let z_crest = z_k_lo + 0.5 * tooth_step;
-            let lo = (z_crest - half_w).max(z_k_lo);
-            let hi = (z_crest + half_w).min(z_k_hi);
-            if hi > lo + 1e-9 {
-                out.push((lo, hi));
-            }
-        }
+        self.envelope
+            .push_thread_mill_axial_intervals_at_radius(r_mm, out);
     }
 
     /// Returns `cot(θ) = 1 / tan(θ)` when the cutter has a conical flute envelope (`Chamfer` / `V-Bit` / `Drill`),
     /// enabling closed-form analytical 3D V-carve stationary-point sweeping in `sweeper.rs`.
     #[inline]
     pub fn conical_slope_cot_theta(&self) -> Option<f64> {
-        match self.kind {
-            TipEnvelopeKind::Chamfer { tan_half_angle, .. }
-            | TipEnvelopeKind::Drill { tan_half_angle } => Some(1.0 / tan_half_angle.max(1e-6)),
-            _ => None,
-        }
+        self.envelope.conical_slope_cot()
     }
 
     /// Evaluates axial offset `dz >= 0` from the cutter tip `(0, 0, 0)` to the lower cutting
     /// envelope at radial distance `r_mm` from the spindle axis (`None` if `r_mm > cutting_radius_mm`).
     #[inline]
     pub fn tip_to_envelope_dz(&self, r_mm: f64) -> Option<f64> {
-        if r_mm < 0.0 || r_mm > self.cutting_radius_mm + 1e-9 {
-            return None;
-        }
-        let r = r_mm.min(self.cutting_radius_mm);
-        let dz = match self.kind {
-            TipEnvelopeKind::Flat => 0.0,
-            TipEnvelopeKind::BullNose {
-                flat_r_mm,
-                corner_r_mm,
-            } => {
-                if r <= flat_r_mm || corner_r_mm <= 1e-9 {
-                    0.0
-                } else {
-                    let dr = (r - flat_r_mm).min(corner_r_mm);
-                    corner_r_mm - (corner_r_mm * corner_r_mm - dr * dr).max(0.0).sqrt()
-                }
-            }
-            TipEnvelopeKind::Ball { ball_r_mm } => {
-                let rc = r.min(ball_r_mm);
-                ball_r_mm - (ball_r_mm * ball_r_mm - rc * rc).max(0.0).sqrt()
-            }
-            TipEnvelopeKind::Chamfer {
-                tip_r_mm,
-                tan_half_angle,
-            } => {
-                if r <= tip_r_mm {
-                    0.0
-                } else {
-                    (r - tip_r_mm) / tan_half_angle
-                }
-            }
-            TipEnvelopeKind::Drill { tan_half_angle } => r / tan_half_angle,
-            TipEnvelopeKind::Face {
-                flat_r_mm,
-                bottom_r_mm,
-                corner_r_mm,
-            } => {
-                if r <= flat_r_mm {
-                    0.0
-                } else if r <= bottom_r_mm {
-                    if corner_r_mm <= 1e-9 {
-                        0.0
-                    } else {
-                        let dr = (r - flat_r_mm).min(corner_r_mm);
-                        corner_r_mm - (corner_r_mm * corner_r_mm - dr * dr).max(0.0).sqrt()
-                    }
-                } else {
-                    corner_r_mm + (r - bottom_r_mm)
-                }
-            }
-            TipEnvelopeKind::ThreadMill => {
-                if r <= self.neck_radius_mm {
-                    0.0
-                } else {
-                    let (z_start, tooth_step, _n, tan_half) = self.thread_mill_tooth_band_params();
-                    let z_first_crest = z_start + 0.5 * tooth_step;
-                    (z_first_crest - (self.cutting_radius_mm - r).max(0.0) * tan_half).max(0.0)
-                }
-            }
-        };
-        Some(dz)
+        self.envelope.profile_dz_at_radius(r_mm)
     }
 
     /// Evaluates the exact cutting envelope radius `r(dz) >= 0` at axial height `dz_mm >= 0` above
@@ -431,66 +189,7 @@ impl RadialCutterProfile {
     /// along the relieved neck `(flute_length_mm, neck_length_mm]`.
     #[inline]
     pub fn radius_at_height_dz(&self, dz_mm: f64) -> Option<f64> {
-        if !dz_mm.is_finite() || dz_mm < -1e-9 {
-            return None;
-        }
-        let dz = dz_mm.max(0.0);
-        let r = match self.kind {
-            TipEnvelopeKind::Flat => self.cutting_radius_mm,
-            TipEnvelopeKind::BullNose {
-                flat_r_mm,
-                corner_r_mm,
-            } => {
-                if corner_r_mm <= 1e-9 || dz >= corner_r_mm {
-                    self.cutting_radius_mm
-                } else {
-                    let dy = corner_r_mm - dz;
-                    (flat_r_mm + (corner_r_mm * corner_r_mm - dy * dy).max(0.0).sqrt())
-                        .min(self.cutting_radius_mm)
-                }
-            }
-            TipEnvelopeKind::Ball { ball_r_mm } => {
-                if dz >= ball_r_mm {
-                    self.cutting_radius_mm
-                } else {
-                    let dy = ball_r_mm - dz;
-                    (ball_r_mm * ball_r_mm - dy * dy)
-                        .max(0.0)
-                        .sqrt()
-                        .min(self.cutting_radius_mm)
-                }
-            }
-            TipEnvelopeKind::Chamfer {
-                tip_r_mm,
-                tan_half_angle,
-            } => (tip_r_mm + dz * tan_half_angle).min(self.cutting_radius_mm),
-            TipEnvelopeKind::Drill { tan_half_angle } => {
-                (dz * tan_half_angle).min(self.cutting_radius_mm)
-            }
-            TipEnvelopeKind::Face {
-                flat_r_mm,
-                bottom_r_mm,
-                corner_r_mm,
-            } => {
-                if dz < corner_r_mm && corner_r_mm > 1e-9 {
-                    let dy = corner_r_mm - dz;
-                    (flat_r_mm + (corner_r_mm * corner_r_mm - dy * dy).max(0.0).sqrt())
-                        .min(bottom_r_mm)
-                } else {
-                    (bottom_r_mm + (dz - corner_r_mm)).min(self.cutting_radius_mm)
-                }
-            }
-            TipEnvelopeKind::ThreadMill => {
-                if dz <= self.flute_length_mm + 1e-9 {
-                    self.thread_mill_tooth_radius_at_z(dz)
-                } else if dz <= self.neck_length_mm + 1e-9 {
-                    self.neck_radius_mm
-                } else {
-                    self.shank_radius_mm
-                }
-            }
-        };
-        Some(r.max(0.0))
+        self.envelope.radius_at_dz(dz_mm)
     }
 
     /// Maximum envelope radius among cutting flutes, shank, and collet/holder.
@@ -689,5 +388,32 @@ fn append_revolved_strip(
                 mesh.indices.extend_from_slice(&[i1, i2, i3]);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sim_colored_vertex_has_exact_40_byte_pod_gpu_layout() {
+        assert_eq!(std::mem::size_of::<SimColoredVertex>(), 40);
+        assert_eq!(std::mem::align_of::<SimColoredVertex>(), 4);
+        assert_eq!(std::mem::offset_of!(SimColoredVertex, pos_mm), 0);
+        assert_eq!(std::mem::offset_of!(SimColoredVertex, normal), 12);
+        assert_eq!(std::mem::offset_of!(SimColoredVertex, color_rgba), 24);
+
+        let verts = [
+            SimColoredVertex {
+                pos_mm: [1.0, 2.0, 3.0],
+                normal: [0.0, 0.0, 1.0],
+                color_rgba: [0.5, 0.6, 0.7, 1.0],
+            },
+            bytemuck::Zeroable::zeroed(),
+        ];
+        let bytes: &[u8] = bytemuck::cast_slice(&verts);
+        assert_eq!(bytes.len(), 80);
+        let roundtrip: &[SimColoredVertex] = bytemuck::cast_slice(bytes);
+        assert_eq!(roundtrip, &verts);
     }
 }
