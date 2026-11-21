@@ -218,4 +218,5 @@ chipcutter build /tmp/tilted_2setup.chip.toml -o /tmp/tilted_gcode --post linuxc
 ## Navigation
 
 - **Previous:** [Tutorial 15 — Machine Definitions, Per-Machine Tool Sets, & Sharing](15-machine-definitions-tool-sets.md)
-- **Index:** [All Tutorials](README.md) — you have completed the entire ChipCutter `00`–`16` curriculum!
+- **Next:** [Tutorial 17 — Tri-Dexel Volumetric Simulation & Quantitative Error-Volume Analysis](17-tridexel-simulation-error-metrics.md)
+- **Index:** [All Tutorials](README.md)

@@ -201,6 +201,17 @@ pub fn parse_capture_post_profile(raw: &str) -> Result<String, String> {
     }
 }
 
+/// Parse and normalize a simulation engine identifier for `--capture-sim-engine`.
+pub fn parse_capture_sim_engine(raw: &str) -> Result<chip_sim::SimEngineKind, String> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "heightmap" | "2.5d" | "z-dexel" => Ok(chip_sim::SimEngineKind::Heightmap),
+        "tri-dexel" | "tridexel" | "tri_dexel" | "3d" => Ok(chip_sim::SimEngineKind::TriDexel),
+        other => Err(format!(
+            "invalid --capture-sim-engine '{other}'; expected one of: heightmap, tri-dexel"
+        )),
+    }
+}
+
 /// Structured options controlling headless UI state before PNG capture.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct CaptureSpec {
@@ -212,6 +223,8 @@ pub struct CaptureSpec {
     pub show_sim_stock: Option<bool>,
     pub show_sim_cutter: Option<bool>,
     pub sim_progress: Option<f64>,
+    pub sim_engine: Option<chip_sim::SimEngineKind>,
+    pub sim_heatmap: bool,
     pub post_profile: Option<String>,
     pub auto_generate: bool,
     pub show_z_planes: Option<bool>,
@@ -370,5 +383,22 @@ mod tests {
             Ok("linuxcnc".to_string())
         );
         assert!(parse_capture_post_profile("unknown_post").is_err());
+    }
+
+    #[test]
+    fn parses_capture_sim_engine() {
+        assert_eq!(
+            parse_capture_sim_engine("heightmap"),
+            Ok(chip_sim::SimEngineKind::Heightmap)
+        );
+        assert_eq!(
+            parse_capture_sim_engine("TRI-DEXEL"),
+            Ok(chip_sim::SimEngineKind::TriDexel)
+        );
+        assert_eq!(
+            parse_capture_sim_engine("tridexel"),
+            Ok(chip_sim::SimEngineKind::TriDexel)
+        );
+        assert!(parse_capture_sim_engine("voxel").is_err());
     }
 }

@@ -246,7 +246,7 @@ Phase 10 gives machinists full, non-destructive control over rotating, laying fl
 
 ---
 
-## Phase 11 — Tri-Dexel Volumetric CAM Simulation & Quantitative Error-Volume Metrics (Planned — M38–M40)
+## Phase 11 — Tri-Dexel Volumetric CAM Simulation & Quantitative Error-Volume Metrics (Completed — M38–M40)
 
 Phase 11 introduces a true 3D **Tri-Dexel volumetric simulation engine** alongside the existing fast **Z-Dexel Heightmap** (and cylindrical rotary) simulation—keeping the existing heightmap engine selectable at all times—and adds comprehensive **stock-vs-target quantitative error metrics** (total error volume, excess/gouge volume, RMS deviation, MAE, signed bias, P95/P99 percentiles, max excess/gouge, and in-tolerance surface %) so future toolpath generation improvements can be measured, visualized, and benchmarked objectively in both GUI and CLI:
 

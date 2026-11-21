@@ -1,6 +1,6 @@
 use std::sync::atomic::Ordering;
 
-use chip_cam::{ArcPlane, SegmentMotion3D, ToolpathSegment3D};
+use chip_cam::{SegmentMotion3D, ToolpathSegment3D};
 use chip_math::{DVec2, DVec3};
 use chip_tools::CutterGeometry;
 use rayon::prelude::*;
@@ -49,59 +49,24 @@ fn decompose_to_linear_chords(seg: &ToolpathSegment3D, max_sag_mm: f64) -> Vec<L
             }]
         }
         SegmentMotion3D::Arc {
-            center_wcs,
-            plane,
             radius_mm,
             signed_sweep_rad,
             ..
         } => {
             let r = radius_mm.max(1e-6);
-            let a0 = match plane {
-                ArcPlane::XY => {
-                    let s = seg.start_wcs - center_wcs;
-                    s.y.atan2(s.x)
-                }
-                ArcPlane::XZ => {
-                    let s = seg.start_wcs - center_wcs;
-                    s.z.atan2(s.x)
-                }
-                ArcPlane::YZ => {
-                    let s = seg.start_wcs - center_wcs;
-                    s.z.atan2(s.y)
-                }
-            };
-            let sweep = signed_sweep_rad;
-            // Chord sag s = r * (1 - cos(dtheta / 2)) <= max_sag_mm
+            // Chord sag s = r * (1 - cos(dtheta / 2)) <= max_sag_mm, capped at <= 0.05 rad (~3°)
             let cos_half = (1.0 - (max_sag_mm / r).min(0.5)).clamp(-1.0, 1.0);
-            let max_dtheta = (2.0 * cos_half.acos()).clamp(0.02, 0.25);
-            let steps = ((sweep.abs() / max_dtheta).ceil() as usize).clamp(4, 256);
+            let max_dtheta = (2.0 * cos_half.acos()).clamp(0.02, 0.05);
+            let steps = ((signed_sweep_rad.abs() / max_dtheta).ceil() as usize).clamp(4, 2_048);
 
             let mut out = Vec::with_capacity(steps);
             let mut prev = seg.start_wcs;
             for k in 1..=steps {
                 let u = k as f64 / steps as f64;
-                let ang = a0 + u * sweep;
-                let (s, c) = ang.sin_cos();
                 let next = if k == steps {
                     seg.end_wcs
                 } else {
-                    match plane {
-                        ArcPlane::XY => DVec3::new(
-                            center_wcs.x + r * c,
-                            center_wcs.y + r * s,
-                            seg.start_wcs.z + u * (seg.end_wcs.z - seg.start_wcs.z),
-                        ),
-                        ArcPlane::XZ => DVec3::new(
-                            center_wcs.x + r * c,
-                            seg.start_wcs.y + u * (seg.end_wcs.y - seg.start_wcs.y),
-                            center_wcs.z + r * s,
-                        ),
-                        ArcPlane::YZ => DVec3::new(
-                            seg.start_wcs.x + u * (seg.end_wcs.x - seg.start_wcs.x),
-                            center_wcs.y + r * c,
-                            center_wcs.z + r * s,
-                        ),
-                    }
+                    seg.sample_point(u)
                 };
                 out.push(LinearSpan3D { p0: prev, p1: next });
                 prev = next;
@@ -308,11 +273,13 @@ fn eval_z_ray_cut_interval(
         }
         let sq = disc.sqrt();
         let inv2a = 0.5 / len2;
-        let t0 = ((-b - sq) * inv2a).clamp(0.0, 1.0);
-        let t1 = ((-b + sq) * inv2a).clamp(0.0, 1.0);
-        if t1 < t0 {
+        let raw_t0 = (-b - sq) * inv2a;
+        let raw_t1 = (-b + sq) * inv2a;
+        if raw_t1 < 0.0 || raw_t0 > 1.0 {
             return None;
         }
+        let t0 = raw_t0.max(0.0);
+        let t1 = raw_t1.min(1.0);
         let tc = (-f.dot(d_xy) / len2).clamp(t0, t1);
         (t0, t1, tc)
     };

@@ -897,6 +897,10 @@ impl ChipCutterApp {
         }
         if st.capture.auto_generate && !st.generate_triggered && has_geo {
             st.generate_triggered = true;
+            if let Some(eng) = st.capture.sim_engine {
+                self.sim_panel.engine = eng;
+            }
+            self.sim_panel.show_error_heatmap = st.capture.sim_heatmap;
             self.auto_sim_after_gen = true;
             self.trigger_generate_dirty(None, None);
             ctx.request_repaint();
@@ -1022,7 +1026,21 @@ impl ChipCutterApp {
         if let Some(show_cutter) = capture.show_sim_cutter {
             self.sim_panel.show_cutter_assembly = show_cutter;
         }
+        self.sim_panel.show_error_heatmap = capture.sim_heatmap;
+        if let Some(eng) = capture.sim_engine
+            && self.sim_panel.engine != eng
+        {
+            self.sim_panel.engine = eng;
+            if self.sim_panel.active_result.is_some() {
+                needs_resim = true;
+            }
+        }
         if let Some(res) = &self.sim_panel.active_result {
+            if let Some(eng) = capture.sim_engine
+                && res.engine != eng
+            {
+                needs_resim = true;
+            }
             self.sim_panel.current_time_sec =
                 res.timeline.total_time_sec * capture.effective_sim_progress();
         }

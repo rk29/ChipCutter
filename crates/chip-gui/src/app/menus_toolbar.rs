@@ -715,9 +715,27 @@ impl ChipCutterApp {
                 ui.close();
             }
             ui.separator();
+            ui.label("Engine:");
+            for eng in chip_sim::SimEngineKind::ALL {
+                if ui
+                    .radio_value(&mut self.sim_panel.engine, eng, eng.label())
+                    .on_hover_text(eng.description())
+                    .changed()
+                    && self.sim_panel.active_result.is_some()
+                {
+                    self.trigger_active_setup_simulation(ctx);
+                }
+            }
+            ui.separator();
             ui.label("Resolution:");
+            let active_eng = self.sim_panel.engine;
             for res in SimResolution::ALL {
-                ui.radio_value(&mut self.sim_panel.resolution, res, res.label());
+                ui.radio_value(
+                    &mut self.sim_panel.resolution,
+                    res,
+                    res.label_for_engine(active_eng),
+                )
+                .on_hover_text(res.description_for_engine(active_eng));
             }
             ui.separator();
             ui.checkbox(
@@ -727,6 +745,10 @@ impl ChipCutterApp {
             ui.checkbox(
                 &mut self.sim_panel.color_by_operation,
                 "Color Cuts by Operation",
+            );
+            ui.checkbox(
+                &mut self.sim_panel.show_error_heatmap,
+                "Error Deviation Heatmap",
             );
             ui.checkbox(
                 &mut self.sim_panel.show_cutter_assembly,

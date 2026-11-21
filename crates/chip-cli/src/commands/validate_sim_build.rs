@@ -154,7 +154,7 @@ pub fn run_simulate(
         "=== ChipCutter {} Simulation: '{}' [{}] ===",
         sim_engine.label(),
         proj_doc.project_name,
-        sim_res_enum.label()
+        sim_res_enum.label_for_engine(sim_engine)
     );
 
     let mut setup_reports = Vec::with_capacity(proj_doc.setups.len());

@@ -106,10 +106,11 @@ Get-FileHash .\ChipCutter-<version>-windows-x86_64.msi -Algorithm SHA256
 - **Tool Library & Coupled SFM / Chipload Calculator:**
   - Supports Flat, Ball, Bull-Nose, Chamfer, Face Mill, and Twist Drill geometries with per-material cutting presets (`Aluminum 6061`, `Mild Steel`, `Hardwood`, `Acrylic`, etc.), radial chip-thinning compensation, machine-scoped tool switching, `.tools.toml` libraries, and a **Fusion 360 `.json` / `.tools` (ZIP)** importer.
 
-- **2.5D Z-Dexel Heightmap Stock Simulation & Mandatory Crash Gate:**
+- **Selectable Heightmap & Tri-Dexel 3D Volumetric Simulation, Error-Volume Metrology, & Mandatory Crash Gate:**
   - Multi-threaded `rayon` toolpath generation (`Ctrl+G`) and `< 1 ms` `100`-step Undo/Redo (`Ctrl+Z` / `Ctrl+Y`).
-  - Interactive 3D machined-stock & revolved cutter/shank/holder timeline playback with trapezoidal-acceleration cycle-time estimation.
-  - **5-Rule Physical Verifier:** Automatically checks every setup for `G0` rapid-into-stock crashes, target B-Rep part gouges (`> 0.02 mm`), non-cutting shank/flute-length collisions, holder collisions, and non-center-cutting plunges—blocking unsafe G-code export in both CLI and GUI.
+  - Switch between fast **2.5D Z-Dexel Heightmap** (plus polar cylindrical 4th-axis stock) and full **3D Tri-Dexel Volumetric** simulation (`X`/`Y`/`Z` orthogonal dexels + sharp Dual-Vertex Surface Nets meshing) with interactive 3D machined-stock & revolved cutter/shank/holder timeline playback and trapezoidal-acceleration cycle-time estimation.
+  - **Quantitative Stock-vs-Target Error Metrics & Deviation Heatmap:** Computes Total / Excess / Gouge Error Volume (`mm³` & `%`), Removal Efficiency, **RMS**, MAE, Mean Signed Bias, P95/P99, In-Tolerance Surface %, Max Excess/Gouge with 1-click camera **`Locate`**, Per-Operation Error Progression, diverging Red/Green/Blue 3D Error Heatmap, and structured JSON reports via `chipcutter simulate --engine tri-dexel --report`.
+  - **5-Rule Physical Verifier:** Automatically checks every setup for `G0` rapid-into-stock crashes, target B-Rep/mesh part gouges (`> 0.02 mm`, including vertical-wall & undercut gouges in Tri-Dexel mode), non-cutting shank/flute-length collisions, holder collisions, and non-center-cutting plunges—blocking unsafe G-code export in both CLI and GUI.
 
 - **Configurable TOML Post-Processors & Portable `.chipz` Bundles:**
   - Ships with built-in **Grbl 1.1 / FluidNC** (automatic file-per-tool splitting—including Two-Stage Flat Endmill + V-Bit V-Carve operations—`<= 80`-char line guard, quadrant arc splitting, expanded peck drills), **grblHAL / FluidNC ATC**, and **LinuxCNC (RS274NGC)** (`M6` + `G43 H`, `G64 P`, native canned cycles) profiles in [`posts/`](posts/).
@@ -176,8 +177,8 @@ cargo run -p chip-cli -- inspect /tmp/torture.step
 # 3. Validate project invariants and generate all 2.5D toolpaths
 cargo run -p chip-cli -- validate --generate /tmp/torture.chip.toml
 
-# 4. Run headless heightmap stock removal & 5-rule crash/gouge verification
-cargo run -p chip-cli -- simulate /tmp/torture.chip.toml --resolution fine --report /tmp/sim_report.json
+# 4. Run headless stock removal (heightmap or tri-dexel) & 5-rule crash/gouge + error-volume/RMS report
+cargo run -p chip-cli -- simulate /tmp/torture.chip.toml --engine tri-dexel --resolution fine --tolerance 0.05 --report /tmp/sim_report.json
 
 # 5. Build safety-verified G-code (LinuxCNC single ATC file or Grbl split-by-tool files)
 cargo run -p chip-cli -- build /tmp/torture.chip.toml -o /tmp/out_linuxcnc --post linuxcnc
@@ -208,11 +209,11 @@ cargo run -p chip-cli -- machines export my-carvera -o my-carvera.machine.toml
 
 ## Documentation
 
-- [**`docs/tutorials/`**](docs/tutorials/README.md) — Illustrated step-by-step Getting Started, 2.5D, 3-Axis Surface, 4th-Axis Rotary, Machine Definitions, Model Orientation/Scaling, & Production Workflow tutorials (`00`–`16`)
+- [**`docs/tutorials/`**](docs/tutorials/README.md) — Illustrated step-by-step Getting Started, 2.5D, 3-Axis Surface, 4th-Axis Rotary, Machine Definitions, Model Orientation/Scaling, Tri-Dexel Simulation & Error Metrics, & Production Workflow tutorials (`00`–`17`)
 - [**`ARCHITECTURE.md`**](ARCHITECTURE.md) — End-to-end data pipeline, crate dependency graph, threading/caching model, and 3D render passes
 - [**`DEVELOPMENT.md`**](DEVELOPMENT.md) — Workspace layout, platform build prerequisites, native Linux/macOS/Windows setup, and headless CI instructions
 - [**`specs/00-overview.md`**](specs/00-overview.md) — Product scope, non-goals, and full specification index (`00` through `11`)
-- [**`specs/10-roadmap.md`**](specs/10-roadmap.md) — Completed Phase 1–10 (`M1`–`M37`) milestones and future phases
+- [**`specs/10-roadmap.md`**](specs/10-roadmap.md) — Completed Phase 1–11 (`M1`–`M40`) milestones and future phases
 - [**`AGENTS.md`**](AGENTS.md) — Architectural invariants and contributor guidelines
 
 ---

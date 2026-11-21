@@ -150,7 +150,10 @@ pub fn show_diagnostics_panel(
                                 status_badge_icon(ui, StatusBadgeKind::Clean, None);
                                 ui.colored_label(
                                     tok.clean_fg,
-                                    "Simulation Verified: 0 crashes, 0 gouges, 0 warnings.",
+                                    format!(
+                                        "Simulation Verified ({}): 0 crashes, 0 gouges, 0 warnings.",
+                                        sim.engine.label()
+                                    ),
                                 );
                             });
                         } else {
@@ -187,6 +190,26 @@ pub fn show_diagnostics_panel(
                                     );
                                 });
                             }
+                        }
+                        if let Some(err) = &sim.error_report {
+                            ui.monospace(format!(
+                                "Error Vol: {:.1} mm^3 ({:.2}% of target) | Excess: {:.1} | Gouge: {:.1} | Eff: {:.1}%",
+                                err.total_error_volume_mm3,
+                                err.error_volume_pct_of_target,
+                                err.excess_volume_mm3,
+                                err.gouge_volume_mm3,
+                                err.material_removal_efficiency_pct
+                            ));
+                            ui.monospace(format!(
+                                "Deviation (+/-{:.3} mm): RMS {:.4} | MAE {:.4} | Bias {:+.4} | P95 {:.3} | P99 {:.3} | In-Tol {:.1}%",
+                                err.tolerance_mm,
+                                err.rms_error_mm,
+                                err.mean_abs_error_mm,
+                                err.mean_signed_error_mm,
+                                err.p95_abs_error_mm,
+                                err.p99_abs_error_mm,
+                                err.in_tolerance_surface_pct
+                            ));
                         }
                         ui.separator();
                     }

@@ -1,6 +1,9 @@
-use chip_cad::{BodyId, CadDocument};
-use chip_cam::{ResolvedSetup, ResolvedStockGeometry, StockAxis};
-use chip_math::{Aabb3, DVec3};
+use chip_cad::{BodyId, CadDocument, SurfaceKind};
+use chip_cam::{
+    ExtractedFeature25D, GeometrySelectionItem, ResolvedSetup, ResolvedStockGeometry, StockAxis,
+    extract_selection_features,
+};
+use chip_math::{Aabb2, Aabb3, ArcPolyline2D, DVec2, DVec3};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -34,6 +37,17 @@ impl SimEngineKind {
         match self {
             Self::Heightmap => "heightmap",
             Self::TriDexel => "tri-dexel",
+        }
+    }
+
+    pub const fn description(self) -> &'static str {
+        match self {
+            Self::Heightmap => {
+                "Fast 2.5D Z-dexel heightfield (or polar cylindrical grid on 4th-axis setups). Best for rapid interactive scrubbing and quick crash checks; vertical walls snap to XY columns and overhangs/undercuts are not modeled."
+            }
+            Self::TriDexel => {
+                "Full 3D volumetric stock using 3 orthogonal ray grids (X, Y, Z) with exact sub-voxel endpoints. Accurately models vertical walls, steep reliefs, undercuts, and 3D error-volume/RMS metrology (slower than Heightmap)."
+            }
         }
     }
 }
@@ -612,6 +626,10 @@ impl TriDexelStock {
 
     /// Voxelizes the target 3D solid from `doc` (both STEP B-Rep solids and STL/OBJ/3MF meshes,
     /// filtered by `target_bodies` when non-empty) onto a Tri-Dexel grid matching `template`.
+    ///
+    /// Horizontal STEP B-Rep planar faces (`|n_wcs.z| > 0.999`) are evaluated analytically via
+    /// `ArcPolyline2D::contains_point` on `z_rays` so multi-hole pockets, counterbores, and bosses
+    /// suffer zero ear-clipping tessellation cap artifacts or circular chord sag.
     pub fn from_target_cad(
         doc: &CadDocument,
         setup: &ResolvedSetup,
@@ -621,7 +639,56 @@ impl TriDexelStock {
         let mut target = Self::empty_like(template);
         let include_body = |bid: BodyId| target_bodies.is_empty() || target_bodies.contains(&bid);
 
-        let mut tris_wcs: Vec<[DVec3; 3]> = Vec::new();
+        // 1. Collect horizontal B-Rep planar faces (`±Z`) analytically for exact Z-ray hole/island cuts
+        let mut horiz_faces: Vec<AnalyticHorizZFace> = Vec::new();
+        let mut handled_horiz_face_ids = vec![false; doc.faces.len()];
+        for face in &doc.faces {
+            if !include_body(face.body_id) {
+                continue;
+            }
+            if let SurfaceKind::Plane { normal, .. } = face.surface {
+                let n_wcs = setup.frame.world_to_local_dir(normal.normalize_or_zero());
+                if n_wcs.z.abs() > 0.999
+                    && let Some(binding) = doc.bind_face(face.id)
+                    && let Ok(summary) = extract_selection_features(
+                        doc,
+                        setup,
+                        &[GeometrySelectionItem::PlanarFace { binding }],
+                    )
+                {
+                    let dir_sign: i8 = if n_wcs.z < 0.0 { 1 } else { -1 };
+                    for feat in summary.features {
+                        if let ExtractedFeature25D::PlanarFace {
+                            source_face_id,
+                            outer_boundary_wcs,
+                            inner_islands_wcs,
+                            face_z_wcs,
+                            ..
+                        } = feat
+                            && source_face_id == Some(face.id)
+                            && !outer_boundary_wcs.segments.is_empty()
+                        {
+                            let aabb = outer_boundary_wcs.exact_aabb();
+                            if aabb.is_valid() {
+                                horiz_faces.push(AnalyticHorizZFace {
+                                    outer: outer_boundary_wcs,
+                                    inners: inner_islands_wcs,
+                                    aabb,
+                                    z_wcs: face_z_wcs,
+                                    dir_sign,
+                                });
+                                if (face.id.0 as usize) < handled_horiz_face_ids.len() {
+                                    handled_horiz_face_ids[face.id.0 as usize] = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut tris_wcs_all: Vec<[DVec3; 3]> = Vec::new();
+        let mut tris_wcs_z: Vec<[DVec3; 3]> = Vec::new();
         for tri in &doc.render_mesh.pick_triangles {
             if let Some(face) = doc.face(tri.face_id)
                 && !include_body(face.body_id)
@@ -632,16 +699,29 @@ impl TriDexelStock {
             let v1 = setup.frame.world_to_local_point(tri.v1_mm);
             let v2 = setup.frame.world_to_local_point(tri.v2_mm);
             if (v1 - v0).cross(v2 - v0).length_squared() > 1e-14 {
-                tris_wcs.push([v0, v1, v2]);
+                tris_wcs_all.push([v0, v1, v2]);
+                let fid_idx = tri.face_id.0 as usize;
+                let handled_z =
+                    fid_idx < handled_horiz_face_ids.len() && handled_horiz_face_ids[fid_idx];
+                if !handled_z {
+                    tris_wcs_z.push([v0, v1, v2]);
+                }
             }
         }
-        if tris_wcs.is_empty() {
+        if tris_wcs_all.is_empty() && horiz_faces.is_empty() {
             return target;
         }
 
-        rasterize_triangles_onto_plane(&mut target.z_rays, &tris_wcs, 0, 1, 2);
-        rasterize_triangles_onto_plane(&mut target.x_rays, &tris_wcs, 1, 2, 0);
-        rasterize_triangles_onto_plane(&mut target.y_rays, &tris_wcs, 0, 2, 1);
+        rasterize_triangles_onto_plane_with_horiz_z(
+            &mut target.z_rays,
+            &tris_wcs_z,
+            &horiz_faces,
+            0,
+            1,
+            2,
+        );
+        rasterize_triangles_onto_plane(&mut target.x_rays, &tris_wcs_all, 1, 2, 0);
+        rasterize_triangles_onto_plane(&mut target.y_rays, &tris_wcs_all, 0, 2, 1);
         target
     }
 
@@ -710,11 +790,30 @@ impl TriDexelStock {
     }
 }
 
+struct AnalyticHorizZFace {
+    outer: ArcPolyline2D,
+    inners: Vec<ArcPolyline2D>,
+    aabb: Aabb2,
+    z_wcs: f64,
+    dir_sign: i8,
+}
+
 /// Rasterizes a closed (or mostly closed) triangle soup onto a single orthogonal [`DexelPlane`]
 /// using deterministic sub-micron ray-center jitter so rays never hit shared triangle edges/vertices.
 fn rasterize_triangles_onto_plane(
     plane: &mut DexelPlane,
     tris_wcs: &[[DVec3; 3]],
+    u_axis: usize,
+    v_axis: usize,
+    w_axis: usize,
+) {
+    rasterize_triangles_onto_plane_with_horiz_z(plane, tris_wcs, &[], u_axis, v_axis, w_axis);
+}
+
+fn rasterize_triangles_onto_plane_with_horiz_z(
+    plane: &mut DexelPlane,
+    tris_wcs: &[[DVec3; 3]],
+    horiz_z_faces: &[AnalyticHorizZFace],
     u_axis: usize,
     v_axis: usize,
     w_axis: usize,
@@ -734,6 +833,37 @@ fn rasterize_triangles_onto_plane(
     let nu = plane.nu;
     let nv = plane.nv;
     let mut hits: Vec<Vec<(f64, i8)>> = vec![Vec::new(); nu * nv];
+
+    // Exact analytic horizontal B-Rep face hits (immune to multi-hole ear-clipping artifacts)
+    if !horiz_z_faces.is_empty() {
+        let ox = plane.origin_u_mm;
+        let oy = plane.origin_v_mm;
+        let dx = plane.du_mm;
+        let dy = plane.dv_mm;
+        hits.par_chunks_mut(nu)
+            .enumerate()
+            .for_each(|(iv, row_hits)| {
+                let rv = oy + (iv as f64 + 0.5) * dy + JITTER_V;
+                for hf in horiz_z_faces {
+                    if rv < hf.aabb.min.y - 1e-6 || rv > hf.aabb.max.y + 1e-6 {
+                        continue;
+                    }
+                    let iu0 = (((hf.aabb.min.x - ox) / dx).floor() as isize).max(0) as usize;
+                    let iu1 = (((hf.aabb.max.x - ox) / dx).ceil() as isize)
+                        .clamp(0, (nu - 1) as isize) as usize;
+                    for (off, cell_hits) in row_hits[iu0..=iu1].iter_mut().enumerate() {
+                        let iu = iu0 + off;
+                        let ru = ox + (iu as f64 + 0.5) * dx + JITTER_U;
+                        let pt = DVec2::new(ru, rv);
+                        if hf.outer.contains_point(pt)
+                            && !hf.inners.iter().any(|inn| inn.contains_point(pt))
+                        {
+                            cell_hits.push((hf.z_wcs, hf.dir_sign));
+                        }
+                    }
+                }
+            });
+    }
 
     for &[p0, p1, p2] in tris_wcs {
         let u0 = comp(p0, u_axis);

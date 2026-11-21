@@ -3,6 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use chip_math::DisplayUnit;
+use chip_sim::SimEngineKind;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -47,6 +48,8 @@ pub struct UserPreferences {
     #[serde(default = "default_true")]
     pub show_stock: bool,
     pub ghost_part: bool,
+    #[serde(default)]
+    pub sim_engine: SimEngineKind,
     pub layout_shares: WorkspaceLayoutShares,
     #[serde(default = "default_true")]
     pub show_welcome_on_startup: bool,
@@ -67,6 +70,7 @@ impl Default for UserPreferences {
             show_rapids: true,
             show_stock: true,
             ghost_part: false,
+            sim_engine: SimEngineKind::Heightmap,
             layout_shares: WorkspaceLayoutShares::default(),
             show_welcome_on_startup: true,
             recent_files: Vec::new(),
@@ -161,6 +165,7 @@ mod tests {
             orthographic: false,
             show_rapids: false,
             ghost_part: true,
+            sim_engine: SimEngineKind::TriDexel,
             layout_shares: WorkspaceLayoutShares {
                 browser_share: 0.25,
                 viewport_share: 0.50,
@@ -188,6 +193,7 @@ mod tests {
         let partial = UserPreferences::from_toml_str(minimal).unwrap();
         assert_eq!(partial.theme, AppTheme::Light);
         assert_eq!(partial.default_machine_id, chip_tools::DEFAULT_MACHINE_ID);
+        assert_eq!(partial.sim_engine, SimEngineKind::Heightmap);
         assert!(partial.show_toolpaths);
         assert!(partial.show_welcome_on_startup);
         assert!(partial.layout_shares.top_row_share <= 0.88 + 1e-6);

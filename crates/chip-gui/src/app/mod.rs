@@ -309,6 +309,7 @@ impl ChipCutterApp {
             machines,
             global_tools,
             last_saved_prefs: prefs.clone(),
+            sim_panel: SimulationPanelState::with_engine(prefs.sim_engine),
             prefs,
             tool_library_modal: ToolLibraryModalState::new(),
             machine_manager_modal: MachineManagerModalState::new(),
@@ -319,7 +320,6 @@ impl ChipCutterApp {
             command_palette: CommandPaletteState::default(),
             shortcut_cheatsheet: ShortcutCheatsheetState::default(),
             about_modal: AboutModalState::default(),
-            sim_panel: SimulationPanelState::default(),
             gcode_panel: GCodePreviewPanelState::default(),
             auto_sim_after_gen: true,
             active_setup_idx: 0,
@@ -464,6 +464,7 @@ impl ChipCutterApp {
             machines,
             global_tools,
             last_saved_prefs: prefs.clone(),
+            sim_panel: SimulationPanelState::with_engine(prefs.sim_engine),
             prefs,
             tool_library_modal: ToolLibraryModalState::new(),
             machine_manager_modal: MachineManagerModalState::new(),
@@ -474,7 +475,6 @@ impl ChipCutterApp {
             command_palette: CommandPaletteState::default(),
             shortcut_cheatsheet: ShortcutCheatsheetState::default(),
             about_modal: AboutModalState::default(),
-            sim_panel: SimulationPanelState::default(),
             gcode_panel: GCodePreviewPanelState::default(),
             auto_sim_after_gen: false,
             active_setup_idx: 0,
@@ -588,6 +588,7 @@ impl ChipCutterApp {
         self.prefs.show_rapids = self.highlight.show_rapids;
         self.prefs.show_stock = self.highlight.show_stock;
         self.prefs.ghost_part = self.highlight.ghost_part;
+        self.prefs.sim_engine = self.sim_panel.engine;
         let shares = extract_workspace_shares(&self.tree);
         if !shares.approx_eq(self.prefs.layout_shares) {
             self.prefs.layout_shares = shares;

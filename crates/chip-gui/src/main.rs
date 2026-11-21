@@ -9,7 +9,7 @@ use chip_gui::{
     app::{ChipCutterApp, SelfTestConfig, StartupDemoMode},
     capture::{
         CaptureFocus, CaptureModal, CapturePane, CaptureSpec, CaptureView,
-        parse_capture_post_profile,
+        parse_capture_post_profile, parse_capture_sim_engine,
     },
     panels::welcome_gallery::SampleProjectId,
     theme::AppTheme,
@@ -95,6 +95,14 @@ struct GuiArgs {
     #[arg(long)]
     capture_sim_progress: Option<f64>,
 
+    /// Select simulation engine during capture (`heightmap` or `tri-dexel`).
+    #[arg(long, value_parser = parse_capture_sim_engine)]
+    capture_sim_engine: Option<chip_sim::SimEngineKind>,
+
+    /// Enable signed stock-vs-target error heatmap coloring during capture.
+    #[arg(long)]
+    capture_sim_heatmap: bool,
+
     /// Override active setup post-processor profile for G-Code Preview capture (`grbl`, `grblhal_atc`, `linuxcnc`).
     #[arg(long, value_parser = parse_capture_post_profile)]
     capture_post: Option<String>,
@@ -151,6 +159,8 @@ fn main() -> eframe::Result {
         show_sim_stock: args.capture_sim_stock,
         show_sim_cutter: args.capture_sim_cutter,
         sim_progress: args.capture_sim_progress,
+        sim_engine: args.capture_sim_engine,
+        sim_heatmap: args.capture_sim_heatmap,
         post_profile: args.capture_post,
         auto_generate: args.capture_generate,
         show_z_planes: args.capture_z_planes,

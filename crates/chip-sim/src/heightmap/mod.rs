@@ -64,6 +64,45 @@ impl SimResolution {
             Self::Ultra => "Ultra (2048)",
         }
     }
+
+    /// Engine-aware display label reflecting the actual max-axis grid dimension used by `engine`.
+    pub const fn label_for_engine(self, engine: crate::tridexel::SimEngineKind) -> &'static str {
+        match (engine, self) {
+            (crate::tridexel::SimEngineKind::Heightmap, Self::Standard) => "Standard (512)",
+            (crate::tridexel::SimEngineKind::Heightmap, Self::Fine) => "Fine (1024)",
+            (crate::tridexel::SimEngineKind::Heightmap, Self::Ultra) => "Ultra (2048)",
+            (crate::tridexel::SimEngineKind::TriDexel, Self::Standard) => "Standard (160)",
+            (crate::tridexel::SimEngineKind::TriDexel, Self::Fine) => "Fine (288)",
+            (crate::tridexel::SimEngineKind::TriDexel, Self::Ultra) => "Ultra (448)",
+        }
+    }
+
+    /// Human-readable tooltip explaining what this detail level means for `engine`.
+    pub const fn description_for_engine(
+        self,
+        engine: crate::tridexel::SimEngineKind,
+    ) -> &'static str {
+        match (engine, self) {
+            (crate::tridexel::SimEngineKind::Heightmap, Self::Standard) => {
+                "Up to 512 cells along the longest XY stock axis. Fast interactive scrubbing and quick crash checks."
+            }
+            (crate::tridexel::SimEngineKind::Heightmap, Self::Fine) => {
+                "Up to 1024 cells along the longest XY stock axis (4x cells). Crisper small features and finer surface metrology."
+            }
+            (crate::tridexel::SimEngineKind::Heightmap, Self::Ultra) => {
+                "Up to 2048 cells along the longest XY stock axis (16x cells). Highest 2.5D detail for tiny engravings and fine finishes (uses more RAM/CPU)."
+            }
+            (crate::tridexel::SimEngineKind::TriDexel, Self::Standard) => {
+                "Up to 160 isotropic cells along the longest 3D axis across X, Y, and Z ray planes. Fast 3D volumetric verification and metrology."
+            }
+            (crate::tridexel::SimEngineKind::TriDexel, Self::Fine) => {
+                "Up to 288 isotropic cells along the longest 3D axis across X, Y, and Z ray planes (~3.2x rays). High-precision 3D walls, scallops, and error-volume benchmarking."
+            }
+            (crate::tridexel::SimEngineKind::TriDexel, Self::Ultra) => {
+                "Up to 448 isotropic cells along the longest 3D axis across X, Y, and Z ray planes (~7.8x rays). Ultra-fine 3D inspection and metrology (slower, higher memory use)."
+            }
+        }
+    }
 }
 
 /// Borrowed input bundle passed to [`run_setup_simulation`].
