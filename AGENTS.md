@@ -11,7 +11,7 @@
 - **Phase Git & Delivery Workflow (Normal Mode of Operation):**
   1. Commit and push roadmap (`specs/10-roadmap.md`) and milestone plans (`plans/`) on `main` first.
   2. Create a local phase branch from `main` (e.g., `phase-<N>-<slug>`) for implementation—do not push the temporary phase branch.
-  3. Land **each milestone in its own verified commit** on the local phase branch.
+  3. **Subagent & Isolated Git Worktree Execution:** Delegate milestone implementation to subagents running inside isolated `git worktree` checkouts branched off the local phase branch (e.g., `/workspace/ChipCutter-wt-m<NN>` on branch `phase-<N>-m<NN>`, sharing `CARGO_TARGET_DIR=/workspace/ChipCutter/target` for fast incremental builds). When a milestone or adjacent tasks partition cleanly across disjoint files or crates, spawn parallel subagents in separate worktrees with explicit crate/file ownership. Review, verify, land **each milestone in its own verified commit** on the local phase branch, and remove each temporary worktree and branch as soon as its work lands.
   4. When ready to publish (after user confirmation), `git fetch origin`, rebase the phase branch cleanly onto `origin/main`, fast-forward `main`, delete the local phase branch, and push `main`.
 - **Phase-Matched Versioning:** Workspace minor versions track the completed phase number (`0.<phase>.0`, tag `v0.<phase>.0`). When bumping versions, synchronize `Cargo.toml`, `Cargo.lock`, golden G-code header comments (`crates/chip-cli/tests/golden/`), `packaging/flatpak/io.github.rk29.ChipCutter.metainfo.xml`, `.github/workflows/release.yml`, and `scripts/package_windows.ps1` in a dedicated commit before tagging.
 - **No Unsolicited Code Generation:** While iterating on specifications or plans, do **not** scaffold `Cargo.toml` or `.rs` files until the user explicitly asks to begin implementation.
@@ -64,7 +64,7 @@
   - No nonlinear 2D CAD geometric constraint solver (keep 2D sketches direct, parametric, and expression-driven).
   - No USB/serial/network machine streaming or jogging (pure offline CAM).
   - No standalone HTML/PDF setup sheets (emit operator setup/tool summaries as structured G-code header comments).
-  - No 3D fixture/clamp collision bodies, thread milling, or volumetric tri-dexel flip stock until scheduled.
+  - No 3D fixture/clamp collision bodies or volumetric tri-dexel flip stock until scheduled.
 
 ---
 
