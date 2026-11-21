@@ -246,15 +246,40 @@ Phase 10 gives machinists full, non-destructive control over rotating, laying fl
 
 ---
 
+## Phase 11 — Tri-Dexel Volumetric CAM Simulation & Quantitative Error-Volume Metrics (Planned — M38–M40)
+
+Phase 11 introduces a true 3D **Tri-Dexel volumetric simulation engine** alongside the existing fast **Z-Dexel Heightmap** (and cylindrical rotary) simulation—keeping the existing heightmap engine selectable at all times—and adds comprehensive **stock-vs-target quantitative error metrics** (total error volume, excess/gouge volume, RMS deviation, MAE, signed bias, P95/P99 percentiles, max excess/gouge, and in-tolerance surface %) so future toolpath generation improvements can be measured, visualized, and benchmarked objectively in both GUI and CLI:
+
+### Milestone 38 — Tri-Dexel Volumetric Stock Kernel & Swept-Cutter Subtraction (`plans/38-milestone-38-plan.md`)
+- **Selectable Simulation Engine (`chip-sim`, `chip-project`):** Introduce `SimEngineKind` (`Heightmap` | `TriDexel`) so machinists and CLI scripts can choose between the existing ultra-fast 2.5D Z-Dexel heightmap and the new full-3D Tri-Dexel volumetric engine without losing backward compatibility.
+- **3-Axis Orthogonal Dexel Grid (`TriDexelStock`):** Represent raw stock and target solids using three orthogonal 1D sorted interval lists (`X`-rays, `Y`-rays, `Z`-rays) in canonical `f64` millimeters with per-endpoint operation provenance (`op_idx`), supporting multi-interval cavities, vertical/steep walls with zero heightmap stair-stepping, horizontal features, and true 3D undercuts across all 6 cutter geometries (Flat, Ball, Bull-Nose, Chamfer, V-Bit, Twist Drill, Face Mill).
+- **Swept Subtraction, 5-Rule Verification, & Crisp Surface Extraction:** Implement `rayon`-parallel analytical swept-cutter subtraction along `G1`/`G2`/`G3` and indexed/rotary moves, full 3D 5-rule collision/gouge verification (catching vertical-wall and undercut gouges), progressive timeline checkpoints, and sharp-feature-preserving tri-dexel mesh extraction for the 3D `wgpu` viewport.
+
+### Milestone 39 — Quantitative Error-Volume Metrics, Deviation Heatmaps, & Algorithm Benchmarking (`plans/39-milestone-39-plan.md`)
+- **Stock-vs-Target Metrology (`StockErrorReport` in `chip-sim`):** Compare simulated machined stock against the exact target B-Rep/mesh solid (supported by **both** Tri-Dexel and Heightmap engines) and report:
+  - **Volumetric Error (`mm³` & `%`):** **Total Error Volume** (`excess + gouge`), **Excess (Uncut / Rest) Volume**, **Overcut / Gouge Volume**, target volume, and material removal efficiency (`%`).
+  - **Surface Deviation Statistics (`mm`):** **Root-Mean-Square (RMS) Error** (overall, excess-only, and gouge-only), **Mean Absolute Error (MAE)**, **Mean Signed Bias** (oversize vs. undersize drift), **P95 & P99 Absolute Error**, **Max Excess** (peak scallop / uncut corner) and **Max Gouge** with exact 3D WCS coordinates, and **In-Tolerance Surface Fraction (`% within ±tol_mm`)**.
+  - **Per-Operation Error Progression:** Record remaining error volume and RMS after each operation to enable apples-to-apples benchmarking of roughing, rest-machining, and finishing algorithms.
+- **Signed Deviation Heatmap & Headless CLI Benchmarking (`chip-sim`, `chip-cli`):** Color rendered stock vertices by signed target deviation (blue = uncut excess, green = within tolerance, red = gouge/overcut), extend `chipcutter simulate` with `--engine <heightmap|tri-dexel>` and `--tolerance <mm>`, and emit full `StockErrorReport` JSON metrics so future toolpath algorithm PRs can track quantitative error-volume and RMS improvements automatically.
+
+### Milestone 40 — GUI Engine Selector, Error-Metrics Dashboard, & Illustrated Tutorial 17 (`plans/40-milestone-40-plan.md`)
+- **Simulation Engine & Deviation Heatmap UI (`chip-gui`):** Add an engine selector (`Heightmap (Fast)` vs. `Tri-Dexel (Volumetric 3D)`) and `Color by Op` / `Error Heatmap` toggle (with adjustable `±tol` legend) to the Simulation Timeline toolbar, persisting engine preference in `prefs.toml`.
+- **Error Metrics Inspector & Click-to-Jump (`chip-gui`):** Display Total/Excess/Gouge Error Volume, RMS, MAE, P95/P99, In-Tolerance %, and Max Excess / Max Gouge cards with 1-click camera jump to worst excess or gouge spots, plus per-operation error breakdown for comparing toolpath settings interactively.
+- **Illustrated Tutorial 17 (`docs/tutorials/17-tridexel-simulation-error-metrics.md`):** Publish a 7-part illustrated guide with headless Vulkan screenshots teaching machinists when to use Heightmap vs. Tri-Dexel simulation, how to interpret error volume / RMS / deviation heatmaps to tune stepover and rest machining, and how to run headless CLI error benchmarks.
+
+---
+
 ## Future Phases
 
-1. **Functional & Behavioral User-Level Testing:**
+1. **Toolpath Algorithm Quality Optimization (Driven by Phase 11 Error Metrics):**
+   - Use Tri-Dexel error-volume & RMS benchmarks across 2.5D, 3D surface (`Adaptive3D`, `Waterline3D`, `Parallel3D`, `Scallop3D`, `Pencil3D`), V-Carve, and 4th-axis rotary strategies to systematically eliminate residual scallops, corner overcuts, and uncut islands.
+2. **Functional & Behavioral User-Level Testing:**
    - Durable end-to-end user-journey and GUI behavioral test harness (`egui_kittest` / headless interactive workflows + CLI workflows) verifying every feature from a machinist's point of view without brittle coupling to internal implementation details.
-2. **Advanced Workholding & Multi-Setup Volumetric Stock:**
+3. **Advanced Workholding & Multi-Setup Stock Carryover:**
    - 3D fixture/vise/clamp collision bodies with automatic safe-rapid routing.
-   - Carrying simulated stock across flipped setups via tri-dexel volumetric stock.
-3. **Ecosystem & Extensibility:**
+   - Carrying simulated Tri-Dexel volumetric stock seamlessly from Setup 1 (`G54`) into flipped Setup 2 (`G55`) for zero-air-cut multi-op machining.
+4. **Ecosystem & Extensibility:**
    - Optional OpenCASCADE (`opencascade-rs`) `CadKernel` feature backend.
    - Thread milling (`ThreadMill` single/multi-form cutter geometry, ISO Metric & Unified thread tables, radial arc-in/out helical passes), additional controller dialects (Fanuc/Haas, Mach4, Masso, Centroid), and printable HTML/PDF setup sheets.
-4. **Tutorials for Upcoming Future-Phase Capabilities:**
-   - Dedicated illustrated guides accompanying new future-phase strategies (thread milling, 3D fixture/vise collision avoidance, and multi-setup volumetric stock workflows).
+5. **Tutorials for Upcoming Future-Phase Capabilities:**
+   - Dedicated illustrated guides accompanying new future-phase strategies (thread milling, 3D fixture/vise collision avoidance, and multi-setup Tri-Dexel stock carryover workflows).
