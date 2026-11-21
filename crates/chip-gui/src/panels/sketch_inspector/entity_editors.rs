@@ -118,8 +118,10 @@ impl EntityGrid<'_> {
     }
 
     fn deg(&mut self, label: &str, key: &'static str, deg: &mut f64, undo: &'static str) {
-        if grid_row(self.ui, label, Some(field_tip(key)), |ui| {
+        let tip = field_tip(key);
+        if grid_row(self.ui, label, Some(tip), |ui| {
             ui.add(egui::DragValue::new(deg).speed(1.0).suffix("°"))
+                .on_hover_text(tip)
                 .changed()
         }) {
             self.changed = Some((undo, self.coal(key)));
@@ -134,8 +136,9 @@ impl EntityGrid<'_> {
         undo: &'static str,
     ) {
         let salt = (key, self.sk_idx, self.ei);
-        if grid_row(self.ui, label, Some(field_tip(key)), |ui| {
-            mini_choice_combo(ui, salt, INPUT_COL_WIDTH + 30.0, val)
+        let tip = field_tip(key);
+        if grid_row(self.ui, label, Some(tip), |ui| {
+            mini_choice_combo(ui, salt, INPUT_COL_WIDTH + 30.0, val, tip)
         }) {
             self.changed = Some((undo, None));
         }
@@ -147,6 +150,7 @@ pub(super) fn mini_choice_combo<T: EnumChoice>(
     salt: impl std::hash::Hash + std::fmt::Debug,
     width: f32,
     val: &mut T,
+    tooltip: &str,
 ) -> bool {
     let mut c = false;
     egui::ComboBox::from_id_salt(salt)
@@ -154,9 +158,14 @@ pub(super) fn mini_choice_combo<T: EnumChoice>(
         .selected_text(val.label())
         .show_ui(ui, |ui| {
             for &item in T::ALL {
-                c |= ui.selectable_value(val, item, item.label()).changed();
+                c |= ui
+                    .selectable_value(val, item, item.label())
+                    .on_hover_text(tooltip)
+                    .changed();
             }
-        });
+        })
+        .response
+        .on_hover_text(tooltip);
     c
 }
 
@@ -224,6 +233,7 @@ fn render_meta_grid(
                     egui::TextEdit::singleline(&mut entry.name)
                         .desired_width(INPUT_COL_WIDTH + 36.0),
                 )
+                .on_hover_text("Display label for this 2D sketch entity")
                 .changed()
             },
         ) {
@@ -237,6 +247,9 @@ fn render_meta_grid(
                 let mut buf = entry.sub_layer.clone().unwrap_or_default();
                 if ui
                     .add(egui::TextEdit::singleline(&mut buf).desired_width(INPUT_COL_WIDTH))
+                    .on_hover_text(
+                        "Optional DXF/SVG sub-layer tag used for batch CAM region selection",
+                    )
                     .changed()
                 {
                     let t = buf.trim();
@@ -251,6 +264,7 @@ fn render_meta_grid(
             Some("Snaps in viewport; excluded from CAM regions"),
             |ui| {
                 ui.checkbox(&mut entry.is_construction, "Construction")
+                    .on_hover_text("Mark as reference/construction geometry (snappable in viewport, excluded from CAM machining regions)")
                     .changed()
             },
         ) {
@@ -332,7 +346,9 @@ fn render_primitive_grid(
                 rotation_deg,
             } => {
                 if grid_row(g.ui, "Polygon Sides", Some(field_tip("psides")), |ui| {
-                    ui.add(egui::DragValue::new(sides).range(3..=64)).changed()
+                    ui.add(egui::DragValue::new(sides).range(3..=64))
+                        .on_hover_text(field_tip("psides"))
+                        .changed()
                 }) {
                     g.changed = Some(("Edit Polygon Sides", g.coal("psides")));
                 }
@@ -364,6 +380,7 @@ fn render_primitive_grid(
                 g.len("Translate Y", "ply", translate_y, "Translate Polyline Y");
                 if grid_row(g.ui, "Scale Factor", Some(field_tip("plsc")), |ui| {
                     ui.add(egui::DragValue::new(scale).speed(0.02).range(0.01..=100.0))
+                        .on_hover_text(field_tip("plsc"))
                         .changed()
                 }) {
                     g.changed = Some(("Scale Polyline", g.coal("plsc")));
@@ -399,7 +416,10 @@ fn render_point_pattern_editor(
                 [(0, "Single"), (1, "Grid"), (2, "Bolt Circle")]
                     .into_iter()
                     .find(|&(i, lbl)| {
-                        ui.selectable_label(kind_idx == i, lbl).clicked() && kind_idx != i
+                        ui.selectable_label(kind_idx == i, lbl)
+                            .on_hover_text(format!("Switch hole pattern type to {lbl}"))
+                            .clicked()
+                            && kind_idx != i
                     })
                     .map(|(i, _)| i)
             },
@@ -440,11 +460,13 @@ fn render_point_pattern_editor(
                 let (cx, cy) = grid_row(g.ui, "Count (X × Y)", Some("Columns × rows"), |ui| {
                     let a = ui
                         .add(egui::DragValue::new(count_x).range(1..=128))
+                        .on_hover_text("Number of hole columns along X")
                         .changed();
                     ui.label("×");
                     (
                         a,
                         ui.add(egui::DragValue::new(count_y).range(1..=128))
+                            .on_hover_text("Number of hole rows along Y")
                             .changed(),
                     )
                 });
@@ -475,10 +497,16 @@ fn render_point_pattern_editor(
                     "Count & Start °",
                     Some("Hole count and start angle"),
                     |ui| {
-                        let a = ui.add(egui::DragValue::new(count).range(1..=180)).changed();
+                        let a = ui
+                            .add(egui::DragValue::new(count).range(1..=180))
+                            .on_hover_text("Number of equally spaced holes around the bolt circle")
+                            .changed();
                         (
                             a,
                             ui.add(egui::DragValue::new(start_angle_deg).speed(1.0).suffix("°"))
+                                .on_hover_text(
+                                    "Angular offset of the first bolt hole from +X (degrees)",
+                                )
                                 .changed(),
                         )
                     },
@@ -536,12 +564,18 @@ fn render_text_editor(
     let ml = egui::TextEdit::multiline(&mut txt.content)
         .desired_rows(2)
         .desired_width(f32::INFINITY);
-    let changed = ui.add(ml).changed().then(|| {
-        (
-            "Edit CAM Text Content",
-            Some(format!("sk_{sk_idx}_txt_{ei}_content")),
+    let changed = ui
+        .add(ml)
+        .on_hover_text(
+            "Multi-line text string converted into outline or single-stroke CAM engraving vectors",
         )
-    });
+        .changed()
+        .then(|| {
+            (
+                "Edit CAM Text Content",
+                Some(format!("sk_{sk_idx}_txt_{ei}_content")),
+            )
+        });
     ui.add_space(4.0);
 
     let grid_changed = inspector_grid(ui, ("sk_ent_txt_grid", sk_idx, ei), |ui| {
@@ -579,10 +613,22 @@ fn render_text_editor(
             "Alignment",
             Some("Horizontal & vertical alignment"),
             |ui| {
-                let a = mini_choice_combo(ui, ("txt_ha", sk_idx, ei), 72.0, &mut txt.h_align);
+                let a = mini_choice_combo(
+                    ui,
+                    ("txt_ha", sk_idx, ei),
+                    72.0,
+                    &mut txt.h_align,
+                    "Horizontal text alignment relative to Origin X",
+                );
                 (
                     a,
-                    mini_choice_combo(ui, ("txt_va", sk_idx, ei), 78.0, &mut txt.v_align),
+                    mini_choice_combo(
+                        ui,
+                        ("txt_va", sk_idx, ei),
+                        78.0,
+                        &mut txt.v_align,
+                        "Vertical text alignment relative to Origin Y",
+                    ),
                 )
             },
         );
@@ -597,6 +643,7 @@ fn render_text_editor(
                     .speed(0.05)
                     .range(0.8..=4.0),
             )
+            .on_hover_text(field_tip("tls"))
             .changed()
         }) {
             g.changed = Some(("Edit Text Line Spacing", g.coal("tls")));
@@ -633,6 +680,7 @@ fn render_text_orient_row(
                         .speed(1.0)
                         .suffix("°"),
                 )
+                .on_hover_text("Rotate text baseline angle in degrees")
                 .changed()
             {
                 return Some(("Rotate Text", Some("trot")));
@@ -664,6 +712,9 @@ fn render_font_picker_controls(
                     SketchFontSource::BuiltinSansBold,
                     "DejaVu Sans Bold (Outline)",
                 )
+                .on_hover_text(
+                    "Built-in TrueType outline font suitable for V-Carve and 2D Pocket lettering",
+                )
                 .changed()
             {
                 out = Some("Switch CAM Font");
@@ -671,12 +722,17 @@ fn render_font_picker_controls(
             for hf in HersheyFontKind::ALL {
                 if ui
                     .selectable_value(font, SketchFontSource::Hershey { font: hf }, hf.label())
+                    .on_hover_text(
+                        "Single-stroke Hershey engraving font for fast 1-pass trace engraving",
+                    )
                     .changed()
                 {
                     out = Some("Switch Hershey Engraving Font");
                 }
             }
-        });
+        })
+        .response
+        .on_hover_text("Select built-in outline font or single-stroke Hershey engraving font");
     let tip = "Load a custom TrueType or OpenType font file (packed into .chipz under fonts/)";
     if ui.small_button(".ttf/.otf…").on_hover_text(tip).clicked()
         && let Some(picked) = rfd::FileDialog::new()

@@ -37,12 +37,15 @@ pub fn show_linking_tab(
                                             r,
                                             r.label(),
                                         )
+                                        .on_hover_text(format!("Use {} Z-retract policy between passes", r.label()))
                                         .changed()
                                     {
                                         *mutated_label = Some("Change Retract Policy");
                                     }
                                 }
-                            });
+                            })
+                            .response
+                            .on_hover_text("Control Z clearance level used when linking between cutting passes");
                     },
                 );
                 grid_row(
@@ -92,13 +95,16 @@ pub fn show_linking_tab(
                                 ] {
                                     if ui
                                         .selectable_label(op.linking.entry_mode == mode, lbl)
+                                        .on_hover_text(format!("Enter closed pockets using {lbl}"))
                                         .clicked()
                                     {
                                         op.linking.entry_mode = mode;
                                         *mutated_label = Some("Change Entry Strategy");
                                     }
                                 }
-                            });
+                            })
+                            .response
+                            .on_hover_text("Select closed-cavity plunge strategy (helical ramp, linear ramp, or direct plunge)");
                     },
                 );
                 grid_row(
@@ -113,6 +119,7 @@ pub fn show_linking_tab(
                                     .speed(0.25)
                                     .suffix("°"),
                             )
+                            .on_hover_text("Descent ramp angle in degrees (lower angles reduce axial load in metals)")
                             .changed()
                         {
                             *mutated_label = Some("Edit Ramp Angle");
@@ -155,6 +162,7 @@ pub fn show_linking_tab(
                     |ui| {
                         if ui
                             .checkbox(&mut op.linking.lead_in.enabled, "Enabled")
+                            .on_hover_text("Approach contour walls smoothly via a tangent arc to prevent plunge marks")
                             .changed()
                         {
                             *mutated_label = Some("Toggle Lead-In");
@@ -191,6 +199,7 @@ pub fn show_linking_tab(
                                     .range(0.0..=180.0)
                                     .suffix("°"),
                                 )
+                                .on_hover_text("Included XY arc sweep angle in degrees for the tangent lead-in")
                                 .changed()
                             {
                                 *mutated_label = Some("Edit Lead-In Sweep");
@@ -240,6 +249,7 @@ pub fn show_linking_tab(
                         |ui| {
                             if ui
                                 .checkbox(&mut op.linking.lead_out_same_as_in, "Mirror Lead-In")
+                                .on_hover_text("Mirror the Lead-In arc and tangent length symmetrically when exiting the contour wall")
                                 .changed()
                             {
                                 *mutated_label = Some("Toggle Mirror Lead-Out");

@@ -216,7 +216,11 @@ pub fn show_about_modal(
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("Close").clicked() {
+                    if ui
+                        .button("Close")
+                        .on_hover_text("Close the About ChipCutter dialog")
+                        .clicked()
+                    {
                         close_clicked = true;
                     }
                 });

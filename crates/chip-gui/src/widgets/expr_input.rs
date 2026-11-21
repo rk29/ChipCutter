@@ -190,11 +190,23 @@ pub fn edit_param_length(
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
 
-        let resp = ui.add(
-            egui::TextEdit::singleline(&mut draft_text)
-                .id(widget_id)
-                .desired_width(width_px),
-        );
+        let input_tip = match &param.expr {
+            Some(expr) => format!(
+                "Parametric length: {expr} = {}\nSupports units (mm, in) and CAM variables (tool_d, stock_z, ...). Click 'fx' to insert variables.",
+                ctx.default_unit.format_length(param.value_mm),
+            ),
+            None => format!(
+                "Length value ({}).\nEnter a number, unit (mm / in), or formula (e.g. tool_d * 0.4). Use Up/Down arrows to nudge.",
+                ctx.default_unit.format_length(param.value_mm),
+            ),
+        };
+        let resp = ui
+            .add(
+                egui::TextEdit::singleline(&mut draft_text)
+                    .id(widget_id)
+                    .desired_width(width_px),
+            )
+            .on_hover_text(input_tip);
 
         let prefix_matches: Vec<&ScopedVarInfo> = if resp.has_focus()
             && let Some(prefix) = extract_trailing_identifier_prefix(&draft_text)

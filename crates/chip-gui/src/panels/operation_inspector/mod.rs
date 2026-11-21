@@ -68,9 +68,14 @@ pub fn show_operation_inspector(ui: &mut egui::Ui, ctx: OperationInspectorCtx<'_
         ui.horizontal(|ui| {
             ui.strong(op_kind.label());
             let name_ref = &mut project.setups[setup_idx].operations[op_idx].name;
-            let resp = ui.add(
-                egui::TextEdit::singleline(name_ref).desired_width(ui.available_width().max(80.0)),
-            );
+            let resp = ui
+                .add(
+                    egui::TextEdit::singleline(name_ref)
+                        .desired_width(ui.available_width().max(80.0)),
+                )
+                .on_hover_text(
+                    "Operation display name shown in the CAM Browser and posted G-code comments",
+                );
             if resp.lost_focus() && project.setups[setup_idx].operations[op_idx].name != pre_op.name
             {
                 mutated_label = Some("Rename Operation");
@@ -83,30 +88,35 @@ pub fn show_operation_inspector(ui: &mut egui::Ui, ctx: OperationInspectorCtx<'_
             ui.spacing_mut().item_spacing.x = 4.0;
             if ui
                 .selectable_value(tab, OperationTab::Tool, "Tool")
+                .on_hover_text("Select cutter, material preset, spindle RPM, surface speed, feedrate, and coolant")
                 .clicked()
             {
                 *pick_mode = ViewportPickMode::InspectEntity;
             }
             if ui
                 .selectable_value(tab, OperationTab::Geometry, "Geometry")
+                .on_hover_text("Pick 3D CAD faces, edges, holes, or 2D sketch regions machined by this operation")
                 .clicked()
             {
                 *pick_mode = default_pick_mode_for_op(setup_idx, op_idx, op_kind, *tab);
             }
             if ui
                 .selectable_value(tab, OperationTab::Heights, "Heights")
+                .on_hover_text("Configure Clearance, Retract, Feed, Top, and Bottom Z planes for this operation")
                 .clicked()
             {
                 *pick_mode = ViewportPickMode::InspectEntity;
             }
             if ui
                 .selectable_value(tab, OperationTab::Passes, "Passes")
+                .on_hover_text("Configure cutting strategy parameters, stepover, stepdown, stock-to-leave, and tabs")
                 .clicked()
             {
                 *pick_mode = ViewportPickMode::InspectEntity;
             }
             if ui
                 .selectable_value(tab, OperationTab::Linking, "Linking")
+                .on_hover_text("Configure retract policy, stay-down distance, helical/linear ramps, and tangent lead-in/out")
                 .clicked()
             {
                 *pick_mode = ViewportPickMode::InspectEntity;

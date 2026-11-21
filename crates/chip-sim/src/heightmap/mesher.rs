@@ -208,9 +208,9 @@ pub fn tessellate_stock_mesh_colored(
                     let r_idx = row + run_end;
                     let same_col = if is_heatmap {
                         let rc = cell_top_color(r_idx, false);
-                        (rc[0] - col[0]).abs() < 0.02
-                            && (rc[1] - col[1]).abs() < 0.02
-                            && (rc[2] - col[2]).abs() < 0.02
+                        (rc[0] - col[0]).abs() < 0.05
+                            && (rc[1] - col[1]).abs() < 0.05
+                            && (rc[2] - col[2]).abs() < 0.05
                     } else if color_by_op {
                         v_op[r_idx] == op0
                     } else {

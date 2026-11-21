@@ -68,6 +68,7 @@ pub fn show_tool_tab(ui: &mut egui::Ui, ctx: ToolTabCtx<'_>) {
 
                         egui::ComboBox::from_id_salt(("op_tool_cb", setup_idx, op_idx))
                             .width(COMBO_COL_WIDTH)
+                            .truncate()
                             .selected_text(selected_label)
                             .show_ui(ui, |ui| {
                                 for &candidate in &available_refs {
@@ -75,11 +76,22 @@ pub fn show_tool_tab(ui: &mut egui::Ui, ctx: ToolTabCtx<'_>) {
                                     let prefix = if compat { "" } else { "[Incompat] " };
                                     let lbl = format!("{prefix}{}", candidate.summary_label());
                                     let is_sel = cur_tid.as_ref() == Some(&candidate.id);
-                                    if ui.selectable_label(is_sel, lbl).clicked() && !is_sel {
+                                    if ui
+                                        .selectable_label(is_sel, lbl)
+                                        .on_hover_text(if compat {
+                                            "Assign this cutting tool to the operation"
+                                        } else {
+                                            "Warning: this cutter geometry is incompatible with the selected strategy"
+                                        })
+                                        .clicked()
+                                        && !is_sel
+                                    {
                                         selected_candidate = Some(candidate.clone());
                                     }
                                 }
-                            });
+                            })
+                            .response
+                            .on_hover_text("Select cutting tool assigned to this CAM operation");
                         if ui
                             .small_button("Library…")
                             .on_hover_text("Open Tool Library Manager")
@@ -128,7 +140,11 @@ pub fn show_tool_tab(ui: &mut egui::Ui, ctx: ToolTabCtx<'_>) {
                                     .show_ui(ui, |ui| {
                                         for p in &active_tool.presets {
                                             let is_p = cur_pid == p.id;
-                                            if ui.selectable_label(is_p, &p.name).clicked() && !is_p
+                                            if ui
+                                                .selectable_label(is_p, &p.name)
+                                                .on_hover_text("Load feeds, speeds, and stepover defaults from this material preset")
+                                                .clicked()
+                                                && !is_p
                                             {
                                                 let op = &mut project.setups[setup_idx].operations
                                                     [op_idx];
@@ -137,7 +153,9 @@ pub fn show_tool_tab(ui: &mut egui::Ui, ctx: ToolTabCtx<'_>) {
                                                 *mutated_label = Some("Change Material Preset");
                                             }
                                         }
-                                    });
+                                    })
+                                    .response
+                                    .on_hover_text("Choose material cutting preset for RPM, feedrate, and coolant defaults");
                             },
                         );
                     }
@@ -149,7 +167,8 @@ pub fn show_tool_tab(ui: &mut egui::Ui, ctx: ToolTabCtx<'_>) {
                             "Keep chipload per tooth constant when editing Spindle RPM or Surface Speed",
                         ),
                         |ui| {
-                            ui.checkbox(lock_chipload, "Lock Chipload");
+                            ui.checkbox(lock_chipload, "Lock Chipload")
+                                .on_hover_text("Keep chipload per tooth constant by scaling feedrate automatically when RPM or Surface Speed changes");
                             let op = &mut project.setups[setup_idx].operations[op_idx];
                             if !op.feed_overrides.is_all_inherited()
                                 && ui
@@ -223,12 +242,14 @@ pub fn show_tool_tab(ui: &mut egui::Ui, ctx: ToolTabCtx<'_>) {
                     "Spindle Speed",
                     Some("Rotational spindle speed (coupled to Surface Speed via cutter diameter)"),
                     |ui| {
-                        let r = ui.add(
-                            egui::DragValue::new(&mut rpm_val)
-                                .speed(25.0)
-                                .range(100.0..=60_000.0)
-                                .suffix(" RPM"),
-                        );
+                        let r = ui
+                            .add(
+                                egui::DragValue::new(&mut rpm_val)
+                                    .speed(25.0)
+                                    .range(100.0..=60_000.0)
+                                    .suffix(" RPM"),
+                            )
+                            .on_hover_text("Spindle rotation speed (RPM); coupled to Surface Speed and Chipload");
                         if op.feed_overrides.spindle_rpm.is_some() {
                             ui.colored_label(tok.dirty_fg, "*")
                                 .on_hover_text("Overridden from material preset");
@@ -258,12 +279,14 @@ pub fn show_tool_tab(ui: &mut egui::Ui, ctx: ToolTabCtx<'_>) {
                     "Surface Speed",
                     Some("Peripheral cutting speed Vc = π · D · RPM"),
                     |ui| {
-                        let r = ui.add(
-                            egui::DragValue::new(&mut vc_disp)
-                                .speed(1.0)
-                                .range(1.0..=5_000.0)
-                                .suffix(format!(" {}", display_unit.surface_speed_suffix())),
-                        );
+                        let r = ui
+                            .add(
+                                egui::DragValue::new(&mut vc_disp)
+                                    .speed(1.0)
+                                    .range(1.0..=5_000.0)
+                                    .suffix(format!(" {}", display_unit.surface_speed_suffix())),
+                            )
+                            .on_hover_text("Peripheral cutter surface speed (m/min or SFM); automatically updates Spindle RPM");
                         if r.changed() {
                             let new_vc_m = display_unit.surface_speed_to_m_min(vc_disp);
                             if let Some(new_rpm) = rpm_from_surface_speed(new_vc_m, dia_mm) {
@@ -305,12 +328,16 @@ pub fn show_tool_tab(ui: &mut egui::Ui, ctx: ToolTabCtx<'_>) {
                     "Cutting Feed",
                     Some("Linear XY cutting feedrate Vf = RPM · flutes · fz"),
                     |ui| {
-                        let r = ui.add(
-                            egui::DragValue::new(&mut vf_disp)
-                                .speed(5.0)
-                                .range(1.0..=25_000.0)
-                                .suffix(format!(" {}", display_unit.feed_suffix())),
-                        );
+                        let r = ui
+                            .add(
+                                egui::DragValue::new(&mut vf_disp)
+                                    .speed(5.0)
+                                    .range(1.0..=25_000.0)
+                                    .suffix(format!(" {}", display_unit.feed_suffix())),
+                            )
+                            .on_hover_text(
+                                "Linear XY cutting feedrate; automatically updates Chipload",
+                            );
                         if op.feed_overrides.cutting_feed_mm_min.is_some() {
                             ui.colored_label(tok.dirty_fg, "*")
                                 .on_hover_text("Overridden from material preset");
@@ -330,13 +357,15 @@ pub fn show_tool_tab(ui: &mut egui::Ui, ctx: ToolTabCtx<'_>) {
                     &chipload_lbl,
                     Some("Uncut chip thickness per flute tooth (fz)"),
                     |ui| {
-                        let r = ui.add(
-                            egui::DragValue::new(&mut fz_disp)
-                                .speed(0.001)
-                                .max_decimals(5)
-                                .range(0.0001..=5.0)
-                                .suffix(format!(" {}", display_unit.chipload_suffix())),
-                        );
+                        let r = ui
+                            .add(
+                                egui::DragValue::new(&mut fz_disp)
+                                    .speed(0.001)
+                                    .max_decimals(5)
+                                    .range(0.0001..=5.0)
+                                    .suffix(format!(" {}", display_unit.chipload_suffix())),
+                            )
+                            .on_hover_text("Uncut chip thickness per flute tooth; automatically updates Cutting Feed");
                         if r.changed() {
                             let new_fz_mm = display_unit.chipload_to_mm(fz_disp);
                             op.feed_overrides.cutting_feed_mm_min =

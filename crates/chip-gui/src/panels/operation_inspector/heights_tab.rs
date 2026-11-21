@@ -75,7 +75,8 @@ pub fn show_heights_tab(ui: &mut egui::Ui, ctx: HeightsTabCtx<'_>) {
                     "3D Preview",
                     Some("Render translucent Z-height reference planes in the 3D viewport"),
                     |ui| {
-                        ui.checkbox(show_z_planes, "Show Z-Planes");
+                        ui.checkbox(show_z_planes, "Show Z-Planes")
+                            .on_hover_text("Render translucent color-coded Clearance, Retract, Feed, Top, and Bottom Z planes in the 3D viewport");
                     },
                 );
 
@@ -98,12 +99,18 @@ pub fn show_heights_tab(ui: &mut egui::Ui, ctx: HeightsTabCtx<'_>) {
                                 for r in HeightReference::OPERATION_REFS {
                                     if ui
                                         .selectable_value(&mut spec.reference, r, r.label())
+                                        .on_hover_text(format!(
+                                            "Measure {name} height relative to {}",
+                                            r.label()
+                                        ))
                                         .changed()
                                     {
                                         *mutated_label = Some("Change Operation Height Reference");
                                     }
                                 }
-                            });
+                            })
+                            .response
+                            .on_hover_text(tip);
                     });
                     grid_row(
                         ui,

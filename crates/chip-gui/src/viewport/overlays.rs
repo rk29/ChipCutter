@@ -195,7 +195,11 @@ pub fn draw_view_cube_overlay(
             ("Front", StandardView::Front),
             ("Right", StandardView::Right),
         ] {
-            if ui.small_button(lbl).clicked() {
+            if ui
+                .small_button(lbl)
+                .on_hover_text(format!("Snap 3D camera to standard {lbl} view"))
+                .clicked()
+            {
                 clicked_view = Some(v);
             }
         }
@@ -206,7 +210,11 @@ pub fn draw_view_cube_overlay(
             ("Left", StandardView::Left),
             ("Bot", StandardView::Bottom),
         ] {
-            if ui.small_button(lbl).clicked() {
+            if ui
+                .small_button(lbl)
+                .on_hover_text(format!("Snap 3D camera to standard {lbl} view"))
+                .clicked()
+            {
                 clicked_view = Some(v);
             }
         }
@@ -365,9 +373,12 @@ pub fn draw_viewport_bottom_hud(
             .width(86.0)
             .show_ui(&mut hud_ui, |ui| {
                 for preset in MousePreset::ALL {
-                    ui.selectable_value(&mut camera.mouse_preset, preset, preset.label());
+                    ui.selectable_value(&mut camera.mouse_preset, preset, preset.label())
+                        .on_hover_text(format!("Use {} viewport orbit/pan/zoom mouse bindings", preset.label()));
                 }
-            });
+            })
+            .response
+            .on_hover_text("Select 3D viewport mouse navigation preset (Fusion 360, Blender, SolidWorks, FreeCAD)");
         let orbit_short = match camera.orbit_mode {
             OrbitMode::TurntableZUp => "+Z Up",
             OrbitMode::FreeTrackball => "Free",

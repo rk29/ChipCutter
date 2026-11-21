@@ -235,6 +235,7 @@ fn render_anchor_card(ui: &mut egui::Ui, st: &mut SketchUiState<'_>) {
                 let prev = name.clone();
                 let w = INPUT_COL_WIDTH + 36.0;
                 ui.add(egui::TextEdit::singleline(name).desired_width(w))
+                    .on_hover_text("Display label for this 2D sketch layer in the CAM Browser")
                     .changed()
                     && *name != prev
             },
@@ -251,7 +252,11 @@ fn render_anchor_card(ui: &mut egui::Ui, st: &mut SketchUiState<'_>) {
             |ui| {
                 let snap = &mut *st.ctx.snap_grid_mm;
                 for (lbl, val) in SNAP_STEPS {
-                    if ui.selectable_label(*snap == val, lbl).clicked() {
+                    if ui
+                        .selectable_label(*snap == val, lbl)
+                        .on_hover_text(format!("Set 2D viewport drawing grid snap to {lbl}"))
+                        .clicked()
+                    {
                         *snap = val;
                     }
                 }
@@ -307,7 +312,13 @@ fn render_anchor_variant_rows(
             ..
         } => {
             if grid_row(ui, "Anchor Plane", Some("Setup XY reference plane"), |ui| {
-                mini_choice_combo(ui, ("sk_pr", sketch_idx), cb_w, plane_ref)
+                mini_choice_combo(
+                    ui,
+                    ("sk_pr", sketch_idx),
+                    cb_w,
+                    plane_ref,
+                    "Reference Z plane within the Setup for this 2D sketch",
+                )
             }) {
                 st.undo_info = Some(("Change Sketch Plane", None));
             }
@@ -321,7 +332,11 @@ fn render_anchor_variant_rows(
                     Some("Click a planar STEP face to anchor"),
                     |ui| {
                         let on = *st.ctx.pick_mode == rebind;
-                        if ui.selectable_label(on, "Attach to 3D Face…").clicked() {
+                        if ui
+                            .selectable_label(on, "Attach to 3D Face…")
+                            .on_hover_text("Click a planar 3D CAD face in the viewport to anchor this sketch onto it")
+                            .clicked()
+                        {
                             *st.ctx.pick_mode = if on {
                                 ViewportPickMode::InspectEntity
                             } else {
@@ -345,10 +360,21 @@ fn render_anchor_variant_rows(
                 Some("Associative planar B-Rep face"),
                 |ui| {
                     ui.strong(format!("Face #{}", face_binding.last_face_index));
-                    if has_cad && ui.small_button("Re-Pick…").clicked() {
+                    if has_cad
+                        && ui
+                            .small_button("Re-Pick…")
+                            .on_hover_text("Select a different planar 3D face to host this sketch")
+                            .clicked()
+                    {
                         *st.ctx.pick_mode = rebind;
                     }
-                    if ui.small_button("Use Setup XY").clicked() {
+                    if ui
+                        .small_button("Use Setup XY")
+                        .on_hover_text(
+                            "Detach from the 3D face and anchor this sketch to the Setup XY plane",
+                        )
+                        .clicked()
+                    {
                         *switch_to_setup_xy = Some(setup_id.clone());
                     }
                 },
@@ -357,7 +383,15 @@ fn render_anchor_variant_rows(
                 ui,
                 "Face Origin",
                 Some("2D (0, 0) datum on host face"),
-                |ui| mini_choice_combo(ui, ("sk_fo", sketch_idx), cb_w, origin_mode),
+                |ui| {
+                    mini_choice_combo(
+                        ui,
+                        ("sk_fo", sketch_idx),
+                        cb_w,
+                        origin_mode,
+                        "2D (0, 0) coordinate datum on the host 3D face",
+                    )
+                },
             ) {
                 st.undo_info = Some(("Change Face Sketch Origin", None));
             }
@@ -371,6 +405,9 @@ fn render_anchor_variant_rows(
                             .speed(1.0)
                             .suffix("°")
                             .range(-180.0..=180.0),
+                    )
+                    .on_hover_text(
+                        "Rotate the sketch +X axis in-plane around the host face normal (degrees)",
                     )
                     .changed()
                 },
@@ -414,7 +451,13 @@ fn render_authoring_card(ui: &mut egui::Ui, st: &mut SketchUiState<'_>) {
     ui.horizontal_wrapped(|ui| {
         let sk = &mut st.ctx.project.sketches[sketch_idx];
         for (spec, btn_lbl, undo_lbl, sub_layer) in QUICK_SPECS {
-            if ui.small_button(btn_lbl).clicked() {
+            if ui
+                .small_button(btn_lbl)
+                .on_hover_text(format!(
+                    "Insert a default {btn_lbl} entity centered at (0, 0)"
+                ))
+                .clicked()
+            {
                 let n = sk.entities.len() + 1;
                 sk.entities.push(ent_entry(n, spec, sub_layer));
                 *st.ctx.selected_entity_idx = Some(sk.entities.len() - 1);

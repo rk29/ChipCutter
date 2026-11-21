@@ -88,12 +88,16 @@ pub(super) fn show_waterline3d_params(
                     let prev = p.order_mode;
                     egui::ComboBox::from_id_salt(("wl3d_order_cb", setup_idx, op_idx))
                         .width(COMBO_COL_WIDTH)
+                        .truncate()
                         .selected_text(p.order_mode.label())
                         .show_ui(ui, |ui| {
                             for m in WaterlineOrderMode::ALL {
-                                ui.selectable_value(&mut p.order_mode, m, m.label());
+                                ui.selectable_value(&mut p.order_mode, m, m.label())
+                                    .on_hover_text(format!("Order 3D waterline contours {}", m.label()));
                             }
-                        });
+                        })
+                        .response
+                        .on_hover_text("Order waterline passes by Z level top-down or finish each island/boss first");
                     if p.order_mode != prev {
                         *mutated = Some("Change Waterline Ordering");
                     }
@@ -114,6 +118,7 @@ pub(super) fn show_waterline3d_params(
                                 .range(0.5..=20.0)
                                 .suffix("°"),
                         )
+                        .on_hover_text("Contour ramp angle in degrees when stepping down between waterline Z levels")
                         .changed()
                     {
                         *mutated = Some("Edit Waterline Ramp Angle");
@@ -190,12 +195,16 @@ pub(super) fn show_adaptive3d_params(
                     let prev = p.adaptive.cut_direction;
                     egui::ComboBox::from_id_salt(("a3d_dir_cb", setup_idx, op_idx))
                         .width(COMBO_COL_WIDTH)
+                        .truncate()
                         .selected_text(p.adaptive.cut_direction.label())
                         .show_ui(ui, |ui| {
                             for d in AdaptiveCutDirection::ALL {
-                                ui.selectable_value(&mut p.adaptive.cut_direction, d, d.label());
+                                ui.selectable_value(&mut p.adaptive.cut_direction, d, d.label())
+                                    .on_hover_text(format!("Use {} cutting engagement on 3D Adaptive peels", d.label()));
                             }
-                        });
+                        })
+                        .response
+                        .on_hover_text("Preferred cutting direction for 3D Adaptive trochoidal clearing passes");
                     if p.adaptive.cut_direction != prev {
                         *mutated = Some("Change 3D Adaptive Cut Direction");
                     }
@@ -255,6 +264,7 @@ pub(super) fn show_parallel3d_params(
                                 .range(-180.0..=180.0)
                                 .suffix("°"),
                         )
+                        .on_hover_text("Raster scanline angle in degrees (0 deg = along +X, 90 deg = along +Y)")
                         .changed()
                     {
                         *mutated = Some("Edit Parallel Pass Angle");
@@ -272,12 +282,16 @@ pub(super) fn show_parallel3d_params(
                     let prev = p.cut_direction;
                     egui::ComboBox::from_id_salt(("par3d_dir_cb", setup_idx, op_idx))
                         .width(COMBO_COL_WIDTH)
+                        .truncate()
                         .selected_text(p.cut_direction.label())
                         .show_ui(ui, |ui| {
                             for d in ParallelCutDirection::ALL {
-                                ui.selectable_value(&mut p.cut_direction, d, d.label());
+                                ui.selectable_value(&mut p.cut_direction, d, d.label())
+                                    .on_hover_text(format!("Traverse raster passes using {}", d.label()));
                             }
-                        });
+                        })
+                        .response
+                        .on_hover_text("Select one-way or zig-zag traversal along 3D parallel raster passes");
                     if p.cut_direction != prev {
                         *mutated = Some("Change Parallel Cut Direction");
                     }
@@ -466,6 +480,7 @@ pub(super) fn show_pencil3d_params(
                 f.row("Offset Passes", |ui, mutated| {
                     if ui
                         .add(egui::DragValue::new(&mut p.num_offset_passes).range(0..=4))
+                        .on_hover_text("Number of extra cleanup passes offset on each side of detected concave fillet creases")
                         .changed()
                     {
                         *mutated = Some("Edit Pencil Offset Pass Count");
@@ -515,12 +530,16 @@ fn show_3d_boundary_card(
                 let prev = *boundary_mode;
                 egui::ComboBox::from_id_salt((card_id.0, "bmode", setup_idx, op_idx))
                     .width(COMBO_COL_WIDTH)
+                    .truncate()
                     .selected_text(boundary_mode.label())
                     .show_ui(ui, |ui| {
                         for m in MachiningBoundaryMode::ALL {
-                            ui.selectable_value(boundary_mode, m, m.label());
+                            ui.selectable_value(boundary_mode, m, m.label())
+                                .on_hover_text(format!("Constrain 3D toolpath using {}", m.label()));
                         }
-                    });
+                    })
+                    .response
+                    .on_hover_text("Select 2D XY containment boundary source for this 3D surface strategy");
                 if *boundary_mode != prev {
                     *mutated = Some("Change 3D Boundary Source");
                 }
@@ -530,12 +549,16 @@ fn show_3d_boundary_card(
                 let prev = *tool_containment;
                 egui::ComboBox::from_id_salt((card_id.0, "tcont", setup_idx, op_idx))
                     .width(COMBO_COL_WIDTH)
+                    .truncate()
                     .selected_text(tool_containment.label())
                     .show_ui(ui, |ui| {
                         for c in ToolContainmentMode::ALL {
-                            ui.selectable_value(tool_containment, c, c.label());
+                            ui.selectable_value(tool_containment, c, c.label())
+                                .on_hover_text(format!("Position cutter {}", c.label()));
                         }
-                    });
+                    })
+                    .response
+                    .on_hover_text("Control whether tool center, inside edge, or outside edge stays within the 2D boundary");
                 if *tool_containment != prev {
                     *mutated = Some("Change 3D Tool Containment");
                 }

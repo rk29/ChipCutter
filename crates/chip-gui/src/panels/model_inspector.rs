@@ -197,13 +197,21 @@ pub fn show_model_inspector(ui: &mut egui::Ui, ctx: ModelInspectorCtx<'_>) -> Mo
                                 axis_lbl,
                                 Some("Increment world-axis rotation by ±90° around model center"),
                                 |ui| {
-                                    if ui.small_button("-90°").clicked() {
+                                    if ui
+                                        .small_button("-90°")
+                                        .on_hover_text(format!("Rotate model -90 degrees around the {axis_lbl} axis"))
+                                        .clicked()
+                                    {
                                         new_transform = pre_transform.rotated_world_axis_deg(
                                             axis_vec, -90.0, pivot,
                                         );
                                         undo_label = Some("Rotate Model -90°");
                                     }
-                                    if ui.small_button("+90°").clicked() {
+                                    if ui
+                                        .small_button("+90°")
+                                        .on_hover_text(format!("Rotate model +90 degrees around the {axis_lbl} axis"))
+                                        .clicked()
+                                    {
                                         new_transform = pre_transform.rotated_world_axis_deg(
                                             axis_vec, 90.0, pivot,
                                         );
@@ -252,13 +260,15 @@ pub fn show_model_inspector(ui: &mut egui::Ui, ctx: ModelInspectorCtx<'_>) -> Mo
                                 Some("Proportional scale multiplier (1.0 = 100%)"),
                                 |ui| {
                                     let mut s = new_transform.scale[0];
-                                    let resp = ui.add(
-                                        egui::DragValue::new(&mut s)
-                                            .speed(0.01)
-                                            .range(MIN_MODEL_SCALE..=MAX_MODEL_SCALE)
-                                            .suffix("×")
-                                            .max_decimals(4),
-                                    );
+                                    let resp = ui
+                                        .add(
+                                            egui::DragValue::new(&mut s)
+                                                .speed(0.01)
+                                                .range(MIN_MODEL_SCALE..=MAX_MODEL_SCALE)
+                                                .suffix("×")
+                                                .max_decimals(4),
+                                        )
+                                        .on_hover_text("Proportional scale multiplier across X, Y, and Z (1.0x = original size)");
                                     if resp.changed() && s.is_finite() {
                                         new_transform = new_transform.with_uniform_scale(s);
                                         undo_label = Some("Scale Model Uniformly");
@@ -274,13 +284,15 @@ pub fn show_model_inspector(ui: &mut egui::Ui, ctx: ModelInspectorCtx<'_>) -> Mo
                                     Some("Independent scale factor along this local model axis"),
                                     |ui| {
                                         let mut s = new_transform.scale[axis_idx];
-                                        let resp = ui.add(
-                                            egui::DragValue::new(&mut s)
-                                                .speed(0.01)
-                                                .range(MIN_MODEL_SCALE..=MAX_MODEL_SCALE)
-                                                .suffix("×")
-                                                .max_decimals(4),
-                                        );
+                                        let resp = ui
+                                            .add(
+                                                egui::DragValue::new(&mut s)
+                                                    .speed(0.01)
+                                                    .range(MIN_MODEL_SCALE..=MAX_MODEL_SCALE)
+                                                    .suffix("×")
+                                                    .max_decimals(4),
+                                            )
+                                            .on_hover_text(format!("Independent scale factor along {lbl}"));
                                         if resp.changed() && s.is_finite() {
                                             new_transform.scale[axis_idx] =
                                                 s.clamp(MIN_MODEL_SCALE, MAX_MODEL_SCALE);
@@ -345,17 +357,19 @@ pub fn show_model_inspector(ui: &mut egui::Ui, ctx: ModelInspectorCtx<'_>) -> Mo
                                 ),
                                 |ui| {
                                     let mut disp_val = (cur_mm * unit_scale).max(0.001);
-                                    let resp = ui.add(
-                                        egui::DragValue::new(&mut disp_val)
-                                            .speed(if unit == DisplayUnit::Inch {
-                                                0.05
-                                            } else {
-                                                0.5
-                                            })
-                                            .range(0.01..=100_000.0)
-                                            .suffix(suffix)
-                                            .max_decimals(max_dec),
-                                    );
+                                    let resp = ui
+                                        .add(
+                                            egui::DragValue::new(&mut disp_val)
+                                                .speed(if unit == DisplayUnit::Inch {
+                                                    0.05
+                                                } else {
+                                                    0.5
+                                                })
+                                                .range(0.01..=100_000.0)
+                                                .suffix(suffix)
+                                                .max_decimals(max_dec),
+                                        )
+                                        .on_hover_text(format!("Enter desired {lbl} to uniformly scale the model to match"));
                                     if resp.changed() && disp_val.is_finite() && disp_val > 1e-4 {
                                         let target_mm = disp_val / unit_scale;
                                         let fitted = pre_transform.scaled_uniformly_to_fit_axis(
@@ -456,13 +470,15 @@ pub fn show_model_inspector(ui: &mut egui::Ui, ctx: ModelInspectorCtx<'_>) -> Mo
                                 Some("Intrinsic XYZ Euler rotation angle in degrees (applied after Scale)"),
                                 |ui| {
                                     let mut deg = new_transform.rotate_deg[axis_idx];
-                                    let resp = ui.add(
-                                        egui::DragValue::new(&mut deg)
-                                            .speed(0.5)
-                                            .range(-360.0..=360.0)
-                                            .suffix("°")
-                                            .max_decimals(2),
-                                    );
+                                    let resp = ui
+                                        .add(
+                                            egui::DragValue::new(&mut deg)
+                                                .speed(0.5)
+                                                .range(-360.0..=360.0)
+                                                .suffix("°")
+                                                .max_decimals(2),
+                                        )
+                                        .on_hover_text(format!("Exact {lbl} Euler rotation angle in degrees"));
                                     if resp.changed() && deg.is_finite() {
                                         new_transform.rotate_deg[axis_idx] = deg;
                                         undo_label = Some("Edit Model Rotation");
@@ -477,13 +493,15 @@ pub fn show_model_inspector(ui: &mut egui::Ui, ctx: ModelInspectorCtx<'_>) -> Mo
                                 Some("World translation offset applied after Scale and Rotation"),
                                 |ui| {
                                     let mut disp = new_transform.translate_mm[axis_idx] * unit_scale;
-                                    let resp = ui.add(
-                                        egui::DragValue::new(&mut disp)
-                                            .speed(drag_speed)
-                                            .range(-100_000.0..=100_000.0)
-                                            .suffix(suffix)
-                                            .max_decimals(max_dec),
-                                    );
+                                    let resp = ui
+                                        .add(
+                                            egui::DragValue::new(&mut disp)
+                                                .speed(drag_speed)
+                                                .range(-100_000.0..=100_000.0)
+                                                .suffix(suffix)
+                                                .max_decimals(max_dec),
+                                        )
+                                        .on_hover_text(format!("Exact world {lbl} translation offset"));
                                     if resp.changed() && disp.is_finite() {
                                         new_transform.translate_mm[axis_idx] = disp / unit_scale;
                                         undo_label = Some("Edit Model Translation");

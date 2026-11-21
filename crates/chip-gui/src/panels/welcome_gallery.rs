@@ -381,7 +381,11 @@ pub fn show_welcome_modal(
                         if let Some(p) = clicked_recent {
                             action = Some(WelcomeGalleryAction::OpenRecentPath(p));
                         }
-                        if ui.small_button("Clear Recent List").clicked() {
+                        if ui
+                            .small_button("Clear Recent List")
+                            .on_hover_text("Clear all entries from the recent projects list")
+                            .clicked()
+                        {
                             action = Some(WelcomeGalleryAction::ClearRecentFiles);
                         }
                     }
@@ -422,13 +426,18 @@ pub fn show_welcome_modal(
                         &mut prefs.show_welcome_on_startup,
                         "Show Welcome overlay on bare startup",
                     )
+                    .on_hover_text("Automatically open this Welcome overlay when launching ChipCutter without a file argument")
                     .changed()
                 {
                     action = Some(WelcomeGalleryAction::PrefsChanged);
                 }
                 ui.weak("· Tip: Ctrl+K Command Palette · F1 Shortcuts");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("Continue to Workspace").clicked() {
+                    if ui
+                        .button("Continue to Workspace")
+                        .on_hover_text("Dismiss the Welcome overlay and enter the CAM workspace")
+                        .clicked()
+                    {
                         dismiss_clicked = true;
                     }
                 });
@@ -482,7 +491,8 @@ pub fn show_sample_gallery_modal(
 
             ui.horizontal(|ui| {
                 for cat in SampleCategory::ALL {
-                    ui.selectable_value(&mut state.category, cat, cat.label());
+                    ui.selectable_value(&mut state.category, cat, cat.label())
+                        .on_hover_text(format!("Filter sample projects by category: {}", cat.label()));
                 }
                 ui.separator();
                 inline_icon(ui, IconKind::Search, tok.text_muted, 13.0);
@@ -490,7 +500,8 @@ pub fn show_sample_gallery_modal(
                     egui::TextEdit::singleline(&mut state.search_query)
                         .hint_text("Filter samples…")
                         .desired_width(150.0),
-                );
+                )
+                .on_hover_text("Search sample projects by title, strategy, or tag");
             });
             ui.separator();
 

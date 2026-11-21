@@ -179,10 +179,14 @@ pub fn show_setup_inspector(ui: &mut egui::Ui, ctx: SetupInspectorCtx<'_>) -> bo
         ui.separator();
         ui.add_space(2.0);
         ui.horizontal(|ui| {
-            ui.selectable_value(tab, SetupTab::Wcs, "WCS & Post");
-            ui.selectable_value(tab, SetupTab::Stock, "Stock");
-            ui.selectable_value(tab, SetupTab::Rotary, "4th Axis");
-            ui.selectable_value(tab, SetupTab::Heights, "Heights");
+            ui.selectable_value(tab, SetupTab::Wcs, "WCS & Post")
+                .on_hover_text("Configure Work Coordinate System orientation, origin datum, target CNC machine, and post-processor");
+            ui.selectable_value(tab, SetupTab::Stock, "Stock")
+                .on_hover_text("Configure raw stock blank shape, fixed or relative dimensions, and side/Z margins");
+            ui.selectable_value(tab, SetupTab::Rotary, "4th Axis")
+                .on_hover_text("Configure 4th-axis rotary kinematics, axis letter, chuck geometry, and cylindrical stock alignment");
+            ui.selectable_value(tab, SetupTab::Heights, "Heights")
+                .on_hover_text("Configure Setup-level safe Clearance and Retract Z heights");
         });
     });
 
@@ -388,11 +392,17 @@ fn render_work_offset_row(
                 .selected_text(wcs_slot.label())
                 .show_ui(ui, |ui| {
                     for slot in WorkOffsetSlot::ALL {
-                        if ui.selectable_value(wcs_slot, slot, slot.label()).changed() {
+                        if ui
+                            .selectable_value(wcs_slot, slot, slot.label())
+                            .on_hover_text(format!("Use CNC work offset {}", slot.label()))
+                            .changed()
+                        {
                             *mutated_label = Some("Change Work Offset Slot");
                         }
                     }
-                });
+                })
+                .response
+                .on_hover_text("Select CNC controller work coordinate offset (G54..G59.3)");
         },
     );
 }
@@ -654,7 +664,13 @@ fn render_wcs_orient_body(ui: &mut egui::Ui, ctx: &mut WcsTabCtx<'_>) {
                     "X Clocking",
                     Some("Rotate +X in 90° steps around +Z"),
                     |ui| {
-                        if ui.small_button("Clock X 90°").clicked() {
+                        if ui
+                            .small_button("Clock X 90°")
+                            .on_hover_text(
+                                "Rotate Setup +X/+Y by 90 degrees around the +Z spindle axis",
+                            )
+                            .clicked()
+                        {
                             *clock_90 = (*clock_90 + 1) % 4;
                             *ctx.mutated_label = Some("Clock WCS X Axis 90°");
                         }
@@ -678,7 +694,11 @@ fn render_wcs_orient_body(ui: &mut egui::Ui, ctx: &mut WcsTabCtx<'_>) {
                     |ui| {
                         ui.label(format!("Face #{}", face_ref.last_index));
                         let on = *ctx.pick_mode == target;
-                        if ui.selectable_label(on, "Pick Face").clicked() {
+                        if ui
+                            .selectable_label(on, "Pick Face")
+                            .on_hover_text("Click a planar 3D CAD face in the viewport to define the Setup XY plane")
+                            .clicked()
+                        {
                             *ctx.pick_mode = if on {
                                 ViewportPickMode::InspectEntity
                             } else {
@@ -726,20 +746,27 @@ fn render_wcs_orient_body(ui: &mut egui::Ui, ctx: &mut WcsTabCtx<'_>) {
             "Fine Z Rot (°)",
             Some("Additional arbitrary rotation around Setup +Z (e.g., 15° or 45° vise clocking)"),
             |ui| {
-                let resp = ui.add(
-                    egui::DragValue::new(extra_z_rot)
-                        .speed(0.5)
-                        .range(-360.0..=360.0)
-                        .suffix("°")
-                        .max_decimals(2),
-                );
+                let resp = ui
+                    .add(
+                        egui::DragValue::new(extra_z_rot)
+                            .speed(0.5)
+                            .range(-360.0..=360.0)
+                            .suffix("°")
+                            .max_decimals(2),
+                    )
+                    .on_hover_text("Fine rotation angle around Setup +Z in degrees");
                 if resp.changed() {
                     if !extra_z_rot.is_finite() {
                         *extra_z_rot = 0.0;
                     }
                     *ctx.mutated_label = Some("Adjust WCS Fine Z Rotation");
                 }
-                if extra_z_rot.abs() > 1e-6 && ui.small_button("0°").clicked() {
+                if extra_z_rot.abs() > 1e-6
+                    && ui
+                        .small_button("0°")
+                        .on_hover_text("Reset fine Z rotation back to 0 degrees")
+                        .clicked()
+                {
                     *extra_z_rot = 0.0;
                     *ctx.mutated_label = Some("Reset WCS Fine Z Rotation");
                 }
@@ -771,14 +798,24 @@ fn render_axis_pick_spec_row(
         |ui| {
             ui.label(spec.desc);
             let on = *pick_mode == spec.target_mode;
-            if ui.selectable_label(on, spec.pick_btn).clicked() {
+            if ui
+                .selectable_label(on, spec.pick_btn)
+                .on_hover_text(
+                    "Click a 3D face or straight edge in the viewport to align this WCS axis",
+                )
+                .clicked()
+            {
                 *pick_mode = if on {
                     ViewportPickMode::InspectEntity
                 } else {
                     spec.target_mode
                 };
             }
-            if ui.checkbox(flip, spec.flip_lbl).changed() {
+            if ui
+                .checkbox(flip, spec.flip_lbl)
+                .on_hover_text("Invert the direction of this WCS axis 180 degrees")
+                .changed()
+            {
                 *mutated = Some(spec.flip_undo);
             }
         },
@@ -1068,12 +1105,17 @@ fn render_post_body(
                             let lbl = format!("{} ({})", prof.name, prof.id);
                             if ui
                                 .selectable_value(&mut setup.post_profile, prof.id, lbl)
+                                .on_hover_text("Select this CNC controller post-processor dialect")
                                 .changed()
                             {
                                 *mutated_label = Some("Change Post Profile");
                             }
                         }
-                    });
+                    })
+                    .response
+                    .on_hover_text(
+                        "Choose the CNC controller G-code post-processor profile for this Setup",
+                    );
             },
         );
     });
@@ -1207,7 +1249,11 @@ fn render_stock_geom_body(
                     g.ui,
                     "Round Saw Blank",
                     Some("Round total stock up to 5 mm step"),
-                    |ui| ui.checkbox(&mut round_on, "Up to 5 mm step").changed(),
+                    |ui| {
+                        ui.checkbox(&mut round_on, "Up to 5 mm step")
+                            .on_hover_text("Round computed stock blank dimensions up to the nearest 5 mm increment")
+                            .changed()
+                    },
                 ) {
                     *round_increment_mm = round_on.then_some(5.0);
                     *g.mutated = Some("Toggle Stock Rounding");
@@ -1274,16 +1320,23 @@ fn render_stock_mode_combo(
     let mm = ParamLength::from_mm;
     egui::ComboBox::from_id_salt(("stock_mode_cb", setup_idx))
         .width(INPUT_COL_WIDTH + 44.0)
+        .truncate()
         .selected_text(stock.kind_label())
         .show_ui(ui, |ui| {
             let is_rbox = matches!(stock, StockConfig::RelativeBox { .. });
-            if ui.selectable_label(is_rbox, "Relative Box Stock").clicked() && !is_rbox {
+            if ui
+                .selectable_label(is_rbox, "Relative Box Stock")
+                .on_hover_text("Size rectangular stock automatically from the model bounding box plus margins")
+                .clicked()
+                && !is_rbox
+            {
                 *stock = StockConfig::default();
                 *mutated_label = Some("Change Stock Mode to Relative Box");
             }
             let is_fbox = matches!(stock, StockConfig::FixedBox { .. });
             if ui
                 .selectable_label(is_fbox, "Fixed-Size Box Stock")
+                .on_hover_text("Specify exact rectangular raw stock width, depth, and height")
                 .clicked()
                 && !is_fbox
             {
@@ -1299,6 +1352,7 @@ fn render_stock_mode_combo(
             let is_rcyl = matches!(stock, StockConfig::RelativeCylinder { .. });
             if ui
                 .selectable_label(is_rcyl, "Relative Cylindrical Stock")
+                .on_hover_text("Size round bar stock automatically from the model diameter/length plus margins")
                 .clicked()
                 && !is_rcyl
             {
@@ -1313,6 +1367,7 @@ fn render_stock_mode_combo(
             let is_fcyl = matches!(stock, StockConfig::FixedCylinder { .. });
             if ui
                 .selectable_label(is_fcyl, "Fixed Cylindrical Stock")
+                .on_hover_text("Specify exact round bar stock diameter and length")
                 .clicked()
                 && !is_fcyl
             {
@@ -1324,7 +1379,9 @@ fn render_stock_mode_combo(
                 };
                 *mutated_label = Some("Change Stock Mode to Fixed Cylinder");
             }
-        });
+        })
+        .response
+        .on_hover_text("Choose raw stock blank shape and sizing mode (relative or fixed box/cylinder)");
 }
 
 fn render_cyl_axis_row(
@@ -1343,11 +1400,20 @@ fn render_cyl_axis_row(
                 .selected_text(axis.label())
                 .show_ui(ui, |ui| {
                     for a in StockAxis::ALL {
-                        if ui.selectable_value(axis, a, a.label()).changed() {
+                        if ui
+                            .selectable_value(axis, a, a.label())
+                            .on_hover_text(format!(
+                                "Orient cylindrical bar stock along {}",
+                                a.label()
+                            ))
+                            .changed()
+                        {
                             *mutated_label = Some("Change Cylinder Stock Axis");
                         }
                     }
-                });
+                })
+                .response
+                .on_hover_text("Select principal WCS axis along which the round bar stock runs");
         },
     );
 }
@@ -1381,7 +1447,11 @@ fn render_stock_offsets_body(
                     g.ui,
                     "Symmetric XY",
                     Some("Apply identical side stock on ±X and ±Y"),
-                    |ui| ui.checkbox(symmetric_xy, "Mirror ±X / ±Y").changed(),
+                    |ui| {
+                        ui.checkbox(symmetric_xy, "Mirror ±X / ±Y")
+                            .on_hover_text("Keep +X/-X and +Y/-Y stock side allowances symmetric")
+                            .changed()
+                    },
                 ) {
                     if *symmetric_xy {
                         *side_neg_x = side_pos_x.clone();
@@ -1549,7 +1619,8 @@ fn show_heights_tab(ui: &mut egui::Ui, ctx: HeightsTabCtx<'_>) {
                     "3D Z Planes",
                     Some("Render translucent Z planes in 3D viewport"),
                     |ui| {
-                        ui.checkbox(show_z_planes, "Preview in viewport");
+                        ui.checkbox(show_z_planes, "Preview in viewport")
+                            .on_hover_text("Overlay translucent Clearance and Retract Z planes inside the 3D viewport");
                     },
                 );
 
@@ -1627,11 +1698,17 @@ fn render_setup_height_ref_row(
                 .selected_text(val.label())
                 .show_ui(ui, |ui| {
                     for r in HeightReference::SETUP_REFS {
-                        if ui.selectable_value(val, r, r.label()).changed() {
+                        if ui
+                            .selectable_value(val, r, r.label())
+                            .on_hover_text(format!("Measure height offset from {}", r.label()))
+                            .changed()
+                        {
                             *mutated = Some(undo);
                         }
                     }
-                });
+                })
+                .response
+                .on_hover_text("Select reference datum plane for this Setup Z height");
         },
     );
 }
@@ -1694,13 +1771,17 @@ fn show_rotary_tab(
                     |ui| {
                         let prev = setup.rotary.mode;
                         egui::ComboBox::from_id_salt(("rot_mode_cb", setup_idx))
-                            .width(INPUT_COL_WIDTH)
+                            .width(INPUT_COL_WIDTH + 54.0)
+                            .truncate()
                             .selected_text(setup.rotary.mode.label())
                             .show_ui(ui, |ui| {
                                 for m in RotaryDriveMode::ALL {
-                                    ui.selectable_value(&mut setup.rotary.mode, m, m.label());
+                                    ui.selectable_value(&mut setup.rotary.mode, m, m.label())
+                                        .on_hover_text(format!("Set 4th-axis rotary mode to {}", m.label()));
                                 }
-                            });
+                            })
+                            .response
+                            .on_hover_text("Select 3-axis (disabled), 2-linear + rotary, indexed 3+1, or simultaneous 4-axis mode");
                         if setup.rotary.mode != prev {
                             *mutated_label = Some("Change Rotary Drive Mode");
                         }
@@ -1715,13 +1796,17 @@ fn show_rotary_tab(
                         |ui| {
                             let prev = setup.rotary.axis;
                             egui::ComboBox::from_id_salt(("rot_axis_cb", setup_idx))
-                                .width(INPUT_COL_WIDTH)
+                                .width(INPUT_COL_WIDTH + 54.0)
+                                .truncate()
                                 .selected_text(setup.rotary.axis.label())
                                 .show_ui(ui, |ui| {
                                     for a in RotaryAxisKind::ALL {
-                                        ui.selectable_value(&mut setup.rotary.axis, a, a.label());
+                                        ui.selectable_value(&mut setup.rotary.axis, a, a.label())
+                                            .on_hover_text(format!("Align rotary centerline with {}", a.label()));
                                     }
-                                });
+                                })
+                                .response
+                                .on_hover_text("Choose which Setup WCS axis aligns with the 4th-axis rotary chuck");
                             if setup.rotary.axis != prev {
                                 *mutated_label = Some("Change Rotary Axis");
                             }
@@ -1735,7 +1820,8 @@ fn show_rotary_tab(
                         |ui| {
                             let prev = setup.rotary.direction;
                             egui::ComboBox::from_id_salt(("rot_dir_cb", setup_idx))
-                                .width(INPUT_COL_WIDTH)
+                                .width(INPUT_COL_WIDTH + 54.0)
+                                .truncate()
                                 .selected_text(setup.rotary.direction.label())
                                 .show_ui(ui, |ui| {
                                     for d in RotaryDirection::ALL {
@@ -1743,9 +1829,16 @@ fn show_rotary_tab(
                                             &mut setup.rotary.direction,
                                             d,
                                             d.label(),
+                                        )
+                                        .on_hover_text(
+                                            format!("Use {} rotation polarity", d.label()),
                                         );
                                     }
-                                });
+                                })
+                                .response
+                                .on_hover_text(
+                                    "Choose positive rotation polarity (right-hand or inverted)",
+                                );
                             if setup.rotary.direction != prev {
                                 *mutated_label = Some("Change Rotary Polarity");
                             }
@@ -1768,15 +1861,19 @@ fn show_rotary_tab(
                                         &mut setup.rotary.axis_letter_override,
                                         None,
                                         format!("Auto ({def})"),
-                                    );
+                                    )
+                                    .on_hover_text("Use the standard ISO axis letter for the chosen rotary axis");
                                     for c in ['A', 'B', 'C'] {
                                         ui.selectable_value(
                                             &mut setup.rotary.axis_letter_override,
                                             Some(c),
                                             format!("{c}-Axis"),
-                                        );
+                                        )
+                                        .on_hover_text(format!("Always emit {c} rotary coordinates in G-code"));
                                     }
-                                });
+                                })
+                                .response
+                                .on_hover_text("Select rotary axis word (A, B, or C) emitted in posted G-code");
                             if setup.rotary.axis_letter_override != prev {
                                 *mutated_label = Some("Change Rotary Axis Letter");
                             }
@@ -1792,7 +1889,8 @@ fn show_rotary_tab(
                         |ui| {
                             let prev = setup.rotary.unwind_mode;
                             egui::ComboBox::from_id_salt(("rot_unwind_cb", setup_idx))
-                                .width(INPUT_COL_WIDTH)
+                                .width(INPUT_COL_WIDTH + 54.0)
+                                .truncate()
                                 .selected_text(setup.rotary.unwind_mode.label())
                                 .show_ui(ui, |ui| {
                                     for u in RotaryUnwindMode::ALL {
@@ -1800,9 +1898,12 @@ fn show_rotary_tab(
                                             &mut setup.rotary.unwind_mode,
                                             u,
                                             u.label(),
-                                        );
+                                        )
+                                        .on_hover_text(format!("Use {} angular rollover policy", u.label()));
                                     }
-                                });
+                                })
+                                .response
+                                .on_hover_text("Choose continuous multi-turn angles vs. 0..360 shortest-path indexing");
                             if setup.rotary.unwind_mode != prev {
                                 *mutated_label = Some("Change Rotary Unwind Mode");
                             }
@@ -1879,8 +1980,14 @@ fn show_rotary_tab(
                                 &mut setup.rotary.chuck_end_positive,
                                 false,
                                 "-End",
+                            )
+                            .on_hover_text(
+                                "Place the rotary chuck at the negative end of the bar stock",
                             );
-                            ui.selectable_value(&mut setup.rotary.chuck_end_positive, true, "+End");
+                            ui.selectable_value(&mut setup.rotary.chuck_end_positive, true, "+End")
+                                .on_hover_text(
+                                    "Place the rotary chuck at the positive end of the bar stock",
+                                );
                         });
                         if setup.rotary.chuck_end_positive != prev {
                             *sg.mutated = Some("Flip Rotary Chuck End");

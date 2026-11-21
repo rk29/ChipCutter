@@ -29,7 +29,11 @@ pub(super) fn show_vcarve_params(ui: &mut egui::Ui, ctx: VCarveParamsUiCtx<'_>) 
             item.grid(ui, "vc_strategy_grid", |f| {
                 f.set_tip("Clamp V-bit medial-axis carving at a flat floor depth (d_flat) for wide letters and V-inlays");
                 f.row("Flat Floor Limit", |ui, mutated| {
-                    if ui.checkbox(&mut has_flat_depth, "Limit Max Depth").changed() {
+                    if ui
+                        .checkbox(&mut has_flat_depth, "Limit Max Depth")
+                        .on_hover_text("Clamp V-bit depth at a flat floor (d_flat) for wide letters, signs, and V-inlays")
+                        .changed()
+                    {
                         p.flat_depth = if has_flat_depth {
                             Some(ParamLength::from_mm(3.0))
                         } else {
@@ -79,10 +83,12 @@ pub(super) fn show_vcarve_params(ui: &mut egui::Ui, ctx: VCarveParamsUiCtx<'_>) 
                         egui::ComboBox::from_id_salt(("vc_clear_tool", setup_idx, op_idx))
                             .selected_text(current_lbl)
                             .width(COMBO_COL_WIDTH)
+                            .truncate()
                             .show_ui(ui, |ui| {
                                 let is_none = p.clearing_tool_id.is_none();
                                 if ui
                                     .selectable_label(is_none, "None (V-Bit Clears All Flats)")
+                                    .on_hover_text("Clear flat pocket areas using only the primary V-bit")
                                     .clicked()
                                     && !is_none
                                 {
@@ -92,13 +98,20 @@ pub(super) fn show_vcarve_params(ui: &mut egui::Ui, ctx: VCarveParamsUiCtx<'_>) 
                                 }
                                 for (tid, lbl, default_preset) in clearing_tool_candidates {
                                     let is_sel = p.clearing_tool_id.as_ref() == Some(tid);
-                                    if ui.selectable_label(is_sel, lbl).clicked() && !is_sel {
+                                    if ui
+                                        .selectable_label(is_sel, lbl)
+                                        .on_hover_text("Use this flat/bull-nose endmill to clear wide flat interiors before the V-bit pass")
+                                        .clicked()
+                                        && !is_sel
+                                    {
                                         p.clearing_tool_id = Some(tid.clone());
                                         p.clearing_preset_id = default_preset.clone();
                                         *mutated = Some("Select V-Carve Secondary Clearing Tool");
                                     }
                                 }
-                            });
+                            })
+                            .response
+                            .on_hover_text("Optional secondary flat endmill for Stage 1 flat-area clearance before V-bit beveling");
                     });
 
                     if p.clearing_tool_id.is_some() {
@@ -107,6 +120,7 @@ pub(super) fn show_vcarve_params(ui: &mut egui::Ui, ctx: VCarveParamsUiCtx<'_>) 
                             for kind in VCarveClearingKind::ALL {
                                 if ui
                                     .selectable_value(&mut p.clearing_strategy, kind, kind.label())
+                                    .on_hover_text(format!("Clear flat V-carve pockets using {}", kind.label()))
                                     .changed()
                                 {
                                     *mutated = Some("Change V-Carve Clearing Strategy");

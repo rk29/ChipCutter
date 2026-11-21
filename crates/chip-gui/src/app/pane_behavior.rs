@@ -556,9 +556,12 @@ impl PaneBehavior<'_> {
                     .selected_text(self.app.pick_filter.label())
                     .show_ui(ui, |ui| {
                         for f in PickFilter::ALL {
-                            ui.selectable_value(&mut self.app.pick_filter, f, f.label());
+                            ui.selectable_value(&mut self.app.pick_filter, f, f.label())
+                                .on_hover_text(format!("Restrict 3D inspection picking to {}", f.label()));
                         }
-                    });
+                    })
+                    .response
+                    .on_hover_text("Filter which B-Rep entity types are highlighted and picked in inspection mode");
             });
             ui.separator();
 

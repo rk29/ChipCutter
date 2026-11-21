@@ -99,6 +99,8 @@ impl ChipCutterApp {
         self.bundle_extract_dir = new_bundle_extract_dir;
         self.history.clear();
         self.clean_undo_len = Some(0);
+        self.show_unsaved_close_modal = false;
+        self.allow_close_without_prompt = false;
         self.external_step_modified = false;
         self.last_reload_banner = None;
         self.model = None;
@@ -142,7 +144,7 @@ impl ChipCutterApp {
         }
     }
 
-    pub(crate) fn save_project_dialog(&mut self) {
+    pub(crate) fn save_project_dialog(&mut self) -> bool {
         if let Some(existing) = self.project_file_path.clone() {
             self.save_project_to_disk(&existing);
         } else if let Some(path) = rfd::FileDialog::new()
@@ -151,6 +153,7 @@ impl ChipCutterApp {
         {
             self.save_project_to_disk(&path);
         }
+        !self.is_project_dirty()
     }
 
     pub(crate) fn load_project_from_disk(&mut self, path: &Path, egui_ctx: egui::Context) {
@@ -1703,5 +1706,40 @@ mod tests {
         assert!(app.sim_panel.active_result.is_none());
         assert!(app.highlight.sim_stock_mesh.is_none());
         assert!(app.gcode_panel.cached_files.is_empty());
+    }
+
+    #[test]
+    fn unsaved_changes_guard_prompts_when_dirty_and_clears_after_save() {
+        let ctx = egui::Context::default();
+        let mut app = ChipCutterApp::new_headless_for_test(&ctx);
+        assert!(!app.is_project_dirty());
+        assert!(!app.should_intercept_close());
+
+        // Making an edit marks the project dirty and activates the close guard.
+        app.history
+            .record_before_edit("Rename Project", None, &app.project);
+        app.project.project_name = "Modified Part".to_string();
+        assert!(app.is_project_dirty());
+        assert!(app.should_intercept_close());
+
+        app.request_app_close(&ctx);
+        assert!(app.show_unsaved_close_modal);
+
+        // Saving to disk clears the dirty flag so closing proceeds without prompting.
+        let tmp = create_private_temp_extract_dir("chipcutter_test_unsaved_guard").unwrap();
+        let path = tmp.join("saved.chip.toml");
+        app.save_project_to_disk(&path);
+        assert!(!app.is_project_dirty());
+        assert!(!app.should_intercept_close());
+
+        // Subsequent edit makes it dirty again, and explicit discard bypasses the guard.
+        app.history
+            .record_before_edit("Second Edit", None, &app.project);
+        app.project.project_name = "Modified Again".to_string();
+        assert!(app.should_intercept_close());
+        app.allow_close_without_prompt = true;
+        assert!(!app.should_intercept_close());
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

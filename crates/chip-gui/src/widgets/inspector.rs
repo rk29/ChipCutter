@@ -196,12 +196,14 @@ pub fn grid_row<R>(
     if let Some(tip) = tooltip {
         lbl_resp.on_hover_text(tip);
     }
-    let out = ui
-        .horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 4.0;
-            add_control(ui)
-        })
-        .inner;
+    let row_resp = ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        add_control(ui)
+    });
+    if let Some(tip) = tooltip {
+        row_resp.response.on_hover_text(tip);
+    }
+    let out = row_resp.inner;
     ui.end_row();
     out
 }

@@ -427,6 +427,7 @@ fn show_operation_rotary_card(
                                         .range(-360.0..=360.0)
                                         .suffix("°"),
                                 )
+                                .on_hover_text("Target rotary index angle in degrees before executing this 3+1 operation")
                                 .changed()
                             {
                                 *mutated = Some("Edit Indexed 3+1 Angle");
@@ -440,6 +441,7 @@ fn show_operation_rotary_card(
                                     let active = (*angle_deg - quick).abs() < 0.05;
                                     if ui
                                         .selectable_label(active, format!("{quick:.0}°"))
+                                        .on_hover_text(format!("Index rotary axis to {quick:.0} degrees"))
                                         .clicked()
                                     {
                                         *angle_deg = quick;
@@ -519,7 +521,12 @@ fn show_rest_machining_card(
             item.grid(ui, "passes_rest_mode_grid", |f| {
                 f.set_tip("Machine only uncut corners/regions left behind by larger cutters or earlier operations");
                 f.row("Rest Mode", |ui, mutated| {
-                    if ui.selectable_value(&mut sel_mode, 0, "Off").clicked() && cur_mode != 0 {
+                    if ui
+                        .selectable_value(&mut sel_mode, 0, "Off")
+                        .on_hover_text("Disable rest machining and clear the entire selected region")
+                        .clicked()
+                        && cur_mode != 0
+                    {
                         rest.mode = RestMachiningMode::Disabled;
                         *mutated = Some("Disable Rest Machining");
                     }
@@ -583,6 +590,7 @@ fn show_rest_machining_card(
                     let mut all_preceding = source_op_ids.is_empty();
                     if ui
                         .checkbox(&mut all_preceding, "All Enabled Preceding Operations")
+                        .on_hover_text("Automatically subtract material removed by every enabled operation earlier in this Setup")
                         .changed()
                     {
                         if all_preceding {
@@ -595,7 +603,11 @@ fn show_rest_machining_card(
                     if !all_preceding {
                         for (uid, uname) in preceding_ops {
                             let mut checked = source_op_ids.iter().any(|x| x == uid);
-                            if ui.checkbox(&mut checked, uname).changed() {
+                            if ui
+                                .checkbox(&mut checked, uname)
+                                .on_hover_text(format!("Include '{uname}' in the preceding stock subtraction for rest machining"))
+                                .changed()
+                            {
                                 if checked {
                                     source_op_ids.push(uid.clone());
                                 } else {

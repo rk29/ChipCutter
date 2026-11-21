@@ -843,14 +843,22 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                             }
 
                             resp.context_menu(|ui| {
-                                if ui.button("Generate Toolpath").clicked() {
+                                if ui
+                                    .button("Generate Toolpath")
+                                    .on_hover_text("Compute or refresh the toolpath for this operation")
+                                    .clicked()
+                                {
                                     emitted_action = Some(BrowserAction::GenerateSingleOp {
                                         setup_idx: s_idx,
                                         op_id: op_id_clone.clone(),
                                     });
                                     ui.close();
                                 }
-                                if ui.button("Duplicate Operation (Ctrl+D)").clicked() {
+                                if ui
+                                    .button("Duplicate Operation (Ctrl+D)")
+                                    .on_hover_text("Insert a copy of this operation directly beneath it")
+                                    .clicked()
+                                {
                                     deferred_op_duplicate = Some((s_idx, o_idx));
                                     ui.close();
                                 }
@@ -860,6 +868,8 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                                         o_idx > 0,
                                         egui::Button::new("Move Up (Ctrl+Up)"),
                                     )
+                                    .on_hover_text("Move this operation earlier in the Setup execution order")
+                                    .on_disabled_hover_text("Already at the top of the Setup")
                                     .clicked()
                                 {
                                     deferred_op_move_slot = Some((s_idx, o_idx, o_idx - 1));
@@ -870,6 +880,8 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                                         o_idx + 1 < op_len,
                                         egui::Button::new("Move Down (Ctrl+Down)"),
                                     )
+                                    .on_hover_text("Move this operation later in the Setup execution order")
+                                    .on_disabled_hover_text("Already at the bottom of the Setup")
                                     .clicked()
                                 {
                                     deferred_op_move_slot = Some((s_idx, o_idx, o_idx + 2));
@@ -882,6 +894,7 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                                     } else {
                                         "Hide Toolpath in Viewport"
                                     })
+                                    .on_hover_text("Toggle 3D viewport visibility of this operation's toolpath without suppressing simulation or G-code")
                                     .clicked()
                                 {
                                     deferred_op_toggle_visibility = Some(op_id_clone.clone());
@@ -893,12 +906,17 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                                     } else {
                                         "Suppress Operation"
                                     })
+                                    .on_hover_text("Enable or suppress this operation in generation, simulation, and G-code posting")
                                     .clicked()
                                 {
                                     deferred_op_toggle_suppress = Some((s_idx, o_idx));
                                     ui.close();
                                 }
-                                if ui.button("Delete Operation (Del)").clicked() {
+                                if ui
+                                    .button("Delete Operation (Del)")
+                                    .on_hover_text("Permanently remove this operation from the Setup (undoable with Ctrl+Z)")
+                                    .clicked()
+                                {
                                     deferred_op_delete = Some((s_idx, o_idx));
                                     ui.close();
                                 }

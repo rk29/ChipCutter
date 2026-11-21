@@ -116,7 +116,14 @@ pub fn show_geometry_tab(ui: &mut egui::Ui, ctx: GeometryTabCtx<'_>) {
                             {
                                 expand_coplanar_faces(doc, op, mutated_label);
                             }
-                            if !op.selections.is_empty() && ui.small_button("Clear All").clicked() {
+                            if !op.selections.is_empty()
+                                && ui
+                                    .small_button("Clear All")
+                                    .on_hover_text(
+                                        "Remove all selected geometry entities from this operation",
+                                    )
+                                    .clicked()
+                            {
                                 op.selections.clear();
                                 *mutated_label = Some("Clear Operation Selections");
                             }
@@ -125,7 +132,11 @@ pub fn show_geometry_tab(ui: &mut egui::Ui, ctx: GeometryTabCtx<'_>) {
                 });
             } else if !op.selections.is_empty() {
                 ui.add_space(4.0);
-                if ui.small_button("Clear All").clicked() {
+                if ui
+                    .small_button("Clear All")
+                    .on_hover_text("Remove all selected geometry entities from this operation")
+                    .clicked()
+                {
                     op.selections.clear();
                     *mutated_label = Some("Clear Operation Selections");
                 }
@@ -149,7 +160,14 @@ pub fn show_geometry_tab(ui: &mut egui::Ui, ctx: GeometryTabCtx<'_>) {
                                 "Add entire 2D sketch layer or DXF/SVG sub-layer to this operation",
                             ),
                             |ui| {
-                                if ui.small_button("+ All").clicked() {
+                                if ui
+                                    .small_button("+ All")
+                                    .on_hover_text(format!(
+                                        "Select all non-construction entities in sketch '{}'",
+                                        sk.name
+                                    ))
+                                    .clicked()
+                                {
                                     let item = GeometrySelectionItem::SketchLayerAll {
                                         sketch_id: sk.id.clone(),
                                         sub_layer: None,
@@ -162,7 +180,11 @@ pub fn show_geometry_tab(ui: &mut egui::Ui, ctx: GeometryTabCtx<'_>) {
                                     }
                                 }
                                 for lname in sk.sub_layer_names() {
-                                    if ui.small_button(format!("+ [{lname}]")).clicked() {
+                                    if ui
+                                        .small_button(format!("+ [{lname}]"))
+                                        .on_hover_text(format!("Select all entities tagged with sub-layer '{lname}' in sketch '{}'", sk.name))
+                                        .clicked()
+                                    {
                                         let item = GeometrySelectionItem::SketchLayerAll {
                                             sketch_id: sk.id.clone(),
                                             sub_layer: Some(lname),
@@ -312,7 +334,11 @@ fn show_selected_entity_list(
             )
             .on_hover_text(item.short_label());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.small_button("×").clicked() {
+                if ui
+                    .small_button("×")
+                    .on_hover_text("Remove this geometry item from the operation")
+                    .clicked()
+                {
                     remove_idx = Some(idx);
                 }
                 match item {

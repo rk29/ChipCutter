@@ -266,9 +266,12 @@ impl MeshImportModalState {
                             .selected_text(self.selected_unit.label())
                             .show_ui(ui, |ui| {
                                 for u in MeshUnitKind::ALL {
-                                    ui.selectable_value(&mut self.selected_unit, u, u.label());
+                                    ui.selectable_value(&mut self.selected_unit, u, u.label())
+                                        .on_hover_text(format!("Interpret raw mesh coordinates in {}", u.label()));
                                 }
-                            });
+                            })
+                            .response
+                            .on_hover_text("Select physical unit of raw mesh coordinates (verify physical size below)");
                         if self.selected_unit != prev {
                             self.dirty_preview = true;
                         }
@@ -301,6 +304,7 @@ impl MeshImportModalState {
                         ui.spacing_mut().item_spacing.x = 4.0;
                         if ui
                             .selectable_label(self.rotate_deg == [0.0, 0.0, 0.0], "As-Is")
+                            .on_hover_text("Import mesh without any initial axis rotation")
                             .clicked()
                         {
                             self.rotate_deg = [0.0, 0.0, 0.0];
@@ -317,13 +321,25 @@ impl MeshImportModalState {
                         {
                             self.rotate_deg = [90.0, 0.0, 0.0];
                         }
-                        if ui.small_button("+90° X").clicked() {
+                        if ui
+                            .small_button("+90° X")
+                            .on_hover_text("Rotate imported mesh +90 degrees around the X axis")
+                            .clicked()
+                        {
                             self.rotate_deg[0] = (self.rotate_deg[0] + 90.0) % 360.0;
                         }
-                        if ui.small_button("+90° Y").clicked() {
+                        if ui
+                            .small_button("+90° Y")
+                            .on_hover_text("Rotate imported mesh +90 degrees around the Y axis")
+                            .clicked()
+                        {
                             self.rotate_deg[1] = (self.rotate_deg[1] + 90.0) % 360.0;
                         }
-                        if ui.small_button("+90° Z").clicked() {
+                        if ui
+                            .small_button("+90° Z")
+                            .on_hover_text("Rotate imported mesh +90 degrees around the Z axis")
+                            .clicked()
+                        {
                             self.rotate_deg[2] = (self.rotate_deg[2] + 90.0) % 360.0;
                         }
                     });
@@ -336,14 +352,21 @@ impl MeshImportModalState {
                                 .range(MIN_MODEL_SCALE..=MAX_MODEL_SCALE)
                                 .suffix("×")
                                 .max_decimals(4),
-                        );
-                        if (self.uniform_scale - 1.0).abs() > 1e-6 && ui.small_button("1.0×").clicked()
+                        )
+                        .on_hover_text("Uniform scale multiplier applied to the mesh on import");
+                        if (self.uniform_scale - 1.0).abs() > 1e-6
+                            && ui
+                                .small_button("1.0×")
+                                .on_hover_text("Reset import scale factor back to 1.0x")
+                                .clicked()
                         {
                             self.uniform_scale = 1.0;
                         }
                         ui.add_space(8.0);
-                        ui.checkbox(&mut self.center_xy, "Center XY");
-                        ui.checkbox(&mut self.drop_z0, "Drop Bottom to Z = 0");
+                        ui.checkbox(&mut self.center_xy, "Center XY")
+                            .on_hover_text("Translate the mesh bounding box center to X = 0, Y = 0");
+                        ui.checkbox(&mut self.drop_z0, "Drop Bottom to Z = 0")
+                            .on_hover_text("Rest the lowest point of the imported mesh on Z = 0");
                     });
                 });
 
@@ -429,7 +452,11 @@ impl MeshImportModalState {
 
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
-                    if ui.button("Cancel").clicked() {
+                    if ui
+                        .button("Cancel")
+                        .on_hover_text("Close the mesh import dialog without modifying the workspace")
+                        .clicked()
+                    {
                         close_clicked = true;
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

@@ -232,9 +232,12 @@ impl GCodePreviewPanelState {
                     .width(240.0)
                     .show_ui(ui, |ui| {
                         for prof in &self.available_profiles {
-                            ui.selectable_value(&mut chosen_id, prof.id.clone(), &prof.name);
+                            ui.selectable_value(&mut chosen_id, prof.id.clone(), &prof.name)
+                                .on_hover_text(format!("Post-process active Setup with '{}'", prof.name));
                         }
-                    });
+                    })
+                    .response
+                    .on_hover_text("Select CNC controller post-processor profile for G-code preview and export");
                 if chosen_id != current_id {
                     history.record_before_edit("Change Post Profile", None, project);
                     project.setups[setup_idx].post_profile = chosen_id;
@@ -301,6 +304,8 @@ impl GCodePreviewPanelState {
             let can_export = !self.cached_files.is_empty();
             if ui
                 .add_enabled(can_export, egui::Button::new("Export G-Code…"))
+                .on_hover_text("Save posted CNC G-code program(s) to disk (opens safety gate if unverified or collisions exist)")
+                .on_disabled_hover_text("Generate clean toolpaths in the active Setup first to preview and export G-code")
                 .clicked()
             {
                 if crit_count > 0 {
@@ -347,11 +352,19 @@ impl GCodePreviewPanelState {
                     ui.label("Run Simulation first to verify zero G0 rapid crashes, gouges, or holder collisions.");
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
-                        if ui.button("Run Simulation Now (Recommended)").clicked() {
+                        if ui
+                            .button("Run Simulation Now (Recommended)")
+                            .on_hover_text("Close this prompt and run material removal and crash verification first")
+                            .clicked()
+                        {
                             self.show_safety_gate_modal = false;
                             action = Some(GCodeUiAction::RunSimulationFirst);
                         }
-                        if ui.button("Export Unverified Anyway").clicked() {
+                        if ui
+                            .button("Export Unverified Anyway")
+                            .on_hover_text("Bypass simulation verification and save the posted G-code directly to disk")
+                            .clicked()
+                        {
                             self.show_safety_gate_modal = false;
                             self.export_files_with_dialog(logs);
                         }
@@ -377,7 +390,10 @@ impl GCodePreviewPanelState {
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
                         if let Some(diag) = first_crit
-                            && ui.button("Cancel & Jump to Crash in 3D").clicked()
+                            && ui
+                                .button("Cancel & Jump to Crash in 3D")
+                                .on_hover_text("Abort G-code export and focus the 3D viewport on the first detected collision")
+                                .clicked()
                         {
                             self.show_safety_gate_modal = false;
                             action = Some(GCodeUiAction::JumpToCrash(diag));
@@ -387,6 +403,7 @@ impl GCodePreviewPanelState {
                                 egui::RichText::new("Acknowledge Risk & Override Export")
                                     .color(tok.error_fg),
                             )
+                            .on_hover_text("Override the crash safety gate and export the G-code files anyway (use with caution)")
                             .clicked()
                         {
                             self.show_safety_gate_modal = false;
@@ -440,7 +457,8 @@ impl GCodePreviewPanelState {
         ui.horizontal_wrapped(|ui| {
             for (idx, f) in self.cached_files.iter().enumerate() {
                 let lbl = format!("{} ({}L)", f.filename, f.line_count);
-                ui.selectable_value(&mut self.selected_file_tab, idx, lbl);
+                ui.selectable_value(&mut self.selected_file_tab, idx, lbl)
+                    .on_hover_text(format!("Preview generated G-code file '{}'", f.filename));
             }
             if let Some(active) = self.cached_files.get(self.selected_file_tab) {
                 ui.separator();

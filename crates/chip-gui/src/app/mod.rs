@@ -129,6 +129,8 @@ pub struct ChipCutterApp {
     pub(crate) project_file_path: Option<PathBuf>,
     pub(crate) bundle_extract_dir: Option<PathBuf>,
     pub(crate) clean_undo_len: Option<usize>,
+    pub(crate) show_unsaved_close_modal: bool,
+    pub(crate) allow_close_without_prompt: bool,
     pub(crate) last_window_title: String,
 
     pub(crate) history: UndoHistory,
@@ -303,6 +305,8 @@ impl ChipCutterApp {
             project_file_path: None,
             bundle_extract_dir: None,
             clean_undo_len: Some(0),
+            show_unsaved_close_modal: false,
+            allow_close_without_prompt: false,
             last_window_title: String::new(),
             history: UndoHistory::new(100),
             toolpath_cache: ToolpathCache::new(128),
@@ -459,6 +463,8 @@ impl ChipCutterApp {
             project_file_path: None,
             bundle_extract_dir: None,
             clean_undo_len: Some(0),
+            show_unsaved_close_modal: false,
+            allow_close_without_prompt: false,
             last_window_title: String::new(),
             history: UndoHistory::new(100),
             toolpath_cache: ToolpathCache::new(128),
@@ -942,6 +948,129 @@ impl ChipCutterApp {
         true
     }
 
+    pub(crate) fn is_project_dirty(&self) -> bool {
+        self.clean_undo_len != Some(self.history.undo_len())
+    }
+
+    pub(crate) fn should_intercept_close(&self) -> bool {
+        self.is_project_dirty() && !self.allow_close_without_prompt && self.self_test.is_none()
+    }
+
+    pub(crate) fn request_app_close(&mut self, ctx: &egui::Context) {
+        if self.should_intercept_close() {
+            self.show_unsaved_close_modal = true;
+        } else {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+    }
+
+    pub(crate) fn handle_viewport_close_guard(&mut self, ctx: &egui::Context) {
+        if ctx.input(|i| i.viewport().close_requested()) && self.should_intercept_close() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.show_unsaved_close_modal = true;
+        }
+    }
+
+    fn show_unsaved_close_prompt(&mut self, ctx: &egui::Context) {
+        if !self.show_unsaved_close_modal {
+            return;
+        }
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.show_unsaved_close_modal = false;
+            return;
+        }
+
+        let tok = ThemeTokens::for_theme(self.theme);
+        let mut open = true;
+        egui::Window::new("Unsaved Changes")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .fixed_size(egui::vec2(420.0, 0.0))
+            .show(ctx, |ui| {
+                ui.label(
+                    egui::RichText::new(format!(
+                        "Save changes to '{}' before closing?",
+                        self.project.project_name
+                    ))
+                    .strong()
+                    .size(14.0),
+                );
+                ui.add_space(4.0);
+                if let Some(path) = &self.project_file_path {
+                    ui.label(
+                        egui::RichText::new(format!("Target file: {}", path.display()))
+                            .small()
+                            .color(tok.text_muted),
+                    );
+                } else {
+                    ui.label(
+                        egui::RichText::new(
+                            "This project has not been saved to disk yet. Choosing Save & Close opens the Save Project dialog.",
+                        )
+                        .small()
+                        .color(tok.text_muted),
+                    );
+                }
+                ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                egui::RichText::new("Save & Close")
+                                    .strong()
+                                    .color(tok.accent_on_fg),
+                            )
+                            .fill(tok.accent),
+                        )
+                        .on_hover_text(
+                            "Save the current project to disk and then exit ChipCutter.",
+                        )
+                        .clicked()
+                        && self.save_project_dialog()
+                    {
+                        self.show_unsaved_close_modal = false;
+                        self.allow_close_without_prompt = true;
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                egui::RichText::new("Discard & Close").color(tok.error_fg),
+                            )
+                            .fill(tok.panel_bg)
+                            .stroke(egui::Stroke::new(1.0, tok.error_border)),
+                        )
+                        .on_hover_text(
+                            "Exit ChipCutter immediately without saving unsaved project edits.",
+                        )
+                        .clicked()
+                    {
+                        self.show_unsaved_close_modal = false;
+                        self.allow_close_without_prompt = true;
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .button("Cancel")
+                            .on_hover_text("Keep ChipCutter open and return to the workspace.")
+                            .clicked()
+                        {
+                            self.show_unsaved_close_modal = false;
+                        }
+                    });
+                });
+            });
+        if !open {
+            self.show_unsaved_close_modal = false;
+        }
+    }
+
     pub(crate) fn perform_undo(&mut self) {
         if let Some(lbl) = self.history.undo(&mut self.project) {
             self.sync_active_machine_tools();
@@ -1208,6 +1337,9 @@ impl eframe::App for ChipCutterApp {
             format!("{:?} ({})", info.backend, info.name)
         });
         show_about_modal(&ctx, &mut self.about_modal, graphics_backend.as_deref());
+
+        self.handle_viewport_close_guard(&ctx);
+        self.show_unsaved_close_prompt(&ctx);
 
         let ptr_down = ctx.input(|i| i.pointer.any_down());
         self.sync_and_save_prefs_if_changed(ptr_down);

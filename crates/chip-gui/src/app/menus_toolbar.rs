@@ -32,7 +32,7 @@ impl ChipCutterApp {
     }
 
     fn sync_window_title(&mut self, ctx: &egui::Context) {
-        let is_dirty_doc = self.clean_undo_len != Some(self.history.undo_len());
+        let is_dirty_doc = self.is_project_dirty();
         let desired_title =
             crate::panels::about::format_window_title(&self.project.project_name, is_dirty_doc);
         if desired_title != self.last_window_title {
@@ -51,6 +51,7 @@ impl ChipCutterApp {
             redo_shortcut,
             save_shortcut,
             open_shortcut,
+            quit_shortcut,
             esc_key,
         ) = ctx.input(|i| {
             let cmd = i.modifiers.command || i.modifiers.ctrl;
@@ -64,9 +65,15 @@ impl ChipCutterApp {
                     || (cmd && i.modifiers.shift && i.key_pressed(egui::Key::Z)),
                 cmd && i.key_pressed(egui::Key::S),
                 cmd && i.key_pressed(egui::Key::O),
+                cmd && i.key_pressed(egui::Key::Q),
                 i.key_pressed(egui::Key::Escape),
             )
         });
+
+        if quit_shortcut {
+            self.request_app_close(ctx);
+            return;
+        }
 
         if palette_shortcut {
             if self.command_palette.open {
@@ -97,7 +104,7 @@ impl ChipCutterApp {
             self.perform_redo();
         }
         if save_shortcut {
-            self.save_project_dialog();
+            let _ = self.save_project_dialog();
         }
         if open_shortcut {
             self.open_project_dialog(ctx);
@@ -173,11 +180,23 @@ impl ChipCutterApp {
                     self.draw_setup_menu(ui);
                     self.draw_operations_menu(ui);
                     ui.menu_button("Tools", |ui| {
-                        if ui.button("Tool Library Manager…").clicked() {
+                        if ui
+                            .button("Tool Library Manager…")
+                            .on_hover_text(
+                                "Browse, edit, import, and export cutting tools and feeds/speeds presets",
+                            )
+                            .clicked()
+                        {
                             self.tool_library_modal.open = true;
                             ui.close();
                         }
-                        if ui.button("Machine Manager…").clicked() {
+                        if ui
+                            .button("Machine Manager…")
+                            .on_hover_text(
+                                "Configure CNC machine travels, spindle limits, 4th-axis rotary kinematics, and default tool libraries",
+                            )
+                            .clicked()
+                        {
                             let active_mid = self.project.effective_machine_id().to_string();
                             self.machine_manager_modal
                                 .open_selecting(&self.machines, &active_mid);
@@ -226,12 +245,17 @@ impl ChipCutterApp {
 
     fn draw_file_menu(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.menu_button("File", |ui| {
-            if ui.button("New Project").clicked() {
+            if ui
+                .button("New Project")
+                .on_hover_text("Start a fresh blank CAM project with your default machine settings")
+                .clicked()
+            {
                 self.reset_blank_project("Untitled Job");
                 ui.close();
             }
             if ui
                 .button("Open Project / Bundle (.chip.toml, .chipz)… (Ctrl+O)")
+                .on_hover_text("Open an existing ChipCutter project file or self-contained .chipz archive")
                 .clicked()
             {
                 ui.close();
@@ -247,6 +271,8 @@ impl ChipCutterApp {
                         let lbl = p.display().to_string();
                         if ui
                             .add_enabled(exists, egui::Button::new(lbl))
+                            .on_hover_text("Reopen this recently used project or model file")
+                            .on_disabled_hover_text("File could not be found at its last saved location")
                             .clicked()
                         {
                             ui.close();
@@ -254,17 +280,29 @@ impl ChipCutterApp {
                         }
                     }
                     ui.separator();
-                    if ui.button("Clear Recent Files").clicked() {
+                    if ui
+                        .button("Clear Recent Files")
+                        .on_hover_text("Remove all entries from the Open Recent menu")
+                        .clicked()
+                    {
                         self.prefs.clear_recent_files();
                         ui.close();
                     }
                 }
             });
-            if ui.button("Save Project (Ctrl+S)").clicked() {
+            if ui
+                .button("Save Project (Ctrl+S)")
+                .on_hover_text("Save the current project to disk (opens Save As if untitled)")
+                .clicked()
+            {
                 ui.close();
-                self.save_project_dialog();
+                let _ = self.save_project_dialog();
             }
-            if ui.button("Save Project As…").clicked() {
+            if ui
+                .button("Save Project As…")
+                .on_hover_text("Save the current project to a new .chip.toml file path")
+                .clicked()
+            {
                 ui.close();
                 if let Some(path) = rfd::FileDialog::new()
                     .set_file_name("job.chip.toml")
@@ -283,12 +321,20 @@ impl ChipCutterApp {
                 ui.close();
                 self.export_chipz_dialog();
             }
-            if ui.button("Export G-Code (.nc / .ngc)…").clicked() {
+            if ui
+                .button("Export G-Code (.nc / .ngc)…")
+                .on_hover_text("Post-process the active Setup and save CNC G-code to disk")
+                .clicked()
+            {
                 ui.close();
                 self.trigger_gcode_export_from_menu();
             }
             ui.separator();
-            if ui.button("Import STEP Model…").clicked() {
+            if ui
+                .button("Import STEP Model…")
+                .on_hover_text("Import an ISO 10303 STEP AP214/AP203 B-Rep 3D CAD solid")
+                .clicked()
+            {
                 ui.close();
                 self.open_step_dialog(ctx);
             }
@@ -317,6 +363,8 @@ impl ChipCutterApp {
                     self.model.is_some(),
                     egui::Button::new("Reload STEP Model (Ctrl+R)"),
                 )
+                .on_hover_text("Re-read the active STEP model from disk and associatively re-bind CAM selections")
+                .on_disabled_hover_text("Import a 3D STEP model first to enable associative reload")
                 .clicked()
             {
                 ui.close();
@@ -327,23 +375,38 @@ impl ChipCutterApp {
                     self.model.is_some(),
                     egui::Button::new("Replace STEP Model (Associative Re-Bind)…"),
                 )
+                .on_hover_text("Swap the active STEP file with a new revision while preserving CAM operations and geometry bindings")
+                .on_disabled_hover_text("Import a 3D STEP model first to replace it with a new revision")
                 .clicked()
             {
                 ui.close();
                 self.replace_step_dialog(ctx);
             }
             ui.separator();
-            if ui.button("Sample Projects Gallery…").clicked() {
+            if ui
+                .button("Sample Projects Gallery…")
+                .on_hover_text("Browse and load built-in 2D, 3D, V-Carve, mesh, and 4th-axis sample projects")
+                .clicked()
+            {
                 self.sample_gallery_modal.open = true;
                 ui.close();
             }
-            if ui.button("Welcome & Quick-Start…").clicked() {
+            if ui
+                .button("Welcome & Quick-Start…")
+                .on_hover_text("Open the Welcome overlay with recent projects and quick-start actions")
+                .clicked()
+            {
                 self.welcome_modal.open = true;
                 ui.close();
             }
             ui.separator();
-            if ui.button("Quit").clicked() {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            if ui
+                .button("Quit (Ctrl+Q)")
+                .on_hover_text("Exit ChipCutter (prompts to save if there are unsaved changes)")
+                .clicked()
+            {
+                ui.close();
+                self.request_app_close(ctx);
             }
         });
     }
@@ -356,6 +419,8 @@ impl ChipCutterApp {
             };
             if ui
                 .add_enabled(self.history.can_undo(), egui::Button::new(undo_lbl))
+                .on_hover_text("Revert the most recent project edit")
+                .on_disabled_hover_text("Nothing to undo")
                 .clicked()
             {
                 self.perform_undo();
@@ -367,6 +432,8 @@ impl ChipCutterApp {
             };
             if ui
                 .add_enabled(self.history.can_redo(), egui::Button::new(redo_lbl))
+                .on_hover_text("Re-apply the most recently undone edit")
+                .on_disabled_hover_text("Nothing to redo")
                 .clicked()
             {
                 self.perform_redo();
@@ -396,6 +463,8 @@ impl ChipCutterApp {
                     focused_op.is_some(),
                     egui::Button::new("Duplicate Operation (Ctrl+D)"),
                 )
+                .on_hover_text("Clone the selected CAM operation directly beneath it in the Setup")
+                .on_disabled_hover_text("Select a CAM operation first to duplicate it")
                 .clicked()
             {
                 self.duplicate_focused_operation();
@@ -406,6 +475,8 @@ impl ChipCutterApp {
                     focused_op.is_some_and(|(_, o)| o > 0),
                     egui::Button::new("Move Operation Up (Ctrl+Up)"),
                 )
+                .on_hover_text("Run the selected operation earlier in the Setup sequence")
+                .on_disabled_hover_text("Select an operation below the first slot to move it up")
                 .clicked()
             {
                 self.move_focused_operation(-1);
@@ -417,6 +488,8 @@ impl ChipCutterApp {
                         .is_some_and(|(s, o)| o + 1 < self.project.setups[s].operations.len()),
                     egui::Button::new("Move Operation Down (Ctrl+Down)"),
                 )
+                .on_hover_text("Run the selected operation later in the Setup sequence")
+                .on_disabled_hover_text("Select an operation above the last slot to move it down")
                 .clicked()
             {
                 self.move_focused_operation(1);
@@ -424,6 +497,8 @@ impl ChipCutterApp {
             }
             if ui
                 .add_enabled(can_delete, egui::Button::new("Delete Selected (Del)"))
+                .on_hover_text("Delete the currently selected operation or 2D sketch entity")
+                .on_disabled_hover_text("Select an operation or 2D sketch entity to delete")
                 .clicked()
             {
                 self.delete_focused_item();
@@ -527,7 +602,11 @@ impl ChipCutterApp {
 
     fn draw_setup_menu(&mut self, ui: &mut egui::Ui) {
         ui.menu_button("Setup", |ui| {
-            if ui.button("New Setup").clicked() {
+            if ui
+                .button("New Setup")
+                .on_hover_text("Create a new machining Setup with its own WCS origin, stock, and work offset (G54-G59)")
+                .clicked()
+            {
                 self.history
                     .record_before_edit("Add Setup", None, &self.project);
                 let n = self.project.setups.len() + 1;
@@ -542,7 +621,11 @@ impl ChipCutterApp {
                 };
                 ui.close();
             }
-            if ui.button("+ New 2D Sketch (Setup XY)").clicked() {
+            if ui
+                .button("+ New 2D Sketch (Setup XY)")
+                .on_hover_text("Add a new 2D vector sketch layer on the active Setup's XY plane")
+                .clicked()
+            {
                 self.create_new_setup_xy_sketch();
                 ui.close();
             }
@@ -551,6 +634,8 @@ impl ChipCutterApp {
                     self.model.is_some(),
                     egui::Button::new("+ New 2D Sketch on 3D Face…"),
                 )
+                .on_hover_text("Pick a planar 3D CAD face in the viewport to host a new 2D sketch plane")
+                .on_disabled_hover_text("Import a 3D STEP model first to attach a sketch to a 3D face")
                 .clicked()
             {
                 self.pick_mode = ViewportPickMode::PickSketchHostFace {
@@ -558,11 +643,19 @@ impl ChipCutterApp {
                 };
                 ui.close();
             }
-            if ui.button("Align View to Active Setup Top").clicked() {
+            if ui
+                .button("Align View to Active Setup Top")
+                .on_hover_text("Rotate the 3D viewport camera to look straight down the active Setup's +Z spindle axis")
+                .clicked()
+            {
                 self.align_camera_to_active_setup();
                 ui.close();
             }
-            if ui.button("Validate Project Invariants").clicked() {
+            if ui
+                .button("Validate Project Invariants")
+                .on_hover_text("Run safety and configuration checks on tools, WCS frames, clearances, and selections")
+                .clicked()
+            {
                 let rep = validate_project(
                     &self.project,
                     self.active_project_dir(),
@@ -586,26 +679,43 @@ impl ChipCutterApp {
         ui.menu_button("Operations", |ui| {
             if ui
                 .button("Generate Dirty in Active Setup (Ctrl+G)")
+                .on_hover_text("Compute or refresh all out-of-date toolpaths in the active Setup")
                 .clicked()
             {
                 self.trigger_generate_dirty(Some(self.active_setup_idx), None);
                 ui.close();
             }
-            if ui.button("Generate All Setups").clicked() {
+            if ui
+                .button("Generate All Setups")
+                .on_hover_text("Compute or refresh all out-of-date toolpaths across every Setup in the project")
+                .clicked()
+            {
                 self.trigger_generate_dirty(None, None);
                 ui.close();
             }
-            if self.dispatcher.is_busy() && ui.button("Cancel Generation (Esc)").clicked() {
+            if self.dispatcher.is_busy()
+                && ui
+                    .button("Cancel Generation (Esc)")
+                    .on_hover_text("Abort all currently running background toolpath calculations")
+                    .clicked()
+            {
                 self.dispatcher.cancel_all();
                 ui.close();
             }
             ui.separator();
-            if ui.button("+ 2D Adaptive / Trochoidal Clearing").clicked() {
+            if ui
+                .button("+ 2D Adaptive / Trochoidal Clearing")
+                .on_hover_text("Add a high-efficiency constant-engagement 2D adaptive roughing pocket operation")
+                .clicked()
+            {
                 self.create_new_adaptive_operation();
                 ui.close();
             }
             for kind in OperationKind::ALL {
-                if ui.button(format!("+ {}", kind.label())).clicked()
+                if ui
+                    .button(format!("+ {}", kind.label()))
+                    .on_hover_text(format!("Add a new {} operation to the active Setup", kind.label()))
+                    .clicked()
                     && self.active_setup_idx < self.project.setups.len()
                 {
                     self.history.record_before_edit(
@@ -681,7 +791,11 @@ impl ChipCutterApp {
 
     fn draw_simulate_menu(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.menu_button("Simulate", |ui| {
-            if ui.button("Run / Refresh Heightmap Simulation").clicked() {
+            if ui
+                .button("Run / Refresh Simulation")
+                .on_hover_text("Run material removal simulation and 5-rule crash verification for the active Setup")
+                .clicked()
+            {
                 focus_workspace_pane(&mut self.tree, WorkspacePane::SimulationTimeline);
                 self.trigger_active_setup_simulation(ctx);
                 ui.close();
@@ -696,6 +810,8 @@ impl ChipCutterApp {
                     self.sim_panel.active_result.is_some(),
                     egui::Button::new(play_lbl),
                 )
+                .on_hover_text("Play or pause live cutter and stock-removal playback along the timeline")
+                .on_disabled_hover_text("Run a simulation first to scrub or play back stock removal")
                 .clicked()
             {
                 self.sim_panel.is_playing = !self.sim_panel.is_playing;
@@ -706,6 +822,8 @@ impl ChipCutterApp {
                     self.sim_panel.active_result.is_some(),
                     egui::Button::new("Jump to Final Machined Stock"),
                 )
+                .on_hover_text("Scrub directly to the end of the simulated Setup to inspect the finished part")
+                .on_disabled_hover_text("Run a simulation first to inspect the final machined stock")
                 .clicked()
             {
                 if let Some(res) = &self.sim_panel.active_result {
@@ -741,29 +859,43 @@ impl ChipCutterApp {
             ui.checkbox(
                 &mut self.sim_panel.show_machined_stock,
                 "Show 3D Machined Stock",
-            );
+            )
+            .on_hover_text("Display the simulated carved stock solid inside the 3D viewport");
             ui.checkbox(
                 &mut self.sim_panel.color_by_operation,
                 "Color Cuts by Operation",
-            );
+            )
+            .on_hover_text("Tint carved stock faces by the operation that last cut them (overridden when Error Heatmap is active)");
             ui.checkbox(
                 &mut self.sim_panel.show_error_heatmap,
                 "Error Deviation Heatmap",
-            );
+            )
+            .on_hover_text("Color machined stock by signed error against the CAD model (red = gouge, green = in-tolerance, blue = rest stock). Uncheck for faster playback.");
             ui.checkbox(
                 &mut self.sim_panel.show_cutter_assembly,
                 "Show 3D Cutter & Holder",
-            );
+            )
+            .on_hover_text("Render the spinning cutter, shank, and tool holder at the active timeline position");
         });
     }
 
     fn draw_post_menu(&mut self, ui: &mut egui::Ui) {
         ui.menu_button("Post", |ui| {
-            if ui.button("Open G-Code Preview Tab").clicked() {
+            if ui
+                .button("Open G-Code Preview Tab")
+                .on_hover_text("Focus the G-Code Preview & Export pane in the lower dock")
+                .clicked()
+            {
                 focus_workspace_pane(&mut self.tree, WorkspacePane::GCodePreview);
                 ui.close();
             }
-            if ui.button("Export G-Code (.nc / .ngc)…").clicked() {
+            if ui
+                .button("Export G-Code (.nc / .ngc)…")
+                .on_hover_text(
+                    "Run safety-gated G-code post-processing and save the program to disk",
+                )
+                .clicked()
+            {
                 ui.close();
                 self.trigger_gcode_export_from_menu();
             }
@@ -787,7 +919,14 @@ impl ChipCutterApp {
                     .collect();
                 for (pid, pname) in profiles {
                     let is_sel = cur_id.eq_ignore_ascii_case(&pid);
-                    if ui.selectable_label(is_sel, pname).clicked() && !is_sel {
+                    if ui
+                        .selectable_label(is_sel, &pname)
+                        .on_hover_text(format!(
+                            "Assign '{pname}' as the G-code post-processor for the active Setup"
+                        ))
+                        .clicked()
+                        && !is_sel
+                    {
                         self.history
                             .record_before_edit("Change Post Profile", None, &self.project);
                         self.project.setups[self.active_setup_idx].post_profile = pid;
@@ -804,13 +943,22 @@ impl ChipCutterApp {
             ui.label("Workspace Theme:");
             for t in AppTheme::ALL {
                 let is_sel = self.theme == t;
-                if ui.selectable_label(is_sel, t.label()).clicked() && !is_sel {
+                if ui
+                    .selectable_label(is_sel, t.label())
+                    .on_hover_text(format!("Switch workspace palette to {}", t.label()))
+                    .clicked()
+                    && !is_sel
+                {
                     self.set_theme(ctx, t);
                     ui.close();
                 }
             }
             ui.separator();
-            if ui.button("Reset Default Workspace Layout").clicked() {
+            if ui
+                .button("Reset Default Workspace Layout")
+                .on_hover_text("Restore default panel docking sizes and tab positions")
+                .clicked()
+            {
                 self.tree = create_default_workspace_tree();
                 ui.close();
             }
@@ -818,45 +966,73 @@ impl ChipCutterApp {
             ui.checkbox(
                 &mut self.highlight.show_toolpaths,
                 "Show 3D Generated Toolpaths",
-            );
-            ui.checkbox(&mut self.highlight.show_rapids, "Show Rapid Moves (G0)");
+            )
+            .on_hover_text("Toggle visibility of all generated cutting toolpaths in the 3D viewport");
+            ui.checkbox(&mut self.highlight.show_rapids, "Show Rapid Moves (G0)")
+                .on_hover_text("Toggle dashed yellow rapid transit lines (G0) between cuts");
             ui.checkbox(
                 &mut self.show_all_setup_toolpaths,
                 "Show All Operations in Active Setup",
-            );
+            )
+            .on_hover_text("When checked, display toolpaths for every visible operation in the Setup; when unchecked, show only the selected operation");
             ui.separator();
             ui.checkbox(
                 &mut self.highlight.show_grid,
                 "Show Active Setup WCS XY Grid",
-            );
-            ui.checkbox(&mut self.highlight.show_stock, "Show Translucent Stock");
-            ui.checkbox(&mut self.highlight.ghost_part, "Ghost Part Translucency");
+            )
+            .on_hover_text("Display the reference coordinate grid on the active Setup's Z = 0 plane");
+            ui.checkbox(&mut self.highlight.show_stock, "Show Translucent Stock")
+                .on_hover_text("Overlay the translucent raw stock bounding block around the part");
+            ui.checkbox(&mut self.highlight.ghost_part, "Ghost Part Translucency")
+                .on_hover_text("Render the 3D CAD solid semi-transparent so internal pockets, holes, and toolpaths remain visible");
             ui.checkbox(
                 &mut self.show_z_planes,
                 "Show Z-Height Planes in Heights Tab",
-            );
+            )
+            .on_hover_text("Render color-coded Clearance, Retract, Top, and Bottom Z planes when editing Heights");
             ui.separator();
-            if ui.button("Toggle Orthographic / Perspective (P)").clicked() {
+            if ui
+                .button("Toggle Orthographic / Perspective (P)")
+                .on_hover_text("Switch the 3D camera between parallel orthographic and perspective projection")
+                .clicked()
+            {
                 self.camera.toggle_projection();
                 ui.close();
             }
-            if ui.button("Fit Model to Viewport (F)").clicked() {
+            if ui
+                .button("Fit Model to Viewport (F)")
+                .on_hover_text("Frame the entire CAD model, stock, and sketches cleanly inside the viewport")
+                .clicked()
+            {
                 self.fit_scene_to_viewport();
                 ui.close();
             }
-            if ui.button("Align View to Active Setup Top (+Z)").clicked() {
+            if ui
+                .button("Align View to Active Setup Top (+Z)")
+                .on_hover_text("Orient the camera straight down the active Setup's +Z spindle axis")
+                .clicked()
+            {
                 self.align_camera_to_active_setup();
                 ui.close();
             }
             ui.separator();
             ui.menu_button("Mouse Navigation Preset", |ui| {
                 for preset in MousePreset::ALL {
-                    ui.selectable_value(&mut self.camera.mouse_preset, preset, preset.label());
+                    ui.selectable_value(&mut self.camera.mouse_preset, preset, preset.label())
+                        .on_hover_text(format!("Use {} 3D viewport orbit/pan/zoom mouse bindings", preset.label()));
                 }
                 ui.separator();
                 for om in [OrbitMode::TurntableZUp, OrbitMode::FreeTrackball] {
                     let is_sel = self.camera.orbit_mode == om;
-                    if ui.selectable_label(is_sel, om.label()).clicked() && !is_sel {
+                    if ui
+                        .selectable_label(is_sel, om.label())
+                        .on_hover_text(match om {
+                            OrbitMode::TurntableZUp => "Keep world +Z upright while orbiting around the part",
+                            OrbitMode::FreeTrackball => "Allow unrestricted 3-axis trackball rotation in any direction",
+                        })
+                        .clicked()
+                        && !is_sel
+                    {
                         self.camera.set_orbit_mode(om);
                         ui.close();
                     }
@@ -1051,8 +1227,10 @@ impl ChipCutterApp {
                         ui.separator();
 
                         let mut u_sel = self.project.display_units;
-                        ui.selectable_value(&mut u_sel, DisplayUnit::Inch, "in");
-                        ui.selectable_value(&mut u_sel, DisplayUnit::Millimeter, "mm");
+                        ui.selectable_value(&mut u_sel, DisplayUnit::Inch, "in")
+                            .on_hover_text("Display lengths and feed rates in Imperial inches (in, IPM, SFM)");
+                        ui.selectable_value(&mut u_sel, DisplayUnit::Millimeter, "mm")
+                            .on_hover_text("Display lengths and feed rates in Metric millimeters (mm, mm/min, m/min)");
                         if u_sel != self.project.display_units {
                             self.history.record_before_edit(
                                 "Change Display Units",
@@ -1083,25 +1261,45 @@ impl ChipCutterApp {
 
     fn draw_help_menu(&mut self, ui: &mut egui::Ui) {
         ui.menu_button("Help", |ui| {
-            if ui.button("Command Palette… (Ctrl+K)").clicked() {
+            if ui
+                .button("Command Palette… (Ctrl+K)")
+                .on_hover_text("Search and invoke any ChipCutter action, sample project, or setting by keyboard")
+                .clicked()
+            {
                 self.command_palette.open_fresh();
                 ui.close();
             }
-            if ui.button("Keyboard Shortcuts (F1 / ?)").clicked() {
+            if ui
+                .button("Keyboard Shortcuts (F1 / ?)")
+                .on_hover_text("View the complete reference of viewport, editing, and simulation hotkeys")
+                .clicked()
+            {
                 self.shortcut_cheatsheet.open = true;
                 ui.close();
             }
             ui.separator();
-            if ui.button("Sample Projects Gallery…").clicked() {
+            if ui
+                .button("Sample Projects Gallery…")
+                .on_hover_text("Browse and load built-in 2D, 3D, V-Carve, mesh, and 4th-axis sample projects")
+                .clicked()
+            {
                 self.sample_gallery_modal.open = true;
                 ui.close();
             }
-            if ui.button("Welcome & Quick-Start…").clicked() {
+            if ui
+                .button("Welcome & Quick-Start…")
+                .on_hover_text("Open the Welcome screen with recent projects and quick-start workflows")
+                .clicked()
+            {
                 self.welcome_modal.open = true;
                 ui.close();
             }
             ui.separator();
-            if ui.button("About ChipCutter…").clicked() {
+            if ui
+                .button("About ChipCutter…")
+                .on_hover_text("Show ChipCutter version, graphics backend, and open-source licensing details")
+                .clicked()
+            {
                 self.about_modal.open = true;
                 ui.close();
             }
@@ -1174,7 +1372,9 @@ impl ChipCutterApp {
         match cmd {
             CommandId::NewProject => self.reset_blank_project("Untitled Job"),
             CommandId::OpenProject => self.open_project_dialog(ctx),
-            CommandId::SaveProject => self.save_project_dialog(),
+            CommandId::SaveProject => {
+                let _ = self.save_project_dialog();
+            }
             CommandId::ExportChipzBundle => self.export_chipz_dialog(),
             CommandId::ImportStepModel => self.open_step_dialog(ctx),
             CommandId::ImportMesh3D => self.mesh_import_modal.open_with_file_picker(),
@@ -1345,10 +1545,18 @@ impl ChipCutterApp {
                             tok.dirty_fg,
                             "External STEP file updated on disk — CAD revision change detected.",
                         );
-                        if ui.small_button("Reload & Re-Match (Ctrl+R)").clicked() {
+                        if ui
+                            .small_button("Reload & Re-Match (Ctrl+R)")
+                            .on_hover_text("Reload the modified STEP model from disk and associatively re-bind CAM faces and edges")
+                            .clicked()
+                        {
                             self.reload_active_step_model(ctx);
                         }
-                        if ui.small_button("Dismiss").clicked() {
+                        if ui
+                            .small_button("Dismiss")
+                            .on_hover_text("Hide this file-change notification without reloading")
+                            .clicked()
+                        {
                             self.external_step_modified = false;
                         }
                     });
@@ -1382,11 +1590,19 @@ impl ChipCutterApp {
                     ui.horizontal_wrapped(|ui| {
                         status_badge_icon(ui, badge, None);
                         ui.colored_label(fg, &msg);
-                        if ui.small_button("Regenerate Dirty (Ctrl+G)").clicked() {
+                        if ui
+                            .small_button("Regenerate Dirty (Ctrl+G)")
+                            .on_hover_text("Recompute all toolpaths invalidated by the CAD reload and refresh simulation")
+                            .clicked()
+                        {
                             self.auto_sim_after_gen = true;
                             self.trigger_generate_dirty(None, None);
                         }
-                        if ui.small_button("Dismiss").clicked() {
+                        if ui
+                            .small_button("Dismiss")
+                            .on_hover_text("Close this reload summary banner")
+                            .clicked()
+                        {
                             self.last_reload_banner = None;
                         }
                     });

@@ -228,13 +228,19 @@ impl MachineManagerModalState {
                             ui.add(
                                 egui::TextEdit::singleline(&mut self.clone_new_id)
                                     .desired_width(160.0),
-                            );
+                            )
+                            .on_hover_text("Unique filesystem-safe identifier for the cloned custom machine (.machine.toml)");
                             ui.label("Name:");
                             ui.add(
                                 egui::TextEdit::singleline(&mut self.clone_new_name)
                                     .desired_width(240.0),
-                            );
-                            if ui.button("Create Clone").clicked() {
+                            )
+                            .on_hover_text("Display name shown in Machine Manager and Setup Inspector");
+                            if ui
+                                .button("Create Clone")
+                                .on_hover_text("Save the cloned editable custom machine profile to your user directory")
+                                .clicked()
+                            {
                                 match clone_machine_definition(
                                     &machines[self.selected_idx],
                                     self.clone_new_id.trim(),
@@ -264,7 +270,11 @@ impl MachineManagerModalState {
                                     }
                                 }
                             }
-                            if ui.button("Cancel").clicked() {
+                            if ui
+                                .button("Cancel")
+                                .on_hover_text("Dismiss the clone machine prompt without creating a new profile")
+                                .clicked()
+                            {
                                 self.clone_draft_open = false;
                             }
                         });
@@ -321,7 +331,11 @@ impl MachineManagerModalState {
                                     rotary_tag,
                                     m.tools.len()
                                 );
-                                if ui.selectable_label(selected, label).clicked() {
+                                if ui
+                                    .selectable_label(selected, label)
+                                    .on_hover_text("Inspect this CNC machine profile's travels, spindle, rotary specs, and tool library")
+                                    .clicked()
+                                {
                                     self.selected_idx = idx;
                                     self.clone_draft_open = false;
                                 }
@@ -343,7 +357,11 @@ impl MachineManagerModalState {
                                 ui.label(
                                     "— updated cleanly on app upgrades. Clone to customize specs or tools.",
                                 );
-                                if ui.button("Clone to Customize").clicked() {
+                                if ui
+                                    .button("Clone to Customize")
+                                    .on_hover_text("Create an editable custom copy of this built-in machine profile")
+                                    .clicked()
+                                {
                                     let existing: Vec<String> =
                                         machines.iter().map(|m| m.id.clone()).collect();
                                     let name_now = machines[self.selected_idx].name.clone();
@@ -362,13 +380,16 @@ impl MachineManagerModalState {
                             &mut self.tab,
                             MachineEditorTab::SpecsKinematics,
                             "Specs & Kinematics",
-                        );
-                        ui.selectable_value(&mut self.tab, MachineEditorTab::Rotary, "4th Axis");
+                        )
+                        .on_hover_text("View or edit machine axis travels, spindle RPM limits, feed/rapid limits, and default post profile");
+                        ui.selectable_value(&mut self.tab, MachineEditorTab::Rotary, "4th Axis")
+                            .on_hover_text("View or edit optional 4th-axis rotary chuck dimensions, slew rate, and 4-axis post profile");
                         ui.selectable_value(
                             &mut self.tab,
                             MachineEditorTab::Tools,
                             format!("Tools ({})", machines[self.selected_idx].tools.len()),
-                        );
+                        )
+                        .on_hover_text("Inspect or copy cutting tools belonging to this CNC machine profile");
                     });
                     right.separator();
 
@@ -392,7 +413,11 @@ impl MachineManagerModalState {
                                                 ui.end_row();
 
                                                 ui.label("Display Name:");
-                                                if ui.text_edit_singleline(&mut m.name).changed() {
+                                                if ui
+                                                    .text_edit_singleline(&mut m.name)
+                                                    .on_hover_text("Human-readable CNC machine name")
+                                                    .changed()
+                                                {
                                                     dirty = true;
                                                 }
                                                 ui.end_row();
@@ -400,7 +425,11 @@ impl MachineManagerModalState {
                                                 ui.label("Manufacturer:");
                                                 let mut mfr =
                                                     m.manufacturer.clone().unwrap_or_default();
-                                                if ui.text_edit_singleline(&mut mfr).changed() {
+                                                if ui
+                                                    .text_edit_singleline(&mut mfr)
+                                                    .on_hover_text("Optional CNC machine builder or vendor name")
+                                                    .changed()
+                                                {
                                                     m.manufacturer = if mfr.trim().is_empty() {
                                                         None
                                                     } else {
@@ -419,6 +448,7 @@ impl MachineManagerModalState {
                                                                 .range(10.0..=5000.0)
                                                                 .prefix("X "),
                                                         )
+                                                        .on_hover_text("Maximum X-axis working envelope travel (mm)")
                                                         .changed();
                                                     dirty |= ui
                                                         .add(
@@ -427,6 +457,7 @@ impl MachineManagerModalState {
                                                                 .range(10.0..=5000.0)
                                                                 .prefix("Y "),
                                                         )
+                                                        .on_hover_text("Maximum Y-axis working envelope travel (mm)")
                                                         .changed();
                                                     dirty |= ui
                                                         .add(
@@ -435,6 +466,7 @@ impl MachineManagerModalState {
                                                                 .range(10.0..=2000.0)
                                                                 .prefix("Z "),
                                                         )
+                                                        .on_hover_text("Maximum Z-axis vertical travel (mm)")
                                                         .changed();
                                                 });
                                                 ui.end_row();
@@ -447,6 +479,7 @@ impl MachineManagerModalState {
                                                                 .speed(100.0)
                                                                 .range(0.0..=60_000.0),
                                                         )
+                                                        .on_hover_text("Minimum supported spindle speed (RPM)")
                                                         .changed();
                                                     ui.label("to");
                                                     dirty |= ui
@@ -455,6 +488,7 @@ impl MachineManagerModalState {
                                                                 .speed(100.0)
                                                                 .range(100.0..=100_000.0),
                                                         )
+                                                        .on_hover_text("Maximum supported spindle speed (RPM)")
                                                         .changed();
                                                 });
                                                 ui.end_row();
@@ -462,6 +496,7 @@ impl MachineManagerModalState {
                                                 ui.label("Collet / Holder:");
                                                 if ui
                                                     .text_edit_singleline(&mut m.spindle.collet_type)
+                                                    .on_hover_text("Spindle taper or collet system (e.g., ER11, ER20, ISO20, BT30)")
                                                     .changed()
                                                 {
                                                     dirty = true;
@@ -483,12 +518,15 @@ impl MachineManagerModalState {
                                                                     kind,
                                                                     kind.label(),
                                                                 )
+                                                                .on_hover_text("Select tool-changing capability of this CNC machine")
                                                                 .changed()
                                                             {
                                                                 dirty = true;
                                                             }
                                                         }
-                                                    });
+                                                    })
+                                                    .response
+                                                    .on_hover_text("Select manual, quick-change, or automatic tool changer (ATC)");
                                                 ui.end_row();
 
                                                 ui.label("Toolsetter / Probe:");
@@ -497,6 +535,7 @@ impl MachineManagerModalState {
                                                         &mut m.has_toolsetter,
                                                         "Machine has fixed toolsetter",
                                                     )
+                                                    .on_hover_text("Enable if the machine automatically probes tool length on tool changes")
                                                     .changed()
                                                 {
                                                     dirty = true;
@@ -514,6 +553,7 @@ impl MachineManagerModalState {
                                                             .range(100.0..=50_000.0)
                                                             .prefix("XY "),
                                                         )
+                                                        .on_hover_text("Maximum XY G0 rapid traverse speed used for cycle-time estimation (mm/min)")
                                                         .changed();
                                                     dirty |= ui
                                                         .add(
@@ -524,6 +564,7 @@ impl MachineManagerModalState {
                                                             .range(50.0..=30_000.0)
                                                             .prefix("Z "),
                                                         )
+                                                        .on_hover_text("Maximum Z G0 rapid traverse speed used for cycle-time estimation (mm/min)")
                                                         .changed();
                                                 });
                                                 ui.end_row();
@@ -539,6 +580,7 @@ impl MachineManagerModalState {
                                                             .range(50.0..=30_000.0)
                                                             .prefix("XY "),
                                                         )
+                                                        .on_hover_text("Maximum XY cutting feed rate (mm/min)")
                                                         .changed();
                                                     dirty |= ui
                                                         .add(
@@ -549,6 +591,7 @@ impl MachineManagerModalState {
                                                             .range(20.0..=15_000.0)
                                                             .prefix("Z "),
                                                         )
+                                                        .on_hover_text("Maximum Z plunge cutting feed rate (mm/min)")
                                                         .changed();
                                                 });
                                                 ui.end_row();
@@ -564,6 +607,7 @@ impl MachineManagerModalState {
                                                             .range(10.0..=20_000.0)
                                                             .suffix(" mm/s²"),
                                                         )
+                                                        .on_hover_text("Nominal axis acceleration for trapezoidal cycle-time estimation (mm/s^2)")
                                                         .changed();
                                                     dirty |= ui
                                                         .add(
@@ -574,6 +618,7 @@ impl MachineManagerModalState {
                                                             .range(0.0..=300.0)
                                                             .suffix(" s"),
                                                         )
+                                                        .on_hover_text("Estimated seconds per tool change added to simulated cycle time")
                                                         .changed();
                                                 });
                                                 ui.end_row();
@@ -589,12 +634,15 @@ impl MachineManagerModalState {
                                                                     p.id.clone(),
                                                                     format!("{} ({})", p.name, p.id),
                                                                 )
+                                                                .on_hover_text("Assign this post-processor as the machine default")
                                                                 .changed()
                                                             {
                                                                 dirty = true;
                                                             }
                                                         }
-                                                    });
+                                                    })
+                                                    .response
+                                                    .on_hover_text("Default G-code post-processor profile applied to new Setups on this machine");
                                                 ui.end_row();
                                             });
                                     });
@@ -664,6 +712,7 @@ impl MachineManagerModalState {
                                                                 .prefix("Ø")
                                                                 .suffix(" mm"),
                                                             )
+                                                            .on_hover_text("Maximum stock swing diameter over the rotary bed (mm)")
                                                             .changed();
                                                         dirty |= ui
                                                             .add(
@@ -675,6 +724,7 @@ impl MachineManagerModalState {
                                                                 .prefix("L ")
                                                                 .suffix(" mm"),
                                                             )
+                                                            .on_hover_text("Maximum cylindrical stock length between chuck and tailstock (mm)")
                                                             .changed();
                                                     });
                                                     ui.end_row();
@@ -691,6 +741,7 @@ impl MachineManagerModalState {
                                                                 .prefix("Ø")
                                                                 .suffix(" mm"),
                                                             )
+                                                            .on_hover_text("Outer diameter of the rotary chuck jaws used for collision checks (mm)")
                                                             .changed();
                                                         dirty |= ui
                                                             .add(
@@ -702,6 +753,7 @@ impl MachineManagerModalState {
                                                                 .prefix("L ")
                                                                 .suffix(" mm"),
                                                             )
+                                                            .on_hover_text("Axial length of the rotary chuck body protruding along the rotary axis (mm)")
                                                             .changed();
                                                     });
                                                     ui.end_row();
@@ -717,6 +769,7 @@ impl MachineManagerModalState {
                                                             .range(60.0..=36_000.0)
                                                             .suffix(" deg/min"),
                                                         )
+                                                        .on_hover_text("Maximum angular slew speed of the 4th-axis rotary table (deg/min)")
                                                         .changed();
                                                     ui.end_row();
 
@@ -744,6 +797,7 @@ impl MachineManagerModalState {
                                                                         p.name, p.id
                                                                     ),
                                                                 )
+                                                                .on_hover_text("Select default 4-axis post-processor for this machine")
                                                                 .clicked()
                                                             {
                                                                 rot.default_post_profile_4axis =
@@ -751,7 +805,9 @@ impl MachineManagerModalState {
                                                                 dirty = true;
                                                             }
                                                         }
-                                                    });
+                                                    })
+                                                    .response
+                                                    .on_hover_text("Default 4-axis rotary post-processor profile for Setups using this machine");
                                                     ui.end_row();
                                                 });
                                         }
@@ -759,7 +815,11 @@ impl MachineManagerModalState {
                                 }
                                 MachineEditorTab::Tools => {
                                     ui.horizontal_wrapped(|ui| {
-                                        if ui.button("Open in Tool Library →").clicked() {
+                                        if ui
+                                            .button("Open in Tool Library ->")
+                                            .on_hover_text("Open the Tool Library Manager focused on this machine's tool set")
+                                            .clicked()
+                                        {
                                             actions.open_tool_library_for_machine =
                                                 Some(m_id_copy.clone());
                                         }
@@ -785,9 +845,12 @@ impl MachineManagerModalState {
                                                             &mut self.copy_source_machine_idx,
                                                             i,
                                                             &other.name,
-                                                        );
+                                                        )
+                                                        .on_hover_text("Choose source machine to copy a cutting tool from");
                                                     }
-                                                });
+                                                })
+                                                .response
+                                                .on_hover_text("Select another CNC machine profile to copy tools from");
                                             ui.menu_button("+ Add Tool", |ui| {
                                                 for (t_idx, tool) in machines
                                                     [self.copy_source_machine_idx]
@@ -800,6 +863,7 @@ impl MachineManagerModalState {
                                                             "T{} {}",
                                                             tool.tool_number, tool.name
                                                         ))
+                                                        .on_hover_text("Copy this tool and its presets into the selected custom machine")
                                                         .clicked()
                                                     {
                                                         copy_from_idx_and_tool = Some((

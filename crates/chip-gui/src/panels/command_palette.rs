@@ -701,13 +701,15 @@ pub fn show_command_palette(
                     ui.horizontal(|ui| {
                         inline_icon(ui, IconKind::Search, tok.accent, 15.0);
                         let prev_q = state.query.clone();
-                        let edit_resp = ui.add(
-                            egui::TextEdit::singleline(&mut state.query)
-                                .hint_text(
-                                    "Type a command, operation, view, or sample (Esc to close)…",
-                                )
-                                .desired_width(palette_w - 42.0),
-                        );
+                        let edit_resp = ui
+                            .add(
+                                egui::TextEdit::singleline(&mut state.query)
+                                    .hint_text(
+                                        "Type a command, operation, view, or sample (Esc to close)…",
+                                    )
+                                    .desired_width(palette_w - 42.0),
+                            )
+                            .on_hover_text("Type keywords to fuzzy-search commands, operations, and sample projects");
                         if state.focus_input_next_frame {
                             edit_resp.request_focus();
                             state.focus_input_next_frame = false;

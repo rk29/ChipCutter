@@ -499,7 +499,9 @@ impl SimulationPanelState {
     }
 
     fn active_stock_color_mode(&self) -> SimStockColorMode {
-        if self.show_error_heatmap {
+        // Defer expensive per-vertex heatmap shading during live animation playback;
+        // render full Error Heatmap immediately whenever paused, scrubbed, or complete.
+        if self.show_error_heatmap && !self.is_playing {
             let tol = self.heatmap_tolerance_mm.clamp(1e-4, 50.0);
             let max_scale = self.heatmap_max_scale_mm.max(tol * 2.0);
             SimStockColorMode::ErrorHeatmap {
@@ -557,7 +559,7 @@ impl SimulationPanelState {
                 self.active_run_id,
                 result_ptr,
                 self.color_by_operation,
-                self.show_error_heatmap,
+                self.show_error_heatmap && !self.is_playing,
                 tol_key,
                 scale_key,
                 rotary_deg_hundredths,
@@ -737,6 +739,9 @@ impl SimulationPanelState {
             };
             if ui
                 .add_enabled(!busy && cad_doc.is_some(), egui::Button::new(btn_lbl))
+                .on_hover_text(
+                    "Run background stock removal simulation, 5-rule crash/gouge checks, and error-volume/RMS metrology",
+                )
                 .clicked()
                 && let Some(doc) = cad_doc
             {
@@ -753,7 +758,11 @@ impl SimulationPanelState {
             }
             if busy {
                 ui.spinner();
-                if ui.small_button("Cancel").clicked() {
+                if ui
+                    .small_button("Cancel")
+                    .on_hover_text("Cancel the in-flight background simulation")
+                    .clicked()
+                {
                     self.cancel_in_flight();
                 }
             }
@@ -807,14 +816,28 @@ impl SimulationPanelState {
                 .response
                 .on_hover_text(res_tooltip);
 
-            ui.checkbox(&mut self.show_machined_stock, "3D Stock");
-            ui.checkbox(&mut self.color_by_operation, "Color by Op");
+            ui.checkbox(&mut self.show_machined_stock, "3D Stock")
+                .on_hover_text("Show or hide the simulated 3D machined stock solid in the viewport");
+            ui.add_enabled(
+                !self.show_error_heatmap,
+                egui::Checkbox::new(&mut self.color_by_operation, "Color by Op"),
+            )
+            .on_hover_text(
+                "Color machined stock faces by which operation cut them (disabled while Error Heatmap is active)",
+            )
+            .on_disabled_hover_text(
+                "Uncheck Error Heatmap to color cuts by operation instead of signed deviation",
+            );
             ui.checkbox(&mut self.show_error_heatmap, "Error Heatmap")
                 .on_hover_text(
-                    "Color 3D stock by signed deviation vs. target model (Red = Gouge, Green = Within Tolerance, Blue = Uncut Excess)",
+                    "Toggle signed stock-vs-target deviation heatmap on the 3D stock (Red = Gouge, Green = Within Tolerance, Blue = Uncut Excess). Uncheck for fastest interactive display.",
                 );
-            ui.checkbox(&mut self.show_cutter_assembly, "3D Cutter");
-            ui.checkbox(&mut self.trail_up_to_cutter, "Progressive Trail");
+            ui.checkbox(&mut self.show_cutter_assembly, "3D Cutter")
+                .on_hover_text("Show or hide the animated 3D tool, shank, and holder assembly");
+            ui.checkbox(&mut self.trail_up_to_cutter, "Progressive Trail")
+                .on_hover_text(
+                    "Show only the toolpath segments executed up to the current timeline position",
+                );
 
             ui.separator();
             let tok = crate::theme::ThemeTokens::from_ui(ui);
@@ -1002,23 +1025,36 @@ impl SimulationPanelState {
                         .width(52.0)
                         .show_ui(ui, |ui| {
                             for spd in [0.1, 0.5, 1.0, 5.0, 10.0, 25.0, 50.0] {
-                                ui.selectable_value(&mut self.speed_multiplier, spd, format!("{spd}x"));
+                                ui.selectable_value(
+                                    &mut self.speed_multiplier,
+                                    spd,
+                                    format!("{spd}x"),
+                                )
+                                .on_hover_text(format!(
+                                    "Play simulation at {spd}x real machining speed"
+                                ));
                             }
-                        });
+                        })
+                        .response
+                        .on_hover_text("Simulation playback speed multiplier");
 
-                    ui.selectable_value(&mut self.scrub_by_distance, false, "Time");
-                    ui.selectable_value(&mut self.scrub_by_distance, true, "Dist");
+                    ui.selectable_value(&mut self.scrub_by_distance, false, "Time")
+                        .on_hover_text("Scrub simulation timeline by elapsed machining time");
+                    ui.selectable_value(&mut self.scrub_by_distance, true, "Dist")
+                        .on_hover_text("Scrub simulation timeline by linear toolpath distance");
                     ui.separator();
 
                     ui.spacing_mut().slider_width = (ui.available_width() - 165.0).max(96.0);
                     if self.scrub_by_distance {
                         let mut cur_d = snap.as_ref().map_or(0.0, |s| s.distance_mm);
                         let max_d = res.timeline.total_distance_mm.max(0.001);
-                        let resp = ui.add(
-                            egui::Slider::new(&mut cur_d, 0.0..=max_d)
-                                .show_value(false)
-                                .trailing_fill(true),
-                        );
+                        let resp = ui
+                            .add(
+                                egui::Slider::new(&mut cur_d, 0.0..=max_d)
+                                    .show_value(false)
+                                    .trailing_fill(true),
+                            )
+                            .on_hover_text("Scrub simulation progress by cumulative tool travel distance");
                         if resp.changed() {
                             self.is_playing = false;
                             if let Some(ds) = res.timeline.sample_at_distance(cur_d) {
@@ -1032,11 +1068,13 @@ impl SimulationPanelState {
                         ));
                     } else {
                         let max_t = res.timeline.total_time_sec.max(0.001);
-                        let resp = ui.add(
-                            egui::Slider::new(&mut self.current_time_sec, 0.0..=max_t)
-                                .show_value(false)
-                                .trailing_fill(true),
-                        );
+                        let resp = ui
+                            .add(
+                                egui::Slider::new(&mut self.current_time_sec, 0.0..=max_t)
+                                    .show_value(false)
+                                    .trailing_fill(true),
+                            )
+                            .on_hover_text("Scrub simulation progress by elapsed cycle time");
                         if resp.changed() {
                             self.is_playing = false;
                         }
@@ -1162,7 +1200,8 @@ impl SimulationPanelState {
                             rep.material_removal_efficiency_pct
                         ));
                         ui.separator();
-                        ui.label("Tol:");
+                        ui.label("Tol:")
+                            .on_hover_text("Tolerance band (+/- mm) shown in green on the Error Heatmap and used for In-Tol %");
                         ui.add(
                             egui::DragValue::new(&mut self.heatmap_tolerance_mm)
                                 .speed(0.005)
@@ -1170,8 +1209,15 @@ impl SimulationPanelState {
                                 .fixed_decimals(3)
                                 .prefix("+/- ")
                                 .suffix(" mm"),
+                        )
+                        .on_hover_text(
+                            "Adjust surface deviation pass tolerance (+/- mm); updates both Error Heatmap green band and In-Tol % live",
                         );
                         ui.separator();
+                        ui.checkbox(&mut self.show_error_heatmap, "Heatmap")
+                            .on_hover_text(
+                                "Enable or disable the 3D Error Heatmap overlay (uncheck for faster stock display)",
+                            );
                         paint_heatmap_legend(
                             ui,
                             self.heatmap_tolerance_mm,
@@ -1717,8 +1763,38 @@ mod tests {
 
         // Toggling Error Heatmap must trigger a clean remesh at the same timestamp
         panel.show_error_heatmap = true;
+        assert!(matches!(
+            panel.active_stock_color_mode(),
+            chip_sim::SimStockColorMode::ErrorHeatmap { .. }
+        ));
         let (rev_hm, mesh_hm) = panel.resolve_viewport_visuals(&project, 0).stock.unwrap();
         assert!(rev_hm > rev_75);
         assert!(!mesh_hm.vertices.is_empty());
+
+        // During live playback, Error Heatmap is deferred for smooth FPS and restored on pause.
+        panel.is_playing = true;
+        assert!(!matches!(
+            panel.active_stock_color_mode(),
+            chip_sim::SimStockColorMode::ErrorHeatmap { .. }
+        ));
+        let (rev_play, _) = panel.resolve_viewport_visuals(&project, 0).stock.unwrap();
+        assert!(rev_play > rev_hm);
+
+        panel.is_playing = false;
+        assert!(matches!(
+            panel.active_stock_color_mode(),
+            chip_sim::SimStockColorMode::ErrorHeatmap { .. }
+        ));
+        let (rev_pause, _) = panel.resolve_viewport_visuals(&project, 0).stock.unwrap();
+        assert!(rev_pause > rev_play);
+
+        // Unchecking Error Heatmap immediately disables heatmap shading and remeshes cleanly.
+        panel.show_error_heatmap = false;
+        assert!(!matches!(
+            panel.active_stock_color_mode(),
+            chip_sim::SimStockColorMode::ErrorHeatmap { .. }
+        ));
+        let (rev_off, _) = panel.resolve_viewport_visuals(&project, 0).stock.unwrap();
+        assert!(rev_off > rev_pause);
     }
 }

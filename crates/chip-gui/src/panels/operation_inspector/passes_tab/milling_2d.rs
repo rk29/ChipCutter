@@ -231,7 +231,15 @@ fn show_manual_tabs_footer(
     } else {
         "Pick Tab Points in 3D Viewport"
     };
-    if ui.button(btn_txt).clicked() {
+    if ui
+        .button(btn_txt)
+        .on_hover_text(if picking_tabs {
+            "Exit interactive 3D holding-tab placement mode"
+        } else {
+            "Click along the selected contour in the 3D viewport to place manual holding tabs"
+        })
+        .clicked()
+    {
         *pick_mode = if picking_tabs {
             ViewportPickMode::InspectEntity
         } else {
@@ -257,7 +265,11 @@ fn show_manual_tabs_footer(
                 anchor.contour_index + 1,
                 anchor.s_norm * 100.0
             ));
-            if ui.small_button("×").clicked() {
+            if ui
+                .small_button("×")
+                .on_hover_text("Remove this manual holding tab anchor")
+                .clicked()
+            {
                 del_anchor = Some(a_idx);
             }
         });
@@ -293,11 +305,23 @@ pub(super) fn show_pocket2d_params(ui: &mut egui::Ui, ctx: PocketParamsUiCtx<'_>
         let mut sel_strat = cur_strat;
         f.set_tip("Offset rings, parallel raster, or constant-engagement 2D Adaptive");
         f.row("Clearing Mode", |ui, mutated| {
-            if ui.selectable_value(&mut sel_strat, 0, "Offset").clicked() && cur_strat != 0 {
+            if ui
+                .selectable_value(&mut sel_strat, 0, "Offset")
+                .on_hover_text(
+                    "Contour-parallel inward/outward offset rings following pocket walls",
+                )
+                .clicked()
+                && cur_strat != 0
+            {
                 p.strategy = PocketStrategyKind::ContourParallel;
                 *mutated = Some("Select Contour-Parallel Pocket");
             }
-            if ui.selectable_value(&mut sel_strat, 1, "Zig-Zag").clicked() && cur_strat != 1 {
+            if ui
+                .selectable_value(&mut sel_strat, 1, "Zig-Zag")
+                .on_hover_text("Parallel linear back-and-forth raster clearing passes")
+                .clicked()
+                && cur_strat != 1
+            {
                 p.strategy = PocketStrategyKind::ZigZag {
                     pass_angle_deg: 0.0,
                 };
@@ -510,13 +534,21 @@ pub(super) fn show_chamfer_trace_params(
                 let mut is_modeled = matches!(p.chamfer_source, ChamferSourceMode::ModeledFace);
                 f.set_tip("Cut bevel on a sharp 90° CAD edge or follow a modeled chamfer face");
                 f.row("CAD Source", |ui, mutated| {
-                    if ui.selectable_value(&mut is_modeled, false, "Sharp Edge").clicked() {
+                    if ui
+                        .selectable_value(&mut is_modeled, false, "Sharp Edge")
+                        .on_hover_text("Cut a specified chamfer width into an un-beveled 90-degree CAD edge")
+                        .clicked()
+                    {
                         p.chamfer_source = ChamferSourceMode::SharpEdge {
                             width: ParamLength::from_mm(0.5),
                         };
                         *mutated = Some("Select Sharp Edge Chamfer");
                     }
-                    if ui.selectable_value(&mut is_modeled, true, "Modeled Bevel").clicked() {
+                    if ui
+                        .selectable_value(&mut is_modeled, true, "Modeled Bevel")
+                        .on_hover_text("Follow the bevel width already modeled on the 3D CAD chamfer face")
+                        .clicked()
+                    {
                         p.chamfer_source = ChamferSourceMode::ModeledFace;
                         *mutated = Some("Select Modeled Chamfer Face");
                     }

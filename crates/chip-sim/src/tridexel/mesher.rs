@@ -1,4 +1,5 @@
 use chip_math::DVec3;
+use rayon::prelude::*;
 
 use crate::{
     cutter_profile::SimColoredVertex,
@@ -86,24 +87,28 @@ pub fn tessellate_tridexel_stock_mesh_colored(
         return SimStockMesh::default();
     }
 
-    // 1. Build padded occupancy volume `(nx + 2) × (ny + 2) × (nz + 2)` via 3-axis majority vote
+    // 1. Build padded occupancy volume `(nx + 2) × (ny + 2) × (nz + 2)` in parallel via 3-axis majority vote
     let pnx = nx + 2;
     let pny = ny + 2;
     let pnz = nz + 2;
     let mut occ = vec![false; pnx * pny * pnz];
-    let occ_idx = |ix: usize, iy: usize, iz: usize| -> usize { (iz * pny + iy) * pnx + ix };
-
-    for k in 0..nz {
-        for j in 0..ny {
-            for i in 0..nx {
-                if stock.is_voxel_solid(i, j, k) {
-                    occ[occ_idx(i + 1, j + 1, k + 1)] = true;
+    let occ_slice = pnx * pny;
+    occ[occ_slice..(nz + 1) * occ_slice]
+        .par_chunks_mut(occ_slice)
+        .enumerate()
+        .for_each(|(k, slice)| {
+            for j in 0..ny {
+                let row = (j + 1) * pnx;
+                for i in 0..nx {
+                    if stock.is_voxel_solid(i, j, k) {
+                        slice[row + i + 1] = true;
+                    }
                 }
             }
-        }
-    }
+        });
+    let occ_idx = |ix: usize, iy: usize, iz: usize| -> usize { (iz * pny + iy) * pnx + ix };
 
-    // 2. Compute dual vertex positions on corners `(0..=nx) × (0..=ny) × (0..=nz)`
+    // 2. Compute dual vertex positions on corners `(0..=nx) × (0..=ny) × (0..=nz)` in parallel
     let dnx = nx + 1;
     let dny = ny + 1;
     let dnz = nz + 1;
@@ -114,77 +119,43 @@ pub fn tessellate_tridexel_stock_mesh_colored(
     let max_dy = 1.05 * stock.dy_mm;
     let max_dz = 1.05 * stock.dz_mm;
 
-    for dk in 0..dnz {
-        let base_z = stock.origin_mm.z + (dk as f64) * stock.dz_mm;
-        for dj in 0..dny {
-            let base_y = stock.origin_mm.y + (dj as f64) * stock.dy_mm;
-            for di in 0..dnx {
-                // Check if the 8 surrounding padded voxels have a sign change
-                let mut any_in = false;
-                let mut any_out = false;
-                for oz in 0..=1 {
-                    for oy in 0..=1 {
-                        for ox in 0..=1 {
-                            if occ[occ_idx(di + ox, dj + oy, dk + oz)] {
-                                any_in = true;
-                            } else {
-                                any_out = true;
+    let dual_slice = dnx * dny;
+    dual_pos
+        .par_chunks_mut(dual_slice)
+        .enumerate()
+        .for_each(|(dk, slice)| {
+            let base_z = stock.origin_mm.z + (dk as f64) * stock.dz_mm;
+            for dj in 0..dny {
+                let base_y = stock.origin_mm.y + (dj as f64) * stock.dy_mm;
+                let row = dj * dnx;
+                for di in 0..dnx {
+                    // Check if the 8 surrounding padded voxels have a sign change
+                    let mut any_in = false;
+                    let mut any_out = false;
+                    for oz in 0..=1 {
+                        for oy in 0..=1 {
+                            for ox in 0..=1 {
+                                if occ[occ_idx(di + ox, dj + oy, dk + oz)] {
+                                    any_in = true;
+                                } else {
+                                    any_out = true;
+                                }
                             }
                         }
                     }
-                }
-                if !(any_in && any_out) {
-                    continue;
-                }
-
-                let base_x = stock.origin_mm.x + (di as f64) * stock.dx_mm;
-                let mut x_sum = 0.0;
-                let mut x_cnt = 0u32;
-                let mut y_sum = 0.0;
-                let mut y_cnt = 0u32;
-                let mut z_sum = 0.0;
-                let mut z_cnt = 0u32;
-
-                // Z-ray crossings around `(di, dj)` at level `dk`
-                for oy in 0..=1usize {
-                    let Some(j) = (dj + oy).checked_sub(1) else {
-                        continue;
-                    };
-                    if j >= ny {
+                    if !(any_in && any_out) {
                         continue;
                     }
-                    for ox in 0..=1usize {
-                        let Some(i) = (di + ox).checked_sub(1) else {
-                            continue;
-                        };
-                        if i >= nx {
-                            continue;
-                        }
-                        let lo = occ[occ_idx(i + 1, j + 1, dk)];
-                        let hi = occ[occ_idx(i + 1, j + 1, dk + 1)];
-                        if lo != hi {
-                            let want_min = !lo && hi;
-                            if let Some((zc, _)) = nearest_ray_endpoint(
-                                stock.z_rays.ray(i, j),
-                                base_z,
-                                want_min,
-                                max_dz,
-                            ) {
-                                z_sum += zc;
-                                z_cnt += 1;
-                            }
-                        }
-                    }
-                }
 
-                // X-ray crossings around `(dj, dk)` at plane `di`
-                for oz in 0..=1usize {
-                    let Some(k) = (dk + oz).checked_sub(1) else {
-                        continue;
-                    };
-                    if k >= nz {
-                        continue;
-                    }
+                    let base_x = stock.origin_mm.x + (di as f64) * stock.dx_mm;
+                    let mut x_sum = 0.0;
+                    let mut x_cnt = 0u32;
+                    let mut y_sum = 0.0;
+                    let mut y_cnt = 0u32;
+                    let mut z_sum = 0.0;
+                    let mut z_cnt = 0u32;
+
+                    // Z-ray crossings around `(di, dj)` at level `dk`
                     for oy in 0..=1usize {
                         let Some(j) = (dj + oy).checked_sub(1) else {
                             continue;
@@ -192,77 +163,116 @@ pub fn tessellate_tridexel_stock_mesh_colored(
                         if j >= ny {
                             continue;
                         }
-                        let lo = occ[occ_idx(di, j + 1, k + 1)];
-                        let hi = occ[occ_idx(di + 1, j + 1, k + 1)];
-                        if lo != hi {
-                            let want_min = !lo && hi;
-                            if let Some((xc, _)) = nearest_ray_endpoint(
-                                stock.x_rays.ray(j, k),
-                                base_x,
-                                want_min,
-                                max_dx,
-                            ) {
-                                x_sum += xc;
-                                x_cnt += 1;
+                        for ox in 0..=1usize {
+                            let Some(i) = (di + ox).checked_sub(1) else {
+                                continue;
+                            };
+                            if i >= nx {
+                                continue;
+                            }
+                            let lo = occ[occ_idx(i + 1, j + 1, dk)];
+                            let hi = occ[occ_idx(i + 1, j + 1, dk + 1)];
+                            if lo != hi {
+                                let want_min = !lo && hi;
+                                if let Some((zc, _)) = nearest_ray_endpoint(
+                                    stock.z_rays.ray(i, j),
+                                    base_z,
+                                    want_min,
+                                    max_dz,
+                                ) {
+                                    z_sum += zc;
+                                    z_cnt += 1;
+                                }
                             }
                         }
                     }
-                }
 
-                // Y-ray crossings around `(di, dk)` at plane `dj`
-                for oz in 0..=1usize {
-                    let Some(k) = (dk + oz).checked_sub(1) else {
-                        continue;
-                    };
-                    if k >= nz {
-                        continue;
-                    }
-                    for ox in 0..=1usize {
-                        let Some(i) = (di + ox).checked_sub(1) else {
+                    // X-ray crossings around `(dj, dk)` at plane `di`
+                    for oz in 0..=1usize {
+                        let Some(k) = (dk + oz).checked_sub(1) else {
                             continue;
                         };
-                        if i >= nx {
+                        if k >= nz {
                             continue;
                         }
-                        let lo = occ[occ_idx(i + 1, dj, k + 1)];
-                        let hi = occ[occ_idx(i + 1, dj + 1, k + 1)];
-                        if lo != hi {
-                            let want_min = !lo && hi;
-                            if let Some((yc, _)) = nearest_ray_endpoint(
-                                stock.y_rays.ray(i, k),
-                                base_y,
-                                want_min,
-                                max_dy,
-                            ) {
-                                y_sum += yc;
-                                y_cnt += 1;
+                        for oy in 0..=1usize {
+                            let Some(j) = (dj + oy).checked_sub(1) else {
+                                continue;
+                            };
+                            if j >= ny {
+                                continue;
+                            }
+                            let lo = occ[occ_idx(di, j + 1, k + 1)];
+                            let hi = occ[occ_idx(di + 1, j + 1, k + 1)];
+                            if lo != hi {
+                                let want_min = !lo && hi;
+                                if let Some((xc, _)) = nearest_ray_endpoint(
+                                    stock.x_rays.ray(j, k),
+                                    base_x,
+                                    want_min,
+                                    max_dx,
+                                ) {
+                                    x_sum += xc;
+                                    x_cnt += 1;
+                                }
                             }
                         }
                     }
-                }
 
-                let vx = if x_cnt > 0 {
-                    (x_sum / f64::from(x_cnt))
-                        .clamp(base_x - 0.55 * stock.dx_mm, base_x + 0.55 * stock.dx_mm)
-                } else {
-                    base_x
-                };
-                let vy = if y_cnt > 0 {
-                    (y_sum / f64::from(y_cnt))
-                        .clamp(base_y - 0.55 * stock.dy_mm, base_y + 0.55 * stock.dy_mm)
-                } else {
-                    base_y
-                };
-                let vz = if z_cnt > 0 {
-                    (z_sum / f64::from(z_cnt))
-                        .clamp(base_z - 0.55 * stock.dz_mm, base_z + 0.55 * stock.dz_mm)
-                } else {
-                    base_z
-                };
-                dual_pos[dual_idx(di, dj, dk)] = [vx as f32, vy as f32, vz as f32];
+                    // Y-ray crossings around `(di, dk)` at plane `dj`
+                    for oz in 0..=1usize {
+                        let Some(k) = (dk + oz).checked_sub(1) else {
+                            continue;
+                        };
+                        if k >= nz {
+                            continue;
+                        }
+                        for ox in 0..=1usize {
+                            let Some(i) = (di + ox).checked_sub(1) else {
+                                continue;
+                            };
+                            if i >= nx {
+                                continue;
+                            }
+                            let lo = occ[occ_idx(i + 1, dj, k + 1)];
+                            let hi = occ[occ_idx(i + 1, dj + 1, k + 1)];
+                            if lo != hi {
+                                let want_min = !lo && hi;
+                                if let Some((yc, _)) = nearest_ray_endpoint(
+                                    stock.y_rays.ray(i, k),
+                                    base_y,
+                                    want_min,
+                                    max_dy,
+                                ) {
+                                    y_sum += yc;
+                                    y_cnt += 1;
+                                }
+                            }
+                        }
+                    }
+
+                    let vx = if x_cnt > 0 {
+                        (x_sum / f64::from(x_cnt))
+                            .clamp(base_x - 0.55 * stock.dx_mm, base_x + 0.55 * stock.dx_mm)
+                    } else {
+                        base_x
+                    };
+                    let vy = if y_cnt > 0 {
+                        (y_sum / f64::from(y_cnt))
+                            .clamp(base_y - 0.55 * stock.dy_mm, base_y + 0.55 * stock.dy_mm)
+                    } else {
+                        base_y
+                    };
+                    let vz = if z_cnt > 0 {
+                        (z_sum / f64::from(z_cnt))
+                            .clamp(base_z - 0.55 * stock.dz_mm, base_z + 0.55 * stock.dz_mm)
+                    } else {
+                        base_z
+                    };
+                    slice[row + di] = [vx as f32, vy as f32, vz as f32];
+                }
             }
-        }
-    }
+        });
 
     // 3. Emit outward-oriented quads on all sign-changing voxel boundaries
     let mut mesh = SimStockMesh {

@@ -320,7 +320,10 @@ impl VectorImportModalState {
             .default_width(520.0)
             .show(egui_ctx, |ui| {
                 ui.horizontal_wrapped(|ui| {
-                    if ui.button("Browse .dxf / .svg…").clicked()
+                    if ui
+                        .button("Browse .dxf / .svg…")
+                        .on_hover_text("Choose a 2D AutoCAD DXF or SVG vector drawing file from disk")
+                        .clicked()
                         && let Some(path) = rfd::FileDialog::new()
                             .add_filter(
                                 "2D Vector Drawings (.dxf, .svg)",
@@ -331,11 +334,19 @@ impl VectorImportModalState {
                         self.load_from_disk_path(path);
                         self.recompute_preview(&setup_id, None);
                     }
-                    if ui.small_button("Sample Panel (.dxf)").clicked() {
+                    if ui
+                        .small_button("Sample Panel (.dxf)")
+                        .on_hover_text("Load the built-in electronics faceplate sample DXF for testing")
+                        .clicked()
+                    {
                         self.load_sample_dxf();
                         self.recompute_preview(&setup_id, None);
                     }
-                    if ui.small_button("Sample Emblem (.svg)").clicked() {
+                    if ui
+                        .small_button("Sample Emblem (.svg)")
+                        .on_hover_text("Load the built-in decorative emblem sample SVG for testing")
+                        .clicked()
+                    {
                         self.load_sample_svg();
                         self.recompute_preview(&setup_id, None);
                     }
@@ -348,7 +359,11 @@ impl VectorImportModalState {
                     .spacing([12.0, 6.0])
                     .show(ui, |ui| {
                         ui.label("Sketch Name:");
-                        if ui.text_edit_singleline(&mut self.sketch_name).changed() {
+                        if ui
+                            .text_edit_singleline(&mut self.sketch_name)
+                            .on_hover_text("Name for the imported 2D sketch layer")
+                            .changed()
+                        {
                             self.dirty_preview = true;
                         }
                         ui.end_row();
@@ -361,12 +376,15 @@ impl VectorImportModalState {
                                     for r in SketchPlaneRef::ALL {
                                         if ui
                                             .selectable_value(&mut self.plane_ref, r, r.label())
+                                            .on_hover_text("Anchor imported 2D vectors on this Setup Z plane")
                                             .changed()
                                         {
                                             self.dirty_preview = true;
                                         }
                                     }
-                                });
+                                })
+                                .response
+                                .on_hover_text("Choose which Setup Z datum plane hosts the imported 2D sketch");
                             ui.label("ΔZ (mm):");
                             if ui
                                 .add(
@@ -374,6 +392,7 @@ impl VectorImportModalState {
                                         .speed(0.1)
                                         .range(-200.0..=200.0),
                                 )
+                                .on_hover_text("Additional Z offset above or below the selected Sketch Z Plane (mm)")
                                 .changed()
                             {
                                 self.dirty_preview = true;
@@ -388,12 +407,15 @@ impl VectorImportModalState {
                                 for u in UnitsChoice::ALL {
                                     if ui
                                         .selectable_value(&mut self.units_choice, u, u.label())
+                                        .on_hover_text("Interpret imported vector coordinates in these physical units")
                                         .changed()
                                     {
                                         self.dirty_preview = true;
                                     }
                                 }
-                            });
+                            })
+                            .response
+                            .on_hover_text("Select physical units or auto-detect scale for the DXF/SVG drawing");
                         ui.end_row();
 
                         if self.format == VectorAssetFormat::Svg {
@@ -407,6 +429,7 @@ impl VectorImportModalState {
                                             (self.svg_dpi - preset).abs() < 0.05,
                                             lbl,
                                         )
+                                        .on_hover_text(format!("Set SVG pixel-to-inch density to {preset} DPI"))
                                         .clicked()
                                     {
                                         self.svg_dpi = preset;
@@ -419,6 +442,7 @@ impl VectorImportModalState {
                                             .speed(1.0)
                                             .range(10.0..=1200.0),
                                     )
+                                    .on_hover_text("Custom SVG pixels-per-inch (DPI) used when SVG coordinates are unitless px")
                                     .changed()
                                 {
                                     self.dirty_preview = true;
@@ -433,6 +457,7 @@ impl VectorImportModalState {
                                 egui::Slider::new(&mut self.join_tolerance_mm, 0.0..=0.50)
                                     .fixed_decimals(3),
                             )
+                            .on_hover_text("Maximum gap between open segment endpoints automatically stitched into closed loops (mm)")
                             .changed()
                         {
                             self.dirty_preview = true;
@@ -444,7 +469,8 @@ impl VectorImportModalState {
                             egui::DragValue::new(&mut self.sheet_thickness_mm)
                                 .speed(0.25)
                                 .range(0.5..=200.0),
-                        );
+                        )
+                        .on_hover_text("Raw stock sheet thickness used when starting a Pure-2D job from this vector file (mm)");
                         ui.end_row();
                     });
 
@@ -454,7 +480,11 @@ impl VectorImportModalState {
                     ui.horizontal_wrapped(|ui| {
                         for lname in self.available_layers.clone() {
                             let mut on = self.enabled_layers.contains(&lname);
-                            if ui.checkbox(&mut on, &lname).changed() {
+                            if ui
+                                .checkbox(&mut on, &lname)
+                                .on_hover_text(format!("Include or exclude DXF layer '{lname}' in the imported sketch"))
+                                .changed()
+                            {
                                 if on {
                                     self.enabled_layers.insert(lname);
                                 } else {

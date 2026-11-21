@@ -114,6 +114,7 @@ impl ToolLibraryModalState {
                                             m.id.eq_ignore_ascii_case(mc.active_machine_id),
                                             format!("{}  {} ({} tools)", m.name, tag, m.tools.len()),
                                         )
+                                        .on_hover_text("Switch active project machine and view its tool library")
                                         .clicked()
                                     {
                                         actions.switch_machine_id = Some(m.id.clone());
@@ -121,7 +122,9 @@ impl ToolLibraryModalState {
                                         self.selected_preset_idx = 0;
                                     }
                                 }
-                            });
+                            })
+                            .response
+                            .on_hover_text("Select which CNC machine's tool library is shown and edited");
                         if is_readonly_builtin {
                             ui.colored_label(
                                 egui::Color32::from_rgb(250, 204, 21),
@@ -142,7 +145,11 @@ impl ToolLibraryModalState {
                                 "Custom (Editable)",
                             );
                         }
-                        if ui.button("Manage Machines...").clicked() {
+                        if ui
+                            .button("Manage Machines...")
+                            .on_hover_text("Open Machine Manager to configure machine travels, spindle limits, and custom profiles")
+                            .clicked()
+                        {
                             actions.open_machine_manager = true;
                         }
                     });
@@ -153,6 +160,8 @@ impl ToolLibraryModalState {
                 ui.horizontal_wrapped(|ui| {
                     if ui
                         .add_enabled(!is_readonly_builtin, egui::Button::new("+ New Cutter"))
+                        .on_hover_text("Create a new cutting tool in the active machine's library")
+                        .on_disabled_hover_text("Clone the built-in machine first to add custom cutters")
                         .clicked()
                     {
                         let next_n = global_lib
@@ -206,6 +215,8 @@ impl ToolLibraryModalState {
                             !is_readonly_builtin,
                             egui::Button::new("Import Fusion 360 (.json / .tools)…"),
                         )
+                        .on_hover_text("Import cutters and cutting presets from an Autodesk Fusion 360 JSON or .tools archive")
+                        .on_disabled_hover_text("Clone the built-in machine first to import tools")
                         .clicked()
                         && let Some(path) = rfd::FileDialog::new()
                             .add_filter("Fusion 360 Tool Library", &["json", "tools"])
@@ -243,6 +254,8 @@ impl ToolLibraryModalState {
                             !is_readonly_builtin,
                             egui::Button::new("Load .tools.toml…"),
                         )
+                        .on_hover_text("Replace the active library with tools loaded from a .tools.toml file")
+                        .on_disabled_hover_text("Clone the built-in machine first to load a custom tool library")
                         .clicked()
                         && let Some(path) = rfd::FileDialog::new()
                             .add_filter("ChipCutter Tool Library", &["toml"])
@@ -268,6 +281,8 @@ impl ToolLibraryModalState {
                                 !is_readonly_builtin,
                                 egui::Button::new("Save Machine Tools"),
                             )
+                            .on_hover_text("Persist changes to the active custom machine's tool library on disk")
+                            .on_disabled_hover_text("Built-in machines are read-only; clone the machine first to save edits")
                             .clicked()
                         {
                             actions.save_active_machine_tools = true;
@@ -276,7 +291,10 @@ impl ToolLibraryModalState {
                                     .to_string(),
                             );
                         }
-                    } else if ui.button("Save Global Library").clicked()
+                    } else if ui
+                        .button("Save Global Library")
+                        .on_hover_text("Save edits to the user's default global tool library file")
+                        .clicked()
                         && let Some(def_path) = default_global_tool_library_path()
                     {
                         match global_lib.save_to_path(&def_path) {
@@ -292,7 +310,10 @@ impl ToolLibraryModalState {
                         }
                     }
 
-                    if ui.button("Export .tools.toml As…").clicked()
+                    if ui
+                        .button("Export .tools.toml As…")
+                        .on_hover_text("Export the current tool library to a portable .tools.toml file")
+                        .clicked()
                         && let Some(path) = rfd::FileDialog::new()
                             .set_file_name("shop_tools.tools.toml")
                             .save_file()
@@ -336,7 +357,11 @@ impl ToolLibraryModalState {
                         .show(&mut cols[0], |ui| {
                             for (idx, t) in global_lib.tools.iter().enumerate() {
                                 let sel = idx == self.selected_tool_idx;
-                                if ui.selectable_label(sel, t.summary_label()).clicked() {
+                                if ui
+                                    .selectable_label(sel, t.summary_label())
+                                    .on_hover_text("Inspect or edit this cutting tool's geometry and material presets")
+                                    .clicked()
+                                {
                                     self.selected_tool_idx = idx;
                                     self.selected_preset_idx = 0;
                                 }
@@ -375,7 +400,8 @@ impl ToolLibraryModalState {
                                 .spacing([10.0, 4.0])
                                 .show(ui, |ui| {
                                     ui.label("Name:");
-                                    ui.text_edit_singleline(&mut tool.name);
+                                    ui.text_edit_singleline(&mut tool.name)
+                                        .on_hover_text("Descriptive name for this cutting tool (shown in Toolpath Browser and G-code comments)");
                                     ui.end_row();
 
                                     edit_offset_number_row(
@@ -436,6 +462,7 @@ impl ToolLibraryModalState {
                                             matches!(tool.geometry, CutterGeometry::FlatEndmill { .. }),
                                             "Flat Endmill",
                                         )
+                                        .on_hover_text("Square-corner flat-bottom milling cutter")
                                         .clicked()
                                     {
                                         tool.geometry = CutterGeometry::FlatEndmill {
@@ -454,6 +481,7 @@ impl ToolLibraryModalState {
                                             ),
                                             "Bull-Nose Endmill",
                                         )
+                                        .on_hover_text("Flat-bottom endmill with a defined corner fillet radius")
                                         .clicked()
                                     {
                                         tool.geometry = CutterGeometry::BullNoseEndmill {
@@ -470,6 +498,7 @@ impl ToolLibraryModalState {
                                             matches!(tool.geometry, CutterGeometry::BallEndmill { .. }),
                                             "Ball Endmill",
                                         )
+                                        .on_hover_text("Hemispherical ball-nose cutter for 3D surface finishing")
                                         .clicked()
                                     {
                                         tool.geometry = CutterGeometry::BallEndmill {
@@ -485,6 +514,7 @@ impl ToolLibraryModalState {
                                             matches!(tool.geometry, CutterGeometry::ChamferMill { .. }),
                                             "Chamfer / Spot Mill",
                                         )
+                                        .on_hover_text("Conical V-bit or chamfer cutter for bevels, spot drilling, and V-carving")
                                         .clicked()
                                     {
                                         tool.geometry = CutterGeometry::ChamferMill {
@@ -502,6 +532,7 @@ impl ToolLibraryModalState {
                                             matches!(tool.geometry, CutterGeometry::TwistDrill { .. }),
                                             "Twist Drill",
                                         )
+                                        .on_hover_text("Pointed twist drill for axial drilling and peck cycles")
                                         .clicked()
                                     {
                                         tool.geometry = CutterGeometry::TwistDrill {
@@ -518,6 +549,7 @@ impl ToolLibraryModalState {
                                             matches!(tool.geometry, CutterGeometry::FaceMill { .. }),
                                             "Face / Fly Cutter",
                                         )
+                                        .on_hover_text("Large-diameter indexable face mill or fly cutter for stock facing")
                                         .clicked()
                                     {
                                         tool.geometry = CutterGeometry::FaceMill {
@@ -530,7 +562,9 @@ impl ToolLibraryModalState {
                                             flutes: n,
                                         };
                                     }
-                                });
+                                })
+                                .response
+                                .on_hover_text("Select physical cutter profile geometry");
 
                             edit_cutter_geometry_fields(ui, &mut tool.geometry, unit);
                             edit_mm_drag(ui, "Holder Stickout:", &mut tool.stickout_length_mm, unit);
@@ -562,7 +596,11 @@ impl ToolLibraryModalState {
                             ui.separator();
                             ui.horizontal(|ui| {
                                 ui.strong("Material Cutting Presets");
-                                if ui.small_button("+ Preset").clicked() {
+                                if ui
+                                    .small_button("+ Preset")
+                                    .on_hover_text("Add a new material feeds-and-speeds preset for this cutter")
+                                    .clicked()
+                                {
                                     let d = tool.geometry.cutting_diameter_mm();
                                     let fl = tool.geometry.flutes();
                                     let pid = format!("preset_{}", tool.presets.len() + 1);
@@ -592,6 +630,7 @@ impl ToolLibraryModalState {
                                     for (pi, p) in tool.presets.iter().enumerate() {
                                         if ui
                                             .selectable_label(pi == self.selected_preset_idx, &p.name)
+                                            .on_hover_text("Select this material preset to edit its feeds, speeds, and cut depths")
                                             .clicked()
                                         {
                                             self.selected_preset_idx = pi;
@@ -603,10 +642,17 @@ impl ToolLibraryModalState {
                                 let flutes = tool.geometry.flutes();
                                 let preset = &mut tool.presets[self.selected_preset_idx];
 
-                                ui.checkbox(&mut self.lock_chipload, "Lock Chipload when editing RPM / Surface Speed");
+                                ui.checkbox(
+                                    &mut self.lock_chipload,
+                                    "Lock Chipload when editing RPM / Surface Speed",
+                                )
+                                .on_hover_text(
+                                    "When checked, changing RPM or surface speed automatically scales cutting feed to keep chipload per tooth constant",
+                                );
                                 ui.horizontal(|ui| {
                                     ui.label("Preset Name:");
-                                    ui.text_edit_singleline(&mut preset.name);
+                                    ui.text_edit_singleline(&mut preset.name)
+                                        .on_hover_text("Descriptive name for this material/cutting preset");
                                 });
 
                                 let mut rpm = preset.spindle_rpm;
@@ -619,6 +665,7 @@ impl ToolLibraryModalState {
                                                 .range(100.0..=60_000.0)
                                                 .suffix(" RPM"),
                                         )
+                                        .on_hover_text("Spindle rotation speed (RPM); linked to Surface Speed and Chipload")
                                         .changed()
                                     {
                                         preset.set_spindle_rpm(
@@ -641,6 +688,7 @@ impl ToolLibraryModalState {
                                                 .range(1.0..=5_000.0)
                                                 .suffix(format!(" {}", unit.surface_speed_suffix())),
                                         )
+                                        .on_hover_text("Cutter perimeter cutting speed (m/min or SFM); automatically updates RPM")
                                         .changed()
                                     {
                                         preset.set_surface_speed_m_min(
@@ -663,6 +711,7 @@ impl ToolLibraryModalState {
                                                 .range(1.0..=25_000.0)
                                                 .suffix(format!(" {}", unit.feed_suffix())),
                                         )
+                                        .on_hover_text("Linear XY cutting feed rate; automatically updates Chipload")
                                         .changed()
                                     {
                                         preset.set_cutting_feed_mm_min(
@@ -684,6 +733,7 @@ impl ToolLibraryModalState {
                                                 .range(0.0001..=5.0)
                                                 .suffix(format!(" {}", unit.chipload_suffix())),
                                         )
+                                        .on_hover_text("Chip thickness removed per flute per spindle revolution")
                                         .changed()
                                     {
                                         preset.set_chipload_mm_tooth(
@@ -709,6 +759,7 @@ impl ToolLibraryModalState {
                                 ui.horizontal(|ui| {
                                     if ui
                                         .checkbox(&mut has_opt, "Adaptive Optimal Load:")
+                                        .on_hover_text("Set a preset radial engagement target for 2D/3D Adaptive roughing")
                                         .changed()
                                     {
                                         preset.optimal_load_mm = if has_opt {
@@ -726,6 +777,7 @@ impl ToolLibraryModalState {
                                                     .range(0.01..=200.0)
                                                     .suffix(format!(" {}", unit.suffix())),
                                             )
+                                            .on_hover_text("Target radial stepover width for constant-engagement Adaptive clearing")
                                             .changed()
                                         {
                                             *opt_mm = unit.to_mm(disp);
@@ -753,6 +805,11 @@ fn edit_offset_number_row(ui: &mut egui::Ui, label: &str, tooltip: &str, value: 
 
 fn edit_mm_drag(ui: &mut egui::Ui, label: &str, val_mm: &mut f64, unit: DisplayUnit) {
     let mut disp = unit.from_mm(*val_mm);
+    let tip = format!(
+        "Edit {} in current tool units ({})",
+        label.trim_end_matches(':'),
+        unit.suffix()
+    );
     ui.horizontal(|ui| {
         ui.label(label);
         if ui
@@ -763,6 +820,7 @@ fn edit_mm_drag(ui: &mut egui::Ui, label: &str, val_mm: &mut f64, unit: DisplayU
                     .range(0.0..=1_000.0)
                     .suffix(format!(" {}", unit.suffix())),
             )
+            .on_hover_text(tip)
             .changed()
         {
             *val_mm = unit.to_mm(disp);
@@ -792,7 +850,8 @@ fn edit_cutter_geometry_fields(ui: &mut egui::Ui, geom: &mut CutterGeometry, uni
             edit_mm_drag(ui, "Shank Diameter:", shank_diameter_mm, unit);
             ui.horizontal(|ui| {
                 ui.label("Flutes:");
-                ui.add(egui::DragValue::new(flutes).range(1..=24));
+                ui.add(egui::DragValue::new(flutes).range(1..=24))
+                    .on_hover_text("Number of cutting flutes on the tool");
             });
         }
         CutterGeometry::BullNoseEndmill {
@@ -810,7 +869,8 @@ fn edit_cutter_geometry_fields(ui: &mut egui::Ui, geom: &mut CutterGeometry, uni
             edit_mm_drag(ui, "Shank Diameter:", shank_diameter_mm, unit);
             ui.horizontal(|ui| {
                 ui.label("Flutes:");
-                ui.add(egui::DragValue::new(flutes).range(1..=24));
+                ui.add(egui::DragValue::new(flutes).range(1..=24))
+                    .on_hover_text("Number of cutting flutes on the bull-nose cutter");
             });
         }
         CutterGeometry::ChamferMill {
@@ -830,14 +890,16 @@ fn edit_cutter_geometry_fields(ui: &mut egui::Ui, geom: &mut CutterGeometry, uni
                     egui::DragValue::new(included_angle_deg)
                         .range(10.0..=170.0)
                         .suffix("°"),
-                );
+                )
+                .on_hover_text("Full included cone angle of the chamfer mill or V-bit (e.g., 60 or 90 degrees)");
             });
             edit_mm_drag(ui, "Flute Length:", flute_length_mm, unit);
             edit_mm_drag(ui, "Overall Length:", overall_length_mm, unit);
             edit_mm_drag(ui, "Shank Diameter:", shank_diameter_mm, unit);
             ui.horizontal(|ui| {
                 ui.label("Flutes:");
-                ui.add(egui::DragValue::new(flutes).range(1..=24));
+                ui.add(egui::DragValue::new(flutes).range(1..=24))
+                    .on_hover_text("Number of cutting flutes on the chamfer/V-bit cutter");
             });
         }
         CutterGeometry::TwistDrill {
@@ -855,14 +917,16 @@ fn edit_cutter_geometry_fields(ui: &mut egui::Ui, geom: &mut CutterGeometry, uni
                     egui::DragValue::new(point_angle_deg)
                         .range(60.0..=160.0)
                         .suffix("°"),
-                );
+                )
+                .on_hover_text("Drill tip point angle (commonly 118 or 135 degrees)");
             });
             edit_mm_drag(ui, "Flute Length:", flute_length_mm, unit);
             edit_mm_drag(ui, "Overall Length:", overall_length_mm, unit);
             edit_mm_drag(ui, "Shank Diameter:", shank_diameter_mm, unit);
             ui.horizontal(|ui| {
                 ui.label("Flutes:");
-                ui.add(egui::DragValue::new(flutes).range(1..=8));
+                ui.add(egui::DragValue::new(flutes).range(1..=8))
+                    .on_hover_text("Number of flutes on the drill bit");
             });
         }
         CutterGeometry::FaceMill {
@@ -882,7 +946,8 @@ fn edit_cutter_geometry_fields(ui: &mut egui::Ui, geom: &mut CutterGeometry, uni
             edit_mm_drag(ui, "Arbor/Shank Dia:", shank_diameter_mm, unit);
             ui.horizontal(|ui| {
                 ui.label("Inserts / Flutes:");
-                ui.add(egui::DragValue::new(flutes).range(1..=16));
+                ui.add(egui::DragValue::new(flutes).range(1..=16))
+                    .on_hover_text("Number of carbide inserts or cutting teeth on the face mill");
             });
         }
     }
