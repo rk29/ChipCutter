@@ -1,0 +1,220 @@
+---
+layout: null
+---
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ChipCutter — Offline 2.5D, 3-Axis, V-Carve, &amp; 4th-Axis CAM</title>
+  <meta name="description" content="Open-source offline desktop 2.5D, 3-axis surface, V-carve, and 4th-axis rotary CAM application and headless G-code verification CLI written in Rust.">
+  <link rel="icon" type="image/png" href="{{ '/images/chipcutter-icon.png' | relative_url }}">
+  <link rel="stylesheet" href="{{ '/assets/site.css' | relative_url }}">
+</head>
+<body>
+  <header class="site-header">
+    <div class="nav-inner">
+      <a class="brand" href="{{ '/' | relative_url }}">
+        <img src="{{ '/images/chipcutter-icon.png' | relative_url }}" alt="ChipCutter logo" width="28" height="28">
+        <span>ChipCutter</span>
+      </a>
+      <nav class="site-nav" aria-label="Primary">
+        <a class="active" href="{{ '/' | relative_url }}">Home</a>
+        <a href="{{ '/samples/' | relative_url }}">Sample Gallery</a>
+        <a href="{{ '/tutorials/' | relative_url }}">Tutorials</a>
+        <a href="#install">Downloads</a>
+        <a class="nav-gh" href="https://github.com/rk29/ChipCutter" target="_blank" rel="noopener">GitHub</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <section class="hero">
+      <div class="container">
+        <span class="hero-badge">v0.12.0 · Offline Desktop &amp; CLI · MIT / Apache-2.0</span>
+        <h1>Offline 2.5D, 3-Axis, V-Carve, &amp; 4th-Axis CAM in Pure Rust</h1>
+        <p class="lead">
+          Turn 3D <strong>STEP</strong> solids, <strong>STL / OBJ / 3MF</strong> meshes,
+          <strong>DXF / SVG</strong> vectors, and parametric 2D sketches into arc-accurate
+          (<code>G2</code>/<code>G3</code>) and inverse-time 4-axis (<code>G93</code>) G-code—verified
+          with heightmap and Tri-Dexel volumetric simulation before a single chip is cut.
+        </p>
+        <div class="hero-actions">
+          <a class="btn btn-primary" href="https://github.com/rk29/ChipCutter/releases" target="_blank" rel="noopener">Download Prebuilt Releases</a>
+          <a class="btn" href="{{ '/samples/' | relative_url }}">Explore 15 Sample Projects</a>
+          <a class="btn" href="{{ '/tutorials/' | relative_url }}">Read 18 Illustrated Tutorials</a>
+        </div>
+
+        <figure class="hero-shot">
+          <img src="{{ '/images/chipcutter-gui.png' | relative_url }}" alt="ChipCutter desktop CAM interface simulating Simultaneous 4-Axis Helical Flute milling">
+          <figcaption class="hero-caption">
+            Simultaneous 4-Axis (<code>X+Y+Z+A</code>) off-centerline auto-tilted helical flute milling with real-time cylindrical stock removal and crash verification in Studio Dark theme.
+          </figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="container">
+        <div class="section-header">
+          <div>
+            <h2>Key Capabilities</h2>
+            <p class="section-sub">Zero cloud lock-in, zero copyleft dependencies, native on Linux, Windows, and macOS.</p>
+          </div>
+        </div>
+        <div class="grid-3">
+          <div class="card">
+            <h3>STEP B-Rep &amp; Associative Reload</h3>
+            <p>Imports ISO 10303 STEP solids with analytic plane, cylinder, cone, and arc classification, BVH 3D picking, non-destructive model transforms, and fuzzy <code>Ctrl+R</code> revision re-matching.</p>
+          </div>
+          <div class="card">
+            <h3>2.5D Milling &amp; Adaptive Rest</h3>
+            <p>Facing, 2D Contour with holding tabs, multi-island Pockets, constant-engagement 2D Adaptive trochoidal clearing, preceding-operation Rest Machining, Drilling/Helical Boring, and Edge Chamfering.</p>
+          </div>
+          <div class="card">
+            <h3>3-Axis Mesh Surfacing</h3>
+            <p>Pure-Rust exact <code>f64</code> Drop-Cutter &amp; Push-Cutter over STL, OBJ, and 3MF meshes for 3D Adaptive Roughing, 3D Waterline, Parallel Raster, Constant-Scallop, and Pencil Fillet Cleanup.</p>
+          </div>
+          <div class="card">
+            <h3>4th-Axis Rotary (A / B / C)</h3>
+            <p>Supports 2-Linear + Rotary cylindrical wrapping (<code>Z+X+A</code>), continuous spiral surfacing, Indexed <code>3+1</code> multi-face milling, and Simultaneous 4-Axis (<code>X+Y+Z+A</code>) with <code>G93</code> inverse-time feeds.</p>
+          </div>
+          <div class="card">
+            <h3>Heightmap &amp; Tri-Dexel Simulation</h3>
+            <p>Switch between fast 2.5D Heightmap and full 3D Tri-Dexel volumetric stock simulation with quantitative error volume, RMS/MAE/P95/P99 surface deviation metrics, Error Heatmap, and a mandatory 5-rule crash gate.</p>
+          </div>
+          <div class="card">
+            <h3>V-Carve, Pure-2D, &amp; Machines</h3>
+            <p>3D medial-axis V-carving with two-stage flat clearance and mated Male V-Inlays, DXF/SVG vector jobs, TrueType + Hershey typography, built-in machine profiles, Fusion 360 tool import, and portable <code>.chipz</code> bundles.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="container">
+        <div class="section-header">
+          <div>
+            <h2>Illustrated Sample Projects Gallery</h2>
+            <p class="section-sub">Preview all 15 built-in projects—including progressive simulation screenshots after every Setup and Operation.</p>
+          </div>
+          <a class="btn" href="{{ '/samples/' | relative_url }}">View All 15 Samples -></a>
+        </div>
+        <div class="grid-3">
+          <a class="card sample-card" href="{{ '/samples/rotary-4axis.html' | relative_url }}">
+            <img src="{{ '/images/samples/rotary-4axis/thumb.png' | relative_url }}" alt="Simultaneous 4-Axis Helical Flute thumbnail" loading="lazy">
+            <div class="sample-card-body">
+              <span class="sample-tag">4th-Axis · 2 Ops</span>
+              <h3>Simultaneous 4-Axis Helical Flute</h3>
+              <p>Off-centerline auto-tilted <code>X+Y+Z+A</code> roughing and finishing on a 3-start helical shaft.</p>
+            </div>
+          </a>
+          <a class="card sample-card" href="{{ '/samples/cam-torture.html' | relative_url }}">
+            <img src="{{ '/images/samples/cam-torture/thumb.png' | relative_url }}" alt="CAM Torture Block thumbnail" loading="lazy">
+            <div class="sample-card-body">
+              <span class="sample-tag">3D STEP · 8 Ops</span>
+              <h3>CAM Torture Block</h3>
+              <p>Flagship prismatic STEP benchmark covering Facing, Pockets, Helical Bore, Drills, Tabs, and Chamfer.</p>
+            </div>
+          </a>
+          <a class="card sample-card" href="{{ '/samples/mesh-dome.html' | relative_url }}">
+            <img src="{{ '/images/samples/mesh-dome/thumb.png' | relative_url }}" alt="Sculpted Dome STL thumbnail" loading="lazy">
+            <div class="sample-card-body">
+              <span class="sample-tag">3D STL · 3 Ops</span>
+              <h3>Sculpted Dome Mesh</h3>
+              <p>Watertight STL hemisphere machined with 3D Adaptive, Waterline Semi-Finish, and Pencil Cleanup.</p>
+            </div>
+          </a>
+          <a class="card sample-card" href="{{ '/samples/vcarve.html' | relative_url }}">
+            <img src="{{ '/images/samples/vcarve/thumb.png' | relative_url }}" alt="V-Carve Sign & Male Inlay thumbnail" loading="lazy">
+            <div class="sample-card-body">
+              <span class="sample-tag">V-Carve · 2 Setups · 4 Ops</span>
+              <h3>V-Carve Sign &amp; Mated Male Inlay</h3>
+              <p>Two-stage Flat + 60° V-Bit female plaque paired with a mirrored G55 Male V-Inlay plug.</p>
+            </div>
+          </a>
+          <a class="card sample-card" href="{{ '/samples/rotary-shaft.html' | relative_url }}">
+            <img src="{{ '/images/samples/rotary-shaft/thumb.png' | relative_url }}" alt="Rotary Indexed Shaft thumbnail" loading="lazy">
+            <div class="sample-card-body">
+              <span class="sample-tag">4th-Axis · 5 Ops</span>
+              <h3>Rotary Indexed Shaft (3+1)</h3>
+              <p>Continuous spiral collar &amp; 3-lobe cam surfacing plus 4-sided indexed wrenching flats (0°–270°).</p>
+            </div>
+          </a>
+          <a class="card sample-card" href="{{ '/samples/pure-2d.html' | relative_url }}">
+            <img src="{{ '/images/samples/pure-2d/thumb.png' | relative_url }}" alt="Pure-2D Router Front Panel thumbnail" loading="lazy">
+            <div class="sample-card-body">
+              <span class="sample-tag">Pure-2D DXF · 4 Ops</span>
+              <h3>Pure-2D Router Front Panel</h3>
+              <p>Zero-STEP multi-layer DXF faceplate with mounting holes, island display recess, slot, and tabs.</p>
+            </div>
+          </a>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="install">
+      <div class="container">
+        <div class="section-header">
+          <div>
+            <h2>Download &amp; Install</h2>
+            <p class="section-sub">Prebuilt desktop apps and headless CLI binaries are published with SHA-256 checksums on <a href="https://github.com/rk29/ChipCutter/releases" target="_blank" rel="noopener">GitHub Releases</a>.</p>
+          </div>
+        </div>
+        <div class="install-grid">
+          <div class="card install-card">
+            <h3>Linux (Flatpak &amp; CLI)</h3>
+            <p>Sandboxed <code>x86_64</code> desktop + CLI Flatpak bundle or standalone CLI tarball.</p>
+            <pre><code>flatpak install --user ChipCutter-0.12.0-linux-x86_64.flatpak
+flatpak run io.github.rk29.ChipCutter</code></pre>
+          </div>
+          <div class="card install-card">
+            <h3>Windows (x86_64)</h3>
+            <p>Install via <code>.msi</code> (with <code>.chip.toml</code>/<code>.chipz</code> associations) or portable <code>.zip</code>.</p>
+            <pre><code># Run desktop GUI or headless CLI:
+chip-gui.exe --sample rotary-4axis
+chipcutter.exe --version</code></pre>
+          </div>
+          <div class="card install-card">
+            <h3>macOS (Universal2)</h3>
+            <p>Native Apple Silicon (<code>arm64</code>) + Intel (<code>x86_64</code>) <code>.dmg</code> app bundle.</p>
+            <pre><code># Drag ChipCutter.app into Applications
+# Optional CLI symlink:
+ln -s /Applications/ChipCutter.app/Contents/MacOS/chipcutter /usr/local/bin/chipcutter</code></pre>
+          </div>
+          <div class="card install-card">
+            <h3>Build from Source</h3>
+            <p>Requires Rust 1.85+ (Edition 2024). Launch any built-in sample directly:</p>
+            <pre><code>git clone https://github.com/rk29/ChipCutter.git
+cd ChipCutter
+cargo run --release -p chip-gui -- --sample rotary-4axis</code></pre>
+          </div>
+        </div>
+
+        <div class="disclaimer">
+          <strong>Safety &amp; Alpha Notice:</strong> ChipCutter is alpha-quality personal open-source software. Always verify <code>0 Crashes</code> in 3D simulation, inspect generated G-code, confirm physical <code>G54</code> zero and workholding clearances, and perform an air-cut before machining.
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="footer-inner">
+      <p>
+        <strong>ChipCutter</strong> — Open-source offline desktop CAM &amp; G-code verification suite.
+        Licensed under <a href="https://github.com/rk29/ChipCutter/blob/main/LICENSE-MIT">MIT</a> or
+        <a href="https://github.com/rk29/ChipCutter/blob/main/LICENSE-APACHE">Apache-2.0</a>.
+      </p>
+      <p class="footer-links">
+        <a href="{{ '/samples/' | relative_url }}">Sample Gallery</a>
+        <span>·</span>
+        <a href="{{ '/tutorials/' | relative_url }}">Tutorials</a>
+        <span>·</span>
+        <a href="https://github.com/rk29/ChipCutter/releases">Releases</a>
+        <span>·</span>
+        <a href="https://github.com/rk29/ChipCutter">Source Code</a>
+      </p>
+    </div>
+  </footer>
+</body>
+</html>

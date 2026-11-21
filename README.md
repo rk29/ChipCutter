@@ -4,7 +4,9 @@
 
 It turns 3D **STEP** B-Rep CAD solids (`AP203` / `AP214` / `AP242`), 3D triangle meshes (**STL**, **OBJ**, **3MF**), 2D **DXF / SVG** vector drawings, and parametric 2D sketches & typography into physically verified, arc-accurate (`G2`/`G3`) and inverse-time 4-axis (`G93`) CNC milling, routing, engraving, surfacing, and rotary G-code—without external CAD build dependencies, cloud accounts, or copyleft libraries.
 
-![ChipCutter Desktop CAM Interface](docs/images/chipcutter-gui.png)
+![ChipCutter Desktop CAM Interface — Simultaneous 4-Axis Helical Flute](docs/images/chipcutter-gui.png)
+
+> **Project Website & Illustrated Docs:** [**https://rk29.github.io/ChipCutter/**](https://rk29.github.io/ChipCutter/) · [**Sample Projects Gallery**](docs/samples/README.md) · [**Tutorials (00–17)**](docs/tutorials/README.md)
 
 ---
 
