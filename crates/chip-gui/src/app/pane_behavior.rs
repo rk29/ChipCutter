@@ -1127,6 +1127,23 @@ impl ChipCutterApp {
             self.welcome_modal.open = modal == CaptureModal::Welcome;
             self.sample_gallery_modal.open = modal == CaptureModal::SampleGallery;
             self.tool_library_modal.open = modal == CaptureModal::ToolLibrary;
+            if modal == CaptureModal::ToolLibrary
+                && let InspectorFocus::Operation { setup_idx, op_idx } = self.inspector_focus
+                && let Some(op_tool_id) = self
+                    .project
+                    .setups
+                    .get(setup_idx)
+                    .and_then(|s| s.operations.get(op_idx))
+                    .and_then(|op| op.tool_id.as_ref())
+                && let Some(idx) = self
+                    .global_tools
+                    .tools
+                    .iter()
+                    .position(|t| &t.id == op_tool_id)
+            {
+                self.tool_library_modal.selected_tool_idx = idx;
+                self.tool_library_modal.selected_preset_idx = 0;
+            }
             if modal == CaptureModal::Machines {
                 let mid = self.project.effective_machine_id().to_string();
                 self.machine_manager_modal

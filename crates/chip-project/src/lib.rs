@@ -29,14 +29,15 @@ pub use demos::{
     build_pure2d_router_panel_demo_project, build_relief_wave_mesh_project,
     build_revision_v1_demo_project, build_rotary_helical_flute_project,
     build_rotary_shaft_preview_project, build_rotary_wrapped_engraving_project,
-    build_sculpted_mesh_dome_project, build_tutorial_3d_adaptive_waterline_project,
-    build_tutorial_3d_surface_finishing_project, build_tutorial_16_tilted_step_project,
-    build_tutorial_16_yup_stl_project, build_tutorial_adaptive_rest_project,
-    build_tutorial_chamfer_trace_project, build_tutorial_contour_project,
-    build_tutorial_drill_bore_project, build_tutorial_facing_project,
-    build_tutorial_indexed_step_multiface_project, build_tutorial_pocket_project,
-    build_tutorial_rotary_4axis_flowline_project, build_tutorial_rotary_axial_parallel_project,
-    build_tutorial_vcarve_inlay_project, build_vcarve_sign_and_inlay_demo_project,
+    build_sculpted_mesh_dome_project, build_thread_mill_manifold_project,
+    build_tutorial_3d_adaptive_waterline_project, build_tutorial_3d_surface_finishing_project,
+    build_tutorial_16_tilted_step_project, build_tutorial_16_yup_stl_project,
+    build_tutorial_adaptive_rest_project, build_tutorial_chamfer_trace_project,
+    build_tutorial_contour_project, build_tutorial_drill_bore_project,
+    build_tutorial_facing_project, build_tutorial_indexed_step_multiface_project,
+    build_tutorial_pocket_project, build_tutorial_rotary_4axis_flowline_project,
+    build_tutorial_rotary_axial_parallel_project, build_tutorial_vcarve_inlay_project,
+    build_vcarve_sign_and_inlay_demo_project,
 };
 pub use dispatcher::{
     BatchGenerationReport, DispatcherEvent, JobDispatcher, generate_project_blocking,
@@ -2920,6 +2921,72 @@ sha256 = "abc"
             } else {
                 assert!(gcode.contains("T9 M6\nG43 H9"));
             }
+        }
+    }
+
+    #[test]
+    fn milestone_47_thread_mill_manifold_generates_and_simulates_cleanly_in_heightmap_and_tridexel()
+    {
+        use chip_cad::sample_threaded_manifold_step;
+        use chip_sim::{SimEngineKind, SimResolution};
+
+        let step = sample_threaded_manifold_step().unwrap();
+        let doc = MonstertruckKernel
+            .load_step_bytes(
+                "18-threaded-manifold.step",
+                step.as_bytes(),
+                DEFAULT_TESS_CHORD_TOL_MM,
+            )
+            .unwrap();
+        let sha = compute_sha256_hex(step.as_bytes());
+        let starter = default_starter_tool_library();
+
+        let mut proj = build_thread_mill_manifold_project(
+            &doc,
+            "18-threaded-manifold.step".to_string(),
+            &sha,
+            &starter.tools,
+        );
+        assert_eq!(proj.setups[0].operations.len(), 6);
+
+        let val = validate_project(&proj, None, Some(&doc));
+        assert!(
+            val.is_valid(),
+            "thread-mill manifold validation errors: {:?}",
+            val.diagnostics
+        );
+
+        let mut cache = ToolpathCache::new(32);
+        let batch = generate_project_blocking(&mut proj, &doc, &mut cache, 1);
+        assert!(
+            batch.is_ok(),
+            "thread-mill manifold generation errors: {:?}",
+            batch.errors
+        );
+        assert_eq!(batch.generated.len(), 6);
+
+        for engine in [SimEngineKind::Heightmap, SimEngineKind::TriDexel] {
+            let sim = simulate_project_setup_with_engine(
+                &SetupSimRequest {
+                    project: &proj,
+                    setup_idx: 0,
+                    cad_doc: &doc,
+                    cad_revision: 1,
+                    cache: &cache,
+                    kinematics: resolve_kinematics_for_key("linuxcnc", None),
+                    resolution: SimResolution::Standard,
+                    cancel: None,
+                },
+                engine,
+            )
+            .unwrap();
+
+            assert_eq!(
+                sim.critical_error_count(),
+                0,
+                "{engine:?}: thread-mill manifold must have 0 critical crashes/gouges, got: {:#?}",
+                sim.diagnostics
+            );
         }
     }
 }

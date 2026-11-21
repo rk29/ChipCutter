@@ -3,7 +3,7 @@
 Welcome to the **ChipCutter Tutorials** library. Each tutorial is a self-contained, illustrated Markdown walkthrough that takes you from a starter 3D **STEP** solid, **DXF/SVG** drawing, or built-in **2D Sketch** all the way through setup, toolpath generation (`Ctrl+G`), 3D heightmap simulation, and safety-verified **GRBL / FluidNC** and **LinuxCNC** G-code.
 
 > [!TIP]
-> Want to browse finished visual previews of all 15 built-in projects first? Visit the [**Illustrated Sample Projects Gallery**](../samples/README.md) with thumbnails and operation-by-operation simulation screenshots.
+> Want to browse finished visual previews of all 16 built-in projects first? Visit the [**Illustrated Sample Projects Gallery**](../samples/README.md) with thumbnails and operation-by-operation simulation screenshots.
 
 > [!WARNING]
 > **CNC Machine Safety First:** Simulation checks toolpaths against modeled stock and target B-Rep geometry, but it does **not** know where your clamps, vise jaws, or spoilboard fasteners sit. Always verify `0 Crashes` in ChipCutter's 3D Simulation, double-check your physical `G54` zero on the machine, and run an air-cut or single-block dry run on any new program.
@@ -45,6 +45,7 @@ Work through the guides in order if you are new to ChipCutter, or jump directly 
 | 15 | [**Machine Definitions, Per-Machine Tool Sets, & Sharing**](15-machine-definitions-tool-sets.md) | 7 built-in read-only profiles (**Generic 3/4-Axis CNC Mill**, **Milo v1.5**, **Milo v2.0**, **Voron Cascade**, **Makera Carvera**, **Carvera Air**, **Carvera Z1**), upgrade-safe cloning, per-machine tool libraries, `.machine.toml` export/import, envelope/RPM diagnostics | [`machines/*.machine.toml`](../../machines/) | **Available** |
 | 16 | [**Rotating, Laying Flat, Scaling, & Moving STEP & STL Models**](16-model-orientation-positioning.md) | Non-destructive `ModelTransform` (`Y-Up -> Z-Up`, `Lay Flat on Clicked Face…`, uniform/non-uniform `Scale` & `Target Size`, `Center XY`, `Drop Bottom to Z=0`, preserved across `Ctrl+R`), Mesh Import orientation, Setup WCS (`Z & X`, `Flip +Z`, `Fine Z Rot`, Op-2 `G55` flip), & `chipcutter transform-model` | [`assets/16-yup-bracket.stl`](assets/16-yup-bracket.stl) & [`assets/16-tilted-bracket.step`](assets/16-tilted-bracket.step) | **Available** |
 | 17 | [**Tri-Dexel Volumetric Simulation & Quantitative Error-Volume Analysis**](17-tridexel-simulation-error-metrics.md) | Selectable **Heightmap (Fast)** vs. **Tri-Dexel (Volumetric 3D)** simulation, signed **Error Heatmap** (`Red` gouge / `Green` ±tol / `Blue` excess), **Total / Excess / Gouge Volume**, **RMS / MAE / Bias / P95 / P99 / In-Tol %**, 1-click **`Locate`**, **Per-Operation Error Progression**, & `chipcutter simulate --engine tri-dexel --report` | `CAM Torture Block` & `Sculpted Dome (STL Mesh)` (Sample Gallery) | **Available** |
+| 18 | [**Helical Thread Milling (Internal Holes & External Bosses)**](18-thread-milling.md) | Single-point & multi-form `ThreadMill` cutters, ISO Metric (`M8 × 1.25`, `M12 × 1.75`) & Unified (`1/4-20 UNC`) presets + tap-drill guidance, bottom-up `G3` vs. top-down `G2` climb kinematics, equal-area radial passes, spring passes, pitch-diameter offset, centerline feed compensation, Tri-Dexel undercut grooves, & GRBL/LinuxCNC posting | [`assets/18-threaded-manifold.step`](assets/18-threaded-manifold.step) (`80×60×20 mm` manifold with M8, 1/4-20 UNC, & M12 boss) | **Available** |
 
 ---
 
@@ -70,6 +71,7 @@ Each tutorial starts from an **empty project** (or a clean seeded revision) and 
 | [`14-bracket-v2.step`](assets/14-bracket-v2.step) | `92 × 70 × 20 mm` Revision v2 bracket (resized pocket, shifted bore/hole, 1 deleted hole) | `chipcutter generate-sample-step <out.step> --tutorial 14-reload-v2` |
 | [`16-yup-bracket.stl`](assets/16-yup-bracket.stl) | Watertight `60 × 40 × 18 mm` sculpted mounting boss exported **Y-up** & off-origin (`STL`) | `chipcutter generate-sample-step <out.stl> --tutorial 16-orient-stl` |
 | [`16-tilted-bracket.step`](assets/16-tilted-bracket.step) | `90 × 70 × 20 mm` prismatic bracket tilted `30° X / 25° Z` for Setup WCS & Op-2 flip | `chipcutter generate-sample-step <out.step> --tutorial 16-orient-step` |
+| [`18-threaded-manifold.step`](assets/18-threaded-manifold.step) | `80 × 60 × 20 mm` aluminum manifold (2× `Ø6.80 mm` M8 pilots, 2× `Ø5.11 mm` 1/4-20 UNC pilots, 1× proud `Ø12.0 mm` boss) | `chipcutter generate-sample-step <out.step> --tutorial 18-thread-milling` |
 
 You can launch any starter STEP, mesh, or DXF model directly into an empty ChipCutter workspace:
 

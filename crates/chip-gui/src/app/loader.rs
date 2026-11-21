@@ -8,7 +8,7 @@ use chip_cad::{
     CadDocument, CadPicker, MeshUnitKind, TopologyGraph, sample_cam_torture_block_step,
     sample_helical_flute_shaft_stl_bytes, sample_machined_plate_step,
     sample_multi_feature_bracket_step, sample_relief_wave_obj_text, sample_revised_part_pair_step,
-    sample_rotary_shaft_stl_bytes, sample_sculpted_dome_stl_bytes,
+    sample_rotary_shaft_stl_bytes, sample_sculpted_dome_stl_bytes, sample_threaded_manifold_step,
 };
 use chip_project::{
     ModelEntry, OperationReloadOutcome, ProjectDocument, build_adaptive_rest_demo_project,
@@ -16,9 +16,9 @@ use chip_project::{
     build_pure2d_router_panel_demo_project, build_relief_wave_mesh_project,
     build_revision_v1_demo_project, build_rotary_helical_flute_project,
     build_rotary_shaft_preview_project, build_rotary_wrapped_engraving_project,
-    build_sculpted_mesh_dome_project, compute_sha256_hex, create_private_temp_extract_dir,
-    export_chipz_bundle, external_or_suspicious_assets_referenced, is_chipz_path,
-    load_model_bytes_cad_doc, portable_model_path, rebind_project_to_reloaded_cad,
+    build_sculpted_mesh_dome_project, build_thread_mill_manifold_project, compute_sha256_hex,
+    create_private_temp_extract_dir, export_chipz_bundle, external_or_suspicious_assets_referenced,
+    is_chipz_path, load_model_bytes_cad_doc, portable_model_path, rebind_project_to_reloaded_cad,
     resolve_model_path, unpack_chipz_bundle,
 };
 
@@ -39,6 +39,7 @@ pub(crate) enum LoadPurpose {
     SeedReliefWaveMesh,
     SeedRotaryIndexedShaft,
     SeedRotaryHelicalFlute,
+    SeedThreadMillManifold,
     ReloadRebind { update_path: bool },
 }
 
@@ -694,6 +695,34 @@ impl ChipCutterApp {
         });
     }
 
+    pub(crate) fn spawn_thread_mill_manifold_load(&mut self, egui_ctx: egui::Context) {
+        let generation = self.begin_model_load_generation();
+        self.logs.push(
+            "Generating Threaded Manifold Block STEP fixture (M8×1.25, 1/4-20 UNC, External M12×1.75)…"
+                .to_string(),
+        );
+        let tx = self.job_tx.clone();
+        rayon::spawn(move || {
+            let t0 = Instant::now();
+            let res = match sample_threaded_manifold_step() {
+                Ok(step_str) => parse_step_bytes_job(
+                    generation,
+                    "18-threaded-manifold.step".to_string(),
+                    step_str.into_bytes(),
+                    None,
+                    LoadPurpose::SeedThreadMillManifold,
+                    t0,
+                ),
+                Err(e) => LoadJobResult::Failed {
+                    generation,
+                    error: e.to_string(),
+                },
+            };
+            let _ = tx.send(res);
+            egui_ctx.request_repaint();
+        });
+    }
+
     pub fn load_rotary_wrapped_engraving_demo(&mut self, egui_ctx: &egui::Context) {
         self.prepare_for_project_replacement(None, None);
         self.project_file_path = None;
@@ -1169,6 +1198,27 @@ impl ChipCutterApp {
                 self.op_tab = OperationTab::Passes;
                 self.show_27pt_dots = false;
             }
+            LoadPurpose::SeedThreadMillManifold => {
+                self.prepare_for_project_replacement(None, None);
+                self.project_file_path = None;
+                self.project.machine_id = None;
+                self.sync_active_machine_tools();
+                self.project = build_thread_mill_manifold_project(
+                    &doc,
+                    doc.source_name.clone(),
+                    &sha256_hex,
+                    &self.global_tools.tools,
+                );
+                self.sync_active_machine_tools();
+                if self.project.setups[0].operations.len() > 3 {
+                    self.inspector_focus = InspectorFocus::Operation {
+                        setup_idx: 0,
+                        op_idx: 3,
+                    };
+                    self.op_tab = OperationTab::Passes;
+                }
+                self.show_27pt_dots = false;
+            }
             LoadPurpose::FreshImport { update_model_entry } => {
                 self.sim_panel.reset_for_new_project();
                 self.gcode_panel.invalidate_preview();
@@ -1284,6 +1334,7 @@ impl ChipCutterApp {
                 | LoadPurpose::SeedReliefWaveMesh
                 | LoadPurpose::SeedRotaryIndexedShaft
                 | LoadPurpose::SeedRotaryHelicalFlute
+                | LoadPurpose::SeedThreadMillManifold
         ) {
             self.auto_sim_after_gen = true;
             self.trigger_generate_dirty(None, None);

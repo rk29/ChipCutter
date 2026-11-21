@@ -170,4 +170,5 @@ jq '.setups[0].error_report | {
 ## Navigation
 
 - **Previous:** [Tutorial 16 — Rotating, Laying Flat, Scaling, & Moving STEP & STL Models](16-model-orientation-positioning.md)
-- **Index:** [All Tutorials](README.md) — you have completed the entire ChipCutter `00`–`17` curriculum!
+- **Next:** [Tutorial 18 — Helical Thread Milling (Internal Holes & External Bosses)](18-thread-milling.md)
+- **Index:** [All Tutorials (`00`–`18`)](README.md)

@@ -186,7 +186,7 @@ enum Commands {
         /// Generate v2 of the Milestone 5 associative reload revision pair (resized pocket, moved/deleted holes).
         #[arg(long)]
         revision_v2: bool,
-        /// Generate a tutorial starter (`01-facing`, `02-contour`, `03-pocket`, `04-drill-bore`, `05-adaptive-rest`, `06-chamfer-trace`, `07-vcarve-medial`, `07-vcarve-inlay`, `13-pure2d-dxf`, `14-reload-v1`, `14-reload-v2`, etc.).
+        /// Generate a tutorial starter (`01-facing`, `02-contour`, `03-pocket`, `04-drill-bore`, `05-adaptive-rest`, `06-chamfer-trace`, `07-vcarve-medial`, `07-vcarve-inlay`, `13-pure2d-dxf`, `14-reload-v1`, `14-reload-v2`, `16-orient-stl`, `16-orient-step`, `18-thread-milling`, etc.).
         #[arg(long)]
         tutorial: Option<String>,
         /// Optional path to also write a seeded `.chip.toml` CAM project referencing `output`.

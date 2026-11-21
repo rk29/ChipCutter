@@ -582,6 +582,9 @@ impl ChipCutterApp {
             SampleProjectId::RotaryHelicalFlute => {
                 self.spawn_rotary_helical_flute_load(ctx.clone());
             }
+            SampleProjectId::ThreadMillManifold => {
+                self.spawn_thread_mill_manifold_load(ctx.clone());
+            }
         }
     }
 

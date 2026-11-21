@@ -289,7 +289,7 @@ Phase 12 focuses on desktop usability, visual consistency, responsiveness, and d
 
 ---
 
-## Phase 13 — Expanded Machine Definitions & Helical Thread Milling (Planned — M44–M47)
+## Phase 13 — Expanded Machine Definitions & Helical Thread Milling (Completed — M44–M47)
 
 Phase 13 expands ChipCutter's built-in desktop CNC machine catalog with four widely used maker/benchtop machines and introduces full end-to-end **Helical Thread Milling** (single-point and multi-form cutters, built-in ISO Metric & Unified thread tables, internal/external helical arc-in/out toolpaths, Tri-Dexel undercut simulation, Tool Library & Operation Inspector UI, a built-in sample project, and illustrated Tutorial 18):
 

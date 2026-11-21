@@ -1441,6 +1441,7 @@ impl ChipCutterApp {
             | CommandId::SampleRotaryIndexedShaft
             | CommandId::SampleRotaryWrappedEngraving
             | CommandId::SampleRotaryHelicalFlute
+            | CommandId::SampleThreadMillManifold
             | CommandId::SampleRevisionReloadV2 => {}
         }
     }

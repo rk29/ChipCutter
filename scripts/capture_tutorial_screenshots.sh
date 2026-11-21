@@ -2,7 +2,7 @@
 # Repeatable headless tutorial screenshot capture pipeline for ChipCutter Phases 4 & 6.
 #
 # Usage:
-#   ./scripts/capture_tutorial_screenshots.sh [--milestone 13|14|15|22|23|24|all] [--tutorial <slug>] [--theme dark|light] [--debug]
+#   ./scripts/capture_tutorial_screenshots.sh [--milestone 13|14|15|22|23|24|47|all] [--tutorial <slug>] [--theme dark|light] [--debug]
 #
 # Renders offscreen inside Xvfb using Vulkan Lavapipe (never opens windows on a host Wayland session).
 
@@ -47,15 +47,16 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+TARGET_DIR="${CARGO_TARGET_DIR:-$REPO_ROOT/target}"
 echo "[capture] Building chip-gui and chip-cli ($PROFILE)..."
 if [[ "$PROFILE" == "release" ]]; then
   cargo build --manifest-path "$REPO_ROOT/Cargo.toml" --release -p chip-gui -p chip-cli
-  BIN="$REPO_ROOT/target/release/chip-gui"
-  CLI_BIN="$REPO_ROOT/target/release/chipcutter"
+  BIN="$TARGET_DIR/release/chip-gui"
+  CLI_BIN="$TARGET_DIR/release/chipcutter"
 else
   cargo build --manifest-path "$REPO_ROOT/Cargo.toml" -p chip-gui -p chip-cli
-  BIN="$REPO_ROOT/target/debug/chip-gui"
-  CLI_BIN="$REPO_ROOT/target/debug/chipcutter"
+  BIN="$TARGET_DIR/debug/chip-gui"
+  CLI_BIN="$TARGET_DIR/debug/chipcutter"
 fi
 
 TMP_PROJ_DIR="$(mktemp -d "${TMPDIR:-/tmp}/chipcutter_tutorial_proj.XXXXXX")"
@@ -949,6 +950,65 @@ capture_14_associative_step_reload() {
     --capture-sim-progress 1.0
 }
 
+capture_18_thread_milling() {
+  local dir="docs/images/tutorials/18-thread-milling"
+  local step="$REPO_ROOT/docs/tutorials/assets/18-threaded-manifold.step"
+  local proj_full="$TMP_PROJ_DIR/18-thread-milling.chip.toml"
+
+  "$CLI_BIN" generate-sample-step "$step" --tutorial 18-thread-milling --project-out "$proj_full"
+
+  # 1. Tool Library Manager showing single-point ThreadMill cutters & relieved-neck schematic
+  capture_shot "$dir/01-thread-mill-tool-library.png" \
+    "$proj_full" \
+    --capture-focus op:3:tool \
+    --capture-modal tools
+
+  # 2. Internal M8 x 1.25 Thread Mill Passes tab (ISO Metric preset, Tap Drill, Bottom-Up G3 Climb, 2 radial + 1 spring, arc feed comp)
+  capture_shot "$dir/02-internal-m8-passes.png" \
+    "$proj_full" \
+    --capture-generate \
+    --capture-view iso \
+    --capture-focus op:3:passes \
+    --capture-isolate-op \
+    --capture-sim-stock false \
+    --capture-sim-cutter false
+
+  # 3. External M12 x 1.75 Boss Thread Passes tab (External Boss, Top-Down G2 Climb, external tangent arc-in/out)
+  capture_shot "$dir/03-external-m12-boss.png" \
+    "$proj_full" \
+    --capture-generate \
+    --capture-view iso \
+    --capture-focus op:5:passes \
+    --capture-isolate-op \
+    --capture-sim-stock false \
+    --capture-sim-cutter false
+
+  # 4. Tri-Dexel (Volumetric 3D) simulation showing helical undercut thread grooves & Verified Crash-Free
+  capture_shot "$dir/04-tridexel-undercut-sim.png" \
+    "$proj_full" \
+    --capture-generate \
+    --capture-view iso \
+    --capture-focus op:5:passes \
+    --capture-pane sim \
+    --capture-sim-engine tri-dexel \
+    --capture-sim-stock true \
+    --capture-sim-cutter true \
+    --capture-sim-progress 1.0
+
+  # 5. Verified LinuxCNC / GRBL helical G2/G3 G-code preview
+  capture_shot "$dir/05-gcode-helical-preview.png" \
+    "$proj_full" \
+    --capture-generate \
+    --capture-view iso \
+    --capture-focus op:3:passes \
+    --capture-pane gcode \
+    --capture-post linuxcnc \
+    --capture-sim-engine tri-dexel \
+    --capture-sim-stock true \
+    --capture-sim-cutter true \
+    --capture-sim-progress 1.0
+}
+
 if [[ -n "$TUTORIAL" ]]; then
   case "$TUTORIAL" in
     00-getting-started)
@@ -996,6 +1056,9 @@ if [[ -n "$TUTORIAL" ]]; then
     14-associative-step-reload)
       capture_14_associative_step_reload
       ;;
+    18-thread-milling)
+      capture_18_thread_milling
+      ;;
     *)
       echo "Unknown tutorial slug: $TUTORIAL" >&2
       exit 2
@@ -1030,6 +1093,9 @@ else
       capture_13_pure2d_dxf_svg_workflow
       capture_14_associative_step_reload
       ;;
+    47)
+      capture_18_thread_milling
+      ;;
     all)
       capture_00_getting_started
       capture_01_facing
@@ -1046,9 +1112,10 @@ else
       capture_12_simultaneous_4axis_milling
       capture_13_pure2d_dxf_svg_workflow
       capture_14_associative_step_reload
+      capture_18_thread_milling
       ;;
     *)
-      echo "Unsupported milestone: $MILESTONE (available: 13, 14, 15, 22, 23, 24, all)" >&2
+      echo "Unsupported milestone: $MILESTONE (available: 13, 14, 15, 22, 23, 24, 47, all)" >&2
       exit 2
       ;;
   esac

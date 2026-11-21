@@ -82,6 +82,7 @@ pub enum CommandId {
     SampleRotaryIndexedShaft,
     SampleRotaryWrappedEngraving,
     SampleRotaryHelicalFlute,
+    SampleThreadMillManifold,
     SampleRevisionReloadV2,
 }
 
@@ -522,6 +523,13 @@ pub const PALETTE_COMMANDS: &[PaletteEntry] = &[
         shortcut: None,
     },
     PaletteEntry {
+        id: CommandId::SampleThreadMillManifold,
+        category: "Samples",
+        label: "Sample: Load Threaded Manifold Block (Helical Thread Milling)",
+        keywords: "sample demo thread mill manifold m8 unc m12 internal external helix tap",
+        shortcut: None,
+    },
+    PaletteEntry {
         id: CommandId::SampleRevisionReloadV2,
         category: "Samples",
         label: "Sample: Associatively Reload CAD Revision v2",
@@ -543,6 +551,7 @@ impl CommandId {
             Self::SampleRotaryIndexedShaft => Some(SampleProjectId::RotaryIndexedShaft),
             Self::SampleRotaryWrappedEngraving => Some(SampleProjectId::RotaryWrappedEngraving),
             Self::SampleRotaryHelicalFlute => Some(SampleProjectId::RotaryHelicalFlute),
+            Self::SampleThreadMillManifold => Some(SampleProjectId::ThreadMillManifold),
             Self::SampleRevisionReloadV2 => Some(SampleProjectId::CadRevisionV2Reload),
             _ => None,
         }

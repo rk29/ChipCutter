@@ -41,8 +41,8 @@ layout: null
         </p>
         <div class="hero-actions">
           <a class="btn btn-primary" href="https://github.com/rk29/ChipCutter/releases" target="_blank" rel="noopener">Download Prebuilt Releases</a>
-          <a class="btn" href="{{ '/samples/' | relative_url }}">Explore 15 Sample Projects</a>
-          <a class="btn" href="{{ '/tutorials/' | relative_url }}">Read 18 Illustrated Tutorials</a>
+          <a class="btn" href="{{ '/samples/' | relative_url }}">Explore 16 Sample Projects</a>
+          <a class="btn" href="{{ '/tutorials/' | relative_url }}">Read 19 Illustrated Tutorials</a>
         </div>
 
         <figure class="hero-shot">
@@ -68,8 +68,8 @@ layout: null
             <p>Imports ISO 10303 STEP solids with analytic plane, cylinder, cone, and arc classification, interactive 3D picking, non-destructive model transforms, and associative <code>Ctrl+R</code> revision re-matching.</p>
           </div>
           <div class="card">
-            <h3>2.5D Milling &amp; Adaptive Rest</h3>
-            <p>Facing, 2D Contour with holding tabs, multi-island Pockets, constant-engagement 2D Adaptive trochoidal clearing, preceding-operation Rest Machining, Drilling/Helical Boring, and Edge Chamfering.</p>
+            <h3>2.5D Milling, Adaptive Rest, &amp; Thread Milling</h3>
+            <p>Facing, 2D Contour with holding tabs, multi-island Pockets, constant-engagement 2D Adaptive trochoidal clearing, preceding-operation Rest Machining, Drilling/Helical Boring, Edge Chamfering, and internal/external Helical Thread Milling (ISO Metric &amp; UNC/UNF presets).</p>
           </div>
           <div class="card">
             <h3>3-Axis Mesh Surfacing</h3>
@@ -96,9 +96,9 @@ layout: null
         <div class="section-header">
           <div>
             <h2>Illustrated Sample Projects Gallery</h2>
-            <p class="section-sub">Preview all 15 built-in projects—including progressive simulation screenshots after every Setup and Operation.</p>
+            <p class="section-sub">Preview all 16 built-in projects—including progressive simulation screenshots after every Setup and Operation.</p>
           </div>
-          <a class="btn" href="{{ '/samples/' | relative_url }}">View All 15 Samples -></a>
+          <a class="btn" href="{{ '/samples/' | relative_url }}">View All 16 Samples -></a>
         </div>
         <div class="grid-3">
           <a class="card sample-card" href="{{ '/samples/rotary-4axis.html' | relative_url }}">
@@ -107,6 +107,14 @@ layout: null
               <span class="sample-tag">4th-Axis · 2 Ops</span>
               <h3>Simultaneous 4-Axis Helical Flute</h3>
               <p>Off-centerline auto-tilted <code>X+Y+Z+A</code> roughing and finishing on a 3-start helical shaft.</p>
+            </div>
+          </a>
+          <a class="card sample-card" href="{{ '/samples/thread-mill.html' | relative_url }}">
+            <img src="{{ '/images/samples/thread-mill/thumb.png' | relative_url }}" alt="Threaded Manifold Block thumbnail" loading="lazy">
+            <div class="sample-card-body">
+              <span class="sample-tag">Thread Mill · 6 Ops</span>
+              <h3>Threaded Manifold Block</h3>
+              <p>Internal <code>M8×1.25</code> &amp; <code>1/4-20 UNC</code> holes and external <code>M12×1.75</code> boss thread milling with Tri-Dexel undercut verification.</p>
             </div>
           </a>
           <a class="card sample-card" href="{{ '/samples/cam-torture.html' | relative_url }}">

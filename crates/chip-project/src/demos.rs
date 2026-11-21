@@ -3950,3 +3950,356 @@ pub fn build_tutorial_16_tilted_step_project(
     proj.setups = vec![setup1, setup2];
     proj
 }
+
+/// Builds the Milestone 47 **Threaded Manifold Block** (`--sample thread-mill`) [`ProjectDocument`]
+/// on [`chip_cad::sample_threaded_manifold_step`] (`80 × 60 × 20 mm`, 6 operations in `G54`):
+/// 1. `Face Stock Top` (`Facing`, `T7` Ø38 mm Face Mill): decks raw billet from `Z = 21 -> 20 mm`.
+/// 2. `Clear Deck Around Boss` (`Pocket2D`, `T1` Ø6 mm Flat Endmill): clears open manifold deck
+///    `Z = 20 -> 12 mm` leaving the proud `Ø12.0 mm` circular boss standing cleanly.
+/// 3. `Bore Pilot Holes` (`DrillBore` / `HelicalBore`, `T3` 1/8" Flat Endmill): helically bores
+///    2× `Ø6.80 mm` (`M8 × 1.25`) and 2× `Ø5.11 mm` (`1/4-20 UNC`) through pilot holes.
+/// 4. `Internal M8 x 1.25 Thread Mill` (`ThreadMill`, `T9` Ø4.75 mm Single-Point): bottom-up climb
+///    (`G3`), 2 radial passes + 1 spring pass.
+/// 5. `Internal 1/4-20 UNC Thread Mill` (`ThreadMill`, `T9` Ø4.75 mm Single-Point): bottom-up climb
+///    (`G3`), 2 radial passes + 1 spring pass.
+/// 6. `External M12 x 1.75 Boss Thread` (`ThreadMill`, `T11` Ø8.0 mm Single-Point): top-down climb
+///    (`G2`) around the proud `Ø12.0 mm` boss, 2 radial passes + 1 spring pass.
+pub fn build_thread_mill_manifold_project(
+    doc: &CadDocument,
+    model_path: String,
+    sha256_hex: &str,
+    available_tools: &[Tool],
+) -> ProjectDocument {
+    use chip_cam::{ThreadCutDirection, ThreadFormKind, ThreadHandedness, ThreadMillParams};
+
+    let mut proj = ProjectDocument::new("Threaded Manifold Block (Helical Thread Milling)");
+    proj.models = vec![ModelEntry {
+        id: "model_1".to_string(),
+        path: model_path,
+        sha256: sha256_hex.to_string(),
+        unit_override: None,
+        transform: chip_cad::ModelTransform::IDENTITY,
+    }];
+
+    let mut setup = Setup::new(
+        "setup_1",
+        "Setup 1 — Threaded Manifold (G54)",
+        WorkOffsetSlot::G54,
+    );
+    setup.wcs.origin = WcsOriginMode::StockBoxPoint {
+        anchor: BoxAnchor27::TOP_FRONT_LEFT,
+    };
+    setup.stock = StockConfig::RelativeBox {
+        side_pos_x: ParamLength::from_mm(0.0),
+        side_neg_x: ParamLength::from_mm(0.0),
+        side_pos_y: ParamLength::from_mm(0.0),
+        side_neg_y: ParamLength::from_mm(0.0),
+        symmetric_xy: true,
+        top_offset_z: ParamLength::from_mm(1.0),
+        bottom_offset_z: ParamLength::from_mm(0.0),
+        sheet_thickness_z: ParamLength::from_mm(20.0),
+        round_increment_mm: None,
+    };
+
+    for t in available_tools {
+        proj.ensure_tool_embedded(t);
+    }
+
+    // Dedicated Ø8.0 mm single-point thread mill with 1.60 mm radial tooth height for coarse
+    // external M12 x 1.75 boss threads (keeps relieved neck Ø4.8 mm > 0.5 mm clear of boss OD).
+    let t11_ext_tm = Tool {
+        id: ToolId("t11_8mm_single_thread_mill".to_string()),
+        tool_number: 11,
+        length_offset_number: 11,
+        diameter_offset_number: 11,
+        name: "8.0mm 3FL 60° Single-Point Thread Mill (M10–M24 / Ext)".to_string(),
+        vendor: Some("Generic Carbide".to_string()),
+        product_id: None,
+        native_unit: DisplayUnit::Millimeter,
+        spindle_direction: SpindleDirection::Cw,
+        default_coolant: CoolantMode::Mist,
+        stickout_length_mm: 26.0,
+        geometry: CutterGeometry::ThreadMill {
+            diameter_mm: 8.0,
+            neck_diameter_mm: 4.8,
+            neck_length_mm: 18.0,
+            pitch_mm: 1.75,
+            teeth_count: 1,
+            thread_angle_deg: 60.0,
+            flute_length_mm: 2.0,
+            overall_length_mm: 55.0,
+            shank_diameter_mm: 8.0,
+            flutes: 3,
+        },
+        presets: vec![CuttingPreset::from_surface_speed(SurfaceSpeedPresetSpec {
+            id: "al6061_ext_thread",
+            name: "Aluminum 6061 - External Threading",
+            material: "Aluminum 6061",
+            diameter_mm: 8.0,
+            flutes: 3,
+            surface_speed_m_min: 190.0,
+            chipload_mm_tooth: 0.025,
+            default_stepdown_mm: 1.75,
+            default_stepover_mm: 0.6,
+            coolant_override: Some(CoolantMode::Mist),
+        })],
+    };
+    proj.ensure_tool_embedded(&t11_ext_tm);
+
+    let face_38mm = proj
+        .tools
+        .iter()
+        .find(|t| matches!(t.geometry, CutterGeometry::FaceMill { .. }))
+        .cloned();
+    let flat_6mm = proj
+        .tools
+        .iter()
+        .find(|t| {
+            matches!(
+                t.geometry,
+                CutterGeometry::FlatEndmill { diameter_mm, .. } if approx_eq(diameter_mm, 6.0, 0.1)
+            )
+        })
+        .cloned();
+    let flat_3175mm = proj
+        .tools
+        .iter()
+        .find(|t| {
+            matches!(
+                t.geometry,
+                CutterGeometry::FlatEndmill { diameter_mm, .. } if (2.5..4.5).contains(&diameter_mm)
+            )
+        })
+        .cloned();
+    let tm_475mm = proj
+        .tools
+        .iter()
+        .find(|t| {
+            matches!(
+                t.geometry,
+                CutterGeometry::ThreadMill {
+                    diameter_mm,
+                    teeth_count: 1,
+                    ..
+                } if (4.0..4.95).contains(&diameter_mm)
+            )
+        })
+        .cloned();
+
+    // Op 1: Face Stock Top (Z = 21 -> 20 mm)
+    if let Some(fm) = &face_38mm {
+        let mut op_face = Operation::new("op_1_face_top", "Face Stock Top", OperationKind::Facing);
+        op_face.tool_id = Some(fm.id.clone());
+        op_face.preset_id = fm.presets.first().map(|p| p.id.clone());
+        setup.operations.push(op_face);
+    }
+
+    // Op 2: Clear Manifold Deck Around Proud Ø12 mm Boss (Z = 20 -> 12 mm)
+    if let Some(deck_face) = doc.faces.iter().find(|f| {
+        matches!(
+            f.surface,
+            SurfaceKind::Plane { origin_mm, normal }
+            if normal.z > 0.99 && approx_eq(origin_mm.z, 12.0, 0.05)
+        )
+    }) && let Some(bind) = doc.bind_face(deck_face.id)
+        && let Some(em) = &flat_6mm
+    {
+        let mut op_deck = Operation::new(
+            "op_2_clear_boss_deck",
+            "Clear Deck Around Boss",
+            OperationKind::Pocket2D,
+        );
+        op_deck.tool_id = Some(em.id.clone());
+        op_deck.preset_id = em.presets.first().map(|p| p.id.clone());
+        op_deck.heights.top = HeightSpec::new(HeightReference::ModelTop, 0.0);
+        op_deck.heights.bottom = HeightSpec::new(HeightReference::FromSelection, 0.0);
+        op_deck.passes.multiple_depths = true;
+        op_deck.passes.max_stepdown = ParamLength::from_mm(4.0);
+        op_deck.passes.stock_to_leave_radial = ParamLength::from_mm(0.0);
+        op_deck.passes.stock_to_leave_axial = ParamLength::from_mm(0.0);
+        op_deck
+            .selections
+            .push(GeometrySelectionItem::PlanarFace { binding: bind });
+        setup.operations.push(op_deck);
+    }
+
+    // Collect Ø6.80 mm (M8) and Ø5.11 mm (1/4-20 UNC) pilot hole faces
+    let m8_hole_faces: Vec<_> = doc
+        .faces
+        .iter()
+        .find(|f| {
+            matches!(
+                f.surface,
+                SurfaceKind::Cylinder {
+                    radius_mm,
+                    is_internal: true,
+                    ..
+                } if approx_eq(radius_mm, 3.40, 0.03)
+            )
+        })
+        .map(|seed| find_same_diameter_holes(doc, seed.id, 1e-3, 1e-3))
+        .unwrap_or_default();
+
+    let unc_hole_faces: Vec<_> = doc
+        .faces
+        .iter()
+        .find(|f| {
+            matches!(
+                f.surface,
+                SurfaceKind::Cylinder {
+                    radius_mm,
+                    is_internal: true,
+                    ..
+                } if approx_eq(radius_mm, 2.555, 0.03)
+            )
+        })
+        .map(|seed| find_same_diameter_holes(doc, seed.id, 1e-3, 1e-3))
+        .unwrap_or_default();
+
+    // Op 3: Helical Bore all 4 Pilot Holes (2× Ø6.80 mm + 2× Ø5.11 mm) with T3 1/8" Flat Endmill
+    if let Some(em_small) = &flat_3175mm
+        && (!m8_hole_faces.is_empty() || !unc_hole_faces.is_empty())
+    {
+        let mut op_bore = Operation::new(
+            "op_3_bore_pilots",
+            "Bore Pilot Holes (Ø6.8 & Ø5.1 mm)",
+            OperationKind::DrillBore,
+        );
+        op_bore.tool_id = Some(em_small.id.clone());
+        op_bore.preset_id = em_small.presets.first().map(|p| p.id.clone());
+        op_bore.heights.top = HeightSpec::new(HeightReference::FromSelection, 0.0);
+        op_bore.heights.bottom = HeightSpec::new(HeightReference::FromSelection, 0.0);
+        op_bore.passes.multiple_depths = true;
+        op_bore.passes.max_stepdown = ParamLength::from_mm(4.0);
+        if let StrategyParams::DrillBore(p) = op_bore.strategy_mut() {
+            p.mode = HoleMachiningMode::HelicalBore;
+            p.bore_ramp_angle_deg = 4.0;
+            p.bore_finish_pass = true;
+            p.bore_finish_stepover = ParamLength::from_mm(0.15);
+            p.optimize_hole_order = true;
+        }
+        for &fid in m8_hole_faces.iter().chain(unc_hole_faces.iter()) {
+            if let Some(bind) = doc.bind_face(fid) {
+                op_bore
+                    .selections
+                    .push(GeometrySelectionItem::CylindricalHole { binding: bind });
+            }
+        }
+        setup.operations.push(op_bore);
+    }
+
+    // Op 4: Internal M8 x 1.25 Thread Mill (single-point, bottom-up climb G3, 2 radial + 1 spring)
+    if let Some(tm) = &tm_475mm
+        && !m8_hole_faces.is_empty()
+    {
+        let mut op_m8 = Operation::new(
+            "op_4_thread_m8",
+            "Internal M8 x 1.25 Thread Mill",
+            OperationKind::ThreadMill,
+        );
+        op_m8.tool_id = Some(tm.id.clone());
+        op_m8.preset_id = tm.presets.first().map(|p| p.id.clone());
+        op_m8.heights.top = HeightSpec::new(HeightReference::FromSelection, 0.0);
+        op_m8.heights.bottom = HeightSpec::new(HeightReference::FromSelection, 2.0);
+        op_m8.strategy = Some(StrategyParams::ThreadMill(ThreadMillParams {
+            form: ThreadFormKind::InternalHole,
+            handedness: ThreadHandedness::RightHand,
+            cut_direction: ThreadCutDirection::Climb,
+            standard_preset: Some("M8 x 1.25".to_string()),
+            major_diameter: ParamLength::from_mm(8.0),
+            pitch: ParamLength::from_mm(1.25),
+            pitch_diameter_offset: ParamLength::from_mm(0.0),
+            radial_passes: 2,
+            spring_passes: 1,
+            lead_in_clearance: ParamLength::from_mm(0.5),
+            compensate_centerline_feed: true,
+            optimize_hole_order: true,
+        }));
+        for &fid in &m8_hole_faces {
+            if let Some(bind) = doc.bind_face(fid) {
+                op_m8
+                    .selections
+                    .push(GeometrySelectionItem::CylindricalHole { binding: bind });
+            }
+        }
+        setup.operations.push(op_m8);
+    }
+
+    // Op 5: Internal 1/4-20 UNC Thread Mill (single-point, bottom-up climb G3, 2 radial + 1 spring)
+    if let Some(tm) = &tm_475mm
+        && !unc_hole_faces.is_empty()
+    {
+        let mut op_unc = Operation::new(
+            "op_5_thread_unc",
+            "Internal 1/4-20 UNC Thread Mill",
+            OperationKind::ThreadMill,
+        );
+        op_unc.tool_id = Some(tm.id.clone());
+        op_unc.preset_id = tm.presets.first().map(|p| p.id.clone());
+        op_unc.heights.top = HeightSpec::new(HeightReference::FromSelection, 0.0);
+        op_unc.heights.bottom = HeightSpec::new(HeightReference::FromSelection, 2.0);
+        op_unc.strategy = Some(StrategyParams::ThreadMill(ThreadMillParams {
+            form: ThreadFormKind::InternalHole,
+            handedness: ThreadHandedness::RightHand,
+            cut_direction: ThreadCutDirection::Climb,
+            standard_preset: Some("1/4-20 UNC".to_string()),
+            major_diameter: ParamLength::from_mm(6.35),
+            pitch: ParamLength::from_mm(1.27),
+            pitch_diameter_offset: ParamLength::from_mm(0.0),
+            radial_passes: 2,
+            spring_passes: 1,
+            lead_in_clearance: ParamLength::from_mm(0.5),
+            compensate_centerline_feed: true,
+            optimize_hole_order: true,
+        }));
+        for &fid in &unc_hole_faces {
+            if let Some(bind) = doc.bind_face(fid) {
+                op_unc
+                    .selections
+                    .push(GeometrySelectionItem::CylindricalHole { binding: bind });
+            }
+        }
+        setup.operations.push(op_unc);
+    }
+
+    // Op 6: External M12 x 1.75 Boss Thread (top-down climb G2, 2 radial + 1 spring)
+    if let Some(boss_top) = doc.faces.iter().find(|f| {
+        matches!(
+            f.surface,
+            SurfaceKind::Plane { origin_mm, normal }
+            if normal.z > 0.99 && approx_eq(origin_mm.z, 20.0, 0.05)
+        )
+    }) && let Some(bind) = doc.bind_face(boss_top.id)
+    {
+        let mut op_ext = Operation::new(
+            "op_6_thread_m12_boss",
+            "External M12 x 1.75 Boss Thread",
+            OperationKind::ThreadMill,
+        );
+        op_ext.tool_id = Some(t11_ext_tm.id.clone());
+        op_ext.preset_id = t11_ext_tm.presets.first().map(|p| p.id.clone());
+        op_ext.heights.top = HeightSpec::new(HeightReference::FromSelection, 0.0);
+        op_ext.heights.bottom = HeightSpec::new(HeightReference::FromSelection, 1.0);
+        op_ext.strategy = Some(StrategyParams::ThreadMill(ThreadMillParams {
+            form: ThreadFormKind::ExternalBoss,
+            handedness: ThreadHandedness::RightHand,
+            cut_direction: ThreadCutDirection::Climb,
+            standard_preset: Some("M12 x 1.75".to_string()),
+            major_diameter: ParamLength::from_mm(12.0),
+            pitch: ParamLength::from_mm(1.75),
+            pitch_diameter_offset: ParamLength::from_mm(0.0),
+            radial_passes: 2,
+            spring_passes: 1,
+            lead_in_clearance: ParamLength::from_mm(0.5),
+            compensate_centerline_feed: true,
+            optimize_hole_order: true,
+        }));
+        op_ext
+            .selections
+            .push(GeometrySelectionItem::PlanarFace { binding: bind });
+        setup.operations.push(op_ext);
+    }
+
+    proj.setups = vec![setup];
+    proj
+}

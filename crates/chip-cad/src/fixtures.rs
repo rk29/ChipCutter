@@ -1246,6 +1246,110 @@ pub fn tutorial_indexed_4side_block_step() -> std::result::Result<String, Sample
     serialize_tutorial_solid(solid, "11-indexed-multiface-block.step")
 }
 
+/// Builds the deterministic Milestone 47 **Threaded Manifold Block** STEP fixture (`80 × 60 × 20 mm`):
+/// - `80 × 60 × 12 mm` aluminum manifold base (`Z = 0.0 .. 12.0 mm`),
+/// - **2× `Ø6.80 mm` (`R = 3.40 mm`) through pilot holes** at `(16.0, 18.0)` and `(16.0, 42.0)`
+///   matching the ISO `M8 × 1.25` recommended tap-drill diameter,
+/// - **2× `Ø5.11 mm` (`R = 2.555 mm`) through pilot holes** at `(36.0, 18.0)` and `(36.0, 42.0)`
+///   matching the Unified `1/4-20 UNC` (`#7`, `0.2010 in`) recommended tap-drill diameter,
+/// - **1× proud `Ø12.0 mm` (`R = 6.0 mm`) circular boss** at `(60.0, 30.0)` rising from `Z = 12.0 mm`
+///   to `Z = 20.0 mm` (`8.0 mm` proud height) for external `M12 × 1.75` thread milling.
+pub fn sample_threaded_manifold_step() -> std::result::Result<String, SampleStepError> {
+    let v0 = builder::vertex(Point3::new(0.0, 0.0, 0.0));
+    let v1 = builder::vertex(Point3::new(80.0, 0.0, 0.0));
+    let v2 = builder::vertex(Point3::new(80.0, 60.0, 0.0));
+    let v3 = builder::vertex(Point3::new(0.0, 60.0, 0.0));
+
+    let outer_wire: Wire = vec![
+        builder::line(&v0, &v1),
+        builder::line(&v1, &v2),
+        builder::line(&v2, &v3),
+        builder::line(&v3, &v0),
+    ]
+    .into();
+
+    // 2× Ø6.80 mm (M8 x 1.25 pilot) + 2× Ø5.11 mm (1/4-20 UNC pilot) through-holes
+    let pilot_holes: [(f64, f64, f64); 4] = [
+        (16.0, 18.0, 3.40),
+        (16.0, 42.0, 3.40),
+        (36.0, 18.0, 2.555),
+        (36.0, 42.0, 2.555),
+    ];
+    let mut bottom_wires = vec![outer_wire];
+    for (cx, cy, r) in pilot_holes {
+        let seed = builder::vertex(Point3::new(cx + r, cy, 0.0));
+        let wire_ccw: Wire = builder::revolve(
+            &seed,
+            Point3::new(cx, cy, 0.0),
+            Vector3::unit_z(),
+            SweepAngle::Closed,
+            2,
+        );
+        bottom_wires.push(wire_ccw.inverse());
+    }
+
+    let base_face_z0 = builder::try_attach_plane(bottom_wires)
+        .map_err(|e| SampleStepError::Modeling(e.to_string()))?;
+    let base_solid = builder::extrude(&base_face_z0, Vector3::new(0.0, 0.0, 12.0));
+    let mut shell_faces: Vec<Face> = base_solid
+        .into_boundaries()
+        .into_iter()
+        .next()
+        .ok_or_else(|| SampleStepError::Modeling("missing manifold base shell".to_string()))?
+        .into_iter()
+        .collect();
+
+    // Pop Z = 12.0 deck cap so we can punch the shared Ø12.0 mm boss footprint wire into it
+    let old_deck_z12 = shell_faces
+        .pop()
+        .ok_or_else(|| SampleStepError::Modeling("empty manifold base shell".to_string()))?;
+    let mut deck_wires: Vec<Wire> = old_deck_z12.boundaries();
+
+    // Proud Ø12.0 mm (R = 6.0 mm) circular boss at (60.0, 30.0) rising Z = 12.0 -> 20.0 mm
+    let boss_seed = builder::vertex(Point3::new(60.0 + 6.0, 30.0, 12.0));
+    let boss_wire_z12_ccw: Wire = builder::revolve(
+        &boss_seed,
+        Point3::new(60.0, 30.0, 12.0),
+        Vector3::unit_z(),
+        SweepAngle::Closed,
+        2,
+    );
+    let boss_base_z12 = builder::try_attach_plane(vec![boss_wire_z12_ccw])
+        .map_err(|e| SampleStepError::Modeling(e.to_string()))?;
+    let boss_solid = builder::extrude(&boss_base_z12, Vector3::new(0.0, 0.0, 8.0));
+    let mut boss_faces: Vec<Face> = boss_solid
+        .into_boundaries()
+        .into_iter()
+        .next()
+        .ok_or_else(|| SampleStepError::Modeling("missing boss shell".to_string()))?
+        .into_iter()
+        .collect();
+    if boss_faces.len() < 3 {
+        return Err(SampleStepError::Modeling(
+            "expected bottom cap, cylinder walls, and top cap on extruded boss".to_string(),
+        ));
+    }
+    // `boss_faces[0]` is the internal Z = 12.0 bottom cap whose boundary wire is CW and shares
+    // exact edges with the extruded cylindrical boss walls.
+    let boss_bottom_cap = boss_faces.remove(0);
+    let boss_footprint_cw = boss_bottom_cap
+        .boundaries()
+        .into_iter()
+        .next()
+        .ok_or_else(|| SampleStepError::Modeling("missing boss footprint wire".to_string()))?;
+    shell_faces.extend(boss_faces);
+    deck_wires.push(boss_footprint_cw);
+
+    let final_deck_z12 = builder::try_attach_plane(deck_wires)
+        .map_err(|e| SampleStepError::Modeling(e.to_string()))?;
+    shell_faces.push(final_deck_z12);
+
+    let full_shell: Shell = shell_faces.into();
+    let solid = Solid::try_new(vec![full_shell])
+        .map_err(|e| SampleStepError::Modeling(format!("non-manifold threaded manifold: {e}")))?;
+    serialize_tutorial_solid(solid, "18-threaded-manifold.step")
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -1843,5 +1947,132 @@ mod tests {
             );
         }
         assert_eq!(doc.faces.len(), 7, "expected clean 7-face chamfered prism");
+    }
+
+    #[test]
+    fn sample_threaded_manifold_step_roundtrips_with_pilot_holes_and_proud_boss() {
+        use crate::topology::{
+            classify_planar_face_loops, find_same_diameter_holes, group_coaxial_holes,
+        };
+
+        let step = sample_threaded_manifold_step().unwrap();
+        let doc = MonstertruckKernel
+            .load_step_bytes(
+                "18-threaded-manifold.step",
+                step.as_bytes(),
+                DEFAULT_TESS_CHORD_TOL_MM,
+            )
+            .unwrap();
+
+        assert_eq!(doc.bodies.len(), 1);
+        let size = doc.aabb_mm.size();
+        assert!(approx_eq(size.x, 80.0, 1e-2));
+        assert!(approx_eq(size.y, 60.0, 1e-2));
+        assert!(approx_eq(size.z, 20.0, 1e-2));
+
+        // 2× Ø6.80 mm (R = 3.40 mm) M8 pilot holes
+        let m8_seed = doc
+            .faces
+            .iter()
+            .find(|f| {
+                matches!(
+                    f.surface,
+                    SurfaceKind::Cylinder {
+                        radius_mm,
+                        is_internal: true,
+                        ..
+                    } if approx_eq(radius_mm, 3.40, 1e-2)
+                )
+            })
+            .unwrap()
+            .id;
+        let m8_holes = group_coaxial_holes(
+            &doc,
+            &find_same_diameter_holes(&doc, m8_seed, 1e-3, 1e-3),
+            DVec3::Z,
+        );
+        assert_eq!(m8_holes.len(), 2);
+        for h in &m8_holes {
+            assert!(h.span.is_through_hole);
+            assert!(approx_eq(h.span.top_proj_mm, 12.0, 0.05));
+            assert!(approx_eq(h.span.bottom_proj_mm, 0.0, 0.05));
+        }
+
+        // 2× Ø5.11 mm (R = 2.555 mm) 1/4-20 UNC pilot holes
+        let unc_seed = doc
+            .faces
+            .iter()
+            .find(|f| {
+                matches!(
+                    f.surface,
+                    SurfaceKind::Cylinder {
+                        radius_mm,
+                        is_internal: true,
+                        ..
+                    } if approx_eq(radius_mm, 2.555, 1e-2)
+                )
+            })
+            .unwrap()
+            .id;
+        let unc_holes = group_coaxial_holes(
+            &doc,
+            &find_same_diameter_holes(&doc, unc_seed, 1e-3, 1e-3),
+            DVec3::Z,
+        );
+        assert_eq!(unc_holes.len(), 2);
+
+        // 1× proud Ø12.0 mm (R = 6.0 mm) external circular boss (`Z = 12..20 mm`)
+        let boss_cyl_count = doc
+            .faces
+            .iter()
+            .filter(|f| {
+                matches!(
+                    f.surface,
+                    SurfaceKind::Cylinder {
+                        radius_mm,
+                        is_internal: false,
+                        ..
+                    } if approx_eq(radius_mm, 6.0, 1e-2)
+                )
+            })
+            .count();
+        assert_eq!(
+            boss_cyl_count, 2,
+            "revolved Ø12 mm boss has 2 half-cylinders"
+        );
+
+        let boss_top = doc
+            .faces
+            .iter()
+            .find(|f| {
+                matches!(
+                    f.surface,
+                    SurfaceKind::Plane { origin_mm, normal }
+                    if normal.z > 0.99 && approx_eq(origin_mm.z, 20.0, 1e-2)
+                )
+            })
+            .expect("expected circular boss top face at Z = 20 mm");
+        assert!(approx_eq(
+            boss_top.area_mm2,
+            std::f64::consts::PI * 36.0,
+            0.5
+        ));
+
+        // Manifold deck at Z = 12 mm has 4 open outer edges + 1 raised Ø12 mm island boss!
+        let deck_z12 = doc
+            .faces
+            .iter()
+            .find(|f| {
+                matches!(
+                    f.surface,
+                    SurfaceKind::Plane { origin_mm, normal }
+                    if normal.z > 0.99 && approx_eq(origin_mm.z, 12.0, 1e-2)
+                )
+            })
+            .unwrap()
+            .id;
+        let deck_cls = classify_planar_face_loops(&doc, deck_z12, DVec3::Z);
+        assert_eq!(deck_cls.open_outer_edges.len(), 4);
+        assert_eq!(deck_cls.raised_inner_loops.len(), 1);
     }
 }

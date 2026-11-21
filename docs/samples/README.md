@@ -15,6 +15,7 @@ Browse every built-in sample project included in **ChipCutter**. Click any thumb
 | Preview | Sample & Overview | Setups / Ops | Launch Flag |
 |---|---|---|---|
 | [![CAM Torture Block](../images/samples/cam-torture/thumb.png)](cam-torture.md) | [**CAM Torture Block**](cam-torture.md)<br>Full-featured 3D STEP benchmark exercising Facing, Pockets + Islands, Open Shoulder, Helical Counterbore, 4x Peck Drills, Outer Profile + Tabs, and 45° Edge Chamfer. | 1 Setup · 8 Ops | `--sample cam-torture` |
+| [![Threaded Manifold Block](../images/samples/thread-mill/thumb.png)](thread-mill.md) | [**Threaded Manifold Block (Helical Thread Milling)**](thread-mill.md)<br>`80 × 60 × 20 mm` aluminum manifold showcasing Facing, boss deck clearing, helical pilot boring, internal `M8 × 1.25` & `1/4-20 UNC` threads, and external `M12 × 1.75` boss threading with Tri-Dexel undercut verification. | 1 Setup · 6 Ops | `--sample thread-mill` |
 | [![2D Adaptive + Rest](../images/samples/adaptive-rest/thumb.png)](adaptive-rest.md) | [**2D Adaptive Clearing + Rest Machining**](adaptive-rest.md)<br>High-efficiency constant-engagement Ø10 mm trochoidal Adaptive roughing followed by Ø3 mm Rest Machining corner cleanup and Ø6 mm air-entry shoulder clearing. | 1 Setup · 5 Ops | `--sample adaptive-rest` |
 | [![Prismatic Multi-Feature Bracket](../images/samples/multi-feature/thumb.png)](multi-feature.md) | [**Prismatic Multi-Feature Bracket**](multi-feature.md)<br>Clean starter 3D STEP bracket demonstrating planar face pocketing and 4x Ø6 mm mounting hole drilling. | 1 Setup · 2 Ops | `--sample multi-feature` |
 | [![30°-Tilted WCS Alignment Bracket](../images/samples/tilted-bracket/thumb.png)](tilted-bracket.md) | [**30°-Tilted WCS Alignment Bracket**](tilted-bracket.md)<br>Unseeded STEP bracket tilted `30° X / 25° Z` for practicing SE(3) Setup WCS face/edge alignment and tight 27-point stock framing. | 1 Setup · Sandbox | `--sample tilted-bracket` |
@@ -68,4 +69,4 @@ Every full-resolution screenshot, `480 px` thumbnail, and per-operation completi
 ./scripts/capture_sample_gallery.sh
 ```
 
-See also the step-by-step [**ChipCutter Tutorials (`00`–`17`)**](../tutorials/README.md) if you want to build each strategy from scratch.
+See also the step-by-step [**ChipCutter Tutorials (`00`–`18`)**](../tutorials/README.md) if you want to build each strategy from scratch.

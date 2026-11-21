@@ -5,10 +5,10 @@ use chip_cad::{
     TopologyGraph, is_mesh_extension, load_mesh_bytes, sample_cam_torture_block_step,
     sample_helical_flute_shaft_stl_bytes, sample_machined_plate_step,
     sample_multi_feature_bracket_step, sample_relief_wave_obj_text, sample_revised_part_pair_step,
-    sample_rotary_shaft_stl_bytes, sample_sculpted_dome_stl_bytes, tutorial_adaptive_pocket_step,
-    tutorial_chamfer_engrave_block_step, tutorial_contour_plate_step,
-    tutorial_drill_bore_plate_step, tutorial_facing_billet_step, tutorial_indexed_4side_block_step,
-    tutorial_pocket_block_step, tutorial_yup_bracket_stl_bytes,
+    sample_rotary_shaft_stl_bytes, sample_sculpted_dome_stl_bytes, sample_threaded_manifold_step,
+    tutorial_adaptive_pocket_step, tutorial_chamfer_engrave_block_step,
+    tutorial_contour_plate_step, tutorial_drill_bore_plate_step, tutorial_facing_billet_step,
+    tutorial_indexed_4side_block_step, tutorial_pocket_block_step, tutorial_yup_bracket_stl_bytes,
 };
 use chip_cam::{BoxAnchor27, OperationStatus, StockConfig, WcsOriginMode};
 use chip_math::{ArcSegment2D, DEFAULT_TESS_CHORD_TOL_MM, DisplayUnit, ParamLength};
@@ -16,15 +16,15 @@ use chip_project::{
     ModelEntry, ProjectDocument, build_cam_torture_project, build_pure2d_router_panel_demo_project,
     build_revision_v1_demo_project, build_rotary_helical_flute_project,
     build_rotary_shaft_preview_project, build_rotary_wrapped_engraving_project,
-    build_sculpted_mesh_dome_project, build_tutorial_3d_adaptive_waterline_project,
-    build_tutorial_3d_surface_finishing_project, build_tutorial_16_tilted_step_project,
-    build_tutorial_16_yup_stl_project, build_tutorial_adaptive_rest_project,
-    build_tutorial_chamfer_trace_project, build_tutorial_contour_project,
-    build_tutorial_drill_bore_project, build_tutorial_facing_project,
-    build_tutorial_indexed_step_multiface_project, build_tutorial_pocket_project,
-    build_tutorial_rotary_4axis_flowline_project, build_tutorial_rotary_axial_parallel_project,
-    build_tutorial_vcarve_inlay_project, compute_sha256_hex, portable_model_path,
-    rebind_project_to_reloaded_cad,
+    build_sculpted_mesh_dome_project, build_thread_mill_manifold_project,
+    build_tutorial_3d_adaptive_waterline_project, build_tutorial_3d_surface_finishing_project,
+    build_tutorial_16_tilted_step_project, build_tutorial_16_yup_stl_project,
+    build_tutorial_adaptive_rest_project, build_tutorial_chamfer_trace_project,
+    build_tutorial_contour_project, build_tutorial_drill_bore_project,
+    build_tutorial_facing_project, build_tutorial_indexed_step_multiface_project,
+    build_tutorial_pocket_project, build_tutorial_rotary_4axis_flowline_project,
+    build_tutorial_rotary_axial_parallel_project, build_tutorial_vcarve_inlay_project,
+    compute_sha256_hex, portable_model_path, rebind_project_to_reloaded_cad,
 };
 use chip_sketch::{
     DxfImportOptions, SketchLayer, SvgImportOptions, VectorImportUnits, import_dxf_path,
@@ -310,9 +310,12 @@ pub fn run_generate_sample_step(
             "16-orient-step" | "16-tilted-step" | "orient-step" => {
                 sample_multi_feature_bracket_step(true)?
             }
+            "18-thread-milling" | "18-threaded-manifold" | "thread-mill" | "thread-milling" => {
+                sample_threaded_manifold_step()?
+            }
             other => {
                 return Err(format!(
-                    "unknown --tutorial '{other}'; expected one of: 01-facing, 02-contour, 03-pocket, 04-drill-bore, 05-adaptive-rest, 06-chamfer-trace, 07-vcarve-medial, 07-vcarve-inlay, 08-3d-adaptive-waterline, 08-mesh-surfacing, 09-3d-surface-finishing, 09-rotary-shaft, 09-rotary-wrap, 10-rotary-wrap, 10-rotary-axial, 10-simultaneous-4axis, 11-indexed-step, 11-indexed-shaft, 12-simultaneous-4axis, 13-pure2d-dxf, 14-reload-v1, 14-reload-v2, 16-orient-stl, 16-orient-step"
+                    "unknown --tutorial '{other}'; expected one of: 01-facing, 02-contour, 03-pocket, 04-drill-bore, 05-adaptive-rest, 06-chamfer-trace, 07-vcarve-medial, 07-vcarve-inlay, 08-3d-adaptive-waterline, 08-mesh-surfacing, 09-3d-surface-finishing, 09-rotary-shaft, 09-rotary-wrap, 10-rotary-wrap, 10-rotary-axial, 10-simultaneous-4axis, 11-indexed-step, 11-indexed-shaft, 12-simultaneous-4axis, 13-pure2d-dxf, 14-reload-v1, 14-reload-v2, 16-orient-stl, 16-orient-step, 18-thread-milling"
                 )
                 .into());
             }
@@ -460,6 +463,18 @@ pub fn run_generate_sample_step(
                             }
                         }
                     }
+                }
+                proj
+            }
+            Some(
+                "18-thread-milling" | "18-threaded-manifold" | "thread-mill" | "thread-milling",
+            ) => {
+                let mut proj =
+                    build_thread_mill_manifold_project(&doc, rel_path, &sha, &starter.tools);
+                if args.empty_project
+                    && let Some(setup) = proj.setups.first_mut()
+                {
+                    setup.operations.clear();
                 }
                 proj
             }

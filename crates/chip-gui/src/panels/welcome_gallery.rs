@@ -28,6 +28,7 @@ pub enum SampleProjectId {
     RotaryIndexedShaft,
     RotaryWrappedEngraving,
     RotaryHelicalFlute,
+    ThreadMillManifold,
 }
 
 impl SampleProjectId {
@@ -51,8 +52,9 @@ impl SampleProjectId {
                 Ok(Self::RotaryWrappedEngraving)
             }
             "rotary-4axis" | "helical-flute" | "4axis-sim" => Ok(Self::RotaryHelicalFlute),
+            "thread-mill" | "thread-milling" | "threaded-manifold" => Ok(Self::ThreadMillManifold),
             other => Err(format!(
-                "invalid --sample '{other}'; expected one of: cam-torture, adaptive-rest, pure-2d, nameplate, vcarve, multi-feature, tilted-bracket, revision-v1, revision-v2, sample-plate, mesh-dome, mesh-wave, rotary-shaft, rotary-wrap, rotary-4axis"
+                "invalid --sample '{other}'; expected one of: cam-torture, adaptive-rest, pure-2d, nameplate, vcarve, multi-feature, tilted-bracket, revision-v1, revision-v2, sample-plate, mesh-dome, mesh-wave, rotary-shaft, rotary-wrap, rotary-4axis, thread-mill"
             )),
         }
     }
@@ -212,6 +214,14 @@ pub const SAMPLE_CATALOG: &[SampleCardSpec] = &[
         badge: "X+Y+Z+A · 2 Ops",
         summary: "Ø40×80mm 3-start helical flute shaft machined with simultaneous X+Y+Z+A off-centerline auto-tilted roughing and finishing (G93).",
     },
+    SampleCardSpec {
+        id: SampleProjectId::ThreadMillManifold,
+        category: SampleCategory::Step3D,
+        icon: IconKind::ThreadMill,
+        title: "Threaded Manifold Block (Helical Thread Milling)",
+        badge: "Thread Mill · 6 Ops",
+        summary: "80×60×20mm aluminum manifold with facing, boss deck clearing, helical pilot boring, internal M8×1.25 & 1/4-20 UNC threads, and external M12×1.75 boss threading.",
+    },
 ];
 
 /// High-level action emitted by either the Welcome Overlay or the Sample Projects Gallery.
@@ -330,7 +340,7 @@ pub fn show_welcome_modal(
                         ui,
                         IconKind::Sparkles,
                         "Browse Sample Projects Gallery…",
-                        "Explore 8 ready-to-machine 3D STEP, Adaptive+Rest, Typography, and V-Inlay demos",
+                        "Explore 16 ready-to-machine 3D STEP, Mesh, 4th-Axis, Thread Mill, Pure-2D, and V-Inlay demos",
                     ) {
                         action = Some(WelcomeGalleryAction::OpenSampleGallery);
                     }
@@ -671,6 +681,10 @@ mod tests {
         assert_eq!(
             SampleProjectId::from_cli_slug("rotary-4axis"),
             Ok(SampleProjectId::RotaryHelicalFlute)
+        );
+        assert_eq!(
+            SampleProjectId::from_cli_slug("thread-mill"),
+            Ok(SampleProjectId::ThreadMillManifold)
         );
         assert!(SampleProjectId::from_cli_slug("nonexistent").is_err());
     }

@@ -1323,3 +1323,171 @@ fn cli_simulate_heightmap_and_tridexel_emit_error_volume_and_rms_reports() {
         "subsequent operations should reduce total error volume: first={first_err:.2}, last={last_err:.2}"
     );
 }
+
+#[test]
+fn v4_golden_thread_milling_snapshots_and_tridexel_sim_match_byte_for_byte() {
+    let tmp = TempTestDir::new("v4_thread_mill_goldens");
+    let update_goldens = std::env::var("CHIPCUTTER_UPDATE_GOLDENS").is_ok();
+    let step_path = tmp.path().join("18-threaded-manifold.step");
+    let proj_path = tmp.path().join("v4_thread_mill.chip.toml");
+
+    // 1. Generate starter STEP + seeded Thread Milling project via `--tutorial 18-thread-milling`
+    let gen_out = Command::new(cli_bin())
+        .args([
+            "generate-sample-step",
+            step_path.to_str().unwrap(),
+            "--tutorial",
+            "18-thread-milling",
+            "--project-out",
+            proj_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run generate-sample-step --tutorial 18-thread-milling");
+    assert!(
+        gen_out.status.success(),
+        "generate-sample-step failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&gen_out.stdout),
+        String::from_utf8_lossy(&gen_out.stderr)
+    );
+
+    // 2. Validate & generate all 6 operations
+    let val_out = Command::new(cli_bin())
+        .args(["validate", "--generate", proj_path.to_str().unwrap()])
+        .output()
+        .expect("run validate --generate on thread-mill project");
+    assert!(
+        val_out.status.success(),
+        "validate --generate failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&val_out.stdout),
+        String::from_utf8_lossy(&val_out.stderr)
+    );
+
+    // 3. Simulate cleanly (0 crashes) in BOTH Heightmap AND Tri-Dexel engines
+    for engine in ["heightmap", "tri-dexel"] {
+        let rep_path = tmp.path().join(format!("sim_{engine}.json"));
+        let sim_out = Command::new(cli_bin())
+            .args([
+                "simulate",
+                proj_path.to_str().unwrap(),
+                "--engine",
+                engine,
+                "--resolution",
+                "standard",
+                "--tolerance",
+                "0.05",
+                "--report",
+                rep_path.to_str().unwrap(),
+            ])
+            .output()
+            .expect("run simulate on thread-mill project");
+        assert!(
+            sim_out.status.success(),
+            "simulate --engine {engine} failed:\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&sim_out.stdout),
+            String::from_utf8_lossy(&sim_out.stderr)
+        );
+        let rep_json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&rep_path).unwrap()).unwrap();
+        assert_eq!(
+            rep_json["passed"], true,
+            "thread-mill simulation ({engine}) must pass with 0 critical errors: {rep_json}"
+        );
+    }
+
+    // 4. Build LinuxCNC ATC single-file golden (`linuxcnc/v4_thread_mill.ngc`)
+    let lcnc_out = tmp.path().join("out_v4_lcnc");
+    let lcnc_res = Command::new(cli_bin())
+        .args([
+            "build",
+            proj_path.to_str().unwrap(),
+            "-o",
+            lcnc_out.to_str().unwrap(),
+            "--post",
+            "linuxcnc",
+        ])
+        .output()
+        .expect("build v4_thread_mill linuxcnc");
+    assert!(
+        lcnc_res.status.success(),
+        "v4 LinuxCNC build failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&lcnc_res.stdout),
+        String::from_utf8_lossy(&lcnc_res.stderr)
+    );
+    let actual_lcnc = std::fs::read_to_string(lcnc_out.join("v4_thread_mill.ngc")).unwrap();
+    assert!(
+        actual_lcnc.contains("T9 M6\nG43 H9") && actual_lcnc.contains("T11 M6\nG43 H11"),
+        "expected T9 and T11 thread mill tool changes in LinuxCNC output"
+    );
+    assert!(
+        actual_lcnc
+            .lines()
+            .any(|l| l.starts_with("G3 ") && l.contains("Z") && l.contains("I")),
+        "expected internal climb helical G3 arc with Z/I in LinuxCNC output"
+    );
+    assert!(
+        actual_lcnc
+            .lines()
+            .any(|l| l.starts_with("G2 ") && l.contains("Z") && l.contains("I")),
+        "expected external climb helical G2 arc with Z/I in LinuxCNC output"
+    );
+    let golden_lcnc = golden_dir().join("linuxcnc/v4_thread_mill.ngc");
+    if update_goldens {
+        std::fs::write(&golden_lcnc, &actual_lcnc).unwrap();
+    }
+    let expected_lcnc = read_golden_normalized(&golden_lcnc);
+    assert_eq!(
+        actual_lcnc, expected_lcnc,
+        "v4_thread_mill.ngc drifted from golden snapshot"
+    );
+
+    // 5. Build GRBL split-by-tool goldens (`grbl/v4_thread_mill_*.nc`)
+    let grbl_out = tmp.path().join("out_v4_grbl");
+    let grbl_res = Command::new(cli_bin())
+        .args([
+            "build",
+            proj_path.to_str().unwrap(),
+            "-o",
+            grbl_out.to_str().unwrap(),
+            "--post",
+            "grbl",
+        ])
+        .output()
+        .expect("build v4_thread_mill grbl");
+    assert!(
+        grbl_res.status.success(),
+        "v4 GRBL build failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&grbl_res.stdout),
+        String::from_utf8_lossy(&grbl_res.stderr)
+    );
+
+    let mut nc_files: Vec<String> = std::fs::read_dir(&grbl_out)
+        .unwrap()
+        .filter_map(|e| {
+            let name = e.ok()?.file_name().to_string_lossy().into_owned();
+            name.ends_with(".nc").then_some(name)
+        })
+        .collect();
+    nc_files.sort();
+    assert_eq!(
+        nc_files.len(),
+        5,
+        "Expected 5 split GRBL files (T7 Face, T1 Deck, T3 Bore, T9 Internal Thread, T11 External Thread), got: {nc_files:?}"
+    );
+    for fname in nc_files {
+        let actual = std::fs::read_to_string(grbl_out.join(&fname)).unwrap();
+        for (idx, line) in actual.lines().enumerate() {
+            assert!(
+                line.len() <= 80,
+                "GRBL file {fname} line {} exceeds 80 chars ({}): {line}",
+                idx + 1,
+                line.len()
+            );
+        }
+        let golden = golden_dir().join("grbl").join(&fname);
+        if update_goldens {
+            std::fs::write(&golden, &actual).unwrap();
+        }
+        let expected = read_golden_normalized(&golden);
+        assert_eq!(actual, expected, "{fname} drifted from golden snapshot");
+    }
+}

@@ -6,7 +6,7 @@ It turns 3D **STEP** B-Rep CAD solids (`AP203` / `AP214` / `AP242`), 3D triangle
 
 ![ChipCutter Desktop CAM Interface — Simultaneous 4-Axis Helical Flute](docs/images/chipcutter-gui.png)
 
-> **Project Website & Illustrated Docs:** [**https://rk29.github.io/ChipCutter/**](https://rk29.github.io/ChipCutter/) · [**Sample Projects Gallery**](docs/samples/README.md) · [**Tutorials (00–17)**](docs/tutorials/README.md)
+> **Project Website & Illustrated Docs:** [**https://rk29.github.io/ChipCutter/**](https://rk29.github.io/ChipCutter/) · [**Sample Projects Gallery**](docs/samples/README.md) · [**Tutorials (00–18)**](docs/tutorials/README.md)
 
 ---
 
@@ -94,7 +94,7 @@ Get-FileHash .\ChipCutter-<version>-windows-x86_64.msi -Algorithm SHA256
   1. **Facing** — Zig-zag or one-way surfacing across stock XY bounds with pass extension and corner roll arcs.
   2. **2D Contour / Profile** — Exact circular-arc offsetting (`cavalier_contours`), multi-depth stepdowns, helical/linear ramps, horizontal + vertical tangent lead-in/out arcs, rough/finish wall passes, 2.5D Rest Machining, and automatic or click-on-contour rectangular/triangular holding tabs.
   3. **2D Pocket & High-Speed 2D Adaptive Clearing** — Closed pockets with arbitrary islands and open-shoulder air-entry pockets using either contour-parallel/zig-zag clearing OR constant-engagement **2D Adaptive / Trochoidal Clearing** (`optimal_load` `ae`, `both_ways` dynamic Climb/Conventional feed, micro-lift smooth arcs, radial chip-thinning feed boost) plus exact **2.5D Rest Machining** (`FromPreviousTool` & multi-operation `FromPrecedingOperations` DAG waves).
-  4. **Drilling & Helical Bore Milling** — Spot, simple drill (`G81`), peck drill (`G83`/`G73`), and multi-pitch helical interpolation + flat-bottom cleanup circle for oversized bores and counterbores.
+  4. **Drilling, Helical Bore Milling, & Helical Thread Milling** — Spot, simple drill (`G81`), peck drill (`G83`/`G73`), multi-pitch helical interpolation + flat-bottom cleanup circle for oversized bores, plus single-point & multi-form **Helical Thread Milling** with built-in **ISO Metric Coarse/Fine** and **Unified UNC/UNF** thread tables, internal/external climb/conventional kinematics, equal-area radial passes, spring passes, pitch-diameter gauge offset, and centerline arc feedrate compensation.
   5. **Edge Chamfering & 2D Curve Trace** — Exact chamfer-mill tip-offset kinematics (`tip_dia`, included angle, `tip_offset`) for both sharp unmodeled CAD edges and modeled `45°` bevel faces, plus 1-pass centerline curve/Hershey engraving.
   6. **3D Medial-Axis V-Carving, Two-Tool Flat Clearance, & Mated V-Inlays** — Simultaneous 3-axis `(X, Y, Z)` Voronoi medial-axis V-carving (`boostvoronoi`) with razor-sharp 3D corner climbs, optional `flat_depth` clamping with **Two-Stage Flat Endmill Area Clearance**, and mirrored **Male V-Inlay Plug** generation (`start_depth` engagement + `glue_gap_bottom`).
   7. **3-Axis Surface Milling over `STL` / `OBJ` / `3MF` Meshes & STEP Solids** — Pure-Rust `MeshBvh` exact `f64` Drop-Cutter & Push-Cutter kernel powering **3D Adaptive Roughing**, **3D Waterline / Z-Level**, **3D Parallel Raster Finishing**, **3D Constant-Scallop Finishing** (Sethian Fast-Marching Eikonal), and **3D Pencil Cleanup** (morphological ball-in-ball Minkowski rest residual).
@@ -106,7 +106,7 @@ Get-FileHash .\ChipCutter-<version>-windows-x86_64.msi -Algorithm SHA256
   - Built-in profiles remain read-only so application upgrades stay clean; clone any machine into upgrade-safe user configuration space (`~/.config/chipcutter/machines/*.machine.toml`), or export/share and import single-file `.machine.toml` bundles via the **Machine Manager** (`Tools → Machine Manager…`) or `chipcutter machines`.
 
 - **Tool Library & Coupled SFM / Chipload Calculator:**
-  - Supports Flat, Ball, Bull-Nose, Chamfer, Face Mill, and Twist Drill geometries with per-material cutting presets (`Aluminum 6061`, `Mild Steel`, `Hardwood`, `Acrylic`, etc.), radial chip-thinning compensation, machine-scoped tool switching, `.tools.toml` libraries, and a **Fusion 360 `.json` / `.tools` (ZIP)** importer.
+  - Supports Flat, Ball, Bull-Nose, Chamfer, Face Mill, Twist Drill, and single-point / multi-form **Thread Mill** geometries with per-material cutting presets (`Aluminum 6061`, `Mild Steel`, `Hardwood`, `Acrylic`, etc.), radial chip-thinning compensation, machine-scoped tool switching, `.tools.toml` libraries, and a **Fusion 360 `.json` / `.tools` (ZIP)** importer.
 
 - **Selectable Heightmap & Tri-Dexel 3D Volumetric Simulation, Error-Volume Metrology, & Mandatory Crash Gate:**
   - Multi-threaded `rayon` toolpath generation (`Ctrl+G`) and `< 1 ms` `100`-step Undo/Redo (`Ctrl+Z` / `Ctrl+Y`).
@@ -135,8 +135,9 @@ Get-FileHash .\ChipCutter-<version>-windows-x86_64.msi -Algorithm SHA256
 # Launch the desktop CAM workspace (opens the Quick-Start Welcome Overlay on bare launch):
 cargo run --release -p chip-gui
 
-# Launch directly into built-in 3D STEP, Mesh, 4th-Axis Rotary, Pure-2D, or V-Carve samples:
+# Launch directly into built-in 3D STEP, Thread Mill, Mesh, 4th-Axis Rotary, Pure-2D, or V-Carve samples:
 cargo run --release -p chip-gui -- --sample cam-torture
+cargo run --release -p chip-gui -- --sample thread-mill
 cargo run --release -p chip-gui -- --sample mesh-dome
 cargo run --release -p chip-gui -- --sample rotary-wrap
 cargo run --release -p chip-gui -- --sample rotary-shaft
@@ -213,12 +214,12 @@ cargo run -p chip-cli -- machines export my-carvera -o my-carvera.machine.toml
 
 ## Documentation
 
-- [**`docs/samples/`**](docs/samples/README.md) — **Illustrated Sample Projects Gallery** with thumbnails of all 15 built-in STEP, Mesh, 4th-Axis Rotary, Pure-2D, and V-Carve samples plus per-Setup and per-Operation completion simulation screenshots
-- [**`docs/tutorials/`**](docs/tutorials/README.md) — Illustrated step-by-step Getting Started, 2.5D, 3-Axis Surface, 4th-Axis Rotary, Machine Definitions, Model Orientation/Scaling, Tri-Dexel Simulation & Error Metrics, & Production Workflow tutorials (`00`–`17`)
+- [**`docs/samples/`**](docs/samples/README.md) — **Illustrated Sample Projects Gallery** with thumbnails of all 16 built-in STEP, Thread Mill, Mesh, 4th-Axis Rotary, Pure-2D, and V-Carve samples plus per-Setup and per-Operation completion simulation screenshots
+- [**`docs/tutorials/`**](docs/tutorials/README.md) — Illustrated step-by-step Getting Started, 2.5D, Helical Thread Milling, 3-Axis Surface, 4th-Axis Rotary, Machine Definitions, Model Orientation/Scaling, Tri-Dexel Simulation & Error Metrics, & Production Workflow tutorials (`00`–`18`)
 - [**`ARCHITECTURE.md`**](ARCHITECTURE.md) — End-to-end data pipeline, crate dependency graph, threading/caching model, and 3D render passes
 - [**`DEVELOPMENT.md`**](DEVELOPMENT.md) — Workspace layout, platform build prerequisites, native Linux/macOS/Windows setup, and headless CI instructions
 - [**`specs/00-overview.md`**](specs/00-overview.md) — Product scope, non-goals, and full specification index (`00` through `11`)
-- [**`specs/10-roadmap.md`**](specs/10-roadmap.md) — Completed Phase 1–12 (`M1`–`M43`) milestones and future phases
+- [**`specs/10-roadmap.md`**](specs/10-roadmap.md) — Completed Phase 1–13 (`M1`–`M47`) milestones and future phases
 - [**`AGENTS.md`**](AGENTS.md) — Architectural invariants and contributor guidelines
 
 ---
