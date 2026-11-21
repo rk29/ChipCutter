@@ -353,7 +353,10 @@ ChipCutter's long-term roadmap focuses on bringing pro-grade CAM capabilities to
    - **Standalone G-Code Backplot & Crash Verification Mode:** Open any external `.nc`/`.ngc` file and run ChipCutter's Tri-Dexel simulator and 5-rule crash verifier on it.
    - **Broader Tool Library Interop & Printable Setup Sheets:** Import tool libraries from FreeCAD (`.fctb`), Carbide Create, and Vectric alongside Fusion 360; richer material presets (brass, acetal/Delrin, G10/carbon fiber, mild steel, hardwoods); and printable HTML/PDF setup sheets with isometric views, WCS origin diagrams, stock dimensions, tool stickout checklists, and cycle times.
    - **Additional Controller Dialects & CAD Kernel Backends:** Fanuc/Haas, Mach4, Masso, and Centroid post dialects, plus an optional OpenCASCADE (`opencascade-rs`) `CadKernel` feature backend.
-7. **Functional & Behavioral User-Level Testing:**
+7. **GPU-Accelerated Simulation (`wgpu` Compute):**
+   - **Optional Headless GPU Compute Backend (`gpu-compute` feature):** Accelerate 2.5D Heightmap, 4th-Axis Cylindrical, and Volumetric 3D (fixed-`K` Tri-Dexel span pools or sparse brickmap SDF) stock subtraction using tiled WGSL compute shaders on `wgpu`—enabling real-time Ultra-resolution playback scrubbing while keeping the deterministic `f64` CPU engine as the exact fallback.
+   - **Direct GPU Stock Rendering & Instant Error Heatmap:** Displace heightfield/cylindrical stock directly from GPU buffers without CPU re-tessellation, evaluate target-mesh signed distances via a GPU BVH for instantaneous tolerance-slider Heatmap recoloring, and run parallel GPU crash bitmasks feeding CPU diagnostic reporting.
+8. **Functional & Behavioral User-Level Testing:**
    - Durable end-to-end user-journey and GUI behavioral test harness (`egui_kittest` / headless interactive workflows + CLI workflows) verifying every feature from a machinist's point of view without brittle coupling to internal implementation details.
-8. **Tutorials for Upcoming Future-Phase Capabilities:**
+9. **Tutorials for Upcoming Future-Phase Capabilities:**
    - Dedicated illustrated guides accompanying new future-phase capabilities (guided operation setup, probing, 3D workholding & multi-setup Tri-Dexel stock carryover, soft jaws, 4th-axis wrapping, nesting, and PCB isolation milling).
