@@ -50,6 +50,11 @@
   </screenshots>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="0.12.0" date="2026-11-21">
+      <description>
+        <p>GUI polish and illustrated documentation release: unified collapsible card styling across the CAM Browser and right-side Inspectors, strict two-column Inspector layouts, consistent eyeball (visibility) vs. checkbox (active/inactive) semantics, universal hover tooltips across all controls, faster Error Heatmap meshing and playback deferral with clear toggle controls, an unsaved-changes confirmation dialog on window close, and an illustrated Sample Projects Gallery with per-operation completion screenshots.</p>
+      </description>
+    </release>
     <release version="0.11.0" date="2026-11-21">
       <description>
         <p>Added selectable Tri-Dexel 3D volumetric CAM simulation alongside fast 2.5D heightmap simulation, quantitative stock-vs-target error-volume and RMS/MAE/P95/P99 surface deviation metrics, signed deviation Error Heatmap visualization, CLI --engine/--tolerance JSON benchmarking, and illustrated Tutorial 17.</p>
