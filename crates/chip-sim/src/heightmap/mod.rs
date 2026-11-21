@@ -6,7 +6,7 @@ mod target_rasterizer;
 pub(crate) use grid::slice_segment_range;
 pub use grid::{HeightfieldStock, UNCUT_OP_IDX};
 pub use mesher::{OPERATION_STOCK_PALETTE, tessellate_stock_mesh};
-pub use sweeper::run_setup_simulation;
+pub use sweeper::{run_setup_simulation, run_setup_simulation_with_engine};
 
 use std::sync::atomic::AtomicBool;
 
@@ -19,6 +19,7 @@ use crate::{
     cutter_profile::{RadialCutterProfile, SimColoredVertex},
     cylindrical::{CylindricalCheckpoint, CylindricalStock},
     timeline::{MachineKinematicsConfig, ScrubSnapshot, SimOperationInput, SimulationTimeline},
+    tridexel::{SimEngineKind, TriDexelCheckpoint, TriDexelStock},
     verifier::{SimDiagnostic, SimSeverity, SimVerificationConfig},
 };
 
@@ -134,6 +135,7 @@ pub(crate) fn target_cursor_from_snap(
 /// Complete output of simulating a Setup (`timeline`, `final_stock`, `checkpoints`, `diagnostics`).
 #[derive(Debug, Clone)]
 pub struct SetupSimulationResult {
+    pub engine: SimEngineKind,
     pub resolution: SimResolution,
     pub timeline: SimulationTimeline,
     pub initial_stock_volume_mm3: f64,
@@ -141,8 +143,11 @@ pub struct SetupSimulationResult {
     pub removed_volume_mm3: f64,
     pub final_stock: HeightfieldStock,
     pub final_cylindrical_stock: Option<CylindricalStock>,
+    pub final_tridexel_stock: Option<TriDexelStock>,
+    pub target_tridexel_stock: Option<TriDexelStock>,
     pub checkpoints: Vec<StockCheckpoint>,
     pub cylindrical_checkpoints: Vec<CylindricalCheckpoint>,
+    pub tridexel_checkpoints: Vec<TriDexelCheckpoint>,
     /// Per-operation `(RadialCutterProfile, is_flat_endmill)` captured during simulation for exact
     /// interactive timeline reconstruction even if project operations are later edited.
     pub operation_profiles: Vec<(RadialCutterProfile, bool)>,

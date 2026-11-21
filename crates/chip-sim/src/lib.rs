@@ -5,6 +5,7 @@ pub mod cutter_profile;
 pub mod cylindrical;
 pub mod heightmap;
 pub mod timeline;
+pub mod tridexel;
 pub mod verifier;
 
 pub use cutter_profile::{
@@ -17,11 +18,15 @@ pub use cylindrical::{
 pub use heightmap::{
     HeightfieldStock, OPERATION_STOCK_PALETTE, SetupSimulationInput, SetupSimulationResult,
     SimError, SimResolution, SimStockMesh, StockCheckpoint, StockPlaybackCursor, UNCUT_OP_IDX,
-    run_setup_simulation, tessellate_stock_mesh,
+    run_setup_simulation, run_setup_simulation_with_engine, tessellate_stock_mesh,
 };
 pub use timeline::{
     MachineKinematicsConfig, MotionSpan, OperationTimelineSummary, ScrubSnapshot,
     SimOperationInput, SimulationTimeline, ToolChangeSnapshot, format_cycle_time_hms,
+};
+pub use tridexel::{
+    DexelPlane, DexelSpan, SimEngineKind, TriDexelCheckpoint, TriDexelStock,
+    run_tridexel_setup_simulation, tessellate_tridexel_stock_mesh,
 };
 pub use verifier::{SimDiagnostic, SimIssueKind, SimSeverity, SimVerificationConfig};
 

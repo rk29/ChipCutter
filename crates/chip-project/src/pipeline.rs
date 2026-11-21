@@ -10,8 +10,8 @@ use chip_post::{
     post_process_setup, resolve_post_profile,
 };
 use chip_sim::{
-    MachineKinematicsConfig, SetupSimulationInput, SetupSimulationResult, SimOperationInput,
-    SimResolution, SimVerificationConfig, run_setup_simulation,
+    MachineKinematicsConfig, SetupSimulationInput, SetupSimulationResult, SimEngineKind,
+    SimOperationInput, SimResolution, SimVerificationConfig, run_setup_simulation_with_engine,
 };
 use chip_tools::Tool;
 
@@ -108,6 +108,15 @@ pub struct SetupSimRequest<'a> {
 
 /// Runs 2.5D Z-dexel heightmap stock removal & 5-rule crash/gouge verification for a single Setup.
 pub fn simulate_project_setup(req: &SetupSimRequest<'_>) -> Result<SetupSimulationResult, String> {
+    simulate_project_setup_with_engine(req, SimEngineKind::Heightmap)
+}
+
+/// Runs stock removal & 5-rule crash/gouge verification for a single Setup using the chosen
+/// [`SimEngineKind`] (`Heightmap` or volumetric `TriDexel`).
+pub fn simulate_project_setup_with_engine(
+    req: &SetupSimRequest<'_>,
+    engine: SimEngineKind,
+) -> Result<SetupSimulationResult, String> {
     let setup = req
         .project
         .setups
@@ -127,16 +136,19 @@ pub fn simulate_project_setup(req: &SetupSimRequest<'_>) -> Result<SetupSimulati
         .map(|item| SimOperationInput::from_operation(item.op, item.tool, item.toolpath.as_ref()))
         .collect();
 
-    run_setup_simulation(&SetupSimulationInput {
-        doc: req.cad_doc,
-        setup: &resolved,
-        target_bodies: &setup.target_bodies,
-        operations: &sim_inputs,
-        resolution: req.resolution,
-        kinematics: req.kinematics,
-        verify_config: SimVerificationConfig::default(),
-        cancel: req.cancel,
-    })
+    run_setup_simulation_with_engine(
+        &SetupSimulationInput {
+            doc: req.cad_doc,
+            setup: &resolved,
+            target_bodies: &setup.target_bodies,
+            operations: &sim_inputs,
+            resolution: req.resolution,
+            kinematics: req.kinematics,
+            verify_config: SimVerificationConfig::default(),
+            cancel: req.cancel,
+        },
+        engine,
+    )
     .map_err(|e| e.to_string())
 }
 

@@ -50,7 +50,7 @@ pub use history::UndoHistory;
 pub use pipeline::{
     ReadySetupOperation, SetupPostRequest, SetupSimRequest, collect_ready_setup_operations,
     kinematics_for_post_profile, post_process_project_setup, resolve_kinematics_for_key,
-    simulate_project_setup,
+    simulate_project_setup, simulate_project_setup_with_engine,
 };
 pub use reload::{
     CadReloadReport, OperationReloadOutcome, cad_binding_to_sketch_face,

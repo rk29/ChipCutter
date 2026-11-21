@@ -787,6 +787,7 @@ pub fn run_cylindrical_setup_simulation(
             });
 
     Ok(SetupSimulationResult {
+        engine: crate::tridexel::SimEngineKind::Heightmap,
         resolution: input.resolution,
         timeline,
         initial_stock_volume_mm3: initial_vol,
@@ -794,8 +795,11 @@ pub fn run_cylindrical_setup_simulation(
         removed_volume_mm3: removed_vol,
         final_stock: placeholder_hf,
         final_cylindrical_stock: Some(stock),
+        final_tridexel_stock: None,
+        target_tridexel_stock: None,
         checkpoints: Vec::new(),
         cylindrical_checkpoints: checkpoints,
+        tridexel_checkpoints: Vec::new(),
         operation_profiles: profiles,
         diagnostics,
     })

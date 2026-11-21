@@ -250,6 +250,66 @@ impl RadialCutterProfile {
         Some(dz)
     }
 
+    /// Evaluates the exact cutting envelope radius `r(dz) >= 0` at axial height `dz_mm >= 0` above
+    /// the cutter tip `(0, 0, 0)` (exact inverse of [`Self::tip_to_envelope_dz`]).
+    ///
+    /// Returns `None` if `dz_mm < 0.0` (below the cutter tip). Above the tip transition height,
+    /// returns `self.cutting_radius_mm` up through the flute envelope.
+    #[inline]
+    pub fn radius_at_height_dz(&self, dz_mm: f64) -> Option<f64> {
+        if !dz_mm.is_finite() || dz_mm < -1e-9 {
+            return None;
+        }
+        let dz = dz_mm.max(0.0);
+        let r = match self.kind {
+            TipEnvelopeKind::Flat => self.cutting_radius_mm,
+            TipEnvelopeKind::BullNose {
+                flat_r_mm,
+                corner_r_mm,
+            } => {
+                if corner_r_mm <= 1e-9 || dz >= corner_r_mm {
+                    self.cutting_radius_mm
+                } else {
+                    let dy = corner_r_mm - dz;
+                    (flat_r_mm + (corner_r_mm * corner_r_mm - dy * dy).max(0.0).sqrt())
+                        .min(self.cutting_radius_mm)
+                }
+            }
+            TipEnvelopeKind::Ball { ball_r_mm } => {
+                if dz >= ball_r_mm {
+                    self.cutting_radius_mm
+                } else {
+                    let dy = ball_r_mm - dz;
+                    (ball_r_mm * ball_r_mm - dy * dy)
+                        .max(0.0)
+                        .sqrt()
+                        .min(self.cutting_radius_mm)
+                }
+            }
+            TipEnvelopeKind::Chamfer {
+                tip_r_mm,
+                tan_half_angle,
+            } => (tip_r_mm + dz * tan_half_angle).min(self.cutting_radius_mm),
+            TipEnvelopeKind::Drill { tan_half_angle } => {
+                (dz * tan_half_angle).min(self.cutting_radius_mm)
+            }
+            TipEnvelopeKind::Face {
+                flat_r_mm,
+                bottom_r_mm,
+                corner_r_mm,
+            } => {
+                if dz < corner_r_mm && corner_r_mm > 1e-9 {
+                    let dy = corner_r_mm - dz;
+                    (flat_r_mm + (corner_r_mm * corner_r_mm - dy * dy).max(0.0).sqrt())
+                        .min(bottom_r_mm)
+                } else {
+                    (bottom_r_mm + (dz - corner_r_mm)).min(self.cutting_radius_mm)
+                }
+            }
+        };
+        Some(r.max(0.0))
+    }
+
     /// Maximum envelope radius among cutting flutes, shank, and collet/holder.
     #[inline]
     pub fn max_assembly_radius_mm(&self) -> f64 {

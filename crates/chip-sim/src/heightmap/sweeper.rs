@@ -762,6 +762,15 @@ struct SegmentRuleHit {
 pub fn run_setup_simulation(
     input: &SetupSimulationInput<'_>,
 ) -> Result<SetupSimulationResult, SimError> {
+    run_setup_simulation_with_engine(input, crate::tridexel::SimEngineKind::Heightmap)
+}
+
+/// Executes stock simulation & 5-rule crash/gouge verification using the selected [`crate::SimEngineKind`]
+/// (`Heightmap` or volumetric `TriDexel`).
+pub fn run_setup_simulation_with_engine(
+    input: &SetupSimulationInput<'_>,
+    engine: crate::tridexel::SimEngineKind,
+) -> Result<SetupSimulationResult, SimError> {
     let check_cancel = || -> Result<(), SimError> {
         if let Some(flag) = input.cancel
             && flag.load(Ordering::Relaxed)
@@ -774,6 +783,9 @@ pub fn run_setup_simulation(
     check_cancel()?;
     if let Some(rotary) = input.setup.rotary {
         return crate::cylindrical::run_cylindrical_setup_simulation(input, rotary);
+    }
+    if engine == crate::tridexel::SimEngineKind::TriDexel {
+        return crate::tridexel::run_tridexel_setup_simulation(input);
     }
     let timeline = SimulationTimeline::from_operations(input.operations, input.kinematics);
     let mut stock = HeightfieldStock::from_setup_stock(&input.setup.stock, input.resolution)?;
@@ -846,6 +858,7 @@ pub fn run_setup_simulation(
     let diagnostics = coalesce_rule_hits(raw_hits);
 
     Ok(SetupSimulationResult {
+        engine: crate::tridexel::SimEngineKind::Heightmap,
         resolution: input.resolution,
         timeline,
         initial_stock_volume_mm3,
@@ -853,8 +866,11 @@ pub fn run_setup_simulation(
         removed_volume_mm3,
         final_stock: stock,
         final_cylindrical_stock: None,
+        final_tridexel_stock: None,
+        target_tridexel_stock: None,
         checkpoints,
         cylindrical_checkpoints: Vec::new(),
+        tridexel_checkpoints: Vec::new(),
         operation_profiles: profiles,
         diagnostics,
     })
