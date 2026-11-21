@@ -269,6 +269,26 @@ Phase 11 introduces a true 3D **Tri-Dexel volumetric simulation engine** alongsi
 
 ---
 
+## Phase 12 — GUI Polish, Consistent Panel UX, Unsaved-Changes Guard, & Illustrated Sample Gallery (Planned — M41–M43)
+
+Phase 12 focuses on desktop usability, visual consistency, responsiveness, and discoverability across the entire `chip-gui` workspace and sample-project documentation:
+
+### Milestone 41 — Unified Collapsible Cards, Strict Two-Column Inspectors, & Consistent Visibility/Active Controls (`plans/41-milestone-41-plan.md`)
+- **Unified Collapsible Card Styling Across Left & Right Panels (`panels/browser.rs`, `widgets/section_card.rs`):** Restyle the left **CAM Browser** (`Models`, `2D Sketches`, `Project Tools`, and per-`Setup` sections) using the same elevated collapsible `section_card` framing and typography already used on the right Inspector panels so both sidebars look cohesive in Studio Dark and Daylight Light themes.
+- **Strict Two-Column Inspector Cards (`panels/setup_inspector.rs`, `panels/operation_inspector.rs`, `panels/model_inspector.rs`, `panels/sketch_inspector.rs`):** Audit and refactor overly wide right-panel cards—especially **WCS Origin** and any sections placing two label/value control pairs side-by-side—into a clean, compact two-column `Name | Value / Selection` layout that fits narrow Inspector widths without horizontal scrolling or clipping.
+- **Consistent Visibility (`Eyeball`) vs. Active/Inactive (`Checkbox`) Semantics (`panels/browser.rs`, `chip-gui`):** Standardize icons and checkboxes across the CAM Browser so **Eyeball icons** always toggle **viewport visibility** (2D Sketches & individual Operation toolpaths) and **Checkboxes** always toggle **Active / Enabled vs. Suppressed / Inactive** state (Operations & Sketches), eliminating the inverted eyeball-as-suppress and checkbox-as-visibility mismatch.
+
+### Milestone 42 — Universal Control Tooltips, Heatmap Toggle & Playback Performance, & Unsaved-Changes Close Guard (`plans/42-milestone-42-plan.md`)
+- **Universal Hover Tooltips (`chip-gui`):** Audit every interactive control across the top menu/toolbar, CAM Browser, right-side Inspectors, bottom panes (`Simulation Timeline`, `G-Code Preview`, `Diagnostics & Log`), viewport HUD, and modals so every button, checkbox, dropdown, slider, and numeric input provides clear hover text explaining what it does.
+- **Error Heatmap Display Toggle & Fast Simulation Playback (`panels/simulation.rs`, `chip-sim`):** Make enabling/disabling the signed **Error Heatmap** display unmistakable and responsive (resolving overlap with `Color by Op`, guaranteeing zero heatmap cost when disabled, deferring/optimizing expensive per-vertex deviation coloring during live scrubbing, and caching deviation lookups so playback stays smooth).
+- **Unsaved-Changes Prompt on Window Close (`app/mod.rs`, `app/loader.rs`):** Intercept application close requests (`ViewportEvent::CloseRequested`) whenever the active project has unsaved edits since the last save, prompting the user with **`Save`**, **`Discard & Close`**, or **`Cancel`** (while leaving headless `--self-test-screenshot` automation unaffected).
+
+### Milestone 43 — Illustrated Sample Projects Gallery Documentation (`plans/43-milestone-43-plan.md`)
+- **Visual Sample Gallery Index (`docs/samples/README.md`):** Publish a thumbnail gallery showcasing every built-in sample project (`SAMPLE_CATALOG`, all 15 STEP, STL/OBJ, Pure-2D, V-Carve, and 4th-Axis Rotary samples), linking each card to its dedicated detail page.
+- **Dedicated Per-Sample Pages & Per-Operation Completion Captures (`docs/samples/<slug>.md`, `docs/images/samples/<slug>/`):** Extend headless capture support (`--capture-sim-after-op` / `--capture-setup`) with a reproducible script (`scripts/capture_sample_gallery.sh`) to generate full screenshots and descriptions for every sample—including an individual screenshot at the exact simulation completion point of **each Setup and Operation** for multi-op and multi-setup samples.
+
+---
+
 ## Future Phases
 
 1. **Toolpath Algorithm Quality Optimization (Driven by Phase 11 Error Metrics):**
