@@ -407,6 +407,30 @@ Phase 16 leveraged Phase 15's GPU-accelerated Ultra simulation and `chipcutter s
 
 ---
 
+## Phase 17 — Shop-Floor Workholding, Fixture Collision Verification, & Multi-Setup Stock Carryover (Planned — M60–M63)
+
+Phase 17 brings real shop-floor workholding awareness and true multi-setup volumetric continuity to ChipCutter—building directly on Phase 14's `chip-bvh`/`chip-geom2d`/`chip-stock` architecture and Phase 15's GPU-accelerated simulation while preserving 100% lossless `.chip.toml` backward compatibility and byte-for-byte Phase 1–2 golden G-code parity (with `G38.2` probing operations remaining deferred to Future Phases):
+
+### Milestone 60 — 3D Fixture, Vise, & Clamp Workholding Model, Persistence, & Viewport Rendering (`plans/60-milestone-60-plan.md`)
+- **Schema-Safe Workholding Model (`chip-cam/src/workholding.rs`):** Add optional `fixtures: Vec<FixtureBody>` on `Setup` (omitted when empty for zero diff on existing projects) supporting parametric **`ViseJaws`** (fixed/movable jaws, step shelves, parallels auto-clamped to stock), **`ToeClamp`** (placed strap/toe clamps with overhang & bolt stud), **`Spoilboard`** (sacrificial bed with allowed overcut margin), **`BoxKeepOut` / `CylinderKeepOut`**, and **`ImportedModel`** (`.step`/`.stl`/`.obj`/`.3mf` fixture solids bundled inside `.chipz` and automatically excluded from target-part gouge metrics).
+- **Exact `f64` Resolution (`chip-bvh`, `chip-geom2d`):** Resolve every enabled fixture into exact Setup-WCS `TriMesh3D` + `FlatBvh` collision volumes and 2D XY keep-out footprints (`RegionSet2D`) with configurable `clearance_margin_mm`.
+- **Setup `[Fixtures]` Tab & Viewport Rendering (`chip-gui`, `chip-cli`):** Add a strict two-column **`[Fixtures]`** tab in Setup Inspector (1-click preset creation, interactive 3D viewport click-to-place for clamps/keep-outs, `< 1 ms` Undo/Redo), translucent `wgpu` fixture shading + `Fixtures` viewport visibility toggle, and `chipcutter workholding list/inspect` CLI helpers.
+
+### Milestone 61 — Automatic Safe-Rapid Routing & 3D Fixture Collision Verification (`plans/61-milestone-61-plan.md`)
+- **Fixture-Aware Safe-Rapid & Linking Routing (`chip-cam/src/fixture_avoidance.rs`):** Automatically inspect non-cutting rapids and stay-down links against enabled fixture `FlatBvh` volumes (accounting for full flute, shank, and holder/collet radial envelopes plus `clearance_margin_mm`), lifting colliding rapids cleanly over clamps/jaws without silently mutating cutting passes—leaving projects with no fixtures byte-identical.
+- **Rule 6: Full-Assembly `FixtureCollision` Verification (`chip-sim`, `chip-stock`):** Add `SimIssueKind::FixtureCollision` (`SimSeverity::CriticalError`, export-blocking and clickable to jump camera + timeline) checking swept flute, shank, and holder/collet envelopes against every enabled fixture across `Heightfield`, `TriDexel`, and `Cylindrical` engines with 100% CPU-vs-GPU parity, plus crimson collision highlighting in the 3D viewport.
+
+### Milestone 62 — Multi-Setup In-Process Volumetric Stock Carryover (`G54` -> `G55`) & Rest-Aware Op-2 Machining (`plans/62-milestone-62-plan.md`)
+- **Cross-Setup Tri-Dexel Carryover (`chip-stock/src/tridexel/transfer.rs`, `chip-cam`):** Add `StockConfig::FromPrecedingSetup` transferring Setup `N`'s exact final `TriDexelStock` into Setup `N+1`'s oriented WCS frame (`T_{N+1 -> N}`)—using an exact zero-blur plane permutation/flip fast path for `90°`/`180°` flip setups and exact BVH surface re-voxelization for arbitrary oblique orientations.
+- **Rest-Aware Op-2 Toolpaths & Cumulative Metrology (`chip-cam`, `chip-project`, `chip-sim`, `chip-gui`, `chip-cli`):** Pass carried-over remaining stock into Op-2 roughing/facing/pocketing (`Adaptive3D`, `Waterline3D`, `Facing`, `Pocket2D`, `Adaptive2D`) to skip already-machined air regions, initialize Op-2 simulation playback from Op-1's real machined solid (at `t = 0.0`) for accurate Op-2 crash detection and cumulative `ErrVol` / `RMS` / `In-Tol %` metrics, and support `chipcutter simulate --all-setups` + Setup `[Stock]` carryover UI preview.
+
+### Milestone 63 — Two-Sided Flip-Jig & Auto Soft-Jaw Wizards, Built-In Workholding Sample, & Spec Sync (`plans/63-milestone-63-plan.md`)
+- **Two-Sided Flip-Jig Dowel-Pin Wizard (`chip-cam`, `chip-gui`, `chip-cli`):** Automatically place collision-free dowel-pin registration holes strictly symmetric about the chosen flip axis (`X` or `Y`), creating the `Flip-Jig Pins` sketch, stock/spoilboard pin-boring operations, paired `180°` Op-2 Setup (`G55`) with `FromPrecedingSetup` stock carryover, and matching pin keep-out fixture bodies.
+- **Auto Soft-Jaw Generator Wizard (`chip-cam`, `chip-gui`, `chip-cli`):** Project the exact `f64` clamping-band part silhouette (with radial clearance and internal corner relief fillets) onto fixed/movable vise jaws—generating both ready-to-machine aluminum soft-jaw setups/toolpaths AND watertight 3D-printable `.stl` soft-jaw meshes (`chipcutter workholding soft-jaws --export-stl`).
+- **Built-In Sample, Verification Gate, & Spec Sync:** Add built-in `two-sided-vise` sample project demonstrating Op-1 vise/clamp avoidance + Op-2 flipped Tri-Dexel stock carryover + soft jaws, lock down end-to-end workholding/carryover/wizard regression tests & headless Vulkan visual verification, and synchronize `specs/03-setups-wcs.md`, `specs/06-simulation.md`, `specs/08-ui-viewport.md`, `specs/09-persistence-cli.md`, `specs/10-roadmap.md`, and `AGENTS.md`.
+
+---
+
 ## Future Phases
 
 ChipCutter's long-term roadmap focuses on bringing pro-grade CAM capabilities to hobby and benchtop machinists—making everyday job setup faster, safer, and easier to use without commercial CAM complexity or licensing cost.
@@ -417,11 +441,8 @@ ChipCutter's long-term roadmap focuses on bringing pro-grade CAM capabilities to
 2. **Guided Operation Setup & Reusable Machining Recipes:**
    - **Guided Operation Setup Mode (Automatic Feature Recognition):** Interactive workflow inspecting imported STEP/mesh/sketch geometry against the active Setup WCS, stock, and target machine's tool library to automatically recognize machinable features and propose a sequenced operation plan—**Facing**, **2D Adaptive / Pocket**, **Drill vs. Helical Bore / Thread Mill**, **2D Contour + Tabs**, **Edge Chamfer**, and **3D Roughing/Finishing**—letting the machinist review, tweak, accept, or skip each step.
    - **Reusable Operation Templates & Recipes:** Save proven multi-op patterns (e.g., *"6061-T6 Pocket + Finish + Chamfer"* or *"M6 Counterbored Hole = Spot + Drill + Helical Bore"*) and apply them in one click to new parts.
-3. **Shop-Floor Workholding, Probing, & Multi-Setup Stock Carryover:**
+3. **In-Machine Probing Operations (`G38.2`):**
    - **Probing Operations (`G38.2`):** First-class WCS corner, bore/boss center, Z-surface, and 2-point rotation/skew probing cycles integrated directly into Setups for grblHAL/Carvera and LinuxCNC controllers.
-   - **3D Fixture, Vise, & Clamp Collision Bodies:** Automatic safe-rapid routing and crash verification against workholding solids.
-   - **In-Process Stock Carryover Across Setups (`G54` -> `G55`):** Pass the exact remaining Tri-Dexel solid from Setup 1 into Setup 2 (e.g. after flipping or re-clamping the part) so both simulation and rest-aware toolpaths know exactly which features were already machined—enabling zero-air-cut multi-op roughing, accurate Op-2 collision checks, and cumulative error-volume metrics.
-   - **Two-Sided Flip-Jig & Auto Soft-Jaw Wizards:** Automatically place symmetric registration dowel-pin holes for flip machining without a vise, or auto-generate ready-to-machine aluminum / 3D-printed vise soft-jaw pockets directly from the part's silhouette.
 4. **Expanded Machining Capabilities:**
    - **3D Edge Deburring & Non-Planar Chamfering:** Follow 3D B-Rep edges with a chamfer or lollipop cutter so curved and stepped parts come off the machine already deburred.
    - **Undercuts, Keyways, T-Slots, & Dovetails:** Lollipop, slot-mill, T-slot, and dovetail cutter geometries + strategies backed by Tri-Dexel undercut simulation.
