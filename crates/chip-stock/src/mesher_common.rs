@@ -1,8 +1,8 @@
 //! Shared stock surface color constants and per-operation color resolver across
-//! Heightmap (`heightmap/mesher.rs`), Tri-Dexel (`tridexel/mesher.rs`), and
-//! Cylindrical (`cylindrical.rs`) stock mesh builders.
+//! Heightfield (`heightfield/mesher.rs`), Tri-Dexel (`tridexel/mesher.rs`), and
+//! Cylindrical (`cylindrical/mesher.rs`) stock mesh builders.
 
-use crate::heightmap::UNCUT_OP_IDX;
+use crate::types::UNCUT_OP_IDX;
 
 /// Distinct operation color palette for **Color Stock by Operation / Tool** (`06-simulation.md` §3).
 pub const OPERATION_STOCK_PALETTE: [[f32; 4]; 8] = [
@@ -25,7 +25,7 @@ pub const MACHINED_METAL_COLOR: [f32; 4] = [0.76, 0.80, 0.85, 1.0];
 
 /// Resolves the vertex sRGB RGBA color for a stock surface cell tagged with `op_idx`.
 #[inline]
-pub fn op_color(op_idx: u16, color_by_op: bool, is_side: bool) -> [f32; 4] {
+pub fn op_color(op_idx: u32, color_by_op: bool, is_side: bool) -> [f32; 4] {
     if op_idx == UNCUT_OP_IDX {
         if is_side {
             RAW_STOCK_SIDE_COLOR
@@ -33,7 +33,7 @@ pub fn op_color(op_idx: u16, color_by_op: bool, is_side: bool) -> [f32; 4] {
             RAW_STOCK_TOP_COLOR
         }
     } else if color_by_op {
-        OPERATION_STOCK_PALETTE[usize::from(op_idx) % OPERATION_STOCK_PALETTE.len()]
+        OPERATION_STOCK_PALETTE[(op_idx as usize) % OPERATION_STOCK_PALETTE.len()]
     } else {
         MACHINED_METAL_COLOR
     }

@@ -14,12 +14,11 @@ use chip_project::{
     ProjectDocument, ToolpathCache, collect_ready_setup_operations, resolve_kinematics_for_key,
 };
 use chip_sim::{
-    CylindricalStock, HeightfieldStock, ScrubSnapshot, SetupSimulationInput, SetupSimulationResult,
-    SimEngineKind, SimError, SimOperationInput, SimResolution, SimStockColorMode, SimStockMesh,
-    SimToolMesh, SimVerificationConfig, StockErrorReport, StockPlaybackCursor, TriDexelStock,
-    build_cutter_assembly_mesh, deviation_to_heatmap_rgba, format_cycle_time_hms,
-    run_setup_simulation_with_engine, tessellate_cylindrical_stock_mesh_colored,
-    tessellate_stock_mesh_colored, tessellate_tridexel_stock_mesh_colored,
+    ScrubSnapshot, SetupSimulationInput, SetupSimulationResult, SimEngineKind, SimError,
+    SimOperationInput, SimResolution, SimStockColorMode, SimStockMesh, SimToolMesh,
+    SimVerificationConfig, SimulatedStock, SimulatedStockPlaybackExt, StockErrorReport,
+    StockPlaybackCursor, build_cutter_assembly_mesh, deviation_to_heatmap_rgba,
+    format_cycle_time_hms, run_setup_simulation_with_engine,
 };
 use chip_tools::{Tool, ToolId};
 use crossbeam_channel::{Receiver, Sender, unbounded};
@@ -68,9 +67,7 @@ pub struct SimulationPanelState {
 
     working_stock_identity: Option<(u64, usize)>,
     working_stock_cursor: Option<StockPlaybackCursor>,
-    working_heightfield: Option<HeightfieldStock>,
-    working_tridexel: Option<TriDexelStock>,
-    working_cylindrical: Option<CylindricalStock>,
+    working_stock: Option<SimulatedStock>,
 
     cached_error_report_key: Option<(u64, u32)>,
     cached_error_report: Option<StockErrorReport>,
@@ -149,9 +146,7 @@ impl Default for SimulationPanelState {
             active_result: None,
             working_stock_identity: None,
             working_stock_cursor: None,
-            working_heightfield: None,
-            working_tridexel: None,
-            working_cylindrical: None,
+            working_stock: None,
             cached_error_report_key: None,
             cached_error_report: None,
             cached_stock_meta: None,
@@ -471,9 +466,7 @@ impl SimulationPanelState {
     fn clear_stock_display_cache(&mut self) {
         self.working_stock_identity = None;
         self.working_stock_cursor = None;
-        self.working_heightfield = None;
-        self.working_tridexel = None;
-        self.working_cylindrical = None;
+        self.working_stock = None;
         self.cached_error_report_key = None;
         self.cached_error_report = None;
         self.cached_stock_meta = None;
@@ -564,50 +557,19 @@ impl SimulationPanelState {
                     seg_idx: res.timeline.motion_spans.len(),
                     seg_u: 0.0,
                 });
-                if let Some(cyl_final) = &res.final_cylindrical_stock {
-                    self.working_cylindrical = Some(cyl_final.clone());
-                    self.working_tridexel = None;
-                    self.working_heightfield = None;
-                } else if let Some(td_final) = &res.final_tridexel_stock {
-                    self.working_tridexel = Some(td_final.clone());
-                    self.working_heightfield = None;
-                    self.working_cylindrical = None;
-                } else {
-                    self.working_heightfield = Some(res.final_stock.clone());
-                    self.working_tridexel = None;
-                    self.working_cylindrical = None;
-                }
+                self.working_stock = Some(res.final_stock.clone());
                 self.cached_stock_mesh = None;
                 self.cached_stock_meta = None;
             }
 
-            let stock_changed = if let Some(cyl_work) = self.working_cylindrical.as_mut() {
-                res.sync_cylindrical_stock_to_time(
-                    cyl_work,
-                    &mut self.working_stock_cursor,
-                    self.current_time_sec,
-                )
-            } else if let Some(td_work) = self.working_tridexel.as_mut() {
-                if let Some(s) = &snap {
-                    let cursor = self
-                        .working_stock_cursor
-                        .get_or_insert(StockPlaybackCursor {
-                            seg_idx: res.timeline.motion_spans.len(),
-                            seg_u: 0.0,
-                        });
-                    td_work.sync_to_scrub_snapshot(cursor, &res, s)
+            let stock_changed =
+                if let (Some(work), Some(s)) = (self.working_stock.as_mut(), snap.as_ref()) {
+                    work.sync_to_scrub_snapshot(&mut self.working_stock_cursor, &res, s)
+                } else if let Some(work) = self.working_stock.as_mut() {
+                    work.sync_to_time(&mut self.working_stock_cursor, &res, self.current_time_sec)
                 } else {
                     false
-                }
-            } else if let Some(hf_work) = self.working_heightfield.as_mut() {
-                res.sync_stock_to_time(
-                    hf_work,
-                    &mut self.working_stock_cursor,
-                    self.current_time_sec,
-                )
-            } else {
-                false
-            };
+                };
 
             let needs_remesh = stock_changed
                 || self.cached_stock_mesh.is_none()
@@ -615,22 +577,12 @@ impl SimulationPanelState {
 
             if needs_remesh {
                 let color_mode = self.active_stock_color_mode();
-                let mesh = if let Some(cyl_work) = self.working_cylindrical.as_ref() {
-                    // Always tessellate in stock-local (0°) frame; the GPU rotates the stock
-                    // via the `stock_model` uniform in `vs_sim_stock` so rotary-only ticks never
-                    // re-tessellate on the CPU.
-                    tessellate_cylindrical_stock_mesh_colored(cyl_work, color_mode, 0.0)
-                } else if let Some(td_work) = self.working_tridexel.as_ref() {
-                    tessellate_tridexel_stock_mesh_colored(
-                        td_work,
-                        res.target_tridexel_stock.as_ref(),
-                        color_mode,
-                    )
-                } else if let Some(hf_work) = self.working_heightfield.as_ref() {
-                    tessellate_stock_mesh_colored(hf_work, color_mode)
-                } else {
-                    SimStockMesh::default()
-                };
+                let mesh = self
+                    .working_stock
+                    .as_ref()
+                    .map_or_else(SimStockMesh::default, |work| {
+                        res.extract_stock_mesh(work, color_mode)
+                    });
 
                 let rev = self.next_gpu_mesh_rev;
                 self.next_gpu_mesh_rev += 1;
@@ -681,7 +633,7 @@ impl SimulationPanelState {
             None
         };
 
-        let sim_rot_deg = if self.show_machined_stock && res.final_cylindrical_stock.is_some() {
+        let sim_rot_deg = if self.show_machined_stock && res.is_cylindrical() {
             snap.as_ref().map_or(0.0, |s| s.rotary_deg)
         } else {
             0.0
@@ -1105,7 +1057,7 @@ impl SimulationPanelState {
                         tc.next_op_name
                     ));
                     ui.separator();
-                    if let Some(cyl) = &res.final_cylindrical_stock {
+                    if let Some(cyl) = res.as_cylindrical() {
                         ui.monospace(format!(
                             "WCS X={} Y={} Z={} {}={:.1}°",
                             display_unit.format_length(s.tip_pos_wcs.x),
@@ -1143,7 +1095,7 @@ impl SimulationPanelState {
                     ui.monospace(format!("T{}", s.tool_number))
                         .on_hover_text(&s.tool_name);
                     ui.separator();
-                    if let Some(cyl) = &res.final_cylindrical_stock {
+                    if let Some(cyl) = res.as_cylindrical() {
                         ui.monospace(format!(
                             "X={} Y={} Z={} {}={:.1}°",
                             display_unit.format_length(s.tip_pos_wcs.x),
@@ -1182,7 +1134,7 @@ impl SimulationPanelState {
             let tok = crate::theme::ThemeTokens::from_ui(ui);
             let snap_rot_deg = snap.as_ref().map_or(0.0, |s| s.rotary_deg);
             let locate_wcs = |loc: DVec3| -> DVec3 {
-                if let Some(cyl) = &res.final_cylindrical_stock
+                if let Some(cyl) = res.as_cylindrical()
                     && snap_rot_deg.abs() > 1e-6
                 {
                     cyl.rotary.rotate_point_wcs(loc, snap_rot_deg)
@@ -1190,7 +1142,7 @@ impl SimulationPanelState {
                     loc
                 }
             };
-            let engine_tag = if res.final_cylindrical_stock.is_some() {
+            let engine_tag = if res.is_cylindrical() {
                 "4-axis polar"
             } else {
                 res.engine.short_slug()
@@ -1479,7 +1431,7 @@ mod tests {
 
             // Working heightfield must already be cut directly beneath the cutter tip,
             // and remain uncut well ahead of the cutter!
-            let hf = panel.working_heightfield.as_ref().unwrap();
+            let hf = panel.working_stock.as_ref().unwrap();
             let z_at_tip = hf.sample_stock_z(tip_wcs.x, 0.0).unwrap();
             assert!(
                 (z_at_tip - (-5.0)).abs() < 0.05,
@@ -1586,19 +1538,11 @@ mod tests {
 
         panel.current_time_sec = cut_start + cut_dur * 0.25;
         let rev_25 = panel.resolve_viewport_visuals(&project, 0).stock.unwrap().0;
-        let vol_25 = panel
-            .working_cylindrical
-            .as_ref()
-            .unwrap()
-            .current_volume_mm3();
+        let vol_25 = panel.working_stock.as_ref().unwrap().compute_volume_mm3();
 
         panel.current_time_sec = cut_start + cut_dur * 0.75;
         let rev_75 = panel.resolve_viewport_visuals(&project, 0).stock.unwrap().0;
-        let vol_75 = panel
-            .working_cylindrical
-            .as_ref()
-            .unwrap()
-            .current_volume_mm3();
+        let vol_75 = panel.working_stock.as_ref().unwrap().compute_volume_mm3();
 
         assert!(
             rev_75 > rev_25,
@@ -1738,7 +1682,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(sim.engine, chip_sim::SimEngineKind::TriDexel);
-        assert!(sim.final_tridexel_stock.is_some());
+        assert!(sim.as_tridexel().is_some());
 
         let cut_start = sim.timeline.motion_spans[1].t_start_sec;
         let cut_dur = sim.timeline.motion_spans[1].t_end_sec - cut_start;
@@ -1753,19 +1697,11 @@ mod tests {
         panel.current_time_sec = cut_start + cut_dur * 0.25;
         let (rev_25, mesh_25) = panel.resolve_viewport_visuals(&project, 0).stock.unwrap();
         assert!(!mesh_25.vertices.is_empty());
-        let vol_25 = panel
-            .working_tridexel
-            .as_ref()
-            .unwrap()
-            .compute_volume_mm3();
+        let vol_25 = panel.working_stock.as_ref().unwrap().compute_volume_mm3();
 
         panel.current_time_sec = cut_start + cut_dur * 0.75;
         let (rev_75, _) = panel.resolve_viewport_visuals(&project, 0).stock.unwrap();
-        let vol_75 = panel
-            .working_tridexel
-            .as_ref()
-            .unwrap()
-            .compute_volume_mm3();
+        let vol_75 = panel.working_stock.as_ref().unwrap().compute_volume_mm3();
         assert!(rev_75 > rev_25);
         assert!(
             vol_75 < vol_25 - 100.0,

@@ -1,0 +1,17 @@
+[package]
+name = "chip-stock"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+bytemuck.workspace = true
+chip-bvh.workspace = true
+chip-math.workspace = true
+chip-tools.workspace = true
+rayon.workspace = true
+serde.workspace = true
+thiserror.workspace = true

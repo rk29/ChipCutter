@@ -1,40 +1,47 @@
-//! 2.5D Z-Dexel heightmap stock material removal, trapezoidal cycle-time timeline,
-//! 3D cutter/stock mesh builders, and 5-rule crash & gouge verifier (`chip-sim`).
+//! Simulation orchestrator, trapezoidal cycle-time timeline, 3D cutter assembly mesh builder,
+//! CAD target adapter, and 5-rule crash & gouge verifier (`chip-sim`).
+//!
+//! Pure volumetric stock kernels (`HeightfieldStock`, `TriDexelStock`, `CylindricalStock`,
+//! `SimulatedStock`, `SimStockBackend`, meshing, and metrology) live in `chip-stock` and are
+//! re-exported here so downstream callers (`chip-project`, `chip-cli`, `chip-gui`) remain stable.
 
+#![deny(unsafe_code)]
+
+pub mod cad_adapter;
 pub mod cutter_profile;
-pub mod cylindrical;
-pub mod heightmap;
-pub(crate) mod mesher_common;
-pub mod metrics;
+pub mod driver;
 pub mod timeline;
-pub mod tridexel;
 pub mod verifier;
 pub(crate) mod verify_common;
 
-pub use cutter_profile::{
-    RadialCutterProfile, SimColoredVertex, SimToolMesh, ToolMeshZone, build_cutter_assembly_mesh,
+pub use cad_adapter::{
+    axis3_from_rotary_axis, axis3_from_stock_axis, extract_cylindrical_target_mesh_from_cad,
+    extract_heightfield_target_from_cad, extract_tridexel_target_from_cad,
+    rotary_stock_spec_from_cam, stock_shape_spec_from_cam,
 };
-pub use cylindrical::{
-    CylindricalCheckpoint, CylindricalStock, run_cylindrical_setup_simulation,
-    tessellate_cylindrical_stock_mesh, tessellate_cylindrical_stock_mesh_colored,
-};
-pub use heightmap::{
-    HeightfieldStock, OPERATION_STOCK_PALETTE, SetupSimulationInput, SetupSimulationResult,
-    SimError, SimResolution, SimStockMesh, StockCheckpoint, StockPlaybackCursor, UNCUT_OP_IDX,
-    run_setup_simulation, run_setup_simulation_with_engine, tessellate_stock_mesh,
-    tessellate_stock_mesh_colored,
-};
-pub use metrics::{
-    OperationErrorSnapshot, SimStockColorMode, StockErrorReport, compute_cylindrical_error_report,
+pub use chip_stock::{
+    AnalyticHorizFace, Axis3, BatchSweepOutput, CpuExactBackend, CylindricalStock, DexelPlane,
+    DexelSpan, FlatDexelSpan, HeightfieldStock, INLINE_DEXEL_SLOTS, MACHINED_METAL_COLOR,
+    OPERATION_STOCK_PALETTE, OperationErrorSnapshot, RAW_STOCK_SIDE_COLOR, RAW_STOCK_TOP_COLOR,
+    RadialCutterProfile, RaySpans, RotaryStockSpec, SimColoredVertex, SimEngineKind, SimError,
+    SimResolution, SimStockBackend, SimStockColorMode, SimStockMesh, SimulatedStock,
+    SpanRuleViolations, StockCheckpointSnapshot, StockErrorReport, StockModelKind,
+    StockPlaybackCursor, StockShapeSpec, StockVerifyTolerances, SweepChord, SweepMotion,
+    SweepToolSpec, TargetTriangle, TriDexelStock, UNCUT_OP_IDX, compute_cylindrical_error_report,
     compute_heightmap_error_report, compute_tridexel_error_report, deviation_to_heatmap_rgba,
+    op_color, pack_span_ops, query_overlap_length, query_target_gouge_depth, spans_contain_coord,
+    spans_difference_length, subtract_dexel_interval, tessellate_cylindrical_stock_mesh,
+    tessellate_cylindrical_stock_mesh_colored, tessellate_stock_mesh,
+    tessellate_stock_mesh_colored, tessellate_tridexel_stock_mesh,
+    tessellate_tridexel_stock_mesh_colored, unpack_max_op, unpack_min_op,
+};
+pub use cutter_profile::{SimToolMesh, ToolMeshZone, build_cutter_assembly_mesh};
+pub use driver::{
+    SetupSimulationInput, SetupSimulationResult, SimulatedStockPlaybackExt, run_setup_simulation,
+    run_setup_simulation_with_backend, run_setup_simulation_with_engine,
 };
 pub use timeline::{
     MachineKinematicsConfig, MotionSpan, OperationTimelineSummary, ScrubSnapshot,
     SimOperationInput, SimulationTimeline, ToolChangeSnapshot, format_cycle_time_hms,
-};
-pub use tridexel::{
-    DexelPlane, DexelSpan, SimEngineKind, TriDexelCheckpoint, TriDexelStock,
-    run_tridexel_setup_simulation, tessellate_tridexel_stock_mesh,
-    tessellate_tridexel_stock_mesh_colored,
 };
 pub use verifier::{SimDiagnostic, SimIssueKind, SimSeverity, SimVerificationConfig};

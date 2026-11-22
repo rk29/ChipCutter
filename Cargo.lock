@@ -811,16 +811,13 @@ dependencies = [
 name = "chip-sim"
 version = "0.13.0"
 dependencies = [
- "bytemuck",
  "chip-bvh",
  "chip-cad",
  "chip-cam",
  "chip-math",
+ "chip-stock",
  "chip-tools",
- "glam",
- "rayon",
  "serde",
- "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -840,6 +837,19 @@ dependencies = [
  "thiserror 2.0.21",
  "toml 0.8.23",
  "usvg",
+]
+
+[[package]]
+name = "chip-stock"
+version = "0.13.0"
+dependencies = [
+ "bytemuck",
+ "chip-bvh",
+ "chip-math",
+ "chip-tools",
+ "rayon",
+ "serde",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

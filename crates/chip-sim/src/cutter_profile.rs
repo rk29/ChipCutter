@@ -1,5 +1,7 @@
-use chip_tools::{AnalyticCutterEnvelope, CutterEnvelopeShape, CutterGeometry, Tool};
+use chip_tools::Tool;
 use serde::{Deserialize, Serialize};
+
+pub use chip_stock::{RadialCutterProfile, SimColoredVertex};
 
 /// Material zone of a 3D revolved cutter assembly mesh.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -9,196 +11,11 @@ pub enum ToolMeshZone {
     ColletHolder,
 }
 
-/// UI-agnostic 3D lit vertex (`pos_mm`, `normal`, `color_rgba`, 40 bytes) ready for zero-copy
-/// `bytemuck::cast_slice` GPU upload.
-#[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct SimColoredVertex {
-    pub pos_mm: [f32; 3],
-    pub normal: [f32; 3],
-    pub color_rgba: [f32; 4],
-}
-
 /// Revolved 3D triangle mesh for a [`Tool`] (`tip = (0, 0, 0)`, axis = `+Z` in Setup WCS).
 #[derive(Debug, Clone, Default)]
 pub struct SimToolMesh {
     pub vertices: Vec<SimColoredVertex>,
     pub indices: Vec<u32>,
-}
-
-/// Exact `f64` radial profile `P(r)` and shank/holder envelope of a [`Tool`] (`06-simulation.md`),
-/// delegating all analytic cutter profile math to [`AnalyticCutterEnvelope`].
-#[derive(Debug, Clone, Copy)]
-pub struct RadialCutterProfile {
-    pub cutting_radius_mm: f64,
-    pub shank_radius_mm: f64,
-    pub holder_radius_mm: f64,
-    pub flute_length_mm: f64,
-    pub stickout_length_mm: f64,
-    pub overall_length_mm: f64,
-    pub is_center_cutting: bool,
-    pub max_safe_plunge_depth_mm: f64,
-    /// Relieved neck radius (`mm`) for [`CutterGeometry::ThreadMill`] (`< cutting_radius_mm`).
-    /// Equals `cutting_radius_mm` for standard monotonic cutters.
-    pub neck_radius_mm: f64,
-    /// Usable relieved-neck reach (`mm`) above the tip before the full-diameter shank begins.
-    /// Equals `flute_length_mm` for standard monotonic cutters.
-    pub neck_length_mm: f64,
-    /// Axial tooth pitch (`mm`) for [`CutterGeometry::ThreadMill`] (`0.0` for other cutters).
-    pub thread_pitch_mm: f64,
-    /// Active V-tooth ring count (`1` = single-point, `>1` = multi-form; `0` for other cutters).
-    pub teeth_count: u32,
-    /// Included thread flank angle in degrees (typically `60°`; `0.0` for other cutters).
-    pub thread_angle_deg: f64,
-    /// `true` when constructed from [`CutterGeometry::ThreadMill`] (non-monotonic undercut profile).
-    pub is_thread_mill: bool,
-    envelope: AnalyticCutterEnvelope,
-}
-
-impl RadialCutterProfile {
-    /// Builds the exact radial height function `P(r)` and holder clearance envelope for `tool`.
-    pub fn from_tool(tool: &Tool) -> Self {
-        let envelope = AnalyticCutterEnvelope::from_geometry(&tool.geometry);
-        let flute_length_mm = envelope.flute_length_mm();
-        let overall_length_mm = envelope.overall_length_mm();
-        let stickout_length_mm = tool.stickout_length_mm.max(flute_length_mm);
-        let shank_radius_mm = envelope.shank_radius_mm();
-        let cutting_radius_mm = envelope.cutting_radius_mm();
-        let neck_radius_mm = envelope.neck_radius_mm();
-        let neck_length_mm = envelope.effective_reach_mm();
-        let is_thread_mill = envelope.is_thread_mill();
-
-        let (thread_pitch_mm, teeth_count, thread_angle_deg) = match envelope.shape() {
-            CutterEnvelopeShape::ThreadMill {
-                pitch_mm,
-                teeth_count,
-                thread_angle_deg,
-                ..
-            } => (pitch_mm, teeth_count, thread_angle_deg),
-            _ => (0.0, 0, 0.0),
-        };
-
-        let (is_center_cutting, max_safe_plunge_depth_mm) = match tool.geometry {
-            CutterGeometry::FlatEndmill { diameter_mm, .. }
-            | CutterGeometry::BullNoseEndmill { diameter_mm, .. }
-            | CutterGeometry::BallEndmill { diameter_mm, .. } => {
-                (true, (1.5 * diameter_mm).min(flute_length_mm))
-            }
-            CutterGeometry::ChamferMill { .. } | CutterGeometry::TwistDrill { .. } => {
-                (true, flute_length_mm)
-            }
-            CutterGeometry::FaceMill { .. } | CutterGeometry::ThreadMill { .. } => (false, 0.0),
-        };
-
-        let holder_radius_mm = (shank_radius_mm * 2.2).max(12.0).max(shank_radius_mm + 4.0);
-
-        Self {
-            cutting_radius_mm,
-            shank_radius_mm,
-            holder_radius_mm,
-            flute_length_mm,
-            stickout_length_mm,
-            overall_length_mm,
-            is_center_cutting,
-            max_safe_plunge_depth_mm,
-            neck_radius_mm,
-            neck_length_mm,
-            thread_pitch_mm,
-            teeth_count,
-            thread_angle_deg,
-            is_thread_mill,
-            envelope,
-        }
-    }
-
-    /// Underlying shared [`AnalyticCutterEnvelope`] from `chip-tools`.
-    #[inline]
-    pub const fn envelope(&self) -> &AnalyticCutterEnvelope {
-        &self.envelope
-    }
-
-    /// Maximum usable reach above the cutter tip before the non-cutting shank begins:
-    /// `neck_length_mm` for relieved-neck thread mills, `flute_length_mm` for all other cutters.
-    #[inline]
-    pub fn effective_reach_mm(&self) -> f64 {
-        self.envelope.effective_reach_mm()
-    }
-
-    /// Returns `(z_start, tooth_step, n_teeth, tan_half_angle)` describing the periodic V-tooth
-    /// cutting band of a [`CutterGeometry::ThreadMill`] within `z ∈ [0, flute_length_mm]`.
-    #[inline]
-    pub(crate) fn thread_mill_tooth_band_params(&self) -> (f64, f64, u32, f64) {
-        self.envelope.thread_mill_tooth_band_params()
-    }
-
-    /// Evaluates the V-tooth radial envelope `R_tooth(z_local)` inside `[0, flute_length_mm]`
-    /// for a [`CutterGeometry::ThreadMill`], clamped to `[neck_radius_mm, cutting_radius_mm]`.
-    #[inline]
-    pub fn thread_mill_tooth_radius_at_z(&self, z_local: f64) -> f64 {
-        self.envelope.thread_mill_tooth_radius_at_z(z_local)
-    }
-
-    /// Evaluates the height-dependent cutter radius `R(z_local)` at axial height `z_local` above
-    /// the tool tip (`0 <= z_local <= stickout_length_mm`), supporting non-monotonic undercut
-    /// profiles such as relieved-neck thread mills:
-    /// - `[0, flute_length_mm]`: cutting-tooth / flute envelope (`R_tooth(z)`)
-    /// - `(flute_length_mm, neck_length_mm]`: relieved neck (`neck_radius_mm < cutting_radius_mm`)
-    /// - `(neck_length_mm, stickout_length_mm]`: cylindrical shank (`shank_radius_mm`)
-    ///
-    /// Returns `None` outside `[0, stickout_length_mm]` or for non-finite inputs.
-    #[inline]
-    pub fn cutter_radius_at_z(&self, z_local: f64) -> Option<f64> {
-        let max_z = self.stickout_length_mm.max(self.effective_reach_mm());
-        self.envelope.cutter_radius_at_z_within(z_local, max_z)
-    }
-
-    /// Pushes exact local axial intervals `(dz_lo, dz_hi)` where a [`CutterGeometry::ThreadMill`]
-    /// occupies radial distance `r_mm` from the spindle axis (non-monotonic undercut support):
-    /// - `r_mm > cutting_radius_mm`: pushes nothing
-    /// - `r_mm <= neck_radius_mm`: pushes `(0.0, neck_length_mm)` (core + relieved neck)
-    /// - `neck_radius_mm < r_mm <= cutting_radius_mm`: pushes one V-tooth interval per tooth!
-    #[inline]
-    pub(crate) fn thread_mill_axial_intervals_at_radius(
-        &self,
-        r_mm: f64,
-        out: &mut Vec<(f64, f64)>,
-    ) {
-        self.envelope
-            .push_thread_mill_axial_intervals_at_radius(r_mm, out);
-    }
-
-    /// Returns `cot(θ) = 1 / tan(θ)` when the cutter has a conical flute envelope (`Chamfer` / `V-Bit` / `Drill`),
-    /// enabling closed-form analytical 3D V-carve stationary-point sweeping in `sweeper.rs`.
-    #[inline]
-    pub fn conical_slope_cot_theta(&self) -> Option<f64> {
-        self.envelope.conical_slope_cot()
-    }
-
-    /// Evaluates axial offset `dz >= 0` from the cutter tip `(0, 0, 0)` to the lower cutting
-    /// envelope at radial distance `r_mm` from the spindle axis (`None` if `r_mm > cutting_radius_mm`).
-    #[inline]
-    pub fn tip_to_envelope_dz(&self, r_mm: f64) -> Option<f64> {
-        self.envelope.profile_dz_at_radius(r_mm)
-    }
-
-    /// Evaluates the exact cutting envelope radius `r(dz) >= 0` at axial height `dz_mm >= 0` above
-    /// the cutter tip `(0, 0, 0)` (exact inverse of [`Self::tip_to_envelope_dz`]).
-    ///
-    /// Returns `None` if `dz_mm < 0.0` (below the cutter tip). For [`CutterGeometry::ThreadMill`],
-    /// returns the non-monotonic V-tooth radius in `[0, flute_length_mm]` and `neck_radius_mm`
-    /// along the relieved neck `(flute_length_mm, neck_length_mm]`.
-    #[inline]
-    pub fn radius_at_height_dz(&self, dz_mm: f64) -> Option<f64> {
-        self.envelope.radius_at_dz(dz_mm)
-    }
-
-    /// Maximum envelope radius among cutting flutes, shank, and collet/holder.
-    #[inline]
-    pub fn max_assembly_radius_mm(&self) -> f64 {
-        self.cutting_radius_mm
-            .max(self.shank_radius_mm)
-            .max(self.holder_radius_mm)
-    }
 }
 
 /// Builds a 3D surface-of-revolution mesh for `tool` (`tip = (0, 0, 0)`, spindle up = `+Z`).
@@ -388,32 +205,5 @@ fn append_revolved_strip(
                 mesh.indices.extend_from_slice(&[i1, i2, i3]);
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn sim_colored_vertex_has_exact_40_byte_pod_gpu_layout() {
-        assert_eq!(std::mem::size_of::<SimColoredVertex>(), 40);
-        assert_eq!(std::mem::align_of::<SimColoredVertex>(), 4);
-        assert_eq!(std::mem::offset_of!(SimColoredVertex, pos_mm), 0);
-        assert_eq!(std::mem::offset_of!(SimColoredVertex, normal), 12);
-        assert_eq!(std::mem::offset_of!(SimColoredVertex, color_rgba), 24);
-
-        let verts = [
-            SimColoredVertex {
-                pos_mm: [1.0, 2.0, 3.0],
-                normal: [0.0, 0.0, 1.0],
-                color_rgba: [0.5, 0.6, 0.7, 1.0],
-            },
-            bytemuck::Zeroable::zeroed(),
-        ];
-        let bytes: &[u8] = bytemuck::cast_slice(&verts);
-        assert_eq!(bytes.len(), 80);
-        let roundtrip: &[SimColoredVertex] = bytemuck::cast_slice(bytes);
-        assert_eq!(roundtrip, &verts);
     }
 }

@@ -1,15 +1,17 @@
-//! Shared verification & sweep helpers unified across Heightmap (`heightmap/sweeper.rs`),
-//! Tri-Dexel (`tridexel/sweep.rs`), and Cylindrical (`cylindrical.rs`) simulation engines:
-//! - Arc-to-chord decomposition (`decompose_segment_to_chords`)
-//! - Per-span Rule 1–4 violation accumulator (`SpanRuleViolations`)
+//! Shared verification & sweep conversion helpers unified across Heightfield, Tri-Dexel, and
+//! Cylindrical simulation engines:
+//! - Arc-to-chord decomposition (`decompose_segment_to_chords`, `segment_to_sweep_chords`)
+//! - Fractional segment slicing (`slice_segment_range`)
 //! - Bounded diagnostic batch coalescer (`ViolationBatchCoalescer`)
 //! - Rule 5 vertical plunge validation (`evaluate_vertical_plunge_violation`)
 
-use chip_cam::{SegmentMotion3D, ToolpathSegment3D};
-use chip_math::DVec3;
+use chip_cam::{ArcPlane, SegmentMotion3D, ToolpathSegment3D};
+use chip_math::{DVec2, DVec3};
+use chip_stock::{
+    RadialCutterProfile, SpanRuleViolations, StockVerifyTolerances, SweepChord, SweepMotion,
+};
 
 use crate::{
-    cutter_profile::RadialCutterProfile,
     timeline::MotionSpan,
     verifier::{SimDiagnostic, SimIssueKind, SimSeverity, SimVerificationConfig},
 };
@@ -19,18 +21,8 @@ use crate::{
 pub(crate) struct LinearChord3D {
     pub(crate) p0: DVec3,
     pub(crate) p1: DVec3,
-}
-
-impl LinearChord3D {
-    #[inline]
-    pub(crate) fn min_z(self) -> f64 {
-        self.p0.z.min(self.p1.z)
-    }
-
-    #[inline]
-    pub(crate) fn max_z(self) -> f64 {
-        self.p0.z.max(self.p1.z)
-    }
+    pub(crate) rotary_deg_0: f64,
+    pub(crate) rotary_deg_1: f64,
 }
 
 /// Decomposes a [`ToolpathSegment3D`] (linear or circular/helical arc) into linear micro-chords
@@ -44,6 +36,8 @@ pub(crate) fn decompose_segment_to_chords(
             vec![LinearChord3D {
                 p0: seg.start_wcs,
                 p1: seg.end_wcs,
+                rotary_deg_0: seg.start_rotary_deg,
+                rotary_deg_1: seg.end_rotary_deg,
             }]
         }
         SegmentMotion3D::Arc {
@@ -59,82 +53,129 @@ pub(crate) fn decompose_segment_to_chords(
 
             let mut out = Vec::with_capacity(steps);
             let mut prev = seg.start_wcs;
+            let mut prev_rot = seg.start_rotary_deg;
             for k in 1..=steps {
                 let u = k as f64 / steps as f64;
-                let next = if k == steps {
-                    seg.end_wcs
+                let (next, next_rot) = if k == steps {
+                    (seg.end_wcs, seg.end_rotary_deg)
                 } else {
-                    seg.sample_point(u)
+                    (seg.sample_point(u), seg.sample_rotary_deg(u))
                 };
-                out.push(LinearChord3D { p0: prev, p1: next });
+                out.push(LinearChord3D {
+                    p0: prev,
+                    p1: next,
+                    rotary_deg_0: prev_rot,
+                    rotary_deg_1: next_rot,
+                });
                 prev = next;
+                prev_rot = next_rot;
             }
             out
         }
     }
 }
 
-/// Per-span / per-row worst-case Rule 1–4 violation accumulator shared by all 3 stock engines.
-#[derive(Debug, Default, Clone, Copy)]
-pub(crate) struct SpanRuleViolations {
-    pub(crate) rapid: Option<(f64, DVec3)>,
-    pub(crate) gouge: Option<(f64, DVec3)>,
-    pub(crate) flute: Option<(f64, DVec3)>,
-    pub(crate) neck: Option<(f64, DVec3)>,
-    pub(crate) holder: Option<(f64, DVec3)>,
+/// Appends [`SweepChord`] primitives for `seg` to `out`, preserving closed-form planar XY arcs
+/// for exact Heightfield distance evaluation while decomposing sloped/helical arcs with `<= 0.005 mm`
+/// chord sag for 3D Tri-Dexel and 4th-axis Cylindrical sweeps.
+pub(crate) fn push_segment_sweep_chords(
+    seg: &ToolpathSegment3D,
+    op_idx: u32,
+    profile_idx: usize,
+    verify_tol: StockVerifyTolerances,
+    out: &mut Vec<SweepChord>,
+) {
+    let is_rapid = matches!(seg.motion, SegmentMotion3D::Rapid);
+    if let SegmentMotion3D::Arc {
+        plane: ArcPlane::XY,
+        center_wcs,
+        radius_mm,
+        signed_sweep_rad,
+        ..
+    } = seg.motion
+        && (seg.end_wcs.z - seg.start_wcs.z).abs() <= 1e-7
+    {
+        let center_xy = DVec2::new(center_wcs.x, center_wcs.y);
+        let a0_rad = (seg.start_wcs.y - center_xy.y).atan2(seg.start_wcs.x - center_xy.x);
+        out.push(SweepChord {
+            motion: SweepMotion::PlanarArcXY {
+                start: seg.start_wcs,
+                end: seg.end_wcs,
+                center_xy,
+                radius_mm,
+                a0_rad,
+                signed_sweep_rad,
+                rotary_deg_0: seg.start_rotary_deg,
+                rotary_deg_1: seg.end_rotary_deg,
+            },
+            op_idx,
+            is_rapid,
+            profile_idx,
+            verify_tol,
+        });
+        return;
+    }
+
+    for ch in decompose_segment_to_chords(seg, 0.005) {
+        out.push(SweepChord {
+            motion: SweepMotion::Linear {
+                p0: ch.p0,
+                p1: ch.p1,
+                rotary_deg_0: ch.rotary_deg_0,
+                rotary_deg_1: ch.rotary_deg_1,
+            },
+            op_idx,
+            is_rapid,
+            profile_idx,
+            verify_tol,
+        });
+    }
 }
 
-impl SpanRuleViolations {
-    #[inline]
-    pub(crate) fn update_slot(slot: &mut Option<(f64, DVec3)>, depth_mm: f64, loc_wcs: DVec3) {
-        if slot.is_none_or(|(cur, _)| depth_mm > cur) {
-            *slot = Some((depth_mm, loc_wcs));
+/// Slices a fractional sub-segment `[u_start, u_end]` (`0.0 <= u_start < u_end <= 1.0`) out of `seg`
+/// for exact mid-segment interactive timeline scrubbing across all 3 volumetric stock engines.
+pub(crate) fn slice_segment_range(
+    seg: &ToolpathSegment3D,
+    u_start: f64,
+    u_end: f64,
+) -> Option<ToolpathSegment3D> {
+    let a = u_start.clamp(0.0, 1.0);
+    let b = u_end.clamp(0.0, 1.0);
+    if b - a <= 1e-6 {
+        return None;
+    }
+    let start_wcs = seg.sample_point(a);
+    let end_wcs = seg.sample_point(b);
+    let motion = match seg.motion {
+        SegmentMotion3D::Rapid => SegmentMotion3D::Rapid,
+        SegmentMotion3D::Linear { feed_mm_min, role } => {
+            SegmentMotion3D::Linear { feed_mm_min, role }
         }
-    }
-
-    #[inline]
-    pub(crate) fn record_rapid(&mut self, depth_mm: f64, loc_wcs: DVec3) {
-        Self::update_slot(&mut self.rapid, depth_mm, loc_wcs);
-    }
-
-    #[inline]
-    pub(crate) fn record_gouge(&mut self, depth_mm: f64, loc_wcs: DVec3) {
-        Self::update_slot(&mut self.gouge, depth_mm, loc_wcs);
-    }
-
-    #[inline]
-    pub(crate) fn record_flute(&mut self, depth_mm: f64, loc_wcs: DVec3) {
-        Self::update_slot(&mut self.flute, depth_mm, loc_wcs);
-    }
-
-    #[inline]
-    pub(crate) fn record_neck(&mut self, depth_mm: f64, loc_wcs: DVec3) {
-        Self::update_slot(&mut self.neck, depth_mm, loc_wcs);
-    }
-
-    #[inline]
-    pub(crate) fn record_holder(&mut self, depth_mm: f64, loc_wcs: DVec3) {
-        Self::update_slot(&mut self.holder, depth_mm, loc_wcs);
-    }
-
-    #[inline]
-    pub(crate) fn merge(&mut self, other: Self) {
-        if let Some((d, p)) = other.rapid {
-            self.record_rapid(d, p);
-        }
-        if let Some((d, p)) = other.gouge {
-            self.record_gouge(d, p);
-        }
-        if let Some((d, p)) = other.flute {
-            self.record_flute(d, p);
-        }
-        if let Some((d, p)) = other.neck {
-            self.record_neck(d, p);
-        }
-        if let Some((d, p)) = other.holder {
-            self.record_holder(d, p);
-        }
-    }
+        SegmentMotion3D::Arc {
+            plane,
+            dir,
+            center_wcs,
+            radius_mm,
+            signed_sweep_rad,
+            feed_mm_min,
+            role,
+        } => SegmentMotion3D::Arc {
+            plane,
+            dir,
+            center_wcs,
+            radius_mm,
+            signed_sweep_rad: signed_sweep_rad * (b - a),
+            feed_mm_min,
+            role,
+        },
+    };
+    Some(ToolpathSegment3D {
+        start_wcs,
+        end_wcs,
+        motion,
+        start_rotary_deg: seg.sample_rotary_deg(a),
+        end_rotary_deg: seg.sample_rotary_deg(b),
+    })
 }
 
 /// Uncoalesced per-span violation event emitted into [`ViolationBatchCoalescer`].
@@ -153,7 +194,7 @@ pub(crate) struct RuleViolationHit {
     pub(crate) detail: String,
 }
 
-/// Bounded streaming diagnostic coalescer shared across Heightmap, Tri-Dexel, and Cylindrical
+/// Bounded streaming diagnostic coalescer shared across Heightfield, Tri-Dexel, and Cylindrical
 /// verifiers.
 ///
 /// Merges consecutive hits of the same `(op_idx, kind)` within `merge_gap_spans` (default `16`)
@@ -342,11 +383,7 @@ impl ViolationBatchCoalescer {
 }
 
 /// Evaluates Rule 5 (vertical plunge into uncut material: missing pilot hole on a thread mill,
-/// non-center-cutting cutter plunge, or excessive axial plunge depth) shared between Heightmap
-/// and Tri-Dexel engines.
-///
-/// `sample_plunge_depth_mm(x, y, z_start, z_end, thread_check_radius_mm)` returns the axial depth
-/// (`mm`) of solid stock penetrated during the vertical downward move.
+/// non-center-cutting cutter plunge, or excessive axial plunge depth) shared across backends.
 pub(crate) fn evaluate_vertical_plunge_violation(
     span: &MotionSpan,
     op_id: &str,
@@ -434,7 +471,6 @@ mod tests {
     fn violation_batch_coalescer_merges_adjacent_hits_caps_count_and_upgrades_severity() {
         let mut coal = ViolationBatchCoalescer::default();
 
-        // 5 consecutive hits within gap 16 -> coalesce to 1, keeping onset span=10 and peak excess=0.9
         for (i, depth) in [0.2, 0.9, 0.4, 0.3, 0.5].iter().enumerate() {
             coal.push(RuleViolationHit {
                 severity: SimSeverity::Warning,
@@ -450,7 +486,6 @@ mod tests {
                 detail: format!("rub {depth:.2}"),
             });
         }
-        // Severity upgrade on same pass replaces Warning with CriticalError even if smaller depth
         coal.push(RuleViolationHit {
             severity: SimSeverity::CriticalError,
             kind: SimIssueKind::FluteLengthExceeded,
@@ -465,7 +500,6 @@ mod tests {
             detail: "neck collision".to_string(),
         });
 
-        // 4 more well-separated passes -> capped at max_per_op_kind = 3 total!
         for k in 1..=4 {
             coal.push(RuleViolationHit {
                 severity: SimSeverity::Warning,

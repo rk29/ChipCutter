@@ -1123,7 +1123,10 @@ mod tests {
         })
         .unwrap();
 
-        let stock_mesh = Arc::new(tessellate_stock_mesh(&sim_res.final_stock, true));
+        let stock_mesh = Arc::new(tessellate_stock_mesh(
+            sim_res.as_heightfield().expect("expected HeightfieldStock"),
+            true,
+        ));
         let tool_mesh = Arc::new(build_cutter_assembly_mesh(flat_6mm, 24, false));
         let mid_snap = sim_res
             .timeline
@@ -1461,10 +1464,7 @@ mod tests {
         })
         .unwrap();
 
-        let cyl = sim
-            .final_cylindrical_stock
-            .as_ref()
-            .expect("expected CylindricalStock");
+        let cyl = sim.as_cylindrical().expect("expected CylindricalStock");
         let angle_deg = 90.0;
         let mesh_local_0 = Arc::new(tessellate_cylindrical_stock_mesh_colored(
             cyl,

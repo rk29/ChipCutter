@@ -314,9 +314,9 @@ fn fault_injection_catches_rapid_crash_target_gouge_flute_rub_holder_crash_and_u
     );
 
     // Verify checkpoint scrubbing + crisp stock mesh triangulation (neutral & per-op colored)
-    let mid_stock = res.reconstruct_stock_at_time(&ops, res.timeline.total_time_sec * 0.5);
-    let mesh_neutral = tessellate_stock_mesh(&mid_stock, false);
-    let mesh_colored = tessellate_stock_mesh(&res.final_stock, true);
+    let mid_stock = res.reconstruct_stock_at_time(res.timeline.total_time_sec * 0.5);
+    let mesh_neutral = res.extract_stock_mesh(&mid_stock, SimStockColorMode::Metallic);
+    let mesh_colored = res.extract_stock_mesh(&res.final_stock, SimStockColorMode::ByOperation);
     assert!(!mesh_neutral.vertices.is_empty());
     assert_eq!(mesh_colored.indices.len() % 3, 0);
 }
@@ -474,25 +474,22 @@ fn incremental_sync_stock_matches_full_reconstruction_mid_segment_and_across_scr
 
     for &t in &sample_times {
         let _ = sim.sync_stock_to_time(&mut working, &mut cursor, t);
-        let reference = sim.reconstruct_stock_at_time(&ops, t);
+        let reference = sim.reconstruct_stock_at_time(t);
+        let w_hf = working.as_heightfield().unwrap();
+        let r_hf = reference.as_heightfield().unwrap();
         assert_eq!(
-            working.z_stock.len(),
-            reference.z_stock.len(),
+            w_hf.z_stock.len(),
+            r_hf.z_stock.len(),
             "grid dimensions must match"
         );
-        for (i, (&w_z, &r_z)) in working
-            .z_stock
-            .iter()
-            .zip(reference.z_stock.iter())
-            .enumerate()
-        {
+        for (i, (&w_z, &r_z)) in w_hf.z_stock.iter().zip(r_hf.z_stock.iter()).enumerate() {
             assert!(
                 (w_z - r_z).abs() < 1e-4 || (w_z.is_infinite() && r_z.is_infinite()),
                 "incremental sync diverged from full reconstruction at t={t:.3}s cell {i}: working={w_z}, ref={r_z}"
             );
         }
         assert_eq!(
-            working.last_op_idx, reference.last_op_idx,
+            w_hf.last_op_idx, r_hf.last_op_idx,
             "last_op_idx mismatch at t={t:.3}s"
         );
     }
@@ -854,29 +851,29 @@ fn tridexel_internal_m8_helical_thread_mill_carves_real_undercut_grooves_with_ze
         "helical M8x1.25 thread grooves should remove > 15 mm³, removed {thread_removed:.2} mm³"
     );
 
-    let td = sim.final_tridexel_stock.as_ref().unwrap();
+    let td = sim.as_tridexel().unwrap();
 
     // Verify Z-dexel overhang splitting inside the thread wall (`x ≈ 3.70 mm ∈ (3.40, 4.00)`, `y ≈ 0`)
-    let ix = ((3.70 - td.origin_mm.x) / td.dx_mm).floor() as usize;
-    let iy = ((0.0 - td.origin_mm.y) / td.dy_mm).floor() as usize;
-    let z_spans = td.z_rays.ray(ix, iy);
+    let ix = ((3.70 - td.origin_wcs.x) / td.dx_mm()).floor() as usize;
+    let iy = ((0.0 - td.origin_wcs.y) / td.dy_mm()).floor() as usize;
+    let z_spans = td.z_plane().ray_spans(ix, iy);
     assert!(
         z_spans.len() >= 5,
         "Z-dexel inside internal thread wall must split into >= 5 overhanging thread crests, got {}: {:?}",
         z_spans.len(),
-        z_spans
+        &*z_spans
     );
 
     // Verify X-dexel radial thread profile oscillates between carved root (~4.0 mm) and retained crest (~3.4 mm)
-    let j_mid = ((0.0 - td.x_rays.origin_u_mm) / td.x_rays.du_mm).floor() as usize;
+    let j_mid = ((0.0 - td.x_plane().origin_u_mm) / td.x_plane().du_mm).floor() as usize;
     let mut min_wall_x = f64::INFINITY;
     let mut max_wall_x = f64::NEG_INFINITY;
-    for k in 0..td.nz {
-        let pz = td.x_rays.center_v(k);
+    for k in 0..td.nz() {
+        let pz = td.x_plane().center_v(k);
         if !(-8.0..=-2.0).contains(&pz) {
             continue;
         }
-        let spans = td.x_rays.ray(j_mid, k);
+        let spans = td.x_plane().ray_spans(j_mid, k);
         // Positive-X solid wall starts after the hole gap (`min_mm > 0`)
         if let Some(pos_wall) = spans.iter().find(|s| s.min_mm > 0.5) {
             min_wall_x = min_wall_x.min(pos_wall.min_mm);
@@ -1048,28 +1045,29 @@ fn tridexel_external_m12_boss_thread_mill_carves_helical_grooves_with_zero_crash
         sim.removed_volume_mm3
     );
 
-    let td = sim.final_tridexel_stock.as_ref().unwrap();
+    let td = sim.as_tridexel().unwrap();
     // Z-ray inside the boss outer thread shell (`x ≈ 5.45 mm ∈ (4.927, 6.000)`, `y ≈ 0`)
-    let ix = ((5.45 - td.origin_mm.x) / td.dx_mm).floor() as usize;
-    let iy = ((0.0 - td.origin_mm.y) / td.dy_mm).floor() as usize;
-    let z_spans = td.z_rays.ray(ix, iy);
+    let ix = ((5.45 - td.origin_wcs.x) / td.dx_mm()).floor() as usize;
+    let iy = ((0.0 - td.origin_wcs.y) / td.dy_mm()).floor() as usize;
+    let z_spans = td.z_plane().ray_spans(ix, iy);
     assert!(
         z_spans.len() >= 4,
         "external boss Z-dexel must retain >= 4 overhanging thread crests, got {}: {:?}",
         z_spans.len(),
-        z_spans
+        &*z_spans
     );
 
     // X-ray outer boss radius along `y ≈ 0` oscillates between carved root (< 5.25) and crest (> 5.80)
-    let j_mid = ((0.0 - td.x_rays.origin_u_mm) / td.x_rays.du_mm).floor() as usize;
+    let j_mid = ((0.0 - td.x_plane().origin_u_mm) / td.x_plane().du_mm).floor() as usize;
     let mut min_outer_x = f64::INFINITY;
     let mut max_outer_x = f64::NEG_INFINITY;
-    for k in 0..td.nz {
-        let pz = td.x_rays.center_v(k);
+    for k in 0..td.nz() {
+        let pz = td.x_plane().center_v(k);
         if !(-9.0..=-2.0).contains(&pz) {
             continue;
         }
-        if let Some(last) = td.x_rays.ray(j_mid, k).last() {
+        let spans = td.x_plane().ray_spans(j_mid, k);
+        if let Some(last) = spans.last() {
             min_outer_x = min_outer_x.min(last.max_mm);
             max_outer_x = max_outer_x.max(last.max_mm);
         }

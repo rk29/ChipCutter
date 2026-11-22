@@ -3,11 +3,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     cylindrical::CylindricalStock,
-    heightmap::HeightfieldStock,
+    heightfield::HeightfieldStock,
     tridexel::{DexelSpan, TriDexelStock, spans_difference_length},
+    types::Axis3,
 };
 
-/// Visual coloring mode for simulated 3D stock meshes (`Heightmap`, `TriDexel`, and 4th-axis `CylindricalStock`).
+/// Visual coloring mode for simulated 3D stock meshes (`Heightfield`, `TriDexel`, and 4th-axis `CylindricalStock`).
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SimStockColorMode {
@@ -40,7 +41,6 @@ pub fn deviation_to_heatmap_rgba(
     }
     let t = ((abs_d - tol) / span).clamp(0.0, 1.0) as f32;
     if signed_dev_mm > 0.0 {
-        // Excess / uncut: cyan [0.22, 0.80, 0.94] -> deep blue [0.12, 0.28, 0.88]
         [
             0.22 + t * (0.12 - 0.22),
             0.80 + t * (0.28 - 0.80),
@@ -48,7 +48,6 @@ pub fn deviation_to_heatmap_rgba(
             1.0,
         ]
     } else {
-        // Gouge / overcut: amber-yellow [0.98, 0.78, 0.16] -> crimson red [0.94, 0.16, 0.20]
         [
             0.98 + t * (0.94 - 0.98),
             0.78 + t * (0.16 - 0.78),
@@ -76,47 +75,26 @@ pub struct OperationErrorSnapshot {
 /// (`TriDexelStock`, `HeightfieldStock`, or 4th-axis `CylindricalStock`) compared against the target 3D solid.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StockErrorReport {
-    /// Reference tolerance band (`±tolerance_mm`) used for `in_tolerance_surface_pct`.
     pub tolerance_mm: f64,
-    /// Reference target solid volume (`mm³`).
     pub target_volume_mm3: f64,
-    /// Uncut excess material remaining outside the target solid (`V(Machined \ Target)`, `mm³`).
     pub excess_volume_mm3: f64,
-    /// Overcut / gouged material removed from inside the target solid (`V(Target \ Machined)`, `mm³`).
     pub gouge_volume_mm3: f64,
-    /// Total symmetric-difference error volume (`excess_volume_mm3 + gouge_volume_mm3`, `mm³`).
     pub total_error_volume_mm3: f64,
-    /// Total error volume expressed as a percentage of `target_volume_mm3`.
     pub error_volume_pct_of_target: f64,
-    /// Percentage of intended removable stock (`Initial - Target`) removed without excess (`[0, 100]`).
     pub material_removal_efficiency_pct: f64,
-    /// Number of target surface boundary points sampled.
     pub sample_count: usize,
-    /// Root-Mean-Square surface deviation (`sqrt(mean(d_i²))`, `mm`).
     pub rms_error_mm: f64,
-    /// Root-Mean-Square deviation over uncut excess surface points (`d_i > 0`, `mm`).
     pub excess_rms_mm: f64,
-    /// Root-Mean-Square deviation over gouged surface points (`d_i < 0`, `mm`).
     pub gouge_rms_mm: f64,
-    /// Mean Absolute Error (`mean(|d_i|)`, `mm`).
     pub mean_abs_error_mm: f64,
-    /// Mean Signed Error (`mean(d_i)`, `mm`; `+` = oversize/uncut bias, `-` = undersize/overcut bias).
     pub mean_signed_error_mm: f64,
-    /// 95th percentile absolute surface error (`mm`).
     pub p95_abs_error_mm: f64,
-    /// 99th percentile absolute surface error (`mm`).
     pub p99_abs_error_mm: f64,
-    /// Peak uncut excess thickness (`mm`, e.g., worst scallop or unmachined corner).
     pub max_excess_mm: f64,
-    /// WCS 3D coordinates of the worst uncut excess sample.
     pub max_excess_location_wcs: Option<DVec3>,
-    /// Deepest overcut / gouge penetration (`mm`, positive magnitude).
     pub max_gouge_mm: f64,
-    /// WCS 3D coordinates of the worst gouge sample.
     pub max_gouge_location_wcs: Option<DVec3>,
-    /// Fraction (`0..=100%`) of sampled target surface points within `±tolerance_mm`.
     pub in_tolerance_surface_pct: f64,
-    /// Chronological per-operation error progression for strategy A/B benchmarking.
     pub per_operation: Vec<OperationErrorSnapshot>,
 }
 
@@ -265,8 +243,6 @@ impl DeviationStatsAcc {
     }
 }
 
-/// Evaluates the signed deviation (`+` = uncut excess, `-` = gouge) at a target boundary endpoint
-/// `target_coord` (`upper_face = true` for `max_mm`, `false` for `min_mm`) against `machined_spans`.
 #[inline]
 pub(crate) fn signed_deviation_at_target_endpoint(
     machined_spans: &[DexelSpan],
@@ -280,7 +256,6 @@ pub(crate) fn signed_deviation_at_target_endpoint(
                 return (ms.max_mm - t_hi).max(0.0);
             }
         }
-        // Machined stock does not cover t_hi -> gouged below t_hi
         let nearest_below = machined_spans
             .iter()
             .filter(|ms| ms.max_mm < t_hi)
@@ -304,8 +279,7 @@ pub(crate) fn signed_deviation_at_target_endpoint(
 }
 
 /// Evaluates the signed deviation (`+` = excess outside target, `-` = gouge inside target) of a
-/// machined surface point `(coord, want_min)` on a single ray against `target_spans` (used for
-/// Tri-Dexel error heatmap vertex coloring!).
+/// machined surface point `(coord, is_min_face)` on a single ray against `target_spans`.
 #[inline]
 pub(crate) fn signed_deviation_at_machined_endpoint(
     target_spans: &[DexelSpan],
@@ -313,10 +287,8 @@ pub(crate) fn signed_deviation_at_machined_endpoint(
     is_min_face: bool,
 ) -> f64 {
     if target_spans.is_empty() {
-        // Pure excess stock outside target silhouette
         return 10.0;
     }
-    // If machined_coord lies strictly inside a target span, it is a GOUGE (negative)
     for ts in target_spans {
         if machined_coord > ts.min_mm && machined_coord < ts.max_mm {
             let depth = if is_min_face {
@@ -329,7 +301,6 @@ pub(crate) fn signed_deviation_at_machined_endpoint(
                 .min(ts.max_mm - machined_coord);
         }
     }
-    // Otherwise it lies outside target spans -> positive EXCESS distance to nearest target boundary
     let mut min_dist = f64::INFINITY;
     for ts in target_spans {
         let d = if machined_coord <= ts.min_mm {
@@ -387,14 +358,14 @@ fn clamp_grid_idx(coord: f64, origin: f64, step: f64, len: usize) -> usize {
     (((coord - origin) / step).floor() as isize).clamp(0, (len - 1) as isize) as usize
 }
 
-/// Refines a 1D ray deviation `d_primary` at target boundary point `p` (`axis`: 0=X, 1=Y, 2=Z)
-/// using the two orthogonal machined dexel planes so rays grazing parallel to a vertical wall or
-/// flat floor measure true 3D surface distance instead of wall height / span length.
+/// Axis-generic refinement of a 1D ray deviation `d_primary` at target boundary point `p` using
+/// the two orthogonal machined dexel planes so rays grazing parallel to a vertical wall or flat
+/// floor measure true 3D surface distance instead of wall height / span length.
 #[inline]
 fn refine_tridexel_signed_deviation(
     machined: &TriDexelStock,
     p: DVec3,
-    axis: u8,
+    axis: Axis3,
     upper_face: bool,
     ts: DexelSpan,
     d_primary: f64,
@@ -405,58 +376,52 @@ fn refine_tridexel_signed_deviation(
     }
 
     let dir = if upper_face { 1.0 } else { -1.0 };
-    let mut probe = p;
-    if d_primary > 0.0 {
-        // Excess: step slightly outward into the supposed excess stock
-        let shift = 0.25 * pitch;
-        match axis {
-            0 => probe.x += dir * shift,
-            1 => probe.y += dir * shift,
-            _ => probe.z += dir * shift,
+    let is_excess = d_primary > 0.0;
+    let shift = if is_excess {
+        0.25 * pitch
+    } else {
+        -(0.25 * pitch).min(0.45 * ts.len_mm())
+    };
+    let probe = axis.add_scaled(p, dir * shift);
+    let idx_3d = [
+        clamp_grid_idx(
+            probe.x,
+            machined.origin_wcs.x,
+            machined.dx_mm(),
+            machined.nx(),
+        ),
+        clamp_grid_idx(
+            probe.y,
+            machined.origin_wcs.y,
+            machined.dy_mm(),
+            machined.ny(),
+        ),
+        clamp_grid_idx(
+            probe.z,
+            machined.origin_wcs.z,
+            machined.dz_mm(),
+            machined.nz(),
+        ),
+    ];
+
+    let [o_ax1, o_ax2] = axis.ortho_axes();
+    let eval_ortho = |o_ax: Axis3| -> f64 {
+        let iu = o_ax.u_axis().get_usize(idx_3d);
+        let iv = o_ax.v_axis().get_usize(idx_3d);
+        let spans = machined.plane(o_ax).ray_spans(iu, iv);
+        let coord = o_ax.get(probe);
+        if is_excess {
+            dist_to_air_1d(&spans, coord)
+        } else {
+            dist_to_solid_1d(&spans, coord)
         }
-        let ix = clamp_grid_idx(probe.x, machined.origin_mm.x, machined.dx_mm, machined.nx);
-        let iy = clamp_grid_idx(probe.y, machined.origin_mm.y, machined.dy_mm, machined.ny);
-        let iz = clamp_grid_idx(probe.z, machined.origin_mm.z, machined.dz_mm, machined.nz);
-        let (o1, o2) = match axis {
-            0 => (
-                dist_to_air_1d(machined.y_rays.ray(ix, iz), probe.y),
-                dist_to_air_1d(machined.z_rays.ray(ix, iy), probe.z),
-            ),
-            1 => (
-                dist_to_air_1d(machined.x_rays.ray(iy, iz), probe.x),
-                dist_to_air_1d(machined.z_rays.ray(ix, iy), probe.z),
-            ),
-            _ => (
-                dist_to_air_1d(machined.x_rays.ray(iy, iz), probe.x),
-                dist_to_air_1d(machined.y_rays.ray(ix, iz), probe.y),
-            ),
-        };
+    };
+
+    let o1 = eval_ortho(o_ax1);
+    let o2 = eval_ortho(o_ax2);
+    if is_excess {
         d_primary.min(o1).min(o2)
     } else {
-        // Gouge: step slightly inward into the target solid span
-        let shift = (0.25 * pitch).min(0.45 * ts.len_mm());
-        match axis {
-            0 => probe.x -= dir * shift,
-            1 => probe.y -= dir * shift,
-            _ => probe.z -= dir * shift,
-        }
-        let ix = clamp_grid_idx(probe.x, machined.origin_mm.x, machined.dx_mm, machined.nx);
-        let iy = clamp_grid_idx(probe.y, machined.origin_mm.y, machined.dy_mm, machined.ny);
-        let iz = clamp_grid_idx(probe.z, machined.origin_mm.z, machined.dz_mm, machined.nz);
-        let (o1, o2) = match axis {
-            0 => (
-                dist_to_solid_1d(machined.y_rays.ray(ix, iz), probe.y),
-                dist_to_solid_1d(machined.z_rays.ray(ix, iy), probe.z),
-            ),
-            1 => (
-                dist_to_solid_1d(machined.x_rays.ray(iy, iz), probe.x),
-                dist_to_solid_1d(machined.z_rays.ray(ix, iy), probe.z),
-            ),
-            _ => (
-                dist_to_solid_1d(machined.x_rays.ray(iy, iz), probe.x),
-                dist_to_solid_1d(machined.y_rays.ray(ix, iz), probe.y),
-            ),
-        };
         -((-d_primary).min(o1).min(o2))
     }
 }
@@ -471,114 +436,48 @@ pub fn compute_tridexel_error_report(
     per_operation: Vec<OperationErrorSnapshot>,
 ) -> StockErrorReport {
     let target_vol = target.compute_volume_mm3();
-    let (ex_x, ex_y, ex_z, g_x, g_y, g_z) = compute_tridexel_axis_error_volumes(machined, target);
-    let excess_vol = (ex_x + ex_y + ex_z) / 3.0;
-    let gouge_vol = (g_x + g_y + g_z) / 3.0;
+    let (excess_vol, gouge_vol) = compute_tridexel_error_volumes(machined, target);
 
-    let est_samples = (target.nx * target.ny + target.ny * target.nz + target.nx * target.nz) / 2;
+    let [nx, ny, nz] = target.dims;
+    let est_samples = (nx * ny + ny * nz + nx * nz) / 2;
     let mut acc = DeviationStatsAcc::new(tolerance_mm, est_samples);
 
-    // Sample Z-ray target endpoints (top & bottom faces)
-    for j in 0..target.ny {
-        let py = target.z_rays.center_v(j);
-        for i in 0..target.nx {
-            let t_spans = target.z_rays.ray(i, j);
-            if t_spans.is_empty() {
-                continue;
-            }
-            let px = target.z_rays.center_u(i);
-            let m_spans = machined.z_rays.ray(i, j);
-            for &ts in t_spans {
-                let p_hi = DVec3::new(px, py, ts.max_mm);
-                let d_hi = refine_tridexel_signed_deviation(
-                    machined,
-                    p_hi,
-                    2,
-                    true,
-                    ts,
-                    signed_deviation_at_target_endpoint(m_spans, ts, true),
-                );
-                acc.push(d_hi, p_hi);
-                let p_lo = DVec3::new(px, py, ts.min_mm);
-                let d_lo = refine_tridexel_signed_deviation(
-                    machined,
-                    p_lo,
-                    2,
-                    false,
-                    ts,
-                    signed_deviation_at_target_endpoint(m_spans, ts, false),
-                );
-                acc.push(d_lo, p_lo);
-            }
-        }
-    }
+    // Axis-generic sampling across all 3 orthogonal target dexel planes!
+    for axis in [Axis3::Z, Axis3::X, Axis3::Y] {
+        let t_plane = target.plane(axis);
+        let m_plane = machined.plane(axis);
+        for iv in 0..t_plane.nv {
+            let pv = t_plane.center_v(iv);
+            for iu in 0..t_plane.nu {
+                let t_spans = t_plane.ray_spans(iu, iv);
+                if t_spans.is_empty() {
+                    continue;
+                }
+                let pu = t_plane.center_u(iu);
+                let m_spans = m_plane.ray_spans(iu, iv);
+                for &ts in t_spans.iter() {
+                    let p_hi = axis.from_uvw(pu, pv, ts.max_mm);
+                    let d_hi = refine_tridexel_signed_deviation(
+                        machined,
+                        p_hi,
+                        axis,
+                        true,
+                        ts,
+                        signed_deviation_at_target_endpoint(&m_spans, ts, true),
+                    );
+                    acc.push(d_hi, p_hi);
 
-    // Sample X-ray target endpoints (vertical X walls & undercuts)
-    for k in 0..target.nz {
-        let pz = target.x_rays.center_v(k);
-        for j in 0..target.ny {
-            let t_spans = target.x_rays.ray(j, k);
-            if t_spans.is_empty() {
-                continue;
-            }
-            let py = target.x_rays.center_u(j);
-            let m_spans = machined.x_rays.ray(j, k);
-            for &ts in t_spans {
-                let p_hi = DVec3::new(ts.max_mm, py, pz);
-                let d_hi = refine_tridexel_signed_deviation(
-                    machined,
-                    p_hi,
-                    0,
-                    true,
-                    ts,
-                    signed_deviation_at_target_endpoint(m_spans, ts, true),
-                );
-                acc.push(d_hi, p_hi);
-                let p_lo = DVec3::new(ts.min_mm, py, pz);
-                let d_lo = refine_tridexel_signed_deviation(
-                    machined,
-                    p_lo,
-                    0,
-                    false,
-                    ts,
-                    signed_deviation_at_target_endpoint(m_spans, ts, false),
-                );
-                acc.push(d_lo, p_lo);
-            }
-        }
-    }
-
-    // Sample Y-ray target endpoints (vertical Y walls & undercuts)
-    for k in 0..target.nz {
-        let pz = target.y_rays.center_v(k);
-        for i in 0..target.nx {
-            let t_spans = target.y_rays.ray(i, k);
-            if t_spans.is_empty() {
-                continue;
-            }
-            let px = target.y_rays.center_u(i);
-            let m_spans = machined.y_rays.ray(i, k);
-            for &ts in t_spans {
-                let p_hi = DVec3::new(px, ts.max_mm, pz);
-                let d_hi = refine_tridexel_signed_deviation(
-                    machined,
-                    p_hi,
-                    1,
-                    true,
-                    ts,
-                    signed_deviation_at_target_endpoint(m_spans, ts, true),
-                );
-                acc.push(d_hi, p_hi);
-                let p_lo = DVec3::new(px, ts.min_mm, pz);
-                let d_lo = refine_tridexel_signed_deviation(
-                    machined,
-                    p_lo,
-                    1,
-                    false,
-                    ts,
-                    signed_deviation_at_target_endpoint(m_spans, ts, false),
-                );
-                acc.push(d_lo, p_lo);
+                    let p_lo = axis.from_uvw(pu, pv, ts.min_mm);
+                    let d_lo = refine_tridexel_signed_deviation(
+                        machined,
+                        p_lo,
+                        axis,
+                        false,
+                        ts,
+                        signed_deviation_at_target_endpoint(&m_spans, ts, false),
+                    );
+                    acc.push(d_lo, p_lo);
+                }
             }
         }
     }
@@ -593,7 +492,7 @@ pub fn compute_tridexel_error_report(
 }
 
 /// Fast per-operation snapshot helper returning `(excess_vol, gouge_vol, rms_mm)` for Tri-Dexel.
-pub(crate) fn compute_tridexel_quick_error_summary(
+pub fn compute_tridexel_quick_error_summary(
     machined: &TriDexelStock,
     target: &TriDexelStock,
 ) -> (f64, f64, f64) {
@@ -605,31 +504,30 @@ pub(crate) fn compute_tridexel_quick_error_summary(
     )
 }
 
-fn compute_tridexel_axis_error_volumes(
-    machined: &TriDexelStock,
-    target: &TriDexelStock,
-) -> (f64, f64, f64, f64, f64, f64) {
-    let plane_diffs =
-        |m: &crate::tridexel::DexelPlane, t: &crate::tridexel::DexelPlane| -> (f64, f64) {
-            let area = m.du_mm * m.dv_mm;
-            let mut ex_len = 0.0;
-            let mut g_len = 0.0;
-            for (mr, tr) in m.rays.iter().zip(t.rays.iter()) {
-                ex_len += spans_difference_length(mr, tr);
-                g_len += spans_difference_length(tr, mr);
-            }
-            (ex_len * area, g_len * area)
-        };
-    let (ex_x, g_x) = plane_diffs(&machined.x_rays, &target.x_rays);
-    let (ex_y, g_y) = plane_diffs(&machined.y_rays, &target.y_rays);
-    let (ex_z, g_z) = plane_diffs(&machined.z_rays, &target.z_rays);
-    (ex_x, ex_y, ex_z, g_x, g_y, g_z)
+fn compute_tridexel_error_volumes(machined: &TriDexelStock, target: &TriDexelStock) -> (f64, f64) {
+    let mut ex_sum = 0.0;
+    let mut g_sum = 0.0;
+    for axis in Axis3::ALL {
+        let m = machined.plane(axis);
+        let t = target.plane(axis);
+        let area = m.du_mm * m.dv_mm;
+        let ray_count = m.ray_count().min(t.ray_count());
+        let mut ex_len = 0.0;
+        let mut g_len = 0.0;
+        for r in 0..ray_count {
+            let mr = m.ray_spans_by_index(r);
+            let tr = t.ray_spans_by_index(r);
+            ex_len += spans_difference_length(&mr, &tr);
+            g_len += spans_difference_length(&tr, &mr);
+        }
+        ex_sum += ex_len * area;
+        g_sum += g_len * area;
+    }
+    (ex_sum / 3.0, g_sum / 3.0)
 }
 
 /// Computes top-projected 2.5D [`StockErrorReport`] from a [`HeightfieldStock`] whose `z_target`
 /// has been rasterized against the target B-Rep/mesh solid.
-///
-/// Returns `None` if no target cells were rasterized (e.g., Pure-2D jobs with no 3D target model).
 pub fn compute_heightmap_error_report(
     stock: &HeightfieldStock,
     initial_stock_vol_mm3: f64,
@@ -643,15 +541,16 @@ pub fn compute_heightmap_error_report(
     let mut acc = DeviationStatsAcc::new(tolerance_mm, stock.nx * stock.ny / 2);
 
     for j in 0..stock.ny {
-        let py = stock.origin_y_mm + (j as f64 + 0.5) * stock.dy_mm;
+        let py = stock.origin_wcs.y + (j as f64 + 0.5) * stock.dy_mm;
         let row = j * stock.nx;
         for i in 0..stock.nx {
             let idx = row + i;
-            if !stock.in_stock[idx] {
+            let zb_f = stock.z_bottom[idx];
+            if !zb_f.is_finite() {
                 continue;
             }
-            let zb = f64::from(stock.z_bottom[idx]);
-            let zm = if stock.z_stock[idx] > stock.z_bottom[idx] {
+            let zb = f64::from(zb_f);
+            let zm = if stock.z_stock[idx] > zb_f {
                 f64::from(stock.z_stock[idx])
             } else {
                 zb
@@ -659,7 +558,7 @@ pub fn compute_heightmap_error_report(
             let zt_f = stock.z_target[idx];
             if zt_f.is_finite() && f64::from(zt_f) > zb + 1e-6 {
                 let zt = f64::from(zt_f);
-                let px = stock.origin_x_mm + (i as f64 + 0.5) * stock.dx_mm;
+                let px = stock.origin_wcs.x + (i as f64 + 0.5) * stock.dx_mm;
                 target_vol += (zt - zb) * cell_area;
                 let dev = zm - zt;
                 if dev > 0.0 {
@@ -667,7 +566,7 @@ pub fn compute_heightmap_error_report(
                 } else {
                     gouge_vol += (-dev) * cell_area;
                 }
-                acc.push(dev, DVec3::new(px, py, zt));
+                acc.push(dev, DVec3::new(px, py, stock.origin_wcs.z + zt));
             } else if zm > zb + 1e-6 {
                 excess_vol += (zm - zb) * cell_area;
             }
@@ -688,21 +587,20 @@ pub fn compute_heightmap_error_report(
 }
 
 /// Fast per-operation heightmap summary `(excess_vol, gouge_vol, rms_mm)` for `per_operation` table.
-pub(crate) fn compute_heightmap_quick_error_summary(
-    stock: &HeightfieldStock,
-) -> Option<(f64, f64, f64)> {
+pub fn compute_heightmap_quick_error_summary(stock: &HeightfieldStock) -> Option<(f64, f64, f64)> {
     let cell_area = stock.dx_mm * stock.dy_mm;
     let mut excess_vol = 0.0;
     let mut gouge_vol = 0.0;
     let mut sum_sq = 0.0;
     let mut cnt = 0usize;
 
-    for idx in 0..stock.in_stock.len() {
-        if !stock.in_stock[idx] {
+    for idx in 0..stock.z_bottom.len() {
+        let zb_f = stock.z_bottom[idx];
+        if !zb_f.is_finite() {
             continue;
         }
-        let zb = f64::from(stock.z_bottom[idx]);
-        let zm = if stock.z_stock[idx] > stock.z_bottom[idx] {
+        let zb = f64::from(zb_f);
+        let zm = if stock.z_stock[idx] > zb_f {
             f64::from(stock.z_stock[idx])
         } else {
             zb
@@ -730,8 +628,6 @@ pub(crate) fn compute_heightmap_quick_error_summary(
 
 /// Computes polar/cylindrical 4th-axis [`StockErrorReport`] from a [`CylindricalStock`] whose
 /// `r_target` has been rasterized against the target B-Rep/mesh solid.
-///
-/// Returns `None` if no target cells were rasterized (e.g., empty CAD document with no 3D model).
 pub fn compute_cylindrical_error_report(
     stock: &CylindricalStock,
     initial_stock_vol_mm3: f64,
@@ -783,7 +679,7 @@ pub fn compute_cylindrical_error_report(
 }
 
 /// Fast per-operation polar/cylindrical summary `(excess_vol, gouge_vol, rms_mm)` for `per_operation` table.
-pub(crate) fn compute_cylindrical_quick_error_summary(
+pub fn compute_cylindrical_quick_error_summary(
     stock: &CylindricalStock,
 ) -> Option<(f64, f64, f64)> {
     let factor = 0.5 * stock.du * stock.dtheta;
@@ -819,79 +715,47 @@ pub(crate) fn compute_cylindrical_quick_error_summary(
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    use chip_cam::ResolvedStockGeometry;
+    use std::f64::consts::PI;
+
     use chip_math::Aabb3;
 
-    use crate::{SimResolution, UNCUT_OP_IDX, tridexel::subtract_dexel_interval};
+    use crate::types::{RotaryStockSpec, SimResolution, StockShapeSpec, UNCUT_OP_IDX};
 
     use super::*;
 
     #[test]
     fn analytical_uniform_offset_and_deliberate_gouge_error_metrics_are_exact() {
-        // Target block: 40 × 30 × 10 mm (`X ∈ [1, 41], Y ∈ [1, 31], Z ∈ [1, 11]`), vol = 12,000 mm³
-        // Raw stock:    42 × 32 × 12 mm (`X ∈ [0, 42], Y ∈ [0, 32], Z ∈ [0, 12]`), vol = 16,128 mm³
-        // Uniform 1.0 mm excess stock on ALL 6 faces -> exact RMS = 1.0 mm, MAE = 1.0 mm,
-        // mean_signed = +1.0 mm, excess_vol = 4,128 mm³, gouge_vol = 0.0 mm³!
         let stock_aabb = Aabb3::new(DVec3::ZERO, DVec3::new(42.0, 32.0, 12.0));
         let target_aabb = Aabb3::new(DVec3::splat(1.0), DVec3::new(41.0, 31.0, 11.0));
-        let stock_geom = ResolvedStockGeometry::Box {
+        let stock_geom = StockShapeSpec::Box {
             aabb_wcs: stock_aabb,
         };
         let machined =
-            TriDexelStock::from_setup_stock(&stock_geom, SimResolution::Standard).unwrap();
+            TriDexelStock::from_stock_spec(&stock_geom, SimResolution::Standard).unwrap();
 
         let mut target = TriDexelStock::empty_like(&machined);
-        for j in 0..target.ny {
-            let py = target.z_rays.center_v(j);
-            for i in 0..target.nx {
-                let px = target.z_rays.center_u(i);
-                if px >= target_aabb.min.x
-                    && px <= target_aabb.max.x
-                    && py >= target_aabb.min.y
-                    && py <= target_aabb.max.y
-                {
-                    target.z_rays.ray_mut(i, j).push(DexelSpan::new(
-                        target_aabb.min.z,
-                        target_aabb.max.z,
-                        UNCUT_OP_IDX,
-                        UNCUT_OP_IDX,
-                    ));
+        for axis in Axis3::ALL {
+            let u_ax = axis.u_axis();
+            let v_ax = axis.v_axis();
+            let plane = target.plane_mut(axis);
+            let nu = plane.nu;
+            let nv = plane.nv;
+            let span = DexelSpan::new(
+                axis.get(target_aabb.min),
+                axis.get(target_aabb.max),
+                UNCUT_OP_IDX,
+                UNCUT_OP_IDX,
+            );
+            for iv in 0..nv {
+                let pv = plane.center_v(iv);
+                if pv < v_ax.get(target_aabb.min) || pv > v_ax.get(target_aabb.max) {
+                    continue;
                 }
-            }
-        }
-        for k in 0..target.nz {
-            let pz = target.x_rays.center_v(k);
-            for j in 0..target.ny {
-                let py = target.x_rays.center_u(j);
-                if py >= target_aabb.min.y
-                    && py <= target_aabb.max.y
-                    && pz >= target_aabb.min.z
-                    && pz <= target_aabb.max.z
-                {
-                    target.x_rays.ray_mut(j, k).push(DexelSpan::new(
-                        target_aabb.min.x,
-                        target_aabb.max.x,
-                        UNCUT_OP_IDX,
-                        UNCUT_OP_IDX,
-                    ));
-                }
-            }
-        }
-        for k in 0..target.nz {
-            let pz = target.y_rays.center_v(k);
-            for i in 0..target.nx {
-                let px = target.y_rays.center_u(i);
-                if px >= target_aabb.min.x
-                    && px <= target_aabb.max.x
-                    && pz >= target_aabb.min.z
-                    && pz <= target_aabb.max.z
-                {
-                    target.y_rays.ray_mut(i, k).push(DexelSpan::new(
-                        target_aabb.min.y,
-                        target_aabb.max.y,
-                        UNCUT_OP_IDX,
-                        UNCUT_OP_IDX,
-                    ));
+                for iu in 0..nu {
+                    let pu = plane.center_u(iu);
+                    if pu >= u_ax.get(target_aabb.min) && pu <= u_ax.get(target_aabb.max) {
+                        plane.set_ray_spans(iu, iv, &[span]);
+                    }
                 }
             }
         }
@@ -917,18 +781,23 @@ mod tests {
             rep.excess_volume_mm3
         );
 
-        // Now inject a deliberate 0.5 mm overcut across the top face (`z ∈ [10.5, 12.0]`) of `target`
+        // Inject a deliberate 0.5 mm overcut across the top face (`z ∈ [10.5, 12.0]`) of `target`
         let mut gouged = target.clone();
-        for ray in &mut gouged.z_rays.rays {
-            subtract_dexel_interval(ray, 10.5, 12.0, 0);
+        let (nx, ny, nz) = (gouged.nx(), gouged.ny(), gouged.nz());
+        for j in 0..ny {
+            for i in 0..nx {
+                gouged
+                    .plane_mut(Axis3::Z)
+                    .subtract_ray_interval(i, j, 10.5, 12.0, 0);
+            }
         }
-        for k in 0..gouged.nz {
-            if gouged.x_rays.center_v(k) > 10.5 {
-                for j in 0..gouged.ny {
-                    gouged.x_rays.ray_mut(j, k).clear();
+        for k in 0..nz {
+            if gouged.x_plane().center_v(k) > 10.5 {
+                for j in 0..ny {
+                    gouged.plane_mut(Axis3::X).clear_ray(j, k);
                 }
-                for i in 0..gouged.nx {
-                    gouged.y_rays.ray_mut(i, k).clear();
+                for i in 0..nx {
+                    gouged.plane_mut(Axis3::Y).clear_ray(i, k);
                 }
             }
         }
@@ -949,68 +818,49 @@ mod tests {
 
     #[test]
     fn cylindrical_error_report_matches_analytical_excess_and_gouge_shells() {
-        use std::f64::consts::PI;
-
-        use chip_cad::CadDocument;
-        use chip_cam::{
-            AxisAnchor, BoxAnchor27, RotaryAxisKind, RotaryDriveMode, Setup, StockAxis,
-            StockConfig, WcsOriginMode, WorkOffsetSlot,
+        let rotary = RotaryStockSpec {
+            axis: Axis3::X,
+            direction_sign: 1.0,
+            axis_letter: 'A',
+            center_wcs: DVec3::ZERO,
+            stock_u_min: -40.0,
+            stock_u_max: 40.0,
+            stock_outer_radius_mm: 21.0,
+            chuck_u_min: 0.0,
+            chuck_u_max: 0.0,
+            chuck_radius_mm: 0.0,
         };
-        use chip_math::{DisplayUnit, ParamLength};
-
-        let mut setup = Setup::new("s_cyl", "Cyl Metrics", WorkOffsetSlot::G54);
-        setup.wcs.origin = WcsOriginMode::StockBoxPoint {
-            anchor: BoxAnchor27 {
-                x: AxisAnchor::Center,
-                y: AxisAnchor::Center,
-                z: AxisAnchor::Center,
-            },
+        let stock_spec = StockShapeSpec::Cylinder {
+            axis: Axis3::X,
+            center_wcs: DVec3::ZERO,
+            radius_mm: 21.0,
+            min_axial_mm: -40.0,
+            max_axial_mm: 40.0,
+            aabb_wcs: Aabb3::new(
+                DVec3::new(-40.0, -21.0, -21.0),
+                DVec3::new(40.0, 21.0, 21.0),
+            ),
         };
-        setup.stock = StockConfig::FixedCylinder {
-            axis: StockAxis::X,
-            diameter: ParamLength::from_mm(42.0), // R_stock = 21 mm
-            length: ParamLength::from_mm(80.0),
-            axial_top_offset: ParamLength::from_mm(0.0),
-        };
-        setup.rotary.mode = RotaryDriveMode::Simultaneous4Axis;
-        setup.rotary.axis = RotaryAxisKind::XAxis;
-
-        let doc = CadDocument::empty();
-        let resolved = setup.resolve(&doc, DisplayUnit::Millimeter).unwrap();
-        let mut stock = CylindricalStock::from_setup(
-            &resolved,
-            resolved.rotary.unwrap(),
-            SimResolution::Standard,
-        )
-        .unwrap();
+        let mut stock =
+            CylindricalStock::from_stock_spec(&stock_spec, rotary, SimResolution::Standard)
+                .unwrap();
         let initial_vol = stock.initial_volume_mm3();
 
-        // With no target rasterized (`r_target == -1.0`), error report must be `None`.
         assert!(compute_cylindrical_error_report(&stock, initial_vol, 0.05, Vec::new()).is_none());
 
-        // Set uniform cylindrical target R_target = 20.0 mm across entire length (uniform +1.0 mm excess shell).
         stock.r_target.fill(20.0_f32);
         let rep = compute_cylindrical_error_report(&stock, initial_vol, 0.05, Vec::new())
             .expect("error report must be populated when target exists");
         let exact_excess_vol = PI * (21.0_f64.powi(2) - 20.0_f64.powi(2)) * 80.0;
-        assert!(
-            (rep.rms_error_mm - 1.0).abs() < 1e-4,
-            "rms={}",
-            rep.rms_error_mm
-        );
+        assert!((rep.rms_error_mm - 1.0).abs() < 1e-4);
         assert!((rep.mean_abs_error_mm - 1.0).abs() < 1e-4);
         assert!((rep.mean_signed_error_mm - 1.0).abs() < 1e-4);
         assert!((rep.max_excess_mm - 1.0).abs() < 1e-4);
         assert!(rep.max_gouge_mm < 1e-6);
         assert!(rep.gouge_volume_mm3 < 1e-6);
         assert!(rep.in_tolerance_surface_pct < 1e-6);
-        assert!(
-            (rep.excess_volume_mm3 - exact_excess_vol).abs() < 1.0,
-            "excess_vol={} vs exact={exact_excess_vol}",
-            rep.excess_volume_mm3
-        );
+        assert!((rep.excess_volume_mm3 - exact_excess_vol).abs() < 1.0);
 
-        // Machine cylinder cleanly to R = 20.0 mm except a single gouged band at R = 19.5 mm (-0.5 mm).
         stock.r_stock.fill(20.0_f32);
         let gouge_iu = stock.nu / 2;
         for it in 0..stock.ntheta {
@@ -1024,7 +874,6 @@ mod tests {
         assert!(rep_g.in_tolerance_surface_pct > 99.0);
         assert!(rep_g.mean_signed_error_mm < 0.0);
 
-        // Widening tolerance above 0.5 mm must bring 100% of surface in tolerance.
         let rep_wide = compute_cylindrical_error_report(&stock, initial_vol, 0.6, Vec::new())
             .expect("wide-tol report");
         assert!((rep_wide.in_tolerance_surface_pct - 100.0).abs() < 1e-6);

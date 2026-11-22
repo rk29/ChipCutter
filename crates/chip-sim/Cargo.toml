@@ -8,13 +8,10 @@ license.workspace = true
 workspace = true
 
 [dependencies]
-bytemuck.workspace = true
-chip-math.workspace = true
 chip-bvh.workspace = true
 chip-cad.workspace = true
-chip-tools.workspace = true
 chip-cam.workspace = true
-glam.workspace = true
-rayon.workspace = true
+chip-math.workspace = true
+chip-stock.workspace = true
+chip-tools.workspace = true
 serde.workspace = true
-thiserror.workspace = true
