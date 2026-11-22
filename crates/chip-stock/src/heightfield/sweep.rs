@@ -396,13 +396,13 @@ fn min_tip_z_within_radius(prim: &SweepMotion, px: f64, py: f64, r_max: f64) -> 
                 return None;
             }
             let dt = ((r2 - d_perp_sq) / l2).max(0.0).sqrt();
-            let t_lo = (tc - dt).clamp(0.0, 1.0);
-            let t_hi = (tc + dt).clamp(0.0, 1.0);
+            let t_lo = (tc - dt).max(0.0);
+            let t_hi = (tc + dt).min(1.0);
             if t_lo > t_hi {
                 return None;
             }
             let t_best = if p1.z >= p0.z { t_lo } else { t_hi };
-            let t_clamped = tc.clamp(0.0, 1.0);
+            let t_clamped = tc.clamp(t_lo, t_hi);
             let r_min = (px - (p0.x + t_clamped * dx)).hypot(py - (p0.y + t_clamped * dy));
             let z_min = p0.z + t_best * (p1.z - p0.z);
             Some((r_min, z_min))
@@ -484,8 +484,8 @@ fn eval_cutter_at_xy(
                 return None;
             }
             let dt = ((r2 - d_perp_sq) / l2).max(0.0).sqrt();
-            let t_lo = (tc - dt).clamp(0.0, 1.0);
-            let t_hi = (tc + dt).clamp(0.0, 1.0);
+            let t_lo = (tc - dt).max(0.0);
+            let t_hi = (tc + dt).min(1.0);
             if t_lo > t_hi {
                 return None;
             }
@@ -602,4 +602,105 @@ fn planar_arc_xy_distance(
     let d0 = (px - start.x).hypot(py - start.y);
     let d1 = (px - end.x).hypot(py - end.y);
     d0.min(d1)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use chip_math::{Aabb3, DVec3, DisplayUnit};
+    use chip_tools::{CoolantMode, CutterGeometry, SpindleDirection, Tool, ToolId};
+
+    use crate::types::{
+        RadialCutterProfile, SimResolution, StockShapeSpec, StockVerifyTolerances, SweepChord,
+        SweepMotion, SweepToolSpec,
+    };
+
+    use super::*;
+
+    fn test_flat_3175_tool() -> SweepToolSpec {
+        let tool = Tool {
+            id: ToolId("t3_test".to_string()),
+            tool_number: 3,
+            length_offset_number: 3,
+            diameter_offset_number: 3,
+            name: "1/8 in Flat".to_string(),
+            vendor: None,
+            product_id: None,
+            native_unit: DisplayUnit::Millimeter,
+            spindle_direction: SpindleDirection::Cw,
+            default_coolant: CoolantMode::Mist,
+            stickout_length_mm: 16.0,
+            geometry: CutterGeometry::FlatEndmill {
+                diameter_mm: 3.175,
+                flute_length_mm: 12.0,
+                overall_length_mm: 50.0,
+                shank_diameter_mm: 3.175,
+                flutes: 2,
+            },
+            presets: Vec::new(),
+        };
+        SweepToolSpec {
+            profile: RadialCutterProfile::from_tool(&tool),
+            is_flat_endmill: true,
+        }
+    }
+
+    #[test]
+    fn sloped_linear_flat_endmill_does_not_cut_beyond_segment_endpoints_when_holder_checked() {
+        let stock_spec = StockShapeSpec::Box {
+            aabb_wcs: Aabb3::new(DVec3::new(0.0, 0.0, -21.0), DVec3::new(80.0, 60.0, 0.0)),
+        };
+        let mut stock_verified =
+            HeightfieldStock::from_stock_spec(&stock_spec, SimResolution::Standard).unwrap();
+        let mut stock_mutate = stock_verified.clone();
+        let tool = test_flat_3175_tool();
+
+        // Short sloped helical chord deep enough (`z + stickout < top_z`) to enable `check_holder`
+        // (`sweep_r = holder_radius_mm = 12.0 mm >> cutting_radius_mm = 1.5875 mm`).
+        let chord = SweepChord {
+            motion: SweepMotion::Linear {
+                p0: DVec3::new(35.182, 18.0, -20.821),
+                p1: DVec3::new(36.0, 17.182, -20.910),
+                rotary_deg_0: 0.0,
+                rotary_deg_1: 0.0,
+            },
+            op_idx: 2,
+            is_rapid: false,
+            profile_idx: 0,
+            verify_tol: StockVerifyTolerances::default(),
+        };
+
+        // Points along the infinite line extension well beyond `r_cut` must never hit.
+        assert!(
+            eval_cutter_at_xy(&chord.motion, 30.0, 23.182, &tool.profile, true).is_none(),
+            "point past start along infinite line extension must not hit flat endmill"
+        );
+        assert!(
+            eval_cutter_at_xy(&chord.motion, 42.0, 11.182, &tool.profile, true).is_none(),
+            "point past end along infinite line extension must not hit flat endmill"
+        );
+        assert!(
+            min_tip_z_within_radius(&chord.motion, 20.0, 33.182, 12.0).is_none(),
+            "point past start along infinite line extension must not hit holder cylinder"
+        );
+
+        let _ = stock_verified.sweep_chords(&[chord], &[tool], true);
+        let _ = stock_mutate.sweep_chords(&[chord], &[tool], false);
+
+        // Verified and playback-mutate sweeps must remove the exact same material.
+        assert_eq!(stock_verified.z_stock, stock_mutate.z_stock);
+        assert_eq!(stock_verified.last_op_idx, stock_mutate.last_op_idx);
+
+        // Cells > 5 mm away along the diagonal line extension must remain completely uncut (Z = 0.0).
+        let z_before_start = stock_verified.sample_stock_z(30.0, 23.182).unwrap();
+        let z_after_end = stock_verified.sample_stock_z(42.0, 11.182).unwrap();
+        assert!(
+            z_before_start.abs() < 1e-4,
+            "stock beyond segment start was spuriously cut to Z={z_before_start}"
+        );
+        assert!(
+            z_after_end.abs() < 1e-4,
+            "stock beyond segment end was spuriously cut to Z={z_after_end}"
+        );
+    }
 }

@@ -2897,5 +2897,48 @@ fn milestone_47_thread_mill_manifold_generates_and_simulates_cleanly_in_heightma
             "{engine:?}: thread-mill manifold must have 0 critical crashes/gouges, got: {:#?}",
             sim.diagnostics
         );
+
+        let report = sim
+            .error_report
+            .as_ref()
+            .expect("3D STEP model must produce StockErrorReport");
+        assert!(
+            report.gouge_volume_mm3 < 1_500.0,
+            "{engine:?}: unexpected massive gouge in thread-mill manifold (max_gouge={:.3} mm, gouge_vol={:.1} mm³)",
+            report.max_gouge_mm,
+            report.gouge_volume_mm3
+        );
+        if let Some(op3_err) = report.per_operation.get(2) {
+            assert!(
+                op3_err.gouge_volume_mm3 < 200.0,
+                "{engine:?}: Op 3 (Bore Pilot Holes) should not gouge surrounding stock (got {:.1} mm³)",
+                op3_err.gouge_volume_mm3
+            );
+        }
+
+        // Verify smooth stock-volume progression and checkpoint parity across Heightmap playback
+        // (Issue #15): stepping across checkpoint boundaries (e.g. Seg 639 -> 640) must never jump.
+        if engine == SimEngineKind::Heightmap {
+            let mut prev_vol = sim.initial_stock_volume_mm3;
+            let mut work_stock = sim.final_stock.clone();
+            let mut cursor = None;
+            for seg_idx in 0..sim.timeline.motion_spans.len() {
+                let t = sim.timeline.motion_spans[seg_idx].t_end_sec;
+                sim.sync_stock_to_time(&mut work_stock, &mut cursor, t);
+                let vol = work_stock.compute_volume_mm3();
+                let delta = prev_vol - vol;
+                assert!(
+                    (-1.0..3_500.0).contains(&delta),
+                    "unexpected volume jump at seg {seg_idx}: prev={prev_vol:.1} mm³, cur={vol:.1} mm³ (delta={delta:.1} mm³)"
+                );
+                prev_vol = vol;
+            }
+            let final_hf = sim.as_heightfield().expect("expected heightfield");
+            let playback_hf = work_stock.as_heightfield().expect("expected heightfield");
+            assert_eq!(
+                playback_hf.z_stock, final_hf.z_stock,
+                "incremental heightfield playback must match final verified stock cell-for-cell"
+            );
+        }
     }
 }
