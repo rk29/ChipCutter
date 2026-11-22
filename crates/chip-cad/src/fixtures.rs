@@ -1523,6 +1523,255 @@ pub fn sample_undercut_deburr_block_step_bytes() -> std::result::Result<Vec<u8>,
     sample_undercut_deburr_block_step().map(String::into_bytes)
 }
 
+/// Generates a self-contained ISO 10303-21 STEP file representing a watertight solid
+/// helical sweep tube (`R = 12 mm` helix radius, `r = 4 mm` circular cross-section,
+/// `Z ∈ [0, 40] mm`, 180° helical twist):
+/// - The side wall is a closed/periodic `RATIONAL_B_SPLINE_SURFACE` (`u_closed = .T.`,
+///   `u ∈ [0, 2π]`, `v ∈ [0, 1]` spanning `Z ∈ [-5, 45] mm`) bounded by a single 4-edge
+///   seam-split wire (`seam_rev`, `bottom_circle`, `seam_fwd`, `top_circle`).
+/// - The seam `EDGE_CURVE` references the untrimmed `B_SPLINE_CURVE_WITH_KNOTS` over
+///   the full `Z ∈ [-5, 45] mm` span while its `VERTEX_POINT` endpoints sit at `Z = 0`
+///   and `Z = 40`, matching FreeCAD/OpenCASCADE Boolean-trimmed helical sweep exports.
+/// - Two planar end caps (`Z = 0` and `Z = 40`) close the solid watertight with exact
+///   Cavalieri volume `π * 4² * 40 ≈ 2010.62 mm³`.
+pub fn sample_periodic_helical_sweep_step() -> String {
+    use std::f64::consts::{FRAC_1_SQRT_2, FRAC_PI_2, PI};
+    use std::fmt::Write as _;
+
+    // Horizontal circular cross-section (r = 4 mm) swept along a cubic B-spline helix
+    // with 7 control points over v ∈ [0, 1] -> Z ∈ [-5, 45] mm.
+    let helix_r = 12.0_f64;
+    let tube_r = 4.0_f64;
+    let z_lo = -5.0_f64;
+    let z_hi = 45.0_f64;
+
+    // Cubic B-spline clamped knot vector over [0, 1] with 7 control points (4 spans).
+    let v_knots = [0.0, 0.0, 0.0, 0.0, 0.25, 0.5, 0.75, 1.0, 1.0, 1.0, 1.0];
+    let n_v = 7usize;
+    let mut center_pts = Vec::with_capacity(n_v);
+    for j in 0..n_v {
+        // Greville abscissae for cubic clamped B-spline so Z(v) is exact linear:
+        let v_g = (v_knots[j + 1] + v_knots[j + 2] + v_knots[j + 3]) / 3.0;
+        let angle = PI * v_g;
+        center_pts.push((
+            helix_r * angle.cos(),
+            helix_r * angle.sin(),
+            z_lo + (z_hi - z_lo) * v_g,
+        ));
+    }
+
+    // Evaluate the exact cubic B-spline centerline at arbitrary v ∈ [0, 1].
+    let eval_center = |v: f64| -> (f64, f64, f64) {
+        let mut span = 3usize;
+        for s in 3..n_v {
+            if v >= v_knots[s] && (v < v_knots[s + 1] || s == n_v - 1) {
+                span = s;
+                break;
+            }
+        }
+        let mut d: [(f64, f64, f64); 4] = [
+            center_pts[span - 3],
+            center_pts[span - 2],
+            center_pts[span - 1],
+            center_pts[span],
+        ];
+        for r in 1..=3 {
+            for j in (r..=3).rev() {
+                let i = span - 3 + j;
+                let denom = v_knots[i + 4 - r] - v_knots[i];
+                let alpha = if denom.abs() > 1e-15 {
+                    (v - v_knots[i]) / denom
+                } else {
+                    0.0
+                };
+                d[j] = (
+                    (1.0 - alpha) * d[j - 1].0 + alpha * d[j].0,
+                    (1.0 - alpha) * d[j - 1].1 + alpha * d[j].1,
+                    (1.0 - alpha) * d[j - 1].2 + alpha * d[j].2,
+                );
+            }
+        }
+        d[3]
+    };
+
+    // Standard 9-point quadratic NURBS unit circle in XY (CCW around +Z, u ∈ [0, 2π]).
+    let circle_xy: [(f64, f64, f64); 9] = [
+        (1.0, 0.0, 1.0),
+        (1.0, 1.0, FRAC_1_SQRT_2),
+        (0.0, 1.0, 1.0),
+        (-1.0, 1.0, FRAC_1_SQRT_2),
+        (-1.0, 0.0, 1.0),
+        (-1.0, -1.0, FRAC_1_SQRT_2),
+        (0.0, -1.0, 1.0),
+        (1.0, -1.0, FRAC_1_SQRT_2),
+        (1.0, 0.0, 1.0),
+    ];
+
+    // Trimmed Z = 0 (v = 0.1) and Z = 40 (v = 0.9) end planes.
+    let c_bot = eval_center(0.1);
+    let c_top = eval_center(0.9);
+    let v_bot = (c_bot.0 + tube_r, c_bot.1, c_bot.2);
+    let v_top = (c_top.0 + tube_r, c_top.1, c_top.2);
+
+    let mut out = String::with_capacity(16 * 1024);
+    out.push_str(
+        "ISO-10303-21;\n\
+HEADER;\n\
+FILE_DESCRIPTION(('ChipCutter Periodic Helical Sweep Fixture'),'2;1');\n\
+FILE_NAME('helical_sweep.step','2026-11-22T00:00:00',(''),(''),'ChipCutter','ChipCutter','');\n\
+FILE_SCHEMA(('AUTOMOTIVE_DESIGN { 1 0 10303 214 1 1 1 1 }'));\n\
+ENDSEC;\n\
+DATA;\n\
+#1 = APPLICATION_PROTOCOL_DEFINITION('international standard','automotive_design',2000,#2);\n\
+#2 = APPLICATION_CONTEXT('core data for automotive mechanical design processes');\n\
+#3 = SHAPE_DEFINITION_REPRESENTATION(#4,#10);\n\
+#4 = PRODUCT_DEFINITION_SHAPE('','',#5);\n\
+#5 = PRODUCT_DEFINITION('design','',#6,#9);\n\
+#6 = PRODUCT_DEFINITION_FORMATION('','',#7);\n\
+#7 = PRODUCT('HelicalSweep','HelicalSweep','',(#8));\n\
+#8 = PRODUCT_CONTEXT('',#2,'mechanical');\n\
+#9 = PRODUCT_DEFINITION_CONTEXT('part definition',#2,'design');\n\
+#10 = ADVANCED_BREP_SHAPE_REPRESENTATION('',(#11,#15),#900);\n\
+#11 = AXIS2_PLACEMENT_3D('',#12,#13,#14);\n\
+#12 = CARTESIAN_POINT('',(0.,0.,0.));\n\
+#13 = DIRECTION('',(0.,0.,1.));\n\
+#14 = DIRECTION('',(1.,0.,0.));\n\
+#15 = MANIFOLD_SOLID_BREP('',#16);\n\
+#16 = CLOSED_SHELL('',(#20,#50,#80));\n",
+    );
+
+    // Vertices at Z = 0 (#21) and Z = 40 (#23) on the u = 0 seam.
+    let _ = writeln!(
+        out,
+        "#21 = VERTEX_POINT('',#22);\n\
+#22 = CARTESIAN_POINT('',({:.12},{:.12},{:.12}));\n\
+#23 = VERTEX_POINT('',#24);\n\
+#24 = CARTESIAN_POINT('',({:.12},{:.12},{:.12}));",
+        v_bot.0, v_bot.1, v_bot.2, v_top.0, v_top.1, v_top.2
+    );
+
+    // Bottom circle edge (#30) at Z = 0, CCW around +Z.
+    let _ = writeln!(
+        out,
+        "#30 = EDGE_CURVE('',#21,#21,#31,.T.);\n\
+#31 = CIRCLE('',#32,{tube_r:.12});\n\
+#32 = AXIS2_PLACEMENT_3D('',#33,#13,#14);\n\
+#33 = CARTESIAN_POINT('',({:.12},{:.12},{:.12}));",
+        c_bot.0, c_bot.1, c_bot.2
+    );
+
+    // Top circle edge (#35) at Z = 40, CCW around +Z.
+    let _ = writeln!(
+        out,
+        "#35 = EDGE_CURVE('',#23,#23,#36,.T.);\n\
+#36 = CIRCLE('',#37,{tube_r:.12});\n\
+#37 = AXIS2_PLACEMENT_3D('',#38,#13,#14);\n\
+#38 = CARTESIAN_POINT('',({:.12},{:.12},{:.12}));",
+        c_top.0, c_top.1, c_top.2
+    );
+
+    // Untrimmed seam B-spline curve (#41) over v ∈ [0, 1] (Z ∈ [-5, 45]), referenced by
+    // EDGE_CURVE #40 between VERTEX_POINT #21 (Z = 0) and #23 (Z = 40).
+    let mut seam_pt_ids = Vec::with_capacity(n_v);
+    for (j, &(cx, cy, cz)) in center_pts.iter().enumerate() {
+        let id = 100 + j;
+        seam_pt_ids.push(format!("#{id}"));
+        let _ = writeln!(
+            out,
+            "#{id} = CARTESIAN_POINT('',({:.12},{:.12},{:.12}));",
+            cx + tube_r,
+            cy,
+            cz
+        );
+    }
+    let _ = writeln!(
+        out,
+        "#40 = EDGE_CURVE('',#21,#23,#41,.T.);\n\
+#41 = B_SPLINE_CURVE_WITH_KNOTS('',3,({}),.UNSPECIFIED.,.F.,.F.,(4,1,1,1,4),(0.,0.25,0.5,0.75,1.),.UNSPECIFIED.);",
+        seam_pt_ids.join(",")
+    );
+
+    // Periodic rational B-spline surface (#200): 9x7 control grid (u_closed = .T.).
+    let mut surf_rows = Vec::with_capacity(9);
+    let mut weight_rows = Vec::with_capacity(9);
+    let mut next_id = 300usize;
+    for &(ux, uy, w) in &circle_xy {
+        let mut row_ids = Vec::with_capacity(n_v);
+        let mut w_row = Vec::with_capacity(n_v);
+        for &(cx, cy, cz) in &center_pts {
+            let id = next_id;
+            next_id += 1;
+            let _ = writeln!(
+                out,
+                "#{id} = CARTESIAN_POINT('',({:.12},{:.12},{:.12}));",
+                cx + tube_r * ux,
+                cy + tube_r * uy,
+                cz
+            );
+            row_ids.push(format!("#{id}"));
+            w_row.push(format!("{w:.12}"));
+        }
+        surf_rows.push(format!("({})", row_ids.join(",")));
+        weight_rows.push(format!("({})", w_row.join(",")));
+    }
+    let _ = writeln!(
+        out,
+        "#200 = ( BOUNDED_SURFACE() B_SPLINE_SURFACE(2,3,({}),.UNSPECIFIED.,.T.,.F.,.F.) \
+B_SPLINE_SURFACE_WITH_KNOTS((3,2,2,2,3),(4,1,1,1,4),(0.,{:.12},{:.12},{:.12},{:.12}),(0.,0.25,0.5,0.75,1.),.UNSPECIFIED.) \
+GEOMETRIC_REPRESENTATION_ITEM() RATIONAL_B_SPLINE_SURFACE(({})) REPRESENTATION_ITEM('') SURFACE() );",
+        surf_rows.join(","),
+        FRAC_PI_2,
+        PI,
+        3.0 * FRAC_PI_2,
+        2.0 * PI,
+        weight_rows.join(",")
+    );
+
+    // Face #20: helical side wall (same_sense = .T.; Su x Sv points radially outward).
+    // Wire traverses: seam_rev (#40 .F.), bottom_circle (#30 .T.), seam_fwd (#40 .T.), top_circle (#35 .F.).
+    out.push_str(
+        "#20 = ADVANCED_FACE('',(#25),#200,.T.);\n\
+#25 = FACE_BOUND('',#26,.T.);\n\
+#26 = EDGE_LOOP('',(#27,#28,#29,#34));\n\
+#27 = ORIENTED_EDGE('',*,*,#40,.F.);\n\
+#28 = ORIENTED_EDGE('',*,*,#30,.T.);\n\
+#29 = ORIENTED_EDGE('',*,*,#40,.T.);\n\
+#34 = ORIENTED_EDGE('',*,*,#35,.F.);\n",
+    );
+
+    // Face #50: bottom planar cap at Z = 0 (outward normal -Z via same_sense = .F.).
+    out.push_str(
+        "#50 = ADVANCED_FACE('',(#51),#54,.F.);\n\
+#51 = FACE_BOUND('',#52,.F.);\n\
+#52 = EDGE_LOOP('',(#53));\n\
+#53 = ORIENTED_EDGE('',*,*,#30,.T.);\n\
+#54 = PLANE('',#32);\n",
+    );
+
+    // Face #80: top planar cap at Z = 40 (outward normal +Z via same_sense = .T.).
+    out.push_str(
+        "#80 = ADVANCED_FACE('',(#81),#84,.T.);\n\
+#81 = FACE_BOUND('',#82,.T.);\n\
+#82 = EDGE_LOOP('',(#83));\n\
+#83 = ORIENTED_EDGE('',*,*,#35,.T.);\n\
+#84 = PLANE('',#37);\n",
+    );
+
+    // Millimeter representation context.
+    out.push_str(
+        "#900 = ( GEOMETRIC_REPRESENTATION_CONTEXT(3) GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT((#904)) \
+GLOBAL_UNIT_ASSIGNED_CONTEXT((#901,#902,#903)) REPRESENTATION_CONTEXT('Context #1','3D Context with UNIT and UNCERTAINTY') );\n\
+#901 = ( LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT(.MILLI.,.METRE.) );\n\
+#902 = ( NAMED_UNIT(*) PLANE_ANGLE_UNIT() SI_UNIT($,.RADIAN.) );\n\
+#903 = ( NAMED_UNIT(*) SI_UNIT($,.STERADIAN.) SOLID_ANGLE_UNIT() );\n\
+#904 = UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE(1.E-07),#901,'distance_accuracy_value','confusion accuracy');\n\
+ENDSEC;\n\
+END-ISO-10303-21;\n",
+    );
+
+    out
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {

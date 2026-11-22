@@ -14,6 +14,7 @@ use crate::{
         EntitySignatureKind, FaceId, FaceTriangle, GeometricSignature, LoopId, OrientedEdgeUse,
         RenderMesh, RenderVertex, SolidBody, StepUnitKind, SurfaceKind,
     },
+    step_periodic::{tessellate_step_shell, trim_bounded_step_edges},
 };
 
 /// Pure-Rust ISO 10303-21 STEP kernel powered by `monstertruck`.
@@ -56,14 +57,15 @@ impl CadKernel for MonstertruckKernel {
 
         for (body_idx, (&step_shell_id, step_shell)) in sorted_shells.into_iter().enumerate() {
             let body_id = BodyId(body_idx as u32);
-            let trimmed = table.to_compressed_trimmed_shell(step_shell).map_err(|e| {
+            let mut trimmed = table.to_compressed_trimmed_shell(step_shell).map_err(|e| {
                 CadError::TopologyConversion {
                     shell_id: step_shell_id,
                     detail: e.to_string(),
                 }
             })?;
 
-            let meshed = trimmed.robust_triangulation(tol_file_units);
+            trim_bounded_step_edges(&mut trimmed, unit_scale);
+            let meshed = tessellate_step_shell(&trimmed, tol_file_units);
 
             let base_edge_offset = edges.len();
             let base_face_offset = faces.len();

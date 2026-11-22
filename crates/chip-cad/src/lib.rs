@@ -13,13 +13,15 @@ pub mod model;
 pub mod monstertruck_kernel;
 pub mod picking;
 pub mod rematch;
+mod step_periodic;
 pub mod topology;
 pub mod transform;
 
 pub use fixtures::{
     SampleStepError, sample_ambiguous_twin_hole_step, sample_cam_torture_block_step,
     sample_machined_plate_step, sample_machined_plate_step_inches,
-    sample_multi_feature_bracket_step, sample_overhang_flange_step, sample_revised_part_pair_step,
+    sample_multi_feature_bracket_step, sample_overhang_flange_step,
+    sample_periodic_helical_sweep_step, sample_revised_part_pair_step,
     sample_sloped_boss_stepped_pocket_step, sample_threaded_manifold_step,
     sample_undercut_deburr_block_step, sample_undercut_deburr_block_step_bytes,
     tutorial_adaptive_pocket_step, tutorial_chamfer_engrave_block_step,

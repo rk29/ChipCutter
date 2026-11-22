@@ -3334,3 +3334,127 @@ fn m66_undercut3d_lollipop_neck_clipping_and_tridexel_parity() {
         }
     }
 }
+
+#[test]
+fn periodic_helical_sweep_step_parallel3d_respects_helix_geometry_with_zero_gouges() {
+    use std::sync::atomic::AtomicBool;
+
+    use chip_cad::{CadKernel, MonstertruckKernel, sample_periodic_helical_sweep_step};
+    use chip_cam::{
+        BoxAnchor27, MotionRole, Operation, OperationKind, Parallel3DParams, SegmentMotion3D,
+        Setup, StrategyParams, WcsOriginMode, WorkOffsetSlot, generate_operation_toolpath,
+    };
+    use chip_math::{DEFAULT_TESS_CHORD_TOL_MM, DisplayUnit, ParamLength};
+    use chip_tools::{CutterGeometry, default_starter_tool_library};
+
+    let step = sample_periodic_helical_sweep_step();
+    let doc = MonstertruckKernel
+        .load_step_bytes(
+            "helical_sweep.step",
+            step.as_bytes(),
+            DEFAULT_TESS_CHORD_TOL_MM,
+        )
+        .unwrap();
+
+    let mut setup = Setup::new("s_helix", "Helical Sweep 3D", WorkOffsetSlot::G54);
+    setup.wcs.origin = WcsOriginMode::ModelBoxPoint {
+        anchor: BoxAnchor27::BOTTOM_FRONT_LEFT,
+    };
+    let resolved = setup.resolve(&doc, DisplayUnit::Millimeter).unwrap();
+
+    let lib = default_starter_tool_library();
+    let mut ball_6 = lib
+        .tools
+        .iter()
+        .find(|t| {
+            matches!(
+                t.geometry,
+                CutterGeometry::BallEndmill { diameter_mm, .. } if (diameter_mm - 6.0).abs() < 1.0
+            )
+        })
+        .expect("starter 6 mm ball endmill present")
+        .clone();
+    // Use long-reach stickout & flute length suitable for the 40 mm tall helical part.
+    if let CutterGeometry::BallEndmill {
+        flute_length_mm,
+        overall_length_mm,
+        ..
+    } = &mut ball_6.geometry
+    {
+        *flute_length_mm = 45.0;
+        *overall_length_mm = 70.0;
+    }
+    ball_6.stickout_length_mm = 55.0;
+
+    let mut op = Operation::new(
+        "op_helix_p3d",
+        "Helix Parallel 3D",
+        OperationKind::Parallel3D,
+    );
+    op.tool_id = Some(ball_6.id.clone());
+    op.strategy = Some(StrategyParams::Parallel3D(Parallel3DParams {
+        use_cusp_height: false,
+        stepover: ParamLength::from_mm(3.0),
+        pass_angle_deg: 0.0,
+        ..Parallel3DParams::default()
+    }));
+
+    let cancel = AtomicBool::new(false);
+    let tp = generate_operation_toolpath(
+        &doc,
+        &resolved,
+        &op,
+        &ball_6,
+        DisplayUnit::Millimeter,
+        true,
+        &cancel,
+    )
+    .unwrap();
+
+    // Verify cutting moves actively follow the helical tube at intermediate Z elevations
+    // (10..35 mm), proving the toolpath sees the helical wall instead of dropping through it.
+    let mid_helix_cuts = tp
+        .segments_wcs
+        .iter()
+        .filter(|seg| {
+            matches!(
+                seg.motion,
+                SegmentMotion3D::Linear {
+                    role: MotionRole::Cut | MotionRole::FinishCut,
+                    ..
+                }
+            ) && seg.end_wcs.z > 10.0
+                && seg.end_wcs.z < 35.0
+        })
+        .count();
+    assert!(
+        mid_helix_cuts >= 10,
+        "expected Parallel3D passes riding over mid-height helical geometry (Z ∈ 10..35 mm), got {mid_helix_cuts}"
+    );
+
+    let sim = run_setup_simulation_with_choice(
+        &SetupSimulationInput {
+            doc: &doc,
+            setup: &resolved,
+            target_bodies: &[],
+            fixtures: &[],
+            operations: &[SimOperationInput::from_operation(&op, &ball_6, &tp)],
+            resolution: SimResolution::Standard,
+            kinematics: MachineKinematicsConfig::default(),
+            verify_config: SimVerificationConfig::default(),
+            initial_stock: None,
+            initial_raw_volume_mm3: None,
+            carried_over_from_setup: None,
+            cancel: None,
+        },
+        SimEngineKind::Heightmap,
+        SimComputeBackendChoice::Cpu,
+    )
+    .unwrap();
+
+    assert!(
+        !sim.has_critical_errors(),
+        "Parallel3D over periodic helical sweep must produce 0 rapid collisions and 0 B-Rep gouges, got: {:#?}",
+        sim.diagnostics
+    );
+}

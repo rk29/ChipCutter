@@ -69,6 +69,7 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 monstertruck-io = { version = "0.4", features = ["step"] }
 monstertruck-meshing = "0.4"
 monstertruck-modeling = "0.4"
+monstertruck-topology = "0.4"
 cavalier_contours = "0.9"
 boostvoronoi = "0.12"
 dxf = "0.6"

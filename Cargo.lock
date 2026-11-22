@@ -680,6 +680,7 @@ dependencies = [
  "monstertruck-io",
  "monstertruck-meshing",
  "monstertruck-modeling",
+ "monstertruck-topology",
  "serde",
  "thiserror 2.0.21",
  "zip",
