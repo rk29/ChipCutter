@@ -271,7 +271,7 @@ pub fn draw_viewport_bottom_hud(
     }
 
     // 2. Centered Floating Camera & Visibility HUD Bar along bottom edge
-    let bar_w = (viewport_rect.width() - 24.0).min(640.0);
+    let bar_w = (viewport_rect.width() - 24.0).min(710.0);
     let bar_h = 32.0;
     let bar_rect = egui::Rect::from_center_size(
         egui::pos2(viewport_rect.center().x, viewport_rect.bottom() - 21.0),
@@ -357,6 +357,13 @@ pub fn draw_viewport_bottom_hud(
         None,
         "Stock",
         "Toggle Translucent Setup Stock",
+    );
+    let _ = hud_toggle_pill(
+        &mut hud_ui,
+        &mut highlight.show_fixtures,
+        None,
+        "Fixtures",
+        "Toggle Translucent 3D Workholding Fixtures (Vises, Clamps, Spoilboard)",
     );
     let _ = hud_toggle_pill(
         &mut hud_ui,

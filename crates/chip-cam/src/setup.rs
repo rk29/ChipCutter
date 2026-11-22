@@ -11,10 +11,19 @@ use crate::{
     rotary::{ResolvedRotaryConfig, RotaryConfig},
     stock::{ResolvedStockGeometry, StockConfig, compute_tight_oriented_model_aabb},
     wcs::{CamError, WcsConfig, WcsOriginMode, WorkOffsetSlot},
+    workholding::FixtureBody,
 };
 
 fn default_post_profile() -> String {
     "grbl".to_string()
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn is_true(v: &bool) -> bool {
+    *v
 }
 
 /// Single physical CNC clamping setup (`03-setups-wcs.md`).
@@ -36,6 +45,10 @@ pub struct Setup {
     pub rotary: RotaryConfig,
     #[serde(default)]
     pub heights: SetupHeights,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fixtures: Vec<FixtureBody>,
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub auto_avoid_fixtures_on_rapids: bool,
     #[serde(default)]
     pub operations: Vec<Operation>,
 }
@@ -52,6 +65,8 @@ impl Setup {
             stock: StockConfig::default(),
             rotary: RotaryConfig::default(),
             heights: SetupHeights::default(),
+            fixtures: Vec::new(),
+            auto_avoid_fixtures_on_rapids: true,
             operations: Vec::new(),
         }
     }

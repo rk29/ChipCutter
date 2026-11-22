@@ -12,6 +12,7 @@ use super::{
         UploadedCadGpu, UploadedToolpathsGpu, ViewportUniformsGpu,
     },
     highlight::{HighlightState, SimStockRenderSource, adaptive_grid_steps, dmat4_to_f32_2d},
+    scene_builders::{build_fixture_shaded_mesh, compute_fixture_gpu_signature},
     toolpath_instances::{build_toolpath_gpu_instances, compute_toolpath_gpu_signature},
 };
 use crate::camera::CadCamera;
@@ -27,6 +28,7 @@ pub struct ViewportRenderer {
     solid_pipeline: wgpu::RenderPipeline,
     solid_ghost_pipeline: wgpu::RenderPipeline,
     overlay_pipeline: wgpu::RenderPipeline,
+    fixture_pipeline: wgpu::RenderPipeline,
     edge_pipeline: wgpu::RenderPipeline,
     sim_stock_pipeline: wgpu::RenderPipeline,
     sim_tool_pipeline: wgpu::RenderPipeline,
@@ -38,6 +40,8 @@ pub struct ViewportRenderer {
     uploaded_toolpaths: Option<UploadedToolpathsGpu>,
     uploaded_sim_stock: GrowableSimIndexedMeshGpu,
     uploaded_sim_tool: GrowableSimIndexedMeshGpu,
+    uploaded_fixtures: GrowableSimIndexedMeshGpu,
+    uploaded_fixtures_sig: Option<u64>,
     overlay_buf: GrowableGpuBuffer,
     edge_buf: GrowableGpuBuffer,
 }
@@ -244,6 +248,42 @@ impl ViewportRenderer {
             cache: None,
         });
 
+        let fixture_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("chip_fixture_pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_fixture"),
+                buffers: &[Some(SimVertexGpu::layout())],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample,
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_sim_mesh"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: COLOR_FORMAT,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+
         let edge_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("chip_edge_pipeline"),
             layout: Some(&pipeline_layout),
@@ -365,6 +405,7 @@ impl ViewportRenderer {
             solid_pipeline,
             solid_ghost_pipeline,
             overlay_pipeline,
+            fixture_pipeline,
             edge_pipeline,
             sim_stock_pipeline,
             sim_tool_pipeline,
@@ -382,6 +423,11 @@ impl ViewportRenderer {
                 "chip_sim_tool_vbuf",
                 "chip_sim_tool_ibuf",
             ),
+            uploaded_fixtures: GrowableSimIndexedMeshGpu::new(
+                "chip_fixtures_vbuf",
+                "chip_fixtures_ibuf",
+            ),
+            uploaded_fixtures_sig: None,
             overlay_buf: GrowableGpuBuffer::new("chip_overlay_tris", wgpu::BufferUsages::VERTEX),
             edge_buf: GrowableGpuBuffer::new("chip_edge_instances", wgpu::BufferUsages::VERTEX),
         }
@@ -518,6 +564,22 @@ impl ViewportRenderer {
         );
         self.overlay_buf.upload_slice(device, queue, &overlay_tris);
         self.edge_buf.upload_slice(device, queue, &edge_instances);
+
+        // Sync translucent shaded 3D Workholding Fixtures GPU buffer only when signature changes
+        let fix_sig = compute_fixture_gpu_signature(highlight);
+        if self.uploaded_fixtures_sig != Some(fix_sig) {
+            if highlight.show_fixtures && !highlight.fixture_meshes.is_empty() {
+                let (fix_verts, fix_indices) = build_fixture_shaded_mesh(highlight);
+                self.uploaded_fixtures.sync(
+                    device,
+                    queue,
+                    Some((fix_sig, fix_verts.as_slice(), fix_indices.as_slice())),
+                );
+            } else {
+                self.uploaded_fixtures.clear();
+            }
+            self.uploaded_fixtures_sig = Some(fix_sig);
+        }
 
         // Update cached Pass #5 GPU-instanced toolpaths only when toolpaths/frame/toggles change!
         let tp_sig = compute_toolpath_gpu_signature(highlight);
@@ -721,6 +783,16 @@ impl ViewportRenderer {
                 pass.set_pipeline(&self.overlay_pipeline);
                 pass.set_vertex_buffer(0, ov_buf.slice(..));
                 pass.draw(0..vert_count, 0..1);
+            }
+
+            // 3B. Translucent Shaded 3D Workholding Fixtures (Vise, Clamps, Spoilboard, Keep-Outs)
+            if highlight.show_fixtures
+                && let Some((vbuf, ibuf, icount)) = self.uploaded_fixtures.active()
+            {
+                pass.set_pipeline(&self.fixture_pipeline);
+                pass.set_vertex_buffer(0, vbuf.slice(..));
+                pass.set_index_buffer(ibuf.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..icount, 0, 0..1);
             }
 
             // 4. Topological edges, Stock wireframe, WCS triad, 3D chain arrows, & Tab bridges
@@ -2154,5 +2226,78 @@ mod tests {
                 "TriDexel GPU ErrorHeatmap must visually differ from ByOperation"
             );
         }
+    }
+
+    #[test]
+    fn renders_translucent_workholding_fixtures_and_toggles_cleanly() {
+        use chip_cam::{FixtureBody, resolve_setup_fixtures_parametric};
+        use chip_math::DVec2;
+
+        use crate::viewport::FixtureVisualMesh;
+
+        let step = sample_multi_feature_bracket_step(false).unwrap();
+        let doc = MonstertruckKernel
+            .load_step_bytes("bracket.step", step.as_bytes(), DEFAULT_TESS_CHORD_TOL_MM)
+            .unwrap();
+
+        let mut setup = Setup::new("s_fix", "Vise + Clamps Setup", WorkOffsetSlot::G54);
+        setup.fixtures = vec![
+            FixtureBody::default_vise("v1", "4in Vise"),
+            FixtureBody::default_toe_clamp("c1", "Right Clamp", DVec2::new(47.0, 0.0), 0.0),
+            FixtureBody::default_spoilboard("sb1", "MDF Spoilboard"),
+        ];
+        let resolved = setup
+            .resolve_immutable(&doc, DisplayUnit::Millimeter)
+            .unwrap();
+        let solids =
+            resolve_setup_fixtures_parametric(&setup, &resolved, DisplayUnit::Millimeter).unwrap();
+        assert_eq!(solids.len(), 3);
+
+        let fixture_meshes: Vec<FixtureVisualMesh> = solids
+            .into_iter()
+            .enumerate()
+            .map(|(idx, sol)| FixtureVisualMesh {
+                revision: 1,
+                fixture_id: sol.fixture_id,
+                mesh: Arc::new(sol.mesh_wcs),
+                base_rgba: sol.color_rgba,
+                colliding: false,
+                selected: idx == 1,
+            })
+            .collect();
+
+        let mut cam = CadCamera::default();
+        cam.fit_aabb(&chip_math::Aabb3::new(
+            chip_math::DVec3::new(-90.0, -90.0, -60.0),
+            chip_math::DVec3::new(110.0, 90.0, 40.0),
+        ));
+
+        let hl_on = HighlightState {
+            wcs_frame: resolved.frame,
+            stock: Some(resolved.stock),
+            show_stock: true,
+            show_fixtures: true,
+            fixture_meshes: fixture_meshes.clone(),
+            ..HighlightState::default()
+        };
+        let hl_off = HighlightState {
+            show_fixtures: false,
+            ..hl_on.clone()
+        };
+
+        let png_on = render_offscreen_png(&doc, &cam, &hl_on, 480, 360).unwrap();
+        let png_off = render_offscreen_png(&doc, &cam, &hl_off, 480, 360).unwrap();
+        let img_on = image::load_from_memory(&png_on).unwrap().to_rgba8();
+        let img_off = image::load_from_memory(&png_off).unwrap().to_rgba8();
+
+        let diff_px = img_on
+            .pixels()
+            .zip(img_off.pixels())
+            .filter(|(a, b)| (0..3).any(|c| a[c].abs_diff(b[c]) > 10))
+            .count();
+        assert!(
+            diff_px > 4_000,
+            "expected translucent workholding fixtures to visibly change >4000 pixels when toggled on vs off (got {diff_px})"
+        );
     }
 }

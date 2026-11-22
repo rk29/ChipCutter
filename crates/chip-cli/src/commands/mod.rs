@@ -6,6 +6,7 @@ pub mod inspect;
 pub mod machines;
 pub mod transform_model;
 pub mod validate_sim_build;
+pub mod workholding;
 
 use std::path::{Path, PathBuf};
 
@@ -59,7 +60,7 @@ pub fn load_primary_cad_for_project(
     proj: &ProjectDocument,
     proj_dir: Option<&Path>,
 ) -> Result<CadDocument, Box<dyn std::error::Error>> {
-    let Some(first) = proj.models.first() else {
+    let Some(first) = proj.primary_part_model() else {
         return Ok(CadDocument::empty());
     };
     let model_path = resolve_model_path(proj_dir, &first.path);

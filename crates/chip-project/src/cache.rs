@@ -103,6 +103,22 @@ pub fn compute_operation_input_hash(
         }
     }
 
+    // Fold enabled 3D Workholding fixtures + rapid-avoidance toggle (skipped when no fixtures exist
+    // and `auto_avoid_fixtures_on_rapids` is default `true` so v1/v2/v3 hashes stay bit-identical!)
+    let any_enabled_fixture = setup.fixtures.iter().any(|f| f.enabled);
+    if any_enabled_fixture || !setup.auto_avoid_fixtures_on_rapids {
+        hasher.update(b"|workholding_v1:");
+        hasher.update([u8::from(setup.auto_avoid_fixtures_on_rapids)]);
+        for fix in &setup.fixtures {
+            if fix.enabled
+                && let Ok(s) = toml::to_string(fix)
+            {
+                hasher.update(s.as_bytes());
+                hasher.update(b";");
+            }
+        }
+    }
+
     // Fold upstream Rest Machining operation hashes recursively (`u_idx < op_idx` guarantees DAG acyclicity;
     // skipped completely when `rest_machining` is disabled or `FromPreviousTool` so v1 hashes stay bit-identical!)
     let upstream_indices = resolve_upstream_rest_op_indices(setup, op_idx);

@@ -343,6 +343,18 @@ fn vs_sim_tool(in: SimVertexIn) -> SimVertexOut {
     return out;
 }
 
+@vertex
+fn vs_fixture(in: SimVertexIn) -> SimVertexOut {
+    var out: SimVertexOut;
+    let world_pos = (u_vp.wcs_local_to_world * vec4<f32>(in.pos_wcs_mm, 1.0)).xyz;
+    let world_n = normalize((u_vp.wcs_local_to_world * vec4<f32>(in.normal_wcs, 0.0)).xyz);
+    out.clip_pos = u_vp.view_proj * vec4<f32>(world_pos, 1.0);
+    out.world_normal = world_n;
+    out.view_normal = normalize((u_vp.view * vec4<f32>(world_n, 0.0)).xyz);
+    out.color_rgba = in.color_rgba;
+    return out;
+}
+
 fn shade_sim_surface(
     view_normal_in: vec3<f32>,
     world_normal: vec3<f32>,

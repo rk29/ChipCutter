@@ -88,6 +88,7 @@ impl ChipCutterApp {
                     id: "model_1".to_string(),
                     path: doc.source_name.clone(),
                     sha256: sha256_hex.clone(),
+                    role: Default::default(),
                     unit_override,
                     transform: chip_cad::ModelTransform::IDENTITY,
                 }];
@@ -289,26 +290,34 @@ impl ChipCutterApp {
                     } else {
                         doc.source_name.clone()
                     };
-                    self.project.models = vec![ModelEntry {
+                    let new_part = ModelEntry {
                         id: "model_1".to_string(),
                         path: stored_path,
                         sha256: sha256_hex.clone(),
+                        role: chip_project::ModelRole::Part,
                         unit_override,
                         transform: init_xf,
-                    }];
+                    };
+                    // Preserve any imported workholding fixture models (`ModelRole::Fixture`)
+                    self.project.models.retain(|m| m.role.is_fixture());
+                    self.project.models.insert(0, new_part);
                     for setup in &mut self.project.setups {
                         for op in &mut setup.operations {
                             op.mark_dirty();
                         }
                     }
-                } else if self.project.models.is_empty() {
-                    self.project.models = vec![ModelEntry {
-                        id: "model_1".to_string(),
-                        path: doc.source_name.clone(),
-                        sha256: sha256_hex.clone(),
-                        unit_override,
-                        transform: init_xf,
-                    }];
+                } else if self.project.primary_part_model().is_none() {
+                    self.project.models.insert(
+                        0,
+                        ModelEntry {
+                            id: "model_1".to_string(),
+                            path: doc.source_name.clone(),
+                            sha256: sha256_hex.clone(),
+                            role: chip_project::ModelRole::Part,
+                            unit_override,
+                            transform: init_xf,
+                        },
+                    );
                 }
             }
             LoadPurpose::ReloadRebind { update_path } => {
@@ -321,8 +330,7 @@ impl ChipCutterApp {
                 fit_camera = was_model_empty;
                 let preserved_xf = self
                     .project
-                    .models
-                    .first()
+                    .primary_part_model()
                     .map_or(chip_cad::ModelTransform::IDENTITY, |m| m.transform);
                 if preserved_xf.is_identity() {
                     self.apply_associative_reload_rebind(
@@ -349,8 +357,7 @@ impl ChipCutterApp {
         let raw_doc = Arc::new(doc);
         let applied_transform = self
             .project
-            .models
-            .first()
+            .primary_part_model()
             .map_or(chip_cad::ModelTransform::IDENTITY, |m| m.transform);
         let (final_doc, final_picker, final_topo) = if applied_transform.is_identity() {
             (Arc::clone(&raw_doc), picker, topo)
@@ -413,8 +420,15 @@ impl ChipCutterApp {
         } else {
             None
         };
-        let report =
-            rebind_project_to_reloaded_cad(&mut self.project, 0, doc, topo, sha256_hex, new_rel);
+        let part_idx = self.project.primary_part_model_index().unwrap_or(0);
+        let report = rebind_project_to_reloaded_cad(
+            &mut self.project,
+            part_idx,
+            doc,
+            topo,
+            sha256_hex,
+            new_rel,
+        );
         let summary = report.summary_line();
         let has_warn = report.needs_repick_count > 0 || !report.setup_wcs_warnings.is_empty();
         self.logs.push(summary.clone());

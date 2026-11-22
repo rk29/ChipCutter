@@ -96,6 +96,9 @@ impl ChipCutterApp {
         self.external_step_modified = false;
         self.last_reload_banner = None;
         self.model = None;
+        self.fixture_models.clear();
+        self.fixture_models_revision = self.fixture_models_revision.wrapping_add(1);
+        self.selected_fixture_idx = None;
         self.cached_frame_geo = None;
         self.active_setup_idx = 0;
         self.hidden_operation_ids.clear();
@@ -157,9 +160,10 @@ impl ChipCutterApp {
                 self.record_recent_file(path);
                 self.sync_active_machine_tools();
                 self.refresh_dependent_expressions();
+                self.reload_fixture_models_from_disk();
                 self.logs
                     .push(format!("Opened project '{}'.", path.display()));
-                if let Some(first_model) = self.project.models.first() {
+                if let Some(first_model) = self.project.primary_part_model() {
                     let step_path = resolve_model_path(path.parent(), &first_model.path);
                     let unit_override = first_model.unit_override;
                     self.spawn_model_file_load_with_options(
@@ -200,12 +204,13 @@ impl ChipCutterApp {
                 self.record_recent_file(archive_path);
                 self.sync_active_machine_tools();
                 self.refresh_dependent_expressions();
+                self.reload_fixture_models_from_disk();
                 self.logs.push(format!(
                     "Unpacked portable bundle '{}' ({} file(s)).",
                     archive_path.display(),
                     unpacked.extracted_files.len()
                 ));
-                if let Some(first_model) = self.project.models.first() {
+                if let Some(first_model) = self.project.primary_part_model() {
                     let step_path = resolve_model_path(Some(&extract_dir), &first_model.path);
                     let unit_override = first_model.unit_override;
                     self.spawn_model_file_load_with_options(
@@ -277,7 +282,7 @@ impl ChipCutterApp {
         };
 
         let mut fallback: Vec<(&str, &[u8])> = Vec::new();
-        if let (Some(m), Some(first)) = (&self.model, self.project.models.first()) {
+        if let (Some(m), Some(first)) = (&self.model, self.project.primary_part_model()) {
             fallback.push((first.id.as_str(), m.raw_step_bytes.as_slice()));
             fallback.push((first.path.as_str(), m.raw_step_bytes.as_slice()));
         }
@@ -330,7 +335,7 @@ impl ChipCutterApp {
             .as_ref()
             .and_then(|m| m.source_path.clone())
             .or_else(|| {
-                let first = self.project.models.first()?;
+                let first = self.project.primary_part_model()?;
                 let resolved = resolve_model_path(self.active_project_dir(), &first.path);
                 resolved.is_file().then_some(resolved)
             });
@@ -490,7 +495,7 @@ impl ChipCutterApp {
         // Throttled (every 2s) external STEP modification check on disk (`09-persistence-cli.md` §1)
         if !self.loading_in_flight && self.last_disk_check.elapsed().as_secs_f32() >= 2.0 {
             self.last_disk_check = Instant::now();
-            if let (Some(m), Some(first)) = (&self.model, self.project.models.first())
+            if let (Some(m), Some(first)) = (&self.model, self.project.primary_part_model())
                 && let Some(disk_path) = &m.source_path
                 && let Ok(meta) = std::fs::metadata(disk_path)
                 && meta.is_file()
@@ -748,6 +753,7 @@ mod tests {
             id: "model_1".to_string(),
             path: "does_not_exist.step".to_string(),
             sha256: "0".repeat(64),
+            role: Default::default(),
             unit_override: None,
             transform: chip_cad::ModelTransform::IDENTITY,
         });

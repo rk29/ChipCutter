@@ -27,6 +27,7 @@ pub fn build_rotary_shaft_preview_project(
         id: "model_1".to_string(),
         path: model_path,
         sha256: sha256_hex.to_string(),
+        role: Default::default(),
         unit_override: None,
         transform: chip_cad::ModelTransform::IDENTITY,
     }];
@@ -309,6 +310,7 @@ pub fn build_rotary_helical_flute_project(
         id: "model_1".to_string(),
         path: model_path,
         sha256: sha256_hex.to_string(),
+        role: Default::default(),
         unit_override: None,
         transform: chip_cad::ModelTransform::IDENTITY,
     }];
@@ -416,6 +418,7 @@ pub fn build_tutorial_rotary_axial_parallel_project(
         id: "model_1".to_string(),
         path: model_path,
         sha256: sha256_hex.to_string(),
+        role: Default::default(),
         unit_override: None,
         transform: chip_cad::ModelTransform::IDENTITY,
     }];
@@ -525,6 +528,7 @@ pub fn build_tutorial_indexed_step_multiface_project(
         id: "model_1".to_string(),
         path: model_path,
         sha256: sha256_hex.to_string(),
+        role: Default::default(),
         unit_override: None,
         transform: chip_cad::ModelTransform::IDENTITY,
     }];
@@ -738,6 +742,7 @@ pub fn build_tutorial_rotary_4axis_flowline_project(
         id: "model_1".to_string(),
         path: model_path,
         sha256: sha256_hex.to_string(),
+        role: Default::default(),
         unit_override: None,
         transform: chip_cad::ModelTransform::IDENTITY,
     }];

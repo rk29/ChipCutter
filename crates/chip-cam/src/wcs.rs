@@ -106,6 +106,11 @@ pub enum CamError {
     EmptyToolpath { op_name: String },
     #[error("invalid 4th-axis rotary configuration for '{op_name}': {reason}")]
     InvalidRotarySetup { op_name: String, reason: String },
+    #[error("invalid workholding fixture '{fixture_name}': {reason}")]
+    InvalidFixture {
+        fixture_name: String,
+        reason: String,
+    },
 }
 
 /// Controller work coordinate offset slot (`G54`..`G59`, `G59.1`..`G59.3`).

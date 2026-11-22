@@ -43,8 +43,8 @@ pub use dispatcher::{
     BatchGenerationReport, DispatcherEvent, JobDispatcher, generate_project_blocking,
 };
 pub use document::{
-    ModelEntry, ProjectDocument, compute_sha256_hex, is_mesh_path, load_model_bytes_cad_doc,
-    load_model_bytes_cad_doc_transformed, load_model_entry_cad_doc,
+    ModelEntry, ModelRole, ProjectDocument, compute_sha256_hex, is_mesh_path,
+    load_model_bytes_cad_doc, load_model_bytes_cad_doc_transformed, load_model_entry_cad_doc,
     load_model_entry_cad_doc_transformed, portable_model_path, resolve_model_path,
 };
 pub use history::UndoHistory;

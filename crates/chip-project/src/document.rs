@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     path::{Component, Path, PathBuf},
     sync::Arc,
 };
@@ -14,6 +15,39 @@ use chip_tools::{DEFAULT_MACHINE_ID, MachineDefinition, Tool, ToolId};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+/// Semantic role of a 3D model file referenced in `ProjectDocument.models`.
+///
+/// [`Self::Part`] (default, omitted from TOML) represents a machined target solid that drives
+/// `StockConfig::RelativeBox`, WCS anchors, and target-part gouge/excess metrology.
+/// [`Self::Fixture`] represents imported workholding hardware (vises, clamps, tombstones) used
+/// exclusively by `FixtureKind::ImportedModel` so it never pollutes target part bounds or stock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelRole {
+    #[default]
+    Part,
+    Fixture,
+}
+
+impl ModelRole {
+    #[inline]
+    pub const fn is_part(&self) -> bool {
+        matches!(self, Self::Part)
+    }
+
+    #[inline]
+    pub const fn is_fixture(&self) -> bool {
+        matches!(self, Self::Fixture)
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Part => "Target Part",
+            Self::Fixture => "Fixture / Workholding",
+        }
+    }
+}
+
 /// External 3D CAD (`.step`/`.stp`) or Triangle Mesh (`.stl`/`.obj`/`.3mf`) model reference
 /// stored in `.chip.toml` (`09-persistence-cli.md`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -21,6 +55,9 @@ pub struct ModelEntry {
     pub id: String,
     pub path: String,
     pub sha256: String,
+    /// Semantic role (`part` default, omitted in TOML | `fixture` for imported workholding solids).
+    #[serde(default, skip_serializing_if = "ModelRole::is_part")]
+    pub role: ModelRole,
     /// Optional explicit unit override for imported triangle meshes (omitted for STEP and
     /// unit-aware 3MF files so existing `.chip.toml` diffs remain clean).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -37,6 +74,22 @@ impl ModelEntry {
             id: id.into(),
             path: path.into(),
             sha256: sha256.into(),
+            role: ModelRole::Part,
+            unit_override: None,
+            transform: ModelTransform::IDENTITY,
+        }
+    }
+
+    pub fn new_fixture(
+        id: impl Into<String>,
+        path: impl Into<String>,
+        sha256: impl Into<String>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            path: path.into(),
+            sha256: sha256.into(),
+            role: ModelRole::Fixture,
             unit_override: None,
             transform: ModelTransform::IDENTITY,
         }
@@ -132,6 +185,57 @@ impl ProjectDocument {
 
     pub fn sketch_mut(&mut self, id: &str) -> Option<&mut SketchLayer> {
         self.sketches.iter_mut().find(|s| s.id == id)
+    }
+
+    /// Returns the primary machined target part model (`role == ModelRole::Part`), ignoring
+    /// any imported workholding fixture models (`ModelRole::Fixture`).
+    pub fn primary_part_model(&self) -> Option<&ModelEntry> {
+        self.models.iter().find(|m| m.role.is_part())
+    }
+
+    /// Returns a mutable reference to the primary machined target part model.
+    pub fn primary_part_model_mut(&mut self) -> Option<&mut ModelEntry> {
+        self.models.iter_mut().find(|m| m.role.is_part())
+    }
+
+    /// Returns the index in `self.models` of the primary machined target part model.
+    pub fn primary_part_model_index(&self) -> Option<usize> {
+        self.models.iter().position(|m| m.role.is_part())
+    }
+
+    /// Iterates over all machined target part models (`role == ModelRole::Part`).
+    pub fn part_models(&self) -> impl Iterator<Item = &ModelEntry> {
+        self.models.iter().filter(|m| m.role.is_part())
+    }
+
+    /// Iterates over all imported workholding fixture models (`role == ModelRole::Fixture`).
+    pub fn fixture_models(&self) -> impl Iterator<Item = &ModelEntry> {
+        self.models.iter().filter(|m| m.role.is_fixture())
+    }
+
+    /// Looks up any model entry (`Part` or `Fixture`) by `id`.
+    pub fn model_by_id(&self, id: &str) -> Option<&ModelEntry> {
+        self.models.iter().find(|m| m.id == id)
+    }
+
+    /// Loads all `ModelRole::Fixture` entries reachable from `project_dir` into a deterministic
+    /// `model_id -> CadDocument` map ready for [`chip_cam::resolve_setup_fixtures`].
+    pub fn load_fixture_cad_documents(
+        &self,
+        project_dir: Option<&Path>,
+    ) -> BTreeMap<String, CadDocument> {
+        let mut docs = BTreeMap::new();
+        for entry in self.fixture_models() {
+            let disk_path = resolve_model_path(project_dir, &entry.path);
+            if let Ok(doc) = load_model_entry_cad_doc_transformed(
+                &disk_path,
+                entry.unit_override,
+                &entry.transform,
+            ) {
+                docs.insert(entry.id.clone(), doc);
+            }
+        }
+        docs
     }
 
     pub fn tool(&self, id: &ToolId) -> Option<&Tool> {

@@ -321,6 +321,7 @@ fn cli_reload_step_handles_v1_to_v2_rebind_and_deleted_hole_flagging() {
         id: "model_1".to_string(),
         path: "part_v1.step".to_string(),
         sha256: compute_sha256_hex(&v1_bytes),
+        role: Default::default(),
         unit_override: None,
         transform: chip_cad::ModelTransform::IDENTITY,
     });
@@ -1649,4 +1650,119 @@ fn cli_simulate_backend_cpu_vs_gpu_json_and_benchmark_parity() {
     assert!(bench_stdout.contains("metrics="));
     assert!(bench_stdout.contains("throughput="));
     assert!(bench_stdout.contains("Error Volume:"));
+}
+
+#[test]
+fn cli_workholding_add_vise_clamp_spoilboard_and_list_roundtrip() {
+    let tmp = TempTestDir::new("workholding_cli_m60");
+    let step_path = tmp.path().join("bracket.step");
+    let proj_path = tmp.path().join("bracket.chip.toml");
+
+    // 1. Seed a sample bracket project
+    let gen_cmd = Command::new(cli_bin())
+        .args([
+            "generate-sample-step",
+            step_path.to_str().unwrap(),
+            "--multi-feature",
+            "--project-out",
+            proj_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("generate sample bracket");
+    assert!(gen_cmd.status.success());
+
+    // 2. Add a vise with parallels, a toe clamp, and a spoilboard
+    let vise = Command::new(cli_bin())
+        .args([
+            "workholding",
+            "add-vise",
+            proj_path.to_str().unwrap(),
+            "--name",
+            "Kurt D688 Vise",
+            "--axis",
+            "y",
+            "--jaw-width",
+            "120",
+            "--grip-depth",
+            "5",
+            "--parallels",
+        ])
+        .output()
+        .expect("workholding add-vise");
+    assert!(
+        vise.status.success(),
+        "add-vise failed:\n{}",
+        String::from_utf8_lossy(&vise.stderr)
+    );
+
+    let clamp = Command::new(cli_bin())
+        .args([
+            "workholding",
+            "add-clamp",
+            proj_path.to_str().unwrap(),
+            "--name",
+            "Right Edge Clamp",
+            "--x",
+            "47",
+            "--y",
+            "0",
+            "--yaw",
+            "0",
+        ])
+        .output()
+        .expect("workholding add-clamp");
+    assert!(
+        clamp.status.success(),
+        "add-clamp failed:\n{}",
+        String::from_utf8_lossy(&clamp.stderr)
+    );
+
+    let sb = Command::new(cli_bin())
+        .args([
+            "workholding",
+            "add-spoilboard",
+            proj_path.to_str().unwrap(),
+            "--thickness",
+            "18",
+            "--margin-xy",
+            "30",
+            "--allowed-overcut",
+            "0.5",
+        ])
+        .output()
+        .expect("workholding add-spoilboard");
+    assert!(
+        sb.status.success(),
+        "add-spoilboard failed:\n{}",
+        String::from_utf8_lossy(&sb.stderr)
+    );
+
+    // 3. `workholding list` prints all 3 resolved fixtures with bounding boxes and triangle counts
+    let list = Command::new(cli_bin())
+        .args(["workholding", "list", proj_path.to_str().unwrap()])
+        .output()
+        .expect("workholding list");
+    assert!(
+        list.status.success(),
+        "workholding list failed:\n{}",
+        String::from_utf8_lossy(&list.stderr)
+    );
+    let list_out = String::from_utf8_lossy(&list.stdout);
+    assert!(list_out.contains("3 fixture(s)"), "stdout:\n{list_out}");
+    assert!(list_out.contains("Kurt D688 Vise"), "stdout:\n{list_out}");
+    assert!(list_out.contains("Right Edge Clamp"), "stdout:\n{list_out}");
+    assert!(list_out.contains("MDF Spoilboard"), "stdout:\n{list_out}");
+    assert!(list_out.contains("WCS AABB"), "stdout:\n{list_out}");
+
+    // 4. `validate` passes cleanly on the project with workholding configured
+    let val = Command::new(cli_bin())
+        .args(["validate", proj_path.to_str().unwrap()])
+        .output()
+        .expect("validate with workholding");
+    assert!(
+        val.status.success(),
+        "validate failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&val.stdout),
+        String::from_utf8_lossy(&val.stderr)
+    );
 }

@@ -3,12 +3,14 @@ mod gpu_types;
 pub mod highlight;
 pub mod overlays;
 pub mod pipeline;
+pub mod scene_builders;
 #[cfg(feature = "gpu-compute")]
 mod sim_gpu_render;
 pub mod toolpath_instances;
 
 pub use highlight::{
-    HighlightState, SimStockRenderSource, SketchLayerVisual, ToolpathRenderEntry, ZPlaneVisual,
+    FixtureVisualMesh, HighlightState, SimStockRenderSource, SketchLayerVisual,
+    ToolpathRenderEntry, ZPlaneVisual,
 };
 pub use overlays::{
     GuidanceHudAction, ViewportHudAction, draw_view_cube_overlay, draw_viewport_bottom_hud,

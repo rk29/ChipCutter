@@ -18,7 +18,9 @@ pub mod surface3d;
 pub mod thread_tables;
 pub mod toolpath;
 pub mod wcs;
+pub mod workholding;
 
+pub use chip_bvh::TriMesh3D;
 pub use cl_data::{ArcDir, ArcPlane, ClEvent, CutterCompMode, DrillCycleKind, MotionRole};
 pub use feed_opt::{
     corner_feed_scale, internal_arc_feed_scale, optimize_toolpath_feedrates,
@@ -106,6 +108,10 @@ pub use toolpath::{
 pub use wcs::{
     AxisAnchor, BoxAnchor27, CamError, WcsAxisRef, WcsConfig, WcsFeaturePointRef,
     WcsOrientationMode, WcsOriginMode, WorkOffsetSlot,
+};
+pub use workholding::{
+    FixtureBody, FixtureKind, FixtureZRef, ResolvedFixtureSolid, ViseClampAxis, ViseFixedSide,
+    resolve_fixture_body, resolve_setup_fixtures, resolve_setup_fixtures_parametric,
 };
 
 #[cfg(test)]

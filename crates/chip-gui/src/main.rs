@@ -136,6 +136,10 @@ struct GuiArgs {
     #[arg(long)]
     capture_27pt_dots: Option<bool>,
 
+    /// Show or hide translucent 3D workholding fixtures during capture (`true` / `false`).
+    #[arg(long)]
+    capture_fixtures: Option<bool>,
+
     /// Show or hide translucent ghost-part comparison during capture (`true` / `false`).
     #[arg(long)]
     capture_ghost_part: Option<bool>,
@@ -190,6 +194,7 @@ fn main() -> eframe::Result {
         auto_generate: args.capture_generate,
         show_z_planes: args.capture_z_planes,
         show_27pt_dots: args.capture_27pt_dots,
+        show_fixtures: args.capture_fixtures,
         ghost_part: args.capture_ghost_part,
         thumb_path: args.capture_thumb,
     };

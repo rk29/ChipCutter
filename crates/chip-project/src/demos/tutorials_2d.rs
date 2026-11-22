@@ -32,6 +32,7 @@ fn init_tutorial_step_project(
         id: "model_1".to_string(),
         path: model_path,
         sha256: sha256_hex.to_string(),
+        role: Default::default(),
         unit_override: None,
         transform: chip_cad::ModelTransform::IDENTITY,
     }];

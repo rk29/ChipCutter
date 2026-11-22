@@ -97,6 +97,7 @@ pub fn run_import_mesh(args: ImportMeshArgs) -> Result<ExitCode, Box<dyn std::er
         id: "model_1".to_string(),
         path: rel_path,
         sha256: compute_sha256_hex(&bytes),
+        role: Default::default(),
         unit_override,
         transform: xf,
     }];

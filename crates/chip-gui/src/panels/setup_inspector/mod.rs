@@ -1,3 +1,4 @@
+mod fixtures_tab;
 mod heights_tab;
 mod rotary_tab;
 mod stock_tab;
@@ -8,12 +9,12 @@ use std::hash::Hash;
 
 use chip_cad::CadDocument;
 use chip_cam::{
-    AxisAnchor, BoxAnchor27, ResolvedSetup, RotaryConfig, Setup, SetupHeights, StockConfig,
-    WcsConfig, WorkOffsetSlot,
+    AxisAnchor, BoxAnchor27, FixtureBody, ResolvedFixtureSolid, ResolvedSetup, RotaryConfig, Setup,
+    SetupHeights, StockConfig, WcsConfig, WorkOffsetSlot,
 };
 use chip_math::{EvalContext, ParamLength};
 use chip_post::builtin_post_profiles;
-use chip_project::{ProjectDocument, UndoHistory};
+use chip_project::{ModelEntry, ProjectDocument, UndoHistory};
 use chip_tools::MachineDefinition;
 
 use crate::{
@@ -25,6 +26,7 @@ use crate::{
 };
 
 use self::{
+    fixtures_tab::{FixturesTabCtx, show_fixtures_tab},
     heights_tab::{HeightsTabCtx, show_heights_tab},
     rotary_tab::show_rotary_tab,
     stock_tab::{StockTabView, show_stock_tab},
@@ -38,16 +40,20 @@ pub struct SetupInspectorCtx<'a> {
     pub history: &'a mut UndoHistory,
     pub cad_doc: Option<&'a CadDocument>,
     pub resolved: Option<Result<&'a ResolvedSetup, &'a str>>,
+    pub resolved_fixtures: &'a [ResolvedFixtureSolid],
     pub tab: &'a mut SetupTab,
     pub pick_mode: &'a mut ViewportPickMode,
+    pub selected_fixture_idx: &'a mut Option<usize>,
+    pub show_fixtures: &'a mut bool,
     pub show_27pt_dots: &'a mut bool,
     pub show_z_planes: &'a mut bool,
     pub machines: &'a [MachineDefinition],
     pub open_machine_manager: &'a mut bool,
     pub machine_changed: &'a mut bool,
+    pub import_fixture_requested: &'a mut bool,
 }
 
-/// Lightweight (~200-byte) pre-edit snapshot of only the Setup's header & WCS/Stock/Post/Heights
+/// Lightweight pre-edit snapshot of only the Setup's header & WCS/Stock/Fixtures/Post/Heights
 /// fields (never cloning `project.tools` or `setup.operations` on idle 60 FPS frames!).
 struct SetupParamsSnapshot {
     name: String,
@@ -57,6 +63,8 @@ struct SetupParamsSnapshot {
     stock: StockConfig,
     rotary: RotaryConfig,
     heights: SetupHeights,
+    fixtures: Vec<FixtureBody>,
+    auto_avoid_fixtures_on_rapids: bool,
 }
 
 impl SetupParamsSnapshot {
@@ -69,6 +77,8 @@ impl SetupParamsSnapshot {
             stock: setup.stock.clone(),
             rotary: setup.rotary.clone(),
             heights: setup.heights.clone(),
+            fixtures: setup.fixtures.clone(),
+            auto_avoid_fixtures_on_rapids: setup.auto_avoid_fixtures_on_rapids,
         }
     }
 
@@ -80,6 +90,8 @@ impl SetupParamsSnapshot {
         setup.stock = self.stock;
         setup.rotary = self.rotary;
         setup.heights = self.heights;
+        setup.fixtures = self.fixtures;
+        setup.auto_avoid_fixtures_on_rapids = self.auto_avoid_fixtures_on_rapids;
     }
 }
 
@@ -129,7 +141,7 @@ impl SetupGrid<'_> {
     }
 }
 
-/// Renders the tabbed **Setup Inspector** (`[WCS]`, `[Stock]`, `[Heights]`).
+/// Renders the tabbed **Setup Inspector** (`[WCS & Post]`, `[Stock]`, `[Fixtures]`, `[4th Axis]`, `[Heights]`).
 pub fn show_setup_inspector(ui: &mut egui::Ui, ctx: SetupInspectorCtx<'_>) -> bool {
     let SetupInspectorCtx {
         project,
@@ -137,13 +149,17 @@ pub fn show_setup_inspector(ui: &mut egui::Ui, ctx: SetupInspectorCtx<'_>) -> bo
         history,
         cad_doc,
         resolved,
+        resolved_fixtures,
         tab,
         pick_mode,
+        selected_fixture_idx,
+        show_fixtures,
         show_27pt_dots,
         show_z_planes,
         machines,
         open_machine_manager,
         machine_changed,
+        import_fixture_requested,
     } = ctx;
 
     if setup_idx >= project.setups.len() {
@@ -187,11 +203,19 @@ pub fn show_setup_inspector(ui: &mut egui::Ui, ctx: SetupInspectorCtx<'_>) -> bo
         ui.add_space(4.0);
         ui.separator();
         ui.add_space(2.0);
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.selectable_value(tab, SetupTab::Wcs, "WCS & Post")
                 .on_hover_text("Configure Work Coordinate System orientation, origin datum, target CNC machine, and post-processor");
             ui.selectable_value(tab, SetupTab::Stock, "Stock")
                 .on_hover_text("Configure raw stock blank shape, fixed or relative dimensions, and side/Z margins");
+            let fix_count = setup.fixtures.len();
+            let fix_lbl = if fix_count > 0 {
+                format!("Fixtures ({fix_count})")
+            } else {
+                "Fixtures".to_string()
+            };
+            ui.selectable_value(tab, SetupTab::Fixtures, fix_lbl)
+                .on_hover_text("Configure 3D workholding hardware (vises, toe clamps, spoilboards, keep-outs, and imported fixtures)");
             ui.selectable_value(tab, SetupTab::Rotary, "4th Axis")
                 .on_hover_text("Configure 4th-axis rotary kinematics, axis letter, chuck geometry, and cylindrical stock alignment");
             ui.selectable_value(tab, SetupTab::Heights, "Heights")
@@ -320,6 +344,12 @@ pub fn show_setup_inspector(ui: &mut egui::Ui, ctx: SetupInspectorCtx<'_>) -> bo
                 }
             }
 
+            let fixture_models: Vec<ModelEntry> =
+                if *tab == SetupTab::Fixtures {
+                    project.fixture_models().cloned().collect()
+                } else {
+                    Vec::new()
+                };
             let setup = &mut project.setups[setup_idx];
             match *tab {
                 SetupTab::Wcs => show_wcs_tab(
@@ -345,6 +375,23 @@ pub fn show_setup_inspector(ui: &mut egui::Ui, ctx: SetupInspectorCtx<'_>) -> bo
                         resolved,
                     },
                     &mut mutated_label,
+                ),
+                SetupTab::Fixtures => show_fixtures_tab(
+                    ui,
+                    FixturesTabCtx {
+                        setup,
+                        setup_idx,
+                        fixture_models: &fixture_models,
+                        eval_ctx: &eval_ctx,
+                        display_unit,
+                        resolved,
+                        resolved_fixtures,
+                        selected_fixture_idx,
+                        show_fixtures,
+                        pick_mode,
+                        import_fixture_requested,
+                        mutated_label: &mut mutated_label,
+                    },
                 ),
                 SetupTab::Rotary => show_rotary_tab(
                     ui,

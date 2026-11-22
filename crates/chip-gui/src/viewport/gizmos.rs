@@ -83,6 +83,11 @@ pub(crate) fn build_edge_and_scene_instances(
         );
     }
 
+    // 2c. Crisp Silhouette / Feature-Crease Wireframe for 3D Workholding Fixtures
+    if highlight.show_fixtures && !highlight.fixture_meshes.is_empty() {
+        super::scene_builders::emit_fixture_wireframe_edges(highlight, &mut out);
+    }
+
     // 3. Translucent Z-Height reference planes across Stock XY footprint
     if !highlight.z_planes_wcs.is_empty() {
         let footprint = highlight.stock.map(|s| s.aabb_wcs()).unwrap_or_else(|| {

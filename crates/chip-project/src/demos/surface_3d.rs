@@ -22,6 +22,7 @@ pub fn build_sculpted_mesh_dome_project(
         id: "model_1".to_string(),
         path: model_path,
         sha256: sha256_hex.to_string(),
+        role: Default::default(),
         unit_override: None,
         transform: chip_cad::ModelTransform::IDENTITY,
     }];
@@ -168,6 +169,7 @@ pub fn build_relief_wave_mesh_project(
         id: "model_1".to_string(),
         path: model_path,
         sha256: sha256_hex.to_string(),
+        role: Default::default(),
         unit_override: None,
         transform: chip_cad::ModelTransform::IDENTITY,
     }];

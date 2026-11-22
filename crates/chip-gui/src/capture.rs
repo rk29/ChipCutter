@@ -109,10 +109,11 @@ fn parse_setup_tab(raw: &str) -> Result<SetupTab, String> {
     match raw.trim().to_ascii_lowercase().as_str() {
         "wcs" => Ok(SetupTab::Wcs),
         "stock" => Ok(SetupTab::Stock),
+        "fixtures" | "fixture" | "workholding" => Ok(SetupTab::Fixtures),
         "rotary" | "4th" | "4axis" => Ok(SetupTab::Rotary),
         "heights" => Ok(SetupTab::Heights),
         other => Err(format!(
-            "invalid Setup tab '{other}'; expected one of: wcs, stock, rotary, heights"
+            "invalid Setup tab '{other}'; expected one of: wcs, stock, fixtures, rotary, heights"
         )),
     }
 }
@@ -257,6 +258,7 @@ pub struct CaptureSpec {
     pub auto_generate: bool,
     pub show_z_planes: Option<bool>,
     pub show_27pt_dots: Option<bool>,
+    pub show_fixtures: Option<bool>,
     pub ghost_part: Option<bool>,
     pub thumb_path: Option<std::path::PathBuf>,
 }
@@ -332,6 +334,13 @@ mod tests {
             Ok(CaptureFocus::Setup {
                 setup_idx: 1,
                 tab: SetupTab::Stock,
+            })
+        );
+        assert_eq!(
+            CaptureFocus::parse("setup:fixtures"),
+            Ok(CaptureFocus::Setup {
+                setup_idx: 0,
+                tab: SetupTab::Fixtures,
             })
         );
         assert_eq!(

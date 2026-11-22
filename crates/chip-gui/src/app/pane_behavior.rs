@@ -172,6 +172,23 @@ impl PaneBehavior<'_> {
                     self.app.sync_viewport_scene_state();
                 }
             }
+        } else if let ViewportPickMode::PlaceFixtureClamp { setup_idx, kind } = self.app.pick_mode {
+            if let Some(cursor_pos) = response.hover_pos()
+                && let Some(ray) = self.app.camera.screen_ray(cursor_pos, avail)
+            {
+                let primary_click = response.clicked_by(egui::PointerButton::Primary);
+                let right_click = response.clicked_by(egui::PointerButton::Secondary);
+                self.app.handle_fixture_place_viewport_interaction(
+                    setup_idx,
+                    kind,
+                    &ray,
+                    primary_click,
+                    right_click,
+                );
+                if primary_click || right_click {
+                    self.app.sync_viewport_scene_state();
+                }
+            }
         } else if let ViewportPickMode::PickModelLayFlatFace { model_idx } = self.app.pick_mode {
             if let Some(cursor_pos) = response.hover_pos()
                 && let Some(ray) = self.app.camera.screen_ray(cursor_pos, avail)
@@ -360,6 +377,12 @@ impl PaneBehavior<'_> {
                         .map(|g| format!("Grid: {g} mm"))
                 }
             }
+            ViewportPickMode::PlaceFixtureClamp { setup_idx, .. } => self
+                .app
+                .project
+                .setups
+                .get(setup_idx)
+                .map(|s| format!("{} fixture(s)", s.fixtures.len())),
             _ => None,
         };
         if let Some(g_act) =
@@ -435,8 +458,12 @@ impl PaneBehavior<'_> {
                         .as_ref()
                         .and_then(|fg| fg.resolved_setup.as_ref())
                         .map(|r| r.as_ref().map_err(String::as_str));
+                    let resolved_fixtures_ref: &[chip_cam::ResolvedFixtureSolid] = frame_geo
+                        .as_ref()
+                        .map_or(&[], |fg| fg.resolved_fixtures.as_slice());
                     let mut open_machine_manager = false;
                     let mut machine_changed = false;
+                    let mut import_fixture_requested = false;
                     let align = show_setup_inspector(
                         ui,
                         SetupInspectorCtx {
@@ -445,15 +472,23 @@ impl PaneBehavior<'_> {
                             history: &mut self.app.history,
                             cad_doc: cad_ref,
                             resolved: resolved_ref,
+                            resolved_fixtures: resolved_fixtures_ref,
                             tab: &mut self.app.setup_tab,
                             pick_mode: &mut self.app.pick_mode,
+                            selected_fixture_idx: &mut self.app.selected_fixture_idx,
+                            show_fixtures: &mut self.app.highlight.show_fixtures,
                             show_27pt_dots: &mut self.app.show_27pt_dots,
                             show_z_planes: &mut self.app.show_z_planes,
                             machines: &self.app.machines,
                             open_machine_manager: &mut open_machine_manager,
                             machine_changed: &mut machine_changed,
+                            import_fixture_requested: &mut import_fixture_requested,
                         },
                     );
+                    if import_fixture_requested {
+                        self.app.import_fixture_model_dialog(setup_idx);
+                        frame_geo = None;
+                    }
                     if machine_changed {
                         self.app.sync_active_machine_tools();
                     }
@@ -1074,6 +1109,9 @@ impl ChipCutterApp {
         }
         if let Some(dots) = capture.show_27pt_dots {
             self.show_27pt_dots = dots;
+        }
+        if let Some(show_fix) = capture.show_fixtures {
+            self.highlight.show_fixtures = show_fix;
         }
         if let Some(ghost) = capture.ghost_part {
             self.highlight.ghost_part = ghost;

@@ -1,9 +1,10 @@
 use chip_cad::{CurveKind, PickFilter, PickTarget, SurfaceKind};
 use chip_cam::{
-    ExtractedFeature25D, GeometrySelectionItem, ManualTabAnchor, OperationStatus, ResolvedHeights,
-    StrategyParams, TabMarker3D, TabPlacementMode, TabProfileKind, WcsAxisRef, WcsFeaturePointRef,
-    WcsOrientationMode, WcsOriginMode, extract_selection_features_with_sketches,
-    resolve_sketch_world_frame, resolve_sketch_world_frame_with_doc,
+    ExtractedFeature25D, FixtureBody, FixtureKind, GeometrySelectionItem, ManualTabAnchor,
+    OperationStatus, ResolvedHeights, StrategyParams, TabMarker3D, TabPlacementMode,
+    TabProfileKind, WcsAxisRef, WcsFeaturePointRef, WcsOrientationMode, WcsOriginMode,
+    extract_selection_features_with_sketches, resolve_sketch_world_frame,
+    resolve_sketch_world_frame_with_doc,
 };
 use chip_math::{Aabb2, DVec2, DVec3, ParamLength, Ray3, RigidFrame3};
 use chip_project::cad_binding_to_sketch_face;
@@ -17,8 +18,11 @@ use chip_sketch::{
 
 use crate::{
     app::ChipCutterApp,
-    panels::{InspectorFocus, OperationTab, SetupTab, SketchAuthorTool, ViewportPickMode},
-    viewport::{SketchLayerVisual, ToolpathRenderEntry, ZPlaneVisual},
+    panels::{
+        FixturePlaceKind, InspectorFocus, OperationTab, SetupTab, SketchAuthorTool,
+        ViewportPickMode,
+    },
+    viewport::{FixtureVisualMesh, SketchLayerVisual, ToolpathRenderEntry, ZPlaneVisual},
 };
 
 pub(crate) struct SketchAuthorInteractionInput {
@@ -38,6 +42,7 @@ impl ChipCutterApp {
         self.highlight.extra_selected_sketch_regions.clear();
         self.highlight.extra_selected_sketch_entities.clear();
         self.highlight.sketch_visuals.clear();
+        self.highlight.fixture_meshes.clear();
         self.highlight.chain_arrows.clear();
         self.highlight.z_planes_wcs.clear();
 
@@ -49,6 +54,37 @@ impl ChipCutterApp {
             self.camera.turntable_frame = rs.frame;
             self.highlight.stock = Some(rs.stock);
             self.highlight.rotary = rs.rotary;
+
+            let selected_fix_id = if matches!(
+                self.inspector_focus,
+                InspectorFocus::Setup { setup_idx } if setup_idx == self.active_setup_idx
+            ) && self.setup_tab == SetupTab::Fixtures
+            {
+                self.selected_fixture_idx
+                    .and_then(|fi| {
+                        self.project
+                            .setups
+                            .get(self.active_setup_idx)
+                            .and_then(|s| s.fixtures.get(fi))
+                    })
+                    .map(|f| f.id.as_str())
+            } else {
+                None
+            };
+            for (sol, mesh_arc) in cached_geo
+                .resolved_fixtures
+                .iter()
+                .zip(cached_geo.fixture_mesh_arcs.iter())
+            {
+                self.highlight.fixture_meshes.push(FixtureVisualMesh {
+                    revision: cached_geo.sig,
+                    fixture_id: sol.fixture_id.clone(),
+                    mesh: std::sync::Arc::clone(mesh_arc),
+                    base_rgba: sol.color_rgba,
+                    colliding: false,
+                    selected: selected_fix_id == Some(sol.fixture_id.as_str()),
+                });
+            }
             for (si, sk) in self.project.sketches.iter().enumerate() {
                 if sk.visible {
                     let wf = if let Some(m) = &self.model {
@@ -258,7 +294,9 @@ impl ChipCutterApp {
                 PickFilter::EdgesOnly
             }
             ViewportPickMode::OpCylindricalHoles { .. } => PickFilter::CylindricalHolesOnly,
-            ViewportPickMode::SketchAuthor { .. } => PickFilter::Any,
+            ViewportPickMode::SketchAuthor { .. } | ViewportPickMode::PlaceFixtureClamp { .. } => {
+                PickFilter::Any
+            }
         }
     }
 
@@ -745,7 +783,8 @@ impl ChipCutterApp {
                     self.align_camera_to_sketch(sketch_idx);
                 }
             }
-            ViewportPickMode::PickModelLayFlatFace { .. } => {}
+            ViewportPickMode::PickModelLayFlatFace { .. }
+            | ViewportPickMode::PlaceFixtureClamp { .. } => {}
         }
     }
 
@@ -1188,6 +1227,147 @@ impl ChipCutterApp {
                 self.project.setups[setup_idx].operations[op_idx].mark_dirty();
             }
         }
+    }
+
+    /// Interactive 3D click-to-place handler for [`ViewportPickMode::PlaceFixtureClamp`].
+    ///
+    /// Intersects the viewport cursor ray with the active Setup's Stock Top plane, auto-orients
+    /// `ToeClamp` outward away from stock center (snapping to nearest stock edge normal or 45°
+    /// corner diagonal), and drops a `ToeClamp` or `CylinderKeepOut` on primary click.
+    pub(crate) fn handle_fixture_place_viewport_interaction(
+        &mut self,
+        setup_idx: usize,
+        kind: FixturePlaceKind,
+        ray: &Ray3,
+        primary_click: bool,
+        right_click: bool,
+    ) {
+        if right_click {
+            self.pick_mode = ViewportPickMode::InspectEntity;
+            return;
+        }
+        if setup_idx >= self.project.setups.len() {
+            self.pick_mode = ViewportPickMode::InspectEntity;
+            return;
+        }
+        let Some(Ok(rs)) = self.active_resolved_setup() else {
+            return;
+        };
+
+        let stock_aabb = rs.stock.aabb_wcs();
+        let z_plane = if stock_aabb.is_valid() {
+            stock_aabb.max.z
+        } else {
+            0.0
+        };
+        let ray_orig_wcs = rs.frame.world_to_local_point(ray.origin);
+        let ray_dir_wcs = rs.frame.world_to_local_dir(ray.dir);
+        if ray_dir_wcs.z.abs() <= 1e-6 {
+            return;
+        }
+        let t = (z_plane - ray_orig_wcs.z) / ray_dir_wcs.z;
+        if t <= 0.0 {
+            return;
+        }
+
+        let hit_wcs = ray_orig_wcs + ray_dir_wcs * t;
+        let click_xy = DVec2::new(hit_wcs.x, hit_wcs.y);
+        let world_pt =
+            rs.frame
+                .local_to_world_point(DVec3::new(click_xy.x, click_xy.y, z_plane + 0.2));
+        let badge = match kind {
+            FixturePlaceKind::ToeClamp => "CLAMP",
+            FixturePlaceKind::CylinderKeepOut => "PIN",
+        };
+        self.highlight.sketch_snap_marker = Some((world_pt, badge, click_xy));
+
+        if !primary_click {
+            return;
+        }
+
+        // Compute outward approach yaw away from stock XY center
+        let yaw_deg = if stock_aabb.is_valid() {
+            let c = DVec2::new(stock_aabb.center().x, stock_aabb.center().y);
+            let half = DVec2::new(
+                (0.5 * stock_aabb.size().x).max(1.0),
+                (0.5 * stock_aabb.size().y).max(1.0),
+            );
+            let rel = click_xy - c;
+            let nx = rel.x / half.x;
+            let ny = rel.y / half.y;
+            if nx.abs() >= 0.75 && ny.abs() >= 0.75 {
+                // Corner diagonal (45°, 135°, 225°, 315°)
+                let raw = ny.atan2(nx).to_degrees();
+                (raw / 45.0).round() * 45.0
+            } else if nx.abs() >= ny.abs() {
+                if nx >= 0.0 { 0.0 } else { 180.0 }
+            } else if ny >= 0.0 {
+                90.0
+            } else {
+                270.0
+            }
+        } else {
+            0.0
+        };
+
+        self.history.record_before_edit(
+            format!("Place {} in Viewport", kind.label()),
+            None,
+            &self.project,
+        );
+        let setup = &mut self.project.setups[setup_idx];
+        let mut num = setup.fixtures.len() + 1;
+        let prefix = match kind {
+            FixturePlaceKind::ToeClamp => "clamp",
+            FixturePlaceKind::CylinderKeepOut => "pin",
+        };
+        let fix_id = loop {
+            let cand = format!("{prefix}_{num}");
+            if !setup.fixtures.iter().any(|f| f.id == cand) {
+                break cand;
+            }
+            num += 1;
+        };
+
+        let fixture = match kind {
+            FixturePlaceKind::ToeClamp => {
+                let n = setup
+                    .fixtures
+                    .iter()
+                    .filter(|f| matches!(f.kind, FixtureKind::ToeClamp { .. }))
+                    .count()
+                    + 1;
+                FixtureBody::default_toe_clamp(fix_id, format!("Toe Clamp {n}"), click_xy, yaw_deg)
+            }
+            FixturePlaceKind::CylinderKeepOut => {
+                let n = setup
+                    .fixtures
+                    .iter()
+                    .filter(|f| matches!(f.kind, FixtureKind::CylinderKeepOut { .. }))
+                    .count()
+                    + 1;
+                let z_bot = if stock_aabb.is_valid() {
+                    stock_aabb.min.z
+                } else {
+                    -15.0
+                };
+                FixtureBody::default_cylinder_keepout(
+                    fix_id,
+                    format!("Keep-Out Pin {n}"),
+                    click_xy,
+                    z_bot,
+                    z_plane + 12.0,
+                )
+            }
+        };
+
+        setup.fixtures.push(fixture);
+        for op in &mut setup.operations {
+            op.mark_dirty();
+        }
+        self.selected_fixture_idx = Some(setup.fixtures.len() - 1);
+        self.highlight.show_fixtures = true;
+        self.cached_frame_geo = None;
     }
 }
 

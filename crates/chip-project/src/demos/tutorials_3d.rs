@@ -28,6 +28,7 @@ pub fn build_tutorial_3d_adaptive_waterline_project(
         id: "model_1".to_string(),
         path: model_path,
         sha256: sha256_hex.to_string(),
+        role: Default::default(),
         unit_override: None,
         transform: chip_cad::ModelTransform::IDENTITY,
     }];
@@ -173,6 +174,7 @@ pub fn build_tutorial_3d_surface_finishing_project(
         id: "model_1".to_string(),
         path: model_path,
         sha256: sha256_hex.to_string(),
+        role: Default::default(),
         unit_override: None,
         transform: chip_cad::ModelTransform::IDENTITY,
     }];
@@ -336,6 +338,7 @@ pub fn build_tutorial_16_yup_stl_project(
         id: "model_1".to_string(),
         path: model_path,
         sha256: sha256_hex.to_string(),
+        role: Default::default(),
         unit_override: Some(chip_cad::MeshUnitKind::Millimeter),
         transform,
     });
@@ -451,6 +454,7 @@ pub fn build_tutorial_16_tilted_step_project(
         id: "model_1".to_string(),
         path: model_path,
         sha256: sha256_hex.to_string(),
+        role: Default::default(),
         unit_override: None,
         transform: chip_cad::ModelTransform::IDENTITY,
     });

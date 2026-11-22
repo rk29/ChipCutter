@@ -8,6 +8,7 @@ pub mod toolbar;
 pub mod viewport_controller;
 
 use std::{
+    collections::HashMap,
     hash::{Hash as _, Hasher as _},
     path::{Path, PathBuf},
     sync::Arc,
@@ -16,12 +17,13 @@ use std::{
 
 use chip_cad::{CadDocument, CadPicker, PickFilter, TopologyGraph};
 use chip_cam::{
-    ExtractedSelectionSummary, OperationStatus, ResolvedSetup,
-    extract_selection_features_with_sketches,
+    ExtractedSelectionSummary, FixtureBody, OperationStatus, ResolvedFixtureSolid, ResolvedSetup,
+    TriMesh3D, extract_selection_features_with_sketches, resolve_fixture_body,
 };
 use chip_math::{Aabb3, DVec3, EvalContext};
 use chip_project::{
-    JobDispatcher, ProjectDocument, ToolpathCache, UndoHistory, is_chipz_path, is_mesh_path,
+    JobDispatcher, ModelEntry, ProjectDocument, ToolpathCache, UndoHistory, compute_sha256_hex,
+    is_chipz_path, is_mesh_path, load_model_entry_cad_doc_transformed, portable_model_path,
 };
 use chip_sim::SimDiagnostic;
 use chip_tools::{ToolLibrary, load_or_default_global_library};
@@ -59,12 +61,14 @@ pub(crate) struct LoadedModelState {
     pub revision: u64,
 }
 
-/// Cached Setup WCS + focused Operation 2.5D selection extraction so idle 60 FPS frames perform
-/// zero redundant B-Rep loop chaining or stock/WCS recomputations.
+/// Cached Setup WCS + resolved 3D workholding fixtures + focused Operation 2.5D selection extraction
+/// so idle 60 FPS frames perform zero redundant B-Rep loop chaining, stock/WCS, or fixture recomputations.
 #[derive(Clone)]
 pub(crate) struct CachedFrameGeo {
     pub sig: u64,
     pub resolved_setup: Option<Result<ResolvedSetup, String>>,
+    pub resolved_fixtures: Vec<ResolvedFixtureSolid>,
+    pub fixture_mesh_arcs: Vec<Arc<TriMesh3D>>,
     pub focused_extracted: Option<Result<ExtractedSelectionSummary, String>>,
 }
 
@@ -142,6 +146,7 @@ pub struct ChipCutterApp {
     pub(crate) setup_tab: SetupTab,
     pub(crate) op_tab: OperationTab,
     pub(crate) pick_mode: ViewportPickMode,
+    pub(crate) selected_fixture_idx: Option<usize>,
     pub(crate) selected_sketch_entity_idx: Option<usize>,
     pub(crate) sketch_snap_grid_mm: Option<f64>,
     pub(crate) sketch_author_start_xy: Option<chip_math::DVec2>,
@@ -153,6 +158,8 @@ pub struct ChipCutterApp {
     pub(crate) hidden_operation_ids: std::collections::HashSet<String>,
 
     pub(crate) model: Option<LoadedModelState>,
+    pub(crate) fixture_models: HashMap<String, Arc<CadDocument>>,
+    pub(crate) fixture_models_revision: u64,
     pub(crate) empty_cad: Arc<CadDocument>,
     pub(crate) next_revision: u64,
     pub(crate) loading_in_flight: bool,
@@ -327,6 +334,7 @@ impl ChipCutterApp {
             setup_tab: SetupTab::Wcs,
             op_tab: OperationTab::Passes,
             pick_mode: ViewportPickMode::InspectEntity,
+            selected_fixture_idx: None,
             selected_sketch_entity_idx: None,
             sketch_snap_grid_mm: None,
             sketch_author_start_xy: None,
@@ -337,6 +345,8 @@ impl ChipCutterApp {
             show_all_setup_toolpaths: true,
             hidden_operation_ids: std::collections::HashSet::new(),
             model: None,
+            fixture_models: HashMap::new(),
+            fixture_models_revision: 0,
             empty_cad: Arc::new(CadDocument::empty()),
             next_revision: 1,
             loading_in_flight: false,
@@ -365,6 +375,7 @@ impl ChipCutterApp {
         app.highlight.show_toolpaths = app.prefs.show_toolpaths;
         app.highlight.show_rapids = app.prefs.show_rapids;
         app.highlight.show_stock = app.prefs.show_stock;
+        app.highlight.show_fixtures = app.prefs.show_fixtures;
         app.highlight.ghost_part = app.prefs.ghost_part;
         if let Some(st) = &app.self_test {
             if let Some(eng) = st.capture.sim_engine {
@@ -490,6 +501,7 @@ impl ChipCutterApp {
             setup_tab: SetupTab::Wcs,
             op_tab: OperationTab::Passes,
             pick_mode: ViewportPickMode::InspectEntity,
+            selected_fixture_idx: None,
             selected_sketch_entity_idx: None,
             sketch_snap_grid_mm: None,
             sketch_author_start_xy: None,
@@ -500,6 +512,8 @@ impl ChipCutterApp {
             show_all_setup_toolpaths: true,
             hidden_operation_ids: std::collections::HashSet::new(),
             model: None,
+            fixture_models: HashMap::new(),
+            fixture_models_revision: 0,
             empty_cad: Arc::new(CadDocument::empty()),
             next_revision: 1,
             loading_in_flight: false,
@@ -599,6 +613,7 @@ impl ChipCutterApp {
         self.prefs.show_toolpaths = self.highlight.show_toolpaths;
         self.prefs.show_rapids = self.highlight.show_rapids;
         self.prefs.show_stock = self.highlight.show_stock;
+        self.prefs.show_fixtures = self.highlight.show_fixtures;
         self.prefs.ghost_part = self.highlight.ghost_part;
         self.prefs.sim_engine = self.sim_panel.engine;
         self.prefs.sim_backend = self.sim_panel.backend_choice;
@@ -702,6 +717,7 @@ impl ChipCutterApp {
     fn compute_frame_geo_signature(&self) -> u64 {
         let mut h = std::collections::hash_map::DefaultHasher::new();
         self.model.as_ref().map_or(0, |m| m.revision).hash(&mut h);
+        self.fixture_models_revision.hash(&mut h);
         self.active_setup_idx.hash(&mut h);
         format!("{:?}", self.project.display_units).hash(&mut h);
         format!("{:?}", self.inspector_focus).hash(&mut h);
@@ -716,6 +732,8 @@ impl ChipCutterApp {
             format!("{:?}", setup.wcs).hash(&mut h);
             format!("{:?}", setup.stock).hash(&mut h);
             format!("{:?}", setup.heights).hash(&mut h);
+            format!("{:?}", setup.fixtures).hash(&mut h);
+            setup.auto_avoid_fixtures_on_rapids.hash(&mut h);
         }
         if let InspectorFocus::Operation { setup_idx, op_idx } = self.inspector_focus
             && let Some(setup) = self.project.setups.get(setup_idx)
@@ -747,6 +765,29 @@ impl ChipCutterApp {
                 _ => None,
             };
 
+            let mut resolved_fixtures = Vec::new();
+            let mut fixture_mesh_arcs = Vec::new();
+            if let (Some(Ok(rs)), Some(setup)) = (
+                &resolved_setup,
+                self.project.setups.get(self.active_setup_idx),
+            ) && !setup.fixtures.is_empty()
+            {
+                let eval_ctx = rs.eval_context(self.project.display_units);
+                let stock_aabb = rs.stock.aabb_wcs();
+                for fix in &setup.fixtures {
+                    if !fix.enabled {
+                        continue;
+                    }
+                    if let Ok(sol) = resolve_fixture_body(fix, &stock_aabb, &eval_ctx, &mut |id| {
+                        self.fixture_models.get(id).map(Arc::as_ref)
+                    }) {
+                        let mesh_arc = Arc::new(sol.mesh_wcs.clone());
+                        fixture_mesh_arcs.push(mesh_arc);
+                        resolved_fixtures.push(sol);
+                    }
+                }
+            }
+
             let focused_extracted = match (eff_cad.as_ref(), &resolved_setup, self.inspector_focus)
             {
                 (Some((doc, _)), Some(Ok(rs)), InspectorFocus::Operation { setup_idx, op_idx }) => {
@@ -773,6 +814,8 @@ impl ChipCutterApp {
             self.cached_frame_geo = Some(CachedFrameGeo {
                 sig,
                 resolved_setup,
+                resolved_fixtures,
+                fixture_mesh_arcs,
                 focused_extracted,
             });
         }
@@ -914,8 +957,112 @@ impl ChipCutterApp {
         }
     }
 
+    pub(crate) fn reload_fixture_models_from_disk(&mut self) {
+        self.fixture_models.clear();
+        let proj_dir = self.active_project_dir().map(Path::to_path_buf);
+        for (id, doc) in self.project.load_fixture_cad_documents(proj_dir.as_deref()) {
+            self.fixture_models.insert(id, Arc::new(doc));
+        }
+        self.fixture_models_revision = self.fixture_models_revision.wrapping_add(1);
+        self.cached_frame_geo = None;
+    }
+
+    pub(crate) fn import_fixture_model_dialog(&mut self, setup_idx: usize) {
+        if setup_idx >= self.project.setups.len() {
+            return;
+        }
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter(
+                "3D Fixture Models (.step, .stp, .stl, .obj, .3mf)",
+                &[
+                    "step", "stp", "stl", "obj", "3mf", "STEP", "STP", "STL", "OBJ", "3MF",
+                ],
+            )
+            .pick_file()
+        else {
+            return;
+        };
+
+        let bytes = match std::fs::read(&path) {
+            Ok(b) => b,
+            Err(err) => {
+                self.logs.push(format!(
+                    "ERROR reading fixture model '{}': {err}",
+                    path.display()
+                ));
+                return;
+            }
+        };
+        let cad_doc = match load_model_entry_cad_doc_transformed(
+            &path,
+            None,
+            &chip_cad::ModelTransform::IDENTITY,
+        ) {
+            Ok(d) => d,
+            Err(err) => {
+                self.logs.push(format!(
+                    "ERROR parsing fixture model '{}': {err}",
+                    path.display()
+                ));
+                return;
+            }
+        };
+
+        let sha = compute_sha256_hex(&bytes);
+        let rel_path = portable_model_path(self.project_file_path.as_deref(), &path);
+        let stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("Fixture")
+            .to_string();
+
+        let mut m_num = self.project.models.len() + 1;
+        let model_id = loop {
+            let cand = format!("fixture_model_{m_num}");
+            if self.project.model_by_id(&cand).is_none() {
+                break cand;
+            }
+            m_num += 1;
+        };
+        let mut f_num = self.project.setups[setup_idx].fixtures.len() + 1;
+        let fix_id = loop {
+            let cand = format!("imported_{f_num}");
+            if !self.project.setups[setup_idx]
+                .fixtures
+                .iter()
+                .any(|f| f.id == cand)
+            {
+                break cand;
+            }
+            f_num += 1;
+        };
+
+        self.history
+            .record_before_edit("Import 3D Fixture Model", None, &self.project);
+        self.project
+            .models
+            .push(ModelEntry::new_fixture(model_id.clone(), rel_path, sha));
+        self.project.setups[setup_idx]
+            .fixtures
+            .push(FixtureBody::default_imported_model(
+                fix_id,
+                stem.clone(),
+                model_id.clone(),
+            ));
+        for op in &mut self.project.setups[setup_idx].operations {
+            op.mark_dirty();
+        }
+        self.selected_fixture_idx = Some(self.project.setups[setup_idx].fixtures.len() - 1);
+        self.highlight.show_fixtures = true;
+        self.fixture_models.insert(model_id, Arc::new(cad_doc));
+        self.fixture_models_revision = self.fixture_models_revision.wrapping_add(1);
+        self.cached_frame_geo = None;
+        self.logs
+            .push(format!("Imported 3D fixture model '{stem}'."));
+    }
+
     pub(crate) fn sync_loaded_model_transform(&mut self) -> bool {
-        let Some(desired_xf) = self.project.models.first().map(|m| m.transform) else {
+        let Some(desired_xf) = self.project.primary_part_model().map(|m| m.transform) else {
             return false;
         };
         let needs_rebuild = self

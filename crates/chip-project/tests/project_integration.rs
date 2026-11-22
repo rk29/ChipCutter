@@ -28,6 +28,7 @@ fn serializes_chip_toml_deterministically_and_validates_project_invariants() {
         id: "model_1".to_string(),
         path: "cad/bracket.step".to_string(),
         sha256: compute_sha256_hex(step_str.as_bytes()),
+        role: Default::default(),
         unit_override: None,
         transform: chip_cad::ModelTransform::IDENTITY,
     });
@@ -264,6 +265,7 @@ fn associative_step_reload_v1_to_v2_rebinds_dirty_flags_deleted_needs_repick_and
         id: "model_1".to_string(),
         path: "cad/part.step".to_string(),
         sha256: compute_sha256_hex(v1_step.as_bytes()),
+        role: Default::default(),
         unit_override: None,
         transform: chip_cad::ModelTransform::IDENTITY,
     });
@@ -488,6 +490,7 @@ fn chipz_bundle_packs_deterministically_embeds_custom_posts_verifies_sha256_and_
         id: "model_1".to_string(),
         path: "bracket.step".to_string(),
         sha256: compute_sha256_hex(&step_bytes),
+        role: Default::default(),
         unit_override: None,
         transform: chip_cad::ModelTransform::IDENTITY,
     });
@@ -747,6 +750,7 @@ fn associative_planar_face_sketch_rebinds_across_step_v1_to_v2_and_checks_setup_
         id: "model_1".to_string(),
         path: "rev_v1.step".to_string(),
         sha256: compute_sha256_hex(step_v1.as_bytes()),
+        role: Default::default(),
         unit_override: None,
         transform: chip_cad::ModelTransform::IDENTITY,
     });
@@ -1273,6 +1277,7 @@ sha256 = "abc"
             id: "dome_stl".to_string(),
             path: "sculpted_dome.stl".to_string(),
             sha256: compute_sha256_hex(&stl_bytes),
+            role: Default::default(),
             unit_override: Some(MeshUnitKind::Millimeter),
             transform: chip_cad::ModelTransform::IDENTITY,
         },
@@ -1280,6 +1285,7 @@ sha256 = "abc"
             id: "wave_obj".to_string(),
             path: "relief_wave.obj".to_string(),
             sha256: compute_sha256_hex(&obj_bytes),
+            role: Default::default(),
             unit_override: None,
             transform: chip_cad::ModelTransform::IDENTITY,
         },
@@ -1287,6 +1293,7 @@ sha256 = "abc"
             id: "box_3mf".to_string(),
             path: "box.3mf".to_string(),
             sha256: compute_sha256_hex(&mf_bytes),
+            role: Default::default(),
             unit_override: None,
             transform: chip_cad::ModelTransform::IDENTITY,
         },
@@ -2529,6 +2536,7 @@ fn milestone_33_private_temp_dir_and_external_asset_detection_and_entry_cap() {
         id: "m_ext".to_string(),
         path: "/etc/passwd".to_string(),
         sha256: String::new(),
+        role: Default::default(),
         unit_override: None,
         transform: chip_cad::ModelTransform::IDENTITY,
     });
@@ -2941,4 +2949,226 @@ fn milestone_47_thread_mill_manifold_generates_and_simulates_cleanly_in_heightma
             );
         }
     }
+}
+
+#[test]
+fn milestone_60_workholding_zero_diff_toml_chipz_roundtrip_role_isolation_cache_and_validation() {
+    use chip_cad::{
+        CadKernel, MonstertruckKernel, sample_machined_plate_step,
+        sample_multi_feature_bracket_step, sample_sculpted_dome_stl_bytes,
+    };
+    use chip_cam::{FixtureBody, FixtureKind, Operation, OperationKind, resolve_setup_fixtures};
+    use chip_math::{DEFAULT_TESS_CHORD_TOL_MM, DVec2, DVec3, ParamLength};
+    use chip_project::{
+        DiagnosticSeverity, ModelEntry, ModelRole, ProjectDocument, compute_operation_input_hash,
+        compute_sha256_hex, create_private_temp_extract_dir, pack_chipz_bundle_bytes,
+        unpack_chipz_bytes, validate_project,
+    };
+
+    // 1. Zero-diff `.chip.toml` backward compatibility: empty `fixtures`, default
+    //    `auto_avoid_fixtures_on_rapids = true`, and `ModelRole::Part` must all be omitted!
+    let mut base_proj = ProjectDocument::new("Backward Compat Workholding");
+    base_proj
+        .models
+        .push(ModelEntry::new("model_1", "part.step", "abc123"));
+    base_proj.setups[0]
+        .operations
+        .push(Operation::new("op_1", "Facing", OperationKind::Facing));
+    let base_toml = base_proj.to_toml_string().unwrap();
+    assert!(
+        !base_toml.contains("fixtures"),
+        "empty fixtures must be omitted from TOML:\n{base_toml}"
+    );
+    assert!(
+        !base_toml.contains("auto_avoid_fixtures_on_rapids"),
+        "default auto_avoid_fixtures_on_rapids=true must be omitted from TOML:\n{base_toml}"
+    );
+    assert!(
+        !base_toml.contains("role ="),
+        "default ModelRole::Part must be omitted from TOML:\n{base_toml}"
+    );
+    let base_hash = compute_operation_input_hash(&base_proj, 0, 0, 1).unwrap();
+
+    // 2. Populated workholding with all 6 FixtureKind variants + ModelRole::Fixture exclusion
+    let part_step = sample_multi_feature_bracket_step(false).unwrap();
+    let part_bytes = part_step.as_bytes();
+    let part_doc = MonstertruckKernel
+        .load_step_bytes("part.step", part_bytes, DEFAULT_TESS_CHORD_TOL_MM)
+        .unwrap();
+
+    let fix_step_text = sample_machined_plate_step().unwrap();
+    let fix_step_bytes = fix_step_text.as_bytes();
+    let fix_stl_bytes = sample_sculpted_dome_stl_bytes();
+
+    let mut proj = ProjectDocument::new("Workholding Full Roundtrip");
+    // Deliberately put a Fixture model FIRST in `models` to verify `primary_part_model()` ignores it!
+    proj.models.push(ModelEntry::new_fixture(
+        "fix_step_model",
+        "fixture_jaw.step",
+        compute_sha256_hex(fix_step_bytes),
+    ));
+    proj.models.push(ModelEntry::new(
+        "part_model",
+        "part.step",
+        compute_sha256_hex(part_bytes),
+    ));
+    proj.models.push(ModelEntry::new_fixture(
+        "fix_stl_model",
+        "fixture_clamp.stl",
+        compute_sha256_hex(&fix_stl_bytes),
+    ));
+    proj.setups[0]
+        .operations
+        .push(Operation::new("op_1", "Facing", OperationKind::Facing));
+
+    assert_eq!(
+        proj.primary_part_model().map(|m| m.id.as_str()),
+        Some("part_model")
+    );
+    assert_eq!(proj.primary_part_model_index(), Some(1));
+    assert_eq!(proj.fixture_models().count(), 2);
+
+    let hash_no_fixtures = compute_operation_input_hash(&proj, 0, 0, 1).unwrap();
+
+    proj.setups[0].fixtures = vec![
+        FixtureBody::default_vise("vise_1", "4in Kurt Vise"),
+        FixtureBody::default_toe_clamp("clamp_1", "Right Clamp", DVec2::new(45.0, 0.0), 0.0),
+        FixtureBody::default_spoilboard("sb_1", "MDF Spoilboard"),
+        FixtureBody::default_box_keepout("box_1", "Stop Block", DVec3::new(-60.0, 0.0, -5.0)),
+        FixtureBody::default_cylinder_keepout(
+            "pin_1",
+            "Dowel Pin",
+            DVec2::new(55.0, 25.0),
+            -20.0,
+            12.0,
+        ),
+        FixtureBody::default_imported_model("imp_step", "Imported STEP Jaw", "fix_step_model"),
+        FixtureBody::default_imported_model("imp_stl", "Imported STL Clamp", "fix_stl_model"),
+    ];
+
+    // Cache invalidation: adding enabled fixtures changes op input hash; disabling a fixture changes it;
+    // editing a disabled fixture does NOT change it; toggling `auto_avoid_fixtures_on_rapids` changes it!
+    let hash_with_fixtures = compute_operation_input_hash(&proj, 0, 0, 1).unwrap();
+    assert_ne!(hash_no_fixtures, hash_with_fixtures);
+    proj.setups[0].fixtures[1].enabled = false;
+    let hash_clamp_disabled = compute_operation_input_hash(&proj, 0, 0, 1).unwrap();
+    assert_ne!(hash_with_fixtures, hash_clamp_disabled);
+    proj.setups[0].fixtures[1].name = "Renamed Disabled Clamp".to_string();
+    assert_eq!(
+        compute_operation_input_hash(&proj, 0, 0, 1).unwrap(),
+        hash_clamp_disabled
+    );
+    proj.setups[0].fixtures[1].enabled = true;
+    proj.setups[0].auto_avoid_fixtures_on_rapids = false;
+    let hash_avoid_off = compute_operation_input_hash(&proj, 0, 0, 1).unwrap();
+    assert_ne!(hash_with_fixtures, hash_avoid_off);
+    proj.setups[0].auto_avoid_fixtures_on_rapids = true;
+
+    // 3. Deterministic `.chip.toml` roundtrip
+    let toml_a = proj.to_toml_string().unwrap();
+    assert!(toml_a.contains("role = \"fixture\""));
+    let parsed = ProjectDocument::from_toml_str(&toml_a).unwrap();
+    assert_eq!(parsed, proj);
+    assert_eq!(parsed.to_toml_string().unwrap(), toml_a);
+
+    // 4. `.chipz` bundle roundtrip (packs both Part and Fixture models, verifies SHA-256, resolves all 7 fixtures!)
+    let (chipz_bytes, sum) = pack_chipz_bundle_bytes(
+        &proj,
+        None,
+        &[
+            ("fix_step_model", fix_step_bytes),
+            ("part_model", part_bytes),
+            ("fix_stl_model", &fix_stl_bytes),
+        ],
+        &[],
+    )
+    .unwrap();
+    assert_eq!(sum.model_files.len(), 3);
+
+    let tmp = create_private_temp_extract_dir("chipcutter_m60_chipz").unwrap();
+    let unpacked = unpack_chipz_bytes(&chipz_bytes, &tmp).unwrap();
+    assert_eq!(unpacked.project.setups[0].fixtures.len(), 7);
+    assert_eq!(
+        unpacked.project.primary_part_model().map(|m| m.id.as_str()),
+        Some("part_model")
+    );
+    assert_eq!(unpacked.project.fixture_models().count(), 2);
+    assert!(
+        unpacked
+            .project
+            .fixture_models()
+            .all(|m| m.role == ModelRole::Fixture)
+    );
+
+    // Resolve setup against ONLY the target part (RelativeBox stock ignores fixture models!)
+    let resolved_setup = unpacked.project.setups[0]
+        .resolve_immutable(&part_doc, unpacked.project.display_units)
+        .unwrap();
+    let stock_sz = resolved_setup.stock.aabb_wcs().size();
+    // Bracket is 90 x 70 x 20 mm + default RelativeBox (+2 mm XY sides, +1 mm top) = 94 x 74 x 21 mm
+    assert!((stock_sz.x - 94.0).abs() < 0.2, "stock_sz={stock_sz:?}");
+    assert!((stock_sz.y - 74.0).abs() < 0.2, "stock_sz={stock_sz:?}");
+    assert!((stock_sz.z - 21.0).abs() < 0.2, "stock_sz={stock_sz:?}");
+
+    let loaded_fix_docs = unpacked.project.load_fixture_cad_documents(Some(&tmp));
+    assert_eq!(loaded_fix_docs.len(), 2);
+    let resolved_solids = resolve_setup_fixtures(
+        &unpacked.project.setups[0],
+        &resolved_setup,
+        unpacked.project.display_units,
+        |id| loaded_fix_docs.get(id),
+    )
+    .unwrap();
+    assert_eq!(resolved_solids.len(), 7);
+    for sol in &resolved_solids {
+        assert!(sol.mesh_wcs.len() >= 12);
+        assert!(sol.aabb_wcs.is_valid());
+        assert!(!sol.footprint_2d.is_empty());
+    }
+
+    // Valid unpacked project passes `validate_project` with 0 errors
+    let val_ok = validate_project(&unpacked.project, Some(&tmp), Some(&part_doc));
+    assert_eq!(
+        val_ok.error_count(),
+        0,
+        "valid workholding project failed validation: {:?}",
+        val_ok.diagnostics
+    );
+
+    // 5. Validation catches missing ImportedModel ID, negative margin, and vise grip_depth > stock_z
+    let mut bad_proj = unpacked.project.clone();
+    bad_proj.setups[0]
+        .fixtures
+        .push(FixtureBody::default_imported_model(
+            "bad_imp",
+            "Ghost Vise",
+            "does_not_exist",
+        ));
+    let mut bad_margin = FixtureBody::default_spoilboard("bad_m", "Neg Margin");
+    bad_margin.clearance_margin = ParamLength::from_mm(-2.0);
+    bad_proj.setups[0].fixtures.push(bad_margin);
+    if let FixtureKind::ViseJaws { grip_depth, .. } = &mut bad_proj.setups[0].fixtures[0].kind {
+        *grip_depth = ParamLength::from_mm(35.0); // exceeds 21 mm stock height
+    }
+    let val_bad = validate_project(&bad_proj, Some(&tmp), Some(&part_doc));
+    assert!(
+        val_bad.error_count() >= 2,
+        "expected >=2 fixture validation errors, got: {:?}",
+        val_bad.diagnostics
+    );
+    assert!(
+        val_bad.diagnostics.iter().any(|d| {
+            d.severity == DiagnosticSeverity::Warning && d.message.contains("exceeds stock height")
+        }),
+        "expected vise grip_depth warning, got: {:?}",
+        val_bad.diagnostics
+    );
+
+    // Re-check base hash stays unaffected
+    assert_eq!(
+        compute_operation_input_hash(&base_proj, 0, 0, 1).unwrap(),
+        base_hash
+    );
+
+    let _ = std::fs::remove_dir_all(&tmp);
 }

@@ -16,6 +16,10 @@ use crate::commands::{
     },
     transform_model::{TransformModelArgs, run_transform_model},
     validate_sim_build::{BuildArgs, SimulateArgs, run_build, run_simulate, run_validate},
+    workholding::{
+        AddClampArgs, AddSpoilboardArgs, AddViseArgs, run_workholding_add_clamp,
+        run_workholding_add_spoilboard, run_workholding_add_vise, run_workholding_list,
+    },
 };
 
 #[derive(Debug, Parser)]
@@ -283,8 +287,157 @@ enum Commands {
         #[command(subcommand)]
         action: MachineCommands,
     },
+    /// 3D workholding fixture utilities (`list`, `add-vise`, `add-clamp`, `add-spoilboard`).
+    Workholding {
+        #[command(subcommand)]
+        action: WorkholdingCommands,
+    },
     /// List all built-in and discovered custom post-processor profiles.
     ListPosts,
+}
+
+#[derive(Debug, Subcommand)]
+enum WorkholdingCommands {
+    /// List all configured Setup fixtures, resolved WCS bounding boxes, margins, and triangle counts.
+    List {
+        /// Path to `.chip.toml` project file or `.chipz` bundle.
+        project: PathBuf,
+        /// Optional Setup filter (0-based index, Setup ID, or Setup name).
+        #[arg(long)]
+        setup: Option<String>,
+    },
+    /// Add a parametric two-jaw machinist vise (with optional step shelves & parallels) to a Setup.
+    #[command(name = "add-vise")]
+    AddVise {
+        /// Path to `.chip.toml` project file.
+        project: PathBuf,
+        /// Optional output `.chip.toml` path (overwrites `project` in place if omitted).
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        /// Target Setup (0-based index, ID, or name; defaults to Setup 0).
+        #[arg(long)]
+        setup: Option<String>,
+        /// Optional display name for the vise fixture.
+        #[arg(long)]
+        name: Option<String>,
+        /// Clamp axis (`y` = front/rear jaws default, `x` = left/right jaws).
+        #[arg(long, default_value = "y")]
+        axis: String,
+        /// Jaw width along the non-clamping axis (`mm`).
+        #[arg(long, default_value_t = 100.0)]
+        jaw_width: f64,
+        /// Thickness of each jaw plate (`mm`).
+        #[arg(long, default_value_t = 18.0)]
+        jaw_thickness: f64,
+        /// Total jaw height (`mm`).
+        #[arg(long, default_value_t = 38.0)]
+        jaw_height: f64,
+        /// Height of stock bottom gripped upward inside jaws (`mm`).
+        #[arg(long, default_value_t = 5.0)]
+        grip_depth: f64,
+        /// Optional inward step-shelf depth under stock bottom (`mm`, `0` = flat jaws).
+        #[arg(long, default_value_t = 0.0)]
+        step_depth: f64,
+        /// Optional step-shelf vertical thickness below stock bottom (`mm`, `0` = flat jaws).
+        #[arg(long, default_value_t = 0.0)]
+        step_height: f64,
+        /// Include a pair of machinist parallels beneath the workpiece.
+        #[arg(long)]
+        parallels: bool,
+        /// Thickness of each parallel bar (`mm`).
+        #[arg(long, default_value_t = 3.175)]
+        parallel_thickness: f64,
+        /// Stationary fixed jaw side (`positive` = rear/+Y default, `negative` = front/-Y).
+        #[arg(long, default_value = "positive")]
+        fixed_side: String,
+        /// Safety clearance margin halo (`mm`).
+        #[arg(long, default_value_t = 1.0)]
+        clearance: f64,
+    },
+    /// Add a parametric toe / strap clamp (with heel riser and T-slot stud tower) to a Setup.
+    #[command(name = "add-clamp")]
+    AddClamp {
+        /// Path to `.chip.toml` project file.
+        project: PathBuf,
+        /// Optional output `.chip.toml` path (overwrites `project` in place if omitted).
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        /// Target Setup (0-based index, ID, or name; defaults to Setup 0).
+        #[arg(long)]
+        setup: Option<String>,
+        /// Optional display name for the clamp fixture.
+        #[arg(long)]
+        name: Option<String>,
+        /// Clamp nose contact X coordinate in Setup WCS (`mm`).
+        #[arg(long, allow_hyphen_values = true)]
+        x: f64,
+        /// Clamp nose contact Y coordinate in Setup WCS (`mm`).
+        #[arg(long, allow_hyphen_values = true)]
+        y: f64,
+        /// Outward approach yaw angle (`deg` in Setup XY; `0` = extends toward `+X`).
+        #[arg(long, default_value_t = 0.0, allow_hyphen_values = true)]
+        yaw: f64,
+        /// Vertical Z datum reference (`stock_top`, `stock_bottom`, `wcs_origin`).
+        #[arg(long, default_value = "stock_top")]
+        z_ref: String,
+        /// Signed Z offset from `z_ref` (`mm`).
+        #[arg(long, default_value_t = 0.0, allow_hyphen_values = true)]
+        z_offset: f64,
+        /// Strap length (`mm`).
+        #[arg(long, default_value_t = 45.0)]
+        strap_length: f64,
+        /// Strap width (`mm`).
+        #[arg(long, default_value_t = 16.0)]
+        strap_width: f64,
+        /// Strap thickness/height (`mm`).
+        #[arg(long, default_value_t = 10.0)]
+        strap_height: f64,
+        /// Nose overlap onto stock edge (`mm`).
+        #[arg(long, default_value_t = 6.0)]
+        nose_overhang: f64,
+        /// T-slot stud/bolt diameter (`mm`).
+        #[arg(long, default_value_t = 8.0)]
+        stud_diameter: f64,
+        /// Stud/nut height protruding above top of strap (`mm`).
+        #[arg(long, default_value_t = 12.0)]
+        stud_height: f64,
+        /// Safety clearance margin halo (`mm`).
+        #[arg(long, default_value_t = 1.0)]
+        clearance: f64,
+    },
+    /// Add a sacrificial MDF / tooling-plate spoilboard beneath a Setup's stock.
+    #[command(name = "add-spoilboard")]
+    AddSpoilboard {
+        /// Path to `.chip.toml` project file.
+        project: PathBuf,
+        /// Optional output `.chip.toml` path (overwrites `project` in place if omitted).
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        /// Target Setup (0-based index, ID, or name; defaults to Setup 0).
+        #[arg(long)]
+        setup: Option<String>,
+        /// Optional display name for the spoilboard.
+        #[arg(long)]
+        name: Option<String>,
+        /// Top surface Z datum reference (`stock_bottom` default, `stock_top`, `wcs_origin`).
+        #[arg(long, default_value = "stock_bottom")]
+        z_ref: String,
+        /// Signed Z offset from `z_ref` (`mm`).
+        #[arg(long, default_value_t = 0.0, allow_hyphen_values = true)]
+        z_offset: f64,
+        /// Spoilboard thickness (`mm`).
+        #[arg(long, default_value_t = 18.0)]
+        thickness: f64,
+        /// XY overhang beyond stock footprint (`mm`).
+        #[arg(long, default_value_t = 25.0)]
+        margin_xy: f64,
+        /// Permitted sacrificial through-cut depth into spoilboard (`mm`).
+        #[arg(long, default_value_t = 0.5)]
+        allowed_overcut: f64,
+        /// Safety clearance margin halo (`mm`).
+        #[arg(long, default_value_t = 0.5)]
+        clearance: f64,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -565,6 +718,100 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
             } => run_machines_clone(source, new_id, name),
             MachineCommands::Export { id, output } => run_machines_export(id, output),
             MachineCommands::Import { input, id } => run_machines_import(input, id),
+        },
+        Commands::Workholding { action } => match action {
+            WorkholdingCommands::List { project, setup } => run_workholding_list(project, setup),
+            WorkholdingCommands::AddVise {
+                project,
+                output,
+                setup,
+                name,
+                axis,
+                jaw_width,
+                jaw_thickness,
+                jaw_height,
+                grip_depth,
+                step_depth,
+                step_height,
+                parallels,
+                parallel_thickness,
+                fixed_side,
+                clearance,
+            } => run_workholding_add_vise(AddViseArgs {
+                project,
+                output,
+                setup,
+                name,
+                axis,
+                jaw_width,
+                jaw_thickness,
+                jaw_height,
+                grip_depth,
+                step_depth,
+                step_height,
+                parallels,
+                parallel_thickness,
+                fixed_side,
+                clearance,
+            }),
+            WorkholdingCommands::AddClamp {
+                project,
+                output,
+                setup,
+                name,
+                x,
+                y,
+                yaw,
+                z_ref,
+                z_offset,
+                strap_length,
+                strap_width,
+                strap_height,
+                nose_overhang,
+                stud_diameter,
+                stud_height,
+                clearance,
+            } => run_workholding_add_clamp(AddClampArgs {
+                project,
+                output,
+                setup,
+                name,
+                x,
+                y,
+                yaw,
+                z_ref,
+                z_offset,
+                strap_length,
+                strap_width,
+                strap_height,
+                nose_overhang,
+                stud_diameter,
+                stud_height,
+                clearance,
+            }),
+            WorkholdingCommands::AddSpoilboard {
+                project,
+                output,
+                setup,
+                name,
+                z_ref,
+                z_offset,
+                thickness,
+                margin_xy,
+                allowed_overcut,
+                clearance,
+            } => run_workholding_add_spoilboard(AddSpoilboardArgs {
+                project,
+                output,
+                setup,
+                name,
+                z_ref,
+                z_offset,
+                thickness,
+                margin_xy,
+                allowed_overcut,
+                clearance,
+            }),
         },
         Commands::ListPosts => {
             for profile in chip_post::load_available_post_profiles(None) {

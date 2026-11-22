@@ -76,8 +76,26 @@ pub enum SetupTab {
     #[default]
     Wcs,
     Stock,
+    Fixtures,
     Rotary,
     Heights,
+}
+
+/// Interactive workholding fixture type dropped by [`ViewportPickMode::PlaceFixtureClamp`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FixturePlaceKind {
+    #[default]
+    ToeClamp,
+    CylinderKeepOut,
+}
+
+impl FixturePlaceKind {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::ToeClamp => "Toe Clamp",
+            Self::CylinderKeepOut => "Cylinder Keep-Out",
+        }
+    }
 }
 
 /// Active sub-tab in the 5-tab Operation Inspector (`08-ui-viewport.md`).
@@ -142,6 +160,10 @@ pub enum ViewportPickMode {
     PickModelLayFlatFace {
         model_idx: usize,
     },
+    PlaceFixtureClamp {
+        setup_idx: usize,
+        kind: FixturePlaceKind,
+    },
 }
 
 impl ViewportPickMode {
@@ -195,6 +217,11 @@ impl ViewportPickMode {
                 "Lay Flat on Face: Click any planar STEP face or STL triangle to lay it flat (-Z) on Z=0 (Esc to cancel)"
                     .to_string(),
             ),
+            Self::PlaceFixtureClamp { kind, .. } => Some(format!(
+                "Place {} Mode: Click on a stock edge, corner, or spoilboard in 3D to drop & orient a {} (Esc / Done to exit)",
+                kind.label(),
+                kind.label()
+            )),
         }
     }
 
@@ -278,6 +305,15 @@ impl ViewportPickMode {
                 "Click any planar STEP face or STL triangle in 3D to place it flat (-Z) on Z = 0"
                     .to_string(),
                 false,
+            )),
+            Self::PlaceFixtureClamp { kind, .. } => Some((
+                match kind {
+                    FixturePlaceKind::ToeClamp => "Place Toe Clamp in 3D",
+                    FixturePlaceKind::CylinderKeepOut => "Place Cylinder Keep-Out in 3D",
+                },
+                "Click on a stock edge, corner, or spoilboard to drop & auto-orient workholding"
+                    .to_string(),
+                true,
             )),
         }
     }

@@ -29,11 +29,10 @@ pub fn run_transform_model(
     args: TransformModelArgs,
 ) -> Result<ExitCode, Box<dyn std::error::Error>> {
     let mut proj = ProjectDocument::load_from_path(&args.project)?;
-    let first = proj
-        .models
-        .first()
-        .ok_or("project contains no [[models]] entry to transform")?
-        .clone();
+    let part_idx = proj
+        .primary_part_model_index()
+        .ok_or("project contains no target part [[models]] entry to transform")?;
+    let first = proj.models[part_idx].clone();
     let model_path = chip_project::resolve_model_path(args.project.parent(), &first.path);
     let raw_doc = chip_project::load_model_entry_cad_doc(&model_path, first.unit_override)?;
 
@@ -106,7 +105,7 @@ pub fn run_transform_model(
     }
     xf.validate()?;
 
-    proj.models[0].transform = xf;
+    proj.models[part_idx].transform = xf;
     for setup in &mut proj.setups {
         for op in &mut setup.operations {
             op.mark_dirty();

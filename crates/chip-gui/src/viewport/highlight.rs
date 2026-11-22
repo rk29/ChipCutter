@@ -3,7 +3,7 @@ use std::{collections::HashSet, sync::Arc};
 use chip_cad::{CadDocument, EdgeId, FaceId, PickTarget, expand_coaxial_hole_faces};
 use chip_cam::{
     ChainDirectionArrow3D, GeneratedToolpath, ResolvedRotaryConfig, ResolvedStockGeometry,
-    TabMarker3D,
+    TabMarker3D, TriMesh3D,
 };
 use chip_math::{ArcPolyline2D, DMat4, DVec2, DVec3, DisplayUnit, MM_PER_INCH, Ray3, RigidFrame3};
 #[cfg(feature = "gpu-compute")]
@@ -107,6 +107,17 @@ pub struct SketchLayerVisual {
     pub world_frame: RigidFrame3,
 }
 
+/// Resolved 3D workholding fixture mesh queued for translucent shaded + wireframe viewport rendering.
+#[derive(Debug, Clone)]
+pub struct FixtureVisualMesh {
+    pub revision: u64,
+    pub fixture_id: String,
+    pub mesh: Arc<TriMesh3D>,
+    pub base_rgba: [f32; 4],
+    pub colliding: bool,
+    pub selected: bool,
+}
+
 /// Active hover, multi-selection, WCS, Stock, Z-plane, 2D Sketch, and Toolpath scene state fed into the 3D CAD/CAM viewport.
 #[derive(Debug, Clone)]
 pub struct HighlightState {
@@ -127,6 +138,8 @@ pub struct HighlightState {
     pub stock: Option<ResolvedStockGeometry>,
     pub rotary: Option<ResolvedRotaryConfig>,
     pub show_stock: bool,
+    pub show_fixtures: bool,
+    pub fixture_meshes: Vec<FixtureVisualMesh>,
     pub z_planes_wcs: Vec<ZPlaneVisual>,
     pub ghost_part: bool,
     pub show_grid: bool,
@@ -165,6 +178,8 @@ impl Default for HighlightState {
             stock: None,
             rotary: None,
             show_stock: true,
+            show_fixtures: true,
+            fixture_meshes: Vec::new(),
             z_planes_wcs: Vec::new(),
             ghost_part: false,
             show_grid: true,
@@ -199,6 +214,7 @@ impl HighlightState {
         self.wcs_frame = RigidFrame3::IDENTITY;
         self.stock = None;
         self.rotary = None;
+        self.fixture_meshes.clear();
         self.z_planes_wcs.clear();
         self.toolpaths.clear();
         self.preview_tab_marker_wcs = None;

@@ -2,12 +2,12 @@ use std::{borrow::Cow, path::Path};
 
 use chip_cad::CadDocument;
 use chip_cam::{
-    OperationRotaryMode, ResolvedHeights, RestMachiningMode, build_indexed_virtual_setup,
-    extract_selection_features_with_sketches,
+    FixtureKind, OperationRotaryMode, ResolvedHeights, RestMachiningMode,
+    build_indexed_virtual_setup, extract_selection_features_with_sketches, resolve_fixture_body,
 };
 use chip_tools::{MachineDefinition, builtin_generic_machine, resolve_machine_definition};
 
-use crate::document::{ProjectDocument, compute_sha256_hex, resolve_model_path};
+use crate::document::{ModelRole, ProjectDocument, compute_sha256_hex, resolve_model_path};
 
 /// Severity of a project validation diagnostic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -183,15 +183,23 @@ pub fn validate_project_with_machine(
         }
     }
 
-    // 3. Validate Setups & Operations against loaded CAD geometry (or Pure-2D empty CAD when `models.is_empty()`)
+    // 3. Validate Setups & Operations against loaded CAD geometry (or Pure-2D empty CAD when no Part models exist)
     let empty_cad = CadDocument::empty();
+    let has_part_models = project.primary_part_model().is_some();
     let effective_cad: Option<&CadDocument> = if let Some(cad_doc) = loaded_cad {
         Some(cad_doc)
-    } else if project.models.is_empty() {
+    } else if !has_part_models {
         Some(&empty_cad)
     } else {
         None
     };
+
+    let loaded_fixture_docs =
+        if project_dir.is_some() && project.models.iter().any(|m| m.role == ModelRole::Fixture) {
+            project.load_fixture_cad_documents(project_dir)
+        } else {
+            std::collections::BTreeMap::new()
+        };
 
     if let Some(cad_doc) = effective_cad {
         for setup in &project.setups {
@@ -281,6 +289,90 @@ pub fn validate_project_with_machine(
                             rot.axis_letter, prof.id
                         ),
                     );
+                }
+            }
+
+            // Validate 3D Workholding fixtures (missing imported models, negative margins, vise grip depth, invalid dims)
+            if !setup.fixtures.is_empty() {
+                let stock_aabb = resolved_setup.stock.aabb_wcs();
+                let fix_ctx = resolved_setup.eval_context(project.display_units);
+                for fix in &setup.fixtures {
+                    let fix_scope = format!("{setup_scope} -> Fixture '{}'", fix.name);
+                    let mut eval_fix = fix.clone();
+                    eval_fix.reevaluate(&fix_ctx);
+
+                    if !eval_fix.clearance_margin.value_mm.is_finite()
+                        || eval_fix.clearance_margin.value_mm < -1e-9
+                    {
+                        report.push_error(
+                            &fix_scope,
+                            format!(
+                                "fixture clearance_margin ({:.3} mm) must be finite and >= 0",
+                                eval_fix.clearance_margin.value_mm
+                            ),
+                        );
+                    }
+                    if !eval_fix.allowed_overcut.value_mm.is_finite()
+                        || eval_fix.allowed_overcut.value_mm < -1e-9
+                    {
+                        report.push_error(
+                            &fix_scope,
+                            format!(
+                                "fixture allowed_overcut ({:.3} mm) must be finite and >= 0",
+                                eval_fix.allowed_overcut.value_mm
+                            ),
+                        );
+                    }
+
+                    match &eval_fix.kind {
+                        FixtureKind::ViseJaws { grip_depth, .. } => {
+                            if grip_depth.value_mm > stock_size.z + 1e-4 {
+                                report.push_warning(
+                                    &fix_scope,
+                                    format!(
+                                        "vise grip_depth ({:.2} mm) exceeds stock height ({:.2} mm); jaws rise above stock top.",
+                                        grip_depth.value_mm, stock_size.z
+                                    ),
+                                );
+                            }
+                        }
+                        FixtureKind::ImportedModel { model_id, .. } => {
+                            match project.model_by_id(model_id) {
+                                None => {
+                                    report.push_error(
+                                        &fix_scope,
+                                        format!(
+                                            "referenced fixture model_id '{model_id}' does not exist in project models"
+                                        ),
+                                    );
+                                    continue;
+                                }
+                                Some(entry) if entry.role != ModelRole::Fixture => {
+                                    report.push_warning(
+                                        &fix_scope,
+                                        format!(
+                                            "model '{model_id}' is referenced as an imported fixture but has role 'part' (mark role = \"fixture\" to avoid polluting stock bounds)."
+                                        ),
+                                    );
+                                }
+                                Some(_) => {}
+                            }
+                            if project_dir.is_none() {
+                                // Skip disk mesh read when validating purely in-memory project without project_dir
+                                continue;
+                            }
+                        }
+                        _ => {}
+                    }
+
+                    if eval_fix.enabled
+                        && let Err(err) =
+                            resolve_fixture_body(&eval_fix, &stock_aabb, &fix_ctx, &mut |id| {
+                                loaded_fixture_docs.get(id)
+                            })
+                    {
+                        report.push_error(&fix_scope, err.to_string());
+                    }
                 }
             }
 
@@ -501,7 +593,7 @@ pub fn validate_project_with_machine(
                 }
             }
         }
-    } else if !project.models.is_empty() && project_dir.is_none() {
+    } else if has_part_models && project_dir.is_none() {
         report.push_warning(
             "Project",
             "CAD document not loaded in memory; skipped B-Rep WCS and selection checks.",

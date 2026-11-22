@@ -113,6 +113,7 @@ pub fn rebind_project_to_reloaded_cad(
             id: "model_1".to_string(),
             path: new_stored_path.unwrap_or_else(|| new_doc.source_name.clone()),
             sha256: new_sha256.to_string(),
+            role: Default::default(),
             unit_override: None,
             transform: chip_cad::ModelTransform::IDENTITY,
         });

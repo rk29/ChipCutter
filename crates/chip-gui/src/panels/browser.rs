@@ -306,13 +306,13 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
             // 1. Models section (unified collapsible card matching right-side Inspector)
             section_card(ui, "browser_models_card", "Models", true, |ui| {
                 if let Some(doc) = cad_doc {
+                    let part_idx = project.primary_part_model_index().unwrap_or(0);
                     let sel = matches!(
                         *focus,
-                        InspectorFocus::Model { model_idx: 0 } | InspectorFocus::CadEntity
-                    );
+                        InspectorFocus::Model { model_idx } if model_idx == part_idx
+                    ) || matches!(*focus, InspectorFocus::CadEntity);
                     let has_xf = project
-                        .models
-                        .first()
+                        .primary_part_model()
                         .is_some_and(|m| !m.transform.is_identity());
                     let body_summary = if !doc.meshes.is_empty() && doc.bodies.is_empty() {
                         format!(
@@ -336,7 +336,9 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                         )
                         .clicked()
                     {
-                        *focus = InspectorFocus::Model { model_idx: 0 };
+                        *focus = InspectorFocus::Model {
+                            model_idx: part_idx,
+                        };
                         *pick_mode = ViewportPickMode::InspectEntity;
                     }
                     ui.indent("model_stats", |ui| {

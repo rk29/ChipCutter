@@ -47,6 +47,8 @@ pub struct UserPreferences {
     pub show_rapids: bool,
     #[serde(default = "default_true")]
     pub show_stock: bool,
+    #[serde(default = "default_true")]
+    pub show_fixtures: bool,
     pub ghost_part: bool,
     #[serde(default)]
     pub sim_engine: SimEngineKind,
@@ -71,6 +73,7 @@ impl Default for UserPreferences {
             show_toolpaths: true,
             show_rapids: true,
             show_stock: true,
+            show_fixtures: true,
             ghost_part: false,
             sim_engine: SimEngineKind::Heightmap,
             sim_backend: SimComputeBackendChoice::Auto,
@@ -200,6 +203,7 @@ mod tests {
         assert_eq!(partial.sim_engine, SimEngineKind::Heightmap);
         assert_eq!(partial.sim_backend, SimComputeBackendChoice::Auto);
         assert!(partial.show_toolpaths);
+        assert!(partial.show_fixtures);
         assert!(partial.show_welcome_on_startup);
         assert!(partial.layout_shares.top_row_share <= 0.88 + 1e-6);
         let sum = partial.layout_shares.browser_share

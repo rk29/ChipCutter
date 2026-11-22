@@ -33,6 +33,7 @@ pub fn build_multi_feature_bracket_project(
         id: "model_1".to_string(),
         path: model_path,
         sha256: sha256_hex.to_string(),
+        role: Default::default(),
         unit_override: None,
         transform: chip_cad::ModelTransform::IDENTITY,
     }];
@@ -119,6 +120,7 @@ pub fn build_cam_torture_project(
         id: "model_1".to_string(),
         path: model_path,
         sha256: sha256_hex.to_string(),
+        role: Default::default(),
         unit_override: None,
         transform: chip_cad::ModelTransform::IDENTITY,
     }];
@@ -373,6 +375,7 @@ pub fn build_adaptive_rest_demo_project(
         id: "model_1".to_string(),
         path: model_path,
         sha256: sha256_hex.to_string(),
+        role: Default::default(),
         unit_override: None,
         transform: chip_cad::ModelTransform::IDENTITY,
     }];
@@ -569,6 +572,7 @@ pub fn build_revision_v1_demo_project(
         id: "model_1".to_string(),
         path: model_path,
         sha256: sha256_hex.to_string(),
+        role: Default::default(),
         unit_override: None,
         transform: chip_cad::ModelTransform::IDENTITY,
     }];
@@ -1491,6 +1495,7 @@ pub fn build_thread_mill_manifold_project(
         id: "model_1".to_string(),
         path: model_path,
         sha256: sha256_hex.to_string(),
+        role: Default::default(),
         unit_override: None,
         transform: chip_cad::ModelTransform::IDENTITY,
     }];

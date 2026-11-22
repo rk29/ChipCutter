@@ -17,13 +17,13 @@ pub fn run_reload_step(
 ) -> Result<ExitCode, Box<dyn std::error::Error>> {
     let mut proj_doc = ProjectDocument::load_from_path(&project)?;
     let dest_proj = output.unwrap_or_else(|| project.clone());
+    let part_idx = proj_doc.primary_part_model_index().unwrap_or(0);
     let step_path = match step {
         Some(s) => s,
         None => {
             let first = proj_doc
-                .models
-                .first()
-                .ok_or("project has no [[models]] entry")?;
+                .primary_part_model()
+                .ok_or("project has no target part [[models]] entry")?;
             resolve_model_path(project.parent(), &first.path)
         }
     };
@@ -36,8 +36,7 @@ pub fn run_reload_step(
     let raw_doc =
         MonstertruckKernel.load_step_bytes(name, &step_bytes, DEFAULT_TESS_CHORD_TOL_MM)?;
     let existing_xf = proj_doc
-        .models
-        .first()
+        .primary_part_model()
         .map_or(chip_cad::ModelTransform::IDENTITY, |m| m.transform);
     existing_xf.validate()?;
     let new_doc = if existing_xf.is_identity() {
@@ -48,8 +47,14 @@ pub fn run_reload_step(
     let topo = TopologyGraph::build(&new_doc);
     let new_rel = portable_model_path(Some(&dest_proj), &step_path);
 
-    let report =
-        rebind_project_to_reloaded_cad(&mut proj_doc, 0, &new_doc, &topo, &sha, Some(new_rel));
+    let report = rebind_project_to_reloaded_cad(
+        &mut proj_doc,
+        part_idx,
+        &new_doc,
+        &topo,
+        &sha,
+        Some(new_rel),
+    );
     println!("=== ChipCutter Associative STEP Reload ===");
     println!("{}", report.summary_line());
     for w in &report.setup_wcs_warnings {
