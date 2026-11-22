@@ -7,11 +7,17 @@ license.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = []
+gpu-compute = ["dep:wgpu", "dep:pollster"]
+
 [dependencies]
 bytemuck.workspace = true
 chip-bvh.workspace = true
 chip-math.workspace = true
 chip-tools.workspace = true
+pollster = { workspace = true, optional = true }
 rayon.workspace = true
 serde.workspace = true
 thiserror.workspace = true
+wgpu = { workspace = true, optional = true }

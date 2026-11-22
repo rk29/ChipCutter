@@ -10,9 +10,10 @@ repository.workspace = true
 workspace = true
 
 [features]
-default = ["gtk3"]
+default = ["gtk3", "gpu-compute"]
 gtk3 = ["rfd/gtk3"]
-flatpak-portal = ["rfd/xdg-portal", "rfd/async-std"]
+flatpak-portal = ["rfd/xdg-portal", "rfd/async-std", "gpu-compute"]
+gpu-compute = ["chip-sim/gpu-compute", "chip-project/gpu-compute"]
 
 [dependencies]
 chip-math.workspace = true

@@ -2,17 +2,21 @@
 //! [`run_setup_simulation_with_backend`] driver, and single [`SimulatedStock`] playback cursor
 //! state machine covering `Heightfield`, `TriDexel`, and 4th-axis `Cylindrical` engines.
 
+#[cfg(feature = "gpu-compute")]
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use chip_cad::{BodyId, CadDocument};
 use chip_cam::ResolvedSetup;
 use chip_stock::{
-    CpuExactBackend, CylindricalStock, HeightfieldStock, OperationErrorSnapshot,
-    RadialCutterProfile, SimEngineKind, SimError, SimResolution, SimStockBackend,
-    SimStockColorMode, SimStockMesh, SimulatedStock, StockCheckpointSnapshot, StockErrorReport,
-    StockModelKind, StockPlaybackCursor, StockVerifyTolerances, SweepChord, SweepToolSpec,
-    TriDexelStock,
+    ActiveSimBackendInfo, CpuExactBackend, CylindricalStock, HeightfieldStock,
+    OperationErrorSnapshot, RadialCutterProfile, SimComputeBackendChoice, SimEngineKind, SimError,
+    SimResolution, SimStockBackend, SimStockColorMode, SimStockMesh, SimulatedStock,
+    StockCheckpointSnapshot, StockErrorReport, StockModelKind, StockPlaybackCursor,
+    StockVerifyTolerances, SweepChord, SweepToolSpec, TriDexelStock,
 };
+#[cfg(feature = "gpu-compute")]
+use chip_stock::{GpuSimContext, WgpuComputeBackend};
 use chip_tools::CutterGeometry;
 
 use crate::{
@@ -47,6 +51,7 @@ pub struct SetupSimulationInput<'a> {
 pub struct SetupSimulationResult {
     pub engine: SimEngineKind,
     pub resolution: SimResolution,
+    pub active_backend: ActiveSimBackendInfo,
     pub timeline: SimulationTimeline,
     pub initial_stock_volume_mm3: f64,
     pub remaining_stock_volume_mm3: f64,
@@ -297,10 +302,71 @@ pub fn run_setup_simulation_with_engine(
     input: &SetupSimulationInput<'_>,
     engine: SimEngineKind,
 ) -> Result<SetupSimulationResult, SimError> {
+    run_setup_simulation_with_choice(input, engine, SimComputeBackendChoice::Cpu)
+}
+
+/// Executes stock simulation & 5-rule crash/gouge verification using the selected [`SimEngineKind`]
+/// and [`SimComputeBackendChoice`] (`Auto` / `Gpu` / `Cpu`), falling back cleanly to
+/// [`CpuExactBackend`] whenever `gpu-compute` is disabled, no GPU adapter is available, or the
+/// stock model is `TriDexel` (until Milestone 53).
+pub fn run_setup_simulation_with_choice(
+    input: &SetupSimulationInput<'_>,
+    engine: SimEngineKind,
+    choice: SimComputeBackendChoice,
+) -> Result<SetupSimulationResult, SimError> {
+    #[cfg(feature = "gpu-compute")]
+    {
+        let gpu_ctx = match choice {
+            SimComputeBackendChoice::Cpu => None,
+            SimComputeBackendChoice::Auto | SimComputeBackendChoice::Gpu => {
+                GpuSimContext::shared_headless()
+            }
+        };
+        run_setup_simulation_with_gpu_context(input, engine, choice, gpu_ctx)
+    }
+    #[cfg(not(feature = "gpu-compute"))]
+    {
+        let _ = choice;
+        let (effective_engine, stock, target_td) = prepare_initial_stock(input, engine)?;
+        let backend = CpuExactBackend::new(stock, target_td);
+        run_setup_simulation_with_backend(input, effective_engine, backend)
+    }
+}
+
+/// Executes stock simulation with an explicitly provided shared [`GpuSimContext`] (e.g., from
+/// `eframe`/`ViewportRenderer`), transparently falling back to [`CpuExactBackend`] when
+/// `choice == SimComputeBackendChoice::Cpu`, `gpu_ctx` is `None`, or `TriDexel` is selected.
+#[cfg(feature = "gpu-compute")]
+pub fn run_setup_simulation_with_gpu_context(
+    input: &SetupSimulationInput<'_>,
+    engine: SimEngineKind,
+    choice: SimComputeBackendChoice,
+    gpu_ctx: Option<Arc<GpuSimContext>>,
+) -> Result<SetupSimulationResult, SimError> {
+    let (effective_engine, stock, target_td) = prepare_initial_stock(input, engine)?;
+    let use_gpu = choice != SimComputeBackendChoice::Cpu
+        && matches!(
+            stock,
+            SimulatedStock::Heightfield(_) | SimulatedStock::Cylindrical(_)
+        );
+
+    if use_gpu && let Some(ctx) = gpu_ctx {
+        let backend = WgpuComputeBackend::new(ctx, stock, target_td);
+        run_setup_simulation_with_backend(input, effective_engine, backend)
+    } else {
+        let backend = CpuExactBackend::new(stock, target_td);
+        run_setup_simulation_with_backend(input, effective_engine, backend)
+    }
+}
+
+fn prepare_initial_stock(
+    input: &SetupSimulationInput<'_>,
+    engine: SimEngineKind,
+) -> Result<(SimEngineKind, SimulatedStock, Option<TriDexelStock>), SimError> {
     check_cancelled(input.cancel)?;
     let stock_spec = stock_shape_spec_from_cam(&input.setup.stock);
 
-    let (effective_engine, backend) = if let Some(rotary) = input.setup.rotary {
+    if let Some(rotary) = input.setup.rotary {
         let rotary_spec = rotary_stock_spec_from_cam(rotary);
         let mut cyl =
             CylindricalStock::from_stock_spec(&stock_spec, rotary_spec, input.resolution)?;
@@ -310,19 +376,21 @@ pub fn run_setup_simulation_with_engine(
         {
             cyl.rasterize_target_mesh(&target_mesh);
         }
-        (
+        Ok((
             SimEngineKind::Heightmap,
-            CpuExactBackend::new(SimulatedStock::Cylindrical(cyl), None),
-        )
+            SimulatedStock::Cylindrical(cyl),
+            None,
+        ))
     } else if engine == SimEngineKind::TriDexel {
         let td = TriDexelStock::from_stock_spec(&stock_spec, input.resolution)?;
         check_cancelled(input.cancel)?;
         let target_td =
             extract_tridexel_target_from_cad(input.doc, input.setup, input.target_bodies, &td);
-        (
+        Ok((
             SimEngineKind::TriDexel,
-            CpuExactBackend::new(SimulatedStock::TriDexel(Box::new(td)), target_td),
-        )
+            SimulatedStock::TriDexel(Box::new(td)),
+            target_td,
+        ))
     } else {
         let mut hf = HeightfieldStock::from_stock_spec(&stock_spec, input.resolution)?;
         check_cancelled(input.cancel)?;
@@ -331,13 +399,12 @@ pub fn run_setup_simulation_with_engine(
                 extract_heightfield_target_from_cad(input.doc, input.setup, input.target_bodies);
             hf.rasterize_target(&horiz_up, &tris);
         }
-        (
+        Ok((
             SimEngineKind::Heightmap,
-            CpuExactBackend::new(SimulatedStock::Heightfield(hf), None),
-        )
-    };
-
-    run_setup_simulation_with_backend(input, effective_engine, backend)
+            SimulatedStock::Heightfield(hf),
+            None,
+        ))
+    }
 }
 
 /// Single unified polymorphic setup simulation loop driving any [`SimStockBackend`]
@@ -444,12 +511,14 @@ pub fn run_setup_simulation_with_backend<B: SimStockBackend>(
     let remaining_stock_volume_mm3 = backend.compute_volume_mm3();
     let removed_volume_mm3 = (initial_stock_volume_mm3 - remaining_stock_volume_mm3).max(0.0);
     let error_report = backend.compute_error_report(initial_stock_volume_mm3, 0.05, per_op_errors);
+    let active_backend = backend.backend_info();
     let (final_stock, target_tridexel_stock) = backend.into_parts();
     let diagnostics = coalescer.into_diagnostics();
 
     Ok(SetupSimulationResult {
         engine,
         resolution: input.resolution,
+        active_backend,
         timeline,
         initial_stock_volume_mm3,
         remaining_stock_volume_mm3,
@@ -1271,5 +1340,533 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[cfg(feature = "gpu-compute")]
+    #[test]
+    fn gpu_vs_cpu_heightfield_end_to_end_parity_all_rules_and_cutters() {
+        let step = sample_machined_plate_step().unwrap();
+        let doc = MonstertruckKernel
+            .load_step_bytes("plate.step", step.as_bytes(), DEFAULT_TESS_CHORD_TOL_MM)
+            .unwrap();
+        let lib = default_starter_tool_library();
+        let flat_6 = &lib.tools[0];
+        let vbit = lib
+            .tools
+            .iter()
+            .find(|t| matches!(t.geometry, CutterGeometry::ChamferMill { .. }))
+            .unwrap();
+        let face = lib
+            .tools
+            .iter()
+            .find(|t| matches!(t.geometry, CutterGeometry::FaceMill { .. }))
+            .unwrap();
+
+        let mut setup = Setup::new("s_hf_parity", "HF Parity", WorkOffsetSlot::G54);
+        let resolved = setup.resolve(&doc, DisplayUnit::Millimeter).unwrap();
+        let maabb = resolved.model_aabb_wcs;
+        let c = maabb.center();
+
+        // Op 0: Clean sloped ramp + XY arc + deliberate rapid crash + target gouge
+        let mut b0 = ToolpathBuilder::new("op_flat_fault");
+        b0.rapid_to(DVec3::new(c.x - 12.0, c.y, maabb.max.z + 10.0));
+        b0.linear_to(
+            DVec3::new(c.x - 12.0, c.y, maabb.max.z - 1.5),
+            300.0,
+            MotionRole::Plunge,
+        );
+        b0.linear_to(
+            DVec3::new(c.x, c.y + 4.0, maabb.max.z - 3.0),
+            800.0,
+            MotionRole::Cut,
+        );
+        b0.arc_xy_to(XyArcMove {
+            end_wcs: DVec3::new(c.x + 10.0, c.y + 4.0, maabb.max.z - 3.0),
+            center_xy: DVec2::new(c.x + 5.0, c.y + 4.0),
+            radius_mm: 5.0,
+            ccw: true,
+            turns: 0,
+            feed_mm_min: 700.0,
+            role: MotionRole::Cut,
+        });
+        // Rapid crash + target gouge
+        b0.rapid_to(DVec3::new(c.x, c.y - 6.0, maabb.max.z - 6.0));
+        b0.rapid_to(DVec3::new(c.x, c.y - 6.0, maabb.max.z + 10.0));
+        let tp0 = b0.finish();
+
+        // Op 1: V-bit sloped climb
+        let mut b1 = ToolpathBuilder::new("op_vbit");
+        b1.rapid_to(DVec3::new(c.x - 8.0, c.y + 8.0, maabb.max.z + 10.0));
+        b1.linear_to(
+            DVec3::new(c.x - 8.0, c.y + 8.0, maabb.max.z - 3.5),
+            400.0,
+            MotionRole::Plunge,
+        );
+        b1.linear_to(
+            DVec3::new(c.x + 8.0, c.y + 12.0, maabb.max.z - 0.5),
+            600.0,
+            MotionRole::Cut,
+        );
+        b1.rapid_to(DVec3::new(c.x + 8.0, c.y + 12.0, maabb.max.z + 10.0));
+        let tp1 = b1.finish();
+
+        // Op 2: Non-center-cutting FaceMill vertical plunge (Rule 5 check!)
+        let mut b2 = ToolpathBuilder::new("op_face_plunge");
+        b2.rapid_to(DVec3::new(c.x + 14.0, c.y - 10.0, maabb.max.z + 8.0));
+        b2.linear_to(
+            DVec3::new(c.x + 14.0, c.y - 10.0, maabb.max.z - 2.0),
+            200.0,
+            MotionRole::Plunge,
+        );
+        b2.rapid_to(DVec3::new(c.x + 14.0, c.y - 10.0, maabb.max.z + 8.0));
+        let tp2 = b2.finish();
+
+        let ops = [
+            SimOperationInput {
+                op_id: "op_flat_fault",
+                op_name: "Flat Ramp & Fault",
+                tool: flat_6,
+                fallback_spindle_rpm: 12_000.0,
+                intentional_edge_break_mm: 0.0,
+                toolpath: &tp0,
+            },
+            SimOperationInput {
+                op_id: "op_vbit",
+                op_name: "V-Carve Climb",
+                tool: vbit,
+                fallback_spindle_rpm: 14_000.0,
+                intentional_edge_break_mm: 0.0,
+                toolpath: &tp1,
+            },
+            SimOperationInput {
+                op_id: "op_face_plunge",
+                op_name: "Face Plunge Rule 5",
+                tool: face,
+                fallback_spindle_rpm: 8_000.0,
+                intentional_edge_break_mm: 0.0,
+                toolpath: &tp2,
+            },
+        ];
+
+        let input = SetupSimulationInput {
+            doc: &doc,
+            setup: &resolved,
+            target_bodies: &[],
+            operations: &ops,
+            resolution: SimResolution::Standard,
+            kinematics: MachineKinematicsConfig::default(),
+            verify_config: SimVerificationConfig::default(),
+            cancel: None,
+        };
+
+        let sim_cpu = run_setup_simulation_with_choice(
+            &input,
+            SimEngineKind::Heightmap,
+            SimComputeBackendChoice::Cpu,
+        )
+        .unwrap();
+        let sim_gpu = run_setup_simulation_with_choice(
+            &input,
+            SimEngineKind::Heightmap,
+            SimComputeBackendChoice::Gpu,
+        )
+        .unwrap();
+
+        assert!(!sim_cpu.active_backend.is_gpu);
+        assert!(sim_gpu.active_backend.is_gpu);
+
+        let vol_err = (sim_gpu.remaining_stock_volume_mm3 - sim_cpu.remaining_stock_volume_mm3)
+            .abs()
+            / sim_cpu.remaining_stock_volume_mm3.max(1.0);
+        assert!(
+            vol_err < 0.0005,
+            "Heightfield E2E volume parity failed: cpu={:.3}, gpu={:.3}, err={:.5}%",
+            sim_cpu.remaining_stock_volume_mm3,
+            sim_gpu.remaining_stock_volume_mm3,
+            vol_err * 100.0
+        );
+
+        let hf_cpu = sim_cpu.as_heightfield().unwrap();
+        let hf_gpu = sim_gpu.as_heightfield().unwrap();
+        let mut max_delta = 0.0_f64;
+        let mut worst = (0usize, 0usize, 0.0_f32, 0.0_f32, 0u32, 0u32);
+        for (idx, (zc, zg)) in hf_cpu.z_stock.iter().zip(hf_gpu.z_stock.iter()).enumerate() {
+            assert_eq!(zc.is_finite(), zg.is_finite());
+            if zc.is_finite() {
+                let d = (f64::from(*zg) - f64::from(*zc)).abs();
+                if d > max_delta {
+                    max_delta = d;
+                    worst = (
+                        idx % hf_cpu.nx,
+                        idx / hf_cpu.nx,
+                        *zc,
+                        *zg,
+                        hf_cpu.last_op_idx[idx],
+                        hf_gpu.last_op_idx[idx],
+                    );
+                }
+            }
+        }
+        assert!(
+            max_delta <= 2e-3,
+            "Heightfield E2E max cell delta {max_delta:.6} mm > 2e-3 mm at ({}, {}) wcs=({:.4},{:.4}) origin=({:.4},{:.4},{:.4}) d=({:.5},{:.5}) c=({:.4},{:.4},{:.4}) maxz={:.4}: cpu={} (op {}), gpu={} (op {})",
+            worst.0,
+            worst.1,
+            hf_cpu.origin_wcs.x + (worst.0 as f64 + 0.5) * hf_cpu.dx_mm,
+            hf_cpu.origin_wcs.y + (worst.1 as f64 + 0.5) * hf_cpu.dy_mm,
+            hf_cpu.origin_wcs.x,
+            hf_cpu.origin_wcs.y,
+            hf_cpu.origin_wcs.z,
+            hf_cpu.dx_mm,
+            hf_cpu.dy_mm,
+            c.x,
+            c.y,
+            c.z,
+            maabb.max.z,
+            worst.2,
+            worst.4,
+            worst.3,
+            worst.5
+        );
+
+        // Identical Rule 1-5 diagnostic counts & severities
+        assert_eq!(
+            sim_cpu.diagnostics.len(),
+            sim_gpu.diagnostics.len(),
+            "Diagnostic count mismatch:\nCPU: {:#?}\nGPU: {:#?}",
+            sim_cpu.diagnostics,
+            sim_gpu.diagnostics
+        );
+        for (dc, dg) in sim_cpu.diagnostics.iter().zip(sim_gpu.diagnostics.iter()) {
+            assert_eq!(dc.kind, dg.kind);
+            assert_eq!(dc.severity, dg.severity);
+            assert_eq!(dc.op_idx, dg.op_idx);
+        }
+        assert!(
+            sim_gpu
+                .diagnostics
+                .iter()
+                .any(|d| d.kind == SimIssueKind::UnsafeVerticalPlunge),
+            "Rule 5 must fire identically on GPU backend"
+        );
+    }
+
+    #[cfg(feature = "gpu-compute")]
+    #[test]
+    fn gpu_vs_cpu_cylindrical_end_to_end_parity_rotary_shaft_wrapped_and_4axis_sim() {
+        let lib = default_starter_tool_library();
+        let flat_6 = &lib.tools[0];
+        let vbit = lib
+            .tools
+            .iter()
+            .find(|t| matches!(t.geometry, CutterGeometry::ChamferMill { .. }))
+            .unwrap();
+
+        // Case 1: Rotary shaft turning + wrapped V-engraving + rapid/gouge/chuck faults
+        let stl_shaft = sample_rotary_shaft_stl_bytes();
+        let doc_shaft = load_mesh_cad_document(
+            "rotary_shaft.stl",
+            &stl_shaft,
+            &MeshImportOptions::default(),
+        )
+        .unwrap();
+        let mut setup_shaft = Setup::new("s_shaft_gpu", "Rotary Shaft GPU", WorkOffsetSlot::G54);
+        setup_shaft.wcs.origin = WcsOriginMode::ModelBoxPoint {
+            anchor: BoxAnchor27::VOLUMETRIC_CENTER,
+        };
+        setup_shaft.stock = StockConfig::FixedCylinder {
+            axis: StockAxis::X,
+            diameter: ParamLength::from_mm(44.0),
+            length: ParamLength::from_mm(80.0),
+            axial_top_offset: ParamLength::from_mm(0.0),
+        };
+        setup_shaft.rotary.mode = RotaryDriveMode::TwoLinearPlusRotary;
+        setup_shaft.rotary.axis = RotaryAxisKind::XAxis;
+        setup_shaft.rotary.chuck_length = ParamLength::from_mm(20.0);
+        setup_shaft.rotary.chuck_diameter = ParamLength::from_mm(65.0);
+        let res_shaft = setup_shaft
+            .resolve(&doc_shaft, DisplayUnit::Millimeter)
+            .unwrap();
+
+        let mut bt = ToolpathBuilder::new("op_turn_wrap");
+        bt.rotary_rapid_to(DVec3::new(-12.0, 0.0, 32.0), 0.0);
+        bt.rotary_linear_to(
+            DVec3::new(-12.0, 0.0, 19.0),
+            0.0,
+            400.0,
+            19.0,
+            MotionRole::Plunge,
+        );
+        bt.rotary_linear_to(
+            DVec3::new(12.0, 0.0, 19.0),
+            360.0,
+            800.0,
+            19.0,
+            MotionRole::Cut,
+        );
+        // Rapid crash + target gouge + chuck collision
+        bt.rotary_rapid_to(DVec3::new(0.0, 0.0, 11.0), 360.0);
+        bt.rotary_rapid_to(DVec3::new(0.0, 0.0, 35.0), 360.0);
+        bt.rotary_rapid_to(DVec3::new(-46.0, 0.0, 24.0), 360.0);
+        let tp_turn = bt.finish();
+
+        // Wrapped V-bit engraving groove around cylinder
+        let mut bw = ToolpathBuilder::new("op_wrapped");
+        bw.rotary_rapid_to(DVec3::new(-8.0, 0.0, 26.0), 45.0);
+        bw.rotary_linear_to(
+            DVec3::new(-8.0, 0.0, 17.5),
+            45.0,
+            350.0,
+            17.5,
+            MotionRole::Plunge,
+        );
+        bw.rotary_linear_to(
+            DVec3::new(8.0, 0.0, 17.5),
+            225.0,
+            600.0,
+            17.5,
+            MotionRole::Cut,
+        );
+        bw.rotary_rapid_to(DVec3::new(8.0, 0.0, 26.0), 225.0);
+        let tp_wrap = bw.finish();
+
+        let ops_shaft = [
+            SimOperationInput {
+                op_id: "op_turn_wrap",
+                op_name: "Rotary Turn & Faults",
+                tool: flat_6,
+                fallback_spindle_rpm: 10_000.0,
+                intentional_edge_break_mm: 0.0,
+                toolpath: &tp_turn,
+            },
+            SimOperationInput {
+                op_id: "op_wrapped",
+                op_name: "Wrapped V-Engrave",
+                tool: vbit,
+                fallback_spindle_rpm: 14_000.0,
+                intentional_edge_break_mm: 0.0,
+                toolpath: &tp_wrap,
+            },
+        ];
+        let in_shaft = SetupSimulationInput {
+            doc: &doc_shaft,
+            setup: &res_shaft,
+            target_bodies: &[],
+            operations: &ops_shaft,
+            resolution: SimResolution::Standard,
+            kinematics: MachineKinematicsConfig::default(),
+            verify_config: SimVerificationConfig::default(),
+            cancel: None,
+        };
+        let shaft_cpu = run_setup_simulation_with_choice(
+            &in_shaft,
+            SimEngineKind::Heightmap,
+            SimComputeBackendChoice::Cpu,
+        )
+        .unwrap();
+        let shaft_gpu = run_setup_simulation_with_choice(
+            &in_shaft,
+            SimEngineKind::Heightmap,
+            SimComputeBackendChoice::Gpu,
+        )
+        .unwrap();
+        assert!(shaft_gpu.active_backend.is_gpu);
+
+        let shaft_vol_err =
+            (shaft_gpu.remaining_stock_volume_mm3 - shaft_cpu.remaining_stock_volume_mm3).abs()
+                / shaft_cpu.remaining_stock_volume_mm3.max(1.0);
+        assert!(
+            shaft_vol_err < 0.001,
+            "Rotary shaft volume parity failed: cpu={:.3}, gpu={:.3}, err={:.5}%",
+            shaft_cpu.remaining_stock_volume_mm3,
+            shaft_gpu.remaining_stock_volume_mm3,
+            shaft_vol_err * 100.0
+        );
+        let mut max_d_shaft = 0.0_f64;
+        let mut worst_shaft = (0usize, 0usize, 0.0_f32, 0.0_f32, 0u32, 0u32);
+        let sc = shaft_cpu.as_cylindrical().unwrap();
+        let sg = shaft_gpu.as_cylindrical().unwrap();
+        for (idx, (a, b)) in sc.r_stock.iter().zip(sg.r_stock.iter()).enumerate() {
+            let d = (f64::from(*a) - f64::from(*b)).abs();
+            if d > max_d_shaft {
+                max_d_shaft = d;
+                worst_shaft = (
+                    idx / sc.ntheta,
+                    idx % sc.ntheta,
+                    *a,
+                    *b,
+                    sc.last_op_idx[idx],
+                    sg.last_op_idx[idx],
+                );
+            }
+        }
+        assert!(
+            max_d_shaft <= 5e-3,
+            "Rotary shaft max cell delta {max_d_shaft:.6} mm > 5e-3 mm at (iu={}, it={}): cpu={} (op {}), gpu={} (op {})",
+            worst_shaft.0,
+            worst_shaft.1,
+            worst_shaft.2,
+            worst_shaft.4,
+            worst_shaft.3,
+            worst_shaft.5
+        );
+        assert_eq!(shaft_cpu.diagnostics.len(), shaft_gpu.diagnostics.len());
+        for (dc, dg) in shaft_cpu
+            .diagnostics
+            .iter()
+            .zip(shaft_gpu.diagnostics.iter())
+        {
+            assert_eq!(dc.kind, dg.kind);
+            assert_eq!(dc.severity, dg.severity);
+        }
+
+        // Case 2: Simultaneous 4-axis off-centerline helical flute shaft + flank gouge & holder crash
+        let stl_helical = chip_cad::sample_helical_flute_shaft_stl_bytes();
+        let doc_helical = load_mesh_cad_document(
+            "helical_flute_shaft.stl",
+            &stl_helical,
+            &MeshImportOptions::default(),
+        )
+        .unwrap();
+        let mut setup_4ax = Setup::new("s_4ax_gpu", "Helical 4-Axis GPU", WorkOffsetSlot::G54);
+        setup_4ax.wcs.origin = WcsOriginMode::ModelBoxPoint {
+            anchor: BoxAnchor27::VOLUMETRIC_CENTER,
+        };
+        setup_4ax.stock = StockConfig::FixedCylinder {
+            axis: StockAxis::X,
+            diameter: ParamLength::from_mm(42.0),
+            length: ParamLength::from_mm(80.0),
+            axial_top_offset: ParamLength::from_mm(0.0),
+        };
+        setup_4ax.rotary.mode = RotaryDriveMode::Simultaneous4Axis;
+        setup_4ax.rotary.axis = RotaryAxisKind::XAxis;
+        let res_4ax = setup_4ax
+            .resolve(&doc_helical, DisplayUnit::Millimeter)
+            .unwrap();
+
+        let mut b4 = ToolpathBuilder::new("op_4ax_helical");
+        b4.rotary_rapid_to(DVec3::new(-10.0, 7.5, 34.0), 0.0);
+        b4.rotary_linear_to(
+            DVec3::new(-10.0, 7.5, 10.0),
+            0.0,
+            400.0,
+            12.0,
+            MotionRole::Cut,
+        );
+        b4.rotary_linear_to(
+            DVec3::new(12.0, 7.5, 10.0),
+            60.0,
+            400.0,
+            12.0,
+            MotionRole::Cut,
+        );
+        b4.rotary_rapid_to(DVec3::new(12.0, 7.5, 34.0), 60.0);
+        b4.rotary_rapid_to(DVec3::new(-30.0, -7.0, 34.0), 60.0);
+        b4.rotary_linear_to(
+            DVec3::new(-30.0, -7.0, -24.0),
+            60.0,
+            300.0,
+            20.0,
+            MotionRole::Plunge,
+        );
+        let tp_4ax = b4.finish();
+
+        let in_4ax = SetupSimulationInput {
+            doc: &doc_helical,
+            setup: &res_4ax,
+            target_bodies: &[],
+            operations: &[SimOperationInput {
+                op_id: "op_4ax_helical",
+                op_name: "4-Axis Helical Flute",
+                tool: flat_6,
+                fallback_spindle_rpm: 10_000.0,
+                intentional_edge_break_mm: 0.0,
+                toolpath: &tp_4ax,
+            }],
+            resolution: SimResolution::Standard,
+            kinematics: MachineKinematicsConfig::default(),
+            verify_config: SimVerificationConfig::default(),
+            cancel: None,
+        };
+        let sim4_cpu = run_setup_simulation_with_choice(
+            &in_4ax,
+            SimEngineKind::Heightmap,
+            SimComputeBackendChoice::Cpu,
+        )
+        .unwrap();
+        let sim4_gpu = run_setup_simulation_with_choice(
+            &in_4ax,
+            SimEngineKind::Heightmap,
+            SimComputeBackendChoice::Gpu,
+        )
+        .unwrap();
+        assert!(sim4_gpu.active_backend.is_gpu);
+
+        let vol4_err = (sim4_gpu.remaining_stock_volume_mm3 - sim4_cpu.remaining_stock_volume_mm3)
+            .abs()
+            / sim4_cpu.remaining_stock_volume_mm3.max(1.0);
+        assert!(
+            vol4_err < 0.001,
+            "4-axis helical volume parity failed: cpu={:.3}, gpu={:.3}, err={:.5}%",
+            sim4_cpu.remaining_stock_volume_mm3,
+            sim4_gpu.remaining_stock_volume_mm3,
+            vol4_err * 100.0
+        );
+        let max_d_4ax = sim4_cpu
+            .as_cylindrical()
+            .unwrap()
+            .r_stock
+            .iter()
+            .zip(sim4_gpu.as_cylindrical().unwrap().r_stock.iter())
+            .map(|(a, b)| (f64::from(*a) - f64::from(*b)).abs())
+            .fold(0.0_f64, f64::max);
+        assert!(
+            max_d_4ax <= 5e-3,
+            "4-axis helical max cell delta {max_d_4ax:.6} mm > 5e-3 mm"
+        );
+        assert_eq!(
+            sim4_cpu.diagnostics.len(),
+            sim4_gpu.diagnostics.len(),
+            "4-axis diag mismatch:\nCPU: {:#?}\nGPU: {:#?}",
+            sim4_cpu.diagnostics,
+            sim4_gpu.diagnostics
+        );
+        for (dc, dg) in sim4_cpu.diagnostics.iter().zip(sim4_gpu.diagnostics.iter()) {
+            assert_eq!(dc.kind, dg.kind);
+            assert_eq!(dc.severity, dg.severity);
+        }
+
+        // Case 3: TriDexel gracefully delegates to CPU under Auto until Milestone 53
+        let empty_doc = CadDocument::empty();
+        let mut setup_td = Setup::new("s_td_fb", "TriDexel Fallback", WorkOffsetSlot::G54);
+        setup_td.wcs.origin = WcsOriginMode::StockBoxPoint {
+            anchor: BoxAnchor27::TOP_CENTER,
+        };
+        setup_td.stock = StockConfig::FixedBox {
+            width_x: ParamLength::from_mm(100.0),
+            depth_y: ParamLength::from_mm(100.0),
+            height_z: ParamLength::from_mm(20.0),
+            xy_align: chip_cam::FixedBoxXyAlign::CenterXy,
+            z_align: chip_cam::FixedBoxZAlign::default(),
+        };
+        let res_td = setup_td
+            .resolve(&empty_doc, DisplayUnit::Millimeter)
+            .unwrap();
+        let sim_td = run_setup_simulation_with_choice(
+            &SetupSimulationInput {
+                doc: &empty_doc,
+                setup: &res_td,
+                target_bodies: &[],
+                operations: &[],
+                resolution: SimResolution::Standard,
+                kinematics: MachineKinematicsConfig::default(),
+                verify_config: SimVerificationConfig::default(),
+                cancel: None,
+            },
+            SimEngineKind::TriDexel,
+            SimComputeBackendChoice::Auto,
+        )
+        .unwrap();
+        assert!(!sim_td.active_backend.is_gpu);
     }
 }

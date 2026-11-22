@@ -13,6 +13,8 @@
 
 pub mod backend;
 pub mod cylindrical;
+#[cfg(feature = "gpu-compute")]
+pub mod gpu;
 pub mod heightfield;
 pub mod mesher_common;
 pub mod metrics;
@@ -25,6 +27,8 @@ pub use backend::{
 pub use cylindrical::{
     CylindricalStock, tessellate_cylindrical_stock_mesh, tessellate_cylindrical_stock_mesh_colored,
 };
+#[cfg(feature = "gpu-compute")]
+pub use gpu::{GpuSimContext, WgpuComputeBackend};
 pub use heightfield::{HeightfieldStock, tessellate_stock_mesh, tessellate_stock_mesh_colored};
 pub use mesher_common::{
     MACHINED_METAL_COLOR, OPERATION_STOCK_PALETTE, RAW_STOCK_SIDE_COLOR, RAW_STOCK_TOP_COLOR,
@@ -43,8 +47,8 @@ pub use tridexel::{
     tessellate_tridexel_stock_mesh_colored, unpack_max_op, unpack_min_op,
 };
 pub use types::{
-    AnalyticHorizFace, Axis3, BatchSweepOutput, RadialCutterProfile, RotaryStockSpec,
-    SimColoredVertex, SimEngineKind, SimError, SimResolution, SimStockMesh, SpanRuleViolations,
-    StockPlaybackCursor, StockShapeSpec, StockVerifyTolerances, SweepChord, SweepMotion,
-    SweepToolSpec, TargetTriangle, UNCUT_OP_IDX,
+    ActiveSimBackendInfo, AnalyticHorizFace, Axis3, BatchSweepOutput, RadialCutterProfile,
+    RotaryStockSpec, SimColoredVertex, SimComputeBackendChoice, SimEngineKind, SimError,
+    SimResolution, SimStockMesh, SpanRuleViolations, StockPlaybackCursor, StockShapeSpec,
+    StockVerifyTolerances, SweepChord, SweepMotion, SweepToolSpec, TargetTriangle, UNCUT_OP_IDX,
 };

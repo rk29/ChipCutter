@@ -7,6 +7,10 @@ license.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = []
+gpu-compute = ["chip-sim/gpu-compute"]
+
 [dependencies]
 chip-math.workspace = true
 chip-cad.workspace = true

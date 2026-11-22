@@ -20,25 +20,31 @@ pub use cad_adapter::{
     rotary_stock_spec_from_cam, stock_shape_spec_from_cam,
 };
 pub use chip_stock::{
-    AnalyticHorizFace, Axis3, BatchSweepOutput, CpuExactBackend, CylindricalStock, DexelPlane,
-    DexelSpan, FlatDexelSpan, HeightfieldStock, INLINE_DEXEL_SLOTS, MACHINED_METAL_COLOR,
-    OPERATION_STOCK_PALETTE, OperationErrorSnapshot, RAW_STOCK_SIDE_COLOR, RAW_STOCK_TOP_COLOR,
-    RadialCutterProfile, RaySpans, RotaryStockSpec, SimColoredVertex, SimEngineKind, SimError,
-    SimResolution, SimStockBackend, SimStockColorMode, SimStockMesh, SimulatedStock,
-    SpanRuleViolations, StockCheckpointSnapshot, StockErrorReport, StockModelKind,
-    StockPlaybackCursor, StockShapeSpec, StockVerifyTolerances, SweepChord, SweepMotion,
-    SweepToolSpec, TargetTriangle, TriDexelStock, UNCUT_OP_IDX, compute_cylindrical_error_report,
-    compute_heightmap_error_report, compute_tridexel_error_report, deviation_to_heatmap_rgba,
-    op_color, pack_span_ops, query_overlap_length, query_target_gouge_depth, spans_contain_coord,
-    spans_difference_length, subtract_dexel_interval, tessellate_cylindrical_stock_mesh,
+    ActiveSimBackendInfo, AnalyticHorizFace, Axis3, BatchSweepOutput, CpuExactBackend,
+    CylindricalStock, DexelPlane, DexelSpan, FlatDexelSpan, HeightfieldStock, INLINE_DEXEL_SLOTS,
+    MACHINED_METAL_COLOR, OPERATION_STOCK_PALETTE, OperationErrorSnapshot, RAW_STOCK_SIDE_COLOR,
+    RAW_STOCK_TOP_COLOR, RadialCutterProfile, RaySpans, RotaryStockSpec, SimColoredVertex,
+    SimComputeBackendChoice, SimEngineKind, SimError, SimResolution, SimStockBackend,
+    SimStockColorMode, SimStockMesh, SimulatedStock, SpanRuleViolations, StockCheckpointSnapshot,
+    StockErrorReport, StockModelKind, StockPlaybackCursor, StockShapeSpec, StockVerifyTolerances,
+    SweepChord, SweepMotion, SweepToolSpec, TargetTriangle, TriDexelStock, UNCUT_OP_IDX,
+    compute_cylindrical_error_report, compute_heightmap_error_report,
+    compute_tridexel_error_report, deviation_to_heatmap_rgba, op_color, pack_span_ops,
+    query_overlap_length, query_target_gouge_depth, spans_contain_coord, spans_difference_length,
+    subtract_dexel_interval, tessellate_cylindrical_stock_mesh,
     tessellate_cylindrical_stock_mesh_colored, tessellate_stock_mesh,
     tessellate_stock_mesh_colored, tessellate_tridexel_stock_mesh,
     tessellate_tridexel_stock_mesh_colored, unpack_max_op, unpack_min_op,
 };
+#[cfg(feature = "gpu-compute")]
+pub use chip_stock::{GpuSimContext, WgpuComputeBackend};
 pub use cutter_profile::{SimToolMesh, ToolMeshZone, build_cutter_assembly_mesh};
+#[cfg(feature = "gpu-compute")]
+pub use driver::run_setup_simulation_with_gpu_context;
 pub use driver::{
     SetupSimulationInput, SetupSimulationResult, SimulatedStockPlaybackExt, run_setup_simulation,
-    run_setup_simulation_with_backend, run_setup_simulation_with_engine,
+    run_setup_simulation_with_backend, run_setup_simulation_with_choice,
+    run_setup_simulation_with_engine,
 };
 pub use timeline::{
     MachineKinematicsConfig, MotionSpan, OperationTimelineSummary, ScrubSnapshot,

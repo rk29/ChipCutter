@@ -7,6 +7,10 @@ license.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = []
+gpu-compute = ["chip-stock/gpu-compute"]
+
 [dependencies]
 chip-bvh.workspace = true
 chip-cad.workspace = true

@@ -15,8 +15,8 @@ use crate::{
     },
     tridexel::{TriDexelStock, tessellate_tridexel_stock_mesh_colored},
     types::{
-        BatchSweepOutput, RotaryStockSpec, SimStockMesh, StockPlaybackCursor, SweepChord,
-        SweepToolSpec,
+        ActiveSimBackendInfo, BatchSweepOutput, RotaryStockSpec, SimStockMesh, StockPlaybackCursor,
+        SweepChord, SweepToolSpec,
     },
 };
 
@@ -448,6 +448,10 @@ impl SimulatedStock {
 /// Polymorphic volumetric stock simulation backend trait (`CpuExactBackend` default;
 /// future `WgpuComputeBackend` plugs in behind `#[cfg(feature = "gpu-compute")]`).
 pub trait SimStockBackend {
+    fn backend_info(&self) -> ActiveSimBackendInfo {
+        ActiveSimBackendInfo::cpu()
+    }
+
     fn kind(&self) -> StockModelKind;
 
     fn capture_checkpoint(&self, completed_segments: usize) -> StockCheckpointSnapshot;

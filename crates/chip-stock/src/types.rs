@@ -287,6 +287,56 @@ pub enum SimError {
     InvalidStockBounds,
 }
 
+/// Selectable compute backend preference for volumetric stock simulation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SimComputeBackendChoice {
+    /// Automatically prefer `WgpuComputeBackend` when compiled with `gpu-compute` and an adapter
+    /// is available, transparently falling back to `CpuExactBackend` otherwise.
+    #[default]
+    Auto,
+    /// Prefer `WgpuComputeBackend` (falling back cleanly to `CpuExactBackend` if unavailable).
+    Gpu,
+    /// Force exact CPU + Rayon volumetric simulation (`CpuExactBackend`).
+    Cpu,
+}
+
+impl SimComputeBackendChoice {
+    pub const ALL: [Self; 3] = [Self::Auto, Self::Gpu, Self::Cpu];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Auto => "Auto (GPU / CPU)",
+            Self::Gpu => "GPU Compute (wgpu)",
+            Self::Cpu => "CPU Exact (Rayon)",
+        }
+    }
+}
+
+/// Metadata identifying which concrete simulation backend executed a simulation run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActiveSimBackendInfo {
+    pub is_gpu: bool,
+    pub adapter_name: String,
+    pub backend_api: String,
+}
+
+impl ActiveSimBackendInfo {
+    pub fn cpu() -> Self {
+        Self {
+            is_gpu: false,
+            adapter_name: "CPU Exact (Rayon)".to_string(),
+            backend_api: "CPU".to_string(),
+        }
+    }
+}
+
+impl Default for ActiveSimBackendInfo {
+    fn default() -> Self {
+        Self::cpu()
+    }
+}
+
 /// Selectable volumetric stock simulation engine (`Phase 11`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

@@ -236,12 +236,21 @@ impl CylindricalStock {
                 }
 
                 let c_exit = eval_clearance(r_exit);
+                let shape = profile.envelope().shape();
+                let is_flat = matches!(shape, chip_tools::CutterEnvelopeShape::Flat { .. });
+                let is_ball = matches!(shape, chip_tools::CutterEnvelopeShape::Ball { .. });
                 let r_new = if c_exit >= 0.0 {
                     r_exit
+                } else if is_flat && d_dot_s > 1e-9 {
+                    (-h0 / d_dot_s).clamp(r_exit, r_enter)
                 } else {
-                    let mut lo = r_exit;
+                    let mut lo = if !is_ball && d_dot_s > 1e-6 {
+                        r_exit.max(-h0 / d_dot_s).min(r_enter)
+                    } else {
+                        r_exit
+                    };
                     let mut hi = r_enter;
-                    for _ in 0..10 {
+                    for _ in 0..11 {
                         let mid = 0.5 * (lo + hi);
                         if eval_clearance(mid) >= 0.0 {
                             hi = mid;

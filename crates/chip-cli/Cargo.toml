@@ -13,6 +13,10 @@ path = "src/main.rs"
 [lints]
 workspace = true
 
+[features]
+default = ["gpu-compute"]
+gpu-compute = ["chip-sim/gpu-compute", "chip-project/gpu-compute"]
+
 [dependencies]
 chip-math.workspace = true
 chip-cad.workspace = true
