@@ -50,6 +50,11 @@
   </screenshots>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="0.16.0" date="2026-11-22">
+      <description>
+        <p>Phase 16 release: upgraded 4th-axis rotary toolpaths with exact direct BVH drop-cutter evaluation, adaptive midpoint chord refinement, slope-compensated cusp stepover, and 3x finer cylindrical pose subdivision; eliminated 3-axis surface finishing chord gouges with zero-gouge chord refinement, higher-resolution smoothed Scallop3D, local contour-offset Waterline3D stepdowns, and sub-cell parabolic Pencil3D ridge centering; added engagement-aware feedrate optimization (internal-arc centerline scaling, sharp-corner lookahead deceleration, radial chip-thinning boost) with Inspector controls and timeline telemetry; fixed 2.5D circular-island rest cleanup and V-Carve Z-chord refinement; isolated background GPU simulation compute onto a dedicated headless wgpu device to prevent Surface::configure panics during window resizes; and updated tutorial commands for installed chip-gui and chipcutter binaries.</p>
+      </description>
+    </release>
     <release version="0.15.0" date="2026-11-22">
       <description>
         <p>Phase 15 release: added an optional wgpu Compute simulation and direct rendering backend (gpu-compute feature with zero new external dependencies and transparent exact CPU fallback), tiled WGSL compute sweepers for 2.5D Heightfield, 4th-axis Cylindrical (up to 5.8x faster at Ultra), and flat fixed-K Tri-Dexel (with lossless hybrid CPU overflow for multi-form thread undercuts), GPU BVH target rasterization and parallel-reduction stock-vs-target error metrics, zero-readback direct GPU stock rendering with instant Error Heatmap tolerance updates, VRAM-bounded GPU checkpoints, GUI backend selector and adapter status badge, and CLI --backend/--benchmark reporting.</p>

@@ -662,7 +662,7 @@ dependencies = [
 
 [[package]]
 name = "chip-bvh"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "bytemuck",
  "chip-math",
@@ -672,7 +672,7 @@ dependencies = [
 
 [[package]]
 name = "chip-cad"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "chip-bvh",
  "chip-math",
@@ -687,7 +687,7 @@ dependencies = [
 
 [[package]]
 name = "chip-cam"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "chip-bvh",
  "chip-cad",
@@ -704,7 +704,7 @@ dependencies = [
 
 [[package]]
 name = "chip-cli"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "chip-cad",
  "chip-cam",
@@ -723,7 +723,7 @@ dependencies = [
 
 [[package]]
 name = "chip-geom2d"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "boostvoronoi",
  "cavalier_contours",
@@ -733,7 +733,7 @@ dependencies = [
 
 [[package]]
 name = "chip-gui"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "bytemuck",
  "chip-cad",
@@ -767,7 +767,7 @@ dependencies = [
 
 [[package]]
 name = "chip-math"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "glam",
  "serde",
@@ -776,7 +776,7 @@ dependencies = [
 
 [[package]]
 name = "chip-post"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "chip-cam",
  "chip-math",
@@ -789,7 +789,7 @@ dependencies = [
 
 [[package]]
 name = "chip-project"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "chip-cad",
  "chip-cam",
@@ -809,7 +809,7 @@ dependencies = [
 
 [[package]]
 name = "chip-sim"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "chip-bvh",
  "chip-cad",
@@ -822,7 +822,7 @@ dependencies = [
 
 [[package]]
 name = "chip-sketch"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "cavalier_contours",
  "chip-geom2d",
@@ -841,7 +841,7 @@ dependencies = [
 
 [[package]]
 name = "chip-stock"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "bytemuck",
  "chip-bvh",
@@ -856,7 +856,7 @@ dependencies = [
 
 [[package]]
 name = "chip-tools"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "chip-math",
  "dirs",
