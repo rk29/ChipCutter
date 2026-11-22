@@ -455,6 +455,34 @@ Phase 18 expands ChipCutter's cutter catalog, volumetric Tri-Dexel undercut simu
 
 ---
 
+## Phase 19 — Complete Feature Tutorials, Expanded Sample Projects, & Gallery Parity (Planned — M68–M71)
+
+Phase 19 closes every remaining tutorial, built-in sample, starter-asset, and Sample Gallery documentation gap across Phases 15–18 (and earlier `.svg`/`.3mf` import formats) so **100% of shipped ChipCutter strategies, cutter geometries, workholding wizards, GPU simulation/feed-optimization features, and file formats** have both a ready-to-run built-in sample project and an illustrated, headless-verified Markdown tutorial and Sample Gallery page—without changing core CAM/simulation algorithms or breaking existing Phase 1–5 golden G-code parity:
+
+### Milestone 68 — Gap-Closing Built-In Sample Projects & Minimal Tutorial Starter Assets (`plans/68-milestone-68-plan.md`)
+- **Six New Built-In Sample Projects (`chip-project`, `chip-gui`, `chip-cli`):** Add crash-free, CPU/GPU-verified built-in samples covering every feature that previously lacked a dedicated 1-click sample:
+  - **`feed-opt-pocket`** (Phase 16 engagement-aware `FeedOptimizationConfig`: internal-arc centerline scaling, sharp-corner lookahead deceleration ramps, radial chip-thinning boost, and timeline feedrate telemetry).
+  - **`flip-jig-softjaws`** (Phase 17 `Spoilboard` + **Flip-Jig Dowel-Pin Wizard** registration holes + `CylinderKeepOut` pins + `G54 -> G55` Tri-Dexel carryover + generated **Auto Soft-Jaw** machining setup).
+  - **`curved-deburr-3d`** (Phase 18 non-planar sloped-boss & stepped-pocket `Deburr3D` with `ChamferMill` inside-corner wall collision trimming, `BallEndmill`, and `LollipopEndmill` underside back-chamfering).
+  - **`dovetail-rail-keyway`** (Phase 18 `DovetailMode::ExternalRail` external dovetail rail + blind `SlotUndercutMode::Keyway` entered via `UndercutEntryMode::EntryBoreCenter`).
+  - **`svg-badge`** (Pure-2D `.svg` import with `96 DPI` cubic-Bézier biarc `G2`/`G3` fitting and nested counter-islands) and **`mesh-3mf-bracket`** (watertight unit-aware `.3mf` 3D mesh surfacing).
+- **Minimal Tutorial Starter Assets & Dynamic Catalog Counts (`docs/tutorials/assets/`, `chip-cli`, `chip-gui`):** Add reproducible `--tutorial` CLI generators and checked-in starter files (`20-feed-opt-pocket.step`, `21-sloped-boss-deburr.step`, `21-overhang-flange.step`, `22-undercut-deburr-block.step`, `13-badge-logo.svg`, `08-bracket.3mf`), and replace hardcoded sample count labels in `welcome_gallery.rs` with dynamic `SAMPLE_CATALOG.len()` formatting.
+
+### Milestone 69 — Illustrated Tutorial 20: GPU-Accelerated Simulation, Benchmarking, & Feedrate Optimization (`plans/69-milestone-69-plan.md`)
+- **Tutorial 20 (`docs/tutorials/20-gpu-simulation-feed-optimization.md`):** Standardized 7-part illustrated walkthrough covering Phase 15's `wgpu` Compute backend (`Auto (GPU)` / `GPU` / `CPU`, adapter badge & stage-timing tooltips, instant `< 0.1 ms` GPU Error Heatmap & live `±tol` slider, `chipcutter simulate --backend gpu --resolution ultra --benchmark --json`) and Phase 16's engagement-aware **Feed Optimization** card (`Internal-Arc Scaling`, `Sharp-Corner Lookahead`, `Radial Chip-Thinning`, `SimulationTimeline` min/avg/max feedrate telemetry, and cusp-height surface quality tuning) using `20-feed-opt-pocket.step` / `--sample feed-opt-pocket`.
+- **Automated Headless Vulkan Captures (`scripts/capture_tutorial_screenshots.sh`, `docs/images/tutorials/20-gpu-simulation-feed-optimization/`):** Add repeatable Vulkan screenshot captures, visually inspect every PNG, and cross-link from `17-tridexel-simulation-error-metrics.md` & `docs/tutorials/README.md`.
+
+### Milestone 70 — Illustrated Tutorials 21 & 22: 3D Edge Deburring & Undercut / T-Slot / Dovetail / Lollipop Milling (`plans/70-milestone-70-plan.md`)
+- **Tutorial 21 (`docs/tutorials/21-3d-edge-deburring-nonplanar-chamfering.md`):** Illustrated 7-part walkthrough covering `LollipopEndmill` setup in Tool Library, explicit 3D curved/sloped B-Rep edge selection vs. `Auto-Detect Sharp Edges` (`min_dihedral_angle_deg`, `exclude_vertical_edges`), automatic `FlatBvh` inside-corner wall collision trimming (`wall_clearance_mm`) on `21-sloped-boss-deburr.step`, underside overhang back-chamfering on `21-overhang-flange.step`, and GPU Tri-Dexel verification.
+- **Tutorial 22 (`docs/tutorials/22-undercut-tslot-dovetail-lollipop.md`):** Illustrated 7-part walkthrough covering `SlotMill`, `DovetailCutter` (with derived `Top Ø`), and `LollipopEndmill` Tool Library configuration, pre-slot throat clearing & fault-injection safety checks, DIN 650 M8 T-Slot (`BothEndsThrough`) & blind Keyway (`EntryBoreCenter`), `60°` Internal Dovetail Slot & External Dovetail Rail, Lollipop 3D overhang undercut finishing (`Undercut3D` with relieved-neck ceiling clipping), auto-Tri-Dexel `chipcutter build`, and GRBL/LinuxCNC posting.
+- **Automated Headless Vulkan Captures (`scripts/capture_tutorial_screenshots.sh`, `docs/images/tutorials/21-*/`, `22-*/`):** Add repeatable capture functions and visually verify every tutorial screenshot.
+
+### Milestone 71 — Full Sample Projects Gallery Parity (`docs/samples/`), GitHub Pages Sync, & Documentation Verification Gate (`plans/71-milestone-71-plan.md`)
+- **100% Sample Gallery Parity (`docs/samples/`, `docs/images/samples/`, `scripts/capture_sample_gallery.sh`):** Harden `capture_sample_gallery.sh` & `capture_tutorial_screenshots.sh` against stale X11 sockets, generate full hero, `480 px` thumbnail, and per-Setup/per-Operation completion screenshots for all 8 undocumented/new samples (`two-sided-vise`, `undercut-deburr`, `feed-opt-pocket`, `flip-jig-softjaws`, `curved-deburr-3d`, `dovetail-rail-keyway`, `svg-badge`, `mesh-3mf-bracket`), and publish dedicated `docs/samples/<slug>.md` pages plus updated `docs/samples/README.md`, `docs/tutorials/README.md`, `docs/index.html`, and `README.md`.
+- **Automated Parity & Link Audit (`chip-project`, `specs/10-roadmap.md`):** Add automated tests verifying every sample in `SAMPLE_CATALOG` loads, generates, simulates with `0` critical errors, and has a matching `docs/samples/<slug>.md` page and valid PNG links, audit all Markdown links/images across `docs/` and `README.md`, and mark Phase 19 complete in `specs/10-roadmap.md`.
+
+---
+
 ## Future Phases
 
 ChipCutter's long-term roadmap focuses on bringing pro-grade CAM capabilities to hobby and benchtop machinists—making everyday job setup faster, safer, and easier to use without commercial CAM complexity or licensing cost.
@@ -479,4 +507,4 @@ ChipCutter's long-term roadmap focuses on bringing pro-grade CAM capabilities to
 6. **Functional & Behavioral User-Level Testing:**
    - Durable end-to-end user-journey and GUI behavioral test harness (`egui_kittest` / headless interactive workflows + CLI workflows) verifying every feature from a machinist's point of view without brittle coupling to internal implementation details.
 7. **Tutorials for Upcoming Future-Phase Capabilities:**
-   - Dedicated illustrated guides accompanying new future-phase capabilities (guided operation setup, probing, 3D workholding & multi-setup Tri-Dexel stock carryover, soft jaws, nesting, and PCB isolation milling).
+   - Dedicated illustrated guides and sample projects accompanying upcoming future-phase capabilities (physics machinability advisor, guided operation setup, probing, 2D nesting, and PCB isolation milling).
