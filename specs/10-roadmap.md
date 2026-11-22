@@ -431,6 +431,30 @@ Phase 17 delivered real shop-floor workholding awareness, full-assembly 3D fixtu
 
 ---
 
+## Phase 18 — Expanded Machining Capabilities: 3D Edge Deburring & Undercut / Slot / T-Slot / Dovetail Milling (Planned — M64–M67)
+
+Phase 18 expands ChipCutter's cutter catalog, volumetric Tri-Dexel undercut simulation (CPU & GPU), and toolpath strategy suite to machine real-world **3D non-planar chamfered/deburred edges**, **keyways**, **T-slots**, **dovetail rails/slots**, and **3D lollipop undercuts**—building directly on `AnalyticCutterEnvelope`, `chip-bvh`, and `TriDexelStock` while preserving 100% schema compatibility, zero new external dependencies, and byte-for-byte Phase 1–2 golden G-code parity (leaving **2D Sheet Nesting & Multi-Part Arrays** and **PCB Isolation Milling & Drilling** in Future Phases):
+
+### Milestone 64 — Undercut Cutter Geometries (`Lollipop`, `Slot / T-Slot`, `Dovetail`), Tri-Dexel Undercut Simulation (CPU + GPU), & Tool Library UI (`plans/64-milestone-64-plan.md`)
+- **Three New Cutter Geometries (`chip-tools`):** Add `CutterGeometry::LollipopEndmill`, `CutterGeometry::SlotMill`, and `CutterGeometry::DovetailCutter` (with relieved `neck_diameter_mm` & `neck_length_mm`), exact non-monotonic `AnalyticCutterEnvelope` radial & axial interval math (`axial_z_interval_at_radius`), Minkowski stock allowance dilation, Fusion 360 `.json`/`.tools` import mapping, and non-colliding starter library presets.
+- **CPU + GPU Volumetric Undercut Sweeping & Revolved 3D Cutter Meshes (`chip-stock`, `chip-sim`):** Extend `GpuToolProfile` (`SHAPE_LOLLIPOP`, `SHAPE_SLOTMILL`, `SHAPE_DOVETAIL` within the existing 64-byte layout), CPU & WGSL `TriDexelStock` / `HeightfieldStock` / `CylindricalStock` sweepers, generalized relieved-neck collision verification (catching neck rubs against overhanging ceilings and un-cleared slot plunges), and 3D revolved cutter meshes in `build_cutter_assembly_mesh`.
+- **Tool Library Manager UI (`chip-gui`):** Add strict two-column editors, hover tooltips, and procedural 2D schematics for Lollipop, Slot/T-Slot, and Dovetail cutters.
+
+### Milestone 65 — 3D Edge Deburring & Non-Planar Chamfering (`OperationKind::Deburr3D`) (`plans/65-milestone-65-plan.md`)
+- **Exact 3D B-Rep Edge Following & Bisector Contact (`chip-cam`):** Add `OperationKind::Deburr3D` following arbitrary curved, sloped, stepped, and multi-edge 3D B-Rep chains (explicit selection or auto-detected sharp edges above `min_dihedral_angle_deg`) using Chamfer Mill, Ball Endmill, or Lollipop Endmill (including underside back-chamfering with Lollipop!).
+- **Automatic Neighbor-Wall Collision Trimming (`chip-cam`, `chip-sim`, `chip-gui`):** Evaluate full cutter/neck/shank clearance against target `FlatBvh` to trim cleanly away from adjacent inside corners/walls by `wall_clearance_mm` with tangent lead-in/out, fixture-aware safe rapids, strict two-column **3D Deburr Passes** Inspector UI, and CPU/GPU Tri-Dexel verification.
+
+### Milestone 66 — Undercut Milling Strategies: Keyways, T-Slots, Dovetails, & Lollipop 3D Undercuts (`plans/66-milestone-66-plan.md`)
+- **Keyway & T-Slot Milling (`OperationKind::SlotUndercut`):** Supports open/blind keyways and T-slot undercuts (with standard metric/imperial presets, optional throat-clearance validation, multi-pass radial stepovers & Z-levels, mandatory safe open-end / entry-bore lead-in, and guaranteed horizontal exit before any `+Z` retract).
+- **Dovetail Milling (`OperationKind::Dovetail`):** Supports straight & contoured dovetail slots and external dovetail rails with throat-clearance validation, progressive lateral stepovers from throat to final angled wall + spring pass, and safe throat-centered retracts.
+- **Lollipop 3D Undercut Finishing (`OperationKind::Undercut3D`):** Horizontal Z-level contour finishing across overhanging downward-facing 3D B-Rep/mesh surfaces (`n_z < 0`) using exact upper-hemisphere contact with automatic relieved-neck ceiling-clearance clipping, plus strict two-column Inspector cards and safety banners in `chip-gui`.
+
+### Milestone 67 — Built-In Undercut & 3D Deburr Sample, E2E Regression Suite, Visual Verification, & Spec Sync (`plans/67-milestone-67-plan.md`)
+- **Programmatic STEP Fixture & Built-In Sample (`chip-cad`, `chip-project`, `chip-gui`, `chip-cli`):** Add `sample_undercut_deburr_block_step_bytes()` (`--undercut-block`) and built-in sample **`undercut-deburr`** combining pre-slot clearing, T-Slot, `60°` Dovetail, Lollipop 3D Undercut, and 3D Edge Deburr in a single crash-free Setup.
+- **E2E Regression, CPU/GPU Parity, Visual Verification, & Spec Sync:** Add `crates/chip-project/tests/expanded_machining_e2e.rs` (including fault-injection tests for overhang neck crashes & vertical undercut retracts, Tri-Dexel accuracy gates, and GRBL/LinuxCNC post parity), verify headless Vulkan Tri-Dexel screenshots, and synchronize `specs/04`, `05`, `06`, `08`, and `10`.
+
+---
+
 ## Future Phases
 
 ChipCutter's long-term roadmap focuses on bringing pro-grade CAM capabilities to hobby and benchtop machinists—making everyday job setup faster, safer, and easier to use without commercial CAM complexity or licensing cost.
@@ -443,9 +467,7 @@ ChipCutter's long-term roadmap focuses on bringing pro-grade CAM capabilities to
    - **Reusable Operation Templates & Recipes:** Save proven multi-op patterns (e.g., *"6061-T6 Pocket + Finish + Chamfer"* or *"M6 Counterbored Hole = Spot + Drill + Helical Bore"*) and apply them in one click to new parts.
 3. **In-Machine Probing Operations (`G38.2`):**
    - **Probing Operations (`G38.2`):** First-class WCS corner, bore/boss center, Z-surface, and 2-point rotation/skew probing cycles integrated directly into Setups for grblHAL/Carvera and LinuxCNC controllers.
-4. **Expanded Machining Capabilities:**
-   - **3D Edge Deburring & Non-Planar Chamfering:** Follow 3D B-Rep edges with a chamfer or lollipop cutter so curved and stepped parts come off the machine already deburred.
-   - **Undercuts, Keyways, T-Slots, & Dovetails:** Lollipop, slot-mill, T-slot, and dovetail cutter geometries + strategies backed by Tri-Dexel undercut simulation.
+4. **2D Sheet Nesting, Multi-Part Arrays, & PCB Isolation Milling:**
    - **2D Sheet Nesting & Multi-Part Arrays:** Pack multiple parts onto plate, plywood, or composite sheets with tool-diameter spacing, grain-direction rules, and automatic tabs.
    - **PCB Isolation Milling & Drilling (Gerber / Excellon):** Isolation routing, copper rub-out, Excellon drill import, and height-probe leveling hooks.
 5. **Frictionless CAD Prep, Verification, & Ecosystem:**
