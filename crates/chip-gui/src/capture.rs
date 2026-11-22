@@ -167,6 +167,8 @@ pub enum CaptureModal {
     SampleGallery,
     ToolLibrary,
     Machines,
+    FlipJigWizard,
+    SoftJawWizard,
     ShortcutCheatsheet,
     About,
 }
@@ -178,10 +180,12 @@ impl CaptureModal {
             "samples" | "sample-gallery" | "gallery" => Ok(Self::SampleGallery),
             "tools" | "tool-library" => Ok(Self::ToolLibrary),
             "machines" | "machine" | "machine-manager" => Ok(Self::Machines),
+            "flip-jig" | "flip-jig-wizard" | "flip_jig" => Ok(Self::FlipJigWizard),
+            "soft-jaws" | "soft-jaw" | "soft-jaw-wizard" | "soft_jaws" => Ok(Self::SoftJawWizard),
             "shortcuts" | "cheatsheet" => Ok(Self::ShortcutCheatsheet),
             "about" => Ok(Self::About),
             other => Err(format!(
-                "invalid --capture-modal '{other}'; expected one of: welcome, samples, tools, machines, shortcuts, about"
+                "invalid --capture-modal '{other}'; expected one of: welcome, samples, tools, machines, flip-jig, soft-jaws, shortcuts, about"
             )),
         }
     }
@@ -400,6 +404,14 @@ mod tests {
         assert_eq!(
             CaptureModal::parse("machine-manager"),
             Ok(CaptureModal::Machines)
+        );
+        assert_eq!(
+            CaptureModal::parse("flip-jig"),
+            Ok(CaptureModal::FlipJigWizard)
+        );
+        assert_eq!(
+            CaptureModal::parse("soft-jaws"),
+            Ok(CaptureModal::SoftJawWizard)
         );
         assert_eq!(
             CaptureModal::parse("shortcuts"),

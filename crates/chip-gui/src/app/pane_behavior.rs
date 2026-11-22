@@ -1279,6 +1279,20 @@ impl ChipCutterApp {
             } else {
                 self.modals.machine_manager.open = false;
             }
+            if modal == CaptureModal::FlipJigWizard {
+                self.modals
+                    .flip_jig_wizard
+                    .open_for_setup(self.active_setup_idx);
+            } else {
+                self.modals.flip_jig_wizard.open = false;
+            }
+            if modal == CaptureModal::SoftJawWizard {
+                self.modals
+                    .soft_jaw_wizard
+                    .open_for_setup(self.active_setup_idx);
+            } else {
+                self.modals.soft_jaw_wizard.open = false;
+            }
             self.modals.shortcut_cheatsheet.open = modal == CaptureModal::ShortcutCheatsheet;
             self.modals.about.open = modal == CaptureModal::About;
         }

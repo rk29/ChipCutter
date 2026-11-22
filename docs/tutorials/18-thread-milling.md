@@ -171,5 +171,6 @@ chipcutter build /tmp/18-thread-milling.chip.toml \
 ## Navigation
 
 - **Previous:** [Tutorial 17 — Tri-Dexel Volumetric Simulation & Quantitative Error-Volume Analysis](17-tridexel-simulation-error-metrics.md)
+- **Next:** [Tutorial 19 — Two-Sided Flip Workholding, 3D Fixtures, & Auto Soft Jaws](19-workholding-flip-jigs-soft-jaws.md)
 - **Sample Showcase:** [Threaded Manifold Block (Helical Thread Milling)](../samples/thread-mill.md)
-- **Index:** [All Tutorials (`00`–`18`)](README.md)
+- **Index:** [All Tutorials (`00`–`19`)](README.md)

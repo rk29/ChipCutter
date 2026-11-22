@@ -2,7 +2,7 @@
 # Repeatable headless tutorial screenshot capture pipeline for ChipCutter Phases 4 & 6.
 #
 # Usage:
-#   ./scripts/capture_tutorial_screenshots.sh [--milestone 13|14|15|22|23|24|47|all] [--tutorial <slug>] [--theme dark|light] [--debug]
+#   ./scripts/capture_tutorial_screenshots.sh [--milestone 13|14|15|22|23|24|47|63|all] [--tutorial <slug>] [--theme dark|light] [--debug]
 #
 # Renders offscreen inside Xvfb using Vulkan Lavapipe (never opens windows on a host Wayland session).
 
@@ -1009,6 +1009,80 @@ capture_18_thread_milling() {
     --capture-sim-progress 1.0
 }
 
+capture_19_workholding_flip_jigs_soft_jaws() {
+  local dir="docs/images/tutorials/19-workholding-flip-jigs-soft-jaws"
+  local plate_step="$REPO_ROOT/docs/tutorials/assets/02-contour-plate.step"
+  local proj_plate="$TMP_PROJ_DIR/19-contour-plate.chip.toml"
+  local proj_flip="$TMP_PROJ_DIR/19-contour-plate-flip.chip.toml"
+
+  "$CLI_BIN" generate-sample-step "$plate_step" --tutorial 02-contour --project-out "$proj_plate"
+  "$CLI_BIN" workholding flip-jig "$proj_plate" -o "$proj_flip" \
+    --axis x --pin-dia 6.0 --count 2 --poka-yoke 4.0 --edge-margin 6.0
+
+  # 1. Setup 1 (G54) Fixtures tab with Machinist Vise + Parallels + End Toe Clamps & Auto-Avoid Rapids
+  capture_shot "$dir/01-setup1-fixtures-vise-clamps.png" \
+    --sample two-sided-vise \
+    --capture-generate \
+    --capture-view iso \
+    --capture-focus setup:0:fixtures \
+    --capture-fixtures true \
+    --capture-sim-stock false \
+    --capture-sim-cutter false
+
+  # 2. Setup 2 (G55) 180-deg flip Stock Carryover & Contoured Soft Jaws
+  capture_shot "$dir/02-setup2-carryover-soft-jaws.png" \
+    --sample two-sided-vise \
+    --capture-generate \
+    --capture-view iso \
+    --capture-setup 1 \
+    --capture-focus setup:1:stock \
+    --capture-fixtures true \
+    --capture-sim-stock false \
+    --capture-sim-cutter false
+
+  # 3. Two-Sided Flip-Jig Dowel-Pin Wizard modal with live symmetry check
+  capture_shot "$dir/03-flip-jig-wizard.png" \
+    "$proj_plate" \
+    --capture-view iso \
+    --capture-focus setup:0:fixtures \
+    --capture-modal flip-jig \
+    --capture-sim-stock false \
+    --capture-sim-cutter false
+
+  # 4. Paired 180-deg Setup 2 (G55) created by Flip-Jig Wizard showing CylinderKeepOut registration pins
+  capture_shot "$dir/04-flip-jig-op2-pins.png" \
+    "$proj_flip" \
+    --capture-view iso \
+    --capture-setup 1 \
+    --capture-focus setup:1:fixtures \
+    --capture-fixtures true \
+    --capture-sim-stock false \
+    --capture-sim-cutter false
+
+  # 5. Auto Soft-Jaw Generator Wizard modal on the two-sided bracket showing pocket area & STL preview
+  capture_shot "$dir/05-soft-jaw-wizard.png" \
+    --sample two-sided-vise \
+    --capture-view iso \
+    --capture-focus setup:0:fixtures \
+    --capture-modal soft-jaws \
+    --capture-sim-stock false \
+    --capture-sim-cutter false
+
+  # 6. Tri-Dexel 3D multi-setup volumetric simulation (Setup 2 G55) with stock carryover & Verified Crash-Free
+  capture_shot "$dir/06-tridexel-carryover-sim.png" \
+    --sample two-sided-vise \
+    --capture-generate \
+    --capture-view iso \
+    --capture-setup 1 \
+    --capture-focus setup:1:fixtures \
+    --capture-fixtures true \
+    --capture-pane sim \
+    --capture-sim-engine tri-dexel \
+    --capture-sim-stock true \
+    --capture-sim-cutter true \
+    --capture-sim-progress 1.0
+}
+
 if [[ -n "$TUTORIAL" ]]; then
   case "$TUTORIAL" in
     00-getting-started)
@@ -1059,6 +1133,9 @@ if [[ -n "$TUTORIAL" ]]; then
     18-thread-milling)
       capture_18_thread_milling
       ;;
+    19-workholding-flip-jigs-soft-jaws)
+      capture_19_workholding_flip_jigs_soft_jaws
+      ;;
     *)
       echo "Unknown tutorial slug: $TUTORIAL" >&2
       exit 2
@@ -1096,6 +1173,9 @@ else
     47)
       capture_18_thread_milling
       ;;
+    63)
+      capture_19_workholding_flip_jigs_soft_jaws
+      ;;
     all)
       capture_00_getting_started
       capture_01_facing
@@ -1113,9 +1193,10 @@ else
       capture_13_pure2d_dxf_svg_workflow
       capture_14_associative_step_reload
       capture_18_thread_milling
+      capture_19_workholding_flip_jigs_soft_jaws
       ;;
     *)
-      echo "Unsupported milestone: $MILESTONE (available: 13, 14, 15, 22, 23, 24, 47, all)" >&2
+      echo "Unsupported milestone: $MILESTONE (available: 13, 14, 15, 22, 23, 24, 47, 63, all)" >&2
       exit 2
       ;;
   esac
