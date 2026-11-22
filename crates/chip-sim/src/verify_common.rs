@@ -332,6 +332,15 @@ impl ViolationBatchCoalescer {
             });
         }
         if let Some((depth, loc)) = violations.neck {
+            let detail = if prof.is_thread_mill {
+                format!(
+                    "Thread mill T{tool_number} relieved neck collided {depth:.2} mm with uncut stock (missing/undersized pilot hole or insufficient neck clearance)."
+                )
+            } else {
+                format!(
+                    "Relieved-neck cutter T{tool_number} neck collided {depth:.2} mm with uncut stock (insufficient pre-slot/overhang clearance or plunge into solid roof)."
+                )
+            };
             self.push(RuleViolationHit {
                 severity: SimSeverity::CriticalError,
                 kind: SimIssueKind::FluteLengthExceeded,
@@ -343,15 +352,13 @@ impl ViolationBatchCoalescer {
                 time_sec,
                 location_wcs: loc,
                 excess_mm: depth,
-                detail: format!(
-                    "Thread mill T{tool_number} relieved neck collided {depth:.2} mm with uncut stock (missing/undersized pilot hole or insufficient neck clearance)."
-                ),
+                detail,
                 fixture_id: None,
                 fixture_name: None,
             });
         }
         if let Some((depth, loc)) = violations.flute {
-            let reach_label = if prof.is_thread_mill {
+            let reach_label = if prof.has_relieved_neck {
                 "usable neck length"
             } else {
                 "flute length"
@@ -422,15 +429,14 @@ pub(crate) fn evaluate_vertical_plunge_violation(
         return None;
     }
 
-    let thread_check_r = prof
-        .is_thread_mill
+    let relieved_check_r = (prof.has_relieved_neck && !prof.is_center_cutting)
         .then(|| (prof.cutting_radius_mm - cfg.radial_wall_skin_mm).max(0.0));
     let plunge_in_mat = sample_plunge_depth_mm(
         seg.start_wcs.x,
         seg.start_wcs.y,
         seg.start_wcs.z,
         seg.end_wcs.z,
-        thread_check_r,
+        relieved_check_r,
     );
     if !plunge_in_mat.is_finite() || plunge_in_mat <= 0.05 {
         return None;
@@ -442,6 +448,14 @@ pub(crate) fn evaluate_vertical_plunge_violation(
             plunge_in_mat,
             format!(
                 "Thread mill T{tool_number} plunged vertically {plunge_in_mat:.2} mm into solid un-drilled stock (missing or undersized pilot hole)."
+            ),
+        )
+    } else if prof.has_relieved_neck && !prof.is_center_cutting {
+        (
+            SimSeverity::CriticalError,
+            plunge_in_mat,
+            format!(
+                "Undercut cutter T{tool_number} plunged vertically {plunge_in_mat:.2} mm into solid uncut stock (enter laterally from a pre-cut slot or outside stock)."
             ),
         )
     } else if !prof.is_center_cutting {

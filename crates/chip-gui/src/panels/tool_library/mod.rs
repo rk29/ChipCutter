@@ -6,7 +6,8 @@ use chip_project::{ProjectDocument, UndoHistory};
 use chip_tools::{
     CoolantMode, CutterGeometry, CuttingPreset, MachineDefinition, SpindleDirection,
     SurfaceSpeedPresetSpec, Tool, ToolId, ToolLibrary, default_global_tool_library_path,
-    import_fusion_library_path,
+    import_fusion_library_path, starter_dovetail_60deg_12mm, starter_lollipop_6mm,
+    starter_tslot_12mm,
 };
 
 use self::{
@@ -217,6 +218,64 @@ impl ToolLibraryModalState {
                         self.selected_preset_idx = 0;
                         actions.save_active_machine_tools = true;
                     }
+
+                    ui.add_enabled_ui(!is_readonly_builtin, |ui| {
+                        ui.menu_button("+ New Undercut...", |ui| {
+                            let mut picked: Option<(Tool, &'static str)> = None;
+                            if ui
+                                .button("Lollipop Endmill (Ø6 mm)")
+                                .on_hover_text(
+                                    "Create a relieved-neck spherical lollipop cutter for 3D underside deburring and concave undercuts",
+                                )
+                                .clicked()
+                            {
+                                picked = Some((starter_lollipop_6mm(), "lollipop"));
+                            }
+                            if ui
+                                .button("Slot / T-Slot Mill (Ø12 × 4 mm)")
+                                .on_hover_text(
+                                    "Create a relieved-neck horizontal T-slot / keyway disc cutter",
+                                )
+                                .clicked()
+                            {
+                                picked = Some((starter_tslot_12mm(), "slot"));
+                            }
+                            if ui
+                                .button("Dovetail Cutter (Ø12 mm 60°)")
+                                .on_hover_text(
+                                    "Create a relieved-neck 60° inverted-cone dovetail cutter",
+                                )
+                                .clicked()
+                            {
+                                picked = Some((starter_dovetail_60deg_12mm(), "dovetail"));
+                            }
+                            if let Some((mut tool, slug)) = picked {
+                                let next_n = global_lib
+                                    .tools
+                                    .iter()
+                                    .map(|t| t.tool_number)
+                                    .max()
+                                    .unwrap_or(0)
+                                    + 1;
+                                tool.id = ToolId(format!("user_{slug}_t{next_n}"));
+                                tool.tool_number = next_n;
+                                tool.length_offset_number = next_n;
+                                tool.diameter_offset_number = next_n;
+                                global_lib.tools.push(tool);
+                                self.selected_tool_idx = global_lib.tools.len() - 1;
+                                self.selected_preset_idx = 0;
+                                actions.save_active_machine_tools = true;
+                                ui.close();
+                            }
+                        })
+                        .response
+                        .on_hover_text(
+                            "Create a starter Lollipop, Slot/T-Slot, or Dovetail undercut cutter",
+                        )
+                        .on_disabled_hover_text(
+                            "Clone the built-in machine first to add custom cutters",
+                        );
+                    });
 
                     if ui
                         .add_enabled(
@@ -784,6 +843,70 @@ mod tests {
             assert!(
                 texts.iter().any(|(t, _)| t == "Geometry Valid"),
                 "expected Thread Mill tool to validate cleanly"
+            );
+        }
+    }
+
+    #[test]
+    fn undercut_cutters_render_editor_fields_derived_top_dia_and_schematics() {
+        let ctx = egui::Context::default();
+        let mut global_lib = default_starter_tool_library();
+        let lolli_idx = global_lib.tools.len();
+        global_lib.tools.push(starter_lollipop_6mm());
+        let slot_idx = global_lib.tools.len();
+        global_lib.tools.push(starter_tslot_12mm());
+        let dove_idx = global_lib.tools.len();
+        global_lib.tools.push(starter_dovetail_60deg_12mm());
+
+        let mut modal = ToolLibraryModalState::new();
+        modal.open = true;
+        let mut project = ProjectDocument::new("test_undercuts");
+        let mut history = UndoHistory::new(8);
+        let mut logs = Vec::new();
+        let base_input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 900.0),
+            )),
+            ..Default::default()
+        };
+
+        for (idx, expected_kind, expected_field) in [
+            (lolli_idx, "Lollipop Endmill", "Sphere Join Height:"),
+            (slot_idx, "Slot / T-Slot Mill", "Cutting Thickness:"),
+            (dove_idx, "Dovetail Cutter", "Top Ø (Derived):"),
+        ] {
+            modal.selected_tool_idx = idx;
+            let _ = run_modal_frame(
+                &ctx,
+                base_input.clone(),
+                &mut modal,
+                &mut global_lib,
+                &mut project,
+                &mut history,
+                &mut logs,
+            );
+            let out = run_modal_frame(
+                &ctx,
+                base_input.clone(),
+                &mut modal,
+                &mut global_lib,
+                &mut project,
+                &mut history,
+                &mut logs,
+            );
+            let texts = collect_text_shapes(&out.shapes);
+            assert!(
+                texts.iter().any(|(t, _)| t == expected_kind),
+                "expected cutter selector to show '{expected_kind}'"
+            );
+            assert!(
+                texts.iter().any(|(t, _)| t == expected_field),
+                "expected parameter row '{expected_field}' for '{expected_kind}'"
+            );
+            assert!(
+                texts.iter().any(|(t, _)| t == "Geometry Valid"),
+                "expected '{expected_kind}' starter tool to validate cleanly"
             );
         }
     }

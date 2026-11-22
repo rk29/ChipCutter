@@ -14,9 +14,13 @@ const SHAPE_BALL: u32 = 2u;
 const SHAPE_CONICAL: u32 = 3u;
 const SHAPE_FACE: u32 = 4u;
 const SHAPE_THREADMILL: u32 = 5u;
+const SHAPE_LOLLIPOP: u32 = 6u;
+const SHAPE_SLOTMILL: u32 = 7u;
+const SHAPE_DOVETAIL: u32 = 8u;
 
 const PROF_FLAG_FLAT_ENDMILL: u32 = 1u;
 const PROF_FLAG_THREAD_MILL: u32 = 2u;
+const PROF_FLAG_RELIEVED_NECK: u32 = 8u;
 
 const CHORD_FLAG_RAPID: u32 = 1u;
 const CHORD_FLAG_VERIFY: u32 = 2u;
@@ -349,10 +353,120 @@ fn eval_profile_dz(prof: GpuToolProfile, r_mm: f32) -> f32 {
             let z_first_crest = z_start + 0.5 * tooth_step;
             return max(z_first_crest - max(prof.cutting_radius_mm - r, 0.0) * tan_half, 0.0);
         }
+        case SHAPE_LOLLIPOP: {
+            let flat_r = prof.param1;
+            let sphere_r = select(prof.cutting_radius_mm, prof.param2, prof.param2 > 1e-6);
+            if (r <= flat_r) {
+                return 0.0;
+            }
+            let dr = min(r - flat_r, sphere_r);
+            return sphere_r - sqrt(max((sphere_r - dr) * (sphere_r + dr), 0.0));
+        }
+        case SHAPE_SLOTMILL: {
+            let corner_r = prof.param1;
+            let flat_r = prof.param2;
+            if (r <= flat_r || corner_r <= 1e-6) {
+                return 0.0;
+            }
+            let dr = min(r - flat_r, corner_r);
+            return corner_r - sqrt(max((corner_r - dr) * (corner_r + dr), 0.0));
+        }
+        case SHAPE_DOVETAIL: {
+            let corner_r = prof.param2;
+            let r_c = max(prof.cutting_radius_mm - corner_r, 0.0);
+            if (r <= r_c || corner_r <= 1e-6) {
+                return 0.0;
+            }
+            let dr = min(r - r_c, corner_r);
+            return corner_r - sqrt(max((corner_r - dr) * (corner_r + dr), 0.0));
+        }
         default: {
             return 0.0;
         }
     }
+}
+
+// Evaluates exact bounded axial cutting interval `[dz_lo, dz_hi]` at radius `r_mm`.
+fn eval_profile_z_interval(prof: GpuToolProfile, r_mm: f32) -> Interval1D {
+    let miss = Interval1D(false, 0.0, 0.0);
+    if (r_mm < 0.0 || r_mm > prof.cutting_radius_mm + 1e-6) {
+        return miss;
+    }
+    let r = min(r_mm, prof.cutting_radius_mm);
+    switch (prof.shape_kind) {
+        case SHAPE_LOLLIPOP: {
+            let z_join = prof.param0;
+            let flat_r = prof.param1;
+            let sphere_r = select(prof.cutting_radius_mm, prof.param2, prof.param2 > 1e-6);
+            if (r <= flat_r) {
+                return Interval1D(true, 0.0, z_join);
+            }
+            let dr = min(r - flat_r, sphere_r);
+            let half_h = sqrt(max((sphere_r - dr) * (sphere_r + dr), 0.0));
+            let dz_lo = max(sphere_r - half_h, 0.0);
+            let dz_hi = min(sphere_r + half_h, z_join);
+            return Interval1D(true, dz_lo, max(dz_hi, dz_lo));
+        }
+        case SHAPE_SLOTMILL: {
+            let h_cut = prof.param0;
+            let corner_r = prof.param1;
+            let flat_r = prof.param2;
+            var dz_lo: f32 = 0.0;
+            if (r > flat_r && corner_r > 1e-6) {
+                let dr = min(r - flat_r, corner_r);
+                dz_lo = corner_r - sqrt(max((corner_r - dr) * (corner_r + dr), 0.0));
+            }
+            let dz_hi = max(h_cut - dz_lo, dz_lo);
+            return Interval1D(true, dz_lo, dz_hi);
+        }
+        case SHAPE_DOVETAIL: {
+            let h_cut = prof.param0;
+            let tan_a = max(prof.param1, 1e-5);
+            let corner_r = prof.param2;
+            if (corner_r <= 1e-6) {
+                let dz_hi = clamp((prof.cutting_radius_mm - r) * tan_a, 0.0, h_cut);
+                return Interval1D(true, 0.0, dz_hi);
+            }
+            let r_c = max(prof.cutting_radius_mm - corner_r, 0.0);
+            var dz_lo: f32 = 0.0;
+            if (r > r_c) {
+                let dr = min(r - r_c, corner_r);
+                dz_lo = corner_r - sqrt(max((corner_r - dr) * (corner_r + dr), 0.0));
+            }
+            let cos_a = 1.0 / sqrt(1.0 + tan_a * tan_a);
+            let sin_a = tan_a * cos_a;
+            let r_tan = r_c + corner_r * sin_a;
+            var dz_hi: f32;
+            if (r >= r_tan) {
+                let dr = min(r - r_c, corner_r);
+                dz_hi = min(corner_r + sqrt(max((corner_r - dr) * (corner_r + dr), 0.0)), h_cut);
+            } else {
+                dz_hi = clamp(
+                    corner_r + (corner_r - (r - r_c) * sin_a) / max(cos_a, 1e-5),
+                    dz_lo,
+                    h_cut,
+                );
+            }
+            return Interval1D(true, dz_lo, max(dz_hi, dz_lo));
+        }
+        default: {
+            let dz_lo = eval_profile_dz(prof, r);
+            if (dz_lo < 0.0) {
+                return miss;
+            }
+            return Interval1D(true, dz_lo, max(prof.flute_length_mm, dz_lo));
+        }
+    }
+}
+
+fn is_bounded_undercut_shape(shape_kind: u32) -> bool {
+    return shape_kind == SHAPE_LOLLIPOP
+        || shape_kind == SHAPE_SLOTMILL
+        || shape_kind == SHAPE_DOVETAIL;
+}
+
+fn horizontal_cut_max_height(prof: GpuToolProfile) -> f32 {
+    return select(prof.flute_length_mm, prof.effective_reach_mm, (prof.flags & PROF_FLAG_THREAD_MILL) != 0u);
 }
 
 fn thread_mill_tooth_radius_at_z(prof: GpuToolProfile, z_local: f32) -> f32 {
@@ -421,6 +535,53 @@ fn eval_radius_at_dz(prof: GpuToolProfile, dz_mm: f32) -> f32 {
             } else {
                 return prof.shank_radius_mm;
             }
+        }
+        case SHAPE_LOLLIPOP: {
+            let z_join = prof.param0;
+            if (dz > z_join + 1e-5) {
+                return -1.0;
+            }
+            let flat_r = prof.param1;
+            let sphere_r = select(prof.cutting_radius_mm, prof.param2, prof.param2 > 1e-6);
+            return min(flat_r + sqrt(max(2.0 * sphere_r * dz - dz * dz, 0.0)), prof.cutting_radius_mm);
+        }
+        case SHAPE_SLOTMILL: {
+            let h_cut = prof.param0;
+            if (dz > h_cut + 1e-5) {
+                return -1.0;
+            }
+            let corner_r = prof.param1;
+            let flat_r = prof.param2;
+            if (corner_r > 1e-6 && dz < corner_r) {
+                return min(flat_r + sqrt(max(2.0 * corner_r * dz - dz * dz, 0.0)), prof.cutting_radius_mm);
+            }
+            if (corner_r > 1e-6 && dz > h_cut - corner_r) {
+                let dtop = max(h_cut - dz, 0.0);
+                return min(flat_r + sqrt(max(2.0 * corner_r * dtop - dtop * dtop, 0.0)), prof.cutting_radius_mm);
+            }
+            return prof.cutting_radius_mm;
+        }
+        case SHAPE_DOVETAIL: {
+            let h_cut = prof.param0;
+            if (dz > h_cut + 1e-5) {
+                return -1.0;
+            }
+            let tan_a = max(prof.param1, 1e-5);
+            let corner_r = prof.param2;
+            let top_r = prof.param3;
+            if (corner_r <= 1e-6) {
+                return clamp(prof.cutting_radius_mm - dz / tan_a, top_r, prof.cutting_radius_mm);
+            }
+            let cos_a = 1.0 / sqrt(1.0 + tan_a * tan_a);
+            let sin_a = tan_a * cos_a;
+            let r_c = max(prof.cutting_radius_mm - corner_r, 0.0);
+            let z_tan = corner_r * (1.0 + cos_a);
+            if (dz <= z_tan) {
+                let d = dz - corner_r;
+                return min(r_c + sqrt(max(corner_r * corner_r - d * d, 0.0)), prof.cutting_radius_mm);
+            }
+            let r_tan = r_c + corner_r * sin_a;
+            return clamp(r_tan - (dz - z_tan) / tan_a, top_r, prof.cutting_radius_mm);
         }
         default: {
             return prof.cutting_radius_mm;
@@ -561,7 +722,7 @@ fn eval_horizontal_ray_cut_interval(
     swap_xy: bool,
 ) -> Interval1D {
     let miss = Interval1D(false, 0.0, 0.0);
-    let max_h = prof.effective_reach_mm;
+    let max_h = horizontal_cut_max_height(prof);
     let min_z = min(p0.z, p1.z);
     let max_z = max(p0.z, p1.z);
     if (pz < min_z - 1e-6 || pz > max_z + max_h + 1e-6) {
@@ -702,9 +863,10 @@ fn eval_horizontal_ray_cut_interval(
 
     let q0 = mix(p0, p1, iv.lo);
     let q1 = mix(p0, p1, iv.hi);
+    let has_relieved_neck = (prof.flags & PROF_FLAG_RELIEVED_NECK) != 0u;
     let r0 = max(max(eval_radius_at_dz(prof, pz - q0.z), 0.0) - radial_shrink, 0.0);
     let r1 = max(max(eval_radius_at_dz(prof, pz - q1.z), 0.0) - radial_shrink, 0.0);
-    if (abs(r0 - r1) <= 1e-6 && r0 > 1e-6) {
+    if (!has_relieved_neck && abs(r0 - r1) <= 1e-6 && r0 > 1e-6) {
         return intersect_horizontal_line_with_capsule_2d(
             proj_horiz(q0, swap_xy),
             proj_horiz(q1, swap_xy),
@@ -735,6 +897,22 @@ fn eval_horizontal_ray_cut_interval(
                 lo = min(lo, cand.lo);
                 hi = max(hi, cand.hi);
                 has_hit = true;
+            }
+        }
+    }
+    if (prof.shape_kind == SHAPE_LOLLIPOP) {
+        let sphere_r = select(prof.cutting_radius_mm, prof.param2, prof.param2 > 1e-6);
+        let tc = (pz - sphere_r - p0.z) / dz_span;
+        if (tc >= iv.lo - 1e-6 && tc <= iv.hi + 1e-6) {
+            let pt = proj_horiz(mix(p0, p1, clamp(tc, iv.lo, iv.hi)), swap_xy);
+            let r_eq = max(prof.cutting_radius_mm - radial_shrink, 0.0);
+            if (r_eq > 1e-6) {
+                let cand = intersect_horizontal_line_with_capsule_2d(pt, pt, r_eq, fixed_u);
+                if (cand.valid) {
+                    lo = min(lo, cand.lo);
+                    hi = max(hi, cand.hi);
+                    has_hit = true;
+                }
             }
         }
     }
@@ -839,12 +1017,12 @@ fn eval_z_ray_cut_interval(
     if (abs(dz_span) <= 1e-6) {
         let pt = mix(p0_xy, p1_xy, t_closest);
         let r = min(length(q_xy - pt), prof.cutting_radius_mm);
-        let dz = eval_profile_dz(prof, r);
-        if (dz < 0.0) {
+        let dz_iv = eval_profile_z_interval(prof, r);
+        if (!dz_iv.valid) {
             return miss;
         }
         let z_tip = p0.z;
-        return Interval1D(true, z_tip + dz, z_tip + prof.flute_length_mm);
+        return Interval1D(true, z_tip + dz_iv.lo, z_tip + dz_iv.hi);
     }
 
     if ((prof.flags & PROF_FLAG_FLAT_ENDMILL) != 0u) {
@@ -856,28 +1034,33 @@ fn eval_z_ray_cut_interval(
     }
 
     var best_z_cut: f32 = 1e30;
-    var max_z_tip: f32 = -1e30;
+    var max_z_hi: f32 = -1e30;
     var found = false;
-    for (var s: u32 = 0u; s <= 8u; s = s + 1u) {
-        let u_frac = f32(s) / 8.0;
-        let t = t_enter + u_frac * (t_exit - t_enter);
+    for (var s: u32 = 0u; s <= 9u; s = s + 1u) {
+        var t: f32;
+        if (s <= 8u) {
+            t = t_enter + (f32(s) / 8.0) * (t_exit - t_enter);
+        } else {
+            t = t_closest;
+        }
         let pt = mix(p0_xy, p1_xy, t);
         let r = min(length(q_xy - pt), prof.cutting_radius_mm);
-        let dz = eval_profile_dz(prof, r);
-        if (dz >= 0.0) {
+        let dz_iv = eval_profile_z_interval(prof, r);
+        if (dz_iv.valid) {
             let z_tip = p0.z + t * dz_span;
-            let z_cut = z_tip + dz;
+            let z_cut = z_tip + dz_iv.lo;
+            let z_hi = z_tip + dz_iv.hi;
             if (!found || z_cut < best_z_cut) {
                 best_z_cut = z_cut;
             }
-            if (!found || z_tip > max_z_tip) {
-                max_z_tip = z_tip;
+            if (!found || z_hi > max_z_hi) {
+                max_z_hi = z_hi;
             }
             found = true;
         }
     }
     if (found) {
-        return Interval1D(true, best_z_cut, max_z_tip + prof.flute_length_mm);
+        return Interval1D(true, best_z_cut, max(max_z_hi, best_z_cut));
     }
     return miss;
 }
@@ -888,6 +1071,7 @@ fn chord_bbox_hits_ray(ch: GpuSweepChord, prof: GpuToolProfile, verify: bool, pu
     let p0 = ch.p0_rot.xyz;
     let p1 = ch.p1_rot.xyz;
     let r_cut = prof.cutting_radius_mm;
+    let max_h = horizontal_cut_max_height(prof);
     if (u.axis_id == 2u) {
         let r_chk = select(r_cut, max(r_cut, prof.holder_radius_mm), verify) + 1e-3;
         return pu >= min(p0.x, p1.x) - r_chk && pu <= max(p0.x, p1.x) + r_chk
@@ -895,11 +1079,11 @@ fn chord_bbox_hits_ray(ch: GpuSweepChord, prof: GpuToolProfile, verify: bool, pu
     } else if (u.axis_id == 0u) {
         let r_chk = r_cut + 1e-3;
         return pu >= min(p0.y, p1.y) - r_chk && pu <= max(p0.y, p1.y) + r_chk
-            && pv >= min(p0.z, p1.z) - 1e-3 && pv <= max(p0.z, p1.z) + prof.effective_reach_mm + 1e-3;
+            && pv >= min(p0.z, p1.z) - 1e-3 && pv <= max(p0.z, p1.z) + max_h + 1e-3;
     } else {
         let r_chk = r_cut + 1e-3;
         return pu >= min(p0.x, p1.x) - r_chk && pu <= max(p0.x, p1.x) + r_chk
-            && pv >= min(p0.z, p1.z) - 1e-3 && pv <= max(p0.z, p1.z) + prof.effective_reach_mm + 1e-3;
+            && pv >= min(p0.z, p1.z) - 1e-3 && pv <= max(p0.z, p1.z) + max_h + 1e-3;
     }
 }
 
@@ -972,6 +1156,7 @@ fn main(
         let verify = (flags & CHORD_FLAG_VERIFY) != 0u;
         let is_rapid = (flags & CHORD_FLAG_RAPID) != 0u;
         let is_thread_mill = (prof.flags & PROF_FLAG_THREAD_MILL) != 0u;
+        let has_relieved_neck = (prof.flags & PROF_FLAG_RELIEVED_NECK) != 0u;
         let rapid_tol = ch.sweep_and_tols.y;
         let gouge_tol = ch.sweep_and_tols.z;
         let wall_skin_tol = ch.sweep_and_tols.w;
@@ -1005,7 +1190,7 @@ fn main(
                 }
                 let c_xy = mix(p0_xy, p1_xy, t_c);
                 let dist_xy = length(q_xy - c_xy);
-                let z_tip_here = p0.z + t_c * (p1.z - p0.z);
+                let z_tip_here = select(min(p0.z, p1.z), p0.z + t_c * (p1.z - p0.z), l2 > 1e-10);
                 let top_z = local_spans[cnt - 1u].max_local;
 
                 if (dist_xy <= prof.holder_radius_mm) {
@@ -1022,7 +1207,7 @@ fn main(
                         record_violation(SLOT_FLUTE, rub, chord_index, local_ray_idx, reach_top);
                     }
                 }
-                if (is_thread_mill && !is_rapid && dist_xy <= neck_skin) {
+                if (has_relieved_neck && !is_rapid && dist_xy <= neck_skin) {
                     let neck_lo = z_tip_here + prof.flute_length_mm + 0.05;
                     let neck_hi = z_tip_here + prof.neck_length_mm;
                     if (neck_hi > neck_lo) {
@@ -1247,8 +1432,9 @@ fn main(
             let pz = pv;
             let u0_c = select(p0.y, p0.x, swap_xy);
             let u1_c = select(p1.y, p1.x, swap_xy);
+            let max_h = horizontal_cut_max_height(prof);
             if (pu < min(u0_c, u1_c) - r_cut - 1e-3 || pu > max(u0_c, u1_c) + r_cut + 1e-3
-                || pz < min(p0.z, p1.z) - 1e-3 || pz > max(p0.z, p1.z) + prof.effective_reach_mm + 1e-3) {
+                || pz < min(p0.z, p1.z) - 1e-3 || pz > max(p0.z, p1.z) + max_h + 1e-3) {
                 continue;
             }
 

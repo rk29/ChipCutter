@@ -286,8 +286,8 @@ fn eval_row_cells(py: f64, row: RowCellsMut<'_>, env: &SweepEnv<'_>) -> (bool, S
                     out.record_rapid(cut_depth, DVec3::new(px, py, z_cut));
                 }
 
-                // Relieved-neck clearance check for ThreadMill (`r <= neck_skin` above cutting teeth)
-                if env.prof.is_thread_mill
+                // Relieved-neck clearance check (`ThreadMill`, `Lollipop`, `SlotMill`, `Dovetail`)
+                if env.prof.has_relieved_neck
                     && !env.is_rapid
                     && hit.r_mm <= neck_skin
                     && cut_depth > 0.02

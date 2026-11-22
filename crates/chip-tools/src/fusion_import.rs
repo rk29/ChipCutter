@@ -440,6 +440,145 @@ pub fn import_fusion_library_bytes(
                     flutes,
                 }
             }
+            "lollipop mill" => {
+                let neck_dia =
+                    g.nd.filter(|&v| v.is_finite() && v > 0.0)
+                        .map(|v| v * len_scale)
+                        .unwrap_or(0.55 * dc_mm)
+                        .clamp(0.1 * dc_mm, 0.92 * dc_mm);
+                let sphere_h = CutterGeometry::lollipop_sphere_height_mm(dc_mm, neck_dia);
+                let flute_len = g
+                    .lcf
+                    .filter(|&v| v.is_finite() && v > 0.0)
+                    .map(|v| (v * len_scale).clamp(0.5 * dc_mm, dc_mm))
+                    .unwrap_or(sphere_h);
+                let default_neck_len =
+                    g.lb.filter(|&v| v.is_finite() && v > 0.0)
+                        .map(|v| v * len_scale)
+                        .unwrap_or_else(|| (dc_mm * 3.0).max(flute_len + 4.0));
+                let neck_len =
+                    g.ln.filter(|&v| v.is_finite() && v > 0.0)
+                        .map(|v| v * len_scale)
+                        .unwrap_or(default_neck_len)
+                        .max(flute_len);
+                let adj_oal = oal_mm.max(neck_len + 5.0);
+                stickout_mm =
+                    g.lb.filter(|&v| v.is_finite() && v > 0.0)
+                        .map(|v| v * len_scale)
+                        .unwrap_or(neck_len * 1.25)
+                        .max(flute_len)
+                        .min(adj_oal);
+                CutterGeometry::LollipopEndmill {
+                    diameter_mm: dc_mm,
+                    neck_diameter_mm: neck_dia,
+                    neck_length_mm: neck_len,
+                    flute_length_mm: flute_len,
+                    overall_length_mm: adj_oal,
+                    shank_diameter_mm: sfdm_mm,
+                    flutes,
+                }
+            }
+            "slot mill" | "t-slot mill" => {
+                let cut_thick = g
+                    .lcf
+                    .filter(|&v| v.is_finite() && v > 0.0)
+                    .map(|v| v * len_scale)
+                    .unwrap_or_else(|| (0.25 * dc_mm).max(1.0));
+                let max_rc = (0.5 * cut_thick).min(0.49 * dc_mm).max(0.0);
+                let corner_r =
+                    g.re.filter(|&v| v.is_finite() && v >= 0.0)
+                        .map(|v| (v * len_scale).clamp(0.0, max_rc))
+                        .unwrap_or(0.0);
+                let neck_dia =
+                    g.nd.filter(|&v| v.is_finite() && v > 0.0)
+                        .map(|v| v * len_scale)
+                        .unwrap_or(0.45 * dc_mm)
+                        .clamp(0.1 * dc_mm, 0.92 * dc_mm);
+                let default_neck_len =
+                    g.lb.filter(|&v| v.is_finite() && v > 0.0)
+                        .map(|v| v * len_scale)
+                        .unwrap_or_else(|| (dc_mm * 1.5).max(cut_thick + 6.0));
+                let neck_len =
+                    g.ln.filter(|&v| v.is_finite() && v > 0.0)
+                        .map(|v| v * len_scale)
+                        .unwrap_or(default_neck_len)
+                        .max(cut_thick);
+                let adj_oal = oal_mm.max(neck_len + 5.0);
+                stickout_mm =
+                    g.lb.filter(|&v| v.is_finite() && v > 0.0)
+                        .map(|v| v * len_scale)
+                        .unwrap_or(neck_len * 1.25)
+                        .max(cut_thick)
+                        .min(adj_oal);
+                CutterGeometry::SlotMill {
+                    diameter_mm: dc_mm,
+                    cutting_thickness_mm: cut_thick,
+                    corner_radius_mm: corner_r,
+                    neck_diameter_mm: neck_dia,
+                    neck_length_mm: neck_len,
+                    overall_length_mm: adj_oal,
+                    shank_diameter_mm: sfdm_mm,
+                    flutes,
+                }
+            }
+            "dovetail mill" => {
+                let side_angle_deg =
+                    g.ta.or(g.sig)
+                        .filter(|&v| v.is_finite() && v > 0.0)
+                        .unwrap_or(60.0)
+                        .clamp(16.0, 84.0);
+                let tan_a = side_angle_deg.to_radians().tan();
+                let max_valid_h = (0.45 * dc_mm * tan_a).max(0.5);
+                let cut_h = g
+                    .lcf
+                    .filter(|&v| v.is_finite() && v > 0.0)
+                    .map(|v| (v * len_scale).clamp(0.2, max_valid_h))
+                    .unwrap_or_else(|| (0.35 * dc_mm).min(max_valid_h).max(0.5));
+                let max_rc = (0.5 * cut_h).min(0.49 * dc_mm).max(0.0);
+                let corner_r =
+                    g.re.filter(|&v| v.is_finite() && v >= 0.0)
+                        .map(|v| (v * len_scale).clamp(0.0, max_rc))
+                        .unwrap_or(0.0);
+                let top_d = CutterGeometry::dovetail_top_diameter_mm(
+                    dc_mm,
+                    side_angle_deg,
+                    cut_h,
+                    corner_r,
+                )
+                .max(0.2);
+                let neck_dia =
+                    g.nd.filter(|&v| v.is_finite() && v > 0.0)
+                        .map(|v| v * len_scale)
+                        .unwrap_or(0.85 * top_d)
+                        .clamp(0.1 * dc_mm.min(top_d), top_d.min(0.95 * dc_mm));
+                let default_neck_len =
+                    g.lb.filter(|&v| v.is_finite() && v > 0.0)
+                        .map(|v| v * len_scale)
+                        .unwrap_or_else(|| (dc_mm * 1.5).max(cut_h + 6.0));
+                let neck_len =
+                    g.ln.filter(|&v| v.is_finite() && v > 0.0)
+                        .map(|v| v * len_scale)
+                        .unwrap_or(default_neck_len)
+                        .max(cut_h);
+                let adj_oal = oal_mm.max(neck_len + 5.0);
+                stickout_mm =
+                    g.lb.filter(|&v| v.is_finite() && v > 0.0)
+                        .map(|v| v * len_scale)
+                        .unwrap_or(neck_len * 1.25)
+                        .max(cut_h)
+                        .min(adj_oal);
+                CutterGeometry::DovetailCutter {
+                    diameter_mm: dc_mm,
+                    side_angle_deg,
+                    cutting_height_mm: cut_h,
+                    corner_radius_mm: corner_r,
+                    neck_diameter_mm: neck_dia,
+                    neck_length_mm: neck_len,
+                    overall_length_mm: adj_oal,
+                    shank_diameter_mm: sfdm_mm,
+                    flutes,
+                }
+            }
             unsupported => {
                 warnings.push(format!(
                     "Skipped unsupported Fusion 360 tool type '{unsupported}' ('{}').",

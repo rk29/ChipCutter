@@ -315,6 +315,56 @@ impl SimulationPanelState {
                     });
             }
 
+            if self.engine == SimEngineKind::Heightmap
+                && project.setups.get(setup_idx).is_some_and(|setup| {
+                    setup.operations.iter().any(|op| {
+                        !op.suppressed
+                            && op.tool_id.as_ref().is_some_and(|tid| {
+                                project
+                                    .tools
+                                    .iter()
+                                    .find(|t| &t.id == tid)
+                                    .is_some_and(|t| {
+                                        matches!(
+                                            t.geometry,
+                                            chip_tools::CutterGeometry::LollipopEndmill { .. }
+                                                | chip_tools::CutterGeometry::SlotMill { .. }
+                                                | chip_tools::CutterGeometry::DovetailCutter { .. }
+                                                | chip_tools::CutterGeometry::ThreadMill { .. }
+                                        )
+                                    })
+                            })
+                    })
+                })
+            {
+                egui::Frame::NONE
+                    .fill(tok.warn_bg)
+                    .stroke(egui::Stroke::new(1.0, tok.warn_border))
+                    .corner_radius(egui::CornerRadius::same(4))
+                    .inner_margin(egui::Margin::symmetric(6, 2))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new("Undercut cutter active — Heightmap is 2.5D")
+                                    .small()
+                                    .strong()
+                                    .color(tok.warn_fg),
+                            )
+                            .on_hover_text(
+                                "This setup uses a relieved-neck undercut cutter (Lollipop, Slot/T-Slot, Dovetail, or Thread Mill). Switch to Tri-Dexel (Volumetric 3D) to preserve overhanging roofs and model true 3D undercuts.",
+                            );
+                            if ui
+                                .small_button("Use Tri-Dexel")
+                                .on_hover_text("Switch simulation engine to Tri-Dexel (Volumetric 3D)")
+                                .clicked()
+                            {
+                                self.engine = SimEngineKind::TriDexel;
+                                engine_changed = true;
+                            }
+                        });
+                    });
+            }
+
             ui.checkbox(&mut self.show_machined_stock, "3D Stock")
                 .on_hover_text("Show or hide the simulated 3D machined stock solid in the viewport");
             ui.add_enabled(

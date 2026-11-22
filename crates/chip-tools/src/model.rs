@@ -79,6 +79,10 @@ pub enum ToolOperationClass {
     Rotary2Linear,
     Rotary4AxisSim,
     ThreadMill,
+    Deburr3D,
+    SlotUndercut,
+    Dovetail,
+    Undercut3D,
 }
 
 /// Physical cutter geometry stored in canonical `f64` millimeters.
@@ -146,9 +150,82 @@ pub enum CutterGeometry {
         shank_diameter_mm: f64,
         flutes: u32,
     },
+    #[serde(rename = "lollipop_endmill")]
+    LollipopEndmill {
+        diameter_mm: f64,
+        neck_diameter_mm: f64,
+        neck_length_mm: f64,
+        flute_length_mm: f64,
+        overall_length_mm: f64,
+        shank_diameter_mm: f64,
+        flutes: u32,
+    },
+    #[serde(rename = "slot_mill")]
+    SlotMill {
+        diameter_mm: f64,
+        cutting_thickness_mm: f64,
+        corner_radius_mm: f64,
+        neck_diameter_mm: f64,
+        neck_length_mm: f64,
+        overall_length_mm: f64,
+        shank_diameter_mm: f64,
+        flutes: u32,
+    },
+    #[serde(rename = "dovetail_cutter")]
+    DovetailCutter {
+        diameter_mm: f64,
+        side_angle_deg: f64,
+        cutting_height_mm: f64,
+        corner_radius_mm: f64,
+        neck_diameter_mm: f64,
+        neck_length_mm: f64,
+        overall_length_mm: f64,
+        shank_diameter_mm: f64,
+        flutes: u32,
+    },
 }
 
 impl CutterGeometry {
+    /// Analytic axial height of a spherical lollipop head up to the relieved neck join:
+    /// `R + sqrt(R^2 - r_neck^2)`.
+    #[inline]
+    pub fn lollipop_sphere_height_mm(diameter_mm: f64, neck_diameter_mm: f64) -> f64 {
+        let r = (0.5 * diameter_mm).max(0.0);
+        let r_neck = (0.5 * neck_diameter_mm).clamp(0.0, r);
+        r + (r * r - r_neck * r_neck).max(0.0).sqrt()
+    }
+
+    /// Analytic minor top diameter (`D_top`) of an inverted conical dovetail cutter at
+    /// `dz = cutting_height_mm`, accounting for any bottom corner fillet `corner_radius_mm`.
+    #[inline]
+    pub fn dovetail_top_diameter_mm(
+        diameter_mm: f64,
+        side_angle_deg: f64,
+        cutting_height_mm: f64,
+        corner_radius_mm: f64,
+    ) -> f64 {
+        let r_bot = (0.5 * diameter_mm).max(0.0);
+        let h = cutting_height_mm.max(0.0);
+        let alpha = side_angle_deg.clamp(1.0, 89.0).to_radians();
+        let tan_a = alpha.tan().max(1e-6);
+        let rc = corner_radius_mm.max(0.0);
+        let r_top = if rc <= 1e-9 {
+            r_bot - h / tan_a
+        } else {
+            let (sin_a, cos_a) = alpha.sin_cos();
+            let r_c = (r_bot - rc).max(0.0);
+            let z_tan = rc * (1.0 + cos_a);
+            if h <= z_tan {
+                let dz = h - rc;
+                r_c + (rc * rc - dz * dz).max(0.0).sqrt()
+            } else {
+                let r_tan = r_c + rc * sin_a;
+                r_tan - (h - z_tan) / tan_a
+            }
+        };
+        2.0 * r_top
+    }
+
     pub const fn kind_label(&self) -> &'static str {
         match self {
             Self::FlatEndmill { .. } => "Flat Endmill",
@@ -158,6 +235,9 @@ impl CutterGeometry {
             Self::TwistDrill { .. } => "Twist Drill",
             Self::FaceMill { .. } => "Face / Fly Cutter",
             Self::ThreadMill { .. } => "Thread Mill",
+            Self::LollipopEndmill { .. } => "Lollipop Endmill",
+            Self::SlotMill { .. } => "Slot / T-Slot Mill",
+            Self::DovetailCutter { .. } => "Dovetail Cutter",
         }
     }
 
@@ -168,7 +248,10 @@ impl CutterGeometry {
             | Self::BallEndmill { diameter_mm, .. }
             | Self::ChamferMill { diameter_mm, .. }
             | Self::TwistDrill { diameter_mm, .. }
-            | Self::ThreadMill { diameter_mm, .. } => diameter_mm,
+            | Self::ThreadMill { diameter_mm, .. }
+            | Self::LollipopEndmill { diameter_mm, .. }
+            | Self::SlotMill { diameter_mm, .. }
+            | Self::DovetailCutter { diameter_mm, .. } => diameter_mm,
             Self::FaceMill {
                 cutting_diameter_mm,
                 ..
@@ -198,7 +281,17 @@ impl CutterGeometry {
             }
             | Self::ThreadMill {
                 flute_length_mm, ..
+            }
+            | Self::LollipopEndmill {
+                flute_length_mm, ..
             } => flute_length_mm,
+            Self::SlotMill {
+                cutting_thickness_mm,
+                ..
+            } => cutting_thickness_mm,
+            Self::DovetailCutter {
+                cutting_height_mm, ..
+            } => cutting_height_mm,
         }
     }
 
@@ -223,6 +316,15 @@ impl CutterGeometry {
                 overall_length_mm, ..
             }
             | Self::ThreadMill {
+                overall_length_mm, ..
+            }
+            | Self::LollipopEndmill {
+                overall_length_mm, ..
+            }
+            | Self::SlotMill {
+                overall_length_mm, ..
+            }
+            | Self::DovetailCutter {
                 overall_length_mm, ..
             } => overall_length_mm,
         }
@@ -250,6 +352,15 @@ impl CutterGeometry {
             }
             | Self::ThreadMill {
                 shank_diameter_mm, ..
+            }
+            | Self::LollipopEndmill {
+                shank_diameter_mm, ..
+            }
+            | Self::SlotMill {
+                shank_diameter_mm, ..
+            }
+            | Self::DovetailCutter {
+                shank_diameter_mm, ..
             } => shank_diameter_mm,
         }
     }
@@ -262,7 +373,10 @@ impl CutterGeometry {
             | Self::ChamferMill { flutes, .. }
             | Self::TwistDrill { flutes, .. }
             | Self::FaceMill { flutes, .. }
-            | Self::ThreadMill { flutes, .. } => flutes,
+            | Self::ThreadMill { flutes, .. }
+            | Self::LollipopEndmill { flutes, .. }
+            | Self::SlotMill { flutes, .. }
+            | Self::DovetailCutter { flutes, .. } => flutes,
         }
     }
 
@@ -298,6 +412,7 @@ impl CutterGeometry {
                     | ToolOperationClass::Pencil3D
                     | ToolOperationClass::Rotary2Linear
                     | ToolOperationClass::Rotary4AxisSim
+                    | ToolOperationClass::SlotUndercut
             ),
             Self::BullNoseEndmill { .. } => matches!(
                 op_class,
@@ -326,6 +441,7 @@ impl CutterGeometry {
                     | ToolOperationClass::Pencil3D
                     | ToolOperationClass::Rotary2Linear
                     | ToolOperationClass::Rotary4AxisSim
+                    | ToolOperationClass::Deburr3D
             ),
             Self::ChamferMill {
                 included_angle_deg, ..
@@ -337,7 +453,8 @@ impl CutterGeometry {
                 | ToolOperationClass::Parallel3D
                 | ToolOperationClass::Pencil3D
                 | ToolOperationClass::Rotary2Linear
-                | ToolOperationClass::Rotary4AxisSim => true,
+                | ToolOperationClass::Rotary4AxisSim
+                | ToolOperationClass::Deburr3D => true,
                 _ => false,
             },
             Self::TwistDrill { .. } => matches!(op_class, ToolOperationClass::Drill),
@@ -346,6 +463,12 @@ impl CutterGeometry {
                 ToolOperationClass::Facing | ToolOperationClass::Contour2D
             ),
             Self::ThreadMill { .. } => matches!(op_class, ToolOperationClass::ThreadMill),
+            Self::LollipopEndmill { .. } => matches!(
+                op_class,
+                ToolOperationClass::Deburr3D | ToolOperationClass::Undercut3D
+            ),
+            Self::SlotMill { .. } => matches!(op_class, ToolOperationClass::SlotUndercut),
+            Self::DovetailCutter { .. } => matches!(op_class, ToolOperationClass::Dovetail),
         }
     }
 }
@@ -423,6 +546,49 @@ pub enum ToolValidationError {
         flute_mm: f64,
         neck_length_mm: f64,
         overall_mm: f64,
+    },
+    #[error(
+        "undercut tool '{name}' neck diameter ({neck_diameter_mm} mm) must satisfy 0 < neck < cutting diameter ({diameter_mm} mm)"
+    )]
+    InvalidRelievedNeck {
+        name: String,
+        neck_diameter_mm: f64,
+        diameter_mm: f64,
+    },
+    #[error(
+        "undercut tool '{name}' neck length ({neck_length_mm} mm) must satisfy cutting height ({cutting_height_mm} mm) <= neck length < overall length ({overall_mm} mm)"
+    )]
+    InvalidRelievedReach {
+        name: String,
+        cutting_height_mm: f64,
+        neck_length_mm: f64,
+        overall_mm: f64,
+    },
+    #[error(
+        "lollipop endmill '{name}' flute height ({flute_mm} mm) must satisfy 0 < flute <= sphere diameter ({diameter_mm} mm)"
+    )]
+    InvalidLollipopHeight {
+        name: String,
+        flute_mm: f64,
+        diameter_mm: f64,
+    },
+    #[error(
+        "slot/dovetail tool '{name}' corner radius ({radius_mm} mm) must satisfy 0 <= R <= {max_radius_mm:.3} mm"
+    )]
+    InvalidUndercutCornerRadius {
+        name: String,
+        radius_mm: f64,
+        max_radius_mm: f64,
+    },
+    #[error("dovetail cutter '{name}' side angle ({angle_deg}°) must satisfy 15° < angle < 85°")]
+    InvalidDovetailAngle { name: String, angle_deg: f64 },
+    #[error(
+        "dovetail cutter '{name}' neck diameter ({neck_diameter_mm} mm) must satisfy 0 < neck <= derived top diameter ({top_diameter_mm:.3} mm)"
+    )]
+    InvalidDovetailTopNeck {
+        name: String,
+        neck_diameter_mm: f64,
+        top_diameter_mm: f64,
     },
 }
 
@@ -609,6 +775,151 @@ impl Tool {
                     return Err(ToolValidationError::InvalidThreadMillReach {
                         name: self.name.clone(),
                         flute_mm: flute_length_mm,
+                        neck_length_mm,
+                        overall_mm: overall_length_mm,
+                    });
+                }
+            }
+            CutterGeometry::LollipopEndmill {
+                diameter_mm,
+                neck_diameter_mm,
+                neck_length_mm,
+                flute_length_mm,
+                overall_length_mm,
+                ..
+            } => {
+                if !neck_diameter_mm.is_finite()
+                    || neck_diameter_mm <= 0.0
+                    || neck_diameter_mm >= diameter_mm - 1e-6
+                {
+                    return Err(ToolValidationError::InvalidRelievedNeck {
+                        name: self.name.clone(),
+                        neck_diameter_mm,
+                        diameter_mm,
+                    });
+                }
+                if flute_length_mm > diameter_mm + 1e-6 {
+                    return Err(ToolValidationError::InvalidLollipopHeight {
+                        name: self.name.clone(),
+                        flute_mm: flute_length_mm,
+                        diameter_mm,
+                    });
+                }
+                if !neck_length_mm.is_finite()
+                    || neck_length_mm + 1e-6 < flute_length_mm
+                    || overall_length_mm <= neck_length_mm + 1e-6
+                {
+                    return Err(ToolValidationError::InvalidRelievedReach {
+                        name: self.name.clone(),
+                        cutting_height_mm: flute_length_mm,
+                        neck_length_mm,
+                        overall_mm: overall_length_mm,
+                    });
+                }
+            }
+            CutterGeometry::SlotMill {
+                diameter_mm,
+                cutting_thickness_mm,
+                corner_radius_mm,
+                neck_diameter_mm,
+                neck_length_mm,
+                overall_length_mm,
+                ..
+            } => {
+                if !neck_diameter_mm.is_finite()
+                    || neck_diameter_mm <= 0.0
+                    || neck_diameter_mm >= diameter_mm - 1e-6
+                {
+                    return Err(ToolValidationError::InvalidRelievedNeck {
+                        name: self.name.clone(),
+                        neck_diameter_mm,
+                        diameter_mm,
+                    });
+                }
+                let max_rc = (0.5 * cutting_thickness_mm)
+                    .min(0.5 * diameter_mm - 1e-4)
+                    .max(0.0);
+                if !corner_radius_mm.is_finite()
+                    || corner_radius_mm < 0.0
+                    || corner_radius_mm > max_rc + 1e-6
+                {
+                    return Err(ToolValidationError::InvalidUndercutCornerRadius {
+                        name: self.name.clone(),
+                        radius_mm: corner_radius_mm,
+                        max_radius_mm: max_rc,
+                    });
+                }
+                if !neck_length_mm.is_finite()
+                    || neck_length_mm + 1e-6 < cutting_thickness_mm
+                    || overall_length_mm <= neck_length_mm + 1e-6
+                {
+                    return Err(ToolValidationError::InvalidRelievedReach {
+                        name: self.name.clone(),
+                        cutting_height_mm: cutting_thickness_mm,
+                        neck_length_mm,
+                        overall_mm: overall_length_mm,
+                    });
+                }
+            }
+            CutterGeometry::DovetailCutter {
+                diameter_mm,
+                side_angle_deg,
+                cutting_height_mm,
+                corner_radius_mm,
+                neck_diameter_mm,
+                neck_length_mm,
+                overall_length_mm,
+                ..
+            } => {
+                if !side_angle_deg.is_finite() || side_angle_deg <= 15.0 || side_angle_deg >= 85.0 {
+                    return Err(ToolValidationError::InvalidDovetailAngle {
+                        name: self.name.clone(),
+                        angle_deg: side_angle_deg,
+                    });
+                }
+                let max_rc = (0.5 * cutting_height_mm)
+                    .min(0.5 * diameter_mm - 1e-4)
+                    .max(0.0);
+                if !corner_radius_mm.is_finite()
+                    || corner_radius_mm < 0.0
+                    || corner_radius_mm > max_rc + 1e-6
+                {
+                    return Err(ToolValidationError::InvalidUndercutCornerRadius {
+                        name: self.name.clone(),
+                        radius_mm: corner_radius_mm,
+                        max_radius_mm: max_rc,
+                    });
+                }
+                if !neck_diameter_mm.is_finite()
+                    || neck_diameter_mm <= 0.0
+                    || neck_diameter_mm >= diameter_mm - 1e-6
+                {
+                    return Err(ToolValidationError::InvalidRelievedNeck {
+                        name: self.name.clone(),
+                        neck_diameter_mm,
+                        diameter_mm,
+                    });
+                }
+                let top_d = CutterGeometry::dovetail_top_diameter_mm(
+                    diameter_mm,
+                    side_angle_deg,
+                    cutting_height_mm,
+                    corner_radius_mm,
+                );
+                if !top_d.is_finite() || top_d <= 1e-4 || neck_diameter_mm > top_d + 1e-6 {
+                    return Err(ToolValidationError::InvalidDovetailTopNeck {
+                        name: self.name.clone(),
+                        neck_diameter_mm,
+                        top_diameter_mm: top_d.max(0.0),
+                    });
+                }
+                if !neck_length_mm.is_finite()
+                    || neck_length_mm + 1e-6 < cutting_height_mm
+                    || overall_length_mm <= neck_length_mm + 1e-6
+                {
+                    return Err(ToolValidationError::InvalidRelievedReach {
+                        name: self.name.clone(),
+                        cutting_height_mm,
                         neck_length_mm,
                         overall_mm: overall_length_mm,
                     });

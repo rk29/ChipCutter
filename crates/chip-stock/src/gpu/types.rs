@@ -17,11 +17,15 @@ pub const SHAPE_BALL: u32 = 2;
 pub const SHAPE_CONICAL: u32 = 3;
 pub const SHAPE_FACE: u32 = 4;
 pub const SHAPE_THREADMILL: u32 = 5;
+pub const SHAPE_LOLLIPOP: u32 = 6;
+pub const SHAPE_SLOTMILL: u32 = 7;
+pub const SHAPE_DOVETAIL: u32 = 8;
 
 /// `GpuToolProfile::flags` bitmask constants.
 pub const PROF_FLAG_FLAT_ENDMILL: u32 = 1 << 0;
 pub const PROF_FLAG_THREAD_MILL: u32 = 1 << 1;
 pub const PROF_FLAG_CONICAL: u32 = 1 << 2;
+pub const PROF_FLAG_RELIEVED_NECK: u32 = 1 << 3;
 
 /// `GpuSweepChord::flags` bitmask constants.
 pub const CHORD_FLAG_RAPID: u32 = 1 << 0;
@@ -58,20 +62,30 @@ pub struct GpuToolProfile {
     /// - `BullNose` / `Face`: `flat_radius_mm`
     /// - `Conical`: `tip_radius_mm`
     /// - `ThreadMill`: `pitch_mm`
+    /// - `Lollipop`: `z_neck_join_mm`
+    /// - `SlotMill`: `cutting_thickness_mm`
+    /// - `Dovetail`: `cutting_height_mm`
     pub param0: f32,
     /// Shape-specific parameter 1:
     /// - `BullNose` / `Face`: `corner_radius_mm`
     /// - `Conical`: `tan_half_angle`
     /// - `ThreadMill`: `z_start`
+    /// - `Lollipop`: `flat_radius_mm`
+    /// - `SlotMill`: `corner_radius_mm`
+    /// - `Dovetail`: `tan_side_angle`
     pub param1: f32,
     /// Shape-specific parameter 2:
     /// - `Face`: `bottom_radius_mm`
     /// - `Conical`: `cot_half_angle` (`1.0 / tan_half_angle`)
     /// - `ThreadMill`: `tooth_step`
+    /// - `Lollipop`: `sphere_radius_mm`
+    /// - `SlotMill`: `flat_radius_mm`
+    /// - `Dovetail`: `corner_radius_mm`
     pub param2: f32,
     /// Shape-specific parameter 3:
     /// - `Face`: `outer_radius_mm`
     /// - `ThreadMill`: `tan_half_thread_angle`
+    /// - `Dovetail`: `top_radius_mm`
     pub param3: f32,
 }
 
@@ -87,6 +101,9 @@ impl GpuToolProfile {
         }
         if prof.is_thread_mill {
             flags |= PROF_FLAG_THREAD_MILL;
+        }
+        if prof.has_relieved_neck {
+            flags |= PROF_FLAG_RELIEVED_NECK;
         }
 
         let (shape_kind, teeth_count, param0, param1, param2, param3) = match env.shape() {
@@ -143,6 +160,46 @@ impl GpuToolProfile {
                     tan_half as f32,
                 )
             }
+            CutterEnvelopeShape::Lollipop {
+                flat_radius_mm,
+                sphere_radius_mm,
+                z_neck_join_mm,
+                ..
+            } => (
+                SHAPE_LOLLIPOP,
+                0,
+                z_neck_join_mm as f32,
+                flat_radius_mm as f32,
+                sphere_radius_mm as f32,
+                0.0,
+            ),
+            CutterEnvelopeShape::SlotMill {
+                flat_radius_mm,
+                cutting_thickness_mm,
+                corner_radius_mm,
+                ..
+            } => (
+                SHAPE_SLOTMILL,
+                0,
+                cutting_thickness_mm as f32,
+                corner_radius_mm as f32,
+                flat_radius_mm as f32,
+                0.0,
+            ),
+            CutterEnvelopeShape::Dovetail {
+                top_radius_mm,
+                cutting_height_mm,
+                tan_side_angle,
+                corner_radius_mm,
+                ..
+            } => (
+                SHAPE_DOVETAIL,
+                0,
+                cutting_height_mm as f32,
+                tan_side_angle as f32,
+                corner_radius_mm as f32,
+                top_radius_mm as f32,
+            ),
         };
 
         Self {

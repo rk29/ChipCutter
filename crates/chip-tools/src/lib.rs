@@ -10,7 +10,10 @@ pub mod machine;
 pub mod model;
 pub mod storage;
 
-pub use builtin::default_starter_tool_library;
+pub use builtin::{
+    default_starter_tool_library, starter_dovetail_60deg_12mm, starter_lollipop_6mm,
+    starter_tslot_12mm, starter_undercut_tools,
+};
 pub use builtin_machines::{
     CARVERA_AIR_MACHINE_ID, CARVERA_MACHINE_ID, CARVERA_Z1_MACHINE_ID, MILO_1_5_MACHINE_ID,
     MILO_2_0_MACHINE_ID, VORON_CASCADE_MACHINE_ID, builtin_carvera_air_machine,
@@ -174,9 +177,9 @@ mod tests {
               "post-process": { "number": 5 }
             },
             {
-              "type": "lollipop mill",
+              "type": "form mill",
               "unit": "millimeters",
-              "description": "Undercut Lollipop",
+              "description": "Custom Exotic Form Cutter",
               "geometry": { "DC": 8.0, "NOF": 4 }
             }
           ]
@@ -186,7 +189,7 @@ mod tests {
         assert_eq!(report.imported_tool_count, 2);
         assert_eq!(report.imported_preset_count, 1);
         assert_eq!(report.warnings.len(), 1);
-        assert!(report.warnings[0].contains("lollipop mill"));
+        assert!(report.warnings[0].contains("form mill"));
 
         let t1 = &report.library.tools[0];
         assert_eq!(t1.native_unit, DisplayUnit::Inch);
@@ -852,5 +855,200 @@ mod tests {
             }
             ref other => panic!("expected ThreadMill, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn undercut_cutters_validate_roundtrip_toml_and_import_from_fusion() {
+        // Starter library T1..T10 indices remain untouched, while `starter_undercut_tools()`
+        // provides validated starter Lollipop, Slot/T-Slot, and Dovetail cutters.
+        let starter_default = default_starter_tool_library();
+        assert_eq!(starter_default.tools.len(), 10);
+
+        let undercuts = starter_undercut_tools();
+        assert_eq!(undercuts.len(), 3);
+        for t in &undercuts {
+            t.validate().unwrap();
+        }
+        let lolli = &undercuts[0];
+        let slot = &undercuts[1];
+        let dove = &undercuts[2];
+
+        assert!(
+            lolli
+                .geometry
+                .supports_operation(ToolOperationClass::Deburr3D)
+        );
+        assert!(
+            lolli
+                .geometry
+                .supports_operation(ToolOperationClass::Undercut3D)
+        );
+        assert!(
+            !lolli
+                .geometry
+                .supports_operation(ToolOperationClass::Dovetail)
+        );
+        assert!(
+            slot.geometry
+                .supports_operation(ToolOperationClass::SlotUndercut)
+        );
+        assert!(
+            !slot
+                .geometry
+                .supports_operation(ToolOperationClass::Undercut3D)
+        );
+        assert!(
+            dove.geometry
+                .supports_operation(ToolOperationClass::Dovetail)
+        );
+        assert!(
+            !dove
+                .geometry
+                .supports_operation(ToolOperationClass::SlotUndercut)
+        );
+
+        // Flat endmill also supports SlotUndercut; Ball & Chamfer support Deburr3D
+        assert!(
+            starter_default.tools[0]
+                .geometry
+                .supports_operation(ToolOperationClass::SlotUndercut)
+        );
+        assert!(
+            starter_default.tools[3]
+                .geometry
+                .supports_operation(ToolOperationClass::Deburr3D)
+        );
+        assert!(
+            starter_default.tools[4]
+                .geometry
+                .supports_operation(ToolOperationClass::Deburr3D)
+        );
+
+        // Deterministic TOML roundtrip with exact serde tag names
+        let lib = ToolLibrary {
+            schema_version: ToolLibrary::CURRENT_SCHEMA_VERSION,
+            name: "Undercut Catalog".to_string(),
+            tools: undercuts.clone(),
+        };
+        let toml_text = lib.to_toml_string().unwrap();
+        assert!(toml_text.contains("type = \"lollipop_endmill\""));
+        assert!(toml_text.contains("type = \"slot_mill\""));
+        assert!(toml_text.contains("type = \"dovetail_cutter\""));
+        let reloaded = ToolLibrary::from_toml_str(&toml_text).unwrap();
+        assert_eq!(reloaded.tools, undercuts);
+
+        // Validation rejections: neck >= diameter, bad dovetail angle, neck > D_top, bad corner radius, bad reach
+        let mut bad_lolli = lolli.clone();
+        if let CutterGeometry::LollipopEndmill {
+            neck_diameter_mm, ..
+        } = &mut bad_lolli.geometry
+        {
+            *neck_diameter_mm = 6.0;
+        }
+        assert!(matches!(
+            bad_lolli.validate(),
+            Err(ToolValidationError::InvalidRelievedNeck { .. })
+        ));
+
+        let mut bad_slot_rc = slot.clone();
+        if let CutterGeometry::SlotMill {
+            corner_radius_mm, ..
+        } = &mut bad_slot_rc.geometry
+        {
+            *corner_radius_mm = 2.5; // > 0.5 * 4.0
+        }
+        assert!(matches!(
+            bad_slot_rc.validate(),
+            Err(ToolValidationError::InvalidUndercutCornerRadius { .. })
+        ));
+
+        let mut bad_slot_reach = slot.clone();
+        if let CutterGeometry::SlotMill { neck_length_mm, .. } = &mut bad_slot_reach.geometry {
+            *neck_length_mm = 2.0; // < cutting_thickness_mm (4.0)
+        }
+        assert!(matches!(
+            bad_slot_reach.validate(),
+            Err(ToolValidationError::InvalidRelievedReach { .. })
+        ));
+
+        let mut bad_dove_ang = dove.clone();
+        if let CutterGeometry::DovetailCutter { side_angle_deg, .. } = &mut bad_dove_ang.geometry {
+            *side_angle_deg = 15.0; // outside open interval (15°, 85°)
+        }
+        assert!(matches!(
+            bad_dove_ang.validate(),
+            Err(ToolValidationError::InvalidDovetailAngle { .. })
+        ));
+
+        let mut bad_dove_top = dove.clone();
+        if let CutterGeometry::DovetailCutter {
+            neck_diameter_mm, ..
+        } = &mut bad_dove_top.geometry
+        {
+            *neck_diameter_mm = 9.0; // > derived D_top (~6.5 mm)
+        }
+        assert!(matches!(
+            bad_dove_top.validate(),
+            Err(ToolValidationError::InvalidDovetailTopNeck { .. })
+        ));
+
+        // Fusion 360 JSON import for "lollipop mill", "slot mill", and "dovetail mill"
+        let fusion_undercuts = r#"{
+          "version": 16,
+          "data": [
+            {
+              "type": "lollipop mill",
+              "unit": "millimeters",
+              "description": "6mm Undercut Lollipop",
+              "guid": "fusion-lollipop-6",
+              "geometry": { "DC": 6.0, "ND": 3.0, "LN": 18.0, "LB": 24.0, "OAL": 55.0, "SFDM": 6.0, "NOF": 4 },
+              "post-process": { "number": 13 }
+            },
+            {
+              "type": "slot mill",
+              "unit": "millimeters",
+              "description": "12x4 T-Slot Cutter",
+              "guid": "fusion-slot-12",
+              "geometry": { "DC": 12.0, "LCF": 4.0, "RE": 0.2, "ND": 5.0, "LN": 18.0, "LB": 26.0, "OAL": 58.0, "SFDM": 6.0, "NOF": 4 },
+              "post-process": { "number": 14 }
+            },
+            {
+              "type": "dovetail mill",
+              "unit": "millimeters",
+              "description": "12mm 60deg Dovetail",
+              "guid": "fusion-dove-12",
+              "geometry": { "DC": 12.0, "TA": 60.0, "LCF": 5.0, "RE": 0.0, "ND": 5.5, "LN": 18.0, "LB": 26.0, "OAL": 58.0, "SFDM": 6.0, "NOF": 4 },
+              "post-process": { "number": 15 }
+            }
+          ]
+        }"#;
+
+        let report =
+            import_fusion_library_bytes(fusion_undercuts.as_bytes(), "Fusion Undercuts").unwrap();
+        assert_eq!(report.imported_tool_count, 3);
+        assert!(
+            report.warnings.is_empty(),
+            "warnings: {:?}",
+            report.warnings
+        );
+        assert!(matches!(
+            report.library.tools[0].geometry,
+            CutterGeometry::LollipopEndmill { diameter_mm, neck_diameter_mm, .. }
+                if approx_eq(diameter_mm, 6.0, 1e-6) && approx_eq(neck_diameter_mm, 3.0, 1e-6)
+        ));
+        assert!(matches!(
+            report.library.tools[1].geometry,
+            CutterGeometry::SlotMill { diameter_mm, cutting_thickness_mm, corner_radius_mm, .. }
+                if approx_eq(diameter_mm, 12.0, 1e-6)
+                    && approx_eq(cutting_thickness_mm, 4.0, 1e-6)
+                    && approx_eq(corner_radius_mm, 0.2, 1e-6)
+        ));
+        assert!(matches!(
+            report.library.tools[2].geometry,
+            CutterGeometry::DovetailCutter { diameter_mm, side_angle_deg, cutting_height_mm, .. }
+                if approx_eq(diameter_mm, 12.0, 1e-6)
+                    && approx_eq(side_angle_deg, 60.0, 1e-6)
+                    && approx_eq(cutting_height_mm, 5.0, 1e-6)
+        ));
     }
 }

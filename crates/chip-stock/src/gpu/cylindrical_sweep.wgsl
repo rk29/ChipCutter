@@ -9,6 +9,9 @@ const SHAPE_BALL: u32 = 2u;
 const SHAPE_CONICAL: u32 = 3u;
 const SHAPE_FACE: u32 = 4u;
 const SHAPE_THREADMILL: u32 = 5u;
+const SHAPE_LOLLIPOP: u32 = 6u;
+const SHAPE_SLOTMILL: u32 = 7u;
+const SHAPE_DOVETAIL: u32 = 8u;
 
 const POSE_FLAG_RAPID: u32 = 1u;
 const POSE_FLAG_VERIFY: u32 = 2u;
@@ -142,6 +145,33 @@ fn eval_profile_dz(prof: GpuToolProfile, r_mm: f32) -> f32 {
             let tan_half = prof.param3;
             let z_first_crest = z_start + 0.5 * tooth_step;
             return max(z_first_crest - max(prof.cutting_radius_mm - r, 0.0) * tan_half, 0.0);
+        }
+        case SHAPE_LOLLIPOP: {
+            let flat_r = prof.param1;
+            let sphere_r = select(prof.cutting_radius_mm, prof.param2, prof.param2 > 1e-6);
+            if (r <= flat_r) {
+                return 0.0;
+            }
+            let dr = min(r - flat_r, sphere_r);
+            return sphere_r - sqrt(max((sphere_r - dr) * (sphere_r + dr), 0.0));
+        }
+        case SHAPE_SLOTMILL: {
+            let corner_r = prof.param1;
+            let flat_r = prof.param2;
+            if (r <= flat_r || corner_r <= 1e-6) {
+                return 0.0;
+            }
+            let dr = min(r - flat_r, corner_r);
+            return corner_r - sqrt(max((corner_r - dr) * (corner_r + dr), 0.0));
+        }
+        case SHAPE_DOVETAIL: {
+            let corner_r = prof.param2;
+            let r_c = max(prof.cutting_radius_mm - corner_r, 0.0);
+            if (r <= r_c || corner_r <= 1e-6) {
+                return 0.0;
+            }
+            let dr = min(r - r_c, corner_r);
+            return corner_r - sqrt(max((corner_r - dr) * (corner_r + dr), 0.0));
         }
         default: {
             return 0.0;
@@ -305,7 +335,7 @@ fn main(
             r_new = clamp(-h0 / d_dot_s, r_exit, r_enter);
         } else {
             var lo = r_exit;
-            if (prof.shape_kind != SHAPE_BALL && d_dot_s > 1e-6) {
+            if (prof.shape_kind != SHAPE_BALL && prof.shape_kind != SHAPE_LOLLIPOP && d_dot_s > 1e-6) {
                 lo = min(max(r_exit, -h0 / d_dot_s), r_enter);
             }
             var hi = r_enter;

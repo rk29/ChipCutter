@@ -496,8 +496,13 @@ pub struct RadialCutterProfile {
     pub teeth_count: u32,
     /// Included thread flank angle in degrees (typically `60°`; `0.0` for other cutters).
     pub thread_angle_deg: f64,
-    /// `true` when constructed from [`CutterGeometry::ThreadMill`] (non-monotonic undercut profile).
+    /// `true` when constructed from [`CutterGeometry::ThreadMill`] (periodic V-tooth band).
     pub is_thread_mill: bool,
+    /// `true` for any relieved-neck undercut cutter (`ThreadMill`, `LollipopEndmill`,
+    /// `SlotMill`, `DovetailCutter`).
+    pub has_relieved_neck: bool,
+    /// `true` for bounded-head undercut cutters (`LollipopEndmill`, `SlotMill`, `DovetailCutter`).
+    pub has_bounded_undercut_head: bool,
     envelope: AnalyticCutterEnvelope,
 }
 
@@ -513,6 +518,8 @@ impl RadialCutterProfile {
         let neck_radius_mm = envelope.neck_radius_mm();
         let neck_length_mm = envelope.effective_reach_mm();
         let is_thread_mill = envelope.is_thread_mill();
+        let has_relieved_neck = envelope.has_relieved_neck();
+        let has_bounded_undercut_head = envelope.has_bounded_undercut_head();
 
         let (thread_pitch_mm, teeth_count, thread_angle_deg) = match envelope.shape() {
             CutterEnvelopeShape::ThreadMill {
@@ -530,10 +537,16 @@ impl RadialCutterProfile {
             | CutterGeometry::BallEndmill { diameter_mm, .. } => {
                 (true, (1.5 * diameter_mm).min(flute_length_mm))
             }
+            CutterGeometry::LollipopEndmill { diameter_mm, .. } => {
+                (true, (0.5 * diameter_mm).min(flute_length_mm))
+            }
             CutterGeometry::ChamferMill { .. } | CutterGeometry::TwistDrill { .. } => {
                 (true, flute_length_mm)
             }
-            CutterGeometry::FaceMill { .. } | CutterGeometry::ThreadMill { .. } => (false, 0.0),
+            CutterGeometry::FaceMill { .. }
+            | CutterGeometry::ThreadMill { .. }
+            | CutterGeometry::SlotMill { .. }
+            | CutterGeometry::DovetailCutter { .. } => (false, 0.0),
         };
 
         let holder_radius_mm = (shank_radius_mm * 2.2).max(12.0).max(shank_radius_mm + 4.0);
@@ -553,6 +566,8 @@ impl RadialCutterProfile {
             teeth_count,
             thread_angle_deg,
             is_thread_mill,
+            has_relieved_neck,
+            has_bounded_undercut_head,
             envelope,
         }
     }
@@ -612,6 +627,30 @@ impl RadialCutterProfile {
     #[inline]
     pub fn tip_to_envelope_dz(&self, r_mm: f64) -> Option<f64> {
         self.envelope.profile_dz_at_radius(r_mm)
+    }
+
+    /// Evaluates the exact bounded axial cutting interval `(dz_lo, dz_hi)` above the cutter tip
+    /// at radial distance `r_mm` (`None` if `r_mm > cutting_radius_mm`).
+    #[inline]
+    pub fn cutting_z_interval_at_radius(&self, r_mm: f64) -> Option<(f64, f64)> {
+        self.envelope.cutting_z_interval_at_radius(r_mm)
+    }
+
+    /// Evaluates the exact cutting-head horizontal radius `r(dz)` strictly within `[0, flute_length_mm]`.
+    #[inline]
+    pub fn cutting_radius_at_dz(&self, dz_mm: f64) -> Option<f64> {
+        self.envelope.cutting_radius_at_dz(dz_mm)
+    }
+
+    /// Axial height above the cutter tip swept on X/Y horizontal dexel planes (`effective_reach_mm`
+    /// for `ThreadMill`, `flute_length_mm` for monotonic and bounded undercut cutters).
+    #[inline]
+    pub fn horizontal_cut_max_height_mm(&self) -> f64 {
+        if self.is_thread_mill {
+            self.effective_reach_mm()
+        } else {
+            self.flute_length_mm
+        }
     }
 
     /// Evaluates the exact cutting envelope radius `r(dz) >= 0` at axial height `dz_mm >= 0` above

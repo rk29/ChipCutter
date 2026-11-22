@@ -116,7 +116,7 @@ fn eval_horizontal_ray_cut_interval(
     swap_xy: bool,
     dz_step_mm: f64,
 ) -> Option<(f64, f64)> {
-    let max_h = prof.effective_reach_mm();
+    let max_h = prof.horizontal_cut_max_height_mm();
     if pz < span.min_z() - 1e-9 || pz > span.max_z() + max_h + 1e-9 {
         return None;
     }
@@ -129,13 +129,21 @@ fn eval_horizontal_ray_cut_interval(
         }
     };
 
+    let eval_r_at_dz = |dz: f64| -> Option<f64> {
+        if prof.has_bounded_undercut_head {
+            prof.cutting_radius_at_dz(dz)
+        } else {
+            prof.radius_at_height_dz(dz)
+        }
+    };
+
     let dz_span = span.p1.z - span.p0.z;
     if dz_span.abs() <= 1e-7 {
         let dz = pz - span.p0.z;
         if dz <= 1e-9 || dz > max_h + 1e-9 {
             return None;
         }
-        let r = (prof.radius_at_height_dz(dz)? - radial_shrink_mm).max(0.0);
+        let r = (eval_r_at_dz(dz)? - radial_shrink_mm).max(0.0);
         if r <= 1e-9 {
             return None;
         }
@@ -240,12 +248,12 @@ fn eval_horizontal_ray_cut_interval(
     let q0 = span.p0.lerp(span.p1, t0);
     let q1 = span.p0.lerp(span.p1, t1);
     let r_at = |z_tip: f64| -> f64 {
-        (prof.radius_at_height_dz(pz - z_tip).unwrap_or(0.0) - radial_shrink_mm).max(0.0)
+        (eval_r_at_dz(pz - z_tip).unwrap_or(0.0) - radial_shrink_mm).max(0.0)
     };
 
     let r0 = r_at(q0.z);
     let r1 = r_at(q1.z);
-    if (r0 - r1).abs() <= 1e-7 && r0 > 1e-9 {
+    if !prof.has_relieved_neck && (r0 - r1).abs() <= 1e-7 && r0 > 1e-9 {
         return intersect_horizontal_line_with_capsule_2d(proj2(q0), proj2(q1), r0, fixed_u);
     }
 
@@ -265,6 +273,23 @@ fn eval_horizontal_ray_cut_interval(
         {
             lo = lo.min(c0);
             hi = hi.max(c1);
+        }
+    }
+    if let chip_tools::CutterEnvelopeShape::Lollipop {
+        sphere_radius_mm, ..
+    } = prof.envelope().shape()
+    {
+        let tc = t_at_z(pz - sphere_radius_mm);
+        if tc >= t0 - 1e-9 && tc <= t1 + 1e-9 {
+            let pt = proj2(span.p0.lerp(span.p1, tc.clamp(t0, t1)));
+            let r_eq = (prof.cutting_radius_mm - radial_shrink_mm).max(0.0);
+            if r_eq > 1e-9
+                && let Some((c0, c1)) =
+                    intersect_horizontal_line_with_capsule_2d(pt, pt, r_eq, fixed_u)
+            {
+                lo = lo.min(c0);
+                hi = hi.max(c1);
+            }
         }
     }
     if lo.is_finite() && hi.is_finite() && hi > lo {
@@ -512,9 +537,9 @@ fn eval_z_ray_cut_interval(
     if dz_span.abs() <= 1e-7 {
         let pt = p0_xy.lerp(p1_xy, t_closest);
         let r = (q_xy - pt).length();
-        let dz = prof.tip_to_envelope_dz(r)?;
+        let (dz_lo, dz_hi) = prof.cutting_z_interval_at_radius(r)?;
         let z_tip = span.p0.z;
-        return Some((z_tip + dz, z_tip + prof.flute_length_mm, z_tip));
+        return Some((z_tip + dz_lo, z_tip + dz_hi, z_tip));
     }
 
     if is_flat_endmill {
@@ -527,27 +552,31 @@ fn eval_z_ray_cut_interval(
 
     let mut best_z_cut = f64::INFINITY;
     let mut best_z_tip = f64::INFINITY;
-    let mut max_z_tip = f64::NEG_INFINITY;
-    let n_samples = 8usize;
-    for s in 0..=n_samples {
-        let u = s as f64 / n_samples as f64;
-        let t = t_enter + u * (t_exit - t_enter);
+    let mut max_z_hi = f64::NEG_INFINITY;
+    let mut consider_t = |t: f64| {
         let pt = p0_xy.lerp(p1_xy, t);
         let r = (q_xy - pt).length();
-        if let Some(dz) = prof.tip_to_envelope_dz(r) {
+        if let Some((dz_lo, dz_hi)) = prof.cutting_z_interval_at_radius(r) {
             let z_tip = span.p0.z + t * dz_span;
-            let z_cut = z_tip + dz;
+            let z_cut = z_tip + dz_lo;
+            let z_hi = z_tip + dz_hi;
             if z_cut < best_z_cut {
                 best_z_cut = z_cut;
                 best_z_tip = z_tip;
             }
-            if z_tip > max_z_tip {
-                max_z_tip = z_tip;
+            if z_hi > max_z_hi {
+                max_z_hi = z_hi;
             }
         }
+    };
+    let n_samples = 8usize;
+    for s in 0..=n_samples {
+        let u = s as f64 / n_samples as f64;
+        consider_t(t_enter + u * (t_exit - t_enter));
     }
-    if best_z_cut.is_finite() {
-        Some((best_z_cut, max_z_tip + prof.flute_length_mm, best_z_tip))
+    consider_t(t_closest);
+    if best_z_cut.is_finite() && max_z_hi.is_finite() {
+        Some((best_z_cut, max_z_hi.max(best_z_cut), best_z_tip))
     } else {
         None
     }
@@ -741,7 +770,11 @@ impl TriDexelStock {
                         };
                         let c_xy = p0_xy.lerp(p1_xy, t_c);
                         let dist_xy = (DVec2::new(px, py) - c_xy).length();
-                        let z_tip_here = chord.p0.z + t_c * (chord.p1.z - chord.p0.z);
+                        let z_tip_here = if l2 > 1e-12 {
+                            chord.p0.z + t_c * (chord.p1.z - chord.p0.z)
+                        } else {
+                            chord.p0.z.min(chord.p1.z)
+                        };
                         if let Some(top_span) = scratch.last() {
                             let top_z = top_span.max_mm;
                             if dist_xy <= ctx.prof.holder_radius_mm {
@@ -759,7 +792,7 @@ impl TriDexelStock {
                                 }
                             }
                         }
-                        if ctx.prof.is_thread_mill && !ctx.is_rapid && dist_xy <= neck_skin {
+                        if ctx.prof.has_relieved_neck && !ctx.is_rapid && dist_xy <= neck_skin {
                             let neck_lo = z_tip_here + ctx.prof.flute_length_mm + 0.05;
                             let neck_hi = z_tip_here + ctx.prof.neck_length_mm;
                             if neck_hi > neck_lo {
@@ -904,7 +937,7 @@ impl TriDexelStock {
         let min_u_cut = u_ax.get(chord.p0).min(u_ax.get(chord.p1)) - r_cut;
         let max_u_cut = u_ax.get(chord.p0).max(u_ax.get(chord.p1)) + r_cut;
         let min_z = chord.min_z();
-        let max_z = chord.max_z() + ctx.prof.effective_reach_mm();
+        let max_z = chord.max_z() + ctx.prof.horizontal_cut_max_height_mm();
         let dz_step = 0.25 * self.dz_mm();
         let neck_skin = (ctx.prof.neck_radius_mm - ctx.tol.radial_wall_skin_mm).max(0.0);
         let wall_skin = ctx.tol.gouge_tol_mm + ctx.tol.radial_wall_skin_mm;
@@ -1101,7 +1134,11 @@ pub(crate) fn replay_single_ray_linear_chord(
                 };
                 let c_xy = p0_xy.lerp(p1_xy, t_c);
                 let dist_xy = (DVec2::new(px, py) - c_xy).length();
-                let z_tip_here = chord.p0.z + t_c * (chord.p1.z - chord.p0.z);
+                let z_tip_here = if l2 > 1e-12 {
+                    chord.p0.z + t_c * (chord.p1.z - chord.p0.z)
+                } else {
+                    chord.p0.z.min(chord.p1.z)
+                };
                 if let Some(top_span) = scratch.last() {
                     let top_z = top_span.max_mm;
                     if dist_xy <= prof.holder_radius_mm {
@@ -1119,7 +1156,7 @@ pub(crate) fn replay_single_ray_linear_chord(
                         }
                     }
                 }
-                if prof.is_thread_mill && !is_rapid && dist_xy <= neck_skin {
+                if prof.has_relieved_neck && !is_rapid && dist_xy <= neck_skin {
                     let neck_lo = z_tip_here + prof.flute_length_mm + 0.05;
                     let neck_hi = z_tip_here + prof.neck_length_mm;
                     if neck_hi > neck_lo {
@@ -1203,7 +1240,7 @@ pub(crate) fn replay_single_ray_linear_chord(
             if pu < u0 - 1e-6
                 || pu > u1 + 1e-6
                 || pz < chord.min_z() - 1e-6
-                || pz > chord.max_z() + prof.effective_reach_mm() + 1e-6
+                || pz > chord.max_z() + prof.horizontal_cut_max_height_mm() + 1e-6
             {
                 return (false, rv);
             }

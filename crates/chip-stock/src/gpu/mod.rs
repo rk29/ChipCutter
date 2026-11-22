@@ -1578,4 +1578,407 @@ mod tests {
         assert!(zero_cache.restore_into_backend(&mut gpu, 0, Some(&cp_0_cpu)));
         assert!((gpu.compute_volume_mm3() - vol_0).abs() < 1e-2);
     }
+
+    #[test]
+    fn m64_tridexel_undercut_tslot_dovetail_lollipop_cpu_vs_gpu_parity_and_fault_injection() {
+        let ctx = GpuSimContext::shared_headless().expect("expected Vulkan/wgpu compute adapter");
+        let tol = StockVerifyTolerances::default();
+
+        // Stock block: X in [0, 40], Y in [-15, +15], Z in [-18, 0] (40 x 30 x 18 = 21,600 mm^3)
+        let stock_aabb = Aabb3::new(DVec3::new(0.0, -15.0, -18.0), DVec3::new(40.0, 15.0, 0.0));
+        let base_td = crate::tridexel::TriDexelStock::from_stock_spec(
+            &StockShapeSpec::Box {
+                aabb_wcs: stock_aabb,
+            },
+            SimResolution::Standard,
+        )
+        .unwrap();
+
+        let flat_6 = make_tool(
+            "flat_6",
+            24.0,
+            CutterGeometry::FlatEndmill {
+                diameter_mm: 6.0,
+                flute_length_mm: 18.0,
+                overall_length_mm: 55.0,
+                shank_diameter_mm: 6.0,
+                flutes: 3,
+            },
+        );
+        // Sharp-corner 12x4 T-slot mill (neck D=5 -> r_neck=2.5 < pre-slot half-width 3.0)
+        let slot_12 = make_tool(
+            "slot_12",
+            26.0,
+            CutterGeometry::SlotMill {
+                diameter_mm: 12.0,
+                cutting_thickness_mm: 4.0,
+                corner_radius_mm: 0.0,
+                neck_diameter_mm: 5.0,
+                neck_length_mm: 18.0,
+                overall_length_mm: 58.0,
+                shank_diameter_mm: 6.0,
+                flutes: 4,
+            },
+        );
+        // Sharp-corner 12mm 60deg Dovetail (H=5 -> R_top = 6 - 5/sqrt(3) = 3.1132 mm, neck D=5 -> r_neck=2.5)
+        let dove_12 = make_tool(
+            "dove_12",
+            26.0,
+            CutterGeometry::DovetailCutter {
+                diameter_mm: 12.0,
+                side_angle_deg: 60.0,
+                cutting_height_mm: 5.0,
+                corner_radius_mm: 0.0,
+                neck_diameter_mm: 5.0,
+                neck_length_mm: 18.0,
+                overall_length_mm: 58.0,
+                shank_diameter_mm: 6.0,
+                flutes: 4,
+            },
+        );
+        // 8mm Lollipop (R=4, neck D=4 -> r_neck=2 < pre-slot half-width 3.0)
+        let lolli_8 = make_tool(
+            "lolli_8",
+            26.0,
+            CutterGeometry::LollipopEndmill {
+                diameter_mm: 8.0,
+                neck_diameter_mm: 4.0,
+                neck_length_mm: 18.0,
+                flute_length_mm: CutterGeometry::lollipop_sphere_height_mm(8.0, 4.0),
+                overall_length_mm: 58.0,
+                shank_diameter_mm: 6.0,
+                flutes: 4,
+            },
+        );
+        let tools = vec![flat_6, slot_12, dove_12, lolli_8];
+
+        // Pre-cut through-slot along X in [-10, 50] at Y = 0, Z = -12 (width 6 mm -> Y in [-3, +3], Z in [-12, 0])
+        let preslot_chords = vec![SweepChord {
+            motion: SweepMotion::Linear {
+                p0: DVec3::new(-10.0, 0.0, -12.0),
+                p1: DVec3::new(50.0, 0.0, -12.0),
+                rotary_deg_0: 0.0,
+                rotary_deg_1: 0.0,
+            },
+            op_idx: 0,
+            is_rapid: false,
+            profile_idx: 0,
+            verify_tol: tol,
+        }];
+
+        let mut preslot_td = base_td.clone();
+        let _ = preslot_td.sweep_chords(&preslot_chords, &tools, None, false);
+        let preslot_vol = preslot_td.compute_volume_mm3();
+
+        // === 1. Horizontal T-Slot with SlotMill at Z_tip = -12.0 (cavity Z in [-12, -8], Y in [-6, +6]) ===
+        {
+            let tslot_chords = vec![SweepChord {
+                motion: SweepMotion::Linear {
+                    p0: DVec3::new(-10.0, 0.0, -12.0),
+                    p1: DVec3::new(50.0, 0.0, -12.0),
+                    rotary_deg_0: 0.0,
+                    rotary_deg_1: 0.0,
+                },
+                op_idx: 1,
+                is_rapid: false,
+                profile_idx: 1,
+                verify_tol: tol,
+            }];
+            let mut cpu =
+                CpuExactBackend::new(SimulatedStock::TriDexel(Box::new(preslot_td.clone())), None);
+            let mut gpu = WgpuComputeBackend::new(
+                std::sync::Arc::clone(&ctx),
+                SimulatedStock::TriDexel(Box::new(preslot_td.clone())),
+                None,
+            );
+            let out_cpu = cpu.sweep_batch(&tslot_chords, &tools, true);
+            let out_gpu = gpu.sweep_batch(&tslot_chords, &tools, true);
+            assert!(
+                out_cpu.violations.neck.is_none(),
+                "clean T-slot must have zero neck collision on CPU"
+            );
+            assert!(
+                out_gpu.violations.neck.is_none(),
+                "clean T-slot must have zero neck collision on GPU"
+            );
+            assert!(out_cpu.violations.flute.is_none());
+            assert!(out_gpu.violations.flute.is_none());
+
+            // Exact undercut removed volume: 2 wings of width (6 - 3) = 3 mm each x 4 mm tall x 40 mm long = 960 mm^3!
+            let removed_cpu = preslot_vol - cpu.compute_volume_mm3();
+            let removed_gpu = preslot_vol - gpu.compute_volume_mm3();
+            let expected_removed = 2.0 * 3.0 * 4.0 * 40.0;
+            assert!(
+                (removed_cpu - expected_removed).abs() / expected_removed < 0.015,
+                "T-slot CPU removed vol {removed_cpu:.2} vs exact {expected_removed:.2}"
+            );
+            assert!(
+                (removed_gpu - removed_cpu).abs() / expected_removed < 0.002,
+                "T-slot CPU/GPU volume parity: cpu={removed_cpu:.2}, gpu={removed_gpu:.2}"
+            );
+
+            // Verify overhanging roof preservation on BOTH CPU & GPU at (X=20, Y=+4.5):
+            // Z-ray must have 2 disjoint spans: floor [-18, -12] and intact overhanging roof [-8, 0]!
+            let (SimulatedStock::TriDexel(td_cpu), _) = cpu.into_parts() else {
+                panic!("expected TriDexel");
+            };
+            let (SimulatedStock::TriDexel(td_gpu), _) = gpu.into_parts() else {
+                panic!("expected TriDexel");
+            };
+            for (label, td) in [("CPU", &td_cpu), ("GPU", &td_gpu)] {
+                let z_plane = td.z_plane();
+                let ix = ((20.0 - z_plane.origin_u_mm) / z_plane.du_mm).floor() as usize;
+                let iy = ((4.5 - z_plane.origin_v_mm) / z_plane.dv_mm).floor() as usize;
+                let spans = z_plane.ray_spans(ix, iy);
+                assert_eq!(
+                    spans.len(),
+                    2,
+                    "{label} T-slot overhang at Y=4.5 must have 2 Z-spans (floor + roof), got {spans:?}"
+                );
+                assert!(
+                    (spans[0].max_mm - (-12.0)).abs() < 0.05,
+                    "{label} floor z={}",
+                    spans[0].max_mm
+                );
+                assert!(
+                    (spans[1].min_mm - (-8.0)).abs() < 0.05,
+                    "{label} roof underside z={}",
+                    spans[1].min_mm
+                );
+                assert!(
+                    (spans[1].max_mm - 0.0).abs() < 0.05,
+                    "{label} roof top z={}",
+                    spans[1].max_mm
+                );
+            }
+        }
+
+        // === 2. 60-deg Dovetail Slot at Z_tip = -12.0 (cavity Z in [-12, -7]) ===
+        {
+            let dove_chords = vec![SweepChord {
+                motion: SweepMotion::Linear {
+                    p0: DVec3::new(-10.0, 0.0, -12.0),
+                    p1: DVec3::new(50.0, 0.0, -12.0),
+                    rotary_deg_0: 0.0,
+                    rotary_deg_1: 0.0,
+                },
+                op_idx: 2,
+                is_rapid: false,
+                profile_idx: 2,
+                verify_tol: tol,
+            }];
+            let mut cpu =
+                CpuExactBackend::new(SimulatedStock::TriDexel(Box::new(preslot_td.clone())), None);
+            let mut gpu = WgpuComputeBackend::new(
+                std::sync::Arc::clone(&ctx),
+                SimulatedStock::TriDexel(Box::new(preslot_td.clone())),
+                None,
+            );
+            let out_cpu = cpu.sweep_batch(&dove_chords, &tools, true);
+            let out_gpu = gpu.sweep_batch(&dove_chords, &tools, true);
+            assert!(out_cpu.violations.neck.is_none());
+            assert!(out_gpu.violations.neck.is_none());
+
+            // Exact trapezoidal undercut wing area outside Y in [-3, +3]:
+            // At dz=0: r=6.0 (wing=3.0); at dz=5: r=6 - 5/sqrt(3)=3.11324865 (wing=0.11324865)
+            // Single wing area = 0.5 * (3.0 + 0.11324865) * 5.0 = 7.7831216 mm^2 -> 2 wings * 40 mm = 622.6497 mm^3!
+            let tan60 = 3.0_f64.sqrt();
+            let wing_top = (6.0 - 5.0 / tan60) - 3.0;
+            let expected_removed = 2.0 * 0.5 * (3.0 + wing_top) * 5.0 * 40.0;
+            let removed_cpu = preslot_vol - cpu.compute_volume_mm3();
+            let removed_gpu = preslot_vol - gpu.compute_volume_mm3();
+            assert!(
+                (removed_cpu - expected_removed).abs() / expected_removed < 0.015,
+                "Dovetail CPU removed vol {removed_cpu:.2} vs exact {expected_removed:.2}"
+            );
+            assert!(
+                (removed_gpu - removed_cpu).abs() / expected_removed < 0.002,
+                "Dovetail CPU/GPU parity: cpu={removed_cpu:.2}, gpu={removed_gpu:.2}"
+            );
+
+            // Verify exact angled dovetail cross-section width on Y-rays AND roof overhang on Z-rays!
+            let (SimulatedStock::TriDexel(td_cpu), _) = cpu.into_parts() else {
+                panic!("expected TriDexel");
+            };
+            let (SimulatedStock::TriDexel(td_gpu), _) = gpu.into_parts() else {
+                panic!("expected TriDexel");
+            };
+            for (label, td) in [("CPU", &td_cpu), ("GPU", &td_gpu)] {
+                let y_plane = td.plane(Axis3::Y);
+                let ix = ((20.0 - y_plane.origin_u_mm) / y_plane.du_mm).floor() as usize;
+                // Sample at Z = -9.5 (dz = 2.5 above tip) -> expected half-width = 6.0 - 2.5/sqrt(3) = 4.5566 mm
+                let iz_mid = ((-9.5 - y_plane.origin_v_mm) / y_plane.dv_mm).floor() as usize;
+                let pz_actual = y_plane.origin_v_mm + (iz_mid as f64 + 0.5) * y_plane.dv_mm;
+                let expected_half_w = 6.0 - (pz_actual - (-12.0)) / tan60;
+                let y_spans = y_plane.ray_spans(ix, iz_mid);
+                assert_eq!(
+                    y_spans.len(),
+                    2,
+                    "{label} dovetail Y-ray at mid-height must split into 2 walls"
+                );
+                let actual_half_w = 0.5 * (y_spans[1].min_mm - y_spans[0].max_mm);
+                assert!(
+                    (actual_half_w - expected_half_w).abs() < 0.05,
+                    "{label} dovetail angled wall half-width at Z={pz_actual:.2}: got {actual_half_w:.3}, expected {expected_half_w:.3}"
+                );
+
+                // Above Z = -7.0 (e.g. Z = -4.0), pre-slot roof remains at half-width = 3.0 mm!
+                let iz_roof = ((-4.0 - y_plane.origin_v_mm) / y_plane.dv_mm).floor() as usize;
+                let y_roof_spans = y_plane.ray_spans(ix, iz_roof);
+                assert_eq!(y_roof_spans.len(), 2);
+                let roof_half_w = 0.5 * (y_roof_spans[1].min_mm - y_roof_spans[0].max_mm);
+                assert!(
+                    (roof_half_w - 3.0).abs() < 0.05,
+                    "{label} dovetail roof half-width must remain 3.0 mm, got {roof_half_w:.3}"
+                );
+            }
+        }
+
+        // === 3. Concave Spherical Undercut Groove with LollipopEndmill at Z_tip = -12.0 ===
+        {
+            let lolli_chords = vec![SweepChord {
+                motion: SweepMotion::Linear {
+                    p0: DVec3::new(-10.0, 0.0, -12.0),
+                    p1: DVec3::new(50.0, 0.0, -12.0),
+                    rotary_deg_0: 0.0,
+                    rotary_deg_1: 0.0,
+                },
+                op_idx: 3,
+                is_rapid: false,
+                profile_idx: 3,
+                verify_tol: tol,
+            }];
+            let mut cpu =
+                CpuExactBackend::new(SimulatedStock::TriDexel(Box::new(preslot_td.clone())), None);
+            let mut gpu = WgpuComputeBackend::new(
+                std::sync::Arc::clone(&ctx),
+                SimulatedStock::TriDexel(Box::new(preslot_td.clone())),
+                None,
+            );
+            let out_cpu = cpu.sweep_batch(&lolli_chords, &tools, true);
+            let out_gpu = gpu.sweep_batch(&lolli_chords, &tools, true);
+            assert!(out_cpu.violations.neck.is_none());
+            assert!(out_gpu.violations.neck.is_none());
+
+            // Exact circular segment area outside |y| <= 3.0 of circle R=4.0:
+            // Two circular caps with chord at y=3.0 (half-angle alpha = acos(3/4)):
+            // Each cap area = R^2 * (alpha - sin(alpha)*cos(alpha)) = 16 * (acos(0.75) - 0.75 * sqrt(7)/4)
+            let alpha = (0.75_f64).acos();
+            let cap_area = 16.0 * (alpha - 0.75 * (1.0 - 0.75 * 0.75_f64).sqrt());
+            let expected_removed = 2.0 * cap_area * 40.0;
+            let removed_cpu = preslot_vol - cpu.compute_volume_mm3();
+            let removed_gpu = preslot_vol - gpu.compute_volume_mm3();
+            assert!(
+                (removed_cpu - expected_removed).abs() / expected_removed < 0.015,
+                "Lollipop CPU removed vol {removed_cpu:.2} vs exact {expected_removed:.2}"
+            );
+            assert!(
+                (removed_gpu - removed_cpu).abs() / expected_removed < 0.005,
+                "Lollipop CPU/GPU parity: cpu={removed_cpu:.2}, gpu={removed_gpu:.2}"
+            );
+
+            // Verify concave spherical roof preservation at Y = 3.5 (within sphere R=4, outside pre-slot 3.0)
+            let (SimulatedStock::TriDexel(td_cpu), _) = cpu.into_parts() else {
+                panic!("expected TriDexel");
+            };
+            let (SimulatedStock::TriDexel(td_gpu), _) = gpu.into_parts() else {
+                panic!("expected TriDexel");
+            };
+            for (label, td) in [("CPU", &td_cpu), ("GPU", &td_gpu)] {
+                let z_plane = td.z_plane();
+                let ix = ((20.0 - z_plane.origin_u_mm) / z_plane.du_mm).floor() as usize;
+                let iy = ((3.5 - z_plane.origin_v_mm) / z_plane.dv_mm).floor() as usize;
+                let py_actual = z_plane.origin_v_mm + (iy as f64 + 0.5) * z_plane.dv_mm;
+                let half_h = (16.0 - py_actual * py_actual).sqrt();
+                let spans = z_plane.ray_spans(ix, iy);
+                assert_eq!(
+                    spans.len(),
+                    2,
+                    "{label} Lollipop overhang at Y={py_actual:.2} must have 2 Z-spans"
+                );
+                assert!((spans[0].max_mm - (-12.0 + 4.0 - half_h)).abs() < 0.05);
+                assert!((spans[1].min_mm - (-12.0 + 4.0 + half_h)).abs() < 0.05);
+                assert!((spans[1].max_mm - 0.0).abs() < 0.05);
+            }
+        }
+
+        // === 4. Fault-Injection (A): Vertical plunge of SlotMill / Dovetail into uncut solid roof ===
+        for (label, prof_idx) in [("SlotMill", 1usize), ("DovetailCutter", 2usize)] {
+            let plunge_chords = vec![SweepChord {
+                motion: SweepMotion::Linear {
+                    p0: DVec3::new(20.0, 0.0, 2.0),
+                    p1: DVec3::new(20.0, 0.0, -12.0),
+                    rotary_deg_0: 0.0,
+                    rotary_deg_1: 0.0,
+                },
+                op_idx: 4,
+                is_rapid: false,
+                profile_idx: prof_idx,
+                verify_tol: tol,
+            }];
+            let mut cpu =
+                CpuExactBackend::new(SimulatedStock::TriDexel(Box::new(base_td.clone())), None);
+            let mut gpu = WgpuComputeBackend::new(
+                std::sync::Arc::clone(&ctx),
+                SimulatedStock::TriDexel(Box::new(base_td.clone())),
+                None,
+            );
+            let out_cpu = cpu.sweep_batch(&plunge_chords, &tools, true);
+            let out_gpu = gpu.sweep_batch(&plunge_chords, &tools, true);
+            assert!(
+                out_cpu.violations.neck.is_some(),
+                "{label} vertical plunge into uncut solid must trigger neck collision on CPU"
+            );
+            assert!(
+                out_gpu.violations.neck.is_some(),
+                "{label} vertical plunge into uncut solid must trigger neck collision on GPU"
+            );
+            let d_cpu = out_cpu.violations.neck.unwrap().0;
+            let d_gpu = out_gpu.violations.neck.unwrap().0;
+            assert!(
+                (d_cpu - d_gpu).abs() < 0.2,
+                "{label} vertical plunge neck depth parity: cpu={d_cpu:.3}, gpu={d_gpu:.3}"
+            );
+        }
+
+        // === 5. Fault-Injection (B): Lateral neck crash into overhanging lip ===
+        // Pre-slot opens Y in [-3, +3]; shifting SlotMill (r_neck=2.5) to Y=+2.0 puts neck out to Y=+4.5 (> 3.0)!
+        {
+            let crash_chords = vec![SweepChord {
+                motion: SweepMotion::Linear {
+                    p0: DVec3::new(5.0, 2.0, -12.0),
+                    p1: DVec3::new(35.0, 2.0, -12.0),
+                    rotary_deg_0: 0.0,
+                    rotary_deg_1: 0.0,
+                },
+                op_idx: 5,
+                is_rapid: false,
+                profile_idx: 1,
+                verify_tol: tol,
+            }];
+            let mut cpu =
+                CpuExactBackend::new(SimulatedStock::TriDexel(Box::new(preslot_td.clone())), None);
+            let mut gpu = WgpuComputeBackend::new(
+                std::sync::Arc::clone(&ctx),
+                SimulatedStock::TriDexel(Box::new(preslot_td.clone())),
+                None,
+            );
+            let out_cpu = cpu.sweep_batch(&crash_chords, &tools, true);
+            let out_gpu = gpu.sweep_batch(&crash_chords, &tools, true);
+            assert!(
+                out_cpu.violations.neck.is_some(),
+                "SlotMill neck ramming overhanging lip must trigger neck violation on CPU"
+            );
+            assert!(
+                out_gpu.violations.neck.is_some(),
+                "SlotMill neck ramming overhanging lip must trigger neck violation on GPU"
+            );
+            let d_cpu = out_cpu.violations.neck.unwrap().0;
+            let d_gpu = out_gpu.violations.neck.unwrap().0;
+            assert!(
+                (d_cpu - d_gpu).abs() < 0.2,
+                "Overhang lip neck crash parity: cpu={d_cpu:.3}, gpu={d_gpu:.3}"
+            );
+        }
+    }
 }

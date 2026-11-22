@@ -8,10 +8,14 @@ const SHAPE_BALL: u32 = 2u;
 const SHAPE_CONICAL: u32 = 3u;
 const SHAPE_FACE: u32 = 4u;
 const SHAPE_THREADMILL: u32 = 5u;
+const SHAPE_LOLLIPOP: u32 = 6u;
+const SHAPE_SLOTMILL: u32 = 7u;
+const SHAPE_DOVETAIL: u32 = 8u;
 
 const PROF_FLAG_FLAT_ENDMILL: u32 = 1u;
 const PROF_FLAG_THREAD_MILL: u32 = 2u;
 const PROF_FLAG_CONICAL: u32 = 4u;
+const PROF_FLAG_RELIEVED_NECK: u32 = 8u;
 
 const CHORD_FLAG_RAPID: u32 = 1u;
 const CHORD_FLAG_VERIFY: u32 = 2u;
@@ -177,6 +181,33 @@ fn eval_profile_dz(prof: GpuToolProfile, r_mm: f32) -> f32 {
             let tan_half = prof.param3;
             let z_first_crest = z_start + 0.5 * tooth_step;
             return max(z_first_crest - max(prof.cutting_radius_mm - r, 0.0) * tan_half, 0.0);
+        }
+        case SHAPE_LOLLIPOP: {
+            let flat_r = prof.param1;
+            let sphere_r = select(prof.cutting_radius_mm, prof.param2, prof.param2 > 1e-6);
+            if (r <= flat_r) {
+                return 0.0;
+            }
+            let dr = min(r - flat_r, sphere_r);
+            return sphere_r - sqrt(max((sphere_r - dr) * (sphere_r + dr), 0.0));
+        }
+        case SHAPE_SLOTMILL: {
+            let corner_r = prof.param1;
+            let flat_r = prof.param2;
+            if (r <= flat_r || corner_r <= 1e-6) {
+                return 0.0;
+            }
+            let dr = min(r - flat_r, corner_r);
+            return corner_r - sqrt(max((corner_r - dr) * (corner_r + dr), 0.0));
+        }
+        case SHAPE_DOVETAIL: {
+            let corner_r = prof.param2;
+            let r_c = max(prof.cutting_radius_mm - corner_r, 0.0);
+            if (r <= r_c || corner_r <= 1e-6) {
+                return 0.0;
+            }
+            let dr = min(r - r_c, corner_r);
+            return corner_r - sqrt(max((corner_r - dr) * (corner_r + dr), 0.0));
         }
         default: {
             return 0.0;
@@ -469,6 +500,7 @@ fn main(
         let is_rapid = (flags & CHORD_FLAG_RAPID) != 0u;
         let check_holder = (flags & CHORD_FLAG_CHECK_HOLDER) != 0u;
         let is_thread_mill = (prof.flags & PROF_FLAG_THREAD_MILL) != 0u;
+        let has_relieved_neck = (prof.flags & PROF_FLAG_RELIEVED_NECK) != 0u;
         let wall_skin = ch.sweep_and_tols.w;
         let r_inner_skin = max(prof.cutting_radius_mm - wall_skin, 0.0);
         let shank_skin = max(prof.shank_radius_mm - wall_skin, 0.0);
@@ -508,8 +540,8 @@ fn main(
                     record_violation(SLOT_RAPID, cut_depth, chord_index, idx, hit.z_cut);
                 }
 
-                // Relieved-neck clearance check for ThreadMill
-                if (is_thread_mill && !is_rapid && hit.r_mm <= neck_skin && cut_depth > 0.02) {
+                // Relieved-neck clearance check (`ThreadMill`, `Lollipop`, `SlotMill`, `Dovetail`)
+                if (has_relieved_neck && !is_rapid && hit.r_mm <= neck_skin && cut_depth > 0.02) {
                     let neck_bottom_z = hit.z_tip + prof.flute_length_mm;
                     let neck_pen = zs - neck_bottom_z;
                     if (neck_pen > 0.15) {

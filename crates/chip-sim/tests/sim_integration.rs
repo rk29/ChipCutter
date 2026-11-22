@@ -1922,3 +1922,220 @@ fn m61_holder_vs_vise_jaw_spoilboard_overcut_clamp_in_cut_and_cylindrical_parity
     assert_eq!(rot_cpu_f[0].fixture_id.as_deref(), Some("tailstock_pin"));
     assert_eq!(rot_cpu_f, rot_gpu_f);
 }
+
+#[test]
+fn m64_all_ten_cutter_meshes_and_undercut_sim_fault_detection() {
+    use chip_cam::{
+        BoxAnchor27, FixedBoxXyAlign, FixedBoxZAlign, MotionRole, Setup, StockConfig,
+        ToolpathBuilder, WcsOriginMode, WorkOffsetSlot,
+    };
+    use chip_math::{DVec3, DisplayUnit, ParamLength};
+    use chip_sim::{SimComputeBackendChoice, build_cutter_assembly_mesh};
+    use chip_tools::{
+        starter_dovetail_60deg_12mm, starter_lollipop_6mm, starter_tslot_12mm,
+        starter_undercut_tools,
+    };
+
+    // 1. Verify `build_cutter_assembly_mesh` across ALL 10 cutter geometry variants:
+    //    valid non-empty indices, finite unit outward-oriented normals, and correct Z/R spans!
+    let mut all_ten = default_starter_tool_library().tools;
+    all_ten.extend(starter_undercut_tools());
+    assert!(all_ten.len() >= 13);
+
+    let mut seen_kinds = std::collections::BTreeSet::new();
+    for tool in &all_ten {
+        seen_kinds.insert(tool.geometry.kind_label());
+        let mesh = build_cutter_assembly_mesh(tool, 24, false);
+        assert!(
+            !mesh.vertices.is_empty() && !mesh.indices.is_empty(),
+            "mesh for '{}' must be non-empty",
+            tool.name
+        );
+        assert_eq!(mesh.indices.len() % 3, 0);
+        for &idx in &mesh.indices {
+            assert!((idx as usize) < mesh.vertices.len());
+        }
+        let mut max_r = 0.0_f32;
+        let mut min_z = f32::INFINITY;
+        let mut max_z = f32::NEG_INFINITY;
+        for v in &mesh.vertices {
+            assert!(v.pos_mm.iter().all(|c| c.is_finite()));
+            let nlen =
+                (v.normal[0] * v.normal[0] + v.normal[1] * v.normal[1] + v.normal[2] * v.normal[2])
+                    .sqrt();
+            assert!(
+                (nlen - 1.0).abs() < 1e-3,
+                "non-unit normal on '{}': len={nlen}",
+                tool.name
+            );
+            // Outward check: radial dot product >= -1e-3 when away from axis
+            let r = v.pos_mm[0].hypot(v.pos_mm[1]);
+            if r > 0.25 {
+                let radial_dot = (v.pos_mm[0] * v.normal[0] + v.pos_mm[1] * v.normal[1]) / r;
+                assert!(
+                    radial_dot >= -0.05,
+                    "inward normal on '{}' at pos={:?}, n={:?}",
+                    tool.name,
+                    v.pos_mm,
+                    v.normal
+                );
+            }
+            max_r = max_r.max(r);
+            min_z = min_z.min(v.pos_mm[2]);
+            max_z = max_z.max(v.pos_mm[2]);
+        }
+        assert!(min_z.abs() < 1e-3, "tip of '{}' must sit at Z=0", tool.name);
+        assert!(max_z > tool.stickout_length_mm as f32 + 20.0);
+        assert!(max_r >= (0.5 * tool.geometry.cutting_diameter_mm()) as f32 - 0.1);
+    }
+    assert_eq!(
+        seen_kinds.len(),
+        10,
+        "expected all 10 CutterGeometry variants covered, got {seen_kinds:?}"
+    );
+
+    // 2. End-to-end Tri-Dexel undercut simulation in `chip-sim`:
+    //    Pre-slot with 6mm Flat -> carve T-slot with 12mm SlotMill -> zero critical errors,
+    //    then fault-inject a vertical plunge of Dovetail into solid stock -> critical error on CPU & GPU!
+    let doc = chip_cad::CadDocument::empty();
+    let lib = default_starter_tool_library();
+    let flat_6 = &lib.tools[0];
+    let slot_12 = starter_tslot_12mm();
+    let dove_12 = starter_dovetail_60deg_12mm();
+    let lolli_6 = starter_lollipop_6mm();
+
+    let mut setup = Setup::new("s_m64", "Undercut Sim", WorkOffsetSlot::G54);
+    setup.wcs.origin = WcsOriginMode::StockBoxPoint {
+        anchor: BoxAnchor27::TOP_CENTER,
+    };
+    setup.stock = StockConfig::FixedBox {
+        width_x: ParamLength::from_mm(100.0),
+        depth_y: ParamLength::from_mm(100.0),
+        height_z: ParamLength::from_mm(18.0),
+        xy_align: FixedBoxXyAlign::CenterXy,
+        z_align: FixedBoxZAlign::CenterZ,
+    };
+    let resolved = setup.resolve(&doc, DisplayUnit::Millimeter).unwrap();
+
+    // Op 0: Pre-slot along X from outside stock (-60 -> +60) at Y=0, Z=-12
+    let mut tb_pre = ToolpathBuilder::new("op_preslot");
+    tb_pre.rapid_to(DVec3::new(-60.0, 0.0, 5.0));
+    tb_pre.linear_to(DVec3::new(-60.0, 0.0, -12.0), 400.0, MotionRole::Plunge);
+    tb_pre.linear_to(DVec3::new(60.0, 0.0, -12.0), 800.0, MotionRole::Cut);
+    tb_pre.rapid_to(DVec3::new(60.0, 0.0, 5.0));
+    let tp_pre = tb_pre.finish();
+
+    // Op 1: Clean lateral T-slot entry from outside stock (-62 -> +62) at Y=0, Z=-12
+    let mut tb_tslot = ToolpathBuilder::new("op_tslot");
+    tb_tslot.rapid_to(DVec3::new(-62.0, 0.0, 5.0));
+    tb_tslot.linear_to(DVec3::new(-62.0, 0.0, -12.0), 300.0, MotionRole::Plunge);
+    tb_tslot.linear_to(DVec3::new(62.0, 0.0, -12.0), 600.0, MotionRole::Cut);
+    tb_tslot.rapid_to(DVec3::new(62.0, 0.0, 5.0));
+    let tp_tslot = tb_tslot.finish();
+
+    // Op 2: Clean lateral Lollipop undercut pass along pre-slotted channel
+    let mut tb_lolli = ToolpathBuilder::new("op_lolli");
+    tb_lolli.rapid_to(DVec3::new(-60.0, 0.0, 5.0));
+    tb_lolli.linear_to(DVec3::new(-60.0, 0.0, -12.0), 300.0, MotionRole::Plunge);
+    tb_lolli.linear_to(DVec3::new(60.0, 0.0, -12.0), 600.0, MotionRole::Cut);
+    tb_lolli.rapid_to(DVec3::new(60.0, 0.0, 5.0));
+    let tp_lolli = tb_lolli.finish();
+
+    for backend in [SimComputeBackendChoice::Cpu, SimComputeBackendChoice::Auto] {
+        let res_ok = run_setup_simulation_with_choice(
+            &SetupSimulationInput {
+                doc: &doc,
+                setup: &resolved,
+                target_bodies: &[],
+                fixtures: &[],
+                operations: &[
+                    SimOperationInput {
+                        op_id: "op_preslot",
+                        op_name: "Pre-Slot",
+                        tool: flat_6,
+                        fallback_spindle_rpm: 12_000.0,
+                        intentional_edge_break_mm: 0.0,
+                        toolpath: &tp_pre,
+                    },
+                    SimOperationInput {
+                        op_id: "op_tslot",
+                        op_name: "T-Slot",
+                        tool: &slot_12,
+                        fallback_spindle_rpm: 8_000.0,
+                        intentional_edge_break_mm: 0.0,
+                        toolpath: &tp_tslot,
+                    },
+                    SimOperationInput {
+                        op_id: "op_lolli",
+                        op_name: "Lollipop Pass",
+                        tool: &lolli_6,
+                        fallback_spindle_rpm: 10_000.0,
+                        intentional_edge_break_mm: 0.0,
+                        toolpath: &tp_lolli,
+                    },
+                ],
+                resolution: SimResolution::Standard,
+                kinematics: MachineKinematicsConfig::default(),
+                verify_config: SimVerificationConfig::default(),
+                initial_stock: None,
+                initial_raw_volume_mm3: None,
+                carried_over_from_setup: None,
+                cancel: None,
+            },
+            SimEngineKind::TriDexel,
+            backend,
+        )
+        .unwrap();
+        assert!(
+            !res_ok.has_critical_errors(),
+            "clean pre-slot + T-slot + lollipop pass must have zero critical errors ({backend:?}): {:#?}",
+            res_ok.diagnostics
+        );
+
+        // Fault-injection: vertical plunge of Dovetail directly into solid uncut stock
+        let mut tb_bad = ToolpathBuilder::new("op_bad_dove");
+        tb_bad.rapid_to(DVec3::new(0.0, 8.0, 5.0));
+        tb_bad.linear_to(DVec3::new(0.0, 8.0, -12.0), 200.0, MotionRole::Plunge);
+        tb_bad.rapid_to(DVec3::new(0.0, 8.0, 5.0));
+        let tp_bad = tb_bad.finish();
+
+        let res_bad = run_setup_simulation_with_choice(
+            &SetupSimulationInput {
+                doc: &doc,
+                setup: &resolved,
+                target_bodies: &[],
+                fixtures: &[],
+                operations: &[SimOperationInput {
+                    op_id: "op_bad_dove",
+                    op_name: "Bad Dovetail Plunge",
+                    tool: &dove_12,
+                    fallback_spindle_rpm: 8_000.0,
+                    intentional_edge_break_mm: 0.0,
+                    toolpath: &tp_bad,
+                }],
+                resolution: SimResolution::Standard,
+                kinematics: MachineKinematicsConfig::default(),
+                verify_config: SimVerificationConfig::default(),
+                initial_stock: None,
+                initial_raw_volume_mm3: None,
+                carried_over_from_setup: None,
+                cancel: None,
+            },
+            SimEngineKind::TriDexel,
+            backend,
+        )
+        .unwrap();
+        assert!(
+            res_bad.has_critical_errors(),
+            "vertical dovetail plunge into uncut solid must trigger critical error ({backend:?})"
+        );
+        assert!(
+            res_bad.diagnostics.iter().any(|d| matches!(
+                d.kind,
+                SimIssueKind::FluteLengthExceeded | SimIssueKind::UnsafeVerticalPlunge
+            )),
+            "expected FluteLengthExceeded / UnsafeVerticalPlunge diagnostic ({backend:?}), got {:#?}",
+            res_bad.diagnostics
+        );
+    }
+}

@@ -64,6 +64,7 @@ pub struct ToolAssemblyProfile {
     pub neck_radius_mm: f64,
     pub neck_length_mm: f64,
     pub is_thread_mill: bool,
+    pub has_relieved_neck: bool,
     pub shank_radius_mm: f64,
     pub stickout_length_mm: f64,
     pub holder_nut_radius_mm: f64,
@@ -82,6 +83,7 @@ impl ToolAssemblyProfile {
         let neck_radius_mm = envelope.neck_radius_mm();
         let neck_length_mm = envelope.effective_reach_mm();
         let is_thread_mill = envelope.is_thread_mill();
+        let has_relieved_neck = envelope.has_relieved_neck();
         let shank_radius_mm = envelope.shank_radius_mm();
         let stickout_length_mm = tool.stickout_length_mm.max(flute_length_mm);
         let holder_nut_radius_mm = (shank_radius_mm * 2.2).max(12.0).max(shank_radius_mm + 4.0);
@@ -96,6 +98,7 @@ impl ToolAssemblyProfile {
             neck_radius_mm,
             neck_length_mm,
             is_thread_mill,
+            has_relieved_neck,
             shank_radius_mm,
             stickout_length_mm,
             holder_nut_radius_mm,
@@ -127,7 +130,7 @@ impl ToolAssemblyProfile {
                 .unwrap_or(self.cutting_radius_mm);
             Some((r, ToolAssemblyPart::Flute))
         } else if z < self.stickout_length_mm {
-            let r = if self.is_thread_mill && z <= self.neck_length_mm {
+            let r = if self.has_relieved_neck && z <= self.neck_length_mm {
                 self.neck_radius_mm
             } else {
                 self.shank_radius_mm
@@ -167,7 +170,7 @@ impl ToolAssemblyProfile {
         if self.stickout_length_mm > self.flute_length_mm + 1e-6
             && r_eff <= self.shank_radius_mm + 1e-9
         {
-            let shank_z = if self.is_thread_mill {
+            let shank_z = if self.has_relieved_neck {
                 if r_eff <= self.neck_radius_mm + 1e-9 {
                     self.flute_length_mm
                 } else {
@@ -236,7 +239,7 @@ fn assembly_zone_bands(assembly: &ToolAssemblyProfile) -> ([AxialZoneBand; 4], u
 
     // 2. Non-cutting shank above flutes (when stickout > flute_length)
     if assembly.stickout_length_mm > assembly.flute_length_mm + 1e-6 {
-        let shank_r = if assembly.is_thread_mill {
+        let shank_r = if assembly.has_relieved_neck {
             assembly.shank_radius_mm.max(assembly.neck_radius_mm)
         } else {
             assembly.shank_radius_mm
@@ -856,7 +859,7 @@ fn evaluate_flat_or_vertical_chord_on_tri(
         } else if band.exact_holder_cone {
             assembly.holder_radius_at_dz(dz_witness)
         } else if band.part == ToolAssemblyPart::Shank
-            && assembly.is_thread_mill
+            && assembly.has_relieved_neck
             && dz_witness <= assembly.neck_length_mm
         {
             assembly.neck_radius_mm

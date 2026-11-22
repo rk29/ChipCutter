@@ -509,3 +509,179 @@ pub fn default_starter_tool_library() -> ToolLibrary {
         tools,
     }
 }
+
+/// Starter 6.0 mm 4FL Carbide Lollipop Endmill (Ø3.0 mm relieved neck, 18.0 mm reach)
+/// for 3D underside/back-chamfer deburring and concave undercut milling.
+pub fn starter_lollipop_6mm() -> Tool {
+    let diameter_mm = 6.0;
+    let neck_diameter_mm = 3.0;
+    let flute_length_mm = CutterGeometry::lollipop_sphere_height_mm(diameter_mm, neck_diameter_mm);
+    Tool {
+        id: ToolId("t13_6mm_lollipop_4fl".to_string()),
+        tool_number: 13,
+        length_offset_number: 13,
+        diameter_offset_number: 13,
+        name: "6mm 4FL Carbide Lollipop Endmill (270°)".to_string(),
+        vendor: Some("Generic Carbide".to_string()),
+        product_id: None,
+        native_unit: DisplayUnit::Millimeter,
+        spindle_direction: SpindleDirection::Cw,
+        default_coolant: CoolantMode::AirBlast,
+        stickout_length_mm: 24.0,
+        geometry: CutterGeometry::LollipopEndmill {
+            diameter_mm,
+            neck_diameter_mm,
+            neck_length_mm: 18.0,
+            flute_length_mm,
+            overall_length_mm: 55.0,
+            shank_diameter_mm: 6.0,
+            flutes: 4,
+        },
+        presets: vec![
+            CuttingPreset::from_surface_speed(SurfaceSpeedPresetSpec {
+                id: "al6061_deburr",
+                name: "Aluminum 6061 - 3D Deburr / Undercut",
+                material: "Aluminum 6061",
+                diameter_mm,
+                flutes: 4,
+                surface_speed_m_min: 180.0,
+                chipload_mm_tooth: 0.022,
+                default_stepdown_mm: 0.5,
+                default_stepover_mm: 0.4,
+                coolant_override: Some(CoolantMode::Mist),
+            }),
+            CuttingPreset::from_surface_speed(SurfaceSpeedPresetSpec {
+                id: "delrin_undercut",
+                name: "Acetal / Delrin - Undercut Finishing",
+                material: "Engineering Plastic",
+                diameter_mm,
+                flutes: 4,
+                surface_speed_m_min: 200.0,
+                chipload_mm_tooth: 0.030,
+                default_stepdown_mm: 0.75,
+                default_stepover_mm: 0.5,
+                coolant_override: Some(CoolantMode::AirBlast),
+            }),
+        ],
+    }
+}
+
+/// Starter 12.0 mm × 4.0 mm 4FL Carbide T-Slot / Keyway Mill (Ø5.0 mm relieved neck, 18.0 mm reach).
+pub fn starter_tslot_12mm() -> Tool {
+    let diameter_mm = 12.0;
+    Tool {
+        id: ToolId("t14_12mm_tslot_4fl".to_string()),
+        tool_number: 14,
+        length_offset_number: 14,
+        diameter_offset_number: 14,
+        name: "12mm × 4mm 4FL Carbide T-Slot Mill".to_string(),
+        vendor: Some("Generic Carbide".to_string()),
+        product_id: None,
+        native_unit: DisplayUnit::Millimeter,
+        spindle_direction: SpindleDirection::Cw,
+        default_coolant: CoolantMode::AirBlast,
+        stickout_length_mm: 26.0,
+        geometry: CutterGeometry::SlotMill {
+            diameter_mm,
+            cutting_thickness_mm: 4.0,
+            corner_radius_mm: 0.2,
+            neck_diameter_mm: 5.0,
+            neck_length_mm: 18.0,
+            overall_length_mm: 58.0,
+            shank_diameter_mm: 6.0,
+            flutes: 4,
+        },
+        presets: vec![
+            CuttingPreset::from_surface_speed(SurfaceSpeedPresetSpec {
+                id: "al6061_tslot",
+                name: "Aluminum 6061 - T-Slot / Keyway",
+                material: "Aluminum 6061",
+                diameter_mm,
+                flutes: 4,
+                surface_speed_m_min: 200.0,
+                chipload_mm_tooth: 0.025,
+                default_stepdown_mm: 4.0,
+                default_stepover_mm: 1.0,
+                coolant_override: Some(CoolantMode::Mist),
+            }),
+            CuttingPreset::from_surface_speed(SurfaceSpeedPresetSpec {
+                id: "steel1018_tslot",
+                name: "Mild Steel 1018 - T-Slot / Keyway",
+                material: "Mild Steel",
+                diameter_mm,
+                flutes: 4,
+                surface_speed_m_min: 75.0,
+                chipload_mm_tooth: 0.015,
+                default_stepdown_mm: 4.0,
+                default_stepover_mm: 0.5,
+                coolant_override: Some(CoolantMode::Flood),
+            }),
+        ],
+    }
+}
+
+/// Starter 12.0 mm 60° 4FL Carbide Dovetail Cutter (5.0 mm cutting height, Ø5.5 mm relieved neck).
+pub fn starter_dovetail_60deg_12mm() -> Tool {
+    let diameter_mm = 12.0;
+    Tool {
+        id: ToolId("t15_12mm_60deg_dovetail_4fl".to_string()),
+        tool_number: 15,
+        length_offset_number: 15,
+        diameter_offset_number: 15,
+        name: "12mm 60° 4FL Carbide Dovetail Cutter".to_string(),
+        vendor: Some("Generic Carbide".to_string()),
+        product_id: None,
+        native_unit: DisplayUnit::Millimeter,
+        spindle_direction: SpindleDirection::Cw,
+        default_coolant: CoolantMode::AirBlast,
+        stickout_length_mm: 26.0,
+        geometry: CutterGeometry::DovetailCutter {
+            diameter_mm,
+            side_angle_deg: 60.0,
+            cutting_height_mm: 5.0,
+            corner_radius_mm: 0.2,
+            neck_diameter_mm: 5.5,
+            neck_length_mm: 18.0,
+            overall_length_mm: 58.0,
+            shank_diameter_mm: 6.0,
+            flutes: 4,
+        },
+        presets: vec![
+            CuttingPreset::from_surface_speed(SurfaceSpeedPresetSpec {
+                id: "al6061_dovetail",
+                name: "Aluminum 6061 - Dovetail Rail",
+                material: "Aluminum 6061",
+                diameter_mm,
+                flutes: 4,
+                surface_speed_m_min: 190.0,
+                chipload_mm_tooth: 0.022,
+                default_stepdown_mm: 5.0,
+                default_stepover_mm: 0.8,
+                coolant_override: Some(CoolantMode::Mist),
+            }),
+            CuttingPreset::from_surface_speed(SurfaceSpeedPresetSpec {
+                id: "steel1018_dovetail",
+                name: "Mild Steel 1018 - Dovetail Rail",
+                material: "Mild Steel",
+                diameter_mm,
+                flutes: 4,
+                surface_speed_m_min: 70.0,
+                chipload_mm_tooth: 0.014,
+                default_stepdown_mm: 5.0,
+                default_stepover_mm: 0.4,
+                coolant_override: Some(CoolantMode::Flood),
+            }),
+        ],
+    }
+}
+
+/// Returns the starter catalog of relieved-neck undercut cutters (`Lollipop`, `Slot / T-Slot`,
+/// and `Dovetail`) kept separate from [`default_starter_tool_library`] so existing `T1..T10`
+/// indices and Phase 1–5 golden G-code snapshots remain byte-for-byte unchanged.
+pub fn starter_undercut_tools() -> Vec<Tool> {
+    vec![
+        starter_lollipop_6mm(),
+        starter_tslot_12mm(),
+        starter_dovetail_60deg_12mm(),
+    ]
+}

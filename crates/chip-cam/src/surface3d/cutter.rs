@@ -98,6 +98,55 @@ impl SurfaceCutterProfile {
             } => SurfaceCutterShape::Flat {
                 radius_mm: cutting_radius_mm,
             },
+            CutterEnvelopeShape::Lollipop {
+                flat_radius_mm,
+                sphere_radius_mm,
+                ..
+            } => {
+                if flat_radius_mm <= 1e-9 {
+                    SurfaceCutterShape::Ball {
+                        radius_mm: sphere_radius_mm,
+                    }
+                } else {
+                    SurfaceCutterShape::BullNose {
+                        flat_radius_mm,
+                        corner_radius_mm: sphere_radius_mm,
+                    }
+                }
+            }
+            CutterEnvelopeShape::SlotMill {
+                flat_radius_mm,
+                cutting_radius_mm,
+                corner_radius_mm,
+                ..
+            } => {
+                if corner_radius_mm <= 1e-6 {
+                    SurfaceCutterShape::Flat {
+                        radius_mm: cutting_radius_mm,
+                    }
+                } else {
+                    SurfaceCutterShape::BullNose {
+                        flat_radius_mm,
+                        corner_radius_mm,
+                    }
+                }
+            }
+            CutterEnvelopeShape::Dovetail {
+                bottom_radius_mm,
+                corner_radius_mm,
+                ..
+            } => {
+                if corner_radius_mm <= 1e-6 {
+                    SurfaceCutterShape::Flat {
+                        radius_mm: bottom_radius_mm,
+                    }
+                } else {
+                    SurfaceCutterShape::BullNose {
+                        flat_radius_mm: (bottom_radius_mm - corner_radius_mm).max(0.0),
+                        corner_radius_mm,
+                    }
+                }
+            }
         };
 
         Self {
