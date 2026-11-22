@@ -116,9 +116,24 @@ impl SimulationPanelState {
                         }
                     }
                     #[cfg(feature = "gpu-compute")]
-                    StockRemeshPayload::GpuHandle(handle) => {
-                        self.cached_gpu_handle = Some(handle);
-                        self.cached_stock_mesh = None;
+                    StockRemeshPayload::GpuStockSnapshot(stock) => {
+                        if let Some(render_ctx) = self.gpu_ctx.as_ref() {
+                            let target_td = self
+                                .active_result
+                                .as_ref()
+                                .and_then(|r| r.target_tridexel_stock.as_ref());
+                            let color_mode = self.active_stock_color_mode();
+                            let handle = chip_sim::GpuStockRenderHandle::from_simulated_stock(
+                                render_ctx, &stock, target_td, color_mode,
+                            );
+                            self.cached_gpu_handle = Some(handle);
+                            self.cached_stock_mesh = None;
+                        } else if let Some(res) = self.active_result.as_ref() {
+                            let color_mode = self.active_stock_color_mode();
+                            let mesh = res.extract_stock_mesh(&stock, color_mode);
+                            self.cached_stock_mesh = Some(Arc::new(mesh));
+                            self.cached_gpu_handle = None;
+                        }
                     }
                 }
                 updated = true;
@@ -1098,7 +1113,7 @@ mod tests {
     #[cfg(feature = "gpu-compute")]
     #[test]
     fn gpu_playback_toggling_heatmap_and_tolerance_updates_without_resweep_or_cpu_mesh() {
-        let ctx = chip_sim::GpuSimContext::shared_headless()
+        let presentation_ctx = chip_sim::GpuSimContext::try_new_headless()
             .expect("expected Vulkan/wgpu compute adapter");
         let mut project = ProjectDocument::new("GPU Instant Heatmap Test");
         let lib = default_starter_tool_library();
@@ -1125,7 +1140,7 @@ mod tests {
         b.linear_to(DVec3::new(30.0, 0.0, -5.0), 600.0, MotionRole::Cut);
         let tp = b.finish();
 
-        let sim = chip_sim::run_setup_simulation_with_gpu_context(
+        let sim = chip_sim::run_setup_simulation_with_choice(
             &SetupSimulationInput {
                 doc: &doc,
                 setup: &resolved,
@@ -1145,7 +1160,6 @@ mod tests {
             },
             chip_sim::SimEngineKind::Heightmap,
             chip_sim::SimComputeBackendChoice::Gpu,
-            Some(Arc::clone(&ctx)),
         )
         .unwrap();
         assert!(sim.active_backend.is_gpu);
@@ -1155,7 +1169,7 @@ mod tests {
 
         let mut panel = SimulationPanelState::with_engine_and_gpu(
             chip_sim::SimEngineKind::Heightmap,
-            Some(ctx),
+            Some(Arc::clone(&presentation_ctx)),
         );
         panel.active_run_id = 1;
         panel.active_setup_idx = 0;
@@ -1261,6 +1275,19 @@ mod tests {
         assert!(
             vol_after < vol_before - 100.0,
             "GPU scrub must cut additional stock (before={vol_before:.1}, after={vol_after:.1})"
+        );
+
+        // Regression test: background remesh worker MUST use an isolated compute `wgpu::Device`
+        // distinct from `eframe`'s presentation device so `Surface::configure` on window resize
+        // can never panic with `ConfigureSurfaceError::GpuWaitTimeout`.
+        let presentation_ctx_ptr = Arc::as_ptr(&presentation_ctx);
+        let worker_ctx_ptr = panel
+            .remesh_worker
+            .compute_gpu_ctx_ptr()
+            .expect("background remesh worker initialized isolated compute GPU context");
+        assert_ne!(
+            worker_ctx_ptr, presentation_ctx_ptr,
+            "background simulation/remesh worker must never submit to eframe's presentation wgpu::Device"
         );
     }
 }

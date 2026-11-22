@@ -6,17 +6,13 @@ use std::{
 
 use chip_cam::{GeneratedToolpath, Operation};
 use chip_project::{collect_ready_setup_operations, resolve_kinematics_for_key};
-#[cfg(not(feature = "gpu-compute"))]
-use chip_sim::run_setup_simulation_with_choice;
 #[cfg(feature = "gpu-compute")]
-use chip_sim::{
-    GpuCheckpointCache, GpuSimContext, GpuStockRenderHandle, WgpuComputeBackend,
-    run_setup_simulation_with_gpu_context,
-};
+use chip_sim::{GpuCheckpointCache, GpuSimContext, WgpuComputeBackend};
 use chip_sim::{
     ScrubSnapshot, SetupSimulationInput, SetupSimulationResult, SimError, SimOperationInput,
     SimStockColorMode, SimStockMesh, SimVerificationConfig, SimulatedStock,
     SimulatedStockPlaybackExt, StockPlaybackCursor, format_cycle_time_hms,
+    run_setup_simulation_with_choice,
 };
 use chip_tools::Tool;
 use crossbeam_channel::{Receiver, Sender, unbounded};
@@ -74,11 +70,12 @@ pub(super) struct StockRemeshRequest {
     pub(super) egui_ctx: Option<egui::Context>,
 }
 
-/// Payload produced by [`StockRemeshWorker`] (CPU indexed mesh or zero-readback GPU handle).
+/// Payload produced by [`StockRemeshWorker`] (CPU indexed mesh or flat GPU stock snapshot uploaded
+/// strictly on the main UI thread so background threads never touch `eframe`'s presentation device).
 pub(super) enum StockRemeshPayload {
     CpuMesh(Arc<SimStockMesh>),
     #[cfg(feature = "gpu-compute")]
-    GpuHandle(Arc<GpuStockRenderHandle>),
+    GpuStockSnapshot(Arc<SimulatedStock>),
 }
 
 /// Completed remesh response produced by [`StockRemeshWorker`].
@@ -98,7 +95,7 @@ struct RemeshWorkerState {
     working_stock_cursor: Option<StockPlaybackCursor>,
     working_stock: Option<SimulatedStock>,
     #[cfg(feature = "gpu-compute")]
-    gpu_ctx: Option<Arc<GpuSimContext>>,
+    compute_gpu_ctx: Option<Arc<GpuSimContext>>,
     #[cfg(feature = "gpu-compute")]
     gpu_backend: Option<WgpuComputeBackend>,
     #[cfg(feature = "gpu-compute")]
@@ -127,71 +124,74 @@ impl RemeshWorkerState {
         let run_identity = (req.run_id, req.result_ptr);
 
         #[cfg(feature = "gpu-compute")]
-        if let Some(ctx) = self.gpu_ctx.as_ref().map(Arc::clone)
-            && req.sim_result.active_backend.is_gpu
-        {
-            if self.working_stock_identity != Some(run_identity) {
-                self.working_stock_identity = Some(run_identity);
-                self.working_stock = None;
-                let total_spans = req.sim_result.timeline.motion_spans.len();
-                self.working_stock_cursor = Some(StockPlaybackCursor {
-                    seg_idx: total_spans,
-                    seg_u: 0.0,
-                });
-                let backend = WgpuComputeBackend::new(
-                    ctx,
-                    req.sim_result.final_stock.clone(),
-                    req.sim_result.target_tridexel_stock.clone(),
-                );
-                self.gpu_checkpoints.clear();
-                let _ = self
-                    .gpu_checkpoints
-                    .capture_from_backend(&backend, total_spans);
-                self.gpu_backend = Some(backend);
-                self.last_meshed_meta = None;
-                self.has_emitted_mesh = false;
+        if req.sim_result.active_backend.is_gpu {
+            if self.compute_gpu_ctx.is_none() {
+                self.compute_gpu_ctx = GpuSimContext::shared_headless();
             }
+            if let Some(ctx) = self.compute_gpu_ctx.as_ref().map(Arc::clone) {
+                if self.working_stock_identity != Some(run_identity) {
+                    self.working_stock_identity = Some(run_identity);
+                    self.working_stock = None;
+                    let total_spans = req.sim_result.timeline.motion_spans.len();
+                    self.working_stock_cursor = Some(StockPlaybackCursor {
+                        seg_idx: total_spans,
+                        seg_u: 0.0,
+                    });
+                    let backend = WgpuComputeBackend::new(
+                        ctx,
+                        req.sim_result.final_stock.clone(),
+                        req.sim_result.target_tridexel_stock.clone(),
+                    );
+                    self.gpu_checkpoints.clear();
+                    let _ = self
+                        .gpu_checkpoints
+                        .capture_from_backend(&backend, total_spans);
+                    self.gpu_backend = Some(backend);
+                    self.last_meshed_meta = None;
+                    self.has_emitted_mesh = false;
+                }
 
-            let stock_changed = if let (Some(backend), Some(snap)) =
-                (self.gpu_backend.as_mut(), req.scrub_snapshot.as_ref())
-            {
-                req.sim_result.sync_gpu_backend_to_scrub_snapshot(
-                    backend,
-                    &mut self.gpu_checkpoints,
-                    &mut self.working_stock_cursor,
-                    snap,
-                )
-            } else if let Some(backend) = self.gpu_backend.as_mut() {
-                req.sim_result.sync_gpu_backend_to_time(
-                    backend,
-                    &mut self.gpu_checkpoints,
-                    &mut self.working_stock_cursor,
-                    req.target_time_sec,
-                )
-            } else {
-                false
-            };
+                let stock_changed = if let (Some(backend), Some(snap)) =
+                    (self.gpu_backend.as_mut(), req.scrub_snapshot.as_ref())
+                {
+                    req.sim_result.sync_gpu_backend_to_scrub_snapshot(
+                        backend,
+                        &mut self.gpu_checkpoints,
+                        &mut self.working_stock_cursor,
+                        snap,
+                    )
+                } else if let Some(backend) = self.gpu_backend.as_mut() {
+                    req.sim_result.sync_gpu_backend_to_time(
+                        backend,
+                        &mut self.gpu_checkpoints,
+                        &mut self.working_stock_cursor,
+                        req.target_time_sec,
+                    )
+                } else {
+                    false
+                };
 
-            let needs_publish = stock_changed || !self.has_emitted_mesh;
-            let payload = if needs_publish {
-                let handle = self
-                    .gpu_backend
-                    .as_mut()
-                    .map(|b| b.capture_render_handle(req.color_mode));
-                self.last_meshed_meta = Some(req.meta);
-                self.has_emitted_mesh = true;
-                handle.map(StockRemeshPayload::GpuHandle)
-            } else {
-                None
-            };
+                let needs_publish = stock_changed || !self.has_emitted_mesh;
+                let payload = if needs_publish {
+                    let snapshot = self
+                        .gpu_backend
+                        .as_ref()
+                        .map(|b| b.with_synced_cpu_stock(|s| Arc::new(s.clone())));
+                    self.last_meshed_meta = Some(req.meta);
+                    self.has_emitted_mesh = true;
+                    snapshot.map(StockRemeshPayload::GpuStockSnapshot)
+                } else {
+                    None
+                };
 
-            return StockRemeshOutput {
-                request_id: req.request_id,
-                run_id: req.run_id,
-                result_ptr: req.result_ptr,
-                meta: req.meta,
-                payload,
-            };
+                return StockRemeshOutput {
+                    request_id: req.request_id,
+                    run_id: req.run_id,
+                    result_ptr: req.result_ptr,
+                    meta: req.meta,
+                    payload,
+                };
+            }
         }
 
         if self.working_stock_identity != Some(run_identity) {
@@ -389,12 +389,11 @@ impl StockRemeshWorker {
         }
     }
 
-    #[cfg(feature = "gpu-compute")]
-    pub(super) fn set_gpu_context(&mut self, gpu_ctx: Option<Arc<GpuSimContext>>) {
-        let mut st = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
-        st.gpu_ctx = gpu_ctx;
-        st.gpu_backend = None;
-        st.gpu_checkpoints.clear();
+    #[cfg(all(test, feature = "gpu-compute"))]
+    pub(super) fn compute_gpu_ctx_ptr(&self) -> Option<*const GpuSimContext> {
+        self.wait_idle();
+        let st = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
+        st.compute_gpu_ctx.as_ref().map(Arc::as_ptr)
     }
 
     #[cfg(test)]
@@ -587,8 +586,6 @@ impl SimulationPanelState {
         ));
 
         let tx = self.tx.clone();
-        #[cfg(feature = "gpu-compute")]
-        let gpu_ctx = self.gpu_ctx.clone();
         rayon::spawn(move || {
             let t0 = Instant::now();
             let refs: Vec<SimOperationInput<'_>> = owned_ops
@@ -608,10 +605,10 @@ impl SimulationPanelState {
                 verify_config: SimVerificationConfig::default(),
                 cancel: Some(&cancel_flag),
             };
-            #[cfg(feature = "gpu-compute")]
-            let res =
-                run_setup_simulation_with_gpu_context(&input, engine, backend_choice, gpu_ctx);
-            #[cfg(not(feature = "gpu-compute"))]
+            // Always run full-setup background GPU simulation on an isolated headless compute
+            // `wgpu::Device` (`GpuSimContext::shared_headless()`), NEVER on `eframe`'s presentation
+            // device—otherwise resizing the window mid-simulation causes `Surface::configure` to
+            // fail with `ConfigureSurfaceError::GpuWaitTimeout`.
             let res = run_setup_simulation_with_choice(&input, engine, backend_choice);
             let mapped = match res {
                 Ok(sim) => Ok(Arc::new(sim)),

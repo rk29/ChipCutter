@@ -672,103 +672,7 @@ impl GpuTriDexelState {
         color_mode: SimStockColorMode,
     ) -> Option<Arc<SimStockMesh>> {
         let guard = self.cpu.lock().unwrap_or_else(|e| e.into_inner());
-        if !guard.stock.planes.iter().any(|p| !p.overflow.is_empty()) {
-            return None;
-        }
-        let color_by_op = matches!(color_mode, SimStockColorMode::ByOperation);
-        let mut mesh = SimStockMesh::default();
-        for axis in Axis3::ALL {
-            let plane = guard.stock.plane(axis);
-            if plane.overflow.is_empty() {
-                continue;
-            }
-            let target_plane = guard.target.as_ref().map(|t| t.plane(axis));
-            let is_side = axis.is_side_axis();
-            let pos_n = axis.unit_vec_f32();
-            let neg_n = [-pos_n[0], -pos_n[1], -pos_n[2]];
-            for (&local_r, spans) in &plane.overflow {
-                let iu = (local_r as usize) % plane.nu;
-                let iv = (local_r as usize) / plane.nu;
-                let u0 = plane.origin_u_mm + (iu as f64) * plane.du_mm;
-                let u1 = u0 + plane.du_mm;
-                let v0 = plane.origin_v_mm + (iv as f64) * plane.dv_mm;
-                let v1 = v0 + plane.dv_mm;
-                let tgt_spans = target_plane.map(|tp| tp.ray_spans(iu, iv));
-                for &s in spans {
-                    for (want_min, coord_w, op_idx, n) in [
-                        (false, s.max_mm, s.max_op_idx, pos_n),
-                        (true, s.min_mm, s.min_op_idx, neg_n),
-                    ] {
-                        let col = match (color_mode, tgt_spans.as_ref()) {
-                            (
-                                SimStockColorMode::ErrorHeatmap {
-                                    tolerance_mm,
-                                    max_scale_mm,
-                                },
-                                Some(ts),
-                            ) => {
-                                let dev =
-                                    signed_deviation_at_machined_endpoint(ts, coord_w, want_min);
-                                deviation_to_heatmap_rgba(dev, tolerance_mm, max_scale_mm)
-                            }
-                            _ => op_color(op_idx, color_by_op, is_side),
-                        };
-                        let to_f32 = |u: f64, v: f64, w: f64| -> [f32; 3] {
-                            let p = axis.from_uvw(u, v, w);
-                            [p.x as f32, p.y as f32, p.z as f32]
-                        };
-                        let (a, b, c, d) = if axis == Axis3::Y {
-                            (
-                                to_f32(u0, v0, coord_w),
-                                to_f32(u0, v1, coord_w),
-                                to_f32(u1, v1, coord_w),
-                                to_f32(u1, v0, coord_w),
-                            )
-                        } else {
-                            (
-                                to_f32(u0, v0, coord_w),
-                                to_f32(u1, v0, coord_w),
-                                to_f32(u1, v1, coord_w),
-                                to_f32(u0, v1, coord_w),
-                            )
-                        };
-                        let (p0, p1, p2, p3) = if want_min { (a, d, c, b) } else { (a, b, c, d) };
-                        let base = mesh.vertices.len() as u32;
-                        mesh.vertices.extend_from_slice(&[
-                            SimColoredVertex {
-                                pos_mm: p0,
-                                normal: n,
-                                color_rgba: col,
-                            },
-                            SimColoredVertex {
-                                pos_mm: p1,
-                                normal: n,
-                                color_rgba: col,
-                            },
-                            SimColoredVertex {
-                                pos_mm: p2,
-                                normal: n,
-                                color_rgba: col,
-                            },
-                            SimColoredVertex {
-                                pos_mm: p3,
-                                normal: n,
-                                color_rgba: col,
-                            },
-                        ]);
-                        mesh.indices.extend_from_slice(&[
-                            base,
-                            base + 1,
-                            base + 2,
-                            base,
-                            base + 2,
-                            base + 3,
-                        ]);
-                    }
-                }
-            }
-        }
-        (!mesh.vertices.is_empty()).then(|| Arc::new(mesh))
+        build_tridexel_overflow_supplement_mesh(&guard.stock, guard.target.as_ref(), color_mode)
     }
 
     pub(crate) fn checkpoint_byte_size(&self) -> usize {
@@ -1498,6 +1402,109 @@ impl GpuTriDexelState {
         }
         guard.gpu_dirty = false;
     }
+}
+
+pub(super) fn build_tridexel_overflow_supplement_mesh(
+    stock: &TriDexelStock,
+    target: Option<&TriDexelStock>,
+    color_mode: SimStockColorMode,
+) -> Option<Arc<SimStockMesh>> {
+    if !stock.planes.iter().any(|p| !p.overflow.is_empty()) {
+        return None;
+    }
+    let color_by_op = matches!(color_mode, SimStockColorMode::ByOperation);
+    let mut mesh = SimStockMesh::default();
+    for axis in Axis3::ALL {
+        let plane = stock.plane(axis);
+        if plane.overflow.is_empty() {
+            continue;
+        }
+        let target_plane = target.map(|t| t.plane(axis));
+        let is_side = axis.is_side_axis();
+        let pos_n = axis.unit_vec_f32();
+        let neg_n = [-pos_n[0], -pos_n[1], -pos_n[2]];
+        for (&local_r, spans) in &plane.overflow {
+            let iu = (local_r as usize) % plane.nu;
+            let iv = (local_r as usize) / plane.nu;
+            let u0 = plane.origin_u_mm + (iu as f64) * plane.du_mm;
+            let u1 = u0 + plane.du_mm;
+            let v0 = plane.origin_v_mm + (iv as f64) * plane.dv_mm;
+            let v1 = v0 + plane.dv_mm;
+            let tgt_spans = target_plane.map(|tp| tp.ray_spans(iu, iv));
+            for &s in spans {
+                for (want_min, coord_w, op_idx, n) in [
+                    (false, s.max_mm, s.max_op_idx, pos_n),
+                    (true, s.min_mm, s.min_op_idx, neg_n),
+                ] {
+                    let col = match (color_mode, tgt_spans.as_ref()) {
+                        (
+                            SimStockColorMode::ErrorHeatmap {
+                                tolerance_mm,
+                                max_scale_mm,
+                            },
+                            Some(ts),
+                        ) => {
+                            let dev = signed_deviation_at_machined_endpoint(ts, coord_w, want_min);
+                            deviation_to_heatmap_rgba(dev, tolerance_mm, max_scale_mm)
+                        }
+                        _ => op_color(op_idx, color_by_op, is_side),
+                    };
+                    let to_f32 = |u: f64, v: f64, w: f64| -> [f32; 3] {
+                        let p = axis.from_uvw(u, v, w);
+                        [p.x as f32, p.y as f32, p.z as f32]
+                    };
+                    let (a, b, c, d) = if axis == Axis3::Y {
+                        (
+                            to_f32(u0, v0, coord_w),
+                            to_f32(u0, v1, coord_w),
+                            to_f32(u1, v1, coord_w),
+                            to_f32(u1, v0, coord_w),
+                        )
+                    } else {
+                        (
+                            to_f32(u0, v0, coord_w),
+                            to_f32(u1, v0, coord_w),
+                            to_f32(u1, v1, coord_w),
+                            to_f32(u0, v1, coord_w),
+                        )
+                    };
+                    let (p0, p1, p2, p3) = if want_min { (a, d, c, b) } else { (a, b, c, d) };
+                    let base = mesh.vertices.len() as u32;
+                    mesh.vertices.extend_from_slice(&[
+                        SimColoredVertex {
+                            pos_mm: p0,
+                            normal: n,
+                            color_rgba: col,
+                        },
+                        SimColoredVertex {
+                            pos_mm: p1,
+                            normal: n,
+                            color_rgba: col,
+                        },
+                        SimColoredVertex {
+                            pos_mm: p2,
+                            normal: n,
+                            color_rgba: col,
+                        },
+                        SimColoredVertex {
+                            pos_mm: p3,
+                            normal: n,
+                            color_rgba: col,
+                        },
+                    ]);
+                    mesh.indices.extend_from_slice(&[
+                        base,
+                        base + 1,
+                        base + 2,
+                        base,
+                        base + 2,
+                        base + 3,
+                    ]);
+                }
+            }
+        }
+    }
+    (!mesh.vertices.is_empty()).then(|| Arc::new(mesh))
 }
 
 #[inline]

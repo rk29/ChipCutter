@@ -8,15 +8,19 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 
+use wgpu::util::DeviceExt as _;
+
 use crate::{
+    backend::SimulatedStock,
     mesher_common::{
         MACHINED_METAL_COLOR, OPERATION_STOCK_PALETTE, RAW_STOCK_SIDE_COLOR, RAW_STOCK_TOP_COLOR,
     },
     metrics::SimStockColorMode,
-    types::{RotaryStockSpec, SimStockMesh},
+    tridexel::{FlatDexelSpan, INLINE_DEXEL_SLOTS, TriDexelStock},
+    types::{Axis3, RotaryStockSpec, SimColoredVertex, SimStockMesh},
 };
 
-use super::context::GpuSimContext;
+use super::{context::GpuSimContext, tridexel::build_tridexel_overflow_supplement_mesh};
 
 /// Maximum emitted vertices per Tri-Dexel GPU indirect draw (`2_400_000 × 40 B = 96 MB < 128 MiB`
 /// WebGPU default `max_storage_buffer_binding_size`).
@@ -339,6 +343,251 @@ pub enum GpuStockRenderHandle {
 }
 
 impl GpuStockRenderHandle {
+    /// Uploads flat stock buffers from a [`SimulatedStock`] snapshot directly onto `ctx`'s
+    /// presentation `wgpu::Device` (zero CPU mesh tessellation, safe to call strictly on the
+    /// main UI thread while background compute sweeps run on an independent headless device).
+    pub fn from_simulated_stock(
+        ctx: &Arc<GpuSimContext>,
+        stock: &SimulatedStock,
+        target_tridexel: Option<&TriDexelStock>,
+        color_mode: SimStockColorMode,
+    ) -> Arc<Self> {
+        let device = ctx.device();
+        match stock {
+            SimulatedStock::Heightfield(hf) => {
+                let z_stock_buf = Arc::new(device.create_buffer_init(
+                    &wgpu::util::BufferInitDescriptor {
+                        label: Some("chip_hf_render_z_stock"),
+                        contents: bytemuck::cast_slice(&hf.z_stock),
+                        usage: wgpu::BufferUsages::STORAGE,
+                    },
+                ));
+                let z_bottom_buf = Arc::new(device.create_buffer_init(
+                    &wgpu::util::BufferInitDescriptor {
+                        label: Some("chip_hf_render_z_bottom"),
+                        contents: bytemuck::cast_slice(&hf.z_bottom),
+                        usage: wgpu::BufferUsages::STORAGE,
+                    },
+                ));
+                let z_target_buf = Arc::new(device.create_buffer_init(
+                    &wgpu::util::BufferInitDescriptor {
+                        label: Some("chip_hf_render_z_target"),
+                        contents: bytemuck::cast_slice(&hf.z_target),
+                        usage: wgpu::BufferUsages::STORAGE,
+                    },
+                ));
+                let last_op_buf = Arc::new(device.create_buffer_init(
+                    &wgpu::util::BufferInitDescriptor {
+                        label: Some("chip_hf_render_last_op"),
+                        contents: bytemuck::cast_slice(&hf.last_op_idx),
+                        usage: wgpu::BufferUsages::STORAGE,
+                    },
+                ));
+                let has_target = hf.z_target.iter().any(|z| z.is_finite());
+                Arc::new(Self::Heightfield(GpuHeightfieldRenderData {
+                    nx: hf.nx as u32,
+                    ny: hf.ny as u32,
+                    origin_wcs: [
+                        hf.origin_wcs.x as f32,
+                        hf.origin_wcs.y as f32,
+                        hf.origin_wcs.z as f32,
+                    ],
+                    dx_mm: hf.dx_mm as f32,
+                    dy_mm: hf.dy_mm as f32,
+                    has_target,
+                    z_stock_buf,
+                    z_bottom_buf,
+                    z_target_buf,
+                    last_op_buf,
+                }))
+            }
+            SimulatedStock::Cylindrical(cyl) => {
+                let r_stock_buf = Arc::new(device.create_buffer_init(
+                    &wgpu::util::BufferInitDescriptor {
+                        label: Some("chip_cyl_render_r_stock"),
+                        contents: bytemuck::cast_slice(&cyl.r_stock),
+                        usage: wgpu::BufferUsages::STORAGE,
+                    },
+                ));
+                let r_target_buf = Arc::new(device.create_buffer_init(
+                    &wgpu::util::BufferInitDescriptor {
+                        label: Some("chip_cyl_render_r_target"),
+                        contents: bytemuck::cast_slice(&cyl.r_target),
+                        usage: wgpu::BufferUsages::STORAGE,
+                    },
+                ));
+                let last_op_buf = Arc::new(device.create_buffer_init(
+                    &wgpu::util::BufferInitDescriptor {
+                        label: Some("chip_cyl_render_last_op"),
+                        contents: bytemuck::cast_slice(&cyl.last_op_idx),
+                        usage: wgpu::BufferUsages::STORAGE,
+                    },
+                ));
+                let has_target = cyl.r_target.iter().any(|&r| r >= 0.0 && r.is_finite());
+                Arc::new(Self::Cylindrical(GpuCylindricalRenderData {
+                    nu: cyl.nu as u32,
+                    ntheta: cyl.ntheta as u32,
+                    rotary: cyl.rotary,
+                    u_min: cyl.u_min,
+                    u_max: cyl.u_max,
+                    du: cyl.du,
+                    dtheta: cyl.dtheta,
+                    has_target,
+                    r_stock_buf,
+                    r_target_buf,
+                    last_op_buf,
+                }))
+            }
+            SimulatedStock::TriDexel(td) => {
+                let rx = td.planes[0].ray_count();
+                let ry = td.planes[1].ray_count();
+                let rz = td.planes[2].ray_count();
+                let plane_ray_offsets = [0u32, rx as u32, (rx + ry) as u32];
+                let total_rays = rx + ry + rz;
+                let total_slots = total_rays * INLINE_DEXEL_SLOTS;
+
+                let mut all_m_slots = Vec::with_capacity(total_slots.max(1));
+                let mut all_m_counts = Vec::with_capacity(total_rays.max(1));
+                for axis in Axis3::ALL {
+                    let p = td.plane(axis);
+                    all_m_slots.extend_from_slice(&p.slots);
+                    all_m_counts.extend_from_slice(&p.counts);
+                }
+                if all_m_slots.is_empty() {
+                    all_m_slots.push(FlatDexelSpan::ZERO);
+                }
+                if all_m_counts.is_empty() {
+                    all_m_counts.push(0);
+                }
+
+                let m_slots_buf = Arc::new(device.create_buffer_init(
+                    &wgpu::util::BufferInitDescriptor {
+                        label: Some("chip_td_render_m_slots"),
+                        contents: bytemuck::cast_slice(&all_m_slots),
+                        usage: wgpu::BufferUsages::STORAGE,
+                    },
+                ));
+                let m_counts_buf = Arc::new(device.create_buffer_init(
+                    &wgpu::util::BufferInitDescriptor {
+                        label: Some("chip_td_render_m_counts"),
+                        contents: bytemuck::cast_slice(&all_m_counts),
+                        usage: wgpu::BufferUsages::STORAGE,
+                    },
+                ));
+
+                let has_target = target_tridexel.is_some();
+                let (t_slots_buf, t_counts_buf) = if let Some(tgt) = target_tridexel {
+                    let mut all_t_slots = Vec::with_capacity(total_slots.max(1));
+                    let mut all_t_counts = Vec::with_capacity(total_rays.max(1));
+                    for axis in Axis3::ALL {
+                        let p = tgt.plane(axis);
+                        all_t_slots.extend_from_slice(&p.slots);
+                        all_t_counts.extend_from_slice(&p.counts);
+                    }
+                    if all_t_slots.is_empty() {
+                        all_t_slots.push(FlatDexelSpan::ZERO);
+                    }
+                    if all_t_counts.is_empty() {
+                        all_t_counts.push(0);
+                    }
+                    (
+                        Arc::new(
+                            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                                label: Some("chip_td_render_t_slots"),
+                                contents: bytemuck::cast_slice(&all_t_slots),
+                                usage: wgpu::BufferUsages::STORAGE,
+                            }),
+                        ),
+                        Arc::new(
+                            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                                label: Some("chip_td_render_t_counts"),
+                                contents: bytemuck::cast_slice(&all_t_counts),
+                                usage: wgpu::BufferUsages::STORAGE,
+                            }),
+                        ),
+                    )
+                } else {
+                    let dummy_slots = [FlatDexelSpan::ZERO];
+                    let dummy_counts = [0u32; 4];
+                    (
+                        Arc::new(
+                            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                                label: Some("chip_td_render_dummy_t_slots"),
+                                contents: bytemuck::cast_slice(&dummy_slots),
+                                usage: wgpu::BufferUsages::STORAGE,
+                            }),
+                        ),
+                        Arc::new(
+                            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                                label: Some("chip_td_render_dummy_t_counts"),
+                                contents: bytemuck::cast_slice(&dummy_counts),
+                                usage: wgpu::BufferUsages::STORAGE,
+                            }),
+                        ),
+                    )
+                };
+
+                let max_vertices = ((total_rays as u64) * 4 * 6)
+                    .clamp(6_000, MAX_TRIDEXEL_EMIT_VERTICES as u64)
+                    as u32;
+                let vertex_bytes =
+                    (max_vertices as u64) * (std::mem::size_of::<SimColoredVertex>() as u64);
+                let vertex_buf = Arc::new(device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("chip_td_render_emit_vertices"),
+                    size: vertex_bytes.max(64),
+                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::STORAGE,
+                    mapped_at_creation: false,
+                }));
+                let indirect_args_buf = Arc::new(device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("chip_td_render_emit_indirect_args"),
+                    size: 16,
+                    usage: wgpu::BufferUsages::INDIRECT
+                        | wgpu::BufferUsages::STORAGE
+                        | wgpu::BufferUsages::COPY_DST
+                        | wgpu::BufferUsages::COPY_SRC,
+                    mapped_at_creation: false,
+                }));
+                let emit_uniform_buf = Arc::new(device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("chip_td_render_emit_uniforms"),
+                    size: std::mem::size_of::<TriDexelEmitUniforms>() as u64,
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                }));
+
+                let overflow_mesh =
+                    build_tridexel_overflow_supplement_mesh(td, target_tridexel, color_mode);
+                let data = GpuTriDexelRenderData::new_and_emit(
+                    Arc::clone(ctx),
+                    [td.dims[0] as u32, td.dims[1] as u32, td.dims[2] as u32],
+                    [
+                        td.origin_wcs.x as f32,
+                        td.origin_wcs.y as f32,
+                        td.origin_wcs.z as f32,
+                    ],
+                    [
+                        td.pitch_mm.x as f32,
+                        td.pitch_mm.y as f32,
+                        td.pitch_mm.z as f32,
+                    ],
+                    plane_ray_offsets,
+                    total_rays as u32,
+                    has_target,
+                    m_slots_buf,
+                    m_counts_buf,
+                    t_slots_buf,
+                    t_counts_buf,
+                    vertex_buf,
+                    indirect_args_buf,
+                    emit_uniform_buf,
+                    max_vertices,
+                    overflow_mesh,
+                    color_mode,
+                );
+                Arc::new(Self::TriDexel(data))
+            }
+        }
+    }
+
     /// Returns `true` if target comparison data is present on the GPU for Error Heatmap display.
     #[inline]
     pub const fn has_target(&self) -> bool {

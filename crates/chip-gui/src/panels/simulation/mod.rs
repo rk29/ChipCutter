@@ -205,7 +205,10 @@ impl SimulationPanelState {
 
     #[cfg(feature = "gpu-compute")]
     pub fn set_gpu_context(&mut self, gpu_ctx: Option<Arc<GpuSimContext>>) {
-        self.remesh_worker.set_gpu_context(gpu_ctx.clone());
+        // Keep `eframe`'s presentation `wgpu::Device` strictly main-thread-only: never hand it to
+        // background worker threads, because `wgpu-core`'s `Surface::configure` requires the
+        // presentation device queue to be completely empty on window resize (otherwise concurrent
+        // background `queue.submit` calls fail with `ConfigureSurfaceError::GpuWaitTimeout`).
         self.gpu_ctx = gpu_ctx;
     }
 
