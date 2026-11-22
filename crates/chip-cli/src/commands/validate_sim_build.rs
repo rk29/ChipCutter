@@ -7,10 +7,13 @@ use chip_post::{
 use chip_project::{
     DiagnosticSeverity, SetupPostRequest, SetupSimRequest, ToolpathCache,
     generate_project_blocking_in_dir, kinematics_for_post_profile, post_process_project_setup,
-    simulate_all_setups_with_choice, simulate_project_setup_in_dir, validate_project,
-    validate_project_with_machine,
+    simulate_all_setups_with_choice, simulate_project_setup_in_dir,
+    simulate_project_setup_with_choice_in_dir, validate_project, validate_project_with_machine,
 };
-use chip_sim::{SetupSimulationResult, SimResolution, StockModelKind, format_cycle_time_hms};
+use chip_sim::{
+    SetupSimulationResult, SimComputeBackendChoice, SimEngineKind, SimResolution, StockModelKind,
+    format_cycle_time_hms,
+};
 use chip_tools::resolve_machine_definition_cli_override;
 
 use crate::commands::{
@@ -432,20 +435,54 @@ pub fn run_build(args: BuildArgs) -> Result<ExitCode, Box<dyn std::error::Error>
         }
         let kin = kinematics_for_post_profile(&post_profile);
 
-        // Mandatory pre-post physical heightmap crash, gouge, & fixture gate (`06-simulation.md` §4)!
-        let sim = simulate_project_setup_in_dir(
-            &SetupSimRequest {
-                project: &proj_doc,
-                setup_idx: s_idx,
-                cad_doc: &cad_doc,
-                cad_revision: 1,
-                cache: &cache,
-                kinematics: kin,
-                resolution: SimResolution::Standard,
-                cancel: None,
-            },
-            proj_dir,
-        )?;
+        // Mandatory pre-post physical crash, gouge, & fixture gate (`06-simulation.md` §4)!
+        // Automatically select full-3D Tri-Dexel when a Setup carries over volumetric stock or
+        // runs undercut strategies / relieved-neck undercut cutters (`SlotMill`, `DovetailCutter`, `LollipopEndmill`).
+        let needs_tridexel = setup.carryover_from_setup_id.is_some()
+            || setup.operations.iter().any(|op| {
+                if op.suppressed {
+                    return false;
+                }
+                if matches!(
+                    op.kind,
+                    chip_cam::OperationKind::SlotUndercut
+                        | chip_cam::OperationKind::Dovetail
+                        | chip_cam::OperationKind::Undercut3D
+                ) {
+                    return true;
+                }
+                op.tool_id
+                    .as_ref()
+                    .and_then(|tid| proj_doc.tool(tid))
+                    .is_some_and(|t| {
+                        matches!(
+                            t.geometry,
+                            chip_tools::CutterGeometry::LollipopEndmill { .. }
+                                | chip_tools::CutterGeometry::SlotMill { .. }
+                                | chip_tools::CutterGeometry::DovetailCutter { .. }
+                        )
+                    })
+            });
+        let sim_req = SetupSimRequest {
+            project: &proj_doc,
+            setup_idx: s_idx,
+            cad_doc: &cad_doc,
+            cad_revision: 1,
+            cache: &cache,
+            kinematics: kin,
+            resolution: SimResolution::Standard,
+            cancel: None,
+        };
+        let sim = if needs_tridexel {
+            simulate_project_setup_with_choice_in_dir(
+                &sim_req,
+                proj_dir,
+                SimEngineKind::TriDexel,
+                SimComputeBackendChoice::Auto,
+            )?
+        } else {
+            simulate_project_setup_in_dir(&sim_req, proj_dir)?
+        };
 
         for d in &sim.diagnostics {
             eprintln!(

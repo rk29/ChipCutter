@@ -4,7 +4,7 @@ use chip_cad::{
     TopologyGraph, sample_cam_torture_block_step, sample_helical_flute_shaft_stl_bytes,
     sample_machined_plate_step, sample_multi_feature_bracket_step, sample_relief_wave_obj_text,
     sample_revised_part_pair_step, sample_rotary_shaft_stl_bytes, sample_sculpted_dome_stl_bytes,
-    sample_threaded_manifold_step,
+    sample_threaded_manifold_step, sample_undercut_deburr_block_step_bytes,
 };
 use chip_project::{
     build_pure2d_router_panel_demo_project, build_revision_v1_demo_project,
@@ -261,6 +261,34 @@ impl ChipCutterApp {
                 LoadPurpose::SeedTwoSidedViseWorkholding,
                 t0,
             );
+            let _ = tx.send(res);
+            egui_ctx.request_repaint();
+        });
+    }
+
+    pub(crate) fn spawn_undercut_deburr_load(&mut self, egui_ctx: egui::Context) {
+        let generation = self.begin_model_load_generation();
+        self.logs.push(
+            "Generating Undercut & 3D Deburr Block STEP fixture (M8 T-Slot, 60° Dovetail, Lollipop Overhang, & 3D Deburr)…"
+                .to_string(),
+        );
+        let tx = self.job_tx.clone();
+        rayon::spawn(move || {
+            let t0 = Instant::now();
+            let res = match sample_undercut_deburr_block_step_bytes() {
+                Ok(step_bytes) => parse_step_bytes_job(
+                    generation,
+                    "sample_undercut_deburr_block.step".to_string(),
+                    step_bytes,
+                    None,
+                    LoadPurpose::SeedUndercutAndDeburrBlock,
+                    t0,
+                ),
+                Err(e) => LoadJobResult::Failed {
+                    generation,
+                    error: e.to_string(),
+                },
+            };
             let _ = tx.send(res);
             egui_ctx.request_repaint();
         });

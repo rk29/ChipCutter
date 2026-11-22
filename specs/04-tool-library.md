@@ -14,12 +14,18 @@ All geometric dimensions are stored internally in `f64` millimeters (while prese
 
 | Cutter Type | Key Geometric Parameters | Valid Operations |
 |---|---|---|
-| **Flat Endmill** | `diameter`, `flute_length`, `overall_length`, `shank_diameter`, `flutes` | Facing, Contour, Pocket, **2D Adaptive**, Helical Bore, Trace, **V-Carve Flat Clearance** |
-| **Bull-Nose (Corner Radius) Endmill** | `diameter`, `corner_radius` (`0 < R < D/2`), `flute_length`, `overall_length`, `shank_diameter`, `flutes` | Facing, Contour, Pocket, **2D Adaptive**, Helical Bore |
-| **Ball Endmill** | `diameter` (`R = D/2`), `flute_length`, `overall_length`, `shank_diameter`, `flutes` | Contour, Pocket, Trace/Engrave *(+ v3 3D surfacing)* |
-| **Chamfer / Spot / V-Bit / Engraving Bit** | `diameter`, `tip_diameter` (`>= 0`, `0` for sharp V-bit or `> 0` for flat-tip engraving cutter), `included_angle_deg` (e.g., `90°`, `60°`, `45°`, `30°`), `flute_length`, `flutes` | **V-Carve**, Edge Chamfer, Trace/Engrave, Spot Drilling |
-| **Twist Drill** | `diameter`, `point_angle_deg` (default `118°` or `135°`), `flute_length`, `overall_length`, `flutes` | Drilling (Simple, Peck) |
+| **Flat Endmill** | `diameter`, `flute_length`, `overall_length`, `shank_diameter`, `flutes` | Facing, Contour, Pocket, **2D Adaptive**, Helical Bore, Trace, **V-Carve Flat Clearance**, Keyway / Pre-Slot (`SlotUndercut`), 3D Surface & Rotary |
+| **Bull-Nose (Corner Radius) Endmill** | `diameter`, `corner_radius` (`0 < R < D/2`), `flute_length`, `overall_length`, `shank_diameter`, `flutes` | Facing, Contour, Pocket, **2D Adaptive**, Helical Bore, 3D Surface & Rotary |
+| **Ball Endmill** | `diameter` (`R = D/2`), `flute_length`, `overall_length`, `shank_diameter`, `flutes` | Contour, Pocket, Trace/Engrave, **3D Edge Deburr (`Deburr3D`)**, 3D Surface & Rotary |
+| **Chamfer / Spot / V-Bit / Engraving Bit** | `diameter`, `tip_diameter` (`>= 0`, `0` for sharp V-bit or `> 0` for flat-tip engraving cutter), `included_angle_deg` (e.g., `90°`, `60°`, `45°`, `30°`), `flute_length`, `flutes` | **V-Carve**, Edge Chamfer, **3D Edge Deburr (`Deburr3D`)**, Trace/Engrave, Spot Drilling |
+| **Twist Drill** | `diameter`, `point_angle_deg` (default `118°` or `135°`), `flute_length`, `overall_length`, `flutes` | Drilling (Simple, Peck, Chip-Break) |
 | **Face / Fly Cutter** | `cutting_diameter`, `outside_diameter`, `corner_radius`, `flute_length`, `inserts/flutes` | Facing, Open Contour |
+| **Thread Mill** | `diameter`, `neck_diameter` (`< diameter`), `neck_length`, `pitch`, `teeth_count` (`1` single-point or `> 1` multi-form), `thread_angle_deg` (default `60°`), `flute_length`, `shank_diameter`, `flutes` | **Helical Thread Milling (`ThreadMill`)** (Internal & External) |
+| **Lollipop Endmill (Spherical Undercut)** | `diameter` (`R = D/2`), `neck_diameter` (`< diameter`), `neck_length`, `flute_length` (`R + √(R² − r_neck²)`), `overall_length`, `shank_diameter`, `flutes` | **3D Edge Deburr (`Deburr3D`, incl. Underside Back-Chamfer)**, **3D Lollipop Undercut (`Undercut3D`)**, 3D Surface Finishing |
+| **Slot / T-Slot / Keyway Mill** | `diameter`, `cutting_thickness`, `corner_radius`, `neck_diameter` (`< diameter`), `neck_length`, `overall_length`, `shank_diameter`, `flutes` | **Slot / Keyway / T-Slot Undercut (`SlotUndercut`)** |
+| **Dovetail Cutter** | `diameter`, `side_angle_deg` (e.g., `45°`, `60°`), `cutting_height`, `corner_radius`, `neck_diameter` (`< D_top`), `neck_length`, `overall_length`, `shank_diameter`, `flutes` | **Dovetail Slot & Rail Milling (`Dovetail`)** |
+
+All 10 cutter geometries share a single unified `AnalyticCutterEnvelope` kernel in `chip-tools` supporting both monotonic top-down profiles and non-monotonic relieved-neck undercut heads (`axial_z_interval_at_radius`, Minkowski radial/axial stock dilation, and `dovetail_top_diameter_mm` / `lollipop_sphere_height_mm` analytic helpers). Starter shop presets for the relieved-neck undercut trio (`T13` 6 mm Lollipop, `T14` 12×4 mm T-Slot Mill, `T15` 12 mm 60° Dovetail) are exposed via `starter_undercut_tools()` without shifting `T1`–`T10` starter indices.
 
 ### Tool Numbering & Machine Metadata
 - `tool_number`: `u32` (`T1`, `T2`, …)
@@ -63,6 +69,6 @@ Inside both the Tool Library Editor and the Operation Inspector:
 
 ## Fusion 360 JSON Tool Library Import
 `chip-tools` includes a one-way importer (and CLI command `chipcutter tools import-fusion <file.json>`) supporting Fusion 360 `.json` (and `.tools` zipped JSON) exports:
-- Maps `"flat end mill"`, `"bull nose end mill"`, `"ball end mill"`, `"chamfer mill"`, `"engraving"` / `"v-bit"`, `"spot drill"`, `"drill"`, and `"face mill"` types.
-- Preserves original tool `"unit"` (`"inches"` vs `"millimeters"`), flute counts, shaft/flute geometry, tool numbers, and all `"start-values"` material cutting presets (including `"optimal-load"` when present).
-- Unsupported exotic tool types (e.g., lollipop, dovetail, form mill) are skipped with a non-fatal import summary warning.
+- Maps all 10 supported cutter families: `"flat end mill"`, `"bull nose end mill"`, `"ball end mill"`, `"chamfer mill"`, `"engraving"` / `"v-bit"`, `"spot drill"`, `"drill"`, `"face mill"`, `"thread mill"`, `"lollipop mill"`, `"slot mill"` (keyway / T-slot), and `"dovetail mill"`.
+- Preserves original tool `"unit"` (`"inches"` vs `"millimeters"`), flute counts, shaft/flute/relieved-neck geometry (`neck_diameter_mm`, `neck_length_mm`, `cutting_thickness_mm`, `cutting_height_mm`, `side_angle_deg`), tool numbers, and all `"start-values"` material cutting presets (including `"optimal-load"` when present).
+- Unsupported exotic tool types (e.g., arbitrary custom form mills or turning inserts) are skipped with a non-fatal import summary warning.

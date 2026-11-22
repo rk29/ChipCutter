@@ -29,7 +29,7 @@ ChipCutter uses `eframe` with the `wgpu` backend and `egui_tiles` for a responsi
 
 ### Design System, Vector Icons, & Status Badges *(v3)*
 - **Semantic Theme Tokens (`ThemeTokens`):** All panel backgrounds, card borders, accent highlights, semantic status colors, and 3D viewport background/grid colors derive from `ThemeTokens` (`AppTheme::Dark` and `AppTheme::Light`)—never scattered ad-hoc RGB literals.
-- **Procedural Vector Icons:** Crisp HiDPI `egui::Painter` vector glyphs for operations, toolbar actions, visibility toggles, and browser status badges:
+- **Procedural Vector Icons:** Crisp HiDPI `egui::Painter` vector glyphs for all operation families (including `ThreadMill`, `Deburr3D`, `SlotUndercut`, `Dovetail`, and `Undercut3D`), toolbar actions, visibility toggles, and browser status badges:
   - **Clean** (emerald check): Up-to-date cached toolpath, paired with `T#` and estimated cycle-time pill.
   - **Dirty** (amber refresh): Parameters, tool, setup, upstream Rest Machining op, CAD, or Sketch changed; awaits `Ctrl+G`.
   - **Generating** (animated spinner): Background `rayon` task in flight.
@@ -91,6 +91,10 @@ Integrated into the central `egui` panel via `egui_wgpu::CallbackTrait` renderin
 - **Setup `[Fixtures]` Tab, Interactive Placement, & Workholding Wizard Modals:**
   - The Setup Inspector's strict two-column **`[Fixtures]`** tab provides 1-click `+ Vise`, `+ Toe Clamp`, `+ Spoilboard`, `+ Keep-Out`, `+ Cylinder`, and `+ Import Fixture…` actions, interactive 3D viewport click-to-place (`Place Clamp in Viewport…`, `Place Pin in Viewport…`), live `Auto-Avoid Rapids` lift & collision banners, and direct buttons to launch the **Flip-Jig Wizard…** and **Auto Soft-Jaw Wizard…** modals (also accessible from the **`Setup`** top menu and **`Ctrl+K`** Command Palette).
   - Both wizard modals provide strict two-column parameter grids, universal hover tooltips, live symmetry/clearance/pocket/STL previews, single-step `< 1 ms` Undo on **Apply to Project**, and native / XDG-portal **`Export Soft Jaws (.stl)…`** folder export.
+- **Tool Library Schematics, Undercut / 3D Deburr Inspector Cards, & Tri-Dexel Advisory:**
+  - The **Tool Library Manager** provides strict two-column geometry editors, universal hover tooltips, and procedural 2D cross-section schematics for all 10 cutter geometries—including relieved-neck **Lollipop Endmill** (spherical head + neck join), **Slot / T-Slot Mill** (disc head + corner radius + neck), and **Dovetail Cutter** (inverted angled cone + top minor diameter readout).
+  - The **Operation Inspector** renders dedicated strict two-column **`[Passes]`** cards for **`3D Deburr`** (`chamfer_width`, `tip_offset`, `wall_clearance`, auto-detect sharp edges, `allow_underside_back_chamfer` Lollipop badge), **`Slot / T-Slot Undercut`** (DIN 650 / ASME / DIN 6885 preset picker, throat/neck clearance safety banner, roof-safe `UndercutEntryMode`), **`Dovetail`** (`InternalSlot` / `ExternalRail`, angle-match & throat-fit diagnostics), and **`3D Lollipop Undercut`** (Z-stepdown / cusp height, overhang angle, neck clearance, open-air lead-out), all accessible from the `Operations` menu, CAM Browser, and `Ctrl+K` Command Palette.
+  - When a Setup contains undercut cutters while the Simulation Timeline is set to 2.5D `Heightmap`, an inline amber advisory banner offers a 1-click **`Use Tri-Dexel`** switch; the **Sample Projects Gallery** includes the built-in **`Undercut & 3D Deburr Block`** (`--sample undercut-deburr`) showcase running in volumetric `Tri-Dexel` mode.
 - **Persistent User Preferences (`prefs.toml` — *v3*):**
   - Stored in the user's platform config directory alongside the global tool library, persisting `AppTheme` (`Dark`/`Light`), default display units, mouse navigation preset, orbit mode, viewport visibility toggles, `egui_tiles` pane shares, and recent project paths across sessions.
 - **Document Undo / Redo (`Ctrl+Z` / `Ctrl+Y`):**

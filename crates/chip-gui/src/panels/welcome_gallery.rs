@@ -30,6 +30,7 @@ pub enum SampleProjectId {
     RotaryHelicalFlute,
     ThreadMillManifold,
     TwoSidedViseWorkholding,
+    UndercutAndDeburrBlock,
 }
 
 impl SampleProjectId {
@@ -57,8 +58,11 @@ impl SampleProjectId {
             "two-sided-vise" | "two-sided" | "workholding" | "soft-jaws" => {
                 Ok(Self::TwoSidedViseWorkholding)
             }
+            "undercut-deburr" | "undercut-block" | "undercut" | "deburr3d" => {
+                Ok(Self::UndercutAndDeburrBlock)
+            }
             other => Err(format!(
-                "invalid --sample '{other}'; expected one of: cam-torture, adaptive-rest, pure-2d, nameplate, vcarve, multi-feature, tilted-bracket, revision-v1, revision-v2, sample-plate, mesh-dome, mesh-wave, rotary-shaft, rotary-wrap, rotary-4axis, thread-mill, two-sided-vise"
+                "invalid --sample '{other}'; expected one of: cam-torture, adaptive-rest, pure-2d, nameplate, vcarve, multi-feature, tilted-bracket, revision-v1, revision-v2, sample-plate, mesh-dome, mesh-wave, rotary-shaft, rotary-wrap, rotary-4axis, thread-mill, two-sided-vise, undercut-deburr"
             )),
         }
     }
@@ -234,6 +238,14 @@ pub const SAMPLE_CATALOG: &[SampleCardSpec] = &[
         badge: "Workholding · Carryover",
         summary: "Two-sided aluminum bracket showcasing Setup 1 vise + parallels + toe clamps with automatic rapid-lift avoidance and Setup 2 180° flip Tri-Dexel stock carryover in soft jaws.",
     },
+    SampleCardSpec {
+        id: SampleProjectId::UndercutAndDeburrBlock,
+        category: SampleCategory::Step3D,
+        icon: IconKind::Dovetail,
+        title: "Undercut & 3D Deburr Block (T-Slot, Dovetail, Lollipop)",
+        badge: "Undercut · Tri-Dexel · 6 Ops",
+        summary: "100×80×28mm aluminum block exercising Facing, Pre-Slot Throats, DIN 650 M8 T-Slot, 60° Dovetail guideway, Lollipop 3D overhang undercut, and 3D Edge Deburr & Back-Chamfer.",
+    },
 ];
 
 /// High-level action emitted by either the Welcome Overlay or the Sample Projects Gallery.
@@ -352,7 +364,7 @@ pub fn show_welcome_modal(
                         ui,
                         IconKind::Sparkles,
                         "Browse Sample Projects Gallery…",
-                        "Explore 16 ready-to-machine 3D STEP, Mesh, 4th-Axis, Thread Mill, Pure-2D, and V-Inlay demos",
+                        "Explore 17 ready-to-machine 3D STEP, Undercut, Mesh, 4th-Axis, Thread Mill, Pure-2D, and V-Inlay demos",
                     ) {
                         action = Some(WelcomeGalleryAction::OpenSampleGallery);
                     }
@@ -701,6 +713,10 @@ mod tests {
         assert_eq!(
             SampleProjectId::from_cli_slug("two-sided-vise"),
             Ok(SampleProjectId::TwoSidedViseWorkholding)
+        );
+        assert_eq!(
+            SampleProjectId::from_cli_slug("undercut-deburr"),
+            Ok(SampleProjectId::UndercutAndDeburrBlock)
         );
         assert!(SampleProjectId::from_cli_slug("nonexistent").is_err());
     }

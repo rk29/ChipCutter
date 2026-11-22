@@ -1414,6 +1414,115 @@ pub fn sample_overhang_flange_step() -> std::result::Result<String, SampleStepEr
     serialize_tutorial_solid(solid, "m65-overhang-flange.step")
 }
 
+/// Builds a clean, watertight `100 × 80 × 28 mm` aluminum manifold/fixture block STEP solid for
+/// Milestone 67 showcasing all Phase 18 expanded machining features simultaneously:
+/// - **Through DIN 650 M8 T-Slot channel** along `X ∈ [0, 100]` centered at `Y = 20.0 mm`:
+///   `8.5 mm` vertical throat (`Z = 20.0..28.0`) above a `14.5 mm × 6.0 mm` undercut head (`Z = 14.0..20.0`),
+/// - **Through `60°` Dovetail guideway slot** along `X ∈ [0, 100]` centered at `Y = 52.0 mm`:
+///   `8.5 mm` vertical throat (`Z = 19.0..28.0`) above a `5.0 mm`-deep `60°` angled dovetail
+///   cavity (`Z = 14.0..19.0`, widening to `14.2735 mm` at the `Z = 14.0` floor),
+/// - **Side-accessible `+Y` overhanging flange & concave `R = 3.0 mm` undercut groove** along `Y = 80.0`:
+///   upper flange lip `Z = 23.2..28.0`, `17.35°` overhanging sloped underside wall from
+///   `(Y = 80.0, Z = 23.2)` inward to `(Y = 79.0, Z = 20.0)` (100% reachable by Ø6 / neck Ø3 Lollipop),
+///   and a tangent `R = 3.0 mm` concave circular-arc groove floor returning cleanly to `(Y = 80.0, Z = 16.754)`,
+/// - **Sharp convex top perimeter, slot-throat, & underside overhang rims** for **3D Edge Deburring
+///   & Lollipop Back-Chamfering** (`OperationKind::Deburr3D`).
+pub fn sample_undercut_deburr_block_step() -> std::result::Result<String, SampleStepError> {
+    // Exact 60° dovetail floor half-width: half_throat (4.25) + depth (5.0) / tan(60°)
+    let dove_half_floor = 4.25 + 5.0 / 60.0_f64.to_radians().tan();
+    let dove_y_lo = 52.0 - dove_half_floor;
+    let dove_y_hi = 52.0 + dove_half_floor;
+
+    // Exact tangent R = 3.0 mm circular arc connecting the +Y sloped overhang (79.0, 20.0) -> (80.0, 23.2)
+    // back out to the lower vertical wall at Y = 80.0 so a Ø6.0 mm Lollipop sweeps it with zero gouge.
+    let slope_len = 1.0_f64.hypot(3.2);
+    let ny = 3.2 / slope_len;
+    let nz = -1.0 / slope_len;
+    let arc_r = 3.0_f64;
+    let cy = 79.0 + arc_r * ny;
+    let cz = 20.0 + arc_r * nz;
+    let dy_exit = 80.0 - cy;
+    let z_exit = cz - (arc_r * arc_r - dy_exit * dy_exit).max(0.0).sqrt();
+    let ang_top = (20.0 - cz).atan2(79.0 - cy);
+    let ang_bot_raw = (z_exit - cz).atan2(80.0 - cy);
+    let ang_bot = if ang_bot_raw < ang_top {
+        ang_bot_raw + std::f64::consts::TAU
+    } else {
+        ang_bot_raw
+    };
+    let ang_mid = 0.5 * (ang_top + ang_bot);
+    let groove_arc_mid = Point3::new(0.0, cy + arc_r * ang_mid.cos(), cz + arc_r * ang_mid.sin());
+
+    // Closed CCW 2D profile in the X = 0 (YZ) plane; extruding along +X by 100 mm with the
+    // non-inverted wire gives outward-facing normals on every planar and cylindrical face.
+    let v_bf = builder::vertex(Point3::new(0.0, 0.0, 0.0));
+    let v_bb = builder::vertex(Point3::new(0.0, 80.0, 0.0));
+    let v_g_bot = builder::vertex(Point3::new(0.0, 80.0, z_exit));
+    let v_g_tan = builder::vertex(Point3::new(0.0, 79.0, 20.0));
+    let v_g_lip = builder::vertex(Point3::new(0.0, 80.0, 23.2));
+    let v_tb = builder::vertex(Point3::new(0.0, 80.0, 28.0));
+
+    // 60° Dovetail guideway at Y = 52.0 (8.5 mm throat Z=19..28, 5.0 mm dovetail Z=14..19)
+    let v_d_rt = builder::vertex(Point3::new(0.0, 56.25, 28.0));
+    let v_d_rm = builder::vertex(Point3::new(0.0, 56.25, 19.0));
+    let v_d_rb = builder::vertex(Point3::new(0.0, dove_y_hi, 14.0));
+    let v_d_lb = builder::vertex(Point3::new(0.0, dove_y_lo, 14.0));
+    let v_d_lm = builder::vertex(Point3::new(0.0, 47.75, 19.0));
+    let v_d_lt = builder::vertex(Point3::new(0.0, 47.75, 28.0));
+
+    // DIN 650 M8 T-Slot at Y = 20.0 (8.5 mm throat Z=20..28, 14.5 × 6.0 mm head Z=14..20)
+    let v_t_rt = builder::vertex(Point3::new(0.0, 24.25, 28.0));
+    let v_t_rm = builder::vertex(Point3::new(0.0, 24.25, 20.0));
+    let v_t_rc = builder::vertex(Point3::new(0.0, 27.25, 20.0));
+    let v_t_rb = builder::vertex(Point3::new(0.0, 27.25, 14.0));
+    let v_t_lb = builder::vertex(Point3::new(0.0, 12.75, 14.0));
+    let v_t_lc = builder::vertex(Point3::new(0.0, 12.75, 20.0));
+    let v_t_lm = builder::vertex(Point3::new(0.0, 15.75, 20.0));
+    let v_t_lt = builder::vertex(Point3::new(0.0, 15.75, 28.0));
+
+    let v_tf = builder::vertex(Point3::new(0.0, 0.0, 28.0));
+
+    let groove_arc = builder::try_circle_arc(&v_g_bot, &v_g_tan, groove_arc_mid)
+        .map_err(|e| SampleStepError::Modeling(e.to_string()))?;
+
+    let profile_wire: Wire = vec![
+        builder::line(&v_bf, &v_bb),
+        builder::line(&v_bb, &v_g_bot),
+        groove_arc,
+        builder::line(&v_g_tan, &v_g_lip),
+        builder::line(&v_g_lip, &v_tb),
+        builder::line(&v_tb, &v_d_rt),
+        builder::line(&v_d_rt, &v_d_rm),
+        builder::line(&v_d_rm, &v_d_rb),
+        builder::line(&v_d_rb, &v_d_lb),
+        builder::line(&v_d_lb, &v_d_lm),
+        builder::line(&v_d_lm, &v_d_lt),
+        builder::line(&v_d_lt, &v_t_rt),
+        builder::line(&v_t_rt, &v_t_rm),
+        builder::line(&v_t_rm, &v_t_rc),
+        builder::line(&v_t_rc, &v_t_rb),
+        builder::line(&v_t_rb, &v_t_lb),
+        builder::line(&v_t_lb, &v_t_lc),
+        builder::line(&v_t_lc, &v_t_lm),
+        builder::line(&v_t_lm, &v_t_lt),
+        builder::line(&v_t_lt, &v_tf),
+        builder::line(&v_tf, &v_bf),
+    ]
+    .into();
+
+    // In the X = 0 YZ plane, CCW (Y -> Z) has normal +X, matching the +X extrusion vector!
+    let left_face = builder::try_attach_plane(vec![profile_wire])
+        .map_err(|e| SampleStepError::Modeling(e.to_string()))?;
+    let solid = builder::extrude(&left_face, Vector3::new(100.0, 0.0, 0.0));
+    serialize_tutorial_solid(solid, "sample_undercut_deburr_block.step")
+}
+
+/// Byte-vector convenience wrapper around [`sample_undercut_deburr_block_step`] returning
+/// UTF-8 ISO 10303-21 STEP bytes for direct CAD loading and sample seeding.
+pub fn sample_undercut_deburr_block_step_bytes() -> std::result::Result<Vec<u8>, SampleStepError> {
+    sample_undercut_deburr_block_step().map(String::into_bytes)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -2138,5 +2247,87 @@ mod tests {
         let deck_cls = classify_planar_face_loops(&doc, deck_z12, DVec3::Z);
         assert_eq!(deck_cls.open_outer_edges.len(), 4);
         assert_eq!(deck_cls.raised_inner_loops.len(), 1);
+    }
+
+    #[test]
+    fn sample_undercut_deburr_block_step_bytes_roundtrips_with_tslot_dovetail_and_overhang() {
+        let bytes = sample_undercut_deburr_block_step_bytes().unwrap();
+        let doc = MonstertruckKernel
+            .load_step_bytes(
+                "sample_undercut_deburr_block.step",
+                &bytes,
+                DEFAULT_TESS_CHORD_TOL_MM,
+            )
+            .unwrap();
+
+        assert_eq!(doc.bodies.len(), 1);
+        let size = doc.aabb_mm.size();
+        assert!(approx_eq(size.x, 100.0, 1e-2));
+        assert!(approx_eq(size.y, 80.0, 1e-2));
+        assert!(approx_eq(size.z, 28.0, 1e-2));
+
+        // Verify both M8 T-slot floor (Y=20, Z=14) and 60° dovetail floor (Y=52, Z=14) have +Z outward normals
+        let slot_floors: Vec<_> = doc
+            .faces
+            .iter()
+            .filter(|f| {
+                matches!(
+                    f.surface,
+                    SurfaceKind::Plane { origin_mm, normal }
+                    if normal.z > 0.99 && approx_eq(origin_mm.z, 14.0, 0.05)
+                )
+            })
+            .collect();
+        assert_eq!(
+            slot_floors.len(),
+            2,
+            "expected exactly 2 slot floor faces at Z=14 (T-slot & 60° dovetail), got {}",
+            slot_floors.len()
+        );
+
+        // Verify T-slot overhanging ceiling faces (`normal.z < -0.99` at `Z = 20.0`)
+        let tslot_ceilings = doc
+            .faces
+            .iter()
+            .filter(|f| {
+                matches!(
+                    f.surface,
+                    SurfaceKind::Plane { origin_mm, normal }
+                    if normal.z < -0.99 && approx_eq(origin_mm.z, 20.0, 0.05)
+                )
+            })
+            .count();
+        assert_eq!(tslot_ceilings, 2, "expected 2 T-slot ceiling lips at Z=20");
+
+        // Verify 2x 60° dovetail overhanging flank faces (`normal.z ≈ -0.5, |normal.y| ≈ 0.866`)
+        let dovetail_flanks = doc
+            .faces
+            .iter()
+            .filter(|f| {
+                matches!(
+                    f.surface,
+                    SurfaceKind::Plane { normal, .. }
+                    if approx_eq(normal.z, -0.5, 1e-2) && approx_eq(normal.y.abs(), 0.8660254, 1e-2)
+                )
+            })
+            .count();
+        assert_eq!(dovetail_flanks, 2, "expected 2x 60° dovetail flanks");
+
+        // Verify +Y sloped overhang wall (`normal.y > 0.9, normal.z ≈ -0.298`) & tangent R=3 concave cylinder
+        let overhang_wall = doc.faces.iter().any(|f| {
+            matches!(
+                f.surface,
+                SurfaceKind::Plane { normal, .. }
+                if normal.y > 0.9 && normal.z < -0.25 && normal.z > -0.35
+            )
+        });
+        assert!(overhang_wall, "expected +Y sloped overhang wall");
+        let groove_cyl = doc.faces.iter().any(|f| {
+            matches!(
+                f.surface,
+                SurfaceKind::Cylinder { radius_mm, .. } if approx_eq(radius_mm, 3.0, 0.05)
+            )
+        });
+        assert!(groove_cyl, "expected tangent R=3.0 mm concave groove arc");
     }
 }

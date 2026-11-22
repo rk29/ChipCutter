@@ -7,7 +7,7 @@ use chip_project::{
     build_revision_v1_demo_project, build_rotary_helical_flute_project,
     build_rotary_shaft_preview_project, build_sculpted_mesh_dome_project,
     build_thread_mill_manifold_project, build_two_sided_vise_workholding_project,
-    portable_model_path, rebind_project_to_reloaded_cad,
+    build_undercut_deburr_block_project, portable_model_path, rebind_project_to_reloaded_cad,
 };
 
 use crate::{
@@ -294,6 +294,28 @@ impl ChipCutterApp {
                 self.highlight.show_fixtures = true;
                 self.show_27pt_dots = false;
             }
+            LoadPurpose::SeedUndercutAndDeburrBlock => {
+                self.prepare_for_project_replacement(None, None);
+                self.project_file_path = None;
+                self.project.machine_id = None;
+                self.sync_active_machine_tools();
+                self.project = build_undercut_deburr_block_project(
+                    &doc,
+                    doc.source_name.clone(),
+                    &sha256_hex,
+                    &self.global_tools.tools,
+                );
+                self.sync_active_machine_tools();
+                self.sim_panel.engine = chip_sim::SimEngineKind::TriDexel;
+                if self.project.setups[0].operations.len() > 3 {
+                    self.inspector_focus = InspectorFocus::Operation {
+                        setup_idx: 0,
+                        op_idx: 3,
+                    };
+                    self.op_tab = OperationTab::Passes;
+                }
+                self.show_27pt_dots = false;
+            }
             LoadPurpose::FreshImport { update_model_entry } => {
                 self.sim_panel.reset_for_new_project();
                 self.gcode_panel.invalidate_preview();
@@ -417,6 +439,7 @@ impl ChipCutterApp {
                 | LoadPurpose::SeedRotaryHelicalFlute
                 | LoadPurpose::SeedThreadMillManifold
                 | LoadPurpose::SeedTwoSidedViseWorkholding
+                | LoadPurpose::SeedUndercutAndDeburrBlock
         ) {
             self.auto_sim_after_gen = true;
             self.trigger_generate_dirty(None, None);

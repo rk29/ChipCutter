@@ -431,7 +431,7 @@ Phase 17 delivered real shop-floor workholding awareness, full-assembly 3D fixtu
 
 ---
 
-## Phase 18 — Expanded Machining Capabilities: 3D Edge Deburring & Undercut / Slot / T-Slot / Dovetail Milling (Planned — M64–M67)
+## Phase 18 — Expanded Machining Capabilities: 3D Edge Deburring & Undercut / Slot / T-Slot / Dovetail Milling (Completed — M64–M67)
 
 Phase 18 expands ChipCutter's cutter catalog, volumetric Tri-Dexel undercut simulation (CPU & GPU), and toolpath strategy suite to machine real-world **3D non-planar chamfered/deburred edges**, **keyways**, **T-slots**, **dovetail rails/slots**, and **3D lollipop undercuts**—building directly on `AnalyticCutterEnvelope`, `chip-bvh`, and `TriDexelStock` while preserving 100% schema compatibility, zero new external dependencies, and byte-for-byte Phase 1–2 golden G-code parity (leaving **2D Sheet Nesting & Multi-Part Arrays** and **PCB Isolation Milling & Drilling** in Future Phases):
 

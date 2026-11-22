@@ -5,9 +5,10 @@ use chip_cad::{
     sample_helical_flute_shaft_stl_bytes, sample_machined_plate_step,
     sample_multi_feature_bracket_step, sample_relief_wave_obj_text, sample_revised_part_pair_step,
     sample_rotary_shaft_stl_bytes, sample_sculpted_dome_stl_bytes, sample_threaded_manifold_step,
-    tutorial_adaptive_pocket_step, tutorial_chamfer_engrave_block_step,
-    tutorial_contour_plate_step, tutorial_drill_bore_plate_step, tutorial_facing_billet_step,
-    tutorial_indexed_4side_block_step, tutorial_pocket_block_step, tutorial_yup_bracket_stl_bytes,
+    sample_undercut_deburr_block_step, tutorial_adaptive_pocket_step,
+    tutorial_chamfer_engrave_block_step, tutorial_contour_plate_step,
+    tutorial_drill_bore_plate_step, tutorial_facing_billet_step, tutorial_indexed_4side_block_step,
+    tutorial_pocket_block_step, tutorial_yup_bracket_stl_bytes,
 };
 use chip_cam::OperationStatus;
 use chip_math::DEFAULT_TESS_CHORD_TOL_MM;
@@ -23,7 +24,8 @@ use chip_project::{
     build_tutorial_facing_project, build_tutorial_indexed_step_multiface_project,
     build_tutorial_pocket_project, build_tutorial_rotary_4axis_flowline_project,
     build_tutorial_rotary_axial_parallel_project, build_tutorial_vcarve_inlay_project,
-    compute_sha256_hex, portable_model_path, rebind_project_to_reloaded_cad,
+    build_undercut_deburr_block_project, compute_sha256_hex, portable_model_path,
+    rebind_project_to_reloaded_cad,
 };
 use chip_sketch::sample_router_panel_dxf;
 use chip_tools::{default_starter_tool_library, resolve_machine_definition_cli_override};
@@ -33,6 +35,7 @@ pub struct GenerateSampleArgs {
     pub multi_feature: bool,
     pub tilted: bool,
     pub cam_torture: bool,
+    pub undercut_block: bool,
     pub revision_v1: bool,
     pub revision_v2: bool,
     pub tutorial: Option<String>,
@@ -320,6 +323,8 @@ pub fn run_generate_sample_step(
         sample_revised_part_pair_step()?.0
     } else if args.revision_v2 {
         sample_revised_part_pair_step()?.1
+    } else if args.undercut_block {
+        sample_undercut_deburr_block_step()?
     } else if args.cam_torture {
         sample_cam_torture_block_step()?
     } else if args.multi_feature || args.tilted {
@@ -467,6 +472,16 @@ pub fn run_generate_sample_step(
             ) => {
                 let mut proj =
                     build_thread_mill_manifold_project(&doc, rel_path, &sha, &starter.tools);
+                if args.empty_project
+                    && let Some(setup) = proj.setups.first_mut()
+                {
+                    setup.operations.clear();
+                }
+                proj
+            }
+            _ if args.undercut_block => {
+                let mut proj =
+                    build_undercut_deburr_block_project(&doc, rel_path, &sha, &starter.tools);
                 if args.empty_project
                     && let Some(setup) = proj.setups.first_mut()
                 {

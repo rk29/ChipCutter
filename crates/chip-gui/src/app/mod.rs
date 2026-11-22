@@ -602,6 +602,9 @@ impl ChipCutterApp {
             SampleProjectId::TwoSidedViseWorkholding => {
                 self.spawn_two_sided_vise_load(ctx.clone());
             }
+            SampleProjectId::UndercutAndDeburrBlock => {
+                self.spawn_undercut_deburr_load(ctx.clone());
+            }
         }
     }
 

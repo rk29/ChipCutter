@@ -186,6 +186,9 @@ enum Commands {
         /// Generate the Milestone 3 CAM torture block (island pocket, open step, wide bore, 45° bevel).
         #[arg(long)]
         cam_torture: bool,
+        /// Generate the Phase 18 Undercut & 3D Deburr block (M8 T-Slot, 60° Dovetail, Lollipop overhang groove, & 3D deburr rims).
+        #[arg(long)]
+        undercut_block: bool,
         /// Generate v1 of the Milestone 5 associative reload revision pair.
         #[arg(long)]
         revision_v1: bool,
@@ -717,6 +720,7 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
             multi_feature,
             tilted,
             cam_torture,
+            undercut_block,
             revision_v1,
             revision_v2,
             tutorial,
@@ -728,6 +732,7 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
             multi_feature,
             tilted,
             cam_torture,
+            undercut_block,
             revision_v1,
             revision_v2,
             tutorial,

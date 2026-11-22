@@ -2228,3 +2228,166 @@ fn cli_workholding_flip_jig_and_soft_jaws_wizards_end_to_end() {
             >= 95.0
     );
 }
+
+#[test]
+fn cli_undercut_block_e2e_generate_validate_simulate_build_and_chipz_roundtrip() {
+    let tmp = TempTestDir::new("undercut_block_e2e");
+    let step_path = tmp.path().join("undercut_block.step");
+    let proj_path = tmp.path().join("undercut_block.chip.toml");
+
+    // 1. Generate programmatic Undercut & 3D Deburr STEP + seeded 6-operation `.chip.toml`
+    let gen_out = Command::new(cli_bin())
+        .args([
+            "generate-sample-step",
+            step_path.to_str().unwrap(),
+            "--undercut-block",
+            "--project-out",
+            proj_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run generate-sample-step --undercut-block");
+    assert!(
+        gen_out.status.success(),
+        "generate-sample-step --undercut-block failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&gen_out.stdout),
+        String::from_utf8_lossy(&gen_out.stderr)
+    );
+    assert!(step_path.is_file());
+    assert!(proj_path.is_file());
+
+    // 2. Validate + generate all 6 operations cleanly
+    let val_out = Command::new(cli_bin())
+        .args(["validate", "--generate", proj_path.to_str().unwrap()])
+        .output()
+        .expect("run validate --generate");
+    assert!(
+        val_out.status.success(),
+        "validate --generate failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&val_out.stdout),
+        String::from_utf8_lossy(&val_out.stderr)
+    );
+
+    // 3. Simulate with `--engine tri-dexel --backend auto --json` and verify 0 critical errors + In-Tol >= 90%
+    let sim_out = Command::new(cli_bin())
+        .args([
+            "simulate",
+            proj_path.to_str().unwrap(),
+            "--engine",
+            "tri-dexel",
+            "--backend",
+            "auto",
+            "--json",
+        ])
+        .output()
+        .expect("run simulate --engine tri-dexel --backend auto --json");
+    assert!(
+        sim_out.status.success(),
+        "simulate tri-dexel failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&sim_out.stdout),
+        String::from_utf8_lossy(&sim_out.stderr)
+    );
+    let sim_json: serde_json::Value =
+        serde_json::from_slice(&sim_out.stdout).expect("parse simulate JSON");
+    assert_eq!(sim_json["passed"], serde_json::Value::Bool(true));
+    assert_eq!(
+        sim_json["setups"][0]["critical_error_count"]
+            .as_u64()
+            .unwrap(),
+        0
+    );
+    let in_tol = sim_json["setups"][0]["error_report"]["in_tolerance_surface_pct"]
+        .as_f64()
+        .unwrap();
+    assert!(
+        in_tol >= 90.0,
+        "CLI undercut-block Tri-Dexel In-Tol ({in_tol:.2}%) < 90%"
+    );
+
+    // 4. Build LinuxCNC and GRBL G-code (automatically verified via volumetric Tri-Dexel!)
+    let lcnc_dir = tmp.path().join("out_linuxcnc");
+    let build_lcnc = Command::new(cli_bin())
+        .args([
+            "build",
+            proj_path.to_str().unwrap(),
+            "-o",
+            lcnc_dir.to_str().unwrap(),
+            "--post",
+            "linuxcnc",
+        ])
+        .output()
+        .expect("run build --post linuxcnc");
+    assert!(
+        build_lcnc.status.success(),
+        "build --post linuxcnc failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&build_lcnc.stdout),
+        String::from_utf8_lossy(&build_lcnc.stderr)
+    );
+    let lcnc_nc = std::fs::read_to_string(lcnc_dir.join("undercut_block.ngc"))
+        .expect("read undercut_block.ngc");
+    assert!(lcnc_nc.contains("G54") && lcnc_nc.contains("M6"));
+    assert!(!lcnc_nc.contains("NaN") && !lcnc_nc.contains("inf"));
+
+    let grbl_dir = tmp.path().join("out_grbl");
+    let build_grbl = Command::new(cli_bin())
+        .args([
+            "build",
+            proj_path.to_str().unwrap(),
+            "-o",
+            grbl_dir.to_str().unwrap(),
+            "--post",
+            "grbl",
+        ])
+        .output()
+        .expect("run build --post grbl");
+    assert!(
+        build_grbl.status.success(),
+        "build --post grbl failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&build_grbl.stdout),
+        String::from_utf8_lossy(&build_grbl.stderr)
+    );
+    assert!(grbl_dir.join("build_summary.json").is_file());
+
+    // 5. Pack portable `.chipz` into isolated directory & verify validate + build match byte-for-byte!
+    let isolated_dir = tmp.path().join("isolated_chipz");
+    std::fs::create_dir_all(&isolated_dir).unwrap();
+    let chipz_path = isolated_dir.join("undercut_block.chipz");
+    let pack_out = Command::new(cli_bin())
+        .args([
+            "bundle",
+            "pack",
+            proj_path.to_str().unwrap(),
+            "-o",
+            chipz_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run bundle pack");
+    assert!(
+        pack_out.status.success(),
+        "bundle pack failed:\nstderr: {}",
+        String::from_utf8_lossy(&pack_out.stderr)
+    );
+
+    let chipz_build_dir = tmp.path().join("out_from_chipz");
+    let build_chipz = Command::new(cli_bin())
+        .args([
+            "build",
+            chipz_path.to_str().unwrap(),
+            "-o",
+            chipz_build_dir.to_str().unwrap(),
+            "--post",
+            "linuxcnc",
+        ])
+        .output()
+        .expect("run build on .chipz");
+    assert!(
+        build_chipz.status.success(),
+        "build on .chipz failed:\nstderr: {}",
+        String::from_utf8_lossy(&build_chipz.stderr)
+    );
+    let chipz_nc = std::fs::read_to_string(chipz_build_dir.join("undercut_block.ngc"))
+        .expect("read undercut_block.ngc from .chipz");
+    assert_eq!(
+        chipz_nc, lcnc_nc,
+        "G-code built from isolated .chipz must match direct .chip.toml build byte-for-byte"
+    );
+}

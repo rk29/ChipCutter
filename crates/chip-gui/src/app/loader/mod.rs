@@ -32,6 +32,7 @@ pub(crate) enum LoadPurpose {
     SeedRotaryHelicalFlute,
     SeedThreadMillManifold,
     SeedTwoSidedViseWorkholding,
+    SeedUndercutAndDeburrBlock,
     ReloadRebind { update_path: bool },
 }
 

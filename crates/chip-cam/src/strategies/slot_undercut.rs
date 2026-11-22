@@ -262,20 +262,28 @@ pub fn generate_slot_undercut(
         if cl.polyline.segments.is_empty() || cl.polyline.perimeter() <= 1e-4 {
             continue;
         }
-        // If extracted from a planar face with blind end walls, inset blind endpoints by cutter_r
-        if cl.start_is_blind_face_wall || cl.end_is_blind_face_wall {
+        // If extracted from a planar face with blind end walls, inset blind endpoints by cutter_r.
+        // Never treat an end as blind when the user explicitly selected `BothEndsThrough` or when
+        // the endpoint sits on/outside the stock XY boundary (e.g., an extruded through T-slot floor
+        // whose end edge touches the block's outer end-cap face).
+        let is_on_stock_boundary = |p: DVec2| {
+            let tol = 0.5;
+            p.x <= stock_aabb.min.x + tol
+                || p.x >= stock_aabb.max.x - tol
+                || p.y <= stock_aabb.min.y + tol
+                || p.y >= stock_aabb.max.y - tol
+        };
+        let trim_start = cl.start_is_blind_face_wall
+            && params.entry_mode != UndercutEntryMode::BothEndsThrough
+            && polyline_start_point(&cl.polyline).is_none_or(|p| !is_on_stock_boundary(p));
+        let trim_end = cl.end_is_blind_face_wall
+            && params.entry_mode != UndercutEntryMode::BothEndsThrough
+            && polyline_end_point(&cl.polyline).is_none_or(|p| !is_on_stock_boundary(p));
+        if trim_start || trim_end {
             trim_polyline_ends_for_blind_walls(
                 &mut cl.polyline,
-                if cl.start_is_blind_face_wall {
-                    cutter_r
-                } else {
-                    0.0
-                },
-                if cl.end_is_blind_face_wall {
-                    cutter_r
-                } else {
-                    0.0
-                },
+                if trim_start { cutter_r } else { 0.0 },
+                if trim_end { cutter_r } else { 0.0 },
             );
             if cl.polyline.perimeter() <= 1e-4 {
                 continue;

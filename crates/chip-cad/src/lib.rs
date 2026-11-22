@@ -21,6 +21,7 @@ pub use fixtures::{
     sample_machined_plate_step, sample_machined_plate_step_inches,
     sample_multi_feature_bracket_step, sample_overhang_flange_step, sample_revised_part_pair_step,
     sample_sloped_boss_stepped_pocket_step, sample_threaded_manifold_step,
+    sample_undercut_deburr_block_step, sample_undercut_deburr_block_step_bytes,
     tutorial_adaptive_pocket_step, tutorial_chamfer_engrave_block_step,
     tutorial_contour_plate_step, tutorial_drill_bore_plate_step, tutorial_facing_billet_step,
     tutorial_indexed_4side_block_step, tutorial_pocket_block_step,

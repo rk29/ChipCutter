@@ -1718,8 +1718,15 @@ fn trim_chain_against_target(
             is_underside: chain.is_underside,
         });
         let head = subchains.remove(0);
-        if tail.stations.last().is_some() && !head.stations.is_empty() {
-            tail.stations.extend_from_slice(&head.stations[1..]);
+        if let (Some(tail_last), Some(head_first)) = (tail.stations.last(), head.stations.first()) {
+            let same_normal = tail_last.sol.outward_xy.dot(head_first.sol.outward_xy) >= 0.995;
+            if same_normal {
+                tail.stations.extend_from_slice(&head.stations[1..]);
+            } else {
+                // Seam sits on a sharp convex corner: keep `head.stations[0]` so `emit_deburr_subchain`
+                // sees `corner_dist <= 0.25` and emits a smooth `emit_corner_roll` around the miter!
+                tail.stations.extend_from_slice(&head.stations);
+            }
         }
         subchains.insert(0, tail);
     }

@@ -37,8 +37,8 @@ pub use demos::{
     build_tutorial_facing_project, build_tutorial_indexed_step_multiface_project,
     build_tutorial_pocket_project, build_tutorial_rotary_4axis_flowline_project,
     build_tutorial_rotary_axial_parallel_project, build_tutorial_vcarve_inlay_project,
-    build_two_sided_vise_workholding_project, build_vcarve_sign_and_inlay_demo_project,
-    sample_two_sided_vise_part_stl_bytes,
+    build_two_sided_vise_workholding_project, build_undercut_deburr_block_project,
+    build_vcarve_sign_and_inlay_demo_project, sample_two_sided_vise_part_stl_bytes,
 };
 pub use dispatcher::{
     BatchGenerationReport, DispatcherEvent, JobDispatcher, generate_project_blocking,
