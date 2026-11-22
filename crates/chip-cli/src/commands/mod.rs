@@ -14,7 +14,10 @@ use chip_project::{
     ProjectDocument, create_private_temp_extract_dir, is_chipz_path,
     load_model_entry_cad_doc_transformed, resolve_model_path, unpack_chipz_bundle,
 };
-use chip_sim::{SimDiagnostic, SimEngineKind, SimResolution, StockErrorReport};
+use chip_sim::{
+    ActiveSimBackendInfo, SimComputeBackendChoice, SimDiagnostic, SimEngineKind, SimResolution,
+    SimTimingBreakdown, StockErrorReport,
+};
 use serde::Serialize;
 
 pub struct TempExtractGuard(PathBuf);
@@ -84,12 +87,26 @@ pub fn parse_sim_engine(raw: &str) -> Result<SimEngineKind, String> {
     }
 }
 
+pub fn parse_sim_backend(raw: &str) -> Result<SimComputeBackendChoice, String> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "auto" => Ok(SimComputeBackendChoice::Auto),
+        "gpu" | "wgpu" => Ok(SimComputeBackendChoice::Gpu),
+        "cpu" | "exact" => Ok(SimComputeBackendChoice::Cpu),
+        other => Err(format!(
+            "unknown simulation backend '{other}'; expected 'auto', 'gpu', or 'cpu'"
+        )),
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct SetupSimReportJson {
     pub setup_id: String,
     pub setup_name: String,
     pub engine: SimEngineKind,
+    pub stock_kind: String,
     pub resolution: SimResolution,
+    pub backend: ActiveSimBackendInfo,
+    pub timing: SimTimingBreakdown,
     pub total_time_sec: f64,
     pub total_time_hms: String,
     pub cutting_time_sec: f64,

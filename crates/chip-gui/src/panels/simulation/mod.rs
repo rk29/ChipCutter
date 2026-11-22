@@ -14,12 +14,12 @@ use std::{
 use chip_cad::CadDocument;
 use chip_math::DVec3;
 use chip_project::{ProjectDocument, ToolpathCache};
+use chip_sim::{
+    ActiveSimBackendInfo, SetupSimulationResult, SimComputeBackendChoice, SimEngineKind,
+    SimResolution, SimStockColorMode, SimStockMesh, SimToolMesh, StockErrorReport,
+};
 #[cfg(feature = "gpu-compute")]
 use chip_sim::{GpuSimContext, GpuStockRenderHandle};
-use chip_sim::{
-    SetupSimulationResult, SimEngineKind, SimResolution, SimStockColorMode, SimStockMesh,
-    SimToolMesh, StockErrorReport,
-};
 use chip_tools::ToolId;
 use crossbeam_channel::{Receiver, Sender, unbounded};
 
@@ -30,6 +30,7 @@ use self::worker::{SimWorkerMsg, StockMeshMeta, StockRemeshKey, StockRemeshWorke
 /// Interactive UI & background worker state for `[Simulation Timeline]` (`06-simulation.md`).
 pub struct SimulationPanelState {
     pub engine: SimEngineKind,
+    pub backend_choice: SimComputeBackendChoice,
     pub resolution: SimResolution,
     pub show_machined_stock: bool,
     pub color_by_operation: bool,
@@ -123,6 +124,7 @@ impl Default for SimulationPanelState {
         let (tx, rx) = unbounded();
         Self {
             engine: SimEngineKind::Heightmap,
+            backend_choice: SimComputeBackendChoice::Auto,
             resolution: SimResolution::Standard,
             show_machined_stock: true,
             color_by_operation: true,
@@ -175,6 +177,14 @@ impl SimulationPanelState {
         }
     }
 
+    pub fn with_prefs(engine: SimEngineKind, backend_choice: SimComputeBackendChoice) -> Self {
+        Self {
+            engine,
+            backend_choice,
+            ..Self::default()
+        }
+    }
+
     #[cfg(feature = "gpu-compute")]
     pub fn with_engine_and_gpu(engine: SimEngineKind, gpu_ctx: Option<Arc<GpuSimContext>>) -> Self {
         let mut s = Self::with_engine(engine);
@@ -183,9 +193,44 @@ impl SimulationPanelState {
     }
 
     #[cfg(feature = "gpu-compute")]
+    pub fn with_prefs_and_gpu(
+        engine: SimEngineKind,
+        backend_choice: SimComputeBackendChoice,
+        gpu_ctx: Option<Arc<GpuSimContext>>,
+    ) -> Self {
+        let mut s = Self::with_prefs(engine, backend_choice);
+        s.set_gpu_context(gpu_ctx);
+        s
+    }
+
+    #[cfg(feature = "gpu-compute")]
     pub fn set_gpu_context(&mut self, gpu_ctx: Option<Arc<GpuSimContext>>) {
         self.remesh_worker.set_gpu_context(gpu_ctx.clone());
         self.gpu_ctx = gpu_ctx;
+    }
+
+    #[inline]
+    pub fn has_gpu_context(&self) -> bool {
+        #[cfg(feature = "gpu-compute")]
+        {
+            self.gpu_ctx.is_some()
+        }
+        #[cfg(not(feature = "gpu-compute"))]
+        {
+            false
+        }
+    }
+
+    #[inline]
+    pub fn gpu_adapter_info(&self) -> Option<&ActiveSimBackendInfo> {
+        #[cfg(feature = "gpu-compute")]
+        {
+            self.gpu_ctx.as_ref().map(|ctx| ctx.adapter_info())
+        }
+        #[cfg(not(feature = "gpu-compute"))]
+        {
+            None
+        }
     }
 
     #[inline]
@@ -248,6 +293,7 @@ impl SimulationPanelState {
         cad_revision.hash(&mut h);
         setup_idx.hash(&mut h);
         self.engine.hash(&mut h);
+        self.backend_choice.hash(&mut h);
         self.resolution.hash(&mut h);
         if let Some(setup) = project.setups.get(setup_idx) {
             setup.post_profile.hash(&mut h);

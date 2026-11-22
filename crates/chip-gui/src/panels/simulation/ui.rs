@@ -1,7 +1,9 @@
 use std::sync::Arc;
 
 use chip_math::{DisplayUnit, MM_PER_INCH};
-use chip_sim::{ScrubSnapshot, SimEngineKind, SimResolution, format_cycle_time_hms};
+use chip_sim::{
+    ScrubSnapshot, SimComputeBackendChoice, SimEngineKind, SimResolution, format_cycle_time_hms,
+};
 
 use super::{
     SimPanelCtx, SimTriggerArgs, SimulationPanelState, SimulationUiAction,
@@ -37,8 +39,9 @@ impl SimulationPanelState {
             self.trail_up_to_cutter,
         );
 
-        // Top Control Bar: Run Simulation, Engine, Resolution, Visual Toggles, Verification Status
+        // Top Control Bar: Run Simulation, Engine, Resolution, Backend, Adapter Pill, Visual Toggles, Verification Status
         let mut engine_changed = false;
+        let mut backend_changed = false;
         ui.horizontal_wrapped(|ui| {
             let busy = self.is_busy();
             let btn_lbl = if busy {
@@ -127,6 +130,155 @@ impl SimulationPanelState {
                 .response
                 .on_hover_text(res_tooltip);
 
+            let prev_backend = self.backend_choice;
+            let backend_short_label = |choice: SimComputeBackendChoice| -> &'static str {
+                match choice {
+                    SimComputeBackendChoice::Auto => "Auto (GPU)",
+                    SimComputeBackendChoice::Gpu => "GPU",
+                    SimComputeBackendChoice::Cpu => "CPU",
+                }
+            };
+            let backend_item_label = |choice: SimComputeBackendChoice| -> &'static str {
+                match choice {
+                    SimComputeBackendChoice::Auto => "Auto (GPU)",
+                    SimComputeBackendChoice::Gpu => "GPU (Compute)",
+                    SimComputeBackendChoice::Cpu => "CPU (Exact)",
+                }
+            };
+            let backend_item_desc = |choice: SimComputeBackendChoice| -> &'static str {
+                match choice {
+                    SimComputeBackendChoice::Auto => {
+                        "Automatically run simulation on GPU compute (wgpu) when available, falling back transparently to exact CPU + Rayon otherwise."
+                    }
+                    SimComputeBackendChoice::Gpu => {
+                        "Prefer GPU compute (wgpu) simulation and zero-readback direct GPU rendering (falls back to CPU if no compute adapter is available)."
+                    }
+                    SimComputeBackendChoice::Cpu => {
+                        "Force exact CPU + Rayon simulation and CPU-tessellated stock rendering (useful for cross-checking GPU results)."
+                    }
+                }
+            };
+            egui::ComboBox::from_id_salt("sim_backend_combo")
+                .selected_text(backend_short_label(self.backend_choice))
+                .width(88.0)
+                .show_ui(ui, |ui| {
+                    for choice in SimComputeBackendChoice::ALL {
+                        ui.selectable_value(
+                            &mut self.backend_choice,
+                            choice,
+                            backend_item_label(choice),
+                        )
+                        .on_hover_text(backend_item_desc(choice));
+                    }
+                })
+                .response
+                .on_hover_text(format!(
+                    "Simulation compute backend (persisted in prefs.toml).\n\nActive setting: {} -- {}",
+                    backend_item_label(self.backend_choice),
+                    backend_item_desc(self.backend_choice)
+                ));
+            if self.backend_choice != prev_backend {
+                backend_changed = true;
+            }
+
+            let tok = crate::theme::ThemeTokens::from_ui(ui);
+            let (pill_text, pill_bg, pill_border, pill_fg, pill_tooltip) =
+                if let Some(res) = &self.active_result
+                    && self.active_setup_idx == setup_idx
+                {
+                    let t = res.timing;
+                    let timing_line = format!(
+                        "Last run: {:.1} ms (setup {:.1} ms · sweep {:.1} ms · metrics {:.1} ms) · {} segs ({:.0} seg/s)",
+                        t.total_ms,
+                        t.target_setup_ms,
+                        t.sweep_ms,
+                        t.metrics_ms,
+                        t.total_segments,
+                        t.segments_per_sec,
+                    );
+                    if res.active_backend.is_gpu {
+                        let short_name = shorten_adapter_name(&res.active_backend.adapter_name);
+                        (
+                            format!("GPU · {short_name}"),
+                            tok.info_bg,
+                            tok.info_border,
+                            tok.info_fg,
+                            format!(
+                                "Active simulation backend: GPU Compute ({})\nAdapter: {}\n{}\nZero-readback direct GPU stock rendering and instant Error Heatmap active.",
+                                res.active_backend.backend_api,
+                                res.active_backend.adapter_name,
+                                timing_line
+                            ),
+                        )
+                    } else if self.backend_choice == SimComputeBackendChoice::Cpu {
+                        (
+                            "CPU (Exact)".to_string(),
+                            tok.card_bg,
+                            tok.border_strong,
+                            tok.text_secondary,
+                            format!(
+                                "Active simulation backend: CPU Exact (Rayon)\n{}\nExact CPU volumetric kernel and CPU-tessellated stock mesh active.",
+                                timing_line
+                            ),
+                        )
+                    } else {
+                        (
+                            "CPU Fallback".to_string(),
+                            tok.warn_bg,
+                            tok.warn_border,
+                            tok.warn_fg,
+                            format!(
+                                "Active simulation backend: CPU Fallback (Rayon)\nGPU compute was unavailable or disabled; ran exact CPU simulation automatically.\n{}",
+                                timing_line
+                            ),
+                        )
+                    }
+                } else if self.backend_choice == SimComputeBackendChoice::Cpu {
+                    (
+                        "CPU (Exact)".to_string(),
+                        tok.card_bg,
+                        tok.border_strong,
+                        tok.text_secondary,
+                        "Configured backend: CPU Exact (Rayon). Next simulation will execute on the exact CPU volumetric kernel."
+                            .to_string(),
+                    )
+                } else if let Some(info) = self.gpu_adapter_info() {
+                    let short_name = shorten_adapter_name(&info.adapter_name);
+                    (
+                        format!("GPU · {short_name}"),
+                        tok.info_bg,
+                        tok.info_border,
+                        tok.info_fg,
+                        format!(
+                            "GPU Compute adapter ready ({})\nAdapter: {}\nNext simulation will execute on GPU with zero-readback rendering.",
+                            info.backend_api, info.adapter_name
+                        ),
+                    )
+                } else {
+                    (
+                        "CPU Fallback".to_string(),
+                        tok.warn_bg,
+                        tok.warn_border,
+                        tok.warn_fg,
+                        "No GPU compute adapter is active; simulation will fall back transparently to exact CPU + Rayon."
+                            .to_string(),
+                    )
+                };
+            egui::Frame::NONE
+                .fill(pill_bg)
+                .stroke(egui::Stroke::new(1.0, pill_border))
+                .corner_radius(egui::CornerRadius::same(4))
+                .inner_margin(egui::Margin::symmetric(6, 2))
+                .show(ui, |ui| {
+                    ui.label(
+                        egui::RichText::new(pill_text)
+                            .small()
+                            .strong()
+                            .color(pill_fg),
+                    )
+                    .on_hover_text(pill_tooltip);
+                });
+
             ui.checkbox(&mut self.show_machined_stock, "3D Stock")
                 .on_hover_text("Show or hide the simulated 3D machined stock solid in the viewport");
             ui.add_enabled(
@@ -151,7 +303,6 @@ impl SimulationPanelState {
                 );
 
             ui.separator();
-            let tok = crate::theme::ThemeTokens::from_ui(ui);
             let up_to_date = self.is_verified_up_to_date(project, setup_idx, cache, cad_revision);
             if let Some(res) = &self.active_result
                 && self.active_setup_idx == setup_idx
@@ -209,7 +360,7 @@ impl SimulationPanelState {
             }
         });
 
-        if engine_changed
+        if (engine_changed || backend_changed)
             && !self.is_busy()
             && self.active_result.is_some()
             && let Some(doc) = cad_doc
@@ -531,5 +682,32 @@ impl SimulationPanelState {
         }
 
         action
+    }
+}
+
+/// Formats a verbose GPU adapter string (e.g. `"AMD Radeon 780M Graphics (RADV PHOENIX)"`)
+/// into a compact toolbar badge label (`"Radeon 780M"`).
+fn shorten_adapter_name(raw: &str) -> String {
+    let trimmed = raw.split('(').next().unwrap_or(raw).trim();
+    let stripped = trimmed
+        .strip_prefix("AMD ")
+        .or_else(|| trimmed.strip_prefix("NVIDIA "))
+        .or_else(|| trimmed.strip_prefix("Intel(R) "))
+        .or_else(|| trimmed.strip_prefix("Intel "))
+        .or_else(|| trimmed.strip_prefix("Apple "))
+        .unwrap_or(trimmed)
+        .trim();
+    let no_gfx = stripped
+        .strip_suffix(" Graphics")
+        .unwrap_or(stripped)
+        .trim();
+    let candidate = if no_gfx.is_empty() { trimmed } else { no_gfx };
+    const MAX_CHARS: usize = 22;
+    if candidate.chars().count() > MAX_CHARS {
+        let mut s: String = candidate.chars().take(MAX_CHARS - 1).collect();
+        s.push('…');
+        s
+    } else {
+        candidate.to_string()
     }
 }

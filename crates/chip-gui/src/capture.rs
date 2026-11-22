@@ -212,6 +212,30 @@ pub fn parse_capture_sim_engine(raw: &str) -> Result<chip_sim::SimEngineKind, St
     }
 }
 
+/// Parse and normalize a simulation compute backend choice for `--capture-sim-backend`.
+pub fn parse_capture_sim_backend(raw: &str) -> Result<chip_sim::SimComputeBackendChoice, String> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "auto" => Ok(chip_sim::SimComputeBackendChoice::Auto),
+        "gpu" | "wgpu" => Ok(chip_sim::SimComputeBackendChoice::Gpu),
+        "cpu" | "exact" => Ok(chip_sim::SimComputeBackendChoice::Cpu),
+        other => Err(format!(
+            "invalid --capture-sim-backend '{other}'; expected one of: auto, gpu, cpu"
+        )),
+    }
+}
+
+/// Parse and normalize a simulation resolution preset for `--capture-sim-resolution`.
+pub fn parse_capture_sim_resolution(raw: &str) -> Result<chip_sim::SimResolution, String> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "standard" | "512" | "160" => Ok(chip_sim::SimResolution::Standard),
+        "fine" | "1024" | "288" => Ok(chip_sim::SimResolution::Fine),
+        "ultra" | "2048" | "448" => Ok(chip_sim::SimResolution::Ultra),
+        other => Err(format!(
+            "invalid --capture-sim-resolution '{other}'; expected one of: standard, fine, ultra"
+        )),
+    }
+}
+
 /// Structured options controlling headless UI state before PNG capture.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct CaptureSpec {
@@ -226,6 +250,8 @@ pub struct CaptureSpec {
     pub sim_progress: Option<f64>,
     pub sim_after_op: Option<usize>,
     pub sim_engine: Option<chip_sim::SimEngineKind>,
+    pub sim_backend: Option<chip_sim::SimComputeBackendChoice>,
+    pub sim_resolution: Option<chip_sim::SimResolution>,
     pub sim_heatmap: bool,
     pub post_profile: Option<String>,
     pub auto_generate: bool,
@@ -427,6 +453,37 @@ mod tests {
             Ok(chip_sim::SimEngineKind::TriDexel)
         );
         assert!(parse_capture_sim_engine("voxel").is_err());
+    }
+
+    #[test]
+    fn parses_capture_sim_backend_and_resolution() {
+        assert_eq!(
+            parse_capture_sim_backend("auto"),
+            Ok(chip_sim::SimComputeBackendChoice::Auto)
+        );
+        assert_eq!(
+            parse_capture_sim_backend("GPU"),
+            Ok(chip_sim::SimComputeBackendChoice::Gpu)
+        );
+        assert_eq!(
+            parse_capture_sim_backend("cpu"),
+            Ok(chip_sim::SimComputeBackendChoice::Cpu)
+        );
+        assert!(parse_capture_sim_backend("cuda").is_err());
+
+        assert_eq!(
+            parse_capture_sim_resolution("standard"),
+            Ok(chip_sim::SimResolution::Standard)
+        );
+        assert_eq!(
+            parse_capture_sim_resolution("FINE"),
+            Ok(chip_sim::SimResolution::Fine)
+        );
+        assert_eq!(
+            parse_capture_sim_resolution("ultra"),
+            Ok(chip_sim::SimResolution::Ultra)
+        );
+        assert!(parse_capture_sim_resolution("extreme").is_err());
     }
 
     #[test]

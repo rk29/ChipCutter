@@ -5,6 +5,7 @@
 #[cfg(feature = "gpu-compute")]
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Instant;
 
 use chip_cad::{BodyId, CadDocument};
 use chip_cam::ResolvedSetup;
@@ -45,13 +46,25 @@ pub struct SetupSimulationInput<'a> {
     pub cancel: Option<&'a AtomicBool>,
 }
 
+/// Structured per-stage wall-clock timing & segment throughput metadata for a simulation run.
+#[derive(Debug, Clone, Copy, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SimTimingBreakdown {
+    pub target_setup_ms: f64,
+    pub sweep_ms: f64,
+    pub metrics_ms: f64,
+    pub total_ms: f64,
+    pub total_segments: usize,
+    pub segments_per_sec: f64,
+}
+
 /// Complete output of simulating a Setup (`timeline`, unified `final_stock`, unified `checkpoints`,
-/// `diagnostics`, and quantitative `error_report`).
+/// `diagnostics`, quantitative `error_report`, and per-stage `timing`).
 #[derive(Debug, Clone)]
 pub struct SetupSimulationResult {
     pub engine: SimEngineKind,
     pub resolution: SimResolution,
     pub active_backend: ActiveSimBackendInfo,
+    pub timing: SimTimingBreakdown,
     pub timeline: SimulationTimeline,
     pub initial_stock_volume_mm3: f64,
     pub remaining_stock_volume_mm3: f64,
@@ -472,9 +485,14 @@ pub fn run_setup_simulation_with_choice(
     #[cfg(not(feature = "gpu-compute"))]
     {
         let _ = choice;
+        let t_total = Instant::now();
+        let t_setup = Instant::now();
         let (effective_engine, stock, target_td) = prepare_initial_stock(input, engine)?;
         let backend = CpuExactBackend::new(stock, target_td);
-        run_setup_simulation_with_backend(input, effective_engine, backend)
+        let target_setup_ms = t_setup.elapsed().as_secs_f64() * 1000.0;
+        let mut res = run_setup_simulation_with_backend(input, effective_engine, backend)?;
+        finalize_timing(&mut res.timing, target_setup_ms, t_total);
+        Ok(res)
     }
 }
 
@@ -488,18 +506,46 @@ pub fn run_setup_simulation_with_gpu_context(
     choice: SimComputeBackendChoice,
     gpu_ctx: Option<Arc<GpuSimContext>>,
 ) -> Result<SetupSimulationResult, SimError> {
+    let t_total = Instant::now();
+    let t_setup = Instant::now();
     let use_gpu = choice != SimComputeBackendChoice::Cpu;
     let active_ctx = if use_gpu { gpu_ctx } else { None };
     let (effective_engine, stock, target_td) =
         prepare_initial_stock_with_gpu(input, engine, active_ctx.as_deref())?;
 
-    if let Some(ctx) = active_ctx {
+    let mut res = if let Some(ctx) = active_ctx {
         let backend = WgpuComputeBackend::new(ctx, stock, target_td);
-        run_setup_simulation_with_backend(input, effective_engine, backend)
+        let target_setup_ms = t_setup.elapsed().as_secs_f64() * 1000.0;
+        let mut out = run_setup_simulation_with_backend(input, effective_engine, backend)?;
+        finalize_timing(&mut out.timing, target_setup_ms, t_total);
+        out
     } else {
         let backend = CpuExactBackend::new(stock, target_td);
-        run_setup_simulation_with_backend(input, effective_engine, backend)
+        let target_setup_ms = t_setup.elapsed().as_secs_f64() * 1000.0;
+        let mut out = run_setup_simulation_with_backend(input, effective_engine, backend)?;
+        finalize_timing(&mut out.timing, target_setup_ms, t_total);
+        out
+    };
+    res.timing.total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
+    res.timing.segments_per_sec =
+        compute_segments_per_sec(res.timing.total_segments, res.timing.total_ms);
+    Ok(res)
+}
+
+#[inline]
+fn compute_segments_per_sec(total_segments: usize, total_ms: f64) -> f64 {
+    if total_ms > 1e-6 {
+        (total_segments as f64) / (total_ms / 1000.0)
+    } else {
+        0.0
     }
+}
+
+#[inline]
+fn finalize_timing(timing: &mut SimTimingBreakdown, target_setup_ms: f64, t_total: Instant) {
+    timing.target_setup_ms = target_setup_ms;
+    timing.total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
+    timing.segments_per_sec = compute_segments_per_sec(timing.total_segments, timing.total_ms);
 }
 
 #[cfg(not(feature = "gpu-compute"))]
@@ -633,6 +679,7 @@ pub fn run_setup_simulation_with_backend<B: SimStockBackend>(
     engine: SimEngineKind,
     mut backend: B,
 ) -> Result<SetupSimulationResult, SimError> {
+    let t_driver_start = Instant::now();
     check_cancelled(input.cancel)?;
     let timeline = SimulationTimeline::from_operations(input.operations, input.kinematics);
     let initial_stock_volume_mm3 = backend.compute_volume_mm3();
@@ -655,6 +702,7 @@ pub fn run_setup_simulation_with_backend<B: SimStockBackend>(
     let mut prev_vol = initial_stock_volume_mm3;
     let mut span_chords: Vec<SweepChord> = Vec::with_capacity(16);
 
+    let t_sweep = Instant::now();
     for (span_idx, span) in timeline.motion_spans.iter().enumerate() {
         check_cancelled(input.cancel)?;
 
@@ -726,18 +774,31 @@ pub fn run_setup_simulation_with_backend<B: SimStockBackend>(
             checkpoints.push(backend.capture_checkpoint(completed));
         }
     }
+    let sweep_ms = t_sweep.elapsed().as_secs_f64() * 1000.0;
 
+    let t_metrics = Instant::now();
     let remaining_stock_volume_mm3 = backend.compute_volume_mm3();
     let removed_volume_mm3 = (initial_stock_volume_mm3 - remaining_stock_volume_mm3).max(0.0);
     let error_report = backend.compute_error_report(initial_stock_volume_mm3, 0.05, per_op_errors);
+    let metrics_ms = t_metrics.elapsed().as_secs_f64() * 1000.0;
     let active_backend = backend.backend_info();
     let (final_stock, target_tridexel_stock) = backend.into_parts();
     let diagnostics = coalescer.into_diagnostics();
+    let total_ms = t_driver_start.elapsed().as_secs_f64() * 1000.0;
+    let timing = SimTimingBreakdown {
+        target_setup_ms: 0.0,
+        sweep_ms,
+        metrics_ms,
+        total_ms,
+        total_segments: total_spans,
+        segments_per_sec: compute_segments_per_sec(total_spans, total_ms),
+    };
 
     Ok(SetupSimulationResult {
         engine,
         resolution: input.resolution,
         active_backend,
+        timing,
         timeline,
         initial_stock_volume_mm3,
         remaining_stock_volume_mm3,

@@ -1,11 +1,13 @@
 # 01 — System Architecture & Workspace Design
 
 ## Architectural Principles
-1. **UI-Agnostic Core:** All CAD loading, spatial BVH indexing, exact 2D geometry, 2D sketch/vector processing, volumetric stock kernels, coordinate transforms, toolpath generation, simulation, and post-processing live in standalone library crates with zero `egui` or `wgpu` dependencies (except optional future GPU compute behind an explicit feature flag). Both the desktop GUI and headless CLI consume the exact same engine.
+1. **UI-Agnostic Core & Feature-Gated GPU Compute:** All CAD loading, spatial BVH indexing, exact 2D geometry, 2D sketch/vector processing, volumetric stock kernels, coordinate transforms, toolpath generation, simulation, and post-processing live in standalone library crates with zero `egui` dependency. `chip-stock`, `chip-sim`, and `chip-project` remain 100% pure-CPU by default (zero `wgpu` dependency), exposing an optional `gpu-compute` feature (`wgpu` + `pollster`, enabled by default in `chip-cli` and `chip-gui`, including `flatpak-portal`) that automatically falls back to exact CPU execution whenever no compute adapter is available. Both the desktop GUI and headless CLI consume the exact same engine.
 2. **Canonical `f64` Millimeter Kernel:** Every internal coordinate, vector, tolerance, arc radius, and feedrate (mm/min) is stored and computed in `f64` millimeters. Unit conversion happens strictly at UI display/input boundaries, DXF/SVG/mesh import boundaries, and post-processor emission (`G20` vs `G21`).
 3. **True Arc Preservation:** 2D boundaries, Bézier biarc fits (`kurbo`), parallel offsets (`cavalier_contours` via `chip-geom2d`), trochoidal peel arcs, helical bores, helical thread mills, and lead-ins preserve analytic line and circular arc segments (`ArcPolyline2D`) all the way through Cutter Location (CL) output so controllers receive smooth `G2`/`G3` moves rather than faceted micro-segments.
 4. **CAD-Agnostic Strategy & Stock Boundaries:** `chip-cam` 2.5D strategies operate exclusively on canonical WCS `ExtractedFeature25D` geometry—never directly on 3D `CadDocument` topology—allowing 3D STEP B-Rep selections and 2D `chip-sketch` vector/text entities to share identical machining algorithms. Likewise, `chip-stock` volumetric stock kernels depend only on `chip-math`, `chip-bvh`, and `chip-tools` (zero `chip-cad` or `chip-cam` dependency), breaking any future `chip-cam` ↔ `chip-sim` cycle for 3D rest machining and multi-setup (`G54` → `G55`) stock carryover.
-5. **GPU-Compute-Ready Flat Data Layouts & Zero-Copy Rendering:** Spatial BVH nodes (`FlatBvhNode` 32-byte `Pod`, `GpuTriangle` 48-byte `Pod` in `chip-bvh`), volumetric stock buffers (flat fixed-`K` Tri-Dexel span pools, stock-local `f32` heightfield/cylindrical grids, `u32` operation provenance tags in `chip-stock`), and simulation mesh vertices (`SimColoredVertex` `#[repr(C)] bytemuck::Pod`) use tightly-packed GPU-compatible layouts. `chip-sim` drives stock updates through the batched `SimStockBackend` trait (`CpuExactBackend` default, plug-in point for a future `WgpuComputeBackend`), while `chip-gui` consumes `SimStockRenderSource` (`CpuMesh { revision, mesh, stock_model }` now, extensible to `GpuGrid`) via reusable `GrowableGpuBuffer` uploads and GPU `stock_model` rotary transforms.
+5. **GPU-Compute Flat Data Layouts & Zero-Readback Rendering:** Spatial BVH nodes (`FlatBvhNode` 32-byte `Pod`, `GpuTriangle` 48-byte `Pod` in `chip-bvh`), volumetric stock buffers (flat fixed-`K` Tri-Dexel span pools, stock-local `f32` heightfield/cylindrical grids, `u32` operation provenance tags in `chip-stock`), and simulation mesh vertices (`SimColoredVertex` `#[repr(C)] bytemuck::Pod`) use tightly-packed GPU-compatible layouts. `chip-sim` drives stock updates through the batched `SimStockBackend` trait (`CpuExactBackend` and optional `gpu-compute` `WgpuComputeBackend`), while `chip-gui` consumes `SimStockRenderSource`:
+   - `SimStockRenderSource::GpuGrid { revision, handle, stock_model, color_mode }` renders live `WgpuComputeBackend` storage buffers directly on the shared `wgpu::Device` (vertex-displaced Heightfield/Cylindrical grids and indirect-draw Tri-Dexel compact-emit buffers) with zero CPU meshing readback and `< 0.1 ms` instant WGSL Error Heatmap updates.
+   - `SimStockRenderSource::CpuMesh { revision, mesh, stock_model }` uploads CPU-tessellated meshes via reusable `GrowableGpuBuffer` buffers with GPU `stock_model` rotary transforms when running `CpuExactBackend`.
 6. **Explicit Dirty-State, DAG Computation, & Non-Blocking UI:** Document edits mutate lightweight parametric specs instantly (enabling `< 1 ms` Undo/Redo with zero idle document clones) and mark dependent operations (including downstream `FromPrecedingOperations` Rest Machining consumers) `Dirty`. Heavy toolpath generation runs only on explicit user action (`Ctrl+G` or CLI build) over a `rayon` thread pool with cancellation tokens, and interactive simulation stock scrubbing/remeshing runs on a coalescing background worker off the `egui` UI thread.
 7. **Permissive Dependency Hygiene:** Enforced via `cargo-deny` (`MIT`, `Apache-2.0`, `BSD-2-Clause`, `BSD-3-Clause`, `MPL-2.0`, `BSL-1.0`, `ISC`, `Zlib`, `Unicode-3.0`; `GPL`/`LGPL`/`AGPL` denied by default).
 
@@ -17,7 +19,7 @@ ChipCutter/
 ├── Cargo.toml                  # Workspace root + shared dependency versions (13 crates)
 ├── deny.toml                   # License & advisory enforcement
 ├── specs/                      # Living design specifications
-├── plans/                      # Sequential milestone implementation plans (M1..M51+)
+├── plans/                      # Sequential milestone implementation plans (M1..M55+)
 ├── posts/                      # Built-in TOML post-processor profiles (grbl, grblhal_atc, linuxcnc, 4-axis)
 ├── machines/                   # Reference TOML machine definitions (generic, milo, carvera, voron-cascade)
 └── crates/
@@ -27,13 +29,13 @@ ChipCutter/
     ├── chip-tools/             # Tool geometry, AnalyticCutterEnvelope, material presets, machine definitions, Fusion 360 importer
     ├── chip-cad/               # CadKernel trait, `monstertruck` STEP loader, STL/OBJ/3MF mesh loaders, B-Rep topology & BVH picking
     ├── chip-sketch/            # 2D Sketch Layers, parametric shapes, DXF/SVG importers, gap-healing, TrueType & Hershey text
-    ├── chip-stock/             # Pure volumetric stock kernels (HeightfieldStock, flat-pool axis-generic TriDexelStock, CylindricalStock), SimStockBackend, meshers, metrology
+    ├── chip-stock/             # Pure volumetric stock kernels (HeightfieldStock, flat-pool TriDexelStock, CylindricalStock), SimStockBackend (CpuExactBackend + optional `gpu-compute` WgpuComputeBackend)
     ├── chip-cam/               # Setups, WCS, 2.5D feature extraction, 2.5D/3D/Rotary/ThreadMill strategies, Adaptive, Rest, V-Carve, CL IR
-    ├── chip-sim/               # Simulation driver, trapezoidal cycle-time timeline, CAD target adapters, 3D cutter mesh, 5-rule crash/gouge verifier
+    ├── chip-sim/               # Simulation driver, stage timing, trapezoidal cycle-time timeline, CAD target adapters, 3D cutter mesh, 5-rule verifier
     ├── chip-post/              # TOML post-processor engine, modal state machine, G93/G94 & quadrant-arc expansion, G-code formatter
     ├── chip-project/           # `.chip.toml` & `.chipz` serialization, DAG JobDispatcher, ToolpathCache, Undo/Redo history, built-in demos
-    ├── chip-cli/               # Headless CLI binary (`chipcutter`)
-    └── chip-gui/               # `eframe` + `wgpu` + `egui_tiles` desktop application, SimStockRenderSource, off-thread remesh worker
+    ├── chip-cli/               # Headless CLI binary (`chipcutter`, default `gpu-compute` with CPU fallback)
+    └── chip-gui/               # `eframe` + `wgpu` + `egui_tiles` desktop app, SimStockRenderSource (`GpuGrid`/`CpuMesh`), off-thread remesh worker
 ```
 
 ---
@@ -112,8 +114,8 @@ flowchart LR
     TOOLS["chip-tools: Tool + AnalyticCutterEnvelope + Machine"] --> OP["chip-cam: 2.5D / 3D Surface / 4-Axis Rotary / ThreadMill"]
     FEAT --> OP
     OP --> TP["Toolpath IR (Rapids, Linear, Helical/Planar/Trochoidal Arcs, Rotary)"]
-    TP --> SIM["chip-sim + chip-stock: SimStockBackend (Heightmap / Tri-Dexel / Cylindrical) & 5-Rule Verifier"]
-    SIM --> RENDER["chip-gui: Off-Thread Remesh Worker -> SimStockRenderSource -> wgpu GrowableGpuBuffer"]
+    TP --> SIM["chip-sim + chip-stock: SimStockBackend (CpuExactBackend / WgpuComputeBackend) & 5-Rule Verifier"]
+    SIM --> RENDER["chip-gui: Off-Thread Worker -> SimStockRenderSource (GpuGrid Direct / CpuMesh) -> wgpu"]
     TP --> CL["Typed CL-Data Stream"]
     CL --> POST["chip-post: TOML Profile -> .nc / .ngc"]
 ```
@@ -148,10 +150,12 @@ flowchart LR
   - Independent operations within a Setup generate concurrently across `rayon` workers.
   - Operations using `RestMachiningMode::FromPrecedingOperations` (or two-stage V-Carve flat-endmill + V-bit clearing) execute in topological dependency waves after their upstream roughing toolpaths complete and expose their 2D swept coverage polygons.
   - If the user modifies an operation (or one of its upstream Rest dependencies) while generating, in-flight cancellation tokens abort obsolete work and return affected operations to `Dirty`.
-- **Coalescing Off-Thread Stock Remeshing (`chip-gui`):**
-  - `panels/simulation/worker.rs` owns the mutable playback `SimulatedStock` (`Heightfield`, `TriDexel`, or `Cylindrical`) on a dedicated background worker thread.
-  - Rapid interactive timeline scrubs coalesce via a latest-wins pending slot so stale intermediate frames are skipped without blocking `egui` frames, publishing monotonic `SimStockRenderSource::CpuMesh { revision, mesh: Arc<SimStockMesh>, stock_model }` updates (while rotary angle-only air slews update `stock_model` on the GPU with zero CPU re-tessellation or GPU buffer re-upload).
-  - Headless `--capture-*` screenshot automation uses a deterministic synchronous flush (`resolve_viewport_visuals_sync`) so captured frames never render blank or lagged stock.
+- **Coalescing Off-Thread Stock Scrubbing & Direct GPU Rendering (`chip-gui`):**
+  - `panels/simulation/worker.rs` owns the mutable playback state on a dedicated background worker thread: either a shared-device `WgpuComputeBackend` + VRAM-bounded `GpuCheckpointCache` (when GPU compute is active) or a CPU `SimulatedStock` (`Heightfield`, `TriDexel`, or `Cylindrical`).
+  - Rapid interactive timeline scrubs coalesce via a latest-wins pending slot so stale intermediate frames are skipped without blocking `egui` frames:
+    - **GPU Direct Path (`SimStockRenderSource::GpuGrid`):** Restores GPU checkpoints via `copy_buffer_to_buffer`, dispatches only the short tail-delta sweep on GPU, and publishes a zero-readback `Arc<GpuStockRenderHandle>` rendered directly by vertex-displaced WGSL pipelines (Heightfield / Cylindrical) or indirect-draw Tri-Dexel emit buffers—with instant `< 0.1 ms` WGSL Error Heatmap & `±tol` updates.
+    - **CPU Exact Path (`SimStockRenderSource::CpuMesh`):** Publishes monotonic `Arc<SimStockMesh>` updates uploaded via reusable `GrowableGpuBuffer` buffers (while rotary angle-only air slews update `stock_model` on the GPU with zero CPU re-tessellation).
+  - Headless `--capture-*` screenshot automation uses a deterministic synchronous flush (`resolve_viewport_visuals_sync` + `device.poll(Wait)`) so captured frames never render blank or lagged stock.
 
 ---
 

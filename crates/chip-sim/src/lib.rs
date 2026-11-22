@@ -46,8 +46,8 @@ pub use cutter_profile::{SimToolMesh, ToolMeshZone, build_cutter_assembly_mesh};
 #[cfg(feature = "gpu-compute")]
 pub use driver::run_setup_simulation_with_gpu_context;
 pub use driver::{
-    SetupSimulationInput, SetupSimulationResult, SimulatedStockPlaybackExt, run_setup_simulation,
-    run_setup_simulation_with_backend, run_setup_simulation_with_choice,
+    SetupSimulationInput, SetupSimulationResult, SimTimingBreakdown, SimulatedStockPlaybackExt,
+    run_setup_simulation, run_setup_simulation_with_backend, run_setup_simulation_with_choice,
     run_setup_simulation_with_engine,
 };
 pub use timeline::{

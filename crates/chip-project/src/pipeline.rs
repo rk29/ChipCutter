@@ -10,8 +10,9 @@ use chip_post::{
     post_process_setup, resolve_post_profile,
 };
 use chip_sim::{
-    MachineKinematicsConfig, SetupSimulationInput, SetupSimulationResult, SimEngineKind,
-    SimOperationInput, SimResolution, SimVerificationConfig, run_setup_simulation_with_engine,
+    MachineKinematicsConfig, SetupSimulationInput, SetupSimulationResult, SimComputeBackendChoice,
+    SimEngineKind, SimOperationInput, SimResolution, SimVerificationConfig,
+    run_setup_simulation_with_choice,
 };
 use chip_tools::Tool;
 
@@ -112,10 +113,20 @@ pub fn simulate_project_setup(req: &SetupSimRequest<'_>) -> Result<SetupSimulati
 }
 
 /// Runs stock removal & 5-rule crash/gouge verification for a single Setup using the chosen
-/// [`SimEngineKind`] (`Heightmap` or volumetric `TriDexel`).
+/// [`SimEngineKind`] (`Heightmap` or volumetric `TriDexel`) on the exact CPU backend.
 pub fn simulate_project_setup_with_engine(
     req: &SetupSimRequest<'_>,
     engine: SimEngineKind,
+) -> Result<SetupSimulationResult, String> {
+    simulate_project_setup_with_choice(req, engine, SimComputeBackendChoice::Cpu)
+}
+
+/// Runs stock removal & 5-rule crash/gouge verification for a single Setup using the chosen
+/// [`SimEngineKind`] and [`SimComputeBackendChoice`] (`Auto` / `Gpu` / `Cpu`).
+pub fn simulate_project_setup_with_choice(
+    req: &SetupSimRequest<'_>,
+    engine: SimEngineKind,
+    choice: SimComputeBackendChoice,
 ) -> Result<SetupSimulationResult, String> {
     let setup = req
         .project
@@ -136,7 +147,7 @@ pub fn simulate_project_setup_with_engine(
         .map(|item| SimOperationInput::from_operation(item.op, item.tool, item.toolpath.as_ref()))
         .collect();
 
-    run_setup_simulation_with_engine(
+    run_setup_simulation_with_choice(
         &SetupSimulationInput {
             doc: req.cad_doc,
             setup: &resolved,
@@ -148,6 +159,7 @@ pub fn simulate_project_setup_with_engine(
             cancel: req.cancel,
         },
         engine,
+        choice,
     )
     .map_err(|e| e.to_string())
 }

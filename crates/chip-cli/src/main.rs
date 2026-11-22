@@ -15,7 +15,7 @@ use crate::commands::{
         run_machines_list,
     },
     transform_model::{TransformModelArgs, run_transform_model},
-    validate_sim_build::{BuildArgs, run_build, run_simulate, run_validate},
+    validate_sim_build::{BuildArgs, SimulateArgs, run_build, run_simulate, run_validate},
 };
 
 #[derive(Debug, Parser)]
@@ -218,12 +218,21 @@ enum Commands {
         /// Simulation engine (`heightmap` fast 2.5D Z-dexel, or `tri-dexel` true 3D volumetric).
         #[arg(long, default_value = "heightmap")]
         engine: String,
+        /// Simulation compute backend (`auto` GPU with CPU fallback, `gpu`, or `cpu`).
+        #[arg(long, default_value = "auto")]
+        backend: String,
         /// Simulation resolution (`standard`, `fine`, `ultra`).
         #[arg(long, default_value = "standard")]
         resolution: String,
         /// Surface deviation pass tolerance band in millimeters for error metrics (`±tolerance`).
         #[arg(long, default_value_t = 0.05)]
         tolerance: f64,
+        /// Print structured per-stage timing & throughput benchmark summary.
+        #[arg(long)]
+        benchmark: bool,
+        /// Emit structured JSON simulation, backend, timing, and error-volume report to stdout.
+        #[arg(long)]
+        json: bool,
         /// Optional path to write structured JSON simulation & error-volume report.
         #[arg(long)]
         report: Option<PathBuf>,
@@ -493,10 +502,22 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         Commands::Simulate {
             project,
             engine,
+            backend,
             resolution,
             tolerance,
+            benchmark,
+            json,
             report,
-        } => run_simulate(project, engine, resolution, tolerance, report),
+        } => run_simulate(SimulateArgs {
+            project,
+            engine,
+            backend,
+            resolution,
+            tolerance,
+            benchmark,
+            json,
+            report,
+        }),
         Commands::Build {
             project,
             output_dir,

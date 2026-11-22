@@ -914,6 +914,12 @@ impl ChipCutterApp {
             if let Some(eng) = st.capture.sim_engine {
                 self.sim_panel.engine = eng;
             }
+            if let Some(backend) = st.capture.sim_backend {
+                self.sim_panel.backend_choice = backend;
+            }
+            if let Some(res) = st.capture.sim_resolution {
+                self.sim_panel.resolution = res;
+            }
             self.sim_panel.show_error_heatmap = st.capture.sim_heatmap;
             self.auto_sim_after_gen = true;
             self.trigger_generate_dirty(None, None);
@@ -1087,11 +1093,39 @@ impl ChipCutterApp {
                 needs_resim = true;
             }
         }
+        if let Some(backend) = capture.sim_backend
+            && self.sim_panel.backend_choice != backend
+        {
+            self.sim_panel.backend_choice = backend;
+            if self.sim_panel.active_result.is_some() {
+                needs_resim = true;
+            }
+        }
+        if let Some(sim_res) = capture.sim_resolution
+            && self.sim_panel.resolution != sim_res
+        {
+            self.sim_panel.resolution = sim_res;
+            if self.sim_panel.active_result.is_some() {
+                needs_resim = true;
+            }
+        }
         if let Some(res) = &self.sim_panel.active_result {
             if let Some(eng) = capture.sim_engine
                 && res.engine != eng
             {
                 needs_resim = true;
+            }
+            if let Some(sim_res) = capture.sim_resolution
+                && res.resolution != sim_res
+            {
+                needs_resim = true;
+            }
+            if let Some(backend) = capture.sim_backend {
+                let want_gpu = backend != chip_sim::SimComputeBackendChoice::Cpu
+                    && self.sim_panel.has_gpu_context();
+                if res.active_backend.is_gpu != want_gpu {
+                    needs_resim = true;
+                }
             }
             let op_id_for_index = capture.sim_after_op.and_then(|oi| {
                 self.project

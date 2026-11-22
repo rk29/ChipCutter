@@ -6,16 +6,17 @@ use std::{
 
 use chip_cam::{GeneratedToolpath, Operation};
 use chip_project::{collect_ready_setup_operations, resolve_kinematics_for_key};
+#[cfg(not(feature = "gpu-compute"))]
+use chip_sim::run_setup_simulation_with_choice;
 #[cfg(feature = "gpu-compute")]
 use chip_sim::{
-    GpuCheckpointCache, GpuSimContext, GpuStockRenderHandle, SimComputeBackendChoice,
-    WgpuComputeBackend, run_setup_simulation_with_gpu_context,
+    GpuCheckpointCache, GpuSimContext, GpuStockRenderHandle, WgpuComputeBackend,
+    run_setup_simulation_with_gpu_context,
 };
 use chip_sim::{
     ScrubSnapshot, SetupSimulationInput, SetupSimulationResult, SimError, SimOperationInput,
     SimStockColorMode, SimStockMesh, SimVerificationConfig, SimulatedStock,
     SimulatedStockPlaybackExt, StockPlaybackCursor, format_cycle_time_hms,
-    run_setup_simulation_with_engine,
 };
 use chip_tools::Tool;
 use crossbeam_channel::{Receiver, Sender, unbounded};
@@ -566,6 +567,7 @@ impl SimulationPanelState {
 
         let signature = self.compute_setup_sim_signature(project, setup_idx, cache, cad_revision);
         let engine = self.engine;
+        let backend_choice = self.backend_choice;
         let resolution = self.resolution;
         let target_bodies = setup.target_bodies.clone();
         let kin = if let Some(mid) = project.machine_id.as_deref()
@@ -577,9 +579,10 @@ impl SimulationPanelState {
         };
 
         logs.push(format!(
-            "Simulating Setup '{}' via {} at {} resolution on background worker…",
+            "Simulating Setup '{}' via {} [{}] at {} resolution on background worker…",
             setup.name,
             engine.label(),
+            backend_choice.label(),
             resolution.label_for_engine(engine)
         ));
 
@@ -606,18 +609,10 @@ impl SimulationPanelState {
                 cancel: Some(&cancel_flag),
             };
             #[cfg(feature = "gpu-compute")]
-            let res = if let Some(ctx) = gpu_ctx {
-                run_setup_simulation_with_gpu_context(
-                    &input,
-                    engine,
-                    SimComputeBackendChoice::Auto,
-                    Some(ctx),
-                )
-            } else {
-                run_setup_simulation_with_engine(&input, engine)
-            };
+            let res =
+                run_setup_simulation_with_gpu_context(&input, engine, backend_choice, gpu_ctx);
             #[cfg(not(feature = "gpu-compute"))]
-            let res = run_setup_simulation_with_engine(&input, engine);
+            let res = run_setup_simulation_with_choice(&input, engine, backend_choice);
             let mapped = match res {
                 Ok(sim) => Ok(Arc::new(sim)),
                 Err(SimError::Cancelled) => return,
@@ -655,8 +650,16 @@ impl SimulationPanelState {
                         Ok(sim) => {
                             let crit = sim.critical_error_count();
                             let warn = sim.warning_count();
+                            let backend_tag = if sim.active_backend.is_gpu {
+                                format!(
+                                    "GPU/{} · {}",
+                                    sim.active_backend.backend_api, sim.active_backend.adapter_name
+                                )
+                            } else {
+                                "CPU Exact".to_string()
+                            };
                             logs.push(format!(
-                                "Simulation completed in {elapsed_ms} ms — Cycle {}, Removed {:.0} mm^3 ({crit} critical error(s), {warn} warning(s)).",
+                                "Simulation completed in {elapsed_ms} ms ({backend_tag}) — Cycle {}, Removed {:.0} mm^3 ({crit} critical error(s), {warn} warning(s)).",
                                 format_cycle_time_hms(sim.timeline.total_time_sec),
                                 sim.removed_volume_mm3
                             ));

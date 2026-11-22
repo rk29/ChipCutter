@@ -7,15 +7,16 @@ use chip_post::{
 use chip_project::{
     DiagnosticSeverity, SetupPostRequest, SetupSimRequest, ToolpathCache,
     generate_project_blocking, kinematics_for_post_profile, post_process_project_setup,
-    resolve_kinematics_for_key, simulate_project_setup, simulate_project_setup_with_engine,
+    resolve_kinematics_for_key, simulate_project_setup, simulate_project_setup_with_choice,
     validate_project, validate_project_with_machine,
 };
-use chip_sim::{SetupSimulationResult, SimResolution, format_cycle_time_hms};
+use chip_sim::{SetupSimulationResult, SimResolution, StockModelKind, format_cycle_time_hms};
 use chip_tools::resolve_machine_definition_cli_override;
 
 use crate::commands::{
     BuildFileSummaryJson, BuildSummaryJson, ProjectSimReportJson, SetupSimReportJson,
-    load_primary_cad_for_project, load_project_or_chipz, parse_sim_engine, parse_sim_resolution,
+    load_primary_cad_for_project, load_project_or_chipz, parse_sim_backend, parse_sim_engine,
+    parse_sim_resolution,
 };
 
 pub fn run_validate(
@@ -109,17 +110,23 @@ pub fn run_validate(
     }
 }
 
-pub fn run_simulate(
-    project: PathBuf,
-    engine: String,
-    resolution: String,
-    tolerance: f64,
-    report: Option<PathBuf>,
-) -> Result<ExitCode, Box<dyn std::error::Error>> {
-    let sim_engine = parse_sim_engine(&engine)?;
-    let sim_res_enum = parse_sim_resolution(&resolution);
-    let tolerance_mm = tolerance.abs().max(1e-4);
-    let loaded = load_project_or_chipz(&project)?;
+pub struct SimulateArgs {
+    pub project: PathBuf,
+    pub engine: String,
+    pub backend: String,
+    pub resolution: String,
+    pub tolerance: f64,
+    pub benchmark: bool,
+    pub json: bool,
+    pub report: Option<PathBuf>,
+}
+
+pub fn run_simulate(args: SimulateArgs) -> Result<ExitCode, Box<dyn std::error::Error>> {
+    let sim_engine = parse_sim_engine(&args.engine)?;
+    let sim_backend = parse_sim_backend(&args.backend)?;
+    let sim_res_enum = parse_sim_resolution(&args.resolution);
+    let tolerance_mm = args.tolerance.abs().max(1e-4);
+    let loaded = load_project_or_chipz(&args.project)?;
     let mut proj_doc = loaded.proj;
     let proj_dir = loaded.dir.as_deref();
     let cad_doc = load_primary_cad_for_project(&proj_doc, proj_dir)?;
@@ -150,19 +157,21 @@ pub fn run_simulate(
         return Ok(ExitCode::FAILURE);
     }
 
-    println!(
-        "=== ChipCutter {} Simulation: '{}' [{}] ===",
-        sim_engine.label(),
-        proj_doc.project_name,
-        sim_res_enum.label_for_engine(sim_engine)
-    );
+    if !args.json {
+        println!(
+            "=== ChipCutter {} Simulation: '{}' [{}] ===",
+            sim_engine.label(),
+            proj_doc.project_name,
+            sim_res_enum.label_for_engine(sim_engine)
+        );
+    }
 
     let mut setup_reports = Vec::with_capacity(proj_doc.setups.len());
     let mut any_critical = false;
 
     for (s_idx, setup) in proj_doc.setups.iter().enumerate() {
         let kin = resolve_kinematics_for_key(&setup.post_profile, proj_dir);
-        let mut sim = simulate_project_setup_with_engine(
+        let mut sim = simulate_project_setup_with_choice(
             &SetupSimRequest {
                 project: &proj_doc,
                 setup_idx: s_idx,
@@ -174,6 +183,7 @@ pub fn run_simulate(
                 cancel: None,
             },
             sim_engine,
+            sim_backend,
         )?;
         if (tolerance_mm - 0.05).abs() > 1e-6
             && let Some(recomputed) = sim.compute_error_report_at_tolerance(tolerance_mm)
@@ -181,52 +191,86 @@ pub fn run_simulate(
             sim.error_report = Some(recomputed);
         }
 
-        let hms = format_cycle_time_hms(sim.timeline.total_time_sec);
-        println!(
-            "Setup '{}' [{}] ({}): Cycle = {} ({:.1}s cut, {:.1}s rapid, {:.1}s ATC) | Stock: {:.0} -> {:.0} mm^3 (removed {:.0} mm^3)",
-            setup.name,
-            setup.wcs_slot.short_code(),
-            sim.engine.short_slug(),
-            hms,
-            sim.timeline.total_cutting_time_sec,
-            sim.timeline.total_rapid_time_sec,
-            sim.timeline.total_tool_change_time_sec,
-            sim.initial_stock_volume_mm3,
-            sim.remaining_stock_volume_mm3,
-            sim.removed_volume_mm3
-        );
-        if let Some(err) = &sim.error_report {
+        if !args.json {
+            let hms = format_cycle_time_hms(sim.timeline.total_time_sec);
+            let backend_short = if sim.active_backend.is_gpu {
+                format!("GPU/{}", sim.active_backend.backend_api)
+            } else {
+                "CPU".to_string()
+            };
+            let stock_tag = stock_kind_slug(sim.stock_kind());
             println!(
-                "  Error Volume: total={:.2} mm^3 ({:.2}% of target) | excess={:.2} mm^3 | gouge={:.2} mm^3 | efficiency={:.1}%",
-                err.total_error_volume_mm3,
-                err.error_volume_pct_of_target,
-                err.excess_volume_mm3,
-                err.gouge_volume_mm3,
-                err.material_removal_efficiency_pct
+                "Setup '{}' [{}] ({} · {}): Cycle = {} ({:.1}s cut, {:.1}s rapid, {:.1}s ATC) | Stock: {:.0} -> {:.0} mm^3 (removed {:.0} mm^3)",
+                setup.name,
+                setup.wcs_slot.short_code(),
+                stock_tag,
+                backend_short,
+                hms,
+                sim.timeline.total_cutting_time_sec,
+                sim.timeline.total_rapid_time_sec,
+                sim.timeline.total_tool_change_time_sec,
+                sim.initial_stock_volume_mm3,
+                sim.remaining_stock_volume_mm3,
+                sim.removed_volume_mm3
             );
-            println!(
-                "  Surface Deviation (±{:.3} mm): RMS={:.4} mm | MAE={:.4} mm | Bias={:+.4} mm | P95={:.4} mm | P99={:.4} mm | In-Tol={:.1}% | MaxExcess=+{:.4} mm | MaxGouge=-{:.4} mm",
-                err.tolerance_mm,
-                err.rms_error_mm,
-                err.mean_abs_error_mm,
-                err.mean_signed_error_mm,
-                err.p95_abs_error_mm,
-                err.p99_abs_error_mm,
-                err.in_tolerance_surface_pct,
-                err.max_excess_mm,
-                err.max_gouge_mm
-            );
-        }
-        for d in &sim.diagnostics {
-            println!(
-                "  {} [{}] {} (seg #{}, t={:.2}s): {}",
-                d.severity.badge(),
-                d.kind.label(),
-                d.op_name,
-                d.global_seg_idx,
-                d.timeline_time_sec,
-                d.message
-            );
+            if args.benchmark {
+                let backend_mode = if sim.active_backend.is_gpu {
+                    "gpu"
+                } else {
+                    "cpu"
+                };
+                println!(
+                    "  Benchmark: backend={} | adapter='{}' ({}) | engine={} | stock={} | resolution={}",
+                    backend_mode,
+                    sim.active_backend.adapter_name,
+                    sim.active_backend.backend_api,
+                    sim.engine.short_slug(),
+                    stock_tag,
+                    sim.resolution.label_for_engine(sim.engine),
+                );
+                println!(
+                    "  Timing: total={:.2} ms (target_setup={:.2} ms, sweep={:.2} ms, metrics={:.2} ms) | segments={} | throughput={:.1} seg/s",
+                    sim.timing.total_ms,
+                    sim.timing.target_setup_ms,
+                    sim.timing.sweep_ms,
+                    sim.timing.metrics_ms,
+                    sim.timing.total_segments,
+                    sim.timing.segments_per_sec,
+                );
+            }
+            if let Some(err) = &sim.error_report {
+                println!(
+                    "  Error Volume: total={:.2} mm^3 ({:.2}% of target) | excess={:.2} mm^3 | gouge={:.2} mm^3 | efficiency={:.1}%",
+                    err.total_error_volume_mm3,
+                    err.error_volume_pct_of_target,
+                    err.excess_volume_mm3,
+                    err.gouge_volume_mm3,
+                    err.material_removal_efficiency_pct
+                );
+                println!(
+                    "  Surface Deviation (±{:.3} mm): RMS={:.4} mm | MAE={:.4} mm | Bias={:+.4} mm | P95={:.4} mm | P99={:.4} mm | In-Tol={:.1}% | MaxExcess=+{:.4} mm | MaxGouge=-{:.4} mm",
+                    err.tolerance_mm,
+                    err.rms_error_mm,
+                    err.mean_abs_error_mm,
+                    err.mean_signed_error_mm,
+                    err.p95_abs_error_mm,
+                    err.p99_abs_error_mm,
+                    err.in_tolerance_surface_pct,
+                    err.max_excess_mm,
+                    err.max_gouge_mm
+                );
+            }
+            for d in &sim.diagnostics {
+                println!(
+                    "  {} [{}] {} (seg #{}, t={:.2}s): {}",
+                    d.severity.badge(),
+                    d.kind.label(),
+                    d.op_name,
+                    d.global_seg_idx,
+                    d.timeline_time_sec,
+                    d.message
+                );
+            }
         }
 
         if sim.has_critical_errors() {
@@ -245,22 +289,39 @@ pub fn run_simulate(
         passed: !any_critical,
         setups: setup_reports,
     };
+    let json_text = if args.json || args.report.is_some() {
+        Some(serde_json::to_string_pretty(&full_report)?)
+    } else {
+        None
+    };
 
-    if let Some(report_path) = report {
+    if let Some(report_path) = args.report {
         if let Some(parent) = report_path.parent()
             && !parent.as_os_str().is_empty()
         {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(&report_path, serde_json::to_string_pretty(&full_report)?)?;
-        println!("Wrote JSON simulation report to {}", report_path.display());
+        if let Some(text) = &json_text {
+            std::fs::write(&report_path, text)?;
+        }
+        if !args.json {
+            println!("Wrote JSON simulation report to {}", report_path.display());
+        }
+    }
+
+    if args.json {
+        if let Some(text) = &json_text {
+            println!("{text}");
+        }
+    } else if any_critical {
+        eprintln!("Simulation FAILED: Critical crash or gouge detected!");
+    } else {
+        println!("Simulation PASSED (0 critical crashes/gouges).");
     }
 
     if any_critical {
-        eprintln!("Simulation FAILED: Critical crash or gouge detected!");
         Ok(ExitCode::FAILURE)
     } else {
-        println!("Simulation PASSED (0 critical crashes/gouges).");
         Ok(ExitCode::SUCCESS)
     }
 }
@@ -435,6 +496,14 @@ pub fn run_build(args: BuildArgs) -> Result<ExitCode, Box<dyn std::error::Error>
     Ok(ExitCode::SUCCESS)
 }
 
+fn stock_kind_slug(kind: StockModelKind) -> &'static str {
+    match kind {
+        StockModelKind::Heightfield25D => "heightfield",
+        StockModelKind::TriDexel3D => "tri_dexel",
+        StockModelKind::Cylindrical4Axis(_) => "cylindrical",
+    }
+}
+
 fn build_sim_report_json(
     setup_id: &str,
     setup_name: &str,
@@ -444,11 +513,15 @@ fn build_sim_report_json(
     let hms = format_cycle_time_hms(sim.timeline.total_time_sec);
     let crit = sim.critical_error_count();
     let warn = sim.warning_count();
+    let stock_kind = stock_kind_slug(sim.stock_kind()).to_string();
     SetupSimReportJson {
         setup_id: setup_id.to_string(),
         setup_name: setup_name.to_string(),
         engine: sim.engine,
+        stock_kind,
         resolution,
+        backend: sim.active_backend,
+        timing: sim.timing,
         total_time_sec: sim.timeline.total_time_sec,
         total_time_hms: hms,
         cutting_time_sec: sim.timeline.total_cutting_time_sec,

@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use chip_math::DisplayUnit;
-use chip_sim::SimEngineKind;
+use chip_sim::{SimComputeBackendChoice, SimEngineKind};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -50,6 +50,8 @@ pub struct UserPreferences {
     pub ghost_part: bool,
     #[serde(default)]
     pub sim_engine: SimEngineKind,
+    #[serde(default)]
+    pub sim_backend: SimComputeBackendChoice,
     pub layout_shares: WorkspaceLayoutShares,
     #[serde(default = "default_true")]
     pub show_welcome_on_startup: bool,
@@ -71,6 +73,7 @@ impl Default for UserPreferences {
             show_stock: true,
             ghost_part: false,
             sim_engine: SimEngineKind::Heightmap,
+            sim_backend: SimComputeBackendChoice::Auto,
             layout_shares: WorkspaceLayoutShares::default(),
             show_welcome_on_startup: true,
             recent_files: Vec::new(),
@@ -166,6 +169,7 @@ mod tests {
             show_rapids: false,
             ghost_part: true,
             sim_engine: SimEngineKind::TriDexel,
+            sim_backend: SimComputeBackendChoice::Cpu,
             layout_shares: WorkspaceLayoutShares {
                 browser_share: 0.25,
                 viewport_share: 0.50,
@@ -194,6 +198,7 @@ mod tests {
         assert_eq!(partial.theme, AppTheme::Light);
         assert_eq!(partial.default_machine_id, chip_tools::DEFAULT_MACHINE_ID);
         assert_eq!(partial.sim_engine, SimEngineKind::Heightmap);
+        assert_eq!(partial.sim_backend, SimComputeBackendChoice::Auto);
         assert!(partial.show_toolpaths);
         assert!(partial.show_welcome_on_startup);
         assert!(partial.layout_shares.top_row_share <= 0.88 + 1e-6);
@@ -235,5 +240,26 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn sim_backend_preferences_roundtrip_all_variants() {
+        for choice in SimComputeBackendChoice::ALL {
+            let prefs = UserPreferences {
+                sim_backend: choice,
+                ..UserPreferences::default()
+            };
+            let toml_text = prefs.to_toml_string().unwrap();
+            let decoded = UserPreferences::from_toml_str(&toml_text).unwrap();
+            assert_eq!(decoded.sim_backend, choice);
+        }
+        // Legacy prefs.toml without `sim_backend` defaults cleanly to `Auto`
+        let legacy = r#"
+            schema_version = 1
+            theme = "dark"
+            sim_engine = "heightmap"
+        "#;
+        let decoded = UserPreferences::from_toml_str(legacy).unwrap();
+        assert_eq!(decoded.sim_backend, SimComputeBackendChoice::Auto);
     }
 }

@@ -9,7 +9,8 @@ use chip_gui::{
     app::{ChipCutterApp, SelfTestConfig, StartupDemoMode},
     capture::{
         CaptureFocus, CaptureModal, CapturePane, CaptureSpec, CaptureView,
-        parse_capture_post_profile, parse_capture_sim_engine,
+        parse_capture_post_profile, parse_capture_sim_backend, parse_capture_sim_engine,
+        parse_capture_sim_resolution,
     },
     panels::welcome_gallery::SampleProjectId,
     theme::AppTheme,
@@ -107,6 +108,14 @@ struct GuiArgs {
     #[arg(long, value_parser = parse_capture_sim_engine)]
     capture_sim_engine: Option<chip_sim::SimEngineKind>,
 
+    /// Select simulation compute backend during capture (`auto`, `gpu`, or `cpu`).
+    #[arg(long, value_parser = parse_capture_sim_backend)]
+    capture_sim_backend: Option<chip_sim::SimComputeBackendChoice>,
+
+    /// Select simulation resolution during capture (`standard`, `fine`, or `ultra`).
+    #[arg(long, value_parser = parse_capture_sim_resolution)]
+    capture_sim_resolution: Option<chip_sim::SimResolution>,
+
     /// Enable signed stock-vs-target error heatmap coloring during capture.
     #[arg(long)]
     capture_sim_heatmap: bool,
@@ -174,6 +183,8 @@ fn main() -> eframe::Result {
         sim_progress: args.capture_sim_progress,
         sim_after_op: args.capture_sim_after_op,
         sim_engine: args.capture_sim_engine,
+        sim_backend: args.capture_sim_backend,
+        sim_resolution: args.capture_sim_resolution,
         sim_heatmap: args.capture_sim_heatmap,
         post_profile: args.capture_post,
         auto_generate: args.capture_generate,

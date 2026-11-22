@@ -311,9 +311,13 @@ impl ChipCutterApp {
             global_tools,
             last_saved_prefs: prefs.clone(),
             #[cfg(feature = "gpu-compute")]
-            sim_panel: SimulationPanelState::with_engine_and_gpu(prefs.sim_engine, shared_gpu_ctx),
+            sim_panel: SimulationPanelState::with_prefs_and_gpu(
+                prefs.sim_engine,
+                prefs.sim_backend,
+                shared_gpu_ctx,
+            ),
             #[cfg(not(feature = "gpu-compute"))]
-            sim_panel: SimulationPanelState::with_engine(prefs.sim_engine),
+            sim_panel: SimulationPanelState::with_prefs(prefs.sim_engine, prefs.sim_backend),
             prefs,
             modals: ModalStates::new(),
             gcode_panel: GCodePreviewPanelState::default(),
@@ -362,6 +366,18 @@ impl ChipCutterApp {
         app.highlight.show_rapids = app.prefs.show_rapids;
         app.highlight.show_stock = app.prefs.show_stock;
         app.highlight.ghost_part = app.prefs.ghost_part;
+        if let Some(st) = &app.self_test {
+            if let Some(eng) = st.capture.sim_engine {
+                app.sim_panel.engine = eng;
+            }
+            if let Some(backend) = st.capture.sim_backend {
+                app.sim_panel.backend_choice = backend;
+            }
+            if let Some(res) = st.capture.sim_resolution {
+                app.sim_panel.resolution = res;
+            }
+            app.sim_panel.show_error_heatmap = st.capture.sim_heatmap;
+        }
 
         if let Some(path) = initial_path {
             app.open_any_path(&path, cc.egui_ctx.clone());
@@ -464,7 +480,7 @@ impl ChipCutterApp {
             machines,
             global_tools,
             last_saved_prefs: prefs.clone(),
-            sim_panel: SimulationPanelState::with_engine(prefs.sim_engine),
+            sim_panel: SimulationPanelState::with_prefs(prefs.sim_engine, prefs.sim_backend),
             prefs,
             modals: ModalStates::new(),
             gcode_panel: GCodePreviewPanelState::default(),
@@ -585,6 +601,7 @@ impl ChipCutterApp {
         self.prefs.show_stock = self.highlight.show_stock;
         self.prefs.ghost_part = self.highlight.ghost_part;
         self.prefs.sim_engine = self.sim_panel.engine;
+        self.prefs.sim_backend = self.sim_panel.backend_choice;
         let shares = extract_workspace_shares(&self.tree);
         if !shares.approx_eq(self.prefs.layout_shares) {
             self.prefs.layout_shares = shares;

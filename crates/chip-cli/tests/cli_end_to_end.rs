@@ -1491,3 +1491,160 @@ fn v4_golden_thread_milling_snapshots_and_tridexel_sim_match_byte_for_byte() {
         assert_eq!(actual, expected, "{fname} drifted from golden snapshot");
     }
 }
+
+#[test]
+fn cli_simulate_backend_cpu_vs_gpu_json_and_benchmark_parity() {
+    let tmp = TempTestDir::new("sim_backend_parity_m55");
+    let step_path = tmp.path().join("cam_torture.step");
+    let proj_path = tmp.path().join("cam_torture.chip.toml");
+
+    let gen_out = Command::new(cli_bin())
+        .args([
+            "generate-sample-step",
+            step_path.to_str().unwrap(),
+            "--cam-torture",
+            "--project-out",
+            proj_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("generate cam-torture project");
+    assert!(
+        gen_out.status.success(),
+        "generate-sample-step failed:\n{}",
+        String::from_utf8_lossy(&gen_out.stderr)
+    );
+
+    // 1. CPU vs GPU JSON parity on Heightmap & Tri-Dexel
+    for engine in ["heightmap", "tri-dexel"] {
+        let cpu_out = Command::new(cli_bin())
+            .args([
+                "simulate",
+                proj_path.to_str().unwrap(),
+                "--engine",
+                engine,
+                "--backend",
+                "cpu",
+                "--resolution",
+                "standard",
+                "--json",
+            ])
+            .output()
+            .expect("run simulate --backend cpu --json");
+        assert!(
+            cpu_out.status.success(),
+            "simulate --engine {engine} --backend cpu --json failed:\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&cpu_out.stdout),
+            String::from_utf8_lossy(&cpu_out.stderr)
+        );
+        let gpu_out = Command::new(cli_bin())
+            .args([
+                "simulate",
+                proj_path.to_str().unwrap(),
+                "--engine",
+                engine,
+                "--backend",
+                "gpu",
+                "--resolution",
+                "standard",
+                "--json",
+            ])
+            .output()
+            .expect("run simulate --backend gpu --json");
+        assert!(
+            gpu_out.status.success(),
+            "simulate --engine {engine} --backend gpu --json failed:\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&gpu_out.stdout),
+            String::from_utf8_lossy(&gpu_out.stderr)
+        );
+
+        let cpu_json: serde_json::Value = serde_json::from_slice(&cpu_out.stdout)
+            .expect("parse stdout JSON for --backend cpu --json");
+        let gpu_json: serde_json::Value = serde_json::from_slice(&gpu_out.stdout)
+            .expect("parse stdout JSON for --backend gpu --json");
+        assert_eq!(cpu_json["passed"], gpu_json["passed"]);
+
+        let cpu_setup = &cpu_json["setups"][0];
+        let gpu_setup = &gpu_json["setups"][0];
+        assert_eq!(cpu_setup["backend"]["is_gpu"], false);
+        assert_eq!(cpu_setup["backend"]["backend_api"], "CPU");
+        assert!(gpu_setup["backend"]["adapter_name"].is_string());
+        assert!(gpu_setup["backend"]["backend_api"].is_string());
+
+        // Timing breakdown metadata must be present and positive
+        for (tag, s) in [("cpu", cpu_setup), ("gpu", gpu_setup)] {
+            let timing = &s["timing"];
+            assert!(
+                timing["total_ms"].as_f64().unwrap() > 0.0,
+                "{engine}/{tag} total_ms must be > 0: {timing}"
+            );
+            assert!(
+                timing["total_segments"].as_u64().unwrap() > 0,
+                "{engine}/{tag} total_segments must be > 0: {timing}"
+            );
+            assert!(
+                timing["segments_per_sec"].as_f64().unwrap() > 0.0,
+                "{engine}/{tag} segments_per_sec must be > 0: {timing}"
+            );
+        }
+
+        // Identical Rule 1-5 crash/gouge diagnostic counts
+        assert_eq!(
+            cpu_setup["critical_error_count"], gpu_setup["critical_error_count"],
+            "{engine}: CPU vs GPU critical_error_count mismatch"
+        );
+        assert_eq!(
+            cpu_setup["warning_count"], gpu_setup["warning_count"],
+            "{engine}: CPU vs GPU warning_count mismatch"
+        );
+
+        // Matching StockErrorReport metrics within f32-vs-f64 tolerance
+        let cpu_err = &cpu_setup["error_report"];
+        let gpu_err = &gpu_setup["error_report"];
+        assert!(cpu_err.is_object() && gpu_err.is_object());
+        let cpu_rms = cpu_err["rms_error_mm"].as_f64().unwrap();
+        let gpu_rms = gpu_err["rms_error_mm"].as_f64().unwrap();
+        assert!(
+            (cpu_rms - gpu_rms).abs() < 0.05,
+            "{engine}: CPU vs GPU RMS mismatch: cpu={cpu_rms:.4}, gpu={gpu_rms:.4}"
+        );
+        let cpu_vol = cpu_err["total_error_volume_mm3"].as_f64().unwrap();
+        let gpu_vol = gpu_err["total_error_volume_mm3"].as_f64().unwrap();
+        let rel_vol_diff = (cpu_vol - gpu_vol).abs() / cpu_vol.max(100.0);
+        assert!(
+            rel_vol_diff < 0.03,
+            "{engine}: CPU vs GPU total_error_volume_mm3 mismatch: cpu={cpu_vol:.2}, gpu={gpu_vol:.2}"
+        );
+        let cpu_intol = cpu_err["in_tolerance_surface_pct"].as_f64().unwrap();
+        let gpu_intol = gpu_err["in_tolerance_surface_pct"].as_f64().unwrap();
+        assert!(
+            (cpu_intol - gpu_intol).abs() < 2.0,
+            "{engine}: CPU vs GPU in_tolerance_surface_pct mismatch: cpu={cpu_intol:.2}, gpu={gpu_intol:.2}"
+        );
+    }
+
+    // 2. Verify `--benchmark` human-readable output format
+    let bench_out = Command::new(cli_bin())
+        .args([
+            "simulate",
+            proj_path.to_str().unwrap(),
+            "--backend",
+            "auto",
+            "--benchmark",
+        ])
+        .output()
+        .expect("run simulate --benchmark");
+    assert!(
+        bench_out.status.success(),
+        "simulate --benchmark failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&bench_out.stdout),
+        String::from_utf8_lossy(&bench_out.stderr)
+    );
+    let bench_stdout = String::from_utf8_lossy(&bench_out.stdout);
+    assert!(bench_stdout.contains("Benchmark: backend="));
+    assert!(bench_stdout.contains("Timing: total="));
+    assert!(bench_stdout.contains("target_setup="));
+    assert!(bench_stdout.contains("sweep="));
+    assert!(bench_stdout.contains("metrics="));
+    assert!(bench_stdout.contains("throughput="));
+    assert!(bench_stdout.contains("Error Volume:"));
+}
