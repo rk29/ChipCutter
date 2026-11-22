@@ -1844,3 +1844,244 @@ fn cli_m61_simulate_json_reports_fixture_collision_and_build_blocks_export() {
         "blocked build must NOT emit any .nc G-code files"
     );
 }
+
+#[test]
+fn cli_simulate_all_setups_carryover_emits_cumulative_json_and_text_reports() {
+    use chip_cam::{
+        BoxAnchor27, HeightReference, HeightSpec, MachiningBoundaryMode, Operation, OperationKind,
+        Setup, StockConfig, StrategyParams, WcsOrientationMode, WcsOriginMode, WorkOffsetSlot,
+    };
+    use chip_math::ParamLength;
+    use chip_project::ModelEntry;
+
+    // Build a watertight two-sided stepped block STL (`60 x 50 x 16 mm`, boss `32 x 26 x 6 mm`)
+    let mut tris: Vec<([f32; 3], [f32; 3], [f32; 3])> = Vec::new();
+    let mut push_quad = |a: [f32; 3], b: [f32; 3], c: [f32; 3], d: [f32; 3]| {
+        tris.push((a, b, c));
+        tris.push((a, c, d));
+    };
+    let (x0, x1, y0, y1, z0, z1) = (0.0_f32, 60.0_f32, 0.0_f32, 50.0_f32, 0.0_f32, 10.0_f32);
+    let (bx0, bx1, by0, by1, bz1) = (14.0_f32, 46.0_f32, 12.0_f32, 38.0_f32, 16.0_f32);
+    push_quad([x0, y0, z0], [x0, y1, z0], [x1, y1, z0], [x1, y0, z0]);
+    push_quad([x0, y0, z0], [x1, y0, z0], [x1, y0, z1], [x0, y0, z1]);
+    push_quad([x1, y1, z0], [x0, y1, z0], [x0, y1, z1], [x1, y1, z1]);
+    push_quad([x0, y1, z0], [x0, y0, z0], [x0, y0, z1], [x0, y1, z1]);
+    push_quad([x1, y0, z0], [x1, y1, z0], [x1, y1, z1], [x1, y0, z1]);
+    push_quad([x0, y0, z1], [x1, y0, z1], [x1, by0, z1], [x0, by0, z1]);
+    push_quad([x0, by1, z1], [x1, by1, z1], [x1, y1, z1], [x0, y1, z1]);
+    push_quad([x0, by0, z1], [bx0, by0, z1], [bx0, by1, z1], [x0, by1, z1]);
+    push_quad([bx1, by0, z1], [x1, by0, z1], [x1, by1, z1], [bx1, by1, z1]);
+    push_quad(
+        [bx0, by0, z1],
+        [bx1, by0, z1],
+        [bx1, by0, bz1],
+        [bx0, by0, bz1],
+    );
+    push_quad(
+        [bx1, by1, z1],
+        [bx0, by1, z1],
+        [bx0, by1, bz1],
+        [bx1, by1, bz1],
+    );
+    push_quad(
+        [bx0, by1, z1],
+        [bx0, by0, z1],
+        [bx0, by0, bz1],
+        [bx0, by1, bz1],
+    );
+    push_quad(
+        [bx1, by0, z1],
+        [bx1, by1, z1],
+        [bx1, by1, bz1],
+        [bx1, by0, bz1],
+    );
+    push_quad(
+        [bx0, by0, bz1],
+        [bx1, by0, bz1],
+        [bx1, by1, bz1],
+        [bx0, by1, bz1],
+    );
+
+    let mut stl_bytes = Vec::with_capacity(84 + tris.len() * 50);
+    stl_bytes.extend_from_slice(&[0u8; 80]);
+    stl_bytes.extend_from_slice(&(tris.len() as u32).to_le_bytes());
+    for (v0, v1, v2) in tris {
+        let e1 = [v1[0] - v0[0], v1[1] - v0[1], v1[2] - v0[2]];
+        let e2 = [v2[0] - v0[0], v2[1] - v0[1], v2[2] - v0[2]];
+        let nx = e1[1] * e2[2] - e1[2] * e2[1];
+        let ny = e1[2] * e2[0] - e1[0] * e2[2];
+        let nz = e1[0] * e2[1] - e1[1] * e2[0];
+        let len = (nx * nx + ny * ny + nz * nz).sqrt().max(1e-12);
+        for c in [nx / len, ny / len, nz / len] {
+            stl_bytes.extend_from_slice(&c.to_le_bytes());
+        }
+        for v in [v0, v1, v2] {
+            for c in v {
+                stl_bytes.extend_from_slice(&c.to_le_bytes());
+            }
+        }
+        stl_bytes.extend_from_slice(&0u16.to_le_bytes());
+    }
+
+    let tmp = TempTestDir::new("m62_cli_all_setups");
+    let stl_path = tmp.path().join("stepped_block.stl");
+    std::fs::write(&stl_path, &stl_bytes).unwrap();
+    let sha = compute_sha256_hex(&stl_bytes);
+
+    let starter = default_starter_tool_library();
+    let flat_6 = starter.tools[0].clone();
+
+    let mut proj = ProjectDocument::new("M62 Two-Sided CLI Test");
+    proj.models
+        .push(ModelEntry::new("m_part", "stepped_block.stl", sha));
+    proj.tools.push(flat_6.clone());
+
+    let mut s1 = Setup::new("setup_1", "Setup 1 - Top Op", WorkOffsetSlot::G54);
+    s1.wcs.origin = WcsOriginMode::StockBoxPoint {
+        anchor: BoxAnchor27::TOP_CENTER,
+    };
+    s1.stock = StockConfig::RelativeBox {
+        side_pos_x: ParamLength::from_mm(3.0),
+        side_neg_x: ParamLength::from_mm(3.0),
+        side_pos_y: ParamLength::from_mm(3.0),
+        side_neg_y: ParamLength::from_mm(3.0),
+        symmetric_xy: true,
+        top_offset_z: ParamLength::from_mm(1.0),
+        bottom_offset_z: ParamLength::from_mm(5.0),
+        sheet_thickness_z: ParamLength::from_mm(12.0),
+        round_increment_mm: None,
+    };
+    let mut op1_face = Operation::new("op1_face", "Op 1.1 Face Top", OperationKind::Facing);
+    op1_face.tool_id = Some(flat_6.id.clone());
+    op1_face.preset_id = flat_6.presets.first().map(|p| p.id.clone());
+    op1_face.heights.top = HeightSpec::new(HeightReference::StockTop, 0.0);
+    op1_face.heights.bottom = HeightSpec::new(HeightReference::ModelTop, 0.0);
+    op1_face.passes.multiple_depths = false;
+    op1_face.passes.stock_to_leave_axial = ParamLength::from_mm(0.0);
+    s1.operations.push(op1_face);
+
+    let mut op1 = Operation::new("op1", "Op 1.2 Top Adaptive", OperationKind::Adaptive3D);
+    op1.tool_id = Some(flat_6.id.clone());
+    op1.preset_id = flat_6.presets.first().map(|p| p.id.clone());
+    op1.heights.top = HeightSpec::new(HeightReference::ModelTop, 0.0);
+    op1.heights.bottom = HeightSpec::new(HeightReference::ModelBottom, 2.0);
+    op1.passes.stock_to_leave_radial = ParamLength::from_mm(0.0);
+    op1.passes.stock_to_leave_axial = ParamLength::from_mm(0.0);
+    if let StrategyParams::Adaptive3D(p) = op1.strategy_mut() {
+        p.boundary_mode = MachiningBoundaryMode::StockBox;
+        p.max_roughing_stepdown = ParamLength::from_mm(5.0);
+        p.fine_stepdown = ParamLength::from_mm(2.0);
+        p.adaptive.optimal_load = ParamLength::from_mm(2.2);
+    }
+    s1.operations.push(op1);
+
+    let mut s2 = Setup::new("setup_2", "Setup 2 - Flip Bottom Op", WorkOffsetSlot::G55);
+    s2.wcs.orientation = WcsOrientationMode::ModelOrientation {
+        flip_z: true,
+        flip_x: false,
+        clock_90: 0,
+        extra_z_rot_deg: 0.0,
+    };
+    s2.wcs.origin = WcsOriginMode::StockBoxPoint {
+        anchor: BoxAnchor27::TOP_CENTER,
+    };
+    s2.stock = StockConfig::RelativeBox {
+        side_pos_x: ParamLength::from_mm(3.0),
+        side_neg_x: ParamLength::from_mm(3.0),
+        side_pos_y: ParamLength::from_mm(3.0),
+        side_neg_y: ParamLength::from_mm(3.0),
+        symmetric_xy: true,
+        top_offset_z: ParamLength::from_mm(5.0),
+        bottom_offset_z: ParamLength::from_mm(1.0),
+        sheet_thickness_z: ParamLength::from_mm(12.0),
+        round_increment_mm: None,
+    };
+    s2.carryover_from_setup_id = Some("setup_1".to_string());
+
+    let mut op2_face = Operation::new("op2_face", "Op 2.1 Face Hat", OperationKind::Facing);
+    op2_face.tool_id = Some(flat_6.id.clone());
+    op2_face.preset_id = flat_6.presets.first().map(|p| p.id.clone());
+    op2_face.heights.top = HeightSpec::new(HeightReference::StockTop, 0.0);
+    op2_face.heights.bottom = HeightSpec::new(HeightReference::ModelTop, 0.0);
+    op2_face.passes.multiple_depths = true;
+    op2_face.passes.max_stepdown = ParamLength::from_mm(2.5);
+    op2_face.passes.stock_to_leave_axial = ParamLength::from_mm(0.0);
+    s2.operations.push(op2_face);
+
+    let mut op2 = Operation::new("op2", "Op 2.2 Bottom Rest", OperationKind::Adaptive3D);
+    op2.tool_id = Some(flat_6.id.clone());
+    op2.preset_id = flat_6.presets.first().map(|p| p.id.clone());
+    op2.heights.top = HeightSpec::new(HeightReference::ModelTop, 0.0);
+    op2.heights.bottom = HeightSpec::new(HeightReference::ModelBottom, 0.0);
+    op2.passes.stock_to_leave_radial = ParamLength::from_mm(0.0);
+    op2.passes.stock_to_leave_axial = ParamLength::from_mm(0.0);
+    if let StrategyParams::Adaptive3D(p) = op2.strategy_mut() {
+        p.boundary_mode = MachiningBoundaryMode::StockBox;
+        p.max_roughing_stepdown = ParamLength::from_mm(4.0);
+        p.fine_stepdown = ParamLength::from_mm(2.0);
+        p.adaptive.optimal_load = ParamLength::from_mm(2.2);
+    }
+    s2.operations.push(op2);
+
+    proj.setups = vec![s1, s2];
+    let proj_path = tmp.path().join("two_sided.chip.toml");
+    proj.save_to_path(&proj_path).unwrap();
+
+    // 1. JSON mode with `--all-setups`
+    let json_out = Command::new(cli_bin())
+        .args([
+            "simulate",
+            proj_path.to_str().unwrap(),
+            "--engine",
+            "tri-dexel",
+            "--all-setups",
+            "--json",
+        ])
+        .output()
+        .expect("simulate --all-setups --json");
+    assert!(
+        json_out.status.success(),
+        "simulate --all-setups --json failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&json_out.stdout),
+        String::from_utf8_lossy(&json_out.stderr)
+    );
+    let json_str = String::from_utf8_lossy(&json_out.stdout);
+    let report: serde_json::Value =
+        serde_json::from_str(&json_str).unwrap_or_else(|e| panic!("invalid JSON: {e}\n{json_str}"));
+    assert_eq!(report["passed"], serde_json::Value::Bool(true));
+    assert_eq!(report["setups"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        report["setups"][1]["carried_over_from_setup"].as_str(),
+        Some("Setup 1 - Top Op")
+    );
+    let cum = &report["cumulative_error_report"];
+    assert!(
+        cum.is_object(),
+        "expected cumulative_error_report object in JSON:\n{json_str}"
+    );
+    let in_tol = cum["in_tolerance_surface_pct"].as_f64().unwrap();
+    let max_gouge = cum["max_gouge_mm"].as_f64().unwrap();
+    assert!(
+        in_tol >= 95.0 && max_gouge <= 0.02,
+        "expected cumulative In-Tol >= 95% and max_gouge <= 0.02 mm, got In-Tol={in_tol:.2}%, max_gouge={max_gouge:.4} mm"
+    );
+
+    // 2. Human-readable text mode with `--all-setups`
+    let txt_out = Command::new(cli_bin())
+        .args([
+            "simulate",
+            proj_path.to_str().unwrap(),
+            "--engine",
+            "tri-dexel",
+            "--all-setups",
+        ])
+        .output()
+        .expect("simulate --all-setups");
+    assert!(txt_out.status.success());
+    let txt_str = String::from_utf8_lossy(&txt_out.stdout);
+    assert!(
+        txt_str.contains("carried over from 'Setup 1 - Top Op'")
+            && txt_str.contains("Cumulative Multi-Setup Metrology"),
+        "expected carryover & cumulative summary in text output:\n{txt_str}"
+    );
+}

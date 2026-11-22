@@ -7,8 +7,8 @@ use chip_post::{
 use chip_project::{
     DiagnosticSeverity, SetupPostRequest, SetupSimRequest, ToolpathCache,
     generate_project_blocking_in_dir, kinematics_for_post_profile, post_process_project_setup,
-    resolve_kinematics_for_key, simulate_project_setup_in_dir,
-    simulate_project_setup_with_choice_in_dir, validate_project, validate_project_with_machine,
+    simulate_all_setups_with_choice, simulate_project_setup_in_dir, validate_project,
+    validate_project_with_machine,
 };
 use chip_sim::{SetupSimulationResult, SimResolution, StockModelKind, format_cycle_time_hms};
 use chip_tools::resolve_machine_definition_cli_override;
@@ -118,6 +118,7 @@ pub struct SimulateArgs {
     pub resolution: String,
     pub tolerance: f64,
     pub benchmark: bool,
+    pub all_setups: bool,
     pub json: bool,
     pub report: Option<PathBuf>,
 }
@@ -167,26 +168,23 @@ pub fn run_simulate(args: SimulateArgs) -> Result<ExitCode, Box<dyn std::error::
         );
     }
 
+    let all_sims = simulate_all_setups_with_choice(
+        &proj_doc,
+        &cad_doc,
+        1,
+        &cache,
+        proj_dir,
+        sim_res_enum,
+        sim_engine,
+        sim_backend,
+        None,
+    )?;
+
     let mut setup_reports = Vec::with_capacity(proj_doc.setups.len());
     let mut any_critical = false;
+    let mut final_error_report = None;
 
-    for (s_idx, setup) in proj_doc.setups.iter().enumerate() {
-        let kin = resolve_kinematics_for_key(&setup.post_profile, proj_dir);
-        let mut sim = simulate_project_setup_with_choice_in_dir(
-            &SetupSimRequest {
-                project: &proj_doc,
-                setup_idx: s_idx,
-                cad_doc: &cad_doc,
-                cad_revision: 1,
-                cache: &cache,
-                kinematics: kin,
-                resolution: sim_res_enum,
-                cancel: None,
-            },
-            proj_dir,
-            sim_engine,
-            sim_backend,
-        )?;
+    for (setup, mut sim) in proj_doc.setups.iter().zip(all_sims) {
         if (tolerance_mm - 0.05).abs() > 1e-6
             && let Some(recomputed) = sim.compute_error_report_at_tolerance(tolerance_mm)
         {
@@ -201,12 +199,18 @@ pub fn run_simulate(args: SimulateArgs) -> Result<ExitCode, Box<dyn std::error::
                 "CPU".to_string()
             };
             let stock_tag = stock_kind_slug(sim.stock_kind());
+            let carry_tag = sim
+                .carried_over_from_setup
+                .as_deref()
+                .map(|src| format!(" · carried over from '{src}'"))
+                .unwrap_or_default();
             println!(
-                "Setup '{}' [{}] ({} · {}): Cycle = {} ({:.1}s cut, {:.1}s rapid, {:.1}s ATC) | Stock: {:.0} -> {:.0} mm^3 (removed {:.0} mm^3)",
+                "Setup '{}' [{}] ({} · {}{}): Cycle = {} ({:.1}s cut, {:.1}s rapid, {:.1}s ATC) | Stock: {:.0} -> {:.0} mm^3 (removed {:.0} mm^3)",
                 setup.name,
                 setup.wcs_slot.short_code(),
                 stock_tag,
                 backend_short,
+                carry_tag,
                 hms,
                 sim.timeline.total_cutting_time_sec,
                 sim.timeline.total_rapid_time_sec,
@@ -278,6 +282,9 @@ pub fn run_simulate(args: SimulateArgs) -> Result<ExitCode, Box<dyn std::error::
         if sim.has_critical_errors() {
             any_critical = true;
         }
+        if let Some(ref rep) = sim.error_report {
+            final_error_report = Some(rep.clone());
+        }
         setup_reports.push(build_sim_report_json(
             &setup.id,
             &setup.name,
@@ -286,10 +293,40 @@ pub fn run_simulate(args: SimulateArgs) -> Result<ExitCode, Box<dyn std::error::
         ));
     }
 
+    let cumulative_error_report = if args.all_setups {
+        final_error_report
+    } else {
+        None
+    };
+
+    if !args.json
+        && args.all_setups
+        && let Some(ref cum) = cumulative_error_report
+    {
+        println!(
+            "=== Cumulative Multi-Setup Metrology ({} Setup(s), ±{:.3} mm) ===",
+            setup_reports.len(),
+            cum.tolerance_mm
+        );
+        println!(
+            "  Final Error Volume: total={:.2} mm^3 ({:.2}% of target) | excess={:.2} mm^3 | gouge={:.2} mm^3 | efficiency={:.1}%",
+            cum.total_error_volume_mm3,
+            cum.error_volume_pct_of_target,
+            cum.excess_volume_mm3,
+            cum.gouge_volume_mm3,
+            cum.material_removal_efficiency_pct
+        );
+        println!(
+            "  Final Surface Deviation: RMS={:.4} mm | In-Tol={:.1}% | MaxExcess=+{:.4} mm | MaxGouge=-{:.4} mm",
+            cum.rms_error_mm, cum.in_tolerance_surface_pct, cum.max_excess_mm, cum.max_gouge_mm
+        );
+    }
+
     let full_report = ProjectSimReportJson {
         project_name: proj_doc.project_name.clone(),
         passed: !any_critical,
         setups: setup_reports,
+        cumulative_error_report,
     };
     let json_text = if args.json || args.report.is_some() {
         Some(serde_json::to_string_pretty(&full_report)?)
@@ -522,6 +559,7 @@ fn build_sim_report_json(
     SetupSimReportJson {
         setup_id: setup_id.to_string(),
         setup_name: setup_name.to_string(),
+        carried_over_from_setup: sim.carried_over_from_setup,
         engine: sim.engine,
         stock_kind,
         resolution,

@@ -712,6 +712,9 @@ fn verifies_all_five_v1_strategies_against_torture_block_invariants() {
         resolution: chip_sim::SimResolution::Fine,
         kinematics: chip_sim::MachineKinematicsConfig::default(),
         verify_config: chip_sim::SimVerificationConfig::default(),
+        initial_stock: None,
+        initial_raw_volume_mm3: None,
+        carried_over_from_setup: None,
         cancel: None,
     })
     .unwrap();
@@ -989,6 +992,7 @@ fn verifies_adaptive_clearing_and_rest_machining_against_sim_oracle() {
         display_unit: DisplayUnit::Millimeter,
         is_first_tool_in_setup: false,
         upstream_rest: &upstream,
+        carryover_stock: None,
         cancel: &cancel,
     })
     .unwrap();
@@ -1088,6 +1092,9 @@ fn verifies_adaptive_clearing_and_rest_machining_against_sim_oracle() {
         resolution: chip_sim::SimResolution::Fine,
         kinematics: chip_sim::MachineKinematicsConfig::default(),
         verify_config: chip_sim::SimVerificationConfig::default(),
+        initial_stock: None,
+        initial_raw_volume_mm3: None,
+        carried_over_from_setup: None,
         cancel: None,
     })
     .unwrap();
@@ -1116,6 +1123,9 @@ fn verifies_adaptive_clearing_and_rest_machining_against_sim_oracle() {
         resolution: chip_sim::SimResolution::Fine,
         kinematics: chip_sim::MachineKinematicsConfig::default(),
         verify_config: chip_sim::SimVerificationConfig::default(),
+        initial_stock: None,
+        initial_raw_volume_mm3: None,
+        carried_over_from_setup: None,
         cancel: None,
     })
     .unwrap();
@@ -1256,6 +1266,7 @@ fn verifies_vcarve_medial_corner_climbs_two_tool_flat_clearance_and_male_inlay_p
         display_unit: DisplayUnit::Millimeter,
         is_first_tool_in_setup: true,
         upstream_rest: &[],
+        carryover_stock: None,
         cancel: &cancel,
     })
     .unwrap();
@@ -1284,6 +1295,9 @@ fn verifies_vcarve_medial_corner_climbs_two_tool_flat_clearance_and_male_inlay_p
         resolution: chip_sim::SimResolution::Fine,
         kinematics: chip_sim::MachineKinematicsConfig::default(),
         verify_config: chip_sim::SimVerificationConfig::default(),
+        initial_stock: None,
+        initial_raw_volume_mm3: None,
+        carried_over_from_setup: None,
         cancel: None,
     })
     .unwrap();
@@ -1346,6 +1360,7 @@ fn verifies_vcarve_medial_corner_climbs_two_tool_flat_clearance_and_male_inlay_p
         display_unit: DisplayUnit::Millimeter,
         is_first_tool_in_setup: true,
         upstream_rest: &[],
+        carryover_stock: None,
         cancel: &cancel,
     })
     .unwrap();
@@ -1368,6 +1383,9 @@ fn verifies_vcarve_medial_corner_climbs_two_tool_flat_clearance_and_male_inlay_p
         resolution: chip_sim::SimResolution::Fine,
         kinematics: chip_sim::MachineKinematicsConfig::default(),
         verify_config: chip_sim::SimVerificationConfig::default(),
+        initial_stock: None,
+        initial_raw_volume_mm3: None,
+        carried_over_from_setup: None,
         cancel: None,
     })
     .unwrap();
@@ -1401,6 +1419,7 @@ fn verifies_vcarve_medial_corner_climbs_two_tool_flat_clearance_and_male_inlay_p
         display_unit: DisplayUnit::Millimeter,
         is_first_tool_in_setup: true,
         upstream_rest: &[],
+        carryover_stock: None,
         cancel: &cancel,
     })
     .unwrap();
@@ -1482,6 +1501,7 @@ fn verifies_adaptive_3d_and_waterline_3d_on_stl_obj_and_step_against_sim_oracle(
         display_unit: DisplayUnit::Millimeter,
         is_first_tool_in_setup: true,
         upstream_rest: &[],
+        carryover_stock: None,
         cancel: &cancel,
     })
     .unwrap();
@@ -1523,6 +1543,7 @@ fn verifies_adaptive_3d_and_waterline_3d_on_stl_obj_and_step_against_sim_oracle(
         display_unit: DisplayUnit::Millimeter,
         is_first_tool_in_setup: false,
         upstream_rest: &[],
+        carryover_stock: None,
         cancel: &cancel,
     })
     .unwrap();
@@ -1545,6 +1566,9 @@ fn verifies_adaptive_3d_and_waterline_3d_on_stl_obj_and_step_against_sim_oracle(
         kinematics: MachineKinematicsConfig::default(),
         resolution: SimResolution::Standard,
         verify_config: SimVerificationConfig::default(),
+        initial_stock: None,
+        initial_raw_volume_mm3: None,
+        carried_over_from_setup: None,
         cancel: None,
     })
     .unwrap();
@@ -1614,6 +1638,7 @@ fn verifies_adaptive_3d_and_waterline_3d_on_stl_obj_and_step_against_sim_oracle(
         display_unit: DisplayUnit::Millimeter,
         is_first_tool_in_setup: true,
         upstream_rest: &[],
+        carryover_stock: None,
         cancel: &cancel,
     })
     .unwrap();
@@ -1680,6 +1705,7 @@ fn verifies_adaptive_3d_and_waterline_3d_on_stl_obj_and_step_against_sim_oracle(
         display_unit: DisplayUnit::Millimeter,
         is_first_tool_in_setup: true,
         upstream_rest: &[],
+        carryover_stock: None,
         cancel: &cancel,
     })
     .unwrap();
@@ -1694,6 +1720,9 @@ fn verifies_adaptive_3d_and_waterline_3d_on_stl_obj_and_step_against_sim_oracle(
         kinematics: MachineKinematicsConfig::default(),
         resolution: SimResolution::Standard,
         verify_config: SimVerificationConfig::default(),
+        initial_stock: None,
+        initial_raw_volume_mm3: None,
+        carried_over_from_setup: None,
         cancel: None,
     })
     .unwrap();
@@ -1731,6 +1760,7 @@ fn verifies_adaptive_3d_and_waterline_3d_on_stl_obj_and_step_against_sim_oracle(
         display_unit: DisplayUnit::Millimeter,
         is_first_tool_in_setup: true,
         upstream_rest: &[],
+        carryover_stock: None,
         cancel: &cancel,
     })
     .unwrap();
@@ -1849,6 +1879,7 @@ fn milestone_18_3d_finishing_parallel_scallop_pencil_and_rest_oracles() {
         display_unit: DisplayUnit::Millimeter,
         is_first_tool_in_setup: true,
         upstream_rest: &[],
+        carryover_stock: None,
         cancel: &cancel,
     })
     .unwrap();
@@ -1868,6 +1899,7 @@ fn milestone_18_3d_finishing_parallel_scallop_pencil_and_rest_oracles() {
         display_unit: DisplayUnit::Millimeter,
         is_first_tool_in_setup: true,
         upstream_rest: &[],
+        carryover_stock: None,
         cancel: &cancel,
     })
     .unwrap();
@@ -1895,6 +1927,7 @@ fn milestone_18_3d_finishing_parallel_scallop_pencil_and_rest_oracles() {
         display_unit: DisplayUnit::Millimeter,
         is_first_tool_in_setup: true,
         upstream_rest: &[],
+        carryover_stock: None,
         cancel: &cancel,
     })
     .unwrap();
@@ -1960,6 +1993,7 @@ fn milestone_18_3d_finishing_parallel_scallop_pencil_and_rest_oracles() {
         display_unit: DisplayUnit::Millimeter,
         is_first_tool_in_setup: true,
         upstream_rest: &[],
+        carryover_stock: None,
         cancel: &cancel,
     })
     .unwrap();
@@ -1984,6 +2018,7 @@ fn milestone_18_3d_finishing_parallel_scallop_pencil_and_rest_oracles() {
         display_unit: DisplayUnit::Millimeter,
         is_first_tool_in_setup: true,
         upstream_rest: &[],
+        carryover_stock: None,
         cancel: &cancel,
     })
     .unwrap();
@@ -2016,6 +2051,7 @@ fn milestone_18_3d_finishing_parallel_scallop_pencil_and_rest_oracles() {
         display_unit: DisplayUnit::Millimeter,
         is_first_tool_in_setup: true,
         upstream_rest: &[],
+        carryover_stock: None,
         cancel: &cancel,
     })
     .unwrap();
@@ -2074,6 +2110,7 @@ fn milestone_18_3d_finishing_parallel_scallop_pencil_and_rest_oracles() {
         display_unit: DisplayUnit::Millimeter,
         is_first_tool_in_setup: false,
         upstream_rest: &[],
+        carryover_stock: None,
         cancel: &cancel,
     })
     .unwrap();
@@ -2119,6 +2156,7 @@ fn milestone_18_3d_finishing_parallel_scallop_pencil_and_rest_oracles() {
         display_unit: DisplayUnit::Millimeter,
         is_first_tool_in_setup: false,
         upstream_rest: &[],
+        carryover_stock: None,
         cancel: &cancel,
     })
     .unwrap();
@@ -2143,6 +2181,9 @@ fn milestone_18_3d_finishing_parallel_scallop_pencil_and_rest_oracles() {
         kinematics: MachineKinematicsConfig::default(),
         resolution: SimResolution::Standard,
         verify_config: SimVerificationConfig::default(),
+        initial_stock: None,
+        initial_raw_volume_mm3: None,
+        carried_over_from_setup: None,
         cancel: None,
     })
     .unwrap();
@@ -2182,6 +2223,7 @@ fn milestone_18_3d_finishing_parallel_scallop_pencil_and_rest_oracles() {
         display_unit: DisplayUnit::Millimeter,
         is_first_tool_in_setup: true,
         upstream_rest: &[],
+        carryover_stock: None,
         cancel: &cancel,
     })
     .unwrap();
@@ -2201,6 +2243,7 @@ fn milestone_18_3d_finishing_parallel_scallop_pencil_and_rest_oracles() {
         display_unit: DisplayUnit::Millimeter,
         is_first_tool_in_setup: false,
         upstream_rest: &[],
+        carryover_stock: None,
         cancel: &cancel,
     })
     .unwrap();
@@ -2217,6 +2260,9 @@ fn milestone_18_3d_finishing_parallel_scallop_pencil_and_rest_oracles() {
         kinematics: MachineKinematicsConfig::default(),
         resolution: SimResolution::Standard,
         verify_config: SimVerificationConfig::default(),
+        initial_stock: None,
+        initial_raw_volume_mm3: None,
+        carried_over_from_setup: None,
         cancel: None,
     })
     .unwrap();
@@ -2307,6 +2353,7 @@ fn rotary2linear_spiral_and_axial_parallel_on_x_and_y_axes_are_centerline_locked
         display_unit: DisplayUnit::Millimeter,
         is_first_tool_in_setup: true,
         upstream_rest: &[],
+        carryover_stock: None,
         cancel: &cancel,
     })
     .unwrap();
@@ -2352,6 +2399,7 @@ fn rotary2linear_spiral_and_axial_parallel_on_x_and_y_axes_are_centerline_locked
         display_unit: DisplayUnit::Millimeter,
         is_first_tool_in_setup: false,
         upstream_rest: &[],
+        carryover_stock: None,
         cancel: &cancel,
     })
     .unwrap();
@@ -2378,6 +2426,9 @@ fn rotary2linear_spiral_and_axial_parallel_on_x_and_y_axes_are_centerline_locked
         kinematics: MachineKinematicsConfig::default(),
         resolution: SimResolution::Standard,
         verify_config: SimVerificationConfig::default(),
+        initial_stock: None,
+        initial_raw_volume_mm3: None,
+        carried_over_from_setup: None,
         cancel: None,
     })
     .unwrap();
@@ -2430,6 +2481,7 @@ fn rotary2linear_spiral_and_axial_parallel_on_x_and_y_axes_are_centerline_locked
         display_unit: DisplayUnit::Millimeter,
         is_first_tool_in_setup: true,
         upstream_rest: &[],
+        carryover_stock: None,
         cancel: &cancel,
     })
     .unwrap();
@@ -2453,6 +2505,9 @@ fn rotary2linear_spiral_and_axial_parallel_on_x_and_y_axes_are_centerline_locked
         kinematics: MachineKinematicsConfig::default(),
         resolution: SimResolution::Standard,
         verify_config: SimVerificationConfig::default(),
+        initial_stock: None,
+        initial_raw_volume_mm3: None,
+        carried_over_from_setup: None,
         cancel: None,
     })
     .unwrap();
@@ -2562,6 +2617,7 @@ fn wrap_cylinder_2d_pocket_respects_centerline_lock_arc_mapping_and_simulates_cl
         display_unit: DisplayUnit::Millimeter,
         is_first_tool_in_setup: true,
         upstream_rest: &[],
+        carryover_stock: None,
         cancel: &cancel,
     })
     .unwrap();
@@ -2603,6 +2659,9 @@ fn wrap_cylinder_2d_pocket_respects_centerline_lock_arc_mapping_and_simulates_cl
         kinematics: MachineKinematicsConfig::default(),
         resolution: SimResolution::Standard,
         verify_config: SimVerificationConfig::default(),
+        initial_stock: None,
+        initial_raw_volume_mm3: None,
+        carried_over_from_setup: None,
         cancel: None,
     })
     .unwrap();
@@ -2726,6 +2785,7 @@ fn indexed_3plus1_four_flats_on_rotary_shaft_retract_safely_and_verify_crash_fre
             display_unit: DisplayUnit::Millimeter,
             is_first_tool_in_setup: idx == 0,
             upstream_rest: &[],
+            carryover_stock: None,
             cancel: &cancel,
         })
         .unwrap();
@@ -2766,6 +2826,9 @@ fn indexed_3plus1_four_flats_on_rotary_shaft_retract_safely_and_verify_crash_fre
         kinematics: MachineKinematicsConfig::default(),
         resolution: SimResolution::Standard,
         verify_config: SimVerificationConfig::default(),
+        initial_stock: None,
+        initial_raw_volume_mm3: None,
+        carried_over_from_setup: None,
         cancel: None,
     })
     .unwrap();
@@ -2863,6 +2926,7 @@ fn rotary4axis_sim_off_centerline_helical_flutes_on_x_and_y_are_smooth_and_crash
         display_unit: DisplayUnit::Millimeter,
         is_first_tool_in_setup: true,
         upstream_rest: &[],
+        carryover_stock: None,
         cancel: &cancel,
     })
     .unwrap_err();
@@ -2898,6 +2962,7 @@ fn rotary4axis_sim_off_centerline_helical_flutes_on_x_and_y_are_smooth_and_crash
         display_unit: DisplayUnit::Millimeter,
         is_first_tool_in_setup: true,
         upstream_rest: &[],
+        carryover_stock: None,
         cancel: &cancel,
     })
     .unwrap();
@@ -2947,6 +3012,7 @@ fn rotary4axis_sim_off_centerline_helical_flutes_on_x_and_y_are_smooth_and_crash
         display_unit: DisplayUnit::Millimeter,
         is_first_tool_in_setup: false,
         upstream_rest: &[],
+        carryover_stock: None,
         cancel: &cancel,
     })
     .unwrap();
@@ -2968,6 +3034,9 @@ fn rotary4axis_sim_off_centerline_helical_flutes_on_x_and_y_are_smooth_and_crash
         kinematics: MachineKinematicsConfig::default(),
         resolution: SimResolution::Standard,
         verify_config: SimVerificationConfig::default(),
+        initial_stock: None,
+        initial_raw_volume_mm3: None,
+        carried_over_from_setup: None,
         cancel: None,
     })
     .unwrap();
@@ -3016,6 +3085,7 @@ fn rotary4axis_sim_off_centerline_helical_flutes_on_x_and_y_are_smooth_and_crash
         display_unit: DisplayUnit::Millimeter,
         is_first_tool_in_setup: true,
         upstream_rest: &[],
+        carryover_stock: None,
         cancel: &cancel,
     })
     .unwrap();
@@ -3043,6 +3113,9 @@ fn rotary4axis_sim_off_centerline_helical_flutes_on_x_and_y_are_smooth_and_crash
         kinematics: MachineKinematicsConfig::default(),
         resolution: SimResolution::Standard,
         verify_config: SimVerificationConfig::default(),
+        initial_stock: None,
+        initial_raw_volume_mm3: None,
+        carried_over_from_setup: None,
         cancel: None,
     })
     .unwrap();

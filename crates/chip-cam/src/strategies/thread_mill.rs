@@ -1117,6 +1117,7 @@ mod tests {
                 display_unit: DisplayUnit::Millimeter,
                 is_first_tool_in_setup: true,
                 upstream_rest: &[],
+                carryover_stock: None,
                 cancel: &cancel,
             })
             .unwrap();
@@ -1213,6 +1214,7 @@ mod tests {
             display_unit: DisplayUnit::Millimeter,
             is_first_tool_in_setup: true,
             upstream_rest: &[],
+            carryover_stock: None,
             cancel: &cancel,
         })
         .unwrap();
@@ -1288,6 +1290,7 @@ mod tests {
             display_unit: DisplayUnit::Millimeter,
             is_first_tool_in_setup: true,
             upstream_rest: &[],
+            carryover_stock: None,
             cancel: &cancel,
         })
         .unwrap();
@@ -1323,6 +1326,7 @@ mod tests {
             display_unit: DisplayUnit::Millimeter,
             is_first_tool_in_setup: true,
             upstream_rest: &[],
+            carryover_stock: None,
             cancel: &cancel,
         })
         .unwrap();
@@ -1354,6 +1358,7 @@ mod tests {
             display_unit: DisplayUnit::Millimeter,
             is_first_tool_in_setup: true,
             upstream_rest: &[],
+            carryover_stock: None,
             cancel: &cancel,
         })
         .unwrap_err();
@@ -1375,6 +1380,7 @@ mod tests {
             display_unit: DisplayUnit::Millimeter,
             is_first_tool_in_setup: true,
             upstream_rest: &[],
+            carryover_stock: None,
             cancel: &cancel,
         })
         .unwrap_err();
@@ -1399,6 +1405,7 @@ mod tests {
             display_unit: DisplayUnit::Millimeter,
             is_first_tool_in_setup: true,
             upstream_rest: &[],
+            carryover_stock: None,
             cancel: &cancel,
         })
         .unwrap_err();
@@ -1421,6 +1428,7 @@ mod tests {
             display_unit: DisplayUnit::Millimeter,
             is_first_tool_in_setup: true,
             upstream_rest: &[],
+            carryover_stock: None,
             cancel: &cancel,
         })
         .unwrap_err();
@@ -1466,6 +1474,7 @@ mod tests {
             display_unit: DisplayUnit::Millimeter,
             is_first_tool_in_setup: true,
             upstream_rest: &[],
+            carryover_stock: None,
             cancel: &cancel,
         })
         .unwrap();
@@ -1479,6 +1488,7 @@ mod tests {
             display_unit: DisplayUnit::Millimeter,
             is_first_tool_in_setup: true,
             upstream_rest: &[],
+            carryover_stock: None,
             cancel: &cancel,
         })
         .unwrap();

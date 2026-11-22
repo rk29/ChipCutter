@@ -7,7 +7,10 @@ use std::{
 
 use chip_cad::CadDocument;
 use chip_cam::{FixtureKind, GeneratedToolpath, Operation, resolve_setup_fixtures};
-use chip_project::{collect_ready_setup_operations, resolve_kinematics_for_key};
+use chip_project::{
+    SetupSimRequest, collect_ready_setup_operations, resolve_kinematics_for_key,
+    simulate_project_setup_with_choice_in_dir,
+};
 #[cfg(feature = "gpu-compute")]
 use chip_sim::{GpuCheckpointCache, GpuSimContext, WgpuComputeBackend};
 use chip_sim::{
@@ -590,6 +593,17 @@ impl SimulationPanelState {
             resolve_kinematics_for_key(&setup.post_profile, project_dir)
         };
 
+        let has_carryover = setup.carryover_from_setup_id.is_some();
+        let carryover_bundle = if has_carryover {
+            Some((
+                project.clone(),
+                cache.clone(),
+                project_dir.map(std::path::Path::to_path_buf),
+            ))
+        } else {
+            None
+        };
+
         logs.push(format!(
             "Simulating Setup '{}' via {} [{}] at {} resolution on background worker…",
             setup.name,
@@ -601,6 +615,41 @@ impl SimulationPanelState {
         let tx = self.tx.clone();
         rayon::spawn(move || {
             let t0 = Instant::now();
+            if let Some((proj_owned, cache_owned, proj_dir_owned)) = carryover_bundle {
+                // Multi-setup carryover path: resolves upstream Setup chain on this background
+                // thread using isolated headless GPU compute (`GpuSimContext::shared_headless()`),
+                // NEVER touching `eframe`'s presentation device!
+                let res = simulate_project_setup_with_choice_in_dir(
+                    &SetupSimRequest {
+                        project: &proj_owned,
+                        setup_idx,
+                        cad_doc: &cad_doc,
+                        cad_revision,
+                        cache: &cache_owned,
+                        kinematics: kin,
+                        resolution,
+                        cancel: Some(&cancel_flag),
+                    },
+                    proj_dir_owned.as_deref(),
+                    engine,
+                    backend_choice,
+                );
+                let mapped = match res {
+                    Ok(sim) => Ok(Arc::new(sim)),
+                    Err(e) if e.contains("cancelled") => return,
+                    Err(e) => Err(e),
+                };
+                let _ = tx.send(SimWorkerMsg::Finished {
+                    run_id,
+                    setup_idx,
+                    signature,
+                    elapsed_ms: t0.elapsed().as_millis(),
+                    result: mapped,
+                });
+                egui_ctx.request_repaint();
+                return;
+            }
+
             let refs: Vec<SimOperationInput<'_>> = owned_ops
                 .iter()
                 .map(|item| {
@@ -638,6 +687,9 @@ impl SimulationPanelState {
                 resolution,
                 kinematics: kin,
                 verify_config: SimVerificationConfig::default(),
+                initial_stock: None,
+                initial_raw_volume_mm3: None,
+                carried_over_from_setup: None,
                 cancel: Some(&cancel_flag),
             };
             // Always run full-setup background GPU simulation on an isolated headless compute
@@ -781,6 +833,9 @@ mod tests {
             resolution: SimResolution::Standard,
             kinematics: MachineKinematicsConfig::default(),
             verify_config: SimVerificationConfig::default(),
+            initial_stock: None,
+            initial_raw_volume_mm3: None,
+            carried_over_from_setup: None,
             cancel: None,
         })
         .unwrap();

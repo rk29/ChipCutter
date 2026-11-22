@@ -234,6 +234,9 @@ enum Commands {
         /// Print structured per-stage timing & throughput benchmark summary.
         #[arg(long)]
         benchmark: bool,
+        /// Simulate all Setups sequentially with volumetric stock carryover and emit cumulative end-of-job metrology.
+        #[arg(long)]
+        all_setups: bool,
         /// Emit structured JSON simulation, backend, timing, and error-volume report to stdout.
         #[arg(long)]
         json: bool,
@@ -659,6 +662,7 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
             resolution,
             tolerance,
             benchmark,
+            all_setups,
             json,
             report,
         } => run_simulate(SimulateArgs {
@@ -668,6 +672,7 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
             resolution,
             tolerance,
             benchmark,
+            all_setups,
             json,
             report,
         }),

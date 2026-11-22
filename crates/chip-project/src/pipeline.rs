@@ -1,18 +1,19 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     path::Path,
     sync::{Arc, atomic::AtomicBool},
 };
 
 use chip_cad::CadDocument;
 use chip_cam::{FixtureKind, GeneratedToolpath, Operation, resolve_setup_fixtures};
+use chip_math::RigidFrame3;
 use chip_post::{
     OperationPostInput, PostOutputFile, PostProfile, SetupPostInput, describe_wcs_origin,
     post_process_setup, resolve_post_profile,
 };
 use chip_sim::{
     MachineKinematicsConfig, SetupSimulationInput, SetupSimulationResult, SimComputeBackendChoice,
-    SimEngineKind, SimOperationInput, SimResolution, SimVerificationConfig,
+    SimEngineKind, SimOperationInput, SimResolution, SimVerificationConfig, TriDexelStock,
     run_setup_simulation_with_choice,
 };
 use chip_tools::Tool;
@@ -146,9 +147,200 @@ pub fn simulate_project_setup_with_choice(
     simulate_project_setup_with_choice_in_dir(req, None, engine, choice)
 }
 
+/// Carried-over volumetric stock transferred from a preceding Setup (`M62`).
+#[derive(Debug, Clone)]
+pub struct CarryoverStockResult {
+    pub stock: TriDexelStock,
+    pub initial_raw_volume_mm3: f64,
+    pub source_setup_id: String,
+    pub source_setup_name: String,
+}
+
+/// Resolves and computes the carried-over [`TriDexelStock`] for `req.setup_idx` (recursively
+/// resolving multi-setup chains `Setup 1 -> Setup 2 -> Setup N` in `TriDexel` mode and rigidly
+/// transforming into `req.setup_idx`'s WCS frame).
+///
+/// Returns `Ok(None)` when `setup.carryover_from_setup_id` is `None`.
+pub fn compute_setup_carryover_stock(
+    req: &SetupSimRequest<'_>,
+    project_dir: Option<&Path>,
+    choice: SimComputeBackendChoice,
+) -> Result<Option<CarryoverStockResult>, String> {
+    let mut chain_cache: HashMap<usize, (TriDexelStock, RigidFrame3, f64, String)> = HashMap::new();
+    compute_setup_carryover_stock_with_cache(req, project_dir, choice, &mut chain_cache)
+}
+
+fn compute_setup_carryover_stock_with_cache(
+    req: &SetupSimRequest<'_>,
+    project_dir: Option<&Path>,
+    choice: SimComputeBackendChoice,
+    chain_cache: &mut HashMap<usize, (TriDexelStock, RigidFrame3, f64, String)>,
+) -> Result<Option<CarryoverStockResult>, String> {
+    let setup = req
+        .project
+        .setups
+        .get(req.setup_idx)
+        .ok_or_else(|| format!("invalid setup index {}", req.setup_idx))?;
+    let Some(ref src_id) = setup.carryover_from_setup_id else {
+        return Ok(None);
+    };
+    let src_idx = req
+        .project
+        .setups
+        .iter()
+        .position(|s| &s.id == src_id)
+        .ok_or_else(|| format!("carryover source setup '{src_id}' not found"))?;
+    if src_idx >= req.setup_idx {
+        return Err(format!(
+            "carryover source setup '{src_id}' (index {src_idx}) must precede '{}' (index {})",
+            setup.name, req.setup_idx
+        ));
+    }
+
+    let dst_resolved = setup
+        .resolve_with_sketches(
+            req.cad_doc,
+            &req.project.sketches,
+            req.project.display_units,
+        )
+        .map_err(|e| e.to_string())?;
+
+    if !chain_cache.contains_key(&src_idx) {
+        let src_setup = &req.project.setups[src_idx];
+        let enabled_with_tool = src_setup
+            .operations
+            .iter()
+            .filter(|o| !o.suppressed && o.tool_id.is_some())
+            .count();
+        let src_ready =
+            collect_ready_setup_operations(req.project, src_idx, req.cache, req.cad_revision);
+        // Note: two-stage V-carve can emit 2 ready ops per operation, so check `< enabled_with_tool`.
+        if enabled_with_tool > 0 && src_ready.len() < enabled_with_tool {
+            return Err(format!(
+                "Carryover source setup '{}' has ungenerated toolpaths; generate all toolpaths (Ctrl+G) first.",
+                src_setup.name
+            ));
+        }
+
+        let src_req = SetupSimRequest {
+            project: req.project,
+            setup_idx: src_idx,
+            cad_doc: req.cad_doc,
+            cad_revision: req.cad_revision,
+            cache: req.cache,
+            kinematics: resolve_kinematics_for_key(&src_setup.post_profile, project_dir),
+            resolution: req.resolution,
+            cancel: req.cancel,
+        };
+        let src_carryover =
+            compute_setup_carryover_stock_with_cache(&src_req, project_dir, choice, chain_cache)?;
+        let src_resolved = src_setup
+            .resolve_with_sketches(
+                req.cad_doc,
+                &req.project.sketches,
+                req.project.display_units,
+            )
+            .map_err(|e| e.to_string())?;
+        let src_sim = simulate_single_setup_inner(
+            &src_req,
+            &src_resolved,
+            &src_ready,
+            project_dir,
+            SimEngineKind::TriDexel,
+            choice,
+            src_carryover.as_ref(),
+        )?;
+        let src_td = src_sim
+            .as_tridexel()
+            .ok_or_else(|| {
+                format!(
+                    "carryover source setup '{}' did not produce a Tri-Dexel stock solid",
+                    src_setup.name
+                )
+            })?
+            .clone();
+        chain_cache.insert(
+            src_idx,
+            (
+                src_td,
+                src_resolved.frame,
+                src_sim.initial_stock_volume_mm3,
+                src_setup.name.clone(),
+            ),
+        );
+    }
+
+    let (src_td, src_frame, raw_vol, src_name) = &chain_cache[&src_idx];
+    let dst_td = src_td
+        .transform_to_frame(*src_frame, dst_resolved.frame, req.resolution)
+        .map_err(|e| e.to_string())?;
+
+    Ok(Some(CarryoverStockResult {
+        stock: dst_td,
+        initial_raw_volume_mm3: *raw_vol,
+        source_setup_id: src_id.clone(),
+        source_setup_name: src_name.clone(),
+    }))
+}
+
+fn simulate_single_setup_inner(
+    req: &SetupSimRequest<'_>,
+    resolved: &chip_cam::ResolvedSetup,
+    ready: &[ReadySetupOperation<'_>],
+    project_dir: Option<&Path>,
+    engine: SimEngineKind,
+    choice: SimComputeBackendChoice,
+    carryover: Option<&CarryoverStockResult>,
+) -> Result<SetupSimulationResult, String> {
+    let setup = &req.project.setups[req.setup_idx];
+    let sim_inputs: Vec<SimOperationInput<'_>> = ready
+        .iter()
+        .map(|item| SimOperationInput::from_operation(item.op, item.tool, item.toolpath.as_ref()))
+        .collect();
+
+    let resolved_fixtures = if setup.fixtures.iter().any(|f| f.enabled) {
+        let needs_imported = setup
+            .fixtures
+            .iter()
+            .any(|f| f.enabled && matches!(f.kind, FixtureKind::ImportedModel { .. }));
+        let fixture_docs: BTreeMap<String, CadDocument> = if needs_imported {
+            req.project.load_fixture_cad_documents(project_dir)
+        } else {
+            BTreeMap::new()
+        };
+        resolve_setup_fixtures(setup, resolved, req.project.display_units, |id| {
+            fixture_docs.get(id)
+        })
+        .map_err(|e| e.to_string())?
+    } else {
+        Vec::new()
+    };
+
+    run_setup_simulation_with_choice(
+        &SetupSimulationInput {
+            doc: req.cad_doc,
+            setup: resolved,
+            target_bodies: &setup.target_bodies,
+            fixtures: &resolved_fixtures,
+            operations: &sim_inputs,
+            resolution: req.resolution,
+            kinematics: req.kinematics,
+            verify_config: SimVerificationConfig::default(),
+            initial_stock: carryover.map(|c| &c.stock),
+            initial_raw_volume_mm3: carryover.map(|c| c.initial_raw_volume_mm3),
+            carried_over_from_setup: carryover.map(|c| c.source_setup_name.as_str()),
+            cancel: req.cancel,
+        },
+        engine,
+        choice,
+    )
+    .map_err(|e| e.to_string())
+}
+
 /// Runs stock removal & 6-rule crash/gouge/fixture verification for a single Setup using the chosen
 /// [`SimEngineKind`] and [`SimComputeBackendChoice`], resolving any `ImportedModel` workholding
-/// fixtures relative to `project_dir`.
+/// fixtures relative to `project_dir` and automatically carrying over remaining volumetric stock
+/// when `setup.carryover_from_setup_id` is set (`M62`).
 pub fn simulate_project_setup_with_choice_in_dir(
     req: &SetupSimRequest<'_>,
     project_dir: Option<&Path>,
@@ -169,45 +361,79 @@ pub fn simulate_project_setup_with_choice_in_dir(
         .map_err(|e| e.to_string())?;
     let ready =
         collect_ready_setup_operations(req.project, req.setup_idx, req.cache, req.cad_revision);
-    let sim_inputs: Vec<SimOperationInput<'_>> = ready
-        .iter()
-        .map(|item| SimOperationInput::from_operation(item.op, item.tool, item.toolpath.as_ref()))
-        .collect();
-
-    let resolved_fixtures = if setup.fixtures.iter().any(|f| f.enabled) {
-        let needs_imported = setup
-            .fixtures
-            .iter()
-            .any(|f| f.enabled && matches!(f.kind, FixtureKind::ImportedModel { .. }));
-        let fixture_docs: BTreeMap<String, CadDocument> = if needs_imported {
-            req.project.load_fixture_cad_documents(project_dir)
-        } else {
-            BTreeMap::new()
-        };
-        resolve_setup_fixtures(setup, &resolved, req.project.display_units, |id| {
-            fixture_docs.get(id)
-        })
-        .map_err(|e| e.to_string())?
-    } else {
-        Vec::new()
-    };
-
-    run_setup_simulation_with_choice(
-        &SetupSimulationInput {
-            doc: req.cad_doc,
-            setup: &resolved,
-            target_bodies: &setup.target_bodies,
-            fixtures: &resolved_fixtures,
-            operations: &sim_inputs,
-            resolution: req.resolution,
-            kinematics: req.kinematics,
-            verify_config: SimVerificationConfig::default(),
-            cancel: req.cancel,
-        },
+    let carryover = compute_setup_carryover_stock(req, project_dir, choice)?;
+    simulate_single_setup_inner(
+        req,
+        &resolved,
+        &ready,
+        project_dir,
         engine,
         choice,
+        carryover.as_ref(),
     )
-    .map_err(|e| e.to_string())
+}
+
+/// Simulates all Setups in `project` sequentially, caching and reusing each Setup's final
+/// `TriDexelStock` for downstream `carryover_from_setup_id` chains so upstream Setups are never
+/// simulated redundantly (`M62`).
+#[allow(clippy::too_many_arguments)]
+pub fn simulate_all_setups_with_choice(
+    project: &ProjectDocument,
+    cad_doc: &CadDocument,
+    cad_revision: u64,
+    cache: &ToolpathCache,
+    project_dir: Option<&Path>,
+    resolution: SimResolution,
+    engine: SimEngineKind,
+    choice: SimComputeBackendChoice,
+    cancel: Option<&AtomicBool>,
+) -> Result<Vec<SetupSimulationResult>, String> {
+    let mut results = Vec::with_capacity(project.setups.len());
+    let mut chain_cache: HashMap<usize, (TriDexelStock, RigidFrame3, f64, String)> = HashMap::new();
+
+    for (s_idx, setup) in project.setups.iter().enumerate() {
+        let kin = resolve_kinematics_for_key(&setup.post_profile, project_dir);
+        let req = SetupSimRequest {
+            project,
+            setup_idx: s_idx,
+            cad_doc,
+            cad_revision,
+            cache,
+            kinematics: kin,
+            resolution,
+            cancel,
+        };
+        let resolved = setup
+            .resolve_with_sketches(cad_doc, &project.sketches, project.display_units)
+            .map_err(|e| e.to_string())?;
+        let ready = collect_ready_setup_operations(project, s_idx, cache, cad_revision);
+        let carryover =
+            compute_setup_carryover_stock_with_cache(&req, project_dir, choice, &mut chain_cache)?;
+        let sim = simulate_single_setup_inner(
+            &req,
+            &resolved,
+            &ready,
+            project_dir,
+            engine,
+            choice,
+            carryover.as_ref(),
+        )?;
+
+        if let Some(td) = sim.as_tridexel() {
+            chain_cache.insert(
+                s_idx,
+                (
+                    td.clone(),
+                    resolved.frame,
+                    sim.initial_stock_volume_mm3,
+                    setup.name.clone(),
+                ),
+            );
+        }
+        results.push(sim);
+    }
+
+    Ok(results)
 }
 
 /// Input configuration for [`post_process_project_setup`].

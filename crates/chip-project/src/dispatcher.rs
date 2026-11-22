@@ -13,6 +13,7 @@ use chip_cam::{
     Setup, UpstreamSweptInput, generate_operation_toolpath_with_fixtures, resolve_setup_fixtures,
 };
 use chip_math::DisplayUnit;
+use chip_sim::{SimComputeBackendChoice, SimResolution, TriDexelStock};
 use chip_sketch::SketchLayer;
 use chip_tools::{CutterGeometry, Tool, resolve_machine_definition};
 use crossbeam_channel::{Receiver, Sender};
@@ -21,9 +22,10 @@ use rayon::prelude::*;
 use crate::{
     cache::{
         OperationInputHash, ToolpathCache, compute_operation_input_hash,
-        resolve_upstream_rest_op_indices,
+        compute_setup_carryover_digest, resolve_upstream_rest_op_indices,
     },
     document::ProjectDocument,
+    pipeline::{SetupSimRequest, compute_setup_carryover_stock, resolve_kinematics_for_key},
 };
 
 /// Event emitted from background `rayon` workers to the UI / coordinator thread (`01-architecture.md`).
@@ -61,6 +63,7 @@ struct QueuedOpTask {
     display_unit: DisplayUnit,
     is_first_tool_in_setup: bool,
     upstream_rest: Vec<UpstreamSweptInput>,
+    carryover_stock: Option<Arc<TriDexelStock>>,
     input_hash: OperationInputHash,
     cancel_token: Arc<AtomicBool>,
 }
@@ -69,6 +72,90 @@ enum UpstreamReadiness {
     Ready(Vec<UpstreamSweptInput>),
     Waiting,
     FailedUpstream { op_name: String, message: String },
+}
+
+enum CarryoverReadiness {
+    None,
+    Ready(Arc<TriDexelStock>),
+    NeedCompute { digest: u64 },
+    WaitingUpstreamOps,
+    FailedUpstream(String),
+}
+
+fn collect_transitive_carryover_setups(
+    project: &ProjectDocument,
+    target_setup_idx: usize,
+) -> HashSet<usize> {
+    let mut visited = HashSet::new();
+    let mut cur = target_setup_idx;
+    while let Some(setup) = project.setups.get(cur)
+        && let Some(ref src_id) = setup.carryover_from_setup_id
+        && let Some(src_idx) = project.setups[..cur].iter().position(|s| &s.id == src_id)
+    {
+        if !visited.insert(src_idx) {
+            break;
+        }
+        cur = src_idx;
+    }
+    visited
+}
+
+fn check_carryover_readiness(
+    project: &ProjectDocument,
+    cache: &ToolpathCache,
+    setup_idx: usize,
+    cad_revision: u64,
+    carryover_cache: &HashMap<(usize, u64), Arc<TriDexelStock>>,
+    carryover_errors: &HashMap<(usize, u64), String>,
+) -> CarryoverReadiness {
+    let Some(setup) = project.setups.get(setup_idx) else {
+        return CarryoverReadiness::None;
+    };
+    let Some(ref src_id) = setup.carryover_from_setup_id else {
+        return CarryoverReadiness::None;
+    };
+    let Some(src_idx) = project.setups[..setup_idx]
+        .iter()
+        .position(|s| &s.id == src_id)
+    else {
+        return CarryoverReadiness::FailedUpstream(format!(
+            "Carryover source setup '{src_id}' is missing or not ordered before '{}'",
+            setup.name
+        ));
+    };
+
+    // Ensure all transitive upstream carryover setups have clean toolpaths first
+    let mut check_setups = vec![src_idx];
+    check_setups.extend(collect_transitive_carryover_setups(project, src_idx));
+    for up_idx in check_setups {
+        let up_setup = &project.setups[up_idx];
+        for (o_idx, op) in up_setup.operations.iter().enumerate() {
+            if op.suppressed {
+                continue;
+            }
+            let Some(h) = compute_operation_input_hash(project, up_idx, o_idx, cad_revision) else {
+                return CarryoverReadiness::WaitingUpstreamOps;
+            };
+            if let Some(err) = cache.get_error(&op.id, h) {
+                return CarryoverReadiness::FailedUpstream(format!(
+                    "Carryover source setup '{}' op '{}' failed: {err}",
+                    up_setup.name, op.name
+                ));
+            }
+            if cache.get(&op.id, h).is_none() {
+                return CarryoverReadiness::WaitingUpstreamOps;
+            }
+        }
+    }
+
+    let digest = compute_setup_carryover_digest(project, src_idx, cad_revision);
+    if let Some(td) = carryover_cache.get(&(setup_idx, digest)) {
+        return CarryoverReadiness::Ready(Arc::clone(td));
+    }
+    if let Some(err) = carryover_errors.get(&(setup_idx, digest)) {
+        return CarryoverReadiness::FailedUpstream(err.clone());
+    }
+    CarryoverReadiness::NeedCompute { digest }
 }
 
 fn cutter_corner_radius_mm(geom: &CutterGeometry) -> f64 {
@@ -142,12 +229,19 @@ fn check_upstream_readiness(
 /// Supports topological wave execution for `RestMachiningMode::FromPrecedingOperations`: downstream
 /// Rest operations wait in `pending_wave` until their upstream roughing toolpaths complete, then
 /// automatically spawn with exact 2D swept coverage inputs.
+type CarryoverMsg = (u64, usize, u64, Result<Arc<TriDexelStock>, String>);
+
 pub struct JobDispatcher {
     tx: Sender<(u64, DispatcherEvent)>,
     rx: Receiver<(u64, DispatcherEvent)>,
+    carryover_tx: Sender<CarryoverMsg>,
+    carryover_rx: Receiver<CarryoverMsg>,
     epoch: u64,
     in_flight: HashMap<String, (OperationInputHash, Arc<AtomicBool>)>,
     pending_wave: HashSet<String>,
+    carryover_cache: HashMap<(usize, u64), Arc<TriDexelStock>>,
+    carryover_errors: HashMap<(usize, u64), String>,
+    in_flight_carryover: HashSet<(usize, u64)>,
     active_cad: Option<(Arc<CadDocument>, u64)>,
     active_fixture_docs: Arc<BTreeMap<String, Arc<CadDocument>>>,
     active_machine_z_travel_mm: Option<f64>,
@@ -163,12 +257,18 @@ impl Default for JobDispatcher {
 impl JobDispatcher {
     pub fn new(wakeup_cb: Option<Arc<dyn Fn() + Send + Sync>>) -> Self {
         let (tx, rx) = crossbeam_channel::unbounded();
+        let (carryover_tx, carryover_rx) = crossbeam_channel::unbounded();
         Self {
             tx,
             rx,
+            carryover_tx,
+            carryover_rx,
             epoch: 0,
             in_flight: HashMap::new(),
             pending_wave: HashSet::new(),
+            carryover_cache: HashMap::new(),
+            carryover_errors: HashMap::new(),
+            in_flight_carryover: HashSet::new(),
             active_cad: None,
             active_fixture_docs: Arc::new(BTreeMap::new()),
             active_machine_z_travel_mm: None,
@@ -188,7 +288,9 @@ impl JobDispatcher {
     }
 
     pub fn is_busy(&self) -> bool {
-        !self.in_flight.is_empty() || !self.pending_wave.is_empty()
+        !self.in_flight.is_empty()
+            || !self.pending_wave.is_empty()
+            || !self.in_flight_carryover.is_empty()
     }
 
     pub fn in_flight_count(&self) -> usize {
@@ -216,6 +318,7 @@ impl JobDispatcher {
     pub fn cancel_all(&mut self) -> usize {
         let count = self.in_flight.len() + self.pending_wave.len();
         self.pending_wave.clear();
+        self.in_flight_carryover.clear();
         for (_, (_, token)) in self.in_flight.drain() {
             token.store(true, Ordering::Relaxed);
         }
@@ -226,11 +329,14 @@ impl JobDispatcher {
     /// dispatcher epoch so stale worker completions are ignored, and drains pending channel events.
     pub fn reset(&mut self) {
         self.cancel_all();
+        self.carryover_cache.clear();
+        self.carryover_errors.clear();
         self.active_cad = None;
         self.active_fixture_docs = Arc::new(BTreeMap::new());
         self.active_machine_z_travel_mm = None;
         self.epoch = self.epoch.wrapping_add(1);
         while self.rx.try_recv().is_ok() {}
+        while self.carryover_rx.try_recv().is_ok() {}
     }
 
     /// Cancels any in-flight job whose `OperationInputHash` no longer matches `project`
@@ -273,9 +379,25 @@ impl JobDispatcher {
         let mut tasks = Vec::new();
         let mut queued_count = 0usize;
 
+        // If targeting a specific setup (or operation) whose Setup carries over stock from an
+        // earlier Setup, include its transitive upstream carryover Setups so they generate first!
+        let mut forced_carryover_setups: HashSet<usize> = HashSet::new();
+        if let Some(target_s) = only_setup_idx {
+            forced_carryover_setups.extend(collect_transitive_carryover_setups(project, target_s));
+        } else if let Some(target_id) = only_op_id
+            && let Some(target_s) = project
+                .setups
+                .iter()
+                .position(|s| s.operations.iter().any(|o| o.id == target_id))
+        {
+            forced_carryover_setups.extend(collect_transitive_carryover_setups(project, target_s));
+        }
+
         for s_idx in 0..project.setups.len() {
+            let is_forced_carryover_setup = forced_carryover_setups.contains(&s_idx);
             if let Some(target_s) = only_setup_idx
                 && s_idx != target_s
+                && !is_forced_carryover_setup
             {
                 continue;
             }
@@ -308,7 +430,8 @@ impl JobDispatcher {
                 }
 
                 let op_id = project.setups[s_idx].operations[o_idx].id.clone();
-                if let Some(target_id) = only_op_id
+                if !is_forced_carryover_setup
+                    && let Some(target_id) = only_op_id
                     && op_id != target_id
                     && !forced_upstream.contains(&o_idx)
                 {
@@ -332,6 +455,42 @@ impl JobDispatcher {
                 if let Some((_, old_tok)) = self.in_flight.remove(&op_id) {
                     old_tok.store(true, Ordering::Relaxed);
                 }
+
+                let carryover_state = check_carryover_readiness(
+                    project,
+                    cache,
+                    s_idx,
+                    cad_revision,
+                    &self.carryover_cache,
+                    &self.carryover_errors,
+                );
+                let carryover_stock = match carryover_state {
+                    CarryoverReadiness::None => None,
+                    CarryoverReadiness::Ready(td) => Some(td),
+                    CarryoverReadiness::NeedCompute { digest } => {
+                        self.spawn_carryover_compute(
+                            project,
+                            &cad_doc,
+                            cad_revision,
+                            cache,
+                            s_idx,
+                            digest,
+                        );
+                        self.pending_wave.insert(op_id);
+                        project.setups[s_idx].operations[o_idx].runtime_status =
+                            OperationStatus::Generating;
+                        queued_count += 1;
+                        continue;
+                    }
+                    CarryoverReadiness::WaitingUpstreamOps
+                    | CarryoverReadiness::FailedUpstream(_) => {
+                        self.pending_wave.insert(op_id);
+                        project.setups[s_idx].operations[o_idx].runtime_status =
+                            OperationStatus::Generating;
+                        queued_count += 1;
+                        continue;
+                    }
+                };
 
                 match check_upstream_readiness(project, cache, s_idx, o_idx, cad_revision) {
                     UpstreamReadiness::Ready(upstream_rest) => {
@@ -366,6 +525,7 @@ impl JobDispatcher {
                             display_unit: project.display_units,
                             is_first_tool_in_setup: is_first_tool,
                             upstream_rest,
+                            carryover_stock,
                             input_hash,
                             cancel_token,
                         });
@@ -383,6 +543,53 @@ impl JobDispatcher {
 
         self.spawn_rayon_tasks(&cad_doc, tasks);
         queued_count
+    }
+
+    fn spawn_carryover_compute(
+        &mut self,
+        project: &ProjectDocument,
+        cad_doc: &Arc<CadDocument>,
+        cad_revision: u64,
+        cache: &ToolpathCache,
+        setup_idx: usize,
+        digest: u64,
+    ) {
+        if !self.in_flight_carryover.insert((setup_idx, digest)) {
+            return;
+        }
+        let epoch = self.epoch;
+        let tx = self.carryover_tx.clone();
+        let wakeup = self.wakeup_cb.clone();
+        let proj_owned = project.clone();
+        let cache_owned = cache.clone();
+        let cad_owned = Arc::clone(cad_doc);
+
+        rayon::spawn(move || {
+            let kin = proj_owned
+                .setups
+                .get(setup_idx)
+                .map(|s| resolve_kinematics_for_key(&s.post_profile, None))
+                .unwrap_or_default();
+            let req = SetupSimRequest {
+                project: &proj_owned,
+                setup_idx,
+                cad_doc: &cad_owned,
+                cad_revision,
+                cache: &cache_owned,
+                kinematics: kin,
+                resolution: SimResolution::Standard,
+                cancel: None,
+            };
+            let res = compute_setup_carryover_stock(&req, None, SimComputeBackendChoice::Auto)
+                .and_then(|opt| {
+                    opt.map(|c| Arc::new(c.stock))
+                        .ok_or_else(|| "carryover stock not configured".to_string())
+                });
+            let _ = tx.send((epoch, setup_idx, digest, res));
+            if let Some(cb) = &wakeup {
+                cb();
+            }
+        });
     }
 
     fn spawn_rayon_tasks(&self, cad_doc: &Arc<CadDocument>, tasks: Vec<QueuedOpTask>) {
@@ -529,6 +736,26 @@ impl JobDispatcher {
             }
         }
 
+        // Drain background carryover Tri-Dexel computation results
+        while let Ok((ev_epoch, s_idx, digest, res)) = self.carryover_rx.try_recv() {
+            if ev_epoch != self.epoch {
+                continue;
+            }
+            self.in_flight_carryover.remove(&(s_idx, digest));
+            match res {
+                Ok(td) => {
+                    self.carryover_errors.remove(&(s_idx, digest));
+                    self.carryover_cache.insert((s_idx, digest), td);
+                }
+                Err(msg) => {
+                    logs.push(format!(
+                        "Error computing carryover stock for setup #{s_idx}: {msg}"
+                    ));
+                    self.carryover_errors.insert((s_idx, digest), msg);
+                }
+            }
+        }
+
         // Advance topological DAG waves for any `pending_wave` operations whose upstream deps finished!
         if !self.pending_wave.is_empty()
             && let Some((cad_doc, saved_rev)) = self.active_cad.clone()
@@ -536,6 +763,7 @@ impl JobDispatcher {
         {
             let shared_sketches = Arc::new(project.sketches.clone());
             let mut next_tasks = Vec::new();
+            let mut to_spawn_carryover: Vec<(usize, u64)> = Vec::new();
             for s_idx in 0..project.setups.len() {
                 let mut seen_tool = false;
                 for o_idx in 0..project.setups[s_idx].operations.len() {
@@ -555,6 +783,38 @@ impl JobDispatcher {
                     else {
                         self.pending_wave.remove(&op_id);
                         continue;
+                    };
+
+                    let carryover_stock = match check_carryover_readiness(
+                        project,
+                        cache,
+                        s_idx,
+                        cad_revision,
+                        &self.carryover_cache,
+                        &self.carryover_errors,
+                    ) {
+                        CarryoverReadiness::None => None,
+                        CarryoverReadiness::Ready(td) => Some(td),
+                        CarryoverReadiness::NeedCompute { digest } => {
+                            to_spawn_carryover.push((s_idx, digest));
+                            continue;
+                        }
+                        CarryoverReadiness::WaitingUpstreamOps => {
+                            if self.in_flight.is_empty()
+                                && self.in_flight_carryover.is_empty()
+                                && next_tasks.is_empty()
+                                && to_spawn_carryover.is_empty()
+                            {
+                                self.pending_wave.remove(&op_id);
+                            }
+                            continue;
+                        }
+                        CarryoverReadiness::FailedUpstream(err) => {
+                            self.pending_wave.remove(&op_id);
+                            logs.push(format!("Error generating '{op_id}': {err}"));
+                            cache.record_error(op_id, input_hash, err);
+                            continue;
+                        }
                     };
 
                     match check_upstream_readiness(project, cache, s_idx, o_idx, cad_revision) {
@@ -586,6 +846,7 @@ impl JobDispatcher {
                                 display_unit: project.display_units,
                                 is_first_tool_in_setup: is_first_tool,
                                 upstream_rest,
+                                carryover_stock,
                                 input_hash,
                                 cancel_token,
                             });
@@ -600,12 +861,19 @@ impl JobDispatcher {
                         }
                         UpstreamReadiness::Waiting => {
                             // If nothing is left in-flight at all, an upstream dependency was cancelled or missing
-                            if self.in_flight.is_empty() && next_tasks.is_empty() {
+                            if self.in_flight.is_empty()
+                                && self.in_flight_carryover.is_empty()
+                                && next_tasks.is_empty()
+                                && to_spawn_carryover.is_empty()
+                            {
                                 self.pending_wave.remove(&op_id);
                             }
                         }
                     }
                 }
+            }
+            for (s_idx, digest) in to_spawn_carryover {
+                self.spawn_carryover_compute(project, &cad_doc, cad_revision, cache, s_idx, digest);
             }
             if !next_tasks.is_empty() {
                 self.spawn_rayon_tasks(&cad_doc, next_tasks);
@@ -659,6 +927,7 @@ fn execute_single_task(
             display_unit: task.display_unit,
             is_first_tool_in_setup: task.is_first_tool_in_setup,
             upstream_rest: &task.upstream_rest,
+            carryover_stock: task.carryover_stock.clone(),
             cancel: &task.cancel_token,
         },
         &resolved_fixtures,
@@ -744,8 +1013,10 @@ pub fn generate_project_blocking_in_dir(
 
     let mut processed: HashSet<(usize, usize)> = HashSet::new();
     let shared_sketches = Arc::new(project.sketches.clone());
+    let mut carryover_cache: HashMap<(usize, u64), Arc<TriDexelStock>> = HashMap::new();
+    let mut carryover_errors: HashMap<(usize, u64), String> = HashMap::new();
 
-    for _wave in 0..=total_ops {
+    for _wave in 0..=(total_ops + project.setups.len()) {
         if processed.len() >= total_ops {
             break;
         }
@@ -786,6 +1057,62 @@ pub fn generate_project_blocking_in_dir(
                 }
 
                 let scope = format!("Setup '{}' -> Op '{}'", setup_name, op.name);
+                let carryover_stock = match check_carryover_readiness(
+                    project,
+                    cache,
+                    s_idx,
+                    cad_revision,
+                    &carryover_cache,
+                    &carryover_errors,
+                ) {
+                    CarryoverReadiness::None => None,
+                    CarryoverReadiness::Ready(td) => Some(td),
+                    CarryoverReadiness::NeedCompute { digest } => {
+                        let kin = resolve_kinematics_for_key(
+                            &project.setups[s_idx].post_profile,
+                            project_dir,
+                        );
+                        let sim_req = SetupSimRequest {
+                            project,
+                            setup_idx: s_idx,
+                            cad_doc,
+                            cad_revision,
+                            cache,
+                            kinematics: kin,
+                            resolution: SimResolution::Standard,
+                            cancel: None,
+                        };
+                        match compute_setup_carryover_stock(
+                            &sim_req,
+                            project_dir,
+                            SimComputeBackendChoice::Auto,
+                        ) {
+                            Ok(Some(res)) => {
+                                let arc_td = Arc::new(res.stock);
+                                carryover_cache.insert((s_idx, digest), Arc::clone(&arc_td));
+                                Some(arc_td)
+                            }
+                            Ok(None) => None,
+                            Err(err) => {
+                                carryover_errors.insert((s_idx, digest), err.clone());
+                                processed.insert((s_idx, o_idx));
+                                cache.record_error(op.id.clone(), hash, err.clone());
+                                report.errors.push((scope, err));
+                                blocked_this_pass = true;
+                                continue;
+                            }
+                        }
+                    }
+                    CarryoverReadiness::WaitingUpstreamOps => continue,
+                    CarryoverReadiness::FailedUpstream(err) => {
+                        processed.insert((s_idx, o_idx));
+                        cache.record_error(op.id.clone(), hash, err.clone());
+                        report.errors.push((scope, err));
+                        blocked_this_pass = true;
+                        continue;
+                    }
+                };
+
                 match check_upstream_readiness(project, cache, s_idx, o_idx, cad_revision) {
                     UpstreamReadiness::Ready(upstream_rest) => {
                         let tool = op
@@ -809,6 +1136,7 @@ pub fn generate_project_blocking_in_dir(
                                 display_unit: project.display_units,
                                 is_first_tool_in_setup: is_first,
                                 upstream_rest,
+                                carryover_stock,
                                 input_hash: hash,
                                 cancel_token: Arc::new(AtomicBool::new(false)),
                             },

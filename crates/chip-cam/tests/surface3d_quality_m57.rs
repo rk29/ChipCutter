@@ -354,6 +354,7 @@ fn relief_wave_09_finishing_tridexel_oracle_eliminates_gouge() {
         display_unit: DisplayUnit::Millimeter,
         is_first_tool_in_setup: true,
         upstream_rest: &[],
+        carryover_stock: None,
         cancel: &cancel,
     })
     .unwrap();
@@ -367,6 +368,7 @@ fn relief_wave_09_finishing_tridexel_oracle_eliminates_gouge() {
         display_unit: DisplayUnit::Millimeter,
         is_first_tool_in_setup: false,
         upstream_rest: &[],
+        carryover_stock: None,
         cancel: &cancel,
     })
     .unwrap();
@@ -380,6 +382,7 @@ fn relief_wave_09_finishing_tridexel_oracle_eliminates_gouge() {
         display_unit: DisplayUnit::Millimeter,
         is_first_tool_in_setup: false,
         upstream_rest: &[],
+        carryover_stock: None,
         cancel: &cancel,
     })
     .unwrap();
@@ -398,6 +401,9 @@ fn relief_wave_09_finishing_tridexel_oracle_eliminates_gouge() {
             kinematics: MachineKinematicsConfig::default(),
             resolution: SimResolution::Standard,
             verify_config: SimVerificationConfig::default(),
+            initial_stock: None,
+            initial_raw_volume_mm3: None,
+            carried_over_from_setup: None,
             cancel: None,
         },
         SimEngineKind::TriDexel,
@@ -459,6 +465,7 @@ fn pencil3d_diagonal_concave_fillet_subcell_centering_tracks_exact_crease_within
         display_unit: DisplayUnit::Millimeter,
         is_first_tool_in_setup: true,
         upstream_rest: &[],
+        carryover_stock: None,
         cancel: &cancel,
     })
     .unwrap();
@@ -562,6 +569,7 @@ fn waterline3d_localized_shallow_shelf_inserts_adaptive_z_levels_despite_small_a
         display_unit: DisplayUnit::Millimeter,
         is_first_tool_in_setup: true,
         upstream_rest: &[],
+        carryover_stock: None,
         cancel: &cancel,
     })
     .unwrap();
@@ -575,6 +583,7 @@ fn waterline3d_localized_shallow_shelf_inserts_adaptive_z_levels_despite_small_a
         display_unit: DisplayUnit::Millimeter,
         is_first_tool_in_setup: true,
         upstream_rest: &[],
+        carryover_stock: None,
         cancel: &cancel,
     })
     .unwrap();
@@ -706,6 +715,7 @@ fn sculpted_dome_08_tridexel_oracle_zero_gouge_and_clean_crown() {
         display_unit: DisplayUnit::Millimeter,
         is_first_tool_in_setup: true,
         upstream_rest: &[],
+        carryover_stock: None,
         cancel: &cancel,
     })
     .unwrap();
@@ -719,6 +729,7 @@ fn sculpted_dome_08_tridexel_oracle_zero_gouge_and_clean_crown() {
         display_unit: DisplayUnit::Millimeter,
         is_first_tool_in_setup: false,
         upstream_rest: &[],
+        carryover_stock: None,
         cancel: &cancel,
     })
     .unwrap();
@@ -732,6 +743,7 @@ fn sculpted_dome_08_tridexel_oracle_zero_gouge_and_clean_crown() {
         display_unit: DisplayUnit::Millimeter,
         is_first_tool_in_setup: false,
         upstream_rest: &[],
+        carryover_stock: None,
         cancel: &cancel,
     })
     .unwrap();
@@ -750,6 +762,9 @@ fn sculpted_dome_08_tridexel_oracle_zero_gouge_and_clean_crown() {
             kinematics: MachineKinematicsConfig::default(),
             resolution: SimResolution::Standard,
             verify_config: SimVerificationConfig::default(),
+            initial_stock: None,
+            initial_raw_volume_mm3: None,
+            carried_over_from_setup: None,
             cancel: None,
         },
         SimEngineKind::TriDexel,

@@ -41,6 +41,8 @@ pub struct Setup {
     pub wcs: WcsConfig,
     #[serde(default)]
     pub stock: StockConfig,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub carryover_from_setup_id: Option<String>,
     #[serde(default, skip_serializing_if = "RotaryConfig::is_disabled")]
     pub rotary: RotaryConfig,
     #[serde(default)]
@@ -63,6 +65,7 @@ impl Setup {
             post_profile: default_post_profile(),
             wcs: WcsConfig::default(),
             stock: StockConfig::default(),
+            carryover_from_setup_id: None,
             rotary: RotaryConfig::default(),
             heights: SetupHeights::default(),
             fixtures: Vec::new(),

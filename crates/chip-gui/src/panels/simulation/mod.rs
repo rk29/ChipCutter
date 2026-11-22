@@ -301,6 +301,15 @@ impl SimulationPanelState {
         if let Some(setup) = project.setups.get(setup_idx) {
             setup.post_profile.hash(&mut h);
             setup.auto_avoid_fixtures_on_rapids.hash(&mut h);
+            setup.carryover_from_setup_id.hash(&mut h);
+            if let Some(ref src_id) = setup.carryover_from_setup_id
+                && let Some(src_idx) = project.setups[..setup_idx]
+                    .iter()
+                    .position(|s| &s.id == src_id)
+            {
+                chip_project::compute_setup_carryover_digest(project, src_idx, cad_revision)
+                    .hash(&mut h);
+            }
             for fix in &setup.fixtures {
                 if fix.enabled {
                     fix.id.hash(&mut h);

@@ -70,6 +70,7 @@ struct SetupParamsSnapshot {
     post_profile: String,
     wcs: WcsConfig,
     stock: StockConfig,
+    carryover_from_setup_id: Option<String>,
     rotary: RotaryConfig,
     heights: SetupHeights,
     fixtures: Vec<FixtureBody>,
@@ -84,6 +85,7 @@ impl SetupParamsSnapshot {
             post_profile: setup.post_profile.clone(),
             wcs: setup.wcs.clone(),
             stock: setup.stock.clone(),
+            carryover_from_setup_id: setup.carryover_from_setup_id.clone(),
             rotary: setup.rotary.clone(),
             heights: setup.heights.clone(),
             fixtures: setup.fixtures.clone(),
@@ -97,6 +99,7 @@ impl SetupParamsSnapshot {
         setup.post_profile = self.post_profile;
         setup.wcs = self.wcs;
         setup.stock = self.stock;
+        setup.carryover_from_setup_id = self.carryover_from_setup_id;
         setup.rotary = self.rotary;
         setup.heights = self.heights;
         setup.fixtures = self.fixtures;
@@ -360,6 +363,21 @@ pub fn show_setup_inspector(ui: &mut egui::Ui, ctx: SetupInspectorCtx<'_>) -> bo
                 } else {
                     Vec::new()
                 };
+            let preceding_setups: Vec<(String, String, bool)> =
+                if *tab == SetupTab::Stock && setup_idx > 0 {
+                    project.setups[..setup_idx]
+                        .iter()
+                        .map(|s| {
+                            let all_clean = s.operations.iter().all(|o| {
+                                o.suppressed
+                                    || o.runtime_status == chip_cam::OperationStatus::Clean
+                            });
+                            (s.id.clone(), s.name.clone(), all_clean)
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
             let setup = &mut project.setups[setup_idx];
             match *tab {
                 SetupTab::Wcs => show_wcs_tab(
@@ -383,6 +401,7 @@ pub fn show_setup_inspector(ui: &mut egui::Ui, ctx: SetupInspectorCtx<'_>) -> bo
                         eval_ctx: &eval_ctx,
                         display_unit,
                         resolved,
+                        preceding_setups: &preceding_setups,
                     },
                     &mut mutated_label,
                 ),

@@ -15,11 +15,15 @@ pub mod thread_mill;
 pub mod vcarve;
 pub mod waterline3d;
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 use chip_cad::CadDocument;
 use chip_math::{Aabb3, DVec3, DisplayUnit, EvalContext};
 use chip_sketch::SketchLayer;
+use chip_stock::TriDexelStock;
 use chip_tools::Tool;
 
 use crate::{
@@ -50,6 +54,7 @@ pub struct StrategyExecContext<'a> {
     pub linking: LinkingParams,
     pub selection: ExtractedSelectionSummary,
     pub upstream_rest: &'a [UpstreamSweptInput],
+    pub carryover_stock: Option<&'a TriDexelStock>,
     pub is_first_tool_in_setup: bool,
     pub clearing_tool: Option<&'a Tool>,
     pub cancel: &'a AtomicBool,
@@ -74,7 +79,8 @@ impl StrategyExecContext<'_> {
     }
 }
 
-/// Input bundle for [`generate_operation_toolpath_with_rest`] (supporting 2D sketches & upstream Rest Machining).
+/// Input bundle for [`generate_operation_toolpath_with_rest`] (supporting 2D sketches, upstream Rest Machining,
+/// and multi-setup carried-over `TriDexelStock` rest roughing).
 pub struct OperationGenRequest<'a> {
     pub doc: &'a CadDocument,
     pub sketches: &'a [SketchLayer],
@@ -85,6 +91,7 @@ pub struct OperationGenRequest<'a> {
     pub display_unit: DisplayUnit,
     pub is_first_tool_in_setup: bool,
     pub upstream_rest: &'a [UpstreamSweptInput],
+    pub carryover_stock: Option<Arc<TriDexelStock>>,
     pub cancel: &'a AtomicBool,
 }
 
@@ -149,6 +156,7 @@ pub fn generate_operation_toolpath(
         display_unit,
         is_first_tool_in_setup,
         upstream_rest: &[],
+        carryover_stock: None,
         cancel,
     })
 }
@@ -158,7 +166,7 @@ pub fn generate_operation_toolpath(
 pub fn generate_operation_toolpath_with_rest(
     req: &OperationGenRequest<'_>,
 ) -> Result<GeneratedToolpath, CamError> {
-    let &OperationGenRequest {
+    let OperationGenRequest {
         doc,
         sketches,
         setup,
@@ -168,8 +176,20 @@ pub fn generate_operation_toolpath_with_rest(
         display_unit,
         is_first_tool_in_setup,
         upstream_rest,
+        carryover_stock,
         cancel,
     } = req;
+    let doc = *doc;
+    let sketches = *sketches;
+    let setup = *setup;
+    let op = *op;
+    let tool = *tool;
+    let clearing_tool = *clearing_tool;
+    let display_unit = *display_unit;
+    let is_first_tool_in_setup = *is_first_tool_in_setup;
+    let upstream_rest = *upstream_rest;
+    let carryover_stock = carryover_stock.as_deref();
+    let cancel = *cancel;
     if cancel.load(Ordering::Relaxed) {
         return Err(CamError::Cancelled);
     }
@@ -209,6 +229,7 @@ pub fn generate_operation_toolpath_with_rest(
                     display_unit,
                     is_first_tool_in_setup,
                     upstream_rest,
+                    carryover_stock: None,
                     cancel,
                 })?;
                 return Ok(rotary_wrap::wrap_indexed_3plus1_toolpath(
@@ -300,6 +321,7 @@ pub fn generate_operation_toolpath_with_rest(
                     display_unit,
                     is_first_tool_in_setup,
                     upstream_rest,
+                    carryover_stock: None,
                     cancel,
                 })?;
                 return Ok(rotary_wrap::wrap_planar_toolpath_to_cylinder(
@@ -382,6 +404,7 @@ pub fn generate_operation_toolpath_with_rest(
         linking,
         selection,
         upstream_rest,
+        carryover_stock,
         is_first_tool_in_setup,
         clearing_tool,
         cancel,

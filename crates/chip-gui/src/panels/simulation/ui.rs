@@ -279,6 +279,42 @@ impl SimulationPanelState {
                     .on_hover_text(pill_tooltip);
                 });
 
+            if let Some(res) = &self.active_result
+                && self.active_setup_idx == setup_idx
+                && let Some(src_name) = &res.carried_over_from_setup
+            {
+                let carry_tip = if res.engine == SimEngineKind::TriDexel {
+                    format!(
+                        "Stock carried over from '{src_name}' via exact rigid-frame Tri-Dexel transfer.\nTimeline t = 0.0 starts from '{src_name}' remaining 3D solid (preserving underside cavities and cumulative error metrology)."
+                    )
+                } else {
+                    format!(
+                        "Stock carried over from '{src_name}' (projected top Z envelope in Heightmap mode).\nSwitch to Tri-Dexel (Volumetric 3D) to preserve underside cavities and flipped 3D pockets."
+                    )
+                };
+                let short_src = if src_name.chars().count() > 18 {
+                    let mut s: String = src_name.chars().take(17).collect();
+                    s.push('…');
+                    s
+                } else {
+                    src_name.clone()
+                };
+                egui::Frame::NONE
+                    .fill(tok.info_bg)
+                    .stroke(egui::Stroke::new(1.0, tok.info_border))
+                    .corner_radius(egui::CornerRadius::same(4))
+                    .inner_margin(egui::Margin::symmetric(6, 2))
+                    .show(ui, |ui| {
+                        ui.label(
+                            egui::RichText::new(format!("Carried over from {short_src}"))
+                                .small()
+                                .strong()
+                                .color(tok.info_fg),
+                        )
+                        .on_hover_text(carry_tip);
+                    });
+            }
+
             ui.checkbox(&mut self.show_machined_stock, "3D Stock")
                 .on_hover_text("Show or hide the simulated 3D machined stock solid in the viewport");
             ui.add_enabled(
@@ -348,12 +384,14 @@ impl SimulationPanelState {
                         action = Some(SimulationUiAction::FocusDiagnosticsTab);
                     }
                 } else {
-                    crate::widgets::status_badge_icon(
-                        ui,
-                        crate::widgets::StatusBadgeKind::Clean,
-                        None,
-                    );
-                    ui.colored_label(tok.clean_fg, "Verified Crash-Free");
+                    ui.horizontal(|ui| {
+                        crate::widgets::status_badge_icon(
+                            ui,
+                            crate::widgets::StatusBadgeKind::Clean,
+                            None,
+                        );
+                        ui.colored_label(tok.clean_fg, "Verified Crash-Free");
+                    });
                 }
             } else {
                 ui.weak("Click 'Run Simulation' to compute 3D material removal & crash checks.");

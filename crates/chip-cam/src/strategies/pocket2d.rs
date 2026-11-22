@@ -481,8 +481,37 @@ pub fn generate_pocket2d(
                 z_levels[lvl_idx - 1]
             };
 
+            // Multi-setup carried-over stock rest filtering: skip Z levels with no remaining
+            // solid material and clip clearing regions to carried-over stock + safe overlap!
+            let carryover_masks: Option<(RegionSet2D, RegionSet2D)> =
+                if let Some(td) = ctx.carryover_stock {
+                    let slab_lo = z_cut + 0.01;
+                    let slab_hi = prev_level_z.max(z_cut + 0.02) + 0.05;
+                    if !td.has_material_in_z_slab(slab_lo, slab_hi, 0.02) {
+                        continue;
+                    }
+                    let mat_polys = td.extract_remaining_material_regions_in_z_slab(
+                        slab_lo,
+                        slab_hi,
+                        tool_r + radial_leave + 0.5,
+                    );
+                    let mat_mask = crate::rest2d::contours_to_region_set(&mat_polys);
+                    if mat_mask.is_empty() {
+                        continue;
+                    }
+                    let tight_polys = td.extract_remaining_material_regions_in_z_slab(
+                        slab_lo,
+                        slab_hi,
+                        tool_r + 0.05,
+                    );
+                    let tight_mask = crate::rest2d::contours_to_region_set(&tight_polys);
+                    Some((mat_mask, tight_mask))
+                } else {
+                    None
+                };
+
             let rest_enabled = !ctx.passes.rest_machining.is_disabled();
-            let work_items: Vec<(PocketRegion2D, RegionSet2D)> = if rest_enabled {
+            let base_work_items: Vec<(PocketRegion2D, RegionSet2D)> = if rest_enabled {
                 compute_rest_pocket_work_items(&PocketRestQuery {
                     raw_pocket: pkt_region,
                     safe_tool_regions: effective_rough,
@@ -502,6 +531,32 @@ pub fn generate_pocket2d(
                     .map(|r| (r, RegionSet2D::empty()))
                     .collect()
             };
+
+            let work_items: Vec<(PocketRegion2D, RegionSet2D)> =
+                if let Some((ref mat_mask, ref tight_mask)) = carryover_masks {
+                    let mut clipped_items = Vec::new();
+                    for (orig_reg, orig_air) in base_work_items {
+                        let orig_set = RegionSet2D::from_single(orig_reg);
+                        let clipped = orig_set.intersect(mat_mask);
+                        if clipped.is_empty() {
+                            continue;
+                        }
+                        let carryover_air = orig_set.difference(tight_mask);
+                        let combined_air = if carryover_air.is_empty() {
+                            orig_air
+                        } else {
+                            orig_air.union(&carryover_air)
+                        };
+                        for sub in clipped.regions {
+                            if sub.net_area_mm2() > 0.05 {
+                                clipped_items.push((sub, combined_air.clone()));
+                            }
+                        }
+                    }
+                    clipped_items
+                } else {
+                    base_work_items
+                };
 
             if let PocketStrategyKind::Adaptive(adaptive_params) = &params.strategy {
                 for (sub_reg, cleared_air) in &work_items {
@@ -1274,6 +1329,7 @@ mod tests {
             display_unit: DisplayUnit::Millimeter,
             is_first_tool_in_setup: true,
             upstream_rest: &[],
+            carryover_stock: None,
             cancel: &cancel,
         })
         .unwrap();
@@ -1320,6 +1376,7 @@ mod tests {
             display_unit: DisplayUnit::Millimeter,
             is_first_tool_in_setup: false,
             upstream_rest: &up,
+            carryover_stock: None,
             cancel: &cancel,
         })
         .unwrap();

@@ -47,6 +47,14 @@ pub struct SetupSimulationInput<'a> {
     pub resolution: SimResolution,
     pub kinematics: MachineKinematicsConfig,
     pub verify_config: SimVerificationConfig,
+    /// Optional carried-over volumetric stock transferred from a preceding Setup (`M62`).
+    /// When `Some`, Setup simulation starts from this machined solid instead of a fresh raw blank.
+    pub initial_stock: Option<&'a TriDexelStock>,
+    /// Optional original raw blank volume (`mm³`) from the root Setup of a carryover chain,
+    /// preserved for cumulative `removed_volume_mm3` and `StockErrorReport` efficiency metrology.
+    pub initial_raw_volume_mm3: Option<f64>,
+    /// Optional display name of the preceding Setup that produced `initial_stock`.
+    pub carried_over_from_setup: Option<&'a str>,
     pub cancel: Option<&'a AtomicBool>,
 }
 
@@ -85,6 +93,8 @@ pub struct SetupSimulationResult {
     pub diagnostics: Vec<SimDiagnostic>,
     /// Quantitative stock-vs-target error volume & surface deviation metrics (when 3D target model exists).
     pub error_report: Option<StockErrorReport>,
+    /// Display name of the preceding Setup from which starting stock was carried over (`None` for raw blank).
+    pub carried_over_from_setup: Option<String>,
 }
 
 impl SetupSimulationResult {
@@ -576,7 +586,11 @@ fn prepare_initial_stock(
             None,
         ))
     } else if engine == SimEngineKind::TriDexel {
-        let td = TriDexelStock::from_stock_spec(&stock_spec, input.resolution)?;
+        let td = if let Some(carried) = input.initial_stock {
+            carried.clone()
+        } else {
+            TriDexelStock::from_stock_spec(&stock_spec, input.resolution)?
+        };
         check_cancelled(input.cancel)?;
         let target_td =
             extract_tridexel_target_from_cad(input.doc, input.setup, input.target_bodies, &td);
@@ -586,7 +600,11 @@ fn prepare_initial_stock(
             target_td,
         ))
     } else {
-        let mut hf = HeightfieldStock::from_stock_spec(&stock_spec, input.resolution)?;
+        let mut hf = if let Some(carried) = input.initial_stock {
+            HeightfieldStock::from_tridexel_projection(carried)
+        } else {
+            HeightfieldStock::from_stock_spec(&stock_spec, input.resolution)?
+        };
         check_cancelled(input.cancel)?;
         if input.doc.has_3d_geometry() {
             let (horiz_up, tris) =
@@ -630,7 +648,11 @@ fn prepare_initial_stock_with_gpu(
             None,
         ))
     } else if engine == SimEngineKind::TriDexel {
-        let td = TriDexelStock::from_stock_spec(&stock_spec, input.resolution)?;
+        let td = if let Some(carried) = input.initial_stock {
+            carried.clone()
+        } else {
+            TriDexelStock::from_stock_spec(&stock_spec, input.resolution)?
+        };
         check_cancelled(input.cancel)?;
         let target_td = if let Some(ctx) = gpu_ctx
             && input.doc.has_3d_geometry()
@@ -647,7 +669,11 @@ fn prepare_initial_stock_with_gpu(
             target_td,
         ))
     } else {
-        let mut hf = HeightfieldStock::from_stock_spec(&stock_spec, input.resolution)?;
+        let mut hf = if let Some(carried) = input.initial_stock {
+            HeightfieldStock::from_tridexel_projection(carried)
+        } else {
+            HeightfieldStock::from_stock_spec(&stock_spec, input.resolution)?
+        };
         check_cancelled(input.cancel)?;
         if input.doc.has_3d_geometry() {
             if let Some(ctx) = gpu_ctx
@@ -686,7 +712,10 @@ pub fn run_setup_simulation_with_backend<B: SimStockBackend>(
     let t_driver_start = Instant::now();
     check_cancelled(input.cancel)?;
     let timeline = SimulationTimeline::from_operations(input.operations, input.kinematics);
-    let initial_stock_volume_mm3 = backend.compute_volume_mm3();
+    let starting_stock_volume_mm3 = backend.compute_volume_mm3();
+    let initial_stock_volume_mm3 = input
+        .initial_raw_volume_mm3
+        .unwrap_or(starting_stock_volume_mm3);
 
     let total_spans = timeline.motion_spans.len();
     let checkpoint_stride = backend.kind().checkpoint_stride(total_spans);
@@ -703,7 +732,7 @@ pub fn run_setup_simulation_with_backend<B: SimStockBackend>(
 
     let mut coalescer = ViolationBatchCoalescer::default();
     let mut per_op_errors: Vec<OperationErrorSnapshot> = Vec::new();
-    let mut prev_vol = initial_stock_volume_mm3;
+    let mut prev_vol = starting_stock_volume_mm3;
     let mut span_chords: Vec<SweepChord> = Vec::with_capacity(16);
 
     let t_sweep = Instant::now();
@@ -874,6 +903,7 @@ pub fn run_setup_simulation_with_backend<B: SimStockBackend>(
         operation_profiles,
         diagnostics,
         error_report,
+        carried_over_from_setup: input.carried_over_from_setup.map(ToString::to_string),
     })
 }
 
@@ -957,6 +987,9 @@ mod tests {
                 resolution: SimResolution::Standard,
                 kinematics: MachineKinematicsConfig::default(),
                 verify_config: SimVerificationConfig::default(),
+                initial_stock: None,
+                initial_raw_volume_mm3: None,
+                carried_over_from_setup: None,
                 cancel: None,
             },
             SimEngineKind::TriDexel,
@@ -993,6 +1026,9 @@ mod tests {
                 resolution: SimResolution::Fine,
                 kinematics: MachineKinematicsConfig::default(),
                 verify_config: SimVerificationConfig::default(),
+                initial_stock: None,
+                initial_raw_volume_mm3: None,
+                carried_over_from_setup: None,
                 cancel: None,
             },
             SimEngineKind::TriDexel,
@@ -1065,6 +1101,9 @@ mod tests {
                 resolution: SimResolution::Standard,
                 kinematics: MachineKinematicsConfig::default(),
                 verify_config: SimVerificationConfig::default(),
+                initial_stock: None,
+                initial_raw_volume_mm3: None,
+                carried_over_from_setup: None,
                 cancel: None,
             },
             SimEngineKind::TriDexel,
@@ -1158,6 +1197,9 @@ mod tests {
             resolution: SimResolution::Standard,
             kinematics: MachineKinematicsConfig::default(),
             verify_config: SimVerificationConfig::default(),
+            initial_stock: None,
+            initial_raw_volume_mm3: None,
+            carried_over_from_setup: None,
             cancel: None,
         })
         .unwrap();
@@ -1265,6 +1307,9 @@ mod tests {
             resolution: SimResolution::Standard,
             kinematics: MachineKinematicsConfig::default(),
             verify_config: SimVerificationConfig::default(),
+            initial_stock: None,
+            initial_raw_volume_mm3: None,
+            carried_over_from_setup: None,
             cancel: None,
         })
         .unwrap();
@@ -1356,6 +1401,9 @@ mod tests {
             resolution: SimResolution::Standard,
             kinematics: MachineKinematicsConfig::default(),
             verify_config: SimVerificationConfig::default(),
+            initial_stock: None,
+            initial_raw_volume_mm3: None,
+            carried_over_from_setup: None,
             cancel: None,
         })
         .unwrap();
@@ -1434,6 +1482,9 @@ mod tests {
                 resolution: SimResolution::Standard,
                 kinematics: MachineKinematicsConfig::default(),
                 verify_config: SimVerificationConfig::default(),
+                initial_stock: None,
+                initial_raw_volume_mm3: None,
+                carried_over_from_setup: None,
                 cancel: None,
             },
             SimEngineKind::TriDexel,
@@ -1617,6 +1668,9 @@ mod tests {
                 resolution: SimResolution::Standard,
                 kinematics: MachineKinematicsConfig::default(),
                 verify_config: SimVerificationConfig::default(),
+                initial_stock: None,
+                initial_raw_volume_mm3: None,
+                carried_over_from_setup: None,
                 cancel: None,
             },
             SimEngineKind::Heightmap,
@@ -1640,6 +1694,9 @@ mod tests {
                 resolution: SimResolution::Standard,
                 kinematics: MachineKinematicsConfig::default(),
                 verify_config: SimVerificationConfig::default(),
+                initial_stock: None,
+                initial_raw_volume_mm3: None,
+                carried_over_from_setup: None,
                 cancel: None,
             },
             SimEngineKind::TriDexel,
@@ -1662,6 +1719,9 @@ mod tests {
             resolution: SimResolution::Standard,
             kinematics: MachineKinematicsConfig::default(),
             verify_config: SimVerificationConfig::default(),
+            initial_stock: None,
+            initial_raw_volume_mm3: None,
+            carried_over_from_setup: None,
             cancel: None,
         })
         .unwrap();
@@ -1812,6 +1872,9 @@ mod tests {
             resolution: SimResolution::Standard,
             kinematics: MachineKinematicsConfig::default(),
             verify_config: SimVerificationConfig::default(),
+            initial_stock: None,
+            initial_raw_volume_mm3: None,
+            carried_over_from_setup: None,
             cancel: None,
         };
 
@@ -2013,6 +2076,9 @@ mod tests {
             resolution: SimResolution::Standard,
             kinematics: MachineKinematicsConfig::default(),
             verify_config: SimVerificationConfig::default(),
+            initial_stock: None,
+            initial_raw_volume_mm3: None,
+            carried_over_from_setup: None,
             cancel: None,
         };
         let shaft_cpu = run_setup_simulation_with_choice(
@@ -2144,6 +2210,9 @@ mod tests {
             resolution: SimResolution::Standard,
             kinematics: MachineKinematicsConfig::default(),
             verify_config: SimVerificationConfig::default(),
+            initial_stock: None,
+            initial_raw_volume_mm3: None,
+            carried_over_from_setup: None,
             cancel: None,
         };
         let sim4_cpu = run_setup_simulation_with_choice(
@@ -2220,6 +2289,9 @@ mod tests {
                 resolution: SimResolution::Standard,
                 kinematics: MachineKinematicsConfig::default(),
                 verify_config: SimVerificationConfig::default(),
+                initial_stock: None,
+                initial_raw_volume_mm3: None,
+                carried_over_from_setup: None,
                 cancel: None,
             },
             SimEngineKind::TriDexel,
@@ -2496,6 +2568,9 @@ mod tests {
                 resolution: SimResolution::Standard,
                 kinematics: MachineKinematicsConfig::default(),
                 verify_config: SimVerificationConfig::default(),
+                initial_stock: None,
+                initial_raw_volume_mm3: None,
+                carried_over_from_setup: None,
                 cancel: None,
             };
             let sim_cpu = run_setup_simulation_with_choice(
@@ -2613,6 +2688,9 @@ mod tests {
                 resolution: SimResolution::Standard,
                 kinematics: MachineKinematicsConfig::default(),
                 verify_config: SimVerificationConfig::default(),
+                initial_stock: None,
+                initial_raw_volume_mm3: None,
+                carried_over_from_setup: None,
                 cancel: None,
             };
             let sim_cpu = run_setup_simulation_with_choice(
@@ -2759,6 +2837,9 @@ mod tests {
                 resolution: SimResolution::Standard,
                 kinematics: MachineKinematicsConfig::default(),
                 verify_config: SimVerificationConfig::default(),
+                initial_stock: None,
+                initial_raw_volume_mm3: None,
+                carried_over_from_setup: None,
                 cancel: None,
             };
             let sim_cpu = run_setup_simulation_with_choice(
@@ -2858,6 +2939,9 @@ mod tests {
             resolution: SimResolution::Standard,
             kinematics: MachineKinematicsConfig::default(),
             verify_config: SimVerificationConfig::default(),
+            initial_stock: None,
+            initial_raw_volume_mm3: None,
+            carried_over_from_setup: None,
             cancel: None,
         };
         let cpu_td = run_setup_simulation_with_choice(
@@ -2931,6 +3015,9 @@ mod tests {
             resolution: SimResolution::Standard,
             kinematics: MachineKinematicsConfig::default(),
             verify_config: SimVerificationConfig::default(),
+            initial_stock: None,
+            initial_raw_volume_mm3: None,
+            carried_over_from_setup: None,
             cancel: None,
         };
         let cpu_cyl = run_setup_simulation_with_choice(
@@ -3042,6 +3129,7 @@ mod tests {
                 display_unit: DisplayUnit::Millimeter,
                 is_first_tool_in_setup: true,
                 upstream_rest: &[],
+                carryover_stock: None,
                 cancel: &cancel,
             })
             .unwrap();
@@ -3063,6 +3151,9 @@ mod tests {
                 resolution: SimResolution::Fine,
                 kinematics: MachineKinematicsConfig::default(),
                 verify_config: SimVerificationConfig::default(),
+                initial_stock: None,
+                initial_raw_volume_mm3: None,
+                carried_over_from_setup: None,
                 cancel: None,
             };
             let sim = run_setup_simulation_with_choice(
@@ -3179,6 +3270,7 @@ mod tests {
                 display_unit: DisplayUnit::Millimeter,
                 is_first_tool_in_setup: true,
                 upstream_rest: &[],
+                carryover_stock: None,
                 cancel: &cancel,
             })
             .unwrap();
@@ -3200,6 +3292,9 @@ mod tests {
                 resolution: SimResolution::Fine,
                 kinematics: MachineKinematicsConfig::default(),
                 verify_config: SimVerificationConfig::default(),
+                initial_stock: None,
+                initial_raw_volume_mm3: None,
+                carried_over_from_setup: None,
                 cancel: None,
             };
             let sim = run_setup_simulation_with_choice(
@@ -3347,6 +3442,7 @@ mod tests {
                 display_unit: DisplayUnit::Millimeter,
                 is_first_tool_in_setup: generated.is_empty(),
                 upstream_rest: &[],
+                carryover_stock: None,
                 cancel: &cancel,
             })
             .unwrap();
@@ -3375,6 +3471,9 @@ mod tests {
             resolution: SimResolution::Standard,
             kinematics: MachineKinematicsConfig::default(),
             verify_config: SimVerificationConfig::default(),
+            initial_stock: None,
+            initial_raw_volume_mm3: None,
+            carried_over_from_setup: None,
             cancel: None,
         };
 

@@ -108,13 +108,29 @@ pub fn generate_facing(
 
     // Compute Z levels (with optional dedicated finishing stepdown)
     let target_bottom_z = ctx.heights.bottom_z_wcs + ctx.passes.stock_to_leave_axial.value_mm;
+    let eff_top_z = if let Some(td) = ctx.carryover_stock {
+        let Some(max_z) = td.max_stock_z_in_xy_aabb(footprint) else {
+            return Err(CamError::EmptyToolpath {
+                op_name: ctx.op.name.clone(),
+            });
+        };
+        if max_z <= target_bottom_z + 1e-3 {
+            return Err(CamError::EmptyToolpath {
+                op_name: ctx.op.name.clone(),
+            });
+        }
+        ctx.heights.top_z_wcs.min(max_z)
+    } else {
+        ctx.heights.top_z_wcs
+    };
+
     let z_levels = if let Some(fin_spec) = &params.finishing_stepdown
         && fin_spec.value_mm > 1e-4
-        && ctx.heights.top_z_wcs - target_bottom_z > fin_spec.value_mm + 1e-4
+        && eff_top_z - target_bottom_z > fin_spec.value_mm + 1e-4
     {
         let rough_bottom = target_bottom_z + fin_spec.value_mm;
         let mut lvls = compute_z_levels(
-            ctx.heights.top_z_wcs,
+            eff_top_z,
             rough_bottom,
             ctx.passes.multiple_depths,
             ctx.passes.max_stepdown.value_mm,
@@ -124,7 +140,7 @@ pub fn generate_facing(
         lvls
     } else {
         compute_z_levels(
-            ctx.heights.top_z_wcs,
+            eff_top_z,
             target_bottom_z,
             ctx.passes.multiple_depths,
             ctx.passes.max_stepdown.value_mm,
@@ -136,8 +152,83 @@ pub fn generate_facing(
     let retract_z = ctx.safe_retract_z();
     let feed_z = ctx.heights.feed_z_wcs;
 
+    let build_pass_vs = |vmin: f64, vmax: f64| -> Vec<f64> {
+        let sv = (vmax - vmin).max(0.0);
+        if sv <= 2.0 * (tool_r - 0.05).max(0.0) {
+            vec![0.5 * (vmin + vmax)]
+        } else {
+            let first_v = vmin + (tool_r - 0.25 * (tool_d - stepover)).clamp(0.0, 0.85 * tool_r);
+            let last_v = vmax - (tool_r - 0.25 * (tool_d - stepover)).clamp(0.0, 0.85 * tool_r);
+            if last_v <= first_v + 1e-6 {
+                vec![0.5 * (vmin + vmax)]
+            } else {
+                let count = ((last_v - first_v) / stepover).ceil().max(1.0) as usize;
+                let actual_step = (last_v - first_v) / (count as f64);
+                (0..=count)
+                    .map(|i| first_v + actual_step * (i as f64))
+                    .collect()
+            }
+        }
+    };
+
     for (lvl_idx, &z_cut) in z_levels.iter().enumerate() {
         ctx.check_cancel()?;
+        let prev_z = if lvl_idx == 0 {
+            eff_top_z
+        } else {
+            z_levels[lvl_idx - 1]
+        };
+
+        let (lvl_pass_vs, lvl_u_start_ext, lvl_u_end_ext, rem_polys_opt) = if let Some(td) =
+            ctx.carryover_stock
+        {
+            let slab_lo = z_cut + 0.01;
+            let slab_hi = prev_z.max(z_cut + 0.02) + 0.05;
+            if !td.has_material_in_z_slab(slab_lo, slab_hi, 0.01) {
+                continue;
+            }
+            let rem_polys = td.extract_remaining_material_regions_in_z_slab(slab_lo, slab_hi, 0.0);
+            let mut ru_min = f64::INFINITY;
+            let mut ru_max = f64::NEG_INFINITY;
+            let mut rv_min = f64::INFINITY;
+            let mut rv_max = f64::NEG_INFINITY;
+            for poly in &rem_polys {
+                for seg in &poly.segments {
+                    let p = seg.start();
+                    if p.x >= footprint.min.x - 1.0
+                        && p.x <= footprint.max.x + 1.0
+                        && p.y >= footprint.min.y - 1.0
+                        && p.y <= footprint.max.y + 1.0
+                    {
+                        let pu = p.dot(u_axis);
+                        let pv = p.dot(v_axis);
+                        ru_min = ru_min.min(pu);
+                        ru_max = ru_max.max(pu);
+                        rv_min = rv_min.min(pv);
+                        rv_max = rv_max.max(pv);
+                    }
+                }
+            }
+            if !(ru_min < ru_max && rv_min < rv_max) {
+                continue;
+            }
+            let cu_min = ru_min.max(u_min);
+            let cu_max = ru_max.min(u_max);
+            let cv_min = rv_min.max(v_min);
+            let cv_max = rv_max.min(v_max);
+            if cu_max <= cu_min + 1e-4 || cv_max <= cv_min + 1e-4 {
+                continue;
+            }
+            (
+                build_pass_vs(cv_min, cv_max),
+                cu_min - (tool_r + pass_ext),
+                cu_max + (tool_r + pass_ext),
+                Some(rem_polys),
+            )
+        } else {
+            (pass_vs.clone(), u_start_ext, u_end_ext, None)
+        };
+
         let is_finish_z = lvl_idx + 1 == z_levels.len() && params.finishing_stepdown.is_some();
         let cut_role = if is_finish_z {
             MotionRole::FinishCut
@@ -145,16 +236,44 @@ pub fn generate_facing(
             MotionRole::Cut
         };
 
-        // Order `pass_vs` so OneWayClimb vs OneWayConventional keeps the uncut stock on the climb/conv side
-        let ordered_vs: Vec<f64> = match params.cut_mode {
+        // Order `lvl_pass_vs` so OneWayClimb vs OneWayConventional keeps the uncut stock on the climb/conv side
+        let mut ordered_vs: Vec<f64> = match params.cut_mode {
             FacingCutMode::OneWayClimb => {
                 // Stepping from high `v` down to low `v` while cutting along `+u` puts uncut stock on the RIGHT (Climb for CW spindle!)
-                let mut rev = pass_vs.clone();
+                let mut rev = lvl_pass_vs;
                 rev.reverse();
                 rev
             }
-            FacingCutMode::BothWaysZigZag | FacingCutMode::OneWayConventional => pass_vs.clone(),
+            FacingCutMode::BothWaysZigZag | FacingCutMode::OneWayConventional => lvl_pass_vs,
         };
+
+        // Drop empty rows where carried-over stock has no material within `tool_r` of `pv`
+        if let Some(ref rem_polys) = rem_polys_opt {
+            let half_band = tool_r + 0.35;
+            ordered_vs.retain(|&pv| {
+                rem_polys.iter().any(|poly| {
+                    let b = poly.exact_aabb();
+                    let corners = [
+                        b.min,
+                        DVec2::new(b.max.x, b.min.y),
+                        b.max,
+                        DVec2::new(b.min.x, b.max.y),
+                    ];
+                    let p_vmin = corners
+                        .iter()
+                        .map(|c| c.dot(v_axis))
+                        .fold(f64::INFINITY, f64::min);
+                    let p_vmax = corners
+                        .iter()
+                        .map(|c| c.dot(v_axis))
+                        .fold(f64::NEG_INFINITY, f64::max);
+                    p_vmax >= pv - half_band && p_vmin <= pv + half_band
+                })
+            });
+            if ordered_vs.is_empty() {
+                continue;
+            }
+        }
 
         for (i, &pv) in ordered_vs.iter().enumerate() {
             ctx.check_cancel()?;
@@ -165,14 +284,21 @@ pub fn generate_facing(
                 FacingCutMode::OneWayClimb | FacingCutMode::OneWayConventional => true,
             };
             let (u0, u1) = if forward {
-                (u_start_ext, u_end_ext)
+                (lvl_u_start_ext, lvl_u_end_ext)
             } else {
-                (u_end_ext, u_start_ext)
+                (lvl_u_end_ext, lvl_u_start_ext)
             };
             let p_start = to_xy(u0, pv);
             let p_end = to_xy(u1, pv);
 
-            if i == 0 || params.cut_mode != FacingCutMode::BothWaysZigZag {
+            let can_zigzag_continue = i > 0
+                && params.cut_mode == FacingCutMode::BothWaysZigZag
+                && builder.current_pos().is_some_and(|cur| {
+                    (cur.z - z_cut).abs() <= 1e-4
+                        && DVec2::new(cur.x, cur.y).distance(p_start) <= 1e-3
+                });
+
+            if !can_zigzag_continue {
                 if builder.current_pos().is_none() {
                     builder.rapid_to(DVec3::new(
                         p_start.x,
@@ -204,6 +330,7 @@ pub fn generate_facing(
             // Smooth U-turn `G2`/`G3` linking arc outside the stock in BothWaysZigZag mode!
             if params.cut_mode == FacingCutMode::BothWaysZigZag
                 && let Some(&next_pv) = ordered_vs.get(i + 1)
+                && (next_pv - pv).abs() <= stepover * 1.5 + 1e-4
             {
                 let p_next_start = to_xy(u1, next_pv);
                 let mid_center = 0.5 * (p_end + p_next_start);

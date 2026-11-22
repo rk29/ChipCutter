@@ -183,6 +183,40 @@ pub fn validate_project_with_machine(
         }
     }
 
+    // 2b. Validate multi-setup volumetric stock carryover references (must precede current setup)
+    for (s_idx, setup) in project.setups.iter().enumerate() {
+        if let Some(ref src_id) = setup.carryover_from_setup_id {
+            let setup_scope = format!("Setup '{}'", setup.name);
+            if src_id == &setup.id {
+                report.push_error(
+                    setup_scope,
+                    "Stock carryover cannot reference the same Setup (self-reference).",
+                );
+            } else {
+                match project.setups.iter().position(|s| &s.id == src_id) {
+                    None => {
+                        report.push_error(
+                            setup_scope,
+                            format!(
+                                "Stock carryover source Setup '{src_id}' does not exist in project."
+                            ),
+                        );
+                    }
+                    Some(src_idx) if src_idx >= s_idx => {
+                        report.push_error(
+                            setup_scope,
+                            format!(
+                                "Stock carryover source Setup '{src_id}' (index {src_idx}) must precede '{}' (index {s_idx}) in setup order.",
+                                setup.name
+                            ),
+                        );
+                    }
+                    Some(_) => {}
+                }
+            }
+        }
+    }
+
     // 3. Validate Setups & Operations against loaded CAD geometry (or Pure-2D empty CAD when no Part models exist)
     let empty_cad = CadDocument::empty();
     let has_part_models = project.primary_part_model().is_some();

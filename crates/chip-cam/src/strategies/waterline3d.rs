@@ -157,14 +157,57 @@ pub fn generate_waterline3d(
     let mut avoids_by_level: Vec<RegionSet2D> = Vec::with_capacity(sliced_levels.len());
     let mut all_contours: Vec<WaterlineContour> = Vec::new();
     let mut bvh_scratch = Vec::with_capacity(64);
+    let mut prev_slice_z = z_top;
 
     for (z_k, avoid) in sliced_levels {
         ctx.check_cancel()?;
         let avoid_idx = avoids_by_level.len();
         if avoid.is_empty() {
             avoids_by_level.push(avoid);
+            prev_slice_z = z_k;
             continue;
         }
+
+        // Multi-setup carried-over stock rest filtering: skip empty Z slices and clip
+        // candidate contours to remaining uncut excess stock + safe entry margin!
+        let slice_containment = if let Some(td) = ctx.carryover_stock {
+            let slab_lo = z_k + 0.01;
+            let slab_hi = prev_slice_z.max(z_k + 0.02) + 0.05;
+            if !td.has_material_in_z_slab(slab_lo, slab_hi, 0.02) {
+                avoids_by_level.push(avoid);
+                prev_slice_z = z_k;
+                continue;
+            }
+            let raw_polys = td.extract_remaining_material_regions_in_z_slab(slab_lo, slab_hi, 0.0);
+            let raw_mat = crate::rest2d::contours_to_region_set(&raw_polys);
+            let z_s = (slab_lo - axial_stock)
+                .clamp(surface.aabb_wcs.min.z + 1e-4, surface.aabb_wcs.max.z - 1e-4);
+            let part_solid = crate::rest2d::contours_to_region_set(
+                &crate::surface3d::slice_surface_contours_z(&surface, z_s),
+            );
+            let halo = radial_stock + 0.6 * td.pitch_mm.x.max(td.pitch_mm.y).min(0.4);
+            let excess = if part_solid.is_empty() {
+                raw_mat
+            } else {
+                raw_mat.difference(&part_solid.dilate_outward(halo))
+            };
+            if excess.is_empty() {
+                avoids_by_level.push(avoid);
+                prev_slice_z = z_k;
+                continue;
+            }
+            let mat_mask = excess.dilate_outward(tool_r + radial_stock + 0.5);
+            let clipped = containment.intersect(&mat_mask);
+            if clipped.is_empty() {
+                avoids_by_level.push(avoid);
+                prev_slice_z = z_k;
+                continue;
+            }
+            Some(clipped)
+        } else {
+            None
+        };
+        let eff_containment = slice_containment.as_ref().unwrap_or(&containment);
 
         for reg in &avoid.regions {
             // External boss boundary (`outer_ccw`): Climb = CW (reverse CCW), Conventional = CCW
@@ -177,7 +220,7 @@ pub fn generate_waterline3d(
                 &outer_oriented,
                 z_k,
                 avoid_idx,
-                &containment,
+                eff_containment,
                 &surface,
                 &cutter,
                 z_bottom,
@@ -200,7 +243,7 @@ pub fn generate_waterline3d(
                     &isl_oriented,
                     z_k,
                     avoid_idx,
-                    &containment,
+                    eff_containment,
                     &surface,
                     &cutter,
                     z_bottom,
@@ -214,6 +257,7 @@ pub fn generate_waterline3d(
             }
         }
         avoids_by_level.push(avoid);
+        prev_slice_z = z_k;
     }
 
     if all_contours.is_empty() {

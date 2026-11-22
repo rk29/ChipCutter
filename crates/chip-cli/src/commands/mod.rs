@@ -103,6 +103,8 @@ pub fn parse_sim_backend(raw: &str) -> Result<SimComputeBackendChoice, String> {
 pub struct SetupSimReportJson {
     pub setup_id: String,
     pub setup_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub carried_over_from_setup: Option<String>,
     pub engine: SimEngineKind,
     pub stock_kind: String,
     pub resolution: SimResolution,
@@ -128,6 +130,8 @@ pub struct ProjectSimReportJson {
     pub project_name: String,
     pub passed: bool,
     pub setups: Vec<SetupSimReportJson>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cumulative_error_report: Option<StockErrorReport>,
 }
 
 #[derive(Debug, Serialize)]

@@ -470,6 +470,7 @@ fn try_generate_flat_clearing_stage(
             primary_hole_diameter_mm: None,
         },
         upstream_rest: &[],
+        carryover_stock: ctx.carryover_stock,
         is_first_tool_in_setup: ctx.is_first_tool_in_setup,
         clearing_tool: None,
         cancel: ctx.cancel,

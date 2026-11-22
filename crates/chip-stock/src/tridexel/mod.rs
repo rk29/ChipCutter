@@ -4,6 +4,7 @@
 pub mod grid;
 pub mod mesher;
 pub mod sweep;
+pub mod transfer;
 
 pub use grid::{
     DexelPlane, DexelSpan, FlatDexelSpan, INLINE_DEXEL_SLOTS, RaySpans, TriDexelStock,
@@ -222,5 +223,278 @@ mod tests {
         assert_eq!(shrunk.len(), 2);
         assert!((shrunk[0].max_mm - 1.5).abs() < 1e-5);
         assert!((shrunk[1].min_mm - 18.5).abs() < 1e-5);
+    }
+
+    #[test]
+    fn rigid_frame_180_flip_transfer_is_exact_zero_blur_and_preserves_op_tags() {
+        use chip_math::{Aabb2, DVec2, RigidFrame3};
+
+        // 80 x 60 x 20 mm block in Setup 1 WCS (`X ∈ [-40, 40], Y ∈ [-30, 30], Z ∈ [-20, 0]`)
+        let aabb = Aabb3::new(DVec3::new(-40.0, -30.0, -20.0), DVec3::new(40.0, 30.0, 0.0));
+        let mut stock1 = TriDexelStock::from_stock_spec(
+            &StockShapeSpec::Box { aabb_wcs: aabb },
+            SimResolution::Standard,
+        )
+        .unwrap();
+
+        // Carve an asymmetric L-shaped pocket (`op_idx = 2`) and circular counterbore (`op_idx = 5`)
+        let (nx, ny, nz) = (stock1.nx(), stock1.ny(), stock1.nz());
+        let in_l_pocket = |x: f64, y: f64| -> bool {
+            ((-25.0..=15.0).contains(&x) && (-18.0..=0.0).contains(&y))
+                || ((-25.0..=-5.0).contains(&x) && (0.0..=18.0).contains(&y))
+        };
+        let in_bore = |x: f64, y: f64| -> bool { (x - 20.0).hypot(y - 12.0) <= 8.0 };
+
+        for j in 0..ny {
+            let py = stock1.z_plane().center_v(j);
+            for i in 0..nx {
+                let px = stock1.z_plane().center_u(i);
+                if in_l_pocket(px, py) {
+                    stock1
+                        .plane_mut(Axis3::Z)
+                        .subtract_ray_interval(i, j, -7.5, 0.0, 2);
+                }
+                if in_bore(px, py) {
+                    stock1
+                        .plane_mut(Axis3::Z)
+                        .subtract_ray_interval(i, j, -12.0, 0.0, 5);
+                }
+            }
+        }
+        // Mirror the same cuts on X and Y planes so 3-axis majority vote and volumes agree
+        for k in 0..nz {
+            let pz = stock1.x_plane().center_v(k);
+            if pz >= -7.5 {
+                for j in 0..ny {
+                    let py = stock1.x_plane().center_u(j);
+                    if (-18.0..=0.0).contains(&py) {
+                        stock1
+                            .plane_mut(Axis3::X)
+                            .subtract_ray_interval(j, k, -25.0, 15.0, 2);
+                    } else if (0.0..=18.0).contains(&py) {
+                        stock1
+                            .plane_mut(Axis3::X)
+                            .subtract_ray_interval(j, k, -25.0, -5.0, 2);
+                    }
+                }
+                for i in 0..nx {
+                    let px = stock1.y_plane().center_u(i);
+                    if (-25.0..=-5.0).contains(&px) {
+                        stock1
+                            .plane_mut(Axis3::Y)
+                            .subtract_ray_interval(i, k, -18.0, 18.0, 2);
+                    } else if (-5.0..=15.0).contains(&px) {
+                        stock1
+                            .plane_mut(Axis3::Y)
+                            .subtract_ray_interval(i, k, -18.0, 0.0, 2);
+                    }
+                }
+            }
+            if pz >= -12.0 {
+                for j in 0..ny {
+                    let py = stock1.x_plane().center_u(j);
+                    let dy = py - 12.0;
+                    if dy.abs() <= 8.0 {
+                        let dx = (64.0 - dy * dy).max(0.0).sqrt();
+                        stock1.plane_mut(Axis3::X).subtract_ray_interval(
+                            j,
+                            k,
+                            20.0 - dx,
+                            20.0 + dx,
+                            5,
+                        );
+                    }
+                }
+                for i in 0..nx {
+                    let px = stock1.y_plane().center_u(i);
+                    let dx = px - 20.0;
+                    if dx.abs() <= 8.0 {
+                        let dy = (64.0 - dx * dx).max(0.0).sqrt();
+                        stock1.plane_mut(Axis3::Y).subtract_ray_interval(
+                            i,
+                            k,
+                            12.0 - dy,
+                            12.0 + dy,
+                            5,
+                        );
+                    }
+                }
+            }
+        }
+
+        let v_src = stock1.compute_volume_mm3();
+        let src_frame = RigidFrame3::IDENTITY.with_origin(DVec3::new(0.0, 0.0, 20.0));
+
+        // Test both 180° X-flip (X' = +X, Y' = -Y, Z' = -Z) and 180° Y-flip (X' = -X, Y' = +Y, Z' = -Z)
+        let x_flip_frame = RigidFrame3 {
+            origin_mm: DVec3::new(0.0, 0.0, 0.0),
+            x_axis: DVec3::X,
+            y_axis: DVec3::NEG_Y,
+            z_axis: DVec3::NEG_Z,
+        };
+        let y_flip_frame = RigidFrame3 {
+            origin_mm: DVec3::new(0.0, 0.0, 0.0),
+            x_axis: DVec3::NEG_X,
+            y_axis: DVec3::Y,
+            z_axis: DVec3::NEG_Z,
+        };
+
+        for (label, dst_frame, expect_bore_xy) in [
+            ("180° X-flip", x_flip_frame, DVec2::new(20.0, -12.0)),
+            ("180° Y-flip", y_flip_frame, DVec2::new(-20.0, 12.0)),
+        ] {
+            let stock2 = stock1
+                .transform_to_frame(src_frame, dst_frame, SimResolution::Standard)
+                .unwrap();
+            let v_dst = stock2.compute_volume_mm3();
+            assert!(
+                (v_dst - v_src).abs() < 1e-3,
+                "{label}: exact volume drift {:.6} mm³ >= 1e-3",
+                (v_dst - v_src).abs()
+            );
+
+            // Original bore at Z ∈ [-12, 0] in Setup 1 (world Z ∈ [8, 20]) becomes Z ∈ [-20, -8]
+            // in Setup 2! So remaining solid at bore center in Setup 2 is Z ∈ [-8, 0] (min_mm = -8,
+            // max_mm = 0, min_op_idx = 5, max_op_idx = UNCUT_OP_IDX)!
+            let i_b = ((expect_bore_xy.x - stock2.origin_wcs.x) / stock2.dx_mm()).floor() as usize;
+            let j_b = ((expect_bore_xy.y - stock2.origin_wcs.y) / stock2.dy_mm()).floor() as usize;
+            let spans = stock2.z_plane().ray_spans(i_b, j_b);
+            assert_eq!(spans.len(), 1, "{label}: expected 1 span at flipped bore");
+            assert!(
+                (spans[0].min_mm - (-8.0)).abs() < 1e-4,
+                "{label}: expected min_mm = -8.0, got {}",
+                spans[0].min_mm
+            );
+            assert!(
+                (spans[0].max_mm - 0.0).abs() < 1e-4,
+                "{label}: expected max_mm = 0.0, got {}",
+                spans[0].max_mm
+            );
+            assert_eq!(
+                spans[0].min_op_idx, 5,
+                "{label}: bore op_idx preserved on flipped bottom"
+            );
+            assert_eq!(spans[0].max_op_idx, UNCUT_OP_IDX);
+
+            // Pure-CPU rest-stock queries
+            assert!(stock2.has_material_in_z_slab(-5.0, 0.0, 0.1));
+            assert!(!stock2.has_material_in_z_slab(0.5, 5.0, 0.1));
+            let bore_box = Aabb2 {
+                min: expect_bore_xy - DVec2::splat(3.0),
+                max: expect_bore_xy + DVec2::splat(3.0),
+            };
+            let max_z = stock2.max_stock_z_in_xy_aabb(bore_box).unwrap();
+            assert!((max_z - 0.0).abs() < 1e-4);
+
+            // At Z ∈ [-19, -15] (deep inside Setup 1's machined pocket & bore), the bore is AIR,
+            // so extracted material region should have a hole at `expect_bore_xy`!
+            let regions = stock2.extract_remaining_material_regions_in_z_slab(-19.0, -15.0, 0.0);
+            assert!(
+                regions.len() >= 2,
+                "{label}: expected outer + hole contours in pocketed Z slab, got {}",
+                regions.len()
+            );
+
+            // Heightfield projection preserves exact top Z envelope
+            let hf2 = crate::HeightfieldStock::from_tridexel_projection(&stock2);
+            assert_eq!(hf2.nx, stock2.nx());
+            assert_eq!(hf2.ny, stock2.ny());
+            let top_at_bore = hf2
+                .sample_stock_z(expect_bore_xy.x, expect_bore_xy.y)
+                .unwrap();
+            assert!((top_at_bore - 0.0).abs() < 1e-4);
+        }
+    }
+
+    #[test]
+    fn rigid_frame_35_deg_oblique_transfer_conserves_volume_within_half_percent() {
+        use chip_math::RigidFrame3;
+
+        let aabb = Aabb3::new(DVec3::new(-30.0, -20.0, -15.0), DVec3::new(30.0, 20.0, 0.0));
+        let mut stock1 = TriDexelStock::from_stock_spec(
+            &StockShapeSpec::Box { aabb_wcs: aabb },
+            SimResolution::Standard,
+        )
+        .unwrap();
+
+        // Carve a central step/pocket (`X ∈ [-10, 10], Y ∈ [-8, 8], Z ∈ [-6, 0]`) across all 3 planes
+        let (nx, ny, nz) = (stock1.nx(), stock1.ny(), stock1.nz());
+        for j in 0..ny {
+            let py = stock1.z_plane().center_v(j);
+            if (-8.0..=8.0).contains(&py) {
+                for i in 0..nx {
+                    let px = stock1.z_plane().center_u(i);
+                    if (-10.0..=10.0).contains(&px) {
+                        stock1
+                            .plane_mut(Axis3::Z)
+                            .subtract_ray_interval(i, j, -6.0, 0.0, 1);
+                    }
+                }
+            }
+        }
+        for k in 0..nz {
+            let pz = stock1.x_plane().center_v(k);
+            if pz >= -6.0 {
+                for j in 0..ny {
+                    let py = stock1.x_plane().center_u(j);
+                    if (-8.0..=8.0).contains(&py) {
+                        stock1
+                            .plane_mut(Axis3::X)
+                            .subtract_ray_interval(j, k, -10.0, 10.0, 1);
+                    }
+                }
+                for i in 0..nx {
+                    let px = stock1.y_plane().center_u(i);
+                    if (-10.0..=10.0).contains(&px) {
+                        stock1
+                            .plane_mut(Axis3::Y)
+                            .subtract_ray_interval(i, k, -8.0, 8.0, 1);
+                    }
+                }
+            }
+        }
+
+        let v_src = stock1.compute_volume_mm3();
+        let src_frame = RigidFrame3::IDENTITY;
+        let angle = 35.0_f64.to_radians();
+        let tilted_z = DVec3::new(angle.sin(), 0.0, angle.cos());
+        let dst_frame = RigidFrame3::from_z_and_x_hint(
+            DVec3::new(10.0, -5.0, 4.0),
+            tilted_z,
+            Some(DVec3::new(angle.cos(), 0.25, -angle.sin())),
+            false,
+            false,
+            0,
+        )
+        .unwrap();
+
+        let stock2 = stock1
+            .transform_to_frame(src_frame, dst_frame, SimResolution::Standard)
+            .unwrap();
+        let v_dst = stock2.compute_volume_mm3();
+        let rel_err = (v_dst - v_src).abs() / v_src;
+        assert!(
+            rel_err < 0.005,
+            "35° oblique BVH transfer volume err {:.3}% >= 0.5% (src={v_src:.1}, dst={v_dst:.1})",
+            rel_err * 100.0
+        );
+
+        // Verify a point deep inside the solid maps to solid, and the carved pocket center maps to air
+        let solid_pt_dst = dst_frame.world_to_local_point(DVec3::new(-22.0, -12.0, -7.5));
+        let air_pt_dst = dst_frame.world_to_local_point(DVec3::new(0.0, 0.0, -2.5));
+        let solid_i = ((solid_pt_dst.x - stock2.origin_wcs.x) / stock2.dx_mm()).floor() as usize;
+        let solid_j = ((solid_pt_dst.y - stock2.origin_wcs.y) / stock2.dy_mm()).floor() as usize;
+        let solid_k = ((solid_pt_dst.z - stock2.origin_wcs.z) / stock2.dz_mm()).floor() as usize;
+        assert!(
+            stock2.is_voxel_solid(solid_i, solid_j, solid_k),
+            "interior solid point must remain solid after 35° oblique transfer"
+        );
+        let air_i = ((air_pt_dst.x - stock2.origin_wcs.x) / stock2.dx_mm()).floor() as usize;
+        let air_j = ((air_pt_dst.y - stock2.origin_wcs.y) / stock2.dy_mm()).floor() as usize;
+        let air_k = ((air_pt_dst.z - stock2.origin_wcs.z) / stock2.dz_mm()).floor() as usize;
+        assert!(
+            !stock2.is_voxel_solid(air_i, air_j, air_k),
+            "carved pocket center must remain air after 35° oblique transfer"
+        );
     }
 }

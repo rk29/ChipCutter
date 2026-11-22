@@ -136,10 +136,87 @@ pub fn compute_operation_input_hash(
         }
     }
 
+    // Fold upstream carryover Setup's WCS/stock/heights/operations recursively (`src_idx < setup_idx`
+    // guarantees strict DAG acyclicity; skipped completely when `carryover_from_setup_id` is `None`
+    // so single-setup v1/v2/v3 hashes stay bit-identical!)
+    if let Some(ref src_id) = setup.carryover_from_setup_id {
+        hasher.update(b"|carryover_v1:");
+        hasher.update(src_id.as_bytes());
+        hasher.update(b":");
+        if let Some(src_idx) = project.setups[..setup_idx]
+            .iter()
+            .position(|s| &s.id == src_id)
+        {
+            fold_setup_carryover_hash(&mut hasher, project, src_idx, cad_revision);
+        }
+    }
+
     let digest = hasher.finalize();
     let mut bytes = [0_u8; 32];
     bytes.copy_from_slice(digest.as_slice());
     Some(OperationInputHash(bytes))
+}
+
+fn fold_setup_carryover_hash(
+    hasher: &mut Sha256,
+    project: &ProjectDocument,
+    src_idx: usize,
+    cad_revision: u64,
+) {
+    let Some(src_setup) = project.setups.get(src_idx) else {
+        return;
+    };
+    hasher.update(src_setup.id.as_bytes());
+    hasher.update(b"{");
+    for b in &src_setup.target_bodies {
+        hasher.update(b.0.to_le_bytes());
+    }
+    if let Ok(s) = toml::to_string(&src_setup.wcs) {
+        hasher.update(s.as_bytes());
+    }
+    if let Ok(s) = toml::to_string(&src_setup.stock) {
+        hasher.update(s.as_bytes());
+    }
+    if let Ok(s) = toml::to_string(&src_setup.heights) {
+        hasher.update(s.as_bytes());
+    }
+    for (u_op_idx, u_op) in src_setup.operations.iter().enumerate() {
+        if u_op.suppressed {
+            continue;
+        }
+        hasher.update(u_op.id.as_bytes());
+        hasher.update(b"=");
+        if let Some(h) = compute_operation_input_hash(project, src_idx, u_op_idx, cad_revision) {
+            hasher.update(h.0);
+        }
+        hasher.update(b";");
+    }
+    if let Some(ref grand_id) = src_setup.carryover_from_setup_id
+        && let Some(grand_idx) = project.setups[..src_idx]
+            .iter()
+            .position(|s| &s.id == grand_id)
+    {
+        hasher.update(b"<-");
+        fold_setup_carryover_hash(hasher, project, grand_idx, cad_revision);
+    }
+    hasher.update(b"}");
+}
+
+/// Computes a deterministic 64-bit digest of `project.setups[src_idx]` (and any transitive
+/// carryover ancestors) for caching intermediate carryover [`chip_sim::TriDexelStock`] solids.
+pub fn compute_setup_carryover_digest(
+    project: &ProjectDocument,
+    src_idx: usize,
+    cad_revision: u64,
+) -> u64 {
+    let mut hasher = Sha256::new();
+    hasher.update(b"chipcutter_carryover_digest_v1:");
+    hasher.update(cad_revision.to_le_bytes());
+    fold_setup_carryover_hash(&mut hasher, project, src_idx, cad_revision);
+    let digest = hasher.finalize();
+    u64::from_le_bytes([
+        digest[0], digest[1], digest[2], digest[3], digest[4], digest[5], digest[6], digest[7],
+    ])
 }
 
 /// Out-of-band hash-addressed cache of generated toolpaths (`08-ui-viewport.md` §Undo/Redo).

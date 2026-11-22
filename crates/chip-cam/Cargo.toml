@@ -13,6 +13,7 @@ chip-bvh.workspace = true
 chip-geom2d.workspace = true
 chip-cad.workspace = true
 chip-sketch.workspace = true
+chip-stock.workspace = true
 chip-tools.workspace = true
 glam.workspace = true
 serde.workspace = true

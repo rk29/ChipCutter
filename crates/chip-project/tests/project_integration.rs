@@ -3337,3 +3337,473 @@ fn m61_cam_torture_toe_clamp_between_pockets_auto_avoid_off_vs_on() {
         sim_on.diagnostics
     );
 }
+
+/// Builds a watertight binary STL of a two-sided stepped block:
+/// - Lower flange: `X ∈ [0, 60], Y ∈ [0, 50], Z ∈ [0, 10]`
+/// - Upper centered boss: `X ∈ [14, 46], Y ∈ [12, 38], Z ∈ [10, 16]`
+fn build_two_sided_stepped_block_stl_bytes() -> Vec<u8> {
+    let mut tris: Vec<([f32; 3], [f32; 3], [f32; 3])> = Vec::new();
+    let mut push_quad = |a: [f32; 3], b: [f32; 3], c: [f32; 3], d: [f32; 3]| {
+        tris.push((a, b, c));
+        tris.push((a, c, d));
+    };
+
+    // Lower flange (0..60, 0..50, 0..10)
+    let (x0, x1, y0, y1, z0, z1) = (0.0_f32, 60.0_f32, 0.0_f32, 50.0_f32, 0.0_f32, 10.0_f32);
+    // Upper boss (14..46, 12..38, 10..16)
+    let (bx0, bx1, by0, by1, bz1) = (14.0_f32, 46.0_f32, 12.0_f32, 38.0_f32, 16.0_f32);
+
+    // Bottom face (Z = 0, normal -Z)
+    push_quad([x0, y0, z0], [x0, y1, z0], [x1, y1, z0], [x1, y0, z0]);
+    // Lower side walls
+    push_quad([x0, y0, z0], [x1, y0, z0], [x1, y0, z1], [x0, y0, z1]); // -Y
+    push_quad([x1, y1, z0], [x0, y1, z0], [x0, y1, z1], [x1, y1, z1]); // +Y
+    push_quad([x0, y1, z0], [x0, y0, z0], [x0, y0, z1], [x0, y1, z1]); // -X
+    push_quad([x1, y0, z0], [x1, y1, z0], [x1, y1, z1], [x1, y0, z1]); // +X
+
+    // Stepped shelf on Z = 10 surrounding boss (4 non-overlapping rectangles, normal +Z)
+    push_quad([x0, y0, z1], [x1, y0, z1], [x1, by0, z1], [x0, by0, z1]); // south strip
+    push_quad([x0, by1, z1], [x1, by1, z1], [x1, y1, z1], [x0, y1, z1]); // north strip
+    push_quad([x0, by0, z1], [bx0, by0, z1], [bx0, by1, z1], [x0, by1, z1]); // west strip
+    push_quad([bx1, by0, z1], [x1, by0, z1], [x1, by1, z1], [bx1, by1, z1]); // east strip
+
+    // Boss walls (Z = 10..16)
+    push_quad(
+        [bx0, by0, z1],
+        [bx1, by0, z1],
+        [bx1, by0, bz1],
+        [bx0, by0, bz1],
+    ); // -Y
+    push_quad(
+        [bx1, by1, z1],
+        [bx0, by1, z1],
+        [bx0, by1, bz1],
+        [bx1, by1, bz1],
+    ); // +Y
+    push_quad(
+        [bx0, by1, z1],
+        [bx0, by0, z1],
+        [bx0, by0, bz1],
+        [bx0, by1, bz1],
+    ); // -X
+    push_quad(
+        [bx1, by0, z1],
+        [bx1, by1, z1],
+        [bx1, by1, bz1],
+        [bx1, by0, bz1],
+    ); // +X
+
+    // Boss top face (Z = 16, normal +Z)
+    push_quad(
+        [bx0, by0, bz1],
+        [bx1, by0, bz1],
+        [bx1, by1, bz1],
+        [bx0, by1, bz1],
+    );
+
+    let mut bytes = Vec::with_capacity(84 + tris.len() * 50);
+    bytes.extend_from_slice(&[0u8; 80]);
+    bytes.extend_from_slice(&(tris.len() as u32).to_le_bytes());
+    for (v0, v1, v2) in tris {
+        let e1 = [v1[0] - v0[0], v1[1] - v0[1], v1[2] - v0[2]];
+        let e2 = [v2[0] - v0[0], v2[1] - v0[1], v2[2] - v0[2]];
+        let nx = e1[1] * e2[2] - e1[2] * e2[1];
+        let ny = e1[2] * e2[0] - e1[0] * e2[2];
+        let nz = e1[0] * e2[1] - e1[1] * e2[0];
+        let len = (nx * nx + ny * ny + nz * nz).sqrt().max(1e-12);
+        for c in [nx / len, ny / len, nz / len] {
+            bytes.extend_from_slice(&c.to_le_bytes());
+        }
+        for v in [v0, v1, v2] {
+            for c in v {
+                bytes.extend_from_slice(&c.to_le_bytes());
+            }
+        }
+        bytes.extend_from_slice(&0u16.to_le_bytes());
+    }
+    bytes
+}
+
+#[test]
+fn milestone_62_two_sided_carryover_rest_roughing_cumulative_metrology_and_gpu_parity() {
+    use chip_cad::{MeshImportOptions, load_mesh_cad_document};
+    use chip_cam::{
+        BoxAnchor27, HeightReference, HeightSpec, MachiningBoundaryMode, Operation, OperationKind,
+        Setup, StockConfig, StrategyParams, WcsOrientationMode, WcsOriginMode, WorkOffsetSlot,
+    };
+    use chip_math::ParamLength;
+    use chip_project::{
+        JobDispatcher, compute_operation_input_hash, simulate_all_setups_with_choice,
+    };
+    use chip_sim::{SimComputeBackendChoice, SimEngineKind, SimResolution};
+
+    let stl_bytes = build_two_sided_stepped_block_stl_bytes();
+    let cad_doc = load_mesh_cad_document(
+        "stepped_block.stl",
+        &stl_bytes,
+        &MeshImportOptions::default(),
+    )
+    .unwrap();
+    let starter = default_starter_tool_library();
+    let flat_6 = starter.tools[0].clone(); // T1 Ø6mm Flat Endmill
+
+    let make_project = |enable_carryover: bool| -> ProjectDocument {
+        let mut proj = ProjectDocument::new("Two-Sided Stepped Block M62");
+        proj.tools.push(flat_6.clone());
+
+        // Setup 1: Top Op [G54] — raw blank with 3 mm XY sides, 1 mm top allowance, 5 mm bottom hat stock
+        let mut s1 = Setup::new("setup_1", "Setup 1 - Top Op", WorkOffsetSlot::G54);
+        s1.wcs.orientation = WcsOrientationMode::ModelOrientation {
+            flip_z: false,
+            flip_x: false,
+            clock_90: 0,
+            extra_z_rot_deg: 0.0,
+        };
+        s1.wcs.origin = WcsOriginMode::StockBoxPoint {
+            anchor: BoxAnchor27::TOP_CENTER,
+        };
+        s1.stock = StockConfig::RelativeBox {
+            side_pos_x: ParamLength::from_mm(3.0),
+            side_neg_x: ParamLength::from_mm(3.0),
+            side_pos_y: ParamLength::from_mm(3.0),
+            side_neg_y: ParamLength::from_mm(3.0),
+            symmetric_xy: true,
+            top_offset_z: ParamLength::from_mm(1.0),
+            bottom_offset_z: ParamLength::from_mm(5.0),
+            sheet_thickness_z: ParamLength::from_mm(12.0),
+            round_increment_mm: None,
+        };
+
+        // Op 1.1: Face 1 mm top allowance cleanly down to ModelTop
+        let mut op1_face =
+            Operation::new("op1_face_top", "Op 1.1 - Face Top", OperationKind::Facing);
+        op1_face.tool_id = Some(flat_6.id.clone());
+        op1_face.preset_id = flat_6.presets.first().map(|p| p.id.clone());
+        op1_face.heights.top = HeightSpec::new(HeightReference::StockTop, 0.0);
+        op1_face.heights.bottom = HeightSpec::new(HeightReference::ModelTop, 0.0);
+        op1_face.passes.multiple_depths = false;
+        op1_face.passes.stock_to_leave_axial = ParamLength::from_mm(0.0);
+        s1.operations.push(op1_face);
+
+        // Op 1.2: 3D Adaptive roughing from ModelTop down to ModelBottom + 2 mm (leaving 2 mm skirt
+        // clear of vise jaws + 5 mm bottom hat stock!)
+        let mut op1 = Operation::new(
+            "op1_top_rough",
+            "Op 1.2 - 3D Adaptive Top",
+            OperationKind::Adaptive3D,
+        );
+        op1.tool_id = Some(flat_6.id.clone());
+        op1.preset_id = flat_6.presets.first().map(|p| p.id.clone());
+        op1.heights.top = HeightSpec::new(HeightReference::ModelTop, 0.0);
+        op1.heights.bottom = HeightSpec::new(HeightReference::ModelBottom, 2.0);
+        op1.passes.stock_to_leave_radial = ParamLength::from_mm(0.0);
+        op1.passes.stock_to_leave_axial = ParamLength::from_mm(0.0);
+        if let StrategyParams::Adaptive3D(p) = op1.strategy_mut() {
+            p.boundary_mode = MachiningBoundaryMode::StockBox;
+            p.max_roughing_stepdown = ParamLength::from_mm(5.0);
+            p.fine_stepdown = ParamLength::from_mm(2.0);
+            p.detect_flats = true;
+            p.adaptive.optimal_load = ParamLength::from_mm(2.2);
+        }
+        s1.operations.push(op1);
+
+        // Setup 2: Flip Bottom Op [G55] — 180° flip around X so bottom hat stock is now on top (+Z)!
+        let mut s2 = Setup::new("setup_2", "Setup 2 - Flip Bottom Op", WorkOffsetSlot::G55);
+        s2.wcs.orientation = WcsOrientationMode::ModelOrientation {
+            flip_z: true,
+            flip_x: false,
+            clock_90: 0,
+            extra_z_rot_deg: 0.0,
+        };
+        s2.wcs.origin = WcsOriginMode::StockBoxPoint {
+            anchor: BoxAnchor27::TOP_CENTER,
+        };
+        s2.stock = StockConfig::RelativeBox {
+            side_pos_x: ParamLength::from_mm(3.0),
+            side_neg_x: ParamLength::from_mm(3.0),
+            side_pos_y: ParamLength::from_mm(3.0),
+            side_neg_y: ParamLength::from_mm(3.0),
+            symmetric_xy: true,
+            top_offset_z: ParamLength::from_mm(5.0),
+            bottom_offset_z: ParamLength::from_mm(1.0),
+            sheet_thickness_z: ParamLength::from_mm(12.0),
+            round_increment_mm: None,
+        };
+        s2.carryover_from_setup_id = enable_carryover.then(|| "setup_1".to_string());
+
+        // Op 2.1: Face off the 5 mm bottom hat stock cleanly down to flipped ModelTop
+        let mut op2_face = Operation::new(
+            "op2_face_hat",
+            "Op 2.1 - Face Bottom Hat",
+            OperationKind::Facing,
+        );
+        op2_face.tool_id = Some(flat_6.id.clone());
+        op2_face.preset_id = flat_6.presets.first().map(|p| p.id.clone());
+        op2_face.heights.top = HeightSpec::new(HeightReference::StockTop, 0.0);
+        op2_face.heights.bottom = HeightSpec::new(HeightReference::ModelTop, 0.0);
+        op2_face.passes.multiple_depths = true;
+        op2_face.passes.max_stepdown = ParamLength::from_mm(2.5);
+        op2_face.passes.stock_to_leave_axial = ParamLength::from_mm(0.0);
+        s2.operations.push(op2_face);
+
+        // Op 2.2: 3D Adaptive Rest from ModelTop down to ModelBottom — with carryover, clears ONLY
+        // the 2 mm remaining flange skirt and skips the entire 14 mm already finished in Setup 1!
+        let mut op2 = Operation::new(
+            "op2_bottom_rest",
+            "Op 2.2 - Rest Profile Skirt",
+            OperationKind::Adaptive3D,
+        );
+        op2.tool_id = Some(flat_6.id.clone());
+        op2.preset_id = flat_6.presets.first().map(|p| p.id.clone());
+        op2.heights.top = HeightSpec::new(HeightReference::ModelTop, 0.0);
+        op2.heights.bottom = HeightSpec::new(HeightReference::ModelBottom, 0.0);
+        op2.passes.stock_to_leave_radial = ParamLength::from_mm(0.0);
+        op2.passes.stock_to_leave_axial = ParamLength::from_mm(0.0);
+        if let StrategyParams::Adaptive3D(p) = op2.strategy_mut() {
+            p.boundary_mode = MachiningBoundaryMode::StockBox;
+            p.max_roughing_stepdown = ParamLength::from_mm(4.0);
+            p.fine_stepdown = ParamLength::from_mm(2.0);
+            p.detect_flats = true;
+            p.adaptive.optimal_load = ParamLength::from_mm(2.2);
+        }
+        s2.operations.push(op2);
+
+        proj.setups = vec![s1, s2];
+        proj
+    };
+
+    // 1. Validate schema TOML compatibility & invalid carryover reference rejection
+    let mut proj_blind = make_project(false);
+    let toml_blind = proj_blind.to_toml_string().unwrap();
+    assert!(
+        !toml_blind.contains("carryover_from_setup_id"),
+        "None carryover_from_setup_id must be omitted from .chip.toml"
+    );
+
+    let mut proj_carry = make_project(true);
+    let toml_carry = proj_carry.to_toml_string().unwrap();
+    assert!(toml_carry.contains("carryover_from_setup_id = \"setup_1\""));
+    let roundtrip = ProjectDocument::from_toml_str(&toml_carry).unwrap();
+    assert_eq!(
+        roundtrip.setups[1].carryover_from_setup_id.as_deref(),
+        Some("setup_1")
+    );
+    assert!(validate_project(&proj_carry, None, Some(&cad_doc)).is_valid());
+
+    // Reject self, forward, and missing carryover references
+    for bad_ref in ["setup_1", "setup_2", "nonexistent_setup"] {
+        let mut bad = make_project(false);
+        bad.setups[0].carryover_from_setup_id = Some(bad_ref.to_string());
+        let rep = validate_project(&bad, None, Some(&cad_doc));
+        assert!(
+            !rep.is_valid(),
+            "expected validation error for bad carryover ref '{bad_ref}'"
+        );
+    }
+
+    // 2. Verify cache invalidation: editing Setup 1 changes Setup 2's OperationInputHash!
+    let h2_before = compute_operation_input_hash(&proj_carry, 1, 0, 1).unwrap();
+    let mut proj_edited = make_project(true);
+    proj_edited.setups[0].operations[0]
+        .passes
+        .stock_to_leave_axial = ParamLength::from_mm(0.25);
+    let h2_after = compute_operation_input_hash(&proj_edited, 1, 0, 1).unwrap();
+    assert_ne!(
+        h2_before, h2_after,
+        "editing Setup 1 must invalidate Setup 2 carryover OperationInputHash"
+    );
+
+    // 3. Compare Op-2 cutting distance WITH carryover vs. BLIND raw stock (assert >= 30% reduction!)
+    let mut cache_blind = ToolpathCache::new(32);
+    let batch_blind = generate_project_blocking(&mut proj_blind, &cad_doc, &mut cache_blind, 1);
+    assert!(
+        batch_blind.is_ok(),
+        "blind gen errors: {:?}",
+        batch_blind.errors
+    );
+
+    let mut cache_carry = ToolpathCache::new(32);
+    let batch_carry = generate_project_blocking(&mut proj_carry, &cad_doc, &mut cache_carry, 1);
+    assert!(
+        batch_carry.is_ok(),
+        "carry gen errors: {:?}",
+        batch_carry.errors
+    );
+
+    let (_, tp2_blind) = cache_blind.get_for_operation(&proj_blind, 1, 1, 1).unwrap();
+    let (_, tp2_carry) = cache_carry.get_for_operation(&proj_carry, 1, 1, 1).unwrap();
+    let blind_dist = tp2_blind.stats.cutting_distance_mm;
+    let carry_dist = tp2_carry.stats.cutting_distance_mm;
+    let reduction_pct = (1.0 - carry_dist / blind_dist) * 100.0;
+    eprintln!(
+        "[M62] Op-2 cutting distance: blind={blind_dist:.1} mm -> carryover={carry_dist:.1} mm ({reduction_pct:.1}% reduction)"
+    );
+    assert!(
+        reduction_pct >= 30.0,
+        "expected Op-2 carryover air-cut reduction >= 30%, got {reduction_pct:.1}% (blind={blind_dist:.1} mm, carry={carry_dist:.1} mm)"
+    );
+
+    // 4. Multi-setup Tri-Dexel simulation chain (CPU) + cumulative metrology
+    let sims_cpu = simulate_all_setups_with_choice(
+        &proj_carry,
+        &cad_doc,
+        1,
+        &cache_carry,
+        None,
+        SimResolution::Standard,
+        SimEngineKind::TriDexel,
+        SimComputeBackendChoice::Cpu,
+        None,
+    )
+    .unwrap();
+    assert_eq!(sims_cpu.len(), 2);
+    let sim1 = &sims_cpu[0];
+    let sim2 = &sims_cpu[1];
+
+    assert!(
+        !sim1.has_critical_errors(),
+        "sim1 diags: {:?}",
+        sim1.diagnostics
+    );
+    assert!(
+        !sim2.has_critical_errors(),
+        "sim2 diags: {:?}",
+        sim2.diagnostics
+    );
+    assert_eq!(
+        sim2.carried_over_from_setup.as_deref(),
+        Some("Setup 1 - Top Op")
+    );
+
+    // Setup 2 at t = 0.0 must start at Setup 1's exact remaining volume (NOT raw blank!)
+    let s2_start_vol = sim2.reconstruct_stock_at_time(0.0).compute_volume_mm3();
+    assert!(
+        (s2_start_vol - sim1.remaining_stock_volume_mm3).abs() < 1.0,
+        "Setup 2 t=0.0 vol ({s2_start_vol:.1}) must match Setup 1 remaining vol ({:.1})",
+        sim1.remaining_stock_volume_mm3
+    );
+    assert!(
+        s2_start_vol < sim1.initial_stock_volume_mm3 * 0.85,
+        "Setup 2 t=0.0 vol ({s2_start_vol:.1}) must be well below raw blank ({:.1})",
+        sim1.initial_stock_volume_mm3
+    );
+
+    // Cumulative error report: Setup 1 alone leaves the 5 mm bottom hat stock uncut, while Setup 2
+    // finishes the 2-sided part to In-Tol >= 95% and MaxGouge <= 0.02 mm!
+    let err1 = sim1.error_report.as_ref().unwrap();
+    let err2 = sim2.error_report.as_ref().unwrap();
+    assert!(
+        err2.excess_volume_mm3 < err1.excess_volume_mm3 * 0.25,
+        "Op-2 must clear bottom hat excess: err1={:.1} mm³, err2={:.1} mm³",
+        err1.excess_volume_mm3,
+        err2.excess_volume_mm3
+    );
+    assert!(
+        err2.in_tolerance_surface_pct >= 95.0,
+        "Cumulative 2-sided In-Tol must be >= 95%, got {:.2}% (RMS={:.4} mm, MaxExcess={:.4} mm, MaxGouge={:.4} mm)",
+        err2.in_tolerance_surface_pct,
+        err2.rms_error_mm,
+        err2.max_excess_mm,
+        err2.max_gouge_mm
+    );
+    assert!(
+        err2.max_gouge_mm <= 0.02,
+        "Cumulative 2-sided max gouge must be <= 0.02 mm, got {:.4} mm",
+        err2.max_gouge_mm
+    );
+
+    // 5. Heightmap projection carryover on Setup 2 works cleanly with 0 critical errors
+    let sim2_hf = simulate_project_setup_with_choice(
+        &SetupSimRequest {
+            project: &proj_carry,
+            setup_idx: 1,
+            cad_doc: &cad_doc,
+            cad_revision: 1,
+            cache: &cache_carry,
+            kinematics: resolve_kinematics_for_key(&proj_carry.setups[1].post_profile, None),
+            resolution: SimResolution::Standard,
+            cancel: None,
+        },
+        SimEngineKind::Heightmap,
+        SimComputeBackendChoice::Cpu,
+    )
+    .unwrap();
+    assert!(
+        !sim2_hf.has_critical_errors(),
+        "hf sim2 diags: {:?}",
+        sim2_hf.diagnostics
+    );
+    assert_eq!(
+        sim2_hf.carried_over_from_setup.as_deref(),
+        Some("Setup 1 - Top Op")
+    );
+
+    // 6. CPU vs. GPU parity on Setup 2 carried-over Tri-Dexel simulation
+    let sims_gpu = simulate_all_setups_with_choice(
+        &proj_carry,
+        &cad_doc,
+        1,
+        &cache_carry,
+        None,
+        SimResolution::Standard,
+        SimEngineKind::TriDexel,
+        SimComputeBackendChoice::Auto,
+        None,
+    )
+    .unwrap();
+    let sim2_gpu = &sims_gpu[1];
+    assert!(
+        !sim2_gpu.has_critical_errors(),
+        "gpu sim2 diags: {:?}",
+        sim2_gpu.diagnostics
+    );
+    let vol_rel_diff = (sim2_gpu.remaining_stock_volume_mm3 - sim2.remaining_stock_volume_mm3)
+        .abs()
+        / sim2.remaining_stock_volume_mm3.max(1.0);
+    assert!(
+        vol_rel_diff < 0.005,
+        "CPU vs GPU carried-over remaining volume diff {:.3}% >= 0.5% (cpu={:.1}, gpu={:.1})",
+        vol_rel_diff * 100.0,
+        sim2.remaining_stock_volume_mm3,
+        sim2_gpu.remaining_stock_volume_mm3
+    );
+    let err2_gpu = sim2_gpu.error_report.as_ref().unwrap();
+    assert!(
+        (err2_gpu.in_tolerance_surface_pct - err2.in_tolerance_surface_pct).abs() < 1.0,
+        "CPU vs GPU In-Tol parity mismatch: cpu={:.2}%, gpu={:.2}%",
+        err2.in_tolerance_surface_pct,
+        err2_gpu.in_tolerance_surface_pct
+    );
+
+    // 7. Non-blocking JobDispatcher background wave test for carryover chain
+    let mut proj_async = make_project(true);
+    let mut cache_async = ToolpathCache::new(32);
+    let mut dispatcher = JobDispatcher::new(None);
+    let cad_arc = std::sync::Arc::new(cad_doc);
+    let queued = dispatcher.dispatch_operations(
+        &mut proj_async,
+        std::sync::Arc::clone(&cad_arc),
+        1,
+        &cache_async,
+        None,
+        None,
+    );
+    assert_eq!(queued, 4);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while dispatcher.is_busy() && std::time::Instant::now() < deadline {
+        let _ = dispatcher.poll_events(&mut proj_async, &mut cache_async, 1);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let _ = dispatcher.poll_events(&mut proj_async, &mut cache_async, 1);
+    assert!(
+        !dispatcher.is_busy(),
+        "JobDispatcher timed out on carryover chain"
+    );
+    let (_, tp2_async) = cache_async
+        .get_for_operation(&proj_async, 1, 1, 1)
+        .expect("Setup 2 op must be Clean in async cache");
+    assert!(
+        (tp2_async.stats.cutting_distance_mm - carry_dist).abs() < 1.0,
+        "async JobDispatcher carryover toolpath must match blocking batch"
+    );
+}

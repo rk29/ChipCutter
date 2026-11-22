@@ -287,6 +287,9 @@ fn fault_injection_catches_rapid_crash_target_gouge_flute_rub_holder_crash_and_u
         resolution: SimResolution::Standard,
         kinematics: MachineKinematicsConfig::default(),
         verify_config: SimVerificationConfig::default(),
+        initial_stock: None,
+        initial_raw_volume_mm3: None,
+        carried_over_from_setup: None,
         cancel: None,
     })
     .unwrap();
@@ -373,6 +376,9 @@ fn fault_injection_catches_3d_ball_endmill_gouge_on_sculpted_dome_mesh() {
         resolution: SimResolution::Standard,
         kinematics: MachineKinematicsConfig::default(),
         verify_config: SimVerificationConfig::default(),
+        initial_stock: None,
+        initial_raw_volume_mm3: None,
+        carried_over_from_setup: None,
         cancel: None,
     })
     .unwrap();
@@ -453,6 +459,9 @@ fn incremental_sync_stock_matches_full_reconstruction_mid_segment_and_across_scr
         resolution: SimResolution::Standard,
         kinematics: MachineKinematicsConfig::default(),
         verify_config: SimVerificationConfig::default(),
+        initial_stock: None,
+        initial_raw_volume_mm3: None,
+        carried_over_from_setup: None,
         cancel: None,
     })
     .unwrap();
@@ -806,6 +815,9 @@ fn tridexel_internal_m8_helical_thread_mill_carves_real_undercut_grooves_with_ze
             resolution: SimResolution::Standard,
             kinematics: MachineKinematicsConfig::default(),
             verify_config: SimVerificationConfig::default(),
+            initial_stock: None,
+            initial_raw_volume_mm3: None,
+            carried_over_from_setup: None,
             cancel: None,
         },
         SimEngineKind::TriDexel,
@@ -839,6 +851,9 @@ fn tridexel_internal_m8_helical_thread_mill_carves_real_undercut_grooves_with_ze
             resolution: SimResolution::Standard,
             kinematics: MachineKinematicsConfig::default(),
             verify_config: SimVerificationConfig::default(),
+            initial_stock: None,
+            initial_raw_volume_mm3: None,
+            carried_over_from_setup: None,
             cancel: None,
         },
         SimEngineKind::TriDexel,
@@ -1034,6 +1049,9 @@ fn tridexel_external_m12_boss_thread_mill_carves_helical_grooves_with_zero_crash
             resolution: SimResolution::Standard,
             kinematics: MachineKinematicsConfig::default(),
             verify_config: SimVerificationConfig::default(),
+            initial_stock: None,
+            initial_raw_volume_mm3: None,
+            carried_over_from_setup: None,
             cancel: None,
         },
         SimEngineKind::TriDexel,
@@ -1141,6 +1159,9 @@ fn thread_mill_fault_injection_catches_missing_pilot_plunge_and_neck_reach_excee
                 resolution: SimResolution::Standard,
                 kinematics: MachineKinematicsConfig::default(),
                 verify_config: SimVerificationConfig::default(),
+                initial_stock: None,
+                initial_raw_volume_mm3: None,
+                carried_over_from_setup: None,
                 cancel: None,
             },
             engine,
@@ -1188,6 +1209,9 @@ fn thread_mill_fault_injection_catches_missing_pilot_plunge_and_neck_reach_excee
                 resolution: SimResolution::Standard,
                 kinematics: MachineKinematicsConfig::default(),
                 verify_config: SimVerificationConfig::default(),
+                initial_stock: None,
+                initial_raw_volume_mm3: None,
+                carried_over_from_setup: None,
                 cancel: None,
             },
             engine,
@@ -1260,6 +1284,7 @@ fn heightmap_and_tridexel_pre_drilled_step_hole_thread_mill_report_zero_critical
         display_unit: DisplayUnit::Millimeter,
         is_first_tool_in_setup: true,
         upstream_rest: &[],
+        carryover_stock: None,
         cancel: &cancel,
     })
     .unwrap();
@@ -1295,6 +1320,7 @@ fn heightmap_and_tridexel_pre_drilled_step_hole_thread_mill_report_zero_critical
         display_unit: DisplayUnit::Millimeter,
         is_first_tool_in_setup: false,
         upstream_rest: &[],
+        carryover_stock: None,
         cancel: &cancel,
     })
     .unwrap();
@@ -1315,6 +1341,9 @@ fn heightmap_and_tridexel_pre_drilled_step_hole_thread_mill_report_zero_critical
                 resolution: SimResolution::Standard,
                 kinematics: MachineKinematicsConfig::default(),
                 verify_config: SimVerificationConfig::default(),
+                initial_stock: None,
+                initial_raw_volume_mm3: None,
+                carried_over_from_setup: None,
                 cancel: None,
             },
             engine,
@@ -1422,6 +1451,9 @@ fn m61_clamp_in_rapid_path_avoidance_and_cpu_gpu_parity_across_engines() {
                     resolution: SimResolution::Standard,
                     kinematics: MachineKinematicsConfig::default(),
                     verify_config: SimVerificationConfig::default(),
+                    initial_stock: None,
+                    initial_raw_volume_mm3: None,
+                    carried_over_from_setup: None,
                     cancel: None,
                 },
                 engine,
@@ -1470,6 +1502,9 @@ fn m61_clamp_in_rapid_path_avoidance_and_cpu_gpu_parity_across_engines() {
                     resolution: SimResolution::Standard,
                     kinematics: MachineKinematicsConfig::default(),
                     verify_config: SimVerificationConfig::default(),
+                    initial_stock: None,
+                    initial_raw_volume_mm3: None,
+                    carried_over_from_setup: None,
                     cancel: None,
                 },
                 engine,
@@ -1589,6 +1624,9 @@ fn m61_holder_vs_vise_jaw_spoilboard_overcut_clamp_in_cut_and_cylindrical_parity
         resolution: SimResolution::Standard,
         kinematics: MachineKinematicsConfig::default(),
         verify_config: SimVerificationConfig::default(),
+        initial_stock: None,
+        initial_raw_volume_mm3: None,
+        carried_over_from_setup: None,
         cancel: None,
     })
     .unwrap();
@@ -1655,6 +1693,9 @@ fn m61_holder_vs_vise_jaw_spoilboard_overcut_clamp_in_cut_and_cylindrical_parity
         resolution: SimResolution::Standard,
         kinematics: MachineKinematicsConfig::default(),
         verify_config: SimVerificationConfig::default(),
+        initial_stock: None,
+        initial_raw_volume_mm3: None,
+        carried_over_from_setup: None,
         cancel: None,
     })
     .unwrap();
@@ -1690,6 +1731,9 @@ fn m61_holder_vs_vise_jaw_spoilboard_overcut_clamp_in_cut_and_cylindrical_parity
         resolution: SimResolution::Standard,
         kinematics: MachineKinematicsConfig::default(),
         verify_config: SimVerificationConfig::default(),
+        initial_stock: None,
+        initial_raw_volume_mm3: None,
+        carried_over_from_setup: None,
         cancel: None,
     })
     .unwrap();
@@ -1753,6 +1797,9 @@ fn m61_holder_vs_vise_jaw_spoilboard_overcut_clamp_in_cut_and_cylindrical_parity
         resolution: SimResolution::Standard,
         kinematics: MachineKinematicsConfig::default(),
         verify_config: SimVerificationConfig::default(),
+        initial_stock: None,
+        initial_raw_volume_mm3: None,
+        carried_over_from_setup: None,
         cancel: None,
     })
     .unwrap();
@@ -1824,6 +1871,9 @@ fn m61_holder_vs_vise_jaw_spoilboard_overcut_clamp_in_cut_and_cylindrical_parity
             resolution: SimResolution::Standard,
             kinematics: MachineKinematicsConfig::default(),
             verify_config: SimVerificationConfig::default(),
+            initial_stock: None,
+            initial_raw_volume_mm3: None,
+            carried_over_from_setup: None,
             cancel: None,
         },
         SimEngineKind::Heightmap,
@@ -1847,6 +1897,9 @@ fn m61_holder_vs_vise_jaw_spoilboard_overcut_clamp_in_cut_and_cylindrical_parity
             resolution: SimResolution::Standard,
             kinematics: MachineKinematicsConfig::default(),
             verify_config: SimVerificationConfig::default(),
+            initial_stock: None,
+            initial_raw_volume_mm3: None,
+            carried_over_from_setup: None,
             cancel: None,
         },
         SimEngineKind::Heightmap,

@@ -682,6 +682,9 @@ mod tests {
             resolution: SimResolution::Standard,
             kinematics: MachineKinematicsConfig::default(),
             verify_config: SimVerificationConfig::default(),
+            initial_stock: None,
+            initial_raw_volume_mm3: None,
+            carried_over_from_setup: None,
             cancel: None,
         })
         .unwrap();

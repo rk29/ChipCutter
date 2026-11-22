@@ -124,6 +124,55 @@ impl HeightfieldStock {
         })
     }
 
+    /// Initializes a 2.5D Z-dexel heightfield directly from the top Z envelope of a carried-over
+    /// [`crate::tridexel::TriDexelStock`] (preserving Setup 1's machined top profile and XY footprint
+    /// when Setup 2 runs in fast `Heightmap` mode).
+    pub fn from_tridexel_projection(td: &crate::tridexel::TriDexelStock) -> Self {
+        let z_plane = td.z_plane();
+        let nx = z_plane.nu;
+        let ny = z_plane.nv;
+        let origin_wcs = td.origin_wcs;
+        let dx_mm = z_plane.du_mm;
+        let dy_mm = z_plane.dv_mm;
+        let aabb = td.aabb_wcs();
+
+        let total = nx * ny;
+        let mut z_stock = vec![f32::NEG_INFINITY; total];
+        let mut z_bottom = vec![f32::NEG_INFINITY; total];
+        let z_target = vec![f32::NEG_INFINITY; total];
+        let mut last_op_idx = vec![UNCUT_OP_IDX; total];
+
+        for j in 0..ny {
+            let row = j * nx;
+            for i in 0..nx {
+                let idx = row + i;
+                if z_plane.counts[idx] == 0 {
+                    continue;
+                }
+                let spans = z_plane.ray_spans_by_index(idx);
+                if let (Some(first), Some(last)) = (spans.first(), spans.last()) {
+                    z_bottom[idx] = (first.min_mm - origin_wcs.z) as f32;
+                    z_stock[idx] = (last.max_mm - origin_wcs.z) as f32;
+                    last_op_idx[idx] = last.max_op_idx;
+                }
+            }
+        }
+
+        Self {
+            nx,
+            ny,
+            origin_wcs,
+            dx_mm,
+            dy_mm,
+            max_initial_top_z_mm: aabb.max.z,
+            min_bottom_z_mm: aabb.min.z,
+            z_stock,
+            z_bottom,
+            z_target,
+            last_op_idx,
+        }
+    }
+
     #[inline]
     pub fn z_wcs_to_local(&self, z_wcs: f64) -> f32 {
         (z_wcs - self.origin_wcs.z) as f32

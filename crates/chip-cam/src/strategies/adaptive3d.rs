@@ -116,28 +116,106 @@ pub fn generate_adaptive3d(
     let pocket_defaults = Pocket2DParams::default();
     let retract_z = ctx.safe_retract_z();
 
+    use crate::surface3d::slice_surface_contours_z;
     let mut prev_coarse_z = z_top;
     let mut emitted_any = false;
+    let mut cumulative_carryover_avoid = RegionSet2D::empty();
+
+    let carryover_excess_masks = |td: &chip_stock::TriDexelStock,
+                                  slab_lo: f64,
+                                  slab_hi: f64|
+     -> Option<(RegionSet2D, RegionSet2D)> {
+        let raw_polys = td.extract_remaining_material_regions_in_z_slab(slab_lo, slab_hi, 0.0);
+        let raw_mat = crate::rest2d::contours_to_region_set(&raw_polys);
+        if raw_mat.is_empty() {
+            return None;
+        }
+        // Subtract the target part solid cross-section (+ 1-cell Tri-Dexel quantization halo)
+        // so already-finished walls/bosses from Setup 1 are NOT mistaken for uncut excess stock!
+        let xy_pitch = td.pitch_mm.x.max(td.pitch_mm.y);
+        let halo = radial_stock + 1.05 * xy_pitch;
+        let mut part_slices = Vec::new();
+        let z_lo_s = (slab_lo - axial_stock)
+            .clamp(surface.aabb_wcs.min.z + 1e-4, surface.aabb_wcs.max.z - 1e-4);
+        let z_hi_s = (slab_hi - axial_stock)
+            .clamp(surface.aabb_wcs.min.z + 1e-4, surface.aabb_wcs.max.z - 1e-4);
+        if slab_lo - axial_stock < surface.aabb_wcs.max.z - 1e-4
+            && slab_hi - axial_stock > surface.aabb_wcs.min.z + 1e-4
+        {
+            for z_s in [z_lo_s, 0.5 * (z_lo_s + z_hi_s)] {
+                let c = slice_surface_contours_z(&surface, z_s);
+                let r = crate::rest2d::contours_to_region_set(&c);
+                if !r.is_empty() {
+                    part_slices.push(r);
+                }
+            }
+        }
+        let excess_mat = if part_slices.is_empty() {
+            raw_mat
+        } else {
+            let part_solid = RegionSet2D::union_many(&mut part_slices).dilate_outward(halo);
+            raw_mat.difference(&part_solid)
+        };
+        if excess_mat.is_empty() || excess_mat.total_area_mm2() <= 0.1 {
+            return None;
+        }
+        let mat_mask = excess_mat.dilate_outward(tool_r + radial_stock + 0.5);
+        let tight_mask = excess_mat.dilate_outward(tool_r + 0.05);
+        Some((mat_mask, tight_mask))
+    };
 
     for &z_curr in &coarse_levels {
         ctx.check_cancel()?;
 
         // Compute clearable tool-center region at `z_curr`
         let avoid_curr = push_cutter_region_z(&surface, &cutter, z_curr);
-        let mut clearable_curr = if avoid_curr.is_empty() {
+        let effective_avoid = if ctx.carryover_stock.is_some() {
+            // In multi-setup 3-axis flipped machining, maintain the cumulative vertical shadow
+            // of overhanging features above `z_curr` so the cutter never plunges through them!
+            cumulative_carryover_avoid = cumulative_carryover_avoid.union(&avoid_curr);
+            &cumulative_carryover_avoid
+        } else {
+            &avoid_curr
+        };
+
+        // Multi-setup carried-over stock rest filtering: skip completely empty Z slabs
+        // and clip candidate roughing regions to remaining uncut excess stock!
+        if let Some(td) = ctx.carryover_stock
+            && !td.has_material_in_z_slab(z_curr + 0.01, prev_coarse_z + 0.05, 0.02)
+        {
+            prev_coarse_z = z_curr;
+            continue;
+        }
+
+        let mut clearable_curr = if effective_avoid.is_empty() {
             containment.clone()
         } else {
-            containment.difference(&avoid_curr)
+            containment.difference(effective_avoid)
         };
 
         // Optional Rest Machining from preceding operations
-        let upstream_air = if !ctx.upstream_rest.is_empty() {
+        let mut upstream_air = if !ctx.upstream_rest.is_empty() {
             swept_toolpath_coverage_2d(ctx.upstream_rest, z_curr).erode_inward(tool_r * 0.98)
         } else {
             RegionSet2D::empty()
         };
         if !upstream_air.is_empty() {
             clearable_curr = clearable_curr.difference(&upstream_air);
+        }
+
+        // Clip to carried-over remaining excess material mask (inflated by safe entry margin)
+        if let Some(td) = ctx.carryover_stock {
+            let slab_lo = z_curr + 0.01;
+            let slab_hi = prev_coarse_z + 0.05;
+            if let Some((mat_mask, tight_mask)) = carryover_excess_masks(td, slab_lo, slab_hi) {
+                let carryover_air = clearable_curr.difference(&tight_mask);
+                if !carryover_air.is_empty() {
+                    upstream_air = upstream_air.union(&carryover_air);
+                }
+                clearable_curr = clearable_curr.intersect(&mat_mask);
+            } else {
+                clearable_curr = RegionSet2D::empty();
+            }
         }
 
         if !clearable_curr.is_empty() && clearable_curr.total_area_mm2() > 0.08 {
@@ -170,12 +248,27 @@ pub fn generate_adaptive3d(
 
             for z_up in step_ups {
                 ctx.check_cancel()?;
+                if let Some(td) = ctx.carryover_stock
+                    && !td.has_material_in_z_slab(z_up + 0.01, step_prev_z + 0.05, 0.02)
+                {
+                    step_prev_z = z_up;
+                    continue;
+                }
                 let avoid_up = push_cutter_region_z(&surface, &cutter, z_up);
-                let clearable_up = if avoid_up.is_empty() {
+                let mut clearable_up = if avoid_up.is_empty() {
                     containment.clone()
                 } else {
                     containment.difference(&avoid_up)
                 };
+                if let Some(td) = ctx.carryover_stock {
+                    if let Some((mat_mask, _)) =
+                        carryover_excess_masks(td, z_up + 0.01, step_prev_z + 0.05)
+                    {
+                        clearable_up = clearable_up.intersect(&mat_mask);
+                    } else {
+                        clearable_up = RegionSet2D::empty();
+                    }
+                }
                 let newly_exposed = clearable_up.difference(&cleared_base);
                 if newly_exposed.is_empty() || newly_exposed.total_area_mm2() <= 0.08 {
                     step_prev_z = z_up;

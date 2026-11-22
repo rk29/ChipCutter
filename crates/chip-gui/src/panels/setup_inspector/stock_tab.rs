@@ -17,6 +17,7 @@ pub(super) struct StockTabView<'a> {
     pub(super) eval_ctx: &'a EvalContext,
     pub(super) display_unit: DisplayUnit,
     pub(super) resolved: Option<Result<&'a ResolvedSetup, &'a str>>,
+    pub(super) preceding_setups: &'a [(String, String, bool)],
 }
 
 pub(super) fn show_stock_tab(
@@ -26,6 +27,17 @@ pub(super) fn show_stock_tab(
     mutated_label: &mut Option<&'static str>,
 ) {
     let idx = view.setup_idx;
+    if idx > 0 && !view.preceding_setups.is_empty() {
+        section_card(
+            ui,
+            ("stock_carryover_card", idx),
+            "Stock Carryover",
+            true,
+            |ui| {
+                render_stock_carryover_body(ui, setup, view, mutated_label);
+            },
+        );
+    }
     section_card(
         ui,
         ("stock_geom_card", idx),
@@ -46,6 +58,106 @@ pub(super) fn show_stock_tab(
     );
 }
 
+fn render_stock_carryover_body(
+    ui: &mut egui::Ui,
+    setup: &mut Setup,
+    view: StockTabView<'_>,
+    mutated_label: &mut Option<&'static str>,
+) {
+    let selected_label = match setup.carryover_from_setup_id.as_deref() {
+        None => "Independent Raw Stock".to_string(),
+        Some(src_id) => view
+            .preceding_setups
+            .iter()
+            .find(|(id, _, _)| id == src_id)
+            .map_or_else(
+                || format!("Carry Over From: {src_id} (missing)"),
+                |(_, name, _)| format!("Carry Over From: {name}"),
+            ),
+    };
+
+    inspector_grid(ui, ("stock_carryover_grid", view.setup_idx), |ui| {
+        grid_row(
+            ui,
+            "Stock Source",
+            Some(
+                "Choose whether this Setup starts from an independent raw blank or carries over the exact machined 3D Tri-Dexel stock from a preceding Setup",
+            ),
+            |ui| {
+                egui::ComboBox::from_id_salt(("stock_carryover_cb", view.setup_idx))
+                    .width(INPUT_COL_WIDTH + 54.0)
+                    .truncate()
+                    .selected_text(selected_label)
+                    .show_ui(ui, |ui| {
+                        if ui
+                            .selectable_value(
+                                &mut setup.carryover_from_setup_id,
+                                None,
+                                "Independent Raw Stock",
+                            )
+                            .on_hover_text(
+                                "Start this Setup from a fresh raw stock blank defined below",
+                            )
+                            .changed()
+                        {
+                            *mutated_label = Some("Disable Stock Carryover");
+                        }
+                        for (sid, sname, _) in view.preceding_setups {
+                            if ui
+                                .selectable_value(
+                                    &mut setup.carryover_from_setup_id,
+                                    Some(sid.clone()),
+                                    format!("Carry Over From: {sname}"),
+                                )
+                                .on_hover_text(format!(
+                                    "Transfer the exact machined volumetric Tri-Dexel solid from '{sname}' into this Setup's WCS for rest-aware Op-2 roughing and continuous simulation"
+                                ))
+                                .changed()
+                            {
+                                *mutated_label = Some("Change Stock Carryover Source");
+                            }
+                        }
+                    })
+                    .response
+                    .on_hover_text(
+                        "Carry over remaining machined stock from an earlier Setup for multi-sided / flip-part machining (G54 -> G55)",
+                    );
+            },
+        );
+    });
+
+    if let Some(src_id) = setup.carryover_from_setup_id.as_deref() {
+        ui.add_space(4.0);
+        if let Some((_, sname, all_clean)) =
+            view.preceding_setups.iter().find(|(id, _, _)| id == src_id)
+        {
+            if *all_clean {
+                inline_banner(
+                    ui,
+                    BannerKind::Info,
+                    format!(
+                        "Carryover active from '{sname}' (up-to-date). Rest-aware Op-2 toolpaths & simulation start from '{sname}' remaining 3D stock; Tri-Dexel preserves underside cavities while Heightmap projects top Z."
+                    ),
+                );
+            } else {
+                inline_banner(
+                    ui,
+                    BannerKind::Warn,
+                    format!(
+                        "Upstream setup '{sname}' has ungenerated or dirty toolpaths — press Ctrl+G to regenerate before simulating."
+                    ),
+                );
+            }
+        } else {
+            inline_banner(
+                ui,
+                BannerKind::Error,
+                format!("Carryover source setup '{src_id}' was not found among preceding setups."),
+            );
+        }
+    }
+}
+
 fn render_stock_geom_body(
     ui: &mut egui::Ui,
     setup: &mut Setup,
@@ -58,6 +170,7 @@ fn render_stock_geom_body(
         eval_ctx,
         display_unit,
         resolved,
+        ..
     } = view;
 
     inspector_grid(ui, ("stock_geom_grid", setup_idx), |ui| {

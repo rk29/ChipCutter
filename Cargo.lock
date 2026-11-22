@@ -695,6 +695,7 @@ dependencies = [
  "chip-math",
  "chip-sim",
  "chip-sketch",
+ "chip-stock",
  "chip-tools",
  "glam",
  "rayon",
