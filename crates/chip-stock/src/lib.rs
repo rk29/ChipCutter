@@ -28,7 +28,7 @@ pub use cylindrical::{
     CylindricalStock, tessellate_cylindrical_stock_mesh, tessellate_cylindrical_stock_mesh_colored,
 };
 #[cfg(feature = "gpu-compute")]
-pub use gpu::{GpuSimContext, WgpuComputeBackend};
+pub use gpu::{GpuErrorHistogram, GpuMeshBvh, GpuSimContext, WgpuComputeBackend};
 pub use heightfield::{HeightfieldStock, tessellate_stock_mesh, tessellate_stock_mesh_colored};
 pub use mesher_common::{
     MACHINED_METAL_COLOR, OPERATION_STOCK_PALETTE, RAW_STOCK_SIDE_COLOR, RAW_STOCK_TOP_COLOR,

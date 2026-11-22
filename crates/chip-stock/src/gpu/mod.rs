@@ -1,16 +1,23 @@
 //! Optional `wgpu` GPU compute volumetric stock simulation backend (`#[cfg(feature = "gpu-compute")]`).
 
 pub mod backend;
+pub mod bvh;
 pub mod context;
 pub mod cylindrical;
 pub mod heightfield;
+pub mod metrics;
+pub mod tridexel;
 pub mod types;
 
 pub use backend::WgpuComputeBackend;
+pub use bvh::GpuMeshBvh;
 pub use context::GpuSimContext;
+pub use metrics::GpuErrorHistogram;
 pub use types::{
-    CylindricalUniforms, GPU_TILE_SIZE, GpuRotaryPose, GpuSweepChord, GpuToolProfile,
-    GpuViolationAccum, GpuViolationSlot, HeightfieldUniforms,
+    BvhDispatchUniforms, CylindricalUniforms, GPU_METRICS_HIST_BINS, GPU_METRICS_MAX_WORKGROUPS,
+    GPU_TILE_SIZE, GpuMetricsPartial, GpuRotaryPose, GpuSweepChord, GpuToolProfile,
+    GpuViolationAccum, GpuViolationSlot, HeightfieldUniforms, MetricsUniforms,
+    TriDexelPlaneUniforms,
 };
 
 #[cfg(test)]
@@ -22,7 +29,7 @@ mod tests {
     use chip_tools::{CoolantMode, CutterGeometry, SpindleDirection, Tool, ToolId};
 
     use crate::{
-        backend::{CpuExactBackend, SimStockBackend, SimulatedStock},
+        backend::{CpuExactBackend, SimStockBackend, SimulatedStock, StockCheckpointSnapshot},
         cylindrical::CylindricalStock,
         heightfield::HeightfieldStock,
         types::{
@@ -589,5 +596,879 @@ mod tests {
             worst.3,
             worst.5
         );
+    }
+
+    fn make_box_trimesh(min: DVec3, max: DVec3) -> chip_bvh::TriMesh3D {
+        let verts = vec![
+            DVec3::new(min.x, min.y, min.z),
+            DVec3::new(max.x, min.y, min.z),
+            DVec3::new(max.x, max.y, min.z),
+            DVec3::new(min.x, max.y, min.z),
+            DVec3::new(min.x, min.y, max.z),
+            DVec3::new(max.x, min.y, max.z),
+            DVec3::new(max.x, max.y, max.z),
+            DVec3::new(min.x, max.y, max.z),
+        ];
+        let tris: [[u32; 3]; 12] = [
+            [0, 2, 1],
+            [0, 3, 2],
+            [4, 5, 6],
+            [4, 6, 7],
+            [0, 1, 5],
+            [0, 5, 4],
+            [3, 7, 6],
+            [3, 6, 2],
+            [0, 4, 7],
+            [0, 7, 3],
+            [1, 2, 6],
+            [1, 6, 5],
+        ];
+        chip_bvh::TriMesh3D::from_indexed(verts, &tris)
+    }
+
+    fn make_cylinder_trimesh_x(
+        u_min: f64,
+        u_max: f64,
+        radius: f64,
+        segs: usize,
+    ) -> chip_bvh::TriMesh3D {
+        let mut verts = Vec::with_capacity(2 + 2 * segs);
+        verts.push(DVec3::new(u_min, 0.0, 0.0)); // 0: min cap center
+        verts.push(DVec3::new(u_max, 0.0, 0.0)); // 1: max cap center
+        for i in 0..segs {
+            let ang = (i as f64 / segs as f64) * std::f64::consts::TAU;
+            let (s, c) = ang.sin_cos();
+            verts.push(DVec3::new(u_min, radius * s, radius * c));
+            verts.push(DVec3::new(u_max, radius * s, radius * c));
+        }
+        let mut tris = Vec::with_capacity(segs * 4);
+        for i in 0..segs {
+            let j = (i + 1) % segs;
+            let a0 = (2 + 2 * i) as u32;
+            let b0 = (2 + 2 * i + 1) as u32;
+            let a1 = (2 + 2 * j) as u32;
+            let b1 = (2 + 2 * j + 1) as u32;
+            // Side quads (outward CCW)
+            tris.push([a0, b0, b1]);
+            tris.push([a0, b1, a1]);
+            // End caps
+            tris.push([0, a0, a1]);
+            tris.push([1, b1, b0]);
+        }
+        chip_bvh::TriMesh3D::from_indexed(verts, &tris)
+    }
+
+    #[test]
+    fn gpu_tridexel_box_and_cylinder_analytical_volumes_across_all_3_axes() {
+        let ctx = GpuSimContext::shared_headless().expect("expected Vulkan/wgpu compute adapter");
+        let box_spec = StockShapeSpec::Box {
+            aabb_wcs: Aabb3::new(DVec3::new(0.0, 0.0, -20.0), DVec3::new(80.0, 60.0, 0.0)),
+        };
+        let td_box =
+            crate::tridexel::TriDexelStock::from_stock_spec(&box_spec, SimResolution::Standard)
+                .unwrap();
+        let expected_box = 80.0 * 60.0 * 20.0;
+        let gpu_box = WgpuComputeBackend::new(
+            std::sync::Arc::clone(&ctx),
+            SimulatedStock::TriDexel(Box::new(td_box)),
+            None,
+        );
+        assert!(gpu_box.backend_info().is_gpu);
+        let vol_gpu = gpu_box.compute_volume_mm3();
+        assert!(
+            (vol_gpu - expected_box).abs() / expected_box < 1e-4,
+            "GPU TriDexel box volume mismatch: gpu={vol_gpu:.3} vs expected={expected_box:.3}"
+        );
+
+        let r = 20.0;
+        let len = 80.0;
+        let expected_cyl = PI * r * r * len;
+        for cyl_axis in Axis3::ALL {
+            let aabb = match cyl_axis {
+                Axis3::X => Aabb3::new(DVec3::new(-40.0, -r, -r), DVec3::new(40.0, r, r)),
+                Axis3::Y => Aabb3::new(DVec3::new(-r, -40.0, -r), DVec3::new(r, 40.0, r)),
+                Axis3::Z => Aabb3::new(DVec3::new(-r, -r, -40.0), DVec3::new(r, r, 40.0)),
+            };
+            let cyl_spec = StockShapeSpec::Cylinder {
+                axis: cyl_axis,
+                center_wcs: DVec3::ZERO,
+                radius_mm: r,
+                min_axial_mm: -40.0,
+                max_axial_mm: 40.0,
+                aabb_wcs: aabb,
+            };
+            let td_cyl =
+                crate::tridexel::TriDexelStock::from_stock_spec(&cyl_spec, SimResolution::Standard)
+                    .unwrap();
+            let vol_cpu = td_cyl.compute_volume_mm3();
+            let gpu_cyl = WgpuComputeBackend::new(
+                std::sync::Arc::clone(&ctx),
+                SimulatedStock::TriDexel(Box::new(td_cyl)),
+                None,
+            );
+            let vol_gpu = gpu_cyl.compute_volume_mm3();
+            assert!(
+                (vol_gpu - expected_cyl).abs() / expected_cyl < 0.005,
+                "GPU TriDexel {cyl_axis:?} cylinder analytical err: gpu={vol_gpu:.2}, exp={expected_cyl:.2}"
+            );
+            assert!(
+                (vol_gpu - vol_cpu).abs() / vol_cpu < 1e-4,
+                "GPU vs CPU TriDexel {cyl_axis:?} cylinder volume mismatch: gpu={vol_gpu:.2}, cpu={vol_cpu:.2}"
+            );
+        }
+    }
+
+    #[test]
+    fn gpu_tridexel_all_seven_cutters_and_fault_injection_match_cpu() {
+        let ctx = GpuSimContext::shared_headless().expect("expected Vulkan/wgpu compute adapter");
+        let stock_aabb = Aabb3::new(DVec3::new(0.0, 0.0, -25.0), DVec3::new(100.0, 80.0, 0.0));
+        let target_aabb = Aabb3::new(DVec3::new(5.0, 5.0, -22.0), DVec3::new(95.0, 75.0, -8.0));
+        let stock_spec = StockShapeSpec::Box {
+            aabb_wcs: stock_aabb,
+        };
+        let td =
+            crate::tridexel::TriDexelStock::from_stock_spec(&stock_spec, SimResolution::Standard)
+                .unwrap();
+        let target_mesh = make_box_trimesh(target_aabb.min, target_aabb.max);
+        let raw_tris: Vec<[DVec3; 3]> = (0..target_mesh.len())
+            .filter_map(|i| target_mesh.triangle_vertices(i).map(|(a, b, c)| [a, b, c]))
+            .collect();
+        let target_td =
+            crate::tridexel::TriDexelStock::from_target_geometry(&raw_tris, &raw_tris, &[], &td);
+
+        let mut tools = all_seven_tools();
+        // Add short-flute flat endmill (idx 7) for flute + holder collision fault injection
+        tools.push(make_tool(
+            "short_flat",
+            10.0,
+            CutterGeometry::FlatEndmill {
+                diameter_mm: 6.0,
+                flute_length_mm: 5.0,
+                overall_length_mm: 40.0,
+                shank_diameter_mm: 6.0,
+                flutes: 2,
+            },
+        ));
+        let tol = StockVerifyTolerances::default();
+
+        let chords = vec![
+            // 0: Flat sloped ramp
+            SweepChord {
+                motion: SweepMotion::Linear {
+                    p0: DVec3::new(10.0, 12.0, -1.0),
+                    p1: DVec3::new(28.0, 20.0, -6.0),
+                    rotary_deg_0: 0.0,
+                    rotary_deg_1: 0.0,
+                },
+                op_idx: 0,
+                is_rapid: false,
+                profile_idx: 0,
+                verify_tol: tol,
+            },
+            // 0b: Flat PlanarArcXY
+            SweepChord {
+                motion: SweepMotion::PlanarArcXY {
+                    start: DVec3::new(35.0, 15.0, -4.0),
+                    end: DVec3::new(25.0, 25.0, -4.0),
+                    center_xy: DVec2::new(25.0, 15.0),
+                    radius_mm: 10.0,
+                    a0_rad: 0.0,
+                    signed_sweep_rad: PI * 0.5,
+                    rotary_deg_0: 0.0,
+                    rotary_deg_1: 0.0,
+                },
+                op_idx: 0,
+                is_rapid: false,
+                profile_idx: 0,
+                verify_tol: tol,
+            },
+            // 1: Ball sloped ramp
+            SweepChord {
+                motion: SweepMotion::Linear {
+                    p0: DVec3::new(45.0, 12.0, -2.0),
+                    p1: DVec3::new(62.0, 24.0, -7.0),
+                    rotary_deg_0: 0.0,
+                    rotary_deg_1: 0.0,
+                },
+                op_idx: 1,
+                is_rapid: false,
+                profile_idx: 1,
+                verify_tol: tol,
+            },
+            // 2: BullNose ramp
+            SweepChord {
+                motion: SweepMotion::Linear {
+                    p0: DVec3::new(72.0, 14.0, -3.5),
+                    p1: DVec3::new(88.0, 24.0, -6.0),
+                    rotary_deg_0: 0.0,
+                    rotary_deg_1: 0.0,
+                },
+                op_idx: 2,
+                is_rapid: false,
+                profile_idx: 2,
+                verify_tol: tol,
+            },
+            // 3: Chamfer / V-Bit sloped climb
+            SweepChord {
+                motion: SweepMotion::Linear {
+                    p0: DVec3::new(12.0, 42.0, -4.8),
+                    p1: DVec3::new(30.0, 52.0, -0.5),
+                    rotary_deg_0: 0.0,
+                    rotary_deg_1: 0.0,
+                },
+                op_idx: 3,
+                is_rapid: false,
+                profile_idx: 3,
+                verify_tol: tol,
+            },
+            // 4: TwistDrill through-hole
+            SweepChord {
+                motion: SweepMotion::Linear {
+                    p0: DVec3::new(48.0, 50.0, 2.0),
+                    p1: DVec3::new(48.0, 50.0, -26.0),
+                    rotary_deg_0: 0.0,
+                    rotary_deg_1: 0.0,
+                },
+                op_idx: 4,
+                is_rapid: false,
+                profile_idx: 4,
+                verify_tol: tol,
+            },
+            // 5: FaceMill skim
+            SweepChord {
+                motion: SweepMotion::Linear {
+                    p0: DVec3::new(62.0, 62.0, -1.8),
+                    p1: DVec3::new(86.0, 62.0, -1.8),
+                    rotary_deg_0: 0.0,
+                    rotary_deg_1: 0.0,
+                },
+                op_idx: 5,
+                is_rapid: false,
+                profile_idx: 5,
+                verify_tol: tol,
+            },
+            // 6: Multi-form ThreadMill deep cut triggering relieved-neck collision
+            SweepChord {
+                motion: SweepMotion::Linear {
+                    p0: DVec3::new(18.0, 66.0, -14.0),
+                    p1: DVec3::new(28.0, 66.0, -12.75),
+                    rotary_deg_0: 0.0,
+                    rotary_deg_1: 0.0,
+                },
+                op_idx: 6,
+                is_rapid: false,
+                profile_idx: 6,
+                verify_tol: tol,
+            },
+            // 7: Short flat rapid crash + target gouge + holder crash + non-rapid flute rub
+            SweepChord {
+                motion: SweepMotion::Linear {
+                    p0: DVec3::new(70.0, 42.0, -15.0),
+                    p1: DVec3::new(82.0, 42.0, -15.0),
+                    rotary_deg_0: 0.0,
+                    rotary_deg_1: 0.0,
+                },
+                op_idx: 7,
+                is_rapid: true,
+                profile_idx: 7,
+                verify_tol: tol,
+            },
+            SweepChord {
+                motion: SweepMotion::Linear {
+                    p0: DVec3::new(70.0, 48.0, -15.0),
+                    p1: DVec3::new(82.0, 48.0, -15.0),
+                    rotary_deg_0: 0.0,
+                    rotary_deg_1: 0.0,
+                },
+                op_idx: 7,
+                is_rapid: false,
+                profile_idx: 7,
+                verify_tol: tol,
+            },
+        ];
+
+        let initial_vol = td.compute_volume_mm3();
+        let mut cpu = CpuExactBackend::new(
+            SimulatedStock::TriDexel(Box::new(td.clone())),
+            Some(target_td.clone()),
+        );
+        let mut gpu =
+            WgpuComputeBackend::new(ctx, SimulatedStock::TriDexel(Box::new(td)), Some(target_td));
+
+        let cp0 = gpu.capture_checkpoint(0);
+        let out_cpu = cpu.sweep_batch(&chords, &tools, true);
+        let out_gpu = gpu.sweep_batch(&chords, &tools, true);
+        assert_eq!(out_cpu.mutated, out_gpu.mutated);
+
+        // Rules 1-4 + relieved neck must match between CPU and GPU
+        for (name, c, g) in [
+            ("rapid", out_cpu.violations.rapid, out_gpu.violations.rapid),
+            ("gouge", out_cpu.violations.gouge, out_gpu.violations.gouge),
+            ("flute", out_cpu.violations.flute, out_gpu.violations.flute),
+            ("neck", out_cpu.violations.neck, out_gpu.violations.neck),
+            (
+                "holder",
+                out_cpu.violations.holder,
+                out_gpu.violations.holder,
+            ),
+        ] {
+            let (dc, _) = c.unwrap_or_else(|| panic!("CPU should detect {name} violation"));
+            let (dg, _) = g.unwrap_or_else(|| panic!("GPU should detect {name} violation"));
+            assert!(
+                (dg - dc).abs() <= 5e-3,
+                "TriDexel {name} violation depth mismatch: cpu={dc:.5}, gpu={dg:.5}"
+            );
+        }
+
+        // Volume parity < 0.1%
+        let vol_cpu = cpu.compute_volume_mm3();
+        let vol_gpu = gpu.compute_volume_mm3();
+        let vol_rel_err = (vol_gpu - vol_cpu).abs() / vol_cpu.max(1.0);
+        assert!(
+            vol_rel_err < 0.001,
+            "TriDexel volume parity failed: cpu={vol_cpu:.3}, gpu={vol_gpu:.3}, rel_err={:.4}%",
+            vol_rel_err * 100.0
+        );
+
+        // GPU vs CPU StockErrorReport parity (RMS & MAE within 0.005 mm)
+        let rep_cpu = cpu
+            .compute_error_report(initial_vol, 0.05, Vec::new())
+            .unwrap();
+        let rep_gpu = gpu
+            .compute_error_report(initial_vol, 0.05, Vec::new())
+            .unwrap();
+        assert!(
+            (rep_gpu.rms_error_mm - rep_cpu.rms_error_mm).abs() < 0.005,
+            "TriDexel RMS mismatch: cpu={:.5}, gpu={:.5}",
+            rep_cpu.rms_error_mm,
+            rep_gpu.rms_error_mm
+        );
+        assert!(
+            (rep_gpu.mean_abs_error_mm - rep_cpu.mean_abs_error_mm).abs() < 0.005,
+            "TriDexel MAE mismatch: cpu={:.5}, gpu={:.5}",
+            rep_cpu.mean_abs_error_mm,
+            rep_gpu.mean_abs_error_mm
+        );
+        assert!(
+            (rep_gpu.in_tolerance_surface_pct - rep_cpu.in_tolerance_surface_pct).abs() < 0.5,
+            "TriDexel in_tol mismatch: cpu={:.2}%, gpu={:.2}%",
+            rep_cpu.in_tolerance_surface_pct,
+            rep_gpu.in_tolerance_surface_pct
+        );
+        assert!(
+            (rep_gpu.max_excess_mm - rep_cpu.max_excess_mm).abs() < 0.01,
+            "TriDexel max_excess mismatch: cpu={:.4}, gpu={:.4}",
+            rep_cpu.max_excess_mm,
+            rep_gpu.max_excess_mm
+        );
+        assert!(
+            (rep_gpu.max_gouge_mm - rep_cpu.max_gouge_mm).abs() < 0.01,
+            "TriDexel max_gouge mismatch: cpu={:.4}, gpu={:.4}",
+            rep_cpu.max_gouge_mm,
+            rep_gpu.max_gouge_mm
+        );
+
+        // Verify checkpoint reset + re-sweep yields identical volume
+        gpu.reset_from_checkpoint(&cp0);
+        let _ = gpu.sweep_batch(&chords, &tools, true);
+        let vol_gpu_reswept = gpu.compute_volume_mm3();
+        assert!(
+            (vol_gpu_reswept - vol_gpu).abs() < 1e-2,
+            "TriDexel checkpoint restore mismatch: before={vol_gpu:.3}, after={vol_gpu_reswept:.3}"
+        );
+    }
+
+    #[test]
+    fn gpu_tridexel_overflow_safety_valve_six_stacked_grooves_and_migration_back() {
+        let ctx = GpuSimContext::shared_headless().expect("expected Vulkan/wgpu compute adapter");
+        let stock_aabb = Aabb3::new(DVec3::new(0.0, 0.0, 0.0), DVec3::new(24.0, 24.0, 24.0));
+        let td = crate::tridexel::TriDexelStock::from_stock_spec(
+            &StockShapeSpec::Box {
+                aabb_wcs: stock_aabb,
+            },
+            SimResolution::Standard,
+        )
+        .unwrap();
+
+        // 6-tooth multi-form ThreadMill (teeth_count = 6) carves 6 stacked annular grooves in a
+        // single undercut zone -> interior rays split into 7 disjoint Z-spans (> K = 4)!
+        let six_tooth_tm = make_tool(
+            "tm_6tooth",
+            26.0,
+            CutterGeometry::ThreadMill {
+                diameter_mm: 8.0,
+                neck_diameter_mm: 2.0,
+                neck_length_mm: 22.0,
+                pitch_mm: 2.5,
+                teeth_count: 6,
+                thread_angle_deg: 60.0,
+                flute_length_mm: 15.0,
+                overall_length_mm: 60.0,
+                shank_diameter_mm: 6.0,
+                flutes: 3,
+            },
+        );
+        // Clearing flat endmill to merge/clear the stacked grooves back to <= K = 4 spans
+        let clear_flat = make_tool(
+            "clear_flat",
+            30.0,
+            CutterGeometry::FlatEndmill {
+                diameter_mm: 14.0,
+                flute_length_mm: 26.0,
+                overall_length_mm: 60.0,
+                shank_diameter_mm: 10.0,
+                flutes: 4,
+            },
+        );
+        let tools = vec![six_tooth_tm, clear_flat];
+        let tol = StockVerifyTolerances::default();
+
+        // Sweep 6-tooth ThreadMill horizontally across center at Z = 3.0 -> teeth span Z in [3..18],
+        // leaving solid material below Z=3 and above Z=18, plus 5 ridges between the 6 grooves -> 7 spans!
+        let groove_chords = vec![SweepChord {
+            motion: SweepMotion::Linear {
+                p0: DVec3::new(8.0, 12.0, 3.0),
+                p1: DVec3::new(16.0, 12.0, 3.0),
+                rotary_deg_0: 0.0,
+                rotary_deg_1: 0.0,
+            },
+            op_idx: 0,
+            is_rapid: false,
+            profile_idx: 0,
+            verify_tol: tol,
+        }];
+
+        let mut cpu = CpuExactBackend::new(SimulatedStock::TriDexel(Box::new(td.clone())), None);
+        let mut gpu = WgpuComputeBackend::new(ctx, SimulatedStock::TriDexel(Box::new(td)), None);
+
+        let _ = cpu.sweep_batch(&groove_chords, &tools, false);
+        let _ = gpu.sweep_batch(&groove_chords, &tools, false);
+
+        let vol_cpu_ov = cpu.compute_volume_mm3();
+        let vol_gpu_ov = gpu.compute_volume_mm3();
+        let rel_err_ov = (vol_gpu_ov - vol_cpu_ov).abs() / vol_cpu_ov.max(1.0);
+        assert!(
+            rel_err_ov < 0.0005,
+            "Overflow 7-span volume parity failed: cpu={vol_cpu_ov:.3}, gpu={vol_gpu_ov:.3}, rel_err={:.5}%",
+            rel_err_ov * 100.0
+        );
+
+        // Inspect checkpoint snapshot to verify overflow_ray_count > 0 and exact 7-span rays on GPU!
+        let cp_ov = gpu.capture_checkpoint(1);
+        let StockCheckpointSnapshot::TriDexel { stock: td_ov, .. } = &cp_ov else {
+            panic!("expected TriDexel checkpoint");
+        };
+        let z_ov_count = td_ov.z_plane().overflow_ray_count();
+        assert!(
+            z_ov_count > 20,
+            "expected > 20 overflow Z-rays (> K = 4 spans), got {z_ov_count}"
+        );
+        let max_spans = td_ov
+            .z_plane()
+            .overflow
+            .values()
+            .map(Vec::len)
+            .max()
+            .unwrap_or(0);
+        assert_eq!(
+            max_spans, 7,
+            "6 stacked grooves must produce exact 7-span rays with zero dropped spans"
+        );
+
+        // Now sweep clearing flat endmill across the entire grooved zone -> shrinks all overflow
+        // rays from 7 spans down to <= 2 spans, cleanly migrating them BACK into GPU inline slots!
+        let merge_chords = vec![SweepChord {
+            motion: SweepMotion::Linear {
+                p0: DVec3::new(6.0, 12.0, 2.0),
+                p1: DVec3::new(18.0, 12.0, 2.0),
+                rotary_deg_0: 0.0,
+                rotary_deg_1: 0.0,
+            },
+            op_idx: 1,
+            is_rapid: false,
+            profile_idx: 1,
+            verify_tol: tol,
+        }];
+        let _ = cpu.sweep_batch(&merge_chords, &tools, false);
+        let _ = gpu.sweep_batch(&merge_chords, &tools, false);
+
+        let vol_cpu_after = cpu.compute_volume_mm3();
+        let vol_gpu_after = gpu.compute_volume_mm3();
+        let rel_err_after = (vol_gpu_after - vol_cpu_after).abs() / vol_cpu_after.max(1.0);
+        assert!(
+            rel_err_after < 0.0005,
+            "Post-migration volume parity failed: cpu={vol_cpu_after:.3}, gpu={vol_gpu_after:.3}"
+        );
+
+        let (SimulatedStock::TriDexel(final_td_gpu), _) = gpu.into_parts() else {
+            panic!("expected TriDexel");
+        };
+        assert_eq!(
+            final_td_gpu.z_plane().overflow_ray_count(),
+            0,
+            "all overflow rays must cleanly migrate back to GPU inline pool once <= K spans"
+        );
+    }
+
+    #[test]
+    fn gpu_bvh_target_rasterization_and_closest_point_match_cpu() {
+        let ctx = GpuSimContext::shared_headless().expect("expected Vulkan/wgpu compute adapter");
+
+        // 1. Tri-Dexel GPU BVH voxelization vs CPU `from_target_geometry`
+        let stock_aabb = Aabb3::new(DVec3::new(0.0, 0.0, -15.0), DVec3::new(50.0, 40.0, 0.0));
+        let target_aabb = Aabb3::new(DVec3::new(5.0, 5.0, -12.0), DVec3::new(45.0, 35.0, -2.0));
+        let box_mesh = make_box_trimesh(target_aabb.min, target_aabb.max);
+        let raw_tris: Vec<[DVec3; 3]> = (0..box_mesh.len())
+            .filter_map(|i| box_mesh.triangle_vertices(i).map(|(a, b, c)| [a, b, c]))
+            .collect();
+
+        let td_template = crate::tridexel::TriDexelStock::from_stock_spec(
+            &StockShapeSpec::Box {
+                aabb_wcs: stock_aabb,
+            },
+            SimResolution::Standard,
+        )
+        .unwrap();
+        let td_cpu = crate::tridexel::TriDexelStock::from_target_geometry(
+            &raw_tris,
+            &raw_tris,
+            &[],
+            &td_template,
+        );
+        let td_gpu = ctx.rasterize_tridexel_target_mesh(&td_template, &box_mesh);
+        let vol_expected = 40.0 * 30.0 * 10.0;
+        let vol_cpu = td_cpu.compute_volume_mm3();
+        let vol_gpu = td_gpu.compute_volume_mm3();
+        assert!(
+            (vol_gpu - vol_expected).abs() / vol_expected < 0.01,
+            "GPU BVH TriDexel vol={vol_gpu:.2} vs analytical={vol_expected:.2}"
+        );
+        assert!(
+            (vol_gpu - vol_cpu).abs() / vol_cpu < 0.005,
+            "GPU vs CPU BVH TriDexel vol mismatch: gpu={vol_gpu:.2}, cpu={vol_cpu:.2}"
+        );
+
+        // 2. Cylindrical GPU BVH inward radial raycast vs CPU `rasterize_target_mesh`
+        let rotary = RotaryStockSpec {
+            axis: Axis3::X,
+            direction_sign: 1.0,
+            axis_letter: 'A',
+            center_wcs: DVec3::ZERO,
+            stock_u_min: -30.0,
+            stock_u_max: 30.0,
+            stock_outer_radius_mm: 22.0,
+            chuck_u_min: -45.0,
+            chuck_u_max: -30.0,
+            chuck_radius_mm: 30.0,
+        };
+        let cyl_spec = StockShapeSpec::Cylinder {
+            axis: Axis3::X,
+            center_wcs: DVec3::ZERO,
+            radius_mm: 22.0,
+            min_axial_mm: -30.0,
+            max_axial_mm: 30.0,
+            aabb_wcs: Aabb3::new(
+                DVec3::new(-30.0, -22.0, -22.0),
+                DVec3::new(30.0, 22.0, 22.0),
+            ),
+        };
+        let cyl_mesh = make_cylinder_trimesh_x(-20.0, 20.0, 15.0, 48);
+        let mut cyl_cpu =
+            CylindricalStock::from_stock_spec(&cyl_spec, rotary, SimResolution::Standard).unwrap();
+        let mut cyl_gpu = cyl_cpu.clone();
+        cyl_cpu.rasterize_target_mesh(&cyl_mesh);
+        ctx.rasterize_cylindrical_target_mesh(&mut cyl_gpu, &cyl_mesh);
+
+        let mut cyl_max_diff = 0.0_f64;
+        let mut cyl_hits_both = 0usize;
+        let mut cyl_hit_mismatch = 0usize;
+        for (a, b) in cyl_cpu.r_target.iter().zip(cyl_gpu.r_target.iter()) {
+            if (*a >= 0.0) != (*b >= 0.0) {
+                cyl_hit_mismatch += 1;
+            } else if *a >= 0.0 {
+                cyl_hits_both += 1;
+                cyl_max_diff = cyl_max_diff.max((f64::from(*a) - f64::from(*b)).abs());
+            }
+        }
+        assert!(cyl_hits_both > 50_000);
+        assert!(
+            (cyl_hit_mismatch as f64) / (cyl_cpu.r_target.len() as f64) < 0.002,
+            "GPU vs CPU BVH Cylindrical hit/miss mismatch too high: {cyl_hit_mismatch} / {}",
+            cyl_cpu.r_target.len()
+        );
+        assert!(
+            cyl_max_diff < 2e-3,
+            "GPU BVH Cylindrical r_target max diff {cyl_max_diff:.6} mm > 2e-3 mm"
+        );
+
+        // 3. Heightfield GPU BVH top-down raycast vs CPU `rasterize_target`
+        let mut hf_cpu = HeightfieldStock::from_stock_spec(
+            &StockShapeSpec::Box {
+                aabb_wcs: stock_aabb,
+            },
+            SimResolution::Standard,
+        )
+        .unwrap();
+        let mut hf_gpu = hf_cpu.clone();
+        let target_tris: Vec<crate::types::TargetTriangle> = raw_tris
+            .iter()
+            .map(|&v| crate::types::TargetTriangle {
+                v,
+                analytic_plane: None,
+            })
+            .collect();
+        hf_cpu.rasterize_target(&[], &target_tris);
+        ctx.rasterize_heightfield_target_mesh(&mut hf_gpu, &box_mesh);
+
+        let mut hf_matches = 0usize;
+        let mut hf_max_diff = 0.0_f64;
+        for (a, b) in hf_cpu.z_target.iter().zip(hf_gpu.z_target.iter()) {
+            if a.is_finite() && b.is_finite() {
+                hf_matches += 1;
+                hf_max_diff = hf_max_diff.max((f64::from(*a) - f64::from(*b)).abs());
+            }
+        }
+        assert!(hf_matches > 10_000);
+        assert!(
+            hf_max_diff < 2e-3,
+            "GPU BVH Heightfield z_target max diff {hf_max_diff:.6} mm > 2e-3 mm"
+        );
+
+        // 4. GPU point-to-mesh closest-point distance vs CPU `TriMesh3D::closest_point`
+        let queries = vec![
+            DVec3::new(0.0, 20.0, -7.0),  // 5 mm outside -X face
+            DVec3::new(25.0, 20.0, 3.0),  // 5 mm above +Z face
+            DVec3::new(50.0, 40.0, 0.0),  // outside corner
+            DVec3::new(25.0, 20.0, -7.0), // interior point
+            DVec3::new(15.0, 15.0, -2.0), // on +Z face (dist = 0)
+        ];
+        let gpu_closest = ctx.query_mesh_closest_points(&box_mesh, &queries);
+        for (q, g_res) in queries.iter().zip(gpu_closest.iter()) {
+            let c_hit = box_mesh.closest_point(*q).unwrap();
+            let (g_pt, g_dist) = g_res.expect("expected GPU closest point hit");
+            assert!(
+                (g_dist - c_hit.distance).abs() < 1e-3,
+                "closest distance mismatch at {q:?}: cpu={:.5}, gpu={:.5}",
+                c_hit.distance,
+                g_dist
+            );
+            assert!(
+                (g_pt - c_hit.point).length() < 1e-3,
+                "closest point mismatch at {q:?}: cpu={:?}, gpu={:?}",
+                c_hit.point,
+                g_pt
+            );
+        }
+    }
+
+    #[test]
+    fn gpu_parallel_reduction_error_report_and_quick_summary_match_cpu_all_three_engines() {
+        let ctx = GpuSimContext::shared_headless().expect("expected Vulkan/wgpu compute adapter");
+        let tools = all_seven_tools();
+        let tol = StockVerifyTolerances::default();
+
+        // === 1. Heightfield GPU vs CPU metrology ===
+        {
+            let stock_aabb = Aabb3::new(DVec3::new(0.0, 0.0, -15.0), DVec3::new(60.0, 60.0, 0.0));
+            let mut hf = HeightfieldStock::from_stock_spec(
+                &StockShapeSpec::Box {
+                    aabb_wcs: stock_aabb,
+                },
+                SimResolution::Standard,
+            )
+            .unwrap();
+            let target_mesh =
+                make_box_trimesh(DVec3::new(5.0, 5.0, -15.0), DVec3::new(55.0, 55.0, -4.0));
+            ctx.rasterize_heightfield_target_mesh(&mut hf, &target_mesh);
+            let init_vol = hf.compute_volume_mm3();
+
+            // Cut with both excess (uncut areas) and a deliberate 1.5 mm gouge down to Z = -5.5
+            let chords = vec![
+                SweepChord {
+                    motion: SweepMotion::Linear {
+                        p0: DVec3::new(10.0, 20.0, -3.5),
+                        p1: DVec3::new(50.0, 20.0, -3.5),
+                        rotary_deg_0: 0.0,
+                        rotary_deg_1: 0.0,
+                    },
+                    op_idx: 0,
+                    is_rapid: false,
+                    profile_idx: 5,
+                    verify_tol: tol,
+                },
+                SweepChord {
+                    motion: SweepMotion::Linear {
+                        p0: DVec3::new(20.0, 40.0, -5.5),
+                        p1: DVec3::new(40.0, 40.0, -5.5),
+                        rotary_deg_0: 0.0,
+                        rotary_deg_1: 0.0,
+                    },
+                    op_idx: 1,
+                    is_rapid: false,
+                    profile_idx: 0,
+                    verify_tol: tol,
+                },
+            ];
+            let mut cpu = CpuExactBackend::new(SimulatedStock::Heightfield(hf.clone()), None);
+            let mut gpu = WgpuComputeBackend::new(
+                std::sync::Arc::clone(&ctx),
+                SimulatedStock::Heightfield(hf),
+                None,
+            );
+            let _ = cpu.sweep_batch(&chords, &tools, false);
+            let _ = gpu.sweep_batch(&chords, &tools, false);
+
+            let (ce, cg, crms) = cpu.compute_quick_error_summary().unwrap();
+            let (ge, gg, grms) = gpu.compute_quick_error_summary().unwrap();
+            assert!((ge - ce).abs() / ce.max(1.0) < 0.002);
+            assert!((gg - cg).abs() / cg.max(1.0) < 0.005);
+            assert!((grms - crms).abs() < 0.005);
+
+            let rc = cpu
+                .compute_error_report(init_vol, 0.05, Vec::new())
+                .unwrap();
+            let rg = gpu
+                .compute_error_report(init_vol, 0.05, Vec::new())
+                .unwrap();
+            assert!((rg.rms_error_mm - rc.rms_error_mm).abs() < 0.005);
+            assert!((rg.mean_abs_error_mm - rc.mean_abs_error_mm).abs() < 0.005);
+            assert!((rg.mean_signed_error_mm - rc.mean_signed_error_mm).abs() < 0.005);
+            assert!((rg.max_excess_mm - rc.max_excess_mm).abs() < 0.005);
+            assert!((rg.max_gouge_mm - rc.max_gouge_mm).abs() < 0.005);
+            assert!((rg.in_tolerance_surface_pct - rc.in_tolerance_surface_pct).abs() < 0.2);
+        }
+
+        // === 2. Cylindrical GPU vs CPU metrology ===
+        {
+            let rotary = RotaryStockSpec {
+                axis: Axis3::X,
+                direction_sign: 1.0,
+                axis_letter: 'A',
+                center_wcs: DVec3::ZERO,
+                stock_u_min: -30.0,
+                stock_u_max: 30.0,
+                stock_outer_radius_mm: 20.0,
+                chuck_u_min: -45.0,
+                chuck_u_max: -30.0,
+                chuck_radius_mm: 30.0,
+            };
+            let cyl_spec = StockShapeSpec::Cylinder {
+                axis: Axis3::X,
+                center_wcs: DVec3::ZERO,
+                radius_mm: 20.0,
+                min_axial_mm: -30.0,
+                max_axial_mm: 30.0,
+                aabb_wcs: Aabb3::new(
+                    DVec3::new(-30.0, -20.0, -20.0),
+                    DVec3::new(30.0, 20.0, 20.0),
+                ),
+            };
+            let mut cyl =
+                CylindricalStock::from_stock_spec(&cyl_spec, rotary, SimResolution::Standard)
+                    .unwrap();
+            cyl.r_target.fill(16.0);
+            let init_vol = cyl.current_volume_mm3();
+
+            let chords = vec![
+                SweepChord {
+                    motion: SweepMotion::Linear {
+                        p0: DVec3::new(-15.0, 0.0, 17.0),
+                        p1: DVec3::new(5.0, 0.0, 17.0),
+                        rotary_deg_0: 0.0,
+                        rotary_deg_1: 360.0,
+                    },
+                    op_idx: 0,
+                    is_rapid: false,
+                    profile_idx: 0,
+                    verify_tol: tol,
+                },
+                SweepChord {
+                    motion: SweepMotion::Linear {
+                        p0: DVec3::new(10.0, 0.0, 14.5),
+                        p1: DVec3::new(18.0, 0.0, 14.5),
+                        rotary_deg_0: 0.0,
+                        rotary_deg_1: 180.0,
+                    },
+                    op_idx: 1,
+                    is_rapid: false,
+                    profile_idx: 0,
+                    verify_tol: tol,
+                },
+            ];
+            let mut cpu = CpuExactBackend::new(SimulatedStock::Cylindrical(cyl.clone()), None);
+            let mut gpu = WgpuComputeBackend::new(
+                std::sync::Arc::clone(&ctx),
+                SimulatedStock::Cylindrical(cyl),
+                None,
+            );
+            let _ = cpu.sweep_batch(&chords, &tools, false);
+            let _ = gpu.sweep_batch(&chords, &tools, false);
+
+            let (ce, cg, crms) = cpu.compute_quick_error_summary().unwrap();
+            let (ge, gg, grms) = gpu.compute_quick_error_summary().unwrap();
+            assert!((ge - ce).abs() / ce.max(1.0) < 0.005);
+            assert!((gg - cg).abs() / cg.max(1.0) < 0.01);
+            assert!((grms - crms).abs() < 0.005);
+
+            let rc = cpu
+                .compute_error_report(init_vol, 0.05, Vec::new())
+                .unwrap();
+            let rg = gpu
+                .compute_error_report(init_vol, 0.05, Vec::new())
+                .unwrap();
+            assert!((rg.rms_error_mm - rc.rms_error_mm).abs() < 0.005);
+            assert!((rg.mean_abs_error_mm - rc.mean_abs_error_mm).abs() < 0.005);
+            assert!((rg.max_excess_mm - rc.max_excess_mm).abs() < 0.005);
+            assert!((rg.max_gouge_mm - rc.max_gouge_mm).abs() < 0.005);
+            assert!((rg.in_tolerance_surface_pct - rc.in_tolerance_surface_pct).abs() < 0.2);
+        }
+
+        // === 3. Tri-Dexel GPU vs CPU metrology (including rasterize_target_mesh_gpu) ===
+        {
+            let stock_aabb = Aabb3::new(DVec3::ZERO, DVec3::new(42.0, 32.0, 12.0));
+            let target_mesh = make_box_trimesh(DVec3::splat(1.0), DVec3::new(41.0, 31.0, 11.0));
+            let td = crate::tridexel::TriDexelStock::from_stock_spec(
+                &StockShapeSpec::Box {
+                    aabb_wcs: stock_aabb,
+                },
+                SimResolution::Standard,
+            )
+            .unwrap();
+            let init_vol = td.compute_volume_mm3();
+
+            let mut gpu = WgpuComputeBackend::new(
+                std::sync::Arc::clone(&ctx),
+                SimulatedStock::TriDexel(Box::new(td.clone())),
+                None,
+            );
+            gpu.rasterize_target_mesh_gpu(&target_mesh);
+            let target_for_cpu = ctx.rasterize_tridexel_target_mesh(&td, &target_mesh);
+            let cpu =
+                CpuExactBackend::new(SimulatedStock::TriDexel(Box::new(td)), Some(target_for_cpu));
+
+            let rc = cpu
+                .compute_error_report(init_vol, 0.05, Vec::new())
+                .unwrap();
+            let rg = gpu
+                .compute_error_report(init_vol, 0.05, Vec::new())
+                .unwrap();
+            assert!(
+                (rg.rms_error_mm - rc.rms_error_mm).abs() < 0.005,
+                "TriDexel uniform-offset RMS: cpu={:.5}, gpu={:.5}",
+                rc.rms_error_mm,
+                rg.rms_error_mm
+            );
+            assert!((rg.mean_abs_error_mm - rc.mean_abs_error_mm).abs() < 0.005);
+            assert!((rg.mean_signed_error_mm - rc.mean_signed_error_mm).abs() < 0.005);
+            assert!((rg.max_excess_mm - rc.max_excess_mm).abs() < 0.005);
+            assert!((rg.max_gouge_mm - rc.max_gouge_mm).abs() < 0.005);
+            assert!((rg.p95_abs_error_mm - rc.p95_abs_error_mm).abs() < 0.05);
+            assert!((rg.p99_abs_error_mm - rc.p99_abs_error_mm).abs() < 0.05);
+            assert!((rg.in_tolerance_surface_pct - rc.in_tolerance_surface_pct).abs() < 0.2);
+            assert!(
+                (rg.excess_volume_mm3 - rc.excess_volume_mm3).abs() / rc.excess_volume_mm3.max(1.0)
+                    < 0.001
+            );
+        }
     }
 }

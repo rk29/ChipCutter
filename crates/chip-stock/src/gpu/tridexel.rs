@@ -1,0 +1,1213 @@
+//! GPU-resident axis-generic flat fixed-`K` (`K = 4`) Tri-Dexel compute sweeper
+//! (`GpuTriDexelState`) driving `tridexel_sweep.wgsl` across all 3 orthogonal planes (`X`, `Y`, `Z`)
+//! in a single GPU command submission with a lossless hybrid CPU overflow safety valve.
+
+use std::sync::{Arc, Mutex};
+
+use chip_bvh::TriMesh3D;
+use chip_math::DVec3;
+use wgpu::util::DeviceExt as _;
+
+use crate::{
+    backend::StockCheckpointSnapshot,
+    tridexel::{
+        DexelSpan, FlatDexelSpan, INLINE_DEXEL_SLOTS, TriDexelStock,
+        sweep::{LinearChord3D, motion_to_linear_chords, replay_single_ray_linear_chord},
+    },
+    types::{
+        Axis3, BatchSweepOutput, SpanRuleViolations, StockVerifyTolerances, SweepChord,
+        SweepToolSpec,
+    },
+};
+
+use super::{
+    context::{GpuSimContext, GrowableStorageBuffer},
+    types::{
+        CHORD_FLAG_RAPID, CHORD_FLAG_VERIFY, GPU_TILE_SIZE, GpuSweepChord, GpuToolProfile,
+        GpuViolationAccum, TriDexelPlaneUniforms,
+    },
+};
+
+const ACCUM_WORDS: usize = std::mem::size_of::<GpuViolationAccum>() / 4; // 44 words
+
+struct CpuShadow {
+    stock: TriDexelStock,
+    target: Option<TriDexelStock>,
+    gpu_dirty: bool,
+}
+
+#[derive(Clone, Copy)]
+struct FlattenedLinearChord {
+    chord: LinearChord3D,
+    op_idx: u32,
+    profile_idx: usize,
+    is_rapid: bool,
+    verify_tol: StockVerifyTolerances,
+}
+
+struct GpuPlaneDispatch {
+    axis: Axis3,
+    nu: usize,
+    nv: usize,
+    tiles_u: usize,
+    tiles_v: usize,
+    ray_offset: usize,
+    origin_u_mm: f64,
+    origin_v_mm: f64,
+    origin_w_mm: f64,
+    du_mm: f64,
+    dv_mm: f64,
+    overflow_words: usize,
+    uniform_buf: wgpu::Buffer,
+    tile_data_buf: GrowableStorageBuffer,
+    accum_and_overflow_buf: wgpu::Buffer,
+    accum_readback_buf: wgpu::Buffer,
+    overflow_readback_buf: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
+    tile_bins: Vec<Vec<u32>>,
+    tile_data_scratch: Vec<u32>,
+}
+
+/// GPU-resident 3-axis orthogonal Tri-Dexel stock storing all 3 planes in contiguous flat `slots`
+/// and `counts` storage buffers (`<= 8` storage buffers per shader stage) with lossless CPU
+/// overflow safety-valve replay for rare `> K = 4`-span rays.
+pub(crate) struct GpuTriDexelState {
+    ctx: Arc<GpuSimContext>,
+    dims: [usize; 3],
+    origin_wcs: DVec3,
+    pitch_mm: DVec3,
+    plane_ray_offsets: [usize; 3],
+    total_rays: usize,
+    has_target: bool,
+    m_slots_buf: wgpu::Buffer,
+    m_counts_buf: wgpu::Buffer,
+    t_slots_buf: wgpu::Buffer,
+    t_counts_buf: wgpu::Buffer,
+    m_slots_readback_buf: wgpu::Buffer,
+    m_counts_readback_buf: wgpu::Buffer,
+    profiles_buf: GrowableStorageBuffer,
+    chords_buf: GrowableStorageBuffer,
+    planes: [GpuPlaneDispatch; 3],
+    gpu_chords_scratch: Vec<GpuSweepChord>,
+    linear_chords_scratch: Vec<FlattenedLinearChord>,
+    arc_linear_scratch: Vec<LinearChord3D>,
+    gpu_profiles_scratch: Vec<GpuToolProfile>,
+    cpu: Mutex<CpuShadow>,
+}
+
+impl std::fmt::Debug for GpuTriDexelState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GpuTriDexelState")
+            .field("dims", &self.dims)
+            .field("has_target", &self.has_target)
+            .finish()
+    }
+}
+
+impl GpuTriDexelState {
+    pub(crate) fn new(
+        ctx: Arc<GpuSimContext>,
+        stock: TriDexelStock,
+        target: Option<TriDexelStock>,
+    ) -> Self {
+        let device = ctx.device();
+        let dims = stock.dims;
+        let origin_wcs = stock.origin_wcs;
+        let pitch_mm = stock.pitch_mm;
+
+        let rx = stock.planes[0].ray_count();
+        let ry = stock.planes[1].ray_count();
+        let rz = stock.planes[2].ray_count();
+        let plane_ray_offsets = [0, rx, rx + ry];
+        let total_rays = rx + ry + rz;
+        let total_slots = total_rays * INLINE_DEXEL_SLOTS;
+
+        let mut all_m_slots = Vec::with_capacity(total_slots);
+        let mut all_m_counts = Vec::with_capacity(total_rays);
+        for axis in Axis3::ALL {
+            let p = stock.plane(axis);
+            all_m_slots.extend_from_slice(&p.slots);
+            all_m_counts.extend_from_slice(&p.counts);
+        }
+
+        let m_slots_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("chip_td_m_slots"),
+            contents: bytemuck::cast_slice(&all_m_slots),
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::COPY_SRC,
+        });
+        let m_counts_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("chip_td_m_counts"),
+            contents: bytemuck::cast_slice(&all_m_counts),
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::COPY_SRC,
+        });
+
+        let has_target = target.is_some();
+        let (t_slots_buf, t_counts_buf) = if let Some(ref tgt) = target {
+            let mut all_t_slots = Vec::with_capacity(total_slots);
+            let mut all_t_counts = Vec::with_capacity(total_rays);
+            for axis in Axis3::ALL {
+                let p = tgt.plane(axis);
+                all_t_slots.extend_from_slice(&p.slots);
+                all_t_counts.extend_from_slice(&p.counts);
+            }
+            (
+                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("chip_td_t_slots"),
+                    contents: bytemuck::cast_slice(&all_t_slots),
+                    usage: wgpu::BufferUsages::STORAGE
+                        | wgpu::BufferUsages::COPY_DST
+                        | wgpu::BufferUsages::COPY_SRC,
+                }),
+                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("chip_td_t_counts"),
+                    contents: bytemuck::cast_slice(&all_t_counts),
+                    usage: wgpu::BufferUsages::STORAGE
+                        | wgpu::BufferUsages::COPY_DST
+                        | wgpu::BufferUsages::COPY_SRC,
+                }),
+            )
+        } else {
+            let dummy_slot = [FlatDexelSpan::ZERO; INLINE_DEXEL_SLOTS];
+            let dummy_cnt = [0u32; 4];
+            (
+                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("chip_td_t_slots_dummy"),
+                    contents: bytemuck::cast_slice(&dummy_slot),
+                    usage: wgpu::BufferUsages::STORAGE,
+                }),
+                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("chip_td_t_counts_dummy"),
+                    contents: bytemuck::cast_slice(&dummy_cnt),
+                    usage: wgpu::BufferUsages::STORAGE,
+                }),
+            )
+        };
+
+        let slots_bytes = (total_slots * std::mem::size_of::<FlatDexelSpan>()) as u64;
+        let counts_bytes = (total_rays * std::mem::size_of::<u32>()) as u64;
+        let m_slots_readback_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("chip_td_m_slots_readback"),
+            size: slots_bytes.max(16),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let m_counts_readback_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("chip_td_m_counts_readback"),
+            size: counts_bytes.max(16),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+
+        let profiles_buf = GrowableStorageBuffer::new(
+            device,
+            "chip_td_profiles",
+            wgpu::BufferUsages::STORAGE,
+            16 * std::mem::size_of::<GpuToolProfile>(),
+        );
+        let chords_buf = GrowableStorageBuffer::new(
+            device,
+            "chip_td_chords",
+            wgpu::BufferUsages::STORAGE,
+            128 * std::mem::size_of::<GpuSweepChord>(),
+        );
+
+        let dz_step = (0.25 * pitch_mm.z) as f32;
+        let make_plane = |axis: Axis3| {
+            let p = stock.plane(axis);
+            let nu = p.nu;
+            let nv = p.nv;
+            let tiles_u = nu.div_ceil(GPU_TILE_SIZE);
+            let tiles_v = nv.div_ceil(GPU_TILE_SIZE);
+            let num_tiles = tiles_u * tiles_v;
+            let ray_offset = plane_ray_offsets[axis.index()];
+            let overflow_words = p.ray_count().div_ceil(32).max(1);
+
+            let uniforms = TriDexelPlaneUniforms {
+                nu: nu as u32,
+                nv: nv as u32,
+                tiles_u: tiles_u as u32,
+                num_tiles: num_tiles as u32,
+                axis_id: axis.index() as u32,
+                has_target: u32::from(has_target),
+                plane_ray_offset: ray_offset as u32,
+                _pad0: 0,
+                du_mm: p.du_mm as f32,
+                dv_mm: p.dv_mm as f32,
+                dz_step_mm: dz_step,
+                _pad1: 0.0,
+            };
+            let uniform_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("chip_td_plane_uniforms"),
+                contents: bytemuck::bytes_of(&uniforms),
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            });
+            let tile_data_buf = GrowableStorageBuffer::new(
+                device,
+                "chip_td_tile_data",
+                wgpu::BufferUsages::STORAGE,
+                (num_tiles + 1 + 256) * std::mem::size_of::<u32>(),
+            );
+
+            let accum_ov_bytes =
+                ((ACCUM_WORDS + overflow_words) * std::mem::size_of::<u32>()) as u64;
+            let accum_and_overflow_buf = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("chip_td_accum_and_overflow"),
+                size: accum_ov_bytes,
+                usage: wgpu::BufferUsages::STORAGE
+                    | wgpu::BufferUsages::COPY_DST
+                    | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            });
+            let accum_readback_buf = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("chip_td_accum_readback"),
+                size: std::mem::size_of::<GpuViolationAccum>() as u64,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            let overflow_readback_buf = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("chip_td_overflow_readback"),
+                size: (overflow_words * std::mem::size_of::<u32>()) as u64,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+
+            let bind_group = build_td_bind_group(
+                device,
+                &ctx.tridexel_bgl,
+                &uniform_buf,
+                &m_slots_buf,
+                &m_counts_buf,
+                &t_slots_buf,
+                &t_counts_buf,
+                profiles_buf.buffer(),
+                chords_buf.buffer(),
+                tile_data_buf.buffer(),
+                &accum_and_overflow_buf,
+            );
+
+            GpuPlaneDispatch {
+                axis,
+                nu,
+                nv,
+                tiles_u,
+                tiles_v,
+                ray_offset,
+                origin_u_mm: p.origin_u_mm,
+                origin_v_mm: p.origin_v_mm,
+                origin_w_mm: p.origin_w_mm,
+                du_mm: p.du_mm,
+                dv_mm: p.dv_mm,
+                overflow_words,
+                uniform_buf,
+                tile_data_buf,
+                accum_and_overflow_buf,
+                accum_readback_buf,
+                overflow_readback_buf,
+                bind_group,
+                tile_bins: vec![Vec::new(); num_tiles],
+                tile_data_scratch: Vec::with_capacity(num_tiles + 1 + 256),
+            }
+        };
+
+        let planes = [
+            make_plane(Axis3::X),
+            make_plane(Axis3::Y),
+            make_plane(Axis3::Z),
+        ];
+
+        Self {
+            ctx,
+            dims,
+            origin_wcs,
+            pitch_mm,
+            plane_ray_offsets,
+            total_rays,
+            has_target,
+            m_slots_buf,
+            m_counts_buf,
+            t_slots_buf,
+            t_counts_buf,
+            m_slots_readback_buf,
+            m_counts_readback_buf,
+            profiles_buf,
+            chords_buf,
+            planes,
+            gpu_chords_scratch: Vec::with_capacity(128),
+            linear_chords_scratch: Vec::with_capacity(128),
+            arc_linear_scratch: Vec::with_capacity(32),
+            gpu_profiles_scratch: Vec::with_capacity(16),
+            cpu: Mutex::new(CpuShadow {
+                stock,
+                target,
+                gpu_dirty: false,
+            }),
+        }
+    }
+
+    #[inline]
+    pub(crate) fn dims(&self) -> [usize; 3] {
+        self.dims
+    }
+
+    #[inline]
+    pub(crate) fn origin_wcs(&self) -> DVec3 {
+        self.origin_wcs
+    }
+
+    #[inline]
+    pub(crate) fn pitch_mm(&self) -> DVec3 {
+        self.pitch_mm
+    }
+
+    #[inline]
+    pub(crate) fn plane_ray_offsets(&self) -> [usize; 3] {
+        self.plane_ray_offsets
+    }
+
+    #[inline]
+    pub(crate) fn total_rays(&self) -> usize {
+        self.total_rays
+    }
+
+    #[inline]
+    pub(crate) fn has_target(&self) -> bool {
+        self.has_target
+    }
+
+    #[inline]
+    pub(crate) fn m_slots_buf(&self) -> &wgpu::Buffer {
+        &self.m_slots_buf
+    }
+
+    #[inline]
+    pub(crate) fn m_counts_buf(&self) -> &wgpu::Buffer {
+        &self.m_counts_buf
+    }
+
+    #[inline]
+    pub(crate) fn t_slots_buf(&self) -> &wgpu::Buffer {
+        &self.t_slots_buf
+    }
+
+    #[inline]
+    pub(crate) fn t_counts_buf(&self) -> &wgpu::Buffer {
+        &self.t_counts_buf
+    }
+
+    /// Returns total volume (`mm³`) of all rays currently residing in the CPU overflow side-table
+    /// across all 3 planes (averaged by `/ 3.0`), without touching GPU buffers.
+    pub(crate) fn overflow_volume_mm3(&self) -> f64 {
+        let guard = self.cpu.lock().unwrap_or_else(|e| e.into_inner());
+        let mut sum = 0.0;
+        for axis in Axis3::ALL {
+            let plane = guard.stock.plane(axis);
+            if !plane.overflow.is_empty() {
+                let area = plane.du_mm * plane.dv_mm;
+                let len_sum: f64 = plane
+                    .overflow
+                    .values()
+                    .map(|spans| spans.iter().map(|s| s.len_mm()).sum::<f64>())
+                    .sum();
+                sum += len_sum * area;
+            }
+        }
+        sum / 3.0
+    }
+
+    /// Returns `true` if any ray in either machined or target Tri-Dexel stock resides in CPU overflow.
+    pub(crate) fn any_overflow(&self) -> bool {
+        let guard = self.cpu.lock().unwrap_or_else(|e| e.into_inner());
+        let m_ov = guard.stock.planes.iter().any(|p| !p.overflow.is_empty());
+        let t_ov = guard
+            .target
+            .as_ref()
+            .is_some_and(|t| t.planes.iter().any(|p| !p.overflow.is_empty()));
+        m_ov || t_ov
+    }
+
+    /// Rasterizes `target_mesh` directly onto GPU target buffers (`t_slots_buf`, `t_counts_buf`)
+    /// via `bvh_distance.wgsl`, updating the CPU shadow target copy and rebinding sweep planes.
+    pub(crate) fn rasterize_target_mesh_gpu(&mut self, target_mesh: &TriMesh3D) {
+        let device = self.ctx.device();
+        let queue = self.ctx.queue();
+        let total_slots = self.total_rays * INLINE_DEXEL_SLOTS;
+
+        if !self.has_target {
+            let slots_bytes = (total_slots * std::mem::size_of::<FlatDexelSpan>()) as u64;
+            let counts_bytes = (self.total_rays * std::mem::size_of::<u32>()) as u64;
+            self.t_slots_buf = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("chip_td_t_slots"),
+                size: slots_bytes.max(16),
+                usage: wgpu::BufferUsages::STORAGE
+                    | wgpu::BufferUsages::COPY_DST
+                    | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            });
+            self.t_counts_buf = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("chip_td_t_counts"),
+                size: counts_bytes.max(16),
+                usage: wgpu::BufferUsages::STORAGE
+                    | wgpu::BufferUsages::COPY_DST
+                    | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            });
+            self.has_target = true;
+
+            let dz_step = (0.25 * self.pitch_mm.z) as f32;
+            for plane in &mut self.planes {
+                let uniforms = TriDexelPlaneUniforms {
+                    nu: plane.nu as u32,
+                    nv: plane.nv as u32,
+                    tiles_u: plane.tiles_u as u32,
+                    num_tiles: (plane.tiles_u * plane.tiles_v) as u32,
+                    axis_id: plane.axis.index() as u32,
+                    has_target: 1,
+                    plane_ray_offset: plane.ray_offset as u32,
+                    _pad0: 0,
+                    du_mm: plane.du_mm as f32,
+                    dv_mm: plane.dv_mm as f32,
+                    dz_step_mm: dz_step,
+                    _pad1: 0.0,
+                };
+                queue.write_buffer(&plane.uniform_buf, 0, bytemuck::bytes_of(&uniforms));
+                plane.bind_group = build_td_bind_group(
+                    device,
+                    &self.ctx.tridexel_bgl,
+                    &plane.uniform_buf,
+                    &self.m_slots_buf,
+                    &self.m_counts_buf,
+                    &self.t_slots_buf,
+                    &self.t_counts_buf,
+                    self.profiles_buf.buffer(),
+                    self.chords_buf.buffer(),
+                    plane.tile_data_buf.buffer(),
+                    &plane.accum_and_overflow_buf,
+                );
+            }
+        }
+
+        let mut guard = self.cpu.lock().unwrap_or_else(|e| e.into_inner());
+        let mut target_stock = TriDexelStock::empty_like(&guard.stock);
+        self.ctx.rasterize_tridexel_into_buffers(
+            &mut target_stock,
+            self.plane_ray_offsets,
+            target_mesh,
+            &self.t_slots_buf,
+            &self.t_counts_buf,
+            &self.m_slots_readback_buf,
+            &self.m_counts_readback_buf,
+        );
+        guard.target = Some(target_stock);
+    }
+
+    /// Dispatches all 3 orthogonal dexel planes in one `CommandEncoder` submission and resolves
+    /// any rare `> K = 4`-span overflow rays losslessly on CPU.
+    pub(crate) fn sweep_batch(
+        &mut self,
+        chords: &[SweepChord],
+        profiles: &[SweepToolSpec],
+        verify: bool,
+    ) -> BatchSweepOutput {
+        if chords.is_empty() || profiles.is_empty() {
+            return BatchSweepOutput::default();
+        }
+
+        self.gpu_chords_scratch.clear();
+        self.linear_chords_scratch.clear();
+
+        for ch in chords {
+            if profiles.get(ch.profile_idx).is_none() {
+                continue;
+            }
+            motion_to_linear_chords(ch.motion, &mut self.arc_linear_scratch);
+            for &lin in &self.arc_linear_scratch {
+                let gpu_idx = self.gpu_chords_scratch.len() as u32;
+                let mut flags = 0u32;
+                if ch.is_rapid {
+                    flags |= CHORD_FLAG_RAPID;
+                }
+                if verify {
+                    flags |= CHORD_FLAG_VERIFY;
+                }
+                self.gpu_chords_scratch.push(GpuSweepChord {
+                    p0_rot: [
+                        (lin.p0.x - self.origin_wcs.x) as f32,
+                        (lin.p0.y - self.origin_wcs.y) as f32,
+                        (lin.p0.z - self.origin_wcs.z) as f32,
+                        0.0,
+                    ],
+                    p1_rot: [
+                        (lin.p1.x - self.origin_wcs.x) as f32,
+                        (lin.p1.y - self.origin_wcs.y) as f32,
+                        (lin.p1.z - self.origin_wcs.z) as f32,
+                        0.0,
+                    ],
+                    arc_params: [0.0; 4],
+                    sweep_and_tols: [
+                        0.0,
+                        ch.verify_tol.rapid_crash_tol_mm as f32,
+                        ch.verify_tol.gouge_tol_mm as f32,
+                        ch.verify_tol.radial_wall_skin_mm as f32,
+                    ],
+                    meta: [ch.op_idx, ch.profile_idx as u32, flags, gpu_idx],
+                });
+                self.linear_chords_scratch.push(FlattenedLinearChord {
+                    chord: lin,
+                    op_idx: ch.op_idx,
+                    profile_idx: ch.profile_idx,
+                    is_rapid: ch.is_rapid,
+                    verify_tol: ch.verify_tol,
+                });
+            }
+        }
+
+        if self.gpu_chords_scratch.is_empty() {
+            return BatchSweepOutput::default();
+        }
+
+        // Coarse 16x16 tile-binning for all 3 planes in strict chronological chord order
+        let mut active_planes = [false; 3];
+        for (ax_idx, plane) in self.planes.iter_mut().enumerate() {
+            for bin in &mut plane.tile_bins {
+                bin.clear();
+            }
+            let axis = plane.axis;
+            let u_ax = axis.u_axis();
+            let mut total_binned = 0usize;
+
+            for (gpu_idx, fc) in self.linear_chords_scratch.iter().enumerate() {
+                let Some(tool) = profiles.get(fc.profile_idx) else {
+                    continue;
+                };
+                let prof = &tool.profile;
+                let r_cut = prof.cutting_radius_mm;
+                let (min_u, max_u, min_v, max_v) = match axis {
+                    Axis3::Z => {
+                        let r_chk = if verify {
+                            r_cut.max(prof.holder_radius_mm)
+                        } else {
+                            r_cut
+                        };
+                        (
+                            fc.chord.p0.x.min(fc.chord.p1.x) - r_chk,
+                            fc.chord.p0.x.max(fc.chord.p1.x) + r_chk,
+                            fc.chord.p0.y.min(fc.chord.p1.y) - r_chk,
+                            fc.chord.p0.y.max(fc.chord.p1.y) + r_chk,
+                        )
+                    }
+                    Axis3::X | Axis3::Y => (
+                        u_ax.get(fc.chord.p0).min(u_ax.get(fc.chord.p1)) - r_cut,
+                        u_ax.get(fc.chord.p0).max(u_ax.get(fc.chord.p1)) + r_cut,
+                        fc.chord.p0.z.min(fc.chord.p1.z),
+                        fc.chord.p0.z.max(fc.chord.p1.z) + prof.effective_reach_mm(),
+                    ),
+                };
+
+                let (Some((u0, u1)), Some((v0, v1))) = (
+                    plane_index_span(plane.origin_u_mm, plane.du_mm, plane.nu, min_u, max_u),
+                    plane_index_span(plane.origin_v_mm, plane.dv_mm, plane.nv, min_v, max_v),
+                ) else {
+                    continue;
+                };
+
+                let tu0 = u0 / GPU_TILE_SIZE;
+                let tu1 = u1 / GPU_TILE_SIZE;
+                let tv0 = v0 / GPU_TILE_SIZE;
+                let tv1 = v1 / GPU_TILE_SIZE;
+                for tv in tv0..=tv1 {
+                    let row_tile = tv * plane.tiles_u;
+                    for tu in tu0..=tu1 {
+                        plane.tile_bins[row_tile + tu].push(gpu_idx as u32);
+                        total_binned += 1;
+                    }
+                }
+            }
+
+            if total_binned > 0 {
+                active_planes[ax_idx] = true;
+                let num_tiles = plane.tiles_u * plane.tiles_v;
+                plane.tile_data_scratch.clear();
+                plane
+                    .tile_data_scratch
+                    .reserve(num_tiles + 1 + total_binned);
+                let mut cursor = 0u32;
+                for bin in &plane.tile_bins {
+                    plane.tile_data_scratch.push(cursor);
+                    cursor += bin.len() as u32;
+                }
+                plane.tile_data_scratch.push(cursor);
+                for bin in &plane.tile_bins {
+                    plane.tile_data_scratch.extend_from_slice(bin);
+                }
+            }
+        }
+
+        if !active_planes.iter().any(|&a| a) {
+            return BatchSweepOutput::default();
+        }
+
+        self.gpu_profiles_scratch.clear();
+        self.gpu_profiles_scratch
+            .extend(profiles.iter().map(GpuToolProfile::from_tool_spec));
+
+        let device = self.ctx.device();
+        let queue = self.ctx.queue();
+        let mut shared_rebind = false;
+        shared_rebind |= self
+            .profiles_buf
+            .upload_slice(device, queue, &self.gpu_profiles_scratch);
+        shared_rebind |= self
+            .chords_buf
+            .upload_slice(device, queue, &self.gpu_chords_scratch);
+
+        for (ax_idx, plane) in self.planes.iter_mut().enumerate() {
+            let mut plane_rebind = shared_rebind;
+            if active_planes[ax_idx] {
+                plane_rebind |=
+                    plane
+                        .tile_data_buf
+                        .upload_slice(device, queue, &plane.tile_data_scratch);
+            }
+            if plane_rebind {
+                plane.bind_group = build_td_bind_group(
+                    device,
+                    &self.ctx.tridexel_bgl,
+                    &plane.uniform_buf,
+                    &self.m_slots_buf,
+                    &self.m_counts_buf,
+                    &self.t_slots_buf,
+                    &self.t_counts_buf,
+                    self.profiles_buf.buffer(),
+                    self.chords_buf.buffer(),
+                    plane.tile_data_buf.buffer(),
+                    &plane.accum_and_overflow_buf,
+                );
+            }
+        }
+
+        let accum_bytes = std::mem::size_of::<GpuViolationAccum>();
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("chip_td_sweep_encoder"),
+        });
+
+        for (ax_idx, plane) in self.planes.iter().enumerate() {
+            if !active_planes[ax_idx] {
+                continue;
+            }
+            encoder.clear_buffer(&plane.accum_and_overflow_buf, 0, None);
+            {
+                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("chip_td_sweep_pass"),
+                    timestamp_writes: None,
+                });
+                pass.set_pipeline(&self.ctx.tridexel_pipeline);
+                pass.set_bind_group(0, &plane.bind_group, &[]);
+                pass.dispatch_workgroups(plane.tiles_u as u32, plane.tiles_v as u32, 1);
+            }
+            encoder.copy_buffer_to_buffer(
+                &plane.accum_and_overflow_buf,
+                0,
+                &plane.accum_readback_buf,
+                0,
+                accum_bytes as u64,
+            );
+        }
+
+        queue.submit(std::iter::once(encoder.finish()));
+
+        let mut any_mutated = false;
+        let mut merged_violations = SpanRuleViolations::default();
+        let mut overflow_planes = [false; 3];
+
+        for (ax_idx, plane) in self.planes.iter().enumerate() {
+            if !active_planes[ax_idx] {
+                continue;
+            }
+            let mut raw = [0u8; std::mem::size_of::<GpuViolationAccum>()];
+            let mut accum = GpuViolationAccum::default();
+            if self
+                .ctx
+                .readback_bytes(&plane.accum_readback_buf, accum_bytes, &mut raw)
+            {
+                accum = *bytemuck::from_bytes(&raw);
+            }
+            if accum.overflow_flag != 0 {
+                overflow_planes[ax_idx] = true;
+            }
+            let axis = plane.axis;
+            let nu = plane.nu;
+            let ou = plane.origin_u_mm;
+            let ov = plane.origin_v_mm;
+            let ow = plane.origin_w_mm;
+            let du = plane.du_mm;
+            let dv = plane.dv_mm;
+            let (plane_mut, plane_viol) = accum.into_span_violations(|ray_idx, loc_w_local| {
+                let idx = ray_idx as usize;
+                let iu = idx % nu;
+                let iv = idx / nu;
+                let pu = ou + (iu as f64 + 0.5) * du;
+                let pv = ov + (iv as f64 + 0.5) * dv;
+                let pw = ow + f64::from(loc_w_local);
+                axis.from_uvw(pu, pv, pw)
+            });
+            any_mutated |= plane_mut;
+            merged_violations.merge(plane_viol);
+        }
+
+        // Lossless hybrid CPU overflow safety valve: only runs on the rare batch where a ray
+        // exceeds K = 4 spans (or an already-overflowed ray is touched by a chord in this batch).
+        for (ax_idx, &had_overflow) in overflow_planes.iter().enumerate() {
+            if !had_overflow {
+                continue;
+            }
+            let (ov_mut, ov_viol) = self.resolve_plane_overflow(ax_idx, profiles, verify);
+            any_mutated |= ov_mut;
+            merged_violations.merge(ov_viol);
+        }
+
+        if any_mutated {
+            let mut guard = self.cpu.lock().unwrap_or_else(|e| e.into_inner());
+            guard.gpu_dirty = true;
+        }
+
+        BatchSweepOutput {
+            mutated: any_mutated,
+            violations: merged_violations,
+        }
+    }
+
+    /// Reads back ONLY the flagged overflow ray bitset for plane `ax_idx`, fetches pre-batch
+    /// inline spans ONLY for newly-overflowed rays, replays this batch's linear chords in exact
+    /// `f64`, updates `plane.overflow`, and migrates rays back into GPU inline slots if they
+    /// shrink to `<= K = 4` spans!
+    fn resolve_plane_overflow(
+        &self,
+        ax_idx: usize,
+        profiles: &[SweepToolSpec],
+        verify: bool,
+    ) -> (bool, SpanRuleViolations) {
+        let plane = &self.planes[ax_idx];
+        let device = self.ctx.device();
+        let queue = self.ctx.queue();
+        let bitset_bytes = plane.overflow_words * std::mem::size_of::<u32>();
+        let bitset_offset = (ACCUM_WORDS * std::mem::size_of::<u32>()) as u64;
+
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("chip_td_overflow_bitset_readback"),
+        });
+        encoder.copy_buffer_to_buffer(
+            &plane.accum_and_overflow_buf,
+            bitset_offset,
+            &plane.overflow_readback_buf,
+            0,
+            bitset_bytes as u64,
+        );
+        queue.submit(std::iter::once(encoder.finish()));
+
+        let mut bitset = vec![0u32; plane.overflow_words];
+        if !self.ctx.readback_bytes(
+            &plane.overflow_readback_buf,
+            bitset_bytes,
+            bytemuck::cast_slice_mut(&mut bitset),
+        ) {
+            return (false, SpanRuleViolations::default());
+        }
+
+        let ray_count = plane.nu * plane.nv;
+        let mut flagged_rays: Vec<u32> = Vec::new();
+        for (word_idx, &bits) in bitset.iter().enumerate() {
+            let mut w = bits;
+            while w != 0 {
+                let tz = w.trailing_zeros();
+                let ray_idx = (word_idx as u32) * 32 + tz;
+                if (ray_idx as usize) < ray_count {
+                    flagged_rays.push(ray_idx);
+                }
+                w &= w - 1;
+            }
+        }
+        if flagged_rays.is_empty() {
+            return (false, SpanRuleViolations::default());
+        }
+
+        let mut guard = self.cpu.lock().unwrap_or_else(|e| e.into_inner());
+        let mut need_gpu_fetch: Vec<u32> = Vec::new();
+        for &r in &flagged_rays {
+            if !guard.stock.planes[ax_idx].overflow.contains_key(&r) {
+                need_gpu_fetch.push(r);
+            }
+        }
+
+        // Batch-copy pre-batch inline `(slots[r*4..r*4+4], counts[r])` for newly-overflowed rays
+        let mut fetched_inline: std::collections::HashMap<
+            u32,
+            ([FlatDexelSpan; INLINE_DEXEL_SLOTS], u32),
+        > = std::collections::HashMap::with_capacity(need_gpu_fetch.len());
+        if !need_gpu_fetch.is_empty() {
+            let slot_chunk = INLINE_DEXEL_SLOTS * std::mem::size_of::<FlatDexelSpan>(); // 64 bytes
+            let total_slot_bytes = (need_gpu_fetch.len() * slot_chunk) as u64;
+            let total_cnt_bytes = (need_gpu_fetch.len() * std::mem::size_of::<u32>()) as u64;
+            let slot_staging = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("chip_td_ov_ray_slots_rb"),
+                size: total_slot_bytes.max(16),
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            let cnt_staging = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("chip_td_ov_ray_cnts_rb"),
+                size: total_cnt_bytes.max(16),
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("chip_td_ov_ray_fetch"),
+            });
+            for (k, &local_r) in need_gpu_fetch.iter().enumerate() {
+                let global_r = plane.ray_offset + local_r as usize;
+                enc.copy_buffer_to_buffer(
+                    &self.m_slots_buf,
+                    (global_r * slot_chunk) as u64,
+                    &slot_staging,
+                    (k * slot_chunk) as u64,
+                    slot_chunk as u64,
+                );
+                enc.copy_buffer_to_buffer(
+                    &self.m_counts_buf,
+                    (global_r * std::mem::size_of::<u32>()) as u64,
+                    &cnt_staging,
+                    (k * std::mem::size_of::<u32>()) as u64,
+                    std::mem::size_of::<u32>() as u64,
+                );
+            }
+            queue.submit(std::iter::once(enc.finish()));
+
+            let mut raw_slots =
+                vec![FlatDexelSpan::ZERO; need_gpu_fetch.len() * INLINE_DEXEL_SLOTS];
+            let mut raw_cnts = vec![0u32; need_gpu_fetch.len()];
+            let ok_s = self.ctx.readback_bytes(
+                &slot_staging,
+                total_slot_bytes as usize,
+                bytemuck::cast_slice_mut(&mut raw_slots),
+            );
+            let ok_c = self.ctx.readback_bytes(
+                &cnt_staging,
+                total_cnt_bytes as usize,
+                bytemuck::cast_slice_mut(&mut raw_cnts),
+            );
+            if ok_s && ok_c {
+                for (k, &local_r) in need_gpu_fetch.iter().enumerate() {
+                    let base = k * INLINE_DEXEL_SLOTS;
+                    let arr = [
+                        raw_slots[base],
+                        raw_slots[base + 1],
+                        raw_slots[base + 2],
+                        raw_slots[base + 3],
+                    ];
+                    fetched_inline.insert(local_r, (arr, raw_cnts[k]));
+                }
+            }
+        }
+
+        let dz_step = 0.25 * self.pitch_mm.z;
+        let axis = plane.axis;
+        let nu = plane.nu;
+        let ou = plane.origin_u_mm;
+        let ov = plane.origin_v_mm;
+        let ow = plane.origin_w_mm;
+        let du = plane.du_mm;
+        let dv = plane.dv_mm;
+        let mut any_mut = false;
+        let mut merged_viol = SpanRuleViolations::default();
+        let mut scratch: Vec<DexelSpan> = Vec::with_capacity(16);
+
+        for &local_r in &flagged_rays {
+            scratch.clear();
+            if let Some(existing) = guard.stock.planes[ax_idx].overflow.get(&local_r) {
+                scratch.extend_from_slice(existing);
+            } else if let Some(&(arr, cnt)) = fetched_inline.get(&local_r) {
+                let n = (cnt as usize).min(INLINE_DEXEL_SLOTS);
+                for slot in arr.iter().take(n) {
+                    scratch.push(slot.to_wcs(ow));
+                }
+            } else {
+                continue;
+            }
+
+            let iu = (local_r as usize) % nu;
+            let iv = (local_r as usize) / nu;
+            let pu = ou + (iu as f64 + 0.5) * du;
+            let pv = ov + (iv as f64 + 0.5) * dv;
+            let target_spans_owned: Option<Vec<DexelSpan>> = guard
+                .target
+                .as_ref()
+                .map(|t| t.plane(axis).ray_spans_by_index(local_r as usize).to_vec());
+            let target_slice = target_spans_owned.as_deref();
+
+            let mut ray_mut = false;
+            for fc in &self.linear_chords_scratch {
+                let Some(tool) = profiles.get(fc.profile_idx) else {
+                    continue;
+                };
+                let (m, v) = replay_single_ray_linear_chord(
+                    axis,
+                    pu,
+                    pv,
+                    dz_step,
+                    fc.chord,
+                    tool,
+                    fc.is_rapid,
+                    fc.verify_tol,
+                    fc.op_idx,
+                    verify,
+                    target_slice,
+                    &mut scratch,
+                );
+                ray_mut |= m;
+                merged_viol.merge(v);
+            }
+
+            let global_r = plane.ray_offset + local_r as usize;
+            let slot_byte_off =
+                (global_r * INLINE_DEXEL_SLOTS * std::mem::size_of::<FlatDexelSpan>()) as u64;
+            let cnt_byte_off = (global_r * std::mem::size_of::<u32>()) as u64;
+
+            if scratch.len() <= INLINE_DEXEL_SLOTS {
+                // Migrate cleanly back into GPU inline flat pool!
+                guard.stock.planes[ax_idx].overflow.remove(&local_r);
+                let mut packed = [FlatDexelSpan::ZERO; INLINE_DEXEL_SLOTS];
+                let mut written = 0usize;
+                for &s in &scratch {
+                    let flat = FlatDexelSpan::from_wcs(s, ow);
+                    if flat.max_local > flat.min_local {
+                        packed[written] = flat;
+                        written += 1;
+                    }
+                }
+                let cnt_u32 = written as u32;
+                queue.write_buffer(
+                    &self.m_slots_buf,
+                    slot_byte_off,
+                    bytemuck::cast_slice(&packed),
+                );
+                queue.write_buffer(
+                    &self.m_counts_buf,
+                    cnt_byte_off,
+                    bytemuck::bytes_of(&cnt_u32),
+                );
+            } else {
+                // Keep exact full span vector in CPU overflow side-table; mark GPU `counts > K`.
+                let mut packed = [FlatDexelSpan::ZERO; INLINE_DEXEL_SLOTS];
+                for (k, slot) in packed.iter_mut().enumerate() {
+                    *slot = FlatDexelSpan::from_wcs(scratch[k], ow);
+                }
+                let cnt_u32 = scratch.len() as u32;
+                guard.stock.planes[ax_idx]
+                    .overflow
+                    .insert(local_r, scratch.clone());
+                queue.write_buffer(
+                    &self.m_slots_buf,
+                    slot_byte_off,
+                    bytemuck::cast_slice(&packed),
+                );
+                queue.write_buffer(
+                    &self.m_counts_buf,
+                    cnt_byte_off,
+                    bytemuck::bytes_of(&cnt_u32),
+                );
+            }
+            any_mut |= ray_mut;
+        }
+
+        (any_mut, merged_viol)
+    }
+
+    pub(crate) fn with_synced_stock<R>(&self, f: impl FnOnce(&TriDexelStock) -> R) -> R {
+        let mut guard = self.cpu.lock().unwrap_or_else(|e| e.into_inner());
+        if guard.gpu_dirty {
+            self.sync_gpu_to_cpu_locked(&mut guard);
+        }
+        f(&guard.stock)
+    }
+
+    pub(crate) fn with_synced_stock_and_target<R>(
+        &self,
+        f: impl FnOnce(&TriDexelStock, Option<&TriDexelStock>) -> R,
+    ) -> R {
+        let mut guard = self.cpu.lock().unwrap_or_else(|e| e.into_inner());
+        if guard.gpu_dirty {
+            self.sync_gpu_to_cpu_locked(&mut guard);
+        }
+        f(&guard.stock, guard.target.as_ref())
+    }
+
+    pub(crate) fn reset_from_checkpoint(&mut self, cp: &StockCheckpointSnapshot) {
+        if let StockCheckpointSnapshot::TriDexel { stock, .. } = cp {
+            let mut guard = self.cpu.lock().unwrap_or_else(|e| e.into_inner());
+            guard.stock.clone_from(stock);
+            guard.gpu_dirty = false;
+            let queue = self.ctx.queue();
+            for axis in Axis3::ALL {
+                let p = guard.stock.plane(axis);
+                let ray_off = self.plane_ray_offsets[axis.index()];
+                let slot_byte_off =
+                    (ray_off * INLINE_DEXEL_SLOTS * std::mem::size_of::<FlatDexelSpan>()) as u64;
+                let cnt_byte_off = (ray_off * std::mem::size_of::<u32>()) as u64;
+                queue.write_buffer(
+                    &self.m_slots_buf,
+                    slot_byte_off,
+                    bytemuck::cast_slice(&p.slots),
+                );
+                queue.write_buffer(
+                    &self.m_counts_buf,
+                    cnt_byte_off,
+                    bytemuck::cast_slice(&p.counts),
+                );
+            }
+        }
+    }
+
+    pub(crate) fn into_parts(self) -> (TriDexelStock, Option<TriDexelStock>) {
+        {
+            let mut guard = self.cpu.lock().unwrap_or_else(|e| e.into_inner());
+            if guard.gpu_dirty {
+                self.sync_gpu_to_cpu_locked(&mut guard);
+            }
+        }
+        let shadow = self.cpu.into_inner().unwrap_or_else(|e| e.into_inner());
+        (shadow.stock, shadow.target)
+    }
+
+    fn sync_gpu_to_cpu_locked(&self, guard: &mut CpuShadow) {
+        let total_slots = self.total_rays * INLINE_DEXEL_SLOTS;
+        let slots_bytes = total_slots * std::mem::size_of::<FlatDexelSpan>();
+        let counts_bytes = self.total_rays * std::mem::size_of::<u32>();
+        if slots_bytes == 0 || counts_bytes == 0 {
+            guard.gpu_dirty = false;
+            return;
+        }
+        let mut encoder =
+            self.ctx
+                .device()
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("chip_td_sync_readback_encoder"),
+                });
+        encoder.copy_buffer_to_buffer(
+            &self.m_slots_buf,
+            0,
+            &self.m_slots_readback_buf,
+            0,
+            slots_bytes as u64,
+        );
+        encoder.copy_buffer_to_buffer(
+            &self.m_counts_buf,
+            0,
+            &self.m_counts_readback_buf,
+            0,
+            counts_bytes as u64,
+        );
+        self.ctx.queue().submit(std::iter::once(encoder.finish()));
+
+        let mut all_slots = vec![FlatDexelSpan::ZERO; total_slots];
+        let mut all_counts = vec![0u32; self.total_rays];
+        let ok_s = self.ctx.readback_bytes(
+            &self.m_slots_readback_buf,
+            slots_bytes,
+            bytemuck::cast_slice_mut(&mut all_slots),
+        );
+        let ok_c = self.ctx.readback_bytes(
+            &self.m_counts_readback_buf,
+            counts_bytes,
+            bytemuck::cast_slice_mut(&mut all_counts),
+        );
+        if ok_s && ok_c {
+            for axis in Axis3::ALL {
+                let p = guard.stock.plane_mut(axis);
+                let ray_off = self.plane_ray_offsets[axis.index()];
+                let rc = p.ray_count();
+                let slot_off = ray_off * INLINE_DEXEL_SLOTS;
+                p.slots
+                    .copy_from_slice(&all_slots[slot_off..slot_off + rc * INLINE_DEXEL_SLOTS]);
+                p.counts.copy_from_slice(&all_counts[ray_off..ray_off + rc]);
+            }
+        }
+        guard.gpu_dirty = false;
+    }
+}
+
+#[inline]
+fn plane_index_span(
+    origin: f64,
+    step: f64,
+    len: usize,
+    min_c: f64,
+    max_c: f64,
+) -> Option<(usize, usize)> {
+    if len == 0 || max_c < origin || min_c > origin + (len as f64) * step {
+        return None;
+    }
+    let i0 = (((min_c - origin) / step).floor() as isize).max(0) as usize;
+    let i1 = (((max_c - origin) / step).ceil() as isize).clamp(0, (len - 1) as isize) as usize;
+    (i0 <= i1).then_some((i0, i1))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_td_bind_group(
+    device: &wgpu::Device,
+    bgl: &wgpu::BindGroupLayout,
+    uniform_buf: &wgpu::Buffer,
+    slots_buf: &wgpu::Buffer,
+    counts_buf: &wgpu::Buffer,
+    target_slots_buf: &wgpu::Buffer,
+    target_counts_buf: &wgpu::Buffer,
+    profiles_buf: &wgpu::Buffer,
+    chords_buf: &wgpu::Buffer,
+    tile_data_buf: &wgpu::Buffer,
+    accum_and_overflow_buf: &wgpu::Buffer,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("chip_td_sweep_bg"),
+        layout: bgl,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniform_buf.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: slots_buf.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: counts_buf.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: target_slots_buf.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: target_counts_buf.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 5,
+                resource: profiles_buf.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 6,
+                resource: chords_buf.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 7,
+                resource: tile_data_buf.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 8,
+                resource: accum_and_overflow_buf.as_entire_binding(),
+            },
+        ],
+    })
+}

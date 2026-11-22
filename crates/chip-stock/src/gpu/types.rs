@@ -319,7 +319,8 @@ impl GpuViolationSlot {
 }
 
 /// 176-byte (`11 × 16B`) per-batch atomic verification accumulator matching the 44-word
-/// `array<atomic<u32>, 44>` buffer in `heightfield_sweep.wgsl` and `cylindrical_sweep.wgsl`.
+/// `array<atomic<u32>, 44>` header in `heightfield_sweep.wgsl`, `cylindrical_sweep.wgsl`,
+/// and `tridexel_sweep.wgsl`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuViolationAccum {
@@ -329,7 +330,8 @@ pub struct GpuViolationAccum {
     pub neck: GpuViolationSlot,
     pub holder: GpuViolationSlot,
     pub mutated_flag: u32,
-    pub _pad0: u32,
+    /// Non-zero when any Tri-Dexel ray overflowed `K = 4` inline spans (triggers CPU safety valve).
+    pub overflow_flag: u32,
     pub _pad1: u32,
     pub _pad2: u32,
 }
@@ -391,6 +393,82 @@ pub struct CylindricalUniforms {
     pub params: [f32; 4],
 }
 
+/// 48-byte (`3 × 16B`) uniform buffer bound by `tridexel_sweep.wgsl` (axis-generic across X/Y/Z).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct TriDexelPlaneUniforms {
+    pub nu: u32,
+    pub nv: u32,
+    pub tiles_u: u32,
+    pub num_tiles: u32,
+    pub axis_id: u32,
+    pub has_target: u32,
+    pub plane_ray_offset: u32,
+    pub _pad0: u32,
+    pub du_mm: f32,
+    pub dv_mm: f32,
+    pub dz_step_mm: f32,
+    pub _pad1: f32,
+}
+
+/// 112-byte (`7 × 16B`) unified uniform buffer bound by `bvh_distance.wgsl`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct BvhDispatchUniforms {
+    pub dims: [u32; 4],
+    pub v0: [f32; 4],
+    pub v1: [f32; 4],
+    pub v2: [f32; 4],
+    pub v3: [f32; 4],
+    pub v4: [f32; 4],
+    pub counts: [u32; 4],
+}
+
+/// Number of logarithmic error histogram bins in `stock_metrics.wgsl` (`0.0005 mm .. 100.0 mm`).
+pub const GPU_METRICS_HIST_BINS: usize = 256;
+/// Maximum parallel reduction workgroups dispatched by `stock_metrics.wgsl`.
+pub const GPU_METRICS_MAX_WORKGROUPS: usize = 512;
+
+/// 128-byte (`8 × 16B`) unified uniform buffer bound by `stock_metrics.wgsl`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct MetricsUniforms {
+    pub dims: [u32; 4],
+    pub td_offsets: [u32; 4],
+    pub origin_and_tol: [f32; 4],
+    pub pitch_and_mean: [f32; 4],
+    pub cyl_e1_pol: [f32; 4],
+    pub cyl_e2: [f32; 4],
+    pub cyl_u_vec: [f32; 4],
+    pub dispatch: [u32; 4],
+}
+
+/// 96-byte (`6 × 16B`) per-workgroup partial reduction output from `stock_metrics.wgsl`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct GpuMetricsPartial {
+    pub remaining_vol: f32,
+    pub target_vol: f32,
+    pub excess_vol: f32,
+    pub gouge_vol: f32,
+    pub sum_sq: f32,
+    pub sum_abs: f32,
+    pub sum_signed: f32,
+    pub excess_sum_sq: f32,
+    pub gouge_sum_sq: f32,
+    pub max_excess: f32,
+    pub max_gouge: f32,
+    pub _pad0: f32,
+    pub max_excess_loc: [f32; 3],
+    pub sample_count: u32,
+    pub max_gouge_loc: [f32; 3],
+    pub in_tol_count: u32,
+    pub excess_count: u32,
+    pub gouge_count: u32,
+    pub _pad1: u32,
+    pub _pad2: u32,
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -434,6 +512,16 @@ mod tests {
 
         assert_eq!(size_of::<HeightfieldUniforms>(), 32);
         assert_eq!(size_of::<CylindricalUniforms>(), 80);
+        assert_eq!(size_of::<TriDexelPlaneUniforms>(), 48);
+        assert_eq!(size_of::<BvhDispatchUniforms>(), 112);
+        assert_eq!(size_of::<MetricsUniforms>(), 128);
+        assert_eq!(size_of::<GpuMetricsPartial>(), 96);
+        assert_eq!(offset_of!(GpuMetricsPartial, max_excess_loc), 48);
+        assert_eq!(offset_of!(GpuMetricsPartial, sample_count), 60);
+        assert_eq!(offset_of!(GpuMetricsPartial, max_gouge_loc), 64);
+        assert_eq!(offset_of!(GpuMetricsPartial, in_tol_count), 76);
+        assert_eq!(offset_of!(GpuMetricsPartial, excess_count), 80);
+        assert_eq!(offset_of!(GpuViolationAccum, overflow_flag), 164);
 
         // Verify Pod byte round-trip for GpuViolationAccum
         let mut acc = GpuViolationAccum::default();

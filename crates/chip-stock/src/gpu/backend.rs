@@ -1,40 +1,40 @@
-//! `WgpuComputeBackend` implementing [`SimStockBackend`] over GPU-resident `Heightfield` and
-//! `Cylindrical` compute sweepers (with clean CPU delegation for `TriDexel` until Milestone 53).
+//! `WgpuComputeBackend` implementing [`SimStockBackend`] across all three volumetric stock
+//! engines (`Heightfield`, `Cylindrical`, and `TriDexel`) with GPU parallel reduction metrology
+//! and direct GPU BVH target rasterization.
 
 use std::sync::Arc;
 
+use chip_bvh::TriMesh3D;
+
 use crate::{
-    backend::{
-        CpuExactBackend, SimStockBackend, SimulatedStock, StockCheckpointSnapshot, StockModelKind,
-    },
+    backend::{SimStockBackend, SimulatedStock, StockCheckpointSnapshot, StockModelKind},
     cylindrical::tessellate_cylindrical_stock_mesh_colored,
     heightfield::tessellate_stock_mesh_colored,
     metrics::{
-        OperationErrorSnapshot, SimStockColorMode, StockErrorReport,
-        compute_cylindrical_error_report, compute_cylindrical_quick_error_summary,
-        compute_heightmap_error_report, compute_heightmap_quick_error_summary,
+        OperationErrorSnapshot, SimStockColorMode, StockErrorReport, compute_tridexel_error_report,
+        compute_tridexel_quick_error_summary,
     },
-    tridexel::TriDexelStock,
+    tridexel::{TriDexelStock, tessellate_tridexel_stock_mesh_colored},
     types::{ActiveSimBackendInfo, BatchSweepOutput, SimStockMesh, SweepChord, SweepToolSpec},
 };
 
 use super::{
     context::GpuSimContext, cylindrical::GpuCylindricalState, heightfield::GpuHeightfieldState,
+    tridexel::GpuTriDexelState,
 };
 
 #[derive(Debug)]
 enum GpuBackendInner {
     Heightfield(Box<GpuHeightfieldState>),
     Cylindrical(Box<GpuCylindricalState>),
-    /// Temporary CPU delegation for `TriDexel` until Milestone 53's WGSL Tri-Dexel sweeper lands.
-    TriDexelCpuFallback(Box<CpuExactBackend>),
+    TriDexel(Box<GpuTriDexelState>),
 }
 
 /// Optional `wgpu` compute volumetric stock simulation backend.
 ///
-/// Executes 2.5D `Heightfield` and 4th-axis `Cylindrical` stock removal and Rules 1–4 verification
-/// on the GPU via tiled WGSL compute shaders, while transparently delegating `TriDexel` to
-/// [`CpuExactBackend`] until Milestone 53.
+/// Executes 2.5D `Heightfield`, 3D volumetric `TriDexel` (with lossless CPU overflow safety valve
+/// for rare `> K = 4`-span rays), and 4th-axis `Cylindrical` stock removal, Rules 1–4
+/// verification, and parallel reduction metrology end-to-end on the GPU.
 #[derive(Debug)]
 pub struct WgpuComputeBackend {
     ctx: Arc<GpuSimContext>,
@@ -42,7 +42,7 @@ pub struct WgpuComputeBackend {
 }
 
 impl WgpuComputeBackend {
-    /// Uploads `stock` into GPU storage buffers (for `Heightfield` and `Cylindrical`) using `ctx`.
+    /// Uploads `stock` (and optional `target_tridexel`) into GPU storage buffers using `ctx`.
     pub fn new(
         ctx: Arc<GpuSimContext>,
         stock: SimulatedStock,
@@ -55,8 +55,8 @@ impl WgpuComputeBackend {
             SimulatedStock::Cylindrical(cyl) => GpuBackendInner::Cylindrical(Box::new(
                 GpuCylindricalState::new(Arc::clone(&ctx), cyl),
             )),
-            SimulatedStock::TriDexel(td) => GpuBackendInner::TriDexelCpuFallback(Box::new(
-                CpuExactBackend::new(SimulatedStock::TriDexel(td), target_tridexel),
+            SimulatedStock::TriDexel(td) => GpuBackendInner::TriDexel(Box::new(
+                GpuTriDexelState::new(Arc::clone(&ctx), *td, target_tridexel),
             )),
         };
         Self { ctx, inner }
@@ -66,25 +66,28 @@ impl WgpuComputeBackend {
     pub fn context(&self) -> &Arc<GpuSimContext> {
         &self.ctx
     }
+
+    /// Rasterizes a WCS-space [`TriMesh3D`] target solid directly onto this backend's GPU target
+    /// buffers using `bvh_distance.wgsl` (`FlatBvhNode` + `GpuTriangle` zero-conversion upload).
+    pub fn rasterize_target_mesh_gpu(&mut self, target_mesh: &TriMesh3D) {
+        match &mut self.inner {
+            GpuBackendInner::Heightfield(hf) => hf.rasterize_target_mesh_gpu(target_mesh),
+            GpuBackendInner::Cylindrical(c) => c.rasterize_target_mesh_gpu(target_mesh),
+            GpuBackendInner::TriDexel(td) => td.rasterize_target_mesh_gpu(target_mesh),
+        }
+    }
 }
 
 impl SimStockBackend for WgpuComputeBackend {
     fn backend_info(&self) -> ActiveSimBackendInfo {
-        match &self.inner {
-            GpuBackendInner::Heightfield(_) | GpuBackendInner::Cylindrical(_) => {
-                self.ctx.adapter_info().clone()
-            }
-            GpuBackendInner::TriDexelCpuFallback(_) => ActiveSimBackendInfo::cpu(),
-        }
+        self.ctx.adapter_info().clone()
     }
 
     fn kind(&self) -> StockModelKind {
         match &self.inner {
             GpuBackendInner::Heightfield(_) => StockModelKind::Heightfield25D,
-            GpuBackendInner::Cylindrical(c) => {
-                c.with_synced_stock(|s| StockModelKind::Cylindrical4Axis(s.rotary))
-            }
-            GpuBackendInner::TriDexelCpuFallback(cpu) => cpu.kind(),
+            GpuBackendInner::Cylindrical(c) => StockModelKind::Cylindrical4Axis(c.rotary()),
+            GpuBackendInner::TriDexel(_) => StockModelKind::TriDexel3D,
         }
     }
 
@@ -104,7 +107,12 @@ impl SimStockBackend for WgpuComputeBackend {
                     last_op_idx: s.last_op_idx.clone(),
                 })
             }
-            GpuBackendInner::TriDexelCpuFallback(cpu) => cpu.capture_checkpoint(completed_segments),
+            GpuBackendInner::TriDexel(td) => {
+                td.with_synced_stock(|s| StockCheckpointSnapshot::TriDexel {
+                    completed_segments,
+                    stock: Box::new(s.clone()),
+                })
+            }
         }
     }
 
@@ -112,7 +120,7 @@ impl SimStockBackend for WgpuComputeBackend {
         match &mut self.inner {
             GpuBackendInner::Heightfield(hf) => hf.reset_from_checkpoint(cp),
             GpuBackendInner::Cylindrical(c) => c.reset_from_checkpoint(cp),
-            GpuBackendInner::TriDexelCpuFallback(cpu) => cpu.reset_from_checkpoint(cp),
+            GpuBackendInner::TriDexel(td) => td.reset_from_checkpoint(cp),
         }
     }
 
@@ -125,7 +133,7 @@ impl SimStockBackend for WgpuComputeBackend {
         match &mut self.inner {
             GpuBackendInner::Heightfield(hf) => hf.sweep_batch(chords, profiles, verify),
             GpuBackendInner::Cylindrical(c) => c.sweep_batch(chords, profiles, verify),
-            GpuBackendInner::TriDexelCpuFallback(cpu) => cpu.sweep_batch(chords, profiles, verify),
+            GpuBackendInner::TriDexel(td) => td.sweep_batch(chords, profiles, verify),
         }
     }
 
@@ -147,33 +155,136 @@ impl SimStockBackend for WgpuComputeBackend {
                 stock_z.map_or(0.0, |sz| sz.min(z_start_wcs) - z_end_wcs)
             }),
             GpuBackendInner::Cylindrical(_) => 0.0,
-            GpuBackendInner::TriDexelCpuFallback(cpu) => cpu.query_vertical_plunge_depth(
-                x_wcs,
-                y_wcs,
-                z_start_wcs,
-                z_end_wcs,
-                thread_check_radius_mm,
-            ),
+            GpuBackendInner::TriDexel(td) => td.with_synced_stock(|s| {
+                if let Some(check_r) = thread_check_radius_mm {
+                    s.query_vertical_plunge_overlap(x_wcs, y_wcs, check_r, z_end_wcs, z_start_wcs)
+                } else {
+                    s.sample_top_z(x_wcs, y_wcs)
+                        .map_or(0.0, |top_z| top_z.min(z_start_wcs) - z_end_wcs)
+                }
+            }),
         }
     }
 
     fn compute_volume_mm3(&self) -> f64 {
         match &self.inner {
-            GpuBackendInner::Heightfield(hf) => hf.with_synced_stock(|s| s.compute_volume_mm3()),
-            GpuBackendInner::Cylindrical(c) => c.with_synced_stock(|s| s.current_volume_mm3()),
-            GpuBackendInner::TriDexelCpuFallback(cpu) => cpu.compute_volume_mm3(),
+            GpuBackendInner::Heightfield(hf) => {
+                self.ctx
+                    .reduce_heightfield_metrics(
+                        hf.nx(),
+                        hf.ny(),
+                        hf.origin_wcs(),
+                        hf.dx_mm(),
+                        hf.dy_mm(),
+                        0.05,
+                        true,
+                        hf.z_stock_buf(),
+                        hf.z_bottom_buf(),
+                        hf.z_target_buf(),
+                    )
+                    .remaining_vol_mm3
+            }
+            GpuBackendInner::Cylindrical(c) => {
+                self.ctx
+                    .reduce_cylindrical_metrics(
+                        c.nu(),
+                        c.ntheta(),
+                        c.rotary(),
+                        c.u_min(),
+                        c.du(),
+                        c.dtheta(),
+                        0.05,
+                        true,
+                        c.r_stock_buf(),
+                        c.r_target_buf(),
+                    )
+                    .remaining_vol_mm3
+            }
+            GpuBackendInner::TriDexel(td) => {
+                let inline_vol = self
+                    .ctx
+                    .reduce_tridexel_metrics(
+                        td.dims(),
+                        td.origin_wcs(),
+                        td.pitch_mm(),
+                        td.plane_ray_offsets(),
+                        td.total_rays(),
+                        td.has_target(),
+                        0.05,
+                        true,
+                        td.m_slots_buf(),
+                        td.m_counts_buf(),
+                        td.t_slots_buf(),
+                        td.t_counts_buf(),
+                    )
+                    .remaining_vol_mm3;
+                inline_vol + td.overflow_volume_mm3()
+            }
         }
     }
 
     fn compute_quick_error_summary(&self) -> Option<(f64, f64, f64)> {
         match &self.inner {
-            GpuBackendInner::Heightfield(hf) => {
-                hf.with_synced_stock(compute_heightmap_quick_error_summary)
+            GpuBackendInner::Heightfield(hf) => self
+                .ctx
+                .reduce_heightfield_metrics(
+                    hf.nx(),
+                    hf.ny(),
+                    hf.origin_wcs(),
+                    hf.dx_mm(),
+                    hf.dy_mm(),
+                    0.05,
+                    false,
+                    hf.z_stock_buf(),
+                    hf.z_bottom_buf(),
+                    hf.z_target_buf(),
+                )
+                .quick_summary(),
+            GpuBackendInner::Cylindrical(c) => self
+                .ctx
+                .reduce_cylindrical_metrics(
+                    c.nu(),
+                    c.ntheta(),
+                    c.rotary(),
+                    c.u_min(),
+                    c.du(),
+                    c.dtheta(),
+                    0.05,
+                    false,
+                    c.r_stock_buf(),
+                    c.r_target_buf(),
+                )
+                .quick_summary(),
+            GpuBackendInner::TriDexel(td) => {
+                if !td.has_target() {
+                    return None;
+                }
+                if td.any_overflow() {
+                    return td.with_synced_stock_and_target(|m, t| {
+                        t.map(|tgt| compute_tridexel_quick_error_summary(m, tgt))
+                    });
+                }
+                let totals = self.ctx.reduce_tridexel_metrics(
+                    td.dims(),
+                    td.origin_wcs(),
+                    td.pitch_mm(),
+                    td.plane_ray_offsets(),
+                    td.total_rays(),
+                    true,
+                    0.05,
+                    false,
+                    td.m_slots_buf(),
+                    td.m_counts_buf(),
+                    td.t_slots_buf(),
+                    td.t_counts_buf(),
+                );
+                let rms = if totals.sample_count > 0 {
+                    (totals.sum_sq / totals.sample_count as f64).sqrt()
+                } else {
+                    0.0
+                };
+                Some((totals.excess_vol_mm3, totals.gouge_vol_mm3, rms))
             }
-            GpuBackendInner::Cylindrical(c) => {
-                c.with_synced_stock(compute_cylindrical_quick_error_summary)
-            }
-            GpuBackendInner::TriDexelCpuFallback(cpu) => cpu.compute_quick_error_summary(),
         }
     }
 
@@ -184,24 +295,69 @@ impl SimStockBackend for WgpuComputeBackend {
         per_operation: Vec<OperationErrorSnapshot>,
     ) -> Option<StockErrorReport> {
         match &self.inner {
-            GpuBackendInner::Heightfield(hf) => hf.with_synced_stock(|s| {
-                compute_heightmap_error_report(
-                    s,
-                    initial_stock_vol_mm3,
+            GpuBackendInner::Heightfield(hf) => self
+                .ctx
+                .reduce_heightfield_metrics(
+                    hf.nx(),
+                    hf.ny(),
+                    hf.origin_wcs(),
+                    hf.dx_mm(),
+                    hf.dy_mm(),
                     tolerance_mm,
-                    per_operation,
+                    false,
+                    hf.z_stock_buf(),
+                    hf.z_bottom_buf(),
+                    hf.z_target_buf(),
                 )
-            }),
-            GpuBackendInner::Cylindrical(c) => c.with_synced_stock(|s| {
-                compute_cylindrical_error_report(
-                    s,
-                    initial_stock_vol_mm3,
+                .into_error_report(initial_stock_vol_mm3, tolerance_mm, per_operation, true),
+            GpuBackendInner::Cylindrical(c) => self
+                .ctx
+                .reduce_cylindrical_metrics(
+                    c.nu(),
+                    c.ntheta(),
+                    c.rotary(),
+                    c.u_min(),
+                    c.du(),
+                    c.dtheta(),
                     tolerance_mm,
-                    per_operation,
+                    false,
+                    c.r_stock_buf(),
+                    c.r_target_buf(),
                 )
-            }),
-            GpuBackendInner::TriDexelCpuFallback(cpu) => {
-                cpu.compute_error_report(initial_stock_vol_mm3, tolerance_mm, per_operation)
+                .into_error_report(initial_stock_vol_mm3, tolerance_mm, per_operation, true),
+            GpuBackendInner::TriDexel(td) => {
+                if !td.has_target() {
+                    return None;
+                }
+                if td.any_overflow() {
+                    return td.with_synced_stock_and_target(|m, t| {
+                        t.map(|tgt| {
+                            compute_tridexel_error_report(
+                                m,
+                                tgt,
+                                initial_stock_vol_mm3,
+                                tolerance_mm,
+                                per_operation,
+                            )
+                        })
+                    });
+                }
+                self.ctx
+                    .reduce_tridexel_metrics(
+                        td.dims(),
+                        td.origin_wcs(),
+                        td.pitch_mm(),
+                        td.plane_ray_offsets(),
+                        td.total_rays(),
+                        true,
+                        tolerance_mm,
+                        false,
+                        td.m_slots_buf(),
+                        td.m_counts_buf(),
+                        td.t_slots_buf(),
+                        td.t_counts_buf(),
+                    )
+                    .into_error_report(initial_stock_vol_mm3, tolerance_mm, per_operation, false)
             }
         }
     }
@@ -214,7 +370,9 @@ impl SimStockBackend for WgpuComputeBackend {
             GpuBackendInner::Cylindrical(c) => c.with_synced_stock(|s| {
                 tessellate_cylindrical_stock_mesh_colored(s, color_mode, 0.0)
             }),
-            GpuBackendInner::TriDexelCpuFallback(cpu) => cpu.extract_stock_mesh(color_mode),
+            GpuBackendInner::TriDexel(td) => td.with_synced_stock_and_target(|s, t| {
+                tessellate_tridexel_stock_mesh_colored(s, t, color_mode)
+            }),
         }
     }
 
@@ -224,7 +382,10 @@ impl SimStockBackend for WgpuComputeBackend {
                 (SimulatedStock::Heightfield(hf.into_stock()), None)
             }
             GpuBackendInner::Cylindrical(c) => (SimulatedStock::Cylindrical(c.into_stock()), None),
-            GpuBackendInner::TriDexelCpuFallback(cpu) => cpu.into_parts(),
+            GpuBackendInner::TriDexel(td) => {
+                let (stock, target) = td.into_parts();
+                (SimulatedStock::TriDexel(Box::new(stock)), target)
+            }
         }
     }
 }

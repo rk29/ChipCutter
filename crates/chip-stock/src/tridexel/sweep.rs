@@ -12,9 +12,9 @@ use super::grid::{
 };
 
 #[derive(Debug, Clone, Copy)]
-struct LinearChord3D {
-    p0: DVec3,
-    p1: DVec3,
+pub(crate) struct LinearChord3D {
+    pub(crate) p0: DVec3,
+    pub(crate) p1: DVec3,
 }
 
 impl LinearChord3D {
@@ -562,7 +562,7 @@ struct SweepContext<'a> {
     target: Option<&'a TriDexelStock>,
 }
 
-fn motion_to_linear_chords(motion: SweepMotion, out: &mut Vec<LinearChord3D>) {
+pub(crate) fn motion_to_linear_chords(motion: SweepMotion, out: &mut Vec<LinearChord3D>) {
     out.clear();
     match motion {
         SweepMotion::Linear { p0, p1, .. } => {
@@ -1040,5 +1040,217 @@ impl TriDexelStock {
         }
 
         (h_mut, h_viol)
+    }
+}
+
+/// Exact `f64` single-ray replay of one [`LinearChord3D`] on plane `axis` at ray center `(pu, pv)`.
+/// Shared by `WgpuComputeBackend`'s lossless hybrid overflow safety valve so rare `> K = 4`-span
+/// rays execute identical subtraction and Rules 1–4 verification to the CPU Tri-Dexel oracle.
+#[cfg(feature = "gpu-compute")]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn replay_single_ray_linear_chord(
+    axis: Axis3,
+    pu: f64,
+    pv: f64,
+    dz_step_mm: f64,
+    chord: LinearChord3D,
+    tool: &SweepToolSpec,
+    is_rapid: bool,
+    tol: StockVerifyTolerances,
+    op_idx: u32,
+    verify: bool,
+    target_spans: Option<&[DexelSpan]>,
+    scratch: &mut Vec<DexelSpan>,
+) -> (bool, SpanRuleViolations) {
+    let mut rv = SpanRuleViolations::default();
+    if scratch.is_empty() {
+        return (false, rv);
+    }
+    let prof = &tool.profile;
+    let r_cut = prof.cutting_radius_mm;
+    let neck_skin = (prof.neck_radius_mm - tol.radial_wall_skin_mm).max(0.0);
+    let shank_skin = (prof.shank_radius_mm - tol.radial_wall_skin_mm).max(0.0);
+    let r_inner_skin = (r_cut - tol.radial_wall_skin_mm).max(0.0);
+
+    match axis {
+        Axis3::Z => {
+            let px = pu;
+            let py = pv;
+            let r_check = if verify {
+                r_cut.max(prof.holder_radius_mm)
+            } else {
+                r_cut
+            };
+            if px < chord.p0.x.min(chord.p1.x) - r_check - 1e-6
+                || px > chord.p0.x.max(chord.p1.x) + r_check + 1e-6
+                || py < chord.p0.y.min(chord.p1.y) - r_check - 1e-6
+                || py > chord.p0.y.max(chord.p1.y) + r_check + 1e-6
+            {
+                return (false, rv);
+            }
+
+            if verify {
+                let p0_xy = DVec2::new(chord.p0.x, chord.p0.y);
+                let p1_xy = DVec2::new(chord.p1.x, chord.p1.y);
+                let d_xy = p1_xy - p0_xy;
+                let l2 = d_xy.length_squared();
+                let t_c = if l2 > 1e-12 {
+                    ((DVec2::new(px, py) - p0_xy).dot(d_xy) / l2).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                let c_xy = p0_xy.lerp(p1_xy, t_c);
+                let dist_xy = (DVec2::new(px, py) - c_xy).length();
+                let z_tip_here = chord.p0.z + t_c * (chord.p1.z - chord.p0.z);
+                if let Some(top_span) = scratch.last() {
+                    let top_z = top_span.max_mm;
+                    if dist_xy <= prof.holder_radius_mm {
+                        let holder_z = z_tip_here + prof.stickout_length_mm;
+                        let pen = top_z - holder_z;
+                        if pen > 0.05 {
+                            rv.record_holder(pen, DVec3::new(px, py, holder_z));
+                        }
+                    }
+                    if !is_rapid && dist_xy <= shank_skin {
+                        let reach_top = z_tip_here + prof.effective_reach_mm();
+                        let rub = top_z - reach_top;
+                        if rub > 0.15 {
+                            rv.record_flute(rub, DVec3::new(px, py, reach_top));
+                        }
+                    }
+                }
+                if prof.is_thread_mill && !is_rapid && dist_xy <= neck_skin {
+                    let neck_lo = z_tip_here + prof.flute_length_mm + 0.05;
+                    let neck_hi = z_tip_here + prof.neck_length_mm;
+                    if neck_hi > neck_lo {
+                        let ov = query_overlap_length(scratch, neck_lo, neck_hi);
+                        if ov > 0.10 {
+                            rv.record_neck(ov, DVec3::new(px, py, neck_lo));
+                        }
+                    }
+                }
+            }
+
+            let mut ray_mut = false;
+            if prof.is_thread_mill {
+                let mut tm_intervals = Vec::new();
+                eval_z_ray_thread_mill_intervals(chord, prof, px, py, r_cut, &mut tm_intervals);
+                if !tm_intervals.is_empty() {
+                    if verify && is_rapid {
+                        for &(z_lo, z_hi) in &tm_intervals {
+                            let ov = query_overlap_length(scratch, z_lo, z_hi);
+                            if ov > tol.rapid_crash_tol_mm {
+                                rv.record_rapid(ov, DVec3::new(px, py, z_lo));
+                            }
+                        }
+                    }
+                    if verify
+                        && let Some(t_spans) = target_spans
+                        && let Some((z_lo_in, z_hi_in)) = eval_z_ray_cylinder_interval(
+                            chord,
+                            px,
+                            py,
+                            neck_skin,
+                            prof.neck_length_mm,
+                        )
+                        && let Some((pen, z_at)) =
+                            query_target_gouge_depth(t_spans, z_lo_in, z_hi_in, tol.gouge_tol_mm)
+                    {
+                        rv.record_gouge(pen, DVec3::new(px, py, z_at));
+                    }
+                    for &(z_lo, z_hi) in &tm_intervals {
+                        if subtract_dexel_interval(scratch, z_lo, z_hi, op_idx) > 0.0 {
+                            ray_mut = true;
+                        }
+                    }
+                }
+            } else if let Some((z_lo, z_hi, _)) =
+                eval_z_ray_cut_interval(chord, prof, tool.is_flat_endmill, px, py, r_cut)
+            {
+                if verify && is_rapid {
+                    let ov = query_overlap_length(scratch, z_lo, z_hi);
+                    if ov > tol.rapid_crash_tol_mm {
+                        rv.record_rapid(ov, DVec3::new(px, py, z_lo));
+                    }
+                }
+                if verify
+                    && let Some(t_spans) = target_spans
+                    && let Some((z_lo_in, z_hi_in, _)) = eval_z_ray_cut_interval(
+                        chord,
+                        prof,
+                        tool.is_flat_endmill,
+                        px,
+                        py,
+                        r_inner_skin,
+                    )
+                    && let Some((pen, z_at)) =
+                        query_target_gouge_depth(t_spans, z_lo_in, z_hi_in, tol.gouge_tol_mm)
+                {
+                    rv.record_gouge(pen, DVec3::new(px, py, z_at));
+                }
+                if subtract_dexel_interval(scratch, z_lo, z_hi, op_idx) > 0.0 {
+                    ray_mut = true;
+                }
+            }
+            (ray_mut, rv)
+        }
+        Axis3::X | Axis3::Y => {
+            let swap_xy = axis == Axis3::Y;
+            let u_ax = axis.u_axis();
+            let pz = pv;
+            let u0 = u_ax.get(chord.p0).min(u_ax.get(chord.p1)) - r_cut;
+            let u1 = u_ax.get(chord.p0).max(u_ax.get(chord.p1)) + r_cut;
+            if pu < u0 - 1e-6
+                || pu > u1 + 1e-6
+                || pz < chord.min_z() - 1e-6
+                || pz > chord.max_z() + prof.effective_reach_mm() + 1e-6
+            {
+                return (false, rv);
+            }
+            let wall_skin = tol.gouge_tol_mm + tol.radial_wall_skin_mm;
+            let mut ray_mut = false;
+            if let Some((w_lo, w_hi)) =
+                eval_horizontal_ray_cut_interval(chord, prof, 0.0, pz, pu, swap_xy, dz_step_mm)
+            {
+                if verify && is_rapid {
+                    let ov = query_overlap_length(scratch, w_lo, w_hi);
+                    if ov > tol.rapid_crash_tol_mm {
+                        rv.record_rapid(ov, axis.from_uvw(pu, pz, 0.5 * (w_lo + w_hi)));
+                    }
+                }
+                if verify
+                    && pz >= chord.min_z() + tol.gouge_tol_mm
+                    && let Some(t_spans) = target_spans
+                    && let Some((w_lo_in, w_hi_in)) = if prof.is_thread_mill {
+                        eval_horizontal_ray_cylinder_interval(
+                            chord,
+                            neck_skin,
+                            prof.neck_length_mm,
+                            pz,
+                            pu,
+                            swap_xy,
+                        )
+                    } else {
+                        eval_horizontal_ray_cut_interval(
+                            chord,
+                            prof,
+                            tol.radial_wall_skin_mm,
+                            pz,
+                            pu,
+                            swap_xy,
+                            dz_step_mm,
+                        )
+                    }
+                    && let Some((pen, w_at)) =
+                        query_target_gouge_depth(t_spans, w_lo_in, w_hi_in, wall_skin)
+                {
+                    rv.record_gouge(pen, axis.from_uvw(pu, pz, w_at));
+                }
+                if subtract_dexel_interval(scratch, w_lo, w_hi, op_idx) > 0.0 {
+                    ray_mut = true;
+                }
+            }
+            (ray_mut, rv)
+        }
     }
 }

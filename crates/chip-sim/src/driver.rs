@@ -307,8 +307,7 @@ pub fn run_setup_simulation_with_engine(
 
 /// Executes stock simulation & 5-rule crash/gouge verification using the selected [`SimEngineKind`]
 /// and [`SimComputeBackendChoice`] (`Auto` / `Gpu` / `Cpu`), falling back cleanly to
-/// [`CpuExactBackend`] whenever `gpu-compute` is disabled, no GPU adapter is available, or the
-/// stock model is `TriDexel` (until Milestone 53).
+/// [`CpuExactBackend`] whenever `gpu-compute` is disabled or no GPU adapter is available.
 pub fn run_setup_simulation_with_choice(
     input: &SetupSimulationInput<'_>,
     engine: SimEngineKind,
@@ -335,7 +334,7 @@ pub fn run_setup_simulation_with_choice(
 
 /// Executes stock simulation with an explicitly provided shared [`GpuSimContext`] (e.g., from
 /// `eframe`/`ViewportRenderer`), transparently falling back to [`CpuExactBackend`] when
-/// `choice == SimComputeBackendChoice::Cpu`, `gpu_ctx` is `None`, or `TriDexel` is selected.
+/// `choice == SimComputeBackendChoice::Cpu` or `gpu_ctx` is `None`.
 #[cfg(feature = "gpu-compute")]
 pub fn run_setup_simulation_with_gpu_context(
     input: &SetupSimulationInput<'_>,
@@ -343,14 +342,12 @@ pub fn run_setup_simulation_with_gpu_context(
     choice: SimComputeBackendChoice,
     gpu_ctx: Option<Arc<GpuSimContext>>,
 ) -> Result<SetupSimulationResult, SimError> {
-    let (effective_engine, stock, target_td) = prepare_initial_stock(input, engine)?;
-    let use_gpu = choice != SimComputeBackendChoice::Cpu
-        && matches!(
-            stock,
-            SimulatedStock::Heightfield(_) | SimulatedStock::Cylindrical(_)
-        );
+    let use_gpu = choice != SimComputeBackendChoice::Cpu;
+    let active_ctx = if use_gpu { gpu_ctx } else { None };
+    let (effective_engine, stock, target_td) =
+        prepare_initial_stock_with_gpu(input, engine, active_ctx.as_deref())?;
 
-    if use_gpu && let Some(ctx) = gpu_ctx {
+    if let Some(ctx) = active_ctx {
         let backend = WgpuComputeBackend::new(ctx, stock, target_td);
         run_setup_simulation_with_backend(input, effective_engine, backend)
     } else {
@@ -359,6 +356,7 @@ pub fn run_setup_simulation_with_gpu_context(
     }
 }
 
+#[cfg(not(feature = "gpu-compute"))]
 fn prepare_initial_stock(
     input: &SetupSimulationInput<'_>,
     engine: SimEngineKind,
@@ -398,6 +396,81 @@ fn prepare_initial_stock(
             let (horiz_up, tris) =
                 extract_heightfield_target_from_cad(input.doc, input.setup, input.target_bodies);
             hf.rasterize_target(&horiz_up, &tris);
+        }
+        Ok((
+            SimEngineKind::Heightmap,
+            SimulatedStock::Heightfield(hf),
+            None,
+        ))
+    }
+}
+
+#[cfg(feature = "gpu-compute")]
+fn prepare_initial_stock_with_gpu(
+    input: &SetupSimulationInput<'_>,
+    engine: SimEngineKind,
+    gpu_ctx: Option<&GpuSimContext>,
+) -> Result<(SimEngineKind, SimulatedStock, Option<TriDexelStock>), SimError> {
+    check_cancelled(input.cancel)?;
+    let stock_spec = stock_shape_spec_from_cam(&input.setup.stock);
+
+    if let Some(rotary) = input.setup.rotary {
+        let rotary_spec = rotary_stock_spec_from_cam(rotary);
+        let mut cyl =
+            CylindricalStock::from_stock_spec(&stock_spec, rotary_spec, input.resolution)?;
+        check_cancelled(input.cancel)?;
+        if let Some(target_mesh) =
+            extract_cylindrical_target_mesh_from_cad(input.doc, input.setup, input.target_bodies)
+        {
+            if let Some(ctx) = gpu_ctx {
+                ctx.rasterize_cylindrical_target_mesh(&mut cyl, &target_mesh);
+            } else {
+                cyl.rasterize_target_mesh(&target_mesh);
+            }
+        }
+        Ok((
+            SimEngineKind::Heightmap,
+            SimulatedStock::Cylindrical(cyl),
+            None,
+        ))
+    } else if engine == SimEngineKind::TriDexel {
+        let td = TriDexelStock::from_stock_spec(&stock_spec, input.resolution)?;
+        check_cancelled(input.cancel)?;
+        let target_td = if let Some(ctx) = gpu_ctx
+            && input.doc.has_3d_geometry()
+            && input.doc.faces.is_empty()
+        {
+            extract_cylindrical_target_mesh_from_cad(input.doc, input.setup, input.target_bodies)
+                .map(|mesh| ctx.rasterize_tridexel_target_mesh(&td, &mesh))
+        } else {
+            extract_tridexel_target_from_cad(input.doc, input.setup, input.target_bodies, &td)
+        };
+        Ok((
+            SimEngineKind::TriDexel,
+            SimulatedStock::TriDexel(Box::new(td)),
+            target_td,
+        ))
+    } else {
+        let mut hf = HeightfieldStock::from_stock_spec(&stock_spec, input.resolution)?;
+        check_cancelled(input.cancel)?;
+        if input.doc.has_3d_geometry() {
+            if let Some(ctx) = gpu_ctx
+                && input.doc.faces.is_empty()
+                && let Some(target_mesh) = extract_cylindrical_target_mesh_from_cad(
+                    input.doc,
+                    input.setup,
+                    input.target_bodies,
+                )
+            {
+                ctx.rasterize_heightfield_target_mesh(&mut hf, &target_mesh);
+            } else {
+                let (horiz_up, tris) = extract_heightfield_target_from_cad(
+                    input.doc,
+                    input.setup,
+                    input.target_bodies,
+                );
+                hf.rasterize_target(&horiz_up, &tris);
+            }
         }
         Ok((
             SimEngineKind::Heightmap,
@@ -1836,9 +1909,9 @@ mod tests {
             assert_eq!(dc.severity, dg.severity);
         }
 
-        // Case 3: TriDexel gracefully delegates to CPU under Auto until Milestone 53
+        // Case 3: TriDexel now executes end-to-end on GPU under Auto (Milestone 53)
         let empty_doc = CadDocument::empty();
-        let mut setup_td = Setup::new("s_td_fb", "TriDexel Fallback", WorkOffsetSlot::G54);
+        let mut setup_td = Setup::new("s_td_gpu", "TriDexel GPU Auto", WorkOffsetSlot::G54);
         setup_td.wcs.origin = WcsOriginMode::StockBoxPoint {
             anchor: BoxAnchor27::TOP_CENTER,
         };
@@ -1867,6 +1940,736 @@ mod tests {
             SimComputeBackendChoice::Auto,
         )
         .unwrap();
-        assert!(!sim_td.active_backend.is_gpu);
+        assert!(sim_td.active_backend.is_gpu);
+    }
+
+    #[cfg(feature = "gpu-compute")]
+    fn make_test_box_mesh_body(
+        id: BodyId,
+        name: &str,
+        min: DVec3,
+        max: DVec3,
+    ) -> chip_cad::TriangleMeshBody {
+        let vertices_mm = vec![
+            DVec3::new(min.x, min.y, min.z),
+            DVec3::new(max.x, min.y, min.z),
+            DVec3::new(max.x, max.y, min.z),
+            DVec3::new(min.x, max.y, min.z),
+            DVec3::new(min.x, min.y, max.z),
+            DVec3::new(max.x, min.y, max.z),
+            DVec3::new(max.x, max.y, max.z),
+            DVec3::new(min.x, max.y, max.z),
+        ];
+        let raw_tris: [[u32; 3]; 12] = [
+            [0, 2, 1],
+            [0, 3, 2],
+            [4, 5, 6],
+            [4, 6, 7],
+            [0, 1, 5],
+            [0, 5, 4],
+            [3, 7, 6],
+            [3, 6, 2],
+            [0, 4, 7],
+            [0, 7, 3],
+            [1, 2, 6],
+            [1, 6, 5],
+        ];
+        let triangles = raw_tris
+            .into_iter()
+            .map(|indices| {
+                let v0 = vertices_mm[indices[0] as usize];
+                let v1 = vertices_mm[indices[1] as usize];
+                let v2 = vertices_mm[indices[2] as usize];
+                chip_cad::MeshTriangle {
+                    indices,
+                    normal: (v1 - v0).cross(v2 - v0).normalize_or_zero(),
+                    aabb: chip_math::Aabb3::from_points([v0, v1, v2]),
+                }
+            })
+            .collect();
+        let size = max - min;
+        chip_cad::TriangleMeshBody {
+            id,
+            name: name.to_string(),
+            format: chip_cad::MeshFormat::ThreeMf,
+            detected_unit: Some(chip_cad::MeshUnitKind::Millimeter),
+            applied_unit: chip_cad::MeshUnitKind::Millimeter,
+            vertices_mm,
+            triangles,
+            aabb_mm: chip_math::Aabb3::new(min, max),
+            diagnostics: chip_cad::MeshDiagnostics {
+                raw_triangle_count: 12,
+                valid_triangle_count: 12,
+                degenerate_triangles_removed: 0,
+                welded_vertex_count: 8,
+                open_boundary_edges: 0,
+                non_manifold_edges: 0,
+                is_watertight: true,
+                signed_volume_mm3: size.x * size.y * size.z,
+            },
+        }
+    }
+
+    #[cfg(feature = "gpu-compute")]
+    fn make_test_sculpted_dome_mesh_body(id: BodyId) -> chip_cad::TriangleMeshBody {
+        // Watertight 40 x 40 mm base block (Z = -12) topped with a smooth cosine dome (Z in [-6, -1])
+        let n = 16usize;
+        let x0 = -20.0;
+        let y0 = -20.0;
+        let step = 40.0 / n as f64;
+        let z_bot = -12.0;
+        let mut verts: Vec<DVec3> = Vec::new();
+        let top_idx = |i: usize, j: usize| -> u32 { (j * (n + 1) + i) as u32 };
+        let bot_base = ((n + 1) * (n + 1)) as u32;
+        let bot_idx = |i: usize, j: usize| -> u32 { bot_base + (j * (n + 1) + i) as u32 };
+
+        for j in 0..=n {
+            let y = y0 + j as f64 * step;
+            for i in 0..=n {
+                let x = x0 + i as f64 * step;
+                let r = (x * x + y * y).sqrt();
+                let dome = if r < 16.0 {
+                    5.0 * (0.5 * (1.0 + (PI * r / 16.0).cos()))
+                } else {
+                    0.0
+                };
+                verts.push(DVec3::new(x, y, -6.0 + dome));
+            }
+        }
+        for j in 0..=n {
+            let y = y0 + j as f64 * step;
+            for i in 0..=n {
+                let x = x0 + i as f64 * step;
+                verts.push(DVec3::new(x, y, z_bot));
+            }
+        }
+
+        let mut tris: Vec<[u32; 3]> = Vec::new();
+        for j in 0..n {
+            for i in 0..n {
+                let a = top_idx(i, j);
+                let b = top_idx(i + 1, j);
+                let c = top_idx(i + 1, j + 1);
+                let d = top_idx(i, j + 1);
+                tris.push([a, b, c]);
+                tris.push([a, c, d]);
+
+                let ba = bot_idx(i, j);
+                let bb = bot_idx(i + 1, j);
+                let bc = bot_idx(i + 1, j + 1);
+                let bd = bot_idx(i, j + 1);
+                tris.push([ba, bc, bb]);
+                tris.push([ba, bd, bc]);
+            }
+        }
+        // Perimeter walls
+        for i in 0..n {
+            // y = y0 (-Y face)
+            tris.push([bot_idx(i, 0), bot_idx(i + 1, 0), top_idx(i + 1, 0)]);
+            tris.push([bot_idx(i, 0), top_idx(i + 1, 0), top_idx(i, 0)]);
+            // y = +20 (+Y face)
+            tris.push([bot_idx(i + 1, n), bot_idx(i, n), top_idx(i, n)]);
+            tris.push([bot_idx(i + 1, n), top_idx(i, n), top_idx(i + 1, n)]);
+        }
+        for j in 0..n {
+            // x = x0 (-X face)
+            tris.push([bot_idx(0, j + 1), bot_idx(0, j), top_idx(0, j)]);
+            tris.push([bot_idx(0, j + 1), top_idx(0, j), top_idx(0, j + 1)]);
+            // x = +20 (+X face)
+            tris.push([bot_idx(n, j), bot_idx(n, j + 1), top_idx(n, j + 1)]);
+            tris.push([bot_idx(n, j), top_idx(n, j + 1), top_idx(n, j)]);
+        }
+
+        let triangles = tris
+            .into_iter()
+            .map(|indices| {
+                let v0 = verts[indices[0] as usize];
+                let v1 = verts[indices[1] as usize];
+                let v2 = verts[indices[2] as usize];
+                chip_cad::MeshTriangle {
+                    indices,
+                    normal: (v1 - v0).cross(v2 - v0).normalize_or_zero(),
+                    aabb: chip_math::Aabb3::from_points([v0, v1, v2]),
+                }
+            })
+            .collect();
+        let aabb = chip_math::Aabb3::new(
+            DVec3::new(-20.0, -20.0, z_bot),
+            DVec3::new(20.0, 20.0, -1.0),
+        );
+        chip_cad::TriangleMeshBody {
+            id,
+            name: "Sculpted Dome".to_string(),
+            format: chip_cad::MeshFormat::ThreeMf,
+            detected_unit: Some(chip_cad::MeshUnitKind::Millimeter),
+            applied_unit: chip_cad::MeshUnitKind::Millimeter,
+            vertices_mm: verts,
+            triangles,
+            aabb_mm: aabb,
+            diagnostics: chip_cad::MeshDiagnostics {
+                raw_triangle_count: 0,
+                valid_triangle_count: 0,
+                degenerate_triangles_removed: 0,
+                welded_vertex_count: 0,
+                open_boundary_edges: 0,
+                non_manifold_edges: 0,
+                is_watertight: true,
+                signed_volume_mm3: 0.0,
+            },
+        }
+    }
+
+    #[cfg(feature = "gpu-compute")]
+    #[test]
+    fn gpu_vs_cpu_tridexel_end_to_end_parity_prismatic_sculpted_and_threadmill() {
+        let lib = default_starter_tool_library();
+        let flat_6 = &lib.tools[0];
+        let ball = lib
+            .tools
+            .iter()
+            .find(|t| matches!(t.geometry, CutterGeometry::BallEndmill { .. }))
+            .unwrap();
+        let face = lib
+            .tools
+            .iter()
+            .find(|t| matches!(t.geometry, CutterGeometry::FaceMill { .. }))
+            .unwrap();
+
+        // === Case 1: 2.5D Prismatic STEP plate + Rule 1/2/5 faults ===
+        {
+            let step = sample_machined_plate_step().unwrap();
+            let doc = MonstertruckKernel
+                .load_step_bytes("plate.step", step.as_bytes(), DEFAULT_TESS_CHORD_TOL_MM)
+                .unwrap();
+            let mut setup = Setup::new("s_td_prism", "Prismatic TriDexel", WorkOffsetSlot::G54);
+            let resolved = setup.resolve(&doc, DisplayUnit::Millimeter).unwrap();
+            let maabb = resolved.model_aabb_wcs;
+            let c = maabb.center();
+
+            let mut b0 = ToolpathBuilder::new("op_prism");
+            b0.rapid_to(DVec3::new(c.x - 15.0, c.y - 8.0, maabb.max.z + 10.0));
+            b0.linear_to(
+                DVec3::new(c.x - 15.0, c.y - 8.0, maabb.max.z - 2.0),
+                300.0,
+                MotionRole::Plunge,
+            );
+            b0.linear_to(
+                DVec3::new(c.x + 5.0, c.y - 8.0, maabb.max.z - 4.0),
+                800.0,
+                MotionRole::Cut,
+            );
+            b0.arc_xy_to(XyArcMove {
+                end_wcs: DVec3::new(c.x + 5.0, c.y + 8.0, maabb.max.z - 4.0),
+                center_xy: DVec2::new(c.x + 5.0, c.y),
+                radius_mm: 8.0,
+                ccw: true,
+                turns: 0,
+                feed_mm_min: 800.0,
+                role: MotionRole::Cut,
+            });
+            // Deliberate rapid crash + target gouge
+            b0.rapid_to(DVec3::new(c.x, c.y, maabb.max.z - 5.0));
+            b0.rapid_to(DVec3::new(c.x, c.y, maabb.max.z + 10.0));
+            let tp0 = b0.finish();
+
+            // Non-center-cutting FaceMill plunge (Rule 5)
+            let mut b1 = ToolpathBuilder::new("op_face_r5");
+            b1.rapid_to(DVec3::new(c.x + 12.0, c.y - 10.0, maabb.max.z + 8.0));
+            b1.linear_to(
+                DVec3::new(c.x + 12.0, c.y - 10.0, maabb.max.z - 2.0),
+                200.0,
+                MotionRole::Plunge,
+            );
+            b1.rapid_to(DVec3::new(c.x + 12.0, c.y - 10.0, maabb.max.z + 8.0));
+            let tp1 = b1.finish();
+
+            let ops = [
+                SimOperationInput {
+                    op_id: "op_prism",
+                    op_name: "Prismatic Slot & Fault",
+                    tool: flat_6,
+                    fallback_spindle_rpm: 12_000.0,
+                    intentional_edge_break_mm: 0.0,
+                    toolpath: &tp0,
+                },
+                SimOperationInput {
+                    op_id: "op_face_r5",
+                    op_name: "Face Plunge Rule 5",
+                    tool: face,
+                    fallback_spindle_rpm: 8_000.0,
+                    intentional_edge_break_mm: 0.0,
+                    toolpath: &tp1,
+                },
+            ];
+            let input = SetupSimulationInput {
+                doc: &doc,
+                setup: &resolved,
+                target_bodies: &[],
+                operations: &ops,
+                resolution: SimResolution::Standard,
+                kinematics: MachineKinematicsConfig::default(),
+                verify_config: SimVerificationConfig::default(),
+                cancel: None,
+            };
+            let sim_cpu = run_setup_simulation_with_choice(
+                &input,
+                SimEngineKind::TriDexel,
+                SimComputeBackendChoice::Cpu,
+            )
+            .unwrap();
+            let sim_gpu = run_setup_simulation_with_choice(
+                &input,
+                SimEngineKind::TriDexel,
+                SimComputeBackendChoice::Gpu,
+            )
+            .unwrap();
+            assert!(!sim_cpu.active_backend.is_gpu);
+            assert!(sim_gpu.active_backend.is_gpu);
+
+            let vol_err = (sim_gpu.remaining_stock_volume_mm3 - sim_cpu.remaining_stock_volume_mm3)
+                .abs()
+                / sim_cpu.remaining_stock_volume_mm3.max(1.0);
+            assert!(
+                vol_err < 0.001,
+                "Prismatic TriDexel vol err {:.4}% > 0.1%",
+                vol_err * 100.0
+            );
+
+            let rc = sim_cpu.error_report.as_ref().unwrap();
+            let rg = sim_gpu.error_report.as_ref().unwrap();
+            assert!(
+                (rg.rms_error_mm - rc.rms_error_mm).abs() < 0.005,
+                "Prismatic TriDexel RMS mismatch: cpu={:.5}, gpu={:.5}",
+                rc.rms_error_mm,
+                rg.rms_error_mm
+            );
+            assert!(
+                (rg.mean_abs_error_mm - rc.mean_abs_error_mm).abs() < 0.005,
+                "Prismatic TriDexel MAE mismatch: cpu={:.5}, gpu={:.5}",
+                rc.mean_abs_error_mm,
+                rg.mean_abs_error_mm
+            );
+            assert!((rg.in_tolerance_surface_pct - rc.in_tolerance_surface_pct).abs() < 0.5);
+            assert_eq!(
+                sim_cpu.diagnostics.len(),
+                sim_gpu.diagnostics.len(),
+                "Prismatic TriDexel diag mismatch:\nCPU: {:#?}\nGPU: {:#?}",
+                sim_cpu.diagnostics,
+                sim_gpu.diagnostics
+            );
+            for (dc, dg) in sim_cpu.diagnostics.iter().zip(sim_gpu.diagnostics.iter()) {
+                assert_eq!(dc.kind, dg.kind);
+                assert_eq!(dc.severity, dg.severity);
+                assert_eq!(dc.op_idx, dg.op_idx);
+            }
+        }
+
+        // === Case 2: 3-axis sculpted dome mesh with BallEndmill 3D finishing passes ===
+        {
+            let dome = make_test_sculpted_dome_mesh_body(BodyId(0));
+            let mut doc = CadDocument::empty();
+            doc.source_name = "dome.stl".to_string();
+            doc.aabb_mm = dome.aabb_mm;
+            doc.meshes = vec![dome];
+
+            let mut setup = Setup::new("s_td_dome", "Sculpted Dome", WorkOffsetSlot::G54);
+            setup.wcs.origin = WcsOriginMode::ModelBoxPoint {
+                anchor: BoxAnchor27::TOP_CENTER,
+            };
+            setup.stock = StockConfig::FixedBox {
+                width_x: ParamLength::from_mm(44.0),
+                depth_y: ParamLength::from_mm(44.0),
+                height_z: ParamLength::from_mm(14.0),
+                xy_align: chip_cam::FixedBoxXyAlign::CenterXy,
+                z_align: chip_cam::FixedBoxZAlign::default(),
+            };
+            let resolved = setup.resolve(&doc, DisplayUnit::Millimeter).unwrap();
+
+            let mut bd = ToolpathBuilder::new("op_dome_3d");
+            bd.rapid_to(DVec3::new(-18.0, -14.0, 10.0));
+            for row in 0..8 {
+                let y = -14.0 + row as f64 * 4.0;
+                let dir = if row % 2 == 0 { 1.0 } else { -1.0 };
+                for step in 0..=12 {
+                    let u = step as f64 / 12.0;
+                    let x = if dir > 0.0 {
+                        -18.0 + 36.0 * u
+                    } else {
+                        18.0 - 36.0 * u
+                    };
+                    let r = (x * x + y * y).sqrt();
+                    let dome_z = if r < 16.0 {
+                        -5.0 + 5.0 * (0.5 * (1.0 + (PI * r / 16.0).cos()))
+                    } else {
+                        -5.0
+                    };
+                    bd.linear_to(DVec3::new(x, y, dome_z), 1200.0, MotionRole::FinishCut);
+                }
+            }
+            bd.rapid_to(DVec3::new(18.0, 14.0, 10.0));
+            let tp_dome = bd.finish();
+
+            let ops = [SimOperationInput {
+                op_id: "op_dome_3d",
+                op_name: "3D Ball Parallel",
+                tool: ball,
+                fallback_spindle_rpm: 16_000.0,
+                intentional_edge_break_mm: 0.0,
+                toolpath: &tp_dome,
+            }];
+            let input = SetupSimulationInput {
+                doc: &doc,
+                setup: &resolved,
+                target_bodies: &[],
+                operations: &ops,
+                resolution: SimResolution::Standard,
+                kinematics: MachineKinematicsConfig::default(),
+                verify_config: SimVerificationConfig::default(),
+                cancel: None,
+            };
+            let sim_cpu = run_setup_simulation_with_choice(
+                &input,
+                SimEngineKind::TriDexel,
+                SimComputeBackendChoice::Cpu,
+            )
+            .unwrap();
+            let sim_gpu = run_setup_simulation_with_choice(
+                &input,
+                SimEngineKind::TriDexel,
+                SimComputeBackendChoice::Gpu,
+            )
+            .unwrap();
+            assert!(sim_gpu.active_backend.is_gpu);
+
+            let vol_err = (sim_gpu.remaining_stock_volume_mm3 - sim_cpu.remaining_stock_volume_mm3)
+                .abs()
+                / sim_cpu.remaining_stock_volume_mm3.max(1.0);
+            assert!(
+                vol_err < 0.001,
+                "Sculpted dome TriDexel vol err {:.4}% > 0.1%",
+                vol_err * 100.0
+            );
+            let rc = sim_cpu.error_report.as_ref().unwrap();
+            let rg = sim_gpu.error_report.as_ref().unwrap();
+            assert!(
+                (rg.rms_error_mm - rc.rms_error_mm).abs() < 0.005,
+                "Sculpted dome RMS mismatch: cpu={:.5}, gpu={:.5}",
+                rc.rms_error_mm,
+                rg.rms_error_mm
+            );
+            assert!(
+                (rg.mean_abs_error_mm - rc.mean_abs_error_mm).abs() < 0.005,
+                "Sculpted dome MAE mismatch: cpu={:.5}, gpu={:.5}",
+                rc.mean_abs_error_mm,
+                rg.mean_abs_error_mm
+            );
+        }
+
+        // === Case 3: Helical ThreadMill undercut (true 3D multi-span internal threads) ===
+        {
+            let empty_doc = CadDocument::empty();
+            let mut setup = Setup::new("s_td_tm", "ThreadMill Helical", WorkOffsetSlot::G54);
+            setup.wcs.origin = WcsOriginMode::StockBoxPoint {
+                anchor: BoxAnchor27::TOP_CENTER,
+            };
+            setup.stock = StockConfig::FixedBox {
+                width_x: ParamLength::from_mm(100.0),
+                depth_y: ParamLength::from_mm(100.0),
+                height_z: ParamLength::from_mm(20.0),
+                xy_align: chip_cam::FixedBoxXyAlign::CenterXy,
+                z_align: chip_cam::FixedBoxZAlign::default(),
+            };
+            let resolved = setup.resolve(&empty_doc, DisplayUnit::Millimeter).unwrap();
+
+            // Pre-drill pilot bore with flat endmill, then cut helical multi-tooth internal thread
+            let mut bp = ToolpathBuilder::new("op_pilot");
+            bp.rapid_to(DVec3::new(0.0, 0.0, 6.0));
+            bp.linear_to(DVec3::new(0.0, 0.0, -16.0), 300.0, MotionRole::Plunge);
+            // Circular bore of R=1.5 with 6mm flat endmill -> 9mm pilot bore
+            for k in 0..=24 {
+                let ang = (k as f64 / 24.0) * std::f64::consts::TAU;
+                bp.linear_to(
+                    DVec3::new(1.5 * ang.cos(), 1.5 * ang.sin(), -16.0),
+                    600.0,
+                    MotionRole::Cut,
+                );
+            }
+            bp.rapid_to(DVec3::new(0.0, 0.0, 6.0));
+            let tp_pilot = bp.finish();
+
+            let tm_tool = chip_tools::Tool {
+                id: chip_tools::ToolId("tm_m12".to_string()),
+                tool_number: 9,
+                length_offset_number: 9,
+                diameter_offset_number: 9,
+                name: "M12 Multi-Form ThreadMill".to_string(),
+                vendor: None,
+                product_id: None,
+                native_unit: DisplayUnit::Millimeter,
+                spindle_direction: chip_tools::SpindleDirection::Cw,
+                default_coolant: chip_tools::CoolantMode::Flood,
+                stickout_length_mm: 24.0,
+                geometry: CutterGeometry::ThreadMill {
+                    diameter_mm: 7.5,
+                    neck_diameter_mm: 4.0,
+                    neck_length_mm: 18.0,
+                    pitch_mm: 1.75,
+                    teeth_count: 5,
+                    thread_angle_deg: 60.0,
+                    flute_length_mm: 9.0,
+                    overall_length_mm: 55.0,
+                    shank_diameter_mm: 6.0,
+                    flutes: 3,
+                },
+                presets: Vec::new(),
+            };
+
+            let mut bt = ToolpathBuilder::new("op_thread");
+            bt.rapid_to(DVec3::new(0.0, 0.0, 6.0));
+            bt.linear_to(DVec3::new(0.0, 0.0, -14.0), 400.0, MotionRole::Plunge);
+            let r_hel = 2.25; // cuts to radius 2.25 + 3.75 = 6.0 mm (M12 major radius)
+            bt.linear_to(DVec3::new(r_hel, 0.0, -14.0), 300.0, MotionRole::LeadIn);
+            let steps = 36usize;
+            for k in 1..=steps {
+                let u = k as f64 / steps as f64;
+                let ang = u * std::f64::consts::TAU;
+                let z = -14.0 + 1.75 * u;
+                bt.linear_to(
+                    DVec3::new(r_hel * ang.cos(), r_hel * ang.sin(), z),
+                    500.0,
+                    MotionRole::Cut,
+                );
+            }
+            bt.linear_to(DVec3::new(0.0, 0.0, -12.25), 400.0, MotionRole::LeadOut);
+            bt.rapid_to(DVec3::new(0.0, 0.0, 6.0));
+            let tp_thread = bt.finish();
+
+            let ops = [
+                SimOperationInput {
+                    op_id: "op_pilot",
+                    op_name: "Pilot Bore",
+                    tool: flat_6,
+                    fallback_spindle_rpm: 12_000.0,
+                    intentional_edge_break_mm: 0.0,
+                    toolpath: &tp_pilot,
+                },
+                SimOperationInput {
+                    op_id: "op_thread",
+                    op_name: "Helical ThreadMill",
+                    tool: &tm_tool,
+                    fallback_spindle_rpm: 8_000.0,
+                    intentional_edge_break_mm: 0.0,
+                    toolpath: &tp_thread,
+                },
+            ];
+            let input = SetupSimulationInput {
+                doc: &empty_doc,
+                setup: &resolved,
+                target_bodies: &[],
+                operations: &ops,
+                resolution: SimResolution::Standard,
+                kinematics: MachineKinematicsConfig::default(),
+                verify_config: SimVerificationConfig::default(),
+                cancel: None,
+            };
+            let sim_cpu = run_setup_simulation_with_choice(
+                &input,
+                SimEngineKind::TriDexel,
+                SimComputeBackendChoice::Cpu,
+            )
+            .unwrap();
+            let sim_gpu = run_setup_simulation_with_choice(
+                &input,
+                SimEngineKind::TriDexel,
+                SimComputeBackendChoice::Gpu,
+            )
+            .unwrap();
+            assert!(sim_gpu.active_backend.is_gpu);
+
+            let vol_err = (sim_gpu.remaining_stock_volume_mm3 - sim_cpu.remaining_stock_volume_mm3)
+                .abs()
+                / sim_cpu.remaining_stock_volume_mm3.max(1.0);
+            assert!(
+                vol_err < 0.001,
+                "ThreadMill helical TriDexel vol err {:.4}% > 0.1% (cpu={:.2}, gpu={:.2})",
+                vol_err * 100.0,
+                sim_cpu.remaining_stock_volume_mm3,
+                sim_gpu.remaining_stock_volume_mm3
+            );
+            assert_eq!(sim_cpu.diagnostics.len(), sim_gpu.diagnostics.len());
+        }
+    }
+
+    #[cfg(feature = "gpu-compute")]
+    #[test]
+    fn gpu_bvh_multibody_stl_target_bodies_filter_matches_cpu_tridexel_and_cylindrical() {
+        // Two disjoint 20 x 20 x 10 mm mesh bodies inside the same CadDocument (including
+        // MESH_FACE_SENTINEL pick_triangles to guard against multi-body bleed-through).
+        let mesh_left = make_test_box_mesh_body(
+            BodyId(0),
+            "Left Part",
+            DVec3::new(0.0, 0.0, -10.0),
+            DVec3::new(20.0, 20.0, 0.0),
+        );
+        let mesh_right = make_test_box_mesh_body(
+            BodyId(1),
+            "Right Part",
+            DVec3::new(30.0, 0.0, -10.0),
+            DVec3::new(50.0, 20.0, 0.0),
+        );
+
+        let mut render_mesh = chip_cad::build_render_mesh_for_triangle_mesh(
+            &mesh_left,
+            35.0,
+            chip_cad::MESH_FACE_SENTINEL,
+        );
+        let rm_right = chip_cad::build_render_mesh_for_triangle_mesh(
+            &mesh_right,
+            35.0,
+            chip_cad::MESH_FACE_SENTINEL,
+        );
+        let v_off = render_mesh.vertices.len() as u32;
+        render_mesh.vertices.extend(rm_right.vertices);
+        render_mesh
+            .indices
+            .extend(rm_right.indices.into_iter().map(|i| i + v_off));
+        render_mesh.pick_triangles.extend(rm_right.pick_triangles);
+
+        let full_aabb =
+            chip_math::Aabb3::new(DVec3::new(0.0, 0.0, -10.0), DVec3::new(50.0, 20.0, 0.0));
+        let mut doc = CadDocument::empty();
+        doc.source_name = "two_bodies.3mf".to_string();
+        doc.meshes = vec![mesh_left, mesh_right];
+        doc.aabb_mm = full_aabb;
+        doc.render_mesh = render_mesh;
+
+        let mut setup = Setup::new("s_mb_gpu", "MultiBody GPU BVH", WorkOffsetSlot::G54);
+        setup.wcs.origin = WcsOriginMode::ModelBoxPoint {
+            anchor: BoxAnchor27 {
+                x: AxisAnchor::Min,
+                y: AxisAnchor::Min,
+                z: AxisAnchor::Max,
+            },
+        };
+        setup.stock = StockConfig::FixedBox {
+            width_x: ParamLength::from_mm(54.0),
+            depth_y: ParamLength::from_mm(24.0),
+            height_z: ParamLength::from_mm(14.0),
+            xy_align: chip_cam::FixedBoxXyAlign::CenterXy,
+            z_align: chip_cam::FixedBoxZAlign::default(),
+        };
+        let resolved = setup.resolve(&doc, DisplayUnit::Millimeter).unwrap();
+
+        let input_right = SetupSimulationInput {
+            doc: &doc,
+            setup: &resolved,
+            target_bodies: &[BodyId(1)],
+            operations: &[],
+            resolution: SimResolution::Standard,
+            kinematics: MachineKinematicsConfig::default(),
+            verify_config: SimVerificationConfig::default(),
+            cancel: None,
+        };
+        let cpu_td = run_setup_simulation_with_choice(
+            &input_right,
+            SimEngineKind::TriDexel,
+            SimComputeBackendChoice::Cpu,
+        )
+        .unwrap();
+        let gpu_td = run_setup_simulation_with_choice(
+            &input_right,
+            SimEngineKind::TriDexel,
+            SimComputeBackendChoice::Gpu,
+        )
+        .unwrap();
+        assert!(gpu_td.active_backend.is_gpu);
+
+        let tgt_cpu = cpu_td.target_tridexel_stock.as_ref().unwrap();
+        let tgt_gpu = gpu_td.target_tridexel_stock.as_ref().unwrap();
+        assert!(
+            (tgt_gpu.compute_volume_mm3() - 4_000.0).abs() < 100.0,
+            "GPU BVH filtered BodyId(1) target vol expected ~4000, got {:.1}",
+            tgt_gpu.compute_volume_mm3()
+        );
+        assert!(
+            (tgt_gpu.compute_volume_mm3() - tgt_cpu.compute_volume_mm3()).abs() < 50.0,
+            "GPU vs CPU filtered BodyId(1) target vol mismatch: gpu={:.1}, cpu={:.1}",
+            tgt_gpu.compute_volume_mm3(),
+            tgt_cpu.compute_volume_mm3()
+        );
+        assert!(
+            tgt_gpu.sample_top_z(10.0, 10.0).is_none(),
+            "excluded BodyId(0) must NOT appear in GPU BVH TriDexel target"
+        );
+        assert!(
+            tgt_gpu.sample_top_z(40.0, 10.0).is_some(),
+            "selected BodyId(1) must appear in GPU BVH TriDexel target"
+        );
+
+        let rep_cpu = cpu_td.error_report.as_ref().unwrap();
+        let rep_gpu = gpu_td.error_report.as_ref().unwrap();
+        assert!(
+            (rep_gpu.target_volume_mm3 - rep_cpu.target_volume_mm3).abs() < 50.0,
+            "GPU vs CPU report target vol mismatch"
+        );
+        assert!(
+            (rep_gpu.excess_volume_mm3 - rep_cpu.excess_volume_mm3).abs() < 50.0,
+            "GPU vs CPU report excess vol mismatch"
+        );
+
+        // Also check Cylindrical GPU BVH target rasterization honors target_bodies filter!
+        let mut setup_cyl = Setup::new("s_mb_cyl", "MultiBody Cyl", WorkOffsetSlot::G54);
+        setup_cyl.wcs.origin = WcsOriginMode::ModelBoxPoint {
+            anchor: BoxAnchor27::VOLUMETRIC_CENTER,
+        };
+        setup_cyl.stock = StockConfig::FixedCylinder {
+            axis: StockAxis::X,
+            diameter: ParamLength::from_mm(40.0),
+            length: ParamLength::from_mm(60.0),
+            axial_top_offset: ParamLength::from_mm(0.0),
+        };
+        setup_cyl.rotary.mode = RotaryDriveMode::TwoLinearPlusRotary;
+        setup_cyl.rotary.axis = RotaryAxisKind::XAxis;
+        let res_cyl = setup_cyl.resolve(&doc, DisplayUnit::Millimeter).unwrap();
+
+        let in_cyl = SetupSimulationInput {
+            doc: &doc,
+            setup: &res_cyl,
+            target_bodies: &[BodyId(1)],
+            operations: &[],
+            resolution: SimResolution::Standard,
+            kinematics: MachineKinematicsConfig::default(),
+            verify_config: SimVerificationConfig::default(),
+            cancel: None,
+        };
+        let cpu_cyl = run_setup_simulation_with_choice(
+            &in_cyl,
+            SimEngineKind::Heightmap,
+            SimComputeBackendChoice::Cpu,
+        )
+        .unwrap();
+        let gpu_cyl = run_setup_simulation_with_choice(
+            &in_cyl,
+            SimEngineKind::Heightmap,
+            SimComputeBackendChoice::Gpu,
+        )
+        .unwrap();
+        assert!(gpu_cyl.active_backend.is_gpu);
+        let cc = cpu_cyl.as_cylindrical().unwrap();
+        let cg = gpu_cyl.as_cylindrical().unwrap();
+        let mut max_rt_diff = 0.0_f64;
+        let mut hit_count = 0usize;
+        for (a, b) in cc.r_target.iter().zip(cg.r_target.iter()) {
+            assert_eq!(*a >= 0.0, *b >= 0.0);
+            if *a >= 0.0 {
+                hit_count += 1;
+                max_rt_diff = max_rt_diff.max((f64::from(*a) - f64::from(*b)).abs());
+            }
+        }
+        assert!(hit_count > 100);
+        assert!(
+            max_rt_diff < 5e-3,
+            "Multi-body Cylindrical GPU BVH r_target max diff {max_rt_diff:.5} mm"
+        );
     }
 }

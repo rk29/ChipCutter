@@ -104,7 +104,9 @@ impl GpuHeightfieldState {
         let z_target_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("chip_hf_z_target"),
             contents: bytemuck::cast_slice(&stock.z_target),
-            usage: wgpu::BufferUsages::STORAGE,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::COPY_SRC,
         });
         let last_op_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("chip_hf_last_op_idx"),
@@ -402,6 +404,82 @@ impl GpuHeightfieldState {
             self.sync_gpu_to_cpu_locked(&mut guard);
         }
         f(&guard.stock)
+    }
+
+    #[inline]
+    pub(crate) fn nx(&self) -> usize {
+        self.nx
+    }
+
+    #[inline]
+    pub(crate) fn ny(&self) -> usize {
+        self.ny
+    }
+
+    #[inline]
+    pub(crate) fn origin_wcs(&self) -> DVec3 {
+        self.origin_wcs
+    }
+
+    #[inline]
+    pub(crate) fn dx_mm(&self) -> f64 {
+        self.dx_mm
+    }
+
+    #[inline]
+    pub(crate) fn dy_mm(&self) -> f64 {
+        self.dy_mm
+    }
+
+    #[inline]
+    pub(crate) fn z_stock_buf(&self) -> &wgpu::Buffer {
+        &self.z_stock_buf
+    }
+
+    #[inline]
+    pub(crate) fn z_bottom_buf(&self) -> &wgpu::Buffer {
+        &self.z_bottom_buf
+    }
+
+    #[inline]
+    pub(crate) fn z_target_buf(&self) -> &wgpu::Buffer {
+        &self.z_target_buf
+    }
+
+    /// Rasterizes `target_mesh` directly into GPU `z_target_buf` via `bvh_distance.wgsl` and
+    /// syncs the resulting `z_target` slice into the CPU shadow copy.
+    pub(crate) fn rasterize_target_mesh_gpu(&mut self, target_mesh: &chip_bvh::TriMesh3D) {
+        self.ctx.rasterize_heightfield_target_into_buffer(
+            self.nx,
+            self.ny,
+            self.origin_wcs,
+            self.dx_mm,
+            self.dy_mm,
+            target_mesh,
+            &self.z_target_buf,
+        );
+        let byte_len = self.nx * self.ny * std::mem::size_of::<f32>();
+        if byte_len > 0 {
+            let mut encoder =
+                self.ctx
+                    .device()
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("chip_hf_target_readback"),
+                    });
+            encoder.copy_buffer_to_buffer(
+                &self.z_target_buf,
+                0,
+                &self.z_stock_readback_buf,
+                0,
+                byte_len as u64,
+            );
+            self.ctx.queue().submit(std::iter::once(encoder.finish()));
+            let mut guard = self.cpu.lock().unwrap_or_else(|e| e.into_inner());
+            let dst: &mut [u8] = bytemuck::cast_slice_mut(&mut guard.stock.z_target);
+            let _ = self
+                .ctx
+                .readback_bytes(&self.z_stock_readback_buf, byte_len, dst);
+        }
     }
 
     /// Restores both CPU shadow and GPU storage buffers from a checkpoint snapshot.

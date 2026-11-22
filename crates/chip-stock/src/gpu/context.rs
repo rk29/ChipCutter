@@ -1,9 +1,23 @@
 //! Shared or headless `wgpu` compute context (`GpuSimContext`) caching compiled WGSL compute
-//! pipelines and bind group layouts for `Heightfield` and `Cylindrical` sweepers.
+//! pipelines and bind group layouts for `Heightfield`, `Cylindrical`, `TriDexel`, BVH target
+//! rasterization/distance, and parallel reduction metrology.
 
-use std::sync::{Arc, OnceLock, mpsc};
+use std::sync::{Arc, Mutex, OnceLock, mpsc};
 
 use crate::types::ActiveSimBackendInfo;
+
+use super::types::{
+    GPU_METRICS_HIST_BINS, GPU_METRICS_MAX_WORKGROUPS, GpuMetricsPartial, MetricsUniforms,
+};
+
+pub(crate) struct MetricsScratchBuffers {
+    pub(crate) uniform_buf: wgpu::Buffer,
+    pub(crate) partials_buf: wgpu::Buffer,
+    pub(crate) partials_readback_buf: wgpu::Buffer,
+    pub(crate) hist_buf: wgpu::Buffer,
+    pub(crate) hist_readback_buf: wgpu::Buffer,
+    pub(crate) common_bg: wgpu::BindGroup,
+}
 
 /// Reusable `wgpu` compute device, queue, and pre-compiled stock simulation pipelines.
 ///
@@ -17,6 +31,24 @@ pub struct GpuSimContext {
     pub(crate) heightfield_pipeline: wgpu::ComputePipeline,
     pub(crate) cylindrical_bgl: wgpu::BindGroupLayout,
     pub(crate) cylindrical_pipeline: wgpu::ComputePipeline,
+    pub(crate) tridexel_bgl: wgpu::BindGroupLayout,
+    pub(crate) tridexel_pipeline: wgpu::ComputePipeline,
+    pub(crate) bvh_common_bgl: wgpu::BindGroupLayout,
+    pub(crate) bvh_td_bgl: wgpu::BindGroupLayout,
+    pub(crate) bvh_cyl_bgl: wgpu::BindGroupLayout,
+    pub(crate) bvh_hf_bgl: wgpu::BindGroupLayout,
+    pub(crate) bvh_closest_bgl: wgpu::BindGroupLayout,
+    pub(crate) bvh_tridexel_pipeline: wgpu::ComputePipeline,
+    pub(crate) bvh_cyl_pipeline: wgpu::ComputePipeline,
+    pub(crate) bvh_hf_pipeline: wgpu::ComputePipeline,
+    pub(crate) bvh_closest_pipeline: wgpu::ComputePipeline,
+    pub(crate) metrics_hf_bgl: wgpu::BindGroupLayout,
+    pub(crate) metrics_cyl_bgl: wgpu::BindGroupLayout,
+    pub(crate) metrics_td_bgl: wgpu::BindGroupLayout,
+    pub(crate) metrics_hf_pipeline: wgpu::ComputePipeline,
+    pub(crate) metrics_cyl_pipeline: wgpu::ComputePipeline,
+    pub(crate) metrics_td_pipeline: wgpu::ComputePipeline,
+    pub(crate) metrics_scratch: Mutex<MetricsScratchBuffers>,
 }
 
 impl std::fmt::Debug for GpuSimContext {
@@ -37,6 +69,9 @@ impl GpuSimContext {
     ) -> Self {
         let (heightfield_bgl, heightfield_pipeline) = build_heightfield_pipeline(&device);
         let (cylindrical_bgl, cylindrical_pipeline) = build_cylindrical_pipeline(&device);
+        let (tridexel_bgl, tridexel_pipeline) = build_tridexel_pipeline(&device);
+        let bvh = build_bvh_pipelines(&device);
+        let met = build_metrics_pipelines(&device);
 
         Self {
             device,
@@ -46,6 +81,24 @@ impl GpuSimContext {
             heightfield_pipeline,
             cylindrical_bgl,
             cylindrical_pipeline,
+            tridexel_bgl,
+            tridexel_pipeline,
+            bvh_common_bgl: bvh.common_bgl,
+            bvh_td_bgl: bvh.td_bgl,
+            bvh_cyl_bgl: bvh.cyl_bgl,
+            bvh_hf_bgl: bvh.hf_bgl,
+            bvh_closest_bgl: bvh.closest_bgl,
+            bvh_tridexel_pipeline: bvh.td_pipeline,
+            bvh_cyl_pipeline: bvh.cyl_pipeline,
+            bvh_hf_pipeline: bvh.hf_pipeline,
+            bvh_closest_pipeline: bvh.closest_pipeline,
+            metrics_hf_bgl: met.hf_bgl,
+            metrics_cyl_bgl: met.cyl_bgl,
+            metrics_td_bgl: met.td_bgl,
+            metrics_hf_pipeline: met.hf_pipeline,
+            metrics_cyl_pipeline: met.cyl_pipeline,
+            metrics_td_pipeline: met.td_pipeline,
+            metrics_scratch: Mutex::new(met.scratch),
         }
     }
 
@@ -271,6 +324,282 @@ fn build_cylindrical_pipeline(
     });
 
     (bgl, pipeline)
+}
+
+fn build_tridexel_pipeline(
+    device: &wgpu::Device,
+) -> (wgpu::BindGroupLayout, wgpu::ComputePipeline) {
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("chip_tridexel_sweep_wgsl"),
+        source: wgpu::ShaderSource::Wgsl(include_str!("tridexel_sweep.wgsl").into()),
+    });
+
+    // 1 uniform + 8 storage buffers (strictly within WebGPU default limit of 8 storage buffers/stage)
+    let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("chip_td_sweep_bgl"),
+        entries: &[
+            uniform_entry(0),        // TriDexelPlaneUniforms
+            storage_entry(1, false), // slots (rw)
+            storage_entry(2, false), // counts (rw)
+            storage_entry(3, true),  // target_slots (ro)
+            storage_entry(4, true),  // target_counts (ro)
+            storage_entry(5, true),  // profiles (ro)
+            storage_entry(6, true),  // chords (ro)
+            storage_entry(7, true),  // tile_data (ro)
+            storage_entry(8, false), // accum_and_overflow (rw atomic)
+        ],
+    });
+
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("chip_td_sweep_layout"),
+        bind_group_layouts: &[Some(&bgl)],
+        immediate_size: 0,
+    });
+
+    let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("chip_td_sweep_pipeline"),
+        layout: Some(&layout),
+        module: &shader,
+        entry_point: Some("main"),
+        compilation_options: wgpu::PipelineCompilationOptions::default(),
+        cache: None,
+    });
+
+    (bgl, pipeline)
+}
+
+struct BuiltBvhPipelines {
+    common_bgl: wgpu::BindGroupLayout,
+    td_bgl: wgpu::BindGroupLayout,
+    cyl_bgl: wgpu::BindGroupLayout,
+    hf_bgl: wgpu::BindGroupLayout,
+    closest_bgl: wgpu::BindGroupLayout,
+    td_pipeline: wgpu::ComputePipeline,
+    cyl_pipeline: wgpu::ComputePipeline,
+    hf_pipeline: wgpu::ComputePipeline,
+    closest_pipeline: wgpu::ComputePipeline,
+}
+
+fn build_bvh_pipelines(device: &wgpu::Device) -> BuiltBvhPipelines {
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("chip_bvh_distance_wgsl"),
+        source: wgpu::ShaderSource::Wgsl(include_str!("bvh_distance.wgsl").into()),
+    });
+
+    let common_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("chip_bvh_common_bgl"),
+        entries: &[
+            uniform_entry(0),       // BvhDispatchUniforms
+            storage_entry(1, true), // bvh_nodes (ro)
+            storage_entry(2, true), // gpu_tris (ro)
+        ],
+    });
+    let td_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("chip_bvh_td_bgl"),
+        entries: &[
+            storage_entry(0, false), // td_slots (rw)
+            storage_entry(1, false), // td_counts (rw)
+            storage_entry(2, false), // td_overflow (rw atomic)
+        ],
+    });
+    let cyl_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("chip_bvh_cyl_bgl"),
+        entries: &[storage_entry(3, false)], // cyl_r_target (rw)
+    });
+    let hf_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("chip_bvh_hf_bgl"),
+        entries: &[storage_entry(4, false)], // hf_z_target (rw)
+    });
+    let closest_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("chip_bvh_closest_bgl"),
+        entries: &[
+            storage_entry(5, true),  // query_points (ro)
+            storage_entry(6, false), // closest_out (rw)
+        ],
+    });
+
+    let make_pipe = |label: &str, entry: &str, group1: &wgpu::BindGroupLayout| {
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some(label),
+            bind_group_layouts: &[Some(&common_bgl), Some(group1)],
+            immediate_size: 0,
+        });
+        device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some(label),
+            layout: Some(&layout),
+            module: &shader,
+            entry_point: Some(entry),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            cache: None,
+        })
+    };
+
+    let td_pipeline = make_pipe("chip_bvh_td_pipe", "rasterize_tridexel_plane", &td_bgl);
+    let cyl_pipeline = make_pipe(
+        "chip_bvh_cyl_pipe",
+        "rasterize_cylindrical_target",
+        &cyl_bgl,
+    );
+    let hf_pipeline = make_pipe("chip_bvh_hf_pipe", "rasterize_heightfield_target", &hf_bgl);
+    let closest_pipeline = make_pipe(
+        "chip_bvh_closest_pipe",
+        "closest_point_distance",
+        &closest_bgl,
+    );
+
+    BuiltBvhPipelines {
+        common_bgl,
+        td_bgl,
+        cyl_bgl,
+        hf_bgl,
+        closest_bgl,
+        td_pipeline,
+        cyl_pipeline,
+        hf_pipeline,
+        closest_pipeline,
+    }
+}
+
+struct BuiltMetricsPipelines {
+    hf_bgl: wgpu::BindGroupLayout,
+    cyl_bgl: wgpu::BindGroupLayout,
+    td_bgl: wgpu::BindGroupLayout,
+    hf_pipeline: wgpu::ComputePipeline,
+    cyl_pipeline: wgpu::ComputePipeline,
+    td_pipeline: wgpu::ComputePipeline,
+    scratch: MetricsScratchBuffers,
+}
+
+fn build_metrics_pipelines(device: &wgpu::Device) -> BuiltMetricsPipelines {
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("chip_stock_metrics_wgsl"),
+        source: wgpu::ShaderSource::Wgsl(include_str!("stock_metrics.wgsl").into()),
+    });
+
+    let common_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("chip_metrics_common_bgl"),
+        entries: &[
+            uniform_entry(0),        // MetricsUniforms
+            storage_entry(1, false), // partials (rw)
+            storage_entry(2, false), // global_hist (rw atomic)
+        ],
+    });
+    let hf_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("chip_metrics_hf_bgl"),
+        entries: &[
+            storage_entry(0, true), // hf_z_stock (ro)
+            storage_entry(1, true), // hf_z_bottom (ro)
+            storage_entry(2, true), // hf_z_target (ro)
+        ],
+    });
+    let cyl_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("chip_metrics_cyl_bgl"),
+        entries: &[
+            storage_entry(3, true), // cyl_r_stock (ro)
+            storage_entry(4, true), // cyl_r_target (ro)
+        ],
+    });
+    let td_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("chip_metrics_td_bgl"),
+        entries: &[
+            storage_entry(5, true), // td_m_slots (ro)
+            storage_entry(6, true), // td_m_counts (ro)
+            storage_entry(7, true), // td_t_slots (ro)
+            storage_entry(8, true), // td_t_counts (ro)
+        ],
+    });
+
+    let make_pipe = |label: &str, entry: &str, group1: &wgpu::BindGroupLayout| {
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some(label),
+            bind_group_layouts: &[Some(&common_bgl), Some(group1)],
+            immediate_size: 0,
+        });
+        device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some(label),
+            layout: Some(&layout),
+            module: &shader,
+            entry_point: Some(entry),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            cache: None,
+        })
+    };
+
+    let hf_pipeline = make_pipe("chip_metrics_hf_pipe", "reduce_heightfield", &hf_bgl);
+    let cyl_pipeline = make_pipe("chip_metrics_cyl_pipe", "reduce_cylindrical", &cyl_bgl);
+    let td_pipeline = make_pipe("chip_metrics_td_pipe", "reduce_tridexel", &td_bgl);
+
+    let uniform_buf = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("chip_metrics_uniforms"),
+        size: std::mem::size_of::<MetricsUniforms>() as u64,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let partials_bytes =
+        (GPU_METRICS_MAX_WORKGROUPS * std::mem::size_of::<GpuMetricsPartial>()) as u64;
+    let partials_buf = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("chip_metrics_partials"),
+        size: partials_bytes,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
+    });
+    let partials_readback_buf = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("chip_metrics_partials_readback"),
+        size: partials_bytes,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let hist_bytes = (GPU_METRICS_HIST_BINS * std::mem::size_of::<u32>()) as u64;
+    let hist_buf = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("chip_metrics_hist"),
+        size: hist_bytes,
+        usage: wgpu::BufferUsages::STORAGE
+            | wgpu::BufferUsages::COPY_DST
+            | wgpu::BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
+    });
+    let hist_readback_buf = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("chip_metrics_hist_readback"),
+        size: hist_bytes,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+
+    let common_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("chip_metrics_common_bg"),
+        layout: &common_bgl,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniform_buf.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: partials_buf.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: hist_buf.as_entire_binding(),
+            },
+        ],
+    });
+
+    BuiltMetricsPipelines {
+        hf_bgl,
+        cyl_bgl,
+        td_bgl,
+        hf_pipeline,
+        cyl_pipeline,
+        td_pipeline,
+        scratch: MetricsScratchBuffers {
+            uniform_buf,
+            partials_buf,
+            partials_readback_buf,
+            hist_buf,
+            hist_readback_buf,
+            common_bg,
+        },
+    }
 }
 
 /// Reusable GPU storage buffer that grows geometrically to avoid per-batch allocations.

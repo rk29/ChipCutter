@@ -122,7 +122,9 @@ impl GpuCylindricalState {
         let r_target_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("chip_cyl_r_target"),
             contents: bytemuck::cast_slice(&stock.r_target),
-            usage: wgpu::BufferUsages::STORAGE,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::COPY_SRC,
         });
         let last_op_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("chip_cyl_last_op_idx"),
@@ -551,6 +553,83 @@ impl GpuCylindricalState {
             self.sync_gpu_to_cpu_locked(&mut guard);
         }
         f(&guard.stock)
+    }
+
+    #[inline]
+    pub(crate) fn nu(&self) -> usize {
+        self.nu
+    }
+
+    #[inline]
+    pub(crate) fn ntheta(&self) -> usize {
+        self.ntheta
+    }
+
+    #[inline]
+    pub(crate) fn rotary(&self) -> RotaryStockSpec {
+        self.rotary
+    }
+
+    #[inline]
+    pub(crate) fn u_min(&self) -> f64 {
+        self.u_min
+    }
+
+    #[inline]
+    pub(crate) fn du(&self) -> f64 {
+        self.du
+    }
+
+    #[inline]
+    pub(crate) fn dtheta(&self) -> f64 {
+        self.dtheta
+    }
+
+    #[inline]
+    pub(crate) fn r_stock_buf(&self) -> &wgpu::Buffer {
+        &self.r_stock_buf
+    }
+
+    #[inline]
+    pub(crate) fn r_target_buf(&self) -> &wgpu::Buffer {
+        &self.r_target_buf
+    }
+
+    /// Rasterizes `target_mesh` directly into GPU `r_target_buf` via `bvh_distance.wgsl` and
+    /// syncs the resulting `r_target` slice into the CPU shadow copy.
+    pub(crate) fn rasterize_target_mesh_gpu(&mut self, target_mesh: &chip_bvh::TriMesh3D) {
+        self.ctx.rasterize_cylindrical_target_into_buffer(
+            self.nu,
+            self.ntheta,
+            self.rotary,
+            self.u_min,
+            self.du,
+            self.dtheta,
+            target_mesh,
+            &self.r_target_buf,
+        );
+        let byte_len = self.nu * self.ntheta * std::mem::size_of::<f32>();
+        if byte_len > 0 {
+            let mut encoder =
+                self.ctx
+                    .device()
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("chip_cyl_target_readback"),
+                    });
+            encoder.copy_buffer_to_buffer(
+                &self.r_target_buf,
+                0,
+                &self.r_stock_readback_buf,
+                0,
+                byte_len as u64,
+            );
+            self.ctx.queue().submit(std::iter::once(encoder.finish()));
+            let mut guard = self.cpu.lock().unwrap_or_else(|e| e.into_inner());
+            let dst: &mut [u8] = bytemuck::cast_slice_mut(&mut guard.stock.r_target);
+            let _ = self
+                .ctx
+                .readback_bytes(&self.r_stock_readback_buf, byte_len, dst);
+        }
     }
 
     /// Restores both CPU shadow and GPU storage buffers from a checkpoint snapshot.
