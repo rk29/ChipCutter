@@ -1,6 +1,6 @@
 use chip_cam::{
-    ArcDir, ArcPlane, ChamferSourceMode, ChamferTraceMode, ClEvent, GeneratedToolpath, Operation,
-    OperationKind, SegmentMotion3D, StrategyParams, ToolpathSegment3D,
+    ArcDir, ArcPlane, ChamferSourceMode, ChamferTraceMode, ClEvent, GeneratedToolpath, MotionRole,
+    Operation, OperationKind, SegmentMotion3D, StrategyParams, ToolpathSegment3D,
 };
 use chip_math::DVec3;
 use chip_tools::{MachineKinematicsSpec, Tool, ToolId};
@@ -223,6 +223,12 @@ pub struct SimulationTimeline {
     pub total_dwell_time_sec: f64,
     pub total_tool_change_time_sec: f64,
     pub total_distance_mm: f64,
+    #[serde(default)]
+    pub min_cutting_feed_mm_min: f64,
+    #[serde(default)]
+    pub max_cutting_feed_mm_min: f64,
+    #[serde(default)]
+    pub feed_modulated_segments: usize,
 }
 
 impl SimulationTimeline {
@@ -243,6 +249,9 @@ impl SimulationTimeline {
         let mut cur_time_sec = 0.0_f64;
         let mut cur_dist_mm = 0.0_f64;
         let mut active_tool_num: Option<u32> = None;
+        let mut min_cut_feed = f64::INFINITY;
+        let mut max_cut_feed = 0.0_f64;
+        let mut feed_modulated_segments = 0usize;
 
         for (op_idx, op) in ops.iter().enumerate() {
             let op_start_time = cur_time_sec;
@@ -283,6 +292,51 @@ impl SimulationTimeline {
             let mut op_rapid_dist = 0.0;
 
             if n > 0 {
+                let mut op_max_cut_feed = 0.0_f64;
+                let mut op_max_finish_feed = 0.0_f64;
+                for seg in segs {
+                    if let SegmentMotion3D::Linear { feed_mm_min, role }
+                    | SegmentMotion3D::Arc {
+                        feed_mm_min, role, ..
+                    } = seg.motion
+                        && feed_mm_min.is_finite()
+                        && feed_mm_min > 0.0
+                    {
+                        match role {
+                            MotionRole::Cut => {
+                                min_cut_feed = min_cut_feed.min(feed_mm_min);
+                                max_cut_feed = max_cut_feed.max(feed_mm_min);
+                                op_max_cut_feed = op_max_cut_feed.max(feed_mm_min);
+                            }
+                            MotionRole::FinishCut => {
+                                min_cut_feed = min_cut_feed.min(feed_mm_min);
+                                max_cut_feed = max_cut_feed.max(feed_mm_min);
+                                op_max_finish_feed = op_max_finish_feed.max(feed_mm_min);
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                for seg in segs {
+                    if let SegmentMotion3D::Linear { feed_mm_min, role }
+                    | SegmentMotion3D::Arc {
+                        feed_mm_min, role, ..
+                    } = seg.motion
+                        && feed_mm_min.is_finite()
+                        && feed_mm_min > 0.0
+                    {
+                        match role {
+                            MotionRole::Cut if op_max_cut_feed - feed_mm_min > 0.5 => {
+                                feed_modulated_segments += 1;
+                            }
+                            MotionRole::FinishCut if op_max_finish_feed - feed_mm_min > 0.5 => {
+                                feed_modulated_segments += 1;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+
                 // Precompute target speeds (mm/s), lengths (mm), and entry/exit unit tangents
                 let mut lengths = Vec::with_capacity(n);
                 let mut target_v = Vec::with_capacity(n);
@@ -425,6 +479,13 @@ impl SimulationTimeline {
 
         timeline.total_time_sec = cur_time_sec;
         timeline.total_distance_mm = cur_dist_mm;
+        timeline.min_cutting_feed_mm_min = if min_cut_feed.is_finite() {
+            min_cut_feed
+        } else {
+            0.0
+        };
+        timeline.max_cutting_feed_mm_min = max_cut_feed;
+        timeline.feed_modulated_segments = feed_modulated_segments;
         timeline
     }
 
@@ -768,5 +829,126 @@ fn trapezoidal_segment_duration(
         let t_acc = (v_peak - v0).max(0.0) / accel;
         let t_dec = (v_peak - v1).max(0.0) / accel;
         t_acc + t_dec
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use chip_cam::{
+        EffectiveCuttingParams, FeedOptimizationConfig, ToolpathBuilder,
+        optimize_toolpath_feedrates, rebuild_segments_from_events,
+    };
+    use chip_math::{DisplayUnit, ParamLength, approx_eq};
+    use chip_tools::{CoolantMode, CutterGeometry, SpindleDirection, Tool, ToolId};
+
+    use super::*;
+
+    fn test_tool() -> Tool {
+        Tool {
+            id: ToolId("t1_6mm".to_string()),
+            tool_number: 1,
+            length_offset_number: 1,
+            diameter_offset_number: 1,
+            name: "6mm Flat Endmill".to_string(),
+            vendor: None,
+            product_id: None,
+            native_unit: DisplayUnit::Millimeter,
+            spindle_direction: SpindleDirection::Cw,
+            default_coolant: CoolantMode::Flood,
+            stickout_length_mm: 24.0,
+            geometry: CutterGeometry::FlatEndmill {
+                diameter_mm: 6.0,
+                flute_length_mm: 18.0,
+                overall_length_mm: 55.0,
+                shank_diameter_mm: 6.0,
+                flutes: 3,
+            },
+            presets: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn timeline_tracks_min_max_cutting_feed_and_modulated_segments() {
+        let tool = test_tool();
+        let cutting = EffectiveCuttingParams {
+            spindle_rpm: 12_000.0,
+            cutting_feed_mm_min: 1_000.0,
+            lead_feed_mm_min: 800.0,
+            ramp_feed_mm_min: 500.0,
+            plunge_feed_mm_min: 300.0,
+            stepdown_mm: 3.0,
+            stepover_mm: 2.4,
+            coolant: CoolantMode::Flood,
+        };
+
+        // 1. Constant-feed L-path (unmodulated) -> min == max == 1000, modulated == 0
+        let mut b_const = ToolpathBuilder::new("op_const");
+        b_const.rapid_to(DVec3::new(0.0, 0.0, 5.0));
+        b_const.linear_to(DVec3::new(0.0, 0.0, -5.0), 300.0, MotionRole::Plunge);
+        b_const.linear_to(DVec3::new(20.0, 0.0, -5.0), 1_000.0, MotionRole::Cut);
+        b_const.linear_to(DVec3::new(20.0, 20.0, -5.0), 1_000.0, MotionRole::Cut);
+        let tp_const = b_const.finish();
+
+        let tl_const = SimulationTimeline::from_operations(
+            &[SimOperationInput {
+                op_id: "op_const",
+                op_name: "Constant Feed",
+                tool: &tool,
+                fallback_spindle_rpm: 12_000.0,
+                intentional_edge_break_mm: 0.0,
+                toolpath: &tp_const,
+            }],
+            MachineKinematicsConfig::default(),
+        );
+        assert!(approx_eq(tl_const.min_cutting_feed_mm_min, 1_000.0, 1e-6));
+        assert!(approx_eq(tl_const.max_cutting_feed_mm_min, 1_000.0, 1e-6));
+        assert_eq!(tl_const.feed_modulated_segments, 0);
+
+        // 2. Optimized L-path with 90° corner slowdown -> min == 350, max == 1000, modulated > 0
+        let mut b_opt = ToolpathBuilder::new("op_opt");
+        b_opt.rapid_to(DVec3::new(0.0, 0.0, 5.0));
+        b_opt.linear_to(DVec3::new(0.0, 0.0, -5.0), 300.0, MotionRole::Plunge);
+        b_opt.linear_to(DVec3::new(20.0, 0.0, -5.0), 1_000.0, MotionRole::Cut);
+        b_opt.linear_to(DVec3::new(20.0, 20.0, -5.0), 1_000.0, MotionRole::Cut);
+        let cfg = FeedOptimizationConfig {
+            enabled: true,
+            corner_slowdown: true,
+            min_feed_fraction: 0.35,
+            corner_angle_threshold_deg: 25.0,
+            slowdown_distance: ParamLength::from_mm(3.0),
+            internal_arc_scaling: true,
+            chip_thinning_boost: false,
+            max_thinning_multiplier: 1.5,
+        };
+        optimize_toolpath_feedrates(
+            &mut b_opt.events,
+            &cfg,
+            &tool,
+            &cutting,
+            OperationKind::Pocket2D,
+        );
+        b_opt.segments_wcs = rebuild_segments_from_events(&b_opt.events);
+        let tp_opt = b_opt.finish();
+
+        let tl_opt = SimulationTimeline::from_operations(
+            &[SimOperationInput {
+                op_id: "op_opt",
+                op_name: "Optimized Feed",
+                tool: &tool,
+                fallback_spindle_rpm: 12_000.0,
+                intentional_edge_break_mm: 0.0,
+                toolpath: &tp_opt,
+            }],
+            MachineKinematicsConfig::default(),
+        );
+        assert!(approx_eq(tl_opt.min_cutting_feed_mm_min, 350.0, 1e-6));
+        assert!(approx_eq(tl_opt.max_cutting_feed_mm_min, 1_000.0, 1e-6));
+        assert!(
+            tl_opt.feed_modulated_segments >= 4,
+            "expected corner slowdown segments to be counted, got {}",
+            tl_opt.feed_modulated_segments
+        );
+        assert!(tl_opt.total_cutting_time_sec > tl_const.total_cutting_time_sec);
     }
 }

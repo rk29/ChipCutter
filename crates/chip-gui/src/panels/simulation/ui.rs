@@ -633,6 +633,33 @@ impl SimulationPanelState {
                                 ));
                             }
                             ui.separator();
+                            let feed_hud_tooltip = if res.timeline.max_cutting_feed_mm_min > 0.0 {
+                                let (min_f, max_f, unit_lbl) = match display_unit {
+                                    DisplayUnit::Millimeter => (
+                                        format!("{:.0}", res.timeline.min_cutting_feed_mm_min),
+                                        format!("{:.0}", res.timeline.max_cutting_feed_mm_min),
+                                        "mm/min",
+                                    ),
+                                    DisplayUnit::Inch => (
+                                        format!(
+                                            "{:.1}",
+                                            res.timeline.min_cutting_feed_mm_min / MM_PER_INCH
+                                        ),
+                                        format!(
+                                            "{:.1}",
+                                            res.timeline.max_cutting_feed_mm_min / MM_PER_INCH
+                                        ),
+                                        "ipm",
+                                    ),
+                                };
+                                format!(
+                                    "Active motion block, commanded feedrate, spindle RPM, and segment index.\nSetup cutting feed range: {min_f}–{max_f} {unit_lbl} ({} modulated cutting segments)",
+                                    res.timeline.feed_modulated_segments
+                                )
+                            } else {
+                                "Active motion block, commanded feedrate, spindle RPM, and segment index"
+                                    .to_string()
+                            };
                             ui.monospace(format!(
                                 "{} | F={} | S={:.0} | Seg {}/{}",
                                 s.motion_code,
@@ -640,7 +667,35 @@ impl SimulationPanelState {
                                 s.spindle_rpm,
                                 s.global_seg_idx + 1,
                                 res.timeline.motion_spans.len()
-                            ));
+                            ))
+                            .on_hover_text(feed_hud_tooltip);
+                            if res.timeline.feed_modulated_segments > 0
+                                && res.timeline.max_cutting_feed_mm_min
+                                    > res.timeline.min_cutting_feed_mm_min + 0.5
+                            {
+                                let range_txt = match display_unit {
+                                    DisplayUnit::Millimeter => format!(
+                                        "Feed Opt: {:.0}–{:.0} mm/min ({} mod)",
+                                        res.timeline.min_cutting_feed_mm_min,
+                                        res.timeline.max_cutting_feed_mm_min,
+                                        res.timeline.feed_modulated_segments
+                                    ),
+                                    DisplayUnit::Inch => format!(
+                                        "Feed Opt: {:.1}–{:.1} ipm ({} mod)",
+                                        res.timeline.min_cutting_feed_mm_min / MM_PER_INCH,
+                                        res.timeline.max_cutting_feed_mm_min / MM_PER_INCH,
+                                        res.timeline.feed_modulated_segments
+                                    ),
+                                };
+                                ui.separator();
+                                ui.colored_label(
+                                    crate::theme::ThemeTokens::from_ui(ui).info_fg,
+                                    egui::RichText::new(range_txt).monospace().small(),
+                                )
+                                .on_hover_text(
+                                    "Engagement-aware feedrate modulation active: minimum to maximum cutting feedrate and count of slowed/modulated cutting segments",
+                                );
+                            }
                             if ui
                                 .small_button("Center")
                                 .on_hover_text("Center camera on cutter tip")

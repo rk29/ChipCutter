@@ -585,10 +585,16 @@ fn emit_pure_medial_vcarve_region(
     kin: &VBitKinematics,
     z_levels: &[f64],
 ) -> Result<(), CamError> {
-    let chains = extract_medial_axis_chains(region, 0.02);
-    if chains.is_empty() {
+    // Tight 0.005 mm chord tolerance for pure medial V-carving so narrow serif tips
+    // and sharp 3D corner climbs carve cleanly with zero flattened blunting.
+    let raw_chains = extract_medial_axis_chains(region, 0.005);
+    if raw_chains.is_empty() {
         return Ok(());
     }
+    let chains: Vec<MedialChain2D> = raw_chains
+        .into_iter()
+        .map(|ch| refine_medial_chain_z_chord(ch, region, kin, 0.005))
+        .collect();
 
     let mut max_raw_d = 0.0_f64;
     for ch in &chains {
@@ -617,6 +623,63 @@ fn emit_pure_medial_vcarve_region(
         }
     }
     Ok(())
+}
+
+/// Refines a pure-medial 3D V-carve chain so nonlinear Z-profile curvature stays within
+/// `z_chord_tol_mm` (`<= 0.005 mm`) along every curved branch and sharp corner climb.
+fn refine_medial_chain_z_chord(
+    chain: MedialChain2D,
+    region: &PocketRegion2D,
+    kin: &VBitKinematics,
+    z_chord_tol_mm: f64,
+) -> MedialChain2D {
+    if chain.samples.len() < 2 {
+        return chain;
+    }
+    let tol = z_chord_tol_mm.max(1e-4);
+    let z_at_r = |r: f64| -> f64 {
+        let d = (((r - kin.r_tip).max(0.0)) / kin.tan_theta).min(kin.max_depth_cap);
+        kin.top_z - d
+    };
+
+    fn subdivide_span(
+        a: MedialNode2D,
+        b: MedialNode2D,
+        region: &PocketRegion2D,
+        z_at_r: &impl Fn(f64) -> f64,
+        tol: f64,
+        depth: u8,
+        out: &mut Vec<MedialNode2D>,
+    ) {
+        if depth >= 4 || a.pos_wcs.distance(b.pos_wcs) <= 0.02 {
+            out.push(b);
+            return;
+        }
+        let mid_xy = 0.5 * (a.pos_wcs + b.pos_wcs);
+        let mid_r = region.min_boundary_distance(mid_xy).max(0.0);
+        let z_lin = 0.5 * (z_at_r(a.clearance_radius_mm) + z_at_r(b.clearance_radius_mm));
+        let z_exact = z_at_r(mid_r);
+        if (z_exact - z_lin).abs() > tol {
+            let mid = MedialNode2D {
+                pos_wcs: mid_xy,
+                clearance_radius_mm: mid_r,
+            };
+            subdivide_span(a, mid, region, z_at_r, tol, depth + 1, out);
+            subdivide_span(mid, b, region, z_at_r, tol, depth + 1, out);
+        } else {
+            out.push(b);
+        }
+    }
+
+    let mut refined = Vec::with_capacity(chain.samples.len() * 2);
+    refined.push(chain.samples[0]);
+    for w in chain.samples.windows(2) {
+        subdivide_span(w[0], w[1], region, &z_at_r, tol, 0, &mut refined);
+    }
+    MedialChain2D {
+        samples: refined,
+        closed: chain.closed,
+    }
 }
 
 fn emit_flat_clamped_vcarve_region(
@@ -924,4 +987,61 @@ fn clip_medial_chain_below_radius(samples: &[MedialNode2D], r_lim: f64) -> Vec<V
         out.push(cur);
     }
     out
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use chip_math::{ArcPolyline2D, ArcSegment2D, DVec2, approx_eq};
+
+    use super::*;
+
+    #[test]
+    fn pure_medial_vcarve_climbs_to_exact_sharp_corner_apex_within_z_chord_tolerance() {
+        // Sharp 30 x 12 mm rectangle: 4 sharp 90° corners must climb all the way to Z = top_z (0.0 mm)
+        let pts = [
+            DVec2::new(0.0, 0.0),
+            DVec2::new(30.0, 0.0),
+            DVec2::new(30.0, 12.0),
+            DVec2::new(0.0, 12.0),
+        ];
+        let outer = ArcPolyline2D {
+            segments: (0..4)
+                .map(|i| ArcSegment2D::Line {
+                    start: pts[i],
+                    end: pts[(i + 1) % 4],
+                })
+                .collect(),
+            closed: true,
+        };
+        let region = PocketRegion2D::new(outer, Vec::new());
+        let kin = VBitKinematics {
+            top_z: 0.0,
+            tan_theta: 30.0_f64.to_radians().tan(),
+            r_tip: 0.0,
+            max_depth_cap: 15.0,
+            retract_z: 5.0,
+        };
+        let chains: Vec<MedialChain2D> = extract_medial_axis_chains(&region, 0.005)
+            .into_iter()
+            .map(|ch| refine_medial_chain_z_chord(ch, &region, &kin, 0.005))
+            .collect();
+        assert!(!chains.is_empty());
+
+        // Every sharp corner apex must be reached within 0.01 mm with clearance_radius == 0 (Z == top_z)
+        for corner in pts {
+            let best = chains
+                .iter()
+                .flat_map(|c| c.samples.iter())
+                .map(|n| (n.pos_wcs.distance(corner), n.clearance_radius_mm))
+                .min_by(|a, b| a.0.total_cmp(&b.0))
+                .unwrap();
+            assert!(
+                best.0 < 0.02 && approx_eq(best.1, 0.0, 0.01),
+                "corner {corner:?} must be reached cleanly with zero blunting: dist={}, r={}",
+                best.0,
+                best.1
+            );
+        }
+    }
 }

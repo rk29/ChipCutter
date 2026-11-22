@@ -100,7 +100,92 @@ impl RestMachiningConfig {
     }
 }
 
-/// Common multi-depth stepdown, stock-to-leave, Rest Machining, and tolerance parameters (`05-operations.md`).
+pub const DEFAULT_MIN_FEED_FRACTION: f64 = 0.35;
+pub const DEFAULT_CORNER_ANGLE_THRESHOLD_DEG: f64 = 25.0;
+pub const DEFAULT_MAX_THINNING_MULTIPLIER: f64 = 1.5;
+
+fn default_min_feed_fraction() -> f64 {
+    DEFAULT_MIN_FEED_FRACTION
+}
+
+fn default_corner_angle_threshold_deg() -> f64 {
+    DEFAULT_CORNER_ANGLE_THRESHOLD_DEG
+}
+
+fn default_slowdown_distance() -> ParamLength {
+    param_expr("tool_d * 0.5", 3.0)
+}
+
+fn default_max_thinning_multiplier() -> f64 {
+    DEFAULT_MAX_THINNING_MULTIPLIER
+}
+
+/// Engagement-aware feedrate optimization settings (`M58`):
+/// internal arc perimeter-to-centerline scaling, sharp-corner lookahead deceleration,
+/// and optional constant-chipload radial chip-thinning boost.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FeedOptimizationConfig {
+    /// Opt-in master toggle (`false` by default for 100% backward compatibility).
+    #[serde(default)]
+    pub enabled: bool,
+    /// Decelerate approaching sharp linear corners and recover smoothly after exit.
+    #[serde(default = "default_true")]
+    pub corner_slowdown: bool,
+    /// Minimum allowed feedrate fraction (`0.15..=1.0`) preventing cutter rubbing/melting.
+    #[serde(default = "default_min_feed_fraction")]
+    pub min_feed_fraction: f64,
+    /// Deflection angle threshold (`5.0°..=120.0°`) triggering sharp-corner lookahead slowdown.
+    #[serde(default = "default_corner_angle_threshold_deg")]
+    pub corner_angle_threshold_deg: f64,
+    /// Lookahead deceleration & recovery ramp distance around sharp corners (default `tool_d * 0.5`).
+    #[serde(default = "default_slowdown_distance", alias = "slowdown_distance_mm")]
+    pub slowdown_distance: ParamLength,
+    /// Exact perimeter-to-centerline scaling `(R_arc - R_tool) / R_arc` on internal cutting arcs.
+    #[serde(default = "default_true")]
+    pub internal_arc_scaling: bool,
+    /// Gently boost straight/low-curvature light-engagement passes to maintain constant chipload.
+    #[serde(default)]
+    pub chip_thinning_boost: bool,
+    /// Maximum feedrate multiplier (`1.0..=2.5`) when `chip_thinning_boost` is enabled.
+    #[serde(default = "default_max_thinning_multiplier")]
+    pub max_thinning_multiplier: f64,
+}
+
+impl Default for FeedOptimizationConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            corner_slowdown: true,
+            min_feed_fraction: DEFAULT_MIN_FEED_FRACTION,
+            corner_angle_threshold_deg: DEFAULT_CORNER_ANGLE_THRESHOLD_DEG,
+            slowdown_distance: default_slowdown_distance(),
+            internal_arc_scaling: true,
+            chip_thinning_boost: false,
+            max_thinning_multiplier: DEFAULT_MAX_THINNING_MULTIPLIER,
+        }
+    }
+}
+
+impl FeedOptimizationConfig {
+    /// Returns `true` when matching default disabled settings so untouched `.chip.toml`
+    /// operations omit `feed_optimization` completely (zero diff on existing projects).
+    pub fn is_default(&self) -> bool {
+        !self.enabled
+            && self.corner_slowdown
+            && (self.min_feed_fraction - DEFAULT_MIN_FEED_FRACTION).abs() <= 1e-9
+            && (self.corner_angle_threshold_deg - DEFAULT_CORNER_ANGLE_THRESHOLD_DEG).abs() <= 1e-9
+            && self.slowdown_distance.expr.as_deref() == Some("tool_d * 0.5")
+            && self.internal_arc_scaling
+            && !self.chip_thinning_boost
+            && (self.max_thinning_multiplier - DEFAULT_MAX_THINNING_MULTIPLIER).abs() <= 1e-9
+    }
+
+    pub fn reevaluate(&mut self, ctx: &EvalContext) {
+        let _ = self.slowdown_distance.reevaluate(ctx);
+    }
+}
+
+/// Common multi-depth stepdown, stock-to-leave, Rest Machining, feed optimization, and tolerance parameters (`05-operations.md`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PassesParams {
     #[serde(default = "default_true")]
@@ -115,6 +200,8 @@ pub struct PassesParams {
     pub stock_to_leave_axial: ParamLength,
     #[serde(default, skip_serializing_if = "RestMachiningConfig::is_disabled")]
     pub rest_machining: RestMachiningConfig,
+    #[serde(default, skip_serializing_if = "FeedOptimizationConfig::is_default")]
+    pub feed_optimization: FeedOptimizationConfig,
     #[serde(default = "default_tolerance_mm")]
     pub tolerance_mm: f64,
 }
@@ -136,6 +223,7 @@ impl Default for PassesParams {
             stock_to_leave_radial: default_zero_len(),
             stock_to_leave_axial: default_zero_len(),
             rest_machining: RestMachiningConfig::default(),
+            feed_optimization: FeedOptimizationConfig::default(),
             tolerance_mm: default_tolerance_mm(),
         }
     }
@@ -147,6 +235,7 @@ impl PassesParams {
         let _ = self.stock_to_leave_radial.reevaluate(ctx);
         let _ = self.stock_to_leave_axial.reevaluate(ctx);
         self.rest_machining.reevaluate(ctx);
+        self.feed_optimization.reevaluate(ctx);
     }
 }
 

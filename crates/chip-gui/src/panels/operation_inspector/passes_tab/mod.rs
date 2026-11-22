@@ -6,8 +6,8 @@ pub mod vcarve;
 use std::ops::RangeInclusive;
 
 use chip_cam::{
-    Operation, OperationKind, OperationRotaryMode, ResolvedRotaryConfig, RestMachiningConfig,
-    RestMachiningMode, StrategyParams, compute_index_angle_for_normal,
+    FeedOptimizationConfig, Operation, OperationKind, OperationRotaryMode, ResolvedRotaryConfig,
+    RestMachiningConfig, RestMachiningMode, StrategyParams, compute_index_angle_for_normal,
 };
 use chip_math::{DVec3, DisplayUnit, EvalContext, ParamLength};
 use chip_tools::{CutterGeometry, ToolId};
@@ -314,6 +314,13 @@ pub fn show_passes_tab(ui: &mut egui::Ui, ctx: PassesTabCtx<'_>) {
         );
     }
 
+    if !matches!(
+        op.kind,
+        OperationKind::DrillBore | OperationKind::ThreadMill
+    ) {
+        show_feed_optimization_card(ui, &mut op.passes.feed_optimization, &mut item);
+    }
+
     match op.strategy_mut() {
         StrategyParams::Facing(p) => milling_2d::show_facing_params(ui, p, item),
         StrategyParams::Contour2D(p) => milling_2d::show_contour2d_params(ui, p, item, pick_mode),
@@ -504,6 +511,128 @@ fn show_operation_rotary_card(
                             -360.0..=360.0,
                             (1.0, "°"),
                             "Edit Cylinder Angle Offset",
+                        );
+                    }
+                }
+            });
+        },
+    );
+}
+
+fn show_feed_optimization_card(
+    ui: &mut egui::Ui,
+    feed_opt: &mut FeedOptimizationConfig,
+    item: &mut PassItemCtx<'_>,
+) {
+    let (setup_idx, op_idx) = item.ids();
+    let eval_ctx = item.eval_ctx;
+    section_card(
+        ui,
+        ("passes_feed_opt_card", setup_idx, op_idx),
+        "Feed Optimization",
+        feed_opt.enabled,
+        |ui| {
+            item.grid(ui, "passes_feed_opt_grid", |f| {
+                let was_enabled = feed_opt.enabled;
+                f.set_tip(
+                    "Modulate cutting feedrates around sharp corners, concave internal arcs, and light-engagement passes without altering rapids or plunges",
+                );
+                f.check(
+                    "Feed Optimization",
+                    &mut feed_opt.enabled,
+                    "Enable Engagement-Aware Feed",
+                    "Toggle Feed Optimization",
+                );
+                if feed_opt.enabled && !was_enabled {
+                    feed_opt.reevaluate(eval_ctx);
+                }
+
+                if feed_opt.enabled {
+                    f.set_tip(
+                        "Split segments approaching sharp linear corners to decelerate smoothly into the apex and recover after exit",
+                    );
+                    f.check(
+                        "Corner Slowdown",
+                        &mut feed_opt.corner_slowdown,
+                        "Lookahead Deceleration",
+                        "Toggle Corner Slowdown",
+                    );
+
+                    if feed_opt.corner_slowdown || feed_opt.internal_arc_scaling {
+                        let mut min_pct = (feed_opt.min_feed_fraction.clamp(0.15, 1.0)) * 100.0;
+                        f.set_tip(
+                            "Minimum allowed feedrate percentage in tight corners and concave arcs (prevents tool rubbing and melting)",
+                        );
+                        f.row("Min Feed %", |ui, mutated| {
+                            if ui
+                                .add(
+                                    egui::DragValue::new(&mut min_pct)
+                                        .range(15.0..=100.0)
+                                        .speed(1.0)
+                                        .fixed_decimals(0)
+                                        .suffix("%"),
+                                )
+                                .on_hover_text(
+                                    "Minimum feedrate floor as a percentage of nominal cutting feed (15%–100%)",
+                                )
+                                .changed()
+                            {
+                                feed_opt.min_feed_fraction = (min_pct / 100.0).clamp(0.15, 1.0);
+                                *mutated = Some("Edit Min Feed Fraction");
+                            }
+                        });
+                    }
+
+                    if feed_opt.corner_slowdown {
+                        f.set_tip(
+                            "Minimum linear direction deflection angle triggering corner lookahead slowdown",
+                        );
+                        f.drag(
+                            "Corner Threshold",
+                            &mut feed_opt.corner_angle_threshold_deg,
+                            5.0..=120.0,
+                            (1.0, "°"),
+                            "Edit Corner Angle Threshold",
+                        );
+                        f.set_tip(
+                            "Lookahead deceleration and exit recovery ramp distance around sharp corners (supports formulas like tool_d * 0.5)",
+                        );
+                        f.len(
+                            "Slowdown Distance",
+                            &mut feed_opt.slowdown_distance,
+                            "Edit Corner Slowdown Distance",
+                        );
+                    }
+
+                    f.set_tip(
+                        "Scale centerline feedrate by (R_arc - R_tool) / R_arc on concave internal arcs so cutting-edge chipload stays constant",
+                    );
+                    f.check(
+                        "Internal Arcs",
+                        &mut feed_opt.internal_arc_scaling,
+                        "Perimeter-to-Center Scaling",
+                        "Toggle Internal Arc Scaling",
+                    );
+
+                    f.set_tip(
+                        "Boost straight/low-curvature light-engagement passes to maintain constant chipload while still throttling inside corners and arcs",
+                    );
+                    f.check(
+                        "Chip-Thinning Boost",
+                        &mut feed_opt.chip_thinning_boost,
+                        "Boost Straight Passes",
+                        "Toggle Chip-Thinning Boost",
+                    );
+                    if feed_opt.chip_thinning_boost {
+                        f.set_tip(
+                            "Upper cap on chip-thinning feedrate multiplier relative to nominal cutting feed (1.0x–2.5x)",
+                        );
+                        f.drag(
+                            "Max Multiplier",
+                            &mut feed_opt.max_thinning_multiplier,
+                            1.0..=2.5,
+                            (0.05, "x"),
+                            "Edit Max Chip-Thinning Multiplier",
                         );
                     }
                 }

@@ -636,7 +636,7 @@ pub fn generate_pocket2d(
                             &pkt_region.islands_cw
                                 [(loop_idx - 1).min(pkt_region.islands_cw.len().saturating_sub(1))]
                         };
-                        let finish_spans = if rest_enabled {
+                        let mut finish_spans = if rest_enabled {
                             clip_contour_path_to_rest(&ContourRestClipQuery {
                                 raw_contour: raw_wall,
                                 offset_sign: 1.0,
@@ -649,6 +649,21 @@ pub fn generate_pocket2d(
                         } else {
                             vec![loop_poly.clone()]
                         };
+                        // Guard against closed island courtyard holes collapsing during 2D upstream
+                        // swept-capsule union: verify directly against upstream cutting segments
+                        // whether radial stock exceeding `min_rest_thickness` remains on an island wall.
+                        if rest_enabled
+                            && loop_idx >= 1
+                            && finish_spans.is_empty()
+                            && island_wall_has_uncut_rest_stock(
+                                raw_wall,
+                                &ctx.passes.rest_machining,
+                                ctx.upstream_rest,
+                                z_cut,
+                            )
+                        {
+                            finish_spans.push(loop_poly.clone());
+                        }
 
                         for span in &finish_spans {
                             let Some((s_xy, _)) = span.sample_at_fraction(0.0) else {
@@ -698,6 +713,109 @@ pub fn generate_pocket2d(
     }
 
     Ok(())
+}
+
+fn island_wall_has_uncut_rest_stock(
+    raw_island: &ArcPolyline2D,
+    rest_cfg: &crate::params::RestMachiningConfig,
+    upstream: &[crate::rest2d::UpstreamSweptInput],
+    z_level_wcs: f64,
+) -> bool {
+    let crate::params::RestMachiningMode::FromPrecedingOperations { source_op_ids } =
+        &rest_cfg.mode
+    else {
+        return false;
+    };
+    let min_thick = rest_cfg.min_rest_thickness.value_mm.max(0.02);
+    let active_upstream: Vec<&crate::rest2d::UpstreamSweptInput> = if source_op_ids.is_empty() {
+        upstream.iter().collect()
+    } else {
+        upstream
+            .iter()
+            .filter(|u| source_op_ids.iter().any(|id| id == &u.op_id))
+            .collect()
+    };
+    if active_upstream.is_empty() {
+        return false;
+    }
+
+    let n_samples = 24usize;
+    let mut sampled_any = false;
+    for i in 0..n_samples {
+        let frac = (i as f64 + 0.5) / (n_samples as f64);
+        let Some((pt, _)) = raw_island.sample_at_fraction(frac) else {
+            continue;
+        };
+        sampled_any = true;
+        let mut min_remaining = f64::INFINITY;
+        for up in &active_upstream {
+            let r_tool = 0.5 * up.tool_diameter_mm;
+            if r_tool <= 1e-4 {
+                continue;
+            }
+            for seg in &up.toolpath.segments_wcs {
+                if matches!(seg.motion, crate::toolpath::SegmentMotion3D::Rapid) {
+                    continue;
+                }
+                if seg.start_wcs.z.max(seg.end_wcs.z) > z_level_wcs + 0.03 {
+                    continue;
+                }
+                let d_xy = point_to_segment_xy_distance(pt, seg);
+                min_remaining = min_remaining.min(d_xy - r_tool);
+                if min_remaining <= min_thick {
+                    break;
+                }
+            }
+            if min_remaining <= min_thick {
+                break;
+            }
+        }
+        if min_remaining > min_thick {
+            return true;
+        }
+    }
+    let _ = sampled_any;
+    false
+}
+
+fn point_to_segment_xy_distance(pt: DVec2, seg: &crate::toolpath::ToolpathSegment3D) -> f64 {
+    let a = DVec2::new(seg.start_wcs.x, seg.start_wcs.y);
+    let b = DVec2::new(seg.end_wcs.x, seg.end_wcs.y);
+    match seg.motion {
+        crate::toolpath::SegmentMotion3D::Arc {
+            plane: crate::cl_data::ArcPlane::XY,
+            center_wcs,
+            radius_mm,
+            signed_sweep_rad,
+            ..
+        } if radius_mm > 1e-5 => {
+            let c = DVec2::new(center_wcs.x, center_wcs.y);
+            let a0 = (a.y - c.y).atan2(a.x - c.x);
+            let ap = (pt.y - c.y).atan2(pt.x - c.x);
+            let in_sweep = if signed_sweep_rad.abs() >= std::f64::consts::TAU - 1e-3 {
+                true
+            } else if signed_sweep_rad >= 0.0 {
+                (ap - a0).rem_euclid(std::f64::consts::TAU) <= signed_sweep_rad + 1e-5
+            } else {
+                (a0 - ap).rem_euclid(std::f64::consts::TAU) <= (-signed_sweep_rad) + 1e-5
+            };
+            if in_sweep {
+                (pt.distance(c) - radius_mm).abs()
+            } else {
+                pt.distance(a).min(pt.distance(b))
+            }
+        }
+        _ => {
+            let ab = b - a;
+            let len2 = ab.length_squared();
+            if len2 <= 1e-12 {
+                pt.distance(a)
+            } else {
+                let t = ((pt - a).dot(ab) / len2).clamp(0.0, 1.0);
+                pt.distance(a + ab * t)
+            }
+        }
+    }
 }
 
 fn rotate_seam_to_cleared_air(poly: &ArcPolyline2D, cleared_air: &RegionSet2D) -> ArcPolyline2D {
@@ -1017,6 +1135,212 @@ fn emit_linear_ramp_on_ring(
             DVec3::new(ring_start_xy.x, ring_start_xy.y, z_cut),
             ctx.cutting.lead_feed_mm_min,
             MotionRole::LeadIn,
+        );
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use std::sync::{Arc, atomic::AtomicBool};
+
+    use chip_cad::{CadKernel, MonstertruckKernel, SurfaceKind, tutorial_adaptive_pocket_step};
+    use chip_math::{DEFAULT_TESS_CHORD_TOL_MM, DisplayUnit, ParamLength, approx_eq};
+    use chip_tools::{
+        CoolantMode, CutterGeometry, CuttingPreset, SpindleDirection, SurfaceSpeedPresetSpec, Tool,
+        ToolId,
+    };
+
+    use crate::{
+        GeometrySelectionItem, Operation, OperationGenRequest, PocketStrategyKind,
+        RestMachiningConfig, RestMachiningMode, Setup, StrategyParams, UpstreamSweptInput,
+        WorkOffsetSlot, generate_operation_toolpath_with_rest, params::AdaptiveClearingParams,
+        rest2d::swept_toolpath_coverage_2d,
+    };
+
+    #[test]
+    fn adaptive_rest_cleans_circular_island_wall_stock_left_by_rougher() {
+        let step = tutorial_adaptive_pocket_step().unwrap();
+        let doc = MonstertruckKernel
+            .load_step_bytes("adap.step", step.as_bytes(), DEFAULT_TESS_CHORD_TOL_MM)
+            .unwrap();
+        let mut setup = Setup::new("setup_1", "Top", WorkOffsetSlot::G54);
+        setup.stock = crate::StockConfig::RelativeBox {
+            side_pos_x: ParamLength::from_mm(0.0),
+            side_neg_x: ParamLength::from_mm(0.0),
+            side_pos_y: ParamLength::from_mm(0.0),
+            side_neg_y: ParamLength::from_mm(0.0),
+            symmetric_xy: true,
+            top_offset_z: ParamLength::from_mm(0.0),
+            bottom_offset_z: ParamLength::from_mm(0.0),
+            sheet_thickness_z: ParamLength::from_mm(20.0),
+            round_increment_mm: None,
+        };
+        let resolved = setup.resolve(&doc, DisplayUnit::Millimeter).unwrap();
+
+        let floor = doc
+            .faces
+            .iter()
+            .find(|f| {
+                matches!(
+                    f.surface,
+                    SurfaceKind::Plane { origin_mm, normal }
+                    if normal.z > 0.99 && approx_eq(origin_mm.z, 10.0, 1e-2)
+                )
+            })
+            .unwrap();
+        let bind = doc.bind_face(floor.id).unwrap();
+
+        let t10 = Tool {
+            id: ToolId("t10".to_string()),
+            tool_number: 10,
+            length_offset_number: 10,
+            diameter_offset_number: 10,
+            name: "10mm".to_string(),
+            vendor: None,
+            product_id: None,
+            native_unit: DisplayUnit::Millimeter,
+            spindle_direction: SpindleDirection::Cw,
+            default_coolant: CoolantMode::AirBlast,
+            stickout_length_mm: 30.0,
+            geometry: CutterGeometry::FlatEndmill {
+                diameter_mm: 10.0,
+                flute_length_mm: 22.0,
+                overall_length_mm: 65.0,
+                shank_diameter_mm: 10.0,
+                flutes: 3,
+            },
+            presets: vec![CuttingPreset::from_surface_speed(SurfaceSpeedPresetSpec {
+                id: "al",
+                name: "Al",
+                material: "Al",
+                diameter_mm: 10.0,
+                flutes: 3,
+                surface_speed_m_min: 280.0,
+                chipload_mm_tooth: 0.055,
+                default_stepdown_mm: 12.0,
+                default_stepover_mm: 2.0,
+                coolant_override: Some(CoolantMode::AirBlast),
+            })],
+        };
+        let t3 = Tool {
+            id: ToolId("t3".to_string()),
+            tool_number: 3,
+            length_offset_number: 3,
+            diameter_offset_number: 3,
+            name: "3mm".to_string(),
+            vendor: None,
+            product_id: None,
+            native_unit: DisplayUnit::Millimeter,
+            spindle_direction: SpindleDirection::Cw,
+            default_coolant: CoolantMode::AirBlast,
+            stickout_length_mm: 18.0,
+            geometry: CutterGeometry::FlatEndmill {
+                diameter_mm: 3.0,
+                flute_length_mm: 12.0,
+                overall_length_mm: 45.0,
+                shank_diameter_mm: 3.0,
+                flutes: 3,
+            },
+            presets: vec![CuttingPreset::from_surface_speed(SurfaceSpeedPresetSpec {
+                id: "al",
+                name: "Al",
+                material: "Al",
+                diameter_mm: 3.0,
+                flutes: 3,
+                surface_speed_m_min: 200.0,
+                chipload_mm_tooth: 0.022,
+                default_stepdown_mm: 5.0,
+                default_stepover_mm: 0.6,
+                coolant_override: Some(CoolantMode::AirBlast),
+            })],
+        };
+
+        let mut op1 = Operation::new_adaptive_2d("op1", "Rough");
+        op1.tool_id = Some(t10.id.clone());
+        op1.passes.stock_to_leave_radial = ParamLength::from_mm(0.2);
+        op1.selections.push(GeometrySelectionItem::PlanarFace {
+            binding: bind.clone(),
+        });
+
+        let cancel = AtomicBool::new(false);
+        let tp1 = generate_operation_toolpath_with_rest(&OperationGenRequest {
+            doc: &doc,
+            sketches: &[],
+            setup: &resolved,
+            op: &op1,
+            tool: &t10,
+            clearing_tool: None,
+            display_unit: DisplayUnit::Millimeter,
+            is_first_tool_in_setup: true,
+            upstream_rest: &[],
+            cancel: &cancel,
+        })
+        .unwrap();
+
+        let up = vec![UpstreamSweptInput {
+            op_id: "op1".to_string(),
+            tool_diameter_mm: 10.0,
+            corner_radius_mm: 0.0,
+            toolpath: Arc::new(tp1),
+        }];
+        let cov = swept_toolpath_coverage_2d(&up, -10.0);
+        eprintln!(
+            "cov regions={}, islands_on_0={}, contains(50,40)={}",
+            cov.regions.len(),
+            cov.regions.first().map_or(0, |r| r.islands_cw.len()),
+            cov.contains_point(chip_math::DVec2::new(50.0, 40.0))
+        );
+        if let Some(isl) = cov.regions.first().and_then(|r| r.islands_cw.first()) {
+            eprintln!("cov island aabb={:?}", isl.exact_aabb());
+        }
+
+        let mut op2 = Operation::new_adaptive_2d("op2", "Rest");
+        op2.tool_id = Some(t3.id.clone());
+        op2.selections
+            .push(GeometrySelectionItem::PlanarFace { binding: bind });
+        op2.passes.rest_machining = RestMachiningConfig {
+            mode: RestMachiningMode::FromPrecedingOperations {
+                source_op_ids: vec!["op1".to_string()],
+            },
+            rest_overlap: ParamLength::from_mm(0.30),
+            min_rest_thickness: ParamLength::from_mm(0.08),
+        };
+        if let StrategyParams::Pocket2D(p) = op2.strategy_mut() {
+            p.strategy = PocketStrategyKind::Adaptive(AdaptiveClearingParams::default());
+        }
+
+        let tp2 = generate_operation_toolpath_with_rest(&OperationGenRequest {
+            doc: &doc,
+            sketches: &[],
+            setup: &resolved,
+            op: &op2,
+            tool: &t3,
+            clearing_tool: None,
+            display_unit: DisplayUnit::Millimeter,
+            is_first_tool_in_setup: false,
+            upstream_rest: &up,
+            cancel: &cancel,
+        })
+        .unwrap();
+
+        let island_fin_segs = tp2
+            .segments_wcs
+            .iter()
+            .filter(|s| {
+                matches!(
+                    s.motion,
+                    crate::SegmentMotion3D::Arc {
+                        radius_mm,
+                        role: crate::MotionRole::FinishCut,
+                        ..
+                    } if (radius_mm - 9.5).abs() < 0.05
+                )
+            })
+            .count();
+        assert!(
+            island_fin_segs >= 4,
+            "Rest finish pass must clean the 0.2 mm radial stock left around the Ø16 mm circular island, got {island_fin_segs} arc segments"
         );
     }
 }

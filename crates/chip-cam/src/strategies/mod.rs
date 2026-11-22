@@ -429,6 +429,18 @@ pub fn generate_operation_toolpath_with_rest(
     }
     builder.push_event(ClEvent::OperationEnd);
 
+    // Engagement-aware feedrate optimization post-pass (fast no-op when disabled)
+    if ctx.passes.feed_optimization.enabled {
+        crate::feed_opt::optimize_toolpath_feedrates(
+            &mut builder.events,
+            &ctx.passes.feed_optimization,
+            ctx.tool,
+            &ctx.cutting,
+            op.kind,
+        );
+        builder.segments_wcs = crate::feed_opt::rebuild_segments_from_events(&builder.events);
+    }
+
     let finished = builder.finish();
     if finished.segments_wcs.is_empty() {
         return Err(CamError::EmptyToolpath {

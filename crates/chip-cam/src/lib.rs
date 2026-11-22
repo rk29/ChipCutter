@@ -2,6 +2,7 @@
 //! Z-height hierarchy resolution, and CAM operation models (`chip-cam`).
 
 pub mod cl_data;
+pub mod feed_opt;
 pub mod heights;
 pub mod medial;
 pub mod offset2d;
@@ -19,6 +20,10 @@ pub mod toolpath;
 pub mod wcs;
 
 pub use cl_data::{ArcDir, ArcPlane, ClEvent, CutterCompMode, DrillCycleKind, MotionRole};
+pub use feed_opt::{
+    corner_feed_scale, internal_arc_feed_scale, optimize_toolpath_feedrates,
+    rebuild_segments_from_events,
+};
 pub use heights::{HeightReference, HeightSpec, OperationHeights, ResolvedHeights, SetupHeights};
 pub use medial::{
     MedialChain2D, MedialNode2D, extract_interior_medial_nodes, extract_medial_axis_chains,
@@ -35,14 +40,15 @@ pub use operation::{
 pub use params::{
     Adaptive3DParams, AdaptiveClearingParams, AdaptiveCutDirection, ChamferSourceMode,
     ChamferTraceMode, ChamferTraceParams, Contour2DParams, ContourCompensation, DrillBoreParams,
-    EntryStrategy, FacingCutMode, FacingParams, HoldingTabsConfig, HoleMachiningMode, LeadConfig,
-    LinkingParams, MachiningBoundaryMode, ManualTabAnchor, Parallel3DParams, ParallelCutDirection,
-    PassesParams, Pencil3DParams, Pocket2DParams, PocketPassOrder, PocketStrategyKind,
-    RestMachiningConfig, RestMachiningMode, RetractPolicy, Rotary2LinearParams, Rotary4AxisPattern,
-    Rotary4AxisSimParams, RotaryCutDirection, RotaryPatternMode, RotaryTiltMode, Scallop3DParams,
-    StrategyParams, TabPlacementMode, TabProfileKind, ThreadCutDirection, ThreadFormKind,
-    ThreadHandedness, ThreadMillParams, ToolContainmentMode, VCarveClearingKind, VCarveInlayMode,
-    VCarveParams, Waterline3DParams, WaterlineOrderMode,
+    EntryStrategy, FacingCutMode, FacingParams, FeedOptimizationConfig, HoldingTabsConfig,
+    HoleMachiningMode, LeadConfig, LinkingParams, MachiningBoundaryMode, ManualTabAnchor,
+    Parallel3DParams, ParallelCutDirection, PassesParams, Pencil3DParams, Pocket2DParams,
+    PocketPassOrder, PocketStrategyKind, RestMachiningConfig, RestMachiningMode, RetractPolicy,
+    Rotary2LinearParams, Rotary4AxisPattern, Rotary4AxisSimParams, RotaryCutDirection,
+    RotaryPatternMode, RotaryTiltMode, Scallop3DParams, StrategyParams, TabPlacementMode,
+    TabProfileKind, ThreadCutDirection, ThreadFormKind, ThreadHandedness, ThreadMillParams,
+    ToolContainmentMode, VCarveClearingKind, VCarveInlayMode, VCarveParams, Waterline3DParams,
+    WaterlineOrderMode,
 };
 pub use rest2d::{
     ContourRestClipQuery, PocketRestQuery, RegionSet2D, RestPocketWorkItem, UpstreamSweptInput,
