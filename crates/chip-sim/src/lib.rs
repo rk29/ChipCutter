@@ -37,7 +37,11 @@ pub use chip_stock::{
     tessellate_tridexel_stock_mesh_colored, unpack_max_op, unpack_min_op,
 };
 #[cfg(feature = "gpu-compute")]
-pub use chip_stock::{GpuSimContext, WgpuComputeBackend};
+pub use chip_stock::{
+    DEFAULT_GPU_CHECKPOINT_BUDGET_BYTES, GpuCheckpointCache, GpuCylindricalRenderData,
+    GpuHeightfieldRenderData, GpuSimContext, GpuStockRenderHandle, GpuTriDexelRenderData,
+    MAX_TRIDEXEL_EMIT_VERTICES, WgpuComputeBackend,
+};
 pub use cutter_profile::{SimToolMesh, ToolMeshZone, build_cutter_assembly_mesh};
 #[cfg(feature = "gpu-compute")]
 pub use driver::run_setup_simulation_with_gpu_context;

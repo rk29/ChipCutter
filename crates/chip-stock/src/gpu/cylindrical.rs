@@ -19,7 +19,9 @@ use crate::{
 };
 
 use super::{
+    checkpoints::GpuCheckpointBuffers,
     context::{GpuSimContext, GrowableStorageBuffer},
+    render_handle::{GpuCylindricalRenderData, GpuStockRenderHandle},
     types::{
         CylindricalUniforms, GPU_TILE_SIZE, GpuRotaryPose, GpuToolProfile, GpuViolationAccum,
         POSE_FLAG_CHECK_HOLDER, POSE_FLAG_RAPID, POSE_FLAG_VERIFY,
@@ -43,10 +45,12 @@ pub(crate) struct GpuCylindricalState {
     ntheta: usize,
     tiles_u: usize,
     tiles_theta: usize,
+    has_target: bool,
     uniform_buf: wgpu::Buffer,
     r_stock_buf: wgpu::Buffer,
-    r_target_buf: wgpu::Buffer,
+    r_target_buf: Arc<wgpu::Buffer>,
     last_op_buf: wgpu::Buffer,
+    render_snap_pool: Vec<(Arc<wgpu::Buffer>, Arc<wgpu::Buffer>)>,
     profiles_buf: GrowableStorageBuffer,
     poses_buf: GrowableStorageBuffer,
     tile_data_buf: GrowableStorageBuffer,
@@ -119,13 +123,16 @@ impl GpuCylindricalState {
                 | wgpu::BufferUsages::COPY_DST
                 | wgpu::BufferUsages::COPY_SRC,
         });
-        let r_target_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("chip_cyl_r_target"),
-            contents: bytemuck::cast_slice(&stock.r_target),
-            usage: wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_DST
-                | wgpu::BufferUsages::COPY_SRC,
-        });
+        let r_target_buf = Arc::new(
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("chip_cyl_r_target"),
+                contents: bytemuck::cast_slice(&stock.r_target),
+                usage: wgpu::BufferUsages::STORAGE
+                    | wgpu::BufferUsages::COPY_DST
+                    | wgpu::BufferUsages::COPY_SRC,
+            }),
+        );
+        let has_target = stock.r_target.iter().any(|&r| r >= 0.0 && r.is_finite());
         let last_op_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("chip_cyl_last_op_idx"),
             contents: bytemuck::cast_slice(&stock.last_op_idx),
@@ -211,10 +218,12 @@ impl GpuCylindricalState {
             ntheta,
             tiles_u,
             tiles_theta,
+            has_target,
             uniform_buf,
             r_stock_buf,
             r_target_buf,
             last_op_buf,
+            render_snap_pool: Vec::new(),
             profiles_buf,
             poses_buf,
             tile_data_buf,
@@ -629,7 +638,140 @@ impl GpuCylindricalState {
             let _ = self
                 .ctx
                 .readback_bytes(&self.r_stock_readback_buf, byte_len, dst);
+            self.has_target = guard
+                .stock
+                .r_target
+                .iter()
+                .any(|&r| r >= 0.0 && r.is_finite());
         }
+    }
+
+    /// Captures a read-only GPU storage-buffer snapshot (`copy_buffer_to_buffer` into a pooled
+    /// `Arc<wgpu::Buffer>` pair) for zero-readback direct 4th-axis viewport rendering.
+    pub(crate) fn capture_render_handle(&mut self) -> Arc<GpuStockRenderHandle> {
+        let cell_bytes = ((self.nu * self.ntheta) * std::mem::size_of::<f32>()) as u64;
+        let (snap_r, snap_op) = if let Some((r, op)) = self
+            .render_snap_pool
+            .iter()
+            .find(|(r, op)| Arc::strong_count(r) == 1 && Arc::strong_count(op) == 1)
+        {
+            (Arc::clone(r), Arc::clone(op))
+        } else {
+            let device = self.ctx.device();
+            let r = Arc::new(device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("chip_cyl_render_snap_r"),
+                size: cell_bytes.max(16),
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+            let op = Arc::new(device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("chip_cyl_render_snap_op"),
+                size: cell_bytes.max(16),
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+            self.render_snap_pool
+                .push((Arc::clone(&r), Arc::clone(&op)));
+            (r, op)
+        };
+
+        if cell_bytes > 0 {
+            let mut encoder =
+                self.ctx
+                    .device()
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("chip_cyl_render_snap_copy"),
+                    });
+            encoder.copy_buffer_to_buffer(&self.r_stock_buf, 0, &snap_r, 0, cell_bytes);
+            encoder.copy_buffer_to_buffer(&self.last_op_buf, 0, &snap_op, 0, cell_bytes);
+            self.ctx.queue().submit(std::iter::once(encoder.finish()));
+        }
+
+        Arc::new(GpuStockRenderHandle::Cylindrical(
+            GpuCylindricalRenderData {
+                nu: self.nu as u32,
+                ntheta: self.ntheta as u32,
+                rotary: self.rotary,
+                u_min: self.u_min,
+                u_max: self.u_max,
+                du: self.du,
+                dtheta: self.dtheta,
+                has_target: self.has_target,
+                r_stock_buf: snap_r,
+                r_target_buf: Arc::clone(&self.r_target_buf),
+                last_op_buf: snap_op,
+            },
+        ))
+    }
+
+    pub(crate) fn checkpoint_byte_size(&self) -> usize {
+        self.nu * self.ntheta * (std::mem::size_of::<f32>() + std::mem::size_of::<u32>())
+    }
+
+    pub(crate) fn clone_live_to_checkpoint_buffers(&self) -> GpuCheckpointBuffers {
+        let cell_bytes = (self.nu * self.ntheta * std::mem::size_of::<f32>()) as u64;
+        let device = self.ctx.device();
+        let r_stock = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("chip_gpu_cp_cyl_r"),
+            size: cell_bytes.max(16),
+            usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let last_op_idx = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("chip_gpu_cp_cyl_op"),
+            size: cell_bytes.max(16),
+            usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        if cell_bytes > 0 {
+            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("chip_cyl_cp_capture"),
+            });
+            encoder.copy_buffer_to_buffer(&self.r_stock_buf, 0, &r_stock, 0, cell_bytes);
+            encoder.copy_buffer_to_buffer(&self.last_op_buf, 0, &last_op_idx, 0, cell_bytes);
+            self.ctx.queue().submit(std::iter::once(encoder.finish()));
+        }
+        GpuCheckpointBuffers::Cylindrical {
+            r_stock,
+            last_op_idx,
+            cell_bytes,
+        }
+    }
+
+    pub(crate) fn restore_from_gpu_checkpoint(
+        &mut self,
+        r_stock: &wgpu::Buffer,
+        last_op_idx: &wgpu::Buffer,
+        cell_bytes: u64,
+    ) {
+        if cell_bytes > 0 {
+            let mut encoder =
+                self.ctx
+                    .device()
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("chip_cyl_cp_restore"),
+                    });
+            encoder.copy_buffer_to_buffer(r_stock, 0, &self.r_stock_buf, 0, cell_bytes);
+            encoder.copy_buffer_to_buffer(last_op_idx, 0, &self.last_op_buf, 0, cell_bytes);
+            self.ctx.queue().submit(std::iter::once(encoder.finish()));
+        }
+        let mut guard = self.cpu.lock().unwrap_or_else(|e| e.into_inner());
+        guard.gpu_dirty = true;
+    }
+
+    pub(crate) fn copy_state_from_cpu_stock(&mut self, stock: &CylindricalStock) {
+        let mut guard = self.cpu.lock().unwrap_or_else(|e| e.into_inner());
+        guard.stock.r_stock.clone_from(&stock.r_stock);
+        guard.stock.last_op_idx.clone_from(&stock.last_op_idx);
+        guard.gpu_dirty = false;
+        self.ctx
+            .queue()
+            .write_buffer(&self.r_stock_buf, 0, bytemuck::cast_slice(&stock.r_stock));
+        self.ctx.queue().write_buffer(
+            &self.last_op_buf,
+            0,
+            bytemuck::cast_slice(&stock.last_op_idx),
+        );
     }
 
     /// Restores both CPU shadow and GPU storage buffers from a checkpoint snapshot.

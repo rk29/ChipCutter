@@ -4,6 +4,8 @@
 
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
 
+use wgpu::util::DeviceExt as _;
+
 use crate::types::ActiveSimBackendInfo;
 
 use super::types::{
@@ -33,6 +35,9 @@ pub struct GpuSimContext {
     pub(crate) cylindrical_pipeline: wgpu::ComputePipeline,
     pub(crate) tridexel_bgl: wgpu::BindGroupLayout,
     pub(crate) tridexel_pipeline: wgpu::ComputePipeline,
+    pub(crate) tridexel_emit_bgl: wgpu::BindGroupLayout,
+    pub(crate) tridexel_emit_pipeline: wgpu::ComputePipeline,
+    pub(crate) tridexel_emit_init_args_buf: wgpu::Buffer,
     pub(crate) bvh_common_bgl: wgpu::BindGroupLayout,
     pub(crate) bvh_td_bgl: wgpu::BindGroupLayout,
     pub(crate) bvh_cyl_bgl: wgpu::BindGroupLayout,
@@ -70,6 +75,8 @@ impl GpuSimContext {
         let (heightfield_bgl, heightfield_pipeline) = build_heightfield_pipeline(&device);
         let (cylindrical_bgl, cylindrical_pipeline) = build_cylindrical_pipeline(&device);
         let (tridexel_bgl, tridexel_pipeline) = build_tridexel_pipeline(&device);
+        let (tridexel_emit_bgl, tridexel_emit_pipeline, tridexel_emit_init_args_buf) =
+            build_tridexel_emit_pipeline(&device);
         let bvh = build_bvh_pipelines(&device);
         let met = build_metrics_pipelines(&device);
 
@@ -83,6 +90,9 @@ impl GpuSimContext {
             cylindrical_pipeline,
             tridexel_bgl,
             tridexel_pipeline,
+            tridexel_emit_bgl,
+            tridexel_emit_pipeline,
+            tridexel_emit_init_args_buf,
             bvh_common_bgl: bvh.common_bgl,
             bvh_td_bgl: bvh.td_bgl,
             bvh_cyl_bgl: bvh.cyl_bgl,
@@ -366,6 +376,54 @@ fn build_tridexel_pipeline(
     });
 
     (bgl, pipeline)
+}
+
+fn build_tridexel_emit_pipeline(
+    device: &wgpu::Device,
+) -> (wgpu::BindGroupLayout, wgpu::ComputePipeline, wgpu::Buffer) {
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("chip_tridexel_emit_wgsl"),
+        source: wgpu::ShaderSource::Wgsl(include_str!("tridexel_emit.wgsl").into()),
+    });
+
+    // 1 uniform + 6 storage buffers (strictly within WebGPU default limit of 8 storage buffers/stage)
+    let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("chip_td_emit_bgl"),
+        entries: &[
+            uniform_entry(0),        // TriDexelEmitUniforms
+            storage_entry(1, true),  // m_slots (ro)
+            storage_entry(2, true),  // m_counts (ro)
+            storage_entry(3, true),  // t_slots (ro)
+            storage_entry(4, true),  // t_counts (ro)
+            storage_entry(5, false), // out_vertices (rw)
+            storage_entry(6, false), // draw_args (rw atomic)
+        ],
+    });
+
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("chip_td_emit_layout"),
+        bind_group_layouts: &[Some(&bgl)],
+        immediate_size: 0,
+    });
+
+    let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("chip_td_emit_pipeline"),
+        layout: Some(&layout),
+        module: &shader,
+        entry_point: Some("main"),
+        compilation_options: wgpu::PipelineCompilationOptions::default(),
+        cache: None,
+    });
+
+    // DrawIndirectArgs { vertex_count: 0, instance_count: 1, first_vertex: 0, first_instance: 0 }
+    let init_args: [u32; 4] = [0, 1, 0, 0];
+    let init_args_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("chip_td_emit_init_args"),
+        contents: bytemuck::cast_slice(&init_args),
+        usage: wgpu::BufferUsages::COPY_SRC,
+    });
+
+    (bgl, pipeline, init_args_buf)
 }
 
 struct BuiltBvhPipelines {

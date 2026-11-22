@@ -246,6 +246,19 @@ impl ChipCutterApp {
         let viewport_renderer = wgpu_render_state
             .as_ref()
             .map(|rs| ViewportRenderer::new(&rs.device));
+        #[cfg(feature = "gpu-compute")]
+        let shared_gpu_ctx = wgpu_render_state.as_ref().map(|rs| {
+            let info = rs.adapter.get_info();
+            Arc::new(chip_sim::GpuSimContext::from_shared(
+                Arc::new(rs.device.clone()),
+                Arc::new(rs.queue.clone()),
+                chip_sim::ActiveSimBackendInfo {
+                    is_gpu: true,
+                    adapter_name: info.name,
+                    backend_api: format!("{:?}", info.backend),
+                },
+            ))
+        });
 
         let (job_tx, job_rx) = crossbeam_channel::unbounded();
         let machines = chip_tools::load_available_machines(None);
@@ -297,6 +310,9 @@ impl ChipCutterApp {
             machines,
             global_tools,
             last_saved_prefs: prefs.clone(),
+            #[cfg(feature = "gpu-compute")]
+            sim_panel: SimulationPanelState::with_engine_and_gpu(prefs.sim_engine, shared_gpu_ctx),
+            #[cfg(not(feature = "gpu-compute"))]
             sim_panel: SimulationPanelState::with_engine(prefs.sim_engine),
             prefs,
             modals: ModalStates::new(),

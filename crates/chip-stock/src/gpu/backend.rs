@@ -19,7 +19,8 @@ use crate::{
 };
 
 use super::{
-    context::GpuSimContext, cylindrical::GpuCylindricalState, heightfield::GpuHeightfieldState,
+    checkpoints::GpuCheckpointBuffers, context::GpuSimContext, cylindrical::GpuCylindricalState,
+    heightfield::GpuHeightfieldState, render_handle::GpuStockRenderHandle,
     tridexel::GpuTriDexelState,
 };
 
@@ -74,6 +75,107 @@ impl WgpuComputeBackend {
             GpuBackendInner::Heightfield(hf) => hf.rasterize_target_mesh_gpu(target_mesh),
             GpuBackendInner::Cylindrical(c) => c.rasterize_target_mesh_gpu(target_mesh),
             GpuBackendInner::TriDexel(td) => td.rasterize_target_mesh_gpu(target_mesh),
+        }
+    }
+
+    /// Captures a read-only zero-readback [`GpuStockRenderHandle`] snapshot for direct viewport
+    /// rendering on the shared `wgpu::Device` (`Heightfield`, `Cylindrical`, or `TriDexel`
+    /// indirect-draw vertex buffer emitted via `tridexel_emit.wgsl`).
+    pub fn capture_render_handle(
+        &mut self,
+        color_mode: SimStockColorMode,
+    ) -> Arc<GpuStockRenderHandle> {
+        match &mut self.inner {
+            GpuBackendInner::Heightfield(hf) => hf.capture_render_handle(),
+            GpuBackendInner::Cylindrical(c) => c.capture_render_handle(),
+            GpuBackendInner::TriDexel(td) => td.capture_render_handle(color_mode),
+        }
+    }
+
+    /// Uploads a CPU [`SimulatedStock`] state directly into this backend's GPU storage buffers
+    /// (used when restoring a final stock state whose GPU checkpoint was evicted).
+    pub fn copy_state_from_cpu_stock(&mut self, stock: &SimulatedStock) {
+        match (&mut self.inner, stock) {
+            (GpuBackendInner::Heightfield(hf), SimulatedStock::Heightfield(src)) => {
+                hf.copy_state_from_cpu_stock(src);
+            }
+            (GpuBackendInner::Cylindrical(c), SimulatedStock::Cylindrical(src)) => {
+                c.copy_state_from_cpu_stock(src);
+            }
+            (GpuBackendInner::TriDexel(td), SimulatedStock::TriDexel(src)) => {
+                td.copy_state_from_cpu_stock(src);
+            }
+            _ => {}
+        }
+    }
+
+    /// Synchronizes live GPU stock state into the CPU shadow copy (if dirty) and invokes `f`
+    /// on the up-to-date [`SimulatedStock`] view. Useful for tests & point queries.
+    pub fn with_synced_cpu_stock<R>(&self, f: impl FnOnce(&SimulatedStock) -> R) -> R {
+        match &self.inner {
+            GpuBackendInner::Heightfield(hf) => {
+                hf.with_synced_stock(|s| f(&SimulatedStock::Heightfield(s.clone())))
+            }
+            GpuBackendInner::Cylindrical(c) => {
+                c.with_synced_stock(|s| f(&SimulatedStock::Cylindrical(s.clone())))
+            }
+            GpuBackendInner::TriDexel(td) => {
+                td.with_synced_stock(|s| f(&SimulatedStock::TriDexel(Box::new(s.clone()))))
+            }
+        }
+    }
+
+    pub(crate) fn checkpoint_byte_size(&self) -> usize {
+        match &self.inner {
+            GpuBackendInner::Heightfield(hf) => hf.checkpoint_byte_size(),
+            GpuBackendInner::Cylindrical(c) => c.checkpoint_byte_size(),
+            GpuBackendInner::TriDexel(td) => td.checkpoint_byte_size(),
+        }
+    }
+
+    pub(crate) fn clone_live_to_checkpoint_buffers(&self) -> GpuCheckpointBuffers {
+        match &self.inner {
+            GpuBackendInner::Heightfield(hf) => hf.clone_live_to_checkpoint_buffers(),
+            GpuBackendInner::Cylindrical(c) => c.clone_live_to_checkpoint_buffers(),
+            GpuBackendInner::TriDexel(td) => td.clone_live_to_checkpoint_buffers(),
+        }
+    }
+
+    pub(crate) fn restore_from_gpu_checkpoint_buffers(&mut self, cp: &GpuCheckpointBuffers) {
+        match (&mut self.inner, cp) {
+            (
+                GpuBackendInner::Heightfield(hf),
+                GpuCheckpointBuffers::Heightfield {
+                    z_stock,
+                    last_op_idx,
+                    cell_bytes,
+                },
+            ) => hf.restore_from_gpu_checkpoint(z_stock, last_op_idx, *cell_bytes),
+            (
+                GpuBackendInner::Cylindrical(c),
+                GpuCheckpointBuffers::Cylindrical {
+                    r_stock,
+                    last_op_idx,
+                    cell_bytes,
+                },
+            ) => c.restore_from_gpu_checkpoint(r_stock, last_op_idx, *cell_bytes),
+            (
+                GpuBackendInner::TriDexel(td),
+                GpuCheckpointBuffers::TriDexel {
+                    m_slots,
+                    m_counts,
+                    slots_bytes,
+                    counts_bytes,
+                    overflow,
+                },
+            ) => td.restore_from_gpu_checkpoint(
+                m_slots,
+                m_counts,
+                *slots_bytes,
+                *counts_bytes,
+                overflow,
+            ),
+            _ => {}
         }
     }
 }

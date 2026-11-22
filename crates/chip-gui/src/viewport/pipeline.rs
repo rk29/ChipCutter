@@ -2,6 +2,8 @@ use chip_cad::CadDocument;
 use chip_math::DisplayUnit;
 use wgpu::util::DeviceExt as _;
 
+#[cfg(feature = "gpu-compute")]
+use super::sim_gpu_render::SimGpuStockRenderer;
 use super::{
     gizmos::build_edge_and_scene_instances,
     gpu_types::{
@@ -28,6 +30,8 @@ pub struct ViewportRenderer {
     edge_pipeline: wgpu::RenderPipeline,
     sim_stock_pipeline: wgpu::RenderPipeline,
     sim_tool_pipeline: wgpu::RenderPipeline,
+    #[cfg(feature = "gpu-compute")]
+    sim_gpu_stock: SimGpuStockRenderer,
     targets: Option<FrameTargets>,
     egui_tex_id: Option<egui::TextureId>,
     uploaded_cad: Option<UploadedCadGpu>,
@@ -348,6 +352,9 @@ impl ViewportRenderer {
             cache: None,
         });
 
+        #[cfg(feature = "gpu-compute")]
+        let sim_gpu_stock = SimGpuStockRenderer::new(device, &shader, &bgl);
+
         Self {
             bgl,
             uniform_buf,
@@ -361,6 +368,8 @@ impl ViewportRenderer {
             edge_pipeline,
             sim_stock_pipeline,
             sim_tool_pipeline,
+            #[cfg(feature = "gpu-compute")]
+            sim_gpu_stock,
             targets: None,
             egui_tex_id: None,
             uploaded_cad: None,
@@ -534,16 +543,32 @@ impl ViewportRenderer {
             });
         }
 
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("chip_viewport_encoder"),
+        });
+
         // Upload Pass #6 3D machined stock render source & 3D revolved cutter assembly into reusable GPU buffers
         match &highlight.sim_stock_source {
             Some(SimStockRenderSource::CpuMesh { revision, mesh, .. }) => {
+                #[cfg(feature = "gpu-compute")]
+                self.sim_gpu_stock.clear();
                 self.uploaded_sim_stock.sync(
                     device,
                     queue,
                     Some((*revision, mesh.vertices.as_slice(), mesh.indices.as_slice())),
                 );
             }
+            #[cfg(feature = "gpu-compute")]
+            Some(SimStockRenderSource::GpuGrid {
+                handle, color_mode, ..
+            }) => {
+                self.uploaded_sim_stock.clear();
+                self.sim_gpu_stock
+                    .prepare(device, queue, &mut encoder, handle, *color_mode);
+            }
             None => {
+                #[cfg(feature = "gpu-compute")]
+                self.sim_gpu_stock.clear();
                 self.uploaded_sim_stock.clear();
             }
         }
@@ -614,10 +639,6 @@ impl ViewportRenderer {
         };
         queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&uniforms));
 
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("chip_viewport_encoder"),
-        });
-
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("chip_viewport_msaa_pass"),
@@ -654,17 +675,23 @@ impl ViewportRenderer {
             pass.set_pipeline(&self.bg_pipeline);
             pass.draw(0..3, 0..1);
 
-            // 2A / Pass #6A: Shaded 3D Machined Stock Mesh (when simulation stock view is active)
-            let showing_sim_stock =
-                if let Some((vbuf, ibuf, icount)) = self.uploaded_sim_stock.active() {
-                    pass.set_pipeline(&self.sim_stock_pipeline);
-                    pass.set_vertex_buffer(0, vbuf.slice(..));
-                    pass.set_index_buffer(ibuf.slice(..), wgpu::IndexFormat::Uint32);
-                    pass.draw_indexed(0..icount, 0, 0..1);
-                    true
-                } else {
-                    false
-                };
+            // 2A / Pass #6A: Shaded 3D Machined Stock Mesh (Direct GPU Grid or CPU Indexed Mesh)
+            #[cfg(feature = "gpu-compute")]
+            let drew_gpu_stock = self.sim_gpu_stock.draw(&mut pass, &self.sim_stock_pipeline);
+            #[cfg(not(feature = "gpu-compute"))]
+            let drew_gpu_stock = false;
+
+            let showing_sim_stock = if drew_gpu_stock {
+                true
+            } else if let Some((vbuf, ibuf, icount)) = self.uploaded_sim_stock.active() {
+                pass.set_pipeline(&self.sim_stock_pipeline);
+                pass.set_vertex_buffer(0, vbuf.slice(..));
+                pass.set_index_buffer(ibuf.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..icount, 0, 0..1);
+                true
+            } else {
+                false
+            };
 
             // 2B. Shaded B-Rep solid (opaque normally, or translucent ghost when comparing against machined stock)
             if (!showing_sim_stock || highlight.ghost_part)
@@ -740,36 +767,25 @@ fn create_vp_bind_group(
     })
 }
 
-/// Renders a [`CadDocument`] completely headless via `wgpu` (e.g. Mesa Lavapipe in CI)
-/// and encodes an RGBA8 PNG byte buffer.
-pub fn render_offscreen_png(
-    doc: &CadDocument,
+/// Renders a scene headless on an existing shared `(wgpu::Device, wgpu::Queue)` (so zero-readback
+/// [`SimStockRenderSource::GpuGrid`] handles from [`chip_sim::GpuSimContext`] can be rendered on
+/// the exact same device) and returns tightly-packed RGBA8 pixel bytes (`width * height * 4`).
+pub fn render_offscreen_rgba_on_device(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    doc: Option<&CadDocument>,
     camera: &CadCamera,
     highlight: &HighlightState,
     width: u32,
     height: u32,
 ) -> Result<Vec<u8>, String> {
-    let instance =
-        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
-    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-        power_preference: wgpu::PowerPreference::default(),
-        compatible_surface: None,
-        force_fallback_adapter: false,
-        apply_limit_buckets: false,
-    }))
-    .map_err(|e| format!("failed to request wgpu adapter: {e}"))?;
-
-    let (device, queue) =
-        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
-            .map_err(|e| format!("failed to create wgpu device: {e}"))?;
-
-    let mut vp = ViewportRenderer::new(&device);
-    vp.targets = Some(FrameTargets::create(&device, width, height));
+    let mut vp = ViewportRenderer::new(device);
+    vp.targets = Some(FrameTargets::create(device, width, height));
     vp.render_internal(
-        &device,
-        &queue,
+        device,
+        queue,
         camera,
-        Some((doc, 1)),
+        doc.map(|d| (d, 1)),
         highlight,
         DisplayUnit::Millimeter,
     );
@@ -832,12 +848,47 @@ pub fn render_offscreen_png(
     }
     drop(mapped);
     readback_buf.unmap();
+    Ok(pixels)
+}
+
+/// Renders a [`CadDocument`] completely headless via `wgpu` (e.g. Mesa Lavapipe in CI)
+/// and encodes an RGBA8 PNG byte buffer.
+pub fn render_offscreen_png(
+    doc: &CadDocument,
+    camera: &CadCamera,
+    highlight: &HighlightState,
+    width: u32,
+    height: u32,
+) -> Result<Vec<u8>, String> {
+    let instance =
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+        power_preference: wgpu::PowerPreference::default(),
+        compatible_surface: None,
+        force_fallback_adapter: false,
+        apply_limit_buckets: false,
+    }))
+    .map_err(|e| format!("failed to request wgpu adapter: {e}"))?;
+
+    let (device, queue) =
+        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
+            .map_err(|e| format!("failed to create wgpu device: {e}"))?;
+
+    let pixels = render_offscreen_rgba_on_device(
+        &device,
+        &queue,
+        Some(doc),
+        camera,
+        highlight,
+        width,
+        height,
+    )?;
 
     let mut png_bytes = Vec::new();
     let encoder = image::codecs::png::PngEncoder::new(&mut png_bytes);
     use image::ImageEncoder as _;
     encoder
-        .write_image(&pixels, w, h, image::ExtendedColorType::Rgba8)
+        .write_image(&pixels, width, height, image::ExtendedColorType::Rgba8)
         .map_err(|e| format!("PNG encode failed: {e}"))?;
 
     Ok(png_bytes)
@@ -1641,5 +1692,467 @@ mod tests {
             diff_vs_cpu90 <= 16,
             "GPU stock_model rotation at 90° must match CPU pre-rotated cylindrical stock reference (got {diff_vs_cpu90} differing pixels)"
         );
+    }
+
+    #[cfg(feature = "gpu-compute")]
+    #[test]
+    fn gpu_grid_direct_render_matches_cpu_mesh_across_heightfield_cylindrical_and_tridexel() {
+        use chip_cad::CadDocument;
+        use chip_cam::{
+            AxisAnchor, BoxAnchor27, MotionRole, RotaryAxisKind, RotaryDriveMode, Setup, StockAxis,
+            StockConfig, ToolpathBuilder, WcsOriginMode, WorkOffsetSlot,
+        };
+        use chip_math::{Aabb3, DMat4, DVec3, ParamLength};
+        use chip_sim::{
+            GpuSimContext, GpuStockRenderHandle, MachineKinematicsConfig, SetupSimulationInput,
+            SimComputeBackendChoice, SimEngineKind, SimOperationInput, SimResolution,
+            SimStockColorMode, SimVerificationConfig, WgpuComputeBackend,
+            run_setup_simulation_with_gpu_context,
+        };
+        use chip_tools::default_starter_tool_library;
+
+        let ctx = GpuSimContext::shared_headless().expect("expected Vulkan/wgpu compute adapter");
+        let device = ctx.device();
+        let queue = ctx.queue();
+        let lib = default_starter_tool_library();
+        let flat_6mm = &lib.tools[0];
+        let (w, h) = (320u32, 240u32);
+
+        let compare_rgba = |label: &str,
+                            bg: &[u8],
+                            cpu: &[u8],
+                            gpu: &[u8],
+                            min_iou: f64,
+                            max_rgb_mae: f64| {
+            let mut bg_diff_cpu = 0usize;
+            let mut bg_diff_gpu = 0usize;
+            let mut inter = 0usize;
+            let mut union = 0usize;
+            let mut rgb_err_sum = 0.0_f64;
+            for px in 0..(w * h) as usize {
+                let o = px * 4;
+                let dc = (0..3)
+                    .map(|c| cpu[o + c].abs_diff(bg[o + c]))
+                    .max()
+                    .unwrap_or(0);
+                let dg = (0..3)
+                    .map(|c| gpu[o + c].abs_diff(bg[o + c]))
+                    .max()
+                    .unwrap_or(0);
+                let c_fg = dc > 8;
+                let g_fg = dg > 8;
+                if c_fg {
+                    bg_diff_cpu += 1;
+                }
+                if g_fg {
+                    bg_diff_gpu += 1;
+                }
+                if c_fg || g_fg {
+                    union += 1;
+                }
+                if c_fg && g_fg {
+                    inter += 1;
+                    let err = (cpu[o].abs_diff(gpu[o]) as f64
+                        + cpu[o + 1].abs_diff(gpu[o + 1]) as f64
+                        + cpu[o + 2].abs_diff(gpu[o + 2]) as f64)
+                        / 3.0;
+                    rgb_err_sum += err;
+                }
+            }
+            assert!(
+                bg_diff_cpu > 1_500 && bg_diff_gpu > 1_500,
+                "{label}: expected rich stock coverage (cpu_fg={bg_diff_cpu}, gpu_fg={bg_diff_gpu})"
+            );
+            let iou = inter as f64 / union.max(1) as f64;
+            let mae = rgb_err_sum / inter.max(1) as f64;
+            assert!(
+                iou >= min_iou,
+                "{label}: silhouette IoU {iou:.3} below {min_iou:.3} (inter={inter}, union={union})"
+            );
+            assert!(
+                mae <= max_rgb_mae,
+                "{label}: overlapping RGB MAE {mae:.2} exceeded {max_rgb_mae:.2}"
+            );
+        };
+
+        let count_rgb_diff = |a: &[u8], b: &[u8]| -> usize {
+            (0..(w * h) as usize)
+                .filter(|&px| {
+                    let o = px * 4;
+                    (0..3)
+                        .map(|c| a[o + c].abs_diff(b[o + c]))
+                        .max()
+                        .unwrap_or(0)
+                        > 15
+                })
+                .count()
+        };
+
+        let doc_empty = CadDocument::empty();
+
+        // === 1. Heightfield (ByOperation + ErrorHeatmap) ===
+        {
+            let mut setup = Setup::new("s_hf_par", "HF Parity", WorkOffsetSlot::G54);
+            setup.wcs.origin = WcsOriginMode::StockBoxPoint {
+                anchor: BoxAnchor27::TOP_CENTER,
+            };
+            setup.stock = StockConfig::FixedBox {
+                width_x: ParamLength::from_mm(100.0),
+                depth_y: ParamLength::from_mm(100.0),
+                height_z: ParamLength::from_mm(20.0),
+                xy_align: chip_cam::FixedBoxXyAlign::CenterXy,
+                z_align: chip_cam::FixedBoxZAlign::CenterZ,
+            };
+            let resolved = setup.resolve(&doc_empty, DisplayUnit::Millimeter).unwrap();
+
+            let mut b = ToolpathBuilder::new("op_hf");
+            b.rapid_to(DVec3::new(-25.0, 0.0, 10.0));
+            b.linear_to(DVec3::new(-25.0, 0.0, -6.0), 300.0, MotionRole::Plunge);
+            b.linear_to(DVec3::new(25.0, 0.0, -6.0), 600.0, MotionRole::Cut);
+            // Through-hole to exercise inactive cell discarding & vertical hole walls
+            b.rapid_to(DVec3::new(0.0, 15.0, 10.0));
+            b.linear_to(DVec3::new(0.0, 15.0, -25.0), 300.0, MotionRole::Plunge);
+            let tp = b.finish();
+
+            let mut sim = run_setup_simulation_with_gpu_context(
+                &SetupSimulationInput {
+                    doc: &doc_empty,
+                    setup: &resolved,
+                    target_bodies: &[],
+                    operations: &[SimOperationInput {
+                        op_id: "op_hf",
+                        op_name: "Slot + Hole",
+                        tool: flat_6mm,
+                        fallback_spindle_rpm: 12_000.0,
+                        intentional_edge_break_mm: 0.0,
+                        toolpath: &tp,
+                    }],
+                    resolution: SimResolution::Standard,
+                    kinematics: MachineKinematicsConfig::default(),
+                    verify_config: SimVerificationConfig::default(),
+                    cancel: None,
+                },
+                SimEngineKind::Heightmap,
+                SimComputeBackendChoice::Gpu,
+                Some(Arc::clone(&ctx)),
+            )
+            .unwrap();
+            // Inject synthetic flat target surface at z_wcs = -4.0 (gouge in slot, excess on top)
+            if let Some(hf) = sim.final_stock.as_heightfield_mut() {
+                let zt = hf.z_wcs_to_local(-4.0);
+                hf.z_target.fill(zt);
+            }
+
+            let mut backend =
+                WgpuComputeBackend::new(Arc::clone(&ctx), sim.final_stock.clone(), None);
+            let gpu_handle = backend.capture_render_handle(SimStockColorMode::ByOperation);
+
+            let mut cam = CadCamera::default();
+            cam.fit_aabb(&Aabb3::new(
+                DVec3::new(-45.0, -35.0, -25.0),
+                DVec3::new(45.0, 35.0, 5.0),
+            ));
+            let base_hl = HighlightState {
+                wcs_frame: resolved.frame,
+                show_stock: false,
+                show_grid: false,
+                ..HighlightState::default()
+            };
+            let bg =
+                render_offscreen_rgba_on_device(device, queue, None, &cam, &base_hl, w, h).unwrap();
+
+            let mut gpu_by_op_px = Vec::new();
+            let mut gpu_hm_px = Vec::new();
+            for (name, mode) in [
+                ("Heightfield ByOperation", SimStockColorMode::ByOperation),
+                (
+                    "Heightfield ErrorHeatmap",
+                    SimStockColorMode::ErrorHeatmap {
+                        tolerance_mm: 0.05,
+                        max_scale_mm: 2.0,
+                    },
+                ),
+            ] {
+                let cpu_mesh = Arc::new(sim.extract_stock_mesh(&sim.final_stock, mode));
+                let mut hl_cpu = base_hl.clone();
+                hl_cpu.sim_stock_source = Some(SimStockRenderSource::CpuMesh {
+                    revision: 1,
+                    mesh: cpu_mesh,
+                    stock_model: DMat4::IDENTITY,
+                });
+                let mut hl_gpu = base_hl.clone();
+                hl_gpu.sim_stock_source = Some(SimStockRenderSource::GpuGrid {
+                    revision: 1,
+                    handle: Arc::clone(&gpu_handle),
+                    stock_model: DMat4::IDENTITY,
+                    color_mode: mode,
+                });
+                let px_cpu =
+                    render_offscreen_rgba_on_device(device, queue, None, &cam, &hl_cpu, w, h)
+                        .unwrap();
+                let px_gpu =
+                    render_offscreen_rgba_on_device(device, queue, None, &cam, &hl_gpu, w, h)
+                        .unwrap();
+                compare_rgba(name, &bg, &px_cpu, &px_gpu, 0.96, 6.0);
+                if matches!(mode, SimStockColorMode::ByOperation) {
+                    gpu_by_op_px = px_gpu;
+                } else {
+                    gpu_hm_px = px_gpu;
+                }
+            }
+            assert!(
+                count_rgb_diff(&gpu_by_op_px, &gpu_hm_px) > 1_000,
+                "Heightfield GPU ErrorHeatmap must visually differ from ByOperation"
+            );
+        }
+
+        // === 2. 4th-Axis Cylindrical (ByOperation + ErrorHeatmap + GPU stock_model rotation) ===
+        {
+            let mut setup = Setup::new("s_cyl_par", "Cyl Parity", WorkOffsetSlot::G54);
+            setup.wcs.origin = WcsOriginMode::StockBoxPoint {
+                anchor: BoxAnchor27 {
+                    x: AxisAnchor::Center,
+                    y: AxisAnchor::Center,
+                    z: AxisAnchor::Center,
+                },
+            };
+            setup.stock = StockConfig::FixedCylinder {
+                axis: StockAxis::X,
+                diameter: ParamLength::from_mm(40.0),
+                length: ParamLength::from_mm(80.0),
+                axial_top_offset: ParamLength::from_mm(0.0),
+            };
+            setup.rotary.mode = RotaryDriveMode::TwoLinearPlusRotary;
+            setup.rotary.axis = RotaryAxisKind::XAxis;
+            let resolved = setup.resolve(&doc_empty, DisplayUnit::Millimeter).unwrap();
+
+            let mut b = ToolpathBuilder::new("op_cyl");
+            b.rotary_rapid_to(DVec3::new(-28.0, 0.0, 28.0), 0.0);
+            b.rotary_linear_to(
+                DVec3::new(-28.0, 0.0, 13.0),
+                0.0,
+                400.0,
+                13.0,
+                MotionRole::Plunge,
+            );
+            b.rotary_linear_to(
+                DVec3::new(28.0, 0.0, 13.0),
+                0.0,
+                600.0,
+                13.0,
+                MotionRole::Cut,
+            );
+            let tp = b.finish();
+
+            let mut sim = run_setup_simulation_with_gpu_context(
+                &SetupSimulationInput {
+                    doc: &doc_empty,
+                    setup: &resolved,
+                    target_bodies: &[],
+                    operations: &[SimOperationInput {
+                        op_id: "op_cyl",
+                        op_name: "Rotary Flute",
+                        tool: flat_6mm,
+                        fallback_spindle_rpm: 12_000.0,
+                        intentional_edge_break_mm: 0.0,
+                        toolpath: &tp,
+                    }],
+                    resolution: SimResolution::Standard,
+                    kinematics: MachineKinematicsConfig::default(),
+                    verify_config: SimVerificationConfig::default(),
+                    cancel: None,
+                },
+                SimEngineKind::Heightmap,
+                SimComputeBackendChoice::Gpu,
+                Some(Arc::clone(&ctx)),
+            )
+            .unwrap();
+            if let Some(cyl) = sim.final_stock.as_cylindrical_mut() {
+                cyl.r_target.fill(16.0_f32);
+            }
+
+            let mut backend =
+                WgpuComputeBackend::new(Arc::clone(&ctx), sim.final_stock.clone(), None);
+            let gpu_handle = backend.capture_render_handle(SimStockColorMode::ByOperation);
+
+            let mut cam = CadCamera::default();
+            cam.fit_aabb(&Aabb3::new(
+                DVec3::new(-45.0, -30.0, -30.0),
+                DVec3::new(45.0, 30.0, 30.0),
+            ));
+            let base_hl = HighlightState {
+                wcs_frame: resolved.frame,
+                rotary: resolved.rotary,
+                sim_rotary_deg: 60.0,
+                show_stock: false,
+                show_grid: false,
+                ..HighlightState::default()
+            };
+            let stock_model = base_hl.stock_model_wcs_transform();
+            let bg =
+                render_offscreen_rgba_on_device(device, queue, None, &cam, &base_hl, w, h).unwrap();
+
+            let mut gpu_by_op_px = Vec::new();
+            let mut gpu_hm_px = Vec::new();
+            for (name, mode) in [
+                ("Cylindrical ByOperation", SimStockColorMode::ByOperation),
+                (
+                    "Cylindrical ErrorHeatmap",
+                    SimStockColorMode::ErrorHeatmap {
+                        tolerance_mm: 0.05,
+                        max_scale_mm: 3.0,
+                    },
+                ),
+            ] {
+                let cpu_mesh = Arc::new(sim.extract_stock_mesh(&sim.final_stock, mode));
+                let mut hl_cpu = base_hl.clone();
+                hl_cpu.sim_stock_source = Some(SimStockRenderSource::CpuMesh {
+                    revision: 1,
+                    mesh: cpu_mesh,
+                    stock_model,
+                });
+                let mut hl_gpu = base_hl.clone();
+                hl_gpu.sim_stock_source = Some(SimStockRenderSource::GpuGrid {
+                    revision: 1,
+                    handle: Arc::clone(&gpu_handle),
+                    stock_model,
+                    color_mode: mode,
+                });
+                let px_cpu =
+                    render_offscreen_rgba_on_device(device, queue, None, &cam, &hl_cpu, w, h)
+                        .unwrap();
+                let px_gpu =
+                    render_offscreen_rgba_on_device(device, queue, None, &cam, &hl_gpu, w, h)
+                        .unwrap();
+                compare_rgba(name, &bg, &px_cpu, &px_gpu, 0.96, 8.0);
+                if matches!(mode, SimStockColorMode::ByOperation) {
+                    gpu_by_op_px = px_gpu;
+                } else {
+                    gpu_hm_px = px_gpu;
+                }
+            }
+            assert!(
+                count_rgb_diff(&gpu_by_op_px, &gpu_hm_px) > 1_000,
+                "Cylindrical GPU ErrorHeatmap must visually differ from ByOperation"
+            );
+        }
+
+        // === 3. Tri-Dexel (tridexel_emit.wgsl + draw_indirect: ByOperation + instant GPU recolor to ErrorHeatmap) ===
+        {
+            let step = sample_machined_plate_step().unwrap();
+            let doc = MonstertruckKernel
+                .load_step_bytes("plate.step", step.as_bytes(), DEFAULT_TESS_CHORD_TOL_MM)
+                .unwrap();
+            let mut setup = Setup::new("s_td_par", "TD Parity", WorkOffsetSlot::G54);
+            let resolved = setup.resolve(&doc, DisplayUnit::Millimeter).unwrap();
+            let aabb = resolved.stock.aabb_wcs();
+            let center = aabb.center();
+
+            let mut b = ToolpathBuilder::new("op_td");
+            b.rapid_to(DVec3::new(center.x - 15.0, center.y, aabb.max.z + 10.0));
+            b.linear_to(
+                DVec3::new(center.x - 15.0, center.y, aabb.max.z - 5.0),
+                300.0,
+                MotionRole::Plunge,
+            );
+            b.linear_to(
+                DVec3::new(center.x + 15.0, center.y, aabb.max.z - 5.0),
+                600.0,
+                MotionRole::Cut,
+            );
+            let tp = b.finish();
+
+            let sim = run_setup_simulation_with_gpu_context(
+                &SetupSimulationInput {
+                    doc: &doc,
+                    setup: &resolved,
+                    target_bodies: &[],
+                    operations: &[SimOperationInput {
+                        op_id: "op_td",
+                        op_name: "TD Slot",
+                        tool: flat_6mm,
+                        fallback_spindle_rpm: 12_000.0,
+                        intentional_edge_break_mm: 0.0,
+                        toolpath: &tp,
+                    }],
+                    resolution: SimResolution::Standard,
+                    kinematics: MachineKinematicsConfig::default(),
+                    verify_config: SimVerificationConfig::default(),
+                    cancel: None,
+                },
+                SimEngineKind::TriDexel,
+                SimComputeBackendChoice::Gpu,
+                Some(Arc::clone(&ctx)),
+            )
+            .unwrap();
+
+            let mut backend = WgpuComputeBackend::new(
+                Arc::clone(&ctx),
+                sim.final_stock.clone(),
+                sim.target_tridexel_stock.clone(),
+            );
+            let gpu_handle = backend.capture_render_handle(SimStockColorMode::ByOperation);
+            let GpuStockRenderHandle::TriDexel(ref td_data) = *gpu_handle else {
+                panic!("expected TriDexel GPU render handle");
+            };
+            assert_eq!(td_data.emit_dispatch_count(), 1);
+
+            let mut cam = CadCamera::default();
+            cam.fit_aabb(&doc.aabb_mm);
+            let base_hl = HighlightState {
+                wcs_frame: resolved.frame,
+                show_stock: false,
+                show_grid: false,
+                ..HighlightState::default()
+            };
+            let bg =
+                render_offscreen_rgba_on_device(device, queue, None, &cam, &base_hl, w, h).unwrap();
+
+            let mut gpu_by_op_px = Vec::new();
+            let mut gpu_hm_px = Vec::new();
+            for (name, mode) in [
+                ("TriDexel ByOperation", SimStockColorMode::ByOperation),
+                (
+                    "TriDexel ErrorHeatmap",
+                    SimStockColorMode::ErrorHeatmap {
+                        tolerance_mm: 0.05,
+                        max_scale_mm: 2.0,
+                    },
+                ),
+            ] {
+                let cpu_mesh = Arc::new(sim.extract_stock_mesh(&sim.final_stock, mode));
+                let mut hl_cpu = base_hl.clone();
+                hl_cpu.sim_stock_source = Some(SimStockRenderSource::CpuMesh {
+                    revision: 1,
+                    mesh: cpu_mesh,
+                    stock_model: DMat4::IDENTITY,
+                });
+                let mut hl_gpu = base_hl.clone();
+                hl_gpu.sim_stock_source = Some(SimStockRenderSource::GpuGrid {
+                    revision: 1,
+                    handle: Arc::clone(&gpu_handle),
+                    stock_model: DMat4::IDENTITY,
+                    color_mode: mode,
+                });
+                let px_cpu =
+                    render_offscreen_rgba_on_device(device, queue, None, &cam, &hl_cpu, w, h)
+                        .unwrap();
+                let px_gpu =
+                    render_offscreen_rgba_on_device(device, queue, None, &cam, &hl_gpu, w, h)
+                        .unwrap();
+                compare_rgba(name, &bg, &px_cpu, &px_gpu, 0.90, 22.0);
+                if matches!(mode, SimStockColorMode::ByOperation) {
+                    gpu_by_op_px = px_gpu;
+                } else {
+                    gpu_hm_px = px_gpu;
+                }
+            }
+            // Same handle re-dispatched tridexel_emit exactly once when switching to ErrorHeatmap!
+            assert_eq!(td_data.emit_dispatch_count(), 2);
+            assert!(
+                count_rgb_diff(&gpu_by_op_px, &gpu_hm_px) > 1_000,
+                "TriDexel GPU ErrorHeatmap must visually differ from ByOperation"
+            );
+        }
     }
 }

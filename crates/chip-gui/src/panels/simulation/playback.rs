@@ -8,7 +8,7 @@ use crate::viewport::SimStockRenderSource;
 
 use super::{
     SimViewportVisuals, SimulationPanelState,
-    worker::{StockMeshMeta, StockRemeshKey, StockRemeshRequest},
+    worker::{StockMeshMeta, StockRemeshKey, StockRemeshPayload, StockRemeshRequest},
 };
 
 impl SimulationPanelState {
@@ -102,12 +102,25 @@ impl SimulationPanelState {
                 continue;
             }
             self.last_applied_remesh_request_id = out.request_id;
-            if let Some(mesh) = out.mesh {
+            if let Some(payload) = out.payload {
                 let rev = self.next_gpu_mesh_rev;
                 self.next_gpu_mesh_rev += 1;
                 self.cached_stock_meta = Some(out.meta);
                 self.cached_stock_rev = rev;
-                self.cached_stock_mesh = Some(mesh);
+                match payload {
+                    StockRemeshPayload::CpuMesh(mesh) => {
+                        self.cached_stock_mesh = Some(mesh);
+                        #[cfg(feature = "gpu-compute")]
+                        {
+                            self.cached_gpu_handle = None;
+                        }
+                    }
+                    #[cfg(feature = "gpu-compute")]
+                    StockRemeshPayload::GpuHandle(handle) => {
+                        self.cached_gpu_handle = Some(handle);
+                        self.cached_stock_mesh = None;
+                    }
+                }
                 updated = true;
             }
         }
@@ -191,15 +204,32 @@ impl SimulationPanelState {
 
         // 1. 3D Machined Stock Render Source (off-thread coalescing interactively; synchronous in headless capture)
         let stock_out = if self.show_machined_stock {
-            let tol_key = (self.heatmap_tolerance_mm.clamp(1e-4, 50.0) * 10_000.0).round() as u32;
-            let scale_key = (self.heatmap_max_scale_mm.clamp(0.01, 100.0) * 1000.0).round() as u32;
-            let desired_meta = StockMeshMeta {
-                run_id: self.active_run_id,
-                result_ptr,
-                color_by_operation: self.color_by_operation,
-                heatmap_active: self.show_error_heatmap && !self.is_playing,
-                tol_key,
-                scale_key,
+            let color_mode = self.active_stock_color_mode();
+            let is_gpu_direct = self.is_gpu_direct_active();
+            let desired_meta = if is_gpu_direct {
+                // On GPU direct rendering, color mode / heatmap tolerance changes update GPU uniforms
+                // or dispatch < 0.3 ms tridexel_emit directly—NEVER re-sweeping or remeshing on CPU!
+                StockMeshMeta {
+                    run_id: self.active_run_id,
+                    result_ptr,
+                    color_by_operation: false,
+                    heatmap_active: false,
+                    tol_key: 0,
+                    scale_key: 0,
+                }
+            } else {
+                let tol_key =
+                    (self.heatmap_tolerance_mm.clamp(1e-4, 50.0) * 10_000.0).round() as u32;
+                let scale_key =
+                    (self.heatmap_max_scale_mm.clamp(0.01, 100.0) * 1000.0).round() as u32;
+                StockMeshMeta {
+                    run_id: self.active_run_id,
+                    result_ptr,
+                    color_by_operation: self.color_by_operation,
+                    heatmap_active: self.show_error_heatmap && !self.is_playing,
+                    tol_key,
+                    scale_key,
+                }
             };
             let desired_key = StockRemeshKey {
                 meta: desired_meta,
@@ -219,7 +249,7 @@ impl SimulationPanelState {
                     sim_result: Arc::clone(&res),
                     target_time_sec: self.current_time_sec,
                     scrub_snapshot: snap.clone(),
-                    color_mode: self.active_stock_color_mode(),
+                    color_mode,
                     meta: desired_meta,
                     egui_ctx: if synchronous {
                         None
@@ -231,15 +261,34 @@ impl SimulationPanelState {
 
             if synchronous {
                 self.flush_remesh_sync();
+                #[cfg(feature = "gpu-compute")]
+                if let Some(ctx) = &self.gpu_ctx {
+                    let _ = ctx.device().poll(wgpu::PollType::wait_indefinitely());
+                }
             }
 
-            self.cached_stock_mesh
-                .as_ref()
-                .map(|m| SimStockRenderSource::CpuMesh {
-                    revision: self.cached_stock_rev,
-                    mesh: Arc::clone(m),
-                    stock_model,
-                })
+            #[cfg(feature = "gpu-compute")]
+            let gpu_source =
+                self.cached_gpu_handle
+                    .as_ref()
+                    .map(|handle| SimStockRenderSource::GpuGrid {
+                        revision: self.cached_stock_rev,
+                        handle: Arc::clone(handle),
+                        stock_model,
+                        color_mode,
+                    });
+            #[cfg(not(feature = "gpu-compute"))]
+            let gpu_source: Option<SimStockRenderSource> = None;
+
+            gpu_source.or_else(|| {
+                self.cached_stock_mesh
+                    .as_ref()
+                    .map(|m| SimStockRenderSource::CpuMesh {
+                        revision: self.cached_stock_rev,
+                        mesh: Arc::clone(m),
+                        stock_model,
+                    })
+            })
         } else {
             None
         };
@@ -618,7 +667,10 @@ mod tests {
         } = panel
             .resolve_viewport_visuals_sync(&project, 0)
             .stock
-            .unwrap();
+            .unwrap()
+        else {
+            panic!("expected CpuMesh");
+        };
         assert!(!mesh_25.vertices.is_empty());
         let vol_25 = panel
             .remesh_worker
@@ -652,7 +704,10 @@ mod tests {
         } = panel
             .resolve_viewport_visuals_sync(&project, 0)
             .stock
-            .unwrap();
+            .unwrap()
+        else {
+            panic!("expected CpuMesh");
+        };
         assert!(rev_hm > rev_75);
         assert!(!mesh_hm.vertices.is_empty());
 
@@ -872,7 +927,10 @@ mod tests {
         } = panel
             .resolve_viewport_visuals_sync(&project, 0)
             .stock
-            .unwrap();
+            .unwrap()
+        else {
+            panic!("expected CpuMesh");
+        };
         assert!(
             mesh_metal.vertices.iter().all(|v| {
                 let max_c = v.color_rgba[0].max(v.color_rgba[1]).max(v.color_rgba[2]);
@@ -891,7 +949,10 @@ mod tests {
         } = panel
             .resolve_viewport_visuals_sync(&project, 0)
             .stock
-            .unwrap();
+            .unwrap()
+        else {
+            panic!("expected CpuMesh");
+        };
         assert!(rev_hm > rev_metal);
         let has_vivid_heatmap_color = mesh_hm.vertices.iter().any(|v| {
             let max_c = v.color_rgba[0].max(v.color_rgba[1]).max(v.color_rgba[2]);
@@ -1032,5 +1093,174 @@ mod tests {
             );
             prev_rot = vis.rotary_deg;
         }
+    }
+
+    #[cfg(feature = "gpu-compute")]
+    #[test]
+    fn gpu_playback_toggling_heatmap_and_tolerance_updates_without_resweep_or_cpu_mesh() {
+        let ctx = chip_sim::GpuSimContext::shared_headless()
+            .expect("expected Vulkan/wgpu compute adapter");
+        let mut project = ProjectDocument::new("GPU Instant Heatmap Test");
+        let lib = default_starter_tool_library();
+        project.tools = lib.tools.clone();
+        let flat_6mm = &lib.tools[0];
+
+        let mut setup = Setup::new("s_gpu_hm", "GPU HF", WorkOffsetSlot::G54);
+        setup.wcs.origin = WcsOriginMode::StockBoxPoint {
+            anchor: BoxAnchor27::TOP_CENTER,
+        };
+        setup.stock = StockConfig::FixedBox {
+            width_x: ParamLength::from_mm(100.0),
+            depth_y: ParamLength::from_mm(100.0),
+            height_z: ParamLength::from_mm(20.0),
+            xy_align: chip_cam::FixedBoxXyAlign::CenterXy,
+            z_align: chip_cam::FixedBoxZAlign::CenterZ,
+        };
+        let doc = CadDocument::empty();
+        let resolved = setup.resolve(&doc, DisplayUnit::Millimeter).unwrap();
+
+        let mut b = ToolpathBuilder::new("op_gpu_slot");
+        b.rapid_to(DVec3::new(-30.0, 0.0, 10.0));
+        b.linear_to(DVec3::new(-30.0, 0.0, -5.0), 300.0, MotionRole::Plunge);
+        b.linear_to(DVec3::new(30.0, 0.0, -5.0), 600.0, MotionRole::Cut);
+        let tp = b.finish();
+
+        let sim = chip_sim::run_setup_simulation_with_gpu_context(
+            &SetupSimulationInput {
+                doc: &doc,
+                setup: &resolved,
+                target_bodies: &[],
+                operations: &[SimOperationInput {
+                    op_id: "op_gpu_slot",
+                    op_name: "GPU Slot",
+                    tool: flat_6mm,
+                    fallback_spindle_rpm: 12_000.0,
+                    intentional_edge_break_mm: 0.0,
+                    toolpath: &tp,
+                }],
+                resolution: SimResolution::Standard,
+                kinematics: MachineKinematicsConfig::default(),
+                verify_config: SimVerificationConfig::default(),
+                cancel: None,
+            },
+            chip_sim::SimEngineKind::Heightmap,
+            chip_sim::SimComputeBackendChoice::Gpu,
+            Some(Arc::clone(&ctx)),
+        )
+        .unwrap();
+        assert!(sim.active_backend.is_gpu);
+
+        let cut_start = sim.timeline.motion_spans[1].t_start_sec;
+        let cut_dur = sim.timeline.motion_spans[1].t_end_sec - cut_start;
+
+        let mut panel = SimulationPanelState::with_engine_and_gpu(
+            chip_sim::SimEngineKind::Heightmap,
+            Some(ctx),
+        );
+        panel.active_run_id = 1;
+        panel.active_setup_idx = 0;
+        panel.active_result = Some(Arc::new(sim));
+        panel.current_time_sec = cut_start + cut_dur * 0.35;
+
+        let vis0 = panel.resolve_viewport_visuals_sync(&project, 0);
+        let src0 = vis0.stock.expect("GPU stock render source present");
+        assert!(
+            src0.cpu_mesh().is_none(),
+            "GPU direct path must not allocate a CPU SimStockMesh"
+        );
+        let SimStockRenderSource::GpuGrid {
+            revision: rev0,
+            color_mode: mode0,
+            ..
+        } = src0
+        else {
+            panic!("expected SimStockRenderSource::GpuGrid");
+        };
+        assert_eq!(mode0, chip_sim::SimStockColorMode::ByOperation);
+        let reqs_after_init = panel.remesh_worker.processed_request_count();
+        assert_eq!(reqs_after_init, 1);
+
+        // Toggle Error Heatmap & drag ±tol slider multiple times: ZERO re-sweeps, ZERO CPU meshes!
+        panel.show_error_heatmap = true;
+        panel.heatmap_tolerance_mm = 0.05;
+        let vis_hm1 = panel.resolve_viewport_visuals_sync(&project, 0);
+        let SimStockRenderSource::GpuGrid {
+            revision: rev_hm1,
+            color_mode: mode_hm1,
+            ..
+        } = vis_hm1.stock.expect("GpuGrid present")
+        else {
+            panic!("expected GpuGrid");
+        };
+        assert_eq!(rev_hm1, rev0);
+        assert!(matches!(
+            mode_hm1,
+            chip_sim::SimStockColorMode::ErrorHeatmap { tolerance_mm, .. }
+            if (tolerance_mm - 0.05).abs() < 1e-6
+        ));
+        assert_eq!(
+            panel.remesh_worker.processed_request_count(),
+            reqs_after_init
+        );
+
+        panel.heatmap_tolerance_mm = 0.25;
+        let vis_hm2 = panel.resolve_viewport_visuals_sync(&project, 0);
+        let SimStockRenderSource::GpuGrid {
+            revision: rev_hm2,
+            color_mode: mode_hm2,
+            ..
+        } = vis_hm2.stock.expect("GpuGrid present")
+        else {
+            panic!("expected GpuGrid");
+        };
+        assert_eq!(rev_hm2, rev0);
+        assert!(matches!(
+            mode_hm2,
+            chip_sim::SimStockColorMode::ErrorHeatmap { tolerance_mm, .. }
+            if (tolerance_mm - 0.25).abs() < 1e-6
+        ));
+        assert_eq!(
+            panel.remesh_worker.processed_request_count(),
+            reqs_after_init
+        );
+
+        panel.show_error_heatmap = false;
+        panel.color_by_operation = false;
+        let vis_metal = panel.resolve_viewport_visuals_sync(&project, 0);
+        let SimStockRenderSource::GpuGrid {
+            revision: rev_metal,
+            color_mode: mode_metal,
+            ..
+        } = vis_metal.stock.expect("GpuGrid present")
+        else {
+            panic!("expected GpuGrid");
+        };
+        assert_eq!(rev_metal, rev0);
+        assert_eq!(mode_metal, chip_sim::SimStockColorMode::Metallic);
+        assert_eq!(
+            panel.remesh_worker.processed_request_count(),
+            reqs_after_init
+        );
+        assert!(panel.cached_stock_mesh.is_none());
+
+        // Scrubbing forward along the cutting segment dispatches GPU delta sweep & advances revision!
+        let vol_before = panel
+            .remesh_worker
+            .inspect_working_stock(|s| s.unwrap().compute_volume_mm3());
+        panel.current_time_sec = cut_start + cut_dur * 0.85;
+        let vis_later = panel.resolve_viewport_visuals_sync(&project, 0);
+        let rev_later = vis_later.stock.expect("GpuGrid present").revision();
+        assert!(rev_later > rev0);
+        assert_eq!(
+            panel.remesh_worker.processed_request_count(),
+            reqs_after_init + 1
+        );
+        let vol_after = panel
+            .remesh_worker
+            .inspect_working_stock(|s| s.unwrap().compute_volume_mm3());
+        assert!(
+            vol_after < vol_before - 100.0,
+            "GPU scrub must cut additional stock (before={vol_before:.1}, after={vol_after:.1})"
+        );
     }
 }

@@ -13,7 +13,9 @@ use crate::{
 };
 
 use super::{
+    checkpoints::GpuCheckpointBuffers,
     context::{GpuSimContext, GrowableStorageBuffer},
+    render_handle::{GpuHeightfieldRenderData, GpuStockRenderHandle},
     types::{GPU_TILE_SIZE, GpuSweepChord, GpuToolProfile, GpuViolationAccum, HeightfieldUniforms},
 };
 
@@ -33,11 +35,13 @@ pub(crate) struct GpuHeightfieldState {
     dx_mm: f64,
     dy_mm: f64,
     max_initial_top_z_mm: f64,
+    has_target: bool,
     uniform_buf: wgpu::Buffer,
     z_stock_buf: wgpu::Buffer,
-    z_bottom_buf: wgpu::Buffer,
-    z_target_buf: wgpu::Buffer,
+    z_bottom_buf: Arc<wgpu::Buffer>,
+    z_target_buf: Arc<wgpu::Buffer>,
     last_op_buf: wgpu::Buffer,
+    render_snap_pool: Vec<(Arc<wgpu::Buffer>, Arc<wgpu::Buffer>)>,
     profiles_buf: GrowableStorageBuffer,
     chords_buf: GrowableStorageBuffer,
     tile_data_buf: GrowableStorageBuffer,
@@ -96,18 +100,23 @@ impl GpuHeightfieldState {
                 | wgpu::BufferUsages::COPY_DST
                 | wgpu::BufferUsages::COPY_SRC,
         });
-        let z_bottom_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("chip_hf_z_bottom"),
-            contents: bytemuck::cast_slice(&stock.z_bottom),
-            usage: wgpu::BufferUsages::STORAGE,
-        });
-        let z_target_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("chip_hf_z_target"),
-            contents: bytemuck::cast_slice(&stock.z_target),
-            usage: wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_DST
-                | wgpu::BufferUsages::COPY_SRC,
-        });
+        let z_bottom_buf = Arc::new(
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("chip_hf_z_bottom"),
+                contents: bytemuck::cast_slice(&stock.z_bottom),
+                usage: wgpu::BufferUsages::STORAGE,
+            }),
+        );
+        let z_target_buf = Arc::new(
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("chip_hf_z_target"),
+                contents: bytemuck::cast_slice(&stock.z_target),
+                usage: wgpu::BufferUsages::STORAGE
+                    | wgpu::BufferUsages::COPY_DST
+                    | wgpu::BufferUsages::COPY_SRC,
+            }),
+        );
+        let has_target = stock.z_target.iter().any(|&z| z.is_finite());
         let last_op_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("chip_hf_last_op_idx"),
             contents: bytemuck::cast_slice(&stock.last_op_idx),
@@ -192,11 +201,13 @@ impl GpuHeightfieldState {
             dx_mm,
             dy_mm,
             max_initial_top_z_mm,
+            has_target,
             uniform_buf,
             z_stock_buf,
             z_bottom_buf,
             z_target_buf,
             last_op_buf,
+            render_snap_pool: Vec::new(),
             profiles_buf,
             chords_buf,
             tile_data_buf,
@@ -479,7 +490,139 @@ impl GpuHeightfieldState {
             let _ = self
                 .ctx
                 .readback_bytes(&self.z_stock_readback_buf, byte_len, dst);
+            self.has_target = guard.stock.z_target.iter().any(|&z| z.is_finite());
         }
+    }
+
+    /// Captures a read-only GPU storage-buffer snapshot (`copy_buffer_to_buffer` into a pooled
+    /// `Arc<wgpu::Buffer>` pair) for zero-readback direct viewport rendering.
+    pub(crate) fn capture_render_handle(&mut self) -> Arc<GpuStockRenderHandle> {
+        let cell_bytes = ((self.nx * self.ny) * std::mem::size_of::<f32>()) as u64;
+        let (snap_z, snap_op) = if let Some((z, op)) = self
+            .render_snap_pool
+            .iter()
+            .find(|(z, op)| Arc::strong_count(z) == 1 && Arc::strong_count(op) == 1)
+        {
+            (Arc::clone(z), Arc::clone(op))
+        } else {
+            let device = self.ctx.device();
+            let z = Arc::new(device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("chip_hf_render_snap_z"),
+                size: cell_bytes.max(16),
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+            let op = Arc::new(device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("chip_hf_render_snap_op"),
+                size: cell_bytes.max(16),
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+            self.render_snap_pool
+                .push((Arc::clone(&z), Arc::clone(&op)));
+            (z, op)
+        };
+
+        if cell_bytes > 0 {
+            let mut encoder =
+                self.ctx
+                    .device()
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("chip_hf_render_snap_copy"),
+                    });
+            encoder.copy_buffer_to_buffer(&self.z_stock_buf, 0, &snap_z, 0, cell_bytes);
+            encoder.copy_buffer_to_buffer(&self.last_op_buf, 0, &snap_op, 0, cell_bytes);
+            self.ctx.queue().submit(std::iter::once(encoder.finish()));
+        }
+
+        Arc::new(GpuStockRenderHandle::Heightfield(
+            GpuHeightfieldRenderData {
+                nx: self.nx as u32,
+                ny: self.ny as u32,
+                origin_wcs: [
+                    self.origin_wcs.x as f32,
+                    self.origin_wcs.y as f32,
+                    self.origin_wcs.z as f32,
+                ],
+                dx_mm: self.dx_mm as f32,
+                dy_mm: self.dy_mm as f32,
+                has_target: self.has_target,
+                z_stock_buf: snap_z,
+                z_bottom_buf: Arc::clone(&self.z_bottom_buf),
+                z_target_buf: Arc::clone(&self.z_target_buf),
+                last_op_buf: snap_op,
+            },
+        ))
+    }
+
+    pub(crate) fn checkpoint_byte_size(&self) -> usize {
+        self.nx * self.ny * (std::mem::size_of::<f32>() + std::mem::size_of::<u32>())
+    }
+
+    pub(crate) fn clone_live_to_checkpoint_buffers(&self) -> GpuCheckpointBuffers {
+        let cell_bytes = (self.nx * self.ny * std::mem::size_of::<f32>()) as u64;
+        let device = self.ctx.device();
+        let z_stock = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("chip_gpu_cp_hf_z"),
+            size: cell_bytes.max(16),
+            usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let last_op_idx = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("chip_gpu_cp_hf_op"),
+            size: cell_bytes.max(16),
+            usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        if cell_bytes > 0 {
+            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("chip_hf_cp_capture"),
+            });
+            encoder.copy_buffer_to_buffer(&self.z_stock_buf, 0, &z_stock, 0, cell_bytes);
+            encoder.copy_buffer_to_buffer(&self.last_op_buf, 0, &last_op_idx, 0, cell_bytes);
+            self.ctx.queue().submit(std::iter::once(encoder.finish()));
+        }
+        GpuCheckpointBuffers::Heightfield {
+            z_stock,
+            last_op_idx,
+            cell_bytes,
+        }
+    }
+
+    pub(crate) fn restore_from_gpu_checkpoint(
+        &mut self,
+        z_stock: &wgpu::Buffer,
+        last_op_idx: &wgpu::Buffer,
+        cell_bytes: u64,
+    ) {
+        if cell_bytes > 0 {
+            let mut encoder =
+                self.ctx
+                    .device()
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("chip_hf_cp_restore"),
+                    });
+            encoder.copy_buffer_to_buffer(z_stock, 0, &self.z_stock_buf, 0, cell_bytes);
+            encoder.copy_buffer_to_buffer(last_op_idx, 0, &self.last_op_buf, 0, cell_bytes);
+            self.ctx.queue().submit(std::iter::once(encoder.finish()));
+        }
+        let mut guard = self.cpu.lock().unwrap_or_else(|e| e.into_inner());
+        guard.gpu_dirty = true;
+    }
+
+    pub(crate) fn copy_state_from_cpu_stock(&mut self, stock: &HeightfieldStock) {
+        let mut guard = self.cpu.lock().unwrap_or_else(|e| e.into_inner());
+        guard.stock.z_stock.clone_from(&stock.z_stock);
+        guard.stock.last_op_idx.clone_from(&stock.last_op_idx);
+        guard.gpu_dirty = false;
+        self.ctx
+            .queue()
+            .write_buffer(&self.z_stock_buf, 0, bytemuck::cast_slice(&stock.z_stock));
+        self.ctx.queue().write_buffer(
+            &self.last_op_buf,
+            0,
+            bytemuck::cast_slice(&stock.last_op_idx),
+        );
     }
 
     /// Restores both CPU shadow and GPU storage buffers from a checkpoint snapshot.

@@ -2,17 +2,24 @@
 
 pub mod backend;
 pub mod bvh;
+pub mod checkpoints;
 pub mod context;
 pub mod cylindrical;
 pub mod heightfield;
 pub mod metrics;
+pub mod render_handle;
 pub mod tridexel;
 pub mod types;
 
 pub use backend::WgpuComputeBackend;
 pub use bvh::GpuMeshBvh;
+pub use checkpoints::{DEFAULT_GPU_CHECKPOINT_BUDGET_BYTES, GpuCheckpointCache};
 pub use context::GpuSimContext;
 pub use metrics::GpuErrorHistogram;
+pub use render_handle::{
+    GpuCylindricalRenderData, GpuHeightfieldRenderData, GpuStockRenderHandle,
+    GpuTriDexelRenderData, MAX_TRIDEXEL_EMIT_VERTICES,
+};
 pub use types::{
     BvhDispatchUniforms, CylindricalUniforms, GPU_METRICS_HIST_BINS, GPU_METRICS_MAX_WORKGROUPS,
     GPU_TILE_SIZE, GpuMetricsPartial, GpuRotaryPose, GpuSweepChord, GpuToolProfile,
@@ -1470,5 +1477,105 @@ mod tests {
                     < 0.001
             );
         }
+    }
+
+    #[test]
+    fn gpu_checkpoint_cache_enforces_vram_budget_lru_eviction_and_cpu_spill_restore() {
+        let ctx = GpuSimContext::shared_headless().expect("expected Vulkan/wgpu compute adapter");
+        let stock_spec = StockShapeSpec::Box {
+            aabb_wcs: Aabb3::new(DVec3::new(0.0, 0.0, -20.0), DVec3::new(80.0, 60.0, 0.0)),
+        };
+        let hf = HeightfieldStock::from_stock_spec(&stock_spec, SimResolution::Standard).unwrap();
+        let tools = all_seven_tools();
+        let tol = StockVerifyTolerances::default();
+
+        let mut gpu = WgpuComputeBackend::new(ctx, SimulatedStock::Heightfield(hf), None);
+        let cp_0_cpu = gpu.capture_checkpoint(0);
+        let single_bytes = GpuCheckpointCache::snapshot_byte_size(&cp_0_cpu);
+        assert!(single_bytes > 0);
+
+        // Tight budget: fits at most 2 GPU checkpoints simultaneously
+        let budget = single_bytes * 2;
+        let mut cache = GpuCheckpointCache::new(budget);
+        assert!(cache.capture_from_backend(&gpu, 0));
+        let vol_0 = gpu.compute_volume_mm3();
+
+        // Cut #1 -> state at seg 10
+        let _ = gpu.sweep_batch(
+            &[SweepChord {
+                motion: SweepMotion::Linear {
+                    p0: DVec3::new(10.0, 20.0, -6.0),
+                    p1: DVec3::new(60.0, 20.0, -6.0),
+                    rotary_deg_0: 0.0,
+                    rotary_deg_1: 0.0,
+                },
+                op_idx: 0,
+                is_rapid: false,
+                profile_idx: 0,
+                verify_tol: tol,
+            }],
+            &tools,
+            false,
+        );
+        let cp_10_cpu = gpu.capture_checkpoint(10);
+        let vol_10 = gpu.compute_volume_mm3();
+        assert!(vol_10 < vol_0 - 100.0);
+        assert!(cache.capture_from_backend(&gpu, 10));
+        assert_eq!(cache.len(), 2);
+        assert_eq!(cache.used_bytes(), budget);
+        assert_eq!(cache.eviction_count(), 0);
+
+        // Touch seg 0 via VRAM restore so seg 10 becomes the LRU entry
+        assert!(cache.restore_into_backend(&mut gpu, 0, Some(&cp_0_cpu)));
+        assert_eq!(cache.hit_count(), 1);
+        assert!((gpu.compute_volume_mm3() - vol_0).abs() < 1e-2);
+
+        // Restore seg 10 (wait: instead sweep directly from seg 0 to create distinct seg 20 state!)
+        let _ = gpu.sweep_batch(
+            &[SweepChord {
+                motion: SweepMotion::Linear {
+                    p0: DVec3::new(15.0, 42.0, -10.0),
+                    p1: DVec3::new(65.0, 42.0, -10.0),
+                    rotary_deg_0: 0.0,
+                    rotary_deg_1: 0.0,
+                },
+                op_idx: 1,
+                is_rapid: false,
+                profile_idx: 0,
+                verify_tol: tol,
+            }],
+            &tools,
+            false,
+        );
+        let vol_20 = gpu.compute_volume_mm3();
+        assert!((vol_20 - vol_10).abs() > 100.0);
+
+        // Capturing seg 20 must evict LRU entry (seg 10) while keeping seg 0 and seg 20 in VRAM
+        assert!(cache.capture_from_backend(&gpu, 20));
+        assert_eq!(cache.eviction_count(), 1);
+        assert_eq!(cache.len(), 2);
+        assert!(cache.used_bytes() <= budget);
+        assert!(cache.contains(0));
+        assert!(cache.contains(20));
+        assert!(!cache.contains(10));
+
+        // Restoring evicted seg 10 transparently spills back from CPU snapshot and restores exact volume
+        assert!(cache.restore_into_backend(&mut gpu, 10, Some(&cp_10_cpu)));
+        assert_eq!(cache.miss_count(), 1);
+        assert!(cache.used_bytes() <= budget);
+        assert!(cache.contains(10));
+        assert!(
+            (gpu.compute_volume_mm3() - vol_10).abs() < 1e-2,
+            "restored evicted checkpoint volume mismatch: got={:.3}, expected={:.3}",
+            gpu.compute_volume_mm3(),
+            vol_10
+        );
+
+        // Zero-budget cache gracefully refuses VRAM storage and still restores from CPU fallback
+        let mut zero_cache = GpuCheckpointCache::new(0);
+        assert!(!zero_cache.capture_from_backend(&gpu, 10));
+        assert!(zero_cache.is_empty());
+        assert!(zero_cache.restore_into_backend(&mut gpu, 0, Some(&cp_0_cpu)));
+        assert!((gpu.compute_volume_mm3() - vol_0).abs() < 1e-2);
     }
 }

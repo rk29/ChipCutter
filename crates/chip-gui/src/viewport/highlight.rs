@@ -6,6 +6,8 @@ use chip_cam::{
     TabMarker3D,
 };
 use chip_math::{ArcPolyline2D, DMat4, DVec2, DVec3, DisplayUnit, MM_PER_INCH, Ray3, RigidFrame3};
+#[cfg(feature = "gpu-compute")]
+use chip_sim::{GpuStockRenderHandle, SimStockColorMode};
 use chip_sim::{SimStockMesh, SimToolMesh};
 use chip_sketch::{SketchLayer, SketchPickHit};
 
@@ -17,9 +19,9 @@ use crate::{camera::CadCamera, theme::AppTheme};
 /// - [`Self::CpuMesh`] uploads a CPU-tessellated [`SimStockMesh`] into reusable GPU buffers only
 ///   when `revision` advances, applying `stock_model` on the GPU (so 4th-axis rotary playback
 ///   rotates without CPU re-tessellation).
-/// - Future phases can add a `GpuGrid` variant behind an optional `gpu-compute` feature to render
-///   heightfield, cylindrical, or fixed-`K` Tri-Dexel GPU storage buffers directly without CPU
-///   meshing readback.
+/// - [`Self::GpuGrid`] (behind `#[cfg(feature = "gpu-compute")]`) renders live GPU-resident
+///   Heightfield, 4th-axis Cylindrical, or Tri-Dexel indirect-draw buffers directly on the shared
+///   `wgpu::Device` with zero CPU meshing readback and `< 0.1 ms` instant Error Heatmap updates.
 #[derive(Debug, Clone)]
 pub enum SimStockRenderSource {
     /// CPU-tessellated indexed stock mesh with monotonic upload `revision` and rigid Setup-WCS
@@ -29,6 +31,14 @@ pub enum SimStockRenderSource {
         mesh: Arc<SimStockMesh>,
         stock_model: DMat4,
     },
+    /// Zero-readback direct GPU storage-buffer / indirect-draw render handle on the shared device.
+    #[cfg(feature = "gpu-compute")]
+    GpuGrid {
+        revision: u64,
+        handle: Arc<GpuStockRenderHandle>,
+        stock_model: DMat4,
+        color_mode: SimStockColorMode,
+    },
 }
 
 impl SimStockRenderSource {
@@ -37,6 +47,8 @@ impl SimStockRenderSource {
     pub const fn revision(&self) -> u64 {
         match self {
             Self::CpuMesh { revision, .. } => *revision,
+            #[cfg(feature = "gpu-compute")]
+            Self::GpuGrid { revision, .. } => *revision,
         }
     }
 
@@ -45,6 +57,8 @@ impl SimStockRenderSource {
     pub const fn stock_model(&self) -> DMat4 {
         match self {
             Self::CpuMesh { stock_model, .. } => *stock_model,
+            #[cfg(feature = "gpu-compute")]
+            Self::GpuGrid { stock_model, .. } => *stock_model,
         }
     }
 
@@ -53,6 +67,18 @@ impl SimStockRenderSource {
     pub fn cpu_mesh(&self) -> Option<&Arc<SimStockMesh>> {
         match self {
             Self::CpuMesh { mesh, .. } => Some(mesh),
+            #[cfg(feature = "gpu-compute")]
+            Self::GpuGrid { .. } => None,
+        }
+    }
+
+    /// Returns the underlying GPU render handle when backed by [`Self::GpuGrid`].
+    #[cfg(feature = "gpu-compute")]
+    #[inline]
+    pub fn gpu_handle(&self) -> Option<&Arc<GpuStockRenderHandle>> {
+        match self {
+            Self::GpuGrid { handle, .. } => Some(handle),
+            Self::CpuMesh { .. } => None,
         }
     }
 }

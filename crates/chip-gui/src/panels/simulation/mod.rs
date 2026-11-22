@@ -14,6 +14,8 @@ use std::{
 use chip_cad::CadDocument;
 use chip_math::DVec3;
 use chip_project::{ProjectDocument, ToolpathCache};
+#[cfg(feature = "gpu-compute")]
+use chip_sim::{GpuSimContext, GpuStockRenderHandle};
 use chip_sim::{
     SetupSimulationResult, SimEngineKind, SimResolution, SimStockColorMode, SimStockMesh,
     SimToolMesh, StockErrorReport,
@@ -65,6 +67,10 @@ pub struct SimulationPanelState {
     cached_stock_meta: Option<StockMeshMeta>,
     cached_stock_rev: u64,
     cached_stock_mesh: Option<Arc<SimStockMesh>>,
+    #[cfg(feature = "gpu-compute")]
+    gpu_ctx: Option<Arc<GpuSimContext>>,
+    #[cfg(feature = "gpu-compute")]
+    cached_gpu_handle: Option<Arc<GpuStockRenderHandle>>,
 
     cached_tool_key: Option<(ToolId, bool)>,
     cached_tool_rev: u64,
@@ -149,6 +155,10 @@ impl Default for SimulationPanelState {
             cached_stock_meta: None,
             cached_stock_rev: 0,
             cached_stock_mesh: None,
+            #[cfg(feature = "gpu-compute")]
+            gpu_ctx: None,
+            #[cfg(feature = "gpu-compute")]
+            cached_gpu_handle: None,
             cached_tool_key: None,
             cached_tool_rev: 0,
             cached_tool_mesh: None,
@@ -162,6 +172,35 @@ impl SimulationPanelState {
         Self {
             engine,
             ..Self::default()
+        }
+    }
+
+    #[cfg(feature = "gpu-compute")]
+    pub fn with_engine_and_gpu(engine: SimEngineKind, gpu_ctx: Option<Arc<GpuSimContext>>) -> Self {
+        let mut s = Self::with_engine(engine);
+        s.set_gpu_context(gpu_ctx);
+        s
+    }
+
+    #[cfg(feature = "gpu-compute")]
+    pub fn set_gpu_context(&mut self, gpu_ctx: Option<Arc<GpuSimContext>>) {
+        self.remesh_worker.set_gpu_context(gpu_ctx.clone());
+        self.gpu_ctx = gpu_ctx;
+    }
+
+    #[inline]
+    pub(crate) fn is_gpu_direct_active(&self) -> bool {
+        #[cfg(feature = "gpu-compute")]
+        {
+            self.gpu_ctx.is_some()
+                && self
+                    .active_result
+                    .as_ref()
+                    .is_some_and(|r| r.active_backend.is_gpu)
+        }
+        #[cfg(not(feature = "gpu-compute"))]
+        {
+            false
         }
     }
 
@@ -254,6 +293,10 @@ impl SimulationPanelState {
         self.cached_error_report = None;
         self.cached_stock_meta = None;
         self.cached_stock_mesh = None;
+        #[cfg(feature = "gpu-compute")]
+        {
+            self.cached_gpu_handle = None;
+        }
     }
 
     /// Returns the active [`StockErrorReport`] evaluated at `self.heatmap_tolerance_mm`,
@@ -275,9 +318,9 @@ impl SimulationPanelState {
     }
 
     fn active_stock_color_mode(&self) -> SimStockColorMode {
-        // Defer expensive per-vertex heatmap shading during live animation playback;
-        // render full Error Heatmap immediately whenever paused, scrubbed, or complete.
-        if self.show_error_heatmap && !self.is_playing {
+        // On CPU, defer expensive per-vertex heatmap shading during live animation playback;
+        // on GPU direct rendering, Error Heatmap runs in < 0.1 ms in WGSL so it stays instant.
+        if self.show_error_heatmap && (!self.is_playing || self.is_gpu_direct_active()) {
             let tol = self.heatmap_tolerance_mm.clamp(1e-4, 50.0);
             let max_scale = self.heatmap_max_scale_mm.max(tol * 2.0);
             SimStockColorMode::ErrorHeatmap {

@@ -16,7 +16,7 @@ use chip_stock::{
     StockVerifyTolerances, SweepChord, SweepToolSpec, TriDexelStock,
 };
 #[cfg(feature = "gpu-compute")]
-use chip_stock::{GpuSimContext, WgpuComputeBackend};
+use chip_stock::{GpuCheckpointCache, GpuSimContext, WgpuComputeBackend};
 use chip_tools::CutterGeometry;
 
 use crate::{
@@ -218,6 +218,152 @@ impl SetupSimulationResult {
                 }
             },
         )
+    }
+
+    /// Synchronizes a GPU-resident [`WgpuComputeBackend`] to an already-sampled [`ScrubSnapshot`]
+    /// using the VRAM-bounded [`GpuCheckpointCache`] (`copy_buffer_to_buffer` restore + GPU tail
+    /// delta sweep), returning `true` if GPU stock buffers mutated.
+    #[cfg(feature = "gpu-compute")]
+    pub fn sync_gpu_backend_to_scrub_snapshot(
+        &self,
+        backend: &mut WgpuComputeBackend,
+        gpu_checkpoints: &mut GpuCheckpointCache,
+        cursor: &mut Option<StockPlaybackCursor>,
+        snap: &ScrubSnapshot,
+    ) -> bool {
+        let target = target_cursor_from_snap(snap, self.timeline.motion_spans.len());
+        self.sync_gpu_backend_to_target_cursor(backend, gpu_checkpoints, cursor, target)
+    }
+
+    /// Synchronizes a GPU-resident [`WgpuComputeBackend`] to `time_sec` using the VRAM-bounded
+    /// [`GpuCheckpointCache`], returning `true` if GPU stock buffers mutated.
+    #[cfg(feature = "gpu-compute")]
+    pub fn sync_gpu_backend_to_time(
+        &self,
+        backend: &mut WgpuComputeBackend,
+        gpu_checkpoints: &mut GpuCheckpointCache,
+        cursor: &mut Option<StockPlaybackCursor>,
+        time_sec: f64,
+    ) -> bool {
+        let total_spans = self.timeline.motion_spans.len();
+        let target = self.timeline.sample_at_time(time_sec).map_or(
+            StockPlaybackCursor {
+                seg_idx: total_spans,
+                seg_u: 0.0,
+            },
+            |s| target_cursor_from_snap(&s, total_spans),
+        );
+        self.sync_gpu_backend_to_target_cursor(backend, gpu_checkpoints, cursor, target)
+    }
+
+    #[cfg(feature = "gpu-compute")]
+    fn sync_gpu_backend_to_target_cursor(
+        &self,
+        backend: &mut WgpuComputeBackend,
+        gpu_checkpoints: &mut GpuCheckpointCache,
+        cursor: &mut Option<StockPlaybackCursor>,
+        target: StockPlaybackCursor,
+    ) -> bool {
+        if let Some(cur) = *cursor
+            && cur.seg_idx == target.seg_idx
+            && (target.seg_u - cur.seg_u).abs() <= 1e-6
+        {
+            return false;
+        }
+
+        let total_spans = self.timeline.motion_spans.len();
+        if target.seg_idx >= total_spans {
+            if !gpu_checkpoints.restore_into_backend(backend, total_spans, None) {
+                backend.copy_state_from_cpu_stock(&self.final_stock);
+                let _ = gpu_checkpoints.capture_from_backend(backend, total_spans);
+            }
+            *cursor = Some(StockPlaybackCursor {
+                seg_idx: total_spans,
+                seg_u: 0.0,
+            });
+            return true;
+        }
+
+        let cp = self
+            .checkpoints
+            .iter()
+            .rfind(|c| c.completed_segments() <= target.seg_idx);
+
+        let (mut cur_seg, cur_u, mut changed) = if let Some(cur) = *cursor
+            && (target.seg_idx > cur.seg_idx
+                || (target.seg_idx == cur.seg_idx && target.seg_u >= cur.seg_u))
+        {
+            if let Some(cp) = cp
+                && cp.completed_segments() > cur.seg_idx
+            {
+                let _ = gpu_checkpoints.restore_into_backend(
+                    backend,
+                    cp.completed_segments(),
+                    Some(cp),
+                );
+                (cp.completed_segments(), 0.0, true)
+            } else {
+                (cur.seg_idx, cur.seg_u, false)
+            }
+        } else if let Some(cp) = cp {
+            let _ =
+                gpu_checkpoints.restore_into_backend(backend, cp.completed_segments(), Some(cp));
+            (cp.completed_segments(), 0.0, true)
+        } else {
+            backend.copy_state_from_cpu_stock(&self.final_stock);
+            (0, 0.0, true)
+        };
+
+        let spans = &self.timeline.motion_spans;
+        let default_tol = StockVerifyTolerances::default();
+        let mut delta_chords: Vec<SweepChord> = Vec::new();
+        let emit_chords = |seg_idx: usize, u_start: f64, u_end: f64, out: &mut Vec<SweepChord>| {
+            let Some(span) = spans.get(seg_idx) else {
+                return;
+            };
+            if u_start <= 1e-6 && u_end >= 1.0 - 1e-6 {
+                push_segment_sweep_chords(
+                    &span.segment,
+                    span.op_idx as u32,
+                    span.op_idx,
+                    default_tol,
+                    out,
+                );
+            } else if let Some(sub_seg) = slice_segment_range(&span.segment, u_start, u_end) {
+                push_segment_sweep_chords(
+                    &sub_seg,
+                    span.op_idx as u32,
+                    span.op_idx,
+                    default_tol,
+                    out,
+                );
+            }
+        };
+
+        if cur_seg == target.seg_idx {
+            if target.seg_u > cur_u + 1e-6 {
+                emit_chords(cur_seg, cur_u, target.seg_u, &mut delta_chords);
+            }
+        } else {
+            if cur_u > 1e-6 {
+                emit_chords(cur_seg, cur_u, 1.0, &mut delta_chords);
+                cur_seg += 1;
+            }
+            for seg_idx in cur_seg..target.seg_idx {
+                emit_chords(seg_idx, 0.0, 1.0, &mut delta_chords);
+            }
+            if target.seg_u > 1e-6 {
+                emit_chords(target.seg_idx, 0.0, target.seg_u, &mut delta_chords);
+            }
+        }
+
+        if !delta_chords.is_empty() {
+            let out = backend.sweep_batch(&delta_chords, &self.operation_profiles, false);
+            changed |= out.mutated;
+        }
+
+        *cursor = Some(target);
+        changed
     }
 }
 
