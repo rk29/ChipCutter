@@ -50,6 +50,11 @@
   </screenshots>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="0.14.0" date="2026-11-22">
+      <description>
+        <p>Phase 14 architecture refactoring release: extracted dedicated pure-kernel internal crates (chip-bvh flat SAH BVH, chip-geom2d exact 2D polygon/Voronoi/arc kernel, and chip-stock volumetric stock engines), unified Heightfield/Tri-Dexel/Cylindrical simulation behind SimStockBackend with an axis-generic flat fixed-K Tri-Dexel span pool and zero-copy GPU vertex/buffer layouts, fixed multi-body STL/OBJ/3MF target_bodies filtering in Tri-Dexel verification, moved interactive simulation stock remeshing off the UI thread with rapid-scrub coalescing, and decomposed oversized modules across the workspace.</p>
+      </description>
+    </release>
     <release version="0.13.0" date="2026-11-21">
       <description>
         <p>Phase 13 release: added four new built-in CNC machine profiles (Makera Carvera, Makera Carvera Z1, Millennium Machines Milo v2.0, and Voron Cascade) and full end-to-end Helical Thread Milling (single-point and multi-form cutters, ISO Metric and Unified UNC/UNF thread tables, internal holes and external bosses, radial tangent arc-in/out, Tri-Dexel 3D helical undercut simulation, Tool Library &amp; Passes Inspector UI, built-in thread-mill sample, and illustrated Tutorial 18).</p>
