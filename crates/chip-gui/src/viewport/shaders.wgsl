@@ -936,3 +936,165 @@ fn vs_sim_cylindrical_gpu(@builtin(vertex_index) vid: u32) -> SimVertexOut {
     out.color_rgba = col;
     return out;
 }
+
+// --- Direct GPU Tri-Dexel Compact-Quad Renderer ---
+
+struct GpuTriDexelRenderUniforms {
+    // [nx, ny, nz, total_rays]
+    dims_and_total: vec4<u32>,
+    // [ray_off_x, ray_off_y, ray_off_z, 0]
+    plane_offsets: vec4<u32>,
+    // [origin_x, origin_y, origin_z, 0.0]
+    origin_wcs: vec4<f32>,
+    // [dx, dy, dz, 0.0]
+    pitch_mm: vec4<f32>,
+};
+
+struct PackedTriDexelQuad {
+    ray_and_flags: u32,
+    color_rgba8: u32,
+    w_local: f32,
+    dw_du: f32,
+    dw_dv: f32,
+};
+
+// Tri-Dexel bindings (10..=11)
+@group(1) @binding(10) var<uniform> u_td_grid: GpuTriDexelRenderUniforms;
+@group(1) @binding(11) var<storage, read> td_quads: array<PackedTriDexelQuad>;
+
+fn td_from_uvw(axis_id: u32, cu: f32, cv: f32, cw: f32) -> vec3<f32> {
+    if (axis_id == 0u) {
+        return vec3<f32>(cw, cu, cv);
+    }
+    if (axis_id == 1u) {
+        return vec3<f32>(cu, cw, cv);
+    }
+    return vec3<f32>(cu, cv, cw);
+}
+
+@vertex
+fn vs_sim_tridexel_gpu(@builtin(vertex_index) vid: u32) -> SimVertexOut {
+    let quad_idx = vid / 6u;
+    let tri_v = vid % 6u;
+    let q = td_quads[quad_idx];
+
+    let global_ray = q.ray_and_flags & 0x7FFFFFFFu;
+    let want_min = (q.ray_and_flags & 0x80000000u) != 0u;
+    let col = unpack4x8unorm(q.color_rgba8);
+
+    let nx = u_td_grid.dims_and_total.x;
+    let ny = u_td_grid.dims_and_total.y;
+    let off_y = u_td_grid.plane_offsets.y;
+    let off_z = u_td_grid.plane_offsets.z;
+
+    var axis_id: u32;
+    var plane_offset: u32;
+    var nu: u32;
+    var du: f32;
+    var dv: f32;
+    var dw: f32;
+    var ou: f32;
+    var ov: f32;
+    var ow: f32;
+
+    if (global_ray < off_y) {
+        // X plane: u = Y, v = Z, w = X
+        axis_id = 0u;
+        plane_offset = u_td_grid.plane_offsets.x;
+        nu = ny;
+        du = u_td_grid.pitch_mm.y;
+        dv = u_td_grid.pitch_mm.z;
+        dw = u_td_grid.pitch_mm.x;
+        ou = u_td_grid.origin_wcs.y;
+        ov = u_td_grid.origin_wcs.z;
+        ow = u_td_grid.origin_wcs.x;
+    } else if (global_ray < off_z) {
+        // Y plane: u = X, v = Z, w = Y
+        axis_id = 1u;
+        plane_offset = off_y;
+        nu = nx;
+        du = u_td_grid.pitch_mm.x;
+        dv = u_td_grid.pitch_mm.z;
+        dw = u_td_grid.pitch_mm.y;
+        ou = u_td_grid.origin_wcs.x;
+        ov = u_td_grid.origin_wcs.z;
+        ow = u_td_grid.origin_wcs.y;
+    } else {
+        // Z plane: u = X, v = Y, w = Z
+        axis_id = 2u;
+        plane_offset = off_z;
+        nu = nx;
+        du = u_td_grid.pitch_mm.x;
+        dv = u_td_grid.pitch_mm.y;
+        dw = u_td_grid.pitch_mm.z;
+        ou = u_td_grid.origin_wcs.x;
+        ov = u_td_grid.origin_wcs.y;
+        ow = u_td_grid.origin_wcs.z;
+    }
+
+    let local_ray = global_ray - plane_offset;
+    let iu = local_ray % nu;
+    let iv = local_ray / nu;
+
+    let dw_du = q.dw_du;
+    let dw_dv = q.dw_dv;
+    var n_uvw = vec3<f32>(-dw_du, -dw_dv, 1.0);
+    if (want_min) {
+        n_uvw = vec3<f32>(dw_du, dw_dv, -1.0);
+    }
+    let normal_wcs = normalize(td_from_uvw(axis_id, n_uvw.x, n_uvw.y, n_uvw.z));
+
+    let u0 = ou + f32(iu) * du;
+    let u1 = ou + f32(iu + 1u) * du;
+    let v0 = ov + f32(iv) * dv;
+    let v1 = ov + f32(iv + 1u) * dv;
+    let w_base = ow + q.w_local;
+
+    let half_du = 0.5 * dw_du * du;
+    let half_dv = 0.5 * dw_dv * dv;
+    let clamp_w = 0.5 * dw;
+    let w00 = w_base + clamp(-half_du - half_dv, -clamp_w, clamp_w);
+    let w10 = w_base + clamp(half_du - half_dv, -clamp_w, clamp_w);
+    let w11 = w_base + clamp(half_du + half_dv, -clamp_w, clamp_w);
+    let w01 = w_base + clamp(-half_du + half_dv, -clamp_w, clamp_w);
+
+    var a: vec3<f32>;
+    var b: vec3<f32>;
+    var c: vec3<f32>;
+    var d: vec3<f32>;
+    if (axis_id == 1u) {
+        // Y plane has flipped handedness: (0,0), (0,1), (1,1), (1,0)
+        a = td_from_uvw(axis_id, u0, v0, w00);
+        b = td_from_uvw(axis_id, u0, v1, w01);
+        c = td_from_uvw(axis_id, u1, v1, w11);
+        d = td_from_uvw(axis_id, u1, v0, w10);
+    } else {
+        a = td_from_uvw(axis_id, u0, v0, w00);
+        b = td_from_uvw(axis_id, u1, v0, w10);
+        c = td_from_uvw(axis_id, u1, v1, w11);
+        d = td_from_uvw(axis_id, u0, v1, w01);
+    }
+
+    var pos_wcs: vec3<f32>;
+    if (tri_v == 0u || tri_v == 3u) {
+        pos_wcs = a;
+    } else if (tri_v == 1u) {
+        pos_wcs = select(b, d, want_min);
+    } else if (tri_v == 2u || tri_v == 4u) {
+        pos_wcs = c;
+    } else {
+        pos_wcs = select(d, b, want_min);
+    }
+
+    let stock_wcs_pos = (u_vp.stock_model * vec4<f32>(pos_wcs, 1.0)).xyz;
+    let stock_wcs_n = (u_vp.stock_model * vec4<f32>(normal_wcs, 0.0)).xyz;
+    let world_pos = (u_vp.wcs_local_to_world * vec4<f32>(stock_wcs_pos, 1.0)).xyz;
+    let world_n = normalize((u_vp.wcs_local_to_world * vec4<f32>(stock_wcs_n, 0.0)).xyz);
+
+    var out: SimVertexOut;
+    out.clip_pos = u_vp.view_proj * vec4<f32>(world_pos, 1.0);
+    out.world_normal = world_n;
+    out.view_normal = normalize((u_vp.view * vec4<f32>(world_n, 0.0)).xyz);
+    out.color_rgba = col;
+    return out;
+}

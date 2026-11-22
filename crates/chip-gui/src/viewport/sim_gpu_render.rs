@@ -87,6 +87,20 @@ pub(crate) struct GpuCylindricalRenderUniformsGpu {
     pub extra: [f32; 4],
 }
 
+/// 64-byte (`4 × 16B`) Tri-Dexel grid geometry uniform bound at `@group(1) @binding(10)`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+pub(crate) struct GpuTriDexelRenderUniformsGpu {
+    /// `[nx, ny, nz, total_rays]`
+    pub dims_and_total: [u32; 4],
+    /// `[ray_off_x, ray_off_y, ray_off_z, 0]`
+    pub plane_offsets: [u32; 4],
+    /// `[origin_x, origin_y, origin_z, 0.0]`
+    pub origin_wcs: [f32; 4],
+    /// `[dx, dy, dz, 0.0]`
+    pub pitch_mm: [f32; 4],
+}
+
 enum ActiveGpuDraw {
     Heightfield {
         bind_group: wgpu::BindGroup,
@@ -104,22 +118,27 @@ enum ActiveGpuDraw {
         r_target_buf: Arc<wgpu::Buffer>,
     },
     TriDexel {
-        vertex_buf: Arc<wgpu::Buffer>,
+        bind_group: wgpu::BindGroup,
+        quad_buf: Arc<wgpu::Buffer>,
         indirect_args_buf: Arc<wgpu::Buffer>,
         has_overflow_mesh: bool,
     },
 }
 
-/// Owns the direct GPU stock render pipelines (`vs_sim_heightfield_gpu`, `vs_sim_cylindrical_gpu`)
-/// and reusable `SimStockVisualUniforms` / bind-group cache for `ViewportRenderer`.
+/// Owns the direct GPU stock render pipelines (`vs_sim_heightfield_gpu`, `vs_sim_cylindrical_gpu`,
+/// `vs_sim_tridexel_gpu`) and reusable `SimStockVisualUniforms` / bind-group cache for
+/// `ViewportRenderer`.
 pub(crate) struct SimGpuStockRenderer {
     visual_uniform_buf: wgpu::Buffer,
     hf_uniform_buf: wgpu::Buffer,
     cyl_uniform_buf: wgpu::Buffer,
+    td_uniform_buf: wgpu::Buffer,
     hf_bgl: wgpu::BindGroupLayout,
     cyl_bgl: wgpu::BindGroupLayout,
+    td_bgl: wgpu::BindGroupLayout,
     hf_pipeline: wgpu::RenderPipeline,
     cyl_pipeline: wgpu::RenderPipeline,
+    td_pipeline: wgpu::RenderPipeline,
     active_draw: Option<ActiveGpuDraw>,
     overflow_mesh_gpu: GrowableSimIndexedMeshGpu,
     overflow_rev: u64,
@@ -146,6 +165,12 @@ impl SimGpuStockRenderer {
         let cyl_uniform_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("chip_sim_gpu_cyl_uniforms"),
             size: std::mem::size_of::<GpuCylindricalRenderUniformsGpu>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let td_uniform_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("chip_sim_gpu_td_uniforms"),
+            size: std::mem::size_of::<GpuTriDexelRenderUniformsGpu>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -194,6 +219,15 @@ impl SimGpuStockRenderer {
                 ro_storage(7, wgpu::ShaderStages::VERTEX),
                 ro_storage(8, wgpu::ShaderStages::VERTEX),
                 ro_storage(9, wgpu::ShaderStages::VERTEX),
+            ],
+        });
+
+        // Tri-Dexel compact-quad direct GPU BGL: 1 uniform + 1 read-only storage buffer
+        let td_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("chip_sim_gpu_td_bgl"),
+            entries: &[
+                uniform(10, wgpu::ShaderStages::VERTEX),
+                ro_storage(11, wgpu::ShaderStages::VERTEX),
             ],
         });
 
@@ -264,6 +298,41 @@ impl SimGpuStockRenderer {
                 cull_mode: None,
                 ..Default::default()
             },
+            depth_stencil: depth_stencil.clone(),
+            multisample,
+            fragment: Some(wgpu::FragmentState {
+                module: shader,
+                entry_point: Some("fs_sim_mesh"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: COLOR_FORMAT,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+
+        let td_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("chip_sim_gpu_td_layout"),
+            bind_group_layouts: &[Some(vp_bgl), Some(&td_bgl)],
+            immediate_size: 0,
+        });
+        let td_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("chip_sim_gpu_td_pipeline"),
+            layout: Some(&td_layout),
+            vertex: wgpu::VertexState {
+                module: shader,
+                entry_point: Some("vs_sim_tridexel_gpu"),
+                buffers: &[],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                cull_mode: None,
+                ..Default::default()
+            },
             depth_stencil,
             multisample,
             fragment: Some(wgpu::FragmentState {
@@ -284,10 +353,13 @@ impl SimGpuStockRenderer {
             visual_uniform_buf,
             hf_uniform_buf,
             cyl_uniform_buf,
+            td_uniform_buf,
             hf_bgl,
             cyl_bgl,
+            td_bgl,
             hf_pipeline,
             cyl_pipeline,
+            td_pipeline,
             active_draw: None,
             overflow_mesh_gpu: GrowableSimIndexedMeshGpu::new(
                 "chip_td_overflow_vbuf",
@@ -524,6 +596,19 @@ impl SimGpuStockRenderer {
         // Zero-op if color_mode already baked; < 0.3 ms GPU compute re-emit if color_mode changed!
         let _ = td.ensure_emitted_for_color_mode(color_mode, encoder);
 
+        let uniforms = GpuTriDexelRenderUniformsGpu {
+            dims_and_total: [td.dims[0], td.dims[1], td.dims[2], td.total_rays],
+            plane_offsets: [
+                td.plane_ray_offsets[0],
+                td.plane_ray_offsets[1],
+                td.plane_ray_offsets[2],
+                0,
+            ],
+            origin_wcs: [td.origin_wcs[0], td.origin_wcs[1], td.origin_wcs[2], 0.0],
+            pitch_mm: [td.pitch_mm[0], td.pitch_mm[1], td.pitch_mm[2], 0.0],
+        };
+        queue.write_buffer(&self.td_uniform_buf, 0, bytemuck::bytes_of(&uniforms));
+
         let has_overflow_mesh = if let Some(ov) = &td.overflow_mesh
             && !ov.vertices.is_empty()
             && !ov.indices.is_empty()
@@ -540,8 +625,44 @@ impl SimGpuStockRenderer {
             false
         };
 
+        let reuse_bg = matches!(
+            &self.active_draw,
+            Some(ActiveGpuDraw::TriDexel {
+                quad_buf,
+                indirect_args_buf,
+                ..
+            }) if Arc::ptr_eq(quad_buf, &td.quad_buf)
+                && Arc::ptr_eq(indirect_args_buf, &td.indirect_args_buf)
+        );
+        if reuse_bg {
+            if let Some(ActiveGpuDraw::TriDexel {
+                has_overflow_mesh: ov_flag,
+                ..
+            }) = &mut self.active_draw
+            {
+                *ov_flag = has_overflow_mesh;
+            }
+            return;
+        }
+
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("chip_sim_gpu_td_bg"),
+            layout: &self.td_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 10,
+                    resource: self.td_uniform_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 11,
+                    resource: td.quad_buf.as_entire_binding(),
+                },
+            ],
+        });
+
         self.active_draw = Some(ActiveGpuDraw::TriDexel {
-            vertex_buf: Arc::clone(&td.vertex_buf),
+            bind_group,
+            quad_buf: Arc::clone(&td.quad_buf),
             indirect_args_buf: Arc::clone(&td.indirect_args_buf),
             has_overflow_mesh,
         });
@@ -584,16 +705,18 @@ impl SimGpuStockRenderer {
                 true
             }
             ActiveGpuDraw::TriDexel {
-                vertex_buf,
+                bind_group,
                 indirect_args_buf,
                 has_overflow_mesh,
+                ..
             } => {
-                pass.set_pipeline(sim_stock_pipeline);
-                pass.set_vertex_buffer(0, vertex_buf.slice(..));
+                pass.set_pipeline(&self.td_pipeline);
+                pass.set_bind_group(1, bind_group, &[]);
                 pass.draw_indirect(indirect_args_buf, 0);
                 if *has_overflow_mesh
                     && let Some((vbuf, ibuf, icount)) = self.overflow_mesh_gpu.active()
                 {
+                    pass.set_pipeline(sim_stock_pipeline);
                     pass.set_vertex_buffer(0, vbuf.slice(..));
                     pass.set_index_buffer(ibuf.slice(..), wgpu::IndexFormat::Uint32);
                     pass.draw_indexed(0..icount, 0, 0..1);

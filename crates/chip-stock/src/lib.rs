@@ -31,7 +31,8 @@ pub use cylindrical::{
 pub use gpu::{
     DEFAULT_GPU_CHECKPOINT_BUDGET_BYTES, GpuCheckpointCache, GpuCylindricalRenderData,
     GpuErrorHistogram, GpuHeightfieldRenderData, GpuMeshBvh, GpuSimContext, GpuStockRenderHandle,
-    GpuTriDexelRenderData, MAX_TRIDEXEL_EMIT_VERTICES, WgpuComputeBackend,
+    GpuTriDexelRenderData, MAX_TRIDEXEL_EMIT_QUADS, MAX_TRIDEXEL_EMIT_VERTICES, PackedTriDexelQuad,
+    TRIDEXEL_PACKED_QUAD_BYTES, WgpuComputeBackend,
 };
 pub use heightfield::{HeightfieldStock, tessellate_stock_mesh, tessellate_stock_mesh_colored};
 pub use mesher_common::{

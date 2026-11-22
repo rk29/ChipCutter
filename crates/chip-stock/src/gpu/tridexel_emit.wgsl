@@ -1,8 +1,8 @@
 // Direct GPU Tri-Dexel Surface Extraction Compute Pass (`tridexel_emit.wgsl`)
-// Scans all 3 orthogonal dexel planes (`X`, `Y`, `Z`), emits packed 40-byte `SimColoredVertex`
-// quads with smooth finite-difference normals on curved surfaces & crisp normals on walls,
-// evaluates `Metallic` / `ByOperation` / signed `ErrorHeatmap` coloring directly on GPU,
-// and populates `DrawIndirectArgs` (`[vertex_count, 1, 0, 0]`) for zero-readback `draw_indirect`.
+// Scans all 3 orthogonal dexel planes (`X`, `Y`, `Z`), emits compact 20-byte `PackedTriDexelQuad`
+// records with finite-difference slopes and packed RGBA8 colors (`Metallic`, `ByOperation`, or
+// signed `ErrorHeatmap`), and populates `DrawIndirectArgs` (`[vertex_count, 1, 0, 0]`) for
+// zero-readback `draw_indirect` expansion in `vs_sim_tridexel_gpu`.
 
 const INLINE_K: u32 = 4u;
 const UNCUT_OP_IDX: u32 = 0xFFFFFFFFu;
@@ -17,7 +17,7 @@ struct TriDexelEmitUniforms {
     dims_and_total: vec4<u32>,
     // [ray_off_x, ray_off_y, ray_off_z, has_target]
     plane_offsets_and_target: vec4<u32>,
-    // [color_mode_id, max_vertices, _pad0, _pad1]
+    // [color_mode_id, max_quads, _pad0, _pad1]
     mode_and_cap: vec4<u32>,
     // [origin_x, origin_y, origin_z, tolerance_mm]
     origin_and_tol: vec4<f32>,
@@ -36,18 +36,19 @@ struct FlatDexelSpan {
     _pad: u32,
 }
 
-// Exact 40-byte tightly-packed vertex matching Rust `SimColoredVertex` / `SimVertexGpu` (align 4).
-struct PackedSimVertex {
-    px: f32,
-    py: f32,
-    pz: f32,
-    nx: f32,
-    ny: f32,
-    nz: f32,
-    r: f32,
-    g: f32,
-    b: f32,
-    a: f32,
+// Compact 20-byte quad record matching Rust `PackedTriDexelQuad` (align 4).
+// Expanded directly into 6 vertices (2 triangles) by `vs_sim_tridexel_gpu` via `draw_indirect`.
+struct PackedTriDexelQuad {
+    // bits 0..30: global_ray, bit 31: want_min (1 = min endpoint, 0 = max endpoint)
+    ray_and_flags: u32,
+    // RGBA8 unorm packed color
+    color_rgba8: u32,
+    // Endpoint coordinate relative to plane origin_w (mm)
+    w_local: f32,
+    // Finite-difference slope dw/du
+    dw_du: f32,
+    // Finite-difference slope dw/dv
+    dw_dv: f32,
 }
 
 // 1 uniform + 6 storage buffers (strictly within WebGPU default limit of 8 storage buffers/stage)
@@ -56,7 +57,7 @@ struct PackedSimVertex {
 @group(0) @binding(2) var<storage, read> m_counts: array<u32>;
 @group(0) @binding(3) var<storage, read> t_slots: array<FlatDexelSpan>;
 @group(0) @binding(4) var<storage, read> t_counts: array<u32>;
-@group(0) @binding(5) var<storage, read_write> out_vertices: array<PackedSimVertex>;
+@group(0) @binding(5) var<storage, read_write> out_quads: array<PackedTriDexelQuad>;
 @group(0) @binding(6) var<storage, read_write> draw_args: array<atomic<u32>, 4>;
 
 fn unpack_min_op(op_packed: u32) -> u32 {
@@ -149,16 +150,6 @@ fn eval_endpoint_color(global_ray: u32, w_local: f32, op_idx: u32, is_side: bool
     return eval_op_color(op_idx, is_side);
 }
 
-fn from_uvw(axis_id: u32, cu: f32, cv: f32, cw: f32) -> vec3<f32> {
-    if (axis_id == 0u) {
-        return vec3<f32>(cw, cu, cv);
-    }
-    if (axis_id == 1u) {
-        return vec3<f32>(cu, cw, cv);
-    }
-    return vec3<f32>(cu, cv, cw);
-}
-
 fn neighbor_endpoint(
     plane_offset: u32,
     nu: u32,
@@ -192,41 +183,32 @@ fn neighbor_endpoint(
     return best_w;
 }
 
-fn make_vertex(p: vec3<f32>, n: vec3<f32>, col: vec4<f32>) -> PackedSimVertex {
-    return PackedSimVertex(
-        p.x, p.y, p.z,
-        n.x, n.y, n.z,
-        col.x, col.y, col.z, col.w,
-    );
-}
-
-fn emit_quad(
-    p0: vec3<f32>,
-    p1: vec3<f32>,
-    p2: vec3<f32>,
-    p3: vec3<f32>,
-    n: vec3<f32>,
+fn emit_packed_quad(
+    global_ray: u32,
+    want_min: bool,
+    w_local: f32,
+    dw_du: f32,
+    dw_dv: f32,
     col: vec4<f32>,
 ) {
-    let cap = u.mode_and_cap.y;
-    if (atomicLoad(&draw_args[0]) + 6u > cap) {
+    let max_verts = u.mode_and_cap.y * 6u;
+    if (atomicLoad(&draw_args[0]) + 6u > max_verts) {
         return;
     }
-    let base = atomicAdd(&draw_args[0], 6u);
-    if (base + 6u > cap) {
-        atomicMin(&draw_args[0], cap);
+    let base_v = atomicAdd(&draw_args[0], 6u);
+    if (base_v + 6u > max_verts) {
+        atomicMin(&draw_args[0], max_verts);
         return;
     }
-    let v0 = make_vertex(p0, n, col);
-    let v1 = make_vertex(p1, n, col);
-    let v2 = make_vertex(p2, n, col);
-    let v3 = make_vertex(p3, n, col);
-    out_vertices[base + 0u] = v0;
-    out_vertices[base + 1u] = v1;
-    out_vertices[base + 2u] = v2;
-    out_vertices[base + 3u] = v0;
-    out_vertices[base + 4u] = v2;
-    out_vertices[base + 5u] = v3;
+    let quad_idx = base_v / 6u;
+    let ray_and_flags = (global_ray & 0x7FFFFFFFu) | select(0u, 0x80000000u, want_min);
+    out_quads[quad_idx] = PackedTriDexelQuad(
+        ray_and_flags,
+        pack4x8unorm(col),
+        w_local,
+        dw_du,
+        dw_dv,
+    );
 }
 
 fn emit_endpoint_face(
@@ -240,9 +222,6 @@ fn emit_endpoint_face(
     du: f32,
     dv: f32,
     dw: f32,
-    ou: f32,
-    ov: f32,
-    ow: f32,
     w_local: f32,
     op_idx: u32,
     want_min: bool,
@@ -258,51 +237,9 @@ fn emit_endpoint_face(
     let dw_du = (wr - wl) / (2.0 * du);
     let dw_dv = (wu - wd) / (2.0 * dv);
 
-    var n_uvw = vec3<f32>(-dw_du, -dw_dv, 1.0);
-    if (want_min) {
-        n_uvw = vec3<f32>(dw_du, dw_dv, -1.0);
-    }
-    let n_wcs = normalize(from_uvw(axis_id, n_uvw.x, n_uvw.y, n_uvw.z));
-
     let is_side = axis_id != 2u;
     let col = eval_endpoint_color(global_ray, w_local, op_idx, is_side);
-
-    let u0 = ou + f32(iu) * du;
-    let u1 = ou + f32(iu + 1u) * du;
-    let v0 = ov + f32(iv) * dv;
-    let v1 = ov + f32(iv + 1u) * dv;
-    let w_base = ow + w_local;
-
-    let half_du = 0.5 * dw_du * du;
-    let half_dv = 0.5 * dw_dv * dv;
-    let clamp_w = 0.5 * dw;
-    let w00 = w_base + clamp(-half_du - half_dv, -clamp_w, clamp_w);
-    let w10 = w_base + clamp(half_du - half_dv, -clamp_w, clamp_w);
-    let w11 = w_base + clamp(half_du + half_dv, -clamp_w, clamp_w);
-    let w01 = w_base + clamp(-half_du + half_dv, -clamp_w, clamp_w);
-
-    var a: vec3<f32>;
-    var b: vec3<f32>;
-    var c: vec3<f32>;
-    var d: vec3<f32>;
-    if (axis_id == 1u) {
-        // Y plane has flipped handedness: (0,0), (0,1), (1,1), (1,0)
-        a = from_uvw(axis_id, u0, v0, w00);
-        b = from_uvw(axis_id, u0, v1, w01);
-        c = from_uvw(axis_id, u1, v1, w11);
-        d = from_uvw(axis_id, u1, v0, w10);
-    } else {
-        a = from_uvw(axis_id, u0, v0, w00);
-        b = from_uvw(axis_id, u1, v0, w10);
-        c = from_uvw(axis_id, u1, v1, w11);
-        d = from_uvw(axis_id, u0, v1, w01);
-    }
-
-    if (want_min) {
-        emit_quad(a, d, c, b, n_wcs, col);
-    } else {
-        emit_quad(a, b, c, d, n_wcs, col);
-    }
+    emit_packed_quad(global_ray, want_min, w_local, dw_du, dw_dv, col);
 }
 
 @compute @workgroup_size(64, 1, 1)
@@ -336,9 +273,6 @@ fn main(
     var du: f32;
     var dv: f32;
     var dw: f32;
-    var ou: f32;
-    var ov: f32;
-    var ow: f32;
 
     if (global_ray < off_y) {
         // X plane: u = Y, v = Z, w = X
@@ -349,9 +283,6 @@ fn main(
         du = u.pitch_and_scale.y;
         dv = u.pitch_and_scale.z;
         dw = u.pitch_and_scale.x;
-        ou = u.origin_and_tol.y;
-        ov = u.origin_and_tol.z;
-        ow = u.origin_and_tol.x;
     } else if (global_ray < off_z) {
         // Y plane: u = X, v = Z, w = Y
         axis_id = 1u;
@@ -361,9 +292,6 @@ fn main(
         du = u.pitch_and_scale.x;
         dv = u.pitch_and_scale.z;
         dw = u.pitch_and_scale.y;
-        ou = u.origin_and_tol.x;
-        ov = u.origin_and_tol.z;
-        ow = u.origin_and_tol.y;
     } else {
         // Z plane: u = X, v = Y, w = Z
         axis_id = 2u;
@@ -373,9 +301,6 @@ fn main(
         du = u.pitch_and_scale.x;
         dv = u.pitch_and_scale.y;
         dw = u.pitch_and_scale.z;
-        ou = u.origin_and_tol.x;
-        ov = u.origin_and_tol.y;
-        ow = u.origin_and_tol.z;
     }
 
     let local_ray = global_ray - plane_offset;
@@ -391,11 +316,11 @@ fn main(
         let op_min = unpack_min_op(s.op_packed);
         let op_max = unpack_max_op(s.op_packed);
         emit_endpoint_face(
-            axis_id, plane_offset, global_ray, nu, nv, iu, iv, du, dv, dw, ou, ov, ow,
+            axis_id, plane_offset, global_ray, nu, nv, iu, iv, du, dv, dw,
             s.max_local, op_max, false,
         );
         emit_endpoint_face(
-            axis_id, plane_offset, global_ray, nu, nv, iu, iv, du, dv, dw, ou, ov, ow,
+            axis_id, plane_offset, global_ray, nu, nv, iu, iv, du, dv, dw,
             s.min_local, op_min, true,
         );
     }

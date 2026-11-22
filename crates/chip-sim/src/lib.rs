@@ -40,7 +40,8 @@ pub use chip_stock::{
 pub use chip_stock::{
     DEFAULT_GPU_CHECKPOINT_BUDGET_BYTES, GpuCheckpointCache, GpuCylindricalRenderData,
     GpuHeightfieldRenderData, GpuSimContext, GpuStockRenderHandle, GpuTriDexelRenderData,
-    MAX_TRIDEXEL_EMIT_VERTICES, WgpuComputeBackend,
+    MAX_TRIDEXEL_EMIT_QUADS, MAX_TRIDEXEL_EMIT_VERTICES, PackedTriDexelQuad,
+    TRIDEXEL_PACKED_QUAD_BYTES, WgpuComputeBackend,
 };
 pub use cutter_profile::{SimToolMesh, ToolMeshZone, build_cutter_assembly_mesh};
 #[cfg(feature = "gpu-compute")]

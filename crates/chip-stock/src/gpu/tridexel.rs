@@ -31,8 +31,8 @@ use super::{
     checkpoints::GpuCheckpointBuffers,
     context::{GpuSimContext, GrowableStorageBuffer},
     render_handle::{
-        GpuStockRenderHandle, GpuTriDexelRenderData, MAX_TRIDEXEL_EMIT_VERTICES,
-        TriDexelEmitUniforms,
+        GpuStockRenderHandle, GpuTriDexelRenderData, TRIDEXEL_PACKED_QUAD_BYTES,
+        TriDexelEmitUniforms, compute_tridexel_max_quads,
     },
     types::{
         CHORD_FLAG_RAPID, CHORD_FLAG_VERIFY, GPU_TILE_SIZE, GpuSweepChord, GpuToolProfile,
@@ -83,7 +83,7 @@ struct GpuPlaneDispatch {
 struct TriDexelRenderSnapSlot {
     m_slots: Arc<wgpu::Buffer>,
     m_counts: Arc<wgpu::Buffer>,
-    vertex_buf: Arc<wgpu::Buffer>,
+    quad_buf: Arc<wgpu::Buffer>,
     indirect_args_buf: Arc<wgpu::Buffer>,
     emit_uniform_buf: Arc<wgpu::Buffer>,
 }
@@ -535,9 +535,9 @@ impl GpuTriDexelState {
     }
 
     /// Snapshots `m_slots` & `m_counts` into a pooled immutable GPU buffer set, dispatches
-    /// `tridexel_emit.wgsl` into a reusable GPU vertex buffer + `DrawIndirectArgs` buffer, and
-    /// returns a read-only [`GpuStockRenderHandle::TriDexel`] (zero CPU-to-GPU upload for inline
-    /// rays; optional tiny CPU supplement mesh ONLY when rare overflow rays exist).
+    /// `tridexel_emit.wgsl` into a reusable compact GPU quad buffer + `DrawIndirectArgs` buffer,
+    /// and returns a read-only [`GpuStockRenderHandle::TriDexel`] (zero CPU-to-GPU upload for
+    /// inline rays; optional tiny CPU supplement mesh ONLY when rare overflow rays exist).
     pub(crate) fn capture_render_handle(
         &mut self,
         color_mode: SimStockColorMode,
@@ -545,21 +545,20 @@ impl GpuTriDexelState {
         let total_slots = self.total_rays * INLINE_DEXEL_SLOTS;
         let slots_bytes = (total_slots * std::mem::size_of::<FlatDexelSpan>()) as u64;
         let counts_bytes = (self.total_rays * std::mem::size_of::<u32>()) as u64;
-        let max_vertices = ((self.total_rays as u64) * 4 * 6)
-            .clamp(6_000, MAX_TRIDEXEL_EMIT_VERTICES as u64) as u32;
-        let vertex_bytes = (max_vertices as u64) * (std::mem::size_of::<SimColoredVertex>() as u64);
+        let max_quads = compute_tridexel_max_quads(self.ctx.device(), self.total_rays);
+        let quad_bytes = (max_quads as u64) * (TRIDEXEL_PACKED_QUAD_BYTES as u64);
 
         let slot = if let Some(existing) = self.render_snap_pool.iter().find(|s| {
             Arc::strong_count(&s.m_slots) == 1
                 && Arc::strong_count(&s.m_counts) == 1
-                && Arc::strong_count(&s.vertex_buf) == 1
+                && Arc::strong_count(&s.quad_buf) == 1
                 && Arc::strong_count(&s.indirect_args_buf) == 1
                 && Arc::strong_count(&s.emit_uniform_buf) == 1
         }) {
             (
                 Arc::clone(&existing.m_slots),
                 Arc::clone(&existing.m_counts),
-                Arc::clone(&existing.vertex_buf),
+                Arc::clone(&existing.quad_buf),
                 Arc::clone(&existing.indirect_args_buf),
                 Arc::clone(&existing.emit_uniform_buf),
             )
@@ -577,10 +576,10 @@ impl GpuTriDexelState {
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             }));
-            let vertex_buf = Arc::new(device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("chip_td_emit_vertices"),
-                size: vertex_bytes.max(64),
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::STORAGE,
+            let quad_buf = Arc::new(device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("chip_td_emit_quads"),
+                size: quad_bytes.max(64),
+                usage: wgpu::BufferUsages::STORAGE,
                 mapped_at_creation: false,
             }));
             let indirect_args_buf = Arc::new(device.create_buffer(&wgpu::BufferDescriptor {
@@ -601,14 +600,14 @@ impl GpuTriDexelState {
             self.render_snap_pool.push(TriDexelRenderSnapSlot {
                 m_slots: Arc::clone(&m_slots),
                 m_counts: Arc::clone(&m_counts),
-                vertex_buf: Arc::clone(&vertex_buf),
+                quad_buf: Arc::clone(&quad_buf),
                 indirect_args_buf: Arc::clone(&indirect_args_buf),
                 emit_uniform_buf: Arc::clone(&emit_uniform_buf),
             });
             (
                 m_slots,
                 m_counts,
-                vertex_buf,
+                quad_buf,
                 indirect_args_buf,
                 emit_uniform_buf,
             )
@@ -659,7 +658,7 @@ impl GpuTriDexelState {
             slot.2,
             slot.3,
             slot.4,
-            max_vertices,
+            max_quads,
             overflow_mesh,
             color_mode,
         );

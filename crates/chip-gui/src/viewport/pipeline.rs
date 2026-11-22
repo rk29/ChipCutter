@@ -2320,4 +2320,157 @@ mod tests {
             "expected translucent workholding fixtures to visibly change >4000 pixels when toggled on vs off (got {diff_px})"
         );
     }
+
+    #[cfg(feature = "gpu-compute")]
+    #[test]
+    fn tridexel_ultra_gpu_renders_flat_top_z_surfaces_without_truncation() {
+        use chip_math::{Aabb3, DMat4, DVec3, RigidFrame3};
+        use chip_sim::{
+            GpuSimContext, GpuStockRenderHandle, RadialCutterProfile, SimResolution,
+            SimStockBackend, SimStockColorMode, SimulatedStock, StockShapeSpec,
+            StockVerifyTolerances, SweepChord, SweepMotion, SweepToolSpec, TriDexelStock,
+            WgpuComputeBackend, tessellate_tridexel_stock_mesh_colored,
+        };
+        use chip_tools::default_starter_tool_library;
+
+        use crate::camera::StandardView;
+
+        let ctx = GpuSimContext::shared_headless().expect("expected Vulkan/wgpu compute adapter");
+        let device = ctx.device();
+        let queue = ctx.queue();
+        let lib = default_starter_tool_library();
+        let flat_6mm = &lib.tools[0];
+        let tool_spec = SweepToolSpec {
+            profile: RadialCutterProfile::from_tool(flat_6mm),
+            is_flat_endmill: true,
+        };
+
+        // 100 × 80 × 29 mm stock at Ultra (`448 × 358 × 130`), matching `undercut-deburr`.
+        let aabb = Aabb3::new(DVec3::new(-50.0, -40.0, -29.0), DVec3::new(50.0, 40.0, 0.0));
+        let td = TriDexelStock::from_stock_spec(
+            &StockShapeSpec::Box { aabb_wcs: aabb },
+            SimResolution::Ultra,
+        )
+        .unwrap();
+        let tol = StockVerifyTolerances::default();
+        let chords = vec![
+            SweepChord {
+                motion: SweepMotion::Linear {
+                    p0: DVec3::new(-55.0, -20.0, -14.0),
+                    p1: DVec3::new(55.0, -20.0, -14.0),
+                    rotary_deg_0: 0.0,
+                    rotary_deg_1: 0.0,
+                },
+                op_idx: 0,
+                is_rapid: false,
+                profile_idx: 0,
+                verify_tol: tol,
+            },
+            SweepChord {
+                motion: SweepMotion::Linear {
+                    p0: DVec3::new(-55.0, 12.0, -14.0),
+                    p1: DVec3::new(55.0, 12.0, -14.0),
+                    rotary_deg_0: 0.0,
+                    rotary_deg_1: 0.0,
+                },
+                op_idx: 1,
+                is_rapid: false,
+                profile_idx: 0,
+                verify_tol: tol,
+            },
+        ];
+
+        let mut backend = WgpuComputeBackend::new(
+            Arc::clone(&ctx),
+            SimulatedStock::TriDexel(Box::new(td)),
+            None,
+        );
+        let _ = backend.sweep_batch(&chords, &[tool_spec], false);
+        let gpu_handle = backend.capture_render_handle(SimStockColorMode::ByOperation);
+        let GpuStockRenderHandle::TriDexel(ref td_render) = *gpu_handle else {
+            panic!("expected TriDexel GPU render handle");
+        };
+        let emitted_verts = td_render.readback_emitted_vertex_count();
+        assert!(
+            emitted_verts > 2_400_000,
+            "Ultra Tri-Dexel render fixture must emit >2.4M vertices (got {emitted_verts})"
+        );
+
+        let (SimulatedStock::TriDexel(td_cpu), _) = backend.into_parts() else {
+            panic!("expected TriDexel stock");
+        };
+        let cpu_mesh = Arc::new(tessellate_tridexel_stock_mesh_colored(
+            &td_cpu,
+            None,
+            SimStockColorMode::ByOperation,
+        ));
+
+        // Top-down orthographic-like view straight onto the flat +Z top surfaces (Z-plane rays).
+        let (w, h) = (320u32, 240u32);
+        let mut cam = CadCamera::default();
+        cam.fit_aabb(&aabb);
+        cam.set_standard_view(StandardView::Top);
+        let base_hl = HighlightState {
+            wcs_frame: RigidFrame3::IDENTITY,
+            show_stock: false,
+            show_grid: false,
+            ..HighlightState::default()
+        };
+        let bg =
+            render_offscreen_rgba_on_device(device, queue, None, &cam, &base_hl, w, h).unwrap();
+
+        let mut hl_cpu = base_hl.clone();
+        hl_cpu.sim_stock_source = Some(SimStockRenderSource::CpuMesh {
+            revision: 1,
+            mesh: cpu_mesh,
+            stock_model: DMat4::IDENTITY,
+        });
+        let mut hl_gpu = base_hl;
+        hl_gpu.sim_stock_source = Some(SimStockRenderSource::GpuGrid {
+            revision: 1,
+            handle: Arc::clone(&gpu_handle),
+            stock_model: DMat4::IDENTITY,
+            color_mode: SimStockColorMode::ByOperation,
+        });
+
+        let px_cpu =
+            render_offscreen_rgba_on_device(device, queue, None, &cam, &hl_cpu, w, h).unwrap();
+        let px_gpu =
+            render_offscreen_rgba_on_device(device, queue, None, &cam, &hl_gpu, w, h).unwrap();
+
+        let mut inter = 0usize;
+        let mut union = 0usize;
+        let mut cpu_fg_cnt = 0usize;
+        let mut gpu_fg_cnt = 0usize;
+        for px in 0..(w * h) as usize {
+            let o = px * 4;
+            let dc = (0..3)
+                .map(|c| px_cpu[o + c].abs_diff(bg[o + c]))
+                .max()
+                .unwrap_or(0);
+            let dg = (0..3)
+                .map(|c| px_gpu[o + c].abs_diff(bg[o + c]))
+                .max()
+                .unwrap_or(0);
+            let c_fg = dc > 8;
+            let g_fg = dg > 8;
+            if c_fg {
+                cpu_fg_cnt += 1;
+            }
+            if g_fg {
+                gpu_fg_cnt += 1;
+            }
+            if c_fg || g_fg {
+                union += 1;
+            }
+            if c_fg && g_fg {
+                inter += 1;
+            }
+        }
+        let iou = inter as f64 / union.max(1) as f64;
+        assert!(
+            cpu_fg_cnt > 10_000 && gpu_fg_cnt > 10_000 && iou >= 0.95,
+            "Ultra Tri-Dexel flat +Z surfaces missing on GPU: cpu_fg={cpu_fg_cnt}, gpu_fg={gpu_fg_cnt}, iou={iou:.4}"
+        );
+    }
 }

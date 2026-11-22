@@ -17,14 +17,52 @@ use crate::{
     },
     metrics::SimStockColorMode,
     tridexel::{FlatDexelSpan, INLINE_DEXEL_SLOTS, TriDexelStock},
-    types::{Axis3, RotaryStockSpec, SimColoredVertex, SimStockMesh},
+    types::{Axis3, RotaryStockSpec, SimStockMesh},
 };
 
 use super::{context::GpuSimContext, tridexel::build_tridexel_overflow_supplement_mesh};
 
-/// Maximum emitted vertices per Tri-Dexel GPU indirect draw (`2_400_000 × 40 B = 96 MB < 128 MiB`
-/// WebGPU default `max_storage_buffer_binding_size`).
-pub const MAX_TRIDEXEL_EMIT_VERTICES: u32 = 2_400_000;
+/// Compact 20-byte GPU Tri-Dexel quad record emitted by `tridexel_emit.wgsl` and expanded into
+/// 6 vertices (2 triangles) on-the-fly by `vs_sim_tridexel_gpu`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct PackedTriDexelQuad {
+    /// Bits `0..30`: `global_ray`, bit `31`: `want_min` (`1` = min endpoint, `0` = max endpoint).
+    pub ray_and_flags: u32,
+    /// Packed `RGBA8` unorm color (`pack4x8unorm` / `unpack4x8unorm`).
+    pub color_rgba8: u32,
+    /// Endpoint coordinate relative to plane `origin_w` (`mm`).
+    pub w_local: f32,
+    /// Finite-difference slope `dw/du`.
+    pub dw_du: f32,
+    /// Finite-difference slope `dw/dv`.
+    pub dw_dv: f32,
+}
+
+/// Byte size of one [`PackedTriDexelQuad`] storage element (`20 bytes`).
+pub const TRIDEXEL_PACKED_QUAD_BYTES: usize = std::mem::size_of::<PackedTriDexelQuad>();
+
+const _: () = assert!(TRIDEXEL_PACKED_QUAD_BYTES == 20);
+
+/// Maximum emitted quads per Tri-Dexel GPU indirect draw (`6_000_000 × 20 B = 120 MB < 128 MiB`
+/// WebGPU default `max_storage_buffer_binding_size`), exceeding even a worst-case `448³` Ultra
+/// grid with all `K = 4` inline spans populated (`602_112 × 4 × 2 = 4_816_896` quads).
+pub const MAX_TRIDEXEL_EMIT_QUADS: u32 = 6_000_000;
+
+/// Maximum emitted vertices per Tri-Dexel GPU indirect draw (`6 × MAX_TRIDEXEL_EMIT_QUADS`).
+pub const MAX_TRIDEXEL_EMIT_VERTICES: u32 = MAX_TRIDEXEL_EMIT_QUADS * 6;
+
+/// Computes the exact inline quad capacity for `total_rays` clamped to both
+/// [`MAX_TRIDEXEL_EMIT_QUADS`] and the active device's `max_storage_buffer_binding_size`.
+pub(crate) fn compute_tridexel_max_quads(device: &wgpu::Device, total_rays: usize) -> u32 {
+    let worst_case_quads = (total_rays as u64)
+        .saturating_mul(INLINE_DEXEL_SLOTS as u64)
+        .saturating_mul(2);
+    let device_quad_cap =
+        device.limits().max_storage_buffer_binding_size / (TRIDEXEL_PACKED_QUAD_BYTES as u64);
+    let hard_cap = (MAX_TRIDEXEL_EMIT_QUADS as u64).min(device_quad_cap);
+    worst_case_quads.clamp(1_000, hard_cap.max(1_000)) as u32
+}
 
 /// Uniform block uploaded to `tridexel_emit.wgsl` (`400 bytes`, 16-byte aligned).
 #[repr(C)]
@@ -34,7 +72,7 @@ pub(crate) struct TriDexelEmitUniforms {
     pub dims_and_total: [u32; 4],
     /// `[ray_off_x, ray_off_y, ray_off_z, has_target]`
     pub plane_offsets_and_target: [u32; 4],
-    /// `[color_mode_id, max_vertices, 0, 0]`
+    /// `[color_mode_id, max_quads, 0, 0]`
     pub mode_and_cap: [u32; 4],
     /// `[origin_x, origin_y, origin_z, tolerance_mm]`
     pub origin_and_tol: [f32; 4],
@@ -55,7 +93,7 @@ impl TriDexelEmitUniforms {
         plane_ray_offsets: [u32; 3],
         total_rays: u32,
         has_target: bool,
-        max_vertices: u32,
+        max_quads: u32,
         color_mode: SimStockColorMode,
     ) -> Self {
         let (mode_id, tol_mm, max_scale_mm) = match color_mode {
@@ -78,7 +116,7 @@ impl TriDexelEmitUniforms {
                 plane_ray_offsets[2],
                 u32::from(has_target),
             ],
-            mode_and_cap: [mode_id, max_vertices, 0, 0],
+            mode_and_cap: [mode_id, max_quads, 0, 0],
             origin_and_tol: [origin_wcs[0], origin_wcs[1], origin_wcs[2], tol_mm],
             pitch_and_scale: [pitch_mm[0], pitch_mm[1], pitch_mm[2], max_scale_mm],
             raw_top_color: RAW_STOCK_TOP_COLOR,
@@ -142,7 +180,7 @@ impl std::fmt::Debug for GpuCylindricalRenderData {
     }
 }
 
-/// Read-only GPU indirect-draw vertex buffer & `DrawIndirectArgs` handle produced by
+/// Read-only GPU indirect-draw compact quad buffer & `DrawIndirectArgs` handle produced by
 /// `tridexel_emit.wgsl`, supporting instant `< 0.3 ms` GPU-only recoloring on `color_mode` or
 /// `tolerance_mm` changes without touching the CPU.
 pub struct GpuTriDexelRenderData {
@@ -153,8 +191,9 @@ pub struct GpuTriDexelRenderData {
     pub plane_ray_offsets: [u32; 3],
     pub total_rays: u32,
     pub has_target: bool,
-    pub vertex_buf: Arc<wgpu::Buffer>,
+    pub quad_buf: Arc<wgpu::Buffer>,
     pub indirect_args_buf: Arc<wgpu::Buffer>,
+    pub max_quads: u32,
     pub max_vertices: u32,
     /// Optional tiny CPU supplement mesh ONLY for rare rays exceeding `K = 4` inline spans.
     pub overflow_mesh: Option<Arc<SimStockMesh>>,
@@ -174,6 +213,7 @@ impl std::fmt::Debug for GpuTriDexelRenderData {
         f.debug_struct("GpuTriDexelRenderData")
             .field("dims", &self.dims)
             .field("has_target", &self.has_target)
+            .field("max_quads", &self.max_quads)
             .field("max_vertices", &self.max_vertices)
             .field("has_overflow_mesh", &self.overflow_mesh.is_some())
             .finish()
@@ -194,10 +234,10 @@ impl GpuTriDexelRenderData {
         m_counts_buf: Arc<wgpu::Buffer>,
         t_slots_buf: Arc<wgpu::Buffer>,
         t_counts_buf: Arc<wgpu::Buffer>,
-        vertex_buf: Arc<wgpu::Buffer>,
+        quad_buf: Arc<wgpu::Buffer>,
         indirect_args_buf: Arc<wgpu::Buffer>,
         emit_uniform_buf: Arc<wgpu::Buffer>,
-        max_vertices: u32,
+        max_quads: u32,
         overflow_mesh: Option<Arc<SimStockMesh>>,
         color_mode: SimStockColorMode,
     ) -> Self {
@@ -228,7 +268,7 @@ impl GpuTriDexelRenderData {
                     },
                     wgpu::BindGroupEntry {
                         binding: 5,
-                        resource: vertex_buf.as_entire_binding(),
+                        resource: quad_buf.as_entire_binding(),
                     },
                     wgpu::BindGroupEntry {
                         binding: 6,
@@ -245,9 +285,10 @@ impl GpuTriDexelRenderData {
             plane_ray_offsets,
             total_rays,
             has_target,
-            vertex_buf,
+            quad_buf,
             indirect_args_buf,
-            max_vertices,
+            max_quads,
+            max_vertices: max_quads.saturating_mul(6),
             overflow_mesh,
             _m_slots_buf: m_slots_buf,
             _m_counts_buf: m_counts_buf,
@@ -272,7 +313,7 @@ impl GpuTriDexelRenderData {
     }
 
     /// Re-dispatches the lightweight `< 0.3 ms` `tridexel_emit.wgsl` compute pass into `encoder`
-    /// ONLY when `color_mode` differs from the color mode already baked into `vertex_buf`.
+    /// ONLY when `color_mode` differs from the color mode already baked into `quad_buf`.
     /// Returns `true` if a compute dispatch was recorded.
     pub fn ensure_emitted_for_color_mode(
         &self,
@@ -293,7 +334,7 @@ impl GpuTriDexelRenderData {
             self.plane_ray_offsets,
             self.total_rays,
             self.has_target,
-            self.max_vertices,
+            self.max_quads,
             color_mode,
         );
         self.ctx
@@ -330,6 +371,32 @@ impl GpuTriDexelRenderData {
     #[inline]
     pub fn emit_dispatch_count(&self) -> u64 {
         self.emit_dispatches.load(Ordering::Relaxed)
+    }
+
+    /// Synchronously reads back the emitted vertex count from `indirect_args_buf` (`draw_args[0]`).
+    /// Intended for verification and diagnostic tests (not the per-frame render loop).
+    pub fn readback_emitted_vertex_count(&self) -> u32 {
+        let staging = self.ctx.device().create_buffer(&wgpu::BufferDescriptor {
+            label: Some("chip_td_indirect_args_readback"),
+            size: 16,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder =
+            self.ctx
+                .device()
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("chip_td_indirect_args_copy"),
+                });
+        encoder.copy_buffer_to_buffer(&self.indirect_args_buf, 0, &staging, 0, 16);
+        self.ctx.queue().submit(std::iter::once(encoder.finish()));
+        let mut raw = [0u8; 16];
+        if self.ctx.readback_bytes(&staging, 16, &mut raw) {
+            let args: [u32; 4] = *bytemuck::from_bytes(&raw);
+            args[0]
+        } else {
+            0
+        }
     }
 }
 
@@ -527,15 +594,12 @@ impl GpuStockRenderHandle {
                     )
                 };
 
-                let max_vertices = ((total_rays as u64) * 4 * 6)
-                    .clamp(6_000, MAX_TRIDEXEL_EMIT_VERTICES as u64)
-                    as u32;
-                let vertex_bytes =
-                    (max_vertices as u64) * (std::mem::size_of::<SimColoredVertex>() as u64);
-                let vertex_buf = Arc::new(device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("chip_td_render_emit_vertices"),
-                    size: vertex_bytes.max(64),
-                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::STORAGE,
+                let max_quads = compute_tridexel_max_quads(device, total_rays);
+                let quad_bytes = (max_quads as u64) * (TRIDEXEL_PACKED_QUAD_BYTES as u64);
+                let quad_buf = Arc::new(device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("chip_td_render_emit_quads"),
+                    size: quad_bytes.max(64),
+                    usage: wgpu::BufferUsages::STORAGE,
                     mapped_at_creation: false,
                 }));
                 let indirect_args_buf = Arc::new(device.create_buffer(&wgpu::BufferDescriptor {
@@ -576,10 +640,10 @@ impl GpuStockRenderHandle {
                     m_counts_buf,
                     t_slots_buf,
                     t_counts_buf,
-                    vertex_buf,
+                    quad_buf,
                     indirect_args_buf,
                     emit_uniform_buf,
-                    max_vertices,
+                    max_quads,
                     overflow_mesh,
                     color_mode,
                 );
