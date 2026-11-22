@@ -670,6 +670,287 @@ pub fn validate_project_with_machine(
                     }
                 }
 
+                // Strategy-specific validation for Milestone 66 Undercut operations
+                if op.kind == chip_cam::OperationKind::SlotUndercut
+                    && let chip_cam::StrategyParams::SlotUndercut(mut p) = op.resolved_strategy()
+                {
+                    p.reevaluate(&eval_ctx);
+                    if !p.slot_width.value_mm.is_finite() || p.slot_width.value_mm <= 1e-4 {
+                        report.push_error(
+                            &op_scope,
+                            format!(
+                                "Slot/T-Slot width ({:.3} mm) must be finite and > 0.",
+                                p.slot_width.value_mm
+                            ),
+                        );
+                    }
+                    if !p.throat_width.value_mm.is_finite() || p.throat_width.value_mm <= 1e-4 {
+                        report.push_error(
+                            &op_scope,
+                            format!(
+                                "Slot/T-Slot throat width ({:.3} mm) must be finite and > 0.",
+                                p.throat_width.value_mm
+                            ),
+                        );
+                    }
+                    if !p.slot_height.value_mm.is_finite() || p.slot_height.value_mm <= 1e-4 {
+                        report.push_error(
+                            &op_scope,
+                            format!(
+                                "Slot/T-Slot height ({:.3} mm) must be finite and > 0.",
+                                p.slot_height.value_mm
+                            ),
+                        );
+                    }
+                    if !p.radial_stepover.value_mm.is_finite() || p.radial_stepover.value_mm <= 1e-4
+                    {
+                        report.push_error(
+                            &op_scope,
+                            format!(
+                                "Slot/T-Slot radial stepover ({:.3} mm) must be finite and > 0.",
+                                p.radial_stepover.value_mm
+                            ),
+                        );
+                    }
+                    if !p.axial_stepdown.value_mm.is_finite() || p.axial_stepdown.value_mm <= 1e-4 {
+                        report.push_error(
+                            &op_scope,
+                            format!(
+                                "Slot/T-Slot axial stepdown ({:.3} mm) must be finite and > 0.",
+                                p.axial_stepdown.value_mm
+                            ),
+                        );
+                    }
+                    if let Some(tool) = op.tool_id.as_ref().and_then(|tid| project.tool(tid)) {
+                        let needs_undercut = p.mode == chip_cam::SlotUndercutMode::TSlot
+                            || p.throat_width.value_mm < p.slot_width.value_mm - 1e-4;
+                        match tool.geometry {
+                            chip_tools::CutterGeometry::SlotMill {
+                                diameter_mm,
+                                cutting_thickness_mm,
+                                neck_diameter_mm,
+                                ..
+                            } => {
+                                if diameter_mm > p.slot_width.value_mm + 1e-4 {
+                                    report.push_error(
+                                        &op_scope,
+                                        format!(
+                                            "Slot mill diameter (Ø{diameter_mm:.3} mm) exceeds slot width ({:.3} mm).",
+                                            p.slot_width.value_mm
+                                        ),
+                                    );
+                                }
+                                if cutting_thickness_mm > p.slot_height.value_mm + 1e-4 {
+                                    report.push_error(
+                                        &op_scope,
+                                        format!(
+                                            "Slot mill cutting thickness ({cutting_thickness_mm:.3} mm) exceeds slot height ({:.3} mm).",
+                                            p.slot_height.value_mm
+                                        ),
+                                    );
+                                }
+                                if p.mode != chip_cam::SlotUndercutMode::SideGroove
+                                    && needs_undercut
+                                {
+                                    if neck_diameter_mm >= p.throat_width.value_mm - 1e-4 {
+                                        report.push_error(
+                                            &op_scope,
+                                            format!(
+                                                "Slot mill neck diameter (Ø{neck_diameter_mm:.3} mm) must be strictly smaller than throat width ({:.3} mm).",
+                                                p.throat_width.value_mm
+                                            ),
+                                        );
+                                    } else {
+                                        let max_lat = (0.5 * p.slot_width.value_mm
+                                            - 0.5 * diameter_mm)
+                                            .max(0.0);
+                                        if max_lat + 0.5 * neck_diameter_mm
+                                            > 0.5 * p.throat_width.value_mm + 1e-4
+                                        {
+                                            report.push_error(
+                                                &op_scope,
+                                                format!(
+                                                    "Slot mill relieved neck collides with throat wall at full lateral offset ({max_lat:.3} mm + neck radius {:.3} mm > half-throat {:.3} mm).",
+                                                    0.5 * neck_diameter_mm,
+                                                    0.5 * p.throat_width.value_mm
+                                                ),
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                            chip_tools::CutterGeometry::FlatEndmill { diameter_mm, .. } => {
+                                if needs_undercut {
+                                    report.push_error(
+                                        &op_scope,
+                                        "T-Slot undercut requires a relieved-neck Slot / T-Slot Mill cutter (assigned: Flat Endmill).",
+                                    );
+                                } else if diameter_mm > p.slot_width.value_mm + 1e-4 {
+                                    report.push_error(
+                                        &op_scope,
+                                        format!(
+                                            "Flat Endmill diameter (Ø{diameter_mm:.3} mm) exceeds keyway width ({:.3} mm).",
+                                            p.slot_width.value_mm
+                                        ),
+                                    );
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+
+                if op.kind == chip_cam::OperationKind::Dovetail
+                    && let chip_cam::StrategyParams::Dovetail(mut p) = op.resolved_strategy()
+                {
+                    p.reevaluate(&eval_ctx);
+                    if !p.side_angle_deg.is_finite()
+                        || p.side_angle_deg <= 15.0
+                        || p.side_angle_deg >= 85.0
+                    {
+                        report.push_error(
+                            &op_scope,
+                            format!(
+                                "Dovetail side angle ({:.1}°) must be within (15°, 85°).",
+                                p.side_angle_deg
+                            ),
+                        );
+                    }
+                    if !p.dovetail_depth.value_mm.is_finite() || p.dovetail_depth.value_mm <= 1e-4 {
+                        report.push_error(
+                            &op_scope,
+                            format!(
+                                "Dovetail depth ({:.3} mm) must be finite and > 0.",
+                                p.dovetail_depth.value_mm
+                            ),
+                        );
+                    }
+                    if !p.radial_stepover.value_mm.is_finite() || p.radial_stepover.value_mm <= 1e-4
+                    {
+                        report.push_error(
+                            &op_scope,
+                            format!(
+                                "Dovetail radial stepover ({:.3} mm) must be finite and > 0.",
+                                p.radial_stepover.value_mm
+                            ),
+                        );
+                    }
+                    if let Some(tool) = op.tool_id.as_ref().and_then(|tid| project.tool(tid))
+                        && let chip_tools::CutterGeometry::DovetailCutter {
+                            diameter_mm,
+                            side_angle_deg,
+                            cutting_height_mm,
+                            corner_radius_mm,
+                            neck_diameter_mm,
+                            ..
+                        } = tool.geometry
+                    {
+                        if (side_angle_deg - p.side_angle_deg).abs() > 0.5 {
+                            report.push_error(
+                                &op_scope,
+                                format!(
+                                    "Dovetail cutter angle ({side_angle_deg:.2}°) mismatches target dovetail angle ({:.2}°, max tolerance ±0.5°).",
+                                    p.side_angle_deg
+                                ),
+                            );
+                        }
+                        if cutting_height_mm + 1e-4 < p.dovetail_depth.value_mm {
+                            report.push_error(
+                                &op_scope,
+                                format!(
+                                    "Dovetail cutter cutting height ({cutting_height_mm:.3} mm) is shallower than dovetail depth ({:.3} mm).",
+                                    p.dovetail_depth.value_mm
+                                ),
+                            );
+                        }
+                        if p.mode == chip_cam::DovetailMode::InternalSlot {
+                            let throat = p.top_throat_width.value_mm;
+                            if neck_diameter_mm >= throat - 1e-4 {
+                                report.push_error(
+                                    &op_scope,
+                                    format!(
+                                        "Dovetail cutter neck diameter (Ø{neck_diameter_mm:.3} mm) must be strictly smaller than top throat width ({throat:.3} mm)."
+                                    ),
+                                );
+                            }
+                            let top_d = chip_tools::CutterGeometry::dovetail_top_diameter_mm(
+                                diameter_mm,
+                                side_angle_deg,
+                                p.dovetail_depth.value_mm.max(0.0),
+                                corner_radius_mm,
+                            );
+                            if top_d > throat + 1e-4 {
+                                report.push_error(
+                                    &op_scope,
+                                    format!(
+                                        "Dovetail cutter upper flank diameter (Ø{top_d:.3} mm) exceeds top throat width ({throat:.3} mm)."
+                                    ),
+                                );
+                            }
+                        }
+                    }
+                }
+
+                if op.kind == chip_cam::OperationKind::Undercut3D
+                    && let chip_cam::StrategyParams::Undercut3D(mut p) = op.resolved_strategy()
+                {
+                    p.reevaluate(&eval_ctx);
+                    if !p.use_cusp_height
+                        && (!p.z_stepdown.value_mm.is_finite() || p.z_stepdown.value_mm <= 1e-4)
+                    {
+                        report.push_error(
+                            &op_scope,
+                            format!(
+                                "3D Undercut Z stepdown ({:.3} mm) must be finite and > 0.",
+                                p.z_stepdown.value_mm
+                            ),
+                        );
+                    }
+                    if p.use_cusp_height
+                        && (!p.target_cusp.value_mm.is_finite() || p.target_cusp.value_mm <= 1e-5)
+                    {
+                        report.push_error(
+                            &op_scope,
+                            format!(
+                                "3D Undercut target cusp ({:.4} mm) must be finite and > 0.",
+                                p.target_cusp.value_mm
+                            ),
+                        );
+                    }
+                    if !p.min_overhang_angle_deg.is_finite()
+                        || p.min_overhang_angle_deg <= 0.0
+                        || p.min_overhang_angle_deg >= 89.0
+                    {
+                        report.push_error(
+                            &op_scope,
+                            format!(
+                                "3D Undercut min overhang angle ({:.1}°) must be within (0°, 89°).",
+                                p.min_overhang_angle_deg
+                            ),
+                        );
+                    }
+                    if !p.neck_clearance.value_mm.is_finite() || p.neck_clearance.value_mm < 0.0 {
+                        report.push_error(
+                            &op_scope,
+                            format!(
+                                "3D Undercut neck clearance ({:.3} mm) must be finite and >= 0.",
+                                p.neck_clearance.value_mm
+                            ),
+                        );
+                    }
+                    if !p.lead_out_distance.value_mm.is_finite()
+                        || p.lead_out_distance.value_mm < 0.0
+                    {
+                        report.push_error(
+                            &op_scope,
+                            format!(
+                                "3D Undercut lead-out distance ({:.3} mm) must be finite and >= 0.",
+                                p.lead_out_distance.value_mm
+                            ),
+                        );
+                    }
+                }
+
                 if op.kind.is_rotary_native() && resolved_setup.rotary.is_none() {
                     report.push_error(
                         &op_scope,
@@ -733,7 +1014,7 @@ pub fn validate_project_with_machine(
 
                 let mut heights = op.heights.clone();
                 heights.reevaluate(&eval_ctx);
-                if let Err(err) = ResolvedHeights::resolve(
+                match ResolvedHeights::resolve(
                     &heights,
                     &effective_setup.model_aabb_wcs,
                     &effective_setup.stock.aabb_wcs(),
@@ -742,7 +1023,44 @@ pub fn validate_project_with_machine(
                     inf_top_z,
                     inf_bot_z,
                 ) {
-                    report.push_error(&op_scope, err.to_string());
+                    Err(err) => {
+                        report.push_error(&op_scope, err.to_string());
+                    }
+                    Ok(rh) => {
+                        let total_depth = (rh.top_z_wcs
+                            - (rh.bottom_z_wcs + op.passes.stock_to_leave_axial.value_mm.max(0.0)))
+                        .max(0.0);
+                        if let Some(tool) = op.tool_id.as_ref().and_then(|tid| project.tool(tid)) {
+                            match (op.kind, &tool.geometry) {
+                                (
+                                    chip_cam::OperationKind::SlotUndercut,
+                                    chip_tools::CutterGeometry::SlotMill { neck_length_mm, .. },
+                                ) if *neck_length_mm + 1e-4 < total_depth => {
+                                    report.push_error(
+                                        &op_scope,
+                                        format!(
+                                            "Slot mill relieved neck length ({neck_length_mm:.3} mm) is shorter than total slot depth ({total_depth:.3} mm)."
+                                        ),
+                                    );
+                                }
+                                (
+                                    chip_cam::OperationKind::Dovetail,
+                                    chip_tools::CutterGeometry::DovetailCutter {
+                                        neck_length_mm,
+                                        ..
+                                    },
+                                ) if *neck_length_mm + 1e-4 < total_depth => {
+                                    report.push_error(
+                                        &op_scope,
+                                        format!(
+                                            "Dovetail cutter relieved neck length ({neck_length_mm:.3} mm) is shorter than total cut depth ({total_depth:.3} mm)."
+                                        ),
+                                    );
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -834,5 +1152,86 @@ mod tests {
         }));
         let rep4 = validate_project(&proj, None, Some(&doc));
         assert!(rep4.error_count() >= 2);
+    }
+
+    #[test]
+    fn validates_m66_undercut_operations_clearances_angles_and_tool_compatibility() {
+        use chip_cam::{DovetailParams, SlotUndercutParams, SlotUndercutPreset, Undercut3DParams};
+        use chip_tools::{starter_dovetail_60deg_12mm, starter_tslot_12mm};
+
+        let step = sample_overhang_flange_step().unwrap();
+        let doc = MonstertruckKernel
+            .load_step_bytes("flange.step", step.as_bytes(), DEFAULT_TESS_CHORD_TOL_MM)
+            .unwrap();
+
+        let slot_12 = starter_tslot_12mm();
+        let dove_60 = starter_dovetail_60deg_12mm();
+        let lolli_6 = starter_lollipop_6mm();
+
+        let mut proj = ProjectDocument::new("M66 Undercut Validation");
+        proj.tools = vec![slot_12.clone(), dove_60.clone(), lolli_6.clone()];
+        proj.setups = vec![Setup::new("s1", "Setup 1", WorkOffsetSlot::G54)];
+
+        // 1. SlotUndercut with narrow throat <= neck_diameter fails validation
+        let mut slot_p = SlotUndercutParams::default();
+        slot_p.apply_preset(SlotUndercutPreset::TSlotM8);
+        slot_p.throat_width = ParamLength::from_mm(4.5);
+        let mut op_slot = Operation::new("op_slot", "T-Slot", OperationKind::SlotUndercut);
+        op_slot.tool_id = Some(slot_12.id.clone());
+        op_slot.strategy = Some(StrategyParams::SlotUndercut(slot_p));
+
+        // 2. Dovetail with 45° target angle on 60° cutter fails validation
+        let mut op_dove = Operation::new("op_dove", "Dovetail", OperationKind::Dovetail);
+        op_dove.tool_id = Some(dove_60.id.clone());
+        op_dove.strategy = Some(StrategyParams::Dovetail(DovetailParams {
+            side_angle_deg: 45.0,
+            ..DovetailParams::default()
+        }));
+
+        // 3. Undercut3D with valid Lollipop passes validation!
+        let mut op_u3d = Operation::new("op_u3d", "3D Undercut", OperationKind::Undercut3D);
+        op_u3d.tool_id = Some(lolli_6.id.clone());
+        op_u3d.strategy = Some(StrategyParams::Undercut3D(Undercut3DParams::default()));
+
+        proj.setups[0].operations = vec![op_slot, op_dove, op_u3d];
+        let rep = validate_project(&proj, None, Some(&doc));
+        assert!(
+            rep.diagnostics
+                .iter()
+                .any(|d| d.severity == DiagnosticSeverity::Error
+                    && d.message.contains("neck diameter")),
+            "expected slot neck error, got: {:?}",
+            rep.diagnostics
+        );
+        assert!(
+            rep.diagnostics
+                .iter()
+                .any(|d| d.severity == DiagnosticSeverity::Error
+                    && d.message.contains("mismatches target dovetail angle")),
+            "expected dovetail angle mismatch error, got: {:?}",
+            rep.diagnostics
+        );
+        assert!(
+            !rep.diagnostics
+                .iter()
+                .any(|d| d.severity == DiagnosticSeverity::Error && d.scope.contains("3D Undercut")),
+            "valid Undercut3D should have zero errors, got: {:?}",
+            rep.diagnostics
+        );
+
+        // 4. Verify lossless .chip.toml serialization roundtrip for all 3 M66 operations!
+        let toml_txt = proj.to_toml_string().unwrap();
+        let parsed = ProjectDocument::from_toml_str(&toml_txt).unwrap();
+        assert_eq!(parsed.setups[0].operations.len(), 3);
+        assert_eq!(
+            parsed.setups[0].operations[0].kind,
+            OperationKind::SlotUndercut
+        );
+        assert_eq!(parsed.setups[0].operations[1].kind, OperationKind::Dovetail);
+        assert_eq!(
+            parsed.setups[0].operations[2].kind,
+            OperationKind::Undercut3D
+        );
+        assert_eq!(parsed.setups[0].operations, proj.setups[0].operations);
     }
 }

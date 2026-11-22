@@ -3,6 +3,7 @@ pub mod adaptive3d;
 pub mod chamfer_trace;
 pub mod contour2d;
 pub mod deburr3d;
+pub mod dovetail;
 pub mod drill_bore;
 pub mod facing;
 pub mod parallel3d;
@@ -12,7 +13,9 @@ pub mod rotary2linear;
 pub mod rotary4axis_sim;
 pub mod rotary_wrap;
 pub mod scallop3d;
+pub mod slot_undercut;
 pub mod thread_mill;
+pub mod undercut3d;
 pub mod vcarve;
 pub mod waterline3d;
 
@@ -474,6 +477,15 @@ pub fn generate_operation_toolpath_with_rest(
         }
         StrategyParams::ThreadMill(p) => {
             thread_mill::generate_thread_mill(&ctx, p, &mut builder)?;
+        }
+        StrategyParams::SlotUndercut(p) => {
+            slot_undercut::generate_slot_undercut(&ctx, p, &mut builder)?;
+        }
+        StrategyParams::Dovetail(p) => {
+            dovetail::generate_dovetail(&ctx, p, &mut builder)?;
+        }
+        StrategyParams::Undercut3D(p) => {
+            undercut3d::generate_undercut3d(&ctx, p, &mut builder)?;
         }
     }
 

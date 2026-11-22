@@ -596,6 +596,7 @@ impl PaneBehavior<'_> {
                             lock_chipload: &mut self.app.lock_chipload,
                             show_z_planes: &mut self.app.show_z_planes,
                             open_tool_manager: &mut self.app.modals.tool_library.open,
+                            sim_engine: self.app.sim_panel.engine,
                         },
                     );
                 }

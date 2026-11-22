@@ -40,15 +40,23 @@ pub enum OperationKind {
     Rotary4AxisSim,
     #[serde(rename = "thread_mill")]
     ThreadMill,
+    #[serde(rename = "slot_undercut")]
+    SlotUndercut,
+    #[serde(rename = "dovetail")]
+    Dovetail,
+    #[serde(rename = "undercut_3d")]
+    Undercut3D,
 }
 
 impl OperationKind {
-    pub const ALL: [Self; 15] = [
+    pub const ALL: [Self; 18] = [
         Self::Facing,
         Self::Contour2D,
         Self::Pocket2D,
         Self::DrillBore,
         Self::ThreadMill,
+        Self::SlotUndercut,
+        Self::Dovetail,
         Self::ChamferTrace,
         Self::VCarve,
         Self::Adaptive3D,
@@ -57,6 +65,7 @@ impl OperationKind {
         Self::Scallop3D,
         Self::Pencil3D,
         Self::Deburr3D,
+        Self::Undercut3D,
         Self::Rotary2Linear,
         Self::Rotary4AxisSim,
     ];
@@ -68,6 +77,8 @@ impl OperationKind {
             Self::Pocket2D => "2D Pocket",
             Self::DrillBore => "Drill / Helical Bore",
             Self::ThreadMill => "Thread Mill",
+            Self::SlotUndercut => "Slot / Keyway / T-Slot",
+            Self::Dovetail => "Dovetail Slot / Rail",
             Self::ChamferTrace => "Edge Chamfer / Trace",
             Self::VCarve => "V-Carve / Bevel Inlay",
             Self::Waterline3D => "3D Waterline / Z-Level",
@@ -76,6 +87,7 @@ impl OperationKind {
             Self::Scallop3D => "3D Constant-Scallop",
             Self::Pencil3D => "3D Pencil Cleanup",
             Self::Deburr3D => "3D Edge Deburr / Chamfer",
+            Self::Undercut3D => "3D Lollipop Undercut",
             Self::Rotary2Linear => "4th-Axis Rotary Surfacing",
             Self::Rotary4AxisSim => "Simultaneous 4-Axis (X+Y+Z+A)",
         }
@@ -88,6 +100,8 @@ impl OperationKind {
             Self::Pocket2D => "2D Pocket",
             Self::DrillBore => "Holes / Bore",
             Self::ThreadMill => "Thread Mill",
+            Self::SlotUndercut => "T-Slot / Keyway",
+            Self::Dovetail => "Dovetail",
             Self::ChamferTrace => "Edge Chamfer",
             Self::VCarve => "V-Carve",
             Self::Waterline3D => "3D Waterline",
@@ -96,6 +110,7 @@ impl OperationKind {
             Self::Scallop3D => "3D Scallop",
             Self::Pencil3D => "3D Pencil",
             Self::Deburr3D => "3D Deburr",
+            Self::Undercut3D => "3D Undercut",
             Self::Rotary2Linear => "4th-Axis Rotary",
             Self::Rotary4AxisSim => "Simultaneous 4-Axis",
         }
@@ -111,6 +126,7 @@ impl OperationKind {
                 | Self::Scallop3D
                 | Self::Pencil3D
                 | Self::Deburr3D
+                | Self::Undercut3D
                 | Self::Rotary2Linear
                 | Self::Rotary4AxisSim
         )
@@ -169,6 +185,15 @@ impl OperationKind {
             Self::ThreadMill => tool
                 .geometry
                 .supports_operation(ToolOperationClass::ThreadMill),
+            Self::SlotUndercut => tool
+                .geometry
+                .supports_operation(ToolOperationClass::SlotUndercut),
+            Self::Dovetail => tool
+                .geometry
+                .supports_operation(ToolOperationClass::Dovetail),
+            Self::Undercut3D => tool
+                .geometry
+                .supports_operation(ToolOperationClass::Undercut3D),
         }
     }
 }
@@ -309,7 +334,8 @@ impl Operation {
             OperationKind::Parallel3D
             | OperationKind::Scallop3D
             | OperationKind::Pencil3D
-            | OperationKind::Deburr3D => {
+            | OperationKind::Deburr3D
+            | OperationKind::Undercut3D => {
                 heights.top =
                     crate::heights::HeightSpec::new(crate::heights::HeightReference::ModelTop, 0.0);
                 heights.bottom = crate::heights::HeightSpec::new(
@@ -332,7 +358,7 @@ impl Operation {
                 passes.stock_to_leave_radial = chip_math::ParamLength::from_mm(0.0);
                 passes.stock_to_leave_axial = chip_math::ParamLength::from_mm(0.0);
             }
-            OperationKind::ThreadMill => {
+            OperationKind::ThreadMill | OperationKind::SlotUndercut | OperationKind::Dovetail => {
                 passes.multiple_depths = false;
                 passes.stock_to_leave_radial = chip_math::ParamLength::from_mm(0.0);
                 passes.stock_to_leave_axial = chip_math::ParamLength::from_mm(0.0);

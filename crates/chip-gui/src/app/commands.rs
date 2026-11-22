@@ -241,6 +241,10 @@ impl ChipCutterApp {
             CommandId::AddOpPocket2D => self.add_standard_operation(OperationKind::Pocket2D),
             CommandId::AddOpDrillBore => self.add_standard_operation(OperationKind::DrillBore),
             CommandId::AddOpThreadMill => self.add_standard_operation(OperationKind::ThreadMill),
+            CommandId::AddOpSlotUndercut => {
+                self.add_standard_operation(OperationKind::SlotUndercut);
+            }
+            CommandId::AddOpDovetail => self.add_standard_operation(OperationKind::Dovetail),
             CommandId::AddOpChamferTrace => {
                 self.add_standard_operation(OperationKind::ChamferTrace)
             }
@@ -251,6 +255,7 @@ impl ChipCutterApp {
             CommandId::AddOpScallop3D => self.add_standard_operation(OperationKind::Scallop3D),
             CommandId::AddOpPencil3D => self.add_standard_operation(OperationKind::Pencil3D),
             CommandId::AddOpDeburr3D => self.add_standard_operation(OperationKind::Deburr3D),
+            CommandId::AddOpUndercut3D => self.add_standard_operation(OperationKind::Undercut3D),
             CommandId::AddOpRotary2Linear => {
                 self.add_standard_operation(OperationKind::Rotary2Linear);
             }

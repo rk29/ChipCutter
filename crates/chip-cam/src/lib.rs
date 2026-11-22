@@ -23,6 +23,7 @@ pub mod workholding;
 pub mod workholding_wizards;
 
 pub use chip_bvh::TriMesh3D;
+pub use chip_sketch;
 pub use cl_data::{ArcDir, ArcPlane, ClEvent, CutterCompMode, DrillCycleKind, MotionRole};
 pub use feed_opt::{
     corner_feed_scale, internal_arc_feed_scale, optimize_toolpath_feedrates,
@@ -51,15 +52,16 @@ pub use operation::{
 pub use params::{
     Adaptive3DParams, AdaptiveClearingParams, AdaptiveCutDirection, ChamferSourceMode,
     ChamferTraceMode, ChamferTraceParams, Contour2DParams, ContourCompensation, Deburr3DParams,
-    DrillBoreParams, EntryStrategy, FacingCutMode, FacingParams, FeedOptimizationConfig,
-    HoldingTabsConfig, HoleMachiningMode, LeadConfig, LinkingParams, MachiningBoundaryMode,
-    ManualTabAnchor, Parallel3DParams, ParallelCutDirection, PassesParams, Pencil3DParams,
-    Pocket2DParams, PocketPassOrder, PocketStrategyKind, RestMachiningConfig, RestMachiningMode,
-    RetractPolicy, Rotary2LinearParams, Rotary4AxisPattern, Rotary4AxisSimParams,
-    RotaryCutDirection, RotaryPatternMode, RotaryTiltMode, Scallop3DParams, StrategyParams,
-    TabPlacementMode, TabProfileKind, ThreadCutDirection, ThreadFormKind, ThreadHandedness,
-    ThreadMillParams, ToolContainmentMode, VCarveClearingKind, VCarveInlayMode, VCarveParams,
-    Waterline3DParams, WaterlineOrderMode,
+    DovetailMode, DovetailParams, DrillBoreParams, EntryStrategy, FacingCutMode, FacingParams,
+    FeedOptimizationConfig, HoldingTabsConfig, HoleMachiningMode, LeadConfig, LinkingParams,
+    MachiningBoundaryMode, ManualTabAnchor, Parallel3DParams, ParallelCutDirection, PassesParams,
+    Pencil3DParams, Pocket2DParams, PocketPassOrder, PocketStrategyKind, RestMachiningConfig,
+    RestMachiningMode, RetractPolicy, Rotary2LinearParams, Rotary4AxisPattern,
+    Rotary4AxisSimParams, RotaryCutDirection, RotaryPatternMode, RotaryTiltMode, Scallop3DParams,
+    SlotUndercutMode, SlotUndercutParams, SlotUndercutPreset, SlotUndercutPresetSpec,
+    StrategyParams, TabPlacementMode, TabProfileKind, ThreadCutDirection, ThreadFormKind,
+    ThreadHandedness, ThreadMillParams, ToolContainmentMode, Undercut3DParams, UndercutEntryMode,
+    VCarveClearingKind, VCarveInlayMode, VCarveParams, Waterline3DParams, WaterlineOrderMode,
 };
 pub use rest2d::{
     ContourRestClipQuery, PocketRestQuery, RegionSet2D, RestPocketWorkItem, UpstreamSweptInput,

@@ -36,6 +36,8 @@ pub enum CommandId {
     AddOpPocket2D,
     AddOpDrillBore,
     AddOpThreadMill,
+    AddOpSlotUndercut,
+    AddOpDovetail,
     AddOpChamferTrace,
     AddOpVCarve,
     AddOpAdaptive3D,
@@ -44,6 +46,7 @@ pub enum CommandId {
     AddOpScallop3D,
     AddOpPencil3D,
     AddOpDeburr3D,
+    AddOpUndercut3D,
     AddOpRotary2Linear,
     AddOpRotary4AxisSim,
     DuplicateOperation,
@@ -268,6 +271,20 @@ pub const PALETTE_COMMANDS: &[PaletteEntry] = &[
         shortcut: None,
     },
     PaletteEntry {
+        id: CommandId::AddOpSlotUndercut,
+        category: "Operation",
+        label: "Add Slot / Keyway / T-Slot Undercut Operation",
+        keywords: "add operation slot t-slot tslot keyway woodruff din650 din6885 undercut side groove",
+        shortcut: None,
+    },
+    PaletteEntry {
+        id: CommandId::AddOpDovetail,
+        category: "Operation",
+        label: "Add Dovetail Slot / Rail Operation",
+        keywords: "add operation dovetail slot rail guideway angled 60 45 undercut internal external",
+        shortcut: None,
+    },
+    PaletteEntry {
         id: CommandId::AddOpChamferTrace,
         category: "Operation",
         label: "Add Edge Chamfer / 2D Curve Trace Operation",
@@ -321,6 +338,13 @@ pub const PALETTE_COMMANDS: &[PaletteEntry] = &[
         category: "Operation",
         label: "Add 3D Edge Deburr / Chamfer Operation",
         keywords: "add operation 3d deburr chamfer bevel edge break lollipop back chamfer non-planar",
+        shortcut: None,
+    },
+    PaletteEntry {
+        id: CommandId::AddOpUndercut3D,
+        category: "Operation",
+        label: "Add 3D Lollipop Undercut Finishing Operation",
+        keywords: "add operation 3d undercut lollipop overhang concave groove neck clearance spherical",
         shortcut: None,
     },
     PaletteEntry {
@@ -993,6 +1017,36 @@ mod tests {
                 fuzzy_match_score(query, &searchable).is_some(),
                 "expected CommandPalette Deburr3D entry to match query '{query}'"
             );
+        }
+    }
+
+    #[test]
+    fn command_palette_contains_and_matches_undercut_operations() {
+        for (id, queries) in [
+            (
+                CommandId::AddOpSlotUndercut,
+                &["t-slot", "keyway", "slot undercut"][..],
+            ),
+            (
+                CommandId::AddOpDovetail,
+                &["dovetail", "guideway", "rail"][..],
+            ),
+            (
+                CommandId::AddOpUndercut3D,
+                &["3d undercut", "lollipop", "overhang"][..],
+            ),
+        ] {
+            let entry = PALETTE_COMMANDS
+                .iter()
+                .find(|e| e.id == id)
+                .unwrap_or_else(|| panic!("{id:?} entry present"));
+            let searchable = format!("{} {} {}", entry.category, entry.label, entry.keywords);
+            for query in queries {
+                assert!(
+                    fuzzy_match_score(query, &searchable).is_some(),
+                    "expected {id:?} to match query '{query}'"
+                );
+            }
         }
     }
 }

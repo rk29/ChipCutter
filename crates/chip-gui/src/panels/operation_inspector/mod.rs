@@ -32,6 +32,7 @@ pub struct OperationInspectorCtx<'a> {
     pub lock_chipload: &'a mut bool,
     pub show_z_planes: &'a mut bool,
     pub open_tool_manager: &'a mut bool,
+    pub sim_engine: chip_sim::SimEngineKind,
 }
 
 /// Renders the standardized 5-tab **Operation Inspector** (`[Tool]`, `[Geometry]`, `[Heights]`, `[Passes]`, `[Linking]`).
@@ -51,6 +52,7 @@ pub fn show_operation_inspector(ui: &mut egui::Ui, ctx: OperationInspectorCtx<'_
         lock_chipload,
         show_z_planes,
         open_tool_manager,
+        sim_engine,
     } = ctx;
 
     if setup_idx >= project.setups.len() || op_idx >= project.setups[setup_idx].operations.len() {
@@ -321,6 +323,7 @@ pub fn show_operation_inspector(ui: &mut egui::Ui, ctx: OperationInspectorCtx<'_
                         assigned_tool_geom: assigned_tool_geom.as_ref(),
                         tool_feed_preview,
                         resolved_thread_depth_mm,
+                        sim_engine,
                         display_unit,
                         setup_idx,
                         op_idx,

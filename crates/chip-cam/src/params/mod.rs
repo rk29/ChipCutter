@@ -4,6 +4,7 @@ mod milling_2d;
 mod rotary;
 mod surface_3d;
 mod thread_mill;
+mod undercut;
 
 pub use common::*;
 pub use deburr3d::*;
@@ -11,6 +12,7 @@ pub use milling_2d::*;
 pub use rotary::*;
 pub use surface_3d::*;
 pub use thread_mill::*;
+pub use undercut::*;
 
 use chip_math::EvalContext;
 use serde::{Deserialize, Serialize};
@@ -48,6 +50,12 @@ pub enum StrategyParams {
     ThreadMill(ThreadMillParams),
     #[serde(rename = "deburr_3d")]
     Deburr3D(Deburr3DParams),
+    #[serde(rename = "slot_undercut")]
+    SlotUndercut(SlotUndercutParams),
+    #[serde(rename = "dovetail")]
+    Dovetail(DovetailParams),
+    #[serde(rename = "undercut_3d")]
+    Undercut3D(Undercut3DParams),
 }
 
 impl StrategyParams {
@@ -68,6 +76,9 @@ impl StrategyParams {
             OperationKind::Rotary2Linear => Self::Rotary2Linear(Rotary2LinearParams::default()),
             OperationKind::Rotary4AxisSim => Self::Rotary4AxisSim(Rotary4AxisSimParams::default()),
             OperationKind::ThreadMill => Self::ThreadMill(ThreadMillParams::default()),
+            OperationKind::SlotUndercut => Self::SlotUndercut(SlotUndercutParams::default()),
+            OperationKind::Dovetail => Self::Dovetail(DovetailParams::default()),
+            OperationKind::Undercut3D => Self::Undercut3D(Undercut3DParams::default()),
         }
     }
 
@@ -89,6 +100,9 @@ impl StrategyParams {
                 | (OperationKind::Rotary2Linear, Self::Rotary2Linear(_))
                 | (OperationKind::Rotary4AxisSim, Self::Rotary4AxisSim(_))
                 | (OperationKind::ThreadMill, Self::ThreadMill(_))
+                | (OperationKind::SlotUndercut, Self::SlotUndercut(_))
+                | (OperationKind::Dovetail, Self::Dovetail(_))
+                | (OperationKind::Undercut3D, Self::Undercut3D(_))
         );
         if !matches {
             *self = Self::default_for_kind(kind);
@@ -112,6 +126,9 @@ impl StrategyParams {
             Self::Rotary2Linear(p) => p.reevaluate(ctx),
             Self::Rotary4AxisSim(p) => p.reevaluate(ctx),
             Self::ThreadMill(p) => p.reevaluate(ctx),
+            Self::SlotUndercut(p) => p.reevaluate(ctx),
+            Self::Dovetail(p) => p.reevaluate(ctx),
+            Self::Undercut3D(p) => p.reevaluate(ctx),
         }
     }
 }

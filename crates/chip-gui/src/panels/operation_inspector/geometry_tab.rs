@@ -42,6 +42,23 @@ pub fn show_geometry_tab(ui: &mut egui::Ui, ctx: GeometryTabCtx<'_>) {
             "3D Edge Deburr / Chamfer: pick explicit 3D B-Rep edge loops, open edge chains, planar faces, or holes below -- or leave empty / enable 'Auto-Detect Edges' in Passes to automatically chamfer all sharp convex 3D edges while trimming away from neighboring walls.",
         );
         ui.add_space(4.0);
+    } else if op.kind == OperationKind::Undercut3D {
+        inline_banner(
+            ui,
+            BannerKind::Info,
+            "3D Lollipop Undercut: automatically scans overhanging downward-facing surfaces on the active 3D solid/mesh within the Heights Z-band while trimming neck/shank collisions. Optionally pick 2D containment boundaries below.",
+        );
+        ui.add_space(4.0);
+    } else if matches!(
+        op.kind,
+        OperationKind::SlotUndercut | OperationKind::Dovetail
+    ) {
+        inline_banner(
+            ui,
+            BannerKind::Info,
+            "Undercut Slot / Dovetail: select a 2D Sketch centerline, B-Rep slot floor face, or open edge chain (plus a pre-cleared Cylindrical Entry Bore when using Entry Bore Center mode).",
+        );
+        ui.add_space(4.0);
     } else if op.kind.is_3d_surface() {
         inline_banner(
             ui,

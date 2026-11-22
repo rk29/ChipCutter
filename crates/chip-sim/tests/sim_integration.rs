@@ -2626,3 +2626,711 @@ fn deburr3d_auto_detect_sharp_edges_ignores_tangent_fillets_and_vertical_walls()
         sim_res.diagnostics
     );
 }
+
+#[test]
+fn m66_tslot_undercut_cpu_and_gpu_tridexel_parity() {
+    use std::sync::atomic::AtomicBool;
+
+    use chip_cam::chip_sketch::{SketchEntity, SketchEntityEntry, SketchLayer};
+    use chip_cam::{
+        BoxAnchor27, FixedBoxXyAlign, FixedBoxZAlign, GeometrySelectionItem, HeightReference,
+        HeightSpec, Operation, OperationGenRequest, OperationKind, SegmentMotion3D, Setup,
+        SlotUndercutMode, SlotUndercutParams, SlotUndercutPreset, StockConfig, StrategyParams,
+        UndercutEntryMode, WcsOriginMode, WorkOffsetSlot, generate_operation_toolpath_with_rest,
+    };
+    use chip_math::{ArcPolyline2D, ArcSegment2D, DVec2, DisplayUnit, ParamLength};
+    use chip_sim::SimComputeBackendChoice;
+    use chip_tools::{default_starter_tool_library, starter_tslot_12mm};
+
+    let doc = chip_cad::CadDocument::empty();
+    let lib = default_starter_tool_library();
+    let flat_6 = &lib.tools[0]; // Ø6 mm Flat Endmill for pre-clearing 8.5 mm throat
+    let slot_12 = starter_tslot_12mm(); // Ø12 mm, 4 mm thick, Ø5 mm neck, 18 mm neck length
+
+    let mut setup = Setup::new("s_m66_tslot", "M66 M8 T-Slot", WorkOffsetSlot::G54);
+    setup.wcs.origin = WcsOriginMode::StockBoxPoint {
+        anchor: BoxAnchor27::TOP_CENTER,
+    };
+    setup.stock = StockConfig::FixedBox {
+        width_x: ParamLength::from_mm(100.0),
+        depth_y: ParamLength::from_mm(100.0),
+        height_z: ParamLength::from_mm(20.0),
+        xy_align: FixedBoxXyAlign::CenterXy,
+        z_align: FixedBoxZAlign::CenterZ,
+    };
+    let resolved = setup.resolve(&doc, DisplayUnit::Millimeter).unwrap();
+
+    let mut sk = SketchLayer::new("sk_m8", "M8 T-Slot Axis", "s_m66_tslot");
+    sk.entities.push(SketchEntityEntry {
+        id: "e_axis".to_string(),
+        name: "Slot Axis".to_string(),
+        sub_layer: None,
+        is_construction: false,
+        entity: SketchEntity::new_polyline(ArcPolyline2D {
+            segments: vec![ArcSegment2D::Line {
+                start: DVec2::new(0.0, 50.0),
+                end: DVec2::new(100.0, 50.0),
+            }],
+            closed: false,
+        }),
+    });
+    sk.rebuild_regions(None);
+    let sel = vec![GeometrySelectionItem::SketchEntity {
+        sketch_id: sk.id.clone(),
+        entity_id: "e_axis".to_string(),
+        reverse: false,
+        side_flip: false,
+    }];
+
+    // Op 1: Pre-clear vertical 8.5 mm throat down to Z = -14.0 mm with Ø6 mm Flat Endmill (Keyway mode)
+    let mut op_throat = Operation::new(
+        "op_throat",
+        "Pre-Clear 8.5mm Throat",
+        OperationKind::SlotUndercut,
+    );
+    op_throat.tool_id = Some(flat_6.id.clone());
+    op_throat.selections = sel.clone();
+    op_throat.heights.top = HeightSpec::new(HeightReference::StockTop, 0.0);
+    op_throat.heights.bottom = HeightSpec::new(HeightReference::StockTop, -14.0);
+    op_throat.strategy = Some(StrategyParams::SlotUndercut(SlotUndercutParams {
+        mode: SlotUndercutMode::Keyway,
+        preset: SlotUndercutPreset::Custom,
+        slot_width: ParamLength::from_mm(8.5),
+        throat_width: ParamLength::from_mm(8.5),
+        slot_height: ParamLength::from_mm(14.0),
+        radial_stepover: ParamLength::from_mm(1.5),
+        axial_stepdown: ParamLength::from_mm(7.0),
+        finish_allowance: ParamLength::from_mm(0.0),
+        spring_pass: false,
+        entry_mode: UndercutEntryMode::BothEndsThrough,
+        entry_extension: ParamLength::from_mm(6.0),
+        climb_direction: true,
+    }));
+
+    // Op 2: Machine DIN 650 M8 T-Slot (14.5 mm wide × 6.0 mm tall beneath 8.5 mm throat) with SlotMill
+    let mut p_m8 = SlotUndercutParams::default();
+    p_m8.apply_preset(SlotUndercutPreset::TSlotM8);
+    p_m8.entry_mode = UndercutEntryMode::BothEndsThrough;
+    p_m8.entry_extension = ParamLength::from_mm(8.0);
+    p_m8.spring_pass = true;
+    let mut op_tslot = Operation::new(
+        "op_tslot",
+        "M8 T-Slot Undercut",
+        OperationKind::SlotUndercut,
+    );
+    op_tslot.tool_id = Some(slot_12.id.clone());
+    op_tslot.selections = sel;
+    op_tslot.heights.top = HeightSpec::new(HeightReference::StockTop, 0.0);
+    op_tslot.heights.bottom = HeightSpec::new(HeightReference::StockTop, -14.0);
+    op_tslot.strategy = Some(StrategyParams::SlotUndercut(p_m8));
+
+    let cancel = AtomicBool::new(false);
+    let tp_throat = generate_operation_toolpath_with_rest(&OperationGenRequest {
+        doc: &doc,
+        sketches: std::slice::from_ref(&sk),
+        setup: &resolved,
+        op: &op_throat,
+        tool: flat_6,
+        clearing_tool: None,
+        display_unit: DisplayUnit::Millimeter,
+        is_first_tool_in_setup: true,
+        upstream_rest: &[],
+        carryover_stock: None,
+        cancel: &cancel,
+    })
+    .unwrap();
+    let tp_tslot = generate_operation_toolpath_with_rest(&OperationGenRequest {
+        doc: &doc,
+        sketches: &[sk],
+        setup: &resolved,
+        op: &op_tslot,
+        tool: &slot_12,
+        clearing_tool: None,
+        display_unit: DisplayUnit::Millimeter,
+        is_first_tool_in_setup: false,
+        upstream_rest: &[],
+        carryover_stock: None,
+        cancel: &cancel,
+    })
+    .unwrap();
+
+    // Verify ZERO vertical plunges or retracts beneath the T-slot roof (`|x| < 56 mm`)!
+    for seg in &tp_tslot.segments_wcs {
+        if (seg.end_wcs.z - seg.start_wcs.z).abs() > 1e-4 {
+            assert!(
+                seg.start_wcs.x.abs() >= 56.0 - 1e-3 && seg.end_wcs.x.abs() >= 56.0 - 1e-3,
+                "T-slot must NEVER plunge or retract vertically inside roof (got {seg:?})"
+            );
+        }
+        assert!(matches!(
+            seg.motion,
+            SegmentMotion3D::Rapid | SegmentMotion3D::Linear { .. } | SegmentMotion3D::Arc { .. }
+        ));
+    }
+
+    let sim_ops = [
+        SimOperationInput::from_operation(&op_throat, flat_6, &tp_throat),
+        SimOperationInput::from_operation(&op_tslot, &slot_12, &tp_tslot),
+    ];
+
+    let mut cpu_vol: Option<f64> = None;
+    for backend in [SimComputeBackendChoice::Cpu, SimComputeBackendChoice::Auto] {
+        let sim = run_setup_simulation_with_choice(
+            &SetupSimulationInput {
+                doc: &doc,
+                setup: &resolved,
+                target_bodies: &[],
+                fixtures: &[],
+                operations: &sim_ops,
+                resolution: SimResolution::Standard,
+                kinematics: MachineKinematicsConfig::default(),
+                verify_config: SimVerificationConfig::default(),
+                initial_stock: None,
+                initial_raw_volume_mm3: None,
+                carried_over_from_setup: None,
+                cancel: None,
+            },
+            SimEngineKind::TriDexel,
+            backend,
+        )
+        .unwrap();
+
+        assert!(
+            !sim.has_critical_errors(),
+            "M8 T-Slot ({backend:?}) must have 0 critical errors, got: {:#?}",
+            sim.diagnostics
+        );
+        let td = sim.as_tridexel().expect("TriDexel stock present");
+
+        // Probe exact cross-section at X = 0 using Y-axis rays!
+        let y_plane = td.y_plane();
+        let u_x0 = ((0.0 - y_plane.origin_u_mm) / y_plane.du_mm)
+            .round()
+            .clamp(0.0, (y_plane.nu - 1) as f64) as usize;
+
+        // Helper: find Y-spans at `(x = 0, z)`
+        let spans_at_z = |z_query: f64| {
+            let v_z = ((z_query - y_plane.origin_v_mm) / y_plane.dv_mm)
+                .round()
+                .clamp(0.0, (y_plane.nv - 1) as f64) as usize;
+            y_plane.ray_spans(u_x0, v_z)
+        };
+
+        // 1. Intact overhanging roof at Z = -4.0 mm: throat gap is `[-4.25, +4.25]` (`8.5 mm` wide!)
+        let roof_spans = spans_at_z(-4.0);
+        assert_eq!(
+            roof_spans.len(),
+            2,
+            "roof at Z=-4 must split into 2 solid shoulders across the 8.5 mm throat ({backend:?}): {roof_spans:?}"
+        );
+        let throat_width_meas = roof_spans[1].min_mm - roof_spans[0].max_mm;
+        assert!(
+            (throat_width_meas - 8.5).abs() < 0.15,
+            "expected 8.5 mm throat width at Z=-4 ({backend:?}), measured {throat_width_meas:.3} mm"
+        );
+
+        // 2. Undercut head cavity at Z = -11.0 mm: exact M8 width `[-7.25, +7.25]` (`14.5 mm` wide!)
+        let cav_spans = spans_at_z(-11.0);
+        assert_eq!(
+            cav_spans.len(),
+            2,
+            "undercut cavity at Z=-11 must have 2 outer walls ({backend:?}): {cav_spans:?}"
+        );
+        let undercut_width_meas = cav_spans[1].min_mm - cav_spans[0].max_mm;
+        assert!(
+            (undercut_width_meas - 14.5).abs() < 0.15,
+            "expected 14.5 mm M8 undercut width at Z=-11 ({backend:?}), measured {undercut_width_meas:.3} mm"
+        );
+
+        // 3. Solid uncut floor beneath Z = -14.0 mm (at Z = -17.0 mm)
+        let floor_spans = spans_at_z(-17.0);
+        assert_eq!(
+            floor_spans.len(),
+            1,
+            "floor at Z=-17 must remain a single solid span ({backend:?}): {floor_spans:?}"
+        );
+
+        if let Some(v0) = cpu_vol {
+            let rel = (sim.removed_volume_mm3 - v0).abs() / v0.max(1.0);
+            assert!(
+                rel < 0.005,
+                "CPU vs GPU T-Slot removed volume mismatch: cpu={v0:.2}, gpu={:.2} (rel={:.4})",
+                sim.removed_volume_mm3,
+                rel
+            );
+        } else {
+            cpu_vol = Some(sim.removed_volume_mm3);
+        }
+    }
+}
+
+#[test]
+fn m66_dovetail_60deg_cpu_and_gpu_tridexel_parity() {
+    use std::sync::atomic::AtomicBool;
+
+    use chip_cam::chip_sketch::{SketchEntity, SketchEntityEntry, SketchLayer};
+    use chip_cam::{
+        BoxAnchor27, CamError, DovetailMode, DovetailParams, FixedBoxXyAlign, FixedBoxZAlign,
+        GeometrySelectionItem, HeightReference, HeightSpec, Operation, OperationGenRequest,
+        OperationKind, Setup, SlotUndercutMode, SlotUndercutParams, SlotUndercutPreset,
+        StockConfig, StrategyParams, UndercutEntryMode, WcsOriginMode, WorkOffsetSlot,
+        generate_operation_toolpath_with_rest,
+    };
+    use chip_math::{ArcPolyline2D, ArcSegment2D, DVec2, DisplayUnit, ParamLength};
+    use chip_sim::SimComputeBackendChoice;
+    use chip_tools::{CutterGeometry, default_starter_tool_library, starter_dovetail_60deg_12mm};
+
+    let doc = chip_cad::CadDocument::empty();
+    let lib = default_starter_tool_library();
+    let flat_6 = &lib.tools[0];
+    let dove_60 = starter_dovetail_60deg_12mm(); // Ø12, 60°, H=5, Rc=0.2, neck=5.5, neck_len=18
+
+    let mut setup = Setup::new("s_m66_dove", "M66 60deg Dovetail", WorkOffsetSlot::G54);
+    setup.wcs.origin = WcsOriginMode::StockBoxPoint {
+        anchor: BoxAnchor27::TOP_CENTER,
+    };
+    setup.stock = StockConfig::FixedBox {
+        width_x: ParamLength::from_mm(100.0),
+        depth_y: ParamLength::from_mm(100.0),
+        height_z: ParamLength::from_mm(20.0),
+        xy_align: FixedBoxXyAlign::CenterXy,
+        z_align: FixedBoxZAlign::CenterZ,
+    };
+    let resolved = setup.resolve(&doc, DisplayUnit::Millimeter).unwrap();
+
+    let mut sk = SketchLayer::new("sk_dove", "Dovetail Axis", "s_m66_dove");
+    sk.entities.push(SketchEntityEntry {
+        id: "e_axis".to_string(),
+        name: "Slot Axis".to_string(),
+        sub_layer: None,
+        is_construction: false,
+        entity: SketchEntity::new_polyline(ArcPolyline2D {
+            segments: vec![ArcSegment2D::Line {
+                start: DVec2::new(0.0, 50.0),
+                end: DVec2::new(100.0, 50.0),
+            }],
+            closed: false,
+        }),
+    });
+    sk.rebuild_regions(None);
+    let sel = vec![GeometrySelectionItem::SketchEntity {
+        sketch_id: sk.id.clone(),
+        entity_id: "e_axis".to_string(),
+        reverse: false,
+        side_flip: false,
+    }];
+
+    // Op 1: Pre-clear vertical 8.5 mm throat down to Z = -12.0 mm
+    let mut op_throat = Operation::new(
+        "op_d_throat",
+        "Pre-Clear Throat",
+        OperationKind::SlotUndercut,
+    );
+    op_throat.tool_id = Some(flat_6.id.clone());
+    op_throat.selections = sel.clone();
+    op_throat.heights.top = HeightSpec::new(HeightReference::StockTop, 0.0);
+    op_throat.heights.bottom = HeightSpec::new(HeightReference::StockTop, -12.0);
+    op_throat.strategy = Some(StrategyParams::SlotUndercut(SlotUndercutParams {
+        mode: SlotUndercutMode::Keyway,
+        preset: SlotUndercutPreset::Custom,
+        slot_width: ParamLength::from_mm(8.5),
+        throat_width: ParamLength::from_mm(8.5),
+        slot_height: ParamLength::from_mm(12.0),
+        radial_stepover: ParamLength::from_mm(1.5),
+        axial_stepdown: ParamLength::from_mm(6.0),
+        finish_allowance: ParamLength::from_mm(0.0),
+        spring_pass: false,
+        entry_mode: UndercutEntryMode::BothEndsThrough,
+        entry_extension: ParamLength::from_mm(6.0),
+        climb_direction: true,
+    }));
+
+    // Op 2: Machine 60° internal dovetail slot (`top_throat = 8.5 mm`, `depth = 5.0 mm`, `z_bottom = -12.0 mm`)
+    let mut op_dove = Operation::new("op_d_60", "60° Dovetail Slot", OperationKind::Dovetail);
+    op_dove.tool_id = Some(dove_60.id.clone());
+    op_dove.selections = sel;
+    op_dove.heights.top = HeightSpec::new(HeightReference::StockTop, 0.0);
+    op_dove.heights.bottom = HeightSpec::new(HeightReference::StockTop, -12.0);
+    op_dove.strategy = Some(StrategyParams::Dovetail(DovetailParams {
+        mode: DovetailMode::InternalSlot,
+        top_throat_width: ParamLength::from_mm(8.5),
+        dovetail_depth: ParamLength::from_mm(5.0),
+        side_angle_deg: 60.0,
+        radial_stepover: ParamLength::from_mm(0.6),
+        finish_allowance: ParamLength::from_mm(0.1),
+        spring_pass: true,
+        entry_mode: UndercutEntryMode::BothEndsThrough,
+        entry_extension: ParamLength::from_mm(8.0),
+        climb_direction: true,
+    }));
+
+    let cancel = AtomicBool::new(false);
+
+    // Angle mismatch check: 45° cutter on 60° slot MUST fail cleanly!
+    let mut dove_45 = dove_60.clone();
+    if let CutterGeometry::DovetailCutter { side_angle_deg, .. } = &mut dove_45.geometry {
+        *side_angle_deg = 45.0;
+    }
+    let bad_err = generate_operation_toolpath_with_rest(&OperationGenRequest {
+        doc: &doc,
+        sketches: std::slice::from_ref(&sk),
+        setup: &resolved,
+        op: &op_dove,
+        tool: &dove_45,
+        clearing_tool: None,
+        display_unit: DisplayUnit::Millimeter,
+        is_first_tool_in_setup: false,
+        upstream_rest: &[],
+        carryover_stock: None,
+        cancel: &cancel,
+    })
+    .unwrap_err();
+    assert!(matches!(bad_err, CamError::InvalidUndercutGeometry { .. }));
+
+    let tp_throat = generate_operation_toolpath_with_rest(&OperationGenRequest {
+        doc: &doc,
+        sketches: std::slice::from_ref(&sk),
+        setup: &resolved,
+        op: &op_throat,
+        tool: flat_6,
+        clearing_tool: None,
+        display_unit: DisplayUnit::Millimeter,
+        is_first_tool_in_setup: true,
+        upstream_rest: &[],
+        carryover_stock: None,
+        cancel: &cancel,
+    })
+    .unwrap();
+    let tp_dove = generate_operation_toolpath_with_rest(&OperationGenRequest {
+        doc: &doc,
+        sketches: &[sk],
+        setup: &resolved,
+        op: &op_dove,
+        tool: &dove_60,
+        clearing_tool: None,
+        display_unit: DisplayUnit::Millimeter,
+        is_first_tool_in_setup: false,
+        upstream_rest: &[],
+        carryover_stock: None,
+        cancel: &cancel,
+    })
+    .unwrap();
+
+    let sim_ops = [
+        SimOperationInput::from_operation(&op_throat, flat_6, &tp_throat),
+        SimOperationInput::from_operation(&op_dove, &dove_60, &tp_dove),
+    ];
+
+    let tan60 = 60.0_f64.to_radians().tan();
+    let mut cpu_vol: Option<f64> = None;
+    for backend in [SimComputeBackendChoice::Cpu, SimComputeBackendChoice::Auto] {
+        let sim = run_setup_simulation_with_choice(
+            &SetupSimulationInput {
+                doc: &doc,
+                setup: &resolved,
+                target_bodies: &[],
+                fixtures: &[],
+                operations: &sim_ops,
+                resolution: SimResolution::Fine,
+                kinematics: MachineKinematicsConfig::default(),
+                verify_config: SimVerificationConfig::default(),
+                initial_stock: None,
+                initial_raw_volume_mm3: None,
+                carried_over_from_setup: None,
+                cancel: None,
+            },
+            SimEngineKind::TriDexel,
+            backend,
+        )
+        .unwrap();
+
+        assert!(
+            !sim.has_critical_errors(),
+            "60° Dovetail ({backend:?}) must have 0 critical errors, got: {:#?}",
+            sim.diagnostics
+        );
+
+        // Measure the exact angled flank in TriDexelStock Y-rays across multiple Z stations inside [-11.3, -7.5]!
+        let td = sim.as_tridexel().expect("TriDexel stock present");
+        let y_plane = td.y_plane();
+        let u_x0 = ((0.0 - y_plane.origin_u_mm) / y_plane.du_mm)
+            .round()
+            .clamp(0.0, (y_plane.nu - 1) as f64) as usize;
+
+        for z_probe in [-11.0_f64, -9.5, -8.0] {
+            let v_z = ((z_probe - y_plane.origin_v_mm) / y_plane.dv_mm)
+                .round()
+                .clamp(0.0, (y_plane.nv - 1) as f64) as usize;
+            let z_actual = y_plane.center_v(v_z);
+            let dz_from_floor = z_actual - (-12.0);
+            let expected_half_w = 0.5 * 8.5 + (5.0 - dz_from_floor) / tan60;
+
+            let spans = y_plane.ray_spans(u_x0, v_z);
+            assert_eq!(spans.len(), 2, "expected 2 walls at z={z_actual:.3}");
+            let pos_wall = spans[1].min_mm;
+            let neg_wall = -spans[0].max_mm;
+            assert!(
+                (pos_wall - expected_half_w).abs() < 0.05,
+                "60° dovetail +Y flank at z={z_actual:.3} ({backend:?}): got {pos_wall:.4}, expected {expected_half_w:.4} (err={:.4} mm)",
+                (pos_wall - expected_half_w).abs()
+            );
+            assert!(
+                (neg_wall - expected_half_w).abs() < 0.05,
+                "60° dovetail -Y flank at z={z_actual:.3} ({backend:?}): got {neg_wall:.4}, expected {expected_half_w:.4} (err={:.4} mm)",
+                (neg_wall - expected_half_w).abs()
+            );
+        }
+
+        if let Some(v0) = cpu_vol {
+            let rel = (sim.removed_volume_mm3 - v0).abs() / v0.max(1.0);
+            assert!(
+                rel < 0.005,
+                "CPU vs GPU Dovetail removed volume mismatch: cpu={v0:.2}, gpu={:.2}",
+                sim.removed_volume_mm3
+            );
+        } else {
+            cpu_vol = Some(sim.removed_volume_mm3);
+        }
+    }
+}
+
+#[test]
+fn m66_undercut3d_lollipop_neck_clipping_and_tridexel_parity() {
+    use std::sync::atomic::AtomicBool;
+
+    use chip_cad::{MeshImportOptions, load_mesh_cad_document};
+    use chip_cam::{
+        BoxAnchor27, HeightReference, HeightSpec, MotionRole, Operation, OperationKind,
+        SegmentMotion3D, Setup, StockConfig, StrategyParams, Undercut3DParams, WcsOriginMode,
+        WorkOffsetSlot, generate_operation_toolpath,
+    };
+    use chip_math::{DVec3, DisplayUnit, ParamLength};
+    use chip_sim::SimComputeBackendChoice;
+    use chip_tools::{CutterGeometry, starter_lollipop_6mm};
+
+    // Build a watertight 3D prism along X ∈ [0, 60] whose +Y front face has a continuous 45°
+    // overhanging underside wall:
+    // - Roof overhang top at Z = 20.0 mm extending out to Y = 20.0 mm across X ∈ [0, 60]
+    // - Overhang lip drops vertically from Z = 20 to Z = 16 at Y = 20.0 mm
+    // - From Z = 16 down to Z = 10, the wall slopes INWARD at 45° beneath the roof (`Y(z) = 20 - (16 - z)`):
+    //   * At Z = 15.0: undercut depth = 1.0 mm (REACHABLE by Ø6/neck Ø3 Lollipop + 0.25 mm clr!)
+    //   * At Z = 11.0: undercut depth = 5.0 mm (DELIBERATELY TOO DEEP — would ram the Ø3 mm neck
+    //     into the overhanging lip at Y = 20.0 mm, so Undercut3D MUST clip it automatically!)
+    let mut tris: Vec<[DVec3; 3]> = Vec::new();
+    let push_quad = |tris: &mut Vec<[DVec3; 3]>, a: DVec3, b: DVec3, c: DVec3, d: DVec3| {
+        tris.push([a, b, c]);
+        tris.push([a, c, d]);
+    };
+
+    // Profile polygon in YZ plane (ordered CCW when looking down +X so extruding x0->x1 gives outward normals):
+    // (y, z): (0,0) -> (14,0) -> (14,10) -> (20,16) -> (20,20) -> (0,20)
+    let prof_yz: [(f64, f64); 6] = [
+        (0.0, 0.0),
+        (14.0, 0.0),
+        (14.0, 10.0),
+        (20.0, 16.0),
+        (20.0, 20.0),
+        (0.0, 20.0),
+    ];
+    let x0 = 0.0;
+    let x1 = 60.0;
+    let n_p = prof_yz.len();
+    for i in 0..n_p {
+        let (y_a, z_a) = prof_yz[i];
+        let (y_b, z_b) = prof_yz[(i + 1) % n_p];
+        // Outward normal for CCW profile in YZ extruded along +X: `(p_b - p_a) × (+X)`
+        push_quad(
+            &mut tris,
+            DVec3::new(x0, y_a, z_a),
+            DVec3::new(x0, y_b, z_b),
+            DVec3::new(x1, y_b, z_b),
+            DVec3::new(x1, y_a, z_a),
+        );
+    }
+    // End caps at x0 (-X normal) and x1 (+X normal) via fan from interior point (7, 10)
+    let c0 = DVec3::new(x0, 7.0, 10.0);
+    let c1 = DVec3::new(x1, 7.0, 10.0);
+    for i in 0..n_p {
+        let (y_a, z_a) = prof_yz[i];
+        let (y_b, z_b) = prof_yz[(i + 1) % n_p];
+        tris.push([c0, DVec3::new(x0, y_b, z_b), DVec3::new(x0, y_a, z_a)]);
+        tris.push([c1, DVec3::new(x1, y_a, z_a), DVec3::new(x1, y_b, z_b)]);
+    }
+
+    let mut stl = String::from("solid m66_overhang\n");
+    for t in &tris {
+        let n = (t[1] - t[0]).cross(t[2] - t[0]).normalize_or_zero();
+        stl.push_str(&format!(
+            "  facet normal {:.6} {:.6} {:.6}\n    outer loop\n      vertex {:.6} {:.6} {:.6}\n      vertex {:.6} {:.6} {:.6}\n      vertex {:.6} {:.6} {:.6}\n    endloop\n  endfacet\n",
+            n.x, n.y, n.z,
+            t[0].x, t[0].y, t[0].z,
+            t[1].x, t[1].y, t[1].z,
+            t[2].x, t[2].y, t[2].z,
+        ));
+    }
+    stl.push_str("endsolid m66_overhang\n");
+
+    let doc = load_mesh_cad_document(
+        "m66_overhang_test.stl",
+        stl.as_bytes(),
+        &MeshImportOptions::default(),
+    )
+    .unwrap();
+
+    let mut setup = Setup::new("s_m66_u3d", "M66 3D Undercut", WorkOffsetSlot::G54);
+    setup.wcs.origin = WcsOriginMode::ModelBoxPoint {
+        anchor: BoxAnchor27::BOTTOM_FRONT_LEFT,
+    };
+    setup.stock = StockConfig::RelativeBox {
+        side_pos_x: ParamLength::from_mm(0.0),
+        side_neg_x: ParamLength::from_mm(0.0),
+        side_pos_y: ParamLength::from_mm(0.0),
+        side_neg_y: ParamLength::from_mm(0.0),
+        symmetric_xy: true,
+        top_offset_z: ParamLength::from_mm(0.0),
+        bottom_offset_z: ParamLength::from_mm(0.0),
+        sheet_thickness_z: ParamLength::from_mm(20.0),
+        round_increment_mm: None,
+    };
+    let resolved = setup.resolve(&doc, DisplayUnit::Millimeter).unwrap();
+
+    let lolli_6 = starter_lollipop_6mm(); // Ø6.0 (R=3.0), neck Ø3.0 (r_neck=1.5), reach=18.0
+    let (r_sphere, r_neck) = match lolli_6.geometry {
+        CutterGeometry::LollipopEndmill {
+            diameter_mm,
+            neck_diameter_mm,
+            ..
+        } => (0.5 * diameter_mm, 0.5 * neck_diameter_mm),
+        _ => unreachable!(),
+    };
+    let neck_clr = 0.25;
+
+    let mut op = Operation::new("op_u3d", "3D Lollipop Undercut", OperationKind::Undercut3D);
+    op.tool_id = Some(lolli_6.id.clone());
+    op.heights.top = HeightSpec::new(HeightReference::ModelTop, 0.0);
+    op.heights.bottom = HeightSpec::new(HeightReference::ModelBottom, 0.0);
+    op.strategy = Some(StrategyParams::Undercut3D(Undercut3DParams {
+        z_stepdown: ParamLength::from_mm(0.35),
+        use_cusp_height: false,
+        target_cusp: ParamLength::from_mm(0.025),
+        min_overhang_angle_deg: 5.0,
+        neck_clearance: ParamLength::from_mm(neck_clr),
+        stock_to_leave: ParamLength::from_mm(0.0),
+        lead_out_distance: ParamLength::from_mm(4.0),
+        climb_direction: true,
+    }));
+
+    let cancel = AtomicBool::new(false);
+    let tp = generate_operation_toolpath(
+        &doc,
+        &resolved,
+        &op,
+        &lolli_6,
+        DisplayUnit::Millimeter,
+        true,
+        &cancel,
+    )
+    .unwrap();
+
+    // 1. Verify active overhang cutting passes occurred AND that automatic neck-clearance clipping
+    //    prevented ANY cutter center from moving closer than `Y = 20.0 + r_neck + neck_clr = 21.75 mm`
+    //    while beneath the overhanging lip (`Z_lip = 16.0..20.0`)!
+    let mut cut_count = 0usize;
+    let mut min_cut_y = f64::INFINITY;
+    for seg in &tp.segments_wcs {
+        if matches!(
+            seg.motion,
+            SegmentMotion3D::Linear {
+                role: MotionRole::FinishCut | MotionRole::Cut,
+                ..
+            }
+        ) {
+            cut_count += 1;
+            min_cut_y = min_cut_y.min(seg.start_wcs.y).min(seg.end_wcs.y);
+            // Neck outer edge `tip_y - r_neck` must NEVER intrude inside `Y = 20.0 + neck_clr`!
+            assert!(
+                seg.start_wcs.y >= 20.0 + r_neck + neck_clr - 0.02
+                    && seg.end_wcs.y >= 20.0 + r_neck + neck_clr - 0.02,
+                "neck-clearance clipping violated: lip at Y=20 requires tip_y >= {:.3}, got seg {:?}",
+                20.0 + r_neck + neck_clr,
+                seg
+            );
+        }
+        // Every vertical plunge or retract MUST be strictly in open air (`y >= 20.0 + r_sphere + neck_clr`)!
+        if (seg.end_wcs.z - seg.start_wcs.z).abs() > 1e-4 {
+            assert!(
+                seg.start_wcs.y >= 20.0 + r_sphere + neck_clr - 0.02,
+                "vertical plunge/retract must occur in open air past overhang lip (Y >= {:.2}), got {seg:?}",
+                20.0 + r_sphere + neck_clr
+            );
+        }
+    }
+    assert!(
+        cut_count >= 5,
+        "expected multiple Z-level overhang cuts along reachable 45° slope, got {cut_count}"
+    );
+
+    // 2. Simulate starting from a solid box matching the roof overhang (`Y ∈ [0, 20], Z ∈ [0, 20]`)
+    //    so the Lollipop actively carves the reachable 45° overhang cavity underneath the intact roof!
+    let mut cpu_vol: Option<f64> = None;
+    for backend in [SimComputeBackendChoice::Cpu, SimComputeBackendChoice::Auto] {
+        let sim = run_setup_simulation_with_choice(
+            &SetupSimulationInput {
+                doc: &doc,
+                setup: &resolved,
+                target_bodies: &[],
+                fixtures: &[],
+                operations: &[SimOperationInput::from_operation(&op, &lolli_6, &tp)],
+                resolution: SimResolution::Standard,
+                kinematics: MachineKinematicsConfig::default(),
+                verify_config: SimVerificationConfig::default(),
+                initial_stock: None,
+                initial_raw_volume_mm3: None,
+                carried_over_from_setup: None,
+                cancel: None,
+            },
+            SimEngineKind::TriDexel,
+            backend,
+        )
+        .unwrap();
+
+        assert!(
+            !sim.has_critical_errors(),
+            "Undercut3D Lollipop ({backend:?}) must have 0 critical errors (0 neck rubs, 0 roof crashes, 0 gouges), got: {:#?}",
+            sim.diagnostics
+        );
+        assert!(
+            sim.removed_volume_mm3 > 20.0,
+            "Undercut3D Lollipop ({backend:?}) must carve measurable overhang material, got {:.3} mm³",
+            sim.removed_volume_mm3
+        );
+
+        // Verify roof above the overhang at `Z = 18.0 mm, X = 30.0 mm` stays completely intact out to `Y ≈ 20.0 mm`!
+        let td = sim.as_tridexel().expect("TriDexel stock present");
+        let y_plane = td.y_plane();
+        let u_x30 = ((30.0 - y_plane.origin_u_mm) / y_plane.du_mm)
+            .round()
+            .clamp(0.0, (y_plane.nu - 1) as f64) as usize;
+        let v_z18 = ((18.0 - y_plane.origin_v_mm) / y_plane.dv_mm)
+            .round()
+            .clamp(0.0, (y_plane.nv - 1) as f64) as usize;
+        let roof_spans = y_plane.ray_spans(u_x30, v_z18);
+        assert_eq!(roof_spans.len(), 1);
+        assert!(
+            roof_spans[0].max_mm > 19.8,
+            "overhanging roof at Z=18 must remain intact out to Y=20.0 ({backend:?}), got {:.3}",
+            roof_spans[0].max_mm
+        );
+
+        if let Some(v0) = cpu_vol {
+            let rel = (sim.removed_volume_mm3 - v0).abs() / v0.max(1.0);
+            assert!(
+                rel < 0.01,
+                "CPU vs GPU Undercut3D removed volume mismatch: cpu={v0:.2}, gpu={:.2}",
+                sim.removed_volume_mm3
+            );
+        } else {
+            cpu_vol = Some(sim.removed_volume_mm3);
+        }
+    }
+}

@@ -2,6 +2,7 @@ pub mod deburr3d_card;
 pub mod milling_2d;
 pub mod surface_3d;
 pub mod thread_mill;
+pub mod undercut_cards;
 pub mod vcarve;
 
 use std::ops::RangeInclusive;
@@ -203,6 +204,7 @@ pub struct PassesTabCtx<'a> {
     pub assigned_tool_geom: Option<&'a CutterGeometry>,
     pub tool_feed_preview: Option<(f64, f64)>,
     pub resolved_thread_depth_mm: Option<f64>,
+    pub sim_engine: chip_sim::SimEngineKind,
     pub display_unit: DisplayUnit,
     pub setup_idx: usize,
     pub op_idx: usize,
@@ -221,6 +223,7 @@ pub fn show_passes_tab(ui: &mut egui::Ui, ctx: PassesTabCtx<'_>) {
         assigned_tool_geom,
         tool_feed_preview,
         resolved_thread_depth_mm,
+        sim_engine,
         display_unit,
         setup_idx,
         op_idx,
@@ -238,7 +241,13 @@ pub fn show_passes_tab(ui: &mut egui::Ui, ctx: PassesTabCtx<'_>) {
         mutated_label,
     };
 
-    if op.kind != OperationKind::Deburr3D {
+    if !matches!(
+        op.kind,
+        OperationKind::Deburr3D
+            | OperationKind::SlotUndercut
+            | OperationKind::Dovetail
+            | OperationKind::Undercut3D
+    ) {
         item.card_grid(
             ui,
             "passes_depth_card",
@@ -373,6 +382,38 @@ pub fn show_passes_tab(ui: &mut egui::Ui, ctx: PassesTabCtx<'_>) {
                 assigned_tool_geom,
                 tool_feed_preview,
                 resolved_thread_depth_mm,
+                display_unit,
+                item,
+            },
+        ),
+        StrategyParams::SlotUndercut(p) => undercut_cards::show_slot_undercut_params(
+            ui,
+            undercut_cards::SlotUndercutUiCtx {
+                p,
+                assigned_tool_geom,
+                resolved_depth_mm: resolved_thread_depth_mm,
+                sim_engine,
+                display_unit,
+                item,
+            },
+        ),
+        StrategyParams::Dovetail(p) => undercut_cards::show_dovetail_params(
+            ui,
+            undercut_cards::DovetailUiCtx {
+                p,
+                assigned_tool_geom,
+                resolved_depth_mm: resolved_thread_depth_mm,
+                sim_engine,
+                display_unit,
+                item,
+            },
+        ),
+        StrategyParams::Undercut3D(p) => undercut_cards::show_undercut3d_params(
+            ui,
+            undercut_cards::Undercut3DUiCtx {
+                p,
+                assigned_tool_geom,
+                sim_engine,
                 display_unit,
                 item,
             },

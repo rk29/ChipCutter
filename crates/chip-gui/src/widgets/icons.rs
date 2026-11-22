@@ -32,6 +32,9 @@ pub enum IconKind {
     Adaptive2D,
     DrillBore,
     ThreadMill,
+    SlotUndercut,
+    Dovetail,
+    Undercut3D,
     ChamferTrace,
     Deburr3D,
     VCarve,
@@ -92,6 +95,8 @@ impl IconKind {
             OperationKind::Pocket2D => Self::Pocket2D,
             OperationKind::DrillBore => Self::DrillBore,
             OperationKind::ThreadMill => Self::ThreadMill,
+            OperationKind::SlotUndercut => Self::SlotUndercut,
+            OperationKind::Dovetail => Self::Dovetail,
             OperationKind::ChamferTrace => Self::ChamferTrace,
             OperationKind::VCarve => Self::VCarve,
             OperationKind::Adaptive3D => Self::Adaptive2D,
@@ -100,6 +105,7 @@ impl IconKind {
             OperationKind::Scallop3D => Self::Pocket2D,
             OperationKind::Pencil3D => Self::ChamferTrace,
             OperationKind::Deburr3D => Self::Deburr3D,
+            OperationKind::Undercut3D => Self::Undercut3D,
             OperationKind::Rotary2Linear => Self::OrthoCube,
             OperationKind::Rotary4AxisSim => Self::OrthoCube,
         }
@@ -301,6 +307,61 @@ pub fn paint_icon(painter: &egui::Painter, rect: Rect, icon: IconKind, color: Co
             painter.line_segment([p(0.39, 0.52), p(0.39, 0.72)], thin);
             painter.line_segment([p(0.61, 0.32), p(0.61, 0.52)], thin);
             painter.circle_stroke(p(0.70, 0.68), s * 0.14, stroke);
+        }
+        IconKind::SlotUndercut => {
+            // Inverted-T undercut cavity profile with relieved-neck slot mill disc inside
+            painter.add(egui::Shape::line(
+                vec![
+                    p(0.12, 0.22),
+                    p(0.36, 0.22),
+                    p(0.36, 0.50),
+                    p(0.16, 0.50),
+                    p(0.16, 0.80),
+                    p(0.84, 0.80),
+                    p(0.84, 0.50),
+                    p(0.64, 0.50),
+                    p(0.64, 0.22),
+                    p(0.88, 0.22),
+                ],
+                stroke,
+            ));
+            painter.line_segment([p(0.50, 0.14), p(0.50, 0.58)], thin);
+            let disc = Rect::from_min_max(p(0.28, 0.58), p(0.72, 0.72));
+            painter.rect_stroke(disc, CornerRadius::same(1), thin, StrokeKind::Inside);
+        }
+        IconKind::Dovetail => {
+            // Angled 60° dovetail cavity profile with inverted-cone cutter outline
+            painter.add(egui::Shape::line(
+                vec![
+                    p(0.12, 0.24),
+                    p(0.34, 0.24),
+                    p(0.18, 0.80),
+                    p(0.82, 0.80),
+                    p(0.66, 0.24),
+                    p(0.88, 0.24),
+                ],
+                stroke,
+            ));
+            painter.line_segment([p(0.50, 0.14), p(0.50, 0.44)], thin);
+            painter.add(egui::Shape::closed_line(
+                vec![p(0.42, 0.44), p(0.58, 0.44), p(0.68, 0.72), p(0.32, 0.72)],
+                thin,
+            ));
+        }
+        IconKind::Undercut3D => {
+            // Overhanging curved 3D lip with relieved-neck spherical lollipop cutter reaching underneath
+            painter.add(egui::Shape::line(
+                vec![
+                    p(0.14, 0.22),
+                    p(0.72, 0.22),
+                    p(0.58, 0.42),
+                    p(0.36, 0.58),
+                    p(0.36, 0.84),
+                ],
+                stroke,
+            ));
+            painter.line_segment([p(0.66, 0.14), p(0.66, 0.48)], thin);
+            painter.circle_stroke(p(0.66, 0.64), s * 0.16, stroke);
         }
         IconKind::VCarve => {
             painter.line_segment([p(0.12, 0.24), p(0.88, 0.24)], thin);
@@ -976,5 +1037,45 @@ mod tests {
             !out.shapes.is_empty(),
             "expected IconKind::Deburr3D to emit vector shapes"
         );
+    }
+
+    #[test]
+    fn undercut_icons_map_operations_and_render_without_panic() {
+        assert_eq!(
+            IconKind::for_operation(OperationKind::SlotUndercut, false),
+            IconKind::SlotUndercut
+        );
+        assert_eq!(
+            IconKind::for_operation(OperationKind::Dovetail, false),
+            IconKind::Dovetail
+        );
+        assert_eq!(
+            IconKind::for_operation(OperationKind::Undercut3D, false),
+            IconKind::Undercut3D
+        );
+
+        let ctx = egui::Context::default();
+        for icon in [
+            IconKind::SlotUndercut,
+            IconKind::Dovetail,
+            IconKind::Undercut3D,
+        ] {
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 200.0))),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
+                    let (rect, _) = ui.allocate_exact_size(Vec2::splat(24.0), Sense::hover());
+                    paint_icon(ui.painter(), rect, icon, Color32::WHITE);
+                    let _ = inline_icon(ui, icon, Color32::LIGHT_GRAY, 14.0);
+                });
+            });
+            out.textures_delta.clear();
+            assert!(
+                !out.shapes.is_empty(),
+                "expected {icon:?} to emit vector shapes"
+            );
+        }
     }
 }

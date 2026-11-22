@@ -675,6 +675,8 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                                 ("2D Pocket", OperationKind::Pocket2D),
                                 ("Drill / Helical Bore", OperationKind::DrillBore),
                                 ("Thread Mill", OperationKind::ThreadMill),
+                                ("Slot / Keyway / T-Slot", OperationKind::SlotUndercut),
+                                ("Dovetail Slot / Rail", OperationKind::Dovetail),
                                 ("Edge Chamfer / Trace", OperationKind::ChamferTrace),
                                 ("3D Adaptive Roughing", OperationKind::Adaptive3D),
                                 ("3D Waterline / Z-Level", OperationKind::Waterline3D),
@@ -682,6 +684,7 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                                 ("3D Constant-Scallop", OperationKind::Scallop3D),
                                 ("3D Pencil Cleanup", OperationKind::Pencil3D),
                                 ("3D Edge Deburr / Chamfer", OperationKind::Deburr3D),
+                                ("3D Lollipop Undercut", OperationKind::Undercut3D),
                                 ("4th-Axis Rotary Surfacing", OperationKind::Rotary2Linear),
                                 (
                                     "Simultaneous 4-Axis (X+Y+Z+A)",
@@ -1219,9 +1222,11 @@ pub fn default_pick_mode_for_op(
         return ViewportPickMode::InspectEntity;
     }
     match kind {
-        OperationKind::Facing | OperationKind::Pocket2D | OperationKind::VCarve => {
-            ViewportPickMode::OpPlanarFaces { setup_idx, op_idx }
-        }
+        OperationKind::Facing
+        | OperationKind::Pocket2D
+        | OperationKind::VCarve
+        | OperationKind::SlotUndercut
+        | OperationKind::Dovetail => ViewportPickMode::OpPlanarFaces { setup_idx, op_idx },
         OperationKind::Contour2D | OperationKind::ChamferTrace | OperationKind::Deburr3D => {
             ViewportPickMode::OpClosedLoops { setup_idx, op_idx }
         }
@@ -1233,6 +1238,7 @@ pub fn default_pick_mode_for_op(
         | OperationKind::Parallel3D
         | OperationKind::Scallop3D
         | OperationKind::Pencil3D
+        | OperationKind::Undercut3D
         | OperationKind::Rotary2Linear
         | OperationKind::Rotary4AxisSim => ViewportPickMode::InspectEntity,
     }
