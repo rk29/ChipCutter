@@ -15,10 +15,10 @@ In this tutorial you will start from an **empty project**, import a minimal cham
 
 Start with an **empty project** and load the minimal chamfer block included with this tutorial ([`06-chamfer-engrave-block.step`](assets/06-chamfer-engrave-block.step) — a pre-squared `100 × 70 × 18 mm` block with a modeled `45° × 1.5 mm` front bevel, a sharp `90°` back edge, and a clean flat top face):
 
-- **From the Welcome Overlay or Menu:** Launch `cargo run --release -p chip-gui`, click **`Import 3D STEP Solid…`** in the **Welcome to ChipCutter** overlay (or **`File → Import STEP Model…`** in the **top menu bar**, or **`Import STEP…`** under **`Models`** in the left **CAM Browser**), and select `docs/tutorials/assets/06-chamfer-engrave-block.step`.
+- **From the Welcome Overlay or Menu:** Launch ChipCutter (`chip-gui`), click **`Import 3D STEP Solid…`** in the **Welcome to ChipCutter** overlay (or **`File → Import STEP Model…`** in the **top menu bar**, or **`Import STEP…`** under **`Models`** in the left **CAM Browser**), and select `docs/tutorials/assets/06-chamfer-engrave-block.step`.
 - **Or open directly from the terminal:**
   ```bash
-  cargo run --release -p chip-gui -- docs/tutorials/assets/06-chamfer-engrave-block.step
+  chip-gui docs/tutorials/assets/06-chamfer-engrave-block.step
   ```
 
 In the left **CAM Browser**, click **`Stock & WCS`** under `Setup 1`, open the **`Stock`** tab in the right **Inspector**, and under **`Stock Offsets`** (with **`Symmetric XY`** / `Mirror ±X / ±Y` checked) set **`Side X Margin (±X)`** = `0 mm`, **`Side Y Margin (±Y)`** = `0 mm`, and **`Top Allowance (+Z)`** = `0 mm` to match the pre-squared `100 × 70 × 18 mm` billet.
@@ -115,16 +115,16 @@ Generate the minimal chamfer/engraving block and 3-operation project, validate, 
 
 ```bash
 # 1. Generate the minimal 100x70x18mm chamfer/engrave block + 3-op .chip.toml project
-cargo run -p chip-cli -- generate-sample-step /tmp/06-chamfer-engrave-block.step \
+chipcutter generate-sample-step /tmp/06-chamfer-engrave-block.step \
   --tutorial 06-chamfer-trace --project-out /tmp/06-chamfer-trace.chip.toml
 
 # 2. Validate, generate toolpaths, and verify zero crashes/gouges
-cargo run -p chip-cli -- validate --generate /tmp/06-chamfer-trace.chip.toml
-cargo run -p chip-cli -- simulate /tmp/06-chamfer-trace.chip.toml --resolution standard
+chipcutter validate --generate /tmp/06-chamfer-trace.chip.toml
+chipcutter simulate /tmp/06-chamfer-trace.chip.toml --resolution standard
 
 # 3. Post-process for GRBL and LinuxCNC
-cargo run -p chip-cli -- build /tmp/06-chamfer-trace.chip.toml -o /tmp/chamfer_grbl --post grbl
-cargo run -p chip-cli -- build /tmp/06-chamfer-trace.chip.toml -o /tmp/chamfer_linuxcnc --post linuxcnc
+chipcutter build /tmp/06-chamfer-trace.chip.toml -o /tmp/chamfer_grbl --post grbl
+chipcutter build /tmp/06-chamfer-trace.chip.toml -o /tmp/chamfer_linuxcnc --post linuxcnc
 ```
 
 ---

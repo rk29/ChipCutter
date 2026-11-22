@@ -20,15 +20,15 @@ Launch the built-in **Threaded Manifold Block** sample directly in `chip-gui` (o
 
 ```bash
 # Option A: Launch the ready-to-simulate built-in Thread Milling sample
-cargo run --release -p chip-gui -- --sample thread-mill
+chip-gui --sample thread-mill
 
 # Option B: Open the bare 80 x 60 x 20 mm starter STEP model in an empty workspace
-cargo run --release -p chip-gui -- docs/tutorials/assets/18-threaded-manifold.step
+chip-gui docs/tutorials/assets/18-threaded-manifold.step
 
 # Option C: Generate the starter STEP solid + seeded 6-operation .chip.toml project via CLI
-cargo run -p chip-cli -- generate-sample-step /tmp/18-threaded-manifold.step \
+chipcutter generate-sample-step /tmp/18-threaded-manifold.step \
   --tutorial 18-thread-milling --project-out /tmp/18-thread-milling.chip.toml
-cargo run --release -p chip-gui -- /tmp/18-thread-milling.chip.toml
+chip-gui /tmp/18-thread-milling.chip.toml
 ```
 
 The starter manifold solid (`80 × 60 × 20 mm`) contains:
@@ -147,22 +147,22 @@ Reproduce the exact starter STEP solid, seeded 6-operation `.chip.toml` project,
 
 ```bash
 # 1. Generate the 80 x 60 x 20 mm Threaded Manifold STEP + seeded 6-operation project
-cargo run -p chip-cli -- generate-sample-step /tmp/18-threaded-manifold.step \
+chipcutter generate-sample-step /tmp/18-threaded-manifold.step \
   --tutorial 18-thread-milling --project-out /tmp/18-thread-milling.chip.toml
 
 # 2. Validate invariants & generate all 6 toolpaths in parallel
-cargo run -p chip-cli -- validate --generate /tmp/18-thread-milling.chip.toml
+chipcutter validate --generate /tmp/18-thread-milling.chip.toml
 
 # 3. Verify 0 crashes in BOTH fast Heightmap and volumetric Tri-Dexel 3D simulation
-cargo run -p chip-cli -- simulate /tmp/18-thread-milling.chip.toml \
+chipcutter simulate /tmp/18-thread-milling.chip.toml \
   --engine heightmap --resolution standard
-cargo run -p chip-cli -- simulate /tmp/18-thread-milling.chip.toml \
+chipcutter simulate /tmp/18-thread-milling.chip.toml \
   --engine tri-dexel --resolution standard --report /tmp/thread_mill_report.json
 
 # 4. Build safety-verified G-code for LinuxCNC (single ATC file) and GRBL (5 split-by-tool files)
-cargo run -p chip-cli -- build /tmp/18-thread-milling.chip.toml \
+chipcutter build /tmp/18-thread-milling.chip.toml \
   -o /tmp/out_thread_linuxcnc --post linuxcnc
-cargo run -p chip-cli -- build /tmp/18-thread-milling.chip.toml \
+chipcutter build /tmp/18-thread-milling.chip.toml \
   -o /tmp/out_thread_grbl --post grbl
 ```
 

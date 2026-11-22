@@ -19,15 +19,15 @@ Launch either pre-seeded rotary showcase directly, or open the starter rotary sh
 
 ```bash
 # Part A — Wrapped Rotary Engraving (Pure-2D Ø40×80 mm cylinder, V-Carve "CHIP" + Flute Pocket):
-cargo run --release -p chip-gui -- --sample rotary-wrap
+chip-gui --sample rotary-wrap
 
 # Part B — Generate the Axial Parallel + Continuous Spiral project on 09-rotary-shaft.stl:
-cargo run -p chip-cli -- generate-sample-step /tmp/10-rotary-shaft.stl \
+chipcutter generate-sample-step /tmp/10-rotary-shaft.stl \
   --tutorial 10-rotary-axial --project-out /tmp/10-rotary-axial.chip.toml
-cargo run --release -p chip-gui -- /tmp/10-rotary-axial.chip.toml
+chip-gui /tmp/10-rotary-axial.chip.toml
 
 # Or open the bare rotary shaft mesh in an empty project:
-cargo run --release -p chip-gui -- docs/tutorials/assets/09-rotary-shaft.stl
+chip-gui docs/tutorials/assets/09-rotary-shaft.stl
 ```
 
 ---
@@ -142,22 +142,22 @@ Generate, validate, simulate on `CylindricalStock`, and post-process both Tutori
 
 ```bash
 # 1. Generate the Wrapped Rotary Engraving project (Pure-2D Ø40×80 mm cylinder)
-cargo run -p chip-cli -- generate-sample-step /tmp/10-rotary-wrap.chip.toml \
+chipcutter generate-sample-step /tmp/10-rotary-wrap.chip.toml \
   --tutorial 10-rotary-wrap
 
 # 2. Generate the Rotary Shaft STL + Continuous Spiral & Axial Parallel (-60°..+60°) project
-cargo run -p chip-cli -- generate-sample-step /tmp/10-rotary-shaft.stl \
+chipcutter generate-sample-step /tmp/10-rotary-shaft.stl \
   --tutorial 10-rotary-axial --project-out /tmp/10-rotary-axial.chip.toml
 
 # 3. Validate, run CylindricalStock verification, and post-process for GRBL Wrap & LinuxCNC 4-Axis
-cargo run -p chip-cli -- validate --generate /tmp/10-rotary-wrap.chip.toml
-cargo run -p chip-cli -- simulate /tmp/10-rotary-wrap.chip.toml --resolution standard
-cargo run -p chip-cli -- build /tmp/10-rotary-wrap.chip.toml -o /tmp/out_10_wrap --post grbl_rotary_wrap
+chipcutter validate --generate /tmp/10-rotary-wrap.chip.toml
+chipcutter simulate /tmp/10-rotary-wrap.chip.toml --resolution standard
+chipcutter build /tmp/10-rotary-wrap.chip.toml -o /tmp/out_10_wrap --post grbl_rotary_wrap
 
-cargo run -p chip-cli -- validate --generate /tmp/10-rotary-axial.chip.toml
-cargo run -p chip-cli -- simulate /tmp/10-rotary-axial.chip.toml --resolution standard
-cargo run -p chip-cli -- build /tmp/10-rotary-axial.chip.toml -o /tmp/out_10_axial_lcnc --post linuxcnc_4axis
-cargo run -p chip-cli -- build /tmp/10-rotary-axial.chip.toml -o /tmp/out_10_axial_wrap --post grbl_rotary_wrap
+chipcutter validate --generate /tmp/10-rotary-axial.chip.toml
+chipcutter simulate /tmp/10-rotary-axial.chip.toml --resolution standard
+chipcutter build /tmp/10-rotary-axial.chip.toml -o /tmp/out_10_axial_lcnc --post linuxcnc_4axis
+chipcutter build /tmp/10-rotary-axial.chip.toml -o /tmp/out_10_axial_wrap --post grbl_rotary_wrap
 ```
 
 ---

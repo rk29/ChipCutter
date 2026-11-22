@@ -17,10 +17,10 @@ In this tutorial you will start from an **empty project**, import a minimal pock
 
 Start with an **empty project** and load the minimal pocket block included with this tutorial ([`03-pocket-block.step`](assets/03-pocket-block.step) — a pre-squared `100 × 80 × 20 mm` block containing only a closed pocket with a raised `Ø14 mm` central island on the left and an open-shoulder step shelf on the right):
 
-- **From the Welcome Overlay or Menu:** Launch `cargo run --release -p chip-gui`, click **`Import 3D STEP Solid…`** in the **Welcome to ChipCutter** overlay (or **`File → Import STEP Model…`** in the **top menu bar**, or **`Import STEP…`** under **`Models`** in the left **CAM Browser**), and select `docs/tutorials/assets/03-pocket-block.step`.
+- **From the Welcome Overlay or Menu:** Launch ChipCutter (`chip-gui`), click **`Import 3D STEP Solid…`** in the **Welcome to ChipCutter** overlay (or **`File → Import STEP Model…`** in the **top menu bar**, or **`Import STEP…`** under **`Models`** in the left **CAM Browser**), and select `docs/tutorials/assets/03-pocket-block.step`.
 - **Or open directly from the terminal:**
   ```bash
-  cargo run --release -p chip-gui -- docs/tutorials/assets/03-pocket-block.step
+  chip-gui docs/tutorials/assets/03-pocket-block.step
   ```
 
 In the left **CAM Browser**, click **`Stock & WCS`** under `Setup 1`, open the **`Stock`** tab in the right **Inspector**, and under **`Stock Offsets`** (with **`Symmetric XY`** / `Mirror ±X / ±Y` checked) set **`Side X Margin (±X)`** = `0 mm`, **`Side Y Margin (±Y)`** = `0 mm`, and **`Top Allowance (+Z)`** = `0 mm` to represent pre-squared `100 × 80 × 20 mm` stock.
@@ -109,16 +109,16 @@ Generate the minimal pocket block and 2-operation project, validate, simulate, a
 
 ```bash
 # 1. Generate the minimal 100x80x20mm pocket block + 2-operation .chip.toml project
-cargo run -p chip-cli -- generate-sample-step /tmp/03-pocket-block.step --tutorial 03-pocket \
+chipcutter generate-sample-step /tmp/03-pocket-block.step --tutorial 03-pocket \
   --project-out /tmp/03-pocket.chip.toml
 
 # 2. Validate, generate toolpaths, and verify zero crashes/gouges
-cargo run -p chip-cli -- validate --generate /tmp/03-pocket.chip.toml
-cargo run -p chip-cli -- simulate /tmp/03-pocket.chip.toml --resolution standard
+chipcutter validate --generate /tmp/03-pocket.chip.toml
+chipcutter simulate /tmp/03-pocket.chip.toml --resolution standard
 
 # 3. Post-process for GRBL and LinuxCNC
-cargo run -p chip-cli -- build /tmp/03-pocket.chip.toml -o /tmp/pocket_grbl --post grbl
-cargo run -p chip-cli -- build /tmp/03-pocket.chip.toml -o /tmp/pocket_linuxcnc --post linuxcnc
+chipcutter build /tmp/03-pocket.chip.toml -o /tmp/pocket_grbl --post grbl
+chipcutter build /tmp/03-pocket.chip.toml -o /tmp/pocket_linuxcnc --post linuxcnc
 ```
 
 ---

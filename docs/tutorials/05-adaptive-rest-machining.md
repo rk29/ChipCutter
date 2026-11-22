@@ -17,10 +17,10 @@ In this tutorial you will start from an **empty project**, import a minimal deep
 
 Start with an **empty project** and load the minimal deep-pocket block included with this tutorial ([`05-adaptive-pocket.step`](assets/05-adaptive-pocket.step) — a pre-squared `100 × 80 × 20 mm` block containing only a single `10 mm`-deep sharp-corner pocket with a raised `Ø16 mm` central boss):
 
-- **From the Welcome Overlay or Menu:** Launch `cargo run --release -p chip-gui`, click **`Import 3D STEP Solid…`** in the **Welcome to ChipCutter** overlay (or **`File → Import STEP Model…`** in the **top menu bar**, or **`Import STEP…`** under **`Models`** in the left **CAM Browser**), and select `docs/tutorials/assets/05-adaptive-pocket.step`.
+- **From the Welcome Overlay or Menu:** Launch ChipCutter (`chip-gui`), click **`Import 3D STEP Solid…`** in the **Welcome to ChipCutter** overlay (or **`File → Import STEP Model…`** in the **top menu bar**, or **`Import STEP…`** under **`Models`** in the left **CAM Browser**), and select `docs/tutorials/assets/05-adaptive-pocket.step`.
 - **Or open directly from the terminal:**
   ```bash
-  cargo run --release -p chip-gui -- docs/tutorials/assets/05-adaptive-pocket.step
+  chip-gui docs/tutorials/assets/05-adaptive-pocket.step
   ```
 
 In the left **CAM Browser**, click **`Stock & WCS`** under `Setup 1`, open the **`Stock`** tab in the right **Inspector**, and under **`Stock Offsets`** (with **`Symmetric XY`** / `Mirror ±X / ±Y` checked) set **`Side X Margin (±X)`** = `0 mm`, **`Side Y Margin (±Y)`** = `0 mm`, and **`Top Allowance (+Z)`** = `0 mm` to match pre-squared `100 × 80 × 20 mm` stock.
@@ -118,16 +118,16 @@ Generate the minimal adaptive pocket block and 2-operation DAG project, validate
 
 ```bash
 # 1. Generate the minimal 100x80x20mm deep-pocket STEP solid + 2-op Adaptive/Rest project
-cargo run -p chip-cli -- generate-sample-step /tmp/05-adaptive-pocket.step \
+chipcutter generate-sample-step /tmp/05-adaptive-pocket.step \
   --tutorial 05-adaptive-rest --project-out /tmp/05-adaptive-rest.chip.toml
 
 # 2. Validate DAG dependencies, generate toolpaths, and verify zero crashes/gouges
-cargo run -p chip-cli -- validate --generate /tmp/05-adaptive-rest.chip.toml
-cargo run -p chip-cli -- simulate /tmp/05-adaptive-rest.chip.toml --resolution standard
+chipcutter validate --generate /tmp/05-adaptive-rest.chip.toml
+chipcutter simulate /tmp/05-adaptive-rest.chip.toml --resolution standard
 
 # 3. Post-process for LinuxCNC (ATC) and GRBL (split by tool)
-cargo run -p chip-cli -- build /tmp/05-adaptive-rest.chip.toml -o /tmp/adp_linuxcnc --post linuxcnc
-cargo run -p chip-cli -- build /tmp/05-adaptive-rest.chip.toml -o /tmp/adp_grbl --post grbl
+chipcutter build /tmp/05-adaptive-rest.chip.toml -o /tmp/adp_linuxcnc --post linuxcnc
+chipcutter build /tmp/05-adaptive-rest.chip.toml -o /tmp/adp_grbl --post grbl
 ```
 
 ---

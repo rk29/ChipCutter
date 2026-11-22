@@ -17,10 +17,10 @@ In this tutorial you will start from an **empty project**, import a minimal hole
 
 Start with an **empty project** and load the minimal hole plate included with this tutorial ([`04-drill-bore-plate.step`](assets/04-drill-bore-plate.step) — a pre-squared `100 × 70 × 16 mm` plate with 4× `Ø6.0 mm` corner through-holes and 1× `Ø18.0 mm × 10 mm` deep central blind counterbore):
 
-- **From the Welcome Overlay or Menu:** Launch `cargo run --release -p chip-gui`, click **`Import 3D STEP Solid…`** in the **Welcome to ChipCutter** overlay (or **`File → Import STEP Model…`** in the **top menu bar**, or **`Import STEP…`** under **`Models`** in the left **CAM Browser**), and select `docs/tutorials/assets/04-drill-bore-plate.step`.
+- **From the Welcome Overlay or Menu:** Launch ChipCutter (`chip-gui`), click **`Import 3D STEP Solid…`** in the **Welcome to ChipCutter** overlay (or **`File → Import STEP Model…`** in the **top menu bar**, or **`Import STEP…`** under **`Models`** in the left **CAM Browser**), and select `docs/tutorials/assets/04-drill-bore-plate.step`.
 - **Or open directly from the terminal:**
   ```bash
-  cargo run --release -p chip-gui -- docs/tutorials/assets/04-drill-bore-plate.step
+  chip-gui docs/tutorials/assets/04-drill-bore-plate.step
   ```
 
 In the left **CAM Browser**, click **`Stock & WCS`** under `Setup 1`, open the **`Stock`** tab in the right **Inspector**, and under **`Stock Offsets`** (with **`Symmetric XY`** / `Mirror ±X / ±Y` checked) set **`Side X Margin (±X)`** = `0 mm`, **`Side Y Margin (±Y)`** = `0 mm`, and **`Top Allowance (+Z)`** = `0 mm` to represent pre-squared `100 × 70 × 16 mm` stock.
@@ -108,16 +108,16 @@ Generate the minimal drill/bore plate and 2-operation project, validate, simulat
 
 ```bash
 # 1. Generate the minimal 100x70x16mm drill/bore plate + 2-operation .chip.toml project
-cargo run -p chip-cli -- generate-sample-step /tmp/04-drill-bore-plate.step --tutorial 04-drill-bore \
+chipcutter generate-sample-step /tmp/04-drill-bore-plate.step --tutorial 04-drill-bore \
   --project-out /tmp/04-drill-bore.chip.toml
 
 # 2. Validate, generate toolpaths, and verify zero crashes/gouges
-cargo run -p chip-cli -- validate --generate /tmp/04-drill-bore.chip.toml
-cargo run -p chip-cli -- simulate /tmp/04-drill-bore.chip.toml --resolution standard
+chipcutter validate --generate /tmp/04-drill-bore.chip.toml
+chipcutter simulate /tmp/04-drill-bore.chip.toml --resolution standard
 
 # 3. Build LinuxCNC (single ATC file with native G83) and GRBL (expanded pecks + split files)
-cargo run -p chip-cli -- build /tmp/04-drill-bore.chip.toml -o /tmp/drill_linuxcnc --post linuxcnc
-cargo run -p chip-cli -- build /tmp/04-drill-bore.chip.toml -o /tmp/drill_grbl --post grbl
+chipcutter build /tmp/04-drill-bore.chip.toml -o /tmp/drill_linuxcnc --post linuxcnc
+chipcutter build /tmp/04-drill-bore.chip.toml -o /tmp/drill_grbl --post grbl
 ```
 
 ---

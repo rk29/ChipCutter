@@ -35,10 +35,10 @@ Launch ChipCutter directly with either asset, or regenerate them anytime via the
 
 ```bash
 # Launch Part A (Y-up STL) in the desktop GUI:
-cargo run --release -p chip-gui -- docs/tutorials/assets/16-yup-bracket.stl
+chip-gui docs/tutorials/assets/16-yup-bracket.stl
 
 # Launch Part B/C (Tilted STEP) in the desktop GUI:
-cargo run --release -p chip-gui -- docs/tutorials/assets/16-tilted-bracket.step
+chip-gui docs/tutorials/assets/16-tilted-bracket.step
 ```
 
 ---

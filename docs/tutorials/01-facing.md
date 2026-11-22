@@ -17,10 +17,10 @@ In this tutorial you will start from an **empty project**, import a minimal rect
 
 Start with an **empty project** and load the minimal billet STEP file included with this tutorial ([`01-facing-billet.step`](assets/01-facing-billet.step) — a plain `100 × 80 × 20 mm` block with 6 planar faces and no extra features):
 
-- **From the Welcome Overlay or Menu:** Launch `cargo run --release -p chip-gui`, click **`Import 3D STEP Solid…`** in the **Welcome to ChipCutter** overlay (or **`File → Import STEP Model…`** in the **top menu bar**, or **`Import STEP…`** under **`Models`** in the left **CAM Browser**), and select `docs/tutorials/assets/01-facing-billet.step`.
+- **From the Welcome Overlay or Menu:** Launch ChipCutter (`chip-gui`), click **`Import 3D STEP Solid…`** in the **Welcome to ChipCutter** overlay (or **`File → Import STEP Model…`** in the **top menu bar**, or **`Import STEP…`** under **`Models`** in the left **CAM Browser**), and select `docs/tutorials/assets/01-facing-billet.step`.
 - **Or open directly from the terminal:**
   ```bash
-  cargo run --release -p chip-gui -- docs/tutorials/assets/01-facing-billet.step
+  chip-gui docs/tutorials/assets/01-facing-billet.step
   ```
 
 ---
@@ -102,18 +102,18 @@ Generate the minimal facing billet and project, validate, simulate, and post-pro
 
 ```bash
 # 1. Generate the minimal 100x80x20mm facing billet + 1-operation .chip.toml project
-cargo run -p chip-cli -- generate-sample-step /tmp/01-facing-billet.step --tutorial 01-facing \
+chipcutter generate-sample-step /tmp/01-facing-billet.step --tutorial 01-facing \
   --project-out /tmp/01-facing.chip.toml
 
 # 2. Validate parameters & generate the facing toolpath
-cargo run -p chip-cli -- validate --generate /tmp/01-facing.chip.toml
+chipcutter validate --generate /tmp/01-facing.chip.toml
 
 # 3. Verify zero crashes/gouges via 2.5D Z-dexel heightmap simulation
-cargo run -p chip-cli -- simulate /tmp/01-facing.chip.toml --resolution standard
+chipcutter simulate /tmp/01-facing.chip.toml --resolution standard
 
 # 4. Build GRBL and LinuxCNC G-code
-cargo run -p chip-cli -- build /tmp/01-facing.chip.toml -o /tmp/facing_grbl --post grbl
-cargo run -p chip-cli -- build /tmp/01-facing.chip.toml -o /tmp/facing_linuxcnc --post linuxcnc
+chipcutter build /tmp/01-facing.chip.toml -o /tmp/facing_grbl --post grbl
+chipcutter build /tmp/01-facing.chip.toml -o /tmp/facing_linuxcnc --post linuxcnc
 ```
 
 ---

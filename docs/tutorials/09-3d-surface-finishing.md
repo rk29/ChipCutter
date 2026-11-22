@@ -23,7 +23,7 @@ This tutorial uses two watertight starter meshes included in `docs/tutorials/ass
 Launch ChipCutter directly with the Relief Wave mesh (or click **`Import 3D Mesh (STL / OBJ / 3MF)…`** on the **Welcome to ChipCutter** overlay, **`File → Import 3D Mesh (.stl / .obj / .3mf)…`** in the **top menu bar**, or **`Import Mesh…`** under **`Models`** in the left **CAM Browser**):
 
 ```bash
-cargo run --release -p chip-gui -- docs/tutorials/assets/09-relief-wave.obj
+chip-gui docs/tutorials/assets/09-relief-wave.obj
 ```
 
 ---
@@ -91,7 +91,7 @@ Whenever a larger ball endmill (e.g., `Ø6 mm`, `R = 3 mm`) finishes a sculpted 
 
 To see `Pencil3D` in action on a sharp dome-to-pedestal fillet:
 
-1. Open the Sculpted Dome sample (`cargo run --release -p chip-gui -- --sample mesh-dome`, or **`Sample Projects Gallery…`** → **`Sculpted Dome (Watertight STL Mesh)`**, which already embeds `T11`), or add **`+ Op… → 3D Pencil Cleanup`** under `Setup 1` in the left **CAM Browser** (or **`Operations → + 3D Pencil Cleanup`** in the **top menu bar**) on your Tutorial 08 project.
+1. Open the Sculpted Dome sample (`chip-gui --sample mesh-dome`, or **`Sample Projects Gallery…`** → **`Sculpted Dome (Watertight STL Mesh)`**, which already embeds `T11`), or add **`+ Op… → 3D Pencil Cleanup`** under `Setup 1` in the left **CAM Browser** (or **`Operations → + 3D Pencil Cleanup`** in the **top menu bar**) on your Tutorial 08 project.
 2. In the right **Inspector** **`Tool`** tab (`Active Cutter`), select **`T11 — 3mm 2FL Carbide Ball Endmill`** (if building from scratch on the default 8-tool starter library, clone a custom machine in **Tool Library Manager** and add a `Ø3 mm` Ball Endmill via **`+ New Cutter`**).
 3. In the **`Heights`** tab (`Z-Height Planes & Offsets`), set **`Bottom Ref`** = **`Model Top`** and **`Bottom Offset`** = `-25.0 mm`.
 4. Switch to the **`Passes`** tab in the right **Inspector**:
@@ -150,19 +150,19 @@ Generate the starter Relief Wave OBJ mesh and 3-operation `Adaptive3D` + `Parall
 
 ```bash
 # 1. Generate the starter Relief Wave OBJ + seeded 3-op surface finishing project
-cargo run -p chip-cli -- generate-sample-step /tmp/09-relief-wave.obj \
+chipcutter generate-sample-step /tmp/09-relief-wave.obj \
   --tutorial 09-3d-surface-finishing --project-out /tmp/09-surface-finishing.chip.toml
 
 # 2. Inspect OBJ triangle count, unit detection, bounding box, and watertightness
-cargo run -p chip-cli -- inspect /tmp/09-relief-wave.obj
+chipcutter inspect /tmp/09-relief-wave.obj
 
 # 3. Validate, generate toolpaths, and verify 0 crashes/gouges headlessly
-cargo run -p chip-cli -- validate --generate /tmp/09-surface-finishing.chip.toml
-cargo run -p chip-cli -- simulate /tmp/09-surface-finishing.chip.toml --resolution standard
+chipcutter validate --generate /tmp/09-surface-finishing.chip.toml
+chipcutter simulate /tmp/09-surface-finishing.chip.toml --resolution standard
 
 # 4. Post-process for LinuxCNC (ATC) and GRBL (2 split .nc files: T1 + T4)
-cargo run -p chip-cli -- build /tmp/09-surface-finishing.chip.toml -o /tmp/wave_linuxcnc --post linuxcnc
-cargo run -p chip-cli -- build /tmp/09-surface-finishing.chip.toml -o /tmp/wave_grbl --post grbl
+chipcutter build /tmp/09-surface-finishing.chip.toml -o /tmp/wave_linuxcnc --post linuxcnc
+chipcutter build /tmp/09-surface-finishing.chip.toml -o /tmp/wave_grbl --post grbl
 ```
 
 ---

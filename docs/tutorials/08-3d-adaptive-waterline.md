@@ -18,10 +18,10 @@ In this tutorial you will start from a bare binary STL mesh ([`08-sculpted-dome.
 
 Start with an **empty project** and load the watertight binary STL starter model included with this tutorial ([`08-sculpted-dome.stl`](assets/08-sculpted-dome.stl) — `70.000 × 70.000 × 33.000 mm`, `6,528 triangles`, `3,266 welded vertices`, `Watertight`):
 
-- **From the Welcome Overlay or Menu:** Launch `cargo run --release -p chip-gui`, click **`Import 3D Mesh (STL / OBJ / 3MF)…`** on the **Welcome to ChipCutter** overlay (or **`File → Import 3D Mesh (.stl / .obj / .3mf)…`** in the **top menu bar**, or **`Import Mesh…`** under **`Models`** in the left **CAM Browser**), select `docs/tutorials/assets/08-sculpted-dome.stl`, verify **`Interpret coordinates as:`** = **`Millimeters (mm)`** in the **Import 3D Mesh (STL / OBJ / 3MF)** modal, and click **`Import 3D Mesh`**.
+- **From the Welcome Overlay or Menu:** Launch ChipCutter (`chip-gui`), click **`Import 3D Mesh (STL / OBJ / 3MF)…`** on the **Welcome to ChipCutter** overlay (or **`File → Import 3D Mesh (.stl / .obj / .3mf)…`** in the **top menu bar**, or **`Import Mesh…`** under **`Models`** in the left **CAM Browser**), select `docs/tutorials/assets/08-sculpted-dome.stl`, verify **`Interpret coordinates as:`** = **`Millimeters (mm)`** in the **Import 3D Mesh (STL / OBJ / 3MF)** modal, and click **`Import 3D Mesh`**.
 - **Or open directly from the terminal:**
   ```bash
-  cargo run --release -p chip-gui -- docs/tutorials/assets/08-sculpted-dome.stl
+  chip-gui docs/tutorials/assets/08-sculpted-dome.stl
   ```
 
 ---
@@ -123,19 +123,19 @@ Generate the starter Sculpted Dome STL mesh and 2-operation `Adaptive3D` + `Wate
 
 ```bash
 # 1. Generate the starter Sculpted Dome STL + seeded 2-op Adaptive3D/Waterline3D project
-cargo run -p chip-cli -- generate-sample-step /tmp/08-sculpted-dome.stl \
+chipcutter generate-sample-step /tmp/08-sculpted-dome.stl \
   --tutorial 08-3d-adaptive-waterline --project-out /tmp/08-adaptive-waterline.chip.toml
 
 # 2. Inspect mesh triangle count, bounding box, and watertightness
-cargo run -p chip-cli -- inspect /tmp/08-sculpted-dome.stl
+chipcutter inspect /tmp/08-sculpted-dome.stl
 
 # 3. Validate, generate toolpaths, and verify 0 crashes/gouges headlessly
-cargo run -p chip-cli -- validate --generate /tmp/08-adaptive-waterline.chip.toml
-cargo run -p chip-cli -- simulate /tmp/08-adaptive-waterline.chip.toml --resolution standard
+chipcutter validate --generate /tmp/08-adaptive-waterline.chip.toml
+chipcutter simulate /tmp/08-adaptive-waterline.chip.toml --resolution standard
 
 # 4. Post-process for LinuxCNC (single ATC .ngc) and GRBL (2 split .nc files: T1 + T4)
-cargo run -p chip-cli -- build /tmp/08-adaptive-waterline.chip.toml -o /tmp/dome_linuxcnc --post linuxcnc
-cargo run -p chip-cli -- build /tmp/08-adaptive-waterline.chip.toml -o /tmp/dome_grbl --post grbl
+chipcutter build /tmp/08-adaptive-waterline.chip.toml -o /tmp/dome_linuxcnc --post linuxcnc
+chipcutter build /tmp/08-adaptive-waterline.chip.toml -o /tmp/dome_grbl --post grbl
 ```
 
 ---

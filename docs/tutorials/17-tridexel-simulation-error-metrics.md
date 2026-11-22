@@ -31,10 +31,10 @@ Launch either project directly from the terminal or pick it from **`File → Sam
 
 ```bash
 # Part A: Prismatic 8-operation STEP torture block
-cargo run --release -p chip-gui -- --sample cam-torture
+chip-gui --sample cam-torture
 
 # Part B: 3-axis sculpted STL dome
-cargo run --release -p chip-gui -- --sample mesh-dome
+chip-gui --sample mesh-dome
 ```
 
 ---

@@ -31,10 +31,10 @@ Two matching STEP revisions are included in `docs/tutorials/assets/`:
 
 Open the starter `Revision v1` job in `chip-gui`:
 
-- **From the Sample Projects Gallery:** Launch `cargo run --release -p chip-gui`, click **`Browse Sample Projects Gallery…`** on the **Welcome to ChipCutter** overlay (or **`File → Sample Projects Gallery…`** / **`Help → Sample Projects Gallery…`** in the **top menu bar**, or **`Sample Gallery…`** under **`Models`** in the left **CAM Browser**), find the **`Associative CAD Revision Reload (v1 -> v2)`** card, and click **`Open Sample`**.
+- **From the Sample Projects Gallery:** Launch ChipCutter (`chip-gui`), click **`Browse Sample Projects Gallery…`** on the **Welcome to ChipCutter** overlay (or **`File → Sample Projects Gallery…`** / **`Help → Sample Projects Gallery…`** in the **top menu bar**, or **`Sample Gallery…`** under **`Models`** in the left **CAM Browser**), find the **`Associative CAD Revision Reload (v1 -> v2)`** card, and click **`Open Sample`**.
 - **Or launch directly from the terminal:**
   ```bash
-  cargo run --release -p chip-gui -- --sample revision-v1
+  chip-gui --sample revision-v1
   ```
 
 ---
@@ -54,7 +54,7 @@ All `6` operations show green **`Clean`** badges in the left **CAM Browser** (`F
 In production, you either overwrite the STEP file on disk and press **`Ctrl+R`** (or click **`Reload (Ctrl+R)`** under **`Models`** in the left **CAM Browser** or **`File → Reload STEP Model (Ctrl+R)`** in the **top menu bar**; ChipCutter also watches the active STEP file SHA-256 every 2 seconds and displays an alert banner with **`Reload & Re-Match (Ctrl+R)`** when CAD changes on disk), or click **`Replace…`** under **`Models`** in the left **CAM Browser** (or **`File → Replace STEP Model (Associative Re-Bind)…`** in the **top menu bar**) and select `docs/tutorials/assets/14-bracket-v2.step`. *(Note: **`Reload (Ctrl+R)`** and **`Replace…`** appear only when a 3D STEP solid is loaded.)*
 
 > [!TIP]
-> You can test the exact `v1 → v2` associative reload in one command via `cargo run --release -p chip-gui -- --sample revision-v2`, or click **`Reload Rev v2`** on the **`Associative CAD Revision Reload (v1 -> v2)`** card inside **`Sample Projects Gallery`**.
+> You can test the exact `v1 → v2` associative reload in one command via `chip-gui --sample revision-v2`, or click **`Reload Rev v2`** on the **`Associative CAD Revision Reload (v1 -> v2)`** card inside **`Sample Projects Gallery`**.
 
 Immediately after loading `v2`, ChipCutter displays the non-blocking **Reload Summary Banner** across the top of the workspace (below the **top toolbar**):
 
@@ -124,28 +124,28 @@ Reproduce the complete `v1 → v2` inspection, baseline simulation, associative 
 
 ```bash
 # 1. Inspect both STEP revisions (compare bounds, face counts, and hole counts)
-cargo run -p chip-cli -- inspect docs/tutorials/assets/14-bracket-v1.step
-cargo run -p chip-cli -- inspect docs/tutorials/assets/14-bracket-v2.step
+chipcutter inspect docs/tutorials/assets/14-bracket-v1.step
+chipcutter inspect docs/tutorials/assets/14-bracket-v2.step
 
 # 2. Generate the Revision v1 STEP solid + seeded 6-operation project and verify baseline
-cargo run -p chip-cli -- generate-sample-step /tmp/14-bracket-v1.step \
+chipcutter generate-sample-step /tmp/14-bracket-v1.step \
   --tutorial 14-reload-v1 --project-out /tmp/14-bracket-v1.chip.toml
-cargo run -p chip-cli -- validate --generate /tmp/14-bracket-v1.chip.toml
-cargo run -p chip-cli -- simulate /tmp/14-bracket-v1.chip.toml --resolution standard
+chipcutter validate --generate /tmp/14-bracket-v1.chip.toml
+chipcutter simulate /tmp/14-bracket-v1.chip.toml --resolution standard
 
 # 3. Associatively reload Revision v2 (prints per-op [REBOUND] and [REPICK!] report;
 #    omit --allow-needs-repick in CI if deleted/ambiguous features should fail the build!)
-cargo run -p chip-cli -- reload-step /tmp/14-bracket-v1.chip.toml \
+chipcutter reload-step /tmp/14-bracket-v1.chip.toml \
   --step docs/tutorials/assets/14-bracket-v2.step \
   -o /tmp/14-bracket-v2-rebound.chip.toml --allow-needs-repick
 
 # 4. Generate the resolved Revision v2 project (obsolete hole suppressed), validate,
 #    simulate, and build verified LinuxCNC G-code
-cargo run -p chip-cli -- generate-sample-step /tmp/14-bracket-v2.step \
+chipcutter generate-sample-step /tmp/14-bracket-v2.step \
   --tutorial 14-reload-v2 --project-out /tmp/14-bracket-v2-clean.chip.toml
-cargo run -p chip-cli -- validate --generate /tmp/14-bracket-v2-clean.chip.toml
-cargo run -p chip-cli -- simulate /tmp/14-bracket-v2-clean.chip.toml --resolution standard
-cargo run -p chip-cli -- build /tmp/14-bracket-v2-clean.chip.toml \
+chipcutter validate --generate /tmp/14-bracket-v2-clean.chip.toml
+chipcutter simulate /tmp/14-bracket-v2-clean.chip.toml --resolution standard
+chipcutter build /tmp/14-bracket-v2-clean.chip.toml \
   -o /tmp/bracket_v2_linuxcnc --post linuxcnc --allow-warnings
 ```
 

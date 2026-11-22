@@ -20,16 +20,16 @@ Generate and launch the complete 3-operation Tutorial 12 comparison project (Aut
 
 ```bash
 # Generate & open the 3-op Tutorial 12 project (Auto-Tilt Spiral + Fixed-Offset Helical Flowline):
-cargo run -p chip-cli -- generate-sample-step /tmp/12-helical-flute.stl \
+chipcutter generate-sample-step /tmp/12-helical-flute.stl \
   --tutorial 12-simultaneous-4axis --project-out /tmp/12-sim4ax.chip.toml
-cargo run --release -p chip-gui -- /tmp/12-sim4ax.chip.toml
+chip-gui /tmp/12-sim4ax.chip.toml
 
 # Or launch the built-in 2-op Simultaneous 4-Axis showcase directly (Dark or Daylight Light theme):
-cargo run --release -p chip-gui -- --sample rotary-4axis
-cargo run --release -p chip-gui -- --sample rotary-4axis --theme light
+chip-gui --sample rotary-4axis
+chip-gui --sample rotary-4axis --theme light
 
 # Or open the bare starter STL in an empty workspace:
-cargo run --release -p chip-gui -- docs/tutorials/assets/10-helical-flute-shaft.stl
+chip-gui docs/tutorials/assets/10-helical-flute-shaft.stl
 ```
 
 ---
@@ -133,14 +133,14 @@ Generate the 3-start helical flute STL and 3-operation Auto-Tilt + Flowline comp
 
 ```bash
 # 1. Generate the starter 3-start helical flute STL + 3-op Simultaneous 4-Axis project
-cargo run -p chip-cli -- generate-sample-step /tmp/12-helical-flute.stl \
+chipcutter generate-sample-step /tmp/12-helical-flute.stl \
   --tutorial 12-simultaneous-4axis --project-out /tmp/12-sim4ax.chip.toml
 
 # 2. Validate, run off-centerline cylindrical verification, and post-process G93 G-code
-cargo run -p chip-cli -- validate --generate /tmp/12-sim4ax.chip.toml
-cargo run -p chip-cli -- simulate /tmp/12-sim4ax.chip.toml --resolution standard
-cargo run -p chip-cli -- build /tmp/12-sim4ax.chip.toml -o /tmp/out_12_grblhal --post grblhal_4axis
-cargo run -p chip-cli -- build /tmp/12-sim4ax.chip.toml -o /tmp/out_12_linuxcnc --post linuxcnc_4axis
+chipcutter validate --generate /tmp/12-sim4ax.chip.toml
+chipcutter simulate /tmp/12-sim4ax.chip.toml --resolution standard
+chipcutter build /tmp/12-sim4ax.chip.toml -o /tmp/out_12_grblhal --post grblhal_4axis
+chipcutter build /tmp/12-sim4ax.chip.toml -o /tmp/out_12_linuxcnc --post linuxcnc_4axis
 ```
 
 ---

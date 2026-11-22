@@ -24,12 +24,12 @@ Start with an **empty project** and load the minimal multi-layer DXF drawing inc
 
 Open it in `chip-gui`:
 
-- **From the Welcome Overlay, Menu, or Toolbar:** Launch `cargo run --release -p chip-gui`, click **`Import 2D DXF / SVG Artwork…`** on the **Welcome to ChipCutter** overlay (or **`File → Import 2D Vector (.dxf / .svg)…`** in the **top menu bar**, or **`DXF/SVG`** in the **top toolbar** and then **`Browse .dxf / .svg…`**), and select `docs/tutorials/assets/13-router-panel.dxf`.
+- **From the Welcome Overlay, Menu, or Toolbar:** Launch ChipCutter (`chip-gui`), click **`Import 2D DXF / SVG Artwork…`** on the **Welcome to ChipCutter** overlay (or **`File → Import 2D Vector (.dxf / .svg)…`** in the **top menu bar**, or **`DXF/SVG`** in the **top toolbar** and then **`Browse .dxf / .svg…`**), and select `docs/tutorials/assets/13-router-panel.dxf`.
 - **Or open directly from the terminal:**
   ```bash
-  cargo run --release -p chip-gui -- docs/tutorials/assets/13-router-panel.dxf
+  chip-gui docs/tutorials/assets/13-router-panel.dxf
   ```
-- **Quick-reference Sample:** You can also inspect the completed job anytime via **`File → Sample Projects Gallery…`** in the **top menu bar** (**`Pure-2D CNC Router Front Panel (.dxf)`** card → **`Open Sample`**) or `cargo run --release -p chip-gui -- --sample pure-2d`.
+- **Quick-reference Sample:** You can also inspect the completed job anytime via **`File → Sample Projects Gallery…`** in the **top menu bar** (**`Pure-2D CNC Router Front Panel (.dxf)`** card → **`Open Sample`**) or `chip-gui --sample pure-2d`.
 
 ---
 
@@ -145,24 +145,24 @@ Inspect the DXF drawing, test raw Pure-2D import, generate the 4-operation proje
 
 ```bash
 # 1. Inspect DXF units, bounds, layers, arc preservation, & gap-healing diagnostics
-cargo run -p chip-cli -- inspect docs/tutorials/assets/13-router-panel.dxf
+chipcutter inspect docs/tutorials/assets/13-router-panel.dxf
 
 # 2. Import any .dxf or .svg into a fresh blank Pure-2D .chip.toml sheet job (6.0 mm thick)
-cargo run -p chip-cli -- import-2d docs/tutorials/assets/13-router-panel.dxf \
+chipcutter import-2d docs/tutorials/assets/13-router-panel.dxf \
   -o /tmp/13-panel-blank.chip.toml --thickness 6.0
 
 # 3. Generate the reproducible 4-operation Pure-2D router panel project
-cargo run -p chip-cli -- generate-sample-step /tmp/13-router-panel.dxf \
+chipcutter generate-sample-step /tmp/13-router-panel.dxf \
   --tutorial 13-pure2d-dxf --project-out /tmp/13-panel.chip.toml
 
 # 4. Validate, generate toolpaths, and verify zero crashes/gouges in 3D simulation
-cargo run -p chip-cli -- validate --generate /tmp/13-panel.chip.toml
-cargo run -p chip-cli -- simulate /tmp/13-panel.chip.toml --resolution standard
+chipcutter validate --generate /tmp/13-panel.chip.toml
+chipcutter simulate /tmp/13-panel.chip.toml --resolution standard
 
 # 5. Pack a self-contained portable .chipz archive and build G-code directly from it
-cargo run -p chip-cli -- bundle pack /tmp/13-panel.chip.toml -o /tmp/13-panel.chipz
-cargo run -p chip-cli -- build /tmp/13-panel.chipz -o /tmp/panel_grbl --post grbl
-cargo run -p chip-cli -- build /tmp/13-panel.chipz -o /tmp/panel_linuxcnc --post linuxcnc
+chipcutter bundle pack /tmp/13-panel.chip.toml -o /tmp/13-panel.chipz
+chipcutter build /tmp/13-panel.chipz -o /tmp/panel_grbl --post grbl
+chipcutter build /tmp/13-panel.chipz -o /tmp/panel_linuxcnc --post linuxcnc
 ```
 
 ---

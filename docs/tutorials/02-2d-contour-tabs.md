@@ -17,10 +17,10 @@ In this tutorial you will start from an **empty project**, import a minimal moun
 
 Start with an **empty project** and load the minimal contour plate included with this tutorial ([`02-contour-plate.step`](assets/02-contour-plate.step) — a clean `100 × 70 × 12 mm` plate with an `R10` arc corner, a `45°` chamfer corner, and no extra pockets or holes):
 
-- **From the Welcome Overlay or Menu:** Launch `cargo run --release -p chip-gui`, click **`Import 3D STEP Solid…`** in the **Welcome to ChipCutter** overlay (or **`File → Import STEP Model…`** in the **top menu bar**, or **`Import STEP…`** under **`Models`** in the left **CAM Browser**), and select `docs/tutorials/assets/02-contour-plate.step`.
+- **From the Welcome Overlay or Menu:** Launch ChipCutter (`chip-gui`), click **`Import 3D STEP Solid…`** in the **Welcome to ChipCutter** overlay (or **`File → Import STEP Model…`** in the **top menu bar**, or **`Import STEP…`** under **`Models`** in the left **CAM Browser**), and select `docs/tutorials/assets/02-contour-plate.step`.
 - **Or open directly from the terminal:**
   ```bash
-  cargo run --release -p chip-gui -- docs/tutorials/assets/02-contour-plate.step
+  chip-gui docs/tutorials/assets/02-contour-plate.step
   ```
 
 ---
@@ -108,16 +108,16 @@ Generate the minimal contour plate and project, validate, simulate, and post-pro
 
 ```bash
 # 1. Generate the minimal 100x70x12mm contour plate + 1-operation .chip.toml project
-cargo run -p chip-cli -- generate-sample-step /tmp/02-contour-plate.step --tutorial 02-contour \
+chipcutter generate-sample-step /tmp/02-contour-plate.step --tutorial 02-contour \
   --project-out /tmp/02-contour.chip.toml
 
 # 2. Validate, generate toolpath, and verify zero crashes/gouges
-cargo run -p chip-cli -- validate --generate /tmp/02-contour.chip.toml
-cargo run -p chip-cli -- simulate /tmp/02-contour.chip.toml --resolution standard
+chipcutter validate --generate /tmp/02-contour.chip.toml
+chipcutter simulate /tmp/02-contour.chip.toml --resolution standard
 
 # 3. Post-process for GRBL and LinuxCNC
-cargo run -p chip-cli -- build /tmp/02-contour.chip.toml -o /tmp/contour_grbl --post grbl
-cargo run -p chip-cli -- build /tmp/02-contour.chip.toml -o /tmp/contour_linuxcnc --post linuxcnc
+chipcutter build /tmp/02-contour.chip.toml -o /tmp/contour_grbl --post grbl
+chipcutter build /tmp/02-contour.chip.toml -o /tmp/contour_linuxcnc --post linuxcnc
 ```
 
 ---

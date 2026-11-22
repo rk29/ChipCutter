@@ -12,11 +12,12 @@ Welcome to the **ChipCutter Tutorials** library. Each tutorial is a self-contain
 
 ## Prerequisites
 
-- **ChipCutter built locally:** See [**`DEVELOPMENT.md`**](../../DEVELOPMENT.md) if you have not built `chip-gui` and `chipcutter` yet.
-- **Launch the desktop CAM app:**
+- **ChipCutter installed:** Download and install a prebuilt release for Linux (Flatpak), Windows (`.msi` / `.zip`), or macOS (`.dmg`) from [**GitHub Releases**](https://github.com/rk29/ChipCutter/releases) (see [**Download & Install**](https://github.com/rk29/ChipCutter#download--install-prebuilt-releases), or [**`DEVELOPMENT.md`**](../../DEVELOPMENT.md) if building from source).
+- **Launch the desktop CAM app:** Open **ChipCutter** from your application launcher (Start Menu / Applications / desktop menu), or launch it from a terminal:
   ```bash
-  cargo run --release -p chip-gui
+  chip-gui
   ```
+  *(On Linux Flatpak, run `flatpak run io.github.rk29.ChipCutter` for the GUI and `flatpak run --command=chipcutter io.github.rk29.ChipCutter` for the CLI if you do not have the standalone `chipcutter` binary on your `PATH`.)*
 - **Units & Expressions:** ChipCutter computes internally in millimeters (`mm`), but every numeric field accepts mixed units and parametric variables (for example `1/4 in`, `tool_d * 0.4`, or `model_top_z + 10 mm`). You can toggle display units (`mm` / `in`) at any time on the right side of the top toolbar.
 
 ---
@@ -76,7 +77,7 @@ Each tutorial starts from an **empty project** (or a clean seeded revision) and 
 You can launch any starter STEP, mesh, or DXF model directly into an empty ChipCutter workspace:
 
 ```bash
-cargo run --release -p chip-gui -- docs/tutorials/assets/01-facing-billet.step
+chip-gui docs/tutorials/assets/01-facing-billet.step
 ```
 
 ---

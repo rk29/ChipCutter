@@ -15,11 +15,13 @@ By the end of this walkthrough, you will know how to:
 
 ## 2. Launching ChipCutter & Opening a Starter Job
 
-Start the desktop CAM workspace from the repository root:
+Open **ChipCutter** from your application launcher (Start Menu on Windows, `ChipCutter.app` in Applications on macOS, or your desktop menu on Linux), or launch it from a terminal:
 
 ```bash
-cargo run --release -p chip-gui
+chip-gui
 ```
+
+*(On Linux Flatpak, run `flatpak run io.github.rk29.ChipCutter`—see the [Tutorials Prerequisites](README.md#prerequisites) for platform install details.)*
 
 On a fresh launch with no file argument, ChipCutter opens the **Welcome to ChipCutter** quick-start overlay:
 
@@ -40,7 +42,7 @@ Click **Browse Sample Projects Gallery…** on the Welcome Overlay (or open **`H
 
 ![Filterable Sample Projects Gallery](../images/tutorials/00-getting-started/02-sample-gallery.png)
 
-Use the category filter tabs along the top of the **Sample Projects Gallery** window (**`All Samples`**, **`3D STEP Solids`**, **`3D Meshes`**, **`Pure-2D & DXF`**, **`V-Carve & Text`**) or the **`Filter samples…`** search box to filter demos. For this orientation guide, find the **Prismatic Multi-Feature Bracket** card and click **`Open Sample`** (or launch it directly with `cargo run --release -p chip-gui -- --sample multi-feature`).
+Use the category filter tabs along the top of the **Sample Projects Gallery** window (**`All Samples`**, **`3D STEP Solids`**, **`3D Meshes`**, **`Pure-2D & DXF`**, **`V-Carve & Text`**) or the **`Filter samples…`** search box to filter demos. For this orientation guide, find the **Prismatic Multi-Feature Bracket** card and click **`Open Sample`** (or launch it directly with `chip-gui --sample multi-feature`).
 
 ---
 
@@ -182,22 +184,22 @@ Every step above works identically from the terminal without a GPU or display se
 
 ```bash
 # 1. Generate the multi-feature STEP bracket + a seeded .chip.toml project
-cargo run -p chip-cli -- generate-sample-step /tmp/bracket.step --multi-feature \
+chipcutter generate-sample-step /tmp/bracket.step --multi-feature \
   --project-out /tmp/bracket.chip.toml
 
 # 2. Inspect exact B-Rep geometry (bounding box, planar faces, cylindrical holes, arcs)
-cargo run -p chip-cli -- inspect /tmp/bracket.step
+chipcutter inspect /tmp/bracket.step
 
 # 3. Validate Setup/WCS/Heights and generate all 2.5D toolpaths in parallel
-cargo run -p chip-cli -- validate --generate /tmp/bracket.chip.toml
+chipcutter validate --generate /tmp/bracket.chip.toml
 
 # 4. Run 2.5D Z-dexel heightmap stock removal & 5-rule crash/gouge verification
-cargo run -p chip-cli -- simulate /tmp/bracket.chip.toml --resolution standard \
+chipcutter simulate /tmp/bracket.chip.toml --resolution standard \
   --report /tmp/sim_report.json
 
 # 5. Build safety-verified G-code for GRBL (split by tool) and LinuxCNC (single ATC file)
-cargo run -p chip-cli -- build /tmp/bracket.chip.toml -o /tmp/out_grbl --post grbl
-cargo run -p chip-cli -- build /tmp/bracket.chip.toml -o /tmp/out_linuxcnc --post linuxcnc
+chipcutter build /tmp/bracket.chip.toml -o /tmp/out_grbl --post grbl
+chipcutter build /tmp/bracket.chip.toml -o /tmp/out_linuxcnc --post linuxcnc
 ```
 
 ---

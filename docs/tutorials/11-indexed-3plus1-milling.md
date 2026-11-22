@@ -18,15 +18,15 @@ Open the included prismatic multi-face STEP fixture ([`assets/11-indexed-multifa
 
 ```bash
 # Part A — Open the bare 11-indexed-multiface-block.step in an empty workspace:
-cargo run --release -p chip-gui -- docs/tutorials/assets/11-indexed-multiface-block.step
+chip-gui docs/tutorials/assets/11-indexed-multiface-block.step
 
 # Or generate & open the complete 5-face Indexed 3+1 STEP project (0° / 45° / 90° / 180° / 270°):
-cargo run -p chip-cli -- generate-sample-step /tmp/11-indexed-multiface-block.step \
+chipcutter generate-sample-step /tmp/11-indexed-multiface-block.step \
   --tutorial 11-indexed-step --project-out /tmp/11-indexed-step.chip.toml
-cargo run --release -p chip-gui -- /tmp/11-indexed-step.chip.toml
+chip-gui /tmp/11-indexed-step.chip.toml
 
 # Part B — Launch the Rotary Indexed Shaft showcase (Continuous Spiral + 4× Cardinal Wrench Flats):
-cargo run --release -p chip-gui -- --sample rotary-shaft
+chip-gui --sample rotary-shaft
 ```
 
 ---
@@ -131,21 +131,21 @@ Generate, validate, simulate, and post-process both the 5-face prismatic STEP jo
 
 ```bash
 # 1. Generate 11-indexed-multiface-block.step + 5-op Indexed 3+1 project (0°/45°/90°/180°/270°)
-cargo run -p chip-cli -- generate-sample-step /tmp/11-indexed-multiface-block.step \
+chipcutter generate-sample-step /tmp/11-indexed-multiface-block.step \
   --tutorial 11-indexed-step --project-out /tmp/11-indexed-step.chip.toml
 
 # 2. Generate 11-rotary-shaft.stl + 5-op Spiral + 4× Cardinal Wrench Flats project
-cargo run -p chip-cli -- generate-sample-step /tmp/11-rotary-shaft.stl \
+chipcutter generate-sample-step /tmp/11-rotary-shaft.stl \
   --tutorial 11-indexed-shaft --project-out /tmp/11-indexed-shaft.chip.toml
 
 # 3. Validate, verify crash-free in CylindricalStock, and build LinuxCNC 4-Axis G-code
-cargo run -p chip-cli -- validate --generate /tmp/11-indexed-step.chip.toml
-cargo run -p chip-cli -- simulate /tmp/11-indexed-step.chip.toml --resolution standard
-cargo run -p chip-cli -- build /tmp/11-indexed-step.chip.toml -o /tmp/out_11_step --post linuxcnc_4axis
+chipcutter validate --generate /tmp/11-indexed-step.chip.toml
+chipcutter simulate /tmp/11-indexed-step.chip.toml --resolution standard
+chipcutter build /tmp/11-indexed-step.chip.toml -o /tmp/out_11_step --post linuxcnc_4axis
 
-cargo run -p chip-cli -- validate --generate /tmp/11-indexed-shaft.chip.toml
-cargo run -p chip-cli -- simulate /tmp/11-indexed-shaft.chip.toml --resolution standard
-cargo run -p chip-cli -- build /tmp/11-indexed-shaft.chip.toml -o /tmp/out_11_shaft --post linuxcnc_4axis
+chipcutter validate --generate /tmp/11-indexed-shaft.chip.toml
+chipcutter simulate /tmp/11-indexed-shaft.chip.toml --resolution standard
+chipcutter build /tmp/11-indexed-shaft.chip.toml -o /tmp/out_11_shaft --post linuxcnc_4axis
 ```
 
 ---

@@ -17,7 +17,7 @@ In this tutorial you will start from an **empty Pure-2D project** (no 3D STEP mo
 
 No external CAD file is needed:
 
-1. Launch ChipCutter (`cargo run --release -p chip-gui`) and click **`New Pure-2D Parametric Sketch`** on the **Welcome to ChipCutter** overlay.
+1. Launch ChipCutter (`chip-gui`) and click **`New Pure-2D Parametric Sketch`** on the **Welcome to ChipCutter** overlay.
 2. In the left **CAM Browser**, click **`Stock & WCS`** under `Setup 1`:
    - In the right **Inspector**, switch to the **`Stock`** tab. Under **`Stock Geometry & Dimensions`**, change **`Stock Mode`** to **`Fixed-Size Box Stock`** (which displays **`Width (WCS X)`**, **`Depth (WCS Y)`**, and **`Height (WCS Z)`**), enter `120 mm`, `55 mm`, and `15 mm`, and under **`Stock Offsets`** confirm **`XY Alignment`** reads `Centered in XY` and set **`Top Allowance (+Z)`** = `0 mm`.
    - Switch to the **`WCS & Post`** tab in the right **Inspector**. Under **`WCS Origin (X0 Y0 Z0)`**, select **`Origin Reference`** = **`Stock 27-Pt`**, set **`Z Level:`** = **`Top`**, and click **`C`** in the **`Center Y`** row (so **`Active Anchor`** reads `Top Center`).
@@ -114,16 +114,16 @@ Generate both the pure medial-axis and the two-setup V-Carve & Mated V-Inlay Pur
 
 ```bash
 # 1. Generate the Pure-2D Two-Stage V-Carve & Mated Male V-Inlay project (2 Setups: G54 + G55)
-cargo run -p chip-cli -- generate-sample-step /tmp/07-vcarve-inlay.chip.toml \
+chipcutter generate-sample-step /tmp/07-vcarve-inlay.chip.toml \
   --tutorial 07-vcarve-inlay
 
 # 2. Validate, generate toolpaths, and verify both Setups (0 crashes/gouges)
-cargo run -p chip-cli -- validate --generate /tmp/07-vcarve-inlay.chip.toml
-cargo run -p chip-cli -- simulate /tmp/07-vcarve-inlay.chip.toml --resolution standard
+chipcutter validate --generate /tmp/07-vcarve-inlay.chip.toml
+chipcutter simulate /tmp/07-vcarve-inlay.chip.toml --resolution standard
 
 # 3. Build GRBL (auto-splits Stage 1 T3 + Stage 2 T8 files per Setup) and LinuxCNC ATC G-code
-cargo run -p chip-cli -- build /tmp/07-vcarve-inlay.chip.toml -o /tmp/vcarve_grbl --post grbl
-cargo run -p chip-cli -- build /tmp/07-vcarve-inlay.chip.toml -o /tmp/vcarve_linuxcnc --post linuxcnc
+chipcutter build /tmp/07-vcarve-inlay.chip.toml -o /tmp/vcarve_grbl --post grbl
+chipcutter build /tmp/07-vcarve-inlay.chip.toml -o /tmp/vcarve_linuxcnc --post linuxcnc
 ```
 
 ---
