@@ -13,13 +13,14 @@ use chip_math::{DVec2, DVec3};
 use crate::{
     cl_data::MotionRole,
     params::Pencil3DParams,
+    rest2d::RegionSet2D,
     strategies::StrategyExecContext,
     surface3d::{
         SurfaceCutterProfile, SurfaceLinkConfig, SurfaceMesh3D,
         compute_morphological_rest_residual, drop_cutter_points_parallel,
         drop_cutter_z_with_scratch, emit_final_surface_retract, emit_surface_safe_link,
-        levels::resolve_3d_containment_region, refine_convex_chords_3d, region_aabb_2d,
-        simplify_3d_polyline_rdp,
+        finishing::simplify_3d_polyline_gouge_safe, levels::resolve_3d_containment_region,
+        refine_convex_chords_3d, region_aabb_2d,
     },
     toolpath::ToolpathBuilder,
     wcs::CamError,
@@ -125,8 +126,8 @@ pub fn generate_pencil3d(
     // 1. Evaluate exact morphological 3D residual stock left by `ref_ball` vs `cur_cutter`
     let w = (bounds.max.x - bounds.min.x).max(1.0);
     let h_span = (bounds.max.y - bounds.min.y).max(1.0);
-    let base_cell = (0.12 * tool_d).clamp(0.25, 0.55);
-    let cell = base_cell.max(((w * h_span) / 48_000.0).sqrt());
+    let base_cell = (0.10 * tool_d).clamp(0.18, 0.45);
+    let cell = base_cell.max(((w * h_span) / 80_000.0).sqrt());
     let pad = 0.5 * (ref_d - tool_d).max(0.0) + cell;
     let min_x = bounds.min.x - pad;
     let min_y = bounds.min.y - pad;
@@ -193,9 +194,20 @@ pub fn generate_pencil3d(
     // 2. Priority-ordered ridge thinning converging onto exact `delta_z` crest centerlines
     priority_ridge_thin(&mut fg, &delta_z, nx, ny);
 
+    // Precompute smooth morphological upper-envelope tip height `z_env_tip` for continuous
+    // sub-cell ridge centering against exact `drop_cutter_z`.
+    let z_env_tip: Vec<Option<f64>> = (0..total)
+        .map(|i| match (z_cur[i], z_ref[i]) {
+            (Some(zc), _) => Some(zc + residual[i]),
+            (None, Some(zr)) => Some(zr),
+            (None, None) => None,
+        })
+        .collect();
+
     // Prune tiny noisy 1–3 pixel spur stubs while preserving true valley chains
     let min_chain_len_mm = (0.75 * tool_d).clamp(1.2, 4.0);
     let raw_2d_chains = extract_skeleton_chains(&fg, min_x, min_y, cell, nx, ny);
+    let mut subcell_scratch = Vec::with_capacity(64);
 
     let mut base_chains_2d: Vec<(Vec<DVec2>, bool)> = Vec::new();
     for raw in raw_2d_chains {
@@ -204,8 +216,26 @@ pub fn generate_pencil3d(
         if len_mm < min_chain_len_mm {
             continue;
         }
-        let smoothed = smooth_polyline_2d(&raw, is_closed, 3);
-        base_chains_2d.push((smoothed, is_closed));
+        // Light initial tangent smoothing (1 pass) before snapping every vertex onto the exact
+        // continuous sub-cell bi-tangent crease via perpendicular 1D quadratic + golden-section search.
+        let pre_smooth = smooth_polyline_2d(&raw, is_closed, 1);
+        let centered = refine_pencil_chain_subcell(
+            &pre_smooth,
+            is_closed,
+            &surface,
+            &cutter,
+            &ref_cutter,
+            &containment,
+            &z_env_tip,
+            min_x,
+            min_y,
+            cell,
+            nx,
+            ny,
+            z_bottom,
+            &mut subcell_scratch,
+        );
+        base_chains_2d.push((centered, is_closed));
     }
 
     if base_chains_2d.is_empty() {
@@ -262,7 +292,9 @@ pub fn generate_pencil3d(
                 let raw = std::mem::take(&mut current);
                 let refined =
                     refine_convex_chords_3d(&surface, &cutter, z_bottom, z_top, &raw, smooth_tol);
-                let simplified = simplify_3d_polyline_rdp(&refined, smooth_tol);
+                let simplified = simplify_3d_polyline_gouge_safe(
+                    &surface, &cutter, z_bottom, &refined, smooth_tol,
+                );
                 if simplified.len() >= 2 {
                     chains_3d.push(simplified);
                 }
@@ -273,7 +305,8 @@ pub fn generate_pencil3d(
         if current.len() >= 2 {
             let refined =
                 refine_convex_chords_3d(&surface, &cutter, z_bottom, z_top, &current, smooth_tol);
-            let simplified = simplify_3d_polyline_rdp(&refined, smooth_tol);
+            let simplified =
+                simplify_3d_polyline_gouge_safe(&surface, &cutter, z_bottom, &refined, smooth_tol);
             if simplified.len() >= 2 {
                 chains_3d.push(simplified);
             }
@@ -375,7 +408,7 @@ fn priority_ridge_thin(fg: &mut [bool], delta_z: &[f64], nx: usize, ny: usize) {
         if ix == 0 || iy == 0 || ix + 1 >= nx || iy + 1 >= ny {
             continue;
         }
-        if !is_border_4(fg, ix, iy, nx) || !is_simple_non_endpoint(fg, ix, iy, nx) {
+        if !is_border_4(fg, ix, iy, nx) || !is_simple_non_endpoint(fg, delta_z, ix, iy, nx) {
             continue;
         }
         fg[idx] = false;
@@ -412,21 +445,34 @@ fn is_border_4(fg: &[bool], ix: usize, iy: usize, nx: usize) -> bool {
     !fg[idx - 1] || !fg[idx + 1] || !fg[idx - nx] || !fg[idx + nx]
 }
 
-/// Checks Zhang–Suen / Hilditch simple-point condition:
+/// Checks Zhang–Suen / Hilditch simple-point condition with ridge-crest endpoint preservation:
 /// - `2 <= N(p) <= 6` foreground 8-neighbors (prevents shrinking endpoints or isolated pixels),
-/// - `S(p) == 1` (`0 -> 1` transitions around the 8-ring, preserving 8-connectivity).
+/// - `S(p) == 1` (`0 -> 1` transitions around the 8-ring, preserving 8-connectivity),
+/// - When `N(p) == 2` (tip of a 2-pixel ribbon or 45° diagonal ridge), preserves the pixel if its
+///   `delta_z` is already on the ridge crest (`>= 0.85 * max_neighbor_delta_z`), preventing open
+///   diagonal fillets from being eroded away from their endpoints!
 #[inline]
-fn is_simple_non_endpoint(fg: &[bool], ix: usize, iy: usize, nx: usize) -> bool {
-    let p2 = fg[(iy - 1) * nx + ix];
-    let p3 = fg[(iy - 1) * nx + ix + 1];
-    let p4 = fg[iy * nx + ix + 1];
-    let p5 = fg[(iy + 1) * nx + ix + 1];
-    let p6 = fg[(iy + 1) * nx + ix];
-    let p7 = fg[(iy + 1) * nx + ix - 1];
-    let p8 = fg[iy * nx + ix - 1];
-    let p9 = fg[(iy - 1) * nx + ix - 1];
-
-    let ring = [p2, p3, p4, p5, p6, p7, p8, p9];
+fn is_simple_non_endpoint(fg: &[bool], delta_z: &[f64], ix: usize, iy: usize, nx: usize) -> bool {
+    let idxs = [
+        (iy - 1) * nx + ix,
+        (iy - 1) * nx + ix + 1,
+        iy * nx + ix + 1,
+        (iy + 1) * nx + ix + 1,
+        (iy + 1) * nx + ix,
+        (iy + 1) * nx + ix - 1,
+        iy * nx + ix - 1,
+        (iy - 1) * nx + ix - 1,
+    ];
+    let ring = [
+        fg[idxs[0]],
+        fg[idxs[1]],
+        fg[idxs[2]],
+        fg[idxs[3]],
+        fg[idxs[4]],
+        fg[idxs[5]],
+        fg[idxs[6]],
+        fg[idxs[7]],
+    ];
     let n_fg: usize = ring.iter().filter(|&&b| b).count();
     if !(2..=6).contains(&n_fg) {
         return false;
@@ -438,7 +484,24 @@ fn is_simple_non_endpoint(fg: &[bool], ix: usize, iy: usize, nx: usize) -> bool 
             transitions += 1;
         }
     }
-    transitions == 1
+    if transitions != 1 {
+        return false;
+    }
+
+    if n_fg == 2 {
+        let cur_dz = delta_z[iy * nx + ix];
+        let mut max_nbr_dz = 0.0_f64;
+        for (k, &is_fg) in ring.iter().enumerate() {
+            if is_fg {
+                max_nbr_dz = max_nbr_dz.max(delta_z[idxs[k]]);
+            }
+        }
+        if cur_dz >= 0.85 * max_nbr_dz {
+            return false;
+        }
+    }
+
+    true
 }
 
 /// Extracts ordered 2D chains (open paths and closed loops) from an 8-connected 1-pixel skeleton.
@@ -615,6 +678,208 @@ fn offset_chain_2d(pts: &[DVec2], is_closed: bool, offset_mm: f64) -> Vec<DVec2>
         };
         let normal = DVec2::new(-t.y, t.x);
         out.push(work[i] + normal * offset_mm);
+    }
+
+    if is_closed && let Some(&first) = out.first() {
+        out.push(first);
+    }
+    out
+}
+
+/// Bilinearly interpolates `grid` at continuous `(x, y)`, falling back cleanly to valid corner
+/// average near boundary masks.
+fn sample_grid_bilinear(
+    grid: &[Option<f64>],
+    min_x: f64,
+    min_y: f64,
+    cell: f64,
+    nx: usize,
+    ny: usize,
+    pt: DVec2,
+) -> Option<f64> {
+    if nx < 2 || ny < 2 {
+        return None;
+    }
+    let fx = (pt.x - min_x) / cell;
+    let fy = (pt.y - min_y) / cell;
+    if !fx.is_finite() || !fy.is_finite() {
+        return None;
+    }
+    let ix0 = (fx.floor() as isize).clamp(0, (nx - 2) as isize) as usize;
+    let iy0 = (fy.floor() as isize).clamp(0, (ny - 2) as isize) as usize;
+    let tx = (fx - ix0 as f64).clamp(0.0, 1.0);
+    let ty = (fy - iy0 as f64).clamp(0.0, 1.0);
+
+    let v00 = grid[iy0 * nx + ix0];
+    let v10 = grid[iy0 * nx + ix0 + 1];
+    let v01 = grid[(iy0 + 1) * nx + ix0];
+    let v11 = grid[(iy0 + 1) * nx + ix0 + 1];
+
+    if let (Some(a), Some(b), Some(c), Some(d)) = (v00, v10, v01, v11) {
+        let ab = a + (b - a) * tx;
+        let cd = c + (d - c) * tx;
+        return Some(ab + (cd - ab) * ty);
+    }
+
+    let weights = [
+        ((1.0 - tx) * (1.0 - ty), v00),
+        (tx * (1.0 - ty), v10),
+        ((1.0 - tx) * ty, v01),
+        (tx * ty, v11),
+    ];
+    let mut sum = 0.0_f64;
+    let mut w_sum = 0.0_f64;
+    for (w, val) in weights {
+        if let Some(v) = val {
+            sum += w * v;
+            w_sum += w;
+        }
+    }
+    (w_sum > 1e-9).then_some(sum / w_sum)
+}
+
+/// Performs local 1D sub-cell ridge centering perpendicular to each pencil chain's local valley
+/// tangent using exact `drop_cutter_z` and the continuous morphological residual envelope,
+/// snapping grid-quantized skeleton vertices onto the exact continuous bi-tangent crease.
+#[allow(clippy::too_many_arguments)]
+fn refine_pencil_chain_subcell(
+    pts: &[DVec2],
+    is_closed: bool,
+    surface: &SurfaceMesh3D,
+    cutter: &SurfaceCutterProfile,
+    ref_cutter: &SurfaceCutterProfile,
+    containment: &RegionSet2D,
+    z_env_tip: &[Option<f64>],
+    min_x: f64,
+    min_y: f64,
+    cell: f64,
+    nx: usize,
+    ny: usize,
+    z_floor: f64,
+    scratch: &mut Vec<usize>,
+) -> Vec<DVec2> {
+    let work = if is_closed && pts.len() >= 4 && pts[0].distance(pts[pts.len() - 1]) <= 1e-4 {
+        &pts[..pts.len() - 1]
+    } else {
+        pts
+    };
+    let n = work.len();
+    if n < 2 {
+        return pts.to_vec();
+    }
+
+    // Clamp the bilinearly interpolated morphological erosion envelope by exact `drop_cutter_z(ref_cutter)`
+    // (an exact mathematical upper bound of morphological erosion) so steep vertical walls never suffer
+    // upward bilinear smearing while diagonal V-troughs still retain a sharp unique peak on the crease.
+    let eval_residual = |q: DVec2, buf: &mut Vec<usize>| -> Option<f64> {
+        let env_bilerp = sample_grid_bilinear(z_env_tip, min_x, min_y, cell, nx, ny, q)?;
+        let z_ref_exact = drop_cutter_z_with_scratch(surface, ref_cutter, q.x, q.y, z_floor, buf)?;
+        let zc = drop_cutter_z_with_scratch(surface, cutter, q.x, q.y, z_floor, buf)?;
+        let env = env_bilerp.min(z_ref_exact);
+        Some((env - zc).max(0.0))
+    };
+
+    let search_half = 0.85 * cell;
+    let mut out = Vec::with_capacity(n + usize::from(is_closed));
+
+    for i in 0..n {
+        let p = work[i];
+        // Estimate smooth valley tangent over a ±2 vertex neighborhood
+        let tangent = if is_closed {
+            let p_prev = work[(i + n - 2.min(n - 1)) % n];
+            let p_next = work[(i + 2.min(n - 1)) % n];
+            (p_next - p_prev).normalize_or_zero()
+        } else {
+            let i_lo = i.saturating_sub(2);
+            let i_hi = (i + 2).min(n - 1);
+            (work[i_hi] - work[i_lo]).normalize_or_zero()
+        };
+        if tangent.length_squared() <= 1e-12 {
+            out.push(p);
+            continue;
+        }
+        let normal = DVec2::new(-tangent.y, tangent.x);
+
+        // 1. 5-point coarse scan across `[-search_half, +search_half]` perpendicular to the valley
+        let step = 0.5 * search_half;
+        let offsets = [-2.0 * step, -step, 0.0, step, 2.0 * step];
+        let mut vals = [f64::NEG_INFINITY; 5];
+        for (k, &s) in offsets.iter().enumerate() {
+            let cand = p + normal * s;
+            if let Some(r) = eval_residual(cand, scratch) {
+                vals[k] = r;
+            }
+        }
+        let base_val = vals[2];
+        if !base_val.is_finite() {
+            out.push(p);
+            continue;
+        }
+
+        let mut best_k = 2usize;
+        for (k, &v) in vals.iter().enumerate() {
+            if v > vals[best_k] {
+                best_k = k;
+            }
+        }
+
+        // 2. Bracket around the coarse peak and refine via golden-section search + parabolic polish
+        //    (handles both smooth curved fillets and sharp asymmetric V-creases to < 0.01 mm).
+        let mut lo = (offsets[best_k] - step).max(-search_half);
+        let mut hi = (offsets[best_k] + step).min(search_half);
+
+        const INV_PHI: f64 = 0.618_033_988_749_894_9;
+        let mut c = hi - INV_PHI * (hi - lo);
+        let mut d = lo + INV_PHI * (hi - lo);
+        let mut fc = eval_residual(p + normal * c, scratch).unwrap_or(f64::NEG_INFINITY);
+        let mut fd = eval_residual(p + normal * d, scratch).unwrap_or(f64::NEG_INFINITY);
+
+        for _ in 0..7 {
+            if hi - lo <= 0.004 {
+                break;
+            }
+            if fc < fd {
+                lo = c;
+                c = d;
+                fc = fd;
+                d = lo + INV_PHI * (hi - lo);
+                fd = eval_residual(p + normal * d, scratch).unwrap_or(f64::NEG_INFINITY);
+            } else {
+                hi = d;
+                d = c;
+                fd = fc;
+                c = hi - INV_PHI * (hi - lo);
+                fc = eval_residual(p + normal * c, scratch).unwrap_or(f64::NEG_INFINITY);
+            }
+        }
+
+        let s_mid = 0.5 * (lo + hi);
+        let delta = 0.5 * (hi - lo).max(0.002);
+        let f_l = eval_residual(p + normal * (s_mid - delta), scratch).unwrap_or(f64::NEG_INFINITY);
+        let f_m = eval_residual(p + normal * s_mid, scratch).unwrap_or(f64::NEG_INFINITY);
+        let f_r = eval_residual(p + normal * (s_mid + delta), scratch).unwrap_or(f64::NEG_INFINITY);
+
+        let s_star = if f_l.is_finite() && f_m.is_finite() && f_r.is_finite() {
+            let denom = f_l - 2.0 * f_m + f_r;
+            if denom < -1e-12 {
+                let ds = (0.5 * delta * (f_l - f_r) / denom).clamp(-delta, delta);
+                (s_mid + ds).clamp(-search_half, search_half)
+            } else {
+                s_mid
+            }
+        } else {
+            s_mid
+        };
+
+        let snapped = p + normal * s_star;
+        let snapped_val = eval_residual(snapped, scratch).unwrap_or(f64::NEG_INFINITY);
+        let in_reg = containment.contains_point(snapped)
+            || containment.min_distance_to_boundary(snapped) <= 0.05;
+        if in_reg && snapped_val >= base_val - 1e-6 {
+            out.push(snapped);
+        } else {
+            out.push(p);
+        }
     }
 
     if is_closed && let Some(&first) = out.first() {

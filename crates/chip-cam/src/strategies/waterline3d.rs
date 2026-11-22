@@ -101,8 +101,10 @@ pub fn generate_waterline3d(
     }
     z_levels.sort_by(|a, b| b.total_cmp(a));
 
-    // Adaptive intermediate Z-stepdown refinement on shallow slopes
-    if params.adaptive_stepdown && z_levels.len() >= 2 {
+    // Adaptive intermediate Z-stepdown refinement using true local radial contour offset `dr_max`.
+    // Reuses computed `push_cutter_region_z` slices directly in Step 2 so no slice is duplicated.
+    let mut sliced_levels: Vec<(f64, RegionSet2D)> = Vec::with_capacity(z_levels.len() * 2);
+    if params.adaptive_stepdown && !z_levels.is_empty() {
         let eff_corner_r = match cutter.shape {
             crate::surface3d::SurfaceCutterShape::Ball { radius_mm } => radius_mm,
             crate::surface3d::SurfaceCutterShape::BullNose {
@@ -111,56 +113,53 @@ pub fn generate_waterline3d(
             _ => 0.0,
         };
 
-        let mut refined = Vec::with_capacity(z_levels.len() * 2);
-        let mut prev_z = z_levels[0];
-        let mut prev_avoid = push_cutter_region_z(&surface, &cutter, prev_z);
-        refined.push(prev_z);
+        // Start from the top surface cap (`z_top`) so shallow dome crowns above `z_levels[0]`
+        // are also adaptively subdivided down to `min_step`.
+        let mut prev_z = z_top;
+        let mut prev_avoid = push_cutter_region_z(&surface, &cutter, (z_top - 1e-3).max(z_bottom));
 
-        for &cur_z in &z_levels[1..] {
+        for &cur_z in &z_levels {
             ctx.check_cancel()?;
             let cur_avoid = push_cutter_region_z(&surface, &cutter, cur_z);
-            let dz = (prev_z - cur_z).abs();
-            if dz > min_step * 1.15 && !cur_avoid.is_empty() {
-                let r_prev = (prev_avoid.total_area_mm2() / std::f64::consts::PI).sqrt();
-                let r_cur = (cur_avoid.total_area_mm2() / std::f64::consts::PI).sqrt();
-                let dr = (r_cur - r_prev).abs();
-                let chord = dr.hypot(dz);
-                let est_cusp = if eff_corner_r > 1e-3 {
-                    (chord * chord) / (8.0 * eff_corner_r)
-                } else {
-                    // For flat endmills, limit horizontal stair-step width
-                    dr * 0.25
-                };
-                if est_cusp > max_cusp && dr > 0.1 {
-                    let ratio = (est_cusp / max_cusp).sqrt().ceil() as usize;
-                    let max_sub = (dz / min_step).floor().max(1.0) as usize;
-                    let n_sub = ratio.clamp(2, max_sub.min(8));
-                    for s in 1..n_sub {
-                        let frac = s as f64 / n_sub as f64;
-                        refined.push(prev_z - frac * dz);
-                    }
-                }
-            }
-            refined.push(cur_z);
+            refine_waterline_interval_adaptive(
+                ctx,
+                &surface,
+                &cutter,
+                prev_z,
+                &prev_avoid,
+                cur_z,
+                &cur_avoid,
+                min_step,
+                max_cusp,
+                eff_corner_r,
+                tool_r,
+                0,
+                &mut sliced_levels,
+            )?;
+            sliced_levels.push((cur_z, cur_avoid.clone()));
             prev_z = cur_z;
             prev_avoid = cur_avoid;
         }
-        z_levels = refined;
+    } else {
+        for &z_k in &z_levels {
+            ctx.check_cancel()?;
+            let avoid = push_cutter_region_z(&surface, &cutter, z_k);
+            sliced_levels.push((z_k, avoid));
+        }
     }
 
-    // 2. Slice each Z level with exact `push_cutter_region_z`, clip to containment, & filter by slope
+    // 2. Clip each sliced Z level to containment & filter by slope
     let slope_min = params.min_slope_deg.clamp(0.0, 90.0);
     let slope_max = params.max_slope_deg.clamp(slope_min, 90.0);
     let filter_slopes = slope_min > 0.5 || slope_max < 89.5;
     let sample_step = (0.25 * tool_r).clamp(0.25, 1.5);
 
-    let mut avoids_by_level: Vec<RegionSet2D> = Vec::with_capacity(z_levels.len());
+    let mut avoids_by_level: Vec<RegionSet2D> = Vec::with_capacity(sliced_levels.len());
     let mut all_contours: Vec<WaterlineContour> = Vec::new();
     let mut bvh_scratch = Vec::with_capacity(64);
 
-    for &z_k in &z_levels {
+    for (z_k, avoid) in sliced_levels {
         ctx.check_cancel()?;
-        let avoid = push_cutter_region_z(&surface, &cutter, z_k);
         let avoid_idx = avoids_by_level.len();
         if avoid.is_empty() {
             avoids_by_level.push(avoid);
@@ -244,7 +243,20 @@ pub fn generate_waterline3d(
 
     for wc in &ordered {
         ctx.check_cancel()?;
-        let Some(first_seg) = wc.polyline.segments.first() else {
+        if wc.polyline.segments.is_empty() {
+            continue;
+        }
+        // For closed loops, rotate the contour seam closest to the current tool XY to keep
+        // stay-down transitions short and strictly outside `avoid_curr`.
+        let rotated_poly = if wc.polyline.closed
+            && wc.polyline.segments.len() >= 2
+            && let Some(prev_p) = cur_pos
+        {
+            rotate_closed_polyline_nearest(&wc.polyline, DVec2::new(prev_p.x, prev_p.y))
+        } else {
+            wc.polyline.clone()
+        };
+        let Some(first_seg) = rotated_poly.segments.first() else {
             continue;
         };
         let start_xy = first_seg.start();
@@ -258,7 +270,14 @@ pub fn generate_waterline3d(
             let dist_xy = prev_xy.distance(start_xy);
             if dist_xy <= stay_down_limit {
                 let prev_avoid = &avoids_by_level[prev_aidx];
-                if segment_clear_of_avoid(prev_xy, start_xy, prev_avoid) {
+                let clear_prev = segment_clear_of_avoid(prev_xy, start_xy, prev_avoid);
+                let clear_curr = if (prev_p.z - wc.z_wcs).abs() <= 1e-4 {
+                    segment_clear_of_avoid(prev_xy, start_xy, avoid)
+                } else {
+                    !avoid.contains_point(start_xy)
+                        || avoid.min_distance_to_boundary(start_xy) <= 0.01
+                };
+                if clear_prev && clear_curr {
                     // Move horizontally at `prev_p.z` (strictly clear of `prev_avoid`), then ramp to `wc.z_wcs`!
                     if dist_xy > 1e-4 {
                         builder.linear_to(
@@ -270,7 +289,7 @@ pub fn generate_waterline3d(
                     let dz = (prev_p.z - wc.z_wcs).max(0.0);
                     if dz > 1e-4 {
                         emit_contour_ramp(
-                            &wc.polyline,
+                            &rotated_poly,
                             prev_p.z,
                             wc.z_wcs,
                             ramp_tan,
@@ -303,7 +322,7 @@ pub fn generate_waterline3d(
                 );
             }
             emit_contour_ramp(
-                &wc.polyline,
+                &rotated_poly,
                 ramp_top_z,
                 wc.z_wcs,
                 ramp_tan,
@@ -314,7 +333,7 @@ pub fn generate_waterline3d(
 
         // Emit full contour pass at constant `wc.z_wcs`
         let end_xy = emit_polyline_at_z(
-            &wc.polyline,
+            &rotated_poly,
             wc.z_wcs,
             cut_feed,
             MotionRole::FinishCut,
@@ -322,9 +341,6 @@ pub fn generate_waterline3d(
         );
         cur_pos = Some(DVec3::new(end_xy.x, end_xy.y, wc.z_wcs));
         cur_avoid_idx = Some(wc.avoid_idx);
-
-        // Keep `avoid` reference used for collision-safe transition check above
-        let _ = avoid;
     }
 
     if let Some(last_p) = cur_pos
@@ -526,15 +542,200 @@ fn segment_clear_of_avoid(a: DVec2, b: DVec2, avoid: &RegionSet2D) -> bool {
         return true;
     }
     let dist = a.distance(b);
-    let n = (dist / 0.5).ceil().clamp(2.0, 64.0) as usize;
-    for k in 1..n {
+    let n = (dist / 0.25).ceil().clamp(4.0, 128.0) as usize;
+    for k in 0..=n {
         let t = k as f64 / n as f64;
         let pt = a.lerp(b, t);
-        if avoid.contains_point(pt) && avoid.min_distance_to_boundary(pt) > 0.02 {
+        if avoid.contains_point(pt) && avoid.min_distance_to_boundary(pt) > 0.005 {
             return false;
         }
     }
     true
+}
+
+fn rotate_closed_polyline_nearest(poly: &ArcPolyline2D, target: DVec2) -> ArcPolyline2D {
+    let n = poly.segments.len();
+    if n < 2 || !poly.closed {
+        return poly.clone();
+    }
+    let best_idx = poly
+        .segments
+        .iter()
+        .enumerate()
+        .min_by(|(_, a), (_, b)| {
+            a.start()
+                .distance_squared(target)
+                .total_cmp(&b.start().distance_squared(target))
+        })
+        .map_or(0, |(i, _)| i);
+    if best_idx == 0 {
+        return poly.clone();
+    }
+    let mut segs = Vec::with_capacity(n);
+    segs.extend_from_slice(&poly.segments[best_idx..]);
+    segs.extend_from_slice(&poly.segments[..best_idx]);
+    ArcPolyline2D {
+        segments: segs,
+        closed: true,
+    }
+}
+
+/// Recursively subdivides a waterline Z interval `[z_hi, z_lo]` wherever the true local 2D
+/// radial contour offset `dr_max` between `avoid_hi` and `avoid_lo` exceeds `max_cusp`.
+#[allow(clippy::too_many_arguments)]
+fn refine_waterline_interval_adaptive(
+    ctx: &StrategyExecContext<'_>,
+    surface: &SurfaceMesh3D,
+    cutter: &SurfaceCutterProfile,
+    z_hi: f64,
+    avoid_hi: &RegionSet2D,
+    z_lo: f64,
+    avoid_lo: &RegionSet2D,
+    min_step: f64,
+    max_cusp: f64,
+    eff_corner_r: f64,
+    tool_r: f64,
+    depth: u32,
+    out: &mut Vec<(f64, RegionSet2D)>,
+) -> Result<(), CamError> {
+    ctx.check_cancel()?;
+    let dz = (z_hi - z_lo).abs();
+    if depth >= 4 || dz <= min_step * 1.15 || avoid_lo.is_empty() {
+        return Ok(());
+    }
+
+    let max_search = (dz * 8.0).max(tool_r * 3.0);
+    let dr_max = max_local_radial_contour_offset(avoid_hi, avoid_lo, max_search);
+    if dr_max <= 0.05 {
+        return Ok(());
+    }
+
+    let chord = dr_max.hypot(dz);
+    let est_cusp = if eff_corner_r > 1e-3 {
+        if chord < 2.0 * eff_corner_r {
+            eff_corner_r
+                - (eff_corner_r * eff_corner_r - 0.25 * chord * chord)
+                    .max(0.0)
+                    .sqrt()
+        } else {
+            (chord * chord) / (8.0 * eff_corner_r)
+        }
+    } else {
+        // For flat endmills, limit horizontal stair-step width
+        dr_max * 0.25
+    };
+
+    if est_cusp <= max_cusp {
+        return Ok(());
+    }
+
+    let z_mid = 0.5 * (z_hi + z_lo);
+    let avoid_mid = push_cutter_region_z(surface, cutter, z_mid);
+    refine_waterline_interval_adaptive(
+        ctx,
+        surface,
+        cutter,
+        z_hi,
+        avoid_hi,
+        z_mid,
+        &avoid_mid,
+        min_step,
+        max_cusp,
+        eff_corner_r,
+        tool_r,
+        depth + 1,
+        out,
+    )?;
+    out.push((z_mid, avoid_mid.clone()));
+    refine_waterline_interval_adaptive(
+        ctx,
+        surface,
+        cutter,
+        z_mid,
+        &avoid_mid,
+        z_lo,
+        avoid_lo,
+        min_step,
+        max_cusp,
+        eff_corner_r,
+        tool_r,
+        depth + 1,
+        out,
+    )?;
+    Ok(())
+}
+
+/// Computes the true maximum local 2D radial contour shift `dr_max` between two consecutive
+/// waterline avoidance slices `prev_avoid` (higher Z) and `cur_avoid` (lower Z), capturing
+/// localized shallow shelves and fillets even when total cross-sectional area barely changes.
+fn max_local_radial_contour_offset(
+    prev_avoid: &RegionSet2D,
+    cur_avoid: &RegionSet2D,
+    max_search_cap: f64,
+) -> f64 {
+    if cur_avoid.is_empty() && prev_avoid.is_empty() {
+        return 0.0;
+    }
+    if prev_avoid.is_empty() {
+        // Feature emerged below `prev_z` (e.g., shallow dome crown): estimate max radial span from centroid
+        let mut max_r = 0.0_f64;
+        for reg in &cur_avoid.regions {
+            let eq_r = (reg.net_area_mm2().max(0.0) / std::f64::consts::PI).sqrt();
+            max_r = max_r.max(eq_r);
+            if let Some(c) = polyline_centroid(&reg.outer_ccw) {
+                for seg in &reg.outer_ccw.segments {
+                    max_r = max_r.max(seg.start().distance(c));
+                }
+            }
+        }
+        return max_r.min(max_search_cap);
+    }
+
+    let mut dr_max = 0.0_f64;
+
+    // One-sided boundary distance helper: for each contour loop in `src`, measure max distance to
+    // `dst`'s boundary when the loop overlaps/borders `dst`, or the loop's own equivalent radius
+    // if it is a newly emerged disconnected boss.
+    let eval_one_sided = |src: &RegionSet2D, dst: &RegionSet2D| -> f64 {
+        let mut best = 0.0_f64;
+        for reg in &src.regions {
+            let loops = std::iter::once(&reg.outer_ccw).chain(reg.islands_cw.iter());
+            for poly in loops {
+                let mut loop_min_d = f64::INFINITY;
+                let mut loop_max_d = 0.0_f64;
+                let mut any_inside_dst = false;
+                for seg in &poly.segments {
+                    let len = seg.length();
+                    let n = (len / 0.75).ceil().clamp(1.0, 32.0) as usize;
+                    for k in 0..=n {
+                        let pt = sample_seg(seg, k as f64 / n as f64);
+                        if dst.contains_point(pt) {
+                            any_inside_dst = true;
+                        }
+                        let d = dst.min_distance_to_boundary(pt);
+                        if d.is_finite() {
+                            loop_min_d = loop_min_d.min(d);
+                            loop_max_d = loop_max_d.max(d);
+                        }
+                    }
+                }
+                if any_inside_dst || loop_min_d <= max_search_cap {
+                    best = best.max(loop_max_d.min(max_search_cap));
+                } else {
+                    let area = crate::surface3d::levels::polyline_signed_area(poly).abs();
+                    let eq_r = (area / std::f64::consts::PI).sqrt();
+                    best = best.max(eq_r.min(max_search_cap));
+                }
+            }
+        }
+        best
+    };
+
+    dr_max = dr_max.max(eval_one_sided(cur_avoid, prev_avoid));
+    if !cur_avoid.is_empty() {
+        dr_max = dr_max.max(eval_one_sided(prev_avoid, cur_avoid));
+    }
+    dr_max
 }
 
 /// Emits a smooth contour-following Z ramp descending from `z_start` down to `z_target`
@@ -612,19 +813,26 @@ fn emit_contour_ramp(
     }
 
     // Complete remainder of the closed loop at `z_target` back to start so the final cut pass starts cleanly
+    // while strictly following curved arc segments (never cutting across chords into `avoid_curr`).
     let rem_pos = traveled % total_len;
     if rem_pos > 1e-3 && total_len - rem_pos > 1e-3 {
         let mut acc = 0.0;
         for seg in &poly.segments {
             let sl = seg.length();
             let next_acc = acc + sl;
-            if next_acc > rem_pos + 1e-5 {
-                let end = seg.end();
-                builder.linear_to(
-                    DVec3::new(end.x, end.y, z_target),
-                    ramp_feed,
-                    MotionRole::FinishCut,
-                );
+            if next_acc > rem_pos + 1e-5 && sl > 1e-7 {
+                let t_start = ((rem_pos - acc) / sl).clamp(0.0, 1.0);
+                let rem_len = sl * (1.0 - t_start);
+                let n = (rem_len / 0.5).ceil().max(1.0) as usize;
+                for k in 1..=n {
+                    let t = t_start + (1.0 - t_start) * (k as f64 / n as f64);
+                    let pt = sample_seg(seg, t);
+                    builder.linear_to(
+                        DVec3::new(pt.x, pt.y, z_target),
+                        ramp_feed,
+                        MotionRole::FinishCut,
+                    );
+                }
             }
             acc = next_acc;
         }

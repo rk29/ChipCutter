@@ -17,9 +17,9 @@ use crate::{
     surface3d::{
         RestMaskGrid2D, SurfaceCutterProfile, SurfaceLinkConfig, SurfaceMesh3D, build_3d_rest_mask,
         drop_cutter_z_with_scratch, emit_final_surface_retract, emit_surface_safe_link,
+        finishing::simplify_3d_polyline_gouge_safe,
         levels::{resolve_3d_containment_region, sample_surface_slope_deg},
-        refine_convex_chords_3d, region_aabb_2d, simplify_3d_polyline_rdp,
-        stepover_for_cusp_height,
+        refine_convex_chords_3d, region_aabb_2d, stepover_for_cusp_height,
     },
     toolpath::ToolpathBuilder,
     wcs::CamError,
@@ -95,7 +95,12 @@ pub fn generate_parallel3d(
     } else {
         params.stepover.value_mm.clamp(0.05, 0.75 * tool_d)
     };
-    let sample_step = params.sample_step.value_mm.clamp(0.1, 1.0);
+    let adaptive_sample_cap = (0.06 * tool_d).clamp(0.15, 0.25);
+    let sample_step = params
+        .sample_step
+        .value_mm
+        .clamp(0.08, 1.0)
+        .min(adaptive_sample_cap);
     let smooth_tol = params.smoothing_tolerance.value_mm.clamp(0.001, 0.010);
 
     let slope_min = params.min_slope_deg.clamp(0.0, 90.0);
@@ -319,7 +324,8 @@ fn sample_parallel_scanline(
         .filter_map(|raw| {
             let refined =
                 refine_convex_chords_3d(surface, cutter, z_bottom, z_top, &raw, smooth_tol);
-            let simplified = simplify_3d_polyline_rdp(&refined, smooth_tol);
+            let simplified =
+                simplify_3d_polyline_gouge_safe(surface, cutter, z_bottom, &refined, smooth_tol);
             if simplified.len() >= 2 {
                 Some(simplified)
             } else {

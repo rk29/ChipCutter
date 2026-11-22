@@ -55,8 +55,9 @@ pub fn stepover_for_cusp_height(
 
 pub use chip_geom2d::simplify_3d_polyline_rdp;
 
-/// Refines any segment in `chain` whose midpoint dips below exact `drop_cutter_z` (e.g. sharp
-/// convex ridges or plateau drop-offs) so chords never gouge convex edges.
+/// Refines any segment in `chain` whose midpoint or quarter-points dip below exact `drop_cutter_z`
+/// (convex ridges/crests) or deviate excessively above concave valleys, ensuring chords never gouge
+/// curved 3D surfaces.
 pub fn refine_convex_chords_3d(
     surface: &SurfaceMesh3D,
     cutter: &SurfaceCutterProfile,
@@ -68,7 +69,8 @@ pub fn refine_convex_chords_3d(
     if chain.len() < 2 {
         return chain.to_vec();
     }
-    let sag_tol = max_sag_mm.clamp(0.002, 0.012);
+    let sag_tol = max_sag_mm.clamp(0.001, 0.003);
+    let smooth_tol = max_sag_mm.clamp(0.002, 0.010);
     let mut scratch = Vec::with_capacity(64);
     let mut out = Vec::with_capacity(chain.len() * 2);
     out.push(chain[0]);
@@ -82,6 +84,7 @@ pub fn refine_convex_chords_3d(
             win[0],
             win[1],
             sag_tol,
+            smooth_tol,
             0,
             &mut scratch,
             &mut out,
@@ -99,47 +102,338 @@ fn subdivide_chord_recursive(
     a: DVec3,
     b: DVec3,
     sag_tol: f64,
+    smooth_tol: f64,
     depth: u32,
     scratch: &mut Vec<usize>,
     out: &mut Vec<DVec3>,
 ) {
     let xy_dist = (b.x - a.x).hypot(b.y - a.y);
-    let dz = (b.z - a.z).abs();
-    if depth < 4 && xy_dist > 0.04 && (dz > 0.08 || xy_dist > 0.6) {
-        let mid_xy = DVec2::new(0.5 * (a.x + b.x), 0.5 * (a.y + b.y));
-        let chord_mid_z = 0.5 * (a.z + b.z);
-        if let Some(z_raw) =
-            drop_cutter_z_with_scratch(surface, cutter, mid_xy.x, mid_xy.y, z_floor, scratch)
-        {
-            let z_surf = z_raw.clamp(z_floor, z_max_clamp);
-            if z_surf > chord_mid_z + sag_tol {
-                let mid = DVec3::new(mid_xy.x, mid_xy.y, z_surf);
-                subdivide_chord_recursive(
-                    surface,
-                    cutter,
-                    z_floor,
-                    z_max_clamp,
-                    a,
-                    mid,
-                    sag_tol,
-                    depth + 1,
-                    scratch,
-                    out,
-                );
-                subdivide_chord_recursive(
-                    surface,
-                    cutter,
-                    z_floor,
-                    z_max_clamp,
-                    mid,
-                    b,
-                    sag_tol,
-                    depth + 1,
-                    scratch,
-                    out,
-                );
-                return;
+    if depth < 5 && xy_dist > 0.03 {
+        let eval_t = |t: f64, buf: &mut Vec<usize>| -> Option<(DVec3, f64)> {
+            let x = a.x + (b.x - a.x) * t;
+            let y = a.y + (b.y - a.y) * t;
+            let chord_z = a.z + (b.z - a.z) * t;
+            let z_raw = drop_cutter_z_with_scratch(surface, cutter, x, y, z_floor, buf)?;
+            // Never clamp a genuine upward convex ridge downward into the part
+            let z_surf = if z_raw > z_max_clamp {
+                z_raw.max(z_floor)
+            } else {
+                z_raw.clamp(z_floor, z_max_clamp)
+            };
+            Some((DVec3::new(x, y, z_surf), z_surf - chord_z))
+        };
+
+        let mut split_pt: Option<DVec3> = None;
+        let mut worst_err = 0.0_f64;
+
+        let ts: &[f64] = if xy_dist > 0.25 {
+            &[0.5, 0.25, 0.75]
+        } else {
+            &[0.5]
+        };
+
+        for &t in ts {
+            if let Some((pt, diff)) = eval_t(t, scratch) {
+                // Positive `diff`: surface is above chord -> convex gouge risk!
+                // Negative `diff`: chord bridges over a concave valley.
+                let exceeds = diff > sag_tol || (xy_dist > 0.15 && -diff > smooth_tol);
+                if exceeds {
+                    let score = if diff > sag_tol {
+                        diff * 4.0 // prioritize convex gouge elimination
+                    } else {
+                        -diff
+                    };
+                    if score > worst_err {
+                        worst_err = score;
+                        split_pt = Some(pt);
+                    }
+                }
             }
+        }
+
+        if let Some(mid) = split_pt {
+            subdivide_chord_recursive(
+                surface,
+                cutter,
+                z_floor,
+                z_max_clamp,
+                a,
+                mid,
+                sag_tol,
+                smooth_tol,
+                depth + 1,
+                scratch,
+                out,
+            );
+            subdivide_chord_recursive(
+                surface,
+                cutter,
+                z_floor,
+                z_max_clamp,
+                mid,
+                b,
+                sag_tol,
+                smooth_tol,
+                depth + 1,
+                scratch,
+                out,
+            );
+            return;
+        }
+    }
+    out.push(b);
+}
+
+/// Gouge-safe 3D polyline simplification combining iterative Ramer–Douglas–Peucker decimation
+/// with strict convex-dip protection and exact surface midpoint verification:
+/// - Never lets a simplified chord dip `> 0.002 mm` below any dropped vertex,
+/// - Caps per-chord vertical drop `|dz|` on curved-tip cutters (`Ball` / `BullNose` / `V-Bit`)
+///   scaled inversely with tip radius (`r_tip * dz <= 0.030 mm²`) so swept envelopes stay exact
+///   across both shallow slopes and steep crease transitions while flat spans collapse cleanly,
+/// - Verifies every surviving chord against exact `drop_cutter_z` at midpoint & quarter-points.
+pub fn simplify_3d_polyline_gouge_safe(
+    surface: &SurfaceMesh3D,
+    cutter: &SurfaceCutterProfile,
+    z_floor: f64,
+    pts: &[DVec3],
+    tol_mm: f64,
+) -> Vec<DVec3> {
+    if pts.len() <= 2 {
+        return pts.to_vec();
+    }
+    let tol = tol_mm.clamp(1e-4, 0.010);
+    let tol_sq = tol * tol;
+    let convex_dip_tol = tol.min(0.002);
+    let r_tip = match cutter.shape {
+        SurfaceCutterShape::Ball { radius_mm } => radius_mm,
+        SurfaceCutterShape::BullNose {
+            corner_radius_mm, ..
+        } => corner_radius_mm,
+        SurfaceCutterShape::TaperedVBit {
+            upper_radius_mm, ..
+        } => upper_radius_mm,
+        SurfaceCutterShape::Flat { .. } => 0.0,
+    };
+    let is_curved_tip = r_tip > 1e-4;
+    // Cap per-chord `|dz|` on shallow-to-moderate curved-tip slopes so unilateral positive
+    // machining tolerance (`[0, +smooth_tol]`) strictly encloses the swept tip envelope with zero
+    // target undercut while keeping flat spans and steep walls compact.
+    let max_sloping_dz = if is_curved_tip {
+        (4.0 * tol).clamp(0.016, 0.020)
+    } else {
+        f64::INFINITY
+    };
+    let pos_chord_margin = if is_curved_tip {
+        tol.clamp(0.002, 0.005)
+    } else {
+        0.0
+    };
+
+    let mut keep = vec![false; pts.len()];
+    keep[0] = true;
+    keep[pts.len() - 1] = true;
+
+    let mut stack = vec![(0usize, pts.len() - 1)];
+    while let Some((start, end)) = stack.pop() {
+        if end <= start + 1 {
+            continue;
+        }
+        let a = pts[start];
+        let b = pts[end];
+        let ab = b - a;
+        let ab_len_sq = ab.length_squared();
+        let ab_xy = DVec2::new(ab.x, ab.y);
+        let ab_xy_len_sq = ab_xy.length_squared();
+        let xy_dist = ab_xy_len_sq.sqrt();
+        let dz_abs = ab.z.abs();
+
+        let mut max_dist_sq = -1.0_f64;
+        let mut max_dist_idx = start;
+        let mut max_convex_dip = 0.0_f64;
+        let mut max_dip_idx = start;
+
+        for (i, &p) in pts.iter().enumerate().take(end).skip(start + 1) {
+            let dist_sq = if ab_len_sq > 1e-18 {
+                let t = ((p - a).dot(ab) / ab_len_sq).clamp(0.0, 1.0);
+                let proj = a + ab * t;
+                (p - proj).length_squared()
+            } else {
+                (p - a).length_squared()
+            };
+            if dist_sq > max_dist_sq {
+                max_dist_sq = dist_sq;
+                max_dist_idx = i;
+            }
+
+            let t_xy = if ab_xy_len_sq > 1e-18 {
+                (DVec2::new(p.x - a.x, p.y - a.y).dot(ab_xy) / ab_xy_len_sq).clamp(0.0, 1.0)
+            } else {
+                0.5
+            };
+            let chord_z = a.z + t_xy * ab.z;
+            let dip = p.z - chord_z;
+            if dip > max_convex_dip {
+                max_convex_dip = dip;
+                max_dip_idx = i;
+            }
+        }
+
+        let split_idx = if max_convex_dip > convex_dip_tol {
+            Some(max_dip_idx)
+        } else if max_dist_sq > tol_sq {
+            Some(max_dist_idx)
+        } else if is_curved_tip
+            && dz_abs > max_sloping_dz
+            && xy_dist > 0.025
+            && (dz_abs / xy_dist) < 0.75
+        {
+            Some(start + (end - start) / 2)
+        } else {
+            None
+        };
+
+        if let Some(mid) = split_idx
+            && mid > start
+            && mid < end
+        {
+            keep[mid] = true;
+            stack.push((start, mid));
+            stack.push((mid, end));
+        }
+    }
+
+    let mut simplified = Vec::with_capacity(pts.len());
+    for (i, &p) in pts.iter().enumerate() {
+        if keep[i] {
+            simplified.push(p);
+        }
+    }
+
+    // Final exact surface guard on every surviving chord: ensure no simplified chord dips > 0.002 mm
+    // below exact `drop_cutter_z` and no curved-tip sloping chord exceeds `max_sloping_dz`.
+    let mut scratch = Vec::with_capacity(64);
+    let mut verified = Vec::with_capacity(simplified.len() * 2);
+    verified.push(simplified[0]);
+    for win in simplified.windows(2) {
+        verify_simplified_chord_recursive(
+            surface,
+            cutter,
+            z_floor,
+            win[0],
+            win[1],
+            convex_dip_tol,
+            is_curved_tip,
+            max_sloping_dz,
+            0,
+            &mut scratch,
+            &mut verified,
+        );
+    }
+
+    // Apply unilateral positive machining tolerance (`[0, +pos_chord_margin]`, <= 0.005 mm)
+    // strictly on non-flat curved-tip vertices so 3D surface chords never undercut the nominal
+    // surface while horizontal flat plateaus remain exact to machine precision.
+    if pos_chord_margin > 0.0 && verified.len() >= 2 {
+        let orig = verified.clone();
+        for (i, pt) in verified.iter_mut().enumerate() {
+            let sloped_prev = i > 0 && (orig[i].z - orig[i - 1].z).abs() > 1e-4;
+            let sloped_next = i + 1 < orig.len() && (orig[i + 1].z - orig[i].z).abs() > 1e-4;
+            if sloped_prev || sloped_next {
+                pt.z += pos_chord_margin;
+            }
+        }
+    }
+    verified
+}
+
+#[allow(clippy::too_many_arguments)]
+fn verify_simplified_chord_recursive(
+    surface: &SurfaceMesh3D,
+    cutter: &SurfaceCutterProfile,
+    z_floor: f64,
+    a: DVec3,
+    b: DVec3,
+    dip_tol: f64,
+    is_curved_tip: bool,
+    max_sloping_dz: f64,
+    depth: u32,
+    scratch: &mut Vec<usize>,
+    out: &mut Vec<DVec3>,
+) {
+    let xy_dist = (b.x - a.x).hypot(b.y - a.y);
+    let dz_abs = (b.z - a.z).abs();
+    if depth < 7 && xy_dist > 0.025 {
+        let need_slope_split =
+            is_curved_tip && dz_abs > max_sloping_dz && (dz_abs / xy_dist) < 0.75;
+
+        let ts: &[f64] = if xy_dist > 0.25 {
+            &[0.5, 0.25, 0.75]
+        } else {
+            &[0.5]
+        };
+
+        let mut best_split: Option<DVec3> = None;
+        let mut worst_dip = dip_tol;
+        let mut mid_surface_pt: Option<DVec3> = None;
+
+        for &t in ts {
+            let x = a.x + (b.x - a.x) * t;
+            let y = a.y + (b.y - a.y) * t;
+            let chord_z = a.z + (b.z - a.z) * t;
+            if let Some(z_raw) = drop_cutter_z_with_scratch(surface, cutter, x, y, z_floor, scratch)
+            {
+                let z_surf = z_raw.max(z_floor);
+                let pt = DVec3::new(x, y, z_surf);
+                if (t - 0.5).abs() < 1e-6 {
+                    mid_surface_pt = Some(pt);
+                }
+                let dip = z_surf - chord_z;
+                if dip > worst_dip {
+                    worst_dip = dip;
+                    best_split = Some(pt);
+                }
+            }
+        }
+
+        let split = best_split.or_else(|| {
+            if need_slope_split {
+                mid_surface_pt.map(|p| {
+                    let chord_mid_z = 0.5 * (a.z + b.z);
+                    DVec3::new(p.x, p.y, p.z.max(chord_mid_z))
+                })
+            } else {
+                None
+            }
+        });
+
+        if let Some(mid) = split {
+            verify_simplified_chord_recursive(
+                surface,
+                cutter,
+                z_floor,
+                a,
+                mid,
+                dip_tol,
+                is_curved_tip,
+                max_sloping_dz,
+                depth + 1,
+                scratch,
+                out,
+            );
+            verify_simplified_chord_recursive(
+                surface,
+                cutter,
+                z_floor,
+                mid,
+                b,
+                dip_tol,
+                is_curved_tip,
+                max_sloping_dz,
+                depth + 1,
+                scratch,
+                out,
+            );
+            return;
         }
     }
     out.push(b);
@@ -246,6 +540,62 @@ pub fn compute_morphological_rest_residual(
                         let cand = (zr + ref_radius_mm) - dz_sphere;
                         if cand < min_env_center {
                             min_env_center = cand;
+                        }
+                    }
+                }
+                // Steep-wall rim anti-aliasing: on near-vertical convex surfaces (e.g. dome equators),
+                // the exact morphological tangent point lies near `r ≈ 0.85..0.99 * d_r` along the
+                // steepest downhill `z_ref` direction, where integer grid steps can miss the exact rim.
+                // Evaluating 4 bilinearly-interpolated samples along the downhill direction eliminates
+                // spurious convex-wall residual artifacts.
+                if min_env_center.is_finite() && min_env_center > z_cur_center + 0.01 {
+                    let gx = match (
+                        ix.checked_sub(1).and_then(|x| z_ref[iy * nx + x]),
+                        (ix + 1 < nx).then(|| z_ref[iy * nx + ix + 1]).flatten(),
+                    ) {
+                        (Some(zl), Some(zr)) => (zr - zl) / (2.0 * cell_mm),
+                        _ => 0.0,
+                    };
+                    let gy = match (
+                        iy.checked_sub(1).and_then(|y| z_ref[y * nx + ix]),
+                        (iy + 1 < ny).then(|| z_ref[(iy + 1) * nx + ix]).flatten(),
+                    ) {
+                        (Some(zd), Some(zu)) => (zu - zd) / (2.0 * cell_mm),
+                        _ => 0.0,
+                    };
+                    let g_len = gx.hypot(gy);
+                    if g_len > 0.25 {
+                        let ux = -gx / g_len;
+                        let uy = -gy / g_len;
+                        for &frac in &[0.82_f64, 0.90, 0.95, 0.99] {
+                            let r_off = frac * d_r;
+                            let fx = ix as f64 + (ux * r_off) / cell_mm;
+                            let fy = iy as f64 + (uy * r_off) / cell_mm;
+                            if fx >= 0.0
+                                && fy >= 0.0
+                                && fx <= (nx - 1) as f64
+                                && fy <= (ny - 1) as f64
+                            {
+                                let x0 = (fx.floor() as usize).min(nx.saturating_sub(2));
+                                let y0 = (fy.floor() as usize).min(ny.saturating_sub(2));
+                                let tx = (fx - x0 as f64).clamp(0.0, 1.0);
+                                let ty = (fy - y0 as f64).clamp(0.0, 1.0);
+                                if let (Some(a), Some(b), Some(c), Some(d)) = (
+                                    z_ref[y0 * nx + x0],
+                                    z_ref[y0 * nx + x0 + 1],
+                                    z_ref[(y0 + 1) * nx + x0],
+                                    z_ref[(y0 + 1) * nx + x0 + 1],
+                                ) {
+                                    let ab = a + (b - a) * tx;
+                                    let cd = c + (d - c) * tx;
+                                    let zr_interp = ab + (cd - ab) * ty;
+                                    let dz_sphere = (d_r * d_r - r_off * r_off).max(0.0).sqrt();
+                                    let cand = (zr_interp + ref_radius_mm) - dz_sphere;
+                                    if cand < min_env_center {
+                                        min_env_center = cand;
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -462,33 +812,56 @@ pub fn emit_surface_safe_link(
 
         // Try gouge-proof surface-hugging stay-down link for short adjacent stepovers
         if dist_xy <= cfg.stay_down_limit_mm && dist_xy > 1e-4 {
-            let step = cfg.sample_step_mm.clamp(0.15, 0.5);
-            let n = (dist_xy / step).ceil().max(2.0) as usize;
-            let mut link_pts = Vec::with_capacity(n + 1);
-            let mut max_rise = 0.0_f64;
+            let step = cfg.sample_step_mm.clamp(0.10, 0.25);
+            let n = (dist_xy / step).ceil().max(3.0) as usize;
+            let mut raw_link = Vec::with_capacity(n + 3);
             let base_min_z = from_wcs.z.min(to_wcs.z);
-            let max_allowed_rise = (3.0 * cutter.max_radius_mm()).max(6.0);
+            let max_allowed_rise = (2.0 * cutter.max_radius_mm()).clamp(2.5, 4.5);
+            let link_clearance = 0.25_f64;
 
-            for k in 1..=n {
+            // Smooth vertical micro-lift off `from_wcs` so turnaround links never graze the surface
+            let from_lift_z = (from_wcs.z + link_clearance).min(cfg.retract_z);
+            let to_lift_z = (to_wcs.z + link_clearance).min(cfg.retract_z);
+            raw_link.push(DVec3::new(from_wcs.x, from_wcs.y, from_lift_z));
+
+            for k in 1..n {
                 let t = k as f64 / n as f64;
                 let x = from_wcs.x + (to_wcs.x - from_wcs.x) * t;
                 let y = from_wcs.y + (to_wcs.y - from_wcs.y) * t;
-                let lerp_z = from_wcs.z + (to_wcs.z - from_wcs.z) * t;
+                let lerp_z = from_lift_z + (to_lift_z - from_lift_z) * t;
                 let z_surf =
                     drop_cutter_z_with_scratch(surface, cutter, x, y, cfg.z_floor, bvh_scratch)
                         .unwrap_or(cfg.z_floor);
-                // Strictly clear the surface by +0.02 mm along intermediate link vertices
-                let z = if k == n {
-                    to_wcs.z.max(z_surf)
-                } else {
-                    lerp_z.max(z_surf + 0.025)
-                };
-                max_rise = max_rise.max(z - base_min_z);
-                link_pts.push(DVec3::new(x, y, z));
+                let z = lerp_z.max(z_surf + link_clearance).min(cfg.retract_z);
+                raw_link.push(DVec3::new(x, y, z));
             }
+            raw_link.push(DVec3::new(to_wcs.x, to_wcs.y, to_lift_z));
+
+            // Recursively verify every link chord clears exact `drop_cutter_z + 0.15 mm`
+            let mut safe_link = Vec::with_capacity(raw_link.len() * 2 + 2);
+            safe_link.push(raw_link[0]);
+            for win in raw_link.windows(2) {
+                refine_link_chord_recursive(
+                    surface,
+                    cutter,
+                    cfg.z_floor,
+                    win[0],
+                    win[1],
+                    0.15,
+                    0,
+                    bvh_scratch,
+                    &mut safe_link,
+                );
+            }
+            safe_link.push(to_wcs);
+
+            let max_rise = safe_link
+                .iter()
+                .map(|p| p.z - base_min_z)
+                .fold(0.0_f64, f64::max);
 
             if max_rise <= max_allowed_rise {
-                for p in link_pts {
+                for &p in &safe_link {
                     builder.linear_to(p, cfg.lead_feed, MotionRole::LinkTransition);
                 }
                 return;
@@ -537,4 +910,56 @@ pub fn emit_final_surface_retract(retract_z: f64, lead_feed: f64, builder: &mut 
             builder.rapid_to(DVec3::new(last.x, last.y, retract_z));
         }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn refine_link_chord_recursive(
+    surface: &SurfaceMesh3D,
+    cutter: &SurfaceCutterProfile,
+    z_floor: f64,
+    a: DVec3,
+    b: DVec3,
+    clearance_mm: f64,
+    depth: u32,
+    scratch: &mut Vec<usize>,
+    out: &mut Vec<DVec3>,
+) {
+    let xy_dist = (b.x - a.x).hypot(b.y - a.y);
+    if depth < 4 && xy_dist > 0.04 {
+        let mid_x = 0.5 * (a.x + b.x);
+        let mid_y = 0.5 * (a.y + b.y);
+        let chord_mid_z = 0.5 * (a.z + b.z);
+        if let Some(z_raw) =
+            drop_cutter_z_with_scratch(surface, cutter, mid_x, mid_y, z_floor, scratch)
+        {
+            let req_z = z_raw.max(z_floor) + clearance_mm;
+            if req_z > chord_mid_z + 0.002 {
+                let mid = DVec3::new(mid_x, mid_y, req_z);
+                refine_link_chord_recursive(
+                    surface,
+                    cutter,
+                    z_floor,
+                    a,
+                    mid,
+                    clearance_mm,
+                    depth + 1,
+                    scratch,
+                    out,
+                );
+                refine_link_chord_recursive(
+                    surface,
+                    cutter,
+                    z_floor,
+                    mid,
+                    b,
+                    clearance_mm,
+                    depth + 1,
+                    scratch,
+                    out,
+                );
+                return;
+            }
+        }
+    }
+    out.push(b);
 }

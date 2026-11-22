@@ -22,9 +22,9 @@ use crate::{
     surface3d::{
         RestMaskGrid2D, SurfaceCutterProfile, SurfaceLinkConfig, SurfaceMesh3D, build_3d_rest_mask,
         drop_cutter_z_with_scratch, emit_final_surface_retract, emit_surface_safe_link,
+        finishing::simplify_3d_polyline_gouge_safe,
         levels::{resolve_3d_containment_region, sample_surface_slope_deg},
-        refine_convex_chords_3d, region_aabb_2d, simplify_3d_polyline_rdp,
-        stepover_for_cusp_height,
+        refine_convex_chords_3d, region_aabb_2d, stepover_for_cusp_height,
     },
     toolpath::ToolpathBuilder,
     wcs::CamError,
@@ -138,8 +138,8 @@ pub fn generate_scallop3d(
     // 1. Build padded 2D grid over `containment` and sample exact `drop_cutter_z` in parallel
     let w = (bounds.max.x - bounds.min.x).max(1.0);
     let h_span = (bounds.max.y - bounds.min.y).max(1.0);
-    let base_cell = (0.35 * target_s_3d).clamp(0.25, 0.75);
-    let cell = base_cell.max(((w * h_span) / 42_000.0).sqrt());
+    let base_cell = (0.30 * target_s_3d).clamp(0.15, 0.50);
+    let cell = base_cell.max(((w * h_span) / 120_000.0).sqrt());
     let min_x = bounds.min.x - cell;
     let min_y = bounds.min.y - cell;
     let nx = ((w + 2.0 * cell) / cell).ceil() as usize + 1;
@@ -215,8 +215,57 @@ pub fn generate_scallop3d(
         }
     }
 
+    // Gentle 1-pass 3x3 Gaussian smoothing of `sec(θ)` over interior cells so Fast Marching
+    // iso-contours remain smooth and kink-free across faceted triangle edges.
+    let mut smooth_weight = weight.clone();
+    for iy in 0..ny {
+        for ix in 0..nx {
+            let idx = iy * nx + ix;
+            if !inside[idx] {
+                continue;
+            }
+            let mut sum = 0.0_f64;
+            let mut w_sum = 0.0_f64;
+            for dy in -1_isize..=1 {
+                let niy = iy as isize + dy;
+                if niy < 0 || niy >= ny as isize {
+                    continue;
+                }
+                for dx in -1_isize..=1 {
+                    let nix = ix as isize + dx;
+                    if nix < 0 || nix >= nx as isize {
+                        continue;
+                    }
+                    let nidx = niy as usize * nx + nix as usize;
+                    if !inside[nidx] {
+                        continue;
+                    }
+                    let k = match (dx == 0, dy == 0) {
+                        (true, true) => 4.0,
+                        (true, false) | (false, true) => 2.0,
+                        (false, false) => 1.0,
+                    };
+                    sum += k * weight[nidx];
+                    w_sum += k;
+                }
+            }
+            if w_sum > 0.0 {
+                smooth_weight[idx] = (sum / w_sum).clamp(1.0, 4.0);
+            }
+        }
+    }
+
     // 3. Fast Marching Eikonal solver from `∂containment` inward
-    let dist = solve_eikonal_fmm(&inside, &weight, &containment, min_x, min_y, cell, nx, ny);
+    let dist = solve_eikonal_fmm(
+        &inside,
+        &smooth_weight,
+        &containment,
+        min_x,
+        min_y,
+        cell,
+        nx,
+        ny,
+    );
 
     let max_d = dist
         .iter()
@@ -321,7 +370,7 @@ pub fn generate_scallop3d(
 
             // If closed loop, rotate seam to point nearest current tool position to minimize linking
             if chain.len() >= 4
-                && chain[0].distance(chain[chain.len() - 1]) <= 0.1
+                && chain[0].distance(chain[chain.len() - 1]) <= 0.15
                 && let Some(cur) = builder.current_pos()
             {
                 let cur_xy = DVec2::new(cur.x, cur.y);
@@ -538,8 +587,13 @@ fn extract_and_project_iso_level(
         if poly.len() < 2 {
             continue;
         }
-        let is_closed = poly.len() >= 4 && poly[0].distance(poly[poly.len() - 1]) <= 1e-2;
+        let is_closed = poly.len() >= 4 && poly[0].distance(poly[poly.len() - 1]) <= 0.5 * cell;
         if is_closed {
+            // Ensure exact 2D closure before orientation & resampling
+            let first = poly[0];
+            if let Some(last) = poly.last_mut() {
+                *last = first;
+            }
             // Orient closed contours consistently (`CCW` for climb outside-in / `CW` for conventional)
             let area = signed_area_2d(&poly);
             let want_ccw = climb_milling;
@@ -548,11 +602,28 @@ fn extract_and_project_iso_level(
             }
         }
 
-        // Resample long spans and project onto exact `f64` `drop_cutter_z`, splitting by rest/slope
+        // Densify long 2D iso-contour segments (<= 0.25 mm) before exact `drop_cutter_z` projection
+        let max_xy_step = (0.25_f64).min(cell.max(0.15));
+        let mut dense_poly = Vec::with_capacity(poly.len() * 2);
+        dense_poly.push(poly[0]);
+        for win in poly.windows(2) {
+            let dist_xy = win[0].distance(win[1]);
+            if dist_xy > max_xy_step {
+                let n = (dist_xy / max_xy_step).ceil() as usize;
+                for k in 1..=n {
+                    let t = k as f64 / n as f64;
+                    dense_poly.push(win[0].lerp(win[1], t));
+                }
+            } else if dist_xy > 1e-6 {
+                dense_poly.push(win[1]);
+            }
+        }
+
+        // Project every vertex onto exact `f64` `drop_cutter_z`, splitting by rest/slope
         let mut current: Vec<DVec3> = Vec::new();
         let mut sub_chains: Vec<Vec<DVec3>> = Vec::new();
 
-        for &pt in &poly {
+        for &pt in &dense_poly {
             let in_reg =
                 containment.contains_point(pt) || containment.min_distance_to_boundary(pt) <= 0.05;
             let in_rest = rest_mask.is_none_or(|rm| rm.contains_xy(pt));
@@ -606,7 +677,7 @@ fn extract_and_project_iso_level(
                 sub_chains.first().and_then(|c| c.first()).copied(),
                 sub_chains.last().and_then(|c| c.last()).copied(),
             )
-            && first_p.distance(last_p) <= 0.1
+            && first_p.distance(last_p) <= 0.25
             && let Some(mut tail) = sub_chains.pop()
         {
             tail.pop();
@@ -614,10 +685,28 @@ fn extract_and_project_iso_level(
             sub_chains[0] = tail;
         }
 
+        // Cleanly close intact closed scallop loops so no start/end seam cusp remains
+        if is_closed && sub_chains.len() == 1 {
+            let loop_chain = &mut sub_chains[0];
+            if loop_chain.len() >= 3 {
+                let first_p = loop_chain[0];
+                let last_p = loop_chain[loop_chain.len() - 1];
+                let gap = first_p.distance(last_p);
+                if gap > 1e-5 && gap <= 0.5 * cell + 0.15 {
+                    loop_chain.push(first_p);
+                } else if gap <= 1e-5
+                    && let Some(last_mut) = loop_chain.last_mut()
+                {
+                    *last_mut = first_p;
+                }
+            }
+        }
+
         for raw in sub_chains {
             let refined =
                 refine_convex_chords_3d(surface, cutter, z_bottom, z_top, &raw, smooth_tol);
-            let simplified = simplify_3d_polyline_rdp(&refined, smooth_tol);
+            let simplified =
+                simplify_3d_polyline_gouge_safe(surface, cutter, z_bottom, &refined, smooth_tol);
             if simplified.len() >= 2 {
                 out.push(simplified);
             }

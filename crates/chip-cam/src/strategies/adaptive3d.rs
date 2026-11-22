@@ -140,7 +140,7 @@ pub fn generate_adaptive3d(
             clearable_curr = clearable_curr.difference(&upstream_air);
         }
 
-        if !clearable_curr.is_empty() && clearable_curr.total_area_mm2() > 0.25 {
+        if !clearable_curr.is_empty() && clearable_curr.total_area_mm2() > 0.08 {
             clear_region_set_adaptive(
                 ctx,
                 &clearable_curr,
@@ -177,7 +177,7 @@ pub fn generate_adaptive3d(
                     containment.difference(&avoid_up)
                 };
                 let newly_exposed = clearable_up.difference(&cleared_base);
-                if newly_exposed.is_empty() || newly_exposed.total_area_mm2() <= 0.25 {
+                if newly_exposed.is_empty() || newly_exposed.total_area_mm2() <= 0.08 {
                     step_prev_z = z_up;
                     continue;
                 }
@@ -241,7 +241,7 @@ fn clear_region_set_adaptive(
     regions.sort_by(|a, b| b.net_area_mm2().total_cmp(&a.net_area_mm2()));
 
     for sub_reg in regions {
-        if sub_reg.net_area_mm2() <= 0.2 {
+        if sub_reg.net_area_mm2() <= 0.08 {
             continue;
         }
         // Does this region reach outside the physical stock XY footprint (open-air entry)?
@@ -276,9 +276,9 @@ fn build_coarse_levels(
     for k in 1..=n {
         levels.push(z_top - (k as f64 / n as f64) * span);
     }
-    // Inject significant flat plateaus directly into primary Z levels (dedup within `0.05 mm`)
+    // Inject significant flat plateaus directly into primary Z levels, snapping accurately within 0.005 mm
     for &zf in flat_targets {
-        if zf < z_top - 0.05 && zf > z_bottom + 0.05 {
+        if zf < z_top - 0.005 && zf > z_bottom + 0.005 {
             if let Some(existing) = levels.iter_mut().find(|z| (**z - zf).abs() <= 0.25) {
                 *existing = zf;
             } else {
@@ -287,7 +287,7 @@ fn build_coarse_levels(
         }
     }
     levels.sort_by(|a, b| b.total_cmp(a));
-    levels.dedup_by(|a, b| (*a - *b).abs() <= 0.02);
+    levels.dedup_by(|a, b| (*a - *b).abs() <= 0.005);
     levels
 }
 
@@ -302,14 +302,21 @@ fn build_fine_stepup_levels(
     let mut levels = Vec::new();
     for k in 1..n {
         let z = z_hi - (k as f64 / n as f64) * span;
-        if z < z_hi - 0.05 && z > z_lo + 0.05 {
+        if z < z_hi - 0.005 && z > z_lo + 0.005 {
             levels.push(z);
         }
     }
+    let snap_tol = (0.25 * fine_step).clamp(0.05, 0.25);
     for &zf in flat_targets {
-        if zf < z_hi - 0.05 && zf > z_lo + 0.05 && !levels.iter().any(|&z| (z - zf).abs() <= 0.05) {
-            levels.push(zf);
+        if zf < z_hi - 0.005 && zf > z_lo + 0.005 {
+            if let Some(existing) = levels.iter_mut().find(|z| (**z - zf).abs() <= snap_tol) {
+                *existing = zf;
+            } else {
+                levels.push(zf);
+            }
         }
     }
+    levels.sort_by(|a, b| b.total_cmp(a));
+    levels.dedup_by(|a, b| (*a - *b).abs() <= 0.005);
     levels
 }
