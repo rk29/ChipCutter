@@ -1,0 +1,142 @@
+use std::{path::PathBuf, process::ExitCode};
+
+use chip_project::ProjectDocument;
+
+pub struct TransformModelArgs {
+    pub project: PathBuf,
+    pub output: Option<PathBuf>,
+    pub rot_x: Option<f64>,
+    pub rot_y: Option<f64>,
+    pub rot_z: Option<f64>,
+    pub scale: Option<f64>,
+    pub scale_x: Option<f64>,
+    pub scale_y: Option<f64>,
+    pub scale_z: Option<f64>,
+    pub fit_size_x: Option<f64>,
+    pub fit_size_y: Option<f64>,
+    pub fit_size_z: Option<f64>,
+    pub move_x: Option<f64>,
+    pub move_y: Option<f64>,
+    pub move_z: Option<f64>,
+    pub y_up_to_z_up: bool,
+    pub center_xy: bool,
+    pub drop_z0: bool,
+    pub align_top_z0: bool,
+    pub reset: bool,
+}
+
+pub fn run_transform_model(
+    args: TransformModelArgs,
+) -> Result<ExitCode, Box<dyn std::error::Error>> {
+    let mut proj = ProjectDocument::load_from_path(&args.project)?;
+    let first = proj
+        .models
+        .first()
+        .ok_or("project contains no [[models]] entry to transform")?
+        .clone();
+    let model_path = chip_project::resolve_model_path(args.project.parent(), &first.path);
+    let raw_doc = chip_project::load_model_entry_cad_doc(&model_path, first.unit_override)?;
+
+    let before_doc = raw_doc.transformed(&first.transform);
+    let before_sz = before_doc.aabb_mm.size();
+
+    let mut xf = if args.reset {
+        chip_cad::ModelTransform::IDENTITY
+    } else {
+        first.transform
+    };
+
+    if args.y_up_to_z_up {
+        let cur_center = raw_doc.transformed(&xf).aabb_mm.center();
+        xf = xf.rotated_world_axis_deg(chip_math::DVec3::X, 90.0, cur_center);
+    }
+    if let Some(rx) = args.rot_x {
+        xf.rotate_deg[0] = rx;
+    }
+    if let Some(ry) = args.rot_y {
+        xf.rotate_deg[1] = ry;
+    }
+    if let Some(rz) = args.rot_z {
+        xf.rotate_deg[2] = rz;
+    }
+    if let Some(s) = args.scale {
+        xf = xf.with_uniform_scale(s);
+    }
+    if let Some(sx) = args.scale_x {
+        xf.scale[0] = sx;
+    }
+    if let Some(sy) = args.scale_y {
+        xf.scale[1] = sy;
+    }
+    if let Some(sz) = args.scale_z {
+        xf.scale[2] = sz;
+    }
+    if let Some(tx) = args.move_x {
+        xf.translate_mm[0] = tx;
+    }
+    if let Some(ty) = args.move_y {
+        xf.translate_mm[1] = ty;
+    }
+    if let Some(tz) = args.move_z {
+        xf.translate_mm[2] = tz;
+    }
+    xf.validate()?;
+
+    let mut cur_doc = raw_doc.transformed(&xf);
+    if let Some(target_x) = args.fit_size_x {
+        xf = xf.scaled_uniformly_to_fit_axis(cur_doc.aabb_mm, 0, target_x);
+        cur_doc = raw_doc.transformed(&xf);
+    } else if let Some(target_y) = args.fit_size_y {
+        xf = xf.scaled_uniformly_to_fit_axis(cur_doc.aabb_mm, 1, target_y);
+        cur_doc = raw_doc.transformed(&xf);
+    } else if let Some(target_z) = args.fit_size_z {
+        xf = xf.scaled_uniformly_to_fit_axis(cur_doc.aabb_mm, 2, target_z);
+        cur_doc = raw_doc.transformed(&xf);
+    }
+    if args.center_xy {
+        xf = xf.centered_xy_for_aabb(cur_doc.aabb_mm);
+        cur_doc = raw_doc.transformed(&xf);
+    }
+    if args.drop_z0 {
+        xf = xf.dropped_bottom_to_z0_for_aabb(cur_doc.aabb_mm);
+        cur_doc = raw_doc.transformed(&xf);
+    } else if args.align_top_z0 {
+        xf = xf.aligned_top_to_z0_for_aabb(cur_doc.aabb_mm);
+        cur_doc = raw_doc.transformed(&xf);
+    }
+    xf.validate()?;
+
+    proj.models[0].transform = xf;
+    for setup in &mut proj.setups {
+        for op in &mut setup.operations {
+            op.mark_dirty();
+        }
+    }
+
+    let dest = args.output.unwrap_or(args.project);
+    proj.save_to_path(&dest)?;
+
+    let after_sz = cur_doc.aabb_mm.size();
+    println!("Transformed model '{}' in {}", first.id, dest.display());
+    println!(
+        "  Before: {:.2} × {:.2} × {:.2} mm (Z [{:.2} .. {:.2}])",
+        before_sz.x, before_sz.y, before_sz.z, before_doc.aabb_mm.min.z, before_doc.aabb_mm.max.z
+    );
+    println!(
+        "  After:  {:.2} × {:.2} × {:.2} mm (Z [{:.2} .. {:.2}])",
+        after_sz.x, after_sz.y, after_sz.z, cur_doc.aabb_mm.min.z, cur_doc.aabb_mm.max.z
+    );
+    println!(
+        "  Transform: rot=({:.2}°, {:.2}°, {:.2}°)  scale=({:.4}, {:.4}, {:.4})  move=({:.3}, {:.3}, {:.3}) mm",
+        xf.rotate_deg[0],
+        xf.rotate_deg[1],
+        xf.rotate_deg[2],
+        xf.scale[0],
+        xf.scale[1],
+        xf.scale[2],
+        xf.translate_mm[0],
+        xf.translate_mm[1],
+        xf.translate_mm[2],
+    );
+    Ok(ExitCode::SUCCESS)
+}

@@ -81,22 +81,22 @@ impl PaneBehavior<'_> {
                     BrowserAction::OpenStepDialog => self.app.open_step_dialog(&ctx),
                     BrowserAction::OpenMeshImportModal { browse_file } => {
                         if browse_file {
-                            self.app.mesh_import_modal.open_with_file_picker();
+                            self.app.modals.mesh_import.open_with_file_picker();
                         } else {
-                            self.app.mesh_import_modal.open = true;
+                            self.app.modals.mesh_import.open = true;
                         }
                     }
                     BrowserAction::OpenVectorImportModal { browse_file } => {
                         if browse_file {
-                            self.app.vector_import_modal.open_with_file_picker();
+                            self.app.modals.vector_import.open_with_file_picker();
                         } else {
-                            self.app.vector_import_modal.open = true;
+                            self.app.modals.vector_import.open = true;
                         }
                     }
                     BrowserAction::ReloadStepModel => self.app.reload_active_step_model(&ctx),
                     BrowserAction::ReplaceStepDialog => self.app.replace_step_dialog(&ctx),
                     BrowserAction::OpenSampleGallery => {
-                        self.app.sample_gallery_modal.open = true;
+                        self.app.modals.sample_gallery.open = true;
                     }
                     BrowserAction::NewSetupXySketch => {
                         self.app.create_new_setup_xy_sketch();
@@ -107,7 +107,7 @@ impl PaneBehavior<'_> {
                         };
                     }
                     BrowserAction::OpenToolLibrary => {
-                        self.app.tool_library_modal.open = true;
+                        self.app.modals.tool_library.open = true;
                     }
                     BrowserAction::AlignCameraToActiveSetup => {
                         self.app.align_camera_to_active_setup();
@@ -460,7 +460,8 @@ impl PaneBehavior<'_> {
                     if open_machine_manager {
                         let active_mid = self.app.project.effective_machine_id().to_string();
                         self.app
-                            .machine_manager_modal
+                            .modals
+                            .machine_manager
                             .open_selecting(&self.app.machines, &active_mid);
                     }
                     if align {
@@ -506,7 +507,7 @@ impl PaneBehavior<'_> {
                             pick_mode: &mut self.app.pick_mode,
                             lock_chipload: &mut self.app.lock_chipload,
                             show_z_planes: &mut self.app.show_z_planes,
-                            open_tool_manager: &mut self.app.tool_library_modal.open,
+                            open_tool_manager: &mut self.app.modals.tool_library.open,
                         },
                     );
                 }
@@ -876,15 +877,16 @@ impl PaneBehavior<'_> {
 
 impl ChipCutterApp {
     pub(crate) fn handle_self_test(&mut self, ctx: &egui::Context) {
-        let is_busy = self.dispatcher.is_busy() || self.sim_panel.is_busy();
+        let is_busy =
+            self.dispatcher.is_busy() || self.sim_panel.is_busy() || self.sim_panel.is_remeshing();
         let has_geo = self.has_geometry();
         let ready = has_geo
-            || self.welcome_modal.open
-            || self.sample_gallery_modal.open
-            || self.tool_library_modal.open
-            || self.machine_manager_modal.open
-            || self.command_palette.open
-            || self.shortcut_cheatsheet.open;
+            || self.modals.welcome.open
+            || self.modals.sample_gallery.open
+            || self.modals.tool_library.open
+            || self.modals.machine_manager.open
+            || self.modals.command_palette.open
+            || self.modals.shortcut_cheatsheet.open;
         let Some(st) = &mut self.self_test else {
             if is_busy {
                 ctx.request_repaint();
@@ -1124,9 +1126,9 @@ impl ChipCutterApp {
         }
 
         if let Some(modal) = capture.modal {
-            self.welcome_modal.open = modal == CaptureModal::Welcome;
-            self.sample_gallery_modal.open = modal == CaptureModal::SampleGallery;
-            self.tool_library_modal.open = modal == CaptureModal::ToolLibrary;
+            self.modals.welcome.open = modal == CaptureModal::Welcome;
+            self.modals.sample_gallery.open = modal == CaptureModal::SampleGallery;
+            self.modals.tool_library.open = modal == CaptureModal::ToolLibrary;
             if modal == CaptureModal::ToolLibrary
                 && let InspectorFocus::Operation { setup_idx, op_idx } = self.inspector_focus
                 && let Some(op_tool_id) = self
@@ -1141,18 +1143,19 @@ impl ChipCutterApp {
                     .iter()
                     .position(|t| &t.id == op_tool_id)
             {
-                self.tool_library_modal.selected_tool_idx = idx;
-                self.tool_library_modal.selected_preset_idx = 0;
+                self.modals.tool_library.selected_tool_idx = idx;
+                self.modals.tool_library.selected_preset_idx = 0;
             }
             if modal == CaptureModal::Machines {
                 let mid = self.project.effective_machine_id().to_string();
-                self.machine_manager_modal
+                self.modals
+                    .machine_manager
                     .open_selecting(&self.machines, &mid);
             } else {
-                self.machine_manager_modal.open = false;
+                self.modals.machine_manager.open = false;
             }
-            self.shortcut_cheatsheet.open = modal == CaptureModal::ShortcutCheatsheet;
-            self.about_modal.open = modal == CaptureModal::About;
+            self.modals.shortcut_cheatsheet.open = modal == CaptureModal::ShortcutCheatsheet;
+            self.modals.about.open = modal == CaptureModal::About;
         }
 
         if let Some(view) = capture.view {

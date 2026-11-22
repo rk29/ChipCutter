@@ -3,15 +3,14 @@ use chip_math::DisplayUnit;
 use wgpu::util::DeviceExt as _;
 
 use super::{
+    gizmos::build_edge_and_scene_instances,
     gpu_types::{
         COLOR_FORMAT, DEPTH_FORMAT, EdgeInstanceGpu, FrameTargets, GrowableGpuBuffer,
         GrowableSimIndexedMeshGpu, OverlayVertexGpu, SAMPLE_COUNT, SimVertexGpu, SolidVertexGpu,
         UploadedCadGpu, UploadedToolpathsGpu, ViewportUniformsGpu,
     },
-    scene_builders::{
-        HighlightState, adaptive_grid_steps, build_edge_and_scene_instances,
-        build_toolpath_gpu_instances, compute_toolpath_gpu_signature, dmat4_to_f32_2d,
-    },
+    highlight::{HighlightState, SimStockRenderSource, adaptive_grid_steps, dmat4_to_f32_2d},
+    toolpath_instances::{build_toolpath_gpu_instances, compute_toolpath_gpu_signature},
 };
 use crate::camera::CadCamera;
 
@@ -535,15 +534,19 @@ impl ViewportRenderer {
             });
         }
 
-        // Upload Pass #6 3D machined stock mesh & 3D revolved cutter assembly into reusable GPU buffers
-        self.uploaded_sim_stock.sync(
-            device,
-            queue,
-            highlight
-                .sim_stock_mesh
-                .as_ref()
-                .map(|(rev, m)| (*rev, m.vertices.as_slice(), m.indices.as_slice())),
-        );
+        // Upload Pass #6 3D machined stock render source & 3D revolved cutter assembly into reusable GPU buffers
+        match &highlight.sim_stock_source {
+            Some(SimStockRenderSource::CpuMesh { revision, mesh, .. }) => {
+                self.uploaded_sim_stock.sync(
+                    device,
+                    queue,
+                    Some((*revision, mesh.vertices.as_slice(), mesh.indices.as_slice())),
+                );
+            }
+            None => {
+                self.uploaded_sim_stock.clear();
+            }
+        }
 
         let mut tool_tip_wcs = [0.0_f32; 4];
         if let Some((rev, tool_mesh, tip_wcs)) = &highlight.sim_tool_mesh {
@@ -566,7 +569,11 @@ impl ViewportRenderer {
         let wcs_l2w = dmat4_to_f32_2d(highlight.wcs_frame.to_dmat4_local_to_world());
         let wcs_w2l = dmat4_to_f32_2d(highlight.wcs_frame.to_dmat4_world_to_local());
         let cad_model = dmat4_to_f32_2d(highlight.cad_world_transform());
-        let stock_model = dmat4_to_f32_2d(highlight.stock_model_wcs_transform());
+        let stock_model_mat = highlight.sim_stock_source.as_ref().map_or_else(
+            || highlight.stock_model_wcs_transform(),
+            |s| s.stock_model(),
+        );
+        let stock_model = dmat4_to_f32_2d(stock_model_mat);
 
         let tok = crate::theme::ThemeTokens::for_theme(highlight.theme);
         let uniforms = ViewportUniformsGpu {
@@ -849,7 +856,7 @@ mod tests {
     use chip_math::DEFAULT_TESS_CHORD_TOL_MM;
 
     use super::*;
-    use crate::viewport::scene_builders::{ToolpathRenderEntry, ZPlaneVisual};
+    use crate::viewport::highlight::{ToolpathRenderEntry, ZPlaneVisual};
 
     #[test]
     fn growable_gpu_buffer_reuses_allocation_and_grows_by_powers_of_two() {
@@ -1138,7 +1145,11 @@ mod tests {
 
         let highlight = HighlightState {
             wcs_frame: resolved.frame,
-            sim_stock_mesh: Some((1, stock_mesh)),
+            sim_stock_source: Some(SimStockRenderSource::CpuMesh {
+                revision: 1,
+                mesh: stock_mesh,
+                stock_model: chip_math::DMat4::IDENTITY,
+            }),
             sim_tool_mesh: Some((1, tool_mesh, mid_snap.tip_pos_wcs)),
             sim_trail_limit: Some(mid_snap.global_seg_idx),
             ..HighlightState::default()
@@ -1521,15 +1532,27 @@ mod tests {
         ));
 
         let mut hl_unrot = base_hl.clone();
-        hl_unrot.sim_stock_mesh = Some((1, Arc::clone(&mesh_local_0)));
         hl_unrot.sim_rotary_deg = 0.0;
+        hl_unrot.sim_stock_source = Some(SimStockRenderSource::CpuMesh {
+            revision: 1,
+            mesh: Arc::clone(&mesh_local_0),
+            stock_model: hl_unrot.stock_model_wcs_transform(),
+        });
 
         let mut hl_gpu90 = base_hl.clone();
-        hl_gpu90.sim_stock_mesh = Some((1, Arc::clone(&mesh_local_0)));
         hl_gpu90.sim_rotary_deg = angle_deg;
+        hl_gpu90.sim_stock_source = Some(SimStockRenderSource::CpuMesh {
+            revision: 1,
+            mesh: Arc::clone(&mesh_local_0),
+            stock_model: hl_gpu90.stock_model_wcs_transform(),
+        });
 
         let mut hl_rev2 = hl_gpu90.clone();
-        hl_rev2.sim_stock_mesh = Some((2, Arc::clone(&mesh_local_0)));
+        hl_rev2.sim_stock_source = Some(SimStockRenderSource::CpuMesh {
+            revision: 2,
+            mesh: Arc::clone(&mesh_local_0),
+            stock_model: hl_rev2.stock_model_wcs_transform(),
+        });
 
         // Frame 1: initial upload of rev 1
         vp.render_internal(
@@ -1573,8 +1596,12 @@ mod tests {
 
         // Frame 4: pixel-accurate verification of GPU `stock_model` 90° vs CPU pre-rotated 90° & unrotated 0°
         let mut hl_cpu90 = base_hl;
-        hl_cpu90.sim_stock_mesh = Some((1, mesh_cpu_rot90));
         hl_cpu90.sim_rotary_deg = 0.0;
+        hl_cpu90.sim_stock_source = Some(SimStockRenderSource::CpuMesh {
+            revision: 1,
+            mesh: mesh_cpu_rot90,
+            stock_model: DMat4::IDENTITY,
+        });
 
         let png_gpu90 = render_offscreen_png(&doc, &cam, &hl_gpu90, 320, 240).unwrap();
         let png_cpu90 = render_offscreen_png(&doc, &cam, &hl_cpu90, 320, 240).unwrap();

@@ -1,6 +1,10 @@
 pub mod bundle_reload_tools;
-pub mod inspect_sample;
+pub mod generate_sample;
+pub mod import_2d;
+pub mod import_mesh;
+pub mod inspect;
 pub mod machines;
+pub mod transform_model;
 pub mod validate_sim_build;
 
 use std::path::{Path, PathBuf};

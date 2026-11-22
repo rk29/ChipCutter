@@ -222,15 +222,19 @@ impl ChipCutterApp {
                 }
             }
 
-            let vis = self
-                .sim_panel
-                .resolve_viewport_visuals(&self.project, self.active_setup_idx);
-            self.highlight.sim_stock_mesh = vis.stock;
+            let vis = if self.self_test.is_some() {
+                self.sim_panel
+                    .resolve_viewport_visuals_sync(&self.project, self.active_setup_idx)
+            } else {
+                self.sim_panel
+                    .resolve_viewport_visuals(&self.project, self.active_setup_idx)
+            };
+            self.highlight.sim_stock_source = vis.stock;
             self.highlight.sim_tool_mesh = vis.cutter;
             self.highlight.sim_trail_limit = vis.trail_limit;
             self.highlight.sim_rotary_deg = vis.rotary_deg;
         } else {
-            self.highlight.sim_stock_mesh = None;
+            self.highlight.sim_stock_source = None;
             self.highlight.sim_tool_mesh = None;
             self.highlight.sim_trail_limit = None;
             self.highlight.sim_rotary_deg = 0.0;

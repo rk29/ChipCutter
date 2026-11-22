@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
-    builtin::default_starter_tool_library,
     builtin_machines::{
         builtin_carvera_air_machine, builtin_carvera_machine, builtin_carvera_z1_machine,
         builtin_milo_1_5_machine, builtin_milo_2_0_machine, builtin_voron_cascade_machine,
@@ -12,6 +11,8 @@ use crate::{
     model::{Tool, ToolId, ToolValidationError},
     storage::ToolLibrary,
 };
+
+pub use crate::builtin_machines::builtin_generic_machine;
 
 /// Canonical default machine profile ID used when a project omits `machine_id`.
 pub const DEFAULT_MACHINE_ID: &str = "generic";
@@ -438,39 +439,6 @@ pub fn sanitize_machine_id(raw: &str) -> String {
     } else {
         out
     }
-}
-
-/// Canonical read-only baseline machine (`generic`) preserving the existing starter tool library.
-pub fn builtin_generic_machine() -> MachineDefinition {
-    let starter = default_starter_tool_library();
-    let mut def = MachineDefinition {
-        schema_version: MachineDefinition::CURRENT_SCHEMA_VERSION,
-        id: DEFAULT_MACHINE_ID.to_string(),
-        name: "Generic 3/4-Axis CNC Mill".to_string(),
-        manufacturer: Some("ChipCutter".to_string()),
-        description: Some(
-            "Baseline 3-axis and 4th-axis CNC mill with the standard metric/imperial starter tool library."
-                .to_string(),
-        ),
-        is_builtin: true,
-        travel_mm: MachineTravelEnvelope::default(),
-        spindle: MachineSpindleSpec::default(),
-        kinematics: MachineKinematicsSpec::default(),
-        tool_change: MachineToolChangeKind::Manual,
-        has_toolsetter: false,
-        default_post_profile: "grbl".to_string(),
-        rotary: Some(MachineRotaryDefaults {
-            axis: "A".to_string(),
-            max_stock_diameter_mm: 120.0,
-            max_stock_length_mm: 250.0,
-            chuck_diameter_mm: 65.0,
-            chuck_length_mm: 20.0,
-            default_post_profile_4axis: Some("linuxcnc_4axis".to_string()),
-        }),
-        tools: starter.tools,
-    };
-    def.sort_tools_deterministically();
-    def
 }
 
 /// Returns all compiled-in read-only [`MachineDefinition`] presets

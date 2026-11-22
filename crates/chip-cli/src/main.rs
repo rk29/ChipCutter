@@ -6,14 +6,15 @@ use clap::{Parser, Subcommand};
 
 use crate::commands::{
     bundle_reload_tools::{run_bundle_pack, run_bundle_unpack, run_import_fusion, run_reload_step},
-    inspect_sample::{
-        GenerateSampleArgs, Import2dArgs, ImportMeshArgs, InspectArgs, TransformModelArgs,
-        run_generate_sample_step, run_import_2d, run_import_mesh, run_inspect, run_transform_model,
-    },
+    generate_sample::{GenerateSampleArgs, run_generate_sample_step},
+    import_2d::{Import2dArgs, run_import_2d},
+    import_mesh::{ImportMeshArgs, run_import_mesh},
+    inspect::{InspectArgs, run_inspect},
     machines::{
         run_machines_clone, run_machines_export, run_machines_import, run_machines_inspect,
         run_machines_list,
     },
+    transform_model::{TransformModelArgs, run_transform_model},
     validate_sim_build::{BuildArgs, run_build, run_simulate, run_validate},
 };
 
