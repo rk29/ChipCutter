@@ -476,6 +476,157 @@ mod tests {
     }
 
     #[test]
+    fn makera_machines_include_complete_essential_extended_bit_set() {
+        let makera_machines = [
+            builtin_carvera_machine(),
+            builtin_carvera_air_machine(),
+            builtin_carvera_z1_machine(),
+        ];
+
+        for machine in &makera_machines {
+            machine.validate().unwrap();
+            assert_eq!(
+                machine.tools.len(),
+                26,
+                "Makera machine '{}' must include all 26 unique cutters from the Essential Milling Bit Set (Extended)",
+                machine.id
+            );
+
+            // Every bit in the Essential Milling Bit Set (Extended) has a 1/8" (3.175mm) shank.
+            for tool in &machine.tools {
+                assert!(
+                    approx_eq(tool.geometry.shank_diameter_mm(), 3.175, 1e-6),
+                    "tool '{}' on '{}' must use a 3.175mm (1/8\") shank",
+                    tool.name,
+                    machine.id
+                );
+            }
+
+            // 5 Spiral 'O' single-flute flats + 4 TiN corn bits = 9 flat endmills
+            let flats: Vec<_> = machine
+                .tools
+                .iter()
+                .filter(|t| matches!(t.geometry, CutterGeometry::FlatEndmill { .. }))
+                .collect();
+            assert_eq!(flats.len(), 9, "'{}' flat/corn count", machine.id);
+            let single_flute_flats: Vec<(f64, f64)> = flats
+                .iter()
+                .filter_map(|t| match t.geometry {
+                    CutterGeometry::FlatEndmill {
+                        diameter_mm,
+                        flute_length_mm,
+                        flutes: 1,
+                        ..
+                    } => Some((diameter_mm, flute_length_mm)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                single_flute_flats,
+                vec![
+                    (3.175, 12.0),
+                    (3.175, 25.0),
+                    (2.0, 8.0),
+                    (1.0, 3.0),
+                    (3.175, 42.0),
+                ]
+            );
+            let corn_diameters: Vec<f64> = flats
+                .iter()
+                .filter_map(|t| match t.geometry {
+                    CutterGeometry::FlatEndmill {
+                        diameter_mm,
+                        flutes: 2,
+                        ..
+                    } => Some(diameter_mm),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(corn_diameters, vec![0.6, 1.0, 2.0, 3.0]);
+
+            // 3 metal + 3 wood/plastic 2-flute ball nose endmills = 6 ball endmills
+            let balls: Vec<(f64, f64)> = machine
+                .tools
+                .iter()
+                .filter_map(|t| match t.geometry {
+                    CutterGeometry::BallEndmill {
+                        diameter_mm,
+                        flute_length_mm,
+                        flutes: 2,
+                        ..
+                    } => Some((diameter_mm, flute_length_mm)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                balls,
+                vec![
+                    (3.175, 10.0),
+                    (2.0, 6.0),
+                    (1.0, 3.0),
+                    (3.175, 22.0),
+                    (2.0, 12.0),
+                    (1.0, 4.0),
+                ]
+            );
+
+            // 3 single-flute engraving V-bits (30°x0.2, 60°x0.1, 30°x0.3) + 1 90° chamfer bit = 4
+            let chamfers: Vec<(f64, f64, u32)> = machine
+                .tools
+                .iter()
+                .filter_map(|t| match t.geometry {
+                    CutterGeometry::ChamferMill {
+                        included_angle_deg,
+                        tip_diameter_mm,
+                        flutes,
+                        ..
+                    } => Some((included_angle_deg, tip_diameter_mm, flutes)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                chamfers,
+                vec![
+                    (30.0, 0.2, 1),
+                    (60.0, 0.1, 1),
+                    (90.0, 0.1, 2),
+                    (30.0, 0.3, 1),
+                ]
+            );
+
+            // 4 TiN-coated twist drills (1.0, 2.0, 2.5, 3.0mm)
+            let drills: Vec<f64> = machine
+                .tools
+                .iter()
+                .filter_map(|t| match t.geometry {
+                    CutterGeometry::TwistDrill { diameter_mm, .. } => Some(diameter_mm),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(drills, vec![1.0, 2.0, 2.5, 3.0]);
+
+            // 3 single-point thread mills (M3, M4 [Extended], M5)
+            let thread_mills: Vec<(f64, f64, f64)> = machine
+                .tools
+                .iter()
+                .filter_map(|t| match t.geometry {
+                    CutterGeometry::ThreadMill {
+                        diameter_mm,
+                        pitch_mm,
+                        neck_length_mm,
+                        ..
+                    } => Some((diameter_mm, pitch_mm, neck_length_mm)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                thread_mills,
+                vec![(2.42, 0.5, 9.0), (3.15, 0.7, 12.0), (4.0, 0.8, 15.0)]
+            );
+        }
+    }
+
+    #[test]
     fn milestone_33_fusion_import_rejects_oversized_and_too_many_entries_archives() {
         use std::io::Write as _;
 

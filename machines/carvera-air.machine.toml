@@ -2,7 +2,7 @@ schema_version = 1
 id = "carvera-air"
 name = "Makera Carvera Air"
 manufacturer = "Makera"
-description = 'Desktop smart CNC with lever quick-change 1/8" spindle, auto-probe/leveling, optional harmonic-drive 4th-axis rotary module, and Makera starter bit set.'
+description = 'Desktop smart CNC with lever quick-change 1/8" spindle, auto-probe/leveling, optional harmonic-drive 4th-axis rotary module, and Makera 1/8" Essential Milling Bit Set (Extended).'
 tool_change = "quick_change"
 has_toolsetter = true
 default_post_profile = "grblhal_atc"
@@ -42,8 +42,8 @@ id = "carvera_t1_3175mm_12loc_1fl"
 tool_number = 1
 length_offset_number = 1
 diameter_offset_number = 1
-name = '3.175mm (1/8") x 12mm 1FL O-Flute Flat'
-vendor = "Makera (Carvera Air Starter Kit)"
+name = '3.175mm (1/8") x 12mm 1FL O-Flute Flat (Metal)'
+vendor = "Makera (Essential Milling Bit Set - Extended)"
 product_id = "MAKERA-3175x12-1FL"
 native_unit = "millimeter"
 spindle_direction = "cw"
@@ -109,7 +109,7 @@ tool_number = 2
 length_offset_number = 2
 diameter_offset_number = 2
 name = '3.175mm (1/8") x 25mm 1FL O-Flute Flat'
-vendor = "Makera (Carvera Air Starter Kit)"
+vendor = "Makera (Essential Milling Bit Set - Extended)"
 product_id = "MAKERA-3175x25-1FL"
 native_unit = "millimeter"
 spindle_direction = "cw"
@@ -159,8 +159,8 @@ id = "carvera_t3_2mm_8loc_1fl"
 tool_number = 3
 length_offset_number = 3
 diameter_offset_number = 3
-name = '2.0mm x 8mm 1FL Flat (1/8" Shank)'
-vendor = "Makera (Carvera Air Starter Kit)"
+name = '2.0mm x 8mm 1FL O-Flute Flat (Metal, 1/8" Shank)'
+vendor = "Makera (Essential Milling Bit Set - Extended)"
 product_id = "MAKERA-2x8-1FL"
 native_unit = "millimeter"
 spindle_direction = "cw"
@@ -210,8 +210,8 @@ id = "carvera_t4_1mm_3loc_1fl"
 tool_number = 4
 length_offset_number = 4
 diameter_offset_number = 4
-name = '1.0mm x 3mm 1FL Micro Flat (1/8" Shank)'
-vendor = "Makera (Carvera Air Starter Kit)"
+name = '1.0mm x 3mm 1FL Micro O-Flute Flat (Metal, 1/8" Shank)'
+vendor = "Makera (Essential Milling Bit Set - Extended)"
 product_id = "MAKERA-1x3-1FL"
 native_unit = "millimeter"
 spindle_direction = "cw"
@@ -261,18 +261,18 @@ id = "carvera_t5_3175mm_2fl_ball"
 tool_number = 5
 length_offset_number = 5
 diameter_offset_number = 5
-name = '3.175mm (1/8") 2FL Ball Nose Endmill'
-vendor = "Makera (Carvera Air Starter Kit)"
-product_id = "MAKERA-3175-2FL-BALL"
+name = '3.175mm (1/8") x 10mm 2FL Ball Nose (Metal)'
+vendor = "Makera (Essential Milling Bit Set - Extended)"
+product_id = "MAKERA-3175x10-2FL-BALL"
 native_unit = "millimeter"
 spindle_direction = "cw"
 default_coolant = "air_blast"
-stickout_length_mm = 20.0
+stickout_length_mm = 19.0
 
 [tools.geometry]
 type = "ball_endmill"
 diameter_mm = 3.175
-flute_length_mm = 12.0
+flute_length_mm = 10.0
 overall_length_mm = 38.0
 shank_diameter_mm = 3.175
 flutes = 2
@@ -312,8 +312,8 @@ id = "carvera_t6_30deg_02mm_engrave"
 tool_number = 6
 length_offset_number = 6
 diameter_offset_number = 6
-name = '30° 0.2mm Tip V-Engraving Bit (1/8")'
-vendor = "Makera (Carvera Air Starter Kit)"
+name = '30° 0.2mm Tip 1FL V-Engraving Bit (Metal, 1/8")'
+vendor = "Makera (Essential Milling Bit Set - Extended)"
 product_id = "MAKERA-V30-02"
 native_unit = "millimeter"
 spindle_direction = "cw"
@@ -325,7 +325,7 @@ type = "chamfer_mill"
 diameter_mm = 3.175
 tip_diameter_mm = 0.2
 included_angle_deg = 30.0
-flute_length_mm = 8.0
+flute_length_mm = 9.0
 overall_length_mm = 38.0
 shank_diameter_mm = 3.175
 flutes = 1
@@ -365,8 +365,8 @@ id = "carvera_t7_60deg_01mm_vcarve"
 tool_number = 7
 length_offset_number = 7
 diameter_offset_number = 7
-name = '60° 0.1mm Tip V-Carve Bit (1/8")'
-vendor = "Makera (Carvera Air Starter Kit)"
+name = '60° 0.1mm Tip 1FL V-Engraving Bit (Metal, 1/8")'
+vendor = "Makera (Essential Milling Bit Set - Extended)"
 product_id = "MAKERA-V60-01"
 native_unit = "millimeter"
 spindle_direction = "cw"
@@ -378,7 +378,7 @@ type = "chamfer_mill"
 diameter_mm = 3.175
 tip_diameter_mm = 0.1
 included_angle_deg = 60.0
-flute_length_mm = 6.0
+flute_length_mm = 8.0
 overall_length_mm = 38.0
 shank_diameter_mm = 3.175
 flutes = 1
@@ -398,13 +398,28 @@ default_stepdown_mm = 1.5
 default_stepover_mm = 0.5
 coolant_override = "disabled"
 
+[[tools.presets]]
+id = "carvera_v60_metal"
+name = "Aluminum / Brass - Fine V-Engraving"
+material = "Aluminum / Brass"
+spindle_rpm = 11028.059048887237
+surface_speed_m_min = 110.0
+cutting_feed_mm_min = 242.61729907551918
+chipload_mm_tooth = 0.022
+lead_feed_mm_min = 194.09383926041536
+ramp_feed_mm_min = 121.30864953775959
+plunge_feed_mm_min = 80.87243302517307
+default_stepdown_mm = 0.2
+default_stepover_mm = 0.15
+coolant_override = "air_blast"
+
 [[tools]]
 id = "carvera_t8_3175mm_90deg_chamfer"
 tool_number = 8
 length_offset_number = 8
 diameter_offset_number = 8
-name = '3.175mm (1/8") 90° Chamfer Bit'
-vendor = "Makera (Carvera Air Starter Kit)"
+name = '3.175mm (1/8") 90° 2FL Chamfer / Spot Bit'
+vendor = "Makera (Essential Milling Bit Set - Extended)"
 product_id = "MAKERA-3175-90-CHAMFER"
 native_unit = "millimeter"
 spindle_direction = "cw"
@@ -414,16 +429,16 @@ stickout_length_mm = 16.0
 [tools.geometry]
 type = "chamfer_mill"
 diameter_mm = 3.175
-tip_diameter_mm = 0.2
+tip_diameter_mm = 0.1
 included_angle_deg = 90.0
-flute_length_mm = 5.0
+flute_length_mm = 3.0
 overall_length_mm = 38.0
 shank_diameter_mm = 3.175
 flutes = 2
 
 [[tools.presets]]
 id = "carvera_chamfer_al"
-name = "Aluminum 6061 - Edge Break"
+name = "Aluminum 6061 - Edge Break / Spot"
 material = "Aluminum 6061"
 spindle_rpm = 11028.059048887237
 surface_speed_m_min = 110.0
@@ -435,3 +450,972 @@ plunge_feed_mm_min = 147.04078731849648
 default_stepdown_mm = 0.4
 default_stepover_mm = 0.4
 coolant_override = "air_blast"
+
+[[tools.presets]]
+id = "carvera_chamfer_wood"
+name = "Hardwood / Plastic - Edge Break"
+material = "Hardwood / Plastic"
+spindle_rpm = 11529.334460200293
+surface_speed_m_min = 115.0
+cutting_feed_mm_min = 876.2294189752222
+chipload_mm_tooth = 0.038
+lead_feed_mm_min = 700.9835351801778
+ramp_feed_mm_min = 438.1147094876111
+plunge_feed_mm_min = 292.07647299174073
+default_stepdown_mm = 1.0
+default_stepover_mm = 1.0
+coolant_override = "disabled"
+
+[[tools]]
+id = "carvera_t9_3175mm_42loc_1fl"
+tool_number = 9
+length_offset_number = 9
+diameter_offset_number = 9
+name = '3.175mm (1/8") x 42mm 1FL O-Flute Flat (Extra Long)'
+vendor = "Makera (Essential Milling Bit Set - Extended)"
+product_id = "MAKERA-3175x42-1FL"
+native_unit = "millimeter"
+spindle_direction = "cw"
+default_coolant = "disabled"
+stickout_length_mm = 44.0
+
+[tools.geometry]
+type = "flat_endmill"
+diameter_mm = 3.175
+flute_length_mm = 42.0
+overall_length_mm = 60.0
+shank_diameter_mm = 3.175
+flutes = 1
+
+[[tools.presets]]
+id = "carvera_42loc_wood"
+name = "Hardwood / Epoxy Board - Extra Deep"
+material = "Hardwood / Tooling Board"
+spindle_rpm = 10526.78363757418
+surface_speed_m_min = 105.0
+cutting_feed_mm_min = 547.3927491538574
+chipload_mm_tooth = 0.052
+lead_feed_mm_min = 437.91419932308594
+ramp_feed_mm_min = 273.6963745769287
+plunge_feed_mm_min = 182.46424971795247
+default_stepdown_mm = 1.0
+default_stepover_mm = 0.9
+coolant_override = "disabled"
+
+[[tools.presets]]
+id = "carvera_42loc_plastic"
+name = "Acetal / Acrylic - Extra Deep"
+material = "Engineering Plastic"
+spindle_rpm = 10025.508226261125
+surface_speed_m_min = 100.0
+cutting_feed_mm_min = 421.0713455029673
+chipload_mm_tooth = 0.042
+lead_feed_mm_min = 336.8570764023739
+ramp_feed_mm_min = 210.53567275148365
+plunge_feed_mm_min = 140.35711516765576
+default_stepdown_mm = 0.8
+default_stepover_mm = 0.8
+coolant_override = "air_blast"
+
+[[tools]]
+id = "carvera_t10_30deg_03mm_engrave"
+tool_number = 10
+length_offset_number = 10
+diameter_offset_number = 10
+name = '30° 0.3mm Tip 1FL V-Engraving Bit (Metal, 1/8")'
+vendor = "Makera (Essential Milling Bit Set - Extended)"
+product_id = "MAKERA-V30-03"
+native_unit = "millimeter"
+spindle_direction = "cw"
+default_coolant = "disabled"
+stickout_length_mm = 16.0
+
+[tools.geometry]
+type = "chamfer_mill"
+diameter_mm = 3.175
+tip_diameter_mm = 0.3
+included_angle_deg = 30.0
+flute_length_mm = 9.0
+overall_length_mm = 38.0
+shank_diameter_mm = 3.175
+flutes = 1
+
+[[tools.presets]]
+id = "carvera_v30_03_metal"
+name = "Aluminum / Brass - Engraving"
+material = "Aluminum / Brass"
+spindle_rpm = 11028.059048887237
+surface_speed_m_min = 110.0
+cutting_feed_mm_min = 308.78565336884265
+chipload_mm_tooth = 0.028
+lead_feed_mm_min = 247.02852269507412
+ramp_feed_mm_min = 154.39282668442132
+plunge_feed_mm_min = 102.92855112294755
+default_stepdown_mm = 0.2
+default_stepover_mm = 0.25
+coolant_override = "air_blast"
+
+[[tools.presets]]
+id = "carvera_v30_03_pcb"
+name = "PCB Isolation / Plastic"
+material = "FR4 PCB / Plastic"
+spindle_rpm = 12030.609871513348
+surface_speed_m_min = 120.0
+cutting_feed_mm_min = 457.16317511750725
+chipload_mm_tooth = 0.038
+lead_feed_mm_min = 365.73054009400585
+ramp_feed_mm_min = 228.58158755875363
+plunge_feed_mm_min = 152.38772503916908
+default_stepdown_mm = 0.2
+default_stepover_mm = 0.25
+coolant_override = "disabled"
+
+[[tools.presets]]
+id = "carvera_v30_03_wood"
+name = "Hardwood / Epoxy Engraving"
+material = "Hardwood / Tooling Board"
+spindle_rpm = 12030.609871513348
+surface_speed_m_min = 120.0
+cutting_feed_mm_min = 577.4692738326407
+chipload_mm_tooth = 0.048
+lead_feed_mm_min = 461.97541906611264
+ramp_feed_mm_min = 288.73463691632037
+plunge_feed_mm_min = 192.48975794421358
+default_stepdown_mm = 1.0
+default_stepover_mm = 0.3
+coolant_override = "disabled"
+
+[[tools]]
+id = "carvera_t11_2mm_6loc_2fl_ball_metal"
+tool_number = 11
+length_offset_number = 11
+diameter_offset_number = 11
+name = '2.0mm x 6mm 2FL Ball Nose (Metal, 1/8" Shank)'
+vendor = "Makera (Essential Milling Bit Set - Extended)"
+product_id = "MAKERA-2x6-2FL-BALL-M"
+native_unit = "millimeter"
+spindle_direction = "cw"
+default_coolant = "air_blast"
+stickout_length_mm = 16.0
+
+[tools.geometry]
+type = "ball_endmill"
+diameter_mm = 2.0
+flute_length_mm = 6.0
+overall_length_mm = 38.0
+shank_diameter_mm = 3.175
+flutes = 2
+
+[[tools.presets]]
+id = "carvera_2mm_ball_al"
+name = "Aluminum 6061 - 3D / 4-Axis"
+material = "Aluminum 6061"
+spindle_rpm = 11777.465788800255
+surface_speed_m_min = 74.0
+cutting_feed_mm_min = 376.87890524160815
+chipload_mm_tooth = 0.016
+lead_feed_mm_min = 301.5031241932865
+ramp_feed_mm_min = 188.43945262080408
+plunge_feed_mm_min = 125.62630174720272
+default_stepdown_mm = 0.25
+default_stepover_mm = 0.25
+coolant_override = "air_blast"
+
+[[tools.presets]]
+id = "carvera_2mm_ball_wood"
+name = "Hardwood / Plastic - 3D / 4-Axis"
+material = "Hardwood / Plastic"
+spindle_rpm = 12414.085561167836
+surface_speed_m_min = 78.0
+cutting_feed_mm_min = 744.8451336700701
+chipload_mm_tooth = 0.03
+lead_feed_mm_min = 595.8761069360561
+ramp_feed_mm_min = 372.42256683503507
+plunge_feed_mm_min = 248.28171122335672
+default_stepdown_mm = 0.8
+default_stepover_mm = 0.3
+coolant_override = "disabled"
+
+[[tools]]
+id = "carvera_t12_1mm_3loc_2fl_ball_metal"
+tool_number = 12
+length_offset_number = 12
+diameter_offset_number = 12
+name = '1.0mm x 3mm 2FL Micro Ball Nose (Metal, 1/8" Shank)'
+vendor = "Makera (Essential Milling Bit Set - Extended)"
+product_id = "MAKERA-1x3-2FL-BALL-M"
+native_unit = "millimeter"
+spindle_direction = "cw"
+default_coolant = "air_blast"
+stickout_length_mm = 14.0
+
+[tools.geometry]
+type = "ball_endmill"
+diameter_mm = 1.0
+flute_length_mm = 3.0
+overall_length_mm = 38.0
+shank_diameter_mm = 3.175
+flutes = 2
+
+[[tools.presets]]
+id = "carvera_1mm_ball_al"
+name = "Aluminum 6061 - Micro 3D"
+material = "Aluminum 6061"
+spindle_rpm = 11459.155902616465
+surface_speed_m_min = 36.0
+cutting_feed_mm_min = 229.1831180523293
+chipload_mm_tooth = 0.01
+lead_feed_mm_min = 183.34649444186346
+ramp_feed_mm_min = 114.59155902616465
+plunge_feed_mm_min = 76.39437268410977
+default_stepdown_mm = 0.15
+default_stepover_mm = 0.15
+coolant_override = "air_blast"
+
+[[tools.presets]]
+id = "carvera_1mm_ball_wood"
+name = "Hardwood / Plastic - Micro 3D"
+material = "Hardwood / Plastic"
+spindle_rpm = 12095.775674984046
+surface_speed_m_min = 38.0
+cutting_feed_mm_min = 435.44792429942567
+chipload_mm_tooth = 0.018
+lead_feed_mm_min = 348.35833943954054
+ramp_feed_mm_min = 217.72396214971283
+plunge_feed_mm_min = 145.14930809980856
+default_stepdown_mm = 0.4
+default_stepover_mm = 0.18
+coolant_override = "disabled"
+
+[[tools]]
+id = "carvera_t13_3175mm_22loc_2fl_ball"
+tool_number = 13
+length_offset_number = 13
+diameter_offset_number = 13
+name = '3.175mm (1/8") x 22mm 2FL Ball Nose (Wood/Plastic)'
+vendor = "Makera (Essential Milling Bit Set - Extended)"
+product_id = "MAKERA-3175x22-2FL-BALL"
+native_unit = "millimeter"
+spindle_direction = "cw"
+default_coolant = "disabled"
+stickout_length_mm = 24.0
+
+[tools.geometry]
+type = "ball_endmill"
+diameter_mm = 3.175
+flute_length_mm = 22.0
+overall_length_mm = 38.0
+shank_diameter_mm = 3.175
+flutes = 2
+
+[[tools.presets]]
+id = "carvera_ball22_wood"
+name = "Hardwood / Epoxy - Deep 3D"
+material = "Hardwood / Tooling Board"
+spindle_rpm = 11830.099706988127
+surface_speed_m_min = 118.0
+cutting_feed_mm_min = 804.4467800751927
+chipload_mm_tooth = 0.034
+lead_feed_mm_min = 643.5574240601542
+ramp_feed_mm_min = 402.22339003759635
+plunge_feed_mm_min = 268.1489266917309
+default_stepdown_mm = 0.9
+default_stepover_mm = 0.45
+coolant_override = "disabled"
+
+[[tools.presets]]
+id = "carvera_ball22_plastic"
+name = "Acetal / Acrylic - Deep 3D"
+material = "Engineering Plastic"
+spindle_rpm = 11028.059048887237
+surface_speed_m_min = 110.0
+cutting_feed_mm_min = 573.4590705421363
+chipload_mm_tooth = 0.026
+lead_feed_mm_min = 458.767256433709
+ramp_feed_mm_min = 286.72953527106813
+plunge_feed_mm_min = 191.15302351404543
+default_stepdown_mm = 0.7
+default_stepover_mm = 0.4
+coolant_override = "air_blast"
+
+[[tools]]
+id = "carvera_t14_2mm_12loc_2fl_ball"
+tool_number = 14
+length_offset_number = 14
+diameter_offset_number = 14
+name = '2.0mm x 12mm 2FL Ball Nose (Wood/Plastic, 1/8" Shank)'
+vendor = "Makera (Essential Milling Bit Set - Extended)"
+product_id = "MAKERA-2x12-2FL-BALL"
+native_unit = "millimeter"
+spindle_direction = "cw"
+default_coolant = "disabled"
+stickout_length_mm = 18.0
+
+[tools.geometry]
+type = "ball_endmill"
+diameter_mm = 2.0
+flute_length_mm = 12.0
+overall_length_mm = 38.0
+shank_diameter_mm = 3.175
+flutes = 2
+
+[[tools.presets]]
+id = "carvera_ball12_wood"
+name = "Hardwood / Epoxy - Fine 3D"
+material = "Hardwood / Tooling Board"
+spindle_rpm = 11777.465788800255
+surface_speed_m_min = 74.0
+cutting_feed_mm_min = 612.4282210176132
+chipload_mm_tooth = 0.026
+lead_feed_mm_min = 489.94257681409056
+ramp_feed_mm_min = 306.2141105088066
+plunge_feed_mm_min = 204.14274033920438
+default_stepdown_mm = 0.7
+default_stepover_mm = 0.3
+coolant_override = "disabled"
+
+[[tools.presets]]
+id = "carvera_ball12_plastic"
+name = "Acetal / Acrylic - Fine 3D"
+material = "Engineering Plastic"
+spindle_rpm = 11140.846016432673
+surface_speed_m_min = 70.0
+cutting_feed_mm_min = 445.63384065730696
+chipload_mm_tooth = 0.02
+lead_feed_mm_min = 356.5070725258456
+ramp_feed_mm_min = 222.81692032865348
+plunge_feed_mm_min = 148.54461355243566
+default_stepdown_mm = 0.55
+default_stepover_mm = 0.28
+coolant_override = "air_blast"
+
+[[tools]]
+id = "carvera_t15_1mm_4loc_2fl_ball"
+tool_number = 15
+length_offset_number = 15
+diameter_offset_number = 15
+name = '1.0mm x 4mm 2FL Micro Ball Nose (Wood/Plastic, 1/8" Shank)'
+vendor = "Makera (Essential Milling Bit Set - Extended)"
+product_id = "MAKERA-1x4-2FL-BALL"
+native_unit = "millimeter"
+spindle_direction = "cw"
+default_coolant = "disabled"
+stickout_length_mm = 14.0
+
+[tools.geometry]
+type = "ball_endmill"
+diameter_mm = 1.0
+flute_length_mm = 4.0
+overall_length_mm = 38.0
+shank_diameter_mm = 3.175
+flutes = 2
+
+[[tools.presets]]
+id = "carvera_ball4_wood"
+name = "Hardwood / Epoxy - Micro 3D"
+material = "Hardwood / Tooling Board"
+spindle_rpm = 12095.775674984046
+surface_speed_m_min = 38.0
+cutting_feed_mm_min = 387.0648215994895
+chipload_mm_tooth = 0.016
+lead_feed_mm_min = 309.65185727959164
+ramp_feed_mm_min = 193.53241079974475
+plunge_feed_mm_min = 129.02160719982984
+default_stepdown_mm = 0.4
+default_stepover_mm = 0.16
+coolant_override = "disabled"
+
+[[tools.presets]]
+id = "carvera_ball4_plastic"
+name = "Acetal / Acrylic - Micro 3D"
+material = "Engineering Plastic"
+spindle_rpm = 11459.155902616465
+surface_speed_m_min = 36.0
+cutting_feed_mm_min = 320.856365273261
+chipload_mm_tooth = 0.014
+lead_feed_mm_min = 256.6850922186088
+ramp_feed_mm_min = 160.4281826366305
+plunge_feed_mm_min = 106.95212175775367
+default_stepdown_mm = 0.35
+default_stepover_mm = 0.15
+coolant_override = "air_blast"
+
+[[tools]]
+id = "carvera_t16_1mm_tin_drill"
+tool_number = 16
+length_offset_number = 16
+diameter_offset_number = 16
+name = '1.0mm x 10mm TiN-Coated Twist Drill (1/8" Shank)'
+vendor = "Makera (Essential Milling Bit Set - Extended)"
+product_id = "MAKERA-DRILL-1x10"
+native_unit = "millimeter"
+spindle_direction = "cw"
+default_coolant = "air_blast"
+stickout_length_mm = 18.0
+
+[tools.geometry]
+type = "twist_drill"
+diameter_mm = 1.0
+point_angle_deg = 118.0
+flute_length_mm = 10.0
+overall_length_mm = 38.0
+shank_diameter_mm = 3.175
+flutes = 2
+
+[[tools.presets]]
+id = "carvera_drill1_al"
+name = "Aluminum 6061 - Peck Drill"
+material = "Aluminum 6061"
+spindle_rpm = 9549.29658551372
+surface_speed_m_min = 30.0
+cutting_feed_mm_min = 190.98593171027443
+chipload_mm_tooth = 0.01
+lead_feed_mm_min = 152.78874536821954
+ramp_feed_mm_min = 95.49296585513721
+plunge_feed_mm_min = 63.66197723675814
+default_stepdown_mm = 0.5
+default_stepover_mm = 1.0
+coolant_override = "air_blast"
+
+[[tools.presets]]
+id = "carvera_drill1_pcb"
+name = "PCB / Plastic / Hardwood - Drill"
+material = "FR4 PCB / Plastic / Wood"
+spindle_rpm = 10822.536130248884
+surface_speed_m_min = 34.0
+cutting_feed_mm_min = 324.6760839074665
+chipload_mm_tooth = 0.015
+lead_feed_mm_min = 259.7408671259732
+ramp_feed_mm_min = 162.33804195373324
+plunge_feed_mm_min = 108.22536130248882
+default_stepdown_mm = 1.0
+default_stepover_mm = 1.0
+coolant_override = "disabled"
+
+[[tools]]
+id = "carvera_t17_2mm_tin_drill"
+tool_number = 17
+length_offset_number = 17
+diameter_offset_number = 17
+name = '2.0mm x 12mm TiN-Coated Twist Drill (1/8" Shank)'
+vendor = "Makera (Essential Milling Bit Set - Extended)"
+product_id = "MAKERA-DRILL-2x12"
+native_unit = "millimeter"
+spindle_direction = "cw"
+default_coolant = "air_blast"
+stickout_length_mm = 19.0
+
+[tools.geometry]
+type = "twist_drill"
+diameter_mm = 2.0
+point_angle_deg = 118.0
+flute_length_mm = 12.0
+overall_length_mm = 38.0
+shank_diameter_mm = 3.175
+flutes = 2
+
+[[tools.presets]]
+id = "carvera_drill2_al"
+name = "Aluminum 6061 - Peck Drill"
+material = "Aluminum 6061"
+spindle_rpm = 9549.29658551372
+surface_speed_m_min = 60.0
+cutting_feed_mm_min = 248.28171122335672
+chipload_mm_tooth = 0.013
+lead_feed_mm_min = 198.6253689786854
+ramp_feed_mm_min = 124.14085561167836
+plunge_feed_mm_min = 82.76057040778558
+default_stepdown_mm = 1.0
+default_stepover_mm = 2.0
+coolant_override = "air_blast"
+
+[[tools.presets]]
+id = "carvera_drill2_pcb"
+name = "PCB / Plastic / Hardwood - Drill"
+material = "FR4 PCB / Plastic / Wood"
+spindle_rpm = 10504.226244065092
+surface_speed_m_min = 66.0
+cutting_feed_mm_min = 378.1521447863433
+chipload_mm_tooth = 0.018
+lead_feed_mm_min = 302.52171582907465
+ramp_feed_mm_min = 189.07607239317164
+plunge_feed_mm_min = 126.05071492878109
+default_stepdown_mm = 2.0
+default_stepover_mm = 2.0
+coolant_override = "disabled"
+
+[[tools]]
+id = "carvera_t18_25mm_tin_drill"
+tool_number = 18
+length_offset_number = 18
+diameter_offset_number = 18
+name = '2.5mm x 12mm TiN-Coated Twist Drill (1/8" Shank)'
+vendor = "Makera (Essential Milling Bit Set - Extended)"
+product_id = "MAKERA-DRILL-25x12"
+native_unit = "millimeter"
+spindle_direction = "cw"
+default_coolant = "air_blast"
+stickout_length_mm = 19.0
+
+[tools.geometry]
+type = "twist_drill"
+diameter_mm = 2.5
+point_angle_deg = 118.0
+flute_length_mm = 12.0
+overall_length_mm = 38.0
+shank_diameter_mm = 3.175
+flutes = 2
+
+[[tools.presets]]
+id = "carvera_drill25_al"
+name = "Aluminum 6061 - Peck Drill"
+material = "Aluminum 6061"
+spindle_rpm = 9421.972631040204
+surface_speed_m_min = 74.0
+cutting_feed_mm_min = 263.8152336691257
+chipload_mm_tooth = 0.014
+lead_feed_mm_min = 211.05218693530057
+ramp_feed_mm_min = 131.90761683456284
+plunge_feed_mm_min = 87.9384112230419
+default_stepdown_mm = 1.2
+default_stepover_mm = 2.5
+coolant_override = "air_blast"
+
+[[tools.presets]]
+id = "carvera_drill25_pcb"
+name = "PCB / Plastic / Hardwood - Drill"
+material = "FR4 PCB / Plastic / Wood"
+spindle_rpm = 10440.564266828334
+surface_speed_m_min = 82.0
+cutting_feed_mm_min = 417.6225706731334
+chipload_mm_tooth = 0.02
+lead_feed_mm_min = 334.09805653850674
+ramp_feed_mm_min = 208.8112853365667
+plunge_feed_mm_min = 139.20752355771114
+default_stepdown_mm = 2.5
+default_stepover_mm = 2.5
+coolant_override = "disabled"
+
+[[tools]]
+id = "carvera_t19_3mm_tin_drill"
+tool_number = 19
+length_offset_number = 19
+diameter_offset_number = 19
+name = '3.0mm x 12mm TiN-Coated Twist Drill (1/8" Shank)'
+vendor = "Makera (Essential Milling Bit Set - Extended)"
+product_id = "MAKERA-DRILL-3x12"
+native_unit = "millimeter"
+spindle_direction = "cw"
+default_coolant = "air_blast"
+stickout_length_mm = 19.0
+
+[tools.geometry]
+type = "twist_drill"
+diameter_mm = 3.0
+point_angle_deg = 118.0
+flute_length_mm = 12.0
+overall_length_mm = 38.0
+shank_diameter_mm = 3.175
+flutes = 2
+
+[[tools.presets]]
+id = "carvera_drill3_al"
+name = "Aluminum 6061 - Peck Drill"
+material = "Aluminum 6061"
+spindle_rpm = 9337.089994724527
+surface_speed_m_min = 88.0
+cutting_feed_mm_min = 280.1126998417358
+chipload_mm_tooth = 0.015
+lead_feed_mm_min = 224.09015987338864
+ramp_feed_mm_min = 140.0563499208679
+plunge_feed_mm_min = 93.37089994724526
+default_stepdown_mm = 1.5
+default_stepover_mm = 3.0
+coolant_override = "air_blast"
+
+[[tools.presets]]
+id = "carvera_drill3_pcb"
+name = "PCB / Plastic / Hardwood - Drill"
+material = "FR4 PCB / Plastic / Wood"
+spindle_rpm = 10185.916357881302
+surface_speed_m_min = 96.0
+cutting_feed_mm_min = 448.1803197467773
+chipload_mm_tooth = 0.022
+lead_feed_mm_min = 358.54425579742184
+ramp_feed_mm_min = 224.09015987338864
+plunge_feed_mm_min = 149.39343991559244
+default_stepdown_mm = 3.0
+default_stepover_mm = 3.0
+coolant_override = "disabled"
+
+[[tools]]
+id = "carvera_t20_06mm_tin_corn"
+tool_number = 20
+length_offset_number = 20
+diameter_offset_number = 20
+name = '0.6mm x 3mm TiN-Coated Corn Bit (1/8" Shank)'
+vendor = "Makera (Essential Milling Bit Set - Extended)"
+product_id = "MAKERA-CORN-06x3"
+native_unit = "millimeter"
+spindle_direction = "cw"
+default_coolant = "disabled"
+stickout_length_mm = 14.0
+
+[tools.geometry]
+type = "flat_endmill"
+diameter_mm = 0.6
+flute_length_mm = 3.0
+overall_length_mm = 38.0
+shank_diameter_mm = 3.175
+flutes = 2
+
+[[tools.presets]]
+id = "carvera_corn06_pcb"
+name = "FR4 PCB / Carbon Fiber - Micro Contour"
+material = "FR4 PCB / Carbon Fiber"
+spindle_rpm = 11671.362493405659
+surface_speed_m_min = 22.0
+cutting_feed_mm_min = 256.7699748549245
+chipload_mm_tooth = 0.011
+lead_feed_mm_min = 205.4159798839396
+ramp_feed_mm_min = 128.38498742746225
+plunge_feed_mm_min = 85.58999161830816
+default_stepdown_mm = 0.3
+default_stepover_mm = 0.25
+coolant_override = "disabled"
+
+[[tools.presets]]
+id = "carvera_corn06_wood"
+name = "Hardwood / Plastic - Micro Contour"
+material = "Hardwood / Plastic"
+spindle_rpm = 11671.362493405659
+surface_speed_m_min = 22.0
+cutting_feed_mm_min = 326.79814981535844
+chipload_mm_tooth = 0.014
+lead_feed_mm_min = 261.4385198522868
+ramp_feed_mm_min = 163.39907490767922
+plunge_feed_mm_min = 108.93271660511948
+default_stepdown_mm = 0.4
+default_stepover_mm = 0.3
+coolant_override = "disabled"
+
+[[tools]]
+id = "carvera_t21_1mm_tin_corn"
+tool_number = 21
+length_offset_number = 21
+diameter_offset_number = 21
+name = '1.0mm x 7mm TiN-Coated Corn Bit (1/8" Shank)'
+vendor = "Makera (Essential Milling Bit Set - Extended)"
+product_id = "MAKERA-CORN-1x7"
+native_unit = "millimeter"
+spindle_direction = "cw"
+default_coolant = "disabled"
+stickout_length_mm = 16.0
+
+[tools.geometry]
+type = "flat_endmill"
+diameter_mm = 1.0
+flute_length_mm = 7.0
+overall_length_mm = 38.0
+shank_diameter_mm = 3.175
+flutes = 2
+
+[[tools.presets]]
+id = "carvera_corn1_pcb"
+name = "FR4 PCB / Carbon Fiber"
+material = "FR4 PCB / Carbon Fiber"
+spindle_rpm = 11459.155902616465
+surface_speed_m_min = 36.0
+cutting_feed_mm_min = 343.77467707849394
+chipload_mm_tooth = 0.015
+lead_feed_mm_min = 275.0197416627952
+ramp_feed_mm_min = 171.88733853924697
+plunge_feed_mm_min = 114.59155902616465
+default_stepdown_mm = 0.4
+default_stepover_mm = 0.4
+coolant_override = "disabled"
+
+[[tools.presets]]
+id = "carvera_corn1_wood"
+name = "Hardwood / Plastic"
+material = "Hardwood / Plastic"
+spindle_rpm = 12095.775674984046
+surface_speed_m_min = 38.0
+cutting_feed_mm_min = 435.44792429942567
+chipload_mm_tooth = 0.018
+lead_feed_mm_min = 348.35833943954054
+ramp_feed_mm_min = 217.72396214971283
+plunge_feed_mm_min = 145.14930809980856
+default_stepdown_mm = 0.6
+default_stepover_mm = 0.5
+coolant_override = "disabled"
+
+[[tools]]
+id = "carvera_t22_2mm_tin_corn"
+tool_number = 22
+length_offset_number = 22
+diameter_offset_number = 22
+name = '2.0mm x 10.5mm TiN-Coated Corn Bit (1/8" Shank)'
+vendor = "Makera (Essential Milling Bit Set - Extended)"
+product_id = "MAKERA-CORN-2x105"
+native_unit = "millimeter"
+spindle_direction = "cw"
+default_coolant = "disabled"
+stickout_length_mm = 18.0
+
+[tools.geometry]
+type = "flat_endmill"
+diameter_mm = 2.0
+flute_length_mm = 10.5
+overall_length_mm = 38.0
+shank_diameter_mm = 3.175
+flutes = 2
+
+[[tools.presets]]
+id = "carvera_corn2_pcb"
+name = "FR4 PCB / Carbon Fiber"
+material = "FR4 PCB / Carbon Fiber"
+spindle_rpm = 11777.465788800255
+surface_speed_m_min = 74.0
+cutting_feed_mm_min = 423.9887683968091
+chipload_mm_tooth = 0.018
+lead_feed_mm_min = 339.19101471744733
+ramp_feed_mm_min = 211.99438419840456
+plunge_feed_mm_min = 141.32958946560305
+default_stepdown_mm = 0.6
+default_stepover_mm = 0.8
+coolant_override = "disabled"
+
+[[tools.presets]]
+id = "carvera_corn2_wood"
+name = "Hardwood / Plastic"
+material = "Hardwood / Plastic"
+spindle_rpm = 12095.775674984046
+surface_speed_m_min = 76.0
+cutting_feed_mm_min = 628.9803350991704
+chipload_mm_tooth = 0.026
+lead_feed_mm_min = 503.18426807933633
+ramp_feed_mm_min = 314.4901675495852
+plunge_feed_mm_min = 209.66011169972344
+default_stepdown_mm = 1.0
+default_stepover_mm = 0.9
+coolant_override = "disabled"
+
+[[tools]]
+id = "carvera_t23_3mm_tin_corn"
+tool_number = 23
+length_offset_number = 23
+diameter_offset_number = 23
+name = '3.0mm x 12mm TiN-Coated Corn Bit (1/8" Shank)'
+vendor = "Makera (Essential Milling Bit Set - Extended)"
+product_id = "MAKERA-CORN-3x12"
+native_unit = "millimeter"
+spindle_direction = "cw"
+default_coolant = "disabled"
+stickout_length_mm = 19.0
+
+[tools.geometry]
+type = "flat_endmill"
+diameter_mm = 3.0
+flute_length_mm = 12.0
+overall_length_mm = 38.0
+shank_diameter_mm = 3.175
+flutes = 2
+
+[[tools.presets]]
+id = "carvera_corn3_pcb"
+name = "FR4 PCB / Carbon Fiber"
+material = "FR4 PCB / Carbon Fiber"
+spindle_rpm = 11671.362493405659
+surface_speed_m_min = 110.0
+cutting_feed_mm_min = 466.8544997362264
+chipload_mm_tooth = 0.02
+lead_feed_mm_min = 373.4835997889811
+ramp_feed_mm_min = 233.4272498681132
+plunge_feed_mm_min = 155.61816657874212
+default_stepdown_mm = 0.8
+default_stepover_mm = 1.2
+coolant_override = "disabled"
+
+[[tools.presets]]
+id = "carvera_corn3_wood"
+name = "Hardwood / Plastic"
+material = "Hardwood / Plastic"
+spindle_rpm = 12201.878970378642
+surface_speed_m_min = 115.0
+cutting_feed_mm_min = 732.1127382227185
+chipload_mm_tooth = 0.03
+lead_feed_mm_min = 585.6901905781748
+ramp_feed_mm_min = 366.05636911135923
+plunge_feed_mm_min = 244.03757940757282
+default_stepdown_mm = 1.5
+default_stepover_mm = 1.4
+coolant_override = "disabled"
+
+[[tools]]
+id = "carvera_t24_m3_thread_mill"
+tool_number = 24
+length_offset_number = 24
+diameter_offset_number = 24
+name = 'M3 (Ø2.42mm x 9mm) 3FL 60° Thread Mill (1/8" Shank)'
+vendor = "Makera (Essential Milling Bit Set - Extended)"
+product_id = "MAKERA-TM-M3"
+native_unit = "millimeter"
+spindle_direction = "cw"
+default_coolant = "air_blast"
+stickout_length_mm = 19.0
+
+[tools.geometry]
+type = "thread_mill"
+diameter_mm = 2.42
+neck_diameter_mm = 1.55
+neck_length_mm = 9.0
+pitch_mm = 0.5
+teeth_count = 1
+thread_angle_deg = 60.0
+flute_length_mm = 2.0
+overall_length_mm = 38.0
+shank_diameter_mm = 3.175
+flutes = 3
+
+[[tools.presets]]
+id = "carvera_tm_m3_al"
+name = "Aluminum 6061 - M3 Threading"
+material = "Aluminum 6061"
+spindle_rpm = 11837.97097377734
+surface_speed_m_min = 90.0
+cutting_feed_mm_min = 177.5695646066601
+chipload_mm_tooth = 0.005
+lead_feed_mm_min = 142.0556516853281
+ramp_feed_mm_min = 88.78478230333005
+plunge_feed_mm_min = 59.1898548688867
+default_stepdown_mm = 0.5
+default_stepover_mm = 0.48
+coolant_override = "air_blast"
+
+[[tools.presets]]
+id = "carvera_tm_m3_plastic"
+name = "Acetal / Hardwood - M3 Threading"
+material = "Engineering Plastic / Hardwood"
+spindle_rpm = 10522.640865579859
+surface_speed_m_min = 80.0
+cutting_feed_mm_min = 315.6792259673958
+chipload_mm_tooth = 0.01
+lead_feed_mm_min = 252.54338077391662
+ramp_feed_mm_min = 157.8396129836979
+plunge_feed_mm_min = 105.2264086557986
+default_stepdown_mm = 0.5
+default_stepover_mm = 0.72
+coolant_override = "disabled"
+
+[[tools]]
+id = "carvera_t25_m4_thread_mill"
+tool_number = 25
+length_offset_number = 25
+diameter_offset_number = 25
+name = 'M4 (Ø3.15mm x 12mm) 3FL 60° Thread Mill (1/8" Shank)'
+vendor = "Makera (Essential Milling Bit Set - Extended)"
+product_id = "MAKERA-TM-M4"
+native_unit = "millimeter"
+spindle_direction = "cw"
+default_coolant = "air_blast"
+stickout_length_mm = 19.0
+
+[tools.geometry]
+type = "thread_mill"
+diameter_mm = 3.15
+neck_diameter_mm = 1.94
+neck_length_mm = 12.0
+pitch_mm = 0.7
+teeth_count = 1
+thread_angle_deg = 60.0
+flute_length_mm = 2.0
+overall_length_mm = 38.0
+shank_diameter_mm = 3.175
+flutes = 3
+
+[[tools.presets]]
+id = "carvera_tm_m4_al"
+name = "Aluminum 6061 - M4 Threading"
+material = "Aluminum 6061"
+spindle_rpm = 11923.989387202319
+surface_speed_m_min = 118.0
+cutting_feed_mm_min = 178.8598408080348
+chipload_mm_tooth = 0.005
+lead_feed_mm_min = 143.08787264642783
+ramp_feed_mm_min = 89.4299204040174
+plunge_feed_mm_min = 59.619946936011594
+default_stepdown_mm = 0.7
+default_stepover_mm = 0.63
+coolant_override = "air_blast"
+
+[[tools.presets]]
+id = "carvera_tm_m4_plastic"
+name = "Acetal / Hardwood - M4 Threading"
+material = "Engineering Plastic / Hardwood"
+spindle_rpm = 10509.278781941026
+surface_speed_m_min = 104.0
+cutting_feed_mm_min = 315.2783634582308
+chipload_mm_tooth = 0.01
+lead_feed_mm_min = 252.22269076658463
+ramp_feed_mm_min = 157.6391817291154
+plunge_feed_mm_min = 105.09278781941026
+default_stepdown_mm = 0.7
+default_stepover_mm = 0.94
+coolant_override = "disabled"
+
+[[tools]]
+id = "carvera_t26_m5_thread_mill"
+tool_number = 26
+length_offset_number = 26
+diameter_offset_number = 26
+name = 'M5 (Ø4.0mm x 15mm) 3FL 60° Thread Mill (1/8" Shank)'
+vendor = "Makera (Essential Milling Bit Set - Extended)"
+product_id = "MAKERA-TM-M5"
+native_unit = "millimeter"
+spindle_direction = "cw"
+default_coolant = "air_blast"
+stickout_length_mm = 19.0
+
+[tools.geometry]
+type = "thread_mill"
+diameter_mm = 4.0
+neck_diameter_mm = 2.61
+neck_length_mm = 15.0
+pitch_mm = 0.8
+teeth_count = 1
+thread_angle_deg = 60.0
+flute_length_mm = 2.0
+overall_length_mm = 38.0
+shank_diameter_mm = 3.175
+flutes = 3
+
+[[tools.presets]]
+id = "carvera_tm_m5_al"
+name = "Aluminum 6061 - M5 Threading"
+material = "Aluminum 6061"
+spindle_rpm = 11936.620731892152
+surface_speed_m_min = 150.0
+cutting_feed_mm_min = 179.04931097838227
+chipload_mm_tooth = 0.005
+lead_feed_mm_min = 143.2394487827058
+ramp_feed_mm_min = 89.52465548919113
+plunge_feed_mm_min = 59.683103659460755
+default_stepdown_mm = 0.8
+default_stepover_mm = 0.8
+coolant_override = "air_blast"
+
+[[tools.presets]]
+id = "carvera_tm_m5_plastic"
+name = "Acetal / Hardwood - M5 Threading"
+material = "Engineering Plastic / Hardwood"
+spindle_rpm = 10504.226244065092
+surface_speed_m_min = 132.0
+cutting_feed_mm_min = 315.12678732195275
+chipload_mm_tooth = 0.01
+lead_feed_mm_min = 252.1014298575622
+ramp_feed_mm_min = 157.56339366097637
+plunge_feed_mm_min = 105.04226244065092
+default_stepdown_mm = 0.8
+default_stepover_mm = 1.2
+coolant_override = "disabled"
