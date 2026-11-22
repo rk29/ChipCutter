@@ -1459,8 +1459,9 @@ fn main(
                             p0, p1, neck_skin, prof.neck_length_mm, pz, pu, swap_xy,
                         );
                     } else {
+                        let flute_wall_skin = wall_skin_tol + max(gouge_tol - 0.02, 0.0);
                         w_in = eval_horizontal_ray_cut_interval(
-                            p0, p1, prof, wall_skin_tol, pz, pu, swap_xy,
+                            p0, p1, prof, flute_wall_skin, pz, pu, swap_xy,
                         );
                     }
                     if (w_in.valid) {

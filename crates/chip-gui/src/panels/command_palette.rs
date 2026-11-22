@@ -43,6 +43,7 @@ pub enum CommandId {
     AddOpParallel3D,
     AddOpScallop3D,
     AddOpPencil3D,
+    AddOpDeburr3D,
     AddOpRotary2Linear,
     AddOpRotary4AxisSim,
     DuplicateOperation,
@@ -313,6 +314,13 @@ pub const PALETTE_COMMANDS: &[PaletteEntry] = &[
         category: "Operation",
         label: "Add 3D Pencil / Fillet Cleanup Operation",
         keywords: "add operation 3d pencil valley crease fillet cleanup corner finishing mesh",
+        shortcut: None,
+    },
+    PaletteEntry {
+        id: CommandId::AddOpDeburr3D,
+        category: "Operation",
+        label: "Add 3D Edge Deburr / Chamfer Operation",
+        keywords: "add operation 3d deburr chamfer bevel edge break lollipop back chamfer non-planar",
         shortcut: None,
     },
     PaletteEntry {
@@ -969,6 +977,21 @@ mod tests {
             assert!(
                 fuzzy_match_score(query, &searchable).is_some(),
                 "expected CommandPalette ThreadMill entry to match query '{query}'"
+            );
+        }
+    }
+
+    #[test]
+    fn command_palette_contains_and_matches_deburr3d_keywords() {
+        let entry = PALETTE_COMMANDS
+            .iter()
+            .find(|e| e.id == CommandId::AddOpDeburr3D)
+            .expect("AddOpDeburr3D entry present");
+        let searchable = format!("{} {} {}", entry.category, entry.label, entry.keywords);
+        for query in ["deburr", "3d deburr", "chamfer", "lollipop", "back chamfer"] {
+            assert!(
+                fuzzy_match_score(query, &searchable).is_some(),
+                "expected CommandPalette Deburr3D entry to match query '{query}'"
             );
         }
     }

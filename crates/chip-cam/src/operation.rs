@@ -32,6 +32,8 @@ pub enum OperationKind {
     Scallop3D,
     #[serde(rename = "pencil_3d")]
     Pencil3D,
+    #[serde(rename = "deburr_3d")]
+    Deburr3D,
     #[serde(rename = "rotary_2linear")]
     Rotary2Linear,
     #[serde(rename = "rotary_4axis_sim")]
@@ -41,7 +43,7 @@ pub enum OperationKind {
 }
 
 impl OperationKind {
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 15] = [
         Self::Facing,
         Self::Contour2D,
         Self::Pocket2D,
@@ -54,6 +56,7 @@ impl OperationKind {
         Self::Parallel3D,
         Self::Scallop3D,
         Self::Pencil3D,
+        Self::Deburr3D,
         Self::Rotary2Linear,
         Self::Rotary4AxisSim,
     ];
@@ -72,6 +75,7 @@ impl OperationKind {
             Self::Parallel3D => "3D Parallel Finishing",
             Self::Scallop3D => "3D Constant-Scallop",
             Self::Pencil3D => "3D Pencil Cleanup",
+            Self::Deburr3D => "3D Edge Deburr / Chamfer",
             Self::Rotary2Linear => "4th-Axis Rotary Surfacing",
             Self::Rotary4AxisSim => "Simultaneous 4-Axis (X+Y+Z+A)",
         }
@@ -91,6 +95,7 @@ impl OperationKind {
             Self::Parallel3D => "3D Parallel",
             Self::Scallop3D => "3D Scallop",
             Self::Pencil3D => "3D Pencil",
+            Self::Deburr3D => "3D Deburr",
             Self::Rotary2Linear => "4th-Axis Rotary",
             Self::Rotary4AxisSim => "Simultaneous 4-Axis",
         }
@@ -105,6 +110,7 @@ impl OperationKind {
                 | Self::Parallel3D
                 | Self::Scallop3D
                 | Self::Pencil3D
+                | Self::Deburr3D
                 | Self::Rotary2Linear
                 | Self::Rotary4AxisSim
         )
@@ -151,6 +157,9 @@ impl OperationKind {
             Self::Pencil3D => tool
                 .geometry
                 .supports_operation(ToolOperationClass::Pencil3D),
+            Self::Deburr3D => tool
+                .geometry
+                .supports_operation(ToolOperationClass::Deburr3D),
             Self::Rotary2Linear => tool
                 .geometry
                 .supports_operation(ToolOperationClass::Rotary2Linear),
@@ -297,7 +306,10 @@ impl Operation {
                 );
                 passes.max_stepdown = chip_math::ParamLength::from_mm(1.25);
             }
-            OperationKind::Parallel3D | OperationKind::Scallop3D | OperationKind::Pencil3D => {
+            OperationKind::Parallel3D
+            | OperationKind::Scallop3D
+            | OperationKind::Pencil3D
+            | OperationKind::Deburr3D => {
                 heights.top =
                     crate::heights::HeightSpec::new(crate::heights::HeightReference::ModelTop, 0.0);
                 heights.bottom = crate::heights::HeightSpec::new(

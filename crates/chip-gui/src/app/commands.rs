@@ -250,6 +250,7 @@ impl ChipCutterApp {
             CommandId::AddOpParallel3D => self.add_standard_operation(OperationKind::Parallel3D),
             CommandId::AddOpScallop3D => self.add_standard_operation(OperationKind::Scallop3D),
             CommandId::AddOpPencil3D => self.add_standard_operation(OperationKind::Pencil3D),
+            CommandId::AddOpDeburr3D => self.add_standard_operation(OperationKind::Deburr3D),
             CommandId::AddOpRotary2Linear => {
                 self.add_standard_operation(OperationKind::Rotary2Linear);
             }

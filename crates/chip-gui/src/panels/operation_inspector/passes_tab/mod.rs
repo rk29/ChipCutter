@@ -1,3 +1,4 @@
+pub mod deburr3d_card;
 pub mod milling_2d;
 pub mod surface_3d;
 pub mod thread_mill;
@@ -237,47 +238,51 @@ pub fn show_passes_tab(ui: &mut egui::Ui, ctx: PassesTabCtx<'_>) {
         mutated_label,
     };
 
-    item.card_grid(
-        ui,
-        "passes_depth_card",
-        "Depth Passes & Stock to Leave",
-        |f| {
-            f.set_tip("Split total axial cut depth into stepped Z levels");
-            f.check(
-                "Multiple Depths",
-                &mut op.passes.multiple_depths,
-                "Enable Z Stepdowns",
-                "Toggle Multiple Depths",
-            );
-            if op.passes.multiple_depths {
-                f.set_tip("Maximum axial depth of cut (ap) per Z level");
-                f.len(
-                    "Maximum Stepdown",
-                    &mut op.passes.max_stepdown,
-                    "Edit Max Stepdown",
-                );
-                f.set_tip("Divide total cut depth into equal Z stepdowns up to Maximum Stepdown");
+    if op.kind != OperationKind::Deburr3D {
+        item.card_grid(
+            ui,
+            "passes_depth_card",
+            "Depth Passes & Stock to Leave",
+            |f| {
+                f.set_tip("Split total axial cut depth into stepped Z levels");
                 f.check(
-                    "Even Stepdowns",
-                    &mut op.passes.even_stepdowns,
-                    "Equalize Z Levels",
-                    "Toggle Even Stepdowns",
+                    "Multiple Depths",
+                    &mut op.passes.multiple_depths,
+                    "Enable Z Stepdowns",
+                    "Toggle Multiple Depths",
                 );
-            }
-            f.set_tip("Radial stock allowance left on vertical walls for a finishing pass");
-            f.len(
-                "Radial Stock",
-                &mut op.passes.stock_to_leave_radial,
-                "Edit Radial Stock to Leave",
-            );
-            f.set_tip("Axial stock allowance left on horizontal floors for a finishing pass");
-            f.len(
-                "Axial Stock",
-                &mut op.passes.stock_to_leave_axial,
-                "Edit Axial Stock to Leave",
-            );
-        },
-    );
+                if op.passes.multiple_depths {
+                    f.set_tip("Maximum axial depth of cut (ap) per Z level");
+                    f.len(
+                        "Maximum Stepdown",
+                        &mut op.passes.max_stepdown,
+                        "Edit Max Stepdown",
+                    );
+                    f.set_tip(
+                        "Divide total cut depth into equal Z stepdowns up to Maximum Stepdown",
+                    );
+                    f.check(
+                        "Even Stepdowns",
+                        &mut op.passes.even_stepdowns,
+                        "Equalize Z Levels",
+                        "Toggle Even Stepdowns",
+                    );
+                }
+                f.set_tip("Radial stock allowance left on vertical walls for a finishing pass");
+                f.len(
+                    "Radial Stock",
+                    &mut op.passes.stock_to_leave_radial,
+                    "Edit Radial Stock to Leave",
+                );
+                f.set_tip("Axial stock allowance left on horizontal floors for a finishing pass");
+                f.len(
+                    "Axial Stock",
+                    &mut op.passes.stock_to_leave_axial,
+                    "Edit Axial Stock to Leave",
+                );
+            },
+        );
+    }
 
     if matches!(
         op.kind,
@@ -321,6 +326,7 @@ pub fn show_passes_tab(ui: &mut egui::Ui, ctx: PassesTabCtx<'_>) {
         show_feed_optimization_card(ui, &mut op.passes.feed_optimization, &mut item);
     }
 
+    let has_explicit_selections = !op.selections.is_empty();
     match op.strategy_mut() {
         StrategyParams::Facing(p) => milling_2d::show_facing_params(ui, p, item),
         StrategyParams::Contour2D(p) => milling_2d::show_contour2d_params(ui, p, item, pick_mode),
@@ -348,6 +354,16 @@ pub fn show_passes_tab(ui: &mut egui::Ui, ctx: PassesTabCtx<'_>) {
         StrategyParams::Parallel3D(p) => surface_3d::show_parallel3d_params(ui, p, item),
         StrategyParams::Scallop3D(p) => surface_3d::show_scallop3d_params(ui, p, item),
         StrategyParams::Pencil3D(p) => surface_3d::show_pencil3d_params(ui, p, item),
+        StrategyParams::Deburr3D(p) => deburr3d_card::show_deburr3d_params(
+            ui,
+            deburr3d_card::Deburr3DParamsUiCtx {
+                p,
+                assigned_tool_geom,
+                has_explicit_selections,
+                display_unit,
+                item,
+            },
+        ),
         StrategyParams::Rotary2Linear(p) => surface_3d::show_rotary2linear_params(ui, p, item),
         StrategyParams::Rotary4AxisSim(p) => surface_3d::show_rotary4axis_sim_params(ui, p, item),
         StrategyParams::ThreadMill(p) => thread_mill::show_thread_mill_params(

@@ -2139,3 +2139,490 @@ fn m64_all_ten_cutter_meshes_and_undercut_sim_fault_detection() {
         );
     }
 }
+
+#[test]
+fn deburr3d_curved_nonplanar_edge_and_stepped_wall_trimming_cpu_and_gpu_tridexel() {
+    use std::sync::atomic::AtomicBool;
+
+    use chip_cad::{
+        CadKernel, CurveKind, MonstertruckKernel, sample_sloped_boss_stepped_pocket_step,
+    };
+    use chip_cam::{
+        BoxAnchor27, Deburr3DParams, MotionRole, Operation, OperationKind, SegmentMotion3D, Setup,
+        StockConfig, StrategyParams, WcsOriginMode, WorkOffsetSlot, generate_operation_toolpath,
+    };
+    use chip_math::{DEFAULT_TESS_CHORD_TOL_MM, DisplayUnit, ParamLength};
+    use chip_tools::{CutterGeometry, default_starter_tool_library};
+
+    let step = sample_sloped_boss_stepped_pocket_step().unwrap();
+    let doc = MonstertruckKernel
+        .load_step_bytes(
+            "m65-curved-stepped-boss.step",
+            step.as_bytes(),
+            DEFAULT_TESS_CHORD_TOL_MM,
+        )
+        .unwrap();
+
+    // Find the exact curved arch CircleArc parameters on Y = 0 for chord-sag verification
+    let arch_arc = doc
+        .edges
+        .iter()
+        .find_map(|e| match e.curve {
+            CurveKind::CircleArc {
+                center_mm,
+                radius_mm,
+                ..
+            } if e.aabb_mm.min.y.abs() < 0.1 && e.aabb_mm.max.y.abs() < 0.1 => {
+                Some((center_mm, radius_mm))
+            }
+            _ => None,
+        })
+        .expect("expected curved 3D circular arc edge on front Y=0 face");
+    let (arc_center, arc_radius) = arch_arc;
+
+    let mut setup = Setup::new("s_m65_curve", "M65 Curved & Stepped", WorkOffsetSlot::G54);
+    setup.wcs.origin = WcsOriginMode::ModelBoxPoint {
+        anchor: BoxAnchor27::BOTTOM_FRONT_LEFT,
+    };
+    setup.stock = StockConfig::RelativeBox {
+        side_pos_x: ParamLength::from_mm(0.0),
+        side_neg_x: ParamLength::from_mm(0.0),
+        side_pos_y: ParamLength::from_mm(0.0),
+        side_neg_y: ParamLength::from_mm(0.0),
+        symmetric_xy: true,
+        top_offset_z: ParamLength::from_mm(0.0),
+        bottom_offset_z: ParamLength::from_mm(0.0),
+        sheet_thickness_z: ParamLength::from_mm(23.0),
+        round_increment_mm: None,
+    };
+    let resolved = setup.resolve(&doc, DisplayUnit::Millimeter).unwrap();
+
+    let lib = default_starter_tool_library();
+    let chamfer_90 = lib
+        .tools
+        .iter()
+        .find(|t| matches!(t.geometry, CutterGeometry::ChamferMill { .. }))
+        .expect("starter ChamferMill present");
+    let ball_6 = lib
+        .tools
+        .iter()
+        .find(|t| matches!(t.geometry, CutterGeometry::BallEndmill { .. }))
+        .expect("starter BallEndmill present");
+
+    let cancel = AtomicBool::new(false);
+
+    for (label, tool) in [("ChamferMill", chamfer_90), ("BallEndmill", ball_6)] {
+        let mut op = Operation::new(
+            format!("op_deburr_{label}"),
+            format!("3D Deburr ({label})"),
+            OperationKind::Deburr3D,
+        );
+        op.tool_id = Some(tool.id.clone());
+        op.strategy = Some(StrategyParams::Deburr3D(Deburr3DParams {
+            chamfer_width: ParamLength::from_mm(0.5),
+            tip_offset: ParamLength::from_mm(0.75),
+            wall_clearance: ParamLength::from_mm(0.15),
+            auto_detect_edges: true,
+            min_dihedral_angle_deg: 15.0,
+            exclude_vertical_edges: true,
+            chord_tolerance_mm: 0.005,
+            ..Deburr3DParams::default()
+        }));
+
+        let tp = generate_operation_toolpath(
+            &doc,
+            &resolved,
+            &op,
+            tool,
+            DisplayUnit::Millimeter,
+            true,
+            &cancel,
+        )
+        .unwrap_or_else(|e| panic!("{label} Deburr3D failed: {e}"));
+
+        // 1. Verify curved 3D arch Z tracking & chord sag <= 0.01 mm
+        let mut arch_cut_z_min = f64::INFINITY;
+        let mut arch_cut_z_max = f64::NEG_INFINITY;
+        let mut max_chord_sag = 0.0_f64;
+        let mut front_shelf_max_x = f64::NEG_INFINITY;
+
+        for seg in &tp.segments_wcs {
+            if !matches!(
+                seg.motion,
+                SegmentMotion3D::Linear {
+                    role: MotionRole::Cut | MotionRole::FinishCut,
+                    ..
+                }
+            ) {
+                continue;
+            }
+            // Curved arch segments on front Y=0 side (`x ∈ [36, 79]`, `y < 0`)
+            if seg.start_wcs.y < 0.0
+                && seg.end_wcs.y < 0.0
+                && seg.start_wcs.x > 37.0
+                && seg.end_wcs.x > 37.0
+                && seg.start_wcs.x < 79.0
+                && seg.end_wcs.x < 79.0
+            {
+                arch_cut_z_min = arch_cut_z_min.min(seg.start_wcs.z).min(seg.end_wcs.z);
+                arch_cut_z_max = arch_cut_z_max.max(seg.start_wcs.z).max(seg.end_wcs.z);
+                // Measure sagitta in XZ relative to exact arch curvature
+                let chord_len_xz =
+                    (seg.end_wcs.x - seg.start_wcs.x).hypot(seg.end_wcs.z - seg.start_wcs.z);
+                let eff_r = arc_radius.max(1.0);
+                let sag = eff_r
+                    - (eff_r * eff_r - 0.25 * chord_len_xz * chord_len_xz)
+                        .max(0.0)
+                        .sqrt();
+                max_chord_sag = max_chord_sag.max(sag);
+                let _ = arc_center;
+            }
+            // Lower shelf segments on front Y=0 side (`x < 35`, `y < 0`, `z < 14.5`)
+            if seg.start_wcs.y < 0.0
+                && seg.end_wcs.y < 0.0
+                && seg.start_wcs.x > 1.0
+                && seg.end_wcs.x < 35.0
+                && seg.start_wcs.z < 14.5
+                && seg.end_wcs.z < 14.5
+            {
+                front_shelf_max_x = front_shelf_max_x.max(seg.start_wcs.x).max(seg.end_wcs.x);
+            }
+        }
+
+        assert!(
+            arch_cut_z_max - arch_cut_z_min > 3.0,
+            "{label}: expected smooth 3D arch Z tracking > 3 mm, got {arch_cut_z_min:.3}..{arch_cut_z_max:.3}"
+        );
+        assert!(
+            max_chord_sag <= 0.01,
+            "{label}: expected 3D curve chord sag <= 0.01 mm, got {max_chord_sag:.5} mm"
+        );
+
+        // 2. Verify automatic inside-corner wall trimming stops cleanly before vertical wall X=35.0
+        //    preserving exact 2D Euclidean `wall_clearance = 0.15 mm` for the tool radius!
+        let tool_r = 0.5 * tool.geometry.cutting_diameter_mm();
+        let mut front_shelf_min_wall_dist = f64::INFINITY;
+        for seg in &tp.segments_wcs {
+            if !matches!(
+                seg.motion,
+                SegmentMotion3D::Linear {
+                    role: MotionRole::Cut | MotionRole::FinishCut,
+                    ..
+                }
+            ) {
+                continue;
+            }
+            if seg.start_wcs.y < 0.0
+                && seg.end_wcs.y < 0.0
+                && seg.start_wcs.x > 1.0
+                && seg.end_wcs.x < 35.0
+                && seg.start_wcs.z < 14.5
+                && seg.end_wcs.z < 14.5
+            {
+                for pt in [seg.start_wcs, seg.end_wcs] {
+                    // Nearest point on vertical boss wall (`x = 35.0, y >= 0.0`)
+                    let dx = (35.0 - pt.x).max(0.0);
+                    let dy = (0.0 - pt.y).max(0.0);
+                    front_shelf_min_wall_dist = front_shelf_min_wall_dist.min(dx.hypot(dy));
+                }
+            }
+        }
+        assert!(
+            front_shelf_max_x.is_finite() && front_shelf_max_x > 10.0,
+            "{label}: expected front lower shelf edge to be machined, got max_x={front_shelf_max_x}"
+        );
+        assert!(
+            front_shelf_min_wall_dist >= tool_r + 0.15 - 0.025,
+            "{label}: lower shelf edge must trim before vertical boss wall X=35 preserving 0.15 mm clearance (tool_r={tool_r:.2}, min_wall_dist={front_shelf_min_wall_dist:.4}, max_x={front_shelf_max_x:.3})"
+        );
+
+        // 3. Verify 0 critical errors on BOTH CPU & GPU Tri-Dexel starting from exact target solid!
+        let template = chip_sim::TriDexelStock::from_stock_spec(
+            &chip_sim::stock_shape_spec_from_cam(&resolved.stock),
+            SimResolution::Standard,
+        )
+        .unwrap();
+        let init_stock =
+            chip_sim::extract_tridexel_target_from_cad(&doc, &resolved, &[], &template)
+                .expect("build TriDexel stock matching target solid");
+
+        for backend in [SimComputeBackendChoice::Cpu, SimComputeBackendChoice::Auto] {
+            let sim_res = run_setup_simulation_with_choice(
+                &SetupSimulationInput {
+                    doc: &doc,
+                    setup: &resolved,
+                    target_bodies: &[],
+                    fixtures: &[],
+                    operations: &[SimOperationInput::from_operation(&op, tool, &tp)],
+                    resolution: SimResolution::Standard,
+                    kinematics: MachineKinematicsConfig::default(),
+                    verify_config: SimVerificationConfig::default(),
+                    initial_stock: Some(&init_stock),
+                    initial_raw_volume_mm3: None,
+                    carried_over_from_setup: None,
+                    cancel: None,
+                },
+                SimEngineKind::TriDexel,
+                backend,
+            )
+            .unwrap();
+
+            assert!(
+                !sim_res.has_critical_errors(),
+                "{label} ({backend:?}) Deburr3D must have 0 critical errors, got: {:#?}",
+                sim_res.diagnostics
+            );
+            assert!(
+                sim_res.removed_volume_mm3 > 10.0,
+                "{label} ({backend:?}) expected measurable chamfer bevel volume removed, got {:.3} mm³",
+                sim_res.removed_volume_mm3
+            );
+        }
+    }
+}
+
+#[test]
+fn deburr3d_lollipop_underside_back_chamfer_cpu_and_gpu_tridexel() {
+    use std::sync::atomic::AtomicBool;
+
+    use chip_cad::{CadKernel, MonstertruckKernel, sample_overhang_flange_step};
+    use chip_cam::{
+        BoxAnchor27, Deburr3DParams, MotionRole, Operation, OperationKind, SegmentMotion3D, Setup,
+        StockConfig, StrategyParams, WcsOriginMode, WorkOffsetSlot, generate_operation_toolpath,
+    };
+    use chip_math::{DEFAULT_TESS_CHORD_TOL_MM, DisplayUnit, ParamLength};
+    use chip_tools::starter_lollipop_6mm;
+
+    let step = sample_overhang_flange_step().unwrap();
+    let doc = MonstertruckKernel
+        .load_step_bytes(
+            "m65-overhang-flange.step",
+            step.as_bytes(),
+            DEFAULT_TESS_CHORD_TOL_MM,
+        )
+        .unwrap();
+
+    let mut setup = Setup::new("s_m65_lolli", "M65 Lollipop Underside", WorkOffsetSlot::G54);
+    setup.wcs.origin = WcsOriginMode::ModelBoxPoint {
+        anchor: BoxAnchor27::BOTTOM_FRONT_LEFT,
+    };
+    setup.stock = StockConfig::RelativeBox {
+        side_pos_x: ParamLength::from_mm(0.0),
+        side_neg_x: ParamLength::from_mm(0.0),
+        side_pos_y: ParamLength::from_mm(0.0),
+        side_neg_y: ParamLength::from_mm(0.0),
+        symmetric_xy: true,
+        top_offset_z: ParamLength::from_mm(0.0),
+        bottom_offset_z: ParamLength::from_mm(0.0),
+        sheet_thickness_z: ParamLength::from_mm(18.0),
+        round_increment_mm: None,
+    };
+    let resolved = setup.resolve(&doc, DisplayUnit::Millimeter).unwrap();
+
+    let lolli_6 = starter_lollipop_6mm();
+    let mut op = Operation::new(
+        "op_deburr_underside",
+        "Lollipop Back-Chamfer",
+        OperationKind::Deburr3D,
+    );
+    op.tool_id = Some(lolli_6.id.clone());
+    op.strategy = Some(StrategyParams::Deburr3D(Deburr3DParams {
+        chamfer_width: ParamLength::from_mm(0.5),
+        wall_clearance: ParamLength::from_mm(0.15),
+        auto_detect_edges: true,
+        min_dihedral_angle_deg: 15.0,
+        exclude_vertical_edges: true,
+        allow_underside_back_chamfer: true,
+        ..Deburr3DParams::default()
+    }));
+
+    let cancel = AtomicBool::new(false);
+    let tp = generate_operation_toolpath(
+        &doc,
+        &resolved,
+        &op,
+        &lolli_6,
+        DisplayUnit::Millimeter,
+        true,
+        &cancel,
+    )
+    .unwrap();
+
+    // Verify underside overhang edges at Z = 12.0 mm are actively machined (`tip_z ≈ 12 - 1.87 - 3 = 7.13 mm`)!
+    let underside_cut_count = tp
+        .segments_wcs
+        .iter()
+        .filter(|s| {
+            matches!(
+                s.motion,
+                SegmentMotion3D::Linear {
+                    role: MotionRole::Cut | MotionRole::FinishCut,
+                    ..
+                }
+            ) && s.start_wcs.z < 9.0
+                && s.end_wcs.z < 9.0
+        })
+        .count();
+    assert!(
+        underside_cut_count >= 10,
+        "expected Lollipop underside back-chamfer cuts along overhang rims (tip Z < 9 mm), got {underside_cut_count}"
+    );
+
+    // Verify 0 critical errors (zero neck rub, shank rub, rapid crash, or gouge) in CPU & GPU Tri-Dexel!
+    let template = chip_sim::TriDexelStock::from_stock_spec(
+        &chip_sim::stock_shape_spec_from_cam(&resolved.stock),
+        SimResolution::Standard,
+    )
+    .unwrap();
+    let init_stock = chip_sim::extract_tridexel_target_from_cad(&doc, &resolved, &[], &template)
+        .expect("build TriDexel stock matching overhang flange");
+
+    for backend in [SimComputeBackendChoice::Cpu, SimComputeBackendChoice::Auto] {
+        let sim_res = run_setup_simulation_with_choice(
+            &SetupSimulationInput {
+                doc: &doc,
+                setup: &resolved,
+                target_bodies: &[],
+                fixtures: &[],
+                operations: &[SimOperationInput::from_operation(&op, &lolli_6, &tp)],
+                resolution: SimResolution::Standard,
+                kinematics: MachineKinematicsConfig::default(),
+                verify_config: SimVerificationConfig::default(),
+                initial_stock: Some(&init_stock),
+                initial_raw_volume_mm3: None,
+                carried_over_from_setup: None,
+                cancel: None,
+            },
+            SimEngineKind::TriDexel,
+            backend,
+        )
+        .unwrap();
+
+        assert!(
+            !sim_res.has_critical_errors(),
+            "Lollipop underside back-chamfer ({backend:?}) must have 0 critical errors, got: {:#?}",
+            sim_res.diagnostics
+        );
+        assert!(
+            sim_res.removed_volume_mm3 > 10.0,
+            "Lollipop underside back-chamfer ({backend:?}) expected removed bevel volume > 10 mm³, got {:.3}",
+            sim_res.removed_volume_mm3
+        );
+    }
+}
+
+#[test]
+fn deburr3d_auto_detect_sharp_edges_ignores_tangent_fillets_and_vertical_walls() {
+    use std::sync::atomic::AtomicBool;
+
+    use chip_cad::{CadKernel, MonstertruckKernel, sample_machined_plate_step};
+    use chip_cam::{
+        BoxAnchor27, Deburr3DParams, MotionRole, Operation, OperationKind, SegmentMotion3D, Setup,
+        StrategyParams, WcsOriginMode, WorkOffsetSlot, generate_operation_toolpath,
+    };
+    use chip_math::{DEFAULT_TESS_CHORD_TOL_MM, DisplayUnit, ParamLength};
+    use chip_tools::{CutterGeometry, default_starter_tool_library};
+
+    let step = sample_machined_plate_step().unwrap();
+    let doc = MonstertruckKernel
+        .load_step_bytes("plate.step", step.as_bytes(), DEFAULT_TESS_CHORD_TOL_MM)
+        .unwrap();
+
+    let mut setup = Setup::new("s_m65_auto", "Auto-Detect Sharp Edges", WorkOffsetSlot::G54);
+    setup.wcs.origin = WcsOriginMode::ModelBoxPoint {
+        anchor: BoxAnchor27::BOTTOM_FRONT_LEFT,
+    };
+    let resolved = setup.resolve(&doc, DisplayUnit::Millimeter).unwrap();
+
+    let lib = default_starter_tool_library();
+    let chamfer_90 = lib
+        .tools
+        .iter()
+        .find(|t| matches!(t.geometry, CutterGeometry::ChamferMill { .. }))
+        .expect("starter ChamferMill present");
+
+    let mut op = Operation::new("op_auto_deburr", "Auto Deburr", OperationKind::Deburr3D);
+    op.tool_id = Some(chamfer_90.id.clone());
+    op.strategy = Some(StrategyParams::Deburr3D(Deburr3DParams {
+        chamfer_width: ParamLength::from_mm(0.5),
+        tip_offset: ParamLength::from_mm(0.75),
+        wall_clearance: ParamLength::from_mm(0.15),
+        auto_detect_edges: true,
+        min_dihedral_angle_deg: 15.0,
+        exclude_vertical_edges: true,
+        ..Deburr3DParams::default()
+    }));
+
+    let cancel = AtomicBool::new(false);
+    let tp = generate_operation_toolpath(
+        &doc,
+        &resolved,
+        &op,
+        chamfer_90,
+        DisplayUnit::Millimeter,
+        true,
+        &cancel,
+    )
+    .unwrap();
+
+    // All cutting moves must lie cleanly at the top Z=16 mm chamfer tip height (`16 - 0.5 - 0.75 = 14.75 mm`),
+    // confirming that pure vertical side-wall edges and smooth tangent fillet seams were ignored!
+    let mut cut_count = 0usize;
+    for seg in &tp.segments_wcs {
+        if matches!(
+            seg.motion,
+            SegmentMotion3D::Linear {
+                role: MotionRole::Cut | MotionRole::FinishCut,
+                ..
+            }
+        ) {
+            cut_count += 1;
+            let dz = (seg.end_wcs.z - seg.start_wcs.z).abs();
+            assert!(
+                dz < 1e-3,
+                "plate has only horizontal top sharp edges; vertical edges must be excluded (got dz={dz:.4})"
+            );
+            assert!(
+                (seg.start_wcs.z - 14.75).abs() < 0.05,
+                "expected chamfer tip height ~14.75 mm on Z=16 plate top, got {:.3}",
+                seg.start_wcs.z
+            );
+        }
+    }
+    assert!(
+        cut_count >= 20,
+        "expected full top perimeter + hole rims deburred, got {cut_count}"
+    );
+
+    let template = chip_sim::TriDexelStock::from_stock_spec(
+        &chip_sim::stock_shape_spec_from_cam(&resolved.stock),
+        SimResolution::Standard,
+    )
+    .unwrap();
+    let init_stock = chip_sim::extract_tridexel_target_from_cad(&doc, &resolved, &[], &template)
+        .expect("build TriDexel stock matching plate");
+    let sim_res = run_setup_simulation_with_choice(
+        &SetupSimulationInput {
+            doc: &doc,
+            setup: &resolved,
+            target_bodies: &[],
+            fixtures: &[],
+            operations: &[SimOperationInput::from_operation(&op, chamfer_90, &tp)],
+            resolution: SimResolution::Standard,
+            kinematics: MachineKinematicsConfig::default(),
+            verify_config: SimVerificationConfig::default(),
+            initial_stock: Some(&init_stock),
+            initial_raw_volume_mm3: None,
+            carried_over_from_setup: None,
+            cancel: None,
+        },
+        SimEngineKind::TriDexel,
+        SimComputeBackendChoice::Cpu,
+    )
+    .unwrap();
+    assert!(
+        !sim_res.has_critical_errors(),
+        "auto-detected plate Deburr3D must have 0 critical errors, got: {:#?}",
+        sim_res.diagnostics
+    );
+}

@@ -35,7 +35,14 @@ pub fn show_geometry_tab(ui: &mut egui::Ui, ctx: GeometryTabCtx<'_>) {
         mutated_label,
     } = ctx;
 
-    if op.kind.is_3d_surface() {
+    if op.kind == OperationKind::Deburr3D {
+        inline_banner(
+            ui,
+            BannerKind::Info,
+            "3D Edge Deburr / Chamfer: pick explicit 3D B-Rep edge loops, open edge chains, planar faces, or holes below -- or leave empty / enable 'Auto-Detect Edges' in Passes to automatically chamfer all sharp convex 3D edges while trimming away from neighboring walls.",
+        );
+        ui.add_space(4.0);
+    } else if op.kind.is_3d_surface() {
         inline_banner(
             ui,
             BannerKind::Info,
@@ -217,6 +224,8 @@ pub fn show_geometry_tab(ui: &mut egui::Ui, ctx: GeometryTabCtx<'_>) {
                     "Facing defaults automatically to the Setup XY Stock boundary."
                 } else if op.kind == OperationKind::ThreadMill {
                     "Pick cylindrical holes/bosses in 3D or select circular 2D sketch contours."
+                } else if op.kind == OperationKind::Deburr3D {
+                    "Pick 3D B-Rep edge loops or open edge chains above, or leave empty to auto-detect sharp convex 3D edges."
                 } else {
                     "Click entities directly in the 3D viewport above to add geometry."
                 };

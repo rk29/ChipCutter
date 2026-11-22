@@ -112,6 +112,10 @@ impl<'a> SimOperationInput<'a> {
             // cylinder walls; `heightmap` and `tridexel` verifiers natively exempt the `(R_neck, R_cut]`
             // tooth engagement band while preserving strict blind-floor & core collision checks.
             OperationKind::ThreadMill => 0.0,
+            OperationKind::Deburr3D => match op.resolved_strategy() {
+                StrategyParams::Deburr3D(p) => p.chamfer_width.value_mm.max(0.0),
+                _ => 0.0,
+            },
             _ => 0.0,
         };
 

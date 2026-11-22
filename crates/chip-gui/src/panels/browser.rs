@@ -681,6 +681,7 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                                 ("3D Parallel Finishing", OperationKind::Parallel3D),
                                 ("3D Constant-Scallop", OperationKind::Scallop3D),
                                 ("3D Pencil Cleanup", OperationKind::Pencil3D),
+                                ("3D Edge Deburr / Chamfer", OperationKind::Deburr3D),
                                 ("4th-Axis Rotary Surfacing", OperationKind::Rotary2Linear),
                                 (
                                     "Simultaneous 4-Axis (X+Y+Z+A)",
@@ -1221,7 +1222,7 @@ pub fn default_pick_mode_for_op(
         OperationKind::Facing | OperationKind::Pocket2D | OperationKind::VCarve => {
             ViewportPickMode::OpPlanarFaces { setup_idx, op_idx }
         }
-        OperationKind::Contour2D | OperationKind::ChamferTrace => {
+        OperationKind::Contour2D | OperationKind::ChamferTrace | OperationKind::Deburr3D => {
             ViewportPickMode::OpClosedLoops { setup_idx, op_idx }
         }
         OperationKind::DrillBore | OperationKind::ThreadMill => {

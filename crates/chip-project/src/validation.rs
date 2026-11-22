@@ -567,6 +567,109 @@ pub fn validate_project_with_machine(
                     continue;
                 }
 
+                // Strategy-specific validation for `OperationKind::Deburr3D`
+                if op.kind == chip_cam::OperationKind::Deburr3D
+                    && let chip_cam::StrategyParams::Deburr3D(mut p) = op.resolved_strategy()
+                {
+                    p.reevaluate(&eval_ctx);
+                    if !p.chamfer_width.value_mm.is_finite() || p.chamfer_width.value_mm <= 1e-4 {
+                        report.push_error(
+                            &op_scope,
+                            format!(
+                                "3D Deburr chamfer width ({:.3} mm) must be finite and > 0.",
+                                p.chamfer_width.value_mm
+                            ),
+                        );
+                    }
+                    if !p.tip_offset.value_mm.is_finite() || p.tip_offset.value_mm < 0.0 {
+                        report.push_error(
+                            &op_scope,
+                            format!(
+                                "3D Deburr tip offset ({:.3} mm) must be finite and >= 0.",
+                                p.tip_offset.value_mm
+                            ),
+                        );
+                    }
+                    if !p.wall_clearance.value_mm.is_finite() || p.wall_clearance.value_mm < 0.0 {
+                        report.push_error(
+                            &op_scope,
+                            format!(
+                                "3D Deburr wall clearance ({:.3} mm) must be finite and >= 0.",
+                                p.wall_clearance.value_mm
+                            ),
+                        );
+                    }
+                    if !p.edge_extension.value_mm.is_finite() || p.edge_extension.value_mm < 0.0 {
+                        report.push_error(
+                            &op_scope,
+                            format!(
+                                "3D Deburr edge extension ({:.3} mm) must be finite and >= 0.",
+                                p.edge_extension.value_mm
+                            ),
+                        );
+                    }
+                    if !p.chord_tolerance_mm.is_finite() || p.chord_tolerance_mm <= 1e-5 {
+                        report.push_error(
+                            &op_scope,
+                            format!(
+                                "3D Deburr chord tolerance ({:.4} mm) must be finite and > 0.",
+                                p.chord_tolerance_mm
+                            ),
+                        );
+                    }
+                    if !p.min_dihedral_angle_deg.is_finite()
+                        || p.min_dihedral_angle_deg <= 0.0
+                        || p.min_dihedral_angle_deg >= 179.0
+                    {
+                        report.push_error(
+                            &op_scope,
+                            format!(
+                                "3D Deburr min edge angle ({:.1}°) must be within (0°, 179°).",
+                                p.min_dihedral_angle_deg
+                            ),
+                        );
+                    }
+                    if p.multiple_passes == 0 {
+                        report.push_error(&op_scope, "3D Deburr passes count must be >= 1.");
+                    }
+                    if let Some(tool) = op.tool_id.as_ref().and_then(|tid| project.tool(tid)) {
+                        if p.allow_underside_back_chamfer
+                            && !matches!(
+                                tool.geometry,
+                                chip_tools::CutterGeometry::LollipopEndmill { .. }
+                            )
+                        {
+                            report.push_error(
+                                &op_scope,
+                                format!(
+                                    "Underside back-chamfering requires a Lollipop Endmill cutter (assigned: {}).",
+                                    tool.geometry.kind_label()
+                                ),
+                            );
+                        }
+                        if let chip_tools::CutterGeometry::ChamferMill {
+                            diameter_mm,
+                            tip_diameter_mm,
+                            included_angle_deg,
+                            ..
+                        } = tool.geometry
+                        {
+                            let half_a = (0.5 * included_angle_deg).clamp(5.0, 85.0).to_radians();
+                            let max_r = 0.5 * (diameter_mm - tip_diameter_mm).max(0.0);
+                            let req_r = p.tip_offset.value_mm.max(0.0) * half_a.tan()
+                                + p.chamfer_width.value_mm.max(0.0);
+                            if req_r > max_r + 1e-3 {
+                                report.push_error(
+                                    &op_scope,
+                                    format!(
+                                        "Chamfer width + tip offset radial reach ({req_r:.2} mm) exceeds chamfer mill flute span ({max_r:.2} mm)."
+                                    ),
+                                );
+                            }
+                        }
+                    }
+                }
+
                 if op.kind.is_rotary_native() && resolved_setup.rotary.is_none() {
                     report.push_error(
                         &op_scope,
@@ -651,4 +754,85 @@ pub fn validate_project_with_machine(
     }
 
     report
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use chip_cad::{CadKernel, MonstertruckKernel, sample_overhang_flange_step};
+    use chip_cam::{
+        Deburr3DParams, Operation, OperationKind, Setup, StrategyParams, WorkOffsetSlot,
+    };
+    use chip_math::{DEFAULT_TESS_CHORD_TOL_MM, ParamLength};
+    use chip_tools::{CutterGeometry, default_starter_tool_library, starter_lollipop_6mm};
+
+    use super::*;
+
+    #[test]
+    fn validates_deburr3d_tool_compatibility_underside_lollipop_and_clearances() {
+        let step = sample_overhang_flange_step().unwrap();
+        let doc = MonstertruckKernel
+            .load_step_bytes("flange.step", step.as_bytes(), DEFAULT_TESS_CHORD_TOL_MM)
+            .unwrap();
+
+        let lib = default_starter_tool_library();
+        let flat_6 = lib
+            .tools
+            .iter()
+            .find(|t| matches!(t.geometry, CutterGeometry::FlatEndmill { .. }))
+            .unwrap()
+            .clone();
+        let chamfer_90 = lib
+            .tools
+            .iter()
+            .find(|t| matches!(t.geometry, CutterGeometry::ChamferMill { .. }))
+            .unwrap()
+            .clone();
+        let lolli_6 = starter_lollipop_6mm();
+
+        let mut proj = ProjectDocument::new("Deburr3D Validation");
+        proj.tools = vec![flat_6.clone(), chamfer_90.clone(), lolli_6.clone()];
+        proj.setups = vec![Setup::new("s1", "Setup 1", WorkOffsetSlot::G54)];
+
+        // 1. FlatEndmill is incompatible with Deburr3D
+        let mut op = Operation::new("op_d", "3D Deburr", OperationKind::Deburr3D);
+        op.tool_id = Some(flat_6.id.clone());
+        proj.setups[0].operations = vec![op];
+        let rep = validate_project(&proj, None, Some(&doc));
+        assert!(rep.error_count() >= 1);
+
+        // 2. ChamferMill with allow_underside_back_chamfer = true must error (requires Lollipop)
+        proj.setups[0].operations[0].tool_id = Some(chamfer_90.id.clone());
+        proj.setups[0].operations[0].strategy = Some(StrategyParams::Deburr3D(Deburr3DParams {
+            allow_underside_back_chamfer: true,
+            ..Deburr3DParams::default()
+        }));
+        let rep2 = validate_project(&proj, None, Some(&doc));
+        assert!(
+            rep2.diagnostics
+                .iter()
+                .any(|d| d.severity == DiagnosticSeverity::Error
+                    && d.message.contains("Lollipop Endmill")),
+            "expected underside Lollipop error, got: {:?}",
+            rep2.diagnostics
+        );
+
+        // 3. LollipopEndmill with allow_underside_back_chamfer = true and valid parameters passes!
+        proj.setups[0].operations[0].tool_id = Some(lolli_6.id.clone());
+        let rep3 = validate_project(&proj, None, Some(&doc));
+        assert!(
+            rep3.is_valid(),
+            "valid Lollipop Deburr3D should have 0 errors, got: {:?}",
+            rep3.diagnostics
+        );
+
+        // 4. Non-positive chamfer_width & negative wall_clearance must fail validation
+        proj.setups[0].operations[0].strategy = Some(StrategyParams::Deburr3D(Deburr3DParams {
+            chamfer_width: ParamLength::from_mm(0.0),
+            wall_clearance: ParamLength::from_mm(-0.1),
+            ..Deburr3DParams::default()
+        }));
+        let rep4 = validate_project(&proj, None, Some(&doc));
+        assert!(rep4.error_count() >= 2);
+    }
 }

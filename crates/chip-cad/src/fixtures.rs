@@ -1350,6 +1350,70 @@ pub fn sample_threaded_manifold_step() -> std::result::Result<String, SampleStep
     serialize_tutorial_solid(solid, "18-threaded-manifold.step")
 }
 
+/// Builds a watertight `80 × 50 mm` non-planar 3D test solid for Milestone 65 (`Deburr3D`):
+/// - Left stepped shelf (`X ∈ [0..35]`, `Z = 14.0 mm`) running straight into a vertical stepped
+///   boss wall at `X = 35.0 mm` (`Z = 14.0..19.0 mm`) to exercise automatic inside-corner wall
+///   collision trimming,
+/// - Right curved 3D circular-arc arch (`X ∈ [35..80]`, arching smoothly through `(57.5, Z = 23.0)`
+///   down to `(80, Z = 15.0)`) producing exact non-planar 3D circular arcs along `Y = 0` & `Y = 50`.
+pub fn sample_sloped_boss_stepped_pocket_step() -> std::result::Result<String, SampleStepError> {
+    let v0 = builder::vertex(Point3::new(0.0, 0.0, 0.0));
+    let v1 = builder::vertex(Point3::new(80.0, 0.0, 0.0));
+    let v2 = builder::vertex(Point3::new(80.0, 0.0, 15.0));
+    let v3 = builder::vertex(Point3::new(35.0, 0.0, 19.0));
+    let v4 = builder::vertex(Point3::new(35.0, 0.0, 14.0));
+    let v5 = builder::vertex(Point3::new(0.0, 0.0, 14.0));
+
+    let arch_mid = Point3::new(57.5, 0.0, 23.0);
+    let arch_edge = builder::try_circle_arc(&v2, &v3, arch_mid)
+        .map_err(|e| SampleStepError::Modeling(e.to_string()))?;
+
+    let profile_wire: Wire = vec![
+        builder::line(&v0, &v1),
+        builder::line(&v1, &v2),
+        arch_edge,
+        builder::line(&v3, &v4),
+        builder::line(&v4, &v5),
+        builder::line(&v5, &v0),
+    ]
+    .into();
+
+    // Invert wire so `front_face` normal points `+Y` matching the `+Y` extrusion direction,
+    // producing a properly outward-oriented manifold solid!
+    let front_face = builder::try_attach_plane(vec![profile_wire.inverse()])
+        .map_err(|e| SampleStepError::Modeling(e.to_string()))?;
+    let solid = builder::extrude(&front_face, Vector3::new(0.0, 50.0, 0.0));
+    serialize_tutorial_solid(solid, "m65-curved-stepped-boss.step")
+}
+
+/// Builds a watertight T-shaped stepped overhang flange (`80 × 50 × 18 mm` bounding envelope) for
+/// Milestone 65 Lollipop underside back-chamfering verification:
+/// - Lower stem: `X ∈ [20..60]`, `Y ∈ [0..50]`, `Z ∈ [0..12]`,
+/// - Upper overhang flange: `X ∈ [8..72]`, `Y ∈ [0..50]`, `Z ∈ [12..18]` (`12 mm` wide underside
+///   overhang rims along `X = 8` and `X = 72` at `Z = 12.0 mm`).
+pub fn sample_overhang_flange_step() -> std::result::Result<String, SampleStepError> {
+    let pts = [
+        Point3::new(20.0, 0.0, 0.0),
+        Point3::new(60.0, 0.0, 0.0),
+        Point3::new(60.0, 0.0, 12.0),
+        Point3::new(72.0, 0.0, 12.0),
+        Point3::new(72.0, 0.0, 18.0),
+        Point3::new(8.0, 0.0, 18.0),
+        Point3::new(8.0, 0.0, 12.0),
+        Point3::new(20.0, 0.0, 12.0),
+    ];
+    let verts: Vec<Vertex> = pts.iter().map(|&p| builder::vertex(p)).collect();
+    let mut edges = Vec::with_capacity(verts.len());
+    for i in 0..verts.len() {
+        edges.push(builder::line(&verts[i], &verts[(i + 1) % verts.len()]));
+    }
+    let profile_wire: Wire = edges.into();
+    let front_face = builder::try_attach_plane(vec![profile_wire.inverse()])
+        .map_err(|e| SampleStepError::Modeling(e.to_string()))?;
+    let solid = builder::extrude(&front_face, Vector3::new(0.0, 50.0, 0.0));
+    serialize_tutorial_solid(solid, "m65-overhang-flange.step")
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {

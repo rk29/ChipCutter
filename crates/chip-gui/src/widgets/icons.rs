@@ -33,6 +33,7 @@ pub enum IconKind {
     DrillBore,
     ThreadMill,
     ChamferTrace,
+    Deburr3D,
     VCarve,
     Sketch2D,
     StepModel,
@@ -98,6 +99,7 @@ impl IconKind {
             OperationKind::Parallel3D => Self::Facing,
             OperationKind::Scallop3D => Self::Pocket2D,
             OperationKind::Pencil3D => Self::ChamferTrace,
+            OperationKind::Deburr3D => Self::Deburr3D,
             OperationKind::Rotary2Linear => Self::OrthoCube,
             OperationKind::Rotary4AxisSim => Self::OrthoCube,
         }
@@ -284,6 +286,21 @@ pub fn paint_icon(painter: &egui::Painter, rect: Rect, icon: IconKind, color: Co
                 stroke,
             ));
             painter.line_segment([p(0.42, 0.26), p(0.74, 0.58)], thin);
+        }
+        IconKind::Deburr3D => {
+            // 3D curved beveled contour with diagonal edge-break highlight & spherical/conical touch
+            painter.add(egui::Shape::line(
+                vec![p(0.14, 0.76), p(0.38, 0.72), p(0.60, 0.52), p(0.84, 0.36)],
+                stroke,
+            ));
+            painter.add(egui::Shape::line(
+                vec![p(0.14, 0.56), p(0.40, 0.52), p(0.62, 0.32), p(0.84, 0.18)],
+                thin,
+            ));
+            // Bevel tick marks linking upper/lower edges across the 3D chamfer strip
+            painter.line_segment([p(0.39, 0.52), p(0.39, 0.72)], thin);
+            painter.line_segment([p(0.61, 0.32), p(0.61, 0.52)], thin);
+            painter.circle_stroke(p(0.70, 0.68), s * 0.14, stroke);
         }
         IconKind::VCarve => {
             painter.line_segment([p(0.12, 0.24), p(0.88, 0.24)], thin);
@@ -932,6 +949,32 @@ mod tests {
         assert!(
             !out.shapes.is_empty(),
             "expected IconKind::ThreadMill to emit vector shapes"
+        );
+    }
+
+    #[test]
+    fn deburr3d_icon_maps_operation_and_renders_without_panic() {
+        assert_eq!(
+            IconKind::for_operation(OperationKind::Deburr3D, false),
+            IconKind::Deburr3D
+        );
+
+        let ctx = egui::Context::default();
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 200.0))),
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
+                let (rect, _) = ui.allocate_exact_size(Vec2::splat(24.0), Sense::hover());
+                paint_icon(ui.painter(), rect, IconKind::Deburr3D, Color32::WHITE);
+                let _ = inline_icon(ui, IconKind::Deburr3D, Color32::LIGHT_GRAY, 14.0);
+            });
+        });
+        out.textures_delta.clear();
+        assert!(
+            !out.shapes.is_empty(),
+            "expected IconKind::Deburr3D to emit vector shapes"
         );
     }
 }

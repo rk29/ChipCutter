@@ -941,6 +941,7 @@ impl TriDexelStock {
         let dz_step = 0.25 * self.dz_mm();
         let neck_skin = (ctx.prof.neck_radius_mm - ctx.tol.radial_wall_skin_mm).max(0.0);
         let wall_skin = ctx.tol.gouge_tol_mm + ctx.tol.radial_wall_skin_mm;
+        let flute_wall_skin = ctx.tol.radial_wall_skin_mm + (ctx.tol.gouge_tol_mm - 0.02).max(0.0);
 
         let plane = self.plane_mut(axis);
         let (Some((u0, u1)), Some((k0, k1))) = (
@@ -1019,7 +1020,7 @@ impl TriDexelStock {
                                 eval_horizontal_ray_cut_interval(
                                     chord,
                                     ctx.prof,
-                                    ctx.tol.radial_wall_skin_mm,
+                                    flute_wall_skin,
                                     pz,
                                     pu,
                                     swap_xy,
@@ -1245,6 +1246,7 @@ pub(crate) fn replay_single_ray_linear_chord(
                 return (false, rv);
             }
             let wall_skin = tol.gouge_tol_mm + tol.radial_wall_skin_mm;
+            let flute_wall_skin = tol.radial_wall_skin_mm + (tol.gouge_tol_mm - 0.02).max(0.0);
             let mut ray_mut = false;
             if let Some((w_lo, w_hi)) =
                 eval_horizontal_ray_cut_interval(chord, prof, 0.0, pz, pu, swap_xy, dz_step_mm)
@@ -1271,7 +1273,7 @@ pub(crate) fn replay_single_ray_linear_chord(
                         eval_horizontal_ray_cut_interval(
                             chord,
                             prof,
-                            tol.radial_wall_skin_mm,
+                            flute_wall_skin,
                             pz,
                             pu,
                             swap_xy,

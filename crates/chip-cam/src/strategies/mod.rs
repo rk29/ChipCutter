@@ -2,6 +2,7 @@ pub mod adaptive2d;
 pub mod adaptive3d;
 pub mod chamfer_trace;
 pub mod contour2d;
+pub mod deburr3d;
 pub mod drill_bore;
 pub mod facing;
 pub mod parallel3d;
@@ -461,6 +462,9 @@ pub fn generate_operation_toolpath_with_rest(
         }
         StrategyParams::Pencil3D(p) => {
             pencil3d::generate_pencil3d(&ctx, p, &mut builder)?;
+        }
+        StrategyParams::Deburr3D(p) => {
+            deburr3d::generate_deburr3d(&ctx, p, &mut builder)?;
         }
         StrategyParams::Rotary2Linear(p) => {
             rotary2linear::generate_rotary2linear(&ctx, p, &mut builder)?;

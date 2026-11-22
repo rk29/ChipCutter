@@ -1,10 +1,12 @@
 mod common;
+mod deburr3d;
 mod milling_2d;
 mod rotary;
 mod surface_3d;
 mod thread_mill;
 
 pub use common::*;
+pub use deburr3d::*;
 pub use milling_2d::*;
 pub use rotary::*;
 pub use surface_3d::*;
@@ -44,6 +46,8 @@ pub enum StrategyParams {
     Rotary4AxisSim(Rotary4AxisSimParams),
     #[serde(rename = "thread_mill")]
     ThreadMill(ThreadMillParams),
+    #[serde(rename = "deburr_3d")]
+    Deburr3D(Deburr3DParams),
 }
 
 impl StrategyParams {
@@ -60,6 +64,7 @@ impl StrategyParams {
             OperationKind::Parallel3D => Self::Parallel3D(Parallel3DParams::default()),
             OperationKind::Scallop3D => Self::Scallop3D(Scallop3DParams::default()),
             OperationKind::Pencil3D => Self::Pencil3D(Pencil3DParams::default()),
+            OperationKind::Deburr3D => Self::Deburr3D(Deburr3DParams::default()),
             OperationKind::Rotary2Linear => Self::Rotary2Linear(Rotary2LinearParams::default()),
             OperationKind::Rotary4AxisSim => Self::Rotary4AxisSim(Rotary4AxisSimParams::default()),
             OperationKind::ThreadMill => Self::ThreadMill(ThreadMillParams::default()),
@@ -80,6 +85,7 @@ impl StrategyParams {
                 | (OperationKind::Parallel3D, Self::Parallel3D(_))
                 | (OperationKind::Scallop3D, Self::Scallop3D(_))
                 | (OperationKind::Pencil3D, Self::Pencil3D(_))
+                | (OperationKind::Deburr3D, Self::Deburr3D(_))
                 | (OperationKind::Rotary2Linear, Self::Rotary2Linear(_))
                 | (OperationKind::Rotary4AxisSim, Self::Rotary4AxisSim(_))
                 | (OperationKind::ThreadMill, Self::ThreadMill(_))
@@ -102,6 +108,7 @@ impl StrategyParams {
             Self::Parallel3D(p) => p.reevaluate(ctx),
             Self::Scallop3D(p) => p.reevaluate(ctx),
             Self::Pencil3D(p) => p.reevaluate(ctx),
+            Self::Deburr3D(p) => p.reevaluate(ctx),
             Self::Rotary2Linear(p) => p.reevaluate(ctx),
             Self::Rotary4AxisSim(p) => p.reevaluate(ctx),
             Self::ThreadMill(p) => p.reevaluate(ctx),

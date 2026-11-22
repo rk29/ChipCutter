@@ -50,16 +50,16 @@ pub use operation::{
 };
 pub use params::{
     Adaptive3DParams, AdaptiveClearingParams, AdaptiveCutDirection, ChamferSourceMode,
-    ChamferTraceMode, ChamferTraceParams, Contour2DParams, ContourCompensation, DrillBoreParams,
-    EntryStrategy, FacingCutMode, FacingParams, FeedOptimizationConfig, HoldingTabsConfig,
-    HoleMachiningMode, LeadConfig, LinkingParams, MachiningBoundaryMode, ManualTabAnchor,
-    Parallel3DParams, ParallelCutDirection, PassesParams, Pencil3DParams, Pocket2DParams,
-    PocketPassOrder, PocketStrategyKind, RestMachiningConfig, RestMachiningMode, RetractPolicy,
-    Rotary2LinearParams, Rotary4AxisPattern, Rotary4AxisSimParams, RotaryCutDirection,
-    RotaryPatternMode, RotaryTiltMode, Scallop3DParams, StrategyParams, TabPlacementMode,
-    TabProfileKind, ThreadCutDirection, ThreadFormKind, ThreadHandedness, ThreadMillParams,
-    ToolContainmentMode, VCarveClearingKind, VCarveInlayMode, VCarveParams, Waterline3DParams,
-    WaterlineOrderMode,
+    ChamferTraceMode, ChamferTraceParams, Contour2DParams, ContourCompensation, Deburr3DParams,
+    DrillBoreParams, EntryStrategy, FacingCutMode, FacingParams, FeedOptimizationConfig,
+    HoldingTabsConfig, HoleMachiningMode, LeadConfig, LinkingParams, MachiningBoundaryMode,
+    ManualTabAnchor, Parallel3DParams, ParallelCutDirection, PassesParams, Pencil3DParams,
+    Pocket2DParams, PocketPassOrder, PocketStrategyKind, RestMachiningConfig, RestMachiningMode,
+    RetractPolicy, Rotary2LinearParams, Rotary4AxisPattern, Rotary4AxisSimParams,
+    RotaryCutDirection, RotaryPatternMode, RotaryTiltMode, Scallop3DParams, StrategyParams,
+    TabPlacementMode, TabProfileKind, ThreadCutDirection, ThreadFormKind, ThreadHandedness,
+    ThreadMillParams, ToolContainmentMode, VCarveClearingKind, VCarveInlayMode, VCarveParams,
+    Waterline3DParams, WaterlineOrderMode,
 };
 pub use rest2d::{
     ContourRestClipQuery, PocketRestQuery, RegionSet2D, RestPocketWorkItem, UpstreamSweptInput,
@@ -85,8 +85,10 @@ pub use stock::{
     compute_tight_oriented_model_aabb,
 };
 pub use strategies::{
-    OperationGenRequest, compute_z_levels, generate_operation_toolpath,
-    generate_operation_toolpath_with_fixtures, generate_operation_toolpath_with_rest,
+    OperationGenRequest, compute_z_levels,
+    deburr3d::{DeburrContactSolution, DeburrSample3D, solve_deburr_tool_tip},
+    generate_operation_toolpath, generate_operation_toolpath_with_fixtures,
+    generate_operation_toolpath_with_rest,
     pocket2d::{
         ContourParallelStrategy, PocketEngagementParams, PocketStrategy, PocketSubpath2D,
         ZigZagPocketStrategy,
