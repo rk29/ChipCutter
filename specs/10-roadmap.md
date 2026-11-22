@@ -348,12 +348,39 @@ Phase 14 consolidated duplicated simulation/geometry kernels, eliminated the `O(
 
 ---
 
+## Phase 15 — GPU-Accelerated Simulation (`wgpu` Compute) & Direct GPU Stock Rendering (Planned — M52–M55)
+
+Phase 15 builds directly on Phase 14's GPU-ready flat layouts (`chip-bvh` `FlatBvhNode`/`GpuTriangle`, `chip-stock` flat fixed-`K` Tri-Dexel span pools & stock-local `f32`/`u32` grids, `SimStockBackend`, and `SimStockRenderSource`) to add an optional **`wgpu` Compute** simulation and rendering backend (`gpu-compute` feature, zero new external dependencies, automatic transparent fallback to exact `CpuExactBackend` whenever no compute adapter is available). Delivering fast Ultra-resolution simulation and instant error-heatmap iteration first directly accelerates Phase 16's toolpath algorithm quality work:
+
+### Milestone 52 — `WgpuComputeBackend` Foundation & Heightfield / Cylindrical WGSL Compute Sweepers (`plans/52-milestone-52-plan.md`)
+- **Feature-Gated `GpuSimContext` & Compute Plumbing (`chip-stock`, `chip-sim`, `chip-project`, `chip-cli`, `chip-gui`):** Add optional `gpu-compute` feature (`wgpu`, `pollster`) on `chip-stock` (forwarded through `chip-sim`/`chip-project`, enabled by default in `chip-gui` including `flatpak-portal` and in `chip-cli`, while keeping default `chip-stock`/`chip-sim` 100% pure-CPU). Support both shared `eframe`/`ViewportRenderer` `(Arc<wgpu::Device>, Arc<wgpu::Queue>)` and headless adapter creation with `SimComputeBackendChoice { Auto, Gpu, Cpu }` and graceful CPU fallback.
+- **GPU Sweep Data Contracts & Atomic Verification:** Define tightly-packed `#[repr(C)] bytemuck::Pod` `GpuSweepChord`, `GpuToolProfile` (all 7 cutter geometries via `AnalyticCutterEnvelope`, including multi-form `ThreadMill`), and `GpuViolationCounters` (`atomic<u32>` flags + fixed-point max penetration + offending chord index feeding `ViolationBatchCoalescer`).
+- **Tiled WGSL Compute Sweepers (`heightfield_sweep.wgsl`, `cylindrical_sweep.wgsl`):** Implement `16×16` tiled compute sweepers with coarse AABB tile-binning for 2.5D `HeightfieldStock` (including closed-form conical V-bit and sloped flat-endmill intervals) and 4th-axis `CylindricalStock` (off-centerline simultaneous 4-axis, spiral/wrapped, and indexed `3+1` + chuck/holder/flute/gouge checks), verified by CPU-vs-GPU differential parity tests.
+
+### Milestone 53 — GPU Flat Fixed-`K` Tri-Dexel Compute Sweeper, GPU BVH Distance, & GPU Error Metrics (`plans/53-milestone-53-plan.md`)
+- **Axis-Generic Flat Fixed-`K` Tri-Dexel WGSL Sweeper (`tridexel_sweep.wgsl`):** Dispatch a single axis-parameterized compute shader across `Axis3::{X, Y, Z}` over the existing 16-byte `FlatDexelSpan` (`K = 4` inline slots + `counts: array<u32>`) buffers with Rules 1–4 atomic verification and a **hybrid overflow safety valve** (per-ray atomic overflow flags that fall back seamlessly to the exact CPU `BTreeMap` overflow side-table only for rare `> K` rays such as 6-tooth multi-form internal thread mills).
+- **GPU Target BVH & Parallel Reduction Metrology (`bvh_distance.wgsl`, `stock_metrics.wgsl`):** Upload `chip-bvh`'s `FlatBvhNode`/`GpuTriangle` buffers directly to GPU for fast target rasterization and signed-distance evaluation, and compute `StockErrorReport` metrics (remaining/excess/gouge volume, RMS, MAE, signed bias, max excess/gouge coordinates, and in-tolerance %) via parallel GPU reductions in `< 1 ms`.
+- **Differential Oracle Parity:** Verify CPU-vs-GPU Tri-Dexel and `StockErrorReport` parity across 2.5D, 3-axis sculpted meshes, multi-body STL `target_bodies` filtering, and multi-form `ThreadMill` overflow stress tests.
+
+### Milestone 54 — Zero-Readback Direct GPU Stock Rendering (`SimStockRenderSource::GpuGrid`) & Instant Error Heatmap (`plans/54-milestone-54-plan.md`)
+- **Direct GPU Stock Rendering (`chip-gui/src/viewport/`):** Add `SimStockRenderSource::GpuGrid` alongside `CpuMesh` so `Heightfield` and `Cylindrical` compute storage buffers render directly via vertex-displaced GPU grids (`vs_sim_heightfield_gpu`, `vs_sim_cylindrical_gpu`) with on-the-fly finite-difference normals—eliminating CPU re-tessellation and PCIe readback during Ultra playback scrubbing. Add a GPU compact-emit mesh pass (`draw_indirect`) for direct GPU `TriDexel` rendering.
+- **Instant GPU Error Heatmap & Tolerance Slider:** Evaluate signed stock-vs-target deviation coloring directly in WGSL using GPU target buffers and a `tolerance_mm` uniform so toggling `Color by Op` vs. `Error Heatmap` or dragging the `±tol` slider updates in `< 0.1 ms` with zero re-meshing.
+- **VRAM-Bounded GPU Checkpoints:** Keep compact GPU-side checkpoint buffer snapshots (with automatic LRU / CPU spill on constrained adapters) for `< 1 ms` interactive Ultra timeline scrubbing.
+
+### Milestone 55 — GUI/CLI Backend Controls, Benchmarks, Visual Parity, & Spec Sync (`plans/55-milestone-55-plan.md`)
+- **GUI & CLI Controls (`chip-gui`, `chip-cli`):** Add Simulation Backend selector (`Auto (GPU)` / `GPU` / `CPU`) and active adapter badge in the Simulation Timeline toolbar & `prefs.toml`; extend `chipcutter simulate` with `--backend <auto|gpu|cpu>` and `--benchmark` (wall-time, segment throughput, active adapter, and full `StockErrorReport` JSON) to power Phase 16's automated algorithm benchmarking.
+- **Headless Visual Parity & Benchmarks:** Visually verify CPU-vs-GPU rendered screenshots across Heightfield (`cam-torture`), Tri-Dexel (`thread-mill`), Cylindrical (`rotary-4axis`), and Error Heatmap views via Vulkan/Xvfb, and run Standard/Fine/Ultra speedup benchmarks.
+- **Spec Synchronization:** Update `specs/01-architecture.md`, `specs/06-simulation.md`, and `specs/10-roadmap.md` to document the `gpu-compute` backend, `SimStockRenderSource::GpuGrid`, and mark Phase 15 complete.
+
+---
+
 ## Future Phases
 
 ChipCutter's long-term roadmap focuses on bringing pro-grade CAM capabilities to hobby and benchtop machinists—making everyday job setup faster, safer, and easier to use without commercial CAM complexity or licensing cost.
 
-1. **Toolpath Algorithm Quality & Engagement-Aware Feedrate Optimization:**
-   - **Error-Metric-Driven Quality Polish:** Use Tri-Dexel error-volume & RMS benchmarks across 2.5D, 3D surface (`Adaptive3D`, `Waterline3D`, `Parallel3D`, `Scallop3D`, `Pencil3D`), V-Carve, Thread Milling, and 4th-axis rotary strategies to systematically eliminate residual scallops, corner overcuts, and uncut islands.
+1. **Phase 16 (Next Planned) — Toolpath Algorithm Quality & Engagement-Aware Feedrate Optimization:**
+   - **4th-Axis Rotary Toolpath & Simulation Quality:** Diagnose and eliminate the visible ridges and apparent gouges observed on the 4th-axis rotary samples even at Ultra resolution—replacing coarse staircase `sample_safe` lifting with exact continuous drop-cutter / chord-sagitta subdivision, tighter adaptive cusp-height stepovers and angular/axial sampling, gouge-free off-centerline tilt smoothing in `Rotary4AxisSim` & `Rotary2Linear`, and higher-fidelity continuous swept contact in `CylindricalStock`.
+   - **Error-Metric-Driven Quality Polish Across All Strategies:** Leverage Phase 15's GPU-accelerated Ultra Tri-Dexel/Heightfield/Cylindrical error-volume & RMS benchmarks across 2.5D, 3D surface (`Adaptive3D`, `Waterline3D`, `Parallel3D`, `Scallop3D`, `Pencil3D`), V-Carve, Thread Milling, and 4th-axis rotary strategies to systematically eliminate residual scallops, corner overcuts, and uncut islands.
    - **Constant-Chipload & Corner Slowdown Feedrate Optimization:** Automatically throttle feedrates inside tight internal corners where radial engagement spikes and accelerate through light-engagement cuts to extend endmill life on hobby-rigidity machines.
 2. **Physics-Backed Safety & Machinability Guardrails:**
    - **Spindle Power, MRR, & Tool Deflection Advisor:** Compare each operation's material removal rate and estimated radial cutting force against the active machine's real spindle power curve (e.g. `150 W` Carvera Z1 vs. `1.5 kW` Milo/Cascade) and tool stickout—flagging stall risk, chatter, or excessive deflection before cutting.
@@ -367,7 +394,6 @@ ChipCutter's long-term roadmap focuses on bringing pro-grade CAM capabilities to
    - **In-Process Stock Carryover Across Setups (`G54` -> `G55`):** Pass the exact remaining Tri-Dexel solid from Setup 1 into Setup 2 (e.g. after flipping or re-clamping the part) so both simulation and rest-aware toolpaths know exactly which features were already machined—enabling zero-air-cut multi-op roughing, accurate Op-2 collision checks, and cumulative error-volume metrics.
    - **Two-Sided Flip-Jig & Auto Soft-Jaw Wizards:** Automatically place symmetric registration dowel-pin holes for flip machining without a vise, or auto-generate ready-to-machine aluminum / 3D-printed vise soft-jaw pockets directly from the part's silhouette.
 5. **Expanded Machining Capabilities:**
-   - **4th-Axis Cylindrical Wrapping:** Wrap 2D sketches, SVG artwork, text, pockets, and V-carve paths cleanly onto cylindrical rotary stock (`A`-axis).
    - **3D Edge Deburring & Non-Planar Chamfering:** Follow 3D B-Rep edges with a chamfer or lollipop cutter so curved and stepped parts come off the machine already deburred.
    - **Undercuts, Keyways, T-Slots, & Dovetails:** Lollipop, slot-mill, T-slot, and dovetail cutter geometries + strategies backed by Tri-Dexel undercut simulation.
    - **2D Sheet Nesting & Multi-Part Arrays:** Pack multiple parts onto plate, plywood, or composite sheets with tool-diameter spacing, grain-direction rules, and automatic tabs.
@@ -378,10 +404,7 @@ ChipCutter's long-term roadmap focuses on bringing pro-grade CAM capabilities to
    - **Standalone G-Code Backplot & Crash Verification Mode:** Open any external `.nc`/`.ngc` file and run ChipCutter's Tri-Dexel simulator and 5-rule crash verifier on it.
    - **Broader Tool Library Interop & Printable Setup Sheets:** Import tool libraries from FreeCAD (`.fctb`), Carbide Create, and Vectric alongside Fusion 360; richer material presets (brass, acetal/Delrin, G10/carbon fiber, mild steel, hardwoods); and printable HTML/PDF setup sheets with isometric views, WCS origin diagrams, stock dimensions, tool stickout checklists, and cycle times.
    - **Additional Controller Dialects & CAD Kernel Backends:** Fanuc/Haas, Mach4, Masso, and Centroid post dialects, plus an optional OpenCASCADE (`opencascade-rs`) `CadKernel` feature backend.
-7. **GPU-Accelerated Simulation (`wgpu` Compute):**
-   - **Optional Headless GPU Compute Backend (`gpu-compute` feature):** Accelerate 2.5D Heightmap, 4th-Axis Cylindrical, and Volumetric 3D (fixed-`K` Tri-Dexel span pools or sparse brickmap SDF) stock subtraction using tiled WGSL compute shaders on `wgpu`—enabling real-time Ultra-resolution playback scrubbing while keeping the deterministic `f64` CPU engine as the exact fallback.
-   - **Direct GPU Stock Rendering & Instant Error Heatmap:** Displace heightfield/cylindrical stock directly from GPU buffers without CPU re-tessellation, evaluate target-mesh signed distances via a GPU BVH for instantaneous tolerance-slider Heatmap recoloring, and run parallel GPU crash bitmasks feeding CPU diagnostic reporting.
-8. **Functional & Behavioral User-Level Testing:**
+7. **Functional & Behavioral User-Level Testing:**
    - Durable end-to-end user-journey and GUI behavioral test harness (`egui_kittest` / headless interactive workflows + CLI workflows) verifying every feature from a machinist's point of view without brittle coupling to internal implementation details.
-9. **Tutorials for Upcoming Future-Phase Capabilities:**
-   - Dedicated illustrated guides accompanying new future-phase capabilities (guided operation setup, probing, 3D workholding & multi-setup Tri-Dexel stock carryover, soft jaws, 4th-axis wrapping, nesting, and PCB isolation milling).
+8. **Tutorials for Upcoming Future-Phase Capabilities:**
+   - Dedicated illustrated guides accompanying new future-phase capabilities (guided operation setup, probing, 3D workholding & multi-setup Tri-Dexel stock carryover, soft jaws, nesting, and PCB isolation milling).
