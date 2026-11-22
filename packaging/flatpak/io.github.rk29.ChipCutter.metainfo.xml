@@ -50,6 +50,11 @@
   </screenshots>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="0.17.0" date="2026-11-22">
+      <description>
+        <p>Phase 17 release: added first-class 3D shop-floor workholding fixtures (parametric Vise Jaws with step shelves and parallels, Toe/Strap Clamps with stud towers, Spoilboards with overcut tolerance, Box/Cylinder Keep-Outs, and imported STEP/STL/OBJ/3MF fixture models via ModelRole::Fixture) with interactive 3D viewport placement, translucent rendering, and the Setup [Fixtures] Inspector tab; added automatic full-assembly fixture-aware safe-rapid lifting and export-blocking Rule 6 FixtureCollision verification across CPU and GPU backends; added multi-setup volumetric Tri-Dexel stock carryover (G54 to G55) with rest-aware Op-2 air-cut skipping and cumulative error-volume metrology (chipcutter simulate --all-setups); added Two-Sided Flip-Jig Dowel-Pin and Auto Soft-Jaw Generator wizards (CNC setup and watertight 3D-printable STL export), built-in two-sided-vise sample, and illustrated Tutorial 19; added the Makera Essential Milling Bit Set (Extended) to Makera built-in machines; fixed 4-axis rotary strategies to cut hollow stock centers cleanly to r = 0; and updated url to 2.5.9 (RUSTSEC-2026-0592).</p>
+      </description>
+    </release>
     <release version="0.16.0" date="2026-11-22">
       <description>
         <p>Phase 16 release: upgraded 4th-axis rotary toolpaths with exact direct BVH drop-cutter evaluation, adaptive midpoint chord refinement, slope-compensated cusp stepover, and 3x finer cylindrical pose subdivision; eliminated 3-axis surface finishing chord gouges with zero-gouge chord refinement, higher-resolution smoothed Scallop3D, local contour-offset Waterline3D stepdowns, and sub-cell parabolic Pencil3D ridge centering; added engagement-aware feedrate optimization (internal-arc centerline scaling, sharp-corner lookahead deceleration, radial chip-thinning boost) with Inspector controls and timeline telemetry; fixed 2.5D circular-island rest cleanup and V-Carve Z-chord refinement; isolated background GPU simulation compute onto a dedicated headless wgpu device to prevent Surface::configure panics during window resizes; and updated tutorial commands for installed chip-gui and chipcutter binaries.</p>
