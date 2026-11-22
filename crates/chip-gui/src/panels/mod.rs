@@ -13,6 +13,7 @@ pub mod sketch_inspector;
 pub mod tool_library;
 pub mod vector_import_modal;
 pub mod welcome_gallery;
+pub mod workholding_wizards;
 
 use chip_cad::EdgeId;
 

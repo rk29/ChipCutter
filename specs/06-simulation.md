@@ -1,7 +1,7 @@
 # 06 — Toolpath Simulation & Crash Verification
 
 ## Overview (`chip-sim` & `chip-stock`)
-Before exporting G-code to a CNC controller, `chip-sim` (orchestrator, timeline, 5-rule verifier, CAD target adapters, and stage timing) and `chip-stock` (UI-agnostic volumetric stock kernels, meshers, metrology, and compute backends) provide **interactive visual playback**, **automated 5-rule crash/gouge verification**, and **quantitative stock-vs-target error-volume / RMS metrology** across 3D STEP/STL/OBJ/3MF solids, 4th-axis rotary setups, and Pure-2D sheet setups (`models = []`).
+Before exporting G-code to a CNC controller, `chip-sim` (orchestrator, timeline, 6-rule verifier, CAD target adapters, and stage timing) and `chip-stock` (UI-agnostic volumetric stock kernels, meshers, metrology, and compute backends) provide **interactive visual playback**, **automated 6-rule crash/gouge/fixture verification**, **multi-setup volumetric stock carryover**, and **quantitative stock-vs-target error-volume / RMS metrology** across 3D STEP/STL/OBJ/3MF solids, 4th-axis rotary setups, and Pure-2D sheet setups (`models = []`).
 
 ---
 
@@ -65,16 +65,21 @@ All three volumetric stock representations share a unified polymorphic container
 
 ---
 
-## 5. Automated Crash, Gouge, & Engagement Verification
-During simulation (and automatically during `chipcutter simulate` / `chipcutter build`), `chip-sim` evaluates five safety rules (with identical diagnostics across `CpuExactBackend` and `WgpuComputeBackend`) and logs structured **Simulation Diagnostics** clickable in the UI to jump the camera + timeline straight to the offending move:
+## 5. Automated Crash, Gouge, Fixture, & Engagement Verification
+During simulation (and automatically during `chipcutter simulate` / `chipcutter build`), `chip-sim` evaluates six safety rules (with identical diagnostics across `CpuExactBackend` and `WgpuComputeBackend`) and logs structured **Simulation Diagnostics** clickable in the UI to jump the camera + timeline straight to the offending move:
 
 | Check | Condition | Severity |
 |---|---|---|
-| **Rapid-into-Stock Crash** | A `G0` rapid move sweeps any cell/ray where the cutter enters uncut stock beyond `rapid_crash_tol_mm` | **Critical Error** (blocks G-code export unless explicitly acknowledged) |
-| **Target Model Gouge** | When `models` is non-empty, any cutting or rapid move penetrates the target solid beyond `gouge_tol_mm` (default `0.02 mm`) | **Critical Error** |
-| **Flute Length / Neck Clearance Exceeded** | Engagement depth exceeds `flute_length` (or relieved `neck_length` / radial neck clearance on `ThreadMill` cutters) | **Warning** |
-| **Holder / Collet / Chuck Collision** | Stock or rotary chuck penetrates holder/collet envelope above `stickout_length` | **Critical Error** |
-| **Excessive Plunge in Material** | Vertical plunge move (`ΔXY == 0`) with non-center-cutting cutter or axial penetration exceeding safe plunge depth | **Warning** |
+| **1. Rapid-into-Stock Crash** | A `G0` rapid move sweeps any cell/ray where the cutter enters uncut stock beyond `rapid_crash_tol_mm` | **Critical Error** (blocks G-code export unless explicitly acknowledged) |
+| **2. Target Model Gouge** | When `models` has part solids, any cutting or rapid move penetrates the target solid beyond `gouge_tol_mm` (default `0.02 mm`); `ModelRole::Fixture` solids are excluded | **Critical Error** |
+| **3. Flute Length / Neck Clearance Exceeded** | Engagement depth exceeds `flute_length` (or relieved `neck_length` / radial neck clearance on `ThreadMill` cutters) | **Warning** |
+| **4. Holder / Collet / Chuck Collision** | Stock or rotary chuck penetrates holder/collet envelope above `stickout_length` | **Critical Error** |
+| **5. Excessive Plunge in Material** | Vertical plunge move (`ΔXY == 0`) with non-center-cutting cutter or axial penetration exceeding safe plunge depth | **Warning** |
+| **6. 3D Fixture Collision (`FixtureCollision`)** | Swept flute, shank, or holder/collet envelope penetrates any enabled `Setup.fixtures` solid (+ `clearance_margin_mm`, honoring `allowed_overcut_mm` on sacrificial spoilboards) across Heightfield, Tri-Dexel, and Cylindrical engines | **Critical Error** (blocks G-code export; colliding hardware highlights crimson in 3D viewport) |
+
+### Multi-Setup Volumetric Stock Carryover & Cumulative Metrology
+- When `Setup.carryover_from_setup_id` is configured, `chip-project` simulates upstream Setups in `TriDexel` mode, rigidly transforms the final remaining `TriDexelStock` into the downstream Setup's WCS frame (`t = 0.0`), and evaluates cumulative end-of-job `StockErrorReport` metrics across all Setups.
+- `chipcutter simulate --all-setups` executes the full multi-setup carryover chain sequentially and emits both per-Setup diagnostics/metrics and the cumulative end-of-job `cumulative_error_report` in JSON (`--json`) and human-readable text modes.
 
 ---
 

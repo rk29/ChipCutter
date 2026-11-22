@@ -4,11 +4,14 @@ use std::{
 };
 
 use chip_cam::{
-    FixtureBody, FixtureKind, FixtureZRef, Setup, ViseClampAxis, ViseFixedSide,
-    resolve_fixture_body, resolve_setup_fixtures,
+    FixtureBody, FixtureKind, FixtureZRef, FlipAxis, FlipJigConfig, FlipJigPinCount, Setup,
+    SoftJawBoltPattern, SoftJawConfig, SoftJawOutputMode, ViseClampAxis, ViseFixedSide,
+    WorkOffsetSlot, build_soft_jaw_plan, build_two_sided_flip_jig, resolve_fixture_body,
+    resolve_setup_fixtures,
 };
 use chip_math::{DVec2, ParamLength};
 use chip_project::ProjectDocument;
+use chip_tools::{CutterGeometry, Tool};
 
 use super::{load_primary_cad_for_project, load_project_or_chipz};
 
@@ -364,4 +367,316 @@ fn validate_and_save_fixture(
     proj.save_to_path(&dest)?;
     println!("Saved updated project to {}", dest.display());
     Ok(())
+}
+
+pub struct FlipJigArgs {
+    pub project: PathBuf,
+    pub output: Option<PathBuf>,
+    pub setup: Option<String>,
+    pub axis: String,
+    pub pin_dia: f64,
+    pub pin_clearance: f64,
+    pub count: usize,
+    pub poka_yoke: f64,
+    pub edge_margin: f64,
+    pub stock_depth: f64,
+    pub spoilboard_depth: f64,
+    pub no_spoilboard: bool,
+}
+
+pub struct SoftJawsArgs {
+    pub project: PathBuf,
+    pub output: Option<PathBuf>,
+    pub setup: Option<String>,
+    pub axis: String,
+    pub jaw_width: f64,
+    pub jaw_depth: f64,
+    pub jaw_height: f64,
+    pub jaw_gap: f64,
+    pub grip_depth: f64,
+    pub clearance: f64,
+    pub corner_relief: f64,
+    pub bolt_pattern: String,
+    pub add_setup: bool,
+    pub export_stl_dir: Option<PathBuf>,
+}
+
+fn parse_flip_axis(raw: &str) -> Result<FlipAxis, String> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "x" | "x-axis" | "x_axis" => Ok(FlipAxis::XAxis),
+        "y" | "y-axis" | "y_axis" => Ok(FlipAxis::YAxis),
+        other => Err(format!("invalid --axis '{other}'; expected 'x' or 'y'")),
+    }
+}
+
+fn parse_pin_count(count: usize) -> Result<FlipJigPinCount, String> {
+    match count {
+        2 => Ok(FlipJigPinCount::TwoOnAxis),
+        4 => Ok(FlipJigPinCount::FourSymmetric),
+        other => Err(format!("invalid --count '{other}'; expected '2' or '4'")),
+    }
+}
+
+fn parse_bolt_pattern(raw: &str) -> Result<SoftJawBoltPattern, String> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "none" | "blank" => Ok(SoftJawBoltPattern::None),
+        "kurt6" | "kurt-6" | "kurt" | "6in" => Ok(SoftJawBoltPattern::Kurt6Inch),
+        "milo4" | "milo-4" | "milo" | "4in" => Ok(SoftJawBoltPattern::Milo4Inch),
+        "carvera" | "carvera-mod" => Ok(SoftJawBoltPattern::CarveraModVise),
+        other => Err(format!(
+            "invalid --bolt-pattern '{other}'; expected 'none', 'kurt6', 'milo4', or 'carvera'"
+        )),
+    }
+}
+
+fn next_unique_setup_id(proj: &ProjectDocument, base: &str) -> String {
+    if !proj.setups.iter().any(|s| s.id == base) {
+        return base.to_string();
+    }
+    let mut n = 2usize;
+    loop {
+        let cand = format!("{base}_{n}");
+        if !proj.setups.iter().any(|s| s.id == cand) {
+            return cand;
+        }
+        n += 1;
+    }
+}
+
+fn next_work_offset_slot(proj: &ProjectDocument) -> WorkOffsetSlot {
+    for slot in [
+        WorkOffsetSlot::G55,
+        WorkOffsetSlot::G56,
+        WorkOffsetSlot::G57,
+        WorkOffsetSlot::G58,
+        WorkOffsetSlot::G59,
+    ] {
+        if !proj.setups.iter().any(|s| s.wcs_slot == slot) {
+            return slot;
+        }
+    }
+    WorkOffsetSlot::G55
+}
+
+fn pick_pin_tool(tools: &[Tool], hole_dia_mm: f64) -> (Option<chip_tools::ToolId>, Option<f64>) {
+    // Prefer a twist drill matching the hole diameter, else a flat endmill smaller than the hole
+    if let Some(drill) = tools.iter().find(|t| {
+        matches!(
+            t.geometry,
+            CutterGeometry::TwistDrill { diameter_mm, .. }
+            if (diameter_mm - hole_dia_mm).abs() <= 0.15
+        )
+    }) {
+        return (
+            Some(drill.id.clone()),
+            Some(drill.geometry.cutting_diameter_mm()),
+        );
+    }
+    if let Some(em) = tools.iter().find(|t| {
+        matches!(
+            t.geometry,
+            CutterGeometry::FlatEndmill { diameter_mm, .. }
+            if diameter_mm < hole_dia_mm - 0.2
+        )
+    }) {
+        return (Some(em.id.clone()), Some(em.geometry.cutting_diameter_mm()));
+    }
+    if let Some(first) = tools.first() {
+        return (
+            Some(first.id.clone()),
+            Some(first.geometry.cutting_diameter_mm()),
+        );
+    }
+    (None, None)
+}
+
+fn pick_flat_endmill_id(tools: &[Tool]) -> Option<chip_tools::ToolId> {
+    tools
+        .iter()
+        .find(|t| matches!(t.geometry, CutterGeometry::FlatEndmill { .. }))
+        .or_else(|| tools.first())
+        .map(|t| t.id.clone())
+}
+
+pub fn run_workholding_flip_jig(args: FlipJigArgs) -> Result<ExitCode, Box<dyn std::error::Error>> {
+    let mut proj = ProjectDocument::load_from_path(&args.project)?;
+    let s_idx = find_setup_index(&proj, args.setup.as_deref())?;
+    let flip_axis = parse_flip_axis(&args.axis)?;
+    let pin_count = parse_pin_count(args.count)?;
+
+    let cad_doc = load_primary_cad_for_project(&proj, args.project.parent())?;
+    let hole_dia = args.pin_dia + args.pin_clearance;
+    let (pin_tool_id, pin_tool_dia) = pick_pin_tool(&proj.tools, hole_dia);
+
+    let cfg = FlipJigConfig {
+        flip_axis,
+        pin_diameter_mm: args.pin_dia,
+        pin_fit_clearance_mm: args.pin_clearance,
+        pin_count,
+        poka_yoke_offset_mm: args.poka_yoke,
+        stock_pin_depth_mm: args.stock_depth,
+        spoilboard_pin_depth_mm: args.spoilboard_depth,
+        edge_margin_mm: args.edge_margin,
+        expand_stock_if_needed: true,
+        include_spoilboard_setup: !args.no_spoilboard,
+        pin_protrusion_z_mm: 6.0,
+        pin_tool_id,
+        pin_tool_diameter_mm: pin_tool_dia,
+        setup2_id: Some(next_unique_setup_id(&proj, "setup_2_flip")),
+        setup2_wcs_slot: next_work_offset_slot(&proj),
+        spoilboard_setup_id: Some(next_unique_setup_id(&proj, "setup_spoilboard_pins")),
+        spoilboard_wcs_slot: WorkOffsetSlot::G54,
+    };
+
+    let plan = build_two_sided_flip_jig(
+        &cad_doc,
+        &proj.setups[s_idx],
+        &proj.sketches,
+        proj.display_units,
+        &cfg,
+    )?;
+
+    if let Some(new_stock) = plan.updated_setup1_stock {
+        proj.setups[s_idx].stock = new_stock;
+    }
+    proj.sketches.push(plan.pin_sketch);
+    proj.setups[s_idx].operations.insert(0, plan.setup1_pin_op);
+    for op in &mut proj.setups[s_idx].operations {
+        op.mark_dirty();
+    }
+    let s2_name = plan.setup2_flip.name.clone();
+    proj.setups.push(plan.setup2_flip);
+    if let Some(sb_sketch) = plan.spoilboard_sketch {
+        proj.sketches.push(sb_sketch);
+    }
+    if let Some(sb_setup) = plan.spoilboard_setup {
+        proj.setups.push(sb_setup);
+    }
+
+    let dest = args.output.unwrap_or_else(|| args.project.clone());
+    proj.save_to_path(&dest)?;
+
+    println!(
+        "=== Flip-Jig Wizard Applied ({} · {} pins · Ø{:.2} mm holes) ===",
+        plan.flip_axis.label(),
+        plan.pin_centers_setup1_wcs.len(),
+        plan.hole_diameter_mm
+    );
+    println!(
+        "  Symmetry error: {:.2e} mm | Min part clearance: {:.2} mm",
+        plan.max_symmetry_error_mm, plan.min_part_clearance_mm
+    );
+    for (i, pt) in plan.pin_centers_setup1_wcs.iter().enumerate() {
+        println!(
+            "  Pin #{}: X={:.3} mm, Y={:.3} mm (Setup 1 WCS)",
+            i + 1,
+            pt.x,
+            pt.y
+        );
+    }
+    println!("  Created paired flip setup: '{s2_name}'");
+    println!("Saved updated project to {}", dest.display());
+    Ok(ExitCode::SUCCESS)
+}
+
+pub fn run_workholding_soft_jaws(
+    args: SoftJawsArgs,
+) -> Result<ExitCode, Box<dyn std::error::Error>> {
+    let mut proj = ProjectDocument::load_from_path(&args.project)?;
+    let s_idx = find_setup_index(&proj, args.setup.as_deref())?;
+    let clamp_axis = parse_vise_axis(&args.axis)?;
+    let mounting_bolt_pattern = parse_bolt_pattern(&args.bolt_pattern)?;
+
+    if !args.add_setup && args.export_stl_dir.is_none() {
+        return Err(
+            "specify --add-setup (to add a CNC machining setup) and/or --export-stl-dir <dir> (to export 3D-printable STLs)"
+                .into(),
+        );
+    }
+
+    let output_mode = match (args.add_setup, args.export_stl_dir.is_some()) {
+        (true, true) => SoftJawOutputMode::Both,
+        (true, false) => SoftJawOutputMode::MachiningSetup,
+        (false, true) => SoftJawOutputMode::PrintableStl,
+        (false, false) => SoftJawOutputMode::Both,
+    };
+
+    let cad_doc = load_primary_cad_for_project(&proj, args.project.parent())?;
+    let tool_id = pick_flat_endmill_id(&proj.tools);
+
+    let cfg = SoftJawConfig {
+        clamp_axis,
+        jaw_width_mm: args.jaw_width,
+        jaw_depth_mm: args.jaw_depth,
+        jaw_height_mm: args.jaw_height,
+        jaw_gap_mm: args.jaw_gap,
+        grip_depth_mm: args.grip_depth,
+        part_clearance_mm: args.clearance,
+        corner_relief_radius_mm: args.corner_relief,
+        mounting_bolt_pattern,
+        output_mode,
+        z_band_bottom_offset_mm: 0.0,
+        roughing_tool_id: tool_id.clone(),
+        finishing_tool_id: tool_id,
+        setup_id: Some(next_unique_setup_id(&proj, "setup_soft_jaws")),
+        wcs_slot: next_work_offset_slot(&proj),
+    };
+
+    let plan = build_soft_jaw_plan(
+        &cad_doc,
+        &proj.setups[s_idx],
+        &proj.sketches,
+        proj.display_units,
+        &cfg,
+    )?;
+
+    println!(
+        "=== Auto Soft-Jaw Wizard ({:.1}×{:.1}×{:.1} mm · grip={:.2} mm · clearance={:.2} mm · {} corner relief(s)) ===",
+        plan.jaw_width_mm,
+        plan.jaw_depth_mm,
+        plan.jaw_height_mm,
+        plan.grip_depth_mm,
+        plan.part_clearance_mm,
+        plan.corner_relief_count
+    );
+
+    if let Some(dir) = &args.export_stl_dir {
+        std::fs::create_dir_all(dir)?;
+        if let Some(fixed_bytes) = &plan.fixed_jaw_stl {
+            let p = dir.join("fixed_jaw.stl");
+            std::fs::write(&p, fixed_bytes)?;
+            println!(
+                "  Exported {} ({} triangles, {} bytes)",
+                p.display(),
+                plan.fixed_jaw_triangle_count,
+                fixed_bytes.len()
+            );
+        }
+        if let Some(movable_bytes) = &plan.movable_jaw_stl {
+            let p = dir.join("movable_jaw.stl");
+            std::fs::write(&p, movable_bytes)?;
+            println!(
+                "  Exported {} ({} triangles, {} bytes)",
+                p.display(),
+                plan.movable_jaw_triangle_count,
+                movable_bytes.len()
+            );
+        }
+    }
+
+    if args.add_setup {
+        if let Some(sk) = plan.pocket_sketch {
+            proj.sketches.push(sk);
+        }
+        if let Some(sj_setup) = plan.machining_setup {
+            let sj_name = sj_setup.name.clone();
+            proj.setups.push(sj_setup);
+            println!("  Added CNC machining setup: '{sj_name}'");
+        }
+        let dest = args.output.unwrap_or_else(|| args.project.clone());
+        proj.save_to_path(&dest)?;
+        println!("Saved updated project to {}", dest.display());
+    }
+
+    Ok(ExitCode::SUCCESS)
 }

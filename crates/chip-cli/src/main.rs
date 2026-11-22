@@ -17,8 +17,9 @@ use crate::commands::{
     transform_model::{TransformModelArgs, run_transform_model},
     validate_sim_build::{BuildArgs, SimulateArgs, run_build, run_simulate, run_validate},
     workholding::{
-        AddClampArgs, AddSpoilboardArgs, AddViseArgs, run_workholding_add_clamp,
-        run_workholding_add_spoilboard, run_workholding_add_vise, run_workholding_list,
+        AddClampArgs, AddSpoilboardArgs, AddViseArgs, FlipJigArgs, SoftJawsArgs,
+        run_workholding_add_clamp, run_workholding_add_spoilboard, run_workholding_add_vise,
+        run_workholding_flip_jig, run_workholding_list, run_workholding_soft_jaws,
     },
 };
 
@@ -290,7 +291,7 @@ enum Commands {
         #[command(subcommand)]
         action: MachineCommands,
     },
-    /// 3D workholding fixture utilities (`list`, `add-vise`, `add-clamp`, `add-spoilboard`).
+    /// 3D workholding fixture & wizard utilities (`list`, `add-vise`, `add-clamp`, `add-spoilboard`, `flip-jig`, `soft-jaws`).
     Workholding {
         #[command(subcommand)]
         action: WorkholdingCommands,
@@ -440,6 +441,90 @@ enum WorkholdingCommands {
         /// Safety clearance margin halo (`mm`).
         #[arg(long, default_value_t = 0.5)]
         clearance: f64,
+    },
+    /// Generate symmetric two-sided dowel-pin registration holes, Op-1 pin drilling, spoilboard setup, and paired 180° Op-2 flip setup.
+    #[command(name = "flip-jig")]
+    FlipJig {
+        /// Path to `.chip.toml` project file.
+        project: PathBuf,
+        /// Optional output `.chip.toml` path (overwrites `project` in place if omitted).
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        /// Target Setup 1 (0-based index, ID, or name; defaults to Setup 0).
+        #[arg(long)]
+        setup: Option<String>,
+        /// Flip axis (`x` = front-to-back around Y center, `y` = left-to-right around X center).
+        #[arg(long, default_value = "x")]
+        axis: String,
+        /// Nominal dowel pin diameter (`mm`).
+        #[arg(long, default_value_t = 6.0)]
+        pin_dia: f64,
+        /// Pin fit clearance added to hole diameter (`mm`).
+        #[arg(long, default_value_t = 0.02)]
+        pin_clearance: f64,
+        /// Number of symmetric registration pins (`2` on flip centerline or `4` mirrored pairs).
+        #[arg(long, default_value_t = 2)]
+        count: usize,
+        /// Optional asymmetric poka-yoke shift along the flip axis (`mm`).
+        #[arg(long, default_value_t = 0.0, allow_hyphen_values = true)]
+        poka_yoke: f64,
+        /// Minimum clearance outside the target part silhouette (`mm`).
+        #[arg(long, default_value_t = 6.0)]
+        edge_margin: f64,
+        /// Stock pin hole depth (`0` = through-stock, `> 0` = blind depth in `mm`).
+        #[arg(long, default_value_t = 0.0)]
+        stock_depth: f64,
+        /// Mating spoilboard dowel hole depth (`mm`).
+        #[arg(long, default_value_t = 10.0)]
+        spoilboard_depth: f64,
+        /// Omit the companion Spoilboard Dowel Holes setup.
+        #[arg(long)]
+        no_spoilboard: bool,
+    },
+    /// Generate contoured CNC-machinable soft-jaw Setup and/or watertight 3D-printable `.stl` soft jaws.
+    #[command(name = "soft-jaws")]
+    SoftJaws {
+        /// Path to `.chip.toml` project file.
+        project: PathBuf,
+        /// Optional output `.chip.toml` path when `--add-setup` is set (overwrites `project` if omitted).
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        /// Source Setup (0-based index, ID, or name; defaults to Setup 0).
+        #[arg(long)]
+        setup: Option<String>,
+        /// Vise clamping axis (`y` = front/rear jaws default, `x` = left/right jaws).
+        #[arg(long, default_value = "y")]
+        axis: String,
+        /// Soft jaw width (`mm`).
+        #[arg(long, default_value_t = 100.0)]
+        jaw_width: f64,
+        /// Soft jaw plate depth/thickness (`mm`).
+        #[arg(long, default_value_t = 25.0)]
+        jaw_depth: f64,
+        /// Total vertical soft jaw blank height (`mm`).
+        #[arg(long, default_value_t = 38.0)]
+        jaw_height: f64,
+        /// Closed spacer gap between fixed & movable jaws (`mm`).
+        #[arg(long, default_value_t = 6.0)]
+        jaw_gap: f64,
+        /// Vertical pocket grip depth cut into top of soft jaws (`mm`).
+        #[arg(long, default_value_t = 4.0)]
+        grip_depth: f64,
+        /// Radial slip-fit clearance around target part silhouette (`mm`).
+        #[arg(long, default_value_t = 0.05)]
+        clearance: f64,
+        /// Internal sharp-corner dogbone relief radius (`mm`, `0` disables).
+        #[arg(long, default_value_t = 1.5)]
+        corner_relief: f64,
+        /// Mounting bolt counterbore pattern (`none`, `kurt6`, `milo4`, `carvera`).
+        #[arg(long, default_value = "milo4")]
+        bolt_pattern: String,
+        /// Append a ready-to-generate CNC soft-jaw machining Setup + Sketch to the project.
+        #[arg(long)]
+        add_setup: bool,
+        /// Export watertight 3D-printable `fixed_jaw.stl` and `movable_jaw.stl` to this directory.
+        #[arg(long)]
+        export_stl_dir: Option<PathBuf>,
     },
 }
 
@@ -816,6 +901,64 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
                 margin_xy,
                 allowed_overcut,
                 clearance,
+            }),
+            WorkholdingCommands::FlipJig {
+                project,
+                output,
+                setup,
+                axis,
+                pin_dia,
+                pin_clearance,
+                count,
+                poka_yoke,
+                edge_margin,
+                stock_depth,
+                spoilboard_depth,
+                no_spoilboard,
+            } => run_workholding_flip_jig(FlipJigArgs {
+                project,
+                output,
+                setup,
+                axis,
+                pin_dia,
+                pin_clearance,
+                count,
+                poka_yoke,
+                edge_margin,
+                stock_depth,
+                spoilboard_depth,
+                no_spoilboard,
+            }),
+            WorkholdingCommands::SoftJaws {
+                project,
+                output,
+                setup,
+                axis,
+                jaw_width,
+                jaw_depth,
+                jaw_height,
+                jaw_gap,
+                grip_depth,
+                clearance,
+                corner_relief,
+                bolt_pattern,
+                add_setup,
+                export_stl_dir,
+            } => run_workholding_soft_jaws(SoftJawsArgs {
+                project,
+                output,
+                setup,
+                axis,
+                jaw_width,
+                jaw_depth,
+                jaw_height,
+                jaw_gap,
+                grip_depth,
+                clearance,
+                corner_relief,
+                bolt_pattern,
+                add_setup,
+                export_stl_dir,
             }),
         },
         Commands::ListPosts => {

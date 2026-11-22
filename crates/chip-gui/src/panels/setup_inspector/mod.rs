@@ -60,6 +60,8 @@ pub struct SetupInspectorCtx<'a> {
     pub open_machine_manager: &'a mut bool,
     pub machine_changed: &'a mut bool,
     pub import_fixture_requested: &'a mut bool,
+    pub open_flip_jig_wizard: &'a mut bool,
+    pub open_soft_jaw_wizard: &'a mut bool,
 }
 
 /// Lightweight pre-edit snapshot of only the Setup's header & WCS/Stock/Fixtures/Post/Heights
@@ -173,6 +175,8 @@ pub fn show_setup_inspector(ui: &mut egui::Ui, ctx: SetupInspectorCtx<'_>) -> bo
         open_machine_manager,
         machine_changed,
         import_fixture_requested,
+        open_flip_jig_wizard,
+        open_soft_jaw_wizard,
     } = ctx;
 
     if setup_idx >= project.setups.len() {
@@ -420,6 +424,8 @@ pub fn show_setup_inspector(ui: &mut egui::Ui, ctx: SetupInspectorCtx<'_>) -> bo
                         show_fixtures,
                         pick_mode,
                         import_fixture_requested,
+                        open_flip_jig_wizard,
+                        open_soft_jaw_wizard,
                         mutated_label: &mut mutated_label,
                     },
                 ),

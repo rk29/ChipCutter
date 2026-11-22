@@ -506,6 +506,8 @@ impl PaneBehavior<'_> {
                     let mut open_machine_manager = false;
                     let mut machine_changed = false;
                     let mut import_fixture_requested = false;
+                    let mut open_flip_jig_wizard = false;
+                    let mut open_soft_jaw_wizard = false;
                     let align = show_setup_inspector(
                         ui,
                         SetupInspectorCtx {
@@ -526,11 +528,19 @@ impl PaneBehavior<'_> {
                             open_machine_manager: &mut open_machine_manager,
                             machine_changed: &mut machine_changed,
                             import_fixture_requested: &mut import_fixture_requested,
+                            open_flip_jig_wizard: &mut open_flip_jig_wizard,
+                            open_soft_jaw_wizard: &mut open_soft_jaw_wizard,
                         },
                     );
                     if import_fixture_requested {
                         self.app.import_fixture_model_dialog(setup_idx);
                         frame_geo = None;
+                    }
+                    if open_flip_jig_wizard {
+                        self.app.modals.flip_jig_wizard.open_for_setup(setup_idx);
+                    }
+                    if open_soft_jaw_wizard {
+                        self.app.modals.soft_jaw_wizard.open_for_setup(setup_idx);
                     }
                     if machine_changed {
                         self.app.sync_active_machine_tools();

@@ -7,7 +7,10 @@ The primary project file is a clean, deterministic, Git-diff-friendly `.chip.tom
 - **Deterministic Ordering:** Maps and lists serialize in stable order so minor parameter edits produce minimal, readable `git diff`s.
 - **Relative Asset Paths:** Imported `.step`, `.dxf`, `.svg`, and custom `.ttf`/`.otf` paths are stored relative to the `.chip.toml` directory whenever under the same project tree (plus SHA-256 content hashes to detect external updates).
 - **No Binary Blobs in `.chip.toml`:** Ephemeral cached toolpaths, Voronoi graphs, and tessellations are NOT dumped into `.chip.toml`.
-- **Backward-Compatible Schema Migration (`v1 -> v2`):**
+- **Workholding & Multi-Setup Carryover Fields (`schema_version = 3`, Phase 17):**
+  - `ModelEntry.role` (`"part"` default/omitted vs. `"fixture"` for imported 3D workholding solids bundled inside `.chipz` `models/*`).
+  - Optional `Setup.fixtures: Vec<FixtureBody>` (omitted when empty), `Setup.auto_avoid_fixtures_on_rapids` (default `true`, omitted when `true`), and `Setup.carryover_from_setup_id: Option<String>` (omitted when `None`)—preserving 100% lossless loading and zero diff on legacy v1/v2/v3 projects.
+- **Backward-Compatible Schema Migration (`v1 -> v2 -> v3`):**
   - `schema_version = 2` adds optional `[[sketches]]` layers, Pure-2D (`models = []`) setups, `PocketStrategy::Adaptive`, `RestMachiningConfig`, and `OperationKind::VCarve`.
   - **100% Seamless v1 Compatibility:** Loading any `schema_version = 1` `.chip.toml` or `.chipz` file migrates cleanly in memory with defaulted `sketches = []` and `rest_machining = "disabled"`, preserving identical generated toolpaths and G-code.
 
@@ -65,7 +68,8 @@ Binary name: `chipcutter`
 | `chipcutter generate-sample-step <out.step> [...] [--project-out <job.chip.toml>]` | Writes deterministic programmatic STEP fixtures (and optional seeded `.chip.toml` jobs) to disk. |
 | `chipcutter import-2d <input.dxf \| input.svg> -o <project.chip.toml> [--units mm\|in] [--dpi 96] [--join-tol 0.05] [--stock-z 12.0]` *(v2)* | Creates or appends a `SketchLayer` from a DXF/SVG file (with gap-healing & biarc fitting) into a pure-2D or hybrid `.chip.toml` project. |
 | `chipcutter validate [--generate] <project.chip.toml \| bundle.chipz>` | Loads project + STEP/vector assets, checks SHA-256 / signature bindings, validates height/tool/parameter/DAG invariants, and optionally generates all enabled toolpaths. |
-| `chipcutter simulate <project.chip.toml \| bundle.chipz> [--resolution standard\|fine\|ultra] [--report report.json]` | Runs headless heightmap stock removal & 5-rule gouge/crash checks across all operations (including Adaptive, Rest Machining, and two-stage V-Carve). |
+| `chipcutter simulate <project.chip.toml \| bundle.chipz> [--engine heightmap\|tri-dexel] [--backend auto\|gpu\|cpu] [--resolution standard\|fine\|ultra] [--all-setups] [--benchmark] [--json] [--report report.json]` | Runs headless Heightmap or volumetric Tri-Dexel stock removal & 6-rule crash/gouge/fixture verification across a single Setup or sequentially across `--all-setups` with volumetric carryover and cumulative metrology. |
+| `chipcutter workholding list \| add-vise \| add-clamp \| add-spoilboard \| flip-jig \| soft-jaws ...` | Lists/resolves Setup workholding fixtures, adds parametric vises/clamps/spoilboards, generates symmetric Flip-Jig dowel-pin setups (`flip-jig`), and generates CNC soft-jaw setups and/or watertight 3D-printable `.stl` soft jaws (`soft-jaws --export-stl-dir`). |
 | `chipcutter build <project.chip.toml \| bundle.chipz> [-o <out_dir>] [--setup <name>] [--post <profile>] [--allow-warnings]` | Generates all enabled operations in topological DAG order, runs mandatory heightmap crash/gouge verification, and writes `.nc`/`.ngc` G-code files + `build_summary.json`. |
 | `chipcutter reload-step <project.chip.toml> [--step <revised.step>] [-o <out.chip.toml>] [--allow-needs-repick]` | Reloads a revised STEP file and associatively re-binds Setup WCS, face-anchored `SketchLayer`s, and Operation selections. |
 | `chipcutter bundle pack / unpack ...` | Packs or safely extracts deterministic `.chipz` archives (including `models/`, `vectors/`, `fonts/`, and `posts/`). |

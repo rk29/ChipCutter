@@ -64,7 +64,7 @@
   - No nonlinear 2D CAD geometric constraint solver (keep 2D sketches direct, parametric, and expression-driven).
   - No USB/serial/network machine streaming or jogging (pure offline CAM).
   - No standalone HTML/PDF setup sheets (emit operator setup/tool summaries as structured G-code header comments).
-  - No 3D fixture/clamp collision bodies or volumetric tri-dexel flip stock until scheduled.
+  - No in-machine `G38.2` probing cycles until scheduled (Phase 17 3D workholding fixtures, safe-rapid avoidance, Rule 6 `FixtureCollision`, multi-setup volumetric Tri-Dexel stock carryover, and Flip-Jig / Auto Soft-Jaw wizards are implemented).
 
 ---
 

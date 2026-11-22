@@ -26,6 +26,8 @@ pub(super) struct FixturesTabCtx<'a> {
     pub(super) show_fixtures: &'a mut bool,
     pub(super) pick_mode: &'a mut ViewportPickMode,
     pub(super) import_fixture_requested: &'a mut bool,
+    pub(super) open_flip_jig_wizard: &'a mut bool,
+    pub(super) open_soft_jaw_wizard: &'a mut bool,
     pub(super) mutated_label: &'a mut Option<&'static str>,
 }
 
@@ -54,6 +56,8 @@ pub(super) fn show_fixtures_tab(ui: &mut egui::Ui, ctx: FixturesTabCtx<'_>) {
         show_fixtures,
         pick_mode,
         import_fixture_requested,
+        open_flip_jig_wizard,
+        open_soft_jaw_wizard,
         mutated_label,
     } = ctx;
 
@@ -317,6 +321,24 @@ pub(super) fn show_fixtures_tab(ui: &mut egui::Ui, ctx: FixturesTabCtx<'_>) {
                             kind: FixturePlaceKind::CylinderKeepOut,
                         }
                     };
+                }
+                if ui
+                    .small_button("Flip-Jig Wizard…")
+                    .on_hover_text(
+                        "Launch the Two-Sided Flip-Jig Dowel-Pin Wizard to generate symmetric registration pins, Op-1 pin holes, and a paired 180° Op-2 Setup",
+                    )
+                    .clicked()
+                {
+                    *open_flip_jig_wizard = true;
+                }
+                if ui
+                    .small_button("Auto Soft-Jaw Wizard…")
+                    .on_hover_text(
+                        "Launch the Auto Soft-Jaw Generator Wizard to create contoured CNC soft-jaw machining ops and/or 3D-printable .stl jaws",
+                    )
+                    .clicked()
+                {
+                    *open_soft_jaw_wizard = true;
                 }
             });
         },

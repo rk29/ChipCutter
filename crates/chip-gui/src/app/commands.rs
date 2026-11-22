@@ -217,6 +217,16 @@ impl ChipCutterApp {
                     setup_idx: self.active_setup_idx,
                 };
             }
+            CommandId::OpenFlipJigWizard => {
+                self.modals
+                    .flip_jig_wizard
+                    .open_for_setup(self.active_setup_idx);
+            }
+            CommandId::OpenSoftJawWizard => {
+                self.modals
+                    .soft_jaw_wizard
+                    .open_for_setup(self.active_setup_idx);
+            }
             CommandId::NewSketchSetupXy => self.create_new_setup_xy_sketch(),
             CommandId::NewSketchOn3dFace => {
                 if self.model.is_some() {
@@ -313,6 +323,7 @@ impl ChipCutterApp {
             | CommandId::SampleRotaryWrappedEngraving
             | CommandId::SampleRotaryHelicalFlute
             | CommandId::SampleThreadMillManifold
+            | CommandId::SampleTwoSidedVise
             | CommandId::SampleRevisionReloadV2 => {}
         }
     }

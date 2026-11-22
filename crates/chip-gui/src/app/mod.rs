@@ -599,6 +599,9 @@ impl ChipCutterApp {
             SampleProjectId::ThreadMillManifold => {
                 self.spawn_thread_mill_manifold_load(ctx.clone());
             }
+            SampleProjectId::TwoSidedViseWorkholding => {
+                self.spawn_two_sided_vise_load(ctx.clone());
+            }
         }
     }
 

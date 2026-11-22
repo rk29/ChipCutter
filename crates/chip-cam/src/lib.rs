@@ -20,6 +20,7 @@ pub mod thread_tables;
 pub mod toolpath;
 pub mod wcs;
 pub mod workholding;
+pub mod workholding_wizards;
 
 pub use chip_bvh::TriMesh3D;
 pub use cl_data::{ArcDir, ArcPlane, ClEvent, CutterCompMode, DrillCycleKind, MotionRole};
@@ -120,6 +121,11 @@ pub use wcs::{
 pub use workholding::{
     FixtureBody, FixtureKind, FixtureZRef, ResolvedFixtureSolid, ViseClampAxis, ViseFixedSide,
     resolve_fixture_body, resolve_setup_fixtures, resolve_setup_fixtures_parametric,
+};
+pub use workholding_wizards::{
+    FlipAxis, FlipJigConfig, FlipJigPinCount, FlipJigPlan, STANDARD_PIN_DIAMETERS_MM,
+    SoftJawBoltPattern, SoftJawConfig, SoftJawOutputMode, SoftJawPlan, build_soft_jaw_plan,
+    build_two_sided_flip_jig, extract_part_silhouette_2d,
 };
 
 #[cfg(test)]

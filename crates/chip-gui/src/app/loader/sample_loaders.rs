@@ -9,6 +9,7 @@ use chip_cad::{
 use chip_project::{
     build_pure2d_router_panel_demo_project, build_revision_v1_demo_project,
     build_rotary_wrapped_engraving_project, compute_sha256_hex, load_model_bytes_cad_doc,
+    sample_two_sided_vise_part_stl_bytes,
 };
 
 use crate::{
@@ -237,6 +238,29 @@ impl ChipCutterApp {
                     error: e.to_string(),
                 },
             };
+            let _ = tx.send(res);
+            egui_ctx.request_repaint();
+        });
+    }
+
+    pub(crate) fn spawn_two_sided_vise_load(&mut self, egui_ctx: egui::Context) {
+        let generation = self.begin_model_load_generation();
+        self.logs.push(
+            "Generating Two-Sided Vise & Soft-Jaw Workholding sample (Setup 1 G54 Vise + Toe Clamps -> Setup 2 G55 Flip Carryover)…".to_string(),
+        );
+        let tx = self.job_tx.clone();
+        rayon::spawn(move || {
+            let t0 = Instant::now();
+            let stl_bytes = sample_two_sided_vise_part_stl_bytes();
+            let res = parse_model_bytes_job(
+                generation,
+                "two_sided_vise_bracket.stl".to_string(),
+                stl_bytes,
+                None,
+                None,
+                LoadPurpose::SeedTwoSidedViseWorkholding,
+                t0,
+            );
             let _ = tx.send(res);
             egui_ctx.request_repaint();
         });

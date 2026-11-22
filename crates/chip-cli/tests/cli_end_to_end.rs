@@ -2085,3 +2085,146 @@ fn cli_simulate_all_setups_carryover_emits_cumulative_json_and_text_reports() {
         "expected carryover & cumulative summary in text output:\n{txt_str}"
     );
 }
+
+#[test]
+fn cli_workholding_flip_jig_and_soft_jaws_wizards_end_to_end() {
+    use chip_cad::{MeshImportOptions, load_mesh_bytes};
+    use chip_project::{
+        build_two_sided_vise_workholding_project, compute_sha256_hex,
+        sample_two_sided_vise_part_stl_bytes,
+    };
+    use chip_tools::default_starter_tool_library;
+
+    let tmp = TempTestDir::new("workholding_wizards_m63");
+    let stl_bytes = sample_two_sided_vise_part_stl_bytes();
+    let stl_path = tmp.path().join("bracket.stl");
+    std::fs::write(&stl_path, &stl_bytes).unwrap();
+    let sha = compute_sha256_hex(&stl_bytes);
+
+    // 1. Seed a single-setup project for CLI wizard testing
+    let starter = default_starter_tool_library();
+    let mut base_proj =
+        build_two_sided_vise_workholding_project("bracket.stl".to_string(), &sha, &starter.tools);
+    base_proj.setups.truncate(1);
+    base_proj.setups[0].fixtures.clear();
+    let base_path = tmp.path().join("base.chip.toml");
+    base_proj.save_to_path(&base_path).unwrap();
+
+    // 2. `chipcutter workholding flip-jig` -> creates Flip-Jig sketch, Op-1 pin op, Setup 2 Flip, Spoilboard setup
+    let flip_out_path = tmp.path().join("with_flip_jig.chip.toml");
+    let flip_out = Command::new(cli_bin())
+        .args([
+            "workholding",
+            "flip-jig",
+            base_path.to_str().unwrap(),
+            "--axis",
+            "x",
+            "--pin-dia",
+            "6",
+            "--count",
+            "2",
+            "--poka-yoke",
+            "4",
+            "-o",
+            flip_out_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("workholding flip-jig");
+    assert!(
+        flip_out.status.success(),
+        "workholding flip-jig failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&flip_out.stdout),
+        String::from_utf8_lossy(&flip_out.stderr)
+    );
+    let flip_proj = ProjectDocument::load_from_path(&flip_out_path).unwrap();
+    assert_eq!(flip_proj.setups.len(), 3);
+    assert_eq!(
+        flip_proj.setups[1].carryover_from_setup_id.as_deref(),
+        Some("setup_1")
+    );
+    assert_eq!(flip_proj.setups[1].fixtures.len(), 2);
+
+    // 3. `chipcutter workholding soft-jaws --add-setup --export-stl-dir` -> CNC setup + watertight STLs
+    let sj_proj_path = tmp.path().join("with_soft_jaws.chip.toml");
+    let sj_stl_dir = tmp.path().join("soft_jaw_stls");
+    let sj_out = Command::new(cli_bin())
+        .args([
+            "workholding",
+            "soft-jaws",
+            base_path.to_str().unwrap(),
+            "--grip-depth",
+            "4.0",
+            "--clearance",
+            "0.10",
+            "--jaw-width",
+            "100",
+            "--jaw-depth",
+            "35",
+            "--jaw-height",
+            "38",
+            "--bolt-pattern",
+            "milo4",
+            "--add-setup",
+            "-o",
+            sj_proj_path.to_str().unwrap(),
+            "--export-stl-dir",
+            sj_stl_dir.to_str().unwrap(),
+        ])
+        .output()
+        .expect("workholding soft-jaws");
+    assert!(
+        sj_out.status.success(),
+        "workholding soft-jaws failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&sj_out.stdout),
+        String::from_utf8_lossy(&sj_out.stderr)
+    );
+    let sj_proj = ProjectDocument::load_from_path(&sj_proj_path).unwrap();
+    assert_eq!(sj_proj.setups.len(), 2);
+    assert_eq!(sj_proj.setups[1].operations.len(), 3);
+
+    for fname in ["fixed_jaw.stl", "movable_jaw.stl"] {
+        let p = sj_stl_dir.join(fname);
+        let bytes = std::fs::read(&p).expect("exported soft-jaw STL must exist");
+        let mesh = load_mesh_bytes(fname, &bytes, &MeshImportOptions::default()).unwrap();
+        assert!(
+            mesh.diagnostics.is_watertight,
+            "{fname} not watertight: {:?}",
+            mesh.diagnostics
+        );
+        assert_eq!(mesh.diagnostics.open_boundary_edges, 0);
+        assert_eq!(mesh.diagnostics.non_manifold_edges, 0);
+        assert!(mesh.diagnostics.signed_volume_mm3 > 0.0);
+    }
+
+    // 4. Built-in `two-sided-vise` project passes `chipcutter simulate --all-setups --json`!
+    let two_sided_proj =
+        build_two_sided_vise_workholding_project("bracket.stl".to_string(), &sha, &starter.tools);
+    let two_sided_path = tmp.path().join("two_sided_vise.chip.toml");
+    two_sided_proj.save_to_path(&two_sided_path).unwrap();
+    let sim_out = Command::new(cli_bin())
+        .args([
+            "simulate",
+            two_sided_path.to_str().unwrap(),
+            "--engine",
+            "tri-dexel",
+            "--all-setups",
+            "--json",
+        ])
+        .output()
+        .expect("simulate two-sided-vise --all-setups --json");
+    assert!(
+        sim_out.status.success(),
+        "simulate two-sided-vise failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&sim_out.stdout),
+        String::from_utf8_lossy(&sim_out.stderr)
+    );
+    let sim_json: serde_json::Value =
+        serde_json::from_slice(&sim_out.stdout).expect("valid simulation JSON");
+    assert_eq!(sim_json["passed"], serde_json::Value::Bool(true));
+    assert!(
+        sim_json["cumulative_error_report"]["in_tolerance_surface_pct"]
+            .as_f64()
+            .unwrap()
+            >= 95.0
+    );
+}

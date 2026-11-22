@@ -6,7 +6,8 @@ use chip_project::{
     build_cam_torture_project, build_multi_feature_bracket_project, build_relief_wave_mesh_project,
     build_revision_v1_demo_project, build_rotary_helical_flute_project,
     build_rotary_shaft_preview_project, build_sculpted_mesh_dome_project,
-    build_thread_mill_manifold_project, portable_model_path, rebind_project_to_reloaded_cad,
+    build_thread_mill_manifold_project, build_two_sided_vise_workholding_project,
+    portable_model_path, rebind_project_to_reloaded_cad,
 };
 
 use crate::{
@@ -277,6 +278,22 @@ impl ChipCutterApp {
                 }
                 self.show_27pt_dots = false;
             }
+            LoadPurpose::SeedTwoSidedViseWorkholding => {
+                self.prepare_for_project_replacement(None, None);
+                self.project_file_path = None;
+                self.project.machine_id = None;
+                self.sync_active_machine_tools();
+                self.project = build_two_sided_vise_workholding_project(
+                    doc.source_name.clone(),
+                    &sha256_hex,
+                    &self.global_tools.tools,
+                );
+                self.sync_active_machine_tools();
+                self.inspector_focus = InspectorFocus::Setup { setup_idx: 0 };
+                self.setup_tab = SetupTab::Fixtures;
+                self.highlight.show_fixtures = true;
+                self.show_27pt_dots = false;
+            }
             LoadPurpose::FreshImport { update_model_entry } => {
                 self.sim_panel.reset_for_new_project();
                 self.gcode_panel.invalidate_preview();
@@ -399,6 +416,7 @@ impl ChipCutterApp {
                 | LoadPurpose::SeedRotaryIndexedShaft
                 | LoadPurpose::SeedRotaryHelicalFlute
                 | LoadPurpose::SeedThreadMillManifold
+                | LoadPurpose::SeedTwoSidedViseWorkholding
         ) {
             self.auto_sim_after_gen = true;
             self.trigger_generate_dirty(None, None);

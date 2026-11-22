@@ -29,6 +29,7 @@ pub enum SampleProjectId {
     RotaryWrappedEngraving,
     RotaryHelicalFlute,
     ThreadMillManifold,
+    TwoSidedViseWorkholding,
 }
 
 impl SampleProjectId {
@@ -53,8 +54,11 @@ impl SampleProjectId {
             }
             "rotary-4axis" | "helical-flute" | "4axis-sim" => Ok(Self::RotaryHelicalFlute),
             "thread-mill" | "thread-milling" | "threaded-manifold" => Ok(Self::ThreadMillManifold),
+            "two-sided-vise" | "two-sided" | "workholding" | "soft-jaws" => {
+                Ok(Self::TwoSidedViseWorkholding)
+            }
             other => Err(format!(
-                "invalid --sample '{other}'; expected one of: cam-torture, adaptive-rest, pure-2d, nameplate, vcarve, multi-feature, tilted-bracket, revision-v1, revision-v2, sample-plate, mesh-dome, mesh-wave, rotary-shaft, rotary-wrap, rotary-4axis, thread-mill"
+                "invalid --sample '{other}'; expected one of: cam-torture, adaptive-rest, pure-2d, nameplate, vcarve, multi-feature, tilted-bracket, revision-v1, revision-v2, sample-plate, mesh-dome, mesh-wave, rotary-shaft, rotary-wrap, rotary-4axis, thread-mill, two-sided-vise"
             )),
         }
     }
@@ -221,6 +225,14 @@ pub const SAMPLE_CATALOG: &[SampleCardSpec] = &[
         title: "Threaded Manifold Block (Helical Thread Milling)",
         badge: "Thread Mill · 6 Ops",
         summary: "80×60×20mm aluminum manifold with facing, boss deck clearing, helical pilot boring, internal M8×1.25 & 1/4-20 UNC threads, and external M12×1.75 boss threading.",
+    },
+    SampleCardSpec {
+        id: SampleProjectId::TwoSidedViseWorkholding,
+        category: SampleCategory::Mesh3D,
+        icon: IconKind::OrthoCube,
+        title: "Two-Sided Vise & Soft-Jaw Bracket (G54 -> G55)",
+        badge: "Workholding · Carryover",
+        summary: "Two-sided aluminum bracket showcasing Setup 1 vise + parallels + toe clamps with automatic rapid-lift avoidance and Setup 2 180° flip Tri-Dexel stock carryover in soft jaws.",
     },
 ];
 
@@ -685,6 +697,10 @@ mod tests {
         assert_eq!(
             SampleProjectId::from_cli_slug("thread-mill"),
             Ok(SampleProjectId::ThreadMillManifold)
+        );
+        assert_eq!(
+            SampleProjectId::from_cli_slug("two-sided-vise"),
+            Ok(SampleProjectId::TwoSidedViseWorkholding)
         );
         assert!(SampleProjectId::from_cli_slug("nonexistent").is_err());
     }

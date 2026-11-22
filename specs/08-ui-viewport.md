@@ -49,8 +49,8 @@ Integrated into the central `egui` panel via `egui_wgpu::CallbackTrait` renderin
    - Per-face state tinting: neutral metallic gray (default), soft blue highlight (hovered `FaceId`), vivid cyan/gold highlight (selected `FaceId`s), translucent ghosting mode.
 3. **Topological B-Rep Edge & 2D Sketch Vector Pass *(v2 extended)*:**
    - Screen-space width-stabilized line/curve pass rendering exact `BRepEdge` curves AND `SketchLayer` `ArcPolyline2D` entities, construction geometry (dashed), open-gap diagnostic markers, closed planar 2D region translucent hover/selection fills, and 3D directional chain cones.
-4. **Stock & WCS Gizmo Pass:**
-   - Translucent wireframe/tinted box or cylinder for Setup stock; RGB XYZ triad arrows (`X`=Red, `Y`=Green, `Z`=Blue) anchored at the WCS origin; translucent Z-height reference planes (`Clearance`, `Retract`, `Top`, `Bottom`) shown live while editing the **Heights** tab.
+4. **Stock, Workholding Fixtures, & WCS Gizmo Pass:**
+   - Translucent wireframe/tinted box or cylinder for Setup stock; translucent shaded 3D workholding hardware (`ViseJaws`, `ToeClamp`, `Spoilboard`, `BoxKeepOut`, `CylinderKeepOut`, and `ImportedModel` fixtures, with crimson highlighting on any `FixtureCollision` body and a `Fixtures` viewport HUD toggle); RGB XYZ triad arrows (`X`=Red, `Y`=Green, `Z`=Blue) anchored at the WCS origin; translucent Z-height reference planes (`Clearance`, `Retract`, `Top`, `Bottom`) shown live while editing the **Heights** tab.
 5. **Instanced Toolpath & Tab Pass:**
    - GPU-instanced line/arc segments supporting `500,000+` segments at `60 FPS` (essential for dense high-speed 2D Adaptive trochoidal paths and V-Carve scrollwork), plus interactive 3D holding tab markers.
 6. **Simulation Stock & Cutter Pass:**
@@ -88,6 +88,9 @@ Integrated into the central `egui` panel via `egui_wgpu::CallbackTrait` renderin
   - Whenever a 3D B-Rep pick mode, manual tab placement, or 2D sketch tool is active, a prominent floating guidance banner at the top-center of the viewport explains the expected next click and provides `[Done]` / `[Cancel (Esc)]` controls.
   - Launching `chip-gui` with no file argument opens a clean **Welcome / Quick-Start Overlay** (`Import 3D STEP`, `Import 2D DXF / SVG`, `Start Pure-2D Sketch`, `Recent Projects`, and a **Sample Projects Gallery** modal).
   - **`Ctrl+K` Command Palette** provides instant fuzzy search across all menu, view, sample, and operation-creation actions, paired with a **`?` / `F1` Keyboard Shortcut Cheat-Sheet** and **`Help → About ChipCutter…`** version/build info modal.
+- **Setup `[Fixtures]` Tab, Interactive Placement, & Workholding Wizard Modals:**
+  - The Setup Inspector's strict two-column **`[Fixtures]`** tab provides 1-click `+ Vise`, `+ Toe Clamp`, `+ Spoilboard`, `+ Keep-Out`, `+ Cylinder`, and `+ Import Fixture…` actions, interactive 3D viewport click-to-place (`Place Clamp in Viewport…`, `Place Pin in Viewport…`), live `Auto-Avoid Rapids` lift & collision banners, and direct buttons to launch the **Flip-Jig Wizard…** and **Auto Soft-Jaw Wizard…** modals (also accessible from the **`Setup`** top menu and **`Ctrl+K`** Command Palette).
+  - Both wizard modals provide strict two-column parameter grids, universal hover tooltips, live symmetry/clearance/pocket/STL previews, single-step `< 1 ms` Undo on **Apply to Project**, and native / XDG-portal **`Export Soft Jaws (.stl)…`** folder export.
 - **Persistent User Preferences (`prefs.toml` — *v3*):**
   - Stored in the user's platform config directory alongside the global tool library, persisting `AppTheme` (`Dark`/`Light`), default display units, mouse navigation preset, orbit mode, viewport visibility toggles, `egui_tiles` pane shares, and recent project paths across sessions.
 - **Document Undo / Redo (`Ctrl+Z` / `Ctrl+Y`):**

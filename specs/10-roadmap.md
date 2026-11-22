@@ -407,9 +407,9 @@ Phase 16 leveraged Phase 15's GPU-accelerated Ultra simulation and `chipcutter s
 
 ---
 
-## Phase 17 — Shop-Floor Workholding, Fixture Collision Verification, & Multi-Setup Stock Carryover (Planned — M60–M63)
+## Phase 17 — Shop-Floor Workholding, Fixture Collision Verification, & Multi-Setup Stock Carryover (Completed — M60–M63)
 
-Phase 17 brings real shop-floor workholding awareness and true multi-setup volumetric continuity to ChipCutter—building directly on Phase 14's `chip-bvh`/`chip-geom2d`/`chip-stock` architecture and Phase 15's GPU-accelerated simulation while preserving 100% lossless `.chip.toml` backward compatibility and byte-for-byte Phase 1–2 golden G-code parity (with `G38.2` probing operations remaining deferred to Future Phases):
+Phase 17 delivered real shop-floor workholding awareness, full-assembly 3D fixture collision verification, true multi-setup volumetric Tri-Dexel continuity, and shop-floor Flip-Jig & Auto Soft-Jaw automation wizards—building directly on Phase 14's `chip-bvh`/`chip-geom2d`/`chip-stock` architecture and Phase 15's GPU-accelerated simulation while preserving 100% lossless `.chip.toml` backward compatibility and byte-for-byte Phase 1–2 golden G-code parity (with `G38.2` probing operations explicitly retained in Future Phases):
 
 ### Milestone 60 — 3D Fixture, Vise, & Clamp Workholding Model, Persistence, & Viewport Rendering (`plans/60-milestone-60-plan.md`)
 - **Schema-Safe Workholding Model (`chip-cam/src/workholding.rs`):** Add optional `fixtures: Vec<FixtureBody>` on `Setup` (omitted when empty for zero diff on existing projects) supporting parametric **`ViseJaws`** (fixed/movable jaws, step shelves, parallels auto-clamped to stock), **`ToeClamp`** (placed strap/toe clamps with overhang & bolt stud), **`Spoilboard`** (sacrificial bed with allowed overcut margin), **`BoxKeepOut` / `CylinderKeepOut`**, and **`ImportedModel`** (`.step`/`.stl`/`.obj`/`.3mf` fixture solids bundled inside `.chipz` and automatically excluded from target-part gouge metrics).

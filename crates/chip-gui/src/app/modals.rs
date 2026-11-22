@@ -15,6 +15,7 @@ use crate::{
             SampleGalleryModalState, WelcomeGalleryAction, WelcomeModalState,
             show_sample_gallery_modal, show_welcome_modal,
         },
+        workholding_wizards::{FlipJigWizardModalState, SoftJawWizardModalState},
     },
     prefs::save_prefs,
     theme::ThemeTokens,
@@ -31,6 +32,8 @@ pub struct ModalStates {
     pub(crate) command_palette: CommandPaletteState,
     pub(crate) shortcut_cheatsheet: ShortcutCheatsheetState,
     pub(crate) about: AboutModalState,
+    pub(crate) flip_jig_wizard: FlipJigWizardModalState,
+    pub(crate) soft_jaw_wizard: SoftJawWizardModalState,
     pub(crate) show_unsaved_close: bool,
 }
 
@@ -52,6 +55,8 @@ impl ModalStates {
             command_palette: CommandPaletteState::default(),
             shortcut_cheatsheet: ShortcutCheatsheetState::default(),
             about: AboutModalState::default(),
+            flip_jig_wizard: FlipJigWizardModalState::default(),
+            soft_jaw_wizard: SoftJawWizardModalState::default(),
             show_unsaved_close: false,
         }
     }
@@ -213,6 +218,40 @@ impl ChipCutterApp {
                     self.fit_scene_to_viewport();
                 }
             }
+        }
+
+        // Workholding Automation Wizards (Flip-Jig Dowel Pins & Auto Soft-Jaws)
+        let wizard_cad = self
+            .model
+            .as_ref()
+            .map(|m| std::sync::Arc::clone(&m.doc))
+            .unwrap_or_else(|| std::sync::Arc::clone(&self.empty_cad));
+        if let Some(res) = self.modals.flip_jig_wizard.show(
+            ctx,
+            &mut self.project,
+            wizard_cad.as_ref(),
+            &mut self.history,
+        ) {
+            self.active_setup_idx = res.new_setup_idx;
+            self.inspector_focus = InspectorFocus::Setup {
+                setup_idx: res.new_setup_idx,
+            };
+            self.highlight.show_fixtures = true;
+            self.cached_frame_geo = None;
+            self.logs.push(res.log_message);
+        }
+        if let Some(res) = self.modals.soft_jaw_wizard.show(
+            ctx,
+            &mut self.project,
+            wizard_cad.as_ref(),
+            &mut self.history,
+        ) {
+            if let Some(s_idx) = res.new_setup_idx {
+                self.active_setup_idx = s_idx;
+                self.inspector_focus = InspectorFocus::Setup { setup_idx: s_idx };
+                self.cached_frame_geo = None;
+            }
+            self.logs.push(res.log_message);
         }
     }
 

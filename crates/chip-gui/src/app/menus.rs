@@ -408,6 +408,28 @@ impl ChipCutterApp {
                 self.align_camera_to_active_setup();
                 ui.close();
             }
+            ui.separator();
+            if ui
+                .button("Flip-Jig Wizard…")
+                .on_hover_text("Generate symmetric two-sided dowel-pin registration holes, Op-1 pin drilling, and a paired 180° Op-2 flip Setup")
+                .clicked()
+            {
+                self.modals
+                    .flip_jig_wizard
+                    .open_for_setup(self.active_setup_idx);
+                ui.close();
+            }
+            if ui
+                .button("Auto Soft-Jaw Wizard…")
+                .on_hover_text("Generate contoured CNC aluminum soft-jaw machining ops and/or watertight 3D-printable .stl soft jaws")
+                .clicked()
+            {
+                self.modals
+                    .soft_jaw_wizard
+                    .open_for_setup(self.active_setup_idx);
+                ui.close();
+            }
+            ui.separator();
             if ui
                 .button("Validate Project Invariants")
                 .on_hover_text("Run safety and configuration checks on tools, WCS frames, clearances, and selections")

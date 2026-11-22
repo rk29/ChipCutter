@@ -26,6 +26,8 @@ pub enum CommandId {
 
     // Authoring & Operations
     NewSetup,
+    OpenFlipJigWizard,
+    OpenSoftJawWizard,
     NewSketchSetupXy,
     NewSketchOn3dFace,
     AddOpAdaptive2D,
@@ -83,6 +85,7 @@ pub enum CommandId {
     SampleRotaryWrappedEngraving,
     SampleRotaryHelicalFlute,
     SampleThreadMillManifold,
+    SampleTwoSidedVise,
     SampleRevisionReloadV2,
 }
 
@@ -205,6 +208,20 @@ pub const PALETTE_COMMANDS: &[PaletteEntry] = &[
         category: "Setup",
         label: "Add New Clamping Setup (G54–G59.3)",
         keywords: "setup wcs g54 g55 flip op2 stock",
+        shortcut: None,
+    },
+    PaletteEntry {
+        id: CommandId::OpenFlipJigWizard,
+        category: "Workholding",
+        label: "Two-Sided Flip-Jig Dowel-Pin Wizard…",
+        keywords: "workholding flip jig dowel pins op2 symmetric g55",
+        shortcut: None,
+    },
+    PaletteEntry {
+        id: CommandId::OpenSoftJawWizard,
+        category: "Workholding",
+        label: "Auto Soft-Jaw Generator Wizard (CNC & 3D-Print STL)…",
+        keywords: "workholding soft jaws vise pocket stl dogbone kurt milo carvera",
         shortcut: None,
     },
     PaletteEntry {
@@ -530,6 +547,13 @@ pub const PALETTE_COMMANDS: &[PaletteEntry] = &[
         shortcut: None,
     },
     PaletteEntry {
+        id: CommandId::SampleTwoSidedVise,
+        category: "Samples",
+        label: "Sample: Load Two-Sided Vise & Soft-Jaw Bracket (G54 -> G55)",
+        keywords: "sample demo workholding vise clamp soft jaws flip carryover two sided",
+        shortcut: None,
+    },
+    PaletteEntry {
         id: CommandId::SampleRevisionReloadV2,
         category: "Samples",
         label: "Sample: Associatively Reload CAD Revision v2",
@@ -552,6 +576,7 @@ impl CommandId {
             Self::SampleRotaryWrappedEngraving => Some(SampleProjectId::RotaryWrappedEngraving),
             Self::SampleRotaryHelicalFlute => Some(SampleProjectId::RotaryHelicalFlute),
             Self::SampleThreadMillManifold => Some(SampleProjectId::ThreadMillManifold),
+            Self::SampleTwoSidedVise => Some(SampleProjectId::TwoSidedViseWorkholding),
             Self::SampleRevisionReloadV2 => Some(SampleProjectId::CadRevisionV2Reload),
             _ => None,
         }
