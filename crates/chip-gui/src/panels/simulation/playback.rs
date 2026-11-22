@@ -428,6 +428,7 @@ mod tests {
             doc: &doc,
             setup: &resolved,
             target_bodies: &[],
+            fixtures: &[],
             operations: &[SimOperationInput {
                 op_id: "op_slot",
                 op_name: "Long Slot Cut",
@@ -557,6 +558,7 @@ mod tests {
             doc: &doc,
             setup: &resolved,
             target_bodies: &[],
+            fixtures: &[],
             operations: &[SimOperationInput {
                 op_id: "op_rot",
                 op_name: "Rotary Axial Flute",
@@ -645,6 +647,7 @@ mod tests {
                 doc: &doc,
                 setup: &resolved,
                 target_bodies: &[],
+                fixtures: &[],
                 operations: &[SimOperationInput {
                     op_id: "op_td_slot",
                     op_name: "TriDexel Slot",
@@ -814,6 +817,7 @@ mod tests {
                 doc: &doc,
                 setup: &resolved,
                 target_bodies: &[],
+                fixtures: &[],
                 operations: &[SimOperationInput {
                     op_id: "op_rot_err",
                     op_name: "Rotary Cut",
@@ -907,6 +911,7 @@ mod tests {
                 doc: &doc,
                 setup: &resolved,
                 target_bodies: &[],
+                fixtures: &[],
                 operations: &[SimOperationInput {
                     op_id: "op_helical",
                     op_name: "4-Axis Helical",
@@ -1033,6 +1038,7 @@ mod tests {
             doc: &doc,
             setup: &resolved,
             target_bodies: &[],
+            fixtures: &[],
             operations: &[SimOperationInput {
                 op_id: "op_rot_index",
                 op_name: "Rotary Flute + Index",
@@ -1145,6 +1151,7 @@ mod tests {
                 doc: &doc,
                 setup: &resolved,
                 target_bodies: &[],
+                fixtures: &[],
                 operations: &[SimOperationInput {
                     op_id: "op_gpu_slot",
                     op_name: "GPU Slot",

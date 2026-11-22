@@ -14,7 +14,7 @@ use crate::{
         gcode_preview::{GCodePanelCtx, GCodeUiAction},
         model_inspector::{ModelInspectorCtx, show_model_inspector},
         operation_inspector::{OperationInspectorCtx, show_operation_inspector},
-        setup_inspector::{SetupInspectorCtx, show_setup_inspector},
+        setup_inspector::{FixtureSafetySummary, SetupInspectorCtx, show_setup_inspector},
         simulation::{SimPanelCtx, SimulationUiAction},
         sketch_inspector::{SketchInspectorAction, SketchInspectorCtx, show_sketch_inspector},
     },
@@ -461,6 +461,48 @@ impl PaneBehavior<'_> {
                     let resolved_fixtures_ref: &[chip_cam::ResolvedFixtureSolid] = frame_geo
                         .as_ref()
                         .map_or(&[], |fg| fg.resolved_fixtures.as_slice());
+                    let fixture_safety = {
+                        let mut lifts = 0usize;
+                        let mut max_z = f64::NEG_INFINITY;
+                        if let Some((_, cad_rev)) = self.app.effective_cad_arc()
+                            && let Some(setup) = self.app.project.setups.get(setup_idx)
+                        {
+                            for (o_idx, op) in setup.operations.iter().enumerate() {
+                                if op.suppressed {
+                                    continue;
+                                }
+                                if let Some((_, tp)) = self.app.toolpath_cache.get_for_operation(
+                                    &self.app.project,
+                                    setup_idx,
+                                    o_idx,
+                                    cad_rev,
+                                ) && tp.rapid_lifts_inserted > 0
+                                {
+                                    lifts += tp.rapid_lifts_inserted;
+                                    max_z = max_z.max(tp.max_lifted_z_wcs);
+                                }
+                            }
+                        }
+                        let colliding_ids: std::collections::HashSet<&str> = self
+                            .app
+                            .sim_panel
+                            .active_result
+                            .as_ref()
+                            .filter(|_| self.app.sim_panel.active_setup_idx == setup_idx)
+                            .map(|res| {
+                                res.diagnostics
+                                    .iter()
+                                    .filter(|d| d.kind == chip_sim::SimIssueKind::FixtureCollision)
+                                    .filter_map(|d| d.fixture_id.as_deref())
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        FixtureSafetySummary {
+                            rapid_lifts_inserted: lifts,
+                            max_lifted_z_wcs: if max_z.is_finite() { max_z } else { 0.0 },
+                            colliding_fixture_count: colliding_ids.len(),
+                        }
+                    };
                     let mut open_machine_manager = false;
                     let mut machine_changed = false;
                     let mut import_fixture_requested = false;
@@ -473,6 +515,7 @@ impl PaneBehavior<'_> {
                             cad_doc: cad_ref,
                             resolved: resolved_ref,
                             resolved_fixtures: resolved_fixtures_ref,
+                            fixture_safety,
                             tab: &mut self.app.setup_tab,
                             pick_mode: &mut self.app.pick_mode,
                             selected_fixture_idx: &mut self.app.selected_fixture_idx,

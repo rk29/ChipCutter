@@ -300,6 +300,14 @@ impl SimulationPanelState {
         self.resolution.hash(&mut h);
         if let Some(setup) = project.setups.get(setup_idx) {
             setup.post_profile.hash(&mut h);
+            setup.auto_avoid_fixtures_on_rapids.hash(&mut h);
+            for fix in &setup.fixtures {
+                if fix.enabled {
+                    fix.id.hash(&mut h);
+                    fix.clearance_margin.value_mm.to_bits().hash(&mut h);
+                    fix.allowed_overcut.value_mm.to_bits().hash(&mut h);
+                }
+            }
             for (o_idx, op) in setup.operations.iter().enumerate() {
                 op.suppressed.hash(&mut h);
                 if !op.suppressed

@@ -33,6 +33,14 @@ use self::{
     wcs_tab::{WcsTabCtx, show_wcs_tab},
 };
 
+/// Live rapid-avoidance and collision summary shown inside the `[Fixtures]` Setup tab (`M61`).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FixtureSafetySummary {
+    pub rapid_lifts_inserted: usize,
+    pub max_lifted_z_wcs: f64,
+    pub colliding_fixture_count: usize,
+}
+
 /// Context passed to [`show_setup_inspector`].
 pub struct SetupInspectorCtx<'a> {
     pub project: &'a mut ProjectDocument,
@@ -41,6 +49,7 @@ pub struct SetupInspectorCtx<'a> {
     pub cad_doc: Option<&'a CadDocument>,
     pub resolved: Option<Result<&'a ResolvedSetup, &'a str>>,
     pub resolved_fixtures: &'a [ResolvedFixtureSolid],
+    pub fixture_safety: FixtureSafetySummary,
     pub tab: &'a mut SetupTab,
     pub pick_mode: &'a mut ViewportPickMode,
     pub selected_fixture_idx: &'a mut Option<usize>,
@@ -150,6 +159,7 @@ pub fn show_setup_inspector(ui: &mut egui::Ui, ctx: SetupInspectorCtx<'_>) -> bo
         cad_doc,
         resolved,
         resolved_fixtures,
+        fixture_safety,
         tab,
         pick_mode,
         selected_fixture_idx,
@@ -386,6 +396,7 @@ pub fn show_setup_inspector(ui: &mut egui::Ui, ctx: SetupInspectorCtx<'_>) -> bo
                         display_unit,
                         resolved,
                         resolved_fixtures,
+                        fixture_safety,
                         selected_fixture_idx,
                         show_fixtures,
                         pick_mode,

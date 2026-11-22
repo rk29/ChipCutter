@@ -670,6 +670,7 @@ mod tests {
             doc: &doc,
             setup: &resolved,
             target_bodies: &[],
+            fixtures: &[],
             operations: &[SimOperationInput {
                 op_id: "stl_op",
                 op_name: "STL Cut",

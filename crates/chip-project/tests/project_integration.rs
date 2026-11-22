@@ -3172,3 +3172,168 @@ fn milestone_60_workholding_zero_diff_toml_chipz_roundtrip_role_isolation_cache_
 
     let _ = std::fs::remove_dir_all(&tmp);
 }
+
+#[test]
+fn m61_cam_torture_toe_clamp_between_pockets_auto_avoid_off_vs_on() {
+    use chip_cad::{CadKernel, MonstertruckKernel, sample_cam_torture_block_step};
+    use chip_cam::{FixtureBody, FixtureKind, SegmentMotion3D};
+    use chip_math::{DEFAULT_TESS_CHORD_TOL_MM, DVec2, ParamLength};
+    use chip_sim::{SimComputeBackendChoice, SimEngineKind, SimIssueKind, SimResolution};
+
+    let step = sample_cam_torture_block_step().unwrap();
+    let cad_doc = MonstertruckKernel
+        .load_step_bytes(
+            "cam_torture.step",
+            step.as_bytes(),
+            DEFAULT_TESS_CHORD_TOL_MM,
+        )
+        .unwrap();
+    let tools = default_starter_tool_library().tools;
+    let sha = compute_sha256_hex(step.as_bytes());
+    let mut proj =
+        build_cam_torture_project(&cad_doc, "cam_torture.step".to_string(), &sha, &tools);
+    // Keep only the 4-hole drilling op (raising its R-plane above stock top since facing is
+    // suppressed) so its horizontal G0 rapid links traverse cleanly between the 4 holes!
+    for op in &mut proj.setups[0].operations {
+        let keep = op.id == "op_7_shelf_holes";
+        op.suppressed = !keep;
+        if keep {
+            op.heights.retract =
+                chip_cam::HeightSpec::new(chip_cam::HeightReference::StockTop, 4.0);
+            op.heights.feed = chip_cam::HeightSpec::new(chip_cam::HeightReference::StockTop, 2.0);
+            op.heights.top = chip_cam::HeightSpec::new(chip_cam::HeightReference::StockTop, 0.0);
+            op.heights.bottom =
+                chip_cam::HeightSpec::new(chip_cam::HeightReference::StockTop, -5.0);
+        }
+    }
+    let resolved = proj.setups[0]
+        .resolve_with_sketches(&cad_doc, &proj.sketches, proj.display_units)
+        .unwrap();
+
+    // Generate baseline without fixtures to locate the longest horizontal G0 rapid between holes
+    let mut base_cache = ToolpathCache::new(64);
+    let base_batch = generate_project_blocking(&mut proj, &cad_doc, &mut base_cache, 1);
+    assert!(
+        base_batch.is_ok() && !base_batch.generated.is_empty(),
+        "base cam-torture drill op failed: {:?}",
+        base_batch.errors
+    );
+
+    let longest_rapid = base_batch
+        .generated
+        .iter()
+        .flat_map(|(_, _, tp)| tp.segments_wcs.iter())
+        .filter(|seg| matches!(seg.motion, SegmentMotion3D::Rapid))
+        .max_by(|a, b| {
+            let la = (a.end_wcs.x - a.start_wcs.x).hypot(a.end_wcs.y - a.start_wcs.y);
+            let lb = (b.end_wcs.x - b.start_wcs.x).hypot(b.end_wcs.y - b.start_wcs.y);
+            la.total_cmp(&lb)
+        })
+        .expect("expected at least one horizontal rapid between holes");
+    let dxy = DVec2::new(
+        longest_rapid.end_wcs.x - longest_rapid.start_wcs.x,
+        longest_rapid.end_wcs.y - longest_rapid.start_wcs.y,
+    );
+    assert!(dxy.length() > 15.0, "expected rapid > 15 mm, got {dxy:?}");
+    let mid = longest_rapid.start_wcs.lerp(longest_rapid.end_wcs, 0.5);
+    let anchor_xy = DVec2::new(mid.x, mid.y);
+    // Point clamp perpendicular to rapid travel so strap & stud straddle the rapid bridge cleanly
+    // without touching either hole!
+    let perp_yaw_deg = dxy.y.atan2(dxy.x).to_degrees() + 90.0;
+    let mut clamp = FixtureBody::default_toe_clamp(
+        "torture_clamp",
+        "Bridge Toe Clamp",
+        anchor_xy,
+        perp_yaw_deg,
+    );
+    if let FixtureKind::ToeClamp {
+        strap_length,
+        strap_width,
+        strap_height,
+        stud_height_above_strap,
+        ..
+    } = &mut clamp.kind
+    {
+        *strap_length = ParamLength::from_mm(22.0);
+        *strap_width = ParamLength::from_mm(8.0);
+        *strap_height = ParamLength::from_mm(8.0);
+        *stud_height_above_strap = ParamLength::from_mm(10.0);
+    }
+    let _ = resolved;
+    proj.setups[0].fixtures.push(clamp);
+
+    // 1. With `auto_avoid_fixtures_on_rapids = false`, `chip-sim` MUST catch `FixtureCollision`!
+    proj.setups[0].auto_avoid_fixtures_on_rapids = false;
+    let mut cache_off = ToolpathCache::new(64);
+    let batch_off = generate_project_blocking(&mut proj, &cad_doc, &mut cache_off, 1);
+    assert!(batch_off.is_ok());
+    let total_lifts_off: usize = batch_off
+        .generated
+        .iter()
+        .map(|(_, _, tp)| tp.rapid_lifts_inserted)
+        .sum();
+    assert_eq!(total_lifts_off, 0);
+
+    let sim_off = simulate_project_setup_with_choice(
+        &SetupSimRequest {
+            project: &proj,
+            setup_idx: 0,
+            cad_doc: &cad_doc,
+            cad_revision: 1,
+            cache: &cache_off,
+            kinematics: resolve_kinematics_for_key(&proj.setups[0].post_profile, None),
+            resolution: SimResolution::Standard,
+            cancel: None,
+        },
+        SimEngineKind::Heightmap,
+        SimComputeBackendChoice::Cpu,
+    )
+    .unwrap();
+    assert!(
+        sim_off.diagnostics.iter().any(|d| {
+            d.kind == SimIssueKind::FixtureCollision
+                && d.fixture_id.as_deref() == Some("torture_clamp")
+        }),
+        "auto_avoid=false must trigger FixtureCollision on bridge clamp, got: {:#?}",
+        sim_off.diagnostics
+    );
+
+    // 2. With `auto_avoid_fixtures_on_rapids = true`, rapids lift cleanly over the stud!
+    proj.setups[0].auto_avoid_fixtures_on_rapids = true;
+    let mut cache_on = ToolpathCache::new(64);
+    let batch_on = generate_project_blocking(&mut proj, &cad_doc, &mut cache_on, 1);
+    assert!(batch_on.is_ok());
+    let total_lifts_on: usize = batch_on
+        .generated
+        .iter()
+        .map(|(_, _, tp)| tp.rapid_lifts_inserted)
+        .sum();
+    assert!(
+        total_lifts_on >= 1,
+        "expected >= 1 rapid lift inserted over bridge clamp"
+    );
+
+    let sim_on = simulate_project_setup_with_choice(
+        &SetupSimRequest {
+            project: &proj,
+            setup_idx: 0,
+            cad_doc: &cad_doc,
+            cad_revision: 1,
+            cache: &cache_on,
+            kinematics: resolve_kinematics_for_key(&proj.setups[0].post_profile, None),
+            resolution: SimResolution::Standard,
+            cancel: None,
+        },
+        SimEngineKind::Heightmap,
+        SimComputeBackendChoice::Cpu,
+    )
+    .unwrap();
+    assert!(
+        !sim_on
+            .diagnostics
+            .iter()
+            .any(|d| d.kind == SimIssueKind::FixtureCollision),
+        "auto_avoid=true must eliminate FixtureCollision on rapid bridge, got: {:#?}",
+        sim_on.diagnostics
+    );
+}

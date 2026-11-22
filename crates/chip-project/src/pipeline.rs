@@ -1,10 +1,11 @@
 use std::{
+    collections::BTreeMap,
     path::Path,
     sync::{Arc, atomic::AtomicBool},
 };
 
 use chip_cad::CadDocument;
-use chip_cam::{GeneratedToolpath, Operation};
+use chip_cam::{FixtureKind, GeneratedToolpath, Operation, resolve_setup_fixtures};
 use chip_post::{
     OperationPostInput, PostOutputFile, PostProfile, SetupPostInput, describe_wcs_origin,
     post_process_setup, resolve_post_profile,
@@ -107,12 +108,26 @@ pub struct SetupSimRequest<'a> {
     pub cancel: Option<&'a AtomicBool>,
 }
 
-/// Runs 2.5D Z-dexel heightmap stock removal & 5-rule crash/gouge verification for a single Setup.
+/// Runs 2.5D Z-dexel heightmap stock removal & 6-rule crash/gouge/fixture verification for a single Setup.
 pub fn simulate_project_setup(req: &SetupSimRequest<'_>) -> Result<SetupSimulationResult, String> {
     simulate_project_setup_with_engine(req, SimEngineKind::Heightmap)
 }
 
-/// Runs stock removal & 5-rule crash/gouge verification for a single Setup using the chosen
+/// Runs 2.5D Z-dexel heightmap stock removal & 6-rule crash/gouge/fixture verification for a single Setup,
+/// resolving any `ImportedModel` workholding fixtures relative to `project_dir`.
+pub fn simulate_project_setup_in_dir(
+    req: &SetupSimRequest<'_>,
+    project_dir: Option<&Path>,
+) -> Result<SetupSimulationResult, String> {
+    simulate_project_setup_with_choice_in_dir(
+        req,
+        project_dir,
+        SimEngineKind::Heightmap,
+        SimComputeBackendChoice::Cpu,
+    )
+}
+
+/// Runs stock removal & 6-rule crash/gouge/fixture verification for a single Setup using the chosen
 /// [`SimEngineKind`] (`Heightmap` or volumetric `TriDexel`) on the exact CPU backend.
 pub fn simulate_project_setup_with_engine(
     req: &SetupSimRequest<'_>,
@@ -121,10 +136,22 @@ pub fn simulate_project_setup_with_engine(
     simulate_project_setup_with_choice(req, engine, SimComputeBackendChoice::Cpu)
 }
 
-/// Runs stock removal & 5-rule crash/gouge verification for a single Setup using the chosen
+/// Runs stock removal & 6-rule crash/gouge/fixture verification for a single Setup using the chosen
 /// [`SimEngineKind`] and [`SimComputeBackendChoice`] (`Auto` / `Gpu` / `Cpu`).
 pub fn simulate_project_setup_with_choice(
     req: &SetupSimRequest<'_>,
+    engine: SimEngineKind,
+    choice: SimComputeBackendChoice,
+) -> Result<SetupSimulationResult, String> {
+    simulate_project_setup_with_choice_in_dir(req, None, engine, choice)
+}
+
+/// Runs stock removal & 6-rule crash/gouge/fixture verification for a single Setup using the chosen
+/// [`SimEngineKind`] and [`SimComputeBackendChoice`], resolving any `ImportedModel` workholding
+/// fixtures relative to `project_dir`.
+pub fn simulate_project_setup_with_choice_in_dir(
+    req: &SetupSimRequest<'_>,
+    project_dir: Option<&Path>,
     engine: SimEngineKind,
     choice: SimComputeBackendChoice,
 ) -> Result<SetupSimulationResult, String> {
@@ -147,11 +174,30 @@ pub fn simulate_project_setup_with_choice(
         .map(|item| SimOperationInput::from_operation(item.op, item.tool, item.toolpath.as_ref()))
         .collect();
 
+    let resolved_fixtures = if setup.fixtures.iter().any(|f| f.enabled) {
+        let needs_imported = setup
+            .fixtures
+            .iter()
+            .any(|f| f.enabled && matches!(f.kind, FixtureKind::ImportedModel { .. }));
+        let fixture_docs: BTreeMap<String, CadDocument> = if needs_imported {
+            req.project.load_fixture_cad_documents(project_dir)
+        } else {
+            BTreeMap::new()
+        };
+        resolve_setup_fixtures(setup, &resolved, req.project.display_units, |id| {
+            fixture_docs.get(id)
+        })
+        .map_err(|e| e.to_string())?
+    } else {
+        Vec::new()
+    };
+
     run_setup_simulation_with_choice(
         &SetupSimulationInput {
             doc: req.cad_doc,
             setup: &resolved,
             target_bodies: &setup.target_bodies,
+            fixtures: &resolved_fixtures,
             operations: &sim_inputs,
             resolution: req.resolution,
             kinematics: req.kinematics,

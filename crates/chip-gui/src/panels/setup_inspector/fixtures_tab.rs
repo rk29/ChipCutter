@@ -6,7 +6,7 @@ use chip_math::{DVec2, DVec3, DisplayUnit, EvalContext, ParamLength};
 use chip_project::ModelEntry;
 
 use crate::{
-    panels::{FixturePlaceKind, ViewportPickMode},
+    panels::{FixturePlaceKind, ViewportPickMode, setup_inspector::FixtureSafetySummary},
     widgets::{
         BannerKind, INPUT_COL_WIDTH, edit_param_length, grid_row, inline_banner, inspector_grid,
         section_card, static_card,
@@ -21,6 +21,7 @@ pub(super) struct FixturesTabCtx<'a> {
     pub(super) display_unit: DisplayUnit,
     pub(super) resolved: Option<Result<&'a ResolvedSetup, &'a str>>,
     pub(super) resolved_fixtures: &'a [ResolvedFixtureSolid],
+    pub(super) fixture_safety: FixtureSafetySummary,
     pub(super) selected_fixture_idx: &'a mut Option<usize>,
     pub(super) show_fixtures: &'a mut bool,
     pub(super) pick_mode: &'a mut ViewportPickMode,
@@ -48,6 +49,7 @@ pub(super) fn show_fixtures_tab(ui: &mut egui::Ui, ctx: FixturesTabCtx<'_>) {
         display_unit,
         resolved,
         resolved_fixtures,
+        fixture_safety,
         selected_fixture_idx,
         show_fixtures,
         pick_mode,
@@ -329,6 +331,50 @@ pub(super) fn show_fixtures_tab(ui: &mut egui::Ui, ctx: FixturesTabCtx<'_>) {
             "No workholding fixtures configured on this Setup yet. Use + Vise, + Toe Clamp, + Spoilboard, + Keep-Out, or Place Clamp in Viewport… above.",
         );
         return;
+    }
+
+    let enabled_count = setup.fixtures.iter().filter(|f| f.enabled).count();
+    if fixture_safety.colliding_fixture_count > 0 {
+        inline_banner(
+            ui,
+            BannerKind::Error,
+            format!(
+                "Fixture collision detected on {} fixture body(s) — colliding hardware highlighted crimson in viewport. Inspect Diagnostics & Log to jump to the collision.",
+                fixture_safety.colliding_fixture_count
+            ),
+        );
+        ui.add_space(5.0);
+    } else if setup.auto_avoid_fixtures_on_rapids && fixture_safety.rapid_lifts_inserted > 0 {
+        let sign = if fixture_safety.max_lifted_z_wcs >= 0.0 {
+            "+"
+        } else {
+            ""
+        };
+        inline_banner(
+            ui,
+            BannerKind::Info,
+            format!(
+                "Auto-Avoid Rapids enabled — {} rapid jump(s) lifted cleanly over fixtures (max Z = {}{})",
+                fixture_safety.rapid_lifts_inserted,
+                sign,
+                display_unit.format_length(fixture_safety.max_lifted_z_wcs),
+            ),
+        );
+        ui.add_space(5.0);
+    } else if setup.auto_avoid_fixtures_on_rapids && enabled_count > 0 {
+        inline_banner(
+            ui,
+            BannerKind::Info,
+            "Auto-Avoid Rapids enabled — rapid links clear enabled fixtures automatically on toolpath regeneration (Ctrl+G).",
+        );
+        ui.add_space(5.0);
+    } else if !setup.auto_avoid_fixtures_on_rapids && enabled_count > 0 {
+        inline_banner(
+            ui,
+            BannerKind::Warn,
+            "Auto-Avoid Rapids disabled — G0 rapid links will NOT lift automatically over fixtures; run Simulation to check for collisions.",
+        );
+        ui.add_space(5.0);
     }
 
     // 2. Compact Fixture Bodies List

@@ -707,6 +707,7 @@ fn verifies_all_five_v1_strategies_against_torture_block_invariants() {
         doc: &doc,
         setup: &resolved_setup,
         target_bodies: &setup.target_bodies,
+        fixtures: &[],
         operations: &sim_ops,
         resolution: chip_sim::SimResolution::Fine,
         kinematics: chip_sim::MachineKinematicsConfig::default(),
@@ -1078,6 +1079,7 @@ fn verifies_adaptive_clearing_and_rest_machining_against_sim_oracle() {
         doc: &doc,
         setup: &resolved_setup,
         target_bodies: &setup.target_bodies,
+        fixtures: &[],
         operations: &[
             chip_sim::SimOperationInput::from_operation(&op_face, face_mill_38mm, &tp_face),
             chip_sim::SimOperationInput::from_operation(&op_plat, flat_6mm, &tp_plat),
@@ -1104,6 +1106,7 @@ fn verifies_adaptive_clearing_and_rest_machining_against_sim_oracle() {
         doc: &doc,
         setup: &resolved_setup,
         target_bodies: &setup.target_bodies,
+        fixtures: &[],
         operations: &[
             chip_sim::SimOperationInput::from_operation(&op_face, face_mill_38mm, &tp_face),
             chip_sim::SimOperationInput::from_operation(&op_plat, flat_6mm, &tp_plat),
@@ -1272,6 +1275,7 @@ fn verifies_vcarve_medial_corner_climbs_two_tool_flat_clearance_and_male_inlay_p
         doc: &empty_doc,
         setup: &resolved_sq,
         target_bodies: &[],
+        fixtures: &[],
         operations: &[chip_sim::SimOperationInput::from_operation(
             &op_pure,
             &vbit_90_wide,
@@ -1356,6 +1360,7 @@ fn verifies_vcarve_medial_corner_climbs_two_tool_flat_clearance_and_male_inlay_p
         doc: &empty_doc,
         setup: &resolved_txt,
         target_bodies: &[],
+        fixtures: &[],
         operations: &[
             chip_sim::SimOperationInput::from_operation(&op_two_tool, flat_6mm, &stage1.toolpath),
             chip_sim::SimOperationInput::from_operation(&op_two_tool, vbit_60, &tp_two),
@@ -1535,6 +1540,7 @@ fn verifies_adaptive_3d_and_waterline_3d_on_stl_obj_and_step_against_sim_oracle(
         doc: &dome_doc,
         setup: &resolved_dome,
         target_bodies: &[],
+        fixtures: &[],
         operations: &sim_ops,
         kinematics: MachineKinematicsConfig::default(),
         resolution: SimResolution::Standard,
@@ -1681,6 +1687,7 @@ fn verifies_adaptive_3d_and_waterline_3d_on_stl_obj_and_step_against_sim_oracle(
         doc: &wave_doc,
         setup: &resolved_wave,
         target_bodies: &[],
+        fixtures: &[],
         operations: &[SimOperationInput::from_operation(
             &op_wave, flat_6mm, &tp_wave,
         )],
@@ -2128,6 +2135,7 @@ fn milestone_18_3d_finishing_parallel_scallop_pencil_and_rest_oracles() {
         doc: &dome_doc,
         setup: &resolved_dome,
         target_bodies: &[],
+        fixtures: &[],
         operations: &[
             SimOperationInput::from_operation(&op_par, &ball_6mm, &tp_par_single),
             SimOperationInput::from_operation(&op_pencil, &ball_3mm, &tp_pencil),
@@ -2201,6 +2209,7 @@ fn milestone_18_3d_finishing_parallel_scallop_pencil_and_rest_oracles() {
         doc: &wave_doc,
         setup: &resolved_wave,
         target_bodies: &[],
+        fixtures: &[],
         operations: &[
             SimOperationInput::from_operation(&op_wave_par, &ball_6mm, &tp_wave_par),
             SimOperationInput::from_operation(&op_wave_sc, &ball_6mm, &tp_wave_sc),
@@ -2361,6 +2370,7 @@ fn rotary2linear_spiral_and_axial_parallel_on_x_and_y_axes_are_centerline_locked
         doc: &doc,
         setup: &resolved_x,
         target_bodies: &[],
+        fixtures: &[],
         operations: &[
             SimOperationInput::from_operation(&op_spiral, &ball_6mm, &tp_spiral),
             SimOperationInput::from_operation(&op_axial, &ball_6mm, &tp_axial),
@@ -2436,6 +2446,7 @@ fn rotary2linear_spiral_and_axial_parallel_on_x_and_y_axes_are_centerline_locked
         doc: &doc,
         setup: &resolved_y,
         target_bodies: &[],
+        fixtures: &[],
         operations: &[SimOperationInput::from_operation(
             &op_spiral, &ball_6mm, &tp_y,
         )],
@@ -2587,6 +2598,7 @@ fn wrap_cylinder_2d_pocket_respects_centerline_lock_arc_mapping_and_simulates_cl
         doc: &doc,
         setup: &resolved,
         target_bodies: &[],
+        fixtures: &[],
         operations: &[SimOperationInput::from_operation(&op, &flat_3mm, &tp)],
         kinematics: MachineKinematicsConfig::default(),
         resolution: SimResolution::Standard,
@@ -2749,6 +2761,7 @@ fn indexed_3plus1_four_flats_on_rotary_shaft_retract_safely_and_verify_crash_fre
         doc: &doc,
         setup: &resolved,
         target_bodies: &[],
+        fixtures: &[],
         operations: &sim_ops,
         kinematics: MachineKinematicsConfig::default(),
         resolution: SimResolution::Standard,
@@ -2947,6 +2960,7 @@ fn rotary4axis_sim_off_centerline_helical_flutes_on_x_and_y_are_smooth_and_crash
         doc: &doc,
         setup: &resolved_x,
         target_bodies: &[],
+        fixtures: &[],
         operations: &[
             SimOperationInput::from_operation(&op_spiral, &ball_6mm, &tp_spiral),
             SimOperationInput::from_operation(&op_flow, &ball_6mm, &tp_flow),
@@ -3022,6 +3036,7 @@ fn rotary4axis_sim_off_centerline_helical_flutes_on_x_and_y_are_smooth_and_crash
         doc: &doc,
         setup: &resolved_y,
         target_bodies: &[],
+        fixtures: &[],
         operations: &[SimOperationInput::from_operation(
             &op_spiral, &ball_6mm, &tp_y,
         )],

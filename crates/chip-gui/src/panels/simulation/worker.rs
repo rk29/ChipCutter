@@ -1,10 +1,12 @@
 use std::{
+    collections::BTreeMap,
     sync::{Arc, Condvar, Mutex, atomic::AtomicBool},
     thread::{self, JoinHandle},
     time::Instant,
 };
 
-use chip_cam::{GeneratedToolpath, Operation};
+use chip_cad::CadDocument;
+use chip_cam::{FixtureKind, GeneratedToolpath, Operation, resolve_setup_fixtures};
 use chip_project::{collect_ready_setup_operations, resolve_kinematics_for_key};
 #[cfg(feature = "gpu-compute")]
 use chip_sim::{GpuCheckpointCache, GpuSimContext, WgpuComputeBackend};
@@ -569,6 +571,17 @@ impl SimulationPanelState {
         let backend_choice = self.backend_choice;
         let resolution = self.resolution;
         let target_bodies = setup.target_bodies.clone();
+        let setup_for_fixtures = setup.clone();
+        let display_units = project.display_units;
+        let needs_imported_fixtures = setup
+            .fixtures
+            .iter()
+            .any(|f| f.enabled && matches!(f.kind, FixtureKind::ImportedModel { .. }));
+        let fixture_docs: BTreeMap<String, CadDocument> = if needs_imported_fixtures {
+            project.load_fixture_cad_documents(project_dir)
+        } else {
+            BTreeMap::new()
+        };
         let kin = if let Some(mid) = project.machine_id.as_deref()
             && let Ok(machine) = chip_tools::resolve_machine_definition(mid, project_dir)
         {
@@ -595,10 +608,32 @@ impl SimulationPanelState {
                 })
                 .collect();
 
+            let resolved_fixtures = if setup_for_fixtures.fixtures.iter().any(|f| f.enabled) {
+                match resolve_setup_fixtures(&setup_for_fixtures, &resolved, display_units, |id| {
+                    fixture_docs.get(id)
+                }) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        let _ = tx.send(SimWorkerMsg::Finished {
+                            run_id,
+                            setup_idx,
+                            signature,
+                            elapsed_ms: t0.elapsed().as_millis(),
+                            result: Err(e.to_string()),
+                        });
+                        egui_ctx.request_repaint();
+                        return;
+                    }
+                }
+            } else {
+                Vec::new()
+            };
+
             let input = SetupSimulationInput {
                 doc: &cad_doc,
                 setup: &resolved,
                 target_bodies: &target_bodies,
+                fixtures: &resolved_fixtures,
                 operations: &refs,
                 resolution,
                 kinematics: kin,
@@ -734,6 +769,7 @@ mod tests {
             doc: &doc,
             setup: &resolved,
             target_bodies: &[],
+            fixtures: &[],
             operations: &[SimOperationInput {
                 op_id: "op_slot",
                 op_name: "Long Slot Cut",

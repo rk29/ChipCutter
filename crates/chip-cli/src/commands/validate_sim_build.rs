@@ -6,9 +6,9 @@ use chip_post::{
 };
 use chip_project::{
     DiagnosticSeverity, SetupPostRequest, SetupSimRequest, ToolpathCache,
-    generate_project_blocking, kinematics_for_post_profile, post_process_project_setup,
-    resolve_kinematics_for_key, simulate_project_setup, simulate_project_setup_with_choice,
-    validate_project, validate_project_with_machine,
+    generate_project_blocking_in_dir, kinematics_for_post_profile, post_process_project_setup,
+    resolve_kinematics_for_key, simulate_project_setup_in_dir,
+    simulate_project_setup_with_choice_in_dir, validate_project, validate_project_with_machine,
 };
 use chip_sim::{SetupSimulationResult, SimResolution, StockModelKind, format_cycle_time_hms};
 use chip_tools::resolve_machine_definition_cli_override;
@@ -66,7 +66,8 @@ pub fn run_validate(
     if generate {
         if let Some(cad_doc) = loaded_cad.as_ref() {
             let mut cache = ToolpathCache::new(64);
-            let batch = generate_project_blocking(&mut proj_doc, cad_doc, &mut cache, 1);
+            let batch =
+                generate_project_blocking_in_dir(&mut proj_doc, cad_doc, proj_dir, &mut cache, 1);
             println!("=== Toolpath Generation Summary ===");
             for (scope, _id, tp) in &batch.generated {
                 println!(
@@ -149,7 +150,7 @@ pub fn run_simulate(args: SimulateArgs) -> Result<ExitCode, Box<dyn std::error::
     }
 
     let mut cache = ToolpathCache::new(128);
-    let batch = generate_project_blocking(&mut proj_doc, &cad_doc, &mut cache, 1);
+    let batch = generate_project_blocking_in_dir(&mut proj_doc, &cad_doc, proj_dir, &mut cache, 1);
     if !batch.errors.is_empty() {
         for (scope, msg) in &batch.errors {
             eprintln!("  [GEN ERROR] {scope}: {msg}");
@@ -171,7 +172,7 @@ pub fn run_simulate(args: SimulateArgs) -> Result<ExitCode, Box<dyn std::error::
 
     for (s_idx, setup) in proj_doc.setups.iter().enumerate() {
         let kin = resolve_kinematics_for_key(&setup.post_profile, proj_dir);
-        let mut sim = simulate_project_setup_with_choice(
+        let mut sim = simulate_project_setup_with_choice_in_dir(
             &SetupSimRequest {
                 project: &proj_doc,
                 setup_idx: s_idx,
@@ -182,6 +183,7 @@ pub fn run_simulate(args: SimulateArgs) -> Result<ExitCode, Box<dyn std::error::
                 resolution: sim_res_enum,
                 cancel: None,
             },
+            proj_dir,
             sim_engine,
             sim_backend,
         )?;
@@ -349,7 +351,7 @@ pub fn run_build(args: BuildArgs) -> Result<ExitCode, Box<dyn std::error::Error>
     }
 
     let mut cache = ToolpathCache::new(128);
-    let batch = generate_project_blocking(&mut proj_doc, &cad_doc, &mut cache, 1);
+    let batch = generate_project_blocking_in_dir(&mut proj_doc, &cad_doc, proj_dir, &mut cache, 1);
     if !batch.errors.is_empty() {
         for (scope, msg) in &batch.errors {
             eprintln!("  [GEN ERROR] {scope}: {msg}");
@@ -393,17 +395,20 @@ pub fn run_build(args: BuildArgs) -> Result<ExitCode, Box<dyn std::error::Error>
         }
         let kin = kinematics_for_post_profile(&post_profile);
 
-        // Mandatory pre-post physical heightmap crash & gouge gate (`06-simulation.md` §4)!
-        let sim = simulate_project_setup(&SetupSimRequest {
-            project: &proj_doc,
-            setup_idx: s_idx,
-            cad_doc: &cad_doc,
-            cad_revision: 1,
-            cache: &cache,
-            kinematics: kin,
-            resolution: SimResolution::Standard,
-            cancel: None,
-        })?;
+        // Mandatory pre-post physical heightmap crash, gouge, & fixture gate (`06-simulation.md` §4)!
+        let sim = simulate_project_setup_in_dir(
+            &SetupSimRequest {
+                project: &proj_doc,
+                setup_idx: s_idx,
+                cad_doc: &cad_doc,
+                cad_revision: 1,
+                cache: &cache,
+                kinematics: kin,
+                resolution: SimResolution::Standard,
+                cancel: None,
+            },
+            proj_dir,
+        )?;
 
         for d in &sim.diagnostics {
             eprintln!(

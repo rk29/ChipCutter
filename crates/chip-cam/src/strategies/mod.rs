@@ -24,6 +24,7 @@ use chip_tools::Tool;
 
 use crate::{
     cl_data::ClEvent,
+    fixture_avoidance::route_toolpath_around_fixtures,
     heights::ResolvedHeights,
     operation::{EffectiveCuttingParams, Operation, OperationKind},
     params::{LinkingParams, PassesParams, RetractPolicy, StrategyParams},
@@ -34,6 +35,7 @@ use crate::{
     stock::ResolvedStockGeometry,
     toolpath::{GeneratedToolpath, ToolpathBuilder},
     wcs::CamError,
+    workholding::ResolvedFixtureSolid,
 };
 
 /// Resolved immutable context passed into each 2.5D / 3-axis toolpath strategy generator.
@@ -84,6 +86,46 @@ pub struct OperationGenRequest<'a> {
     pub is_first_tool_in_setup: bool,
     pub upstream_rest: &'a [UpstreamSweptInput],
     pub cancel: &'a AtomicBool,
+}
+
+/// Generates a verified [`GeneratedToolpath`] with optional 3D workholding fixtures and automatic
+/// safe-rapid avoidance routing (`M61`), validating lifted rapid Z heights against active machine
+/// Z travel limits when provided.
+///
+/// Exact no-op wrapper over [`generate_operation_toolpath_with_rest`] when `fixtures.is_empty()`
+/// or `!auto_avoid_fixtures_on_rapids`.
+pub fn generate_operation_toolpath_with_fixtures(
+    req: &OperationGenRequest<'_>,
+    fixtures: &[ResolvedFixtureSolid],
+    auto_avoid_fixtures_on_rapids: bool,
+    machine_z_travel_mm: Option<f64>,
+) -> Result<GeneratedToolpath, CamError> {
+    let mut tp = generate_operation_toolpath_with_rest(req)?;
+    if auto_avoid_fixtures_on_rapids && !fixtures.is_empty() {
+        route_toolpath_around_fixtures(
+            &mut tp,
+            req.tool,
+            req.setup,
+            fixtures,
+            true,
+            machine_z_travel_mm,
+        );
+        if let (Some(stage), Some(clear_tool)) = (tp.clearing_stage.as_mut(), req.clearing_tool) {
+            let stage_summary = route_toolpath_around_fixtures(
+                &mut stage.toolpath,
+                clear_tool,
+                req.setup,
+                fixtures,
+                true,
+                machine_z_travel_mm,
+            );
+            tp.rapid_lifts_inserted += stage_summary.rapid_lifts_inserted;
+            if stage_summary.rapid_lifts_inserted > 0 {
+                tp.max_lifted_z_wcs = tp.max_lifted_z_wcs.max(stage_summary.max_lifted_z_wcs);
+            }
+        }
+    }
+    Ok(tp)
 }
 
 /// Generates a verified [`GeneratedToolpath`] (typed `ClEvent` stream + exact 3D WCS motion segments)

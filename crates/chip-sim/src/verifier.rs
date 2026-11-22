@@ -20,7 +20,7 @@ impl SimSeverity {
     }
 }
 
-/// Specific safety rule triggered during heightmap verification (`06-simulation.md` §4).
+/// Specific safety rule triggered during simulation verification (`06-simulation.md` §4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SimIssueKind {
@@ -34,6 +34,8 @@ pub enum SimIssueKind {
     HolderCollision,
     /// Vertical plunge (`ΔXY == 0`) into material with non-center-cutting tool or excessive depth.
     UnsafeVerticalPlunge,
+    /// Full cutter assembly (flute, shank, or collet/holder) collided with an enabled 3D fixture.
+    FixtureCollision,
 }
 
 impl SimIssueKind {
@@ -44,14 +46,16 @@ impl SimIssueKind {
             Self::FluteLengthExceeded => "Flute Length Exceeded (Shank Rub)",
             Self::HolderCollision => "Holder / Collet Collision",
             Self::UnsafeVerticalPlunge => "Excessive Vertical Plunge",
+            Self::FixtureCollision => "Fixture / Clamp Collision",
         }
     }
 
     pub const fn default_severity(self) -> SimSeverity {
         match self {
-            Self::RapidIntoStock | Self::TargetModelGouge | Self::HolderCollision => {
-                SimSeverity::CriticalError
-            }
+            Self::RapidIntoStock
+            | Self::TargetModelGouge
+            | Self::HolderCollision
+            | Self::FixtureCollision => SimSeverity::CriticalError,
             Self::FluteLengthExceeded | Self::UnsafeVerticalPlunge => SimSeverity::Warning,
         }
     }
@@ -73,6 +77,12 @@ pub struct SimDiagnostic {
     /// Worst violation magnitude in millimeters (crash depth, gouge depth, shank rub, or plunge excess).
     pub max_excess_mm: f64,
     pub message: String,
+    /// Offending workholding fixture ID when `kind == SimIssueKind::FixtureCollision`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fixture_id: Option<String>,
+    /// Human-readable workholding fixture name when `kind == SimIssueKind::FixtureCollision`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fixture_name: Option<String>,
 }
 
 /// Tolerances governing automated crash & gouge detection.

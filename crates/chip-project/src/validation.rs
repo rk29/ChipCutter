@@ -365,13 +365,29 @@ pub fn validate_project_with_machine(
                         _ => {}
                     }
 
-                    if eval_fix.enabled
-                        && let Err(err) =
-                            resolve_fixture_body(&eval_fix, &stock_aabb, &fix_ctx, &mut |id| {
-                                loaded_fixture_docs.get(id)
-                            })
-                    {
-                        report.push_error(&fix_scope, err.to_string());
+                    if eval_fix.enabled {
+                        match resolve_fixture_body(&eval_fix, &stock_aabb, &fix_ctx, &mut |id| {
+                            loaded_fixture_docs.get(id)
+                        }) {
+                            Ok(sol) => {
+                                if setup.auto_avoid_fixtures_on_rapids && !sol.is_spoilboard {
+                                    let req_z = sol.aabb_wcs.max.z + sol.clearance_margin_mm + 2.0;
+                                    let z_span = req_z - stock_aabb.min.z;
+                                    if z_span > travel.z_mm + 0.01 {
+                                        report.push_warning(
+                                            &fix_scope,
+                                            format!(
+                                                "safe-rapid clearance over fixture (Z = {req_z:+.1} mm, span {z_span:.1} mm above stock bottom) exceeds machine '{}' Z travel ({:.1} mm).",
+                                                resolved_machine.name, travel.z_mm
+                                            ),
+                                        );
+                                    }
+                                }
+                            }
+                            Err(err) => {
+                                report.push_error(&fix_scope, err.to_string());
+                            }
+                        }
                     }
                 }
             }

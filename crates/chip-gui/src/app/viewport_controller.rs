@@ -71,6 +71,19 @@ impl ChipCutterApp {
             } else {
                 None
             };
+            let colliding_fixture_ids: std::collections::HashSet<&str> = self
+                .sim_panel
+                .active_result
+                .as_ref()
+                .filter(|_| self.sim_panel.active_setup_idx == self.active_setup_idx)
+                .map(|res| {
+                    res.diagnostics
+                        .iter()
+                        .filter(|d| d.kind == chip_sim::SimIssueKind::FixtureCollision)
+                        .filter_map(|d| d.fixture_id.as_deref())
+                        .collect()
+                })
+                .unwrap_or_default();
             for (sol, mesh_arc) in cached_geo
                 .resolved_fixtures
                 .iter()
@@ -81,7 +94,7 @@ impl ChipCutterApp {
                     fixture_id: sol.fixture_id.clone(),
                     mesh: std::sync::Arc::clone(mesh_arc),
                     base_rgba: sol.color_rgba,
-                    colliding: false,
+                    colliding: colliding_fixture_ids.contains(sol.fixture_id.as_str()),
                     selected: selected_fix_id == Some(sol.fixture_id.as_str()),
                 });
             }

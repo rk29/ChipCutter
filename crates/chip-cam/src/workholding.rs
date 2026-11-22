@@ -570,6 +570,7 @@ pub struct ResolvedFixtureSolid {
     pub footprint_2d: RegionSet2D,
     pub clearance_margin_mm: f64,
     pub allowed_overcut_mm: f64,
+    pub is_spoilboard: bool,
     pub color_rgba: [f32; 4],
 }
 
@@ -809,6 +810,7 @@ where
     }
 
     let color_rgba = eval_fix.effective_color_rgba();
+    let is_spoilboard = matches!(eval_fix.kind, FixtureKind::Spoilboard { .. });
     let aabb_wcs = mesh_wcs.bounds();
     Ok(ResolvedFixtureSolid {
         fixture_id: eval_fix.id,
@@ -818,6 +820,7 @@ where
         footprint_2d,
         clearance_margin_mm,
         allowed_overcut_mm,
+        is_spoilboard,
         color_rgba,
     })
 }

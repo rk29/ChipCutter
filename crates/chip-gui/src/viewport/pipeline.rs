@@ -1245,6 +1245,7 @@ mod tests {
             doc: &doc,
             setup: &resolved,
             target_bodies: &setup.target_bodies,
+            fixtures: &[],
             operations: &sim_ops,
             resolution: SimResolution::Standard,
             kinematics: MachineKinematicsConfig::default(),
@@ -1583,6 +1584,7 @@ mod tests {
             doc: &doc,
             setup: &resolved,
             target_bodies: &[],
+            fixtures: &[],
             operations: &[SimOperationInput {
                 op_id: "op_rot_flat",
                 op_name: "Asymmetric Axial Flute",
@@ -1891,6 +1893,7 @@ mod tests {
                     doc: &doc_empty,
                     setup: &resolved,
                     target_bodies: &[],
+                    fixtures: &[],
                     operations: &[SimOperationInput {
                         op_id: "op_hf",
                         op_name: "Slot + Hole",
@@ -2021,6 +2024,7 @@ mod tests {
                     doc: &doc_empty,
                     setup: &resolved,
                     target_bodies: &[],
+                    fixtures: &[],
                     operations: &[SimOperationInput {
                         op_id: "op_cyl",
                         op_name: "Rotary Flute",
@@ -2139,6 +2143,7 @@ mod tests {
                     doc: &doc,
                     setup: &resolved,
                     target_bodies: &[],
+                    fixtures: &[],
                     operations: &[SimOperationInput {
                         op_id: "op_td",
                         op_name: "TD Slot",

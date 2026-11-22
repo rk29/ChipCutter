@@ -3,6 +3,7 @@
 
 pub mod cl_data;
 pub mod feed_opt;
+pub mod fixture_avoidance;
 pub mod heights;
 pub mod medial;
 pub mod offset2d;
@@ -25,6 +26,13 @@ pub use cl_data::{ArcDir, ArcPlane, ClEvent, CutterCompMode, DrillCycleKind, Mot
 pub use feed_opt::{
     corner_feed_scale, internal_arc_feed_scale, optimize_toolpath_feedrates,
     rebuild_segments_from_events,
+};
+pub use fixture_avoidance::{
+    FixtureHit, FixtureRoutingSummary, ToolAssemblyPart, ToolAssemblyProfile,
+    check_chord_fixture_collision, check_segment_fixture_collision,
+    check_segment_fixture_collisions_all, check_segment_fixture_collisions_with_profile,
+    check_segments_fixture_collisions_par, min_safe_z_over_fixtures,
+    route_toolpath_around_fixtures,
 };
 pub use heights::{HeightReference, HeightSpec, OperationHeights, ResolvedHeights, SetupHeights};
 pub use medial::{
@@ -77,7 +85,7 @@ pub use stock::{
 };
 pub use strategies::{
     OperationGenRequest, compute_z_levels, generate_operation_toolpath,
-    generate_operation_toolpath_with_rest,
+    generate_operation_toolpath_with_fixtures, generate_operation_toolpath_with_rest,
     pocket2d::{
         ContourParallelStrategy, PocketEngagementParams, PocketStrategy, PocketSubpath2D,
         ZigZagPocketStrategy,

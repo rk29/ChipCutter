@@ -8,7 +8,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use chip_cad::{BodyId, CadDocument};
-use chip_cam::ResolvedSetup;
+use chip_cam::{
+    ResolvedFixtureSolid, ResolvedSetup, SegmentMotion3D, ToolAssemblyPart, ToolAssemblyProfile,
+    check_segments_fixture_collisions_par,
+};
 use chip_stock::{
     ActiveSimBackendInfo, CpuExactBackend, CylindricalStock, HeightfieldStock,
     OperationErrorSnapshot, RadialCutterProfile, SimComputeBackendChoice, SimEngineKind, SimError,
@@ -26,10 +29,10 @@ use crate::{
         extract_tridexel_target_from_cad, rotary_stock_spec_from_cam, stock_shape_spec_from_cam,
     },
     timeline::{MachineKinematicsConfig, ScrubSnapshot, SimOperationInput, SimulationTimeline},
-    verifier::{SimDiagnostic, SimSeverity, SimVerificationConfig},
+    verifier::{SimDiagnostic, SimIssueKind, SimSeverity, SimVerificationConfig},
     verify_common::{
-        ViolationBatchCoalescer, evaluate_vertical_plunge_violation, push_segment_sweep_chords,
-        slice_segment_range,
+        RuleViolationHit, ViolationBatchCoalescer, evaluate_vertical_plunge_violation,
+        push_segment_sweep_chords, slice_segment_range,
     },
 };
 
@@ -39,6 +42,7 @@ pub struct SetupSimulationInput<'a> {
     pub doc: &'a CadDocument,
     pub setup: &'a ResolvedSetup,
     pub target_bodies: &'a [BodyId],
+    pub fixtures: &'a [ResolvedFixtureSolid],
     pub operations: &'a [SimOperationInput<'a>],
     pub resolution: SimResolution,
     pub kinematics: MachineKinematicsConfig,
@@ -776,6 +780,67 @@ pub fn run_setup_simulation_with_backend<B: SimStockBackend>(
     }
     let sweep_ms = t_sweep.elapsed().as_secs_f64() * 1000.0;
 
+    // Rule 6: Full-assembly 3D workholding fixture collision verification (`M61`).
+    // Runs in parallel over the shared `timeline.motion_spans` chord stream with 0.0 ms overhead
+    // when `input.fixtures.is_empty()`, guaranteeing 100% identical diagnostics across CPU & GPU
+    // backends and across Heightfield, Tri-Dexel, and Cylindrical engines!
+    if !input.fixtures.is_empty() && !timeline.motion_spans.is_empty() {
+        check_cancelled(input.cancel)?;
+        let assembly_profiles: Vec<ToolAssemblyProfile> = input
+            .operations
+            .iter()
+            .map(|op| ToolAssemblyProfile::from_tool(op.tool))
+            .collect();
+        let span_items: Vec<(usize, usize, chip_cam::ToolpathSegment3D)> = timeline
+            .motion_spans
+            .iter()
+            .enumerate()
+            .map(|(idx, s)| (idx, s.op_idx, s.segment))
+            .collect();
+        let raw_hits = check_segments_fixture_collisions_par(
+            &span_items,
+            &assembly_profiles,
+            input.fixtures,
+            false,
+        );
+        for (span_pos, hit) in raw_hits {
+            let span = &timeline.motion_spans[span_pos];
+            let op_in = &input.operations[span.op_idx];
+            let is_rapid = matches!(span.segment.motion, SegmentMotion3D::Rapid);
+            let action_verb = match (is_rapid, hit.contact_part) {
+                (true, ToolAssemblyPart::Flute) => "G0 rapid move collided with",
+                (true, ToolAssemblyPart::Shank) => "Non-cutting shank rapid collided with",
+                (true, ToolAssemblyPart::Holder) => "Holder/collet rapid collided with",
+                (false, ToolAssemblyPart::Flute) => "Cutter flutes cut into",
+                (false, ToolAssemblyPart::Shank) => "Non-cutting shank collided with",
+                (false, ToolAssemblyPart::Holder) => "Holder/collet collided with",
+            };
+            let detail = format!(
+                "{action_verb} '{}' by {:.2} mm at WCS ({:.2}, {:.2}, {:.2}).",
+                hit.fixture_name,
+                hit.penetration_mm,
+                hit.hit_point_wcs.x,
+                hit.hit_point_wcs.y,
+                hit.hit_point_wcs.z,
+            );
+            coalescer.push(RuleViolationHit {
+                severity: SimIssueKind::FixtureCollision.default_severity(),
+                kind: SimIssueKind::FixtureCollision,
+                span_idx: span.global_seg_idx,
+                op_idx: span.op_idx,
+                op_id: op_in.op_id.to_string(),
+                op_name: op_in.op_name.to_string(),
+                tool_number: op_in.tool.tool_number,
+                time_sec: span.t_start_sec,
+                location_wcs: hit.hit_point_wcs,
+                excess_mm: hit.penetration_mm,
+                detail,
+                fixture_id: Some(hit.fixture_id),
+                fixture_name: Some(hit.fixture_name),
+            });
+        }
+    }
+
     let t_metrics = Instant::now();
     let remaining_stock_volume_mm3 = backend.compute_volume_mm3();
     let removed_volume_mm3 = (initial_stock_volume_mm3 - remaining_stock_volume_mm3).max(0.0);
@@ -880,6 +945,7 @@ mod tests {
                 doc: &empty_doc,
                 setup: &resolved,
                 target_bodies: &[],
+                fixtures: &[],
                 operations: &[SimOperationInput {
                     op_id: "op_slot",
                     op_name: "Slot",
@@ -915,6 +981,7 @@ mod tests {
                 doc: &empty_doc,
                 setup: &resolved,
                 target_bodies: &[],
+                fixtures: &[],
                 operations: &[SimOperationInput {
                     op_id: "op_slot",
                     op_name: "Slot",
@@ -986,6 +1053,7 @@ mod tests {
                 doc: &doc,
                 setup: &resolved,
                 target_bodies: &[],
+                fixtures: &[],
                 operations: &[SimOperationInput {
                     op_id: "op_bad",
                     op_name: "Bad Cut",
@@ -1078,6 +1146,7 @@ mod tests {
             doc: &doc,
             setup: &resolved,
             target_bodies: &[],
+            fixtures: &[],
             operations: &[SimOperationInput {
                 op_id: "op_turn",
                 op_name: "Rotary Turn Groove",
@@ -1184,6 +1253,7 @@ mod tests {
             doc: &doc,
             setup: &resolved,
             target_bodies: &[],
+            fixtures: &[],
             operations: &[SimOperationInput {
                 op_id: "op_fault",
                 op_name: "Fault Injection",
@@ -1274,6 +1344,7 @@ mod tests {
             doc: &doc,
             setup: &resolved,
             target_bodies: &[],
+            fixtures: &[],
             operations: &[SimOperationInput {
                 op_id: "op_4ax_fault",
                 op_name: "Off-Centerline Faults",
@@ -1351,6 +1422,7 @@ mod tests {
                 doc: &doc,
                 setup: &resolved,
                 target_bodies: &[],
+                fixtures: &[],
                 operations: &[SimOperationInput {
                     op_id: "op_turn",
                     op_name: "Rotary Rough",
@@ -1533,6 +1605,7 @@ mod tests {
                 doc: &doc,
                 setup: &resolved_3ax,
                 target_bodies: &[],
+                fixtures: &[],
                 operations: &[SimOperationInput {
                     op_id: "op_3ax",
                     op_name: "3-Axis Cut",
@@ -1555,6 +1628,7 @@ mod tests {
                 doc: &doc,
                 setup: &resolved_3ax,
                 target_bodies: &[],
+                fixtures: &[],
                 operations: &[SimOperationInput {
                     op_id: "op_3ax",
                     op_name: "3-Axis Cut",
@@ -1576,6 +1650,7 @@ mod tests {
             doc: &doc,
             setup: &resolved_4ax,
             target_bodies: &[],
+            fixtures: &[],
             operations: &[SimOperationInput {
                 op_id: "op_4ax",
                 op_name: "4-Axis Cut",
@@ -1732,6 +1807,7 @@ mod tests {
             doc: &doc,
             setup: &resolved,
             target_bodies: &[],
+            fixtures: &[],
             operations: &ops,
             resolution: SimResolution::Standard,
             kinematics: MachineKinematicsConfig::default(),
@@ -1932,6 +2008,7 @@ mod tests {
             doc: &doc_shaft,
             setup: &res_shaft,
             target_bodies: &[],
+            fixtures: &[],
             operations: &ops_shaft,
             resolution: SimResolution::Standard,
             kinematics: MachineKinematicsConfig::default(),
@@ -2055,6 +2132,7 @@ mod tests {
             doc: &doc_helical,
             setup: &res_4ax,
             target_bodies: &[],
+            fixtures: &[],
             operations: &[SimOperationInput {
                 op_id: "op_4ax_helical",
                 op_name: "4-Axis Helical Flute",
@@ -2137,6 +2215,7 @@ mod tests {
                 doc: &empty_doc,
                 setup: &res_td,
                 target_bodies: &[],
+                fixtures: &[],
                 operations: &[],
                 resolution: SimResolution::Standard,
                 kinematics: MachineKinematicsConfig::default(),
@@ -2412,6 +2491,7 @@ mod tests {
                 doc: &doc,
                 setup: &resolved,
                 target_bodies: &[],
+                fixtures: &[],
                 operations: &ops,
                 resolution: SimResolution::Standard,
                 kinematics: MachineKinematicsConfig::default(),
@@ -2528,6 +2608,7 @@ mod tests {
                 doc: &doc,
                 setup: &resolved,
                 target_bodies: &[],
+                fixtures: &[],
                 operations: &ops,
                 resolution: SimResolution::Standard,
                 kinematics: MachineKinematicsConfig::default(),
@@ -2673,6 +2754,7 @@ mod tests {
                 doc: &empty_doc,
                 setup: &resolved,
                 target_bodies: &[],
+                fixtures: &[],
                 operations: &ops,
                 resolution: SimResolution::Standard,
                 kinematics: MachineKinematicsConfig::default(),
@@ -2771,6 +2853,7 @@ mod tests {
             doc: &doc,
             setup: &resolved,
             target_bodies: &[BodyId(1)],
+            fixtures: &[],
             operations: &[],
             resolution: SimResolution::Standard,
             kinematics: MachineKinematicsConfig::default(),
@@ -2843,6 +2926,7 @@ mod tests {
             doc: &doc,
             setup: &res_cyl,
             target_bodies: &[BodyId(1)],
+            fixtures: &[],
             operations: &[],
             resolution: SimResolution::Standard,
             kinematics: MachineKinematicsConfig::default(),
@@ -2974,6 +3058,7 @@ mod tests {
                 doc: &doc,
                 setup: &resolved,
                 target_bodies: &[],
+                fixtures: &[],
                 operations: &ops,
                 resolution: SimResolution::Fine,
                 kinematics: MachineKinematicsConfig::default(),
@@ -3110,6 +3195,7 @@ mod tests {
                 doc: &doc,
                 setup: &resolved,
                 target_bodies: &[],
+                fixtures: &[],
                 operations: &ops,
                 resolution: SimResolution::Fine,
                 kinematics: MachineKinematicsConfig::default(),
@@ -3284,6 +3370,7 @@ mod tests {
             doc: &doc,
             setup: &resolved,
             target_bodies: &[],
+            fixtures: &[],
             operations: &sim_ops,
             resolution: SimResolution::Standard,
             kinematics: MachineKinematicsConfig::default(),

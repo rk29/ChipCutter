@@ -282,6 +282,7 @@ fn fault_injection_catches_rapid_crash_target_gouge_flute_rub_holder_crash_and_u
         doc: &cad_doc,
         setup: &resolved,
         target_bodies: &setup.target_bodies,
+        fixtures: &[],
         operations: &ops,
         resolution: SimResolution::Standard,
         kinematics: MachineKinematicsConfig::default(),
@@ -360,6 +361,7 @@ fn fault_injection_catches_3d_ball_endmill_gouge_on_sculpted_dome_mesh() {
         doc: &cad_doc,
         setup: &resolved,
         target_bodies: &[],
+        fixtures: &[],
         operations: &[SimOperationInput {
             op_id: "op_gouge_dome",
             op_name: "Intentional Dome Gouge",
@@ -446,6 +448,7 @@ fn incremental_sync_stock_matches_full_reconstruction_mid_segment_and_across_scr
         doc: &doc,
         setup: &resolved,
         target_bodies: &[],
+        fixtures: &[],
         operations: &ops,
         resolution: SimResolution::Standard,
         kinematics: MachineKinematicsConfig::default(),
@@ -791,6 +794,7 @@ fn tridexel_internal_m8_helical_thread_mill_carves_real_undercut_grooves_with_ze
             doc: &doc,
             setup: &resolved,
             target_bodies: &[],
+            fixtures: &[],
             operations: &[SimOperationInput {
                 op_id: "op_pilot",
                 op_name: "Pilot Drill Ø6.8",
@@ -813,6 +817,7 @@ fn tridexel_internal_m8_helical_thread_mill_carves_real_undercut_grooves_with_ze
             doc: &doc,
             setup: &resolved,
             target_bodies: &[],
+            fixtures: &[],
             operations: &[
                 SimOperationInput {
                     op_id: "op_pilot",
@@ -1017,6 +1022,7 @@ fn tridexel_external_m12_boss_thread_mill_carves_helical_grooves_with_zero_crash
             doc: &doc,
             setup: &resolved,
             target_bodies: &[],
+            fixtures: &[],
             operations: &[SimOperationInput {
                 op_id: "op_ext_m12",
                 op_name: "External M12x1.75 Thread",
@@ -1123,6 +1129,7 @@ fn thread_mill_fault_injection_catches_missing_pilot_plunge_and_neck_reach_excee
                 doc: &doc,
                 setup: &resolved,
                 target_bodies: &[],
+                fixtures: &[],
                 operations: &[SimOperationInput {
                     op_id: "op_no_pilot",
                     op_name: "Un-Drilled Thread Plunge",
@@ -1159,6 +1166,7 @@ fn thread_mill_fault_injection_catches_missing_pilot_plunge_and_neck_reach_excee
                 doc: &doc,
                 setup: &resolved,
                 target_bodies: &[],
+                fixtures: &[],
                 operations: &[
                     SimOperationInput {
                         op_id: "op_deep_pilot",
@@ -1302,6 +1310,7 @@ fn heightmap_and_tridexel_pre_drilled_step_hole_thread_mill_report_zero_critical
                 doc: &doc,
                 setup: &resolved,
                 target_bodies: &[],
+                fixtures: &[],
                 operations: &sim_ops,
                 resolution: SimResolution::Standard,
                 kinematics: MachineKinematicsConfig::default(),
@@ -1332,4 +1341,531 @@ fn heightmap_and_tridexel_pre_drilled_step_hole_thread_mill_report_zero_critical
             sim.diagnostics
         );
     }
+}
+
+#[test]
+fn m61_clamp_in_rapid_path_avoidance_and_cpu_gpu_parity_across_engines() {
+    use chip_cam::{
+        BoxAnchor27, FixedBoxXyAlign, FixedBoxZAlign, FixtureBody, MotionRole, Setup, StockConfig,
+        ToolpathBuilder, WcsOriginMode, WorkOffsetSlot, resolve_setup_fixtures_parametric,
+        route_toolpath_around_fixtures,
+    };
+    use chip_math::{DVec2, DVec3, DisplayUnit, ParamLength};
+    use chip_sim::SimComputeBackendChoice;
+
+    let lib = default_starter_tool_library();
+    let flat_6mm = &lib.tools[0]; // Ø6mm flat endmill
+
+    let mut setup = Setup::new("s_m61_rapid", "M61 Rapid Avoidance", WorkOffsetSlot::G54);
+    setup.wcs.origin = WcsOriginMode::StockBoxPoint {
+        anchor: BoxAnchor27::TOP_CENTER,
+    };
+    setup.stock = StockConfig::FixedBox {
+        width_x: ParamLength::from_mm(120.0),
+        depth_y: ParamLength::from_mm(100.0),
+        height_z: ParamLength::from_mm(20.0),
+        xy_align: FixedBoxXyAlign::CenterXy,
+        z_align: FixedBoxZAlign::CenterZ,
+    };
+    // Place a ToeClamp with tall stud tower right across Y = 0 between the two pockets
+    setup.fixtures.push(FixtureBody::default_toe_clamp(
+        "center_clamp",
+        "Center Toe Clamp",
+        DVec2::new(0.0, -16.0),
+        90.0,
+    ));
+
+    let doc = chip_cad::CadDocument::empty();
+    let resolved = setup.resolve(&doc, DisplayUnit::Millimeter).unwrap();
+    let fixtures =
+        resolve_setup_fixtures_parametric(&setup, &resolved, DisplayUnit::Millimeter).unwrap();
+    assert_eq!(fixtures.len(), 1);
+    let clamp_top_z = fixtures[0].aabb_wcs.max.z;
+
+    // Build two pocket cuts separated by a horizontal G0 rapid at Z = +10 mm (right through the clamp!)
+    let mut tb = ToolpathBuilder::new("op_two_pockets");
+    tb.rapid_to(DVec3::new(-35.0, 0.0, 10.0));
+    tb.linear_to(DVec3::new(-35.0, 0.0, -5.0), 300.0, MotionRole::Plunge);
+    tb.linear_to(DVec3::new(-25.0, 0.0, -5.0), 800.0, MotionRole::Cut);
+    tb.rapid_to(DVec3::new(-25.0, 0.0, 10.0));
+    tb.rapid_to(DVec3::new(25.0, 0.0, 10.0)); // Collides with Center Toe Clamp!
+    tb.linear_to(DVec3::new(25.0, 0.0, -5.0), 300.0, MotionRole::Plunge);
+    tb.linear_to(DVec3::new(35.0, 0.0, -5.0), 800.0, MotionRole::Cut);
+    tb.rapid_to(DVec3::new(35.0, 0.0, 10.0));
+    let tp_unrouted = tb.finish();
+
+    let mut tp_routed = tp_unrouted.clone();
+    let routing =
+        route_toolpath_around_fixtures(&mut tp_routed, flat_6mm, &resolved, &fixtures, true, None);
+    assert_eq!(routing.rapid_lifts_inserted, 1);
+    assert!(routing.max_lifted_z_wcs >= clamp_top_z + fixtures[0].clearance_margin_mm + 2.0 - 1e-4);
+
+    // 1. Unrouted toolpath (`auto_avoid = false`) MUST trigger identical `FixtureCollision`
+    //    across Heightmap & TriDexel and across CPU & GPU backends!
+    let mut baseline_fixture_diags: Option<Vec<chip_sim::SimDiagnostic>> = None;
+    for engine in [SimEngineKind::Heightmap, SimEngineKind::TriDexel] {
+        for choice in [SimComputeBackendChoice::Cpu, SimComputeBackendChoice::Auto] {
+            let sim_bad = run_setup_simulation_with_choice(
+                &SetupSimulationInput {
+                    doc: &doc,
+                    setup: &resolved,
+                    target_bodies: &[],
+                    fixtures: &fixtures,
+                    operations: &[SimOperationInput {
+                        op_id: "op_two_pockets",
+                        op_name: "Two Pockets",
+                        tool: flat_6mm,
+                        fallback_spindle_rpm: 12_000.0,
+                        intentional_edge_break_mm: 0.0,
+                        toolpath: &tp_unrouted,
+                    }],
+                    resolution: SimResolution::Standard,
+                    kinematics: MachineKinematicsConfig::default(),
+                    verify_config: SimVerificationConfig::default(),
+                    cancel: None,
+                },
+                engine,
+                choice,
+            )
+            .unwrap();
+            let f_diags: Vec<_> = sim_bad
+                .diagnostics
+                .iter()
+                .filter(|d| d.kind == SimIssueKind::FixtureCollision)
+                .cloned()
+                .collect();
+            assert_eq!(
+                f_diags.len(),
+                1,
+                "{engine:?}/{choice:?}: expected 1 FixtureCollision on unrouted rapid, got {f_diags:#?}"
+            );
+            assert_eq!(f_diags[0].severity, chip_sim::SimSeverity::CriticalError);
+            assert_eq!(f_diags[0].fixture_id.as_deref(), Some("center_clamp"));
+            assert_eq!(f_diags[0].fixture_name.as_deref(), Some("Center Toe Clamp"));
+            assert!(f_diags[0].max_excess_mm > 1.0);
+            if let Some(ref base) = baseline_fixture_diags {
+                assert_eq!(
+                    &f_diags, base,
+                    "{engine:?}/{choice:?}: FixtureCollision diagnostics must be 100% identical across engines & CPU/GPU"
+                );
+            } else {
+                baseline_fixture_diags = Some(f_diags);
+            }
+
+            // 2. Routed toolpath (`auto_avoid = true`) MUST have ZERO critical errors!
+            let sim_ok = run_setup_simulation_with_choice(
+                &SetupSimulationInput {
+                    doc: &doc,
+                    setup: &resolved,
+                    target_bodies: &[],
+                    fixtures: &fixtures,
+                    operations: &[SimOperationInput {
+                        op_id: "op_two_pockets",
+                        op_name: "Two Pockets",
+                        tool: flat_6mm,
+                        fallback_spindle_rpm: 12_000.0,
+                        intentional_edge_break_mm: 0.0,
+                        toolpath: &tp_routed,
+                    }],
+                    resolution: SimResolution::Standard,
+                    kinematics: MachineKinematicsConfig::default(),
+                    verify_config: SimVerificationConfig::default(),
+                    cancel: None,
+                },
+                engine,
+                choice,
+            )
+            .unwrap();
+            assert!(
+                !sim_ok.has_critical_errors(),
+                "{engine:?}/{choice:?}: routed toolpath must report 0 critical errors, got {:#?}",
+                sim_ok.diagnostics
+            );
+        }
+    }
+}
+
+#[test]
+fn m61_holder_vs_vise_jaw_spoilboard_overcut_clamp_in_cut_and_cylindrical_parity() {
+    use chip_cam::{
+        BoxAnchor27, FixedBoxXyAlign, FixedBoxZAlign, FixtureBody, FixtureKind, MotionRole,
+        RotaryAxisKind, RotaryDriveMode, Setup, StockAxis, StockConfig, ToolpathBuilder,
+        ViseClampAxis, ViseFixedSide, WcsOriginMode, WorkOffsetSlot,
+        resolve_setup_fixtures_parametric, route_toolpath_around_fixtures,
+    };
+    use chip_math::{DVec2, DVec3, DisplayUnit, ParamLength};
+    use chip_sim::SimComputeBackendChoice;
+    use chip_tools::{CoolantMode, CutterGeometry, SpindleDirection, Tool, ToolId};
+
+    let doc = chip_cad::CadDocument::empty();
+
+    // -------------------------------------------------------------------------
+    // A. Holder-vs-ViseJaws: tall vise jaw beside deep pocket — flute clears
+    //    horizontally, wider collet/holder collides with accurate penetration!
+    // -------------------------------------------------------------------------
+    let short_3mm = Tool {
+        id: ToolId("t_3mm_short".to_string()),
+        tool_number: 2,
+        length_offset_number: 2,
+        diameter_offset_number: 2,
+        name: "3mm Short Endmill".to_string(),
+        vendor: None,
+        product_id: None,
+        native_unit: DisplayUnit::Millimeter,
+        spindle_direction: SpindleDirection::Cw,
+        default_coolant: CoolantMode::Flood,
+        stickout_length_mm: 16.0,
+        geometry: CutterGeometry::FlatEndmill {
+            diameter_mm: 3.0, // flute_r = 1.5 mm, shank_r = 1.5 mm, holder_nut_r = 12.0 mm
+            flute_length_mm: 12.0,
+            overall_length_mm: 45.0,
+            shank_diameter_mm: 3.0,
+            flutes: 3,
+        },
+        presets: Vec::new(),
+    };
+
+    let mut vise_setup = Setup::new("s_vise", "Vise Holder Test", WorkOffsetSlot::G54);
+    vise_setup.wcs.origin = WcsOriginMode::StockBoxPoint {
+        anchor: BoxAnchor27::TOP_CENTER,
+    };
+    // Stock is 100x100x30 (Y ∈ [-50, +50], Z ∈ [-30, 0])
+    vise_setup.stock = StockConfig::FixedBox {
+        width_x: ParamLength::from_mm(100.0),
+        depth_y: ParamLength::from_mm(100.0),
+        height_z: ParamLength::from_mm(30.0),
+        xy_align: FixedBoxXyAlign::CenterXy,
+        z_align: FixedBoxZAlign::CenterZ,
+    };
+    // Vise jaws grip 28 mm up from stock bottom -> jaw top is at Z = -2.0 mm, inner face at Y = ±50 mm!
+    vise_setup.fixtures.push(FixtureBody {
+        id: "vise_tall".to_string(),
+        name: "Tall Soft Jaws".to_string(),
+        enabled: true,
+        clearance_margin: ParamLength::from_mm(1.0),
+        allowed_overcut: ParamLength::from_mm(0.0),
+        kind: FixtureKind::ViseJaws {
+            clamp_axis: ViseClampAxis::Y,
+            jaw_width: ParamLength::from_mm(100.0),
+            jaw_thickness: ParamLength::from_mm(18.0),
+            jaw_height: ParamLength::from_mm(40.0),
+            grip_depth: ParamLength::from_mm(28.0),
+            step_shelf_depth: ParamLength::from_mm(0.0),
+            step_shelf_height: ParamLength::from_mm(0.0),
+            include_parallels: false,
+            parallel_thickness: ParamLength::from_mm(3.175),
+            center_offset_along_jaw: ParamLength::from_mm(0.0),
+            fixed_jaw_side: ViseFixedSide::Positive,
+        },
+        color_rgba: None,
+    });
+    let res_vise = vise_setup.resolve(&doc, DisplayUnit::Millimeter).unwrap();
+    let vise_fix =
+        resolve_setup_fixtures_parametric(&vise_setup, &res_vise, DisplayUnit::Millimeter).unwrap();
+
+    // Tool cuts inside pocket at Y = +42.0 mm (8 mm clear of Y = +50 jaw inner face -> flute_r=1.5 clears!)
+    // At Z_tip = -22.0 mm, holder bottom is at Z = -22.0 + 16.0 = -6.0 mm (< jaw top Z = -2.0 mm!)
+    // Holder nut radius = 12.0 mm -> penetrates jaw by `12.0 - 8.0 = 4.0 mm` (axial = 4.0 mm)!
+    let mut tb_vise = ToolpathBuilder::new("op_deep_pocket");
+    tb_vise.rapid_to(DVec3::new(-10.0, 42.0, 15.0));
+    tb_vise.linear_to(DVec3::new(-10.0, 42.0, -22.0), 300.0, MotionRole::Plunge);
+    tb_vise.linear_to(DVec3::new(10.0, 42.0, -22.0), 700.0, MotionRole::Cut);
+    tb_vise.rapid_to(DVec3::new(10.0, 42.0, 15.0));
+    let tp_vise = tb_vise.finish();
+
+    let sim_vise = run_setup_simulation(&SetupSimulationInput {
+        doc: &doc,
+        setup: &res_vise,
+        target_bodies: &[],
+        fixtures: &vise_fix,
+        operations: &[SimOperationInput {
+            op_id: "op_deep_pocket",
+            op_name: "Deep Pocket",
+            tool: &short_3mm,
+            fallback_spindle_rpm: 15_000.0,
+            intentional_edge_break_mm: 0.0,
+            toolpath: &tp_vise,
+        }],
+        resolution: SimResolution::Standard,
+        kinematics: MachineKinematicsConfig::default(),
+        verify_config: SimVerificationConfig::default(),
+        cancel: None,
+    })
+    .unwrap();
+    let holder_diag = sim_vise
+        .diagnostics
+        .iter()
+        .find(|d| d.kind == SimIssueKind::FixtureCollision)
+        .expect("holder vs vise jaw must trigger FixtureCollision");
+    assert_eq!(holder_diag.fixture_id.as_deref(), Some("vise_tall"));
+    assert!(
+        holder_diag.message.contains("Holder/collet"),
+        "expected Holder/collet diagnostic message, got: {}",
+        holder_diag.message
+    );
+    assert!(
+        (holder_diag.max_excess_mm - 4.0).abs() < 0.1,
+        "expected ~4.0 mm holder penetration, got {}",
+        holder_diag.max_excess_mm
+    );
+
+    // -------------------------------------------------------------------------
+    // B. Spoilboard `allowed_overcut`: 0.2 mm skim passes, 1.0 mm plunge fails!
+    // -------------------------------------------------------------------------
+    let lib = default_starter_tool_library();
+    let flat_6mm = &lib.tools[0];
+    let mut sb_setup = Setup::new("s_sb", "Spoilboard Test", WorkOffsetSlot::G54);
+    sb_setup.wcs.origin = WcsOriginMode::StockBoxPoint {
+        anchor: BoxAnchor27::TOP_CENTER,
+    };
+    sb_setup.stock = StockConfig::FixedBox {
+        width_x: ParamLength::from_mm(100.0),
+        depth_y: ParamLength::from_mm(100.0),
+        height_z: ParamLength::from_mm(12.0),
+        xy_align: FixedBoxXyAlign::CenterXy,
+        z_align: FixedBoxZAlign::CenterZ,
+    };
+    let mut sb = FixtureBody::default_spoilboard("sb_mdf", "Sacrificial MDF");
+    sb.allowed_overcut = ParamLength::from_mm(0.3);
+    sb_setup.fixtures.push(sb);
+    let res_sb = sb_setup.resolve(&doc, DisplayUnit::Millimeter).unwrap();
+    let sb_fix =
+        resolve_setup_fixtures_parametric(&sb_setup, &res_sb, DisplayUnit::Millimeter).unwrap();
+
+    // 0.2 mm skim below stock bottom (Z = -12.2 mm) -> passes!
+    let mut tb_skim = ToolpathBuilder::new("op_skim");
+    tb_skim.rapid_to(DVec3::new(-15.0, 0.0, 5.0));
+    tb_skim.linear_to(DVec3::new(-15.0, 0.0, -12.2), 300.0, MotionRole::Plunge);
+    tb_skim.linear_to(DVec3::new(15.0, 0.0, -12.2), 800.0, MotionRole::Cut);
+    tb_skim.rapid_to(DVec3::new(15.0, 0.0, 5.0));
+    let tp_skim = tb_skim.finish();
+    let sim_skim = run_setup_simulation(&SetupSimulationInput {
+        doc: &doc,
+        setup: &res_sb,
+        target_bodies: &[],
+        fixtures: &sb_fix,
+        operations: &[SimOperationInput {
+            op_id: "op_skim",
+            op_name: "Through Cut Skim",
+            tool: flat_6mm,
+            fallback_spindle_rpm: 12_000.0,
+            intentional_edge_break_mm: 0.0,
+            toolpath: &tp_skim,
+        }],
+        resolution: SimResolution::Standard,
+        kinematics: MachineKinematicsConfig::default(),
+        verify_config: SimVerificationConfig::default(),
+        cancel: None,
+    })
+    .unwrap();
+    assert!(
+        !sim_skim
+            .diagnostics
+            .iter()
+            .any(|d| d.kind == SimIssueKind::FixtureCollision),
+        "0.2 mm spoilboard skim within 0.3 mm tolerance must not flag FixtureCollision: {:#?}",
+        sim_skim.diagnostics
+    );
+
+    // 1.0 mm deep plunge into spoilboard (Z = -13.0 mm) -> triggers FixtureCollision!
+    let mut tb_deep = ToolpathBuilder::new("op_deep_sb");
+    tb_deep.rapid_to(DVec3::new(-15.0, 0.0, 5.0));
+    tb_deep.linear_to(DVec3::new(-15.0, 0.0, -13.0), 300.0, MotionRole::Plunge);
+    tb_deep.linear_to(DVec3::new(15.0, 0.0, -13.0), 800.0, MotionRole::Cut);
+    tb_deep.rapid_to(DVec3::new(15.0, 0.0, 5.0));
+    let tp_deep = tb_deep.finish();
+    let sim_deep = run_setup_simulation(&SetupSimulationInput {
+        doc: &doc,
+        setup: &res_sb,
+        target_bodies: &[],
+        fixtures: &sb_fix,
+        operations: &[SimOperationInput {
+            op_id: "op_deep_sb",
+            op_name: "Too Deep Cut",
+            tool: flat_6mm,
+            fallback_spindle_rpm: 12_000.0,
+            intentional_edge_break_mm: 0.0,
+            toolpath: &tp_deep,
+        }],
+        resolution: SimResolution::Standard,
+        kinematics: MachineKinematicsConfig::default(),
+        verify_config: SimVerificationConfig::default(),
+        cancel: None,
+    })
+    .unwrap();
+    let sb_diag = sim_deep
+        .diagnostics
+        .iter()
+        .find(|d| d.kind == SimIssueKind::FixtureCollision)
+        .expect("1.0 mm plunge into spoilboard must trigger FixtureCollision");
+    assert_eq!(sb_diag.fixture_id.as_deref(), Some("sb_mdf"));
+    assert!((sb_diag.max_excess_mm - 0.7).abs() < 0.05);
+
+    // -------------------------------------------------------------------------
+    // C. Clamp-in-cut-path: rapid router must NOT mutate cutting pass, and
+    //    chip-sim MUST block with FixtureCollision CriticalError!
+    // -------------------------------------------------------------------------
+    let mut cut_setup = Setup::new("s_cut", "Cut Collision Test", WorkOffsetSlot::G54);
+    cut_setup.wcs.origin = WcsOriginMode::StockBoxPoint {
+        anchor: BoxAnchor27::TOP_CENTER,
+    };
+    cut_setup.stock = StockConfig::FixedBox {
+        width_x: ParamLength::from_mm(100.0),
+        depth_y: ParamLength::from_mm(100.0),
+        height_z: ParamLength::from_mm(12.0),
+        xy_align: FixedBoxXyAlign::CenterXy,
+        z_align: FixedBoxZAlign::CenterZ,
+    };
+    cut_setup.fixtures.push(FixtureBody::default_toe_clamp(
+        "clamp_in_cut",
+        "Strap Clamp On Cut",
+        DVec2::new(0.0, 0.0),
+        0.0,
+    ));
+    let res_cut = cut_setup.resolve(&doc, DisplayUnit::Millimeter).unwrap();
+    let cut_fix =
+        resolve_setup_fixtures_parametric(&cut_setup, &res_cut, DisplayUnit::Millimeter).unwrap();
+    let mut tb_cut = ToolpathBuilder::new("op_cut_clamp");
+    tb_cut.rapid_to(DVec3::new(-25.0, 0.0, 35.0));
+    tb_cut.linear_to(DVec3::new(-25.0, 0.0, -3.0), 300.0, MotionRole::Plunge);
+    tb_cut.linear_to(DVec3::new(25.0, 0.0, -3.0), 800.0, MotionRole::Cut);
+    tb_cut.rapid_to(DVec3::new(25.0, 0.0, 35.0));
+    let mut tp_cut = tb_cut.finish();
+    let orig_cut_events = tp_cut.events.clone();
+    let route_res =
+        route_toolpath_around_fixtures(&mut tp_cut, flat_6mm, &res_cut, &cut_fix, true, None);
+    assert_eq!(route_res.rapid_lifts_inserted, 0);
+    assert_eq!(tp_cut.events, orig_cut_events);
+
+    let sim_cut = run_setup_simulation(&SetupSimulationInput {
+        doc: &doc,
+        setup: &res_cut,
+        target_bodies: &[],
+        fixtures: &cut_fix,
+        operations: &[SimOperationInput {
+            op_id: "op_cut_clamp",
+            op_name: "Slot Through Clamp",
+            tool: flat_6mm,
+            fallback_spindle_rpm: 12_000.0,
+            intentional_edge_break_mm: 0.0,
+            toolpath: &tp_cut,
+        }],
+        resolution: SimResolution::Standard,
+        kinematics: MachineKinematicsConfig::default(),
+        verify_config: SimVerificationConfig::default(),
+        cancel: None,
+    })
+    .unwrap();
+    assert!(sim_cut.has_critical_errors());
+    assert!(sim_cut.diagnostics.iter().any(|d| {
+        d.kind == SimIssueKind::FixtureCollision && d.fixture_id.as_deref() == Some("clamp_in_cut")
+    }));
+
+    // -------------------------------------------------------------------------
+    // D. 4th-Axis Cylindrical CPU vs GPU FixtureCollision parity!
+    // -------------------------------------------------------------------------
+    let shaft_stl = chip_cad::sample_rotary_shaft_stl_bytes();
+    let shaft_mesh = chip_cad::load_mesh_bytes(
+        "rotary_shaft.stl",
+        &shaft_stl,
+        &chip_cad::MeshImportOptions::default(),
+    )
+    .unwrap();
+    let shaft_doc = chip_cad::CadDocument::from_mesh("rotary_shaft.stl".to_string(), shaft_mesh);
+    let mut rot_setup = Setup::new("s_rot", "4th Axis Fixture Parity", WorkOffsetSlot::G54);
+    rot_setup.wcs.origin = WcsOriginMode::StockBoxPoint {
+        anchor: BoxAnchor27 {
+            x: chip_cam::AxisAnchor::Center,
+            y: chip_cam::AxisAnchor::Center,
+            z: chip_cam::AxisAnchor::Center,
+        },
+    };
+    rot_setup.stock = StockConfig::RelativeCylinder {
+        axis: StockAxis::X,
+        radial_offset: ParamLength::from_mm(1.0),
+        top_offset: ParamLength::from_mm(0.0),
+        bottom_offset: ParamLength::from_mm(0.0),
+    };
+    rot_setup.rotary.mode = RotaryDriveMode::Simultaneous4Axis;
+    rot_setup.rotary.axis = RotaryAxisKind::XAxis;
+    rot_setup
+        .fixtures
+        .push(FixtureBody::default_cylinder_keepout(
+            "tailstock_pin",
+            "Tailstock Center Keep-Out",
+            DVec2::new(20.0, 0.0),
+            0.0,
+            35.0,
+        ));
+    let res_rot = rot_setup
+        .resolve(&shaft_doc, DisplayUnit::Millimeter)
+        .unwrap();
+    let rot_fix =
+        resolve_setup_fixtures_parametric(&rot_setup, &res_rot, DisplayUnit::Millimeter).unwrap();
+    let mut tb_rot = ToolpathBuilder::new("op_rot_hit");
+    tb_rot.rotary_rapid_to(DVec3::new(-20.0, 0.0, 26.0), 0.0);
+    tb_rot.rotary_rapid_to(DVec3::new(30.0, 0.0, 26.0), 90.0); // Hits tailstock pin!
+    let tp_rot = tb_rot.finish();
+
+    let cyl_cpu = run_setup_simulation_with_choice(
+        &SetupSimulationInput {
+            doc: &shaft_doc,
+            setup: &res_rot,
+            target_bodies: &[],
+            fixtures: &rot_fix,
+            operations: &[SimOperationInput {
+                op_id: "op_rot_hit",
+                op_name: "Rotary Traverse",
+                tool: flat_6mm,
+                fallback_spindle_rpm: 12_000.0,
+                intentional_edge_break_mm: 0.0,
+                toolpath: &tp_rot,
+            }],
+            resolution: SimResolution::Standard,
+            kinematics: MachineKinematicsConfig::default(),
+            verify_config: SimVerificationConfig::default(),
+            cancel: None,
+        },
+        SimEngineKind::Heightmap,
+        SimComputeBackendChoice::Cpu,
+    )
+    .unwrap();
+    let cyl_gpu = run_setup_simulation_with_choice(
+        &SetupSimulationInput {
+            doc: &shaft_doc,
+            setup: &res_rot,
+            target_bodies: &[],
+            fixtures: &rot_fix,
+            operations: &[SimOperationInput {
+                op_id: "op_rot_hit",
+                op_name: "Rotary Traverse",
+                tool: flat_6mm,
+                fallback_spindle_rpm: 12_000.0,
+                intentional_edge_break_mm: 0.0,
+                toolpath: &tp_rot,
+            }],
+            resolution: SimResolution::Standard,
+            kinematics: MachineKinematicsConfig::default(),
+            verify_config: SimVerificationConfig::default(),
+            cancel: None,
+        },
+        SimEngineKind::Heightmap,
+        SimComputeBackendChoice::Auto,
+    )
+    .unwrap();
+    assert!(cyl_cpu.is_cylindrical());
+    assert!(cyl_gpu.is_cylindrical());
+    let rot_cpu_f: Vec<_> = cyl_cpu
+        .diagnostics
+        .iter()
+        .filter(|d| d.kind == SimIssueKind::FixtureCollision)
+        .collect();
+    let rot_gpu_f: Vec<_> = cyl_gpu
+        .diagnostics
+        .iter()
+        .filter(|d| d.kind == SimIssueKind::FixtureCollision)
+        .collect();
+    assert_eq!(rot_cpu_f.len(), 1);
+    assert_eq!(rot_cpu_f[0].fixture_id.as_deref(), Some("tailstock_pin"));
+    assert_eq!(rot_cpu_f, rot_gpu_f);
 }

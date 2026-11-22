@@ -41,6 +41,7 @@ pub use demos::{
 };
 pub use dispatcher::{
     BatchGenerationReport, DispatcherEvent, JobDispatcher, generate_project_blocking,
+    generate_project_blocking_in_dir,
 };
 pub use document::{
     ModelEntry, ModelRole, ProjectDocument, compute_sha256_hex, is_mesh_path,
@@ -51,7 +52,8 @@ pub use history::UndoHistory;
 pub use pipeline::{
     ReadySetupOperation, SetupPostRequest, SetupSimRequest, collect_ready_setup_operations,
     kinematics_for_post_profile, post_process_project_setup, resolve_kinematics_for_key,
-    simulate_project_setup, simulate_project_setup_with_choice, simulate_project_setup_with_engine,
+    simulate_project_setup, simulate_project_setup_in_dir, simulate_project_setup_with_choice,
+    simulate_project_setup_with_choice_in_dir, simulate_project_setup_with_engine,
 };
 pub use reload::{
     CadReloadReport, OperationReloadOutcome, cad_binding_to_sketch_face,

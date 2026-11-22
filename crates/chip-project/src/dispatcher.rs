@@ -1,5 +1,6 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
+    path::Path,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -8,12 +9,12 @@ use std::{
 
 use chip_cad::CadDocument;
 use chip_cam::{
-    CamError, GeneratedToolpath, Operation, OperationGenRequest, OperationStatus, Setup,
-    UpstreamSweptInput, generate_operation_toolpath_with_rest,
+    CamError, FixtureKind, GeneratedToolpath, Operation, OperationGenRequest, OperationStatus,
+    Setup, UpstreamSweptInput, generate_operation_toolpath_with_fixtures, resolve_setup_fixtures,
 };
 use chip_math::DisplayUnit;
 use chip_sketch::SketchLayer;
-use chip_tools::{CutterGeometry, Tool};
+use chip_tools::{CutterGeometry, Tool, resolve_machine_definition};
 use crossbeam_channel::{Receiver, Sender};
 use rayon::prelude::*;
 
@@ -52,6 +53,8 @@ pub enum DispatcherEvent {
 struct QueuedOpTask {
     setup: Setup,
     sketches: Arc<Vec<SketchLayer>>,
+    fixture_docs: Arc<BTreeMap<String, Arc<CadDocument>>>,
+    machine_z_travel_mm: Option<f64>,
     op: Operation,
     tool: Option<Tool>,
     clearing_tool: Option<Tool>,
@@ -146,6 +149,8 @@ pub struct JobDispatcher {
     in_flight: HashMap<String, (OperationInputHash, Arc<AtomicBool>)>,
     pending_wave: HashSet<String>,
     active_cad: Option<(Arc<CadDocument>, u64)>,
+    active_fixture_docs: Arc<BTreeMap<String, Arc<CadDocument>>>,
+    active_machine_z_travel_mm: Option<f64>,
     wakeup_cb: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
@@ -165,8 +170,21 @@ impl JobDispatcher {
             in_flight: HashMap::new(),
             pending_wave: HashSet::new(),
             active_cad: None,
+            active_fixture_docs: Arc::new(BTreeMap::new()),
+            active_machine_z_travel_mm: None,
             wakeup_cb,
         }
+    }
+
+    /// Updates the preloaded `ModelRole::Fixture` CAD documents and optional active machine Z travel
+    /// envelope (`mm`) used by background toolpath generation for fixture-aware safe-rapid routing.
+    pub fn set_workholding_context(
+        &mut self,
+        fixture_docs: BTreeMap<String, Arc<CadDocument>>,
+        machine_z_travel_mm: Option<f64>,
+    ) {
+        self.active_fixture_docs = Arc::new(fixture_docs);
+        self.active_machine_z_travel_mm = machine_z_travel_mm;
     }
 
     pub fn is_busy(&self) -> bool {
@@ -209,6 +227,8 @@ impl JobDispatcher {
     pub fn reset(&mut self) {
         self.cancel_all();
         self.active_cad = None;
+        self.active_fixture_docs = Arc::new(BTreeMap::new());
+        self.active_machine_z_travel_mm = None;
         self.epoch = self.epoch.wrapping_add(1);
         while self.rx.try_recv().is_ok() {}
     }
@@ -330,9 +350,16 @@ impl JobDispatcher {
                             .clearing_tool_id()
                             .and_then(|tid| project.tool(tid).cloned());
 
+                        let machine_z = self.active_machine_z_travel_mm.or_else(|| {
+                            resolve_machine_definition(project.effective_machine_id(), None)
+                                .ok()
+                                .map(|m| m.travel_mm.z_mm)
+                        });
                         tasks.push(QueuedOpTask {
                             setup: project.setups[s_idx].clone(),
                             sketches: Arc::clone(&shared_sketches),
+                            fixture_docs: Arc::clone(&self.active_fixture_docs),
+                            machine_z_travel_mm: machine_z,
                             op: project.setups[s_idx].operations[o_idx].clone(),
                             tool,
                             clearing_tool,
@@ -456,12 +483,21 @@ impl JobDispatcher {
                     if matches_inflight {
                         self.in_flight.remove(&op_id);
                     }
+                    let lift_suffix = if toolpath.rapid_lifts_inserted > 0 {
+                        format!(
+                            ", {} fixture rapid lift(s) up to Z={:+.1} mm",
+                            toolpath.rapid_lifts_inserted, toolpath.max_lifted_z_wcs
+                        )
+                    } else {
+                        String::new()
+                    };
                     logs.push(format!(
-                        "Generated '{}' ({} passes, {:.1}s est., {} G2/G3 arcs)",
+                        "Generated '{}' ({} passes, {:.1}s est., {} G2/G3 arcs{})",
                         op_id,
                         toolpath.stats.pass_count,
                         toolpath.stats.total_est_time_sec,
-                        toolpath.stats.arc_move_count
+                        toolpath.stats.arc_move_count,
+                        lift_suffix,
                     ));
                     cache.insert(op_id, input_hash, toolpath);
                 }
@@ -534,9 +570,16 @@ impl JobDispatcher {
                             let clearing_tool = project.setups[s_idx].operations[o_idx]
                                 .clearing_tool_id()
                                 .and_then(|tid| project.tool(tid).cloned());
+                            let machine_z = self.active_machine_z_travel_mm.or_else(|| {
+                                resolve_machine_definition(project.effective_machine_id(), None)
+                                    .ok()
+                                    .map(|m| m.travel_mm.z_mm)
+                            });
                             next_tasks.push(QueuedOpTask {
                                 setup: project.setups[s_idx].clone(),
                                 sketches: Arc::clone(&shared_sketches),
+                                fixture_docs: Arc::clone(&self.active_fixture_docs),
+                                machine_z_travel_mm: machine_z,
                                 op: project.setups[s_idx].operations[o_idx].clone(),
                                 tool,
                                 clearing_tool,
@@ -596,18 +639,32 @@ fn execute_single_task(
     let tool = task.tool.as_ref().ok_or_else(|| CamError::MissingTool {
         op_name: task.op.name.clone(),
     })?;
-    generate_operation_toolpath_with_rest(&OperationGenRequest {
-        doc: cad,
-        sketches: &task.sketches,
-        setup: &resolved_setup,
-        op: &task.op,
-        tool,
-        clearing_tool: task.clearing_tool.as_ref(),
-        display_unit: task.display_unit,
-        is_first_tool_in_setup: task.is_first_tool_in_setup,
-        upstream_rest: &task.upstream_rest,
-        cancel: &task.cancel_token,
-    })
+    let resolved_fixtures = if task.setup.auto_avoid_fixtures_on_rapids
+        && task.setup.fixtures.iter().any(|f| f.enabled)
+    {
+        resolve_setup_fixtures(&task.setup, &resolved_setup, task.display_unit, |id| {
+            task.fixture_docs.get(id).map(Arc::as_ref)
+        })?
+    } else {
+        Vec::new()
+    };
+    generate_operation_toolpath_with_fixtures(
+        &OperationGenRequest {
+            doc: cad,
+            sketches: &task.sketches,
+            setup: &resolved_setup,
+            op: &task.op,
+            tool,
+            clearing_tool: task.clearing_tool.as_ref(),
+            display_unit: task.display_unit,
+            is_first_tool_in_setup: task.is_first_tool_in_setup,
+            upstream_rest: &task.upstream_rest,
+            cancel: &task.cancel_token,
+        },
+        &resolved_fixtures,
+        task.setup.auto_avoid_fixtures_on_rapids,
+        task.machine_z_travel_mm,
+    )
 }
 
 struct WaveTaskOutcome {
@@ -639,6 +696,18 @@ pub fn generate_project_blocking(
     cache: &mut ToolpathCache,
     cad_revision: u64,
 ) -> BatchGenerationReport {
+    generate_project_blocking_in_dir(project, cad_doc, None, cache, cad_revision)
+}
+
+/// Generates all non-suppressed operations across `project` in topological DAG waves, loading any
+/// `ImportedModel` fixture CAD documents and custom machine travel limits from `project_dir`.
+pub fn generate_project_blocking_in_dir(
+    project: &mut ProjectDocument,
+    cad_doc: &CadDocument,
+    project_dir: Option<&Path>,
+    cache: &mut ToolpathCache,
+    cad_revision: u64,
+) -> BatchGenerationReport {
     project.reevaluate_sketches(cad_doc, None);
     let mut report = BatchGenerationReport::default();
     let total_ops: usize = project
@@ -650,6 +719,28 @@ pub fn generate_project_blocking(
         cache.reconcile_project_statuses(project, cad_revision, &HashSet::new());
         return report;
     }
+
+    let needs_imported_fixtures = project.setups.iter().any(|s| {
+        s.auto_avoid_fixtures_on_rapids
+            && s.fixtures
+                .iter()
+                .any(|f| f.enabled && matches!(f.kind, FixtureKind::ImportedModel { .. }))
+    });
+    let shared_fixture_docs: Arc<BTreeMap<String, Arc<CadDocument>>> = if needs_imported_fixtures {
+        Arc::new(
+            project
+                .load_fixture_cad_documents(project_dir)
+                .into_iter()
+                .map(|(k, v)| (k, Arc::new(v)))
+                .collect(),
+        )
+    } else {
+        Arc::new(BTreeMap::new())
+    };
+    let machine_z_travel_mm =
+        resolve_machine_definition(project.effective_machine_id(), project_dir)
+            .ok()
+            .map(|m| m.travel_mm.z_mm);
 
     let mut processed: HashSet<(usize, usize)> = HashSet::new();
     let shared_sketches = Arc::new(project.sketches.clone());
@@ -710,6 +801,8 @@ pub fn generate_project_blocking(
                             QueuedOpTask {
                                 setup: project.setups[s_idx].clone(),
                                 sketches: Arc::clone(&shared_sketches),
+                                fixture_docs: Arc::clone(&shared_fixture_docs),
+                                machine_z_travel_mm,
                                 op: op.clone(),
                                 tool,
                                 clearing_tool,

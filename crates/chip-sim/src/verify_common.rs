@@ -192,6 +192,8 @@ pub(crate) struct RuleViolationHit {
     pub(crate) location_wcs: DVec3,
     pub(crate) excess_mm: f64,
     pub(crate) detail: String,
+    pub(crate) fixture_id: Option<String>,
+    pub(crate) fixture_name: Option<String>,
 }
 
 /// Bounded streaming diagnostic coalescer shared across Heightfield, Tri-Dexel, and Cylindrical
@@ -228,12 +230,15 @@ impl ViolationBatchCoalescer {
         let existing_count = self
             .diagnostics
             .iter()
-            .filter(|d| d.op_idx == hit.op_idx && d.kind == hit.kind)
+            .filter(|d| {
+                d.op_idx == hit.op_idx && d.kind == hit.kind && d.fixture_id == hit.fixture_id
+            })
             .count();
 
         for (di, diag) in self.diagnostics.iter_mut().enumerate().rev() {
             if diag.op_idx == hit.op_idx
                 && diag.kind == hit.kind
+                && diag.fixture_id == hit.fixture_id
                 && (hit.span_idx <= self.last_seg_by_diag[di].saturating_add(self.merge_gap_spans)
                     || existing_count >= self.max_per_op_kind)
             {
@@ -247,6 +252,9 @@ impl ViolationBatchCoalescer {
                     diag.max_excess_mm = hit.excess_mm;
                     diag.location_wcs = hit.location_wcs;
                     diag.message = hit.detail;
+                    if hit.fixture_name.is_some() {
+                        diag.fixture_name = hit.fixture_name;
+                    }
                 }
                 return;
             }
@@ -265,6 +273,8 @@ impl ViolationBatchCoalescer {
             location_wcs: hit.location_wcs,
             max_excess_mm: hit.excess_mm,
             message: hit.detail,
+            fixture_id: hit.fixture_id,
+            fixture_name: hit.fixture_name,
         });
     }
 
@@ -297,6 +307,8 @@ impl ViolationBatchCoalescer {
                     "G0 rapid move crashed {depth:.3} mm into remaining stock at WCS ({:.2}, {:.2}, {:.2}).",
                     loc.x, loc.y, loc.z
                 ),
+                fixture_id: None,
+                fixture_name: None,
             });
         }
         if let Some((depth, loc)) = violations.gouge {
@@ -315,6 +327,8 @@ impl ViolationBatchCoalescer {
                     "Tool T{tool_number} gouged target model by {depth:.3} mm at WCS ({:.2}, {:.2}, {:.2}).",
                     loc.x, loc.y, loc.z
                 ),
+                fixture_id: None,
+                fixture_name: None,
             });
         }
         if let Some((depth, loc)) = violations.neck {
@@ -332,6 +346,8 @@ impl ViolationBatchCoalescer {
                 detail: format!(
                     "Thread mill T{tool_number} relieved neck collided {depth:.2} mm with uncut stock (missing/undersized pilot hole or insufficient neck clearance)."
                 ),
+                fixture_id: None,
+                fixture_name: None,
             });
         }
         if let Some((depth, loc)) = violations.flute {
@@ -355,6 +371,8 @@ impl ViolationBatchCoalescer {
                     "Engagement depth exceeded T{tool_number} {reach_label} ({:.2} mm) by {depth:.2} mm (shank rub).",
                     prof.effective_reach_mm()
                 ),
+                fixture_id: None,
+                fixture_name: None,
             });
         }
         if let Some((depth, loc)) = violations.holder {
@@ -373,6 +391,8 @@ impl ViolationBatchCoalescer {
                     "Collet/holder of T{tool_number} collided {depth:.2} mm into stock (stickout {:.2} mm insufficient).",
                     prof.stickout_length_mm
                 ),
+                fixture_id: None,
+                fixture_name: None,
             });
         }
     }
@@ -457,6 +477,8 @@ pub(crate) fn evaluate_vertical_plunge_violation(
         location_wcs: seg.end_wcs,
         excess_mm,
         detail,
+        fixture_id: None,
+        fixture_name: None,
     })
 }
 
@@ -484,6 +506,8 @@ mod tests {
                 location_wcs: DVec3::new(i as f64, 0.0, -5.0),
                 excess_mm: *depth,
                 detail: format!("rub {depth:.2}"),
+                fixture_id: None,
+                fixture_name: None,
             });
         }
         coal.push(RuleViolationHit {
@@ -498,6 +522,8 @@ mod tests {
             location_wcs: DVec3::new(9.0, 0.0, -5.0),
             excess_mm: 0.3,
             detail: "neck collision".to_string(),
+            fixture_id: None,
+            fixture_name: None,
         });
 
         for k in 1..=4 {
@@ -513,6 +539,8 @@ mod tests {
                 location_wcs: DVec3::new(0.0, 0.0, -5.0),
                 excess_mm: 0.1 * k as f64,
                 detail: format!("pass {k}"),
+                fixture_id: None,
+                fixture_name: None,
             });
         }
 

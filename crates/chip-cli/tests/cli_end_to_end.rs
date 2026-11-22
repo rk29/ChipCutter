@@ -1766,3 +1766,81 @@ fn cli_workholding_add_vise_clamp_spoilboard_and_list_roundtrip() {
         String::from_utf8_lossy(&val.stderr)
     );
 }
+
+#[test]
+fn cli_m61_simulate_json_reports_fixture_collision_and_build_blocks_export() {
+    use chip_cam::FixtureBody;
+    use chip_math::DVec2;
+    use chip_project::build_pure2d_router_panel_demo_project;
+
+    let tmp = TempTestDir::new("m61_cli_fixture_gate");
+    let tools = chip_tools::default_starter_tool_library().tools;
+    let mut proj = build_pure2d_router_panel_demo_project(None, &tools);
+    // Place a ToeClamp directly across the center of the router panel cutting paths!
+    proj.setups[0].fixtures.push(FixtureBody::default_toe_clamp(
+        "blocking_clamp",
+        "Blocking Center Clamp",
+        DVec2::new(40.0, 30.0),
+        0.0,
+    ));
+    let proj_path = tmp.path().join("blocked_by_clamp.chip.toml");
+    proj.save_to_path(&proj_path).unwrap();
+
+    // 1. `chipcutter simulate --json` fails with exit code != 0 and emits `fixture_collision` + `fixture_id`!
+    let sim = Command::new(cli_bin())
+        .args(["simulate", proj_path.to_str().unwrap(), "--json"])
+        .output()
+        .expect("simulate blocked project");
+    assert!(
+        !sim.status.success(),
+        "simulate must fail when cutting passes collide with a fixture"
+    );
+    let sim_stdout = String::from_utf8_lossy(&sim.stdout);
+    let report: serde_json::Value = serde_json::from_str(&sim_stdout)
+        .unwrap_or_else(|e| panic!("invalid JSON from simulate: {e}\n{sim_stdout}"));
+    assert_eq!(report["passed"], serde_json::Value::Bool(false));
+    let diags = report["setups"][0]["diagnostics"]
+        .as_array()
+        .expect("diagnostics array");
+    assert!(
+        diags.iter().any(|d| {
+            d["kind"] == "fixture_collision"
+                && d["fixture_id"] == "blocking_clamp"
+                && d["fixture_name"] == "Blocking Center Clamp"
+        }),
+        "expected fixture_collision diagnostic in JSON:\n{sim_stdout}"
+    );
+
+    // 2. `chipcutter build` blocks G-code export and produces NO .nc files!
+    let out_dir = tmp.path().join("nc_blocked");
+    let build = Command::new(cli_bin())
+        .args([
+            "build",
+            proj_path.to_str().unwrap(),
+            "-o",
+            out_dir.to_str().unwrap(),
+        ])
+        .output()
+        .expect("build blocked project");
+    assert!(
+        !build.status.success(),
+        "build must abort on FixtureCollision critical error"
+    );
+    let build_stderr = String::from_utf8_lossy(&build.stderr);
+    assert!(
+        build_stderr.contains("Fixture / Clamp Collision")
+            && build_stderr.contains("Blocking Center Clamp"),
+        "expected fixture collision message on stderr:\n{build_stderr}"
+    );
+    let nc_count = std::fs::read_dir(&out_dir)
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("nc"))
+                .count()
+        })
+        .unwrap_or(0);
+    assert_eq!(
+        nc_count, 0,
+        "blocked build must NOT emit any .nc G-code files"
+    );
+}

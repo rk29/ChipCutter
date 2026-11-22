@@ -186,6 +186,14 @@ pub struct ClearingSubToolpath {
     pub toolpath: GeneratedToolpath,
 }
 
+fn is_zero_usize(v: &usize) -> bool {
+    *v == 0
+}
+
+fn is_zero_f64(v: &f64) -> bool {
+    v.abs() <= 1e-12
+}
+
 /// Cached output of generating a single 2.5D CAM [`crate::operation::Operation`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GeneratedToolpath {
@@ -197,6 +205,91 @@ pub struct GeneratedToolpath {
     pub warnings: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clearing_stage: Option<Box<ClearingSubToolpath>>,
+    /// Number of non-cutting rapid/link moves automatically lifted over 3D workholding fixtures.
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub rapid_lifts_inserted: usize,
+    /// Peak Setup WCS Z height (`mm`) reached by automatically lifted safe-rapid bridges (`0.0` if none).
+    #[serde(default, skip_serializing_if = "is_zero_f64")]
+    pub max_lifted_z_wcs: f64,
+}
+
+impl GeneratedToolpath {
+    /// Recomputes [`ToolpathStats`] and updates `OperationStart.est_time_sec` from `self.events`
+    /// and `self.segments_wcs` after post-processing passes such as fixture safe-rapid routing.
+    pub fn recompute_stats(&mut self) {
+        let mut cutting_distance_mm = 0.0;
+        let mut rapid_distance_mm = 0.0;
+        let mut est_cutting_time_sec = 0.0;
+        let mut est_rapid_time_sec = 0.0;
+        let mut bounds_wcs = Aabb3::EMPTY;
+
+        for ev in &self.events {
+            if let ClEvent::Dwell { seconds } = ev
+                && seconds.is_finite()
+                && *seconds > 0.0
+            {
+                est_cutting_time_sec += *seconds;
+            }
+        }
+
+        for seg in &self.segments_wcs {
+            bounds_wcs.extend_point(seg.start_wcs);
+            bounds_wcs.extend_point(seg.end_wcs);
+            if matches!(seg.motion, SegmentMotion3D::Arc { .. }) {
+                for i in 1..=8 {
+                    bounds_wcs.extend_point(seg.sample_point(f64::from(i) / 8.0));
+                }
+            }
+            let len = seg.length_mm();
+            match seg.motion {
+                SegmentMotion3D::Rapid => {
+                    rapid_distance_mm += len;
+                    est_rapid_time_sec += (len / DEFAULT_RAPID_RATE_MM_MIN) * 60.0;
+                }
+                SegmentMotion3D::Linear { feed_mm_min, .. }
+                | SegmentMotion3D::Arc { feed_mm_min, .. } => {
+                    cutting_distance_mm += len;
+                    if feed_mm_min > 1e-6 {
+                        est_cutting_time_sec += (len / feed_mm_min) * 60.0;
+                    }
+                }
+            }
+        }
+
+        let mut linear_move_count = 0usize;
+        let mut arc_move_count = 0usize;
+        let mut drill_cycle_count = 0usize;
+        for ev in &self.events {
+            match ev {
+                ClEvent::LinearMove { .. } | ClEvent::RotaryLinearMove { .. } => {
+                    linear_move_count += 1;
+                }
+                ClEvent::ArcMove { .. } => arc_move_count += 1,
+                ClEvent::DrillCycle { .. } => drill_cycle_count += 1,
+                _ => {}
+            }
+        }
+
+        let total_est_time_sec = est_cutting_time_sec + est_rapid_time_sec;
+        for ev in &mut self.events {
+            if let ClEvent::OperationStart { est_time_sec, .. } = ev {
+                *est_time_sec = total_est_time_sec;
+            }
+        }
+
+        self.stats = ToolpathStats {
+            cutting_distance_mm,
+            rapid_distance_mm,
+            est_cutting_time_sec,
+            est_rapid_time_sec,
+            total_est_time_sec,
+            pass_count: self.stats.pass_count,
+            linear_move_count,
+            arc_move_count,
+            drill_cycle_count,
+            bounds_wcs,
+        };
+    }
 }
 
 /// Planar or helical `G17` XY circular arc specification passed to [`ToolpathBuilder::arc_xy_to`].
@@ -731,6 +824,8 @@ impl ToolpathBuilder {
             tab_markers_wcs: self.tab_markers_wcs,
             warnings: self.warnings,
             clearing_stage: self.clearing_stage,
+            rapid_lifts_inserted: 0,
+            max_lifted_z_wcs: 0.0,
         }
     }
 }

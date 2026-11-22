@@ -389,6 +389,7 @@ fn relief_wave_09_finishing_tridexel_oracle_eliminates_gouge() {
             doc: &doc,
             setup: &resolved,
             target_bodies: &[],
+            fixtures: &[],
             operations: &[
                 SimOperationInput::from_operation(&op_rough, &flat_6, &tp_rough),
                 SimOperationInput::from_operation(&op_par, &ball_6, &tp_par),
@@ -740,6 +741,7 @@ fn sculpted_dome_08_tridexel_oracle_zero_gouge_and_clean_crown() {
             doc: &doc,
             setup: &resolved,
             target_bodies: &[],
+            fixtures: &[],
             operations: &[
                 SimOperationInput::from_operation(&op_rough, &flat_6, &tp_rough),
                 SimOperationInput::from_operation(&op_wl, &ball_6, &tp_wl),

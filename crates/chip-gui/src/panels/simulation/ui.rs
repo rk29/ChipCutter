@@ -54,7 +54,7 @@ impl SimulationPanelState {
             if ui
                 .add_enabled(!busy && cad_doc.is_some(), egui::Button::new(btn_lbl))
                 .on_hover_text(
-                    "Run background stock removal simulation, 5-rule crash/gouge checks, and error-volume/RMS metrology",
+                    "Run background stock removal simulation, 6-rule crash/gouge/fixture checks, and error-volume/RMS metrology",
                 )
                 .clicked()
                 && let Some(doc) = cad_doc

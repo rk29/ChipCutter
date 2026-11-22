@@ -925,6 +925,13 @@ impl ChipCutterApp {
             );
             return;
         };
+        let machine_z = self.active_machine().map(|m| m.travel_mm.z_mm);
+        let fix_docs: std::collections::BTreeMap<String, Arc<CadDocument>> = self
+            .fixture_models
+            .iter()
+            .map(|(k, v)| (k.clone(), Arc::clone(v)))
+            .collect();
+        self.dispatcher.set_workholding_context(fix_docs, machine_z);
         let spawned = self.dispatcher.dispatch_operations(
             &mut self.project,
             cad_doc,
