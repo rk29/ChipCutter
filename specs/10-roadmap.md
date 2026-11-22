@@ -374,9 +374,19 @@ Phase 15 built directly on Phase 14's GPU-ready flat layouts (`chip-bvh` `FlatBv
 
 ---
 
-## Phase 16 — Toolpath Algorithm Quality & Engagement-Aware Feedrate Optimization (Planned — M56–M59)
+## Phase 16 — Toolpath Algorithm Quality & Engagement-Aware Feedrate Optimization (Completed — M56–M59)
 
-Phase 16 leverages Phase 15's GPU-accelerated Ultra simulation and `chipcutter simulate --benchmark --json` metrology harness to systematically eliminate surface ridges, staircase lifting artifacts, chord gouges, and uncut rest islands across 4th-axis rotary, 3-axis surfacing, and 2.5D strategies, and introduces engagement-aware corner-slowdown and constant-chipload feedrate optimization:
+Phase 16 leveraged Phase 15's GPU-accelerated Ultra simulation and `chipcutter simulate --benchmark --json` metrology harness to systematically eliminate surface ridges, staircase lifting artifacts, chord gouges, and uncut rest islands across 4th-axis rotary, 3-axis surfacing, and 2.5D strategies, and introduced engagement-aware corner-slowdown and constant-chipload feedrate optimization:
+
+- **Verified v0.15.0 → Phase 16 GPU Benchmark Improvements (`±0.05 mm` tolerance, `0` critical errors across all benchmarks):**
+  - `12-simultaneous-4axis` (GPU Ultra): `In-Tol` `17.8%` → **`70.8%`** (`~97.6%` of machined area excluding 11 mm chuck/tailstock ends), `ErrVol` `3,735.9` → **`2,531.3 mm³`**, `RMS` `0.5291` → **`0.4827 mm`**, `max_gouge = 0.015 mm`.
+  - `09-rotary-shaft` (GPU Ultra): `In-Tol` `34.0%` → **`56.5%`**, `ErrVol` `5,090.5` → **`3,964.1 mm³`**, `RMS` `0.8843` → **`0.8011 mm`**, `max_gouge` `0.014` → **`0.004 mm`**.
+  - `10-rotary-axial` (GPU Ultra): `In-Tol` `16.1%` → **`36.4%`**, `ErrVol` `13,454.6` → **`12,518.7 mm³`**, `max_gouge` `0.019` → **`0.005 mm`**.
+  - `11-indexed-step` (GPU Ultra): Fixed STEP polar target rasterization & metrics (`RMS 0.0000*` bug → accurate `RMS = 9.1130 mm`, `In-Tol = 77.7%`, `max_gouge = 0.000 mm`).
+  - `09-3d-surface-finishing` (GPU Tri-Dexel Fine): **`gouge_volume`** **`65.1 mm³` → `0.00 mm³`**, **`max_gouge`** **`-0.146 mm` → `0.000 mm`** (100% gouge elimination), `In-Tol` `75.2%` → **`77.5%`**.
+  - `08-mesh-surfacing` & `08-3d-adaptive-waterline` (GPU Tri-Dexel Fine): `0.00 mm³` gouge (`max_gouge <= 0.001 mm`), `In-Tol` `53.2% / 54.5%` → **`55.2% / 55.4%`**.
+  - `05-adaptive-rest` (GPU Tri-Dexel Fine): `ErrVol` **`131.0` → `27.4 mm³`** (`-79.1%`), `RMS = 0.0346 mm`, `In-Tol = 99.6%`, `gouge_volume = 0.05 mm³`.
+  - `18-thread-milling` (GPU Tri-Dexel Fine): `0` critical errors, `In-Tol = 95.5%`, `RMS = 0.0823 mm`.
 
 ### Milestone 56 — 4th-Axis Rotary Toolpath Quality & High-Fidelity Cylindrical Verification (`plans/56-milestone-56-plan.md`)
 - **Eliminate Staircase Lifting & Coarse Grid Artifacts (`rotary4axis_sim.rs`, `rotary2linear.rs`):** Remove the quantized `sample_safe()` staircase lifts (`z_max + 0.06 * c_spread` and `r_max` jumps that caused `+0.52 mm` systematic bias and `17.8%` in-tolerance surface on `12-simultaneous-4axis` and `16.1–34.0%` on `09/10-rotary-*`). Evaluate exact `f64` `drop_cutter_z_with_scratch` directly along the spiral/flowline curve (backed by `chip-bvh`) paired with adaptive midpoint/sagitta chord subdivision (`<= 0.005 mm`) so convex ridges and helical flanks are both ridge-free and gouge-free.

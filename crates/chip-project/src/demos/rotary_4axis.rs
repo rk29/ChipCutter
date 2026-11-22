@@ -117,10 +117,12 @@ pub fn build_rotary_shaft_preview_project(
     if let StrategyParams::Rotary2Linear(p) = op_spiral.strategy_mut() {
         p.pattern = chip_cam::RotaryPatternMode::ContinuousSpiral;
         p.stepover = ParamLength::from_mm(1.6);
+        p.use_cusp_height = true;
+        p.cusp_height = ParamLength::from_mm(0.020);
         p.axial_margin_start = ParamLength::from_mm(34.0);
         p.axial_margin_end = ParamLength::from_mm(8.0);
-        p.angular_sample_deg = 5.0;
-        p.axial_sample_step = ParamLength::from_mm(1.0);
+        p.angular_sample_deg = 1.5;
+        p.axial_sample_step = ParamLength::from_mm(0.25);
     }
 
     let mut ops = vec![op_spiral];
@@ -386,8 +388,12 @@ pub fn build_rotary_helical_flute_project(
         p.max_tilt_deg = 18.0;
         p.tilt_smoothing_window = 3;
         p.stepover = ParamLength::from_mm(1.5);
+        p.use_cusp_height = true;
+        p.cusp_height = ParamLength::from_mm(0.020);
         p.axial_margin_start = ParamLength::from_mm(11.0);
         p.axial_margin_end = ParamLength::from_mm(11.0);
+        p.angular_sample_deg = 1.5;
+        p.axial_sample_step = ParamLength::from_mm(0.25);
     }
 
     proj.setups[0].operations = vec![op_rough, op_finish];
@@ -465,12 +471,14 @@ pub fn build_tutorial_rotary_axial_parallel_project(
         p.pattern = chip_cam::RotaryPatternMode::ContinuousSpiral;
         p.cut_direction = chip_cam::RotaryCutDirection::ZigZag;
         p.stepover = ParamLength::from_mm(1.6);
+        p.use_cusp_height = true;
+        p.cusp_height = ParamLength::from_mm(0.025);
         p.start_angle_deg = 0.0;
         p.end_angle_deg = 360.0;
         p.axial_margin_start = ParamLength::from_mm(34.0);
         p.axial_margin_end = ParamLength::from_mm(8.0);
-        p.angular_sample_deg = 5.0;
-        p.axial_sample_step = ParamLength::from_mm(1.0);
+        p.angular_sample_deg = 1.5;
+        p.axial_sample_step = ParamLength::from_mm(0.25);
     }
 
     // Op 2: Partial-sector Axial Parallel lengthwise raster (-60°..+60°)
@@ -485,12 +493,14 @@ pub fn build_tutorial_rotary_axial_parallel_project(
         p.pattern = chip_cam::RotaryPatternMode::AxialParallel;
         p.cut_direction = chip_cam::RotaryCutDirection::ZigZag;
         p.stepover = ParamLength::from_mm(1.2);
+        p.use_cusp_height = true;
+        p.cusp_height = ParamLength::from_mm(0.020);
         p.start_angle_deg = -60.0;
         p.end_angle_deg = 60.0;
         p.axial_margin_start = ParamLength::from_mm(34.0);
         p.axial_margin_end = ParamLength::from_mm(8.0);
-        p.angular_sample_deg = 4.0;
-        p.axial_sample_step = ParamLength::from_mm(1.0);
+        p.angular_sample_deg = 1.5;
+        p.axial_sample_step = ParamLength::from_mm(0.25);
     }
 
     proj.setups[0].operations = vec![op_spiral, op_axial];
@@ -807,8 +817,12 @@ pub fn build_tutorial_rotary_4axis_flowline_project(
         p.max_tilt_deg = 18.0;
         p.tilt_smoothing_window = 3;
         p.stepover = ParamLength::from_mm(1.5);
+        p.use_cusp_height = true;
+        p.cusp_height = ParamLength::from_mm(0.020);
         p.axial_margin_start = ParamLength::from_mm(11.0);
         p.axial_margin_end = ParamLength::from_mm(11.0);
+        p.angular_sample_deg = 1.5;
+        p.axial_sample_step = ParamLength::from_mm(0.25);
     }
 
     // Op 3: Axial / Helical Flowline with Fixed Lateral Offset (2.5 mm off centerline)
@@ -826,8 +840,12 @@ pub fn build_tutorial_rotary_4axis_flowline_project(
         p.tilt_mode = chip_cam::RotaryTiltMode::FixedLateralOffset;
         p.lateral_offset = ParamLength::from_mm(2.5);
         p.stepover = ParamLength::from_mm(2.2);
+        p.use_cusp_height = true;
+        p.cusp_height = ParamLength::from_mm(0.025);
         p.axial_margin_start = ParamLength::from_mm(11.0);
         p.axial_margin_end = ParamLength::from_mm(11.0);
+        p.angular_sample_deg = 1.5;
+        p.axial_sample_step = ParamLength::from_mm(0.25);
     }
 
     proj.setups[0].operations = vec![op_rough, op_spiral_fin, op_flowline];

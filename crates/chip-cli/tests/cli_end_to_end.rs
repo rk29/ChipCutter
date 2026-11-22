@@ -955,6 +955,7 @@ fn phase_5_v3_rotary_golden_gcode_snapshots_match_exact_expected_output() {
     // Keep golden snapshot compact while preserving full continuous spiral + 4 indexed faces
     shaft_proj.setups[0].operations[0].passes.multiple_depths = false;
     if let StrategyParams::Rotary2Linear(p) = shaft_proj.setups[0].operations[0].strategy_mut() {
+        p.use_cusp_height = false;
         p.stepover = ParamLength::from_mm(8.0);
     }
     for op in &mut shaft_proj.setups[0].operations[1..] {
@@ -1060,6 +1061,7 @@ fn phase_5_v3_rotary_golden_gcode_snapshots_match_exact_expected_output() {
     // Keep finishing pass with coarse stepover for a compact simultaneous 4-axis golden
     flute_proj.setups[0].operations.remove(0);
     if let StrategyParams::Rotary4AxisSim(p) = flute_proj.setups[0].operations[0].strategy_mut() {
+        p.use_cusp_height = false;
         p.stepover = ParamLength::from_mm(12.0);
     }
     let flute_toml = tmp.path().join("v3_rotary_4axis_sim.chip.toml");

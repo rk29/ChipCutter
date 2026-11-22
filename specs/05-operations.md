@@ -153,4 +153,43 @@ Available on **2D Pocket / 2D Adaptive**, **2D Contour**, and **V-Carve** to eli
 |---|---|---|
 | **`Disabled`** *(Default)* | None | Machines the full selected feature geometry. |
 | **`FromPreviousTool`** | `prev_tool_diameter`, `prev_stock_to_leave_radial`, `rest_overlap_mm` (default `0.25 mm`), `min_rest_width_mm` | Analytically computes the 2D region reachable by the reference cutter: $C_{\text{prev}} = \text{OffsetOutward}(\text{OffsetInward}(T,\; R_{\text{prev}} + s_{\text{prev}}),\; R_{\text{prev}} - \delta_{\text{overlap}})$, then machines $R_{\text{rest}} = T \setminus C_{\text{prev}}$ (pruning micro-slivers thinner than `min_rest_width_mm`). Fast, stateless, and parallelizable! |
-| **`FromPrecedingOperations`** | `source`: `AllPrecedingInSetup` \| `Explicit(Vec<OperationId>)`, `rest_overlap_mm`, `min_rest_width_mm` | Unions the exact 2D swept cutter footprints (at Z depths covering the current operation's cut range) of enabled upstream operations in the Setup, shrinks that union inward by `rest_overlap_mm` so entries overlap cleanly without uncut cusps, and subtracts it from $T$. Automatically registers a DAG dependency in `chip-project` so editing, reordering, or suppressing an upstream operation marks downstream Rest operations `Dirty`. |
+| **`FromPrecedingOperations`** | `source`: `AllPrecedingInSetup` \| `Explicit(Vec<OperationId>)`, `rest_overlap_mm`, `min_rest_width_mm` | Unions the exact 2D swept cutter footprints (at Z depths covering the current operation's cut range) of enabled upstream operations in the Setup, shrinks that union inward by `rest_overlap_mm` so entries overlap cleanly without uncut cusps, and subtracts it from $T$. Automatically registers a DAG dependency in `chip-project` so editing, reordering, or suppressing an upstream operation marks downstream Rest operations `Dirty`. Includes exact island-wall rest cleanup verification so nested bosses and internal pocket corners finish cleanly without uncut slivers or wall gouges. |
+
+---
+
+## Engagement-Aware Feedrate Optimization *(Phase 16)*
+
+Implemented as a shared, UI-agnostic `ClEvent` post-pass (`crates/chip-cam/src/feed_opt.rs`) configured via an opt-in, schema-safe `FeedOptimizationConfig` on `PassesParams` (`enabled = false` by default, `skip_serializing_if = "FeedOptimizationConfig::is_default"` so existing `.chip.toml` projects and Phase 1–2 golden snapshots remain 100% byte-identical):
+
+- **Exact Internal-Arc Scaling (`internal_arc_scaling`):** For planar `G17` cutting arcs (`MotionRole::Cut` / `FinishCut`) with `R_tool < R_arc < 4 * R_tool`, scales centerline feedrate by:
+  $$F_{\text{center}} = F_{\text{nom}} \cdot \operatorname{clamp}\!\left(\frac{R_{\text{arc}} - R_{\text{tool}}}{R_{\text{arc}}},\; f_{\min},\; 1.0\right)$$
+  so the cutting edge chipload stays constant inside concave fillets and pocket corners.
+- **Sharp-Corner Lookahead Slowdown (`corner_slowdown`):** Detects linear cutting deflection angles $\theta \ge \theta_{\text{thresh}}$ (`corner_angle_threshold_deg`, default `25°`), splits segments cleanly within `slowdown_distance` (default `tool_d * 0.5`) with micro-segment guards preserving exact path geometry and endpoints, decelerating monotonically into the corner apex (floored at `min_feed_fraction`, default `0.35`) and recovering smoothly after exit.
+- **Constant-Chipload Radial Chip-Thinning Boost (`chip_thinning_boost`):** Optionally boosts straight/low-curvature light-engagement passes up to `max_thinning_multiplier` (default `1.5×`, clamped `1.0..=2.5`) while automatically throttling back down inside corners and internal arcs.
+- **Safety Invariants:** Never modifies `G0` rapids, `MotionRole::Plunge` / `Ramp` / `LeadIn` / `LeadOut` / `LinkTransition` / `TabRamp`, `DrillBore` canned cycles, or `ThreadMill` centerline-compensated helical moves. `SimulationTimeline` exposes `min_cutting_feed_mm_min`, `max_cutting_feed_mm_min`, and `feed_modulated_segments` telemetry.
+- **V-Carve Z-Chord Fidelity:** `VCarve` medial-axis corner climbs refine variable-depth 3D Z-chords within `<= 0.005 mm` so narrow serif tips carve crisply without apex blunting.
+
+---
+
+## 3-Axis Sculpted Surface Milling *(Phase 5 & Phase 16)*
+
+All 3-axis surface strategies (`Adaptive3D`, `Waterline3D`, `Parallel3D`, `Scallop3D`, `Pencil3D`) operate directly on canonical `f64` triangle meshes (`STL`/`OBJ`/`3MF`) and tessellated STEP B-Rep solids indexed by `chip-bvh`'s flat SAH `FlatBvh` using exact analytical `drop_cutter_z_with_scratch` and `push_cutter_region_z` kernels:
+
+- **Zero-Gouge 3D Convex Chord Refinement (`refine_convex_chords_3d`, `simplify_3d_polyline_gouge_safe`):**
+  - Evaluates exact `drop_cutter_z_with_scratch` at chord midpoints (and quarter-points on chords `> 0.25 mm`) for every chord with `xy_dist > 0.03 mm`, recursively bisecting up to depth 5 whenever convex surface crests protrude above the chord by `> sag_tol` (`<= 0.003 mm`) or concave valley bridging exceeds `smooth_tol`.
+  - Gouge-safe RDP decimation (`simplify_3d_polyline_gouge_safe`) guarantees simplified chords never dip `> 0.002 mm` below any dropped vertex or exact surface midpoint, caps per-chord `|dz|` on curved-tip cutters (`Ball`, `BullNose`, `V-Bit`), and verifies low-clearance stay-down links (`emit_surface_safe_link`) against exact `drop_cutter_z` clearance.
+- **Curvature-Aware `Scallop3D`:** Computes a high-resolution (up to `120,000`-cell, `base_cell` down to `0.15 mm`) Fast Marching Eikonal geodesic distance field using a smoothed local surface slope metric $\sec(\theta)$, extracts iso-contours with clean loop closure, projects every vertex onto exact `drop_cutter_z`, and applies `refine_convex_chords_3d` + `simplify_3d_polyline_gouge_safe`.
+- **Local-Offset `Waterline3D` Adaptive Stepdowns:** Computes true local 2D Hausdorff / point-to-boundary contour offset `dr_max` between adjacent Z-slice avoidance boundaries (`prev_avoid` vs. `cur_avoid`) to insert cusp-bounded intermediate Z-levels precisely where localized shallow crowns, shelves, or fillets widen—paired with flat-plateau detection (`detect_flat_plateaus`) and collision-free helical/contour ramping.
+- **3D `Adaptive3D` Roughing:** Combines Z-level `push_cutter_region_z` slices with narrow-band fine step-up terraces, flat-shelf alignment (`<= 0.005 mm`), engagement-bounded trochoidal clearing, and micro-lift linking.
+- **Sub-Cell Quadratic Ridge Centering in `Pencil3D`:** Extracts concave bi-tangent valleys from the exact morphological rest residual `delta_z(x, y) = z_drop(ref_ball) - z_drop(cur_cutter)` via priority-ordered topology-preserving thinning, then applies local 1D quadratic sub-cell refinement perpendicular to the valley tangent against exact `drop_cutter_z` so pencil passes track the continuous fillet crease cleanly.
+
+---
+
+## 4th-Axis Rotary Milling *(Phase 5 & Phase 16)*
+
+Supports `TwoLinearPlusRotary` (`Z+X+A` / `Z+Y+B`), `Indexed3Plus1`, and `Simultaneous4Axis` (`X+Y+Z+A/B`) rotary Setups (`Rotary2Linear`, `Rotary4AxisSim`, `OperationRotaryMode::WrapCylinder`, and `OperationRotaryMode::Indexed3Plus1`):
+
+- **Exact Direct BVH Rotary Drop-Cutter (`drop_cutter_rotary_at` / `drop_cutter_rotary_z_rel`):** Queries `base_mesh`'s `FlatBvh` directly in parallel (`rayon`) at arbitrary `(u, θ, c_cross)` by rotating only the narrow local cutter search volume/candidate triangles into part space—eliminating quantized grid-corner staircase lifts and per-angle full-mesh rebuilds.
+- **Adaptive Midpoint Chord-Sagitta Subdivision:** Along every emitted spiral, axial-parallel, or helical flowline strip (`Rotary2Linear` and `Rotary4AxisSim`), recursively evaluates exact chord midpoints (up to depth 4) whenever convex peak sagitta exceeds `4 µm` or concave valley faceting exceeds `smooth_tol`, followed by tight convex-safe decimation (`max_convex_dip <= 0.002 mm`).
+- **Slope-Compensated Cusp-Height Rotary Stepover:** When `use_cusp_height` is enabled on `Rotary2Linear` or `Rotary4AxisSim`, scales the analytical cutter cusp stepover by local axial/circumferential flank slope `cos(φ)` (`estimate_rotary_flank_cos_phi`) so steep helical flute walls and eccentric cam lobes achieve smooth, uniform finish without spiral ridges.
+- **Gouge-Free Off-Centerline Auto-Tilt (`Rotary4AxisSim`):** Computes a C¹-smoothed cross-axis lateral offset field `c_cross(u, θ)` from local circumferential surface normals (`SurfaceNormalAutoTilt`) or fixed lateral shift (`FixedLateralOffset`), then evaluates final exact off-centerline `drop_cutter_rotary_z_rel` heights at the smoothed tilt field with exact `G93` inverse-time feedrates.
