@@ -125,10 +125,11 @@ impl CylindricalStock {
         let target_rows: Vec<Vec<f32>> = (0..nu)
             .into_par_iter()
             .map(|iu| {
-                let u = u_min + (iu as f64 + 0.5) * du;
+                // Deterministic sub-micron jitter avoids shared triangle-edge misses on aligned STL/STEP seams.
+                let u = u_min + (iu as f64 + 0.5) * du + 1.371_91e-4 * du;
                 let mut row = vec![-1.0_f32; ntheta];
                 for (it, cell_r) in row.iter_mut().enumerate() {
-                    let theta = it as f64 * dtheta;
+                    let theta = it as f64 * dtheta + 2.718_28e-4 * dtheta;
                     let p_outer = rotary.cylindrical_to_wcs(u, theta, r_cast);
                     let p_axis = rotary.cylindrical_to_wcs(u, theta, 0.0);
                     let dir = (p_axis - p_outer).normalize_or_zero();

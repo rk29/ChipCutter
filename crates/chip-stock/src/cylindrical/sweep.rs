@@ -25,8 +25,8 @@ impl CylindricalStock {
         verify: bool,
     ) -> BatchSweepOutput {
         let mut out = BatchSweepOutput::default();
-        let step_u = (0.5 * self.du).max(0.15);
-        let step_deg = (0.5 * self.dtheta.to_degrees()).max(0.75);
+        let step_u = (0.5 * self.du).clamp(0.05, 0.12);
+        let step_deg = (0.5 * self.dtheta.to_degrees()).clamp(0.15, 0.35);
 
         for ch in chords {
             let Some(tool) = tools.get(ch.profile_idx) else {
@@ -36,7 +36,7 @@ impl CylindricalStock {
             let d_deg = ch.motion.rotary_delta_deg();
             let n_lin = (lin_len / step_u).ceil() as usize;
             let n_rot = (d_deg / step_deg).ceil() as usize;
-            let n_steps = n_lin.max(n_rot).clamp(1, 2_000);
+            let n_steps = n_lin.max(n_rot).clamp(1, 4_000);
 
             for k in 0..=n_steps {
                 let t = k as f64 / n_steps as f64;

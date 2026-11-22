@@ -433,6 +433,15 @@ fn reduce_cylindrical(
                 push_deviation(&acc, dev, loc, tol);
             } else if (rm > 1e-6) {
                 acc.excess_vol = acc.excess_vol + factor * rm * rm;
+                let iu = idx / ntheta;
+                let it = idx % ntheta;
+                let u_coord = u_min + (f32(iu) + 0.5) * du;
+                let theta = f32(it) * dtheta;
+                let loc = center
+                    + u_vec * (u_coord - u_center)
+                    + e1 * (rm * cos(theta))
+                    + e2 * (rm * sin(theta) * pol);
+                push_deviation(&acc, rm, loc, tol);
             }
         }
         idx = idx + grid_stride;

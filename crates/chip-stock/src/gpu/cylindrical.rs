@@ -263,8 +263,8 @@ impl GpuCylindricalState {
         self.gpu_poses_scratch.clear();
         self.pose_tips_wcs_scratch.clear();
 
-        let step_u = (0.5 * self.du).max(0.15);
-        let step_deg = (0.5 * self.dtheta.to_degrees()).max(0.75);
+        let step_u = (0.5 * self.du).clamp(0.05, 0.12);
+        let step_deg = (0.5 * self.dtheta.to_degrees()).clamp(0.15, 0.35);
         let u_vec = self.rotary.axis_unit();
         let has_chuck = self.rotary.chuck_u_max > self.rotary.chuck_u_min + 1e-4;
 
@@ -286,7 +286,7 @@ impl GpuCylindricalState {
             let d_deg = ch.motion.rotary_delta_deg();
             let n_lin = (lin_len / step_u).ceil() as usize;
             let n_rot = (d_deg / step_deg).ceil() as usize;
-            let n_steps = n_lin.max(n_rot).clamp(1, 2_000);
+            let n_steps = n_lin.max(n_rot).clamp(1, 4_000);
 
             for k in 0..=n_steps {
                 let t = k as f64 / n_steps as f64;

@@ -2879,4 +2879,488 @@ mod tests {
             "Multi-body Cylindrical GPU BVH r_target max diff {max_rt_diff:.5} mm"
         );
     }
+
+    #[test]
+    fn rotary_4axis_sim_and_2linear_quality_oracle_zero_staircase_bias_and_gouge_free() {
+        use std::sync::atomic::AtomicBool;
+
+        use chip_cad::sample_helical_flute_shaft_stl_bytes;
+        use chip_cam::{
+            Operation, OperationGenRequest, OperationKind, Rotary4AxisPattern,
+            Rotary4AxisSimParams, RotaryPatternMode, RotaryTiltMode, StrategyParams,
+            generate_operation_toolpath_with_rest,
+        };
+        use chip_tools::CutterGeometry;
+
+        let lib = default_starter_tool_library();
+        let ball_6 = lib
+            .tools
+            .iter()
+            .find(|t| {
+                matches!(
+                    t.geometry,
+                    CutterGeometry::BallEndmill { diameter_mm, .. } if approx_eq(diameter_mm, 6.0, 0.5)
+                )
+            })
+            .expect("6mm ball endmill in starter library");
+        let cancel = AtomicBool::new(false);
+
+        // === 1. Simultaneous 4-Axis Helical Flute (`Rotary4AxisSim`, Auto-Tilt + Slope-Compensated Cusp) ===
+        {
+            let stl = sample_helical_flute_shaft_stl_bytes();
+            let doc =
+                load_mesh_cad_document("helical_flute.stl", &stl, &MeshImportOptions::default())
+                    .unwrap();
+
+            let mut setup = Setup::new("s_m56_4ax", "M56 4-Axis Quality", WorkOffsetSlot::G54);
+            setup.wcs.origin = WcsOriginMode::StockBoxPoint {
+                anchor: BoxAnchor27::VOLUMETRIC_CENTER,
+            };
+            setup.stock = StockConfig::FixedCylinder {
+                axis: StockAxis::X,
+                diameter: ParamLength::from_mm(42.0),
+                length: ParamLength::from_mm(80.0),
+                axial_top_offset: ParamLength::from_mm(0.0),
+            };
+            setup.rotary.mode = RotaryDriveMode::Simultaneous4Axis;
+            setup.rotary.axis = RotaryAxisKind::XAxis;
+            setup.rotary.chuck_length = ParamLength::from_mm(20.0);
+            setup.rotary.chuck_diameter = ParamLength::from_mm(65.0);
+            let resolved = setup.resolve(&doc, DisplayUnit::Millimeter).unwrap();
+
+            let mut op = Operation::new(
+                "op_4ax_fin",
+                "4-Axis Helical Finish (Cusp)",
+                OperationKind::Rotary4AxisSim,
+            );
+            op.tool_id = Some(ball_6.id.clone());
+            op.passes.multiple_depths = false;
+            op.strategy = Some(StrategyParams::Rotary4AxisSim(Rotary4AxisSimParams {
+                pattern: Rotary4AxisPattern::SimultaneousSpiral,
+                tilt_mode: RotaryTiltMode::SurfaceNormalAutoTilt,
+                max_tilt_deg: 18.0,
+                tilt_smoothing_window: 3,
+                use_cusp_height: true,
+                cusp_height: ParamLength::from_mm(0.015),
+                stepover: ParamLength::from_mm(1.5),
+                axial_margin_start: ParamLength::from_mm(11.0),
+                axial_margin_end: ParamLength::from_mm(11.0),
+                ..Default::default()
+            }));
+
+            let tp = generate_operation_toolpath_with_rest(&OperationGenRequest {
+                doc: &doc,
+                sketches: &[],
+                setup: &resolved,
+                op: &op,
+                tool: ball_6,
+                clearing_tool: None,
+                display_unit: DisplayUnit::Millimeter,
+                is_first_tool_in_setup: true,
+                upstream_rest: &[],
+                cancel: &cancel,
+            })
+            .unwrap();
+
+            let ops = [SimOperationInput {
+                op_id: &op.id,
+                op_name: &op.name,
+                tool: ball_6,
+                fallback_spindle_rpm: 12_000.0,
+                intentional_edge_break_mm: 0.0,
+                toolpath: &tp,
+            }];
+            let input = SetupSimulationInput {
+                doc: &doc,
+                setup: &resolved,
+                target_bodies: &[],
+                operations: &ops,
+                resolution: SimResolution::Fine,
+                kinematics: MachineKinematicsConfig::default(),
+                verify_config: SimVerificationConfig::default(),
+                cancel: None,
+            };
+            let sim = run_setup_simulation_with_choice(
+                &input,
+                SimEngineKind::Heightmap,
+                SimComputeBackendChoice::Auto,
+            )
+            .unwrap();
+            assert_eq!(
+                sim.critical_error_count(),
+                0,
+                "Rotary4AxisSim must have zero critical errors: {:#?}",
+                sim.diagnostics
+            );
+
+            // Evaluate machined-zone (`u ∈ [-27.5, +27.5]`) surface accuracy directly on CylindricalStock
+            let cyl = sim.as_cylindrical().unwrap();
+            let mut sum_sq = 0.0_f64;
+            let mut sum_signed = 0.0_f64;
+            let mut max_gouge = 0.0_f64;
+            let mut in_tol = 0usize;
+            let mut total = 0usize;
+            for iu in 0..cyl.nu {
+                let u = cyl.u_min + (iu as f64 + 0.5) * cyl.du;
+                if !(-27.5..=27.5).contains(&u) {
+                    continue;
+                }
+                for it in 0..cyl.ntheta {
+                    let idx = iu * cyl.ntheta + it;
+                    let rt = f64::from(cyl.r_target[idx]);
+                    if rt < 0.0 {
+                        continue;
+                    }
+                    let dev = f64::from(cyl.r_stock[idx]) - rt;
+                    sum_sq += dev * dev;
+                    sum_signed += dev;
+                    if dev < 0.0 {
+                        max_gouge = max_gouge.max(-dev);
+                    }
+                    if dev.abs() <= 0.05 {
+                        in_tol += 1;
+                    }
+                    total += 1;
+                }
+            }
+            assert!(total > 10_000);
+            let rms = (sum_sq / total as f64).sqrt();
+            let bias = sum_signed / total as f64;
+            let in_tol_pct = 100.0 * (in_tol as f64) / (total as f64);
+            assert!(
+                rms <= 0.08,
+                "Rotary4AxisSim machined-zone RMS expected <= 0.08 mm, got {rms:.4} mm"
+            );
+            assert!(
+                bias.abs() < 0.03,
+                "Rotary4AxisSim staircase bias expected |bias| < 0.03 mm, got {bias:+.4} mm"
+            );
+            assert!(
+                max_gouge <= 0.015,
+                "Rotary4AxisSim max_gouge expected <= 0.015 mm, got {max_gouge:.4} mm"
+            );
+            assert!(
+                in_tol_pct >= 85.0,
+                "Rotary4AxisSim machined-zone In-Tol (±0.05) expected >= 85%, got {in_tol_pct:.1}%"
+            );
+        }
+
+        // === 2. 2-Linear + Rotary 3-Lobe Cam & Collar (`Rotary2Linear`, Slope-Compensated Cusp) ===
+        {
+            let stl = sample_rotary_shaft_stl_bytes();
+            let doc =
+                load_mesh_cad_document("rotary_shaft.stl", &stl, &MeshImportOptions::default())
+                    .unwrap();
+
+            let mut setup = Setup::new("s_m56_2lin", "M56 2-Linear Quality", WorkOffsetSlot::G54);
+            setup.wcs.origin = WcsOriginMode::StockBoxPoint {
+                anchor: BoxAnchor27::VOLUMETRIC_CENTER,
+            };
+            setup.stock = StockConfig::FixedCylinder {
+                axis: StockAxis::X,
+                diameter: ParamLength::from_mm(42.0),
+                length: ParamLength::from_mm(80.0),
+                axial_top_offset: ParamLength::from_mm(0.0),
+            };
+            setup.rotary.mode = RotaryDriveMode::TwoLinearPlusRotary;
+            setup.rotary.axis = RotaryAxisKind::XAxis;
+            setup.rotary.chuck_length = ParamLength::from_mm(20.0);
+            setup.rotary.chuck_diameter = ParamLength::from_mm(65.0);
+            let resolved = setup.resolve(&doc, DisplayUnit::Millimeter).unwrap();
+
+            let mut op = Operation::new(
+                "op_2lin_fin",
+                "Rotary 2-Linear Finish (Cusp)",
+                OperationKind::Rotary2Linear,
+            );
+            op.tool_id = Some(ball_6.id.clone());
+            op.passes.multiple_depths = false;
+            if let StrategyParams::Rotary2Linear(p) = op.strategy_mut() {
+                p.pattern = RotaryPatternMode::ContinuousSpiral;
+                p.use_cusp_height = true;
+                p.cusp_height = ParamLength::from_mm(0.015);
+                p.stepover = ParamLength::from_mm(1.5);
+                p.axial_margin_start = ParamLength::from_mm(34.0);
+                p.axial_margin_end = ParamLength::from_mm(8.0);
+            }
+
+            let tp = generate_operation_toolpath_with_rest(&OperationGenRequest {
+                doc: &doc,
+                sketches: &[],
+                setup: &resolved,
+                op: &op,
+                tool: ball_6,
+                clearing_tool: None,
+                display_unit: DisplayUnit::Millimeter,
+                is_first_tool_in_setup: true,
+                upstream_rest: &[],
+                cancel: &cancel,
+            })
+            .unwrap();
+
+            let ops = [SimOperationInput {
+                op_id: &op.id,
+                op_name: &op.name,
+                tool: ball_6,
+                fallback_spindle_rpm: 12_000.0,
+                intentional_edge_break_mm: 0.0,
+                toolpath: &tp,
+            }];
+            let input = SetupSimulationInput {
+                doc: &doc,
+                setup: &resolved,
+                target_bodies: &[],
+                operations: &ops,
+                resolution: SimResolution::Fine,
+                kinematics: MachineKinematicsConfig::default(),
+                verify_config: SimVerificationConfig::default(),
+                cancel: None,
+            };
+            let sim = run_setup_simulation_with_choice(
+                &input,
+                SimEngineKind::Heightmap,
+                SimComputeBackendChoice::Auto,
+            )
+            .unwrap();
+            assert_eq!(
+                sim.critical_error_count(),
+                0,
+                "Rotary2Linear must have zero critical errors: {:#?}",
+                sim.diagnostics
+            );
+
+            // Evaluate machined collar + 3-lobe cam (clear of unavoidable R=3 mm ball corner fillets at x=-2.5/+7.5)
+            let cyl = sim.as_cylindrical().unwrap();
+            let mut sum_sq = 0.0_f64;
+            let mut sum_signed = 0.0_f64;
+            let mut max_gouge = 0.0_f64;
+            let mut in_tol = 0usize;
+            let mut total = 0usize;
+            for iu in 0..cyl.nu {
+                let u = cyl.u_min + (iu as f64 + 0.5) * cyl.du;
+                // Sample across the turned collar floor (`[0.0, 5.0]`) + 3-lobe cam (`[14.0, 26.0]`),
+                // clear of unavoidable R=3 mm ball-radius corner fillets at x=-2.5, +7.5, +12.0, +28.0
+                if !((0.0..=5.0).contains(&u) || (14.0..=26.0).contains(&u)) {
+                    continue;
+                }
+                for it in 0..cyl.ntheta {
+                    let idx = iu * cyl.ntheta + it;
+                    let rt = f64::from(cyl.r_target[idx]);
+                    if rt < 0.0 {
+                        continue;
+                    }
+                    let dev = f64::from(cyl.r_stock[idx]) - rt;
+                    sum_sq += dev * dev;
+                    sum_signed += dev;
+                    if dev < 0.0 {
+                        max_gouge = max_gouge.max(-dev);
+                    }
+                    if dev.abs() <= 0.05 {
+                        in_tol += 1;
+                    }
+                    total += 1;
+                }
+            }
+            assert!(total > 10_000);
+            let rms = (sum_sq / total as f64).sqrt();
+            let bias = sum_signed / total as f64;
+            let in_tol_pct = 100.0 * (in_tol as f64) / (total as f64);
+            assert!(
+                rms <= 0.05,
+                "Rotary2Linear machined-zone RMS expected <= 0.05 mm, got {rms:.4} mm"
+            );
+            assert!(
+                bias.abs() < 0.02,
+                "Rotary2Linear staircase bias expected |bias| < 0.02 mm, got {bias:+.4} mm"
+            );
+            assert!(
+                max_gouge <= 0.015,
+                "Rotary2Linear max_gouge expected <= 0.015 mm, got {max_gouge:.4} mm"
+            );
+            assert!(
+                in_tol_pct >= 90.0,
+                "Rotary2Linear machined-zone In-Tol (±0.05) expected >= 90%, got {in_tol_pct:.1}%"
+            );
+        }
+    }
+
+    #[test]
+    fn indexed_step_cylindrical_target_metrics_non_zero_rms_and_cpu_gpu_parity() {
+        use std::sync::atomic::AtomicBool;
+
+        use chip_cad::{SurfaceKind, tutorial_indexed_4side_block_step};
+        use chip_cam::{
+            FixedBoxXyAlign, FixedBoxZAlign, GeometrySelectionItem, Operation, OperationGenRequest,
+            OperationKind, OperationRotaryMode, compute_index_angle_for_normal,
+            generate_operation_toolpath_with_rest,
+        };
+
+        let step = tutorial_indexed_4side_block_step().unwrap();
+        let doc = MonstertruckKernel
+            .load_step_bytes(
+                "11-indexed-multiface-block.step",
+                step.as_bytes(),
+                DEFAULT_TESS_CHORD_TOL_MM,
+            )
+            .unwrap();
+
+        let mut setup = Setup::new("s_idx_step", "Indexed 3+1 STEP", WorkOffsetSlot::G54);
+        setup.wcs.origin = WcsOriginMode::StockBoxPoint {
+            anchor: BoxAnchor27::VOLUMETRIC_CENTER,
+        };
+        setup.stock = StockConfig::FixedBox {
+            width_x: ParamLength::from_mm(90.0),
+            depth_y: ParamLength::from_mm(36.0),
+            height_z: ParamLength::from_mm(36.0),
+            xy_align: FixedBoxXyAlign::CenterXy,
+            z_align: FixedBoxZAlign::CenterZ,
+        };
+        setup.rotary.mode = RotaryDriveMode::Indexed3Plus1;
+        setup.rotary.axis = RotaryAxisKind::XAxis;
+        setup.rotary.clearance_radial_offset = ParamLength::from_mm(10.0);
+        setup.rotary.chuck_length = ParamLength::from_mm(20.0);
+        setup.rotary.chuck_diameter = ParamLength::from_mm(65.0);
+        let resolved = setup.resolve(&doc, DisplayUnit::Millimeter).unwrap();
+        let rot = resolved.rotary.unwrap();
+
+        let lib = default_starter_tool_library();
+        let flat_6 = &lib.tools[0];
+        let cancel = AtomicBool::new(false);
+
+        // Generate all 5 indexed planar face operations (0°, 45°, 90°, 180°, 270°)
+        let mut generated = Vec::new();
+        for face in &doc.faces {
+            let SurfaceKind::Plane { normal, .. } = face.surface else {
+                continue;
+            };
+            let n_wcs = resolved.frame.world_to_local_dir(normal);
+            let Some(angle_deg) = compute_index_angle_for_normal(n_wcs, &rot) else {
+                continue;
+            };
+            let Some(binding) = doc.bind_face(face.id) else {
+                continue;
+            };
+            let mut op = Operation::new(
+                format!("op_idx_{}", angle_deg.round() as i32),
+                format!("Indexed {angle_deg:.0}°"),
+                OperationKind::Pocket2D,
+            );
+            op.tool_id = Some(flat_6.id.clone());
+            op.selections
+                .push(GeometrySelectionItem::PlanarFace { binding });
+            op.passes.multiple_depths = true;
+            op.passes.max_stepdown = ParamLength::from_mm(2.5);
+            op.rotary = OperationRotaryMode::Indexed3Plus1 { angle_deg };
+            let tp = generate_operation_toolpath_with_rest(&OperationGenRequest {
+                doc: &doc,
+                sketches: &[],
+                setup: &resolved,
+                op: &op,
+                tool: flat_6,
+                clearing_tool: None,
+                display_unit: DisplayUnit::Millimeter,
+                is_first_tool_in_setup: generated.is_empty(),
+                upstream_rest: &[],
+                cancel: &cancel,
+            })
+            .unwrap();
+            generated.push((op, tp));
+        }
+        assert_eq!(generated.len(), 5, "expected 5 indexed planar faces");
+
+        let sim_ops: Vec<SimOperationInput<'_>> = generated
+            .iter()
+            .map(|(op, tp)| SimOperationInput {
+                op_id: &op.id,
+                op_name: &op.name,
+                tool: flat_6,
+                fallback_spindle_rpm: 12_000.0,
+                intentional_edge_break_mm: 0.0,
+                toolpath: tp,
+            })
+            .collect();
+
+        let input = SetupSimulationInput {
+            doc: &doc,
+            setup: &resolved,
+            target_bodies: &[],
+            operations: &sim_ops,
+            resolution: SimResolution::Standard,
+            kinematics: MachineKinematicsConfig::default(),
+            verify_config: SimVerificationConfig::default(),
+            cancel: None,
+        };
+
+        let cpu = run_setup_simulation_with_choice(
+            &input,
+            SimEngineKind::Heightmap,
+            SimComputeBackendChoice::Cpu,
+        )
+        .unwrap();
+        assert_eq!(cpu.critical_error_count(), 0);
+        let rc = cpu
+            .error_report
+            .as_ref()
+            .expect("11-indexed-step must produce a Cylindrical StockErrorReport");
+        assert!(
+            rc.rms_error_mm > 5.0,
+            "11-indexed-step RMS must reflect uncut bar ends (non-zero), got {:.4}",
+            rc.rms_error_mm
+        );
+        assert!(
+            rc.max_excess_mm > 20.0,
+            "max_excess must reflect 36x36 bar stub corner, got {:.3}",
+            rc.max_excess_mm
+        );
+        assert!(
+            rc.max_gouge_mm < 0.01,
+            "indexed STEP faces must be gouge-free, got {:.5}",
+            rc.max_gouge_mm
+        );
+        assert!(
+            (70.0..=85.0).contains(&rc.in_tolerance_surface_pct),
+            "expected ~77.7% in-tolerance surface (70/90 mm machined), got {:.2}%",
+            rc.in_tolerance_surface_pct
+        );
+
+        #[cfg(feature = "gpu-compute")]
+        if GpuSimContext::shared_headless().is_some() {
+            let gpu = run_setup_simulation_with_choice(
+                &input,
+                SimEngineKind::Heightmap,
+                SimComputeBackendChoice::Gpu,
+            )
+            .unwrap();
+            assert!(gpu.active_backend.is_gpu);
+            assert_eq!(gpu.critical_error_count(), 0);
+            let rg = gpu.error_report.as_ref().unwrap();
+            let vol_err = (gpu.remaining_stock_volume_mm3 - cpu.remaining_stock_volume_mm3).abs()
+                / cpu.remaining_stock_volume_mm3.max(1.0);
+            assert!(vol_err < 0.001, "vol parity err {:.4}%", vol_err * 100.0);
+            assert!(
+                (rg.rms_error_mm - rc.rms_error_mm).abs() < 0.01,
+                "RMS parity cpu={:.4} gpu={:.4}",
+                rc.rms_error_mm,
+                rg.rms_error_mm
+            );
+            assert!(
+                (rg.mean_abs_error_mm - rc.mean_abs_error_mm).abs() < 0.01,
+                "MAE parity cpu={:.4} gpu={:.4}",
+                rc.mean_abs_error_mm,
+                rg.mean_abs_error_mm
+            );
+            assert!(
+                (rg.max_excess_mm - rc.max_excess_mm).abs() < 0.01,
+                "max_excess parity cpu={:.4} gpu={:.4}",
+                rc.max_excess_mm,
+                rg.max_excess_mm
+            );
+            assert!(
+                (rg.in_tolerance_surface_pct - rc.in_tolerance_surface_pct).abs() < 0.5,
+                "in_tol parity cpu={:.2}% gpu={:.2}%",
+                rc.in_tolerance_surface_pct,
+                rg.in_tolerance_surface_pct
+            );
+        }
+    }
 }

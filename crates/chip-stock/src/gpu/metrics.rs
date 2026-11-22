@@ -345,13 +345,19 @@ impl GpuSimContext {
                 },
             ],
         });
-        self.run_metrics_reduction(
+        let mut totals = self.run_metrics_reduction(
             &self.metrics_cyl_pipeline,
             &stock_bg,
             &uniforms,
             num_wg,
             !volume_only,
-        )
+        );
+        // Mirror CPU `has_target` guard: if no target solid was rasterized (`r_target` all `-1.0`),
+        // clear sample_count so `quick_summary()` and `into_error_report(..., true)` return `None`.
+        if !volume_only && totals.target_vol_mm3 <= 1e-9 {
+            totals.sample_count = 0;
+        }
+        totals
     }
 
     #[allow(clippy::too_many_arguments)]

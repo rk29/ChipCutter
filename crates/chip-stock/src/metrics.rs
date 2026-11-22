@@ -635,10 +635,11 @@ pub fn compute_cylindrical_error_report(
     per_operation: Vec<OperationErrorSnapshot>,
 ) -> Option<StockErrorReport> {
     let factor = 0.5 * stock.du * stock.dtheta;
+    let mut has_target = false;
     let mut target_vol = 0.0;
     let mut excess_vol = 0.0;
     let mut gouge_vol = 0.0;
-    let mut acc = DeviationStatsAcc::new(tolerance_mm, stock.nu * stock.ntheta / 2);
+    let mut acc = DeviationStatsAcc::new(tolerance_mm, stock.nu * stock.ntheta);
 
     for iu in 0..stock.nu {
         let u = stock.u_min + (iu as f64 + 0.5) * stock.du;
@@ -648,6 +649,7 @@ pub fn compute_cylindrical_error_report(
             let rm = f64::from(stock.r_stock[idx]).max(0.0);
             let rt_f = stock.r_target[idx];
             if rt_f >= 0.0 && rt_f.is_finite() {
+                has_target = true;
                 let rt = f64::from(rt_f);
                 target_vol += factor * rt * rt;
                 let dev = rm - rt;
@@ -661,11 +663,14 @@ pub fn compute_cylindrical_error_report(
                 acc.push(dev, loc);
             } else if rm > 1e-6 {
                 excess_vol += factor * rm * rm;
+                let theta = it as f64 * stock.dtheta;
+                let loc = stock.rotary.cylindrical_to_wcs(u, theta, rm);
+                acc.push(rm, loc);
             }
         }
     }
 
-    if acc.abs_samples.is_empty() {
+    if !has_target || acc.abs_samples.is_empty() {
         return None;
     }
 
@@ -683,6 +688,7 @@ pub fn compute_cylindrical_quick_error_summary(
     stock: &CylindricalStock,
 ) -> Option<(f64, f64, f64)> {
     let factor = 0.5 * stock.du * stock.dtheta;
+    let mut has_target = false;
     let mut excess_vol = 0.0;
     let mut gouge_vol = 0.0;
     let mut sum_sq = 0.0;
@@ -692,6 +698,7 @@ pub fn compute_cylindrical_quick_error_summary(
         let rm = f64::from(stock.r_stock[idx]).max(0.0);
         let rt_f = stock.r_target[idx];
         if rt_f >= 0.0 && rt_f.is_finite() {
+            has_target = true;
             let rt = f64::from(rt_f);
             let dev = rm - rt;
             if dev > 0.0 {
@@ -703,9 +710,11 @@ pub fn compute_cylindrical_quick_error_summary(
             cnt += 1;
         } else if rm > 1e-6 {
             excess_vol += factor * rm * rm;
+            sum_sq += rm * rm;
+            cnt += 1;
         }
     }
-    if cnt == 0 {
+    if !has_target || cnt == 0 {
         None
     } else {
         Some((excess_vol, gouge_vol, (sum_sq / cnt as f64).sqrt()))
@@ -877,5 +886,38 @@ mod tests {
         let rep_wide = compute_cylindrical_error_report(&stock, initial_vol, 0.6, Vec::new())
             .expect("wide-tol report");
         assert!((rep_wide.in_tolerance_surface_pct - 100.0).abs() < 1e-6);
+
+        // Partial-length target (like `11-indexed-step` where 70 mm target sits inside 90 mm bar):
+        // Machined middle half matches `r_target = 16.0` exact, while outer ends have `r_target = -1.0`
+        // and uncut stock `r_stock = 21.0`. Excess volume AND surface RMS / in-tol must agree!
+        stock.r_stock.fill(21.0_f32);
+        stock.r_target.fill(-1.0_f32);
+        let q1 = stock.nu / 4;
+        let q3 = 3 * stock.nu / 4;
+        for iu in q1..q3 {
+            for it in 0..stock.ntheta {
+                let idx = iu * stock.ntheta + it;
+                stock.r_target[idx] = 16.0_f32;
+                stock.r_stock[idx] = 16.0_f32;
+            }
+        }
+        let rep_partial = compute_cylindrical_error_report(&stock, initial_vol, 0.05, Vec::new())
+            .expect("partial-length cylindrical target report");
+        assert!(rep_partial.excess_volume_mm3 > 10_000.0);
+        assert!(
+            rep_partial.rms_error_mm > 10.0,
+            "uncut non-target bar ends must produce non-zero RMS, got {}",
+            rep_partial.rms_error_mm
+        );
+        assert!(
+            (rep_partial.max_excess_mm - 21.0).abs() < 1e-4,
+            "max_excess={}",
+            rep_partial.max_excess_mm
+        );
+        assert!(
+            (rep_partial.in_tolerance_surface_pct - 50.0).abs() < 1.0,
+            "expected ~50% in-tol for half-length target, got {:.2}%",
+            rep_partial.in_tolerance_surface_pct
+        );
     }
 }

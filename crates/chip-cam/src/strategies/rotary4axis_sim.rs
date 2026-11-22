@@ -3,8 +3,9 @@
 //!
 //! Drives all three linear axes simultaneously with the 4th rotary axis using either a fixed
 //! off-centerline lateral shift or smoothed automatic surface-normal tilt (`c_cross(u, θ)`),
-//! followed by exact `f64` off-centerline Drop-Cutter contact evaluation in parallel (`rayon`),
-//! concentric multi-depth roughing without mid-air unwinding, and gouge-safe chord decimation.
+//! followed by exact `f64` direct off-centerline Drop-Cutter contact evaluation in parallel
+//! (`rayon`), adaptive gouge-free chord-midpoint subdivision, concentric multi-depth roughing
+//! without mid-air unwinding, and tight convex-safe chord decimation.
 
 use chip_math::DVec3;
 use rayon::prelude::*;
@@ -13,13 +14,11 @@ use crate::{
     cl_data::MotionRole,
     params::{Rotary4AxisPattern, Rotary4AxisSimParams, RotaryCutDirection, RotaryTiltMode},
     rotary::{
-        ResolvedRotaryConfig, RotaryAxisKind, RotaryDriveMode, build_rotated_strip_mesh,
-        resolve_rotary_axial_window,
+        ResolvedRotaryConfig, RotaryAxisKind, RotaryDriveMode, drop_cutter_rotary_z_rel,
+        estimate_rotary_flank_cos_phi, resolve_rotary_axial_window,
     },
     strategies::{StrategyExecContext, compute_z_levels},
-    surface3d::{
-        SurfaceCutterProfile, SurfaceMesh3D, drop_cutter_z_with_scratch, stepover_for_cusp_height,
-    },
+    surface3d::{SurfaceCutterProfile, SurfaceMesh3D, stepover_for_cusp_height},
     toolpath::ToolpathBuilder,
     wcs::CamError,
 };
@@ -86,157 +85,84 @@ pub fn generate_rotary4axis_sim(
     let angular_span_deg = end_deg - start_deg;
     let is_full_turn = (angular_span_deg - 360.0).abs() <= 1e-3;
 
-    // Fine internal Drop-Cutter sampling resolution keeping convex helical flanks gouge-free
-    let axial_sample = params.axial_sample_step.value_mm.clamp(0.1, 0.40);
+    // Fine direct sampling bounds keeping curved helical flanks accurate prior to adaptive midpoint refinement
+    let axial_sample = params.axial_sample_step.value_mm.clamp(0.08, 0.25);
     let n_u = (((u_end - u_start) / axial_sample).ceil() as usize).clamp(4, 2_000);
     let du = (u_end - u_start) / (n_u as f64);
     let u_samples: Vec<f64> = (0..=n_u).map(|i| u_start + (i as f64) * du).collect();
 
-    let d_theta_req = params.angular_sample_deg.clamp(0.5, 2.0);
+    let d_theta_req = params.angular_sample_deg.clamp(0.5, 1.5);
     let n_theta = ((angular_span_deg / d_theta_req).ceil() as usize).clamp(8, 720);
     let d_theta = angular_span_deg / (n_theta as f64);
-    let theta_count = if is_full_turn { n_theta } else { n_theta + 1 };
 
     let cutter = SurfaceCutterProfile::from_tool_geometry(
         &ctx.tool.geometry,
         ctx.passes.stock_to_leave_radial.value_mm,
         ctx.passes.stock_to_leave_axial.value_mm,
     );
-    let r_max = cutter.max_radius_mm();
     let r_floor = (ctx.heights.bottom_z_wcs - rot.center_wcs.z).max(0.5);
-    let z_floor = rot.center_wcs.z + r_floor;
     let r_outer_est = rot.stock_outer_radius_mm.max(2.0);
     let max_safe_cross = (r_outer_est * 0.65).max(0.5);
 
-    // Stage A: Compute smoothed off-centerline cross-axis offset field `c_cross[it][iu]`
-    let c_cross_grid = compute_cross_offset_field(
+    // Stage A: Compute smooth C1-continuous cross-axis offset field `c_cross(u, θ)`
+    let c_field = compute_cross_offset_field(
         &base_mesh,
         &rot,
         &cutter,
         params,
-        &u_samples,
-        start_deg,
-        d_theta,
-        theta_count,
-        is_full_turn,
         u_start,
         u_end,
-        r_max,
+        start_deg,
+        angular_span_deg,
+        is_full_turn,
         r_floor,
-        z_floor,
         max_safe_cross,
     );
     ctx.check_cancel()?;
 
-    let mut max_abs_cross = 0.0_f64;
-    for row in &c_cross_grid {
-        for &c in row {
-            max_abs_cross = max_abs_cross.max(c.abs());
-        }
-    }
-
-    // Stage B: Exact f64 off-centerline Drop-Cutter evaluation in parallel across angular stations
-    let z_slices: Vec<Vec<f64>> = (0..theta_count)
-        .into_par_iter()
-        .map(|it| {
-            let theta_deg = start_deg + (it as f64) * d_theta;
-            let rot_mesh = build_rotated_strip_mesh(
-                &base_mesh,
-                &rot,
-                theta_deg,
-                u_start,
-                u_end,
-                max_abs_cross + r_max,
-                z_floor,
-            );
-            let mut scratch = Vec::with_capacity(64);
-            let mut row = Vec::with_capacity(u_samples.len());
-            for (iu, &u_val) in u_samples.iter().enumerate() {
-                let c_off = c_cross_grid[it][iu];
-                let (qx, qy) = match rot.axis {
-                    RotaryAxisKind::XAxis | RotaryAxisKind::ZAxis => {
-                        (u_val, rot.center_wcs.y + c_off)
-                    }
-                    RotaryAxisKind::YAxis => (rot.center_wcs.x + c_off, u_val),
-                };
-                let z_hit = if rot_mesh.triangles.is_empty() {
-                    None
-                } else {
-                    drop_cutter_z_with_scratch(&rot_mesh, &cutter, qx, qy, z_floor, &mut scratch)
-                };
-                row.push((z_hit.unwrap_or(z_floor) - rot.center_wcs.z).max(r_floor));
-            }
-            row
-        })
-        .collect();
-
-    ctx.check_cancel()?;
-
-    let mut r_min_surf = f64::INFINITY;
-    let mut r_max_surf = 0.0_f64;
-    for (it, row) in z_slices.iter().enumerate() {
-        for (iu, &z_rel) in row.iter().enumerate() {
-            let r_eff = z_rel.hypot(c_cross_grid[it][iu]);
-            r_min_surf = r_min_surf.min(r_eff);
-            r_max_surf = r_max_surf.max(r_eff);
-        }
-    }
-    if !r_min_surf.is_finite() {
-        return Err(CamError::EmptyToolpath {
-            op_name: ctx.op.name.clone(),
-        });
-    }
-
-    let grid = Rotary4AxisGrid {
-        u_start,
-        du,
-        n_u,
-        start_deg,
-        d_theta,
-        n_theta,
-        is_full_turn,
-        z_rel_slices: z_slices,
-        c_cross_slices: c_cross_grid,
-    };
-
+    // Slope-compensated cusp-height stepover scaling when enabled
     let stepover_mm = if params.use_cusp_height {
         let cusp = params.cusp_height.value_mm.clamp(0.002, 2.0);
-        stepover_for_cusp_height(&cutter, cusp, params.stepover.value_mm.max(0.05))
-            .clamp(0.1, tool_d * 0.75)
+        let base_step = stepover_for_cusp_height(&cutter, cusp, params.stepover.value_mm.max(0.05));
+        let cos_phi = estimate_rotary_flank_cos_phi(
+            &base_mesh,
+            &rot,
+            &cutter,
+            u_start,
+            u_end,
+            start_deg,
+            end_deg,
+            is_full_turn,
+            r_floor,
+            matches!(params.pattern, Rotary4AxisPattern::HelicalFlowline),
+        );
+        (base_step * cos_phi).clamp(0.08, tool_d * 0.75)
     } else {
         params.stepover.value_mm.max(0.05)
     };
 
-    let r_outer = rot.stock_outer_radius_mm.max(r_max_surf);
-    let radial_levels = compute_z_levels(
-        r_outer,
-        r_min_surf,
-        ctx.passes.multiple_depths,
-        ctx.passes.max_stepdown.value_mm,
-        ctx.passes.even_stepdowns,
-    )?;
-
-    let safe_z_wcs = rot.center_wcs.z + rot.clearance_radius_mm.max(r_outer + 5.0);
     let cut_feed = ctx.cutting.cutting_feed_mm_min;
     let plunge_feed = ctx.cutting.plunge_feed_mm_min.min(cut_feed).max(10.0);
     let smooth_tol = params.smoothing_tolerance.value_mm.clamp(0.0, 0.25);
 
+    // Stage B: Exact direct f64 off-centerline drop-cutter evaluation + adaptive chord refinement
     match params.pattern {
         Rotary4AxisPattern::SimultaneousSpiral => {
             emit_simultaneous_spiral(
                 ctx,
+                &base_mesh,
                 &rot,
-                &grid,
-                &radial_levels,
+                &cutter,
+                &c_field,
                 u_start,
                 u_end,
                 start_deg,
                 end_deg,
                 is_full_turn,
+                r_floor,
                 stepover_mm,
                 d_theta,
                 params.cut_direction,
-                safe_z_wcs,
                 cut_feed,
                 plunge_feed,
                 smooth_tol,
@@ -246,17 +172,18 @@ pub fn generate_rotary4axis_sim(
         Rotary4AxisPattern::HelicalFlowline => {
             emit_helical_flowline(
                 ctx,
+                &base_mesh,
                 &rot,
-                &grid,
-                &radial_levels,
+                &cutter,
+                &c_field,
                 &u_samples,
                 start_deg,
                 end_deg,
                 is_full_turn,
-                r_outer,
+                r_floor,
+                r_outer_est,
                 stepover_mm,
                 params.cut_direction,
-                safe_z_wcs,
                 cut_feed,
                 plunge_feed,
                 smooth_tol,
@@ -265,6 +192,7 @@ pub fn generate_rotary4axis_sim(
         }
     }
 
+    let safe_z_wcs = rot.center_wcs.z + rot.clearance_radius_mm.max(r_outer_est + 5.0);
     if let Some(last) = builder.current_pos()
         && last.z < safe_z_wcs - 1e-4
     {
@@ -277,72 +205,121 @@ pub fn generate_rotary4axis_sim(
     Ok(())
 }
 
-/// Computes the smooth cross-axis lateral offset grid `c_cross[it][iu]` (`mm`).
+/// Smooth cross-axis lateral offset field `c_cross(u, θ)` (`mm`).
+enum CrossOffsetField {
+    Fixed(f64),
+    Grid {
+        u_start: f64,
+        du: f64,
+        n_u: usize,
+        start_deg: f64,
+        d_theta: f64,
+        n_theta: usize,
+        is_full_turn: bool,
+        c_cross_slices: Vec<Vec<f64>>,
+    },
+}
+
+impl CrossOffsetField {
+    #[inline]
+    fn sample(&self, u: f64, theta_deg: f64) -> f64 {
+        match self {
+            Self::Fixed(c) => *c,
+            Self::Grid {
+                u_start,
+                du,
+                n_u,
+                start_deg,
+                d_theta,
+                n_theta,
+                is_full_turn,
+                c_cross_slices,
+            } => {
+                let fu = ((u - *u_start) / *du).clamp(0.0, *n_u as f64);
+                let iu0 = (fu.floor() as usize).min(*n_u);
+                let iu1 = (iu0 + 1).min(*n_u);
+                let tu = (fu - iu0 as f64).clamp(0.0, 1.0);
+
+                let (it0, it1, tt) = if *is_full_turn {
+                    let wrapped = (theta_deg - *start_deg).rem_euclid(360.0);
+                    let ft = wrapped / *d_theta;
+                    let i0 = (ft.floor() as usize) % *n_theta;
+                    let i1 = (i0 + 1) % *n_theta;
+                    (i0, i1, (ft - ft.floor()).clamp(0.0, 1.0))
+                } else {
+                    let max_idx = c_cross_slices.len().saturating_sub(1);
+                    let ft = ((theta_deg - *start_deg) / *d_theta).clamp(0.0, max_idx as f64);
+                    let i0 = (ft.floor() as usize).min(max_idx);
+                    let i1 = (i0 + 1).min(max_idx);
+                    (i0, i1, (ft - i0 as f64).clamp(0.0, 1.0))
+                };
+
+                let c00 = c_cross_slices[it0][iu0];
+                let c01 = c_cross_slices[it0][iu1];
+                let c10 = c_cross_slices[it1][iu0];
+                let c11 = c_cross_slices[it1][iu1];
+                let c0 = c00 + (c01 - c00) * tu;
+                let c1 = c10 + (c11 - c10) * tu;
+                c0 + (c1 - c0) * tt
+            }
+        }
+    }
+}
+
+/// Computes the smooth cross-axis lateral offset field `c_cross(u, θ)` (`mm`) using direct
+/// exact `f64` centerline drop-cutter queries.
 #[allow(clippy::too_many_arguments)]
 fn compute_cross_offset_field(
     base_mesh: &SurfaceMesh3D,
     rot: &ResolvedRotaryConfig,
     cutter: &SurfaceCutterProfile,
     params: &Rotary4AxisSimParams,
-    u_samples: &[f64],
-    start_deg: f64,
-    d_theta: f64,
-    theta_count: usize,
-    is_full_turn: bool,
     u_start: f64,
     u_end: f64,
-    r_max: f64,
+    start_deg: f64,
+    angular_span_deg: f64,
+    is_full_turn: bool,
     r_floor: f64,
-    z_floor: f64,
     max_safe_cross: f64,
-) -> Vec<Vec<f64>> {
-    let nu = u_samples.len();
+) -> CrossOffsetField {
     match params.tilt_mode {
         RotaryTiltMode::FixedLateralOffset => {
             let c_fixed = params
                 .lateral_offset
                 .value_mm
                 .clamp(-max_safe_cross, max_safe_cross);
-            vec![vec![c_fixed; nu]; theta_count]
+            CrossOffsetField::Fixed(c_fixed)
         }
         RotaryTiltMode::SurfaceNormalAutoTilt => {
             let max_tilt_rad = params.max_tilt_deg.clamp(0.0, 40.0).to_radians();
             if max_tilt_rad <= 1e-4 {
-                return vec![vec![0.0; nu]; theta_count];
+                return CrossOffsetField::Fixed(0.0);
             }
 
-            // Coarse centerline drop-cutter pass to estimate local circumferential flank slope `dr/(r*dθ)`
+            let axial_tilt = params.axial_sample_step.value_mm.clamp(0.20, 0.40);
+            let n_u = (((u_end - u_start) / axial_tilt).ceil() as usize).clamp(4, 1_000);
+            let du = (u_end - u_start) / (n_u as f64);
+            let u_samples: Vec<f64> = (0..=n_u).map(|i| u_start + (i as f64) * du).collect();
+            let nu = u_samples.len();
+
+            let d_theta_req = params.angular_sample_deg.clamp(1.0, 2.0);
+            let n_theta = ((angular_span_deg / d_theta_req).ceil() as usize).clamp(8, 360);
+            let d_theta = angular_span_deg / (n_theta as f64);
+            let theta_count = if is_full_turn { n_theta } else { n_theta + 1 };
+
+            // Exact centerline drop-cutter pass to estimate local circumferential flank slope `dr/(r*dθ)`
             let r_center: Vec<Vec<f64>> = (0..theta_count)
                 .into_par_iter()
                 .map(|it| {
                     let theta_deg = start_deg + (it as f64) * d_theta;
-                    let rot_mesh = build_rotated_strip_mesh(
-                        base_mesh, rot, theta_deg, u_start, u_end, r_max, z_floor,
-                    );
-                    let mut scratch = Vec::with_capacity(64);
-                    let mut row = Vec::with_capacity(nu);
-                    for &u_val in u_samples {
-                        let (qx, qy) = match rot.axis {
-                            RotaryAxisKind::XAxis | RotaryAxisKind::ZAxis => {
-                                (u_val, rot.center_wcs.y)
-                            }
-                            RotaryAxisKind::YAxis => (rot.center_wcs.x, u_val),
-                        };
-                        let z_hit = if rot_mesh.triangles.is_empty() {
-                            None
-                        } else {
-                            drop_cutter_z_with_scratch(
-                                &rot_mesh,
-                                cutter,
-                                qx,
-                                qy,
-                                z_floor,
-                                &mut scratch,
+                    u_samples
+                        .iter()
+                        .map(|&u_val| {
+                            drop_cutter_rotary_z_rel(
+                                base_mesh, rot, cutter, u_val, 0.0, theta_deg, r_floor,
                             )
-                        };
-                        row.push((z_hit.unwrap_or(z_floor) - rot.center_wcs.z).max(r_floor));
-                    }
-                    row
+                        })
+                        .collect()
                 })
                 .collect();
 
@@ -402,7 +379,6 @@ fn compute_cross_offset_field(
                     for iu in 0..nu {
                         let iup = iu.saturating_sub(1);
                         let iun = (iu + 1).min(nu - 1);
-                        // 2D separable-style 5-point smoothing kernel
                         let val = 0.40 * cur[it][iu]
                             + 0.20 * cur[itp][iu]
                             + 0.20 * cur[itn][iu]
@@ -413,80 +389,18 @@ fn compute_cross_offset_field(
                 }
                 std::mem::swap(&mut cur, &mut next);
             }
-            cur
+
+            CrossOffsetField::Grid {
+                u_start,
+                du,
+                n_u,
+                start_deg,
+                d_theta,
+                n_theta,
+                is_full_turn,
+                c_cross_slices: cur,
+            }
         }
-    }
-}
-
-struct Rotary4AxisGrid {
-    u_start: f64,
-    du: f64,
-    n_u: usize,
-    start_deg: f64,
-    d_theta: f64,
-    n_theta: usize,
-    is_full_turn: bool,
-    z_rel_slices: Vec<Vec<f64>>,
-    c_cross_slices: Vec<Vec<f64>>,
-}
-
-impl Rotary4AxisGrid {
-    /// Returns `(c_cross_mm, z_rel_mm)` at `(u, theta_deg)` with shoulder-safe Z lifting across
-    /// sharp steps and smooth bilinear cross-axis interpolation.
-    fn sample_safe(&self, u: f64, theta_deg: f64) -> (f64, f64) {
-        let fu = ((u - self.u_start) / self.du).clamp(0.0, self.n_u as f64);
-        let iu0 = (fu.floor() as usize).min(self.n_u);
-        let iu1 = (iu0 + 1).min(self.n_u);
-        let tu = (fu - iu0 as f64).clamp(0.0, 1.0);
-
-        let (it0, it1, tt) = if self.is_full_turn {
-            let wrapped = (theta_deg - self.start_deg).rem_euclid(360.0);
-            let ft = wrapped / self.d_theta;
-            let i0 = (ft.floor() as usize) % self.n_theta;
-            let i1 = (i0 + 1) % self.n_theta;
-            (i0, i1, (ft - ft.floor()).clamp(0.0, 1.0))
-        } else {
-            let max_idx = self.z_rel_slices.len().saturating_sub(1);
-            let ft = ((theta_deg - self.start_deg) / self.d_theta).clamp(0.0, max_idx as f64);
-            let i0 = (ft.floor() as usize).min(max_idx);
-            let i1 = (i0 + 1).min(max_idx);
-            (i0, i1, (ft - i0 as f64).clamp(0.0, 1.0))
-        };
-
-        let c00 = self.c_cross_slices[it0][iu0];
-        let c01 = self.c_cross_slices[it0][iu1];
-        let c10 = self.c_cross_slices[it1][iu0];
-        let c11 = self.c_cross_slices[it1][iu1];
-        let c0 = c00 + (c01 - c00) * tu;
-        let c1 = c10 + (c11 - c10) * tu;
-        let c_bi = c0 + (c1 - c0) * tt;
-
-        let z00 = self.z_rel_slices[it0][iu0];
-        let z01 = self.z_rel_slices[it0][iu1];
-        let z10 = self.z_rel_slices[it1][iu0];
-        let z11 = self.z_rel_slices[it1][iu1];
-        let z0 = z00 + (z01 - z00) * tu;
-        let z1 = z10 + (z11 - z10) * tu;
-        let z_bi = z0 + (z1 - z0) * tt;
-        let z_max = z00.max(z01).max(z10).max(z11);
-
-        let c_min = c00.min(c01).min(c10).min(c11);
-        let c_max = c00.max(c01).max(c10).max(c11);
-        let c_spread = c_max - c_min;
-        let z_safe = if (z_max - z_bi) > 0.008 || c_spread > 0.10 {
-            z_max + 0.06 * c_spread
-        } else {
-            z_bi
-        };
-        (c_bi, z_safe)
-    }
-
-    /// Evaluates `(c_cross, z_rel)` clamped to concentric cylindrical roughing shell `r_ceil`.
-    #[inline]
-    fn sample_at_shell(&self, u: f64, theta_deg: f64, r_ceil: f64) -> (f64, f64) {
-        let (c, z_surf) = self.sample_safe(u, theta_deg);
-        let z_shell = (r_ceil * r_ceil - c * c).max(0.25).sqrt();
-        (c, z_surf.max(z_shell))
     }
 }
 
@@ -501,76 +415,248 @@ fn off_center_wcs(rot: &ResolvedRotaryConfig, u_axial: f64, c_cross: f64, z_rel:
     }
 }
 
+#[inline]
+fn clamp_to_shell(c_cross: f64, z_surf: f64, r_ceil: f64) -> f64 {
+    let z_shell = (r_ceil * r_ceil - c_cross * c_cross).max(0.25).sqrt();
+    z_surf.max(z_shell)
+}
+
+/// Evaluates exact `(u, theta_deg, c_cross, z_rel)` in parallel along a sequence of `(u, theta_deg)`
+/// coordinates, then recursively refines every chord whose midpoint deviates from exact `f64`
+/// off-centerline drop-cutter contact (guarding both convex peaks `> 4 µm` and concave valleys).
+fn evaluate_and_refine_4axis_strip(
+    base_mesh: &SurfaceMesh3D,
+    rot: &ResolvedRotaryConfig,
+    cutter: &SurfaceCutterProfile,
+    c_field: &CrossOffsetField,
+    coords: &[(f64, f64)],
+    r_floor: f64,
+    smooth_tol: f64,
+) -> Vec<(f64, f64, f64, f64)> {
+    if coords.is_empty() {
+        return Vec::new();
+    }
+
+    let evaluated: Vec<(f64, f64, f64, f64)> = coords
+        .par_iter()
+        .map(|&(u, th)| {
+            let c = c_field.sample(u, th);
+            let z = drop_cutter_rotary_z_rel(base_mesh, rot, cutter, u, c, th, r_floor);
+            (u, th, c, z)
+        })
+        .collect();
+
+    if evaluated.len() <= 1 {
+        return evaluated;
+    }
+
+    let concave_tol = smooth_tol.clamp(0.004, 0.015);
+    let inserted: Vec<Vec<(f64, f64, f64, f64)>> = (0..(evaluated.len() - 1))
+        .into_par_iter()
+        .map(|i| {
+            let mut mid_pts = Vec::new();
+            refine_4axis_segment(
+                base_mesh,
+                rot,
+                cutter,
+                c_field,
+                r_floor,
+                evaluated[i],
+                evaluated[i + 1],
+                concave_tol,
+                0,
+                &mut mid_pts,
+            );
+            mid_pts
+        })
+        .collect();
+
+    let extra: usize = inserted.iter().map(Vec::len).sum();
+    let mut out = Vec::with_capacity(evaluated.len() + extra);
+    for (i, seg_mids) in inserted.into_iter().enumerate() {
+        out.push(evaluated[i]);
+        out.extend(seg_mids);
+    }
+    if let Some(&last) = evaluated.last() {
+        out.push(last);
+    }
+    out
+}
+
+#[allow(clippy::too_many_arguments)]
+fn refine_4axis_segment(
+    base_mesh: &SurfaceMesh3D,
+    rot: &ResolvedRotaryConfig,
+    cutter: &SurfaceCutterProfile,
+    c_field: &CrossOffsetField,
+    r_floor: f64,
+    a: (f64, f64, f64, f64),
+    b: (f64, f64, f64, f64),
+    concave_tol: f64,
+    depth: u8,
+    out: &mut Vec<(f64, f64, f64, f64)>,
+) {
+    if depth >= 4 {
+        return;
+    }
+    let d_th = (b.1 - a.1).abs();
+    let d_z = (b.3 - a.3).abs();
+    let d_c = (b.2 - a.2).abs();
+    if d_th <= 0.35 && d_z <= 0.015 && d_c <= 0.02 {
+        return;
+    }
+
+    let u_mid = 0.5 * (a.0 + b.0);
+    let th_mid = 0.5 * (a.1 + b.1);
+    let c_mid = c_field.sample(u_mid, th_mid);
+    let z_mid = drop_cutter_rotary_z_rel(base_mesh, rot, cutter, u_mid, c_mid, th_mid, r_floor);
+
+    let c_chord = 0.5 * (a.2 + b.2);
+    let z_chord = 0.5 * (a.3 + b.3);
+    // Also verify exact contact at the linearly interpolated cross-axis offset `c_chord`
+    let z_at_chord_c = if (c_mid - c_chord).abs() > 1e-4 {
+        drop_cutter_rotary_z_rel(base_mesh, rot, cutter, u_mid, c_chord, th_mid, r_floor)
+    } else {
+        z_mid
+    };
+
+    let convex_err = (z_mid - z_chord).max(z_at_chord_c - z_chord);
+    let concave_err = z_chord - z_mid;
+    let cross_err = (c_mid - c_chord).abs();
+
+    if convex_err > 0.0025 || concave_err > concave_tol || cross_err > concave_tol.min(0.006) {
+        let mid = (u_mid, th_mid, c_mid, z_mid);
+        refine_4axis_segment(
+            base_mesh,
+            rot,
+            cutter,
+            c_field,
+            r_floor,
+            a,
+            mid,
+            concave_tol,
+            depth + 1,
+            out,
+        );
+        out.push(mid);
+        refine_4axis_segment(
+            base_mesh,
+            rot,
+            cutter,
+            c_field,
+            r_floor,
+            mid,
+            b,
+            concave_tol,
+            depth + 1,
+            out,
+        );
+    }
+}
+
+fn surface_radius_bounds(pts: &[(f64, f64, f64, f64)]) -> (f64, f64) {
+    let mut r_min = f64::INFINITY;
+    let mut r_max = 0.0_f64;
+    for &(_, _, c, z) in pts {
+        let r_eff = z.hypot(c);
+        r_min = r_min.min(r_eff);
+        r_max = r_max.max(r_eff);
+    }
+    (r_min, r_max)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn emit_simultaneous_spiral(
     ctx: &StrategyExecContext<'_>,
+    base_mesh: &SurfaceMesh3D,
     rot: &ResolvedRotaryConfig,
-    grid: &Rotary4AxisGrid,
-    radial_levels: &[f64],
+    cutter: &SurfaceCutterProfile,
+    c_field: &CrossOffsetField,
     u_start: f64,
     u_end: f64,
     start_deg: f64,
     end_deg: f64,
     is_full_turn: bool,
+    r_floor: f64,
     stepover_mm: f64,
     d_theta: f64,
     cut_direction: RotaryCutDirection,
-    safe_z_wcs: f64,
     cut_feed: f64,
     plunge_feed: f64,
     smooth_tol: f64,
     builder: &mut ToolpathBuilder,
 ) -> Result<(), CamError> {
-    let n_levels = radial_levels.len();
-    let mut continuous_theta = start_deg;
+    if is_full_turn {
+        let n_turns = ((u_end - u_start) / stepover_mm).ceil().max(1.0);
+        let steps_per_rev = ((360.0 / d_theta).ceil() as usize).clamp(48, 720);
+        let rev_step_deg = 360.0 / (steps_per_rev as f64);
 
-    for (li, &r_ceil) in radial_levels.iter().enumerate() {
+        let helix_steps = ((n_turns * (steps_per_rev as f64)).round() as usize).max(steps_per_rev);
+        let th_helix_start = start_deg + 360.0;
+        let th_helix_span = n_turns * 360.0;
+        let th_end_start = th_helix_start + th_helix_span;
+        let total_level_deg = (n_turns + 2.0) * 360.0;
+
+        let mut base_coords: Vec<(f64, f64)> =
+            Vec::with_capacity(2 * steps_per_rev + helix_steps + 2);
+        // 1. Start 360° cleanup ring at u_start
+        for k in 0..=steps_per_rev {
+            base_coords.push((u_start, start_deg + (k as f64) * rev_step_deg));
+        }
+        // 2. Continuous simultaneous 4-axis helix
+        for k in 1..=helix_steps {
+            let t = (k as f64) / (helix_steps as f64);
+            let u = u_start + t * (u_end - u_start);
+            let th = th_helix_start + t * th_helix_span;
+            base_coords.push((u, th));
+        }
+        // 3. End 360° cleanup ring at u_end
+        for k in 1..=steps_per_rev {
+            base_coords.push((u_end, th_end_start + (k as f64) * rev_step_deg));
+        }
+
+        let base_refined = evaluate_and_refine_4axis_strip(
+            base_mesh,
+            rot,
+            cutter,
+            c_field,
+            &base_coords,
+            r_floor,
+            smooth_tol,
+        );
         ctx.check_cancel()?;
-        let role = if li + 1 == n_levels {
-            MotionRole::FinishCut
-        } else {
-            MotionRole::Cut
-        };
 
-        if is_full_turn {
-            let n_turns = ((u_end - u_start) / stepover_mm).ceil().max(1.0);
-            let steps_per_rev = ((360.0 / d_theta).ceil() as usize).clamp(24, 360);
-            let rev_step_deg = 360.0 / (steps_per_rev as f64);
-            let level_start_deg = continuous_theta;
+        let (r_min_surf, r_max_surf) = surface_radius_bounds(&base_refined);
+        if !r_min_surf.is_finite() {
+            return Err(CamError::EmptyToolpath {
+                op_name: ctx.op.name.clone(),
+            });
+        }
+        let r_outer = rot.stock_outer_radius_mm.max(r_max_surf);
+        let radial_levels = compute_z_levels(
+            r_outer,
+            r_min_surf,
+            ctx.passes.multiple_depths,
+            ctx.passes.max_stepdown.value_mm,
+            ctx.passes.even_stepdowns,
+        )?;
+        let safe_z_wcs = rot.center_wcs.z + rot.clearance_radius_mm.max(r_outer + 5.0);
+        let n_levels = radial_levels.len();
 
-            let mut raw_pts: Vec<(f64, f64, f64, f64)> =
-                Vec::with_capacity((n_turns as usize + 3) * steps_per_rev);
+        for (li, &r_ceil) in radial_levels.iter().enumerate() {
+            ctx.check_cancel()?;
+            let role = if li + 1 == n_levels {
+                MotionRole::FinishCut
+            } else {
+                MotionRole::Cut
+            };
+            let level_th_offset = (li as f64) * total_level_deg;
+            let level_pts: Vec<(f64, f64, f64, f64)> = base_refined
+                .iter()
+                .map(|&(u, th, c, z)| (u, th + level_th_offset, c, clamp_to_shell(c, z, r_ceil)))
+                .collect();
 
-            // 1. Start 360° cleanup ring at u_start
-            for k in 0..=steps_per_rev {
-                let th = level_start_deg + (k as f64) * rev_step_deg;
-                let (c, z) = grid.sample_at_shell(u_start, th, r_ceil);
-                raw_pts.push((u_start, th, c, z));
-            }
-
-            // 2. Continuous simultaneous 4-axis helix
-            let helix_steps =
-                ((n_turns * (steps_per_rev as f64)).round() as usize).max(steps_per_rev);
-            let th_helix_start = level_start_deg + 360.0;
-            let th_helix_span = n_turns * 360.0;
-            for k in 1..=helix_steps {
-                let t = (k as f64) / (helix_steps as f64);
-                let u = u_start + t * (u_end - u_start);
-                let th = th_helix_start + t * th_helix_span;
-                let (c, z) = grid.sample_at_shell(u, th, r_ceil);
-                raw_pts.push((u, th, c, z));
-            }
-
-            // 3. End 360° cleanup ring at u_end
-            let th_end_start = th_helix_start + th_helix_span;
-            for k in 1..=steps_per_rev {
-                let th = th_end_start + (k as f64) * rev_step_deg;
-                let (c, z) = grid.sample_at_shell(u_end, th, r_ceil);
-                raw_pts.push((u_end, th, c, z));
-            }
-            continuous_theta = th_end_start + 360.0;
-
-            let pts = decimate_4axis_strip(&raw_pts, smooth_tol);
+            let pts = decimate_4axis_strip(&level_pts, smooth_tol);
             if let Some(&(u0, th0, c0, z0)) = pts.first() {
                 let p0 = off_center_wcs(rot, u0, c0, z0);
                 builder.rotary_rapid_to(DVec3::new(p0.x, p0.y, safe_z_wcs), th0);
@@ -596,28 +682,71 @@ fn emit_simultaneous_spiral(
                 }
                 builder.pass_count += 1;
             }
-        } else {
-            let n_lanes = (((u_end - u_start) / stepover_mm).ceil() as usize).max(1);
-            let lane_du = (u_end - u_start) / (n_lanes as f64);
-            let n_ang = (((end_deg - start_deg) / d_theta).ceil() as usize).max(4);
-            let ang_step = (end_deg - start_deg) / (n_ang as f64);
+        }
+    } else {
+        let n_lanes = (((u_end - u_start) / stepover_mm).ceil() as usize).max(1);
+        let lane_du = (u_end - u_start) / (n_lanes as f64);
+        let n_ang = (((end_deg - start_deg) / d_theta).ceil() as usize).max(4);
+        let ang_step = (end_deg - start_deg) / (n_ang as f64);
 
-            for lane in 0..=n_lanes {
-                ctx.check_cancel()?;
+        let refined_lanes: Vec<Vec<(f64, f64, f64, f64)>> = (0..=n_lanes)
+            .map(|lane| {
                 let u = u_start + (lane as f64) * lane_du;
                 let reverse = match cut_direction {
                     RotaryCutDirection::ZigZag => lane % 2 == 1,
                     RotaryCutDirection::Climb => false,
                     RotaryCutDirection::Conventional => true,
                 };
-                let mut raw_pts = Vec::with_capacity(n_ang + 1);
-                for k in 0..=n_ang {
-                    let kk = if reverse { n_ang - k } else { k };
-                    let th = start_deg + (kk as f64) * ang_step;
-                    let (c, z) = grid.sample_at_shell(u, th, r_ceil);
-                    raw_pts.push((u, th, c, z));
-                }
-                let pts = decimate_4axis_strip(&raw_pts, smooth_tol);
+                let coords: Vec<(f64, f64)> = (0..=n_ang)
+                    .map(|k| {
+                        let kk = if reverse { n_ang - k } else { k };
+                        (u, start_deg + (kk as f64) * ang_step)
+                    })
+                    .collect();
+                evaluate_and_refine_4axis_strip(
+                    base_mesh, rot, cutter, c_field, &coords, r_floor, smooth_tol,
+                )
+            })
+            .collect();
+        ctx.check_cancel()?;
+
+        let mut r_min_surf = f64::INFINITY;
+        let mut r_max_surf = 0.0_f64;
+        for lane in &refined_lanes {
+            let (lo, hi) = surface_radius_bounds(lane);
+            r_min_surf = r_min_surf.min(lo);
+            r_max_surf = r_max_surf.max(hi);
+        }
+        if !r_min_surf.is_finite() {
+            return Err(CamError::EmptyToolpath {
+                op_name: ctx.op.name.clone(),
+            });
+        }
+        let r_outer = rot.stock_outer_radius_mm.max(r_max_surf);
+        let radial_levels = compute_z_levels(
+            r_outer,
+            r_min_surf,
+            ctx.passes.multiple_depths,
+            ctx.passes.max_stepdown.value_mm,
+            ctx.passes.even_stepdowns,
+        )?;
+        let safe_z_wcs = rot.center_wcs.z + rot.clearance_radius_mm.max(r_outer + 5.0);
+        let n_levels = radial_levels.len();
+
+        for (li, &r_ceil) in radial_levels.iter().enumerate() {
+            ctx.check_cancel()?;
+            let role = if li + 1 == n_levels {
+                MotionRole::FinishCut
+            } else {
+                MotionRole::Cut
+            };
+
+            for (lane, base_lane) in refined_lanes.iter().enumerate() {
+                let level_pts: Vec<(f64, f64, f64, f64)> = base_lane
+                    .iter()
+                    .map(|&(u, th, c, z)| (u, th, c, clamp_to_shell(c, z, r_ceil)))
+                    .collect();
+                let pts = decimate_4axis_strip(&level_pts, smooth_tol);
                 if let Some(&(u0, th0, c0, z0)) = pts.first() {
                     let p0 = off_center_wcs(rot, u0, c0, z0);
                     let need_retract = lane == 0 || cut_direction != RotaryCutDirection::ZigZag;
@@ -674,30 +803,97 @@ fn emit_simultaneous_spiral(
 #[allow(clippy::too_many_arguments)]
 fn emit_helical_flowline(
     ctx: &StrategyExecContext<'_>,
+    base_mesh: &SurfaceMesh3D,
     rot: &ResolvedRotaryConfig,
-    grid: &Rotary4AxisGrid,
-    radial_levels: &[f64],
+    cutter: &SurfaceCutterProfile,
+    c_field: &CrossOffsetField,
     u_samples: &[f64],
     start_deg: f64,
     end_deg: f64,
     is_full_turn: bool,
-    r_outer: f64,
+    r_floor: f64,
+    r_outer_est: f64,
     stepover_mm: f64,
     cut_direction: RotaryCutDirection,
-    safe_z_wcs: f64,
     cut_feed: f64,
     plunge_feed: f64,
     smooth_tol: f64,
     builder: &mut ToolpathBuilder,
 ) -> Result<(), CamError> {
     let angular_span = end_deg - start_deg;
-    let delta_deg = (stepover_mm / r_outer.max(2.0))
+    let delta_deg = (stepover_mm / r_outer_est.max(2.0))
         .to_degrees()
         .clamp(0.5, 45.0);
     let n_lanes = ((angular_span / delta_deg).ceil() as usize).max(4);
     let lane_step_deg = angular_span / (n_lanes as f64);
     let lane_count = if is_full_turn { n_lanes } else { n_lanes + 1 };
+
+    let refined_lanes: Vec<Vec<(f64, f64, f64, f64)>> = (0..lane_count)
+        .map(|lane| {
+            let th = start_deg + (lane as f64) * lane_step_deg;
+            let reverse = match cut_direction {
+                RotaryCutDirection::ZigZag => lane % 2 == 1,
+                RotaryCutDirection::Climb => false,
+                RotaryCutDirection::Conventional => true,
+            };
+            let coords: Vec<(f64, f64)> = if reverse {
+                u_samples.iter().rev().map(|&u| (u, th)).collect()
+            } else {
+                u_samples.iter().map(|&u| (u, th)).collect()
+            };
+            evaluate_and_refine_4axis_strip(
+                base_mesh, rot, cutter, c_field, &coords, r_floor, smooth_tol,
+            )
+        })
+        .collect();
+    ctx.check_cancel()?;
+
+    let mut r_min_surf = f64::INFINITY;
+    let mut r_max_surf = 0.0_f64;
+    for lane in &refined_lanes {
+        let (lo, hi) = surface_radius_bounds(lane);
+        r_min_surf = r_min_surf.min(lo);
+        r_max_surf = r_max_surf.max(hi);
+    }
+    if !r_min_surf.is_finite() {
+        return Err(CamError::EmptyToolpath {
+            op_name: ctx.op.name.clone(),
+        });
+    }
+
+    let r_outer = rot.stock_outer_radius_mm.max(r_max_surf);
+    let radial_levels = compute_z_levels(
+        r_outer,
+        r_min_surf,
+        ctx.passes.multiple_depths,
+        ctx.passes.max_stepdown.value_mm,
+        ctx.passes.even_stepdowns,
+    )?;
+    let safe_z_wcs = rot.center_wcs.z + rot.clearance_radius_mm.max(r_outer + 5.0);
     let n_levels = radial_levels.len();
+
+    // Precompute exact gouge-free ZigZag link transitions between adjacent lanes
+    let link_steps = ((lane_step_deg / 1.5).ceil() as usize).clamp(2, 24);
+    let lane_links: Vec<Vec<(f64, f64, f64, f64)>> = (0..lane_count)
+        .map(|lane| {
+            if lane == 0 || cut_direction != RotaryCutDirection::ZigZag {
+                return Vec::new();
+            }
+            let Some(&(u0, th0, _, _)) = refined_lanes[lane].first() else {
+                return Vec::new();
+            };
+            let prev_th = start_deg + ((lane - 1) as f64) * lane_step_deg;
+            let coords: Vec<(f64, f64)> = (0..=link_steps)
+                .map(|s| {
+                    let t = (s as f64) / (link_steps as f64);
+                    (u0, prev_th + t * (th0 - prev_th))
+                })
+                .collect();
+            evaluate_and_refine_4axis_strip(
+                base_mesh, rot, cutter, c_field, &coords, r_floor, smooth_tol,
+            )
+        })
+        .collect();
 
     for (li, &r_ceil) in radial_levels.iter().enumerate() {
         ctx.check_cancel()?;
@@ -707,29 +903,13 @@ fn emit_helical_flowline(
             MotionRole::Cut
         };
 
-        for lane in 0..lane_count {
+        for (lane, base_lane) in refined_lanes.iter().enumerate() {
             ctx.check_cancel()?;
-            let th = start_deg + (lane as f64) * lane_step_deg;
-            let reverse = match cut_direction {
-                RotaryCutDirection::ZigZag => lane % 2 == 1,
-                RotaryCutDirection::Climb => false,
-                RotaryCutDirection::Conventional => true,
-            };
-
-            let mut raw_pts = Vec::with_capacity(u_samples.len());
-            if reverse {
-                for &u in u_samples.iter().rev() {
-                    let (c, z) = grid.sample_at_shell(u, th, r_ceil);
-                    raw_pts.push((u, th, c, z));
-                }
-            } else {
-                for &u in u_samples {
-                    let (c, z) = grid.sample_at_shell(u, th, r_ceil);
-                    raw_pts.push((u, th, c, z));
-                }
-            }
-
-            let pts = decimate_4axis_strip(&raw_pts, smooth_tol);
+            let level_pts: Vec<(f64, f64, f64, f64)> = base_lane
+                .iter()
+                .map(|&(u, th, c, z)| (u, th, c, clamp_to_shell(c, z, r_ceil)))
+                .collect();
+            let pts = decimate_4axis_strip(&level_pts, smooth_tol);
             if let Some(&(u0, th0, c0, z0)) = pts.first() {
                 let p0 = off_center_wcs(rot, u0, c0, z0);
                 if lane == 0 || cut_direction != RotaryCutDirection::ZigZag {
@@ -742,17 +922,13 @@ fn emit_helical_flowline(
                         MotionRole::Plunge,
                     );
                 } else {
-                    let prev_th = start_deg + ((lane - 1) as f64) * lane_step_deg;
-                    let link_steps = ((lane_step_deg / 2.0).ceil() as usize).clamp(2, 16);
-                    for s in 1..=link_steps {
-                        let t = (s as f64) / (link_steps as f64);
-                        let th_mid = prev_th + t * (th0 - prev_th);
-                        let (c_mid, z_mid) = grid.sample_at_shell(u0, th_mid, r_ceil);
+                    for &(lu, lth, lc, lz) in lane_links[lane].iter().skip(1) {
+                        let z_clamped = clamp_to_shell(lc, lz, r_ceil);
                         builder.rotary_linear_to(
-                            off_center_wcs(rot, u0, c_mid, z_mid),
-                            th_mid,
+                            off_center_wcs(rot, lu, lc, z_clamped),
+                            lth,
                             cut_feed,
-                            c_mid.hypot(z_mid).max(1.0),
+                            lc.hypot(z_clamped).max(1.0),
                             MotionRole::LinkTransition,
                         );
                     }
@@ -792,8 +968,8 @@ fn emit_helical_flowline(
 }
 
 /// Conservative 4-axis chord decimation in `(u, theta_deg, c_cross, z_rel)` space:
-/// never dips > 3 µm below convex ridges in `z`, preserves cross-axis `c_cross` accuracy within
-/// `tol_mm`, and keeps angular spans `<= 2.5°` on curved contours.
+/// never dips `> 2 µm` below convex ridges in `z`, preserves cross-axis `c_cross` accuracy within
+/// `tol_mm`, and keeps angular spans `<= 1.5°` on curved contours (`<= 4.0°` on constant-radius zones).
 fn decimate_4axis_strip(pts: &[(f64, f64, f64, f64)], tol_mm: f64) -> Vec<(f64, f64, f64, f64)> {
     if pts.len() <= 2 || tol_mm <= 1e-7 {
         return pts.to_vec();
@@ -806,9 +982,9 @@ fn decimate_4axis_strip(pts: &[(f64, f64, f64, f64)], tol_mm: f64) -> Vec<(f64, 
         let a = pts[anchor_idx];
         let b = pts[i + 1];
         let max_ang = if (b.3 - a.3).abs() > 1e-3 || (b.2 - a.2).abs() > 1e-3 || a.2.abs() > 0.5 {
-            1.8
+            1.5
         } else {
-            6.0
+            4.0
         };
         if (b.1 - a.1).abs() > max_ang {
             out.push(pts[i]);
@@ -827,7 +1003,9 @@ fn decimate_4axis_strip(pts: &[(f64, f64, f64, f64)], tol_mm: f64) -> Vec<(f64, 
             };
             let c_interp = a.2 + t * (b.2 - a.2);
             let z_interp = a.3 + t * (b.3 - a.3);
-            if (pz - z_interp) > 0.003 || (z_interp - pz) > tol_mm || (pc - c_interp).abs() > tol_mm
+            if (pz - z_interp) > 0.0015
+                || (z_interp - pz) > tol_mm
+                || (pc - c_interp).abs() > tol_mm.min(0.005)
             {
                 exceeds = true;
                 break;

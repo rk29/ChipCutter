@@ -461,8 +461,9 @@ fn rasterize_cylindrical_target(@builtin(global_invocation_id) gid: vec3<u32>) {
     let u_center = u.v4.x;
     let pol = u.v4.y;
 
-    let u_coord = u_min + (f32(iu) + 0.5) * du;
-    let theta = f32(it) * dtheta;
+    // Deterministic sub-micron jitter avoids shared triangle-edge misses on aligned STL/STEP seams.
+    let u_coord = u_min + (f32(iu) + 0.5) * du + 1.37191e-4 * du;
+    let theta = f32(it) * dtheta + 2.71828e-4 * dtheta;
     let d_rad = e1 * cos(theta) + e2 * (sin(theta) * pol);
     let p_axis = center + u_vec * (u_coord - u_center);
     let p_outer = p_axis + d_rad * r_cast;
