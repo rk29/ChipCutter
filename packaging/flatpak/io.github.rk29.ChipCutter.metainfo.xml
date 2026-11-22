@@ -50,6 +50,11 @@
   </screenshots>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="0.14.1" date="2026-11-22">
+      <description>
+        <p>Bug-fix release: fixed 2.5D heightfield simulation swept-interval intersection along sloped linear moves for flat endmills, eliminating false rapid/ramp stock removal artifacts on ramped entries.</p>
+      </description>
+    </release>
     <release version="0.14.0" date="2026-11-22">
       <description>
         <p>Phase 14 architecture refactoring release: extracted dedicated pure-kernel internal crates (chip-bvh flat SAH BVH, chip-geom2d exact 2D polygon/Voronoi/arc kernel, and chip-stock volumetric stock engines), unified Heightfield/Tri-Dexel/Cylindrical simulation behind SimStockBackend with an axis-generic flat fixed-K Tri-Dexel span pool and zero-copy GPU vertex/buffer layouts, fixed multi-body STL/OBJ/3MF target_bodies filtering in Tri-Dexel verification, moved interactive simulation stock remeshing off the UI thread with rapid-scrub coalescing, and decomposed oversized modules across the workspace.</p>
