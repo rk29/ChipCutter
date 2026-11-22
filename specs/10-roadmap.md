@@ -374,37 +374,56 @@ Phase 15 built directly on Phase 14's GPU-ready flat layouts (`chip-bvh` `FlatBv
 
 ---
 
+## Phase 16 — Toolpath Algorithm Quality & Engagement-Aware Feedrate Optimization (Planned — M56–M59)
+
+Phase 16 leverages Phase 15's GPU-accelerated Ultra simulation and `chipcutter simulate --benchmark --json` metrology harness to systematically eliminate surface ridges, staircase lifting artifacts, chord gouges, and uncut rest islands across 4th-axis rotary, 3-axis surfacing, and 2.5D strategies, and introduces engagement-aware corner-slowdown and constant-chipload feedrate optimization:
+
+### Milestone 56 — 4th-Axis Rotary Toolpath Quality & High-Fidelity Cylindrical Verification (`plans/56-milestone-56-plan.md`)
+- **Eliminate Staircase Lifting & Coarse Grid Artifacts (`rotary4axis_sim.rs`, `rotary2linear.rs`):** Remove the quantized `sample_safe()` staircase lifts (`z_max + 0.06 * c_spread` and `r_max` jumps that caused `+0.52 mm` systematic bias and `17.8%` in-tolerance surface on `12-simultaneous-4axis` and `16.1–34.0%` on `09/10-rotary-*`). Evaluate exact `f64` `drop_cutter_z_with_scratch` directly along the spiral/flowline curve (backed by `chip-bvh`) paired with adaptive midpoint/sagitta chord subdivision (`<= 0.005 mm`) so convex ridges and helical flanks are both ridge-free and gouge-free.
+- **Slope-Compensated Cusp-Height Stepover & Gouge-Free Off-Centerline Tilt:** Scale rotary spiral/flowline stepover accurately for local axial flank slope and target cusp height, re-evaluate exact off-centerline drop-cutter heights after `c_cross` smoothing, and tighten rotary decimation tolerances so helical flutes finish smoothly without visible spiral ridges.
+- **High-Fidelity Cylindrical Verification (`chip-stock` CPU & GPU):** Tighten rotary pose subdivision (`<= 0.25°` / `<= 0.5 * du`, fast on Phase 15's GPU sweeper) to eliminate simulation-induced circumferential beading at Ultra resolution, and fix STEP solid polar target rasterization/metrics (`11-indexed-step` `RMS = 0.000` reporting bug).
+
+### Milestone 57 — 3-Axis Surface Finishing & Roughing Quality Polish (`plans/57-milestone-57-plan.md`)
+- **Zero-Gouge Exact 3D Chord Refinement (`surface3d/finishing.rs`, `parallel3d.rs`, `scallop3d.rs`, `pencil3d.rs`):** Fix the `dz > 0.08 || xy_dist > 0.6` blind spot in `refine_convex_chords_3d` and tighten `Scallop3D` Eikonal grid resolution & iso-contour projection to eliminate the `-0.146 mm` / `65.1 mm³` gouge measured on `09-3d-surface-finishing` while driving `In-Tol %` dramatically upward.
+- **Local-Slope `Waterline3D`, `Adaptive3D` Rest Margins, & Sub-Cell `Pencil3D`:** Replace `Waterline3D`'s global area-radius intermediate stepdown heuristic with true local contour-offset (`dr`) slope refinement, tighten `Adaptive3D` + `Parallel3D` containment/boundary margins (`08-mesh-surfacing` & `08-3d-adaptive-waterline`), and add sub-cell parabolic ridge centering in `Pencil3D` for crisp concave fillet cleanup.
+
+### Milestone 58 — Engagement-Aware Feedrate Optimization & 2.5D Corner Cleanup (`plans/58-milestone-58-plan.md`)
+- **Shared Feedrate Optimizer (`crates/chip-cam/src/feed_opt.rs`):** Implement curvature- and engagement-aware feedrate modulation supporting (1) exact internal-arc perimeter-to-centerline scaling `F_center = F_nom * (R_path - R_tool) / R_path` and lookahead deceleration ramps into sharp concave corners, (2) radial chip-thinning modulation across light vs. heavy engagements, and (3) smooth Z-ramp / rotary radius feed transitions.
+- **Schema-Safe Config, Inspector UI, & Timeline Telemetry (`chip-cam`, `chip-sim`, `chip-gui`):** Add optional `FeedOptimizationConfig` on `CuttingParams` (default-compatible so Phase 1–2 golden G-code snapshots stay byte-identical), add a two-column **Feed Optimization** card in the Operation Inspector with hover tooltips, surface min/avg/max modulated feedrate telemetry in `SimulationTimeline`, and polish 2.5D Adaptive/Rest & V-Carve corner residuals (`05-adaptive-rest`).
+
+### Milestone 59 — Quantitative Quality Regression Suite, Sample Polish, Visual Verification, & Spec Sync (`plans/59-milestone-59-plan.md`)
+- **Automated Quality Regression Gate (`chip-project`, `chip-cli`):** Add deterministic error-metric regression tests asserting hard thresholds on `RMS`, `max_gouge_mm`, `gouge_volume_mm3`, and `in_tolerance_surface_pct` across 4th-axis rotary, 3-axis surface, 2.5D adaptive/rest, and thread-milling benchmarks.
+- **Sample Polish, Visual Verification, & Docs Sync (`chip-project`, `docs/`, `specs/`):** Upgrade built-in 4th-axis & 3-axis sample projects to showcase crisp cusp-controlled finishing (updating affected Phase 5 golden snapshots transparently while keeping Phase 1–2 goldens byte-identical), visually verify before/after headless Vulkan screenshots (Ultra + Error Heatmap), and synchronize `specs/05-operations.md` and `specs/10-roadmap.md`.
+
+---
+
 ## Future Phases
 
 ChipCutter's long-term roadmap focuses on bringing pro-grade CAM capabilities to hobby and benchtop machinists—making everyday job setup faster, safer, and easier to use without commercial CAM complexity or licensing cost.
 
-1. **Phase 16 (Next Planned) — Toolpath Algorithm Quality & Engagement-Aware Feedrate Optimization:**
-   - **4th-Axis Rotary Toolpath & Simulation Quality:** Diagnose and eliminate the visible ridges and apparent gouges observed on the 4th-axis rotary samples even at Ultra resolution—replacing coarse staircase `sample_safe` lifting with exact continuous drop-cutter / chord-sagitta subdivision, tighter adaptive cusp-height stepovers and angular/axial sampling, gouge-free off-centerline tilt smoothing in `Rotary4AxisSim` & `Rotary2Linear`, and higher-fidelity continuous swept contact in `CylindricalStock`.
-   - **Error-Metric-Driven Quality Polish Across All Strategies:** Leverage Phase 15's GPU-accelerated Ultra Tri-Dexel/Heightfield/Cylindrical error-volume & RMS benchmarks across 2.5D, 3D surface (`Adaptive3D`, `Waterline3D`, `Parallel3D`, `Scallop3D`, `Pencil3D`), V-Carve, Thread Milling, and 4th-axis rotary strategies to systematically eliminate residual scallops, corner overcuts, and uncut islands.
-   - **Constant-Chipload & Corner Slowdown Feedrate Optimization:** Automatically throttle feedrates inside tight internal corners where radial engagement spikes and accelerate through light-engagement cuts to extend endmill life on hobby-rigidity machines.
-2. **Physics-Backed Safety & Machinability Guardrails:**
+1. **Physics-Backed Safety & Machinability Guardrails:**
    - **Spindle Power, MRR, & Tool Deflection Advisor:** Compare each operation's material removal rate and estimated radial cutting force against the active machine's real spindle power curve (e.g. `150 W` Carvera Z1 vs. `1.5 kW` Milo/Cascade) and tool stickout—flagging stall risk, chatter, or excessive deflection before cutting.
    - **In-Viewport Measurement & Machinability Inspector:** Click-to-measure distances, hole diameters, depths, and angles directly in the 3D viewport, plus a **Minimum-Radius & Reach Heatmap** highlighting tight internal corners smaller than the chosen cutter and pockets deeper than flute/neck reach.
-3. **Guided Operation Setup & Reusable Machining Recipes:**
+2. **Guided Operation Setup & Reusable Machining Recipes:**
    - **Guided Operation Setup Mode (Automatic Feature Recognition):** Interactive workflow inspecting imported STEP/mesh/sketch geometry against the active Setup WCS, stock, and target machine's tool library to automatically recognize machinable features and propose a sequenced operation plan—**Facing**, **2D Adaptive / Pocket**, **Drill vs. Helical Bore / Thread Mill**, **2D Contour + Tabs**, **Edge Chamfer**, and **3D Roughing/Finishing**—letting the machinist review, tweak, accept, or skip each step.
    - **Reusable Operation Templates & Recipes:** Save proven multi-op patterns (e.g., *"6061-T6 Pocket + Finish + Chamfer"* or *"M6 Counterbored Hole = Spot + Drill + Helical Bore"*) and apply them in one click to new parts.
-4. **Shop-Floor Workholding, Probing, & Multi-Setup Stock Carryover:**
+3. **Shop-Floor Workholding, Probing, & Multi-Setup Stock Carryover:**
    - **Probing Operations (`G38.2`):** First-class WCS corner, bore/boss center, Z-surface, and 2-point rotation/skew probing cycles integrated directly into Setups for grblHAL/Carvera and LinuxCNC controllers.
    - **3D Fixture, Vise, & Clamp Collision Bodies:** Automatic safe-rapid routing and crash verification against workholding solids.
    - **In-Process Stock Carryover Across Setups (`G54` -> `G55`):** Pass the exact remaining Tri-Dexel solid from Setup 1 into Setup 2 (e.g. after flipping or re-clamping the part) so both simulation and rest-aware toolpaths know exactly which features were already machined—enabling zero-air-cut multi-op roughing, accurate Op-2 collision checks, and cumulative error-volume metrics.
    - **Two-Sided Flip-Jig & Auto Soft-Jaw Wizards:** Automatically place symmetric registration dowel-pin holes for flip machining without a vise, or auto-generate ready-to-machine aluminum / 3D-printed vise soft-jaw pockets directly from the part's silhouette.
-5. **Expanded Machining Capabilities:**
+4. **Expanded Machining Capabilities:**
    - **3D Edge Deburring & Non-Planar Chamfering:** Follow 3D B-Rep edges with a chamfer or lollipop cutter so curved and stepped parts come off the machine already deburred.
    - **Undercuts, Keyways, T-Slots, & Dovetails:** Lollipop, slot-mill, T-slot, and dovetail cutter geometries + strategies backed by Tri-Dexel undercut simulation.
    - **2D Sheet Nesting & Multi-Part Arrays:** Pack multiple parts onto plate, plywood, or composite sheets with tool-diameter spacing, grain-direction rules, and automatic tabs.
    - **PCB Isolation Milling & Drilling (Gerber / Excellon):** Isolation routing, copper rub-out, Excellon drill import, and height-probe leveling hooks.
-6. **Frictionless CAD Prep, Verification, & Ecosystem:**
+5. **Frictionless CAD Prep, Verification, & Ecosystem:**
    - **Live CAD Auto-Reload & Diff Preview:** Watch exported `.step`/`.dxf`/`.svg` files from FreeCAD/Fusion/Onshape, reload automatically on save, and visually highlight changed faces and re-matched selections.
    - **STL / Mesh 2.5D Feature Extraction:** Auto-detect flat Z-planes, cylindrical holes, and outer silhouettes from triangle meshes so STL models can use fast 2.5D strategies in addition to 3D surface passes.
    - **Standalone G-Code Backplot & Crash Verification Mode:** Open any external `.nc`/`.ngc` file and run ChipCutter's Tri-Dexel simulator and 5-rule crash verifier on it.
    - **Broader Tool Library Interop & Printable Setup Sheets:** Import tool libraries from FreeCAD (`.fctb`), Carbide Create, and Vectric alongside Fusion 360; richer material presets (brass, acetal/Delrin, G10/carbon fiber, mild steel, hardwoods); and printable HTML/PDF setup sheets with isometric views, WCS origin diagrams, stock dimensions, tool stickout checklists, and cycle times.
    - **Additional Controller Dialects & CAD Kernel Backends:** Fanuc/Haas, Mach4, Masso, and Centroid post dialects, plus an optional OpenCASCADE (`opencascade-rs`) `CadKernel` feature backend.
-7. **Functional & Behavioral User-Level Testing:**
+6. **Functional & Behavioral User-Level Testing:**
    - Durable end-to-end user-journey and GUI behavioral test harness (`egui_kittest` / headless interactive workflows + CLI workflows) verifying every feature from a machinist's point of view without brittle coupling to internal implementation details.
-8. **Tutorials for Upcoming Future-Phase Capabilities:**
+7. **Tutorials for Upcoming Future-Phase Capabilities:**
    - Dedicated illustrated guides accompanying new future-phase capabilities (guided operation setup, probing, 3D workholding & multi-setup Tri-Dexel stock carryover, soft jaws, nesting, and PCB isolation milling).
