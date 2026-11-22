@@ -3126,3 +3126,534 @@ fn rotary4axis_sim_off_centerline_helical_flutes_on_x_and_y_are_smooth_and_crash
         sim_y.diagnostics
     );
 }
+
+fn push_box_stl_tris(tris: &mut Vec<([f32; 3], [f32; 3], [f32; 3])>, min: [f32; 3], max: [f32; 3]) {
+    let [x0, y0, z0] = min;
+    let [x1, y1, z1] = max;
+    let p000 = [x0, y0, z0];
+    let p100 = [x1, y0, z0];
+    let p110 = [x1, y1, z0];
+    let p010 = [x0, y1, z0];
+    let p001 = [x0, y0, z1];
+    let p101 = [x1, y0, z1];
+    let p111 = [x1, y1, z1];
+    let p011 = [x0, y1, z1];
+    let quads = [
+        (p000, p010, p110, p100), // -Z
+        (p001, p101, p111, p011), // +Z
+        (p000, p100, p101, p001), // -Y
+        (p010, p011, p111, p110), // +Y
+        (p000, p001, p011, p010), // -X
+        (p100, p110, p111, p101), // +X
+    ];
+    for (a, b, c, d) in quads {
+        tris.push((a, b, c));
+        tris.push((a, c, d));
+    }
+}
+
+fn build_binary_stl(tris: &[([f32; 3], [f32; 3], [f32; 3])]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(84 + tris.len() * 50);
+    out.extend_from_slice(&[0u8; 80]);
+    out.extend_from_slice(&(tris.len() as u32).to_le_bytes());
+    for &(a, b, c) in tris {
+        out.extend_from_slice(&[0u8; 12]); // normal recomputed on load
+        for v in [a, b, c] {
+            for coord in v {
+                out.extend_from_slice(&coord.to_le_bytes());
+            }
+        }
+        out.extend_from_slice(&0u16.to_le_bytes());
+    }
+    out
+}
+
+fn push_cyl_stl_tris(
+    tris: &mut Vec<([f32; 3], [f32; 3], [f32; 3])>,
+    x0: f32,
+    x1: f32,
+    cy: f32,
+    cz: f32,
+    r: f32,
+    segs: usize,
+) {
+    let mut ring0 = Vec::with_capacity(segs);
+    let mut ring1 = Vec::with_capacity(segs);
+    for i in 0..segs {
+        let ang = (i as f32) * std::f32::consts::TAU / (segs as f32);
+        let y = cy + r * ang.cos();
+        let z = cz + r * ang.sin();
+        ring0.push([x0, y, z]);
+        ring1.push([x1, y, z]);
+    }
+    let c0 = [x0, cy, cz];
+    let c1 = [x1, cy, cz];
+    for i in 0..segs {
+        let j = (i + 1) % segs;
+        tris.push((ring0[i], ring1[i], ring1[j]));
+        tris.push((ring0[i], ring1[j], ring0[j]));
+        tris.push((c0, ring0[j], ring0[i]));
+        tris.push((c1, ring1[i], ring1[j]));
+    }
+}
+
+#[test]
+fn rotary_4axis_and_2linear_clear_empty_center_without_leaving_stem() {
+    use chip_cad::{MeshImportOptions, load_mesh_cad_document};
+    use chip_cam::{
+        OperationGenRequest, Rotary4AxisPattern, RotaryAxisKind, RotaryCutDirection,
+        RotaryDriveMode, RotaryPatternMode, RotaryTiltMode, StockAxis,
+        generate_operation_toolpath_with_rest,
+    };
+    use chip_sim::{
+        MachineKinematicsConfig, SetupSimulationInput, SimComputeBackendChoice, SimEngineKind,
+        SimOperationInput, SimResolution, SimVerificationConfig, run_setup_simulation,
+        run_setup_simulation_with_choice,
+    };
+
+    // 1. Star-shaped watertight part: centered cylindrical base (`x ∈ [-10, 0], R = 9 mm`) plus
+    // an eccentric lobe (`x ∈ [0, 10], center (0, 4.5), R = 4.5 mm`) tangent to the rotary axis,
+    // leaving the entire `θ ∈ (90°, 270°)` half empty at the centerline (`r_target = -1`).
+    let mut half_tris = Vec::new();
+    push_cyl_stl_tris(&mut half_tris, -10.0, 0.0, 0.0, 0.0, 9.0, 72);
+    push_cyl_stl_tris(&mut half_tris, 0.0, 10.0, 0.0, 4.5, 4.5, 72);
+    let half_stl = build_binary_stl(&half_tris);
+    let doc = load_mesh_cad_document("offset_cyl.stl", &half_stl, &MeshImportOptions::default())
+        .expect("load synthetic eccentric-lobe mesh");
+
+    let lib = default_starter_tool_library();
+    let flat_3mm = lib
+        .tools
+        .iter()
+        .find(|t| {
+            matches!(
+                t.geometry,
+                CutterGeometry::FlatEndmill { diameter_mm, .. } if diameter_mm < 4.0
+            )
+        })
+        .expect("small flat endmill in starter library")
+        .clone();
+    let mut ball_3mm = flat_3mm.clone();
+    ball_3mm.id = chip_tools::ToolId("t_ball_3175".to_string());
+    ball_3mm.name = "3.175mm Ball Endmill".to_string();
+    ball_3mm.geometry = CutterGeometry::BallEndmill {
+        diameter_mm: 3.175,
+        flute_length_mm: 12.0,
+        overall_length_mm: 38.0,
+        shank_diameter_mm: 3.175,
+        flutes: 2,
+    };
+    let cancel = AtomicBool::new(false);
+
+    let mut setup_4ax = Setup::new("s_empty_4ax", "Empty Center 4-Axis", WorkOffsetSlot::G54);
+    setup_4ax.wcs.origin = WcsOriginMode::StockBoxPoint {
+        anchor: BoxAnchor27::VOLUMETRIC_CENTER,
+    };
+    setup_4ax.stock = StockConfig::FixedCylinder {
+        axis: StockAxis::X,
+        diameter: ParamLength::from_mm(30.0),
+        length: ParamLength::from_mm(26.0),
+        axial_top_offset: ParamLength::from_mm(0.0),
+    };
+    setup_4ax.rotary.mode = RotaryDriveMode::Simultaneous4Axis;
+    setup_4ax.rotary.axis = RotaryAxisKind::XAxis;
+    setup_4ax.rotary.clearance_radial_offset = ParamLength::from_mm(10.0);
+    let resolved_4ax = setup_4ax.resolve(&doc, DisplayUnit::Millimeter).unwrap();
+    let rot_4ax = resolved_4ax.rotary.unwrap();
+
+    // 1a. Simultaneous 4-Axis (`Rotary4AxisSim`) — Auto-Tilt Spiral (multi-depth)
+    let mut op_autotilt = Operation::new(
+        "op_empty_autotilt",
+        "4-Axis Auto-Tilt Spiral",
+        OperationKind::Rotary4AxisSim,
+    );
+    op_autotilt.tool_id = Some(flat_3mm.id.clone());
+    op_autotilt.heights.bottom = HeightSpec::new(HeightReference::ModelBottom, 0.0);
+    op_autotilt.passes.multiple_depths = true;
+    op_autotilt.passes.max_stepdown = ParamLength::from_mm(5.0);
+    if let StrategyParams::Rotary4AxisSim(p) = op_autotilt.strategy_mut() {
+        p.pattern = Rotary4AxisPattern::SimultaneousSpiral;
+        p.tilt_mode = RotaryTiltMode::SurfaceNormalAutoTilt;
+        p.max_tilt_deg = 16.0;
+        p.tilt_smoothing_window = 3;
+        p.stepover = ParamLength::from_mm(1.5);
+        p.angular_sample_deg = 2.0;
+    }
+
+    let tp_autotilt = generate_operation_toolpath_with_rest(&OperationGenRequest {
+        doc: &doc,
+        sketches: &[],
+        setup: &resolved_4ax,
+        op: &op_autotilt,
+        tool: &flat_3mm,
+        clearing_tool: None,
+        display_unit: DisplayUnit::Millimeter,
+        is_first_tool_in_setup: true,
+        upstream_rest: &[],
+        carryover_stock: None,
+        cancel: &cancel,
+    })
+    .unwrap();
+
+    let min_r_autotilt = tp_autotilt
+        .segments_wcs
+        .iter()
+        .filter(|s| !matches!(s.motion, SegmentMotion3D::Rapid))
+        .map(|s| (s.end_wcs.y - rot_4ax.center_wcs.y).hypot(s.end_wcs.z - rot_4ax.center_wcs.z))
+        .fold(f64::INFINITY, f64::min);
+    assert!(
+        min_r_autotilt <= 1e-4,
+        "Rotary4AxisSim Auto-Tilt must cut all the way to rotary centerline (r=0), got min_r={min_r_autotilt:.4} mm"
+    );
+
+    let sim_autotilt = run_setup_simulation(&SetupSimulationInput {
+        doc: &doc,
+        setup: &resolved_4ax,
+        target_bodies: &[],
+        fixtures: &[],
+        operations: &[SimOperationInput::from_operation(
+            &op_autotilt,
+            &flat_3mm,
+            &tp_autotilt,
+        )],
+        kinematics: MachineKinematicsConfig::default(),
+        resolution: SimResolution::Standard,
+        verify_config: SimVerificationConfig::default(),
+        initial_stock: None,
+        initial_raw_volume_mm3: None,
+        carried_over_from_setup: None,
+        cancel: None,
+    })
+    .unwrap();
+    assert_eq!(
+        sim_autotilt.critical_error_count(),
+        0,
+        "Rotary4AxisSim Auto-Tilt empty-center must verify crash-free & gouge-free, got: {:#?}",
+        sim_autotilt.diagnostics
+    );
+    let cyl_auto = sim_autotilt.as_cylindrical().unwrap();
+    let mut empty_max_r = 0.0_f32;
+    let mut empty_count = 0usize;
+    for iu in 0..cyl_auto.nu {
+        let u = cyl_auto.u_min + (iu as f64 + 0.5) * cyl_auto.du;
+        // Sample inside the half-shaft zone (in WCS the step from full block to half-shaft is at x = 3.0)
+        if !(6.0..=11.5).contains(&u) {
+            continue;
+        }
+        for it in 0..cyl_auto.ntheta {
+            let theta_deg = (it as f64 * cyl_auto.dtheta).to_degrees();
+            if !(135.0..=225.0).contains(&theta_deg) {
+                continue;
+            }
+            let idx = iu * cyl_auto.ntheta + it;
+            if cyl_auto.r_target[idx] < 0.0 {
+                empty_count += 1;
+                empty_max_r = empty_max_r.max(cyl_auto.r_stock[idx]);
+            }
+        }
+    }
+    assert!(empty_count > 50, "expected empty-center target cells");
+    assert!(
+        empty_max_r < 0.05,
+        "Rotary4AxisSim Auto-Tilt must not leave a center stem, got max r_stock={empty_max_r:.4} mm"
+    );
+
+    // 1b. Simultaneous 4-Axis (`Rotary4AxisSim`) — Fixed Lateral Offset (`2.5 mm`) must taper to center
+    let mut op_fixed = Operation::new(
+        "op_empty_fixed",
+        "4-Axis Fixed Offset Flowline",
+        OperationKind::Rotary4AxisSim,
+    );
+    op_fixed.tool_id = Some(flat_3mm.id.clone());
+    op_fixed.heights.bottom = HeightSpec::new(HeightReference::ModelBottom, 0.0);
+    op_fixed.passes.multiple_depths = false;
+    if let StrategyParams::Rotary4AxisSim(p) = op_fixed.strategy_mut() {
+        p.pattern = Rotary4AxisPattern::HelicalFlowline;
+        p.cut_direction = RotaryCutDirection::ZigZag;
+        p.tilt_mode = RotaryTiltMode::FixedLateralOffset;
+        p.lateral_offset = ParamLength::from_mm(2.5);
+        p.stepover = ParamLength::from_mm(2.5);
+    }
+    let tp_fixed = generate_operation_toolpath_with_rest(&OperationGenRequest {
+        doc: &doc,
+        sketches: &[],
+        setup: &resolved_4ax,
+        op: &op_fixed,
+        tool: &flat_3mm,
+        clearing_tool: None,
+        display_unit: DisplayUnit::Millimeter,
+        is_first_tool_in_setup: true,
+        upstream_rest: &[],
+        carryover_stock: None,
+        cancel: &cancel,
+    })
+    .unwrap();
+    let min_r_fixed = tp_fixed
+        .segments_wcs
+        .iter()
+        .filter(|s| !matches!(s.motion, SegmentMotion3D::Rapid))
+        .map(|s| (s.end_wcs.y - rot_4ax.center_wcs.y).hypot(s.end_wcs.z - rot_4ax.center_wcs.z))
+        .fold(f64::INFINITY, f64::min);
+    assert!(
+        min_r_fixed <= 1e-4,
+        "Rotary4AxisSim FixedLateralOffset must taper to centerline where no center material exists, got min_r={min_r_fixed:.4} mm"
+    );
+    let sim_fixed = run_setup_simulation(&SetupSimulationInput {
+        doc: &doc,
+        setup: &resolved_4ax,
+        target_bodies: &[],
+        fixtures: &[],
+        operations: &[SimOperationInput::from_operation(
+            &op_fixed, &flat_3mm, &tp_fixed,
+        )],
+        kinematics: MachineKinematicsConfig::default(),
+        resolution: SimResolution::Standard,
+        verify_config: SimVerificationConfig::default(),
+        initial_stock: None,
+        initial_raw_volume_mm3: None,
+        carried_over_from_setup: None,
+        cancel: None,
+    })
+    .unwrap();
+    assert_eq!(
+        sim_fixed.critical_error_count(),
+        0,
+        "Rotary4AxisSim FixedLateralOffset empty-center must verify crash-free & gouge-free, got: {:#?}",
+        sim_fixed.diagnostics
+    );
+
+    // 1c. Explicit positive Bottom Height (`WCS Origin + 3.0 mm`) must still preserve the requested core radius
+    let mut op_core = op_autotilt.clone();
+    op_core.id = "op_keep_core".to_string();
+    op_core.heights.bottom = HeightSpec::new(HeightReference::WcsOrigin, 3.0);
+    op_core.passes.multiple_depths = false;
+    let tp_core = generate_operation_toolpath_with_rest(&OperationGenRequest {
+        doc: &doc,
+        sketches: &[],
+        setup: &resolved_4ax,
+        op: &op_core,
+        tool: &flat_3mm,
+        clearing_tool: None,
+        display_unit: DisplayUnit::Millimeter,
+        is_first_tool_in_setup: true,
+        upstream_rest: &[],
+        carryover_stock: None,
+        cancel: &cancel,
+    })
+    .unwrap();
+    let min_z_core = tp_core
+        .segments_wcs
+        .iter()
+        .filter(|s| !matches!(s.motion, SegmentMotion3D::Rapid))
+        .map(|s| s.end_wcs.z - rot_4ax.center_wcs.z)
+        .fold(f64::INFINITY, f64::min);
+    assert!(
+        min_z_core >= 3.0 - 1e-4,
+        "Explicit positive Bottom Height (+3.0 mm) must be respected, got min_z_rel={min_z_core:.4} mm"
+    );
+
+    // 1d. 2-Linear + Rotary (`Rotary2Linear`) must also cut all the way to r = 0 without a stem
+    let mut setup_2lin = setup_4ax.clone();
+    setup_2lin.rotary.mode = RotaryDriveMode::TwoLinearPlusRotary;
+    let resolved_2lin = setup_2lin.resolve(&doc, DisplayUnit::Millimeter).unwrap();
+    let rot_2lin = resolved_2lin.rotary.unwrap();
+
+    let mut op_2lin = Operation::new(
+        "op_empty_2lin",
+        "Rotary 2-Linear Spiral",
+        OperationKind::Rotary2Linear,
+    );
+    op_2lin.tool_id = Some(flat_3mm.id.clone());
+    op_2lin.heights.bottom = HeightSpec::new(HeightReference::ModelBottom, 0.0);
+    op_2lin.passes.multiple_depths = true;
+    op_2lin.passes.max_stepdown = ParamLength::from_mm(5.0);
+    if let StrategyParams::Rotary2Linear(p) = op_2lin.strategy_mut() {
+        p.pattern = RotaryPatternMode::ContinuousSpiral;
+        p.stepover = ParamLength::from_mm(1.5);
+    }
+    let tp_2lin = generate_operation_toolpath_with_rest(&OperationGenRequest {
+        doc: &doc,
+        sketches: &[],
+        setup: &resolved_2lin,
+        op: &op_2lin,
+        tool: &flat_3mm,
+        clearing_tool: None,
+        display_unit: DisplayUnit::Millimeter,
+        is_first_tool_in_setup: true,
+        upstream_rest: &[],
+        carryover_stock: None,
+        cancel: &cancel,
+    })
+    .unwrap();
+    let min_r_2lin = tp_2lin
+        .segments_wcs
+        .iter()
+        .filter(|s| !matches!(s.motion, SegmentMotion3D::Rapid))
+        .map(|s| s.end_wcs.z - rot_2lin.center_wcs.z)
+        .fold(f64::INFINITY, f64::min);
+    assert!(
+        min_r_2lin <= 1e-6,
+        "Rotary2Linear must cut all the way to rotary centerline (r=0), got min_r={min_r_2lin:.4} mm"
+    );
+    let sim_2lin = run_setup_simulation(&SetupSimulationInput {
+        doc: &doc,
+        setup: &resolved_2lin,
+        target_bodies: &[],
+        fixtures: &[],
+        operations: &[SimOperationInput::from_operation(
+            &op_2lin, &flat_3mm, &tp_2lin,
+        )],
+        kinematics: MachineKinematicsConfig::default(),
+        resolution: SimResolution::Standard,
+        verify_config: SimVerificationConfig::default(),
+        initial_stock: None,
+        initial_raw_volume_mm3: None,
+        carried_over_from_setup: None,
+        cancel: None,
+    })
+    .unwrap();
+    assert_eq!(
+        sim_2lin.critical_error_count(),
+        0,
+        "Rotary2Linear empty-center must verify crash-free & gouge-free, got: {:#?}",
+        sim_2lin.diagnostics
+    );
+    let cyl_2lin = sim_2lin.as_cylindrical().unwrap();
+    let mut empty_max_r_2lin = 0.0_f32;
+    for iu in 0..cyl_2lin.nu {
+        let u = cyl_2lin.u_min + (iu as f64 + 0.5) * cyl_2lin.du;
+        if !(6.0..=11.5).contains(&u) {
+            continue;
+        }
+        for it in 0..cyl_2lin.ntheta {
+            let theta_deg = (it as f64 * cyl_2lin.dtheta).to_degrees();
+            if !(135.0..=225.0).contains(&theta_deg) {
+                continue;
+            }
+            let idx = iu * cyl_2lin.ntheta + it;
+            if cyl_2lin.r_target[idx] < 0.0 {
+                empty_max_r_2lin = empty_max_r_2lin.max(cyl_2lin.r_stock[idx]);
+            }
+        }
+    }
+    assert!(
+        empty_max_r_2lin < 0.05,
+        "Rotary2Linear must not leave a center stem, got max r_stock={empty_max_r_2lin:.4} mm"
+    );
+
+    // 2. Two-prong ("bunny ears") hollow-center geometry with a ball endmill + Auto-Tilt smoothing:
+    // base block + two symmetrically offset prongs (`|y| ∈ [6, 11]`) leaving a completely open
+    // channel down the rotary centerline. Must cut out the center to r = 0 while preserving both
+    // outer prongs without gouging on both CPU and GPU cylindrical backends.
+    let mut prong_tris = Vec::new();
+    push_box_stl_tris(&mut prong_tris, [-10.0, -9.0, -9.0], [0.0, 9.0, 9.0]);
+    push_box_stl_tris(&mut prong_tris, [0.0, -11.0, -3.0], [10.0, -6.0, 3.0]);
+    push_box_stl_tris(&mut prong_tris, [0.0, 6.0, -3.0], [10.0, 11.0, 3.0]);
+    let prong_stl = build_binary_stl(&prong_tris);
+    let prong_doc =
+        load_mesh_cad_document("two_prongs.stl", &prong_stl, &MeshImportOptions::default())
+            .expect("load two-prong mesh");
+
+    let mut op_prongs = op_autotilt.clone();
+    op_prongs.id = "op_prongs_ball".to_string();
+    op_prongs.tool_id = Some(ball_3mm.id.clone());
+    op_prongs.passes.multiple_depths = false;
+    if let StrategyParams::Rotary4AxisSim(p) = op_prongs.strategy_mut() {
+        p.stepover = ParamLength::from_mm(0.65);
+        p.max_tilt_deg = 18.0;
+        p.tilt_smoothing_window = 3;
+        p.angular_sample_deg = 2.0;
+    }
+
+    let mut setup_prongs = setup_4ax.clone();
+    let resolved_prongs = setup_prongs
+        .resolve(&prong_doc, DisplayUnit::Millimeter)
+        .unwrap();
+    let rot_prongs = resolved_prongs.rotary.unwrap();
+    let tp_prongs = generate_operation_toolpath_with_rest(&OperationGenRequest {
+        doc: &prong_doc,
+        sketches: &[],
+        setup: &resolved_prongs,
+        op: &op_prongs,
+        tool: &ball_3mm,
+        clearing_tool: None,
+        display_unit: DisplayUnit::Millimeter,
+        is_first_tool_in_setup: true,
+        upstream_rest: &[],
+        carryover_stock: None,
+        cancel: &cancel,
+    })
+    .unwrap();
+    let min_r_prongs = tp_prongs
+        .segments_wcs
+        .iter()
+        .filter(|s| !matches!(s.motion, SegmentMotion3D::Rapid))
+        .map(|s| {
+            (s.end_wcs.y - rot_prongs.center_wcs.y).hypot(s.end_wcs.z - rot_prongs.center_wcs.z)
+        })
+        .fold(f64::INFINITY, f64::min);
+    assert!(
+        min_r_prongs <= 1e-4,
+        "Two-prong empty-center model must be cut to r = 0 without leaving a stem, got min_r={min_r_prongs:.4} mm"
+    );
+
+    let prong_sim_input = SetupSimulationInput {
+        doc: &prong_doc,
+        setup: &resolved_prongs,
+        target_bodies: &[],
+        fixtures: &[],
+        operations: &[SimOperationInput::from_operation(
+            &op_prongs, &ball_3mm, &tp_prongs,
+        )],
+        kinematics: MachineKinematicsConfig::default(),
+        resolution: SimResolution::Standard,
+        verify_config: SimVerificationConfig::default(),
+        initial_stock: None,
+        initial_raw_volume_mm3: None,
+        carried_over_from_setup: None,
+        cancel: None,
+    };
+
+    for backend in [SimComputeBackendChoice::Cpu, SimComputeBackendChoice::Auto] {
+        let sim_prongs =
+            run_setup_simulation_with_choice(&prong_sim_input, SimEngineKind::Heightmap, backend)
+                .unwrap();
+        assert_eq!(
+            sim_prongs.critical_error_count(),
+            0,
+            "Two-prong ({backend:?}) toolpath must verify crash-free & gouge-free, got: {:#?}",
+            sim_prongs.diagnostics
+        );
+        let cyl_prongs = sim_prongs.as_cylindrical().unwrap();
+        let mut prong_empty_max_r = 0.0_f32;
+        let mut prong_outer_min_r = f32::INFINITY;
+        for iu in 0..cyl_prongs.nu {
+            let u = cyl_prongs.u_min + (iu as f64 + 0.5) * cyl_prongs.du;
+            if !(6.0..=11.5).contains(&u) {
+                continue;
+            }
+            for it in 0..cyl_prongs.ntheta {
+                let theta_deg = (it as f64 * cyl_prongs.dtheta).to_degrees();
+                let idx = iu * cyl_prongs.ntheta + it;
+                let in_open_channel =
+                    theta_deg <= 20.0 || theta_deg >= 340.0 || (160.0..=200.0).contains(&theta_deg);
+                if in_open_channel && cyl_prongs.r_target[idx] < 0.0 {
+                    prong_empty_max_r = prong_empty_max_r.max(cyl_prongs.r_stock[idx]);
+                }
+                let on_prong_crown =
+                    (85.0..=95.0).contains(&theta_deg) || (265.0..=275.0).contains(&theta_deg);
+                if on_prong_crown && cyl_prongs.r_target[idx] > 10.0 {
+                    prong_outer_min_r = prong_outer_min_r.min(cyl_prongs.r_stock[idx]);
+                }
+            }
+        }
+        assert!(
+            prong_empty_max_r < 0.05,
+            "Two-prong ({backend:?}) empty center must not retain a stem, got max r_stock={prong_empty_max_r:.4} mm"
+        );
+        assert!(
+            prong_outer_min_r > 10.5,
+            "Two-prong ({backend:?}) outer prongs must remain intact (not erased by center pass), got min r_stock={prong_outer_min_r:.4} mm"
+        );
+    }
+}

@@ -90,7 +90,7 @@ pub fn generate_rotary2linear(
         ctx.passes.stock_to_leave_radial.value_mm,
         ctx.passes.stock_to_leave_axial.value_mm,
     );
-    let r_floor = (ctx.heights.bottom_z_wcs - rot.center_wcs.z).max(0.5);
+    let r_floor = (ctx.heights.bottom_z_wcs - rot.center_wcs.z).max(0.0);
     let r_outer_est = rot.stock_outer_radius_mm.max(2.0);
 
     // Effective stepover (either explicit mm or slope-compensated cusp-height derived)

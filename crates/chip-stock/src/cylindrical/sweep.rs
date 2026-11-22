@@ -205,7 +205,7 @@ impl CylindricalStock {
                 let Some((cr_lo, cr_hi)) = solve_cylinder_ray_interval(a, b, c, r_cut) else {
                     continue;
                 };
-                if cr_hi <= 0.0 || cr_lo >= r_cur {
+                if cr_hi <= 0.0 || cr_lo >= r_cur || cr_hi < r_cur - 1e-4 {
                     continue;
                 }
 
@@ -223,7 +223,7 @@ impl CylindricalStock {
                 };
 
                 let c_enter = eval_clearance(r_enter);
-                if c_enter < 0.0 {
+                if c_enter <= 1e-5 {
                     continue;
                 }
 

@@ -283,7 +283,7 @@ fn main(
 
         // Cutter cylinder interval
         let c_int = solve_cylinder_ray_interval(a, b, c, r_cut);
-        if (!c_int.valid || c_int.hi <= 0.0 || c_int.lo >= r_cur) {
+        if (!c_int.valid || c_int.hi <= 0.0 || c_int.lo >= r_cur || c_int.hi < r_cur - 1e-4) {
             continue;
         }
         let r_enter = min(r_cur, c_int.hi);
@@ -293,7 +293,7 @@ fn main(
         }
 
         let c_enter = eval_clearance(r_enter, v0, d_rad, spindle, prof, r_cut);
-        if (c_enter < 0.0) {
+        if (c_enter <= 1e-5) {
             continue;
         }
 

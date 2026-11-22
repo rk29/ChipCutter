@@ -100,7 +100,7 @@ pub fn generate_rotary4axis_sim(
         ctx.passes.stock_to_leave_radial.value_mm,
         ctx.passes.stock_to_leave_axial.value_mm,
     );
-    let r_floor = (ctx.heights.bottom_z_wcs - rot.center_wcs.z).max(0.5);
+    let r_floor = (ctx.heights.bottom_z_wcs - rot.center_wcs.z).max(0.0);
     let r_outer_est = rot.stock_outer_radius_mm.max(2.0);
     let max_safe_cross = (r_outer_est * 0.65).max(0.5);
 
@@ -266,6 +266,91 @@ impl CrossOffsetField {
     }
 }
 
+/// Samples the centerline drop-cutter radius grid `r_center[it][iu]` over the rotary window.
+#[allow(clippy::too_many_arguments)]
+fn sample_centerline_radius_grid(
+    base_mesh: &SurfaceMesh3D,
+    rot: &ResolvedRotaryConfig,
+    cutter: &SurfaceCutterProfile,
+    params: &Rotary4AxisSimParams,
+    u_start: f64,
+    u_end: f64,
+    start_deg: f64,
+    angular_span_deg: f64,
+    is_full_turn: bool,
+    r_floor: f64,
+) -> (usize, f64, usize, f64, Vec<Vec<f64>>) {
+    let axial_tilt = params.axial_sample_step.value_mm.clamp(0.20, 0.40);
+    let n_u = (((u_end - u_start) / axial_tilt).ceil() as usize).clamp(4, 1_000);
+    let du = (u_end - u_start) / (n_u as f64);
+    let u_samples: Vec<f64> = (0..=n_u).map(|i| u_start + (i as f64) * du).collect();
+
+    let d_theta_req = params.angular_sample_deg.clamp(1.0, 2.0);
+    let n_theta = ((angular_span_deg / d_theta_req).ceil() as usize).clamp(8, 360);
+    let d_theta = angular_span_deg / (n_theta as f64);
+    let theta_count = if is_full_turn { n_theta } else { n_theta + 1 };
+
+    let r_center: Vec<Vec<f64>> = (0..theta_count)
+        .into_par_iter()
+        .map(|it| {
+            let theta_deg = start_deg + (it as f64) * d_theta;
+            u_samples
+                .iter()
+                .map(|&u_val| {
+                    drop_cutter_rotary_z_rel(base_mesh, rot, cutter, u_val, 0.0, theta_deg, r_floor)
+                })
+                .collect()
+        })
+        .collect();
+
+    (n_u, du, n_theta, d_theta, r_center)
+}
+
+/// Applies `smooth_passes` of bounded 5-point stencil smoothing to a `(theta, u)` cross-offset grid,
+/// enforcing `|c_cross| <= min(r_center, max_safe_cross)` at every cell so smoothing never bleeds
+/// non-zero lateral offsets into empty-center voids (`r_center == 0`).
+fn smooth_cross_offset_grid(
+    mut cur: Vec<Vec<f64>>,
+    r_center: &[Vec<f64>],
+    is_full_turn: bool,
+    smooth_passes: usize,
+    max_safe_cross: f64,
+) -> Vec<Vec<f64>> {
+    let theta_count = cur.len();
+    let nu = cur.first().map_or(0, Vec::len);
+    if theta_count == 0 || nu == 0 || smooth_passes == 0 {
+        return cur;
+    }
+    let mut next = vec![vec![0.0_f64; nu]; theta_count];
+    for _ in 0..smooth_passes {
+        for it in 0..theta_count {
+            let itp = if is_full_turn {
+                (it + theta_count - 1) % theta_count
+            } else {
+                it.saturating_sub(1)
+            };
+            let itn = if is_full_turn {
+                (it + 1) % theta_count
+            } else {
+                (it + 1).min(theta_count - 1)
+            };
+            for iu in 0..nu {
+                let iup = iu.saturating_sub(1);
+                let iun = (iu + 1).min(nu - 1);
+                let val = 0.40 * cur[it][iu]
+                    + 0.20 * cur[itp][iu]
+                    + 0.20 * cur[itn][iu]
+                    + 0.10 * cur[it][iup]
+                    + 0.10 * cur[it][iun];
+                let cell_limit = r_center[it][iu].max(0.0).min(max_safe_cross);
+                next[it][iu] = val.clamp(-cell_limit, cell_limit);
+            }
+        }
+        std::mem::swap(&mut cur, &mut next);
+    }
+    cur
+}
+
 /// Computes the smooth cross-axis lateral offset field `c_cross(u, θ)` (`mm`) using direct
 /// exact `f64` centerline drop-cutter queries.
 #[allow(clippy::too_many_arguments)]
@@ -282,13 +367,57 @@ fn compute_cross_offset_field(
     r_floor: f64,
     max_safe_cross: f64,
 ) -> CrossOffsetField {
+    let smooth_passes = params.tilt_smoothing_window.clamp(0, 12) as usize;
     match params.tilt_mode {
         RotaryTiltMode::FixedLateralOffset => {
             let c_fixed = params
                 .lateral_offset
                 .value_mm
                 .clamp(-max_safe_cross, max_safe_cross);
-            CrossOffsetField::Fixed(c_fixed)
+            if c_fixed.abs() <= 1e-6 {
+                return CrossOffsetField::Fixed(0.0);
+            }
+
+            let (n_u, du, n_theta, d_theta, r_center) = sample_centerline_radius_grid(
+                base_mesh,
+                rot,
+                cutter,
+                params,
+                u_start,
+                u_end,
+                start_deg,
+                angular_span_deg,
+                is_full_turn,
+                r_floor,
+            );
+            let c_abs = c_fixed.abs();
+            let needs_center_taper = r_center
+                .iter()
+                .any(|row| row.iter().any(|&r| r < c_abs - 1e-4));
+            if !needs_center_taper {
+                return CrossOffsetField::Fixed(c_fixed);
+            }
+
+            let raw: Vec<Vec<f64>> = r_center
+                .iter()
+                .map(|row| {
+                    row.iter()
+                        .map(|&r| c_fixed * (r.max(0.0) / c_abs).clamp(0.0, 1.0))
+                        .collect()
+                })
+                .collect();
+            let cur = smooth_cross_offset_grid(raw, &r_center, is_full_turn, smooth_passes, c_abs);
+
+            CrossOffsetField::Grid {
+                u_start,
+                du,
+                n_u,
+                start_deg,
+                d_theta,
+                n_theta,
+                is_full_turn,
+                c_cross_slices: cur,
+            }
         }
         RotaryTiltMode::SurfaceNormalAutoTilt => {
             let max_tilt_rad = params.max_tilt_deg.clamp(0.0, 40.0).to_radians();
@@ -296,32 +425,21 @@ fn compute_cross_offset_field(
                 return CrossOffsetField::Fixed(0.0);
             }
 
-            let axial_tilt = params.axial_sample_step.value_mm.clamp(0.20, 0.40);
-            let n_u = (((u_end - u_start) / axial_tilt).ceil() as usize).clamp(4, 1_000);
-            let du = (u_end - u_start) / (n_u as f64);
-            let u_samples: Vec<f64> = (0..=n_u).map(|i| u_start + (i as f64) * du).collect();
-            let nu = u_samples.len();
-
-            let d_theta_req = params.angular_sample_deg.clamp(1.0, 2.0);
-            let n_theta = ((angular_span_deg / d_theta_req).ceil() as usize).clamp(8, 360);
-            let d_theta = angular_span_deg / (n_theta as f64);
-            let theta_count = if is_full_turn { n_theta } else { n_theta + 1 };
-
             // Exact centerline drop-cutter pass to estimate local circumferential flank slope `dr/(r*dθ)`
-            let r_center: Vec<Vec<f64>> = (0..theta_count)
-                .into_par_iter()
-                .map(|it| {
-                    let theta_deg = start_deg + (it as f64) * d_theta;
-                    u_samples
-                        .iter()
-                        .map(|&u_val| {
-                            drop_cutter_rotary_z_rel(
-                                base_mesh, rot, cutter, u_val, 0.0, theta_deg, r_floor,
-                            )
-                        })
-                        .collect()
-                })
-                .collect();
+            let (n_u, du, n_theta, d_theta, r_center) = sample_centerline_radius_grid(
+                base_mesh,
+                rot,
+                cutter,
+                params,
+                u_start,
+                u_end,
+                start_deg,
+                angular_span_deg,
+                is_full_turn,
+                r_floor,
+            );
+            let theta_count = r_center.len();
+            let nu = n_u + 1;
 
             // Convert circumferential slope into bounded cross-axis offset aligning cutter with flank normal
             let d_th_rad = d_theta.to_radians().max(1e-4);
@@ -350,45 +468,25 @@ fn compute_cross_offset_field(
                     2.0 * d_th_rad
                 };
                 for iu in 0..nu {
-                    let r_here = r_center[it][iu].max(1.0);
+                    let r_raw = r_center[it][iu].max(0.0);
+                    let r_denom = r_raw.max(1.0);
                     let dr_dtheta = (r_center[it_next][iu] - r_center[it_prev][iu]) / span_rad;
-                    let slope_angle = (dr_dtheta / r_here).atan();
+                    let slope_angle = (dr_dtheta / r_denom).atan();
                     let clamped_alpha = slope_angle.clamp(-max_tilt_rad, max_tilt_rad);
-                    let c_val = (axis_cross_sign * r_here * clamped_alpha.sin())
+                    let c_val = (axis_cross_sign * r_raw * clamped_alpha.sin())
                         .clamp(-max_safe_cross, max_safe_cross);
                     raw[it][iu] = c_val;
                 }
             }
 
             // Smooth cross-axis tilt field so simultaneous Y/X & rotary motion stays C1-smooth
-            let smooth_passes = params.tilt_smoothing_window.clamp(0, 12) as usize;
-            let mut cur = raw;
-            let mut next = vec![vec![0.0_f64; nu]; theta_count];
-            for _ in 0..smooth_passes {
-                for it in 0..theta_count {
-                    let itp = if is_full_turn {
-                        (it + theta_count - 1) % theta_count
-                    } else {
-                        it.saturating_sub(1)
-                    };
-                    let itn = if is_full_turn {
-                        (it + 1) % theta_count
-                    } else {
-                        (it + 1).min(theta_count - 1)
-                    };
-                    for iu in 0..nu {
-                        let iup = iu.saturating_sub(1);
-                        let iun = (iu + 1).min(nu - 1);
-                        let val = 0.40 * cur[it][iu]
-                            + 0.20 * cur[itp][iu]
-                            + 0.20 * cur[itn][iu]
-                            + 0.10 * cur[it][iup]
-                            + 0.10 * cur[it][iun];
-                        next[it][iu] = val.clamp(-max_safe_cross, max_safe_cross);
-                    }
-                }
-                std::mem::swap(&mut cur, &mut next);
-            }
+            let cur = smooth_cross_offset_grid(
+                raw,
+                &r_center,
+                is_full_turn,
+                smooth_passes,
+                max_safe_cross,
+            );
 
             CrossOffsetField::Grid {
                 u_start,
@@ -417,7 +515,7 @@ fn off_center_wcs(rot: &ResolvedRotaryConfig, u_axial: f64, c_cross: f64, z_rel:
 
 #[inline]
 fn clamp_to_shell(c_cross: f64, z_surf: f64, r_ceil: f64) -> f64 {
-    let z_shell = (r_ceil * r_ceil - c_cross * c_cross).max(0.25).sqrt();
+    let z_shell = (r_ceil * r_ceil - c_cross * c_cross).max(0.0).sqrt();
     z_surf.max(z_shell)
 }
 
@@ -496,7 +594,8 @@ fn refine_4axis_segment(
     depth: u8,
     out: &mut Vec<(f64, f64, f64, f64)>,
 ) {
-    if depth >= 4 {
+    let max_depth = if (b.3 - a.3).abs() > 0.25 { 8 } else { 4 };
+    if depth >= max_depth {
         return;
     }
     let d_th = (b.1 - a.1).abs();
