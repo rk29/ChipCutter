@@ -50,6 +50,11 @@
   </screenshots>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="0.20.0" date="2026-11-23">
+      <description>
+        <p>Phase 20 release: hardened all 3-axis, 2.5D, indexed 3+1, workholding, and 4th-axis rotary toolpathing kernels for overhanging and continuously twisting helical lofts—adding multi-tier shank and collet/holder target-part clearance across drop_cutter_z and PushCutterField with reach-limit diagnostics; adding automatic 2.5D overhang-plunge warnings and an opt-in Avoid Model Overhangs mode across Pocket2D, Contour2D, DrillBore, Facing, and ChamferTrace; scoping 2D rest machining by rotary index angle and adding in-setup cross-angle volumetric Tri-Dexel stock carryover plus continuous swept Z-slab excess masks; suppressing false overhang-shadow creases and rest bands in Pencil3D/build_3d_rest_mask, splitting Parallel3D/Scallop3D chains safely at overhang cliffs, and extracting continuous swept clamping-band silhouettes for Auto Soft-Jaws; adding verified partial-sector ZigZag rotary links, overhang-aware multi-offset SurfaceNormalAutoTilt flank probing, and axial-undercut reach warnings; and adding OS clipboard support with selectable/copyable Activity Logs (#26), Flatpak host filesystem access and hardened missing-model handling (#27), live simulation percent-complete progress telemetry (#28), and Surface Nets GPU Tri-Dexel curved surface rendering with batched GPU sweeps (#29).</p>
+      </description>
+    </release>
     <release version="0.19.3" date="2026-11-23">
       <description>
         <p>Bug-fix release: refactored chip-cli clap subcommand parsing into boxed per-subcommand Args structs to eliminate Windows debug main-thread stack overflows under the 1 MiB default stack limit, and added a 768 KiB stack-headroom regression test (#25).</p>
