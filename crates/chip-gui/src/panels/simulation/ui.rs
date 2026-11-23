@@ -661,13 +661,13 @@ impl SimulationPanelState {
                                 tc.next_op_name
                             ));
                             ui.separator();
-                            if let Some(cyl) = res.as_cylindrical() {
+                            if let Some(rot) = res.rotary_spec() {
                                 ui.monospace(format!(
                                     "WCS X={} Y={} Z={} {}={:.1}°",
                                     display_unit.format_length(s.tip_pos_wcs.x),
                                     display_unit.format_length(s.tip_pos_wcs.y),
                                     display_unit.format_length(s.tip_pos_wcs.z),
-                                    cyl.rotary.axis_letter,
+                                    rot.axis_letter,
                                     s.rotary_deg,
                                 ));
                             } else {
@@ -703,13 +703,13 @@ impl SimulationPanelState {
                             ui.monospace(format!("T{}", s.tool_number))
                                 .on_hover_text(&s.tool_name);
                             ui.separator();
-                            if let Some(cyl) = res.as_cylindrical() {
+                            if let Some(rot) = res.rotary_spec() {
                                 ui.monospace(format!(
                                     "X={} Y={} Z={} {}={:.1}°",
                                     display_unit.format_length(s.tip_pos_wcs.x),
                                     display_unit.format_length(s.tip_pos_wcs.y),
                                     display_unit.format_length(s.tip_pos_wcs.z),
-                                    cyl.rotary.axis_letter,
+                                    rot.axis_letter,
                                     s.rotary_deg,
                                 ));
                             } else {

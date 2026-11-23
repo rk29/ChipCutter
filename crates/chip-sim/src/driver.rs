@@ -14,9 +14,9 @@ use chip_cam::{
 };
 use chip_stock::{
     ActiveSimBackendInfo, CpuExactBackend, CylindricalStock, HeightfieldStock,
-    OperationErrorSnapshot, RadialCutterProfile, SimComputeBackendChoice, SimEngineKind, SimError,
-    SimResolution, SimStockBackend, SimStockColorMode, SimStockMesh, SimulatedStock,
-    StockCheckpointSnapshot, StockErrorReport, StockModelKind, StockPlaybackCursor,
+    OperationErrorSnapshot, RadialCutterProfile, RotaryStockSpec, SimComputeBackendChoice,
+    SimEngineKind, SimError, SimResolution, SimStockBackend, SimStockColorMode, SimStockMesh,
+    SimulatedStock, StockCheckpointSnapshot, StockErrorReport, StockModelKind, StockPlaybackCursor,
     StockVerifyTolerances, SweepChord, SweepToolSpec, TriDexelStock,
 };
 #[cfg(feature = "gpu-compute")]
@@ -106,6 +106,16 @@ impl SetupSimulationResult {
     #[inline]
     pub const fn is_cylindrical(&self) -> bool {
         self.final_stock.is_cylindrical()
+    }
+
+    #[inline]
+    pub const fn rotary_spec(&self) -> Option<RotaryStockSpec> {
+        self.final_stock.rotary_spec()
+    }
+
+    #[inline]
+    pub const fn is_rotary(&self) -> bool {
+        self.final_stock.is_rotary()
     }
 
     #[inline]
@@ -570,7 +580,9 @@ fn prepare_initial_stock(
     check_cancelled(input.cancel)?;
     let stock_spec = stock_shape_spec_from_cam(&input.setup.stock);
 
-    if let Some(rotary) = input.setup.rotary {
+    if let Some(rotary) = input.setup.rotary
+        && engine != SimEngineKind::TriDexel
+    {
         let rotary_spec = rotary_stock_spec_from_cam(rotary);
         let mut cyl =
             CylindricalStock::from_stock_spec(&stock_spec, rotary_spec, input.resolution)?;
@@ -586,11 +598,12 @@ fn prepare_initial_stock(
             None,
         ))
     } else if engine == SimEngineKind::TriDexel {
-        let td = if let Some(carried) = input.initial_stock {
+        let mut td = if let Some(carried) = input.initial_stock {
             carried.clone()
         } else {
             TriDexelStock::from_stock_spec(&stock_spec, input.resolution)?
         };
+        td.rotary = input.setup.rotary.map(rotary_stock_spec_from_cam);
         check_cancelled(input.cancel)?;
         let target_td =
             extract_tridexel_target_from_cad(input.doc, input.setup, input.target_bodies, &td);
@@ -628,7 +641,9 @@ fn prepare_initial_stock_with_gpu(
     check_cancelled(input.cancel)?;
     let stock_spec = stock_shape_spec_from_cam(&input.setup.stock);
 
-    if let Some(rotary) = input.setup.rotary {
+    if let Some(rotary) = input.setup.rotary
+        && engine != SimEngineKind::TriDexel
+    {
         let rotary_spec = rotary_stock_spec_from_cam(rotary);
         let mut cyl =
             CylindricalStock::from_stock_spec(&stock_spec, rotary_spec, input.resolution)?;
@@ -648,11 +663,12 @@ fn prepare_initial_stock_with_gpu(
             None,
         ))
     } else if engine == SimEngineKind::TriDexel {
-        let td = if let Some(carried) = input.initial_stock {
+        let mut td = if let Some(carried) = input.initial_stock {
             carried.clone()
         } else {
             TriDexelStock::from_stock_spec(&stock_spec, input.resolution)?
         };
+        td.rotary = input.setup.rotary.map(rotary_stock_spec_from_cam);
         check_cancelled(input.cancel)?;
         let target_td = if let Some(ctx) = gpu_ctx
             && input.doc.has_3d_geometry()
@@ -3546,6 +3562,183 @@ mod tests {
                 "in_tol parity cpu={:.2}% gpu={:.2}%",
                 rc.in_tolerance_surface_pct,
                 rg.in_tolerance_surface_pct
+            );
+        }
+    }
+
+    #[test]
+    fn rotary_tridexel_indexed_below_equator_removes_all_cut_material_and_matches_cpu_gpu() {
+        let stl = sample_rotary_shaft_stl_bytes();
+        let doc = load_mesh_cad_document("rotary_shaft.stl", &stl, &MeshImportOptions::default())
+            .unwrap();
+        let lib = default_starter_tool_library();
+        let flat_3mm = lib
+            .tools
+            .iter()
+            .find(|t| {
+                matches!(
+                    t.geometry,
+                    CutterGeometry::FlatEndmill { diameter_mm, .. } if diameter_mm <= 4.0
+                )
+            })
+            .unwrap_or(&lib.tools[0]);
+
+        let mut setup = Setup::new("s_rot_td", "Rotary Indexed Tri-Dexel", WorkOffsetSlot::G54);
+        setup.wcs.origin = WcsOriginMode::ModelBoxPoint {
+            anchor: BoxAnchor27::VOLUMETRIC_CENTER,
+        };
+        setup.stock = StockConfig::FixedCylinder {
+            axis: StockAxis::X,
+            diameter: ParamLength::from_mm(42.0),
+            length: ParamLength::from_mm(80.0),
+            axial_top_offset: ParamLength::from_mm(0.0),
+        };
+        setup.rotary.mode = RotaryDriveMode::Simultaneous4Axis;
+        setup.rotary.axis = RotaryAxisKind::XAxis;
+        let resolved = setup.resolve(&doc, DisplayUnit::Millimeter).unwrap();
+
+        // Indexed 3+1 cuts on 0°, 90°, 180°, 270° including a multi-stepdown A=0° off-centerline
+        // roughing slot extending below Z = 0 (Z = +6 -> 0 -> -5 -> -10.5 at Y = -17.0 mm, leaving
+        // outer rim intact while cutting cleanly through the bottom of the cylinder).
+        let mut b = ToolpathBuilder::new("op_idx_rough");
+        b.rotary_rapid_to(DVec3::new(-15.0, -17.0, 28.0), 0.0);
+        for &z_lvl in &[6.0_f64, 0.0, -5.0, -10.5] {
+            b.rotary_linear_to(
+                DVec3::new(-15.0, -17.0, z_lvl),
+                0.0,
+                300.0,
+                21.0,
+                MotionRole::Plunge,
+            );
+            b.rotary_linear_to(
+                DVec3::new(15.0, -17.0, z_lvl),
+                0.0,
+                600.0,
+                21.0,
+                MotionRole::Cut,
+            );
+            b.rotary_rapid_to(DVec3::new(15.0, -17.0, 28.0), 0.0);
+            b.rotary_rapid_to(DVec3::new(-15.0, -17.0, 28.0), 0.0);
+        }
+        for &ang in &[90.0_f64, 180.0, 270.0] {
+            b.rotary_rapid_to(DVec3::new(-12.0, 0.0, 28.0), ang);
+            b.rotary_linear_to(
+                DVec3::new(-12.0, 0.0, 16.5),
+                ang,
+                300.0,
+                16.5,
+                MotionRole::Plunge,
+            );
+            b.rotary_linear_to(
+                DVec3::new(12.0, 0.0, 16.5),
+                ang,
+                600.0,
+                16.5,
+                MotionRole::Cut,
+            );
+            b.rotary_rapid_to(DVec3::new(12.0, 0.0, 28.0), ang);
+        }
+        let tp = b.finish();
+
+        let input = SetupSimulationInput {
+            doc: &doc,
+            setup: &resolved,
+            target_bodies: &[],
+            fixtures: &[],
+            operations: &[SimOperationInput {
+                op_id: "op_idx_rough",
+                op_name: "Indexed Adaptive Rough",
+                tool: flat_3mm,
+                fallback_spindle_rpm: 12_000.0,
+                intentional_edge_break_mm: 0.0,
+                toolpath: &tp,
+            }],
+            resolution: SimResolution::Standard,
+            kinematics: MachineKinematicsConfig::default(),
+            verify_config: SimVerificationConfig::default(),
+            initial_stock: None,
+            initial_raw_volume_mm3: None,
+            carried_over_from_setup: None,
+            cancel: None,
+        };
+
+        let cpu = run_setup_simulation_with_choice(
+            &input,
+            SimEngineKind::TriDexel,
+            SimComputeBackendChoice::Cpu,
+        )
+        .unwrap();
+        assert_eq!(cpu.engine, SimEngineKind::TriDexel);
+        assert!(cpu.is_rotary());
+        let td_cpu = cpu
+            .as_tridexel()
+            .expect("SimEngineKind::TriDexel on rotary setup must produce TriDexelStock");
+        assert!(
+            td_cpu
+                .sample_top_z(0.0, -17.0)
+                .is_some_and(|z| (z - (-10.5)).abs() < 0.05),
+            "deep A=0° cut below equator must remove material all the way to Z=-10.5 at (0, -17), got {:?}",
+            td_cpu.sample_top_z(0.0, -17.0)
+        );
+        assert!(
+            td_cpu.sample_top_z(0.0, -18.3).is_none(),
+            "deep A=0° cut to Z=-10.5 must break cleanly through cylinder bottom at (0, -18.3), got {:?}",
+            td_cpu.sample_top_z(0.0, -18.3)
+        );
+        assert!(
+            td_cpu.sample_top_z(0.0, -20.0).is_some_and(|z| z > 5.0),
+            "outer cylindrical rim outside cutter width must remain intact"
+        );
+        assert!(
+            (2_800.0..=3_600.0).contains(&cpu.removed_volume_mm3),
+            "expected ~3,196 mm^3 removed volume across 4 indexed sides, got {:.1}",
+            cpu.removed_volume_mm3
+        );
+        let rc = cpu
+            .error_report
+            .as_ref()
+            .expect("rotary Tri-Dexel must populate StockErrorReport");
+        assert!(rc.rms_error_mm.is_finite() && rc.target_volume_mm3 > 10_000.0);
+
+        // Verify incremental playback cursor sync matches final stock cleanly
+        let mid_stock = cpu.reconstruct_stock_at_time(cpu.timeline.total_time_sec * 0.5);
+        assert!(mid_stock.is_rotary());
+        assert!(
+            mid_stock.compute_volume_mm3() < cpu.initial_stock_volume_mm3
+                && mid_stock.compute_volume_mm3() >= cpu.remaining_stock_volume_mm3 - 1.0
+        );
+
+        #[cfg(feature = "gpu-compute")]
+        if GpuSimContext::shared_headless().is_some() {
+            let gpu = run_setup_simulation_with_choice(
+                &input,
+                SimEngineKind::TriDexel,
+                SimComputeBackendChoice::Gpu,
+            )
+            .unwrap();
+            assert!(gpu.active_backend.is_gpu);
+            assert_eq!(gpu.engine, SimEngineKind::TriDexel);
+            assert!(gpu.is_rotary());
+            let td_gpu = gpu.as_tridexel().expect("expected GPU TriDexelStock");
+            assert!(
+                td_gpu
+                    .sample_top_z(0.0, -17.0)
+                    .is_some_and(|z| (z - (-10.5)).abs() < 0.05)
+            );
+            assert!(td_gpu.sample_top_z(0.0, -18.3).is_none());
+            let vol_err = (gpu.remaining_stock_volume_mm3 - cpu.remaining_stock_volume_mm3).abs()
+                / cpu.remaining_stock_volume_mm3.max(1.0);
+            assert!(
+                vol_err < 0.002,
+                "rotary Tri-Dexel CPU vs GPU volume parity err {:.4}%",
+                vol_err * 100.0
+            );
+            let rg = gpu.error_report.as_ref().unwrap();
+            assert!(
+                (rg.rms_error_mm - rc.rms_error_mm).abs() < 0.05,
+                "rotary Tri-Dexel RMS parity cpu={:.4} gpu={:.4}",
+                rc.rms_error_mm,
+                rg.rms_error_mm
             );
         }
     }

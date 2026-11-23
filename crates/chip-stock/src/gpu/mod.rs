@@ -2094,4 +2094,254 @@ mod tests {
             "worst-case Ultra 448³ packed quad buffer must fit inside 128 MiB"
         );
     }
+
+    #[test]
+    fn gpu_tridexel_rotary_indexed_below_equator_cardinal_and_simultaneous_match_cpu() {
+        let Some(ctx) = GpuSimContext::shared_headless() else {
+            return;
+        };
+
+        let r_stock = 21.0;
+        let len = 60.0;
+        let stock_spec = StockShapeSpec::Cylinder {
+            axis: Axis3::X,
+            center_wcs: DVec3::ZERO,
+            radius_mm: r_stock,
+            min_axial_mm: -0.5 * len,
+            max_axial_mm: 0.5 * len,
+            aabb_wcs: Aabb3::new(
+                DVec3::new(-0.5 * len, -r_stock, -r_stock),
+                DVec3::new(0.5 * len, r_stock, r_stock),
+            ),
+        };
+        let rotary = RotaryStockSpec {
+            axis: Axis3::X,
+            direction_sign: 1.0,
+            axis_letter: 'A',
+            center_wcs: DVec3::ZERO,
+            stock_u_min: -0.5 * len,
+            stock_u_max: 0.5 * len,
+            stock_outer_radius_mm: r_stock,
+            chuck_u_min: -50.0,
+            chuck_u_max: -30.0,
+            chuck_radius_mm: 32.5,
+        };
+
+        let mut td_init =
+            crate::TriDexelStock::from_stock_spec(&stock_spec, SimResolution::Standard).unwrap();
+        td_init.rotary = Some(rotary);
+
+        let specs = vec![
+            make_tool(
+                "t_flat_3175",
+                28.0,
+                CutterGeometry::FlatEndmill {
+                    diameter_mm: 3.175,
+                    flute_length_mm: 25.0,
+                    overall_length_mm: 50.0,
+                    shank_diameter_mm: 3.175,
+                    flutes: 1,
+                },
+            ),
+            make_tool(
+                "t_ball_4",
+                26.0,
+                CutterGeometry::BallEndmill {
+                    diameter_mm: 4.0,
+                    flute_length_mm: 20.0,
+                    overall_length_mm: 50.0,
+                    shank_diameter_mm: 4.0,
+                    flutes: 2,
+                },
+            ),
+        ];
+
+        let tol = StockVerifyTolerances::default();
+        let chords = vec![
+            // 1. Indexed A=0° deep off-centerline roughing cut below cylinder centerline (Z = -10.5)
+            //    leaving outer rim at |Y| ∈ [18.8, 21.0] intact while cutting clean through bottom.
+            SweepChord {
+                motion: SweepMotion::Linear {
+                    p0: DVec3::new(-12.0, -17.15, -10.5),
+                    p1: DVec3::new(12.0, -17.15, -10.5),
+                    rotary_deg_0: 0.0,
+                    rotary_deg_1: 0.0,
+                },
+                op_idx: 0,
+                profile_idx: 0,
+                is_rapid: false,
+                verify_tol: tol,
+            },
+            // 2. Cardinal indexed A=90° flat pass
+            SweepChord {
+                motion: SweepMotion::Linear {
+                    p0: DVec3::new(-10.0, 0.0, 14.0),
+                    p1: DVec3::new(10.0, 0.0, 14.0),
+                    rotary_deg_0: 90.0,
+                    rotary_deg_1: 90.0,
+                },
+                op_idx: 1,
+                profile_idx: 0,
+                is_rapid: false,
+                verify_tol: tol,
+            },
+            // 3. Cardinal indexed A=180° flat pass
+            SweepChord {
+                motion: SweepMotion::Linear {
+                    p0: DVec3::new(-10.0, 5.0, 15.0),
+                    p1: DVec3::new(10.0, 5.0, 15.0),
+                    rotary_deg_0: 180.0,
+                    rotary_deg_1: 180.0,
+                },
+                op_idx: 2,
+                profile_idx: 0,
+                is_rapid: false,
+                verify_tol: tol,
+            },
+            // 4. Cardinal indexed A=270° flat pass
+            SweepChord {
+                motion: SweepMotion::Linear {
+                    p0: DVec3::new(-10.0, 0.0, 15.0),
+                    p1: DVec3::new(10.0, 0.0, 15.0),
+                    rotary_deg_0: 270.0,
+                    rotary_deg_1: 270.0,
+                },
+                op_idx: 3,
+                profile_idx: 0,
+                is_rapid: false,
+                verify_tol: tol,
+            },
+            // 5. Non-cardinal indexed A=45° ball endmill pass
+            SweepChord {
+                motion: SweepMotion::Linear {
+                    p0: DVec3::new(-8.0, 0.0, 16.0),
+                    p1: DVec3::new(8.0, 0.0, 16.0),
+                    rotary_deg_0: 45.0,
+                    rotary_deg_1: 45.0,
+                },
+                op_idx: 4,
+                profile_idx: 1,
+                is_rapid: false,
+                verify_tol: tol,
+            },
+            // 6. Simultaneous 4-axis helical sweep with ball endmill
+            SweepChord {
+                motion: SweepMotion::Linear {
+                    p0: DVec3::new(-15.0, 2.0, 17.0),
+                    p1: DVec3::new(15.0, -2.0, 17.0),
+                    rotary_deg_0: 0.0,
+                    rotary_deg_1: 180.0,
+                },
+                op_idx: 5,
+                profile_idx: 1,
+                is_rapid: false,
+                verify_tol: tol,
+            },
+            // 7. Deliberate chuck collision fault injection
+            SweepChord {
+                motion: SweepMotion::Linear {
+                    p0: DVec3::new(-32.0, 0.0, 20.0),
+                    p1: DVec3::new(-32.0, 0.0, 20.0),
+                    rotary_deg_0: 0.0,
+                    rotary_deg_1: 0.0,
+                },
+                op_idx: 6,
+                profile_idx: 0,
+                is_rapid: false,
+                verify_tol: tol,
+            },
+        ];
+
+        let mut cpu_be =
+            CpuExactBackend::new(SimulatedStock::TriDexel(Box::new(td_init.clone())), None);
+        let mut gpu_be = WgpuComputeBackend::new(
+            std::sync::Arc::clone(&ctx),
+            SimulatedStock::TriDexel(Box::new(td_init)),
+            None,
+        );
+
+        let out_cpu = cpu_be.sweep_batch(&chords, &specs, true);
+        let out_gpu = gpu_be.sweep_batch(&chords, &specs, true);
+
+        assert!(out_cpu.mutated && out_gpu.mutated);
+        assert!(
+            out_cpu.violations.holder.is_some() && out_gpu.violations.holder.is_some(),
+            "rotary Tri-Dexel must catch chuck collision on both CPU and GPU"
+        );
+
+        let v_cpu = cpu_be.compute_volume_mm3();
+        let v_gpu = gpu_be.compute_volume_mm3();
+        let rel_err = (v_cpu - v_gpu).abs() / v_cpu.max(1.0);
+        assert!(
+            rel_err < 1e-3,
+            "rotary Tri-Dexel CPU vs GPU volume parity mismatch: cpu={v_cpu:.2}, gpu={v_gpu:.2}, rel={rel_err:.6}"
+        );
+
+        // Verify the deep A=0° cut at (X=0, Y=-17.15, Z=-10.5) completely cleared the Z-ray
+        // through the bottom of the cylinder while preserving the outer uncut rim at Y=-20.0!
+        let (SimulatedStock::TriDexel(td_cpu), _) = cpu_be.into_parts() else {
+            panic!("expected TriDexel");
+        };
+        let (SimulatedStock::TriDexel(td_gpu), _) = gpu_be.into_parts() else {
+            panic!("expected TriDexel");
+        };
+        for (label, td) in [("cpu", &td_cpu), ("gpu", &td_gpu)] {
+            // At Y=-17.15, cylinder bottom is Z=-sqrt(21^2 - 17.15^2)≈-12.12, so cutting to
+            // Z=-10.5 must lower top_z all the way down to -10.5 (below the equator!).
+            let z_center = td.sample_top_z(0.0, -17.15);
+            assert!(
+                z_center.is_some_and(|z| (z - (-10.5)).abs() < 0.05),
+                "{label}: deep A=0° cut to Z=-10.5 must remove all material down to -10.5 at Y=-17.15, got top_z={z_center:?}"
+            );
+            // At Y=-18.4 (inside cutter radius [-18.74, -15.56]), cylinder bottom is Z≈-10.12,
+            // so cutting to Z=-10.5 breaks cleanly out the bottom of the cylinder!
+            let z_break = td.sample_top_z(0.0, -18.4);
+            assert!(
+                z_break.is_none(),
+                "{label}: deep A=0° cut to Z=-10.5 must break cleanly through cylinder bottom at Y=-18.4, got top_z={z_break:?}"
+            );
+            let z_rim = td.sample_top_z(0.0, -20.0);
+            assert!(
+                z_rim.is_some_and(|z| z > 5.0),
+                "{label}: outer uncut cylindrical rim at Y=-20.0 must remain intact, got top_z={z_rim:?}"
+            );
+        }
+
+        // Also verify CylindricalStock's below-centerline angular bounding fix on CPU & GPU:
+        // A cutter at (X=0, Y=-5, Z=-15) must remove upper-hemisphere material at θ≈14° (Z>0).
+        let cyl_init =
+            CylindricalStock::from_stock_spec(&stock_spec, rotary, SimResolution::Standard)
+                .unwrap();
+        let deep_chord = vec![SweepChord {
+            motion: SweepMotion::Linear {
+                p0: DVec3::new(-5.0, -5.0, -15.0),
+                p1: DVec3::new(5.0, -5.0, -15.0),
+                rotary_deg_0: 0.0,
+                rotary_deg_1: 0.0,
+            },
+            op_idx: 0,
+            profile_idx: 0,
+            is_rapid: false,
+            verify_tol: tol,
+        }];
+        let mut cyl_cpu = CpuExactBackend::new(SimulatedStock::Cylindrical(cyl_init.clone()), None);
+        let mut cyl_gpu = WgpuComputeBackend::new(
+            std::sync::Arc::clone(&ctx),
+            SimulatedStock::Cylindrical(cyl_init),
+            None,
+        );
+        let oc = cyl_cpu.sweep_batch(&deep_chord, &specs, false);
+        let og = cyl_gpu.sweep_batch(&deep_chord, &specs, false);
+        assert!(oc.mutated && og.mutated);
+        let vc = cyl_cpu.compute_volume_mm3();
+        let vg = cyl_gpu.compute_volume_mm3();
+        assert!(
+            vc < std::f64::consts::PI * r_stock * r_stock * len - 200.0,
+            "CylindricalStock must remove upper-hemisphere stock when cutter tip is below Z=0 (vc={vc:.1})"
+        );
+        assert!(
+            (vc - vg).abs() / vc.max(1.0) < 1e-3,
+            "CylindricalStock below-Z=0 CPU vs GPU parity mismatch: cpu={vc:.2}, gpu={vg:.2}"
+        );
+    }
 }

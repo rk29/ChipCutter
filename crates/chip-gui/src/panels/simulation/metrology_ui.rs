@@ -19,16 +19,18 @@ pub(super) fn show_error_metrics_dashboard(
     let tok = crate::theme::ThemeTokens::from_ui(ui);
     let snap_rot_deg = snap.map_or(0.0, |s| s.rotary_deg);
     let locate_wcs = |loc: DVec3| -> DVec3 {
-        if let Some(cyl) = res.as_cylindrical()
+        if let Some(rot) = res.rotary_spec()
             && snap_rot_deg.abs() > 1e-6
         {
-            cyl.rotary.rotate_point_wcs(loc, snap_rot_deg)
+            rot.rotate_point_wcs(loc, snap_rot_deg)
         } else {
             loc
         }
     };
     let engine_tag = if res.is_cylindrical() {
         "4-axis polar"
+    } else if res.is_rotary() {
+        "4-axis tri-dexel"
     } else {
         res.engine.short_slug()
     };

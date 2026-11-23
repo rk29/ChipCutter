@@ -4,7 +4,8 @@ use chip_math::{Aabb3, DVec2, DVec3};
 use rayon::prelude::*;
 
 use crate::types::{
-    AnalyticHorizFace, Axis3, SimError, SimResolution, StockShapeSpec, UNCUT_OP_IDX,
+    AnalyticHorizFace, Axis3, RotaryStockSpec, SimError, SimResolution, StockShapeSpec,
+    UNCUT_OP_IDX,
 };
 
 /// Minimum retained dexel interval thickness (`mm`) below which a sliver is discarded.
@@ -666,6 +667,9 @@ pub struct TriDexelStock {
     pub origin_wcs: DVec3,
     pub pitch_mm: DVec3,
     pub planes: [DexelPlane; 3],
+    /// Optional 4th-axis rotary coordinate frame when simulating a rotary Setup in volumetric
+    /// 3D Tri-Dexel mode (`None` for standard 3-axis Setups).
+    pub rotary: Option<RotaryStockSpec>,
 }
 
 impl TriDexelStock {
@@ -789,6 +793,7 @@ impl TriDexelStock {
                 make_plane(Axis3::Y),
                 make_plane(Axis3::Z),
             ],
+            rotary: None,
         })
     }
 
@@ -816,6 +821,7 @@ impl TriDexelStock {
                 make_plane(Axis3::Y),
                 make_plane(Axis3::Z),
             ],
+            rotary: None,
         }
     }
 

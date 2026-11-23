@@ -24,6 +24,9 @@ const PROF_FLAG_RELIEVED_NECK: u32 = 8u;
 
 const CHORD_FLAG_RAPID: u32 = 1u;
 const CHORD_FLAG_VERIFY: u32 = 2u;
+const CHORD_FLAG_ORIENTED_POSE: u32 = 16u;
+const CHORD_CARDINAL_SHIFT: u32 = 8u;
+const CHORD_CARDINAL_MASK: u32 = 7u;
 
 const SLOT_RAPID: u32 = 0u;
 const SLOT_GOUGE: u32 = 8u;
@@ -1075,24 +1078,325 @@ fn eval_z_ray_cut_interval(
 
 // Conservative bounding check used to test whether a chord in this tile could touch an
 // already-overflowed ray at `(pu, pv)` before flagging it for exact CPU replay.
+fn cardinal_axis(code: u32) -> u32 {
+    if (code <= 1u) {
+        return 2u;
+    }
+    if (code <= 3u) {
+        return 1u;
+    }
+    return 0u;
+}
+
+fn cardinal_sign(code: u32) -> f32 {
+    return select(-1.0, 1.0, (code & 1u) == 0u);
+}
+
+fn axis_get(v: vec3<f32>, ax: u32) -> f32 {
+    if (ax == 0u) {
+        return v.x;
+    }
+    if (ax == 1u) {
+        return v.y;
+    }
+    return v.z;
+}
+
+fn plane_u_axis(ax: u32) -> u32 {
+    return select(0u, 1u, ax == 0u);
+}
+
+fn plane_v_axis(ax: u32) -> u32 {
+    return select(2u, 1u, ax == 2u);
+}
+
+fn plane_from_uvw(ax: u32, pu: f32, pv: f32, pw: f32) -> vec3<f32> {
+    if (ax == 0u) {
+        return vec3<f32>(pw, pu, pv);
+    }
+    if (ax == 1u) {
+        return vec3<f32>(pu, pw, pv);
+    }
+    return vec3<f32>(pu, pv, pw);
+}
+
+fn axis_unit_vec(ax: u32) -> vec3<f32> {
+    if (ax == 0u) {
+        return vec3<f32>(1.0, 0.0, 0.0);
+    }
+    if (ax == 1u) {
+        return vec3<f32>(0.0, 1.0, 0.0);
+    }
+    return vec3<f32>(0.0, 0.0, 1.0);
+}
+
+fn map_cz_interval_to_w(iv: Interval1D, s_sign: f32) -> Interval1D {
+    if (!iv.valid) {
+        return iv;
+    }
+    if (s_sign >= 0.0) {
+        return iv;
+    }
+    return Interval1D(true, -iv.hi, -iv.lo);
+}
+
+fn solve_oriented_cylinder_interval(
+    a: f32,
+    b: f32,
+    c: f32,
+    h0: f32,
+    d_dot_s: f32,
+    radius: f32,
+    h_lo: f32,
+    h_hi: f32,
+) -> Interval1D {
+    var out = Interval1D(false, 0.0, 0.0);
+    if (radius > 1e-6 && h_hi > h_lo + 1e-6) {
+        var valid = true;
+        var w_lo: f32 = -1e6;
+        var w_hi: f32 = 1e6;
+        let c_eff = c - radius * radius;
+        if (a <= 1e-10) {
+            if (c_eff > 0.0) {
+                valid = false;
+            }
+        } else {
+            let disc = b * b - a * c_eff;
+            if (disc < 0.0) {
+                valid = false;
+            } else {
+                let sd = sqrt(disc);
+                w_lo = (-b - sd) / a;
+                w_hi = (-b + sd) / a;
+            }
+        }
+        if (valid) {
+            if (abs(d_dot_s) <= 1e-10) {
+                if (h0 < h_lo || h0 > h_hi) {
+                    valid = false;
+                }
+            } else {
+                let t0 = (h_lo - h0) / d_dot_s;
+                let t1 = (h_hi - h0) / d_dot_s;
+                w_lo = max(w_lo, min(t0, t1));
+                w_hi = min(w_hi, max(t0, t1));
+            }
+            if (valid && w_hi > w_lo + 1e-5) {
+                out = Interval1D(true, w_lo, w_hi);
+            }
+        }
+    }
+    return out;
+}
+
+fn eval_oriented_inside(
+    w: f32,
+    a: f32,
+    b: f32,
+    c: f32,
+    h0: f32,
+    d_dot_s: f32,
+    dr_skin: f32,
+    prof: GpuToolProfile,
+) -> f32 {
+    let rho = sqrt(max(a * w * w + 2.0 * b * w + c, 0.0)) + dr_skin;
+    let h = h0 + w * d_dot_s;
+    let ziv = eval_profile_z_interval(prof, rho);
+    if (!ziv.valid) {
+        return -1e30;
+    }
+    return min(h - ziv.lo, ziv.hi - h);
+}
+
+fn eval_oriented_pose_cut_interval(
+    v0: vec3<f32>,
+    d_axis: vec3<f32>,
+    spindle: vec3<f32>,
+    a: f32,
+    b: f32,
+    c: f32,
+    h0: f32,
+    d_dot_s: f32,
+    prof: GpuToolProfile,
+    r_lim: f32,
+) -> Interval1D {
+    var out = Interval1D(false, 0.0, 0.0);
+    let r_eff = min(r_lim, prof.cutting_radius_mm);
+    if (r_eff <= 1e-5) {
+        return out;
+    }
+    let h_max = horizontal_cut_max_height(prof);
+    let cyl = solve_oriented_cylinder_interval(a, b, c, h0, d_dot_s, r_eff, 0.0, h_max);
+    if (!cyl.valid) {
+        return out;
+    }
+    if (prof.shape_kind == SHAPE_FLAT) {
+        return cyl;
+    }
+    if (prof.shape_kind == SHAPE_BALL) {
+        let r_ball = prof.cutting_radius_mm;
+        var out_lo: f32 = 1e30;
+        var out_hi: f32 = -1e30;
+        let q = v0 - spindle * r_ball;
+        let bs = dot(q, d_axis);
+        let cs = dot(q, q) - r_eff * r_eff;
+        let disc = bs * bs - cs;
+        if (disc >= 0.0) {
+            let sd = sqrt(disc);
+            var s_lo = -bs - sd;
+            var s_hi = -bs + sd;
+            if (abs(d_dot_s) > 1e-10) {
+                let t0 = -h0 / d_dot_s;
+                let t1 = (h_max - h0) / d_dot_s;
+                s_lo = max(s_lo, min(t0, t1));
+                s_hi = min(s_hi, max(t0, t1));
+            } else if (h0 < 0.0 || h0 > h_max) {
+                s_hi = s_lo - 1.0;
+            }
+            if (s_hi > s_lo + 1e-5) {
+                out_lo = min(out_lo, s_lo);
+                out_hi = max(out_hi, s_hi);
+            }
+        }
+        let upper = solve_oriented_cylinder_interval(a, b, c, h0, d_dot_s, r_eff, r_ball, h_max);
+        if (upper.valid) {
+            out_lo = min(out_lo, upper.lo);
+            out_hi = max(out_hi, upper.hi);
+        }
+        if (out_hi > out_lo + 1e-5) {
+            out = Interval1D(true, out_lo, out_hi);
+        }
+        return out;
+    }
+
+    let dr_skin = max(prof.cutting_radius_mm - r_eff, 0.0);
+    let w_lo = cyl.lo;
+    let w_hi = cyl.hi;
+    let g_lo = eval_oriented_inside(w_lo, a, b, c, h0, d_dot_s, dr_skin, prof);
+    let g_hi = eval_oriented_inside(w_hi, a, b, c, h0, d_dot_s, dr_skin, prof);
+    if (g_lo >= 0.0 && g_hi >= 0.0) {
+        out = cyl;
+    } else if (g_lo >= 0.0) {
+        var lo = w_lo;
+        var hi = w_hi;
+        for (var it: u32 = 0u; it < 11u; it = it + 1u) {
+            let mid = 0.5 * (lo + hi);
+            if (eval_oriented_inside(mid, a, b, c, h0, d_dot_s, dr_skin, prof) >= 0.0) {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        if (lo > w_lo + 1e-5) {
+            out = Interval1D(true, w_lo, lo);
+        }
+    } else if (g_hi >= 0.0) {
+        var lo = w_lo;
+        var hi = w_hi;
+        for (var it: u32 = 0u; it < 11u; it = it + 1u) {
+            let mid = 0.5 * (lo + hi);
+            if (eval_oriented_inside(mid, a, b, c, h0, d_dot_s, dr_skin, prof) >= 0.0) {
+                hi = mid;
+            } else {
+                lo = mid;
+            }
+        }
+        if (w_hi > hi + 1e-5) {
+            out = Interval1D(true, hi, w_hi);
+        }
+    } else {
+        let w_min_rho = select(0.5 * (w_lo + w_hi), clamp(-b / a, w_lo, w_hi), a > 1e-10);
+        var probes: array<f32, 4>;
+        probes[0] = w_min_rho;
+        probes[1] = w_lo + 0.25 * (w_hi - w_lo);
+        probes[2] = 0.5 * (w_lo + w_hi);
+        probes[3] = w_lo + 0.75 * (w_hi - w_lo);
+        var best_w = w_min_rho;
+        var best_g: f32 = -1e30;
+        for (var pi: u32 = 0u; pi < 4u; pi = pi + 1u) {
+            let gv = eval_oriented_inside(probes[pi], a, b, c, h0, d_dot_s, dr_skin, prof);
+            if (gv > best_g) {
+                best_g = gv;
+                best_w = probes[pi];
+            }
+        }
+        if (best_g > 0.0) {
+            var lo_a = w_lo;
+            var hi_a = best_w;
+            for (var it: u32 = 0u; it < 11u; it = it + 1u) {
+                let mid = 0.5 * (lo_a + hi_a);
+                if (eval_oriented_inside(mid, a, b, c, h0, d_dot_s, dr_skin, prof) >= 0.0) {
+                    hi_a = mid;
+                } else {
+                    lo_a = mid;
+                }
+            }
+            var lo_b = best_w;
+            var hi_b = w_hi;
+            for (var it: u32 = 0u; it < 11u; it = it + 1u) {
+                let mid = 0.5 * (lo_b + hi_b);
+                if (eval_oriented_inside(mid, a, b, c, h0, d_dot_s, dr_skin, prof) >= 0.0) {
+                    lo_b = mid;
+                } else {
+                    hi_b = mid;
+                }
+            }
+            if (lo_b > hi_a + 1e-5) {
+                out = Interval1D(true, hi_a, lo_b);
+            }
+        }
+    }
+    return out;
+}
+
 fn chord_bbox_hits_ray(ch: GpuSweepChord, prof: GpuToolProfile, verify: bool, pu: f32, pv: f32) -> bool {
+    let flags = ch.info.z;
     let p0 = ch.p0_rot.xyz;
     let p1 = ch.p1_rot.xyz;
     let r_cut = prof.cutting_radius_mm;
-    let max_h = horizontal_cut_max_height(prof);
-    if (u.axis_id == 2u) {
+    let u_ax = plane_u_axis(u.axis_id);
+    let v_ax = plane_v_axis(u.axis_id);
+
+    if ((flags & CHORD_FLAG_ORIENTED_POSE) != 0u) {
+        let spindle = ch.arc_params.xyz;
         let r_chk = select(r_cut, max(r_cut, prof.holder_radius_mm), verify) + 1e-3;
-        return pu >= min(p0.x, p1.x) - r_chk && pu <= max(p0.x, p1.x) + r_chk
-            && pv >= min(p0.y, p1.y) - r_chk && pv <= max(p0.y, p1.y) + r_chk;
+        let reach = select(
+            horizontal_cut_max_height(prof),
+            max(prof.stickout_length_mm, prof.flute_length_mm) + 40.0,
+            verify,
+        );
+        let top_pt = p0 + spindle * reach;
+        let bmin = min(p0, top_pt) - vec3<f32>(r_chk);
+        let bmax = max(p0, top_pt) + vec3<f32>(r_chk);
+        return pu >= axis_get(bmin, u_ax) && pu <= axis_get(bmax, u_ax)
+            && pv >= axis_get(bmin, v_ax) && pv <= axis_get(bmax, v_ax);
     }
-    if (u.axis_id == 0u) {
-        let r_chk = r_cut + 1e-3;
-        return pu >= min(p0.y, p1.y) - r_chk && pu <= max(p0.y, p1.y) + r_chk
-            && pv >= min(p0.z, p1.z) - 1e-3 && pv <= max(p0.z, p1.z) + max_h + 1e-3;
+
+    let cardinal = (flags >> CHORD_CARDINAL_SHIFT) & CHORD_CARDINAL_MASK;
+    let s_ax = cardinal_axis(cardinal);
+    let s_sign = cardinal_sign(cardinal);
+    let max_h = horizontal_cut_max_height(prof);
+    if (u.axis_id == s_ax) {
+        let r_chk = select(r_cut, max(r_cut, prof.holder_radius_mm), verify) + 1e-3;
+        let u0 = min(axis_get(p0, u_ax), axis_get(p1, u_ax)) - r_chk;
+        let u1 = max(axis_get(p0, u_ax), axis_get(p1, u_ax)) + r_chk;
+        let v0 = min(axis_get(p0, v_ax), axis_get(p1, v_ax)) - r_chk;
+        let v1 = max(axis_get(p0, v_ax), axis_get(p1, v_ax)) + r_chk;
+        return pu >= u0 && pu <= u1 && pv >= v0 && pv <= v1;
     }
-    let r_chk = r_cut + 1e-3;
-    return pu >= min(p0.x, p1.x) - r_chk && pu <= max(p0.x, p1.x) + r_chk
-        && pv >= min(p0.z, p1.z) - 1e-3 && pv <= max(p0.z, p1.z) + max_h + 1e-3;
+
+    let spindle_in_u = (u_ax == s_ax);
+    let other_ax = select(u_ax, v_ax, spindle_in_u);
+    let lat_min = min(axis_get(p0, other_ax), axis_get(p1, other_ax)) - r_cut - 1e-3;
+    let lat_max = max(axis_get(p0, other_ax), axis_get(p1, other_ax)) + r_cut + 1e-3;
+    let s0 = min(axis_get(p0, s_ax), axis_get(p1, s_ax));
+    let s1 = max(axis_get(p0, s_ax), axis_get(p1, s_ax));
+    let s_min = select(s0 - max_h - 1e-3, s0 - 1e-3, s_sign >= 0.0);
+    let s_max = select(s1 + 1e-3, s1 + max_h + 1e-3, s_sign >= 0.0);
+    if (spindle_in_u) {
+        return pu >= s_min && pu <= s_max && pv >= lat_min && pv <= lat_max;
+    }
+    return pu >= lat_min && pu <= lat_max && pv >= s_min && pv <= s_max;
 }
 
 @compute @workgroup_size(16, 16, 1)
@@ -1176,19 +1480,117 @@ fn main(
         let shank_skin = max(prof.shank_radius_mm - wall_skin_tol, 0.0);
         let r_inner_skin = max(r_cut - wall_skin_tol, 0.0);
 
-        if (u.axis_id == 2u) {
-            // === Z-PLANE (`u = X`, `v = Y`, `w = Z`) ===
+        if ((flags & CHORD_FLAG_ORIENTED_POSE) != 0u) {
+            // === GENERAL ORIENTED 4TH-AXIS ROTARY POSE ===
+            let spindle = ch.arc_params.xyz;
+            let p_base = plane_from_uvw(u.axis_id, pu, pv, 0.0);
+            let d_axis = axis_unit_vec(u.axis_id);
+            let v0 = p_base - p0;
+            let h0 = dot(v0, spindle);
+            let d_dot_s = dot(d_axis, spindle);
+            let v0_perp = v0 - spindle * h0;
+            let d_perp = d_axis - spindle * d_dot_s;
+            let a = max(dot(d_perp, d_perp), 0.0);
+            let b = dot(v0_perp, d_perp);
+            let c = max(dot(v0_perp, v0_perp), 0.0);
+
+            if (verify) {
+                let stickout = max(prof.stickout_length_mm, prof.flute_length_mm);
+                let h_iv = solve_oriented_cylinder_interval(
+                    a, b, c, h0, d_dot_s, prof.holder_radius_mm, stickout, stickout + 40.0,
+                );
+                if (h_iv.valid) {
+                    let pen = query_overlap_local(&local_spans, cnt, h_iv.lo, h_iv.hi);
+                    if (pen > 0.05) {
+                        record_violation(SLOT_HOLDER, pen, chord_index, local_ray_idx, h_iv.lo);
+                    }
+                }
+                if (!is_rapid) {
+                    let reach = prof.effective_reach_mm;
+                    if (stickout > reach + 1e-4) {
+                        let f_iv = solve_oriented_cylinder_interval(
+                            a, b, c, h0, d_dot_s, shank_skin, reach, stickout,
+                        );
+                        if (f_iv.valid) {
+                            let rub = query_overlap_local(&local_spans, cnt, f_iv.lo, f_iv.hi);
+                            if (rub > 0.15) {
+                                record_violation(SLOT_FLUTE, rub, chord_index, local_ray_idx, f_iv.lo);
+                            }
+                        }
+                    }
+                    if (has_relieved_neck && prof.neck_length_mm > prof.flute_length_mm + 0.05) {
+                        let n_iv = solve_oriented_cylinder_interval(
+                            a, b, c, h0, d_dot_s, neck_skin, prof.flute_length_mm + 0.05, prof.neck_length_mm,
+                        );
+                        if (n_iv.valid) {
+                            let ov = query_overlap_local(&local_spans, cnt, n_iv.lo, n_iv.hi);
+                            if (ov > 0.10) {
+                                record_violation(SLOT_NECK, ov, chord_index, local_ray_idx, n_iv.lo);
+                            }
+                        }
+                    }
+                }
+            }
+
+            let w_iv = eval_oriented_pose_cut_interval(
+                v0, d_axis, spindle, a, b, c, h0, d_dot_s, prof, r_cut,
+            );
+            if (w_iv.valid) {
+                if (verify && is_rapid) {
+                    let ov = query_overlap_local(&local_spans, cnt, w_iv.lo, w_iv.hi);
+                    if (ov > rapid_tol) {
+                        record_violation(
+                            SLOT_RAPID,
+                            ov,
+                            chord_index,
+                            local_ray_idx,
+                            0.5 * (w_iv.lo + w_iv.hi),
+                        );
+                    }
+                }
+                if (verify && u.has_target != 0u) {
+                    let w_in = eval_oriented_pose_cut_interval(
+                        v0, d_axis, spindle, a, b, c, h0, d_dot_s, prof, r_inner_skin,
+                    );
+                    if (w_in.valid) {
+                        let gh = query_target_gouge(
+                            global_ray_idx,
+                            w_in.lo,
+                            w_in.hi,
+                            gouge_tol + wall_skin_tol,
+                        );
+                        if (gh.valid) {
+                            record_violation(SLOT_GOUGE, gh.depth, chord_index, local_ray_idx, gh.coord);
+                        }
+                    }
+                }
+                let res = subtract_interval_local(&local_spans, &cnt, w_iv.lo, w_iv.hi, op_idx);
+                if (res < 0) { overflowed = true; } else if (res > 0) { ray_mutated = true; }
+            }
+            continue;
+        }
+
+        let cardinal = (flags >> CHORD_CARDINAL_SHIFT) & CHORD_CARDINAL_MASK;
+        let s_ax = cardinal_axis(cardinal);
+        let s_sign = cardinal_sign(cardinal);
+        let u_ax = plane_u_axis(u.axis_id);
+        let v_ax = plane_v_axis(u.axis_id);
+
+        if (u.axis_id == s_ax) {
+            // === AXIAL PLANE (parallel to cardinal spindle `s_sign * e_{s_ax}`) ===
+            let mp0 = vec3<f32>(axis_get(p0, u_ax), axis_get(p0, v_ax), s_sign * axis_get(p0, s_ax));
+            let mp1 = vec3<f32>(axis_get(p1, u_ax), axis_get(p1, v_ax), s_sign * axis_get(p1, s_ax));
             let px = pu;
             let py = pv;
             let r_chk = select(r_cut, max(r_cut, prof.holder_radius_mm), verify) + 1e-3;
-            if (px < min(p0.x, p1.x) - r_chk || px > max(p0.x, p1.x) + r_chk
-                || py < min(p0.y, p1.y) - r_chk || py > max(p0.y, p1.y) + r_chk) {
+            if (px < min(mp0.x, mp1.x) - r_chk || px > max(mp0.x, mp1.x) + r_chk
+                || py < min(mp0.y, mp1.y) - r_chk || py > max(mp0.y, mp1.y) + r_chk) {
                 continue;
             }
 
             if (verify) {
-                let p0_xy = p0.xy;
-                let p1_xy = p1.xy;
+                let p0_xy = mp0.xy;
+                let p1_xy = mp1.xy;
                 let d_xy = p1_xy - p0_xy;
                 let l2 = dot(d_xy, d_xy);
                 let q_xy = vec2<f32>(px, py);
@@ -1198,38 +1600,39 @@ fn main(
                 }
                 let c_xy = mix(p0_xy, p1_xy, t_c);
                 let dist_xy = length(q_xy - c_xy);
-                let z_tip_here = select(min(p0.z, p1.z), p0.z + t_c * (p1.z - p0.z), l2 > 1e-10);
-                let top_z = local_spans[cnt - 1u].max_local;
+                let z_tip_here = select(min(mp0.z, mp1.z), mp0.z + t_c * (mp1.z - mp0.z), l2 > 1e-10);
+                let top_z = select(-local_spans[0u].min_local, local_spans[cnt - 1u].max_local, s_sign >= 0.0);
 
                 if (dist_xy <= prof.holder_radius_mm) {
                     let holder_z = z_tip_here + prof.stickout_length_mm;
                     let pen = top_z - holder_z;
                     if (pen > 0.05) {
-                        record_violation(SLOT_HOLDER, pen, chord_index, local_ray_idx, holder_z);
+                        record_violation(SLOT_HOLDER, pen, chord_index, local_ray_idx, s_sign * holder_z);
                     }
                 }
                 if (!is_rapid && dist_xy <= shank_skin) {
                     let reach_top = z_tip_here + prof.effective_reach_mm;
                     let rub = top_z - reach_top;
                     if (rub > 0.15) {
-                        record_violation(SLOT_FLUTE, rub, chord_index, local_ray_idx, reach_top);
+                        record_violation(SLOT_FLUTE, rub, chord_index, local_ray_idx, s_sign * reach_top);
                     }
                 }
                 if (has_relieved_neck && !is_rapid && dist_xy <= neck_skin) {
                     let neck_lo = z_tip_here + prof.flute_length_mm + 0.05;
                     let neck_hi = z_tip_here + prof.neck_length_mm;
                     if (neck_hi > neck_lo) {
-                        let ov = query_overlap_local(&local_spans, cnt, neck_lo, neck_hi);
+                        let w_nk = map_cz_interval_to_w(Interval1D(true, neck_lo, neck_hi), s_sign);
+                        let ov = query_overlap_local(&local_spans, cnt, w_nk.lo, w_nk.hi);
                         if (ov > 0.10) {
-                            record_violation(SLOT_NECK, ov, chord_index, local_ray_idx, neck_lo);
+                            record_violation(SLOT_NECK, ov, chord_index, local_ray_idx, s_sign * neck_lo);
                         }
                     }
                 }
             }
 
             if (is_thread_mill) {
-                let p0_xy = p0.xy;
-                let p1_xy = p1.xy;
+                let p0_xy = mp0.xy;
+                let p1_xy = mp1.xy;
                 let q_xy = vec2<f32>(px, py);
                 let d_xy = p1_xy - p0_xy;
                 let len2 = dot(d_xy, d_xy);
@@ -1264,15 +1667,18 @@ fn main(
                 }
 
                 if (in_cyl) {
-                    let dz_span = p1.z - p0.z;
+                    let dz_span = mp1.z - mp0.z;
                     let z_start = prof.param1;
                     let tooth_step = prof.param2;
                     let tan_half = prof.param3;
                     let n_teeth = max(prof.teeth_count, 1u);
 
                     if (verify && u.has_target != 0u) {
-                        let z_in = eval_z_ray_cylinder_interval(
-                            p0, p1, px, py, neck_skin, prof.neck_length_mm,
+                        let z_in = map_cz_interval_to_w(
+                            eval_z_ray_cylinder_interval(
+                                mp0, mp1, px, py, neck_skin, prof.neck_length_mm,
+                            ),
+                            s_sign,
                         );
                         if (z_in.valid) {
                             let gh = query_target_gouge(global_ray_idx, z_in.lo, z_in.hi, gouge_tol);
@@ -1285,18 +1691,20 @@ fn main(
                     if (len2 <= 1e-10 || abs(dz_span) <= 1e-6) {
                         let pt = mix(p0_xy, p1_xy, t_closest);
                         let r = length(q_xy - pt);
-                        let z_lo_tip = min(p0.z, p1.z);
-                        let z_hi_tip = max(p0.z, p1.z);
+                        let z_lo_tip = min(mp0.z, mp1.z);
+                        let z_hi_tip = max(mp0.z, mp1.z);
                         if (r <= prof.neck_radius_mm + 1e-6) {
-                            let zlo = z_lo_tip;
-                            let zhi = z_hi_tip + prof.neck_length_mm;
+                            let w_iv = map_cz_interval_to_w(
+                                Interval1D(true, z_lo_tip, z_hi_tip + prof.neck_length_mm),
+                                s_sign,
+                            );
                             if (verify && is_rapid) {
-                                let ov = query_overlap_local(&local_spans, cnt, zlo, zhi);
+                                let ov = query_overlap_local(&local_spans, cnt, w_iv.lo, w_iv.hi);
                                 if (ov > rapid_tol) {
-                                    record_violation(SLOT_RAPID, ov, chord_index, local_ray_idx, zlo);
+                                    record_violation(SLOT_RAPID, ov, chord_index, local_ray_idx, w_iv.lo);
                                 }
                             }
-                            let res = subtract_interval_local(&local_spans, &cnt, zlo, zhi, op_idx);
+                            let res = subtract_interval_local(&local_spans, &cnt, w_iv.lo, w_iv.hi, op_idx);
                             if (res < 0) { overflowed = true; } else if (res > 0) { ray_mutated = true; }
                         } else if (r <= r_cut + 1e-6) {
                             let half_w = max(r_cut - r, 0.0) * tan_half;
@@ -1308,9 +1716,10 @@ fn main(
                                     let lo = max(z_crest - half_w, zk_lo) + z_lo_tip;
                                     let hi = min(z_crest + half_w, zk_hi) + z_hi_tip;
                                     if (hi > lo + 1e-6) {
-                                        let ov = query_overlap_local(&local_spans, cnt, lo, hi);
+                                        let w_iv = map_cz_interval_to_w(Interval1D(true, lo, hi), s_sign);
+                                        let ov = query_overlap_local(&local_spans, cnt, w_iv.lo, w_iv.hi);
                                         if (ov > rapid_tol) {
-                                            record_violation(SLOT_RAPID, ov, chord_index, local_ray_idx, lo);
+                                            record_violation(SLOT_RAPID, ov, chord_index, local_ray_idx, w_iv.lo);
                                         }
                                     }
                                 }
@@ -1322,7 +1731,8 @@ fn main(
                                 let lo = max(z_crest - half_w, zk_lo) + z_lo_tip;
                                 let hi = min(z_crest + half_w, zk_hi) + z_hi_tip;
                                 if (hi > lo + 1e-6) {
-                                    let res = subtract_interval_local(&local_spans, &cnt, lo, hi, op_idx);
+                                    let w_iv = map_cz_interval_to_w(Interval1D(true, lo, hi), s_sign);
+                                    let res = subtract_interval_local(&local_spans, &cnt, w_iv.lo, w_iv.hi, op_idx);
                                     if (res < 0) { overflowed = true; break; } else if (res > 0) { ray_mutated = true; }
                                 }
                             }
@@ -1342,7 +1752,7 @@ fn main(
                         for (var si: u32 = 0u; si < 6u; si = si + 1u) {
                             let pt = mix(p0_xy, p1_xy, ts[si]);
                             let r = length(q_xy - pt);
-                            let z_tip = p0.z + ts[si] * dz_span;
+                            let z_tip = mp0.z + ts[si] * dz_span;
                             sample_r[si] = r;
                             sample_z[si] = z_tip;
                             if (r <= prof.neck_radius_mm + 1e-6) {
@@ -1370,16 +1780,18 @@ fn main(
                                     }
                                 }
                                 if (t_hi > t_lo + 1e-6) {
-                                    let ov = query_overlap_local(&local_spans, cnt, t_lo, t_hi);
+                                    let w_iv = map_cz_interval_to_w(Interval1D(true, t_lo, t_hi), s_sign);
+                                    let ov = query_overlap_local(&local_spans, cnt, w_iv.lo, w_iv.hi);
                                     if (ov > rapid_tol) {
-                                        record_violation(SLOT_RAPID, ov, chord_index, local_ray_idx, t_lo);
+                                        record_violation(SLOT_RAPID, ov, chord_index, local_ray_idx, w_iv.lo);
                                     }
                                 }
                             }
                             if (neck_hi > neck_lo + 1e-6) {
-                                let ov = query_overlap_local(&local_spans, cnt, neck_lo, neck_hi);
+                                let w_nk = map_cz_interval_to_w(Interval1D(true, neck_lo, neck_hi), s_sign);
+                                let ov = query_overlap_local(&local_spans, cnt, w_nk.lo, w_nk.hi);
                                 if (ov > rapid_tol) {
-                                    record_violation(SLOT_RAPID, ov, chord_index, local_ray_idx, neck_lo);
+                                    record_violation(SLOT_RAPID, ov, chord_index, local_ray_idx, w_nk.lo);
                                 }
                             }
                         }
@@ -1402,18 +1814,23 @@ fn main(
                                 }
                             }
                             if (t_hi > t_lo + 1e-6) {
-                                let res = subtract_interval_local(&local_spans, &cnt, t_lo, t_hi, op_idx);
+                                let w_iv = map_cz_interval_to_w(Interval1D(true, t_lo, t_hi), s_sign);
+                                let res = subtract_interval_local(&local_spans, &cnt, w_iv.lo, w_iv.hi, op_idx);
                                 if (res < 0) { overflowed = true; break; } else if (res > 0) { ray_mutated = true; }
                             }
                         }
                         if (!overflowed && neck_hi > neck_lo + 1e-6) {
-                            let res = subtract_interval_local(&local_spans, &cnt, neck_lo, neck_hi, op_idx);
+                            let w_nk = map_cz_interval_to_w(Interval1D(true, neck_lo, neck_hi), s_sign);
+                            let res = subtract_interval_local(&local_spans, &cnt, w_nk.lo, w_nk.hi, op_idx);
                             if (res < 0) { overflowed = true; } else if (res > 0) { ray_mutated = true; }
                         }
                     }
                 }
             } else {
-                let z_iv = eval_z_ray_cut_interval(p0, p1, prof, px, py, r_cut);
+                let z_iv = map_cz_interval_to_w(
+                    eval_z_ray_cut_interval(mp0, mp1, prof, px, py, r_cut),
+                    s_sign,
+                );
                 if (z_iv.valid) {
                     if (verify && is_rapid) {
                         let ov = query_overlap_local(&local_spans, cnt, z_iv.lo, z_iv.hi);
@@ -1422,7 +1839,10 @@ fn main(
                         }
                     }
                     if (verify && u.has_target != 0u) {
-                        let z_in = eval_z_ray_cut_interval(p0, p1, prof, px, py, r_inner_skin);
+                        let z_in = map_cz_interval_to_w(
+                            eval_z_ray_cut_interval(mp0, mp1, prof, px, py, r_inner_skin),
+                            s_sign,
+                        );
                         if (z_in.valid) {
                             let gh = query_target_gouge(global_ray_idx, z_in.lo, z_in.hi, gouge_tol);
                             if (gh.valid) {
@@ -1435,18 +1855,28 @@ fn main(
                 }
             }
         } else {
-            // === HORIZONTAL PLANES: `axis_id == 0u` (X: u=Y, v=Z, w=X) or `1u` (Y: u=X, v=Z, w=Y) ===
-            let swap_xy = (u.axis_id == 1u);
-            let pz = pv;
-            let u0_c = select(p0.y, p0.x, swap_xy);
-            let u1_c = select(p1.y, p1.x, swap_xy);
+            // === HORIZONTAL PLANES (orthogonal to cardinal spindle `s_sign * e_{s_ax}`) ===
+            let spindle_in_u = (u_ax == s_ax);
+            let other_ax = select(u_ax, v_ax, spindle_in_u);
+            let mp0 = vec3<f32>(
+                axis_get(p0, u.axis_id),
+                axis_get(p0, other_ax),
+                s_sign * axis_get(p0, s_ax),
+            );
+            let mp1 = vec3<f32>(
+                axis_get(p1, u.axis_id),
+                axis_get(p1, other_ax),
+                s_sign * axis_get(p1, s_ax),
+            );
+            let pz = select(s_sign * pv, s_sign * pu, spindle_in_u);
+            let pu_c = select(pu, pv, spindle_in_u);
             let max_h = horizontal_cut_max_height(prof);
-            if (pu < min(u0_c, u1_c) - r_cut - 1e-3 || pu > max(u0_c, u1_c) + r_cut + 1e-3
-                || pz < min(p0.z, p1.z) - 1e-3 || pz > max(p0.z, p1.z) + max_h + 1e-3) {
+            if (pu_c < min(mp0.y, mp1.y) - r_cut - 1e-3 || pu_c > max(mp0.y, mp1.y) + r_cut + 1e-3
+                || pz < min(mp0.z, mp1.z) - 1e-3 || pz > max(mp0.z, mp1.z) + max_h + 1e-3) {
                 continue;
             }
 
-            let w_iv = eval_horizontal_ray_cut_interval(p0, p1, prof, 0.0, pz, pu, swap_xy);
+            let w_iv = eval_horizontal_ray_cut_interval(mp0, mp1, prof, 0.0, pz, pu_c, false);
             if (w_iv.valid) {
                 if (verify && is_rapid) {
                     let ov = query_overlap_local(&local_spans, cnt, w_iv.lo, w_iv.hi);
@@ -1460,16 +1890,16 @@ fn main(
                         );
                     }
                 }
-                if (verify && u.has_target != 0u && pz >= min(p0.z, p1.z) + gouge_tol) {
+                if (verify && u.has_target != 0u && pz >= min(mp0.z, mp1.z) + gouge_tol) {
                     var w_in: Interval1D;
                     if (is_thread_mill) {
                         w_in = eval_horizontal_ray_cylinder_interval(
-                            p0, p1, neck_skin, prof.neck_length_mm, pz, pu, swap_xy,
+                            mp0, mp1, neck_skin, prof.neck_length_mm, pz, pu_c, false,
                         );
                     } else {
                         let flute_wall_skin = wall_skin_tol + max(gouge_tol - 0.02, 0.0);
                         w_in = eval_horizontal_ray_cut_interval(
-                            p0, p1, prof, flute_wall_skin, pz, pu, swap_xy,
+                            mp0, mp1, prof, flute_wall_skin, pz, pu_c, false,
                         );
                     }
                     if (w_in.valid) {

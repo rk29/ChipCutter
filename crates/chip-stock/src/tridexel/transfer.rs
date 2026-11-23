@@ -282,6 +282,7 @@ impl TriDexelStock {
                 build_plane(Axis3::Y),
                 build_plane(Axis3::Z),
             ],
+            rotary: None,
         }
     }
 

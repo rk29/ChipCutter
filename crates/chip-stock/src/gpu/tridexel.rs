@@ -19,11 +19,14 @@ use crate::{
     },
     tridexel::{
         DexelSpan, FlatDexelSpan, INLINE_DEXEL_SLOTS, TriDexelStock,
-        sweep::{LinearChord3D, motion_to_linear_chords, replay_single_ray_linear_chord},
+        sweep::{
+            LinearChord3D, SweptPrimitive, decompose_chord_for_tridexel,
+            replay_single_ray_primitive,
+        },
     },
     types::{
-        Axis3, BatchSweepOutput, SimColoredVertex, SimStockMesh, SpanRuleViolations,
-        StockVerifyTolerances, SweepChord, SweepToolSpec,
+        Axis3, BatchSweepOutput, RotaryStockSpec, SimColoredVertex, SimStockMesh,
+        SpanRuleViolations, StockVerifyTolerances, SweepChord, SweepToolSpec,
     },
 };
 
@@ -35,8 +38,9 @@ use super::{
         TriDexelEmitUniforms, compute_tridexel_max_quads,
     },
     types::{
-        CHORD_FLAG_RAPID, CHORD_FLAG_VERIFY, GPU_TILE_SIZE, GpuSweepChord, GpuToolProfile,
-        GpuViolationAccum, TriDexelPlaneUniforms,
+        CHORD_CARDINAL_MASK, CHORD_CARDINAL_SHIFT, CHORD_FLAG_ORIENTED_POSE, CHORD_FLAG_RAPID,
+        CHORD_FLAG_VERIFY, GPU_TILE_SIZE, GpuSweepChord, GpuToolProfile, GpuViolationAccum,
+        TriDexelPlaneUniforms,
     },
 };
 
@@ -49,8 +53,8 @@ struct CpuShadow {
 }
 
 #[derive(Clone, Copy)]
-struct FlattenedLinearChord {
-    chord: LinearChord3D,
+struct FlattenedPrimitive {
+    prim: SweptPrimitive,
     op_idx: u32,
     profile_idx: usize,
     is_rapid: bool,
@@ -96,6 +100,7 @@ pub(crate) struct GpuTriDexelState {
     dims: [usize; 3],
     origin_wcs: DVec3,
     pitch_mm: DVec3,
+    rotary: Option<RotaryStockSpec>,
     plane_ray_offsets: [usize; 3],
     total_rays: usize,
     has_target: bool,
@@ -110,8 +115,9 @@ pub(crate) struct GpuTriDexelState {
     chords_buf: GrowableStorageBuffer,
     planes: [GpuPlaneDispatch; 3],
     gpu_chords_scratch: Vec<GpuSweepChord>,
-    linear_chords_scratch: Vec<FlattenedLinearChord>,
+    prim_chords_scratch: Vec<FlattenedPrimitive>,
     arc_linear_scratch: Vec<LinearChord3D>,
+    prim_decompose_scratch: Vec<SweptPrimitive>,
     gpu_profiles_scratch: Vec<GpuToolProfile>,
     cpu: Mutex<CpuShadow>,
 }
@@ -135,6 +141,7 @@ impl GpuTriDexelState {
         let dims = stock.dims;
         let origin_wcs = stock.origin_wcs;
         let pitch_mm = stock.pitch_mm;
+        let rotary = stock.rotary;
 
         let rx = stock.planes[0].ray_count();
         let ry = stock.planes[1].ray_count();
@@ -353,6 +360,7 @@ impl GpuTriDexelState {
             dims,
             origin_wcs,
             pitch_mm,
+            rotary,
             plane_ray_offsets,
             total_rays,
             has_target,
@@ -367,8 +375,9 @@ impl GpuTriDexelState {
             chords_buf,
             planes,
             gpu_chords_scratch: Vec::with_capacity(128),
-            linear_chords_scratch: Vec::with_capacity(128),
+            prim_chords_scratch: Vec::with_capacity(128),
             arc_linear_scratch: Vec::with_capacity(32),
+            prim_decompose_scratch: Vec::with_capacity(32),
             gpu_profiles_scratch: Vec::with_capacity(16),
             cpu: Mutex::new(CpuShadow {
                 stock,
@@ -782,14 +791,26 @@ impl GpuTriDexelState {
         }
 
         self.gpu_chords_scratch.clear();
-        self.linear_chords_scratch.clear();
+        self.prim_chords_scratch.clear();
+        let min_pitch = self.pitch_mm.x.min(self.pitch_mm.y).min(self.pitch_mm.z);
+        let mut chuck_violations = SpanRuleViolations::default();
 
         for ch in chords {
-            if profiles.get(ch.profile_idx).is_none() {
+            let Some(tool) = profiles.get(ch.profile_idx) else {
                 continue;
-            }
-            motion_to_linear_chords(ch.motion, &mut self.arc_linear_scratch);
-            for &lin in &self.arc_linear_scratch {
+            };
+            self.prim_decompose_scratch.clear();
+            decompose_chord_for_tridexel(
+                ch,
+                self.rotary,
+                min_pitch,
+                &tool.profile,
+                verify,
+                &mut self.arc_linear_scratch,
+                &mut self.prim_decompose_scratch,
+                &mut chuck_violations,
+            );
+            for &prim in &self.prim_decompose_scratch {
                 let gpu_idx = self.gpu_chords_scratch.len() as u32;
                 let mut flags = 0u32;
                 if ch.is_rapid {
@@ -798,30 +819,65 @@ impl GpuTriDexelState {
                 if verify {
                     flags |= CHORD_FLAG_VERIFY;
                 }
-                self.gpu_chords_scratch.push(GpuSweepChord {
-                    p0_rot: [
-                        (lin.p0.x - self.origin_wcs.x) as f32,
-                        (lin.p0.y - self.origin_wcs.y) as f32,
-                        (lin.p0.z - self.origin_wcs.z) as f32,
-                        0.0,
-                    ],
-                    p1_rot: [
-                        (lin.p1.x - self.origin_wcs.x) as f32,
-                        (lin.p1.y - self.origin_wcs.y) as f32,
-                        (lin.p1.z - self.origin_wcs.z) as f32,
-                        0.0,
-                    ],
-                    arc_params: [0.0; 4],
-                    sweep_and_tols: [
-                        0.0,
-                        ch.verify_tol.rapid_crash_tol_mm as f32,
-                        ch.verify_tol.gouge_tol_mm as f32,
-                        ch.verify_tol.radial_wall_skin_mm as f32,
-                    ],
-                    meta: [ch.op_idx, ch.profile_idx as u32, flags, gpu_idx],
-                });
-                self.linear_chords_scratch.push(FlattenedLinearChord {
-                    chord: lin,
+                let gpu_chord = match prim {
+                    SweptPrimitive::CardinalLinear {
+                        chord: lin,
+                        spindle,
+                        rot_deg,
+                    } => {
+                        flags |= (spindle.code() & CHORD_CARDINAL_MASK) << CHORD_CARDINAL_SHIFT;
+                        GpuSweepChord {
+                            p0_rot: [
+                                (lin.p0.x - self.origin_wcs.x) as f32,
+                                (lin.p0.y - self.origin_wcs.y) as f32,
+                                (lin.p0.z - self.origin_wcs.z) as f32,
+                                rot_deg as f32,
+                            ],
+                            p1_rot: [
+                                (lin.p1.x - self.origin_wcs.x) as f32,
+                                (lin.p1.y - self.origin_wcs.y) as f32,
+                                (lin.p1.z - self.origin_wcs.z) as f32,
+                                rot_deg as f32,
+                            ],
+                            arc_params: [0.0; 4],
+                            sweep_and_tols: [
+                                0.0,
+                                ch.verify_tol.rapid_crash_tol_mm as f32,
+                                ch.verify_tol.gouge_tol_mm as f32,
+                                ch.verify_tol.radial_wall_skin_mm as f32,
+                            ],
+                            meta: [ch.op_idx, ch.profile_idx as u32, flags, gpu_idx],
+                        }
+                    }
+                    SweptPrimitive::OrientedPose(pose) => {
+                        flags |= CHORD_FLAG_ORIENTED_POSE;
+                        GpuSweepChord {
+                            p0_rot: [
+                                (pose.tip.x - self.origin_wcs.x) as f32,
+                                (pose.tip.y - self.origin_wcs.y) as f32,
+                                (pose.tip.z - self.origin_wcs.z) as f32,
+                                0.0,
+                            ],
+                            p1_rot: [0.0; 4],
+                            arc_params: [
+                                pose.spindle.x as f32,
+                                pose.spindle.y as f32,
+                                pose.spindle.z as f32,
+                                0.0,
+                            ],
+                            sweep_and_tols: [
+                                0.0,
+                                ch.verify_tol.rapid_crash_tol_mm as f32,
+                                ch.verify_tol.gouge_tol_mm as f32,
+                                ch.verify_tol.radial_wall_skin_mm as f32,
+                            ],
+                            meta: [ch.op_idx, ch.profile_idx as u32, flags, gpu_idx],
+                        }
+                    }
+                };
+                self.gpu_chords_scratch.push(gpu_chord);
+                self.prim_chords_scratch.push(FlattenedPrimitive {
+                    prim,
                     op_idx: ch.op_idx,
                     profile_idx: ch.profile_idx,
                     is_rapid: ch.is_rapid,
@@ -831,7 +887,10 @@ impl GpuTriDexelState {
         }
 
         if self.gpu_chords_scratch.is_empty() {
-            return BatchSweepOutput::default();
+            return BatchSweepOutput {
+                mutated: false,
+                violations: chuck_violations,
+            };
         }
 
         // Coarse 16x16 tile-binning for all 3 planes in strict chronological chord order
@@ -842,34 +901,77 @@ impl GpuTriDexelState {
             }
             let axis = plane.axis;
             let u_ax = axis.u_axis();
+            let v_ax = axis.v_axis();
             let mut total_binned = 0usize;
 
-            for (gpu_idx, fc) in self.linear_chords_scratch.iter().enumerate() {
+            for (gpu_idx, fc) in self.prim_chords_scratch.iter().enumerate() {
                 let Some(tool) = profiles.get(fc.profile_idx) else {
                     continue;
                 };
                 let prof = &tool.profile;
                 let r_cut = prof.cutting_radius_mm;
-                let (min_u, max_u, min_v, max_v) = match axis {
-                    Axis3::Z => {
+                let (min_u, max_u, min_v, max_v) = match fc.prim {
+                    SweptPrimitive::CardinalLinear { chord, spindle, .. } => {
+                        let s_ax = spindle.axis();
+                        if axis == s_ax {
+                            let r_chk = if verify {
+                                r_cut.max(prof.holder_radius_mm)
+                            } else {
+                                r_cut
+                            };
+                            (
+                                u_ax.get(chord.p0).min(u_ax.get(chord.p1)) - r_chk,
+                                u_ax.get(chord.p0).max(u_ax.get(chord.p1)) + r_chk,
+                                v_ax.get(chord.p0).min(v_ax.get(chord.p1)) - r_chk,
+                                v_ax.get(chord.p0).max(v_ax.get(chord.p1)) + r_chk,
+                            )
+                        } else {
+                            let max_h = prof.horizontal_cut_max_height_mm();
+                            let spindle_in_u = u_ax == s_ax;
+                            let other_ax = if spindle_in_u { v_ax } else { u_ax };
+                            let min_lat =
+                                other_ax.get(chord.p0).min(other_ax.get(chord.p1)) - r_cut;
+                            let max_lat =
+                                other_ax.get(chord.p0).max(other_ax.get(chord.p1)) + r_cut;
+                            let (min_s, max_s) = if spindle.sign() >= 0.0 {
+                                (
+                                    s_ax.get(chord.p0).min(s_ax.get(chord.p1)),
+                                    s_ax.get(chord.p0).max(s_ax.get(chord.p1)) + max_h,
+                                )
+                            } else {
+                                (
+                                    s_ax.get(chord.p0).min(s_ax.get(chord.p1)) - max_h,
+                                    s_ax.get(chord.p0).max(s_ax.get(chord.p1)),
+                                )
+                            };
+                            if spindle_in_u {
+                                (min_s, max_s, min_lat, max_lat)
+                            } else {
+                                (min_lat, max_lat, min_s, max_s)
+                            }
+                        }
+                    }
+                    SweptPrimitive::OrientedPose(pose) => {
                         let r_chk = if verify {
                             r_cut.max(prof.holder_radius_mm)
                         } else {
                             r_cut
                         };
+                        let reach = if verify {
+                            prof.stickout_length_mm.max(prof.flute_length_mm) + 40.0
+                        } else {
+                            prof.horizontal_cut_max_height_mm()
+                        };
+                        let top_pt = pose.tip + pose.spindle * reach;
+                        let aabb_min = pose.tip.min(top_pt) - DVec3::splat(r_chk);
+                        let aabb_max = pose.tip.max(top_pt) + DVec3::splat(r_chk);
                         (
-                            fc.chord.p0.x.min(fc.chord.p1.x) - r_chk,
-                            fc.chord.p0.x.max(fc.chord.p1.x) + r_chk,
-                            fc.chord.p0.y.min(fc.chord.p1.y) - r_chk,
-                            fc.chord.p0.y.max(fc.chord.p1.y) + r_chk,
+                            u_ax.get(aabb_min),
+                            u_ax.get(aabb_max),
+                            v_ax.get(aabb_min),
+                            v_ax.get(aabb_max),
                         )
                     }
-                    Axis3::X | Axis3::Y => (
-                        u_ax.get(fc.chord.p0).min(u_ax.get(fc.chord.p1)) - r_cut,
-                        u_ax.get(fc.chord.p0).max(u_ax.get(fc.chord.p1)) + r_cut,
-                        fc.chord.p0.z.min(fc.chord.p1.z),
-                        fc.chord.p0.z.max(fc.chord.p1.z) + prof.effective_reach_mm(),
-                    ),
                 };
 
                 let (Some((u0, u1)), Some((v0, v1))) = (
@@ -912,7 +1014,10 @@ impl GpuTriDexelState {
         }
 
         if !active_planes.iter().any(|&a| a) {
-            return BatchSweepOutput::default();
+            return BatchSweepOutput {
+                mutated: false,
+                violations: chuck_violations,
+            };
         }
 
         self.gpu_profiles_scratch.clear();
@@ -985,7 +1090,7 @@ impl GpuTriDexelState {
         queue.submit(std::iter::once(encoder.finish()));
 
         let mut any_mutated = false;
-        let mut merged_violations = SpanRuleViolations::default();
+        let mut merged_violations = chuck_violations;
         let mut overflow_planes = [false; 3];
 
         for (ax_idx, plane) in self.planes.iter().enumerate() {
@@ -1010,15 +1115,38 @@ impl GpuTriDexelState {
             let ow = plane.origin_w_mm;
             let du = plane.du_mm;
             let dv = plane.dv_mm;
-            let (plane_mut, plane_viol) = accum.into_span_violations(|ray_idx, loc_w_local| {
-                let idx = ray_idx as usize;
-                let iu = idx % nu;
-                let iv = idx / nu;
-                let pu = ou + (iu as f64 + 0.5) * du;
-                let pv = ov + (iv as f64 + 0.5) * dv;
-                let pw = ow + f64::from(loc_w_local);
-                axis.from_uvw(pu, pv, pw)
-            });
+            let rotary = self.rotary;
+            let prims = &self.prim_chords_scratch;
+            let (plane_mut, plane_viol) =
+                accum.into_span_violations_with_chord(|chord_idx, ray_idx, loc_w_local| {
+                    if let Some(fc) = prims.get(chord_idx as usize) {
+                        match fc.prim {
+                            SweptPrimitive::OrientedPose(pose) => return pose.tip_wcs,
+                            SweptPrimitive::CardinalLinear { rot_deg, .. } => {
+                                let idx = ray_idx as usize;
+                                let iu = idx % nu;
+                                let iv = idx / nu;
+                                let pu = ou + (iu as f64 + 0.5) * du;
+                                let pv = ov + (iv as f64 + 0.5) * dv;
+                                let pw = ow + f64::from(loc_w_local);
+                                let pt_part = axis.from_uvw(pu, pv, pw);
+                                if let Some(rot) = rotary
+                                    && rot_deg.abs() > 1e-6
+                                {
+                                    return rot.rotate_point_wcs(pt_part, rot_deg);
+                                }
+                                return pt_part;
+                            }
+                        }
+                    }
+                    let idx = ray_idx as usize;
+                    let iu = idx % nu;
+                    let iv = idx / nu;
+                    let pu = ou + (iu as f64 + 0.5) * du;
+                    let pv = ov + (iv as f64 + 0.5) * dv;
+                    let pw = ow + f64::from(loc_w_local);
+                    axis.from_uvw(pu, pv, pw)
+                });
             any_mutated |= plane_mut;
             merged_violations.merge(plane_viol);
         }
@@ -1177,7 +1305,8 @@ impl GpuTriDexelState {
             }
         }
 
-        let dz_step = 0.25 * self.pitch_mm.z;
+        let pitch_mm = self.pitch_mm;
+        let rotary = self.rotary;
         let axis = plane.axis;
         let nu = plane.nu;
         let ou = plane.origin_u_mm;
@@ -1213,16 +1342,17 @@ impl GpuTriDexelState {
             let target_slice = target_spans_owned.as_deref();
 
             let mut ray_mut = false;
-            for fc in &self.linear_chords_scratch {
+            for fc in &self.prim_chords_scratch {
                 let Some(tool) = profiles.get(fc.profile_idx) else {
                     continue;
                 };
-                let (m, v) = replay_single_ray_linear_chord(
+                let (m, v) = replay_single_ray_primitive(
                     axis,
                     pu,
                     pv,
-                    dz_step,
-                    fc.chord,
+                    pitch_mm,
+                    fc.prim,
+                    rotary,
                     tool,
                     fc.is_rapid,
                     fc.verify_tol,

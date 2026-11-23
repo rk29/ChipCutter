@@ -210,7 +210,7 @@ impl SimulationPanelState {
 
         let _ = self.poll_remesh_outputs();
 
-        let sim_rot_deg = if self.show_machined_stock && res.is_cylindrical() {
+        let sim_rot_deg = if self.show_machined_stock && res.is_rotary() {
             snap.as_ref().map_or(0.0, |s| s.rotary_deg)
         } else {
             0.0
@@ -360,10 +360,9 @@ impl SimulationPanelState {
 }
 
 fn compute_stock_model_wcs(res: &SetupSimulationResult, rotary_deg: f64) -> DMat4 {
-    if let Some(cyl) = res.as_cylindrical()
+    if let Some(rot) = res.rotary_spec()
         && rotary_deg.abs() > 1e-6
     {
-        let rot = cyl.rotary;
         let angle_rad = (rotary_deg * rot.direction_sign).to_radians();
         DMat4::from_translation(rot.center_wcs)
             * DMat4::from_axis_angle(rot.axis_unit(), angle_rad)

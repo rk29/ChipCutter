@@ -156,6 +156,22 @@ impl SimulatedStock {
         matches!(self, Self::Cylindrical(_))
     }
 
+    /// Returns the active 4th-axis [`RotaryStockSpec`] when this stock represents a rotary Setup
+    /// (either polar `Cylindrical` or volumetric 3D `TriDexel`), or `None` for 3-axis Setups.
+    #[inline]
+    pub const fn rotary_spec(&self) -> Option<RotaryStockSpec> {
+        match self {
+            Self::Heightfield(_) => None,
+            Self::TriDexel(td) => td.rotary,
+            Self::Cylindrical(cyl) => Some(cyl.rotary),
+        }
+    }
+
+    #[inline]
+    pub const fn is_rotary(&self) -> bool {
+        self.rotary_spec().is_some()
+    }
+
     /// Computes total remaining solid stock volume (`mm³`).
     pub fn compute_volume_mm3(&self) -> f64 {
         match self {
@@ -195,6 +211,9 @@ impl SimulatedStock {
                 stock_z.map_or(0.0, |sz| sz.min(z_start_wcs) - z_end_wcs)
             }
             Self::TriDexel(td) => {
+                if td.rotary.is_some() {
+                    return 0.0;
+                }
                 if let Some(check_r) = thread_check_radius_mm {
                     td.query_vertical_plunge_overlap(x_wcs, y_wcs, check_r, z_end_wcs, z_start_wcs)
                 } else {

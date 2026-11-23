@@ -258,6 +258,9 @@ impl SimStockBackend for WgpuComputeBackend {
             }),
             GpuBackendInner::Cylindrical(_) => 0.0,
             GpuBackendInner::TriDexel(td) => td.with_synced_stock(|s| {
+                if s.rotary.is_some() {
+                    return 0.0;
+                }
                 if let Some(check_r) = thread_check_radius_mm {
                     s.query_vertical_plunge_overlap(x_wcs, y_wcs, check_r, z_end_wcs, z_start_wcs)
                 } else {

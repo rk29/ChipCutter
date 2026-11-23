@@ -341,7 +341,9 @@ impl GpuCylindricalState {
 
                 let radial_tip = tip_part_rel - u_vec * tip_part_rel.dot(u_vec);
                 let c_off_center = radial_tip.cross(spindle_part).length();
-                let full_circle = r_tip <= r_footprint + 1.0 || self.rotary.axis == Axis3::Z;
+                let full_circle = r_tip <= r_footprint + 1.0
+                    || tip_h_above_axis <= r_footprint + 1.0
+                    || self.rotary.axis == Axis3::Z;
 
                 let mut flags = 0u32;
                 if ch.is_rapid {

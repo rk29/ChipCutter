@@ -135,7 +135,9 @@ impl CylindricalStock {
         let rel_tip = tip_part - self.rotary.center_wcs;
         let radial_tip = rel_tip - u_vec * rel_tip.dot(u_vec);
         let c_off_center = radial_tip.cross(spindle_part).length();
-        let full_circle = r_tip <= r_footprint + 1.0 || self.rotary.axis == Axis3::Z;
+        let full_circle = r_tip <= r_footprint + 1.0
+            || tip_h_above_axis <= r_footprint + 1.0
+            || self.rotary.axis == Axis3::Z;
         let (it_center, it_half_span) = if full_circle {
             (0isize, self.ntheta as isize)
         } else {

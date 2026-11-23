@@ -32,6 +32,13 @@ pub const CHORD_FLAG_RAPID: u32 = 1 << 0;
 pub const CHORD_FLAG_VERIFY: u32 = 1 << 1;
 pub const CHORD_FLAG_PLANAR_ARC_XY: u32 = 1 << 2;
 pub const CHORD_FLAG_CHECK_HOLDER: u32 = 1 << 3;
+/// Tri-Dexel rotary flag: `p0_rot.xyz` is a workpiece-fixed stock-local cutter tip and
+/// `arc_params.xyz` is the workpiece-fixed unit spindle vector for an arbitrary oriented pose.
+pub const CHORD_FLAG_ORIENTED_POSE: u32 = 1 << 4;
+/// Tri-Dexel cardinal spindle axis code stored in bits `8..11` of `flags`:
+/// `0 = +Z` (default 3-axis / `0°`), `1 = -Z`, `2 = +Y`, `3 = -Y`, `4 = +X`, `5 = -X`.
+pub const CHORD_CARDINAL_SHIFT: u32 = 8;
+pub const CHORD_CARDINAL_MASK: u32 = 0x7;
 
 /// `GpuRotaryPose::flags` bitmask constants.
 pub const POSE_FLAG_RAPID: u32 = 1 << 0;
@@ -400,21 +407,30 @@ impl GpuViolationAccum {
         &self,
         mut resolve_loc_wcs: impl FnMut(u32, f32) -> DVec3,
     ) -> (bool, SpanRuleViolations) {
+        self.into_span_violations_with_chord(|_ch, cell, z_loc| resolve_loc_wcs(cell, z_loc))
+    }
+
+    /// Decodes all 5 violation slots into [`SpanRuleViolations`] using a caller-provided
+    /// `(chord_idx, cell_idx, loc_z_local) -> DVec3` WCS coordinate resolver.
+    pub fn into_span_violations_with_chord(
+        &self,
+        mut resolve_loc_wcs: impl FnMut(u32, u32, f32) -> DVec3,
+    ) -> (bool, SpanRuleViolations) {
         let mut out = SpanRuleViolations::default();
-        if let Some((depth, _ch, cell, z_loc)) = self.rapid.decode() {
-            out.record_rapid(depth, resolve_loc_wcs(cell, z_loc));
+        if let Some((depth, ch, cell, z_loc)) = self.rapid.decode() {
+            out.record_rapid(depth, resolve_loc_wcs(ch, cell, z_loc));
         }
-        if let Some((depth, _ch, cell, z_loc)) = self.gouge.decode() {
-            out.record_gouge(depth, resolve_loc_wcs(cell, z_loc));
+        if let Some((depth, ch, cell, z_loc)) = self.gouge.decode() {
+            out.record_gouge(depth, resolve_loc_wcs(ch, cell, z_loc));
         }
-        if let Some((depth, _ch, cell, z_loc)) = self.flute.decode() {
-            out.record_flute(depth, resolve_loc_wcs(cell, z_loc));
+        if let Some((depth, ch, cell, z_loc)) = self.flute.decode() {
+            out.record_flute(depth, resolve_loc_wcs(ch, cell, z_loc));
         }
-        if let Some((depth, _ch, cell, z_loc)) = self.neck.decode() {
-            out.record_neck(depth, resolve_loc_wcs(cell, z_loc));
+        if let Some((depth, ch, cell, z_loc)) = self.neck.decode() {
+            out.record_neck(depth, resolve_loc_wcs(ch, cell, z_loc));
         }
-        if let Some((depth, _ch, cell, z_loc)) = self.holder.decode() {
-            out.record_holder(depth, resolve_loc_wcs(cell, z_loc));
+        if let Some((depth, ch, cell, z_loc)) = self.holder.decode() {
+            out.record_holder(depth, resolve_loc_wcs(ch, cell, z_loc));
         }
         (self.mutated_flag != 0, out)
     }
