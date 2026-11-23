@@ -50,6 +50,11 @@
   </screenshots>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="0.19.0" date="2026-11-23">
+      <description>
+        <p>Phase 19 release: achieved 100% tutorial, starter-asset, and Sample Projects Gallery coverage across all shipped ChipCutter capabilities—adding 6 new crash-free built-in samples (feed-opt-pocket, flip-jig-softjaws, curved-deburr-3d, dovetail-rail-keyway, svg-badge, and mesh-3mf-bracket) plus 6 minimal tutorial starter assets; publishing illustrated Tutorials 20 (GPU-Accelerated Simulation, Benchmarking, and Feedrate Optimization), 21 (3D Edge Deburring and Non-Planar Chamfering), and 22 (Undercut Keyway, T-Slot, Dovetail, and Lollipop Milling) with verified headless Vulkan screenshots; completing all 24 dedicated Sample Projects Gallery pages and GitHub Pages/README sync enforced by automated docs and Markdown link parity tests; and making WGSL shader return paths FXC-safe for Windows D3DCompile (#22).</p>
+      </description>
+    </release>
     <release version="0.18.0" date="2026-11-22">
       <description>
         <p>Phase 18 release: added LollipopEndmill, SlotMill (Keyway/T-Slot), and DovetailCutter geometries with non-monotonic AnalyticCutterEnvelope undercut math, CPU and WGSL GPU Tri-Dexel undercut sweeping and relieved-neck collision verification, 3D revolved cutter meshes for all 10 cutter types, and Tool Library 2D schematics; added 3D Edge Deburring and Non-Planar Chamfering (Deburr3D) with B-Rep bisector contact, inside-corner wall collision trimming, and Lollipop underside back-chamfering; added Slot/Keyway/T-Slot (SlotUndercut), Internal/External Dovetail (Dovetail), and Lollipop 3D Overhang Undercut (Undercut3D) strategies with strict horizontal entry/exit safety guards and Inspector cards; added the undercut-deburr built-in sample and auto-Tri-Dexel CLI build verification for undercut jobs; fixed truncated flat surfaces in Ultra GPU Tri-Dexel rendering via compact quad emission (#20); and fixed periodic NURBS/B-spline STEP sweep tessellation and bounded edge trimming (#21).</p>
