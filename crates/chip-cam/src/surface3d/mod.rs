@@ -7,6 +7,7 @@ pub mod cutter;
 pub mod drop_cutter;
 pub mod finishing;
 pub mod levels;
+pub mod overhang_guard;
 pub mod push_cutter;
 
 use chip_bvh::{
@@ -15,8 +16,11 @@ use chip_bvh::{
 use chip_cad::{BodyId, CadDocument, MeshTriangle, TriangleMeshBody};
 use chip_math::{Aabb3, DVec3, RigidFrame3};
 
-pub use cutter::{SurfaceCutterProfile, SurfaceCutterShape};
-pub use drop_cutter::{drop_cutter_points_parallel, drop_cutter_z, drop_cutter_z_with_scratch};
+pub use cutter::{AssemblyClearanceSpec, SurfaceCutterProfile, SurfaceCutterShape};
+pub use drop_cutter::{
+    DropCutterDetail, drop_cutter_points_parallel, drop_cutter_z,
+    drop_cutter_z_detailed_with_scratch, drop_cutter_z_with_scratch,
+};
 pub use finishing::{
     RestMaskGrid2D, SurfaceLinkConfig, build_3d_rest_mask, compute_morphological_rest_residual,
     emit_final_surface_retract, emit_surface_safe_link, refine_convex_chords_3d, region_aabb_2d,
@@ -25,6 +29,10 @@ pub use finishing::{
 pub use levels::{
     clip_polyline_to_region, detect_flat_plateaus, rect_region_2d, resolve_3d_containment_region,
     sample_surface_slope_deg, stock_xy_region,
+};
+pub use overhang_guard::{
+    OverhangGuardReport, check_2d_toolpath_against_overhangs, check_hole_column_overhang,
+    clip_2d_contour_outside_overhangs, is_2d_arc_clear_of_avoid, is_2d_segment_clear_of_avoid,
 };
 pub use push_cutter::{PushCutterField, push_cutter_region_z, slice_surface_contours_z};
 

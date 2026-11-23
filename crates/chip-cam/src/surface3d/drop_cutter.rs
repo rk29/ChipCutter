@@ -2,6 +2,7 @@ use chip_math::{DVec2, DVec3};
 use rayon::prelude::*;
 
 use crate::{
+    fixture_avoidance::ToolAssemblyPart,
     rest2d::RegionSet2D,
     surface3d::{
         SurfaceMesh3D,
@@ -9,12 +10,30 @@ use crate::{
     },
 };
 
+/// Detailed analytical Drop-Cutter contact result separating flute-only contact from full-assembly
+/// shank / collet-holder clearance lift.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DropCutterDetail {
+    /// Final required tip Z (`mm` in Setup WCS, clamped to `>= z_floor`).
+    pub z_tip_wcs: f64,
+    /// Flute-only tip Z (`None` if flutes did not overlap any triangle).
+    pub z_flute_wcs: Option<f64>,
+    /// Assembly component that determined `z_tip_wcs` (`Flute`, `Shank`, or `Holder`).
+    pub limiting_part: ToolAssemblyPart,
+    /// Vertical lift (`mm >= 0`) added above flute-only contact (or `z_floor` if flutes missed)
+    /// caused by wider shank or collet/holder clearance.
+    pub assembly_lift_mm: f64,
+}
+
 /// Evaluates the exact analytical `f64` Drop-Cutter contact Z height (`z_tip` in Setup WCS mm)
 /// at horizontal cutter axis position `(x, y)` above `surface`, floored by `z_floor`.
 ///
-/// Returns `None` if no triangle in `surface` overlaps the cutter's horizontal footprint
-/// (or if `x`/`y` are non-finite). When a contact occurs, `stock_axial_mm` is added to the
-/// highest contact height and clamped to `>= z_floor`.
+/// When `cutter.assembly` is populated ([`SurfaceCutterProfile::from_tool`]), also enforces exact
+/// analytical clearance across wider non-cutting shanks (`dz >= flute_length_mm`), collet nuts
+/// (`dz >= stickout_length_mm`), and tapered holder cones (`holder_cone_z0..z1`).
+///
+/// Returns `None` if no triangle in `surface` overlaps the active cutter/assembly footprint above
+/// `z_floor` (or if `x`/`y`/`z_floor` are non-finite).
 pub fn drop_cutter_z(
     surface: &SurfaceMesh3D,
     cutter: &SurfaceCutterProfile,
@@ -35,45 +54,242 @@ pub fn drop_cutter_z_with_scratch(
     z_floor: f64,
     candidate_buf: &mut Vec<usize>,
 ) -> Option<f64> {
+    drop_cutter_z_detailed_with_scratch(surface, cutter, x, y, z_floor, candidate_buf)
+        .map(|d| d.z_tip_wcs)
+}
+
+/// Zero-allocation inner Drop-Cutter returning full [`DropCutterDetail`] (including whether wider
+/// shank or holder clearance lifted `z_tip_wcs` above flute-only contact).
+pub fn drop_cutter_z_detailed_with_scratch(
+    surface: &SurfaceMesh3D,
+    cutter: &SurfaceCutterProfile,
+    x: f64,
+    y: f64,
+    z_floor: f64,
+    candidate_buf: &mut Vec<usize>,
+) -> Option<DropCutterDetail> {
     if !x.is_finite() || !y.is_finite() || !z_floor.is_finite() {
         return None;
     }
-    let r_max = cutter.max_radius_mm();
+    let r_flute = cutter.max_radius_mm();
+    let eval_assembly = cutter.assembly_can_overlap(surface.aabb_wcs.max.z, z_floor);
+
+    if !eval_assembly {
+        // Fast single-disk path: zero overhead on normal parts and bit-exact parity with flute-only.
+        surface
+            .bvh
+            .query_xy_circle_into(x, y, r_flute + 1e-6, candidate_buf);
+        if candidate_buf.is_empty() {
+            return None;
+        }
+
+        let c_xy = DVec2::new(x, y);
+        let mut best_z = f64::NEG_INFINITY;
+        let mut hit_any = false;
+
+        for &ti in candidate_buf.iter() {
+            let tri = &surface.triangles[ti];
+            if hit_any && tri.aabb.max.z <= best_z {
+                continue;
+            }
+            let [i0, i1, i2] = tri.indices;
+            let v0 = surface.vertices_wcs[i0 as usize];
+            let v1 = surface.vertices_wcs[i1 as usize];
+            let v2 = surface.vertices_wcs[i2 as usize];
+
+            if let Some(z_tri) = drop_cutter_triangle_shape(&cutter.shape, c_xy, v0, v1, v2)
+                && z_tri.is_finite()
+                && (!hit_any || z_tri > best_z)
+            {
+                best_z = z_tri;
+                hit_any = true;
+            }
+        }
+
+        return if hit_any {
+            let z_final = (best_z + cutter.stock_axial_mm).max(z_floor);
+            Some(DropCutterDetail {
+                z_tip_wcs: z_final,
+                z_flute_wcs: Some(z_final),
+                limiting_part: ToolAssemblyPart::Flute,
+                assembly_lift_mm: 0.0,
+            })
+        } else {
+            None
+        };
+    }
+
+    // Full-assembly multi-tier path (`Flute` + wider `Shank` + `Collet Nut` + `Holder Cone`)
+    let asm = cutter.assembly?;
+
+    let r_shank_eff = asm.effective_shank_radius_mm();
+    let check_shank = r_shank_eff > r_flute + 1e-6
+        && surface.aabb_wcs.max.z + cutter.stock_axial_mm > z_floor + asm.flute_length_mm - 1e-4;
+
+    let r_nut_eff = asm.effective_holder_nut_radius_mm();
+    let check_nut = r_nut_eff > r_flute.max(r_shank_eff) + 1e-6
+        && surface.aabb_wcs.max.z + asm.holder_clearance_mm
+            > z_floor + asm.stickout_length_mm - 1e-4;
+
+    let r_body_eff = asm.effective_holder_body_radius_mm();
+    let cone_dz = (asm.holder_cone_z1 - asm.holder_cone_z0).max(1e-6);
+    let check_cone = r_body_eff > r_nut_eff + 1e-6
+        && surface.aabb_wcs.max.z + asm.holder_clearance_mm > z_floor + asm.holder_cone_z0 - 1e-4;
+
+    let r_query = cutter.effective_query_radius_mm(surface.aabb_wcs.max.z, z_floor);
     surface
         .bvh
-        .query_xy_circle_into(x, y, r_max + 1e-6, candidate_buf);
+        .query_xy_circle_into(x, y, r_query + 1e-6, candidate_buf);
     if candidate_buf.is_empty() {
         return None;
     }
 
+    let shank_shape = SurfaceCutterShape::Flat {
+        radius_mm: r_shank_eff,
+    };
+    let nut_shape = SurfaceCutterShape::Flat {
+        radius_mm: r_nut_eff,
+    };
+    let cone_shape = SurfaceCutterShape::TaperedVBit {
+        tip_radius_mm: r_nut_eff,
+        upper_radius_mm: r_body_eff,
+        half_angle_rad: ((r_body_eff - r_nut_eff) / cone_dz).max(1e-6).atan(),
+    };
+
     let c_xy = DVec2::new(x, y);
-    let mut best_z = f64::NEG_INFINITY;
-    let mut hit_any = false;
+    let mut best_flute_raw = f64::NEG_INFINITY;
+    let mut hit_flute = false;
+
+    let mut best_asm_z = z_floor - 1e-6;
+    let mut hit_asm = false;
+    let mut best_asm_part = ToolAssemblyPart::Flute;
+
+    let flute_xy_pad = r_flute + 1e-6;
 
     for &ti in candidate_buf.iter() {
         let tri = &surface.triangles[ti];
-        // Quick Z pruning: if even the highest vertex of this triangle cannot beat `best_z`, skip!
-        if hit_any && tri.aabb.max.z <= best_z {
-            continue;
-        }
         let [i0, i1, i2] = tri.indices;
         let v0 = surface.vertices_wcs[i0 as usize];
         let v1 = surface.vertices_wcs[i1 as usize];
         let v2 = surface.vertices_wcs[i2 as usize];
 
-        if let Some(z_tri) = drop_cutter_triangle(cutter, c_xy, v0, v1, v2)
+        // 1. Flute contact (only when triangle XY AABB overlaps flute disk)
+        let tri_overlaps_flute = tri.aabb.max.x >= x - flute_xy_pad
+            && tri.aabb.min.x <= x + flute_xy_pad
+            && tri.aabb.max.y >= y - flute_xy_pad
+            && tri.aabb.min.y <= y + flute_xy_pad;
+        if tri_overlaps_flute
+            && (!hit_flute || tri.aabb.max.z > best_flute_raw)
+            && let Some(z_tri) = drop_cutter_triangle_shape(&cutter.shape, c_xy, v0, v1, v2)
             && z_tri.is_finite()
-            && (!hit_any || z_tri > best_z)
+            && (!hit_flute || z_tri > best_flute_raw)
         {
-            best_z = z_tri;
-            hit_any = true;
+            best_flute_raw = z_tri;
+            hit_flute = true;
+        }
+
+        let current_floor = if hit_flute {
+            (best_flute_raw + cutter.stock_axial_mm).max(best_asm_z)
+        } else {
+            best_asm_z
+        };
+
+        // 2. Wider non-cutting shank tier (`dz = flute_length_mm`, `r = shank_r + stock_radial`)
+        if check_shank
+            && tri.aabb.max.z + cutter.stock_axial_mm - asm.flute_length_mm > current_floor
+        {
+            let tri_overlaps_shank = tri.aabb.max.x >= x - r_shank_eff - 1e-6
+                && tri.aabb.min.x <= x + r_shank_eff + 1e-6
+                && tri.aabb.max.y >= y - r_shank_eff - 1e-6
+                && tri.aabb.min.y <= y + r_shank_eff + 1e-6;
+            if tri_overlaps_shank
+                && let Some(z_contact) = drop_cutter_triangle_shape(&shank_shape, c_xy, v0, v1, v2)
+            {
+                let z_tip = z_contact + cutter.stock_axial_mm - asm.flute_length_mm;
+                if z_tip.is_finite() && z_tip > best_asm_z {
+                    best_asm_z = z_tip;
+                    hit_asm = true;
+                    best_asm_part = ToolAssemblyPart::Shank;
+                }
+            }
+        }
+
+        let current_floor = if hit_flute {
+            (best_flute_raw + cutter.stock_axial_mm).max(best_asm_z)
+        } else {
+            best_asm_z
+        };
+
+        // 3. Collet nut cylinder tier (`dz = stickout_length_mm`, `r = nut_r + holder_clearance`)
+        if check_nut
+            && tri.aabb.max.z + asm.holder_clearance_mm - asm.stickout_length_mm > current_floor
+        {
+            let tri_overlaps_nut = tri.aabb.max.x >= x - r_nut_eff - 1e-6
+                && tri.aabb.min.x <= x + r_nut_eff + 1e-6
+                && tri.aabb.max.y >= y - r_nut_eff - 1e-6
+                && tri.aabb.min.y <= y + r_nut_eff + 1e-6;
+            if tri_overlaps_nut
+                && let Some(z_contact) = drop_cutter_triangle_shape(&nut_shape, c_xy, v0, v1, v2)
+            {
+                let z_tip = z_contact + asm.holder_clearance_mm - asm.stickout_length_mm;
+                if z_tip.is_finite() && z_tip > best_asm_z {
+                    best_asm_z = z_tip;
+                    hit_asm = true;
+                    best_asm_part = ToolAssemblyPart::Holder;
+                }
+            }
+        }
+
+        let current_floor = if hit_flute {
+            (best_flute_raw + cutter.stock_axial_mm).max(best_asm_z)
+        } else {
+            best_asm_z
+        };
+
+        // 4. Tapered holder cone tier (`holder_cone_z0..holder_cone_z1`, `r_nut -> r_body`)
+        if check_cone
+            && tri.aabb.max.z + asm.holder_clearance_mm - asm.holder_cone_z0 > current_floor
+            && let Some(z_contact) = drop_cutter_triangle_shape(&cone_shape, c_xy, v0, v1, v2)
+        {
+            let z_tip = z_contact + asm.holder_clearance_mm - asm.holder_cone_z0;
+            if z_tip.is_finite() && z_tip > best_asm_z {
+                best_asm_z = z_tip;
+                hit_asm = true;
+                best_asm_part = ToolAssemblyPart::Holder;
+            }
         }
     }
 
-    if hit_any {
-        Some((best_z + cutter.stock_axial_mm).max(z_floor))
+    if !hit_flute && !hit_asm {
+        return None;
+    }
+
+    let z_flute_clamped = hit_flute.then(|| (best_flute_raw + cutter.stock_axial_mm).max(z_floor));
+    let base_z = z_flute_clamped.unwrap_or(z_floor);
+
+    if hit_asm && best_asm_z > base_z + 1e-7 {
+        let z_final = best_asm_z.max(z_floor);
+        Some(DropCutterDetail {
+            z_tip_wcs: z_final,
+            z_flute_wcs: z_flute_clamped,
+            limiting_part: best_asm_part,
+            assembly_lift_mm: (z_final - base_z).max(0.0),
+        })
+    } else if let Some(zf) = z_flute_clamped {
+        Some(DropCutterDetail {
+            z_tip_wcs: zf,
+            z_flute_wcs: Some(zf),
+            limiting_part: ToolAssemblyPart::Flute,
+            assembly_lift_mm: 0.0,
+        })
     } else {
-        None
+        let z_final = best_asm_z.max(z_floor);
+        Some(DropCutterDetail {
+            z_tip_wcs: z_final,
+            z_flute_wcs: None,
+            limiting_part: best_asm_part,
+            assembly_lift_mm: (z_final - z_floor).max(0.0),
+        })
     }
 }
 
@@ -106,6 +322,7 @@ pub fn drop_cutter_points_parallel(
 /// 1. Facet interior / rim contact,
 /// 2. All 3 triangle edges clipped to the cutter disk `d <= R_max`,
 /// 3. All 3 triangle vertices inside `d <= R_max`.
+#[allow(dead_code)]
 pub(crate) fn drop_cutter_triangle(
     cutter: &SurfaceCutterProfile,
     c_xy: DVec2,
@@ -113,7 +330,17 @@ pub(crate) fn drop_cutter_triangle(
     v1: DVec3,
     v2: DVec3,
 ) -> Option<f64> {
-    let r_max = cutter.max_radius_mm();
+    drop_cutter_triangle_shape(&cutter.shape, c_xy, v0, v1, v2)
+}
+
+pub(crate) fn drop_cutter_triangle_shape(
+    shape: &SurfaceCutterShape,
+    c_xy: DVec2,
+    v0: DVec3,
+    v1: DVec3,
+    v2: DVec3,
+) -> Option<f64> {
+    let r_max = shape.max_radius_mm();
     let mut best: Option<f64> = None;
     let mut consider = |z: f64| {
         if z.is_finite() && best.is_none_or(|b| z > b) {
@@ -124,14 +351,14 @@ pub(crate) fn drop_cutter_triangle(
     // 1. Vertex contacts
     for v in [v0, v1, v2] {
         let d = (DVec2::new(v.x, v.y) - c_xy).length();
-        if let Some(h) = cutter.profile_height_at_radius(d) {
+        if let Some(h) = shape.profile_height_at_radius(d) {
             consider(v.z - h);
         }
     }
 
     // 2. Edge contacts (exact closed-form for Flat/Ball/VBit; safeguarded unimodal refinement for BullNose)
     for (a, b) in [(v0, v1), (v1, v2), (v2, v0)] {
-        if let Some(z_e) = drop_cutter_edge(cutter, c_xy, a, b, r_max) {
+        if let Some(z_e) = drop_cutter_edge_shape(shape, c_xy, a, b, r_max) {
             consider(z_e);
         }
     }
@@ -162,7 +389,7 @@ pub(crate) fn drop_cutter_triangle(
                 let u = DVec2::new(-n.x / n_xy_len, -n.y / n_xy_len);
                 let slope = n_xy_len / n.z;
 
-                match cutter.shape {
+                match *shape {
                     SurfaceCutterShape::Flat { radius_mm } => {
                         let p = c_xy + u * radius_mm;
                         if point_in_triangle_2d(p, v0_2, v1_2, v2_2) {
@@ -173,7 +400,7 @@ pub(crate) fn drop_cutter_triangle(
                         let d_star = radius_mm * n_xy_len;
                         let p = c_xy + u * d_star;
                         if point_in_triangle_2d(p, v0_2, v1_2, v2_2)
-                            && let Some(h) = cutter.profile_height_at_radius(d_star)
+                            && let Some(h) = shape.profile_height_at_radius(d_star)
                         {
                             consider(plane_z(p) - h);
                         }
@@ -185,7 +412,7 @@ pub(crate) fn drop_cutter_triangle(
                         let d_star = flat_radius_mm + corner_radius_mm * n_xy_len;
                         let p = c_xy + u * d_star;
                         if point_in_triangle_2d(p, v0_2, v1_2, v2_2)
-                            && let Some(h) = cutter.profile_height_at_radius(d_star)
+                            && let Some(h) = shape.profile_height_at_radius(d_star)
                         {
                             consider(plane_z(p) - h);
                         }
@@ -206,7 +433,7 @@ pub(crate) fn drop_cutter_triangle(
                         for d_c in candidates {
                             let p = c_xy + u * d_c;
                             if point_in_triangle_2d(p, v0_2, v1_2, v2_2)
-                                && let Some(h) = cutter.profile_height_at_radius(d_c)
+                                && let Some(h) = shape.profile_height_at_radius(d_c)
                             {
                                 consider(plane_z(p) - h);
                             }
@@ -221,8 +448,8 @@ pub(crate) fn drop_cutter_triangle(
 }
 
 /// Computes exact maximum of `p(t).z - h(||p_xy(t) - c_xy||)` over `t ∈ [0, 1]` where `d(t) <= r_max`.
-fn drop_cutter_edge(
-    cutter: &SurfaceCutterProfile,
+fn drop_cutter_edge_shape(
+    shape: &SurfaceCutterShape,
     c_xy: DVec2,
     a: DVec3,
     b: DVec3,
@@ -236,7 +463,7 @@ fn drop_cutter_edge(
     if len2_sq <= 1e-18 {
         // Purely vertical edge: endpoints already evaluated, return highest point if inside disk
         let dist = a2.length();
-        return cutter
+        return shape
             .profile_height_at_radius(dist)
             .map(|h| a.z.max(b.z) - h);
     }
@@ -246,7 +473,7 @@ fn drop_cutter_edge(
 
     let eval = |t: f64| -> Option<f64> {
         let dist = (a2 + d2 * t).length();
-        let h = cutter.profile_height_at_radius(dist)?;
+        let h = shape.profile_height_at_radius(dist)?;
         Some(a.z + t * dz - h)
     };
 
@@ -269,7 +496,7 @@ fn drop_cutter_edge(
     let u_perp = a2.x * dir.y - a2.y * dir.x;
     let m = dz / len2;
 
-    match cutter.shape {
+    match *shape {
         SurfaceCutterShape::Flat { .. } => {
             // `f(t)` is linear on `[t_lo, t_hi]`; endpoints `t_lo`/`t_hi` are already exact!
         }

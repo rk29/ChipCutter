@@ -185,6 +185,10 @@ impl FeedOptimizationConfig {
     }
 }
 
+fn is_false(v: &bool) -> bool {
+    !*v
+}
+
 /// Common multi-depth stepdown, stock-to-leave, Rest Machining, feed optimization, and tolerance parameters (`05-operations.md`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PassesParams {
@@ -204,6 +208,11 @@ pub struct PassesParams {
     pub feed_optimization: FeedOptimizationConfig,
     #[serde(default = "default_tolerance_mm")]
     pub tolerance_mm: f64,
+    /// When `true` and a 3D model is loaded, 2.5D strategies subtract/clip overhanging 3D model
+    /// collision shadows (including shank/holder clearance) from generated toolpaths and skip
+    /// occluded holes. Defaults to `false` for 100% backward compatibility.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub avoid_model_overhangs: bool,
 }
 
 fn default_max_stepdown() -> ParamLength {
@@ -225,6 +234,7 @@ impl Default for PassesParams {
             rest_machining: RestMachiningConfig::default(),
             feed_optimization: FeedOptimizationConfig::default(),
             tolerance_mm: default_tolerance_mm(),
+            avoid_model_overhangs: false,
         }
     }
 }

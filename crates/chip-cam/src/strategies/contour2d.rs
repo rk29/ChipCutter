@@ -7,9 +7,13 @@ use crate::{
         Contour2DParams, ContourCompensation, EntryStrategy, HoldingTabsConfig, LeadConfig,
         TabPlacementMode, TabProfileKind,
     },
-    rest2d::{ContourRestClipQuery, clip_contour_path_to_rest},
+    rest2d::{ContourRestClipQuery, RegionSet2D, clip_contour_path_to_rest},
     selection::ExtractedFeature25D,
     strategies::{StrategyExecContext, compute_z_levels},
+    surface3d::{
+        PushCutterField, SurfaceCutterProfile, SurfaceMesh3D, clip_2d_contour_outside_overhangs,
+        is_2d_arc_clear_of_avoid, is_2d_segment_clear_of_avoid,
+    },
     toolpath::{TabMarker3D, ToolpathBuilder, VerticalArcMove, XyArcMove},
     wcs::CamError,
 };
@@ -125,6 +129,19 @@ pub fn generate_contour2d(
         side_passes.push((0.0, false));
     }
 
+    let overhang_cutter = SurfaceCutterProfile::from_tool(
+        ctx.tool,
+        radial_leave.max(0.0),
+        ctx.passes.stock_to_leave_axial.value_mm.max(0.0),
+        0.5,
+    );
+    let overhang_surface = (ctx.passes.avoid_model_overhangs && ctx.doc.has_3d_geometry())
+        .then(|| SurfaceMesh3D::from_cad_document(ctx.doc, &[], &ctx.setup.frame));
+    let overhang_field = overhang_surface
+        .as_ref()
+        .filter(|s| !s.triangles.is_empty() && s.aabb_wcs.is_valid())
+        .map(|s| PushCutterField::build_with_z_min(s, overhang_cutter, target_bottom_z));
+
     for (contour_idx, src) in contours.iter().enumerate() {
         ctx.check_cancel()?;
 
@@ -225,10 +242,12 @@ pub fn generate_contour2d(
                     };
 
                 let rest_enabled = !ctx.passes.rest_machining.is_disabled();
+                let avoid_overhangs = overhang_field.is_some();
                 if params.continuous_spiral_ramp
                     && poly.closed
                     && loop_tabs_s_mm.is_empty()
                     && !rest_enabled
+                    && !avoid_overhangs
                 {
                     emit_continuous_spiral_contour(
                         ctx,
@@ -243,19 +262,43 @@ pub fn generate_contour2d(
                             cut_role,
                         },
                     );
-                } else if rest_enabled {
+                } else if rest_enabled || avoid_overhangs {
                     for &z_cut in &z_levels {
                         ctx.check_cancel()?;
-                        let rest_spans = clip_contour_path_to_rest(&ContourRestClipQuery {
-                            raw_contour: &src.poly_wcs,
-                            offset_sign: base_sign,
-                            candidate_path: &poly,
-                            current_tool_radius_mm: tool_r,
-                            rest_cfg: &ctx.passes.rest_machining,
-                            upstream: ctx.upstream_rest,
-                            z_level_wcs: z_cut,
-                        });
-                        for span in &rest_spans {
+                        let mut spans = if rest_enabled {
+                            clip_contour_path_to_rest(&ContourRestClipQuery {
+                                raw_contour: &src.poly_wcs,
+                                offset_sign: base_sign,
+                                candidate_path: &poly,
+                                current_tool_radius_mm: tool_r,
+                                rest_cfg: &ctx.passes.rest_machining,
+                                upstream: ctx.upstream_rest,
+                                z_level_wcs: z_cut,
+                            })
+                        } else {
+                            vec![poly.clone()]
+                        };
+                        let avoid_z = overhang_field
+                            .as_ref()
+                            .map(|f| f.avoidance_region_z(z_cut))
+                            .filter(|r| !r.is_empty());
+                        if let (Some(surf), Some(avoid)) =
+                            (overhang_surface.as_ref(), avoid_z.as_ref())
+                        {
+                            spans = spans
+                                .iter()
+                                .flat_map(|sp| {
+                                    clip_2d_contour_outside_overhangs(
+                                        sp,
+                                        avoid,
+                                        surf,
+                                        &overhang_cutter,
+                                        z_cut,
+                                    )
+                                })
+                                .collect();
+                        }
+                        for span in &spans {
                             let span_tabs: Vec<f64> = if !src_tab_s_norms.is_empty()
                                 && extra_radial <= 1e-4
                                 && span.closed
@@ -277,6 +320,7 @@ pub fn generate_contour2d(
                                     tool_r,
                                     cut_feed,
                                     cut_role,
+                                    avoid_z: avoid_z.as_ref(),
                                 },
                             );
                         }
@@ -297,6 +341,7 @@ pub fn generate_contour2d(
                                 tool_r,
                                 cut_feed,
                                 cut_role,
+                                avoid_z: None,
                             },
                         );
                     }
@@ -426,6 +471,7 @@ struct SingleDepthContourPassSpec<'a> {
     tool_r: f64,
     cut_feed: f64,
     cut_role: MotionRole,
+    avoid_z: Option<&'a RegionSet2D>,
 }
 
 struct LeadArcSpec<'a> {
@@ -435,6 +481,7 @@ struct LeadArcSpec<'a> {
     base_sign: f64,
     z_cut: f64,
     retract_z: f64,
+    avoid_z: Option<&'a RegionSet2D>,
 }
 
 fn emit_continuous_spiral_contour(
@@ -468,6 +515,7 @@ fn emit_continuous_spiral_contour(
             base_sign,
             z_cut: start_z,
             retract_z,
+            avoid_z: None,
         },
     );
 
@@ -532,6 +580,7 @@ fn emit_continuous_spiral_contour(
                 base_sign,
                 z_cut: target_bottom_z,
                 retract_z,
+                avoid_z: None,
             },
         );
     }
@@ -552,6 +601,7 @@ fn emit_single_depth_contour_pass(
         tool_r,
         cut_feed,
         cut_role,
+        avoid_z,
     } = spec;
     let Some((entry_pt, entry_tan)) = poly.sample_at_fraction(0.0) else {
         return;
@@ -628,6 +678,7 @@ fn emit_single_depth_contour_pass(
                 base_sign,
                 z_cut,
                 retract_z,
+                avoid_z,
             },
         );
     }
@@ -701,6 +752,7 @@ fn emit_single_depth_contour_pass(
                 base_sign,
                 z_cut,
                 retract_z,
+                avoid_z,
             },
         );
     } else if let Some(cur) = builder.current_pos() {
@@ -870,6 +922,7 @@ fn emit_approach_and_lead_in(
         base_sign,
         z_cut,
         retract_z,
+        avoid_z,
     } = spec;
     let feed_z = ctx.heights.feed_z_wcs;
     if let Some(cur) = builder.current_pos()
@@ -920,6 +973,31 @@ fn emit_approach_and_lead_in(
     } else {
         p_arc_start
     };
+
+    // Keep lead-in strictly inside verified overhang-free air when `avoid_model_overhangs` is active
+    if let Some(av) = avoid_z {
+        let c_in = p_arc_end + n_safe * r_h;
+        let signed_sweep = if base_sign >= 0.0 {
+            sweep_rad
+        } else {
+            -sweep_rad
+        };
+        let approach_ok = is_2d_segment_clear_of_avoid(approach_xy, p_arc_start, av);
+        let arc_ok = r_h <= 1e-4
+            || sweep_rad <= 1e-3
+            || is_2d_arc_clear_of_avoid(p_arc_start, c_in, r_h, signed_sweep, av);
+        let lin_ok = l_lin <= 1e-4 || is_2d_segment_clear_of_avoid(p_arc_end, entry_pt, av);
+        if !(approach_ok && arc_ok && lin_ok) {
+            builder.rapid_to(DVec3::new(entry_pt.x, entry_pt.y, retract_z));
+            builder.rapid_to(DVec3::new(entry_pt.x, entry_pt.y, feed_z));
+            builder.linear_to(
+                DVec3::new(entry_pt.x, entry_pt.y, z_cut),
+                ctx.cutting.plunge_feed_mm_min,
+                MotionRole::Plunge,
+            );
+            return;
+        }
+    }
     let plunge_target_z = if r_v > 1e-4 {
         (z_cut + r_v).min(feed_z)
     } else {
@@ -1014,6 +1092,7 @@ fn emit_lead_out_and_retract(
         base_sign,
         z_cut,
         retract_z,
+        avoid_z,
     } = spec;
     if lead.enabled && base_sign != 0.0 {
         let aabb_sz = poly.exact_aabb().size();
@@ -1034,27 +1113,42 @@ fn emit_lead_out_and_retract(
         };
 
         let p_arc_start = exit_pt + t * l_lin;
-        if l_lin > 1e-4 {
-            builder.linear_to(
-                DVec3::new(p_arc_start.x, p_arc_start.y, z_cut),
-                ctx.cutting.lead_feed_mm_min,
-                MotionRole::LeadOut,
-            );
-        }
-        if r_h > 1e-4 && sweep_rad > 1e-3 {
-            let c_out = p_arc_start + n_safe * r_h;
-            let p_arc_end = p_arc_start
-                + n_safe * (r_h * (1.0 - sweep_rad.cos()))
-                + t * (r_h * sweep_rad.sin());
-            builder.arc_xy_to(XyArcMove {
-                end_wcs: DVec3::new(p_arc_end.x, p_arc_end.y, z_cut),
-                center_xy: c_out,
-                radius_mm: r_h,
-                ccw: base_sign >= 0.0,
-                turns: 0,
-                feed_mm_min: ctx.cutting.lead_feed_mm_min,
-                role: MotionRole::LeadOut,
-            });
+        let c_out = p_arc_start + n_safe * r_h;
+        let signed_sweep = if base_sign >= 0.0 {
+            sweep_rad
+        } else {
+            -sweep_rad
+        };
+        let lead_out_safe = avoid_z.is_none_or(|av| {
+            let lin_ok = l_lin <= 1e-4 || is_2d_segment_clear_of_avoid(exit_pt, p_arc_start, av);
+            let arc_ok = r_h <= 1e-4
+                || sweep_rad <= 1e-3
+                || is_2d_arc_clear_of_avoid(p_arc_start, c_out, r_h, signed_sweep, av);
+            lin_ok && arc_ok
+        });
+
+        if lead_out_safe {
+            if l_lin > 1e-4 {
+                builder.linear_to(
+                    DVec3::new(p_arc_start.x, p_arc_start.y, z_cut),
+                    ctx.cutting.lead_feed_mm_min,
+                    MotionRole::LeadOut,
+                );
+            }
+            if r_h > 1e-4 && sweep_rad > 1e-3 {
+                let p_arc_end = p_arc_start
+                    + n_safe * (r_h * (1.0 - sweep_rad.cos()))
+                    + t * (r_h * sweep_rad.sin());
+                builder.arc_xy_to(XyArcMove {
+                    end_wcs: DVec3::new(p_arc_end.x, p_arc_end.y, z_cut),
+                    center_xy: c_out,
+                    radius_mm: r_h,
+                    ccw: base_sign >= 0.0,
+                    turns: 0,
+                    feed_mm_min: ctx.cutting.lead_feed_mm_min,
+                    role: MotionRole::LeadOut,
+                });
+            }
         }
     }
 

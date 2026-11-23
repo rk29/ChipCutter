@@ -1,10 +1,12 @@
-use chip_math::{Aabb2, DVec2, DVec3};
+use chip_math::{Aabb2, ArcPolyline2D, ArcSegment2D, DVec2, DVec3};
 
 use crate::{
     cl_data::MotionRole,
     params::{FacingCutMode, FacingParams},
+    rest2d::{RegionSet2D, clip_polyline_outside_region_set},
     selection::ExtractedFeature25D,
     strategies::{StrategyExecContext, compute_z_levels},
+    surface3d::{PushCutterField, SurfaceCutterProfile, SurfaceMesh3D, is_2d_arc_clear_of_avoid},
     toolpath::{ToolpathBuilder, XyArcMove},
     wcs::CamError,
 };
@@ -152,6 +154,19 @@ pub fn generate_facing(
     let retract_z = ctx.safe_retract_z();
     let feed_z = ctx.heights.feed_z_wcs;
 
+    let overhang_cutter = SurfaceCutterProfile::from_tool(
+        ctx.tool,
+        0.0,
+        ctx.passes.stock_to_leave_axial.value_mm.max(0.0),
+        0.5,
+    );
+    let overhang_surface = (ctx.passes.avoid_model_overhangs && ctx.doc.has_3d_geometry())
+        .then(|| SurfaceMesh3D::from_cad_document(ctx.doc, &[], &ctx.setup.frame));
+    let overhang_field = overhang_surface
+        .as_ref()
+        .filter(|s| !s.triangles.is_empty() && s.aabb_wcs.is_valid())
+        .map(|s| PushCutterField::build_with_z_min(s, overhang_cutter, target_bottom_z));
+
     let build_pass_vs = |vmin: f64, vmax: f64| -> Vec<f64> {
         let sv = (vmax - vmin).max(0.0);
         if sv <= 2.0 * (tool_r - 0.05).max(0.0) {
@@ -275,9 +290,13 @@ pub fn generate_facing(
             }
         }
 
+        let overhang_avoid: Option<RegionSet2D> = overhang_field
+            .as_ref()
+            .map(|f| f.avoidance_region_z(z_cut))
+            .filter(|r| !r.is_empty());
+
         for (i, &pv) in ordered_vs.iter().enumerate() {
             ctx.check_cancel()?;
-            builder.pass_count += 1;
 
             let forward = match params.cut_mode {
                 FacingCutMode::BothWaysZigZag => i % 2 == 0,
@@ -291,68 +310,111 @@ pub fn generate_facing(
             let p_start = to_xy(u0, pv);
             let p_end = to_xy(u1, pv);
 
-            let can_zigzag_continue = i > 0
-                && params.cut_mode == FacingCutMode::BothWaysZigZag
-                && builder.current_pos().is_some_and(|cur| {
-                    (cur.z - z_cut).abs() <= 1e-4
-                        && DVec2::new(cur.x, cur.y).distance(p_start) <= 1e-3
-                });
+            let row_spans: Vec<(DVec2, DVec2)> = if let Some(ref avoid) = overhang_avoid {
+                let raw_line = ArcPolyline2D {
+                    segments: vec![ArcSegment2D::Line {
+                        start: p_start,
+                        end: p_end,
+                    }],
+                    closed: false,
+                };
+                clip_polyline_outside_region_set(&raw_line, avoid)
+                    .into_iter()
+                    .filter_map(|poly| {
+                        let s = poly.segments.first()?.start();
+                        let e = poly.segments.last()?.end();
+                        (s.distance(e) > 0.05).then_some((s, e))
+                    })
+                    .collect()
+            } else {
+                vec![(p_start, p_end)]
+            };
 
-            if !can_zigzag_continue {
-                if builder.current_pos().is_none() {
-                    builder.rapid_to(DVec3::new(
-                        p_start.x,
-                        p_start.y,
-                        ctx.heights.clearance_z_wcs,
-                    ));
-                } else {
-                    if let Some(cur) = builder.current_pos()
-                        && cur.z < retract_z - 1e-6
-                    {
-                        builder.rapid_to(DVec3::new(cur.x, cur.y, retract_z));
-                    }
-                    builder.rapid_to(DVec3::new(p_start.x, p_start.y, retract_z));
-                }
-                builder.rapid_to(DVec3::new(p_start.x, p_start.y, feed_z));
-                builder.linear_to(
-                    DVec3::new(p_start.x, p_start.y, z_cut),
-                    ctx.cutting.plunge_feed_mm_min,
-                    MotionRole::Plunge,
-                );
+            if row_spans.is_empty() {
+                continue;
             }
 
-            builder.linear_to(
-                DVec3::new(p_end.x, p_end.y, z_cut),
-                ctx.cutting.cutting_feed_mm_min,
-                cut_role,
-            );
+            for (span_idx, &(span_start, span_end)) in row_spans.iter().enumerate() {
+                builder.pass_count += 1;
 
-            // Smooth U-turn `G2`/`G3` linking arc outside the stock in BothWaysZigZag mode!
-            if params.cut_mode == FacingCutMode::BothWaysZigZag
-                && let Some(&next_pv) = ordered_vs.get(i + 1)
-                && (next_pv - pv).abs() <= stepover * 1.5 + 1e-4
-            {
-                let p_next_start = to_xy(u1, next_pv);
-                let mid_center = 0.5 * (p_end + p_next_start);
-                let link_r = 0.5 * p_end.distance(p_next_start);
-                // Turning from `+u` toward `+v` (`next_pv > pv`) is CCW; turning from `-u` toward `+v` is CW!
-                let ccw = if forward { next_pv > pv } else { next_pv < pv };
-                if link_r > 1e-4 {
-                    builder.arc_xy_to(XyArcMove {
-                        end_wcs: DVec3::new(p_next_start.x, p_next_start.y, z_cut),
-                        center_xy: mid_center,
-                        radius_mm: link_r,
-                        ccw,
-                        turns: 0,
-                        feed_mm_min: ctx.cutting.lead_feed_mm_min,
-                        role: MotionRole::LinkTransition,
+                let can_zigzag_continue = i > 0
+                    && span_idx == 0
+                    && params.cut_mode == FacingCutMode::BothWaysZigZag
+                    && builder.current_pos().is_some_and(|cur| {
+                        (cur.z - z_cut).abs() <= 1e-4
+                            && DVec2::new(cur.x, cur.y).distance(span_start) <= 1e-3
                     });
-                } else {
+
+                if !can_zigzag_continue {
+                    if builder.current_pos().is_none() {
+                        builder.rapid_to(DVec3::new(
+                            span_start.x,
+                            span_start.y,
+                            ctx.heights.clearance_z_wcs,
+                        ));
+                    } else {
+                        if let Some(cur) = builder.current_pos()
+                            && cur.z < retract_z - 1e-6
+                        {
+                            builder.rapid_to(DVec3::new(cur.x, cur.y, retract_z));
+                        }
+                        builder.rapid_to(DVec3::new(span_start.x, span_start.y, retract_z));
+                    }
+                    builder.rapid_to(DVec3::new(span_start.x, span_start.y, feed_z));
                     builder.linear_to(
-                        DVec3::new(p_next_start.x, p_next_start.y, z_cut),
-                        ctx.cutting.lead_feed_mm_min,
-                        MotionRole::LinkTransition,
+                        DVec3::new(span_start.x, span_start.y, z_cut),
+                        ctx.cutting.plunge_feed_mm_min,
+                        MotionRole::Plunge,
                     );
+                }
+
+                builder.linear_to(
+                    DVec3::new(span_end.x, span_end.y, z_cut),
+                    ctx.cutting.cutting_feed_mm_min,
+                    cut_role,
+                );
+
+                // Smooth U-turn `G2`/`G3` linking arc outside the stock in BothWaysZigZag mode!
+                let is_unclipped_end =
+                    span_idx + 1 == row_spans.len() && span_end.distance(p_end) <= 1e-3;
+                if is_unclipped_end
+                    && params.cut_mode == FacingCutMode::BothWaysZigZag
+                    && let Some(&next_pv) = ordered_vs.get(i + 1)
+                    && (next_pv - pv).abs() <= stepover * 1.5 + 1e-4
+                {
+                    let p_next_start = to_xy(u1, next_pv);
+                    let mid_center = 0.5 * (p_end + p_next_start);
+                    let link_r = 0.5 * p_end.distance(p_next_start);
+                    // Turning from `+u` toward `+v` (`next_pv > pv`) is CCW; turning from `-u` toward `+v` is CW!
+                    let ccw = if forward { next_pv > pv } else { next_pv < pv };
+                    let sweep = if ccw {
+                        std::f64::consts::PI
+                    } else {
+                        -std::f64::consts::PI
+                    };
+                    let arc_clear = overhang_avoid.as_ref().is_none_or(|av| {
+                        !av.contains_point(p_next_start)
+                            && is_2d_arc_clear_of_avoid(p_end, mid_center, link_r, sweep, av)
+                    });
+                    if arc_clear {
+                        if link_r > 1e-4 {
+                            builder.arc_xy_to(XyArcMove {
+                                end_wcs: DVec3::new(p_next_start.x, p_next_start.y, z_cut),
+                                center_xy: mid_center,
+                                radius_mm: link_r,
+                                ccw,
+                                turns: 0,
+                                feed_mm_min: ctx.cutting.lead_feed_mm_min,
+                                role: MotionRole::LinkTransition,
+                            });
+                        } else {
+                            builder.linear_to(
+                                DVec3::new(p_next_start.x, p_next_start.y, z_cut),
+                                ctx.cutting.lead_feed_mm_min,
+                                MotionRole::LinkTransition,
+                            );
+                        }
+                    }
                 }
             }
         }

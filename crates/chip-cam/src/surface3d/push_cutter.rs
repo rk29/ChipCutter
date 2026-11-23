@@ -2,11 +2,17 @@ use std::collections::HashMap;
 
 use chip_geom2d::{contours_to_region_set, simplify_rdp_2d};
 use chip_math::{ArcPolyline2D, ArcSegment2D, DVec2, DVec3};
+use chip_tools::Tool;
 use rayon::prelude::*;
 
 use crate::{
+    fixture_avoidance::ToolAssemblyPart,
     rest2d::RegionSet2D,
-    surface3d::{SurfaceMesh3D, cutter::SurfaceCutterProfile, drop_cutter_z_with_scratch},
+    surface3d::{
+        SurfaceMesh3D,
+        cutter::SurfaceCutterProfile,
+        drop_cutter::{drop_cutter_z_detailed_with_scratch, drop_cutter_z_with_scratch},
+    },
 };
 
 /// Slices `surface` with the horizontal plane `z = z_wcs` and chains the resulting
@@ -71,13 +77,18 @@ pub fn slice_surface_contours_z(surface: &SurfaceMesh3D, z_wcs: f64) -> Vec<ArcP
 pub struct PushCutterField<'a> {
     surface: &'a SurfaceMesh3D,
     safe_cutter: SurfaceCutterProfile,
-    min_x: f64,
-    min_y: f64,
+    origin_x: f64,
+    origin_y: f64,
+    ix_offset: usize,
+    iy_offset: usize,
     cell_mm: f64,
     nx: usize,
     ny: usize,
     z_floor: f64,
     z_grid: Vec<f64>,
+    /// Sample points where wider shank or collet/holder clearance lifted `z_tip` above flute-only
+    /// contact (`(xy_wcs, lift_mm, limiting_part)`). Empty whenever flutes alone govern clearance.
+    assembly_lift_samples: Vec<(DVec2, f64, ToolAssemblyPart)>,
 }
 
 impl<'a> PushCutterField<'a> {
@@ -86,20 +97,40 @@ impl<'a> PushCutterField<'a> {
     const RADIAL_SAG_MARGIN_MM: f64 = 0.015;
 
     /// Builds a [`PushCutterField`] in parallel across the XY footprint of `surface` dilated by
-    /// `cutter.max_radius_mm()`.
+    /// `cutter.max_radius_mm()` (or `cutter.max_assembly_radius_mm()` when wider shank or holder
+    /// tiers can overlap `surface.aabb_wcs`).
     pub fn build(surface: &'a SurfaceMesh3D, cutter: SurfaceCutterProfile) -> Self {
+        let z_min = if surface.aabb_wcs.is_valid() {
+            surface.aabb_wcs.min.z
+        } else {
+            -1000.0
+        };
+        Self::build_with_z_min(surface, cutter, z_min)
+    }
+
+    /// Builds a [`PushCutterField`] knowing the lowest machining Z height `z_min_wcs` that will
+    /// be queried via [`Self::avoidance_region_z`], keeping grid bounds lean and bit-identical to
+    /// flute-only grids whenever shank/holder tiers cannot overlap `surface.aabb_wcs`.
+    pub fn build_with_z_min(
+        surface: &'a SurfaceMesh3D,
+        cutter: SurfaceCutterProfile,
+        z_min_wcs: f64,
+    ) -> Self {
         let safe_cutter = cutter.with_extra_radial_margin(Self::RADIAL_SAG_MARGIN_MM);
         if surface.triangles.is_empty() || !surface.aabb_wcs.is_valid() {
             return Self {
                 surface,
                 safe_cutter,
-                min_x: 0.0,
-                min_y: 0.0,
+                origin_x: 0.0,
+                origin_y: 0.0,
+                ix_offset: 0,
+                iy_offset: 0,
                 cell_mm: 1.0,
                 nx: 0,
                 ny: 0,
                 z_floor: -1000.0,
                 z_grid: Vec::new(),
+                assembly_lift_samples: Vec::new(),
             };
         }
 
@@ -110,29 +141,93 @@ impl<'a> PushCutterField<'a> {
 
         let base_cell = (0.18 * r_max).clamp(0.15, 0.30);
         const MAX_CELLS: f64 = 120_000.0;
-        let cell_mm = base_cell.max(((span_x * span_y) / MAX_CELLS).sqrt());
+        let mut cell_mm = base_cell.max(((span_x * span_y) / MAX_CELLS).sqrt());
 
         // Pad by `r_max + 2 * cell_mm` on every side so the entire outer grid border is strictly
         // outside the cutter's reach (`z = -inf`), guaranteeing every extracted contour is closed.
-        let pad = r_max + 2.0 * cell_mm;
-        let min_x = aabb.min.x - pad;
-        let min_y = aabb.min.y - pad;
-        let max_x = aabb.max.x + pad;
-        let max_y = aabb.max.y + pad;
+        let z_floor = if safe_cutter.assembly.is_some() {
+            z_min_wcs.min(aabb.max.z) - 0.5
+        } else {
+            aabb.min.z - 1000.0
+        };
+        let r_asm_pad = if safe_cutter.assembly_can_overlap(aabb.max.z, z_floor) {
+            safe_cutter
+                .effective_query_radius_mm(aabb.max.z, z_floor)
+                .min(safe_cutter.max_assembly_radius_mm())
+                .max(r_max)
+        } else {
+            r_max
+        };
 
-        let nx = (((max_x - min_x) / cell_mm).ceil() as usize).max(4) + 1;
-        let ny = (((max_y - min_y) / cell_mm).ceil() as usize).max(4) + 1;
-        let z_floor = aabb.min.z - 1000.0;
+        let mut base_pad = r_max + 2.0 * cell_mm;
+        let mut origin_x = aabb.min.x - base_pad;
+        let mut origin_y = aabb.min.y - base_pad;
+        let mut base_nx =
+            (((aabb.max.x + base_pad - origin_x) / cell_mm).ceil() as usize).max(4) + 1;
+        let mut base_ny =
+            (((aabb.max.y + base_pad - origin_y) / cell_mm).ceil() as usize).max(4) + 1;
 
-        let z_grid: Vec<f64> = (0..ny)
+        let mut extra_cells = if r_asm_pad > r_max + 1e-6 {
+            ((r_asm_pad - r_max) / cell_mm).ceil() as usize
+        } else {
+            0
+        };
+
+        // Guard against excessive total cell counts on huge holder-to-part ratios
+        if extra_cells > 0 {
+            let cand_cells = (base_nx + 2 * extra_cells) * (base_ny + 2 * extra_cells);
+            const MAX_ASM_CELLS: usize = 280_000;
+            if cand_cells > MAX_ASM_CELLS {
+                let full_span_x = (aabb.max.x - aabb.min.x).max(0.1) + 2.0 * r_asm_pad;
+                let full_span_y = (aabb.max.y - aabb.min.y).max(0.1) + 2.0 * r_asm_pad;
+                cell_mm =
+                    cell_mm.max(((full_span_x * full_span_y) / (MAX_ASM_CELLS as f64)).sqrt());
+                base_pad = r_max + 2.0 * cell_mm;
+                origin_x = aabb.min.x - base_pad;
+                origin_y = aabb.min.y - base_pad;
+                base_nx =
+                    (((aabb.max.x + base_pad - origin_x) / cell_mm).ceil() as usize).max(4) + 1;
+                base_ny =
+                    (((aabb.max.y + base_pad - origin_y) / cell_mm).ceil() as usize).max(4) + 1;
+                extra_cells = ((r_asm_pad - r_max) / cell_mm).ceil() as usize;
+            }
+        }
+
+        let nx = base_nx + 2 * extra_cells;
+        let ny = base_ny + 2 * extra_cells;
+        let ix_offset = extra_cells;
+        let iy_offset = extra_cells;
+        let track_lifts = safe_cutter.assembly_can_overlap(aabb.max.z, z_floor);
+
+        type LiftSample = (DVec2, f64, ToolAssemblyPart);
+        let rows: Vec<(Vec<f64>, Vec<LiftSample>)> = (0..ny)
             .into_par_iter()
-            .flat_map_iter(|iy| {
+            .map(|iy| {
                 let mut row = vec![f64::NEG_INFINITY; nx];
+                let mut lifts = Vec::new();
                 let mut scratch = Vec::with_capacity(64);
-                let y = min_y + iy as f64 * cell_mm;
+                let y = origin_y + (iy as isize - iy_offset as isize) as f64 * cell_mm;
                 for (ix, cell_z) in row.iter_mut().enumerate() {
-                    let x = min_x + ix as f64 * cell_mm;
-                    if let Some(z_hit) = drop_cutter_z_with_scratch(
+                    let x = origin_x + (ix as isize - ix_offset as isize) as f64 * cell_mm;
+                    if track_lifts {
+                        if let Some(det) = drop_cutter_z_detailed_with_scratch(
+                            surface,
+                            &safe_cutter,
+                            x,
+                            y,
+                            z_floor,
+                            &mut scratch,
+                        ) {
+                            *cell_z = det.z_tip_wcs;
+                            if det.assembly_lift_mm > 0.05 && det.z_tip_wcs > z_min_wcs + 0.05 {
+                                lifts.push((
+                                    DVec2::new(x, y),
+                                    det.assembly_lift_mm,
+                                    det.limiting_part,
+                                ));
+                            }
+                        }
+                    } else if let Some(z_hit) = drop_cutter_z_with_scratch(
                         surface,
                         &safe_cutter,
                         x,
@@ -143,28 +238,77 @@ impl<'a> PushCutterField<'a> {
                         *cell_z = z_hit;
                     }
                 }
-                row
+                (row, lifts)
             })
             .collect();
+
+        let mut z_grid = Vec::with_capacity(nx * ny);
+        let mut assembly_lift_samples = Vec::new();
+        for (row, lifts) in rows {
+            z_grid.extend(row);
+            assembly_lift_samples.extend(lifts);
+        }
 
         Self {
             surface,
             safe_cutter,
-            min_x,
-            min_y,
+            origin_x,
+            origin_y,
+            ix_offset,
+            iy_offset,
             cell_mm,
             nx,
             ny,
             z_floor,
             z_grid,
+            assembly_lift_samples,
         }
+    }
+
+    /// Formats a non-blocking reach-limit warning whenever wider shank or collet/holder clearance
+    /// lifted the avoidance envelope above flute-only contact inside `containment`.
+    pub fn reach_limit_warning(&self, containment: &RegionSet2D, tool: &Tool) -> Option<String> {
+        if self.assembly_lift_samples.is_empty() {
+            return None;
+        }
+        let mut max_shank_lift = 0.0_f64;
+        let mut max_holder_lift = 0.0_f64;
+        for &(pt, lift, part) in &self.assembly_lift_samples {
+            if !containment.is_empty() && !containment.contains_point(pt) {
+                continue;
+            }
+            match part {
+                ToolAssemblyPart::Shank => max_shank_lift = max_shank_lift.max(lift),
+                ToolAssemblyPart::Holder => max_holder_lift = max_holder_lift.max(lift),
+                ToolAssemblyPart::Flute => {}
+            }
+        }
+        let max_lift = max_shank_lift.max(max_holder_lift);
+        if max_lift <= 0.05 {
+            return None;
+        }
+        let cause = match (max_shank_lift > 0.05, max_holder_lift > 0.05) {
+            (true, true) => "wider non-cutting shank and collet/holder",
+            (true, false) => "wider non-cutting shank",
+            (false, true) => "collet/holder body",
+            (false, false) => return None,
+        };
+        Some(format!(
+            "Reach-limit avoidance active for T{} ({}): {} clearance lifted avoidance by up to {:.2} mm (flute {:.1} mm, stickout {:.1} mm). Consider a longer flute/stickout or a relieved-neck cutter to reach deeper.",
+            tool.tool_number,
+            tool.name,
+            cause,
+            max_lift,
+            tool.geometry.flute_length_mm(),
+            tool.stickout_length_mm,
+        ))
     }
 
     #[inline]
     fn grid_xy(&self, ix: usize, iy: usize) -> DVec2 {
         DVec2::new(
-            self.min_x + ix as f64 * self.cell_mm,
-            self.min_y + iy as f64 * self.cell_mm,
+            self.origin_x + (ix as isize - self.ix_offset as isize) as f64 * self.cell_mm,
+            self.origin_y + (iy as isize - self.iy_offset as isize) as f64 * self.cell_mm,
         )
     }
 
@@ -301,8 +445,12 @@ impl<'a> PushCutterField<'a> {
                     4 => link(et, er),
                     5 => {
                         let center = DVec2::new(
-                            self.min_x + (ix as f64 + 0.5) * self.cell_mm,
-                            self.min_y + (iy as f64 + 0.5) * self.cell_mm,
+                            self.origin_x
+                                + ((ix as isize - self.ix_offset as isize) as f64 + 0.5)
+                                    * self.cell_mm,
+                            self.origin_y
+                                + ((iy as isize - self.iy_offset as isize) as f64 + 0.5)
+                                    * self.cell_mm,
                         );
                         if self.is_inside_exact(center, z_thresh, &mut saddle_scratch) {
                             link(eb, er);
@@ -318,8 +466,12 @@ impl<'a> PushCutterField<'a> {
                     9 => link(eb, et),
                     10 => {
                         let center = DVec2::new(
-                            self.min_x + (ix as f64 + 0.5) * self.cell_mm,
-                            self.min_y + (iy as f64 + 0.5) * self.cell_mm,
+                            self.origin_x
+                                + ((ix as isize - self.ix_offset as isize) as f64 + 0.5)
+                                    * self.cell_mm,
+                            self.origin_y
+                                + ((iy as isize - self.iy_offset as isize) as f64 + 0.5)
+                                    * self.cell_mm,
                         );
                         if self.is_inside_exact(center, z_thresh, &mut saddle_scratch) {
                             link(el, eb);

@@ -318,6 +318,7 @@ pub fn show_operation_inspector(ui: &mut egui::Ui, ctx: OperationInspectorCtx<'_
                     ui,
                     passes_tab::PassesTabCtx {
                         op: &mut project.setups[setup_idx].operations[op_idx],
+                        has_3d_model: cad_doc.is_some_and(CadDocument::has_3d_geometry),
                         preceding_ops: &preceding_ops,
                         clearing_tool_candidates: &clearing_tool_candidates,
                         assigned_tool_geom: assigned_tool_geom.as_ref(),

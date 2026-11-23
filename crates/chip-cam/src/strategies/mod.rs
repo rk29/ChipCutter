@@ -35,12 +35,16 @@ use crate::{
     fixture_avoidance::route_toolpath_around_fixtures,
     heights::ResolvedHeights,
     operation::{EffectiveCuttingParams, Operation, OperationKind},
-    params::{LinkingParams, PassesParams, RetractPolicy, StrategyParams},
+    params::{
+        ChamferSourceMode, ChamferTraceMode, ContourCompensation, LinkingParams, PassesParams,
+        RetractPolicy, StrategyParams,
+    },
     rest2d::UpstreamSweptInput,
     rotary::{OperationRotaryMode, RotaryAxisKind, build_indexed_virtual_setup},
     selection::{ExtractedSelectionSummary, extract_selection_features_with_sketches},
     setup::ResolvedSetup,
     stock::ResolvedStockGeometry,
+    surface3d::{SurfaceMesh3D, check_2d_toolpath_against_overhangs},
     toolpath::{GeneratedToolpath, ToolpathBuilder},
     wcs::CamError,
     workholding::ResolvedFixtureSolid,
@@ -520,6 +524,46 @@ pub fn generate_operation_toolpath_with_rest(
             op.kind,
         );
         builder.segments_wcs = crate::feed_opt::rebuild_segments_from_events(&builder.events);
+    }
+
+    // Automatic 2.5D overhang collision guard when a 3D model is loaded and opt-in avoidance is off
+    if ctx.doc.has_3d_geometry()
+        && !ctx.passes.avoid_model_overhangs
+        && matches!(
+            op.kind,
+            OperationKind::Facing
+                | OperationKind::Contour2D
+                | OperationKind::Pocket2D
+                | OperationKind::DrillBore
+                | OperationKind::ChamferTrace
+        )
+    {
+        let surface = SurfaceMesh3D::from_cad_document(ctx.doc, &[], &ctx.setup.frame);
+        let min_ignored_z = match &strategy {
+            StrategyParams::ChamferTrace(p)
+                if p.mode == ChamferTraceMode::EdgeChamfer
+                    && matches!(p.chamfer_source, ChamferSourceMode::SharpEdge { .. }) =>
+            {
+                Some(ctx.selection.inferred_top_z_wcs)
+            }
+            StrategyParams::ChamferTrace(p)
+                if p.mode == ChamferTraceMode::CurveTrace
+                    && p.trace_compensation == ContourCompensation::CenterOff =>
+            {
+                Some(ctx.selection.inferred_top_z_wcs)
+            }
+            _ => None,
+        };
+        if let Some(report) = check_2d_toolpath_against_overhangs(
+            &surface,
+            ctx.tool,
+            &builder.segments_wcs,
+            min_ignored_z,
+        ) {
+            builder
+                .warnings
+                .push(report.format_warning(op.kind.label()));
+        }
     }
 
     let finished = builder.finish();

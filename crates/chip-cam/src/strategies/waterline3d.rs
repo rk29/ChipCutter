@@ -49,8 +49,7 @@ pub fn generate_waterline3d(
 
     let radial_stock = ctx.passes.stock_to_leave_radial.value_mm.max(0.0);
     let axial_stock = ctx.passes.stock_to_leave_axial.value_mm.max(0.0);
-    let cutter =
-        SurfaceCutterProfile::from_tool_geometry(&ctx.tool.geometry, radial_stock, axial_stock);
+    let cutter = SurfaceCutterProfile::from_tool(ctx.tool, radial_stock, axial_stock, 0.5);
     let tool_r = 0.5 * ctx.tool.geometry.cutting_diameter_mm().max(0.1);
 
     let z_top = ctx
@@ -102,7 +101,10 @@ pub fn generate_waterline3d(
 
     // Adaptive intermediate Z-stepdown refinement using true local radial contour offset `dr_max`.
     // Precomputes exact vertical-cutter avoidance field once and reuses slices directly in Step 2.
-    let push_field = PushCutterField::build(&surface, cutter);
+    let push_field = PushCutterField::build_with_z_min(&surface, cutter, z_bottom);
+    if let Some(warn) = push_field.reach_limit_warning(&containment, ctx.tool) {
+        builder.warnings.push(warn);
+    }
     let mut sliced_levels: Vec<(f64, RegionSet2D)> = Vec::with_capacity(z_levels.len() * 2);
     if params.adaptive_stepdown && !z_levels.is_empty() {
         let eff_corner_r = match cutter.shape {

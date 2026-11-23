@@ -6,6 +6,7 @@ use crate::{
     params::{DrillBoreParams, HoleMachiningMode},
     selection::ExtractedFeature25D,
     strategies::StrategyExecContext,
+    surface3d::{SurfaceMesh3D, check_hole_column_overhang},
     toolpath::{DrillCycleSpec, ToolpathBuilder, XyArcMove},
     wcs::CamError,
 };
@@ -68,6 +69,8 @@ pub fn generate_drill_bore(
 
     let tool_d = ctx.tool.geometry.cutting_diameter_mm();
     let retract_z = ctx.safe_retract_z();
+    let overhang_surface = (ctx.passes.avoid_model_overhangs && ctx.doc.has_3d_geometry())
+        .then(|| SurfaceMesh3D::from_cad_document(ctx.doc, &[], &ctx.setup.frame));
 
     for (idx, hole) in holes.iter().enumerate() {
         ctx.check_cancel()?;
@@ -97,7 +100,29 @@ pub fn generate_drill_bore(
             }
         };
 
-        if idx == 0 && builder.current_pos().is_none() {
+        if let Some(ref surf) = overhang_surface {
+            let orbit_r = if use_bore {
+                (0.5 * hole.diameter_mm - 0.5 * tool_d - ctx.passes.stock_to_leave_radial.value_mm)
+                    .max(0.0)
+            } else {
+                0.0
+            };
+            if let Some(blocking_z) =
+                check_hole_column_overhang(surf, ctx.tool, hole.center_wcs, orbit_r, hole_bottom_z)
+            {
+                builder.warnings.push(format!(
+                    "Skipped hole #{} (Ø{:.2} mm at WCS ({:.2}, {:.2})): vertical plunge column occluded by overhanging 3D geometry up to Z={:.2} mm.",
+                    idx + 1,
+                    hole.diameter_mm,
+                    hole.center_wcs.x,
+                    hole.center_wcs.y,
+                    blocking_z
+                ));
+                continue;
+            }
+        }
+
+        if builder.current_pos().is_none() {
             builder.rapid_to(DVec3::new(
                 hole.center_wcs.x,
                 hole.center_wcs.y,

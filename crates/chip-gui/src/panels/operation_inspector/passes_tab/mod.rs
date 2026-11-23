@@ -199,6 +199,7 @@ impl GridForm<'_, '_> {
 
 pub struct PassesTabCtx<'a> {
     pub op: &'a mut Operation,
+    pub has_3d_model: bool,
     pub preceding_ops: &'a [(String, String)],
     pub clearing_tool_candidates: &'a [(ToolId, String, Option<String>)],
     pub assigned_tool_geom: Option<&'a CutterGeometry>,
@@ -218,6 +219,7 @@ pub struct PassesTabCtx<'a> {
 pub fn show_passes_tab(ui: &mut egui::Ui, ctx: PassesTabCtx<'_>) {
     let PassesTabCtx {
         op,
+        has_3d_model,
         preceding_ops,
         clearing_tool_candidates,
         assigned_tool_geom,
@@ -289,6 +291,26 @@ pub fn show_passes_tab(ui: &mut egui::Ui, ctx: PassesTabCtx<'_>) {
                     &mut op.passes.stock_to_leave_axial,
                     "Edit Axial Stock to Leave",
                 );
+                if has_3d_model
+                    && matches!(
+                        op.kind,
+                        OperationKind::Facing
+                            | OperationKind::Contour2D
+                            | OperationKind::Pocket2D
+                            | OperationKind::DrillBore
+                            | OperationKind::ChamferTrace
+                    )
+                {
+                    f.set_tip(
+                        "Trim 2.5D toolpaths around overhanging 3D model geometry (including shank & holder clearance) and skip occluded holes",
+                    );
+                    f.check(
+                        "Avoid Overhangs",
+                        &mut op.passes.avoid_model_overhangs,
+                        "Avoid Model Overhangs",
+                        "Toggle Avoid Model Overhangs",
+                    );
+                }
             },
         );
     }

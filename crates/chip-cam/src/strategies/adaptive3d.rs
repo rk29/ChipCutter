@@ -41,8 +41,7 @@ pub fn generate_adaptive3d(
 
     let radial_stock = ctx.passes.stock_to_leave_radial.value_mm.max(0.0);
     let axial_stock = ctx.passes.stock_to_leave_axial.value_mm.max(0.0);
-    let cutter =
-        SurfaceCutterProfile::from_tool_geometry(&ctx.tool.geometry, radial_stock, axial_stock);
+    let cutter = SurfaceCutterProfile::from_tool(ctx.tool, radial_stock, axial_stock, 0.5);
     let tool_d = ctx.tool.geometry.cutting_diameter_mm().max(0.1);
     let tool_r = 0.5 * tool_d;
 
@@ -116,7 +115,10 @@ pub fn generate_adaptive3d(
     let retract_z = ctx.safe_retract_z();
 
     use crate::surface3d::slice_surface_contours_z;
-    let push_field = PushCutterField::build(&surface, cutter);
+    let push_field = PushCutterField::build_with_z_min(&surface, cutter, z_bottom);
+    if let Some(warn) = push_field.reach_limit_warning(&containment, ctx.tool) {
+        builder.warnings.push(warn);
+    }
     let mut prev_coarse_z = z_top;
     let mut emitted_any = false;
 

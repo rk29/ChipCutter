@@ -19,6 +19,10 @@ use crate::{
         adaptive2d::{AdaptiveSliceSpec, generate_adaptive_region_slice},
         compute_z_levels,
     },
+    surface3d::{
+        PushCutterField, SurfaceCutterProfile, SurfaceMesh3D, clip_2d_contour_outside_overhangs,
+        is_2d_segment_clear_of_avoid,
+    },
     toolpath::{ToolpathBuilder, XyArcMove},
     wcs::CamError,
 };
@@ -444,6 +448,19 @@ pub fn generate_pocket2d(
         .value_mm
         .max(stepover * 1.6);
 
+    let overhang_cutter = SurfaceCutterProfile::from_tool(
+        ctx.tool,
+        radial_leave.max(0.0),
+        ctx.passes.stock_to_leave_axial.value_mm.max(0.0),
+        0.5,
+    );
+    let overhang_surface = (ctx.passes.avoid_model_overhangs && ctx.doc.has_3d_geometry())
+        .then(|| SurfaceMesh3D::from_cad_document(ctx.doc, &[], &ctx.setup.frame));
+    let overhang_field = overhang_surface
+        .as_ref()
+        .filter(|s| !s.triangles.is_empty() && s.aabb_wcs.is_valid())
+        .map(|s| PushCutterField::build_with_z_min(s, overhang_cutter, target_bottom_z));
+
     for (pkt_region, raw_floor_outer_ccw, has_open) in &raw_pockets {
         ctx.check_cancel()?;
 
@@ -532,7 +549,7 @@ pub fn generate_pocket2d(
                     .collect()
             };
 
-            let work_items: Vec<(PocketRegion2D, RegionSet2D)> =
+            let mut work_items: Vec<(PocketRegion2D, RegionSet2D)> =
                 if let Some((ref mat_mask, ref tight_mask)) = carryover_masks {
                     let mut clipped_items = Vec::new();
                     for (orig_reg, orig_air) in base_work_items {
@@ -557,6 +574,23 @@ pub fn generate_pocket2d(
                 } else {
                     base_work_items
                 };
+
+            let overhang_avoid: Option<RegionSet2D> = overhang_field
+                .as_ref()
+                .map(|f| f.avoidance_region_z(z_cut))
+                .filter(|r| !r.is_empty());
+            if let Some(ref avoid) = overhang_avoid {
+                let mut safe_items = Vec::new();
+                for (orig_reg, orig_air) in work_items {
+                    let diff = RegionSet2D::from_single(orig_reg).difference(avoid);
+                    for sub in diff.regions {
+                        if sub.net_area_mm2() > 0.05 {
+                            safe_items.push((sub, orig_air.clone()));
+                        }
+                    }
+                }
+                work_items = safe_items;
+            }
 
             if let PocketStrategyKind::Adaptive(adaptive_params) = &params.strategy {
                 for (sub_reg, cleared_air) in &work_items {
@@ -720,18 +754,35 @@ pub fn generate_pocket2d(
                             finish_spans.push(loop_poly.clone());
                         }
 
+                        if let (Some(surf), Some(avoid)) =
+                            (overhang_surface.as_ref(), overhang_avoid.as_ref())
+                        {
+                            finish_spans = finish_spans
+                                .iter()
+                                .flat_map(|sp| {
+                                    clip_2d_contour_outside_overhangs(
+                                        sp,
+                                        avoid,
+                                        surf,
+                                        &overhang_cutter,
+                                        z_cut,
+                                    )
+                                })
+                                .collect();
+                        }
+
                         for span in &finish_spans {
                             let Some((s_xy, _)) = span.sample_at_fraction(0.0) else {
                                 continue;
                             };
                             let stay = builder.current_pos().is_some_and(|cur| {
+                                let cur_xy = DVec2::new(cur.x, cur.y);
                                 (cur.z - z_cut).abs() <= 1e-4
-                                    && DVec2::new(cur.x, cur.y).distance(s_xy) <= stay_down_limit
-                                    && is_chord_inside_region(
-                                        DVec2::new(cur.x, cur.y),
-                                        s_xy,
-                                        fin_reg,
-                                    )
+                                    && cur_xy.distance(s_xy) <= stay_down_limit
+                                    && is_chord_inside_region(cur_xy, s_xy, fin_reg)
+                                    && overhang_avoid.as_ref().is_none_or(|av| {
+                                        is_2d_segment_clear_of_avoid(cur_xy, s_xy, av)
+                                    })
                             });
                             if stay {
                                 builder.linear_to(

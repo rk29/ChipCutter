@@ -7,6 +7,10 @@ use crate::{
     params::{ChamferSourceMode, ChamferTraceMode, ChamferTraceParams, ContourCompensation},
     selection::ExtractedFeature25D,
     strategies::{StrategyExecContext, compute_z_levels},
+    surface3d::{
+        PushCutterField, SurfaceCutterProfile, SurfaceMesh3D, clip_2d_contour_outside_overhangs,
+        is_2d_arc_clear_of_avoid,
+    },
     toolpath::{ToolpathBuilder, XyArcMove},
     wcs::CamError,
 };
@@ -179,6 +183,18 @@ fn generate_edge_chamfer(
         });
     }
 
+    let overhang_cutter = SurfaceCutterProfile::from_tool(ctx.tool, 0.0, 0.0, 0.5);
+    let overhang_surface = (ctx.passes.avoid_model_overhangs && ctx.doc.has_3d_geometry())
+        .then(|| SurfaceMesh3D::from_cad_document(ctx.doc, &[], &ctx.setup.frame));
+    let min_tip_z = jobs
+        .iter()
+        .map(|j| j.top_z_wcs - (j.chamfer_width_mm / theta_rad.tan() + d_tip))
+        .fold(f64::INFINITY, f64::min);
+    let overhang_field = overhang_surface
+        .as_ref()
+        .filter(|s| !s.triangles.is_empty() && s.aabb_wcs.is_valid())
+        .map(|s| PushCutterField::build_with_z_min(s, overhang_cutter, min_tip_z));
+
     for job in &jobs {
         ctx.check_cancel()?;
         let w = job.chamfer_width_mm;
@@ -218,21 +234,49 @@ fn generate_edge_chamfer(
             });
         }
 
-        let offset_paths = offset_polyline(&job.upper_poly_wcs, job.offset_sign * radial_offset);
+        let raw_offset_paths =
+            offset_polyline(&job.upper_poly_wcs, job.offset_sign * radial_offset);
+        let z_avoid_query = if job.is_modeled_upper_edge {
+            tip_z_wcs
+        } else {
+            job.top_z_wcs + 0.05
+        };
+        let avoid_z = overhang_field
+            .as_ref()
+            .map(|f| f.avoidance_region_z(z_avoid_query))
+            .filter(|r| !r.is_empty());
+        let offset_paths: Vec<ArcPolyline2D> =
+            if let (Some(surf), Some(avoid)) = (overhang_surface.as_ref(), avoid_z.as_ref()) {
+                raw_offset_paths
+                    .iter()
+                    .flat_map(|p| {
+                        clip_2d_contour_outside_overhangs(
+                            p,
+                            avoid,
+                            surf,
+                            &overhang_cutter,
+                            z_avoid_query,
+                        )
+                    })
+                    .collect()
+            } else {
+                raw_offset_paths
+            };
+
         for path in offset_paths {
             let Some((start_xy, start_tan)) = path.sample_at_fraction(0.0) else {
                 continue;
             };
             builder.pass_count += 1;
 
-            // Tangent horizontal lead-in if enabled
+            // Tangent horizontal lead-in if enabled (kept strictly outside overhanging 3D solids)
             let t = start_tan.normalize_or_zero();
             let n_safe = if job.offset_sign >= 0.0 {
                 DVec2::new(-t.y, t.x)
             } else {
                 DVec2::new(t.y, -t.x)
             };
-            let lead_r = if ctx.linking.lead_in.enabled {
+            let mut lead_r = if ctx.linking.lead_in.enabled {
                 ctx.linking
                     .lead_in
                     .horizontal_radius
@@ -241,6 +285,23 @@ fn generate_edge_chamfer(
             } else {
                 0.0
             };
+
+            if lead_r > 1e-4
+                && let Some(ref av) = avoid_z
+            {
+                let cand_approach = start_xy + n_safe * lead_r - t * lead_r;
+                let c_in = start_xy + n_safe * lead_r;
+                let sweep = if job.offset_sign >= 0.0 {
+                    std::f64::consts::FRAC_PI_2
+                } else {
+                    -std::f64::consts::FRAC_PI_2
+                };
+                if av.contains_point(cand_approach)
+                    || !is_2d_arc_clear_of_avoid(cand_approach, c_in, lead_r, sweep, av)
+                {
+                    lead_r = 0.0;
+                }
+            }
 
             let approach_xy = if lead_r > 1e-4 {
                 start_xy + n_safe * lead_r - t * lead_r
@@ -390,6 +451,18 @@ fn generate_curve_trace(
     }
 
     let retract_z = ctx.safe_retract_z();
+    let overhang_cutter = SurfaceCutterProfile::from_tool(
+        ctx.tool,
+        radial_leave.max(0.0),
+        ctx.passes.stock_to_leave_axial.value_mm.max(0.0),
+        0.5,
+    );
+    let overhang_surface = (ctx.passes.avoid_model_overhangs && ctx.doc.has_3d_geometry())
+        .then(|| SurfaceMesh3D::from_cad_document(ctx.doc, &[], &ctx.setup.frame));
+    let overhang_field = overhang_surface
+        .as_ref()
+        .filter(|s| !s.triangles.is_empty() && s.aabb_wcs.is_valid())
+        .map(|s| PushCutterField::build_with_z_min(s, overhang_cutter, target_bottom_z));
 
     for (raw_poly, side_flip) in &traces {
         ctx.check_cancel()?;
@@ -405,33 +478,59 @@ fn generate_curve_trace(
 
         let paths = offset_polyline(raw_poly, signed_off);
         for path in paths {
-            let Some((s_xy, _)) = path.sample_at_fraction(0.0) else {
-                continue;
-            };
             for &z_cut in &z_levels {
                 ctx.check_cancel()?;
-                builder.pass_count += 1;
-                if let Some(cur) = builder.current_pos()
-                    && cur.z < retract_z - 1e-6
+                let z_avoid_query = if params.trace_compensation == ContourCompensation::CenterOff {
+                    ctx.heights.top_z_wcs + 0.05
+                } else {
+                    z_cut
+                };
+                let clipped_spans: Vec<ArcPolyline2D> = if let (Some(surf), Some(field)) =
+                    (overhang_surface.as_ref(), overhang_field.as_ref())
                 {
-                    builder.rapid_to(DVec3::new(cur.x, cur.y, retract_z));
-                }
-                builder.rapid_to(DVec3::new(s_xy.x, s_xy.y, retract_z));
-                builder.rapid_to(DVec3::new(s_xy.x, s_xy.y, ctx.heights.feed_z_wcs));
-                builder.linear_to(
-                    DVec3::new(s_xy.x, s_xy.y, z_cut),
-                    ctx.cutting.plunge_feed_mm_min,
-                    MotionRole::Plunge,
-                );
-                builder.emit_polyline_2d_z_interp(
-                    &path,
-                    z_cut,
-                    z_cut,
-                    ctx.cutting.cutting_feed_mm_min,
-                    MotionRole::Cut,
-                );
-                if let Some(cur) = builder.current_pos() {
-                    builder.rapid_to(DVec3::new(cur.x, cur.y, retract_z));
+                    let av = field.avoidance_region_z(z_avoid_query);
+                    if av.is_empty() {
+                        vec![path.clone()]
+                    } else {
+                        clip_2d_contour_outside_overhangs(
+                            &path,
+                            &av,
+                            surf,
+                            &overhang_cutter,
+                            z_avoid_query,
+                        )
+                    }
+                } else {
+                    vec![path.clone()]
+                };
+
+                for span in &clipped_spans {
+                    let Some((s_xy, _)) = span.sample_at_fraction(0.0) else {
+                        continue;
+                    };
+                    builder.pass_count += 1;
+                    if let Some(cur) = builder.current_pos()
+                        && cur.z < retract_z - 1e-6
+                    {
+                        builder.rapid_to(DVec3::new(cur.x, cur.y, retract_z));
+                    }
+                    builder.rapid_to(DVec3::new(s_xy.x, s_xy.y, retract_z));
+                    builder.rapid_to(DVec3::new(s_xy.x, s_xy.y, ctx.heights.feed_z_wcs));
+                    builder.linear_to(
+                        DVec3::new(s_xy.x, s_xy.y, z_cut),
+                        ctx.cutting.plunge_feed_mm_min,
+                        MotionRole::Plunge,
+                    );
+                    builder.emit_polyline_2d_z_interp(
+                        span,
+                        z_cut,
+                        z_cut,
+                        ctx.cutting.cutting_feed_mm_min,
+                        MotionRole::Cut,
+                    );
+                    if let Some(cur) = builder.current_pos() {
+                        builder.rapid_to(DVec3::new(cur.x, cur.y, retract_z));
+                    }
                 }
             }
         }
