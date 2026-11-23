@@ -25,24 +25,27 @@ pub use chip_stock::{
     CylindricalStock, DexelPlane, DexelSpan, FlatDexelSpan, HeightfieldStock, INLINE_DEXEL_SLOTS,
     MACHINED_METAL_COLOR, OPERATION_STOCK_PALETTE, OperationErrorSnapshot, RAW_STOCK_SIDE_COLOR,
     RAW_STOCK_TOP_COLOR, RadialCutterProfile, RaySpans, RotaryStockSpec, SimColoredVertex,
-    SimComputeBackendChoice, SimEngineKind, SimError, SimResolution, SimStockBackend,
-    SimStockColorMode, SimStockMesh, SimulatedStock, SpanRuleViolations, StockCheckpointSnapshot,
-    StockErrorReport, StockModelKind, StockPlaybackCursor, StockShapeSpec, StockVerifyTolerances,
-    SweepChord, SweepMotion, SweepToolSpec, TargetTriangle, TriDexelStock, UNCUT_OP_IDX,
-    compute_cylindrical_error_report, compute_heightmap_error_report,
+    SimComputeBackendChoice, SimEngineKind, SimError, SimMeshOptions, SimResolution,
+    SimStockBackend, SimStockColorMode, SimStockMesh, SimulatedStock, SpanRuleViolations,
+    StockCheckpointSnapshot, StockErrorReport, StockModelKind, StockPlaybackCursor, StockShapeSpec,
+    StockVerifyTolerances, SweepChord, SweepMotion, SweepToolSpec, TargetTriangle, TriDexelStock,
+    UNCUT_OP_IDX, compute_cylindrical_error_report, compute_heightmap_error_report,
     compute_tridexel_error_report, deviation_to_heatmap_rgba, op_color, pack_span_ops,
     query_overlap_length, query_target_gouge_depth, spans_contain_coord, spans_difference_length,
     subtract_dexel_interval, tessellate_cylindrical_stock_mesh,
-    tessellate_cylindrical_stock_mesh_colored, tessellate_stock_mesh,
-    tessellate_stock_mesh_colored, tessellate_tridexel_stock_mesh,
-    tessellate_tridexel_stock_mesh_colored, unpack_max_op, unpack_min_op,
+    tessellate_cylindrical_stock_mesh_colored, tessellate_cylindrical_stock_mesh_with_options,
+    tessellate_stock_mesh, tessellate_stock_mesh_colored, tessellate_stock_mesh_with_options,
+    tessellate_tridexel_stock_mesh, tessellate_tridexel_stock_mesh_colored,
+    tessellate_tridexel_stock_mesh_with_options, unpack_max_op, unpack_min_op,
 };
 #[cfg(feature = "gpu-compute")]
 pub use chip_stock::{
     DEFAULT_GPU_CHECKPOINT_BUDGET_BYTES, GpuCheckpointCache, GpuCylindricalRenderData,
     GpuHeightfieldRenderData, GpuSimContext, GpuStockRenderHandle, GpuTriDexelRenderData,
     MAX_TRIDEXEL_EMIT_QUADS, MAX_TRIDEXEL_EMIT_VERTICES, PackedTriDexelQuad,
-    TRIDEXEL_PACKED_QUAD_BYTES, WgpuComputeBackend,
+    TRIDEXEL_DUAL_OFFSET_PACK_SCALE, TRIDEXEL_PACKED_QUAD_BYTES, WgpuComputeBackend,
+    oct_decode_unit_normal, oct_encode_unit_normal, pack_oct_normal_pair_12bit,
+    unpack_oct_normal_12bit,
 };
 pub use cutter_profile::{SimToolMesh, ToolMeshZone, build_cutter_assembly_mesh};
 pub use driver::{

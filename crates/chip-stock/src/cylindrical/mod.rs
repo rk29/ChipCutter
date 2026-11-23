@@ -6,4 +6,7 @@ mod mesher;
 mod sweep;
 
 pub use grid::CylindricalStock;
-pub use mesher::{tessellate_cylindrical_stock_mesh, tessellate_cylindrical_stock_mesh_colored};
+pub use mesher::{
+    tessellate_cylindrical_stock_mesh, tessellate_cylindrical_stock_mesh_colored,
+    tessellate_cylindrical_stock_mesh_with_options,
+};

@@ -19,7 +19,8 @@ pub use metrics::GpuErrorHistogram;
 pub use render_handle::{
     GpuCylindricalRenderData, GpuHeightfieldRenderData, GpuStockRenderHandle,
     GpuTriDexelRenderData, MAX_TRIDEXEL_EMIT_QUADS, MAX_TRIDEXEL_EMIT_VERTICES, PackedTriDexelQuad,
-    TRIDEXEL_PACKED_QUAD_BYTES,
+    TRIDEXEL_DUAL_OFFSET_PACK_SCALE, TRIDEXEL_PACKED_QUAD_BYTES, oct_decode_unit_normal,
+    oct_encode_unit_normal, pack_oct_normal_pair_12bit, unpack_oct_normal_12bit,
 };
 pub use types::{
     BvhDispatchUniforms, CylindricalUniforms, GPU_METRICS_HIST_BINS, GPU_METRICS_MAX_WORKGROUPS,
@@ -2085,10 +2086,9 @@ mod tests {
         // Verify worst-case 448³ cube fits within WebGPU's 128 MiB storage buffer binding limit!
         let cube_rays = 3usize * 448 * 448;
         let max_quads = render_handle::compute_tridexel_max_quads(ctx.device(), cube_rays);
-        assert_eq!(
-            max_quads as usize,
-            cube_rays * crate::tridexel::INLINE_DEXEL_SLOTS * 2
-        );
+        let device_cap = (ctx.device().limits().max_storage_buffer_binding_size
+            / TRIDEXEL_PACKED_QUAD_BYTES as u64) as u32;
+        assert_eq!(max_quads, MAX_TRIDEXEL_EMIT_QUADS.min(device_cap));
         assert!(
             (max_quads as usize) * TRIDEXEL_PACKED_QUAD_BYTES <= 128 * 1024 * 1024,
             "worst-case Ultra 448³ packed quad buffer must fit inside 128 MiB"

@@ -25,7 +25,7 @@ use crate::{
         },
     },
     types::{
-        Axis3, BatchSweepOutput, RotaryStockSpec, SimColoredVertex, SimStockMesh,
+        Axis3, BatchSweepOutput, RotaryStockSpec, SimColoredVertex, SimMeshOptions, SimStockMesh,
         SpanRuleViolations, StockVerifyTolerances, SweepChord, SweepToolSpec,
     },
 };
@@ -553,6 +553,16 @@ impl GpuTriDexelState {
         &mut self,
         color_mode: SimStockColorMode,
     ) -> Arc<GpuStockRenderHandle> {
+        self.capture_render_handle_with_options(SimMeshOptions::from(color_mode))
+    }
+
+    /// Snapshots `m_slots` & `m_counts` into a pooled immutable GPU buffer set and dispatches
+    /// `tridexel_emit.wgsl` with visual [`SimMeshOptions`] (`color_mode` + `mesh_skinning`).
+    pub(crate) fn capture_render_handle_with_options(
+        &mut self,
+        options: SimMeshOptions,
+    ) -> Arc<GpuStockRenderHandle> {
+        let color_mode = options.color_mode;
         let total_slots = self.total_rays * INLINE_DEXEL_SLOTS;
         let slots_bytes = (total_slots * std::mem::size_of::<FlatDexelSpan>()) as u64;
         let counts_bytes = (self.total_rays * std::mem::size_of::<u32>()) as u64;
@@ -590,7 +600,7 @@ impl GpuTriDexelState {
             let quad_buf = Arc::new(device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("chip_td_emit_quads"),
                 size: quad_bytes.max(64),
-                usage: wgpu::BufferUsages::STORAGE,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
                 mapped_at_creation: false,
             }));
             let indirect_args_buf = Arc::new(device.create_buffer(&wgpu::BufferDescriptor {
@@ -671,7 +681,7 @@ impl GpuTriDexelState {
             slot.4,
             max_quads,
             overflow_mesh,
-            color_mode,
+            options,
         );
 
         Arc::new(GpuStockRenderHandle::TriDexel(data))

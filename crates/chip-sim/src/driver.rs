@@ -15,9 +15,9 @@ use chip_cam::{
 use chip_stock::{
     ActiveSimBackendInfo, CpuExactBackend, CylindricalStock, HeightfieldStock,
     OperationErrorSnapshot, RadialCutterProfile, RotaryStockSpec, SimComputeBackendChoice,
-    SimEngineKind, SimError, SimResolution, SimStockBackend, SimStockColorMode, SimStockMesh,
-    SimulatedStock, StockCheckpointSnapshot, StockErrorReport, StockModelKind, StockPlaybackCursor,
-    StockVerifyTolerances, SweepChord, SweepToolSpec, TriDexelStock,
+    SimEngineKind, SimError, SimMeshOptions, SimResolution, SimStockBackend, SimStockColorMode,
+    SimStockMesh, SimulatedStock, StockCheckpointSnapshot, StockErrorReport, StockModelKind,
+    StockPlaybackCursor, StockVerifyTolerances, SweepChord, SweepToolSpec, TriDexelStock,
 };
 #[cfg(feature = "gpu-compute")]
 use chip_stock::{GpuCheckpointCache, GpuSimContext, WgpuComputeBackend};
@@ -174,7 +174,17 @@ impl SetupSimulationResult {
         stock: &SimulatedStock,
         color_mode: SimStockColorMode,
     ) -> SimStockMesh {
-        stock.extract_stock_mesh(self.target_tridexel_stock.as_ref(), color_mode)
+        self.extract_stock_mesh_with_options(stock, SimMeshOptions::from(color_mode))
+    }
+
+    /// Tessellates `stock` into a GPU-ready [`SimStockMesh`] using visual [`SimMeshOptions`]
+    /// (`color_mode` + optional crease-preserving `mesh_skinning`).
+    pub fn extract_stock_mesh_with_options(
+        &self,
+        stock: &SimulatedStock,
+        options: SimMeshOptions,
+    ) -> SimStockMesh {
+        stock.extract_stock_mesh_with_options(self.target_tridexel_stock.as_ref(), options)
     }
 
     /// Reconstructs the exact [`SimulatedStock`] state at `time_sec` by restoring the nearest
@@ -2549,7 +2559,6 @@ mod tests {
         assert!(sim_td.active_backend.is_gpu);
     }
 
-    #[cfg(feature = "gpu-compute")]
     fn make_test_box_mesh_body(
         id: BodyId,
         name: &str,
@@ -4195,6 +4204,132 @@ mod tests {
             assert_eq!(
                 gpu_rapid.global_seg_idx, cpu_rapid.global_seg_idx,
                 "{engine:?} batched GPU must attribute rapid crash to exact offending segment"
+            );
+        }
+    }
+
+    #[test]
+    fn setup_simulation_mesh_skinning_toggle_leaves_metrology_bit_identical() {
+        let target_mesh = make_test_box_mesh_body(
+            BodyId(0),
+            "Target Block",
+            DVec3::new(-20.0, -20.0, -14.0),
+            DVec3::new(20.0, 20.0, -2.0),
+        );
+        let render_mesh = chip_cad::build_render_mesh_for_triangle_mesh(
+            &target_mesh,
+            35.0,
+            chip_cad::MESH_FACE_SENTINEL,
+        );
+        let mut doc = CadDocument::empty();
+        doc.source_name = "skinning_target.3mf".to_string();
+        doc.meshes = vec![target_mesh];
+        doc.aabb_mm = chip_math::Aabb3::new(
+            DVec3::new(-20.0, -20.0, -14.0),
+            DVec3::new(20.0, 20.0, -2.0),
+        );
+        doc.render_mesh = render_mesh;
+        let box_body = BodyId(0);
+
+        let mut setup = Setup::new(
+            "s_skin_metrology",
+            "Skinning Metrology Setup",
+            WorkOffsetSlot::G54,
+        );
+        setup.wcs.origin = WcsOriginMode::StockBoxPoint {
+            anchor: BoxAnchor27::TOP_CENTER,
+        };
+        setup.stock = StockConfig::FixedBox {
+            width_x: ParamLength::from_mm(50.0),
+            depth_y: ParamLength::from_mm(50.0),
+            height_z: ParamLength::from_mm(16.0),
+            xy_align: chip_cam::FixedBoxXyAlign::CenterXy,
+            z_align: chip_cam::FixedBoxZAlign::CenterZ,
+        };
+        let resolved = setup.resolve(&doc, DisplayUnit::Millimeter).unwrap();
+
+        let ball_8mm = chip_tools::Tool {
+            id: chip_tools::ToolId("ball_8".to_string()),
+            tool_number: 1,
+            length_offset_number: 1,
+            diameter_offset_number: 1,
+            name: "8mm Ball".to_string(),
+            vendor: None,
+            product_id: None,
+            native_unit: DisplayUnit::Millimeter,
+            spindle_direction: chip_tools::SpindleDirection::Cw,
+            default_coolant: chip_tools::CoolantMode::Mist,
+            stickout_length_mm: 28.0,
+            geometry: CutterGeometry::BallEndmill {
+                diameter_mm: 8.0,
+                flute_length_mm: 14.0,
+                overall_length_mm: 50.0,
+                shank_diameter_mm: 8.0,
+                flutes: 2,
+            },
+            presets: Vec::new(),
+        };
+
+        let mut b = ToolpathBuilder::new("op_ball");
+        b.rapid_to(DVec3::new(-18.0, -10.0, 5.0));
+        b.linear_to(DVec3::new(-18.0, -10.0, -2.5), 400.0, MotionRole::Plunge);
+        b.linear_to(DVec3::new(18.0, 10.0, -4.5), 1200.0, MotionRole::Cut);
+        b.rapid_to(DVec3::new(18.0, 10.0, 5.0));
+        let tp = b.finish();
+
+        let input = SetupSimulationInput {
+            doc: &doc,
+            setup: &resolved,
+            target_bodies: &[box_body],
+            fixtures: &[],
+            operations: &[SimOperationInput {
+                op_id: "op_ball",
+                op_name: "Ball Groove",
+                tool: &ball_8mm,
+                fallback_spindle_rpm: 12_000.0,
+                intentional_edge_break_mm: 0.0,
+                toolpath: &tp,
+            }],
+            resolution: SimResolution::Standard,
+            kinematics: MachineKinematicsConfig::default(),
+            verify_config: SimVerificationConfig::default(),
+            initial_stock: None,
+            initial_raw_volume_mm3: None,
+            carried_over_from_setup: None,
+            cancel: None,
+        };
+
+        for engine in [SimEngineKind::Heightmap, SimEngineKind::TriDexel] {
+            let res = run_setup_simulation_with_engine(&input, engine).unwrap();
+            let rep_before = res.compute_error_report_at_tolerance(0.05).unwrap();
+            let mesh_crisp = res.extract_stock_mesh_with_options(
+                &res.final_stock,
+                SimMeshOptions::new(SimStockColorMode::ByOperation, false),
+            );
+            let mesh_skinned = res.extract_stock_mesh_with_options(
+                &res.final_stock,
+                SimMeshOptions::new(SimStockColorMode::ByOperation, true),
+            );
+            let rep_after = res.compute_error_report_at_tolerance(0.05).unwrap();
+
+            assert!(!mesh_crisp.vertices.is_empty());
+            assert!(!mesh_skinned.vertices.is_empty());
+            assert_eq!(rep_before, rep_after);
+            assert_eq!(
+                res.error_report
+                    .as_ref()
+                    .unwrap()
+                    .excess_volume_mm3
+                    .to_bits(),
+                rep_after.excess_volume_mm3.to_bits()
+            );
+            assert_eq!(
+                res.error_report
+                    .as_ref()
+                    .unwrap()
+                    .gouge_volume_mm3
+                    .to_bits(),
+                rep_after.gouge_volume_mm3.to_bits()
             );
         }
     }

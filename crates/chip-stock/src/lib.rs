@@ -16,6 +16,8 @@ pub mod cylindrical;
 #[cfg(feature = "gpu-compute")]
 pub mod gpu;
 pub mod heightfield;
+#[cfg(test)]
+mod mesh_skinning_tests;
 pub mod mesher_common;
 pub mod metrics;
 pub mod tridexel;
@@ -26,15 +28,21 @@ pub use backend::{
 };
 pub use cylindrical::{
     CylindricalStock, tessellate_cylindrical_stock_mesh, tessellate_cylindrical_stock_mesh_colored,
+    tessellate_cylindrical_stock_mesh_with_options,
 };
 #[cfg(feature = "gpu-compute")]
 pub use gpu::{
     DEFAULT_GPU_CHECKPOINT_BUDGET_BYTES, GpuCheckpointCache, GpuCylindricalRenderData,
     GpuErrorHistogram, GpuHeightfieldRenderData, GpuMeshBvh, GpuSimContext, GpuStockRenderHandle,
     GpuTriDexelRenderData, MAX_TRIDEXEL_EMIT_QUADS, MAX_TRIDEXEL_EMIT_VERTICES, PackedTriDexelQuad,
-    TRIDEXEL_PACKED_QUAD_BYTES, WgpuComputeBackend,
+    TRIDEXEL_DUAL_OFFSET_PACK_SCALE, TRIDEXEL_PACKED_QUAD_BYTES, WgpuComputeBackend,
+    oct_decode_unit_normal, oct_encode_unit_normal, pack_oct_normal_pair_12bit,
+    unpack_oct_normal_12bit,
 };
-pub use heightfield::{HeightfieldStock, tessellate_stock_mesh, tessellate_stock_mesh_colored};
+pub use heightfield::{
+    HeightfieldStock, tessellate_stock_mesh, tessellate_stock_mesh_colored,
+    tessellate_stock_mesh_with_options,
+};
 pub use mesher_common::{
     MACHINED_METAL_COLOR, OPERATION_STOCK_PALETTE, RAW_STOCK_SIDE_COLOR, RAW_STOCK_TOP_COLOR,
     op_color,
@@ -49,11 +57,13 @@ pub use tridexel::{
     DexelPlane, DexelSpan, FlatDexelSpan, INLINE_DEXEL_SLOTS, RaySpans, TriDexelStock,
     pack_span_ops, query_overlap_length, query_target_gouge_depth, spans_contain_coord,
     spans_difference_length, subtract_dexel_interval, tessellate_tridexel_stock_mesh,
-    tessellate_tridexel_stock_mesh_colored, unpack_max_op, unpack_min_op,
+    tessellate_tridexel_stock_mesh_colored, tessellate_tridexel_stock_mesh_with_options,
+    unpack_max_op, unpack_min_op,
 };
 pub use types::{
     ActiveSimBackendInfo, AnalyticHorizFace, Axis3, BatchSweepOutput, RadialCutterProfile,
     RotaryStockSpec, SimColoredVertex, SimComputeBackendChoice, SimEngineKind, SimError,
-    SimResolution, SimStockMesh, SpanRuleViolations, StockPlaybackCursor, StockShapeSpec,
-    StockVerifyTolerances, SweepChord, SweepMotion, SweepToolSpec, TargetTriangle, UNCUT_OP_IDX,
+    SimMeshOptions, SimResolution, SimStockMesh, SpanRuleViolations, StockPlaybackCursor,
+    StockShapeSpec, StockVerifyTolerances, SweepChord, SweepMotion, SweepToolSpec, TargetTriangle,
+    UNCUT_OP_IDX,
 };

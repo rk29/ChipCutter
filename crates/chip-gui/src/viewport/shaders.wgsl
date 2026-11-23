@@ -401,7 +401,7 @@ const SIM_COLOR_MODE_BY_OP: u32 = 1u;
 const SIM_COLOR_MODE_HEATMAP: u32 = 2u;
 
 struct SimStockVisualUniforms {
-    // [color_mode_id (0=Metallic, 1=ByOperation, 2=ErrorHeatmap), has_target, 0, 0]
+    // [color_mode_id (0=Metallic, 1=ByOperation, 2=ErrorHeatmap), has_target, mesh_skinning (0/1), 0]
     mode_and_flags: vec4<u32>,
     // [tolerance_mm, max_scale_mm, 0, 0]
     heatmap_params: vec4<f32>,
@@ -529,6 +529,125 @@ fn hf_degenerate_out() -> SimGpuHfOut {
     return out;
 }
 
+const SIM_CREASE_COS: f32 = 0.788;
+
+fn hf_cell_smooth_normal(
+    vi: u32,
+    vj: u32,
+    vx: u32,
+    vy: u32,
+    vdx: f32,
+    vdy: f32,
+    cliff_dz: f32,
+) -> vec3<f32> {
+    let sidx = hf_src_idx(vi, vj);
+    let z0 = hf_z_stock[sidx];
+    var has_l = false;
+    var has_r = false;
+    var has_d = false;
+    var has_u = false;
+    var zl = z0;
+    var zr = z0;
+    var zd = z0;
+    var zu = z0;
+    if (vi > 0u) {
+        let n = hf_src_idx(vi - 1u, vj);
+        if (hf_is_active(n) && abs(hf_z_stock[n] - z0) <= cliff_dz) {
+            zl = hf_z_stock[n];
+            has_l = true;
+        }
+    }
+    if (vi + 1u < vx) {
+        let n = hf_src_idx(vi + 1u, vj);
+        if (hf_is_active(n) && abs(hf_z_stock[n] - z0) <= cliff_dz) {
+            zr = hf_z_stock[n];
+            has_r = true;
+        }
+    }
+    if (vj > 0u) {
+        let n = hf_src_idx(vi, vj - 1u);
+        if (hf_is_active(n) && abs(hf_z_stock[n] - z0) <= cliff_dz) {
+            zd = hf_z_stock[n];
+            has_d = true;
+        }
+    }
+    if (vj + 1u < vy) {
+        let n = hf_src_idx(vi, vj + 1u);
+        if (hf_is_active(n) && abs(hf_z_stock[n] - z0) <= cliff_dz) {
+            zu = hf_z_stock[n];
+            has_u = true;
+        }
+    }
+    var dz_dx = 0.0;
+    if (has_l && has_r) {
+        dz_dx = (zr - zl) / (2.0 * vdx);
+    } else if (has_r) {
+        dz_dx = (zr - z0) / vdx;
+    } else if (has_l) {
+        dz_dx = (z0 - zl) / vdx;
+    }
+    var dz_dy = 0.0;
+    if (has_d && has_u) {
+        dz_dy = (zu - zd) / (2.0 * vdy);
+    } else if (has_u) {
+        dz_dy = (zu - z0) / vdy;
+    } else if (has_d) {
+        dz_dy = (z0 - zd) / vdy;
+    }
+    return normalize(vec3<f32>(-dz_dx, -dz_dy, 1.0));
+}
+
+struct HfCornerSample {
+    z_local: f32,
+    normal: vec3<f32>,
+};
+
+fn hf_skinned_corner(
+    ci: u32,
+    cj: u32,
+    vx: u32,
+    vy: u32,
+    vdx: f32,
+    vdy: f32,
+    cliff_dz: f32,
+    z_self: f32,
+    zb_self: f32,
+    n_self: vec3<f32>,
+) -> HfCornerSample {
+    var z_sum = 0.0;
+    var n_sum = vec3<f32>(0.0);
+    var cnt = 0.0;
+    for (var k = 0u; k < 4u; k = k + 1u) {
+        let ox = k & 1u;
+        let oy = (k >> 1u) & 1u;
+        let ni_i = i32(ci) + i32(ox) - 1;
+        let nj_i = i32(cj) + i32(oy) - 1;
+        if (ni_i >= 0 && nj_i >= 0 && ni_i < i32(vx) && nj_i < i32(vy)) {
+            let ni = u32(ni_i);
+            let nj = u32(nj_i);
+            let nidx = hf_src_idx(ni, nj);
+            if (hf_is_active(nidx) && abs(hf_z_stock[nidx] - z_self) <= cliff_dz) {
+                let nn = hf_cell_smooth_normal(ni, nj, vx, vy, vdx, vdy, cliff_dz);
+                if (dot(nn, n_self) >= SIM_CREASE_COS) {
+                    z_sum = z_sum + hf_z_stock[nidx];
+                    n_sum = n_sum + nn;
+                    cnt = cnt + 1.0;
+                }
+            }
+        }
+    }
+    var out: HfCornerSample;
+    if (cnt > 0.0) {
+        out.z_local = max(z_sum / cnt, zb_self + 1e-4);
+        let n_len = length(n_sum);
+        out.normal = select(n_self, n_sum / max(n_len, 1e-6), n_len > 1e-6);
+    } else {
+        out.z_local = z_self;
+        out.normal = n_self;
+    }
+    return out;
+}
+
 @vertex
 fn vs_sim_heightfield_gpu(@builtin(vertex_index) vid: u32) -> SimGpuHfOut {
     let vx = u_hf_grid.dims.z;
@@ -549,12 +668,14 @@ fn vs_sim_heightfield_gpu(@builtin(vertex_index) vid: u32) -> SimGpuHfOut {
     let tri_v = rem % 6u;
     var quad_lut = array<u32, 6>(0u, 1u, 2u, 0u, 2u, 3u);
     let corner = quad_lut[tri_v];
+    let skinning = u_sim_vis.mode_and_flags.z != 0u;
 
     let ox = u_hf_grid.origin_wcs.x;
     let oy = u_hf_grid.origin_wcs.y;
     let oz = u_hf_grid.origin_wcs.z;
     let vdx = u_hf_grid.pitch_mm.x;
     let vdy = u_hf_grid.pitch_mm.y;
+    let cliff_dz = 1.5 * max(vdx, vdy);
 
     let x0 = ox + f32(vi) * vdx;
     let x1 = ox + f32(vi + 1u) * vdx;
@@ -575,45 +696,71 @@ fn vs_sim_heightfield_gpu(@builtin(vertex_index) vid: u32) -> SimGpuHfOut {
     var color_flags = 0u;
 
     if (face_id == 0u) {
-        // Top face (+Z) with smooth finite-difference slope normals matching heightfield/mesher.rs
-        let slope_max_dz = 1.6 * max(vdx, vdy);
-        var zl = zt;
-        if (vi > 0u) {
-            let n = hf_src_idx(vi - 1u, vj);
-            if (hf_is_active(n) && abs(hf_z_stock[n] - zt) <= slope_max_dz) {
-                zl = hf_z_stock[n];
+        if (skinning) {
+            let n_self = hf_cell_smooth_normal(vi, vj, vx, vy, vdx, vdy, cliff_dz);
+            let cx = select(0u, 1u, corner == 1u || corner == 2u);
+            let cy = select(0u, 1u, corner == 2u || corner == 3u);
+            let sample = hf_skinned_corner(
+                vi + cx,
+                vj + cy,
+                vx,
+                vy,
+                vdx,
+                vdy,
+                cliff_dz,
+                zt,
+                zb,
+                n_self,
+            );
+            let pos_c = vec3<f32>(select(x0, x1, cx != 0u), select(y0, y1, cy != 0u), oz + sample.z_local);
+            p0 = pos_c;
+            p1 = pos_c;
+            p2 = pos_c;
+            p3 = pos_c;
+            normal = sample.normal;
+            color_sidx = sidx;
+            color_flags = 0u;
+        } else {
+            // Crisp top face (+Z) with smooth finite-difference slope normals matching heightfield/mesher.rs
+            let slope_max_dz = 1.6 * max(vdx, vdy);
+            var zl = zt;
+            if (vi > 0u) {
+                let n = hf_src_idx(vi - 1u, vj);
+                if (hf_is_active(n) && abs(hf_z_stock[n] - zt) <= slope_max_dz) {
+                    zl = hf_z_stock[n];
+                }
             }
-        }
-        var zr = zt;
-        if (vi + 1u < vx) {
-            let n = hf_src_idx(vi + 1u, vj);
-            if (hf_is_active(n) && abs(hf_z_stock[n] - zt) <= slope_max_dz) {
-                zr = hf_z_stock[n];
+            var zr = zt;
+            if (vi + 1u < vx) {
+                let n = hf_src_idx(vi + 1u, vj);
+                if (hf_is_active(n) && abs(hf_z_stock[n] - zt) <= slope_max_dz) {
+                    zr = hf_z_stock[n];
+                }
             }
-        }
-        var zd = zt;
-        if (vj > 0u) {
-            let n = hf_src_idx(vi, vj - 1u);
-            if (hf_is_active(n) && abs(hf_z_stock[n] - zt) <= slope_max_dz) {
-                zd = hf_z_stock[n];
+            var zd = zt;
+            if (vj > 0u) {
+                let n = hf_src_idx(vi, vj - 1u);
+                if (hf_is_active(n) && abs(hf_z_stock[n] - zt) <= slope_max_dz) {
+                    zd = hf_z_stock[n];
+                }
             }
-        }
-        var zu = zt;
-        if (vj + 1u < vy) {
-            let n = hf_src_idx(vi, vj + 1u);
-            if (hf_is_active(n) && abs(hf_z_stock[n] - zt) <= slope_max_dz) {
-                zu = hf_z_stock[n];
+            var zu = zt;
+            if (vj + 1u < vy) {
+                let n = hf_src_idx(vi, vj + 1u);
+                if (hf_is_active(n) && abs(hf_z_stock[n] - zt) <= slope_max_dz) {
+                    zu = hf_z_stock[n];
+                }
             }
+            let dz_dx = (zr - zl) / (2.0 * vdx);
+            let dz_dy = (zu - zd) / (2.0 * vdy);
+            normal = normalize(vec3<f32>(-dz_dx, -dz_dy, 1.0));
+            p0 = vec3<f32>(x0, y0, zt_w);
+            p1 = vec3<f32>(x1, y0, zt_w);
+            p2 = vec3<f32>(x1, y1, zt_w);
+            p3 = vec3<f32>(x0, y1, zt_w);
+            color_sidx = sidx;
+            color_flags = 0u;
         }
-        let dz_dx = (zr - zl) / (2.0 * vdx);
-        let dz_dy = (zu - zd) / (2.0 * vdy);
-        normal = normalize(vec3<f32>(-dz_dx, -dz_dy, 1.0));
-        p0 = vec3<f32>(x0, y0, zt_w);
-        p1 = vec3<f32>(x1, y0, zt_w);
-        p2 = vec3<f32>(x1, y1, zt_w);
-        p3 = vec3<f32>(x0, y1, zt_w);
-        color_sidx = sidx;
-        color_flags = 0u;
     } else if (face_id == 1u) {
         // Bottom face (-Z)
         normal = vec3<f32>(0.0, 0.0, -1.0);
@@ -627,6 +774,8 @@ fn vs_sim_heightfield_gpu(@builtin(vertex_index) vid: u32) -> SimGpuHfOut {
         // +X wall/riser
         var emit_wall = false;
         var z_lo_w = zb_w;
+        var z_top_0 = zt_w;
+        var z_top_1 = zt_w;
         if (vi + 1u >= vx) {
             emit_wall = true;
             color_sidx = sidx;
@@ -638,24 +787,39 @@ fn vs_sim_heightfield_gpu(@builtin(vertex_index) vid: u32) -> SimGpuHfOut {
                 color_sidx = sidx;
                 color_flags = 1u;
             } else if (zt > hf_z_stock[n] + 2e-4) {
-                emit_wall = true;
-                z_lo_w = oz + max(hf_z_stock[n], zb);
-                color_sidx = n;
-                color_flags = 0u;
+                var is_continuous = false;
+                if (skinning && abs(zt - hf_z_stock[n]) <= cliff_dz) {
+                    let n_self = hf_cell_smooth_normal(vi, vj, vx, vy, vdx, vdy, cliff_dz);
+                    let n_nb = hf_cell_smooth_normal(vi + 1u, vj, vx, vy, vdx, vdy, cliff_dz);
+                    is_continuous = dot(n_self, n_nb) >= SIM_CREASE_COS;
+                }
+                if (!is_continuous) {
+                    emit_wall = true;
+                    z_lo_w = oz + max(hf_z_stock[n], zb);
+                    color_sidx = n;
+                    color_flags = 0u;
+                }
             }
         }
         if (!emit_wall) {
             return hf_degenerate_out();
         }
+        if (skinning) {
+            let n_self = hf_cell_smooth_normal(vi, vj, vx, vy, vdx, vdy, cliff_dz);
+            z_top_0 = oz + hf_skinned_corner(vi + 1u, vj, vx, vy, vdx, vdy, cliff_dz, zt, zb, n_self).z_local;
+            z_top_1 = oz + hf_skinned_corner(vi + 1u, vj + 1u, vx, vy, vdx, vdy, cliff_dz, zt, zb, n_self).z_local;
+        }
         normal = vec3<f32>(1.0, 0.0, 0.0);
         p0 = vec3<f32>(x1, y0, z_lo_w);
         p1 = vec3<f32>(x1, y1, z_lo_w);
-        p2 = vec3<f32>(x1, y1, zt_w);
-        p3 = vec3<f32>(x1, y0, zt_w);
+        p2 = vec3<f32>(x1, y1, z_top_1);
+        p3 = vec3<f32>(x1, y0, z_top_0);
     } else if (face_id == 3u) {
         // -X wall/riser
         var emit_wall = false;
         var z_lo_w = zb_w;
+        var z_top_0 = zt_w;
+        var z_top_1 = zt_w;
         if (vi == 0u) {
             emit_wall = true;
             color_sidx = sidx;
@@ -667,24 +831,39 @@ fn vs_sim_heightfield_gpu(@builtin(vertex_index) vid: u32) -> SimGpuHfOut {
                 color_sidx = sidx;
                 color_flags = 1u;
             } else if (zt > hf_z_stock[n] + 2e-4) {
-                emit_wall = true;
-                z_lo_w = oz + max(hf_z_stock[n], zb);
-                color_sidx = n;
-                color_flags = 0u;
+                var is_continuous = false;
+                if (skinning && abs(zt - hf_z_stock[n]) <= cliff_dz) {
+                    let n_self = hf_cell_smooth_normal(vi, vj, vx, vy, vdx, vdy, cliff_dz);
+                    let n_nb = hf_cell_smooth_normal(vi - 1u, vj, vx, vy, vdx, vdy, cliff_dz);
+                    is_continuous = dot(n_self, n_nb) >= SIM_CREASE_COS;
+                }
+                if (!is_continuous) {
+                    emit_wall = true;
+                    z_lo_w = oz + max(hf_z_stock[n], zb);
+                    color_sidx = n;
+                    color_flags = 0u;
+                }
             }
         }
         if (!emit_wall) {
             return hf_degenerate_out();
         }
+        if (skinning) {
+            let n_self = hf_cell_smooth_normal(vi, vj, vx, vy, vdx, vdy, cliff_dz);
+            z_top_0 = oz + hf_skinned_corner(vi, vj, vx, vy, vdx, vdy, cliff_dz, zt, zb, n_self).z_local;
+            z_top_1 = oz + hf_skinned_corner(vi, vj + 1u, vx, vy, vdx, vdy, cliff_dz, zt, zb, n_self).z_local;
+        }
         normal = vec3<f32>(-1.0, 0.0, 0.0);
         p0 = vec3<f32>(x0, y1, z_lo_w);
         p1 = vec3<f32>(x0, y0, z_lo_w);
-        p2 = vec3<f32>(x0, y0, zt_w);
-        p3 = vec3<f32>(x0, y1, zt_w);
+        p2 = vec3<f32>(x0, y0, z_top_0);
+        p3 = vec3<f32>(x0, y1, z_top_1);
     } else if (face_id == 4u) {
         // +Y wall/riser
         var emit_wall = false;
         var z_lo_w = zb_w;
+        var z_top_0 = zt_w;
+        var z_top_1 = zt_w;
         if (vj + 1u >= vy) {
             emit_wall = true;
             color_sidx = sidx;
@@ -696,24 +875,39 @@ fn vs_sim_heightfield_gpu(@builtin(vertex_index) vid: u32) -> SimGpuHfOut {
                 color_sidx = sidx;
                 color_flags = 1u;
             } else if (zt > hf_z_stock[n] + 2e-4) {
-                emit_wall = true;
-                z_lo_w = oz + max(hf_z_stock[n], zb);
-                color_sidx = n;
-                color_flags = 0u;
+                var is_continuous = false;
+                if (skinning && abs(zt - hf_z_stock[n]) <= cliff_dz) {
+                    let n_self = hf_cell_smooth_normal(vi, vj, vx, vy, vdx, vdy, cliff_dz);
+                    let n_nb = hf_cell_smooth_normal(vi, vj + 1u, vx, vy, vdx, vdy, cliff_dz);
+                    is_continuous = dot(n_self, n_nb) >= SIM_CREASE_COS;
+                }
+                if (!is_continuous) {
+                    emit_wall = true;
+                    z_lo_w = oz + max(hf_z_stock[n], zb);
+                    color_sidx = n;
+                    color_flags = 0u;
+                }
             }
         }
         if (!emit_wall) {
             return hf_degenerate_out();
         }
+        if (skinning) {
+            let n_self = hf_cell_smooth_normal(vi, vj, vx, vy, vdx, vdy, cliff_dz);
+            z_top_0 = oz + hf_skinned_corner(vi, vj + 1u, vx, vy, vdx, vdy, cliff_dz, zt, zb, n_self).z_local;
+            z_top_1 = oz + hf_skinned_corner(vi + 1u, vj + 1u, vx, vy, vdx, vdy, cliff_dz, zt, zb, n_self).z_local;
+        }
         normal = vec3<f32>(0.0, 1.0, 0.0);
         p0 = vec3<f32>(x1, y1, z_lo_w);
         p1 = vec3<f32>(x0, y1, z_lo_w);
-        p2 = vec3<f32>(x0, y1, zt_w);
-        p3 = vec3<f32>(x1, y1, zt_w);
+        p2 = vec3<f32>(x0, y1, z_top_0);
+        p3 = vec3<f32>(x1, y1, z_top_1);
     } else {
         // -Y wall/riser
         var emit_wall = false;
         var z_lo_w = zb_w;
+        var z_top_0 = zt_w;
+        var z_top_1 = zt_w;
         if (vj == 0u) {
             emit_wall = true;
             color_sidx = sidx;
@@ -725,20 +919,33 @@ fn vs_sim_heightfield_gpu(@builtin(vertex_index) vid: u32) -> SimGpuHfOut {
                 color_sidx = sidx;
                 color_flags = 1u;
             } else if (zt > hf_z_stock[n] + 2e-4) {
-                emit_wall = true;
-                z_lo_w = oz + max(hf_z_stock[n], zb);
-                color_sidx = n;
-                color_flags = 0u;
+                var is_continuous = false;
+                if (skinning && abs(zt - hf_z_stock[n]) <= cliff_dz) {
+                    let n_self = hf_cell_smooth_normal(vi, vj, vx, vy, vdx, vdy, cliff_dz);
+                    let n_nb = hf_cell_smooth_normal(vi, vj - 1u, vx, vy, vdx, vdy, cliff_dz);
+                    is_continuous = dot(n_self, n_nb) >= SIM_CREASE_COS;
+                }
+                if (!is_continuous) {
+                    emit_wall = true;
+                    z_lo_w = oz + max(hf_z_stock[n], zb);
+                    color_sidx = n;
+                    color_flags = 0u;
+                }
             }
         }
         if (!emit_wall) {
             return hf_degenerate_out();
         }
+        if (skinning) {
+            let n_self = hf_cell_smooth_normal(vi, vj, vx, vy, vdx, vdy, cliff_dz);
+            z_top_0 = oz + hf_skinned_corner(vi, vj, vx, vy, vdx, vdy, cliff_dz, zt, zb, n_self).z_local;
+            z_top_1 = oz + hf_skinned_corner(vi + 1u, vj, vx, vy, vdx, vdy, cliff_dz, zt, zb, n_self).z_local;
+        }
         normal = vec3<f32>(0.0, -1.0, 0.0);
         p0 = vec3<f32>(x0, y0, z_lo_w);
         p1 = vec3<f32>(x1, y0, z_lo_w);
-        p2 = vec3<f32>(x1, y0, zt_w);
-        p3 = vec3<f32>(x0, y0, zt_w);
+        p2 = vec3<f32>(x1, y0, z_top_1);
+        p3 = vec3<f32>(x0, y0, z_top_0);
     }
 
     var pos_wcs = p0;
@@ -877,14 +1084,28 @@ fn vs_sim_cylindrical_gpu(@builtin(vertex_index) vid: u32) -> SimVertexOut {
         let u_next = min(vi_u + 1u, su - 1u);
         let t_prev = (vi_t + st - 1u) % st;
         let t_next = (vi_t + 1u) % st;
-        let du_vec = cyl_vertex_pos(u_next, vi_t) - cyl_vertex_pos(u_prev, vi_t);
-        let dt_vec = cyl_vertex_pos(vi_u, t_next) - cyl_vertex_pos(vi_u, t_prev);
-        let n_raw = cross(du_vec, dt_vec);
-        let n_len = length(n_raw);
-        if (n_len > 1e-6) {
-            normal_wcs = n_raw / n_len;
+        var du_vec = cyl_vertex_pos(u_next, vi_t) - cyl_vertex_pos(u_prev, vi_t);
+        var dt_vec = cyl_vertex_pos(vi_u, t_next) - cyl_vertex_pos(vi_u, t_prev);
+        if (u_sim_vis.mode_and_flags.z != 0u) {
+            let p00 = cyl_vertex_pos(iu, it);
+            let p10 = cyl_vertex_pos(iu + 1u, it);
+            let p11 = cyl_vertex_pos(iu + 1u, it_next);
+            let p01 = cyl_vertex_pos(iu, it_next);
+            let q_raw = cross(p10 - p00, p11 - p00) + cross(p11 - p00, p01 - p00);
+            let q_len = length(q_raw);
+            let q_n = select(u_cyl_grid.e1_and_u_min.xyz, q_raw / max(q_len, 1e-6), q_len > 1e-6);
+            let n_smooth_raw = cross(du_vec, dt_vec);
+            let ns_len = length(n_smooth_raw);
+            let n_smooth = select(q_n, n_smooth_raw / max(ns_len, 1e-6), ns_len > 1e-6);
+            normal_wcs = select(q_n, n_smooth, dot(n_smooth, q_n) >= SIM_CREASE_COS);
         } else {
-            normal_wcs = u_cyl_grid.e1_and_u_min.xyz;
+            let n_raw = cross(du_vec, dt_vec);
+            let n_len = length(n_raw);
+            if (n_len > 1e-6) {
+                normal_wcs = n_raw / n_len;
+            } else {
+                normal_wcs = u_cyl_grid.e1_and_u_min.xyz;
+            }
         }
         col = cyl_cell_color(cyl_src_idx(vi_u, vi_t));
     } else {
@@ -953,10 +1174,12 @@ struct GpuTriDexelRenderUniforms {
 struct PackedTriDexelQuad {
     ray_dw_flags: u32,
     color_rgba8: u32,
-    corner0_nx: u32,
-    corner1_ny: u32,
-    corner2_nz: u32,
+    corner0_pad: u32,
+    corner1_pad: u32,
+    corner2_pad: u32,
     corner3_pad: u32,
+    n01_oct: u32,
+    n23_oct: u32,
 };
 
 // Tri-Dexel bindings (10..=11)
@@ -973,6 +1196,30 @@ fn td_from_uvw(axis_id: u32, cu: f32, cv: f32, cw: f32) -> vec3<f32> {
     return out;
 }
 
+fn td_oct_decode(e: vec2<f32>) -> vec3<f32> {
+    var v = vec3<f32>(e.x, e.y, 1.0 - abs(e.x) - abs(e.y));
+    if (v.z < 0.0) {
+        let sx = select(-1.0, 1.0, v.x >= 0.0);
+        let sy = select(-1.0, 1.0, v.y >= 0.0);
+        v = vec3<f32>((1.0 - abs(v.y)) * sx, (1.0 - abs(v.x)) * sy, v.z);
+    }
+    let len = length(v);
+    return select(vec3<f32>(0.0, 0.0, 1.0), v / max(len, 1e-6), len > 1e-6);
+}
+
+fn td_unpack_oct_normal_12bit(hi8_word: u32, is_second: bool, corner_word: u32) -> vec3<f32> {
+    let shift = select(0u, 16u, is_second);
+    let hi8_x = (hi8_word >> shift) & 0xFFu;
+    let hi8_y = (hi8_word >> (shift + 8u)) & 0xFFu;
+    let lo_byte = (corner_word >> 24u) & 0xFFu;
+    let lo4_x = lo_byte & 0xFu;
+    let lo4_y = (lo_byte >> 4u) & 0xFu;
+    let qx = (hi8_x << 4u) | lo4_x;
+    let qy = (hi8_y << 4u) | lo4_y;
+    let e = vec2<f32>(f32(qx), f32(qy)) * (1.0 / 2047.0) - vec2<f32>(1.0);
+    return td_oct_decode(e);
+}
+
 @vertex
 fn vs_sim_tridexel_gpu(@builtin(vertex_index) vid: u32) -> SimVertexOut {
     let quad_idx = vid / 6u;
@@ -984,12 +1231,10 @@ fn vs_sim_tridexel_gpu(@builtin(vertex_index) vid: u32) -> SimVertexOut {
     let want_min = (q.ray_dw_flags & 0x80000000u) != 0u;
     let col = unpack4x8unorm(q.color_rgba8);
 
-    let c0 = unpack4x8snorm(q.corner0_nx);
-    let c1 = unpack4x8snorm(q.corner1_ny);
-    let c2 = unpack4x8snorm(q.corner2_nz);
+    let c0 = unpack4x8snorm(q.corner0_pad);
+    let c1 = unpack4x8snorm(q.corner1_pad);
+    let c2 = unpack4x8snorm(q.corner2_pad);
     let c3 = unpack4x8snorm(q.corner3_pad);
-    let normal_raw = vec3<f32>(c0.w, c1.w, c2.w);
-    let normal_wcs = select(vec3<f32>(0.0, 0.0, 1.0), normalize(normal_raw), length(normal_raw) > 1e-5);
 
     let nx = u_td_grid.dims_and_total.x;
     let ny = u_td_grid.dims_and_total.y;
@@ -1059,22 +1304,27 @@ fn vs_sim_tridexel_gpu(@builtin(vertex_index) vid: u32) -> SimVertexOut {
     var c_off: vec3<f32>;
     var cu_step = 0u;
     var cv_step = 0u;
+    var normal_wcs: vec3<f32>;
     if (corner_id == 0u) {
-        c_off = c0.xyz * 0.6;
+        c_off = c0.xyz;
         cu_step = 0u;
         cv_step = 0u;
+        normal_wcs = td_unpack_oct_normal_12bit(q.n01_oct, false, q.corner0_pad);
     } else if (corner_id == 1u) {
-        c_off = c1.xyz * 0.6;
+        c_off = c1.xyz;
         cu_step = select(1u, 0u, axis_id == 1u);
         cv_step = select(0u, 1u, axis_id == 1u);
+        normal_wcs = td_unpack_oct_normal_12bit(q.n01_oct, true, q.corner1_pad);
     } else if (corner_id == 2u) {
-        c_off = c2.xyz * 0.6;
+        c_off = c2.xyz;
         cu_step = 1u;
         cv_step = 1u;
+        normal_wcs = td_unpack_oct_normal_12bit(q.n23_oct, false, q.corner2_pad);
     } else {
-        c_off = c3.xyz * 0.6;
+        c_off = c3.xyz;
         cu_step = select(0u, 1u, axis_id == 1u);
         cv_step = select(1u, 0u, axis_id == 1u);
+        normal_wcs = td_unpack_oct_normal_12bit(q.n23_oct, true, q.corner3_pad);
     }
 
     let pos_wcs = td_from_uvw(

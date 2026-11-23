@@ -3,6 +3,8 @@ use chip_tools::{AnalyticCutterEnvelope, CutterEnvelopeShape, CutterGeometry, To
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::metrics::SimStockColorMode;
+
 /// Sentinel operation tag marking unmachined raw stock across Heightfield, Tri-Dexel, and
 /// Cylindrical stock buffers (WGSL-compatible `u32`).
 pub const UNCUT_OP_IDX: u32 = u32::MAX;
@@ -454,6 +456,36 @@ pub struct SimColoredVertex {
     pub pos_mm: [f32; 3],
     pub normal: [f32; 3],
     pub color_rgba: [f32; 4],
+}
+
+/// Visual-only mesh extraction & GPU rendering options for simulated 3D stock display.
+///
+/// Strictly decoupled from volumetric stock geometry, sweep math, crash verification,
+/// and quantitative metrology (`StockErrorReport`).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct SimMeshOptions {
+    pub color_mode: SimStockColorMode,
+    pub mesh_skinning: bool,
+}
+
+impl SimMeshOptions {
+    #[inline]
+    pub const fn new(color_mode: SimStockColorMode, mesh_skinning: bool) -> Self {
+        Self {
+            color_mode,
+            mesh_skinning,
+        }
+    }
+}
+
+impl From<SimStockColorMode> for SimMeshOptions {
+    #[inline]
+    fn from(color_mode: SimStockColorMode) -> Self {
+        Self {
+            color_mode,
+            mesh_skinning: false,
+        }
+    }
 }
 
 /// Triangulated 3D machined stock mesh (`pos_mm`, `normal`, `color_rgba` in Setup WCS).

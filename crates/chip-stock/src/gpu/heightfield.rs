@@ -9,7 +9,7 @@ use wgpu::util::DeviceExt as _;
 use crate::{
     backend::StockCheckpointSnapshot,
     heightfield::HeightfieldStock,
-    types::{BatchSweepOutput, SweepChord, SweepMotion, SweepToolSpec},
+    types::{BatchSweepOutput, SimMeshOptions, SweepChord, SweepMotion, SweepToolSpec},
 };
 
 use super::{
@@ -501,6 +501,15 @@ impl GpuHeightfieldState {
     /// Captures a read-only GPU storage-buffer snapshot (`copy_buffer_to_buffer` into a pooled
     /// `Arc<wgpu::Buffer>` pair) for zero-readback direct viewport rendering.
     pub(crate) fn capture_render_handle(&mut self) -> Arc<GpuStockRenderHandle> {
+        self.capture_render_handle_with_options(SimMeshOptions::default())
+    }
+
+    /// Captures a read-only GPU storage-buffer snapshot for direct viewport rendering (heightfield
+    /// `mesh_skinning` is evaluated live in `vs_sim_heightfield_gpu` via `SimStockVisualUniforms`).
+    pub(crate) fn capture_render_handle_with_options(
+        &mut self,
+        _options: SimMeshOptions,
+    ) -> Arc<GpuStockRenderHandle> {
         let cell_bytes = ((self.nx * self.ny) * std::mem::size_of::<f32>()) as u64;
         let (snap_z, snap_op) = if let Some((z, op)) = self
             .render_snap_pool

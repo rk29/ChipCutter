@@ -8,4 +8,6 @@ mod mesher;
 mod sweep;
 
 pub use grid::HeightfieldStock;
-pub use mesher::{tessellate_stock_mesh, tessellate_stock_mesh_colored};
+pub use mesher::{
+    tessellate_stock_mesh, tessellate_stock_mesh_colored, tessellate_stock_mesh_with_options,
+};

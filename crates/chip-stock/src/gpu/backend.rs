@@ -8,14 +8,17 @@ use chip_bvh::TriMesh3D;
 
 use crate::{
     backend::{SimStockBackend, SimulatedStock, StockCheckpointSnapshot, StockModelKind},
-    cylindrical::tessellate_cylindrical_stock_mesh_colored,
-    heightfield::tessellate_stock_mesh_colored,
+    cylindrical::tessellate_cylindrical_stock_mesh_with_options,
+    heightfield::tessellate_stock_mesh_with_options,
     metrics::{
         OperationErrorSnapshot, SimStockColorMode, StockErrorReport, compute_tridexel_error_report,
         compute_tridexel_quick_error_summary,
     },
-    tridexel::{TriDexelStock, tessellate_tridexel_stock_mesh_colored},
-    types::{ActiveSimBackendInfo, BatchSweepOutput, SimStockMesh, SweepChord, SweepToolSpec},
+    tridexel::{TriDexelStock, tessellate_tridexel_stock_mesh_with_options},
+    types::{
+        ActiveSimBackendInfo, BatchSweepOutput, SimMeshOptions, SimStockMesh, SweepChord,
+        SweepToolSpec,
+    },
 };
 
 use super::{
@@ -89,6 +92,19 @@ impl WgpuComputeBackend {
             GpuBackendInner::Heightfield(hf) => hf.capture_render_handle(),
             GpuBackendInner::Cylindrical(c) => c.capture_render_handle(),
             GpuBackendInner::TriDexel(td) => td.capture_render_handle(color_mode),
+        }
+    }
+
+    /// Captures a read-only zero-readback [`GpuStockRenderHandle`] snapshot with visual
+    /// [`SimMeshOptions`] (`color_mode` + optional `mesh_skinning`).
+    pub fn capture_render_handle_with_options(
+        &mut self,
+        options: SimMeshOptions,
+    ) -> Arc<GpuStockRenderHandle> {
+        match &mut self.inner {
+            GpuBackendInner::Heightfield(hf) => hf.capture_render_handle_with_options(options),
+            GpuBackendInner::Cylindrical(c) => c.capture_render_handle(),
+            GpuBackendInner::TriDexel(td) => td.capture_render_handle_with_options(options),
         }
     }
 
@@ -467,16 +483,16 @@ impl SimStockBackend for WgpuComputeBackend {
         }
     }
 
-    fn extract_stock_mesh(&self, color_mode: SimStockColorMode) -> SimStockMesh {
+    fn extract_stock_mesh_with_options(&self, options: SimMeshOptions) -> SimStockMesh {
         match &self.inner {
             GpuBackendInner::Heightfield(hf) => {
-                hf.with_synced_stock(|s| tessellate_stock_mesh_colored(s, color_mode))
+                hf.with_synced_stock(|s| tessellate_stock_mesh_with_options(s, options))
             }
             GpuBackendInner::Cylindrical(c) => c.with_synced_stock(|s| {
-                tessellate_cylindrical_stock_mesh_colored(s, color_mode, 0.0)
+                tessellate_cylindrical_stock_mesh_with_options(s, options, 0.0)
             }),
             GpuBackendInner::TriDexel(td) => td.with_synced_stock_and_target(|s, t| {
-                tessellate_tridexel_stock_mesh_colored(s, t, color_mode)
+                tessellate_tridexel_stock_mesh_with_options(s, t, options)
             }),
         }
     }

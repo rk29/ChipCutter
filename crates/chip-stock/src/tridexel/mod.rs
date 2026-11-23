@@ -11,7 +11,10 @@ pub use grid::{
     pack_span_ops, query_overlap_length, query_target_gouge_depth, spans_contain_coord,
     spans_difference_length, subtract_dexel_interval, unpack_max_op, unpack_min_op,
 };
-pub use mesher::{tessellate_tridexel_stock_mesh, tessellate_tridexel_stock_mesh_colored};
+pub use mesher::{
+    tessellate_tridexel_stock_mesh, tessellate_tridexel_stock_mesh_colored,
+    tessellate_tridexel_stock_mesh_with_options,
+};
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]

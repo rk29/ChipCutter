@@ -7,18 +7,18 @@ use bytemuck::{Pod, Zeroable};
 use chip_sim::{
     GpuCylindricalRenderData, GpuHeightfieldRenderData, GpuStockRenderHandle,
     GpuTriDexelRenderData, MACHINED_METAL_COLOR, OPERATION_STOCK_PALETTE, RAW_STOCK_SIDE_COLOR,
-    RAW_STOCK_TOP_COLOR, SimStockColorMode,
+    RAW_STOCK_TOP_COLOR, SimMeshOptions, SimStockColorMode,
 };
 
 use super::gpu_types::{COLOR_FORMAT, DEPTH_FORMAT, GrowableSimIndexedMeshGpu, SAMPLE_COUNT};
 
 /// Shared 336-byte (`21 × 16B`) visual styling uniform buffer updated via a single
-/// `queue.write_buffer` whenever `color_mode` (`ByOperation` / `Metallic` / `ErrorHeatmap`) or
-/// `tolerance_mm` changes—zero stock re-sweep and zero CPU re-meshing.
+/// `queue.write_buffer` whenever `color_mode` (`ByOperation` / `Metallic` / `ErrorHeatmap`),
+/// `mesh_skinning`, or `tolerance_mm` changes—zero stock re-sweep and zero CPU re-meshing.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub(crate) struct SimStockVisualUniformsGpu {
-    /// `[color_mode_id (0=Metallic, 1=ByOperation, 2=ErrorHeatmap), has_target, 0, 0]`
+    /// `[color_mode_id (0=Metallic, 1=ByOperation, 2=ErrorHeatmap), has_target, mesh_skinning (0/1), 0]`
     pub mode_and_flags: [u32; 4],
     /// `[tolerance_mm, max_scale_mm, 0.0, 0.0]`
     pub heatmap_params: [f32; 4],
@@ -29,8 +29,13 @@ pub(crate) struct SimStockVisualUniformsGpu {
 }
 
 impl SimStockVisualUniformsGpu {
+    #[allow(dead_code)]
     pub(crate) fn from_color_mode(color_mode: SimStockColorMode, has_target: bool) -> Self {
-        let (mode_id, tol_mm, max_scale_mm) = match color_mode {
+        Self::from_options(SimMeshOptions::from(color_mode), has_target)
+    }
+
+    pub(crate) fn from_options(options: SimMeshOptions, has_target: bool) -> Self {
+        let (mode_id, tol_mm, max_scale_mm) = match options.color_mode {
             SimStockColorMode::Metallic => (0u32, 0.05_f32, 1.0_f32),
             SimStockColorMode::ByOperation => (1u32, 0.05_f32, 1.0_f32),
             SimStockColorMode::ErrorHeatmap {
@@ -43,7 +48,12 @@ impl SimStockVisualUniformsGpu {
             *slot = OPERATION_STOCK_PALETTE[i % OPERATION_STOCK_PALETTE.len()];
         }
         Self {
-            mode_and_flags: [mode_id, u32::from(has_target), 0, 0],
+            mode_and_flags: [
+                mode_id,
+                u32::from(has_target),
+                u32::from(options.mesh_skinning),
+                0,
+            ],
             heatmap_params: [tol_mm, max_scale_mm, 0.0, 0.0],
             raw_top_color: RAW_STOCK_TOP_COLOR,
             raw_side_color: RAW_STOCK_SIDE_COLOR,
@@ -382,14 +392,31 @@ impl SimGpuStockRenderer {
         handle: &GpuStockRenderHandle,
         color_mode: SimStockColorMode,
     ) {
-        let vis = SimStockVisualUniformsGpu::from_color_mode(color_mode, handle.has_target());
+        self.prepare_with_options(
+            device,
+            queue,
+            encoder,
+            handle,
+            SimMeshOptions::from(color_mode),
+        );
+    }
+
+    pub(crate) fn prepare_with_options(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        handle: &GpuStockRenderHandle,
+        options: SimMeshOptions,
+    ) {
+        let vis = SimStockVisualUniformsGpu::from_options(options, handle.has_target());
         queue.write_buffer(&self.visual_uniform_buf, 0, bytemuck::bytes_of(&vis));
 
         match handle {
             GpuStockRenderHandle::Heightfield(hf) => self.prepare_heightfield(device, queue, hf),
             GpuStockRenderHandle::Cylindrical(cyl) => self.prepare_cylindrical(device, queue, cyl),
             GpuStockRenderHandle::TriDexel(td) => {
-                self.prepare_tridexel(device, queue, encoder, td, color_mode);
+                self.prepare_tridexel(device, queue, encoder, td, options);
             }
         }
     }
@@ -591,10 +618,10 @@ impl SimGpuStockRenderer {
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         td: &GpuTriDexelRenderData,
-        color_mode: SimStockColorMode,
+        options: SimMeshOptions,
     ) {
-        // Zero-op if color_mode already baked; < 0.3 ms GPU compute re-emit if color_mode changed!
-        let _ = td.ensure_emitted_for_color_mode(color_mode, encoder);
+        // Zero-op if options already baked; < 0.5 ms GPU compute re-emit if color_mode or mesh_skinning changed!
+        let _ = td.ensure_emitted_for_options(options, encoder);
 
         let uniforms = GpuTriDexelRenderUniformsGpu {
             dims_and_total: [td.dims[0], td.dims[1], td.dims[2], td.total_rays],

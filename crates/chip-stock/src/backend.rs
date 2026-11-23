@@ -5,18 +5,18 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    cylindrical::{CylindricalStock, tessellate_cylindrical_stock_mesh_colored},
-    heightfield::{HeightfieldStock, tessellate_stock_mesh_colored},
+    cylindrical::{CylindricalStock, tessellate_cylindrical_stock_mesh_with_options},
+    heightfield::{HeightfieldStock, tessellate_stock_mesh_with_options},
     metrics::{
         OperationErrorSnapshot, SimStockColorMode, StockErrorReport,
         compute_cylindrical_error_report, compute_cylindrical_quick_error_summary,
         compute_heightmap_error_report, compute_heightmap_quick_error_summary,
         compute_tridexel_error_report, compute_tridexel_quick_error_summary,
     },
-    tridexel::{TriDexelStock, tessellate_tridexel_stock_mesh_colored},
+    tridexel::{TriDexelStock, tessellate_tridexel_stock_mesh_with_options},
     types::{
-        ActiveSimBackendInfo, BatchSweepOutput, RotaryStockSpec, SimStockMesh, StockPlaybackCursor,
-        SweepChord, SweepToolSpec,
+        ActiveSimBackendInfo, BatchSweepOutput, RotaryStockSpec, SimMeshOptions, SimStockMesh,
+        StockPlaybackCursor, SweepChord, SweepToolSpec,
     },
 };
 
@@ -317,13 +317,23 @@ impl SimulatedStock {
         target_tridexel: Option<&TriDexelStock>,
         color_mode: SimStockColorMode,
     ) -> SimStockMesh {
+        self.extract_stock_mesh_with_options(target_tridexel, SimMeshOptions::from(color_mode))
+    }
+
+    /// Extracts a 3D GPU-ready [`SimStockMesh`] with visual [`SimMeshOptions`] (`color_mode` +
+    /// optional crease-preserving `mesh_skinning`).
+    pub fn extract_stock_mesh_with_options(
+        &self,
+        target_tridexel: Option<&TriDexelStock>,
+        options: SimMeshOptions,
+    ) -> SimStockMesh {
         match self {
-            Self::Heightfield(hf) => tessellate_stock_mesh_colored(hf, color_mode),
+            Self::Heightfield(hf) => tessellate_stock_mesh_with_options(hf, options),
             Self::TriDexel(td) => {
-                tessellate_tridexel_stock_mesh_colored(td, target_tridexel, color_mode)
+                tessellate_tridexel_stock_mesh_with_options(td, target_tridexel, options)
             }
             Self::Cylindrical(cyl) => {
-                tessellate_cylindrical_stock_mesh_colored(cyl, color_mode, 0.0)
+                tessellate_cylindrical_stock_mesh_with_options(cyl, options, 0.0)
             }
         }
     }
@@ -504,7 +514,11 @@ pub trait SimStockBackend {
         per_operation: Vec<OperationErrorSnapshot>,
     ) -> Option<StockErrorReport>;
 
-    fn extract_stock_mesh(&self, color_mode: SimStockColorMode) -> SimStockMesh;
+    fn extract_stock_mesh(&self, color_mode: SimStockColorMode) -> SimStockMesh {
+        self.extract_stock_mesh_with_options(SimMeshOptions::from(color_mode))
+    }
+
+    fn extract_stock_mesh_with_options(&self, options: SimMeshOptions) -> SimStockMesh;
 
     fn into_parts(self) -> (SimulatedStock, Option<TriDexelStock>);
 }
@@ -589,9 +603,9 @@ impl SimStockBackend for CpuExactBackend {
         )
     }
 
-    fn extract_stock_mesh(&self, color_mode: SimStockColorMode) -> SimStockMesh {
+    fn extract_stock_mesh_with_options(&self, options: SimMeshOptions) -> SimStockMesh {
         self.stock
-            .extract_stock_mesh(self.target_tridexel.as_ref(), color_mode)
+            .extract_stock_mesh_with_options(self.target_tridexel.as_ref(), options)
     }
 
     fn into_parts(self) -> (SimulatedStock, Option<TriDexelStock>) {

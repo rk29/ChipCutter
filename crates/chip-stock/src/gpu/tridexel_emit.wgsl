@@ -2,14 +2,16 @@
 // Scans all 3 orthogonal dexel planes (`X`, `Y`, `Z`), resolves exact 3-axis majority-vote
 // voxel boundary faces with cross-plane snapped dual vertices (zero overlapping-plane ribbon
 // artifacts, zero sawtooth cylinder rims, watertight manifold geometry matching CPU Surface Nets),
-// evaluates dominant-axis crease-aware smooth normals and `Metallic` / `ByOperation` / signed
-// `ErrorHeatmap` coloring directly on GPU, and packs 24-byte `PackedTriDexelQuad` records for
+// supports optional crease-preserving Mesh Skinning (deterministic corner relaxation + per-corner
+// smooth normals) and `Metallic` / `ByOperation` / signed `ErrorHeatmap` coloring directly on GPU,
+// and packs 32-byte `PackedTriDexelQuad` records (12-bit octahedral per-corner normals) for
 // zero-readback `draw_indirect` expansion in `vs_sim_tridexel_gpu`.
 //
 // Structured to keep statically inlined loop count and nesting depth compact for Windows FXC
 // (`D3DCompile` SM 5.0) compatibility: fixed-`K` (`K = 4`) ray lookups are straight-line checks
-// (zero inner loops), dual-cell edge scans use a single flat 12-edge loop, and `main` processes
-// both span endpoints through a single unified `emit_surface_net_quad` call site.
+// (zero inner loops), dual-cell edge scans use a single flat 12-edge loop, corner relaxation and
+// per-corner normal evaluation are straight-line (zero loops), and `main` processes both span
+// endpoints through a single unified `emit_surface_net_quad` call site.
 
 const INLINE_K: u32 = 4u;
 const UNCUT_OP_IDX: u32 = 0xFFFFFFFFu;
@@ -20,14 +22,17 @@ const COLOR_MODE_BY_OP: u32 = 1u;
 const COLOR_MODE_HEATMAP: u32 = 2u;
 
 const DUAL_OFFSET_CLAMP: f32 = 0.55;
-const DUAL_OFFSET_PACK_SCALE: f32 = 0.6;
+const DUAL_RELAX_OFFSET_CLAMP: f32 = 0.98;
+const DUAL_OFFSET_PACK_SCALE: f32 = 1.0;
+const CREASE_COS_THRESHOLD: f32 = 0.788;
+const MAX_RELAX_DISP_RATIO: f32 = 0.45;
 
 struct TriDexelEmitUniforms {
     // [nx, ny, nz, total_rays]
     dims_and_total: vec4<u32>,
     // [ray_off_x, ray_off_y, ray_off_z, has_target]
     plane_offsets_and_target: vec4<u32>,
-    // [color_mode_id, max_quads, _pad0, _pad1]
+    // [color_mode_id, max_quads, mesh_skinning (0/1), _pad1]
     mode_and_cap: vec4<u32>,
     // [origin_x, origin_y, origin_z, tolerance_mm]
     origin_and_tol: vec4<f32>,
@@ -46,21 +51,25 @@ struct FlatDexelSpan {
     _pad: u32,
 }
 
-// Compact 24-byte watertight Surface-Nets quad record matching Rust `PackedTriDexelQuad`.
+// Compact 32-byte aligned watertight Surface-Nets quad record matching Rust `PackedTriDexelQuad`.
 // Expanded directly into 6 vertices (2 triangles) by `vs_sim_tridexel_gpu` via `draw_indirect`.
 struct PackedTriDexelQuad {
     // bits 0..20: global_ray, bits 20..30: dw voxel face index, bit 31: want_min
     ray_dw_flags: u32,
     // RGBA8 unorm packed color
     color_rgba8: u32,
-    // snorm8x4: xyz = corner 0 (du, dv, dw) / 0.6, w = normal.x
-    corner0_nx: u32,
-    // snorm8x4: xyz = corner 1 (du, dv, dw) / 0.6, w = normal.y
-    corner1_ny: u32,
-    // snorm8x4: xyz = corner 2 (du, dv, dw) / 0.6, w = normal.z
-    corner2_nz: u32,
-    // snorm8x4: xyz = corner 3 (du, dv, dw) / 0.6, w = 0
+    // snorm8x3 corner 0 offset (du, dv, dw) in bytes 0..3 + 4+4-bit octahedral refinement in byte 3
+    corner0_pad: u32,
+    // snorm8x3 corner 1 offset (du, dv, dw) in bytes 0..3 + 4+4-bit octahedral refinement in byte 3
+    corner1_pad: u32,
+    // snorm8x3 corner 2 offset (du, dv, dw) in bytes 0..3 + 4+4-bit octahedral refinement in byte 3
+    corner2_pad: u32,
+    // snorm8x3 corner 3 offset (du, dv, dw) in bytes 0..3 + 4+4-bit octahedral refinement in byte 3
     corner3_pad: u32,
+    // High-8-bit octahedral-encoded unit normals for corners 0 & 1 (x0, y0, x1, y1)
+    n01_oct: u32,
+    // High-8-bit octahedral-encoded unit normals for corners 2 & 3 (x2, y2, x3, y3)
+    n23_oct: u32,
 }
 
 // 1 uniform + 6 storage buffers (strictly within WebGPU default limit of 8 storage buffers/stage)
@@ -626,6 +635,223 @@ fn compute_crease_aware_normal(center_local: vec3<f32>, n_face: vec3<f32>) -> ve
     return out_n;
 }
 
+fn oct_encode(n_in: vec3<f32>) -> vec2<f32> {
+    let l1 = abs(n_in.x) + abs(n_in.y) + abs(n_in.z);
+    var p = vec2<f32>(0.0, 0.0);
+    if (l1 > 1e-6) {
+        p = n_in.xy / l1;
+        if (n_in.z < 0.0) {
+            let sx = select(-1.0, 1.0, p.x >= 0.0);
+            let sy = select(-1.0, 1.0, p.y >= 0.0);
+            p = vec2<f32>((1.0 - abs(p.y)) * sx, (1.0 - abs(p.x)) * sy);
+        }
+    }
+    return clamp(p, vec2<f32>(-1.0), vec2<f32>(1.0));
+}
+
+fn oct_quant_12(n_in: vec3<f32>) -> vec2<u32> {
+    let e = oct_encode(n_in);
+    let qx = u32(clamp(round((e.x + 1.0) * 2047.0), 0.0, 4094.0));
+    let qy = u32(clamp(round((e.y + 1.0) * 2047.0), 0.0, 4094.0));
+    return vec2<u32>(qx, qy);
+}
+
+fn pack_corner_with_oct_lo(off_uvw: vec3<f32>, q: vec2<u32>) -> u32 {
+    let inv_scale = 1.0 / DUAL_OFFSET_PACK_SCALE;
+    let xyz_word = pack4x8snorm(vec4<f32>(off_uvw * inv_scale, 0.0)) & 0x00FFFFFFu;
+    let lo_byte = (q.x & 0xFu) | ((q.y & 0xFu) << 4u);
+    return xyz_word | (lo_byte << 24u);
+}
+
+fn pack_oct_pair_hi8(qa: vec2<u32>, qb: vec2<u32>) -> u32 {
+    return ((qa.x >> 4u) & 0xFFu)
+        | (((qa.y >> 4u) & 0xFFu) << 8u)
+        | (((qb.x >> 4u) & 0xFFu) << 16u)
+        | (((qb.y >> 4u) & 0xFFu) << 24u);
+}
+
+// Deterministic, axis-independent, crease-preserving dual-corner relaxation (zero loops).
+// Because `c_xyz`, the 8-voxel occupancy gradient `n_occ`, and `dom_ax` depend ONLY on the shared
+// dual corner `c_xyz`, all adjacent quads across X/Y/Z seams emit bit-identical relaxed positions.
+fn relax_dual_corner_uvw(
+    axis_id: u32,
+    c_xyz: vec3<i32>,
+    off_uvw: vec3<f32>,
+    ouc: u32,
+    ovc: u32,
+    occ_mask: u32,
+) -> vec3<f32> {
+    let nx = i32(u.dims_and_total.x);
+    let ny = i32(u.dims_and_total.y);
+    let nz = i32(u.dims_and_total.z);
+    var out_off = off_uvw;
+
+    let is_bnd = c_xyz.x <= 0 || c_xyz.x >= nx
+        || c_xyz.y <= 0 || c_xyz.y >= ny
+        || c_xyz.z <= 0 || c_xyz.z >= nz;
+    if (!is_bnd) {
+        let b000 = select(0.0, 1.0, occ18_bit(occ_mask, ouc, ovc, 0u));
+        let b100 = select(0.0, 1.0, occ18_bit(occ_mask, ouc + 1u, ovc, 0u));
+        let b010 = select(0.0, 1.0, occ18_bit(occ_mask, ouc, ovc + 1u, 0u));
+        let b110 = select(0.0, 1.0, occ18_bit(occ_mask, ouc + 1u, ovc + 1u, 0u));
+        let b001 = select(0.0, 1.0, occ18_bit(occ_mask, ouc, ovc, 1u));
+        let b101 = select(0.0, 1.0, occ18_bit(occ_mask, ouc + 1u, ovc, 1u));
+        let b011 = select(0.0, 1.0, occ18_bit(occ_mask, ouc, ovc + 1u, 1u));
+        let b111 = select(0.0, 1.0, occ18_bit(occ_mask, ouc + 1u, ovc + 1u, 1u));
+
+        let gu = (b000 + b010 + b001 + b011) - (b100 + b110 + b101 + b111);
+        let gv = (b000 + b100 + b001 + b101) - (b010 + b110 + b011 + b111);
+        let gw = (b000 + b100 + b010 + b110) - (b001 + b101 + b011 + b111);
+        let n_occ = from_uvw_f32(axis_id, gu, gv, gw);
+        let ax = abs(n_occ.x);
+        let ay = abs(n_occ.y);
+        let az = abs(n_occ.z);
+
+        if (ax + ay + az > 0.5) {
+            var dom_ax = 2u;
+            if (ax >= ay && ax >= az) {
+                dom_ax = 0u;
+            } else if (ay >= az) {
+                dom_ax = 1u;
+            }
+            let dom_u_ax = plane_u_axis(dom_ax);
+            let dom_v_ax = plane_v_axis(dom_ax);
+            let dom_du = axis_pitch(dom_u_ax);
+            let dom_dv = axis_pitch(dom_v_ax);
+            let dom_dw = axis_pitch(dom_ax);
+            let cu = axis_get_i32(c_xyz, dom_u_ax);
+            let cv = axis_get_i32(c_xyz, dom_v_ax);
+
+            let pitch_xyz = u.pitch_and_scale.xyz;
+            let raw_off_xyz = from_uvw_f32(axis_id, off_uvw.x, off_uvw.y, off_uvw.z);
+            let pos_0 = (vec3<f32>(c_xyz) + raw_off_xyz) * pitch_xyz;
+            let ref_w = axis_get_f32(pos_0, dom_ax);
+            let dom_want_min = axis_get_f32(n_occ, dom_ax) < 0.0;
+            let max_d = 1.35 * dom_dw;
+
+            let q00 = nearest_endpoint_on_plane(dom_ax, cu - 1, cv - 1, dom_want_min, ref_w, max_d);
+            let q10 = nearest_endpoint_on_plane(dom_ax, cu, cv - 1, dom_want_min, ref_w, max_d);
+            let q01 = nearest_endpoint_on_plane(dom_ax, cu - 1, cv, dom_want_min, ref_w, max_d);
+            let q11 = nearest_endpoint_on_plane(dom_ax, cu, cv, dom_want_min, ref_w, max_d);
+
+            if (q00.found && q10.found && q01.found && q11.found) {
+                let s_u_mid = 0.5 * ((q10.coord - q00.coord) + (q11.coord - q01.coord)) / dom_du;
+                let s_v_mid = 0.5 * ((q01.coord - q00.coord) + (q11.coord - q10.coord)) / dom_dv;
+
+                let q_ll = nearest_endpoint_on_plane(dom_ax, cu - 2, cv - 1, dom_want_min, q00.coord, max_d);
+                let q_rr = nearest_endpoint_on_plane(dom_ax, cu + 1, cv - 1, dom_want_min, q10.coord, max_d);
+                let q_dd = nearest_endpoint_on_plane(dom_ax, cu - 1, cv - 2, dom_want_min, q00.coord, max_d);
+                let q_uu = nearest_endpoint_on_plane(dom_ax, cu - 1, cv + 1, dom_want_min, q01.coord, max_d);
+
+                let s_u_l = select(s_u_mid, (q00.coord - q_ll.coord) / dom_du, q_ll.found);
+                let s_u_r = select(s_u_mid, (q_rr.coord - q10.coord) / dom_du, q_rr.found);
+                let s_v_d = select(s_v_mid, (q00.coord - q_dd.coord) / dom_dv, q_dd.found);
+                let s_v_u = select(s_v_mid, (q_uu.coord - q01.coord) / dom_dv, q_uu.found);
+
+                let n_ul = normalize(vec3<f32>(-s_u_l, -s_v_mid, 1.0));
+                let n_ur = normalize(vec3<f32>(-s_u_r, -s_v_mid, 1.0));
+                let n_vd = normalize(vec3<f32>(-s_u_mid, -s_v_d, 1.0));
+                let n_vu = normalize(vec3<f32>(-s_u_mid, -s_v_u, 1.0));
+
+                if (dot(n_ul, n_ur) >= CREASE_COS_THRESHOLD && dot(n_vd, n_vu) >= CREASE_COS_THRESHOLD) {
+                    let w_smooth = 0.25 * (q00.coord + q10.coord + q01.coord + q11.coord);
+                    let target_xyz = from_uvw_f32(dom_ax, f32(cu) * dom_du, f32(cv) * dom_dv, w_smooth);
+                    var delta = 0.65 * (target_xyz - pos_0);
+                    let min_p = min(pitch_xyz.x, min(pitch_xyz.y, pitch_xyz.z));
+                    let max_d_len = MAX_RELAX_DISP_RATIO * min_p;
+                    let d_len = length(delta);
+                    if (d_len > max_d_len && d_len > 1e-6) {
+                        delta = delta * (max_d_len / d_len);
+                    }
+                    let relaxed_pos = pos_0 + delta;
+                    let relaxed_off_xyz = clamp(
+                        relaxed_pos / pitch_xyz - vec3<f32>(c_xyz),
+                        vec3<f32>(-DUAL_RELAX_OFFSET_CLAMP),
+                        vec3<f32>(DUAL_RELAX_OFFSET_CLAMP),
+                    );
+                    out_off = vec3<f32>(
+                        axis_get_f32(relaxed_off_xyz, plane_u_axis(axis_id)),
+                        axis_get_f32(relaxed_off_xyz, plane_v_axis(axis_id)),
+                        axis_get_f32(relaxed_off_xyz, axis_id),
+                    );
+                }
+            }
+        }
+    }
+    return out_off;
+}
+
+// Evaluates a crease-aware smooth surface normal directly at dual corner `c_xyz` using the
+// symmetric 2×2 ray stencil on the dominant dexel plane of `n_face` (zero loops, FXC-safe).
+fn compute_corner_smooth_normal(
+    c_xyz: vec3<i32>,
+    corner_local: vec3<f32>,
+    n_face: vec3<f32>,
+) -> vec3<f32> {
+    let ax = abs(n_face.x);
+    let ay = abs(n_face.y);
+    let az = abs(n_face.z);
+    var dom_ax = 2u;
+    if (ax >= ay && ax >= az) {
+        dom_ax = 0u;
+    } else if (ay >= az) {
+        dom_ax = 1u;
+    }
+
+    let dom_u_ax = plane_u_axis(dom_ax);
+    let dom_v_ax = plane_v_axis(dom_ax);
+    let du = axis_pitch(dom_u_ax);
+    let dv = axis_pitch(dom_v_ax);
+    let dw = axis_pitch(dom_ax);
+    let cu = axis_get_i32(c_xyz, dom_u_ax);
+    let cv = axis_get_i32(c_xyz, dom_v_ax);
+    let cw = axis_get_f32(corner_local, dom_ax);
+    let dom_want_min = axis_get_f32(n_face, dom_ax) < 0.0;
+    let max_d = 1.35 * dw;
+
+    let q00 = nearest_endpoint_on_plane(dom_ax, cu - 1, cv - 1, dom_want_min, cw, max_d);
+    let q10 = nearest_endpoint_on_plane(dom_ax, cu, cv - 1, dom_want_min, cw, max_d);
+    let q01 = nearest_endpoint_on_plane(dom_ax, cu - 1, cv, dom_want_min, cw, max_d);
+    let q11 = nearest_endpoint_on_plane(dom_ax, cu, cv, dom_want_min, cw, max_d);
+
+    var u_sum = 0.0;
+    var u_cnt = 0.0;
+    if (q00.found && q10.found) {
+        u_sum = u_sum + (q10.coord - q00.coord) / du;
+        u_cnt = u_cnt + 1.0;
+    }
+    if (q01.found && q11.found) {
+        u_sum = u_sum + (q11.coord - q01.coord) / du;
+        u_cnt = u_cnt + 1.0;
+    }
+
+    var v_sum = 0.0;
+    var v_cnt = 0.0;
+    if (q00.found && q01.found) {
+        v_sum = v_sum + (q01.coord - q00.coord) / dv;
+        v_cnt = v_cnt + 1.0;
+    }
+    if (q10.found && q11.found) {
+        v_sum = v_sum + (q11.coord - q10.coord) / dv;
+        v_cnt = v_cnt + 1.0;
+    }
+
+    var out_n = n_face;
+    if (u_cnt > 0.0 || v_cnt > 0.0) {
+        let dw_du = select(0.0, u_sum / max(u_cnt, 1.0), u_cnt > 0.0);
+        let dw_dv = select(0.0, v_sum / max(v_cnt, 1.0), v_cnt > 0.0);
+        var n_uvw = vec3<f32>(-dw_du, -dw_dv, 1.0);
+        if (dom_want_min) {
+            n_uvw = vec3<f32>(dw_du, dw_dv, -1.0);
+        }
+        let n_smooth = normalize(from_uvw_f32(dom_ax, n_uvw.x, n_uvw.y, n_uvw.z));
+        if (dot(n_smooth, n_face) >= CREASE_COS_THRESHOLD) {
+            out_n = n_smooth;
+        }
+    }
+    return out_n;
+}
+
 fn emit_surface_net_quad(
     axis_id: u32,
     global_ray: u32,
@@ -644,6 +870,7 @@ fn emit_surface_net_quad(
     let iiu = i32(iu);
     let iiv = i32(iv);
     let idw = i32(dw_idx);
+    let skinning = u.mode_and_cap.z != 0u;
 
     // Cache 3×3×2 voxel occupancy around `(iu, iv, dw)` in a single flat 18-iteration loop.
     var occ_mask = 0u;
@@ -665,7 +892,7 @@ fn emit_surface_net_quad(
     let pw = axis_pitch(axis_id);
 
     // Quad corner layout matching `Axis3::quad_corner_offsets()` in Rust `tridexel/mesher.rs`.
-    // Single 4-iteration loop avoids 4× inlining of `compute_dual_corner_offset` in FXC.
+    // Single 4-iteration loop avoids 4× inlining of corner helpers in FXC.
     var off0 = vec3<f32>(0.0);
     var off1 = vec3<f32>(0.0);
     var off2 = vec3<f32>(0.0);
@@ -674,6 +901,10 @@ fn emit_surface_net_quad(
     var p1 = vec3<f32>(0.0);
     var p2 = vec3<f32>(0.0);
     var p3 = vec3<f32>(0.0);
+    var c0_xyz = vec3<i32>(0);
+    var c1_xyz = vec3<i32>(0);
+    var c2_xyz = vec3<i32>(0);
+    var c3_xyz = vec3<i32>(0);
 
     for (var ci = 0u; ci < 4u; ci = ci + 1u) {
         var ouc = 0u;
@@ -688,7 +919,11 @@ fn emit_surface_net_quad(
             ouc = select(0u, 1u, axis_id == 1u);
             ovc = select(1u, 0u, axis_id == 1u);
         }
-        let off = compute_dual_corner_offset(axis_id, iiu, iiv, idw, ouc, ovc, occ_mask);
+        let c_xyz = from_uvw_i32(axis_id, iiu + i32(ouc), iiv + i32(ovc), idw);
+        var off = compute_dual_corner_offset(axis_id, iiu, iiv, idw, ouc, ovc, occ_mask);
+        if (skinning) {
+            off = relax_dual_corner_uvw(axis_id, c_xyz, off, ouc, ovc, occ_mask);
+        }
         let pos = from_uvw_f32(
             axis_id,
             (f32(iu + ouc) + off.x) * pu,
@@ -698,15 +933,19 @@ fn emit_surface_net_quad(
         if (ci == 0u) {
             off0 = off;
             p0 = pos;
+            c0_xyz = c_xyz;
         } else if (ci == 1u) {
             off1 = off;
             p1 = pos;
+            c1_xyz = c_xyz;
         } else if (ci == 2u) {
             off2 = off;
             p2 = pos;
+            c2_xyz = c_xyz;
         } else {
             off3 = off;
             p3 = pos;
+            c3_xyz = c_xyz;
         }
     }
 
@@ -718,8 +957,43 @@ fn emit_surface_net_quad(
     let fallback_n = from_uvw_f32(axis_id, 0.0, 0.0, select(1.0, -1.0, want_min));
     let n_face = select(fallback_n, n_raw / max(n_len, 1e-6), n_len > 1e-6);
 
-    let center_local = 0.25 * (p0 + p1 + p2 + p3);
-    let n_final = compute_crease_aware_normal(center_local, n_face);
+    var n0 = n_face;
+    var n1 = n_face;
+    var n2 = n_face;
+    var n3 = n_face;
+    if (skinning) {
+        for (var ci = 0u; ci < 4u; ci = ci + 1u) {
+            var c_xyz = c0_xyz;
+            var pos = p0;
+            if (ci == 1u) {
+                c_xyz = c1_xyz;
+                pos = p1;
+            } else if (ci == 2u) {
+                c_xyz = c2_xyz;
+                pos = p2;
+            } else if (ci == 3u) {
+                c_xyz = c3_xyz;
+                pos = p3;
+            }
+            let nc = compute_corner_smooth_normal(c_xyz, pos, n_face);
+            if (ci == 0u) {
+                n0 = nc;
+            } else if (ci == 1u) {
+                n1 = nc;
+            } else if (ci == 2u) {
+                n2 = nc;
+            } else {
+                n3 = nc;
+            }
+        }
+    } else {
+        let center_local = 0.25 * (p0 + p1 + p2 + p3);
+        let n_final = compute_crease_aware_normal(center_local, n_face);
+        n0 = n_final;
+        n1 = n_final;
+        n2 = n_final;
+        n3 = n_final;
+    }
 
     let is_side = axis_id != 2u;
     let col = eval_endpoint_color(global_ray, w_local, op_idx, is_side);
@@ -730,17 +1004,22 @@ fn emit_surface_net_quad(
         return;
     }
     let quad_idx = base_v / 6u;
-    let inv_scale = 1.0 / DUAL_OFFSET_PACK_SCALE;
+    let q0 = oct_quant_12(n0);
+    let q1 = oct_quant_12(n1);
+    let q2 = oct_quant_12(n2);
+    let q3 = oct_quant_12(n3);
     let ray_dw_flags = (global_ray & 0xFFFFFu)
         | ((dw_idx & 0x3FFu) << 20u)
         | select(0u, 0x80000000u, want_min);
     out_quads[quad_idx] = PackedTriDexelQuad(
         ray_dw_flags,
         pack4x8unorm(col),
-        pack4x8snorm(vec4<f32>(off0 * inv_scale, n_final.x)),
-        pack4x8snorm(vec4<f32>(off1 * inv_scale, n_final.y)),
-        pack4x8snorm(vec4<f32>(off2 * inv_scale, n_final.z)),
-        pack4x8snorm(vec4<f32>(off3 * inv_scale, 0.0)),
+        pack_corner_with_oct_lo(off0, q0),
+        pack_corner_with_oct_lo(off1, q1),
+        pack_corner_with_oct_lo(off2, q2),
+        pack_corner_with_oct_lo(off3, q3),
+        pack_oct_pair_hi8(q0, q1),
+        pack_oct_pair_hi8(q2, q3),
     );
 }
 

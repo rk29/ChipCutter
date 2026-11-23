@@ -17,14 +17,101 @@ use crate::{
     },
     metrics::SimStockColorMode,
     tridexel::{FlatDexelSpan, INLINE_DEXEL_SLOTS, TriDexelStock},
-    types::{Axis3, RotaryStockSpec, SimStockMesh},
+    types::{Axis3, RotaryStockSpec, SimMeshOptions, SimStockMesh},
 };
 
 use super::{context::GpuSimContext, tridexel::build_tridexel_overflow_supplement_mesh};
 
-/// Compact 24-byte GPU Tri-Dexel Surface-Nets quad record emitted by `tridexel_emit.wgsl` and
-/// expanded into 6 vertices (2 watertight snapped triangles with crease-aware smooth normals)
-/// on-the-fly by `vs_sim_tridexel_gpu`.
+/// Scale factor used to pack Tri-Dexel dual corner offsets `(du, dv, dw)` into `snorm8×3`.
+/// Covers `[-1.0, +1.0]` voxel pitch so both crisp (`±0.55`) and relaxed skinned (`±0.95`)
+/// dual corners encode cleanly without clipping.
+pub const TRIDEXEL_DUAL_OFFSET_PACK_SCALE: f32 = 1.0;
+
+/// Encodes a 3D unit normal into signed 2D octahedral coordinates in `[-1.0, 1.0]²`.
+#[inline]
+pub fn oct_encode_unit_normal(n: [f32; 3]) -> [f32; 2] {
+    let l1 = n[0].abs() + n[1].abs() + n[2].abs();
+    if l1 <= 1e-6 {
+        return [0.0, 0.0];
+    }
+    let mut px = n[0] / l1;
+    let mut py = n[1] / l1;
+    if n[2] < 0.0 {
+        let sx = if px >= 0.0 { 1.0 } else { -1.0 };
+        let sy = if py >= 0.0 { 1.0 } else { -1.0 };
+        let nx = (1.0 - py.abs()) * sx;
+        let ny = (1.0 - px.abs()) * sy;
+        px = nx;
+        py = ny;
+    }
+    [px.clamp(-1.0, 1.0), py.clamp(-1.0, 1.0)]
+}
+
+/// Decodes signed 2D octahedral coordinates in `[-1.0, 1.0]²` back to a 3D unit normal.
+#[inline]
+pub fn oct_decode_unit_normal(e: [f32; 2]) -> [f32; 3] {
+    let mut x = e[0];
+    let mut y = e[1];
+    let z = 1.0 - x.abs() - y.abs();
+    if z < 0.0 {
+        let sx = if x >= 0.0 { 1.0 } else { -1.0 };
+        let sy = if y >= 0.0 { 1.0 } else { -1.0 };
+        let nx = (1.0 - y.abs()) * sx;
+        let ny = (1.0 - x.abs()) * sy;
+        x = nx;
+        y = ny;
+    }
+    let len = (x * x + y * y + z * z).sqrt();
+    if len > 1e-6 {
+        [x / len, y / len, z / len]
+    } else {
+        [0.0, 0.0, 1.0]
+    }
+}
+
+/// Packs two 3D unit normals `(n_a, n_b)` into a 12-bit-per-axis octahedral representation:
+/// returns `(packed_hi8_ab, lo4_byte_a, lo4_byte_b)` where `packed_hi8_ab` stores the top 8 bits
+/// of `(ax, ay, bx, by)` (`n01_oct` / `n23_oct`) and `lo4_byte_*` stores the 4+4-bit refinement
+/// packed into the spare high byte of `corner*_pad`. Cardinal axes roundtrip with `0.0°` error
+/// and arbitrary sphere directions roundtrip within `< 0.06°`.
+#[inline]
+pub fn pack_oct_normal_pair_12bit(n_a: [f32; 3], n_b: [f32; 3]) -> (u32, u8, u8) {
+    let ea = oct_encode_unit_normal(n_a);
+    let eb = oct_encode_unit_normal(n_b);
+    let qax = ((ea[0] + 1.0) * 2047.0).round().clamp(0.0, 4094.0) as u32;
+    let qay = ((ea[1] + 1.0) * 2047.0).round().clamp(0.0, 4094.0) as u32;
+    let qbx = ((eb[0] + 1.0) * 2047.0).round().clamp(0.0, 4094.0) as u32;
+    let qby = ((eb[1] + 1.0) * 2047.0).round().clamp(0.0, 4094.0) as u32;
+
+    let hi8_word = ((qax >> 4) & 0xFF)
+        | (((qay >> 4) & 0xFF) << 8)
+        | (((qbx >> 4) & 0xFF) << 16)
+        | (((qby >> 4) & 0xFF) << 24);
+    let lo_a = ((qax & 0xF) | ((qay & 0xF) << 4)) as u8;
+    let lo_b = ((qbx & 0xF) | ((qby & 0xF) << 4)) as u8;
+    (hi8_word, lo_a, lo_b)
+}
+
+/// Unpacks one 12-bit-per-axis octahedral normal from `(hi8_word, is_second, corner_word)` matching
+/// `vs_sim_tridexel_gpu` bit-for-bit.
+#[inline]
+pub fn unpack_oct_normal_12bit(hi8_word: u32, is_second: bool, corner_word: u32) -> [f32; 3] {
+    let shift = if is_second { 16 } else { 0 };
+    let hi8_x = (hi8_word >> shift) & 0xFF;
+    let hi8_y = (hi8_word >> (shift + 8)) & 0xFF;
+    let lo_byte = (corner_word >> 24) & 0xFF;
+    let lo4_x = lo_byte & 0xF;
+    let lo4_y = (lo_byte >> 4) & 0xF;
+    let qx = (hi8_x << 4) | lo4_x;
+    let qy = (hi8_y << 4) | lo4_y;
+    let ex = (qx as f32) * (1.0 / 2047.0) - 1.0;
+    let ey = (qy as f32) * (1.0 / 2047.0) - 1.0;
+    oct_decode_unit_normal([ex, ey])
+}
+
+/// Compact 32-byte aligned GPU Tri-Dexel Surface-Nets quad record emitted by `tridexel_emit.wgsl`
+/// and expanded into 6 vertices (2 watertight snapped triangles with per-corner crease-aware smooth
+/// normals) on-the-fly by `vs_sim_tridexel_gpu`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct PackedTriDexelQuad {
@@ -34,25 +121,28 @@ pub struct PackedTriDexelQuad {
     pub ray_dw_flags: u32,
     /// Packed `RGBA8` unorm color (`pack4x8unorm` / `unpack4x8unorm`).
     pub color_rgba8: u32,
-    /// Corner 0 sub-voxel dual offset `(du, dv, dw) / 0.6` in `snorm8×3`, plus `normal.x` in W.
-    pub corner0_nx: u32,
-    /// Corner 1 sub-voxel dual offset `(du, dv, dw) / 0.6` in `snorm8×3`, plus `normal.y` in W.
-    pub corner1_ny: u32,
-    /// Corner 2 sub-voxel dual offset `(du, dv, dw) / 0.6` in `snorm8×3`, plus `normal.z` in W.
-    pub corner2_nz: u32,
-    /// Corner 3 sub-voxel dual offset `(du, dv, dw) / 0.6` in `snorm8×3`, plus `0` in W.
+    /// Corner 0 sub-voxel dual offset `(du, dv, dw)` in `snorm8×3` + 4+4-bit octahedral refinement in W.
+    pub corner0_pad: u32,
+    /// Corner 1 sub-voxel dual offset `(du, dv, dw)` in `snorm8×3` + 4+4-bit octahedral refinement in W.
+    pub corner1_pad: u32,
+    /// Corner 2 sub-voxel dual offset `(du, dv, dw)` in `snorm8×3` + 4+4-bit octahedral refinement in W.
+    pub corner2_pad: u32,
+    /// Corner 3 sub-voxel dual offset `(du, dv, dw)` in `snorm8×3` + 4+4-bit octahedral refinement in W.
     pub corner3_pad: u32,
+    /// High-8-bit octahedral-encoded unit normals for corners 0 & 1 (`x0, y0, x1, y1`).
+    pub n01_oct: u32,
+    /// High-8-bit octahedral-encoded unit normals for corners 2 & 3 (`x2, y2, x3, y3`).
+    pub n23_oct: u32,
 }
 
-/// Byte size of one [`PackedTriDexelQuad`] storage element (`24 bytes`).
+/// Byte size of one [`PackedTriDexelQuad`] storage element (`32 bytes`).
 pub const TRIDEXEL_PACKED_QUAD_BYTES: usize = std::mem::size_of::<PackedTriDexelQuad>();
 
-const _: () = assert!(TRIDEXEL_PACKED_QUAD_BYTES == 24);
+const _: () = assert!(TRIDEXEL_PACKED_QUAD_BYTES == 32);
 
-/// Maximum emitted quads per Tri-Dexel GPU indirect draw (`5_200_000 × 24 B = 124.8 MB < 128 MiB`
-/// WebGPU default `max_storage_buffer_binding_size`), exceeding even a worst-case `448³` Ultra
-/// grid with all `K = 4` inline spans populated (`602_112 × 4 × 2 = 4_816_896` quads).
-pub const MAX_TRIDEXEL_EMIT_QUADS: u32 = 5_200_000;
+/// Maximum emitted quads per Tri-Dexel GPU indirect draw (`4_000_000 × 32 B = 128.0 MB < 128 MiB`
+/// WebGPU default `max_storage_buffer_binding_size`).
+pub const MAX_TRIDEXEL_EMIT_QUADS: u32 = 4_000_000;
 
 /// Maximum emitted vertices per Tri-Dexel GPU indirect draw (`6 × MAX_TRIDEXEL_EMIT_QUADS`).
 pub const MAX_TRIDEXEL_EMIT_VERTICES: u32 = MAX_TRIDEXEL_EMIT_QUADS * 6;
@@ -77,7 +167,7 @@ pub(crate) struct TriDexelEmitUniforms {
     pub dims_and_total: [u32; 4],
     /// `[ray_off_x, ray_off_y, ray_off_z, has_target]`
     pub plane_offsets_and_target: [u32; 4],
-    /// `[color_mode_id, max_quads, 0, 0]`
+    /// `[color_mode_id, max_quads, mesh_skinning (0/1), 0]`
     pub mode_and_cap: [u32; 4],
     /// `[origin_x, origin_y, origin_z, tolerance_mm]`
     pub origin_and_tol: [f32; 4],
@@ -99,9 +189,9 @@ impl TriDexelEmitUniforms {
         total_rays: u32,
         has_target: bool,
         max_quads: u32,
-        color_mode: SimStockColorMode,
+        options: SimMeshOptions,
     ) -> Self {
-        let (mode_id, tol_mm, max_scale_mm) = match color_mode {
+        let (mode_id, tol_mm, max_scale_mm) = match options.color_mode {
             SimStockColorMode::Metallic => (0u32, 0.05_f32, 1.0_f32),
             SimStockColorMode::ByOperation => (1u32, 0.05_f32, 1.0_f32),
             SimStockColorMode::ErrorHeatmap {
@@ -121,7 +211,7 @@ impl TriDexelEmitUniforms {
                 plane_ray_offsets[2],
                 u32::from(has_target),
             ],
-            mode_and_cap: [mode_id, max_quads, 0, 0],
+            mode_and_cap: [mode_id, max_quads, u32::from(options.mesh_skinning), 0],
             origin_and_tol: [origin_wcs[0], origin_wcs[1], origin_wcs[2], tol_mm],
             pitch_and_scale: [pitch_mm[0], pitch_mm[1], pitch_mm[2], max_scale_mm],
             raw_top_color: RAW_STOCK_TOP_COLOR,
@@ -209,7 +299,7 @@ pub struct GpuTriDexelRenderData {
     _t_counts_buf: Arc<wgpu::Buffer>,
     emit_uniform_buf: Arc<wgpu::Buffer>,
     emit_bind_group: Arc<wgpu::BindGroup>,
-    emitted_color_mode: Mutex<Option<SimStockColorMode>>,
+    emitted_options: Mutex<Option<SimMeshOptions>>,
     emit_dispatches: AtomicU64,
 }
 
@@ -244,7 +334,7 @@ impl GpuTriDexelRenderData {
         emit_uniform_buf: Arc<wgpu::Buffer>,
         max_quads: u32,
         overflow_mesh: Option<Arc<SimStockMesh>>,
-        color_mode: SimStockColorMode,
+        options: SimMeshOptions,
     ) -> Self {
         let emit_res = ctx.tridexel_emit_resources();
         let emit_bind_group =
@@ -302,7 +392,7 @@ impl GpuTriDexelRenderData {
             _t_counts_buf: t_counts_buf,
             emit_uniform_buf,
             emit_bind_group,
-            emitted_color_mode: Mutex::new(None),
+            emitted_options: Mutex::new(None),
             emit_dispatches: AtomicU64::new(0),
         };
 
@@ -312,25 +402,36 @@ impl GpuTriDexelRenderData {
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("chip_td_emit_initial_encoder"),
                 });
-        data.ensure_emitted_for_color_mode(color_mode, &mut encoder);
+        data.ensure_emitted_for_options(options, &mut encoder);
         data.ctx.queue().submit(std::iter::once(encoder.finish()));
 
         data
     }
 
-    /// Re-dispatches the lightweight `< 0.3 ms` `tridexel_emit.wgsl` compute pass into `encoder`
-    /// ONLY when `color_mode` differs from the color mode already baked into `quad_buf`.
-    /// Returns `true` if a compute dispatch was recorded.
+    /// Re-dispatches the lightweight `< 0.5 ms` `tridexel_emit.wgsl` compute pass into `encoder`
+    /// ONLY when `color_mode` differs from the options already baked into `quad_buf`
+    /// (`mesh_skinning = false`). Returns `true` if a compute dispatch was recorded.
     pub fn ensure_emitted_for_color_mode(
         &self,
         color_mode: SimStockColorMode,
         encoder: &mut wgpu::CommandEncoder,
     ) -> bool {
+        self.ensure_emitted_for_options(SimMeshOptions::from(color_mode), encoder)
+    }
+
+    /// Re-dispatches the lightweight `tridexel_emit.wgsl` compute pass into `encoder` ONLY when
+    /// `options` (`color_mode` or `mesh_skinning`) differs from what is already baked into
+    /// `quad_buf`. Returns `true` if a compute dispatch was recorded.
+    pub fn ensure_emitted_for_options(
+        &self,
+        options: SimMeshOptions,
+        encoder: &mut wgpu::CommandEncoder,
+    ) -> bool {
         let mut guard = self
-            .emitted_color_mode
+            .emitted_options
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        if *guard == Some(color_mode) {
+        if *guard == Some(options) {
             return false;
         }
         let uniforms = TriDexelEmitUniforms::build(
@@ -341,7 +442,7 @@ impl GpuTriDexelRenderData {
             self.total_rays,
             self.has_target,
             self.max_quads,
-            color_mode,
+            options,
         );
         self.ctx
             .queue()
@@ -363,9 +464,25 @@ impl GpuTriDexelRenderData {
             pass.dispatch_workgroups(wg_x, wg_y, 1);
         }
 
-        *guard = Some(color_mode);
+        *guard = Some(options);
         self.emit_dispatches.fetch_add(1, Ordering::Relaxed);
         true
+    }
+
+    /// Synchronously re-emits `quad_buf` on the GPU when `options` changed (convenience wrapper
+    /// for standalone/live toggle outside an active render-pass command encoder).
+    pub fn refresh_for_options(&self, options: SimMeshOptions) -> bool {
+        let mut encoder =
+            self.ctx
+                .device()
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("chip_td_emit_refresh_encoder"),
+                });
+        let dispatched = self.ensure_emitted_for_options(options, &mut encoder);
+        if dispatched {
+            self.ctx.queue().submit(std::iter::once(encoder.finish()));
+        }
+        dispatched
     }
 
     /// Number of times `tridexel_emit.wgsl` has been dispatched on this handle.
@@ -399,6 +516,140 @@ impl GpuTriDexelRenderData {
             0
         }
     }
+
+    /// Synchronously reads back all emitted [`PackedTriDexelQuad`] records from `quad_buf`.
+    /// Intended for CPU-vs-GPU verification and parity tests (not the per-frame render loop).
+    pub fn readback_emitted_quads(&self) -> Vec<PackedTriDexelQuad> {
+        let quad_count = (self.readback_emitted_vertex_count() / 6) as usize;
+        if quad_count == 0 {
+            return Vec::new();
+        }
+        let byte_len = quad_count * TRIDEXEL_PACKED_QUAD_BYTES;
+        let staging = self.ctx.device().create_buffer(&wgpu::BufferDescriptor {
+            label: Some("chip_td_quads_readback"),
+            size: byte_len as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder =
+            self.ctx
+                .device()
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("chip_td_quads_copy"),
+                });
+        encoder.copy_buffer_to_buffer(&self.quad_buf, 0, &staging, 0, byte_len as u64);
+        self.ctx.queue().submit(std::iter::once(encoder.finish()));
+        let mut quads = vec![bytemuck::Zeroable::zeroed(); quad_count];
+        let raw: &mut [u8] = bytemuck::cast_slice_mut(&mut quads);
+        if self.ctx.readback_bytes(&staging, byte_len, raw) {
+            quads
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Expands one [`PackedTriDexelQuad`] into its 4 WCS `(pos_mm, unit_normal)` corners in
+    /// outward CCW winding order, matching `vs_sim_tridexel_gpu` bit-for-bit.
+    pub fn unpack_quad_corners(&self, q: &PackedTriDexelQuad) -> [([f32; 3], [f32; 3]); 4] {
+        let global_ray = q.ray_dw_flags & 0xFFFFF;
+        let dw_idx = (q.ray_dw_flags >> 20) & 0x3FF;
+        let want_min = (q.ray_dw_flags & 0x8000_0000) != 0;
+
+        let nx = self.dims[0];
+        let ny = self.dims[1];
+        let off_y = self.plane_ray_offsets[1];
+        let off_z = self.plane_ray_offsets[2];
+
+        let (axis_id, plane_offset, nu, du, dv, dw, ou, ov, ow) = if global_ray < off_y {
+            (
+                0u32,
+                self.plane_ray_offsets[0],
+                ny,
+                self.pitch_mm[1],
+                self.pitch_mm[2],
+                self.pitch_mm[0],
+                self.origin_wcs[1],
+                self.origin_wcs[2],
+                self.origin_wcs[0],
+            )
+        } else if global_ray < off_z {
+            (
+                1u32,
+                off_y,
+                nx,
+                self.pitch_mm[0],
+                self.pitch_mm[2],
+                self.pitch_mm[1],
+                self.origin_wcs[0],
+                self.origin_wcs[2],
+                self.origin_wcs[1],
+            )
+        } else {
+            (
+                2u32,
+                off_z,
+                nx,
+                self.pitch_mm[0],
+                self.pitch_mm[1],
+                self.pitch_mm[2],
+                self.origin_wcs[0],
+                self.origin_wcs[1],
+                self.origin_wcs[2],
+            )
+        };
+
+        let local_ray = global_ray - plane_offset;
+        let iu = local_ray % nu.max(1);
+        let iv = local_ray / nu.max(1);
+
+        let unpack_snorm8x3 = |w: u32| -> [f32; 3] {
+            let b0 = (w & 0xFF) as u8 as i8;
+            let b1 = ((w >> 8) & 0xFF) as u8 as i8;
+            let b2 = ((w >> 16) & 0xFF) as u8 as i8;
+            [
+                (f32::from(b0) / 127.0).clamp(-1.0, 1.0) * TRIDEXEL_DUAL_OFFSET_PACK_SCALE,
+                (f32::from(b1) / 127.0).clamp(-1.0, 1.0) * TRIDEXEL_DUAL_OFFSET_PACK_SCALE,
+                (f32::from(b2) / 127.0).clamp(-1.0, 1.0) * TRIDEXEL_DUAL_OFFSET_PACK_SCALE,
+            ]
+        };
+
+        let corner_words = [q.corner0_pad, q.corner1_pad, q.corner2_pad, q.corner3_pad];
+        let steps: [(u32, u32); 4] = if axis_id == 1 {
+            [(0, 0), (0, 1), (1, 1), (1, 0)]
+        } else {
+            [(0, 0), (1, 0), (1, 1), (0, 1)]
+        };
+
+        let mut raw_corners = [([0.0_f32; 3], [0.0_f32; 3]); 4];
+        for ci in 0..4 {
+            let off = unpack_snorm8x3(corner_words[ci]);
+            let u = ou + ((iu + steps[ci].0) as f32 + off[0]) * du;
+            let v = ov + ((iv + steps[ci].1) as f32 + off[1]) * dv;
+            let w = ow + (dw_idx as f32 + off[2]) * dw;
+            let pos = match axis_id {
+                0 => [w, u, v],
+                1 => [u, w, v],
+                _ => [u, v, w],
+            };
+            let n = if ci < 2 {
+                unpack_oct_normal_12bit(q.n01_oct, ci == 1, corner_words[ci])
+            } else {
+                unpack_oct_normal_12bit(q.n23_oct, ci == 3, corner_words[ci])
+            };
+            raw_corners[ci] = (pos, n);
+        }
+
+        if want_min {
+            [
+                raw_corners[0],
+                raw_corners[3],
+                raw_corners[2],
+                raw_corners[1],
+            ]
+        } else {
+            raw_corners
+        }
+    }
 }
 
 /// Polymorphic read-only GPU stock render handle published by [`super::WgpuComputeBackend`] for
@@ -420,6 +671,24 @@ impl GpuStockRenderHandle {
         target_tridexel: Option<&TriDexelStock>,
         color_mode: SimStockColorMode,
     ) -> Arc<Self> {
+        Self::from_simulated_stock_with_options(
+            ctx,
+            stock,
+            target_tridexel,
+            SimMeshOptions::from(color_mode),
+        )
+    }
+
+    /// Uploads flat stock buffers from a [`SimulatedStock`] snapshot directly onto `ctx`'s
+    /// presentation `wgpu::Device` using visual [`SimMeshOptions`] (`color_mode` + optional
+    /// `mesh_skinning`).
+    pub fn from_simulated_stock_with_options(
+        ctx: &Arc<GpuSimContext>,
+        stock: &SimulatedStock,
+        target_tridexel: Option<&TriDexelStock>,
+        options: SimMeshOptions,
+    ) -> Arc<Self> {
+        let color_mode = options.color_mode;
         let device = ctx.device();
         match stock {
             SimulatedStock::Heightfield(hf) => {
@@ -600,7 +869,7 @@ impl GpuStockRenderHandle {
                 let quad_buf = Arc::new(device.create_buffer(&wgpu::BufferDescriptor {
                     label: Some("chip_td_render_emit_quads"),
                     size: quad_bytes.max(64),
-                    usage: wgpu::BufferUsages::STORAGE,
+                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
                     mapped_at_creation: false,
                 }));
                 let indirect_args_buf = Arc::new(device.create_buffer(&wgpu::BufferDescriptor {
@@ -646,10 +915,19 @@ impl GpuStockRenderHandle {
                     emit_uniform_buf,
                     max_quads,
                     overflow_mesh,
-                    color_mode,
+                    options,
                 );
                 Arc::new(Self::TriDexel(data))
             }
+        }
+    }
+
+    /// Refreshes any GPU-baked render geometry (such as `TriDexel` indirect quads) to match
+    /// `options` without re-running simulation sweeps. Returns `true` if a GPU compute pass ran.
+    pub fn refresh_for_options(&self, options: SimMeshOptions) -> bool {
+        match self {
+            Self::Heightfield(_) | Self::Cylindrical(_) => false,
+            Self::TriDexel(t) => t.refresh_for_options(options),
         }
     }
 
