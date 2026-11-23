@@ -229,9 +229,11 @@ fn cpu_tridexel_curved_skinning_is_smooth_watertight_and_bounded() {
         "skinned mode must strictly reduce normal discontinuity across adjacent curved quads (skinned={skin_disc:.3}° vs crisp={crisp_disc:.3}°)"
     );
 
-    // Verify bounded displacement <= 0.45 * pitch AND exact watertight shared corner identity!
+    // Verify bounded displacement within the dual cell (<= 1.15 * pitch from crisp axis-decoupled
+    // corner, since real 3D Surface Nets removes up to ~0.75 * pitch of stair-step offset) AND
+    // exact watertight shared corner identity!
     let min_pitch = stock.pitch_mm.x.min(stock.pitch_mm.y).min(stock.pitch_mm.z);
-    let max_allowed = 0.45 * min_pitch + 1e-4;
+    let max_allowed = 1.15 * min_pitch + 1e-4;
     let mut max_disp = 0.0_f64;
     let mut orig_to_relaxed: HashMap<[u32; 3], [u32; 3]> = HashMap::new();
 
@@ -756,8 +758,8 @@ mod gpu_skinning_tests {
             "GPU skinned mode must reduce normal discontinuity across adjacent curved quads (skinned={gpu_skin_disc:.3}° vs crisp={gpu_crisp_disc:.3}°)"
         );
 
-        // Verify GPU displacement <= 0.45 * pitch AND watertightness (shared dual corners emit identical positions)
-        let max_allowed = 0.45 * min_pitch + 0.02; // allow 1 LSB of snorm8 packing (~0.008*pitch)
+        // Verify GPU displacement stays bounded inside dual cell AND watertightness (shared dual corners emit identical positions)
+        let max_allowed = 1.15 * min_pitch + 0.02; // allow 1 LSB of snorm8 packing (~0.008*pitch)
         let mut max_gpu_disp = 0.0_f64;
         let mut corner_map: HashMap<(u32, u32, u32), [f32; 3]> = HashMap::new();
         let nx = td_render.dims[0];

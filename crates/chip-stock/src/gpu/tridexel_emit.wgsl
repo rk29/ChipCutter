@@ -426,9 +426,113 @@ fn occ18_bit(mask: u32, lu: u32, lv: u32, lw: u32) -> bool {
     return ((mask >> bit) & 1u) != 0u;
 }
 
-// Computes the exact cross-plane Dual-Vertex Surface Nets sub-voxel offset `(off_u, off_v, off_w)`
-// (in voxel units, clamped to `[-0.55, +0.55]`) for dual corner `(iu + ou_c, iv + ov_c, dw)`
-// reading the pre-cached 3×3×2 voxel occupancy bitmask `occ_mask` via a single flat 12-edge loop.
+// Evaluates a local surface patch normal on dexel plane `ax` around dual corner `c_xyz`.
+// Returns `vec4(nx, ny, nz, 1.0)` when neighboring rays confirm a sustained surface patch, or
+// `vec4(0.0)` when the crossings belong to an isolated 1-voxel stair-step (zero loops, FXC-safe).
+fn eval_corner_plane_patch_normal(
+    ax: u32,
+    c_xyz: vec3<i32>,
+    want_min: bool,
+    ref_w: f32,
+) -> vec4<f32> {
+    let u_ax = plane_u_axis(ax);
+    let v_ax = plane_v_axis(ax);
+    let du = axis_pitch(u_ax);
+    let dv = axis_pitch(v_ax);
+    let dw = axis_pitch(ax);
+    let cu = axis_get_i32(c_xyz, u_ax);
+    let cv = axis_get_i32(c_xyz, v_ax);
+    let max_d = 1.65 * dw;
+
+    let q00 = nearest_endpoint_on_plane(ax, cu - 1, cv - 1, want_min, ref_w, max_d);
+    let q10 = nearest_endpoint_on_plane(ax, cu, cv - 1, want_min, ref_w, max_d);
+    let q01 = nearest_endpoint_on_plane(ax, cu - 1, cv, want_min, ref_w, max_d);
+    let q11 = nearest_endpoint_on_plane(ax, cu, cv, want_min, ref_w, max_d);
+
+    let hits = select(0u, 1u, q00.found)
+        + select(0u, 1u, q10.found)
+        + select(0u, 1u, q01.found)
+        + select(0u, 1u, q11.found);
+
+    var out = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+    if (hits >= 2u) {
+        var u_sum = 0.0;
+        var u_cnt = 0.0;
+        if (q00.found && q10.found) {
+            u_sum = u_sum + (q10.coord - q00.coord) / du;
+            u_cnt = u_cnt + 1.0;
+        }
+        if (q01.found && q11.found) {
+            u_sum = u_sum + (q11.coord - q01.coord) / du;
+            u_cnt = u_cnt + 1.0;
+        }
+
+        var v_sum = 0.0;
+        var v_cnt = 0.0;
+        if (q00.found && q01.found) {
+            v_sum = v_sum + (q01.coord - q00.coord) / dv;
+            v_cnt = v_cnt + 1.0;
+        }
+        if (q10.found && q11.found) {
+            v_sum = v_sum + (q11.coord - q10.coord) / dv;
+            v_cnt = v_cnt + 1.0;
+        }
+
+        var valid = true;
+        if (u_cnt == 0.0) {
+            let left_side = q00.found || q01.found;
+            let base_u = select(cu, cu - 1, left_side);
+            let step_u = select(1, -1, left_side);
+            let base_v = select(cv, cv - 1, q00.found || q10.found);
+            let q_ref = nearest_endpoint_on_plane(ax, base_u, base_v, want_min, ref_w, max_d);
+            let q_ext = nearest_endpoint_on_plane(ax, base_u + step_u, base_v, want_min, ref_w, max_d);
+            if (q_ref.found && q_ext.found) {
+                u_sum = (q_ext.coord - q_ref.coord) / (du * f32(step_u));
+                u_cnt = 1.0;
+            } else {
+                valid = false;
+            }
+        }
+        if (valid && v_cnt == 0.0) {
+            let bot_side = q00.found || q10.found;
+            let base_v = select(cv, cv - 1, bot_side);
+            let step_v = select(1, -1, bot_side);
+            let base_u = select(cu, cu - 1, q00.found || q01.found);
+            let q_ref = nearest_endpoint_on_plane(ax, base_u, base_v, want_min, ref_w, max_d);
+            let q_ext = nearest_endpoint_on_plane(ax, base_u, base_v + step_v, want_min, ref_w, max_d);
+            if (q_ref.found && q_ext.found) {
+                v_sum = (q_ext.coord - q_ref.coord) / (dv * f32(step_v));
+                v_cnt = 1.0;
+            } else {
+                valid = false;
+            }
+        }
+
+        if (valid && u_cnt > 0.0 && v_cnt > 0.0) {
+            let dw_du = u_sum / u_cnt;
+            let dw_dv = v_sum / v_cnt;
+            var n_uvw = vec3<f32>(-dw_du, -dw_dv, 1.0);
+            if (want_min) {
+                n_uvw = vec3<f32>(dw_du, dw_dv, -1.0);
+            }
+            let n_xyz = from_uvw_f32(ax, n_uvw.x, n_uvw.y, n_uvw.z);
+            let n_len = length(n_xyz);
+            if (n_len > 1e-6) {
+                out = vec4<f32>(n_xyz / n_len, 1.0);
+            }
+        }
+    }
+    return out;
+}
+
+// Computes the Dual-Vertex Surface Nets sub-voxel offset `(off_u, off_v, off_w)` for dual corner
+// `(iu + ou_c, iv + ov_c, dw)` reading the pre-cached 3×3×2 voxel occupancy bitmask `occ_mask`
+// via a single flat 12-edge loop.
+// - When `skinning == false`: axis-decoupled corner averaging (crisp mode).
+// - When `skinning == true`: true 3D Surface Nets crossing-point centroid (`V_SN = (1/|E|) Σ P_e`),
+//   which places every smooth curved/sloped/45° corner directly on the continuous surface with
+//   zero stair-steps, while preserving exact axis-decoupled sharp corners on outer stock
+//   boundaries and genuine 90° multi-plane creases!
 fn compute_dual_corner_offset(
     axis_id: u32,
     iu: i32,
@@ -437,6 +541,7 @@ fn compute_dual_corner_offset(
     ou_c: u32,
     ov_c: u32,
     occ_mask: u32,
+    skinning: bool,
 ) -> vec3<f32> {
     let u_ax = plane_u_axis(axis_id);
     let v_ax = plane_v_axis(axis_id);
@@ -455,10 +560,21 @@ fn compute_dual_corner_offset(
 
     var w_sum = 0.0;
     var w_cnt = 0.0;
+    var w_min_votes = 0.0;
     var u_sum = 0.0;
     var u_cnt = 0.0;
+    var u_min_votes = 0.0;
     var v_sum = 0.0;
     var v_cnt = 0.0;
+    var v_min_votes = 0.0;
+
+    // Canonical-order (X-edges + Y-edges + Z-edges) 3D Surface Nets crossing-point accumulators
+    // in local (x, y, z) mm so all quads sharing `c_xyz` across X/Y/Z seams compute bit-identical
+    // floating-point centroids with zero snorm8 rounding divergence!
+    var p3_w_sum = vec3<f32>(0.0, 0.0, 0.0);
+    var p3_u_sum = vec3<f32>(0.0, 0.0, 0.0);
+    var p3_v_sum = vec3<f32>(0.0, 0.0, 0.0);
+    var p3_cnt = 0.0;
 
     // Flat 12-edge scan: e in 0..4 => W-axis, 4..8 => U-axis, 8..12 => V-axis
     for (var e = 0u; e < 12u; e = e + 1u) {
@@ -469,6 +585,9 @@ fn compute_dual_corner_offset(
         var rv = 0;
         var ref_c = base_w;
         var max_d = 1.05 * pw;
+        var edge_u_mm = base_u;
+        var edge_v_mm = base_v;
+        var edge_w_mm = base_w;
 
         if (e < 4u) {
             let ou = e & 1u;
@@ -479,6 +598,8 @@ fn compute_dual_corner_offset(
             hi = occ18_bit(occ_mask, lu, lv, 1u);
             ru = iu + i32(lu) - 1;
             rv = iv + i32(lv) - 1;
+            edge_u_mm = (f32(ru) + 0.5) * pu;
+            edge_v_mm = (f32(rv) + 0.5) * pv;
         } else if (e < 8u) {
             let sub = e - 4u;
             let ov = sub & 1u;
@@ -487,12 +608,15 @@ fn compute_dual_corner_offset(
             lo = occ18_bit(occ_mask, ou_c, lv, lw);
             hi = occ18_bit(occ_mask, ou_c + 1u, lv, lw);
             let qw = dw + i32(lw) - 1;
-            let vox = from_uvw_i32(axis_id, iu + i32(ou_c), iv + i32(lv) - 1, qw);
+            let qv = iv + i32(lv) - 1;
+            let vox = from_uvw_i32(axis_id, iu + i32(ou_c), qv, qw);
             q_ax = u_ax;
             ru = axis_get_i32(vox, u_u_ax);
             rv = axis_get_i32(vox, u_v_ax);
             ref_c = base_u;
             max_d = 1.05 * pu;
+            edge_v_mm = (f32(qv) + 0.5) * pv;
+            edge_w_mm = (f32(qw) + 0.5) * pw;
         } else {
             let sub = e - 8u;
             let ou = sub & 1u;
@@ -501,48 +625,128 @@ fn compute_dual_corner_offset(
             lo = occ18_bit(occ_mask, lu, ov_c, lw);
             hi = occ18_bit(occ_mask, lu, ov_c + 1u, lw);
             let qw = dw + i32(lw) - 1;
-            let vox = from_uvw_i32(axis_id, iu + i32(lu) - 1, iv + i32(ov_c), qw);
+            let qu = iu + i32(lu) - 1;
+            let vox = from_uvw_i32(axis_id, qu, iv + i32(ov_c), qw);
             q_ax = v_ax;
             ru = axis_get_i32(vox, v_u_ax);
             rv = axis_get_i32(vox, v_v_ax);
             ref_c = base_v;
             max_d = 1.05 * pv;
+            edge_u_mm = (f32(qu) + 0.5) * pu;
+            edge_w_mm = (f32(qw) + 0.5) * pw;
         }
 
         if (lo != hi) {
-            let q = nearest_endpoint_on_plane(q_ax, ru, rv, !lo && hi, ref_c, max_d);
+            let want_min = !lo && hi;
+            let q = nearest_endpoint_on_plane(q_ax, ru, rv, want_min, ref_c, max_d);
             if (q.found) {
                 if (e < 4u) {
                     w_sum = w_sum + q.coord;
                     w_cnt = w_cnt + 1.0;
+                    w_min_votes = w_min_votes + select(0.0, 1.0, want_min);
+                    p3_w_sum = p3_w_sum + from_uvw_f32(axis_id, edge_u_mm, edge_v_mm, q.coord);
+                    p3_cnt = p3_cnt + 1.0;
                 } else if (e < 8u) {
                     u_sum = u_sum + q.coord;
                     u_cnt = u_cnt + 1.0;
+                    u_min_votes = u_min_votes + select(0.0, 1.0, want_min);
+                    p3_u_sum = p3_u_sum + from_uvw_f32(axis_id, q.coord, edge_v_mm, edge_w_mm);
+                    p3_cnt = p3_cnt + 1.0;
                 } else {
                     v_sum = v_sum + q.coord;
                     v_cnt = v_cnt + 1.0;
+                    v_min_votes = v_min_votes + select(0.0, 1.0, want_min);
+                    p3_v_sum = p3_v_sum + from_uvw_f32(axis_id, edge_u_mm, q.coord, edge_w_mm);
+                    p3_cnt = p3_cnt + 1.0;
                 }
             }
         }
     }
 
-    let off_w = select(
+    let w_avg = select(base_w, w_sum / max(w_cnt, 1.0), w_cnt > 0.0);
+    let u_avg = select(base_u, u_sum / max(u_cnt, 1.0), u_cnt > 0.0);
+    let v_avg = select(base_v, v_sum / max(v_cnt, 1.0), v_cnt > 0.0);
+
+    let dec_w = select(
         0.0,
-        clamp((w_sum / max(w_cnt, 1.0) - base_w) / pw, -DUAL_OFFSET_CLAMP, DUAL_OFFSET_CLAMP),
+        clamp((w_avg - base_w) / pw, -DUAL_OFFSET_CLAMP, DUAL_OFFSET_CLAMP),
         w_cnt > 0.0,
     );
-    let off_u = select(
+    let dec_u = select(
         0.0,
-        clamp((u_sum / max(u_cnt, 1.0) - base_u) / pu, -DUAL_OFFSET_CLAMP, DUAL_OFFSET_CLAMP),
+        clamp((u_avg - base_u) / pu, -DUAL_OFFSET_CLAMP, DUAL_OFFSET_CLAMP),
         u_cnt > 0.0,
     );
-    let off_v = select(
+    let dec_v = select(
         0.0,
-        clamp((v_sum / max(v_cnt, 1.0) - base_v) / pv, -DUAL_OFFSET_CLAMP, DUAL_OFFSET_CLAMP),
+        clamp((v_avg - base_v) / pv, -DUAL_OFFSET_CLAMP, DUAL_OFFSET_CLAMP),
         v_cnt > 0.0,
     );
+    var out_off = vec3<f32>(dec_u, dec_v, dec_w);
 
-    return vec3<f32>(off_u, off_v, off_w);
+    if (skinning && p3_cnt > 0.0) {
+        let c_xyz = from_uvw_i32(axis_id, iu + i32(ou_c), iv + i32(ov_c), dw);
+        let nx = i32(u.dims_and_total.x);
+        let ny = i32(u.dims_and_total.y);
+        let nz = i32(u.dims_and_total.z);
+        var is_sharp = c_xyz.x <= 0 || c_xyz.x >= nx
+            || c_xyz.y <= 0 || c_xyz.y >= ny
+            || c_xyz.z <= 0 || c_xyz.z >= nz;
+
+        let active_axes = select(0u, 1u, w_cnt > 0.0)
+            + select(0u, 1u, u_cnt > 0.0)
+            + select(0u, 1u, v_cnt > 0.0);
+        if (!is_sharp && active_axes >= 2u) {
+            var nw = vec4<f32>(0.0);
+            var nu = vec4<f32>(0.0);
+            var nv = vec4<f32>(0.0);
+            if (w_cnt > 0.0) {
+                nw = eval_corner_plane_patch_normal(axis_id, c_xyz, w_min_votes * 2.0 > w_cnt, w_avg);
+            }
+            if (u_cnt > 0.0) {
+                nu = eval_corner_plane_patch_normal(u_ax, c_xyz, u_min_votes * 2.0 > u_cnt, u_avg);
+            }
+            if (v_cnt > 0.0) {
+                nv = eval_corner_plane_patch_normal(v_ax, c_xyz, v_min_votes * 2.0 > v_cnt, v_avg);
+            }
+            if (nw.w > 0.5 && nu.w > 0.5 && dot(nw.xyz, nu.xyz) < CREASE_COS_THRESHOLD) {
+                is_sharp = true;
+            }
+            if (nw.w > 0.5 && nv.w > 0.5 && dot(nw.xyz, nv.xyz) < CREASE_COS_THRESHOLD) {
+                is_sharp = true;
+            }
+            if (nu.w > 0.5 && nv.w > 0.5 && dot(nu.xyz, nv.xyz) < CREASE_COS_THRESHOLD) {
+                is_sharp = true;
+            }
+        }
+
+        if (!is_sharp) {
+            // Canonical summation order: X-edges + Y-edges + Z-edges
+            var p3_x = p3_u_sum;
+            var p3_y = p3_v_sum;
+            var p3_z = p3_w_sum;
+            if (axis_id == 0u) {
+                p3_x = p3_w_sum;
+                p3_y = p3_u_sum;
+                p3_z = p3_v_sum;
+            } else if (axis_id == 1u) {
+                p3_x = p3_u_sum;
+                p3_y = p3_w_sum;
+                p3_z = p3_v_sum;
+            }
+            let cent_xyz = (p3_x + p3_y + p3_z) / p3_cnt;
+            let cent_u = axis_get_f32(cent_xyz, u_ax);
+            let cent_v = axis_get_f32(cent_xyz, v_ax);
+            let cent_w = axis_get_f32(cent_xyz, axis_id);
+            out_off = vec3<f32>(
+                clamp((cent_u - base_u) / pu, -DUAL_OFFSET_CLAMP, DUAL_OFFSET_CLAMP),
+                clamp((cent_v - base_v) / pv, -DUAL_OFFSET_CLAMP, DUAL_OFFSET_CLAMP),
+                clamp((cent_w - base_w) / pw, -DUAL_OFFSET_CLAMP, DUAL_OFFSET_CLAMP),
+            );
+        }
+    }
+
+    return out_off;
 }
 
 // Evaluates a crease-aware smooth surface normal on the dominant dexel plane of `n_face` so
@@ -670,9 +874,10 @@ fn pack_oct_pair_hi8(qa: vec2<u32>, qb: vec2<u32>) -> u32 {
         | (((qb.y >> 4u) & 0xFFu) << 24u);
 }
 
-// Deterministic, axis-independent, crease-preserving dual-corner relaxation (zero loops).
-// Because `c_xyz`, the 8-voxel occupancy gradient `n_occ`, and `dom_ax` depend ONLY on the shared
-// dual corner `c_xyz`, all adjacent quads across X/Y/Z seams emit bit-identical relaxed positions.
+// Deterministic, axis-symmetric, crease-preserving dual-corner surface projection (zero loops).
+// Projects smooth dual corners strictly along the local surface normal onto the continuous 2×2
+// crossing plane (never pulling tangential (u, v) back to integer grid corners!), so smooth
+// curved/helical surfaces stay glass-smooth and 100% watertight across X/Y/Z seams.
 fn relax_dual_corner_uvw(
     axis_id: u32,
     c_xyz: vec3<i32>,
@@ -703,67 +908,67 @@ fn relax_dual_corner_uvw(
         let gv = (b000 + b100 + b001 + b101) - (b010 + b110 + b011 + b111);
         let gw = (b000 + b100 + b010 + b110) - (b001 + b101 + b011 + b111);
         let n_occ = from_uvw_f32(axis_id, gu, gv, gw);
-        let ax = abs(n_occ.x);
-        let ay = abs(n_occ.y);
-        let az = abs(n_occ.z);
+        let n_occ_len = length(n_occ);
 
-        if (ax + ay + az > 0.5) {
-            var dom_ax = 2u;
-            if (ax >= ay && ax >= az) {
-                dom_ax = 0u;
-            } else if (ay >= az) {
-                dom_ax = 1u;
-            }
-            let dom_u_ax = plane_u_axis(dom_ax);
-            let dom_v_ax = plane_v_axis(dom_ax);
-            let dom_du = axis_pitch(dom_u_ax);
-            let dom_dv = axis_pitch(dom_v_ax);
-            let dom_dw = axis_pitch(dom_ax);
-            let cu = axis_get_i32(c_xyz, dom_u_ax);
-            let cv = axis_get_i32(c_xyz, dom_v_ax);
-
+        if (n_occ_len > 0.5) {
+            let n_dir = n_occ / n_occ_len;
             let pitch_xyz = u.pitch_and_scale.xyz;
             let raw_off_xyz = from_uvw_f32(axis_id, off_uvw.x, off_uvw.y, off_uvw.z);
             let pos_0 = (vec3<f32>(c_xyz) + raw_off_xyz) * pitch_xyz;
-            let ref_w = axis_get_f32(pos_0, dom_ax);
-            let dom_want_min = axis_get_f32(n_occ, dom_ax) < 0.0;
-            let max_d = 1.35 * dom_dw;
 
-            let q00 = nearest_endpoint_on_plane(dom_ax, cu - 1, cv - 1, dom_want_min, ref_w, max_d);
-            let q10 = nearest_endpoint_on_plane(dom_ax, cu, cv - 1, dom_want_min, ref_w, max_d);
-            let q01 = nearest_endpoint_on_plane(dom_ax, cu - 1, cv, dom_want_min, ref_w, max_d);
-            let q11 = nearest_endpoint_on_plane(dom_ax, cu, cv, dom_want_min, ref_w, max_d);
+            var n_blend = vec3<f32>(0.0);
+            var dist_sum = 0.0;
+            var w_total = 0.0;
 
-            if (q00.found && q10.found && q01.found && q11.found) {
-                let s_u_mid = 0.5 * ((q10.coord - q00.coord) + (q11.coord - q01.coord)) / dom_du;
-                let s_v_mid = 0.5 * ((q01.coord - q00.coord) + (q11.coord - q10.coord)) / dom_dv;
+            for (var ax = 0u; ax < 3u; ax = ax + 1u) {
+                let comp = axis_get_f32(n_dir, ax);
+                let w_ax = comp * comp;
+                if (w_ax > 0.06) {
+                    let dom_u_ax = plane_u_axis(ax);
+                    let dom_v_ax = plane_v_axis(ax);
+                    let dom_du = axis_pitch(dom_u_ax);
+                    let dom_dv = axis_pitch(dom_v_ax);
+                    let dom_dw = axis_pitch(ax);
+                    let cu = axis_get_i32(c_xyz, dom_u_ax);
+                    let cv = axis_get_i32(c_xyz, dom_v_ax);
+                    let ref_w = axis_get_f32(pos_0, ax);
+                    let want_min = comp < 0.0;
+                    let max_d = 1.85 * dom_dw;
 
-                let q_ll = nearest_endpoint_on_plane(dom_ax, cu - 2, cv - 1, dom_want_min, q00.coord, max_d);
-                let q_rr = nearest_endpoint_on_plane(dom_ax, cu + 1, cv - 1, dom_want_min, q10.coord, max_d);
-                let q_dd = nearest_endpoint_on_plane(dom_ax, cu - 1, cv - 2, dom_want_min, q00.coord, max_d);
-                let q_uu = nearest_endpoint_on_plane(dom_ax, cu - 1, cv + 1, dom_want_min, q01.coord, max_d);
+                    let q00 = nearest_endpoint_on_plane(ax, cu - 1, cv - 1, want_min, ref_w, max_d);
+                    let q10 = nearest_endpoint_on_plane(ax, cu, cv - 1, want_min, ref_w, max_d);
+                    let q01 = nearest_endpoint_on_plane(ax, cu - 1, cv, want_min, ref_w, max_d);
+                    let q11 = nearest_endpoint_on_plane(ax, cu, cv, want_min, ref_w, max_d);
 
-                let s_u_l = select(s_u_mid, (q00.coord - q_ll.coord) / dom_du, q_ll.found);
-                let s_u_r = select(s_u_mid, (q_rr.coord - q10.coord) / dom_du, q_rr.found);
-                let s_v_d = select(s_v_mid, (q00.coord - q_dd.coord) / dom_dv, q_dd.found);
-                let s_v_u = select(s_v_mid, (q_uu.coord - q01.coord) / dom_dv, q_uu.found);
-
-                let n_ul = normalize(vec3<f32>(-s_u_l, -s_v_mid, 1.0));
-                let n_ur = normalize(vec3<f32>(-s_u_r, -s_v_mid, 1.0));
-                let n_vd = normalize(vec3<f32>(-s_u_mid, -s_v_d, 1.0));
-                let n_vu = normalize(vec3<f32>(-s_u_mid, -s_v_u, 1.0));
-
-                if (dot(n_ul, n_ur) >= CREASE_COS_THRESHOLD && dot(n_vd, n_vu) >= CREASE_COS_THRESHOLD) {
-                    let w_smooth = 0.25 * (q00.coord + q10.coord + q01.coord + q11.coord);
-                    let target_xyz = from_uvw_f32(dom_ax, f32(cu) * dom_du, f32(cv) * dom_dv, w_smooth);
-                    var delta = 0.65 * (target_xyz - pos_0);
-                    let min_p = min(pitch_xyz.x, min(pitch_xyz.y, pitch_xyz.z));
-                    let max_d_len = MAX_RELAX_DISP_RATIO * min_p;
-                    let d_len = length(delta);
-                    if (d_len > max_d_len && d_len > 1e-6) {
-                        delta = delta * (max_d_len / d_len);
+                    if (q00.found && q10.found && q01.found && q11.found) {
+                        let s_u = 0.5 * ((q10.coord - q00.coord) + (q11.coord - q01.coord)) / dom_du;
+                        let s_v = 0.5 * ((q01.coord - q00.coord) + (q11.coord - q10.coord)) / dom_dv;
+                        var n_uvw = vec3<f32>(-s_u, -s_v, 1.0);
+                        if (want_min) {
+                            n_uvw = vec3<f32>(s_u, s_v, -1.0);
+                        }
+                        let n_ax = normalize(from_uvw_f32(ax, n_uvw.x, n_uvw.y, n_uvw.z));
+                        let w_avg = 0.25 * (q00.coord + q10.coord + q01.coord + q11.coord);
+                        let cent = from_uvw_f32(ax, f32(cu) * dom_du, f32(cv) * dom_dv, w_avg);
+                        let sd = dot(cent - pos_0, n_ax);
+                        n_blend = n_blend + w_ax * n_ax;
+                        dist_sum = dist_sum + w_ax * sd;
+                        w_total = w_total + w_ax;
                     }
-                    let relaxed_pos = pos_0 + delta;
+                }
+            }
+
+            if (w_total > 0.05) {
+                let nb_len = length(n_blend);
+                if (nb_len > 1e-5) {
+                    let n_smooth = n_blend / nb_len;
+                    let min_p = min(pitch_xyz.x, min(pitch_xyz.y, pitch_xyz.z));
+                    let sd_clamped = clamp(
+                        dist_sum / w_total,
+                        -MAX_RELAX_DISP_RATIO * min_p,
+                        MAX_RELAX_DISP_RATIO * min_p,
+                    );
+                    let relaxed_pos = pos_0 + sd_clamped * n_smooth;
                     let relaxed_off_xyz = clamp(
                         relaxed_pos / pitch_xyz - vec3<f32>(c_xyz),
                         vec3<f32>(-DUAL_RELAX_OFFSET_CLAMP),
@@ -781,72 +986,132 @@ fn relax_dual_corner_uvw(
     return out_off;
 }
 
-// Evaluates a crease-aware smooth surface normal directly at dual corner `c_xyz` using the
-// symmetric 2×2 ray stencil on the dominant dexel plane of `n_face` (zero loops, FXC-safe).
+// Evaluates a C¹ axis-blended crease-aware smooth surface normal directly at dual corner `c_xyz`
+// using the corner's own 8-voxel outward direction `n_occ` (so narrow sliver quads on smooth
+// curved slopes never degenerate or flip normals, while genuine sharp creases still fall back to
+// `n_face`).
 fn compute_corner_smooth_normal(
+    axis_id: u32,
     c_xyz: vec3<i32>,
     corner_local: vec3<f32>,
     n_face: vec3<f32>,
+    ouc: u32,
+    ovc: u32,
+    occ_mask: u32,
 ) -> vec3<f32> {
-    let ax = abs(n_face.x);
-    let ay = abs(n_face.y);
-    let az = abs(n_face.z);
-    var dom_ax = 2u;
-    if (ax >= ay && ax >= az) {
-        dom_ax = 0u;
-    } else if (ay >= az) {
-        dom_ax = 1u;
+    let nx = i32(u.dims_and_total.x);
+    let ny = i32(u.dims_and_total.y);
+    let nz = i32(u.dims_and_total.z);
+    let is_bnd = c_xyz.x <= 0 || c_xyz.x >= nx
+        || c_xyz.y <= 0 || c_xyz.y >= ny
+        || c_xyz.z <= 0 || c_xyz.z >= nz;
+
+    let b000 = select(0.0, 1.0, occ18_bit(occ_mask, ouc, ovc, 0u));
+    let b100 = select(0.0, 1.0, occ18_bit(occ_mask, ouc + 1u, ovc, 0u));
+    let b010 = select(0.0, 1.0, occ18_bit(occ_mask, ouc, ovc + 1u, 0u));
+    let b110 = select(0.0, 1.0, occ18_bit(occ_mask, ouc + 1u, ovc + 1u, 0u));
+    let b001 = select(0.0, 1.0, occ18_bit(occ_mask, ouc, ovc, 1u));
+    let b101 = select(0.0, 1.0, occ18_bit(occ_mask, ouc + 1u, ovc, 1u));
+    let b011 = select(0.0, 1.0, occ18_bit(occ_mask, ouc, ovc + 1u, 1u));
+    let b111 = select(0.0, 1.0, occ18_bit(occ_mask, ouc + 1u, ovc + 1u, 1u));
+
+    let gu = (b000 + b010 + b001 + b011) - (b100 + b110 + b101 + b111);
+    let gv = (b000 + b100 + b001 + b101) - (b010 + b110 + b011 + b111);
+    let gw = (b000 + b100 + b010 + b110) - (b001 + b101 + b011 + b111);
+    let n_occ_raw = from_uvw_f32(axis_id, gu, gv, gw);
+    let n_occ_len = length(n_occ_raw);
+    let ref_dir = select(n_face, n_occ_raw / max(n_occ_len, 1e-6), !is_bnd && n_occ_len > 0.5);
+
+    var n_axes = array<vec4<f32>, 3>(vec4<f32>(0.0), vec4<f32>(0.0), vec4<f32>(0.0));
+    var w_axes = array<f32, 3>(0.0, 0.0, 0.0);
+
+    for (var ax = 0u; ax < 3u; ax = ax + 1u) {
+        let comp = axis_get_f32(ref_dir, ax);
+        let w_ax = comp * comp;
+        if (w_ax > 0.04) {
+            let dom_u_ax = plane_u_axis(ax);
+            let dom_v_ax = plane_v_axis(ax);
+            let du = axis_pitch(dom_u_ax);
+            let dv = axis_pitch(dom_v_ax);
+            let dw = axis_pitch(ax);
+            let cu = axis_get_i32(c_xyz, dom_u_ax);
+            let cv = axis_get_i32(c_xyz, dom_v_ax);
+            let cw = axis_get_f32(corner_local, ax);
+            let dom_want_min = comp < 0.0;
+            let max_d = 1.85 * dw;
+
+            let q00 = nearest_endpoint_on_plane(ax, cu - 1, cv - 1, dom_want_min, cw, max_d);
+            let q10 = nearest_endpoint_on_plane(ax, cu, cv - 1, dom_want_min, cw, max_d);
+            let q01 = nearest_endpoint_on_plane(ax, cu - 1, cv, dom_want_min, cw, max_d);
+            let q11 = nearest_endpoint_on_plane(ax, cu, cv, dom_want_min, cw, max_d);
+
+            var u_sum = 0.0;
+            var u_cnt = 0.0;
+            if (q00.found && q10.found) {
+                u_sum = u_sum + (q10.coord - q00.coord) / du;
+                u_cnt = u_cnt + 1.0;
+            }
+            if (q01.found && q11.found) {
+                u_sum = u_sum + (q11.coord - q01.coord) / du;
+                u_cnt = u_cnt + 1.0;
+            }
+
+            var v_sum = 0.0;
+            var v_cnt = 0.0;
+            if (q00.found && q01.found) {
+                v_sum = v_sum + (q01.coord - q00.coord) / dv;
+                v_cnt = v_cnt + 1.0;
+            }
+            if (q10.found && q11.found) {
+                v_sum = v_sum + (q11.coord - q10.coord) / dv;
+                v_cnt = v_cnt + 1.0;
+            }
+
+            if (u_cnt > 0.0 || v_cnt > 0.0) {
+                let dw_du = select(0.0, u_sum / max(u_cnt, 1.0), u_cnt > 0.0);
+                let dw_dv = select(0.0, v_sum / max(v_cnt, 1.0), v_cnt > 0.0);
+                var n_uvw = vec3<f32>(-dw_du, -dw_dv, 1.0);
+                if (dom_want_min) {
+                    n_uvw = vec3<f32>(dw_du, dw_dv, -1.0);
+                }
+                let n_ax = normalize(from_uvw_f32(ax, n_uvw.x, n_uvw.y, n_uvw.z));
+                n_axes[ax] = vec4<f32>(n_ax, 1.0);
+                w_axes[ax] = w_ax;
+            }
+        }
     }
 
-    let dom_u_ax = plane_u_axis(dom_ax);
-    let dom_v_ax = plane_v_axis(dom_ax);
-    let du = axis_pitch(dom_u_ax);
-    let dv = axis_pitch(dom_v_ax);
-    let dw = axis_pitch(dom_ax);
-    let cu = axis_get_i32(c_xyz, dom_u_ax);
-    let cv = axis_get_i32(c_xyz, dom_v_ax);
-    let cw = axis_get_f32(corner_local, dom_ax);
-    let dom_want_min = axis_get_f32(n_face, dom_ax) < 0.0;
-    let max_d = 1.35 * dw;
-
-    let q00 = nearest_endpoint_on_plane(dom_ax, cu - 1, cv - 1, dom_want_min, cw, max_d);
-    let q10 = nearest_endpoint_on_plane(dom_ax, cu, cv - 1, dom_want_min, cw, max_d);
-    let q01 = nearest_endpoint_on_plane(dom_ax, cu - 1, cv, dom_want_min, cw, max_d);
-    let q11 = nearest_endpoint_on_plane(dom_ax, cu, cv, dom_want_min, cw, max_d);
-
-    var u_sum = 0.0;
-    var u_cnt = 0.0;
-    if (q00.found && q10.found) {
-        u_sum = u_sum + (q10.coord - q00.coord) / du;
-        u_cnt = u_cnt + 1.0;
+    // Check if the corner sits on a genuine sharp crease (outer boundary OR two active planes
+    // disagreeing by > 38°). On sharp creases, filter strictly against `n_face`; on smooth
+    // curved corners, blend all active planes unconditionally so sliver quads match seamlessly!
+    var is_crease = is_bnd;
+    if (!is_crease && n_axes[0].w > 0.5 && n_axes[1].w > 0.5 && dot(n_axes[0].xyz, n_axes[1].xyz) < CREASE_COS_THRESHOLD) {
+        is_crease = true;
     }
-    if (q01.found && q11.found) {
-        u_sum = u_sum + (q11.coord - q01.coord) / du;
-        u_cnt = u_cnt + 1.0;
+    if (!is_crease && n_axes[0].w > 0.5 && n_axes[2].w > 0.5 && dot(n_axes[0].xyz, n_axes[2].xyz) < CREASE_COS_THRESHOLD) {
+        is_crease = true;
+    }
+    if (!is_crease && n_axes[1].w > 0.5 && n_axes[2].w > 0.5 && dot(n_axes[1].xyz, n_axes[2].xyz) < CREASE_COS_THRESHOLD) {
+        is_crease = true;
     }
 
-    var v_sum = 0.0;
-    var v_cnt = 0.0;
-    if (q00.found && q01.found) {
-        v_sum = v_sum + (q01.coord - q00.coord) / dv;
-        v_cnt = v_cnt + 1.0;
-    }
-    if (q10.found && q11.found) {
-        v_sum = v_sum + (q11.coord - q10.coord) / dv;
-        v_cnt = v_cnt + 1.0;
+    var n_blend = vec3<f32>(0.0);
+    var w_total = 0.0;
+    for (var ax = 0u; ax < 3u; ax = ax + 1u) {
+        if (n_axes[ax].w > 0.5) {
+            let allow = select(dot(n_axes[ax].xyz, n_face) > 0.15, dot(n_axes[ax].xyz, n_face) >= CREASE_COS_THRESHOLD, is_crease);
+            if (allow) {
+                n_blend = n_blend + w_axes[ax] * n_axes[ax].xyz;
+                w_total = w_total + w_axes[ax];
+            }
+        }
     }
 
     var out_n = n_face;
-    if (u_cnt > 0.0 || v_cnt > 0.0) {
-        let dw_du = select(0.0, u_sum / max(u_cnt, 1.0), u_cnt > 0.0);
-        let dw_dv = select(0.0, v_sum / max(v_cnt, 1.0), v_cnt > 0.0);
-        var n_uvw = vec3<f32>(-dw_du, -dw_dv, 1.0);
-        if (dom_want_min) {
-            n_uvw = vec3<f32>(dw_du, dw_dv, -1.0);
-        }
-        let n_smooth = normalize(from_uvw_f32(dom_ax, n_uvw.x, n_uvw.y, n_uvw.z));
-        if (dot(n_smooth, n_face) >= CREASE_COS_THRESHOLD) {
-            out_n = n_smooth;
+    if (w_total > 0.01) {
+        let nb_len = length(n_blend);
+        if (nb_len > 1e-5) {
+            out_n = n_blend / nb_len;
         }
     }
     return out_n;
@@ -920,7 +1185,7 @@ fn emit_surface_net_quad(
             ovc = select(1u, 0u, axis_id == 1u);
         }
         let c_xyz = from_uvw_i32(axis_id, iiu + i32(ouc), iiv + i32(ovc), idw);
-        var off = compute_dual_corner_offset(axis_id, iiu, iiv, idw, ouc, ovc, occ_mask);
+        var off = compute_dual_corner_offset(axis_id, iiu, iiv, idw, ouc, ovc, occ_mask, skinning);
         if (skinning) {
             off = relax_dual_corner_uvw(axis_id, c_xyz, off, ouc, ovc, occ_mask);
         }
@@ -963,19 +1228,27 @@ fn emit_surface_net_quad(
     var n3 = n_face;
     if (skinning) {
         for (var ci = 0u; ci < 4u; ci = ci + 1u) {
+            var ouc = 0u;
+            var ovc = 0u;
             var c_xyz = c0_xyz;
             var pos = p0;
             if (ci == 1u) {
+                ouc = select(1u, 0u, axis_id == 1u);
+                ovc = select(0u, 1u, axis_id == 1u);
                 c_xyz = c1_xyz;
                 pos = p1;
             } else if (ci == 2u) {
+                ouc = 1u;
+                ovc = 1u;
                 c_xyz = c2_xyz;
                 pos = p2;
             } else if (ci == 3u) {
+                ouc = select(0u, 1u, axis_id == 1u);
+                ovc = select(1u, 0u, axis_id == 1u);
                 c_xyz = c3_xyz;
                 pos = p3;
             }
-            let nc = compute_corner_smooth_normal(c_xyz, pos, n_face);
+            let nc = compute_corner_smooth_normal(axis_id, c_xyz, pos, n_face, ouc, ovc, occ_mask);
             if (ci == 0u) {
                 n0 = nc;
             } else if (ci == 1u) {
@@ -996,7 +1269,12 @@ fn emit_surface_net_quad(
     }
 
     let is_side = axis_id != 2u;
-    let col = eval_endpoint_color(global_ray, w_local, op_idx, is_side);
+    var col = eval_endpoint_color(global_ray, w_local, op_idx, is_side);
+    if (skinning && op_idx == UNCUT_OP_IDX && u.mode_and_cap.x != COLOR_MODE_HEATMAP) {
+        let n_avg = normalize(n0 + n1 + n2 + n3);
+        let top_blend = clamp((abs(n_avg.z) - 0.70) / 0.25, 0.0, 1.0);
+        col = mix(u.raw_side_color, u.raw_top_color, top_blend);
+    }
 
     let base_v = atomicAdd(&draw_args[0], 6u);
     if (base_v + 6u > max_verts) {

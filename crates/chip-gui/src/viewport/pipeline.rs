@@ -2774,5 +2774,106 @@ mod tests {
             skin_mean_diff < 8.0,
             "GPU skinned cylinder shading must match CPU skinned mesh (mean_diff={skin_mean_diff:.2})"
         );
+
+        // Also verify close-up 45° helical-cut curved surface visual smoothness (Crisp vs Skinned)
+        // on BOTH GPU and CPU (and optionally dump side-by-side PNGs when CHIPCUTTER_DUMP_SKIN_PNG_DIR is set).
+        let (cw, ch) = (512u32, 384u32);
+        let mut close_cam = CadCamera {
+            target_mm: DVec3::ZERO,
+            distance_mm: 26.0,
+            ..CadCamera::default()
+        };
+        close_cam.set_standard_view(StandardView::Isometric);
+        close_cam.distance_mm = 26.0;
+
+        let render_mode = |is_gpu: bool, skin: bool| -> Vec<u8> {
+            let mut hl = HighlightState {
+                wcs_frame: RigidFrame3::IDENTITY,
+                show_stock: false,
+                show_grid: false,
+                ..HighlightState::default()
+            };
+            hl.sim_stock_source = if is_gpu {
+                Some(SimStockRenderSource::GpuGrid {
+                    revision: if skin { 12 } else { 11 },
+                    handle: Arc::clone(&gpu_handle),
+                    stock_model: DMat4::IDENTITY,
+                    color_mode: SimStockColorMode::ByOperation,
+                    mesh_skinning: skin,
+                })
+            } else {
+                let m = Arc::new(chip_sim::tessellate_tridexel_stock_mesh_with_options(
+                    &td_cpu,
+                    None,
+                    chip_sim::SimMeshOptions::new(SimStockColorMode::ByOperation, skin),
+                ));
+                Some(SimStockRenderSource::CpuMesh {
+                    revision: if skin { 12 } else { 11 },
+                    mesh: m,
+                    stock_model: DMat4::IDENTITY,
+                })
+            };
+            render_offscreen_rgba_on_device(device, queue, None, &close_cam, &hl, cw, ch).unwrap()
+        };
+
+        let close_gpu_crisp = render_mode(true, false);
+        let close_gpu_skin = render_mode(true, true);
+        let close_cpu_crisp = render_mode(false, false);
+        let close_cpu_skin = render_mode(false, true);
+
+        // Measure pixel-to-pixel vertical luminance roughness on the cylinder body:
+        // true 3D Surface Nets skinning must strictly eliminate stair-step banding on both GPU & CPU!
+        let close_bg = render_offscreen_rgba_on_device(
+            device,
+            queue,
+            None,
+            &close_cam,
+            &HighlightState {
+                wcs_frame: RigidFrame3::IDENTITY,
+                show_stock: false,
+                show_grid: false,
+                ..HighlightState::default()
+            },
+            cw,
+            ch,
+        )
+        .unwrap();
+        let vertical_roughness = |px: &[u8]| -> f64 {
+            let mut sum = 0.0_f64;
+            let mut cnt = 0usize;
+            for y in 1..(ch - 1) as usize {
+                for x in 0..cw as usize {
+                    let o0 = (y * cw as usize + x) * 4;
+                    let o1 = ((y + 1) * cw as usize + x) * 4;
+                    let fg0 = (0..3)
+                        .map(|c| px[o0 + c].abs_diff(close_bg[o0 + c]))
+                        .max()
+                        .unwrap_or(0)
+                        > 8;
+                    let fg1 = (0..3)
+                        .map(|c| px[o1 + c].abs_diff(close_bg[o1 + c]))
+                        .max()
+                        .unwrap_or(0)
+                        > 8;
+                    if fg0 && fg1 {
+                        let d = (0..3)
+                            .map(|c| f64::from(px[o0 + c].abs_diff(px[o1 + c])))
+                            .sum::<f64>()
+                            / 3.0;
+                        sum += d;
+                        cnt += 1;
+                    }
+                }
+            }
+            sum / cnt.max(1) as f64
+        };
+        let gpu_crisp_r = vertical_roughness(&close_gpu_crisp);
+        let gpu_skin_r = vertical_roughness(&close_gpu_skin);
+        let cpu_crisp_r = vertical_roughness(&close_cpu_crisp);
+        let cpu_skin_r = vertical_roughness(&close_cpu_skin);
+        assert!(
+            gpu_skin_r < gpu_crisp_r * 0.55 && cpu_skin_r < cpu_crisp_r * 0.55,
+            "3D Surface Nets skinning must sharply reduce stair-step luminance roughness (GPU {gpu_skin_r:.2} vs {gpu_crisp_r:.2}, CPU {cpu_skin_r:.2} vs {cpu_crisp_r:.2})"
+        );
     }
 }

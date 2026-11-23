@@ -136,6 +136,128 @@ fn crease_aware_smooth_normal(stock: &TriDexelStock, center_wcs: DVec3, n_face: 
     }
 }
 
+/// Evaluates a local surface normal on dexel plane `ax` around dual corner `d_ijk` (`want_min`
+/// indicates whether the solid is on the `+ax` side). Returns `Some(unit_normal)` only when
+/// neighboring rays confirm a sustained surface patch (at least 1 tangent slope on each axis or
+/// 2 coplanar crossings), so 1-voxel stair-step risers on gentle slopes are never mistaken for
+/// vertical walls.
+#[inline]
+fn corner_plane_patch_normal(
+    stock: &TriDexelStock,
+    ax: Axis3,
+    d_ijk: [usize; 3],
+    want_min: bool,
+    ref_w: f64,
+) -> Option<DVec3> {
+    let u_ax = ax.u_axis();
+    let v_ax = ax.v_axis();
+    let plane = stock.plane(ax);
+    let nu = plane.nu as isize;
+    let nv = plane.nv as isize;
+    let cu = u_ax.get_usize(d_ijk) as isize;
+    let cv = v_ax.get_usize(d_ijk) as isize;
+    let du = plane.du_mm;
+    let dv = plane.dv_mm;
+    let max_d = 1.65 * stock.pitch(ax);
+
+    let q = |iu: isize, iv: isize| -> Option<f64> {
+        if iu < 0 || iv < 0 || iu >= nu || iv >= nv {
+            return None;
+        }
+        nearest_ray_endpoint(
+            &plane.ray_spans(iu as usize, iv as usize),
+            ref_w,
+            want_min,
+            max_d,
+        )
+        .map(|(c, _)| c)
+    };
+
+    let q00 = q(cu - 1, cv - 1);
+    let q10 = q(cu, cv - 1);
+    let q01 = q(cu - 1, cv);
+    let q11 = q(cu, cv);
+    let hits = usize::from(q00.is_some())
+        + usize::from(q10.is_some())
+        + usize::from(q01.is_some())
+        + usize::from(q11.is_some());
+    // Require at least 2 rays; if only 2 rays hit, require they extend 1 step further along the
+    // perpendicular axis (a sustained flat wall/floor patch, not a 1-voxel stair-step riser).
+    if hits < 2 {
+        return None;
+    }
+
+    let mut u_sum = 0.0;
+    let mut u_cnt = 0.0;
+    if let (Some(a), Some(b)) = (q00, q10) {
+        u_sum += (b - a) / du;
+        u_cnt += 1.0;
+    }
+    if let (Some(a), Some(b)) = (q01, q11) {
+        u_sum += (b - a) / du;
+        u_cnt += 1.0;
+    }
+
+    let mut v_sum = 0.0;
+    let mut v_cnt = 0.0;
+    if let (Some(a), Some(b)) = (q00, q01) {
+        v_sum += (b - a) / dv;
+        v_cnt += 1.0;
+    }
+    if let (Some(a), Some(b)) = (q10, q11) {
+        v_sum += (b - a) / dv;
+        v_cnt += 1.0;
+    }
+
+    // If a single 1-voxel step line has crossings only along one tangent (e.g. a 1-voxel riser
+    // along a gentle slope), probe 1 ray further along the missing tangent to distinguish a real
+    // sustained wall/floor from a 1-voxel step.
+    if u_cnt == 0.0 {
+        let base_u = if q00.is_some() || q01.is_some() {
+            cu - 1
+        } else {
+            cu
+        };
+        let step_u = if base_u == cu - 1 { -1 } else { 1 };
+        let base_v = if q00.is_some() || q10.is_some() {
+            cv - 1
+        } else {
+            cv
+        };
+        let ref_val = q(base_u, base_v)?;
+        let ext = q(base_u + step_u, base_v)?;
+        u_sum = (ext - ref_val) / (du * (step_u as f64));
+        u_cnt = 1.0;
+    }
+    if v_cnt == 0.0 {
+        let base_v = if q00.is_some() || q10.is_some() {
+            cv - 1
+        } else {
+            cv
+        };
+        let step_v = if base_v == cv - 1 { -1 } else { 1 };
+        let base_u = if q00.is_some() || q01.is_some() {
+            cu - 1
+        } else {
+            cu
+        };
+        let ref_val = q(base_u, base_v)?;
+        let ext = q(base_u, base_v + step_v)?;
+        v_sum = (ext - ref_val) / (dv * (step_v as f64));
+        v_cnt = 1.0;
+    }
+
+    let dw_du = u_sum / u_cnt;
+    let dw_dv = v_sum / v_cnt;
+    let n_uvw = if want_min {
+        DVec3::new(dw_du, dw_dv, -1.0)
+    } else {
+        DVec3::new(-dw_du, -dw_dv, 1.0)
+    };
+    let n = ax.from_uvw(n_uvw.x, n_uvw.y, n_uvw.z).normalize_or_zero();
+    (n.length_squared() > 0.5).then_some(n)
+}
+
 /// Extracts a watertight, sharp-feature-preserving 3D [`SimStockMesh`] from a [`TriDexelStock`]
 /// using axis-decoupled Dual-Vertex Surface Nets.
 pub fn tessellate_tridexel_stock_mesh(stock: &TriDexelStock, color_by_op: bool) -> SimStockMesh {
@@ -197,103 +319,284 @@ pub fn tessellate_tridexel_stock_mesh_with_options(
         });
     let occ_idx = |ijk: [usize; 3]| -> usize { (ijk[2] * pny + ijk[1]) * pnx + ijk[0] };
 
-    // 2. Compute dual vertex positions on corners `(0..=nx) × (0..=ny) × (0..=nz)` in parallel
+    // 2. Compute dual vertex positions on corners `(0..=nx) × (0..=ny) × (0..=nz)` in parallel.
+    //    - Crisp mode (`mesh_skinning == false`): axis-decoupled dual corner averaging.
+    //    - Skinned mode (`mesh_skinning == true`): true 3D Surface Nets crossing-point centroid
+    //      (`V_SN = (1/|E|) Σ P_e`), which places every smooth sloped/curved/45° corner directly
+    //      on the continuous surface with zero stair-steps, while automatically keeping exact
+    //      axis-decoupled corners on outer stock boundaries and genuine 90° sharp creases!
     let dnx = nx + 1;
     let dny = ny + 1;
     let dnz = nz + 1;
     let dual_idx = |ijk: [usize; 3]| -> usize { (ijk[2] * dny + ijk[1]) * dnx + ijk[0] };
     let mut dual_pos: Vec<[f32; 3]> = vec![[0.0; 3]; dnx * dny * dnz];
+    let mut dual_sharp_crease: Vec<bool> = if options.mesh_skinning {
+        vec![false; dnx * dny * dnz]
+    } else {
+        Vec::new()
+    };
 
     let dual_slice = dnx * dny;
-    dual_pos
-        .par_chunks_mut(dual_slice)
-        .enumerate()
-        .for_each(|(dk, slice)| {
-            for dj in 0..dny {
-                let row = dj * dnx;
-                for di in 0..dnx {
-                    // Check if the 8 surrounding padded voxels have a sign change
-                    let mut any_in = false;
-                    let mut any_out = false;
-                    for oz in 0..=1 {
-                        for oy in 0..=1 {
-                            for ox in 0..=1 {
-                                if occ[occ_idx([di + ox, dj + oy, dk + oz])] {
-                                    any_in = true;
-                                } else {
-                                    any_out = true;
+    if options.mesh_skinning {
+        dual_pos
+            .par_chunks_mut(dual_slice)
+            .zip(dual_sharp_crease.par_chunks_mut(dual_slice))
+            .enumerate()
+            .for_each(|(dk, (slice, crease_slice))| {
+                for dj in 0..dny {
+                    let row = dj * dnx;
+                    for di in 0..dnx {
+                        let mut any_in = false;
+                        let mut any_out = false;
+                        for oz in 0..=1 {
+                            for oy in 0..=1 {
+                                for ox in 0..=1 {
+                                    if occ[occ_idx([di + ox, dj + oy, dk + oz])] {
+                                        any_in = true;
+                                    } else {
+                                        any_out = true;
+                                    }
                                 }
                             }
                         }
-                    }
-                    if !(any_in && any_out) {
-                        continue;
-                    }
+                        if !(any_in && any_out) {
+                            continue;
+                        }
 
-                    let d_ijk = [di, dj, dk];
-                    let mut pos = [0.0_f32; 3];
+                        let d_ijk = [di, dj, dk];
+                        let is_outer_bnd =
+                            di == 0 || di == nx || dj == 0 || dj == ny || dk == 0 || dk == nz;
 
-                    // Axis-generic dual-vertex crossing accumulation across X, Y, and Z!
-                    for axis in Axis3::ALL {
-                        let ax_i = axis.index();
-                        let u_ax = axis.u_axis();
-                        let v_ax = axis.v_axis();
-                        let nu = stock.dim(u_ax);
-                        let nv = stock.dim(v_ax);
-                        let du_c = u_ax.get_usize(d_ijk);
-                        let dv_c = v_ax.get_usize(d_ijk);
-                        let dw = axis.get_usize(d_ijk);
-                        let pitch_w = stock.pitch(axis);
-                        let base_w = axis.get(stock.origin_wcs) + (dw as f64) * pitch_w;
-                        let max_dw = 1.05 * pitch_w;
-                        let plane = stock.plane(axis);
+                        let mut decoupled = [0.0_f64; 3];
+                        let mut p3_sum = DVec3::ZERO;
+                        let mut p3_cnt = 0u32;
+                        let mut axis_cnt = [0u32; 3];
+                        let mut axis_want_min = [false; 3];
+                        let mut axis_avg_w = [0.0_f64; 3];
 
-                        let mut w_sum = 0.0;
-                        let mut w_cnt = 0u32;
-                        for ov in 0..=1usize {
-                            let Some(iv) = (dv_c + ov).checked_sub(1) else {
-                                continue;
-                            };
-                            if iv >= nv {
-                                continue;
-                            }
-                            for ou in 0..=1usize {
-                                let Some(iu) = (du_c + ou).checked_sub(1) else {
+                        for axis in Axis3::ALL {
+                            let ax_i = axis.index();
+                            let u_ax = axis.u_axis();
+                            let v_ax = axis.v_axis();
+                            let nu = stock.dim(u_ax);
+                            let nv = stock.dim(v_ax);
+                            let du_c = u_ax.get_usize(d_ijk);
+                            let dv_c = v_ax.get_usize(d_ijk);
+                            let dw = axis.get_usize(d_ijk);
+                            let pitch_w = stock.pitch(axis);
+                            let base_w = axis.get(stock.origin_wcs) + (dw as f64) * pitch_w;
+                            let max_dw = 1.05 * pitch_w;
+                            let plane = stock.plane(axis);
+
+                            let mut w_sum = 0.0;
+                            let mut w_cnt = 0u32;
+                            let mut min_votes = 0u32;
+                            for ov in 0..=1usize {
+                                let Some(iv) = (dv_c + ov).checked_sub(1) else {
                                     continue;
                                 };
-                                if iu >= nu {
+                                if iv >= nv {
                                     continue;
                                 }
-                                let lo = occ[occ_idx(axis.from_uvw_usize(iu + 1, iv + 1, dw))];
-                                let hi = occ[occ_idx(axis.from_uvw_usize(iu + 1, iv + 1, dw + 1))];
-                                if lo != hi {
-                                    let want_min = !lo && hi;
-                                    if let Some((wc, _)) = nearest_ray_endpoint(
-                                        &plane.ray_spans(iu, iv),
-                                        base_w,
-                                        want_min,
-                                        max_dw,
-                                    ) {
-                                        w_sum += wc;
-                                        w_cnt += 1;
+                                let center_v = plane.center_v(iv);
+                                for ou in 0..=1usize {
+                                    let Some(iu) = (du_c + ou).checked_sub(1) else {
+                                        continue;
+                                    };
+                                    if iu >= nu {
+                                        continue;
+                                    }
+                                    let lo = occ[occ_idx(axis.from_uvw_usize(iu + 1, iv + 1, dw))];
+                                    let hi =
+                                        occ[occ_idx(axis.from_uvw_usize(iu + 1, iv + 1, dw + 1))];
+                                    if lo != hi {
+                                        let want_min = !lo && hi;
+                                        if let Some((wc, _)) = nearest_ray_endpoint(
+                                            &plane.ray_spans(iu, iv),
+                                            base_w,
+                                            want_min,
+                                            max_dw,
+                                        ) {
+                                            w_sum += wc;
+                                            w_cnt += 1;
+                                            if want_min {
+                                                min_votes += 1;
+                                            }
+                                            let p3 =
+                                                axis.from_uvw(plane.center_u(iu), center_v, wc);
+                                            p3_sum += p3;
+                                            p3_cnt += 1;
+                                        }
+                                    }
+                                }
+                            }
+
+                            axis_cnt[ax_i] = w_cnt;
+                            axis_want_min[ax_i] = min_votes * 2 > w_cnt;
+                            let coord = if w_cnt > 0 {
+                                let avg = w_sum / f64::from(w_cnt);
+                                axis_avg_w[ax_i] = avg;
+                                avg.clamp(base_w - 0.55 * pitch_w, base_w + 0.55 * pitch_w)
+                            } else {
+                                axis_avg_w[ax_i] = base_w;
+                                base_w
+                            };
+                            decoupled[ax_i] = coord;
+                        }
+
+                        // Detect genuine multi-plane sharp 90° creases vs smooth curved/45° slopes
+                        let mut is_sharp = is_outer_bnd;
+                        let active_axes = usize::from(axis_cnt[0] > 0)
+                            + usize::from(axis_cnt[1] > 0)
+                            + usize::from(axis_cnt[2] > 0);
+                        if !is_sharp && active_axes >= 2 {
+                            let mut patch_normals: [Option<DVec3>; 3] = [None; 3];
+                            for axis in Axis3::ALL {
+                                let i = axis.index();
+                                if axis_cnt[i] > 0 {
+                                    patch_normals[i] = corner_plane_patch_normal(
+                                        stock,
+                                        axis,
+                                        d_ijk,
+                                        axis_want_min[i],
+                                        axis_avg_w[i],
+                                    );
+                                }
+                            }
+                            for a in 0..3 {
+                                if let Some(na) = patch_normals[a] {
+                                    for nb in patch_normals.iter().skip(a + 1).flatten() {
+                                        if na.dot(*nb) < CREASE_COS_THRESHOLD {
+                                            is_sharp = true;
+                                        }
                                     }
                                 }
                             }
                         }
 
-                        let coord = if w_cnt > 0 {
-                            (w_sum / f64::from(w_cnt))
-                                .clamp(base_w - 0.55 * pitch_w, base_w + 0.55 * pitch_w)
+                        crease_slice[row + di] = is_sharp;
+                        let chosen = if is_sharp || p3_cnt == 0 {
+                            [
+                                decoupled[0] as f32,
+                                decoupled[1] as f32,
+                                decoupled[2] as f32,
+                            ]
                         } else {
-                            base_w
+                            let c = p3_sum / f64::from(p3_cnt);
+                            let bx = stock.origin_wcs.x + (di as f64) * stock.pitch_mm.x;
+                            let by = stock.origin_wcs.y + (dj as f64) * stock.pitch_mm.y;
+                            let bz = stock.origin_wcs.z + (dk as f64) * stock.pitch_mm.z;
+                            [
+                                c.x.clamp(
+                                    bx - 0.55 * stock.pitch_mm.x,
+                                    bx + 0.55 * stock.pitch_mm.x,
+                                ) as f32,
+                                c.y.clamp(
+                                    by - 0.55 * stock.pitch_mm.y,
+                                    by + 0.55 * stock.pitch_mm.y,
+                                ) as f32,
+                                c.z.clamp(
+                                    bz - 0.55 * stock.pitch_mm.z,
+                                    bz + 0.55 * stock.pitch_mm.z,
+                                ) as f32,
+                            ]
                         };
-                        pos[ax_i] = coord as f32;
+                        slice[row + di] = chosen;
                     }
-
-                    slice[row + di] = pos;
                 }
-            }
-        });
+            });
+    } else {
+        dual_pos
+            .par_chunks_mut(dual_slice)
+            .enumerate()
+            .for_each(|(dk, slice)| {
+                for dj in 0..dny {
+                    let row = dj * dnx;
+                    for di in 0..dnx {
+                        // Check if the 8 surrounding padded voxels have a sign change
+                        let mut any_in = false;
+                        let mut any_out = false;
+                        for oz in 0..=1 {
+                            for oy in 0..=1 {
+                                for ox in 0..=1 {
+                                    if occ[occ_idx([di + ox, dj + oy, dk + oz])] {
+                                        any_in = true;
+                                    } else {
+                                        any_out = true;
+                                    }
+                                }
+                            }
+                        }
+                        if !(any_in && any_out) {
+                            continue;
+                        }
+
+                        let d_ijk = [di, dj, dk];
+                        let mut pos = [0.0_f32; 3];
+
+                        // Axis-generic dual-vertex crossing accumulation across X, Y, and Z!
+                        for axis in Axis3::ALL {
+                            let ax_i = axis.index();
+                            let u_ax = axis.u_axis();
+                            let v_ax = axis.v_axis();
+                            let nu = stock.dim(u_ax);
+                            let nv = stock.dim(v_ax);
+                            let du_c = u_ax.get_usize(d_ijk);
+                            let dv_c = v_ax.get_usize(d_ijk);
+                            let dw = axis.get_usize(d_ijk);
+                            let pitch_w = stock.pitch(axis);
+                            let base_w = axis.get(stock.origin_wcs) + (dw as f64) * pitch_w;
+                            let max_dw = 1.05 * pitch_w;
+                            let plane = stock.plane(axis);
+
+                            let mut w_sum = 0.0;
+                            let mut w_cnt = 0u32;
+                            for ov in 0..=1usize {
+                                let Some(iv) = (dv_c + ov).checked_sub(1) else {
+                                    continue;
+                                };
+                                if iv >= nv {
+                                    continue;
+                                }
+                                for ou in 0..=1usize {
+                                    let Some(iu) = (du_c + ou).checked_sub(1) else {
+                                        continue;
+                                    };
+                                    if iu >= nu {
+                                        continue;
+                                    }
+                                    let lo = occ[occ_idx(axis.from_uvw_usize(iu + 1, iv + 1, dw))];
+                                    let hi =
+                                        occ[occ_idx(axis.from_uvw_usize(iu + 1, iv + 1, dw + 1))];
+                                    if lo != hi {
+                                        let want_min = !lo && hi;
+                                        if let Some((wc, _)) = nearest_ray_endpoint(
+                                            &plane.ray_spans(iu, iv),
+                                            base_w,
+                                            want_min,
+                                            max_dw,
+                                        ) {
+                                            w_sum += wc;
+                                            w_cnt += 1;
+                                        }
+                                    }
+                                }
+                            }
+
+                            let coord = if w_cnt > 0 {
+                                (w_sum / f64::from(w_cnt))
+                                    .clamp(base_w - 0.55 * pitch_w, base_w + 0.55 * pitch_w)
+                            } else {
+                                base_w
+                            };
+                            pos[ax_i] = coord as f32;
+                        }
+
+                        slice[row + di] = pos;
+                    }
+                }
+            });
+    }
 
     if !options.mesh_skinning {
         // Crisp path (unchanged behavior): emit outward-oriented quads with a single normal per quad
@@ -443,6 +746,7 @@ pub fn tessellate_tridexel_stock_mesh_with_options(
         verts: [u32; 4],
         fallback_n: [f32; 3],
         color: [f32; 4],
+        is_uncut: bool,
     }
 
     let mut dual_to_compact = vec![u32::MAX; dnx * dny * dnz];
@@ -464,7 +768,8 @@ pub fn tessellate_tridexel_stock_mesh_with_options(
             f64::from(p[1]),
             f64::from(p[2]),
         ));
-        let bnd = ijk[0] == 0
+        let bnd = dual_sharp_crease[d_id]
+            || ijk[0] == 0
             || ijk[0] == nx
             || ijk[1] == 0
             || ijk[1] == ny
@@ -538,6 +843,7 @@ pub fn tessellate_tridexel_stock_mesh_with_options(
                         verts,
                         fallback_n,
                         color: col,
+                        is_uncut: op == UNCUT_OP_IDX,
                     });
                 }
             }
@@ -612,7 +918,7 @@ pub fn tessellate_tridexel_stock_mesh_with_options(
         })
         .collect();
 
-    // 6. Run 2 passes of volume-preserving Taubin (λ = 0.45, μ = -0.47) relaxation on unpinned
+    // 6. Run 3 passes of volume-preserving Taubin (λ = 0.45, μ = -0.47) relaxation on unpinned
     //    smooth vertices, clamping total displacement from original dual vertex to <= 0.45 * pitch
     let min_pitch = stock.pitch_mm.x.min(stock.pitch_mm.y).min(stock.pitch_mm.z);
     let max_disp = MAX_RELAX_DISP_RATIO * min_pitch;
@@ -621,7 +927,7 @@ pub fn tessellate_tridexel_stock_mesh_with_options(
     let mut cur_pos = orig_pos.clone();
     let mut next_pos = orig_pos.clone();
 
-    for _pass in 0..2 {
+    for _pass in 0..3 {
         for &factor in &[TAUBIN_LAMBDA, TAUBIN_MU] {
             next_pos.par_iter_mut().enumerate().for_each(|(v, out_p)| {
                 if pinned[v] {
@@ -660,7 +966,7 @@ pub fn tessellate_tridexel_stock_mesh_with_options(
         }
     }
 
-    // 7. Recompute area-weighted quad normals from relaxed positions
+    // 7. Recompute area-weighted quad normals from relaxed positions & smooth vertex normals
     let quad_normals: Vec<(DVec3, DVec3)> = raw_quads
         .par_iter()
         .map(|q| {
@@ -678,12 +984,28 @@ pub fn tessellate_tridexel_stock_mesh_with_options(
                     f64::from(q.fallback_n[1]),
                     f64::from(q.fallback_n[2]),
                 );
-                (fb * 1e-6, fb)
+                (fb * 1e-12, fb)
             }
         })
         .collect();
 
-    // 8. Compute crease-aware per-corner smooth normals `(n0, n1, n2, n3)` and emit SimStockMesh
+    let smooth_vert_normals: Vec<DVec3> = (0..num_verts)
+        .into_par_iter()
+        .map(|v| {
+            let inc = &vert_quads[offsets[v]..offsets[v + 1]];
+            let mut n_sum = DVec3::ZERO;
+            for &adj_qi in inc {
+                n_sum += quad_normals[adj_qi as usize].0;
+            }
+            n_sum.normalize_or_zero()
+        })
+        .collect();
+
+    // 8. Compute crease-aware per-corner smooth normals `(n0, n1, n2, n3)` and emit SimStockMesh.
+    //    - Unpinned smooth vertices share the exact area-weighted vertex normal across all
+    //      incident quads (eliminating dark sliver seams on 15°–45° curved slopes).
+    //    - Pinned crease/boundary vertices split strictly at `CREASE_COS_THRESHOLD` (38°) so
+    //      90° rectangular pockets and outer stock faces stay razor-sharp.
     let mut vertices = vec![
         SimColoredVertex {
             pos_mm: [0.0; 3],
@@ -700,25 +1022,44 @@ pub fn tessellate_tridexel_stock_mesh_with_options(
             let (_, qn) = quad_normals[qi];
             for ci in 0..4 {
                 let v = q.verts[ci] as usize;
-                let inc = &vert_quads[offsets[v]..offsets[v + 1]];
-                let mut n_sum = DVec3::ZERO;
-                for &adj_qi in inc {
-                    let (adj_area_n, adj_unit_n) = quad_normals[adj_qi as usize];
-                    if adj_unit_n.dot(qn) >= CREASE_COS_THRESHOLD {
-                        n_sum += adj_area_n;
-                    }
-                }
-                let n_len_sq = n_sum.length_squared();
-                let nc = if n_len_sq > 1e-20 {
-                    n_sum / n_len_sq.sqrt()
+                let nc = if !pinned[v] && smooth_vert_normals[v].length_squared() > 0.5 {
+                    smooth_vert_normals[v]
                 } else {
-                    qn
+                    let inc = &vert_quads[offsets[v]..offsets[v + 1]];
+                    let mut n_sum = DVec3::ZERO;
+                    for &adj_qi in inc {
+                        let (adj_area_n, adj_unit_n) = quad_normals[adj_qi as usize];
+                        if adj_unit_n.dot(qn) >= CREASE_COS_THRESHOLD {
+                            n_sum += adj_area_n;
+                        }
+                    }
+                    let n_len_sq = n_sum.length_squared();
+                    if n_len_sq > 1e-20 {
+                        n_sum / n_len_sq.sqrt()
+                    } else {
+                        qn
+                    }
                 };
                 let p = cur_pos[v];
+                let col = if q.is_uncut
+                    && !matches!(color_mode, SimStockColorMode::ErrorHeatmap { .. })
+                {
+                    let top_blend = ((nc.z.abs() as f32 - 0.70) / 0.25).clamp(0.0, 1.0);
+                    let side = crate::mesher_common::RAW_STOCK_SIDE_COLOR;
+                    let top = crate::mesher_common::RAW_STOCK_TOP_COLOR;
+                    [
+                        side[0] + (top[0] - side[0]) * top_blend,
+                        side[1] + (top[1] - side[1]) * top_blend,
+                        side[2] + (top[2] - side[2]) * top_blend,
+                        1.0,
+                    ]
+                } else {
+                    q.color
+                };
                 out_v[ci] = SimColoredVertex {
                     pos_mm: [p.x as f32, p.y as f32, p.z as f32],
                     normal: [nc.x as f32, nc.y as f32, nc.z as f32],
-                    color_rgba: q.color,
+                    color_rgba: col,
                 };
             }
         });
