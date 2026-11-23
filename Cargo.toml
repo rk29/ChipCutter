@@ -17,7 +17,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.21.0"
+version = "0.21.1"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 description = "Open-source 2.5D, 3-axis, and 4th-axis desktop CAM and G-code verification suite"
@@ -36,17 +36,17 @@ unwrap_used = "deny"
 expect_used = "deny"
 
 [workspace.dependencies]
-chip-math = { version = "0.21.0", path = "crates/chip-math" }
-chip-bvh = { version = "0.21.0", path = "crates/chip-bvh" }
-chip-geom2d = { version = "0.21.0", path = "crates/chip-geom2d" }
-chip-cad = { version = "0.21.0", path = "crates/chip-cad" }
-chip-sketch = { version = "0.21.0", path = "crates/chip-sketch" }
-chip-tools = { version = "0.21.0", path = "crates/chip-tools" }
-chip-stock = { version = "0.21.0", path = "crates/chip-stock" }
-chip-cam = { version = "0.21.0", path = "crates/chip-cam" }
-chip-sim = { version = "0.21.0", path = "crates/chip-sim" }
-chip-post = { version = "0.21.0", path = "crates/chip-post" }
-chip-project = { version = "0.21.0", path = "crates/chip-project" }
+chip-math = { version = "0.21.1", path = "crates/chip-math" }
+chip-bvh = { version = "0.21.1", path = "crates/chip-bvh" }
+chip-geom2d = { version = "0.21.1", path = "crates/chip-geom2d" }
+chip-cad = { version = "0.21.1", path = "crates/chip-cad" }
+chip-sketch = { version = "0.21.1", path = "crates/chip-sketch" }
+chip-tools = { version = "0.21.1", path = "crates/chip-tools" }
+chip-stock = { version = "0.21.1", path = "crates/chip-stock" }
+chip-cam = { version = "0.21.1", path = "crates/chip-cam" }
+chip-sim = { version = "0.21.1", path = "crates/chip-sim" }
+chip-post = { version = "0.21.1", path = "crates/chip-post" }
+chip-project = { version = "0.21.1", path = "crates/chip-project" }
 
 glam = { version = "0.29", features = ["serde", "bytemuck"] }
 bytemuck = { version = "1.21", features = ["derive"] }
