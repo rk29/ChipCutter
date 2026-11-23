@@ -859,7 +859,7 @@ value_mm = 1.5
 id = "op_0_3_2_copy_2"
 name = "3D Adaptive 90 deg"
 kind = "adaptive_3d"
-suppressed = true
+suppressed = false
 tool_id = "carvera_t2_3175mm_25loc_1fl"
 preset_id = "carvera_al6061_deep"
 selections = []
@@ -909,6 +909,15 @@ value_mm = 0.5
 
 [setups.operations.passes.stock_to_leave_axial]
 value_mm = 0.3
+
+[setups.operations.passes.rest_machining.mode]
+mode = "from_preceding_operations"
+
+[setups.operations.passes.rest_machining.rest_overlap]
+value_mm = 0.25
+
+[setups.operations.passes.rest_machining.min_rest_thickness]
+value_mm = 0.05
 
 [setups.operations.linking]
 retract_policy = "minimum_retract"
@@ -965,7 +974,7 @@ angle_deg = 90.0
 
 [setups.operations.strategy]
 strategy_kind = "adaptive_3d"
-boundary_mode = "stock_box"
+boundary_mode = "model_silhouette"
 tool_containment = "tool_center_on_boundary"
 detect_flats = true
 flat_area_min_mm2 = 4.0
@@ -1000,7 +1009,7 @@ value_mm = 1.5
 id = "op_0_3_2_copy_2_copy_3"
 name = "3D Adaptive 180 deg"
 kind = "adaptive_3d"
-suppressed = true
+suppressed = false
 tool_id = "carvera_t2_3175mm_25loc_1fl"
 preset_id = "carvera_al6061_deep"
 selections = []
@@ -1050,6 +1059,15 @@ value_mm = 0.5
 
 [setups.operations.passes.stock_to_leave_axial]
 value_mm = 0.3
+
+[setups.operations.passes.rest_machining.mode]
+mode = "from_preceding_operations"
+
+[setups.operations.passes.rest_machining.rest_overlap]
+value_mm = 0.25
+
+[setups.operations.passes.rest_machining.min_rest_thickness]
+value_mm = 0.05
 
 [setups.operations.linking]
 retract_policy = "minimum_retract"
@@ -1106,7 +1124,7 @@ angle_deg = 180.0
 
 [setups.operations.strategy]
 strategy_kind = "adaptive_3d"
-boundary_mode = "stock_box"
+boundary_mode = "model_silhouette"
 tool_containment = "tool_center_on_boundary"
 detect_flats = true
 flat_area_min_mm2 = 4.0
@@ -1141,7 +1159,7 @@ value_mm = 1.5
 id = "op_0_3_2_copy_2_copy_3_copy_4"
 name = "3D Adaptive 270 deg"
 kind = "adaptive_3d"
-suppressed = true
+suppressed = false
 tool_id = "carvera_t2_3175mm_25loc_1fl"
 preset_id = "carvera_al6061_deep"
 selections = []
@@ -1191,6 +1209,15 @@ value_mm = 0.5
 
 [setups.operations.passes.stock_to_leave_axial]
 value_mm = 0.3
+
+[setups.operations.passes.rest_machining.mode]
+mode = "from_preceding_operations"
+
+[setups.operations.passes.rest_machining.rest_overlap]
+value_mm = 0.25
+
+[setups.operations.passes.rest_machining.min_rest_thickness]
+value_mm = 0.05
 
 [setups.operations.linking]
 retract_policy = "minimum_retract"
@@ -1247,7 +1274,7 @@ angle_deg = 270.0
 
 [setups.operations.strategy]
 strategy_kind = "adaptive_3d"
-boundary_mode = "stock_box"
+boundary_mode = "model_silhouette"
 tool_containment = "tool_center_on_boundary"
 detect_flats = true
 flat_area_min_mm2 = 4.0
@@ -1282,7 +1309,7 @@ value_mm = 1.5
 id = "op_0_5_4"
 name = "Simultaneous 4-Axis"
 kind = "rotary_4axis_sim"
-suppressed = true
+suppressed = false
 tool_id = "carvera_t5_3175mm_2fl_ball"
 preset_id = "carvera_ball_al"
 selections = []
@@ -1320,7 +1347,7 @@ reference = "model_bottom"
 value_mm = 0.0
 
 [setups.operations.passes]
-multiple_depths = true
+multiple_depths = false
 even_stepdowns = true
 tolerance_mm = 0.01
 
