@@ -527,28 +527,52 @@ Focuses on day-to-day usability and visual polish across the workspace: moving i
 
 ---
 
+## Phase 22 — Unified Cutting Area & Machining Boundary Controls Across Operations (Planned — M80–M83)
+
+Standardizes how machinists specify *what area to cut* across 3-axis, 4th-axis rotary, undercut/deburr, and 2.5D operations: replacing fake AABB silhouettes with true projected model silhouettes, giving both 4th-axis rotary operations full `-U`/`+U` axial boundary source, containment, signed offset, and outer radial ceiling controls, upgrading 2.5D Facing and Pocket/Adaptive cutting areas, consolidating all boundary controls into the Operation Inspector `[Geometry]` tab, and adding live 3D viewport boundary previews.
+
+### Milestone 80 — Unified 3D Machining Boundary Schema, True Model Silhouette, & `Undercut3D`/`Deburr3D` Containment (`plans/80-milestone-80-plan.md`)
+- **Shared `MachiningBoundaryConfig` & True `ModelSilhouette` (`chip-cam`, `chip-project`):** Consolidate duplicated `boundary_mode` / `tool_containment` / `boundary_offset` fields into a single backward-compatible `MachiningBoundaryConfig` (`#[serde(flatten)]`), replace `resolve_3d_containment_region`'s rectangular AABB fallback for `ModelSilhouette` with true projected 2D mesh silhouette polygons (reusing `slab_projection.rs`), preserve true circular XY footprints for cylindrical Z-axis stock, and fix `Adaptive3D`'s `StockBox` bug (honoring `tool_containment` and signed `boundary_offset`).
+- **3D Surface Parity Across `Undercut3D` & `Deburr3D` (`chip-cam`):** Wire `MachiningBoundaryConfig` into `Undercut3D` (replacing its hardcoded `ToolCenterOnBoundary` / `0.0 mm` containment) and `Deburr3D` (constraining `auto_detect_edges` within the resolved XY boundary), and emit structured diagnostics instead of silent fallbacks when `SelectedRegions` has no selections.
+
+### Milestone 81 — 4th-Axis Rotary Axial Boundary Unification (`-U`/`+U` Bounds, Containment, Radial Ceiling, & Wrapper Chuck Safety) (`plans/81-milestone-81-plan.md`)
+- **Shared `RotaryAxialBoundaryConfig` for `Rotary2Linear` & `Rotary4AxisSim` (`chip-cam`, `chip-project`):** Replace inward-only `axial_margin_start/end` with a backward-compatible `RotaryAxialBoundaryConfig` supporting `StockBounds`, `ModelBounds`, `SelectedGeometry` (projecting selected 3D faces/loops onto `-U..+U`), and `ExplicitRange { u_start, u_end }`, paired with axial `ToolContainmentMode` (`Center` / `Inside` / `Outside`) and signed start/end offsets (allowing controlled shoulder overrun while strictly enforcing the rotary chuck keep-out guard).
+- **Radial Envelope & Rotary Wrapper Safety (`chip-cam`):** Honor `heights.top_z_wcs` as an outer radial roughing ceiling (eliminating air-cutting on stepped shafts) alongside `heights.bottom_z_wcs` as core radius floor, and enforce optional axial/angular limits plus mandatory rotary chuck keep-out protection on `WrapCylinder` and `Indexed3Plus1`.
+
+### Milestone 82 — 2.5D Cutting Area Consistency & Inspector Control Hygiene (`plans/82-milestone-82-plan.md`)
+- **Exact Polygon `Facing` & `Pocket2D`/`Adaptive2D` Outer-Bound Clearing (`chip-cam`):** Upgrade `Facing` to adopt `MachiningBoundaryConfig` (`StockBox`, `ModelSilhouette`, `SelectedRegions`, `tool_containment`, `boundary_offset`) and clip facing passes to the exact selected polygon + raised islands rather than collapsing selections to a rectangular `Aabb2`; add `StockContour` (clear around selected bosses up to stock bounds) and sketch/loop open-edge support to `Pocket2D`/`Adaptive2D`, plus optional XY containment clipping on `Contour2D`.
+- **Strategy Parameter & Height Hygiene (`chip-cam`, `chip-gui`):** Hide unused `Multiple Depths` / `Radial Stock` controls on strategies that ignore them (`Parallel3D`, `Scallop3D`, `Pencil3D`, `ThreadMill`), clarify `VCarve` / `EdgeChamfer` height behavior, and expose `SlotUndercut` / `Dovetail` stock-to-leave consistently.
+
+### Milestone 83 — Unified `[Geometry]` Tab Boundary Controls, Live 3D Viewport Previews, & Phase 22 Spec Sync (`plans/83-milestone-83-plan.md`)
+- **Consolidated `[Geometry]` Cutting-Area UI (`chip-gui`):** Move all boundary controls (`MachiningBoundaryConfig`, `RotaryAxialBoundaryConfig`, angular sector bounds, and `Pocket2D` stock-contour options) out of `[Passes]` into `[Geometry]` right beside selections, replacing the misleading rotary 3D banner with accurate `-U`/`+U` axial boundary controls and live resolved-dimension readouts.
+- **Live 3D Viewport Cutting-Area Overlays & Spec Sync (`chip-gui`, `specs/`):** Render live 3D viewport overlays whenever `[Geometry]` is active—crisp boundary polygon + dashed effective tool-center containment loop for 2.5D/3-axis ops, and translucent cylindrical `[u_start, u_end] × [start_deg, end_deg]` sector bands with `-U`/`+U` endcap rings and chuck keep-out plane for 4th-axis rotary ops—and synchronize `specs/05-operations.md`, `specs/08-ui-viewport.md`, and `specs/10-roadmap.md`.
+
+---
+
 ## Future Phases
 
 ChipCutter's long-term roadmap focuses on bringing pro-grade CAM capabilities to hobby and benchtop machinists—making everyday job setup faster, safer, and easier to use without commercial CAM complexity or licensing cost.
 
-1. **Physics-Backed Safety & Machinability Guardrails:**
+1. **Per-Operation Avoid / Keep-Out Regions & Fixture-Trimmed Cutting Areas:**
+   - **Avoid / Exclude Regions (`avoid_selections`):** Allow any 2.5D, 3-axis, or 4th-axis operation to pick faces, 2D sketch loops, or fixture bodies as explicit **Keep-Out / Avoid Zones** (with configurable radial/axial clearance) that subtract directly from the operation's cutting area—complementing Phase 17's fixture-aware rapid lifting with true cutting-area exclusion.
+2. **Physics-Backed Safety & Machinability Guardrails:**
    - **Spindle Power, MRR, & Tool Deflection Advisor:** Compare each operation's material removal rate and estimated radial cutting force against the active machine's real spindle power curve (e.g. `150 W` Carvera Z1 vs. `1.5 kW` Milo/Cascade) and tool stickout—flagging stall risk, chatter, or excessive deflection before cutting.
    - **In-Viewport Measurement & Machinability Inspector:** Click-to-measure distances, hole diameters, depths, and angles directly in the 3D viewport, plus a **Minimum-Radius & Reach Heatmap** highlighting tight internal corners smaller than the chosen cutter and pockets deeper than flute/neck reach.
-2. **Guided Operation Setup & Reusable Machining Recipes:**
+3. **Guided Operation Setup & Reusable Machining Recipes:**
    - **Guided Operation Setup Mode (Automatic Feature Recognition):** Interactive workflow inspecting imported STEP/mesh/sketch geometry against the active Setup WCS, stock, and target machine's tool library to automatically recognize machinable features and propose a sequenced operation plan—**Facing**, **2D Adaptive / Pocket**, **Drill vs. Helical Bore / Thread Mill**, **2D Contour + Tabs**, **Edge Chamfer**, and **3D Roughing/Finishing**—letting the machinist review, tweak, accept, or skip each step.
    - **Reusable Operation Templates & Recipes:** Save proven multi-op patterns (e.g., *"6061-T6 Pocket + Finish + Chamfer"* or *"M6 Counterbored Hole = Spot + Drill + Helical Bore"*) and apply them in one click to new parts.
-3. **In-Machine Probing Operations (`G38.2`):**
+4. **In-Machine Probing Operations (`G38.2`):**
    - **Probing Operations (`G38.2`):** First-class WCS corner, bore/boss center, Z-surface, and 2-point rotation/skew probing cycles integrated directly into Setups for grblHAL/Carvera and LinuxCNC controllers.
-4. **2D Sheet Nesting, Multi-Part Arrays, & PCB Isolation Milling:**
+5. **2D Sheet Nesting, Multi-Part Arrays, & PCB Isolation Milling:**
    - **2D Sheet Nesting & Multi-Part Arrays:** Pack multiple parts onto plate, plywood, or composite sheets with tool-diameter spacing, grain-direction rules, and automatic tabs.
    - **PCB Isolation Milling & Drilling (Gerber / Excellon):** Isolation routing, copper rub-out, Excellon drill import, and height-probe leveling hooks.
-5. **Frictionless CAD Prep, Verification, & Ecosystem:**
+6. **Frictionless CAD Prep, Verification, & Ecosystem:**
    - **Live CAD Auto-Reload & Diff Preview:** Watch exported `.step`/`.dxf`/`.svg` files from FreeCAD/Fusion/Onshape, reload automatically on save, and visually highlight changed faces and re-matched selections.
    - **STL / Mesh 2.5D Feature Extraction:** Auto-detect flat Z-planes, cylindrical holes, and outer silhouettes from triangle meshes so STL models can use fast 2.5D strategies in addition to 3D surface passes.
    - **Standalone G-Code Backplot & Crash Verification Mode:** Open any external `.nc`/`.ngc` file and run ChipCutter's Tri-Dexel simulator and 5-rule crash verifier on it.
    - **Broader Tool Library Interop & Printable Setup Sheets:** Import tool libraries from FreeCAD (`.fctb`), Carbide Create, and Vectric alongside Fusion 360; richer material presets (brass, acetal/Delrin, G10/carbon fiber, mild steel, hardwoods); and printable HTML/PDF setup sheets with isometric views, WCS origin diagrams, stock dimensions, tool stickout checklists, and cycle times.
    - **Additional Controller Dialects & CAD Kernel Backends:** Fanuc/Haas, Mach4, Masso, and Centroid post dialects, plus an optional OpenCASCADE (`opencascade-rs`) `CadKernel` feature backend.
-6. **Functional & Behavioral User-Level Testing:**
+7. **Functional & Behavioral User-Level Testing:**
    - Durable end-to-end user-journey and GUI behavioral test harness (`egui_kittest` / headless interactive workflows + CLI workflows) verifying every feature from a machinist's point of view without brittle coupling to internal implementation details.
-7. **Tutorials for Upcoming Future-Phase Capabilities:**
+8. **Tutorials for Upcoming Future-Phase Capabilities:**
    - Dedicated illustrated guides and sample projects accompanying upcoming future-phase capabilities (physics machinability advisor, guided operation setup, probing, 2D nesting, and PCB isolation milling).
