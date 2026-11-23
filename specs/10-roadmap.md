@@ -505,6 +505,28 @@ Building on `v0.19.1`'s monotonic `PushCutterField` fix for overhanging helical 
 
 ---
 
+## Phase 21 — Workspace Decluttering, Settings Page, Streamlined Tool Management, & Simulation Mesh Skinning (Planned — M76–M79)
+
+Focuses on day-to-day usability and visual polish across the workspace: moving infrequently changed preferences off-screen into a dedicated Settings page, simplifying Setup cards and top-action-bar operation creation around a clearly indicated Active Setup, streamlining project tool selection/pruning and machine-switch tool replacement with a single `"Tools"` button, and adding smooth crease-preserving simulation mesh skinning across CPU & GPU engines.
+
+### Milestone 76 — Unified Settings Page (`prefs.toml`) & Workspace Chrome Decluttering (`plans/76-milestone-76-plan.md`)
+- **Dedicated Settings Page (`chip-gui`):** Add a categorized `Settings` modal (`General & Appearance`, `Viewport & Navigation`, `Simulation`, `Machine Defaults`) reachable via `Edit → Settings…` (`Ctrl+,`), Command Palette, and a compact toolbar `Settings` button, extending `prefs.toml` with backward-compatible `sim_resolution` and `sim_mesh_skinning` fields.
+- **On-Screen Chrome Decluttering (`chip-gui`):** Move low-frequency `Engine` / `Resolution` / `Backend` dropdowns off the Simulation Timeline bar (leaving a compact clickable summary chip into `Settings → Simulation`), move `MousePreset` and `OrbitMode` off the floating viewport HUD, and move global `Theme` and default `Units` toggles off the top action bar.
+
+### Milestone 77 — Active-Setup Indication, Top Action Bar Operation Creation & Separators, and Setup Card Simplification (`plans/77-milestone-77-plan.md`)
+- **Active-Setup Highlight & Setup Card Cleanup (`chip-gui`):** Remove per-setup `+ Adap` / `+ Cont` / `+ VCarve` / `+ Op…` rows from CAM Browser Setup cards and make the Active Setup unmistakably clear with an accent border, tinted header, `"Active"` badge pill, and 1-click activation.
+- **Grouped Top Action Bar Operation Creation (`chip-gui`):** Route top-action-bar operation creation (`+ Sketch`, `+ Adaptive`, `+ Contour`, `+ V-Carve`, and categorized `+ Op ▾`) cleanly to the active setup with explicit `ui.separator()` dividers between File/History, Geometry/Operations, Pipeline, Tools, and Utility groups.
+
+### Milestone 78 — Streamlined Tool Management, Single `"Tools"` Entry Point, `Project Tools` Controls, & Interactive Machine-Switch Tool Swapping (`plans/78-milestone-78-plan.md`)
+- **Single `"Tools"` Entry Point & Actionable `Project Tools` Card (`chip-gui`, `chip-project`):** Consolidate the three duplicate `"Tools"` buttons down to one (top action bar), add inline `+ Add`, per-tool `Remove` (with usage badges), and 1-click `Remove Unused (N)` controls directly on the `Project Tools` card, and improve the operation `Tool` picker to group compatible Project & Machine tools with search/filtering.
+- **Interactive Machine-Switch Tool Swapping (`chip-project`, `chip-gui`):** Whenever switching the project's target machine from Setup Inspector, Machine Manager, or Tool Library, automatically detect operations referencing tools missing from the new machine and open a guided **Swap Machine Tools** dialog pre-selecting closest compatible replacements and applying the swap + optional unused-tool pruning as one atomic Undo step.
+
+### Milestone 79 — Simulation Mesh Skinning (Smooth Surface Display on CPU & GPU), Visual Verification, & Phase 21 Spec Sync (`plans/79-milestone-79-plan.md`)
+- **Crease-Preserving Simulation Mesh Skinning (`chip-stock`, `chip-sim`, `chip-gui`):** Wire `prefs.sim_mesh_skinning` from `Settings → Simulation` into live CPU & GPU `TriDexelStock` (crease-preserving tangential Taubin relaxation + per-vertex crease-aware smooth normals + 32-byte octahedral `PackedTriDexelQuad` GPU parity), `HeightfieldStock`, and `CylindricalStock` meshers—keeping 90° edges razor-sharp and volumetric error/crash metrology 100% invariant.
+- **Visual Verification & Spec Sync (`chip-stock`, `chip-sim`, `specs/`):** Add smoothness, watertightness, sharp-crease, CPU-vs-GPU parity, and metrology-invariance tests, visually verify headless Vulkan before/after renders, and synchronize `specs/06-simulation.md`, `specs/08-ui-viewport.md`, and `specs/10-roadmap.md`.
+
+---
+
 ## Future Phases
 
 ChipCutter's long-term roadmap focuses on bringing pro-grade CAM capabilities to hobby and benchtop machinists—making everyday job setup faster, safer, and easier to use without commercial CAM complexity or licensing cost.
