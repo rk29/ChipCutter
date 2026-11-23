@@ -222,6 +222,29 @@ pub fn extract_selection_features_with_sketches(
     setup: &ResolvedSetup,
     selections: &[GeometrySelectionItem],
 ) -> Result<ExtractedSelectionSummary, CamError> {
+    extract_selection_features_inner(doc, sketches, setup, selections, false)
+}
+
+/// Extracts selections for native 4th-axis rotary operations (`Rotary2Linear` / `Rotary4AxisSim`),
+/// tolerating arbitrarily oriented 3D faces and rotary-axis cylindrical faces (which are projected
+/// directly onto the rotary axis `-U..+U` by `resolve_rotary_window`) while still extracting 2D
+/// sketch selections and validating that all referenced entities exist.
+pub fn extract_rotary_selection_features(
+    doc: &CadDocument,
+    sketches: &[SketchLayer],
+    setup: &ResolvedSetup,
+    selections: &[GeometrySelectionItem],
+) -> Result<ExtractedSelectionSummary, CamError> {
+    extract_selection_features_inner(doc, sketches, setup, selections, true)
+}
+
+fn extract_selection_features_inner(
+    doc: &CadDocument,
+    sketches: &[SketchLayer],
+    setup: &ResolvedSetup,
+    selections: &[GeometrySelectionItem],
+    allow_arbitrary_3d_orientation: bool,
+) -> Result<ExtractedSelectionSummary, CamError> {
     let stock_top_z = setup.stock.aabb_wcs().max.z;
     let model_top_z = setup.model_aabb_wcs.max.z;
     let doc_has_bodies = doc.has_3d_geometry();
@@ -270,7 +293,18 @@ pub fn extract_selection_features_with_sketches(
                     raw_hole_faces: &mut raw_hole_faces,
                     primary_hole_diameter_mm: &mut primary_hole_diameter_mm,
                 };
-                extract_planar_face(&mut acc, binding)?;
+                match extract_planar_face(&mut acc, binding) {
+                    Ok(()) => {}
+                    Err(CamError::FaceNotHorizontalInWcs { .. })
+                        if allow_arbitrary_3d_orientation =>
+                    {
+                        let fid = FaceId(binding.last_index);
+                        if !highlight_faces.contains(&fid) {
+                            highlight_faces.push(fid);
+                        }
+                    }
+                    Err(err) => return Err(err),
+                }
             }
             GeometrySelectionItem::ClosedLoop {
                 binding,
@@ -334,7 +368,18 @@ pub fn extract_selection_features_with_sketches(
                     raw_hole_faces: &mut raw_hole_faces,
                     primary_hole_diameter_mm: &mut primary_hole_diameter_mm,
                 };
-                collect_cylindrical_hole(&mut acc, binding)?;
+                match collect_cylindrical_hole(&mut acc, binding) {
+                    Ok(()) => {}
+                    Err(CamError::HoleNotAlignedWithWcsZ { .. })
+                        if allow_arbitrary_3d_orientation =>
+                    {
+                        let fid = FaceId(binding.last_index);
+                        if !highlight_faces.contains(&fid) {
+                            highlight_faces.push(fid);
+                        }
+                    }
+                    Err(err) => return Err(err),
+                }
             }
             GeometrySelectionItem::SketchRegion {
                 sketch_id,

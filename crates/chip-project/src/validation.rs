@@ -2,8 +2,10 @@ use std::{borrow::Cow, path::Path};
 
 use chip_cad::CadDocument;
 use chip_cam::{
-    FixtureKind, OperationRotaryMode, ResolvedHeights, RestMachiningMode,
-    build_indexed_virtual_setup, extract_selection_features_with_sketches, resolve_fixture_body,
+    ExtractedFeature25D, FixtureKind, OperationRotaryMode, ResolvedHeights, RestMachiningMode,
+    RotaryAxialBoundaryMode, RotaryAxisKind, build_indexed_virtual_setup,
+    extract_rotary_selection_features, extract_selection_features_with_sketches,
+    resolve_fixture_body, rotary_chuck_guard_u,
 };
 use chip_tools::{MachineDefinition, builtin_generic_machine, resolve_machine_definition};
 
@@ -976,6 +978,50 @@ pub fn validate_project_with_machine(
                     continue;
                 }
 
+                // Strategy-specific axial/angular boundary validation for native 4th-axis rotary ops
+                if op.kind.is_rotary_native()
+                    && let Some(mut ab) = op.rotary_axial_boundary().cloned()
+                {
+                    ab.reevaluate(&eval_ctx);
+                    if ab.axial_boundary_mode == RotaryAxialBoundaryMode::SelectedGeometry
+                        && op.selections.is_empty()
+                    {
+                        report.push_warning(
+                            &op_scope,
+                            "Rotary axial boundary mode 'Selected Geometry' has no selections; generation will fall back to Model Bounds.",
+                        );
+                    }
+                    if ab.axial_boundary_mode == RotaryAxialBoundaryMode::ExplicitRange {
+                        let u_start = ab.explicit_u_start.value_mm;
+                        let u_end = ab.explicit_u_end.value_mm;
+                        if !u_start.is_finite() || !u_end.is_finite() {
+                            report.push_error(
+                                &op_scope,
+                                "Rotary explicit axial range bounds must be finite.",
+                            );
+                        } else if u_start >= u_end - 1e-6 {
+                            report.push_warning(
+                                &op_scope,
+                                format!(
+                                    "Rotary explicit axial range start ({u_start:.2} mm) is >= end ({u_end:.2} mm)."
+                                ),
+                            );
+                        }
+                    }
+                    if !ab.start_angle_deg.is_finite()
+                        || !ab.end_angle_deg.is_finite()
+                        || ab.end_angle_deg <= ab.start_angle_deg + 1e-3
+                    {
+                        report.push_error(
+                            &op_scope,
+                            format!(
+                                "Rotary angular span [{:.1}°, {:.1}°] must be finite with end_angle_deg > start_angle_deg.",
+                                ab.start_angle_deg, ab.end_angle_deg
+                            ),
+                        );
+                    }
+                }
+
                 // Validate selections & Z-height hierarchy (in rotated virtual Setup for Indexed 3+1)
                 let effective_setup = match (&op.rotary, resolved_setup.rotary) {
                     (OperationRotaryMode::Indexed3Plus1 { angle_deg }, Some(rot)) => Cow::Owned(
@@ -983,12 +1029,22 @@ pub fn validate_project_with_machine(
                     ),
                     _ => Cow::Borrowed(&resolved_setup),
                 };
-                let summary = match extract_selection_features_with_sketches(
-                    cad_doc,
-                    &project.sketches,
-                    &effective_setup,
-                    &op.selections,
-                ) {
+                let summary_res = if op.kind.is_rotary_native() {
+                    extract_rotary_selection_features(
+                        cad_doc,
+                        &project.sketches,
+                        &effective_setup,
+                        &op.selections,
+                    )
+                } else {
+                    extract_selection_features_with_sketches(
+                        cad_doc,
+                        &project.sketches,
+                        &effective_setup,
+                        &op.selections,
+                    )
+                };
+                let summary = match summary_res {
                     Ok(s) => s,
                     Err(err) => {
                         report.push_error(&op_scope, err.to_string());
@@ -1014,6 +1070,114 @@ pub fn validate_project_with_machine(
                             &op_scope,
                             "3D Machining Boundary is set to 'Selected 2D Contours' but no closed 2D contours or planar faces are selected; falling back to Model Silhouette.",
                         );
+                    }
+                }
+
+                // Warn early if a `WrapCylinder` operation intrudes into the rotary chuck keep-out
+                // zone or wraps beyond 360° around the cylinder circumference.
+                if let (
+                    OperationRotaryMode::WrapCylinder {
+                        wrap_radius,
+                        axial_offset,
+                        ..
+                    },
+                    Some(rot),
+                ) = (&op.rotary, resolved_setup.rotary)
+                    && rot.axis != RotaryAxisKind::ZAxis
+                {
+                    let mut wr = wrap_radius.clone();
+                    let _ = wr.reevaluate(&eval_ctx);
+                    let mut ao = axial_offset.clone();
+                    let _ = ao.reevaluate(&eval_ctx);
+                    let r_wrap = wr.value_mm.max(1.0);
+                    let ax_off = ao.value_mm;
+
+                    let mut u_min = f64::INFINITY;
+                    let mut u_max = f64::NEG_INFINITY;
+                    let mut s_min = f64::INFINITY;
+                    let mut s_max = f64::NEG_INFINITY;
+                    let mut extend_aabb = |b: chip_math::Aabb2| {
+                        if b.is_valid() {
+                            match rot.axis {
+                                RotaryAxisKind::XAxis | RotaryAxisKind::ZAxis => {
+                                    u_min = u_min.min(b.min.x + ax_off);
+                                    u_max = u_max.max(b.max.x + ax_off);
+                                    s_min = s_min.min(b.min.y);
+                                    s_max = s_max.max(b.max.y);
+                                }
+                                RotaryAxisKind::YAxis => {
+                                    u_min = u_min.min(b.min.y + ax_off);
+                                    u_max = u_max.max(b.max.y + ax_off);
+                                    s_min = s_min.min(-b.max.x);
+                                    s_max = s_max.max(-b.min.x);
+                                }
+                            }
+                        }
+                    };
+                    for feat in &summary.features {
+                        match feat {
+                            ExtractedFeature25D::PlanarFace {
+                                outer_boundary_wcs, ..
+                            } => extend_aabb(outer_boundary_wcs.exact_aabb()),
+                            ExtractedFeature25D::Contour { polyline_wcs, .. } => {
+                                extend_aabb(polyline_wcs.exact_aabb());
+                            }
+                            ExtractedFeature25D::ModeledChamfer {
+                                upper_polyline_wcs,
+                                lower_polyline_wcs,
+                                ..
+                            } => {
+                                extend_aabb(upper_polyline_wcs.exact_aabb());
+                                extend_aabb(lower_polyline_wcs.exact_aabb());
+                            }
+                            ExtractedFeature25D::CylindricalHole {
+                                center_wcs,
+                                diameter_mm,
+                                ..
+                            } => {
+                                let r = 0.5 * diameter_mm.abs();
+                                extend_aabb(chip_math::Aabb2::from_points([
+                                    chip_math::DVec2::new(center_wcs.x - r, center_wcs.y - r),
+                                    chip_math::DVec2::new(center_wcs.x + r, center_wcs.y + r),
+                                ]));
+                            }
+                        }
+                    }
+
+                    if u_min.is_finite()
+                        && u_max.is_finite()
+                        && (rot.chuck_u_max - rot.chuck_u_min).abs() > 1e-6
+                    {
+                        let tool_d = op
+                            .tool_id
+                            .as_ref()
+                            .and_then(|tid| project.tool(tid))
+                            .map_or(0.1, |t| t.geometry.cutting_diameter_mm());
+                        let guard_u = rotary_chuck_guard_u(&rot, tool_d);
+                        let intrudes = if rot.chuck_end_positive {
+                            u_max > guard_u + 1e-4
+                        } else {
+                            u_min < guard_u - 1e-4
+                        };
+                        if intrudes {
+                            report.push_warning(
+                                &op_scope,
+                                format!(
+                                    "Wrapped 2D operation axial extent [{u_min:.2}, {u_max:.2}] mm intrudes into the rotary chuck keep-out zone (limit {guard_u:.2} mm)."
+                                ),
+                            );
+                        }
+                    }
+                    if s_min.is_finite() && s_max.is_finite() {
+                        let span_deg = ((s_max - s_min) / r_wrap).to_degrees();
+                        if span_deg > 360.0 + 1e-3 {
+                            report.push_warning(
+                                &op_scope,
+                                format!(
+                                    "Wrapped 2D geometry circumferential span ({span_deg:.1}°) exceeds 360° at wrap radius {r_wrap:.2} mm."
+                                ),
+                            );
+                        }
                     }
                 }
 
@@ -1394,5 +1558,246 @@ auto_detect_edges = true
             "SelectedRegions warning should clear once a closed contour is selected: {:?}",
             rep_clean.diagnostics
         );
+    }
+
+    #[test]
+    fn m81_validates_rotary_axial_boundary_warnings_and_legacy_toml_compatibility() {
+        use chip_cad::{MeshImportOptions, load_mesh_cad_document, sample_rotary_shaft_stl_bytes};
+        use chip_cam::{
+            BoxAnchor27, GeometrySelectionItem, HeightReference, HeightSpec,
+            RotaryAxialBoundaryMode, RotaryAxisKind, RotaryDriveMode, StockAxis, StockConfig,
+            ToolContainmentMode, WcsOriginMode,
+        };
+        use chip_sketch::{RectAnchorMode, SketchEntity, SketchEntityEntry, SketchLayer};
+
+        let stl = sample_rotary_shaft_stl_bytes();
+        let doc = load_mesh_cad_document("rotary_shaft.stl", &stl, &MeshImportOptions::default())
+            .unwrap();
+
+        let lib = default_starter_tool_library();
+        let ball_6 = lib
+            .tools
+            .iter()
+            .find(|t| matches!(t.geometry, CutterGeometry::BallEndmill { .. }))
+            .unwrap()
+            .clone();
+        let flat_6 = lib
+            .tools
+            .iter()
+            .find(|t| matches!(t.geometry, CutterGeometry::FlatEndmill { .. }))
+            .unwrap()
+            .clone();
+
+        let mut proj = ProjectDocument::new("M81 Rotary Validation");
+        proj.tools = vec![ball_6.clone(), flat_6.clone()];
+        let mut setup = Setup::new("s_rot", "Rotary Setup", WorkOffsetSlot::G54);
+        setup.wcs.origin = WcsOriginMode::StockBoxPoint {
+            anchor: BoxAnchor27::VOLUMETRIC_CENTER,
+        };
+        setup.stock = StockConfig::FixedCylinder {
+            axis: StockAxis::X,
+            diameter: ParamLength::from_mm(42.0),
+            length: ParamLength::from_mm(80.0),
+            axial_top_offset: ParamLength::from_mm(0.0),
+        };
+        setup.rotary.mode = RotaryDriveMode::Simultaneous4Axis;
+        setup.rotary.axis = RotaryAxisKind::XAxis;
+        setup.rotary.chuck_length = ParamLength::from_mm(20.0);
+
+        // Sketch intruding into -U chuck AND wide enough to exceed 360°
+        let mut sk = SketchLayer::new("sk_bad_wrap", "Bad Wrap", setup.id.clone());
+        sk.entities.push(SketchEntityEntry {
+            id: "r_bad".to_string(),
+            name: "Bad Rect".to_string(),
+            sub_layer: None,
+            is_construction: false,
+            entity: SketchEntity::Rectangle {
+                anchor: RectAnchorMode::Center,
+                x: ParamLength::from_mm(-36.0),
+                y: ParamLength::from_mm(0.0),
+                width: ParamLength::from_mm(12.0),
+                height: ParamLength::from_mm(150.0),
+                corner_radius: ParamLength::from_mm(0.0),
+                rotation_deg: 0.0,
+            },
+        });
+        sk.rebuild_regions(None);
+        proj.sketches = vec![sk];
+
+        // 1. Rotary2Linear with SelectedGeometry & empty selections -> warning
+        let mut op_sel_empty =
+            Operation::new("op_1", "Rot Empty Sel", OperationKind::Rotary2Linear);
+        op_sel_empty.tool_id = Some(ball_6.id.clone());
+        op_sel_empty
+            .rotary_axial_boundary_mut()
+            .unwrap()
+            .axial_boundary_mode = RotaryAxialBoundaryMode::SelectedGeometry;
+
+        // 2. Rotary4AxisSim with ExplicitRange & u_start >= u_end -> warning
+        let mut op_exp_bad = Operation::new("op_2", "Rot Bad Range", OperationKind::Rotary4AxisSim);
+        op_exp_bad.tool_id = Some(ball_6.id.clone());
+        {
+            let ab = op_exp_bad.rotary_axial_boundary_mut().unwrap();
+            ab.axial_boundary_mode = RotaryAxialBoundaryMode::ExplicitRange;
+            ab.explicit_u_start = ParamLength::from_mm(15.0);
+            ab.explicit_u_end = ParamLength::from_mm(5.0);
+        }
+
+        // 3. WrapCylinder intruding into chuck keep-out AND > 360° -> warnings
+        let mut op_wrap_bad = Operation::new("op_3", "Wrap Bad", OperationKind::Pocket2D);
+        op_wrap_bad.tool_id = Some(flat_6.id.clone());
+        op_wrap_bad
+            .selections
+            .push(GeometrySelectionItem::SketchLayerAll {
+                sketch_id: "sk_bad_wrap".to_string(),
+                sub_layer: None,
+                reverse: false,
+                side_flip: false,
+            });
+        op_wrap_bad.heights.top = HeightSpec::new(HeightReference::StockTop, 0.0);
+        op_wrap_bad.heights.bottom = HeightSpec::new(HeightReference::StockTop, -2.0);
+        op_wrap_bad.rotary = OperationRotaryMode::WrapCylinder {
+            wrap_radius: ParamLength::from_mm(20.0),
+            axial_offset: ParamLength::from_mm(0.0),
+            angle_offset_deg: 0.0,
+        };
+
+        setup.operations = vec![op_sel_empty, op_exp_bad, op_wrap_bad];
+        proj.setups = vec![setup];
+
+        let rep = validate_project(&proj, None, Some(&doc));
+        assert!(
+            rep.diagnostics
+                .iter()
+                .any(|d| d.severity == DiagnosticSeverity::Warning
+                    && d.message.contains("Selected Geometry")),
+            "expected SelectedGeometry empty warning, got: {:?}",
+            rep.diagnostics
+        );
+        assert!(
+            rep.diagnostics
+                .iter()
+                .any(|d| d.severity == DiagnosticSeverity::Warning
+                    && d.message.contains("explicit axial range")),
+            "expected ExplicitRange u_start >= u_end warning, got: {:?}",
+            rep.diagnostics
+        );
+        assert!(
+            rep.diagnostics
+                .iter()
+                .any(|d| d.severity == DiagnosticSeverity::Warning
+                    && d.message.contains("chuck keep-out")),
+            "expected WrapCylinder chuck keep-out warning, got: {:?}",
+            rep.diagnostics
+        );
+        assert!(
+            rep.diagnostics
+                .iter()
+                .any(|d| d.severity == DiagnosticSeverity::Warning && d.message.contains("360°")),
+            "expected WrapCylinder > 360° warning, got: {:?}",
+            rep.diagnostics
+        );
+
+        // 4. Verify lossless TOML roundtrip with flattened `RotaryAxialBoundaryConfig`
+        let toml_txt = proj.to_toml_string().unwrap();
+        let reparsed = ProjectDocument::from_toml_str(&toml_txt).unwrap();
+        assert_eq!(reparsed.setups[0].operations, proj.setups[0].operations);
+
+        // 5. Verify 100% backward-compatible deserialization of legacy TOML lacking new M81 fields
+        let legacy_2lin_toml = r#"
+strategy_kind = "rotary_2linear"
+pattern = "continuous_spiral"
+cut_direction = "zig_zag"
+use_cusp_height = true
+start_angle_deg = -45.0
+end_angle_deg = 135.0
+angular_sample_deg = 2.0
+
+[stepover]
+value_mm = 1.5
+
+[cusp_height]
+value_mm = 0.02
+
+[axial_margin_start]
+value_mm = 34.0
+
+[axial_margin_end]
+value_mm = 8.0
+
+[axial_sample_step]
+value_mm = 0.25
+
+[smoothing_tolerance]
+value_mm = 0.01
+"#;
+        let parsed_2lin: StrategyParams = toml::from_str(legacy_2lin_toml).unwrap();
+        match parsed_2lin {
+            StrategyParams::Rotary2Linear(p) => {
+                assert_eq!(
+                    p.axial_boundary.axial_boundary_mode,
+                    RotaryAxialBoundaryMode::ModelBounds
+                );
+                assert_eq!(
+                    p.axial_boundary.axial_containment,
+                    ToolContainmentMode::ToolCenterOnBoundary
+                );
+                assert!((p.axial_boundary.start_angle_deg - (-45.0)).abs() < 1e-9);
+                assert!((p.axial_boundary.end_angle_deg - 135.0).abs() < 1e-9);
+                assert!((p.axial_boundary.axial_margin_start.value_mm - 34.0).abs() < 1e-9);
+                assert!((p.axial_boundary.axial_margin_end.value_mm - 8.0).abs() < 1e-9);
+            }
+            other => panic!("expected Rotary2Linear, got {other:?}"),
+        }
+
+        let legacy_4ax_toml = r#"
+strategy_kind = "rotary_4axis_sim"
+pattern = "simultaneous_spiral"
+cut_direction = "zig_zag"
+tilt_mode = "surface_normal_auto_tilt"
+max_tilt_deg = 18.0
+tilt_smoothing_window = 3
+use_cusp_height = false
+start_angle_deg = 0.0
+end_angle_deg = 360.0
+angular_sample_deg = 1.5
+
+[lateral_offset]
+value_mm = 2.5
+
+[stepover]
+value_mm = 2.0
+
+[cusp_height]
+value_mm = 0.02
+
+[axial_margin_start]
+value_mm = 11.0
+
+[axial_margin_end]
+value_mm = 11.0
+
+[axial_sample_step]
+value_mm = 0.25
+
+[smoothing_tolerance]
+value_mm = 0.01
+"#;
+        let parsed_4ax: StrategyParams = toml::from_str(legacy_4ax_toml).unwrap();
+        match parsed_4ax {
+            StrategyParams::Rotary4AxisSim(p) => {
+                assert_eq!(
+                    p.axial_boundary.axial_boundary_mode,
+                    RotaryAxialBoundaryMode::ModelBounds
+                );
+                assert_eq!(
+                    p.axial_boundary.axial_containment,
+                    ToolContainmentMode::ToolCenterOnBoundary
+                );
+                assert!((p.axial_boundary.axial_margin_start.value_mm - 11.0).abs() < 1e-9);
+                assert!((p.axial_boundary.axial_margin_end.value_mm - 11.0).abs() < 1e-9);
+            }
+            other => panic!("expected Rotary4AxisSim, got {other:?}"),
+        }
     }
 }

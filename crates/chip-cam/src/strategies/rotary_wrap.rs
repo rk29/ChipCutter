@@ -5,8 +5,9 @@ use chip_math::DVec3;
 
 use crate::{
     cl_data::{ClEvent, MotionRole},
-    rotary::{ResolvedRotaryConfig, RotaryAxisKind},
+    rotary::{ResolvedRotaryConfig, RotaryAxisKind, validate_toolpath_rotary_chuck_clearance},
     toolpath::{ClearingSubToolpath, GeneratedToolpath, SegmentMotion3D, ToolpathBuilder},
+    wcs::CamError,
 };
 
 /// Wraps a flat 2D planar toolpath `(x_2d, y_2d, z_2d)` onto a cylinder of radius `wrap_radius_mm`
@@ -61,9 +62,18 @@ pub fn wrap_planar_toolpath_to_cylinder(
 
     let max_chord_mm = 0.35_f64;
     let max_step_deg = 1.5_f64;
+    let mut min_wrapped_deg = f64::INFINITY;
+    let mut max_wrapped_deg = f64::NEG_INFINITY;
+    let mut track_deg = |deg: f64| {
+        if deg.is_finite() {
+            min_wrapped_deg = min_wrapped_deg.min(deg);
+            max_wrapped_deg = max_wrapped_deg.max(deg);
+        }
+    };
 
     for (seg_idx, seg) in flat_tp.segments_wcs.iter().enumerate() {
         let (start_wcs, start_deg, start_r) = map_pt(seg.start_wcs);
+        track_deg(start_deg);
         if seg_idx == 0 {
             let entry_safe = DVec3::new(start_wcs.x, start_wcs.y, safe_z_wcs.max(start_wcs.z));
             builder.rotary_rapid_to(entry_safe, start_deg);
@@ -87,6 +97,7 @@ pub fn wrap_planar_toolpath_to_cylinder(
         match seg.motion {
             SegmentMotion3D::Rapid => {
                 let (mut end_wcs, end_deg, _) = map_pt(seg.end_wcs);
+                track_deg(end_deg);
                 // Keep rapids at or above rotary clearance radius when traversing laterally/angularly
                 let lateral = (end_wcs.x - start_wcs.x).hypot(end_wcs.y - start_wcs.y);
                 if lateral > 1e-3 || (end_deg - start_deg).abs() > 1e-3 {
@@ -96,6 +107,7 @@ pub fn wrap_planar_toolpath_to_cylinder(
             }
             SegmentMotion3D::Linear { feed_mm_min, role } => {
                 let (_, end_deg, _) = map_pt(seg.end_wcs);
+                track_deg(end_deg);
                 let d_deg = (end_deg - start_deg).abs();
                 let n_steps = ((d_deg / max_step_deg).ceil() as usize)
                     .max((seg.length_mm() / (max_chord_mm * 2.0)).ceil() as usize)
@@ -103,6 +115,7 @@ pub fn wrap_planar_toolpath_to_cylinder(
                 for k in 1..=n_steps {
                     let t = k as f64 / n_steps as f64;
                     let (w, d, r) = map_pt(seg.sample_point(t));
+                    track_deg(d);
                     builder.rotary_linear_to(w, d, feed_mm_min, r, role);
                 }
             }
@@ -114,10 +127,23 @@ pub fn wrap_planar_toolpath_to_cylinder(
                 for k in 1..=n_steps {
                     let t = k as f64 / n_steps as f64;
                     let (w, d, r) = map_pt(seg.sample_point(t));
+                    track_deg(d);
                     builder.rotary_linear_to(w, d, feed_mm_min, r, role);
                 }
             }
         }
+    }
+
+    if min_wrapped_deg.is_finite()
+        && max_wrapped_deg.is_finite()
+        && (max_wrapped_deg - min_wrapped_deg) > 360.0 + 1e-3
+    {
+        builder.warnings.push(format!(
+            "Wrapped cylindrical toolpath angular span ({:.1}°, [{:.1}°..{:.1}°]) exceeds 360°; wrapped geometry may overlap around the cylinder circumference.",
+            max_wrapped_deg - min_wrapped_deg,
+            min_wrapped_deg,
+            max_wrapped_deg
+        ));
     }
 
     if let Some(last) = builder.current_pos()
@@ -151,6 +177,37 @@ pub fn wrap_planar_toolpath_to_cylinder(
     }
 
     builder.finish()
+}
+
+/// Wraps a flat 2D planar toolpath onto a cylinder and enforces the mandatory rotary chuck
+/// keep-out guard (`tool_r + 0.5 mm`), returning [`CamError::InvalidRotarySetup`] if any
+/// wrapped move intrudes into the chuck keep-out zone.
+#[allow(clippy::too_many_arguments)]
+pub fn wrap_planar_toolpath_to_cylinder_checked(
+    flat_tp: &GeneratedToolpath,
+    rotary: &ResolvedRotaryConfig,
+    wrap_radius_mm: f64,
+    axial_offset_mm: f64,
+    angle_offset_deg: f64,
+    tool_diameter_mm: f64,
+    clearing_tool_diameter_mm: Option<f64>,
+    op_name: &str,
+) -> Result<GeneratedToolpath, CamError> {
+    let wrapped = wrap_planar_toolpath_to_cylinder(
+        flat_tp,
+        rotary,
+        wrap_radius_mm,
+        axial_offset_mm,
+        angle_offset_deg,
+    );
+    validate_toolpath_rotary_chuck_clearance(
+        &wrapped,
+        rotary,
+        tool_diameter_mm,
+        clearing_tool_diameter_mm,
+        op_name,
+    )?;
+    Ok(wrapped)
 }
 
 /// Wraps a toolpath generated inside an [`crate::rotary::build_indexed_virtual_setup`] rotated

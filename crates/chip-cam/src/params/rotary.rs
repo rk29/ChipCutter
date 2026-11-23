@@ -2,8 +2,94 @@ use chip_math::{EvalContext, ParamLength};
 use serde::{Deserialize, Serialize};
 
 use super::surface_3d::{
-    default_finishing_cusp_height, default_finishing_smooth_tol, default_zero_length,
+    ToolContainmentMode, default_finishing_cusp_height, default_finishing_smooth_tol,
+    default_zero_length,
 };
+
+/// Axial cutting-area boundary source along the 4th-axis rotary centerline (`-U..+U`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RotaryAxialBoundaryMode {
+    /// Full setup cylindrical stock axial span `[stock_u_min, stock_u_max]`.
+    StockBounds,
+    /// Active 3D model axial span `[mesh_u_min, mesh_u_max]` (clamped to stock).
+    #[default]
+    ModelBounds,
+    /// Axial `-U..+U` span projected from selected 3D faces, loops, chains, holes, or sketches.
+    SelectedGeometry,
+    /// Explicit user-entered `[explicit_u_start, explicit_u_end]` coordinates along the rotary axis.
+    ExplicitRange,
+}
+
+impl RotaryAxialBoundaryMode {
+    pub const ALL: [Self; 4] = [
+        Self::StockBounds,
+        Self::ModelBounds,
+        Self::SelectedGeometry,
+        Self::ExplicitRange,
+    ];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::StockBounds => "Stock Bounds (-U..+U)",
+            Self::ModelBounds => "Model Bounds (-U..+U)",
+            Self::SelectedGeometry => "Selected Geometry (-U..+U)",
+            Self::ExplicitRange => "Explicit -U / +U Range",
+        }
+    }
+}
+
+/// Shared 4th-axis rotary axial (`-U`/`+U`) and angular (`θ`) cutting-area boundary configuration,
+/// embedded via `#[serde(flatten)]` into [`Rotary2LinearParams`] and [`Rotary4AxisSimParams`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RotaryAxialBoundaryConfig {
+    #[serde(default)]
+    pub axial_boundary_mode: RotaryAxialBoundaryMode,
+    #[serde(default)]
+    pub axial_containment: ToolContainmentMode,
+    /// Signed axial margin (`mm`) at the `-U` boundary end (`> 0` trims inward, `< 0` extends outward past `-U`).
+    #[serde(default = "default_zero_length")]
+    pub axial_margin_start: ParamLength,
+    /// Signed axial margin (`mm`) at the `+U` boundary end (`> 0` trims inward, `< 0` extends outward past `+U`).
+    #[serde(default = "default_zero_length")]
+    pub axial_margin_end: ParamLength,
+    /// Explicit `-U` axial boundary coordinate (`mm`) used when `axial_boundary_mode == ExplicitRange`.
+    #[serde(default = "default_zero_length")]
+    pub explicit_u_start: ParamLength,
+    /// Explicit `+U` axial boundary coordinate (`mm`) used when `axial_boundary_mode == ExplicitRange`.
+    #[serde(default = "default_zero_length")]
+    pub explicit_u_end: ParamLength,
+    /// Start angular boundary (`deg`, `0.0` default for full circumference).
+    #[serde(default)]
+    pub start_angle_deg: f64,
+    /// End angular boundary (`deg`, `360.0` default for full circumference).
+    #[serde(default = "default_rotary_end_angle_deg")]
+    pub end_angle_deg: f64,
+}
+
+impl Default for RotaryAxialBoundaryConfig {
+    fn default() -> Self {
+        Self {
+            axial_boundary_mode: RotaryAxialBoundaryMode::ModelBounds,
+            axial_containment: ToolContainmentMode::ToolCenterOnBoundary,
+            axial_margin_start: ParamLength::from_mm(0.0),
+            axial_margin_end: ParamLength::from_mm(0.0),
+            explicit_u_start: ParamLength::from_mm(0.0),
+            explicit_u_end: ParamLength::from_mm(0.0),
+            start_angle_deg: 0.0,
+            end_angle_deg: default_rotary_end_angle_deg(),
+        }
+    }
+}
+
+impl RotaryAxialBoundaryConfig {
+    pub fn reevaluate(&mut self, ctx: &EvalContext) {
+        let _ = self.axial_margin_start.reevaluate(ctx);
+        let _ = self.axial_margin_end.reevaluate(ctx);
+        let _ = self.explicit_u_start.reevaluate(ctx);
+        let _ = self.explicit_u_end.reevaluate(ctx);
+    }
+}
 
 /// Machining pattern for centerline-locked 2-linear + rotary 3D surfacing (`OperationKind::Rotary2Linear`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -80,18 +166,9 @@ pub struct Rotary2LinearParams {
     pub use_cusp_height: bool,
     #[serde(default = "default_finishing_cusp_height")]
     pub cusp_height: ParamLength,
-    /// Start angular boundary (`deg`, used by `AxialParallel` or partial-sector spiral).
-    #[serde(default)]
-    pub start_angle_deg: f64,
-    /// End angular boundary (`deg`, `360.0` default for full circumference).
-    #[serde(default = "default_rotary_end_angle_deg")]
-    pub end_angle_deg: f64,
-    /// Inward trim margin (`mm`) from the `-u` stock end (e.g. to stay clear of the rotary chuck!).
-    #[serde(default = "default_zero_length")]
-    pub axial_margin_start: ParamLength,
-    /// Inward trim margin (`mm`) from the `+u` stock end (e.g. to clear a live tailstock center).
-    #[serde(default = "default_zero_length")]
-    pub axial_margin_end: ParamLength,
+    /// Shared `-U`/`+U` axial boundary, tool containment, signed margins, and angular sector.
+    #[serde(flatten)]
+    pub axial_boundary: RotaryAxialBoundaryConfig,
     /// Angular drop-cutter sampling resolution (`deg`).
     #[serde(default = "default_rotary_angular_sample_deg")]
     pub angular_sample_deg: f64,
@@ -111,10 +188,7 @@ impl Default for Rotary2LinearParams {
             stepover: default_rotary_stepover(),
             use_cusp_height: false,
             cusp_height: default_finishing_cusp_height(),
-            start_angle_deg: 0.0,
-            end_angle_deg: 360.0,
-            axial_margin_start: ParamLength::from_mm(0.0),
-            axial_margin_end: ParamLength::from_mm(0.0),
+            axial_boundary: RotaryAxialBoundaryConfig::default(),
             angular_sample_deg: default_rotary_angular_sample_deg(),
             axial_sample_step: default_rotary_axial_sample(),
             smoothing_tolerance: default_finishing_smooth_tol(),
@@ -126,8 +200,7 @@ impl Rotary2LinearParams {
     pub fn reevaluate(&mut self, ctx: &EvalContext) {
         let _ = self.stepover.reevaluate(ctx);
         let _ = self.cusp_height.reevaluate(ctx);
-        let _ = self.axial_margin_start.reevaluate(ctx);
-        let _ = self.axial_margin_end.reevaluate(ctx);
+        self.axial_boundary.reevaluate(ctx);
         let _ = self.axial_sample_step.reevaluate(ctx);
         let _ = self.smoothing_tolerance.reevaluate(ctx);
     }
@@ -214,14 +287,9 @@ pub struct Rotary4AxisSimParams {
     pub use_cusp_height: bool,
     #[serde(default = "default_finishing_cusp_height")]
     pub cusp_height: ParamLength,
-    #[serde(default)]
-    pub start_angle_deg: f64,
-    #[serde(default = "default_rotary_end_angle_deg")]
-    pub end_angle_deg: f64,
-    #[serde(default = "default_zero_length")]
-    pub axial_margin_start: ParamLength,
-    #[serde(default = "default_zero_length")]
-    pub axial_margin_end: ParamLength,
+    /// Shared `-U`/`+U` axial boundary, tool containment, signed margins, and angular sector.
+    #[serde(flatten)]
+    pub axial_boundary: RotaryAxialBoundaryConfig,
     #[serde(default = "default_rotary_angular_sample_deg")]
     pub angular_sample_deg: f64,
     #[serde(default = "default_rotary_axial_sample")]
@@ -242,10 +310,7 @@ impl Default for Rotary4AxisSimParams {
             stepover: default_rotary_stepover(),
             use_cusp_height: false,
             cusp_height: default_finishing_cusp_height(),
-            start_angle_deg: 0.0,
-            end_angle_deg: 360.0,
-            axial_margin_start: ParamLength::from_mm(0.0),
-            axial_margin_end: ParamLength::from_mm(0.0),
+            axial_boundary: RotaryAxialBoundaryConfig::default(),
             angular_sample_deg: default_rotary_angular_sample_deg(),
             axial_sample_step: default_rotary_axial_sample(),
             smoothing_tolerance: default_finishing_smooth_tol(),
@@ -258,8 +323,7 @@ impl Rotary4AxisSimParams {
         let _ = self.lateral_offset.reevaluate(ctx);
         let _ = self.stepover.reevaluate(ctx);
         let _ = self.cusp_height.reevaluate(ctx);
-        let _ = self.axial_margin_start.reevaluate(ctx);
-        let _ = self.axial_margin_end.reevaluate(ctx);
+        self.axial_boundary.reevaluate(ctx);
         let _ = self.axial_sample_step.reevaluate(ctx);
         let _ = self.smoothing_tolerance.reevaluate(ctx);
     }

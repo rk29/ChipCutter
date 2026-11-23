@@ -12,8 +12,9 @@ use crate::{
     cl_data::MotionRole,
     params::{Rotary2LinearParams, RotaryCutDirection, RotaryPatternMode},
     rotary::{
-        ResolvedRotaryConfig, RotaryAxisKind, detect_rotary_axial_undercut_warning,
-        drop_cutter_rotary_z_rel, estimate_rotary_flank_cos_phi, resolve_rotary_axial_window,
+        ResolvedRotaryConfig, RotaryAxisKind, RotaryWindowInput,
+        detect_rotary_axial_undercut_warning, drop_cutter_rotary_z_rel,
+        estimate_rotary_flank_cos_phi, resolve_rotary_window,
     },
     strategies::{StrategyExecContext, compute_z_levels},
     surface3d::{SurfaceCutterProfile, SurfaceMesh3D, stepover_for_cusp_height},
@@ -53,25 +54,25 @@ pub fn generate_rotary2linear(
     }
 
     let tool_d = ctx.tool.geometry.cutting_diameter_mm().max(0.1);
-    let (u_start, u_end) = resolve_rotary_axial_window(
-        &rot,
-        &base_mesh,
-        tool_d,
-        params.axial_margin_start.value_mm,
-        params.axial_margin_end.value_mm,
-        &ctx.op.name,
-    )?;
+    let win = resolve_rotary_window(&RotaryWindowInput {
+        rot: &rot,
+        frame: &ctx.setup.frame,
+        doc: Some(ctx.doc),
+        base_mesh: &base_mesh,
+        selections: &ctx.op.selections,
+        extracted_selection: Some(&ctx.selection),
+        boundary: &params.axial_boundary,
+        tool_diameter_mm: tool_d,
+        top_z_wcs: ctx.heights.top_z_wcs,
+        bottom_z_wcs: ctx.heights.bottom_z_wcs,
+        op_name: &ctx.op.name,
+    })?;
+    builder.warnings.extend(win.warnings);
 
-    // Angular window [start_deg, end_deg]
-    let start_deg = params.start_angle_deg;
-    let end_deg = params.end_angle_deg;
-    if !start_deg.is_finite() || !end_deg.is_finite() || end_deg <= start_deg + 1e-3 {
-        return Err(CamError::InvalidParameter {
-            param: "end_angle_deg",
-            value: end_deg,
-            reason: "must be finite and greater than start_angle_deg",
-        });
-    }
+    let u_start = win.u_start;
+    let u_end = win.u_end;
+    let start_deg = win.start_angle_deg;
+    let end_deg = win.end_angle_deg;
     let angular_span_deg = end_deg - start_deg;
     let is_full_turn = (angular_span_deg - 360.0).abs() <= 1e-3;
 
@@ -90,7 +91,10 @@ pub fn generate_rotary2linear(
         ctx.passes.stock_to_leave_radial.value_mm,
         ctx.passes.stock_to_leave_axial.value_mm,
     );
-    let r_floor = (ctx.heights.bottom_z_wcs - rot.center_wcs.z).max(0.0);
+    let r_floor = win.r_floor;
+    let r_ceiling_override = (ctx.heights.top_z_wcs
+        < rot.center_wcs.z + rot.stock_outer_radius_mm - 1e-6)
+        .then_some(win.r_ceiling);
     let r_outer_est = rot.stock_outer_radius_mm.max(2.0);
 
     // Effective stepover (either explicit mm or slope-compensated cusp-height derived)
@@ -131,6 +135,7 @@ pub fn generate_rotary2linear(
                 end_deg,
                 is_full_turn,
                 r_floor,
+                r_ceiling_override,
                 stepover_mm,
                 d_theta,
                 params.cut_direction,
@@ -152,6 +157,7 @@ pub fn generate_rotary2linear(
                 is_full_turn,
                 r_outer_est,
                 r_floor,
+                r_ceiling_override,
                 stepover_mm,
                 params.cut_direction,
                 cut_feed,
@@ -345,6 +351,7 @@ fn emit_continuous_spiral(
     end_deg: f64,
     is_full_turn: bool,
     r_floor: f64,
+    r_ceiling_override: Option<f64>,
     stepover_mm: f64,
     d_theta: f64,
     cut_direction: RotaryCutDirection,
@@ -399,8 +406,9 @@ fn emit_continuous_spiral(
             });
         }
         let r_outer = rot.stock_outer_radius_mm.max(r_max_surf);
+        let r_rough_top = r_ceiling_override.map_or(r_outer, |c| c.clamp(r_min_surf, r_outer));
         let radial_levels = compute_z_levels(
-            r_outer,
+            r_rough_top,
             r_min_surf,
             ctx.passes.multiple_depths,
             ctx.passes.max_stepdown.value_mm,
@@ -514,8 +522,9 @@ fn emit_continuous_spiral(
             });
         }
         let r_outer = rot.stock_outer_radius_mm.max(r_max_surf);
+        let r_rough_top = r_ceiling_override.map_or(r_outer, |c| c.clamp(r_min_surf, r_outer));
         let radial_levels = compute_z_levels(
-            r_outer,
+            r_rough_top,
             r_min_surf,
             ctx.passes.multiple_depths,
             ctx.passes.max_stepdown.value_mm,
@@ -614,6 +623,7 @@ fn emit_axial_parallel(
     is_full_turn: bool,
     r_outer_est: f64,
     r_floor: f64,
+    r_ceiling_override: Option<f64>,
     stepover_mm: f64,
     cut_direction: RotaryCutDirection,
     cut_feed: f64,
@@ -661,8 +671,9 @@ fn emit_axial_parallel(
     }
 
     let r_outer = rot.stock_outer_radius_mm.max(r_max_surf);
+    let r_rough_top = r_ceiling_override.map_or(r_outer, |c| c.clamp(r_min_surf, r_outer));
     let radial_levels = compute_z_levels(
-        r_outer,
+        r_rough_top,
         r_min_surf,
         ctx.passes.multiple_depths,
         ctx.passes.max_stepdown.value_mm,

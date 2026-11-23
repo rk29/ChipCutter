@@ -872,12 +872,12 @@ fn m75_partial_sector_zigzag_rotary2linear_and_rotary4axis_sim_gouge_free() {
     if let StrategyParams::Rotary2Linear(p) = op_2lin.strategy_mut() {
         p.pattern = RotaryPatternMode::ContinuousSpiral;
         p.cut_direction = RotaryCutDirection::ZigZag;
-        p.start_angle_deg = 0.0;
-        p.end_angle_deg = 180.0;
+        p.axial_boundary.start_angle_deg = 0.0;
+        p.axial_boundary.end_angle_deg = 180.0;
         p.use_cusp_height = false;
         p.stepover = ParamLength::from_mm(3.0);
-        p.axial_margin_start = ParamLength::from_mm(9.0);
-        p.axial_margin_end = ParamLength::from_mm(5.0);
+        p.axial_boundary.axial_margin_start = ParamLength::from_mm(9.0);
+        p.axial_boundary.axial_margin_end = ParamLength::from_mm(5.0);
     }
 
     let tp_2lin = generate_operation_toolpath_with_rest(&OperationGenRequest {
@@ -938,12 +938,12 @@ fn m75_partial_sector_zigzag_rotary2linear_and_rotary4axis_sim_gouge_free() {
         p.max_tilt_deg = 28.0;
         p.tilt_smoothing_window = 3;
         p.cut_direction = RotaryCutDirection::ZigZag;
-        p.start_angle_deg = 0.0;
-        p.end_angle_deg = 180.0;
+        p.axial_boundary.start_angle_deg = 0.0;
+        p.axial_boundary.end_angle_deg = 180.0;
         p.use_cusp_height = false;
         p.stepover = ParamLength::from_mm(3.0);
-        p.axial_margin_start = ParamLength::from_mm(9.0);
-        p.axial_margin_end = ParamLength::from_mm(5.0);
+        p.axial_boundary.axial_margin_start = ParamLength::from_mm(9.0);
+        p.axial_boundary.axial_margin_end = ParamLength::from_mm(5.0);
     }
 
     let tp_4ax = generate_operation_toolpath_with_rest(&OperationGenRequest {
@@ -1014,8 +1014,8 @@ fn m75_partial_sector_zigzag_rotary2linear_and_rotary4axis_sim_gouge_free() {
     if let StrategyParams::Rotary4AxisSim(p) = op_flute.strategy_mut() {
         p.stepover = ParamLength::from_mm(10.0);
         p.use_cusp_height = false;
-        p.axial_margin_start = ParamLength::from_mm(11.0);
-        p.axial_margin_end = ParamLength::from_mm(11.0);
+        p.axial_boundary.axial_margin_start = ParamLength::from_mm(11.0);
+        p.axial_boundary.axial_margin_end = ParamLength::from_mm(11.0);
     }
     let tp_flute = generate_operation_toolpath_with_rest(&OperationGenRequest {
         doc: &flute_doc,
@@ -1122,8 +1122,8 @@ fn m75_rotary4axis_auto_tilt_improves_overhanging_helical_grooves_vs_rotary2line
         p.pattern = RotaryPatternMode::ContinuousSpiral;
         p.use_cusp_height = false;
         p.stepover = ParamLength::from_mm(2.0);
-        p.axial_margin_start = ParamLength::from_mm(margin_start);
-        p.axial_margin_end = ParamLength::from_mm(margin_end);
+        p.axial_boundary.axial_margin_start = ParamLength::from_mm(margin_start);
+        p.axial_boundary.axial_margin_end = ParamLength::from_mm(margin_end);
         p.angular_sample_deg = 1.5;
     }
 
@@ -1143,8 +1143,8 @@ fn m75_rotary4axis_auto_tilt_improves_overhanging_helical_grooves_vs_rotary2line
         p.tilt_smoothing_window = 3;
         p.use_cusp_height = false;
         p.stepover = ParamLength::from_mm(2.0);
-        p.axial_margin_start = ParamLength::from_mm(margin_start);
-        p.axial_margin_end = ParamLength::from_mm(margin_end);
+        p.axial_boundary.axial_margin_start = ParamLength::from_mm(margin_start);
+        p.axial_boundary.axial_margin_end = ParamLength::from_mm(margin_end);
         p.angular_sample_deg = 1.5;
     }
 

@@ -142,7 +142,8 @@ fn build_3angle_helix_project(enable_rest: bool, sha: &str) -> ProjectDocument {
     setup.rotary.mode = RotaryDriveMode::Indexed3Plus1;
     setup.rotary.axis = RotaryAxisKind::XAxis;
     setup.rotary.clearance_radial_offset = ParamLength::from_mm(10.0);
-    setup.rotary.chuck_length = ParamLength::from_mm(15.0);
+    // Full-stock StockBox indexed carryover test without a jaw keep-out collar (matching M57)
+    setup.rotary.chuck_length = ParamLength::from_mm(0.0);
     setup.rotary.chuck_diameter = ParamLength::from_mm(55.0);
 
     for (idx, angle_deg) in [0.0_f64, 120.0, 240.0].into_iter().enumerate() {

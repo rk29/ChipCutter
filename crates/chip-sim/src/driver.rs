@@ -3371,8 +3371,11 @@ mod tests {
                 use_cusp_height: true,
                 cusp_height: ParamLength::from_mm(0.015),
                 stepover: ParamLength::from_mm(1.5),
-                axial_margin_start: ParamLength::from_mm(11.0),
-                axial_margin_end: ParamLength::from_mm(11.0),
+                axial_boundary: chip_cam::RotaryAxialBoundaryConfig {
+                    axial_margin_start: ParamLength::from_mm(11.0),
+                    axial_margin_end: ParamLength::from_mm(11.0),
+                    ..Default::default()
+                },
                 ..Default::default()
             }));
 
@@ -3513,8 +3516,8 @@ mod tests {
                 p.use_cusp_height = true;
                 p.cusp_height = ParamLength::from_mm(0.015);
                 p.stepover = ParamLength::from_mm(1.5);
-                p.axial_margin_start = ParamLength::from_mm(34.0);
-                p.axial_margin_end = ParamLength::from_mm(8.0);
+                p.axial_boundary.axial_margin_start = ParamLength::from_mm(34.0);
+                p.axial_boundary.axial_margin_end = ParamLength::from_mm(8.0);
             }
 
             let tp = generate_operation_toolpath_with_rest(&OperationGenRequest {

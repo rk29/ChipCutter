@@ -120,8 +120,8 @@ pub fn build_rotary_shaft_preview_project(
         p.stepover = ParamLength::from_mm(1.6);
         p.use_cusp_height = true;
         p.cusp_height = ParamLength::from_mm(0.020);
-        p.axial_margin_start = ParamLength::from_mm(34.0);
-        p.axial_margin_end = ParamLength::from_mm(8.0);
+        p.axial_boundary.axial_margin_start = ParamLength::from_mm(34.0);
+        p.axial_boundary.axial_margin_end = ParamLength::from_mm(8.0);
         p.angular_sample_deg = 1.5;
         p.axial_sample_step = ParamLength::from_mm(0.25);
     }
@@ -370,8 +370,8 @@ pub fn build_rotary_helical_flute_project(
         p.max_tilt_deg = 16.0;
         p.tilt_smoothing_window = 3;
         p.stepover = ParamLength::from_mm(2.6);
-        p.axial_margin_start = ParamLength::from_mm(11.0);
-        p.axial_margin_end = ParamLength::from_mm(11.0);
+        p.axial_boundary.axial_margin_start = ParamLength::from_mm(11.0);
+        p.axial_boundary.axial_margin_end = ParamLength::from_mm(11.0);
     }
 
     // Op 2: Simultaneous 4-Axis Helical Finishing (off-centerline smoothed auto-tilt)
@@ -392,8 +392,8 @@ pub fn build_rotary_helical_flute_project(
         p.stepover = ParamLength::from_mm(1.5);
         p.use_cusp_height = true;
         p.cusp_height = ParamLength::from_mm(0.020);
-        p.axial_margin_start = ParamLength::from_mm(11.0);
-        p.axial_margin_end = ParamLength::from_mm(11.0);
+        p.axial_boundary.axial_margin_start = ParamLength::from_mm(11.0);
+        p.axial_boundary.axial_margin_end = ParamLength::from_mm(11.0);
         p.angular_sample_deg = 1.5;
         p.axial_sample_step = ParamLength::from_mm(0.25);
     }
@@ -476,10 +476,10 @@ pub fn build_tutorial_rotary_axial_parallel_project(
         p.stepover = ParamLength::from_mm(1.6);
         p.use_cusp_height = true;
         p.cusp_height = ParamLength::from_mm(0.025);
-        p.start_angle_deg = 0.0;
-        p.end_angle_deg = 360.0;
-        p.axial_margin_start = ParamLength::from_mm(34.0);
-        p.axial_margin_end = ParamLength::from_mm(8.0);
+        p.axial_boundary.start_angle_deg = 0.0;
+        p.axial_boundary.end_angle_deg = 360.0;
+        p.axial_boundary.axial_margin_start = ParamLength::from_mm(34.0);
+        p.axial_boundary.axial_margin_end = ParamLength::from_mm(8.0);
         p.angular_sample_deg = 1.5;
         p.axial_sample_step = ParamLength::from_mm(0.25);
     }
@@ -498,10 +498,10 @@ pub fn build_tutorial_rotary_axial_parallel_project(
         p.stepover = ParamLength::from_mm(1.2);
         p.use_cusp_height = true;
         p.cusp_height = ParamLength::from_mm(0.020);
-        p.start_angle_deg = -60.0;
-        p.end_angle_deg = 60.0;
-        p.axial_margin_start = ParamLength::from_mm(34.0);
-        p.axial_margin_end = ParamLength::from_mm(8.0);
+        p.axial_boundary.start_angle_deg = -60.0;
+        p.axial_boundary.end_angle_deg = 60.0;
+        p.axial_boundary.axial_margin_start = ParamLength::from_mm(34.0);
+        p.axial_boundary.axial_margin_end = ParamLength::from_mm(8.0);
         p.angular_sample_deg = 1.5;
         p.axial_sample_step = ParamLength::from_mm(0.25);
     }
@@ -802,8 +802,8 @@ pub fn build_tutorial_rotary_4axis_flowline_project(
         p.max_tilt_deg = 16.0;
         p.tilt_smoothing_window = 3;
         p.stepover = ParamLength::from_mm(2.6);
-        p.axial_margin_start = ParamLength::from_mm(11.0);
-        p.axial_margin_end = ParamLength::from_mm(11.0);
+        p.axial_boundary.axial_margin_start = ParamLength::from_mm(11.0);
+        p.axial_boundary.axial_margin_end = ParamLength::from_mm(11.0);
     }
 
     // Op 2: Simultaneous Helical Spiral Finish with Auto Surface-Normal Tilt (18°, 3 cells)
@@ -824,8 +824,8 @@ pub fn build_tutorial_rotary_4axis_flowline_project(
         p.stepover = ParamLength::from_mm(1.5);
         p.use_cusp_height = true;
         p.cusp_height = ParamLength::from_mm(0.020);
-        p.axial_margin_start = ParamLength::from_mm(11.0);
-        p.axial_margin_end = ParamLength::from_mm(11.0);
+        p.axial_boundary.axial_margin_start = ParamLength::from_mm(11.0);
+        p.axial_boundary.axial_margin_end = ParamLength::from_mm(11.0);
         p.angular_sample_deg = 1.5;
         p.axial_sample_step = ParamLength::from_mm(0.25);
     }
@@ -847,8 +847,8 @@ pub fn build_tutorial_rotary_4axis_flowline_project(
         p.stepover = ParamLength::from_mm(2.2);
         p.use_cusp_height = true;
         p.cusp_height = ParamLength::from_mm(0.025);
-        p.axial_margin_start = ParamLength::from_mm(11.0);
-        p.axial_margin_end = ParamLength::from_mm(11.0);
+        p.axial_boundary.axial_margin_start = ParamLength::from_mm(11.0);
+        p.axial_boundary.axial_margin_end = ParamLength::from_mm(11.0);
         p.angular_sample_deg = 1.5;
         p.axial_sample_step = ParamLength::from_mm(0.25);
     }

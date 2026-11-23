@@ -621,7 +621,7 @@ pub(super) fn show_rotary2linear_params(
                 f.row("Start Angle (°)", |ui, mutated| {
                     if ui
                         .add(
-                            egui::DragValue::new(&mut p.start_angle_deg)
+                            egui::DragValue::new(&mut p.axial_boundary.start_angle_deg)
                                 .speed(2.0)
                                 .range(-360.0..=360.0)
                                 .suffix("°"),
@@ -629,8 +629,8 @@ pub(super) fn show_rotary2linear_params(
                         .on_hover_text("Start angle around the 4th rotary axis")
                         .changed()
                     {
-                        if p.end_angle_deg <= p.start_angle_deg + 1.0 {
-                            p.end_angle_deg = p.start_angle_deg + 1.0;
+                        if p.axial_boundary.end_angle_deg <= p.axial_boundary.start_angle_deg + 1.0 {
+                            p.axial_boundary.end_angle_deg = p.axial_boundary.start_angle_deg + 1.0;
                         }
                         *mutated = Some("Edit Rotary Start Angle");
                     }
@@ -639,9 +639,9 @@ pub(super) fn show_rotary2linear_params(
                 f.row("End Angle (°)", |ui, mutated| {
                     if ui
                         .add(
-                            egui::DragValue::new(&mut p.end_angle_deg)
+                            egui::DragValue::new(&mut p.axial_boundary.end_angle_deg)
                                 .speed(2.0)
-                                .range((p.start_angle_deg + 1.0)..=720.0)
+                                .range((p.axial_boundary.start_angle_deg + 1.0)..=720.0)
                                 .suffix("°"),
                         )
                         .on_hover_text("End angle around the 4th rotary axis")
@@ -650,16 +650,16 @@ pub(super) fn show_rotary2linear_params(
                         *mutated = Some("Edit Rotary End Angle");
                     }
                 });
-                f.set_tip("Inward axial trim margin from the -U stock end (keeps cutter clear of the chuck)");
+                f.set_tip("Signed axial margin at the -U end (> 0 trims inward, < 0 extends outward; always chuck-safe)");
                 f.len(
                     "Start Margin (-U)",
-                    &mut p.axial_margin_start,
+                    &mut p.axial_boundary.axial_margin_start,
                     "Edit Rotary Start Margin",
                 );
-                f.set_tip("Inward axial trim margin from the +U stock end (e.g. tailstock clearance)");
+                f.set_tip("Signed axial margin at the +U end (> 0 trims inward, < 0 extends outward; always chuck-safe)");
                 f.len(
                     "End Margin (+U)",
-                    &mut p.axial_margin_end,
+                    &mut p.axial_boundary.axial_margin_end,
                     "Edit Rotary End Margin",
                 );
                 f.set_tip("Angular Drop-Cutter sampling resolution around the rotary axis");
@@ -768,7 +768,7 @@ pub(super) fn show_rotary4axis_sim_params(
                 f.row("Start Angle (°)", |ui, mutated| {
                     if ui
                         .add(
-                            egui::DragValue::new(&mut p.start_angle_deg)
+                            egui::DragValue::new(&mut p.axial_boundary.start_angle_deg)
                                 .speed(2.0)
                                 .range(-360.0..=360.0)
                                 .suffix("°"),
@@ -776,8 +776,8 @@ pub(super) fn show_rotary4axis_sim_params(
                         .on_hover_text("Start angle around the 4th rotary axis")
                         .changed()
                     {
-                        if p.end_angle_deg <= p.start_angle_deg + 1.0 {
-                            p.end_angle_deg = p.start_angle_deg + 1.0;
+                        if p.axial_boundary.end_angle_deg <= p.axial_boundary.start_angle_deg + 1.0 {
+                            p.axial_boundary.end_angle_deg = p.axial_boundary.start_angle_deg + 1.0;
                         }
                         *mutated = Some("Edit 4-Axis Start Angle");
                     }
@@ -786,9 +786,9 @@ pub(super) fn show_rotary4axis_sim_params(
                 f.row("End Angle (°)", |ui, mutated| {
                     if ui
                         .add(
-                            egui::DragValue::new(&mut p.end_angle_deg)
+                            egui::DragValue::new(&mut p.axial_boundary.end_angle_deg)
                                 .speed(2.0)
-                                .range((p.start_angle_deg + 1.0)..=720.0)
+                                .range((p.axial_boundary.start_angle_deg + 1.0)..=720.0)
                                 .suffix("°"),
                         )
                         .on_hover_text("End angle around the 4th rotary axis")
@@ -797,16 +797,16 @@ pub(super) fn show_rotary4axis_sim_params(
                         *mutated = Some("Edit 4-Axis End Angle");
                     }
                 });
-                f.set_tip("Inward axial trim margin from the -U stock end (chuck side)");
+                f.set_tip("Signed axial margin at the -U end (chuck side; always chuck-safe)");
                 f.len(
                     "Start Margin (-U)",
-                    &mut p.axial_margin_start,
+                    &mut p.axial_boundary.axial_margin_start,
                     "Edit 4-Axis Start Margin",
                 );
-                f.set_tip("Inward axial trim margin from the +U stock end (tailstock side)");
+                f.set_tip("Signed axial margin at the +U end (tailstock side; always chuck-safe)");
                 f.len(
                     "End Margin (+U)",
-                    &mut p.axial_margin_end,
+                    &mut p.axial_boundary.axial_margin_end,
                     "Edit 4-Axis End Margin",
                 );
                 f.set_tip("Angular Drop-Cutter sampling resolution around the rotary axis");

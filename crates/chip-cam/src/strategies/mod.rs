@@ -40,8 +40,14 @@ use crate::{
         RetractPolicy, StrategyParams,
     },
     rest2d::{UpstreamSweptInput, filter_upstream_for_indexed_angle},
-    rotary::{OperationRotaryMode, RotaryAxisKind, build_indexed_virtual_setup},
-    selection::{ExtractedSelectionSummary, extract_selection_features_with_sketches},
+    rotary::{
+        OperationRotaryMode, RotaryAxisKind, build_indexed_virtual_setup,
+        validate_toolpath_rotary_chuck_clearance,
+    },
+    selection::{
+        ExtractedSelectionSummary, extract_rotary_selection_features,
+        extract_selection_features_with_sketches,
+    },
     setup::ResolvedSetup,
     stock::ResolvedStockGeometry,
     surface3d::{SurfaceMesh3D, check_2d_toolpath_against_overhangs},
@@ -271,9 +277,15 @@ pub fn generate_operation_toolpath_with_rest(
                 carryover_stock: rotated_carryover,
                 cancel: req.cancel,
             })?;
-            Ok(rotary_wrap::wrap_indexed_3plus1_toolpath(
-                &local_tp, &rot, *angle_deg,
-            ))
+            let wrapped = rotary_wrap::wrap_indexed_3plus1_toolpath(&local_tp, &rot, *angle_deg);
+            validate_toolpath_rotary_chuck_clearance(
+                &wrapped,
+                &rot,
+                req.tool.geometry.cutting_diameter_mm(),
+                req.clearing_tool.map(|t| t.geometry.cutting_diameter_mm()),
+                &req.op.name,
+            )?;
+            Ok(wrapped)
         }
         OperationRotaryMode::WrapCylinder {
             wrap_radius,
@@ -363,13 +375,16 @@ pub fn generate_operation_toolpath_with_rest(
                 carryover_stock: None,
                 cancel: req.cancel,
             })?;
-            Ok(rotary_wrap::wrap_planar_toolpath_to_cylinder(
+            rotary_wrap::wrap_planar_toolpath_to_cylinder_checked(
                 &flat_tp,
                 &rot,
                 r_wrap,
                 ax_off,
                 *angle_offset_deg,
-            ))
+                req.tool.geometry.cutting_diameter_mm(),
+                req.clearing_tool.map(|t| t.geometry.cutting_diameter_mm()),
+                &req.op.name,
+            )
         }
     }
 }
@@ -406,7 +421,11 @@ fn generate_operation_toolpath_inner(
     }
 
     // 1. Extract 3D B-Rep + 2D Sketch features in Setup WCS coordinates
-    let selection = extract_selection_features_with_sketches(doc, sketches, setup, &op.selections)?;
+    let selection = if op.kind.is_rotary_native() {
+        extract_rotary_selection_features(doc, sketches, setup, &op.selections)?
+    } else {
+        extract_selection_features_with_sketches(doc, sketches, setup, &op.selections)?
+    };
     if op.kind != OperationKind::Facing && !op.kind.is_3d_surface() && selection.features.is_empty()
     {
         return Err(CamError::EmptySelection {

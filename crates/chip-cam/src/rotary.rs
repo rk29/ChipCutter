@@ -3,15 +3,18 @@
 //! & Milestone 19).
 
 use chip_bvh::FlatBvhNode;
-use chip_cad::MeshTriangle;
+use chip_cad::{CadDocument, CurveKind, EdgeId, FaceId, LoopId, MeshTriangle};
 use chip_math::{Aabb3, DVec2, DVec3, EvalContext, ParamLength, RigidFrame3};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    params::{RotaryAxialBoundaryConfig, RotaryAxialBoundaryMode, ToolContainmentMode},
+    selection::{ExtractedFeature25D, ExtractedSelectionSummary, GeometrySelectionItem},
     setup::ResolvedSetup,
     stock::{ResolvedStockGeometry, StockAxis},
     surface3d::{SurfaceCutterProfile, SurfaceMesh3D, drop_cutter::drop_cutter_triangle},
+    toolpath::{GeneratedToolpath, SegmentMotion3D},
     wcs::CamError,
 };
 
@@ -796,9 +799,577 @@ pub fn compute_rotary_angular_feed_deg_min(
     deg_min.clamp(1.0, max_f)
 }
 
-/// Resolves the chuck-cleared axial machining window `[u_start, u_end]` (`mm`) along `rot.axis`,
-/// trimming stock bounds by start/end margins, clamping to `base_mesh` axial bounds, and enforcing
-/// a `0.5 * tool_diameter_mm + 0.5 mm` chuck keep-out guard.
+/// Minimum axial safety clearance (`mm`) added beyond the cutter radius from the rotary chuck face.
+pub const ROTARY_CHUCK_GUARD_CLEARANCE_MM: f64 = 0.5;
+
+/// Computes the hard rotary chuck keep-out boundary plane coordinate (`mm` along `rot.axis`)
+/// for a cutter of `tool_diameter_mm`:
+/// - When `!rot.chuck_end_positive` (chuck at `-U`): `chuck_u_max + tool_r + 0.5 mm`
+///   (tool centerline must satisfy `u >= chuck_guard_u`).
+/// - When `rot.chuck_end_positive` (chuck at `+U`): `chuck_u_min - (tool_r + 0.5 mm)`
+///   (tool centerline must satisfy `u <= chuck_guard_u`).
+#[inline]
+pub fn rotary_chuck_guard_u(rot: &ResolvedRotaryConfig, tool_diameter_mm: f64) -> f64 {
+    let tool_r = 0.5 * tool_diameter_mm.max(0.1);
+    let guard = tool_r + ROTARY_CHUCK_GUARD_CLEARANCE_MM;
+    if rot.chuck_end_positive {
+        rot.chuck_u_min - guard
+    } else {
+        rot.chuck_u_max + guard
+    }
+}
+
+/// Fully resolved 4th-axis rotary axial (`-U`/`+U`), angular (`θ`), and radial (`r_floor..r_ceiling`)
+/// machining window shared by native rotary toolpath kernels and live 3D viewport previews.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResolvedRotaryWindow {
+    /// Nominal axial bounds before tool-containment & margin shifts (`mm` along rotary axis).
+    pub nominal_u_min: f64,
+    pub nominal_u_max: f64,
+    /// Final chuck-safe tool-center axial span `[u_start, u_end]` (`mm`).
+    pub u_start: f64,
+    pub u_end: f64,
+    /// Effective angular span `[start_angle_deg, end_angle_deg]` (`deg`).
+    pub start_angle_deg: f64,
+    pub end_angle_deg: f64,
+    /// Effective radial envelope `[r_floor, r_ceiling]` (`mm` from rotary centerline).
+    pub r_floor: f64,
+    pub r_ceiling: f64,
+    /// Hard chuck keep-out boundary plane coordinate (`mm`) along the rotary axis.
+    pub chuck_guard_u: f64,
+    /// Whether the chuck keep-out guard actively clamped `u_start` or `u_end`.
+    pub clamped_by_chuck: bool,
+    pub warnings: Vec<String>,
+}
+
+/// Input bundle for [`resolve_rotary_window`].
+pub struct RotaryWindowInput<'a> {
+    pub rot: &'a ResolvedRotaryConfig,
+    pub frame: &'a RigidFrame3,
+    pub doc: Option<&'a CadDocument>,
+    pub base_mesh: &'a SurfaceMesh3D,
+    pub selections: &'a [GeometrySelectionItem],
+    pub extracted_selection: Option<&'a ExtractedSelectionSummary>,
+    pub boundary: &'a RotaryAxialBoundaryConfig,
+    pub tool_diameter_mm: f64,
+    pub top_z_wcs: f64,
+    pub bottom_z_wcs: f64,
+    pub op_name: &'a str,
+}
+
+fn extend_u_from_aabb_world(
+    aabb_world: &Aabb3,
+    frame: &RigidFrame3,
+    u_vec: DVec3,
+    u_min: &mut f64,
+    u_max: &mut f64,
+) {
+    if !aabb_world.is_valid() {
+        return;
+    }
+    for x in [aabb_world.min.x, aabb_world.max.x] {
+        for y in [aabb_world.min.y, aabb_world.max.y] {
+            for z in [aabb_world.min.z, aabb_world.max.z] {
+                let p_wcs = frame.world_to_local_point(DVec3::new(x, y, z));
+                let u = p_wcs.dot(u_vec);
+                *u_min = (*u_min).min(u);
+                *u_max = (*u_max).max(u);
+            }
+        }
+    }
+}
+
+fn extend_u_from_edge(
+    doc: &CadDocument,
+    eid: EdgeId,
+    frame: &RigidFrame3,
+    u_vec: DVec3,
+    u_min: &mut f64,
+    u_max: &mut f64,
+) {
+    let mut found_pts = false;
+    if let Some(ep) = doc
+        .render_mesh
+        .edge_polylines
+        .iter()
+        .find(|p| p.edge_id == eid)
+    {
+        for &pt_world in &ep.points_mm {
+            let u = frame.world_to_local_point(pt_world).dot(u_vec);
+            *u_min = (*u_min).min(u);
+            *u_max = (*u_max).max(u);
+            found_pts = true;
+        }
+    }
+    if let Some(edge) = doc.edge(eid) {
+        match edge.curve {
+            CurveKind::Line { start_mm, end_mm } => {
+                for p in [start_mm, end_mm] {
+                    let u = frame.world_to_local_point(p).dot(u_vec);
+                    *u_min = (*u_min).min(u);
+                    *u_max = (*u_max).max(u);
+                    found_pts = true;
+                }
+            }
+            CurveKind::CircleArc {
+                center_mm,
+                normal,
+                radius_mm,
+                start_mm,
+                end_mm,
+                is_full_circle,
+            } => {
+                for p in [start_mm, end_mm] {
+                    let u = frame.world_to_local_point(p).dot(u_vec);
+                    *u_min = (*u_min).min(u);
+                    *u_max = (*u_max).max(u);
+                    found_pts = true;
+                }
+                if is_full_circle {
+                    // Exact axial projection of a 3D circle of radius `r` and unit normal `n`:
+                    // `u(θ) = c · u_vec ± r * sqrt(1 - (n · u_vec)^2)`.
+                    let c_wcs = frame.world_to_local_point(center_mm);
+                    let n_wcs = frame.world_to_local_dir(normal.normalize_or_zero());
+                    let cos_nu = n_wcs.dot(u_vec).clamp(-1.0, 1.0);
+                    let sin_nu = (1.0 - cos_nu * cos_nu).max(0.0).sqrt();
+                    let cu = c_wcs.dot(u_vec);
+                    let r_u = radius_mm.abs() * sin_nu;
+                    *u_min = (*u_min).min(cu - r_u);
+                    *u_max = (*u_max).max(cu + r_u);
+                    found_pts = true;
+                }
+            }
+            _ => {}
+        }
+        if !found_pts {
+            extend_u_from_aabb_world(&edge.aabb_mm, frame, u_vec, u_min, u_max);
+        }
+    }
+}
+
+fn extend_u_from_face(
+    doc: &CadDocument,
+    fid: FaceId,
+    frame: &RigidFrame3,
+    u_vec: DVec3,
+    u_min: &mut f64,
+    u_max: &mut f64,
+) {
+    let mut found_pts = false;
+    for tri in &doc.render_mesh.pick_triangles {
+        if tri.face_id == fid {
+            for p in [tri.v0_mm, tri.v1_mm, tri.v2_mm] {
+                let u = frame.world_to_local_point(p).dot(u_vec);
+                *u_min = (*u_min).min(u);
+                *u_max = (*u_max).max(u);
+            }
+            found_pts = true;
+        }
+    }
+    if let Some(face) = doc.face(fid) {
+        if let Some(lid) = face.outer_loop
+            && let Some(lp) = doc.brep_loop(lid)
+        {
+            for eu in &lp.edges {
+                extend_u_from_edge(doc, eu.edge_id, frame, u_vec, u_min, u_max);
+                found_pts = true;
+            }
+        }
+        for &ilid in &face.inner_loops {
+            if let Some(lp) = doc.brep_loop(ilid) {
+                for eu in &lp.edges {
+                    extend_u_from_edge(doc, eu.edge_id, frame, u_vec, u_min, u_max);
+                    found_pts = true;
+                }
+            }
+        }
+        if !found_pts {
+            extend_u_from_aabb_world(&face.aabb_mm, frame, u_vec, u_min, u_max);
+        }
+    }
+}
+
+/// Projects all selected 3D B-Rep faces/loops/chains/holes and extracted 2D sketch features
+/// onto the rotary axis unit vector `u_vec` to obtain `[sel_u_min, sel_u_max]` (`mm`).
+///
+/// Returns `None` if no selections are present or none project to finite coordinates.
+pub fn project_selections_onto_rotary_axis(
+    doc: Option<&CadDocument>,
+    frame: &RigidFrame3,
+    selections: &[GeometrySelectionItem],
+    extracted_selection: Option<&ExtractedSelectionSummary>,
+    rot: &ResolvedRotaryConfig,
+) -> Option<(f64, f64)> {
+    let (_, _, u_vec) = rot.axis.basis();
+    let mut u_min = f64::INFINITY;
+    let mut u_max = f64::NEG_INFINITY;
+
+    let extend_xy_box = |box2: chip_math::Aabb2, u_min: &mut f64, u_max: &mut f64| {
+        if box2.is_valid() {
+            for x in [box2.min.x, box2.max.x] {
+                for y in [box2.min.y, box2.max.y] {
+                    let u = DVec3::new(x, y, 0.0).dot(u_vec);
+                    *u_min = (*u_min).min(u);
+                    *u_max = (*u_max).max(u);
+                }
+            }
+        }
+    };
+
+    if let Some(summary) = extracted_selection {
+        for feat in &summary.features {
+            match feat {
+                ExtractedFeature25D::PlanarFace {
+                    outer_boundary_wcs,
+                    inner_islands_wcs,
+                    ..
+                } => {
+                    extend_xy_box(outer_boundary_wcs.exact_aabb(), &mut u_min, &mut u_max);
+                    for isl in inner_islands_wcs {
+                        extend_xy_box(isl.exact_aabb(), &mut u_min, &mut u_max);
+                    }
+                }
+                ExtractedFeature25D::Contour { polyline_wcs, .. } => {
+                    extend_xy_box(polyline_wcs.exact_aabb(), &mut u_min, &mut u_max);
+                }
+                ExtractedFeature25D::ModeledChamfer {
+                    upper_polyline_wcs,
+                    lower_polyline_wcs,
+                    ..
+                } => {
+                    extend_xy_box(upper_polyline_wcs.exact_aabb(), &mut u_min, &mut u_max);
+                    extend_xy_box(lower_polyline_wcs.exact_aabb(), &mut u_min, &mut u_max);
+                }
+                ExtractedFeature25D::CylindricalHole {
+                    center_wcs,
+                    diameter_mm,
+                    ..
+                } => {
+                    let r = 0.5 * diameter_mm.abs();
+                    let cu = DVec3::new(center_wcs.x, center_wcs.y, 0.0).dot(u_vec);
+                    u_min = u_min.min(cu - r);
+                    u_max = u_max.max(cu + r);
+                }
+            }
+        }
+    }
+
+    if let Some(cad) = doc {
+        for item in selections {
+            match item {
+                GeometrySelectionItem::PlanarFace { binding }
+                | GeometrySelectionItem::CylindricalHole { binding } => {
+                    let fid = FaceId(binding.last_index);
+                    if cad.face(fid).is_some() {
+                        extend_u_from_face(cad, fid, frame, u_vec, &mut u_min, &mut u_max);
+                    } else {
+                        extend_u_from_aabb_world(
+                            &binding.signature.aabb_mm,
+                            frame,
+                            u_vec,
+                            &mut u_min,
+                            &mut u_max,
+                        );
+                    }
+                }
+                GeometrySelectionItem::ClosedLoop { binding, .. } => {
+                    let lid = LoopId(binding.last_index);
+                    if let Some(lp) = cad.brep_loop(lid) {
+                        for eu in &lp.edges {
+                            extend_u_from_edge(
+                                cad, eu.edge_id, frame, u_vec, &mut u_min, &mut u_max,
+                            );
+                        }
+                    } else {
+                        extend_u_from_aabb_world(
+                            &binding.signature.aabb_mm,
+                            frame,
+                            u_vec,
+                            &mut u_min,
+                            &mut u_max,
+                        );
+                    }
+                }
+                GeometrySelectionItem::OpenChain {
+                    start_edge,
+                    resolved_edges,
+                    ..
+                } => {
+                    if resolved_edges.is_empty() {
+                        let eid = EdgeId(start_edge.last_index);
+                        if cad.edge(eid).is_some() {
+                            extend_u_from_edge(cad, eid, frame, u_vec, &mut u_min, &mut u_max);
+                        } else {
+                            extend_u_from_aabb_world(
+                                &start_edge.signature.aabb_mm,
+                                frame,
+                                u_vec,
+                                &mut u_min,
+                                &mut u_max,
+                            );
+                        }
+                    } else {
+                        for eu in resolved_edges {
+                            extend_u_from_edge(
+                                cad, eu.edge_id, frame, u_vec, &mut u_min, &mut u_max,
+                            );
+                        }
+                    }
+                }
+                GeometrySelectionItem::SketchRegion { .. }
+                | GeometrySelectionItem::SketchEntity { .. }
+                | GeometrySelectionItem::SketchLayerAll { .. } => {
+                    // Handled via `extracted_selection` above.
+                }
+            }
+        }
+    }
+
+    if u_min.is_finite() && u_max.is_finite() {
+        Some((u_min, u_max))
+    } else {
+        None
+    }
+}
+
+/// Resolves the complete 4th-axis rotary machining window (`-U`/`+U` axial bounds, tool
+/// containment, signed margins, mandatory hard chuck keep-out guard, angular sector, and
+/// radial floor/ceiling envelope) for [`crate::strategies::rotary2linear`] and
+/// [`crate::strategies::rotary4axis_sim`].
+pub fn resolve_rotary_window(
+    input: &RotaryWindowInput<'_>,
+) -> Result<ResolvedRotaryWindow, CamError> {
+    let rot = input.rot;
+    let boundary = input.boundary;
+    let (_, _, u_vec) = rot.axis.basis();
+
+    let mut mesh_u_min = f64::INFINITY;
+    let mut mesh_u_max = f64::NEG_INFINITY;
+    for &v in &input.base_mesh.vertices_wcs {
+        let u = v.dot(u_vec);
+        mesh_u_min = mesh_u_min.min(u);
+        mesh_u_max = mesh_u_max.max(u);
+    }
+
+    let model_nominal = if mesh_u_min.is_finite() && mesh_u_max.is_finite() {
+        (
+            mesh_u_min.max(rot.stock_u_min),
+            mesh_u_max.min(rot.stock_u_max),
+        )
+    } else {
+        (rot.stock_u_min, rot.stock_u_max)
+    };
+
+    let mut warnings = Vec::new();
+    let (nominal_u_min, nominal_u_max) = match boundary.axial_boundary_mode {
+        RotaryAxialBoundaryMode::StockBounds => (rot.stock_u_min, rot.stock_u_max),
+        RotaryAxialBoundaryMode::ModelBounds => model_nominal,
+        RotaryAxialBoundaryMode::SelectedGeometry => {
+            if let Some((sel_min, sel_max)) = project_selections_onto_rotary_axis(
+                input.doc,
+                input.frame,
+                input.selections,
+                input.extracted_selection,
+                rot,
+            ) {
+                (sel_min, sel_max)
+            } else {
+                warnings.push(
+                    "Rotary axial boundary mode 'Selected Geometry' has no projectable selections; falling back to Model Bounds."
+                        .to_string(),
+                );
+                model_nominal
+            }
+        }
+        RotaryAxialBoundaryMode::ExplicitRange => {
+            let e_start = boundary.explicit_u_start.value_mm;
+            let e_end = boundary.explicit_u_end.value_mm;
+            if !e_start.is_finite() {
+                return Err(CamError::InvalidParameter {
+                    param: "explicit_u_start",
+                    value: e_start,
+                    reason: "must be finite",
+                });
+            }
+            if !e_end.is_finite() {
+                return Err(CamError::InvalidParameter {
+                    param: "explicit_u_end",
+                    value: e_end,
+                    reason: "must be finite",
+                });
+            }
+            if e_start > e_end + 1e-9 {
+                warnings.push(format!(
+                    "Explicit rotary axial range start ({e_start:.2} mm) > end ({e_end:.2} mm); normalized to [{e_end:.2}, {e_start:.2}] mm."
+                ));
+            }
+            (e_start.min(e_end), e_start.max(e_end))
+        }
+    };
+
+    let margin_start = boundary.axial_margin_start.value_mm;
+    let margin_end = boundary.axial_margin_end.value_mm;
+    if !margin_start.is_finite() {
+        return Err(CamError::InvalidParameter {
+            param: "axial_margin_start",
+            value: margin_start,
+            reason: "must be finite",
+        });
+    }
+    if !margin_end.is_finite() {
+        return Err(CamError::InvalidParameter {
+            param: "axial_margin_end",
+            value: margin_end,
+            reason: "must be finite",
+        });
+    }
+
+    let tool_d = input.tool_diameter_mm.max(0.1);
+    let tool_r = 0.5 * tool_d;
+
+    // 1. Apply axial tool containment relative to nominal [-U, +U] ends
+    let (mut u_start, mut u_end) = match boundary.axial_containment {
+        ToolContainmentMode::ToolInsideBoundary => (nominal_u_min + tool_r, nominal_u_max - tool_r),
+        ToolContainmentMode::ToolCenterOnBoundary => (nominal_u_min, nominal_u_max),
+        ToolContainmentMode::ToolOutsideBoundary => {
+            (nominal_u_min - tool_r, nominal_u_max + tool_r)
+        }
+    };
+
+    // 2. Apply signed margins (> 0 trims inward, < 0 extends outward past boundary)
+    u_start += margin_start;
+    u_end -= margin_end;
+
+    // 3. Enforce mandatory hard rotary chuck keep-out guard AFTER containment and margins
+    let chuck_guard_u = rotary_chuck_guard_u(rot, tool_d);
+    let mut clamped_by_chuck = false;
+    if rot.chuck_end_positive {
+        if u_end > chuck_guard_u + 1e-9 {
+            let requested = u_end;
+            u_end = chuck_guard_u;
+            clamped_by_chuck = true;
+            warnings.push(format!(
+                "Rotary axial +U limit ({requested:.2} mm) clamped to {chuck_guard_u:.2} mm by mandatory chuck keep-out guard (tool radius + {ROTARY_CHUCK_GUARD_CLEARANCE_MM:.1} mm)."
+            ));
+        }
+    } else if u_start < chuck_guard_u - 1e-9 {
+        let requested = u_start;
+        u_start = chuck_guard_u;
+        clamped_by_chuck = true;
+        warnings.push(format!(
+            "Rotary axial -U limit ({requested:.2} mm) clamped to {chuck_guard_u:.2} mm by mandatory chuck keep-out guard (tool radius + {ROTARY_CHUCK_GUARD_CLEARANCE_MM:.1} mm)."
+        ));
+    }
+
+    if !u_start.is_finite() || !u_end.is_finite() || u_end <= u_start + 1e-3 {
+        return Err(CamError::InvalidRotarySetup {
+            op_name: input.op_name.to_string(),
+            reason: format!(
+                "Axial machining window [{u_start:.2}, {u_end:.2}] mm is empty after containment, margins, and chuck clearance"
+            ),
+        });
+    }
+
+    let start_angle_deg = boundary.start_angle_deg;
+    let end_angle_deg = boundary.end_angle_deg;
+    if !start_angle_deg.is_finite()
+        || !end_angle_deg.is_finite()
+        || end_angle_deg <= start_angle_deg + 1e-3
+    {
+        return Err(CamError::InvalidParameter {
+            param: "end_angle_deg",
+            value: end_angle_deg,
+            reason: "must be finite and greater than start_angle_deg",
+        });
+    }
+
+    let r_floor = (input.bottom_z_wcs - rot.center_wcs.z).max(0.0);
+    let stock_top_z = rot.center_wcs.z + rot.stock_outer_radius_mm;
+    let r_ceiling = if input.top_z_wcs < stock_top_z - 1e-6 {
+        (input.top_z_wcs - rot.center_wcs.z).clamp(r_floor, rot.stock_outer_radius_mm.max(r_floor))
+    } else {
+        rot.stock_outer_radius_mm.max(r_floor)
+    };
+
+    Ok(ResolvedRotaryWindow {
+        nominal_u_min,
+        nominal_u_max,
+        u_start,
+        u_end,
+        start_angle_deg,
+        end_angle_deg,
+        r_floor,
+        r_ceiling,
+        chuck_guard_u,
+        clamped_by_chuck,
+        warnings,
+    })
+}
+
+/// Validates that every motion segment of `tp` (and any nested clearing stage) respects the
+/// mandatory rotary chuck axial keep-out plane (`rotary_chuck_guard_u`), returning a structured
+/// [`CamError::InvalidRotarySetup`] if any move intrudes into the chuck keep-out zone.
+pub fn validate_toolpath_rotary_chuck_clearance(
+    tp: &GeneratedToolpath,
+    rot: &ResolvedRotaryConfig,
+    tool_diameter_mm: f64,
+    clearing_tool_diameter_mm: Option<f64>,
+    op_name: &str,
+) -> Result<(), CamError> {
+    if rot.axis == RotaryAxisKind::ZAxis || (rot.chuck_u_max - rot.chuck_u_min).abs() <= 1e-6 {
+        return Ok(());
+    }
+    let guard_u = rotary_chuck_guard_u(rot, tool_diameter_mm);
+    let (_, _, u_vec) = rot.axis.basis();
+    let chuck_top_z = rot.center_wcs.z + rot.chuck_radius_mm + ROTARY_CHUCK_GUARD_CLEARANCE_MM;
+    let mut worst_violation: Option<f64> = None;
+
+    for seg in &tp.segments_wcs {
+        let is_rapid = matches!(seg.motion, SegmentMotion3D::Rapid);
+        let min_z = seg.start_wcs.z.min(seg.end_wcs.z);
+        if is_rapid && min_z > chuck_top_z {
+            continue;
+        }
+        let u0 = seg.start_wcs.dot(u_vec);
+        let u1 = seg.end_wcs.dot(u_vec);
+        if rot.chuck_end_positive {
+            let u_hi = u0.max(u1);
+            if u_hi > guard_u + 1e-4 {
+                worst_violation = Some(worst_violation.map_or(u_hi, |w| w.max(u_hi)));
+            }
+        } else {
+            let u_lo = u0.min(u1);
+            if u_lo < guard_u - 1e-4 {
+                worst_violation = Some(worst_violation.map_or(u_lo, |w| w.min(u_lo)));
+            }
+        }
+    }
+
+    if let Some(offending_u) = worst_violation {
+        let (side_label, cmp_label) = if rot.chuck_end_positive {
+            ("+U", "<=")
+        } else {
+            ("-U", ">=")
+        };
+        return Err(CamError::InvalidRotarySetup {
+            op_name: op_name.to_string(),
+            reason: format!(
+                "Toolpath reaches U = {offending_u:.2} mm and intrudes into the {side_label} rotary chuck keep-out zone (must stay {cmp_label} {guard_u:.2} mm for Ø{:.2} mm cutter + {ROTARY_CHUCK_GUARD_CLEARANCE_MM:.1} mm clearance)",
+                tool_diameter_mm.max(0.1)
+            ),
+        });
+    }
+
+    if let Some(cs) = &tp.clearing_stage {
+        let clear_d = clearing_tool_diameter_mm.unwrap_or(tool_diameter_mm);
+        validate_toolpath_rotary_chuck_clearance(&cs.toolpath, rot, clear_d, None, op_name)?;
+    }
+
+    Ok(())
+}
+
+/// Legacy helper resolving the chuck-cleared axial machining window `[u_start, u_end]` (`mm`)
+/// along `rot.axis` using `ModelBounds`, `ToolCenterOnBoundary`, and non-negative inward margins.
 pub fn resolve_rotary_axial_window(
     rot: &ResolvedRotaryConfig,
     base_mesh: &SurfaceMesh3D,
@@ -807,41 +1378,27 @@ pub fn resolve_rotary_axial_window(
     axial_margin_end_mm: f64,
     op_name: &str,
 ) -> Result<(f64, f64), CamError> {
-    let (_, _, u_vec) = rot.axis.basis();
-    let mut mesh_u_min = f64::INFINITY;
-    let mut mesh_u_max = f64::NEG_INFINITY;
-    for &v in &base_mesh.vertices_wcs {
-        let u = v.dot(u_vec);
-        mesh_u_min = mesh_u_min.min(u);
-        mesh_u_max = mesh_u_max.max(u);
-    }
-
-    let tool_d = tool_diameter_mm.max(0.1);
-    let tool_r = 0.5 * tool_d;
-    let chuck_guard = tool_r + 0.5;
-
-    let mut u_start = rot.stock_u_min + axial_margin_start_mm.max(0.0);
-    let mut u_end = rot.stock_u_max - axial_margin_end_mm.max(0.0);
-    if mesh_u_min.is_finite() && mesh_u_max.is_finite() {
-        u_start = u_start.max(mesh_u_min);
-        u_end = u_end.min(mesh_u_max);
-    }
-    if rot.chuck_end_positive {
-        u_end = u_end.min(rot.chuck_u_min - chuck_guard);
-    } else {
-        u_start = u_start.max(rot.chuck_u_max + chuck_guard);
-    }
-
-    if !u_start.is_finite() || !u_end.is_finite() || u_end <= u_start + 1e-3 {
-        return Err(CamError::InvalidRotarySetup {
-            op_name: op_name.to_string(),
-            reason: format!(
-                "Axial machining window [{u_start:.2}, {u_end:.2}] mm is empty after chuck clearance and margins"
-            ),
-        });
-    }
-
-    Ok((u_start, u_end))
+    let boundary = RotaryAxialBoundaryConfig {
+        axial_boundary_mode: RotaryAxialBoundaryMode::ModelBounds,
+        axial_containment: ToolContainmentMode::ToolCenterOnBoundary,
+        axial_margin_start: ParamLength::from_mm(axial_margin_start_mm.max(0.0)),
+        axial_margin_end: ParamLength::from_mm(axial_margin_end_mm.max(0.0)),
+        ..RotaryAxialBoundaryConfig::default()
+    };
+    let win = resolve_rotary_window(&RotaryWindowInput {
+        rot,
+        frame: &RigidFrame3::IDENTITY,
+        doc: None,
+        base_mesh,
+        selections: &[],
+        extracted_selection: None,
+        boundary: &boundary,
+        tool_diameter_mm,
+        top_z_wcs: rot.center_wcs.z + rot.stock_outer_radius_mm,
+        bottom_z_wcs: rot.center_wcs.z,
+        op_name,
+    })?;
+    Ok((win.u_start, win.u_end))
 }
 
 /// Builds a rotated [`SurfaceMesh3D`] pre-filtered to ONLY triangles intersecting the exact
@@ -1785,5 +2342,373 @@ mod tests {
     #[inline]
     fn rot_ref(r: &ResolvedRotaryConfig) -> &ResolvedRotaryConfig {
         r
+    }
+
+    #[test]
+    fn m81_resolve_rotary_window_all_four_modes_containment_and_chuck_guard_on_x_and_y_axes() {
+        use chip_cad::{CadKernel, MonstertruckKernel, tutorial_indexed_4side_block_step};
+        use chip_math::{ArcPolyline2D, ArcSegment2D, DEFAULT_TESS_CHORD_TOL_MM};
+
+        use crate::operation::{Operation, OperationKind};
+
+        // Helper building a simple 1-triangle dummy mesh spanning `u ∈ [-20.0, +25.0]` along `axis`
+        let make_mesh = |axis: RotaryAxisKind| -> SurfaceMesh3D {
+            let (v0, v1, v2) = match axis {
+                RotaryAxisKind::XAxis | RotaryAxisKind::ZAxis => (
+                    DVec3::new(-20.0, -5.0, 12.0),
+                    DVec3::new(25.0, 5.0, 12.0),
+                    DVec3::new(0.0, 0.0, 18.0),
+                ),
+                RotaryAxisKind::YAxis => (
+                    DVec3::new(-5.0, -20.0, 12.0),
+                    DVec3::new(5.0, 25.0, 12.0),
+                    DVec3::new(0.0, 0.0, 18.0),
+                ),
+            };
+            let verts = vec![v0, v1, v2];
+            let aabb = Aabb3::from_points([v0, v1, v2]);
+            let tri = MeshTriangle {
+                indices: [0, 1, 2],
+                normal: (v1 - v0).cross(v2 - v0).normalize_or_zero(),
+                aabb,
+            };
+            SurfaceMesh3D::from_indexed_triangles(verts, vec![tri], aabb)
+        };
+
+        let tool_d = 6.0_f64;
+        let tool_r = 3.0_f64;
+
+        for axis in [RotaryAxisKind::XAxis, RotaryAxisKind::YAxis] {
+            let mesh = make_mesh(axis);
+            for chuck_pos in [false, true] {
+                let mut rot = dummy_resolved(axis, RotaryDirection::RightHandCcw, DVec3::ZERO);
+                rot.chuck_end_positive = chuck_pos;
+                if chuck_pos {
+                    rot.chuck_u_min = 40.0;
+                    rot.chuck_u_max = 60.0;
+                } else {
+                    rot.chuck_u_min = -60.0;
+                    rot.chuck_u_max = -40.0;
+                }
+                let expected_guard = if chuck_pos {
+                    40.0 - (tool_r + ROTARY_CHUCK_GUARD_CLEARANCE_MM)
+                } else {
+                    -40.0 + (tool_r + ROTARY_CHUCK_GUARD_CLEARANCE_MM)
+                };
+
+                // 1. StockBounds: nominal = [-40, +40], chuck end clamped with warning
+                let b_stock = RotaryAxialBoundaryConfig {
+                    axial_boundary_mode: RotaryAxialBoundaryMode::StockBounds,
+                    ..Default::default()
+                };
+                let w_stock = resolve_rotary_window(&RotaryWindowInput {
+                    rot: &rot,
+                    frame: &RigidFrame3::IDENTITY,
+                    doc: None,
+                    base_mesh: &mesh,
+                    selections: &[],
+                    extracted_selection: None,
+                    boundary: &b_stock,
+                    tool_diameter_mm: tool_d,
+                    top_z_wcs: 22.0,
+                    bottom_z_wcs: 5.0,
+                    op_name: "test_stock",
+                })
+                .unwrap();
+                assert!(approx_eq(w_stock.nominal_u_min, -40.0, 1e-9));
+                assert!(approx_eq(w_stock.nominal_u_max, 40.0, 1e-9));
+                assert!(approx_eq(w_stock.chuck_guard_u, expected_guard, 1e-9));
+                assert!(w_stock.clamped_by_chuck);
+                assert!(!w_stock.warnings.is_empty());
+                if chuck_pos {
+                    assert!(approx_eq(w_stock.u_start, -40.0, 1e-9));
+                    assert!(approx_eq(w_stock.u_end, expected_guard, 1e-9));
+                } else {
+                    assert!(approx_eq(w_stock.u_start, expected_guard, 1e-9));
+                    assert!(approx_eq(w_stock.u_end, 40.0, 1e-9));
+                }
+                assert!(approx_eq(w_stock.r_floor, 5.0, 1e-9));
+                assert!(approx_eq(w_stock.r_ceiling, 22.0, 1e-9));
+
+                // 2. ModelBounds + ToolInside / ToolCenter / ToolOutside exact ±tool_r shifts
+                for (containment, d_lo, d_hi) in [
+                    (ToolContainmentMode::ToolInsideBoundary, tool_r, -tool_r),
+                    (ToolContainmentMode::ToolCenterOnBoundary, 0.0, 0.0),
+                    (ToolContainmentMode::ToolOutsideBoundary, -tool_r, tool_r),
+                ] {
+                    let b_model = RotaryAxialBoundaryConfig {
+                        axial_boundary_mode: RotaryAxialBoundaryMode::ModelBounds,
+                        axial_containment: containment,
+                        ..Default::default()
+                    };
+                    let w_model = resolve_rotary_window(&RotaryWindowInput {
+                        rot: &rot,
+                        frame: &RigidFrame3::IDENTITY,
+                        doc: None,
+                        base_mesh: &mesh,
+                        selections: &[],
+                        extracted_selection: None,
+                        boundary: &b_model,
+                        tool_diameter_mm: tool_d,
+                        top_z_wcs: 16.0, // lowered below stock_outer_radius_mm = 22.0
+                        bottom_z_wcs: 4.0,
+                        op_name: "test_model",
+                    })
+                    .unwrap();
+                    assert!(approx_eq(w_model.u_start, -20.0 + d_lo, 1e-9));
+                    assert!(approx_eq(w_model.u_end, 25.0 + d_hi, 1e-9));
+                    assert!(!w_model.clamped_by_chuck);
+                    assert!(approx_eq(w_model.r_ceiling, 16.0, 1e-9));
+                    assert!(approx_eq(w_model.r_floor, 4.0, 1e-9));
+                }
+
+                // 3. Signed negative margin extends past model for shoulder overrun, AND
+                //    excessive negative margin toward chuck hard-clamps cleanly at chuck_guard_u!
+                let b_overrun = RotaryAxialBoundaryConfig {
+                    axial_boundary_mode: RotaryAxialBoundaryMode::ModelBounds,
+                    axial_containment: ToolContainmentMode::ToolCenterOnBoundary,
+                    axial_margin_start: ParamLength::from_mm(-5.0),
+                    axial_margin_end: ParamLength::from_mm(-4.0),
+                    ..Default::default()
+                };
+                let w_over = resolve_rotary_window(&RotaryWindowInput {
+                    rot: &rot,
+                    frame: &RigidFrame3::IDENTITY,
+                    doc: None,
+                    base_mesh: &mesh,
+                    selections: &[],
+                    extracted_selection: None,
+                    boundary: &b_overrun,
+                    tool_diameter_mm: tool_d,
+                    top_z_wcs: 22.0,
+                    bottom_z_wcs: 0.0,
+                    op_name: "test_overrun",
+                })
+                .unwrap();
+                assert!(approx_eq(w_over.u_start, -25.0, 1e-9));
+                assert!(approx_eq(w_over.u_end, 29.0, 1e-9));
+                assert!(!w_over.clamped_by_chuck);
+
+                let b_extreme = RotaryAxialBoundaryConfig {
+                    axial_boundary_mode: RotaryAxialBoundaryMode::ModelBounds,
+                    axial_containment: ToolContainmentMode::ToolOutsideBoundary,
+                    axial_margin_start: ParamLength::from_mm(-30.0),
+                    axial_margin_end: ParamLength::from_mm(-30.0),
+                    ..Default::default()
+                };
+                let w_ext = resolve_rotary_window(&RotaryWindowInput {
+                    rot: &rot,
+                    frame: &RigidFrame3::IDENTITY,
+                    doc: None,
+                    base_mesh: &mesh,
+                    selections: &[],
+                    extracted_selection: None,
+                    boundary: &b_extreme,
+                    tool_diameter_mm: tool_d,
+                    top_z_wcs: 22.0,
+                    bottom_z_wcs: 0.0,
+                    op_name: "test_extreme",
+                })
+                .unwrap();
+                assert!(w_ext.clamped_by_chuck);
+                if chuck_pos {
+                    assert!(approx_eq(w_ext.u_end, expected_guard, 1e-9));
+                } else {
+                    assert!(approx_eq(w_ext.u_start, expected_guard, 1e-9));
+                }
+
+                // 4. SelectedGeometry: extracted contour projects cleanly onto `u_vec`,
+                //    and empty selections fall back to ModelBounds with a warning
+                let (p0, p1) = match axis {
+                    RotaryAxisKind::XAxis | RotaryAxisKind::ZAxis => {
+                        (DVec2::new(-8.5, -4.0), DVec2::new(14.5, 4.0))
+                    }
+                    RotaryAxisKind::YAxis => (DVec2::new(-4.0, -8.5), DVec2::new(4.0, 14.5)),
+                };
+                let extracted = ExtractedSelectionSummary {
+                    features: vec![ExtractedFeature25D::Contour {
+                        polyline_wcs: ArcPolyline2D {
+                            segments: vec![ArcSegment2D::Line { start: p0, end: p1 }],
+                            closed: false,
+                        },
+                        min_z_wcs: 0.0,
+                        max_z_wcs: 10.0,
+                        reverse: false,
+                        side_flip: false,
+                        source_edge_ids: Vec::new(),
+                        adjacent_lower_floor_z_wcs: None,
+                    }],
+                    ..Default::default()
+                };
+                let b_sel = RotaryAxialBoundaryConfig {
+                    axial_boundary_mode: RotaryAxialBoundaryMode::SelectedGeometry,
+                    ..Default::default()
+                };
+                let w_sel = resolve_rotary_window(&RotaryWindowInput {
+                    rot: &rot,
+                    frame: &RigidFrame3::IDENTITY,
+                    doc: None,
+                    base_mesh: &mesh,
+                    selections: &[],
+                    extracted_selection: Some(&extracted),
+                    boundary: &b_sel,
+                    tool_diameter_mm: tool_d,
+                    top_z_wcs: 22.0,
+                    bottom_z_wcs: 0.0,
+                    op_name: "test_sel",
+                })
+                .unwrap();
+                assert!(approx_eq(w_sel.u_start, -8.5, 1e-9));
+                assert!(approx_eq(w_sel.u_end, 14.5, 1e-9));
+                assert!(w_sel.warnings.is_empty());
+
+                let w_sel_empty = resolve_rotary_window(&RotaryWindowInput {
+                    rot: &rot,
+                    frame: &RigidFrame3::IDENTITY,
+                    doc: None,
+                    base_mesh: &mesh,
+                    selections: &[],
+                    extracted_selection: None,
+                    boundary: &b_sel,
+                    tool_diameter_mm: tool_d,
+                    top_z_wcs: 22.0,
+                    bottom_z_wcs: 0.0,
+                    op_name: "test_sel_empty",
+                })
+                .unwrap();
+                assert!(approx_eq(w_sel_empty.u_start, -20.0, 1e-9));
+                assert!(approx_eq(w_sel_empty.u_end, 25.0, 1e-9));
+                assert!(
+                    w_sel_empty
+                        .warnings
+                        .iter()
+                        .any(|w| w.contains("falling back to Model Bounds"))
+                );
+
+                // 5. ExplicitRange: exact bounds, inverted bounds normalized with warning, empty errors
+                let b_exp = RotaryAxialBoundaryConfig {
+                    axial_boundary_mode: RotaryAxialBoundaryMode::ExplicitRange,
+                    explicit_u_start: ParamLength::from_mm(-12.0),
+                    explicit_u_end: ParamLength::from_mm(18.0),
+                    ..Default::default()
+                };
+                let w_exp = resolve_rotary_window(&RotaryWindowInput {
+                    rot: &rot,
+                    frame: &RigidFrame3::IDENTITY,
+                    doc: None,
+                    base_mesh: &mesh,
+                    selections: &[],
+                    extracted_selection: None,
+                    boundary: &b_exp,
+                    tool_diameter_mm: tool_d,
+                    top_z_wcs: 22.0,
+                    bottom_z_wcs: 0.0,
+                    op_name: "test_exp",
+                })
+                .unwrap();
+                assert!(approx_eq(w_exp.u_start, -12.0, 1e-9));
+                assert!(approx_eq(w_exp.u_end, 18.0, 1e-9));
+
+                let b_exp_inv = RotaryAxialBoundaryConfig {
+                    axial_boundary_mode: RotaryAxialBoundaryMode::ExplicitRange,
+                    explicit_u_start: ParamLength::from_mm(18.0),
+                    explicit_u_end: ParamLength::from_mm(-12.0),
+                    ..Default::default()
+                };
+                let w_exp_inv = resolve_rotary_window(&RotaryWindowInput {
+                    rot: &rot,
+                    frame: &RigidFrame3::IDENTITY,
+                    doc: None,
+                    base_mesh: &mesh,
+                    selections: &[],
+                    extracted_selection: None,
+                    boundary: &b_exp_inv,
+                    tool_diameter_mm: tool_d,
+                    top_z_wcs: 22.0,
+                    bottom_z_wcs: 0.0,
+                    op_name: "test_exp_inv",
+                })
+                .unwrap();
+                assert!(approx_eq(w_exp_inv.u_start, -12.0, 1e-9));
+                assert!(approx_eq(w_exp_inv.u_end, 18.0, 1e-9));
+                assert!(!w_exp_inv.warnings.is_empty());
+
+                let b_exp_empty = RotaryAxialBoundaryConfig {
+                    axial_boundary_mode: RotaryAxialBoundaryMode::ExplicitRange,
+                    explicit_u_start: ParamLength::from_mm(5.0),
+                    explicit_u_end: ParamLength::from_mm(5.0),
+                    ..Default::default()
+                };
+                let err_empty = resolve_rotary_window(&RotaryWindowInput {
+                    rot: &rot,
+                    frame: &RigidFrame3::IDENTITY,
+                    doc: None,
+                    base_mesh: &mesh,
+                    selections: &[],
+                    extracted_selection: None,
+                    boundary: &b_exp_empty,
+                    tool_diameter_mm: tool_d,
+                    top_z_wcs: 22.0,
+                    bottom_z_wcs: 0.0,
+                    op_name: "test_exp_empty",
+                })
+                .unwrap_err();
+                assert!(matches!(err_empty, CamError::InvalidRotarySetup { .. }));
+            }
+        }
+
+        // 6. SelectedGeometry with real 3D STEP faces (including non-horizontal side/bevel face)
+        let step = tutorial_indexed_4side_block_step().unwrap();
+        let doc = MonstertruckKernel
+            .load_step_bytes("block.step", step.as_bytes(), DEFAULT_TESS_CHORD_TOL_MM)
+            .unwrap();
+        let target_face = doc
+            .faces
+            .iter()
+            .find(|f| (f.aabb_mm.max.x - f.aabb_mm.min.x) > 5.0)
+            .unwrap();
+        let binding = doc.bind_face(target_face.id).unwrap();
+        let rot_x = dummy_resolved(
+            RotaryAxisKind::XAxis,
+            RotaryDirection::RightHandCcw,
+            DVec3::ZERO,
+        );
+        let projected = project_selections_onto_rotary_axis(
+            Some(&doc),
+            &RigidFrame3::IDENTITY,
+            &[GeometrySelectionItem::PlanarFace { binding }],
+            None,
+            &rot_x,
+        )
+        .unwrap();
+        assert!(approx_eq(projected.0, target_face.aabb_mm.min.x, 0.05));
+        assert!(approx_eq(projected.1, target_face.aabb_mm.max.x, 0.05));
+
+        // 7. Operation::rotary_axial_boundary / _mut accessors
+        let mut op_2lin = Operation::new("op_r2", "Rot2", OperationKind::Rotary2Linear);
+        assert!(op_2lin.rotary_axial_boundary().is_some());
+        op_2lin
+            .rotary_axial_boundary_mut()
+            .unwrap()
+            .axial_boundary_mode = RotaryAxialBoundaryMode::ExplicitRange;
+        assert_eq!(
+            op_2lin.rotary_axial_boundary().unwrap().axial_boundary_mode,
+            RotaryAxialBoundaryMode::ExplicitRange
+        );
+
+        let mut op_4ax = Operation::new("op_r4", "Rot4", OperationKind::Rotary4AxisSim);
+        assert!(op_4ax.rotary_axial_boundary().is_some());
+        op_4ax
+            .rotary_axial_boundary_mut()
+            .unwrap()
+            .axial_containment = ToolContainmentMode::ToolInsideBoundary;
+        assert_eq!(
+            op_4ax.rotary_axial_boundary().unwrap().axial_containment,
+            ToolContainmentMode::ToolInsideBoundary
+        );
+
+        let mut op_2d = Operation::new("op_2d", "Pocket", OperationKind::Pocket2D);
+        assert!(op_2d.rotary_axial_boundary().is_none());
+        assert!(op_2d.rotary_axial_boundary_mut().is_none());
     }
 }

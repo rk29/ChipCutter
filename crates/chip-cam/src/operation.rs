@@ -422,6 +422,30 @@ impl Operation {
         }
     }
 
+    /// Returns the shared 4th-axis rotary axial/angular boundary config for native rotary operations.
+    pub fn rotary_axial_boundary(&self) -> Option<&crate::params::RotaryAxialBoundaryConfig> {
+        match &self.strategy {
+            Some(StrategyParams::Rotary2Linear(p)) => Some(&p.axial_boundary),
+            Some(StrategyParams::Rotary4AxisSim(p)) => Some(&p.axial_boundary),
+            _ => None,
+        }
+    }
+
+    /// Returns mutable access to the shared 4th-axis rotary axial/angular boundary config
+    /// for native rotary operations (initializing default strategy params if absent).
+    pub fn rotary_axial_boundary_mut(
+        &mut self,
+    ) -> Option<&mut crate::params::RotaryAxialBoundaryConfig> {
+        if !self.kind.is_rotary_native() {
+            return None;
+        }
+        match self.strategy_mut() {
+            StrategyParams::Rotary2Linear(p) => Some(&mut p.axial_boundary),
+            StrategyParams::Rotary4AxisSim(p) => Some(&mut p.axial_boundary),
+            _ => None,
+        }
+    }
+
     pub fn mark_dirty(&mut self) {
         self.runtime_status = OperationStatus::Dirty;
     }
