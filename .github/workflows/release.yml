@@ -139,13 +139,13 @@ jobs:
           set -euo pipefail
           flatpak run --command=chipcutter io.github.rk29.ChipCutter --version
           flatpak run --command=chipcutter io.github.rk29.ChipCutter list-posts
-          SMOKE_DIR="$(mktemp -d)"
+          SMOKE_DIR="$(mktemp -d "${HOME}/chipcutter-flatpak-smoke.XXXXXX")"
           trap 'rm -rf "${SMOKE_DIR}"' EXIT
-          flatpak run --command=chipcutter --filesystem="${SMOKE_DIR}" io.github.rk29.ChipCutter \
+          flatpak run --command=chipcutter io.github.rk29.ChipCutter \
             generate-sample-step "${SMOKE_DIR}/01-facing.step" \
             --tutorial 01-facing \
             --project-out "${SMOKE_DIR}/01-facing.chip.toml"
-          flatpak run --command=chipcutter --filesystem="${SMOKE_DIR}" io.github.rk29.ChipCutter \
+          flatpak run --command=chipcutter io.github.rk29.ChipCutter \
             validate "${SMOKE_DIR}/01-facing.chip.toml" --generate
 
       - name: Setup Rust toolchain for standalone CLI archive

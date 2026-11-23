@@ -351,6 +351,45 @@ pub fn compute_sha256_hex(bytes: &[u8]) -> String {
     out
 }
 
+/// Returns `true` when `path` points inside a Linux Flatpak `xdg-document-portal` FUSE mount
+/// (`/run/user/<uid>/doc/<doc-id>/...` or `/var/run/user/<uid>/doc/<doc-id>/...`).
+pub fn is_flatpak_document_portal_path(path: &Path) -> bool {
+    let mut comps = path.components();
+    if !matches!(comps.next(), Some(Component::RootDir)) {
+        return false;
+    }
+    let Some(Component::Normal(first)) = comps.next() else {
+        return false;
+    };
+    let run_matched = if first == "run" {
+        true
+    } else if first == "var" {
+        matches!(comps.next(), Some(Component::Normal(s)) if s == "run")
+    } else {
+        false
+    };
+    if !run_matched {
+        return false;
+    }
+    if !matches!(comps.next(), Some(Component::Normal(s)) if s == "user") {
+        return false;
+    }
+    let Some(Component::Normal(uid)) = comps.next() else {
+        return false;
+    };
+    if uid.is_empty()
+        || !uid
+            .to_str()
+            .is_some_and(|s| s.bytes().all(|b| b.is_ascii_digit()))
+    {
+        return false;
+    }
+    if !matches!(comps.next(), Some(Component::Normal(s)) if s == "doc") {
+        return false;
+    }
+    matches!(comps.next(), Some(Component::Normal(doc_id)) if !doc_id.is_empty())
+}
+
 /// Computes a portable `/` relative path from `project_file`'s directory to `step_path` whenever
 /// they share a common directory prefix; falls back to `step_path` otherwise.
 pub fn portable_model_path(project_file: Option<&Path>, step_path: &Path) -> String {
@@ -365,6 +404,11 @@ pub fn portable_model_path(project_file: Option<&Path>, step_path: &Path) -> Str
 
     if let Ok(rel) = step_abs.strip_prefix(&proj_abs) {
         return normalize_slashes(&rel.to_string_lossy());
+    }
+
+    // Never emit `../<other-doc-id>/...` across distinct Flatpak `xdg-document-portal` mounts.
+    if is_flatpak_document_portal_path(&proj_abs) || is_flatpak_document_portal_path(&step_abs) {
+        return normalize_slashes(&step_path.to_string_lossy());
     }
 
     // Also handle sibling directories (e.g., `../cad/part.step`) up to 2 parent hops
@@ -475,5 +519,61 @@ pub fn load_model_entry_cad_doc_transformed(
         Ok(raw)
     } else {
         Ok(raw.transformed(transform))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::{is_flatpak_document_portal_path, portable_model_path};
+
+    #[test]
+    fn flatpak_document_portal_path_detection() {
+        assert!(is_flatpak_document_portal_path(Path::new(
+            "/run/user/1000/doc/a1b2c3d4/part.step"
+        )));
+        assert!(is_flatpak_document_portal_path(Path::new(
+            "/var/run/user/1000/doc/a1b2c3d4/part.step"
+        )));
+        assert!(is_flatpak_document_portal_path(Path::new(
+            "/run/user/0/doc/deadbeef"
+        )));
+
+        assert!(!is_flatpak_document_portal_path(Path::new(
+            "/run/user/1000/doc"
+        )));
+        assert!(!is_flatpak_document_portal_path(Path::new(
+            "/run/user/alice/doc/a1b2c3d4/part.step"
+        )));
+        assert!(!is_flatpak_document_portal_path(Path::new(
+            "/home/user/projects/part.step"
+        )));
+        assert!(!is_flatpak_document_portal_path(Path::new(
+            "relative/part.step"
+        )));
+    }
+
+    #[test]
+    fn portable_model_path_does_not_walk_across_distinct_flatpak_portal_mounts() {
+        let proj = Path::new("/run/user/1000/doc/bbbb2222/job.chip.toml");
+        let other_portal_step = Path::new("/run/user/1000/doc/aaaa1111/part.step");
+        assert_eq!(
+            portable_model_path(Some(proj), other_portal_step),
+            "/run/user/1000/doc/aaaa1111/part.step"
+        );
+
+        let same_portal_step = Path::new("/run/user/1000/doc/bbbb2222/models/part.step");
+        assert_eq!(
+            portable_model_path(Some(proj), same_portal_step),
+            "models/part.step"
+        );
+
+        let normal_proj = Path::new("/home/user/cnc/cam/job.chip.toml");
+        let normal_sibling = Path::new("/home/user/cnc/cad/part.step");
+        assert_eq!(
+            portable_model_path(Some(normal_proj), normal_sibling),
+            "../cad/part.step"
+        );
     }
 }

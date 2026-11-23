@@ -10,6 +10,7 @@ finish-args:
   - --socket=wayland
   - --socket=fallback-x11
   - --device=dri
+  - --filesystem=host
 
 build-options:
   append-path: /usr/lib/sdk/rust-stable/bin

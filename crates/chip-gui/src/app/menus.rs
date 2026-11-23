@@ -222,11 +222,11 @@ impl ChipCutterApp {
             }
             if ui
                 .add_enabled(
-                    self.model.is_some(),
+                    self.model.is_some() || self.project.primary_part_model().is_some(),
                     egui::Button::new("Replace STEP Model (Associative Re-Bind)…"),
                 )
-                .on_hover_text("Swap the active STEP file with a new revision while preserving CAM operations and geometry bindings")
-                .on_disabled_hover_text("Import a 3D STEP model first to replace it with a new revision")
+                .on_hover_text("Swap or locate the active project's STEP file while preserving CAM operations and geometry bindings")
+                .on_disabled_hover_text("Import a 3D STEP model or open a 3D project first to replace or locate its model")
                 .clicked()
             {
                 ui.close();

@@ -47,9 +47,10 @@ pub use dispatcher::{
     generate_project_blocking_in_dir,
 };
 pub use document::{
-    ModelEntry, ModelRole, ProjectDocument, compute_sha256_hex, is_mesh_path,
-    load_model_bytes_cad_doc, load_model_bytes_cad_doc_transformed, load_model_entry_cad_doc,
-    load_model_entry_cad_doc_transformed, portable_model_path, resolve_model_path,
+    ModelEntry, ModelRole, ProjectDocument, compute_sha256_hex, is_flatpak_document_portal_path,
+    is_mesh_path, load_model_bytes_cad_doc, load_model_bytes_cad_doc_transformed,
+    load_model_entry_cad_doc, load_model_entry_cad_doc_transformed, portable_model_path,
+    resolve_model_path,
 };
 pub use history::UndoHistory;
 pub use pipeline::{

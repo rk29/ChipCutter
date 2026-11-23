@@ -9,8 +9,8 @@ use std::{
 use chip_cad::{CadDocument, CadPicker, MeshUnitKind, TopologyGraph};
 use chip_project::{
     ProjectDocument, compute_sha256_hex, create_private_temp_extract_dir, export_chipz_bundle,
-    external_or_suspicious_assets_referenced, is_chipz_path, load_model_bytes_cad_doc,
-    portable_model_path, resolve_model_path, unpack_chipz_bundle,
+    external_or_suspicious_assets_referenced, is_chipz_path, is_flatpak_document_portal_path,
+    load_model_bytes_cad_doc, portable_model_path, resolve_model_path, unpack_chipz_bundle,
 };
 
 use crate::{
@@ -429,7 +429,7 @@ impl ChipCutterApp {
                 }
                 Err(e) => LoadJobResult::Failed {
                     generation,
-                    error: format!("failed to read {}: {e}", path.display()),
+                    error: format_model_read_error(&path, &e, is_running_in_flatpak_sandbox()),
                 },
             };
             let _ = tx.send(res);
@@ -530,6 +530,27 @@ impl ChipCutterApp {
         }
 
         let _ = self.sim_panel.poll_worker(&mut self.logs);
+    }
+}
+
+fn is_running_in_flatpak_sandbox() -> bool {
+    std::env::var_os("FLATPAK_ID").is_some() || Path::new("/.flatpak-info").exists()
+}
+
+fn format_model_read_error(path: &Path, err: &std::io::Error, in_flatpak_sandbox: bool) -> String {
+    let base = format!("failed to read {}: {err}", path.display());
+    if is_flatpak_document_portal_path(path)
+        || (in_flatpak_sandbox
+            && matches!(
+                err.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied
+            ))
+    {
+        format!(
+            "{base} (Hint: Flatpak single-file portal mounts cannot access sibling STEP/model files referenced by a .chip.toml project. Grant host filesystem access with `flatpak override --user --filesystem=host io.github.rk29.ChipCutter`, open a self-contained `.chipz` bundle, or use File -> Replace STEP Model to locate the model.)"
+        )
+    } else {
+        base
     }
 }
 
@@ -921,6 +942,98 @@ mod tests {
         assert!(app.should_intercept_close());
         app.allow_close_without_prompt = true;
         assert!(!app.should_intercept_close());
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn flatpak_manifest_grants_host_filesystem_for_project_step_models() {
+        let manifest_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../packaging/flatpak/io.github.rk29.ChipCutter.yml");
+        let manifest = std::fs::read_to_string(&manifest_path)
+            .expect("Flatpak manifest must exist in packaging/flatpak/");
+        assert!(
+            manifest
+                .lines()
+                .any(|line| line.trim() == "- --filesystem=host"),
+            "Flatpak manifest must grant `--filesystem=host` in `finish-args` so `.chip.toml` projects can open sibling/referenced STEP models"
+        );
+    }
+
+    #[test]
+    fn model_read_error_includes_flatpak_hint_only_for_portal_or_sandbox_failures() {
+        let enoent = std::io::Error::new(std::io::ErrorKind::NotFound, "No such file or directory");
+
+        let portal_msg = format_model_read_error(
+            Path::new("/run/user/1000/doc/abc12345/part.step"),
+            &enoent,
+            false,
+        );
+        assert!(portal_msg.contains("Flatpak single-file portal mounts"));
+        assert!(portal_msg.contains("Replace STEP Model"));
+
+        let sandbox_msg =
+            format_model_read_error(Path::new("/home/user/projects/part.step"), &enoent, true);
+        assert!(sandbox_msg.contains("Flatpak single-file portal mounts"));
+
+        let regular_msg =
+            format_model_read_error(Path::new("/home/user/projects/part.step"), &enoent, false);
+        assert!(!regular_msg.contains("Flatpak"));
+        assert!(regular_msg.contains("failed to read /home/user/projects/part.step"));
+    }
+
+    #[test]
+    fn missing_project_model_can_be_recovered_via_associative_rebind() {
+        let ctx = egui::Context::default();
+        let mut app = ChipCutterApp::new_headless_for_test(&ctx);
+
+        let tmp = create_private_temp_extract_dir("chipcutter_test_missing_model_rebind").unwrap();
+        let toml_path = tmp.join("missing_step.chip.toml");
+        let mut proj = ProjectDocument::new("Project Missing STEP");
+        proj.models.push(ModelEntry {
+            id: "model_1".to_string(),
+            path: "missing_original.step".to_string(),
+            sha256: "0".repeat(64),
+            role: Default::default(),
+            unit_override: None,
+            transform: chip_cad::ModelTransform::IDENTITY,
+        });
+        proj.save_to_path(&toml_path).unwrap();
+
+        app.load_project_from_disk(&toml_path, ctx.clone());
+        wait_for_model_load(&mut app, &ctx);
+        assert!(app.model.is_none());
+        assert!(
+            app.project.primary_part_model().is_some(),
+            "project should still retain its primary part model entry for Replace STEP Model recovery"
+        );
+
+        let recovered_step_path = tmp.join("recovered_part.step");
+        std::fs::write(
+            &recovered_step_path,
+            chip_cad::sample_machined_plate_step().unwrap(),
+        )
+        .unwrap();
+
+        app.spawn_step_file_load_with_purpose(
+            recovered_step_path.clone(),
+            LoadPurpose::ReloadRebind { update_path: true },
+            ctx.clone(),
+        );
+        wait_for_model_load(&mut app, &ctx);
+
+        assert_eq!(
+            app.model
+                .as_ref()
+                .expect("recovered STEP should load via Replace STEP Model re-bind")
+                .doc
+                .source_name,
+            "recovered_part.step"
+        );
+        assert_eq!(
+            app.project.primary_part_model().unwrap().path,
+            "recovered_part.step"
+        );
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
