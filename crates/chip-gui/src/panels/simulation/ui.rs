@@ -39,62 +39,11 @@ impl SimulationPanelState {
             self.trail_up_to_cutter,
         );
 
-        // Top Control Bar: Run Simulation, Engine, Resolution, Backend, Adapter Pill, Visual Toggles, Verification Status
+        // Top Control Bar: Engine, Resolution, Backend, Adapter Pill, Visual Toggles, Verification Status
         let mut engine_changed = false;
         let mut backend_changed = false;
-        let in_flight_progress = self.in_flight_progress();
+        let busy = self.is_busy();
         ui.horizontal_wrapped(|ui| {
-            let busy = in_flight_progress.is_some();
-            let btn_lbl = if busy {
-                "Simulating…"
-            } else if self.active_result.is_some() {
-                "Refresh Simulation"
-            } else {
-                "Run Simulation"
-            };
-            if ui
-                .add_enabled(!busy && cad_doc.is_some(), egui::Button::new(btn_lbl))
-                .on_hover_text(
-                    "Run background stock removal simulation, 6-rule crash/gouge/fixture checks, and error-volume/RMS metrology",
-                )
-                .clicked()
-                && let Some(doc) = cad_doc
-            {
-                self.trigger_simulation(SimTriggerArgs {
-                    project,
-                    setup_idx,
-                    cad_doc: Arc::clone(doc),
-                    cad_revision,
-                    cache,
-                    project_dir,
-                    egui_ctx: ui.ctx().clone(),
-                    logs,
-                });
-            }
-            if let Some(prog) = in_flight_progress {
-                let pct = prog.percent_rounded();
-                let tok = crate::theme::ThemeTokens::from_ui(ui);
-                ui.spinner();
-                ui.add(
-                    egui::ProgressBar::new(prog.fraction)
-                        .desired_width(124.0)
-                        .fill(tok.accent)
-                        .text(egui::RichText::new(format!("{pct}%")).small().strong()),
-                )
-                .on_hover_text(format!(
-                    "Simulation progress: {pct}% ({})",
-                    prog.stage.label()
-                ));
-                if ui
-                    .small_button("Cancel")
-                    .on_hover_text("Cancel the in-flight background simulation")
-                    .clicked()
-                {
-                    self.cancel_in_flight();
-                }
-            }
-
-            ui.separator();
             let prev_engine = self.engine;
             egui::ComboBox::from_id_salt("sim_engine_combo")
                 .selected_text(self.engine.label())
@@ -430,7 +379,7 @@ impl SimulationPanelState {
                         crate::widgets::StatusBadgeKind::Dirty,
                         None,
                     );
-                    ui.colored_label(tok.dirty_fg, "Toolpaths changed — Refresh Simulation");
+                    ui.colored_label(tok.dirty_fg, "Toolpaths changed — Click 'Simulate' to refresh");
                 } else if warn > 0 {
                     crate::widgets::status_badge_icon(
                         ui,
@@ -456,14 +405,12 @@ impl SimulationPanelState {
                         ui.colored_label(tok.clean_fg, "Verified Crash-Free");
                     });
                 }
-            } else if let Some(prog) = in_flight_progress {
-                ui.weak(format!(
-                    "{} ({}%)",
-                    prog.stage.label(),
-                    prog.percent_rounded()
-                ));
+            } else if busy {
+                ui.weak("Simulation running…");
             } else {
-                ui.weak("Click 'Run Simulation' to compute 3D material removal & crash checks.");
+                ui.weak(
+                    "Click 'Simulate' on the top toolbar to compute 3D material removal & crash checks.",
+                );
             }
         });
 
@@ -487,18 +434,20 @@ impl SimulationPanelState {
         ui.separator();
 
         let Some(res) = self.active_result.clone() else {
-            if let Some(prog) = in_flight_progress {
-                show_in_flight_progress_banner(ui, prog);
+            if busy {
+                ui.weak("Simulation running…");
             } else {
                 ui.weak("No stock simulation active for this Setup yet.");
             }
             return action;
         };
         if self.active_setup_idx != setup_idx || res.timeline.is_empty() {
-            if let Some(prog) = in_flight_progress {
-                show_in_flight_progress_banner(ui, prog);
+            if busy {
+                ui.weak("Simulation running…");
             } else {
-                ui.weak("Click 'Run Simulation' to simulate the currently selected Setup.");
+                ui.weak(
+                    "Click 'Simulate' on the top toolbar to simulate the currently selected Setup.",
+                );
             }
             return action;
         }
@@ -858,23 +807,6 @@ impl SimulationPanelState {
 
         action
     }
-}
-
-/// Renders a clear inline progress banner in the Simulation Timeline body while a background
-/// simulation is running and no completed result is displayed for the active Setup yet.
-fn show_in_flight_progress_banner(ui: &mut egui::Ui, prog: chip_sim::SimProgressSnapshot) {
-    let pct = prog.percent_rounded();
-    let tok = crate::theme::ThemeTokens::from_ui(ui);
-    ui.horizontal(|ui| {
-        ui.spinner();
-        ui.label(format!("{}… ({pct}%)", prog.stage.label()));
-        ui.add(
-            egui::ProgressBar::new(prog.fraction)
-                .desired_width(220.0)
-                .fill(tok.accent)
-                .text(egui::RichText::new(format!("{pct}%")).small().strong()),
-        );
-    });
 }
 
 /// Computes playback completion percentage in `[0.0, 100.0]` for the timeline scrubber.

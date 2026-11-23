@@ -89,6 +89,10 @@ impl ChipCutterApp {
                 let n = self.dispatcher.cancel_all();
                 self.logs
                     .push(format!("Cancelled {n} in-flight generation job(s)."));
+            } else if self.sim_panel.is_busy() {
+                self.sim_panel.cancel_in_flight();
+                self.logs
+                    .push("Cancelled in-flight simulation.".to_string());
             }
         }
 

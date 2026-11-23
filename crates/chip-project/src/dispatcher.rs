@@ -250,6 +250,25 @@ fn check_upstream_readiness(
 /// automatically spawn with exact 2D swept coverage inputs.
 type CarryoverMsg = (u64, usize, u64, Result<Arc<TriDexelStock>, String>);
 
+/// Live batch progress snapshot for in-flight background toolpath generation.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GenerationProgressSnapshot {
+    /// Number of operations in the active generation batch that have finished.
+    pub completed: usize,
+    /// Total number of operations queued in the active generation batch.
+    pub total: usize,
+    /// Normalized completion fraction in `[0.0, 1.0]`.
+    pub fraction: f32,
+}
+
+impl GenerationProgressSnapshot {
+    /// Returns completion percentage rounded to the nearest integer in `0..=100`.
+    #[must_use]
+    pub fn percent_rounded(&self) -> u8 {
+        (self.fraction.clamp(0.0, 1.0) * 100.0).round() as u8
+    }
+}
+
 pub struct JobDispatcher {
     tx: Sender<(u64, DispatcherEvent)>,
     rx: Receiver<(u64, DispatcherEvent)>,
@@ -258,6 +277,7 @@ pub struct JobDispatcher {
     epoch: u64,
     in_flight: HashMap<String, (OperationInputHash, Arc<AtomicBool>)>,
     pending_wave: HashSet<String>,
+    batch_ops: HashSet<String>,
     carryover_cache: HashMap<(usize, u64), Arc<TriDexelStock>>,
     carryover_errors: HashMap<(usize, u64), String>,
     in_flight_carryover: HashSet<(usize, u64)>,
@@ -285,6 +305,7 @@ impl JobDispatcher {
             epoch: 0,
             in_flight: HashMap::new(),
             pending_wave: HashSet::new(),
+            batch_ops: HashSet::new(),
             carryover_cache: HashMap::new(),
             carryover_errors: HashMap::new(),
             in_flight_carryover: HashSet::new(),
@@ -316,6 +337,27 @@ impl JobDispatcher {
         self.in_flight.len() + self.pending_wave.len()
     }
 
+    /// Returns live batch completion progress while toolpath generation is running, or `None` when idle.
+    #[must_use]
+    pub fn batch_progress(&self) -> Option<GenerationProgressSnapshot> {
+        if !self.is_busy() {
+            return None;
+        }
+        let remaining = self.in_flight_count();
+        let total = self.batch_ops.len().max(remaining);
+        let completed = total.saturating_sub(remaining);
+        let fraction = if total == 0 {
+            0.0
+        } else {
+            (completed as f32 / total as f32).clamp(0.0, 1.0)
+        };
+        Some(GenerationProgressSnapshot {
+            completed,
+            total,
+            fraction,
+        })
+    }
+
     pub fn in_flight_ids(&self) -> HashSet<String> {
         let mut ids: HashSet<String> = self.in_flight.keys().cloned().collect();
         ids.extend(self.pending_wave.iter().cloned());
@@ -325,18 +367,26 @@ impl JobDispatcher {
     /// Signals cancellation for a single operation if currently generating or waiting in a DAG wave.
     pub fn cancel_operation(&mut self, op_id: &str) -> bool {
         let removed_pending = self.pending_wave.remove(op_id);
-        if let Some((_, token)) = self.in_flight.remove(op_id) {
+        let removed_in_flight = if let Some((_, token)) = self.in_flight.remove(op_id) {
             token.store(true, Ordering::Relaxed);
             true
         } else {
-            removed_pending
+            false
+        };
+        if removed_pending || removed_in_flight {
+            self.batch_ops.remove(op_id);
         }
+        if !self.is_busy() {
+            self.batch_ops.clear();
+        }
+        removed_pending || removed_in_flight
     }
 
     /// Signals cancellation for all in-flight and queued wave jobs (`Esc`).
     pub fn cancel_all(&mut self) -> usize {
         let count = self.in_flight.len() + self.pending_wave.len();
         self.pending_wave.clear();
+        self.batch_ops.clear();
         self.in_flight_carryover.clear();
         for (_, (_, token)) in self.in_flight.drain() {
             token.store(true, Ordering::Relaxed);
@@ -370,15 +420,25 @@ impl JobDispatcher {
             }
         }
 
+        let batch_ops = &mut self.batch_ops;
         self.in_flight.retain(|op_id, (job_hash, token)| {
             let still_matches = current_hashes.get(op_id) == Some(job_hash);
             if !still_matches {
                 token.store(true, Ordering::Relaxed);
+                batch_ops.remove(op_id);
             }
             still_matches
         });
-        self.pending_wave
-            .retain(|op_id| current_hashes.contains_key(op_id));
+        self.pending_wave.retain(|op_id| {
+            let keep = current_hashes.contains_key(op_id);
+            if !keep {
+                batch_ops.remove(op_id);
+            }
+            keep
+        });
+        if !self.is_busy() {
+            self.batch_ops.clear();
+        }
     }
 
     /// Queues dirty (or explicitly targeted) non-suppressed operations onto the background `rayon` pool,
@@ -393,6 +453,9 @@ impl JobDispatcher {
         only_setup_idx: Option<usize>,
         only_op_id: Option<&str>,
     ) -> usize {
+        if !self.is_busy() {
+            self.batch_ops.clear();
+        }
         self.active_cad = Some((Arc::clone(&cad_doc), cad_revision));
         let shared_sketches = Arc::new(project.sketches.clone());
         let mut tasks = Vec::new();
@@ -495,6 +558,7 @@ impl JobDispatcher {
                             s_idx,
                             digest,
                         );
+                        self.batch_ops.insert(op_id.clone());
                         self.pending_wave.insert(op_id);
                         project.setups[s_idx].operations[o_idx].runtime_status =
                             OperationStatus::Generating;
@@ -503,6 +567,7 @@ impl JobDispatcher {
                     }
                     CarryoverReadiness::WaitingUpstreamOps
                     | CarryoverReadiness::FailedUpstream(_) => {
+                        self.batch_ops.insert(op_id.clone());
                         self.pending_wave.insert(op_id);
                         project.setups[s_idx].operations[o_idx].runtime_status =
                             OperationStatus::Generating;
@@ -524,6 +589,7 @@ impl JobDispatcher {
                                 if let Some(td) = self.carryover_cache.get(&(s_idx, in_digest)) {
                                     Some(Arc::clone(td))
                                 } else if self.carryover_errors.contains_key(&(s_idx, in_digest)) {
+                                    self.batch_ops.insert(op_id.clone());
                                     self.pending_wave.insert(op_id);
                                     project.setups[s_idx].operations[o_idx].runtime_status =
                                         OperationStatus::Generating;
@@ -543,6 +609,7 @@ impl JobDispatcher {
                                         upstream_indices,
                                         in_digest,
                                     );
+                                    self.batch_ops.insert(op_id.clone());
                                     self.pending_wave.insert(op_id);
                                     project.setups[s_idx].operations[o_idx].runtime_status =
                                         OperationStatus::Generating;
@@ -555,6 +622,7 @@ impl JobDispatcher {
 
                         self.pending_wave.remove(&op_id);
                         let cancel_token = Arc::new(AtomicBool::new(false));
+                        self.batch_ops.insert(op_id.clone());
                         self.in_flight
                             .insert(op_id.clone(), (input_hash, Arc::clone(&cancel_token)));
                         project.setups[s_idx].operations[o_idx].runtime_status =
@@ -591,6 +659,7 @@ impl JobDispatcher {
                         queued_count += 1;
                     }
                     UpstreamReadiness::Waiting | UpstreamReadiness::FailedUpstream { .. } => {
+                        self.batch_ops.insert(op_id.clone());
                         self.pending_wave.insert(op_id);
                         project.setups[s_idx].operations[o_idx].runtime_status =
                             OperationStatus::Generating;
@@ -1039,6 +1108,9 @@ impl JobDispatcher {
             }
         }
 
+        if !self.is_busy() {
+            self.batch_ops.clear();
+        }
         let inflight_set = self.in_flight_ids();
         cache.reconcile_project_statuses(project, cad_revision, &inflight_set);
         logs
@@ -1478,5 +1550,68 @@ mod tests {
             cache.get_error("stale_err", stale_hash).is_none(),
             "stale Failed event must not populate ToolpathCache errors"
         );
+    }
+
+    #[test]
+    fn batch_progress_tracks_completions_and_clears_when_idle_or_cancelled() {
+        let mut dispatcher = JobDispatcher::new(None);
+        let mut project = ProjectDocument::new("Batch Progress Test");
+        let mut cache = ToolpathCache::new(16);
+
+        assert!(dispatcher.batch_progress().is_none());
+
+        let hash_a = OperationInputHash([0x11; 32]);
+        let hash_b = OperationInputHash([0x22; 32]);
+        dispatcher.batch_ops.insert("op_a".to_string());
+        dispatcher.batch_ops.insert("op_b".to_string());
+        dispatcher.in_flight.insert(
+            "op_a".to_string(),
+            (hash_a, Arc::new(AtomicBool::new(false))),
+        );
+        dispatcher.pending_wave.insert("op_b".to_string());
+
+        let p0 = dispatcher.batch_progress().unwrap();
+        assert_eq!(p0.completed, 0);
+        assert_eq!(p0.total, 2);
+        assert_eq!(p0.percent_rounded(), 0);
+
+        let _ = dispatcher.tx.send((
+            dispatcher.epoch,
+            DispatcherEvent::Completed {
+                op_id: "op_a".to_string(),
+                input_hash: hash_a,
+                toolpath: Arc::new(ToolpathBuilder::new("op_a").finish()),
+            },
+        ));
+        let _ = dispatcher.poll_events(&mut project, &mut cache, 1);
+
+        let p1 = dispatcher.batch_progress().unwrap();
+        assert_eq!(p1.completed, 1);
+        assert_eq!(p1.total, 2);
+        assert_eq!(p1.percent_rounded(), 50);
+
+        let cancelled = dispatcher.cancel_all();
+        assert_eq!(cancelled, 1);
+        assert!(dispatcher.batch_progress().is_none());
+        assert!(dispatcher.batch_ops.is_empty());
+
+        // Also verify full completion clears batch_progress to None.
+        dispatcher.batch_ops.insert("op_c".to_string());
+        dispatcher.in_flight.insert(
+            "op_c".to_string(),
+            (hash_b, Arc::new(AtomicBool::new(false))),
+        );
+        assert_eq!(dispatcher.batch_progress().unwrap().total, 1);
+        let _ = dispatcher.tx.send((
+            dispatcher.epoch,
+            DispatcherEvent::Completed {
+                op_id: "op_c".to_string(),
+                input_hash: hash_b,
+                toolpath: Arc::new(ToolpathBuilder::new("op_c").finish()),
+            },
+        ));
+        let _ = dispatcher.poll_events(&mut project, &mut cache, 1);
+        assert!(dispatcher.batch_progress().is_none());
+        assert!(dispatcher.batch_ops.is_empty());
     }
 }

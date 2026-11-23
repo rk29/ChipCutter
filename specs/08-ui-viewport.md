@@ -9,7 +9,7 @@ ChipCutter uses `eframe` with the `wgpu` backend and `egui_tiles` for a responsi
 │ Menu Bar: File | Edit | Setup | Operations | Tools | Simulate | Post | View | Help │
 ├──────────────────────────────────────────────────────────────────────────────┤
 │ Single-Row Workflow Toolbar: [Open][Save][.chipz][DXF/SVG] | [+ Sketch]      │
-│   [+ Adaptive][+ V-Carve] | [Generate (Ctrl+G)] [Simulate] [Post] | [Ctrl+K] │
+│   [+ Adaptive][+ V-Carve] | [Generate][Simulate][Post][Progress] | [Tools]   │
 ├────────────────────┬────────────────────────────────────┬────────────────────┤
 │ CAM Browser        │  [Active Pick / Sketch Banner HUD] │ Inspector          │
 │ (Left Tile)        │                                    │ (Right Tile)       │

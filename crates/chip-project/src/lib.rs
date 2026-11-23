@@ -43,8 +43,8 @@ pub use demos::{
     build_vcarve_sign_and_inlay_demo_project, sample_two_sided_vise_part_stl_bytes,
 };
 pub use dispatcher::{
-    BatchGenerationReport, DispatcherEvent, JobDispatcher, generate_project_blocking,
-    generate_project_blocking_in_dir,
+    BatchGenerationReport, DispatcherEvent, GenerationProgressSnapshot, JobDispatcher,
+    generate_project_blocking, generate_project_blocking_in_dir,
 };
 pub use document::{
     ModelEntry, ModelRole, ProjectDocument, compute_sha256_hex, is_flatpak_document_portal_path,

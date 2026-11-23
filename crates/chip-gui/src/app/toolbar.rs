@@ -28,7 +28,7 @@ impl ChipCutterApp {
             )
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 5.0;
+                    ui.spacing_mut().item_spacing.x = 3.5;
 
                     if icon_button(
                         ui,
@@ -129,12 +129,10 @@ impl ChipCutterApp {
                     ui.separator();
 
                     if self.dispatcher.is_busy() {
-                        ui.spinner();
-                        let cancel_lbl = format!("Cancel ({})", self.dispatcher.in_flight_count());
                         if icon_button(
                             ui,
                             IconKind::CancelStop,
-                            Some(&cancel_lbl),
+                            Some("Cancel"),
                             "Cancel In-Flight Toolpath Generation (Esc)",
                         )
                         .clicked()
@@ -152,22 +150,16 @@ impl ChipCutterApp {
                         self.trigger_generate_dirty(Some(self.active_setup_idx), None);
                     }
 
-                    if let Some(prog) = self.sim_panel.in_flight_progress() {
-                        let pct = prog.percent_rounded();
-                        let sim_lbl = format!("Sim {pct}%");
-                        ui.spinner();
+                    if self.sim_panel.is_busy() {
                         if icon_button(
                             ui,
-                            IconKind::Simulate,
-                            Some(&sim_lbl),
-                            &format!(
-                                "Simulation running: {pct}% ({}). Click to focus Simulation Timeline.",
-                                prog.stage.label()
-                            ),
+                            IconKind::CancelStop,
+                            Some("Cancel"),
+                            "Cancel In-Flight Simulation (Esc)",
                         )
                         .clicked()
                         {
-                            focus_workspace_pane(&mut self.tree, WorkspacePane::SimulationTimeline);
+                            self.sim_panel.cancel_in_flight();
                         }
                     } else if icon_button(
                         ui,
@@ -190,6 +182,17 @@ impl ChipCutterApp {
                     {
                         focus_workspace_pane(&mut self.tree, WorkspacePane::GCodePreview);
                     }
+
+                    let job_progress = resolve_toolbar_job_progress(
+                        self.dispatcher.batch_progress(),
+                        self.sim_panel.in_flight_progress(),
+                    );
+                    if toolbar_progress_bar(ui, job_progress.as_ref()).clicked()
+                        && self.sim_panel.is_busy()
+                    {
+                        focus_workspace_pane(&mut self.tree, WorkspacePane::SimulationTimeline);
+                    }
+
                     if icon_button(
                         ui,
                         IconKind::Tool,
@@ -203,7 +206,7 @@ impl ChipCutterApp {
 
                     // Right-aligned Theme & Display Units controls
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.spacing_mut().item_spacing.x = 5.0;
+                        ui.spacing_mut().item_spacing.x = 4.0;
                         let (theme_icon, theme_tip) = match self.theme {
                             AppTheme::Dark => (
                                 IconKind::Sun,
@@ -332,5 +335,187 @@ impl ChipCutterApp {
                     });
                 });
         }
+    }
+}
+
+/// Consolidated progress state rendered in the single small toolbar progress bar next to
+/// `[Generate]`, `[Simulate]`, and `[Post]`.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ToolbarJobProgress {
+    pub fraction: f32,
+    pub percent: u8,
+    pub tooltip: String,
+}
+
+/// Selects the active progress snapshot to display in the single toolbar progress bar.
+pub(crate) fn resolve_toolbar_job_progress(
+    gen_prog: Option<chip_project::GenerationProgressSnapshot>,
+    sim_prog: Option<chip_sim::SimProgressSnapshot>,
+) -> Option<ToolbarJobProgress> {
+    if let Some(prog) = sim_prog {
+        let pct = prog.percent_rounded();
+        Some(ToolbarJobProgress {
+            fraction: prog.fraction.clamp(0.0, 1.0),
+            percent: pct,
+            tooltip: format!("Simulation running: {pct}% ({})", prog.stage.label()),
+        })
+    } else if let Some(prog) = gen_prog {
+        let pct = prog.percent_rounded();
+        let tooltip = if prog.total > 0 {
+            format!(
+                "Generating toolpaths: {}/{} ({pct}%)",
+                prog.completed, prog.total
+            )
+        } else {
+            format!("Generating toolpaths: {pct}%")
+        };
+        Some(ToolbarJobProgress {
+            fraction: prog.fraction.clamp(0.0, 1.0),
+            percent: pct,
+            tooltip,
+        })
+    } else {
+        None
+    }
+}
+
+/// Renders a single compact progress bar next to `[Generate] [Simulate] [Post]` on the top bar.
+fn toolbar_progress_bar(
+    ui: &mut egui::Ui,
+    progress: Option<&ToolbarJobProgress>,
+) -> egui::Response {
+    let tok = ThemeTokens::from_ui(ui);
+    let size = egui::Vec2::new(56.0, 20.0);
+    let sense = if progress.is_some() {
+        egui::Sense::click()
+    } else {
+        egui::Sense::hover()
+    };
+    let (rect, resp) = ui.allocate_exact_size(size, sense);
+
+    if ui.is_rect_visible(rect) {
+        let painter = ui.painter();
+        let radius = egui::CornerRadius::same(4);
+        painter.rect(
+            rect,
+            radius,
+            tok.card_bg,
+            egui::Stroke::new(1.0, tok.border),
+            egui::StrokeKind::Inside,
+        );
+
+        if let Some(prog) = progress {
+            let frac = prog.fraction.clamp(0.0, 1.0);
+            let inner = rect.shrink(1.0);
+            let fill_w = (inner.width() * frac).clamp(0.0, inner.width());
+            let fill_rect =
+                egui::Rect::from_min_size(inner.min, egui::Vec2::new(fill_w, inner.height()));
+            if fill_w > 0.5 {
+                painter.rect_filled(fill_rect, egui::CornerRadius::same(3), tok.accent);
+            }
+
+            let label = format!("{}%", prog.percent);
+            let font = egui::FontId::proportional(11.5);
+            let unfilled_rect = egui::Rect::from_min_max(
+                egui::Pos2::new(fill_rect.right(), inner.top()),
+                inner.max,
+            );
+            if unfilled_rect.width() > 0.5 {
+                painter.with_clip_rect(unfilled_rect).text(
+                    rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    &label,
+                    font.clone(),
+                    tok.text_primary,
+                );
+            }
+            if fill_rect.width() > 0.5 {
+                painter.with_clip_rect(fill_rect).text(
+                    rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    &label,
+                    font,
+                    tok.accent_on_fg,
+                );
+            }
+        }
+    }
+
+    let tip = progress.map_or("Progress for Generate, Simulate, and Post", |p| {
+        p.tooltip.as_str()
+    });
+    resp.on_hover_text(tip)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use chip_project::GenerationProgressSnapshot;
+    use chip_sim::{SimProgressSnapshot, SimProgressStage};
+
+    use super::{resolve_toolbar_job_progress, toolbar_progress_bar};
+
+    #[test]
+    fn resolve_toolbar_job_progress_handles_idle_generation_and_simulation() {
+        assert!(resolve_toolbar_job_progress(None, None).is_none());
+
+        let gen_snap = GenerationProgressSnapshot {
+            completed: 2,
+            total: 4,
+            fraction: 0.5,
+        };
+        let gen_prog = resolve_toolbar_job_progress(Some(gen_snap), None).expect("gen progress");
+        assert_eq!(gen_prog.percent, 50);
+        assert!((gen_prog.fraction - 0.5).abs() < 1e-6);
+        assert!(gen_prog.tooltip.contains("2/4"));
+        assert!(gen_prog.tooltip.contains("50%"));
+
+        let sim_snap = SimProgressSnapshot {
+            fraction: 0.73,
+            percent: 73.0,
+            stage: SimProgressStage::Sweeping,
+        };
+        let sim_prog = resolve_toolbar_job_progress(None, Some(sim_snap)).expect("sim progress");
+        assert_eq!(sim_prog.percent, 73);
+        assert!((sim_prog.fraction - 0.73).abs() < 1e-6);
+        assert!(sim_prog.tooltip.contains("73%"));
+        assert!(
+            sim_prog
+                .tooltip
+                .contains(SimProgressStage::Sweeping.label())
+        );
+    }
+
+    #[test]
+    fn toolbar_progress_bar_renders_idle_and_active_states_without_panic() {
+        let ctx = egui::Context::default();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::Vec2::new(320.0, 100.0),
+            )),
+            ..Default::default()
+        };
+        let active = resolve_toolbar_job_progress(
+            None,
+            Some(SimProgressSnapshot {
+                fraction: 0.42,
+                percent: 42.0,
+                stage: SimProgressStage::Sweeping,
+            }),
+        );
+        let mut out = ctx.run_ui(input, |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let _ = toolbar_progress_bar(ui, None);
+                    let _ = toolbar_progress_bar(ui, active.as_ref());
+                });
+            });
+        });
+        out.textures_delta.clear();
+        assert!(
+            !out.shapes.is_empty(),
+            "expected toolbar progress bar to paint track, fill, and percentage text"
+        );
     }
 }
