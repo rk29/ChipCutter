@@ -28,7 +28,7 @@ impl ChipCutterApp {
             )
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 3.5;
+                    ui.spacing_mut().item_spacing.x = 3.0;
 
                     if icon_button(
                         ui,
@@ -141,7 +141,7 @@ impl ChipCutterApp {
                     {
                         self.create_new_vcarve_operation();
                     }
-                    ui.menu_button("+ Op ▾", |ui| {
+                    ui.menu_button("+ Op…", |ui| {
                         ui.label(
                             egui::RichText::new(format!("Add to {active_setup_name}"))
                                 .small()
@@ -283,7 +283,7 @@ impl ChipCutterApp {
                         if icon_button(
                             ui,
                             IconKind::Settings,
-                            Some("Settings"),
+                            None,
                             "Open Settings & Preferences (Ctrl+,)",
                         )
                         .clicked()
@@ -296,7 +296,7 @@ impl ChipCutterApp {
                         if icon_button(
                             ui,
                             IconKind::Search,
-                            Some("Ctrl+K"),
+                            None,
                             "Open Fuzzy Command Palette (Ctrl+K)",
                         )
                         .clicked()
