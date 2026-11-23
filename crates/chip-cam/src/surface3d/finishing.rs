@@ -215,6 +215,11 @@ pub fn simplify_3d_polyline_gouge_safe(
         SurfaceCutterShape::Flat { .. } => 0.0,
     };
     let is_curved_tip = r_tip > 1e-4;
+    let z_min_part = surface.aabb_wcs.min.z;
+    let has_overhang = surface
+        .triangles
+        .iter()
+        .any(|t| t.normal.z < -0.15 && t.aabb.max.z > z_min_part + 0.05);
     // Cap per-chord `|dz|` on shallow-to-moderate curved-tip slopes so unilateral positive
     // machining tolerance (`[0, +smooth_tol]`) strictly encloses the swept tip envelope with zero
     // target undercut while keeping flat spans and steep walls compact.
@@ -283,9 +288,13 @@ pub fn simplify_3d_polyline_gouge_safe(
         } else if max_dist_sq > tol_sq {
             Some(max_dist_idx)
         } else if is_curved_tip
-            && dz_abs > max_sloping_dz
             && xy_dist > 0.025
-            && (dz_abs / xy_dist) < 0.75
+            && if has_overhang {
+                (dz_abs / xy_dist) < 2.75
+                    && dz_abs * (xy_dist / xy_dist.hypot(dz_abs)) > max_sloping_dz
+            } else {
+                dz_abs > max_sloping_dz && (dz_abs / xy_dist) < 0.75
+            }
         {
             Some(start + (end - start) / 2)
         } else {
@@ -323,6 +332,7 @@ pub fn simplify_3d_polyline_gouge_safe(
             win[1],
             convex_dip_tol,
             is_curved_tip,
+            has_overhang,
             max_sloping_dz,
             0,
             &mut scratch,
@@ -355,6 +365,7 @@ fn verify_simplified_chord_recursive(
     b: DVec3,
     dip_tol: f64,
     is_curved_tip: bool,
+    has_overhang: bool,
     max_sloping_dz: f64,
     depth: u32,
     scratch: &mut Vec<usize>,
@@ -363,8 +374,13 @@ fn verify_simplified_chord_recursive(
     let xy_dist = (b.x - a.x).hypot(b.y - a.y);
     let dz_abs = (b.z - a.z).abs();
     if depth < 7 && xy_dist > 0.025 {
-        let need_slope_split =
-            is_curved_tip && dz_abs > max_sloping_dz && (dz_abs / xy_dist) < 0.75;
+        let need_slope_split = is_curved_tip
+            && if has_overhang {
+                (dz_abs / xy_dist) < 2.75
+                    && dz_abs * (xy_dist / xy_dist.hypot(dz_abs)) > max_sloping_dz
+            } else {
+                dz_abs > max_sloping_dz && (dz_abs / xy_dist) < 0.75
+            };
 
         let ts: &[f64] = if xy_dist > 0.25 {
             &[0.5, 0.25, 0.75]
@@ -415,6 +431,7 @@ fn verify_simplified_chord_recursive(
                 mid,
                 dip_tol,
                 is_curved_tip,
+                has_overhang,
                 max_sloping_dz,
                 depth + 1,
                 scratch,
@@ -428,6 +445,7 @@ fn verify_simplified_chord_recursive(
                 b,
                 dip_tol,
                 is_curved_tip,
+                has_overhang,
                 max_sloping_dz,
                 depth + 1,
                 scratch,
@@ -693,11 +711,23 @@ pub fn build_3d_rest_mask(
     let z_cur =
         drop_cutter_points_parallel(surface, current_cutter, &coords, z_floor, Some(containment));
 
-    let residual = compute_morphological_rest_residual(
+    let mut residual = compute_morphological_rest_residual(
         &z_ref,
         &z_cur,
         0.5 * ref_d_eff + prev_stock,
         current_cutter.max_radius_mm(),
+        res,
+        nx,
+        ny,
+    );
+    suppress_overhang_shadow_residuals(
+        surface,
+        current_cutter,
+        0.5 * ref_d_eff + prev_stock,
+        &z_cur,
+        &mut residual,
+        min_x,
+        min_y,
         res,
         nx,
         ny,
@@ -810,8 +840,11 @@ pub fn emit_surface_safe_link(
             return;
         }
 
-        // Try gouge-proof surface-hugging stay-down link for short adjacent stepovers
-        if dist_xy <= cfg.stay_down_limit_mm && dist_xy > 1e-4 {
+        // Try gouge-proof surface-hugging stay-down link for short adjacent stepovers,
+        // except when descending steeply off a split overhang cliff (always retract & plunge cleanly).
+        let steep_cliff_drop =
+            (from_wcs.z - to_wcs.z) > 1.5 && dist_xy < (from_wcs.z - to_wcs.z) * 0.5;
+        if !steep_cliff_drop && dist_xy <= cfg.stay_down_limit_mm && dist_xy > 1e-4 {
             let step = cfg.sample_step_mm.clamp(0.10, 0.25);
             let n = (dist_xy / step).ceil().max(3.0) as usize;
             let mut raw_link = Vec::with_capacity(n + 3);
@@ -962,4 +995,694 @@ fn refine_link_chord_recursive(
         }
     }
     out.push(b);
+}
+
+/// Suppresses spurious 3D rest / pencil residual cells caused by disconnected overhanging roofs
+/// above an open air void, while preserving 100% of genuine concave fillets, V-grooves,
+/// vertical-wall-to-floor corners, and sculpted relief valleys.
+///
+/// For any cell `(x, y)` with `residual > 0`, locates the highest reference-ball surface contact
+/// `c_ref` inside `r <= ref_radius_mm` and probes vertically beneath `c_ref`:
+/// - If solid material connects `z_cur` continuously up to `c_ref`, the residual is genuine and
+///   remains untouched.
+/// - If `c_ref` sits on an overhanging structure above an open air gap underneath a downward-facing
+///   surface (`normal.z < -0.15`), recomputes the maximum residual from non-overhanging connected
+///   surfaces below the overhang ceiling (zeroing pure overhang-shadow bands while preserving any
+///   genuine lower fillet nearby).
+#[allow(clippy::too_many_arguments)]
+pub fn suppress_overhang_shadow_residuals(
+    surface: &SurfaceMesh3D,
+    current_cutter: &SurfaceCutterProfile,
+    ref_radius_mm: f64,
+    z_cur: &[Option<f64>],
+    residual: &mut [f64],
+    min_x: f64,
+    min_y: f64,
+    cell_mm: f64,
+    nx: usize,
+    ny: usize,
+) {
+    if nx == 0 || ny == 0 || surface.triangles.is_empty() || residual.len() < nx * ny {
+        return;
+    }
+
+    // Fast path: if the mesh has no downward-facing triangles strictly above its lowest floor,
+    // no overhang shadow can exist anywhere on the part.
+    let z_min_part = surface.aabb_wcs.min.z;
+    let has_any_overhang = surface
+        .triangles
+        .iter()
+        .any(|t| t.normal.z < -0.15 && t.aabb.max.z > z_min_part + 0.05);
+    if !has_any_overhang {
+        return;
+    }
+
+    let ref_r = ref_radius_mm.max(current_cutter.max_radius_mm());
+    let ref_d = (2.0 * ref_r).max(0.1);
+    let ref_ball_geom = chip_tools::CutterGeometry::BallEndmill {
+        diameter_mm: ref_d,
+        flute_length_mm: current_cutter.flute_length_mm.max(ref_d * 2.0),
+        overall_length_mm: current_cutter.flute_length_mm.max(ref_d * 2.0) + 20.0,
+        shank_diameter_mm: ref_d,
+        flutes: 2,
+    };
+    let ref_cutter = SurfaceCutterProfile::from_tool_geometry(
+        &ref_ball_geom,
+        0.0,
+        current_cutter.stock_axial_mm,
+    );
+
+    residual
+        .par_chunks_mut(nx)
+        .enumerate()
+        .for_each(|(iy, row)| {
+            if iy >= ny {
+                return;
+            }
+            let y = min_y + iy as f64 * cell_mm;
+            let mut cand_buf = Vec::with_capacity(64);
+            let mut ray_buf = Vec::with_capacity(32);
+
+            for (ix, res_val) in row.iter_mut().enumerate() {
+                if *res_val <= 1e-4 {
+                    continue;
+                }
+                let Some(zc) = z_cur[iy * nx + ix] else {
+                    continue;
+                };
+                let x = min_x + ix as f64 * cell_mm;
+                let p_xy = DVec2::new(x, y);
+                let z_surf_cur = zc - current_cutter.stock_axial_mm;
+
+                let Some((_best_z, best_pt, best_tri)) =
+                    drop_cutter_highest_contact(surface, &ref_cutter, p_xy, &mut cand_buf)
+                else {
+                    continue;
+                };
+
+                let Some(z_overhang_bot) = overhang_ceiling_above_air_gap(
+                    surface,
+                    best_pt,
+                    best_tri,
+                    p_xy,
+                    z_surf_cur,
+                    &mut ray_buf,
+                ) else {
+                    continue;
+                };
+
+                // Highest `z_ref` contact rests on an overhanging roof above an open air gap.
+                // Check whether any connected (non-overhanging) triangle below the overhang
+                // ceiling still leaves a genuine concave residual at `(x, y)`.
+                let mut best_connected_z = f64::NEG_INFINITY;
+                for &ti in &cand_buf {
+                    let tri = &surface.triangles[ti];
+                    if tri.aabb.min.z >= z_overhang_bot - 0.05 {
+                        continue;
+                    }
+                    let [i0, i1, i2] = tri.indices;
+                    let v0 = surface.vertices_wcs[i0 as usize];
+                    let v1 = surface.vertices_wcs[i1 as usize];
+                    let v2 = surface.vertices_wcs[i2 as usize];
+                    if let Some((z_tri, c_pt)) =
+                        drop_profile_triangle_with_contact(&ref_cutter, p_xy, v0, v1, v2)
+                        && z_tri > best_connected_z
+                        && overhang_ceiling_above_air_gap(
+                            surface,
+                            c_pt,
+                            ti,
+                            p_xy,
+                            z_surf_cur,
+                            &mut ray_buf,
+                        )
+                        .is_none()
+                    {
+                        best_connected_z = z_tri;
+                    }
+                }
+
+                let max_connected_res = if best_connected_z.is_finite() {
+                    (best_connected_z + ref_cutter.stock_axial_mm - zc).max(0.0)
+                } else {
+                    0.0
+                };
+                *res_val = (*res_val).min(max_connected_res);
+            }
+        });
+}
+
+/// Returns `true` when the transition between two nearby 3D cutter-tip points `a` and `b`
+/// crosses a vertical overhang-shadow air gap (upper point resting on a disconnected overhanging
+/// roof above a downward-facing underside `normal.z < -0.15`, lower point on the lower floor/hub),
+/// rather than a continuous steep wall.
+pub fn is_overhang_shadow_transition(
+    surface: &SurfaceMesh3D,
+    cutter: &SurfaceCutterProfile,
+    a: DVec3,
+    b: DVec3,
+    cand_buf: &mut Vec<usize>,
+    ray_buf: &mut Vec<usize>,
+) -> bool {
+    let (hi, lo) = if a.z >= b.z { (a, b) } else { (b, a) };
+    if hi.z - lo.z <= 0.15 {
+        return false;
+    }
+    let hi_xy = DVec2::new(hi.x, hi.y);
+    let lo_xy = DVec2::new(lo.x, lo.y);
+    let z_surf_lo = lo.z - cutter.stock_axial_mm;
+
+    let Some((_z_hit, contact_pt, tri_idx)) =
+        drop_cutter_highest_contact(surface, cutter, hi_xy, cand_buf)
+    else {
+        return false;
+    };
+
+    overhang_ceiling_above_air_gap(surface, contact_pt, tri_idx, lo_xy, z_surf_lo, ray_buf)
+        .is_some()
+}
+
+/// Splits a 3D finishing cutting chain at steep downward overhang-shadow drop-offs so the cutter
+/// retracts/approaches cleanly and plunges at `plunge_feed` via [`emit_surface_safe_link`] instead
+/// of diving nearly vertically at full `cut_feed`, while keeping continuous steep walls intact.
+pub fn split_chains_at_overhang_cliffs(
+    surface: &SurfaceMesh3D,
+    cutter: &SurfaceCutterProfile,
+    chain: Vec<DVec3>,
+) -> Vec<Vec<DVec3>> {
+    if chain.len() < 2 {
+        return Vec::new();
+    }
+
+    let z_min_part = surface.aabb_wcs.min.z;
+    let has_any_overhang = surface
+        .triangles
+        .iter()
+        .any(|t| t.normal.z < -0.15 && t.aabb.max.z > z_min_part + 0.05);
+    if !has_any_overhang {
+        return vec![chain];
+    }
+
+    let tool_d = 2.0 * cutter.max_radius_mm();
+    let max_drop_mm = (0.5 * tool_d).max(1.5);
+    // tan(70°) ≈ 2.747477419454622
+    const TAN_70_DEG: f64 = 2.747_477_419_454_622;
+
+    let mut cand_buf = Vec::with_capacity(64);
+    let mut ray_buf = Vec::with_capacity(32);
+    let mut out: Vec<Vec<DVec3>> = Vec::new();
+    let mut cur: Vec<DVec3> = Vec::with_capacity(chain.len());
+    cur.push(chain[0]);
+
+    for &b in &chain[1..] {
+        let a = *cur.last().unwrap_or(&b);
+        let dz_drop = a.z - b.z;
+        let dz_rise = b.z - a.z;
+        let dxy = (b.x - a.x).hypot(b.y - a.y);
+        let is_steep_drop = dz_drop > max_drop_mm && dz_drop > TAN_70_DEG * dxy;
+        if is_steep_drop
+            && is_overhang_shadow_transition(surface, cutter, a, b, &mut cand_buf, &mut ray_buf)
+        {
+            if cur.len() >= 2 {
+                out.push(std::mem::take(&mut cur));
+            } else {
+                cur.clear();
+            }
+            cur.push(b);
+        } else if dz_drop > 0.05 && dz_drop > TAN_70_DEG * dxy && dxy > 1e-4 {
+            // Non-overhanging steep wall descent: step clear horizontally at high Z before descending
+            cur.push(DVec3::new(b.x, b.y, a.z));
+            cur.push(b);
+        } else if dz_rise > 0.05 && dz_rise > TAN_70_DEG * dxy && dxy > 1e-4 {
+            // Steep vertical wall / overhang climb: rise straight up in clear air before stepping onto crest
+            cur.push(DVec3::new(a.x, a.y, b.z));
+            cur.push(b);
+        } else {
+            cur.push(b);
+        }
+    }
+
+    if cur.len() >= 2 {
+        out.push(cur);
+    }
+    out
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum ColumnGapCheck {
+    OverhangGap(f64),
+    SolidConnected,
+    MissedUpper,
+}
+
+fn overhang_ceiling_above_air_gap(
+    surface: &SurfaceMesh3D,
+    contact_pt: DVec3,
+    tri_idx: usize,
+    ref_xy: DVec2,
+    z_surf_lo: f64,
+    ray_buf: &mut Vec<usize>,
+) -> Option<f64> {
+    if contact_pt.z <= z_surf_lo + 0.08 {
+        return None;
+    }
+    let tri = &surface.triangles[tri_idx];
+    let [i0, i1, i2] = tri.indices;
+    let v0 = surface.vertices_wcs[i0 as usize];
+    let v1 = surface.vertices_wcs[i1 as usize];
+    let v2 = surface.vertices_wcs[i2 as usize];
+
+    let c_xy = DVec2::new(contact_pt.x, contact_pt.y);
+    let centroid_xy = DVec2::new((v0.x + v1.x + v2.x) / 3.0, (v0.y + v1.y + v2.y) / 3.0);
+    let dir_in = (c_xy - ref_xy).normalize_or_zero();
+    let has_dir = dir_in.length_squared() > 0.5;
+    let perp = DVec2::new(-dir_in.y, dir_in.x);
+
+    let mut probes = [DVec2::ZERO; 7];
+    let mut n_probes = 0usize;
+    if has_dir {
+        probes[n_probes] = c_xy + dir_in * 0.08;
+        n_probes += 1;
+        probes[n_probes] = c_xy + dir_in * 0.02;
+        n_probes += 1;
+        // Grazing-corner fallback: step slightly to either lateral side of `dir_in` so rays
+        // aligned directly with a roof corner edge still enter the overhanging solid cleanly.
+        probes[n_probes] = c_xy + dir_in * 0.08 + perp * 0.06;
+        n_probes += 1;
+        probes[n_probes] = c_xy + dir_in * 0.08 - perp * 0.06;
+        n_probes += 1;
+    } else {
+        probes[n_probes] = c_xy;
+        n_probes += 1;
+    }
+    if tri.normal.z.abs() > 0.1 {
+        probes[n_probes] = c_xy.lerp(centroid_xy, 0.25);
+        n_probes += 1;
+    }
+    if has_dir {
+        probes[n_probes] = c_xy + dir_in * 0.25;
+        n_probes += 1;
+    }
+
+    for &q_xy in &probes[..n_probes] {
+        match column_overhang_bottom_above_gap(
+            surface,
+            q_xy,
+            z_surf_lo,
+            contact_pt.z,
+            tri.aabb.max.z,
+            ray_buf,
+        ) {
+            ColumnGapCheck::OverhangGap(z_bot) => return Some(z_bot),
+            ColumnGapCheck::SolidConnected => return None,
+            ColumnGapCheck::MissedUpper => {}
+        }
+    }
+    None
+}
+
+fn column_overhang_bottom_above_gap(
+    surface: &SurfaceMesh3D,
+    q_xy: DVec2,
+    z_surf_lo: f64,
+    z_contact: f64,
+    z_tri_max: f64,
+    ray_buf: &mut Vec<usize>,
+) -> ColumnGapCheck {
+    // Tiny deterministic XY perturbation prevents vertical rays from slipping through shared edges
+    let q = DVec2::new(q_xy.x + 1.13e-7, q_xy.y + 2.37e-7);
+    surface.bvh.query_xy_circle_into(q.x, q.y, 1e-5, ray_buf);
+    if ray_buf.is_empty() {
+        return ColumnGapCheck::MissedUpper;
+    }
+
+    let mut hits: Vec<(f64, f64)> = Vec::with_capacity(ray_buf.len().min(16));
+    for &ti in ray_buf.iter() {
+        let tri = &surface.triangles[ti];
+        let nz = tri.normal.z;
+        if nz.abs() <= 1e-5 {
+            continue;
+        }
+        let [i0, i1, i2] = tri.indices;
+        let v0 = surface.vertices_wcs[i0 as usize];
+        let v1 = surface.vertices_wcs[i1 as usize];
+        let v2 = surface.vertices_wcs[i2 as usize];
+        let v0_2 = DVec2::new(v0.x, v0.y);
+        let v1_2 = DVec2::new(v1.x, v1.y);
+        let v2_2 = DVec2::new(v2.x, v2.y);
+        if !point_in_triangle_2d_finishing(q, v0_2, v1_2, v2_2) {
+            continue;
+        }
+        let n = tri.normal;
+        let z_hit = v0.z - (n.x * (q.x - v0.x) + n.y * (q.y - v0.y)) / nz;
+        if z_hit.is_finite() {
+            hits.push((z_hit, nz));
+        }
+    }
+    if hits.is_empty() {
+        return ColumnGapCheck::MissedUpper;
+    }
+
+    // Sort ascending by Z; break near-coplanar ties with upward faces (`nz > 0`) first so flush
+    // stacked-box internal seams (`+Z` coplanar with `-Z`) never register as an air gap.
+    hits.sort_by(|a, b| {
+        if (a.0 - b.0).abs() <= 1e-4 {
+            b.1.total_cmp(&a.1)
+        } else {
+            a.0.total_cmp(&b.0)
+        }
+    });
+
+    let z_upper_limit = z_contact.max(z_tri_max) + 0.15;
+    let mut highest_below = z_surf_lo;
+    let mut saw_upper_solid = false;
+
+    for &(z_hit, nz) in &hits {
+        if z_hit <= z_surf_lo + 0.05 {
+            continue;
+        }
+        if z_hit > z_upper_limit {
+            break;
+        }
+        if nz < -0.15 {
+            // Confirm no coplanar upward-facing seam sits within 0.05 mm of this downward face
+            let has_coplanar_up = hits
+                .iter()
+                .any(|&(zh, nzh)| nzh > 0.05 && (zh - z_hit).abs() <= 0.05);
+            if !has_coplanar_up && z_hit - highest_below > 0.05 {
+                return ColumnGapCheck::OverhangGap(z_hit);
+            }
+        } else if nz > 0.05 {
+            if z_hit >= z_contact - 0.15 {
+                saw_upper_solid = true;
+                break;
+            }
+            highest_below = highest_below.max(z_hit);
+        }
+    }
+
+    if saw_upper_solid {
+        ColumnGapCheck::SolidConnected
+    } else {
+        ColumnGapCheck::MissedUpper
+    }
+}
+
+/// Evaluates the highest analytical Drop-Cutter contact `(z_tip_raw, contact_pt_3d, tri_idx)`
+/// at horizontal cutter axis `(c_xy.x, c_xy.y)`.
+fn drop_cutter_highest_contact(
+    surface: &SurfaceMesh3D,
+    cutter: &SurfaceCutterProfile,
+    c_xy: DVec2,
+    cand_buf: &mut Vec<usize>,
+) -> Option<(f64, DVec3, usize)> {
+    let r_max = cutter.max_radius_mm();
+    surface
+        .bvh
+        .query_xy_circle_into(c_xy.x, c_xy.y, r_max + 1e-6, cand_buf);
+    if cand_buf.is_empty() {
+        return None;
+    }
+
+    let mut best: Option<(f64, DVec3, usize)> = None;
+    for &ti in cand_buf.iter() {
+        let tri = &surface.triangles[ti];
+        if let Some((best_z, _, _)) = best
+            && tri.aabb.max.z <= best_z
+        {
+            continue;
+        }
+        let [i0, i1, i2] = tri.indices;
+        let v0 = surface.vertices_wcs[i0 as usize];
+        let v1 = surface.vertices_wcs[i1 as usize];
+        let v2 = surface.vertices_wcs[i2 as usize];
+        if let Some((z_tri, c_pt)) = drop_profile_triangle_with_contact(cutter, c_xy, v0, v1, v2)
+            && z_tri.is_finite()
+            && best.is_none_or(|(bz, _, _)| z_tri > bz)
+        {
+            best = Some((z_tri, c_pt, ti));
+        }
+    }
+    best
+}
+
+fn drop_profile_triangle_with_contact(
+    cutter: &SurfaceCutterProfile,
+    c_xy: DVec2,
+    v0: DVec3,
+    v1: DVec3,
+    v2: DVec3,
+) -> Option<(f64, DVec3)> {
+    let r_max = cutter.max_radius_mm();
+    let mut best: Option<(f64, DVec3)> = None;
+    let mut consider = |z: f64, pt: DVec3| {
+        if z.is_finite() && best.is_none_or(|(bz, _)| z > bz) {
+            best = Some((z, pt));
+        }
+    };
+
+    for v in [v0, v1, v2] {
+        let d = (DVec2::new(v.x, v.y) - c_xy).length();
+        if let Some(h) = cutter.profile_height_at_radius(d) {
+            consider(v.z - h, v);
+        }
+    }
+
+    for (a, b) in [(v0, v1), (v1, v2), (v2, v0)] {
+        if let Some((z_e, pt_e)) = drop_profile_edge_with_contact(cutter, c_xy, a, b, r_max) {
+            consider(z_e, pt_e);
+        }
+    }
+
+    let raw_n = (v1 - v0).cross(v2 - v0);
+    let n_len = raw_n.length();
+    if n_len > 1e-12 {
+        let mut n = raw_n / n_len;
+        if n.z < 0.0 {
+            n = -n;
+        }
+        if n.z > 1e-9 {
+            let plane_z =
+                |p: DVec2| -> f64 { v0.z - (n.x * (p.x - v0.x) + n.y * (p.y - v0.y)) / n.z };
+            let v0_2 = DVec2::new(v0.x, v0.y);
+            let v1_2 = DVec2::new(v1.x, v1.y);
+            let v2_2 = DVec2::new(v2.x, v2.y);
+
+            if point_in_triangle_2d_finishing(c_xy, v0_2, v1_2, v2_2) {
+                let zp = plane_z(c_xy);
+                consider(zp, DVec3::new(c_xy.x, c_xy.y, zp));
+            }
+
+            let n_xy_len = n.x.hypot(n.y);
+            if n_xy_len > 1e-11 {
+                let u = DVec2::new(-n.x / n_xy_len, -n.y / n_xy_len);
+                let slope = n_xy_len / n.z;
+                match cutter.shape {
+                    SurfaceCutterShape::Flat { radius_mm } => {
+                        let p = c_xy + u * radius_mm;
+                        if point_in_triangle_2d_finishing(p, v0_2, v1_2, v2_2) {
+                            let zp = plane_z(p);
+                            consider(zp, DVec3::new(p.x, p.y, zp));
+                        }
+                    }
+                    SurfaceCutterShape::Ball { radius_mm } => {
+                        let d_star = radius_mm * n_xy_len;
+                        let p = c_xy + u * d_star;
+                        if point_in_triangle_2d_finishing(p, v0_2, v1_2, v2_2)
+                            && let Some(h) = cutter.profile_height_at_radius(d_star)
+                        {
+                            let zp = plane_z(p);
+                            consider(zp - h, DVec3::new(p.x, p.y, zp));
+                        }
+                    }
+                    SurfaceCutterShape::BullNose {
+                        flat_radius_mm,
+                        corner_radius_mm,
+                    } => {
+                        let d_star = flat_radius_mm + corner_radius_mm * n_xy_len;
+                        let p = c_xy + u * d_star;
+                        if point_in_triangle_2d_finishing(p, v0_2, v1_2, v2_2)
+                            && let Some(h) = cutter.profile_height_at_radius(d_star)
+                        {
+                            let zp = plane_z(p);
+                            consider(zp - h, DVec3::new(p.x, p.y, zp));
+                        }
+                    }
+                    SurfaceCutterShape::TaperedVBit {
+                        tip_radius_mm,
+                        upper_radius_mm,
+                        half_angle_rad,
+                    } => {
+                        let cone_slope = 1.0 / half_angle_rad.tan().max(1e-9);
+                        let candidates: [f64; 2] = if slope < cone_slope {
+                            [tip_radius_mm, tip_radius_mm]
+                        } else if slope > cone_slope {
+                            [upper_radius_mm, upper_radius_mm]
+                        } else {
+                            [tip_radius_mm, upper_radius_mm]
+                        };
+                        for d_c in candidates {
+                            let p = c_xy + u * d_c;
+                            if point_in_triangle_2d_finishing(p, v0_2, v1_2, v2_2)
+                                && let Some(h) = cutter.profile_height_at_radius(d_c)
+                            {
+                                let zp = plane_z(p);
+                                consider(zp - h, DVec3::new(p.x, p.y, zp));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    best
+}
+
+fn drop_profile_edge_with_contact(
+    cutter: &SurfaceCutterProfile,
+    c_xy: DVec2,
+    a: DVec3,
+    b: DVec3,
+    r_max: f64,
+) -> Option<(f64, DVec3)> {
+    let a2 = DVec2::new(a.x, a.y) - c_xy;
+    let d2 = DVec2::new(b.x - a.x, b.y - a.y);
+    let dz = b.z - a.z;
+    let len2_sq = d2.length_squared();
+    if len2_sq <= 1e-18 {
+        let dist = a2.length();
+        let top = if a.z >= b.z { a } else { b };
+        return cutter
+            .profile_height_at_radius(dist)
+            .map(|h| (top.z - h, top));
+    }
+
+    let (t_lo, t_hi) = segment_disk_interval_finishing(a2, d2, len2_sq, r_max)?;
+    let eval = |t: f64| -> Option<(f64, DVec3)> {
+        let dist = (a2 + d2 * t).length();
+        let h = cutter.profile_height_at_radius(dist)?;
+        let pt = a + (b - a) * t;
+        Some((pt.z - h, pt))
+    };
+
+    let mut best: Option<(f64, DVec3)> = None;
+    let mut consider_t = |t: f64| {
+        let tc = t.clamp(t_lo, t_hi);
+        if let Some((z, pt)) = eval(tc)
+            && best.is_none_or(|(bz, _)| z > bz)
+        {
+            best = Some((z, pt));
+        }
+    };
+
+    consider_t(t_lo);
+    consider_t(t_hi);
+
+    let len2 = len2_sq.sqrt();
+    let dir = d2 / len2;
+    let s0 = a2.dot(dir);
+    let u_perp = a2.x * dir.y - a2.y * dir.x;
+    let m = dz / len2;
+
+    match cutter.shape {
+        SurfaceCutterShape::Flat { .. } => {}
+        SurfaceCutterShape::Ball { radius_mm } => {
+            let r_eff_sq = (radius_mm * radius_mm - u_perp * u_perp).max(0.0);
+            if r_eff_sq > 0.0 {
+                let s_star = (m / (1.0 + m * m).sqrt()) * r_eff_sq.sqrt();
+                consider_t((s_star - s0) / len2);
+            }
+        }
+        SurfaceCutterShape::TaperedVBit {
+            tip_radius_mm,
+            half_angle_rad,
+            ..
+        } => {
+            if let Some((f_lo, f_hi)) =
+                segment_disk_interval_finishing(a2, d2, len2_sq, tip_radius_mm)
+            {
+                consider_t(f_lo);
+                consider_t(f_hi);
+            }
+            let k = m * half_angle_rad.tan();
+            if k.abs() < 1.0 - 1e-12 {
+                let s_star = u_perp.abs() * k / (1.0 - k * k).sqrt();
+                consider_t((s_star - s0) / len2);
+            }
+        }
+        SurfaceCutterShape::BullNose { flat_radius_mm, .. } => {
+            if let Some((f_lo, f_hi)) =
+                segment_disk_interval_finishing(a2, d2, len2_sq, flat_radius_mm)
+            {
+                consider_t(f_lo);
+                consider_t(f_hi);
+            }
+            const INV_PHI: f64 = 0.618_033_988_749_894_9;
+            let mut lo = t_lo;
+            let mut hi = t_hi;
+            let mut c = hi - INV_PHI * (hi - lo);
+            let mut d = lo + INV_PHI * (hi - lo);
+            let mut fc = eval(c).map_or(f64::NEG_INFINITY, |(z, _)| z);
+            let mut fd = eval(d).map_or(f64::NEG_INFINITY, |(z, _)| z);
+            for _ in 0..32 {
+                if hi - lo <= 1e-9 {
+                    break;
+                }
+                if fc < fd {
+                    lo = c;
+                    c = d;
+                    fc = fd;
+                    d = lo + INV_PHI * (hi - lo);
+                    fd = eval(d).map_or(f64::NEG_INFINITY, |(z, _)| z);
+                } else {
+                    hi = d;
+                    d = c;
+                    fd = fc;
+                    c = hi - INV_PHI * (hi - lo);
+                    fc = eval(c).map_or(f64::NEG_INFINITY, |(z, _)| z);
+                }
+            }
+            consider_t(0.5 * (lo + hi));
+        }
+    }
+
+    best
+}
+
+#[inline]
+fn segment_disk_interval_finishing(
+    a2: DVec2,
+    d2: DVec2,
+    len2_sq: f64,
+    radius: f64,
+) -> Option<(f64, f64)> {
+    let b = a2.dot(d2);
+    let c = a2.length_squared() - radius * radius;
+    let disc = b * b - len2_sq * c;
+    if disc < -1e-14 {
+        return None;
+    }
+    let sqrt_d = disc.max(0.0).sqrt();
+    let t0 = (-b - sqrt_d) / len2_sq;
+    let t1 = (-b + sqrt_d) / len2_sq;
+    let lo = t0.max(0.0);
+    let hi = t1.min(1.0);
+    if lo <= hi + 1e-12 {
+        Some((lo.clamp(0.0, 1.0), hi.clamp(0.0, 1.0)))
+    } else {
+        None
+    }
+}
+
+#[inline]
+fn point_in_triangle_2d_finishing(p: DVec2, a: DVec2, b: DVec2, c: DVec2) -> bool {
+    let area2 = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+    if area2.abs() <= 1e-14 {
+        return false;
+    }
+    let inv = 1.0 / area2;
+    let w0 = ((b.x - p.x) * (c.y - p.y) - (b.y - p.y) * (c.x - p.x)) * inv;
+    let w1 = ((c.x - p.x) * (a.y - p.y) - (c.y - p.y) * (a.x - p.x)) * inv;
+    let w2 = 1.0 - w0 - w1;
+    w0 >= -1e-10 && w1 >= -1e-10 && w2 >= -1e-10
 }

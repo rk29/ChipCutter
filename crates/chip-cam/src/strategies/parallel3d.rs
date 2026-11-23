@@ -17,7 +17,7 @@ use crate::{
     surface3d::{
         RestMaskGrid2D, SurfaceCutterProfile, SurfaceLinkConfig, SurfaceMesh3D, build_3d_rest_mask,
         drop_cutter_z_with_scratch, emit_final_surface_retract, emit_surface_safe_link,
-        finishing::simplify_3d_polyline_gouge_safe,
+        finishing::{simplify_3d_polyline_gouge_safe, split_chains_at_overhang_cliffs},
         levels::{resolve_3d_containment_region, sample_surface_slope_deg},
         refine_convex_chords_3d, region_aabb_2d, stepover_for_cusp_height,
     },
@@ -43,8 +43,7 @@ pub fn generate_parallel3d(
 
     let radial_stock = ctx.passes.stock_to_leave_radial.value_mm.max(0.0);
     let axial_stock = ctx.passes.stock_to_leave_axial.value_mm.max(0.0);
-    let cutter =
-        SurfaceCutterProfile::from_tool_geometry(&ctx.tool.geometry, radial_stock, axial_stock);
+    let cutter = SurfaceCutterProfile::from_tool(ctx.tool, radial_stock, axial_stock, 0.5);
     let tool_d = ctx.tool.geometry.cutting_diameter_mm().max(0.1);
     let tool_r = 0.5 * tool_d;
 
@@ -220,22 +219,21 @@ pub fn generate_parallel3d(
             }
 
             for chain in chains {
-                if chain.len() < 2 {
-                    continue;
+                for sub_chain in split_chains_at_overhang_cliffs(&surface, &cutter, chain) {
+                    emit_surface_safe_link(
+                        &surface,
+                        &cutter,
+                        sub_chain[0],
+                        &link_cfg,
+                        &mut bvh_scratch,
+                        builder,
+                    );
+                    for &pt in &sub_chain[1..] {
+                        builder.linear_to(pt, cut_feed, MotionRole::FinishCut);
+                    }
+                    builder.pass_count += 1;
+                    emitted_passes += 1;
                 }
-                emit_surface_safe_link(
-                    &surface,
-                    &cutter,
-                    chain[0],
-                    &link_cfg,
-                    &mut bvh_scratch,
-                    builder,
-                );
-                for &pt in &chain[1..] {
-                    builder.linear_to(pt, cut_feed, MotionRole::FinishCut);
-                }
-                builder.pass_count += 1;
-                emitted_passes += 1;
             }
         }
     }

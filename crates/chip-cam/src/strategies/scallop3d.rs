@@ -22,7 +22,10 @@ use crate::{
     surface3d::{
         RestMaskGrid2D, SurfaceCutterProfile, SurfaceLinkConfig, SurfaceMesh3D, build_3d_rest_mask,
         drop_cutter_z_with_scratch, emit_final_surface_retract, emit_surface_safe_link,
-        finishing::simplify_3d_polyline_gouge_safe,
+        finishing::{
+            is_overhang_shadow_transition, simplify_3d_polyline_gouge_safe,
+            split_chains_at_overhang_cliffs,
+        },
         levels::{resolve_3d_containment_region, sample_surface_slope_deg},
         refine_convex_chords_3d, region_aabb_2d, stepover_for_cusp_height,
     },
@@ -79,8 +82,7 @@ pub fn generate_scallop3d(
 
     let radial_stock = ctx.passes.stock_to_leave_radial.value_mm.max(0.0);
     let axial_stock = ctx.passes.stock_to_leave_axial.value_mm.max(0.0);
-    let cutter =
-        SurfaceCutterProfile::from_tool_geometry(&ctx.tool.geometry, radial_stock, axial_stock);
+    let cutter = SurfaceCutterProfile::from_tool(ctx.tool, radial_stock, axial_stock, 0.5);
     let tool_d = ctx.tool.geometry.cutting_diameter_mm().max(0.1);
     let tool_r = 0.5 * tool_d;
 
@@ -182,18 +184,51 @@ pub fn generate_scallop3d(
 
     // 2. Compute local surface arc-length weight `w(x, y) = sec(θ) = sqrt(1 + (dz/dx)^2 + (dz/dy)^2)`
     //    clamped to `[1.0, 4.0]` so steep walls receive proportionally tighter XY stepovers without
-    //    stacking degenerate infinite passes on 90° cliffs.
+    //    stacking degenerate infinite passes on 90° cliffs or artificial overhang-shadow drop-offs.
+    let disc_thresh = (2.0 * cell).max(0.4 * tool_r);
+    let mut cand_scratch = Vec::with_capacity(64);
+    let mut ray_scratch = Vec::with_capacity(32);
     let mut weight = vec![1.0_f64; total];
     for iy in 0..ny {
+        let y = min_y + iy as f64 * cell;
         for ix in 0..nx {
             let idx = iy * nx + ix;
             if !inside[idx] {
                 continue;
             }
+            let x = min_x + ix as f64 * cell;
             let zc = z_grid[idx];
+            let p_c = DVec3::new(x, y, zc);
+
             let dz_dx = {
-                let has_l = ix > 0 && inside[idx - 1];
-                let has_r = ix + 1 < nx && inside[idx + 1];
+                let mut has_l = ix > 0 && inside[idx - 1];
+                if has_l
+                    && (z_grid[idx - 1] - zc).abs() > disc_thresh
+                    && is_overhang_shadow_transition(
+                        &surface,
+                        &cutter,
+                        p_c,
+                        DVec3::new(x - cell, y, z_grid[idx - 1]),
+                        &mut cand_scratch,
+                        &mut ray_scratch,
+                    )
+                {
+                    has_l = false;
+                }
+                let mut has_r = ix + 1 < nx && inside[idx + 1];
+                if has_r
+                    && (z_grid[idx + 1] - zc).abs() > disc_thresh
+                    && is_overhang_shadow_transition(
+                        &surface,
+                        &cutter,
+                        p_c,
+                        DVec3::new(x + cell, y, z_grid[idx + 1]),
+                        &mut cand_scratch,
+                        &mut ray_scratch,
+                    )
+                {
+                    has_r = false;
+                }
                 match (has_l, has_r) {
                     (true, true) => (z_grid[idx + 1] - z_grid[idx - 1]) / (2.0 * cell),
                     (true, false) => (zc - z_grid[idx - 1]) / cell,
@@ -202,8 +237,34 @@ pub fn generate_scallop3d(
                 }
             };
             let dz_dy = {
-                let has_d = iy > 0 && inside[idx - nx];
-                let has_u = iy + 1 < ny && inside[idx + nx];
+                let mut has_d = iy > 0 && inside[idx - nx];
+                if has_d
+                    && (z_grid[idx - nx] - zc).abs() > disc_thresh
+                    && is_overhang_shadow_transition(
+                        &surface,
+                        &cutter,
+                        p_c,
+                        DVec3::new(x, y - cell, z_grid[idx - nx]),
+                        &mut cand_scratch,
+                        &mut ray_scratch,
+                    )
+                {
+                    has_d = false;
+                }
+                let mut has_u = iy + 1 < ny && inside[idx + nx];
+                if has_u
+                    && (z_grid[idx + nx] - zc).abs() > disc_thresh
+                    && is_overhang_shadow_transition(
+                        &surface,
+                        &cutter,
+                        p_c,
+                        DVec3::new(x, y + cell, z_grid[idx + nx]),
+                        &mut cand_scratch,
+                        &mut ray_scratch,
+                    )
+                {
+                    has_u = false;
+                }
                 match (has_d, has_u) {
                     (true, true) => (z_grid[idx + nx] - z_grid[idx - nx]) / (2.0 * cell),
                     (true, false) => (zc - z_grid[idx - nx]) / cell,
@@ -394,19 +455,21 @@ pub fn generate_scallop3d(
                 }
             }
 
-            emit_surface_safe_link(
-                &surface,
-                &cutter,
-                chain[0],
-                &link_cfg,
-                &mut bvh_scratch,
-                builder,
-            );
-            for &pt in &chain[1..] {
-                builder.linear_to(pt, cut_feed, MotionRole::FinishCut);
+            for sub_chain in split_chains_at_overhang_cliffs(&surface, &cutter, chain) {
+                emit_surface_safe_link(
+                    &surface,
+                    &cutter,
+                    sub_chain[0],
+                    &link_cfg,
+                    &mut bvh_scratch,
+                    builder,
+                );
+                for &pt in &sub_chain[1..] {
+                    builder.linear_to(pt, cut_feed, MotionRole::FinishCut);
+                }
+                builder.pass_count += 1;
+                emitted_passes += 1;
             }
-            builder.pass_count += 1;
-            emitted_passes += 1;
         }
     }
 

@@ -19,7 +19,8 @@ use crate::{
         SurfaceCutterProfile, SurfaceLinkConfig, SurfaceMesh3D,
         compute_morphological_rest_residual, drop_cutter_points_parallel,
         drop_cutter_z_with_scratch, emit_final_surface_retract, emit_surface_safe_link,
-        finishing::simplify_3d_polyline_gouge_safe, levels::resolve_3d_containment_region,
+        finishing::{simplify_3d_polyline_gouge_safe, suppress_overhang_shadow_residuals},
+        levels::resolve_3d_containment_region,
         refine_convex_chords_3d, region_aabb_2d,
     },
     toolpath::ToolpathBuilder,
@@ -74,8 +75,7 @@ pub fn generate_pencil3d(
 
     let radial_stock = ctx.passes.stock_to_leave_radial.value_mm.max(0.0);
     let axial_stock = ctx.passes.stock_to_leave_axial.value_mm.max(0.0);
-    let cutter =
-        SurfaceCutterProfile::from_tool_geometry(&ctx.tool.geometry, radial_stock, axial_stock);
+    let cutter = SurfaceCutterProfile::from_tool(ctx.tool, radial_stock, axial_stock, 0.5);
     let tool_d = ctx.tool.geometry.cutting_diameter_mm().max(0.1);
     let tool_r = 0.5 * tool_d;
 
@@ -153,11 +153,23 @@ pub fn generate_pencil3d(
         drop_cutter_points_parallel(&surface, &cutter, &coords, z_bottom, Some(&containment));
     ctx.check_cancel()?;
 
-    let residual = compute_morphological_rest_residual(
+    let mut residual = compute_morphological_rest_residual(
         &z_ref,
         &z_cur,
         ref_cutter.max_radius_mm(),
         cutter.max_radius_mm(),
+        cell,
+        nx,
+        ny,
+    );
+    suppress_overhang_shadow_residuals(
+        &surface,
+        &cutter,
+        ref_cutter.max_radius_mm(),
+        &z_cur,
+        &mut residual,
+        min_x,
+        min_y,
         cell,
         nx,
         ny,
