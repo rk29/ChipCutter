@@ -33,6 +33,11 @@ pub(crate) enum LoadPurpose {
     SeedThreadMillManifold,
     SeedTwoSidedViseWorkholding,
     SeedUndercutAndDeburrBlock,
+    SeedFeedOptPocket,
+    SeedFlipJigSoftJaws,
+    SeedCurvedDeburr3D,
+    SeedDovetailRailKeyway,
+    SeedMesh3mfBracket,
     ReloadRebind { update_path: bool },
 }
 

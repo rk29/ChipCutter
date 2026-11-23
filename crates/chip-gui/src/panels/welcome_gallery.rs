@@ -31,6 +31,12 @@ pub enum SampleProjectId {
     ThreadMillManifold,
     TwoSidedViseWorkholding,
     UndercutAndDeburrBlock,
+    FeedOptPocket,
+    FlipJigSoftJaws,
+    CurvedDeburr3D,
+    DovetailRailKeyway,
+    SvgBadgeSign,
+    Mesh3mfBracket,
 }
 
 impl SampleProjectId {
@@ -61,8 +67,14 @@ impl SampleProjectId {
             "undercut-deburr" | "undercut-block" | "undercut" | "deburr3d" => {
                 Ok(Self::UndercutAndDeburrBlock)
             }
+            "feed-opt-pocket" | "feed-opt" => Ok(Self::FeedOptPocket),
+            "flip-jig-softjaws" | "flip-jig" => Ok(Self::FlipJigSoftJaws),
+            "curved-deburr-3d" | "curved-deburr" => Ok(Self::CurvedDeburr3D),
+            "dovetail-rail-keyway" | "dovetail-rail" => Ok(Self::DovetailRailKeyway),
+            "svg-badge" | "svg-badge-sign" => Ok(Self::SvgBadgeSign),
+            "mesh-3mf-bracket" | "mesh-3mf" | "3mf-bracket" => Ok(Self::Mesh3mfBracket),
             other => Err(format!(
-                "invalid --sample '{other}'; expected one of: cam-torture, adaptive-rest, pure-2d, nameplate, vcarve, multi-feature, tilted-bracket, revision-v1, revision-v2, sample-plate, mesh-dome, mesh-wave, rotary-shaft, rotary-wrap, rotary-4axis, thread-mill, two-sided-vise, undercut-deburr"
+                "invalid --sample '{other}'; expected one of: cam-torture, adaptive-rest, pure-2d, nameplate, vcarve, multi-feature, tilted-bracket, revision-v1, revision-v2, sample-plate, mesh-dome, mesh-wave, rotary-shaft, rotary-wrap, rotary-4axis, thread-mill, two-sided-vise, undercut-deburr, feed-opt-pocket, flip-jig-softjaws, curved-deburr-3d, dovetail-rail-keyway, svg-badge, mesh-3mf-bracket"
             )),
         }
     }
@@ -246,6 +258,54 @@ pub const SAMPLE_CATALOG: &[SampleCardSpec] = &[
         badge: "Undercut · Tri-Dexel · 6 Ops",
         summary: "100×80×28mm aluminum block exercising Facing, Pre-Slot Throats, DIN 650 M8 T-Slot, 60° Dovetail guideway, Lollipop 3D overhang undercut, and 3D Edge Deburr & Back-Chamfer.",
     },
+    SampleCardSpec {
+        id: SampleProjectId::FeedOptPocket,
+        category: SampleCategory::Step3D,
+        icon: IconKind::Adaptive2D,
+        title: "Feed-Optimized Adaptive Pocket (Engagement Telemetry)",
+        badge: "Feed-Opt · Corners & Arcs",
+        summary: "Sharp-corner island pocket with Engagement-Aware Feed Optimization (corner lookahead deceleration, internal-arc scaling, and radial chip-thinning boost).",
+    },
+    SampleCardSpec {
+        id: SampleProjectId::FlipJigSoftJaws,
+        category: SampleCategory::Step3D,
+        icon: IconKind::OrthoCube,
+        title: "Flip-Jig Dowel Pins & Auto Soft-Jaw Setup (G54–G56)",
+        badge: "Spoilboard · 3 Setups",
+        summary: "Contour plate on a Spoilboard with Flip-Jig TwoOnAxis registration pins + poka-yoke offset, Setup 2 180° flip carryover, and Setup 3 generated Auto Soft-Jaw machining.",
+    },
+    SampleCardSpec {
+        id: SampleProjectId::CurvedDeburr3D,
+        category: SampleCategory::Step3D,
+        icon: IconKind::Deburr3D,
+        title: "3D Curved Arch & Underside Deburring (3 Cutters)",
+        badge: "Deburr3D · Tri-Dexel",
+        summary: "Non-planar curved arch & overhang part exercising Deburr3D across ChamferMill (FlatBvh inside-corner wall trimming), BallEndmill, and Lollipop underside back-chamfering.",
+    },
+    SampleCardSpec {
+        id: SampleProjectId::DovetailRailKeyway,
+        category: SampleCategory::Step3D,
+        icon: IconKind::Dovetail,
+        title: "External 60° Dovetail Rail & Blind Entry-Bore Keyway",
+        badge: "ExternalRail · EntryBore",
+        summary: "90×50×22mm slide block sequencing Facing, Ø8mm Entry Bore, blind Keyway via EntryBoreCenter, and dual-flank External 60° Dovetail Rail milling in Tri-Dexel mode.",
+    },
+    SampleCardSpec {
+        id: SampleProjectId::SvgBadgeSign,
+        category: SampleCategory::Pure2dSketch,
+        icon: IconKind::VectorImport,
+        title: "Pure-2D SVG Badge Sign (96 DPI Bézier Biarcs)",
+        badge: "Zero-STEP · SVG · G2/G3",
+        summary: "Pure-2D badge imported directly from 96 DPI cubic Bézier SVG with nested counter-islands, annular Pocket, V-Carve accents, and outer Contour + Tabs emitting true G2/G3 arcs.",
+    },
+    SampleCardSpec {
+        id: SampleProjectId::Mesh3mfBracket,
+        category: SampleCategory::Mesh3D,
+        icon: IconKind::StepModel,
+        title: "Sculpted Mount Bracket (Unit-Aware 3MF Mesh)",
+        badge: "3D 3MF · 2 Ops",
+        summary: "80×56×20mm watertight millimeter .3mf sculpted mounting bracket machined with 3D Adaptive Roughing and 3D Constant-Scallop Finishing.",
+    },
 ];
 
 /// High-level action emitted by either the Welcome Overlay or the Sample Projects Gallery.
@@ -360,11 +420,15 @@ pub fn show_welcome_modal(
                     ) {
                         action = Some(WelcomeGalleryAction::StartPure2dSketchJob);
                     }
+                    let sample_count_subtitle = format!(
+                        "Explore {} ready-to-machine 3D STEP, Undercut, Mesh, 4th-Axis, Thread Mill, Pure-2D, and V-Inlay demos",
+                        SAMPLE_CATALOG.len()
+                    );
                     if welcome_action_row(
                         ui,
                         IconKind::Sparkles,
                         "Browse Sample Projects Gallery…",
-                        "Explore 17 ready-to-machine 3D STEP, Undercut, Mesh, 4th-Axis, Thread Mill, Pure-2D, and V-Inlay demos",
+                        &sample_count_subtitle,
                     ) {
                         action = Some(WelcomeGalleryAction::OpenSampleGallery);
                     }
@@ -718,6 +782,31 @@ mod tests {
             SampleProjectId::from_cli_slug("undercut-deburr"),
             Ok(SampleProjectId::UndercutAndDeburrBlock)
         );
+        assert_eq!(
+            SampleProjectId::from_cli_slug("feed-opt-pocket"),
+            Ok(SampleProjectId::FeedOptPocket)
+        );
+        assert_eq!(
+            SampleProjectId::from_cli_slug("flip-jig-softjaws"),
+            Ok(SampleProjectId::FlipJigSoftJaws)
+        );
+        assert_eq!(
+            SampleProjectId::from_cli_slug("curved-deburr-3d"),
+            Ok(SampleProjectId::CurvedDeburr3D)
+        );
+        assert_eq!(
+            SampleProjectId::from_cli_slug("dovetail-rail-keyway"),
+            Ok(SampleProjectId::DovetailRailKeyway)
+        );
+        assert_eq!(
+            SampleProjectId::from_cli_slug("svg-badge"),
+            Ok(SampleProjectId::SvgBadgeSign)
+        );
+        assert_eq!(
+            SampleProjectId::from_cli_slug("mesh-3mf-bracket"),
+            Ok(SampleProjectId::Mesh3mfBracket)
+        );
+        assert_eq!(SAMPLE_CATALOG.len(), 23);
         assert!(SampleProjectId::from_cli_slug("nonexistent").is_err());
     }
 }

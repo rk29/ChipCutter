@@ -605,6 +605,24 @@ impl ChipCutterApp {
             SampleProjectId::UndercutAndDeburrBlock => {
                 self.spawn_undercut_deburr_load(ctx.clone());
             }
+            SampleProjectId::FeedOptPocket => {
+                self.spawn_feed_opt_pocket_load(ctx.clone());
+            }
+            SampleProjectId::FlipJigSoftJaws => {
+                self.spawn_flip_jig_softjaws_load(ctx.clone());
+            }
+            SampleProjectId::CurvedDeburr3D => {
+                self.spawn_curved_deburr_3d_load(ctx.clone());
+            }
+            SampleProjectId::DovetailRailKeyway => {
+                self.spawn_dovetail_rail_keyway_load(ctx.clone());
+            }
+            SampleProjectId::SvgBadgeSign => {
+                self.load_svg_badge_sign_demo(ctx);
+            }
+            SampleProjectId::Mesh3mfBracket => {
+                self.spawn_mesh_3mf_bracket_load(ctx.clone());
+            }
         }
     }
 

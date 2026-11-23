@@ -1,15 +1,18 @@
 use std::time::Instant;
 
 use chip_cad::{
-    TopologyGraph, sample_cam_torture_block_step, sample_helical_flute_shaft_stl_bytes,
+    TopologyGraph, sample_cam_torture_block_step, sample_curved_deburr_overhang_step_bytes,
+    sample_dovetail_rail_keyway_step_bytes, sample_helical_flute_shaft_stl_bytes,
     sample_machined_plate_step, sample_multi_feature_bracket_step, sample_relief_wave_obj_text,
     sample_revised_part_pair_step, sample_rotary_shaft_stl_bytes, sample_sculpted_dome_stl_bytes,
-    sample_threaded_manifold_step, sample_undercut_deburr_block_step_bytes,
+    sample_sculpted_mount_3mf_bytes, sample_threaded_manifold_step,
+    sample_undercut_deburr_block_step_bytes, tutorial_adaptive_pocket_step,
+    tutorial_contour_plate_step,
 };
 use chip_project::{
     build_pure2d_router_panel_demo_project, build_revision_v1_demo_project,
-    build_rotary_wrapped_engraving_project, compute_sha256_hex, load_model_bytes_cad_doc,
-    sample_two_sided_vise_part_stl_bytes,
+    build_rotary_wrapped_engraving_project, build_svg_badge_sign_project, compute_sha256_hex,
+    load_model_bytes_cad_doc, sample_two_sided_vise_part_stl_bytes,
 };
 
 use crate::{
@@ -292,6 +295,163 @@ impl ChipCutterApp {
             let _ = tx.send(res);
             egui_ctx.request_repaint();
         });
+    }
+
+    pub(crate) fn spawn_feed_opt_pocket_load(&mut self, egui_ctx: egui::Context) {
+        let generation = self.begin_model_load_generation();
+        self.logs.push(
+            "Generating Feed-Optimized Adaptive Pocket STEP fixture (sharp corners + Ø16 mm boss)…"
+                .to_string(),
+        );
+        let tx = self.job_tx.clone();
+        rayon::spawn(move || {
+            let t0 = Instant::now();
+            let res = match tutorial_adaptive_pocket_step() {
+                Ok(step_str) => parse_step_bytes_job(
+                    generation,
+                    "20-feed-opt-pocket.step".to_string(),
+                    step_str.into_bytes(),
+                    None,
+                    LoadPurpose::SeedFeedOptPocket,
+                    t0,
+                ),
+                Err(e) => LoadJobResult::Failed {
+                    generation,
+                    error: e.to_string(),
+                },
+            };
+            let _ = tx.send(res);
+            egui_ctx.request_repaint();
+        });
+    }
+
+    pub(crate) fn spawn_flip_jig_softjaws_load(&mut self, egui_ctx: egui::Context) {
+        let generation = self.begin_model_load_generation();
+        self.logs.push(
+            "Generating Flip-Jig Dowel Pins & Auto Soft-Jaw Setup sample (Spoilboard + G54/G55/G56)…"
+                .to_string(),
+        );
+        let tx = self.job_tx.clone();
+        rayon::spawn(move || {
+            let t0 = Instant::now();
+            let res = match tutorial_contour_plate_step() {
+                Ok(step_str) => parse_step_bytes_job(
+                    generation,
+                    "02-contour-plate.step".to_string(),
+                    step_str.into_bytes(),
+                    None,
+                    LoadPurpose::SeedFlipJigSoftJaws,
+                    t0,
+                ),
+                Err(e) => LoadJobResult::Failed {
+                    generation,
+                    error: e.to_string(),
+                },
+            };
+            let _ = tx.send(res);
+            egui_ctx.request_repaint();
+        });
+    }
+
+    pub(crate) fn spawn_curved_deburr_3d_load(&mut self, egui_ctx: egui::Context) {
+        let generation = self.begin_model_load_generation();
+        self.logs.push(
+            "Generating 3D Curved Arch & Underside Deburring STEP fixture (ChamferMill, BallEndmill, Lollipop)…"
+                .to_string(),
+        );
+        let tx = self.job_tx.clone();
+        rayon::spawn(move || {
+            let t0 = Instant::now();
+            let res = match sample_curved_deburr_overhang_step_bytes() {
+                Ok(step_bytes) => parse_step_bytes_job(
+                    generation,
+                    "sample_curved_deburr_overhang.step".to_string(),
+                    step_bytes,
+                    None,
+                    LoadPurpose::SeedCurvedDeburr3D,
+                    t0,
+                ),
+                Err(e) => LoadJobResult::Failed {
+                    generation,
+                    error: e.to_string(),
+                },
+            };
+            let _ = tx.send(res);
+            egui_ctx.request_repaint();
+        });
+    }
+
+    pub(crate) fn spawn_dovetail_rail_keyway_load(&mut self, egui_ctx: egui::Context) {
+        let generation = self.begin_model_load_generation();
+        self.logs.push(
+            "Generating External 60° Dovetail Rail & Blind Entry-Bore Keyway STEP fixture…"
+                .to_string(),
+        );
+        let tx = self.job_tx.clone();
+        rayon::spawn(move || {
+            let t0 = Instant::now();
+            let res = match sample_dovetail_rail_keyway_step_bytes() {
+                Ok(step_bytes) => parse_step_bytes_job(
+                    generation,
+                    "sample_dovetail_rail_keyway.step".to_string(),
+                    step_bytes,
+                    None,
+                    LoadPurpose::SeedDovetailRailKeyway,
+                    t0,
+                ),
+                Err(e) => LoadJobResult::Failed {
+                    generation,
+                    error: e.to_string(),
+                },
+            };
+            let _ = tx.send(res);
+            egui_ctx.request_repaint();
+        });
+    }
+
+    pub(crate) fn spawn_mesh_3mf_bracket_load(&mut self, egui_ctx: egui::Context) {
+        let generation = self.begin_model_load_generation();
+        self.logs
+            .push("Generating Sculpted Mount Bracket (.3mf unit-aware mesh) sample…".to_string());
+        let tx = self.job_tx.clone();
+        rayon::spawn(move || {
+            let t0 = Instant::now();
+            let mf_bytes = sample_sculpted_mount_3mf_bytes();
+            let res = parse_model_bytes_job(
+                generation,
+                "08-bracket.3mf".to_string(),
+                mf_bytes,
+                None,
+                None,
+                LoadPurpose::SeedMesh3mfBracket,
+                t0,
+            );
+            let _ = tx.send(res);
+            egui_ctx.request_repaint();
+        });
+    }
+
+    pub fn load_svg_badge_sign_demo(&mut self, egui_ctx: &egui::Context) {
+        self.prepare_for_project_replacement(None, None);
+        self.project_file_path = None;
+        self.project.machine_id = None;
+        self.sync_active_machine_tools();
+        self.project = build_svg_badge_sign_project(None, &self.global_tools.tools);
+        self.sync_active_machine_tools();
+        self.inspector_focus = InspectorFocus::Operation {
+            setup_idx: 0,
+            op_idx: 0,
+        };
+        self.op_tab = OperationTab::Geometry;
+        self.refresh_dependent_expressions();
+        self.fit_scene_to_viewport();
+        self.logs.push(
+            "Loaded Pure-2D SVG Badge Sign (96 DPI cubic Bézier biarcs — Emblem Pocket + Island, V-Carve Accents, Outer Contour + Tabs)."
+                .to_string(),
+        );
+        self.auto_sim_after_gen = true;
+        self.trigger_generate_dirty(None, None);
+        egui_ctx.request_repaint();
     }
 
     pub(crate) fn spawn_thread_mill_manifold_load(&mut self, egui_ctx: egui::Context) {

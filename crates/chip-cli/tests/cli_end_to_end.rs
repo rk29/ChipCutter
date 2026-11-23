@@ -2391,3 +2391,59 @@ fn cli_undercut_block_e2e_generate_validate_simulate_build_and_chipz_roundtrip()
         "G-code built from isolated .chipz must match direct .chip.toml build byte-for-byte"
     );
 }
+
+#[test]
+fn cli_m68_tutorial_starter_generators_match_checked_in_assets_byte_for_byte() {
+    let tmp = TempTestDir::new("m68_tutorial_assets");
+    let assets_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("docs")
+        .join("tutorials")
+        .join("assets");
+
+    let cases = [
+        ("20-feed-opt", "20-feed-opt-pocket.step", true),
+        ("21-deburr-boss", "21-sloped-boss-deburr.step", true),
+        ("21-deburr-flange", "21-overhang-flange.step", true),
+        ("22-undercut-block", "22-undercut-deburr-block.step", true),
+        ("13-pure2d-svg", "13-badge-logo.svg", true),
+        ("08-bracket-3mf", "08-bracket.3mf", true),
+    ];
+
+    for (slug, filename, test_project_out) in cases {
+        let out_file = tmp.path().join(filename);
+        let proj_file = tmp.path().join(format!("{slug}.chip.toml"));
+        let mut cmd = Command::new(cli_bin());
+        cmd.args([
+            "generate-sample-step",
+            "--tutorial",
+            slug,
+            out_file.to_str().unwrap(),
+        ]);
+        if test_project_out {
+            cmd.args(["--project-out", proj_file.to_str().unwrap()]);
+        }
+        let res = cmd.output().expect("run generate-sample-step --tutorial");
+        assert!(
+            res.status.success(),
+            "generate-sample-step --tutorial {slug} failed:\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&res.stdout),
+            String::from_utf8_lossy(&res.stderr)
+        );
+        let generated = std::fs::read(&out_file).expect("read generated starter asset");
+        let checked_in = std::fs::read(assets_dir.join(filename))
+            .unwrap_or_else(|e| panic!("read checked-in {}: {e}", filename));
+        assert_eq!(
+            generated, checked_in,
+            "CLI --tutorial {slug} output differs from docs/tutorials/assets/{filename}"
+        );
+        if test_project_out {
+            assert!(
+                proj_file.is_file(),
+                "expected --project-out to create {}",
+                proj_file.display()
+            );
+        }
+    }
+}

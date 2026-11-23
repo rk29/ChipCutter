@@ -1,3 +1,4 @@
+mod feature_samples;
 mod milling_2d;
 mod rotary_4axis;
 mod surface_3d;
@@ -6,6 +7,7 @@ mod tutorials_3d;
 mod two_sided_vise;
 mod undercut_deburr;
 
+pub use feature_samples::*;
 pub use milling_2d::*;
 pub use rotary_4axis::*;
 pub use surface_3d::*;

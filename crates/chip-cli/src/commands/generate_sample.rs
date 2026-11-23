@@ -3,20 +3,22 @@ use std::{path::PathBuf, process::ExitCode};
 use chip_cad::{
     CadKernel, MonstertruckKernel, TopologyGraph, sample_cam_torture_block_step,
     sample_helical_flute_shaft_stl_bytes, sample_machined_plate_step,
-    sample_multi_feature_bracket_step, sample_relief_wave_obj_text, sample_revised_part_pair_step,
-    sample_rotary_shaft_stl_bytes, sample_sculpted_dome_stl_bytes, sample_threaded_manifold_step,
-    sample_undercut_deburr_block_step, tutorial_adaptive_pocket_step,
-    tutorial_chamfer_engrave_block_step, tutorial_contour_plate_step,
-    tutorial_drill_bore_plate_step, tutorial_facing_billet_step, tutorial_indexed_4side_block_step,
-    tutorial_pocket_block_step, tutorial_yup_bracket_stl_bytes,
+    sample_multi_feature_bracket_step, sample_overhang_flange_step, sample_relief_wave_obj_text,
+    sample_revised_part_pair_step, sample_rotary_shaft_stl_bytes, sample_sculpted_dome_stl_bytes,
+    sample_sculpted_mount_3mf_bytes, sample_sloped_boss_stepped_pocket_step,
+    sample_svg_badge_bytes, sample_threaded_manifold_step, sample_undercut_deburr_block_step,
+    tutorial_adaptive_pocket_step, tutorial_chamfer_engrave_block_step,
+    tutorial_contour_plate_step, tutorial_drill_bore_plate_step, tutorial_facing_billet_step,
+    tutorial_indexed_4side_block_step, tutorial_pocket_block_step, tutorial_yup_bracket_stl_bytes,
 };
 use chip_cam::OperationStatus;
 use chip_math::DEFAULT_TESS_CHORD_TOL_MM;
 use chip_project::{
-    build_cam_torture_project, build_pure2d_router_panel_demo_project,
-    build_revision_v1_demo_project, build_rotary_helical_flute_project,
-    build_rotary_shaft_preview_project, build_rotary_wrapped_engraving_project,
-    build_sculpted_mesh_dome_project, build_thread_mill_manifold_project,
+    build_cam_torture_project, build_feed_opt_pocket_project, build_mesh_3mf_bracket_project,
+    build_pure2d_router_panel_demo_project, build_revision_v1_demo_project,
+    build_rotary_helical_flute_project, build_rotary_shaft_preview_project,
+    build_rotary_wrapped_engraving_project, build_sculpted_mesh_dome_project,
+    build_svg_badge_sign_project, build_thread_mill_manifold_project,
     build_tutorial_3d_adaptive_waterline_project, build_tutorial_3d_surface_finishing_project,
     build_tutorial_16_tilted_step_project, build_tutorial_16_yup_stl_project,
     build_tutorial_adaptive_rest_project, build_tutorial_chamfer_trace_project,
@@ -91,6 +93,7 @@ pub fn run_generate_sample_step(
             "08-mesh-surfacing"
                 | "08-sculpted-dome"
                 | "08-3d-adaptive-waterline"
+                | "08-bracket-3mf"
                 | "09-3d-surface-finishing"
                 | "09-relief-wave"
                 | "09-rotary-shaft"
@@ -131,6 +134,7 @@ pub fn run_generate_sample_step(
             "08-mesh-surfacing" | "08-sculpted-dome" | "08-3d-adaptive-waterline" => {
                 (sample_sculpted_dome_stl_bytes(), "STL")
             }
+            "08-bracket-3mf" => (sample_sculpted_mount_3mf_bytes(), "3MF"),
             "09-3d-surface-finishing" | "09-relief-wave" => {
                 (sample_relief_wave_obj_text().into_bytes(), "OBJ")
             }
@@ -163,6 +167,7 @@ pub fn run_generate_sample_step(
                 "08-mesh-surfacing" | "08-sculpted-dome" => {
                     build_sculpted_mesh_dome_project(rel, &sha, &starter.tools)
                 }
+                "08-bracket-3mf" => build_mesh_3mf_bracket_project(rel, &sha, &starter.tools),
                 "10-rotary-axial" => {
                     build_tutorial_rotary_axial_parallel_project(rel, &sha, &starter.tools)
                 }
@@ -247,6 +252,54 @@ pub fn run_generate_sample_step(
         return Ok(ExitCode::SUCCESS);
     }
 
+    // Pure-2D SVG tutorial starter asset (`13-pure2d-svg` -> `13-badge-logo.svg`)
+    if let Some(slug) = tutorial_slug.as_deref()
+        && matches!(slug, "13-pure2d-svg" | "13-badge-logo" | "pure2d-svg")
+    {
+        let svg_bytes = sample_svg_badge_bytes();
+        if let Some(parent) = args.output.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&args.output, &svg_bytes)?;
+        println!(
+            "Wrote Pure-2D tutorial SVG artwork ({} bytes) to {}",
+            svg_bytes.len(),
+            args.output.display()
+        );
+        if let Some(proj_path) = args.project_out {
+            let starter = default_starter_tool_library();
+            let rel = portable_model_path(Some(&proj_path), &args.output);
+            let mut proj = build_svg_badge_sign_project(Some(rel), &starter.tools);
+            if let Some(sk) = proj.sketches.first_mut()
+                && let Some(asset) = sk.source_asset.as_mut()
+            {
+                asset.sha256 = compute_sha256_hex(&svg_bytes);
+            }
+            if args.empty_project
+                && let Some(setup) = proj.setups.first_mut()
+            {
+                setup.operations.clear();
+            }
+            if let Some(m) = explicit_machine.as_ref() {
+                proj.apply_machine_defaults(m, false);
+            }
+            if let Some(parent) = proj_path.parent()
+                && !parent.as_os_str().is_empty()
+            {
+                std::fs::create_dir_all(parent)?;
+            }
+            proj.save_to_path(&proj_path)?;
+            println!(
+                "Wrote Pure-2D SVG tutorial project ({} ops) to {}",
+                proj.setups.first().map_or(0, |s| s.operations.len()),
+                proj_path.display()
+            );
+        }
+        return Ok(ExitCode::SUCCESS);
+    }
+
     // Phase 10 Tutorial 16 Y-Up STL starter asset (`16-orient-stl`)
     if let Some(slug) = tutorial_slug.as_deref()
         && matches!(slug, "16-orient-stl" | "16-yup-stl" | "orient-stl")
@@ -312,9 +365,15 @@ pub fn run_generate_sample_step(
             "18-thread-milling" | "18-threaded-manifold" | "thread-mill" | "thread-milling" => {
                 sample_threaded_manifold_step()?
             }
+            "20-feed-opt" | "20-feed-opt-pocket" | "feed-opt" => tutorial_adaptive_pocket_step()?,
+            "21-deburr-boss" | "21-sloped-boss-deburr" => sample_sloped_boss_stepped_pocket_step()?,
+            "21-deburr-flange" | "21-overhang-flange" => sample_overhang_flange_step()?,
+            "22-undercut-block" | "22-undercut-deburr-block" => {
+                sample_undercut_deburr_block_step()?
+            }
             other => {
                 return Err(format!(
-                    "unknown --tutorial '{other}'; expected one of: 01-facing, 02-contour, 03-pocket, 04-drill-bore, 05-adaptive-rest, 06-chamfer-trace, 07-vcarve-medial, 07-vcarve-inlay, 08-3d-adaptive-waterline, 08-mesh-surfacing, 09-3d-surface-finishing, 09-rotary-shaft, 09-rotary-wrap, 10-rotary-wrap, 10-rotary-axial, 10-simultaneous-4axis, 11-indexed-step, 11-indexed-shaft, 12-simultaneous-4axis, 13-pure2d-dxf, 14-reload-v1, 14-reload-v2, 16-orient-stl, 16-orient-step, 18-thread-milling"
+                    "unknown --tutorial '{other}'; expected one of: 01-facing, 02-contour, 03-pocket, 04-drill-bore, 05-adaptive-rest, 06-chamfer-trace, 07-vcarve-medial, 07-vcarve-inlay, 08-3d-adaptive-waterline, 08-mesh-surfacing, 08-bracket-3mf, 09-3d-surface-finishing, 09-rotary-shaft, 09-rotary-wrap, 10-rotary-wrap, 10-rotary-axial, 10-simultaneous-4axis, 11-indexed-step, 11-indexed-shaft, 12-simultaneous-4axis, 13-pure2d-dxf, 13-pure2d-svg, 14-reload-v1, 14-reload-v2, 16-orient-stl, 16-orient-step, 18-thread-milling, 20-feed-opt, 21-deburr-boss, 21-deburr-flange, 22-undercut-block"
                 )
                 .into());
             }
@@ -476,6 +535,49 @@ pub fn run_generate_sample_step(
                     && let Some(setup) = proj.setups.first_mut()
                 {
                     setup.operations.clear();
+                }
+                proj
+            }
+            Some("20-feed-opt" | "20-feed-opt-pocket" | "feed-opt") => {
+                let mut proj = build_feed_opt_pocket_project(&doc, rel_path, &sha, &starter.tools);
+                if args.empty_project
+                    && let Some(setup) = proj.setups.first_mut()
+                {
+                    setup.operations.clear();
+                }
+                proj
+            }
+            Some("22-undercut-block" | "22-undercut-deburr-block") => {
+                let mut proj =
+                    build_undercut_deburr_block_project(&doc, rel_path, &sha, &starter.tools);
+                if args.empty_project
+                    && let Some(setup) = proj.setups.first_mut()
+                {
+                    setup.operations.clear();
+                }
+                proj
+            }
+            Some(
+                "21-deburr-boss"
+                | "21-sloped-boss-deburr"
+                | "21-deburr-flange"
+                | "21-overhang-flange",
+            ) => {
+                let mut proj =
+                    chip_project::ProjectDocument::new("Tutorial 21 — 3D Edge Deburring");
+                proj.models = vec![chip_project::ModelEntry {
+                    id: "model_1".to_string(),
+                    path: rel_path,
+                    sha256: sha,
+                    role: Default::default(),
+                    unit_override: None,
+                    transform: chip_cad::ModelTransform::IDENTITY,
+                }];
+                for t in &starter.tools {
+                    proj.ensure_tool_embedded(t);
+                }
+                for t in chip_tools::starter_undercut_tools() {
+                    proj.ensure_tool_embedded(&t);
                 }
                 proj
             }

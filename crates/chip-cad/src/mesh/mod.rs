@@ -17,7 +17,8 @@ use crate::{
 pub use bvh::{MeshBvh, MeshRayHit};
 pub use fixtures::{
     sample_box_3mf_bytes, sample_helical_flute_shaft_stl_bytes, sample_relief_wave_obj_text,
-    sample_rotary_shaft_stl_bytes, sample_sculpted_dome_stl_bytes, tutorial_yup_bracket_stl_bytes,
+    sample_rotary_shaft_stl_bytes, sample_sculpted_dome_stl_bytes, sample_sculpted_mount_3mf_bytes,
+    tutorial_yup_bracket_stl_bytes,
 };
 
 /// Source file format of an imported triangle mesh.

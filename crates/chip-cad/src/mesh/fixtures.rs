@@ -295,6 +295,199 @@ pub fn sample_box_3mf_bytes(unit: MeshUnitKind, transform_str: Option<&str>) -> 
     cursor.into_inner()
 }
 
+/// Generates a deterministic, 100% watertight, unit-aware millimeter `.3mf` OPC ZIP archive
+/// (`unit="millimeter"`) containing a sculpted **3D Mounting Bracket** (`80 × 56 × 20 mm`,
+/// `X ∈ [0, 80]`, `Y ∈ [0, 56]`, `Z ∈ [0, 20]`):
+/// - Flat `8.0 mm` base flange deck around the perimeter,
+/// - Smoothly blended central sculpted mounting arch & twin saddle lobes rising cleanly to
+///   `Z = 20.0 mm`, ideal for 3D Adaptive Roughing + 3D Constant-Scallop Finishing.
+pub fn sample_sculpted_mount_3mf_bytes() -> Vec<u8> {
+    use std::fmt::Write as _;
+
+    let nx: usize = 32;
+    let ny: usize = 24;
+    let w = 80.0_f64;
+    let h = 56.0_f64;
+    let base_z = 8.0_f64;
+
+    let smoothstep = |edge0: f64, edge1: f64, x: f64| -> f64 {
+        let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+        t * t * (3.0 - 2.0 * t)
+    };
+
+    // Precompute exact vertices: top grid `(nx+1)*(ny+1)` followed by flat bottom grid at `Z = 0`
+    let mut vertices: Vec<[f64; 3]> = Vec::with_capacity(2 * (nx + 1) * (ny + 1));
+    let mut raw_z = vec![0.0_f64; (nx + 1) * (ny + 1)];
+    let mut max_bump = 0.0_f64;
+    for j in 0..=ny {
+        let y = (j as f64 / ny as f64) * h;
+        let v = (y - 0.5 * h) / (0.5 * h); // [-1, 1]
+        let env_y = smoothstep(0.96, 0.42, v.abs());
+        for i in 0..=nx {
+            let x = (i as f64 / nx as f64) * w;
+            let u = (x - 0.5 * w) / (0.5 * w); // [-1, 1]
+            let env_x = smoothstep(0.96, 0.42, u.abs());
+            let env = env_x * env_y;
+            let central_ridge = (-((u / 0.52).powi(2) + (v / 0.62).powi(2))).exp();
+            let side_lobes = 0.48
+                * ((-(((u - 0.52) / 0.28).powi(2) + (v / 0.48).powi(2))).exp()
+                    + (-(((u + 0.52) / 0.28).powi(2) + (v / 0.48).powi(2))).exp());
+            let bump = env * (central_ridge + side_lobes);
+            if bump > max_bump {
+                max_bump = bump;
+            }
+            raw_z[j * (nx + 1) + i] = bump;
+        }
+    }
+    let scale_z = if max_bump > 1e-9 {
+        12.0 / max_bump
+    } else {
+        1.0
+    };
+    for j in 0..=ny {
+        let y = (j as f64 / ny as f64) * h;
+        for i in 0..=nx {
+            let x = (i as f64 / nx as f64) * w;
+            let z = base_z + raw_z[j * (nx + 1) + i] * scale_z;
+            vertices.push([x, y, z]);
+        }
+    }
+    for j in 0..=ny {
+        let y = (j as f64 / ny as f64) * h;
+        for i in 0..=nx {
+            let x = (i as f64 / nx as f64) * w;
+            vertices.push([x, y, 0.0]);
+        }
+    }
+
+    let top_idx = |i: usize, j: usize| -> usize { j * (nx + 1) + i };
+    let bot_offset = (nx + 1) * (ny + 1);
+    let bot_idx = |i: usize, j: usize| -> usize { bot_offset + j * (nx + 1) + i };
+
+    let mut tris: Vec<[usize; 3]> = Vec::with_capacity(4 * nx * ny + 4 * (nx + ny));
+    let mut push_quad = |a: usize, b: usize, c: usize, d: usize| {
+        tris.push([a, b, c]);
+        tris.push([a, c, d]);
+    };
+
+    // Top sculpted surface (+Z outward)
+    for j in 0..ny {
+        for i in 0..nx {
+            push_quad(
+                top_idx(i, j),
+                top_idx(i + 1, j),
+                top_idx(i + 1, j + 1),
+                top_idx(i, j + 1),
+            );
+        }
+    }
+    // Flat bottom face (-Z outward)
+    for j in 0..ny {
+        for i in 0..nx {
+            push_quad(
+                bot_idx(i, j),
+                bot_idx(i, j + 1),
+                bot_idx(i + 1, j + 1),
+                bot_idx(i + 1, j),
+            );
+        }
+    }
+    // Front (-Y) & Back (+Y) vertical perimeter walls
+    for i in 0..nx {
+        push_quad(
+            bot_idx(i, 0),
+            bot_idx(i + 1, 0),
+            top_idx(i + 1, 0),
+            top_idx(i, 0),
+        );
+        push_quad(
+            bot_idx(i + 1, ny),
+            bot_idx(i, ny),
+            top_idx(i, ny),
+            top_idx(i + 1, ny),
+        );
+    }
+    // Left (-X) & Right (+X) vertical perimeter walls
+    for j in 0..ny {
+        push_quad(
+            bot_idx(0, j + 1),
+            bot_idx(0, j),
+            top_idx(0, j),
+            top_idx(0, j + 1),
+        );
+        push_quad(
+            bot_idx(nx, j),
+            bot_idx(nx, j + 1),
+            top_idx(nx, j + 1),
+            top_idx(nx, j),
+        );
+    }
+
+    let mut model_xml = String::with_capacity(vertices.len() * 44 + tris.len() * 34 + 512);
+    model_xml.push_str(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">
+  <resources>
+    <object id="1" name="SculptedMountBracket" type="model">
+      <mesh>
+        <vertices>
+"#,
+    );
+    for [x, y, z] in &vertices {
+        let _ = writeln!(
+            model_xml,
+            r#"          <vertex x="{x:.6}" y="{y:.6}" z="{z:.6}"/>"#
+        );
+    }
+    model_xml.push_str("        </vertices>\n        <triangles>\n");
+    for [v1, v2, v3] in &tris {
+        let _ = writeln!(
+            model_xml,
+            r#"          <triangle v1="{v1}" v2="{v2}" v3="{v3}"/>"#
+        );
+    }
+    model_xml.push_str(
+        r#"        </triangles>
+      </mesh>
+    </object>
+  </resources>
+  <build>
+    <item objectid="1"/>
+  </build>
+</model>
+"#,
+    );
+
+    let rels_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Target="/3D/3dmodel.model" Id="rel0" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>
+</Relationships>
+"#;
+
+    let content_types_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/>
+</Types>
+"#;
+
+    let mut cursor = std::io::Cursor::new(Vec::new());
+    {
+        let mut zw = ZipWriter::new(&mut cursor);
+        let opts = SimpleFileOptions::default()
+            .compression_method(CompressionMethod::Deflated)
+            .last_modified_time(DateTime::default());
+        let _ = zw.start_file("[Content_Types].xml", opts);
+        let _ = zw.write_all(content_types_xml.as_bytes());
+        let _ = zw.start_file("_rels/.rels", opts);
+        let _ = zw.write_all(rels_xml.as_bytes());
+        let _ = zw.start_file("3D/3dmodel.model", opts);
+        let _ = zw.write_all(model_xml.as_bytes());
+        let _ = zw.finish();
+    }
+    cursor.into_inner()
+}
+
 /// Generates a deterministic, 100% watertight binary STL of a **4th-Axis Rotary Shaft**
 /// (`Ø40 mm × 80 mm` aligned along the WCS `X / A` axis, `X ∈ [-40, +40]`) combining:
 /// - Left & right `R = 20 mm` cylindrical journals,

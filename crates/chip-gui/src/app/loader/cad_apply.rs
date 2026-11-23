@@ -3,7 +3,9 @@ use std::{path::Path, sync::Arc};
 use chip_cad::{CadDocument, CadPicker, TopologyGraph};
 use chip_project::{
     ModelEntry, OperationReloadOutcome, ProjectDocument, build_adaptive_rest_demo_project,
-    build_cam_torture_project, build_multi_feature_bracket_project, build_relief_wave_mesh_project,
+    build_cam_torture_project, build_curved_deburr_3d_project, build_dovetail_rail_keyway_project,
+    build_feed_opt_pocket_project, build_flip_jig_softjaws_project, build_mesh_3mf_bracket_project,
+    build_multi_feature_bracket_project, build_relief_wave_mesh_project,
     build_revision_v1_demo_project, build_rotary_helical_flute_project,
     build_rotary_shaft_preview_project, build_sculpted_mesh_dome_project,
     build_thread_mill_manifold_project, build_two_sided_vise_workholding_project,
@@ -316,6 +318,109 @@ impl ChipCutterApp {
                 }
                 self.show_27pt_dots = false;
             }
+            LoadPurpose::SeedFeedOptPocket => {
+                self.prepare_for_project_replacement(None, None);
+                self.project_file_path = None;
+                self.project.machine_id = None;
+                self.sync_active_machine_tools();
+                self.project = build_feed_opt_pocket_project(
+                    &doc,
+                    doc.source_name.clone(),
+                    &sha256_hex,
+                    &self.global_tools.tools,
+                );
+                self.sync_active_machine_tools();
+                if !self.project.setups[0].operations.is_empty() {
+                    self.inspector_focus = InspectorFocus::Operation {
+                        setup_idx: 0,
+                        op_idx: 0,
+                    };
+                    self.op_tab = OperationTab::Passes;
+                }
+                self.show_27pt_dots = false;
+            }
+            LoadPurpose::SeedFlipJigSoftJaws => {
+                self.prepare_for_project_replacement(None, None);
+                self.project_file_path = None;
+                self.project.machine_id = None;
+                self.sync_active_machine_tools();
+                self.project = build_flip_jig_softjaws_project(
+                    &doc,
+                    doc.source_name.clone(),
+                    &sha256_hex,
+                    &self.global_tools.tools,
+                );
+                self.sync_active_machine_tools();
+                self.sim_panel.engine = chip_sim::SimEngineKind::TriDexel;
+                self.inspector_focus = InspectorFocus::Setup { setup_idx: 0 };
+                self.setup_tab = SetupTab::Fixtures;
+                self.highlight.show_fixtures = true;
+                self.show_27pt_dots = false;
+            }
+            LoadPurpose::SeedCurvedDeburr3D => {
+                self.prepare_for_project_replacement(None, None);
+                self.project_file_path = None;
+                self.project.machine_id = None;
+                self.sync_active_machine_tools();
+                self.project = build_curved_deburr_3d_project(
+                    &doc,
+                    doc.source_name.clone(),
+                    &sha256_hex,
+                    &self.global_tools.tools,
+                );
+                self.sync_active_machine_tools();
+                self.sim_panel.engine = chip_sim::SimEngineKind::TriDexel;
+                if self.project.setups[0].operations.len() > 3 {
+                    self.inspector_focus = InspectorFocus::Operation {
+                        setup_idx: 0,
+                        op_idx: 3,
+                    };
+                    self.op_tab = OperationTab::Passes;
+                }
+                self.show_27pt_dots = false;
+            }
+            LoadPurpose::SeedDovetailRailKeyway => {
+                self.prepare_for_project_replacement(None, None);
+                self.project_file_path = None;
+                self.project.machine_id = None;
+                self.sync_active_machine_tools();
+                self.project = build_dovetail_rail_keyway_project(
+                    &doc,
+                    doc.source_name.clone(),
+                    &sha256_hex,
+                    &self.global_tools.tools,
+                );
+                self.sync_active_machine_tools();
+                self.sim_panel.engine = chip_sim::SimEngineKind::TriDexel;
+                if self.project.setups[0].operations.len() > 3 {
+                    self.inspector_focus = InspectorFocus::Operation {
+                        setup_idx: 0,
+                        op_idx: 3,
+                    };
+                    self.op_tab = OperationTab::Passes;
+                }
+                self.show_27pt_dots = false;
+            }
+            LoadPurpose::SeedMesh3mfBracket => {
+                self.prepare_for_project_replacement(None, None);
+                self.project_file_path = None;
+                self.project.machine_id = None;
+                self.sync_active_machine_tools();
+                self.project = build_mesh_3mf_bracket_project(
+                    doc.source_name.clone(),
+                    &sha256_hex,
+                    &self.global_tools.tools,
+                );
+                self.sync_active_machine_tools();
+                if !self.project.setups[0].operations.is_empty() {
+                    self.inspector_focus = InspectorFocus::Operation {
+                        setup_idx: 0,
+                        op_idx: self.project.setups[0].operations.len().saturating_sub(1),
+                    };
+                    self.op_tab = OperationTab::Passes;
+                }
+                self.show_27pt_dots = false;
+            }
             LoadPurpose::FreshImport { update_model_entry } => {
                 self.sim_panel.reset_for_new_project();
                 self.gcode_panel.invalidate_preview();
@@ -440,6 +545,11 @@ impl ChipCutterApp {
                 | LoadPurpose::SeedThreadMillManifold
                 | LoadPurpose::SeedTwoSidedViseWorkholding
                 | LoadPurpose::SeedUndercutAndDeburrBlock
+                | LoadPurpose::SeedFeedOptPocket
+                | LoadPurpose::SeedFlipJigSoftJaws
+                | LoadPurpose::SeedCurvedDeburr3D
+                | LoadPurpose::SeedDovetailRailKeyway
+                | LoadPurpose::SeedMesh3mfBracket
         ) {
             self.auto_sim_after_gen = true;
             self.trigger_generate_dirty(None, None);

@@ -1523,6 +1523,326 @@ pub fn sample_undercut_deburr_block_step_bytes() -> std::result::Result<Vec<u8>,
     sample_undercut_deburr_block_step().map(String::into_bytes)
 }
 
+/// Builds a watertight `80 × 50 × 23 mm` non-planar 3D solid combining the curved circular-arc
+/// sloped arch and vertical stepped boss wall of [`sample_sloped_boss_stepped_pocket_step`] with
+/// a `2.5 mm × 6.5 mm` side undercut relief groove along `+X` (`X = 77.5..80.0`, `Z = 3.0..9.5`)
+/// creating a crisp `90°` underside overhang rim at `(X = 80.0, Z = 9.5)` for Milestone 68
+/// (`curved-deburr-3d`) Lollipop back-chamfering alongside ChamferMill & BallEndmill 3D deburring.
+pub fn sample_curved_deburr_overhang_step() -> std::result::Result<String, SampleStepError> {
+    let v0 = builder::vertex(Point3::new(0.0, 0.0, 0.0));
+    let v1 = builder::vertex(Point3::new(80.0, 0.0, 0.0));
+    let v_g0 = builder::vertex(Point3::new(80.0, 0.0, 3.0));
+    let v_g1 = builder::vertex(Point3::new(77.5, 0.0, 3.0));
+    let v_g2 = builder::vertex(Point3::new(77.5, 0.0, 9.5));
+    let v_g3 = builder::vertex(Point3::new(80.0, 0.0, 9.5));
+    let v2 = builder::vertex(Point3::new(80.0, 0.0, 15.0));
+    let v3 = builder::vertex(Point3::new(35.0, 0.0, 19.0));
+    let v4 = builder::vertex(Point3::new(35.0, 0.0, 14.0));
+    let v5 = builder::vertex(Point3::new(0.0, 0.0, 14.0));
+
+    let arch_mid = Point3::new(57.5, 0.0, 23.0);
+    let arch_edge = builder::try_circle_arc(&v2, &v3, arch_mid)
+        .map_err(|e| SampleStepError::Modeling(e.to_string()))?;
+
+    let profile_wire: Wire = vec![
+        builder::line(&v0, &v1),
+        builder::line(&v1, &v_g0),
+        builder::line(&v_g0, &v_g1),
+        builder::line(&v_g1, &v_g2),
+        builder::line(&v_g2, &v_g3),
+        builder::line(&v_g3, &v2),
+        arch_edge,
+        builder::line(&v3, &v4),
+        builder::line(&v4, &v5),
+        builder::line(&v5, &v0),
+    ]
+    .into();
+
+    let front_face = builder::try_attach_plane(vec![profile_wire.inverse()])
+        .map_err(|e| SampleStepError::Modeling(e.to_string()))?;
+    let solid = builder::extrude(&front_face, Vector3::new(0.0, 50.0, 0.0));
+    serialize_tutorial_solid(solid, "sample_curved_deburr_overhang.step")
+}
+
+/// Byte-vector convenience wrapper around [`sample_curved_deburr_overhang_step`].
+pub fn sample_curved_deburr_overhang_step_bytes() -> std::result::Result<Vec<u8>, SampleStepError> {
+    sample_curved_deburr_overhang_step().map(String::into_bytes)
+}
+
+/// Builds a watertight `90 × 50 × 22 mm` aluminum dovetail slide block STEP solid for Milestone 68
+/// (`dovetail-rail-keyway`) featuring:
+/// - **External `60°` male dovetail rail flanks** along both `-Y` and `+Y` sides (`Z = 17.0..22.0`,
+///   `5.0 mm` vertical dovetail height tapering inward by `5.0 / tan(60°) ≈ 2.8868 mm` above a
+///   `50.0 mm` wide base pedestal `Z = 0..17.0`), and
+/// - **Blind top keyway** (`[19..71] × [20..30]`, `10.0 mm` wide × `6.0 mm` deep, floor at `Z = 16.0`)
+///   terminating at a **pre-drilled `Ø8.0 mm` (`R = 4.0 mm`) cylindrical entry bore** centered at
+///   `(24.0, 25.0)` (`Z = 14.0..16.0`) for `SlotUndercutMode::Keyway` + `UndercutEntryMode::EntryBoreCenter`.
+pub fn sample_dovetail_rail_keyway_step() -> std::result::Result<String, SampleStepError> {
+    let run = 5.0 / 60.0_f64.to_radians().tan();
+
+    // 1. Extrude the external 60° dovetail rail YZ profile at X = 0 along +X by 90.0 mm.
+    //    CCW in YZ (Y -> Z) yields outward normal +X matching the +X extrusion vector.
+    let v_bf = builder::vertex(Point3::new(0.0, 0.0, 0.0));
+    let v_bb = builder::vertex(Point3::new(0.0, 50.0, 0.0));
+    let v_r_sh = builder::vertex(Point3::new(0.0, 50.0, 17.0));
+    let v_r_in = builder::vertex(Point3::new(0.0, 50.0 - run, 17.0));
+    let v_r_top = builder::vertex(Point3::new(0.0, 50.0, 22.0));
+    let v_l_top = builder::vertex(Point3::new(0.0, 0.0, 22.0));
+    let v_l_in = builder::vertex(Point3::new(0.0, run, 17.0));
+    let v_l_sh = builder::vertex(Point3::new(0.0, 0.0, 17.0));
+
+    let profile_wire: Wire = vec![
+        builder::line(&v_bf, &v_bb),
+        builder::line(&v_bb, &v_r_sh),
+        builder::line(&v_r_sh, &v_r_in),
+        builder::line(&v_r_in, &v_r_top),
+        builder::line(&v_r_top, &v_l_top),
+        builder::line(&v_l_top, &v_l_in),
+        builder::line(&v_l_in, &v_l_sh),
+        builder::line(&v_l_sh, &v_bf),
+    ]
+    .into();
+
+    let left_face = builder::try_attach_plane(vec![profile_wire])
+        .map_err(|e| SampleStepError::Modeling(e.to_string()))?;
+    let base_solid = builder::extrude(&left_face, Vector3::new(90.0, 0.0, 0.0));
+    let base_shell = base_solid
+        .into_boundaries()
+        .into_iter()
+        .next()
+        .ok_or_else(|| SampleStepError::Modeling("missing dovetail base shell".to_string()))?;
+
+    let mut shell_faces: Vec<Face> = base_shell.into_iter().collect();
+
+    // Locate and remove the planar top face at Z = 22.0 so we can pierce it with the blind keyway!
+    let top_idx = shell_faces
+        .iter()
+        .position(|f| {
+            let mut all_z22 = true;
+            let mut count = 0usize;
+            for b in f.boundaries() {
+                for v in b.vertex_iter() {
+                    count += 1;
+                    if (v.point().z - 22.0).abs() > 1e-4 {
+                        all_z22 = false;
+                        break;
+                    }
+                }
+                if !all_z22 {
+                    break;
+                }
+            }
+            count >= 4 && all_z22
+        })
+        .ok_or_else(|| {
+            SampleStepError::Modeling("missing top Z=22 face on dovetail rail".to_string())
+        })?;
+    let old_top_face = shell_faces.remove(top_idx);
+    let mut top_wires = old_top_face.boundaries();
+
+    // 2. Pre-drilled Ø8.0 mm (R = 4.0 mm) cylindrical entry bore at (24.0, 25.0), Z = 14.0..16.0
+    let bore_seed = builder::vertex(Point3::new(24.0 + 4.0, 25.0, 14.0));
+    let bore_wire_z14: Wire = builder::revolve(
+        &bore_seed,
+        Point3::new(24.0, 25.0, 14.0),
+        Vector3::unit_z(),
+        SweepAngle::Closed,
+        2,
+    );
+    let bore_floor_z14 = builder::try_attach_plane(vec![bore_wire_z14])
+        .map_err(|e| SampleStepError::Modeling(e.to_string()))?;
+    let bore_plug = builder::extrude(&bore_floor_z14, Vector3::new(0.0, 0.0, 2.0)); // Z = 14 -> 16
+    let mut bore_faces: Vec<Face> = bore_plug
+        .into_boundaries()
+        .into_iter()
+        .next()
+        .ok_or_else(|| SampleStepError::Modeling("missing entry bore plug shell".to_string()))?
+        .into_iter()
+        .collect();
+    let bore_top_z16 = bore_faces
+        .pop()
+        .ok_or_else(|| SampleStepError::Modeling("empty entry bore plug".to_string()))?;
+    let bore_mouth_z16 = bore_top_z16
+        .boundaries()
+        .into_iter()
+        .next()
+        .ok_or_else(|| SampleStepError::Modeling("missing entry bore mouth wire".to_string()))?;
+    for f in bore_faces {
+        shell_faces.push(f.inverse());
+    }
+
+    // 3. Blind top keyway cavity [19..71] x [20..30] at Z = 16.0..22.0 with entry bore hole on floor
+    let k0 = builder::vertex(Point3::new(19.0, 20.0, 16.0));
+    let k1 = builder::vertex(Point3::new(71.0, 20.0, 16.0));
+    let k2 = builder::vertex(Point3::new(71.0, 30.0, 16.0));
+    let k3 = builder::vertex(Point3::new(19.0, 30.0, 16.0));
+    let kw_outer_z16: Wire = vec![
+        builder::line(&k0, &k1),
+        builder::line(&k1, &k2),
+        builder::line(&k2, &k3),
+        builder::line(&k3, &k0),
+    ]
+    .into();
+
+    let kw_floor_proto = builder::try_attach_plane(vec![kw_outer_z16, bore_mouth_z16.inverse()])
+        .map_err(|e| SampleStepError::Modeling(e.to_string()))?;
+    let shared_kw_wire_z16 = kw_floor_proto.boundaries()[0].clone();
+    shell_faces.push(kw_floor_proto); // +Z keyway floor at Z = 16.0
+
+    let kw_cap_only = builder::try_attach_plane(vec![shared_kw_wire_z16])
+        .map_err(|e| SampleStepError::Modeling(e.to_string()))?;
+    let kw_plug = builder::extrude(&kw_cap_only, Vector3::new(0.0, 0.0, 6.0)); // Z = 16 -> 22
+    let mut kw_plug_faces: Vec<Face> = kw_plug
+        .into_boundaries()
+        .into_iter()
+        .next()
+        .ok_or_else(|| SampleStepError::Modeling("missing keyway plug shell".to_string()))?
+        .into_iter()
+        .collect();
+    let kw_top_z22 = kw_plug_faces
+        .pop()
+        .ok_or_else(|| SampleStepError::Modeling("empty keyway plug".to_string()))?;
+    // Skip solid bottom cap (`kw_plug_faces[0]`), invert 4 vertical keyway walls
+    for wf in kw_plug_faces.into_iter().skip(1) {
+        shell_faces.push(wf.inverse());
+    }
+    let kw_mouth_z22 =
+        kw_top_z22.boundaries().into_iter().next().ok_or_else(|| {
+            SampleStepError::Modeling("missing keyway top mouth wire".to_string())
+        })?;
+    top_wires.push(kw_mouth_z22.inverse());
+
+    let new_top_z22 = builder::try_attach_plane(top_wires)
+        .map_err(|e| SampleStepError::Modeling(e.to_string()))?;
+    shell_faces.push(new_top_z22);
+
+    let full_shell: Shell = shell_faces.into();
+    let solid = Solid::try_new(vec![full_shell]).map_err(|e| {
+        SampleStepError::Modeling(format!("non-manifold dovetail rail keyway solid: {e}"))
+    })?;
+    serialize_tutorial_solid(solid, "sample_dovetail_rail_keyway.step")
+}
+
+/// Byte-vector convenience wrapper around [`sample_dovetail_rail_keyway_step`].
+pub fn sample_dovetail_rail_keyway_step_bytes() -> std::result::Result<Vec<u8>, SampleStepError> {
+    sample_dovetail_rail_keyway_step().map(String::into_bytes)
+}
+
+/// Generates a deterministic, clean `96 DPI` `.svg` badge artwork (`120.0 × 75.0 mm` at `96 DPI`,
+/// unitless `453.543307 × 283.464567 px`) featuring explicit cubic Bézier (`C`) curves for true
+/// `G2`/`G3` biarc fitting and three CAM-ready `<g id="...">` layers:
+/// - `OUTLINE`: `110 × 65 mm` badge perimeter with `R = 10 mm` cubic Bézier rounded corners,
+/// - `EMBLEM_POCKET`: Centered cubic Bézier circular medallion (`R = 22 mm` outer, `R = 10 mm` nested
+///   counter-island) for annular pocket clearing,
+/// - `VCARVE_ACCENT`: Flanking symmetric cubic Bézier teardrop/leaf emblems for medial V-carving.
+pub fn sample_svg_badge_bytes() -> Vec<u8> {
+    // 96 DPI scale: 1 mm = 96 / 25.4 px
+    const PX: f64 = 96.0 / 25.4;
+    const KAPPA: f64 = 0.552_284_749_830_793_6;
+
+    let w_px = 120.0 * PX;
+    let h_px = 75.0 * PX;
+
+    // Helper: cubic Bézier rounded rectangle path in SVG pixels (x0..x1, y0..y1, radius r in mm)
+    let rounded_rect_cubic = |x0_mm: f64, y0_mm: f64, x1_mm: f64, y1_mm: f64, r_mm: f64| {
+        let (x0, y0, x1, y1, r) = (x0_mm * PX, y0_mm * PX, x1_mm * PX, y1_mm * PX, r_mm * PX);
+        let k = r * KAPPA;
+        format!(
+            "M {a:.4} {y0:.4} L {b:.4} {y0:.4} C {c:.4} {y0:.4} {x1:.4} {d:.4} {x1:.4} {e:.4} \
+             L {x1:.4} {f:.4} C {x1:.4} {g:.4} {c:.4} {y1:.4} {b:.4} {y1:.4} \
+             L {a:.4} {y1:.4} C {h:.4} {y1:.4} {x0:.4} {g:.4} {x0:.4} {f:.4} \
+             L {x0:.4} {e:.4} C {x0:.4} {d:.4} {h:.4} {y0:.4} {a:.4} {y0:.4} Z",
+            a = x0 + r,
+            b = x1 - r,
+            c = x1 - r + k,
+            d = y0 + r - k,
+            e = y0 + r,
+            f = y1 - r,
+            g = y1 - r + k,
+            h = x0 + r - k,
+        )
+    };
+
+    // Helper: 4-segment cubic Bézier circle centered at (cx_mm, cy_mm) with radius r_mm
+    let circle_cubic = |cx_mm: f64, cy_mm: f64, r_mm: f64, cw: bool| {
+        let (cx, cy, r) = (cx_mm * PX, cy_mm * PX, r_mm * PX);
+        let k = r * KAPPA;
+        if cw {
+            format!(
+                "M {rx:.4} {cy:.4} \
+                 C {rx:.4} {ypk:.4} {xpk:.4} {by:.4} {cx:.4} {by:.4} \
+                 C {xmk:.4} {by:.4} {lx:.4} {ypk:.4} {lx:.4} {cy:.4} \
+                 C {lx:.4} {ymk:.4} {xmk:.4} {ty:.4} {cx:.4} {ty:.4} \
+                 C {xpk:.4} {ty:.4} {rx:.4} {ymk:.4} {rx:.4} {cy:.4} Z",
+                rx = cx + r,
+                lx = cx - r,
+                by = cy + r,
+                ty = cy - r,
+                xpk = cx + k,
+                xmk = cx - k,
+                ypk = cy + k,
+                ymk = cy - k,
+            )
+        } else {
+            format!(
+                "M {rx:.4} {cy:.4} \
+                 C {rx:.4} {ymk:.4} {xpk:.4} {ty:.4} {cx:.4} {ty:.4} \
+                 C {xmk:.4} {ty:.4} {lx:.4} {ymk:.4} {lx:.4} {cy:.4} \
+                 C {lx:.4} {ypk:.4} {xmk:.4} {by:.4} {cx:.4} {by:.4} \
+                 C {xpk:.4} {by:.4} {rx:.4} {ypk:.4} {rx:.4} {cy:.4} Z",
+                rx = cx + r,
+                lx = cx - r,
+                by = cy + r,
+                ty = cy - r,
+                xpk = cx + k,
+                xmk = cx - k,
+                ypk = cy + k,
+                ymk = cy - k,
+            )
+        }
+    };
+
+    // Helper: symmetric curved cubic Bézier leaf/diamond accent centered at (cx_mm, cy_mm)
+    let leaf_cubic = |cx_mm: f64, cy_mm: f64, half_w_mm: f64, half_h_mm: f64| {
+        let (cx, cy, hw, hh) = (cx_mm * PX, cy_mm * PX, half_w_mm * PX, half_h_mm * PX);
+        let top_y = cy - hh;
+        let bot_y = cy + hh;
+        format!(
+            "M {cx:.4} {top_y:.4} \
+             C {r1:.4} {y1:.4} {r1:.4} {y2:.4} {cx:.4} {bot_y:.4} \
+             C {l1:.4} {y2:.4} {l1:.4} {y1:.4} {cx:.4} {top_y:.4} Z",
+            r1 = cx + hw * 1.35,
+            l1 = cx - hw * 1.35,
+            y1 = cy - hh * 0.45,
+            y2 = cy + hh * 0.45,
+        )
+    };
+
+    let outline_d = rounded_rect_cubic(5.0, 5.0, 115.0, 70.0, 10.0);
+    let emblem_outer_d = circle_cubic(60.0, 37.5, 22.0, true);
+    let emblem_island_d = circle_cubic(60.0, 37.5, 10.0, false);
+    let accent_left_d = leaf_cubic(22.0, 37.5, 6.0, 13.0);
+    let accent_right_d = leaf_cubic(98.0, 37.5, 6.0, 13.0);
+
+    format!(
+        r##"<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="{w_px:.6}" height="{h_px:.6}" viewBox="0 0 {w_px:.6} {h_px:.6}">
+  <g id="OUTLINE">
+    <path d="{outline_d}" fill="none" stroke="#111111" stroke-width="1"/>
+  </g>
+  <g id="EMBLEM_POCKET">
+    <path d="{emblem_outer_d} {emblem_island_d}" fill="#222222" fill-rule="evenodd"/>
+  </g>
+  <g id="VCARVE_ACCENT">
+    <path d="{accent_left_d}" fill="#333333"/>
+    <path d="{accent_right_d}" fill="#333333"/>
+  </g>
+</svg>
+"##
+    )
+    .into_bytes()
+}
+
 /// Generates a self-contained ISO 10303-21 STEP file representing a watertight solid
 /// helical sweep tube (`R = 12 mm` helix radius, `r = 4 mm` circular cross-section,
 /// `Z ∈ [0, 40] mm`, 180° helical twist):
@@ -2578,5 +2898,108 @@ mod tests {
             )
         });
         assert!(groove_cyl, "expected tangent R=3.0 mm concave groove arc");
+    }
+
+    #[test]
+    fn sample_dovetail_rail_keyway_and_curved_deburr_and_3mf_and_svg_fixtures_roundtrip() {
+        use crate::{
+            MeshImportOptions, MeshUnitKind, load_mesh_bytes, sample_sculpted_mount_3mf_bytes,
+        };
+
+        // 1. Dovetail rail + blind keyway + Ø8 mm entry bore STEP
+        let dove_bytes = sample_dovetail_rail_keyway_step_bytes().unwrap();
+        let dove_doc = MonstertruckKernel
+            .load_step_bytes(
+                "sample_dovetail_rail_keyway.step",
+                &dove_bytes,
+                DEFAULT_TESS_CHORD_TOL_MM,
+            )
+            .unwrap();
+        assert_eq!(dove_doc.bodies.len(), 1);
+        let dsz = dove_doc.aabb_mm.size();
+        assert!(approx_eq(dsz.x, 90.0, 1e-2));
+        assert!(approx_eq(dsz.y, 50.0, 1e-2));
+        assert!(approx_eq(dsz.z, 22.0, 1e-2));
+
+        // 2x external 60° overhanging dovetail flanks (`normal.z ≈ -0.5, |normal.y| ≈ 0.866`)
+        let ext_flanks = dove_doc
+            .faces
+            .iter()
+            .filter(|f| {
+                matches!(
+                    f.surface,
+                    SurfaceKind::Plane { normal, .. }
+                    if approx_eq(normal.z, -0.5, 1e-2) && approx_eq(normal.y.abs(), 0.8660254, 1e-2)
+                )
+            })
+            .count();
+        assert_eq!(ext_flanks, 2, "expected 2 external 60° dovetail flanks");
+
+        // Blind top keyway floor at Z = 16.0 and Ø8.0 mm (R = 4.0) entry bore
+        assert!(dove_doc.faces.iter().any(|f| {
+            matches!(
+                f.surface,
+                SurfaceKind::Plane { origin_mm, normal }
+                if normal.z > 0.99 && approx_eq(origin_mm.z, 16.0, 0.05)
+            )
+        }));
+        assert!(dove_doc.faces.iter().any(|f| {
+            matches!(
+                f.surface,
+                SurfaceKind::Cylinder {
+                    radius_mm,
+                    is_internal: true,
+                    ..
+                } if approx_eq(radius_mm, 4.0, 0.05)
+            )
+        }));
+
+        // 2. Curved sloped boss + underside overhang combo STEP
+        let curv_bytes = sample_curved_deburr_overhang_step_bytes().unwrap();
+        let curv_doc = MonstertruckKernel
+            .load_step_bytes(
+                "sample_curved_deburr_overhang.step",
+                &curv_bytes,
+                DEFAULT_TESS_CHORD_TOL_MM,
+            )
+            .unwrap();
+        assert_eq!(curv_doc.bodies.len(), 1);
+        let csz = curv_doc.aabb_mm.size();
+        assert!(approx_eq(csz.x, 80.0, 1e-2));
+        assert!(approx_eq(csz.y, 50.0, 1e-2));
+        assert!(
+            (23.0..=23.5).contains(&csz.z),
+            "expected curved arch Z height in [23.0, 23.5], got {}",
+            csz.z
+        );
+        assert!(curv_doc.faces.iter().any(|f| {
+            matches!(
+                f.surface,
+                SurfaceKind::Plane { origin_mm, normal }
+                if normal.z < -0.99 && approx_eq(origin_mm.z, 9.5, 0.05)
+            )
+        }));
+
+        // 3. Watertight unit-aware millimeter 3MF sculpted mount bracket
+        let mf_bytes = sample_sculpted_mount_3mf_bytes();
+        let mesh =
+            load_mesh_bytes("08-bracket.3mf", &mf_bytes, &MeshImportOptions::default()).unwrap();
+        assert_eq!(mesh.applied_unit, MeshUnitKind::Millimeter);
+        assert!(mesh.diagnostics.is_watertight);
+        assert_eq!(mesh.diagnostics.open_boundary_edges, 0);
+        assert_eq!(mesh.diagnostics.non_manifold_edges, 0);
+        assert!(mesh.diagnostics.signed_volume_mm3 > 0.0);
+        let msz = mesh.aabb_mm.size();
+        assert!(approx_eq(msz.x, 80.0, 0.05));
+        assert!(approx_eq(msz.y, 56.0, 0.05));
+        assert!(approx_eq(msz.z, 20.0, 0.05));
+
+        // 4. Clean 96 DPI SVG badge bytes containing cubic Béziers & layers
+        let svg_bytes = sample_svg_badge_bytes();
+        let svg_str = std::str::from_utf8(&svg_bytes).unwrap();
+        assert!(svg_str.contains("id=\"OUTLINE\""));
+        assert!(svg_str.contains("id=\"EMBLEM_POCKET\""));
+        assert!(svg_str.contains("id=\"VCARVE_ACCENT\""));
+        assert!(svg_str.contains(" C "));
     }
 }
