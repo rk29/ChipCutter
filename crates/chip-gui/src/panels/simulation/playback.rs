@@ -222,13 +222,15 @@ impl SimulationPanelState {
             let color_mode = self.active_stock_color_mode();
             let is_gpu_direct = self.is_gpu_direct_active();
             let desired_meta = if is_gpu_direct {
-                // On GPU direct rendering, color mode / heatmap tolerance changes update GPU uniforms
-                // or dispatch < 0.3 ms tridexel_emit directly—NEVER re-sweeping or remeshing on CPU!
+                // On GPU direct rendering, color mode / heatmap tolerance / mesh_skinning changes
+                // update GPU uniforms or dispatch < 0.3 ms tridexel_emit directly—NEVER re-sweeping
+                // or remeshing on CPU!
                 StockMeshMeta {
                     run_id: self.active_run_id,
                     result_ptr,
                     color_by_operation: false,
                     heatmap_active: false,
+                    mesh_skinning: false,
                     tol_key: 0,
                     scale_key: 0,
                 }
@@ -242,6 +244,7 @@ impl SimulationPanelState {
                     result_ptr,
                     color_by_operation: self.color_by_operation,
                     heatmap_active: self.show_error_heatmap && !self.is_playing,
+                    mesh_skinning: self.mesh_skinning,
                     tol_key,
                     scale_key,
                 }
@@ -265,6 +268,7 @@ impl SimulationPanelState {
                     target_time_sec: self.current_time_sec,
                     scrub_snapshot: snap.clone(),
                     color_mode,
+                    mesh_skinning: self.mesh_skinning,
                     meta: desired_meta,
                     egui_ctx: if synchronous {
                         None
@@ -291,6 +295,7 @@ impl SimulationPanelState {
                         handle: Arc::clone(handle),
                         stock_model,
                         color_mode,
+                        mesh_skinning: self.mesh_skinning,
                     });
             #[cfg(not(feature = "gpu-compute"))]
             let gpu_source: Option<SimStockRenderSource> = None;
@@ -1267,10 +1272,13 @@ mod tests {
 
         panel.show_error_heatmap = false;
         panel.color_by_operation = false;
+        panel.mesh_skinning = !panel.mesh_skinning;
+        let expected_skin = panel.mesh_skinning;
         let vis_metal = panel.resolve_viewport_visuals_sync(&project, 0);
         let SimStockRenderSource::GpuGrid {
             revision: rev_metal,
             color_mode: mode_metal,
+            mesh_skinning: skin_metal,
             ..
         } = vis_metal.stock.expect("GpuGrid present")
         else {
@@ -1278,6 +1286,7 @@ mod tests {
         };
         assert_eq!(rev_metal, rev0);
         assert_eq!(mode_metal, chip_sim::SimStockColorMode::Metallic);
+        assert_eq!(skin_metal, expected_skin);
         assert_eq!(
             panel.remesh_worker.processed_request_count(),
             reqs_after_init

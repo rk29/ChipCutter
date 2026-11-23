@@ -38,6 +38,7 @@ pub enum SimStockRenderSource {
         handle: Arc<GpuStockRenderHandle>,
         stock_model: DMat4,
         color_mode: SimStockColorMode,
+        mesh_skinning: bool,
     },
 }
 

@@ -505,7 +505,7 @@ Building on `v0.19.1`'s monotonic `PushCutterField` fix for overhanging helical 
 
 ---
 
-## Phase 21 — Workspace Decluttering, Settings Page, Streamlined Tool Management, & Simulation Mesh Skinning (Planned — M76–M79)
+## Phase 21 — Workspace Decluttering, Settings Page, Streamlined Tool Management, & Simulation Mesh Skinning (Completed — M76–M79)
 
 Focuses on day-to-day usability and visual polish across the workspace: moving infrequently changed preferences off-screen into a dedicated Settings page, simplifying Setup cards and top-action-bar operation creation around a clearly indicated Active Setup, streamlining project tool selection/pruning and machine-switch tool replacement with a single `"Tools"` button, and adding smooth crease-preserving simulation mesh skinning across CPU & GPU engines.
 

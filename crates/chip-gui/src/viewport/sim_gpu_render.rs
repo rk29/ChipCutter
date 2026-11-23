@@ -384,23 +384,6 @@ impl SimGpuStockRenderer {
         self.overflow_mesh_gpu.clear();
     }
 
-    pub(crate) fn prepare(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        encoder: &mut wgpu::CommandEncoder,
-        handle: &GpuStockRenderHandle,
-        color_mode: SimStockColorMode,
-    ) {
-        self.prepare_with_options(
-            device,
-            queue,
-            encoder,
-            handle,
-            SimMeshOptions::from(color_mode),
-        );
-    }
-
     pub(crate) fn prepare_with_options(
         &mut self,
         device: &wgpu::Device,

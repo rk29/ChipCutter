@@ -622,11 +622,19 @@ impl ViewportRenderer {
             }
             #[cfg(feature = "gpu-compute")]
             Some(SimStockRenderSource::GpuGrid {
-                handle, color_mode, ..
+                handle,
+                color_mode,
+                mesh_skinning,
+                ..
             }) => {
                 self.uploaded_sim_stock.clear();
-                self.sim_gpu_stock
-                    .prepare(device, queue, &mut encoder, handle, *color_mode);
+                self.sim_gpu_stock.prepare_with_options(
+                    device,
+                    queue,
+                    &mut encoder,
+                    handle,
+                    chip_sim::SimMeshOptions::new(*color_mode, *mesh_skinning),
+                );
             }
             None => {
                 #[cfg(feature = "gpu-compute")]
@@ -2040,6 +2048,7 @@ mod tests {
                     handle: Arc::clone(&gpu_handle),
                     stock_model: DMat4::IDENTITY,
                     color_mode: mode,
+                    mesh_skinning: false,
                 });
                 let px_cpu =
                     render_offscreen_rgba_on_device(device, queue, None, &cam, &hl_cpu, w, h)
@@ -2175,6 +2184,7 @@ mod tests {
                     handle: Arc::clone(&gpu_handle),
                     stock_model,
                     color_mode: mode,
+                    mesh_skinning: false,
                 });
                 let px_cpu =
                     render_offscreen_rgba_on_device(device, queue, None, &cam, &hl_cpu, w, h)
@@ -2295,6 +2305,7 @@ mod tests {
                     handle: Arc::clone(&gpu_handle),
                     stock_model: DMat4::IDENTITY,
                     color_mode: mode,
+                    mesh_skinning: false,
                 });
                 let px_cpu =
                     render_offscreen_rgba_on_device(device, queue, None, &cam, &hl_cpu, w, h)
@@ -2501,6 +2512,7 @@ mod tests {
             handle: Arc::clone(&gpu_handle),
             stock_model: DMat4::IDENTITY,
             color_mode: SimStockColorMode::ByOperation,
+            mesh_skinning: false,
         });
 
         let px_cpu =
@@ -2651,6 +2663,7 @@ mod tests {
             handle: Arc::clone(&gpu_handle),
             stock_model: DMat4::IDENTITY,
             color_mode: SimStockColorMode::ByOperation,
+            mesh_skinning: false,
         });
 
         let px_cpu =
@@ -2699,6 +2712,67 @@ mod tests {
         assert!(
             mean_diff < 6.0 && stripe_frac < 0.03,
             "GPU curved cylinder shading must match CPU Surface Nets without dark ribbon stripes (mean_diff={mean_diff:.2}, stripe_frac={stripe_frac:.4})"
+        );
+
+        // Also verify Smooth Skinned mode (`mesh_skinning = true`) renders cleanly on both CPU & GPU
+        // and matches between CPU and GPU pipelines!
+        let cpu_mesh_skin = Arc::new(chip_sim::tessellate_tridexel_stock_mesh_with_options(
+            &td_cpu,
+            None,
+            chip_sim::SimMeshOptions::new(SimStockColorMode::ByOperation, true),
+        ));
+        hl_cpu.sim_stock_source = Some(SimStockRenderSource::CpuMesh {
+            revision: 2,
+            mesh: cpu_mesh_skin,
+            stock_model: DMat4::IDENTITY,
+        });
+        hl_gpu.sim_stock_source = Some(SimStockRenderSource::GpuGrid {
+            revision: 2,
+            handle: Arc::clone(&gpu_handle),
+            stock_model: DMat4::IDENTITY,
+            color_mode: SimStockColorMode::ByOperation,
+            mesh_skinning: true,
+        });
+        let px_cpu_skin =
+            render_offscreen_rgba_on_device(device, queue, None, &cam, &hl_cpu, w, h).unwrap();
+        let px_gpu_skin =
+            render_offscreen_rgba_on_device(device, queue, None, &cam, &hl_gpu, w, h).unwrap();
+        let mut skin_overlap = 0usize;
+        let mut skin_union = 0usize;
+        let mut skin_diff_sum = 0u64;
+        for px in 0..(w * h) as usize {
+            let o = px * 4;
+            let c_fg = (0..3)
+                .map(|c| px_cpu_skin[o + c].abs_diff(bg[o + c]))
+                .max()
+                .unwrap_or(0)
+                > 8;
+            let g_fg = (0..3)
+                .map(|c| px_gpu_skin[o + c].abs_diff(bg[o + c]))
+                .max()
+                .unwrap_or(0)
+                > 8;
+            if c_fg || g_fg {
+                skin_union += 1;
+            }
+            if c_fg && g_fg {
+                skin_overlap += 1;
+                let max_ch_diff = (0..3)
+                    .map(|c| px_cpu_skin[o + c].abs_diff(px_gpu_skin[o + c]))
+                    .max()
+                    .unwrap_or(0);
+                skin_diff_sum += u64::from(max_ch_diff);
+            }
+        }
+        let skin_iou = skin_overlap as f64 / skin_union.max(1) as f64;
+        let skin_mean_diff = skin_diff_sum as f64 / skin_overlap.max(1) as f64;
+        assert!(
+            skin_overlap > 10_000 && skin_iou >= 0.96,
+            "GPU skinned cylinder silhouette must match CPU skinned mesh (overlap={skin_overlap}, iou={skin_iou:.4})"
+        );
+        assert!(
+            skin_mean_diff < 8.0,
+            "GPU skinned cylinder shading must match CPU skinned mesh (mean_diff={skin_mean_diff:.2})"
         );
     }
 }

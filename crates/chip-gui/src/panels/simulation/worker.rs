@@ -14,9 +14,9 @@ use chip_project::{
 #[cfg(feature = "gpu-compute")]
 use chip_sim::{GpuCheckpointCache, GpuSimContext, WgpuComputeBackend};
 use chip_sim::{
-    ScrubSnapshot, SetupSimulationInput, SetupSimulationResult, SimError, SimOperationInput,
-    SimProgressTracker, SimStockColorMode, SimStockMesh, SimVerificationConfig, SimulatedStock,
-    SimulatedStockPlaybackExt, StockPlaybackCursor, format_cycle_time_hms,
+    ScrubSnapshot, SetupSimulationInput, SetupSimulationResult, SimError, SimMeshOptions,
+    SimOperationInput, SimProgressTracker, SimStockColorMode, SimStockMesh, SimVerificationConfig,
+    SimulatedStock, SimulatedStockPlaybackExt, StockPlaybackCursor, format_cycle_time_hms,
     run_setup_simulation_with_choice_and_progress,
 };
 use chip_tools::Tool;
@@ -48,6 +48,7 @@ pub(super) struct StockMeshMeta {
     pub(super) result_ptr: usize,
     pub(super) color_by_operation: bool,
     pub(super) heatmap_active: bool,
+    pub(super) mesh_skinning: bool,
     pub(super) tol_key: u32,
     pub(super) scale_key: u32,
 }
@@ -71,6 +72,7 @@ pub(super) struct StockRemeshRequest {
     pub(super) target_time_sec: f64,
     pub(super) scrub_snapshot: Option<ScrubSnapshot>,
     pub(super) color_mode: SimStockColorMode,
+    pub(super) mesh_skinning: bool,
     pub(super) meta: StockMeshMeta,
     pub(super) egui_ctx: Option<egui::Context>,
 }
@@ -233,12 +235,15 @@ impl RemeshWorkerState {
             stock_changed || !self.has_emitted_mesh || self.last_meshed_meta != Some(req.meta);
 
         let payload = if needs_remesh {
-            let extracted = self
-                .working_stock
-                .as_ref()
-                .map_or_else(SimStockMesh::default, |work| {
-                    req.sim_result.extract_stock_mesh(work, req.color_mode)
-                });
+            let extracted =
+                self.working_stock
+                    .as_ref()
+                    .map_or_else(SimStockMesh::default, |work| {
+                        req.sim_result.extract_stock_mesh_with_options(
+                            work,
+                            SimMeshOptions::new(req.color_mode, req.mesh_skinning),
+                        )
+                    });
             self.last_meshed_meta = Some(req.meta);
             self.has_emitted_mesh = true;
             Some(StockRemeshPayload::CpuMesh(Arc::new(extracted)))
