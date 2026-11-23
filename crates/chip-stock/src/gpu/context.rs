@@ -27,6 +27,18 @@ pub(crate) struct TriDexelEmitResources {
     pub(crate) init_args_buf: wgpu::Buffer,
 }
 
+/// Process-wide serialization lock for `wgpu::Device::create_compute_pipeline` / shader module
+/// compilation. On Windows DX12 with FXC (`d3dcompiler_47.dll`), `wgpu-hal`'s shader cache shares
+/// `ID3DBlob` objects whose COM `AddRef`/`Release` is non-atomic; serializing pipeline builds
+/// prevents concurrent thread races inside FXC during lazy or multi-context initialization.
+fn with_pipeline_compile_lock<R>(f: impl FnOnce() -> R) -> R {
+    static PIPELINE_COMPILE_LOCK: Mutex<()> = Mutex::new(());
+    let _guard = PIPELINE_COMPILE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    f()
+}
+
 /// Reusable `wgpu` compute device, queue, and pre-compiled stock simulation pipelines.
 ///
 /// Can be constructed either from an existing shared `eframe`/`ViewportRenderer` device
@@ -41,6 +53,7 @@ pub struct GpuSimContext {
     pub(crate) cylindrical_pipeline: wgpu::ComputePipeline,
     pub(crate) tridexel_bgl: wgpu::BindGroupLayout,
     pub(crate) tridexel_pipeline: wgpu::ComputePipeline,
+    tridexel_oriented_pipeline: OnceLock<wgpu::ComputePipeline>,
     tridexel_emit: OnceLock<TriDexelEmitResources>,
     pub(crate) bvh_common_bgl: wgpu::BindGroupLayout,
     pub(crate) bvh_td_bgl: wgpu::BindGroupLayout,
@@ -76,11 +89,21 @@ impl GpuSimContext {
         queue: Arc<wgpu::Queue>,
         adapter_info: ActiveSimBackendInfo,
     ) -> Self {
-        let (heightfield_bgl, heightfield_pipeline) = build_heightfield_pipeline(&device);
-        let (cylindrical_bgl, cylindrical_pipeline) = build_cylindrical_pipeline(&device);
-        let (tridexel_bgl, tridexel_pipeline) = build_tridexel_pipeline(&device);
-        let bvh = build_bvh_pipelines(&device);
-        let met = build_metrics_pipelines(&device);
+        let (
+            (heightfield_bgl, heightfield_pipeline),
+            (cylindrical_bgl, cylindrical_pipeline),
+            (tridexel_bgl, tridexel_pipeline),
+            bvh,
+            met,
+        ) = with_pipeline_compile_lock(|| {
+            (
+                build_heightfield_pipeline(&device),
+                build_cylindrical_pipeline(&device),
+                build_tridexel_pipeline(&device),
+                build_bvh_pipelines(&device),
+                build_metrics_pipelines(&device),
+            )
+        });
 
         Self {
             device,
@@ -92,6 +115,7 @@ impl GpuSimContext {
             cylindrical_pipeline,
             tridexel_bgl,
             tridexel_pipeline,
+            tridexel_oriented_pipeline: OnceLock::new(),
             tridexel_emit: OnceLock::new(),
             bvh_common_bgl: bvh.common_bgl,
             bvh_td_bgl: bvh.td_bgl,
@@ -249,11 +273,23 @@ impl GpuSimContext {
         &self.adapter_info
     }
 
+    /// Lazily compiles and caches the 4th-axis oriented-pose Tri-Dexel sweep pipeline
+    /// (`main_oriented` in `tridexel_sweep.wgsl`) so 3-axis/indexed simulations only compile the
+    /// compact cardinal sweeper (`main`).
+    pub(crate) fn tridexel_oriented_pipeline(&self) -> &wgpu::ComputePipeline {
+        self.tridexel_oriented_pipeline.get_or_init(|| {
+            with_pipeline_compile_lock(|| {
+                build_tridexel_oriented_pipeline(&self.device, &self.tridexel_bgl)
+            })
+        })
+    }
+
     /// Lazily compiles and caches the viewport-only Tri-Dexel Surface Nets compute pipeline so
     /// headless CLI/test simulations do not pay its compilation cost unless rendering is requested.
     pub(crate) fn tridexel_emit_resources(&self) -> &TriDexelEmitResources {
-        self.tridexel_emit
-            .get_or_init(|| build_tridexel_emit_pipeline(&self.device))
+        self.tridexel_emit.get_or_init(|| {
+            with_pipeline_compile_lock(|| build_tridexel_emit_pipeline(&self.device))
+        })
     }
 
     /// Synchronously maps `staging_buf` (after a copy command has been submitted to `queue`)
@@ -485,6 +521,31 @@ fn build_tridexel_pipeline(
     });
 
     (bgl, pipeline)
+}
+
+fn build_tridexel_oriented_pipeline(
+    device: &wgpu::Device,
+    bgl: &wgpu::BindGroupLayout,
+) -> wgpu::ComputePipeline {
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("chip_tridexel_sweep_oriented_wgsl"),
+        source: wgpu::ShaderSource::Wgsl(include_str!("tridexel_sweep.wgsl").into()),
+    });
+
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("chip_td_sweep_oriented_layout"),
+        bind_group_layouts: &[Some(bgl)],
+        immediate_size: 0,
+    });
+
+    device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("chip_td_sweep_oriented_pipeline"),
+        layout: Some(&layout),
+        module: &shader,
+        entry_point: Some("main_oriented"),
+        compilation_options: wgpu::PipelineCompilationOptions::default(),
+        cache: None,
+    })
 }
 
 fn build_tridexel_emit_pipeline(device: &wgpu::Device) -> TriDexelEmitResources {
@@ -867,52 +928,98 @@ mod tests {
         })
     }
 
-    fn inlined_loop_stats(
+    #[derive(Default, Clone, Copy)]
+    struct InlinedComplexity {
+        loops: usize,
+        max_depth: usize,
+        switches: usize,
+        stmts: usize,
+        local_arrays: usize,
+    }
+
+    fn count_local_arrays(module: &wgpu::naga::Module, func: &wgpu::naga::Function) -> usize {
+        func.local_variables
+            .iter()
+            .filter(|(_, lv)| {
+                matches!(
+                    module.types[lv.ty].inner,
+                    wgpu::naga::TypeInner::Array { .. }
+                )
+            })
+            .count()
+    }
+
+    fn inlined_complexity(
         module: &wgpu::naga::Module,
         block: &Block,
         depth: usize,
-    ) -> (usize, usize) {
-        let mut total_loops = 0usize;
-        let mut max_depth = depth;
+    ) -> InlinedComplexity {
+        let mut out = InlinedComplexity {
+            max_depth: depth,
+            ..Default::default()
+        };
         for stmt in block.iter() {
+            if !matches!(stmt, Statement::Emit(_)) {
+                out.stmts += 1;
+            }
             match stmt {
                 Statement::Block(inner) => {
-                    let (c, d) = inlined_loop_stats(module, inner, depth);
-                    total_loops += c;
-                    max_depth = max_depth.max(d);
+                    let sub = inlined_complexity(module, inner, depth);
+                    out.loops += sub.loops;
+                    out.max_depth = out.max_depth.max(sub.max_depth);
+                    out.switches += sub.switches;
+                    out.stmts += sub.stmts;
+                    out.local_arrays += sub.local_arrays;
                 }
                 Statement::If { accept, reject, .. } => {
-                    let (ca, da) = inlined_loop_stats(module, accept, depth);
-                    let (cr, dr) = inlined_loop_stats(module, reject, depth);
-                    total_loops += ca + cr;
-                    max_depth = max_depth.max(da).max(dr);
+                    let a = inlined_complexity(module, accept, depth);
+                    let r = inlined_complexity(module, reject, depth);
+                    out.loops += a.loops + r.loops;
+                    out.max_depth = out.max_depth.max(a.max_depth).max(r.max_depth);
+                    out.switches += a.switches + r.switches;
+                    out.stmts += a.stmts + r.stmts;
+                    out.local_arrays += a.local_arrays + r.local_arrays;
                 }
                 Statement::Switch { cases, .. } => {
+                    out.switches += 1;
                     for case in cases {
-                        let (c, d) = inlined_loop_stats(module, &case.body, depth);
-                        total_loops += c;
-                        max_depth = max_depth.max(d);
+                        let sub = inlined_complexity(module, &case.body, depth);
+                        out.loops += sub.loops;
+                        out.max_depth = out.max_depth.max(sub.max_depth);
+                        out.switches += sub.switches;
+                        out.stmts += sub.stmts;
+                        out.local_arrays += sub.local_arrays;
                     }
                 }
                 Statement::Loop {
                     body, continuing, ..
                 } => {
                     let next_depth = depth + 1;
-                    let (cb, db) = inlined_loop_stats(module, body, next_depth);
-                    let (cc, dc) = inlined_loop_stats(module, continuing, next_depth);
-                    total_loops += 1 + cb + cc;
-                    max_depth = max_depth.max(next_depth).max(db).max(dc);
+                    let b = inlined_complexity(module, body, next_depth);
+                    let c = inlined_complexity(module, continuing, next_depth);
+                    out.loops += 1 + b.loops + c.loops;
+                    out.max_depth = out
+                        .max_depth
+                        .max(next_depth)
+                        .max(b.max_depth)
+                        .max(c.max_depth);
+                    out.switches += b.switches + c.switches;
+                    out.stmts += b.stmts + c.stmts;
+                    out.local_arrays += b.local_arrays + c.local_arrays;
                 }
                 Statement::Call { function, .. } => {
-                    let (c, d) =
-                        inlined_loop_stats(module, &module.functions[*function].body, depth);
-                    total_loops += c;
-                    max_depth = max_depth.max(d);
+                    let callee = &module.functions[*function];
+                    let sub = inlined_complexity(module, &callee.body, depth);
+                    out.loops += sub.loops;
+                    out.max_depth = out.max_depth.max(sub.max_depth);
+                    out.switches += sub.switches;
+                    out.stmts += sub.stmts;
+                    out.local_arrays += count_local_arrays(module, callee) + sub.local_arrays;
                 }
                 _ => {}
             }
         }
-        (total_loops, max_depth)
+        out
     }
 
     fn assert_fxc_safe_wgsl(label: &str, src: &str) {
@@ -950,27 +1057,58 @@ mod tests {
         for ep in &module.entry_points {
             check_fn(&ep.name, &ep.function);
             // FXC (D3DCompile SM 5.0) inlines every user function and wraps each WGSL loop in
-            // Naga's 64-bit `loop_bound` + `while(true)` scaffold. Deeply nested or heavily
-            // duplicated inlined loops cause FXC to spin for minutes or crash with
-            // `STATUS_INTEGER_DIVIDE_BY_ZERO` (`0xc0000094`) on Windows.
-            let (inlined_loops, max_depth) = inlined_loop_stats(&module, &ep.function.body, 0);
-            let loop_cap = if label == "tridexel_emit.wgsl" {
-                12
-            } else {
-                60
+            // Naga's 64-bit `loop_bound` + `while(true)` scaffold. Deeply nested loops, heavily
+            // duplicated switches/statements, or dynamically-indexed local arrays cause FXC to
+            // spin for minutes or crash (`STATUS_INTEGER_DIVIDE_BY_ZERO` / `STATUS_ACCESS_VIOLATION`)
+            // on Windows.
+            let mut stats = inlined_complexity(&module, &ep.function.body, 0);
+            stats.local_arrays += count_local_arrays(&module, &ep.function);
+            let loop_cap = match label {
+                "tridexel_emit.wgsl" => 12,
+                "tridexel_sweep.wgsl" => 16,
+                _ => 36,
+            };
+            let stmt_cap = match label {
+                "tridexel_emit.wgsl" => 3_200,
+                "tridexel_sweep.wgsl" => 1_800,
+                _ => 1_800,
             };
             assert!(
-                max_depth <= 3,
-                "WGSL shader `{label}` entry `{}` has inlined loop nesting depth {max_depth} (> 3), \
+                stats.max_depth <= 3,
+                "WGSL shader `{label}` entry `{}` has inlined loop nesting depth {} (> 3), \
                  which can hang or crash Windows FXC (`d3dcompiler_47.dll`)",
-                ep.name
+                ep.name,
+                stats.max_depth
             );
             assert!(
-                inlined_loops <= loop_cap,
-                "WGSL shader `{label}` entry `{}` expands to {inlined_loops} inlined loops (> {loop_cap}), \
+                stats.loops <= loop_cap,
+                "WGSL shader `{label}` entry `{}` expands to {} inlined loops (> {loop_cap}), \
                  which can hang or crash Windows FXC (`d3dcompiler_47.dll`)",
-                ep.name
+                ep.name,
+                stats.loops
             );
+            assert!(
+                stats.switches <= 12,
+                "WGSL shader `{label}` entry `{}` expands to {} inlined switches (> 12), \
+                 which can hang or crash Windows FXC (`d3dcompiler_47.dll`)",
+                ep.name,
+                stats.switches
+            );
+            assert!(
+                stats.stmts <= stmt_cap,
+                "WGSL shader `{label}` entry `{}` expands to {} inlined statements (> {stmt_cap}), \
+                 which can hang or crash Windows FXC (`d3dcompiler_47.dll`)",
+                ep.name,
+                stats.stmts
+            );
+            if matches!(label, "tridexel_sweep.wgsl" | "tridexel_emit.wgsl") {
+                assert_eq!(
+                    stats.local_arrays, 0,
+                    "WGSL shader `{label}` entry `{}` declares {} inlined function-local arrays \
+                     (avoid FXC `dcl_indexableTemp` pressure)",
+                    ep.name, stats.local_arrays
+                );
+            }
         }
     }
 

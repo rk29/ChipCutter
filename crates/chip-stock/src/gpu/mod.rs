@@ -2549,4 +2549,120 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn gpu_tridexel_mixed_cardinal_and_oriented_single_batch_matches_cpu() {
+        let Some(ctx) = GpuSimContext::shared_headless() else {
+            return;
+        };
+        let r_stock = 15.0;
+        let half_len = 20.0;
+        let rotary = RotaryStockSpec {
+            axis: crate::types::Axis3::X,
+            center_wcs: DVec3::ZERO,
+            direction_sign: 1.0,
+            axis_letter: 'A',
+            stock_u_min: -half_len,
+            stock_u_max: half_len,
+            stock_outer_radius_mm: r_stock,
+            chuck_u_min: -40.0,
+            chuck_u_max: -half_len,
+            chuck_radius_mm: 24.0,
+        };
+        let stock_spec = StockShapeSpec::Cylinder {
+            center_wcs: DVec3::ZERO,
+            axis: crate::types::Axis3::X,
+            radius_mm: r_stock,
+            min_axial_mm: -half_len,
+            max_axial_mm: half_len,
+            aabb_wcs: Aabb3::new(
+                DVec3::new(-half_len, -r_stock, -r_stock),
+                DVec3::new(half_len, r_stock, r_stock),
+            ),
+        };
+        let mut td_cpu =
+            crate::tridexel::TriDexelStock::from_stock_spec(&stock_spec, SimResolution::Standard)
+                .unwrap();
+        td_cpu.rotary = Some(rotary);
+        let td_gpu = td_cpu.clone();
+
+        let tools = vec![make_tool(
+            "ball_6",
+            22.0,
+            CutterGeometry::BallEndmill {
+                diameter_mm: 6.0,
+                flute_length_mm: 14.0,
+                overall_length_mm: 50.0,
+                shank_diameter_mm: 6.0,
+                flutes: 2,
+            },
+        )];
+        // Single batch interleaving: indexed cardinal (0 deg) -> continuous oriented (0..45 deg)
+        // -> indexed cardinal (90 deg) -> continuous oriented (90..135 deg).
+        let chords = vec![
+            SweepChord {
+                motion: SweepMotion::Linear {
+                    p0: DVec3::new(-12.0, 0.0, 12.0),
+                    p1: DVec3::new(12.0, 0.0, 12.0),
+                    rotary_deg_0: 0.0,
+                    rotary_deg_1: 0.0,
+                },
+                op_idx: 0,
+                is_rapid: false,
+                profile_idx: 0,
+                verify_tol: StockVerifyTolerances::default(),
+            },
+            SweepChord {
+                motion: SweepMotion::Linear {
+                    p0: DVec3::new(12.0, 0.0, 12.0),
+                    p1: DVec3::new(-12.0, 0.0, 12.0),
+                    rotary_deg_0: 0.0,
+                    rotary_deg_1: 45.0,
+                },
+                op_idx: 0,
+                is_rapid: false,
+                profile_idx: 0,
+                verify_tol: StockVerifyTolerances::default(),
+            },
+            SweepChord {
+                motion: SweepMotion::Linear {
+                    p0: DVec3::new(-12.0, 0.0, 11.5),
+                    p1: DVec3::new(12.0, 0.0, 11.5),
+                    rotary_deg_0: 90.0,
+                    rotary_deg_1: 90.0,
+                },
+                op_idx: 1,
+                is_rapid: false,
+                profile_idx: 0,
+                verify_tol: StockVerifyTolerances::default(),
+            },
+            SweepChord {
+                motion: SweepMotion::Linear {
+                    p0: DVec3::new(12.0, 0.0, 11.5),
+                    p1: DVec3::new(-12.0, 0.0, 11.5),
+                    rotary_deg_0: 90.0,
+                    rotary_deg_1: 135.0,
+                },
+                op_idx: 1,
+                is_rapid: false,
+                profile_idx: 0,
+                verify_tol: StockVerifyTolerances::default(),
+            },
+        ];
+
+        let mut cpu = CpuExactBackend::new(SimulatedStock::TriDexel(Box::new(td_cpu)), None);
+        let mut gpu =
+            WgpuComputeBackend::new(ctx, SimulatedStock::TriDexel(Box::new(td_gpu)), None);
+        let out_cpu = cpu.sweep_batch(&chords, &tools, true);
+        let out_gpu = gpu.sweep_batch(&chords, &tools, true);
+        assert!(out_cpu.mutated && out_gpu.mutated);
+
+        let vol_cpu = cpu.compute_volume_mm3();
+        let vol_gpu = gpu.compute_volume_mm3();
+        let rel_err = ((vol_gpu - vol_cpu) / vol_cpu.max(1.0)).abs();
+        assert!(
+            rel_err < 0.005,
+            "mixed cardinal+oriented batch GPU volume ({vol_gpu:.2}) must match CPU ({vol_cpu:.2}), rel_err={rel_err:.5}"
+        );
+    }
 }

@@ -953,6 +953,77 @@ impl GpuTriDexelState {
             };
         }
 
+        self.gpu_profiles_scratch.clear();
+        self.gpu_profiles_scratch
+            .extend(profiles.iter().map(GpuToolProfile::from_tool_spec));
+
+        let shared_rebind = {
+            let device = self.ctx.device();
+            let queue = self.ctx.queue();
+            let mut rebind = false;
+            rebind |= self
+                .profiles_buf
+                .upload_slice(device, queue, &self.gpu_profiles_scratch);
+            rebind |= self
+                .chords_buf
+                .upload_slice(device, queue, &self.gpu_chords_scratch);
+            rebind
+        };
+
+        // Partition flattened primitives into maximal contiguous runs of `CardinalLinear` vs
+        // `OrientedPose` so each run dispatches its dedicated compact shader (`main` vs lazy
+        // `main_oriented`) in exact chronological order with zero extra passes for pure batches.
+        let total_prims = self.prim_chords_scratch.len();
+        let mut any_mutated = false;
+        let mut merged_violations = chuck_violations;
+        let mut run_start = 0usize;
+        let mut need_shared_rebind = shared_rebind;
+        while run_start < total_prims {
+            let is_oriented = matches!(
+                self.prim_chords_scratch[run_start].prim,
+                SweptPrimitive::OrientedPose(_)
+            );
+            let mut run_end = run_start + 1;
+            while run_end < total_prims
+                && matches!(
+                    self.prim_chords_scratch[run_end].prim,
+                    SweptPrimitive::OrientedPose(_)
+                ) == is_oriented
+            {
+                run_end += 1;
+            }
+            let (run_mut, run_viol) = self.dispatch_primitive_run(
+                run_start..run_end,
+                is_oriented,
+                need_shared_rebind,
+                profiles,
+                verify,
+            );
+            need_shared_rebind = false;
+            any_mutated |= run_mut;
+            merged_violations.merge(run_viol);
+            run_start = run_end;
+        }
+
+        if any_mutated {
+            let mut guard = self.cpu.lock().unwrap_or_else(|e| e.into_inner());
+            guard.gpu_dirty = true;
+        }
+
+        BatchSweepOutput {
+            mutated: any_mutated,
+            violations: merged_violations,
+        }
+    }
+
+    fn dispatch_primitive_run(
+        &mut self,
+        run_range: std::ops::Range<usize>,
+        is_oriented: bool,
+        shared_rebind: bool,
+        profiles: &[SweepToolSpec],
+        verify: bool,
+    ) -> (bool, SpanRuleViolations) {
         // Coarse 16x16 tile-binning for all 3 planes in strict chronological chord order
         let mut active_planes = [false; 3];
         for (ax_idx, plane) in self.planes.iter_mut().enumerate() {
@@ -964,7 +1035,8 @@ impl GpuTriDexelState {
             let v_ax = axis.v_axis();
             let mut total_binned = 0usize;
 
-            for (gpu_idx, fc) in self.prim_chords_scratch.iter().enumerate() {
+            for gpu_idx in run_range.clone() {
+                let fc = &self.prim_chords_scratch[gpu_idx];
                 let Some(tool) = profiles.get(fc.profile_idx) else {
                     continue;
                 };
@@ -1069,26 +1141,11 @@ impl GpuTriDexelState {
         }
 
         if !active_planes.iter().any(|&a| a) {
-            return BatchSweepOutput {
-                mutated: false,
-                violations: chuck_violations,
-            };
+            return (false, SpanRuleViolations::default());
         }
-
-        self.gpu_profiles_scratch.clear();
-        self.gpu_profiles_scratch
-            .extend(profiles.iter().map(GpuToolProfile::from_tool_spec));
 
         let device = self.ctx.device();
         let queue = self.ctx.queue();
-        let mut shared_rebind = false;
-        shared_rebind |= self
-            .profiles_buf
-            .upload_slice(device, queue, &self.gpu_profiles_scratch);
-        shared_rebind |= self
-            .chords_buf
-            .upload_slice(device, queue, &self.gpu_chords_scratch);
-
         for (ax_idx, plane) in self.planes.iter_mut().enumerate() {
             let mut plane_rebind = shared_rebind;
             if active_planes[ax_idx] {
@@ -1114,6 +1171,11 @@ impl GpuTriDexelState {
             }
         }
 
+        let pipeline = if is_oriented {
+            self.ctx.tridexel_oriented_pipeline()
+        } else {
+            &self.ctx.tridexel_pipeline
+        };
         let accum_bytes = std::mem::size_of::<GpuViolationAccum>();
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("chip_td_sweep_encoder"),
@@ -1129,7 +1191,7 @@ impl GpuTriDexelState {
                     label: Some("chip_td_sweep_pass"),
                     timestamp_writes: None,
                 });
-                pass.set_pipeline(&self.ctx.tridexel_pipeline);
+                pass.set_pipeline(pipeline);
                 pass.set_bind_group(0, &plane.bind_group, &[]);
                 pass.dispatch_workgroups(plane.tiles_u as u32, plane.tiles_v as u32, 1);
             }
@@ -1145,7 +1207,7 @@ impl GpuTriDexelState {
         queue.submit(std::iter::once(encoder.finish()));
 
         let mut any_mutated = false;
-        let mut merged_violations = chuck_violations;
+        let mut merged_violations = SpanRuleViolations::default();
         let mut overflow_planes = [false; 3];
 
         // Single-poll batched readback across all active planes (1 CPU-GPU sync instead of 3!)
@@ -1238,29 +1300,23 @@ impl GpuTriDexelState {
             if !had_overflow {
                 continue;
             }
-            let (ov_mut, ov_viol) = self.resolve_plane_overflow(ax_idx, profiles, verify);
+            let (ov_mut, ov_viol) =
+                self.resolve_plane_overflow(ax_idx, run_range.clone(), profiles, verify);
             any_mutated |= ov_mut;
             merged_violations.merge(ov_viol);
         }
 
-        if any_mutated {
-            let mut guard = self.cpu.lock().unwrap_or_else(|e| e.into_inner());
-            guard.gpu_dirty = true;
-        }
-
-        BatchSweepOutput {
-            mutated: any_mutated,
-            violations: merged_violations,
-        }
+        (any_mutated, merged_violations)
     }
 
     /// Reads back ONLY the flagged overflow ray bitset for plane `ax_idx`, fetches pre-batch
-    /// inline spans ONLY for newly-overflowed rays, replays this batch's linear chords in exact
+    /// inline spans ONLY for newly-overflowed rays, replays this run's primitives in exact
     /// `f64`, updates `plane.overflow`, and migrates rays back into GPU inline slots if they
     /// shrink to `<= K = 4` spans!
     fn resolve_plane_overflow(
         &self,
         ax_idx: usize,
+        run_range: std::ops::Range<usize>,
         profiles: &[SweepToolSpec],
         verify: bool,
     ) -> (bool, SpanRuleViolations) {
@@ -1423,7 +1479,7 @@ impl GpuTriDexelState {
             let target_slice = target_spans_owned.as_deref();
 
             let mut ray_mut = false;
-            for fc in &self.prim_chords_scratch {
+            for fc in &self.prim_chords_scratch[run_range.clone()] {
                 let Some(tool) = profiles.get(fc.profile_idx) else {
                     continue;
                 };

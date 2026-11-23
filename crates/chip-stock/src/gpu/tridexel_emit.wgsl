@@ -356,7 +356,7 @@ struct EndpointQuery {
     coord: f32,
 }
 
-// Straight-line fixed-K (`K = 4`) nearest endpoint lookup (zero inner loops for fast FXC compile).
+// Straight-line fixed-K (`K = 4`) nearest endpoint lookup (zero inner loops, compact for FXC).
 fn nearest_endpoint_on_plane(
     ax: u32,
     iu: i32,
@@ -376,44 +376,36 @@ fn nearest_endpoint_on_plane(
             var best_d = max_dw + 1.0;
 
             let s0 = m_slots[base];
-            if (s0.max_local > s0.min_local) {
-                let c0 = select(s0.max_local, s0.min_local, want_min);
-                let d0 = abs(c0 - ref_w);
-                if (d0 <= max_dw && d0 < best_d) {
-                    best_d = d0;
-                    out = EndpointQuery(true, c0);
-                }
+            let c0 = select(s0.max_local, s0.min_local, want_min);
+            let d0 = abs(c0 - ref_w);
+            if (s0.max_local > s0.min_local && d0 <= max_dw && d0 < best_d) {
+                best_d = d0;
+                out = EndpointQuery(true, c0);
             }
             if (n_cnt > 1u) {
                 let s1 = m_slots[base + 1u];
-                if (s1.max_local > s1.min_local) {
-                    let c1 = select(s1.max_local, s1.min_local, want_min);
-                    let d1 = abs(c1 - ref_w);
-                    if (d1 <= max_dw && d1 < best_d) {
-                        best_d = d1;
-                        out = EndpointQuery(true, c1);
-                    }
+                let c1 = select(s1.max_local, s1.min_local, want_min);
+                let d1 = abs(c1 - ref_w);
+                if (s1.max_local > s1.min_local && d1 <= max_dw && d1 < best_d) {
+                    best_d = d1;
+                    out = EndpointQuery(true, c1);
                 }
             }
             if (n_cnt > 2u) {
                 let s2 = m_slots[base + 2u];
-                if (s2.max_local > s2.min_local) {
-                    let c2 = select(s2.max_local, s2.min_local, want_min);
-                    let d2 = abs(c2 - ref_w);
-                    if (d2 <= max_dw && d2 < best_d) {
-                        best_d = d2;
-                        out = EndpointQuery(true, c2);
-                    }
+                let c2 = select(s2.max_local, s2.min_local, want_min);
+                let d2 = abs(c2 - ref_w);
+                if (s2.max_local > s2.min_local && d2 <= max_dw && d2 < best_d) {
+                    best_d = d2;
+                    out = EndpointQuery(true, c2);
                 }
             }
             if (n_cnt > 3u) {
                 let s3 = m_slots[base + 3u];
-                if (s3.max_local > s3.min_local) {
-                    let c3 = select(s3.max_local, s3.min_local, want_min);
-                    let d3 = abs(c3 - ref_w);
-                    if (d3 <= max_dw && d3 < best_d) {
-                        out = EndpointQuery(true, c3);
-                    }
+                let c3 = select(s3.max_local, s3.min_local, want_min);
+                let d3 = abs(c3 - ref_w);
+                if (s3.max_local > s3.min_local && d3 <= max_dw && d3 < best_d) {
+                    out = EndpointQuery(true, c3);
                 }
             }
         }
@@ -481,10 +473,18 @@ fn eval_corner_plane_patch_normal(
         var valid = true;
         if (u_cnt == 0.0) {
             let left_side = q00.found || q01.found;
+            let bot_side = q00.found || q10.found;
             let base_u = select(cu, cu - 1, left_side);
             let step_u = select(1, -1, left_side);
-            let base_v = select(cv, cv - 1, q00.found || q10.found);
-            let q_ref = nearest_endpoint_on_plane(ax, base_u, base_v, want_min, ref_w, max_d);
+            let base_v = select(cv, cv - 1, bot_side);
+            var q_ref = q11;
+            if (left_side && bot_side) {
+                q_ref = q00;
+            } else if (!left_side && bot_side) {
+                q_ref = q10;
+            } else if (left_side && !bot_side) {
+                q_ref = q01;
+            }
             let q_ext = nearest_endpoint_on_plane(ax, base_u + step_u, base_v, want_min, ref_w, max_d);
             if (q_ref.found && q_ext.found) {
                 u_sum = (q_ext.coord - q_ref.coord) / (du * f32(step_u));
@@ -495,10 +495,18 @@ fn eval_corner_plane_patch_normal(
         }
         if (valid && v_cnt == 0.0) {
             let bot_side = q00.found || q10.found;
+            let left_side = q00.found || q01.found;
             let base_v = select(cv, cv - 1, bot_side);
             let step_v = select(1, -1, bot_side);
-            let base_u = select(cu, cu - 1, q00.found || q01.found);
-            let q_ref = nearest_endpoint_on_plane(ax, base_u, base_v, want_min, ref_w, max_d);
+            let base_u = select(cu, cu - 1, left_side);
+            var q_ref = q11;
+            if (left_side && bot_side) {
+                q_ref = q00;
+            } else if (!left_side && bot_side) {
+                q_ref = q10;
+            } else if (left_side && !bot_side) {
+                q_ref = q01;
+            }
             let q_ext = nearest_endpoint_on_plane(ax, base_u, base_v + step_v, want_min, ref_w, max_d);
             if (q_ref.found && q_ext.found) {
                 v_sum = (q_ext.coord - q_ref.coord) / (dv * f32(step_v));
@@ -700,14 +708,22 @@ fn compute_dual_corner_offset(
             var nw = vec4<f32>(0.0);
             var nu = vec4<f32>(0.0);
             var nv = vec4<f32>(0.0);
-            if (w_cnt > 0.0) {
-                nw = eval_corner_plane_patch_normal(axis_id, c_xyz, w_min_votes * 2.0 > w_cnt, w_avg);
-            }
-            if (u_cnt > 0.0) {
-                nu = eval_corner_plane_patch_normal(u_ax, c_xyz, u_min_votes * 2.0 > u_cnt, u_avg);
-            }
-            if (v_cnt > 0.0) {
-                nv = eval_corner_plane_patch_normal(v_ax, c_xyz, v_min_votes * 2.0 > v_cnt, v_avg);
+            // Single call site to `eval_corner_plane_patch_normal` avoids 3× helper inlining in FXC.
+            for (var ai = 0u; ai < 3u; ai = ai + 1u) {
+                let ax_cnt = select(select(w_cnt, u_cnt, ai == 1u), v_cnt, ai == 2u);
+                if (ax_cnt > 0.0) {
+                    let q_ax = select(select(axis_id, u_ax, ai == 1u), v_ax, ai == 2u);
+                    let q_votes = select(select(w_min_votes, u_min_votes, ai == 1u), v_min_votes, ai == 2u);
+                    let q_avg = select(select(w_avg, u_avg, ai == 1u), v_avg, ai == 2u);
+                    let pn = eval_corner_plane_patch_normal(q_ax, c_xyz, q_votes * 2.0 > ax_cnt, q_avg);
+                    if (ai == 0u) {
+                        nw = pn;
+                    } else if (ai == 1u) {
+                        nu = pn;
+                    } else {
+                        nv = pn;
+                    }
+                }
             }
             if (nw.w > 0.5 && nu.w > 0.5 && dot(nw.xyz, nu.xyz) < CREASE_COS_THRESHOLD) {
                 is_sharp = true;
@@ -1022,8 +1038,12 @@ fn compute_corner_smooth_normal(
     let n_occ_len = length(n_occ_raw);
     let ref_dir = select(n_face, n_occ_raw / max(n_occ_len, 1e-6), !is_bnd && n_occ_len > 0.5);
 
-    var n_axes = array<vec4<f32>, 3>(vec4<f32>(0.0), vec4<f32>(0.0), vec4<f32>(0.0));
-    var w_axes = array<f32, 3>(0.0, 0.0, 0.0);
+    var n_ax0 = vec4<f32>(0.0);
+    var n_ax1 = vec4<f32>(0.0);
+    var n_ax2 = vec4<f32>(0.0);
+    var w_ax0: f32 = 0.0;
+    var w_ax1: f32 = 0.0;
+    var w_ax2: f32 = 0.0;
 
     for (var ax = 0u; ax < 3u; ax = ax + 1u) {
         let comp = axis_get_f32(ref_dir, ax);
@@ -1075,8 +1095,16 @@ fn compute_corner_smooth_normal(
                     n_uvw = vec3<f32>(dw_du, dw_dv, -1.0);
                 }
                 let n_ax = normalize(from_uvw_f32(ax, n_uvw.x, n_uvw.y, n_uvw.z));
-                n_axes[ax] = vec4<f32>(n_ax, 1.0);
-                w_axes[ax] = w_ax;
+                if (ax == 0u) {
+                    n_ax0 = vec4<f32>(n_ax, 1.0);
+                    w_ax0 = w_ax;
+                } else if (ax == 1u) {
+                    n_ax1 = vec4<f32>(n_ax, 1.0);
+                    w_ax1 = w_ax;
+                } else {
+                    n_ax2 = vec4<f32>(n_ax, 1.0);
+                    w_ax2 = w_ax;
+                }
             }
         }
     }
@@ -1085,26 +1113,30 @@ fn compute_corner_smooth_normal(
     // disagreeing by > 38°). On sharp creases, filter strictly against `n_face`; on smooth
     // curved corners, blend all active planes unconditionally so sliver quads match seamlessly!
     var is_crease = is_bnd;
-    if (!is_crease && n_axes[0].w > 0.5 && n_axes[1].w > 0.5 && dot(n_axes[0].xyz, n_axes[1].xyz) < CREASE_COS_THRESHOLD) {
+    if (!is_crease && n_ax0.w > 0.5 && n_ax1.w > 0.5 && dot(n_ax0.xyz, n_ax1.xyz) < CREASE_COS_THRESHOLD) {
         is_crease = true;
     }
-    if (!is_crease && n_axes[0].w > 0.5 && n_axes[2].w > 0.5 && dot(n_axes[0].xyz, n_axes[2].xyz) < CREASE_COS_THRESHOLD) {
+    if (!is_crease && n_ax0.w > 0.5 && n_ax2.w > 0.5 && dot(n_ax0.xyz, n_ax2.xyz) < CREASE_COS_THRESHOLD) {
         is_crease = true;
     }
-    if (!is_crease && n_axes[1].w > 0.5 && n_axes[2].w > 0.5 && dot(n_axes[1].xyz, n_axes[2].xyz) < CREASE_COS_THRESHOLD) {
+    if (!is_crease && n_ax1.w > 0.5 && n_ax2.w > 0.5 && dot(n_ax1.xyz, n_ax2.xyz) < CREASE_COS_THRESHOLD) {
         is_crease = true;
     }
 
     var n_blend = vec3<f32>(0.0);
     var w_total = 0.0;
-    for (var ax = 0u; ax < 3u; ax = ax + 1u) {
-        if (n_axes[ax].w > 0.5) {
-            let allow = select(dot(n_axes[ax].xyz, n_face) > 0.15, dot(n_axes[ax].xyz, n_face) >= CREASE_COS_THRESHOLD, is_crease);
-            if (allow) {
-                n_blend = n_blend + w_axes[ax] * n_axes[ax].xyz;
-                w_total = w_total + w_axes[ax];
-            }
-        }
+    let min_dot = select(0.15, CREASE_COS_THRESHOLD, is_crease);
+    if (n_ax0.w > 0.5 && dot(n_ax0.xyz, n_face) >= min_dot) {
+        n_blend = n_blend + w_ax0 * n_ax0.xyz;
+        w_total = w_total + w_ax0;
+    }
+    if (n_ax1.w > 0.5 && dot(n_ax1.xyz, n_face) >= min_dot) {
+        n_blend = n_blend + w_ax1 * n_ax1.xyz;
+        w_total = w_total + w_ax1;
+    }
+    if (n_ax2.w > 0.5 && dot(n_ax2.xyz, n_face) >= min_dot) {
+        n_blend = n_blend + w_ax2 * n_ax2.xyz;
+        w_total = w_total + w_ax2;
     }
 
     var out_n = n_face;
