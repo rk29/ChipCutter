@@ -50,6 +50,11 @@
   </screenshots>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="0.19.3" date="2026-11-23">
+      <description>
+        <p>Bug-fix release: refactored chip-cli clap subcommand parsing into boxed per-subcommand Args structs to eliminate Windows debug main-thread stack overflows under the 1 MiB default stack limit, and added a 768 KiB stack-headroom regression test (#25).</p>
+      </description>
+    </release>
     <release version="0.19.2" date="2026-11-23">
       <description>
         <p>Bug-fix release: enabled full 3D volumetric Tri-Dexel simulation on 4th-axis rotary setups across both CPU and WGSL GPU backends (supporting deep below-centerline indexed 3+1 cuts, interior off-centerline slots, overhanging helical flutes, live rotary stock animation, and rotary chuck keep-out collision checks), and expanded polar CylindricalStock angular search bounds when cutting below the rotary centerline (#24).</p>
