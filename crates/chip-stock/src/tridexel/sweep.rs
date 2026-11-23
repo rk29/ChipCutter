@@ -44,6 +44,7 @@ impl CardinalSpindle {
         }
     }
 
+    #[cfg(feature = "gpu-compute")]
     #[inline]
     pub(crate) const fn code(self) -> u32 {
         self as u32
@@ -334,7 +335,9 @@ fn eval_horizontal_ray_cut_interval(
     }
 
     let sub_dz = (q1.z - q0.z).abs();
-    let n_sub = ((sub_dz / dz_step_mm.max(0.05)).ceil() as usize).clamp(2, 24);
+    let n_sub_z = (sub_dz / dz_step_mm.max(0.05)).ceil() as usize;
+    let n_sub_r = ((r1 - r0).abs() / 0.015).ceil() as usize;
+    let n_sub = n_sub_z.max(n_sub_r).clamp(2, 32);
     let mut lo = f64::INFINITY;
     let mut hi = f64::NEG_INFINITY;
     for s in 0..n_sub {

@@ -483,7 +483,7 @@ Phase 19 closes every remaining tutorial, built-in sample, starter-asset, and Sa
 
 ---
 
-## Phase 20 — Overhang-Safe & Helical-Loft Toolpathing Across 3-Axis, 2.5D, Indexed `3+1`, & 4th-Axis Milling (Planned — M72–M75)
+## Phase 20 — Overhang-Safe & Helical-Loft Toolpathing Across 3-Axis, 2.5D, Indexed `3+1`, & 4th-Axis Milling (Completed — M72–M75)
 
 Building on `v0.19.1`'s monotonic `PushCutterField` fix for overhanging helical lofts in `Adaptive3D` and `Waterline3D` (#23), Phase 20 systematically hardens every remaining toolpathing, rest-machining, workholding-silhouette, and 4th-axis rotary kernel across ChipCutter against overhanging, cantilevered, and continuously twisting helical geometry—while preserving 100% lossless `.chip.toml` backward compatibility and byte-for-byte parity on existing Phase 1–5 golden G-code snapshots:
 

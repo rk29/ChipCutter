@@ -14,8 +14,10 @@ use crate::{
     cl_data::MotionRole,
     params::{Rotary4AxisPattern, Rotary4AxisSimParams, RotaryCutDirection, RotaryTiltMode},
     rotary::{
-        ResolvedRotaryConfig, RotaryAxisKind, RotaryDriveMode, drop_cutter_rotary_z_rel,
-        estimate_rotary_flank_cos_phi, resolve_rotary_axial_window,
+        ResolvedRotaryConfig, RotaryAxisKind, RotaryDriveMode,
+        detect_rotary_axial_undercut_warning, drop_cutter_rotary_z_rel,
+        estimate_rotary_flank_cos_phi, mesh_has_steep_circumferential_overhang,
+        resolve_rotary_axial_window,
     },
     strategies::{StrategyExecContext, compute_z_levels},
     surface3d::{SurfaceCutterProfile, SurfaceMesh3D, stepover_for_cusp_height},
@@ -200,6 +202,12 @@ pub fn generate_rotary4axis_sim(
             DVec3::new(last.x, last.y, safe_z_wcs),
             builder.current_rotary_deg(),
         );
+    }
+
+    if let Some(warn) =
+        detect_rotary_axial_undercut_warning(&base_mesh, &rot, u_start, u_end, r_floor)
+    {
+        builder.warnings.push(warn);
     }
 
     Ok(())
@@ -451,6 +459,7 @@ fn compute_cross_offset_field(
             };
 
             let mut raw = vec![vec![0.0_f64; nu]; theta_count];
+            let mut local_slope = vec![vec![0.0_f64; nu]; theta_count];
             for it in 0..theta_count {
                 let it_prev = if is_full_turn {
                     (it + theta_count - 1) % theta_count
@@ -471,7 +480,9 @@ fn compute_cross_offset_field(
                     let r_raw = r_center[it][iu].max(0.0);
                     let r_denom = r_raw.max(1.0);
                     let dr_dtheta = (r_center[it_next][iu] - r_center[it_prev][iu]) / span_rad;
-                    let slope_angle = (dr_dtheta / r_denom).atan();
+                    let slope = dr_dtheta / r_denom;
+                    local_slope[it][iu] = slope;
+                    let slope_angle = slope.atan();
                     let clamped_alpha = slope_angle.clamp(-max_tilt_rad, max_tilt_rad);
                     let c_val = (axis_cross_sign * r_raw * clamped_alpha.sin())
                         .clamp(-max_safe_cross, max_safe_cross);
@@ -479,14 +490,246 @@ fn compute_cross_offset_field(
                 }
             }
 
-            // Smooth cross-axis tilt field so simultaneous Y/X & rotary motion stays C1-smooth
-            let cur = smooth_cross_offset_grid(
-                raw,
-                &r_center,
-                is_full_turn,
-                smooth_passes,
-                max_safe_cross,
+            // Overhang-aware multi-offset circumferential flank probing: activates strictly when
+            // the target mesh contains steep (>70°) or overhanging circumferential blade walls so
+            // non-overhanging flutes/cams (and Phase 5 goldens) remain 100% bit-identical.
+            let probed_overhangs = mesh_has_steep_circumferential_overhang(
+                base_mesh,
+                rot,
+                u_start,
+                u_end,
+                cutter.max_radius_mm(),
             );
+            if probed_overhangs {
+                const CLIFF_SLOPE_THRESH: f64 = 0.700_207_538_209_709_7; // tan(35°)
+                let look_steps =
+                    ((params.max_tilt_deg.clamp(5.0, 40.0) * 0.90) / d_theta).ceil() as usize;
+                let look_steps = look_steps.clamp(2, 24);
+                let sin_max_tilt = max_tilt_rad.sin();
+
+                let probed: Vec<Vec<f64>> = (0..theta_count)
+                    .into_par_iter()
+                    .map(|it| {
+                        let theta_deg = start_deg + (it as f64) * d_theta;
+                        let mut row = raw[it].clone();
+
+                        for (iu, c_out) in row.iter_mut().enumerate() {
+                            let r_raw = r_center[it][iu].max(0.0);
+                            if r_raw <= r_floor + 1e-4 {
+                                continue;
+                            }
+                            let c_lim = (r_raw * sin_max_tilt).min(r_raw).min(max_safe_cross);
+                            if c_lim <= 0.05 {
+                                continue;
+                            }
+
+                            let c_slope = *c_out;
+                            let is_cliff = local_slope[it][iu].abs() > CLIFF_SLOPE_THRESH;
+
+                            // Local crest check + nearby overhanging cliff search within ±look_steps
+                            let mut r_local_max = r_raw;
+                            for delta in 1..=3usize {
+                                if is_full_turn {
+                                    let im = (it + theta_count - delta % theta_count) % theta_count;
+                                    let ip = (it + delta) % theta_count;
+                                    r_local_max =
+                                        r_local_max.max(r_center[im][iu]).max(r_center[ip][iu]);
+                                } else {
+                                    if it >= delta {
+                                        r_local_max = r_local_max.max(r_center[it - delta][iu]);
+                                    }
+                                    if it + delta < theta_count {
+                                        r_local_max = r_local_max.max(r_center[it + delta][iu]);
+                                    }
+                                }
+                            }
+
+                            let mut neg_dist: Option<usize> = None;
+                            let mut pos_dist: Option<usize> = None;
+                            for step in 1..=look_steps {
+                                if neg_dist.is_none() {
+                                    let im_opt = if is_full_turn {
+                                        Some((it + theta_count - step % theta_count) % theta_count)
+                                    } else {
+                                        it.checked_sub(step)
+                                    };
+                                    if let Some(im) = im_opt
+                                        && local_slope[im][iu].abs() > CLIFF_SLOPE_THRESH
+                                        && r_center[im][iu] > r_raw + 0.5
+                                    {
+                                        neg_dist = Some(step);
+                                    }
+                                }
+                                if pos_dist.is_none() {
+                                    let ip_opt = if is_full_turn {
+                                        Some((it + step) % theta_count)
+                                    } else if it + step < theta_count {
+                                        Some(it + step)
+                                    } else {
+                                        None
+                                    };
+                                    if let Some(ip) = ip_opt
+                                        && local_slope[ip][iu].abs() > CLIFF_SLOPE_THRESH
+                                        && r_center[ip][iu] > r_raw + 0.5
+                                    {
+                                        pos_dist = Some(step);
+                                    }
+                                }
+                                if neg_dist.is_some() && pos_dist.is_some() {
+                                    break;
+                                }
+                            }
+
+                            let has_nearby_cliff = neg_dist.is_some() || pos_dist.is_some();
+                            if !is_cliff && !has_nearby_cliff {
+                                continue;
+                            }
+
+                            // Symmetric 7-sample lateral probe fan c ∈ [-c_lim, +c_lim]
+                            let u_val = u_start + (iu as f64) * du;
+                            let mut samples = [(0.0_f64, r_raw, r_raw); 7];
+                            let mut r_eff_min = r_raw;
+                            for (idx, &k) in [-3_i32, -2, -1, 0, 1, 2, 3].iter().enumerate() {
+                                if k == 0 {
+                                    samples[idx] = (0.0, r_raw, r_raw);
+                                } else {
+                                    let c_cand = (f64::from(k) / 3.0) * c_lim;
+                                    let z_cand = drop_cutter_rotary_z_rel(
+                                        base_mesh, rot, cutter, u_val, c_cand, theta_deg, r_floor,
+                                    );
+                                    let r_eff = z_cand.hypot(c_cand);
+                                    samples[idx] = (c_cand, z_cand, r_eff);
+                                    if z_cand >= r_floor {
+                                        r_eff_min = r_eff_min.min(r_eff);
+                                    }
+                                }
+                            }
+
+                            let on_blade_crest = r_raw >= r_local_max - 0.75;
+                            let mut c_target = c_slope;
+
+                            if !on_blade_crest && r_eff_min < r_raw - 0.12 {
+                                // Flank or narrow overhanging groove: pick candidate reaching deepest
+                                // into the groove while preferring smoothness with `c_slope`.
+                                let mut best_c = c_slope;
+                                let mut best_cost = f64::INFINITY;
+                                for &(c_cand, z_cand, r_eff) in &samples {
+                                    if z_cand < r_floor || r_eff > r_eff_min + 0.08 {
+                                        continue;
+                                    }
+                                    let cost =
+                                        (r_eff - r_eff_min) + 0.02 * (c_cand - c_slope).abs();
+                                    if cost < best_cost {
+                                        best_cost = cost;
+                                        best_c = c_cand;
+                                    }
+                                }
+                                c_target = 0.75 * best_c + 0.25 * c_slope;
+                            } else if has_nearby_cliff {
+                                // Recessed groove floor beside an overhanging helical crest: tilt
+                                // toward the closer overhanging cliff as far as stays clear of the
+                                // overhanging blade tip (`r_eff <= r_eff_min + 0.35 mm`).
+                                let (overhang_dir, dist) = match (neg_dist, pos_dist) {
+                                    (Some(dn), Some(dp)) => {
+                                        if dn <= dp {
+                                            (-axis_cross_sign, dn)
+                                        } else {
+                                            (axis_cross_sign, dp)
+                                        }
+                                    }
+                                    (Some(dn), None) => (-axis_cross_sign, dn),
+                                    (None, Some(dp)) => (axis_cross_sign, dp),
+                                    (None, None) => (0.0, look_steps),
+                                };
+                                if overhang_dir.abs() > 0.5 {
+                                    let mut best_reach_c = 0.0_f64;
+                                    for &(c_cand, z_cand, r_eff) in &samples {
+                                        if z_cand >= r_floor
+                                            && c_cand * overhang_dir > 0.0
+                                            && r_eff <= r_eff_min + 0.35
+                                            && c_cand.abs() > best_reach_c.abs()
+                                        {
+                                            best_reach_c = c_cand;
+                                        }
+                                    }
+                                    let prox = (1.0 - (dist as f64) / ((look_steps + 2) as f64))
+                                        .clamp(0.25, 1.0);
+                                    let c_reach = best_reach_c * prox;
+                                    c_target = if is_cliff {
+                                        0.75 * c_reach + 0.25 * c_slope
+                                    } else {
+                                        c_reach
+                                    };
+                                }
+                            }
+
+                            *c_out = c_target.clamp(-c_lim, c_lim);
+                        }
+                        row
+                    })
+                    .collect();
+                raw = probed;
+            }
+
+            // Smooth cross-axis tilt field so simultaneous Y/X & rotary motion stays C1-smooth
+            // with zero sudden cross-axis jerks across steep overhang transitions.
+            let cur = if probed_overhangs {
+                let mut g = smooth_cross_offset_grid(
+                    raw,
+                    &r_center,
+                    is_full_turn,
+                    smooth_passes.max(8),
+                    max_safe_cross,
+                );
+                // Enforce a strict angular & axial rate-of-change bound (`<= 0.45 mm/deg`) via
+                // iterative projection so steep overhang reversals never create cross-axis jerks.
+                let max_dc_th = (0.45 * d_theta).max(0.15);
+                let max_dc_u = (0.60 * du).max(0.15);
+                for _ in 0..8 {
+                    let mut changed = false;
+                    for it in 0..theta_count {
+                        let it_next = if is_full_turn {
+                            (it + 1) % theta_count
+                        } else if it + 1 < theta_count {
+                            it + 1
+                        } else {
+                            continue;
+                        };
+                        for iu in 0..nu {
+                            let diff = g[it_next][iu] - g[it][iu];
+                            if diff.abs() > max_dc_th {
+                                let excess = 0.5 * (diff.abs() - max_dc_th) * diff.signum();
+                                g[it][iu] += excess;
+                                g[it_next][iu] -= excess;
+                                changed = true;
+                            }
+                        }
+                    }
+                    for row in &mut g {
+                        for iu in 0..(nu.saturating_sub(1)) {
+                            let diff = row[iu + 1] - row[iu];
+                            if diff.abs() > max_dc_u {
+                                let excess = 0.5 * (diff.abs() - max_dc_u) * diff.signum();
+                                row[iu] += excess;
+                                row[iu + 1] -= excess;
+                                changed = true;
+                            }
+                        }
+                    }
+                    if !changed {
+                        break;
+                    }
+                }
+                smooth_cross_offset_grid(g, &r_center, is_full_turn, 2, max_safe_cross)
+            } else {
+                smooth_cross_offset_grid(
+                    raw,
+                    &r_center,
+                    is_full_turn,
+                    smooth_passes,
+                    max_safe_cross,
+                )
+            };
 
             CrossOffsetField::Grid {
                 u_start,
@@ -598,10 +841,11 @@ fn refine_4axis_segment(
     if depth >= max_depth {
         return;
     }
+    let d_u = (b.0 - a.0).abs();
     let d_th = (b.1 - a.1).abs();
     let d_z = (b.3 - a.3).abs();
     let d_c = (b.2 - a.2).abs();
-    if d_th <= 0.35 && d_z <= 0.015 && d_c <= 0.02 {
+    if d_th <= 0.35 && d_z <= 0.015 && d_c <= 0.02 && (d_th > 1e-6 || d_u <= 0.05) {
         return;
     }
 
@@ -623,7 +867,25 @@ fn refine_4axis_segment(
     let concave_err = z_chord - z_mid;
     let cross_err = (c_mid - c_chord).abs();
 
-    if convex_err > 0.0025 || concave_err > concave_tol || cross_err > concave_tol.min(0.006) {
+    let mut needs_split =
+        convex_err > 0.0025 || concave_err > concave_tol || cross_err > concave_tol.min(0.006);
+    // On pure-axial strips/links (`d_th == 0`) crossing steep vertical cliffs, also check
+    // quarter-points so asymmetric shoulders never clip (leaves full-turn spirals bit-identical).
+    if !needs_split && d_th <= 1e-6 && d_z > 0.25 {
+        for t in [0.25_f64, 0.75] {
+            let u_q = a.0 + t * (b.0 - a.0);
+            let th_q = a.1 + t * (b.1 - a.1);
+            let c_q = a.2 + t * (b.2 - a.2);
+            let z_q = drop_cutter_rotary_z_rel(base_mesh, rot, cutter, u_q, c_q, th_q, r_floor);
+            let z_c = a.3 + t * (b.3 - a.3);
+            if (z_q - z_c) > 0.0025 {
+                needs_split = true;
+                break;
+            }
+        }
+    }
+
+    if needs_split {
         let mid = (u_mid, th_mid, c_mid, z_mid);
         refine_4axis_segment(
             base_mesh,
@@ -809,10 +1071,40 @@ fn emit_simultaneous_spiral(
             .collect();
         ctx.check_cancel()?;
 
+        // Precompute exact gouge-free ZigZag axial link transitions (`u_prev -> u_cur`) at the
+        // shared sector endpoint angle `th0` so diagonal helical crests are never clipped.
+        let link_steps = ((lane_du / 0.25).ceil() as usize).clamp(2, 64);
+        let lane_links: Vec<Vec<(f64, f64, f64, f64)>> = (0..=n_lanes)
+            .map(|lane| {
+                if lane == 0 || cut_direction != RotaryCutDirection::ZigZag {
+                    return Vec::new();
+                }
+                let Some(&(u0, th0, _, _)) = refined_lanes[lane].first() else {
+                    return Vec::new();
+                };
+                let u_prev = u_start + ((lane - 1) as f64) * lane_du;
+                let coords: Vec<(f64, f64)> = (0..=link_steps)
+                    .map(|s| {
+                        let t = (s as f64) / (link_steps as f64);
+                        (u_prev + t * (u0 - u_prev), th0)
+                    })
+                    .collect();
+                evaluate_and_refine_4axis_strip(
+                    base_mesh, rot, cutter, c_field, &coords, r_floor, smooth_tol,
+                )
+            })
+            .collect();
+        ctx.check_cancel()?;
+
         let mut r_min_surf = f64::INFINITY;
         let mut r_max_surf = 0.0_f64;
         for lane in &refined_lanes {
             let (lo, hi) = surface_radius_bounds(lane);
+            r_min_surf = r_min_surf.min(lo);
+            r_max_surf = r_max_surf.max(hi);
+        }
+        for link in &lane_links {
+            let (lo, hi) = surface_radius_bounds(link);
             r_min_surf = r_min_surf.min(lo);
             r_max_surf = r_max_surf.max(hi);
         }
@@ -858,6 +1150,17 @@ fn emit_simultaneous_spiral(
                             c0.hypot(z0).max(1.0),
                             MotionRole::Plunge,
                         );
+                    } else if lane_links[lane].len() >= 2 {
+                        for &(lu, lth, lc, lz) in lane_links[lane].iter().skip(1) {
+                            let z_clamped = clamp_to_shell(lc, lz, r_ceil);
+                            builder.rotary_linear_to(
+                                off_center_wcs(rot, lu, lc, z_clamped),
+                                lth,
+                                cut_feed,
+                                lc.hypot(z_clamped).max(1.0),
+                                MotionRole::LinkTransition,
+                            );
+                        }
                     } else {
                         builder.rotary_linear_to(
                             p0,

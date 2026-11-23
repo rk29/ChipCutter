@@ -666,6 +666,118 @@ pub fn sample_helical_flute_shaft_stl_bytes() -> Vec<u8> {
     )
 }
 
+/// Generates a deterministic, 100% watertight binary STL of a **Triple-Helix Overhanging Loft**
+/// (`Ø36 mm × 56 mm` aligned along WCS `X / A`, `X ∈ [-28, +28]`, ~3.7k triangles) with:
+/// - Left cylindrical clamping journal (`X ∈ [-28, -21]`, `R = 14 mm`),
+/// - A 3-blade twisted helical loft (`X ∈ [-20, +15]`, `120°` total twist, hub `R = 9 mm` to
+///   blade crests `R = 18 mm`) whose blades curl circumferentially by `~41°`, creating genuine
+///   **circumferential overhangs** (`n · e_r < 0`) beneath every helical blade crest, and
+/// - An **axial overhanging retaining shroud / lip** (`X ∈ [+16.5, +22]`, `R = 17.5 mm`
+///   overhanging a recessed `X ∈ [+16.5, +19.5]` annular cavity down to `R = 9 mm`) followed by
+///   the right journal (`X ∈ [+22, +28]`, `R = 14 mm`), creating genuine **axial (`u`-direction)
+///   undercuts** unreachable from vertical cylindrical poses.
+pub fn sample_triple_helix_loft_stl_bytes() -> Vec<u8> {
+    let n_theta: usize = 60; // Divisible by 3, 4, 5, 6, 12 for exact 3-blade symmetry
+    let r_hub = 9.0_f64;
+    let blade_height = 9.0_f64; // Crests at R = 18.0 mm
+    let total_twist_rad = (2.0 * PI) / 3.0; // 120° twist across the helical blade span
+    let curl_rad = 0.72_f64; // ~41° circumferential blade curl -> true circumferential overhang
+
+    let smoothstep = |edge0: f64, edge1: f64, x: f64| -> f64 {
+        let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+        t * t * (3.0 - 2.0 * t)
+    };
+
+    // Build ordered axial rings `(x, r, env_blade, twist_rad)` walking cleanly along a simple
+    // non-self-intersecting 2D profile from X = -28 mm to X = +28 mm.
+    let mut rings: Vec<Vec<DVec3>> = Vec::with_capacity(34);
+
+    let push_cylinder_ring = |rings: &mut Vec<Vec<DVec3>>, x: f64, r: f64| {
+        let mut ring = Vec::with_capacity(n_theta);
+        for k in 0..n_theta {
+            let s = (k as f64 / n_theta as f64) * (2.0 * PI);
+            // Match `RotaryAxisKind::XAxis`: e1 = +Z, e2 = -Y -> p = (x, -r sin θ, r cos θ)
+            ring.push(DVec3::new(x, -r * s.sin(), r * s.cos()));
+        }
+        rings.push(ring);
+    };
+
+    // 1. Left cylindrical journal (`X = -28 .. -21`, R = 14 mm) tapering to hub (`X = -20`, R = 9 mm)
+    push_cylinder_ring(&mut rings, -28.0, 14.0);
+    push_cylinder_ring(&mut rings, -21.0, 14.0);
+
+    // 2. Main 3-blade twisted overhanging helical loft (`X = -20 .. +15`)
+    let n_helical = 22usize;
+    let x_hel_start = -20.0_f64;
+    let x_hel_end = 15.0_f64;
+    for i in 0..=n_helical {
+        let t = i as f64 / n_helical as f64;
+        let x = x_hel_start + t * (x_hel_end - x_hel_start);
+        let env = smoothstep(x_hel_start, x_hel_start + 3.5, x)
+            * smoothstep(x_hel_end, x_hel_end - 3.5, x);
+        let twist = t * total_twist_rad;
+        let mut ring = Vec::with_capacity(n_theta);
+        for k in 0..n_theta {
+            let s = (k as f64 / n_theta as f64) * (2.0 * PI);
+            let h = (0.5 + 0.5 * (3.0 * s).cos()).powi(2);
+            let r = r_hub + blade_height * env * h;
+            let theta = s + twist + curl_rad * env * h;
+            ring.push(DVec3::new(x, -r * theta.sin(), r * theta.cos()));
+        }
+        rings.push(ring);
+    }
+
+    // 3. Axial overhang undercut cavity + retaining shroud lip + right journal (`X = +16 .. +28`)
+    // Simple non-self-intersecting 2D profile `(x, r)`:
+    // (16.0, 9.0) -> (19.5, 9.0) -> (19.5, 12.5) -> (16.5, 15.5) -> (16.5, 17.5)
+    //             -> (22.0, 17.5) -> (22.0, 14.0) -> (28.0, 14.0)
+    for &(x, r) in &[
+        (16.0, 9.0),
+        (19.5, 9.0),
+        (19.5, 12.5),
+        (16.5, 15.5),
+        (16.5, 17.5),
+        (22.0, 17.5),
+        (22.0, 14.0),
+        (28.0, 14.0),
+    ] {
+        push_cylinder_ring(&mut rings, x, r);
+    }
+
+    let mut tris: Vec<[DVec3; 3]> = Vec::with_capacity(n_theta * (2 * rings.len() + 2));
+
+    // Lateral skin with strictly outward normals `(d - a) x (b - a)` pointing outward into air
+    for s in 0..(rings.len() - 1) {
+        for k in 0..n_theta {
+            let kn = (k + 1) % n_theta;
+            let a = rings[s][k];
+            let b = rings[s + 1][k];
+            let c = rings[s + 1][kn];
+            let d = rings[s][kn];
+            tris.push([a, d, c]);
+            tris.push([a, c, b]);
+        }
+    }
+
+    // Left end cap (`X = -28`, outward normal `-X`)
+    let left_center = DVec3::new(-28.0, 0.0, 0.0);
+    let left_ring = &rings[0];
+    for k in 0..n_theta {
+        let kn = (k + 1) % n_theta;
+        tris.push([left_center, left_ring[kn], left_ring[k]]);
+    }
+
+    // Right end cap (`X = +28`, outward normal `+X`)
+    let right_center = DVec3::new(28.0, 0.0, 0.0);
+    let right_ring = &rings[rings.len() - 1];
+    for k in 0..n_theta {
+        let kn = (k + 1) % n_theta;
+        tris.push([right_center, right_ring[k], right_ring[kn]]);
+    }
+
+    encode_binary_stl("ChipCutter Triple-Helix Overhanging Loft (mm)", &tris)
+}
+
 /// Generates a deterministic, 100% watertight binary STL of a **Sculpted Mounting Boss**
 /// (`60 × 40 × 18 mm` when upright: `60 × 40 × 6 mm` rectangular flange with an `R = 12 mm`
 /// smooth hemispherical boss on top), exported **Y-up** (lying sideways along `+Y`, rotated

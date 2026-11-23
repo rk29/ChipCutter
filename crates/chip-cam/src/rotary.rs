@@ -1266,6 +1266,184 @@ pub fn estimate_rotary_flank_cos_phi(
     (1.0 / (1.0 + slope_eff * slope_eff).sqrt()).clamp(0.45, 1.0)
 }
 
+/// Returns `-1.0` if `base_mesh` is globally inward-wound (negative signed volume, as in some
+/// legacy STL fixtures) or `+1.0` for standard outward-oriented meshes.
+fn mesh_outward_winding_sign(base_mesh: &SurfaceMesh3D) -> f64 {
+    let mut signed_vol6 = 0.0_f64;
+    for tri in &base_mesh.triangles {
+        let [i0, i1, i2] = tri.indices;
+        let v0 = base_mesh.vertices_wcs[i0 as usize];
+        let v1 = base_mesh.vertices_wcs[i1 as usize];
+        let v2 = base_mesh.vertices_wcs[i2 as usize];
+        signed_vol6 += v0.dot(v1.cross(v2));
+    }
+    if signed_vol6 < -1e-6 { -1.0 } else { 1.0 }
+}
+
+/// Returns `true` when `base_mesh` contains significant steep circumferential flanks (`> ~70°`
+/// from radial) or genuine circumferential overhangs (`n · e_r <= 0`) inside the axial window
+/// `[u_start - margin_mm, u_end + margin_mm]`.
+///
+/// Used by [`crate::strategies::rotary4axis_sim`] so multi-offset circumferential flank probing
+/// activates cleanly on overhanging helical blades while leaving non-overhanging flutes/cams
+/// (and Phase 5 golden snapshots) 100% bit-identical.
+pub fn mesh_has_steep_circumferential_overhang(
+    base_mesh: &SurfaceMesh3D,
+    rot: &ResolvedRotaryConfig,
+    u_start: f64,
+    u_end: f64,
+    margin_mm: f64,
+) -> bool {
+    if rot.axis == RotaryAxisKind::ZAxis || base_mesh.triangles.is_empty() {
+        return false;
+    }
+    let winding_sign = mesh_outward_winding_sign(base_mesh);
+    let (_, _, u_vec) = rot.axis.basis();
+    let u_lo = u_start - margin_mm.max(0.0);
+    let u_hi = u_end + margin_mm.max(0.0);
+    let mut steep_area = 0.0_f64;
+
+    for tri in &base_mesh.triangles {
+        let [i0, i1, i2] = tri.indices;
+        let v0 = base_mesh.vertices_wcs[i0 as usize];
+        let v1 = base_mesh.vertices_wcs[i1 as usize];
+        let v2 = base_mesh.vertices_wcs[i2 as usize];
+        let centroid = (v0 + v1 + v2) / 3.0;
+        let u = centroid.dot(u_vec);
+        if u < u_lo || u > u_hi {
+            continue;
+        }
+        let rel = centroid - rot.center_wcs;
+        let radial_vec = rel - u_vec * rel.dot(u_vec);
+        let r_len = radial_vec.length();
+        if r_len <= 0.25 {
+            continue;
+        }
+        let e_r = radial_vec / r_len;
+        let cross = (v1 - v0).cross(v2 - v0);
+        let area2 = cross.length();
+        if area2 <= 1e-8 {
+            continue;
+        }
+        let n = (cross / area2) * winding_sign;
+        let n_perp = n - u_vec * n.dot(u_vec);
+        let n_perp_len = n_perp.length();
+        if n_perp_len <= 0.25 {
+            continue;
+        }
+        let cos_radial = n_perp.dot(e_r) / n_perp_len;
+        // Steep circumferential wall (> ~70° from radial) or true circumferential overhang (<= 0)
+        if cos_radial < 0.35 {
+            steep_area += 0.5 * area2;
+            if steep_area > 1.0 {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Fast post-generation reachability check detecting axial (`u`-direction) overhang / undercut
+/// surface area on `base_mesh` inside `[u_start, u_end]` that cannot be reached from any vertical
+/// cylindrical pose `(u, c, θ)`.
+///
+/// Returns an actionable non-blocking warning suggesting an indexed `Undercut3D` (`LollipopEndmill`)
+/// pass whenever significant unreachable axial-undercut area (`>= 2.0 mm²`) is found.
+pub fn detect_rotary_axial_undercut_warning(
+    base_mesh: &SurfaceMesh3D,
+    rot: &ResolvedRotaryConfig,
+    u_start: f64,
+    u_end: f64,
+    r_floor: f64,
+) -> Option<String> {
+    if rot.axis == RotaryAxisKind::ZAxis || base_mesh.triangles.is_empty() {
+        return None;
+    }
+    let winding_sign = mesh_outward_winding_sign(base_mesh);
+    let (_, _, u_vec) = rot.axis.basis();
+    let mut mesh_u_min = f64::INFINITY;
+    let mut mesh_u_max = f64::NEG_INFINITY;
+    for &v in &base_mesh.vertices_wcs {
+        let u = v.dot(u_vec);
+        mesh_u_min = mesh_u_min.min(u);
+        mesh_u_max = mesh_u_max.max(u);
+    }
+    if !mesh_u_min.is_finite() || !mesh_u_max.is_finite() {
+        return None;
+    }
+
+    let u_lo = (u_start + 0.5).max(mesh_u_min + 0.35);
+    let u_hi = (u_end - 0.5).min(mesh_u_max - 0.35);
+    if u_hi <= u_lo {
+        return None;
+    }
+
+    let max_ray_t = (rot.stock_outer_radius_mm * 2.5).max(100.0);
+    // Test a ±40° fan of perpendicular-plane spindle approach rays `(e_r, e_theta)`
+    const APPROACH_ANGLES_DEG: [f64; 5] = [-40.0, -20.0, 0.0, 20.0, 40.0];
+    let approach_sc: [(f64, f64); 5] = APPROACH_ANGLES_DEG.map(|deg| deg.to_radians().sin_cos());
+
+    let unreachable_area: f64 = base_mesh
+        .triangles
+        .par_iter()
+        .map(|tri| {
+            let [i0, i1, i2] = tri.indices;
+            let v0 = base_mesh.vertices_wcs[i0 as usize];
+            let v1 = base_mesh.vertices_wcs[i1 as usize];
+            let v2 = base_mesh.vertices_wcs[i2 as usize];
+            let centroid = (v0 + v1 + v2) / 3.0;
+            let u = centroid.dot(u_vec);
+            if u < u_lo || u > u_hi {
+                return 0.0;
+            }
+            let rel = centroid - rot.center_wcs;
+            let radial_vec = rel - u_vec * rel.dot(u_vec);
+            let r_len = radial_vec.length();
+            if r_len <= r_floor + 0.25 {
+                return 0.0;
+            }
+            let cross = (v1 - v0).cross(v2 - v0);
+            let area2 = cross.length();
+            if area2 <= 1e-6 {
+                return 0.0;
+            }
+            let n = (cross / area2) * winding_sign;
+            let e_r = radial_vec / r_len;
+            let n_u_abs = n.dot(u_vec).abs();
+            let n_r = n.dot(e_r);
+
+            // Only evaluate triangles with an axial orientation component that either face inward
+            // toward the rotary axis or sit beneath an axial roof (normal non-radial).
+            if n_u_abs < 0.15 || n_r > 0.35 {
+                return 0.0;
+            }
+
+            let e_theta = u_vec.cross(e_r).normalize_or_zero();
+            let origin = centroid + n * 0.05;
+
+            // Reachable if ANY vertical cylindrical approach ray in the cross-sectional plane
+            // faces the triangle (`n · dir >= -0.10`) AND escapes without hitting an overhanging roof.
+            let mut reachable = false;
+            for &(sin_a, cos_a) in &approach_sc {
+                let dir = (e_r * cos_a + e_theta * sin_a).normalize_or_zero();
+                if n.dot(dir) >= -0.10 && base_mesh.raycast(origin, dir, max_ray_t).is_none() {
+                    reachable = true;
+                    break;
+                }
+            }
+            if reachable { 0.0 } else { 0.5 * area2 }
+        })
+        .sum();
+
+    if unreachable_area >= 2.0 {
+        Some(format!(
+            "Rotary toolpath detected ~{unreachable_area:.1} mm² of axial overhang/undercut surface area unreachable from vertical cylindrical poses; consider adding an indexed Undercut3D pass with a LollipopEndmill."
+        ))
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {

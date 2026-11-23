@@ -18,7 +18,7 @@ pub use bvh::{MeshBvh, MeshRayHit};
 pub use fixtures::{
     sample_box_3mf_bytes, sample_helical_flute_shaft_stl_bytes, sample_relief_wave_obj_text,
     sample_rotary_shaft_stl_bytes, sample_sculpted_dome_stl_bytes, sample_sculpted_mount_3mf_bytes,
-    tutorial_yup_bracket_stl_bytes,
+    sample_triple_helix_loft_stl_bytes, tutorial_yup_bracket_stl_bytes,
 };
 
 /// Source file format of an imported triangle mesh.
@@ -688,5 +688,74 @@ f -5/1/1 -4/2/1 -3/3/1 -2/4/1 -1/5/1
         // Z-slab query around Z=20 finds hemisphere slice triangles
         let slab = bvh.query_z_slab(19.5, 20.5);
         assert!(!slab.is_empty());
+    }
+
+    #[test]
+    fn sample_triple_helix_loft_is_watertight_with_circumferential_and_axial_overhangs() {
+        let stl_bytes = sample_triple_helix_loft_stl_bytes();
+        let mesh = load_mesh_bytes(
+            "triple_helix_loft.stl",
+            &stl_bytes,
+            &MeshImportOptions::default(),
+        )
+        .unwrap();
+
+        assert!(
+            mesh.diagnostics.is_watertight,
+            "triple-helix loft STL must be watertight: {:?}",
+            mesh.diagnostics
+        );
+        assert_eq!(mesh.diagnostics.open_boundary_edges, 0);
+        assert_eq!(mesh.diagnostics.non_manifold_edges, 0);
+        assert!(
+            (2_000..=5_000).contains(&mesh.triangles.len()),
+            "expected compact ~2k-5k triangle mesh, got {}",
+            mesh.triangles.len()
+        );
+
+        let mut signed_vol6 = 0.0_f64;
+        let mut circ_overhang_area = 0.0_f64;
+        let mut axial_overhang_area = 0.0_f64;
+        for tri in &mesh.triangles {
+            let v0 = mesh.vertices_mm[tri.indices[0] as usize];
+            let v1 = mesh.vertices_mm[tri.indices[1] as usize];
+            let v2 = mesh.vertices_mm[tri.indices[2] as usize];
+            signed_vol6 += v0.dot(v1.cross(v2));
+
+            let centroid = (v0 + v1 + v2) / 3.0;
+            let cross = (v1 - v0).cross(v2 - v0);
+            let area2 = cross.length();
+            if area2 <= 1e-8 {
+                continue;
+            }
+            let n = cross / area2;
+            let r_vec = DVec3::new(0.0, centroid.y, centroid.z);
+            let r_len = r_vec.length();
+            if r_len <= 0.5 {
+                continue;
+            }
+            let e_r = r_vec / r_len;
+            let n_r = n.dot(e_r);
+            if (-20.0..=15.0).contains(&centroid.x) && n_r < -0.10 {
+                circ_overhang_area += 0.5 * area2;
+            }
+            if (16.0..=20.0).contains(&centroid.x) && n_r < -0.10 && n.x.abs() > 0.20 {
+                axial_overhang_area += 0.5 * area2;
+            }
+        }
+
+        assert!(
+            signed_vol6 / 6.0 > 10_000.0,
+            "triple-helix loft must have positive outward-oriented volume, got {:.1} mm³",
+            signed_vol6 / 6.0
+        );
+        assert!(
+            circ_overhang_area > 50.0,
+            "triple-helix loft must have substantial circumferential overhang area, got {circ_overhang_area:.1} mm²"
+        );
+        assert!(
+            axial_overhang_area > 50.0,
+            "triple-helix loft must have substantial axial overhang area, got {axial_overhang_area:.1} mm²"
+        );
     }
 }

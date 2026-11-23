@@ -77,8 +77,9 @@ During simulation (and automatically during `chipcutter simulate` / `chipcutter 
 | **5. Excessive Plunge in Material** | Vertical plunge move (`ΔXY == 0`) with non-center-cutting cutter or axial penetration exceeding safe plunge depth (**Critical Error** when plunging a `ThreadMill`, `SlotMill`, or `DovetailCutter` vertically into solid un-cleared stock) | **Warning** / **Critical Error** (undercut/thread mill plunge) |
 | **6. 3D Fixture Collision (`FixtureCollision`)** | Swept flute, shank, or holder/collet envelope penetrates any enabled `Setup.fixtures` solid (+ `clearance_margin_mm`, honoring `allowed_overcut_mm` on sacrificial spoilboards) across Heightfield, Tri-Dexel, and Cylindrical engines | **Critical Error** (blocks G-code export; colliding hardware highlights crimson in 3D viewport) |
 
-### Multi-Setup Volumetric Stock Carryover & Cumulative Metrology
+### Multi-Setup & Multi-Angle `Indexed3Plus1` Volumetric Stock Carryover & Cumulative Metrology
 - When `Setup.carryover_from_setup_id` is configured, `chip-project` simulates upstream Setups in `TriDexel` mode, rigidly transforms the final remaining `TriDexelStock` into the downstream Setup's WCS frame (`t = 0.0`), and evaluates cumulative end-of-job `StockErrorReport` metrics across all Setups.
+- Inside a single `Indexed3Plus1` Setup (`0°` / `120°` / `240°`, etc.), whenever a downstream 3D roughing operation (`Adaptive3D`, `Waterline3D`) enables `RestMachiningMode::FromPrecedingOperations` following operations at different rotary index angles, `chip-project` sequentially sweeps preceding operations into a shared volumetric `TriDexelStock` and transforms the remaining in-process stock into the active virtual indexed WCS frame via `TriDexelStock::transform_to_frame`—verifying zero cross-angle rapid-into-stock crashes and zero target gouges across both CPU and GPU backends.
 - `chipcutter simulate --all-setups` executes the full multi-setup carryover chain sequentially and emits both per-Setup diagnostics/metrics and the cumulative end-of-job `cumulative_error_report` in JSON (`--json`) and human-readable text modes.
 
 ---

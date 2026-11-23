@@ -12,8 +12,8 @@ use crate::{
     cl_data::MotionRole,
     params::{Rotary2LinearParams, RotaryCutDirection, RotaryPatternMode},
     rotary::{
-        ResolvedRotaryConfig, RotaryAxisKind, drop_cutter_rotary_z_rel,
-        estimate_rotary_flank_cos_phi, resolve_rotary_axial_window,
+        ResolvedRotaryConfig, RotaryAxisKind, detect_rotary_axial_undercut_warning,
+        drop_cutter_rotary_z_rel, estimate_rotary_flank_cos_phi, resolve_rotary_axial_window,
     },
     strategies::{StrategyExecContext, compute_z_levels},
     surface3d::{SurfaceCutterProfile, SurfaceMesh3D, stepover_for_cusp_height},
@@ -172,6 +172,12 @@ pub fn generate_rotary2linear(
         );
     }
 
+    if let Some(warn) =
+        detect_rotary_axial_undercut_warning(&base_mesh, &rot, u_start, u_end, r_floor)
+    {
+        builder.warnings.push(warn);
+    }
+
     Ok(())
 }
 
@@ -257,12 +263,14 @@ fn refine_rotary_segment(
     depth: u8,
     out: &mut Vec<(f64, f64, f64)>,
 ) {
-    if depth >= 4 {
+    let max_depth = if (b.2 - a.2).abs() > 0.25 { 8 } else { 4 };
+    if depth >= max_depth {
         return;
     }
+    let d_u = (b.0 - a.0).abs();
     let d_th = (b.1 - a.1).abs();
     let d_r = (b.2 - a.2).abs();
-    if d_th <= 0.5 && d_r <= 0.02 {
+    if d_th <= 0.5 && d_r <= 0.02 && (d_th > 1e-6 || d_u <= 0.05) {
         return;
     }
 
@@ -271,7 +279,23 @@ fn refine_rotary_segment(
     let r_mid = drop_cutter_rotary_z_rel(base_mesh, rot, cutter, u_mid, 0.0, th_mid, r_floor);
     let r_chord = 0.5 * (a.2 + b.2);
 
-    if (r_mid - r_chord) > 0.004 || (r_chord - r_mid) > concave_tol {
+    let mut needs_split = (r_mid - r_chord) > 0.004 || (r_chord - r_mid) > concave_tol;
+    // On steep overhang cliffs (`|dr| > 0.25 mm`), also probe quarter-points to catch asymmetric
+    // S-curve convex ridges that pass through the midpoint chord linearly.
+    if !needs_split && d_r > 0.25 {
+        for t in [0.25_f64, 0.75] {
+            let u_q = a.0 + t * (b.0 - a.0);
+            let th_q = a.1 + t * (b.1 - a.1);
+            let r_q = drop_cutter_rotary_z_rel(base_mesh, rot, cutter, u_q, 0.0, th_q, r_floor);
+            let r_c = a.2 + t * (b.2 - a.2);
+            if (r_q - r_c) > 0.003 {
+                needs_split = true;
+                break;
+            }
+        }
+    }
+
+    if needs_split {
         let mid = (u_mid, th_mid, r_mid);
         refine_rotary_segment(
             base_mesh,
@@ -447,10 +471,40 @@ fn emit_continuous_spiral(
             .collect();
         ctx.check_cancel()?;
 
+        // Precompute exact gouge-free ZigZag axial link transitions (`u_prev -> u_cur`) at the
+        // shared sector endpoint angle `th0` so diagonal helical crests are never clipped.
+        let link_steps = ((lane_du / 0.25).ceil() as usize).clamp(2, 64);
+        let lane_links: Vec<Vec<(f64, f64, f64)>> = (0..=n_lanes)
+            .map(|lane| {
+                if lane == 0 || cut_direction != RotaryCutDirection::ZigZag {
+                    return Vec::new();
+                }
+                let Some(&(u0, th0, _)) = refined_lanes[lane].first() else {
+                    return Vec::new();
+                };
+                let u_prev = u_start + ((lane - 1) as f64) * lane_du;
+                let coords: Vec<(f64, f64)> = (0..=link_steps)
+                    .map(|s| {
+                        let t = (s as f64) / (link_steps as f64);
+                        (u_prev + t * (u0 - u_prev), th0)
+                    })
+                    .collect();
+                evaluate_and_refine_rotary_strip(
+                    base_mesh, rot, cutter, &coords, r_floor, smooth_tol,
+                )
+            })
+            .collect();
+        ctx.check_cancel()?;
+
         let mut r_min_surf = f64::INFINITY;
         let mut r_max_surf = 0.0_f64;
         for lane in &refined_lanes {
             let (lo, hi) = radius_bounds(lane);
+            r_min_surf = r_min_surf.min(lo);
+            r_max_surf = r_max_surf.max(hi);
+        }
+        for link in &lane_links {
+            let (lo, hi) = radius_bounds(link);
             r_min_surf = r_min_surf.min(lo);
             r_max_surf = r_max_surf.max(hi);
         }
@@ -496,6 +550,17 @@ fn emit_continuous_spiral(
                             r0.max(1.0),
                             MotionRole::Plunge,
                         );
+                    } else if lane_links[lane].len() >= 2 {
+                        for &(lu, lth, lr) in lane_links[lane].iter().skip(1) {
+                            let r_clamped = lr.max(r_ceil);
+                            builder.rotary_linear_to(
+                                centerline_wcs(rot, lu, r_clamped),
+                                lth,
+                                cut_feed,
+                                r_clamped.max(1.0),
+                                MotionRole::LinkTransition,
+                            );
+                        }
                     } else {
                         builder.rotary_linear_to(
                             p0,

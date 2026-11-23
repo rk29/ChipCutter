@@ -889,7 +889,9 @@ fn eval_horizontal_ray_cut_interval(
     }
 
     let sub_dz = abs(q1.z - q0.z);
-    let n_sub = clamp(u32(ceil(sub_dz / max(u.dz_step_mm, 0.05))), 2u, 24u);
+    let n_sub_z = u32(ceil(sub_dz / max(u.dz_step_mm, 0.05)));
+    let n_sub_r = u32(ceil(abs(r1 - r0) / 0.015));
+    let n_sub = clamp(max(n_sub_z, n_sub_r), 2u, 32u);
     var has_hit = false;
     var lo: f32 = 1e30;
     var hi: f32 = -1e30;
