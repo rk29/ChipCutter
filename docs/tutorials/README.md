@@ -3,7 +3,7 @@
 Welcome to the **ChipCutter Tutorials** library. Each tutorial is a self-contained, illustrated Markdown walkthrough that takes you from a starter 3D **STEP** solid, **DXF/SVG** drawing, or built-in **2D Sketch** all the way through setup, toolpath generation (`Ctrl+G`), 3D heightmap simulation, and safety-verified **GRBL / FluidNC** and **LinuxCNC** G-code.
 
 > [!TIP]
-> Want to browse finished visual previews of all 16 built-in projects first? Visit the [**Illustrated Sample Projects Gallery**](../samples/README.md) with thumbnails and operation-by-operation simulation screenshots.
+> Want to browse finished visual previews of all 24 documented built-in projects first? Visit the [**Illustrated Sample Projects Gallery**](../samples/README.md) with thumbnails and operation-by-operation simulation screenshots.
 
 > [!WARNING]
 > **CNC Machine Safety First:** ChipCutter verifies toolpaths against modeled stock, target B-Rep/mesh geometry, and any enabled 3D workholding fixtures (`Setup → Fixtures`, Rule 6 `FixtureCollision`), but it cannot detect unmodeled hardware on your physical table. Always verify `0 Crashes` in ChipCutter's 3D Simulation, confirm your physical fixtures and `G54`/`G55` zeros match your project, and run an air-cut or single-block dry run on any new program.
@@ -94,7 +94,7 @@ chip-gui docs/tutorials/assets/01-facing-billet.step
 
 ## Tutorial Authoring & Screenshot Conventions
 
-All Phase 4 and Phase 6 guides (`00`–`14`) follow a uniform 7-part structure so machinists and contributors can scan any strategy quickly:
+All ChipCutter guides (`00`–`22`) follow a uniform 7-part structure so machinists and contributors can scan any strategy quickly:
 
 1. **Goal & What You'll Learn** — Target machining outcome and key takeaways.
 2. **Prerequisites & Starter Project** — How to open the exact starter model or sample job.

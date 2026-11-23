@@ -455,7 +455,7 @@ Phase 18 expands ChipCutter's cutter catalog, volumetric Tri-Dexel undercut simu
 
 ---
 
-## Phase 19 — Complete Feature Tutorials, Expanded Sample Projects, & Gallery Parity (Planned — M68–M71)
+## Phase 19 — Complete Feature Tutorials, Expanded Sample Projects, & Gallery Parity (Completed — M68–M71)
 
 Phase 19 closes every remaining tutorial, built-in sample, starter-asset, and Sample Gallery documentation gap across Phases 15–18 (and earlier `.svg`/`.3mf` import formats) so **100% of shipped ChipCutter strategies, cutter geometries, workholding wizards, GPU simulation/feed-optimization features, and file formats** have both a ready-to-run built-in sample project and an illustrated, headless-verified Markdown tutorial and Sample Gallery page—without changing core CAM/simulation algorithms or breaking existing Phase 1–5 golden G-code parity:
 

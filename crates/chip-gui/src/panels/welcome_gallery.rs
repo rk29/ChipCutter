@@ -40,6 +40,36 @@ pub enum SampleProjectId {
 }
 
 impl SampleProjectId {
+    /// Canonical CLI `--sample <SLUG>` and `docs/samples/<slug>.md` identifier.
+    pub const fn cli_slug(self) -> &'static str {
+        match self {
+            Self::CamTortureBlock => "cam-torture",
+            Self::AdaptiveRest => "adaptive-rest",
+            Self::Pure2dPanel => "pure-2d",
+            Self::EngravedNameplate => "nameplate",
+            Self::VCarveSignInlay => "vcarve",
+            Self::MultiFeatureBracket => "multi-feature",
+            Self::Tilted30Bracket => "tilted-bracket",
+            Self::CadRevisionV1 => "revision-v1",
+            Self::CadRevisionV2Reload => "revision-v2",
+            Self::SamplePlate => "sample-plate",
+            Self::SculptedMeshDome => "mesh-dome",
+            Self::ReliefWaveMesh => "mesh-wave",
+            Self::RotaryIndexedShaft => "rotary-shaft",
+            Self::RotaryWrappedEngraving => "rotary-wrap",
+            Self::RotaryHelicalFlute => "rotary-4axis",
+            Self::ThreadMillManifold => "thread-mill",
+            Self::TwoSidedViseWorkholding => "two-sided-vise",
+            Self::UndercutAndDeburrBlock => "undercut-deburr",
+            Self::FeedOptPocket => "feed-opt-pocket",
+            Self::FlipJigSoftJaws => "flip-jig-softjaws",
+            Self::CurvedDeburr3D => "curved-deburr-3d",
+            Self::DovetailRailKeyway => "dovetail-rail-keyway",
+            Self::SvgBadgeSign => "svg-badge",
+            Self::Mesh3mfBracket => "mesh-3mf-bracket",
+        }
+    }
+
     /// Parse a CLI `--sample <SLUG>` identifier into a built-in [`SampleProjectId`].
     pub fn from_cli_slug(raw: &str) -> Result<Self, String> {
         match raw.trim().to_ascii_lowercase().as_str() {

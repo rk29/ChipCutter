@@ -41,8 +41,8 @@ layout: null
         </p>
         <div class="hero-actions">
           <a class="btn btn-primary" href="https://github.com/rk29/ChipCutter/releases" target="_blank" rel="noopener">Download Prebuilt Releases</a>
-          <a class="btn" href="{{ '/samples/' | relative_url }}">Explore 16 Sample Projects</a>
-          <a class="btn" href="{{ '/tutorials/' | relative_url }}">Read 20 Illustrated Tutorials</a>
+          <a class="btn" href="{{ '/samples/' | relative_url }}">Explore 24 Sample Projects</a>
+          <a class="btn" href="{{ '/tutorials/' | relative_url }}">Read 23 Illustrated Tutorials</a>
         </div>
 
         <figure class="hero-shot">
@@ -64,28 +64,28 @@ layout: null
         </div>
         <div class="grid-3">
           <div class="card">
-            <h3>STEP B-Rep &amp; Associative Reload</h3>
-            <p>Imports ISO 10303 STEP solids with analytic plane, cylinder, cone, and arc classification, interactive 3D picking, non-destructive model transforms, and associative <code>Ctrl+R</code> revision re-matching.</p>
+            <h3>STEP B-Rep, Meshes, &amp; Associative Reload</h3>
+            <p>Imports ISO 10303 STEP solids and watertight STL / OBJ / 3MF meshes with analytic plane, cylinder, cone, and arc classification, non-destructive model transforms, and associative <code>Ctrl+R</code> revision re-matching.</p>
           </div>
           <div class="card">
-            <h3>2.5D Milling, Adaptive Rest, &amp; Thread Milling</h3>
-            <p>Facing, 2D Contour with holding tabs, multi-island Pockets, constant-engagement 2D Adaptive trochoidal clearing, preceding-operation Rest Machining, Drilling/Helical Boring, Edge Chamfering, and internal/external Helical Thread Milling (ISO Metric &amp; UNC/UNF presets).</p>
+            <h3>2.5D Milling, Feed Optimization, &amp; Thread Milling</h3>
+            <p>Facing, 2D Contour + Tabs, multi-island Pockets, 2D Adaptive + Rest Machining, Engagement-Aware Feed Optimization (corner lookahead, internal-arc scaling, chip-thinning), Drilling/Boring, and ISO Metric &amp; UNC/UNF Helical Thread Milling.</p>
           </div>
           <div class="card">
-            <h3>3-Axis Mesh Surfacing</h3>
-            <p>High-precision 3-axis drop-cutter and push-cutter machining over STL, OBJ, and 3MF meshes for 3D Adaptive Roughing, 3D Waterline, Parallel Raster, Constant-Scallop, and Pencil Fillet Cleanup.</p>
+            <h3>3D Workholding, Wizards, &amp; Stock Carryover</h3>
+            <p>Parametric vises, parallels, toe clamps, spoilboards, and imported fixtures with Auto-Avoid Rapids, Rule 6 <code>FixtureCollision</code>, multi-setup <code>G54 → G55</code> Tri-Dexel stock carryover, Flip-Jig Dowel-Pin Wizard, and Auto Soft-Jaw Generator.</p>
           </div>
           <div class="card">
-            <h3>4th-Axis Rotary (A / B / C)</h3>
-            <p>Supports 2-Linear + Rotary cylindrical wrapping (<code>Z+X+A</code>), continuous spiral surfacing, Indexed <code>3+1</code> multi-face milling, and Simultaneous 4-Axis (<code>X+Y+Z+A</code>) with <code>G93</code> inverse-time feeds.</p>
+            <h3>Undercuts &amp; 3D Edge Deburring</h3>
+            <p>Non-planar 3D B-Rep edge deburring (<code>Deburr3D</code>) with automatic <code>FlatBvh</code> inside-corner wall trimming and Lollipop underside back-chamfering, plus DIN 650 T-Slots, Blind Keyways, Internal/External <code>60°</code> Dovetails, and Lollipop <code>Undercut3D</code>.</p>
           </div>
           <div class="card">
-            <h3>Heightmap &amp; Tri-Dexel Simulation</h3>
-            <p>Switch between fast 2.5D Heightmap and full 3D Tri-Dexel volumetric stock simulation with quantitative error volume, RMS/MAE/P95/P99 surface deviation metrics, Error Heatmap, and a mandatory 5-rule crash gate.</p>
+            <h3>3-Axis Surfacing, 4th-Axis Rotary, &amp; V-Carve</h3>
+            <p>3-Axis Adaptive, Waterline, Parallel, Constant-Scallop, and Pencil cleanup; 4th-Axis Wrapping (<code>Z+X+A</code>), Indexed <code>3+1</code>, and Simultaneous <code>X+Y+Z+A</code> (<code>G93</code>); 3D medial-axis V-Carving + Male V-Inlays, DXF/SVG biarcs, and 7 built-in CNC machine profiles.</p>
           </div>
           <div class="card">
-            <h3>V-Carve, Pure-2D, &amp; Machines</h3>
-            <p>3D medial-axis V-carving with two-stage flat clearance and mated Male V-Inlays, DXF/SVG vector jobs, TrueType + Hershey typography, 7 built-in CNC machine profiles (Carvera, Milo, Voron Cascade, Generic), Fusion 360 tool import, and portable <code>.chipz</code> bundles.</p>
+            <h3>GPU Compute Simulation &amp; Error Metrology</h3>
+            <p>Optional <code>wgpu</code> Compute backend powering zero-readback Heightmap, Cylindrical, and volumetric 3D Tri-Dexel simulation with instant <code>&lt; 0.1 ms</code> Error Heatmap, RMS/MAE/P95/P99 deviation metrics, and a mandatory 6-rule crash gate.</p>
           </div>
         </div>
       </div>
@@ -96,11 +96,27 @@ layout: null
         <div class="section-header">
           <div>
             <h2>Illustrated Sample Projects Gallery</h2>
-            <p class="section-sub">Preview all 16 built-in projects—including progressive simulation screenshots after every Setup and Operation.</p>
+            <p class="section-sub">Preview all 24 documented built-in projects—including progressive simulation screenshots after every Setup and Operation.</p>
           </div>
-          <a class="btn" href="{{ '/samples/' | relative_url }}">View All 16 Samples -></a>
+          <a class="btn" href="{{ '/samples/' | relative_url }}">View All 24 Samples -></a>
         </div>
         <div class="grid-3">
+          <a class="card sample-card" href="{{ '/samples/two-sided-vise.html' | relative_url }}">
+            <img src="{{ '/images/samples/two-sided-vise/thumb.png' | relative_url }}" alt="Two-Sided Vise & Soft-Jaw Bracket thumbnail" loading="lazy">
+            <div class="sample-card-body">
+              <span class="sample-tag">Workholding · 2 Setups · 4 Ops</span>
+              <h3>Two-Sided Vise &amp; Soft-Jaw Bracket</h3>
+              <p>Setup 1 vise + toe-clamp rapid avoidance and Setup 2 <code>180°</code> flip Tri-Dexel stock carryover in stepped soft jaws.</p>
+            </div>
+          </a>
+          <a class="card sample-card" href="{{ '/samples/undercut-deburr.html' | relative_url }}">
+            <img src="{{ '/images/samples/undercut-deburr/thumb.png' | relative_url }}" alt="Undercut & 3D Deburr Block thumbnail" loading="lazy">
+            <div class="sample-card-body">
+              <span class="sample-tag">Undercut · Tri-Dexel · 6 Ops</span>
+              <h3>Undercut &amp; 3D Deburr Block</h3>
+              <p>Pre-slot throats, DIN 650 M8 T-Slot, <code>60°</code> Dovetail guideway, Lollipop overhang undercut, and 3D Edge Deburr.</p>
+            </div>
+          </a>
           <a class="card sample-card" href="{{ '/samples/rotary-4axis.html' | relative_url }}">
             <img src="{{ '/images/samples/rotary-4axis/thumb.png' | relative_url }}" alt="Simultaneous 4-Axis Helical Flute thumbnail" loading="lazy">
             <div class="sample-card-body">

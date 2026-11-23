@@ -6,7 +6,7 @@ It turns 3D **STEP** B-Rep CAD solids (`AP203` / `AP214` / `AP242`), 3D triangle
 
 ![ChipCutter Desktop CAM Interface — Simultaneous 4-Axis Helical Flute](docs/images/chipcutter-gui.png)
 
-> **Project Website & Illustrated Docs:** [**https://rk29.github.io/ChipCutter/**](https://rk29.github.io/ChipCutter/) · [**Sample Projects Gallery**](docs/samples/README.md) · [**Tutorials (00–19)**](docs/tutorials/README.md)
+> **Project Website & Illustrated Docs:** [**https://rk29.github.io/ChipCutter/**](https://rk29.github.io/ChipCutter/) · [**Sample Projects Gallery (24 Samples)**](docs/samples/README.md) · [**Tutorials (00–22)**](docs/tutorials/README.md)
 
 ---
 
@@ -98,7 +98,9 @@ Get-FileHash .\ChipCutter-<version>-windows-x86_64.msi -Algorithm SHA256
   5. **Edge Chamfering & 2D Curve Trace** — Exact chamfer-mill tip-offset kinematics (`tip_dia`, included angle, `tip_offset`) for both sharp unmodeled CAD edges and modeled `45°` bevel faces, plus 1-pass centerline curve/Hershey engraving.
   6. **3D Medial-Axis V-Carving, Two-Tool Flat Clearance, & Mated V-Inlays** — Simultaneous 3-axis `(X, Y, Z)` Voronoi medial-axis V-carving (`boostvoronoi`) with razor-sharp 3D corner climbs, optional `flat_depth` clamping with **Two-Stage Flat Endmill Area Clearance**, and mirrored **Male V-Inlay Plug** generation (`start_depth` engagement + `glue_gap_bottom`).
   7. **3-Axis Surface Milling over `STL` / `OBJ` / `3MF` Meshes & STEP Solids** — Pure-Rust `MeshBvh` exact `f64` Drop-Cutter & Push-Cutter kernel powering **3D Adaptive Roughing**, **3D Waterline / Z-Level**, **3D Parallel Raster Finishing**, **3D Constant-Scallop Finishing** (Sethian Fast-Marching Eikonal), and **3D Pencil Cleanup** (morphological ball-in-ball Minkowski rest residual).
-  8. **4th-Axis Rotary Milling (`A` / `B` / `C`)** — Configurable rotary setups with chuck/clearance visualization and polar `CylindricalStock` 5-rule verification supporting **2-Linear + Rotary Cylindrical Wrapping (`Z+X+A` / `Z+Y+B`)**, **Continuous Rotary Spiral & Axial Surfacing**, **Indexed `3+1` Multi-Face Milling** (with B-Rep face-normal alignment), and **Simultaneous 4-Axis (`X+Y+Z+A/B`)** off-centerline auto-tilted helical milling with `G93` inverse-time feedrates (`linuxcnc_4axis`, `grblhal_4axis`, and swapped-axis `grbl_rotary_wrap`).
+  8. **4th-Axis Rotary Milling (`A` / `B` / `C`)** — Configurable rotary setups with chuck/clearance visualization and polar `CylindricalStock` verification supporting **2-Linear + Rotary Cylindrical Wrapping (`Z+X+A` / `Z+Y+B`)**, **Continuous Rotary Spiral & Axial Surfacing**, **Indexed `3+1` Multi-Face Milling** (with B-Rep face-normal alignment), and **Simultaneous 4-Axis (`X+Y+Z+A/B`)** off-centerline auto-tilted helical milling with `G93` inverse-time feedrates (`linuxcnc_4axis`, `grblhal_4axis`, and swapped-axis `grbl_rotary_wrap`).
+  9. **3D Edge Deburring & Undercut Milling (`Deburr3D`, `SlotUndercut`, `Dovetail`, `Undercut3D`)** — Relieved-neck `SlotMill`, `DovetailCutter`, and `LollipopEndmill` cutters powering non-planar 3D edge deburring with automatic `FlatBvh` inside-corner wall collision trimming and Lollipop underside back-chamfering, DIN 650 / ASME T-Slots & blind entry-bore keyways, internal & external `60°` dovetails, and Lollipop 3D overhang finishing—verified in CPU & GPU Tri-Dexel simulation.
+  10. **Engagement-Aware Feedrate Optimization & 3D Workholding / Stock Carryover** — Curvature- and engagement-aware feed modulation (sharp-corner lookahead deceleration, internal-arc perimeter-to-centerline scaling, radial chip-thinning boost) with timeline telemetry, plus 3D fixtures (`ViseJaws`, `ToeClamp`, `Spoilboard`, keep-outs, imported fixtures), **Auto-Avoid Rapids**, Rule 6 `FixtureCollision`, multi-setup `G54 → G55` Tri-Dexel stock carryover, **Flip-Jig Dowel-Pin Wizard**, and **Auto Soft-Jaw Generator**.
 
 - **Machine Definitions & Per-Machine Tool Libraries (`machines/`):**
   - Ships with 7 read-only built-in profiles: **`Generic 3/4-Axis CNC Mill`**, **`Millennium Machines Milo v1.5 (LDO Kit)`**, **`Millennium Machines Milo v2.0`**, **`Voron Cascade`**, **`Makera Carvera`** (6-tool ATC + 4th-axis rotary), **`Makera Carvera Air`**, and **`Makera Carvera Z1`**—each paired with a tailored starter cutter library validated against its spindle, collet, and feed limits.
@@ -108,11 +110,11 @@ Get-FileHash .\ChipCutter-<version>-windows-x86_64.msi -Algorithm SHA256
 - **Tool Library & Coupled SFM / Chipload Calculator:**
   - Supports Flat, Ball, Bull-Nose, Chamfer, Face Mill, Twist Drill, and single-point / multi-form **Thread Mill** geometries with per-material cutting presets (`Aluminum 6061`, `Mild Steel`, `Hardwood`, `Acrylic`, etc.), radial chip-thinning compensation, machine-scoped tool switching, `.tools.toml` libraries, and a **Fusion 360 `.json` / `.tools` (ZIP)** importer.
 
-- **Selectable Heightmap & Tri-Dexel 3D Volumetric Simulation, Error-Volume Metrology, & Mandatory Crash Gate:**
-  - Multi-threaded `rayon` toolpath generation (`Ctrl+G`) and `< 1 ms` `100`-step Undo/Redo (`Ctrl+Z` / `Ctrl+Y`).
+- **GPU-Accelerated Heightmap, Cylindrical, & Tri-Dexel 3D Volumetric Simulation, Error-Volume Metrology, & Mandatory 6-Rule Crash Gate:**
+  - Multi-threaded `rayon` toolpath generation (`Ctrl+G`), `< 1 ms` `100`-step Undo/Redo (`Ctrl+Z` / `Ctrl+Y`), and an optional **`wgpu` Compute** simulation backend (`Auto (GPU)` / `GPU` / `CPU`) with zero-readback GPU stock rendering and `< 0.1 ms` interactive **Error Heatmap** updates.
   - Switch between fast **2.5D Z-Dexel Heightmap** (plus polar cylindrical 4th-axis stock) and full **3D Tri-Dexel Volumetric** simulation (`X`/`Y`/`Z` orthogonal dexels + sharp Dual-Vertex Surface Nets meshing) with interactive 3D machined-stock & revolved cutter/shank/holder timeline playback and trapezoidal-acceleration cycle-time estimation.
-  - **Quantitative Stock-vs-Target Error Metrics & Deviation Heatmap:** Computes Total / Excess / Gouge Error Volume (`mm³` & `%`), Removal Efficiency, **RMS**, MAE, Mean Signed Bias, P95/P99, In-Tolerance Surface %, Max Excess/Gouge with 1-click camera **`Locate`**, Per-Operation Error Progression, diverging Red/Green/Blue 3D Error Heatmap, and structured JSON reports via `chipcutter simulate --engine tri-dexel --report`.
-  - **5-Rule Physical Verifier:** Automatically checks every setup for `G0` rapid-into-stock crashes, target B-Rep/mesh part gouges (`> 0.02 mm`, including vertical-wall & undercut gouges in Tri-Dexel mode), non-cutting shank/flute-length collisions, holder collisions, and non-center-cutting plunges—blocking unsafe G-code export in both CLI and GUI.
+  - **Quantitative Stock-vs-Target Error Metrics & Deviation Heatmap:** Computes Total / Excess / Gouge Error Volume (`mm³` & `%`), Removal Efficiency, **RMS**, MAE, Mean Signed Bias, P95/P99, In-Tolerance Surface %, Max Excess/Gouge with 1-click camera **`Locate`**, Per-Operation Error Progression, diverging Red/Green/Blue 3D Error Heatmap, and structured JSON reports via `chipcutter simulate --engine tri-dexel --backend gpu --benchmark --report`.
+  - **6-Rule Physical Verifier:** Automatically checks every setup for `G0` rapid-into-stock crashes, target B-Rep/mesh part gouges (`> 0.02 mm`, including vertical-wall & undercut gouges in Tri-Dexel mode), non-cutting shank/flute-length/neck collisions, holder collisions, non-center-cutting plunges, and 3D workholding **`FixtureCollision`**—blocking unsafe G-code export in both CLI and GUI.
 
 - **Configurable TOML Post-Processors & Portable `.chipz` Bundles:**
   - Ships with built-in **Grbl 1.1 / FluidNC** (automatic file-per-tool splitting—including Two-Stage Flat Endmill + V-Bit V-Carve operations—`<= 80`-char line guard, quadrant arc splitting, expanded peck drills), **grblHAL / FluidNC ATC**, and **LinuxCNC (RS274NGC)** (`M6` + `G43 H`, `G64 P`, native canned cycles) profiles in [`posts/`](posts/).
@@ -135,12 +137,13 @@ Get-FileHash .\ChipCutter-<version>-windows-x86_64.msi -Algorithm SHA256
 # Launch the desktop CAM workspace (opens the Quick-Start Welcome Overlay on bare launch):
 cargo run --release -p chip-gui
 
-# Launch directly into built-in 3D STEP, Thread Mill, Mesh, 4th-Axis Rotary, Pure-2D, or V-Carve samples:
+# Launch directly into built-in 3D STEP, Workholding, Undercut/Deburr, Thread Mill, Mesh, 4th-Axis Rotary, Pure-2D, or V-Carve samples:
 cargo run --release -p chip-gui -- --sample cam-torture
+cargo run --release -p chip-gui -- --sample two-sided-vise
+cargo run --release -p chip-gui -- --sample undercut-deburr
+cargo run --release -p chip-gui -- --sample feed-opt-pocket
 cargo run --release -p chip-gui -- --sample thread-mill
 cargo run --release -p chip-gui -- --sample mesh-dome
-cargo run --release -p chip-gui -- --sample rotary-wrap
-cargo run --release -p chip-gui -- --sample rotary-shaft
 cargo run --release -p chip-gui -- --sample rotary-4axis
 cargo run --release -p chip-gui -- --sample pure-2d
 cargo run --release -p chip-gui -- --sample vcarve
@@ -214,12 +217,12 @@ cargo run -p chip-cli -- machines export my-carvera -o my-carvera.machine.toml
 
 ## Documentation
 
-- [**`docs/samples/`**](docs/samples/README.md) — **Illustrated Sample Projects Gallery** with thumbnails of all 16 built-in STEP, Thread Mill, Mesh, 4th-Axis Rotary, Pure-2D, and V-Carve samples plus per-Setup and per-Operation completion simulation screenshots
-- [**`docs/tutorials/`**](docs/tutorials/README.md) — Illustrated step-by-step Getting Started, 2.5D, Helical Thread Milling, Two-Sided Flip Workholding & Soft Jaws, 3-Axis Surface, 4th-Axis Rotary, Machine Definitions, Model Orientation/Scaling, Tri-Dexel Simulation & Error Metrics, & Production Workflow tutorials (`00`–`19`)
+- [**`docs/samples/`**](docs/samples/README.md) — **Illustrated Sample Projects Gallery** with thumbnails of all 24 documented built-in STEP, Workholding, Undercut & 3D Deburr, Thread Mill, Mesh (`STL`/`OBJ`/`3MF`), 4th-Axis Rotary, Pure-2D (`DXF`/`SVG`), and V-Carve samples plus per-Setup and per-Operation completion simulation screenshots
+- [**`docs/tutorials/`**](docs/tutorials/README.md) — Illustrated step-by-step Getting Started, 2.5D, Helical Thread Milling, Two-Sided Flip Workholding & Soft Jaws, GPU Simulation & Feedrate Optimization, 3D Edge Deburring, Undercut/T-Slot/Dovetail/Lollipop Milling, 3-Axis Surface, 4th-Axis Rotary, Machine Definitions, Model Orientation/Scaling, Tri-Dexel Simulation & Error Metrics, & Production Workflow tutorials (`00`–`22`)
 - [**`ARCHITECTURE.md`**](ARCHITECTURE.md) — End-to-end data pipeline, crate dependency graph, threading/caching model, and 3D render passes
 - [**`DEVELOPMENT.md`**](DEVELOPMENT.md) — Workspace layout, platform build prerequisites, native Linux/macOS/Windows setup, and headless CI instructions
 - [**`specs/00-overview.md`**](specs/00-overview.md) — Product scope, non-goals, and full specification index (`00` through `11`)
-- [**`specs/10-roadmap.md`**](specs/10-roadmap.md) — Completed Phase 1–13 (`M1`–`M47`) milestones and future phases
+- [**`specs/10-roadmap.md`**](specs/10-roadmap.md) — Completed Phase 1–19 (`M1`–`M71`) milestones and future phases
 - [**`AGENTS.md`**](AGENTS.md) — Architectural invariants and contributor guidelines
 
 ---
