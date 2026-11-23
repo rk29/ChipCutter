@@ -66,6 +66,7 @@ pub use params::{
 pub use rest2d::{
     ContourRestClipQuery, PocketRestQuery, RegionSet2D, RestPocketWorkItem, UpstreamSweptInput,
     clip_contour_path_to_rest, clip_polyline_outside_region_set, compute_rest_pocket_work_items,
+    filter_upstream_for_indexed_angle, indexed_angles_match, normalize_indexed_angle_deg,
     swept_segment_capsule_2d, swept_toolpath_coverage_2d,
 };
 pub use rotary::{
@@ -107,9 +108,9 @@ pub use surface3d::{
     clip_2d_contour_outside_overhangs, clip_polyline_to_region, detect_flat_plateaus,
     drop_cutter_points_parallel, drop_cutter_z, drop_cutter_z_detailed_with_scratch,
     drop_cutter_z_with_scratch, emit_final_surface_retract, emit_surface_safe_link,
-    push_cutter_region_z, rect_region_2d, refine_convex_chords_3d, region_aabb_2d,
-    resolve_3d_containment_region, sample_surface_slope_deg, simplify_3d_polyline_rdp,
-    slice_surface_contours_z, stepover_for_cusp_height, stock_xy_region,
+    project_surface_z_slab_xy, push_cutter_region_z, rect_region_2d, refine_convex_chords_3d,
+    region_aabb_2d, resolve_3d_containment_region, sample_surface_slope_deg,
+    simplify_3d_polyline_rdp, slice_surface_contours_z, stepover_for_cusp_height, stock_xy_region,
 };
 pub use thread_tables::{
     ISO_60_H_OVER_P, ThreadSpecEntry, ThreadStandardKind, all_thread_specs, find_thread_spec,

@@ -981,6 +981,8 @@ fn verifies_adaptive_clearing_and_rest_machining_against_sim_oracle() {
         tool_diameter_mm: 10.0,
         corner_radius_mm: 0.0,
         toolpath: Arc::clone(&tp_rough_10),
+        indexed_angle_deg: None,
+        is_rotary_native: false,
     }];
     let tp_rest_3 = generate_operation_toolpath_with_rest(&OperationGenRequest {
         doc: &doc,

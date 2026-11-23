@@ -3,7 +3,10 @@ use std::{
     sync::Arc,
 };
 
-use chip_cam::{GeneratedToolpath, OperationStatus, RestMachiningMode, Setup};
+use chip_cam::{
+    GeneratedToolpath, OperationRotaryMode, OperationStatus, RestMachiningMode, Setup,
+    indexed_angles_match, normalize_indexed_angle_deg,
+};
 use sha2::{Digest, Sha256};
 
 use crate::document::ProjectDocument;
@@ -119,6 +122,14 @@ pub fn compute_operation_input_hash(
         }
     }
 
+    // Fold enabled 4th-axis rotary kinematics (skipped when disabled so v1/v2/v3 hashes stay bit-identical!)
+    if setup.rotary.is_enabled() {
+        hasher.update(b"|rotary_v1:");
+        if let Ok(s) = toml::to_string(&setup.rotary) {
+            hasher.update(s.as_bytes());
+        }
+    }
+
     // Fold upstream Rest Machining operation hashes recursively (`u_idx < op_idx` guarantees DAG acyclicity;
     // skipped completely when `rest_machining` is disabled or `FromPreviousTool` so v1 hashes stay bit-identical!)
     let upstream_indices = resolve_upstream_rest_op_indices(setup, op_idx);
@@ -213,6 +224,104 @@ pub fn compute_setup_carryover_digest(
     hasher.update(b"chipcutter_carryover_digest_v1:");
     hasher.update(cad_revision.to_le_bytes());
     fold_setup_carryover_hash(&mut hasher, project, src_idx, cad_revision);
+    let digest = hasher.finalize();
+    u64::from_le_bytes([
+        digest[0], digest[1], digest[2], digest[3], digest[4], digest[5], digest[6], digest[7],
+    ])
+}
+
+/// Returns `true` when `setup.operations[op_idx]` uses `RestMachiningMode::FromPrecedingOperations`
+/// inside a rotary-enabled Setup and at least one resolved preceding operation runs at a different
+/// rotary index angle (or is rotary-native / cylindrical-wrapped), requiring in-setup volumetric
+/// [`chip_sim::TriDexelStock`] carryover (`M73`).
+pub fn op_needs_in_setup_rotary_carryover(setup: &Setup, op_idx: usize) -> bool {
+    if !setup.rotary.is_enabled() {
+        return false;
+    }
+    let Some(op) = setup.operations.get(op_idx) else {
+        return false;
+    };
+    if op.kind.is_rotary_native() || matches!(op.rotary, OperationRotaryMode::WrapCylinder { .. }) {
+        return false;
+    }
+    let upstream_indices = resolve_upstream_rest_op_indices(setup, op_idx);
+    if upstream_indices.is_empty() {
+        return false;
+    }
+
+    let target_angle = match op.rotary {
+        OperationRotaryMode::Indexed3Plus1 { angle_deg } => {
+            Some(normalize_indexed_angle_deg(angle_deg))
+        }
+        OperationRotaryMode::None => None,
+        OperationRotaryMode::WrapCylinder { .. } => return false,
+    };
+
+    upstream_indices.into_iter().any(|u_idx| {
+        let u_op = &setup.operations[u_idx];
+        if u_op.kind.is_rotary_native() {
+            return true;
+        }
+        match u_op.rotary {
+            OperationRotaryMode::WrapCylinder { .. } => true,
+            OperationRotaryMode::Indexed3Plus1 { angle_deg } => match target_angle {
+                Some(t_ang) => !indexed_angles_match(angle_deg, t_ang, 1e-3),
+                None => true,
+            },
+            OperationRotaryMode::None => target_angle.is_some(),
+        }
+    })
+}
+
+/// Computes a deterministic 64-bit digest of the Setup-WCS volumetric [`chip_sim::TriDexelStock`]
+/// produced by sweeping all preceding in-setup rest operations referenced by
+/// `project.setups[setup_idx].operations[op_idx]`.
+pub fn compute_in_setup_carryover_digest(
+    project: &ProjectDocument,
+    setup_idx: usize,
+    op_idx: usize,
+    cad_revision: u64,
+) -> u64 {
+    let mut hasher = Sha256::new();
+    hasher.update(b"chipcutter_in_setup_carryover_v1:");
+    hasher.update(cad_revision.to_le_bytes());
+    if let Some(setup) = project.setups.get(setup_idx) {
+        hasher.update(setup.id.as_bytes());
+        hasher.update(b"{");
+        for b in &setup.target_bodies {
+            hasher.update(b.0.to_le_bytes());
+        }
+        if let Ok(s) = toml::to_string(&setup.wcs) {
+            hasher.update(s.as_bytes());
+        }
+        if let Ok(s) = toml::to_string(&setup.stock) {
+            hasher.update(s.as_bytes());
+        }
+        if let Ok(s) = toml::to_string(&setup.heights) {
+            hasher.update(s.as_bytes());
+        }
+        if let Ok(s) = toml::to_string(&setup.rotary) {
+            hasher.update(s.as_bytes());
+        }
+        if let Some(ref src_id) = setup.carryover_from_setup_id
+            && let Some(src_idx) = project.setups[..setup_idx]
+                .iter()
+                .position(|s| &s.id == src_id)
+        {
+            hasher.update(b"<-");
+            fold_setup_carryover_hash(&mut hasher, project, src_idx, cad_revision);
+        }
+        for u_idx in resolve_upstream_rest_op_indices(setup, op_idx) {
+            let u_op = &setup.operations[u_idx];
+            hasher.update(u_op.id.as_bytes());
+            hasher.update(b"=");
+            if let Some(h) = compute_operation_input_hash(project, setup_idx, u_idx, cad_revision) {
+                hasher.update(h.0);
+            }
+            hasher.update(b";");
+        }
+        hasher.update(b"}");
+    }
     let digest = hasher.finalize();
     u64::from_le_bytes([
         digest[0], digest[1], digest[2], digest[3], digest[4], digest[5], digest[6], digest[7],

@@ -351,6 +351,93 @@ fn compute_setup_carryover_stock_with_cache(
     }))
 }
 
+/// Computes the Setup-WCS volumetric [`TriDexelStock`] obtained by sweeping the specified
+/// preceding in-setup operations (`upstream_op_indices`) in `req.setup_idx` (starting from
+/// cross-setup carryover stock when `setup.carryover_from_setup_id` is configured, else raw stock).
+///
+/// Used for in-setup cross-angle `Indexed3Plus1` volumetric rest roughing (`M73`).
+pub fn compute_in_setup_carryover_stock(
+    req: &SetupSimRequest<'_>,
+    upstream_op_indices: &[usize],
+    project_dir: Option<&Path>,
+    choice: SimComputeBackendChoice,
+) -> Result<TriDexelStock, String> {
+    let setup = req
+        .project
+        .setups
+        .get(req.setup_idx)
+        .ok_or_else(|| format!("invalid setup index {}", req.setup_idx))?;
+    let resolved = setup
+        .resolve_with_sketches(
+            req.cad_doc,
+            &req.project.sketches,
+            req.project.display_units,
+        )
+        .map_err(|e| e.to_string())?;
+    let base_carryover = compute_setup_carryover_stock(req, project_dir, choice)?;
+
+    let mut ready_upstream = Vec::with_capacity(upstream_op_indices.len());
+    for &op_idx in upstream_op_indices {
+        let Some(op) = setup.operations.get(op_idx) else {
+            continue;
+        };
+        if op.suppressed {
+            continue;
+        }
+        let Some(tid) = &op.tool_id else {
+            continue;
+        };
+        let Some(tool) = req.project.tools.iter().find(|t| &t.id == tid) else {
+            return Err(format!(
+                "Upstream operation '{}' references missing tool '{tid}'",
+                op.name
+            ));
+        };
+        let Some((_hash, toolpath)) =
+            req.cache
+                .get_for_operation(req.project, req.setup_idx, op_idx, req.cad_revision)
+        else {
+            return Err(format!(
+                "Upstream operation '{}' has no cached toolpath for in-setup carryover",
+                op.name
+            ));
+        };
+        if let Some(stage) = &toolpath.clearing_stage
+            && let Some(clear_tool) = req.project.tools.iter().find(|t| t.id == stage.tool_id)
+        {
+            ready_upstream.push(ReadySetupOperation {
+                op_idx,
+                op,
+                tool: clear_tool,
+                toolpath: Arc::new(stage.toolpath.clone()),
+            });
+        }
+        ready_upstream.push(ReadySetupOperation {
+            op_idx,
+            op,
+            tool,
+            toolpath,
+        });
+    }
+
+    let sim = simulate_single_setup_inner(
+        req,
+        &resolved,
+        &ready_upstream,
+        project_dir,
+        SimEngineKind::TriDexel,
+        choice,
+        base_carryover.as_ref(),
+        None,
+    )?;
+    sim.as_tridexel().cloned().ok_or_else(|| {
+        format!(
+            "in-setup carryover for setup '{}' did not produce a Tri-Dexel stock solid",
+            setup.name
+        )
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn simulate_single_setup_inner(
     req: &SetupSimRequest<'_>,

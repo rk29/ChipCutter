@@ -1390,6 +1390,8 @@ mod tests {
             tool_diameter_mm: 10.0,
             corner_radius_mm: 0.0,
             toolpath: Arc::new(tp1),
+            indexed_angle_deg: None,
+            is_rotary_native: false,
         }];
         let cov = swept_toolpath_coverage_2d(&up, -10.0);
         eprintln!(

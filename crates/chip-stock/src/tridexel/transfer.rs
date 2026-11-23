@@ -951,3 +951,118 @@ fn rdp_open(pts: &mut [DVec2], tol2: f64) -> Vec<DVec2> {
         .filter_map(|(i, &p)| keep[i].then_some(p))
         .collect()
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use chip_math::{Aabb3, DVec3, RigidFrame3};
+    use chip_tools::{CutterGeometry, default_starter_tool_library};
+
+    use crate::{
+        SweepChord, SweepMotion, SweepToolSpec, TriDexelStock,
+        types::{Axis3, RadialCutterProfile, SimResolution, StockShapeSpec, StockVerifyTolerances},
+    };
+
+    fn rotated_x_frame(angle_deg: f64) -> RigidFrame3 {
+        let a = (-angle_deg).to_radians();
+        let (s, c) = a.sin_cos();
+        RigidFrame3 {
+            origin_mm: DVec3::ZERO,
+            x_axis: DVec3::X,
+            y_axis: DVec3::new(0.0, c, s),
+            z_axis: DVec3::new(0.0, -s, c),
+        }
+    }
+
+    #[test]
+    fn rotary_frame_transfer_preserves_volume_and_overhangs_for_cardinal_and_arbitrary_angles() {
+        // Ø40 mm x 60 mm cylindrical stock along X, with a deep slot machined on the +Z/+Y quadrant
+        // creating an asymmetric solid with vertical overhangs when rotated around X.
+        let spec = StockShapeSpec::Cylinder {
+            axis: Axis3::X,
+            center_wcs: DVec3::ZERO,
+            radius_mm: 20.0,
+            min_axial_mm: -30.0,
+            max_axial_mm: 30.0,
+            aabb_wcs: Aabb3::new(
+                DVec3::new(-30.0, -20.0, -20.0),
+                DVec3::new(30.0, 20.0, 20.0),
+            ),
+        };
+        let mut stock = TriDexelStock::from_stock_spec(&spec, SimResolution::Standard).unwrap();
+
+        let mut tool = default_starter_tool_library().tools[0].clone();
+        tool.geometry = CutterGeometry::FlatEndmill {
+            diameter_mm: 8.0,
+            flute_length_mm: 25.0,
+            overall_length_mm: 50.0,
+            shank_diameter_mm: 8.0,
+            flutes: 3,
+        };
+        let tool_spec = SweepToolSpec {
+            profile: RadialCutterProfile::from_tool(&tool),
+            is_flat_endmill: true,
+        };
+        let chord = SweepChord {
+            motion: SweepMotion::Linear {
+                p0: DVec3::new(-22.0, 12.0, 4.0),
+                p1: DVec3::new(22.0, 12.0, 4.0),
+                rotary_deg_0: 0.0,
+                rotary_deg_1: 0.0,
+            },
+            op_idx: 0,
+            is_rapid: false,
+            profile_idx: 0,
+            verify_tol: StockVerifyTolerances::default(),
+        };
+        let _ = stock.sweep_chords(&[chord], &[tool_spec], None, false);
+
+        let src_vol = stock.compute_volume_mm3();
+        assert!(src_vol > 10_000.0);
+
+        let src_frame = RigidFrame3::IDENTITY;
+
+        // 1. Cardinal rotary angles (90°, 180°, 270°): exact zero-blur permutation fast path!
+        for angle_deg in [90.0_f64, 180.0, 270.0] {
+            let dst_frame = rotated_x_frame(angle_deg);
+            let dst = stock
+                .transform_to_frame(src_frame, dst_frame, SimResolution::Standard)
+                .unwrap();
+            let vol_err_pct = ((dst.compute_volume_mm3() - src_vol).abs() / src_vol) * 100.0;
+            assert!(
+                vol_err_pct < 0.01,
+                "Cardinal {angle_deg}° transfer volume error {vol_err_pct:.4}% exceeded 0.01%"
+            );
+            // Verify solid interior point on opposite side `(0, -12, 0)` transferred cleanly!
+            let mapped = dst_frame.world_to_local_point(DVec3::new(0.0, -12.0, 0.0));
+            assert!(
+                dst.has_material_in_z_slab(mapped.z - 1.5, mapped.z + 1.5, 0.2),
+                "Cardinal {angle_deg}° transfer lost solid material at {mapped:?}"
+            );
+        }
+
+        // 2. Arbitrary oblique rotary angles (60°, 120°, 240°): watertight BVH re-voxelization!
+        for angle_deg in [60.0_f64, 120.0, 240.0] {
+            let dst_frame = rotated_x_frame(angle_deg);
+            let dst = stock
+                .transform_to_frame(src_frame, dst_frame, SimResolution::Standard)
+                .unwrap();
+            let vol_err_pct = ((dst.compute_volume_mm3() - src_vol).abs() / src_vol) * 100.0;
+            assert!(
+                vol_err_pct < 0.5,
+                "Oblique {angle_deg}° transfer volume error {vol_err_pct:.4}% exceeded 0.5%"
+            );
+            // Verify uncut lobe at `(0, -12, 8)` still exists in rotated frame
+            let mapped_solid = dst_frame.world_to_local_point(DVec3::new(0.0, -12.0, 8.0));
+            let regs = dst.extract_remaining_material_regions_in_z_slab(
+                mapped_solid.z - 1.0,
+                mapped_solid.z + 1.0,
+                0.0,
+            );
+            assert!(
+                !regs.is_empty(),
+                "Oblique {angle_deg}° transfer lost solid overhang region around {mapped_solid:?}"
+            );
+        }
+    }
+}

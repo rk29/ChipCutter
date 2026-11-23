@@ -23,6 +23,67 @@ pub struct UpstreamSweptInput {
     pub tool_diameter_mm: f64,
     pub corner_radius_mm: f64,
     pub toolpath: Arc<GeneratedToolpath>,
+    /// Normalized rotary index angle in `[0°, 360°)` for `OperationRotaryMode::Indexed3Plus1`
+    /// operations, or `None` for standard 3-axis / non-indexed operations.
+    pub indexed_angle_deg: Option<f64>,
+    /// `true` for rotary-native simultaneous/turning operations (`Rotary2Linear`, `Rotary4AxisSim`)
+    /// or `OperationRotaryMode::WrapCylinder` wrapped operations whose `segments_wcs` are non-planar
+    /// and must never be projected into 2D planar `swept_toolpath_coverage_2d`.
+    pub is_rotary_native: bool,
+}
+
+/// Normalizes an indexed rotary angle (`deg`) into canonical `[0.0, 360.0)`.
+#[inline]
+pub fn normalize_indexed_angle_deg(angle_deg: f64) -> f64 {
+    if !angle_deg.is_finite() {
+        return 0.0;
+    }
+    let m = angle_deg.rem_euclid(360.0);
+    if m.abs() < 1e-9 || (360.0 - m).abs() < 1e-9 {
+        0.0
+    } else {
+        m
+    }
+}
+
+/// Returns `true` when two rotary index angles `a_deg` and `b_deg` coincide modulo `360°` within
+/// `tol_deg`.
+#[inline]
+pub fn indexed_angles_match(a_deg: f64, b_deg: f64, tol_deg: f64) -> bool {
+    if !a_deg.is_finite() || !b_deg.is_finite() || !tol_deg.is_finite() {
+        return false;
+    }
+    let diff = (a_deg - b_deg).rem_euclid(360.0);
+    diff.min(360.0 - diff) <= tol_deg.max(0.0)
+}
+
+/// Filters `inputs` to only upstream operations whose 2D planar XY coordinates live in the exact
+/// same frame as `target_angle_deg`:
+/// - Always excludes rotary-native / cylindrical-wrapped inputs (`is_rotary_native == true`).
+/// - Matches `(Some(u_ang), Some(t_ang))` iff `indexed_angles_match(u_ang, t_ang, 1e-3)`.
+/// - Matches `(None, None)` for standard 3-axis planar operations.
+/// - Excludes cross-angle or mixed indexed/non-indexed pairs so 2D swept capsules from one rotary
+///   index angle can never corrupt another angle's XY coordinate plane.
+pub fn filter_upstream_for_indexed_angle(
+    inputs: &[UpstreamSweptInput],
+    target_angle_deg: Option<f64>,
+) -> Vec<UpstreamSweptInput> {
+    const ANGLE_TOL_DEG: f64 = 1e-3;
+    let target_norm = target_angle_deg.map(normalize_indexed_angle_deg);
+    inputs
+        .iter()
+        .filter(|inp| {
+            if inp.is_rotary_native {
+                return false;
+            }
+            match (inp.indexed_angle_deg, target_norm) {
+                (Some(u_ang), Some(t_ang)) => indexed_angles_match(u_ang, t_ang, ANGLE_TOL_DEG),
+                (None, None) => true,
+                _ => false,
+            }
+        })
+        .cloned()
+        .collect()
 }
 
 fn effective_radius_at_height(
@@ -51,11 +112,15 @@ pub fn swept_toolpath_coverage_2d(inputs: &[UpstreamSweptInput], z_level_wcs: f6
     let z_tol = 0.03;
 
     for inp in inputs {
-        if inp.tool_diameter_mm <= 1e-4 {
+        if inp.is_rotary_native || inp.tool_diameter_mm <= 1e-4 {
             continue;
         }
         for seg3 in &inp.toolpath.segments_wcs {
             if matches!(seg3.motion, SegmentMotion3D::Rapid) {
+                continue;
+            }
+            // Simultaneous rotary motion is never a flat 2D XY capsule in a single planar frame.
+            if (seg3.start_rotary_deg - seg3.end_rotary_deg).abs() > 1e-3 {
                 continue;
             }
             let seg_max_z = seg3.start_wcs.z.max(seg3.end_wcs.z);
@@ -397,5 +462,114 @@ mod tests {
             2.0 * std::f64::consts::PI * 25.0,
             0.2
         ));
+    }
+
+    #[test]
+    fn filter_upstream_for_indexed_angle_scopes_by_mod_360_and_excludes_rotary_native() {
+        use crate::{cl_data::MotionRole, toolpath::ToolpathBuilder};
+        use chip_math::DVec3;
+
+        let make_tp = |id: &str, start_deg: f64, end_deg: f64| {
+            let mut b = ToolpathBuilder::new(id);
+            b.rotary_linear_to(
+                DVec3::new(0.0, 0.0, -5.0),
+                start_deg,
+                500.0,
+                10.0,
+                MotionRole::Cut,
+            );
+            b.rotary_linear_to(
+                DVec3::new(20.0, 0.0, -5.0),
+                end_deg,
+                500.0,
+                10.0,
+                MotionRole::Cut,
+            );
+            Arc::new(b.finish())
+        };
+
+        let inputs = vec![
+            UpstreamSweptInput {
+                op_id: "plain_3axis".to_string(),
+                tool_diameter_mm: 6.0,
+                corner_radius_mm: 0.0,
+                toolpath: make_tp("plain_3axis", 0.0, 0.0),
+                indexed_angle_deg: None,
+                is_rotary_native: false,
+            },
+            UpstreamSweptInput {
+                op_id: "idx_0".to_string(),
+                tool_diameter_mm: 6.0,
+                corner_radius_mm: 0.0,
+                toolpath: make_tp("idx_0", 0.0, 0.0),
+                indexed_angle_deg: Some(0.0),
+                is_rotary_native: false,
+            },
+            UpstreamSweptInput {
+                op_id: "idx_359_9995".to_string(),
+                tool_diameter_mm: 6.0,
+                corner_radius_mm: 0.0,
+                toolpath: make_tp("idx_359_9995", 359.9995, 359.9995),
+                indexed_angle_deg: Some(359.9995),
+                is_rotary_native: false,
+            },
+            UpstreamSweptInput {
+                op_id: "idx_neg90".to_string(),
+                tool_diameter_mm: 6.0,
+                corner_radius_mm: 0.0,
+                toolpath: make_tp("idx_neg90", -90.0, -90.0),
+                indexed_angle_deg: Some(-90.0),
+                is_rotary_native: false,
+            },
+            UpstreamSweptInput {
+                op_id: "idx_120".to_string(),
+                tool_diameter_mm: 6.0,
+                corner_radius_mm: 0.0,
+                toolpath: make_tp("idx_120", 120.0, 120.0),
+                indexed_angle_deg: Some(120.0),
+                is_rotary_native: false,
+            },
+            UpstreamSweptInput {
+                op_id: "rotary_sim".to_string(),
+                tool_diameter_mm: 6.0,
+                corner_radius_mm: 0.0,
+                toolpath: make_tp("rotary_sim", 0.0, 90.0),
+                indexed_angle_deg: Some(0.0),
+                is_rotary_native: true,
+            },
+        ];
+
+        let f_none: Vec<_> = filter_upstream_for_indexed_angle(&inputs, None)
+            .into_iter()
+            .map(|u| u.op_id)
+            .collect();
+        assert_eq!(f_none, vec!["plain_3axis"]);
+
+        let f_0: Vec<_> = filter_upstream_for_indexed_angle(&inputs, Some(0.0))
+            .into_iter()
+            .map(|u| u.op_id)
+            .collect();
+        assert_eq!(f_0, vec!["idx_0", "idx_359_9995"]);
+
+        let f_270: Vec<_> = filter_upstream_for_indexed_angle(&inputs, Some(270.0))
+            .into_iter()
+            .map(|u| u.op_id)
+            .collect();
+        assert_eq!(f_270, vec!["idx_neg90"]);
+
+        let f_240 = filter_upstream_for_indexed_angle(&inputs, Some(240.0));
+        assert!(f_240.is_empty());
+
+        // Defensive check: simultaneous rotary segment with `start_rotary_deg != end_rotary_deg`
+        // must be skipped by `swept_toolpath_coverage_2d` even if `is_rotary_native == false`.
+        let sim_unmarked = [UpstreamSweptInput {
+            op_id: "sim_unmarked".to_string(),
+            tool_diameter_mm: 6.0,
+            corner_radius_mm: 0.0,
+            toolpath: make_tp("sim_unmarked", 0.0, 45.0),
+            indexed_angle_deg: None,
+            is_rotary_native: false,
+        }];
+        assert!(swept_toolpath_coverage_2d(&sim_unmarked, -5.0).is_empty());
     }
 }

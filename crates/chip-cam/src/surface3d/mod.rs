@@ -9,6 +9,7 @@ pub mod finishing;
 pub mod levels;
 pub mod overhang_guard;
 pub mod push_cutter;
+pub mod slab_projection;
 
 use chip_bvh::{
     ClosestPointHit, FlatBvh, RayHit, TriMesh3D, closest_point_on_triangle, ray_triangle_intersect,
@@ -35,6 +36,7 @@ pub use overhang_guard::{
     clip_2d_contour_outside_overhangs, is_2d_arc_clear_of_avoid, is_2d_segment_clear_of_avoid,
 };
 pub use push_cutter::{PushCutterField, push_cutter_region_z, slice_surface_contours_z};
+pub use slab_projection::project_surface_z_slab_xy;
 
 /// WCS-space canonical `f64` triangle surface mesh accelerated by a [`chip_bvh::FlatBvh`].
 #[derive(Debug, Clone)]

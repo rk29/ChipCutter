@@ -181,12 +181,14 @@ pub fn generate_waterline3d(
             }
             let raw_polys = td.extract_remaining_material_regions_in_z_slab(slab_lo, slab_hi, 0.0);
             let raw_mat = crate::rest2d::contours_to_region_set(&raw_polys);
-            let z_s = (slab_lo - axial_stock)
-                .clamp(surface.aabb_wcs.min.z + 1e-4, surface.aabb_wcs.max.z - 1e-4);
-            let part_solid = crate::rest2d::contours_to_region_set(
-                &crate::surface3d::slice_surface_contours_z(&surface, z_s),
+            let xy_pitch = td.pitch_mm.x.max(td.pitch_mm.y);
+            let part_solid = crate::surface3d::project_surface_z_slab_xy(
+                &surface,
+                slab_lo - axial_stock,
+                slab_hi - axial_stock,
+                (0.4 * xy_pitch).clamp(0.06, 0.20),
             );
-            let halo = radial_stock + 0.6 * td.pitch_mm.x.max(td.pitch_mm.y).min(0.4);
+            let halo = radial_stock + 0.5 * xy_pitch.min(0.4);
             let excess = if part_solid.is_empty() {
                 raw_mat
             } else {

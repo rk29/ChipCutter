@@ -114,7 +114,7 @@ pub fn generate_adaptive3d(
     let pocket_defaults = Pocket2DParams::default();
     let retract_z = ctx.safe_retract_z();
 
-    use crate::surface3d::slice_surface_contours_z;
+    use crate::surface3d::project_surface_z_slab_xy;
     let push_field = PushCutterField::build_with_z_min(&surface, cutter, z_bottom);
     if let Some(warn) = push_field.reach_limit_warning(&containment, ctx.tool) {
         builder.warnings.push(warn);
@@ -131,37 +131,31 @@ pub fn generate_adaptive3d(
         if raw_mat.is_empty() {
             return None;
         }
-        // Subtract the target part solid cross-section (+ 1-cell Tri-Dexel quantization halo)
-        // so already-finished walls/bosses from Setup 1 are NOT mistaken for uncut excess stock!
+        // Subtract the exact swept target-part solid projection across the full Z slab
+        // `[slab_lo - axial_stock, slab_hi - axial_stock]` (+ 1-cell Tri-Dexel quantization halo)
+        // so already-finished walls, bosses, and twisting helical blades are NEVER mistaken for
+        // uncut excess stock between discrete Z planes!
         let xy_pitch = td.pitch_mm.x.max(td.pitch_mm.y);
         let halo = radial_stock + 1.05 * xy_pitch;
-        let mut part_slices = Vec::new();
-        let z_lo_s = (slab_lo - axial_stock)
-            .clamp(surface.aabb_wcs.min.z + 1e-4, surface.aabb_wcs.max.z - 1e-4);
-        let z_hi_s = (slab_hi - axial_stock)
-            .clamp(surface.aabb_wcs.min.z + 1e-4, surface.aabb_wcs.max.z - 1e-4);
-        if slab_lo - axial_stock < surface.aabb_wcs.max.z - 1e-4
-            && slab_hi - axial_stock > surface.aabb_wcs.min.z + 1e-4
-        {
-            for z_s in [z_lo_s, 0.5 * (z_lo_s + z_hi_s)] {
-                let c = slice_surface_contours_z(&surface, z_s);
-                let r = crate::rest2d::contours_to_region_set(&c);
-                if !r.is_empty() {
-                    part_slices.push(r);
-                }
-            }
-        }
-        let excess_mat = if part_slices.is_empty() {
-            raw_mat
+        let slab_cell = (0.5 * xy_pitch).clamp(0.08, 0.25);
+        let part_slab = project_surface_z_slab_xy(
+            &surface,
+            slab_lo - axial_stock,
+            slab_hi - axial_stock,
+            slab_cell,
+        );
+        let excess_mat = if part_slab.is_empty() {
+            raw_mat.clone()
         } else {
-            let part_solid = RegionSet2D::union_many(&mut part_slices).dilate_outward(halo);
+            let part_solid = part_slab.dilate_outward(halo);
             raw_mat.difference(&part_solid)
         };
         if excess_mat.is_empty() || excess_mat.total_area_mm2() <= 0.1 {
             return None;
         }
         let mat_mask = excess_mat.dilate_outward(tool_r + radial_stock + 0.5);
-        let tight_mask = excess_mat.dilate_outward(tool_r + 0.05);
+        // Mark tool centers as open air ONLY where physical remaining stock (`raw_mat`) is absent!
+        let tight_mask = raw_mat.dilate_outward(tool_r + 0.15);
         Some((mat_mask, tight_mask))
     };
 
