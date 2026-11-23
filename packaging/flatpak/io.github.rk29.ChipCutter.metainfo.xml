@@ -50,6 +50,11 @@
   </screenshots>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="0.19.1" date="2026-11-23">
+      <description>
+        <p>Bug-fix release: replaced tip-band-only push-cutter slicing in 3D Adaptive and 3D Waterline with a precomputed analytical drop-cutter avoidance field (PushCutterField) and Marching Squares contour extraction so descending Z levels remain strictly monotonic and preserve overhanging helical lofts, flanges, and undercuts without vertical shank gouges or rapid retract collisions (#23); and added panic-safe power-of-two coordinate scaling with cleaned multi-scale fallback for complex 2D boolean operations in chip-geom2d.</p>
+      </description>
+    </release>
     <release version="0.19.0" date="2026-11-23">
       <description>
         <p>Phase 19 release: achieved 100% tutorial, starter-asset, and Sample Projects Gallery coverage across all shipped ChipCutter capabilities—adding 6 new crash-free built-in samples (feed-opt-pocket, flip-jig-softjaws, curved-deburr-3d, dovetail-rail-keyway, svg-badge, and mesh-3mf-bracket) plus 6 minimal tutorial starter assets; publishing illustrated Tutorials 20 (GPU-Accelerated Simulation, Benchmarking, and Feedrate Optimization), 21 (3D Edge Deburring and Non-Planar Chamfering), and 22 (Undercut Keyway, T-Slot, Dovetail, and Lollipop Milling) with verified headless Vulkan screenshots; completing all 24 dedicated Sample Projects Gallery pages and GitHub Pages/README sync enforced by automated docs and Markdown link parity tests; and making WGSL shader return paths FXC-safe for Windows D3DCompile (#22).</p>
