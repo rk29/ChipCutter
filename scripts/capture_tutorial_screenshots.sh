@@ -2,7 +2,7 @@
 # Repeatable headless tutorial screenshot capture pipeline for ChipCutter Phases 4 & 6.
 #
 # Usage:
-#   ./scripts/capture_tutorial_screenshots.sh [--milestone 13|14|15|22|23|24|47|63|all] [--tutorial <slug>] [--theme dark|light] [--debug]
+#   ./scripts/capture_tutorial_screenshots.sh [--milestone 13|14|15|22|23|24|47|63|69|all] [--tutorial <slug>] [--theme dark|light] [--debug]
 #
 # Renders offscreen inside Xvfb using Vulkan Lavapipe (never opens windows on a host Wayland session).
 
@@ -62,14 +62,24 @@ fi
 TMP_PROJ_DIR="$(mktemp -d "${TMPDIR:-/tmp}/chipcutter_tutorial_proj.XXXXXX")"
 trap 'rm -rf "$TMP_PROJ_DIR"' EXIT
 
+pick_free_x_display() {
+  local d=199
+  while [[ -e "/tmp/.X${d}-lock" || -L "/tmp/.X${d}-lock" || -e "/tmp/.X11-unix/X${d}" || -S "/tmp/.X11-unix/X${d}" ]]; do
+    d=$((d + 1))
+  done
+  echo "$d"
+}
+
 capture_shot() {
   local out_rel="$1"
   shift
   local out_abs="$REPO_ROOT/$out_rel"
   mkdir -p "$(dirname "$out_abs")"
-  echo "[capture] -> $out_rel"
+  local disp
+  disp="$(pick_free_x_display)"
+  echo "[capture] -> $out_rel (display :$disp)"
   WAYLAND_DISPLAY= WINIT_UNIX_BACKEND=x11 WGPU_BACKEND=vulkan \
-    xvfb-run -a -s "-screen 0 1440x900x24" \
+    xvfb-run -n "$disp" -s "-screen 0 1440x900x24" \
     "$BIN" --theme "$THEME" --self-test-screenshot "$out_abs" "$@"
 }
 
@@ -1083,6 +1093,77 @@ capture_19_workholding_flip_jigs_soft_jaws() {
     --capture-sim-progress 1.0
 }
 
+capture_20_gpu_feed_opt() {
+  local dir="docs/images/tutorials/20-gpu-simulation-feed-optimization"
+
+  # 1. Simulation Timeline showing GPU Compute adapter badge + Tri-Dexel Fine stock on Sculpted Dome (Verified Crash-Free)
+  capture_shot "$dir/01-gpu-backend-toolbar.png" \
+    --sample mesh-dome \
+    --capture-generate \
+    --capture-view iso \
+    --capture-focus op:1:passes \
+    --capture-pane sim \
+    --capture-sim-engine tri-dexel \
+    --capture-sim-backend gpu \
+    --capture-sim-resolution fine \
+    --capture-sim-stock true \
+    --capture-sim-cutter true \
+    --capture-sim-progress 1.0
+
+  # 2. 4th-axis Cylindrical GPU Ultra simulation + live Error Heatmap + high-precision metrology
+  capture_shot "$dir/02-gpu-ultra-heatmap.png" \
+    --sample rotary-4axis \
+    --capture-generate \
+    --capture-view iso \
+    --capture-focus op:1:passes \
+    --capture-pane sim \
+    --capture-sim-backend gpu \
+    --capture-sim-resolution ultra \
+    --capture-sim-heatmap \
+    --capture-sim-stock true \
+    --capture-sim-cutter false \
+    --capture-sim-progress 1.0
+
+  # 3. Feed-Optimized Pocket Operation Inspector with expanded Feed Optimization card on Op 1
+  capture_shot "$dir/03-feed-opt-inspector.png" \
+    --sample feed-opt-pocket \
+    --capture-generate \
+    --capture-view iso \
+    --capture-focus op:0:passes \
+    --capture-isolate-op \
+    --capture-sim-stock false \
+    --capture-sim-cutter false
+
+  # 4. Simulation Timeline mid-cut showing modulated cutting feedrate range & active corner/arc F readout
+  capture_shot "$dir/04-modulated-feed-timeline.png" \
+    --sample feed-opt-pocket \
+    --capture-generate \
+    --capture-view iso \
+    --capture-focus op:1:passes \
+    --capture-pane sim \
+    --capture-sim-engine tri-dexel \
+    --capture-sim-backend gpu \
+    --capture-sim-resolution standard \
+    --capture-sim-stock true \
+    --capture-sim-cutter true \
+    --capture-sim-progress 0.88
+
+  # 5. G-Code Preview showing verified program ready to post modulated F words
+  capture_shot "$dir/05-gcode-modulated-feeds.png" \
+    --sample feed-opt-pocket \
+    --capture-generate \
+    --capture-view iso \
+    --capture-focus op:1:passes \
+    --capture-pane gcode \
+    --capture-post linuxcnc \
+    --capture-sim-engine tri-dexel \
+    --capture-sim-backend gpu \
+    --capture-sim-resolution standard \
+    --capture-sim-stock true \
+    --capture-sim-cutter true \
+    --capture-sim-progress 1.0
+}
+
 if [[ -n "$TUTORIAL" ]]; then
   case "$TUTORIAL" in
     00-getting-started)
@@ -1136,6 +1217,9 @@ if [[ -n "$TUTORIAL" ]]; then
     19-workholding-flip-jigs-soft-jaws)
       capture_19_workholding_flip_jigs_soft_jaws
       ;;
+    20-gpu-simulation-feed-optimization)
+      capture_20_gpu_feed_opt
+      ;;
     *)
       echo "Unknown tutorial slug: $TUTORIAL" >&2
       exit 2
@@ -1176,6 +1260,9 @@ else
     63)
       capture_19_workholding_flip_jigs_soft_jaws
       ;;
+    69)
+      capture_20_gpu_feed_opt
+      ;;
     all)
       capture_00_getting_started
       capture_01_facing
@@ -1194,9 +1281,10 @@ else
       capture_14_associative_step_reload
       capture_18_thread_milling
       capture_19_workholding_flip_jigs_soft_jaws
+      capture_20_gpu_feed_opt
       ;;
     *)
-      echo "Unsupported milestone: $MILESTONE (available: 13, 14, 15, 22, 23, 24, 47, 63, all)" >&2
+      echo "Unsupported milestone: $MILESTONE (available: 13, 14, 15, 22, 23, 24, 47, 63, 69, all)" >&2
       exit 2
       ;;
   esac

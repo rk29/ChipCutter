@@ -264,4 +264,5 @@ chipcutter build /tmp/19-plate-softjaws.chip.toml -o /tmp/out_softjaws_linuxcnc 
 ## Navigation
 
 - **Previous:** [Tutorial 18 — Helical Thread Milling (Internal Holes & External Bosses)](18-thread-milling.md)
-- **Index:** [All Tutorials (`00`–`19`)](README.md)
+- **Next:** [Tutorial 20 — GPU-Accelerated Simulation, Benchmarking, & Feedrate Optimization](20-gpu-simulation-feed-optimization.md)
+- **Index:** [All Tutorials (`00`–`20`)](README.md)

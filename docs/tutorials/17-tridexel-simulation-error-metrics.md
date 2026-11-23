@@ -11,6 +11,9 @@ ChipCutter now offers **two selectable physical stock simulation engines** side-
 | **`Heightmap (Fast)`** | Single-layer `Z(x, y)` heightfield (or polar `R(u, θ)` on 4th-axis rotary setups) | Instant interactive scrubbing, quick 2.5D crash checks, low-overhead iteration | Fastest |
 | **`Tri-Dexel (Volumetric 3D)`** | 3 orthogonal sorted interval grids (`X`-rays, `Y`-rays, `Z`-rays) + sharp Dual-Vertex Surface Nets mesher | Crisp vertical walls with zero stair-stepping, 3D sculpted reliefs, undercuts, and accurate 3D volumetric error/RMS metrology | High-precision 3D |
 
+> [!TIP]
+> **Want GPU-accelerated simulation & live `< 0.1 ms` Error Heatmap tuning?** See [**Tutorial 20 — GPU-Accelerated Simulation, Benchmarking, & Feedrate Optimization**](20-gpu-simulation-feed-optimization.md) to enable the `wgpu` Compute backend (`Auto (GPU)` / `GPU`), benchmark `--backend gpu --benchmark --json` throughput against CPU, and optimize corner/arc cutting feedrates.
+
 In this tutorial you will learn how to:
 
 1. Switch between **`Heightmap (Fast)`** and **`Tri-Dexel (Volumetric 3D)`** in the **Simulation Timeline** toolbar (and **`Simulate → Engine`** menu), with your preference persisted automatically in `prefs.toml`.
@@ -171,4 +174,4 @@ jq '.setups[0].error_report | {
 
 - **Previous:** [Tutorial 16 — Rotating, Laying Flat, Scaling, & Moving STEP & STL Models](16-model-orientation-positioning.md)
 - **Next:** [Tutorial 18 — Helical Thread Milling (Internal Holes & External Bosses)](18-thread-milling.md)
-- **Index:** [All Tutorials (`00`–`18`)](README.md)
+- **Index:** [All Tutorials (`00`–`20`)](README.md)
