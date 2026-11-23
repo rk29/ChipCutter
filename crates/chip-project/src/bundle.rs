@@ -9,7 +9,7 @@ use chip_post::{PostProfile, builtin_post_profiles, resolve_post_profile};
 use chip_tools::{is_builtin_machine_id, resolve_machine_definition};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use zip::{CompressionMethod, DateTime, ZipArchive, ZipWriter, write::SimpleFileOptions};
+use zip::{CompressionMethod, DateTime, System, ZipArchive, ZipWriter, write::SimpleFileOptions};
 
 use crate::{
     document::{ProjectDocument, compute_sha256_hex, resolve_model_path},
@@ -338,7 +338,9 @@ pub fn pack_chipz_bundle_with_options(
         let mut writer = ZipWriter::new(&mut zip_buf);
         let opts = SimpleFileOptions::default()
             .compression_method(CompressionMethod::Deflated)
-            .last_modified_time(DateTime::default());
+            .last_modified_time(DateTime::default())
+            .system(System::Unix)
+            .unix_permissions(0o644);
 
         // Write `project.chip.toml` first for easy human inspection, followed by sorted `models/*` and `posts/*`
         if let Some(proj_bytes) = entries.remove("project.chip.toml") {

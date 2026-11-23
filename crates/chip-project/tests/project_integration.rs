@@ -521,6 +521,29 @@ fn chipz_bundle_packs_deterministically_embeds_custom_posts_verifies_sha256_and_
         bytes_1, bytes_2,
         ".chipz archive output must be byte-for-byte deterministic"
     );
+    {
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&bytes_1)).unwrap();
+        assert!(archive.len() >= 3);
+        for idx in 0..archive.len() {
+            let entry = archive.by_index(idx).unwrap();
+            let name = entry.name().unwrap().into_owned();
+            assert_eq!(
+                entry.system(),
+                zip::System::Unix,
+                ".chipz entry '{name}' must pin System::Unix for cross-platform determinism"
+            );
+            assert_eq!(
+                entry.external_attributes(),
+                0o100644 << 16,
+                ".chipz entry '{name}' must pin 0o100644 permissions"
+            );
+            assert_eq!(
+                entry.last_modified(),
+                Some(zip::DateTime::default()),
+                ".chipz entry '{name}' must pin DOS epoch timestamp"
+            );
+        }
+    }
     assert_eq!(sum_1.model_files, vec!["models/bracket.step".to_string()]);
     assert_eq!(
         sum_1.custom_post_files,

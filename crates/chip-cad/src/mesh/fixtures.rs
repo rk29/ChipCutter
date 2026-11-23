@@ -1,7 +1,7 @@
 use std::{f64::consts::PI, io::Write as _};
 
 use chip_math::DVec3;
-use zip::{CompressionMethod, DateTime, ZipWriter, write::SimpleFileOptions};
+use zip::{CompressionMethod, DateTime, System, ZipWriter, write::SimpleFileOptions};
 
 use crate::mesh::MeshUnitKind;
 
@@ -283,7 +283,9 @@ pub fn sample_box_3mf_bytes(unit: MeshUnitKind, transform_str: Option<&str>) -> 
         let mut zw = ZipWriter::new(&mut cursor);
         let opts = SimpleFileOptions::default()
             .compression_method(CompressionMethod::Deflated)
-            .last_modified_time(DateTime::default());
+            .last_modified_time(DateTime::default())
+            .system(System::Unix)
+            .unix_permissions(0o644);
         let _ = zw.start_file("[Content_Types].xml", opts);
         let _ = zw.write_all(content_types_xml.as_bytes());
         let _ = zw.start_file("_rels/.rels", opts);
@@ -476,7 +478,9 @@ pub fn sample_sculpted_mount_3mf_bytes() -> Vec<u8> {
         let mut zw = ZipWriter::new(&mut cursor);
         let opts = SimpleFileOptions::default()
             .compression_method(CompressionMethod::Deflated)
-            .last_modified_time(DateTime::default());
+            .last_modified_time(DateTime::default())
+            .system(System::Unix)
+            .unix_permissions(0o644);
         let _ = zw.start_file("[Content_Types].xml", opts);
         let _ = zw.write_all(content_types_xml.as_bytes());
         let _ = zw.start_file("_rels/.rels", opts);

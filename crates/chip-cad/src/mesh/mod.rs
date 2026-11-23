@@ -669,6 +669,43 @@ f -5/1/1 -4/2/1 -3/3/1 -2/4/1 -1/5/1
     }
 
     #[test]
+    fn sample_3mf_generators_pin_cross_platform_zip_metadata() {
+        for (label, bytes) in [
+            (
+                "sample_box_3mf_bytes",
+                sample_box_3mf_bytes(MeshUnitKind::Millimeter, None),
+            ),
+            (
+                "sample_sculpted_mount_3mf_bytes",
+                sample_sculpted_mount_3mf_bytes(),
+            ),
+        ] {
+            let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&bytes))
+                .unwrap_or_else(|e| panic!("open {label} as ZIP: {e}"));
+            assert!(archive.len() >= 3, "{label} should contain 3MF OPC entries");
+            for idx in 0..archive.len() {
+                let entry = archive.by_index(idx).unwrap();
+                let name = entry.name().unwrap().into_owned();
+                assert_eq!(
+                    entry.system(),
+                    zip::System::Unix,
+                    "{label} entry '{name}' must pin System::Unix for cross-platform byte determinism"
+                );
+                assert_eq!(
+                    entry.external_attributes(),
+                    0o100644 << 16,
+                    "{label} entry '{name}' must pin 0o100644 permissions"
+                );
+                assert_eq!(
+                    entry.last_modified(),
+                    Some(zip::DateTime::default()),
+                    "{label} entry '{name}' must pin DOS epoch timestamp"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn mesh_bvh_xy_circle_z_slab_and_raycast_are_accurate() {
         let dome_bytes = sample_sculpted_dome_stl_bytes();
         let dome = load_mesh_bytes("dome.stl", &dome_bytes, &MeshImportOptions::default()).unwrap();
