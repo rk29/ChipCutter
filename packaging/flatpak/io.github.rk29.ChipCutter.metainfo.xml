@@ -50,6 +50,11 @@
   </screenshots>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="0.21.0" date="2026-11-23">
+      <description>
+        <p>Phase 21 release: added a unified Settings modal (Ctrl+,) consolidating Display/Theme, Navigation/Input, Simulation (engine, detail level, and mesh skinning), and Workspace/Defaults while decluttering infrequent controls from the simulation timeline and viewport chrome; added clear Active Setup highlighting and a separator-grouped top action bar for creating operations without duplicating buttons on every setup card; streamlined tool management to a single Tools button, upgraded the Project Tools browser card with direct add, usage badges, guarded delete, and Remove Unused pruning, improved Operation tool selection with grouped/searchable pickers, and added an interactive Switch Machine tool-replacement dialog; and added live-toggleable CPU and WGSL GPU simulation mesh skinning powered by 3D Surface Nets crossing-point centroids, crease-preserving corner normals, and smooth uncut stock blending across Tri-Dexel, Heightfield, and Cylindrical stocks.</p>
+      </description>
+    </release>
     <release version="0.20.1" date="2026-11-23">
       <description>
         <p>UI polish release: consolidated background toolpath generation and stock simulation progress into a single compact progress bar beside the top-toolbar Generate/Simulate/Post controls, removed redundant simulation start controls and duplicate percentage readouts from the Simulation Timeline panel, added live JobDispatcher batch progress tracking, and enabled Esc cancellation for in-flight simulations (#30).</p>
