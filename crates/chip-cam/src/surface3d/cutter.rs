@@ -157,6 +157,47 @@ impl SurfaceCutterProfile {
         }
     }
 
+    /// Returns a copy of `self` with an additional horizontal radial clearance margin (`extra_radial_mm >= 0`)
+    /// folded analytically via horizontal disk Minkowski dilation (leaving flat axial contact heights exact).
+    pub fn with_extra_radial_margin(&self, extra_radial_mm: f64) -> Self {
+        let sr = extra_radial_mm.max(0.0);
+        if sr <= 1e-9 {
+            return *self;
+        }
+        let envelope = self.envelope.with_stock_allowance(sr, 0.0);
+        let shape = match self.shape {
+            SurfaceCutterShape::Flat { radius_mm } => SurfaceCutterShape::Flat {
+                radius_mm: radius_mm + sr,
+            },
+            SurfaceCutterShape::Ball { radius_mm } => SurfaceCutterShape::BullNose {
+                flat_radius_mm: sr,
+                corner_radius_mm: radius_mm,
+            },
+            SurfaceCutterShape::BullNose {
+                flat_radius_mm,
+                corner_radius_mm,
+            } => SurfaceCutterShape::BullNose {
+                flat_radius_mm: flat_radius_mm + sr,
+                corner_radius_mm,
+            },
+            SurfaceCutterShape::TaperedVBit {
+                tip_radius_mm,
+                upper_radius_mm,
+                half_angle_rad,
+            } => SurfaceCutterShape::TaperedVBit {
+                tip_radius_mm: tip_radius_mm + sr,
+                upper_radius_mm: upper_radius_mm + sr,
+                half_angle_rad,
+            },
+        };
+        Self {
+            shape,
+            flute_length_mm: self.flute_length_mm,
+            stock_axial_mm: self.stock_axial_mm,
+            envelope,
+        }
+    }
+
     /// Underlying shared [`AnalyticCutterEnvelope`] from `chip-tools`.
     #[inline]
     pub const fn envelope(&self) -> &AnalyticCutterEnvelope {

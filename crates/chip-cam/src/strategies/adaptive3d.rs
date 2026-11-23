@@ -16,9 +16,8 @@ use crate::{
         adaptive2d::{AdaptiveSliceSpec, generate_adaptive_region_slice},
     },
     surface3d::{
-        SurfaceCutterProfile, SurfaceMesh3D,
+        PushCutterField, SurfaceCutterProfile, SurfaceMesh3D,
         levels::{detect_flat_plateaus, resolve_3d_containment_region, stock_xy_region},
-        push_cutter_region_z,
     },
     toolpath::ToolpathBuilder,
     wcs::CamError,
@@ -117,9 +116,9 @@ pub fn generate_adaptive3d(
     let retract_z = ctx.safe_retract_z();
 
     use crate::surface3d::slice_surface_contours_z;
+    let push_field = PushCutterField::build(&surface, cutter);
     let mut prev_coarse_z = z_top;
     let mut emitted_any = false;
-    let mut cumulative_carryover_avoid = RegionSet2D::empty();
 
     let carryover_excess_masks = |td: &chip_stock::TriDexelStock,
                                   slab_lo: f64,
@@ -167,16 +166,9 @@ pub fn generate_adaptive3d(
     for &z_curr in &coarse_levels {
         ctx.check_cancel()?;
 
-        // Compute clearable tool-center region at `z_curr`
-        let avoid_curr = push_cutter_region_z(&surface, &cutter, z_curr);
-        let effective_avoid = if ctx.carryover_stock.is_some() {
-            // In multi-setup 3-axis flipped machining, maintain the cumulative vertical shadow
-            // of overhanging features above `z_curr` so the cutter never plunges through them!
-            cumulative_carryover_avoid = cumulative_carryover_avoid.union(&avoid_curr);
-            &cumulative_carryover_avoid
-        } else {
-            &avoid_curr
-        };
+        // Compute clearable tool-center region at `z_curr` (monotonically includes full vertical
+        // overhang shadow for all part geometry above `z_curr`)
+        let avoid_curr = push_field.avoidance_region_z(z_curr);
 
         // Multi-setup carried-over stock rest filtering: skip completely empty Z slabs
         // and clip candidate roughing regions to remaining uncut excess stock!
@@ -187,10 +179,10 @@ pub fn generate_adaptive3d(
             continue;
         }
 
-        let mut clearable_curr = if effective_avoid.is_empty() {
+        let mut clearable_curr = if avoid_curr.is_empty() {
             containment.clone()
         } else {
-            containment.difference(effective_avoid)
+            containment.difference(&avoid_curr)
         };
 
         // Optional Rest Machining from preceding operations
@@ -254,7 +246,7 @@ pub fn generate_adaptive3d(
                     step_prev_z = z_up;
                     continue;
                 }
-                let avoid_up = push_cutter_region_z(&surface, &cutter, z_up);
+                let avoid_up = push_field.avoidance_region_z(z_up);
                 let mut clearable_up = if avoid_up.is_empty() {
                     containment.clone()
                 } else {

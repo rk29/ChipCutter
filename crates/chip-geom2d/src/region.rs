@@ -252,14 +252,13 @@ impl RegionSet2D {
 
         // Union all outer CCW loops `U = (∪ O_A) ∪ O_R`, then carve remaining holes that lie
         // outside both `A` and `R`.
-        let bool_opts = bool_options();
         let mut outer_plines: Vec<Polyline<f64>> = overlapping
             .iter()
             .map(|r| to_ccw_pline(&r.outer_ccw))
             .collect();
         outer_plines.push(to_ccw_pline(&reg.outer_ccw));
 
-        let (merged_outers, courtyard_holes) = union_simple_ccw_loops(outer_plines, &bool_opts);
+        let (merged_outers, courtyard_holes) = union_simple_ccw_loops(outer_plines);
         let mut merged_set = assemble_regions_from_outers_and_holes(merged_outers, courtyard_holes);
 
         for (i, a_reg) in overlapping.iter().enumerate() {
@@ -299,10 +298,88 @@ impl RegionSet2D {
     }
 }
 
-fn bool_options() -> PlineBooleanOptions<'static> {
-    PlineBooleanOptions {
-        pos_equal_eps: 1e-5,
-        ..Default::default()
+fn scale_pline(src: &Polyline<f64>, s: f64) -> Polyline<f64> {
+    let mut dst = if src.is_closed() {
+        Polyline::new_closed()
+    } else {
+        Polyline::new()
+    };
+    for v in &src.vertex_data {
+        dst.add(v.x * s, v.y * s, v.bulge);
+    }
+    dst
+}
+
+fn clean_pline_for_fallback(src: &Polyline<f64>) -> Polyline<f64> {
+    let mut clean = src.clone();
+    for v in &mut clean.vertex_data {
+        if v.bulge.abs() < 1e-5 {
+            v.bulge = 0.0;
+        }
+    }
+    clean.remove_redundant(1e-4).unwrap_or(clean)
+}
+
+/// Panic-safe, power-of-two scaled wrapper around `cavalier_contours::Polyline::boolean_opt`.
+///
+/// Mirrors `offset_polyline`'s bit-exact `WORK_SCALE` strategy (`16.0`) so unnormalized
+/// `perp_dot` predicates in `cavalier_contours` don't misclassify short near-collinear segments
+/// and debug-mode `PlineViewData::validate_for_source` assertions never panic on curved/helical slices.
+fn safe_pline_boolean(
+    a: &Polyline<f64>,
+    b: &Polyline<f64>,
+    op: BooleanOp,
+) -> (Vec<Polyline<f64>>, Vec<Polyline<f64>>) {
+    const WORK_SCALE: f64 = 16.0;
+    const INV_WORK_SCALE: f64 = 1.0 / WORK_SCALE;
+
+    let run_scaled = |pa: &Polyline<f64>, pb: &Polyline<f64>, scale: f64, eps: f64| {
+        let sa = scale_pline(pa, scale);
+        let sb = scale_pline(pb, scale);
+        let opts = PlineBooleanOptions {
+            pos_equal_eps: eps,
+            ..Default::default()
+        };
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            sa.boolean_opt(&sb, op, &opts)
+        }))
+        .ok()
+        .map(|res| {
+            let inv = 1.0 / scale;
+            let pos = res
+                .pos_plines
+                .into_iter()
+                .map(|bp| scale_pline(&bp.pline, inv))
+                .collect();
+            let neg = res
+                .neg_plines
+                .into_iter()
+                .map(|bp| scale_pline(&bp.pline, inv))
+                .collect();
+            (pos, neg)
+        })
+    };
+
+    // Fast path: bit-exact 16x working scale
+    if let Some(res) = run_scaled(a, b, WORK_SCALE, 1e-5) {
+        return res;
+    }
+
+    // Fallback: snap micro-bulges, remove redundant vertices, and retry across power-of-two scales
+    let ca = clean_pline_for_fallback(a);
+    let cb = clean_pline_for_fallback(b);
+    for (scale, eps) in [(256.0, 1e-5), (1024.0, 1e-5), (1.0, 1e-4)] {
+        if let Some(res) = run_scaled(&ca, &cb, scale, eps) {
+            return res;
+        }
+    }
+    let _ = INV_WORK_SCALE;
+
+    // Conservative last-resort fallback if every boolean scale failed
+    match op {
+        BooleanOp::Or => (vec![a.clone(), b.clone()], Vec::new()),
+        BooleanOp::Not => (vec![a.clone()], Vec::new()),
+        BooleanOp::And | BooleanOp::Xor => (Vec::new(), Vec::new()),
     }
 }
 
@@ -435,7 +512,6 @@ fn assemble_regions_from_outers_and_holes(
 /// Unions a list of simple `CCW` loops, returning `(merged_outer_ccw_plines, enclosed_courtyard_holes)`.
 fn union_simple_ccw_loops(
     mut loops: Vec<Polyline<f64>>,
-    opts: &PlineBooleanOptions,
 ) -> (Vec<Polyline<f64>>, Vec<Polyline<f64>>) {
     loops.retain(|p| p.vertex_count() >= 2 && p.area().abs() > 1e-5);
     let mut outers: Vec<Polyline<f64>> = Vec::new();
@@ -450,22 +526,17 @@ fn union_simple_ccw_loops(
         }
         let mut current_outers = Vec::with_capacity(outers.len() + 1);
         for existing in outers {
-            let res = existing.boolean_opt(&cand, BooleanOp::Or, opts);
-            if res.pos_plines.len() == 1 {
-                cand = res
-                    .pos_plines
-                    .into_iter()
-                    .next()
-                    .map(|b| b.pline)
-                    .unwrap_or(cand);
+            let (pos_plines, neg_plines) = safe_pline_boolean(&existing, &cand, BooleanOp::Or);
+            if pos_plines.len() == 1 {
+                cand = pos_plines.into_iter().next().unwrap_or(cand);
                 if cand.vertex_count() >= 2
                     && cand.orientation() != PlineOrientation::CounterClockwise
                 {
                     cand.invert_direction_mut();
                 }
-                for neg in res.neg_plines {
-                    if neg.pline.vertex_count() >= 2 {
-                        holes.push(neg.pline);
+                for neg in neg_plines {
+                    if neg.vertex_count() >= 2 {
+                        holes.push(neg);
                     }
                 }
             } else {
@@ -482,10 +553,10 @@ fn union_simple_ccw_loops(
             if h.orientation() != PlineOrientation::CounterClockwise {
                 h.invert_direction_mut();
             }
-            let diff = h.boolean_opt(&cand, BooleanOp::Not, opts);
-            for pos in diff.pos_plines {
-                if pos.pline.vertex_count() >= 2 && pos.pline.area().abs() > 1e-5 {
-                    surviving_holes.push(pos.pline);
+            let (pos_plines, _) = safe_pline_boolean(&h, &cand, BooleanOp::Not);
+            for pos in pos_plines {
+                if pos.vertex_count() >= 2 && pos.area().abs() > 1e-5 {
+                    surviving_holes.push(pos);
                 }
             }
         }
@@ -503,7 +574,6 @@ fn subtract_simple_ccw_from_set(
     cut_ccw: &Polyline<f64>,
     cut_aabb: &Aabb2,
 ) -> RegionSet2D {
-    let opts = bool_options();
     let mut out_regions = Vec::new();
 
     for reg in &set.regions {
@@ -523,7 +593,7 @@ fn subtract_simple_ccw_from_set(
         }
         obstacles.push(cut_ccw.clone());
 
-        let (obs_outers, obs_courtyards) = union_simple_ccw_loops(obstacles, &opts);
+        let (obs_outers, obs_courtyards) = union_simple_ccw_loops(obstacles);
 
         // Start from `O`, subtract each merged obstacle outer `U_k`, then add back `O ∩ courtyard`!
         let mut cur_outers = vec![outer_pl.clone()];
@@ -532,15 +602,15 @@ fn subtract_simple_ccw_from_set(
         for obs in &obs_outers {
             let mut next_outers = Vec::new();
             for o in cur_outers {
-                let diff = o.boolean_opt(obs, BooleanOp::Not, &opts);
-                for pos in diff.pos_plines {
-                    if pos.pline.vertex_count() >= 2 && pos.pline.area().abs() > 1e-5 {
-                        next_outers.push(pos.pline);
+                let (pos_plines, neg_plines) = safe_pline_boolean(&o, obs, BooleanOp::Not);
+                for pos in pos_plines {
+                    if pos.vertex_count() >= 2 && pos.area().abs() > 1e-5 {
+                        next_outers.push(pos);
                     }
                 }
-                for neg in diff.neg_plines {
-                    if neg.pline.vertex_count() >= 2 && neg.pline.area().abs() > 1e-5 {
-                        cur_holes.push(neg.pline);
+                for neg in neg_plines {
+                    if neg.vertex_count() >= 2 && neg.area().abs() > 1e-5 {
+                        cur_holes.push(neg);
                     }
                 }
             }
@@ -555,11 +625,8 @@ fn subtract_simple_ccw_from_set(
             if cy.orientation() != PlineOrientation::CounterClockwise {
                 cy.invert_direction_mut();
             }
-            let inter = outer_pl.boolean_opt(&cy, BooleanOp::And, &opts);
-            let cy_set = assemble_regions_from_outers_and_holes(
-                inter.pos_plines.into_iter().map(|b| b.pline).collect(),
-                inter.neg_plines.into_iter().map(|b| b.pline).collect(),
-            );
+            let (pos_plines, neg_plines) = safe_pline_boolean(&outer_pl, &cy, BooleanOp::And);
+            let cy_set = assemble_regions_from_outers_and_holes(pos_plines, neg_plines);
             base = base.union(&cy_set);
         }
         out_regions.extend(base.regions);
@@ -575,7 +642,6 @@ fn intersect_set_with_simple_ccw(
     mask_ccw: &Polyline<f64>,
     mask_aabb: &Aabb2,
 ) -> RegionSet2D {
-    let opts = bool_options();
     let mut out_regions = Vec::new();
 
     for reg in &set.regions {
@@ -586,11 +652,8 @@ fn intersect_set_with_simple_ccw(
         if outer_pl.vertex_count() < 2 {
             continue;
         }
-        let inter = outer_pl.boolean_opt(mask_ccw, BooleanOp::And, &opts);
-        let mut sub = assemble_regions_from_outers_and_holes(
-            inter.pos_plines.into_iter().map(|b| b.pline).collect(),
-            inter.neg_plines.into_iter().map(|b| b.pline).collect(),
-        );
+        let (pos_plines, neg_plines) = safe_pline_boolean(&outer_pl, mask_ccw, BooleanOp::And);
+        let mut sub = assemble_regions_from_outers_and_holes(pos_plines, neg_plines);
         for isl in &reg.islands_cw {
             if !sub.is_empty() {
                 let isl_ccw = to_ccw_pline(isl);

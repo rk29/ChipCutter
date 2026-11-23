@@ -13,13 +13,12 @@ use crate::{
     rest2d::RegionSet2D,
     strategies::StrategyExecContext,
     surface3d::{
-        SurfaceCutterProfile, SurfaceMesh3D,
+        PushCutterField, SurfaceCutterProfile, SurfaceMesh3D,
         levels::{
             clip_polyline_to_region, detect_flat_plateaus, points_to_polyline,
             resolve_3d_containment_region, reverse_arc_polyline, sample_seg,
             sample_surface_slope_deg,
         },
-        push_cutter_region_z,
     },
     toolpath::{ToolpathBuilder, XyArcMove},
     wcs::CamError,
@@ -102,7 +101,8 @@ pub fn generate_waterline3d(
     z_levels.sort_by(|a, b| b.total_cmp(a));
 
     // Adaptive intermediate Z-stepdown refinement using true local radial contour offset `dr_max`.
-    // Reuses computed `push_cutter_region_z` slices directly in Step 2 so no slice is duplicated.
+    // Precomputes exact vertical-cutter avoidance field once and reuses slices directly in Step 2.
+    let push_field = PushCutterField::build(&surface, cutter);
     let mut sliced_levels: Vec<(f64, RegionSet2D)> = Vec::with_capacity(z_levels.len() * 2);
     if params.adaptive_stepdown && !z_levels.is_empty() {
         let eff_corner_r = match cutter.shape {
@@ -116,15 +116,14 @@ pub fn generate_waterline3d(
         // Start from the top surface cap (`z_top`) so shallow dome crowns above `z_levels[0]`
         // are also adaptively subdivided down to `min_step`.
         let mut prev_z = z_top;
-        let mut prev_avoid = push_cutter_region_z(&surface, &cutter, (z_top - 1e-3).max(z_bottom));
+        let mut prev_avoid = push_field.avoidance_region_z((z_top - 1e-3).max(z_bottom));
 
         for &cur_z in &z_levels {
             ctx.check_cancel()?;
-            let cur_avoid = push_cutter_region_z(&surface, &cutter, cur_z);
+            let cur_avoid = push_field.avoidance_region_z(cur_z);
             refine_waterline_interval_adaptive(
                 ctx,
-                &surface,
-                &cutter,
+                &push_field,
                 prev_z,
                 &prev_avoid,
                 cur_z,
@@ -143,7 +142,7 @@ pub fn generate_waterline3d(
     } else {
         for &z_k in &z_levels {
             ctx.check_cancel()?;
-            let avoid = push_cutter_region_z(&surface, &cutter, z_k);
+            let avoid = push_field.avoidance_region_z(z_k);
             sliced_levels.push((z_k, avoid));
         }
     }
@@ -629,8 +628,7 @@ fn rotate_closed_polyline_nearest(poly: &ArcPolyline2D, target: DVec2) -> ArcPol
 #[allow(clippy::too_many_arguments)]
 fn refine_waterline_interval_adaptive(
     ctx: &StrategyExecContext<'_>,
-    surface: &SurfaceMesh3D,
-    cutter: &SurfaceCutterProfile,
+    push_field: &PushCutterField<'_>,
     z_hi: f64,
     avoid_hi: &RegionSet2D,
     z_lo: f64,
@@ -674,11 +672,10 @@ fn refine_waterline_interval_adaptive(
     }
 
     let z_mid = 0.5 * (z_hi + z_lo);
-    let avoid_mid = push_cutter_region_z(surface, cutter, z_mid);
+    let avoid_mid = push_field.avoidance_region_z(z_mid);
     refine_waterline_interval_adaptive(
         ctx,
-        surface,
-        cutter,
+        push_field,
         z_hi,
         avoid_hi,
         z_mid,
@@ -693,8 +690,7 @@ fn refine_waterline_interval_adaptive(
     out.push((z_mid, avoid_mid.clone()));
     refine_waterline_interval_adaptive(
         ctx,
-        surface,
-        cutter,
+        push_field,
         z_mid,
         &avoid_mid,
         z_lo,

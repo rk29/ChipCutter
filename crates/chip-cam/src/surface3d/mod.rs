@@ -26,7 +26,7 @@ pub use levels::{
     clip_polyline_to_region, detect_flat_plateaus, rect_region_2d, resolve_3d_containment_region,
     sample_surface_slope_deg, stock_xy_region,
 };
-pub use push_cutter::{push_cutter_region_z, slice_surface_contours_z};
+pub use push_cutter::{PushCutterField, push_cutter_region_z, slice_surface_contours_z};
 
 /// WCS-space canonical `f64` triangle surface mesh accelerated by a [`chip_bvh::FlatBvh`].
 #[derive(Debug, Clone)]
@@ -452,5 +452,85 @@ mod tests {
             (ball_area_r - expected_ball_r).abs() < 0.06,
             "Ball push-cutter radius expected {expected_ball_r:.4}, got {ball_area_r:.4}"
         );
+    }
+
+    #[test]
+    fn push_cutter_field_preserves_overhang_shadow_and_is_monotonic() {
+        // Watertight overhanging T-flange: narrow lower stem `[-4..4] x [-4..4] x [0..10]`
+        // topped by a wide overhanging roof `[-14..14] x [-8..8] x [10..16]`.
+        let mut tris: Vec<[DVec3; 3]> = Vec::new();
+        let push_box =
+            |tris: &mut Vec<[DVec3; 3]>, x0: f64, y0: f64, z0: f64, x1: f64, y1: f64, z1: f64| {
+                let v = [
+                    DVec3::new(x0, y0, z0),
+                    DVec3::new(x1, y0, z0),
+                    DVec3::new(x1, y1, z0),
+                    DVec3::new(x0, y1, z0),
+                    DVec3::new(x0, y0, z1),
+                    DVec3::new(x1, y0, z1),
+                    DVec3::new(x1, y1, z1),
+                    DVec3::new(x0, y1, z1),
+                ];
+                let quads = [
+                    [0, 3, 2, 1], // bottom (-Z)
+                    [4, 5, 6, 7], // top (+Z)
+                    [0, 1, 5, 4], // front (-Y)
+                    [2, 3, 7, 6], // back (+Y)
+                    [0, 4, 7, 3], // left (-X)
+                    [1, 2, 6, 5], // right (+X)
+                ];
+                for [a, b, c, d] in quads {
+                    tris.push([v[a], v[b], v[c]]);
+                    tris.push([v[a], v[c], v[d]]);
+                }
+            };
+        push_box(&mut tris, -4.0, -4.0, 0.0, 4.0, 4.0, 10.0);
+        push_box(&mut tris, -14.0, -8.0, 10.0, 14.0, 8.0, 16.0);
+        let surface = SurfaceMesh3D::from_raw_triangles(&tris);
+
+        for cutter in [
+            SurfaceCutterProfile::from_tool_geometry(&make_flat(6.0), 0.5, 0.25),
+            SurfaceCutterProfile::from_tool_geometry(&make_ball(4.0), 0.5, 0.25),
+        ] {
+            let field = super::PushCutterField::build(&surface, cutter);
+            let avoid_hi = field.avoidance_region_z(13.0);
+            let avoid_lo = field.avoidance_region_z(4.0);
+
+            // Points strictly underneath the overhanging flange at Z = 4.0 MUST stay inside `avoid_lo`!
+            for pt in [
+                DVec2::new(12.0, 0.0),
+                DVec2::new(-12.0, 6.0),
+                DVec2::new(0.0, 9.0),
+                DVec2::new(15.0, 0.0),
+            ] {
+                assert!(
+                    avoid_lo.contains_point(pt),
+                    "Overhanging flange shadow at {pt:?} must be avoided at z=4.0"
+                );
+            }
+
+            // Strict monotonicity: everything avoided at higher Z must also be avoided at lower Z
+            let leaked = avoid_hi.difference(&avoid_lo);
+            assert!(
+                leaked.total_area_mm2() <= 1e-3,
+                "PushCutterField must be monotonic across Z levels, leaked area={:.4} mm²",
+                leaked.total_area_mm2()
+            );
+
+            // Grid-wide agreement with exact drop_cutter_z at z=4.0
+            for ix in -18..=18 {
+                for iy in -12..=12 {
+                    let pt = DVec2::new(ix as f64, iy as f64);
+                    if let Some(zd) = drop_cutter_z(&surface, &cutter, pt.x, pt.y, -100.0)
+                        && zd > 4.05
+                    {
+                        assert!(
+                            avoid_lo.contains_point(pt),
+                            "Missed overhang collision at {pt:?} (drop_cutter_z={zd:.3} > 4.0)"
+                        );
+                    }
+                }
+            }
+        }
     }
 }

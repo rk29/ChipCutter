@@ -101,12 +101,13 @@ pub use strategies::{
     },
 };
 pub use surface3d::{
-    RestMaskGrid2D, SurfaceCutterProfile, SurfaceCutterShape, SurfaceLinkConfig, SurfaceMesh3D,
-    build_3d_rest_mask, clip_polyline_to_region, detect_flat_plateaus, drop_cutter_points_parallel,
-    drop_cutter_z, drop_cutter_z_with_scratch, emit_final_surface_retract, emit_surface_safe_link,
-    push_cutter_region_z, rect_region_2d, refine_convex_chords_3d, region_aabb_2d,
-    resolve_3d_containment_region, sample_surface_slope_deg, simplify_3d_polyline_rdp,
-    slice_surface_contours_z, stepover_for_cusp_height, stock_xy_region,
+    PushCutterField, RestMaskGrid2D, SurfaceCutterProfile, SurfaceCutterShape, SurfaceLinkConfig,
+    SurfaceMesh3D, build_3d_rest_mask, clip_polyline_to_region, detect_flat_plateaus,
+    drop_cutter_points_parallel, drop_cutter_z, drop_cutter_z_with_scratch,
+    emit_final_surface_retract, emit_surface_safe_link, push_cutter_region_z, rect_region_2d,
+    refine_convex_chords_3d, region_aabb_2d, resolve_3d_containment_region,
+    sample_surface_slope_deg, simplify_3d_polyline_rdp, slice_surface_contours_z,
+    stepover_for_cusp_height, stock_xy_region,
 };
 pub use thread_tables::{
     ISO_60_H_OVER_P, ThreadSpecEntry, ThreadStandardKind, all_thread_specs, find_thread_spec,

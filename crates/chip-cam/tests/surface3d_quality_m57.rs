@@ -790,3 +790,260 @@ fn sculpted_dome_08_tridexel_oracle_zero_gouge_and_clean_crown() {
         err.max_gouge_mm
     );
 }
+
+/// Builds a closed watertight 3-blade helical loft solid along the X axis (`x ∈ [-18, +18] mm`,
+/// base radius `6.5 mm`, 3 helical fins reaching `R = 12.5 mm` with `180°` twist along X).
+fn build_triple_helical_loft_stl() -> Vec<u8> {
+    let nx = 24usize;
+    let n_theta = 48usize;
+    let x_min = -18.0_f64;
+    let x_max = 18.0_f64;
+
+    let radius_at = |x: f64, theta: f64| -> f64 {
+        let u = (x - x_min) / (x_max - x_min);
+        let twist = std::f64::consts::PI * u;
+        let wave = (3.0 * (theta - twist)).cos();
+        // Smooth axial envelope tapering the 3 helical lofts into clean cylindrical end hubs
+        let env = (std::f64::consts::PI * u).sin().powf(0.45);
+        let fin = (wave * 0.5 + 0.5).powi(2) * env;
+        6.5 + 6.0 * fin
+    };
+
+    let mut rings: Vec<Vec<DVec3>> = Vec::with_capacity(nx + 1);
+    for ix in 0..=nx {
+        let x = x_min + (x_max - x_min) * (ix as f64 / nx as f64);
+        let mut ring = Vec::with_capacity(n_theta);
+        for it in 0..n_theta {
+            let th = std::f64::consts::TAU * (it as f64 / n_theta as f64);
+            let r = radius_at(x, th);
+            ring.push(DVec3::new(x, r * th.cos(), r * th.sin()));
+        }
+        rings.push(ring);
+    }
+
+    let mut tris: Vec<[DVec3; 3]> = Vec::new();
+    for ix in 0..nx {
+        for it in 0..n_theta {
+            let it_next = (it + 1) % n_theta;
+            let p00 = rings[ix][it];
+            let p10 = rings[ix + 1][it];
+            let p11 = rings[ix + 1][it_next];
+            let p01 = rings[ix][it_next];
+            // Outward radial normal: (p01 - p00) x (p10 - p00) = (+theta) x (+X) = +radial
+            tris.push([p00, p11, p10]);
+            tris.push([p00, p01, p11]);
+        }
+    }
+    // End caps (`-X` outward `-X`, `+X` outward `+X`)
+    let c_neg = DVec3::new(x_min, 0.0, 0.0);
+    let c_pos = DVec3::new(x_max, 0.0, 0.0);
+    for it in 0..n_theta {
+        let it_next = (it + 1) % n_theta;
+        tris.push([c_neg, rings[0][it_next], rings[0][it]]);
+        tris.push([c_pos, rings[nx][it], rings[nx][it_next]]);
+    }
+
+    encode_test_stl(&tris)
+}
+
+#[test]
+fn adaptive3d_indexed_helical_loft_zero_gouge_and_zero_rapid_crashes() {
+    use chip_cam::{
+        OperationRotaryMode, RotaryAxisKind, RotaryDriveMode, StockAxis, SurfaceCutterProfile,
+        SurfaceMesh3D, build_indexed_virtual_setup, drop_cutter_z,
+    };
+
+    let stl = build_triple_helical_loft_stl();
+    let doc = load_mesh_cad_document("triple_helix_loft.stl", &stl, &MeshImportOptions::default())
+        .unwrap();
+
+    let mut ball_4 = make_ball_tool("t_ball_4_helix", 5, 4.0);
+    ball_4.stickout_length_mm = 32.0;
+    if let CutterGeometry::BallEndmill {
+        flute_length_mm, ..
+    } = &mut ball_4.geometry
+    {
+        *flute_length_mm = 26.0;
+    }
+
+    let cancel = AtomicBool::new(false);
+
+    // 1. True volumetric Tri-Dexel verification of 3D Adaptive roughing on the overhanging triple helical loft
+    let mut box_setup = Setup::new(
+        "setup_helix_3ax",
+        "Helical Loft 3-Axis",
+        WorkOffsetSlot::G54,
+    );
+    box_setup.wcs.origin = WcsOriginMode::StockBoxPoint {
+        anchor: BoxAnchor27::TOP_CENTER,
+    };
+    box_setup.stock = StockConfig::RelativeBox {
+        symmetric_xy: true,
+        side_pos_x: ParamLength::from_mm(3.0),
+        side_neg_x: ParamLength::from_mm(3.0),
+        side_pos_y: ParamLength::from_mm(3.0),
+        side_neg_y: ParamLength::from_mm(3.0),
+        top_offset_z: ParamLength::from_mm(1.0),
+        bottom_offset_z: ParamLength::from_mm(0.0),
+        sheet_thickness_z: ParamLength::from_mm(26.0),
+        round_increment_mm: None,
+    };
+    let resolved_box = box_setup.resolve(&doc, DisplayUnit::Millimeter).unwrap();
+
+    let mut op_3ax = Operation::new(
+        "op_helix_3ax",
+        "Adaptive 3D Helical",
+        OperationKind::Adaptive3D,
+    );
+    op_3ax.tool_id = Some(ball_4.id.clone());
+    op_3ax.heights.top = HeightSpec::new(HeightReference::StockTop, 0.0);
+    op_3ax.heights.bottom = HeightSpec::new(HeightReference::ModelBottom, 0.0);
+    op_3ax.passes.stock_to_leave_radial = ParamLength::from_mm(0.4);
+    op_3ax.passes.stock_to_leave_axial = ParamLength::from_mm(0.25);
+    if let StrategyParams::Adaptive3D(p) = op_3ax.strategy_mut() {
+        p.boundary_mode = MachiningBoundaryMode::StockBox;
+        p.max_roughing_stepdown = ParamLength::from_mm(6.0);
+        p.fine_stepdown = ParamLength::from_mm(3.0);
+        p.adaptive.optimal_load = ParamLength::from_mm(1.8);
+        p.detect_flats = true;
+    }
+
+    let tp_3ax = generate_operation_toolpath_with_rest(&OperationGenRequest {
+        doc: &doc,
+        sketches: &[],
+        setup: &resolved_box,
+        op: &op_3ax,
+        tool: &ball_4,
+        clearing_tool: None,
+        display_unit: DisplayUnit::Millimeter,
+        is_first_tool_in_setup: true,
+        upstream_rest: &[],
+        carryover_stock: None,
+        cancel: &cancel,
+    })
+    .unwrap();
+
+    let sim_box = run_setup_simulation_with_choice(
+        &SetupSimulationInput {
+            doc: &doc,
+            setup: &resolved_box,
+            target_bodies: &[],
+            fixtures: &[],
+            operations: &[SimOperationInput::from_operation(&op_3ax, &ball_4, &tp_3ax)],
+            kinematics: MachineKinematicsConfig::default(),
+            resolution: SimResolution::Standard,
+            verify_config: SimVerificationConfig::default(),
+            initial_stock: None,
+            initial_raw_volume_mm3: None,
+            carried_over_from_setup: None,
+            cancel: None,
+        },
+        SimEngineKind::TriDexel,
+        SimComputeBackendChoice::Auto,
+    )
+    .unwrap();
+
+    assert_eq!(
+        sim_box.critical_error_count(),
+        0,
+        "3D Adaptive on overhanging triple helical loft must have 0 critical errors in Tri-Dexel, got: {:#?}",
+        sim_box.diagnostics
+    );
+    let err_box = sim_box
+        .error_report
+        .as_ref()
+        .expect("Tri-Dexel error_report");
+    assert!(
+        err_box.gouge_volume_mm3 <= 0.1,
+        "3D Adaptive helical loft gouge_volume_mm3 must be <= 0.1 mm³, got {:.4}",
+        err_box.gouge_volume_mm3
+    );
+    assert!(
+        err_box.max_gouge_mm <= 0.015,
+        "3D Adaptive helical loft max_gouge_mm must be <= 0.015 mm, got {:.4}",
+        err_box.max_gouge_mm
+    );
+
+    // 2. Indexed 3+1 rotary Adaptive3D across 3 helical phases (0°, 120°, 240°) verified against
+    //    exact analytical `drop_cutter_z` in each indexed virtual WCS frame
+    let mut rot_setup = Setup::new(
+        "setup_helix_idx",
+        "Indexed Helical Roughing",
+        WorkOffsetSlot::G54,
+    );
+    rot_setup.wcs.origin = WcsOriginMode::StockBoxPoint {
+        anchor: BoxAnchor27 {
+            x: chip_cam::AxisAnchor::Center,
+            y: chip_cam::AxisAnchor::Center,
+            z: chip_cam::AxisAnchor::Center,
+        },
+    };
+    rot_setup.stock = StockConfig::FixedCylinder {
+        axis: StockAxis::X,
+        diameter: ParamLength::from_mm(30.0),
+        length: ParamLength::from_mm(40.0),
+        axial_top_offset: ParamLength::from_mm(2.0),
+    };
+    rot_setup.rotary.mode = RotaryDriveMode::Indexed3Plus1;
+    rot_setup.rotary.axis = RotaryAxisKind::XAxis;
+    rot_setup.rotary.clearance_radial_offset = ParamLength::from_mm(10.0);
+    rot_setup.rotary.chuck_length = ParamLength::from_mm(0.0);
+    let resolved_rot = rot_setup.resolve(&doc, DisplayUnit::Millimeter).unwrap();
+    let rot = resolved_rot.rotary.expect("rotary config resolved");
+
+    for (idx, angle_deg) in [0.0_f64, 120.0_f64, 240.0_f64].into_iter().enumerate() {
+        let mut op = Operation::new(
+            format!("op_helix_{idx}"),
+            format!("Indexed Adaptive 3D {angle_deg:.0}°"),
+            OperationKind::Adaptive3D,
+        );
+        op.tool_id = Some(ball_4.id.clone());
+        op.rotary = OperationRotaryMode::Indexed3Plus1 { angle_deg };
+        op.heights.top = HeightSpec::new(HeightReference::StockTop, 0.0);
+        op.heights.bottom = HeightSpec::new(HeightReference::ModelBottom, 0.0);
+        op.passes.stock_to_leave_radial = ParamLength::from_mm(0.4);
+        op.passes.stock_to_leave_axial = ParamLength::from_mm(0.25);
+        if let StrategyParams::Adaptive3D(p) = op.strategy_mut() {
+            p.boundary_mode = MachiningBoundaryMode::StockBox;
+            p.max_roughing_stepdown = ParamLength::from_mm(6.0);
+            p.fine_stepdown = ParamLength::from_mm(3.0);
+            p.adaptive.optimal_load = ParamLength::from_mm(1.8);
+            p.detect_flats = true;
+        }
+
+        let tp = generate_operation_toolpath_with_rest(&OperationGenRequest {
+            doc: &doc,
+            sketches: &[],
+            setup: &resolved_rot,
+            op: &op,
+            tool: &ball_4,
+            clearing_tool: None,
+            display_unit: DisplayUnit::Millimeter,
+            is_first_tool_in_setup: idx == 0,
+            upstream_rest: &[],
+            carryover_stock: None,
+            cancel: &cancel,
+        })
+        .unwrap();
+
+        let vsetup = build_indexed_virtual_setup(&resolved_rot, &rot, angle_deg);
+        let surface = SurfaceMesh3D::from_cad_document(&doc, &[], &vsetup.frame);
+        let nominal_cutter = SurfaceCutterProfile::from_tool_geometry(&ball_4.geometry, 0.0, 0.0);
+        let mut max_gouge = 0.0_f64;
+        for seg in &tp.segments_wcs {
+            if matches!(seg.motion, SegmentMotion3D::Rapid) {
+                continue;
+            }
+            for t in [0.0, 0.5, 1.0] {
+                let p = seg.sample_point(t);
+                if let Some(zd) = drop_cutter_z(&surface, &nominal_cutter, p.x, p.y, -100.0) {
+                    max_gouge = max_gouge.max(zd - p.z);
+                }
+            }
+        }
+        assert!(
+            max_gouge <= 0.02,
+            "Indexed Adaptive3D at {angle_deg}° must not cut into overhanging helical lofts, max_gouge={max_gouge:.4} mm"
+        );
+    }
+}
