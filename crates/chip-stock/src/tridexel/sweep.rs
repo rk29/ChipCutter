@@ -1,4 +1,4 @@
-use chip_math::{DVec2, DVec3};
+use chip_math::{Aabb3, DVec2, DVec3};
 use rayon::prelude::*;
 
 use crate::types::{
@@ -683,11 +683,82 @@ impl SweepContext<'_> {
 }
 
 #[inline]
+fn aabb_overlaps(min_a: DVec3, max_a: DVec3, stock: Aabb3) -> bool {
+    max_a.x >= stock.min.x
+        && min_a.x <= stock.max.x
+        && max_a.y >= stock.min.y
+        && min_a.y <= stock.max.y
+        && max_a.z >= stock.min.z
+        && min_a.z <= stock.max.z
+}
+
+/// Computes the tight stock-intersecting world-space AABB `(aabb_min, aabb_max)` for an arbitrary
+/// [`OrientedPose3D`] together with `check_holder` (`true` only when the holder/collet envelope
+/// above `stickout_length` actually intersects `stock_aabb`). Returns `None` when no part of the
+/// cutter/shank/holder intersects `stock_aabb` (e.g., clearance rapids above the workpiece).
+#[inline]
+pub(crate) fn oriented_pose_stock_aabb(
+    pose: OrientedPose3D,
+    prof: &RadialCutterProfile,
+    stock_aabb: Aabb3,
+    verify: bool,
+) -> Option<(DVec3, DVec3, bool)> {
+    let r_cut = prof.cutting_radius_mm.max(0.05);
+    let max_h = prof.horizontal_cut_max_height_mm();
+    let flute_top = pose.tip + pose.spindle * max_h;
+    let mut bmin = pose.tip.min(flute_top) - DVec3::splat(r_cut);
+    let mut bmax = pose.tip.max(flute_top) + DVec3::splat(r_cut);
+    let mut active = aabb_overlaps(bmin, bmax, stock_aabb);
+    let mut check_holder = false;
+
+    if verify {
+        let stickout = prof.stickout_length_mm.max(prof.flute_length_mm);
+        let reach = prof.effective_reach_mm();
+        if stickout > reach + 1e-4 {
+            let s_lo = pose.tip + pose.spindle * reach;
+            let s_hi = pose.tip + pose.spindle * stickout;
+            let r_sh = prof.shank_radius_mm.max(r_cut);
+            let smin = s_lo.min(s_hi) - DVec3::splat(r_sh);
+            let smax = s_lo.max(s_hi) + DVec3::splat(r_sh);
+            if aabb_overlaps(smin, smax, stock_aabb) {
+                if active {
+                    bmin = bmin.min(smin);
+                    bmax = bmax.max(smax);
+                } else {
+                    bmin = smin;
+                    bmax = smax;
+                    active = true;
+                }
+            }
+        }
+        let h_lo = pose.tip + pose.spindle * stickout;
+        let h_hi = pose.tip + pose.spindle * (stickout + 40.0);
+        let r_h = prof.holder_radius_mm.max(r_cut);
+        let hmin = h_lo.min(h_hi) - DVec3::splat(r_h);
+        let hmax = h_lo.max(h_hi) + DVec3::splat(r_h);
+        if aabb_overlaps(hmin, hmax, stock_aabb) {
+            check_holder = true;
+            if active {
+                bmin = bmin.min(hmin);
+                bmax = bmax.max(hmax);
+            } else {
+                bmin = hmin;
+                bmax = hmax;
+                active = true;
+            }
+        }
+    }
+
+    active.then_some((bmin, bmax, check_holder))
+}
+
+#[inline]
 fn check_rotary_chuck_pose(
     rot: RotaryStockSpec,
     tip_wcs: DVec3,
     tip_part: DVec3,
     r_cut: f64,
+    src_chord_idx: u32,
     violations: &mut SpanRuleViolations,
 ) {
     let (u_tip, _, r_tip) = rot.wcs_to_cylindrical(tip_part);
@@ -695,7 +766,7 @@ fn check_rotary_chuck_pose(
     let u_overlaps_chuck = (u_tip + r_cut) >= rot.chuck_u_min && (u_tip - r_cut) <= rot.chuck_u_max;
     if u_overlaps_chuck && r_tip < chuck_clearance_r - 0.05 {
         let excess = chuck_clearance_r - r_tip;
-        violations.record_holder(excess, tip_wcs);
+        violations.record_holder_at(excess, tip_wcs, src_chord_idx);
     }
 }
 
@@ -705,10 +776,12 @@ fn check_rotary_chuck_pose(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn decompose_chord_for_tridexel(
     ch: &SweepChord,
+    src_chord_idx: u32,
     rotary: Option<RotaryStockSpec>,
     min_pitch_mm: f64,
     prof: &RadialCutterProfile,
     verify: bool,
+    skip_start_pose: bool,
     arc_buf: &mut Vec<LinearChord3D>,
     out_prims: &mut Vec<SweptPrimitive>,
     out_chuck_viol: &mut SpanRuleViolations,
@@ -746,11 +819,32 @@ pub(crate) fn decompose_chord_for_tridexel(
                     lin.p1
                 };
                 if has_chuck {
-                    check_rotary_chuck_pose(rot, lin.p0, p0_part, r_cut, out_chuck_viol);
+                    check_rotary_chuck_pose(
+                        rot,
+                        lin.p0,
+                        p0_part,
+                        r_cut,
+                        src_chord_idx,
+                        out_chuck_viol,
+                    );
                     let mid_wcs = lin.p0.lerp(lin.p1, 0.5);
                     let mid_part = p0_part.lerp(p1_part, 0.5);
-                    check_rotary_chuck_pose(rot, mid_wcs, mid_part, r_cut, out_chuck_viol);
-                    check_rotary_chuck_pose(rot, lin.p1, p1_part, r_cut, out_chuck_viol);
+                    check_rotary_chuck_pose(
+                        rot,
+                        mid_wcs,
+                        mid_part,
+                        r_cut,
+                        src_chord_idx,
+                        out_chuck_viol,
+                    );
+                    check_rotary_chuck_pose(
+                        rot,
+                        lin.p1,
+                        p1_part,
+                        r_cut,
+                        src_chord_idx,
+                        out_chuck_viol,
+                    );
                 }
                 out_prims.push(SweptPrimitive::CardinalLinear {
                     chord: LinearChord3D {
@@ -766,22 +860,32 @@ pub(crate) fn decompose_chord_for_tridexel(
     }
 
     // Non-cardinal constant angle (e.g. 30°/45° indexed) or simultaneous 4-axis rotary motion:
-    // subdivide into workpiece-fixed oriented cutter poses.
-    let step_lin = (0.5 * min_pitch_mm).clamp(0.08, 0.25);
-    let step_deg = 0.35;
+    // subdivide into workpiece-fixed oriented cutter poses scaled cleanly to voxel pitch and
+    // effective rotary contact radius so scallops stay << voxel pitch without pose explosion.
+    let step_lin = (0.5 * min_pitch_mm)
+        .clamp(0.08, 0.30)
+        .min((0.45 * r_cut).max(0.08));
+    let p0_wcs = ch.motion.sample_point(0.0);
+    let p1_wcs = ch.motion.sample_point(1.0);
+    let (_, _, r0) = rot.wcs_to_cylindrical(p0_wcs);
+    let (_, _, r1) = rot.wcs_to_cylindrical(p1_wcs);
+    let r_ref = (r0.max(r1).min(rot.stock_outer_radius_mm) + r_cut)
+        .clamp(r_cut.max(1.0), rot.stock_outer_radius_mm + r_cut);
+    let step_deg = (step_lin / r_ref).to_degrees().clamp(0.35, 1.5);
     let lin_len = ch.motion.length_mm();
     let n_lin = (lin_len / step_lin).ceil() as usize;
     let n_rot = (d_deg / step_deg).ceil() as usize;
     let n_steps = n_lin.max(n_rot).clamp(1, 2_000);
+    let k_start = usize::from(skip_start_pose);
 
-    for k in 0..=n_steps {
+    for k in k_start..=n_steps {
         let t = k as f64 / n_steps as f64;
         let tip_wcs = ch.motion.sample_point(t);
         let rot_deg = ch.motion.sample_rotary_deg(t);
         let tip_part = rot.rotate_point_wcs(tip_wcs, -rot_deg);
         let spindle_part = rot.rotate_vector_wcs(DVec3::Z, -rot_deg);
         if has_chuck {
-            check_rotary_chuck_pose(rot, tip_wcs, tip_part, r_cut, out_chuck_viol);
+            check_rotary_chuck_pose(rot, tip_wcs, tip_part, r_cut, src_chord_idx, out_chuck_viol);
         }
         out_prims.push(SweptPrimitive::OrientedPose(OrientedPose3D {
             tip: tip_part,
@@ -1003,6 +1107,7 @@ fn apply_oriented_pose_to_ray(
     tol: StockVerifyTolerances,
     op_idx: u32,
     verify: bool,
+    check_holder: bool,
     target_spans: Option<&[DexelSpan]>,
     scratch: &mut Vec<DexelSpan>,
 ) -> (bool, SpanRuleViolations) {
@@ -1029,16 +1134,18 @@ fn apply_oriented_pose_to_ray(
 
     if verify {
         let stickout = prof.stickout_length_mm.max(prof.flute_length_mm);
-        if let Some((hw_lo, hw_hi)) = solve_oriented_cylinder_interval(
-            a,
-            b,
-            c,
-            h0,
-            d_dot_s,
-            prof.holder_radius_mm,
-            stickout,
-            stickout + 40.0,
-        ) {
+        if check_holder
+            && let Some((hw_lo, hw_hi)) = solve_oriented_cylinder_interval(
+                a,
+                b,
+                c,
+                h0,
+                d_dot_s,
+                prof.holder_radius_mm,
+                stickout,
+                stickout + 40.0,
+            )
+        {
             let pen = query_overlap_length(scratch, hw_lo, hw_hi);
             if pen > 0.05 {
                 rv.record_holder(pen, pose.tip_wcs);
@@ -1221,22 +1328,48 @@ impl TriDexelStock {
         let mut prim_buf: Vec<SweptPrimitive> = Vec::with_capacity(16);
         let min_pitch = self.pitch_mm.x.min(self.pitch_mm.y).min(self.pitch_mm.z);
         let rotary = self.rotary;
+        let mut prev_oriented_end: Option<(DVec3, f64, u32, usize, bool)> = None;
 
-        for ch in chords {
+        for (raw_idx, ch) in chords.iter().enumerate() {
             let Some(tool) = tools.get(ch.profile_idx) else {
                 continue;
             };
+            let start_pt = ch.motion.sample_point(0.0);
+            let start_rot = ch.motion.sample_rotary_deg(0.0);
+            let skip_start = prev_oriented_end.is_some_and(|(pp, pr, pop, pprof, prap)| {
+                pop == ch.op_idx
+                    && pprof == ch.profile_idx
+                    && prap == ch.is_rapid
+                    && pp.distance_squared(start_pt) <= 1e-10
+                    && (pr - start_rot).abs() <= 1e-6
+            });
             prim_buf.clear();
             decompose_chord_for_tridexel(
                 ch,
+                raw_idx as u32,
                 rotary,
                 min_pitch,
                 &tool.profile,
                 verify,
+                skip_start,
                 &mut arc_buf,
                 &mut prim_buf,
                 &mut out.violations,
             );
+            prev_oriented_end = if prim_buf
+                .last()
+                .is_some_and(|p| matches!(p, SweptPrimitive::OrientedPose(_)))
+            {
+                Some((
+                    ch.motion.sample_point(1.0),
+                    ch.motion.sample_rotary_deg(1.0),
+                    ch.op_idx,
+                    ch.profile_idx,
+                    ch.is_rapid,
+                ))
+            } else {
+                None
+            };
             for &prim in &prim_buf {
                 match prim {
                     SweptPrimitive::CardinalLinear {
@@ -1314,25 +1447,24 @@ impl TriDexelStock {
         ctx: &SweepContext<'_>,
         verify: bool,
     ) -> (bool, SpanRuleViolations) {
+        let Some((aabb_min, aabb_max, check_holder)) =
+            oriented_pose_stock_aabb(pose, ctx.prof, self.aabb_wcs(), verify)
+        else {
+            return (false, SpanRuleViolations::default());
+        };
+
         let mut violations = SpanRuleViolations::default();
         let mut mutated = false;
-        let r_chk = if verify {
-            ctx.prof.cutting_radius_mm.max(ctx.prof.holder_radius_mm)
-        } else {
-            ctx.prof.cutting_radius_mm
-        };
-        let reach = if verify {
-            ctx.prof.stickout_length_mm.max(ctx.prof.flute_length_mm) + 40.0
-        } else {
-            ctx.prof.horizontal_cut_max_height_mm()
-        };
-        let top_pt = pose.tip + pose.spindle * reach;
-        let aabb_min = pose.tip.min(top_pt) - DVec3::splat(r_chk);
-        let aabb_max = pose.tip.max(top_pt) + DVec3::splat(r_chk);
-
         for axis in Axis3::ALL {
-            let (p_mut, p_viol) =
-                self.sweep_oriented_pose_plane(axis, pose, aabb_min, aabb_max, ctx, verify);
+            let (p_mut, p_viol) = self.sweep_oriented_pose_plane(
+                axis,
+                pose,
+                aabb_min,
+                aabb_max,
+                ctx,
+                verify,
+                check_holder,
+            );
             mutated |= p_mut;
             violations.merge(p_viol);
         }
@@ -1340,6 +1472,7 @@ impl TriDexelStock {
         (mutated, violations)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn sweep_oriented_pose_plane(
         &mut self,
         axis: Axis3,
@@ -1348,6 +1481,7 @@ impl TriDexelStock {
         aabb_max: DVec3,
         ctx: &SweepContext<'_>,
         verify: bool,
+        check_holder: bool,
     ) -> (bool, SpanRuleViolations) {
         let u_ax = axis.u_axis();
         let v_ax = axis.v_axis();
@@ -1367,23 +1501,26 @@ impl TriDexelStock {
         let dv = plane.dv_mm;
         let row_slot_stride = nu * INLINE_DEXEL_SLOTS;
         let target_plane = ctx.target.map(|t| t.plane(axis));
+        let span_rays = (u1 - u0 + 1) * (v1 - v0 + 1);
 
         let slots_slice = &mut plane.slots[v0 * row_slot_stride..(v1 + 1) * row_slot_stride];
         let counts_slice = &mut plane.counts[v0 * nu..(v1 + 1) * nu];
         let overflow_ref = &plane.overflow;
 
-        let (p_mut, p_viol, overflow_deltas) = slots_slice
-            .par_chunks_mut(row_slot_stride)
-            .zip(counts_slice.par_chunks_mut(nu))
-            .enumerate()
-            .map(|(v_off, (row_slots, row_counts))| {
+        let (p_mut, p_viol, overflow_deltas) = if span_rays < 2048 {
+            let mut p_mut = false;
+            let mut p_viol = SpanRuleViolations::default();
+            let mut ov_deltas: Vec<(u32, Option<Vec<DexelSpan>>)> = Vec::new();
+            let mut scratch: Vec<DexelSpan> = Vec::with_capacity(8);
+
+            for (v_off, (row_slots, row_counts)) in slots_slice
+                .chunks_mut(row_slot_stride)
+                .zip(counts_slice.chunks_mut(nu))
+                .enumerate()
+            {
                 let iv = v0 + v_off;
                 let pv = ov + (iv as f64 + 0.5) * dv;
                 let row_base = iv * nu;
-                let mut row_mut = false;
-                let mut rv = SpanRuleViolations::default();
-                let mut row_ov_deltas: Vec<(u32, Option<Vec<DexelSpan>>)> = Vec::new();
-                let mut scratch: Vec<DexelSpan> = Vec::with_capacity(8);
 
                 for iu in u0..=u1 {
                     if row_counts[iu] == 0 {
@@ -1415,12 +1552,13 @@ impl TriDexelStock {
                         ctx.tol,
                         ctx.op_idx,
                         verify,
+                        check_holder,
                         target_spans_owned.as_deref(),
                         &mut scratch,
                     );
-                    rv.merge(ray_viol);
+                    p_viol.merge(ray_viol);
                     if ray_mut {
-                        row_mut = true;
+                        p_mut = true;
                         write_row_ray_from(
                             iu,
                             ray_idx,
@@ -1429,20 +1567,86 @@ impl TriDexelStock {
                             ow,
                             &scratch,
                             was_ov,
-                            &mut row_ov_deltas,
+                            &mut ov_deltas,
                         );
                     }
                 }
-                (row_mut, rv, row_ov_deltas)
-            })
-            .reduce(
-                || (false, SpanRuleViolations::default(), Vec::new()),
-                |(m0, mut v0, mut d0), (m1, v1, mut d1)| {
-                    v0.merge(v1);
-                    d0.append(&mut d1);
-                    (m0 || m1, v0, d0)
-                },
-            );
+            }
+            (p_mut, p_viol, ov_deltas)
+        } else {
+            slots_slice
+                .par_chunks_mut(row_slot_stride)
+                .zip(counts_slice.par_chunks_mut(nu))
+                .enumerate()
+                .map(|(v_off, (row_slots, row_counts))| {
+                    let iv = v0 + v_off;
+                    let pv = ov + (iv as f64 + 0.5) * dv;
+                    let row_base = iv * nu;
+                    let mut row_mut = false;
+                    let mut rv = SpanRuleViolations::default();
+                    let mut row_ov_deltas: Vec<(u32, Option<Vec<DexelSpan>>)> = Vec::new();
+                    let mut scratch: Vec<DexelSpan> = Vec::with_capacity(8);
+
+                    for iu in u0..=u1 {
+                        if row_counts[iu] == 0 {
+                            continue;
+                        }
+                        let ray_idx = (row_base + iu) as u32;
+                        let was_ov = load_row_ray_into(
+                            iu,
+                            ray_idx,
+                            row_slots,
+                            row_counts,
+                            overflow_ref,
+                            ow,
+                            &mut scratch,
+                        );
+                        if scratch.is_empty() {
+                            continue;
+                        }
+                        let pu = ou + (iu as f64 + 0.5) * du;
+                        let target_spans_owned =
+                            target_plane.map(|tp| tp.ray_spans_by_index(row_base + iu));
+                        let (ray_mut, ray_viol) = apply_oriented_pose_to_ray(
+                            axis,
+                            pu,
+                            pv,
+                            pose,
+                            ctx.prof,
+                            ctx.is_rapid,
+                            ctx.tol,
+                            ctx.op_idx,
+                            verify,
+                            check_holder,
+                            target_spans_owned.as_deref(),
+                            &mut scratch,
+                        );
+                        rv.merge(ray_viol);
+                        if ray_mut {
+                            row_mut = true;
+                            write_row_ray_from(
+                                iu,
+                                ray_idx,
+                                row_slots,
+                                row_counts,
+                                ow,
+                                &scratch,
+                                was_ov,
+                                &mut row_ov_deltas,
+                            );
+                        }
+                    }
+                    (row_mut, rv, row_ov_deltas)
+                })
+                .reduce(
+                    || (false, SpanRuleViolations::default(), Vec::new()),
+                    |(m0, mut v0, mut d0), (m1, v1, mut d1)| {
+                        v0.merge(v1);
+                        d0.append(&mut d1);
+                        (m0 || m1, v0, d0)
+                    },
+                )
+        };
 
         for (ray_idx, entry) in overflow_deltas {
             match entry {
@@ -1958,6 +2162,7 @@ pub(crate) fn replay_single_ray_primitive(
             is_rapid,
             tol,
             op_idx,
+            verify,
             verify,
             target_spans,
             scratch,

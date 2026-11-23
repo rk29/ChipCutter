@@ -225,6 +225,53 @@ impl GpuSimContext {
         staging_buf.unmap();
         ok
     }
+
+    /// Synchronously maps up to 3 staging buffers with a single `device.poll(wait_indefinitely)`
+    /// round-trip so multi-plane Tri-Dexel sweeps avoid 3× CPU-GPU synchronization stalls.
+    pub(crate) fn readback_bytes_batch(
+        &self,
+        entries: &mut [(&wgpu::Buffer, usize, &mut [u8])],
+    ) -> [bool; 3] {
+        let mut results = [false; 3];
+        let mut rxs: [Option<mpsc::Receiver<Result<(), wgpu::BufferAsyncError>>>; 3] =
+            [None, None, None];
+        let mut mapped_flags = [false; 3];
+
+        for (idx, (buf, byte_len, dst)) in entries.iter().enumerate().take(3) {
+            if *byte_len == 0 || dst.len() < *byte_len {
+                continue;
+            }
+            let slice = buf.slice(0..*byte_len as u64);
+            let (tx, rx) = mpsc::channel();
+            slice.map_async(wgpu::MapMode::Read, move |res| {
+                let _ = tx.send(res);
+            });
+            rxs[idx] = Some(rx);
+            mapped_flags[idx] = true;
+        }
+
+        if mapped_flags.iter().any(|&m| m) {
+            let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
+        }
+
+        for (idx, (buf, byte_len, dst)) in entries.iter_mut().enumerate().take(3) {
+            if !mapped_flags[idx] {
+                continue;
+            }
+            if let Some(rx) = rxs[idx].take()
+                && matches!(rx.recv(), Ok(Ok(())))
+            {
+                let slice = buf.slice(0..*byte_len as u64);
+                if let Ok(mapped) = slice.get_mapped_range() {
+                    dst[..*byte_len].copy_from_slice(&mapped[..*byte_len]);
+                    results[idx] = true;
+                }
+            }
+            buf.unmap();
+        }
+
+        results
+    }
 }
 
 fn storage_entry(binding: u32, read_only: bool) -> wgpu::BindGroupLayoutEntry {

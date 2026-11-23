@@ -115,6 +115,7 @@ fn record_violation(slot_base: u32, depth: f32, chord_idx: u32, cell_idx: u32, l
     }
     let depth_bits = bitcast<u32>(depth);
     atomicStore(&violations.words[slot_base], 1u);
+    atomicMax(&violations.words[slot_base + 5u], 0xFFFFFFFFu - chord_idx);
     let prev = atomicMax(&violations.words[slot_base + 1u], depth_bits);
     if (depth_bits > prev) {
         atomicStore(&violations.words[slot_base + 2u], chord_idx);

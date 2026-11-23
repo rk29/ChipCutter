@@ -24,6 +24,7 @@ const PROF_FLAG_RELIEVED_NECK: u32 = 8u;
 
 const CHORD_FLAG_RAPID: u32 = 1u;
 const CHORD_FLAG_VERIFY: u32 = 2u;
+const CHORD_FLAG_CHECK_HOLDER: u32 = 8u;
 const CHORD_FLAG_ORIENTED_POSE: u32 = 16u;
 const CHORD_CARDINAL_SHIFT: u32 = 8u;
 const CHORD_CARDINAL_MASK: u32 = 7u;
@@ -115,6 +116,7 @@ fn record_violation(slot_base: u32, depth: f32, chord_idx: u32, ray_idx: u32, lo
     }
     let depth_bits = bitcast<u32>(depth);
     atomicStore(&accum_and_overflow[slot_base], 1u);
+    atomicMax(&accum_and_overflow[slot_base + 5u], 0xFFFFFFFFu - chord_idx);
     let prev = atomicMax(&accum_and_overflow[slot_base + 1u], depth_bits);
     if (depth_bits > prev) {
         atomicStore(&accum_and_overflow[slot_base + 2u], chord_idx);
@@ -1359,11 +1361,16 @@ fn chord_bbox_hits_ray(ch: GpuSweepChord, prof: GpuToolProfile, verify: bool, pu
 
     if ((flags & CHORD_FLAG_ORIENTED_POSE) != 0u) {
         let spindle = ch.arc_params.xyz;
-        let r_chk = select(r_cut, max(r_cut, prof.holder_radius_mm), verify) + 1e-3;
+        let check_holder = verify && ((flags & CHORD_FLAG_CHECK_HOLDER) != 0u);
+        let r_chk = select(
+            select(r_cut, max(r_cut, prof.shank_radius_mm), verify),
+            max(r_cut, prof.holder_radius_mm),
+            check_holder,
+        ) + 1e-3;
         let reach = select(
-            horizontal_cut_max_height(prof),
+            select(horizontal_cut_max_height(prof), max(prof.stickout_length_mm, prof.flute_length_mm), verify),
             max(prof.stickout_length_mm, prof.flute_length_mm) + 40.0,
-            verify,
+            check_holder,
         );
         let top_pt = p0 + spindle * reach;
         let bmin = min(p0, top_pt) - vec3<f32>(r_chk);
@@ -1496,13 +1503,15 @@ fn main(
 
             if (verify) {
                 let stickout = max(prof.stickout_length_mm, prof.flute_length_mm);
-                let h_iv = solve_oriented_cylinder_interval(
-                    a, b, c, h0, d_dot_s, prof.holder_radius_mm, stickout, stickout + 40.0,
-                );
-                if (h_iv.valid) {
-                    let pen = query_overlap_local(&local_spans, cnt, h_iv.lo, h_iv.hi);
-                    if (pen > 0.05) {
-                        record_violation(SLOT_HOLDER, pen, chord_index, local_ray_idx, h_iv.lo);
+                if ((flags & CHORD_FLAG_CHECK_HOLDER) != 0u) {
+                    let h_iv = solve_oriented_cylinder_interval(
+                        a, b, c, h0, d_dot_s, prof.holder_radius_mm, stickout, stickout + 40.0,
+                    );
+                    if (h_iv.valid) {
+                        let pen = query_overlap_local(&local_spans, cnt, h_iv.lo, h_iv.hi);
+                        if (pen > 0.05) {
+                            record_violation(SLOT_HOLDER, pen, chord_index, local_ray_idx, h_iv.lo);
+                        }
                     }
                 }
                 if (!is_rapid) {

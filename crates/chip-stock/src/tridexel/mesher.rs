@@ -35,6 +35,88 @@ fn nearest_ray_endpoint(
     best.map(|(_, c, op)| (c, op))
 }
 
+/// Evaluates a crease-aware smooth surface normal on the dominant dexel plane of `n_face` so
+/// curved cylinders, spheres, domes, and helical flutes shade seamlessly across X/Y/Z face seams
+/// while sharp 90° edges fall back crisply to `n_face`.
+#[inline]
+fn crease_aware_smooth_normal(stock: &TriDexelStock, center_wcs: DVec3, n_face: DVec3) -> DVec3 {
+    let ax = n_face.x.abs();
+    let ay = n_face.y.abs();
+    let az = n_face.z.abs();
+    let dom_ax = if ax >= ay && ax >= az {
+        Axis3::X
+    } else if ay >= az {
+        Axis3::Y
+    } else {
+        Axis3::Z
+    };
+
+    let u_ax = dom_ax.u_axis();
+    let v_ax = dom_ax.v_axis();
+    let plane = stock.plane(dom_ax);
+    let du = plane.du_mm;
+    let dv = plane.dv_mm;
+    let dw = stock.pitch(dom_ax);
+    let nu = plane.nu as isize;
+    let nv = plane.nv as isize;
+
+    let diu = (((u_ax.get(center_wcs) - plane.origin_u_mm) / du).floor() as isize)
+        .clamp(0, (nu - 1).max(0));
+    let div = (((v_ax.get(center_wcs) - plane.origin_v_mm) / dv).floor() as isize)
+        .clamp(0, (nv - 1).max(0));
+    let cw = dom_ax.get(center_wcs);
+    let dom_want_min = dom_ax.get(n_face) < 0.0;
+    let max_d = 1.35 * dw;
+
+    let query = |qu: isize, qv: isize, ref_w: f64| -> Option<f64> {
+        if qu < 0 || qv < 0 || qu >= nu || qv >= nv {
+            return None;
+        }
+        nearest_ray_endpoint(
+            &plane.ray_spans(qu as usize, qv as usize),
+            ref_w,
+            dom_want_min,
+            max_d,
+        )
+        .map(|(c, _)| c)
+    };
+
+    let Some(wc) = query(diu, div, cw) else {
+        return n_face;
+    };
+    let ql = query(diu - 1, div, wc);
+    let qr = query(diu + 1, div, wc);
+    let qd = query(diu, div - 1, wc);
+    let qu = query(diu, div + 1, wc);
+
+    let dw_du = match (ql, qr) {
+        (Some(wl), Some(wr)) => (wr - wl) / (2.0 * du),
+        (None, Some(wr)) => (wr - wc) / du,
+        (Some(wl), None) => (wc - wl) / du,
+        (None, None) => 0.0,
+    };
+    let dw_dv = match (qd, qu) {
+        (Some(wd), Some(wu)) => (wu - wd) / (2.0 * dv),
+        (None, Some(wu)) => (wu - wc) / dv,
+        (Some(wd), None) => (wc - wd) / dv,
+        (None, None) => 0.0,
+    };
+
+    let n_uvw = if dom_want_min {
+        DVec3::new(dw_du, dw_dv, -1.0)
+    } else {
+        DVec3::new(-dw_du, -dw_dv, 1.0)
+    };
+    let n_smooth = dom_ax
+        .from_uvw(n_uvw.x, n_uvw.y, n_uvw.z)
+        .normalize_or_zero();
+    if n_smooth.dot(n_face) >= 0.72 {
+        n_smooth
+    } else {
+        n_face
+    }
+}
+
 /// Extracts a watertight, sharp-feature-preserving 3D [`SimStockMesh`] from a [`TriDexelStock`]
 /// using axis-decoupled Dual-Vertex Surface Nets.
 pub fn tessellate_tridexel_stock_mesh(stock: &TriDexelStock, color_by_op: bool) -> SimStockMesh {
@@ -198,12 +280,18 @@ pub fn tessellate_tridexel_stock_mesh_colored(
         let v3 = DVec3::new(f64::from(p3[0]), f64::from(p3[1]), f64::from(p3[2]));
         let n_raw = (v2 - v0).cross(v3 - v1);
         let n_len = n_raw.length();
-        let normal = if n_len > 1e-10 {
-            let u = n_raw / n_len;
-            [u.x as f32, u.y as f32, u.z as f32]
+        let n_face = if n_len > 1e-10 {
+            n_raw / n_len
         } else {
-            fallback_n
+            DVec3::new(
+                f64::from(fallback_n[0]),
+                f64::from(fallback_n[1]),
+                f64::from(fallback_n[2]),
+            )
         };
+        let center_wcs = 0.25 * (v0 + v1 + v2 + v3);
+        let n_smooth = crease_aware_smooth_normal(stock, center_wcs, n_face);
+        let normal = [n_smooth.x as f32, n_smooth.y as f32, n_smooth.z as f32];
         let base = mesh.vertices.len() as u32;
         mesh.vertices.extend_from_slice(&[
             SimColoredVertex {

@@ -364,7 +364,9 @@ pub struct GpuViolationSlot {
     pub cell_idx: u32,
     /// Stock-local `f32` Z bitcast (Heightfield) or `0` (Cylindrical).
     pub loc_z_bits: u32,
-    pub _pad0: u32,
+    /// `u32::MAX - first_chord_idx` accumulated via `atomicMax` (zero-init safe) so batched GPU
+    /// sweeps preserve exact chronological onset segment attribution alongside peak depth/location.
+    pub inv_first_chord: u32,
     pub _pad1: u32,
     pub _pad2: u32,
 }
@@ -379,6 +381,19 @@ impl GpuViolationSlot {
         let depth = f64::from(f32::from_bits(self.max_depth_bits));
         let loc_z = f32::from_bits(self.loc_z_bits);
         Some((depth, self.chord_idx, self.cell_idx, loc_z))
+    }
+
+    /// Decodes `(depth_mm, peak_chord_idx, first_chord_idx, cell_idx, loc_z_local)` if this
+    /// violation channel fired.
+    #[inline]
+    pub fn decode_with_onset(&self) -> Option<(f64, u32, u32, u32, f32)> {
+        let (depth, peak_ch, cell, loc_z) = self.decode()?;
+        let first_ch = if self.inv_first_chord > 0 {
+            u32::MAX - self.inv_first_chord
+        } else {
+            peak_ch
+        };
+        Some((depth, peak_ch, first_ch, cell, loc_z))
     }
 }
 
@@ -411,28 +426,44 @@ impl GpuViolationAccum {
     }
 
     /// Decodes all 5 violation slots into [`SpanRuleViolations`] using a caller-provided
+    /// `(peak_chord_idx, first_chord_idx, cell_idx, loc_z_local) -> (DVec3, onset_src_chord_idx)` resolver.
+    pub fn into_span_violations_mapped(
+        &self,
+        mut resolve: impl FnMut(u32, u32, u32, f32) -> (DVec3, u32),
+    ) -> (bool, SpanRuleViolations) {
+        let mut out = SpanRuleViolations::default();
+        if let Some((depth, peak_ch, first_ch, cell, z_loc)) = self.rapid.decode_with_onset() {
+            let (loc, src) = resolve(peak_ch, first_ch, cell, z_loc);
+            out.record_rapid_at(depth, loc, src);
+        }
+        if let Some((depth, peak_ch, first_ch, cell, z_loc)) = self.gouge.decode_with_onset() {
+            let (loc, src) = resolve(peak_ch, first_ch, cell, z_loc);
+            out.record_gouge_at(depth, loc, src);
+        }
+        if let Some((depth, peak_ch, first_ch, cell, z_loc)) = self.flute.decode_with_onset() {
+            let (loc, src) = resolve(peak_ch, first_ch, cell, z_loc);
+            out.record_flute_at(depth, loc, src);
+        }
+        if let Some((depth, peak_ch, first_ch, cell, z_loc)) = self.neck.decode_with_onset() {
+            let (loc, src) = resolve(peak_ch, first_ch, cell, z_loc);
+            out.record_neck_at(depth, loc, src);
+        }
+        if let Some((depth, peak_ch, first_ch, cell, z_loc)) = self.holder.decode_with_onset() {
+            let (loc, src) = resolve(peak_ch, first_ch, cell, z_loc);
+            out.record_holder_at(depth, loc, src);
+        }
+        (self.mutated_flag != 0, out)
+    }
+
+    /// Decodes all 5 violation slots into [`SpanRuleViolations`] using a caller-provided
     /// `(chord_idx, cell_idx, loc_z_local) -> DVec3` WCS coordinate resolver.
     pub fn into_span_violations_with_chord(
         &self,
         mut resolve_loc_wcs: impl FnMut(u32, u32, f32) -> DVec3,
     ) -> (bool, SpanRuleViolations) {
-        let mut out = SpanRuleViolations::default();
-        if let Some((depth, ch, cell, z_loc)) = self.rapid.decode() {
-            out.record_rapid(depth, resolve_loc_wcs(ch, cell, z_loc));
-        }
-        if let Some((depth, ch, cell, z_loc)) = self.gouge.decode() {
-            out.record_gouge(depth, resolve_loc_wcs(ch, cell, z_loc));
-        }
-        if let Some((depth, ch, cell, z_loc)) = self.flute.decode() {
-            out.record_flute(depth, resolve_loc_wcs(ch, cell, z_loc));
-        }
-        if let Some((depth, ch, cell, z_loc)) = self.neck.decode() {
-            out.record_neck(depth, resolve_loc_wcs(ch, cell, z_loc));
-        }
-        if let Some((depth, ch, cell, z_loc)) = self.holder.decode() {
-            out.record_holder(depth, resolve_loc_wcs(ch, cell, z_loc));
-        }
-        (self.mutated_flag != 0, out)
+        self.into_span_violations_mapped(|peak_ch, first_ch, cell, z_loc| {
+            (resolve_loc_wcs(peak_ch, cell, z_loc), first_ch)
+        })
     }
 }
 

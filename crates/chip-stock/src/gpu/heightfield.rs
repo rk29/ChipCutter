@@ -385,16 +385,20 @@ impl GpuHeightfieldState {
         let dx = self.dx_mm;
         let dy = self.dy_mm;
 
-        let (mutated, violations) = accum.into_span_violations(|cell_idx, loc_z_local| {
-            let idx = cell_idx as usize;
-            let i = idx % nx;
-            let j = idx / nx;
-            DVec3::new(
-                ox + (i as f64 + 0.5) * dx,
-                oy + (j as f64 + 0.5) * dy,
-                oz + f64::from(loc_z_local),
-            )
-        });
+        let (mutated, violations) =
+            accum.into_span_violations_mapped(|_peak_ch, first_ch, cell_idx, loc_z_local| {
+                let idx = cell_idx as usize;
+                let i = idx % nx;
+                let j = idx / nx;
+                (
+                    DVec3::new(
+                        ox + (i as f64 + 0.5) * dx,
+                        oy + (j as f64 + 0.5) * dy,
+                        oz + f64::from(loc_z_local),
+                    ),
+                    first_ch,
+                )
+            });
 
         if mutated {
             let mut guard = self.cpu.lock().unwrap_or_else(|e| e.into_inner());

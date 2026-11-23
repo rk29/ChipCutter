@@ -8,7 +8,7 @@ use std::{
 };
 
 use chip_bvh::TriMesh3D;
-use chip_math::DVec3;
+use chip_math::{Aabb3, DVec3};
 use wgpu::util::DeviceExt as _;
 
 use crate::{
@@ -20,7 +20,7 @@ use crate::{
     tridexel::{
         DexelSpan, FlatDexelSpan, INLINE_DEXEL_SLOTS, TriDexelStock,
         sweep::{
-            LinearChord3D, SweptPrimitive, decompose_chord_for_tridexel,
+            LinearChord3D, SweptPrimitive, decompose_chord_for_tridexel, oriented_pose_stock_aabb,
             replay_single_ray_primitive,
         },
     },
@@ -38,9 +38,9 @@ use super::{
         TriDexelEmitUniforms, compute_tridexel_max_quads,
     },
     types::{
-        CHORD_CARDINAL_MASK, CHORD_CARDINAL_SHIFT, CHORD_FLAG_ORIENTED_POSE, CHORD_FLAG_RAPID,
-        CHORD_FLAG_VERIFY, GPU_TILE_SIZE, GpuSweepChord, GpuToolProfile, GpuViolationAccum,
-        TriDexelPlaneUniforms,
+        CHORD_CARDINAL_MASK, CHORD_CARDINAL_SHIFT, CHORD_FLAG_CHECK_HOLDER,
+        CHORD_FLAG_ORIENTED_POSE, CHORD_FLAG_RAPID, CHORD_FLAG_VERIFY, GPU_TILE_SIZE,
+        GpuSweepChord, GpuToolProfile, GpuViolationAccum, TriDexelPlaneUniforms,
     },
 };
 
@@ -55,10 +55,12 @@ struct CpuShadow {
 #[derive(Clone, Copy)]
 struct FlattenedPrimitive {
     prim: SweptPrimitive,
+    src_chord_idx: u32,
     op_idx: u32,
     profile_idx: usize,
     is_rapid: bool,
     verify_tol: StockVerifyTolerances,
+    oriented_aabb: Option<(DVec3, DVec3)>,
 }
 
 struct GpuPlaneDispatch {
@@ -793,25 +795,60 @@ impl GpuTriDexelState {
         self.gpu_chords_scratch.clear();
         self.prim_chords_scratch.clear();
         let min_pitch = self.pitch_mm.x.min(self.pitch_mm.y).min(self.pitch_mm.z);
+        let stock_aabb = Aabb3::new(
+            self.origin_wcs,
+            self.origin_wcs
+                + DVec3::new(
+                    self.dims[0] as f64 * self.pitch_mm.x,
+                    self.dims[1] as f64 * self.pitch_mm.y,
+                    self.dims[2] as f64 * self.pitch_mm.z,
+                ),
+        );
         let mut chuck_violations = SpanRuleViolations::default();
+        let mut prev_oriented_end: Option<(DVec3, f64, u32, usize, bool)> = None;
 
-        for ch in chords {
+        for (raw_idx, ch) in chords.iter().enumerate() {
             let Some(tool) = profiles.get(ch.profile_idx) else {
                 continue;
             };
+            let start_pt = ch.motion.sample_point(0.0);
+            let start_rot = ch.motion.sample_rotary_deg(0.0);
+            let skip_start = prev_oriented_end.is_some_and(|(pp, pr, pop, pprof, prap)| {
+                pop == ch.op_idx
+                    && pprof == ch.profile_idx
+                    && prap == ch.is_rapid
+                    && pp.distance_squared(start_pt) <= 1e-10
+                    && (pr - start_rot).abs() <= 1e-6
+            });
             self.prim_decompose_scratch.clear();
             decompose_chord_for_tridexel(
                 ch,
+                raw_idx as u32,
                 self.rotary,
                 min_pitch,
                 &tool.profile,
                 verify,
+                skip_start,
                 &mut self.arc_linear_scratch,
                 &mut self.prim_decompose_scratch,
                 &mut chuck_violations,
             );
+            prev_oriented_end = if self
+                .prim_decompose_scratch
+                .last()
+                .is_some_and(|p| matches!(p, SweptPrimitive::OrientedPose(_)))
+            {
+                Some((
+                    ch.motion.sample_point(1.0),
+                    ch.motion.sample_rotary_deg(1.0),
+                    ch.op_idx,
+                    ch.profile_idx,
+                    ch.is_rapid,
+                ))
+            } else {
+                None
+            };
             for &prim in &self.prim_decompose_scratch {
-                let gpu_idx = self.gpu_chords_scratch.len() as u32;
                 let mut flags = 0u32;
                 if ch.is_rapid {
                     flags |= CHORD_FLAG_RAPID;
@@ -819,6 +856,8 @@ impl GpuTriDexelState {
                 if verify {
                     flags |= CHORD_FLAG_VERIFY;
                 }
+                let mut oriented_aabb = None;
+                let gpu_idx = self.gpu_chords_scratch.len() as u32;
                 let gpu_chord = match prim {
                     SweptPrimitive::CardinalLinear {
                         chord: lin,
@@ -850,7 +889,16 @@ impl GpuTriDexelState {
                         }
                     }
                     SweptPrimitive::OrientedPose(pose) => {
+                        let Some((aabb_min, aabb_max, check_holder)) =
+                            oriented_pose_stock_aabb(pose, &tool.profile, stock_aabb, verify)
+                        else {
+                            continue;
+                        };
+                        oriented_aabb = Some((aabb_min, aabb_max));
                         flags |= CHORD_FLAG_ORIENTED_POSE;
+                        if check_holder {
+                            flags |= CHORD_FLAG_CHECK_HOLDER;
+                        }
                         GpuSweepChord {
                             p0_rot: [
                                 (pose.tip.x - self.origin_wcs.x) as f32,
@@ -878,10 +926,12 @@ impl GpuTriDexelState {
                 self.gpu_chords_scratch.push(gpu_chord);
                 self.prim_chords_scratch.push(FlattenedPrimitive {
                     prim,
+                    src_chord_idx: raw_idx as u32,
                     op_idx: ch.op_idx,
                     profile_idx: ch.profile_idx,
                     is_rapid: ch.is_rapid,
                     verify_tol: ch.verify_tol,
+                    oriented_aabb,
                 });
             }
         }
@@ -952,19 +1002,14 @@ impl GpuTriDexelState {
                         }
                     }
                     SweptPrimitive::OrientedPose(pose) => {
-                        let r_chk = if verify {
-                            r_cut.max(prof.holder_radius_mm)
-                        } else {
-                            r_cut
-                        };
-                        let reach = if verify {
-                            prof.stickout_length_mm.max(prof.flute_length_mm) + 40.0
-                        } else {
-                            prof.horizontal_cut_max_height_mm()
-                        };
-                        let top_pt = pose.tip + pose.spindle * reach;
-                        let aabb_min = pose.tip.min(top_pt) - DVec3::splat(r_chk);
-                        let aabb_max = pose.tip.max(top_pt) + DVec3::splat(r_chk);
+                        let (aabb_min, aabb_max) = fc.oriented_aabb.unwrap_or_else(|| {
+                            let reach = prof.horizontal_cut_max_height_mm();
+                            let top_pt = pose.tip + pose.spindle * reach;
+                            (
+                                pose.tip.min(top_pt) - DVec3::splat(r_cut),
+                                pose.tip.max(top_pt) + DVec3::splat(r_cut),
+                            )
+                        });
                         (
                             u_ax.get(aabb_min),
                             u_ax.get(aabb_max),
@@ -1093,18 +1138,41 @@ impl GpuTriDexelState {
         let mut merged_violations = chuck_violations;
         let mut overflow_planes = [false; 3];
 
+        // Single-poll batched readback across all active planes (1 CPU-GPU sync instead of 3!)
+        let mut raw0 = [0u8; std::mem::size_of::<GpuViolationAccum>()];
+        let mut raw1 = [0u8; std::mem::size_of::<GpuViolationAccum>()];
+        let mut raw2 = [0u8; std::mem::size_of::<GpuViolationAccum>()];
+        let read_ok = {
+            let mut entries: [(&wgpu::Buffer, usize, &mut [u8]); 3] = [
+                (
+                    &self.planes[0].accum_readback_buf,
+                    if active_planes[0] { accum_bytes } else { 0 },
+                    &mut raw0,
+                ),
+                (
+                    &self.planes[1].accum_readback_buf,
+                    if active_planes[1] { accum_bytes } else { 0 },
+                    &mut raw1,
+                ),
+                (
+                    &self.planes[2].accum_readback_buf,
+                    if active_planes[2] { accum_bytes } else { 0 },
+                    &mut raw2,
+                ),
+            ];
+            self.ctx.readback_bytes_batch(&mut entries)
+        };
+        let raw_slices: [&[u8]; 3] = [&raw0, &raw1, &raw2];
+
         for (ax_idx, plane) in self.planes.iter().enumerate() {
             if !active_planes[ax_idx] {
                 continue;
             }
-            let mut raw = [0u8; std::mem::size_of::<GpuViolationAccum>()];
-            let mut accum = GpuViolationAccum::default();
-            if self
-                .ctx
-                .readback_bytes(&plane.accum_readback_buf, accum_bytes, &mut raw)
-            {
-                accum = *bytemuck::from_bytes(&raw);
-            }
+            let accum = if read_ok[ax_idx] {
+                *bytemuck::from_bytes::<GpuViolationAccum>(raw_slices[ax_idx])
+            } else {
+                GpuViolationAccum::default()
+            };
             if accum.overflow_flag != 0 {
                 overflow_planes[ax_idx] = true;
             }
@@ -1118,10 +1186,13 @@ impl GpuTriDexelState {
             let rotary = self.rotary;
             let prims = &self.prim_chords_scratch;
             let (plane_mut, plane_viol) =
-                accum.into_span_violations_with_chord(|chord_idx, ray_idx, loc_w_local| {
-                    if let Some(fc) = prims.get(chord_idx as usize) {
+                accum.into_span_violations_mapped(|peak_ch, first_ch, ray_idx, loc_w_local| {
+                    let onset_src = prims
+                        .get(first_ch as usize)
+                        .map_or(0, |fc| fc.src_chord_idx);
+                    if let Some(fc) = prims.get(peak_ch as usize) {
                         match fc.prim {
-                            SweptPrimitive::OrientedPose(pose) => return pose.tip_wcs,
+                            SweptPrimitive::OrientedPose(pose) => return (pose.tip_wcs, onset_src),
                             SweptPrimitive::CardinalLinear { rot_deg, .. } => {
                                 let idx = ray_idx as usize;
                                 let iu = idx % nu;
@@ -1133,9 +1204,9 @@ impl GpuTriDexelState {
                                 if let Some(rot) = rotary
                                     && rot_deg.abs() > 1e-6
                                 {
-                                    return rot.rotate_point_wcs(pt_part, rot_deg);
+                                    return (rot.rotate_point_wcs(pt_part, rot_deg), onset_src);
                                 }
-                                return pt_part;
+                                return (pt_part, onset_src);
                             }
                         }
                     }
@@ -1145,7 +1216,7 @@ impl GpuTriDexelState {
                     let pu = ou + (iu as f64 + 0.5) * du;
                     let pv = ov + (iv as f64 + 0.5) * dv;
                     let pw = ow + f64::from(loc_w_local);
-                    axis.from_uvw(pu, pv, pw)
+                    (axis.from_uvw(pu, pv, pw), onset_src)
                 });
             any_mutated |= plane_mut;
             merged_violations.merge(plane_viol);

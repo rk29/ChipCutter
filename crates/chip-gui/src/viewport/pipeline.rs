@@ -2543,4 +2543,162 @@ mod tests {
             "Ultra Tri-Dexel flat +Z surfaces missing on GPU: cpu_fg={cpu_fg_cnt}, gpu_fg={gpu_fg_cnt}, iou={iou:.4}"
         );
     }
+
+    #[cfg(feature = "gpu-compute")]
+    #[test]
+    fn tridexel_curved_cylinder_gpu_matches_cpu_surface_nets_without_ribbon_stripes() {
+        use chip_math::{Aabb3, DMat4, DVec3, RigidFrame3};
+        use chip_sim::{
+            Axis3, GpuSimContext, RotaryStockSpec, SimResolution, SimStockBackend,
+            SimStockColorMode, SimulatedStock, StockShapeSpec, StockVerifyTolerances, SweepChord,
+            SweepMotion, SweepToolSpec, TriDexelStock, WgpuComputeBackend,
+            tessellate_tridexel_stock_mesh_colored,
+        };
+        use chip_tools::default_starter_tool_library;
+
+        use crate::camera::StandardView;
+
+        let Some(ctx) = GpuSimContext::shared_headless() else {
+            return;
+        };
+        let device = ctx.device();
+        let queue = ctx.queue();
+
+        let r_stock = 21.0;
+        let len = 80.0;
+        let aabb = Aabb3::new(
+            DVec3::new(-0.5 * len, -r_stock, -r_stock),
+            DVec3::new(0.5 * len, r_stock, r_stock),
+        );
+        let stock_spec = StockShapeSpec::Cylinder {
+            axis: Axis3::X,
+            center_wcs: DVec3::ZERO,
+            radius_mm: r_stock,
+            min_axial_mm: -0.5 * len,
+            max_axial_mm: 0.5 * len,
+            aabb_wcs: aabb,
+        };
+        let mut td = TriDexelStock::from_stock_spec(&stock_spec, SimResolution::Standard).unwrap();
+        td.rotary = Some(RotaryStockSpec {
+            axis: Axis3::X,
+            direction_sign: 1.0,
+            axis_letter: 'A',
+            center_wcs: DVec3::ZERO,
+            stock_u_min: -0.5 * len,
+            stock_u_max: 0.5 * len,
+            stock_outer_radius_mm: r_stock,
+            chuck_u_min: -60.0,
+            chuck_u_max: -40.0,
+            chuck_radius_mm: 32.5,
+        });
+
+        let lib = default_starter_tool_library();
+        let tool_spec = SweepToolSpec {
+            profile: chip_sim::RadialCutterProfile::from_tool(&lib.tools[0]),
+            is_flat_endmill: true,
+        };
+        let chords = vec![SweepChord {
+            motion: SweepMotion::Linear {
+                p0: DVec3::new(-22.0, 0.0, 14.0),
+                p1: DVec3::new(22.0, 0.0, 14.0),
+                rotary_deg_0: 0.0,
+                rotary_deg_1: 120.0,
+            },
+            op_idx: 0,
+            is_rapid: false,
+            profile_idx: 0,
+            verify_tol: StockVerifyTolerances::default(),
+        }];
+
+        let mut backend = WgpuComputeBackend::new(
+            Arc::clone(&ctx),
+            SimulatedStock::TriDexel(Box::new(td)),
+            None,
+        );
+        let _ = backend.sweep_batch(&chords, &[tool_spec], false);
+        let gpu_handle = backend.capture_render_handle(SimStockColorMode::ByOperation);
+        let (SimulatedStock::TriDexel(td_cpu), _) = backend.into_parts() else {
+            panic!("expected TriDexel stock");
+        };
+        let cpu_mesh = Arc::new(tessellate_tridexel_stock_mesh_colored(
+            &td_cpu,
+            None,
+            SimStockColorMode::ByOperation,
+        ));
+
+        let (w, h) = (320u32, 240u32);
+        let mut cam = CadCamera::default();
+        cam.fit_aabb(&aabb);
+        cam.set_standard_view(StandardView::Isometric);
+        let base_hl = HighlightState {
+            wcs_frame: RigidFrame3::IDENTITY,
+            show_stock: false,
+            show_grid: false,
+            ..HighlightState::default()
+        };
+        let bg =
+            render_offscreen_rgba_on_device(device, queue, None, &cam, &base_hl, w, h).unwrap();
+
+        let mut hl_cpu = base_hl.clone();
+        hl_cpu.sim_stock_source = Some(SimStockRenderSource::CpuMesh {
+            revision: 1,
+            mesh: cpu_mesh,
+            stock_model: DMat4::IDENTITY,
+        });
+        let mut hl_gpu = base_hl;
+        hl_gpu.sim_stock_source = Some(SimStockRenderSource::GpuGrid {
+            revision: 1,
+            handle: Arc::clone(&gpu_handle),
+            stock_model: DMat4::IDENTITY,
+            color_mode: SimStockColorMode::ByOperation,
+        });
+
+        let px_cpu =
+            render_offscreen_rgba_on_device(device, queue, None, &cam, &hl_cpu, w, h).unwrap();
+        let px_gpu =
+            render_offscreen_rgba_on_device(device, queue, None, &cam, &hl_gpu, w, h).unwrap();
+
+        let mut fg_overlap = 0usize;
+        let mut union = 0usize;
+        let mut rgb_diff_sum = 0u64;
+        let mut large_stripe_pixels = 0usize;
+        for px in 0..(w * h) as usize {
+            let o = px * 4;
+            let c_fg = (0..3)
+                .map(|c| px_cpu[o + c].abs_diff(bg[o + c]))
+                .max()
+                .unwrap_or(0)
+                > 8;
+            let g_fg = (0..3)
+                .map(|c| px_gpu[o + c].abs_diff(bg[o + c]))
+                .max()
+                .unwrap_or(0)
+                > 8;
+            if c_fg || g_fg {
+                union += 1;
+            }
+            if c_fg && g_fg {
+                fg_overlap += 1;
+                let max_ch_diff = (0..3)
+                    .map(|c| px_cpu[o + c].abs_diff(px_gpu[o + c]))
+                    .max()
+                    .unwrap_or(0);
+                rgb_diff_sum += u64::from(max_ch_diff);
+                if max_ch_diff > 28 {
+                    large_stripe_pixels += 1;
+                }
+            }
+        }
+        let iou = fg_overlap as f64 / union.max(1) as f64;
+        let mean_diff = rgb_diff_sum as f64 / fg_overlap.max(1) as f64;
+        let stripe_frac = large_stripe_pixels as f64 / fg_overlap.max(1) as f64;
+        assert!(
+            fg_overlap > 10_000 && iou >= 0.96,
+            "GPU curved cylinder silhouette must match CPU Surface Nets (overlap={fg_overlap}, iou={iou:.4})"
+        );
+        assert!(
+            mean_diff < 6.0 && stripe_frac < 0.03,
+            "GPU curved cylinder shading must match CPU Surface Nets without dark ribbon stripes (mean_diff={mean_diff:.2}, stripe_frac={stripe_frac:.4})"
+        );
+    }
 }

@@ -814,57 +814,128 @@ pub struct SpanRuleViolations {
     pub flute: Option<(f64, DVec3)>,
     pub neck: Option<(f64, DVec3)>,
     pub holder: Option<(f64, DVec3)>,
+    /// Input batch chord index (`0..chords.len()`) corresponding to each winning violation slot
+    /// (`[rapid, gouge, flute, neck, holder]`) so batched GPU sweeps attribute diagnostics to the
+    /// exact offending motion segment.
+    pub chord_indices: [u32; 5],
 }
 
 impl SpanRuleViolations {
     #[inline]
-    pub fn update_slot(slot: &mut Option<(f64, DVec3)>, depth_mm: f64, loc_wcs: DVec3) {
+    pub const fn is_empty(&self) -> bool {
+        self.rapid.is_none()
+            && self.gouge.is_none()
+            && self.flute.is_none()
+            && self.neck.is_none()
+            && self.holder.is_none()
+    }
+
+    #[inline]
+    pub fn update_slot(slot: &mut Option<(f64, DVec3)>, depth_mm: f64, loc_wcs: DVec3) -> bool {
         if slot.is_none_or(|(cur, _)| depth_mm > cur) {
             *slot = Some((depth_mm, loc_wcs));
+            true
+        } else {
+            false
         }
     }
 
     #[inline]
     pub fn record_rapid(&mut self, depth_mm: f64, loc_wcs: DVec3) {
+        self.record_rapid_at(depth_mm, loc_wcs, 0);
+    }
+
+    #[inline]
+    pub fn record_rapid_at(&mut self, depth_mm: f64, loc_wcs: DVec3, chord_idx: u32) {
+        let had = self.rapid.is_some();
         Self::update_slot(&mut self.rapid, depth_mm, loc_wcs);
+        self.chord_indices[0] = if had {
+            self.chord_indices[0].min(chord_idx)
+        } else {
+            chord_idx
+        };
     }
 
     #[inline]
     pub fn record_gouge(&mut self, depth_mm: f64, loc_wcs: DVec3) {
+        self.record_gouge_at(depth_mm, loc_wcs, 0);
+    }
+
+    #[inline]
+    pub fn record_gouge_at(&mut self, depth_mm: f64, loc_wcs: DVec3, chord_idx: u32) {
+        let had = self.gouge.is_some();
         Self::update_slot(&mut self.gouge, depth_mm, loc_wcs);
+        self.chord_indices[1] = if had {
+            self.chord_indices[1].min(chord_idx)
+        } else {
+            chord_idx
+        };
     }
 
     #[inline]
     pub fn record_flute(&mut self, depth_mm: f64, loc_wcs: DVec3) {
+        self.record_flute_at(depth_mm, loc_wcs, 0);
+    }
+
+    #[inline]
+    pub fn record_flute_at(&mut self, depth_mm: f64, loc_wcs: DVec3, chord_idx: u32) {
+        let had = self.flute.is_some();
         Self::update_slot(&mut self.flute, depth_mm, loc_wcs);
+        self.chord_indices[2] = if had {
+            self.chord_indices[2].min(chord_idx)
+        } else {
+            chord_idx
+        };
     }
 
     #[inline]
     pub fn record_neck(&mut self, depth_mm: f64, loc_wcs: DVec3) {
+        self.record_neck_at(depth_mm, loc_wcs, 0);
+    }
+
+    #[inline]
+    pub fn record_neck_at(&mut self, depth_mm: f64, loc_wcs: DVec3, chord_idx: u32) {
+        let had = self.neck.is_some();
         Self::update_slot(&mut self.neck, depth_mm, loc_wcs);
+        self.chord_indices[3] = if had {
+            self.chord_indices[3].min(chord_idx)
+        } else {
+            chord_idx
+        };
     }
 
     #[inline]
     pub fn record_holder(&mut self, depth_mm: f64, loc_wcs: DVec3) {
+        self.record_holder_at(depth_mm, loc_wcs, 0);
+    }
+
+    #[inline]
+    pub fn record_holder_at(&mut self, depth_mm: f64, loc_wcs: DVec3, chord_idx: u32) {
+        let had = self.holder.is_some();
         Self::update_slot(&mut self.holder, depth_mm, loc_wcs);
+        self.chord_indices[4] = if had {
+            self.chord_indices[4].min(chord_idx)
+        } else {
+            chord_idx
+        };
     }
 
     #[inline]
     pub fn merge(&mut self, other: Self) {
         if let Some((d, p)) = other.rapid {
-            self.record_rapid(d, p);
+            self.record_rapid_at(d, p, other.chord_indices[0]);
         }
         if let Some((d, p)) = other.gouge {
-            self.record_gouge(d, p);
+            self.record_gouge_at(d, p, other.chord_indices[1]);
         }
         if let Some((d, p)) = other.flute {
-            self.record_flute(d, p);
+            self.record_flute_at(d, p, other.chord_indices[2]);
         }
         if let Some((d, p)) = other.neck {
-            self.record_neck(d, p);
+            self.record_neck_at(d, p, other.chord_indices[3]);
         }
         if let Some((d, p)) = other.holder {
-            self.record_holder(d, p);
+            self.record_holder_at(d, p, other.chord_indices[4]);
         }
     }
 }

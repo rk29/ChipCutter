@@ -951,11 +951,12 @@ struct GpuTriDexelRenderUniforms {
 };
 
 struct PackedTriDexelQuad {
-    ray_and_flags: u32,
+    ray_dw_flags: u32,
     color_rgba8: u32,
-    w_local: f32,
-    dw_du: f32,
-    dw_dv: f32,
+    corner0_nx: u32,
+    corner1_ny: u32,
+    corner2_nz: u32,
+    corner3_pad: u32,
 };
 
 // Tri-Dexel bindings (10..=11)
@@ -963,13 +964,13 @@ struct PackedTriDexelQuad {
 @group(1) @binding(11) var<storage, read> td_quads: array<PackedTriDexelQuad>;
 
 fn td_from_uvw(axis_id: u32, cu: f32, cv: f32, cw: f32) -> vec3<f32> {
+    var out = vec3<f32>(cu, cv, cw);
     if (axis_id == 0u) {
-        return vec3<f32>(cw, cu, cv);
+        out = vec3<f32>(cw, cu, cv);
+    } else if (axis_id == 1u) {
+        out = vec3<f32>(cu, cw, cv);
     }
-    if (axis_id == 1u) {
-        return vec3<f32>(cu, cw, cv);
-    }
-    return vec3<f32>(cu, cv, cw);
+    return out;
 }
 
 @vertex
@@ -978,9 +979,17 @@ fn vs_sim_tridexel_gpu(@builtin(vertex_index) vid: u32) -> SimVertexOut {
     let tri_v = vid % 6u;
     let q = td_quads[quad_idx];
 
-    let global_ray = q.ray_and_flags & 0x7FFFFFFFu;
-    let want_min = (q.ray_and_flags & 0x80000000u) != 0u;
+    let global_ray = q.ray_dw_flags & 0xFFFFFu;
+    let dw_idx = (q.ray_dw_flags >> 20u) & 0x3FFu;
+    let want_min = (q.ray_dw_flags & 0x80000000u) != 0u;
     let col = unpack4x8unorm(q.color_rgba8);
+
+    let c0 = unpack4x8snorm(q.corner0_nx);
+    let c1 = unpack4x8snorm(q.corner1_ny);
+    let c2 = unpack4x8snorm(q.corner2_nz);
+    let c3 = unpack4x8snorm(q.corner3_pad);
+    let normal_raw = vec3<f32>(c0.w, c1.w, c2.w);
+    let normal_wcs = select(vec3<f32>(0.0, 0.0, 1.0), normalize(normal_raw), length(normal_raw) > 1e-5);
 
     let nx = u_td_grid.dims_and_total.x;
     let ny = u_td_grid.dims_and_total.y;
@@ -1036,55 +1045,44 @@ fn vs_sim_tridexel_gpu(@builtin(vertex_index) vid: u32) -> SimVertexOut {
     let iu = local_ray % nu;
     let iv = local_ray / nu;
 
-    let dw_du = q.dw_du;
-    let dw_dv = q.dw_dv;
-    var n_uvw = vec3<f32>(-dw_du, -dw_dv, 1.0);
-    if (want_min) {
-        n_uvw = vec3<f32>(dw_du, dw_dv, -1.0);
-    }
-    let normal_wcs = normalize(td_from_uvw(axis_id, n_uvw.x, n_uvw.y, n_uvw.z));
-
-    let u0 = ou + f32(iu) * du;
-    let u1 = ou + f32(iu + 1u) * du;
-    let v0 = ov + f32(iv) * dv;
-    let v1 = ov + f32(iv + 1u) * dv;
-    let w_base = ow + q.w_local;
-
-    let half_du = 0.5 * dw_du * du;
-    let half_dv = 0.5 * dw_dv * dv;
-    let clamp_w = 0.5 * dw;
-    let w00 = w_base + clamp(-half_du - half_dv, -clamp_w, clamp_w);
-    let w10 = w_base + clamp(half_du - half_dv, -clamp_w, clamp_w);
-    let w11 = w_base + clamp(half_du + half_dv, -clamp_w, clamp_w);
-    let w01 = w_base + clamp(-half_du + half_dv, -clamp_w, clamp_w);
-
-    var a: vec3<f32>;
-    var b: vec3<f32>;
-    var c: vec3<f32>;
-    var d: vec3<f32>;
-    if (axis_id == 1u) {
-        // Y plane has flipped handedness: (0,0), (0,1), (1,1), (1,0)
-        a = td_from_uvw(axis_id, u0, v0, w00);
-        b = td_from_uvw(axis_id, u0, v1, w01);
-        c = td_from_uvw(axis_id, u1, v1, w11);
-        d = td_from_uvw(axis_id, u1, v0, w10);
-    } else {
-        a = td_from_uvw(axis_id, u0, v0, w00);
-        b = td_from_uvw(axis_id, u1, v0, w10);
-        c = td_from_uvw(axis_id, u1, v1, w11);
-        d = td_from_uvw(axis_id, u0, v1, w01);
-    }
-
-    var pos_wcs: vec3<f32>;
+    var corner_id: u32;
     if (tri_v == 0u || tri_v == 3u) {
-        pos_wcs = a;
+        corner_id = 0u;
     } else if (tri_v == 1u) {
-        pos_wcs = select(b, d, want_min);
+        corner_id = select(1u, 3u, want_min);
     } else if (tri_v == 2u || tri_v == 4u) {
-        pos_wcs = c;
+        corner_id = 2u;
     } else {
-        pos_wcs = select(d, b, want_min);
+        corner_id = select(3u, 1u, want_min);
     }
+
+    var c_off: vec3<f32>;
+    var cu_step = 0u;
+    var cv_step = 0u;
+    if (corner_id == 0u) {
+        c_off = c0.xyz * 0.6;
+        cu_step = 0u;
+        cv_step = 0u;
+    } else if (corner_id == 1u) {
+        c_off = c1.xyz * 0.6;
+        cu_step = select(1u, 0u, axis_id == 1u);
+        cv_step = select(0u, 1u, axis_id == 1u);
+    } else if (corner_id == 2u) {
+        c_off = c2.xyz * 0.6;
+        cu_step = 1u;
+        cv_step = 1u;
+    } else {
+        c_off = c3.xyz * 0.6;
+        cu_step = select(0u, 1u, axis_id == 1u);
+        cv_step = select(1u, 0u, axis_id == 1u);
+    }
+
+    let pos_wcs = td_from_uvw(
+        axis_id,
+        ou + (f32(iu + cu_step) + c_off.x) * du,
+        ov + (f32(iv + cv_step) + c_off.y) * dv,
+        ow + (f32(dw_idx) + c_off.z) * dw,
+    );
 
     let stock_wcs_pos = (u_vp.stock_model * vec4<f32>(pos_wcs, 1.0)).xyz;
     let stock_wcs_n = (u_vp.stock_model * vec4<f32>(normal_wcs, 0.0)).xyz;

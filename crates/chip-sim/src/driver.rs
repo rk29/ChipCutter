@@ -848,7 +848,20 @@ pub fn run_setup_simulation_with_backend_and_progress<B: SimStockBackend>(
     let mut coalescer = ViolationBatchCoalescer::default();
     let mut per_op_errors: Vec<OperationErrorSnapshot> = Vec::new();
     let mut prev_vol = starting_stock_volume_mm3;
-    let mut span_chords: Vec<SweepChord> = Vec::with_capacity(16);
+    let is_gpu_backend = backend.backend_info().is_gpu;
+    const GPU_SWEEP_BATCH_MAX_SPANS: usize = 128;
+    const GPU_SWEEP_BATCH_MAX_CHORDS: usize = 256;
+    let mut span_chords: Vec<SweepChord> = Vec::with_capacity(if is_gpu_backend {
+        GPU_SWEEP_BATCH_MAX_CHORDS + 16
+    } else {
+        16
+    });
+    let mut batch_chord_spans: Vec<usize> = Vec::with_capacity(if is_gpu_backend {
+        GPU_SWEEP_BATCH_MAX_CHORDS + 16
+    } else {
+        0
+    });
+    let mut batch_span_count: usize = 0;
 
     if let Some(p) = progress {
         p.report(0.10, SimProgressStage::Sweeping);
@@ -863,48 +876,141 @@ pub fn run_setup_simulation_with_backend_and_progress<B: SimStockBackend>(
         let mut op_verify = input.verify_config;
         op_verify.gouge_tol_mm += op_in.intentional_edge_break_mm.max(0.0);
 
+        let is_vertical_plunge = !matches!(span.segment.motion, SegmentMotion3D::Rapid)
+            && (span.segment.end_wcs.x - span.segment.start_wcs.x)
+                .hypot(span.segment.end_wcs.y - span.segment.start_wcs.y)
+                <= 1e-4
+            && span.segment.end_wcs.z < span.segment.start_wcs.z - 1e-4;
+
+        // Flush any buffered GPU sweep batch before evaluating Rule 5 vertical plunge depth so the
+        // stock height query sees exact up-to-the-segment material removal.
+        if is_gpu_backend && is_vertical_plunge && !span_chords.is_empty() {
+            let sweep_out = backend.sweep_batch(&span_chords, &operation_profiles, true);
+            if !sweep_out.violations.is_empty() {
+                let fallback_idx = batch_chord_spans.last().copied().unwrap_or(span_idx);
+                coalescer.push_batch_violations(&sweep_out.violations, |src_chord_idx| {
+                    let hit_idx = batch_chord_spans
+                        .get(src_chord_idx as usize)
+                        .copied()
+                        .unwrap_or(fallback_idx);
+                    let s = &timeline.motion_spans[hit_idx];
+                    let op = &input.operations[s.op_idx];
+                    let prof = &operation_profiles[s.op_idx].profile;
+                    (
+                        s.global_seg_idx,
+                        s.op_idx,
+                        op.op_id,
+                        op.op_name,
+                        op.tool.tool_number,
+                        s.t_start_sec,
+                        prof,
+                    )
+                });
+            }
+            span_chords.clear();
+            batch_chord_spans.clear();
+            batch_span_count = 0;
+        }
+
         // Rule 5: Vertical Plunge check (shared across 3-axis Heightfield & Tri-Dexel; 0.0 on Cylindrical)
-        if let Some(hit) = evaluate_vertical_plunge_violation(
-            span,
-            op_in.op_id,
-            op_in.op_name,
-            op_in.tool.tool_number,
-            &tool_spec.profile,
-            &op_verify,
-            |x, y, z_start, z_end, thread_check_r| {
-                backend.query_vertical_plunge_depth(x, y, z_start, z_end, thread_check_r)
-            },
-        ) {
+        if is_vertical_plunge
+            && let Some(hit) = evaluate_vertical_plunge_violation(
+                span,
+                op_in.op_id,
+                op_in.op_name,
+                op_in.tool.tool_number,
+                &tool_spec.profile,
+                &op_verify,
+                |x, y, z_start, z_end, thread_check_r| {
+                    backend.query_vertical_plunge_depth(x, y, z_start, z_end, thread_check_r)
+                },
+            )
+        {
             coalescer.push(hit);
         }
 
-        span_chords.clear();
-        push_segment_sweep_chords(
-            &span.segment,
-            span.op_idx as u32,
-            span.op_idx,
-            StockVerifyTolerances {
-                gouge_tol_mm: op_verify.gouge_tol_mm,
-                rapid_crash_tol_mm: op_verify.rapid_crash_tol_mm,
-                radial_wall_skin_mm: op_verify.radial_wall_skin_mm,
-            },
-            &mut span_chords,
-        );
-
-        let sweep_out = backend.sweep_batch(&span_chords, &operation_profiles, true);
-        coalescer.push_span_violations(
-            &sweep_out.violations,
-            span.global_seg_idx,
-            span.op_idx,
-            op_in.op_id,
-            op_in.op_name,
-            op_in.tool.tool_number,
-            span.t_start_sec,
-            &tool_spec.profile,
-        );
-
         let completed = span_idx + 1;
         let is_op_end = timeline.operations[span.op_idx].end_global_seg == completed;
+        let need_checkpoint =
+            (completed.is_multiple_of(checkpoint_stride) || is_op_end) && completed < total_spans;
+
+        if is_gpu_backend {
+            let chord_start = span_chords.len();
+            push_segment_sweep_chords(
+                &span.segment,
+                span.op_idx as u32,
+                span.op_idx,
+                StockVerifyTolerances {
+                    gouge_tol_mm: op_verify.gouge_tol_mm,
+                    rapid_crash_tol_mm: op_verify.rapid_crash_tol_mm,
+                    radial_wall_skin_mm: op_verify.radial_wall_skin_mm,
+                },
+                &mut span_chords,
+            );
+            batch_chord_spans.resize(span_chords.len(), span_idx);
+            if span_chords.len() > chord_start {
+                batch_span_count += 1;
+            }
+
+            let must_flush = is_op_end
+                || need_checkpoint
+                || completed == total_spans
+                || batch_span_count >= GPU_SWEEP_BATCH_MAX_SPANS
+                || span_chords.len() >= GPU_SWEEP_BATCH_MAX_CHORDS;
+            if must_flush && !span_chords.is_empty() {
+                let sweep_out = backend.sweep_batch(&span_chords, &operation_profiles, true);
+                if !sweep_out.violations.is_empty() {
+                    let fallback_idx = batch_chord_spans.last().copied().unwrap_or(span_idx);
+                    coalescer.push_batch_violations(&sweep_out.violations, |src_chord_idx| {
+                        let hit_idx = batch_chord_spans
+                            .get(src_chord_idx as usize)
+                            .copied()
+                            .unwrap_or(fallback_idx);
+                        let s = &timeline.motion_spans[hit_idx];
+                        let op = &input.operations[s.op_idx];
+                        let prof = &operation_profiles[s.op_idx].profile;
+                        (
+                            s.global_seg_idx,
+                            s.op_idx,
+                            op.op_id,
+                            op.op_name,
+                            op.tool.tool_number,
+                            s.t_start_sec,
+                            prof,
+                        )
+                    });
+                }
+                span_chords.clear();
+                batch_chord_spans.clear();
+                batch_span_count = 0;
+            }
+        } else {
+            span_chords.clear();
+            push_segment_sweep_chords(
+                &span.segment,
+                span.op_idx as u32,
+                span.op_idx,
+                StockVerifyTolerances {
+                    gouge_tol_mm: op_verify.gouge_tol_mm,
+                    rapid_crash_tol_mm: op_verify.rapid_crash_tol_mm,
+                    radial_wall_skin_mm: op_verify.radial_wall_skin_mm,
+                },
+                &mut span_chords,
+            );
+
+            let sweep_out = backend.sweep_batch(&span_chords, &operation_profiles, true);
+            coalescer.push_span_violations(
+                &sweep_out.violations,
+                span.global_seg_idx,
+                span.op_idx,
+                op_in.op_id,
+                op_in.op_name,
+                op_in.tool.tool_number,
+                span.t_start_sec,
+                &tool_spec.profile,
+            );
+        }
+
         if is_op_end {
             let cur_vol = backend.compute_volume_mm3();
             let op_removed = (prev_vol - cur_vol).max(0.0);
@@ -922,7 +1028,7 @@ pub fn run_setup_simulation_with_backend_and_progress<B: SimStockBackend>(
                 });
             }
         }
-        if (completed.is_multiple_of(checkpoint_stride) || is_op_end) && completed < total_spans {
+        if need_checkpoint {
             checkpoints.push(backend.capture_checkpoint(completed));
         }
         if let Some(p) = progress {
@@ -3990,5 +4096,106 @@ mod tests {
         .unwrap_err();
         assert!(matches!(err, SimError::Cancelled));
         assert!(cancel_tracker.snapshot().percent_rounded() < 100);
+    }
+
+    #[cfg(feature = "gpu-compute")]
+    #[test]
+    fn batched_gpu_sweep_matches_cpu_volume_and_exact_violation_segment_on_long_path() {
+        let Some(_) = GpuSimContext::shared_headless() else {
+            return;
+        };
+
+        let lib = default_starter_tool_library();
+        let flat_6mm = &lib.tools[0];
+        let mut setup = Setup::new("s_batch_gpu", "Batched GPU Setup", WorkOffsetSlot::G54);
+        setup.wcs.origin = WcsOriginMode::StockBoxPoint {
+            anchor: BoxAnchor27::TOP_CENTER,
+        };
+        setup.stock = StockConfig::FixedBox {
+            width_x: ParamLength::from_mm(100.0),
+            depth_y: ParamLength::from_mm(100.0),
+            height_z: ParamLength::from_mm(20.0),
+            xy_align: chip_cam::FixedBoxXyAlign::CenterXy,
+            z_align: chip_cam::FixedBoxZAlign::CenterZ,
+        };
+        let doc = CadDocument::empty();
+        let resolved = setup.resolve(&doc, DisplayUnit::Millimeter).unwrap();
+
+        // Build >300 segments spanning multiple GPU sweep batches, with a deliberate G0 rapid crash
+        // into uncut stock at a known mid-batch segment index.
+        let mut b = ToolpathBuilder::new("op_batch");
+        b.rapid_to(DVec3::new(-40.0, -30.0, 10.0));
+        b.linear_to(DVec3::new(-40.0, -30.0, -2.0), 400.0, MotionRole::Plunge);
+        for row in 0..160 {
+            let y = -30.0 + (row as f64) * 0.35;
+            let x_a = if row % 2 == 0 { -40.0 } else { 40.0 };
+            let x_b = -x_a;
+            b.linear_to(DVec3::new(x_a, y, -2.0), 1200.0, MotionRole::Cut);
+            b.linear_to(DVec3::new(x_b, y, -2.0), 1200.0, MotionRole::Cut);
+            if row == 110 {
+                // Deliberate G0 rapid plunge/drag through uncut stock on the far side
+                b.rapid_to(DVec3::new(x_b, 35.0, -4.0));
+                b.rapid_to(DVec3::new(x_b, y, 5.0));
+                b.linear_to(DVec3::new(x_b, y, -2.0), 400.0, MotionRole::Plunge);
+            }
+        }
+        b.rapid_to(DVec3::new(0.0, 0.0, 10.0));
+        let tp = b.finish();
+        assert!(tp.segments_wcs.len() > 300);
+
+        let input = SetupSimulationInput {
+            doc: &doc,
+            setup: &resolved,
+            target_bodies: &[],
+            fixtures: &[],
+            operations: &[SimOperationInput {
+                op_id: "op_batch",
+                op_name: "Batched Roughing",
+                tool: flat_6mm,
+                fallback_spindle_rpm: 12_000.0,
+                intentional_edge_break_mm: 0.0,
+                toolpath: &tp,
+            }],
+            resolution: SimResolution::Standard,
+            kinematics: MachineKinematicsConfig::default(),
+            verify_config: SimVerificationConfig::default(),
+            initial_stock: None,
+            initial_raw_volume_mm3: None,
+            carried_over_from_setup: None,
+            cancel: None,
+        };
+
+        for engine in [SimEngineKind::Heightmap, SimEngineKind::TriDexel] {
+            let cpu =
+                run_setup_simulation_with_choice(&input, engine, SimComputeBackendChoice::Cpu)
+                    .unwrap();
+            let gpu =
+                run_setup_simulation_with_choice(&input, engine, SimComputeBackendChoice::Gpu)
+                    .unwrap();
+            assert!(gpu.active_backend.is_gpu);
+
+            let vol_err = (gpu.remaining_stock_volume_mm3 - cpu.remaining_stock_volume_mm3).abs()
+                / cpu.remaining_stock_volume_mm3.max(1.0);
+            assert!(
+                vol_err < 0.002,
+                "{engine:?} batched GPU vs CPU volume err {:.4}%",
+                vol_err * 100.0
+            );
+
+            let cpu_rapid = cpu
+                .diagnostics
+                .iter()
+                .find(|d| d.kind == SimIssueKind::RapidIntoStock)
+                .expect("CPU must catch deliberate G0 rapid crash");
+            let gpu_rapid = gpu
+                .diagnostics
+                .iter()
+                .find(|d| d.kind == SimIssueKind::RapidIntoStock)
+                .expect("batched GPU must catch deliberate G0 rapid crash");
+            assert_eq!(
+                gpu_rapid.global_seg_idx, cpu_rapid.global_seg_idx,
+                "{engine:?} batched GPU must attribute rapid crash to exact offending segment"
+            );
+        }
     }
 }

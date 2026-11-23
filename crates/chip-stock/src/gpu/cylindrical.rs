@@ -62,7 +62,7 @@ pub(crate) struct GpuCylindricalState {
     tile_bins: Vec<Vec<u32>>,
     tile_data_scratch: Vec<u32>,
     gpu_poses_scratch: Vec<GpuRotaryPose>,
-    pose_tips_wcs_scratch: Vec<DVec3>,
+    pose_tips_wcs_scratch: Vec<(DVec3, u32)>,
     gpu_profiles_scratch: Vec<GpuToolProfile>,
     cpu: Mutex<CpuShadow>,
 }
@@ -270,8 +270,9 @@ impl GpuCylindricalState {
 
         let mut chuck_violations = SpanRuleViolations::default();
         let mut total_binned = 0usize;
+        let mut prev_end: Option<(DVec3, f64, u32, usize, bool)> = None;
 
-        for ch in chords {
+        for (raw_idx, ch) in chords.iter().enumerate() {
             let Some(tool) = profiles.get(ch.profile_idx) else {
                 continue;
             };
@@ -288,7 +289,25 @@ impl GpuCylindricalState {
             let n_rot = (d_deg / step_deg).ceil() as usize;
             let n_steps = n_lin.max(n_rot).clamp(1, 4_000);
 
-            for k in 0..=n_steps {
+            let start_pt = ch.motion.sample_point(0.0);
+            let start_rot = ch.motion.sample_rotary_deg(0.0);
+            let skip_start = prev_end.is_some_and(|(pp, pr, pop, pprof, prap)| {
+                pop == ch.op_idx
+                    && pprof == ch.profile_idx
+                    && prap == ch.is_rapid
+                    && pp.distance_squared(start_pt) <= 1e-10
+                    && (pr - start_rot).abs() <= 1e-6
+            });
+            prev_end = Some((
+                ch.motion.sample_point(1.0),
+                ch.motion.sample_rotary_deg(1.0),
+                ch.op_idx,
+                ch.profile_idx,
+                ch.is_rapid,
+            ));
+
+            let k_start = usize::from(skip_start);
+            for k in k_start..=n_steps {
                 let t = k as f64 / n_steps as f64;
                 let tip_wcs = ch.motion.sample_point(t);
                 let rot_deg = ch.motion.sample_rotary_deg(t);
@@ -304,7 +323,7 @@ impl GpuCylindricalState {
                         && (u_tip - r_cut) <= self.rotary.chuck_u_max;
                     if u_overlaps_chuck && r_tip < chuck_clearance_r - 0.05 {
                         let excess = chuck_clearance_r - r_tip;
-                        chuck_violations.record_holder(excess, tip_wcs);
+                        chuck_violations.record_holder_at(excess, tip_wcs, raw_idx as u32);
                     }
                 }
 
@@ -372,7 +391,7 @@ impl GpuCylindricalState {
                     ],
                     meta: [ch.op_idx, ch.profile_idx as u32, flags, pose_idx],
                 });
-                self.pose_tips_wcs_scratch.push(tip_wcs);
+                self.pose_tips_wcs_scratch.push((tip_wcs, raw_idx as u32));
 
                 let tu0 = iu_min / GPU_TILE_SIZE;
                 let tu1 = iu_max / GPU_TILE_SIZE;
@@ -537,12 +556,16 @@ impl GpuCylindricalState {
         }
 
         let pose_tips = &self.pose_tips_wcs_scratch;
-        let (mutated, mut violations) = accum.into_span_violations(|pose_idx, _z_unused| {
-            pose_tips
-                .get(pose_idx as usize)
-                .copied()
-                .unwrap_or(self.rotary.center_wcs)
-        });
+        let (mutated, mut violations) =
+            accum.into_span_violations_mapped(|_peak_ch, first_pose_idx, pose_idx, _z_unused| {
+                let peak_loc = pose_tips
+                    .get(pose_idx as usize)
+                    .map_or(self.rotary.center_wcs, |&(loc, _)| loc);
+                let onset_src = pose_tips
+                    .get(first_pose_idx as usize)
+                    .map_or(0, |&(_, src)| src);
+                (peak_loc, onset_src)
+            });
         violations.merge(chuck_violations);
 
         if mutated {

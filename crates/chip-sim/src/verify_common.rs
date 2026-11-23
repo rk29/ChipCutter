@@ -278,21 +278,29 @@ impl ViolationBatchCoalescer {
         });
     }
 
-    /// Translates a [`SpanRuleViolations`] summary for `span` into bounded coalesced diagnostics.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn push_span_violations(
+    /// Translates a [`SpanRuleViolations`] summary for a single span or multi-span GPU batch into
+    /// bounded coalesced diagnostics in exact chronological `span_idx` order, resolving each rule's
+    /// offending chord index via `resolve_span`.
+    pub(crate) fn push_batch_violations<'a>(
         &mut self,
         violations: &SpanRuleViolations,
-        span_idx: usize,
-        op_idx: usize,
-        op_id: &str,
-        op_name: &str,
-        tool_number: u32,
-        time_sec: f64,
-        prof: &RadialCutterProfile,
+        mut resolve_span: impl FnMut(
+            u32,
+        ) -> (
+            usize,
+            usize,
+            &'a str,
+            &'a str,
+            u32,
+            f64,
+            &'a RadialCutterProfile,
+        ),
     ) {
+        let mut hits: Vec<RuleViolationHit> = Vec::with_capacity(5);
         if let Some((depth, loc)) = violations.rapid {
-            self.push(RuleViolationHit {
+            let (span_idx, op_idx, op_id, op_name, tool_number, time_sec, _) =
+                resolve_span(violations.chord_indices[0]);
+            hits.push(RuleViolationHit {
                 severity: SimIssueKind::RapidIntoStock.default_severity(),
                 kind: SimIssueKind::RapidIntoStock,
                 span_idx,
@@ -312,7 +320,9 @@ impl ViolationBatchCoalescer {
             });
         }
         if let Some((depth, loc)) = violations.gouge {
-            self.push(RuleViolationHit {
+            let (span_idx, op_idx, op_id, op_name, tool_number, time_sec, _) =
+                resolve_span(violations.chord_indices[1]);
+            hits.push(RuleViolationHit {
                 severity: SimIssueKind::TargetModelGouge.default_severity(),
                 kind: SimIssueKind::TargetModelGouge,
                 span_idx,
@@ -332,6 +342,8 @@ impl ViolationBatchCoalescer {
             });
         }
         if let Some((depth, loc)) = violations.neck {
+            let (span_idx, op_idx, op_id, op_name, tool_number, time_sec, prof) =
+                resolve_span(violations.chord_indices[3]);
             let detail = if prof.is_thread_mill {
                 format!(
                     "Thread mill T{tool_number} relieved neck collided {depth:.2} mm with uncut stock (missing/undersized pilot hole or insufficient neck clearance)."
@@ -341,7 +353,7 @@ impl ViolationBatchCoalescer {
                     "Relieved-neck cutter T{tool_number} neck collided {depth:.2} mm with uncut stock (insufficient pre-slot/overhang clearance or plunge into solid roof)."
                 )
             };
-            self.push(RuleViolationHit {
+            hits.push(RuleViolationHit {
                 severity: SimSeverity::CriticalError,
                 kind: SimIssueKind::FluteLengthExceeded,
                 span_idx,
@@ -358,12 +370,14 @@ impl ViolationBatchCoalescer {
             });
         }
         if let Some((depth, loc)) = violations.flute {
+            let (span_idx, op_idx, op_id, op_name, tool_number, time_sec, prof) =
+                resolve_span(violations.chord_indices[2]);
             let reach_label = if prof.has_relieved_neck {
                 "usable neck length"
             } else {
                 "flute length"
             };
-            self.push(RuleViolationHit {
+            hits.push(RuleViolationHit {
                 severity: SimIssueKind::FluteLengthExceeded.default_severity(),
                 kind: SimIssueKind::FluteLengthExceeded,
                 span_idx,
@@ -383,7 +397,9 @@ impl ViolationBatchCoalescer {
             });
         }
         if let Some((depth, loc)) = violations.holder {
-            self.push(RuleViolationHit {
+            let (span_idx, op_idx, op_id, op_name, tool_number, time_sec, prof) =
+                resolve_span(violations.chord_indices[4]);
+            hits.push(RuleViolationHit {
                 severity: SimIssueKind::HolderCollision.default_severity(),
                 kind: SimIssueKind::HolderCollision,
                 span_idx,
@@ -402,6 +418,36 @@ impl ViolationBatchCoalescer {
                 fixture_name: None,
             });
         }
+        hits.sort_by_key(|h| h.span_idx);
+        for hit in hits {
+            self.push(hit);
+        }
+    }
+
+    /// Translates a [`SpanRuleViolations`] summary for `span` into bounded coalesced diagnostics.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn push_span_violations(
+        &mut self,
+        violations: &SpanRuleViolations,
+        span_idx: usize,
+        op_idx: usize,
+        op_id: &str,
+        op_name: &str,
+        tool_number: u32,
+        time_sec: f64,
+        prof: &RadialCutterProfile,
+    ) {
+        self.push_batch_violations(violations, |_| {
+            (
+                span_idx,
+                op_idx,
+                op_id,
+                op_name,
+                tool_number,
+                time_sec,
+                prof,
+            )
+        });
     }
 
     pub(crate) fn into_diagnostics(self) -> Vec<SimDiagnostic> {

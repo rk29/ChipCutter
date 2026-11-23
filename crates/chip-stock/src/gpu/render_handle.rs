@@ -22,32 +22,37 @@ use crate::{
 
 use super::{context::GpuSimContext, tridexel::build_tridexel_overflow_supplement_mesh};
 
-/// Compact 20-byte GPU Tri-Dexel quad record emitted by `tridexel_emit.wgsl` and expanded into
-/// 6 vertices (2 triangles) on-the-fly by `vs_sim_tridexel_gpu`.
+/// Compact 24-byte GPU Tri-Dexel Surface-Nets quad record emitted by `tridexel_emit.wgsl` and
+/// expanded into 6 vertices (2 watertight snapped triangles with crease-aware smooth normals)
+/// on-the-fly by `vs_sim_tridexel_gpu`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct PackedTriDexelQuad {
-    /// Bits `0..30`: `global_ray`, bit `31`: `want_min` (`1` = min endpoint, `0` = max endpoint).
-    pub ray_and_flags: u32,
+    /// Bits `0..20`: `global_ray` (up to `1,048,575`; Ultra `448³` is `602,112`),
+    /// Bits `20..30`: voxel face plane index `dw` (`0..=1023`; Ultra `448³` is `0..=448`),
+    /// Bit `31`: `want_min` (`1` = negative outward normal, `0` = positive outward normal).
+    pub ray_dw_flags: u32,
     /// Packed `RGBA8` unorm color (`pack4x8unorm` / `unpack4x8unorm`).
     pub color_rgba8: u32,
-    /// Endpoint coordinate relative to plane `origin_w` (`mm`).
-    pub w_local: f32,
-    /// Finite-difference slope `dw/du`.
-    pub dw_du: f32,
-    /// Finite-difference slope `dw/dv`.
-    pub dw_dv: f32,
+    /// Corner 0 sub-voxel dual offset `(du, dv, dw) / 0.6` in `snorm8×3`, plus `normal.x` in W.
+    pub corner0_nx: u32,
+    /// Corner 1 sub-voxel dual offset `(du, dv, dw) / 0.6` in `snorm8×3`, plus `normal.y` in W.
+    pub corner1_ny: u32,
+    /// Corner 2 sub-voxel dual offset `(du, dv, dw) / 0.6` in `snorm8×3`, plus `normal.z` in W.
+    pub corner2_nz: u32,
+    /// Corner 3 sub-voxel dual offset `(du, dv, dw) / 0.6` in `snorm8×3`, plus `0` in W.
+    pub corner3_pad: u32,
 }
 
-/// Byte size of one [`PackedTriDexelQuad`] storage element (`20 bytes`).
+/// Byte size of one [`PackedTriDexelQuad`] storage element (`24 bytes`).
 pub const TRIDEXEL_PACKED_QUAD_BYTES: usize = std::mem::size_of::<PackedTriDexelQuad>();
 
-const _: () = assert!(TRIDEXEL_PACKED_QUAD_BYTES == 20);
+const _: () = assert!(TRIDEXEL_PACKED_QUAD_BYTES == 24);
 
-/// Maximum emitted quads per Tri-Dexel GPU indirect draw (`6_000_000 × 20 B = 120 MB < 128 MiB`
+/// Maximum emitted quads per Tri-Dexel GPU indirect draw (`5_200_000 × 24 B = 124.8 MB < 128 MiB`
 /// WebGPU default `max_storage_buffer_binding_size`), exceeding even a worst-case `448³` Ultra
 /// grid with all `K = 4` inline spans populated (`602_112 × 4 × 2 = 4_816_896` quads).
-pub const MAX_TRIDEXEL_EMIT_QUADS: u32 = 6_000_000;
+pub const MAX_TRIDEXEL_EMIT_QUADS: u32 = 5_200_000;
 
 /// Maximum emitted vertices per Tri-Dexel GPU indirect draw (`6 × MAX_TRIDEXEL_EMIT_QUADS`).
 pub const MAX_TRIDEXEL_EMIT_VERTICES: u32 = MAX_TRIDEXEL_EMIT_QUADS * 6;

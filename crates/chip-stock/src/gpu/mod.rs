@@ -2344,4 +2344,97 @@ mod tests {
             "CylindricalStock below-Z=0 CPU vs GPU parity mismatch: cpu={vc:.2}, gpu={vg:.2}"
         );
     }
+
+    #[test]
+    fn gpu_tridexel_surface_nets_emit_matches_cpu_surface_nets_on_cylinder() {
+        let Some(ctx) = GpuSimContext::shared_headless() else {
+            return;
+        };
+
+        let r_stock = 21.0;
+        let len = 80.0;
+        let stock_spec = StockShapeSpec::Cylinder {
+            axis: Axis3::X,
+            center_wcs: DVec3::ZERO,
+            radius_mm: r_stock,
+            min_axial_mm: -0.5 * len,
+            max_axial_mm: 0.5 * len,
+            aabb_wcs: Aabb3::new(
+                DVec3::new(-0.5 * len, -r_stock, -r_stock),
+                DVec3::new(0.5 * len, r_stock, r_stock),
+            ),
+        };
+        let rotary = RotaryStockSpec {
+            axis: Axis3::X,
+            direction_sign: 1.0,
+            axis_letter: 'A',
+            center_wcs: DVec3::ZERO,
+            stock_u_min: -0.5 * len,
+            stock_u_max: 0.5 * len,
+            stock_outer_radius_mm: r_stock,
+            chuck_u_min: -60.0,
+            chuck_u_max: -40.0,
+            chuck_radius_mm: 32.5,
+        };
+        let mut td =
+            crate::tridexel::TriDexelStock::from_stock_spec(&stock_spec, SimResolution::Standard)
+                .unwrap();
+        td.rotary = Some(rotary);
+
+        let tools = vec![make_tool(
+            "t_ball_3175",
+            28.0,
+            CutterGeometry::BallEndmill {
+                diameter_mm: 3.175,
+                flute_length_mm: 14.0,
+                overall_length_mm: 50.0,
+                shank_diameter_mm: 3.175,
+                flutes: 2,
+            },
+        )];
+        let tol = StockVerifyTolerances::default();
+        let chords = vec![SweepChord {
+            motion: SweepMotion::Linear {
+                p0: DVec3::new(-25.0, 0.0, 14.0),
+                p1: DVec3::new(25.0, 0.0, 14.0),
+                rotary_deg_0: 0.0,
+                rotary_deg_1: 180.0,
+            },
+            op_idx: 0,
+            profile_idx: 0,
+            is_rapid: false,
+            verify_tol: tol,
+        }];
+
+        let mut gpu = WgpuComputeBackend::new(
+            std::sync::Arc::clone(&ctx),
+            SimulatedStock::TriDexel(Box::new(td)),
+            None,
+        );
+        let _ = gpu.sweep_batch(&chords, &tools, false);
+        let handle = gpu.capture_render_handle(crate::metrics::SimStockColorMode::ByOperation);
+        let GpuStockRenderHandle::TriDexel(ref td_render) = *handle else {
+            panic!("expected TriDexel GPU render handle");
+        };
+        let gpu_quads = u64::from(td_render.readback_emitted_vertex_count()) / 6;
+
+        let (SimulatedStock::TriDexel(td_after), _) = gpu.into_parts() else {
+            panic!("expected TriDexel stock");
+        };
+        let cpu_mesh = crate::tridexel::tessellate_tridexel_stock_mesh_colored(
+            &td_after,
+            None,
+            crate::metrics::SimStockColorMode::ByOperation,
+        );
+        let cpu_quads = (cpu_mesh.indices.len() / 6) as u64;
+        assert!(
+            cpu_quads > 10_000,
+            "expected >10k Surface Nets quads on machined cylinder, got {cpu_quads}"
+        );
+        let ratio = gpu_quads as f64 / cpu_quads as f64;
+        assert!(
+            (0.95..=1.05).contains(&ratio),
+            "GPU Surface Nets quad count ({gpu_quads}) must closely match CPU Surface Nets ({cpu_quads}), ratio={ratio:.4}"
+        );
+    }
 }
