@@ -3522,7 +3522,7 @@ fn milestone_62_two_sided_carryover_rest_roughing_cumulative_metrology_and_gpu_p
         op1.passes.stock_to_leave_radial = ParamLength::from_mm(0.0);
         op1.passes.stock_to_leave_axial = ParamLength::from_mm(0.0);
         if let StrategyParams::Adaptive3D(p) = op1.strategy_mut() {
-            p.boundary_mode = MachiningBoundaryMode::StockBox;
+            p.boundary.boundary_mode = MachiningBoundaryMode::StockBox;
             p.max_roughing_stepdown = ParamLength::from_mm(5.0);
             p.fine_stepdown = ParamLength::from_mm(2.0);
             p.detect_flats = true;
@@ -3583,7 +3583,7 @@ fn milestone_62_two_sided_carryover_rest_roughing_cumulative_metrology_and_gpu_p
         op2.passes.stock_to_leave_radial = ParamLength::from_mm(0.0);
         op2.passes.stock_to_leave_axial = ParamLength::from_mm(0.0);
         if let StrategyParams::Adaptive3D(p) = op2.strategy_mut() {
-            p.boundary_mode = MachiningBoundaryMode::StockBox;
+            p.boundary.boundary_mode = MachiningBoundaryMode::StockBox;
             p.max_roughing_stepdown = ParamLength::from_mm(4.0);
             p.fine_stepdown = ParamLength::from_mm(2.0);
             p.detect_flats = true;

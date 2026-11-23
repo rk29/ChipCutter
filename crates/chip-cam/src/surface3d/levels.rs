@@ -9,8 +9,25 @@ use crate::{
     selection::{ExtractedFeature25D, ExtractedSelectionSummary},
     setup::ResolvedSetup,
     stock::ResolvedStockGeometry,
-    surface3d::{SurfaceCutterProfile, SurfaceMesh3D, drop_cutter_z_with_scratch},
+    surface3d::{
+        SurfaceCutterProfile, SurfaceMesh3D, drop_cutter_z_with_scratch,
+        slab_projection::project_surface_z_slab_xy,
+    },
 };
+
+/// Structured result of resolving a 3D operation's 2D XY machining containment boundary.
+///
+/// Shared between all 3D toolpath strategies and viewport boundary preview so both render and cut
+/// against the exact same nominal and effective regions.
+#[derive(Debug, Clone)]
+pub struct ResolvedBoundary2D {
+    /// Raw nominal boundary loops before tool-radius / offset dilation (for viewport display).
+    pub nominal_region: RegionSet2D,
+    /// Effective tool-center containment region after `tool_containment` + `boundary_offset`.
+    pub effective_region: RegionSet2D,
+    /// Non-fatal diagnostic warnings (e.g., `SelectedRegions` chosen with no selections).
+    pub warnings: Vec<String>,
+}
 
 /// Detects significant upward-facing horizontal flat plateaus on `surface` inside `[z_min, z_max]`,
 /// returning deduplicated plateau Z heights sorted descending (top-down).
@@ -73,9 +90,44 @@ pub fn detect_flat_plateaus(
     heights
 }
 
-/// Resolves the 2D XY machining containment [`RegionSet2D`] (in tool-center coordinates) for
-/// `Waterline3D` and `Adaptive3D` operations.
-pub fn resolve_3d_containment_region(
+/// Projects the true 2D XY silhouette of `surface` onto the active Setup XY plane using
+/// [`project_surface_z_slab_xy`] across the full model Z span, clamping outer AABB boundaries to
+/// exact `surface.aabb_wcs` coordinates and falling back to [`rect_region_2d`] only if projection
+/// yields an empty polygon on a degenerate mesh.
+fn model_silhouette_xy_region(surface: &SurfaceMesh3D, setup: &ResolvedSetup) -> RegionSet2D {
+    if !surface.aabb_wcs.is_valid() {
+        return stock_xy_region(setup);
+    }
+    let aabb_rect = rect_region_2d(
+        surface.aabb_wcs.min.x,
+        surface.aabb_wcs.min.y,
+        surface.aabb_wcs.max.x,
+        surface.aabb_wcs.max.y,
+    );
+    let span_x = (surface.aabb_wcs.max.x - surface.aabb_wcs.min.x).max(0.1);
+    let span_y = (surface.aabb_wcs.max.y - surface.aabb_wcs.min.y).max(0.1);
+    let cell_mm = (span_x.max(span_y) / 300.0).clamp(0.05, 0.25);
+
+    let projected = project_surface_z_slab_xy(
+        surface,
+        surface.aabb_wcs.min.z - 1.0,
+        surface.aabb_wcs.max.z + 1.0,
+        cell_mm,
+    );
+    if projected.is_empty() {
+        return aabb_rect;
+    }
+    let clipped = projected.intersect(&aabb_rect);
+    if clipped.is_empty() {
+        projected
+    } else {
+        clipped
+    }
+}
+
+/// Resolves the 2D XY machining boundary into both its raw `nominal_region` (before tool radius
+/// and offset dilation) and its tool-center `effective_region`, along with any non-fatal warnings.
+pub fn resolve_3d_containment_region_detailed(
     surface: &SurfaceMesh3D,
     setup: &ResolvedSetup,
     selection: &ExtractedSelectionSummary,
@@ -83,34 +135,19 @@ pub fn resolve_3d_containment_region(
     containment: ToolContainmentMode,
     extra_offset_mm: f64,
     tool_radius_mm: f64,
-) -> RegionSet2D {
-    let base_region = match mode {
+) -> ResolvedBoundary2D {
+    let mut warnings = Vec::new();
+    let nominal_region = match mode {
         MachiningBoundaryMode::StockBox => stock_xy_region(setup),
-        MachiningBoundaryMode::ModelSilhouette => {
-            if surface.aabb_wcs.is_valid() {
-                rect_region_2d(
-                    surface.aabb_wcs.min.x,
-                    surface.aabb_wcs.min.y,
-                    surface.aabb_wcs.max.x,
-                    surface.aabb_wcs.max.y,
-                )
-            } else {
-                stock_xy_region(setup)
-            }
-        }
+        MachiningBoundaryMode::ModelSilhouette => model_silhouette_xy_region(surface, setup),
         MachiningBoundaryMode::SelectedRegions => {
             let sel_reg = selected_features_xy_region(selection);
             if sel_reg.is_empty() {
-                if surface.aabb_wcs.is_valid() {
-                    rect_region_2d(
-                        surface.aabb_wcs.min.x,
-                        surface.aabb_wcs.min.y,
-                        surface.aabb_wcs.max.x,
-                        surface.aabb_wcs.max.y,
-                    )
-                } else {
-                    stock_xy_region(setup)
-                }
+                warnings.push(
+                    "Machining boundary is set to 'Selected 2D Contours' but no closed 2D contours or planar faces are selected; falling back to Model Silhouette."
+                        .to_string(),
+                );
+                model_silhouette_xy_region(surface, setup)
             } else {
                 sel_reg
             }
@@ -129,13 +166,60 @@ pub fn resolve_3d_containment_region(
             0.0
         };
 
-    if delta > 1e-5 {
-        base_region.dilate_outward(delta)
+    let effective_region = if mode == MachiningBoundaryMode::StockBox {
+        match setup.stock {
+            ResolvedStockGeometry::Cylinder {
+                axis: crate::stock::StockAxis::Z,
+                center_wcs,
+                radius_mm,
+                ..
+            } => {
+                RegionSet2D::from_circle(DVec2::new(center_wcs.x, center_wcs.y), radius_mm + delta)
+            }
+            ResolvedStockGeometry::Box { aabb_wcs }
+            | ResolvedStockGeometry::Cylinder { aabb_wcs, .. } => rect_region_2d(
+                aabb_wcs.min.x - delta,
+                aabb_wcs.min.y - delta,
+                aabb_wcs.max.x + delta,
+                aabb_wcs.max.y + delta,
+            ),
+        }
+    } else if delta > 1e-5 {
+        nominal_region.dilate_outward(delta)
     } else if delta < -1e-5 {
-        base_region.erode_inward(-delta)
+        nominal_region.erode_inward(-delta)
     } else {
-        base_region
+        nominal_region.clone()
+    };
+
+    ResolvedBoundary2D {
+        nominal_region,
+        effective_region,
+        warnings,
     }
+}
+
+/// Resolves the 2D XY machining containment [`RegionSet2D`] (in tool-center coordinates) for
+/// 3-axis surface, undercut, and deburr operations.
+pub fn resolve_3d_containment_region(
+    surface: &SurfaceMesh3D,
+    setup: &ResolvedSetup,
+    selection: &ExtractedSelectionSummary,
+    mode: MachiningBoundaryMode,
+    containment: ToolContainmentMode,
+    extra_offset_mm: f64,
+    tool_radius_mm: f64,
+) -> RegionSet2D {
+    resolve_3d_containment_region_detailed(
+        surface,
+        setup,
+        selection,
+        mode,
+        containment,
+        extra_offset_mm,
+        tool_radius_mm,
+    )
+    .effective_region
 }
 
 /// Evaluates the effective local surface slope angle in degrees (`0° = flat horizontal`,

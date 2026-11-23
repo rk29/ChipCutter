@@ -143,8 +143,8 @@ pub fn build_sculpted_mesh_dome_project(
     op_pencil.preset_id = ball_3mm_tool.presets.first().map(|p| p.id.clone());
     op_pencil.heights.bottom = HeightSpec::new(HeightReference::ModelTop, -25.0);
     if let StrategyParams::Pencil3D(p) = op_pencil.strategy_mut() {
-        p.boundary_mode = chip_cam::MachiningBoundaryMode::ModelSilhouette;
-        p.tool_containment = chip_cam::ToolContainmentMode::ToolInsideBoundary;
+        p.boundary.boundary_mode = chip_cam::MachiningBoundaryMode::ModelSilhouette;
+        p.boundary.tool_containment = chip_cam::ToolContainmentMode::ToolInsideBoundary;
         p.reference_tool_diameter = ParamLength::from_mm(6.0);
         p.valley_threshold = ParamLength::from_mm(0.15);
         p.num_offset_passes = 0;
@@ -236,8 +236,8 @@ pub fn build_relief_wave_mesh_project(
     }
     op_par.heights.bottom = HeightSpec::new(HeightReference::ModelTop, -10.0);
     if let StrategyParams::Parallel3D(p) = op_par.strategy_mut() {
-        p.boundary_mode = chip_cam::MachiningBoundaryMode::ModelSilhouette;
-        p.tool_containment = chip_cam::ToolContainmentMode::ToolCenterOnBoundary;
+        p.boundary.boundary_mode = chip_cam::MachiningBoundaryMode::ModelSilhouette;
+        p.boundary.tool_containment = chip_cam::ToolContainmentMode::ToolCenterOnBoundary;
         p.use_cusp_height = true;
         p.cusp_height = ParamLength::from_mm(0.035);
         p.pass_angle_deg = 45.0;
@@ -257,8 +257,8 @@ pub fn build_relief_wave_mesh_project(
     }
     op_scallop.heights.bottom = HeightSpec::new(HeightReference::ModelTop, -10.0);
     if let StrategyParams::Scallop3D(p) = op_scallop.strategy_mut() {
-        p.boundary_mode = chip_cam::MachiningBoundaryMode::ModelSilhouette;
-        p.tool_containment = chip_cam::ToolContainmentMode::ToolCenterOnBoundary;
+        p.boundary.boundary_mode = chip_cam::MachiningBoundaryMode::ModelSilhouette;
+        p.boundary.tool_containment = chip_cam::ToolContainmentMode::ToolCenterOnBoundary;
         p.cusp_height = ParamLength::from_mm(0.04);
         p.max_stepover = ParamLength::from_mm(1.5);
         p.min_stepover = ParamLength::from_mm(0.2);

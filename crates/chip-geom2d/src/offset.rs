@@ -401,7 +401,11 @@ impl PocketRegion2D {
         }
 
         let shape = Shape::from_plines(plines);
-        let offset_shape = shape.parallel_offset(inward_dist_mm, &ShapeOffsetOptions::default());
+        let Ok(offset_shape) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            shape.parallel_offset(inward_dist_mm, &ShapeOffsetOptions::default())
+        })) else {
+            return crate::region::offset_single_region_shape(self, inward_dist_mm);
+        };
 
         let outers: Vec<ArcPolyline2D> = offset_shape
             .ccw_plines

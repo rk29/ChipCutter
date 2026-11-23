@@ -195,8 +195,8 @@ fn m72_triple_helix_full_assembly_clearance_and_25d_overhang_guard() {
     op_rough.passes.stock_to_leave_radial = ParamLength::from_mm(0.0);
     op_rough.passes.stock_to_leave_axial = ParamLength::from_mm(0.0);
     if let StrategyParams::Adaptive3D(p) = op_rough.strategy_mut() {
-        p.boundary_mode = MachiningBoundaryMode::StockBox;
-        p.tool_containment = ToolContainmentMode::ToolOutsideBoundary;
+        p.boundary.boundary_mode = MachiningBoundaryMode::StockBox;
+        p.boundary.tool_containment = ToolContainmentMode::ToolOutsideBoundary;
         p.max_roughing_stepdown = ParamLength::from_mm(2.0);
         p.fine_stepdown = ParamLength::from_mm(0.5);
         p.adaptive.optimal_load = ParamLength::from_mm(1.6);
@@ -212,8 +212,8 @@ fn m72_triple_helix_full_assembly_clearance_and_25d_overhang_guard() {
     op_wl.heights.bottom = HeightSpec::new(HeightReference::WcsOrigin, 2.0);
     op_wl.passes.max_stepdown = ParamLength::from_mm(2.0);
     if let StrategyParams::Waterline3D(p) = op_wl.strategy_mut() {
-        p.boundary_mode = MachiningBoundaryMode::StockBox;
-        p.tool_containment = ToolContainmentMode::ToolOutsideBoundary;
+        p.boundary.boundary_mode = MachiningBoundaryMode::StockBox;
+        p.boundary.tool_containment = ToolContainmentMode::ToolOutsideBoundary;
         p.adaptive_stepdown = false;
     }
 
@@ -498,8 +498,8 @@ fn m73_triple_helix_indexed_3plus1_volumetric_carryover_cpu_gpu_parity() {
                 };
             }
             if let StrategyParams::Adaptive3D(p) = op.strategy_mut() {
-                p.boundary_mode = MachiningBoundaryMode::SelectedRegions;
-                p.tool_containment = ToolContainmentMode::ToolInsideBoundary;
+                p.boundary.boundary_mode = MachiningBoundaryMode::SelectedRegions;
+                p.boundary.tool_containment = ToolContainmentMode::ToolInsideBoundary;
                 p.max_roughing_stepdown = ParamLength::from_mm(6.0);
                 p.fine_stepdown = ParamLength::from_mm(0.0);
                 p.adaptive.optimal_load = ParamLength::from_mm(2.2);
@@ -625,8 +625,8 @@ fn m74_triple_helix_overhang_safe_finishing_and_swept_soft_jaws() {
     op_par.tool_id = Some(ball_4.id.clone());
     op_par.heights.bottom = HeightSpec::new(HeightReference::WcsOrigin, 0.0);
     if let StrategyParams::Parallel3D(p) = op_par.strategy_mut() {
-        p.boundary_mode = MachiningBoundaryMode::ModelSilhouette;
-        p.tool_containment = ToolContainmentMode::ToolCenterOnBoundary;
+        p.boundary.boundary_mode = MachiningBoundaryMode::ModelSilhouette;
+        p.boundary.tool_containment = ToolContainmentMode::ToolCenterOnBoundary;
         p.use_cusp_height = false;
         p.stepover = ParamLength::from_mm(2.0);
         p.pass_angle_deg = 0.0;
@@ -638,8 +638,8 @@ fn m74_triple_helix_overhang_safe_finishing_and_swept_soft_jaws() {
     op_sc.tool_id = Some(ball_4.id.clone());
     op_sc.heights.bottom = HeightSpec::new(HeightReference::WcsOrigin, 0.0);
     if let StrategyParams::Scallop3D(p) = op_sc.strategy_mut() {
-        p.boundary_mode = MachiningBoundaryMode::ModelSilhouette;
-        p.tool_containment = ToolContainmentMode::ToolCenterOnBoundary;
+        p.boundary.boundary_mode = MachiningBoundaryMode::ModelSilhouette;
+        p.boundary.tool_containment = ToolContainmentMode::ToolCenterOnBoundary;
         p.cusp_height = ParamLength::from_mm(0.15);
         p.max_stepover = ParamLength::from_mm(2.2);
         p.min_stepover = ParamLength::from_mm(0.8);
@@ -649,8 +649,8 @@ fn m74_triple_helix_overhang_safe_finishing_and_swept_soft_jaws() {
     op_pen.tool_id = Some(ball_4.id.clone());
     op_pen.heights.bottom = HeightSpec::new(HeightReference::WcsOrigin, 0.0);
     if let StrategyParams::Pencil3D(p) = op_pen.strategy_mut() {
-        p.boundary_mode = MachiningBoundaryMode::ModelSilhouette;
-        p.tool_containment = ToolContainmentMode::ToolCenterOnBoundary;
+        p.boundary.boundary_mode = MachiningBoundaryMode::ModelSilhouette;
+        p.boundary.tool_containment = ToolContainmentMode::ToolCenterOnBoundary;
         p.reference_tool_diameter = ParamLength::from_mm(10.0);
         p.valley_threshold = ParamLength::from_mm(0.20);
         p.num_offset_passes = 0;

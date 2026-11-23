@@ -307,8 +307,8 @@ fn overhang_t_flange_pencil3d_and_rest_mask_suppress_shadow_while_preserving_hub
     op.tool_id = Some(ball_3.id.clone());
     op.heights.bottom = HeightSpec::new(HeightReference::ModelBottom, 0.0);
     if let StrategyParams::Pencil3D(p) = op.strategy_mut() {
-        p.boundary_mode = MachiningBoundaryMode::ModelSilhouette;
-        p.tool_containment = ToolContainmentMode::ToolInsideBoundary;
+        p.boundary.boundary_mode = MachiningBoundaryMode::ModelSilhouette;
+        p.boundary.tool_containment = ToolContainmentMode::ToolInsideBoundary;
         p.reference_tool_diameter = ParamLength::from_mm(8.0);
         p.valley_threshold = ParamLength::from_mm(0.08);
         p.num_offset_passes = 0;
@@ -454,8 +454,8 @@ fn parallel3d_and_scallop3d_on_overhanging_flange_zero_gouge_zero_crash_no_cliff
     op_par.tool_id = Some(ball_4.id.clone());
     op_par.heights.bottom = HeightSpec::new(HeightReference::ModelBottom, 4.0);
     if let StrategyParams::Parallel3D(p) = op_par.strategy_mut() {
-        p.boundary_mode = MachiningBoundaryMode::ModelSilhouette;
-        p.tool_containment = ToolContainmentMode::ToolInsideBoundary;
+        p.boundary.boundary_mode = MachiningBoundaryMode::ModelSilhouette;
+        p.boundary.tool_containment = ToolContainmentMode::ToolInsideBoundary;
         p.use_cusp_height = false;
         p.stepover = ParamLength::from_mm(1.5);
         p.pass_angle_deg = 0.0;
@@ -468,8 +468,8 @@ fn parallel3d_and_scallop3d_on_overhanging_flange_zero_gouge_zero_crash_no_cliff
     op_sc.tool_id = Some(ball_4.id.clone());
     op_sc.heights.bottom = HeightSpec::new(HeightReference::ModelBottom, 4.0);
     if let StrategyParams::Scallop3D(p) = op_sc.strategy_mut() {
-        p.boundary_mode = MachiningBoundaryMode::ModelSilhouette;
-        p.tool_containment = ToolContainmentMode::ToolInsideBoundary;
+        p.boundary.boundary_mode = MachiningBoundaryMode::ModelSilhouette;
+        p.boundary.tool_containment = ToolContainmentMode::ToolInsideBoundary;
         p.cusp_height = ParamLength::from_mm(0.10);
         p.max_stepover = ParamLength::from_mm(1.5);
         p.min_stepover = ParamLength::from_mm(0.4);
@@ -743,8 +743,8 @@ fn parallel3d_and_scallop3d_on_twisted_overhanging_helical_loft_zero_gouge_zero_
     op_par.tool_id = Some(ball_4.id.clone());
     op_par.heights.bottom = HeightSpec::new(HeightReference::ModelBottom, 0.0);
     if let StrategyParams::Parallel3D(p) = op_par.strategy_mut() {
-        p.boundary_mode = MachiningBoundaryMode::ModelSilhouette;
-        p.tool_containment = ToolContainmentMode::ToolCenterOnBoundary;
+        p.boundary.boundary_mode = MachiningBoundaryMode::ModelSilhouette;
+        p.boundary.tool_containment = ToolContainmentMode::ToolCenterOnBoundary;
         p.use_cusp_height = false;
         p.stepover = ParamLength::from_mm(2.0);
         p.pass_angle_deg = 0.0;
@@ -756,8 +756,8 @@ fn parallel3d_and_scallop3d_on_twisted_overhanging_helical_loft_zero_gouge_zero_
     op_sc.tool_id = Some(ball_4.id.clone());
     op_sc.heights.bottom = HeightSpec::new(HeightReference::ModelBottom, 0.0);
     if let StrategyParams::Scallop3D(p) = op_sc.strategy_mut() {
-        p.boundary_mode = MachiningBoundaryMode::ModelSilhouette;
-        p.tool_containment = ToolContainmentMode::ToolCenterOnBoundary;
+        p.boundary.boundary_mode = MachiningBoundaryMode::ModelSilhouette;
+        p.boundary.tool_containment = ToolContainmentMode::ToolCenterOnBoundary;
         p.cusp_height = ParamLength::from_mm(0.15);
         p.max_stepover = ParamLength::from_mm(2.0);
         p.min_stepover = ParamLength::from_mm(0.8);

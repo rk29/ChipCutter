@@ -1622,9 +1622,9 @@ fn verifies_adaptive_3d_and_waterline_3d_on_stl_obj_and_step_against_sim_oracle(
             side_flip: false,
         });
     if let StrategyParams::Waterline3D(p) = op_wl_clip.strategy_mut() {
-        p.boundary_mode = MachiningBoundaryMode::SelectedRegions;
-        p.tool_containment = ToolContainmentMode::ToolInsideBoundary;
-        p.boundary_offset = ParamLength::from_mm(0.0);
+        p.boundary.boundary_mode = MachiningBoundaryMode::SelectedRegions;
+        p.boundary.tool_containment = ToolContainmentMode::ToolInsideBoundary;
+        p.boundary.boundary_offset = ParamLength::from_mm(0.0);
         p.min_slope_deg = 35.0;
         p.max_slope_deg = 90.0;
         p.adaptive_stepdown = false;
@@ -1863,8 +1863,8 @@ fn milestone_18_3d_finishing_parallel_scallop_pencil_and_rest_oracles() {
     op_par.tool_id = Some(ball_6mm.id.clone());
     op_par.heights.bottom = HeightSpec::new(HeightReference::ModelTop, -25.0);
     if let StrategyParams::Parallel3D(p) = op_par.strategy_mut() {
-        p.boundary_mode = MachiningBoundaryMode::ModelSilhouette;
-        p.tool_containment = ToolContainmentMode::ToolInsideBoundary;
+        p.boundary.boundary_mode = MachiningBoundaryMode::ModelSilhouette;
+        p.boundary.tool_containment = ToolContainmentMode::ToolInsideBoundary;
         p.use_cusp_height = true;
         p.cusp_height = ParamLength::from_mm(0.08);
         p.pass_angle_deg = 45.0;
@@ -2037,8 +2037,8 @@ fn milestone_18_3d_finishing_parallel_scallop_pencil_and_rest_oracles() {
     op_scallop.tool_id = Some(ball_6mm.id.clone());
     op_scallop.heights.bottom = HeightSpec::new(HeightReference::ModelTop, -25.0);
     if let StrategyParams::Scallop3D(p) = op_scallop.strategy_mut() {
-        p.boundary_mode = MachiningBoundaryMode::ModelSilhouette;
-        p.tool_containment = ToolContainmentMode::ToolInsideBoundary;
+        p.boundary.boundary_mode = MachiningBoundaryMode::ModelSilhouette;
+        p.boundary.tool_containment = ToolContainmentMode::ToolInsideBoundary;
         p.cusp_height = ParamLength::from_mm(0.08);
         p.max_stepover = ParamLength::from_mm(2.0);
         p.min_stepover = ParamLength::from_mm(0.2);
@@ -2096,8 +2096,8 @@ fn milestone_18_3d_finishing_parallel_scallop_pencil_and_rest_oracles() {
     op_pencil.tool_id = Some(ball_3mm.id.clone());
     op_pencil.heights.bottom = HeightSpec::new(HeightReference::ModelTop, -25.0);
     if let StrategyParams::Pencil3D(p) = op_pencil.strategy_mut() {
-        p.boundary_mode = MachiningBoundaryMode::ModelSilhouette;
-        p.tool_containment = ToolContainmentMode::ToolInsideBoundary;
+        p.boundary.boundary_mode = MachiningBoundaryMode::ModelSilhouette;
+        p.boundary.tool_containment = ToolContainmentMode::ToolInsideBoundary;
         p.reference_tool_diameter = ParamLength::from_mm(6.0);
         p.valley_threshold = ParamLength::from_mm(0.15);
         p.num_offset_passes = 0;

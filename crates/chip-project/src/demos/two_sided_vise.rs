@@ -313,7 +313,7 @@ pub fn build_two_sided_vise_workholding_project(
         op1_adapt.passes.stock_to_leave_radial = ParamLength::from_mm(0.0);
         op1_adapt.passes.stock_to_leave_axial = ParamLength::from_mm(0.0);
         if let StrategyParams::Adaptive3D(p) = op1_adapt.strategy_mut() {
-            p.boundary_mode = MachiningBoundaryMode::StockBox;
+            p.boundary.boundary_mode = MachiningBoundaryMode::StockBox;
             p.max_roughing_stepdown = ParamLength::from_mm(5.0);
             p.fine_stepdown = ParamLength::from_mm(2.0);
             p.detect_flats = true;
@@ -416,7 +416,7 @@ pub fn build_two_sided_vise_workholding_project(
         op2_rest.passes.stock_to_leave_radial = ParamLength::from_mm(0.0);
         op2_rest.passes.stock_to_leave_axial = ParamLength::from_mm(0.0);
         if let StrategyParams::Adaptive3D(p) = op2_rest.strategy_mut() {
-            p.boundary_mode = MachiningBoundaryMode::StockBox;
+            p.boundary.boundary_mode = MachiningBoundaryMode::StockBox;
             p.max_roughing_stepdown = ParamLength::from_mm(3.5);
             p.fine_stepdown = ParamLength::from_mm(2.0);
             p.detect_flats = true;

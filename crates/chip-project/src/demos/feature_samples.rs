@@ -553,7 +553,7 @@ pub fn build_curved_deburr_3d_project(
         op1.passes.stock_to_leave_radial = ParamLength::from_mm(0.25);
         op1.passes.stock_to_leave_axial = ParamLength::from_mm(0.0);
         if let StrategyParams::Adaptive3D(p) = op1.strategy_mut() {
-            p.boundary_mode = MachiningBoundaryMode::StockBox;
+            p.boundary.boundary_mode = MachiningBoundaryMode::StockBox;
             p.max_roughing_stepdown = ParamLength::from_mm(4.5);
             p.fine_stepdown = ParamLength::from_mm(1.5);
             p.detect_flats = true;
@@ -576,8 +576,8 @@ pub fn build_curved_deburr_3d_project(
         op2.passes.stock_to_leave_radial = ParamLength::from_mm(0.0);
         op2.passes.stock_to_leave_axial = ParamLength::from_mm(0.0);
         if let StrategyParams::Parallel3D(p) = op2.strategy_mut() {
-            p.boundary_mode = MachiningBoundaryMode::ModelSilhouette;
-            p.tool_containment = ToolContainmentMode::ToolCenterOnBoundary;
+            p.boundary.boundary_mode = MachiningBoundaryMode::ModelSilhouette;
+            p.boundary.tool_containment = ToolContainmentMode::ToolCenterOnBoundary;
             p.use_cusp_height = true;
             p.cusp_height = ParamLength::from_mm(0.03);
             p.pass_angle_deg = 0.0;
@@ -646,6 +646,7 @@ pub fn build_curved_deburr_3d_project(
             chord_tolerance_mm: 0.005,
             multiple_passes: 1,
             spring_pass: false,
+            ..Deburr3DParams::default()
         }));
         setup.operations.push(op4);
     }
@@ -699,6 +700,7 @@ pub fn build_curved_deburr_3d_project(
             chord_tolerance_mm: 0.005,
             multiple_passes: 1,
             spring_pass: false,
+            ..Deburr3DParams::default()
         }));
         setup.operations.push(op5);
     }
@@ -749,6 +751,7 @@ pub fn build_curved_deburr_3d_project(
             chord_tolerance_mm: 0.005,
             multiple_passes: 1,
             spring_pass: false,
+            ..Deburr3DParams::default()
         }));
         setup.operations.push(op6);
     }
@@ -1224,8 +1227,8 @@ pub fn build_mesh_3mf_bracket_project(
         op_scallop.preset_id = t.presets.first().map(|p| p.id.clone());
         op_scallop.heights.bottom = HeightSpec::new(HeightReference::ModelTop, -12.0);
         if let StrategyParams::Scallop3D(p) = op_scallop.strategy_mut() {
-            p.boundary_mode = MachiningBoundaryMode::ModelSilhouette;
-            p.tool_containment = ToolContainmentMode::ToolCenterOnBoundary;
+            p.boundary.boundary_mode = MachiningBoundaryMode::ModelSilhouette;
+            p.boundary.tool_containment = ToolContainmentMode::ToolCenterOnBoundary;
             p.cusp_height = ParamLength::from_mm(0.04);
             p.max_stepover = ParamLength::from_mm(1.5);
             p.min_stepover = ParamLength::from_mm(0.25);

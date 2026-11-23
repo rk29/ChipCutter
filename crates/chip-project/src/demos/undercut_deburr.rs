@@ -263,6 +263,7 @@ pub fn build_undercut_deburr_block_project(
             stock_to_leave: ParamLength::from_mm(0.0),
             lead_out_distance: ParamLength::from_mm(4.0),
             climb_direction: true,
+            ..Undercut3DParams::default()
         }));
         setup.operations.push(op5);
     }
@@ -292,6 +293,7 @@ pub fn build_undercut_deburr_block_project(
             chord_tolerance_mm: 0.005,
             multiple_passes: 1,
             spring_pass: false,
+            ..Deburr3DParams::default()
         }));
         setup.operations.push(op6);
     }

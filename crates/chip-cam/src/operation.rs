@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     heights::OperationHeights,
-    params::{LinkingParams, PassesParams, StrategyParams},
+    params::{LinkingParams, MachiningBoundaryConfig, PassesParams, StrategyParams},
     rotary::OperationRotaryMode,
     selection::GeometrySelectionItem,
 };
@@ -445,6 +445,20 @@ impl Operation {
             .get_or_insert_with(|| StrategyParams::default_for_kind(self.kind));
         s.ensure_matches_kind(self.kind);
         s
+    }
+
+    /// Returns the shared 3D XY machining boundary config for 3-axis surface, undercut, and
+    /// 3D deburr operations (`None` for 2.5D and 4th-axis rotary strategies).
+    pub fn machining_boundary(&self) -> Option<&MachiningBoundaryConfig> {
+        self.strategy
+            .as_ref()
+            .and_then(StrategyParams::machining_boundary)
+    }
+
+    /// Mutable access to the shared 3D XY machining boundary config (initializing default
+    /// strategy params if absent or mismatched with `self.kind`).
+    pub fn machining_boundary_mut(&mut self) -> Option<&mut MachiningBoundaryConfig> {
+        self.strategy_mut().machining_boundary_mut()
     }
 
     /// Re-evaluates all inline parameter formulas (`heights`, `passes`, `linking`, `strategy`) under `ctx`.

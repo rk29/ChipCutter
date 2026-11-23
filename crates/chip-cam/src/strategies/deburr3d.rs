@@ -20,8 +20,10 @@ use chip_tools::{AnalyticCutterEnvelope, CutterEnvelopeShape, CutterGeometry};
 use crate::{
     cl_data::MotionRole,
     params::Deburr3DParams,
+    rest2d::RegionSet2D,
     selection::GeometrySelectionItem,
     strategies::StrategyExecContext,
+    surface3d::{SurfaceMesh3D, resolve_3d_containment_region_detailed},
     toolpath::{ToolpathBuilder, XyArcMove},
     wcs::CamError,
 };
@@ -527,6 +529,28 @@ pub fn generate_deburr3d(
 
     // 3. Build target B-Rep TriMesh3D + FlatBvh in Setup WCS for full-assembly collision trimming
     let target_mesh = ctx.doc.build_wcs_tri_mesh(&[], &ctx.setup.frame);
+    let xy_containment: Option<RegionSet2D> = if use_auto_detect {
+        let surface = SurfaceMesh3D::from_tri_mesh(target_mesh.clone());
+        let tool_r = 0.5 * ctx.tool.geometry.cutting_diameter_mm().max(0.1);
+        let resolved_boundary = resolve_3d_containment_region_detailed(
+            &surface,
+            ctx.setup,
+            &ctx.selection,
+            params.boundary.boundary_mode,
+            params.boundary.tool_containment,
+            params.boundary.boundary_offset.value_mm,
+            tool_r,
+        );
+        builder.warnings.extend(resolved_boundary.warnings);
+        if resolved_boundary.effective_region.is_empty() {
+            return Err(CamError::EmptyToolpath {
+                op_name: ctx.op.name.clone(),
+            });
+        }
+        Some(resolved_boundary.effective_region)
+    } else {
+        None
+    };
     let envelope = AnalyticCutterEnvelope::from_geometry(&ctx.tool.geometry);
     let stickout_mm = ctx
         .tool
@@ -563,6 +587,7 @@ pub fn generate_deburr3d(
                 tip_offset,
                 wall_clearance,
                 params.allow_underside_back_chamfer,
+                xy_containment.as_ref(),
                 &mut cand_buf,
             );
 
@@ -1556,6 +1581,14 @@ struct TrimmedSubChain {
     is_underside: bool,
 }
 
+#[inline]
+fn tip_xy_in_containment(tip_wcs: DVec3, xy_containment: Option<&RegionSet2D>) -> bool {
+    xy_containment.is_none_or(|reg| {
+        let pt = DVec2::new(tip_wcs.x, tip_wcs.y);
+        reg.contains_point(pt) || reg.min_distance_to_boundary(pt) <= 0.02
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn trim_chain_against_target(
     chain: &DeburrEdgeChain,
@@ -1567,6 +1600,7 @@ fn trim_chain_against_target(
     tip_offset: f64,
     wall_clearance: f64,
     allow_underside: bool,
+    xy_containment: Option<&RegionSet2D>,
     cand_buf: &mut Vec<usize>,
 ) -> Vec<TrimmedSubChain> {
     let n = chain.samples.len();
@@ -1587,16 +1621,17 @@ fn trim_chain_against_target(
             allow_underside,
         );
         let ok = if let Some(cs) = sol {
-            is_station_collision_free(
-                s,
-                &cs,
-                envelope,
-                stickout_mm,
-                target_mesh,
-                chamfer_w,
-                wall_clearance,
-                cand_buf,
-            )
+            tip_xy_in_containment(cs.tip_wcs, xy_containment)
+                && is_station_collision_free(
+                    s,
+                    &cs,
+                    envelope,
+                    stickout_mm,
+                    target_mesh,
+                    chamfer_w,
+                    wall_clearance,
+                    cand_buf,
+                )
         } else {
             false
         };
@@ -1652,6 +1687,7 @@ fn trim_chain_against_target(
                 tip_offset,
                 wall_clearance,
                 allow_underside,
+                xy_containment,
                 cand_buf,
             )
             && refined.sol.tip_wcs.distance(
@@ -1685,6 +1721,7 @@ fn trim_chain_against_target(
                 tip_offset,
                 wall_clearance,
                 allow_underside,
+                xy_containment,
                 cand_buf,
             )
             && let Some(last) = stations.last()
@@ -1748,6 +1785,7 @@ fn binary_refine_boundary(
     tip_offset: f64,
     wall_clearance: f64,
     allow_underside: bool,
+    xy_containment: Option<&RegionSet2D>,
     cand_buf: &mut Vec<usize>,
 ) -> Option<SolvedStation> {
     let mut lo = 0.0_f64;
@@ -1765,16 +1803,18 @@ fn binary_refine_boundary(
             wall_clearance,
             allow_underside,
         ) {
-            if is_station_collision_free(
-                &sample,
-                &sol,
-                envelope,
-                stickout_mm,
-                target_mesh,
-                chamfer_w,
-                wall_clearance,
-                cand_buf,
-            ) {
+            if tip_xy_in_containment(sol.tip_wcs, xy_containment)
+                && is_station_collision_free(
+                    &sample,
+                    &sol,
+                    envelope,
+                    stickout_mm,
+                    target_mesh,
+                    chamfer_w,
+                    wall_clearance,
+                    cand_buf,
+                )
+            {
                 best = Some(SolvedStation { sample, sol });
                 true
             } else {

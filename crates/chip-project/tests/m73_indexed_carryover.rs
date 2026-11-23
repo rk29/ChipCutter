@@ -167,8 +167,8 @@ fn build_3angle_helix_project(enable_rest: bool, sha: &str) -> ProjectDocument {
             };
         }
         if let Some(StrategyParams::Adaptive3D(ref mut p)) = op.strategy {
-            p.boundary_mode = MachiningBoundaryMode::StockBox;
-            p.tool_containment = ToolContainmentMode::ToolCenterOnBoundary;
+            p.boundary.boundary_mode = MachiningBoundaryMode::StockBox;
+            p.boundary.tool_containment = ToolContainmentMode::ToolCenterOnBoundary;
             p.max_roughing_stepdown = ParamLength::from_mm(6.0);
             p.fine_stepdown = ParamLength::from_mm(0.0);
             p.adaptive.optimal_load = ParamLength::from_mm(2.2);

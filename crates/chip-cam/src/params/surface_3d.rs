@@ -90,15 +90,52 @@ pub(super) fn default_zero_length() -> ParamLength {
     ParamLength::from_mm(0.0)
 }
 
-/// Strategy parameters for **3D Waterline / Z-Level Machining** (`OperationKind::Waterline3D`).
+/// Shared 2D XY machining containment boundary configuration embedded via `#[serde(flatten)]`
+/// across all 3-axis surfacing (`Waterline3D`, `Adaptive3D`, `Parallel3D`, `Scallop3D`, `Pencil3D`),
+/// `Undercut3D`, and `Deburr3D` parameter structs.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Waterline3DParams {
+pub struct MachiningBoundaryConfig {
     #[serde(default)]
     pub boundary_mode: MachiningBoundaryMode,
     #[serde(default)]
     pub tool_containment: ToolContainmentMode,
     #[serde(default = "default_zero_length")]
     pub boundary_offset: ParamLength,
+}
+
+impl Default for MachiningBoundaryConfig {
+    fn default() -> Self {
+        Self {
+            boundary_mode: MachiningBoundaryMode::default(),
+            tool_containment: ToolContainmentMode::default(),
+            boundary_offset: default_zero_length(),
+        }
+    }
+}
+
+impl MachiningBoundaryConfig {
+    pub fn new(
+        boundary_mode: MachiningBoundaryMode,
+        tool_containment: ToolContainmentMode,
+        boundary_offset_mm: f64,
+    ) -> Self {
+        Self {
+            boundary_mode,
+            tool_containment,
+            boundary_offset: ParamLength::from_mm(boundary_offset_mm),
+        }
+    }
+
+    pub fn reevaluate(&mut self, ctx: &EvalContext) {
+        let _ = self.boundary_offset.reevaluate(ctx);
+    }
+}
+
+/// Strategy parameters for **3D Waterline / Z-Level Machining** (`OperationKind::Waterline3D`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Waterline3DParams {
+    #[serde(flatten)]
+    pub boundary: MachiningBoundaryConfig,
     /// Minimum surface steepness (`0° = flat horizontal`, `90° = vertical wall`) machined by waterline passes.
     #[serde(default)]
     pub min_slope_deg: f64,
@@ -136,9 +173,11 @@ fn default_waterline_max_cusp() -> ParamLength {
 impl Default for Waterline3DParams {
     fn default() -> Self {
         Self {
-            boundary_mode: MachiningBoundaryMode::ModelSilhouette,
-            tool_containment: ToolContainmentMode::ToolOutsideBoundary,
-            boundary_offset: ParamLength::from_mm(0.5),
+            boundary: MachiningBoundaryConfig::new(
+                MachiningBoundaryMode::ModelSilhouette,
+                ToolContainmentMode::ToolOutsideBoundary,
+                0.5,
+            ),
             min_slope_deg: 0.0,
             max_slope_deg: 90.0,
             adaptive_stepdown: true,
@@ -154,7 +193,7 @@ impl Default for Waterline3DParams {
 
 impl Waterline3DParams {
     pub fn reevaluate(&mut self, ctx: &EvalContext) {
-        let _ = self.boundary_offset.reevaluate(ctx);
+        self.boundary.reevaluate(ctx);
         let _ = self.min_stepdown.reevaluate(ctx);
         let _ = self.max_cusp_height.reevaluate(ctx);
     }
@@ -163,12 +202,8 @@ impl Waterline3DParams {
 /// Strategy parameters for **3D Adaptive Clearing / Roughing** (`OperationKind::Adaptive3D`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Adaptive3DParams {
-    #[serde(default)]
-    pub boundary_mode: MachiningBoundaryMode,
-    #[serde(default)]
-    pub tool_containment: ToolContainmentMode,
-    #[serde(default = "default_zero_length")]
-    pub boundary_offset: ParamLength,
+    #[serde(flatten)]
+    pub boundary: MachiningBoundaryConfig,
     #[serde(default)]
     pub adaptive: AdaptiveClearingParams,
     /// Primary coarse roughing Z stepdown (`mm`).
@@ -196,9 +231,11 @@ fn default_adaptive3d_fine_stepdown() -> ParamLength {
 impl Default for Adaptive3DParams {
     fn default() -> Self {
         Self {
-            boundary_mode: MachiningBoundaryMode::StockBox,
-            tool_containment: ToolContainmentMode::ToolCenterOnBoundary,
-            boundary_offset: ParamLength::from_mm(0.5),
+            boundary: MachiningBoundaryConfig::new(
+                MachiningBoundaryMode::StockBox,
+                ToolContainmentMode::ToolOutsideBoundary,
+                1.0,
+            ),
             adaptive: AdaptiveClearingParams::default(),
             max_roughing_stepdown: default_adaptive3d_rough_stepdown(),
             fine_stepdown: default_adaptive3d_fine_stepdown(),
@@ -210,7 +247,7 @@ impl Default for Adaptive3DParams {
 
 impl Adaptive3DParams {
     pub fn reevaluate(&mut self, ctx: &EvalContext) {
-        let _ = self.boundary_offset.reevaluate(ctx);
+        self.boundary.reevaluate(ctx);
         self.adaptive.reevaluate(ctx);
         let _ = self.max_roughing_stepdown.reevaluate(ctx);
         let _ = self.fine_stepdown.reevaluate(ctx);
@@ -258,12 +295,8 @@ pub(super) fn default_finishing_smooth_tol() -> ParamLength {
 /// Strategy parameters for **3D Parallel / Raster Finishing** (`OperationKind::Parallel3D`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Parallel3DParams {
-    #[serde(default)]
-    pub boundary_mode: MachiningBoundaryMode,
-    #[serde(default)]
-    pub tool_containment: ToolContainmentMode,
-    #[serde(default = "default_zero_length")]
-    pub boundary_offset: ParamLength,
+    #[serde(flatten)]
+    pub boundary: MachiningBoundaryConfig,
     /// Explicit XY raster stepover (`mm`) when `use_cusp_height == false`.
     #[serde(default = "default_parallel3d_stepover")]
     pub stepover: ParamLength,
@@ -298,9 +331,11 @@ pub struct Parallel3DParams {
 impl Default for Parallel3DParams {
     fn default() -> Self {
         Self {
-            boundary_mode: MachiningBoundaryMode::ModelSilhouette,
-            tool_containment: ToolContainmentMode::ToolCenterOnBoundary,
-            boundary_offset: ParamLength::from_mm(0.0),
+            boundary: MachiningBoundaryConfig::new(
+                MachiningBoundaryMode::ModelSilhouette,
+                ToolContainmentMode::ToolCenterOnBoundary,
+                0.0,
+            ),
             stepover: default_parallel3d_stepover(),
             use_cusp_height: true,
             cusp_height: default_finishing_cusp_height(),
@@ -317,7 +352,7 @@ impl Default for Parallel3DParams {
 
 impl Parallel3DParams {
     pub fn reevaluate(&mut self, ctx: &EvalContext) {
-        let _ = self.boundary_offset.reevaluate(ctx);
+        self.boundary.reevaluate(ctx);
         let _ = self.stepover.reevaluate(ctx);
         let _ = self.cusp_height.reevaluate(ctx);
         let _ = self.sample_step.reevaluate(ctx);
@@ -336,12 +371,8 @@ fn default_scallop3d_min_stepover() -> ParamLength {
 /// Strategy parameters for **3D Constant-Scallop Finishing** (`OperationKind::Scallop3D`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Scallop3DParams {
-    #[serde(default)]
-    pub boundary_mode: MachiningBoundaryMode,
-    #[serde(default)]
-    pub tool_containment: ToolContainmentMode,
-    #[serde(default = "default_zero_length")]
-    pub boundary_offset: ParamLength,
+    #[serde(flatten)]
+    pub boundary: MachiningBoundaryConfig,
     /// Target constant 3D scallop / cusp height (`mm`) across both shallow crests and steep walls.
     #[serde(default = "default_finishing_cusp_height")]
     pub cusp_height: ParamLength,
@@ -368,9 +399,11 @@ pub struct Scallop3DParams {
 impl Default for Scallop3DParams {
     fn default() -> Self {
         Self {
-            boundary_mode: MachiningBoundaryMode::ModelSilhouette,
-            tool_containment: ToolContainmentMode::ToolCenterOnBoundary,
-            boundary_offset: ParamLength::from_mm(0.0),
+            boundary: MachiningBoundaryConfig::new(
+                MachiningBoundaryMode::ModelSilhouette,
+                ToolContainmentMode::ToolCenterOnBoundary,
+                0.0,
+            ),
             cusp_height: default_finishing_cusp_height(),
             max_stepover: default_scallop3d_max_stepover(),
             min_stepover: default_scallop3d_min_stepover(),
@@ -385,7 +418,7 @@ impl Default for Scallop3DParams {
 
 impl Scallop3DParams {
     pub fn reevaluate(&mut self, ctx: &EvalContext) {
-        let _ = self.boundary_offset.reevaluate(ctx);
+        self.boundary.reevaluate(ctx);
         let _ = self.cusp_height.reevaluate(ctx);
         let _ = self.max_stepover.reevaluate(ctx);
         let _ = self.min_stepover.reevaluate(ctx);
@@ -408,12 +441,8 @@ fn default_pencil3d_offset_stepover() -> ParamLength {
 /// Strategy parameters for **3D Pencil / Concave Fillet Cleanup** (`OperationKind::Pencil3D`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Pencil3DParams {
-    #[serde(default)]
-    pub boundary_mode: MachiningBoundaryMode,
-    #[serde(default)]
-    pub tool_containment: ToolContainmentMode,
-    #[serde(default = "default_zero_length")]
-    pub boundary_offset: ParamLength,
+    #[serde(flatten)]
+    pub boundary: MachiningBoundaryConfig,
     /// Virtual larger reference ball diameter (`mm`) used to detect unmachined concave valleys & creases.
     #[serde(default = "default_pencil3d_ref_tool_dia")]
     pub reference_tool_diameter: ParamLength,
@@ -434,9 +463,11 @@ pub struct Pencil3DParams {
 impl Default for Pencil3DParams {
     fn default() -> Self {
         Self {
-            boundary_mode: MachiningBoundaryMode::ModelSilhouette,
-            tool_containment: ToolContainmentMode::ToolCenterOnBoundary,
-            boundary_offset: ParamLength::from_mm(0.0),
+            boundary: MachiningBoundaryConfig::new(
+                MachiningBoundaryMode::ModelSilhouette,
+                ToolContainmentMode::ToolCenterOnBoundary,
+                0.0,
+            ),
             reference_tool_diameter: default_pencil3d_ref_tool_dia(),
             valley_threshold: default_pencil3d_valley_threshold(),
             num_offset_passes: 0,
@@ -448,7 +479,7 @@ impl Default for Pencil3DParams {
 
 impl Pencil3DParams {
     pub fn reevaluate(&mut self, ctx: &EvalContext) {
-        let _ = self.boundary_offset.reevaluate(ctx);
+        self.boundary.reevaluate(ctx);
         let _ = self.reference_tool_diameter.reevaluate(ctx);
         let _ = self.valley_threshold.reevaluate(ctx);
         let _ = self.offset_stepover.reevaluate(ctx);

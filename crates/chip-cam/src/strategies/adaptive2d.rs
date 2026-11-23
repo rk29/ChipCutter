@@ -251,15 +251,27 @@ fn init_adaptive_cavity(
 
     // 2. Open-Edge Exterior Air Entry (outside physical stock XY footprint by `>= tool_r - 0.05`):
     if spec.has_open_air {
-        let stock_aabb = ctx.setup.stock.aabb_wcs();
-        let stock_engage_box = rect_region_2d(
-            stock_aabb.min.x - (tool_r - 0.05),
-            stock_aabb.min.y - (tool_r - 0.05),
-            stock_aabb.max.x + (tool_r - 0.05),
-            stock_aabb.max.y + (tool_r - 0.05),
-        );
+        let engage_pad = (tool_r - 0.05).max(0.01);
+        let stock_engage_region = match ctx.setup.stock {
+            crate::stock::ResolvedStockGeometry::Cylinder {
+                axis: crate::stock::StockAxis::Z,
+                center_wcs,
+                radius_mm,
+                ..
+            } => RegionSet2D::from_circle(
+                DVec2::new(center_wcs.x, center_wcs.y),
+                radius_mm + engage_pad,
+            ),
+            crate::stock::ResolvedStockGeometry::Box { aabb_wcs }
+            | crate::stock::ResolvedStockGeometry::Cylinder { aabb_wcs, .. } => rect_region_2d(
+                aabb_wcs.min.x - engage_pad,
+                aabb_wcs.min.y - engage_pad,
+                aabb_wcs.max.x + engage_pad,
+                aabb_wcs.max.y + engage_pad,
+            ),
+        };
         let sub_set = RegionSet2D::from_single(spec.sub_reg.clone());
-        let exterior_air = sub_set.difference(&stock_engage_box);
+        let exterior_air = sub_set.difference(&stock_engage_region);
         if !exterior_air.is_empty() && exterior_air.total_area_mm2() > 1e-3 {
             return Ok(exterior_air);
         }

@@ -311,8 +311,8 @@ fn relief_wave_09_finishing_tridexel_oracle_eliminates_gouge() {
     op_par.tool_id = Some(ball_6.id.clone());
     op_par.heights.bottom = HeightSpec::new(HeightReference::ModelTop, -10.0);
     if let StrategyParams::Parallel3D(p) = op_par.strategy_mut() {
-        p.boundary_mode = MachiningBoundaryMode::ModelSilhouette;
-        p.tool_containment = ToolContainmentMode::ToolCenterOnBoundary;
+        p.boundary.boundary_mode = MachiningBoundaryMode::ModelSilhouette;
+        p.boundary.tool_containment = ToolContainmentMode::ToolCenterOnBoundary;
         p.use_cusp_height = true;
         p.cusp_height = ParamLength::from_mm(0.04);
         p.pass_angle_deg = 45.0;
@@ -335,8 +335,8 @@ fn relief_wave_09_finishing_tridexel_oracle_eliminates_gouge() {
         min_rest_thickness: ParamLength::from_mm(0.05),
     };
     if let StrategyParams::Scallop3D(p) = op_sc.strategy_mut() {
-        p.boundary_mode = MachiningBoundaryMode::ModelSilhouette;
-        p.tool_containment = ToolContainmentMode::ToolCenterOnBoundary;
+        p.boundary.boundary_mode = MachiningBoundaryMode::ModelSilhouette;
+        p.boundary.tool_containment = ToolContainmentMode::ToolCenterOnBoundary;
         p.cusp_height = ParamLength::from_mm(0.04);
         p.max_stepover = ParamLength::from_mm(1.5);
         p.min_stepover = ParamLength::from_mm(0.25);
@@ -447,8 +447,8 @@ fn pencil3d_diagonal_concave_fillet_subcell_centering_tracks_exact_crease_within
     let mut op = Operation::new("op_pencil_diag", "Diagonal Pencil", OperationKind::Pencil3D);
     op.tool_id = Some(ball_3.id.clone());
     if let StrategyParams::Pencil3D(p) = op.strategy_mut() {
-        p.boundary_mode = MachiningBoundaryMode::ModelSilhouette;
-        p.tool_containment = ToolContainmentMode::ToolInsideBoundary;
+        p.boundary.boundary_mode = MachiningBoundaryMode::ModelSilhouette;
+        p.boundary.tool_containment = ToolContainmentMode::ToolInsideBoundary;
         p.reference_tool_diameter = ParamLength::from_mm(8.0);
         p.valley_threshold = ParamLength::from_mm(0.08);
         p.num_offset_passes = 0;
@@ -545,8 +545,8 @@ fn waterline3d_localized_shallow_shelf_inserts_adaptive_z_levels_despite_small_a
         op.heights.bottom = HeightSpec::new(HeightReference::ModelBottom, 2.0);
         op.passes.max_stepdown = ParamLength::from_mm(4.0);
         if let StrategyParams::Waterline3D(p) = op.strategy_mut() {
-            p.boundary_mode = MachiningBoundaryMode::StockBox;
-            p.tool_containment = ToolContainmentMode::ToolOutsideBoundary;
+            p.boundary.boundary_mode = MachiningBoundaryMode::StockBox;
+            p.boundary.tool_containment = ToolContainmentMode::ToolOutsideBoundary;
             p.adaptive_stepdown = adaptive;
             p.min_stepdown = ParamLength::from_mm(0.5);
             p.max_cusp_height = ParamLength::from_mm(0.05);
@@ -698,8 +698,8 @@ fn sculpted_dome_08_tridexel_oracle_zero_gouge_and_clean_crown() {
     op_pencil.tool_id = Some(ball_3.id.clone());
     op_pencil.heights.bottom = HeightSpec::new(HeightReference::ModelTop, -25.0);
     if let StrategyParams::Pencil3D(p) = op_pencil.strategy_mut() {
-        p.boundary_mode = MachiningBoundaryMode::ModelSilhouette;
-        p.tool_containment = ToolContainmentMode::ToolInsideBoundary;
+        p.boundary.boundary_mode = MachiningBoundaryMode::ModelSilhouette;
+        p.boundary.tool_containment = ToolContainmentMode::ToolInsideBoundary;
         p.reference_tool_diameter = ParamLength::from_mm(6.0);
         p.valley_threshold = ParamLength::from_mm(0.15);
         p.num_offset_passes = 0;
@@ -901,7 +901,7 @@ fn adaptive3d_indexed_helical_loft_zero_gouge_and_zero_rapid_crashes() {
     op_3ax.passes.stock_to_leave_radial = ParamLength::from_mm(0.4);
     op_3ax.passes.stock_to_leave_axial = ParamLength::from_mm(0.25);
     if let StrategyParams::Adaptive3D(p) = op_3ax.strategy_mut() {
-        p.boundary_mode = MachiningBoundaryMode::StockBox;
+        p.boundary.boundary_mode = MachiningBoundaryMode::StockBox;
         p.max_roughing_stepdown = ParamLength::from_mm(6.0);
         p.fine_stepdown = ParamLength::from_mm(3.0);
         p.adaptive.optimal_load = ParamLength::from_mm(1.8);
@@ -1004,7 +1004,7 @@ fn adaptive3d_indexed_helical_loft_zero_gouge_and_zero_rapid_crashes() {
         op.passes.stock_to_leave_radial = ParamLength::from_mm(0.4);
         op.passes.stock_to_leave_axial = ParamLength::from_mm(0.25);
         if let StrategyParams::Adaptive3D(p) = op.strategy_mut() {
-            p.boundary_mode = MachiningBoundaryMode::StockBox;
+            p.boundary.boundary_mode = MachiningBoundaryMode::StockBox;
             p.max_roughing_stepdown = ParamLength::from_mm(6.0);
             p.fine_stepdown = ParamLength::from_mm(3.0);
             p.adaptive.optimal_load = ParamLength::from_mm(1.8);

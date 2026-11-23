@@ -116,9 +116,9 @@ pub fn build_tutorial_3d_adaptive_waterline_project(
             side_flip: false,
         });
     if let StrategyParams::Adaptive3D(p) = op_rough.strategy_mut() {
-        p.boundary_mode = chip_cam::MachiningBoundaryMode::SelectedRegions;
-        p.tool_containment = chip_cam::ToolContainmentMode::ToolOutsideBoundary;
-        p.boundary_offset = ParamLength::from_mm(0.5);
+        p.boundary.boundary_mode = chip_cam::MachiningBoundaryMode::SelectedRegions;
+        p.boundary.tool_containment = chip_cam::ToolContainmentMode::ToolOutsideBoundary;
+        p.boundary.boundary_offset = ParamLength::from_mm(0.5);
         p.max_roughing_stepdown = ParamLength::from_mm(5.0);
         p.fine_stepdown = ParamLength::from_mm(1.5);
         p.adaptive.optimal_load = ParamLength::from_mm(1.8);
@@ -140,9 +140,9 @@ pub fn build_tutorial_3d_adaptive_waterline_project(
     op_wl.passes.stock_to_leave_radial = ParamLength::from_mm(0.0);
     op_wl.passes.stock_to_leave_axial = ParamLength::from_mm(0.0);
     if let StrategyParams::Waterline3D(p) = op_wl.strategy_mut() {
-        p.boundary_mode = chip_cam::MachiningBoundaryMode::ModelSilhouette;
-        p.tool_containment = chip_cam::ToolContainmentMode::ToolOutsideBoundary;
-        p.boundary_offset = ParamLength::from_mm(0.5);
+        p.boundary.boundary_mode = chip_cam::MachiningBoundaryMode::ModelSilhouette;
+        p.boundary.tool_containment = chip_cam::ToolContainmentMode::ToolOutsideBoundary;
+        p.boundary.boundary_offset = ParamLength::from_mm(0.5);
         p.adaptive_stepdown = true;
         p.min_stepdown = ParamLength::from_mm(0.4);
         p.max_cusp_height = ParamLength::from_mm(0.05);
@@ -253,8 +253,8 @@ pub fn build_tutorial_3d_surface_finishing_project(
     op_par.passes.stock_to_leave_radial = ParamLength::from_mm(0.0);
     op_par.passes.stock_to_leave_axial = ParamLength::from_mm(0.0);
     if let StrategyParams::Parallel3D(p) = op_par.strategy_mut() {
-        p.boundary_mode = chip_cam::MachiningBoundaryMode::ModelSilhouette;
-        p.tool_containment = chip_cam::ToolContainmentMode::ToolCenterOnBoundary;
+        p.boundary.boundary_mode = chip_cam::MachiningBoundaryMode::ModelSilhouette;
+        p.boundary.tool_containment = chip_cam::ToolContainmentMode::ToolCenterOnBoundary;
         p.use_cusp_height = true;
         p.cusp_height = ParamLength::from_mm(0.04);
         p.pass_angle_deg = 45.0;
@@ -286,8 +286,8 @@ pub fn build_tutorial_3d_surface_finishing_project(
         min_rest_thickness: ParamLength::from_mm(0.05),
     };
     if let StrategyParams::Scallop3D(p) = op_scallop.strategy_mut() {
-        p.boundary_mode = chip_cam::MachiningBoundaryMode::ModelSilhouette;
-        p.tool_containment = chip_cam::ToolContainmentMode::ToolCenterOnBoundary;
+        p.boundary.boundary_mode = chip_cam::MachiningBoundaryMode::ModelSilhouette;
+        p.boundary.tool_containment = chip_cam::ToolContainmentMode::ToolCenterOnBoundary;
         p.cusp_height = ParamLength::from_mm(0.04);
         p.max_stepover = ParamLength::from_mm(1.5);
         p.min_stepover = ParamLength::from_mm(0.25);
@@ -421,8 +421,8 @@ pub fn build_tutorial_16_yup_stl_project(
             fin.preset_id = bm.presets.first().map(|p| p.id.clone());
             fin.heights.bottom = HeightSpec::new(HeightReference::ModelBottom, 0.0);
             if let StrategyParams::Parallel3D(p) = fin.strategy_mut() {
-                p.boundary_mode = chip_cam::MachiningBoundaryMode::ModelSilhouette;
-                p.tool_containment = chip_cam::ToolContainmentMode::ToolInsideBoundary;
+                p.boundary.boundary_mode = chip_cam::MachiningBoundaryMode::ModelSilhouette;
+                p.boundary.tool_containment = chip_cam::ToolContainmentMode::ToolInsideBoundary;
                 p.use_cusp_height = false;
                 p.stepover = ParamLength::from_mm(2.0);
                 p.pass_angle_deg = 0.0;

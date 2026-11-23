@@ -1,6 +1,8 @@
 use chip_math::{EvalContext, ParamLength};
 use serde::{Deserialize, Serialize};
 
+use super::surface_3d::{MachiningBoundaryConfig, MachiningBoundaryMode, ToolContainmentMode};
+
 fn default_true() -> bool {
     true
 }
@@ -412,9 +414,67 @@ impl DovetailParams {
     }
 }
 
+fn default_undercut3d_boundary() -> MachiningBoundaryConfig {
+    MachiningBoundaryConfig::new(
+        MachiningBoundaryMode::ModelSilhouette,
+        ToolContainmentMode::ToolOutsideBoundary,
+        0.0,
+    )
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct Undercut3DParamsDe {
+    #[serde(default)]
+    boundary_mode: Option<MachiningBoundaryMode>,
+    #[serde(default)]
+    tool_containment: Option<ToolContainmentMode>,
+    #[serde(default)]
+    boundary_offset: Option<ParamLength>,
+    #[serde(default = "default_undercut3d_z_stepdown")]
+    z_stepdown: ParamLength,
+    #[serde(default)]
+    use_cusp_height: bool,
+    #[serde(default = "default_undercut3d_target_cusp")]
+    target_cusp: ParamLength,
+    #[serde(default = "default_min_overhang_angle_deg")]
+    min_overhang_angle_deg: f64,
+    #[serde(default = "default_neck_clearance")]
+    neck_clearance: ParamLength,
+    #[serde(default = "default_zero_length")]
+    stock_to_leave: ParamLength,
+    #[serde(default = "default_lead_out_distance")]
+    lead_out_distance: ParamLength,
+    #[serde(default = "default_true")]
+    climb_direction: bool,
+}
+
+impl From<Undercut3DParamsDe> for Undercut3DParams {
+    fn from(raw: Undercut3DParamsDe) -> Self {
+        let def = default_undercut3d_boundary();
+        Self {
+            boundary: MachiningBoundaryConfig {
+                boundary_mode: raw.boundary_mode.unwrap_or(def.boundary_mode),
+                tool_containment: raw.tool_containment.unwrap_or(def.tool_containment),
+                boundary_offset: raw.boundary_offset.unwrap_or(def.boundary_offset),
+            },
+            z_stepdown: raw.z_stepdown,
+            use_cusp_height: raw.use_cusp_height,
+            target_cusp: raw.target_cusp,
+            min_overhang_angle_deg: raw.min_overhang_angle_deg,
+            neck_clearance: raw.neck_clearance,
+            stock_to_leave: raw.stock_to_leave,
+            lead_out_distance: raw.lead_out_distance,
+            climb_direction: raw.climb_direction,
+        }
+    }
+}
+
 /// Strategy parameters for **3D Lollipop Undercut Finishing** (`OperationKind::Undercut3D`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(from = "Undercut3DParamsDe")]
 pub struct Undercut3DParams {
+    #[serde(flatten)]
+    pub boundary: MachiningBoundaryConfig,
     /// Constant horizontal Z-slice stepdown across overhanging surfaces (`mm`, default `0.4 mm`).
     #[serde(default = "default_undercut3d_z_stepdown")]
     pub z_stepdown: ParamLength,
@@ -444,6 +504,7 @@ pub struct Undercut3DParams {
 impl Default for Undercut3DParams {
     fn default() -> Self {
         Self {
+            boundary: default_undercut3d_boundary(),
             z_stepdown: default_undercut3d_z_stepdown(),
             use_cusp_height: false,
             target_cusp: default_undercut3d_target_cusp(),
@@ -458,6 +519,7 @@ impl Default for Undercut3DParams {
 
 impl Undercut3DParams {
     pub fn reevaluate(&mut self, ctx: &EvalContext) {
+        self.boundary.reevaluate(ctx);
         let _ = self.z_stepdown.reevaluate(ctx);
         let _ = self.target_cusp.reevaluate(ctx);
         let _ = self.neck_clearance.reevaluate(ctx);

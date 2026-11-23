@@ -3218,6 +3218,7 @@ fn m66_undercut3d_lollipop_neck_clipping_and_tridexel_parity() {
         stock_to_leave: ParamLength::from_mm(0.0),
         lead_out_distance: ParamLength::from_mm(4.0),
         climb_direction: true,
+        ..Undercut3DParams::default()
     }));
 
     let cancel = AtomicBool::new(false);

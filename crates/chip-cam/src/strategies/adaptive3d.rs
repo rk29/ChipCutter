@@ -9,7 +9,7 @@ use chip_math::DVec3;
 
 use crate::{
     offset2d::PocketRegion2D,
-    params::{Adaptive3DParams, MachiningBoundaryMode, Pocket2DParams},
+    params::{Adaptive3DParams, Pocket2DParams},
     rest2d::{RegionSet2D, swept_toolpath_coverage_2d},
     strategies::{
         StrategyExecContext,
@@ -17,7 +17,7 @@ use crate::{
     },
     surface3d::{
         PushCutterField, SurfaceCutterProfile, SurfaceMesh3D,
-        levels::{detect_flat_plateaus, resolve_3d_containment_region, stock_xy_region},
+        levels::{detect_flat_plateaus, resolve_3d_containment_region_detailed, stock_xy_region},
     },
     toolpath::ToolpathBuilder,
     wcs::CamError,
@@ -56,30 +56,18 @@ pub fn generate_adaptive3d(
         });
     }
 
-    // Resolve 2D tool-center containment boundary.
-    // For `StockBox` roughing, expand as a sharp rectangle past the physical stock edge (`tool_r + 1.5 mm`)
-    // so `generate_adaptive_region_slice` has a continuous connected open-air frame on all 4 sides & corners!
-    let containment = match params.boundary_mode {
-        MachiningBoundaryMode::StockBox => {
-            let sa = ctx.setup.stock.aabb_wcs();
-            let pad = tool_r + params.boundary_offset.value_mm.max(1.0);
-            crate::surface3d::levels::rect_region_2d(
-                sa.min.x - pad,
-                sa.min.y - pad,
-                sa.max.x + pad,
-                sa.max.y + pad,
-            )
-        }
-        _ => resolve_3d_containment_region(
-            &surface,
-            ctx.setup,
-            &ctx.selection,
-            params.boundary_mode,
-            params.tool_containment,
-            params.boundary_offset.value_mm,
-            tool_r,
-        ),
-    };
+    // Resolve 2D tool-center containment boundary uniformly across StockBox, ModelSilhouette, and SelectedRegions.
+    let resolved_boundary = resolve_3d_containment_region_detailed(
+        &surface,
+        ctx.setup,
+        &ctx.selection,
+        params.boundary.boundary_mode,
+        params.boundary.tool_containment,
+        params.boundary.boundary_offset.value_mm,
+        tool_r,
+    );
+    builder.warnings.extend(resolved_boundary.warnings);
+    let containment = resolved_boundary.effective_region;
     if containment.is_empty() {
         return Err(CamError::EmptyToolpath {
             op_name: ctx.op.name.clone(),

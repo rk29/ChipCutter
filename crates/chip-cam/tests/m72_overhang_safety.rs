@@ -279,7 +279,7 @@ fn adaptive3d_and_waterline3d_wider_shank_overhang_pass_tridexel_zero_collisions
     op_adap.passes.stock_to_leave_radial = ParamLength::from_mm(0.2);
     op_adap.passes.stock_to_leave_axial = ParamLength::from_mm(0.1);
     if let StrategyParams::Adaptive3D(p) = op_adap.strategy_mut() {
-        p.boundary_mode = MachiningBoundaryMode::StockBox;
+        p.boundary.boundary_mode = MachiningBoundaryMode::StockBox;
         p.max_roughing_stepdown = ParamLength::from_mm(4.0);
         p.fine_stepdown = ParamLength::from_mm(2.0);
         p.adaptive.optimal_load = ParamLength::from_mm(1.5);
@@ -316,8 +316,8 @@ fn adaptive3d_and_waterline3d_wider_shank_overhang_pass_tridexel_zero_collisions
     op_wl.heights.bottom = HeightSpec::new(HeightReference::ModelBottom, 2.5);
     op_wl.passes.max_stepdown = ParamLength::from_mm(2.5);
     if let StrategyParams::Waterline3D(p) = op_wl.strategy_mut() {
-        p.boundary_mode = MachiningBoundaryMode::StockBox;
-        p.tool_containment = ToolContainmentMode::ToolOutsideBoundary;
+        p.boundary.boundary_mode = MachiningBoundaryMode::StockBox;
+        p.boundary.tool_containment = ToolContainmentMode::ToolOutsideBoundary;
         p.adaptive_stepdown = false;
         p.detect_flats = true;
     }
@@ -429,7 +429,7 @@ fn adaptive3d_and_waterline3d_holder_clearance_avoids_tall_overhang_in_tridexel(
     op_adap.passes.stock_to_leave_radial = ParamLength::from_mm(0.2);
     op_adap.passes.stock_to_leave_axial = ParamLength::from_mm(0.1);
     if let StrategyParams::Adaptive3D(p) = op_adap.strategy_mut() {
-        p.boundary_mode = MachiningBoundaryMode::StockBox;
+        p.boundary.boundary_mode = MachiningBoundaryMode::StockBox;
         p.max_roughing_stepdown = ParamLength::from_mm(6.0);
         p.fine_stepdown = ParamLength::from_mm(2.0);
         p.adaptive.optimal_load = ParamLength::from_mm(2.0);
@@ -464,8 +464,8 @@ fn adaptive3d_and_waterline3d_holder_clearance_avoids_tall_overhang_in_tridexel(
     op_wl.heights.bottom = HeightSpec::new(HeightReference::ModelBottom, 2.5);
     op_wl.passes.max_stepdown = ParamLength::from_mm(3.0);
     if let StrategyParams::Waterline3D(p) = op_wl.strategy_mut() {
-        p.boundary_mode = MachiningBoundaryMode::StockBox;
-        p.tool_containment = ToolContainmentMode::ToolOutsideBoundary;
+        p.boundary.boundary_mode = MachiningBoundaryMode::StockBox;
+        p.boundary.tool_containment = ToolContainmentMode::ToolOutsideBoundary;
         p.adaptive_stepdown = false;
         p.detect_flats = true;
     }

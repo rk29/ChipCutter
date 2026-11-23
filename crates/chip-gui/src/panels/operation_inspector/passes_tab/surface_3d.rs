@@ -131,9 +131,9 @@ pub(super) fn show_waterline3d_params(
     show_3d_boundary_card(
         ui,
         ("wl3d_boundary_card", setup_idx, op_idx),
-        &mut p.boundary_mode,
-        &mut p.tool_containment,
-        &mut p.boundary_offset,
+        &mut p.boundary.boundary_mode,
+        &mut p.boundary.tool_containment,
+        &mut p.boundary.boundary_offset,
         &mut item,
     );
 }
@@ -216,9 +216,9 @@ pub(super) fn show_adaptive3d_params(
     show_3d_boundary_card(
         ui,
         ("a3d_boundary_card", setup_idx, op_idx),
-        &mut p.boundary_mode,
-        &mut p.tool_containment,
-        &mut p.boundary_offset,
+        &mut p.boundary.boundary_mode,
+        &mut p.boundary.tool_containment,
+        &mut p.boundary.boundary_offset,
         &mut item,
     );
 }
@@ -344,9 +344,9 @@ pub(super) fn show_parallel3d_params(
     show_3d_boundary_card(
         ui,
         ("par3d_boundary_card", setup_idx, op_idx),
-        &mut p.boundary_mode,
-        &mut p.tool_containment,
-        &mut p.boundary_offset,
+        &mut p.boundary.boundary_mode,
+        &mut p.boundary.tool_containment,
+        &mut p.boundary.boundary_offset,
         &mut item,
     );
 }
@@ -443,9 +443,9 @@ pub(super) fn show_scallop3d_params(
     show_3d_boundary_card(
         ui,
         ("sc3d_boundary_card", setup_idx, op_idx),
-        &mut p.boundary_mode,
-        &mut p.tool_containment,
-        &mut p.boundary_offset,
+        &mut p.boundary.boundary_mode,
+        &mut p.boundary.tool_containment,
+        &mut p.boundary.boundary_offset,
         &mut item,
     );
 }
@@ -507,9 +507,9 @@ pub(super) fn show_pencil3d_params(
     show_3d_boundary_card(
         ui,
         ("pen3d_boundary_card", setup_idx, op_idx),
-        &mut p.boundary_mode,
-        &mut p.tool_containment,
-        &mut p.boundary_offset,
+        &mut p.boundary.boundary_mode,
+        &mut p.boundary.tool_containment,
+        &mut p.boundary.boundary_offset,
         &mut item,
     );
 }

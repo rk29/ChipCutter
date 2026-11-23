@@ -16,17 +16,16 @@ use chip_tools::CutterGeometry;
 
 use crate::{
     cl_data::MotionRole,
-    params::{MachiningBoundaryMode, ToolContainmentMode, Undercut3DParams},
+    params::Undercut3DParams,
     rest2d::RegionSet2D,
     strategies::StrategyExecContext,
-    surface3d::{SurfaceMesh3D, resolve_3d_containment_region},
+    surface3d::{SurfaceMesh3D, resolve_3d_containment_region_detailed},
     toolpath::ToolpathBuilder,
     wcs::CamError,
 };
 
 #[derive(Debug, Clone, Copy)]
 struct OverhangStation {
-    surf_wcs: DVec3,
     tip_wcs: DVec3,
     outward_xy: DVec2,
 }
@@ -69,7 +68,6 @@ impl LollipopSpecs {
             return None;
         }
         Some(OverhangStation {
-            surf_wcs: p_surf,
             tip_wcs: tip,
             outward_xy: DVec2::new(n.x / n_xy_len, n.y / n_xy_len),
         })
@@ -177,21 +175,23 @@ pub fn generate_undercut3d(
         neck_clearance: params.neck_clearance.value_mm.max(0.0),
     };
 
-    // Optional 2D containment region when user explicitly selected boundary contours/faces
-    let containment_opt: Option<RegionSet2D> = if !ctx.selection.features.is_empty() {
-        let reg = resolve_3d_containment_region(
-            &surface,
-            ctx.setup,
-            &ctx.selection,
-            MachiningBoundaryMode::SelectedRegions,
-            ToolContainmentMode::ToolCenterOnBoundary,
-            0.0,
-            sphere_r,
-        );
-        (!reg.is_empty()).then_some(reg)
-    } else {
-        None
-    };
+    // Resolve 2D XY tool-center containment boundary from `params.boundary`
+    let resolved_boundary = resolve_3d_containment_region_detailed(
+        &surface,
+        ctx.setup,
+        &ctx.selection,
+        params.boundary.boundary_mode,
+        params.boundary.tool_containment,
+        params.boundary.boundary_offset.value_mm,
+        specs.eff_r,
+    );
+    builder.warnings.extend(resolved_boundary.warnings);
+    if resolved_boundary.effective_region.is_empty() {
+        return Err(CamError::EmptyToolpath {
+            op_name: ctx.op.name.clone(),
+        });
+    }
+    let containment_opt: Option<RegionSet2D> = Some(resolved_boundary.effective_region);
 
     // 3. Identify overhanging downward-facing triangles (`n_z <= -sin(min_overhang_angle)`)
     let sin_min = params.min_overhang_angle_deg.to_radians().sin();
@@ -576,8 +576,10 @@ fn trim_chain_for_neck_and_head_clearance(
     for &(p_surf, n_surf) in dense {
         let sol = specs.solve_tip(p_surf, n_surf);
         let ok = sol.is_some_and(|st| {
-            let in_xy = containment
-                .is_none_or(|reg| reg.contains_point(DVec2::new(st.surf_wcs.x, st.surf_wcs.y)));
+            let in_xy = containment.is_none_or(|reg| {
+                let tip_xy = DVec2::new(st.tip_wcs.x, st.tip_wcs.y);
+                reg.contains_point(tip_xy) || reg.min_distance_to_boundary(tip_xy) <= 0.02
+            });
             in_xy && is_lollipop_station_clear(st.tip_wcs, specs, surface, cand_buf)
         });
         solved.push(sol);
@@ -659,8 +661,10 @@ fn binary_refine_overhang_boundary(
         let p = good.0.lerp(bad.0, mid);
         let n = good.1.lerp(bad.1, mid).normalize_or_zero();
         let ok = if let Some(st) = specs.solve_tip(p, n) {
-            let in_xy = containment
-                .is_none_or(|reg| reg.contains_point(DVec2::new(st.surf_wcs.x, st.surf_wcs.y)));
+            let in_xy = containment.is_none_or(|reg| {
+                let tip_xy = DVec2::new(st.tip_wcs.x, st.tip_wcs.y);
+                reg.contains_point(tip_xy) || reg.min_distance_to_boundary(tip_xy) <= 0.02
+            });
             if in_xy && is_lollipop_station_clear(st.tip_wcs, specs, surface, cand_buf) {
                 best = Some(st);
                 true

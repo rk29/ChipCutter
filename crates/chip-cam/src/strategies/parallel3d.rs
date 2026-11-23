@@ -18,7 +18,7 @@ use crate::{
         RestMaskGrid2D, SurfaceCutterProfile, SurfaceLinkConfig, SurfaceMesh3D, build_3d_rest_mask,
         drop_cutter_z_with_scratch, emit_final_surface_retract, emit_surface_safe_link,
         finishing::{simplify_3d_polyline_gouge_safe, split_chains_at_overhang_cliffs},
-        levels::{resolve_3d_containment_region, sample_surface_slope_deg},
+        levels::{resolve_3d_containment_region_detailed, sample_surface_slope_deg},
         refine_convex_chords_3d, region_aabb_2d, stepover_for_cusp_height,
     },
     toolpath::ToolpathBuilder,
@@ -61,15 +61,17 @@ pub fn generate_parallel3d(
         });
     }
 
-    let containment = resolve_3d_containment_region(
+    let resolved_boundary = resolve_3d_containment_region_detailed(
         &surface,
         ctx.setup,
         &ctx.selection,
-        params.boundary_mode,
-        params.tool_containment,
-        params.boundary_offset.value_mm,
+        params.boundary.boundary_mode,
+        params.boundary.tool_containment,
+        params.boundary.boundary_offset.value_mm,
         tool_r,
     );
+    builder.warnings.extend(resolved_boundary.warnings);
+    let containment = resolved_boundary.effective_region;
     let Some(bounds) = region_aabb_2d(&containment) else {
         return Err(CamError::EmptyToolpath {
             op_name: ctx.op.name.clone(),

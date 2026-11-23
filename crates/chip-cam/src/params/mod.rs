@@ -109,6 +109,32 @@ impl StrategyParams {
         }
     }
 
+    pub fn machining_boundary(&self) -> Option<&MachiningBoundaryConfig> {
+        match self {
+            Self::Waterline3D(p) => Some(&p.boundary),
+            Self::Adaptive3D(p) => Some(&p.boundary),
+            Self::Parallel3D(p) => Some(&p.boundary),
+            Self::Scallop3D(p) => Some(&p.boundary),
+            Self::Pencil3D(p) => Some(&p.boundary),
+            Self::Undercut3D(p) => Some(&p.boundary),
+            Self::Deburr3D(p) => Some(&p.boundary),
+            _ => None,
+        }
+    }
+
+    pub fn machining_boundary_mut(&mut self) -> Option<&mut MachiningBoundaryConfig> {
+        match self {
+            Self::Waterline3D(p) => Some(&mut p.boundary),
+            Self::Adaptive3D(p) => Some(&mut p.boundary),
+            Self::Parallel3D(p) => Some(&mut p.boundary),
+            Self::Scallop3D(p) => Some(&mut p.boundary),
+            Self::Pencil3D(p) => Some(&mut p.boundary),
+            Self::Undercut3D(p) => Some(&mut p.boundary),
+            Self::Deburr3D(p) => Some(&mut p.boundary),
+            _ => None,
+        }
+    }
+
     pub fn reevaluate(&mut self, ctx: &EvalContext) {
         match self {
             Self::Facing(p) => p.reevaluate(ctx),

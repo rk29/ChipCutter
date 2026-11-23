@@ -28,7 +28,8 @@ pub use finishing::{
     simplify_3d_polyline_rdp, stepover_for_cusp_height,
 };
 pub use levels::{
-    clip_polyline_to_region, detect_flat_plateaus, rect_region_2d, resolve_3d_containment_region,
+    ResolvedBoundary2D, clip_polyline_to_region, detect_flat_plateaus, rect_region_2d,
+    resolve_3d_containment_region, resolve_3d_containment_region_detailed,
     sample_surface_slope_deg, stock_xy_region,
 };
 pub use overhang_guard::{

@@ -837,8 +837,8 @@ fn v3_golden_3axis_mesh_surfacing_snapshots_match_byte_for_byte() {
     op_par.preset_id = ball_6_preset;
     op_par.heights.bottom = HeightSpec::new(HeightReference::ModelTop, -25.0);
     if let StrategyParams::Parallel3D(p) = op_par.strategy_mut() {
-        p.boundary_mode = MachiningBoundaryMode::ModelSilhouette;
-        p.tool_containment = ToolContainmentMode::ToolInsideBoundary;
+        p.boundary.boundary_mode = MachiningBoundaryMode::ModelSilhouette;
+        p.boundary.tool_containment = ToolContainmentMode::ToolInsideBoundary;
         p.use_cusp_height = false;
         p.stepover = ParamLength::from_mm(3.0);
         p.pass_angle_deg = 0.0;
@@ -1968,7 +1968,7 @@ fn cli_simulate_all_setups_carryover_emits_cumulative_json_and_text_reports() {
     op1.passes.stock_to_leave_radial = ParamLength::from_mm(0.0);
     op1.passes.stock_to_leave_axial = ParamLength::from_mm(0.0);
     if let StrategyParams::Adaptive3D(p) = op1.strategy_mut() {
-        p.boundary_mode = MachiningBoundaryMode::StockBox;
+        p.boundary.boundary_mode = MachiningBoundaryMode::StockBox;
         p.max_roughing_stepdown = ParamLength::from_mm(5.0);
         p.fine_stepdown = ParamLength::from_mm(2.0);
         p.adaptive.optimal_load = ParamLength::from_mm(2.2);
@@ -2016,7 +2016,7 @@ fn cli_simulate_all_setups_carryover_emits_cumulative_json_and_text_reports() {
     op2.passes.stock_to_leave_radial = ParamLength::from_mm(0.0);
     op2.passes.stock_to_leave_axial = ParamLength::from_mm(0.0);
     if let StrategyParams::Adaptive3D(p) = op2.strategy_mut() {
-        p.boundary_mode = MachiningBoundaryMode::StockBox;
+        p.boundary.boundary_mode = MachiningBoundaryMode::StockBox;
         p.max_roughing_stepdown = ParamLength::from_mm(4.0);
         p.fine_stepdown = ParamLength::from_mm(2.0);
         p.adaptive.optimal_load = ParamLength::from_mm(2.2);

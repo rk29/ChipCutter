@@ -996,6 +996,27 @@ pub fn validate_project_with_machine(
                     }
                 };
 
+                if let Some(boundary) = op.resolved_strategy().machining_boundary()
+                    && boundary.boundary_mode == chip_cam::MachiningBoundaryMode::SelectedRegions
+                {
+                    let has_2d_region = summary.features.iter().any(|feat| {
+                        matches!(
+                            feat,
+                            chip_cam::ExtractedFeature25D::PlanarFace { .. }
+                                | chip_cam::ExtractedFeature25D::Contour {
+                                    polyline_wcs: chip_math::ArcPolyline2D { closed: true, .. },
+                                    ..
+                                }
+                        )
+                    });
+                    if !has_2d_region {
+                        report.push_warning(
+                            &op_scope,
+                            "3D Machining Boundary is set to 'Selected 2D Contours' but no closed 2D contours or planar faces are selected; falling back to Model Silhouette.",
+                        );
+                    }
+                }
+
                 let (inf_top_z, inf_bot_z) =
                     if op.kind.is_3d_surface() && summary.features.is_empty() {
                         (
@@ -1233,5 +1254,145 @@ mod tests {
             OperationKind::Undercut3D
         );
         assert_eq!(parsed.setups[0].operations, proj.setups[0].operations);
+    }
+
+    #[test]
+    fn m80_toml_backward_compatibility_and_selected_regions_validation_warning() {
+        use chip_cam::{
+            GeometrySelectionItem, MachiningBoundaryConfig, MachiningBoundaryMode,
+            ToolContainmentMode, Undercut3DParams,
+        };
+        use chip_sketch::{RectAnchorMode, SketchEntity, SketchEntityEntry, SketchLayer};
+
+        // 1. Legacy flat TOML keys deserialize losslessly into `MachiningBoundaryConfig` for all 5 3D strategies
+        let legacy_3d_toml = r#"
+strategy_kind = "adaptive_3d"
+boundary_mode = "model_silhouette"
+tool_containment = "tool_inside_boundary"
+boundary_offset = { value_mm = -1.5 }
+"#;
+        let parsed_a3d: StrategyParams = toml::from_str(legacy_3d_toml).unwrap();
+        let b = parsed_a3d.machining_boundary().unwrap();
+        assert_eq!(b.boundary_mode, MachiningBoundaryMode::ModelSilhouette);
+        assert_eq!(b.tool_containment, ToolContainmentMode::ToolInsideBoundary);
+        assert!((b.boundary_offset.value_mm - (-1.5)).abs() < 1e-9);
+        // Re-serialization preserves flat key names (`boundary_mode`, `tool_containment`, `boundary_offset`)
+        let re_toml = toml::to_string(&parsed_a3d).unwrap();
+        assert!(re_toml.contains("boundary_mode = \"model_silhouette\""));
+        assert!(re_toml.contains("tool_containment = \"tool_inside_boundary\""));
+        assert!(re_toml.contains("boundary_offset"));
+
+        // 2. Legacy Undercut3D & Deburr3D TOML without boundary keys load with clean defaults
+        let legacy_u3d = r#"
+strategy_kind = "undercut_3d"
+z_stepdown = { value_mm = 0.3 }
+"#;
+        let parsed_u3d: StrategyParams = toml::from_str(legacy_u3d).unwrap();
+        assert_eq!(
+            *parsed_u3d.machining_boundary().unwrap(),
+            MachiningBoundaryConfig::new(
+                MachiningBoundaryMode::ModelSilhouette,
+                ToolContainmentMode::ToolOutsideBoundary,
+                0.0
+            )
+        );
+
+        let legacy_deb = r#"
+strategy_kind = "deburr_3d"
+chamfer_width = { value_mm = 0.4 }
+auto_detect_edges = true
+"#;
+        let parsed_deb: StrategyParams = toml::from_str(legacy_deb).unwrap();
+        assert_eq!(
+            *parsed_deb.machining_boundary().unwrap(),
+            MachiningBoundaryConfig::new(
+                MachiningBoundaryMode::ModelSilhouette,
+                ToolContainmentMode::ToolOutsideBoundary,
+                0.0
+            )
+        );
+
+        // Explicit keys on Undercut3D / Deburr3D roundtrip losslessly
+        let explicit_u3d = StrategyParams::Undercut3D(Undercut3DParams {
+            boundary: MachiningBoundaryConfig::new(
+                MachiningBoundaryMode::SelectedRegions,
+                ToolContainmentMode::ToolInsideBoundary,
+                0.75,
+            ),
+            ..Undercut3DParams::default()
+        });
+        let u3d_txt = toml::to_string(&explicit_u3d).unwrap();
+        assert!(u3d_txt.contains("boundary_mode = \"selected_regions\""));
+        let u3d_rt: StrategyParams = toml::from_str(&u3d_txt).unwrap();
+        assert_eq!(u3d_rt, explicit_u3d);
+
+        // 3. Validation emits a non-blocking warning when SelectedRegions has zero 2D/planar selections
+        let step = sample_overhang_flange_step().unwrap();
+        let doc = MonstertruckKernel
+            .load_step_bytes("flange.step", step.as_bytes(), DEFAULT_TESS_CHORD_TOL_MM)
+            .unwrap();
+        let lolli_6 = starter_lollipop_6mm();
+
+        let mut proj = ProjectDocument::new("M80 Boundary Validation");
+        proj.tools = vec![lolli_6.clone()];
+        proj.setups = vec![Setup::new("s1", "Setup 1", WorkOffsetSlot::G54)];
+
+        let mut op = Operation::new("op_u3d", "3D Undercut", OperationKind::Undercut3D);
+        op.tool_id = Some(lolli_6.id.clone());
+        op.machining_boundary_mut().unwrap().boundary_mode = MachiningBoundaryMode::SelectedRegions;
+        proj.setups[0].operations = vec![op];
+
+        let rep_warn = validate_project(&proj, None, Some(&doc));
+        assert!(
+            rep_warn.is_valid(),
+            "missing SelectedRegions must be a non-blocking warning, not error: {:?}",
+            rep_warn.diagnostics
+        );
+        assert!(
+            rep_warn.diagnostics.iter().any(|d| {
+                d.severity == DiagnosticSeverity::Warning
+                    && d.message.contains("Selected 2D Contours")
+            }),
+            "expected SelectedRegions warning, got: {:?}",
+            rep_warn.diagnostics
+        );
+
+        // Selecting a closed 2D sketch contour clears the warning!
+        let mut sk = SketchLayer::new("sk_1", "Window", "s1");
+        sk.entities.push(SketchEntityEntry {
+            id: "r1".to_string(),
+            name: "Rect".to_string(),
+            is_construction: false,
+            sub_layer: Some("DEFAULT".to_string()),
+            entity: SketchEntity::Rectangle {
+                x: ParamLength::from_mm(0.0),
+                y: ParamLength::from_mm(0.0),
+                width: ParamLength::from_mm(30.0),
+                height: ParamLength::from_mm(30.0),
+                corner_radius: ParamLength::from_mm(0.0),
+                rotation_deg: 0.0,
+                anchor: RectAnchorMode::Center,
+            },
+        });
+        sk.rebuild_regions(None);
+        proj.sketches.push(sk);
+        proj.setups[0].operations[0]
+            .selections
+            .push(GeometrySelectionItem::SketchLayerAll {
+                sketch_id: "sk_1".to_string(),
+                sub_layer: None,
+                reverse: false,
+                side_flip: false,
+            });
+        let rep_clean = validate_project(&proj, None, Some(&doc));
+        assert!(rep_clean.is_valid());
+        assert!(
+            !rep_clean.diagnostics.iter().any(|d| {
+                d.severity == DiagnosticSeverity::Warning
+                    && d.message.contains("Selected 2D Contours")
+            }),
+            "SelectedRegions warning should clear once a closed contour is selected: {:?}",
+            rep_clean.diagnostics
+        );
     }
 }
