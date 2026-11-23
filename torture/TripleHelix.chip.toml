@@ -1,0 +1,938 @@
+schema_version = 3
+project_name = "Simultaneous 4-Axis Helical Flute (X+Y+Z+A)"
+display_units = "millimeter"
+machine_id = "carvera-air"
+
+[[models]]
+id = "model_1"
+path = "TripleHelix-Body.step"
+sha256 = "b47977058a660c175a300ecaed11b3d72270b3a9fdc5f9f7f07b2a04ec8fcc42"
+
+[models.transform]
+translate_mm = [
+    -29.999999999999996,
+    0.0,
+    30.0,
+]
+rotate_deg = [
+    0.0,
+    90.0,
+    0.0,
+]
+
+[[tools]]
+id = "t1_6mm_flat_3fl"
+tool_number = 1
+length_offset_number = 1
+diameter_offset_number = 1
+name = "6mm 3FL Carbide Flat Endmill"
+vendor = "Generic Carbide"
+native_unit = "millimeter"
+spindle_direction = "cw"
+default_coolant = "air_blast"
+stickout_length_mm = 24.0
+
+[tools.geometry]
+type = "flat_endmill"
+diameter_mm = 6.0
+flute_length_mm = 18.0
+overall_length_mm = 50.0
+shank_diameter_mm = 6.0
+flutes = 3
+
+[[tools.presets]]
+id = "al6061_rough"
+name = "Aluminum 6061 - Roughing"
+material = "Aluminum 6061"
+spindle_rpm = 13793.428401297597
+surface_speed_m_min = 260.0
+cutting_feed_mm_min = 1737.9719785634973
+chipload_mm_tooth = 0.042
+lead_feed_mm_min = 1390.3775828507978
+ramp_feed_mm_min = 868.9859892817486
+plunge_feed_mm_min = 579.3239928544991
+default_stepdown_mm = 3.0
+default_stepover_mm = 2.4
+coolant_override = "mist"
+
+[[tools.presets]]
+id = "al6061_finish"
+name = "Aluminum 6061 - Finishing"
+material = "Aluminum 6061"
+spindle_rpm = 16976.527263135504
+surface_speed_m_min = 320.0
+cutting_feed_mm_min = 1527.8874536821952
+chipload_mm_tooth = 0.03
+lead_feed_mm_min = 1222.3099629457563
+ramp_feed_mm_min = 763.9437268410976
+plunge_feed_mm_min = 509.29581789406507
+default_stepdown_mm = 9.0
+default_stepover_mm = 0.6
+coolant_override = "mist"
+
+[[tools.presets]]
+id = "plywood"
+name = "Baltic Birch Plywood"
+material = "Hardwood / Plywood"
+spindle_rpm = 18037.56021708147
+surface_speed_m_min = 340.0
+cutting_feed_mm_min = 3517.324242330887
+chipload_mm_tooth = 0.065
+lead_feed_mm_min = 2813.85939386471
+ramp_feed_mm_min = 1758.6621211654435
+plunge_feed_mm_min = 1172.4414141102957
+default_stepdown_mm = 6.0
+default_stepover_mm = 3.0
+coolant_override = "disabled"
+
+[[tools.presets]]
+id = "delrin"
+name = "Acetal / Delrin"
+material = "Engineering Plastic"
+spindle_rpm = 14854.461355243566
+surface_speed_m_min = 280.0
+cutting_feed_mm_min = 2673.803043943842
+chipload_mm_tooth = 0.06
+lead_feed_mm_min = 2139.0424351550737
+ramp_feed_mm_min = 1336.901521971921
+plunge_feed_mm_min = 891.267681314614
+default_stepdown_mm = 4.0
+default_stepover_mm = 3.0
+coolant_override = "air_blast"
+
+[[tools.presets]]
+id = "steel1018"
+name = "Mild Steel 1018"
+material = "Mild Steel"
+spindle_rpm = 5039.906531243352
+surface_speed_m_min = 95.0
+cutting_feed_mm_min = 377.99298984325145
+chipload_mm_tooth = 0.025
+lead_feed_mm_min = 302.3943918746012
+ramp_feed_mm_min = 188.99649492162573
+plunge_feed_mm_min = 125.99766328108382
+default_stepdown_mm = 1.5
+default_stepover_mm = 1.2
+coolant_override = "flood"
+
+[[tools]]
+id = "t2_1_4in_bull_3fl"
+tool_number = 2
+length_offset_number = 2
+diameter_offset_number = 2
+name = '1/4 in 3FL Bull-Nose R0.020"'
+vendor = "Lakeshore Carbide"
+native_unit = "inch"
+spindle_direction = "cw"
+default_coolant = "flood"
+stickout_length_mm = 25.4
+
+[tools.geometry]
+type = "bull_nose_endmill"
+diameter_mm = 6.35
+corner_radius_mm = 0.508
+flute_length_mm = 19.049999999999997
+overall_length_mm = 63.5
+shank_diameter_mm = 6.35
+flutes = 3
+
+[[tools.presets]]
+id = "al6061_rough"
+name = "Aluminum 6061 - Roughing"
+material = "Aluminum 6061"
+spindle_rpm = 12531.885282826406
+surface_speed_m_min = 250.0
+cutting_feed_mm_min = 1691.8045131815647
+chipload_mm_tooth = 0.045
+lead_feed_mm_min = 1353.4436105452519
+ramp_feed_mm_min = 845.9022565907824
+plunge_feed_mm_min = 563.9348377271882
+default_stepdown_mm = 3.175
+default_stepover_mm = 2.54
+coolant_override = "flood"
+
+[[tools.presets]]
+id = "steel1018"
+name = "Mild Steel 1018"
+material = "Mild Steel"
+spindle_rpm = 4511.478701817506
+surface_speed_m_min = 90.0
+cutting_feed_mm_min = 338.36090263631297
+chipload_mm_tooth = 0.025
+lead_feed_mm_min = 270.6887221090504
+ramp_feed_mm_min = 169.18045131815649
+plunge_feed_mm_min = 112.78696754543766
+default_stepdown_mm = 1.5
+default_stepover_mm = 1.27
+coolant_override = "flood"
+
+[[tools]]
+id = "t3_1_8in_flat_2fl"
+tool_number = 3
+length_offset_number = 3
+diameter_offset_number = 3
+name = "1/8 in 2FL Carbide Flat"
+native_unit = "inch"
+spindle_direction = "cw"
+default_coolant = "air_blast"
+stickout_length_mm = 16.0
+
+[tools.geometry]
+type = "flat_endmill"
+diameter_mm = 3.175
+flute_length_mm = 12.0
+overall_length_mm = 38.1
+shank_diameter_mm = 3.175
+flutes = 2
+
+[[tools.presets]]
+id = "al6061_slot"
+name = "Aluminum 6061 - Fine Pocket"
+material = "Aluminum 6061"
+spindle_rpm = 18045.914807270023
+surface_speed_m_min = 180.0
+cutting_feed_mm_min = 794.020251519881
+chipload_mm_tooth = 0.022
+lead_feed_mm_min = 635.2162012159048
+ramp_feed_mm_min = 397.0101257599405
+plunge_feed_mm_min = 264.67341717329367
+default_stepdown_mm = 1.2
+default_stepover_mm = 1.27
+coolant_override = "air_blast"
+
+[[tools.presets]]
+id = "plywood"
+name = "Baltic Birch Plywood"
+material = "Hardwood / Plywood"
+spindle_rpm = 22056.118097774473
+surface_speed_m_min = 220.0
+cutting_feed_mm_min = 1985.0506287997025
+chipload_mm_tooth = 0.045
+lead_feed_mm_min = 1588.0405030397621
+ramp_feed_mm_min = 992.5253143998513
+plunge_feed_mm_min = 661.6835429332342
+default_stepdown_mm = 3.175
+default_stepover_mm = 1.5
+coolant_override = "disabled"
+
+[[tools]]
+id = "t4_6mm_ball_2fl"
+tool_number = 4
+length_offset_number = 4
+diameter_offset_number = 4
+name = "6mm 2FL Carbide Ball Endmill"
+native_unit = "millimeter"
+spindle_direction = "cw"
+default_coolant = "air_blast"
+stickout_length_mm = 24.0
+
+[tools.geometry]
+type = "ball_endmill"
+diameter_mm = 6.0
+flute_length_mm = 16.0
+overall_length_mm = 50.0
+shank_diameter_mm = 6.0
+flutes = 2
+
+[[tools.presets]]
+id = "al6061_groove"
+name = "Aluminum 6061 - Groove/Contour"
+material = "Aluminum 6061"
+spindle_rpm = 12732.395447351628
+surface_speed_m_min = 240.0
+cutting_feed_mm_min = 814.8733086305042
+chipload_mm_tooth = 0.032
+lead_feed_mm_min = 651.8986469044034
+ramp_feed_mm_min = 407.4366543152521
+plunge_feed_mm_min = 271.6244362101681
+default_stepdown_mm = 1.5
+default_stepover_mm = 1.2
+coolant_override = "mist"
+
+[[tools]]
+id = "carvera_t5_3175mm_2fl_ball"
+tool_number = 5
+length_offset_number = 5
+diameter_offset_number = 5
+name = '3.175mm (1/8") x 10mm 2FL Ball Nose (Metal)'
+vendor = "Makera (Essential Milling Bit Set - Extended)"
+product_id = "MAKERA-3175x10-2FL-BALL"
+native_unit = "millimeter"
+spindle_direction = "cw"
+default_coolant = "air_blast"
+stickout_length_mm = 19.0
+
+[tools.geometry]
+type = "ball_endmill"
+diameter_mm = 3.175
+flute_length_mm = 10.0
+overall_length_mm = 38.0
+shank_diameter_mm = 3.175
+flutes = 2
+
+[[tools.presets]]
+id = "carvera_ball_al"
+name = "Aluminum 6061 - 3D / 4-Axis"
+material = "Aluminum 6061"
+spindle_rpm = 11529.334460200293
+surface_speed_m_min = 115.0
+cutting_feed_mm_min = 461.17337840801173
+chipload_mm_tooth = 0.02
+lead_feed_mm_min = 368.9387027264094
+ramp_feed_mm_min = 230.58668920400586
+plunge_feed_mm_min = 153.72445946933723
+default_stepdown_mm = 0.4
+default_stepover_mm = 0.3
+coolant_override = "air_blast"
+
+[[tools.presets]]
+id = "carvera_ball_wood"
+name = "Hardwood / Epoxy - 3D / 4-Axis"
+material = "Hardwood / Tooling Board"
+spindle_rpm = 12531.885282826406
+surface_speed_m_min = 125.0
+cutting_feed_mm_min = 1002.5508226261126
+chipload_mm_tooth = 0.04
+lead_feed_mm_min = 802.0406581008901
+ramp_feed_mm_min = 501.2754113130563
+plunge_feed_mm_min = 334.1836075420375
+default_stepdown_mm = 1.0
+default_stepover_mm = 0.4
+coolant_override = "disabled"
+
+[[tools]]
+id = "t5_6mm_90deg_chamfer"
+tool_number = 5
+length_offset_number = 5
+diameter_offset_number = 5
+name = "6mm 90° Carbide Chamfer / Spot Mill"
+native_unit = "millimeter"
+spindle_direction = "cw"
+default_coolant = "air_blast"
+stickout_length_mm = 22.0
+
+[tools.geometry]
+type = "chamfer_mill"
+diameter_mm = 6.0
+tip_diameter_mm = 0.2
+included_angle_deg = 90.0
+flute_length_mm = 12.0
+overall_length_mm = 50.0
+shank_diameter_mm = 6.0
+flutes = 2
+
+[[tools.presets]]
+id = "al6061_chamfer"
+name = "Aluminum 6061 - Deburr/Spot"
+material = "Aluminum 6061"
+spindle_rpm = 9549.29658551372
+surface_speed_m_min = 180.0
+cutting_feed_mm_min = 534.7606087887684
+chipload_mm_tooth = 0.028
+lead_feed_mm_min = 427.80848703101475
+ramp_feed_mm_min = 267.3803043943842
+plunge_feed_mm_min = 178.2535362629228
+default_stepdown_mm = 1.0
+default_stepover_mm = 0.5
+coolant_override = "air_blast"
+
+[[tools]]
+id = "t6_6mm_118deg_drill"
+tool_number = 6
+length_offset_number = 6
+diameter_offset_number = 6
+name = "6.0mm 118° Carbide Stub Drill"
+native_unit = "millimeter"
+spindle_direction = "cw"
+default_coolant = "flood"
+stickout_length_mm = 32.0
+
+[tools.geometry]
+type = "twist_drill"
+diameter_mm = 6.0
+point_angle_deg = 118.0
+flute_length_mm = 28.0
+overall_length_mm = 66.0
+shank_diameter_mm = 6.0
+flutes = 2
+
+[[tools.presets]]
+id = "al6061_drill"
+name = "Aluminum 6061 - Peck Drill"
+material = "Aluminum 6061"
+spindle_rpm = 4774.64829275686
+surface_speed_m_min = 90.0
+cutting_feed_mm_min = 525.2113122032547
+chipload_mm_tooth = 0.055
+lead_feed_mm_min = 420.1690497626038
+ramp_feed_mm_min = 262.60565610162735
+plunge_feed_mm_min = 175.0704374010849
+default_stepdown_mm = 6.0
+default_stepover_mm = 6.0
+coolant_override = "flood"
+
+[[tools]]
+id = "t7_38mm_facemill_3fl"
+tool_number = 7
+length_offset_number = 7
+diameter_offset_number = 7
+name = "38mm 3-Insert APKT Face Mill"
+native_unit = "millimeter"
+spindle_direction = "cw"
+default_coolant = "air_blast"
+stickout_length_mm = 35.0
+
+[tools.geometry]
+type = "face_mill"
+cutting_diameter_mm = 38.0
+outside_diameter_mm = 40.0
+corner_radius_mm = 0.8
+flute_length_mm = 10.0
+overall_length_mm = 45.0
+shank_diameter_mm = 19.05
+flutes = 3
+
+[[tools.presets]]
+id = "al6061_face"
+name = "Aluminum 6061 - Decking"
+material = "Aluminum 6061"
+spindle_rpm = 2931.8015832717565
+surface_speed_m_min = 350.0
+cutting_feed_mm_min = 703.6323799852215
+chipload_mm_tooth = 0.08
+lead_feed_mm_min = 562.9059039881772
+ramp_feed_mm_min = 351.81618999261076
+plunge_feed_mm_min = 234.5441266617405
+default_stepdown_mm = 1.0
+default_stepover_mm = 26.0
+coolant_override = "air_blast"
+
+[[tools]]
+id = "t8_6mm_60deg_vbit"
+tool_number = 8
+length_offset_number = 8
+diameter_offset_number = 8
+name = "6mm 60° Carbide Engraving V-Bit"
+native_unit = "millimeter"
+spindle_direction = "cw"
+default_coolant = "air_blast"
+stickout_length_mm = 20.0
+
+[tools.geometry]
+type = "chamfer_mill"
+diameter_mm = 6.0
+tip_diameter_mm = 0.0
+included_angle_deg = 60.0
+flute_length_mm = 10.0
+overall_length_mm = 50.0
+shank_diameter_mm = 6.0
+flutes = 2
+
+[[tools.presets]]
+id = "hardwood_vcarve"
+name = "Hardwood / Acrylic - V-Carve & Inlay"
+material = "Hardwood / Acrylic"
+spindle_rpm = 15915.494309189535
+surface_speed_m_min = 300.0
+cutting_feed_mm_min = 1432.3944878270581
+chipload_mm_tooth = 0.045
+lead_feed_mm_min = 1145.9155902616465
+ramp_feed_mm_min = 716.1972439135291
+plunge_feed_mm_min = 477.46482927568604
+default_stepdown_mm = 3.0
+default_stepover_mm = 0.5
+coolant_override = "disabled"
+
+[[tools.presets]]
+id = "al6061_vcarve"
+name = "Aluminum 6061 - Fine V-Engrave"
+material = "Aluminum 6061"
+spindle_rpm = 9549.29658551372
+surface_speed_m_min = 180.0
+cutting_feed_mm_min = 381.97186342054886
+chipload_mm_tooth = 0.02
+lead_feed_mm_min = 305.5774907364391
+ramp_feed_mm_min = 190.98593171027443
+plunge_feed_mm_min = 127.32395447351628
+default_stepdown_mm = 0.8
+default_stepover_mm = 0.35
+coolant_override = "air_blast"
+
+[[tools]]
+id = "t9_475mm_single_thread_mill"
+tool_number = 9
+length_offset_number = 9
+diameter_offset_number = 9
+name = "4.75mm 3FL 60° Single-Point Thread Mill (M6–M12)"
+vendor = "Generic Carbide"
+native_unit = "millimeter"
+spindle_direction = "cw"
+default_coolant = "air_blast"
+stickout_length_mm = 22.0
+
+[tools.geometry]
+type = "thread_mill"
+diameter_mm = 4.75
+neck_diameter_mm = 2.85
+neck_length_mm = 16.0
+pitch_mm = 1.0
+teeth_count = 1
+thread_angle_deg = 60.0
+flute_length_mm = 1.2
+overall_length_mm = 50.0
+shank_diameter_mm = 6.0
+flutes = 3
+
+[[tools.presets]]
+id = "al6061_thread"
+name = "Aluminum 6061 - Helical Threading"
+material = "Aluminum 6061"
+spindle_rpm = 12062.269371175227
+surface_speed_m_min = 180.0
+cutting_feed_mm_min = 723.7361622705137
+chipload_mm_tooth = 0.02
+lead_feed_mm_min = 578.988929816411
+ramp_feed_mm_min = 361.86808113525683
+plunge_feed_mm_min = 241.24538742350455
+default_stepdown_mm = 1.0
+default_stepover_mm = 0.5
+coolant_override = "mist"
+
+[[tools.presets]]
+id = "delrin_thread"
+name = "Acetal / Delrin - Helical Threading"
+material = "Engineering Plastic"
+spindle_rpm = 13402.52152352803
+surface_speed_m_min = 200.0
+cutting_feed_mm_min = 1005.1891142646023
+chipload_mm_tooth = 0.025
+lead_feed_mm_min = 804.1512914116819
+ramp_feed_mm_min = 502.59455713230113
+plunge_feed_mm_min = 335.06303808820076
+default_stepdown_mm = 1.0
+default_stepover_mm = 0.6
+coolant_override = "air_blast"
+
+[[tools.presets]]
+id = "steel1018_thread"
+name = "Mild Steel 1018 - Helical Threading"
+material = "Mild Steel"
+spindle_rpm = 5025.945571323011
+surface_speed_m_min = 75.0
+cutting_feed_mm_min = 180.9340405676284
+chipload_mm_tooth = 0.012
+lead_feed_mm_min = 144.74723245410271
+ramp_feed_mm_min = 90.4670202838142
+plunge_feed_mm_min = 60.31134685587613
+default_stepdown_mm = 1.0
+default_stepover_mm = 0.35
+coolant_override = "flood"
+
+[[tools]]
+id = "t10_310mm_micro_thread_mill"
+tool_number = 10
+length_offset_number = 10
+diameter_offset_number = 10
+name = "3.10mm 3FL 60° Micro Single-Point Thread Mill (M4–M6)"
+vendor = "Generic Carbide"
+native_unit = "millimeter"
+spindle_direction = "cw"
+default_coolant = "air_blast"
+stickout_length_mm = 18.0
+
+[tools.geometry]
+type = "thread_mill"
+diameter_mm = 3.1
+neck_diameter_mm = 1.85
+neck_length_mm = 12.0
+pitch_mm = 0.7
+teeth_count = 1
+thread_angle_deg = 60.0
+flute_length_mm = 0.9
+overall_length_mm = 50.0
+shank_diameter_mm = 4.0
+flutes = 3
+
+[[tools.presets]]
+id = "al6061_micro_thread"
+name = "Aluminum 6061 - Micro Threading"
+material = "Aluminum 6061"
+spindle_rpm = 13348.479098029931
+surface_speed_m_min = 130.0
+cutting_feed_mm_min = 600.6815594113469
+chipload_mm_tooth = 0.015
+lead_feed_mm_min = 480.5452475290776
+ramp_feed_mm_min = 300.34077970567347
+plunge_feed_mm_min = 200.22718647044897
+default_stepdown_mm = 0.7
+default_stepover_mm = 0.35
+coolant_override = "mist"
+
+[[tools.presets]]
+id = "delrin_micro_thread"
+name = "Acetal / Delrin - Micro Threading"
+material = "Engineering Plastic"
+spindle_rpm = 14888.688224725693
+surface_speed_m_min = 145.0
+cutting_feed_mm_min = 893.3212934835416
+chipload_mm_tooth = 0.02
+lead_feed_mm_min = 714.6570347868333
+ramp_feed_mm_min = 446.6606467417708
+plunge_feed_mm_min = 297.77376449451384
+default_stepdown_mm = 0.7
+default_stepover_mm = 0.4
+coolant_override = "air_blast"
+
+[[setups]]
+id = "setup_1"
+name = "Setup 1 — Simultaneous 4-Axis A-Chuck"
+target_bodies = []
+wcs_slot = "G54"
+post_profile = "linuxcnc_4axis"
+
+[setups.wcs.orientation]
+mode = "model_orientation"
+flip_z = false
+flip_x = false
+clock_90 = 0
+
+[setups.wcs.origin]
+mode = "stock_box_point"
+
+[setups.wcs.origin.anchor]
+x = "center"
+y = "center"
+z = "center"
+
+[[setups.wcs.additional_offset_wcs]]
+value_mm = 0.0
+
+[[setups.wcs.additional_offset_wcs]]
+value_mm = 0.0
+
+[[setups.wcs.additional_offset_wcs]]
+value_mm = 0.0
+
+[setups.stock]
+type = "fixed_cylinder"
+axis = "x"
+
+[setups.stock.diameter]
+value_mm = 42.0
+
+[setups.stock.length]
+value_mm = 80.0
+
+[setups.stock.axial_top_offset]
+value_mm = 0.0
+
+[setups.rotary]
+mode = "simultaneous4_axis"
+axis = "x_axis"
+direction = "right_hand_ccw"
+chuck_end_positive = false
+unwind_mode = "continuous_multi_turn"
+
+[[setups.rotary.center_offset_wcs]]
+value_mm = 0.0
+
+[[setups.rotary.center_offset_wcs]]
+value_mm = 0.0
+
+[setups.rotary.clearance_radial_offset]
+value_mm = 12.0
+
+[setups.rotary.chuck_length]
+value_mm = 20.0
+
+[setups.rotary.chuck_diameter]
+value_mm = 65.0
+
+[setups.heights.clearance]
+reference = "stock_top"
+
+[setups.heights.clearance.offset]
+value_mm = 10.0
+
+[setups.heights.retract]
+reference = "stock_top"
+
+[setups.heights.retract.offset]
+value_mm = 5.0
+
+[setups.heights.default_feed_offset]
+value_mm = 2.0
+
+[[setups.operations]]
+id = "op_1_4ax_rough"
+name = "4-Axis Helical Roughing (Auto-Tilt)"
+kind = "rotary_4axis_sim"
+suppressed = false
+tool_id = "carvera_t5_3175mm_2fl_ball"
+preset_id = "carvera_ball_al"
+selections = []
+
+[setups.operations.feed_overrides]
+
+[setups.operations.heights.clearance]
+reference = "setup_clearance"
+
+[setups.operations.heights.clearance.offset]
+value_mm = 0.0
+
+[setups.operations.heights.retract]
+reference = "setup_retract"
+
+[setups.operations.heights.retract.offset]
+value_mm = 0.0
+
+[setups.operations.heights.feed]
+reference = "operation_top"
+
+[setups.operations.heights.feed.offset]
+value_mm = 2.0
+
+[setups.operations.heights.top]
+reference = "stock_top"
+
+[setups.operations.heights.top.offset]
+value_mm = 0.0
+
+[setups.operations.heights.bottom]
+reference = "model_bottom"
+
+[setups.operations.heights.bottom.offset]
+value_mm = 0.0
+
+[setups.operations.passes]
+multiple_depths = true
+even_stepdowns = true
+tolerance_mm = 0.01
+
+[setups.operations.passes.max_stepdown]
+value_mm = 3.0
+
+[setups.operations.passes.stock_to_leave_radial]
+value_mm = 0.25
+
+[setups.operations.passes.stock_to_leave_axial]
+value_mm = 0.25
+
+[setups.operations.linking]
+retract_policy = "minimum_retract"
+ramp_angle_deg = 2.5
+lead_out_same_as_in = true
+
+[setups.operations.linking.safe_stay_down_distance]
+expr = "tool_d * 2.0"
+value_mm = 12.0
+
+[setups.operations.linking.entry_mode]
+mode = "helical_ramp"
+
+[setups.operations.linking.min_ramp_diameter]
+expr = "tool_d * 0.4"
+value_mm = 2.4
+
+[setups.operations.linking.lead_in]
+enabled = true
+horizontal_sweep_deg = 90.0
+
+[setups.operations.linking.lead_in.horizontal_radius]
+expr = "tool_d * 0.25"
+value_mm = 1.5
+
+[setups.operations.linking.lead_in.linear_length]
+expr = "tool_d * 0.15"
+value_mm = 0.9
+
+[setups.operations.linking.lead_in.vertical_radius]
+value_mm = 0.0
+
+[setups.operations.linking.lead_out]
+enabled = true
+horizontal_sweep_deg = 90.0
+
+[setups.operations.linking.lead_out.horizontal_radius]
+expr = "tool_d * 0.25"
+value_mm = 1.5
+
+[setups.operations.linking.lead_out.linear_length]
+expr = "tool_d * 0.15"
+value_mm = 0.9
+
+[setups.operations.linking.lead_out.vertical_radius]
+value_mm = 0.0
+
+[setups.operations.linking.seam_overlap]
+value_mm = 0.5
+
+[setups.operations.strategy]
+strategy_kind = "rotary_4axis_sim"
+pattern = "simultaneous_spiral"
+cut_direction = "zig_zag"
+tilt_mode = "surface_normal_auto_tilt"
+max_tilt_deg = 16.0
+tilt_smoothing_window = 3
+use_cusp_height = false
+start_angle_deg = 0.0
+end_angle_deg = 360.0
+angular_sample_deg = 2.5
+
+[setups.operations.strategy.lateral_offset]
+value_mm = 2.5
+
+[setups.operations.strategy.stepover]
+value_mm = 2.6
+
+[setups.operations.strategy.cusp_height]
+value_mm = 0.025
+
+[setups.operations.strategy.axial_margin_start]
+value_mm = 11.0
+
+[setups.operations.strategy.axial_margin_end]
+value_mm = 11.0
+
+[setups.operations.strategy.axial_sample_step]
+value_mm = 0.5
+
+[setups.operations.strategy.smoothing_tolerance]
+value_mm = 0.005
+
+[[setups.operations]]
+id = "op_2_4ax_finish"
+name = "4-Axis Helical Finishing (Auto-Tilt)"
+kind = "rotary_4axis_sim"
+suppressed = false
+tool_id = "carvera_t5_3175mm_2fl_ball"
+preset_id = "carvera_ball_al"
+selections = []
+
+[setups.operations.feed_overrides]
+
+[setups.operations.heights.clearance]
+reference = "setup_clearance"
+
+[setups.operations.heights.clearance.offset]
+value_mm = 0.0
+
+[setups.operations.heights.retract]
+reference = "setup_retract"
+
+[setups.operations.heights.retract.offset]
+value_mm = 0.0
+
+[setups.operations.heights.feed]
+reference = "operation_top"
+
+[setups.operations.heights.feed.offset]
+value_mm = 2.0
+
+[setups.operations.heights.top]
+reference = "stock_top"
+
+[setups.operations.heights.top.offset]
+value_mm = 0.0
+
+[setups.operations.heights.bottom]
+reference = "model_bottom"
+
+[setups.operations.heights.bottom.offset]
+value_mm = 0.0
+
+[setups.operations.passes]
+multiple_depths = false
+even_stepdowns = true
+tolerance_mm = 0.01
+
+[setups.operations.passes.max_stepdown]
+value_mm = 3.0
+
+[setups.operations.passes.stock_to_leave_radial]
+value_mm = 0.0
+
+[setups.operations.passes.stock_to_leave_axial]
+value_mm = 0.0
+
+[setups.operations.linking]
+retract_policy = "minimum_retract"
+ramp_angle_deg = 2.5
+lead_out_same_as_in = true
+
+[setups.operations.linking.safe_stay_down_distance]
+expr = "tool_d * 2.0"
+value_mm = 12.0
+
+[setups.operations.linking.entry_mode]
+mode = "helical_ramp"
+
+[setups.operations.linking.min_ramp_diameter]
+expr = "tool_d * 0.4"
+value_mm = 2.4
+
+[setups.operations.linking.lead_in]
+enabled = true
+horizontal_sweep_deg = 90.0
+
+[setups.operations.linking.lead_in.horizontal_radius]
+expr = "tool_d * 0.25"
+value_mm = 1.5
+
+[setups.operations.linking.lead_in.linear_length]
+expr = "tool_d * 0.15"
+value_mm = 0.9
+
+[setups.operations.linking.lead_in.vertical_radius]
+value_mm = 0.0
+
+[setups.operations.linking.lead_out]
+enabled = true
+horizontal_sweep_deg = 90.0
+
+[setups.operations.linking.lead_out.horizontal_radius]
+expr = "tool_d * 0.25"
+value_mm = 1.5
+
+[setups.operations.linking.lead_out.linear_length]
+expr = "tool_d * 0.15"
+value_mm = 0.9
+
+[setups.operations.linking.lead_out.vertical_radius]
+value_mm = 0.0
+
+[setups.operations.linking.seam_overlap]
+value_mm = 0.5
+
+[setups.operations.strategy]
+strategy_kind = "rotary_4axis_sim"
+pattern = "simultaneous_spiral"
+cut_direction = "zig_zag"
+tilt_mode = "surface_normal_auto_tilt"
+max_tilt_deg = 18.0
+tilt_smoothing_window = 3
+use_cusp_height = true
+start_angle_deg = 0.0
+end_angle_deg = 360.0
+angular_sample_deg = 1.5
+
+[setups.operations.strategy.lateral_offset]
+value_mm = 2.5
+
+[setups.operations.strategy.stepover]
+value_mm = 1.5
+
+[setups.operations.strategy.cusp_height]
+value_mm = 0.02
+
+[setups.operations.strategy.axial_margin_start]
+value_mm = 11.0
+
+[setups.operations.strategy.axial_margin_end]
+value_mm = 11.0
+
+[setups.operations.strategy.axial_sample_step]
+value_mm = 0.25
+
+[setups.operations.strategy.smoothing_tolerance]
+value_mm = 0.005
