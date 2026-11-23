@@ -5,17 +5,38 @@ use chip_cam::{BoxAnchor27, StockConfig, WcsOriginMode};
 use chip_math::ParamLength;
 use chip_project::{ModelEntry, ProjectDocument, compute_sha256_hex, portable_model_path};
 use chip_tools::default_starter_tool_library;
+use clap::Args;
 
+#[derive(Debug, Args)]
 pub struct ImportMeshArgs {
+    /// Input `.stl`, `.obj`, or `.3mf` mesh file.
     pub input: PathBuf,
+    /// Destination `.chip.toml` project file.
+    #[arg(short, long)]
     pub output: PathBuf,
+    /// Mesh unit override (`auto`, `mm`, `in`, `cm`, `m`, `ft`, `um`).
+    #[arg(long, default_value = "auto")]
     pub mesh_units: String,
+    /// Rotate imported mesh around X axis (degrees).
+    #[arg(long, default_value_t = 0.0, allow_hyphen_values = true)]
     pub rot_x: f64,
+    /// Rotate imported mesh around Y axis (degrees).
+    #[arg(long, default_value_t = 0.0, allow_hyphen_values = true)]
     pub rot_y: f64,
+    /// Rotate imported mesh around Z axis (degrees).
+    #[arg(long, default_value_t = 0.0, allow_hyphen_values = true)]
     pub rot_z: f64,
+    /// Uniform scale factor applied to imported mesh (`1.0` default).
+    #[arg(long, default_value_t = 1.0)]
     pub scale: f64,
+    /// Convert Y-up mesh to Z-up (`+90°` around X).
+    #[arg(long)]
     pub y_up_to_z_up: bool,
+    /// Center transformed mesh XY bounds on `(0, 0)`.
+    #[arg(long)]
     pub center_xy: bool,
+    /// Drop bottom of transformed mesh to `Z = 0`.
+    #[arg(long)]
     pub drop_z0: bool,
 }
 

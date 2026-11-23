@@ -12,56 +12,139 @@ use chip_cam::{
 use chip_math::{DVec2, ParamLength};
 use chip_project::ProjectDocument;
 use chip_tools::{CutterGeometry, Tool};
+use clap::Args;
 
 use super::{load_primary_cad_for_project, load_project_or_chipz};
 
+#[derive(Debug, Args)]
 pub struct AddViseArgs {
+    /// Path to `.chip.toml` project file.
     pub project: PathBuf,
+    /// Optional output `.chip.toml` path (overwrites `project` in place if omitted).
+    #[arg(short, long)]
     pub output: Option<PathBuf>,
+    /// Target Setup (0-based index, ID, or name; defaults to Setup 0).
+    #[arg(long)]
     pub setup: Option<String>,
+    /// Optional display name for the vise fixture.
+    #[arg(long)]
     pub name: Option<String>,
+    /// Clamp axis (`y` = front/rear jaws default, `x` = left/right jaws).
+    #[arg(long, default_value = "y")]
     pub axis: String,
+    /// Jaw width along the non-clamping axis (`mm`).
+    #[arg(long, default_value_t = 100.0)]
     pub jaw_width: f64,
+    /// Thickness of each jaw plate (`mm`).
+    #[arg(long, default_value_t = 18.0)]
     pub jaw_thickness: f64,
+    /// Total jaw height (`mm`).
+    #[arg(long, default_value_t = 38.0)]
     pub jaw_height: f64,
+    /// Height of stock bottom gripped upward inside jaws (`mm`).
+    #[arg(long, default_value_t = 5.0)]
     pub grip_depth: f64,
+    /// Optional inward step-shelf depth under stock bottom (`mm`, `0` = flat jaws).
+    #[arg(long, default_value_t = 0.0)]
     pub step_depth: f64,
+    /// Optional step-shelf vertical thickness below stock bottom (`mm`, `0` = flat jaws).
+    #[arg(long, default_value_t = 0.0)]
     pub step_height: f64,
+    /// Include a pair of machinist parallels beneath the workpiece.
+    #[arg(long)]
     pub parallels: bool,
+    /// Thickness of each parallel bar (`mm`).
+    #[arg(long, default_value_t = 3.175)]
     pub parallel_thickness: f64,
+    /// Stationary fixed jaw side (`positive` = rear/+Y default, `negative` = front/-Y).
+    #[arg(long, default_value = "positive")]
     pub fixed_side: String,
+    /// Safety clearance margin halo (`mm`).
+    #[arg(long, default_value_t = 1.0)]
     pub clearance: f64,
 }
 
+#[derive(Debug, Args)]
 pub struct AddClampArgs {
+    /// Path to `.chip.toml` project file.
     pub project: PathBuf,
+    /// Optional output `.chip.toml` path (overwrites `project` in place if omitted).
+    #[arg(short, long)]
     pub output: Option<PathBuf>,
+    /// Target Setup (0-based index, ID, or name; defaults to Setup 0).
+    #[arg(long)]
     pub setup: Option<String>,
+    /// Optional display name for the clamp fixture.
+    #[arg(long)]
     pub name: Option<String>,
+    /// Clamp nose contact X coordinate in Setup WCS (`mm`).
+    #[arg(long, allow_hyphen_values = true)]
     pub x: f64,
+    /// Clamp nose contact Y coordinate in Setup WCS (`mm`).
+    #[arg(long, allow_hyphen_values = true)]
     pub y: f64,
+    /// Outward approach yaw angle (`deg` in Setup XY; `0` = extends toward `+X`).
+    #[arg(long, default_value_t = 0.0, allow_hyphen_values = true)]
     pub yaw: f64,
+    /// Vertical Z datum reference (`stock_top`, `stock_bottom`, `wcs_origin`).
+    #[arg(long, default_value = "stock_top")]
     pub z_ref: String,
+    /// Signed Z offset from `z_ref` (`mm`).
+    #[arg(long, default_value_t = 0.0, allow_hyphen_values = true)]
     pub z_offset: f64,
+    /// Strap length (`mm`).
+    #[arg(long, default_value_t = 45.0)]
     pub strap_length: f64,
+    /// Strap width (`mm`).
+    #[arg(long, default_value_t = 16.0)]
     pub strap_width: f64,
+    /// Strap thickness/height (`mm`).
+    #[arg(long, default_value_t = 10.0)]
     pub strap_height: f64,
+    /// Nose overlap onto stock edge (`mm`).
+    #[arg(long, default_value_t = 6.0)]
     pub nose_overhang: f64,
+    /// T-slot stud/bolt diameter (`mm`).
+    #[arg(long, default_value_t = 8.0)]
     pub stud_diameter: f64,
+    /// Stud/nut height protruding above top of strap (`mm`).
+    #[arg(long, default_value_t = 12.0)]
     pub stud_height: f64,
+    /// Safety clearance margin halo (`mm`).
+    #[arg(long, default_value_t = 1.0)]
     pub clearance: f64,
 }
 
+#[derive(Debug, Args)]
 pub struct AddSpoilboardArgs {
+    /// Path to `.chip.toml` project file.
     pub project: PathBuf,
+    /// Optional output `.chip.toml` path (overwrites `project` in place if omitted).
+    #[arg(short, long)]
     pub output: Option<PathBuf>,
+    /// Target Setup (0-based index, ID, or name; defaults to Setup 0).
+    #[arg(long)]
     pub setup: Option<String>,
+    /// Optional display name for the spoilboard.
+    #[arg(long)]
     pub name: Option<String>,
+    /// Top surface Z datum reference (`stock_bottom` default, `stock_top`, `wcs_origin`).
+    #[arg(long, default_value = "stock_bottom")]
     pub z_ref: String,
+    /// Signed Z offset from `z_ref` (`mm`).
+    #[arg(long, default_value_t = 0.0, allow_hyphen_values = true)]
     pub z_offset: f64,
+    /// Spoilboard thickness (`mm`).
+    #[arg(long, default_value_t = 18.0)]
     pub thickness: f64,
+    /// XY overhang beyond stock footprint (`mm`).
+    #[arg(long, default_value_t = 25.0)]
     pub margin_xy: f64,
+    /// Permitted sacrificial through-cut depth into spoilboard (`mm`).
+    #[arg(long, default_value_t = 0.5)]
     pub allowed_overcut: f64,
+    /// Safety clearance margin halo (`mm`).
+    #[arg(long, default_value_t = 0.5)]
     pub clearance: f64,
 }
 
@@ -369,35 +452,87 @@ fn validate_and_save_fixture(
     Ok(())
 }
 
+#[derive(Debug, Args)]
 pub struct FlipJigArgs {
+    /// Path to `.chip.toml` project file.
     pub project: PathBuf,
+    /// Optional output `.chip.toml` path (overwrites `project` in place if omitted).
+    #[arg(short, long)]
     pub output: Option<PathBuf>,
+    /// Target Setup 1 (0-based index, ID, or name; defaults to Setup 0).
+    #[arg(long)]
     pub setup: Option<String>,
+    /// Flip axis (`x` = front-to-back around Y center, `y` = left-to-right around X center).
+    #[arg(long, default_value = "x")]
     pub axis: String,
+    /// Nominal dowel pin diameter (`mm`).
+    #[arg(long, default_value_t = 6.0)]
     pub pin_dia: f64,
+    /// Pin fit clearance added to hole diameter (`mm`).
+    #[arg(long, default_value_t = 0.02)]
     pub pin_clearance: f64,
+    /// Number of symmetric registration pins (`2` on flip centerline or `4` mirrored pairs).
+    #[arg(long, default_value_t = 2)]
     pub count: usize,
+    /// Optional asymmetric poka-yoke shift along the flip axis (`mm`).
+    #[arg(long, default_value_t = 0.0, allow_hyphen_values = true)]
     pub poka_yoke: f64,
+    /// Minimum clearance outside the target part silhouette (`mm`).
+    #[arg(long, default_value_t = 6.0)]
     pub edge_margin: f64,
+    /// Stock pin hole depth (`0` = through-stock, `> 0` = blind depth in `mm`).
+    #[arg(long, default_value_t = 0.0)]
     pub stock_depth: f64,
+    /// Mating spoilboard dowel hole depth (`mm`).
+    #[arg(long, default_value_t = 10.0)]
     pub spoilboard_depth: f64,
+    /// Omit the companion Spoilboard Dowel Holes setup.
+    #[arg(long)]
     pub no_spoilboard: bool,
 }
 
+#[derive(Debug, Args)]
 pub struct SoftJawsArgs {
+    /// Path to `.chip.toml` project file.
     pub project: PathBuf,
+    /// Optional output `.chip.toml` path when `--add-setup` is set (overwrites `project` if omitted).
+    #[arg(short, long)]
     pub output: Option<PathBuf>,
+    /// Source Setup (0-based index, ID, or name; defaults to Setup 0).
+    #[arg(long)]
     pub setup: Option<String>,
+    /// Vise clamping axis (`y` = front/rear jaws default, `x` = left/right jaws).
+    #[arg(long, default_value = "y")]
     pub axis: String,
+    /// Soft jaw width (`mm`).
+    #[arg(long, default_value_t = 100.0)]
     pub jaw_width: f64,
+    /// Soft jaw plate depth/thickness (`mm`).
+    #[arg(long, default_value_t = 25.0)]
     pub jaw_depth: f64,
+    /// Total vertical soft jaw blank height (`mm`).
+    #[arg(long, default_value_t = 38.0)]
     pub jaw_height: f64,
+    /// Closed spacer gap between fixed & movable jaws (`mm`).
+    #[arg(long, default_value_t = 6.0)]
     pub jaw_gap: f64,
+    /// Vertical pocket grip depth cut into top of soft jaws (`mm`).
+    #[arg(long, default_value_t = 4.0)]
     pub grip_depth: f64,
+    /// Radial slip-fit clearance around target part silhouette (`mm`).
+    #[arg(long, default_value_t = 0.05)]
     pub clearance: f64,
+    /// Internal sharp-corner dogbone relief radius (`mm`, `0` disables).
+    #[arg(long, default_value_t = 1.5)]
     pub corner_relief: f64,
+    /// Mounting bolt counterbore pattern (`none`, `kurt6`, `milo4`, `carvera`).
+    #[arg(long, default_value = "milo4")]
     pub bolt_pattern: String,
+    /// Append a ready-to-generate CNC soft-jaw machining Setup + Sketch to the project.
+    #[arg(long)]
     pub add_setup: bool,
+    /// Export watertight 3D-printable `fixed_jaw.stl` and `movable_jaw.stl` to this directory.
+    #[arg(long)]
     pub export_stl_dir: Option<PathBuf>,
 }
 

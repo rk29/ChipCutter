@@ -8,14 +8,29 @@ use chip_sketch::{
     import_svg_path,
 };
 use chip_tools::default_starter_tool_library;
+use clap::Args;
 
+#[derive(Debug, Args)]
 pub struct Import2dArgs {
+    /// Input `.dxf` or `.svg` vector file.
     pub input: PathBuf,
+    /// Destination `.chip.toml` project file.
+    #[arg(short, long)]
     pub output: PathBuf,
+    /// Optional existing `.chip.toml` project to append the `SketchLayer` onto.
+    #[arg(long = "project")]
     pub existing_project: Option<PathBuf>,
+    /// Vector unit override (`auto`, `auto_in`, `mm`, `in`, `cm`).
+    #[arg(long, default_value = "auto")]
     pub units: String,
+    /// SVG unitless pixel DPI (`96` CSS/Inkscape, `72` Illustrator, `90` legacy Inkscape).
+    #[arg(long, default_value_t = 96.0)]
     pub svg_dpi: f64,
+    /// Endpoint gap-healing join tolerance in millimeters (`0.05` default).
+    #[arg(long, default_value_t = 0.05)]
     pub join_tol: f64,
+    /// Sheet Z thickness (`mm`) when initializing a new Pure-2D project.
+    #[arg(long = "thickness", default_value_t = 6.0)]
     pub sheet_thickness_mm: f64,
 }
 

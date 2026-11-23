@@ -9,13 +9,25 @@ use chip_sketch::{
     DxfImportOptions, SvgImportOptions, VectorImportUnits, import_dxf_path, import_svg_path,
 };
 
+use clap::Args;
+
 use super::import_mesh::parse_mesh_unit_override;
 
+#[derive(Debug, Args)]
 pub struct InspectArgs {
+    /// Path to `.step`, `.stp`, `.stl`, `.obj`, `.3mf`, `.dxf`, or `.svg` file.
     pub path: PathBuf,
+    /// Display unit for dimensions (`mm` or `in`).
+    #[arg(long, default_value = "mm")]
     pub units: String,
+    /// Optional mesh unit override (`auto`, `mm`, `in`, `cm`, `m`, `ft`, `um`) for `.stl`/`.obj`/`.3mf`.
+    #[arg(long, default_value = "auto")]
     pub mesh_units: String,
+    /// SVG unitless pixel DPI (`96` CSS/Inkscape, `72` Illustrator, `90` legacy Inkscape).
+    #[arg(long, default_value_t = 96.0)]
     pub svg_dpi: f64,
+    /// Endpoint gap-healing join tolerance in millimeters (`0.0` disables gap healing).
+    #[arg(long, default_value_t = 0.05)]
     pub join_tol: f64,
 }
 

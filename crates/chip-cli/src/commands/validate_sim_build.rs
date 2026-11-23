@@ -15,6 +15,7 @@ use chip_sim::{
     format_cycle_time_hms,
 };
 use chip_tools::resolve_machine_definition_cli_override;
+use clap::Args;
 
 use crate::commands::{
     BuildFileSummaryJson, BuildSummaryJson, ProjectSimReportJson, SetupSimReportJson,
@@ -114,15 +115,33 @@ pub fn run_validate(
     }
 }
 
+#[derive(Debug, Args)]
 pub struct SimulateArgs {
+    /// Path to `.chip.toml` project file (or `.chipz` bundle).
     pub project: PathBuf,
+    /// Simulation engine (`heightmap` fast 2.5D Z-dexel, or `tri-dexel` true 3D volumetric).
+    #[arg(long, default_value = "heightmap")]
     pub engine: String,
+    /// Simulation compute backend (`auto` GPU with CPU fallback, `gpu`, or `cpu`).
+    #[arg(long, default_value = "auto")]
     pub backend: String,
+    /// Simulation resolution (`standard`, `fine`, `ultra`).
+    #[arg(long, default_value = "standard")]
     pub resolution: String,
+    /// Surface deviation pass tolerance band in millimeters for error metrics (`±tolerance`).
+    #[arg(long, default_value_t = 0.05)]
     pub tolerance: f64,
+    /// Print structured per-stage timing & throughput benchmark summary.
+    #[arg(long)]
     pub benchmark: bool,
+    /// Simulate all Setups sequentially with volumetric stock carryover and emit cumulative end-of-job metrology.
+    #[arg(long)]
     pub all_setups: bool,
+    /// Emit structured JSON simulation, backend, timing, and error-volume report to stdout.
+    #[arg(long)]
     pub json: bool,
+    /// Optional path to write structured JSON simulation & error-volume report.
+    #[arg(long)]
     pub report: Option<PathBuf>,
 }
 
@@ -368,11 +387,21 @@ pub fn run_simulate(args: SimulateArgs) -> Result<ExitCode, Box<dyn std::error::
     }
 }
 
+#[derive(Debug, Args)]
 pub struct BuildArgs {
+    /// Path to `.chip.toml` project file (or `.chipz` bundle).
     pub project: PathBuf,
+    /// Output directory for emitted `.nc`/`.ngc` G-code files and `build_summary.json`.
+    #[arg(short, long, default_value = "out")]
     pub output_dir: PathBuf,
+    /// Optional filter to build only a specific Setup (by Setup name or ID).
+    #[arg(long = "setup")]
     pub setup_filter: Option<String>,
+    /// Optional post-processor profile ID (`grbl`, `grblhal_atc`, `linuxcnc`) or `.post.toml` file path override.
+    #[arg(long = "post")]
     pub post_override: Option<String>,
+    /// Allow non-critical simulation warnings (critical crashes/gouges still block build!).
+    #[arg(long)]
     pub allow_warnings: bool,
 }
 

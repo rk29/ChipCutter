@@ -31,18 +31,41 @@ use chip_project::{
 };
 use chip_sketch::sample_router_panel_dxf;
 use chip_tools::{default_starter_tool_library, resolve_machine_definition_cli_override};
+use clap::Args;
 
+#[derive(Debug, Args)]
 pub struct GenerateSampleArgs {
+    /// Output `.step` file path.
     pub output: PathBuf,
+    /// Generate the Milestone 2 multi-feature bracket (with blind pocket/hole + 4 mounting holes).
+    #[arg(long)]
     pub multi_feature: bool,
+    /// Tilt the generated multi-feature bracket by 30° X / 25° Z to test WCS alignment.
+    #[arg(long)]
     pub tilted: bool,
+    /// Generate the Milestone 3 CAM torture block (island pocket, open step, wide bore, 45° bevel).
+    #[arg(long)]
     pub cam_torture: bool,
+    /// Generate the Phase 18 Undercut & 3D Deburr block (M8 T-Slot, 60° Dovetail, Lollipop overhang groove, & 3D deburr rims).
+    #[arg(long)]
     pub undercut_block: bool,
+    /// Generate v1 of the Milestone 5 associative reload revision pair.
+    #[arg(long)]
     pub revision_v1: bool,
+    /// Generate v2 of the Milestone 5 associative reload revision pair (resized pocket, moved/deleted holes).
+    #[arg(long)]
     pub revision_v2: bool,
+    /// Generate a tutorial starter (`01-facing`, `02-contour`, `03-pocket`, `04-drill-bore`, `05-adaptive-rest`, `06-chamfer-trace`, `07-vcarve-medial`, `07-vcarve-inlay`, `13-pure2d-dxf`, `14-reload-v1`, `14-reload-v2`, `16-orient-stl`, `16-orient-step`, `18-thread-milling`, etc.).
+    #[arg(long)]
     pub tutorial: Option<String>,
+    /// Optional path to also write a seeded `.chip.toml` CAM project referencing `output`.
+    #[arg(long)]
     pub project_out: Option<PathBuf>,
+    /// When combined with `--tutorial` and `--project-out`, write an empty 0-operation starter project (Stock & WCS only).
+    #[arg(long)]
     pub empty_project: bool,
+    /// Optional target CNC machine definition ID (e.g. `generic`, `milo-1.5`, `milo-2.0`, `voron-cascade`, `carvera`, `carvera-air`, `carvera-z1`) to record on the generated project.
+    #[arg(long)]
     pub machine: Option<String>,
 }
 

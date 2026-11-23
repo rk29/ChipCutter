@@ -1,27 +1,68 @@
 use std::{path::PathBuf, process::ExitCode};
 
 use chip_project::ProjectDocument;
+use clap::Args;
 
+#[derive(Debug, Args)]
 pub struct TransformModelArgs {
+    /// Path to `.chip.toml` project file.
     pub project: PathBuf,
+    /// Optional output `.chip.toml` path (overwrites `project` in place if omitted).
+    #[arg(short, long)]
     pub output: Option<PathBuf>,
+    /// Set X rotation angle (degrees).
+    #[arg(long, allow_hyphen_values = true)]
     pub rot_x: Option<f64>,
+    /// Set Y rotation angle (degrees).
+    #[arg(long, allow_hyphen_values = true)]
     pub rot_y: Option<f64>,
+    /// Set Z rotation angle (degrees).
+    #[arg(long, allow_hyphen_values = true)]
     pub rot_z: Option<f64>,
+    /// Set uniform scale factor across X, Y, and Z.
+    #[arg(long)]
     pub scale: Option<f64>,
+    /// Set X scale factor.
+    #[arg(long)]
     pub scale_x: Option<f64>,
+    /// Set Y scale factor.
+    #[arg(long)]
     pub scale_y: Option<f64>,
+    /// Set Z scale factor.
+    #[arg(long)]
     pub scale_z: Option<f64>,
+    /// Uniformly scale so transformed X span equals `<mm>`.
+    #[arg(long)]
     pub fit_size_x: Option<f64>,
+    /// Uniformly scale so transformed Y span equals `<mm>`.
+    #[arg(long)]
     pub fit_size_y: Option<f64>,
+    /// Uniformly scale so transformed Z span equals `<mm>`.
+    #[arg(long)]
     pub fit_size_z: Option<f64>,
+    /// Set X translation (`mm`).
+    #[arg(long, allow_hyphen_values = true)]
     pub move_x: Option<f64>,
+    /// Set Y translation (`mm`).
+    #[arg(long, allow_hyphen_values = true)]
     pub move_y: Option<f64>,
+    /// Set Z translation (`mm`).
+    #[arg(long, allow_hyphen_values = true)]
     pub move_z: Option<f64>,
+    /// Apply `+90° X` (`Y-Up -> Z-Up`) world rotation around model center.
+    #[arg(long)]
     pub y_up_to_z_up: bool,
+    /// Center transformed XY bounds on `(0, 0)`.
+    #[arg(long)]
     pub center_xy: bool,
+    /// Drop bottom (`min Z`) to `Z = 0`.
+    #[arg(long)]
     pub drop_z0: bool,
+    /// Align top (`max Z`) to `Z = 0`.
+    #[arg(long)]
     pub align_top_z0: bool,
+    /// Reset transform to identity before applying any other flags.
+    #[arg(long)]
     pub reset: bool,
 }
 
