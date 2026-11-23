@@ -14,6 +14,7 @@ impl ChipCutterApp {
     pub(crate) fn handle_global_shortcuts(&mut self, ctx: &egui::Context) {
         let (
             palette_shortcut,
+            settings_shortcut,
             f1_shortcut,
             gen_shortcut,
             reload_shortcut,
@@ -27,6 +28,7 @@ impl ChipCutterApp {
             let cmd = i.modifiers.command || i.modifiers.ctrl;
             (
                 cmd && i.key_pressed(egui::Key::K),
+                cmd && i.key_pressed(egui::Key::Comma),
                 i.key_pressed(egui::Key::F1),
                 cmd && i.key_pressed(egui::Key::G),
                 cmd && i.key_pressed(egui::Key::R),
@@ -42,6 +44,11 @@ impl ChipCutterApp {
 
         if quit_shortcut {
             self.request_app_close(ctx);
+            return;
+        }
+
+        if settings_shortcut {
+            self.modals.settings.open = !self.modals.settings.open;
             return;
         }
 

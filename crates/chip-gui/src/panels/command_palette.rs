@@ -75,6 +75,7 @@ pub enum CommandId {
     SwitchUnitsMillimeter,
     SwitchUnitsInch,
     OpenShortcutCheatsheet,
+    OpenSettings,
     OpenAboutModal,
 
     // Quick-Load Samples
@@ -486,6 +487,13 @@ pub const PALETTE_COMMANDS: &[PaletteEntry] = &[
         label: "Open Welcome & Quick-Start Screen",
         keywords: "welcome start recent help",
         shortcut: None,
+    },
+    PaletteEntry {
+        id: CommandId::OpenSettings,
+        category: "Settings",
+        label: "Open Settings & Preferences…",
+        keywords: "settings preferences theme units simulation engine resolution mesh skinning mouse navigation",
+        shortcut: Some("Ctrl+,"),
     },
     PaletteEntry {
         id: CommandId::OpenShortcutCheatsheet,

@@ -82,6 +82,7 @@ pub enum IconKind {
     Crosshair,
     ArrowUp,
     ArrowDown,
+    Settings,
 }
 
 impl IconKind {
@@ -739,6 +740,19 @@ pub fn paint_icon(painter: &egui::Painter, rect: Rect, icon: IconKind, color: Co
                 vec![p(0.22, 0.36), p(0.50, 0.68), p(0.78, 0.36)],
                 stroke,
             ));
+        }
+        IconKind::Settings => {
+            let c = sq.center();
+            let r_inner = s * 0.14;
+            let r_body = s * 0.28;
+            let r_tooth = s * 0.40;
+            painter.circle_stroke(c, r_body, thin);
+            painter.circle_stroke(c, r_inner, thin);
+            for k in 0..8 {
+                let a = (k as f32) * FRAC_PI_4;
+                let dir = Vec2::new(a.cos(), a.sin());
+                painter.line_segment([c + dir * r_body, c + dir * r_tooth], stroke);
+            }
         }
     }
 }

@@ -8,7 +8,9 @@ use crate::{
             show_shortcut_cheatsheet_modal,
         },
         machine_manager::MachineManagerModalState,
+        machine_tool_swap::MachineToolSwapModalState,
         mesh_import_modal::MeshImportModalState,
+        settings::{SettingsModalCtx, SettingsModalState, show_settings_modal},
         tool_library::{ToolLibraryMachineContext, ToolLibraryModalState},
         vector_import_modal::{VectorImportModalState, VectorModalAction, VectorModalCtx},
         welcome_gallery::{
@@ -25,6 +27,8 @@ use crate::{
 pub struct ModalStates {
     pub(crate) tool_library: ToolLibraryModalState,
     pub(crate) machine_manager: MachineManagerModalState,
+    pub(crate) machine_tool_swap: MachineToolSwapModalState,
+    pub(crate) settings: SettingsModalState,
     pub(crate) mesh_import: MeshImportModalState,
     pub(crate) vector_import: VectorImportModalState,
     pub(crate) welcome: WelcomeModalState,
@@ -48,6 +52,8 @@ impl ModalStates {
         Self {
             tool_library: ToolLibraryModalState::new(),
             machine_manager: MachineManagerModalState::new(),
+            machine_tool_swap: MachineToolSwapModalState::default(),
+            settings: SettingsModalState::default(),
             mesh_import: MeshImportModalState::default(),
             vector_import: VectorImportModalState::default(),
             welcome: WelcomeModalState::default(),
@@ -63,6 +69,54 @@ impl ModalStates {
 }
 
 impl ChipCutterApp {
+    /// Unified machine-switching entry point called by Setup Inspector, Machine Manager, and
+    /// Tool Library. If existing operations use tools absent from the target machine, opens the
+    /// interactive **Swap Machine Tools** dialog; otherwise switches immediately.
+    pub(crate) fn request_machine_switch(&mut self, target_machine_id: String, sync_setups: bool) {
+        let current_mid = self.project.effective_machine_id().to_string();
+        if current_mid.eq_ignore_ascii_case(&target_machine_id) && !sync_setups {
+            return;
+        }
+        let Some(target_machine) = self
+            .machines
+            .iter()
+            .find(|m| m.id.eq_ignore_ascii_case(&target_machine_id))
+            .cloned()
+        else {
+            self.history
+                .record_before_edit("Change Target Machine", None, &self.project);
+            self.project.machine_id = Some(target_machine_id);
+            self.sync_active_machine_tools();
+            return;
+        };
+
+        let plan = self.project.plan_machine_tool_swap(&target_machine);
+        if plan.needs_user_prompt() {
+            let source_name = self
+                .machines
+                .iter()
+                .find(|m| m.id.eq_ignore_ascii_case(&current_mid))
+                .map_or_else(|| current_mid.clone(), |m| m.name.clone());
+            self.modals.machine_tool_swap.open_for_plan(
+                source_name,
+                target_machine,
+                plan,
+                sync_setups,
+            );
+        } else {
+            self.history
+                .record_before_edit("Change Target Machine", None, &self.project);
+            self.project
+                .apply_machine_defaults(&target_machine, sync_setups);
+            self.sync_active_machine_tools();
+            self.cached_frame_geo = None;
+            self.logs.push(format!(
+                "[MACHINES] Switched project machine to '{}'.",
+                target_machine.name
+            ));
+        }
+    }
+
     pub(crate) fn show_primary_modals(&mut self, ctx: &egui::Context) {
         let active_mid = self.project.effective_machine_id().to_string();
         let tl_actions = self.modals.tool_library.show_with_machine(
@@ -77,10 +131,7 @@ impl ChipCutterApp {
             }),
         );
         if let Some(new_mid) = tl_actions.switch_machine_id {
-            self.history
-                .record_before_edit("Switch Target Machine", None, &self.project);
-            self.project.machine_id = Some(new_mid);
-            self.sync_active_machine_tools();
+            self.request_machine_switch(new_mid, false);
         }
         if tl_actions.clone_active_machine {
             let src_id = self.project.effective_machine_id().to_string();
@@ -149,19 +200,7 @@ impl ChipCutterApp {
             &mut self.logs,
         );
         if let Some((mid, sync_setups)) = mm_actions.select_project_machine {
-            self.history
-                .record_before_edit("Change Target Machine", None, &self.project);
-            if let Some(m) = self
-                .machines
-                .iter()
-                .find(|m| m.id.eq_ignore_ascii_case(&mid))
-                .cloned()
-            {
-                self.project.apply_machine_defaults(&m, sync_setups);
-            } else {
-                self.project.machine_id = Some(mid);
-            }
-            self.sync_active_machine_tools();
+            self.request_machine_switch(mid, sync_setups);
         }
         if let Some(def_mid) = mm_actions.set_default_machine_id {
             self.prefs.default_machine_id = def_mid;
@@ -173,6 +212,85 @@ impl ChipCutterApp {
         }
         if mm_actions.machines_modified {
             self.sync_active_machine_tools();
+        }
+
+        if let Some(commit) = self.modals.machine_tool_swap.show(ctx, self.theme) {
+            self.history
+                .record_before_edit("Switch Machine & Swap Tools", None, &self.project);
+            let summary = self.project.apply_machine_tool_swap(
+                &commit.target_machine,
+                commit.sync_setups,
+                &commit.choices,
+                commit.prune_replaced_unused,
+            );
+            self.sync_active_machine_tools();
+            self.cached_frame_geo = None;
+            self.logs.push(format!(
+                "[MACHINES] Switched to '{}': swapped {} tool(s), updated {} op(s), removed {} unused tool(s).",
+                commit.target_machine.name,
+                summary.replaced_tool_count,
+                summary.updated_operation_count,
+                summary.pruned_unused_count
+            ));
+        }
+
+        let gpu_info_owned = self.sim_panel.gpu_adapter_info().cloned();
+        let settings_actions = show_settings_modal(
+            ctx,
+            &mut self.modals.settings,
+            SettingsModalCtx {
+                theme: self.theme,
+                project_units: self.project.display_units,
+                prefs: &mut self.prefs,
+                mouse_preset: &mut self.camera.mouse_preset,
+                orbit_mode: &mut self.camera.orbit_mode,
+                orthographic: self.camera.projection.is_orthographic(),
+                show_z_planes: &mut self.show_z_planes,
+                show_all_setup_toolpaths: &mut self.show_all_setup_toolpaths,
+                show_grid: &mut self.highlight.show_grid,
+                sim_engine: &mut self.sim_panel.engine,
+                sim_resolution: &mut self.sim_panel.resolution,
+                sim_backend: &mut self.sim_panel.backend_choice,
+                sim_mesh_skinning: &mut self.sim_panel.mesh_skinning,
+                gpu_adapter_info: gpu_info_owned.as_ref(),
+                machines: &self.machines,
+            },
+        );
+        if let Some(new_theme) = settings_actions.theme_changed {
+            self.set_theme(ctx, new_theme);
+        }
+        if let Some(new_units) = settings_actions.project_units_changed {
+            self.history
+                .record_before_edit("Change Display Units", None, &self.project);
+            self.project.display_units = new_units;
+            self.refresh_dependent_expressions();
+        }
+        if let Some(new_orbit) = settings_actions.orbit_mode_changed {
+            self.camera.set_orbit_mode(new_orbit);
+        }
+        if let Some(want_ortho) = settings_actions.projection_changed
+            && want_ortho != self.camera.projection.is_orthographic()
+        {
+            self.camera.toggle_projection();
+        }
+        if settings_actions.reset_workspace_layout {
+            self.tree = crate::layout::create_default_workspace_tree();
+            self.prefs.layout_shares = Default::default();
+        }
+        if settings_actions.sim_rerun_requested
+            && !self.sim_panel.is_busy()
+            && self.sim_panel.active_result.is_some()
+        {
+            self.trigger_active_setup_simulation(ctx);
+        }
+        if settings_actions.sim_skinning_changed {
+            ctx.request_repaint();
+        }
+        if settings_actions.open_machine_manager {
+            let cur_id = self.project.effective_machine_id().to_string();
+            self.modals
+                .machine_manager
+                .open_selecting(&self.machines, &cur_id);
         }
 
         if let Some(mesh_commit) = self

@@ -39,6 +39,7 @@ pub struct SimulationPanelState {
     pub engine: SimEngineKind,
     pub backend_choice: SimComputeBackendChoice,
     pub resolution: SimResolution,
+    pub mesh_skinning: bool,
     pub show_machined_stock: bool,
     pub color_by_operation: bool,
     pub show_error_heatmap: bool,
@@ -124,6 +125,7 @@ pub struct SimPanelCtx<'a> {
 pub enum SimulationUiAction {
     FocusDiagnosticsTab,
     CenterCameraWcs(DVec3),
+    OpenSimulationSettings,
 }
 
 impl Default for SimulationPanelState {
@@ -133,6 +135,7 @@ impl Default for SimulationPanelState {
             engine: SimEngineKind::Heightmap,
             backend_choice: SimComputeBackendChoice::Auto,
             resolution: SimResolution::Standard,
+            mesh_skinning: true,
             show_machined_stock: true,
             color_by_operation: true,
             show_error_heatmap: false,

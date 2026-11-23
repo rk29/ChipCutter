@@ -106,9 +106,6 @@ impl PaneBehavior<'_> {
                             setup_idx: self.app.active_setup_idx,
                         };
                     }
-                    BrowserAction::OpenToolLibrary => {
-                        self.app.modals.tool_library.open = true;
-                    }
                     BrowserAction::AlignCameraToActiveSetup => {
                         self.app.align_camera_to_active_setup();
                     }
@@ -505,6 +502,7 @@ impl PaneBehavior<'_> {
                     };
                     let mut open_machine_manager = false;
                     let mut machine_changed = false;
+                    let mut switch_machine_id: Option<String> = None;
                     let mut import_fixture_requested = false;
                     let mut open_flip_jig_wizard = false;
                     let mut open_soft_jaw_wizard = false;
@@ -527,6 +525,7 @@ impl PaneBehavior<'_> {
                             machines: &self.app.machines,
                             open_machine_manager: &mut open_machine_manager,
                             machine_changed: &mut machine_changed,
+                            switch_machine_id: &mut switch_machine_id,
                             import_fixture_requested: &mut import_fixture_requested,
                             open_flip_jig_wizard: &mut open_flip_jig_wizard,
                             open_soft_jaw_wizard: &mut open_soft_jaw_wizard,
@@ -542,7 +541,9 @@ impl PaneBehavior<'_> {
                     if open_soft_jaw_wizard {
                         self.app.modals.soft_jaw_wizard.open_for_setup(setup_idx);
                     }
-                    if machine_changed {
+                    if let Some(new_mid) = switch_machine_id {
+                        self.app.request_machine_switch(new_mid, false);
+                    } else if machine_changed {
                         self.app.sync_active_machine_tools();
                     }
                     if open_machine_manager {
@@ -899,6 +900,12 @@ impl PaneBehavior<'_> {
                     if let Some(Ok(rs)) = self.app.active_resolved_setup() {
                         self.app.camera.target_mm = rs.frame.local_to_world_point(pt_wcs);
                     }
+                }
+                SimulationUiAction::OpenSimulationSettings => {
+                    self.app
+                        .modals
+                        .settings
+                        .open_section(crate::panels::settings::SettingsSection::Simulation);
                 }
             }
         }

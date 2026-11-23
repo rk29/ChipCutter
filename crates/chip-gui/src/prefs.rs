@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use chip_math::DisplayUnit;
-use chip_sim::{SimComputeBackendChoice, SimEngineKind};
+use chip_sim::{SimComputeBackendChoice, SimEngineKind, SimResolution};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -53,7 +53,11 @@ pub struct UserPreferences {
     #[serde(default)]
     pub sim_engine: SimEngineKind,
     #[serde(default)]
+    pub sim_resolution: SimResolution,
+    #[serde(default)]
     pub sim_backend: SimComputeBackendChoice,
+    #[serde(default = "default_true")]
+    pub sim_mesh_skinning: bool,
     pub layout_shares: WorkspaceLayoutShares,
     #[serde(default = "default_true")]
     pub show_welcome_on_startup: bool,
@@ -76,7 +80,9 @@ impl Default for UserPreferences {
             show_fixtures: true,
             ghost_part: false,
             sim_engine: SimEngineKind::Heightmap,
+            sim_resolution: SimResolution::Standard,
             sim_backend: SimComputeBackendChoice::Auto,
+            sim_mesh_skinning: true,
             layout_shares: WorkspaceLayoutShares::default(),
             show_welcome_on_startup: true,
             recent_files: Vec::new(),
@@ -257,7 +263,8 @@ mod tests {
             let decoded = UserPreferences::from_toml_str(&toml_text).unwrap();
             assert_eq!(decoded.sim_backend, choice);
         }
-        // Legacy prefs.toml without `sim_backend` defaults cleanly to `Auto`
+        // Legacy prefs.toml without `sim_backend`, `sim_resolution`, or `sim_mesh_skinning`
+        // defaults cleanly.
         let legacy = r#"
             schema_version = 1
             theme = "dark"
@@ -265,5 +272,21 @@ mod tests {
         "#;
         let decoded = UserPreferences::from_toml_str(legacy).unwrap();
         assert_eq!(decoded.sim_backend, SimComputeBackendChoice::Auto);
+        assert_eq!(decoded.sim_resolution, SimResolution::Standard);
+        assert!(decoded.sim_mesh_skinning);
+
+        for res in SimResolution::ALL {
+            for skin in [false, true] {
+                let prefs = UserPreferences {
+                    sim_resolution: res,
+                    sim_mesh_skinning: skin,
+                    ..UserPreferences::default()
+                };
+                let toml_text = prefs.to_toml_string().unwrap();
+                let rt = UserPreferences::from_toml_str(&toml_text).unwrap();
+                assert_eq!(rt.sim_resolution, res);
+                assert_eq!(rt.sim_mesh_skinning, skin);
+            }
+        }
     }
 }

@@ -51,50 +51,174 @@ pub fn show_tool_tab(ui: &mut egui::Ui, ctx: ToolTabCtx<'_>) {
                 grid_row(
                     ui,
                     "Active Cutter",
-                    Some("Select cutter from project-embedded or global tool library"),
+                    Some("Select a compatible cutter from Project Tools or Active Machine Library"),
                     |ui| {
-                        let mut available_refs: Vec<&Tool> = project.tools.iter().collect();
+                        let mut project_compat: Vec<&Tool> = Vec::new();
+                        let mut machine_compat: Vec<&Tool> = Vec::new();
+                        let mut incompat_tools: Vec<&Tool> = Vec::new();
+                        for pt in &project.tools {
+                            if op_kind.is_compatible_with_tool(pt) {
+                                project_compat.push(pt);
+                            } else {
+                                incompat_tools.push(pt);
+                            }
+                        }
                         for gt in &global_tools.tools {
-                            if !project.tools.iter().any(|pt| pt.id == gt.id) {
-                                available_refs.push(gt);
+                            if project.tools.iter().any(|pt| pt.id == gt.id) {
+                                continue;
+                            }
+                            if op_kind.is_compatible_with_tool(gt) {
+                                machine_compat.push(gt);
+                            } else {
+                                incompat_tools.push(gt);
                             }
                         }
 
                         let selected_label = cur_tid
                             .as_ref()
-                            .and_then(|id| available_refs.iter().find(|t| &t.id == id))
+                            .and_then(|id| {
+                                project
+                                    .tools
+                                    .iter()
+                                    .chain(global_tools.tools.iter())
+                                    .find(|t| &t.id == id)
+                            })
                             .map(|t| t.summary_label())
                             .unwrap_or_else(|| "Select a Tool…".to_string());
+
+                        let total_compat = project_compat.len() + machine_compat.len();
+                        let filter_id =
+                            ui.make_persistent_id(("op_tool_filter", setup_idx, op_idx));
+                        let show_incompat_id =
+                            ui.make_persistent_id(("op_tool_show_incompat", setup_idx, op_idx));
 
                         egui::ComboBox::from_id_salt(("op_tool_cb", setup_idx, op_idx))
                             .width(COMBO_COL_WIDTH)
                             .truncate()
                             .selected_text(selected_label)
                             .show_ui(ui, |ui| {
-                                for &candidate in &available_refs {
-                                    let compat = op_kind.is_compatible_with_tool(candidate);
-                                    let prefix = if compat { "" } else { "[Incompat] " };
-                                    let lbl = format!("{prefix}{}", candidate.summary_label());
-                                    let is_sel = cur_tid.as_ref() == Some(&candidate.id);
-                                    if ui
-                                        .selectable_label(is_sel, lbl)
-                                        .on_hover_text(if compat {
-                                            "Assign this cutting tool to the operation"
-                                        } else {
-                                            "Warning: this cutter geometry is incompatible with the selected strategy"
-                                        })
-                                        .clicked()
-                                        && !is_sel
-                                    {
-                                        selected_candidate = Some(candidate.clone());
+                                let mut filter_txt = if total_compat > 6 {
+                                    let mut txt = ui
+                                        .data_mut(|d| d.get_temp::<String>(filter_id))
+                                        .unwrap_or_default();
+                                    ui.add(
+                                        egui::TextEdit::singleline(&mut txt)
+                                            .desired_width(COMBO_COL_WIDTH - 12.0)
+                                            .hint_text("Search tools…"),
+                                    );
+                                    ui.data_mut(|d| d.insert_temp(filter_id, txt.clone()));
+                                    ui.separator();
+                                    txt
+                                } else {
+                                    String::new()
+                                };
+                                filter_txt = filter_txt.trim().to_ascii_lowercase();
+                                let matches_filter = |t: &Tool| -> bool {
+                                    filter_txt.is_empty()
+                                        || t.summary_label()
+                                            .to_ascii_lowercase()
+                                            .contains(&filter_txt)
+                                };
+
+                                if !project_compat.is_empty() {
+                                    ui.label(
+                                        egui::RichText::new("Project Tools")
+                                            .small()
+                                            .strong()
+                                            .color(tok.text_muted),
+                                    );
+                                    for &candidate in &project_compat {
+                                        if !matches_filter(candidate) {
+                                            continue;
+                                        }
+                                        let is_sel = cur_tid.as_ref() == Some(&candidate.id);
+                                        if ui
+                                            .selectable_label(is_sel, candidate.summary_label())
+                                            .on_hover_text(
+                                                "Assign this project tool to the operation",
+                                            )
+                                            .clicked()
+                                            && !is_sel
+                                        {
+                                            selected_candidate = Some(candidate.clone());
+                                        }
+                                    }
+                                }
+
+                                if !machine_compat.is_empty() {
+                                    if !project_compat.is_empty() {
+                                        ui.separator();
+                                    }
+                                    ui.label(
+                                        egui::RichText::new("Machine Library (auto-embeds)")
+                                            .small()
+                                            .strong()
+                                            .color(tok.text_muted),
+                                    );
+                                    for &candidate in &machine_compat {
+                                        if !matches_filter(candidate) {
+                                            continue;
+                                        }
+                                        let is_sel = cur_tid.as_ref() == Some(&candidate.id);
+                                        if ui
+                                            .selectable_label(is_sel, candidate.summary_label())
+                                            .on_hover_text(
+                                                "Embed from active machine library and assign to this operation",
+                                            )
+                                            .clicked()
+                                            && !is_sel
+                                        {
+                                            selected_candidate = Some(candidate.clone());
+                                        }
+                                    }
+                                }
+
+                                if total_compat == 0 {
+                                    ui.weak("No compatible cutters found in current machine library.");
+                                }
+
+                                if !incompat_tools.is_empty() {
+                                    ui.separator();
+                                    let mut show_incompat = ui
+                                        .data_mut(|d| d.get_temp::<bool>(show_incompat_id))
+                                        .unwrap_or(false);
+                                    ui.checkbox(
+                                        &mut show_incompat,
+                                        format!("Show incompatible ({})", incompat_tools.len()),
+                                    );
+                                    ui.data_mut(|d| {
+                                        d.insert_temp(show_incompat_id, show_incompat);
+                                    });
+                                    if show_incompat {
+                                        for &candidate in &incompat_tools {
+                                            if !matches_filter(candidate) {
+                                                continue;
+                                            }
+                                            let is_sel = cur_tid.as_ref() == Some(&candidate.id);
+                                            if ui
+                                                .selectable_label(
+                                                    is_sel,
+                                                    format!("[Incompat] {}", candidate.summary_label()),
+                                                )
+                                                .on_hover_text(
+                                                    "Warning: this cutter geometry is incompatible with the selected strategy",
+                                                )
+                                                .clicked()
+                                                && !is_sel
+                                            {
+                                                selected_candidate = Some(candidate.clone());
+                                            }
+                                        }
                                     }
                                 }
                             })
                             .response
                             .on_hover_text("Select cutting tool assigned to this CAM operation");
                         if ui
-                            .small_button("Library…")
-                            .on_hover_text("Open Tool Library Manager")
+                            .small_button("Edit…")
+                            .on_hover_text(
+                                "Open Tool Library Manager to edit cutter geometry or presets",
+                            )
                             .clicked()
                         {
                             *open_tool_manager = true;

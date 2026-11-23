@@ -1,9 +1,9 @@
-use chip_math::DisplayUnit;
+use chip_cam::OperationKind;
 
 use crate::{
     app::ChipCutterApp,
     layout::{WorkspacePane, focus_workspace_pane},
-    theme::{AppTheme, ThemeTokens},
+    theme::ThemeTokens,
     widgets::{IconKind, StatusBadgeKind, icon_button, primary_icon_button, status_badge_icon},
 };
 
@@ -95,11 +95,17 @@ impl ChipCutterApp {
 
                     ui.separator();
 
+                    let active_setup_name = self
+                        .project
+                        .setups
+                        .get(self.active_setup_idx)
+                        .map_or("Active Setup", |s| s.name.as_str())
+                        .to_string();
                     if icon_button(
                         ui,
                         IconKind::Sketch2D,
                         Some("+ Sketch"),
-                        "Create a New 2D Sketch Layer on Active Setup XY",
+                        &format!("Create a New 2D Sketch Layer on {active_setup_name} XY"),
                     )
                     .clicked()
                     {
@@ -109,7 +115,7 @@ impl ChipCutterApp {
                         ui,
                         IconKind::Adaptive2D,
                         Some("+ Adaptive"),
-                        "Add a 2D Adaptive / Trochoidal Clearing Operation",
+                        &format!("Add 2D Adaptive / Trochoidal Clearing to {active_setup_name}"),
                     )
                     .clicked()
                     {
@@ -117,14 +123,79 @@ impl ChipCutterApp {
                     }
                     if icon_button(
                         ui,
+                        IconKind::Contour2D,
+                        Some("+ Contour"),
+                        &format!("Add 2D Contour / Profile operation to {active_setup_name}"),
+                    )
+                    .clicked()
+                    {
+                        self.add_standard_operation(OperationKind::Contour2D);
+                    }
+                    if icon_button(
+                        ui,
                         IconKind::VCarve,
                         Some("+ V-Carve"),
-                        "Add a 3D Medial-Axis V-Carve / Flat Clearance / V-Inlay Operation",
+                        &format!("Add 3D Medial-Axis V-Carve / Inlay operation to {active_setup_name}"),
                     )
                     .clicked()
                     {
                         self.create_new_vcarve_operation();
                     }
+                    ui.menu_button("+ Op ▾", |ui| {
+                        ui.label(
+                            egui::RichText::new(format!("Add to {active_setup_name}"))
+                                .small()
+                                .strong()
+                                .color(tok.text_muted),
+                        );
+                        ui.separator();
+                        ui.label(egui::RichText::new("2D / 2.5D").small().strong());
+                        for (lbl, kind) in [
+                            ("Facing", OperationKind::Facing),
+                            ("2D Pocket", OperationKind::Pocket2D),
+                            ("Drill / Helical Bore", OperationKind::DrillBore),
+                            ("Thread Mill", OperationKind::ThreadMill),
+                            ("Slot / Keyway / T-Slot", OperationKind::SlotUndercut),
+                            ("Dovetail Slot / Rail", OperationKind::Dovetail),
+                            ("Edge Chamfer / Trace", OperationKind::ChamferTrace),
+                        ] {
+                            if ui.button(lbl).clicked() {
+                                self.add_standard_operation(kind);
+                                ui.close();
+                            }
+                        }
+                        ui.separator();
+                        ui.label(egui::RichText::new("3D Surface").small().strong());
+                        for (lbl, kind) in [
+                            ("3D Adaptive Roughing", OperationKind::Adaptive3D),
+                            ("3D Waterline / Z-Level", OperationKind::Waterline3D),
+                            ("3D Parallel Finishing", OperationKind::Parallel3D),
+                            ("3D Constant-Scallop", OperationKind::Scallop3D),
+                            ("3D Pencil Cleanup", OperationKind::Pencil3D),
+                            ("3D Edge Deburr / Chamfer", OperationKind::Deburr3D),
+                            ("3D Lollipop Undercut", OperationKind::Undercut3D),
+                        ] {
+                            if ui.button(lbl).clicked() {
+                                self.add_standard_operation(kind);
+                                ui.close();
+                            }
+                        }
+                        ui.separator();
+                        ui.label(egui::RichText::new("4th-Axis Rotary").small().strong());
+                        for (lbl, kind) in [
+                            ("4th-Axis Rotary Surfacing", OperationKind::Rotary2Linear),
+                            ("Simultaneous 4-Axis (X+Y+Z+A)", OperationKind::Rotary4AxisSim),
+                        ] {
+                            if ui.button(lbl).clicked() {
+                                self.add_standard_operation(kind);
+                                ui.close();
+                            }
+                        }
+                    })
+                    .response
+                    .on_hover_text(format!(
+                        "Add another 2.5D, 3D surfacing, or 4th-axis operation to {active_setup_name}"
+                    ));
 
                     ui.separator();
 
@@ -193,49 +264,31 @@ impl ChipCutterApp {
                         focus_workspace_pane(&mut self.tree, WorkspacePane::SimulationTimeline);
                     }
 
+                    ui.separator();
+
                     if icon_button(
                         ui,
                         IconKind::Tool,
                         Some("Tools"),
-                        "Open Tool Library Manager",
+                        "Open Tool Library & Machine Tools Manager",
                     )
                     .clicked()
                     {
                         self.modals.tool_library.open = true;
                     }
 
-                    // Right-aligned Theme & Display Units controls
+                    // Right-aligned Utility controls (Command Palette & Settings)
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.spacing_mut().item_spacing.x = 4.0;
-                        let (theme_icon, theme_tip) = match self.theme {
-                            AppTheme::Dark => (
-                                IconKind::Sun,
-                                "Switch to Daylight High-Contrast Light Theme",
-                            ),
-                            AppTheme::Light => (IconKind::Moon, "Switch to Studio Dark Theme"),
-                        };
-                        if icon_button(ui, theme_icon, Some(self.theme.short_label()), theme_tip)
-                            .clicked()
+                        if icon_button(
+                            ui,
+                            IconKind::Settings,
+                            Some("Settings"),
+                            "Open Settings & Preferences (Ctrl+,)",
+                        )
+                        .clicked()
                         {
-                            self.set_theme(ctx, self.theme.toggled());
-                        }
-
-                        ui.separator();
-
-                        let mut u_sel = self.project.display_units;
-                        ui.selectable_value(&mut u_sel, DisplayUnit::Inch, "in")
-                            .on_hover_text("Display lengths and feed rates in Imperial inches (in, IPM, SFM)");
-                        ui.selectable_value(&mut u_sel, DisplayUnit::Millimeter, "mm")
-                            .on_hover_text("Display lengths and feed rates in Metric millimeters (mm, mm/min, m/min)");
-                        if u_sel != self.project.display_units {
-                            self.history.record_before_edit(
-                                "Change Display Units",
-                                None,
-                                &self.project,
-                            );
-                            self.project.display_units = u_sel;
-                            self.prefs.default_units = u_sel;
-                            self.refresh_dependent_expressions();
+                            self.modals.settings.open = true;
                         }
 
                         ui.separator();

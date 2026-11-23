@@ -8,7 +8,7 @@ use chip_cad::{
     CadDocument, CadError, CadKernel, MeshImportOptions, MeshUnitKind, ModelTransform,
     MonstertruckKernel, is_mesh_extension, load_mesh_cad_document,
 };
-use chip_cam::{Setup, WorkOffsetSlot};
+use chip_cam::{Setup, StrategyParams, WorkOffsetSlot};
 use chip_math::{DEFAULT_TESS_CHORD_TOL_MM, DisplayUnit, ParamLength};
 use chip_sketch::{CustomFontMap, SketchEntity, SketchFontSource, SketchLayer};
 use chip_tools::{DEFAULT_MACHINE_ID, MachineDefinition, Tool, ToolId};
@@ -280,6 +280,206 @@ impl ProjectDocument {
         });
     }
 
+    /// Maps every referenced [`ToolId`] (both primary `op.tool_id` and V-Carve
+    /// `clearing_tool_id`) to the operations that use it.
+    pub fn tool_usage_map(&self) -> BTreeMap<ToolId, Vec<ToolOperationRef>> {
+        let mut map: BTreeMap<ToolId, Vec<ToolOperationRef>> = BTreeMap::new();
+        for (setup_idx, setup) in self.setups.iter().enumerate() {
+            for (op_idx, op) in setup.operations.iter().enumerate() {
+                if let Some(tid) = &op.tool_id {
+                    map.entry(tid.clone()).or_default().push(ToolOperationRef {
+                        setup_idx,
+                        op_idx,
+                        setup_name: setup.name.clone(),
+                        op_name: op.name.clone(),
+                        is_clearing_tool: false,
+                    });
+                }
+                if let Some(ctid) = op.clearing_tool_id() {
+                    map.entry(ctid.clone()).or_default().push(ToolOperationRef {
+                        setup_idx,
+                        op_idx,
+                        setup_name: setup.name.clone(),
+                        op_name: op.name.clone(),
+                        is_clearing_tool: true,
+                    });
+                }
+            }
+        }
+        map
+    }
+
+    /// Returns embedded project tools that are not referenced by any operation.
+    pub fn unused_tool_ids(&self) -> Vec<ToolId> {
+        let used = self.tool_usage_map();
+        self.tools
+            .iter()
+            .filter(|t| !used.contains_key(&t.id))
+            .map(|t| t.id.clone())
+            .collect()
+    }
+
+    /// Removes an embedded project tool if and only if no operation references it.
+    pub fn remove_tool_if_unused(&mut self, id: &ToolId) -> bool {
+        let used = self.tool_usage_map();
+        if used.contains_key(id) {
+            return false;
+        }
+        let before = self.tools.len();
+        self.tools.retain(|t| &t.id != id);
+        self.tools.len() < before
+    }
+
+    /// Removes all unreferenced embedded project tools and returns how many were removed.
+    pub fn prune_unused_tools(&mut self) -> usize {
+        let used = self.tool_usage_map();
+        let before = self.tools.len();
+        self.tools.retain(|t| used.contains_key(&t.id));
+        before - self.tools.len()
+    }
+
+    /// Inspects all project tools referenced by operations against `target_machine.tools` and
+    /// produces a deterministic replacement plan for interactive machine switching.
+    pub fn plan_machine_tool_swap(
+        &self,
+        target_machine: &MachineDefinition,
+    ) -> MachineToolSwapPlan {
+        let usage_map = self.tool_usage_map();
+        let mut exact_matches = Vec::new();
+        let mut entries = Vec::new();
+
+        for (tid, usages) in &usage_map {
+            let Some(cur_tool) = self.tool(tid) else {
+                continue;
+            };
+            let is_exact = target_machine.tools.iter().any(|cand| {
+                cand.id == cur_tool.id
+                    && std::mem::discriminant(&cand.geometry)
+                        == std::mem::discriminant(&cur_tool.geometry)
+                    && (cand.geometry.cutting_diameter_mm()
+                        - cur_tool.geometry.cutting_diameter_mm())
+                    .abs()
+                        < 1e-3
+            });
+            if is_exact {
+                exact_matches.push(tid.clone());
+                continue;
+            }
+
+            let cur_disc = std::mem::discriminant(&cur_tool.geometry);
+            let cur_dia = cur_tool.geometry.cutting_diameter_mm();
+            let cur_flutes = cur_tool.geometry.flutes();
+
+            let mut ranked: Vec<Tool> = target_machine.tools.clone();
+            ranked.sort_by(|a, b| {
+                let a_same = std::mem::discriminant(&a.geometry) == cur_disc;
+                let b_same = std::mem::discriminant(&b.geometry) == cur_disc;
+                b_same
+                    .cmp(&a_same)
+                    .then_with(|| {
+                        let da = (a.geometry.cutting_diameter_mm() - cur_dia).abs();
+                        let db = (b.geometry.cutting_diameter_mm() - cur_dia).abs();
+                        da.total_cmp(&db)
+                    })
+                    .then_with(|| {
+                        let fa = a.geometry.flutes().abs_diff(cur_flutes);
+                        let fb = b.geometry.flutes().abs_diff(cur_flutes);
+                        fa.cmp(&fb)
+                    })
+                    .then_with(|| a.tool_number.cmp(&b.tool_number))
+                    .then_with(|| a.id.cmp(&b.id))
+            });
+
+            let suggested = ranked
+                .first()
+                .filter(|cand| std::mem::discriminant(&cand.geometry) == cur_disc)
+                .cloned()
+                .map_or(ToolSwapChoice::KeepExisting, |t| {
+                    ToolSwapChoice::ReplaceWith(Box::new(t))
+                });
+
+            entries.push(ToolSwapEntry {
+                current_tool: cur_tool.clone(),
+                usages: usages.clone(),
+                candidates: ranked,
+                suggested,
+            });
+        }
+
+        let unused_project_tools = self.unused_tool_ids();
+        MachineToolSwapPlan {
+            target_machine_id: target_machine.id.clone(),
+            target_machine_name: target_machine.name.clone(),
+            exact_matches,
+            entries,
+            unused_project_tools,
+        }
+    }
+
+    /// Switches this project to `target_machine`, applies user-chosen tool replacements across all
+    /// setups/operations (including V-Carve clearing tools), marks modified operations `Dirty`,
+    /// and optionally prunes unreferenced tools.
+    pub fn apply_machine_tool_swap(
+        &mut self,
+        target_machine: &MachineDefinition,
+        sync_setups: bool,
+        choices: &BTreeMap<ToolId, ToolSwapChoice>,
+        prune_unused: bool,
+    ) -> MachineToolSwapSummary {
+        self.apply_machine_defaults(target_machine, sync_setups);
+
+        let mut replacement_map: BTreeMap<ToolId, Tool> = BTreeMap::new();
+        for (old_id, choice) in choices {
+            if let ToolSwapChoice::ReplaceWith(new_tool) = choice {
+                self.ensure_tool_embedded(new_tool);
+                replacement_map.insert(old_id.clone(), (**new_tool).clone());
+            }
+        }
+
+        let mut updated_operation_count = 0usize;
+        if !replacement_map.is_empty() {
+            for setup in &mut self.setups {
+                for op in &mut setup.operations {
+                    let mut op_changed = false;
+                    if let Some(old_tid) = op.tool_id.clone()
+                        && let Some(new_tool) = replacement_map.get(&old_tid)
+                        && new_tool.id != old_tid
+                    {
+                        op.tool_id = Some(new_tool.id.clone());
+                        op.preset_id = new_tool.presets.first().map(|p| p.id.clone());
+                        op.feed_overrides.clear_all();
+                        op_changed = true;
+                    }
+                    if let Some(StrategyParams::VCarve(vp)) = &mut op.strategy
+                        && let Some(old_ctid) = vp.clearing_tool_id.clone()
+                        && let Some(new_tool) = replacement_map.get(&old_ctid)
+                        && new_tool.id != old_ctid
+                    {
+                        vp.clearing_tool_id = Some(new_tool.id.clone());
+                        op_changed = true;
+                    }
+                    if op_changed {
+                        op.mark_dirty();
+                        updated_operation_count += 1;
+                    }
+                }
+            }
+        }
+
+        let pruned_unused_count = if prune_unused {
+            self.prune_unused_tools()
+        } else {
+            0
+        };
+        self.sort_tools_deterministically();
+
+        MachineToolSwapSummary {
+            replaced_tool_count: replacement_map.len(),
+            updated_operation_count,
+            pruned_unused_count,
+        }
+    }
+
     /// Loads any custom `.ttf`/`.otf` font byte buffers referenced by [`SketchFontSource::CustomFile`]
     /// relative to `project_dir`.
     pub fn load_custom_fonts(&self, project_dir: Option<&Path>) -> CustomFontMap {
@@ -337,6 +537,58 @@ impl ProjectDocument {
             sk.rebuild_regions(custom_fonts);
         }
     }
+}
+
+/// Reference from a CAM operation to an embedded project tool (`ProjectDocument::tool_usage_map`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolOperationRef {
+    pub setup_idx: usize,
+    pub op_idx: usize,
+    pub setup_name: String,
+    pub op_name: String,
+    pub is_clearing_tool: bool,
+}
+
+/// User selection for a project tool when switching CNC machines.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ToolSwapChoice {
+    ReplaceWith(Box<Tool>),
+    KeepExisting,
+}
+
+/// Single project tool that requires user confirmation/replacement when switching machines.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToolSwapEntry {
+    pub current_tool: Tool,
+    pub usages: Vec<ToolOperationRef>,
+    /// Target machine tools sorted by geometry compatibility and closest cutting diameter.
+    pub candidates: Vec<Tool>,
+    pub suggested: ToolSwapChoice,
+}
+
+/// Planned tool migration summary when switching a project to a different [`MachineDefinition`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct MachineToolSwapPlan {
+    pub target_machine_id: String,
+    pub target_machine_name: String,
+    pub exact_matches: Vec<ToolId>,
+    pub entries: Vec<ToolSwapEntry>,
+    pub unused_project_tools: Vec<ToolId>,
+}
+
+impl MachineToolSwapPlan {
+    /// Returns `true` when at least one operation uses a tool missing from the target machine.
+    pub fn needs_user_prompt(&self) -> bool {
+        !self.entries.is_empty()
+    }
+}
+
+/// Summary returned after applying a [`MachineToolSwapPlan`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MachineToolSwapSummary {
+    pub replaced_tool_count: usize,
+    pub updated_operation_count: usize,
+    pub pruned_unused_count: usize,
 }
 
 /// Computes lowercase `64`-character SHA-256 hex digest of `bytes`.
@@ -575,5 +827,144 @@ mod tests {
             portable_model_path(Some(normal_proj), normal_sibling),
             "../cad/part.step"
         );
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn tool_usage_pruning_and_machine_swap_plan_and_apply() {
+        use std::collections::BTreeMap;
+
+        use chip_cam::{Operation, OperationKind, OperationStatus, StrategyParams};
+        use chip_tools::{CutterGeometry, Tool, ToolId, builtin_generic_machine};
+
+        use super::{ProjectDocument, ToolSwapChoice};
+
+        let generic = builtin_generic_machine();
+        let flat6 = generic
+            .tools
+            .iter()
+            .find(|t| matches!(t.geometry, CutterGeometry::FlatEndmill { .. }))
+            .unwrap()
+            .clone();
+        let vbit60 = generic
+            .tools
+            .iter()
+            .find(|t| OperationKind::VCarve.is_compatible_with_tool(t))
+            .unwrap()
+            .clone();
+        let unused_ball = generic
+            .tools
+            .iter()
+            .find(|t| matches!(t.geometry, CutterGeometry::BallEndmill { .. }))
+            .unwrap()
+            .clone();
+
+        let mut doc = ProjectDocument::new("Swap Test");
+        doc.ensure_tool_embedded(&flat6);
+        doc.ensure_tool_embedded(&vbit60);
+        doc.ensure_tool_embedded(&unused_ball);
+
+        let mut op1 = Operation::new("op1", "Pocket 1", OperationKind::Pocket2D);
+        op1.tool_id = Some(flat6.id.clone());
+        op1.runtime_status = OperationStatus::Clean;
+
+        let mut op2 = Operation::new("op2", "VCarve 1", OperationKind::VCarve);
+        op2.tool_id = Some(vbit60.id.clone());
+        op2.runtime_status = OperationStatus::Clean;
+        if let Some(StrategyParams::VCarve(vp)) = &mut op2.strategy {
+            vp.clearing_tool_id = Some(flat6.id.clone());
+        }
+        doc.setups[0].operations.push(op1);
+        doc.setups[0].operations.push(op2);
+
+        // Usage map captures both primary tool_id and V-Carve clearing_tool_id
+        let usage = doc.tool_usage_map();
+        assert_eq!(usage.get(&flat6.id).unwrap().len(), 2);
+        assert!(
+            usage
+                .get(&flat6.id)
+                .unwrap()
+                .iter()
+                .any(|u| u.is_clearing_tool)
+        );
+        assert_eq!(usage.get(&vbit60.id).unwrap().len(), 1);
+        assert_eq!(doc.unused_tool_ids(), vec![unused_ball.id.clone()]);
+
+        // Cannot remove in-use tool, can remove unused tool
+        assert!(!doc.remove_tool_if_unused(&flat6.id));
+        assert!(doc.remove_tool_if_unused(&unused_ball.id));
+        assert!(doc.unused_tool_ids().is_empty());
+
+        // Target machine has a closer-diameter flat (different ID), a farther flat, and exact vbit60
+        let base_dia = flat6.geometry.cutting_diameter_mm();
+        let mut flat_close = flat6.clone();
+        flat_close.id = ToolId("target_flat_close".to_string());
+        flat_close.name = "Close Flat Endmill".to_string();
+        if let CutterGeometry::FlatEndmill { diameter_mm, .. } = &mut flat_close.geometry {
+            *diameter_mm = base_dia + 0.35;
+        }
+        let mut flat_far = flat6.clone();
+        flat_far.id = ToolId("target_flat_far".to_string());
+        flat_far.name = "Far Flat Endmill".to_string();
+        if let CutterGeometry::FlatEndmill { diameter_mm, .. } = &mut flat_far.geometry {
+            *diameter_mm = (base_dia - 3.0).max(1.0);
+        }
+
+        let mut target_machine = generic.clone();
+        target_machine.id = "custom_router".to_string();
+        target_machine.name = "Custom Router".to_string();
+        target_machine.tools = vec![flat_far.clone(), flat_close.clone(), vbit60.clone()];
+
+        let plan = doc.plan_machine_tool_swap(&target_machine);
+        assert!(plan.needs_user_prompt());
+        assert_eq!(plan.exact_matches, vec![vbit60.id.clone()]);
+        assert_eq!(plan.entries.len(), 1);
+        assert_eq!(plan.entries[0].current_tool.id, flat6.id);
+        // Closest diameter flat endmill is suggested over the farther diameter
+        assert_eq!(
+            plan.entries[0].suggested,
+            ToolSwapChoice::ReplaceWith(Box::new(flat_close.clone()))
+        );
+
+        let mut choices = BTreeMap::new();
+        choices.insert(
+            flat6.id.clone(),
+            ToolSwapChoice::ReplaceWith(Box::new(flat_close.clone())),
+        );
+        let summary = doc.apply_machine_tool_swap(&target_machine, true, &choices, true);
+        assert_eq!(summary.replaced_tool_count, 1);
+        assert_eq!(summary.updated_operation_count, 2);
+        assert_eq!(summary.pruned_unused_count, 1);
+
+        assert_eq!(doc.machine_id.as_deref(), Some("custom_router"));
+        assert_eq!(
+            doc.setups[0].operations[0].tool_id,
+            Some(flat_close.id.clone())
+        );
+        assert_eq!(
+            doc.setups[0].operations[0].runtime_status,
+            OperationStatus::Dirty
+        );
+        assert_eq!(
+            doc.setups[0].operations[1].clearing_tool_id(),
+            Some(&flat_close.id)
+        );
+        assert_eq!(
+            doc.setups[0].operations[1].runtime_status,
+            OperationStatus::Dirty
+        );
+        assert!(
+            doc.tool(&flat6.id).is_none(),
+            "old replaced tool should be pruned"
+        );
+        assert!(doc.tool(&flat_close.id).is_some());
+
+        // Switching to a machine with zero compatible flat endmills suggests KeepExisting
+        let mut vbit_only_machine = target_machine.clone();
+        vbit_only_machine.id = "engraver".to_string();
+        vbit_only_machine.tools = vec![Tool { ..vbit60 }];
+        let plan2 = doc.plan_machine_tool_swap(&vbit_only_machine);
+        assert_eq!(plan2.entries.len(), 1);
+        assert_eq!(plan2.entries[0].suggested, ToolSwapChoice::KeepExisting);
     }
 }

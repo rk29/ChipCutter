@@ -377,6 +377,8 @@ impl ChipCutterApp {
         app.highlight.show_stock = app.prefs.show_stock;
         app.highlight.show_fixtures = app.prefs.show_fixtures;
         app.highlight.ghost_part = app.prefs.ghost_part;
+        app.sim_panel.resolution = app.prefs.sim_resolution;
+        app.sim_panel.mesh_skinning = app.prefs.sim_mesh_skinning;
         if let Some(st) = &app.self_test {
             if let Some(eng) = st.capture.sim_engine {
                 app.sim_panel.engine = eng;
@@ -640,7 +642,9 @@ impl ChipCutterApp {
         self.prefs.show_fixtures = self.highlight.show_fixtures;
         self.prefs.ghost_part = self.highlight.ghost_part;
         self.prefs.sim_engine = self.sim_panel.engine;
+        self.prefs.sim_resolution = self.sim_panel.resolution;
         self.prefs.sim_backend = self.sim_panel.backend_choice;
+        self.prefs.sim_mesh_skinning = self.sim_panel.mesh_skinning;
         let shares = extract_workspace_shares(&self.tree);
         if !shares.approx_eq(self.prefs.layout_shares) {
             self.prefs.layout_shares = shares;
@@ -1220,5 +1224,89 @@ impl eframe::App for ChipCutterApp {
         let ptr_down = ctx.input(|i| i.pointer.any_down());
         self.sync_and_save_prefs_if_changed(ptr_down);
         self.handle_self_test(&ctx);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod phase21_ui_tests {
+    use chip_cam::{OperationKind, Setup, WorkOffsetSlot};
+
+    use super::ChipCutterApp;
+    use crate::panels::{InspectorFocus, command_palette::CommandId};
+
+    #[test]
+    fn active_setup_receives_top_bar_operations_and_undo_restores() {
+        let ctx = egui::Context::default();
+        let mut app = ChipCutterApp::new_headless_for_test(&ctx);
+        app.project.setups.push(Setup::new(
+            "setup_2",
+            "Setup 2 — Flip Op",
+            WorkOffsetSlot::G55,
+        ));
+        app.active_setup_idx = 1;
+
+        app.add_standard_operation(OperationKind::Contour2D);
+        assert_eq!(app.project.setups[0].operations.len(), 0);
+        assert_eq!(app.project.setups[1].operations.len(), 1);
+        assert_eq!(
+            app.inspector_focus,
+            InspectorFocus::Operation {
+                setup_idx: 1,
+                op_idx: 0
+            }
+        );
+
+        app.create_new_adaptive_operation();
+        assert_eq!(app.project.setups[1].operations.len(), 2);
+        assert!(app.project.setups[1].operations[1].is_adaptive_2d());
+
+        app.perform_undo();
+        assert_eq!(app.project.setups[1].operations.len(), 1);
+    }
+
+    #[test]
+    fn settings_command_opens_modal_and_machine_switch_prompts_tool_swap() {
+        let ctx = egui::Context::default();
+        let mut app = ChipCutterApp::new_headless_for_test(&ctx);
+        assert!(!app.modals.settings.open);
+        app.execute_palette_command(CommandId::OpenSettings, &ctx);
+        assert!(app.modals.settings.open);
+
+        // Switching machine on an empty project (no operations) switches immediately without modal
+        let other_mid = app
+            .machines
+            .iter()
+            .find(|m| {
+                !m.id
+                    .eq_ignore_ascii_case(app.project.effective_machine_id())
+            })
+            .map(|m| m.id.clone());
+        if let Some(mid) = other_mid {
+            app.request_machine_switch(mid.clone(), false);
+            assert!(!app.modals.machine_tool_swap.open);
+            assert_eq!(app.project.effective_machine_id(), mid);
+
+            // Adding an operation embeds a tool from `mid`; switching back to another machine
+            // whose library lacks that tool ID opens the swap modal!
+            app.add_standard_operation(OperationKind::Contour2D);
+            let orig_mid = app
+                .machines
+                .iter()
+                .find(|m| !m.id.eq_ignore_ascii_case(&mid))
+                .map(|m| m.id.clone())
+                .unwrap();
+            let used_tid = app.project.setups[0].operations[0].tool_id.clone().unwrap();
+            let target_has_exact = app
+                .machines
+                .iter()
+                .find(|m| m.id.eq_ignore_ascii_case(&orig_mid))
+                .unwrap()
+                .tools
+                .iter()
+                .any(|t| t.id == used_tid);
+            app.request_machine_switch(orig_mid, false);
+            assert_eq!(app.modals.machine_tool_swap.open, !target_has_exact);
+        }
     }
 }

@@ -27,7 +27,6 @@ pub enum BrowserAction {
     OpenSampleGallery,
     NewSetupXySketch,
     StartPickSketchHostFace,
-    OpenToolLibrary,
     AlignCameraToActiveSetup,
     GenerateSetup(usize),
     GenerateSingleOp { setup_idx: usize, op_id: String },
@@ -251,20 +250,13 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
     }
 
     ui.horizontal(|ui| {
-        let title_w = (ui.available_width() - 108.0).max(60.0);
+        let title_w = (ui.available_width() - 66.0).max(60.0);
         ui.add_sized(
             [title_w, 18.0],
             egui::Label::new(egui::RichText::new(&project.project_name).strong()).truncate(),
         )
         .on_hover_text(&project.project_name);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui
-                .small_button("Tools")
-                .on_hover_text("Open Tool Library Manager")
-                .clicked()
-            {
-                emitted_action = Some(BrowserAction::OpenToolLibrary);
-            }
             if ui
                 .small_button("+ Setup")
                 .on_hover_text("Add a new clamping Setup (e.g., Op 2 Flip)")
@@ -549,36 +541,187 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                 },
             );
 
-            // 2. Project-Embedded Tools section
-            let tools_title = format!("Project Tools ({})", project.tools.len());
+            // 2. Project-Embedded Tools section (inline Add, Remove, & Remove Unused controls)
+            let usage_map = project.tool_usage_map();
+            let unused_count = project.unused_tool_ids().len();
+            let tools_title = if unused_count > 0 {
+                format!("Project Tools ({} · {unused_count} unused)", project.tools.len())
+            } else {
+                format!("Project Tools ({})", project.tools.len())
+            };
+            let mut deferred_add_tool: Option<chip_tools::Tool> = None;
+            let mut deferred_remove_tool: Option<chip_tools::ToolId> = None;
+            let mut deferred_prune_unused = false;
+
             section_card(ui, "browser_tools_card", &tools_title, false, |ui| {
+                let tok = ThemeTokens::from_ui(ui);
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    ui.menu_button("+ Add Tool…", |ui| {
+                        let filter_id = ui.make_persistent_id("browser_add_tool_filter");
+                        let mut filter_text = ui
+                            .data_mut(|d| d.get_temp::<String>(filter_id))
+                            .unwrap_or_default();
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new("Filter:").small());
+                            ui.add(
+                                egui::TextEdit::singleline(&mut filter_text)
+                                    .desired_width(170.0)
+                                    .hint_text("diameter, flat, ball, v-bit…"),
+                            );
+                        });
+                        ui.data_mut(|d| d.insert_temp(filter_id, filter_text.clone()));
+                        ui.separator();
+
+                        let needle = filter_text.trim().to_ascii_lowercase();
+                        egui::ScrollArea::vertical()
+                            .id_salt("browser_add_tool_list")
+                            .max_height(240.0)
+                            .show(ui, |ui| {
+                                let mut shown_any = false;
+                                for gt in &global_tools.tools {
+                                    let lbl = gt.summary_label();
+                                    if !needle.is_empty()
+                                        && !lbl.to_ascii_lowercase().contains(&needle)
+                                    {
+                                        continue;
+                                    }
+                                    shown_any = true;
+                                    let already_in = project.tool(&gt.id).is_some();
+                                    let row_lbl = if already_in {
+                                        format!("✓ {lbl} (in project)")
+                                    } else {
+                                        lbl
+                                    };
+                                    if ui
+                                        .add_enabled(!already_in, egui::Button::new(row_lbl))
+                                        .on_hover_text(
+                                            "Embed this cutter from the active machine into Project Tools",
+                                        )
+                                        .on_disabled_hover_text(
+                                            "Already embedded in Project Tools",
+                                        )
+                                        .clicked()
+                                    {
+                                        deferred_add_tool = Some(gt.clone());
+                                        ui.close();
+                                    }
+                                }
+                                if !shown_any {
+                                    ui.weak("No matching tools in active machine library.");
+                                }
+                            });
+                    })
+                    .response
+                    .on_hover_text("Add a cutting tool from the active machine into this project");
+
+                    if ui
+                        .add_enabled(
+                            unused_count > 0,
+                            egui::Button::new(format!("Remove Unused ({unused_count})")).small(),
+                        )
+                        .on_hover_text(
+                            "Remove all embedded project tools not referenced by any operation",
+                        )
+                        .on_disabled_hover_text("All project tools are currently used by operations")
+                        .clicked()
+                    {
+                        deferred_prune_unused = true;
+                    }
+                });
+
+                ui.add_space(3.0);
+
                 if project.tools.is_empty() {
-                    ui.weak("Tools are embedded automatically when assigned to operations.");
+                    ui.weak("No project tools yet. Click '+ Add Tool…' or assign a cutter to an operation.");
                 } else {
                     for tool in &project.tools {
-                        ui.label(format!(
-                            "• T{} — {} ({})",
-                            tool.tool_number,
-                            tool.name,
-                            tool.native_unit
-                                .format_length(tool.geometry.cutting_diameter_mm())
-                        ));
+                        let usages = usage_map.get(&tool.id);
+                        let use_count = usages.map_or(0, Vec::len);
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 4.0;
+                            let dia_txt = tool
+                                .native_unit
+                                .format_length(tool.geometry.cutting_diameter_mm());
+                            let main_txt =
+                                format!("T{} · {} ({dia_txt})", tool.tool_number, tool.name);
+                            let label_w = (ui.available_width() - 80.0).max(60.0);
+                            ui.add_sized(
+                                [label_w, 18.0],
+                                egui::Label::new(main_txt).truncate(),
+                            )
+                            .on_hover_text(tool.summary_label());
+
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    let del_tip = if use_count == 0 {
+                                        format!("Remove unused tool T{} from project", tool.tool_number)
+                                    } else {
+                                        let names: Vec<&str> = usages
+                                            .into_iter()
+                                            .flatten()
+                                            .map(|u| u.op_name.as_str())
+                                            .collect();
+                                        format!(
+                                            "Cannot remove: used by {}",
+                                            names.join(", ")
+                                        )
+                                    };
+                                    ui.add_enabled_ui(use_count == 0, |ui| {
+                                        if small_icon_button(ui, IconKind::Trash, &del_tip)
+                                            .clicked()
+                                        {
+                                            deferred_remove_tool = Some(tool.id.clone());
+                                        }
+                                    });
+
+                                    let (badge_txt, badge_col) = if use_count == 0 {
+                                        ("Unused".to_string(), tok.warn_fg)
+                                    } else if use_count == 1 {
+                                        ("1 op".to_string(), tok.text_muted)
+                                    } else {
+                                        (format!("{use_count} ops"), tok.text_muted)
+                                    };
+                                    ui.label(
+                                        egui::RichText::new(badge_txt).small().color(badge_col),
+                                    );
+                                },
+                            );
+                        });
                     }
-                }
-                ui.add_space(2.0);
-                if ui
-                    .small_button("Manage Tool Library…")
-                    .on_hover_text("Open the Tool Library manager to edit, add, or import tools")
-                    .clicked()
-                {
-                    emitted_action = Some(BrowserAction::OpenToolLibrary);
                 }
             });
 
+            if let Some(new_tool) = deferred_add_tool {
+                history.record_before_edit("Add Project Tool", None, project);
+                let label = new_tool.summary_label();
+                project.ensure_tool_embedded(&new_tool);
+                emitted_action = Some(BrowserAction::Log(format!(
+                    "Added tool to project: {label}."
+                )));
+            }
+            if let Some(rm_id) = deferred_remove_tool {
+                history.record_before_edit("Remove Project Tool", None, project);
+                if project.remove_tool_if_unused(&rm_id) {
+                    emitted_action = Some(BrowserAction::Log(format!(
+                        "Removed unused tool '{}' from project.",
+                        rm_id.0
+                    )));
+                }
+            }
+            if deferred_prune_unused {
+                history.record_before_edit("Remove Unused Project Tools", None, project);
+                let removed = project.prune_unused_tools();
+                if removed > 0 {
+                    emitted_action = Some(BrowserAction::Log(format!(
+                        "Removed {removed} unused tool(s) from project."
+                    )));
+                }
+            }
+
             // 3. Setups & Operations tree (each Setup in a unified collapsible card)
             let mut deferred_setup_delete: Option<usize> = None;
-            let mut deferred_op_add: Option<(usize, OperationKind)> = None;
-            let mut deferred_adaptive_add: Option<usize> = None;
             let mut deferred_op_move_slot: Option<(usize, usize, usize)> = None;
             let mut deferred_op_delete: Option<(usize, usize)> = None;
             let mut deferred_op_duplicate: Option<(usize, usize)> = None;
@@ -590,19 +733,23 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                 let setup_header = {
                     let s = &project.setups[s_idx];
                     let slot = s.wcs_slot.short_code();
-                    let base = if s.name.contains(slot) {
+                    if s.name.contains(slot) {
                         s.name.clone()
                     } else {
                         format!("{} [{slot}]", s.name)
-                    };
-                    if is_active_setup {
-                        format!("• {base}")
-                    } else {
-                        base
                     }
                 };
+                let multi_setup = project.setups.len() > 1;
+                let mut activate_clicked = false;
 
-                section_card(ui, ("setup_hdr", s_idx), &setup_header, true, |ui| {
+                setup_section_card(
+                    ui,
+                    ("setup_hdr", s_idx),
+                    &setup_header,
+                    is_active_setup,
+                    multi_setup,
+                    &mut activate_clicked,
+                    |ui| {
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 4.0;
                         let stock_selected = *focus == InspectorFocus::Setup { setup_idx: s_idx };
@@ -643,62 +790,6 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                                 },
                             );
                         }
-                    });
-
-                    // Streamlined single-row Operation creation bar
-                    ui.horizontal_wrapped(|ui| {
-                        ui.spacing_mut().item_spacing.x = 3.0;
-                        if ui
-                            .small_button("+ Adap")
-                            .on_hover_text("Add 2D Adaptive / Trochoidal Clearing operation")
-                            .clicked()
-                        {
-                            deferred_adaptive_add = Some(s_idx);
-                        }
-                        if ui
-                            .small_button("+ Cont")
-                            .on_hover_text("Add 2D Contour / Profile operation")
-                            .clicked()
-                        {
-                            deferred_op_add = Some((s_idx, OperationKind::Contour2D));
-                        }
-                        if ui
-                            .small_button("+ VCarve")
-                            .on_hover_text("Add 3D V-Carve / Bevel Inlay operation")
-                            .clicked()
-                        {
-                            deferred_op_add = Some((s_idx, OperationKind::VCarve));
-                        }
-                        ui.menu_button("+ Op…", |ui| {
-                            for (lbl, kind) in [
-                                ("Facing", OperationKind::Facing),
-                                ("2D Pocket", OperationKind::Pocket2D),
-                                ("Drill / Helical Bore", OperationKind::DrillBore),
-                                ("Thread Mill", OperationKind::ThreadMill),
-                                ("Slot / Keyway / T-Slot", OperationKind::SlotUndercut),
-                                ("Dovetail Slot / Rail", OperationKind::Dovetail),
-                                ("Edge Chamfer / Trace", OperationKind::ChamferTrace),
-                                ("3D Adaptive Roughing", OperationKind::Adaptive3D),
-                                ("3D Waterline / Z-Level", OperationKind::Waterline3D),
-                                ("3D Parallel Finishing", OperationKind::Parallel3D),
-                                ("3D Constant-Scallop", OperationKind::Scallop3D),
-                                ("3D Pencil Cleanup", OperationKind::Pencil3D),
-                                ("3D Edge Deburr / Chamfer", OperationKind::Deburr3D),
-                                ("3D Lollipop Undercut", OperationKind::Undercut3D),
-                                ("4th-Axis Rotary Surfacing", OperationKind::Rotary2Linear),
-                                (
-                                    "Simultaneous 4-Axis (X+Y+Z+A)",
-                                    OperationKind::Rotary4AxisSim,
-                                ),
-                            ] {
-                                if ui.button(lbl).clicked() {
-                                    deferred_op_add = Some((s_idx, kind));
-                                    ui.close();
-                                }
-                            }
-                        })
-                        .response
-                        .on_hover_text("Add another 2.5D, 3-axis surfacing, or 4th-axis rotary operation");
                     });
 
                     ui.add_space(2.0);
@@ -1085,7 +1176,13 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                             }
                         }
                     }
-                });
+                },
+                );
+                if activate_clicked {
+                    *active_setup_idx = s_idx;
+                    *focus = InspectorFocus::Setup { setup_idx: s_idx };
+                    *pick_mode = ViewportPickMode::InspectEntity;
+                }
             }
 
             if let Some(vis_op_id) = deferred_op_toggle_visibility
@@ -1105,55 +1202,6 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                 *focus = InspectorFocus::Setup {
                     setup_idx: *active_setup_idx,
                 };
-            }
-
-            if let Some(s_idx) = deferred_adaptive_add {
-                history.record_before_edit("Add 2D Adaptive Clearing", None, project);
-                let next_op_num = project.setups[s_idx].operations.len() + 1;
-                let mut op = Operation::new_adaptive_2d(
-                    format!("op_{s_idx}_{next_op_num}_adaptive"),
-                    format!("2D Adaptive {next_op_num}"),
-                );
-                if let Some(first_compat) = project
-                    .tools
-                    .iter()
-                    .chain(global_tools.tools.iter())
-                    .find(|t| OperationKind::Pocket2D.is_compatible_with_tool(t))
-                    .cloned()
-                {
-                    project.ensure_tool_embedded(&first_compat);
-                    op.tool_id = Some(first_compat.id);
-                    op.preset_id = first_compat.presets.first().map(|p| p.id.clone());
-                }
-                project.setups[s_idx].operations.push(op);
-                let o_idx = project.setups[s_idx].operations.len() - 1;
-                *active_setup_idx = s_idx;
-                *focus = InspectorFocus::Operation {
-                    setup_idx: s_idx,
-                    op_idx: o_idx,
-                };
-                *op_tab = OperationTab::Geometry;
-                *pick_mode =
-                    default_pick_mode_for_op(s_idx, o_idx, OperationKind::Pocket2D, *op_tab);
-            }
-
-            if let Some((s_idx, kind)) = deferred_op_add {
-                history.record_before_edit(format!("Add {}", kind.label()), None, project);
-                if let Some(o_idx) =
-                    create_default_operation_in_setup(project, global_tools, s_idx, kind)
-                {
-                    *active_setup_idx = s_idx;
-                    *focus = InspectorFocus::Operation {
-                        setup_idx: s_idx,
-                        op_idx: o_idx,
-                    };
-                    *op_tab = if kind == OperationKind::Facing || kind.is_3d_surface() {
-                        OperationTab::Passes
-                    } else {
-                        OperationTab::Geometry
-                    };
-                    *pick_mode = default_pick_mode_for_op(s_idx, o_idx, kind, *op_tab);
-                }
             }
 
             if let Some((s_idx, o_idx)) = deferred_op_duplicate {
@@ -1209,7 +1257,154 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
             }
         });
 
+    let _ = (op_tab, setup_tab);
     emitted_action
+}
+
+/// Renders a Setup card in the CAM Browser with unmistakable active-setup visual indication
+/// (accent border, subtle accent header tint, and `"Active"` pill badge) plus 1-click activation.
+fn setup_section_card(
+    ui: &mut egui::Ui,
+    id_salt: impl std::hash::Hash + std::fmt::Debug,
+    title: &str,
+    is_active: bool,
+    multi_setup: bool,
+    activate_clicked: &mut bool,
+    add_body: impl FnOnce(&mut egui::Ui),
+) {
+    let tok = ThemeTokens::from_ui(ui);
+    let state_id = ui.make_persistent_id(id_salt);
+    let mut is_open = ui
+        .data_mut(|d| d.get_persisted::<bool>(state_id))
+        .unwrap_or(true);
+
+    let (card_fill, card_stroke) = if is_active {
+        (tok.card_bg, Stroke::new(1.5, tok.accent))
+    } else {
+        (tok.card_bg, Stroke::new(1.0, tok.border))
+    };
+
+    egui::Frame::NONE
+        .fill(card_fill)
+        .stroke(card_stroke)
+        .corner_radius(CornerRadius::same(6))
+        .inner_margin(egui::Margin::symmetric(8, 7))
+        .show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                // Collapse chevron button
+                let (chev_rect, chev_resp) =
+                    ui.allocate_exact_size(Vec2::splat(18.0), Sense::click());
+                if chev_resp.clicked() {
+                    is_open = !is_open;
+                    ui.data_mut(|d| d.insert_persisted(state_id, is_open));
+                }
+                if ui.is_rect_visible(chev_rect) {
+                    let c = chev_rect.center();
+                    let col = if chev_resp.hovered() || is_active {
+                        tok.accent
+                    } else {
+                        tok.text_secondary
+                    };
+                    let pts = if is_open {
+                        vec![
+                            Pos2::new(c.x - 3.5, c.y - 2.0),
+                            Pos2::new(c.x + 3.5, c.y - 2.0),
+                            Pos2::new(c.x, c.y + 3.0),
+                        ]
+                    } else {
+                        vec![
+                            Pos2::new(c.x - 2.0, c.y - 3.5),
+                            Pos2::new(c.x + 3.0, c.y),
+                            Pos2::new(c.x - 2.0, c.y + 3.5),
+                        ]
+                    };
+                    ui.painter().add(egui::Shape::convex_polygon(
+                        pts,
+                        col,
+                        Stroke::NONE,
+                    ));
+                }
+                chev_resp.on_hover_text(if is_open {
+                    "Collapse setup"
+                } else {
+                    "Expand setup"
+                });
+
+                // Clickable Setup title (activates the Setup when clicked)
+                let badge_reserve = if is_active {
+                    54.0
+                } else if multi_setup {
+                    68.0
+                } else {
+                    4.0
+                };
+                let title_w = (ui.available_width() - badge_reserve).max(48.0);
+                let title_color = if is_active {
+                    tok.text_primary
+                } else {
+                    tok.text_secondary
+                };
+                let title_resp = ui
+                    .add_sized(
+                        [title_w, 18.0],
+                        egui::Label::new(
+                            egui::RichText::new(title).strong().color(title_color),
+                        )
+                        .truncate()
+                        .sense(Sense::click()),
+                    )
+                    .on_hover_cursor(CursorIcon::PointingHand)
+                    .on_hover_text(if is_active {
+                        format!(
+                            "{title} (Active Setup — top action bar operations are added here)"
+                        )
+                    } else {
+                        format!(
+                            "Click to make '{title}' the Active Setup (receives operations from top action bar)"
+                        )
+                    });
+                if title_resp.clicked() {
+                    *activate_clicked = true;
+                }
+
+                // Right-aligned Active pill or Set Active button
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if is_active {
+                        egui::Frame::NONE
+                            .fill(tok.accent)
+                            .corner_radius(CornerRadius::same(4))
+                            .inner_margin(egui::Margin::symmetric(6, 1))
+                            .show(ui, |ui| {
+                                ui.label(
+                                    egui::RichText::new("Active")
+                                        .small()
+                                        .strong()
+                                        .color(tok.accent_on_fg),
+                                )
+                                .on_hover_text(
+                                    "Active Setup: operations added from the top action bar are placed in this Setup",
+                                );
+                            });
+                    } else if multi_setup
+                        && ui
+                            .small_button("Activate")
+                            .on_hover_text(
+                                "Make this the Active Setup so top action bar operations are added here",
+                            )
+                            .clicked()
+                    {
+                        *activate_clicked = true;
+                    }
+                });
+            });
+
+            if is_open {
+                ui.add_space(4.0);
+                add_body(ui);
+            }
+        });
 }
 
 pub fn default_pick_mode_for_op(

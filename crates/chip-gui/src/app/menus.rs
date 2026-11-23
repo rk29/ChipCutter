@@ -2,14 +2,12 @@ use std::path::Path;
 
 use chip_cam::{OperationKind, Setup, WorkOffsetSlot};
 use chip_project::validate_project;
-use chip_sim::SimResolution;
 
 use crate::{
     app::ChipCutterApp,
-    camera::{MousePreset, OrbitMode},
     layout::{WorkspacePane, create_default_workspace_tree, focus_workspace_pane},
-    panels::{InspectorFocus, ViewportPickMode},
-    theme::{AppTheme, ThemeTokens},
+    panels::{InspectorFocus, ViewportPickMode, settings::SettingsSection},
+    theme::ThemeTokens,
 };
 
 impl ChipCutterApp {
@@ -28,31 +26,6 @@ impl ChipCutterApp {
                     self.draw_edit_menu(ui);
                     self.draw_setup_menu(ui);
                     self.draw_operations_menu(ui);
-                    ui.menu_button("Tools", |ui| {
-                        if ui
-                            .button("Tool Library Manager…")
-                            .on_hover_text(
-                                "Browse, edit, import, and export cutting tools and feeds/speeds presets",
-                            )
-                            .clicked()
-                        {
-                            self.modals.tool_library.open = true;
-                            ui.close();
-                        }
-                        if ui
-                            .button("Machine Manager…")
-                            .on_hover_text(
-                                "Configure CNC machine travels, spindle limits, 4th-axis rotary kinematics, and default tool libraries",
-                            )
-                            .clicked()
-                        {
-                            let active_mid = self.project.effective_machine_id().to_string();
-                            self.modals
-                                .machine_manager
-                                .open_selecting(&self.machines, &active_mid);
-                            ui.close();
-                        }
-                    });
                     self.draw_simulate_menu(ui, ctx);
                     self.draw_post_menu(ui);
                     self.draw_view_menu(ui, ctx);
@@ -354,6 +327,15 @@ impl ChipCutterApp {
                 self.delete_focused_item();
                 ui.close();
             }
+            ui.separator();
+            if ui
+                .button("Settings… (Ctrl+,)")
+                .on_hover_text("Configure theme, units, mouse navigation, simulation engine/detail/skinning, and default machine")
+                .clicked()
+            {
+                self.modals.settings.open = true;
+                ui.close();
+            }
         });
     }
 
@@ -430,6 +412,19 @@ impl ChipCutterApp {
                 ui.close();
             }
             ui.separator();
+            if ui
+                .button("Machine Manager…")
+                .on_hover_text(
+                    "Configure CNC machine travels, spindle limits, 4th-axis rotary kinematics, and default tool libraries",
+                )
+                .clicked()
+            {
+                let active_mid = self.project.effective_machine_id().to_string();
+                self.modals
+                    .machine_manager
+                    .open_selecting(&self.machines, &active_mid);
+                ui.close();
+            }
             if ui
                 .button("Validate Project Invariants")
                 .on_hover_text("Run safety and configuration checks on tools, WCS frames, clearances, and selections")
@@ -547,27 +542,15 @@ impl ChipCutterApp {
                 ui.close();
             }
             ui.separator();
-            ui.label("Engine:");
-            for eng in chip_sim::SimEngineKind::ALL {
-                if ui
-                    .radio_value(&mut self.sim_panel.engine, eng, eng.label())
-                    .on_hover_text(eng.description())
-                    .changed()
-                    && self.sim_panel.active_result.is_some()
-                {
-                    self.trigger_active_setup_simulation(ctx);
-                }
-            }
-            ui.separator();
-            ui.label("Resolution:");
-            let active_eng = self.sim_panel.engine;
-            for res in SimResolution::ALL {
-                ui.radio_value(
-                    &mut self.sim_panel.resolution,
-                    res,
-                    res.label_for_engine(active_eng),
-                )
-                .on_hover_text(res.description_for_engine(active_eng));
+            if ui
+                .button("Simulation Settings…")
+                .on_hover_text("Configure Simulation Engine, Detail Level, Compute Backend, and Mesh Skinning")
+                .clicked()
+            {
+                self.modals
+                    .settings
+                    .open_section(SettingsSection::Simulation);
+                ui.close();
             }
             ui.separator();
             ui.checkbox(
@@ -652,22 +635,8 @@ impl ChipCutterApp {
         });
     }
 
-    fn draw_view_menu(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+    fn draw_view_menu(&mut self, ui: &mut egui::Ui, _ctx: &egui::Context) {
         ui.menu_button("View", |ui| {
-            ui.label("Workspace Theme:");
-            for t in AppTheme::ALL {
-                let is_sel = self.theme == t;
-                if ui
-                    .selectable_label(is_sel, t.label())
-                    .on_hover_text(format!("Switch workspace palette to {}", t.label()))
-                    .clicked()
-                    && !is_sel
-                {
-                    self.set_theme(ctx, t);
-                    ui.close();
-                }
-            }
-            ui.separator();
             if ui
                 .button("Reset Default Workspace Layout")
                 .on_hover_text("Restore default panel docking sizes and tab positions")
@@ -730,28 +699,16 @@ impl ChipCutterApp {
                 ui.close();
             }
             ui.separator();
-            ui.menu_button("Mouse Navigation Preset", |ui| {
-                for preset in MousePreset::ALL {
-                    ui.selectable_value(&mut self.camera.mouse_preset, preset, preset.label())
-                        .on_hover_text(format!("Use {} 3D viewport orbit/pan/zoom mouse bindings", preset.label()));
-                }
-                ui.separator();
-                for om in [OrbitMode::TurntableZUp, OrbitMode::FreeTrackball] {
-                    let is_sel = self.camera.orbit_mode == om;
-                    if ui
-                        .selectable_label(is_sel, om.label())
-                        .on_hover_text(match om {
-                            OrbitMode::TurntableZUp => "Keep world +Z upright while orbiting around the part",
-                            OrbitMode::FreeTrackball => "Allow unrestricted 3-axis trackball rotation in any direction",
-                        })
-                        .clicked()
-                        && !is_sel
-                    {
-                        self.camera.set_orbit_mode(om);
-                        ui.close();
-                    }
-                }
-            });
+            if ui
+                .button("Appearance & Navigation Settings…")
+                .on_hover_text("Configure workspace theme, mouse navigation preset, and orbit mode")
+                .clicked()
+            {
+                self.modals
+                    .settings
+                    .open_section(SettingsSection::Viewport);
+                ui.close();
+            }
         });
     }
 

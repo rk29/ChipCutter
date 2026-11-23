@@ -1,9 +1,7 @@
 use std::sync::Arc;
 
 use chip_math::{DisplayUnit, MM_PER_INCH};
-use chip_sim::{
-    ScrubSnapshot, SimComputeBackendChoice, SimEngineKind, SimResolution, format_cycle_time_hms,
-};
+use chip_sim::{ScrubSnapshot, SimComputeBackendChoice, SimEngineKind, format_cycle_time_hms};
 
 use super::{
     SimPanelCtx, SimTriggerArgs, SimulationPanelState, SimulationUiAction,
@@ -39,112 +37,26 @@ impl SimulationPanelState {
             self.trail_up_to_cutter,
         );
 
-        // Top Control Bar: Engine, Resolution, Backend, Adapter Pill, Visual Toggles, Verification Status
+        // Top Control Bar: Compact Settings Chip, Carryover/Undercut Pills, Visual Toggles, Verification Status
         let mut engine_changed = false;
-        let mut backend_changed = false;
         let busy = self.is_busy();
         ui.horizontal_wrapped(|ui| {
-            let prev_engine = self.engine;
-            egui::ComboBox::from_id_salt("sim_engine_combo")
-                .selected_text(self.engine.label())
-                .width(172.0)
-                .show_ui(ui, |ui| {
-                    for eng in SimEngineKind::ALL {
-                        ui.selectable_value(&mut self.engine, eng, eng.label())
-                            .on_hover_text(eng.description());
-                    }
-                })
-                .response
-                .on_hover_text(format!(
-                    "Simulation engine (persisted in prefs.toml).\n\nActive: {} -- {}",
-                    self.engine.label(),
-                    self.engine.description()
-                ));
-            if self.engine != prev_engine {
-                engine_changed = true;
-            }
-
-            let res_tooltip = match self.engine {
-                SimEngineKind::Heightmap => format!(
-                    "Heightmap XY grid resolution (cells along longest XY stock axis). Higher values give sharper detail and more accurate error metrics at the cost of CPU/RAM.\n\nActive: {} -- {}",
-                    self.resolution.label_for_engine(self.engine),
-                    self.resolution.description_for_engine(self.engine)
-                ),
-                SimEngineKind::TriDexel => format!(
-                    "Tri-Dexel 3D lattice resolution (isotropic cells along longest X/Y/Z stock axis across all 3 orthogonal ray planes). Higher values give sharper 3D edges and tighter error-volume/RMS metrology at the cost of CPU/RAM.\n\nActive: {} -- {}",
-                    self.resolution.label_for_engine(self.engine),
-                    self.resolution.description_for_engine(self.engine)
-                ),
-            };
-            egui::ComboBox::from_id_salt("sim_res_combo")
-                .selected_text(self.resolution.label_for_engine(self.engine))
-                .width(124.0)
-                .show_ui(ui, |ui| {
-                    for r in SimResolution::ALL {
-                        ui.selectable_value(
-                            &mut self.resolution,
-                            r,
-                            r.label_for_engine(self.engine),
-                        )
-                        .on_hover_text(r.description_for_engine(self.engine));
-                    }
-                })
-                .response
-                .on_hover_text(res_tooltip);
-
-            let prev_backend = self.backend_choice;
-            let backend_short_label = |choice: SimComputeBackendChoice| -> &'static str {
-                match choice {
-                    SimComputeBackendChoice::Auto => "Auto (GPU)",
-                    SimComputeBackendChoice::Gpu => "GPU",
-                    SimComputeBackendChoice::Cpu => "CPU",
-                }
-            };
-            let backend_item_label = |choice: SimComputeBackendChoice| -> &'static str {
-                match choice {
-                    SimComputeBackendChoice::Auto => "Auto (GPU)",
-                    SimComputeBackendChoice::Gpu => "GPU (Compute)",
-                    SimComputeBackendChoice::Cpu => "CPU (Exact)",
-                }
-            };
-            let backend_item_desc = |choice: SimComputeBackendChoice| -> &'static str {
-                match choice {
-                    SimComputeBackendChoice::Auto => {
-                        "Automatically run simulation on GPU compute (wgpu) when available, falling back transparently to exact CPU + Rayon otherwise."
-                    }
-                    SimComputeBackendChoice::Gpu => {
-                        "Prefer GPU compute (wgpu) simulation and zero-readback direct GPU rendering (falls back to CPU if no compute adapter is available)."
-                    }
-                    SimComputeBackendChoice::Cpu => {
-                        "Force exact CPU + Rayon simulation and CPU-tessellated stock rendering (useful for cross-checking GPU results)."
-                    }
-                }
-            };
-            egui::ComboBox::from_id_salt("sim_backend_combo")
-                .selected_text(backend_short_label(self.backend_choice))
-                .width(88.0)
-                .show_ui(ui, |ui| {
-                    for choice in SimComputeBackendChoice::ALL {
-                        ui.selectable_value(
-                            &mut self.backend_choice,
-                            choice,
-                            backend_item_label(choice),
-                        )
-                        .on_hover_text(backend_item_desc(choice));
-                    }
-                })
-                .response
-                .on_hover_text(format!(
-                    "Simulation compute backend (persisted in prefs.toml).\n\nActive setting: {} -- {}",
-                    backend_item_label(self.backend_choice),
-                    backend_item_desc(self.backend_choice)
-                ));
-            if self.backend_choice != prev_backend {
-                backend_changed = true;
-            }
-
             let tok = crate::theme::ThemeTokens::from_ui(ui);
-            let (pill_text, pill_bg, pill_border, pill_fg, pill_tooltip) =
+            let engine_short = match self.engine {
+                SimEngineKind::Heightmap => "Heightmap",
+                SimEngineKind::TriDexel => "Tri-Dexel",
+            };
+            let res_short = match self.resolution {
+                chip_sim::SimResolution::Standard => "Standard",
+                chip_sim::SimResolution::Fine => "Fine",
+                chip_sim::SimResolution::Ultra => "Ultra",
+            };
+            let skin_short = if self.mesh_skinning {
+                "Skinned"
+            } else {
+                "Crisp"
+            };
+            let (backend_short, pill_bg, pill_border, pill_fg, pill_tooltip) =
                 if let Some(res) = &self.active_result
                     && self.active_setup_idx == setup_idx
                 {
@@ -161,12 +73,15 @@ impl SimulationPanelState {
                     if res.active_backend.is_gpu {
                         let short_name = shorten_adapter_name(&res.active_backend.adapter_name);
                         (
-                            format!("GPU · {short_name}"),
+                            format!("GPU ({short_name})"),
                             tok.info_bg,
                             tok.info_border,
                             tok.info_fg,
                             format!(
-                                "Active simulation backend: GPU Compute ({})\nAdapter: {}\n{}\nZero-readback direct GPU stock rendering and instant Error Heatmap active.",
+                                "Engine: {} · Detail: {} · Surface: {}\nActive backend: GPU Compute ({}) — {}\n{}\n\nClick to configure Simulation Engine, Detail Level, Backend, and Mesh Skinning in Settings.",
+                                self.engine.label(),
+                                self.resolution.label_for_engine(self.engine),
+                                skin_short,
                                 res.active_backend.backend_api,
                                 res.active_backend.adapter_name,
                                 timing_line
@@ -174,12 +89,15 @@ impl SimulationPanelState {
                         )
                     } else if self.backend_choice == SimComputeBackendChoice::Cpu {
                         (
-                            "CPU (Exact)".to_string(),
+                            "CPU".to_string(),
                             tok.card_bg,
                             tok.border_strong,
                             tok.text_secondary,
                             format!(
-                                "Active simulation backend: CPU Exact (Rayon)\n{}\nExact CPU volumetric kernel and CPU-tessellated stock mesh active.",
+                                "Engine: {} · Detail: {} · Surface: {}\nActive backend: CPU Exact (Rayon)\n{}\n\nClick to configure Simulation settings.",
+                                self.engine.label(),
+                                self.resolution.label_for_engine(self.engine),
+                                skin_short,
                                 timing_line
                             ),
                         )
@@ -190,30 +108,41 @@ impl SimulationPanelState {
                             tok.warn_border,
                             tok.warn_fg,
                             format!(
-                                "Active simulation backend: CPU Fallback (Rayon)\nGPU compute was unavailable or disabled; ran exact CPU simulation automatically.\n{}",
+                                "Engine: {} · Detail: {} · Surface: {}\nActive backend: CPU Fallback (Rayon)\n{}\n\nClick to configure Simulation settings.",
+                                self.engine.label(),
+                                self.resolution.label_for_engine(self.engine),
+                                skin_short,
                                 timing_line
                             ),
                         )
                     }
                 } else if self.backend_choice == SimComputeBackendChoice::Cpu {
                     (
-                        "CPU (Exact)".to_string(),
+                        "CPU".to_string(),
                         tok.card_bg,
                         tok.border_strong,
                         tok.text_secondary,
-                        "Configured backend: CPU Exact (Rayon). Next simulation will execute on the exact CPU volumetric kernel."
-                            .to_string(),
+                        format!(
+                            "Engine: {} · Detail: {} · Surface: {}\nConfigured backend: CPU Exact (Rayon)\n\nClick to configure Simulation settings.",
+                            self.engine.label(),
+                            self.resolution.label_for_engine(self.engine),
+                            skin_short,
+                        ),
                     )
                 } else if let Some(info) = self.gpu_adapter_info() {
                     let short_name = shorten_adapter_name(&info.adapter_name);
                     (
-                        format!("GPU · {short_name}"),
+                        format!("GPU ({short_name})"),
                         tok.info_bg,
                         tok.info_border,
                         tok.info_fg,
                         format!(
-                            "GPU Compute adapter ready ({})\nAdapter: {}\nNext simulation will execute on GPU with zero-readback rendering.",
-                            info.backend_api, info.adapter_name
+                            "Engine: {} · Detail: {} · Surface: {}\nGPU Compute adapter ready ({}) — {}\n\nClick to configure Simulation settings.",
+                            self.engine.label(),
+                            self.resolution.label_for_engine(self.engine),
+                            skin_short,
+                            info.backend_api,
+                            info.adapter_name
                         ),
                     )
                 } else {
@@ -222,24 +151,28 @@ impl SimulationPanelState {
                         tok.warn_bg,
                         tok.warn_border,
                         tok.warn_fg,
-                        "No GPU compute adapter is active; simulation will fall back transparently to exact CPU + Rayon."
-                            .to_string(),
+                        format!(
+                            "Engine: {} · Detail: {} · Surface: {}\nNo GPU compute adapter active; CPU + Rayon fallback.\n\nClick to configure Simulation settings.",
+                            self.engine.label(),
+                            self.resolution.label_for_engine(self.engine),
+                            skin_short,
+                        ),
                     )
                 };
-            egui::Frame::NONE
-                .fill(pill_bg)
-                .stroke(egui::Stroke::new(1.0, pill_border))
-                .corner_radius(egui::CornerRadius::same(4))
-                .inner_margin(egui::Margin::symmetric(6, 2))
-                .show(ui, |ui| {
-                    ui.label(
-                        egui::RichText::new(pill_text)
-                            .small()
-                            .strong()
-                            .color(pill_fg),
-                    )
-                    .on_hover_text(pill_tooltip);
-                });
+
+            let chip_label = format!("{engine_short} · {res_short} · {backend_short}");
+            if ui
+                .add(
+                    egui::Button::new(egui::RichText::new(chip_label).small().strong().color(pill_fg))
+                        .fill(pill_bg)
+                        .stroke(egui::Stroke::new(1.0, pill_border))
+                        .corner_radius(egui::CornerRadius::same(4)),
+                )
+                .on_hover_text(pill_tooltip)
+                .clicked()
+            {
+                action = Some(SimulationUiAction::OpenSimulationSettings);
+            }
 
             if let Some(res) = &self.active_result
                 && self.active_setup_idx == setup_idx
@@ -414,7 +347,7 @@ impl SimulationPanelState {
             }
         });
 
-        if (engine_changed || backend_changed)
+        if engine_changed
             && !self.is_busy()
             && self.active_result.is_some()
             && let Some(doc) = cad_doc

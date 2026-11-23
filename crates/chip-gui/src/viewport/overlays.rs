@@ -2,7 +2,7 @@ use chip_cam::BoxAnchor27;
 use chip_math::{Aabb3, RigidFrame3};
 
 use crate::{
-    camera::{CadCamera, MousePreset, OrbitMode, StandardView},
+    camera::{CadCamera, StandardView},
     panels::ViewportPickMode,
     theme::ThemeTokens,
     viewport::HighlightState,
@@ -266,12 +266,12 @@ pub fn draw_viewport_bottom_hud(
         );
     }
 
-    if viewport_rect.width() < 520.0 || viewport_rect.height() < 90.0 {
+    if viewport_rect.width() < 420.0 || viewport_rect.height() < 90.0 {
         return None;
     }
 
     // 2. Centered Floating Camera & Visibility HUD Bar along bottom edge
-    let bar_w = (viewport_rect.width() - 24.0).min(710.0);
+    let bar_w = (viewport_rect.width() - 24.0).min(535.0);
     let bar_h = 32.0;
     let bar_rect = egui::Rect::from_center_size(
         egui::pos2(viewport_rect.center().x, viewport_rect.bottom() - 21.0),
@@ -372,36 +372,6 @@ pub fn draw_viewport_bottom_hud(
         "Ghost",
         "Toggle Translucent Target Part Overlay",
     );
-
-    if bar_w >= 580.0 {
-        hud_ui.separator();
-        egui::ComboBox::from_id_salt("vp_hud_mouse_preset")
-            .selected_text(camera.mouse_preset.short_label())
-            .width(86.0)
-            .show_ui(&mut hud_ui, |ui| {
-                for preset in MousePreset::ALL {
-                    ui.selectable_value(&mut camera.mouse_preset, preset, preset.label())
-                        .on_hover_text(format!("Use {} viewport orbit/pan/zoom mouse bindings", preset.label()));
-                }
-            })
-            .response
-            .on_hover_text("Select 3D viewport mouse navigation preset (Fusion 360, Blender, SolidWorks, FreeCAD)");
-        let orbit_short = match camera.orbit_mode {
-            OrbitMode::TurntableZUp => "+Z Up",
-            OrbitMode::FreeTrackball => "Free",
-        };
-        let next_orbit = match camera.orbit_mode {
-            OrbitMode::TurntableZUp => OrbitMode::FreeTrackball,
-            OrbitMode::FreeTrackball => OrbitMode::TurntableZUp,
-        };
-        if hud_ui
-            .small_button(orbit_short)
-            .on_hover_text(camera.orbit_mode.label())
-            .clicked()
-        {
-            camera.set_orbit_mode(next_orbit);
-        }
-    }
 
     emitted
 }

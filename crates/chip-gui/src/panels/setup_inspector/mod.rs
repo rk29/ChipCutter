@@ -59,6 +59,7 @@ pub struct SetupInspectorCtx<'a> {
     pub machines: &'a [MachineDefinition],
     pub open_machine_manager: &'a mut bool,
     pub machine_changed: &'a mut bool,
+    pub switch_machine_id: &'a mut Option<String>,
     pub import_fixture_requested: &'a mut bool,
     pub open_flip_jig_wizard: &'a mut bool,
     pub open_soft_jaw_wizard: &'a mut bool,
@@ -174,6 +175,7 @@ pub fn show_setup_inspector(ui: &mut egui::Ui, ctx: SetupInspectorCtx<'_>) -> bo
         machines,
         open_machine_manager,
         machine_changed,
+        switch_machine_id,
         import_fixture_requested,
         open_flip_jig_wizard,
         open_soft_jaw_wizard,
@@ -349,9 +351,9 @@ pub fn show_setup_inspector(ui: &mut egui::Ui, ctx: SetupInspectorCtx<'_>) -> bo
                 );
 
                 if let Some(new_mid) = picked_machine {
-                    history.record_before_edit("Change Target Machine", None, project);
-                    project.machine_id = Some(new_mid);
-                    *machine_changed = true;
+                    if !new_mid.eq_ignore_ascii_case(&current_mid) {
+                        *switch_machine_id = Some(new_mid);
+                    }
                 } else if apply_defaults_clicked
                     && let Some(m) = current_machine
                 {

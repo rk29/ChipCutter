@@ -127,9 +127,12 @@ impl ChipCutterApp {
             .project
             .tools
             .iter()
+            .chain(self.global_tools.tools.iter())
             .find(|t| OperationKind::Pocket2D.is_compatible_with_tool(t))
+            .cloned()
         {
-            op.tool_id = Some(t.id.clone());
+            self.project.ensure_tool_embedded(&t);
+            op.tool_id = Some(t.id);
             op.preset_id = t.presets.first().map(|p| p.id.clone());
         }
         self.project.setups[s_idx].operations.push(op);
@@ -317,6 +320,7 @@ impl ChipCutterApp {
                 }
             }
             CommandId::OpenShortcutCheatsheet => self.modals.shortcut_cheatsheet.open = true,
+            CommandId::OpenSettings => self.modals.settings.open = true,
             CommandId::OpenAboutModal => self.modals.about.open = true,
             CommandId::SampleCamTorture
             | CommandId::SampleAdaptiveRest
