@@ -503,7 +503,9 @@ pub(super) fn show_slot_undercut_params(ui: &mut egui::Ui, ctx: SlotUndercutUiCt
                     "Edit Slot Axial Stepdown",
                 );
 
-                f.set_tip("Lateral stock reserved on both undercut walls for the final finishing pass");
+                f.set_tip(
+                    "Lateral stock reserved for this operation's own final finishing pass (final uncut wall/floor stock is set by Stock to Leave above)",
+                );
                 f.len(
                     "Finish Allowance",
                     &mut p.finish_allowance,
@@ -628,7 +630,9 @@ pub(super) fn show_dovetail_params(ui: &mut egui::Ui, ctx: DovetailUiCtx<'_>) {
                     "Edit Dovetail Radial Stepover",
                 );
 
-                f.set_tip("Lateral stock allowance reserved for the final angled flank finishing pass");
+                f.set_tip(
+                    "Lateral stock allowance reserved for this operation's own final angled flank finishing pass (final uncut stock is set by Stock to Leave above)",
+                );
                 f.len(
                     "Finish Allowance",
                     &mut p.finish_allowance,

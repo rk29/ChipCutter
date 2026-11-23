@@ -158,12 +158,13 @@ fn make_rect_sketch(
 }
 
 #[test]
-fn operation_machining_boundary_accessors_cover_all_7_3d_strategies() {
+fn operation_machining_boundary_accessors_cover_facing_and_all_7_3d_strategies() {
     for kind in OperationKind::ALL {
         let mut op = Operation::new("op_test", kind.default_name(), kind);
         let expected_some = matches!(
             kind,
-            OperationKind::Waterline3D
+            OperationKind::Facing
+                | OperationKind::Waterline3D
                 | OperationKind::Adaptive3D
                 | OperationKind::Parallel3D
                 | OperationKind::Scallop3D

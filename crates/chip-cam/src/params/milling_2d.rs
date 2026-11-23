@@ -3,8 +3,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::cl_data::DrillCycleKind;
 
-use super::common::{
-    default_one_u32, default_ramp_angle_deg, default_true, default_zero_len, param_expr,
+use super::{
+    common::{default_one_u32, default_ramp_angle_deg, default_true, default_zero_len, param_expr},
+    surface_3d::{MachiningBoundaryConfig, MachiningBoundaryMode, ToolContainmentMode},
 };
 
 /// Facing cut direction policy (`05-operations.md` §1).
@@ -36,6 +37,8 @@ impl FacingCutMode {
 /// Strategy parameters for **Facing** (`05-operations.md` §1).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FacingParams {
+    #[serde(flatten)]
+    pub boundary: MachiningBoundaryConfig,
     #[serde(default)]
     pub pass_direction_deg: f64,
     #[serde(default = "default_true")]
@@ -61,6 +64,11 @@ fn default_facing_ext() -> ParamLength {
 impl Default for FacingParams {
     fn default() -> Self {
         Self {
+            boundary: MachiningBoundaryConfig::new(
+                MachiningBoundaryMode::StockBox,
+                ToolContainmentMode::ToolOutsideBoundary,
+                0.0,
+            ),
             pass_direction_deg: 0.0,
             auto_longest_axis: true,
             stepover: default_facing_stepover(),
@@ -73,6 +81,7 @@ impl Default for FacingParams {
 
 impl FacingParams {
     pub fn reevaluate(&mut self, ctx: &EvalContext) {
+        self.boundary.reevaluate(ctx);
         let _ = self.stepover.reevaluate(ctx);
         let _ = self.pass_extension.reevaluate(ctx);
         if let Some(fs) = &mut self.finishing_stepdown {
@@ -237,6 +246,10 @@ pub struct Contour2DParams {
     #[serde(default)]
     pub repeat_finish_pass: bool,
     #[serde(default)]
+    pub clip_to_stock_bounds: bool,
+    #[serde(default = "default_zero_len")]
+    pub open_chain_extension: ParamLength,
+    #[serde(default)]
     pub tabs: HoldingTabsConfig,
 }
 
@@ -260,6 +273,8 @@ impl Default for Contour2DParams {
             finish_stepover: default_finish_stepover(),
             finish_feed_mm_min: None,
             repeat_finish_pass: false,
+            clip_to_stock_bounds: false,
+            open_chain_extension: default_zero_len(),
             tabs: HoldingTabsConfig::default(),
         }
     }
@@ -269,6 +284,7 @@ impl Contour2DParams {
     pub fn reevaluate(&mut self, ctx: &EvalContext) {
         let _ = self.roughing_stepover.reevaluate(ctx);
         let _ = self.finish_stepover.reevaluate(ctx);
+        let _ = self.open_chain_extension.reevaluate(ctx);
         self.tabs.reevaluate(ctx);
     }
 }
@@ -401,9 +417,36 @@ impl PocketPassOrder {
     }
 }
 
+/// 2D Pocket / Adaptive boundary interpretation (`05-operations.md` §3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PocketBoundaryMode {
+    /// Clear inside selected planar faces or closed 2D loops, preserving any raised islands.
+    #[default]
+    SelectedPockets,
+    /// Treat selected planar faces or closed 2D loops as raised bosses (islands) to leave standing,
+    /// and clear all stock material outside them up to the Setup Stock XY boundary with open-air entry.
+    ClearOutsideSelectedToStock,
+}
+
+impl PocketBoundaryMode {
+    pub const ALL: [Self; 2] = [Self::SelectedPockets, Self::ClearOutsideSelectedToStock];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::SelectedPockets => "Inside Selected Pockets",
+            Self::ClearOutsideSelectedToStock => "Outside Selected Bosses (To Stock)",
+        }
+    }
+}
+
 /// Strategy parameters for **2D Pocket** (`05-operations.md` §3).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Pocket2DParams {
+    #[serde(default)]
+    pub boundary_mode: PocketBoundaryMode,
+    #[serde(default)]
+    pub treat_outer_boundary_as_open: bool,
     #[serde(default)]
     pub strategy: PocketStrategyKind,
     #[serde(default = "default_pocket_stepover")]
@@ -429,6 +472,8 @@ fn default_open_overhang() -> ParamLength {
 impl Default for Pocket2DParams {
     fn default() -> Self {
         Self {
+            boundary_mode: PocketBoundaryMode::SelectedPockets,
+            treat_outer_boundary_as_open: false,
             strategy: PocketStrategyKind::ContourParallel,
             stepover: default_pocket_stepover(),
             pass_order: PocketPassOrder::Auto,

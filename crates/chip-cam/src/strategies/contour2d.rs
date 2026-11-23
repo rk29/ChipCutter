@@ -2,17 +2,19 @@ use chip_math::{ArcPolyline2D, ArcSegment2D, DVec2, DVec3};
 
 use crate::{
     cl_data::{ArcPlane, ClEvent, CutterCompMode, MotionRole},
-    offset2d::offset_polyline,
+    offset2d::{clip_scanline_to_region, offset_polyline},
     params::{
         Contour2DParams, ContourCompensation, EntryStrategy, HoldingTabsConfig, LeadConfig,
         TabPlacementMode, TabProfileKind,
     },
-    rest2d::{ContourRestClipQuery, RegionSet2D, clip_contour_path_to_rest},
+    rest2d::{
+        ContourRestClipQuery, RegionSet2D, clip_contour_path_to_rest, clip_polyline_by_region_set,
+    },
     selection::ExtractedFeature25D,
     strategies::{StrategyExecContext, compute_z_levels},
     surface3d::{
         PushCutterField, SurfaceCutterProfile, SurfaceMesh3D, clip_2d_contour_outside_overhangs,
-        is_2d_arc_clear_of_avoid, is_2d_segment_clear_of_avoid,
+        is_2d_arc_clear_of_avoid, is_2d_segment_clear_of_avoid, stock_xy_region,
     },
     toolpath::{TabMarker3D, ToolpathBuilder, VerticalArcMove, XyArcMove},
     wcs::CamError,
@@ -42,6 +44,15 @@ pub fn generate_contour2d(
     params: &Contour2DParams,
     builder: &mut ToolpathBuilder,
 ) -> Result<(), CamError> {
+    let open_ext = params.open_chain_extension.value_mm;
+    if !open_ext.is_finite() || open_ext < 0.0 {
+        return Err(CamError::InvalidParameter {
+            param: "contour_2d.open_chain_extension",
+            value: open_ext,
+            reason: "must be finite and >= 0.0 mm",
+        });
+    }
+
     let mut contours: Vec<SourceContour> = Vec::new();
     for feat in &ctx.selection.features {
         match feat {
@@ -51,8 +62,13 @@ pub fn generate_contour2d(
                 ..
             } => {
                 if !polyline_wcs.segments.is_empty() {
+                    let poly = if !polyline_wcs.closed && open_ext > 1e-4 {
+                        extend_open_polyline_tangents(polyline_wcs, open_ext)
+                    } else {
+                        polyline_wcs.clone()
+                    };
                     contours.push(SourceContour {
-                        poly_wcs: polyline_wcs.clone(),
+                        poly_wcs: poly,
                         side_flip: *side_flip,
                     });
                 }
@@ -128,6 +144,11 @@ pub fn generate_contour2d(
     if side_passes.is_empty() {
         side_passes.push((0.0, false));
     }
+
+    let stock_clip_region = params
+        .clip_to_stock_bounds
+        .then(|| stock_xy_region(ctx.setup))
+        .filter(|r| !r.is_empty());
 
     let overhang_cutter = SurfaceCutterProfile::from_tool(
         ctx.tool,
@@ -217,133 +238,146 @@ pub fn generate_contour2d(
             for raw_loop in offset_loops {
                 ctx.check_cancel()?;
                 // Shift closed-loop seam to the midpoint of its longest smooth segment so lead-in/out never lands on a sharp corner!
-                let poly = if raw_loop.closed {
+                let base_poly = if raw_loop.closed {
                     shift_seam_to_longest_segment_midpoint(&raw_loop)
                 } else {
                     raw_loop
                 };
-                if poly.perimeter() <= 1e-4 {
+                if base_poly.perimeter() <= 1e-4 {
                     continue;
                 }
 
-                // Project holding tabs onto this offset loop (only needed on the innermost radial pass where extra_radial == 0,
-                // or any pass touching the part wall)
-                let loop_tabs_s_mm: Vec<f64> =
-                    if !src_tab_s_norms.is_empty() && extra_radial <= 1e-4 {
-                        src_tab_s_norms
-                            .iter()
-                            .filter_map(|&sn| {
-                                let (src_pt, _) = src.poly_wcs.sample_at_fraction(sn)?;
-                                poly.project_point(src_pt).map(|pr| pr.s_mm)
-                            })
-                            .collect()
+                let clipped_polys: Vec<ArcPolyline2D> =
+                    if let Some(ref stock_reg) = stock_clip_region {
+                        clip_contour_to_region_exact(&base_poly, stock_reg)
                     } else {
-                        Vec::new()
+                        vec![base_poly]
                     };
 
-                let rest_enabled = !ctx.passes.rest_machining.is_disabled();
-                let avoid_overhangs = overhang_field.is_some();
-                if params.continuous_spiral_ramp
-                    && poly.closed
-                    && loop_tabs_s_mm.is_empty()
-                    && !rest_enabled
-                    && !avoid_overhangs
-                {
-                    emit_continuous_spiral_contour(
-                        ctx,
-                        params,
-                        builder,
-                        &SpiralContourEmitSpec {
-                            poly: &poly,
-                            base_sign,
-                            z_levels: &z_levels,
-                            target_bottom_z,
-                            cut_feed,
-                            cut_role,
-                        },
-                    );
-                } else if rest_enabled || avoid_overhangs {
-                    for &z_cut in &z_levels {
-                        ctx.check_cancel()?;
-                        let mut spans = if rest_enabled {
-                            clip_contour_path_to_rest(&ContourRestClipQuery {
-                                raw_contour: &src.poly_wcs,
-                                offset_sign: base_sign,
-                                candidate_path: &poly,
-                                current_tool_radius_mm: tool_r,
-                                rest_cfg: &ctx.passes.rest_machining,
-                                upstream: ctx.upstream_rest,
-                                z_level_wcs: z_cut,
-                            })
-                        } else {
-                            vec![poly.clone()]
-                        };
-                        let avoid_z = overhang_field
-                            .as_ref()
-                            .map(|f| f.avoidance_region_z(z_cut))
-                            .filter(|r| !r.is_empty());
-                        if let (Some(surf), Some(avoid)) =
-                            (overhang_surface.as_ref(), avoid_z.as_ref())
-                        {
-                            spans = spans
+                for poly in clipped_polys {
+                    if poly.perimeter() <= 1e-4 {
+                        continue;
+                    }
+
+                    // Project holding tabs onto this offset loop (only needed on the innermost radial pass where extra_radial == 0,
+                    // or any pass touching the part wall)
+                    let loop_tabs_s_mm: Vec<f64> =
+                        if !src_tab_s_norms.is_empty() && extra_radial <= 1e-4 && poly.closed {
+                            src_tab_s_norms
                                 .iter()
-                                .flat_map(|sp| {
-                                    clip_2d_contour_outside_overhangs(
-                                        sp,
-                                        avoid,
-                                        surf,
-                                        &overhang_cutter,
-                                        z_cut,
-                                    )
+                                .filter_map(|&sn| {
+                                    let (src_pt, _) = src.poly_wcs.sample_at_fraction(sn)?;
+                                    poly.project_point(src_pt).map(|pr| pr.s_mm)
                                 })
-                                .collect();
-                        }
-                        for span in &spans {
-                            let span_tabs: Vec<f64> = if !src_tab_s_norms.is_empty()
-                                && extra_radial <= 1e-4
-                                && span.closed
-                            {
-                                loop_tabs_s_mm.clone()
+                                .collect()
+                        } else {
+                            Vec::new()
+                        };
+
+                    let rest_enabled = !ctx.passes.rest_machining.is_disabled();
+                    let avoid_overhangs = overhang_field.is_some();
+                    if params.continuous_spiral_ramp
+                        && poly.closed
+                        && loop_tabs_s_mm.is_empty()
+                        && !rest_enabled
+                        && !avoid_overhangs
+                    {
+                        emit_continuous_spiral_contour(
+                            ctx,
+                            params,
+                            builder,
+                            &SpiralContourEmitSpec {
+                                poly: &poly,
+                                base_sign,
+                                z_levels: &z_levels,
+                                target_bottom_z,
+                                cut_feed,
+                                cut_role,
+                            },
+                        );
+                    } else if rest_enabled || avoid_overhangs {
+                        for &z_cut in &z_levels {
+                            ctx.check_cancel()?;
+                            let mut spans = if rest_enabled {
+                                clip_contour_path_to_rest(&ContourRestClipQuery {
+                                    raw_contour: &src.poly_wcs,
+                                    offset_sign: base_sign,
+                                    candidate_path: &poly,
+                                    current_tool_radius_mm: tool_r,
+                                    rest_cfg: &ctx.passes.rest_machining,
+                                    upstream: ctx.upstream_rest,
+                                    z_level_wcs: z_cut,
+                                })
                             } else {
-                                Vec::new()
+                                vec![poly.clone()]
                             };
+                            let avoid_z = overhang_field
+                                .as_ref()
+                                .map(|f| f.avoidance_region_z(z_cut))
+                                .filter(|r| !r.is_empty());
+                            if let (Some(surf), Some(avoid)) =
+                                (overhang_surface.as_ref(), avoid_z.as_ref())
+                            {
+                                spans = spans
+                                    .iter()
+                                    .flat_map(|sp| {
+                                        clip_2d_contour_outside_overhangs(
+                                            sp,
+                                            avoid,
+                                            surf,
+                                            &overhang_cutter,
+                                            z_cut,
+                                        )
+                                    })
+                                    .collect();
+                            }
+                            for span in &spans {
+                                let span_tabs: Vec<f64> = if !src_tab_s_norms.is_empty()
+                                    && extra_radial <= 1e-4
+                                    && span.closed
+                                {
+                                    loop_tabs_s_mm.clone()
+                                } else {
+                                    Vec::new()
+                                };
+                                emit_single_depth_contour_pass(
+                                    ctx,
+                                    params,
+                                    builder,
+                                    &SingleDepthContourPassSpec {
+                                        poly: span,
+                                        base_sign,
+                                        z_cut,
+                                        target_bottom_z,
+                                        tab_centers_s_mm: &span_tabs,
+                                        tool_r,
+                                        cut_feed,
+                                        cut_role,
+                                        avoid_z: avoid_z.as_ref(),
+                                    },
+                                );
+                            }
+                        }
+                    } else {
+                        for &z_cut in &z_levels {
+                            ctx.check_cancel()?;
                             emit_single_depth_contour_pass(
                                 ctx,
                                 params,
                                 builder,
                                 &SingleDepthContourPassSpec {
-                                    poly: span,
+                                    poly: &poly,
                                     base_sign,
                                     z_cut,
                                     target_bottom_z,
-                                    tab_centers_s_mm: &span_tabs,
+                                    tab_centers_s_mm: &loop_tabs_s_mm,
                                     tool_r,
                                     cut_feed,
                                     cut_role,
-                                    avoid_z: avoid_z.as_ref(),
+                                    avoid_z: None,
                                 },
                             );
                         }
-                    }
-                } else {
-                    for &z_cut in &z_levels {
-                        ctx.check_cancel()?;
-                        emit_single_depth_contour_pass(
-                            ctx,
-                            params,
-                            builder,
-                            &SingleDepthContourPassSpec {
-                                poly: &poly,
-                                base_sign,
-                                z_cut,
-                                target_bottom_z,
-                                tab_centers_s_mm: &loop_tabs_s_mm,
-                                tool_r,
-                                cut_feed,
-                                cut_role,
-                                avoid_z: None,
-                            },
-                        );
                     }
                 }
             }
@@ -351,6 +385,183 @@ pub fn generate_contour2d(
     }
 
     Ok(())
+}
+
+fn extend_open_polyline_tangents(poly: &ArcPolyline2D, ext_mm: f64) -> ArcPolyline2D {
+    if poly.closed || poly.segments.is_empty() || !ext_mm.is_finite() || ext_mm <= 1e-4 {
+        return poly.clone();
+    }
+    let mut segs = poly.segments.clone();
+    if let Some(first) = segs.first().copied()
+        && let Some((start_pt, start_tan)) = first.eval_at(0.0)
+    {
+        let dir = start_tan.normalize_or_zero();
+        if dir.length_squared() > 0.5 {
+            let new_start = start_pt - dir * ext_mm;
+            match segs[0] {
+                ArcSegment2D::Line { ref mut start, .. } => *start = new_start,
+                ArcSegment2D::Arc { .. } => {
+                    segs.insert(
+                        0,
+                        ArcSegment2D::Line {
+                            start: new_start,
+                            end: start_pt,
+                        },
+                    );
+                }
+            }
+        }
+    }
+    if let Some(last) = segs.last().copied()
+        && let Some((end_pt, end_tan)) = last.eval_at(1.0)
+    {
+        let dir = end_tan.normalize_or_zero();
+        if dir.length_squared() > 0.5 {
+            let new_end = end_pt + dir * ext_mm;
+            let last_idx = segs.len() - 1;
+            match segs[last_idx] {
+                ArcSegment2D::Line { ref mut end, .. } => *end = new_end,
+                ArcSegment2D::Arc { .. } => {
+                    segs.push(ArcSegment2D::Line {
+                        start: end_pt,
+                        end: new_end,
+                    });
+                }
+            }
+        }
+    }
+    ArcPolyline2D {
+        segments: segs,
+        closed: false,
+    }
+}
+
+/// Clips a 2D contour polyline to stay strictly inside `region`, using exact analytic ray-region
+/// intersections on linear segments and arc-preserving subdivision on curved segments.
+fn clip_contour_to_region_exact(poly: &ArcPolyline2D, region: &RegionSet2D) -> Vec<ArcPolyline2D> {
+    if poly.segments.is_empty() || region.is_empty() {
+        return Vec::new();
+    }
+
+    let mut kept_segs: Vec<ArcSegment2D> = Vec::new();
+    let mut clipped_any = false;
+
+    for &seg in &poly.segments {
+        match seg {
+            ArcSegment2D::Line { start, end } => {
+                let len = start.distance(end);
+                if len <= 1e-6 {
+                    continue;
+                }
+                let mut seg_spans: Vec<(f64, f64)> = Vec::new();
+                let dir = (end - start) / len;
+                for reg in &region.regions {
+                    for (a, b) in clip_scanline_to_region(start, end, reg) {
+                        let t0 = (a - start).dot(dir).clamp(0.0, len);
+                        let t1 = (b - start).dot(dir).clamp(0.0, len);
+                        let (lo, hi) = if t0 <= t1 { (t0, t1) } else { (t1, t0) };
+                        if hi - lo > 1e-5 {
+                            seg_spans.push((lo, hi));
+                        }
+                    }
+                }
+                if seg_spans.is_empty() {
+                    clipped_any = true;
+                    continue;
+                }
+                seg_spans.sort_by(|a, b| a.0.total_cmp(&b.0));
+                let mut merged: Vec<(f64, f64)> = Vec::with_capacity(seg_spans.len());
+                for (a, b) in seg_spans {
+                    if let Some(last) = merged.last_mut()
+                        && a <= last.1 + 1e-4
+                    {
+                        last.1 = last.1.max(b);
+                        continue;
+                    }
+                    merged.push((a, b));
+                }
+                if merged.len() == 1 && merged[0].0 <= 1e-4 && (len - merged[0].1).abs() <= 1e-4 {
+                    kept_segs.push(seg);
+                } else {
+                    clipped_any = true;
+                    for (lo, hi) in merged {
+                        kept_segs.push(ArcSegment2D::Line {
+                            start: start + dir * lo,
+                            end: start + dir * hi,
+                        });
+                    }
+                }
+            }
+            ArcSegment2D::Arc { .. } => {
+                let single = ArcPolyline2D {
+                    segments: vec![seg],
+                    closed: false,
+                };
+                let pieces = clip_polyline_by_region_set(&single, region, true);
+                if pieces.len() == 1
+                    && pieces[0].segments.len() == 1
+                    && (pieces[0].perimeter() - seg.length()).abs() <= 1e-3
+                {
+                    kept_segs.push(seg);
+                } else {
+                    clipped_any = true;
+                    for p in pieces {
+                        kept_segs.extend(p.segments);
+                    }
+                }
+            }
+        }
+    }
+
+    if kept_segs.is_empty() {
+        return Vec::new();
+    }
+    if !clipped_any {
+        return vec![poly.clone()];
+    }
+
+    // Stitch contiguous kept segments into clean polylines (and wrap around if closed loop stayed intact).
+    let mut chains: Vec<Vec<ArcSegment2D>> = Vec::new();
+    for seg in kept_segs {
+        if let Some(cur) = chains.last_mut()
+            && let Some(prev) = cur.last()
+            && prev.end().distance(seg.start()) <= 1e-3
+        {
+            cur.push(seg);
+        } else {
+            chains.push(vec![seg]);
+        }
+    }
+
+    if poly.closed
+        && chains.len() >= 2
+        && let (Some(first_start), Some(last_end)) = (
+            chains.first().and_then(|c| c.first()).map(|s| s.start()),
+            chains.last().and_then(|c| c.last()).map(|s| s.end()),
+        )
+        && first_start.distance(last_end) <= 1e-3
+        && let Some(mut tail) = chains.pop()
+    {
+        tail.extend(chains[0].iter().copied());
+        chains[0] = tail;
+    }
+
+    chains
+        .into_iter()
+        .filter(|segs| !segs.is_empty())
+        .map(|segs| {
+            let is_closed = poly.closed
+                && segs.len() >= 2
+                && segs
+                    .first()
+                    .zip(segs.last())
+                    .is_some_and(|(f, l)| f.start().distance(l.end()) <= 1e-3);
+            ArcPolyline2D {
+                segments: segs,
+                closed: is_closed,
+            }
+        })
+        .collect()
 }
 
 fn shift_seam_to_longest_segment_midpoint(poly: &ArcPolyline2D) -> ArcPolyline2D {

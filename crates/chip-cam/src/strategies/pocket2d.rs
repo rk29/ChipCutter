@@ -8,7 +8,9 @@ use crate::{
         OffsetRegionNode, PocketRegion2D, build_offset_region_tree, clip_scanline_to_region,
         find_helical_entry_pole,
     },
-    params::{EntryStrategy, Pocket2DParams, PocketPassOrder, PocketStrategyKind},
+    params::{
+        EntryStrategy, Pocket2DParams, PocketBoundaryMode, PocketPassOrder, PocketStrategyKind,
+    },
     rest2d::{
         ContourRestClipQuery, PocketRestQuery, RegionSet2D, clip_contour_path_to_rest,
         compute_rest_pocket_work_items,
@@ -21,7 +23,7 @@ use crate::{
     },
     surface3d::{
         PushCutterField, SurfaceCutterProfile, SurfaceMesh3D, clip_2d_contour_outside_overhangs,
-        is_2d_segment_clear_of_avoid,
+        is_2d_segment_clear_of_avoid, stock_xy_region,
     },
     toolpath::{ToolpathBuilder, XyArcMove},
     wcs::CamError,
@@ -364,56 +366,178 @@ pub fn generate_pocket2d(
         ctx.passes.even_stepdowns,
     )?;
 
-    let mut raw_pockets: Vec<(PocketRegion2D, ArcPolyline2D, bool)> = Vec::new();
-    for feat in &ctx.selection.features {
-        match feat {
-            ExtractedFeature25D::PlanarFace {
-                outer_boundary_wcs,
-                open_outer_segments,
-                raised_islands_wcs,
-                ..
-            } => {
-                let has_open = open_outer_segments.iter().any(|&b| b);
-                let is_adaptive = matches!(params.strategy, PocketStrategyKind::Adaptive(_));
-                let open_shift = if has_open {
-                    let stock_aabb = ctx.setup.stock.aabb_wcs();
-                    let feat_aabb = outer_boundary_wcs.exact_aabb();
-                    let extra_stock_margin =
-                        if is_adaptive && stock_aabb.is_valid() && feat_aabb.is_valid() {
-                            (stock_aabb.max.x - feat_aabb.max.x)
-                                .max(feat_aabb.min.x - stock_aabb.min.x)
-                                .max(stock_aabb.max.y - feat_aabb.max.y)
-                                .max(feat_aabb.min.y - stock_aabb.min.y)
-                                .clamp(0.0, 25.0)
+    let finish_allowance = if params.finish_wall_pass {
+        params.finish_wall_stepover.value_mm.max(0.0)
+    } else {
+        0.0
+    };
+    let is_adaptive = matches!(params.strategy, PocketStrategyKind::Adaptive(_));
+
+    // `(clearing_region, raw_floor_outer_ccw, has_open_air_edges, skip_outer_finish_pass)`
+    let mut raw_pockets: Vec<(PocketRegion2D, ArcPolyline2D, bool, bool)> = Vec::new();
+    match params.boundary_mode {
+        PocketBoundaryMode::SelectedPockets => {
+            for feat in &ctx.selection.features {
+                match feat {
+                    ExtractedFeature25D::PlanarFace {
+                        outer_boundary_wcs,
+                        open_outer_segments,
+                        raised_islands_wcs,
+                        ..
+                    } => {
+                        let outer_ccw = outer_boundary_wcs.ensure_orientation(true);
+                        if params.treat_outer_boundary_as_open {
+                            let open_shift = 2.0 * tool_r
+                                + radial_leave
+                                + finish_allowance
+                                + params.open_edge_overhang.value_mm.max(0.5);
+                            let mut expanded = RegionSet2D::from_single(PocketRegion2D::new(
+                                outer_ccw.clone(),
+                                Vec::new(),
+                            ))
+                            .dilate_outward(open_shift);
+                            if !raised_islands_wcs.is_empty() {
+                                let mut isl_sets: Vec<RegionSet2D> = raised_islands_wcs
+                                    .iter()
+                                    .filter(|i| i.closed && !i.segments.is_empty())
+                                    .map(|i| {
+                                        RegionSet2D::from_single(PocketRegion2D::new(
+                                            i.ensure_orientation(true),
+                                            Vec::new(),
+                                        ))
+                                    })
+                                    .collect();
+                                let isl_union = RegionSet2D::union_many(&mut isl_sets);
+                                if !isl_union.is_empty() {
+                                    expanded = expanded.difference(&isl_union);
+                                }
+                            }
+                            for reg in expanded.regions {
+                                raw_pockets.push((reg, outer_ccw.clone(), true, true));
+                            }
                         } else {
-                            0.0
-                        };
-                    let base_r = if is_adaptive {
-                        2.0 * tool_r + extra_stock_margin
-                    } else {
-                        tool_r
-                    };
-                    base_r + radial_leave + params.open_edge_overhang.value_mm.max(0.2)
-                } else {
-                    0.0
+                            let has_open = open_outer_segments.iter().any(|&b| b);
+                            let open_shift = if has_open {
+                                let stock_aabb = ctx.setup.stock.aabb_wcs();
+                                let feat_aabb = outer_boundary_wcs.exact_aabb();
+                                let extra_stock_margin =
+                                    if is_adaptive && stock_aabb.is_valid() && feat_aabb.is_valid()
+                                    {
+                                        (stock_aabb.max.x - feat_aabb.max.x)
+                                            .max(feat_aabb.min.x - stock_aabb.min.x)
+                                            .max(stock_aabb.max.y - feat_aabb.max.y)
+                                            .max(feat_aabb.min.y - stock_aabb.min.y)
+                                            .clamp(0.0, 25.0)
+                                    } else {
+                                        0.0
+                                    };
+                                let base_r = if is_adaptive {
+                                    2.0 * tool_r + extra_stock_margin
+                                } else {
+                                    tool_r
+                                };
+                                base_r + radial_leave + params.open_edge_overhang.value_mm.max(0.2)
+                            } else {
+                                0.0
+                            };
+                            let region = PocketRegion2D::from_face_with_open_extensions(
+                                outer_boundary_wcs,
+                                open_outer_segments,
+                                raised_islands_wcs,
+                                open_shift,
+                            );
+                            raw_pockets.push((region, outer_ccw, has_open, false));
+                        }
+                    }
+                    ExtractedFeature25D::Contour { polyline_wcs, .. } if polyline_wcs.closed => {
+                        let ccw = polyline_wcs.ensure_orientation(true);
+                        if params.treat_outer_boundary_as_open {
+                            let open_shift = 2.0 * tool_r
+                                + radial_leave
+                                + finish_allowance
+                                + params.open_edge_overhang.value_mm.max(0.5);
+                            let expanded = RegionSet2D::from_single(PocketRegion2D::new(
+                                ccw.clone(),
+                                Vec::new(),
+                            ))
+                            .dilate_outward(open_shift);
+                            for reg in expanded.regions {
+                                raw_pockets.push((reg, ccw.clone(), true, true));
+                            }
+                        } else {
+                            raw_pockets.push((
+                                PocketRegion2D::new(ccw.clone(), Vec::new()),
+                                ccw,
+                                false,
+                                false,
+                            ));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        PocketBoundaryMode::ClearOutsideSelectedToStock => {
+            let mut boss_sets: Vec<RegionSet2D> = Vec::new();
+            for feat in &ctx.selection.features {
+                match feat {
+                    ExtractedFeature25D::PlanarFace {
+                        outer_boundary_wcs, ..
+                    } if outer_boundary_wcs.closed && !outer_boundary_wcs.segments.is_empty() => {
+                        boss_sets.push(RegionSet2D::from_single(PocketRegion2D::new(
+                            outer_boundary_wcs.ensure_orientation(true),
+                            Vec::new(),
+                        )));
+                    }
+                    ExtractedFeature25D::Contour { polyline_wcs, .. }
+                        if polyline_wcs.closed && !polyline_wcs.segments.is_empty() =>
+                    {
+                        boss_sets.push(RegionSet2D::from_single(PocketRegion2D::new(
+                            polyline_wcs.ensure_orientation(true),
+                            Vec::new(),
+                        )));
+                    }
+                    _ => {}
+                }
+            }
+            if boss_sets.is_empty() {
+                return Err(CamError::EmptySelection {
+                    op_name: ctx.op.name.clone(),
+                    op_kind: ctx.op.kind.label(),
+                });
+            }
+            let boss_union = RegionSet2D::union_many(&mut boss_sets);
+            let raw_stock = stock_xy_region(ctx.setup);
+            if let Some(raw_stock_outer) = raw_stock.regions.first().map(|r| r.outer_ccw.clone()) {
+                let open_shift = 2.0 * tool_r
+                    + radial_leave
+                    + finish_allowance
+                    + params.open_edge_overhang.value_mm.max(0.5);
+                let expanded_stock = match ctx.setup.stock {
+                    crate::stock::ResolvedStockGeometry::Cylinder {
+                        axis: crate::stock::StockAxis::Z,
+                        center_wcs,
+                        radius_mm,
+                        ..
+                    } => RegionSet2D::from_circle(
+                        DVec2::new(center_wcs.x, center_wcs.y),
+                        radius_mm + open_shift,
+                    ),
+                    crate::stock::ResolvedStockGeometry::Box { aabb_wcs }
+                    | crate::stock::ResolvedStockGeometry::Cylinder { aabb_wcs, .. } => {
+                        crate::surface3d::rect_region_2d(
+                            aabb_wcs.min.x - open_shift,
+                            aabb_wcs.min.y - open_shift,
+                            aabb_wcs.max.x + open_shift,
+                            aabb_wcs.max.y + open_shift,
+                        )
+                    }
                 };
-                let region = PocketRegion2D::from_face_with_open_extensions(
-                    outer_boundary_wcs,
-                    open_outer_segments,
-                    raised_islands_wcs,
-                    open_shift,
-                );
-                raw_pockets.push((
-                    region,
-                    outer_boundary_wcs.ensure_orientation(true),
-                    has_open,
-                ));
+                let clear_set = expanded_stock.difference(&boss_union);
+                for reg in clear_set.regions {
+                    raw_pockets.push((reg, raw_stock_outer.clone(), true, true));
+                }
             }
-            ExtractedFeature25D::Contour { polyline_wcs, .. } if polyline_wcs.closed => {
-                let ccw = polyline_wcs.ensure_orientation(true);
-                raw_pockets.push((PocketRegion2D::new(ccw.clone(), Vec::new()), ccw, false));
-            }
-            _ => {}
         }
     }
 
@@ -432,11 +556,6 @@ pub fn generate_pocket2d(
         PocketStrategyKind::Adaptive(_) => None,
     };
 
-    let finish_allowance = if params.finish_wall_pass {
-        params.finish_wall_stepover.value_mm.max(0.0)
-    } else {
-        0.0
-    };
     let d_finish = (tool_r + radial_leave).max(0.01);
     let d_rough = d_finish + finish_allowance;
 
@@ -461,7 +580,7 @@ pub fn generate_pocket2d(
         .filter(|s| !s.triangles.is_empty() && s.aabb_wcs.is_valid())
         .map(|s| PushCutterField::build_with_z_min(s, overhang_cutter, target_bottom_z));
 
-    for (pkt_region, raw_floor_outer_ccw, has_open) in &raw_pockets {
+    for (pkt_region, raw_floor_outer_ccw, has_open, skip_outer_finish) in &raw_pockets {
         ctx.check_cancel()?;
 
         let finish_regions = pkt_region.erode_inward(d_finish);
@@ -719,6 +838,9 @@ pub fn generate_pocket2d(
                         .chain(fin_reg.islands_cw.iter())
                         .enumerate()
                     {
+                        if loop_idx == 0 && *skip_outer_finish {
+                            continue;
+                        }
                         let raw_wall = if loop_idx == 0 {
                             raw_floor_outer_ccw
                         } else {

@@ -111,6 +111,7 @@ impl StrategyParams {
 
     pub fn machining_boundary(&self) -> Option<&MachiningBoundaryConfig> {
         match self {
+            Self::Facing(p) => Some(&p.boundary),
             Self::Waterline3D(p) => Some(&p.boundary),
             Self::Adaptive3D(p) => Some(&p.boundary),
             Self::Parallel3D(p) => Some(&p.boundary),
@@ -124,6 +125,7 @@ impl StrategyParams {
 
     pub fn machining_boundary_mut(&mut self) -> Option<&mut MachiningBoundaryConfig> {
         match self {
+            Self::Facing(p) => Some(&mut p.boundary),
             Self::Waterline3D(p) => Some(&mut p.boundary),
             Self::Adaptive3D(p) => Some(&mut p.boundary),
             Self::Parallel3D(p) => Some(&mut p.boundary),

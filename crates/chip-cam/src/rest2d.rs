@@ -3,9 +3,9 @@
 
 use std::sync::Arc;
 
-use chip_geom2d::region::clip_polyline_by_region_set;
 pub use chip_geom2d::region::{
-    RegionSet2D, clip_polyline_outside_region_set, contours_to_region_set, swept_segment_capsule_2d,
+    RegionSet2D, clip_polyline_by_region_set, clip_polyline_outside_region_set,
+    contours_to_region_set, swept_segment_capsule_2d,
 };
 use chip_math::{ArcPolyline2D, ArcSegment2D, DVec2};
 

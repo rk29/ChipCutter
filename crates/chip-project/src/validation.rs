@@ -1800,4 +1800,83 @@ value_mm = 0.01
             other => panic!("expected Rotary4AxisSim, got {other:?}"),
         }
     }
+
+    #[test]
+    fn m82_25d_cutting_area_params_roundtrip_and_legacy_toml_compat() {
+        use chip_cam::{
+            Contour2DParams, FacingParams, MachiningBoundaryConfig, MachiningBoundaryMode,
+            Pocket2DParams, PocketBoundaryMode, StrategyParams, ToolContainmentMode,
+        };
+        use chip_math::ParamLength;
+
+        // 1. Roundtrip FacingParams with flattened MachiningBoundaryConfig + finishing_stepdown
+        let face = StrategyParams::Facing(FacingParams {
+            boundary: MachiningBoundaryConfig::new(
+                MachiningBoundaryMode::SelectedRegions,
+                ToolContainmentMode::ToolInsideBoundary,
+                -1.5,
+            ),
+            finishing_stepdown: Some(ParamLength::from_mm(0.35)),
+            ..FacingParams::default()
+        });
+        let face_toml = toml::to_string(&face).unwrap();
+        let face_rt: StrategyParams = toml::from_str(&face_toml).unwrap();
+        assert_eq!(face_rt, face);
+
+        // 2. Roundtrip Pocket2DParams with boss-clearing & open-outer flags
+        let pkt = StrategyParams::Pocket2D(Pocket2DParams {
+            boundary_mode: PocketBoundaryMode::ClearOutsideSelectedToStock,
+            treat_outer_boundary_as_open: true,
+            ..Pocket2DParams::default()
+        });
+        let pkt_toml = toml::to_string(&pkt).unwrap();
+        let pkt_rt: StrategyParams = toml::from_str(&pkt_toml).unwrap();
+        assert_eq!(pkt_rt, pkt);
+
+        // 3. Roundtrip Contour2DParams with stock clipping & open chain extension
+        let cnt = StrategyParams::Contour2D(Contour2DParams {
+            clip_to_stock_bounds: true,
+            open_chain_extension: ParamLength::from_mm(4.5),
+            ..Contour2DParams::default()
+        });
+        let cnt_toml = toml::to_string(&cnt).unwrap();
+        let cnt_rt: StrategyParams = toml::from_str(&cnt_toml).unwrap();
+        assert_eq!(cnt_rt, cnt);
+
+        // 4. Legacy TOML omitting all M82 fields deserializes cleanly
+        let legacy_face: StrategyParams = toml::from_str(
+            r#"
+strategy_kind = "facing"
+auto_longest_axis = true
+cut_mode = "both_ways_zig_zag"
+"#,
+        )
+        .unwrap();
+        match legacy_face {
+            StrategyParams::Facing(p) => {
+                assert_eq!(p.boundary.boundary_mode, MachiningBoundaryMode::StockBox);
+                assert!((p.boundary.boundary_offset.value_mm - 0.0).abs() < 1e-9);
+            }
+            other => panic!("expected Facing, got {other:?}"),
+        }
+
+        let legacy_pkt: StrategyParams = toml::from_str("strategy_kind = \"pocket_2d\"\n").unwrap();
+        match legacy_pkt {
+            StrategyParams::Pocket2D(p) => {
+                assert_eq!(p.boundary_mode, PocketBoundaryMode::SelectedPockets);
+                assert!(!p.treat_outer_boundary_as_open);
+            }
+            other => panic!("expected Pocket2D, got {other:?}"),
+        }
+
+        let legacy_cnt: StrategyParams =
+            toml::from_str("strategy_kind = \"contour_2d\"\n").unwrap();
+        match legacy_cnt {
+            StrategyParams::Contour2D(p) => {
+                assert!(!p.clip_to_stock_bounds);
+                assert!((p.open_chain_extension.value_mm - 0.0).abs() < 1e-9);
+            }
+            other => panic!("expected Contour2D, got {other:?}"),
+        }
+    }
 }

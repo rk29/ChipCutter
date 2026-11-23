@@ -471,15 +471,15 @@ impl Operation {
         s
     }
 
-    /// Returns the shared 3D XY machining boundary config for 3-axis surface, undercut, and
-    /// 3D deburr operations (`None` for 2.5D and 4th-axis rotary strategies).
+    /// Returns the shared 2D XY machining boundary config for `Facing`, 3-axis surface, undercut,
+    /// and 3D deburr operations (`None` for other 2.5D and 4th-axis rotary strategies).
     pub fn machining_boundary(&self) -> Option<&MachiningBoundaryConfig> {
         self.strategy
             .as_ref()
             .and_then(StrategyParams::machining_boundary)
     }
 
-    /// Mutable access to the shared 3D XY machining boundary config (initializing default
+    /// Mutable access to the shared 2D XY machining boundary config (initializing default
     /// strategy params if absent or mismatched with `self.kind`).
     pub fn machining_boundary_mut(&mut self) -> Option<&mut MachiningBoundaryConfig> {
         self.strategy_mut().machining_boundary_mut()

@@ -514,7 +514,7 @@ pub(super) fn show_pencil3d_params(
     );
 }
 
-fn show_3d_boundary_card(
+pub(super) fn show_3d_boundary_card(
     ui: &mut egui::Ui,
     card_id: (&'static str, usize, usize),
     boundary_mode: &mut MachiningBoundaryMode,
@@ -522,8 +522,28 @@ fn show_3d_boundary_card(
     boundary_offset: &mut chip_math::ParamLength,
     item: &mut PassItemCtx<'_>,
 ) {
+    show_boundary_card_titled(
+        ui,
+        card_id,
+        "3D Machining Boundary",
+        boundary_mode,
+        tool_containment,
+        boundary_offset,
+        item,
+    );
+}
+
+pub(super) fn show_boundary_card_titled(
+    ui: &mut egui::Ui,
+    card_id: (&'static str, usize, usize),
+    title: &str,
+    boundary_mode: &mut MachiningBoundaryMode,
+    tool_containment: &mut ToolContainmentMode,
+    boundary_offset: &mut chip_math::ParamLength,
+    item: &mut PassItemCtx<'_>,
+) {
     let (setup_idx, op_idx) = item.ids();
-    section_card(ui, card_id, "3D Machining Boundary", true, |ui| {
+    section_card(ui, card_id, title, true, |ui| {
         item.grid(ui, card_id.0, |f| {
             f.set_tip("2D XY containment boundary constraining 3D roughing/waterline motion");
             f.row("Boundary Source", |ui, mutated| {

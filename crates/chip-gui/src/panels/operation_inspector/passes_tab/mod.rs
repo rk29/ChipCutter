@@ -8,8 +8,9 @@ pub mod vcarve;
 use std::ops::RangeInclusive;
 
 use chip_cam::{
-    FeedOptimizationConfig, Operation, OperationKind, OperationRotaryMode, ResolvedRotaryConfig,
-    RestMachiningConfig, RestMachiningMode, StrategyParams, compute_index_angle_for_normal,
+    FeedOptimizationConfig, MachiningBoundaryMode, Operation, OperationKind, OperationRotaryMode,
+    ResolvedRotaryConfig, RestMachiningConfig, RestMachiningMode, StrategyParams,
+    compute_index_angle_for_normal,
 };
 use chip_math::{DVec3, DisplayUnit, EvalContext, ParamLength};
 use chip_tools::{CutterGeometry, ToolId};
@@ -216,6 +217,61 @@ pub struct PassesTabCtx<'a> {
     pub mutated_label: &'a mut Option<&'static str>,
 }
 
+/// Per-operation visibility flags for the shared `Depth Passes & Stock to Leave` card.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DepthStockCardVisibility {
+    pub show_card: bool,
+    pub show_multiple_depths: bool,
+    pub show_radial_stock: bool,
+    pub show_axial_stock: bool,
+}
+
+/// Computes which controls in the shared `Depth Passes & Stock to Leave` card apply to `op`.
+///
+/// Hides controls ignored by a strategy kernel (e.g., `Multiple Depths` on `Parallel3D`,
+/// `Scallop3D`, `Pencil3D`, `ThreadMill`, and `Adaptive3D` which owns `Rough Stepdown` /
+/// `Fine Step-Up`; `Radial Stock` on `ThreadMill` and pure stock-box `Facing`), while keeping
+/// active `Stock to Leave` fields visible on `SlotUndercut` and `Dovetail`.
+pub fn depth_stock_card_visibility(op: &Operation) -> DepthStockCardVisibility {
+    if matches!(op.kind, OperationKind::Deburr3D | OperationKind::Undercut3D) {
+        return DepthStockCardVisibility {
+            show_card: false,
+            show_multiple_depths: false,
+            show_radial_stock: false,
+            show_axial_stock: false,
+        };
+    }
+
+    let show_multiple_depths = !matches!(
+        op.kind,
+        OperationKind::Parallel3D
+            | OperationKind::Scallop3D
+            | OperationKind::Pencil3D
+            | OperationKind::ThreadMill
+            | OperationKind::Adaptive3D
+            | OperationKind::SlotUndercut
+            | OperationKind::Dovetail
+    );
+
+    let show_radial_stock = match op.kind {
+        OperationKind::ThreadMill => false,
+        OperationKind::Facing => {
+            !op.selections.is_empty()
+                || op
+                    .machining_boundary()
+                    .is_some_and(|b| b.boundary_mode == MachiningBoundaryMode::SelectedRegions)
+        }
+        _ => true,
+    };
+
+    DepthStockCardVisibility {
+        show_card: true,
+        show_multiple_depths,
+        show_radial_stock,
+        show_axial_stock: true,
+    }
+}
+
 pub fn show_passes_tab(ui: &mut egui::Ui, ctx: PassesTabCtx<'_>) {
     let PassesTabCtx {
         op,
@@ -243,18 +299,15 @@ pub fn show_passes_tab(ui: &mut egui::Ui, ctx: PassesTabCtx<'_>) {
         mutated_label,
     };
 
-    if !matches!(
-        op.kind,
-        OperationKind::Deburr3D
-            | OperationKind::SlotUndercut
-            | OperationKind::Dovetail
-            | OperationKind::Undercut3D
-    ) {
-        item.card_grid(
-            ui,
-            "passes_depth_card",
-            "Depth Passes & Stock to Leave",
-            |f| {
+    let depth_vis = depth_stock_card_visibility(op);
+    if depth_vis.show_card {
+        let card_title = if depth_vis.show_multiple_depths {
+            "Depth Passes & Stock to Leave"
+        } else {
+            "Stock to Leave"
+        };
+        item.card_grid(ui, "passes_depth_card", card_title, |f| {
+            if depth_vis.show_multiple_depths {
                 f.set_tip("Split total axial cut depth into stepped Z levels");
                 f.check(
                     "Multiple Depths",
@@ -279,40 +332,55 @@ pub fn show_passes_tab(ui: &mut egui::Ui, ctx: PassesTabCtx<'_>) {
                         "Toggle Even Stepdowns",
                     );
                 }
-                f.set_tip("Radial stock allowance left on vertical walls for a finishing pass");
+            }
+            if depth_vis.show_radial_stock {
+                let (rad_label, rad_tip) = if op.kind == OperationKind::Facing {
+                    (
+                        "Island Radial Stock",
+                        "Radial clearance left around raised islands or bosses when facing selected regions",
+                    )
+                } else {
+                    (
+                        "Radial Stock",
+                        "Radial stock allowance left on vertical walls for a finishing pass",
+                    )
+                };
+                f.set_tip(rad_tip);
                 f.len(
-                    "Radial Stock",
+                    rad_label,
                     &mut op.passes.stock_to_leave_radial,
                     "Edit Radial Stock to Leave",
                 );
+            }
+            if depth_vis.show_axial_stock {
                 f.set_tip("Axial stock allowance left on horizontal floors for a finishing pass");
                 f.len(
                     "Axial Stock",
                     &mut op.passes.stock_to_leave_axial,
                     "Edit Axial Stock to Leave",
                 );
-                if has_3d_model
-                    && matches!(
-                        op.kind,
-                        OperationKind::Facing
-                            | OperationKind::Contour2D
-                            | OperationKind::Pocket2D
-                            | OperationKind::DrillBore
-                            | OperationKind::ChamferTrace
-                    )
-                {
-                    f.set_tip(
-                        "Trim 2.5D toolpaths around overhanging 3D model geometry (including shank & holder clearance) and skip occluded holes",
-                    );
-                    f.check(
-                        "Avoid Overhangs",
-                        &mut op.passes.avoid_model_overhangs,
-                        "Avoid Model Overhangs",
-                        "Toggle Avoid Model Overhangs",
-                    );
-                }
-            },
-        );
+            }
+            if has_3d_model
+                && matches!(
+                    op.kind,
+                    OperationKind::Facing
+                        | OperationKind::Contour2D
+                        | OperationKind::Pocket2D
+                        | OperationKind::DrillBore
+                        | OperationKind::ChamferTrace
+                )
+            {
+                f.set_tip(
+                    "Trim 2.5D toolpaths around overhanging 3D model geometry (including shank & holder clearance) and skip occluded holes",
+                );
+                f.check(
+                    "Avoid Overhangs",
+                    &mut op.passes.avoid_model_overhangs,
+                    "Avoid Model Overhangs",
+                    "Toggle Avoid Model Overhangs",
+                );
+            }
+        });
     }
 
     if matches!(
@@ -845,4 +913,86 @@ fn show_rest_machining_card(
             }
         },
     );
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn depth_stock_card_visibility_hides_ignored_controls_per_operation_kind() {
+        // 1. Parallel3D, Scallop3D, Pencil3D, Adaptive3D hide Multiple Depths (no dead/duplicate stepdown!)
+        for kind in [
+            OperationKind::Parallel3D,
+            OperationKind::Scallop3D,
+            OperationKind::Pencil3D,
+            OperationKind::Adaptive3D,
+        ] {
+            let op = Operation::new("op", "test", kind);
+            let vis = depth_stock_card_visibility(&op);
+            assert!(vis.show_card, "{kind:?} should show Stock to Leave card");
+            assert!(
+                !vis.show_multiple_depths,
+                "{kind:?} must hide Multiple Depths / Max Stepdown"
+            );
+            assert!(vis.show_radial_stock);
+            assert!(vis.show_axial_stock);
+        }
+
+        // 2. ThreadMill hides both Multiple Depths AND Radial Stock (controlled by Pitch Dia Offset)
+        let tm = Operation::new("op_tm", "Thread", OperationKind::ThreadMill);
+        let tm_vis = depth_stock_card_visibility(&tm);
+        assert!(tm_vis.show_card);
+        assert!(!tm_vis.show_multiple_depths);
+        assert!(!tm_vis.show_radial_stock);
+        assert!(tm_vis.show_axial_stock);
+
+        // 3. SlotUndercut and Dovetail transparently expose Stock to Leave (no silent hidden values!)
+        for kind in [OperationKind::SlotUndercut, OperationKind::Dovetail] {
+            let op = Operation::new("op_u", "Undercut", kind);
+            let vis = depth_stock_card_visibility(&op);
+            assert!(vis.show_card, "{kind:?} must expose Stock to Leave");
+            assert!(!vis.show_multiple_depths);
+            assert!(vis.show_radial_stock);
+            assert!(vis.show_axial_stock);
+        }
+
+        // 4. Facing hides Radial Stock in StockBox mode, shows it in SelectedRegions mode
+        let mut face = Operation::new("op_f", "Face", OperationKind::Facing);
+        let f_stock_vis = depth_stock_card_visibility(&face);
+        assert!(f_stock_vis.show_card);
+        assert!(f_stock_vis.show_multiple_depths);
+        assert!(!f_stock_vis.show_radial_stock);
+        assert!(f_stock_vis.show_axial_stock);
+
+        face.machining_boundary_mut().unwrap().boundary_mode =
+            MachiningBoundaryMode::SelectedRegions;
+        let f_sel_vis = depth_stock_card_visibility(&face);
+        assert!(f_sel_vis.show_radial_stock);
+
+        // 5. Deburr3D & Undercut3D own their dedicated cards
+        for kind in [OperationKind::Deburr3D, OperationKind::Undercut3D] {
+            let op = Operation::new("op_d", "Dedicated", kind);
+            assert!(!depth_stock_card_visibility(&op).show_card);
+        }
+
+        // 6. Core 2.5D & rotary strategies still expose Multiple Depths + Stock to Leave
+        for kind in [
+            OperationKind::Pocket2D,
+            OperationKind::Contour2D,
+            OperationKind::Waterline3D,
+            OperationKind::Rotary2Linear,
+            OperationKind::Rotary4AxisSim,
+        ] {
+            let op = Operation::new("op_c", "Core", kind);
+            let vis = depth_stock_card_visibility(&op);
+            assert!(
+                vis.show_card
+                    && vis.show_multiple_depths
+                    && vis.show_radial_stock
+                    && vis.show_axial_stock
+            );
+        }
+    }
 }

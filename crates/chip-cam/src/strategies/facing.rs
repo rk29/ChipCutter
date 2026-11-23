@@ -1,15 +1,26 @@
-use chip_math::{Aabb2, ArcPolyline2D, ArcSegment2D, DVec2, DVec3};
+use chip_math::{Aabb2, ArcSegment2D, DVec2, DVec3};
 
 use crate::{
     cl_data::MotionRole,
-    params::{FacingCutMode, FacingParams},
-    rest2d::{RegionSet2D, clip_polyline_outside_region_set},
+    offset2d::{PocketRegion2D, clip_scanline_to_region},
+    params::{FacingCutMode, FacingParams, MachiningBoundaryMode, ToolContainmentMode},
+    rest2d::RegionSet2D,
     selection::ExtractedFeature25D,
+    stock::{ResolvedStockGeometry, StockAxis},
     strategies::{StrategyExecContext, compute_z_levels},
-    surface3d::{PushCutterField, SurfaceCutterProfile, SurfaceMesh3D, is_2d_arc_clear_of_avoid},
+    surface3d::{
+        PushCutterField, SurfaceCutterProfile, SurfaceMesh3D, is_2d_arc_clear_of_avoid,
+        region_aabb_2d, resolve_3d_containment_region_detailed, stock_xy_region,
+    },
     toolpath::{ToolpathBuilder, XyArcMove},
     wcs::CamError,
 };
+
+struct FacingRowSpans {
+    pv: f64,
+    forward: bool,
+    spans: Vec<(DVec2, DVec2)>,
+}
 
 /// Generates a 2.5D **Facing** toolpath (`05-operations.md` §1).
 pub fn generate_facing(
@@ -29,27 +40,106 @@ pub fn generate_facing(
         });
     }
 
-    let pass_ext = params.pass_extension.value_mm.max(0.05 * tool_d);
-
-    // Determine XY footprint: union of selected planar faces if any, otherwise full Setup Stock XY AABB!
-    let mut footprint = Aabb2::EMPTY;
-    for feat in &ctx.selection.features {
-        if let ExtractedFeature25D::PlanarFace {
-            outer_boundary_wcs, ..
-        } = feat
-        {
-            footprint = footprint.union(&outer_boundary_wcs.exact_aabb());
-        } else if let ExtractedFeature25D::Contour { polyline_wcs, .. } = feat {
-            footprint = footprint.union(&polyline_wcs.exact_aabb());
-        }
+    let boundary_offset = params.boundary.boundary_offset.value_mm;
+    if !boundary_offset.is_finite() {
+        return Err(CamError::InvalidParameter {
+            param: "facing.boundary_offset",
+            value: boundary_offset,
+            reason: "must be finite",
+        });
     }
-    if !footprint.is_valid() {
+
+    let pass_ext = params.pass_extension.value_mm.max(0.05 * tool_d);
+    let radial_leave = ctx.passes.stock_to_leave_radial.value_mm.max(0.0);
+
+    let is_classic_rect_stock = params.boundary.boundary_mode == MachiningBoundaryMode::StockBox
+        && params.boundary.tool_containment == ToolContainmentMode::ToolOutsideBoundary
+        && boundary_offset.abs() <= 1e-6
+        && !matches!(
+            ctx.setup.stock,
+            ResolvedStockGeometry::Cylinder {
+                axis: StockAxis::Z,
+                ..
+            }
+        );
+
+    // Resolve polygon regions when using general MachiningBoundaryConfig (SelectedRegions,
+    // ModelSilhouette, custom containment/offset, or cylindrical Z-axis stock).
+    let (
+        footprint,
+        clip_outer_opt,
+        lane_domain_opt,
+        island_avoid,
+        u_ext_per_span,
+        use_exact_center_lanes,
+    ) = if is_classic_rect_stock {
         let s3 = ctx.setup.stock.aabb_wcs();
-        footprint = Aabb2 {
+        let fp = Aabb2 {
             min: DVec2::new(s3.min.x, s3.min.y),
             max: DVec2::new(s3.max.x, s3.max.y),
         };
-    }
+        (
+            fp,
+            None,
+            None,
+            RegionSet2D::empty(),
+            tool_r + pass_ext,
+            false,
+        )
+    } else {
+        let (nominal_outer, raised_islands) =
+            resolve_facing_nominal_and_islands(ctx, params, tool_r, builder);
+        if nominal_outer.is_empty() {
+            return Err(CamError::EmptyToolpath {
+                op_name: ctx.op.name.clone(),
+            });
+        }
+
+        let nominal_with_offset = offset_region_set(&nominal_outer, boundary_offset);
+        let (lane_domain, clip_outer, span_ext, exact_center_lanes) =
+            match params.boundary.tool_containment {
+                ToolContainmentMode::ToolOutsideBoundary => (
+                    nominal_with_offset.clone(),
+                    nominal_with_offset.dilate_outward(tool_r),
+                    pass_ext,
+                    false,
+                ),
+                ToolContainmentMode::ToolCenterOnBoundary => {
+                    (nominal_with_offset.clone(), nominal_with_offset, 0.0, true)
+                }
+                ToolContainmentMode::ToolInsideBoundary => {
+                    let eroded = offset_region_set(&nominal_outer, boundary_offset - tool_r);
+                    (eroded.clone(), eroded, 0.0, true)
+                }
+            };
+
+        if clip_outer.is_empty() || lane_domain.is_empty() {
+            return Err(CamError::EmptyToolpath {
+                op_name: ctx.op.name.clone(),
+            });
+        }
+
+        let island_av = if raised_islands.is_empty() {
+            RegionSet2D::empty()
+        } else {
+            raised_islands.dilate_outward(tool_r + radial_leave)
+        };
+
+        let Some(fp) = region_aabb_2d(&lane_domain).filter(Aabb2::is_valid) else {
+            return Err(CamError::EmptyToolpath {
+                op_name: ctx.op.name.clone(),
+            });
+        };
+
+        (
+            fp,
+            Some(clip_outer),
+            Some(lane_domain),
+            island_av,
+            span_ext,
+            exact_center_lanes,
+        )
+    };
 
     let fp_size = footprint.size();
     let angle_rad = if params.auto_longest_axis {
@@ -65,48 +155,59 @@ pub fn generate_facing(
     let u_axis = DVec2::new(angle_rad.cos(), angle_rad.sin());
     let v_axis = DVec2::new(-angle_rad.sin(), angle_rad.cos());
 
-    // Project the 4 corners of `footprint` onto `(u_axis, v_axis)`
-    let corners = [
-        footprint.min,
-        DVec2::new(footprint.max.x, footprint.min.y),
-        footprint.max,
-        DVec2::new(footprint.min.x, footprint.max.y),
-    ];
-    let mut u_min = f64::INFINITY;
-    let mut u_max = f64::NEG_INFINITY;
-    let mut v_min = f64::INFINITY;
-    let mut v_max = f64::NEG_INFINITY;
-    for c in corners {
-        let pu = c.dot(u_axis);
-        let pv = c.dot(v_axis);
-        u_min = u_min.min(pu);
-        u_max = u_max.max(pu);
-        v_min = v_min.min(pv);
-        v_max = v_max.max(pv);
-    }
+    // Project corners (or exact region vertices when polygon-bounded) onto `(u_axis, v_axis)`.
+    let (u_min, u_max, v_min, v_max) = if let Some(ref lane_dom) = lane_domain_opt {
+        project_region_uv_bounds(lane_dom, u_axis, v_axis)
+    } else {
+        project_aabb_uv_bounds(footprint, u_axis, v_axis)
+    };
+
+    let (clip_u_min, clip_u_max) = if let Some(ref clip_reg) = clip_outer_opt {
+        let (cu0, cu1, _, _) = project_region_uv_bounds(clip_reg, u_axis, v_axis);
+        (cu0, cu1)
+    } else {
+        (u_min, u_max)
+    };
+
+    let build_pass_vs = |vmin: f64, vmax: f64| -> Vec<f64> {
+        let sv = (vmax - vmin).max(0.0);
+        if use_exact_center_lanes {
+            if sv <= 0.1 {
+                return vec![0.5 * (vmin + vmax)];
+            }
+            let inset = (0.05_f64).min(0.25 * sv);
+            let first_v = vmin + inset;
+            let last_v = vmax - inset;
+            if last_v <= first_v + 1e-6 {
+                vec![0.5 * (vmin + vmax)]
+            } else {
+                let count = ((last_v - first_v) / stepover).ceil().max(1.0) as usize;
+                let actual_step = (last_v - first_v) / (count as f64);
+                (0..=count)
+                    .map(|i| first_v + actual_step * (i as f64))
+                    .collect()
+            }
+        } else if sv <= 2.0 * (tool_r - 0.05).max(0.0) {
+            vec![0.5 * (vmin + vmax)]
+        } else {
+            let first_v = vmin + (tool_r - 0.25 * (tool_d - stepover)).clamp(0.0, 0.85 * tool_r);
+            let last_v = vmax - (tool_r - 0.25 * (tool_d - stepover)).clamp(0.0, 0.85 * tool_r);
+            if last_v <= first_v + 1e-6 {
+                vec![0.5 * (vmin + vmax)]
+            } else {
+                let count = ((last_v - first_v) / stepover).ceil().max(1.0) as usize;
+                let actual_step = (last_v - first_v) / (count as f64);
+                (0..=count)
+                    .map(|i| first_v + actual_step * (i as f64))
+                    .collect()
+            }
+        }
+    };
 
     // Extend along `u` by `tool_r + pass_ext` so the full cutter body starts & ends in air outside stock!
     let u_start_ext = u_min - (tool_r + pass_ext);
     let u_end_ext = u_max + (tool_r + pass_ext);
-
-    // Inset lateral span slightly (`v_min + 0.35 * tool_r .. v_max - 0.35 * tool_r`) while guaranteeing
-    // full coverage within `tool_r` of both `v_min` and `v_max`!
-    let span_v = (v_max - v_min).max(0.0);
-    let pass_vs: Vec<f64> = if span_v <= 2.0 * (tool_r - 0.05).max(0.0) {
-        vec![0.5 * (v_min + v_max)]
-    } else {
-        let first_v = v_min + (tool_r - 0.25 * (tool_d - stepover)).clamp(0.0, 0.85 * tool_r);
-        let last_v = v_max - (tool_r - 0.25 * (tool_d - stepover)).clamp(0.0, 0.85 * tool_r);
-        if last_v <= first_v + 1e-6 {
-            vec![0.5 * (v_min + v_max)]
-        } else {
-            let count = ((last_v - first_v) / stepover).ceil().max(1.0) as usize;
-            let actual_step = (last_v - first_v) / (count as f64);
-            (0..=count)
-                .map(|i| first_v + actual_step * (i as f64))
-                .collect()
-        }
-    };
+    let pass_vs = build_pass_vs(v_min, v_max);
 
     // Compute Z levels (with optional dedicated finishing stepdown)
     let target_bottom_z = ctx.heights.bottom_z_wcs + ctx.passes.stock_to_leave_axial.value_mm;
@@ -166,25 +267,6 @@ pub fn generate_facing(
         .as_ref()
         .filter(|s| !s.triangles.is_empty() && s.aabb_wcs.is_valid())
         .map(|s| PushCutterField::build_with_z_min(s, overhang_cutter, target_bottom_z));
-
-    let build_pass_vs = |vmin: f64, vmax: f64| -> Vec<f64> {
-        let sv = (vmax - vmin).max(0.0);
-        if sv <= 2.0 * (tool_r - 0.05).max(0.0) {
-            vec![0.5 * (vmin + vmax)]
-        } else {
-            let first_v = vmin + (tool_r - 0.25 * (tool_d - stepover)).clamp(0.0, 0.85 * tool_r);
-            let last_v = vmax - (tool_r - 0.25 * (tool_d - stepover)).clamp(0.0, 0.85 * tool_r);
-            if last_v <= first_v + 1e-6 {
-                vec![0.5 * (vmin + vmax)]
-            } else {
-                let count = ((last_v - first_v) / stepover).ceil().max(1.0) as usize;
-                let actual_step = (last_v - first_v) / (count as f64);
-                (0..=count)
-                    .map(|i| first_v + actual_step * (i as f64))
-                    .collect()
-            }
-        }
-    };
 
     for (lvl_idx, &z_cut) in z_levels.iter().enumerate() {
         ctx.check_cancel()?;
@@ -295,6 +377,18 @@ pub fn generate_facing(
             .map(|f| f.avoidance_region_z(z_cut))
             .filter(|r| !r.is_empty());
 
+        let total_avoid: Option<RegionSet2D> = match (island_avoid.is_empty(), &overhang_avoid) {
+            (true, None) => None,
+            (true, Some(ov)) => Some(ov.clone()),
+            (false, None) => Some(island_avoid.clone()),
+            (false, Some(ov)) => Some(island_avoid.union(ov)),
+        };
+
+        // Precompute exact clipped spans for every row at this Z level.
+        let scan_u_lo = clip_u_min.min(lvl_u_start_ext) - tool_r - pass_ext - 2.0;
+        let scan_u_hi = clip_u_max.max(lvl_u_end_ext) + tool_r + pass_ext + 2.0;
+        let mut row_spans_all: Vec<FacingRowSpans> = Vec::with_capacity(ordered_vs.len());
+
         for (i, &pv) in ordered_vs.iter().enumerate() {
             ctx.check_cancel()?;
 
@@ -302,37 +396,66 @@ pub fn generate_facing(
                 FacingCutMode::BothWaysZigZag => i % 2 == 0,
                 FacingCutMode::OneWayClimb | FacingCutMode::OneWayConventional => true,
             };
-            let (u0, u1) = if forward {
-                (lvl_u_start_ext, lvl_u_end_ext)
-            } else {
-                (lvl_u_end_ext, lvl_u_start_ext)
-            };
-            let p_start = to_xy(u0, pv);
-            let p_end = to_xy(u1, pv);
 
-            let row_spans: Vec<(DVec2, DVec2)> = if let Some(ref avoid) = overhang_avoid {
-                let raw_line = ArcPolyline2D {
-                    segments: vec![ArcSegment2D::Line {
-                        start: p_start,
-                        end: p_end,
-                    }],
-                    closed: false,
-                };
-                clip_polyline_outside_region_set(&raw_line, avoid)
-                    .into_iter()
-                    .filter_map(|poly| {
-                        let s = poly.segments.first()?.start();
-                        let e = poly.segments.last()?.end();
-                        (s.distance(e) > 0.05).then_some((s, e))
-                    })
-                    .collect()
+            let mut u_intervals: Vec<(f64, f64)> = if let Some(ref clip_reg) = clip_outer_opt {
+                let mut spans = clip_scanline_to_region_set_u(
+                    to_xy(scan_u_lo, pv),
+                    to_xy(scan_u_hi, pv),
+                    u_axis,
+                    clip_reg,
+                );
+                if u_ext_per_span > 1e-5 {
+                    for s in &mut spans {
+                        s.0 -= u_ext_per_span;
+                        s.1 += u_ext_per_span;
+                    }
+                    spans = merge_u_intervals(spans);
+                }
+                spans
             } else {
-                vec![(p_start, p_end)]
+                vec![(lvl_u_start_ext, lvl_u_end_ext)]
             };
 
+            if let Some(ref avoid) = total_avoid
+                && !u_intervals.is_empty()
+            {
+                let avoid_u = clip_scanline_to_region_set_u(
+                    to_xy(scan_u_lo, pv),
+                    to_xy(scan_u_hi, pv),
+                    u_axis,
+                    avoid,
+                );
+                if !avoid_u.is_empty() {
+                    u_intervals = subtract_u_intervals(&u_intervals, &avoid_u);
+                }
+            }
+
+            let mut spans: Vec<(DVec2, DVec2)> = u_intervals
+                .into_iter()
+                .filter(|&(a, b)| b - a > 0.05)
+                .map(|(a, b)| {
+                    if forward {
+                        (to_xy(a, pv), to_xy(b, pv))
+                    } else {
+                        (to_xy(b, pv), to_xy(a, pv))
+                    }
+                })
+                .collect();
+            if !forward {
+                spans.reverse();
+            }
+
+            row_spans_all.push(FacingRowSpans { pv, forward, spans });
+        }
+
+        for (i, row) in row_spans_all.iter().enumerate() {
+            ctx.check_cancel()?;
+            let row_spans = &row.spans;
             if row_spans.is_empty() {
                 continue;
             }
+            let pv = row.pv;
+            let forward = row.forward;
 
             for (span_idx, &(span_start, span_end)) in row_spans.iter().enumerate() {
                 builder.pass_count += 1;
@@ -374,27 +497,27 @@ pub fn generate_facing(
                     cut_role,
                 );
 
-                // Smooth U-turn `G2`/`G3` linking arc outside the stock in BothWaysZigZag mode!
-                let is_unclipped_end =
-                    span_idx + 1 == row_spans.len() && span_end.distance(p_end) <= 1e-3;
-                if is_unclipped_end
+                // Smooth U-turn `G2`/`G3` linking arc outside the stock in BothWaysZigZag mode
+                // whenever the next row starts at the exact matching U station and the arc is clear!
+                if span_idx + 1 == row_spans.len()
                     && params.cut_mode == FacingCutMode::BothWaysZigZag
-                    && let Some(&next_pv) = ordered_vs.get(i + 1)
-                    && (next_pv - pv).abs() <= stepover * 1.5 + 1e-4
+                    && let Some(next_row) = row_spans_all.get(i + 1)
+                    && let Some(&(p_next_start, _)) = next_row.spans.first()
+                    && (next_row.pv - pv).abs() <= stepover * 1.5 + 1e-4
+                    && (p_next_start.dot(u_axis) - span_end.dot(u_axis)).abs() <= 1e-3
                 {
-                    let p_next_start = to_xy(u1, next_pv);
-                    let mid_center = 0.5 * (p_end + p_next_start);
-                    let link_r = 0.5 * p_end.distance(p_next_start);
-                    // Turning from `+u` toward `+v` (`next_pv > pv`) is CCW; turning from `-u` toward `+v` is CW!
+                    let next_pv = next_row.pv;
+                    let mid_center = 0.5 * (span_end + p_next_start);
+                    let link_r = 0.5 * span_end.distance(p_next_start);
                     let ccw = if forward { next_pv > pv } else { next_pv < pv };
                     let sweep = if ccw {
                         std::f64::consts::PI
                     } else {
                         -std::f64::consts::PI
                     };
-                    let arc_clear = overhang_avoid.as_ref().is_none_or(|av| {
+                    let arc_clear = total_avoid.as_ref().is_none_or(|av| {
                         !av.contains_point(p_next_start)
-                            && is_2d_arc_clear_of_avoid(p_end, mid_center, link_r, sweep, av)
+                            && is_2d_arc_clear_of_avoid(span_end, mid_center, link_r, sweep, av)
                     });
                     if arc_clear {
                         if link_r > 1e-4 {
@@ -426,4 +549,224 @@ pub fn generate_facing(
     }
 
     Ok(())
+}
+
+fn resolve_facing_nominal_and_islands(
+    ctx: &StrategyExecContext<'_>,
+    params: &FacingParams,
+    tool_r: f64,
+    builder: &mut ToolpathBuilder,
+) -> (RegionSet2D, RegionSet2D) {
+    match params.boundary.boundary_mode {
+        MachiningBoundaryMode::StockBox => (stock_xy_region(ctx.setup), RegionSet2D::empty()),
+        MachiningBoundaryMode::ModelSilhouette => {
+            if ctx.doc.has_3d_geometry() {
+                let surface = SurfaceMesh3D::from_cad_document(ctx.doc, &[], &ctx.setup.frame);
+                if !surface.triangles.is_empty() && surface.aabb_wcs.is_valid() {
+                    let resolved = resolve_3d_containment_region_detailed(
+                        &surface,
+                        ctx.setup,
+                        &ctx.selection,
+                        MachiningBoundaryMode::ModelSilhouette,
+                        ToolContainmentMode::ToolCenterOnBoundary,
+                        0.0,
+                        tool_r,
+                    );
+                    builder.warnings.extend(resolved.warnings);
+                    return (resolved.nominal_region, RegionSet2D::empty());
+                }
+            }
+            (stock_xy_region(ctx.setup), RegionSet2D::empty())
+        }
+        MachiningBoundaryMode::SelectedRegions => {
+            let mut outer_sets = Vec::new();
+            let mut island_sets = Vec::new();
+            for feat in &ctx.selection.features {
+                match feat {
+                    ExtractedFeature25D::PlanarFace {
+                        outer_boundary_wcs,
+                        raised_islands_wcs,
+                        ..
+                    } => {
+                        if outer_boundary_wcs.closed && !outer_boundary_wcs.segments.is_empty() {
+                            let outer = outer_boundary_wcs.ensure_orientation(true);
+                            outer_sets.push(RegionSet2D::from_single(PocketRegion2D::new(
+                                outer,
+                                Vec::new(),
+                            )));
+                        }
+                        for isl in raised_islands_wcs {
+                            if isl.closed && !isl.segments.is_empty() {
+                                let ccw = isl.ensure_orientation(true);
+                                island_sets.push(RegionSet2D::from_single(PocketRegion2D::new(
+                                    ccw,
+                                    Vec::new(),
+                                )));
+                            }
+                        }
+                    }
+                    ExtractedFeature25D::Contour { polyline_wcs, .. }
+                        if polyline_wcs.closed && !polyline_wcs.segments.is_empty() =>
+                    {
+                        let outer = polyline_wcs.ensure_orientation(true);
+                        outer_sets.push(RegionSet2D::from_single(PocketRegion2D::new(
+                            outer,
+                            Vec::new(),
+                        )));
+                    }
+                    _ => {}
+                }
+            }
+
+            if outer_sets.is_empty() {
+                builder.warnings.push(
+                    "Machining boundary is set to 'Selected 2D Contours' but no closed 2D contours or planar faces are selected; falling back to Stock Bounds."
+                        .to_string(),
+                );
+                return (stock_xy_region(ctx.setup), RegionSet2D::empty());
+            }
+
+            let nominal_outer = RegionSet2D::union_many(&mut outer_sets);
+            let raised_islands = RegionSet2D::union_many(&mut island_sets);
+            (nominal_outer, raised_islands)
+        }
+    }
+}
+
+fn offset_region_set(reg: &RegionSet2D, delta_mm: f64) -> RegionSet2D {
+    if delta_mm > 1e-5 {
+        reg.dilate_outward(delta_mm)
+    } else if delta_mm < -1e-5 {
+        reg.erode_inward(-delta_mm)
+    } else {
+        reg.clone()
+    }
+}
+
+fn project_aabb_uv_bounds(aabb: Aabb2, u_axis: DVec2, v_axis: DVec2) -> (f64, f64, f64, f64) {
+    let corners = [
+        aabb.min,
+        DVec2::new(aabb.max.x, aabb.min.y),
+        aabb.max,
+        DVec2::new(aabb.min.x, aabb.max.y),
+    ];
+    let mut u_min = f64::INFINITY;
+    let mut u_max = f64::NEG_INFINITY;
+    let mut v_min = f64::INFINITY;
+    let mut v_max = f64::NEG_INFINITY;
+    for c in corners {
+        let pu = c.dot(u_axis);
+        let pv = c.dot(v_axis);
+        u_min = u_min.min(pu);
+        u_max = u_max.max(pu);
+        v_min = v_min.min(pv);
+        v_max = v_max.max(pv);
+    }
+    (u_min, u_max, v_min, v_max)
+}
+
+fn project_region_uv_bounds(
+    region: &RegionSet2D,
+    u_axis: DVec2,
+    v_axis: DVec2,
+) -> (f64, f64, f64, f64) {
+    let mut u_min = f64::INFINITY;
+    let mut u_max = f64::NEG_INFINITY;
+    let mut v_min = f64::INFINITY;
+    let mut v_max = f64::NEG_INFINITY;
+    let mut include_pt = |p: DVec2| {
+        let pu = p.dot(u_axis);
+        let pv = p.dot(v_axis);
+        u_min = u_min.min(pu);
+        u_max = u_max.max(pu);
+        v_min = v_min.min(pv);
+        v_max = v_max.max(pv);
+    };
+
+    for reg in &region.regions {
+        for seg in &reg.outer_ccw.segments {
+            match *seg {
+                ArcSegment2D::Line { start, end } => {
+                    include_pt(start);
+                    include_pt(end);
+                }
+                ArcSegment2D::Arc { .. } => {
+                    for k in 0..=16 {
+                        if let Some((pt, _)) = seg.eval_at(f64::from(k) / 16.0) {
+                            include_pt(pt);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if !u_min.is_finite() {
+        region_aabb_2d(region)
+            .filter(Aabb2::is_valid)
+            .map_or((0.0, 0.0, 0.0, 0.0), |b| {
+                project_aabb_uv_bounds(b, u_axis, v_axis)
+            })
+    } else {
+        (u_min, u_max, v_min, v_max)
+    }
+}
+
+fn clip_scanline_to_region_set_u(
+    p0: DVec2,
+    p1: DVec2,
+    u_axis: DVec2,
+    set: &RegionSet2D,
+) -> Vec<(f64, f64)> {
+    let mut out = Vec::new();
+    for reg in &set.regions {
+        for (a, b) in clip_scanline_to_region(p0, p1, reg) {
+            let ua = a.dot(u_axis);
+            let ub = b.dot(u_axis);
+            let (lo, hi) = if ua <= ub { (ua, ub) } else { (ub, ua) };
+            if hi - lo > 1e-5 {
+                out.push((lo, hi));
+            }
+        }
+    }
+    merge_u_intervals(out)
+}
+
+fn merge_u_intervals(mut intervals: Vec<(f64, f64)>) -> Vec<(f64, f64)> {
+    if intervals.len() <= 1 {
+        return intervals;
+    }
+    intervals.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut merged: Vec<(f64, f64)> = Vec::with_capacity(intervals.len());
+    for (a, b) in intervals {
+        if let Some(last) = merged.last_mut()
+            && a <= last.1 + 1e-4
+        {
+            last.1 = last.1.max(b);
+            continue;
+        }
+        merged.push((a, b));
+    }
+    merged
+}
+
+fn subtract_u_intervals(base: &[(f64, f64)], avoid: &[(f64, f64)]) -> Vec<(f64, f64)> {
+    let mut cur: Vec<(f64, f64)> = base.to_vec();
+    for &(av_lo, av_hi) in avoid {
+        let mut next = Vec::with_capacity(cur.len());
+        for (a, b) in cur {
+            if av_hi <= a + 1e-6 || av_lo >= b - 1e-6 {
+                next.push((a, b));
+            } else {
+                if av_lo > a + 1e-5 {
+                    next.push((a, av_lo));
+                }
+                if av_hi < b - 1e-5 {
+                    next.push((av_hi, b));
+                }
+            }
+        }
+        cur = next;
+    }
+    cur
 }
