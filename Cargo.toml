@@ -77,7 +77,7 @@ usvg = { version = "0.50", default-features = false }
 kurbo = "0.13"
 skrifa = "0.44"
 
-eframe = { version = "0.37", default-features = false, features = ["wgpu", "default_fonts", "wayland", "x11"] }
+eframe = { version = "0.37", default-features = false, features = ["wgpu", "default_fonts", "wayland", "x11", "clipboard"] }
 egui = "0.37"
 egui-wgpu = "0.37"
 egui_tiles = "0.18"

@@ -1,3 +1,5 @@
+use std::time::{Duration, Instant};
+
 use chip_cad::CadDocument;
 use chip_cam::OperationStatus;
 use chip_project::{ProjectDocument, ToolpathCache};
@@ -8,6 +10,11 @@ use crate::{
     theme::ThemeTokens,
     widgets::{StatusBadgeKind, status_badge_icon},
 };
+
+/// Formats all Activity Log entries as a newline-delimited plain-text block for display and clipboard copy.
+pub fn format_activity_log(logs: &[String]) -> String {
+    logs.join("\n")
+}
 
 /// Collects fast in-memory machine envelope / spindle / feedrate / rotary warnings for the active
 /// setup without touching disk or running full B-Rep extraction.
@@ -299,17 +306,409 @@ pub fn show_diagnostics_panel(
         }
 
         // Right column: Event & Validation Log
-        cols[1].strong("Activity Log");
-        cols[1].separator();
-        egui::ScrollArea::vertical()
-            .id_salt("diag_activity_log")
-            .stick_to_bottom(true)
-            .show(&mut cols[1], |ui| {
-                for entry in logs {
-                    ui.monospace(entry);
+        let copied_feedback_id = egui::Id::unique("diag_activity_log_copied_until");
+        let copied_until = cols[1]
+            .ctx()
+            .data(|d| d.get_temp::<Instant>(copied_feedback_id));
+        let show_copied = if let Some(until) = copied_until {
+            if Instant::now() < until {
+                cols[1]
+                    .ctx()
+                    .request_repaint_after(Duration::from_millis(250));
+                true
+            } else {
+                cols[1]
+                    .ctx()
+                    .data_mut(|d| d.remove::<Instant>(copied_feedback_id));
+                false
+            }
+        } else {
+            false
+        };
+
+        cols[1].horizontal(|ui| {
+            ui.strong("Activity Log");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .add_enabled_ui(!logs.is_empty(), |ui| ui.small_button("Copy All"))
+                    .inner
+                    .on_hover_text("Copy all Activity Log entries to clipboard")
+                    .on_disabled_hover_text("No activity log entries to copy")
+                    .clicked()
+                {
+                    ui.ctx().copy_text(format_activity_log(logs));
+                    ui.ctx().data_mut(|d| {
+                        d.insert_temp(copied_feedback_id, Instant::now() + Duration::from_secs(2));
+                    });
+                }
+                if show_copied {
+                    ui.colored_label(tok.clean_fg, "Copied!");
                 }
             });
+        });
+        cols[1].separator();
+        if logs.is_empty() {
+            cols[1].weak("No activity log entries yet.");
+        } else {
+            let log_text = format_activity_log(logs);
+            egui::Frame::NONE
+                .fill(tok.code_bg)
+                .stroke(egui::Stroke::new(1.0, tok.border))
+                .inner_margin(4.0)
+                .corner_radius(4.0)
+                .show(&mut cols[1], |ui| {
+                    egui::ScrollArea::vertical()
+                        .id_salt("diag_activity_log")
+                        .auto_shrink([false, false])
+                        .stick_to_bottom(true)
+                        .show(ui, |ui| {
+                            let mut read_only_text = log_text.as_str();
+                            let output = egui::TextEdit::multiline(&mut read_only_text)
+                                .id_salt("diag_activity_log_text")
+                                .font(egui::TextStyle::Monospace)
+                                .desired_width(f32::INFINITY)
+                                .frame(egui::Frame::NONE)
+                                .background_color(egui::Color32::TRANSPARENT)
+                                .show(ui);
+
+                            let selected_text = output
+                                .cursor_range
+                                .or_else(|| output.state.cursor.char_range())
+                                .map(|range| range.slice_str(&log_text))
+                                .filter(|s| !s.is_empty());
+
+                            output.response.context_menu(|ui| {
+                                if ui
+                                    .add_enabled(
+                                        selected_text.is_some(),
+                                        egui::Button::new("Copy Selection"),
+                                    )
+                                    .on_hover_text(
+                                        "Copy the selected Activity Log text to clipboard",
+                                    )
+                                    .on_disabled_hover_text(
+                                        "Select text in the Activity Log to copy a selection",
+                                    )
+                                    .clicked()
+                                {
+                                    if let Some(sel) = selected_text {
+                                        ui.ctx().copy_text(sel.to_owned());
+                                        ui.ctx().data_mut(|d| {
+                                            d.insert_temp(
+                                                copied_feedback_id,
+                                                Instant::now() + Duration::from_secs(2),
+                                            );
+                                        });
+                                    }
+                                    ui.close();
+                                }
+                                if ui
+                                    .button("Copy All")
+                                    .on_hover_text("Copy all Activity Log entries to clipboard")
+                                    .clicked()
+                                {
+                                    ui.ctx().copy_text(log_text.clone());
+                                    ui.ctx().data_mut(|d| {
+                                        d.insert_temp(
+                                            copied_feedback_id,
+                                            Instant::now() + Duration::from_secs(2),
+                                        );
+                                    });
+                                    ui.close();
+                                }
+                            });
+                        });
+                });
+        }
     });
 
     jump_target
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    fn run_diag_frame(
+        ctx: &egui::Context,
+        input: egui::RawInput,
+        project: &ProjectDocument,
+        cache: &ToolpathCache,
+        logs: &[String],
+    ) -> egui::FullOutput {
+        let mut out = ctx.run_ui(input, |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
+                show_diagnostics_panel(ui, project, 0, cache, 0, None, None, None, logs);
+            });
+        });
+        out.textures_delta.clear();
+        out
+    }
+
+    fn copied_texts(output: &egui::FullOutput) -> Vec<String> {
+        output
+            .platform_output
+            .commands
+            .iter()
+            .filter_map(|cmd| match cmd {
+                egui::OutputCommand::CopyText(text) => Some(text.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn format_activity_log_joins_entries_with_newlines() {
+        assert_eq!(format_activity_log(&[]), "");
+        assert_eq!(
+            format_activity_log(&["ERROR loading project: missing file".to_string()]),
+            "ERROR loading project: missing file"
+        );
+        assert_eq!(
+            format_activity_log(&[
+                "ChipCutter initialized.".to_string(),
+                "ERROR loading project: missing file".to_string(),
+            ]),
+            "ChipCutter initialized.\nERROR loading project: missing file"
+        );
+    }
+
+    #[test]
+    fn activity_log_select_all_and_copy_shortcut_emits_copy_text_command() {
+        let ctx = egui::Context::default();
+        let project = ProjectDocument::new("Test");
+        let cache = ToolpathCache::new(16);
+        let logs = vec![
+            "ChipCutter initialized.".to_string(),
+            "ERROR loading project: invalid TOML syntax at line 12".to_string(),
+        ];
+        let screen = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 300.0));
+
+        // Frame 1: render panel to compute widget layout.
+        let _ = run_diag_frame(
+            &ctx,
+            egui::RawInput {
+                screen_rect: Some(screen),
+                ..Default::default()
+            },
+            &project,
+            &cache,
+            &logs,
+        );
+
+        // Frame 2: click inside the right-half Activity Log read-only TextEdit to focus it.
+        let click_pos = egui::pos2(550.0, 70.0);
+        let _ = run_diag_frame(
+            &ctx,
+            egui::RawInput {
+                screen_rect: Some(screen),
+                events: vec![
+                    egui::Event::PointerMoved(click_pos),
+                    egui::Event::PointerButton {
+                        pos: click_pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                    egui::Event::PointerButton {
+                        pos: click_pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: false,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+                ..Default::default()
+            },
+            &project,
+            &cache,
+            &logs,
+        );
+
+        // Frame 3: attempt to type into the read-only log (must be ignored), then press
+        // Ctrl+A (Select All) and Copy (Ctrl+C).
+        let out = run_diag_frame(
+            &ctx,
+            egui::RawInput {
+                screen_rect: Some(screen),
+                events: vec![
+                    egui::Event::Text("SHOULD_NOT_MODIFY".to_string()),
+                    egui::Event::Key {
+                        key: egui::Key::A,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers: egui::Modifiers::COMMAND,
+                    },
+                    egui::Event::Copy,
+                ],
+                ..Default::default()
+            },
+            &project,
+            &cache,
+            &logs,
+        );
+
+        assert_eq!(copied_texts(&out), vec![format_activity_log(&logs)]);
+    }
+
+    #[test]
+    fn activity_log_partial_selection_copy_emits_selected_substring() {
+        let ctx = egui::Context::default();
+        let project = ProjectDocument::new("Test");
+        let cache = ToolpathCache::new(16);
+        let logs = vec![
+            "ChipCutter initialized.".to_string(),
+            "ERROR loading project: missing file".to_string(),
+        ];
+        let screen = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 300.0));
+
+        // Frame 1: initial layout.
+        let _ = run_diag_frame(
+            &ctx,
+            egui::RawInput {
+                screen_rect: Some(screen),
+                ..Default::default()
+            },
+            &project,
+            &cache,
+            &logs,
+        );
+
+        // Frame 2: click inside the Activity Log to focus it.
+        let click_pos = egui::pos2(430.0, 48.0);
+        let _ = run_diag_frame(
+            &ctx,
+            egui::RawInput {
+                screen_rect: Some(screen),
+                events: vec![
+                    egui::Event::PointerMoved(click_pos),
+                    egui::Event::PointerButton {
+                        pos: click_pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                    egui::Event::PointerButton {
+                        pos: click_pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: false,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+                ..Default::default()
+            },
+            &project,
+            &cache,
+            &logs,
+        );
+
+        // Frame 3: move to start of line 1, Shift+Right 10 times ("ChipCutter"), then Copy.
+        let mut events = vec![egui::Event::Key {
+            key: egui::Key::Home,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }];
+        for _ in 0..10 {
+            events.push(egui::Event::Key {
+                key: egui::Key::ArrowRight,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::SHIFT,
+            });
+        }
+        events.push(egui::Event::Copy);
+
+        let out = run_diag_frame(
+            &ctx,
+            egui::RawInput {
+                screen_rect: Some(screen),
+                events,
+                ..Default::default()
+            },
+            &project,
+            &cache,
+            &logs,
+        );
+
+        assert_eq!(copied_texts(&out), vec!["ChipCutter".to_string()]);
+    }
+
+    #[test]
+    fn activity_log_copy_all_button_emits_copy_text_command() {
+        let ctx = egui::Context::default();
+        let project = ProjectDocument::new("Test");
+        let cache = ToolpathCache::new(16);
+        let logs = vec![
+            "Opening project foo.chip.toml...".to_string(),
+            "ERROR loading project: file not found".to_string(),
+        ];
+
+        // Frame 1: render panel to compute layout.
+        let screen = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 300.0));
+        let _ = run_diag_frame(
+            &ctx,
+            egui::RawInput {
+                screen_rect: Some(screen),
+                ..Default::default()
+            },
+            &project,
+            &cache,
+            &logs,
+        );
+
+        // Frame 2: click the "Copy All" button in the top-right Activity Log header.
+        let pos = egui::pos2(760.0, 16.0);
+        let out = run_diag_frame(
+            &ctx,
+            egui::RawInput {
+                screen_rect: Some(screen),
+                events: vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: false,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+                ..Default::default()
+            },
+            &project,
+            &cache,
+            &logs,
+        );
+
+        assert_eq!(copied_texts(&out), vec![format_activity_log(&logs)]);
+    }
+
+    #[test]
+    fn activity_log_empty_renders_cleanly_without_copy_commands() {
+        let ctx = egui::Context::default();
+        let project = ProjectDocument::new("Empty");
+        let cache = ToolpathCache::new(16);
+        let out = run_diag_frame(
+            &ctx,
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::pos2(0.0, 0.0),
+                    egui::vec2(800.0, 300.0),
+                )),
+                ..Default::default()
+            },
+            &project,
+            &cache,
+            &[],
+        );
+        assert!(copied_texts(&out).is_empty());
+    }
 }
