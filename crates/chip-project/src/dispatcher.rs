@@ -5,6 +5,7 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
+    time::{Duration, Instant},
 };
 
 use chip_cad::CadDocument;
@@ -33,6 +34,26 @@ use crate::{
     },
 };
 
+/// Formats a wall-clock execution [`Duration`] into a concise human-readable string
+/// (`142ms`, `1.42s`, or `2m 05.3s`) for Activity Log messages.
+#[must_use]
+pub fn format_exec_duration(elapsed: Duration) -> String {
+    let total_ms = elapsed.as_millis();
+    if total_ms < 1_000 {
+        return format!("{total_ms}ms");
+    }
+    let secs = elapsed.as_secs_f64();
+    if secs < 59.995 {
+        return format!("{secs:.2}s");
+    }
+    let total_tenths = (secs * 10.0).round() as u64;
+    let mins = total_tenths / 600;
+    let rem_tenths = total_tenths % 600;
+    let secs_whole = rem_tenths / 10;
+    let secs_frac = rem_tenths % 10;
+    format!("{mins}m {secs_whole:02}.{secs_frac}s")
+}
+
 /// Event emitted from background `rayon` workers to the UI / coordinator thread (`01-architecture.md`).
 #[derive(Debug, Clone)]
 pub enum DispatcherEvent {
@@ -44,15 +65,18 @@ pub enum DispatcherEvent {
         op_id: String,
         input_hash: OperationInputHash,
         toolpath: Arc<GeneratedToolpath>,
+        elapsed: Duration,
     },
     Cancelled {
         op_id: String,
         input_hash: OperationInputHash,
+        elapsed: Duration,
     },
     Failed {
         op_id: String,
         input_hash: OperationInputHash,
         message: String,
+        elapsed: Duration,
     },
 }
 
@@ -278,6 +302,9 @@ pub struct JobDispatcher {
     in_flight: HashMap<String, (OperationInputHash, Arc<AtomicBool>)>,
     pending_wave: HashSet<String>,
     batch_ops: HashSet<String>,
+    batch_started_at: Option<Instant>,
+    batch_succeeded: usize,
+    batch_failed: usize,
     carryover_cache: HashMap<(usize, u64), Arc<TriDexelStock>>,
     carryover_errors: HashMap<(usize, u64), String>,
     in_flight_carryover: HashSet<(usize, u64)>,
@@ -306,6 +333,9 @@ impl JobDispatcher {
             in_flight: HashMap::new(),
             pending_wave: HashSet::new(),
             batch_ops: HashSet::new(),
+            batch_started_at: None,
+            batch_succeeded: 0,
+            batch_failed: 0,
             carryover_cache: HashMap::new(),
             carryover_errors: HashMap::new(),
             in_flight_carryover: HashSet::new(),
@@ -335,6 +365,12 @@ impl JobDispatcher {
 
     pub fn in_flight_count(&self) -> usize {
         self.in_flight.len() + self.pending_wave.len()
+    }
+
+    /// Returns wall-clock elapsed duration for the active generation batch, or `None` when idle.
+    #[must_use]
+    pub fn batch_elapsed(&self) -> Option<Duration> {
+        self.batch_started_at.map(|t0| t0.elapsed())
     }
 
     /// Returns live batch completion progress while toolpath generation is running, or `None` when idle.
@@ -378,6 +414,9 @@ impl JobDispatcher {
         }
         if !self.is_busy() {
             self.batch_ops.clear();
+            self.batch_started_at = None;
+            self.batch_succeeded = 0;
+            self.batch_failed = 0;
         }
         removed_pending || removed_in_flight
     }
@@ -387,6 +426,9 @@ impl JobDispatcher {
         let count = self.in_flight.len() + self.pending_wave.len();
         self.pending_wave.clear();
         self.batch_ops.clear();
+        self.batch_started_at = None;
+        self.batch_succeeded = 0;
+        self.batch_failed = 0;
         self.in_flight_carryover.clear();
         for (_, (_, token)) in self.in_flight.drain() {
             token.store(true, Ordering::Relaxed);
@@ -438,6 +480,9 @@ impl JobDispatcher {
         });
         if !self.is_busy() {
             self.batch_ops.clear();
+            self.batch_started_at = None;
+            self.batch_succeeded = 0;
+            self.batch_failed = 0;
         }
     }
 
@@ -455,6 +500,9 @@ impl JobDispatcher {
     ) -> usize {
         if !self.is_busy() {
             self.batch_ops.clear();
+            self.batch_started_at = None;
+            self.batch_succeeded = 0;
+            self.batch_failed = 0;
         }
         self.active_cad = Some((Arc::clone(&cad_doc), cad_revision));
         let shared_sketches = Arc::new(project.sketches.clone());
@@ -669,6 +717,9 @@ impl JobDispatcher {
             }
         }
 
+        if queued_count > 0 && self.batch_started_at.is_none() {
+            self.batch_started_at = Some(Instant::now());
+        }
         self.spawn_rayon_tasks(&cad_doc, tasks);
         queued_count
     }
@@ -780,6 +831,7 @@ impl JobDispatcher {
 
             rayon::spawn(move || {
                 let op_id = task.op.id.clone();
+                let started = Instant::now();
                 let _ = tx.send((
                     epoch,
                     DispatcherEvent::Started {
@@ -794,6 +846,7 @@ impl JobDispatcher {
                         DispatcherEvent::Cancelled {
                             op_id,
                             input_hash: task.input_hash,
+                            elapsed: started.elapsed(),
                         },
                     ));
                     if let Some(cb) = &wakeup {
@@ -803,6 +856,7 @@ impl JobDispatcher {
                 }
 
                 let res = execute_single_task(&cad, &task);
+                let elapsed = started.elapsed();
                 match res {
                     Ok(tp) => {
                         let _ = tx.send((
@@ -811,6 +865,7 @@ impl JobDispatcher {
                                 op_id,
                                 input_hash: task.input_hash,
                                 toolpath: Arc::new(tp),
+                                elapsed,
                             },
                         ));
                     }
@@ -820,6 +875,7 @@ impl JobDispatcher {
                             DispatcherEvent::Cancelled {
                                 op_id,
                                 input_hash: task.input_hash,
+                                elapsed,
                             },
                         ));
                     }
@@ -830,6 +886,7 @@ impl JobDispatcher {
                                 op_id,
                                 input_hash: task.input_hash,
                                 message: err.to_string(),
+                                elapsed,
                             },
                         ));
                     }
@@ -861,6 +918,7 @@ impl JobDispatcher {
                     op_id,
                     input_hash,
                     toolpath,
+                    elapsed,
                 } => {
                     let matches_inflight = self
                         .in_flight
@@ -869,6 +927,7 @@ impl JobDispatcher {
                     if matches_inflight {
                         self.in_flight.remove(&op_id);
                     }
+                    self.batch_succeeded += 1;
                     let lift_suffix = if toolpath.rapid_lifts_inserted > 0 {
                         format!(
                             ", {} fixture rapid lift(s) up to Z={:+.1} mm",
@@ -877,8 +936,9 @@ impl JobDispatcher {
                     } else {
                         String::new()
                     };
+                    let wall = format_exec_duration(elapsed);
                     logs.push(format!(
-                        "Generated '{}' ({} passes, {:.1}s est., {} G2/G3 arcs{})",
+                        "Generated '{}' in {wall} ({} passes, est. cycle {:.1}s, {} G2/G3 arcs{})",
                         op_id,
                         toolpath.stats.pass_count,
                         toolpath.stats.total_est_time_sec,
@@ -887,20 +947,10 @@ impl JobDispatcher {
                     ));
                     cache.insert(op_id, input_hash, toolpath);
                 }
-                DispatcherEvent::Cancelled { op_id, input_hash } => {
-                    let matches_inflight = self
-                        .in_flight
-                        .get(&op_id)
-                        .is_some_and(|(h, _)| *h == input_hash);
-                    if matches_inflight {
-                        self.in_flight.remove(&op_id);
-                    }
-                    logs.push(format!("Cancelled generation for '{op_id}'"));
-                }
-                DispatcherEvent::Failed {
+                DispatcherEvent::Cancelled {
                     op_id,
                     input_hash,
-                    message,
+                    elapsed,
                 } => {
                     let matches_inflight = self
                         .in_flight
@@ -909,7 +959,25 @@ impl JobDispatcher {
                     if matches_inflight {
                         self.in_flight.remove(&op_id);
                     }
-                    logs.push(format!("Error generating '{op_id}': {message}"));
+                    let wall = format_exec_duration(elapsed);
+                    logs.push(format!("Cancelled generation for '{op_id}' after {wall}"));
+                }
+                DispatcherEvent::Failed {
+                    op_id,
+                    input_hash,
+                    message,
+                    elapsed,
+                } => {
+                    let matches_inflight = self
+                        .in_flight
+                        .get(&op_id)
+                        .is_some_and(|(h, _)| *h == input_hash);
+                    if matches_inflight {
+                        self.in_flight.remove(&op_id);
+                    }
+                    self.batch_failed += 1;
+                    let wall = format_exec_duration(elapsed);
+                    logs.push(format!("Failed '{op_id}' after {wall}: {message}"));
                     cache.record_error(op_id, input_hash, message);
                 }
             }
@@ -992,6 +1060,7 @@ impl JobDispatcher {
                         }
                         CarryoverReadiness::FailedUpstream(err) => {
                             self.pending_wave.remove(&op_id);
+                            self.batch_failed += 1;
                             logs.push(format!("Error generating '{op_id}': {err}"));
                             cache.record_error(op_id, input_hash, err);
                             continue;
@@ -1016,6 +1085,7 @@ impl JobDispatcher {
                                     self.carryover_errors.get(&(s_idx, in_digest)).cloned()
                                 {
                                     self.pending_wave.remove(&op_id);
+                                    self.batch_failed += 1;
                                     logs.push(format!("Error generating '{op_id}': {err}"));
                                     cache.record_error(op_id, input_hash, err);
                                     continue;
@@ -1069,6 +1139,7 @@ impl JobDispatcher {
                         }
                         UpstreamReadiness::FailedUpstream { op_name, message } => {
                             self.pending_wave.remove(&op_id);
+                            self.batch_failed += 1;
                             let err = format!(
                                 "Blocked by failed upstream Rest Machining operation '{op_name}': {message}"
                             );
@@ -1109,7 +1180,27 @@ impl JobDispatcher {
         }
 
         if !self.is_busy() {
+            let batch_total = self.batch_ops.len();
+            if let Some(batch_start) = self.batch_started_at.take()
+                && batch_total > 1
+                && (self.batch_succeeded > 0 || self.batch_failed > 0)
+            {
+                let wall = format_exec_duration(batch_start.elapsed());
+                if self.batch_failed == 0 {
+                    logs.push(format!(
+                        "Toolpath generation complete ({} operations) in {wall}",
+                        self.batch_succeeded
+                    ));
+                } else {
+                    logs.push(format!(
+                        "Toolpath generation finished ({} succeeded, {} failed) in {wall}",
+                        self.batch_succeeded, self.batch_failed
+                    ));
+                }
+            }
             self.batch_ops.clear();
+            self.batch_succeeded = 0;
+            self.batch_failed = 0;
         }
         let inflight_set = self.in_flight_ids();
         cache.reconcile_project_statuses(project, cad_revision, &inflight_set);
@@ -1529,6 +1620,7 @@ mod tests {
                 op_id: "stale_op".to_string(),
                 input_hash: stale_hash,
                 toolpath: stale_tp,
+                elapsed: Duration::from_millis(42),
             },
         ));
         let _ = dispatcher.tx.send((
@@ -1537,6 +1629,7 @@ mod tests {
                 op_id: "stale_err".to_string(),
                 input_hash: stale_hash,
                 message: "stale failure".to_string(),
+                elapsed: Duration::from_millis(17),
             },
         ));
 
@@ -1581,6 +1674,7 @@ mod tests {
                 op_id: "op_a".to_string(),
                 input_hash: hash_a,
                 toolpath: Arc::new(ToolpathBuilder::new("op_a").finish()),
+                elapsed: Duration::from_millis(25),
             },
         ));
         let _ = dispatcher.poll_events(&mut project, &mut cache, 1);
@@ -1608,10 +1702,114 @@ mod tests {
                 op_id: "op_c".to_string(),
                 input_hash: hash_b,
                 toolpath: Arc::new(ToolpathBuilder::new("op_c").finish()),
+                elapsed: Duration::from_millis(15),
             },
         ));
         let _ = dispatcher.poll_events(&mut project, &mut cache, 1);
         assert!(dispatcher.batch_progress().is_none());
         assert!(dispatcher.batch_ops.is_empty());
+    }
+
+    #[test]
+    fn format_exec_duration_formats_milliseconds_seconds_and_minutes() {
+        assert_eq!(format_exec_duration(Duration::ZERO), "0ms");
+        assert_eq!(format_exec_duration(Duration::from_millis(142)), "142ms");
+        assert_eq!(format_exec_duration(Duration::from_millis(999)), "999ms");
+        assert_eq!(format_exec_duration(Duration::from_millis(1_000)), "1.00s");
+        assert_eq!(format_exec_duration(Duration::from_millis(1_420)), "1.42s");
+        assert_eq!(
+            format_exec_duration(Duration::from_millis(59_994)),
+            "59.99s"
+        );
+        assert_eq!(
+            format_exec_duration(Duration::from_millis(59_995)),
+            "1m 00.0s"
+        );
+        assert_eq!(
+            format_exec_duration(Duration::from_millis(125_300)),
+            "2m 05.3s"
+        );
+        assert_eq!(
+            format_exec_duration(Duration::from_millis(119_990)),
+            "2m 00.0s"
+        );
+    }
+
+    #[test]
+    fn poll_events_logs_wall_clock_execution_time_for_completed_failed_cancelled_and_batch() {
+        let mut dispatcher = JobDispatcher::new(None);
+        let mut project = ProjectDocument::new("Exec Time Log Test");
+        let mut cache = ToolpathCache::new(16);
+
+        let hash_a = OperationInputHash([0x01; 32]);
+        let hash_b = OperationInputHash([0x02; 32]);
+        let hash_c = OperationInputHash([0x03; 32]);
+        dispatcher.batch_started_at = Some(Instant::now());
+        dispatcher.batch_ops.insert("op_pocket".to_string());
+        dispatcher.batch_ops.insert("op_contour".to_string());
+        dispatcher.batch_ops.insert("op_drill".to_string());
+        dispatcher.in_flight.insert(
+            "op_pocket".to_string(),
+            (hash_a, Arc::new(AtomicBool::new(false))),
+        );
+        dispatcher.in_flight.insert(
+            "op_contour".to_string(),
+            (hash_b, Arc::new(AtomicBool::new(false))),
+        );
+        dispatcher.in_flight.insert(
+            "op_drill".to_string(),
+            (hash_c, Arc::new(AtomicBool::new(false))),
+        );
+
+        let _ = dispatcher.tx.send((
+            dispatcher.epoch,
+            DispatcherEvent::Completed {
+                op_id: "op_pocket".to_string(),
+                input_hash: hash_a,
+                toolpath: Arc::new(ToolpathBuilder::new("op_pocket").finish()),
+                elapsed: Duration::from_millis(142),
+            },
+        ));
+        let _ = dispatcher.tx.send((
+            dispatcher.epoch,
+            DispatcherEvent::Failed {
+                op_id: "op_contour".to_string(),
+                input_hash: hash_b,
+                message: "invalid tool".to_string(),
+                elapsed: Duration::from_millis(1_420),
+            },
+        ));
+        let _ = dispatcher.tx.send((
+            dispatcher.epoch,
+            DispatcherEvent::Cancelled {
+                op_id: "op_drill".to_string(),
+                input_hash: hash_c,
+                elapsed: Duration::from_millis(125_300),
+            },
+        ));
+
+        let logs = dispatcher.poll_events(&mut project, &mut cache, 1);
+        assert_eq!(
+            logs.len(),
+            4,
+            "expected 3 op logs + 1 batch summary: {logs:?}"
+        );
+        assert!(
+            logs[0].contains("Generated 'op_pocket' in 142ms")
+                && logs[0].contains("est. cycle 0.0s"),
+            "unexpected completed log: {}",
+            logs[0]
+        );
+        assert_eq!(logs[1], "Failed 'op_contour' after 1.42s: invalid tool");
+        assert_eq!(
+            logs[2],
+            "Cancelled generation for 'op_drill' after 2m 05.3s"
+        );
+        assert!(
+            logs[3].starts_with("Toolpath generation finished (1 succeeded, 1 failed) in "),
+            "unexpected batch summary: {}",
+            logs[3]
+        );
+        assert!(dispatcher.batch_elapsed().is_none());
     }
 }

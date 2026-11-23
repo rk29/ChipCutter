@@ -93,13 +93,27 @@ impl ChipCutterApp {
                 self.pick_mode = ViewportPickMode::InspectEntity;
                 self.highlight.preview_tab_marker_wcs = None;
             } else if self.dispatcher.is_busy() {
+                let elapsed = self.dispatcher.batch_elapsed();
                 let n = self.dispatcher.cancel_all();
-                self.logs
-                    .push(format!("Cancelled {n} in-flight generation job(s)."));
+                if let Some(d) = elapsed {
+                    self.logs.push(format!(
+                        "Cancelled {n} in-flight generation job(s) after {}.",
+                        chip_project::format_exec_duration(d)
+                    ));
+                } else {
+                    self.logs
+                        .push(format!("Cancelled {n} in-flight generation job(s)."));
+                }
             } else if self.sim_panel.is_busy() {
-                self.sim_panel.cancel_in_flight();
-                self.logs
-                    .push("Cancelled in-flight simulation.".to_string());
+                if let Some(d) = self.sim_panel.cancel_in_flight() {
+                    self.logs.push(format!(
+                        "Cancelled in-flight simulation after {}.",
+                        chip_project::format_exec_duration(d)
+                    ));
+                } else {
+                    self.logs
+                        .push("Cancelled in-flight simulation.".to_string());
+                }
             }
         }
 

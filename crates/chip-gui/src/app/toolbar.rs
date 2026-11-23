@@ -208,7 +208,17 @@ impl ChipCutterApp {
                         )
                         .clicked()
                         {
-                            self.dispatcher.cancel_all();
+                            let elapsed = self.dispatcher.batch_elapsed();
+                            let n = self.dispatcher.cancel_all();
+                            if let Some(d) = elapsed {
+                                self.logs.push(format!(
+                                    "Cancelled {n} in-flight generation job(s) after {}.",
+                                    chip_project::format_exec_duration(d)
+                                ));
+                            } else {
+                                self.logs
+                                    .push(format!("Cancelled {n} in-flight generation job(s)."));
+                            }
                         }
                     } else if primary_icon_button(
                         ui,
@@ -230,7 +240,15 @@ impl ChipCutterApp {
                         )
                         .clicked()
                         {
-                            self.sim_panel.cancel_in_flight();
+                            if let Some(d) = self.sim_panel.cancel_in_flight() {
+                                self.logs.push(format!(
+                                    "Cancelled in-flight simulation after {}.",
+                                    chip_project::format_exec_duration(d)
+                                ));
+                            } else {
+                                self.logs
+                                    .push("Cancelled in-flight simulation.".to_string());
+                            }
                         }
                     } else if icon_button(
                         ui,

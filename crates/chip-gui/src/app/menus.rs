@@ -473,7 +473,17 @@ impl ChipCutterApp {
                     .on_hover_text("Abort all currently running background toolpath calculations")
                     .clicked()
             {
-                self.dispatcher.cancel_all();
+                let elapsed = self.dispatcher.batch_elapsed();
+                let n = self.dispatcher.cancel_all();
+                if let Some(d) = elapsed {
+                    self.logs.push(format!(
+                        "Cancelled {n} in-flight generation job(s) after {}.",
+                        chip_project::format_exec_duration(d)
+                    ));
+                } else {
+                    self.logs
+                        .push(format!("Cancelled {n} in-flight generation job(s)."));
+                }
                 ui.close();
             }
             ui.separator();

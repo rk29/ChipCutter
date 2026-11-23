@@ -2,22 +2,22 @@ use std::{
     collections::BTreeMap,
     sync::{Arc, Condvar, Mutex, atomic::AtomicBool},
     thread::{self, JoinHandle},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use chip_cad::CadDocument;
 use chip_cam::{FixtureKind, GeneratedToolpath, Operation, resolve_setup_fixtures};
 use chip_project::{
-    SetupSimRequest, collect_ready_setup_operations, resolve_kinematics_for_key,
-    simulate_project_setup_with_choice_and_progress_in_dir,
+    SetupSimRequest, collect_ready_setup_operations, format_exec_duration,
+    resolve_kinematics_for_key, simulate_project_setup_with_choice_and_progress_in_dir,
 };
 #[cfg(feature = "gpu-compute")]
 use chip_sim::{GpuCheckpointCache, GpuSimContext, WgpuComputeBackend};
 use chip_sim::{
-    ScrubSnapshot, SetupSimulationInput, SetupSimulationResult, SimError, SimMeshOptions,
-    SimOperationInput, SimProgressTracker, SimStockColorMode, SimStockMesh, SimVerificationConfig,
-    SimulatedStock, SimulatedStockPlaybackExt, StockPlaybackCursor, format_cycle_time_hms,
-    run_setup_simulation_with_choice_and_progress,
+    ScrubSnapshot, SetupSimulationInput, SetupSimulationResult, SimEngineKind, SimError,
+    SimMeshOptions, SimOperationInput, SimProgressTracker, SimStockColorMode, SimStockMesh,
+    SimVerificationConfig, SimulatedStock, SimulatedStockPlaybackExt, StockPlaybackCursor,
+    format_cycle_time_hms, run_setup_simulation_with_choice_and_progress,
 };
 use chip_tools::Tool;
 use crossbeam_channel::{Receiver, Sender, unbounded};
@@ -35,7 +35,8 @@ pub(super) enum SimWorkerMsg {
         run_id: u64,
         setup_idx: usize,
         signature: u64,
-        elapsed_ms: u128,
+        engine: SimEngineKind,
+        elapsed: Duration,
         result: Result<Arc<SetupSimulationResult>, String>,
     },
 }
@@ -578,6 +579,7 @@ impl SimulationPanelState {
         })));
         self.in_flight = Some(InFlightSim {
             run_id,
+            started_at: Instant::now(),
             cancel: Arc::clone(&cancel_flag),
             progress: Arc::clone(&progress_tracker),
         });
@@ -657,7 +659,8 @@ impl SimulationPanelState {
                     run_id,
                     setup_idx,
                     signature,
-                    elapsed_ms: t0.elapsed().as_millis(),
+                    engine,
+                    elapsed: t0.elapsed(),
                     result: mapped,
                 });
                 egui_ctx.request_repaint();
@@ -681,7 +684,8 @@ impl SimulationPanelState {
                             run_id,
                             setup_idx,
                             signature,
-                            elapsed_ms: t0.elapsed().as_millis(),
+                            engine,
+                            elapsed: t0.elapsed(),
                             result: Err(e.to_string()),
                         });
                         egui_ctx.request_repaint();
@@ -725,7 +729,8 @@ impl SimulationPanelState {
                 run_id,
                 setup_idx,
                 signature,
-                elapsed_ms: t0.elapsed().as_millis(),
+                engine,
+                elapsed: t0.elapsed(),
                 result: mapped,
             });
             egui_ctx.request_repaint();
@@ -741,7 +746,8 @@ impl SimulationPanelState {
                     run_id,
                     setup_idx,
                     signature,
-                    elapsed_ms,
+                    engine,
+                    elapsed,
                     result,
                 } => {
                     if self
@@ -753,6 +759,7 @@ impl SimulationPanelState {
                     } else {
                         continue;
                     }
+                    let wall = format_exec_duration(elapsed);
                     match result {
                         Ok(sim) => {
                             let crit = sim.critical_error_count();
@@ -766,7 +773,8 @@ impl SimulationPanelState {
                                 "CPU Exact".to_string()
                             };
                             logs.push(format!(
-                                "Simulation completed in {elapsed_ms} ms ({backend_tag}) — Cycle {}, Removed {:.0} mm^3 ({crit} critical error(s), {warn} warning(s)).",
+                                "Simulation complete in {wall} ({}, {backend_tag}) — Cycle {}, Removed {:.0} mm^3 ({crit} critical error(s), {warn} warning(s)).",
+                                sim.engine.label(),
                                 format_cycle_time_hms(sim.timeline.total_time_sec),
                                 sim.removed_volume_mm3
                             ));
@@ -780,7 +788,10 @@ impl SimulationPanelState {
                             completed_new = true;
                         }
                         Err(err) => {
-                            logs.push(format!("ERROR during heightmap simulation: {err}"));
+                            logs.push(format!(
+                                "ERROR during {} simulation after {wall}: {err}",
+                                engine.label()
+                            ));
                         }
                     }
                 }
@@ -991,7 +1002,8 @@ mod tests {
             run_id: 7,
             setup_idx: 0,
             signature: 42,
-            elapsed_ms: 5,
+            engine: chip_sim::SimEngineKind::Heightmap,
+            elapsed: std::time::Duration::from_millis(5),
             result: Ok(sim),
         });
         let mut logs = Vec::new();
@@ -1002,19 +1014,24 @@ mod tests {
 
     #[test]
     fn in_flight_progress_reports_live_updates_and_clears_on_cancel_or_finish() {
-        use std::sync::atomic::AtomicBool;
+        use std::{
+            sync::atomic::AtomicBool,
+            time::{Duration, Instant},
+        };
 
-        use chip_sim::{SimProgressStage, SimProgressTracker};
+        use chip_sim::{SimEngineKind, SimProgressStage, SimProgressTracker};
 
         use crate::panels::simulation::InFlightSim;
 
         let (_project, sim) = build_slot_sim();
         let mut panel = SimulationPanelState::default();
         assert!(panel.in_flight_progress().is_none());
+        assert!(panel.cancel_in_flight().is_none());
 
         let tracker = Arc::new(SimProgressTracker::new());
         panel.in_flight = Some(InFlightSim {
             run_id: 9,
+            started_at: Instant::now(),
             cancel: Arc::new(AtomicBool::new(false)),
             progress: Arc::clone(&tracker),
         });
@@ -1028,8 +1045,8 @@ mod tests {
         assert_eq!(snap.percent_rounded(), 42);
         assert_eq!(snap.stage, SimProgressStage::Sweeping);
 
-        // Cancelling clears progress immediately.
-        panel.cancel_in_flight();
+        // Cancelling clears progress immediately and reports elapsed duration.
+        assert!(panel.cancel_in_flight().is_some());
         assert!(!panel.is_busy());
         assert!(panel.in_flight_progress().is_none());
 
@@ -1037,6 +1054,7 @@ mod tests {
         let tracker2 = Arc::new(SimProgressTracker::new());
         panel.in_flight = Some(InFlightSim {
             run_id: 10,
+            started_at: Instant::now(),
             cancel: Arc::new(AtomicBool::new(false)),
             progress: Arc::clone(&tracker2),
         });
@@ -1047,12 +1065,84 @@ mod tests {
             run_id: 10,
             setup_idx: 0,
             signature: 99,
-            elapsed_ms: 12,
+            engine: SimEngineKind::Heightmap,
+            elapsed: Duration::from_millis(12),
             result: Ok(sim),
         });
         let mut logs = Vec::new();
         assert!(panel.poll_worker(&mut logs));
         assert!(!panel.is_busy());
         assert!(panel.in_flight_progress().is_none());
+        assert_eq!(logs.len(), 1);
+        assert!(
+            logs[0].starts_with("Simulation complete in 12ms (Heightmap (Fast), CPU Exact)"),
+            "unexpected completion log: {}",
+            logs[0]
+        );
+    }
+
+    #[test]
+    fn poll_worker_logs_formatted_wall_clock_time_for_completion_and_failure() {
+        use std::{
+            sync::atomic::AtomicBool,
+            time::{Duration, Instant},
+        };
+
+        use chip_sim::{SimEngineKind, SimProgressTracker};
+
+        use crate::panels::simulation::InFlightSim;
+
+        let (_project, sim) = build_slot_sim();
+        // Multi-second completion log formatting
+        let mut panel = SimulationPanelState {
+            in_flight: Some(InFlightSim {
+                run_id: 1,
+                started_at: Instant::now(),
+                cancel: Arc::new(AtomicBool::new(false)),
+                progress: Arc::new(SimProgressTracker::new()),
+            }),
+            ..Default::default()
+        };
+        let _ = panel.tx.send(SimWorkerMsg::Finished {
+            run_id: 1,
+            setup_idx: 0,
+            signature: 11,
+            engine: SimEngineKind::Heightmap,
+            elapsed: Duration::from_millis(2_340),
+            result: Ok(sim),
+        });
+        let mut logs = Vec::new();
+        assert!(panel.poll_worker(&mut logs));
+        assert_eq!(logs.len(), 1);
+        assert!(
+            logs[0]
+                .starts_with("Simulation complete in 2.34s (Heightmap (Fast), CPU Exact) — Cycle "),
+            "unexpected completion log: {}",
+            logs[0]
+        );
+        assert!(logs[0].contains("critical error(s)"));
+        assert!(logs[0].contains("warning(s)"));
+
+        // Failure log formatting preserves engine label and elapsed execution time
+        panel.in_flight = Some(InFlightSim {
+            run_id: 2,
+            started_at: Instant::now(),
+            cancel: Arc::new(AtomicBool::new(false)),
+            progress: Arc::new(SimProgressTracker::new()),
+        });
+        let _ = panel.tx.send(SimWorkerMsg::Finished {
+            run_id: 2,
+            setup_idx: 0,
+            signature: 12,
+            engine: SimEngineKind::TriDexel,
+            elapsed: Duration::from_millis(415),
+            result: Err("invalid fixture geometry".to_string()),
+        });
+        assert!(!panel.poll_worker(&mut logs));
+        assert_eq!(logs.len(), 2);
+        assert_eq!(
+            logs[1],
+            "ERROR during Tri-Dexel (Volumetric 3D) simulation after 415ms: invalid fixture geometry"
+        );
     }
 }

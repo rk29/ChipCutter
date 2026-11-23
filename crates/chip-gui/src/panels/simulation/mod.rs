@@ -9,6 +9,7 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
+    time::{Duration, Instant},
 };
 
 use chip_cad::CadDocument;
@@ -30,6 +31,7 @@ use self::worker::{SimWorkerMsg, StockMeshMeta, StockRemeshKey, StockRemeshWorke
 
 struct InFlightSim {
     run_id: u64,
+    started_at: Instant,
     cancel: Arc<AtomicBool>,
     progress: Arc<SimProgressTracker>,
 }
@@ -276,9 +278,12 @@ impl SimulationPanelState {
         self.remesh_worker.is_busy()
     }
 
-    pub fn cancel_in_flight(&mut self) {
+    pub fn cancel_in_flight(&mut self) -> Option<Duration> {
         if let Some(job) = self.in_flight.take() {
             job.cancel.store(true, Ordering::Relaxed);
+            Some(job.started_at.elapsed())
+        } else {
+            None
         }
     }
 

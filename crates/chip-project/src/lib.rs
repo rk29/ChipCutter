@@ -44,7 +44,7 @@ pub use demos::{
 };
 pub use dispatcher::{
     BatchGenerationReport, DispatcherEvent, GenerationProgressSnapshot, JobDispatcher,
-    generate_project_blocking, generate_project_blocking_in_dir,
+    format_exec_duration, generate_project_blocking, generate_project_blocking_in_dir,
 };
 pub use document::{
     MachineToolSwapPlan, MachineToolSwapSummary, ModelEntry, ModelRole, ProjectDocument,
