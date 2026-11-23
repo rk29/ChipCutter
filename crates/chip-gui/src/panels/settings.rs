@@ -115,54 +115,73 @@ pub fn show_settings_modal(
         .resizable(true)
         .collapsible(false)
         .show(ctx, |ui| {
+            let total_w = ui.available_width().max(540.0);
+            let body_h = ui.available_height().max(400.0);
+            let rail_w = 180.0_f32;
+            let gap_w = 10.0_f32;
+            let content_w = (total_w - rail_w - gap_w).max(340.0);
+
             ui.horizontal_top(|ui| {
                 // Left category rail
-                egui::Frame::NONE
-                    .fill(tok.panel_bg)
-                    .stroke(Stroke::new(1.0, tok.border))
-                    .corner_radius(CornerRadius::same(6))
-                    .inner_margin(egui::Margin::same(6))
-                    .show(ui, |ui| {
-                        ui.set_min_width(176.0);
-                        ui.set_max_width(176.0);
-                        ui.set_min_height(ui.available_height().max(380.0));
-                        ui.vertical(|ui| {
-                            ui.spacing_mut().item_spacing.y = 4.0;
-                            for section in SettingsSection::ALL {
-                                let selected = state.active_section == section;
-                                if ui
-                                    .add_sized(
-                                        [164.0, 28.0],
-                                        egui::Button::selectable(selected, section.label()),
-                                    )
-                                    .clicked()
-                                {
-                                    state.active_section = section;
+                ui.allocate_ui_with_layout(
+                    egui::vec2(rail_w, body_h),
+                    egui::Layout::top_down(egui::Align::LEFT),
+                    |ui| {
+                        egui::Frame::NONE
+                            .fill(tok.panel_bg)
+                            .stroke(Stroke::new(1.0, tok.border))
+                            .corner_radius(CornerRadius::same(6))
+                            .inner_margin(egui::Margin::same(6))
+                            .show(ui, |ui| {
+                                ui.set_min_width(rail_w - 14.0);
+                                ui.set_min_height((body_h - 14.0).max(360.0));
+                                ui.spacing_mut().item_spacing.y = 4.0;
+                                for section in SettingsSection::ALL {
+                                    let selected = state.active_section == section;
+                                    if ui
+                                        .add_sized(
+                                            [rail_w - 16.0, 28.0],
+                                            egui::Button::selectable(selected, section.label()),
+                                        )
+                                        .clicked()
+                                    {
+                                        state.active_section = section;
+                                    }
                                 }
-                            }
-                        });
-                    });
+                            });
+                    },
+                );
 
-                ui.add_space(8.0);
+                ui.add_space(gap_w);
 
-                // Right scrollable content pane
-                egui::ScrollArea::vertical()
-                    .id_salt(("settings_scroll", state.active_section as u8))
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| match state.active_section {
-                        SettingsSection::General => {
-                            show_general_section(ui, &mut sctx, &mut actions);
-                        }
-                        SettingsSection::Viewport => {
-                            show_viewport_section(ui, &tok, &mut sctx, &mut actions);
-                        }
-                        SettingsSection::Simulation => {
-                            show_simulation_section(ui, &tok, &mut sctx, &mut actions);
-                        }
-                        SettingsSection::Machine => {
-                            show_machine_section(ui, &tok, &mut sctx, &mut actions);
-                        }
-                    });
+                // Right scrollable content pane (explicit top-down layout & width so
+                // section_card / inspector_grid never collapse inside horizontal_top)
+                ui.allocate_ui_with_layout(
+                    egui::vec2(content_w, body_h),
+                    egui::Layout::top_down(egui::Align::LEFT),
+                    |ui| {
+                        egui::ScrollArea::vertical()
+                            .id_salt(("settings_scroll", state.active_section as u8))
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                ui.set_min_width((content_w - 12.0).max(320.0));
+                                match state.active_section {
+                                    SettingsSection::General => {
+                                        show_general_section(ui, &mut sctx, &mut actions);
+                                    }
+                                    SettingsSection::Viewport => {
+                                        show_viewport_section(ui, &tok, &mut sctx, &mut actions);
+                                    }
+                                    SettingsSection::Simulation => {
+                                        show_simulation_section(ui, &tok, &mut sctx, &mut actions);
+                                    }
+                                    SettingsSection::Machine => {
+                                        show_machine_section(ui, &tok, &mut sctx, &mut actions);
+                                    }
+                                }
+                            });
+                    },
+                );
             });
         });
 
@@ -595,14 +614,130 @@ fn show_machine_section(
 
             ui.add_space(6.0);
             if ui
-            .button("Open Machine Manager…")
-            .on_hover_text(
-                "Inspect, clone, edit, import, or export CNC machine profiles and their tool libraries",
-            )
-            .clicked()
-        {
-            actions.open_machine_manager = true;
-        }
+                .button("Open Machine Manager…")
+                .on_hover_text(
+                    "Inspect, clone, edit, import, or export CNC machine profiles and their tool libraries",
+                )
+                .clicked()
+            {
+                actions.open_machine_manager = true;
+            }
         },
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use chip_math::DisplayUnit;
+    use chip_sim::{SimComputeBackendChoice, SimEngineKind, SimResolution};
+
+    use super::{SettingsModalCtx, SettingsModalState, SettingsSection, show_settings_modal};
+    use crate::{
+        camera::{MousePreset, OrbitMode},
+        prefs::UserPreferences,
+        theme::AppTheme,
+    };
+
+    fn collect_text_shapes(shapes: &[egui::epaint::ClippedShape]) -> Vec<(String, egui::Rect)> {
+        let mut out = Vec::new();
+        for cs in shapes {
+            collect_shape_text(&cs.shape, cs.clip_rect, &mut out);
+        }
+        out
+    }
+
+    fn collect_shape_text(
+        shape: &egui::Shape,
+        clip: egui::Rect,
+        out: &mut Vec<(String, egui::Rect)>,
+    ) {
+        match shape {
+            egui::Shape::Text(ts) => {
+                let rect = ts.visual_bounding_rect().intersect(clip);
+                out.push((ts.galley.text().to_string(), rect));
+            }
+            egui::Shape::Vec(v) => {
+                for s in v {
+                    collect_shape_text(s, clip, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn settings_modal_renders_visible_controls_in_all_four_sections() {
+        let machines = chip_tools::builtin_machine_definitions();
+        let expected = [
+            (SettingsSection::General, "Workspace Theme"),
+            (SettingsSection::Viewport, "Mouse Preset"),
+            (
+                SettingsSection::Simulation,
+                "Smooth Skinned Surfaces (Mesh Skinning)",
+            ),
+            (SettingsSection::Machine, "Default Machine"),
+        ];
+
+        for (section, needle) in expected {
+            let ctx = egui::Context::default();
+            let mut state = SettingsModalState::default();
+            state.open_section(section);
+
+            let mut prefs = UserPreferences::default();
+            let mut mouse_preset = MousePreset::Fusion360;
+            let mut orbit_mode = OrbitMode::TurntableZUp;
+            let mut show_z_planes = true;
+            let mut show_all_setup_toolpaths = true;
+            let mut show_grid = true;
+            let mut sim_engine = SimEngineKind::TriDexel;
+            let mut sim_resolution = SimResolution::Standard;
+            let mut sim_backend = SimComputeBackendChoice::Auto;
+            let mut sim_mesh_skinning = true;
+
+            let mut last_shapes = Vec::new();
+            for _ in 0..2 {
+                let input = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::Vec2::new(1280.0, 800.0),
+                    )),
+                    ..Default::default()
+                };
+                let mut out = ctx.run_ui(input, |ui| {
+                    let _ = show_settings_modal(
+                        ui.ctx(),
+                        &mut state,
+                        SettingsModalCtx {
+                            theme: AppTheme::Dark,
+                            project_units: DisplayUnit::Millimeter,
+                            prefs: &mut prefs,
+                            mouse_preset: &mut mouse_preset,
+                            orbit_mode: &mut orbit_mode,
+                            orthographic: true,
+                            show_z_planes: &mut show_z_planes,
+                            show_all_setup_toolpaths: &mut show_all_setup_toolpaths,
+                            show_grid: &mut show_grid,
+                            sim_engine: &mut sim_engine,
+                            sim_resolution: &mut sim_resolution,
+                            sim_backend: &mut sim_backend,
+                            sim_mesh_skinning: &mut sim_mesh_skinning,
+                            gpu_adapter_info: None,
+                            machines: &machines,
+                        },
+                    );
+                });
+                out.textures_delta.clear();
+                last_shapes = out.shapes;
+            }
+
+            let texts = collect_text_shapes(&last_shapes);
+            assert!(
+                texts
+                    .iter()
+                    .any(|(t, r)| t.contains(needle) && r.width() > 20.0 && r.height() > 5.0),
+                "section {section:?} must render visible control containing '{needle}'; found: {:?}",
+                texts.iter().map(|(t, r)| (t, r.size())).collect::<Vec<_>>()
+            );
+        }
+    }
 }
