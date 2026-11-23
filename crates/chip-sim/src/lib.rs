@@ -10,6 +10,7 @@
 pub mod cad_adapter;
 pub mod cutter_profile;
 pub mod driver;
+pub mod progress;
 pub mod timeline;
 pub mod verifier;
 pub(crate) mod verify_common;
@@ -44,13 +45,17 @@ pub use chip_stock::{
     TRIDEXEL_PACKED_QUAD_BYTES, WgpuComputeBackend,
 };
 pub use cutter_profile::{SimToolMesh, ToolMeshZone, build_cutter_assembly_mesh};
-#[cfg(feature = "gpu-compute")]
-pub use driver::run_setup_simulation_with_gpu_context;
 pub use driver::{
     SetupSimulationInput, SetupSimulationResult, SimTimingBreakdown, SimulatedStockPlaybackExt,
-    run_setup_simulation, run_setup_simulation_with_backend, run_setup_simulation_with_choice,
-    run_setup_simulation_with_engine,
+    run_setup_simulation, run_setup_simulation_with_backend,
+    run_setup_simulation_with_backend_and_progress, run_setup_simulation_with_choice,
+    run_setup_simulation_with_choice_and_progress, run_setup_simulation_with_engine,
 };
+#[cfg(feature = "gpu-compute")]
+pub use driver::{
+    run_setup_simulation_with_gpu_context, run_setup_simulation_with_gpu_context_and_progress,
+};
+pub use progress::{SimProgressScope, SimProgressSnapshot, SimProgressStage, SimProgressTracker};
 pub use timeline::{
     MachineKinematicsConfig, MotionSpan, OperationTimelineSummary, ScrubSnapshot,
     SimOperationInput, SimulationTimeline, ToolChangeSnapshot, format_cycle_time_hms,

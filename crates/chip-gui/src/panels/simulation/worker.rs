@@ -9,20 +9,20 @@ use chip_cad::CadDocument;
 use chip_cam::{FixtureKind, GeneratedToolpath, Operation, resolve_setup_fixtures};
 use chip_project::{
     SetupSimRequest, collect_ready_setup_operations, resolve_kinematics_for_key,
-    simulate_project_setup_with_choice_in_dir,
+    simulate_project_setup_with_choice_and_progress_in_dir,
 };
 #[cfg(feature = "gpu-compute")]
 use chip_sim::{GpuCheckpointCache, GpuSimContext, WgpuComputeBackend};
 use chip_sim::{
     ScrubSnapshot, SetupSimulationInput, SetupSimulationResult, SimError, SimOperationInput,
-    SimStockColorMode, SimStockMesh, SimVerificationConfig, SimulatedStock,
+    SimProgressTracker, SimStockColorMode, SimStockMesh, SimVerificationConfig, SimulatedStock,
     SimulatedStockPlaybackExt, StockPlaybackCursor, format_cycle_time_hms,
-    run_setup_simulation_with_choice,
+    run_setup_simulation_with_choice_and_progress,
 };
 use chip_tools::Tool;
 use crossbeam_channel::{Receiver, Sender, unbounded};
 
-use super::{SimTriggerArgs, SimulationPanelState};
+use super::{InFlightSim, SimTriggerArgs, SimulationPanelState};
 
 struct OwnedSimOp {
     op: Operation,
@@ -567,7 +567,15 @@ impl SimulationPanelState {
         let run_id = self.next_run_id;
         self.next_run_id += 1;
         let cancel_flag = Arc::new(AtomicBool::new(false));
-        self.in_flight = Some((run_id, Arc::clone(&cancel_flag)));
+        let progress_repaint_ctx = egui_ctx.clone();
+        let progress_tracker = Arc::new(SimProgressTracker::with_callback(Arc::new(move || {
+            progress_repaint_ctx.request_repaint();
+        })));
+        self.in_flight = Some(InFlightSim {
+            run_id,
+            cancel: Arc::clone(&cancel_flag),
+            progress: Arc::clone(&progress_tracker),
+        });
 
         let signature = self.compute_setup_sim_signature(project, setup_idx, cache, cad_revision);
         let engine = self.engine;
@@ -619,7 +627,7 @@ impl SimulationPanelState {
                 // Multi-setup carryover path: resolves upstream Setup chain on this background
                 // thread using isolated headless GPU compute (`GpuSimContext::shared_headless()`),
                 // NEVER touching `eframe`'s presentation device!
-                let res = simulate_project_setup_with_choice_in_dir(
+                let res = simulate_project_setup_with_choice_and_progress_in_dir(
                     &SetupSimRequest {
                         project: &proj_owned,
                         setup_idx,
@@ -633,6 +641,7 @@ impl SimulationPanelState {
                     proj_dir_owned.as_deref(),
                     engine,
                     backend_choice,
+                    Some(progress_tracker.full_scope()),
                 );
                 let mapped = match res {
                     Ok(sim) => Ok(Arc::new(sim)),
@@ -696,7 +705,12 @@ impl SimulationPanelState {
             // `wgpu::Device` (`GpuSimContext::shared_headless()`), NEVER on `eframe`'s presentation
             // device—otherwise resizing the window mid-simulation causes `Surface::configure` to
             // fail with `ConfigureSurfaceError::GpuWaitTimeout`.
-            let res = run_setup_simulation_with_choice(&input, engine, backend_choice);
+            let res = run_setup_simulation_with_choice_and_progress(
+                &input,
+                engine,
+                backend_choice,
+                Some(progress_tracker.full_scope()),
+            );
             let mapped = match res {
                 Ok(sim) => Ok(Arc::new(sim)),
                 Err(SimError::Cancelled) => return,
@@ -725,7 +739,11 @@ impl SimulationPanelState {
                     elapsed_ms,
                     result,
                 } => {
-                    if self.in_flight.as_ref().is_some_and(|(id, _)| *id == run_id) {
+                    if self
+                        .in_flight
+                        .as_ref()
+                        .is_some_and(|job| job.run_id == run_id)
+                    {
                         self.in_flight = None;
                     } else {
                         continue;
@@ -975,5 +993,61 @@ mod tests {
         assert!(!panel.poll_worker(&mut logs));
         assert!(panel.active_result.is_none());
         assert!(logs.is_empty());
+    }
+
+    #[test]
+    fn in_flight_progress_reports_live_updates_and_clears_on_cancel_or_finish() {
+        use std::sync::atomic::AtomicBool;
+
+        use chip_sim::{SimProgressStage, SimProgressTracker};
+
+        use crate::panels::simulation::InFlightSim;
+
+        let (_project, sim) = build_slot_sim();
+        let mut panel = SimulationPanelState::default();
+        assert!(panel.in_flight_progress().is_none());
+
+        let tracker = Arc::new(SimProgressTracker::new());
+        panel.in_flight = Some(InFlightSim {
+            run_id: 9,
+            cancel: Arc::new(AtomicBool::new(false)),
+            progress: Arc::clone(&tracker),
+        });
+        assert!(panel.is_busy());
+        assert_eq!(panel.in_flight_progress().unwrap().percent_rounded(), 0);
+
+        tracker
+            .full_scope()
+            .report(0.42, SimProgressStage::Sweeping);
+        let snap = panel.in_flight_progress().unwrap();
+        assert_eq!(snap.percent_rounded(), 42);
+        assert_eq!(snap.stage, SimProgressStage::Sweeping);
+
+        // Cancelling clears progress immediately.
+        panel.cancel_in_flight();
+        assert!(!panel.is_busy());
+        assert!(panel.in_flight_progress().is_none());
+
+        // Completing a run via worker channel clears in-flight progress cleanly.
+        let tracker2 = Arc::new(SimProgressTracker::new());
+        panel.in_flight = Some(InFlightSim {
+            run_id: 10,
+            cancel: Arc::new(AtomicBool::new(false)),
+            progress: Arc::clone(&tracker2),
+        });
+        tracker2
+            .full_scope()
+            .report(1.0, SimProgressStage::Complete);
+        let _ = panel.tx.send(SimWorkerMsg::Finished {
+            run_id: 10,
+            setup_idx: 0,
+            signature: 99,
+            elapsed_ms: 12,
+            result: Ok(sim),
+        });
+        let mut logs = Vec::new();
+        assert!(panel.poll_worker(&mut logs));
+        assert!(!panel.is_busy());
+        assert!(panel.in_flight_progress().is_none());
     }
 }

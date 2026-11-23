@@ -16,7 +16,8 @@ use chip_math::DVec3;
 use chip_project::{ProjectDocument, ToolpathCache};
 use chip_sim::{
     ActiveSimBackendInfo, SetupSimulationResult, SimComputeBackendChoice, SimEngineKind,
-    SimResolution, SimStockColorMode, SimStockMesh, SimToolMesh, StockErrorReport,
+    SimProgressSnapshot, SimProgressTracker, SimResolution, SimStockColorMode, SimStockMesh,
+    SimToolMesh, StockErrorReport,
 };
 #[cfg(feature = "gpu-compute")]
 use chip_sim::{GpuSimContext, GpuStockRenderHandle};
@@ -26,6 +27,12 @@ use crossbeam_channel::{Receiver, Sender, unbounded};
 use crate::viewport::SimStockRenderSource;
 
 use self::worker::{SimWorkerMsg, StockMeshMeta, StockRemeshKey, StockRemeshWorker};
+
+struct InFlightSim {
+    run_id: u64,
+    cancel: Arc<AtomicBool>,
+    progress: Arc<SimProgressTracker>,
+}
 
 /// Interactive UI & background worker state for `[Simulation Timeline]` (`06-simulation.md`).
 pub struct SimulationPanelState {
@@ -45,7 +52,7 @@ pub struct SimulationPanelState {
     pub current_time_sec: f64,
 
     next_run_id: u64,
-    in_flight: Option<(u64, Arc<AtomicBool>)>,
+    in_flight: Option<InFlightSim>,
     tx: Sender<SimWorkerMsg>,
     rx: Receiver<SimWorkerMsg>,
 
@@ -256,14 +263,19 @@ impl SimulationPanelState {
         self.in_flight.is_some()
     }
 
+    /// Returns live background simulation progress (`0.0..=1.0`, `0.0..=100.0%`, stage) while running.
+    pub fn in_flight_progress(&self) -> Option<SimProgressSnapshot> {
+        self.in_flight.as_ref().map(|job| job.progress.snapshot())
+    }
+
     /// Returns `true` while the background stock remesh worker has an active or queued scrub job.
     pub fn is_remeshing(&self) -> bool {
         self.remesh_worker.is_busy()
     }
 
     pub fn cancel_in_flight(&mut self) {
-        if let Some((_, flag)) = self.in_flight.take() {
-            flag.store(true, Ordering::Relaxed);
+        if let Some(job) = self.in_flight.take() {
+            job.cancel.store(true, Ordering::Relaxed);
         }
     }
 

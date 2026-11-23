@@ -28,6 +28,7 @@ use crate::{
         extract_cylindrical_target_mesh_from_cad, extract_heightfield_target_from_cad,
         extract_tridexel_target_from_cad, rotary_stock_spec_from_cam, stock_shape_spec_from_cam,
     },
+    progress::{SimProgressScope, SimProgressStage},
     timeline::{MachineKinematicsConfig, ScrubSnapshot, SimOperationInput, SimulationTimeline},
     verifier::{SimDiagnostic, SimIssueKind, SimSeverity, SimVerificationConfig},
     verify_common::{
@@ -496,6 +497,18 @@ pub fn run_setup_simulation_with_choice(
     engine: SimEngineKind,
     choice: SimComputeBackendChoice,
 ) -> Result<SetupSimulationResult, SimError> {
+    run_setup_simulation_with_choice_and_progress(input, engine, choice, None)
+}
+
+/// Executes stock simulation & 6-rule crash/gouge/fixture verification using the selected
+/// [`SimEngineKind`] and [`SimComputeBackendChoice`], reporting live completion progress into
+/// `progress` (`0%`–`100%`) when provided.
+pub fn run_setup_simulation_with_choice_and_progress(
+    input: &SetupSimulationInput<'_>,
+    engine: SimEngineKind,
+    choice: SimComputeBackendChoice,
+    progress: Option<SimProgressScope<'_>>,
+) -> Result<SetupSimulationResult, SimError> {
     #[cfg(feature = "gpu-compute")]
     {
         let gpu_ctx = match choice {
@@ -504,17 +517,22 @@ pub fn run_setup_simulation_with_choice(
                 GpuSimContext::shared_headless()
             }
         };
-        run_setup_simulation_with_gpu_context(input, engine, choice, gpu_ctx)
+        run_setup_simulation_with_gpu_context_and_progress(input, engine, choice, gpu_ctx, progress)
     }
     #[cfg(not(feature = "gpu-compute"))]
     {
         let _ = choice;
         let t_total = Instant::now();
         let t_setup = Instant::now();
-        let (effective_engine, stock, target_td) = prepare_initial_stock(input, engine)?;
+        let (effective_engine, stock, target_td) = prepare_initial_stock(input, engine, progress)?;
         let backend = CpuExactBackend::new(stock, target_td);
         let target_setup_ms = t_setup.elapsed().as_secs_f64() * 1000.0;
-        let mut res = run_setup_simulation_with_backend(input, effective_engine, backend)?;
+        let mut res = run_setup_simulation_with_backend_and_progress(
+            input,
+            effective_engine,
+            backend,
+            progress,
+        )?;
         finalize_timing(&mut res.timing, target_setup_ms, t_total);
         Ok(res)
     }
@@ -530,23 +548,46 @@ pub fn run_setup_simulation_with_gpu_context(
     choice: SimComputeBackendChoice,
     gpu_ctx: Option<Arc<GpuSimContext>>,
 ) -> Result<SetupSimulationResult, SimError> {
+    run_setup_simulation_with_gpu_context_and_progress(input, engine, choice, gpu_ctx, None)
+}
+
+/// Executes stock simulation with an explicitly provided shared [`GpuSimContext`] and optional
+/// live progress reporting into `progress`.
+#[cfg(feature = "gpu-compute")]
+pub fn run_setup_simulation_with_gpu_context_and_progress(
+    input: &SetupSimulationInput<'_>,
+    engine: SimEngineKind,
+    choice: SimComputeBackendChoice,
+    gpu_ctx: Option<Arc<GpuSimContext>>,
+    progress: Option<SimProgressScope<'_>>,
+) -> Result<SetupSimulationResult, SimError> {
     let t_total = Instant::now();
     let t_setup = Instant::now();
     let use_gpu = choice != SimComputeBackendChoice::Cpu;
     let active_ctx = if use_gpu { gpu_ctx } else { None };
     let (effective_engine, stock, target_td) =
-        prepare_initial_stock_with_gpu(input, engine, active_ctx.as_deref())?;
+        prepare_initial_stock_with_gpu(input, engine, active_ctx.as_deref(), progress)?;
 
     let mut res = if let Some(ctx) = active_ctx {
         let backend = WgpuComputeBackend::new(ctx, stock, target_td);
         let target_setup_ms = t_setup.elapsed().as_secs_f64() * 1000.0;
-        let mut out = run_setup_simulation_with_backend(input, effective_engine, backend)?;
+        let mut out = run_setup_simulation_with_backend_and_progress(
+            input,
+            effective_engine,
+            backend,
+            progress,
+        )?;
         finalize_timing(&mut out.timing, target_setup_ms, t_total);
         out
     } else {
         let backend = CpuExactBackend::new(stock, target_td);
         let target_setup_ms = t_setup.elapsed().as_secs_f64() * 1000.0;
-        let mut out = run_setup_simulation_with_backend(input, effective_engine, backend)?;
+        let mut out = run_setup_simulation_with_backend_and_progress(
+            input,
+            effective_engine,
+            backend,
+            progress,
+        )?;
         finalize_timing(&mut out.timing, target_setup_ms, t_total);
         out
     };
@@ -576,7 +617,11 @@ fn finalize_timing(timing: &mut SimTimingBreakdown, target_setup_ms: f64, t_tota
 fn prepare_initial_stock(
     input: &SetupSimulationInput<'_>,
     engine: SimEngineKind,
+    progress: Option<SimProgressScope<'_>>,
 ) -> Result<(SimEngineKind, SimulatedStock, Option<TriDexelStock>), SimError> {
+    if let Some(p) = progress {
+        p.report(0.0, SimProgressStage::PreparingStock);
+    }
     check_cancelled(input.cancel)?;
     let stock_spec = stock_shape_spec_from_cam(&input.setup.stock);
 
@@ -586,11 +631,17 @@ fn prepare_initial_stock(
         let rotary_spec = rotary_stock_spec_from_cam(rotary);
         let mut cyl =
             CylindricalStock::from_stock_spec(&stock_spec, rotary_spec, input.resolution)?;
+        if let Some(p) = progress {
+            p.report(0.03, SimProgressStage::PreparingStock);
+        }
         check_cancelled(input.cancel)?;
         if let Some(target_mesh) =
             extract_cylindrical_target_mesh_from_cad(input.doc, input.setup, input.target_bodies)
         {
             cyl.rasterize_target_mesh(&target_mesh);
+        }
+        if let Some(p) = progress {
+            p.report(0.08, SimProgressStage::PreparingStock);
         }
         Ok((
             SimEngineKind::Heightmap,
@@ -604,9 +655,15 @@ fn prepare_initial_stock(
             TriDexelStock::from_stock_spec(&stock_spec, input.resolution)?
         };
         td.rotary = input.setup.rotary.map(rotary_stock_spec_from_cam);
+        if let Some(p) = progress {
+            p.report(0.03, SimProgressStage::PreparingStock);
+        }
         check_cancelled(input.cancel)?;
         let target_td =
             extract_tridexel_target_from_cad(input.doc, input.setup, input.target_bodies, &td);
+        if let Some(p) = progress {
+            p.report(0.08, SimProgressStage::PreparingStock);
+        }
         Ok((
             SimEngineKind::TriDexel,
             SimulatedStock::TriDexel(Box::new(td)),
@@ -618,11 +675,17 @@ fn prepare_initial_stock(
         } else {
             HeightfieldStock::from_stock_spec(&stock_spec, input.resolution)?
         };
+        if let Some(p) = progress {
+            p.report(0.03, SimProgressStage::PreparingStock);
+        }
         check_cancelled(input.cancel)?;
         if input.doc.has_3d_geometry() {
             let (horiz_up, tris) =
                 extract_heightfield_target_from_cad(input.doc, input.setup, input.target_bodies);
             hf.rasterize_target(&horiz_up, &tris);
+        }
+        if let Some(p) = progress {
+            p.report(0.08, SimProgressStage::PreparingStock);
         }
         Ok((
             SimEngineKind::Heightmap,
@@ -637,7 +700,11 @@ fn prepare_initial_stock_with_gpu(
     input: &SetupSimulationInput<'_>,
     engine: SimEngineKind,
     gpu_ctx: Option<&GpuSimContext>,
+    progress: Option<SimProgressScope<'_>>,
 ) -> Result<(SimEngineKind, SimulatedStock, Option<TriDexelStock>), SimError> {
+    if let Some(p) = progress {
+        p.report(0.0, SimProgressStage::PreparingStock);
+    }
     check_cancelled(input.cancel)?;
     let stock_spec = stock_shape_spec_from_cam(&input.setup.stock);
 
@@ -647,6 +714,9 @@ fn prepare_initial_stock_with_gpu(
         let rotary_spec = rotary_stock_spec_from_cam(rotary);
         let mut cyl =
             CylindricalStock::from_stock_spec(&stock_spec, rotary_spec, input.resolution)?;
+        if let Some(p) = progress {
+            p.report(0.03, SimProgressStage::PreparingStock);
+        }
         check_cancelled(input.cancel)?;
         if let Some(target_mesh) =
             extract_cylindrical_target_mesh_from_cad(input.doc, input.setup, input.target_bodies)
@@ -656,6 +726,9 @@ fn prepare_initial_stock_with_gpu(
             } else {
                 cyl.rasterize_target_mesh(&target_mesh);
             }
+        }
+        if let Some(p) = progress {
+            p.report(0.08, SimProgressStage::PreparingStock);
         }
         Ok((
             SimEngineKind::Heightmap,
@@ -669,6 +742,9 @@ fn prepare_initial_stock_with_gpu(
             TriDexelStock::from_stock_spec(&stock_spec, input.resolution)?
         };
         td.rotary = input.setup.rotary.map(rotary_stock_spec_from_cam);
+        if let Some(p) = progress {
+            p.report(0.03, SimProgressStage::PreparingStock);
+        }
         check_cancelled(input.cancel)?;
         let target_td = if let Some(ctx) = gpu_ctx
             && input.doc.has_3d_geometry()
@@ -679,6 +755,9 @@ fn prepare_initial_stock_with_gpu(
         } else {
             extract_tridexel_target_from_cad(input.doc, input.setup, input.target_bodies, &td)
         };
+        if let Some(p) = progress {
+            p.report(0.08, SimProgressStage::PreparingStock);
+        }
         Ok((
             SimEngineKind::TriDexel,
             SimulatedStock::TriDexel(Box::new(td)),
@@ -690,6 +769,9 @@ fn prepare_initial_stock_with_gpu(
         } else {
             HeightfieldStock::from_stock_spec(&stock_spec, input.resolution)?
         };
+        if let Some(p) = progress {
+            p.report(0.03, SimProgressStage::PreparingStock);
+        }
         check_cancelled(input.cancel)?;
         if input.doc.has_3d_geometry() {
             if let Some(ctx) = gpu_ctx
@@ -710,6 +792,9 @@ fn prepare_initial_stock_with_gpu(
                 hf.rasterize_target(&horiz_up, &tris);
             }
         }
+        if let Some(p) = progress {
+            p.report(0.08, SimProgressStage::PreparingStock);
+        }
         Ok((
             SimEngineKind::Heightmap,
             SimulatedStock::Heightfield(hf),
@@ -719,13 +804,27 @@ fn prepare_initial_stock_with_gpu(
 }
 
 /// Single unified polymorphic setup simulation loop driving any [`SimStockBackend`]
-/// (`CpuExactBackend` today; future `WgpuComputeBackend` plugs in here directly).
+/// (`CpuExactBackend` today; `WgpuComputeBackend` plugs in here directly).
 pub fn run_setup_simulation_with_backend<B: SimStockBackend>(
     input: &SetupSimulationInput<'_>,
     engine: SimEngineKind,
+    backend: B,
+) -> Result<SetupSimulationResult, SimError> {
+    run_setup_simulation_with_backend_and_progress(input, engine, backend, None)
+}
+
+/// Single unified polymorphic setup simulation loop driving any [`SimStockBackend`] with optional
+/// live completion progress reporting (`0%`–`100%`).
+pub fn run_setup_simulation_with_backend_and_progress<B: SimStockBackend>(
+    input: &SetupSimulationInput<'_>,
+    engine: SimEngineKind,
     mut backend: B,
+    progress: Option<SimProgressScope<'_>>,
 ) -> Result<SetupSimulationResult, SimError> {
     let t_driver_start = Instant::now();
+    if let Some(p) = progress {
+        p.report(0.05, SimProgressStage::PreparingStock);
+    }
     check_cancelled(input.cancel)?;
     let timeline = SimulationTimeline::from_operations(input.operations, input.kinematics);
     let starting_stock_volume_mm3 = backend.compute_volume_mm3();
@@ -751,6 +850,10 @@ pub fn run_setup_simulation_with_backend<B: SimStockBackend>(
     let mut prev_vol = starting_stock_volume_mm3;
     let mut span_chords: Vec<SweepChord> = Vec::with_capacity(16);
 
+    if let Some(p) = progress {
+        p.report(0.10, SimProgressStage::Sweeping);
+    }
+    let mut last_sweep_permille: u32 = 100;
     let t_sweep = Instant::now();
     for (span_idx, span) in timeline.motion_spans.iter().enumerate() {
         check_cancelled(input.cancel)?;
@@ -822,8 +925,22 @@ pub fn run_setup_simulation_with_backend<B: SimStockBackend>(
         if (completed.is_multiple_of(checkpoint_stride) || is_op_end) && completed < total_spans {
             checkpoints.push(backend.capture_checkpoint(completed));
         }
+        if let Some(p) = progress {
+            let local_permille =
+                100 + ((completed as u64).saturating_mul(820) / (total_spans.max(1) as u64)) as u32;
+            if local_permille > last_sweep_permille {
+                last_sweep_permille = local_permille;
+                p.report(
+                    f64::from(local_permille) / 1000.0,
+                    SimProgressStage::Sweeping,
+                );
+            }
+        }
     }
     let sweep_ms = t_sweep.elapsed().as_secs_f64() * 1000.0;
+    if let Some(p) = progress {
+        p.report(0.92, SimProgressStage::Sweeping);
+    }
 
     // Rule 6: Full-assembly 3D workholding fixture collision verification (`M61`).
     // Runs in parallel over the shared `timeline.motion_spans` chord stream with 0.0 ms overhead
@@ -831,6 +948,9 @@ pub fn run_setup_simulation_with_backend<B: SimStockBackend>(
     // backends and across Heightfield, Tri-Dexel, and Cylindrical engines!
     if !input.fixtures.is_empty() && !timeline.motion_spans.is_empty() {
         check_cancelled(input.cancel)?;
+        if let Some(p) = progress {
+            p.report(0.92, SimProgressStage::CheckingFixtures);
+        }
         let assembly_profiles: Vec<ToolAssemblyProfile> = input
             .operations
             .iter()
@@ -886,6 +1006,9 @@ pub fn run_setup_simulation_with_backend<B: SimStockBackend>(
         }
     }
 
+    if let Some(p) = progress {
+        p.report(0.96, SimProgressStage::ComputingMetrics);
+    }
     let t_metrics = Instant::now();
     let remaining_stock_volume_mm3 = backend.compute_volume_mm3();
     let removed_volume_mm3 = (initial_stock_volume_mm3 - remaining_stock_volume_mm3).max(0.0);
@@ -903,6 +1026,9 @@ pub fn run_setup_simulation_with_backend<B: SimStockBackend>(
         total_segments: total_spans,
         segments_per_sec: compute_segments_per_sec(total_spans, total_ms),
     };
+    if let Some(p) = progress {
+        p.report(1.0, SimProgressStage::Complete);
+    }
 
     Ok(SetupSimulationResult {
         engine,
@@ -3741,5 +3867,128 @@ mod tests {
                 rg.rms_error_mm
             );
         }
+    }
+
+    #[test]
+    fn simulation_reports_monotonic_percent_complete_and_honors_cancellation() {
+        use std::sync::{Arc, Mutex, atomic::AtomicBool};
+
+        use crate::progress::{SimProgressStage, SimProgressTracker};
+
+        let lib = default_starter_tool_library();
+        let flat_6mm = &lib.tools[0];
+
+        let mut setup = Setup::new("s_prog", "Progress Setup", WorkOffsetSlot::G54);
+        setup.wcs.origin = WcsOriginMode::StockBoxPoint {
+            anchor: BoxAnchor27::TOP_CENTER,
+        };
+        setup.stock = StockConfig::FixedBox {
+            width_x: ParamLength::from_mm(100.0),
+            depth_y: ParamLength::from_mm(100.0),
+            height_z: ParamLength::from_mm(20.0),
+            xy_align: chip_cam::FixedBoxXyAlign::CenterXy,
+            z_align: chip_cam::FixedBoxZAlign::CenterZ,
+        };
+        let doc = CadDocument::empty();
+        let resolved = setup.resolve(&doc, DisplayUnit::Millimeter).unwrap();
+
+        let mut b = ToolpathBuilder::new("op_prog");
+        b.rapid_to(DVec3::new(-30.0, -25.0, 8.0));
+        b.linear_to(DVec3::new(-30.0, -25.0, -3.0), 300.0, MotionRole::Plunge);
+        for row in 0..20 {
+            let y = -25.0 + (row as f64) * 2.5;
+            let x_end = if row % 2 == 0 { 30.0 } else { -30.0 };
+            b.linear_to(DVec3::new(x_end, y, -3.0), 800.0, MotionRole::Cut);
+            if row < 19 {
+                b.linear_to(DVec3::new(x_end, y + 2.5, -3.0), 800.0, MotionRole::Cut);
+            }
+        }
+        b.rapid_to(DVec3::new(30.0, 25.0, 8.0));
+        let tp = b.finish();
+
+        let observed = Arc::new(Mutex::new(Vec::<(u8, SimProgressStage)>::new()));
+        let observed_cb = Arc::clone(&observed);
+        let tracker_slot: Arc<Mutex<Option<Arc<SimProgressTracker>>>> = Arc::new(Mutex::new(None));
+        let tracker_slot_cb = Arc::clone(&tracker_slot);
+        let tracker = Arc::new(SimProgressTracker::with_callback(Arc::new(move || {
+            if let Some(t) = tracker_slot_cb.lock().unwrap().as_ref() {
+                let snap = t.snapshot();
+                observed_cb
+                    .lock()
+                    .unwrap()
+                    .push((snap.percent_rounded(), snap.stage));
+            }
+        })));
+        *tracker_slot.lock().unwrap() = Some(Arc::clone(&tracker));
+
+        let input = SetupSimulationInput {
+            doc: &doc,
+            setup: &resolved,
+            target_bodies: &[],
+            fixtures: &[],
+            operations: &[SimOperationInput {
+                op_id: "op_prog",
+                op_name: "Progress Raster",
+                tool: flat_6mm,
+                fallback_spindle_rpm: 12_000.0,
+                intentional_edge_break_mm: 0.0,
+                toolpath: &tp,
+            }],
+            resolution: SimResolution::Standard,
+            kinematics: MachineKinematicsConfig::default(),
+            verify_config: SimVerificationConfig::default(),
+            initial_stock: None,
+            initial_raw_volume_mm3: None,
+            carried_over_from_setup: None,
+            cancel: None,
+        };
+
+        let _res = run_setup_simulation_with_choice_and_progress(
+            &input,
+            SimEngineKind::Heightmap,
+            SimComputeBackendChoice::Cpu,
+            Some(tracker.full_scope()),
+        )
+        .unwrap();
+
+        let final_snap = tracker.snapshot();
+        assert_eq!(final_snap.percent_rounded(), 100);
+        assert_eq!(final_snap.stage, SimProgressStage::Complete);
+
+        let log = observed.lock().unwrap();
+        assert!(
+            log.len() >= 5,
+            "expected multiple intermediate progress updates, got {log:?}"
+        );
+        assert!(
+            log.iter()
+                .any(|(pct, st)| *pct > 10 && *pct < 95 && *st == SimProgressStage::Sweeping),
+            "expected mid-sweep percentage updates in (10, 95), got {log:?}"
+        );
+        for w in log.windows(2) {
+            assert!(
+                w[1].0 >= w[0].0,
+                "progress percentage must be monotonic, saw regression {} -> {}",
+                w[0].0,
+                w[1].0
+            );
+        }
+
+        // Pre-cancelled run must return Cancelled without reporting 100% completion.
+        let cancel = AtomicBool::new(true);
+        let cancel_tracker = SimProgressTracker::new();
+        let cancel_input = SetupSimulationInput {
+            cancel: Some(&cancel),
+            ..input
+        };
+        let err = run_setup_simulation_with_choice_and_progress(
+            &cancel_input,
+            SimEngineKind::Heightmap,
+            SimComputeBackendChoice::Cpu,
+            Some(cancel_tracker.full_scope()),
+        )
+        .unwrap_err();
+        assert!(matches!(err, SimError::Cancelled));
+        assert!(cancel_tracker.snapshot().percent_rounded() < 100);
     }
 }

@@ -42,8 +42,9 @@ impl SimulationPanelState {
         // Top Control Bar: Run Simulation, Engine, Resolution, Backend, Adapter Pill, Visual Toggles, Verification Status
         let mut engine_changed = false;
         let mut backend_changed = false;
+        let in_flight_progress = self.in_flight_progress();
         ui.horizontal_wrapped(|ui| {
-            let busy = self.is_busy();
+            let busy = in_flight_progress.is_some();
             let btn_lbl = if busy {
                 "Simulating…"
             } else if self.active_result.is_some() {
@@ -70,8 +71,20 @@ impl SimulationPanelState {
                     logs,
                 });
             }
-            if busy {
+            if let Some(prog) = in_flight_progress {
+                let pct = prog.percent_rounded();
+                let tok = crate::theme::ThemeTokens::from_ui(ui);
                 ui.spinner();
+                ui.add(
+                    egui::ProgressBar::new(prog.fraction)
+                        .desired_width(124.0)
+                        .fill(tok.accent)
+                        .text(egui::RichText::new(format!("{pct}%")).small().strong()),
+                )
+                .on_hover_text(format!(
+                    "Simulation progress: {pct}% ({})",
+                    prog.stage.label()
+                ));
                 if ui
                     .small_button("Cancel")
                     .on_hover_text("Cancel the in-flight background simulation")
@@ -443,6 +456,12 @@ impl SimulationPanelState {
                         ui.colored_label(tok.clean_fg, "Verified Crash-Free");
                     });
                 }
+            } else if let Some(prog) = in_flight_progress {
+                ui.weak(format!(
+                    "{} ({}%)",
+                    prog.stage.label(),
+                    prog.percent_rounded()
+                ));
             } else {
                 ui.weak("Click 'Run Simulation' to compute 3D material removal & crash checks.");
             }
@@ -468,11 +487,19 @@ impl SimulationPanelState {
         ui.separator();
 
         let Some(res) = self.active_result.clone() else {
-            ui.weak("No stock simulation active for this Setup yet.");
+            if let Some(prog) = in_flight_progress {
+                show_in_flight_progress_banner(ui, prog);
+            } else {
+                ui.weak("No stock simulation active for this Setup yet.");
+            }
             return action;
         };
         if self.active_setup_idx != setup_idx || res.timeline.is_empty() {
-            ui.weak("Click 'Run Simulation' to simulate the currently selected Setup.");
+            if let Some(prog) = in_flight_progress {
+                show_in_flight_progress_banner(ui, prog);
+            } else {
+                ui.weak("Click 'Run Simulation' to simulate the currently selected Setup.");
+            }
             return action;
         }
 
@@ -594,7 +621,7 @@ impl SimulationPanelState {
                         .on_hover_text("Scrub simulation timeline by linear toolpath distance");
                     ui.separator();
 
-                    ui.spacing_mut().slider_width = (ui.available_width() - 165.0).max(96.0);
+                    ui.spacing_mut().slider_width = (ui.available_width() - 220.0).max(96.0);
                     if self.scrub_by_distance {
                         let mut cur_d = snap.as_ref().map_or(0.0, |s| s.distance_mm);
                         let max_d = res.timeline.total_distance_mm.max(0.001);
@@ -613,8 +640,9 @@ impl SimulationPanelState {
                                 self.current_time_sec = ds.time_sec;
                             }
                         }
+                        let pct = compute_playback_percent(cur_d, res.timeline.total_distance_mm);
                         ui.monospace(format!(
-                            "{} / {}",
+                            "{} / {} ({pct:.0}%)",
                             display_unit.format_length(cur_d),
                             display_unit.format_length(max_d)
                         ));
@@ -630,8 +658,12 @@ impl SimulationPanelState {
                         if resp.changed() {
                             self.is_playing = false;
                         }
+                        let pct = compute_playback_percent(
+                            self.current_time_sec,
+                            res.timeline.total_time_sec,
+                        );
                         ui.monospace(format!(
-                            "{} / {}",
+                            "{} / {} ({pct:.0}%)",
                             format_cycle_time_hms(self.current_time_sec),
                             format_cycle_time_hms(res.timeline.total_time_sec)
                         ));
@@ -828,6 +860,32 @@ impl SimulationPanelState {
     }
 }
 
+/// Renders a clear inline progress banner in the Simulation Timeline body while a background
+/// simulation is running and no completed result is displayed for the active Setup yet.
+fn show_in_flight_progress_banner(ui: &mut egui::Ui, prog: chip_sim::SimProgressSnapshot) {
+    let pct = prog.percent_rounded();
+    let tok = crate::theme::ThemeTokens::from_ui(ui);
+    ui.horizontal(|ui| {
+        ui.spinner();
+        ui.label(format!("{}… ({pct}%)", prog.stage.label()));
+        ui.add(
+            egui::ProgressBar::new(prog.fraction)
+                .desired_width(220.0)
+                .fill(tok.accent)
+                .text(egui::RichText::new(format!("{pct}%")).small().strong()),
+        );
+    });
+}
+
+/// Computes playback completion percentage in `[0.0, 100.0]` for the timeline scrubber.
+pub(crate) fn compute_playback_percent(current: f64, total: f64) -> f64 {
+    if !current.is_finite() || !total.is_finite() || total <= 1e-9 {
+        100.0
+    } else {
+        (current / total * 100.0).clamp(0.0, 100.0)
+    }
+}
+
 /// Formats a verbose GPU adapter string (e.g. `"AMD Radeon 780M Graphics (RADV PHOENIX)"`)
 /// into a compact toolbar badge label (`"Radeon 780M"`).
 fn shorten_adapter_name(raw: &str) -> String {
@@ -852,5 +910,21 @@ fn shorten_adapter_name(raw: &str) -> String {
         s
     } else {
         candidate.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::compute_playback_percent;
+
+    #[test]
+    fn playback_percent_handles_endpoints_midpoints_and_edge_cases() {
+        assert!((compute_playback_percent(0.0, 120.0) - 0.0).abs() < 1e-9);
+        assert!((compute_playback_percent(30.0, 120.0) - 25.0).abs() < 1e-9);
+        assert!((compute_playback_percent(120.0, 120.0) - 100.0).abs() < 1e-9);
+        assert!((compute_playback_percent(150.0, 120.0) - 100.0).abs() < 1e-9);
+        assert!((compute_playback_percent(-5.0, 120.0) - 0.0).abs() < 1e-9);
+        assert!((compute_playback_percent(0.0, 0.0) - 100.0).abs() < 1e-9);
+        assert!((compute_playback_percent(f64::NAN, 120.0) - 100.0).abs() < 1e-9);
     }
 }

@@ -13,8 +13,8 @@ use chip_post::{
 };
 use chip_sim::{
     MachineKinematicsConfig, SetupSimulationInput, SetupSimulationResult, SimComputeBackendChoice,
-    SimEngineKind, SimOperationInput, SimResolution, SimVerificationConfig, TriDexelStock,
-    run_setup_simulation_with_choice,
+    SimEngineKind, SimOperationInput, SimProgressScope, SimResolution, SimVerificationConfig,
+    TriDexelStock, run_setup_simulation_with_choice_and_progress,
 };
 use chip_tools::Tool;
 
@@ -167,7 +167,65 @@ pub fn compute_setup_carryover_stock(
     choice: SimComputeBackendChoice,
 ) -> Result<Option<CarryoverStockResult>, String> {
     let mut chain_cache: HashMap<usize, (TriDexelStock, RigidFrame3, f64, String)> = HashMap::new();
-    compute_setup_carryover_stock_with_cache(req, project_dir, choice, &mut chain_cache)
+    compute_setup_carryover_stock_with_cache(req, project_dir, choice, &mut chain_cache, None, None)
+}
+
+fn compute_carryover_progress_ranges(
+    req: &SetupSimRequest<'_>,
+    chain_cache: &HashMap<usize, (TriDexelStock, RigidFrame3, f64, String)>,
+) -> HashMap<usize, (f64, f64)> {
+    let mut chain_rev = Vec::new();
+    let mut cur_idx = req.setup_idx;
+    while let Some(setup) = req.project.setups.get(cur_idx) {
+        if chain_rev.contains(&cur_idx) {
+            break;
+        }
+        chain_rev.push(cur_idx);
+        let Some(ref src_id) = setup.carryover_from_setup_id else {
+            break;
+        };
+        let Some(src_idx) = req.project.setups.iter().position(|s| &s.id == src_id) else {
+            break;
+        };
+        if src_idx >= cur_idx || chain_cache.contains_key(&src_idx) {
+            break;
+        }
+        cur_idx = src_idx;
+    }
+    chain_rev.reverse();
+
+    let weights: Vec<(usize, f64)> = chain_rev
+        .into_iter()
+        .map(|idx| {
+            let ready =
+                collect_ready_setup_operations(req.project, idx, req.cache, req.cad_revision);
+            let segs: usize = ready.iter().map(|r| r.toolpath.segments_wcs.len()).sum();
+            (idx, (segs.max(1) as f64) + 20.0)
+        })
+        .collect();
+    let total_w: f64 = weights.iter().map(|(_, w)| *w).sum::<f64>().max(1.0);
+
+    let mut ranges = HashMap::with_capacity(weights.len());
+    let mut acc = 0.0;
+    for (idx, w) in weights {
+        let start = acc / total_w;
+        acc += w;
+        let end = (acc / total_w).min(1.0);
+        ranges.insert(idx, (start, end));
+    }
+    ranges
+}
+
+fn scope_for_setup<'a>(
+    progress: Option<SimProgressScope<'a>>,
+    ranges: Option<&HashMap<usize, (f64, f64)>>,
+    setup_idx: usize,
+) -> Option<SimProgressScope<'a>> {
+    progress.map(|p| {
+        ranges
+            .and_then(|m| m.get(&setup_idx))
+            .map_or(p, |&(start, end)| p.sub_scope(start, end))
+    })
 }
 
 fn compute_setup_carryover_stock_with_cache(
@@ -175,6 +233,8 @@ fn compute_setup_carryover_stock_with_cache(
     project_dir: Option<&Path>,
     choice: SimComputeBackendChoice,
     chain_cache: &mut HashMap<usize, (TriDexelStock, RigidFrame3, f64, String)>,
+    progress: Option<SimProgressScope<'_>>,
+    progress_ranges: Option<&HashMap<usize, (f64, f64)>>,
 ) -> Result<Option<CarryoverStockResult>, String> {
     let setup = req
         .project
@@ -232,8 +292,14 @@ fn compute_setup_carryover_stock_with_cache(
             resolution: req.resolution,
             cancel: req.cancel,
         };
-        let src_carryover =
-            compute_setup_carryover_stock_with_cache(&src_req, project_dir, choice, chain_cache)?;
+        let src_carryover = compute_setup_carryover_stock_with_cache(
+            &src_req,
+            project_dir,
+            choice,
+            chain_cache,
+            progress,
+            progress_ranges,
+        )?;
         let src_resolved = src_setup
             .resolve_with_sketches(
                 req.cad_doc,
@@ -241,6 +307,7 @@ fn compute_setup_carryover_stock_with_cache(
                 req.project.display_units,
             )
             .map_err(|e| e.to_string())?;
+        let src_progress = scope_for_setup(progress, progress_ranges, src_idx);
         let src_sim = simulate_single_setup_inner(
             &src_req,
             &src_resolved,
@@ -249,6 +316,7 @@ fn compute_setup_carryover_stock_with_cache(
             SimEngineKind::TriDexel,
             choice,
             src_carryover.as_ref(),
+            src_progress,
         )?;
         let src_td = src_sim
             .as_tridexel()
@@ -283,6 +351,7 @@ fn compute_setup_carryover_stock_with_cache(
     }))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn simulate_single_setup_inner(
     req: &SetupSimRequest<'_>,
     resolved: &chip_cam::ResolvedSetup,
@@ -291,6 +360,7 @@ fn simulate_single_setup_inner(
     engine: SimEngineKind,
     choice: SimComputeBackendChoice,
     carryover: Option<&CarryoverStockResult>,
+    progress: Option<SimProgressScope<'_>>,
 ) -> Result<SetupSimulationResult, String> {
     let setup = &req.project.setups[req.setup_idx];
     let sim_inputs: Vec<SimOperationInput<'_>> = ready
@@ -316,7 +386,7 @@ fn simulate_single_setup_inner(
         Vec::new()
     };
 
-    run_setup_simulation_with_choice(
+    run_setup_simulation_with_choice_and_progress(
         &SetupSimulationInput {
             doc: req.cad_doc,
             setup: resolved,
@@ -333,6 +403,7 @@ fn simulate_single_setup_inner(
         },
         engine,
         choice,
+        progress,
     )
     .map_err(|e| e.to_string())
 }
@@ -346,6 +417,18 @@ pub fn simulate_project_setup_with_choice_in_dir(
     project_dir: Option<&Path>,
     engine: SimEngineKind,
     choice: SimComputeBackendChoice,
+) -> Result<SetupSimulationResult, String> {
+    simulate_project_setup_with_choice_and_progress_in_dir(req, project_dir, engine, choice, None)
+}
+
+/// Runs stock removal & 6-rule crash/gouge/fixture verification for a single Setup (including any
+/// upstream carryover chain) while reporting live completion progress into `progress` (`0%`–`100%`).
+pub fn simulate_project_setup_with_choice_and_progress_in_dir(
+    req: &SetupSimRequest<'_>,
+    project_dir: Option<&Path>,
+    engine: SimEngineKind,
+    choice: SimComputeBackendChoice,
+    progress: Option<SimProgressScope<'_>>,
 ) -> Result<SetupSimulationResult, String> {
     let setup = req
         .project
@@ -361,7 +444,17 @@ pub fn simulate_project_setup_with_choice_in_dir(
         .map_err(|e| e.to_string())?;
     let ready =
         collect_ready_setup_operations(req.project, req.setup_idx, req.cache, req.cad_revision);
-    let carryover = compute_setup_carryover_stock(req, project_dir, choice)?;
+    let mut chain_cache: HashMap<usize, (TriDexelStock, RigidFrame3, f64, String)> = HashMap::new();
+    let progress_ranges = progress.map(|_| compute_carryover_progress_ranges(req, &chain_cache));
+    let carryover = compute_setup_carryover_stock_with_cache(
+        req,
+        project_dir,
+        choice,
+        &mut chain_cache,
+        progress,
+        progress_ranges.as_ref(),
+    )?;
+    let dst_progress = scope_for_setup(progress, progress_ranges.as_ref(), req.setup_idx);
     simulate_single_setup_inner(
         req,
         &resolved,
@@ -370,6 +463,7 @@ pub fn simulate_project_setup_with_choice_in_dir(
         engine,
         choice,
         carryover.as_ref(),
+        dst_progress,
     )
 }
 
@@ -407,8 +501,14 @@ pub fn simulate_all_setups_with_choice(
             .resolve_with_sketches(cad_doc, &project.sketches, project.display_units)
             .map_err(|e| e.to_string())?;
         let ready = collect_ready_setup_operations(project, s_idx, cache, cad_revision);
-        let carryover =
-            compute_setup_carryover_stock_with_cache(&req, project_dir, choice, &mut chain_cache)?;
+        let carryover = compute_setup_carryover_stock_with_cache(
+            &req,
+            project_dir,
+            choice,
+            &mut chain_cache,
+            None,
+            None,
+        )?;
         let sim = simulate_single_setup_inner(
             &req,
             &resolved,
@@ -417,6 +517,7 @@ pub fn simulate_all_setups_with_choice(
             engine,
             choice,
             carryover.as_ref(),
+            None,
         )?;
 
         if let Some(td) = sim.as_tridexel() {
@@ -492,4 +593,123 @@ pub fn post_process_project_setup(
     };
 
     post_process_setup(&post_input, req.post_profile, req.program_stem).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use chip_cad::CadDocument;
+    use chip_cam::{
+        BoxAnchor27, MotionRole, Operation, OperationKind, Setup, StockConfig, ToolpathBuilder,
+        WcsOriginMode, WorkOffsetSlot,
+    };
+    use chip_math::{DVec3, ParamLength};
+    use chip_sim::{
+        MachineKinematicsConfig, SimComputeBackendChoice, SimEngineKind, SimProgressStage,
+        SimProgressTracker, SimResolution,
+    };
+    use chip_tools::default_starter_tool_library;
+
+    use crate::{
+        ProjectDocument, SetupSimRequest, ToolpathCache, compute_operation_input_hash,
+        simulate_project_setup_with_choice_and_progress_in_dir,
+    };
+
+    #[test]
+    fn carryover_chain_reports_single_monotonic_progress_to_100_percent() {
+        let mut project = ProjectDocument::new("Carryover Progress Test");
+        let lib = default_starter_tool_library();
+        project.tools = lib.tools.clone();
+        let tool_id = project.tools[0].id.clone();
+
+        let make_setup = |id: &str, name: &str, op_id: &str, op_name: &str| {
+            let mut setup = Setup::new(id, name, WorkOffsetSlot::G54);
+            setup.wcs.origin = WcsOriginMode::StockBoxPoint {
+                anchor: BoxAnchor27::TOP_CENTER,
+            };
+            setup.stock = StockConfig::FixedBox {
+                width_x: ParamLength::from_mm(100.0),
+                depth_y: ParamLength::from_mm(100.0),
+                height_z: ParamLength::from_mm(20.0),
+                xy_align: chip_cam::FixedBoxXyAlign::CenterXy,
+                z_align: chip_cam::FixedBoxZAlign::CenterZ,
+            };
+            let mut op = Operation::new(op_id, op_name, OperationKind::Facing);
+            op.tool_id = Some(tool_id.clone());
+            setup.operations.push(op);
+            setup
+        };
+
+        let setup1 = make_setup("s1", "Setup 1", "op1", "Op 1");
+        let mut setup2 = make_setup("s2", "Setup 2", "op2", "Op 2");
+        setup2.carryover_from_setup_id = Some("s1".to_string());
+        project.setups = vec![setup1, setup2];
+
+        let doc = CadDocument::empty();
+        let mut cache = ToolpathCache::new(16);
+        for (s_idx, op_id, z_cut) in [(0, "op1", -2.0), (1, "op2", -4.0)] {
+            let mut b = ToolpathBuilder::new(op_id);
+            b.rapid_to(DVec3::new(-20.0, 0.0, 5.0));
+            b.linear_to(DVec3::new(-20.0, 0.0, z_cut), 300.0, MotionRole::Plunge);
+            for i in 0..8 {
+                let x = -20.0 + (i as f64 + 1.0) * 5.0;
+                b.linear_to(DVec3::new(x, 0.0, z_cut), 600.0, MotionRole::Cut);
+            }
+            b.rapid_to(DVec3::new(20.0, 0.0, 5.0));
+            let tp = b.finish();
+            let key = compute_operation_input_hash(&project, s_idx, 0, 0).unwrap();
+            cache.insert(op_id, key, Arc::new(tp));
+        }
+
+        let history = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let history_cb = Arc::clone(&history);
+        let slot: Arc<Mutex<Option<Arc<SimProgressTracker>>>> = Arc::new(Mutex::new(None));
+        let slot_cb = Arc::clone(&slot);
+        let tracker = Arc::new(SimProgressTracker::with_callback(Arc::new(move || {
+            if let Some(t) = slot_cb.lock().unwrap().as_ref() {
+                history_cb
+                    .lock()
+                    .unwrap()
+                    .push(t.snapshot().percent_rounded());
+            }
+        })));
+        *slot.lock().unwrap() = Some(Arc::clone(&tracker));
+
+        let res = simulate_project_setup_with_choice_and_progress_in_dir(
+            &SetupSimRequest {
+                project: &project,
+                setup_idx: 1,
+                cad_doc: &doc,
+                cad_revision: 0,
+                cache: &cache,
+                kinematics: MachineKinematicsConfig::default(),
+                resolution: SimResolution::Standard,
+                cancel: None,
+            },
+            None,
+            SimEngineKind::TriDexel,
+            SimComputeBackendChoice::Cpu,
+            Some(tracker.full_scope()),
+        )
+        .unwrap();
+
+        assert_eq!(res.carried_over_from_setup.as_deref(), Some("Setup 1"));
+        assert_eq!(tracker.snapshot().percent_rounded(), 100);
+        assert_eq!(tracker.snapshot().stage, SimProgressStage::Complete);
+
+        let pcts = history.lock().unwrap();
+        assert!(
+            pcts.iter().any(|&p| (10..=45).contains(&p))
+                && pcts.iter().any(|&p| (55..=95).contains(&p)),
+            "expected monotonic progress spanning both carryover setups, got {pcts:?}"
+        );
+        for w in pcts.windows(2) {
+            assert!(
+                w[1] >= w[0],
+                "carryover progress must never regress: {pcts:?}"
+            );
+        }
+    }
 }

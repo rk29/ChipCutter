@@ -152,11 +152,28 @@ impl ChipCutterApp {
                         self.trigger_generate_dirty(Some(self.active_setup_idx), None);
                     }
 
-                    if icon_button(
+                    if let Some(prog) = self.sim_panel.in_flight_progress() {
+                        let pct = prog.percent_rounded();
+                        let sim_lbl = format!("Sim {pct}%");
+                        ui.spinner();
+                        if icon_button(
+                            ui,
+                            IconKind::Simulate,
+                            Some(&sim_lbl),
+                            &format!(
+                                "Simulation running: {pct}% ({}). Click to focus Simulation Timeline.",
+                                prog.stage.label()
+                            ),
+                        )
+                        .clicked()
+                        {
+                            focus_workspace_pane(&mut self.tree, WorkspacePane::SimulationTimeline);
+                        }
+                    } else if icon_button(
                         ui,
                         IconKind::Simulate,
                         Some("Simulate"),
-                        "Run 2.5D Z-Dexel Heightmap Stock Removal & 5-Rule Crash Verification",
+                        "Run Stock Removal Simulation & 6-Rule Crash/Gouge/Fixture Verification",
                     )
                     .clicked()
                     {
