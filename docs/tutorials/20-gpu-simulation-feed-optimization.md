@@ -241,5 +241,6 @@ chipcutter build /tmp/20-feed-opt.chip.toml -o /tmp/out_feed_opt_linuxcnc --post
 ## Navigation
 
 - **Previous:** [Tutorial 19 — Two-Sided Flip Workholding, 3D Fixtures, & Auto Soft Jaws](19-workholding-flip-jigs-soft-jaws.md)
+- **Next:** [Tutorial 21 — 3D Edge Deburring & Non-Planar Chamfering (`Deburr3D`)](21-3d-edge-deburring-nonplanar-chamfering.md)
 - **Related:** [Tutorial 17 — Tri-Dexel Volumetric Simulation & Quantitative Error-Volume Analysis](17-tridexel-simulation-error-metrics.md)
-- **Index:** [All Tutorials (`00`–`20`)](README.md)
+- **Index:** [All Tutorials (`00`–`22`)](README.md)

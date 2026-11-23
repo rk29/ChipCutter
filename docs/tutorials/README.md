@@ -49,6 +49,8 @@ Work through the guides in order if you are new to ChipCutter, or jump directly 
 | 18 | [**Helical Thread Milling (Internal Holes & External Bosses)**](18-thread-milling.md) | Single-point & multi-form `ThreadMill` cutters, ISO Metric (`M8 × 1.25`, `M12 × 1.75`) & Unified (`1/4-20 UNC`) presets + tap-drill guidance, bottom-up `G3` vs. top-down `G2` climb kinematics, equal-area radial passes, spring passes, pitch-diameter offset, centerline feed compensation, Tri-Dexel undercut grooves, & GRBL/LinuxCNC posting | [`assets/18-threaded-manifold.step`](assets/18-threaded-manifold.step) (`80×60×20 mm` manifold with M8, 1/4-20 UNC, & M12 boss) | **Available** |
 | 19 | [**Two-Sided Flip Workholding, 3D Fixtures, & Auto Soft Jaws**](19-workholding-flip-jigs-soft-jaws.md) | 3D workholding (`ViseJaws` + parallels, `ToeClamp`, `Spoilboard`, keep-outs, imported fixture models), **Auto-Avoid Rapids** & Rule 6 `FixtureCollision`, multi-setup **Tri-Dexel Stock Carryover** (`G54 → G55`), **Flip-Jig Dowel-Pin Wizard** (with Poka-Yoke offset), **Auto Soft-Jaw Wizard** (CNC setup + 3D-printable `.stl`), & `chipcutter workholding` CLI | `Two-Sided Vise & Soft-Jaw Bracket` (`--sample two-sided-vise`) & [`assets/02-contour-plate.step`](assets/02-contour-plate.step) | **Available** |
 | 20 | [**GPU-Accelerated Simulation, Benchmarking, & Feedrate Optimization**](20-gpu-simulation-feed-optimization.md) | `wgpu` Compute backend (`Auto (GPU)` / `GPU` / `CPU`), live `GPU · <Adapter>` timing tooltip, zero-readback direct GPU stock rendering & `< 0.1 ms` **Error Heatmap** tuning, **Feed Optimization** (sharp-corner lookahead deceleration, internal-arc perimeter-to-centerline scaling, radial chip-thinning boost), modulated feed telemetry, cusp-height tuning, & `chipcutter simulate --backend gpu --benchmark --json` | `Feed-Optimized Adaptive Pocket` (`--sample feed-opt-pocket`), [`assets/20-feed-opt-pocket.step`](assets/20-feed-opt-pocket.step), `Sculpted Dome`, & `Simultaneous 4-Axis Helical Flute` | **Available** |
+| 21 | [**3D Edge Deburring & Non-Planar Chamfering (`Deburr3D`)**](21-3d-edge-deburring-nonplanar-chamfering.md) | Non-planar 3D B-Rep edge deburring (`ChamferMill`, `BallEndmill`, & `LollipopEndmill`), **`Auto-Detect Edges`** (`Min Edge Angle`, `Exclude Vertical`), automatic `FlatBvh` inside-corner wall collision trimming (`Wall Clearance`), circular corner rolls, **Lollipop Underside Back-Chamfering**, & GPU Tri-Dexel verification (`intentional_edge_break_mm`) | `3D Curved & Underside Deburring` (`--sample curved-deburr-3d`), [`assets/21-sloped-boss-deburr.step`](assets/21-sloped-boss-deburr.step), & [`assets/21-overhang-flange.step`](assets/21-overhang-flange.step) | **Available** |
+| 22 | [**Undercut Milling: Keyways, T-Slots, Dovetails, & Lollipop 3D Undercuts**](22-undercut-tslot-dovetail-lollipop.md) | Relieved-neck `SlotMill`, `DovetailCutter` (live derived `Top Ø`), & `LollipopEndmill` cutters, mandatory throat pre-clearing, **DIN 650 / ASME T-Slots** & **Blind Keyways** (`SlotUndercut` + `BothEndsThrough` / `EntryBoreCenter`), **Internal `60°` Dovetail Slots & External Dovetail Rails** (`Dovetail`), **Lollipop 3D Overhang Undercuts** (`Undercut3D`), & GPU Tri-Dexel Error Heatmap verification | `Undercut & 3D Deburr Block` (`--sample undercut-deburr`), `External 60° Dovetail Rail & Blind Keyway` (`--sample dovetail-rail-keyway`), & [`assets/22-undercut-deburr-block.step`](assets/22-undercut-deburr-block.step) | **Available** |
 
 ---
 
@@ -65,17 +67,22 @@ Each tutorial starts from an **empty project** (or a clean seeded revision) and 
 | [`05-adaptive-pocket.step`](assets/05-adaptive-pocket.step) | `100 × 80 × 20 mm` block with 1 deep `10 mm` sharp-corner pocket + `Ø16 mm` boss | `chipcutter generate-sample-step <out.step> --tutorial 05-adaptive-rest` |
 | [`06-chamfer-engrave-block.step`](assets/06-chamfer-engrave-block.step) | `100 × 70 × 18 mm` block with 1 modeled `45° × 1.5 mm` front bevel & sharp back edge | `chipcutter generate-sample-step <out.step> --tutorial 06-chamfer-trace` |
 | [`08-sculpted-dome.stl`](assets/08-sculpted-dome.stl) | Watertight `80 × 80 × 25 mm` sculpted dome on pedestal (`STL` mesh) | `chipcutter generate-sample-step <out.stl> --tutorial 08-3d-adaptive-waterline` |
+| [`08-bracket.3mf`](assets/08-bracket.3mf) | Watertight sculpted mounting bracket mesh (`3MF` package) | `chipcutter generate-sample-step <out.3mf> --tutorial 08-bracket-3mf` |
 | [`09-relief-wave.obj`](assets/09-relief-wave.obj) | Watertight `80 × 60 × 15 mm` sinusoidal sculpted relief wave (`OBJ` mesh) | `chipcutter generate-sample-step <out.obj> --tutorial 09-3d-surface-finishing` |
 | [`09-rotary-shaft.stl`](assets/09-rotary-shaft.stl) | Watertight `Ø40 × 80 mm` shaft with 4 wrench flats, collar groove, & 3-lobe cam | `chipcutter generate-sample-step <out.stl> --tutorial 10-rotary-axial` |
 | [`11-indexed-multiface-block.step`](assets/11-indexed-multiface-block.step) | `70 × 32 × 32 mm` prismatic STEP block with cardinal & `45°` angled faces | `chipcutter generate-sample-step <out.step> --tutorial 11-indexed-step` |
 | [`10-helical-flute-shaft.stl`](assets/10-helical-flute-shaft.stl) | Watertight `Ø40 × 80 mm` 3-start helical impeller/flute shaft | `chipcutter generate-sample-step <out.stl> --tutorial 12-simultaneous-4axis` |
 | [`13-router-panel.dxf`](assets/13-router-panel.dxf) | `160 × 100 mm` multi-layer router front panel (`OUTLINE`, `HOLES`, `POCKETS`, `CUTOUTS`) | `chipcutter generate-sample-step <out.dxf> --tutorial 13-pure2d-dxf` |
+| [`13-badge-logo.svg`](assets/13-badge-logo.svg) | Pure-2D `96 DPI` cubic Bézier emblem badge artwork (`SVG` vector with counter-islands) | `chipcutter generate-sample-step <out.svg> --tutorial 13-pure2d-svg` |
 | [`14-bracket-v1.step`](assets/14-bracket-v1.step) | `90 × 70 × 20 mm` Revision v1 bracket (blind pocket, `Ø14 mm` bore, 2× `Ø6 mm` holes) | `chipcutter generate-sample-step <out.step> --tutorial 14-reload-v1` |
 | [`14-bracket-v2.step`](assets/14-bracket-v2.step) | `92 × 70 × 20 mm` Revision v2 bracket (resized pocket, shifted bore/hole, 1 deleted hole) | `chipcutter generate-sample-step <out.step> --tutorial 14-reload-v2` |
 | [`16-yup-bracket.stl`](assets/16-yup-bracket.stl) | Watertight `60 × 40 × 18 mm` sculpted mounting boss exported **Y-up** & off-origin (`STL`) | `chipcutter generate-sample-step <out.stl> --tutorial 16-orient-stl` |
 | [`16-tilted-bracket.step`](assets/16-tilted-bracket.step) | `90 × 70 × 20 mm` prismatic bracket tilted `30° X / 25° Z` for Setup WCS & Op-2 flip | `chipcutter generate-sample-step <out.step> --tutorial 16-orient-step` |
 | [`18-threaded-manifold.step`](assets/18-threaded-manifold.step) | `80 × 60 × 20 mm` aluminum manifold (2× `Ø6.80 mm` M8 pilots, 2× `Ø5.11 mm` 1/4-20 UNC pilots, 1× proud `Ø12.0 mm` boss) | `chipcutter generate-sample-step <out.step> --tutorial 18-thread-milling` |
 | [`20-feed-opt-pocket.step`](assets/20-feed-opt-pocket.step) | `100 × 80 × 20 mm` sharp-corner pocket block with raised `Ø16 mm` central island boss | `chipcutter generate-sample-step <out.step> --tutorial 20-feed-opt` |
+| [`21-sloped-boss-deburr.step`](assets/21-sloped-boss-deburr.step) | `80 × 50 × 23 mm` stepped shelf (`Z = 14 mm`) & curved 3D circular-arc arch (`Z = 15..23 mm`) for `Deburr3D` wall-trimming | `chipcutter generate-sample-step <out.step> --tutorial 21-deburr-boss` |
+| [`21-overhang-flange.step`](assets/21-overhang-flange.step) | `80 × 50 × 18 mm` T-shaped stepped overhang flange (`12 mm` underside lips at `Z = 12 mm`) for Lollipop back-chamfering | `chipcutter generate-sample-step <out.step> --tutorial 21-deburr-flange` |
+| [`22-undercut-deburr-block.step`](assets/22-undercut-deburr-block.step) | `100 × 80 × 28 mm` manifold block with DIN 650 M8 T-slot, `60°` dovetail guideway, & `+Y` concave overhang groove | `chipcutter generate-sample-step <out.step> --tutorial 22-undercut-block` |
 
 You can launch any starter STEP, mesh, or DXF model directly into an empty ChipCutter workspace:
 
@@ -102,11 +109,11 @@ All Phase 4 and Phase 6 guides (`00`–`14`) follow a uniform 7-part structure s
 Screenshots are stored under `docs/images/tutorials/<nn>-<slug>/<step>-<name>.png` and captured deterministically via `chip-gui --self-test-screenshot` under headless Xvfb + Vulkan Lavapipe:
 
 ```bash
-# Capture screenshots for all 15 tutorials across Phases 4 & 6 (Milestones 13–15 & 22–24):
+# Capture screenshots for all tutorials across all milestones:
 ./scripts/capture_tutorial_screenshots.sh --milestone all
 
-# Capture only a single milestone (13, 14, 15, 22, 23, or 24):
-./scripts/capture_tutorial_screenshots.sh --milestone 24
+# Capture only a single milestone (13, 14, 15, 22, 23, 24, 47, 63, 69, or 70):
+./scripts/capture_tutorial_screenshots.sh --milestone 70
 
 # Or capture a single tutorial in Daylight Light theme:
 ./scripts/capture_tutorial_screenshots.sh --tutorial 13-pure2d-dxf-svg-workflow --theme light

@@ -1263,14 +1263,25 @@ impl ChipCutterApp {
                     .get(setup_idx)
                     .and_then(|s| s.operations.get(op_idx))
                     .and_then(|op| op.tool_id.as_ref())
-                && let Some(idx) = self
+                    .cloned()
+            {
+                if !self.global_tools.tools.iter().any(|t| t.id == op_tool_id) {
+                    for pt in &self.project.tools {
+                        if !self.global_tools.tools.iter().any(|t| t.id == pt.id) {
+                            self.global_tools.tools.push(pt.clone());
+                        }
+                    }
+                }
+                if let Some(idx) = self
                     .global_tools
                     .tools
                     .iter()
-                    .position(|t| &t.id == op_tool_id)
-            {
-                self.modals.tool_library.selected_tool_idx = idx;
-                self.modals.tool_library.selected_preset_idx = 0;
+                    .position(|t| t.id == op_tool_id)
+                {
+                    self.modals.tool_library.selected_tool_idx = idx;
+                    self.modals.tool_library.selected_preset_idx = 0;
+                    self.modals.tool_library.scroll_to_selected = true;
+                }
             }
             if modal == CaptureModal::Machines {
                 let mid = self.project.effective_machine_id().to_string();

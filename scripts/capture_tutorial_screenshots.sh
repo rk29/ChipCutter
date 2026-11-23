@@ -2,7 +2,7 @@
 # Repeatable headless tutorial screenshot capture pipeline for ChipCutter Phases 4 & 6.
 #
 # Usage:
-#   ./scripts/capture_tutorial_screenshots.sh [--milestone 13|14|15|22|23|24|47|63|69|all] [--tutorial <slug>] [--theme dark|light] [--debug]
+#   ./scripts/capture_tutorial_screenshots.sh [--milestone 13|14|15|22|23|24|47|63|69|70|all] [--tutorial <slug>] [--theme dark|light] [--debug]
 #
 # Renders offscreen inside Xvfb using Vulkan Lavapipe (never opens windows on a host Wayland session).
 
@@ -1164,6 +1164,173 @@ capture_20_gpu_feed_opt() {
     --capture-sim-progress 1.0
 }
 
+capture_21_3d_deburr() {
+  local dir="docs/images/tutorials/21-3d-edge-deburring-nonplanar-chamfering"
+
+  # 1. Tool Library modal showing Lollipop Endmill 2D schematic & relieved-neck fields
+  capture_shot "$dir/01-lollipop-tool-library.png" \
+    --sample curved-deburr-3d \
+    --capture-focus op:5:tool \
+    --capture-modal tools
+
+  # 2. 3D Edge Deburr / Chamfer Passes card + curved sloped arch toolpath & automatic wall collision trimming
+  capture_shot "$dir/02-deburr3d-passes-chamfer.png" \
+    --sample curved-deburr-3d \
+    --capture-generate \
+    --capture-view iso \
+    --capture-focus op:3:passes \
+    --capture-isolate-op \
+    --capture-sim-stock false \
+    --capture-sim-cutter false
+
+  # 3. Ball Endmill curved non-planar arch rim pass
+  capture_shot "$dir/03-deburr3d-ball-rim.png" \
+    --sample curved-deburr-3d \
+    --capture-generate \
+    --capture-view iso \
+    --capture-focus op:4:passes \
+    --capture-isolate-op \
+    --capture-sim-stock false \
+    --capture-sim-cutter false
+
+  # 4. Lollipop underside back-chamfer op with Underside Back-Chamfer enabled
+  capture_shot "$dir/04-deburr3d-lollipop-backchamfer.png" \
+    --sample curved-deburr-3d \
+    --capture-generate \
+    --capture-view iso \
+    --capture-focus op:5:passes \
+    --capture-isolate-op \
+    --capture-sim-stock false \
+    --capture-sim-cutter false
+
+  # 5. GPU Tri-Dexel Fine verification showing crisp beveled edges & Verified Crash-Free
+  capture_shot "$dir/05-deburr3d-tridexel-sim.png" \
+    --sample curved-deburr-3d \
+    --capture-generate \
+    --capture-view iso \
+    --capture-focus op:5:passes \
+    --capture-pane sim \
+    --capture-sim-engine tri-dexel \
+    --capture-sim-backend gpu \
+    --capture-sim-resolution fine \
+    --capture-sim-stock true \
+    --capture-sim-cutter true \
+    --capture-sim-progress 1.0
+
+  # 6. G-Code Preview tab (LinuxCNC post profile + Sim Verified 0 Crashes)
+  capture_shot "$dir/06-deburr3d-gcode.png" \
+    --sample curved-deburr-3d \
+    --capture-generate \
+    --capture-view iso \
+    --capture-focus op:5:passes \
+    --capture-pane gcode \
+    --capture-post linuxcnc \
+    --capture-sim-engine tri-dexel \
+    --capture-sim-backend gpu \
+    --capture-sim-resolution fine \
+    --capture-sim-stock true \
+    --capture-sim-cutter true \
+    --capture-sim-progress 1.0
+}
+
+capture_22_undercut_milling() {
+  local dir="docs/images/tutorials/22-undercut-tslot-dovetail-lollipop"
+
+  # 1. Tool Library modal showing DovetailCutter 2D schematic & derived Top Ø
+  capture_shot "$dir/01-undercut-tools-library.png" \
+    --sample undercut-deburr \
+    --capture-focus op:3:tool \
+    --capture-modal tools
+
+  # 2. After Op 2 Pre-Slot Throats showing cleared 8.5 mm throats before undercut cutters enter
+  capture_shot "$dir/02-preslot-throats.png" \
+    --sample undercut-deburr \
+    --capture-generate \
+    --capture-view iso \
+    --capture-focus op:1:passes \
+    --capture-pane sim \
+    --capture-sim-engine tri-dexel \
+    --capture-sim-backend gpu \
+    --capture-sim-resolution fine \
+    --capture-sim-stock true \
+    --capture-sim-cutter true \
+    --capture-sim-after-op 1
+
+  # 3. Op 3 M8 T-Slot Undercut Passes card + mid-cut revolved SlotMill inside the T-slot
+  capture_shot "$dir/03-tslot-undercut-passes.png" \
+    --sample undercut-deburr \
+    --capture-generate \
+    --capture-view iso \
+    --capture-focus op:2:passes \
+    --capture-isolate-op \
+    --capture-pane sim \
+    --capture-sim-engine tri-dexel \
+    --capture-sim-backend gpu \
+    --capture-sim-resolution fine \
+    --capture-sim-stock true \
+    --capture-sim-cutter true \
+    --capture-sim-progress 0.36
+
+  # 4. Op 4 60° Dovetail Guideway Passes card + mid-cut revolved DovetailCutter
+  capture_shot "$dir/04-dovetail-slot-passes.png" \
+    --sample undercut-deburr \
+    --capture-generate \
+    --capture-view iso \
+    --capture-focus op:3:passes \
+    --capture-isolate-op \
+    --capture-pane sim \
+    --capture-sim-engine tri-dexel \
+    --capture-sim-backend gpu \
+    --capture-sim-resolution fine \
+    --capture-sim-stock true \
+    --capture-sim-cutter true \
+    --capture-sim-progress 0.56
+
+  # 5. External 60° Dovetail Rail & Blind Keyway with Entry Bore (dovetail-rail-keyway)
+  capture_shot "$dir/05-dovetail-rail-keyway.png" \
+    --sample dovetail-rail-keyway \
+    --capture-generate \
+    --capture-view iso \
+    --capture-focus op:3:passes \
+    --capture-pane sim \
+    --capture-sim-engine tri-dexel \
+    --capture-sim-backend gpu \
+    --capture-sim-resolution fine \
+    --capture-sim-stock true \
+    --capture-sim-cutter true \
+    --capture-sim-progress 0.92
+
+  # 6. Op 5 Lollipop Overhang Undercut Passes card + Tri-Dexel groove
+  capture_shot "$dir/06-lollipop-undercut3d.png" \
+    --sample undercut-deburr \
+    --capture-generate \
+    --capture-view back \
+    --capture-focus op:4:passes \
+    --capture-isolate-op \
+    --capture-pane sim \
+    --capture-sim-engine tri-dexel \
+    --capture-sim-backend gpu \
+    --capture-sim-resolution fine \
+    --capture-sim-stock true \
+    --capture-sim-cutter true \
+    --capture-sim-progress 0.88
+
+  # 7. Final GPU Tri-Dexel Fine Error Heatmap showing 98-99% In-Tol & Verified Crash-Free
+  capture_shot "$dir/07-undercut-tridexel-heatmap.png" \
+    --sample undercut-deburr \
+    --capture-generate \
+    --capture-view iso \
+    --capture-focus op:5:passes \
+    --capture-pane sim \
+    --capture-sim-engine tri-dexel \
+    --capture-sim-backend gpu \
+    --capture-sim-resolution fine \
+    --capture-sim-heatmap \
+    --capture-sim-stock true \
+    --capture-sim-cutter false \
+    --capture-sim-progress 1.0
+}
+
 if [[ -n "$TUTORIAL" ]]; then
   case "$TUTORIAL" in
     00-getting-started)
@@ -1220,6 +1387,12 @@ if [[ -n "$TUTORIAL" ]]; then
     20-gpu-simulation-feed-optimization)
       capture_20_gpu_feed_opt
       ;;
+    21-3d-edge-deburring-nonplanar-chamfering)
+      capture_21_3d_deburr
+      ;;
+    22-undercut-tslot-dovetail-lollipop)
+      capture_22_undercut_milling
+      ;;
     *)
       echo "Unknown tutorial slug: $TUTORIAL" >&2
       exit 2
@@ -1263,6 +1436,10 @@ else
     69)
       capture_20_gpu_feed_opt
       ;;
+    70)
+      capture_21_3d_deburr
+      capture_22_undercut_milling
+      ;;
     all)
       capture_00_getting_started
       capture_01_facing
@@ -1282,9 +1459,11 @@ else
       capture_18_thread_milling
       capture_19_workholding_flip_jigs_soft_jaws
       capture_20_gpu_feed_opt
+      capture_21_3d_deburr
+      capture_22_undercut_milling
       ;;
     *)
-      echo "Unsupported milestone: $MILESTONE (available: 13, 14, 15, 22, 23, 24, 47, 63, 69, all)" >&2
+      echo "Unsupported milestone: $MILESTONE (available: 13, 14, 15, 22, 23, 24, 47, 63, 69, 70, all)" >&2
       exit 2
       ;;
   esac

@@ -50,6 +50,7 @@ pub struct ToolLibraryModalState {
     pub selected_preset_idx: usize,
     pub lock_chipload: bool,
     pub status_banner: Option<String>,
+    pub scroll_to_selected: bool,
 }
 
 impl ToolLibraryModalState {
@@ -60,6 +61,7 @@ impl ToolLibraryModalState {
             selected_preset_idx: 0,
             lock_chipload: true,
             status_banner: None,
+            scroll_to_selected: false,
         }
     }
 
@@ -422,13 +424,16 @@ impl ToolLibraryModalState {
                         .id_salt("tool_lib_left_list")
                         .max_height(280.0)
                         .show(&mut cols[0], |ui| {
+                            let scroll_now = std::mem::take(&mut self.scroll_to_selected);
                             for (idx, t) in global_lib.tools.iter().enumerate() {
                                 let sel = idx == self.selected_tool_idx;
-                                if ui
+                                let resp = ui
                                     .selectable_label(sel, t.summary_label())
-                                    .on_hover_text("Inspect or edit this cutting tool's geometry and material presets")
-                                    .clicked()
-                                {
+                                    .on_hover_text("Inspect or edit this cutting tool's geometry and material presets");
+                                if sel && scroll_now {
+                                    resp.scroll_to_me(Some(egui::Align::Center));
+                                }
+                                if resp.clicked() {
                                     self.selected_tool_idx = idx;
                                     self.selected_preset_idx = 0;
                                 }
