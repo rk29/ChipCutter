@@ -2437,4 +2437,116 @@ mod tests {
             "GPU Surface Nets quad count ({gpu_quads}) must closely match CPU Surface Nets ({cpu_quads}), ratio={ratio:.4}"
         );
     }
+
+    #[test]
+    fn gpu_shared_headless_isolates_gl_contexts_per_thread_and_runs_concurrent_tridexel_safely() {
+        let Some(main_ctx) = GpuSimContext::shared_headless() else {
+            return;
+        };
+        let is_gl = main_ctx.adapter_info().backend_api == "Gl";
+        let main_ptr = std::sync::Arc::as_ptr(&main_ctx) as usize;
+
+        let worker_count = 3usize;
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(worker_count));
+        let handles: Vec<_> = (0..worker_count)
+            .map(|idx| {
+                let barrier = std::sync::Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    let ctx = GpuSimContext::shared_headless()
+                        .expect("worker expected headless compute context");
+
+                    let stock_spec = StockShapeSpec::Box {
+                        aabb_wcs: Aabb3::new(
+                            DVec3::new(0.0, 0.0, -12.0),
+                            DVec3::new(40.0, 30.0, 0.0),
+                        ),
+                    };
+                    let td = crate::tridexel::TriDexelStock::from_stock_spec(
+                        &stock_spec,
+                        SimResolution::Standard,
+                    )
+                    .unwrap();
+                    let initial_vol = td.compute_volume_mm3();
+                    let tools = vec![make_tool(
+                        "flat_6",
+                        20.0,
+                        CutterGeometry::FlatEndmill {
+                            diameter_mm: 6.0,
+                            flute_length_mm: 14.0,
+                            overall_length_mm: 50.0,
+                            shank_diameter_mm: 6.0,
+                            flutes: 3,
+                        },
+                    )];
+                    let chords = vec![SweepChord {
+                        motion: SweepMotion::Linear {
+                            p0: DVec3::new(8.0, 15.0, -4.0),
+                            p1: DVec3::new(32.0, 15.0, -4.0),
+                            rotary_deg_0: 0.0,
+                            rotary_deg_1: 0.0,
+                        },
+                        op_idx: 0,
+                        is_rapid: false,
+                        profile_idx: 0,
+                        verify_tol: StockVerifyTolerances::default(),
+                    }];
+
+                    // Align all worker threads so GLES contexts execute buffer creation,
+                    // compute sweeps, and readbacks simultaneously.
+                    barrier.wait();
+                    let mut gpu = WgpuComputeBackend::new(
+                        std::sync::Arc::clone(&ctx),
+                        SimulatedStock::TriDexel(Box::new(td)),
+                        None,
+                    );
+                    let out = gpu.sweep_batch(&chords, &tools, true);
+                    assert!(out.mutated);
+                    let final_vol = gpu.compute_volume_mm3();
+                    assert!(
+                        final_vol < initial_vol - 400.0,
+                        "worker {idx} expected material removal (initial={initial_vol:.1}, final={final_vol:.1})"
+                    );
+                    std::sync::Arc::as_ptr(&ctx) as usize
+                })
+            })
+            .collect();
+
+        let worker_ptrs: Vec<usize> = handles
+            .into_iter()
+            .map(|h| h.join().expect("worker thread must not panic"))
+            .collect();
+
+        if is_gl {
+            let unique: std::collections::HashSet<usize> = worker_ptrs
+                .iter()
+                .copied()
+                .chain(std::iter::once(main_ptr))
+                .collect();
+            assert_eq!(
+                unique.len(),
+                worker_count + 1,
+                "Backend::Gl must hand out distinct pooled GpuSimContexts to concurrent callers to avoid wgpu-hal adapter context lock timeouts"
+            );
+
+            // After worker contexts are dropped, repeated sequential checkouts must reuse idle
+            // pooled contexts rather than allocating a fresh GL context on every call.
+            let mut sequential_ptrs = std::collections::HashSet::new();
+            for _ in 0..6 {
+                let reused = GpuSimContext::shared_headless().expect("reused pooled GL context");
+                sequential_ptrs.insert(std::sync::Arc::as_ptr(&reused) as usize);
+            }
+            assert!(
+                sequential_ptrs.len() < 6,
+                "idle pooled GL contexts should be reused across sequential calls (saw {} distinct contexts in 6 calls)",
+                sequential_ptrs.len()
+            );
+        } else {
+            for ptr in worker_ptrs {
+                assert_eq!(
+                    ptr, main_ptr,
+                    "non-GL headless backends must share a single process-wide GpuSimContext"
+                );
+            }
+        }
+    }
 }

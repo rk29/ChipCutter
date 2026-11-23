@@ -117,6 +117,15 @@ impl GpuSimContext {
     /// (e.g. Mesa `lavapipe`) if no hardware adapter is available. Returns `None` cleanly if no
     /// usable compute adapter exists.
     pub fn try_new_headless() -> Option<Arc<Self>> {
+        Self::try_new_headless_with_backend().map(|(ctx, _)| ctx)
+    }
+
+    fn try_new_headless_with_backend() -> Option<(Arc<Self>, wgpu::Backend)> {
+        // Serialize headless instance/adapter/device creation so concurrent first-use threads
+        // (especially under EGL/Mesa `Backend::Gl`) never race during driver/display init.
+        static INIT_LOCK: Mutex<()> = Mutex::new(());
+        let _init_guard = INIT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
         let instance =
             wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
         let power_preference =
@@ -139,6 +148,7 @@ impl GpuSimContext {
         .ok()?;
 
         let raw_info = adapter.get_info();
+        let backend = raw_info.backend;
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("chip_stock_gpu_compute"),
             required_features: wgpu::Features::empty(),
@@ -152,21 +162,66 @@ impl GpuSimContext {
         let adapter_info = ActiveSimBackendInfo {
             is_gpu: true,
             adapter_name: raw_info.name,
-            backend_api: format!("{:?}", raw_info.backend),
+            backend_api: format!("{backend:?}"),
         };
 
-        Some(Arc::new(Self::from_shared(
-            Arc::new(device),
-            Arc::new(queue),
-            adapter_info,
-        )))
+        Some((
+            Arc::new(Self::from_shared(
+                Arc::new(device),
+                Arc::new(queue),
+                adapter_info,
+            )),
+            backend,
+        ))
     }
 
-    /// Returns a process-wide lazily-initialized headless [`GpuSimContext`] so repeated
-    /// CLI/test simulations reuse the compiled Vulkan/Metal/DX12 device & pipelines.
+    /// Returns a lazily-initialized headless [`GpuSimContext`] so repeated CLI/test simulations
+    /// reuse the compiled Vulkan/Metal/DX12/GL device & pipelines.
+    ///
+    /// On multi-thread-safe backends (`Vulkan`, `Metal`, `Dx12`), a single process-wide context is
+    /// shared across threads. On OpenGL/GLES (`Backend::Gl`), `wgpu-hal` guards every device and
+    /// queue operation behind a single `AdapterContext` mutex with a fixed timeout (`6 s` on EGL,
+    /// `1 s` on WGL) that panics when another thread holds the GL context across a long compute
+    /// dispatch (e.g. software `llvmpipe` Tri-Dexel sweeps on Linux CI). For `Backend::Gl`,
+    /// contexts are therefore leased from a process-wide idle pool (identified via
+    /// `Arc::strong_count == 1`) so concurrent workers and parallel tests never contend on a
+    /// shared GL context while sequential calls still reuse compiled pipelines without leaking or
+    /// touching TLS destructors at thread exit.
     pub fn shared_headless() -> Option<Arc<Self>> {
-        static SHARED: OnceLock<Option<Arc<GpuSimContext>>> = OnceLock::new();
-        SHARED.get_or_init(Self::try_new_headless).clone()
+        enum SharedHeadless {
+            None,
+            ProcessWide(Arc<GpuSimContext>),
+            PooledGl(Mutex<Vec<Arc<GpuSimContext>>>),
+        }
+
+        static SHARED: OnceLock<SharedHeadless> = OnceLock::new();
+
+        let mode = SHARED.get_or_init(|| match Self::try_new_headless_with_backend() {
+            None => SharedHeadless::None,
+            Some((ctx, wgpu::Backend::Gl)) => SharedHeadless::PooledGl(Mutex::new(vec![ctx])),
+            Some((ctx, _)) => SharedHeadless::ProcessWide(ctx),
+        });
+
+        match mode {
+            SharedHeadless::None => None,
+            SharedHeadless::ProcessWide(ctx) => Some(Arc::clone(ctx)),
+            SharedHeadless::PooledGl(pool) => {
+                {
+                    let guard = pool.lock().unwrap_or_else(|e| e.into_inner());
+                    if let Some(idle) = guard.iter().find(|ctx| {
+                        Arc::strong_count(ctx) == 1
+                            && Arc::strong_count(&ctx.device) == 1
+                            && Arc::strong_count(&ctx.queue) == 1
+                    }) {
+                        return Some(Arc::clone(idle));
+                    }
+                }
+                let created = Self::try_new_headless()?;
+                let mut guard = pool.lock().unwrap_or_else(|e| e.into_inner());
+                guard.push(Arc::clone(&created));
+                Some(created)
+            }
+        }
     }
 
     #[inline]
