@@ -483,6 +483,28 @@ Phase 19 closes every remaining tutorial, built-in sample, starter-asset, and Sa
 
 ---
 
+## Phase 20 — Overhang-Safe & Helical-Loft Toolpathing Across 3-Axis, 2.5D, Indexed `3+1`, & 4th-Axis Milling (Planned — M72–M75)
+
+Building on `v0.19.1`'s monotonic `PushCutterField` fix for overhanging helical lofts in `Adaptive3D` and `Waterline3D` (#23), Phase 20 systematically hardens every remaining toolpathing, rest-machining, workholding-silhouette, and 4th-axis rotary kernel across ChipCutter against overhanging, cantilevered, and continuously twisting helical geometry—while preserving 100% lossless `.chip.toml` backward compatibility and byte-for-byte parity on existing Phase 1–5 golden G-code snapshots:
+
+### Milestone 72 — Full-Assembly Shank/Holder Overhang Avoidance & 2.5D Overhang Safety Guards (`plans/72-milestone-72-plan.md`)
+- **Full-Assembly Target-Part Clearance (`chip-cam`):** Extend `SurfaceCutterProfile`, `drop_cutter_z`, and `PushCutterField` with optional multi-tier shank (`shank_diameter_mm > cutting_diameter_mm`) and collet/holder (`dz >= stickout_length_mm`) clearance envelopes derived from `ToolAssemblyProfile`, automatically protecting overhanging helical blades from upper-shank and holder crashes with reach-limit diagnostics.
+- **2.5D Overhang Collision Guard & Opt-In Model Avoidance (`chip-cam`, `chip-gui`):** Automatically warn when 2.5D operations (`Pocket2D`, `Contour2D`, `DrillBore`, `Facing`, `ChamferTrace`) plunge through overhanging 3D solids above selected features, and add a schema-safe `PassesConfig::avoid_model_overhangs` toggle (default `false`) that trims/clips 2.5D regions and hole columns cleanly around overhanging geometry.
+
+### Milestone 73 — `Indexed3Plus1` Cross-Angle Rest Machining, Volumetric Carryover, & Swept Slab Excess Masks (`plans/73-milestone-73-plan.md`)
+- **Angle-Scoped 2D Rest & Cross-Angle Volumetric `TriDexelStock` Carryover (`chip-cam`, `chip-stock`, `chip-project`):** Tag `UpstreamSweptInput` with its rotary index angle so 2D `swept_toolpath_coverage_2d` never mixes coordinates across different `Indexed3Plus1` orientations (`0°` vs. `120°`/`240°`), and wire in-setup sequential `TriDexelStock` carryover across indexed angles via `TriDexelStock::transform_to_frame` to skip already-cleared outer stock safely in 3D.
+- **Swept Z-Slab Target-Part Masking (`chip-cam`):** Replace sparse 1–2 Z-plane `slice_surface_contours_z` subtraction in `Adaptive3D` and `Waterline3D` carryover excess-stock masks with an exact swept Z-slab XY footprint so rapidly twisting helical blades never leave false excess-stock slivers between sample planes.
+
+### Milestone 74 — Overhang-Aware 3D Finishing (`Parallel3D`, `Scallop3D`, `Pencil3D`, Rest Masks) & Swept Soft-Jaw Silhouettes (`plans/74-milestone-74-plan.md`)
+- **Overhang-Shadow Cliff Suppression (`chip-cam`):** Upgrade `compute_morphological_rest_residual`, `build_3d_rest_mask`, and `Pencil3D` to distinguish genuine concave valleys/fillets from vertical overhang drop-off discontinuities, eliminating spurious overhang-shadow pencil traces and false rest bands.
+- **Cliff-Safe `Scallop3D` & `Parallel3D` + Exact Swept Soft-Jaw Silhouettes (`chip-cam`):** Guard `Scallop3D`'s Fast Marching `sec(θ)` slope weights against overhang-shadow discontinuities, split `Parallel3D`/`Scallop3D` chains cleanly at vertical overhang drop-offs instead of diving at full `cut_feed`, and replace the 9-slice `workholding_wizards.rs` union with a continuous swept clamping-band silhouette so generated soft jaws clear twisted helical crests without scalloping.
+
+### Milestone 75 — Helical-Loft 4th-Axis Rotary Improvements, Benchmark Suite, & Phase 20 Spec Sync (`plans/75-milestone-75-plan.md`)
+- **Verified Partial-Sector `ZigZag` Linking & Multi-Offset `SurfaceNormalAutoTilt` (`chip-cam`):** Precompute exact `drop_cutter_rotary_z_rel`-verified axial lane links for partial-sector `ZigZag` passes in `Rotary2Linear` and `Rotary4AxisSim`, upgrade `SurfaceNormalAutoTilt` with circumferential multi-offset flank probing beneath overhanging helical crests, and emit reachability diagnostics for axial (`u`-direction) helical undercuts.
+- **Helical-Loft Benchmark, E2E Regression Suite, & Spec Sync (`chip-cad`, `chip-project`, `specs/`):** Add a watertight programmatic multi-blade helical-loft benchmark fixture, lock down CPU & GPU Tri-Dexel/Cylindrical E2E regression tests covering M72–M75, verify Phase 1–5 golden G-code parity, and synchronize `specs/05-operations.md`, `specs/06-simulation.md`, and `specs/10-roadmap.md`.
+
+---
+
 ## Future Phases
 
 ChipCutter's long-term roadmap focuses on bringing pro-grade CAM capabilities to hobby and benchtop machinists—making everyday job setup faster, safer, and easier to use without commercial CAM complexity or licensing cost.
