@@ -721,3 +721,96 @@ impl GrowableStorageBuffer {
         &self.buffer
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use wgpu::naga::{Block, Statement, front::wgsl, valid};
+
+    fn block_contains_return(block: &Block) -> bool {
+        block.iter().any(|stmt| match stmt {
+            Statement::Return { .. } => true,
+            Statement::Block(inner) => block_contains_return(inner),
+            Statement::If { accept, reject, .. } => {
+                block_contains_return(accept) || block_contains_return(reject)
+            }
+            Statement::Switch { cases, .. } => cases.iter().any(|c| block_contains_return(&c.body)),
+            Statement::Loop {
+                body, continuing, ..
+            } => block_contains_return(body) || block_contains_return(continuing),
+            _ => false,
+        })
+    }
+
+    fn switch_contains_return(block: &Block) -> bool {
+        block.iter().any(|stmt| match stmt {
+            Statement::Switch { cases, .. } => cases.iter().any(|c| block_contains_return(&c.body)),
+            Statement::Block(inner) => switch_contains_return(inner),
+            Statement::If { accept, reject, .. } => {
+                switch_contains_return(accept) || switch_contains_return(reject)
+            }
+            Statement::Loop {
+                body, continuing, ..
+            } => switch_contains_return(body) || switch_contains_return(continuing),
+            _ => false,
+        })
+    }
+
+    fn assert_fxc_safe_wgsl(label: &str, src: &str) {
+        let module = wgsl::parse_str(src)
+            .unwrap_or_else(|err| panic!("failed to parse WGSL shader `{label}`: {err}"));
+        let mut validator =
+            valid::Validator::new(valid::ValidationFlags::all(), valid::Capabilities::empty());
+        validator
+            .validate(&module)
+            .unwrap_or_else(|err| panic!("failed to validate WGSL shader `{label}`: {err}"));
+
+        let check_fn = |fn_name: &str, func: &wgpu::naga::Function| {
+            if func.result.is_none() {
+                return;
+            }
+            // FXC (D3DCompile SM 5.x) emits `error X3507: Not all control paths return a value`
+            // when a non-void function ends in a `switch` or `if/else` chain without an
+            // unconditional top-level `return`, or returns early inside `switch` cases.
+            assert!(
+                matches!(func.body.last(), Some(Statement::Return { value: Some(_) })),
+                "WGSL shader `{label}` function `{fn_name}` must end with an unconditional \
+                 top-level `return` statement for Windows FXC compatibility"
+            );
+            assert!(
+                !switch_contains_return(&func.body),
+                "WGSL shader `{label}` function `{fn_name}` contains a `return` inside a \
+                 `switch` case, which can trigger FXC error X3507 on Windows"
+            );
+        };
+
+        for (_, func) in module.functions.iter() {
+            let fn_name = func.name.as_deref().unwrap_or("<unnamed>");
+            check_fn(fn_name, func);
+        }
+        for ep in &module.entry_points {
+            check_fn(&ep.name, &ep.function);
+        }
+    }
+
+    #[test]
+    fn all_compute_wgsl_shaders_have_fxc_safe_return_paths() {
+        let shaders: [(&str, &str); 6] = [
+            (
+                "heightfield_sweep.wgsl",
+                include_str!("heightfield_sweep.wgsl"),
+            ),
+            (
+                "cylindrical_sweep.wgsl",
+                include_str!("cylindrical_sweep.wgsl"),
+            ),
+            ("tridexel_sweep.wgsl", include_str!("tridexel_sweep.wgsl")),
+            ("tridexel_emit.wgsl", include_str!("tridexel_emit.wgsl")),
+            ("bvh_distance.wgsl", include_str!("bvh_distance.wgsl")),
+            ("stock_metrics.wgsl", include_str!("stock_metrics.wgsl")),
+        ];
+        for (label, src) in shaders {
+            assert_fxc_safe_wgsl(label, src);
+        }
+    }
+}

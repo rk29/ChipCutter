@@ -301,89 +301,84 @@ fn eval_profile_dz(prof: GpuToolProfile, r_mm: f32) -> f32 {
         return -1.0;
     }
     let r = min(r_mm, prof.cutting_radius_mm);
+    var dz: f32 = 0.0;
     switch (prof.shape_kind) {
         case SHAPE_FLAT: {
-            return 0.0;
+            dz = 0.0;
         }
         case SHAPE_BULLNOSE: {
             let flat_r = prof.param0;
             let corner_r = prof.param1;
-            if (r <= flat_r || corner_r <= 1e-6) {
-                return 0.0;
+            if (r > flat_r && corner_r > 1e-6) {
+                let dr = min(r - flat_r, corner_r);
+                dz = corner_r - sqrt(max((corner_r - dr) * (corner_r + dr), 0.0));
             }
-            let dr = min(r - flat_r, corner_r);
-            return corner_r - sqrt(max((corner_r - dr) * (corner_r + dr), 0.0));
         }
         case SHAPE_BALL: {
             let rad = prof.cutting_radius_mm;
             let rc = min(r, rad);
-            return rad - sqrt(max((rad - rc) * (rad + rc), 0.0));
+            dz = rad - sqrt(max((rad - rc) * (rad + rc), 0.0));
         }
         case SHAPE_CONICAL: {
             let tip_r = prof.param0;
             let tan_half = prof.param1;
-            if (r <= tip_r) {
-                return 0.0;
+            if (r > tip_r) {
+                dz = (r - tip_r) / tan_half;
             }
-            return (r - tip_r) / tan_half;
         }
         case SHAPE_FACE: {
             let flat_r = prof.param0;
             let corner_r = prof.param1;
             let bottom_r = prof.param2;
             if (r <= flat_r) {
-                return 0.0;
+                dz = 0.0;
             } else if (r <= bottom_r) {
-                if (corner_r <= 1e-6) {
-                    return 0.0;
+                if (corner_r > 1e-6) {
+                    let dr = min(r - flat_r, corner_r);
+                    dz = corner_r - sqrt(max((corner_r - dr) * (corner_r + dr), 0.0));
                 }
-                let dr = min(r - flat_r, corner_r);
-                return corner_r - sqrt(max((corner_r - dr) * (corner_r + dr), 0.0));
             } else {
-                return corner_r + (r - bottom_r);
+                dz = corner_r + (r - bottom_r);
             }
         }
         case SHAPE_THREADMILL: {
-            if (r <= prof.neck_radius_mm) {
-                return 0.0;
+            if (r > prof.neck_radius_mm) {
+                let z_start = prof.param1;
+                let tooth_step = prof.param2;
+                let tan_half = prof.param3;
+                let z_first_crest = z_start + 0.5 * tooth_step;
+                dz = max(z_first_crest - max(prof.cutting_radius_mm - r, 0.0) * tan_half, 0.0);
             }
-            let z_start = prof.param1;
-            let tooth_step = prof.param2;
-            let tan_half = prof.param3;
-            let z_first_crest = z_start + 0.5 * tooth_step;
-            return max(z_first_crest - max(prof.cutting_radius_mm - r, 0.0) * tan_half, 0.0);
         }
         case SHAPE_LOLLIPOP: {
             let flat_r = prof.param1;
             let sphere_r = select(prof.cutting_radius_mm, prof.param2, prof.param2 > 1e-6);
-            if (r <= flat_r) {
-                return 0.0;
+            if (r > flat_r) {
+                let dr = min(r - flat_r, sphere_r);
+                dz = sphere_r - sqrt(max((sphere_r - dr) * (sphere_r + dr), 0.0));
             }
-            let dr = min(r - flat_r, sphere_r);
-            return sphere_r - sqrt(max((sphere_r - dr) * (sphere_r + dr), 0.0));
         }
         case SHAPE_SLOTMILL: {
             let corner_r = prof.param1;
             let flat_r = prof.param2;
-            if (r <= flat_r || corner_r <= 1e-6) {
-                return 0.0;
+            if (r > flat_r && corner_r > 1e-6) {
+                let dr = min(r - flat_r, corner_r);
+                dz = corner_r - sqrt(max((corner_r - dr) * (corner_r + dr), 0.0));
             }
-            let dr = min(r - flat_r, corner_r);
-            return corner_r - sqrt(max((corner_r - dr) * (corner_r + dr), 0.0));
         }
         case SHAPE_DOVETAIL: {
             let corner_r = prof.param2;
             let r_c = max(prof.cutting_radius_mm - corner_r, 0.0);
-            if (r <= r_c || corner_r <= 1e-6) {
-                return 0.0;
+            if (r > r_c && corner_r > 1e-6) {
+                let dr = min(r - r_c, corner_r);
+                dz = corner_r - sqrt(max((corner_r - dr) * (corner_r + dr), 0.0));
             }
-            let dr = min(r - r_c, corner_r);
-            return corner_r - sqrt(max((corner_r - dr) * (corner_r + dr), 0.0));
         }
         default: {
-            return 0.0;
+            dz = 0.0;
         }
     }
+    return dz;
 }
 
 // Evaluates exact bounded axial cutting interval `[dz_lo, dz_hi]` at radius `r_mm`.
@@ -393,19 +388,21 @@ fn eval_profile_z_interval(prof: GpuToolProfile, r_mm: f32) -> Interval1D {
         return miss;
     }
     let r = min(r_mm, prof.cutting_radius_mm);
+    var out = miss;
     switch (prof.shape_kind) {
         case SHAPE_LOLLIPOP: {
             let z_join = prof.param0;
             let flat_r = prof.param1;
             let sphere_r = select(prof.cutting_radius_mm, prof.param2, prof.param2 > 1e-6);
             if (r <= flat_r) {
-                return Interval1D(true, 0.0, z_join);
+                out = Interval1D(true, 0.0, z_join);
+            } else {
+                let dr = min(r - flat_r, sphere_r);
+                let half_h = sqrt(max((sphere_r - dr) * (sphere_r + dr), 0.0));
+                let dz_lo = max(sphere_r - half_h, 0.0);
+                let dz_hi = min(sphere_r + half_h, z_join);
+                out = Interval1D(true, dz_lo, max(dz_hi, dz_lo));
             }
-            let dr = min(r - flat_r, sphere_r);
-            let half_h = sqrt(max((sphere_r - dr) * (sphere_r + dr), 0.0));
-            let dz_lo = max(sphere_r - half_h, 0.0);
-            let dz_hi = min(sphere_r + half_h, z_join);
-            return Interval1D(true, dz_lo, max(dz_hi, dz_lo));
         }
         case SHAPE_SLOTMILL: {
             let h_cut = prof.param0;
@@ -417,7 +414,7 @@ fn eval_profile_z_interval(prof: GpuToolProfile, r_mm: f32) -> Interval1D {
                 dz_lo = corner_r - sqrt(max((corner_r - dr) * (corner_r + dr), 0.0));
             }
             let dz_hi = max(h_cut - dz_lo, dz_lo);
-            return Interval1D(true, dz_lo, dz_hi);
+            out = Interval1D(true, dz_lo, dz_hi);
         }
         case SHAPE_DOVETAIL: {
             let h_cut = prof.param0;
@@ -425,38 +422,39 @@ fn eval_profile_z_interval(prof: GpuToolProfile, r_mm: f32) -> Interval1D {
             let corner_r = prof.param2;
             if (corner_r <= 1e-6) {
                 let dz_hi = clamp((prof.cutting_radius_mm - r) * tan_a, 0.0, h_cut);
-                return Interval1D(true, 0.0, dz_hi);
-            }
-            let r_c = max(prof.cutting_radius_mm - corner_r, 0.0);
-            var dz_lo: f32 = 0.0;
-            if (r > r_c) {
-                let dr = min(r - r_c, corner_r);
-                dz_lo = corner_r - sqrt(max((corner_r - dr) * (corner_r + dr), 0.0));
-            }
-            let cos_a = 1.0 / sqrt(1.0 + tan_a * tan_a);
-            let sin_a = tan_a * cos_a;
-            let r_tan = r_c + corner_r * sin_a;
-            var dz_hi: f32;
-            if (r >= r_tan) {
-                let dr = min(r - r_c, corner_r);
-                dz_hi = min(corner_r + sqrt(max((corner_r - dr) * (corner_r + dr), 0.0)), h_cut);
+                out = Interval1D(true, 0.0, dz_hi);
             } else {
-                dz_hi = clamp(
-                    corner_r + (corner_r - (r - r_c) * sin_a) / max(cos_a, 1e-5),
-                    dz_lo,
-                    h_cut,
-                );
+                let r_c = max(prof.cutting_radius_mm - corner_r, 0.0);
+                var dz_lo: f32 = 0.0;
+                if (r > r_c) {
+                    let dr = min(r - r_c, corner_r);
+                    dz_lo = corner_r - sqrt(max((corner_r - dr) * (corner_r + dr), 0.0));
+                }
+                let cos_a = 1.0 / sqrt(1.0 + tan_a * tan_a);
+                let sin_a = tan_a * cos_a;
+                let r_tan = r_c + corner_r * sin_a;
+                var dz_hi: f32;
+                if (r >= r_tan) {
+                    let dr = min(r - r_c, corner_r);
+                    dz_hi = min(corner_r + sqrt(max((corner_r - dr) * (corner_r + dr), 0.0)), h_cut);
+                } else {
+                    dz_hi = clamp(
+                        corner_r + (corner_r - (r - r_c) * sin_a) / max(cos_a, 1e-5),
+                        dz_lo,
+                        h_cut,
+                    );
+                }
+                out = Interval1D(true, dz_lo, max(dz_hi, dz_lo));
             }
-            return Interval1D(true, dz_lo, max(dz_hi, dz_lo));
         }
         default: {
             let dz_lo = eval_profile_dz(prof, r);
-            if (dz_lo < 0.0) {
-                return miss;
+            if (dz_lo >= 0.0) {
+                out = Interval1D(true, dz_lo, max(prof.flute_length_mm, dz_lo));
             }
-            return Interval1D(true, dz_lo, max(prof.flute_length_mm, dz_lo));
         }
     }
+    return out;
 }
 
 fn is_bounded_undercut_shape(shape_kind: u32) -> bool {
@@ -493,29 +491,32 @@ fn eval_radius_at_dz(prof: GpuToolProfile, dz_mm: f32) -> f32 {
         return -1.0;
     }
     let dz = max(dz_mm, 0.0);
+    var out: f32 = prof.cutting_radius_mm;
     switch (prof.shape_kind) {
         case SHAPE_FLAT: {
-            return prof.cutting_radius_mm;
+            out = prof.cutting_radius_mm;
         }
         case SHAPE_BULLNOSE: {
             let flat_r = prof.param0;
             let corner_r = prof.param1;
             if (corner_r <= 1e-6 || dz >= corner_r) {
-                return flat_r + corner_r;
+                out = flat_r + corner_r;
+            } else {
+                out = min(flat_r + sqrt(max(2.0 * corner_r * dz - dz * dz, 0.0)), prof.cutting_radius_mm);
             }
-            return min(flat_r + sqrt(max(2.0 * corner_r * dz - dz * dz, 0.0)), prof.cutting_radius_mm);
         }
         case SHAPE_BALL: {
             let rad = prof.cutting_radius_mm;
             if (dz >= rad) {
-                return rad;
+                out = rad;
+            } else {
+                out = min(sqrt(max(2.0 * rad * dz - dz * dz, 0.0)), rad);
             }
-            return min(sqrt(max(2.0 * rad * dz - dz * dz, 0.0)), rad);
         }
         case SHAPE_CONICAL: {
             let tip_r = prof.param0;
             let tan_half = prof.param1;
-            return min(tip_r + dz * tan_half, prof.cutting_radius_mm);
+            out = min(tip_r + dz * tan_half, prof.cutting_radius_mm);
         }
         case SHAPE_FACE: {
             let flat_r = prof.param0;
@@ -523,70 +524,77 @@ fn eval_radius_at_dz(prof: GpuToolProfile, dz_mm: f32) -> f32 {
             let bottom_r = prof.param2;
             let outer_r = prof.param3;
             if (dz < corner_r && corner_r > 1e-6) {
-                return min(flat_r + sqrt(max(2.0 * corner_r * dz - dz * dz, 0.0)), bottom_r);
+                out = min(flat_r + sqrt(max(2.0 * corner_r * dz - dz * dz, 0.0)), bottom_r);
+            } else {
+                out = min(bottom_r + (dz - corner_r), outer_r);
             }
-            return min(bottom_r + (dz - corner_r), outer_r);
         }
         case SHAPE_THREADMILL: {
             if (dz <= prof.flute_length_mm + 1e-6) {
-                return thread_mill_tooth_radius_at_z(prof, dz);
+                out = thread_mill_tooth_radius_at_z(prof, dz);
             } else if (dz <= prof.neck_length_mm + 1e-6) {
-                return prof.neck_radius_mm;
+                out = prof.neck_radius_mm;
             } else {
-                return prof.shank_radius_mm;
+                out = prof.shank_radius_mm;
             }
         }
         case SHAPE_LOLLIPOP: {
             let z_join = prof.param0;
             if (dz > z_join + 1e-5) {
-                return -1.0;
+                out = -1.0;
+            } else {
+                let flat_r = prof.param1;
+                let sphere_r = select(prof.cutting_radius_mm, prof.param2, prof.param2 > 1e-6);
+                out = min(flat_r + sqrt(max(2.0 * sphere_r * dz - dz * dz, 0.0)), prof.cutting_radius_mm);
             }
-            let flat_r = prof.param1;
-            let sphere_r = select(prof.cutting_radius_mm, prof.param2, prof.param2 > 1e-6);
-            return min(flat_r + sqrt(max(2.0 * sphere_r * dz - dz * dz, 0.0)), prof.cutting_radius_mm);
         }
         case SHAPE_SLOTMILL: {
             let h_cut = prof.param0;
             if (dz > h_cut + 1e-5) {
-                return -1.0;
+                out = -1.0;
+            } else {
+                let corner_r = prof.param1;
+                let flat_r = prof.param2;
+                if (corner_r > 1e-6 && dz < corner_r) {
+                    out = min(flat_r + sqrt(max(2.0 * corner_r * dz - dz * dz, 0.0)), prof.cutting_radius_mm);
+                } else if (corner_r > 1e-6 && dz > h_cut - corner_r) {
+                    let dtop = max(h_cut - dz, 0.0);
+                    out = min(flat_r + sqrt(max(2.0 * corner_r * dtop - dtop * dtop, 0.0)), prof.cutting_radius_mm);
+                } else {
+                    out = prof.cutting_radius_mm;
+                }
             }
-            let corner_r = prof.param1;
-            let flat_r = prof.param2;
-            if (corner_r > 1e-6 && dz < corner_r) {
-                return min(flat_r + sqrt(max(2.0 * corner_r * dz - dz * dz, 0.0)), prof.cutting_radius_mm);
-            }
-            if (corner_r > 1e-6 && dz > h_cut - corner_r) {
-                let dtop = max(h_cut - dz, 0.0);
-                return min(flat_r + sqrt(max(2.0 * corner_r * dtop - dtop * dtop, 0.0)), prof.cutting_radius_mm);
-            }
-            return prof.cutting_radius_mm;
         }
         case SHAPE_DOVETAIL: {
             let h_cut = prof.param0;
             if (dz > h_cut + 1e-5) {
-                return -1.0;
+                out = -1.0;
+            } else {
+                let tan_a = max(prof.param1, 1e-5);
+                let corner_r = prof.param2;
+                let top_r = prof.param3;
+                if (corner_r <= 1e-6) {
+                    out = clamp(prof.cutting_radius_mm - dz / tan_a, top_r, prof.cutting_radius_mm);
+                } else {
+                    let cos_a = 1.0 / sqrt(1.0 + tan_a * tan_a);
+                    let sin_a = tan_a * cos_a;
+                    let r_c = max(prof.cutting_radius_mm - corner_r, 0.0);
+                    let z_tan = corner_r * (1.0 + cos_a);
+                    if (dz <= z_tan) {
+                        let d = dz - corner_r;
+                        out = min(r_c + sqrt(max(corner_r * corner_r - d * d, 0.0)), prof.cutting_radius_mm);
+                    } else {
+                        let r_tan = r_c + corner_r * sin_a;
+                        out = clamp(r_tan - (dz - z_tan) / tan_a, top_r, prof.cutting_radius_mm);
+                    }
+                }
             }
-            let tan_a = max(prof.param1, 1e-5);
-            let corner_r = prof.param2;
-            let top_r = prof.param3;
-            if (corner_r <= 1e-6) {
-                return clamp(prof.cutting_radius_mm - dz / tan_a, top_r, prof.cutting_radius_mm);
-            }
-            let cos_a = 1.0 / sqrt(1.0 + tan_a * tan_a);
-            let sin_a = tan_a * cos_a;
-            let r_c = max(prof.cutting_radius_mm - corner_r, 0.0);
-            let z_tan = corner_r * (1.0 + cos_a);
-            if (dz <= z_tan) {
-                let d = dz - corner_r;
-                return min(r_c + sqrt(max(corner_r * corner_r - d * d, 0.0)), prof.cutting_radius_mm);
-            }
-            let r_tan = r_c + corner_r * sin_a;
-            return clamp(r_tan - (dz - z_tan) / tan_a, top_r, prof.cutting_radius_mm);
         }
         default: {
-            return prof.cutting_radius_mm;
+            out = prof.cutting_radius_mm;
         }
     }
+    return out;
 }
 
 fn clamp_unit_interval(a: f32, b: f32) -> Interval1D {
@@ -1076,15 +1084,15 @@ fn chord_bbox_hits_ray(ch: GpuSweepChord, prof: GpuToolProfile, verify: bool, pu
         let r_chk = select(r_cut, max(r_cut, prof.holder_radius_mm), verify) + 1e-3;
         return pu >= min(p0.x, p1.x) - r_chk && pu <= max(p0.x, p1.x) + r_chk
             && pv >= min(p0.y, p1.y) - r_chk && pv <= max(p0.y, p1.y) + r_chk;
-    } else if (u.axis_id == 0u) {
+    }
+    if (u.axis_id == 0u) {
         let r_chk = r_cut + 1e-3;
         return pu >= min(p0.y, p1.y) - r_chk && pu <= max(p0.y, p1.y) + r_chk
             && pv >= min(p0.z, p1.z) - 1e-3 && pv <= max(p0.z, p1.z) + max_h + 1e-3;
-    } else {
-        let r_chk = r_cut + 1e-3;
-        return pu >= min(p0.x, p1.x) - r_chk && pu <= max(p0.x, p1.x) + r_chk
-            && pv >= min(p0.z, p1.z) - 1e-3 && pv <= max(p0.z, p1.z) + max_h + 1e-3;
     }
+    let r_chk = r_cut + 1e-3;
+    return pu >= min(p0.x, p1.x) - r_chk && pu <= max(p0.x, p1.x) + r_chk
+        && pv >= min(p0.z, p1.z) - 1e-3 && pv <= max(p0.z, p1.z) + max_h + 1e-3;
 }
 
 @compute @workgroup_size(16, 16, 1)

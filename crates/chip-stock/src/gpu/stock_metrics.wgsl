@@ -534,23 +534,22 @@ fn td_signed_dev_at_target_endpoint(
             }
         }
         return -max(t_hi - nearest_below, 0.0);
-    } else {
-        let t_lo = ts.min_local;
-        for (var i: u32 = 0u; i < m_cnt; i = i + 1u) {
-            let ms = td_m_slots[m_base + i];
-            if (t_lo >= ms.min_local - 1e-6 && t_lo <= ms.max_local + 1e-6) {
-                return max(t_lo - ms.min_local, 0.0);
-            }
-        }
-        var nearest_above = ts.max_local;
-        for (var i: u32 = 0u; i < m_cnt; i = i + 1u) {
-            let ms = td_m_slots[m_base + i];
-            if (ms.min_local > t_lo) {
-                nearest_above = min(nearest_above, ms.min_local);
-            }
-        }
-        return -max(nearest_above - t_lo, 0.0);
     }
+    let t_lo = ts.min_local;
+    for (var i: u32 = 0u; i < m_cnt; i = i + 1u) {
+        let ms = td_m_slots[m_base + i];
+        if (t_lo >= ms.min_local - 1e-6 && t_lo <= ms.max_local + 1e-6) {
+            return max(t_lo - ms.min_local, 0.0);
+        }
+    }
+    var nearest_above = ts.max_local;
+    for (var i: u32 = 0u; i < m_cnt; i = i + 1u) {
+        let ms = td_m_slots[m_base + i];
+        if (ms.min_local > t_lo) {
+            nearest_above = min(nearest_above, ms.min_local);
+        }
+    }
+    return -max(nearest_above - t_lo, 0.0);
 }
 
 fn td_dist_to_air_1d(m_base: u32, m_cnt: u32, coord: f32) -> f32 {

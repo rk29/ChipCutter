@@ -982,6 +982,76 @@ mod tests {
     use crate::viewport::highlight::{ToolpathRenderEntry, ZPlaneVisual};
 
     #[test]
+    fn viewport_wgsl_shader_has_fxc_safe_return_paths() {
+        use wgpu::naga::{Block, Statement, front::wgsl, valid};
+
+        fn block_contains_return(block: &Block) -> bool {
+            block.iter().any(|stmt| match stmt {
+                Statement::Return { .. } => true,
+                Statement::Block(inner) => block_contains_return(inner),
+                Statement::If { accept, reject, .. } => {
+                    block_contains_return(accept) || block_contains_return(reject)
+                }
+                Statement::Switch { cases, .. } => {
+                    cases.iter().any(|c| block_contains_return(&c.body))
+                }
+                Statement::Loop {
+                    body, continuing, ..
+                } => block_contains_return(body) || block_contains_return(continuing),
+                _ => false,
+            })
+        }
+
+        fn switch_contains_return(block: &Block) -> bool {
+            block.iter().any(|stmt| match stmt {
+                Statement::Switch { cases, .. } => {
+                    cases.iter().any(|c| block_contains_return(&c.body))
+                }
+                Statement::Block(inner) => switch_contains_return(inner),
+                Statement::If { accept, reject, .. } => {
+                    switch_contains_return(accept) || switch_contains_return(reject)
+                }
+                Statement::Loop {
+                    body, continuing, ..
+                } => switch_contains_return(body) || switch_contains_return(continuing),
+                _ => false,
+            })
+        }
+
+        let module =
+            wgsl::parse_str(include_str!("shaders.wgsl")).expect("parse viewport shaders.wgsl");
+        let mut validator =
+            valid::Validator::new(valid::ValidationFlags::all(), valid::Capabilities::empty());
+        validator
+            .validate(&module)
+            .expect("validate viewport shaders.wgsl");
+
+        let check_fn = |fn_name: &str, func: &wgpu::naga::Function| {
+            if func.result.is_none() {
+                return;
+            }
+            assert!(
+                matches!(func.body.last(), Some(Statement::Return { value: Some(_) })),
+                "viewport shaders.wgsl function `{fn_name}` must end with an unconditional \
+                 top-level `return` statement for Windows FXC compatibility"
+            );
+            assert!(
+                !switch_contains_return(&func.body),
+                "viewport shaders.wgsl function `{fn_name}` contains a `return` inside a \
+                 `switch` case, which can trigger FXC error X3507 on Windows"
+            );
+        };
+
+        for (_, func) in module.functions.iter() {
+            let fn_name = func.name.as_deref().unwrap_or("<unnamed>");
+            check_fn(fn_name, func);
+        }
+        for ep in &module.entry_points {
+            check_fn(&ep.name, &ep.function);
+        }
+    }
+
+    #[test]
     fn growable_gpu_buffer_reuses_allocation_and_grows_by_powers_of_two() {
         let instance =
             wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
