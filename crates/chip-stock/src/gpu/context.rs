@@ -21,6 +21,12 @@ pub(crate) struct MetricsScratchBuffers {
     pub(crate) common_bg: wgpu::BindGroup,
 }
 
+pub(crate) struct TriDexelEmitResources {
+    pub(crate) bgl: wgpu::BindGroupLayout,
+    pub(crate) pipeline: wgpu::ComputePipeline,
+    pub(crate) init_args_buf: wgpu::Buffer,
+}
+
 /// Reusable `wgpu` compute device, queue, and pre-compiled stock simulation pipelines.
 ///
 /// Can be constructed either from an existing shared `eframe`/`ViewportRenderer` device
@@ -35,9 +41,7 @@ pub struct GpuSimContext {
     pub(crate) cylindrical_pipeline: wgpu::ComputePipeline,
     pub(crate) tridexel_bgl: wgpu::BindGroupLayout,
     pub(crate) tridexel_pipeline: wgpu::ComputePipeline,
-    pub(crate) tridexel_emit_bgl: wgpu::BindGroupLayout,
-    pub(crate) tridexel_emit_pipeline: wgpu::ComputePipeline,
-    pub(crate) tridexel_emit_init_args_buf: wgpu::Buffer,
+    tridexel_emit: OnceLock<TriDexelEmitResources>,
     pub(crate) bvh_common_bgl: wgpu::BindGroupLayout,
     pub(crate) bvh_td_bgl: wgpu::BindGroupLayout,
     pub(crate) bvh_cyl_bgl: wgpu::BindGroupLayout,
@@ -75,8 +79,6 @@ impl GpuSimContext {
         let (heightfield_bgl, heightfield_pipeline) = build_heightfield_pipeline(&device);
         let (cylindrical_bgl, cylindrical_pipeline) = build_cylindrical_pipeline(&device);
         let (tridexel_bgl, tridexel_pipeline) = build_tridexel_pipeline(&device);
-        let (tridexel_emit_bgl, tridexel_emit_pipeline, tridexel_emit_init_args_buf) =
-            build_tridexel_emit_pipeline(&device);
         let bvh = build_bvh_pipelines(&device);
         let met = build_metrics_pipelines(&device);
 
@@ -90,9 +92,7 @@ impl GpuSimContext {
             cylindrical_pipeline,
             tridexel_bgl,
             tridexel_pipeline,
-            tridexel_emit_bgl,
-            tridexel_emit_pipeline,
-            tridexel_emit_init_args_buf,
+            tridexel_emit: OnceLock::new(),
             bvh_common_bgl: bvh.common_bgl,
             bvh_td_bgl: bvh.td_bgl,
             bvh_cyl_bgl: bvh.cyl_bgl,
@@ -192,6 +192,13 @@ impl GpuSimContext {
     #[inline]
     pub fn adapter_info(&self) -> &ActiveSimBackendInfo {
         &self.adapter_info
+    }
+
+    /// Lazily compiles and caches the viewport-only Tri-Dexel Surface Nets compute pipeline so
+    /// headless CLI/test simulations do not pay its compilation cost unless rendering is requested.
+    pub(crate) fn tridexel_emit_resources(&self) -> &TriDexelEmitResources {
+        self.tridexel_emit
+            .get_or_init(|| build_tridexel_emit_pipeline(&self.device))
     }
 
     /// Synchronously maps `staging_buf` (after a copy command has been submitted to `queue`)
@@ -425,9 +432,7 @@ fn build_tridexel_pipeline(
     (bgl, pipeline)
 }
 
-fn build_tridexel_emit_pipeline(
-    device: &wgpu::Device,
-) -> (wgpu::BindGroupLayout, wgpu::ComputePipeline, wgpu::Buffer) {
+fn build_tridexel_emit_pipeline(device: &wgpu::Device) -> TriDexelEmitResources {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("chip_tridexel_emit_wgsl"),
         source: wgpu::ShaderSource::Wgsl(include_str!("tridexel_emit.wgsl").into()),
@@ -470,7 +475,11 @@ fn build_tridexel_emit_pipeline(
         usage: wgpu::BufferUsages::COPY_SRC,
     });
 
-    (bgl, pipeline, init_args_buf)
+    TriDexelEmitResources {
+        bgl,
+        pipeline,
+        init_args_buf,
+    }
 }
 
 struct BuiltBvhPipelines {
@@ -803,6 +812,54 @@ mod tests {
         })
     }
 
+    fn inlined_loop_stats(
+        module: &wgpu::naga::Module,
+        block: &Block,
+        depth: usize,
+    ) -> (usize, usize) {
+        let mut total_loops = 0usize;
+        let mut max_depth = depth;
+        for stmt in block.iter() {
+            match stmt {
+                Statement::Block(inner) => {
+                    let (c, d) = inlined_loop_stats(module, inner, depth);
+                    total_loops += c;
+                    max_depth = max_depth.max(d);
+                }
+                Statement::If { accept, reject, .. } => {
+                    let (ca, da) = inlined_loop_stats(module, accept, depth);
+                    let (cr, dr) = inlined_loop_stats(module, reject, depth);
+                    total_loops += ca + cr;
+                    max_depth = max_depth.max(da).max(dr);
+                }
+                Statement::Switch { cases, .. } => {
+                    for case in cases {
+                        let (c, d) = inlined_loop_stats(module, &case.body, depth);
+                        total_loops += c;
+                        max_depth = max_depth.max(d);
+                    }
+                }
+                Statement::Loop {
+                    body, continuing, ..
+                } => {
+                    let next_depth = depth + 1;
+                    let (cb, db) = inlined_loop_stats(module, body, next_depth);
+                    let (cc, dc) = inlined_loop_stats(module, continuing, next_depth);
+                    total_loops += 1 + cb + cc;
+                    max_depth = max_depth.max(next_depth).max(db).max(dc);
+                }
+                Statement::Call { function, .. } => {
+                    let (c, d) =
+                        inlined_loop_stats(module, &module.functions[*function].body, depth);
+                    total_loops += c;
+                    max_depth = max_depth.max(d);
+                }
+                _ => {}
+            }
+        }
+        (total_loops, max_depth)
+    }
+
     fn assert_fxc_safe_wgsl(label: &str, src: &str) {
         let module = wgsl::parse_str(src)
             .unwrap_or_else(|err| panic!("failed to parse WGSL shader `{label}`: {err}"));
@@ -837,6 +894,28 @@ mod tests {
         }
         for ep in &module.entry_points {
             check_fn(&ep.name, &ep.function);
+            // FXC (D3DCompile SM 5.0) inlines every user function and wraps each WGSL loop in
+            // Naga's 64-bit `loop_bound` + `while(true)` scaffold. Deeply nested or heavily
+            // duplicated inlined loops cause FXC to spin for minutes or crash with
+            // `STATUS_INTEGER_DIVIDE_BY_ZERO` (`0xc0000094`) on Windows.
+            let (inlined_loops, max_depth) = inlined_loop_stats(&module, &ep.function.body, 0);
+            let loop_cap = if label == "tridexel_emit.wgsl" {
+                12
+            } else {
+                60
+            };
+            assert!(
+                max_depth <= 3,
+                "WGSL shader `{label}` entry `{}` has inlined loop nesting depth {max_depth} (> 3), \
+                 which can hang or crash Windows FXC (`d3dcompiler_47.dll`)",
+                ep.name
+            );
+            assert!(
+                inlined_loops <= loop_cap,
+                "WGSL shader `{label}` entry `{}` expands to {inlined_loops} inlined loops (> {loop_cap}), \
+                 which can hang or crash Windows FXC (`d3dcompiler_47.dll`)",
+                ep.name
+            );
         }
     }
 

@@ -246,10 +246,11 @@ impl GpuTriDexelRenderData {
         overflow_mesh: Option<Arc<SimStockMesh>>,
         color_mode: SimStockColorMode,
     ) -> Self {
+        let emit_res = ctx.tridexel_emit_resources();
         let emit_bind_group =
             Arc::new(ctx.device().create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("chip_td_emit_bg"),
-                layout: &ctx.tridexel_emit_bgl,
+                layout: &emit_res.bgl,
                 entries: &[
                     wgpu::BindGroupEntry {
                         binding: 0,
@@ -346,13 +347,8 @@ impl GpuTriDexelRenderData {
             .queue()
             .write_buffer(&self.emit_uniform_buf, 0, bytemuck::bytes_of(&uniforms));
 
-        encoder.copy_buffer_to_buffer(
-            &self.ctx.tridexel_emit_init_args_buf,
-            0,
-            &self.indirect_args_buf,
-            0,
-            16,
-        );
+        let emit_res = self.ctx.tridexel_emit_resources();
+        encoder.copy_buffer_to_buffer(&emit_res.init_args_buf, 0, &self.indirect_args_buf, 0, 16);
 
         let num_wg = self.total_rays.div_ceil(64).max(1);
         let wg_x = num_wg.min(65_535);
@@ -362,7 +358,7 @@ impl GpuTriDexelRenderData {
                 label: Some("chip_td_emit_pass"),
                 timestamp_writes: None,
             });
-            pass.set_pipeline(&self.ctx.tridexel_emit_pipeline);
+            pass.set_pipeline(&emit_res.pipeline);
             pass.set_bind_group(0, &*self.emit_bind_group, &[]);
             pass.dispatch_workgroups(wg_x, wg_y, 1);
         }

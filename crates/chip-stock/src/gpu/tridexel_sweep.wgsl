@@ -288,13 +288,11 @@ fn subtract_interval_local(
     if (!mutated) {
         return 0;
     }
-    for (var k: u32 = 0u; k < INLINE_K; k = k + 1u) {
-        if (k < out_n) {
-            (*local_spans)[k] = out_spans[k];
-        } else {
-            (*local_spans)[k] = FlatDexelSpan(0.0, 0.0, 0u, 0u);
-        }
-    }
+    let zero_span = FlatDexelSpan(0.0, 0.0, 0u, 0u);
+    if (0u < out_n) { (*local_spans)[0u] = out_spans[0u]; } else { (*local_spans)[0u] = zero_span; }
+    if (1u < out_n) { (*local_spans)[1u] = out_spans[1u]; } else { (*local_spans)[1u] = zero_span; }
+    if (2u < out_n) { (*local_spans)[2u] = out_spans[2u]; } else { (*local_spans)[2u] = zero_span; }
+    if (3u < out_n) { (*local_spans)[3u] = out_spans[3u]; } else { (*local_spans)[3u] = zero_span; }
     *cnt = out_n;
     return 1;
 }
@@ -656,19 +654,28 @@ fn intersect_horizontal_line_with_capsule_2d(
     let len = length(seg_v);
     if (len > 1e-7) {
         let n = vec2<f32>(-seg_v.y / len, seg_v.x / len) * r;
-        for (var si: i32 = -1; si <= 1; si = si + 2) {
-            let sgn = f32(si);
-            let a = p0 + n * sgn;
-            let b = p1 + n * sgn;
-            let dy = b.y - a.y;
-            if (abs(dy) > 1e-7) {
-                let s = (y_line - a.y) / dy;
-                if (s >= 0.0 && s <= 1.0) {
-                    let xc = a.x + s * (b.x - a.x);
-                    x_lo = min(x_lo, xc);
-                    x_hi = max(x_hi, xc);
-                    has_hit = true;
-                }
+        let a_neg = p0 - n;
+        let b_neg = p1 - n;
+        let dy_neg = b_neg.y - a_neg.y;
+        if (abs(dy_neg) > 1e-7) {
+            let s = (y_line - a_neg.y) / dy_neg;
+            if (s >= 0.0 && s <= 1.0) {
+                let xc = a_neg.x + s * (b_neg.x - a_neg.x);
+                x_lo = min(x_lo, xc);
+                x_hi = max(x_hi, xc);
+                has_hit = true;
+            }
+        }
+        let a_pos = p0 + n;
+        let b_pos = p1 + n;
+        let dy_pos = b_pos.y - a_pos.y;
+        if (abs(dy_pos) > 1e-7) {
+            let s = (y_line - a_pos.y) / dy_pos;
+            if (s >= 0.0 && s <= 1.0) {
+                let xc = a_pos.x + s * (b_pos.x - a_pos.x);
+                x_lo = min(x_lo, xc);
+                x_hi = max(x_hi, xc);
+                has_hit = true;
             }
         }
     }
