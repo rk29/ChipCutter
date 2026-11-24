@@ -549,31 +549,46 @@ Standardizes how machinists specify *what area to cut* across 3-axis, 4th-axis r
 
 ---
 
+## Phase 23 — Per-Operation Keep-Out Regions, Model Bounds, Sketch Quick-Select Polish, & Indexed 4th-Axis Auto-Rotate (Planned — M84–M86)
+
+Completes the cutting-area workflow started in Phase 22 by adding an explicit rectangular **Model Bounds** XY boundary source, auto-expanding **2D Sketch Quick-Select** controls, automatic **Indexed 3+1 viewport rotation** so the machined face sits upright under `+Z` while editing, and first-class **Per-Operation Avoid / Keep-Out Regions** (faces, 2D sketch loops, and Setup workholding fixtures) subtracted directly from cutting areas with red-tinted 3D viewport overlays.
+
+### Milestone 84 — `Model Bounds` (`ModelBoundingBox`), Sketch Quick-Select Auto-Expand, & Indexed 4th-Axis Auto-Rotate Viewport (`plans/84-milestone-84-plan.md`)
+- **Explicit `Model Bounds` (`MachiningBoundaryMode::ModelBoundingBox`) with Per-Side Signed Offsets (`chip-cam`, `chip-gui`):** Add a rectangular XY model bounding-box boundary mode with independent signed `-X`, `+X`, `-Y`, and `+Y` side offsets (positive expands outward, negative insets inward) alongside `Stock Bounds`, `Model Silhouette`, and `Selected 2D Contours` across all 8 boundary-aware strategies (`Adaptive3D`, `Waterline3D`, `Parallel3D`, `Scallop3D`, `Pencil3D`, `Undercut3D`, `Deburr3D`, `Facing`) and `BoundaryPreviewOverlay`.
+- **Sketch Quick-Select Polish & Indexed 4th-Axis Auto-Rotate (`chip-gui`, `chip-cam`):** Auto-expand **`2D Sketch Layers & Quick Select`** (with per-entity quick-add and empty-state `+ New Sketch` shortcut) when switching to `Selected 2D Contours`, and automatically rotate the displayed 3D model, raw setup stock wireframe, chuck visuals, picking raycasts, Z-height planes, and `BoundaryPreviewOverlay` to match the selected `Indexed 3+1` operation's `angle_deg` (with a toggle in `4th-Axis Indexing / Wrapping` & `Settings → Viewport`).
+
+### Milestone 85 — Per-Operation & Shared Avoid / Keep-Out Regions & Fixture-Trimmed Cutting Areas Kernel (`plans/85-milestone-85-plan.md`)
+- **Backward-Compatible `AvoidRegionConfig`, Reusable `SharedAvoidRegion`, & Resolution Kernel (`chip-cam`, `chip-project`):** Add project-level named `SharedAvoidRegion` definitions (`ProjectDocument::avoid_regions`, linkable across multiple operations within a Setup or across Setups) alongside `Operation::avoid: AvoidRegionConfig` (`shared_region_ids`, local `selections`, `fixture_ids`, `avoid_all_fixtures`, `radial_clearance`, `axial_clearance`)—all hashed in `OperationInputHash` and re-matched on associative STEP reload—and implement `resolve_avoid_region_2d` projecting selected 3D faces, 2D sketch loops, and Z-overlapping `ResolvedFixtureSolid` bodies into exact keep-out regions.
+- **Cross-Strategy Cutting-Area Subtraction (`chip-cam`, `chip-sim`):** Subtract merged local + shared keep-out regions cleanly across 3-axis/3D ops (`Adaptive3D`, `Waterline3D`, `Parallel3D`, `Scallop3D`, `Pencil3D`, `Undercut3D`, `Deburr3D`), 2.5D ops (`Facing`, `Pocket2D`/`Adaptive2D`, `Contour2D`, `VCarve`, `DrillBore` hole skip with diagnostics), and 4th-axis rotary axial keep-out bands—verified crash-free and fixture-collision-free in `chip-sim`.
+
+### Milestone 86 — Avoid / Keep-Out `[Geometry]` UI, Shared Region Manager, Red-Tinted 3D Overlays, Visual Verification, & Phase 23 Spec Sync (`plans/86-milestone-86-plan.md`)
+- **Interactive Keep-Out Controls, Shared Region Reuse, & Red 3D Overlays (`chip-gui`):** Add an **`Avoid / Keep-Out Regions`** card in `[Geometry]` (1-click shared region toggle chips, `Save Local as Shared…`, `Edit` / `Detach to Local` / `Apply to Setup Ops…`, fixture chips, `Avoid All Setup Fixtures` toggle, Cutting vs. Avoid pick-target toggle, sketch quick-add, clearance inputs, CAM Browser `Keep-Out Regions` management with atomic Undo) and render nominal/effective keep-out zones in high-contrast coral/red wireframe & translucent fill in the 3D viewport.
+- **Visual Verification & Spec Sync (`chip-gui`, `specs/`):** Visually verify headless Vulkan screenshots of auto-rotated `Indexed 3+1` (`Model Bounds`) and fixture/sketch keep-out trimming, and synchronize `specs/05-operations.md`, `specs/08-ui-viewport.md`, and `specs/10-roadmap.md`.
+
+---
+
 ## Future Phases
 
 ChipCutter's long-term roadmap focuses on bringing pro-grade CAM capabilities to hobby and benchtop machinists—making everyday job setup faster, safer, and easier to use without commercial CAM complexity or licensing cost.
 
-1. **Per-Operation Avoid / Keep-Out Regions, Model Bounds, & Selection Polish:**
-   - **Avoid / Exclude Regions (`avoid_selections`):** Allow any 2.5D, 3-axis, or 4th-axis operation to pick faces, 2D sketch loops, or fixture bodies as explicit **Keep-Out / Avoid Zones** (with configurable radial/axial clearance) that subtract directly from the operation's cutting area—complementing Phase 17's fixture-aware rapid lifting with true cutting-area exclusion.
-   - **Model Bounds (`ModelBoundingBox`) & Sketch Quick-Select Polish:** Add an explicit rectangular **`Model Bounds`** XY boundary source option alongside `Stock Bounds` / `Model Silhouette` / `Selected 2D Contours`, and auto-expand the **`2D Sketch Layers & Quick Select`** card in `[Geometry]` whenever switching to `Selected 2D Contours`.
-2. **Physics-Backed Safety & Machinability Guardrails:**
+1. **Physics-Backed Safety & Machinability Guardrails:**
    - **Spindle Power, MRR, & Tool Deflection Advisor:** Compare each operation's material removal rate and estimated radial cutting force against the active machine's real spindle power curve (e.g. `150 W` Carvera Z1 vs. `1.5 kW` Milo/Cascade) and tool stickout—flagging stall risk, chatter, or excessive deflection before cutting.
    - **In-Viewport Measurement & Machinability Inspector:** Click-to-measure distances, hole diameters, depths, and angles directly in the 3D viewport, plus a **Minimum-Radius & Reach Heatmap** highlighting tight internal corners smaller than the chosen cutter and pockets deeper than flute/neck reach.
-3. **Guided Operation Setup & Reusable Machining Recipes:**
+2. **Guided Operation Setup & Reusable Machining Recipes:**
    - **Guided Operation Setup Mode (Automatic Feature Recognition):** Interactive workflow inspecting imported STEP/mesh/sketch geometry against the active Setup WCS, stock, and target machine's tool library to automatically recognize machinable features and propose a sequenced operation plan—**Facing**, **2D Adaptive / Pocket**, **Drill vs. Helical Bore / Thread Mill**, **2D Contour + Tabs**, **Edge Chamfer**, and **3D Roughing/Finishing**—letting the machinist review, tweak, accept, or skip each step.
    - **Reusable Operation Templates & Recipes:** Save proven multi-op patterns (e.g., *"6061-T6 Pocket + Finish + Chamfer"* or *"M6 Counterbored Hole = Spot + Drill + Helical Bore"*) and apply them in one click to new parts.
-4. **In-Machine Probing Operations (`G38.2`):**
+3. **In-Machine Probing Operations (`G38.2`):**
    - **Probing Operations (`G38.2`):** First-class WCS corner, bore/boss center, Z-surface, and 2-point rotation/skew probing cycles integrated directly into Setups for grblHAL/Carvera and LinuxCNC controllers.
-5. **2D Sheet Nesting, Multi-Part Arrays, & PCB Isolation Milling:**
+4. **2D Sheet Nesting, Multi-Part Arrays, & PCB Isolation Milling:**
    - **2D Sheet Nesting & Multi-Part Arrays:** Pack multiple parts onto plate, plywood, or composite sheets with tool-diameter spacing, grain-direction rules, and automatic tabs.
    - **PCB Isolation Milling & Drilling (Gerber / Excellon):** Isolation routing, copper rub-out, Excellon drill import, and height-probe leveling hooks.
-6. **Frictionless CAD Prep, Verification, & Ecosystem:**
+5. **Frictionless CAD Prep, Verification, & Ecosystem:**
    - **Live CAD Auto-Reload & Diff Preview:** Watch exported `.step`/`.dxf`/`.svg` files from FreeCAD/Fusion/Onshape, reload automatically on save, and visually highlight changed faces and re-matched selections.
    - **STL / Mesh 2.5D Feature Extraction:** Auto-detect flat Z-planes, cylindrical holes, and outer silhouettes from triangle meshes so STL models can use fast 2.5D strategies in addition to 3D surface passes.
    - **Standalone G-Code Backplot & Crash Verification Mode:** Open any external `.nc`/`.ngc` file and run ChipCutter's Tri-Dexel simulator and 5-rule crash verifier on it.
    - **Broader Tool Library Interop & Printable Setup Sheets:** Import tool libraries from FreeCAD (`.fctb`), Carbide Create, and Vectric alongside Fusion 360; richer material presets (brass, acetal/Delrin, G10/carbon fiber, mild steel, hardwoods); and printable HTML/PDF setup sheets with isometric views, WCS origin diagrams, stock dimensions, tool stickout checklists, and cycle times.
    - **Additional Controller Dialects & CAD Kernel Backends:** Fanuc/Haas, Mach4, Masso, and Centroid post dialects, plus an optional OpenCASCADE (`opencascade-rs`) `CadKernel` feature backend.
-7. **Functional & Behavioral User-Level Testing:**
+6. **Functional & Behavioral User-Level Testing:**
    - Durable end-to-end user-journey and GUI behavioral test harness (`egui_kittest` / headless interactive workflows + CLI workflows) verifying every feature from a machinist's point of view without brittle coupling to internal implementation details.
-8. **Tutorials for Upcoming Future-Phase Capabilities:**
+7. **Tutorials for Upcoming Future-Phase Capabilities:**
    - Dedicated illustrated guides and sample projects accompanying upcoming future-phase capabilities (physics machinability advisor, guided operation setup, probing, 2D nesting, and PCB isolation milling).
