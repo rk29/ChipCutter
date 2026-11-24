@@ -221,10 +221,10 @@ cargo run -p chip-cli -- machines export my-carvera -o my-carvera.machine.toml
 
 - [**`docs/samples/`**](docs/samples/README.md) — **Illustrated Sample Projects Gallery** with thumbnails of all 26 documented built-in STEP, Workholding, Undercut & 3D Deburr, Thread Mill, Mesh (`STL`/`OBJ`/`3MF`), 4th-Axis Rotary, Pure-2D (`DXF`/`SVG`), and V-Carve samples plus per-Setup and per-Operation completion simulation screenshots
 - [**`docs/tutorials/`**](docs/tutorials/README.md) — Illustrated step-by-step Getting Started, 2.5D, Helical Thread Milling, Two-Sided Flip Workholding & Soft Jaws, GPU Simulation & Feedrate Optimization, 3D Edge Deburring, Undercut/T-Slot/Dovetail/Lollipop Milling, 3-Axis Surface, 4th-Axis Rotary, Machine Definitions, Model Orientation/Scaling, Tri-Dexel Simulation & Error Metrics, & Production Workflow tutorials (`00`–`22`)
-- [**`ARCHITECTURE.md`**](ARCHITECTURE.md) — End-to-end data pipeline, crate dependency graph, threading/caching model, and 3D render passes
+- [**`ARCHITECTURE.md`**](ARCHITECTURE.md) — Architecture entry point & index into [`specs/01-architecture.md`](specs/01-architecture.md) and the full [`specs/`](specs/) design documentation
 - [**`DEVELOPMENT.md`**](DEVELOPMENT.md) — Workspace layout, platform build prerequisites, native Linux/macOS/Windows setup, and headless CI instructions
 - [**`specs/00-overview.md`**](specs/00-overview.md) — Product scope, non-goals, and full specification index (`00` through `11`)
-- [**`specs/10-roadmap.md`**](specs/10-roadmap.md) — Completed Phase 1–22 (`M1`–`M83`) milestones and future phases
+- [**`specs/10-roadmap.md`**](specs/10-roadmap.md) — Completed phases/milestones and future phases
 - [**`AGENTS.md`**](AGENTS.md) — Architectural invariants and contributor guidelines
 
 ---
