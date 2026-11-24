@@ -10,7 +10,7 @@ use crate::{
     strategies::{StrategyExecContext, compute_z_levels},
     surface3d::{
         PushCutterField, SurfaceCutterProfile, SurfaceMesh3D, is_2d_arc_clear_of_avoid,
-        region_aabb_2d, resolve_3d_containment_region_detailed, stock_xy_region,
+        region_aabb_2d, resolve_3d_boundary_config_detailed, stock_xy_region,
     },
     toolpath::{ToolpathBuilder, XyArcMove},
     wcs::CamError,
@@ -563,13 +563,14 @@ fn resolve_facing_nominal_and_islands(
             if ctx.doc.has_3d_geometry() {
                 let surface = SurfaceMesh3D::from_cad_document(ctx.doc, &[], &ctx.setup.frame);
                 if !surface.triangles.is_empty() && surface.aabb_wcs.is_valid() {
-                    let resolved = resolve_3d_containment_region_detailed(
+                    let mut cfg = params.boundary.clone();
+                    cfg.tool_containment = ToolContainmentMode::ToolCenterOnBoundary;
+                    cfg.boundary_offset = chip_math::ParamLength::from_mm(0.0);
+                    let resolved = resolve_3d_boundary_config_detailed(
                         &surface,
                         ctx.setup,
                         &ctx.selection,
-                        MachiningBoundaryMode::ModelSilhouette,
-                        ToolContainmentMode::ToolCenterOnBoundary,
-                        0.0,
+                        &cfg,
                         tool_r,
                     );
                     builder.warnings.extend(resolved.warnings);

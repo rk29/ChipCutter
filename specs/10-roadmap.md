@@ -553,8 +553,9 @@ Standardizes how machinists specify *what area to cut* across 3-axis, 4th-axis r
 
 ChipCutter's long-term roadmap focuses on bringing pro-grade CAM capabilities to hobby and benchtop machinists—making everyday job setup faster, safer, and easier to use without commercial CAM complexity or licensing cost.
 
-1. **Per-Operation Avoid / Keep-Out Regions & Fixture-Trimmed Cutting Areas:**
+1. **Per-Operation Avoid / Keep-Out Regions, Model Bounds, & Selection Polish:**
    - **Avoid / Exclude Regions (`avoid_selections`):** Allow any 2.5D, 3-axis, or 4th-axis operation to pick faces, 2D sketch loops, or fixture bodies as explicit **Keep-Out / Avoid Zones** (with configurable radial/axial clearance) that subtract directly from the operation's cutting area—complementing Phase 17's fixture-aware rapid lifting with true cutting-area exclusion.
+   - **Model Bounds (`ModelBoundingBox`) & Sketch Quick-Select Polish:** Add an explicit rectangular **`Model Bounds`** XY boundary source option alongside `Stock Bounds` / `Model Silhouette` / `Selected 2D Contours`, and auto-expand the **`2D Sketch Layers & Quick Select`** card in `[Geometry]` whenever switching to `Selected 2D Contours`.
 2. **Physics-Backed Safety & Machinability Guardrails:**
    - **Spindle Power, MRR, & Tool Deflection Advisor:** Compare each operation's material removal rate and estimated radial cutting force against the active machine's real spindle power curve (e.g. `150 W` Carvera Z1 vs. `1.5 kW` Milo/Cascade) and tool stickout—flagging stall risk, chatter, or excessive deflection before cutting.
    - **In-Viewport Measurement & Machinability Inspector:** Click-to-measure distances, hole diameters, depths, and angles directly in the 3D viewport, plus a **Minimum-Radius & Reach Heatmap** highlighting tight internal corners smaller than the chosen cutter and pockets deeper than flute/neck reach.

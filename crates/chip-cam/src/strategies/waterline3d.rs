@@ -16,7 +16,7 @@ use crate::{
         PushCutterField, SurfaceCutterProfile, SurfaceMesh3D,
         levels::{
             clip_polyline_to_region, detect_flat_plateaus, points_to_polyline,
-            resolve_3d_containment_region_detailed, reverse_arc_polyline, sample_seg,
+            resolve_3d_boundary_config_detailed, reverse_arc_polyline, sample_seg,
             sample_surface_slope_deg,
         },
     },
@@ -66,13 +66,11 @@ pub fn generate_waterline3d(
         });
     }
 
-    let resolved_boundary = resolve_3d_containment_region_detailed(
+    let resolved_boundary = resolve_3d_boundary_config_detailed(
         &surface,
         ctx.setup,
         &ctx.selection,
-        params.boundary.boundary_mode,
-        params.boundary.tool_containment,
-        params.boundary.boundary_offset.value_mm,
+        &params.boundary,
         tool_r,
     );
     builder.warnings.extend(resolved_boundary.warnings);

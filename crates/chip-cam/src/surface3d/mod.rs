@@ -29,8 +29,8 @@ pub use finishing::{
 };
 pub use levels::{
     ResolvedBoundary2D, clip_polyline_to_region, detect_flat_plateaus, rect_region_2d,
-    resolve_3d_containment_region, resolve_3d_containment_region_detailed,
-    sample_surface_slope_deg, stock_xy_region,
+    resolve_3d_boundary_config_detailed, resolve_3d_containment_region,
+    resolve_3d_containment_region_detailed, sample_surface_slope_deg, stock_xy_region,
 };
 pub use overhang_guard::{
     OverhangGuardReport, check_2d_toolpath_against_overhangs, check_hole_column_overhang,

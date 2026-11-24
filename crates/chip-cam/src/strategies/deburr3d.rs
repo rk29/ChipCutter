@@ -23,7 +23,7 @@ use crate::{
     rest2d::RegionSet2D,
     selection::GeometrySelectionItem,
     strategies::StrategyExecContext,
-    surface3d::{SurfaceMesh3D, resolve_3d_containment_region_detailed},
+    surface3d::{SurfaceMesh3D, resolve_3d_boundary_config_detailed},
     toolpath::{ToolpathBuilder, XyArcMove},
     wcs::CamError,
 };
@@ -532,13 +532,11 @@ pub fn generate_deburr3d(
     let xy_containment: Option<RegionSet2D> = if use_auto_detect {
         let surface = SurfaceMesh3D::from_tri_mesh(target_mesh.clone());
         let tool_r = 0.5 * ctx.tool.geometry.cutting_diameter_mm().max(0.1);
-        let resolved_boundary = resolve_3d_containment_region_detailed(
+        let resolved_boundary = resolve_3d_boundary_config_detailed(
             &surface,
             ctx.setup,
             &ctx.selection,
-            params.boundary.boundary_mode,
-            params.boundary.tool_containment,
-            params.boundary.boundary_offset.value_mm,
+            &params.boundary,
             tool_r,
         );
         builder.warnings.extend(resolved_boundary.warnings);

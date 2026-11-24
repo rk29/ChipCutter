@@ -16,7 +16,7 @@ use chip_cam::{
     OperationKind, PocketBoundaryMode, PocketRegion2D, RegionSet2D, ResolvedHeights,
     ResolvedRotaryConfig, ResolvedRotaryWindow, ResolvedSetup, ResolvedStockGeometry,
     RotaryWindowInput, StockAxis, StrategyParams, SurfaceMesh3D, ToolContainmentMode,
-    rect_region_2d, resolve_3d_containment_region_detailed, resolve_rotary_window, stock_xy_region,
+    rect_region_2d, resolve_3d_boundary_config_detailed, resolve_rotary_window, stock_xy_region,
 };
 use chip_math::{Aabb3, DVec2, DVec3, DisplayUnit, EvalContext, RigidFrame3};
 use chip_tools::Tool;
@@ -217,6 +217,7 @@ fn compute_boundary_preview_signature(input: &BoundaryPreviewInput<'_>) -> u64 {
         std::mem::discriminant(&b.tool_containment).hash(&mut h);
         b.boundary_offset.value_mm.to_bits().hash(&mut h);
         b.boundary_offset.expr.hash(&mut h);
+        b.silhouette_fill_holes.hash(&mut h);
     } else if let Some(rb) = input.op.rotary_axial_boundary() {
         2_u8.hash(&mut h);
         std::mem::discriminant(&rb.axial_boundary_mode).hash(&mut h);
@@ -404,9 +405,7 @@ fn compute_overlay(
                 rs,
                 surface_mesh,
                 sel_ref,
-                boundary.boundary_mode,
-                boundary.tool_containment,
-                boundary.boundary_offset.value_mm,
+                &boundary,
                 tool_r,
                 show_effective,
                 top_z_wcs,
@@ -422,15 +421,8 @@ fn compute_overlay(
             &empty_mesh
         };
 
-        let resolved = resolve_3d_containment_region_detailed(
-            surf_ref,
-            rs,
-            sel_ref,
-            boundary.boundary_mode,
-            boundary.tool_containment,
-            boundary.boundary_offset.value_mm,
-            tool_r,
-        );
+        let resolved =
+            resolve_3d_boundary_config_detailed(surf_ref, rs, sel_ref, &boundary, tool_r);
         return Some(BoundaryPreviewOverlay::Planar2D {
             nominal_region: resolved.nominal_region,
             effective_region: resolved.effective_region,
@@ -460,14 +452,15 @@ fn resolve_facing_preview(
     rs: &ResolvedSetup,
     surface_mesh: Option<&SurfaceMesh3D>,
     selection: &ExtractedSelectionSummary,
-    mode: MachiningBoundaryMode,
-    containment: ToolContainmentMode,
-    extra_offset_mm: f64,
+    boundary: &chip_cam::MachiningBoundaryConfig,
     tool_r: f64,
     show_effective: bool,
     top_z_wcs: f64,
     bottom_z_wcs: f64,
 ) -> BoundaryPreviewOverlay {
+    let mode = boundary.boundary_mode;
+    let containment = boundary.tool_containment;
+    let extra_offset_mm = boundary.boundary_offset.value_mm;
     let mut warnings = Vec::new();
     let nominal_region = match mode {
         MachiningBoundaryMode::StockBox => stock_xy_region(rs),
@@ -476,15 +469,10 @@ fn resolve_facing_preview(
                 && !surf.triangles.is_empty()
                 && surf.aabb_wcs.is_valid()
             {
-                let res = resolve_3d_containment_region_detailed(
-                    surf,
-                    rs,
-                    selection,
-                    MachiningBoundaryMode::ModelSilhouette,
-                    ToolContainmentMode::ToolCenterOnBoundary,
-                    0.0,
-                    tool_r,
-                );
+                let mut cfg = boundary.clone();
+                cfg.tool_containment = ToolContainmentMode::ToolCenterOnBoundary;
+                cfg.boundary_offset = chip_math::ParamLength::from_mm(0.0);
+                let res = resolve_3d_boundary_config_detailed(surf, rs, selection, &cfg, tool_r);
                 warnings.extend(res.warnings);
                 res.nominal_region
             } else {

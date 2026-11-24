@@ -430,6 +430,8 @@ struct Undercut3DParamsDe {
     tool_containment: Option<ToolContainmentMode>,
     #[serde(default)]
     boundary_offset: Option<ParamLength>,
+    #[serde(default)]
+    silhouette_fill_holes: Option<bool>,
     #[serde(default = "default_undercut3d_z_stepdown")]
     z_stepdown: ParamLength,
     #[serde(default)]
@@ -456,6 +458,9 @@ impl From<Undercut3DParamsDe> for Undercut3DParams {
                 boundary_mode: raw.boundary_mode.unwrap_or(def.boundary_mode),
                 tool_containment: raw.tool_containment.unwrap_or(def.tool_containment),
                 boundary_offset: raw.boundary_offset.unwrap_or(def.boundary_offset),
+                silhouette_fill_holes: raw
+                    .silhouette_fill_holes
+                    .unwrap_or(def.silhouette_fill_holes),
             },
             z_stepdown: raw.z_stepdown,
             use_cusp_height: raw.use_cusp_height,

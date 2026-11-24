@@ -494,6 +494,27 @@ fn show_machining_boundary_card(
                     },
                 );
 
+                if boundary.boundary_mode == MachiningBoundaryMode::ModelSilhouette {
+                    grid_row(
+                        ui,
+                        "Interior Holes",
+                        Some(
+                            "Fill interior through-holes in the projected Model Silhouette so 3D passes machine through voids instead of leaving uncut stock pillars",
+                        ),
+                        |ui| {
+                            if ui
+                                .checkbox(&mut boundary.silhouette_fill_holes, "Fill through-holes")
+                                .on_hover_text(
+                                    "Checked: machine across interior through-holes inside the outer silhouette. Unchecked: keep interior through-hole voids outside the cutting boundary.",
+                                )
+                                .changed()
+                            {
+                                *mutated_label = Some("Toggle Silhouette Fill Through-Holes");
+                            }
+                        },
+                    );
+                }
+
                 grid_row(
                     ui,
                     "Tool Containment",

@@ -101,6 +101,10 @@ pub struct MachiningBoundaryConfig {
     pub tool_containment: ToolContainmentMode,
     #[serde(default = "default_zero_length")]
     pub boundary_offset: ParamLength,
+    /// When `boundary_mode == ModelSilhouette`, fill interior through-holes so 3D passes machine
+    /// through open voids instead of leaving uncut stock pillars inside them.
+    #[serde(default = "default_true")]
+    pub silhouette_fill_holes: bool,
 }
 
 impl Default for MachiningBoundaryConfig {
@@ -109,6 +113,7 @@ impl Default for MachiningBoundaryConfig {
             boundary_mode: MachiningBoundaryMode::default(),
             tool_containment: ToolContainmentMode::default(),
             boundary_offset: default_zero_length(),
+            silhouette_fill_holes: true,
         }
     }
 }
@@ -123,6 +128,7 @@ impl MachiningBoundaryConfig {
             boundary_mode,
             tool_containment,
             boundary_offset: ParamLength::from_mm(boundary_offset_mm),
+            silhouette_fill_holes: true,
         }
     }
 

@@ -17,7 +17,7 @@ use crate::{
     },
     surface3d::{
         PushCutterField, SurfaceCutterProfile, SurfaceMesh3D,
-        levels::{detect_flat_plateaus, resolve_3d_containment_region_detailed, stock_xy_region},
+        levels::{detect_flat_plateaus, resolve_3d_boundary_config_detailed, stock_xy_region},
     },
     toolpath::ToolpathBuilder,
     wcs::CamError,
@@ -57,13 +57,11 @@ pub fn generate_adaptive3d(
     }
 
     // Resolve 2D tool-center containment boundary uniformly across StockBox, ModelSilhouette, and SelectedRegions.
-    let resolved_boundary = resolve_3d_containment_region_detailed(
+    let resolved_boundary = resolve_3d_boundary_config_detailed(
         &surface,
         ctx.setup,
         &ctx.selection,
-        params.boundary.boundary_mode,
-        params.boundary.tool_containment,
-        params.boundary.boundary_offset.value_mm,
+        &params.boundary,
         tool_r,
     );
     builder.warnings.extend(resolved_boundary.warnings);

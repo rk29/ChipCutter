@@ -26,7 +26,7 @@ use crate::{
             is_overhang_shadow_transition, simplify_3d_polyline_gouge_safe,
             split_chains_at_overhang_cliffs,
         },
-        levels::{resolve_3d_containment_region_detailed, sample_surface_slope_deg},
+        levels::{resolve_3d_boundary_config_detailed, sample_surface_slope_deg},
         refine_convex_chords_3d, region_aabb_2d, stepover_for_cusp_height,
     },
     toolpath::ToolpathBuilder,
@@ -100,13 +100,11 @@ pub fn generate_scallop3d(
         });
     }
 
-    let resolved_boundary = resolve_3d_containment_region_detailed(
+    let resolved_boundary = resolve_3d_boundary_config_detailed(
         &surface,
         ctx.setup,
         &ctx.selection,
-        params.boundary.boundary_mode,
-        params.boundary.tool_containment,
-        params.boundary.boundary_offset.value_mm,
+        &params.boundary,
         tool_r,
     );
     builder.warnings.extend(resolved_boundary.warnings);

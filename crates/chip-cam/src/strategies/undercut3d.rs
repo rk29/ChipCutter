@@ -19,7 +19,7 @@ use crate::{
     params::Undercut3DParams,
     rest2d::RegionSet2D,
     strategies::StrategyExecContext,
-    surface3d::{SurfaceMesh3D, resolve_3d_containment_region_detailed},
+    surface3d::{SurfaceMesh3D, resolve_3d_boundary_config_detailed},
     toolpath::ToolpathBuilder,
     wcs::CamError,
 };
@@ -176,13 +176,11 @@ pub fn generate_undercut3d(
     };
 
     // Resolve 2D XY tool-center containment boundary from `params.boundary`
-    let resolved_boundary = resolve_3d_containment_region_detailed(
+    let resolved_boundary = resolve_3d_boundary_config_detailed(
         &surface,
         ctx.setup,
         &ctx.selection,
-        params.boundary.boundary_mode,
-        params.boundary.tool_containment,
-        params.boundary.boundary_offset.value_mm,
+        &params.boundary,
         specs.eff_r,
     );
     builder.warnings.extend(resolved_boundary.warnings);

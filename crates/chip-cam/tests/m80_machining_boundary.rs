@@ -12,7 +12,7 @@ use chip_cam::{
     OperationGenRequest, OperationKind, ParallelCutDirection, SegmentMotion3D, Setup, StockAxis,
     StockConfig, StrategyParams, SurfaceMesh3D, ToolContainmentMode, Undercut3DParams,
     WcsOriginMode, WorkOffsetSlot, generate_operation_toolpath_with_rest,
-    resolve_3d_containment_region_detailed, stock_xy_region,
+    resolve_3d_boundary_config_detailed, resolve_3d_containment_region_detailed, stock_xy_region,
 };
 use chip_math::{DEFAULT_TESS_CHORD_TOL_MM, DVec2, DVec3, DisplayUnit, ParamLength};
 use chip_sim::{
@@ -912,6 +912,214 @@ fn deburr3d_auto_detect_respects_selected_regions_and_passes_sim() {
         sim_res.critical_error_count(),
         0,
         "Deburr3D SelectedRegions must have 0 critical errors in sim, got: {:#?}",
+        sim_res.diagnostics
+    );
+}
+
+fn build_hollow_ring_stl_bytes(r_outer: f64, r_inner: f64, height: f64) -> Vec<u8> {
+    let segs = 48usize;
+    let mut tris = Vec::new();
+    for i in 0..segs {
+        let a0 = (i as f64 / segs as f64) * std::f64::consts::TAU;
+        let a1 = ((i + 1) as f64 / segs as f64) * std::f64::consts::TAU;
+        let (c0, s0) = (a0.cos(), a0.sin());
+        let (c1, s1) = (a1.cos(), a1.sin());
+        let ob0 = DVec3::new(r_outer * c0, r_outer * s0, 0.0);
+        let ob1 = DVec3::new(r_outer * c1, r_outer * s1, 0.0);
+        let ot0 = DVec3::new(r_outer * c0, r_outer * s0, height);
+        let ot1 = DVec3::new(r_outer * c1, r_outer * s1, height);
+        let ib0 = DVec3::new(r_inner * c0, r_inner * s0, 0.0);
+        let ib1 = DVec3::new(r_inner * c1, r_inner * s1, 0.0);
+        let it0 = DVec3::new(r_inner * c0, r_inner * s0, height);
+        let it1 = DVec3::new(r_inner * c1, r_inner * s1, height);
+        // Outer wall (outward)
+        tris.push([ob0, ob1, ot1]);
+        tris.push([ob0, ot1, ot0]);
+        // Inner wall (inward toward axis)
+        tris.push([ib0, it1, ib1]);
+        tris.push([ib0, it0, it1]);
+        // Top annulus (+Z)
+        tris.push([it0, ot0, ot1]);
+        tris.push([it0, ot1, it1]);
+        // Bottom annulus (-Z)
+        tris.push([ib0, ob1, ob0]);
+        tris.push([ib0, ib1, ob1]);
+    }
+    encode_test_stl(&tris)
+}
+
+#[test]
+fn model_silhouette_fill_through_holes_option_toggles_interior_void_machining() {
+    let r_outer = 24.0;
+    let r_inner = 12.0;
+    let height = 10.0;
+    let stl = build_hollow_ring_stl_bytes(r_outer, r_inner, height);
+    let doc =
+        load_mesh_cad_document("hollow_ring.stl", &stl, &MeshImportOptions::default()).unwrap();
+
+    let mut setup = Setup::new("s_ring", "Ring Setup", WorkOffsetSlot::G54);
+    setup.wcs.origin = WcsOriginMode::ModelBoxPoint {
+        anchor: BoxAnchor27::TOP_CENTER,
+    };
+    setup.stock = StockConfig::RelativeBox {
+        symmetric_xy: true,
+        side_pos_x: ParamLength::from_mm(4.0),
+        side_neg_x: ParamLength::from_mm(4.0),
+        side_pos_y: ParamLength::from_mm(4.0),
+        side_neg_y: ParamLength::from_mm(4.0),
+        top_offset_z: ParamLength::from_mm(0.0),
+        bottom_offset_z: ParamLength::from_mm(0.0),
+        sheet_thickness_z: ParamLength::from_mm(height),
+        round_increment_mm: None,
+    };
+    let resolved = setup.resolve(&doc, DisplayUnit::Millimeter).unwrap();
+    let surface = SurfaceMesh3D::from_cad_document(&doc, &[], &resolved.frame);
+    let empty_sel = ExtractedSelectionSummary::default();
+
+    // 1. Default `silhouette_fill_holes = true` fills the central through-hole void
+    let mut cfg_filled = MachiningBoundaryConfig::new(
+        MachiningBoundaryMode::ModelSilhouette,
+        ToolContainmentMode::ToolCenterOnBoundary,
+        0.5,
+    );
+    assert!(cfg_filled.silhouette_fill_holes);
+    let res_filled =
+        resolve_3d_boundary_config_detailed(&surface, &resolved, &empty_sel, &cfg_filled, 1.5);
+    assert!(
+        res_filled
+            .nominal_region
+            .regions
+            .iter()
+            .all(|r| r.islands_cw.is_empty()),
+        "silhouette_fill_holes=true must fill interior through-holes"
+    );
+    assert!(
+        res_filled.effective_region.contains_point(DVec2::ZERO),
+        "center of through-hole must be inside effective_region when silhouette_fill_holes=true"
+    );
+
+    // 2. `silhouette_fill_holes = false` preserves the interior through-hole void
+    cfg_filled.silhouette_fill_holes = false;
+    let res_hollow =
+        resolve_3d_boundary_config_detailed(&surface, &resolved, &empty_sel, &cfg_filled, 1.5);
+    let hole_count: usize = res_hollow
+        .nominal_region
+        .regions
+        .iter()
+        .map(|r| r.islands_cw.len())
+        .sum();
+    assert_eq!(
+        hole_count, 1,
+        "silhouette_fill_holes=false must preserve the interior through-hole"
+    );
+    assert!(
+        !res_hollow.effective_region.contains_point(DVec2::ZERO),
+        "center of through-hole must stay excluded when silhouette_fill_holes=false"
+    );
+
+    // 3. Adaptive3D cuts inside the central through-hole when `silhouette_fill_holes=true` and
+    //    skips it when `silhouette_fill_holes=false` (verified crash/gouge-free in chip-sim!)
+    let lib = default_starter_tool_library();
+    let flat_3 = lib
+        .tools
+        .iter()
+        .find(|t| {
+            matches!(t.geometry, CutterGeometry::FlatEndmill { diameter_mm, .. } if diameter_mm <= 3.5)
+        })
+        .unwrap();
+    let make_op = |fill_holes: bool| {
+        let mut op = Operation::new("op_ring", "Ring Adaptive", OperationKind::Adaptive3D);
+        op.tool_id = Some(flat_3.id.clone());
+        op.heights.top = HeightSpec::new(HeightReference::StockTop, 0.0);
+        op.heights.bottom = HeightSpec::new(HeightReference::ModelBottom, 0.0);
+        if let Some(StrategyParams::Adaptive3D(ref mut p)) = op.strategy {
+            p.boundary.boundary_mode = MachiningBoundaryMode::ModelSilhouette;
+            p.boundary.tool_containment = ToolContainmentMode::ToolOutsideBoundary;
+            p.boundary.boundary_offset = ParamLength::from_mm(2.0);
+            p.boundary.silhouette_fill_holes = fill_holes;
+            p.max_roughing_stepdown = ParamLength::from_mm(5.0);
+            p.fine_stepdown = ParamLength::from_mm(0.0);
+        }
+        op
+    };
+
+    let cancel = AtomicBool::new(false);
+    let op_fill = make_op(true);
+    let tp_fill = generate_operation_toolpath_with_rest(&OperationGenRequest {
+        doc: &doc,
+        sketches: &[],
+        setup: &resolved,
+        op: &op_fill,
+        tool: flat_3,
+        clearing_tool: None,
+        display_unit: DisplayUnit::Millimeter,
+        is_first_tool_in_setup: true,
+        upstream_rest: &[],
+        carryover_stock: None,
+        cancel: &cancel,
+    })
+    .unwrap();
+    let cuts_inside_hole = |tp: &chip_cam::GeneratedToolpath| -> bool {
+        tp.segments_wcs.iter().any(|s| {
+            matches!(
+                s.motion,
+                SegmentMotion3D::Linear {
+                    role: MotionRole::Cut | MotionRole::FinishCut,
+                    ..
+                } | SegmentMotion3D::Arc {
+                    role: MotionRole::Cut | MotionRole::FinishCut,
+                    ..
+                }
+            ) && (s.start_wcs.x.hypot(s.start_wcs.y) < 6.0 || s.end_wcs.x.hypot(s.end_wcs.y) < 6.0)
+        })
+    };
+    assert!(
+        cuts_inside_hole(&tp_fill),
+        "Adaptive3D must cut inside the through-hole when silhouette_fill_holes=true"
+    );
+
+    let op_keep = make_op(false);
+    let tp_keep = generate_operation_toolpath_with_rest(&OperationGenRequest {
+        doc: &doc,
+        sketches: &[],
+        setup: &resolved,
+        op: &op_keep,
+        tool: flat_3,
+        clearing_tool: None,
+        display_unit: DisplayUnit::Millimeter,
+        is_first_tool_in_setup: true,
+        upstream_rest: &[],
+        carryover_stock: None,
+        cancel: &cancel,
+    })
+    .unwrap();
+    assert!(
+        !cuts_inside_hole(&tp_keep),
+        "Adaptive3D must NOT cut inside the through-hole when silhouette_fill_holes=false"
+    );
+
+    let sim_ops = vec![SimOperationInput::from_operation(
+        &op_fill, flat_3, &tp_fill,
+    )];
+    let sim_res = run_setup_simulation(&SetupSimulationInput {
+        doc: &doc,
+        setup: &resolved,
+        target_bodies: &[],
+        fixtures: &[],
+        operations: &sim_ops,
+        kinematics: MachineKinematicsConfig::default(),
+        resolution: SimResolution::Standard,
+        verify_config: SimVerificationConfig::default(),
+        initial_stock: None,
+        initial_raw_volume_mm3: None,
+        carried_over_from_setup: None,
+        cancel: None,
+    })
+    .unwrap();
+    assert_eq!(
+        sim_res.critical_error_count(),
+        0,
+        "filled-hole Adaptive3D must have 0 critical errors in sim: {:#?}",
         sim_res.diagnostics
     );
 }

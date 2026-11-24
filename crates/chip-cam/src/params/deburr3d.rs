@@ -51,6 +51,8 @@ struct Deburr3DParamsDe {
     tool_containment: Option<ToolContainmentMode>,
     #[serde(default)]
     boundary_offset: Option<ParamLength>,
+    #[serde(default)]
+    silhouette_fill_holes: Option<bool>,
     #[serde(default = "default_chamfer_width")]
     chamfer_width: ParamLength,
     #[serde(default = "default_tip_offset")]
@@ -85,6 +87,9 @@ impl From<Deburr3DParamsDe> for Deburr3DParams {
                 boundary_mode: raw.boundary_mode.unwrap_or(def.boundary_mode),
                 tool_containment: raw.tool_containment.unwrap_or(def.tool_containment),
                 boundary_offset: raw.boundary_offset.unwrap_or(def.boundary_offset),
+                silhouette_fill_holes: raw
+                    .silhouette_fill_holes
+                    .unwrap_or(def.silhouette_fill_holes),
             },
             chamfer_width: raw.chamfer_width,
             tip_offset: raw.tip_offset,

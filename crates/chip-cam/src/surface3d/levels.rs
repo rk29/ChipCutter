@@ -4,7 +4,7 @@ use chip_math::{ArcPolyline2D, ArcSegment2D, DVec2};
 
 use crate::{
     offset2d::PocketRegion2D,
-    params::{MachiningBoundaryMode, ToolContainmentMode},
+    params::{MachiningBoundaryConfig, MachiningBoundaryMode, ToolContainmentMode},
     rest2d::RegionSet2D,
     selection::{ExtractedFeature25D, ExtractedSelectionSummary},
     setup::ResolvedSetup,
@@ -94,7 +94,15 @@ pub fn detect_flat_plateaus(
 /// [`project_surface_z_slab_xy`] across the full model Z span, clamping outer AABB boundaries to
 /// exact `surface.aabb_wcs` coordinates and falling back to [`rect_region_2d`] only if projection
 /// yields an empty polygon on a degenerate mesh.
-fn model_silhouette_xy_region(surface: &SurfaceMesh3D, setup: &ResolvedSetup) -> RegionSet2D {
+///
+/// When `fill_holes == true`, interior through-hole voids (`holes_cw`) are filled so machining
+/// boundaries cover the full outer silhouette rather than leaving uncut stock pillars inside
+/// through-holes.
+fn model_silhouette_xy_region(
+    surface: &SurfaceMesh3D,
+    setup: &ResolvedSetup,
+    fill_holes: bool,
+) -> RegionSet2D {
     if !surface.aabb_wcs.is_valid() {
         return stock_xy_region(setup);
     }
@@ -117,12 +125,44 @@ fn model_silhouette_xy_region(surface: &SurfaceMesh3D, setup: &ResolvedSetup) ->
     if projected.is_empty() {
         return aabb_rect;
     }
+    let projected = if fill_holes && projected.regions.iter().any(|r| !r.islands_cw.is_empty()) {
+        let mut outer_sets: Vec<RegionSet2D> = projected
+            .regions
+            .iter()
+            .map(|r| RegionSet2D::from_single(PocketRegion2D::new(r.outer_ccw.clone(), Vec::new())))
+            .collect();
+        let filled = RegionSet2D::union_many(&mut outer_sets);
+        if filled.is_empty() { projected } else { filled }
+    } else {
+        projected
+    };
     let clipped = projected.intersect(&aabb_rect);
     if clipped.is_empty() {
         projected
     } else {
         clipped
     }
+}
+
+/// Resolves a [`MachiningBoundaryConfig`] into both its raw `nominal_region` (before tool radius
+/// and offset dilation) and its tool-center `effective_region`, along with any non-fatal warnings.
+pub fn resolve_3d_boundary_config_detailed(
+    surface: &SurfaceMesh3D,
+    setup: &ResolvedSetup,
+    selection: &ExtractedSelectionSummary,
+    config: &MachiningBoundaryConfig,
+    tool_radius_mm: f64,
+) -> ResolvedBoundary2D {
+    resolve_3d_containment_region_impl(
+        surface,
+        setup,
+        selection,
+        config.boundary_mode,
+        config.tool_containment,
+        config.boundary_offset.value_mm,
+        config.silhouette_fill_holes,
+        tool_radius_mm,
+    )
 }
 
 /// Resolves the 2D XY machining boundary into both its raw `nominal_region` (before tool radius
@@ -136,10 +176,35 @@ pub fn resolve_3d_containment_region_detailed(
     extra_offset_mm: f64,
     tool_radius_mm: f64,
 ) -> ResolvedBoundary2D {
+    resolve_3d_containment_region_impl(
+        surface,
+        setup,
+        selection,
+        mode,
+        containment,
+        extra_offset_mm,
+        true,
+        tool_radius_mm,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn resolve_3d_containment_region_impl(
+    surface: &SurfaceMesh3D,
+    setup: &ResolvedSetup,
+    selection: &ExtractedSelectionSummary,
+    mode: MachiningBoundaryMode,
+    containment: ToolContainmentMode,
+    extra_offset_mm: f64,
+    silhouette_fill_holes: bool,
+    tool_radius_mm: f64,
+) -> ResolvedBoundary2D {
     let mut warnings = Vec::new();
     let nominal_region = match mode {
         MachiningBoundaryMode::StockBox => stock_xy_region(setup),
-        MachiningBoundaryMode::ModelSilhouette => model_silhouette_xy_region(surface, setup),
+        MachiningBoundaryMode::ModelSilhouette => {
+            model_silhouette_xy_region(surface, setup, silhouette_fill_holes)
+        }
         MachiningBoundaryMode::SelectedRegions => {
             let sel_reg = selected_features_xy_region(selection);
             if sel_reg.is_empty() {
@@ -147,7 +212,7 @@ pub fn resolve_3d_containment_region_detailed(
                     "Machining boundary is set to 'Selected 2D Contours' but no closed 2D contours or planar faces are selected; falling back to Model Silhouette."
                         .to_string(),
                 );
-                model_silhouette_xy_region(surface, setup)
+                model_silhouette_xy_region(surface, setup, silhouette_fill_holes)
             } else {
                 sel_reg
             }
