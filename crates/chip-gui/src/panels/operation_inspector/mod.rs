@@ -19,6 +19,13 @@ use crate::{
     widgets::{BannerKind, IconKind, inline_banner, inline_icon, static_card},
 };
 
+/// Side-effect actions emitted by [`show_operation_inspector`] back to the host shell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OperationInspectorAction {
+    /// User clicked `+ New Sketch` inside the empty-state `2D Sketch Layers & Quick Select` card.
+    CreateSketch,
+}
+
 /// Context passed to [`show_operation_inspector`].
 pub struct OperationInspectorCtx<'a> {
     pub project: &'a mut ProjectDocument,
@@ -36,12 +43,16 @@ pub struct OperationInspectorCtx<'a> {
     pub pick_mode: &'a mut ViewportPickMode,
     pub lock_chipload: &'a mut bool,
     pub show_z_planes: &'a mut bool,
+    pub auto_rotate_indexed_op: &'a mut bool,
     pub open_tool_manager: &'a mut bool,
     pub sim_engine: chip_sim::SimEngineKind,
 }
 
 /// Renders the standardized 5-tab **Operation Inspector** (`[Tool]`, `[Geometry]`, `[Heights]`, `[Passes]`, `[Linking]`).
-pub fn show_operation_inspector(ui: &mut egui::Ui, ctx: OperationInspectorCtx<'_>) {
+pub fn show_operation_inspector(
+    ui: &mut egui::Ui,
+    ctx: OperationInspectorCtx<'_>,
+) -> Option<OperationInspectorAction> {
     let OperationInspectorCtx {
         project,
         setup_idx,
@@ -58,13 +69,14 @@ pub fn show_operation_inspector(ui: &mut egui::Ui, ctx: OperationInspectorCtx<'_
         pick_mode,
         lock_chipload,
         show_z_planes,
+        auto_rotate_indexed_op,
         open_tool_manager,
         sim_engine,
     } = ctx;
 
     if setup_idx >= project.setups.len() || op_idx >= project.setups[setup_idx].operations.len() {
         inline_banner(ui, BannerKind::Info, "No Operation selected.");
-        return;
+        return None;
     }
 
     let display_unit = project.display_units;
@@ -72,6 +84,7 @@ pub fn show_operation_inspector(ui: &mut egui::Ui, ctx: OperationInspectorCtx<'_
     let pre_op = project.setups[setup_idx].operations[op_idx].clone();
     let pre_tools_len = project.tools.len();
     let mut mutated_label: Option<&'static str> = None;
+    let mut create_sketch_requested = false;
 
     let op_kind = project.setups[setup_idx].operations[op_idx].kind;
     let op_is_adaptive = project.setups[setup_idx].operations[op_idx].is_adaptive_2d();
@@ -254,6 +267,7 @@ pub fn show_operation_inspector(ui: &mut egui::Ui, ctx: OperationInspectorCtx<'_
                         extracted,
                         pick_mode,
                         mutated_label: &mut mutated_label,
+                        create_sketch_requested: &mut create_sketch_requested,
                     },
                 );
             }
@@ -352,6 +366,7 @@ pub fn show_operation_inspector(ui: &mut egui::Ui, ctx: OperationInspectorCtx<'_
                         eval_ctx: &eval_ctx,
                         resolved_rotary: resolved_setup.and_then(|rs| rs.rotary),
                         selected_face_normal_wcs,
+                        auto_rotate_indexed_op,
                         pick_mode,
                         mutated_label: &mut mutated_label,
                     },
@@ -382,6 +397,8 @@ pub fn show_operation_inspector(ui: &mut egui::Ui, ctx: OperationInspectorCtx<'_
         history.record_before_edit(action, None, &pre_doc);
         project.setups[setup_idx].operations[op_idx].mark_dirty();
     }
+
+    create_sketch_requested.then_some(OperationInspectorAction::CreateSketch)
 }
 
 #[cfg(test)]
@@ -479,6 +496,7 @@ mod tests {
         let mut pick_mode = ViewportPickMode::InspectEntity;
         let mut lock_chipload = true;
         let mut show_z_planes = false;
+        let mut auto_rotate_indexed_op = true;
         let mut open_tool_manager = false;
 
         let mut out = ctx.run_ui(
@@ -509,6 +527,7 @@ mod tests {
                             pick_mode: &mut pick_mode,
                             lock_chipload: &mut lock_chipload,
                             show_z_planes: &mut show_z_planes,
+                            auto_rotate_indexed_op: &mut auto_rotate_indexed_op,
                             open_tool_manager: &mut open_tool_manager,
                             sim_engine: chip_sim::SimEngineKind::TriDexel,
                         },
@@ -692,6 +711,9 @@ mod tests {
             op.machining_boundary_mut().unwrap().boundary_mode = MachiningBoundaryMode::StockBox;
             assert!(!geometry_tab::pick_card_default_open(&op));
             op.machining_boundary_mut().unwrap().boundary_mode =
+                MachiningBoundaryMode::ModelBoundingBox;
+            assert!(!geometry_tab::pick_card_default_open(&op));
+            op.machining_boundary_mut().unwrap().boundary_mode =
                 MachiningBoundaryMode::ModelSilhouette;
             assert!(!geometry_tab::pick_card_default_open(&op));
             op.machining_boundary_mut().unwrap().boundary_mode =
@@ -731,6 +753,7 @@ mod tests {
         let mut pick_mode = ViewportPickMode::InspectEntity;
         let mut lock_chipload = true;
         let mut show_z_planes = false;
+        let mut auto_rotate_indexed_op = true;
         let mut open_tool_manager = false;
 
         // First frame: initialize layout, then probe exact screen center of the "0–180°" preset chip
@@ -763,6 +786,7 @@ mod tests {
                             pick_mode: &mut pick_mode,
                             lock_chipload: &mut lock_chipload,
                             show_z_planes: &mut show_z_planes,
+                            auto_rotate_indexed_op: &mut auto_rotate_indexed_op,
                             open_tool_manager: &mut open_tool_manager,
                             sim_engine: chip_sim::SimEngineKind::TriDexel,
                         },
@@ -800,6 +824,7 @@ mod tests {
                             pick_mode: &mut pick_mode,
                             lock_chipload: &mut lock_chipload,
                             show_z_planes: &mut show_z_planes,
+                            auto_rotate_indexed_op: &mut auto_rotate_indexed_op,
                             open_tool_manager: &mut open_tool_manager,
                             sim_engine: chip_sim::SimEngineKind::TriDexel,
                         },
@@ -868,6 +893,7 @@ mod tests {
                         pick_mode: &mut pick_mode,
                         lock_chipload: &mut lock_chipload,
                         show_z_planes: &mut show_z_planes,
+                        auto_rotate_indexed_op: &mut auto_rotate_indexed_op,
                         open_tool_manager: &mut open_tool_manager,
                         sim_engine: chip_sim::SimEngineKind::TriDexel,
                     },
@@ -898,5 +924,242 @@ mod tests {
             .rotary_axial_boundary()
             .unwrap();
         assert!((rb_restored.end_angle_deg - 360.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn m84_model_bounds_inputs_sketch_auto_expand_quick_select_and_indexed_toggle() {
+        use chip_cam::{GeometrySelectionItem, OperationRotaryMode};
+        use chip_sketch::{RectAnchorMode, SketchEntity, SketchEntityEntry, SketchLayer};
+
+        let tools = default_starter_tool_library();
+        let rs_rot = make_resolved_rotary_setup();
+        let mut proj = ProjectDocument::new("m84_ui_test");
+        proj.tools = tools.tools.clone();
+
+        let mut op = Operation::new("op_a3d", "3D Adaptive", OperationKind::Adaptive3D);
+        op.tool_id = Some(tools.tools[0].id.clone());
+        op.rotary = OperationRotaryMode::Indexed3Plus1 { angle_deg: 90.0 };
+        op.machining_boundary_mut().unwrap().boundary_mode =
+            MachiningBoundaryMode::ModelBoundingBox;
+        proj.setups[0].operations = vec![op];
+
+        // 1. ModelBoundingBox renders all four per-side offset inputs in [Geometry]
+        let mb_texts = render_inspector_texts(&mut proj, &rs_rot, &tools, OperationTab::Geometry);
+        let mb_joined = mb_texts.join("\n");
+        assert!(
+            mb_joined.contains("-X Offset")
+                && mb_joined.contains("+X Offset")
+                && mb_joined.contains("-Y Offset")
+                && mb_joined.contains("+Y Offset"),
+            "ModelBoundingBox must render all 4 per-side offset inputs; got:\n{mb_joined}"
+        );
+
+        // 2. [Passes] shows inline auto-rotate toggle inside 4th-Axis Indexing / Wrapping
+        let pass_texts = render_inspector_texts(&mut proj, &rs_rot, &tools, OperationTab::Passes);
+        let pass_joined = pass_texts.join("\n");
+        assert!(
+            pass_joined.contains("Auto-rotate view to index angle"),
+            "[Passes] must show inline auto-rotate checkbox for Indexed 3+1; got:\n{pass_joined}"
+        );
+
+        // 3. Switching from ModelSilhouette -> SelectedRegions auto-expands `2D Sketch Layers & Quick Select`
+        //    and clicking a per-entity quick-add chip inserts `GeometrySelectionItem::SketchEntity`!
+        let mut sk = SketchLayer::new("sk_1", "Boundary Sketch", "s1");
+        sk.entities.push(SketchEntityEntry {
+            id: "rect_1".to_string(),
+            name: "Rect 1".to_string(),
+            is_construction: false,
+            sub_layer: None,
+            entity: SketchEntity::Rectangle {
+                anchor: RectAnchorMode::Center,
+                x: ParamLength::from_mm(0.0),
+                y: ParamLength::from_mm(0.0),
+                width: ParamLength::from_mm(40.0),
+                height: ParamLength::from_mm(20.0),
+                corner_radius: ParamLength::from_mm(0.0),
+                rotation_deg: 0.0,
+            },
+        });
+        sk.entities.push(SketchEntityEntry {
+            id: "const_line".to_string(),
+            name: "Construction".to_string(),
+            is_construction: true,
+            sub_layer: None,
+            entity: SketchEntity::new_circle(
+                ParamLength::from_mm(0.0),
+                ParamLength::from_mm(0.0),
+                ParamLength::from_mm(10.0),
+            ),
+        });
+        proj.sketches = vec![sk];
+        proj.setups[0].operations[0]
+            .machining_boundary_mut()
+            .unwrap()
+            .boundary_mode = MachiningBoundaryMode::ModelSilhouette;
+
+        let ctx = egui::Context::default();
+        let mut history = UndoHistory::default();
+        let mut tab = OperationTab::Geometry;
+        let mut pick_mode = ViewportPickMode::InspectEntity;
+        let mut lock_chipload = true;
+        let mut show_z_planes = false;
+        let mut auto_rotate = true;
+        let mut open_tool_manager = false;
+
+        let mut run_frame = |ctx: &egui::Context,
+                             proj: &mut ProjectDocument,
+                             history: &mut UndoHistory,
+                             events: Vec<egui::Event>|
+         -> (
+            Vec<egui::epaint::ClippedShape>,
+            Option<OperationInspectorAction>,
+        ) {
+            let mut action = None;
+            let mut out = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(440.0, 1200.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    egui::CentralPanel::default().show(ui, |ui| {
+                        action = show_operation_inspector(
+                            ui,
+                            OperationInspectorCtx {
+                                project: proj,
+                                setup_idx: 0,
+                                op_idx: 0,
+                                global_tools: &tools,
+                                history,
+                                cad_doc: None,
+                                resolved_setup: Some(&rs_rot),
+                                surface_mesh: None,
+                                boundary_preview: None,
+                                selected_face_normal_wcs: None,
+                                extracted: None,
+                                tab: &mut tab,
+                                pick_mode: &mut pick_mode,
+                                lock_chipload: &mut lock_chipload,
+                                show_z_planes: &mut show_z_planes,
+                                auto_rotate_indexed_op: &mut auto_rotate,
+                                open_tool_manager: &mut open_tool_manager,
+                                sim_engine: chip_sim::SimEngineKind::TriDexel,
+                            },
+                        );
+                    });
+                },
+            );
+            out.textures_delta.clear();
+            (out.shapes, action)
+        };
+
+        // Frame 1 (ModelSilhouette): sketch card starts collapsed (`+ Rect 1` not visible)
+        let (shapes_collapsed, _) = run_frame(&ctx, &mut proj, &mut history, Vec::new());
+        let mut t_col = Vec::new();
+        collect_shape_texts(&shapes_collapsed, &mut t_col);
+        assert!(
+            !t_col.iter().any(|t| t == "+ Rect 1"),
+            "sketch card should start collapsed under ModelSilhouette"
+        );
+
+        // Switch Boundary Source to SelectedRegions -> sketch card auto-expands immediately!
+        proj.setups[0].operations[0]
+            .machining_boundary_mut()
+            .unwrap()
+            .boundary_mode = MachiningBoundaryMode::SelectedRegions;
+        let _ = run_frame(&ctx, &mut proj, &mut history, Vec::new());
+        let (shapes_open, _) = run_frame(&ctx, &mut proj, &mut history, Vec::new());
+        let mut t_open = Vec::new();
+        collect_shape_texts(&shapes_open, &mut t_open);
+        assert!(
+            t_open.iter().any(|t| t == "+ Rect 1"),
+            "switching to SelectedRegions must auto-expand 2D Sketch Layers & Quick Select and show '+ Rect 1'; got: {t_open:?}"
+        );
+        assert!(
+            !t_open.iter().any(|t| t.contains("Construction")),
+            "construction entities must be excluded from quick-add chips"
+        );
+
+        // Click `+ Rect 1` -> inserts `GeometrySelectionItem::SketchEntity`
+        fn find_text_center(shape: &egui::Shape, needle: &str) -> Option<egui::Pos2> {
+            match shape {
+                egui::Shape::Text(t) if t.galley.text() == needle => {
+                    Some(t.pos + t.galley.size() * 0.5)
+                }
+                egui::Shape::Vec(v) => v.iter().find_map(|s| find_text_center(s, needle)),
+                _ => None,
+            }
+        }
+        let chip_pt = shapes_open
+            .iter()
+            .find_map(|cs| find_text_center(&cs.shape, "+ Rect 1"))
+            .expect("+ Rect 1 chip must be painted");
+        let _ = run_frame(
+            &ctx,
+            &mut proj,
+            &mut history,
+            vec![
+                egui::Event::PointerMoved(chip_pt),
+                egui::Event::PointerButton {
+                    pos: chip_pt,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+                egui::Event::PointerButton {
+                    pos: chip_pt,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+        );
+        assert!(
+            proj.setups[0].operations[0].selections.iter().any(|s| {
+                matches!(
+                    s,
+                    GeometrySelectionItem::SketchEntity {
+                        sketch_id,
+                        entity_id,
+                        ..
+                    } if sketch_id == "sk_1" && entity_id == "rect_1"
+                )
+            }),
+            "clicking '+ Rect 1' must insert GeometrySelectionItem::SketchEntity; selections: {:?}",
+            proj.setups[0].operations[0].selections
+        );
+
+        // 4. Empty sketches state under SelectedRegions shows `+ New Sketch` and emits CreateSketch action
+        proj.sketches.clear();
+        let _ = run_frame(&ctx, &mut proj, &mut history, Vec::new());
+        let (shapes_empty, _) = run_frame(&ctx, &mut proj, &mut history, Vec::new());
+        let new_sk_pt = shapes_empty
+            .iter()
+            .find_map(|cs| find_text_center(&cs.shape, "+ New Sketch"))
+            .expect("empty sketch state must render '+ New Sketch' button");
+        let (_, create_act) = run_frame(
+            &ctx,
+            &mut proj,
+            &mut history,
+            vec![
+                egui::Event::PointerMoved(new_sk_pt),
+                egui::Event::PointerButton {
+                    pos: new_sk_pt,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+                egui::Event::PointerButton {
+                    pos: new_sk_pt,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+        );
+        assert_eq!(create_act, Some(OperationInspectorAction::CreateSketch));
     }
 }

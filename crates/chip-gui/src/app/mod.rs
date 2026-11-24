@@ -763,14 +763,20 @@ impl ChipCutterApp {
             format!("{:?}", setup.wcs).hash(&mut h);
             format!("{:?}", setup.stock).hash(&mut h);
             format!("{:?}", setup.heights).hash(&mut h);
+            format!("{:?}", setup.rotary).hash(&mut h);
             format!("{:?}", setup.fixtures).hash(&mut h);
             setup.auto_avoid_fixtures_on_rapids.hash(&mut h);
         }
+        self.prefs.auto_rotate_indexed_op.hash(&mut h);
+        let sim_active =
+            self.highlight.sim_stock_source.is_some() || self.highlight.sim_tool_mesh.is_some();
+        sim_active.hash(&mut h);
         if let InspectorFocus::Operation { setup_idx, op_idx } = self.inspector_focus
             && let Some(setup) = self.project.setups.get(setup_idx)
             && let Some(op) = setup.operations.get(op_idx)
         {
             format!("{:?}", op.selections).hash(&mut h);
+            format!("{:?}", op.rotary).hash(&mut h);
             matches!(op.runtime_status, OperationStatus::NeedsRepick { .. }).hash(&mut h);
         }
         h.finish()
@@ -819,6 +825,8 @@ impl ChipCutterApp {
                 }
             }
 
+            let sim_active =
+                self.highlight.sim_stock_source.is_some() || self.highlight.sim_tool_mesh.is_some();
             let focused_extracted = match (eff_cad.as_ref(), &resolved_setup, self.inspector_focus)
             {
                 (Some((doc, _)), Some(Ok(rs)), InspectorFocus::Operation { setup_idx, op_idx }) => {
@@ -826,11 +834,21 @@ impl ChipCutterApp {
                         && let Some(op) = setup.operations.get(op_idx)
                         && !matches!(op.runtime_status, OperationStatus::NeedsRepick { .. })
                     {
+                        let eff_rs = if setup_idx == self.active_setup_idx {
+                            viewport_controller::effective_setup_for_indexed_preview(
+                                rs,
+                                self.prefs.auto_rotate_indexed_op,
+                                sim_active,
+                                op,
+                            )
+                        } else {
+                            std::borrow::Cow::Borrowed(rs)
+                        };
                         Some(
                             extract_selection_features_with_sketches(
                                 doc,
                                 &self.project.sketches,
-                                rs,
+                                eff_rs.as_ref(),
                                 &op.selections,
                             )
                             .map_err(|e| e.to_string()),

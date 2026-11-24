@@ -161,6 +161,12 @@ pub fn resolve_3d_boundary_config_detailed(
         config.tool_containment,
         config.boundary_offset.value_mm,
         config.silhouette_fill_holes,
+        [
+            config.model_bounds_offset_x_neg.value_mm,
+            config.model_bounds_offset_x_pos.value_mm,
+            config.model_bounds_offset_y_neg.value_mm,
+            config.model_bounds_offset_y_pos.value_mm,
+        ],
         tool_radius_mm,
     )
 }
@@ -184,6 +190,7 @@ pub fn resolve_3d_containment_region_detailed(
         containment,
         extra_offset_mm,
         true,
+        [0.0; 4],
         tool_radius_mm,
     )
 }
@@ -197,11 +204,39 @@ fn resolve_3d_containment_region_impl(
     containment: ToolContainmentMode,
     extra_offset_mm: f64,
     silhouette_fill_holes: bool,
+    model_bounds_offsets_mm: [f64; 4],
     tool_radius_mm: f64,
 ) -> ResolvedBoundary2D {
     let mut warnings = Vec::new();
+    let mut model_box_bounds: Option<(f64, f64, f64, f64)> = None;
+    let mut model_box_collapsed = false;
     let nominal_region = match mode {
         MachiningBoundaryMode::StockBox => stock_xy_region(setup),
+        MachiningBoundaryMode::ModelBoundingBox => {
+            let finite_or_zero = |v: f64| if v.is_finite() { v } else { 0.0 };
+            let off_x_neg = finite_or_zero(model_bounds_offsets_mm[0]);
+            let off_x_pos = finite_or_zero(model_bounds_offsets_mm[1]);
+            let off_y_neg = finite_or_zero(model_bounds_offsets_mm[2]);
+            let off_y_pos = finite_or_zero(model_bounds_offsets_mm[3]);
+            if surface.aabb_wcs.is_valid() {
+                let x_min = surface.aabb_wcs.min.x - off_x_neg;
+                let x_max = surface.aabb_wcs.max.x + off_x_pos;
+                let y_min = surface.aabb_wcs.min.y - off_y_neg;
+                let y_max = surface.aabb_wcs.max.y + off_y_pos;
+                if x_max <= x_min + 1e-4 || y_max <= y_min + 1e-4 {
+                    model_box_collapsed = true;
+                    warnings.push(format!(
+                        "Model Bounds collapsed to an empty XY region (X: [{x_min:.2}, {x_max:.2}], Y: [{y_min:.2}, {y_max:.2}] mm) because negative per-side offsets exceed the model span."
+                    ));
+                    RegionSet2D::empty()
+                } else {
+                    model_box_bounds = Some((x_min, y_min, x_max, y_max));
+                    rect_region_2d(x_min, y_min, x_max, y_max)
+                }
+            } else {
+                stock_xy_region(setup)
+            }
+        }
         MachiningBoundaryMode::ModelSilhouette => {
             model_silhouette_xy_region(surface, setup, silhouette_fill_holes)
         }
@@ -231,7 +266,23 @@ fn resolve_3d_containment_region_impl(
             0.0
         };
 
-    let effective_region = if mode == MachiningBoundaryMode::StockBox {
+    let effective_region = if model_box_collapsed {
+        RegionSet2D::empty()
+    } else if let Some((x_min, y_min, x_max, y_max)) = model_box_bounds {
+        let ex_min = x_min - delta;
+        let ex_max = x_max + delta;
+        let ey_min = y_min - delta;
+        let ey_max = y_max + delta;
+        if ex_max <= ex_min + 1e-4 || ey_max <= ey_min + 1e-4 {
+            warnings.push(
+                "Effective Model Bounds collapsed to an empty XY region after applying Tool Containment and Boundary Offset."
+                    .to_string(),
+            );
+            RegionSet2D::empty()
+        } else {
+            rect_region_2d(ex_min, ey_min, ex_max, ey_max)
+        }
+    } else if mode == MachiningBoundaryMode::StockBox {
         match setup.stock {
             ResolvedStockGeometry::Cylinder {
                 axis: crate::stock::StockAxis::Z,

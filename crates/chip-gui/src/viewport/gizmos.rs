@@ -63,6 +63,7 @@ pub(crate) fn build_edge_and_scene_instances(
     }
 
     // 2. Stock translucent shell + wireframe in active Setup WCS (when not replaced by 3D machined stock)
+    let stock_rot_wcs = highlight.stock_model_wcs_transform();
     if highlight.show_stock
         && highlight.sim_stock_source.is_none()
         && let Some(stock) = &highlight.stock
@@ -70,6 +71,7 @@ pub(crate) fn build_edge_and_scene_instances(
         emit_stock_visuals(
             stock,
             &highlight.wcs_frame,
+            stock_rot_wcs,
             highlight.theme.is_light(),
             overlay_tris,
             &mut out,
@@ -92,11 +94,31 @@ pub(crate) fn build_edge_and_scene_instances(
         super::scene_builders::emit_fixture_wireframe_edges(highlight, &mut out);
     }
 
-    // 3. Translucent Z-Height reference planes across Stock XY footprint
+    // 3. Translucent Z-Height reference planes across Stock XY footprint (honoring rotary rotation)
     if !highlight.z_planes_wcs.is_empty() {
-        let footprint = highlight.stock.map(|s| s.aabb_wcs()).unwrap_or_else(|| {
-            Aabb3::new(DVec3::new(-40.0, -30.0, 0.0), DVec3::new(40.0, 30.0, 10.0))
-        });
+        let footprint = highlight
+            .stock
+            .map(|s| {
+                let raw = s.aabb_wcs();
+                if highlight.has_active_cad_rotary_transform() && raw.is_valid() {
+                    let mut rot_aabb = Aabb3::EMPTY;
+                    for x in [raw.min.x, raw.max.x] {
+                        for y in [raw.min.y, raw.max.y] {
+                            for z in [raw.min.z, raw.max.z] {
+                                rot_aabb.extend_point(
+                                    stock_rot_wcs.transform_point3(DVec3::new(x, y, z)),
+                                );
+                            }
+                        }
+                    }
+                    rot_aabb
+                } else {
+                    raw
+                }
+            })
+            .unwrap_or_else(|| {
+                Aabb3::new(DVec3::new(-40.0, -30.0, 0.0), DVec3::new(40.0, 30.0, 10.0))
+            });
         let pad = 3.0;
         let x0 = footprint.min.x - pad;
         let x1 = footprint.max.x + pad;
@@ -188,9 +210,32 @@ pub(crate) fn build_edge_and_scene_instances(
 
     // 5. 3D Chain Travel Direction & Offset-Side Indicators
     let arrow_scale = (camera.scene_radius_mm * 0.14).clamp(4.0, 18.0);
+    let has_arrow_xf = highlight.has_active_cad_rotary_transform();
+    let arrow_xf = if has_arrow_xf {
+        highlight.cad_world_transform()
+    } else {
+        DMat4::IDENTITY
+    };
     for arrow in &highlight.chain_arrows {
-        let p0 = arrow.anchor_world_mm - arrow.tangent_world * (0.4 * arrow_scale);
-        let p_tip = arrow.anchor_world_mm + arrow.tangent_world * (0.6 * arrow_scale);
+        let (anchor, tangent, side_normal) = if has_arrow_xf {
+            (
+                arrow_xf.transform_point3(arrow.anchor_world_mm),
+                arrow_xf
+                    .transform_vector3(arrow.tangent_world)
+                    .normalize_or_zero(),
+                arrow_xf
+                    .transform_vector3(arrow.side_normal_world)
+                    .normalize_or_zero(),
+            )
+        } else {
+            (
+                arrow.anchor_world_mm,
+                arrow.tangent_world,
+                arrow.side_normal_world,
+            )
+        };
+        let p0 = anchor - tangent * (0.4 * arrow_scale);
+        let p_tip = anchor + tangent * (0.6 * arrow_scale);
         let dir_col = [0.18, 0.96, 0.62, 1.0];
         out.push(EdgeInstanceGpu {
             p0_mm: dvec3_f32(p0),
@@ -200,8 +245,7 @@ pub(crate) fn build_edge_and_scene_instances(
         });
         let w_len = 0.35 * arrow_scale;
         for sign in [-1.0, 1.0] {
-            let wing = p_tip - arrow.tangent_world * w_len
-                + arrow.side_normal_world * (sign * 0.55 * w_len);
+            let wing = p_tip - tangent * w_len + side_normal * (sign * 0.55 * w_len);
             out.push(EdgeInstanceGpu {
                 p0_mm: dvec3_f32(p_tip),
                 p1_mm: dvec3_f32(wing),
@@ -210,9 +254,9 @@ pub(crate) fn build_edge_and_scene_instances(
             });
         }
         // Perpendicular offset-side tick (amber/magenta) showing Left vs Right cutter compensation side
-        let side_tip = arrow.anchor_world_mm + arrow.side_normal_world * (0.55 * arrow_scale);
+        let side_tip = anchor + side_normal * (0.55 * arrow_scale);
         out.push(EdgeInstanceGpu {
-            p0_mm: dvec3_f32(arrow.anchor_world_mm),
+            p0_mm: dvec3_f32(anchor),
             p1_mm: dvec3_f32(side_tip),
             color: [1.0, 0.45, 0.78, 1.0],
             width_px: 2.6,
@@ -768,9 +812,10 @@ fn push_quad_tris(
     }
 }
 
-fn emit_stock_visuals(
+pub(crate) fn emit_stock_visuals(
     stock: &ResolvedStockGeometry,
     wcs_frame: &RigidFrame3,
+    stock_rot_wcs: DMat4,
     is_light: bool,
     overlay_tris: &mut Vec<OverlayVertexGpu>,
     edges: &mut Vec<EdgeInstanceGpu>,
@@ -785,6 +830,8 @@ fn emit_stock_visuals(
     } else {
         [0.95, 0.78, 0.32, 0.62]
     };
+
+    let map_wcs = |p: DVec3| wcs_frame.local_to_world_point(stock_rot_wcs.transform_point3(p));
 
     match *stock {
         ResolvedStockGeometry::Box { aabb_wcs } => {
@@ -803,7 +850,7 @@ fn emit_stock_visuals(
                 DVec3::new(max.x, max.y, max.z),
                 DVec3::new(min.x, max.y, max.z),
             ];
-            let c: [DVec3; 8] = corners_wcs.map(|p| wcs_frame.local_to_world_point(p));
+            let c: [DVec3; 8] = corners_wcs.map(map_wcs);
 
             let quads = [
                 (0, 1, 2, 3),
@@ -858,7 +905,7 @@ fn emit_stock_visuals(
                     StockAxis::X => DVec3::new(ax, center_wcs.y + u, center_wcs.z + v),
                     StockAxis::Y => DVec3::new(center_wcs.x + u, ax, center_wcs.z + v),
                 };
-                wcs_frame.local_to_world_point(p_wcs)
+                map_wcs(p_wcs)
             };
 
             for i in 0..N {

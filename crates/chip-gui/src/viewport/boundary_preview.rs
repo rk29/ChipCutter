@@ -164,7 +164,10 @@ fn needs_surface_mesh(op: &Operation) -> bool {
     }
     if let Some(b) = op.machining_boundary() {
         return match op.kind {
-            OperationKind::Facing => b.boundary_mode == MachiningBoundaryMode::ModelSilhouette,
+            OperationKind::Facing => matches!(
+                b.boundary_mode,
+                MachiningBoundaryMode::ModelBoundingBox | MachiningBoundaryMode::ModelSilhouette
+            ),
             OperationKind::Adaptive3D
             | OperationKind::Waterline3D
             | OperationKind::Parallel3D
@@ -174,7 +177,9 @@ fn needs_surface_mesh(op: &Operation) -> bool {
             | OperationKind::Deburr3D => {
                 matches!(
                     b.boundary_mode,
-                    MachiningBoundaryMode::ModelSilhouette | MachiningBoundaryMode::SelectedRegions
+                    MachiningBoundaryMode::ModelBoundingBox
+                        | MachiningBoundaryMode::ModelSilhouette
+                        | MachiningBoundaryMode::SelectedRegions
                 )
             }
             _ => false,
@@ -210,6 +215,13 @@ fn compute_boundary_preview_signature(input: &BoundaryPreviewInput<'_>) -> u64 {
     tool_d.to_bits().hash(&mut h);
 
     format!("{:?}", input.op.heights).hash(&mut h);
+    format!("{:?}", input.op.rotary).hash(&mut h);
+    let rf = &input.resolved_setup.frame;
+    for v in [rf.origin_mm, rf.x_axis, rf.y_axis, rf.z_axis] {
+        v.x.to_bits().hash(&mut h);
+        v.y.to_bits().hash(&mut h);
+        v.z.to_bits().hash(&mut h);
+    }
 
     if let Some(b) = input.op.machining_boundary() {
         1_u8.hash(&mut h);
@@ -218,6 +230,15 @@ fn compute_boundary_preview_signature(input: &BoundaryPreviewInput<'_>) -> u64 {
         b.boundary_offset.value_mm.to_bits().hash(&mut h);
         b.boundary_offset.expr.hash(&mut h);
         b.silhouette_fill_holes.hash(&mut h);
+        for side_off in [
+            &b.model_bounds_offset_x_neg,
+            &b.model_bounds_offset_x_pos,
+            &b.model_bounds_offset_y_neg,
+            &b.model_bounds_offset_y_pos,
+        ] {
+            side_off.value_mm.to_bits().hash(&mut h);
+            side_off.expr.hash(&mut h);
+        }
     } else if let Some(rb) = input.op.rotary_axial_boundary() {
         2_u8.hash(&mut h);
         std::mem::discriminant(&rb.axial_boundary_mode).hash(&mut h);
@@ -461,9 +482,36 @@ fn resolve_facing_preview(
     let mode = boundary.boundary_mode;
     let containment = boundary.tool_containment;
     let extra_offset_mm = boundary.boundary_offset.value_mm;
+    if mode == MachiningBoundaryMode::ModelBoundingBox {
+        let proxy_mesh;
+        let surf_opt = if let Some(surf) = surface_mesh
+            && surf.aabb_wcs.is_valid()
+        {
+            Some(surf)
+        } else if rs.model_aabb_wcs.is_valid() {
+            proxy_mesh = aabb_proxy_surface_mesh(&rs.model_aabb_wcs);
+            Some(&proxy_mesh)
+        } else {
+            None
+        };
+        if let Some(surf) = surf_opt {
+            let res = resolve_3d_boundary_config_detailed(surf, rs, selection, boundary, tool_r);
+            return BoundaryPreviewOverlay::Planar2D {
+                nominal_region: res.nominal_region,
+                effective_region: res.effective_region,
+                show_effective,
+                top_z_wcs,
+                bottom_z_wcs,
+                warnings: res.warnings,
+            };
+        }
+    }
+
     let mut warnings = Vec::new();
     let nominal_region = match mode {
-        MachiningBoundaryMode::StockBox => stock_xy_region(rs),
+        MachiningBoundaryMode::StockBox | MachiningBoundaryMode::ModelBoundingBox => {
+            stock_xy_region(rs)
+        }
         MachiningBoundaryMode::ModelSilhouette => {
             if let Some(surf) = surface_mesh
                 && !surf.triangles.is_empty()
@@ -840,5 +888,129 @@ mod tests {
             ov_pkt.as_ref(),
             BoundaryPreviewOverlay::StockOuterEnvelope { .. }
         ));
+    }
+
+    #[test]
+    fn m84_model_bounds_cache_invalidation_and_indexed_virtual_setup_90deg_preview() {
+        use chip_cam::{OperationRotaryMode, build_indexed_virtual_setup};
+
+        // Asymmetric non-square rotary model + box stock:
+        // X ∈ [-40, 40], Y ∈ [-10, 10], Z ∈ [-25, 25]
+        let mut rs = sample_rotary_setup();
+        rs.model_aabb_wcs = Aabb3::new(
+            DVec3::new(-40.0, -10.0, -25.0),
+            DVec3::new(40.0, 10.0, 25.0),
+        );
+        rs.stock = ResolvedStockGeometry::Box {
+            aabb_wcs: Aabb3::new(
+                DVec3::new(-45.0, -12.0, -27.0),
+                DVec3::new(45.0, 12.0, 27.0),
+            ),
+        };
+        let rot = rs.rotary.unwrap();
+        let tools = default_starter_tool_library();
+        let tool6 = tools.tools.first().unwrap().clone();
+
+        let mut op = Operation::new("op_idx90", "Indexed 90 Rough", OperationKind::Adaptive3D);
+        op.rotary = OperationRotaryMode::Indexed3Plus1 { angle_deg: 90.0 };
+        {
+            let b = op.machining_boundary_mut().unwrap();
+            b.boundary_mode = MachiningBoundaryMode::ModelBoundingBox;
+            b.tool_containment = ToolContainmentMode::ToolCenterOnBoundary;
+            b.boundary_offset = ParamLength::from_mm(0.0);
+        }
+
+        let mut cache = BoundaryPreviewCache::default();
+
+        // 1. Evaluate at 0° -> Y span is [-10, 10] (width 20 mm)
+        let ov0 = cache
+            .get_or_compute(&BoundaryPreviewInput {
+                active: true,
+                setup_idx: 0,
+                op_idx: 0,
+                cad_rev: 1,
+                frame_geo_sig: 100,
+                display_unit: DisplayUnit::Millimeter,
+                doc: None,
+                resolved_setup: &rs,
+                op: &op,
+                active_tool: Some(&tool6),
+                extracted: None,
+            })
+            .unwrap();
+        let BoundaryPreviewOverlay::Planar2D {
+            nominal_region: nom0,
+            ..
+        } = ov0.as_ref()
+        else {
+            panic!("expected Planar2D");
+        };
+        let bb0 = nom0.regions[0].outer_ccw.exact_aabb();
+        assert!((bb0.size().x - 80.0).abs() < 1e-3);
+        assert!((bb0.size().y - 20.0).abs() < 1e-3);
+        assert_eq!(cache.recompute_count(), 1);
+
+        // 2. Evaluate in `build_indexed_virtual_setup(rs, rot, 90°)` -> Y and Z swap!
+        //    Model Y span becomes [-25, 25] (width 50 mm), and cache invalidates even with same frame_geo_sig!
+        let virtual_90 = build_indexed_virtual_setup(&rs, &rot, 90.0);
+        let ov90 = cache
+            .get_or_compute(&BoundaryPreviewInput {
+                active: true,
+                setup_idx: 0,
+                op_idx: 0,
+                cad_rev: 1,
+                frame_geo_sig: 100,
+                display_unit: DisplayUnit::Millimeter,
+                doc: None,
+                resolved_setup: &virtual_90,
+                op: &op,
+                active_tool: Some(&tool6),
+                extracted: None,
+            })
+            .unwrap();
+        assert_eq!(
+            cache.recompute_count(),
+            2,
+            "switching resolved_setup to 90° virtual setup must invalidate cache"
+        );
+        let BoundaryPreviewOverlay::Planar2D {
+            nominal_region: nom90,
+            ..
+        } = ov90.as_ref()
+        else {
+            panic!("expected Planar2D");
+        };
+        let bb90 = nom90.regions[0].outer_ccw.exact_aabb();
+        assert!((bb90.size().x - 80.0).abs() < 1e-3);
+        assert!(
+            (bb90.size().y - 50.0).abs() < 1e-3,
+            "at A=90°, ModelBoundingBox Y extent must swap with Z (expected 50 mm, got {:.2} mm)",
+            bb90.size().y
+        );
+
+        // 3. Editing each of the 4 per-side offsets invalidates cache immediately
+        for side in 0..4 {
+            let b = op.machining_boundary_mut().unwrap();
+            match side {
+                0 => b.model_bounds_offset_x_neg = ParamLength::from_mm(2.0),
+                1 => b.model_bounds_offset_x_pos = ParamLength::from_mm(-1.0),
+                2 => b.model_bounds_offset_y_neg = ParamLength::from_mm(3.0),
+                _ => b.model_bounds_offset_y_pos = ParamLength::from_mm(-2.0),
+            }
+            let _ = cache.get_or_compute(&BoundaryPreviewInput {
+                active: true,
+                setup_idx: 0,
+                op_idx: 0,
+                cad_rev: 1,
+                frame_geo_sig: 100,
+                display_unit: DisplayUnit::Millimeter,
+                doc: None,
+                resolved_setup: &virtual_90,
+                op: &op,
+                active_tool: Some(&tool6),
+                extracted: None,
+            });
+            assert_eq!(cache.recompute_count(), 3 + side as u64);
+        }
     }
 }

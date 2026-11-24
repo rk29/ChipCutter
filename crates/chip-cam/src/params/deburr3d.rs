@@ -53,6 +53,14 @@ struct Deburr3DParamsDe {
     boundary_offset: Option<ParamLength>,
     #[serde(default)]
     silhouette_fill_holes: Option<bool>,
+    #[serde(default)]
+    model_bounds_offset_x_neg: Option<ParamLength>,
+    #[serde(default)]
+    model_bounds_offset_x_pos: Option<ParamLength>,
+    #[serde(default)]
+    model_bounds_offset_y_neg: Option<ParamLength>,
+    #[serde(default)]
+    model_bounds_offset_y_pos: Option<ParamLength>,
     #[serde(default = "default_chamfer_width")]
     chamfer_width: ParamLength,
     #[serde(default = "default_tip_offset")]
@@ -90,6 +98,18 @@ impl From<Deburr3DParamsDe> for Deburr3DParams {
                 silhouette_fill_holes: raw
                     .silhouette_fill_holes
                     .unwrap_or(def.silhouette_fill_holes),
+                model_bounds_offset_x_neg: raw
+                    .model_bounds_offset_x_neg
+                    .unwrap_or(def.model_bounds_offset_x_neg),
+                model_bounds_offset_x_pos: raw
+                    .model_bounds_offset_x_pos
+                    .unwrap_or(def.model_bounds_offset_x_pos),
+                model_bounds_offset_y_neg: raw
+                    .model_bounds_offset_y_neg
+                    .unwrap_or(def.model_bounds_offset_y_neg),
+                model_bounds_offset_y_pos: raw
+                    .model_bounds_offset_y_pos
+                    .unwrap_or(def.model_bounds_offset_y_pos),
             },
             chamfer_width: raw.chamfer_width,
             tip_offset: raw.tip_offset,

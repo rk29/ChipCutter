@@ -64,8 +64,9 @@ pub const fn cutting_area_card_kind(op: &Operation) -> CuttingAreaCardKind {
 /// Returns whether the `Interactive 3D Pick Mode` section card should open by default for `op`.
 ///
 /// Collapses by default on 3D surface ops (`Adaptive3D`, `Waterline3D`, `Parallel3D`, `Scallop3D`,
-/// `Pencil3D`, `Undercut3D`) and `Facing` whenever `Stock Bounds` or `Model Silhouette` is active,
-/// and on 4th-axis rotary ops unless `Selected Geometry (-U..+U)` is active.
+/// `Pencil3D`, `Undercut3D`) and `Facing` whenever `Stock Bounds`, `Model Bounds`, or
+/// `Model Silhouette` is active, and on 4th-axis rotary ops unless `Selected Geometry (-U..+U)`
+/// is active.
 pub fn pick_card_default_open(op: &Operation) -> bool {
     if op.kind.is_rotary_native() {
         return op
@@ -92,8 +93,9 @@ pub fn pick_card_default_open(op: &Operation) -> bool {
 fn boundary_source_ui_label(mode: MachiningBoundaryMode) -> &'static str {
     match mode {
         MachiningBoundaryMode::StockBox => "Stock Bounds",
+        MachiningBoundaryMode::ModelBoundingBox => "Model Bounds",
         MachiningBoundaryMode::ModelSilhouette => "Model Silhouette",
-        MachiningBoundaryMode::SelectedRegions => "Selected Regions",
+        MachiningBoundaryMode::SelectedRegions => "Selected 2D Contours",
     }
 }
 
@@ -137,6 +139,7 @@ pub struct GeometryTabCtx<'a> {
     pub extracted: Option<Result<&'a ExtractedSelectionSummary, &'a str>>,
     pub pick_mode: &'a mut ViewportPickMode,
     pub mutated_label: &'a mut Option<&'static str>,
+    pub create_sketch_requested: &'a mut bool,
 }
 
 pub fn show_geometry_tab(ui: &mut egui::Ui, ctx: GeometryTabCtx<'_>) {
@@ -156,6 +159,7 @@ pub fn show_geometry_tab(ui: &mut egui::Ui, ctx: GeometryTabCtx<'_>) {
         extracted,
         pick_mode,
         mutated_label,
+        create_sketch_requested,
     } = ctx;
 
     // 1. Unified Cutting Area / Machining Boundary card at the top of [Geometry]
@@ -313,63 +317,197 @@ pub fn show_geometry_tab(ui: &mut egui::Ui, ctx: GeometryTabCtx<'_>) {
         },
     );
 
-    if !sketches.is_empty() {
+    if !sketches.is_empty() || pick_default_open {
         section_card(
             ui,
-            ("geom_sketch_card", setup_idx, op_idx),
+            ("geom_sketch_card", setup_idx, op_idx, pick_default_open),
             "2D Sketch Layers & Quick Select",
             pick_default_open,
             |ui| {
-                inspector_grid(ui, ("geom_sketch_grid", setup_idx, op_idx), |ui| {
-                    for sk in sketches {
-                        grid_row(
-                            ui,
-                            &sk.name,
-                            Some(
-                                "Add entire 2D sketch layer or DXF/SVG sub-layer to this operation",
-                            ),
-                            |ui| {
-                                if ui
-                                    .small_button("+ All")
-                                    .on_hover_text(format!(
-                                        "Select all non-construction entities in sketch '{}'",
-                                        sk.name
-                                    ))
-                                    .clicked()
-                                {
-                                    let item = GeometrySelectionItem::SketchLayerAll {
-                                        sketch_id: sk.id.clone(),
-                                        sub_layer: None,
-                                        reverse: false,
-                                        side_flip: false,
-                                    };
-                                    if !op.selections.contains(&item) {
-                                        op.selections.push(item);
-                                        *mutated_label = Some("Add Sketch Layer");
-                                    }
-                                }
-                                for lname in sk.sub_layer_names() {
-                                    if ui
-                                        .small_button(format!("+ [{lname}]"))
-                                        .on_hover_text(format!("Select all entities tagged with sub-layer '{lname}' in sketch '{}'", sk.name))
-                                        .clicked()
-                                    {
-                                        let item = GeometrySelectionItem::SketchLayerAll {
-                                            sketch_id: sk.id.clone(),
-                                            sub_layer: Some(lname),
-                                            reverse: false,
-                                            side_flip: false,
-                                        };
-                                        if !op.selections.contains(&item) {
-                                            op.selections.push(item);
-                                            *mutated_label = Some("Add Sketch Sub-Layer");
-                                        }
-                                    }
-                                }
-                            },
-                        );
+                if sketches.is_empty() {
+                    inline_banner(
+                        ui,
+                        BannerKind::Info,
+                        "No 2D sketches in this project yet — create a sketch to draw a boundary rectangle or 2D contour.",
+                    );
+                    ui.add_space(4.0);
+                    if ui
+                        .small_button("+ New Sketch")
+                        .on_hover_text(
+                            "Create a new 2D Sketch Layer anchored to the active Setup XY plane",
+                        )
+                        .clicked()
+                    {
+                        *create_sketch_requested = true;
                     }
-                });
+                } else {
+                    inspector_grid(ui, ("geom_sketch_grid", setup_idx, op_idx), |ui| {
+                        for sk in sketches {
+                            grid_row(
+                                ui,
+                                &sk.name,
+                                Some(
+                                    "Add entire 2D sketch layer, DXF/SVG sub-layer, or individual sketch entity to this operation",
+                                ),
+                                |ui| {
+                                    ui.horizontal_wrapped(|ui| {
+                                        if ui
+                                            .small_button("+ All")
+                                            .on_hover_text(format!(
+                                                "Select all non-construction entities in sketch '{}'",
+                                                sk.name
+                                            ))
+                                            .clicked()
+                                        {
+                                            let item = GeometrySelectionItem::SketchLayerAll {
+                                                sketch_id: sk.id.clone(),
+                                                sub_layer: None,
+                                                reverse: false,
+                                                side_flip: false,
+                                            };
+                                            if !op.selections.contains(&item) {
+                                                op.selections.push(item);
+                                                *mutated_label = Some("Add Sketch Layer");
+                                            }
+                                        }
+                                        for lname in sk.sub_layer_names() {
+                                            if ui
+                                                .small_button(format!("+ [{lname}]"))
+                                                .on_hover_text(format!(
+                                                    "Select all entities tagged with sub-layer '{lname}' in sketch '{}'",
+                                                    sk.name
+                                                ))
+                                                .clicked()
+                                            {
+                                                let item = GeometrySelectionItem::SketchLayerAll {
+                                                    sketch_id: sk.id.clone(),
+                                                    sub_layer: Some(lname),
+                                                    reverse: false,
+                                                    side_flip: false,
+                                                };
+                                                if !op.selections.contains(&item) {
+                                                    op.selections.push(item);
+                                                    *mutated_label = Some("Add Sketch Sub-Layer");
+                                                }
+                                            }
+                                        }
+                                        const MAX_QUICK_ENTITIES: usize = 12;
+                                        let non_construction: Vec<_> = sk
+                                            .entities
+                                            .iter()
+                                            .filter(|e| !e.is_construction)
+                                            .collect();
+                                        if !non_construction.is_empty() {
+                                            for (e_idx, ent) in non_construction
+                                                .iter()
+                                                .take(MAX_QUICK_ENTITIES)
+                                                .enumerate()
+                                            {
+                                                let short_name = if ent.name.trim().is_empty() {
+                                                    format!(
+                                                        "{} {}",
+                                                        ent.entity.kind_label(),
+                                                        e_idx + 1
+                                                    )
+                                                } else {
+                                                    ent.name.trim().to_string()
+                                                };
+                                                let already_pos = op.selections.iter().position(|s| {
+                                                    matches!(
+                                                        s,
+                                                        GeometrySelectionItem::SketchEntity {
+                                                            sketch_id,
+                                                            entity_id,
+                                                            ..
+                                                        } if sketch_id == &sk.id && entity_id == &ent.id
+                                                    )
+                                                });
+                                                let chip_label = if already_pos.is_some() {
+                                                    format!("✓ {short_name}")
+                                                } else {
+                                                    format!("+ {short_name}")
+                                                };
+                                                if ui
+                                                    .small_button(chip_label)
+                                                    .on_hover_text(format!(
+                                                        "Toggle {} '{}' in sketch '{}'",
+                                                        ent.entity.kind_label(),
+                                                        short_name,
+                                                        sk.name
+                                                    ))
+                                                    .clicked()
+                                                {
+                                                    if let Some(pos) = already_pos {
+                                                        op.selections.remove(pos);
+                                                        *mutated_label =
+                                                            Some("Remove Sketch Entity");
+                                                    } else {
+                                                        op.selections.push(
+                                                            GeometrySelectionItem::SketchEntity {
+                                                                sketch_id: sk.id.clone(),
+                                                                entity_id: ent.id.clone(),
+                                                                reverse: false,
+                                                                side_flip: false,
+                                                            },
+                                                        );
+                                                        *mutated_label = Some("Add Sketch Entity");
+                                                    }
+                                                }
+                                            }
+                                            if non_construction.len() > MAX_QUICK_ENTITIES {
+                                                ui.weak(format!(
+                                                    "+{} more",
+                                                    non_construction.len() - MAX_QUICK_ENTITIES
+                                                ));
+                                            }
+                                        } else if !sk.regions.is_empty() {
+                                            for (r_idx, reg) in
+                                                sk.regions.iter().take(MAX_QUICK_ENTITIES).enumerate()
+                                            {
+                                                let already_pos = op.selections.iter().position(|s| {
+                                                    matches!(
+                                                        s,
+                                                        GeometrySelectionItem::SketchRegion {
+                                                            sketch_id,
+                                                            region_id,
+                                                        } if sketch_id == &sk.id && region_id == &reg.id
+                                                    )
+                                                });
+                                                let chip_label = if already_pos.is_some() {
+                                                    format!("✓ Region {}", r_idx + 1)
+                                                } else {
+                                                    format!("+ Region {}", r_idx + 1)
+                                                };
+                                                if ui
+                                                    .small_button(chip_label)
+                                                    .on_hover_text(format!(
+                                                        "Toggle closed region '{}' in sketch '{}'",
+                                                        reg.id, sk.name
+                                                    ))
+                                                    .clicked()
+                                                {
+                                                    if let Some(pos) = already_pos {
+                                                        op.selections.remove(pos);
+                                                        *mutated_label =
+                                                            Some("Remove Sketch Region");
+                                                    } else {
+                                                        op.selections.push(
+                                                            GeometrySelectionItem::SketchRegion {
+                                                                sketch_id: sk.id.clone(),
+                                                                region_id: reg.id.clone(),
+                                                            },
+                                                        );
+                                                        *mutated_label = Some("Add Sketch Region");
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    });
+                                },
+                            );
+                        }
+                    });
+                }
             },
         );
     }
@@ -465,7 +603,7 @@ fn show_machining_boundary_card(
                     ui,
                     "Boundary Source",
                     Some(
-                        "2D XY region constraining this operation (Stock Bounds, projected Model Silhouette, or Selected Regions)",
+                        "2D XY region constraining this operation (Stock Bounds, Model Bounds rectangle, projected Model Silhouette, or Selected 2D Contours)",
                     ),
                     |ui| {
                         let prev = boundary.boundary_mode;
@@ -493,6 +631,81 @@ fn show_machining_boundary_card(
                         }
                     },
                 );
+
+                if boundary.boundary_mode == MachiningBoundaryMode::ModelBoundingBox {
+                    grid_row(
+                        ui,
+                        "-X Offset",
+                        Some(
+                            "Signed offset on the -X side of Model Bounds (+ expands outward toward -X, - insets inward toward +X)",
+                        ),
+                        |ui| {
+                            if edit_param_length(
+                                ui,
+                                ("geom_mb_xneg", setup_idx, op_idx),
+                                &mut boundary.model_bounds_offset_x_neg,
+                                eval_ctx,
+                                INPUT_COL_WIDTH,
+                            ) {
+                                *mutated_label = Some("Edit Model Bounds -X Offset");
+                            }
+                        },
+                    );
+                    grid_row(
+                        ui,
+                        "+X Offset",
+                        Some(
+                            "Signed offset on the +X side of Model Bounds (+ expands outward toward +X, - insets inward toward -X)",
+                        ),
+                        |ui| {
+                            if edit_param_length(
+                                ui,
+                                ("geom_mb_xpos", setup_idx, op_idx),
+                                &mut boundary.model_bounds_offset_x_pos,
+                                eval_ctx,
+                                INPUT_COL_WIDTH,
+                            ) {
+                                *mutated_label = Some("Edit Model Bounds +X Offset");
+                            }
+                        },
+                    );
+                    grid_row(
+                        ui,
+                        "-Y Offset",
+                        Some(
+                            "Signed offset on the -Y side of Model Bounds (+ expands outward toward -Y, - insets inward toward +Y)",
+                        ),
+                        |ui| {
+                            if edit_param_length(
+                                ui,
+                                ("geom_mb_yneg", setup_idx, op_idx),
+                                &mut boundary.model_bounds_offset_y_neg,
+                                eval_ctx,
+                                INPUT_COL_WIDTH,
+                            ) {
+                                *mutated_label = Some("Edit Model Bounds -Y Offset");
+                            }
+                        },
+                    );
+                    grid_row(
+                        ui,
+                        "+Y Offset",
+                        Some(
+                            "Signed offset on the +Y side of Model Bounds (+ expands outward toward +Y, - insets inward toward -Y)",
+                        ),
+                        |ui| {
+                            if edit_param_length(
+                                ui,
+                                ("geom_mb_ypos", setup_idx, op_idx),
+                                &mut boundary.model_bounds_offset_y_pos,
+                                eval_ctx,
+                                INPUT_COL_WIDTH,
+                            ) {
+                                *mutated_label = Some("Edit Model Bounds +Y Offset");
+                            }
+                        },
+                    );
+                }
 
                 if boundary.boundary_mode == MachiningBoundaryMode::ModelSilhouette {
                     grid_row(
@@ -615,8 +828,14 @@ fn show_machining_boundary_card(
                 inline_banner(
                     ui,
                     BannerKind::Warn,
-                    "Selected Regions is active with no geometry selected. Pick closed 2D contours, planar faces, or sketch regions below.",
+                    "Selected 2D Contours is active with no geometry selected. Pick closed 2D contours, planar faces, or sketch regions below.",
                 );
+            } else if let Some(BoundaryPreviewOverlay::Planar2D { warnings, .. }) = boundary_preview
+            {
+                for w in warnings {
+                    ui.add_space(4.0);
+                    inline_banner(ui, BannerKind::Warn, w);
+                }
             }
 
             if op_kind == OperationKind::Deburr3D {

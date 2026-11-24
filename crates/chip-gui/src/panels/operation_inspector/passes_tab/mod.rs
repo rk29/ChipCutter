@@ -213,6 +213,7 @@ pub struct PassesTabCtx<'a> {
     pub eval_ctx: &'a EvalContext,
     pub resolved_rotary: Option<ResolvedRotaryConfig>,
     pub selected_face_normal_wcs: Option<DVec3>,
+    pub auto_rotate_indexed_op: &'a mut bool,
     pub pick_mode: &'a mut ViewportPickMode,
     pub mutated_label: &'a mut Option<&'static str>,
 }
@@ -288,6 +289,7 @@ pub fn show_passes_tab(ui: &mut egui::Ui, ctx: PassesTabCtx<'_>) {
         eval_ctx,
         resolved_rotary,
         selected_face_normal_wcs,
+        auto_rotate_indexed_op,
         pick_mode,
         mutated_label,
     } = ctx;
@@ -414,6 +416,7 @@ pub fn show_passes_tab(ui: &mut egui::Ui, ctx: PassesTabCtx<'_>) {
             op.kind,
             rot,
             selected_face_normal_wcs,
+            auto_rotate_indexed_op,
             &mut item,
         );
     }
@@ -517,6 +520,7 @@ fn show_operation_rotary_card(
     op_kind: OperationKind,
     rot: ResolvedRotaryConfig,
     selected_face_normal_wcs: Option<DVec3>,
+    auto_rotate_indexed_op: &mut bool,
     item: &mut PassItemCtx<'_>,
 ) {
     let (setup_idx, op_idx) = item.ids();
@@ -602,6 +606,18 @@ fn show_operation_rotary_card(
                             {
                                 *mutated = Some("Edit Indexed 3+1 Angle");
                             }
+                        });
+                        f.set_tip(
+                            "Automatically rotate the 3D model, raw setup stock, chuck jaws, Z-height planes, and cutting boundary preview in the viewport to match this Indexed 3+1 angle",
+                        );
+                        f.row("Viewport Sync", |ui, _mutated| {
+                            ui.checkbox(
+                                auto_rotate_indexed_op,
+                                "Auto-rotate view to index angle",
+                            )
+                            .on_hover_text(
+                                "Rotate displayed workpiece, raw stock, and preview to this 3+1 index angle (persisted in Settings → Viewport & Navigation)",
+                            );
                         });
                         f.set_tip("Snap rotary index angle to standard 90° cardinal faces");
                         f.row("Quick Index", |ui, mutated| {

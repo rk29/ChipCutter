@@ -1879,4 +1879,139 @@ cut_mode = "both_ways_zig_zag"
             other => panic!("expected Contour2D, got {other:?}"),
         }
     }
+
+    #[test]
+    fn m84_model_bounding_box_toml_roundtrip_all_8_strategies_and_cache_hash_invalidation() {
+        use chip_cam::{
+            Adaptive3DParams, Deburr3DParams, FacingParams, MachiningBoundaryConfig,
+            MachiningBoundaryMode, Parallel3DParams, Pencil3DParams, Scallop3DParams,
+            StrategyParams, ToolContainmentMode, Undercut3DParams, Waterline3DParams,
+        };
+        use chip_math::ParamLength;
+
+        use crate::cache::compute_operation_input_hash;
+
+        let mut custom_boundary = MachiningBoundaryConfig::new(
+            MachiningBoundaryMode::ModelBoundingBox,
+            ToolContainmentMode::ToolOutsideBoundary,
+            1.25,
+        );
+        custom_boundary.model_bounds_offset_x_neg = ParamLength::from_mm(2.5);
+        custom_boundary.model_bounds_offset_x_pos = ParamLength::from_mm(-1.75);
+        custom_boundary.model_bounds_offset_y_neg = ParamLength::from_mm(0.5);
+        custom_boundary.model_bounds_offset_y_pos = ParamLength::from_mm(-3.25);
+
+        let all_eight: Vec<(&str, StrategyParams)> = vec![
+            (
+                "facing",
+                StrategyParams::Facing(FacingParams {
+                    boundary: custom_boundary.clone(),
+                    ..FacingParams::default()
+                }),
+            ),
+            (
+                "adaptive_3d",
+                StrategyParams::Adaptive3D(Adaptive3DParams {
+                    boundary: custom_boundary.clone(),
+                    ..Adaptive3DParams::default()
+                }),
+            ),
+            (
+                "waterline_3d",
+                StrategyParams::Waterline3D(Waterline3DParams {
+                    boundary: custom_boundary.clone(),
+                    ..Waterline3DParams::default()
+                }),
+            ),
+            (
+                "parallel_3d",
+                StrategyParams::Parallel3D(Parallel3DParams {
+                    boundary: custom_boundary.clone(),
+                    ..Parallel3DParams::default()
+                }),
+            ),
+            (
+                "scallop_3d",
+                StrategyParams::Scallop3D(Scallop3DParams {
+                    boundary: custom_boundary.clone(),
+                    ..Scallop3DParams::default()
+                }),
+            ),
+            (
+                "pencil_3d",
+                StrategyParams::Pencil3D(Pencil3DParams {
+                    boundary: custom_boundary.clone(),
+                    ..Pencil3DParams::default()
+                }),
+            ),
+            (
+                "undercut_3d",
+                StrategyParams::Undercut3D(Undercut3DParams {
+                    boundary: custom_boundary.clone(),
+                    ..Undercut3DParams::default()
+                }),
+            ),
+            (
+                "deburr_3d",
+                StrategyParams::Deburr3D(Deburr3DParams {
+                    boundary: custom_boundary.clone(),
+                    ..Deburr3DParams::default()
+                }),
+            ),
+        ];
+
+        for (tag, strat) in all_eight {
+            let txt = toml::to_string(&strat).unwrap();
+            assert!(
+                txt.contains("boundary_mode = \"model_bounding_box\""),
+                "{tag} TOML must serialize snake_case model_bounding_box"
+            );
+            let rt: StrategyParams = toml::from_str(&txt).unwrap();
+            assert_eq!(
+                rt, strat,
+                "{tag} must roundtrip ModelBoundingBox + all 4 per-side offsets losslessly"
+            );
+
+            // Legacy TOML without `model_bounds_offset_*` defaults all 4 to 0.0 mm
+            let legacy = format!("strategy_kind = \"{tag}\"\n");
+            let parsed_legacy: StrategyParams = toml::from_str(&legacy).unwrap();
+            let b = parsed_legacy.machining_boundary().unwrap();
+            assert!((b.model_bounds_offset_x_neg.value_mm - 0.0).abs() < 1e-9);
+            assert!((b.model_bounds_offset_x_pos.value_mm - 0.0).abs() < 1e-9);
+            assert!((b.model_bounds_offset_y_neg.value_mm - 0.0).abs() < 1e-9);
+            assert!((b.model_bounds_offset_y_pos.value_mm - 0.0).abs() < 1e-9);
+        }
+
+        // OperationInputHash invalidates when switching to ModelBoundingBox or editing any of the 4 offsets
+        let mut proj = ProjectDocument::new("M84 Cache Hash");
+        let op = Operation::new("op1", "3D Adaptive", OperationKind::Adaptive3D);
+        proj.setups[0].operations = vec![op];
+        let h_base = compute_operation_input_hash(&proj, 0, 0, 1).unwrap();
+
+        proj.setups[0].operations[0]
+            .machining_boundary_mut()
+            .unwrap()
+            .boundary_mode = MachiningBoundaryMode::ModelBoundingBox;
+        let h_mb = compute_operation_input_hash(&proj, 0, 0, 1).unwrap();
+        assert_ne!(h_base, h_mb);
+
+        let mut prev_h = h_mb;
+        for side in 0..4 {
+            let b = proj.setups[0].operations[0]
+                .machining_boundary_mut()
+                .unwrap();
+            match side {
+                0 => b.model_bounds_offset_x_neg = ParamLength::from_mm(1.0),
+                1 => b.model_bounds_offset_x_pos = ParamLength::from_mm(-1.0),
+                2 => b.model_bounds_offset_y_neg = ParamLength::from_mm(2.0),
+                _ => b.model_bounds_offset_y_pos = ParamLength::from_mm(-2.0),
+            }
+            let h_next = compute_operation_input_hash(&proj, 0, 0, 1).unwrap();
+            assert_ne!(
+                prev_h, h_next,
+                "changing model_bounds_offset side {side} must invalidate OperationInputHash"
+            );
+            prev_h = h_next;
+        }
+    }
 }

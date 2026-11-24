@@ -12,16 +12,23 @@ use super::{
 pub enum MachiningBoundaryMode {
     #[default]
     StockBox,
+    ModelBoundingBox,
     ModelSilhouette,
     SelectedRegions,
 }
 
 impl MachiningBoundaryMode {
-    pub const ALL: [Self; 3] = [Self::StockBox, Self::ModelSilhouette, Self::SelectedRegions];
+    pub const ALL: [Self; 4] = [
+        Self::StockBox,
+        Self::ModelBoundingBox,
+        Self::ModelSilhouette,
+        Self::SelectedRegions,
+    ];
 
     pub const fn label(self) -> &'static str {
         match self {
             Self::StockBox => "Stock Bounds",
+            Self::ModelBoundingBox => "Model Bounds",
             Self::ModelSilhouette => "Model Silhouette",
             Self::SelectedRegions => "Selected 2D Contours",
         }
@@ -92,7 +99,7 @@ pub(super) fn default_zero_length() -> ParamLength {
 
 /// Shared 2D XY machining containment boundary configuration embedded via `#[serde(flatten)]`
 /// across all 3-axis surfacing (`Waterline3D`, `Adaptive3D`, `Parallel3D`, `Scallop3D`, `Pencil3D`),
-/// `Undercut3D`, and `Deburr3D` parameter structs.
+/// `Undercut3D`, `Deburr3D`, and `Facing` parameter structs.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MachiningBoundaryConfig {
     #[serde(default)]
@@ -105,6 +112,18 @@ pub struct MachiningBoundaryConfig {
     /// through open voids instead of leaving uncut stock pillars inside them.
     #[serde(default = "default_true")]
     pub silhouette_fill_holes: bool,
+    /// Signed `-X` side offset when `boundary_mode == ModelBoundingBox` (`+` expands outward toward `-X`, `-` insets inward toward `+X`).
+    #[serde(default = "default_zero_length")]
+    pub model_bounds_offset_x_neg: ParamLength,
+    /// Signed `+X` side offset when `boundary_mode == ModelBoundingBox` (`+` expands outward toward `+X`, `-` insets inward toward `-X`).
+    #[serde(default = "default_zero_length")]
+    pub model_bounds_offset_x_pos: ParamLength,
+    /// Signed `-Y` side offset when `boundary_mode == ModelBoundingBox` (`+` expands outward toward `-Y`, `-` insets inward toward `+Y`).
+    #[serde(default = "default_zero_length")]
+    pub model_bounds_offset_y_neg: ParamLength,
+    /// Signed `+Y` side offset when `boundary_mode == ModelBoundingBox` (`+` expands outward toward `+Y`, `-` insets inward toward `-Y`).
+    #[serde(default = "default_zero_length")]
+    pub model_bounds_offset_y_pos: ParamLength,
 }
 
 impl Default for MachiningBoundaryConfig {
@@ -114,6 +133,10 @@ impl Default for MachiningBoundaryConfig {
             tool_containment: ToolContainmentMode::default(),
             boundary_offset: default_zero_length(),
             silhouette_fill_holes: true,
+            model_bounds_offset_x_neg: default_zero_length(),
+            model_bounds_offset_x_pos: default_zero_length(),
+            model_bounds_offset_y_neg: default_zero_length(),
+            model_bounds_offset_y_pos: default_zero_length(),
         }
     }
 }
@@ -129,11 +152,19 @@ impl MachiningBoundaryConfig {
             tool_containment,
             boundary_offset: ParamLength::from_mm(boundary_offset_mm),
             silhouette_fill_holes: true,
+            model_bounds_offset_x_neg: default_zero_length(),
+            model_bounds_offset_x_pos: default_zero_length(),
+            model_bounds_offset_y_neg: default_zero_length(),
+            model_bounds_offset_y_pos: default_zero_length(),
         }
     }
 
     pub fn reevaluate(&mut self, ctx: &EvalContext) {
         let _ = self.boundary_offset.reevaluate(ctx);
+        let _ = self.model_bounds_offset_x_neg.reevaluate(ctx);
+        let _ = self.model_bounds_offset_x_pos.reevaluate(ctx);
+        let _ = self.model_bounds_offset_y_neg.reevaluate(ctx);
+        let _ = self.model_bounds_offset_y_pos.reevaluate(ctx);
     }
 }
 

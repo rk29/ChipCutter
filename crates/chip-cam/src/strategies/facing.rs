@@ -95,12 +95,13 @@ pub fn generate_facing(
             });
         }
 
-        let nominal_with_offset = offset_region_set(&nominal_outer, boundary_offset);
+        let mode = params.boundary.boundary_mode;
+        let nominal_with_offset = offset_facing_region(&nominal_outer, mode, boundary_offset);
         let (lane_domain, clip_outer, span_ext, exact_center_lanes) =
             match params.boundary.tool_containment {
                 ToolContainmentMode::ToolOutsideBoundary => (
                     nominal_with_offset.clone(),
-                    nominal_with_offset.dilate_outward(tool_r),
+                    offset_facing_region(&nominal_outer, mode, boundary_offset + tool_r),
                     pass_ext,
                     false,
                 ),
@@ -108,7 +109,8 @@ pub fn generate_facing(
                     (nominal_with_offset.clone(), nominal_with_offset, 0.0, true)
                 }
                 ToolContainmentMode::ToolInsideBoundary => {
-                    let eroded = offset_region_set(&nominal_outer, boundary_offset - tool_r);
+                    let eroded =
+                        offset_facing_region(&nominal_outer, mode, boundary_offset - tool_r);
                     (eroded.clone(), eroded, 0.0, true)
                 }
             };
@@ -559,7 +561,7 @@ fn resolve_facing_nominal_and_islands(
 ) -> (RegionSet2D, RegionSet2D) {
     match params.boundary.boundary_mode {
         MachiningBoundaryMode::StockBox => (stock_xy_region(ctx.setup), RegionSet2D::empty()),
-        MachiningBoundaryMode::ModelSilhouette => {
+        MachiningBoundaryMode::ModelBoundingBox | MachiningBoundaryMode::ModelSilhouette => {
             if ctx.doc.has_3d_geometry() {
                 let surface = SurfaceMesh3D::from_cad_document(ctx.doc, &[], &ctx.setup.frame);
                 if !surface.triangles.is_empty() && surface.aabb_wcs.is_valid() {
@@ -632,6 +634,27 @@ fn resolve_facing_nominal_and_islands(
             (nominal_outer, raised_islands)
         }
     }
+}
+
+fn offset_facing_region(
+    reg: &RegionSet2D,
+    mode: MachiningBoundaryMode,
+    delta_mm: f64,
+) -> RegionSet2D {
+    if reg.is_empty() {
+        return RegionSet2D::empty();
+    }
+    if mode == MachiningBoundaryMode::ModelBoundingBox
+        && let Some(b) = region_aabb_2d(reg).filter(Aabb2::is_valid)
+    {
+        return crate::surface3d::rect_region_2d(
+            b.min.x - delta_mm,
+            b.min.y - delta_mm,
+            b.max.x + delta_mm,
+            b.max.y + delta_mm,
+        );
+    }
+    offset_region_set(reg, delta_mm)
 }
 
 fn offset_region_set(reg: &RegionSet2D, delta_mm: f64) -> RegionSet2D {

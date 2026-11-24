@@ -1123,3 +1123,328 @@ fn model_silhouette_fill_through_holes_option_toggles_interior_void_machining() 
         sim_res.diagnostics
     );
 }
+
+/// Builds a watertight STL bar (`X ∈ [-half_x..half_x]`, `Z ∈ [0..height]`) whose `±Y` profile
+/// curves deeply inward into concave exterior bays (`y = ±(y_end - bay_depth * cos^2(pi*x/(2*half_x)))`),
+/// mirroring double-helix / waisted rotary blanks where `ModelSilhouette` leaves thin stock slivers
+/// inside concave bays while `StockBox` extends into chuck ends.
+fn build_wavy_concave_bar_stl_bytes(
+    half_x: f64,
+    y_end: f64,
+    bay_depth: f64,
+    height: f64,
+) -> Vec<u8> {
+    let steps = 40usize;
+    let y_at = |x: f64| -> f64 {
+        let u = (x / half_x).clamp(-1.0, 1.0);
+        let c = (0.5 * std::f64::consts::PI * u).cos();
+        (y_end - bay_depth * c * c).max(2.0)
+    };
+    let mut tris: Vec<[DVec3; 3]> = Vec::new();
+    for i in 0..steps {
+        let x0 = -half_x + (2.0 * half_x) * (i as f64 / steps as f64);
+        let x1 = -half_x + (2.0 * half_x) * ((i + 1) as f64 / steps as f64);
+        let y0 = y_at(x0);
+        let y1 = y_at(x1);
+
+        let b0n = DVec3::new(x0, -y0, 0.0);
+        let b1n = DVec3::new(x1, -y1, 0.0);
+        let b0p = DVec3::new(x0, y0, 0.0);
+        let b1p = DVec3::new(x1, y1, 0.0);
+        let t0n = DVec3::new(x0, -y0, height);
+        let t1n = DVec3::new(x1, -y1, height);
+        let t0p = DVec3::new(x0, y0, height);
+        let t1p = DVec3::new(x1, y1, height);
+
+        // Top (+Z)
+        tris.push([t0n, t1n, t1p]);
+        tris.push([t0n, t1p, t0p]);
+        // Bottom (-Z)
+        tris.push([b0n, b1p, b1n]);
+        tris.push([b0n, b0p, b1p]);
+        // -Y side wall
+        tris.push([b0n, b1n, t1n]);
+        tris.push([b0n, t1n, t0n]);
+        // +Y side wall
+        tris.push([b1p, b0p, t0p]);
+        tris.push([b1p, t0p, t1p]);
+    }
+    // -X end cap
+    let y_neg = y_at(-half_x);
+    let nb0 = DVec3::new(-half_x, -y_neg, 0.0);
+    let nb1 = DVec3::new(-half_x, y_neg, 0.0);
+    let nt0 = DVec3::new(-half_x, -y_neg, height);
+    let nt1 = DVec3::new(-half_x, y_neg, height);
+    tris.push([nb0, nt0, nt1]);
+    tris.push([nb0, nt1, nb1]);
+    // +X end cap
+    let y_pos = y_at(half_x);
+    let pb0 = DVec3::new(half_x, -y_pos, 0.0);
+    let pb1 = DVec3::new(half_x, y_pos, 0.0);
+    let pt0 = DVec3::new(half_x, -y_pos, height);
+    let pt1 = DVec3::new(half_x, y_pos, height);
+    tris.push([pb0, pb1, pt1]);
+    tris.push([pb0, pt1, pt0]);
+
+    encode_test_stl(&tris)
+}
+
+#[test]
+fn m84_model_bounding_box_offsets_sharp_corners_collapse_guard_and_sim_verification() {
+    let half_x = 28.0;
+    let y_end = 14.0;
+    let bay_depth = 8.0; // narrows to ±6 mm in the middle concave bays!
+    let height = 10.0;
+    let stl = build_wavy_concave_bar_stl_bytes(half_x, y_end, bay_depth, height);
+    let doc = load_mesh_cad_document("wavy_bar.stl", &stl, &MeshImportOptions::default()).unwrap();
+
+    // Rectangular stock extending far past the model in X (simulating rotary chuck/tailstock ends)
+    let mut setup = Setup::new("s_m84", "Wavy Bar Setup", WorkOffsetSlot::G54);
+    setup.wcs.origin = WcsOriginMode::ModelBoxPoint {
+        anchor: BoxAnchor27::TOP_CENTER,
+    };
+    setup.stock = StockConfig::RelativeBox {
+        symmetric_xy: false,
+        side_pos_x: ParamLength::from_mm(18.0),
+        side_neg_x: ParamLength::from_mm(18.0),
+        side_pos_y: ParamLength::from_mm(6.0),
+        side_neg_y: ParamLength::from_mm(6.0),
+        top_offset_z: ParamLength::from_mm(1.5),
+        bottom_offset_z: ParamLength::from_mm(0.0),
+        sheet_thickness_z: ParamLength::from_mm(height + 1.5),
+        round_increment_mm: None,
+    };
+    let resolved = setup.resolve(&doc, DisplayUnit::Millimeter).unwrap();
+    let surface = SurfaceMesh3D::from_cad_document(&doc, &[], &resolved.frame);
+    let empty_sel = ExtractedSelectionSummary::default();
+
+    // 1. Nominal ModelBoundingBox matches exact `surface.aabb_wcs` with 4 crisp line segments
+    let cfg_nom = MachiningBoundaryConfig::new(
+        MachiningBoundaryMode::ModelBoundingBox,
+        ToolContainmentMode::ToolCenterOnBoundary,
+        0.0,
+    );
+    let res_nom =
+        resolve_3d_boundary_config_detailed(&surface, &resolved, &empty_sel, &cfg_nom, 2.0);
+    assert!(res_nom.warnings.is_empty());
+    assert_eq!(res_nom.nominal_region.regions.len(), 1);
+    assert_eq!(
+        res_nom.nominal_region.regions[0].outer_ccw.segments.len(),
+        4,
+        "ModelBoundingBox must emit a sharp 4-segment rectangle"
+    );
+    let nom_bb = res_nom.nominal_region.regions[0].outer_ccw.exact_aabb();
+    assert!((nom_bb.min.x - (-half_x)).abs() < 1e-3);
+    assert!((nom_bb.max.x - half_x).abs() < 1e-3);
+    assert!((nom_bb.min.y - (-y_end)).abs() < 1e-3);
+    assert!((nom_bb.max.y - y_end).abs() < 1e-3);
+    // Concave bay center `(0, 10)` is INSIDE ModelBoundingBox (clearing outer concave bays!)
+    // whereas it lies OUTSIDE ModelSilhouette (where y(0) = 6 mm).
+    assert!(res_nom.nominal_region.contains_point(DVec2::new(0.0, 10.0)));
+    let res_sil = resolve_3d_boundary_config_detailed(
+        &surface,
+        &resolved,
+        &empty_sel,
+        &MachiningBoundaryConfig::new(
+            MachiningBoundaryMode::ModelSilhouette,
+            ToolContainmentMode::ToolCenterOnBoundary,
+            0.0,
+        ),
+        2.0,
+    );
+    assert!(
+        !res_sil.nominal_region.contains_point(DVec2::new(0.0, 10.0)),
+        "sanity check: (0, 10) sits inside the concave exterior bay outside ModelSilhouette"
+    );
+
+    // 2. Independent signed per-side offsets + expression reevaluation + containment + uniform offset
+    let mut eval_ctx = resolved.eval_context(DisplayUnit::Millimeter);
+    eval_ctx.set_var("tool_r", 2.0);
+    let mut cfg_sides = MachiningBoundaryConfig::new(
+        MachiningBoundaryMode::ModelBoundingBox,
+        ToolContainmentMode::ToolOutsideBoundary,
+        1.0,
+    );
+    cfg_sides.model_bounds_offset_x_neg = ParamLength::parse("tool_r + 0.5", &eval_ctx).unwrap(); // +2.5
+    cfg_sides.model_bounds_offset_x_pos = ParamLength::from_mm(-3.0);
+    cfg_sides.model_bounds_offset_y_neg = ParamLength::from_mm(1.5);
+    cfg_sides.model_bounds_offset_y_pos = ParamLength::parse("-tool_r", &eval_ctx).unwrap(); // -2.0
+    // Re-evaluate with updated `tool_r = 3.0` to prove all four fields reevaluate!
+    eval_ctx.set_var("tool_r", 3.0);
+    cfg_sides.reevaluate(&eval_ctx);
+    assert!((cfg_sides.model_bounds_offset_x_neg.value_mm - 3.5).abs() < 1e-9);
+    assert!((cfg_sides.model_bounds_offset_y_pos.value_mm - (-3.0)).abs() < 1e-9);
+
+    let tool_r = 2.0;
+    let res_sides =
+        resolve_3d_boundary_config_detailed(&surface, &resolved, &empty_sel, &cfg_sides, tool_r);
+    assert!(res_sides.warnings.is_empty());
+    let nb = res_sides.nominal_region.regions[0].outer_ccw.exact_aabb();
+    assert!((nb.min.x - (-half_x - 3.5)).abs() < 1e-3);
+    assert!((nb.max.x - (half_x - 3.0)).abs() < 1e-3);
+    assert!((nb.min.y - (-y_end - 1.5)).abs() < 1e-3);
+    assert!((nb.max.y - (y_end - 3.0)).abs() < 1e-3);
+
+    // Effective region = sharp rectangle shifted by delta = +tool_r + boundary_offset = +3.0 mm
+    assert_eq!(
+        res_sides.effective_region.regions[0]
+            .outer_ccw
+            .segments
+            .len(),
+        4,
+        "ModelBoundingBox effective offset must preserve crisp 4-segment rectangle corners"
+    );
+    let eb = res_sides.effective_region.regions[0].outer_ccw.exact_aabb();
+    assert!((eb.min.x - (nb.min.x - 3.0)).abs() < 1e-3);
+    assert!((eb.max.x - (nb.max.x + 3.0)).abs() < 1e-3);
+    assert!((eb.min.y - (nb.min.y - 3.0)).abs() < 1e-3);
+    assert!((eb.max.y - (nb.max.y + 3.0)).abs() < 1e-3);
+
+    // ToolInsideBoundary shrinks sharply by tool_r
+    let mut cfg_in = cfg_nom.clone();
+    cfg_in.tool_containment = ToolContainmentMode::ToolInsideBoundary;
+    let res_in = resolve_3d_boundary_config_detailed(&surface, &resolved, &empty_sel, &cfg_in, 2.0);
+    let ib = res_in.effective_region.regions[0].outer_ccw.exact_aabb();
+    assert!((ib.min.x - (-half_x + 2.0)).abs() < 1e-3);
+    assert!((ib.max.x - (half_x - 2.0)).abs() < 1e-3);
+
+    // 3. Collapsed bounds guard: negative offsets exceeding model width return empty + warning (no panic)
+    let mut cfg_collapsed = MachiningBoundaryConfig::new(
+        MachiningBoundaryMode::ModelBoundingBox,
+        ToolContainmentMode::ToolOutsideBoundary,
+        5.0, // even with positive uniform offset, collapsed nominal must stay empty!
+    );
+    cfg_collapsed.model_bounds_offset_x_neg = ParamLength::from_mm(-30.0);
+    cfg_collapsed.model_bounds_offset_x_pos = ParamLength::from_mm(-30.0);
+    let res_col =
+        resolve_3d_boundary_config_detailed(&surface, &resolved, &empty_sel, &cfg_collapsed, 2.0);
+    assert!(res_col.nominal_region.is_empty());
+    assert!(res_col.effective_region.is_empty());
+    assert!(
+        !res_col.warnings.is_empty(),
+        "collapsed Model Bounds must emit a clear diagnostic warning"
+    );
+
+    // 4. End-to-end Adaptive3D + Facing with ModelBoundingBox verified crash- and gouge-free in chip-sim
+    let lib = default_starter_tool_library();
+    let flat_4 = lib
+        .tools
+        .iter()
+        .find(|t| {
+            matches!(t.geometry, CutterGeometry::FlatEndmill { diameter_mm, .. } if diameter_mm <= 6.5)
+        })
+        .unwrap();
+    let tool_r_4 = 0.5 * flat_4.geometry.cutting_diameter_mm();
+
+    let mut face_op = Operation::new("op_face_mb", "Face Model Bounds", OperationKind::Facing);
+    face_op.tool_id = Some(flat_4.id.clone());
+    face_op.heights.top = HeightSpec::new(HeightReference::StockTop, 0.0);
+    face_op.heights.bottom = HeightSpec::new(HeightReference::ModelTop, 0.0);
+    if let Some(StrategyParams::Facing(ref mut p)) = face_op.strategy {
+        p.boundary.boundary_mode = MachiningBoundaryMode::ModelBoundingBox;
+        p.boundary.tool_containment = ToolContainmentMode::ToolCenterOnBoundary;
+        p.boundary.model_bounds_offset_x_neg = ParamLength::from_mm(1.0);
+        p.boundary.model_bounds_offset_x_pos = ParamLength::from_mm(1.0);
+    }
+
+    let mut rough_op = Operation::new("op_a3d_mb", "Rough Model Bounds", OperationKind::Adaptive3D);
+    rough_op.tool_id = Some(flat_4.id.clone());
+    rough_op.heights.top = HeightSpec::new(HeightReference::ModelTop, 0.0);
+    rough_op.heights.bottom = HeightSpec::new(HeightReference::ModelBottom, 0.0);
+    if let Some(StrategyParams::Adaptive3D(ref mut p)) = rough_op.strategy {
+        p.boundary.boundary_mode = MachiningBoundaryMode::ModelBoundingBox;
+        p.boundary.tool_containment = ToolContainmentMode::ToolOutsideBoundary;
+        p.boundary.boundary_offset = ParamLength::from_mm(0.5);
+        p.boundary.model_bounds_offset_y_neg = ParamLength::from_mm(1.0);
+        p.boundary.model_bounds_offset_y_pos = ParamLength::from_mm(1.0);
+        p.max_roughing_stepdown = ParamLength::from_mm(5.0);
+        p.fine_stepdown = ParamLength::from_mm(0.0);
+    }
+
+    let cancel = AtomicBool::new(false);
+    let tp_face = generate_operation_toolpath_with_rest(&OperationGenRequest {
+        doc: &doc,
+        sketches: &[],
+        setup: &resolved,
+        op: &face_op,
+        tool: flat_4,
+        clearing_tool: None,
+        display_unit: DisplayUnit::Millimeter,
+        is_first_tool_in_setup: true,
+        upstream_rest: &[],
+        carryover_stock: None,
+        cancel: &cancel,
+    })
+    .unwrap();
+    let tp_rough = generate_operation_toolpath_with_rest(&OperationGenRequest {
+        doc: &doc,
+        sketches: &[],
+        setup: &resolved,
+        op: &rough_op,
+        tool: flat_4,
+        clearing_tool: None,
+        display_unit: DisplayUnit::Millimeter,
+        is_first_tool_in_setup: false,
+        upstream_rest: &[],
+        carryover_stock: None,
+        cancel: &cancel,
+    })
+    .unwrap();
+
+    // Roughing clears inside the concave exterior bay (`|x| < 10`, `|y| > 8`) while staying clear
+    // of the rotary chuck ends (`|x| <= half_x + tool_r + 0.5 + tol`, well short of stock `±46 mm`)!
+    let cuts_bay = tp_rough.segments_wcs.iter().any(|s| {
+        matches!(
+            s.motion,
+            SegmentMotion3D::Linear {
+                role: MotionRole::Cut | MotionRole::FinishCut,
+                ..
+            } | SegmentMotion3D::Arc {
+                role: MotionRole::Cut | MotionRole::FinishCut,
+                ..
+            }
+        ) && s.end_wcs.x.abs() < 10.0
+            && s.end_wcs.y.abs() > 8.5
+    });
+    assert!(
+        cuts_bay,
+        "Adaptive3D with ModelBoundingBox must clear concave exterior bays"
+    );
+    let max_abs_x = tp_rough
+        .segments_wcs
+        .iter()
+        .filter(|s| !matches!(s.motion, SegmentMotion3D::Rapid))
+        .map(|s| s.start_wcs.x.abs().max(s.end_wcs.x.abs()))
+        .fold(0.0_f64, f64::max);
+    assert!(
+        max_abs_x <= half_x + tool_r_4 + 1.5,
+        "ModelBoundingBox must stay within model X bounds + containment/offset ({:.2} mm), not extend into stock chuck ends (±46 mm)",
+        max_abs_x
+    );
+
+    let sim_ops = vec![
+        SimOperationInput::from_operation(&face_op, flat_4, &tp_face),
+        SimOperationInput::from_operation(&rough_op, flat_4, &tp_rough),
+    ];
+    let sim_res = run_setup_simulation(&SetupSimulationInput {
+        doc: &doc,
+        setup: &resolved,
+        target_bodies: &[],
+        fixtures: &[],
+        operations: &sim_ops,
+        kinematics: MachineKinematicsConfig::default(),
+        resolution: SimResolution::Standard,
+        verify_config: SimVerificationConfig::default(),
+        initial_stock: None,
+        initial_raw_volume_mm3: None,
+        carried_over_from_setup: None,
+        cancel: None,
+    })
+    .unwrap();
+    assert_eq!(
+        sim_res.critical_error_count(),
+        0,
+        "ModelBoundingBox Facing + Adaptive3D must have 0 crashes and 0 gouges in chip-sim: {:#?}",
+        sim_res.diagnostics
+    );
+}

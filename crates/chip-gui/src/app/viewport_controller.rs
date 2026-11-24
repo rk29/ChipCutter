@@ -1,12 +1,15 @@
+use std::borrow::Cow;
+
 use chip_cad::{CurveKind, PickFilter, PickTarget, SurfaceKind};
 use chip_cam::{
     ExtractedFeature25D, FixtureBody, FixtureKind, GeometrySelectionItem, ManualTabAnchor,
-    OperationStatus, ResolvedHeights, StrategyParams, TabMarker3D, TabPlacementMode,
-    TabProfileKind, WcsAxisRef, WcsFeaturePointRef, WcsOrientationMode, WcsOriginMode,
+    Operation, OperationRotaryMode, OperationStatus, ResolvedHeights, ResolvedRotaryConfig,
+    ResolvedSetup, StrategyParams, TabMarker3D, TabPlacementMode, TabProfileKind, WcsAxisRef,
+    WcsFeaturePointRef, WcsOrientationMode, WcsOriginMode, build_indexed_virtual_setup,
     extract_selection_features_with_sketches, resolve_sketch_world_frame,
     resolve_sketch_world_frame_with_doc,
 };
-use chip_math::{Aabb2, DVec2, DVec3, ParamLength, Ray3, RigidFrame3};
+use chip_math::{Aabb2, DMat4, DVec2, DVec3, ParamLength, Ray3, RigidFrame3};
 use chip_project::cad_binding_to_sketch_face;
 use chip_sketch::{
     FaceSketchOriginMode, PointPatternSpec, PolygonEvalSpec, PolygonSizingMode, RectAnchorMode,
@@ -37,6 +40,62 @@ pub(crate) struct SketchAuthorInteractionInput {
     pub right_click: bool,
 }
 
+/// Resolves the active viewport rotary angle (`deg`) and optional Indexed 3+1 HUD badge
+/// `(axis_letter, angle_deg)` following strict precedence:
+/// 1. Active simulation playback (`sim_active == true`) always owns `sim_rotary_deg`.
+/// 2. Otherwise, when `auto_rotate_indexed_op == true` and `focused_op` is `Indexed3Plus1 { angle_deg }`
+///    on a rotary-enabled Setup, auto-rotate to `angle_deg` and return the HUD badge when rotated.
+/// 3. Otherwise `0.0°` with no indexed badge.
+pub(crate) fn resolve_effective_viewport_rotary(
+    sim_active: bool,
+    sim_rotary_deg: f64,
+    auto_rotate_indexed_op: bool,
+    focused_op: Option<&Operation>,
+    rotary: Option<ResolvedRotaryConfig>,
+) -> (f64, Option<(char, f64)>) {
+    if sim_active {
+        return (sim_rotary_deg, None);
+    }
+    if auto_rotate_indexed_op
+        && let Some(rot) = rotary
+        && let Some(op) = focused_op
+        && let OperationRotaryMode::Indexed3Plus1 { angle_deg } = op.rotary
+    {
+        let badge = (angle_deg.abs() > 1e-6).then_some((rot.axis_letter, angle_deg));
+        return (angle_deg, badge);
+    }
+    (0.0, None)
+}
+
+/// Returns the effective [`ResolvedSetup`] used for `BoundaryPreviewOverlay`, `ZPlaneVisual`,
+/// and `[Geometry]` / `[Heights]` inspection: when auto-rotate is active for an `Indexed3Plus1`
+/// operation outside simulation playback, returns [`build_indexed_virtual_setup`] so previews and
+/// heights match the exact upright `+Z` rotated orientation machined by `generate_operation_toolpath`.
+pub(crate) fn effective_setup_for_indexed_preview<'a>(
+    rs: &'a ResolvedSetup,
+    auto_rotate_indexed_op: bool,
+    sim_active: bool,
+    op: &Operation,
+) -> Cow<'a, ResolvedSetup> {
+    if !sim_active
+        && auto_rotate_indexed_op
+        && let Some(rot) = rs.rotary
+        && let OperationRotaryMode::Indexed3Plus1 { angle_deg } = op.rotary
+    {
+        return Cow::Owned(build_indexed_virtual_setup(rs, &rot, angle_deg));
+    }
+    Cow::Borrowed(rs)
+}
+
+fn transform_rigid_frame_by_dmat4(f: RigidFrame3, m: DMat4) -> RigidFrame3 {
+    RigidFrame3 {
+        origin_mm: m.transform_point3(f.origin_mm),
+        x_axis: m.transform_vector3(f.x_axis).normalize_or_zero(),
+        y_axis: m.transform_vector3(f.y_axis).normalize_or_zero(),
+        z_axis: m.transform_vector3(f.z_axis).normalize_or_zero(),
+    }
+}
+
 impl ChipCutterApp {
     pub(crate) fn sync_viewport_scene_state(&mut self) {
         self.highlight.theme = self.theme;
@@ -50,14 +109,60 @@ impl ChipCutterApp {
         self.highlight.z_planes_wcs.clear();
         self.highlight.boundary_preview = None;
 
+        // 0. Resolve simulation visuals first so `sim_active` precedence is known before frame-geo
+        //    caching, indexed auto-rotate, BoundaryPreviewOverlay, and ZPlaneVisual resolution.
+        let mut sim_vis_rotary_deg = 0.0_f64;
+        if self.effective_cad_arc().is_some()
+            && self.project.setups.get(self.active_setup_idx).is_some()
+        {
+            let vis = if self.self_test.is_some() {
+                self.sim_panel
+                    .resolve_viewport_visuals_sync(&self.project, self.active_setup_idx)
+            } else {
+                self.sim_panel
+                    .resolve_viewport_visuals(&self.project, self.active_setup_idx)
+            };
+            self.highlight.sim_stock_source = vis.stock;
+            self.highlight.sim_tool_mesh = vis.cutter;
+            self.highlight.sim_trail_limit = vis.trail_limit;
+            sim_vis_rotary_deg = vis.rotary_deg;
+        } else {
+            self.highlight.sim_stock_source = None;
+            self.highlight.sim_tool_mesh = None;
+            self.highlight.sim_trail_limit = None;
+        }
+        let sim_active =
+            self.highlight.sim_stock_source.is_some() || self.highlight.sim_tool_mesh.is_some();
+
         let cached_geo = self.ensure_frame_geo_cached().clone();
         let resolved_opt = cached_geo.resolved_setup.and_then(Result::ok);
+
+        let focused_active_op: Option<&Operation> = match self.inspector_focus {
+            InspectorFocus::Operation { setup_idx, op_idx }
+                if setup_idx == self.active_setup_idx =>
+            {
+                self.project
+                    .setups
+                    .get(setup_idx)
+                    .and_then(|s| s.operations.get(op_idx))
+            }
+            _ => None,
+        };
 
         if let Some(rs) = &resolved_opt {
             self.highlight.wcs_frame = rs.frame;
             self.camera.turntable_frame = rs.frame;
             self.highlight.stock = Some(rs.stock);
             self.highlight.rotary = rs.rotary;
+
+            let (eff_rotary_deg, _) = resolve_effective_viewport_rotary(
+                sim_active,
+                sim_vis_rotary_deg,
+                self.prefs.auto_rotate_indexed_op,
+                focused_active_op,
+                rs.rotary,
+            );
+            self.highlight.sim_rotary_deg = eff_rotary_deg;
 
             let selected_fix_id = if matches!(
                 self.inspector_focus,
@@ -102,13 +207,42 @@ impl ChipCutterApp {
                     selected: selected_fix_id == Some(sol.fixture_id.as_str()),
                 });
             }
+            let has_cad_rot = self.highlight.has_active_cad_rotary_transform();
+            let cad_xf = if has_cad_rot {
+                self.highlight.cad_world_transform()
+            } else {
+                DMat4::IDENTITY
+            };
+            // For `SetupXy` sketches when auto-rotated to an Indexed 3+1 angle, keep the sketch
+            // flat & upright in `rs.frame` at the upright indexed stock/model Z height.
+            let upright_rs_for_xy: Option<ResolvedSetup> = focused_active_op.and_then(|op| {
+                match effective_setup_for_indexed_preview(
+                    rs,
+                    self.prefs.auto_rotate_indexed_op,
+                    sim_active,
+                    op,
+                ) {
+                    Cow::Owned(mut v) => {
+                        v.frame = rs.frame;
+                        Some(v)
+                    }
+                    Cow::Borrowed(_) => None,
+                }
+            });
             for (si, sk) in self.project.sketches.iter().enumerate() {
                 if sk.visible {
-                    let wf = if let Some(m) = &self.model {
-                        resolve_sketch_world_frame_with_doc(&m.doc, sk, rs)
-                    } else {
-                        resolve_sketch_world_frame(false, sk, rs)
+                    let rs_for_sk = match (&sk.anchor, &upright_rs_for_xy) {
+                        (SketchAnchor::SetupXy { .. }, Some(u_rs)) => u_rs,
+                        _ => rs,
                     };
+                    let mut wf = if let Some(m) = &self.model {
+                        resolve_sketch_world_frame_with_doc(&m.doc, sk, rs_for_sk)
+                    } else {
+                        resolve_sketch_world_frame(false, sk, rs_for_sk)
+                    };
+                    if has_cad_rot && matches!(sk.anchor, SketchAnchor::PlanarFace { .. }) {
+                        wf = transform_rigid_frame_by_dmat4(wf, cad_xf);
+                    }
                     if matches!(self.inspector_focus, InspectorFocus::Sketch { sketch_idx } if sketch_idx == si)
                         && matches!(sk.anchor, SketchAnchor::PlanarFace { .. })
                     {
@@ -124,6 +258,7 @@ impl ChipCutterApp {
             self.highlight.wcs_frame = RigidFrame3::IDENTITY;
             self.highlight.stock = None;
             self.highlight.rotary = None;
+            self.highlight.sim_rotary_deg = 0.0;
         }
 
         match self.inspector_focus {
@@ -174,6 +309,17 @@ impl ChipCutterApp {
                         self.highlight.chain_arrows = sum.direction_arrows.clone();
                     }
 
+                    let eff_rs = if setup_idx == self.active_setup_idx {
+                        effective_setup_for_indexed_preview(
+                            rs,
+                            self.prefs.auto_rotate_indexed_op,
+                            sim_active,
+                            op,
+                        )
+                    } else {
+                        Cow::Borrowed(rs)
+                    };
+
                     if self.op_tab == OperationTab::Geometry && setup_idx == self.active_setup_idx {
                         let active_tool = op.tool_id.as_ref().and_then(|tid| {
                             self.project
@@ -194,7 +340,7 @@ impl ChipCutterApp {
                                 frame_geo_sig: cached_geo.sig,
                                 display_unit: self.project.display_units,
                                 doc: doc_opt,
-                                resolved_setup: rs,
+                                resolved_setup: eff_rs.as_ref(),
                                 op,
                                 active_tool,
                                 extracted: extracted_opt,
@@ -205,7 +351,7 @@ impl ChipCutterApp {
                         && self.op_tab == OperationTab::Heights
                         && let Some(sum) = extracted_opt
                     {
-                        let mut ctx = rs.eval_context(self.project.display_units);
+                        let mut ctx = eff_rs.eval_context(self.project.display_units);
                         if let Some(tid) = &op.tool_id
                             && let Some(t) = self.project.tool(tid)
                         {
@@ -217,10 +363,10 @@ impl ChipCutterApp {
                         h_eval.reevaluate(&ctx);
                         if let Ok(rh) = ResolvedHeights::resolve(
                             &h_eval,
-                            &rs.model_aabb_wcs,
-                            &rs.stock.aabb_wcs(),
-                            rs.clearance_z_wcs,
-                            rs.retract_z_wcs,
+                            &eff_rs.model_aabb_wcs,
+                            &eff_rs.stock.aabb_wcs(),
+                            eff_rs.clearance_z_wcs,
+                            eff_rs.retract_z_wcs,
                             sum.inferred_top_z_wcs,
                             sum.inferred_bottom_z_wcs,
                         ) {
@@ -314,23 +460,6 @@ impl ChipCutterApp {
                     });
                 }
             }
-
-            let vis = if self.self_test.is_some() {
-                self.sim_panel
-                    .resolve_viewport_visuals_sync(&self.project, self.active_setup_idx)
-            } else {
-                self.sim_panel
-                    .resolve_viewport_visuals(&self.project, self.active_setup_idx)
-            };
-            self.highlight.sim_stock_source = vis.stock;
-            self.highlight.sim_tool_mesh = vis.cutter;
-            self.highlight.sim_trail_limit = vis.trail_limit;
-            self.highlight.sim_rotary_deg = vis.rotary_deg;
-        } else {
-            self.highlight.sim_stock_source = None;
-            self.highlight.sim_tool_mesh = None;
-            self.highlight.sim_trail_limit = None;
-            self.highlight.sim_rotary_deg = 0.0;
         }
     }
 
@@ -376,15 +505,24 @@ impl ChipCutterApp {
         let mut best_t = f64::INFINITY;
         let mut best_hit: Option<SketchPickHit> = None;
 
+        let has_cad_rot = self.highlight.has_active_cad_rotary_transform();
+        let cad_xf = if has_cad_rot {
+            self.highlight.cad_world_transform()
+        } else {
+            DMat4::IDENTITY
+        };
         for sk in &self.project.sketches {
             if !sk.visible {
                 continue;
             }
-            let wf = if let Some(m) = &self.model {
+            let mut wf = if let Some(m) = &self.model {
                 resolve_sketch_world_frame_with_doc(&m.doc, sk, &rs)
             } else {
                 resolve_sketch_world_frame(doc_has_bodies, sk, &rs)
             };
+            if has_cad_rot && matches!(sk.anchor, SketchAnchor::PlanarFace { .. }) {
+                wf = transform_rigid_frame_by_dmat4(wf, cad_xf);
+            }
             let denom = ray.dir.dot(wf.z_axis);
             if denom.abs() <= 1e-6 {
                 continue;
@@ -1489,5 +1627,133 @@ fn build_rubber_band_polys(
             out
         }
         SketchAuthorTool::PlaceText => Vec::new(),
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use chip_cam::{
+        OperationKind, ResolvedRotaryConfig, ResolvedStockGeometry, RotaryAxisKind,
+        RotaryDirection, RotaryDriveMode, RotaryUnwindMode,
+    };
+    use chip_math::{Aabb3, DVec3, Ray3, RigidFrame3};
+
+    use super::*;
+    use crate::viewport::{HighlightState, gizmos::emit_stock_visuals};
+
+    fn sample_x_rotary() -> ResolvedRotaryConfig {
+        ResolvedRotaryConfig {
+            mode: RotaryDriveMode::Indexed3Plus1,
+            axis: RotaryAxisKind::XAxis,
+            direction: RotaryDirection::RightHandCcw,
+            axis_letter: 'A',
+            center_wcs: DVec3::new(0.0, 2.0, -3.0),
+            stock_u_min: -45.0,
+            stock_u_max: 45.0,
+            stock_outer_radius_mm: 30.0,
+            clearance_radius_mm: 40.0,
+            chuck_end_positive: false,
+            chuck_u_min: -65.0,
+            chuck_u_max: -45.0,
+            chuck_radius_mm: 35.0,
+            unwind_mode: RotaryUnwindMode::ContinuousMultiTurn,
+        }
+    }
+
+    #[test]
+    fn m84_indexed_auto_rotate_precedence_stock_wireframe_and_picking_ray_alignment() {
+        let rot = sample_x_rotary();
+        let mut op_idx90 = Operation::new("op90", "Index 90", OperationKind::Adaptive3D);
+        op_idx90.rotary = OperationRotaryMode::Indexed3Plus1 { angle_deg: 90.0 };
+
+        // 1. Auto-rotate enabled + no active sim -> rotates to 90° with HUD badge
+        let (deg, badge) =
+            resolve_effective_viewport_rotary(false, 0.0, true, Some(&op_idx90), Some(rot));
+        assert!((deg - 90.0).abs() < 1e-9);
+        assert_eq!(badge, Some(('A', 90.0)));
+
+        // 2. Auto-rotate disabled -> stays at 0° with no badge
+        let (deg_off, badge_off) =
+            resolve_effective_viewport_rotary(false, 0.0, false, Some(&op_idx90), Some(rot));
+        assert!((deg_off - 0.0).abs() < 1e-9);
+        assert_eq!(badge_off, None);
+
+        // 3. Simulation playback active -> strict precedence over auto-rotate!
+        let (deg_sim, badge_sim) =
+            resolve_effective_viewport_rotary(true, 137.5, true, Some(&op_idx90), Some(rot));
+        assert!((deg_sim - 137.5).abs() < 1e-9);
+        assert_eq!(badge_sim, None);
+
+        // 4. `emit_stock_visuals` rotates asymmetric raw Box stock in lockstep with `sim_rotary_deg = 90°`
+        let stock = ResolvedStockGeometry::Box {
+            aabb_wcs: Aabb3::new(
+                DVec3::new(-45.0, -10.0, -25.0),
+                DVec3::new(45.0, 10.0, 25.0),
+            ),
+        };
+        let mut rot_origin = rot;
+        rot_origin.center_wcs = DVec3::ZERO;
+        let hl90 = HighlightState {
+            wcs_frame: RigidFrame3::IDENTITY,
+            rotary: Some(rot_origin),
+            sim_rotary_deg: 90.0,
+            ..HighlightState::default()
+        };
+        let mut tris = Vec::new();
+        let mut edges = Vec::new();
+        emit_stock_visuals(
+            &stock,
+            &hl90.wcs_frame,
+            hl90.stock_model_wcs_transform(),
+            false,
+            &mut tris,
+            &mut edges,
+        );
+        assert_eq!(edges.len(), 12);
+        let mut min_y = f32::INFINITY;
+        let mut max_y = f32::NEG_INFINITY;
+        let mut min_z = f32::INFINITY;
+        let mut max_z = f32::NEG_INFINITY;
+        for e in &edges {
+            for p in [e.p0_mm, e.p1_mm] {
+                min_y = min_y.min(p[1]);
+                max_y = max_y.max(p[1]);
+                min_z = min_z.min(p[2]);
+                max_z = max_z.max(p[2]);
+            }
+        }
+        assert!(
+            (max_y - min_y - 50.0).abs() < 1e-3 && (max_z - min_z - 20.0).abs() < 1e-3,
+            "Box stock rotated by 90° around X must swap Y (50 mm) and Z (20 mm) extents; got Y=[{min_y}, {max_y}], Z=[{min_z}, {max_z}]"
+        );
+
+        // 5. `world_ray_to_cad_model_space` keeps picking hits 100% aligned at 90°, 180°, 270°, and 45°
+        let wcs_frame = RigidFrame3 {
+            origin_mm: DVec3::new(12.0, -5.0, 7.0),
+            x_axis: DVec3::X,
+            y_axis: DVec3::Y,
+            z_axis: DVec3::Z,
+        };
+        let sample_cad_pt = DVec3::new(18.0, 14.0, -9.0);
+        for angle_deg in [45.0_f64, 90.0, 180.0, 270.0] {
+            let hl = HighlightState {
+                wcs_frame,
+                rotary: Some(rot),
+                sim_rotary_deg: angle_deg,
+                ..HighlightState::default()
+            };
+            let displayed_world = hl.cad_world_transform().transform_point3(sample_cad_pt);
+            // Shoot a ray directly from +Z above the displayed rotated point downward through it
+            let ray_world =
+                Ray3::new(displayed_world + DVec3::new(0.0, 0.0, 80.0), DVec3::NEG_Z).unwrap();
+            let ray_cad = hl.world_ray_to_cad_model_space(&ray_world);
+            let hit_on_ray = ray_cad.origin + ray_cad.dir * 80.0;
+            assert!(
+                hit_on_ray.distance(sample_cad_pt) < 1e-8,
+                "picking ray at {angle_deg}° must map displayed point back onto exact unrotated CAD point (err = {:.3e} mm)",
+                hit_on_ray.distance(sample_cad_pt)
+            );
+        }
     }
 }

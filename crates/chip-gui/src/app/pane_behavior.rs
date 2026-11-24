@@ -13,7 +13,9 @@ use crate::{
         diagnostics::show_diagnostics_panel,
         gcode_preview::{GCodePanelCtx, GCodeUiAction},
         model_inspector::{ModelInspectorCtx, show_model_inspector},
-        operation_inspector::{OperationInspectorCtx, show_operation_inspector},
+        operation_inspector::{
+            OperationInspectorAction, OperationInspectorCtx, show_operation_inspector,
+        },
         setup_inspector::{FixtureSafetySummary, SetupInspectorCtx, show_setup_inspector},
         simulation::{SimPanelCtx, SimulationUiAction},
         sketch_inspector::{SketchInspectorAction, SketchInspectorCtx, show_sketch_inspector},
@@ -406,6 +408,27 @@ impl PaneBehavior<'_> {
             }
         }
 
+        let sim_active = self.app.highlight.sim_stock_source.is_some()
+            || self.app.highlight.sim_tool_mesh.is_some();
+        let focused_active_op = match self.app.inspector_focus {
+            InspectorFocus::Operation { setup_idx, op_idx }
+                if setup_idx == self.app.active_setup_idx =>
+            {
+                self.app
+                    .project
+                    .setups
+                    .get(setup_idx)
+                    .and_then(|s| s.operations.get(op_idx))
+            }
+            _ => None,
+        };
+        let (_, indexed_badge) = crate::app::viewport_controller::resolve_effective_viewport_rotary(
+            sim_active,
+            self.app.highlight.sim_rotary_deg,
+            self.app.prefs.auto_rotate_indexed_op,
+            focused_active_op,
+            self.app.highlight.rotary,
+        );
         let setup_lbl = self
             .app
             .project
@@ -413,12 +436,23 @@ impl PaneBehavior<'_> {
             .get(self.app.active_setup_idx)
             .map(|s| {
                 let code = s.wcs_slot.short_code();
+                let idx_str = indexed_badge
+                    .map(|(axis_letter, angle_deg)| {
+                        format!(" — Indexed {axis_letter} = {angle_deg:.1}°")
+                    })
+                    .unwrap_or_default();
                 if s.name.contains(code) {
-                    format!("{} · {}", s.name, self.app.project.display_units.suffix())
+                    format!(
+                        "{}{} · {}",
+                        s.name,
+                        idx_str,
+                        self.app.project.display_units.suffix()
+                    )
                 } else {
                     format!(
-                        "{} [{}] · {}",
+                        "{}{} [{}] · {}",
                         s.name,
+                        idx_str,
                         code,
                         self.app.project.display_units.suffix()
                     )
@@ -580,7 +614,28 @@ impl PaneBehavior<'_> {
                             }
                             _ => None,
                         };
-                    show_operation_inspector(
+                    let sim_active = self.app.highlight.sim_stock_source.is_some()
+                        || self.app.highlight.sim_tool_mesh.is_some();
+                    let eff_resolved = resolved_opt.map(|rs| {
+                        if setup_idx == self.app.active_setup_idx
+                            && let Some(op) = self
+                                .app
+                                .project
+                                .setups
+                                .get(setup_idx)
+                                .and_then(|s| s.operations.get(op_idx))
+                        {
+                            crate::app::viewport_controller::effective_setup_for_indexed_preview(
+                                rs,
+                                self.app.prefs.auto_rotate_indexed_op,
+                                sim_active,
+                                op,
+                            )
+                        } else {
+                            std::borrow::Cow::Borrowed(rs)
+                        }
+                    });
+                    let op_action = show_operation_inspector(
                         ui,
                         OperationInspectorCtx {
                             project: &mut self.app.project,
@@ -589,7 +644,7 @@ impl PaneBehavior<'_> {
                             global_tools: &self.app.global_tools,
                             history: &mut self.app.history,
                             cad_doc: cad_ref,
-                            resolved_setup: resolved_opt,
+                            resolved_setup: eff_resolved.as_deref(),
                             surface_mesh: self.app.boundary_preview_cache.cached_surface(),
                             boundary_preview: self.app.highlight.boundary_preview.as_deref(),
                             selected_face_normal_wcs,
@@ -598,10 +653,15 @@ impl PaneBehavior<'_> {
                             pick_mode: &mut self.app.pick_mode,
                             lock_chipload: &mut self.app.lock_chipload,
                             show_z_planes: &mut self.app.show_z_planes,
+                            auto_rotate_indexed_op: &mut self.app.prefs.auto_rotate_indexed_op,
                             open_tool_manager: &mut self.app.modals.tool_library.open,
                             sim_engine: self.app.sim_panel.engine,
                         },
                     );
+                    if matches!(op_action, Some(OperationInspectorAction::CreateSketch)) {
+                        self.app.create_new_setup_xy_sketch();
+                        frame_geo = None;
+                    }
                 }
                 InspectorFocus::CadEntity => {
                     self.ui_cad_entity_inspector(ui);

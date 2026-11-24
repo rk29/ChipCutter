@@ -432,6 +432,14 @@ struct Undercut3DParamsDe {
     boundary_offset: Option<ParamLength>,
     #[serde(default)]
     silhouette_fill_holes: Option<bool>,
+    #[serde(default)]
+    model_bounds_offset_x_neg: Option<ParamLength>,
+    #[serde(default)]
+    model_bounds_offset_x_pos: Option<ParamLength>,
+    #[serde(default)]
+    model_bounds_offset_y_neg: Option<ParamLength>,
+    #[serde(default)]
+    model_bounds_offset_y_pos: Option<ParamLength>,
     #[serde(default = "default_undercut3d_z_stepdown")]
     z_stepdown: ParamLength,
     #[serde(default)]
@@ -461,6 +469,18 @@ impl From<Undercut3DParamsDe> for Undercut3DParams {
                 silhouette_fill_holes: raw
                     .silhouette_fill_holes
                     .unwrap_or(def.silhouette_fill_holes),
+                model_bounds_offset_x_neg: raw
+                    .model_bounds_offset_x_neg
+                    .unwrap_or(def.model_bounds_offset_x_neg),
+                model_bounds_offset_x_pos: raw
+                    .model_bounds_offset_x_pos
+                    .unwrap_or(def.model_bounds_offset_x_pos),
+                model_bounds_offset_y_neg: raw
+                    .model_bounds_offset_y_neg
+                    .unwrap_or(def.model_bounds_offset_y_neg),
+                model_bounds_offset_y_pos: raw
+                    .model_bounds_offset_y_pos
+                    .unwrap_or(def.model_bounds_offset_y_pos),
             },
             z_stepdown: raw.z_stepdown,
             use_cusp_height: raw.use_cusp_height,

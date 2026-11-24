@@ -408,6 +408,13 @@ fn show_viewport_section(
                 "Show Z-height planes when editing Heights tab",
             )
             .on_hover_text("Render translucent Clearance, Retract, Top, and Bottom Z planes");
+            ui.checkbox(
+                &mut sctx.prefs.auto_rotate_indexed_op,
+                "Auto-rotate workpiece to active Indexed 3+1 angle",
+            )
+            .on_hover_text(
+                "Automatically rotate the displayed 3D model, raw setup stock, chuck jaws, Z planes, and boundary preview to the selected Indexed 3+1 operation's index angle",
+            );
         },
     );
 }

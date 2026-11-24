@@ -50,6 +50,10 @@ pub struct UserPreferences {
     #[serde(default = "default_true")]
     pub show_fixtures: bool,
     pub ghost_part: bool,
+    /// Automatically rotate displayed 3D CAD model, raw setup stock, chuck jaws, Z planes, and
+    /// cutting-area preview to match the selected `Indexed 3+1` operation's index angle.
+    #[serde(default = "default_true")]
+    pub auto_rotate_indexed_op: bool,
     #[serde(default)]
     pub sim_engine: SimEngineKind,
     #[serde(default)]
@@ -79,6 +83,7 @@ impl Default for UserPreferences {
             show_stock: true,
             show_fixtures: true,
             ghost_part: false,
+            auto_rotate_indexed_op: true,
             sim_engine: SimEngineKind::Heightmap,
             sim_resolution: SimResolution::Standard,
             sim_backend: SimComputeBackendChoice::Auto,
@@ -177,6 +182,7 @@ mod tests {
             orthographic: false,
             show_rapids: false,
             ghost_part: true,
+            auto_rotate_indexed_op: false,
             sim_engine: SimEngineKind::TriDexel,
             sim_backend: SimComputeBackendChoice::Cpu,
             layout_shares: WorkspaceLayoutShares {
@@ -210,6 +216,7 @@ mod tests {
         assert_eq!(partial.sim_backend, SimComputeBackendChoice::Auto);
         assert!(partial.show_toolpaths);
         assert!(partial.show_fixtures);
+        assert!(partial.auto_rotate_indexed_op);
         assert!(partial.show_welcome_on_startup);
         assert!(partial.layout_shares.top_row_share <= 0.88 + 1e-6);
         let sum = partial.layout_shares.browser_share
