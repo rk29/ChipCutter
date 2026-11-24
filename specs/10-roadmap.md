@@ -567,6 +567,24 @@ Completes the cutting-area workflow started in Phase 22 by adding an explicit re
 
 ---
 
+## Phase 24 — UI Completeness & Inspector Parity (Planned — M87–M89)
+
+Closes every backend-vs-GUI gap uncovered across `chip-cam`, `chip-tools`, `chip-project`, `chip-sketch`, `chip-post`, and `chip-sim` so every active backend parameter, override, wizard option, and multi-setup workflow is directly accessible in `chip-gui` without editing TOML by hand.
+
+### Milestone 87 — Feeds, Speeds, Tool Library CRUD, & Operation Strategy / Linking UI Completeness (`plans/87-milestone-87-plan.md`)
+- **Feeds, Presets, & Tool CRUD (`chip-gui`):** Expose `OperationFeedOverrides::{plunge_feed_mm_min, ramp_feed_mm_min, lead_feed_mm_min, stepdown_mm}` in `[Tool]`, `CuttingPreset::{plunge/ramp/lead feeds, material, coolant_override}` + Delete Preset in `presets_editor.rs`, and `Tool::{spindle_direction, default_coolant, vendor, product_id}` + Duplicate/Delete Tool in `tool_library/mod.rs`.
+- **Linking & Strategy Parameters (`chip-gui`):** Wire full independent `op.linking.lead_out` controls (decoupled from `lead_in.enabled`) and `EntryStrategy::PreDrilled` in `[Linking]`, plus all 6 missing `DrillBore` fields (G82 dwell, G73 chip-break retract, peck decay, min peck, bore pitch & finish stepover), `Contour2D::finish_feed_mm_min`, `Adaptive2D`/`Adaptive3D` trochoid/feed/flat fields, and `VCarve::clearing_preset_id`.
+
+### Milestone 88 — Setup Inspector, WCS, Stock, Workholding Wizards, & Machine Manager UI Completeness (`plans/88-milestone-88-plan.md`)
+- **Setup, WCS, Stock, & Fixtures (`chip-gui`):** Switch Setup Inspector post dropdown to `load_available_post_profiles(...)` (exposing custom `.post.toml`), add multi-body `Setup::target_bodies` selector with Undo, wire `SelectXYPlane::x_edge_ref`, `SelectZAndX::x_ref` clear-to-Auto, and `EdgeStart`/`EdgeMidpoint`/`EdgeEnd` origin switcher, make `RelativeBox::round_increment_mm` editable, allow `SetupClearance` retract ref, and add `FixtureBody::color_rgba` picker/reset.
+- **Workholding Wizards & Machine Manager (`chip-gui`):** Wire `SoftJawBoltPattern::Custom::cbore_depth_mm`, `SoftJawConfig::z_band_bottom_offset_mm`, `FlipJigConfig::pin_protrusion_z_mm`, and optional wizard tool/WCS overrides; expose `supported_shank_diameters_mm`, `junction_deviation_mm`, `power_watts`, and `description` in Machine Manager.
+
+### Milestone 89 — Simulation, Project / Model / Sketch Polish, Multi-Setup Batch Actions, & Phase 24 Spec Sync (`plans/89-milestone-89-plan.md`)
+- **Simulation, Project, Model, & Sketch Polish (`chip-gui`):** Make `heatmap_max_scale_mm` and `SimVerificationConfig` tolerances editable with **Simulate All Setups** + **Export Metrology JSON**, add inline `project_name` rename, expose `VectorImportModalState::arc_fit_tolerance_mm`, post-import `ModelEntry::{role, unit_override}`, and Sketch Setup reassignment + text arc-fit/face-index controls.
+- **Multi-Setup Batch Export, Post Profile Inspector, & Spec Sync (`chip-gui`, `specs/`):** Add **Export All Setups…** batch G-code export, add a read-only / clone-to-custom `.post.toml` inspector modal, and synchronize `specs/{05,06,08,10}-*.md`.
+
+---
+
 ## Future Phases
 
 ChipCutter's long-term roadmap focuses on bringing pro-grade CAM capabilities to hobby and benchtop machinists—making everyday job setup faster, safer, and easier to use without commercial CAM complexity or licensing cost.
