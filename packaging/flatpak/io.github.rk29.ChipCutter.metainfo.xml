@@ -50,6 +50,11 @@
   </screenshots>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="0.22.1" date="2026-11-24">
+      <description>
+        <p>Bug-fix &amp; usability release: added a "Fill through-holes" option (silhouette_fill_holes, default enabled) to Model Silhouette machining boundaries across all 3-axis, Undercut3D, Deburr3D, and Facing operations plus live 3D viewport boundary previews so interior through-holes do not leave uncut stock pillars; and fixed a Windows CI timeout in the m73_indexed_carryover integration test by restoring ToolOutsideBoundary containment and widening the async wave deadline.</p>
+      </description>
+    </release>
     <release version="0.22.0" date="2026-11-24">
       <description>
         <p>Phase 22 release: unified cutting-area and machining-boundary controls across 2.5D, 3-axis, undercut/deburr, and 4th-axis rotary operations inside the Operation Inspector Geometry tab with live 3D viewport boundary and rotary sector overlays; introduced shared MachiningBoundaryConfig with true projected 2D Model Silhouette polygons, circular Z-cylinder stock bounds, Adaptive3D StockBox containment/offset fixes, and Undercut3D/Deburr3D XY boundary support; introduced shared RotaryAxialBoundaryConfig (-U/+U StockBounds, ModelBounds, SelectedGeometry, ExplicitRange, axial ToolContainmentMode, signed overrun margins with mandatory chuck keep-out, outer radial roughing ceiling via Top Height, and WrapCylinder/Indexed3Plus1 chuck protection); upgraded 2.5D Facing to exact polygon and raised-island clipping, added Pocket2D/Adaptive2D boss-clearing (ClearOutsideSelectedToStock) and open-outer-boundary support plus Contour2D stock clipping and open-chain extension; added wall-clock execution time logging for toolpath generation and stock simulation; and refreshed all specifications, tutorials, sample gallery pages, and screenshots for Phases 21–22.</p>
