@@ -3,6 +3,7 @@ use std::time::Instant;
 use chip_cad::{
     TopologyGraph, sample_cam_torture_block_step, sample_curved_deburr_overhang_step_bytes,
     sample_dovetail_rail_keyway_step_bytes, sample_helical_flute_shaft_stl_bytes,
+    sample_indexed_4sided_bar_step_bytes, sample_keepout_clamp_plate_step_bytes,
     sample_machined_plate_step, sample_multi_feature_bracket_step, sample_relief_wave_obj_text,
     sample_revised_part_pair_step, sample_rotary_shaft_stl_bytes, sample_sculpted_dome_stl_bytes,
     sample_sculpted_mount_3mf_bytes, sample_threaded_manifold_step,
@@ -426,6 +427,62 @@ impl ChipCutterApp {
                 LoadPurpose::SeedMesh3mfBracket,
                 t0,
             );
+            let _ = tx.send(res);
+            egui_ctx.request_repaint();
+        });
+    }
+
+    pub(crate) fn spawn_keepout_clamps_load(&mut self, egui_ctx: egui::Context) {
+        let generation = self.begin_model_load_generation();
+        self.logs.push(
+            "Generating Clamp & Boss Keep-Out Plate STEP fixture (Shared Avoid Region + Toe Clamps + Boss Keep-Out)…"
+                .to_string(),
+        );
+        let tx = self.job_tx.clone();
+        rayon::spawn(move || {
+            let t0 = Instant::now();
+            let res = match sample_keepout_clamp_plate_step_bytes() {
+                Ok(step_bytes) => parse_step_bytes_job(
+                    generation,
+                    "sample_keepout_clamp_plate.step".to_string(),
+                    step_bytes,
+                    None,
+                    LoadPurpose::SeedKeepOutClamps,
+                    t0,
+                ),
+                Err(e) => LoadJobResult::Failed {
+                    generation,
+                    error: e.to_string(),
+                },
+            };
+            let _ = tx.send(res);
+            egui_ctx.request_repaint();
+        });
+    }
+
+    pub(crate) fn spawn_indexed_model_bounds_load(&mut self, egui_ctx: egui::Context) {
+        let generation = self.begin_model_load_generation();
+        self.logs.push(
+            "Generating Indexed 4-Sided Bar STEP fixture (Fixed-Box Center-Z + Model Bounds & Auto-Rotate 3+1)…"
+                .to_string(),
+        );
+        let tx = self.job_tx.clone();
+        rayon::spawn(move || {
+            let t0 = Instant::now();
+            let res = match sample_indexed_4sided_bar_step_bytes() {
+                Ok(step_bytes) => parse_step_bytes_job(
+                    generation,
+                    "sample_indexed_4sided_bar.step".to_string(),
+                    step_bytes,
+                    None,
+                    LoadPurpose::SeedIndexedModelBounds,
+                    t0,
+                ),
+                Err(e) => LoadJobResult::Failed {
+                    generation,
+                    error: e.to_string(),
+                },
+            };
             let _ = tx.send(res);
             egui_ctx.request_repaint();
         });

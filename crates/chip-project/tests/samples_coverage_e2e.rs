@@ -10,25 +10,28 @@ use std::path::PathBuf;
 use chip_cad::{
     CadDocument, CadKernel, MeshFormat, MeshImportOptions, MeshUnitKind, MonstertruckKernel,
     load_mesh_cad_document, sample_curved_deburr_overhang_step_bytes,
-    sample_dovetail_rail_keyway_step_bytes, sample_overhang_flange_step,
+    sample_dovetail_rail_keyway_step_bytes, sample_indexed_4sided_bar_step_bytes,
+    sample_keepout_clamp_plate_step_bytes, sample_overhang_flange_step,
     sample_sculpted_mount_3mf_bytes, sample_sloped_boss_stepped_pocket_step,
     sample_svg_badge_bytes, sample_undercut_deburr_block_step, tutorial_adaptive_pocket_step,
     tutorial_contour_plate_step,
 };
 use chip_cam::{
-    DovetailMode, FixtureKind, OperationKind, SlotUndercutMode, StrategyParams, UndercutEntryMode,
+    DovetailMode, FixedBoxZAlign, FixtureKind, MachiningBoundaryMode, OperationKind,
+    OperationRotaryMode, SlotUndercutMode, StockConfig, StrategyParams, UndercutEntryMode,
 };
 use chip_math::DEFAULT_TESS_CHORD_TOL_MM;
 use chip_post::builtin_post_profiles;
 use chip_project::{
     ProjectDocument, SetupPostRequest, SetupSimRequest, ToolpathCache,
     build_curved_deburr_3d_project, build_dovetail_rail_keyway_project,
-    build_feed_opt_pocket_project, build_flip_jig_softjaws_project, build_mesh_3mf_bracket_project,
-    build_svg_badge_sign_project, compute_sha256_hex, generate_project_blocking,
-    post_process_project_setup, resolve_kinematics_for_key, simulate_all_setups_with_choice,
-    simulate_project_setup_with_choice, validate_project,
+    build_feed_opt_pocket_project, build_flip_jig_softjaws_project,
+    build_indexed_model_bounds_project, build_keepout_clamps_project,
+    build_mesh_3mf_bracket_project, build_svg_badge_sign_project, compute_sha256_hex,
+    generate_project_blocking, post_process_project_setup, resolve_kinematics_for_key,
+    simulate_all_setups_with_choice, simulate_project_setup_with_choice, validate_project,
 };
-use chip_sim::{SimComputeBackendChoice, SimEngineKind, SimResolution};
+use chip_sim::{SimComputeBackendChoice, SimEngineKind, SimIssueKind, SimResolution};
 use chip_tools::default_starter_tool_library;
 
 fn assert_posts_cleanly(
@@ -652,6 +655,272 @@ fn sample_mesh_3mf_bracket_e2e_watertight_import_and_zero_errors() {
     );
 
     assert_posts_cleanly(&proj, &cad_doc, &cache, 0, "G54", "mesh_3mf_bracket");
+}
+
+/// `keepout-clamps`: Shared Avoid / Keep-Out region bundling two overhanging `ToeClamp` fixtures
+/// and a 2D sketched central boss keep-out shared across Facing, 3D Adaptive (`ModelBoundingBox` +
+/// signed offsets), and 3D Parallel Finish, plus `Contour2D` with `avoid_all_fixtures = true` —
+/// verified `0` critical errors, `0` `FixtureCollision`, `0` `TargetModelGouge`, `0` `RapidIntoStock`.
+#[test]
+fn sample_keepout_clamps_e2e_shared_avoid_and_zero_fixture_collisions() {
+    let step_bytes = sample_keepout_clamp_plate_step_bytes().unwrap();
+    let cad_doc = MonstertruckKernel
+        .load_step_bytes(
+            "sample_keepout_clamp_plate.step",
+            &step_bytes,
+            DEFAULT_TESS_CHORD_TOL_MM,
+        )
+        .unwrap();
+    let sha = compute_sha256_hex(&step_bytes);
+    let starter = default_starter_tool_library();
+
+    let mut proj = build_keepout_clamps_project(
+        &cad_doc,
+        "sample_keepout_clamp_plate.step".to_string(),
+        &sha,
+        &starter.tools,
+    );
+
+    assert_eq!(proj.setups.len(), 1);
+    assert_eq!(proj.setups[0].operations.len(), 4);
+    assert_eq!(proj.avoid_regions.len(), 1);
+    assert_eq!(proj.avoid_regions[0].id, "avoid_clamps_boss");
+    assert_eq!(proj.avoid_regions[0].fixture_ids.len(), 2);
+    assert_eq!(proj.avoid_regions[0].selections.len(), 1);
+
+    let shared_users = proj.setups[0]
+        .operations
+        .iter()
+        .filter(|op| {
+            op.avoid
+                .shared_region_ids
+                .iter()
+                .any(|id| id == "avoid_clamps_boss")
+        })
+        .count();
+    assert_eq!(
+        shared_users, 3,
+        "expected exactly 3 operations linked to shared keep-out 'avoid_clamps_boss'"
+    );
+    assert!(
+        proj.setups[0].operations[3].avoid.avoid_all_fixtures,
+        "Op 4 Contour2D must enable avoid_all_fixtures"
+    );
+    assert!(matches!(
+        proj.setups[0].operations[1].strategy,
+        Some(StrategyParams::Adaptive3D(ref p))
+            if p.boundary.boundary_mode == MachiningBoundaryMode::ModelBoundingBox
+                && p.boundary.model_bounds_offset_x_neg.value_mm < 0.0
+                && p.boundary.model_bounds_offset_y_pos.value_mm > 0.0
+    ));
+    assert_toml_roundtrip_deterministic(&proj);
+
+    let val = validate_project(&proj, None, Some(&cad_doc));
+    assert!(
+        val.is_valid(),
+        "keepout-clamps validation: {:?}",
+        val.diagnostics
+    );
+
+    let mut cache = ToolpathCache::new(64);
+    let batch = generate_project_blocking(&mut proj, &cad_doc, &mut cache, 1);
+    assert!(
+        batch.is_ok(),
+        "keepout-clamps generation: {:?}",
+        batch.errors
+    );
+    assert_eq!(batch.generated.len(), 4);
+
+    let kin = resolve_kinematics_for_key(&proj.setups[0].post_profile, None);
+    let sim = simulate_project_setup_with_choice(
+        &SetupSimRequest {
+            project: &proj,
+            setup_idx: 0,
+            cad_doc: &cad_doc,
+            cad_revision: 1,
+            cache: &cache,
+            kinematics: kin,
+            resolution: SimResolution::Standard,
+            cancel: None,
+        },
+        SimEngineKind::Heightmap,
+        SimComputeBackendChoice::Cpu,
+    )
+    .unwrap();
+
+    assert_eq!(
+        sim.critical_error_count(),
+        0,
+        "keepout-clamps critical errors: {:#?}",
+        sim.diagnostics
+    );
+    for kind in [
+        SimIssueKind::FixtureCollision,
+        SimIssueKind::TargetModelGouge,
+        SimIssueKind::RapidIntoStock,
+    ] {
+        assert!(
+            !sim.diagnostics.iter().any(|d| d.kind == kind),
+            "keepout-clamps reported unexpected {kind:?}: {:#?}",
+            sim.diagnostics
+        );
+    }
+
+    let err = sim.error_report.as_ref().unwrap();
+    assert!(
+        err.max_gouge_mm <= 0.02,
+        "keepout-clamps max_gouge_mm {:.4} > 0.02",
+        err.max_gouge_mm
+    );
+
+    assert_posts_cleanly(&proj, &cad_doc, &cache, 0, "G54", "keepout_clamps");
+}
+
+/// `indexed-model-bounds`: 4-sided sculpted STEP bar in `FixedBox` with `FixedBoxZAlign::CenterZ`
+/// on an `X`/`A` `Indexed3Plus1` rotary setup with `-X` chuck, exercising `ModelBoundingBox` with
+/// both negative (`-X = -1.0 mm` chuck margin) and positive (`+X = +2.0 mm`, `±Y = +1.5 mm`)
+/// per-side offsets across `0°`, `90°`, `180°`, and `270°` — verified `0` crashes, `0` gouges,
+/// `0` chuck collisions, and clean 4-axis G-code.
+#[test]
+fn sample_indexed_model_bounds_e2e_center_z_offsets_and_zero_errors() {
+    let step_bytes = sample_indexed_4sided_bar_step_bytes().unwrap();
+    let cad_doc = MonstertruckKernel
+        .load_step_bytes(
+            "sample_indexed_4sided_bar.step",
+            &step_bytes,
+            DEFAULT_TESS_CHORD_TOL_MM,
+        )
+        .unwrap();
+    let sha = compute_sha256_hex(&step_bytes);
+    let starter = default_starter_tool_library();
+
+    let mut proj = build_indexed_model_bounds_project(
+        "sample_indexed_4sided_bar.step".to_string(),
+        &sha,
+        &starter.tools,
+    );
+
+    assert_eq!(proj.setups.len(), 1);
+    assert_eq!(proj.setups[0].operations.len(), 4);
+    assert!(matches!(
+        proj.setups[0].stock,
+        StockConfig::FixedBox {
+            z_align: FixedBoxZAlign::CenterZ,
+            ..
+        }
+    ));
+
+    let expected_angles = [0.0_f64, 90.0, 180.0, 270.0];
+    for (op, expected_deg) in proj.setups[0].operations.iter().zip(expected_angles) {
+        assert!(matches!(
+            op.rotary,
+            OperationRotaryMode::Indexed3Plus1 { angle_deg } if (angle_deg - expected_deg).abs() < 1e-6
+        ));
+        let boundary = match op.strategy.as_ref() {
+            Some(StrategyParams::Adaptive3D(p)) => &p.boundary,
+            Some(StrategyParams::Parallel3D(p)) => &p.boundary,
+            other => panic!("unexpected strategy on {}: {other:?}", op.id),
+        };
+        assert_eq!(
+            boundary.boundary_mode,
+            MachiningBoundaryMode::ModelBoundingBox
+        );
+        assert!(
+            boundary.model_bounds_offset_x_neg.value_mm < 0.0,
+            "expected negative -X offset on {} for chuck clearance",
+            op.id
+        );
+        assert!(
+            boundary.model_bounds_offset_x_pos.value_mm > 0.0
+                && boundary.model_bounds_offset_y_neg.value_mm > 0.0
+                && boundary.model_bounds_offset_y_pos.value_mm > 0.0,
+            "expected positive +X / ±Y offsets on {}",
+            op.id
+        );
+    }
+    assert_toml_roundtrip_deterministic(&proj);
+
+    let val = validate_project(&proj, None, Some(&cad_doc));
+    assert!(
+        val.is_valid(),
+        "indexed-model-bounds validation: {:?}",
+        val.diagnostics
+    );
+
+    let mut cache = ToolpathCache::new(64);
+    let batch = generate_project_blocking(&mut proj, &cad_doc, &mut cache, 1);
+    assert!(
+        batch.is_ok(),
+        "indexed-model-bounds generation: {:?}",
+        batch.errors
+    );
+    assert_eq!(batch.generated.len(), 4);
+
+    let kin = resolve_kinematics_for_key(&proj.setups[0].post_profile, None);
+    let sim = simulate_project_setup_with_choice(
+        &SetupSimRequest {
+            project: &proj,
+            setup_idx: 0,
+            cad_doc: &cad_doc,
+            cad_revision: 1,
+            cache: &cache,
+            kinematics: kin,
+            resolution: SimResolution::Standard,
+            cancel: None,
+        },
+        SimEngineKind::Heightmap,
+        SimComputeBackendChoice::Cpu,
+    )
+    .unwrap();
+
+    assert_eq!(
+        sim.critical_error_count(),
+        0,
+        "indexed-model-bounds critical errors: {:#?}",
+        sim.diagnostics
+    );
+    for kind in [
+        SimIssueKind::FixtureCollision,
+        SimIssueKind::TargetModelGouge,
+        SimIssueKind::RapidIntoStock,
+    ] {
+        assert!(
+            !sim.diagnostics.iter().any(|d| d.kind == kind),
+            "indexed-model-bounds reported unexpected {kind:?}: {:#?}",
+            sim.diagnostics
+        );
+    }
+
+    let err = sim.error_report.as_ref().unwrap();
+    assert!(
+        err.max_gouge_mm <= 0.02,
+        "indexed-model-bounds max_gouge_mm {:.4} > 0.02",
+        err.max_gouge_mm
+    );
+
+    // Post-process using linuxcnc_4axis to verify A-axis indexing G-code
+    let profiles = builtin_post_profiles();
+    let lcnc4 = profiles.iter().find(|p| p.id == "linuxcnc_4axis").unwrap();
+    let files = post_process_project_setup(&SetupPostRequest {
+        project: &proj,
+        setup_idx: 0,
+        cad_doc: &cad_doc,
+        cad_revision: 1,
+        cache: &cache,
+        post_profile: lcnc4,
+        project_label: &proj.project_name,
+        program_stem: "indexed_model_bounds",
+    })
+    .unwrap();
+    let combined: String = files.iter().map(|f| f.content.as_str()).collect();
+    assert!(combined.contains("G54"), "missing G54");
+    assert!(combined.contains("A90"), "missing A90 index move");
+    assert!(combined.contains("A180"), "missing A180 index move");
+    assert!(combined.contains("A270"), "missing A270 index move");
+    assert!(
+        !combined.contains("NaN") && !combined.contains("inf") && !combined.contains("INF"),
+        "indexed-model-bounds 4-axis G-code contains non-finite numeric output"
+    );
 }
 
 /// Verify all 6 minimal tutorial starter assets checked in under `docs/tutorials/assets/`

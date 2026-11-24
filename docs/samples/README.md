@@ -33,6 +33,7 @@ Browse every built-in sample project included in **ChipCutter**. Click any thumb
 |---|---|---|---|
 | [![Two-Sided Vise & Soft-Jaw Bracket](../images/samples/two-sided-vise/thumb.png)](two-sided-vise.md) | [**Two-Sided Vise & Soft-Jaw Bracket (`G54` -> `G55`)**](two-sided-vise.md)<br>Two-sided aluminum bracket showcasing Setup 1 vise + parallels + toe clamps with automatic rapid-lift avoidance and Setup 2 `180°` flip Tri-Dexel stock carryover in stepped soft jaws. | 2 Setups · 4 Ops | `--sample two-sided-vise` |
 | [![Flip-Jig Dowel Pins & Auto Soft-Jaw Setup](../images/samples/flip-jig-softjaws/thumb.png)](flip-jig-softjaws.md) | [**Flip-Jig Dowel Pins & Auto Soft-Jaw Setup (`G54`–`G56`)**](flip-jig-softjaws.md)<br>Contour plate on an MDF Spoilboard with `TwoOnAxis` Flip-Jig registration pins (+5 mm poka-yoke), `180°` flipped Setup 2 carryover with `CylinderKeepOut` pins, and Setup 3 generated Auto Soft-Jaw machining. | 3 Setups · 8 Ops | `--sample flip-jig-softjaws` |
+| [![Clamp & Boss Keep-Out Plate](../images/samples/keepout-clamps/thumb.png)](keepout-clamps.md) | [**Clamp & Boss Keep-Out Plate (Avoid / Keep-Out Regions)**](keepout-clamps.md)<br>`100 × 70 × 18 mm` filleted plate on an MDF Spoilboard with two overhanging `ToeClamp`s and a sketched central boss bundled into a reusable `SharedAvoidRegion` across Facing, 3D Adaptive (`Model Bounds`), and 3D Parallel, plus `Avoid All Fixtures` outer Contour. | 1 Setup · 4 Ops | `--sample keepout-clamps` |
 
 ---
 
@@ -63,6 +64,7 @@ Browse every built-in sample project included in **ChipCutter**. Click any thumb
 | [![Rotary Indexed Shaft](../images/samples/rotary-shaft/thumb.png)](rotary-shaft.md) | [**Rotary Indexed Shaft (4th-Axis A)**](rotary-shaft.md)<br>`Ø40 × 80 mm` shaft combining continuous `Z+X+A` rotary spiral surfacing over a collar & 3-lobe cam with 4-sided Indexed `3+1` wrenching flats (`0°/90°/180°/270°`). | 1 Setup · 5 Ops | `--sample rotary-shaft` |
 | [![Wrapped Rotary Engraving](../images/samples/rotary-wrap/thumb.png)](rotary-wrap.md) | [**Wrapped Rotary Engraving (`Z+X+A`)**](rotary-wrap.md)<br>Wraps bold TrueType `"CHIP"` V-Carving and a rounded circumferential flute onto a `Ø40 × 80 mm` cylindrical blank for `G93` 4-axis or swapped-axis GRBL rotaries. | 1 Setup · 2 Ops | `--sample rotary-wrap` |
 | [![Simultaneous 4-Axis Helical Flute](../images/samples/rotary-4axis/thumb.png)](rotary-4axis.md) | [**Simultaneous 4-Axis Helical Flute (`X+Y+Z+A`)**](rotary-4axis.md)<br>`Ø40 × 80 mm` 3-start helical flute shaft machined with simultaneous `X+Y+Z+A` off-centerline auto-tilted roughing and finishing (`G93` inverse-time feed). | 1 Setup · 2 Ops | `--sample rotary-4axis` |
+| [![Indexed 4-Sided Bar](../images/samples/indexed-model-bounds/thumb.png)](indexed-model-bounds.md) | [**Indexed 4-Sided Bar (Model Bounds & Auto-Rotate `3+1`)**](indexed-model-bounds.md)<br>`70 × 30 × 30 mm` 4-sided sculpted STEP bar in `FixedBox` (`CenterZ`) stock on the `A`-axis, showcasing signed `Model Bounds` per-side offsets (`-X/+X/-Y/+Y`) and automatic upright viewport rotation across `0° / 90° / 180° / 270°`. | 1 Setup · 4 Ops | `--sample indexed-model-bounds` |
 
 ---
 

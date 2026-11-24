@@ -1728,6 +1728,185 @@ pub fn sample_dovetail_rail_keyway_step_bytes() -> std::result::Result<Vec<u8>, 
     sample_dovetail_rail_keyway_step().map(String::into_bytes)
 }
 
+/// Builds a watertight `100 × 70 × 18 mm` machined aluminum plate STEP solid for Phase 23
+/// (`keepout-clamps`) featuring:
+/// - **Outer flange (`100 × 70 × 10 mm`, `Z = 0..10 mm`)** with four `R = 8 mm` filleted corners
+///   for smooth `G2`/`G3` outer contouring while two toe clamps overhang the `-X` and `+X` edges,
+/// - **Raised central rectangular boss (`30 × 26 × 8 mm`, `X ∈ [35, 65]`, `Y ∈ [22, 48]`,
+///   `Z = 10..18 mm`)** protected by a 2D keep-out sketch bundled into a shared Avoid region.
+pub fn sample_keepout_clamp_plate_step() -> std::result::Result<String, SampleStepError> {
+    let r = 8.0_f64;
+    let d = r * std::f64::consts::FRAC_1_SQRT_2;
+
+    // 1. Outer 100 x 70 mm flange profile with 4x R8 rounded corners (CCW on Z = 0)
+    let v0 = builder::vertex(Point3::new(r, 0.0, 0.0));
+    let v1 = builder::vertex(Point3::new(100.0 - r, 0.0, 0.0));
+    let v2 = builder::vertex(Point3::new(100.0, r, 0.0));
+    let v3 = builder::vertex(Point3::new(100.0, 70.0 - r, 0.0));
+    let v4 = builder::vertex(Point3::new(100.0 - r, 70.0, 0.0));
+    let v5 = builder::vertex(Point3::new(r, 70.0, 0.0));
+    let v6 = builder::vertex(Point3::new(0.0, 70.0 - r, 0.0));
+    let v7 = builder::vertex(Point3::new(0.0, r, 0.0));
+
+    let arc_br = builder::try_circle_arc(&v1, &v2, Point3::new(100.0 - r + d, r - d, 0.0))
+        .map_err(|e| SampleStepError::Modeling(e.to_string()))?;
+    let arc_tr = builder::try_circle_arc(&v3, &v4, Point3::new(100.0 - r + d, 70.0 - r + d, 0.0))
+        .map_err(|e| SampleStepError::Modeling(e.to_string()))?;
+    let arc_tl = builder::try_circle_arc(&v5, &v6, Point3::new(r - d, 70.0 - r + d, 0.0))
+        .map_err(|e| SampleStepError::Modeling(e.to_string()))?;
+    let arc_bl = builder::try_circle_arc(&v7, &v0, Point3::new(r - d, r - d, 0.0))
+        .map_err(|e| SampleStepError::Modeling(e.to_string()))?;
+
+    let outer_wire: Wire = vec![
+        builder::line(&v0, &v1),
+        arc_br,
+        builder::line(&v2, &v3),
+        arc_tr,
+        builder::line(&v4, &v5),
+        arc_tl,
+        builder::line(&v6, &v7),
+        arc_bl,
+    ]
+    .into();
+
+    let base_face_z0 = builder::try_attach_plane(vec![outer_wire])
+        .map_err(|e| SampleStepError::Modeling(e.to_string()))?;
+    let base_solid = builder::extrude(&base_face_z0, Vector3::new(0.0, 0.0, 10.0));
+    let mut shell_faces: Vec<Face> = base_solid
+        .into_boundaries()
+        .into_iter()
+        .next()
+        .ok_or_else(|| SampleStepError::Modeling("missing clamp plate base shell".to_string()))?
+        .into_iter()
+        .collect();
+
+    let old_deck_z10 = shell_faces
+        .pop()
+        .ok_or_else(|| SampleStepError::Modeling("empty clamp plate base shell".to_string()))?;
+    let mut deck_wires: Vec<Wire> = old_deck_z10.boundaries();
+
+    // 2. Raised central rectangular boss (X ∈ [35, 65], Y ∈ [22, 48], Z = 10..18 mm)
+    let b0 = builder::vertex(Point3::new(35.0, 22.0, 10.0));
+    let b1 = builder::vertex(Point3::new(65.0, 22.0, 10.0));
+    let b2 = builder::vertex(Point3::new(65.0, 48.0, 10.0));
+    let b3 = builder::vertex(Point3::new(35.0, 48.0, 10.0));
+    let boss_wire_z10_ccw: Wire = vec![
+        builder::line(&b0, &b1),
+        builder::line(&b1, &b2),
+        builder::line(&b2, &b3),
+        builder::line(&b3, &b0),
+    ]
+    .into();
+    let boss_base_z10 = builder::try_attach_plane(vec![boss_wire_z10_ccw])
+        .map_err(|e| SampleStepError::Modeling(e.to_string()))?;
+    let boss_solid = builder::extrude(&boss_base_z10, Vector3::new(0.0, 0.0, 8.0));
+    let mut boss_faces: Vec<Face> = boss_solid
+        .into_boundaries()
+        .into_iter()
+        .next()
+        .ok_or_else(|| SampleStepError::Modeling("missing central boss shell".to_string()))?
+        .into_iter()
+        .collect();
+    if boss_faces.len() < 3 {
+        return Err(SampleStepError::Modeling(
+            "expected bottom cap, walls, and top cap on central boss".to_string(),
+        ));
+    }
+    let boss_bottom_cap = boss_faces.remove(0);
+    let boss_footprint_cw = boss_bottom_cap
+        .boundaries()
+        .into_iter()
+        .next()
+        .ok_or_else(|| SampleStepError::Modeling("missing boss footprint wire".to_string()))?;
+    shell_faces.extend(boss_faces);
+    deck_wires.push(boss_footprint_cw);
+
+    let final_deck_z10 = builder::try_attach_plane(deck_wires)
+        .map_err(|e| SampleStepError::Modeling(e.to_string()))?;
+    shell_faces.push(final_deck_z10);
+
+    let full_shell: Shell = shell_faces.into();
+    let solid = Solid::try_new(vec![full_shell])
+        .map_err(|e| SampleStepError::Modeling(format!("non-manifold clamp plate solid: {e}")))?;
+    serialize_tutorial_solid(solid, "sample_keepout_clamp_plate.step")
+}
+
+/// Byte-vector convenience wrapper around [`sample_keepout_clamp_plate_step`].
+pub fn sample_keepout_clamp_plate_step_bytes() -> std::result::Result<Vec<u8>, SampleStepError> {
+    sample_keepout_clamp_plate_step().map(String::into_bytes)
+}
+
+/// Builds a watertight `70 × 30 × 30 mm` 4-sided sculpted prismatic bar STEP solid centered on the
+/// `X` (`A`) rotary axis (`X ∈ [-35, +35]`, `Y ∈ [-15, +15]`, `Z ∈ [-15, +15]`) for Phase 23
+/// (`indexed-model-bounds`), featuring unmistakable distinct geometry on every cardinal side:
+/// - **`0°` (`+Z` face):** Raised `10 mm` central longitudinal rib (`Z = +15`) flanked by stepped
+///   shoulders (`Z = +11`),
+/// - **`90°` (`+Y` face):** Asymmetric stepped terrace (`Y = +15` → `Y = +11`) joined by a `45°`
+///   longitudinal bevel,
+/// - **`180°` (`-Z` face):** Twin outer rails (`Z = -15`) flanking a `14 mm`-wide recessed U-channel
+///   (`Z = -11`),
+/// - **`270°` (`-Y` face):** Smooth convex circular-arc dome ridge (`R = 12.125 mm`, peaking at
+///   `Y = -15`) flanked by flat lands (`Y = -11`) for 3D Parallel finishing.
+pub fn sample_indexed_4sided_bar_step() -> std::result::Result<String, SampleStepError> {
+    // YZ cross-section at X = -35.0 oriented CCW viewed from +X (normal +X aligned with +70 X extrusion)
+    let v_b0 = builder::vertex(Point3::new(-35.0, -13.0, -15.0));
+    let v_b1 = builder::vertex(Point3::new(-35.0, -7.0, -15.0));
+    let v_b2 = builder::vertex(Point3::new(-35.0, -7.0, -11.0));
+    let v_b3 = builder::vertex(Point3::new(-35.0, 7.0, -11.0));
+    let v_b4 = builder::vertex(Point3::new(-35.0, 7.0, -15.0));
+    let v_b5 = builder::vertex(Point3::new(-35.0, 15.0, -15.0));
+
+    // +Y (90°): lower land at Y = +15, 45° bevel to Y = +11, upper terrace at Y = +11
+    let v_r1 = builder::vertex(Point3::new(-35.0, 15.0, -3.0));
+    let v_r2 = builder::vertex(Point3::new(-35.0, 11.0, 1.0));
+    let v_r3 = builder::vertex(Point3::new(-35.0, 11.0, 11.0));
+
+    // +Z (0°): stepped shoulders at Z = +11 flanking central rib at Z = +15
+    let v_t1 = builder::vertex(Point3::new(-35.0, 5.0, 11.0));
+    let v_t2 = builder::vertex(Point3::new(-35.0, 5.0, 15.0));
+    let v_t3 = builder::vertex(Point3::new(-35.0, -5.0, 15.0));
+    let v_t4 = builder::vertex(Point3::new(-35.0, -5.0, 11.0));
+    let v_t5 = builder::vertex(Point3::new(-35.0, -11.0, 11.0));
+
+    // -Y (270°): smooth convex circular-arc dome ridge peaking at (-35, -15, 0)
+    let v_l1 = builder::vertex(Point3::new(-35.0, -11.0, 9.0));
+    let v_l2 = builder::vertex(Point3::new(-35.0, -11.0, -9.0));
+    let v_l3 = builder::vertex(Point3::new(-35.0, -11.0, -13.0));
+    let dome_arc = builder::try_circle_arc(&v_l1, &v_l2, Point3::new(-35.0, -15.0, 0.0))
+        .map_err(|e| SampleStepError::Modeling(e.to_string()))?;
+
+    let profile_x_neg: Wire = vec![
+        builder::line(&v_b0, &v_b1),
+        builder::line(&v_b1, &v_b2),
+        builder::line(&v_b2, &v_b3),
+        builder::line(&v_b3, &v_b4),
+        builder::line(&v_b4, &v_b5),
+        builder::line(&v_b5, &v_r1),
+        builder::line(&v_r1, &v_r2),
+        builder::line(&v_r2, &v_r3),
+        builder::line(&v_r3, &v_t1),
+        builder::line(&v_t1, &v_t2),
+        builder::line(&v_t2, &v_t3),
+        builder::line(&v_t3, &v_t4),
+        builder::line(&v_t4, &v_t5),
+        builder::line(&v_t5, &v_l1),
+        dome_arc,
+        builder::line(&v_l2, &v_l3),
+        builder::line(&v_l3, &v_b0),
+    ]
+    .into();
+
+    let end_face_x_neg = builder::try_attach_plane(vec![profile_x_neg])
+        .map_err(|e| SampleStepError::Modeling(e.to_string()))?;
+    let solid = builder::extrude(&end_face_x_neg, Vector3::new(70.0, 0.0, 0.0));
+    serialize_tutorial_solid(solid, "sample_indexed_4sided_bar.step")
+}
+
+/// Byte-vector convenience wrapper around [`sample_indexed_4sided_bar_step`].
+pub fn sample_indexed_4sided_bar_step_bytes() -> std::result::Result<Vec<u8>, SampleStepError> {
+    sample_indexed_4sided_bar_step().map(String::into_bytes)
+}
+
 /// Generates a deterministic, clean `96 DPI` `.svg` badge artwork (`120.0 × 75.0 mm` at `96 DPI`,
 /// unitless `453.543307 × 283.464567 px`) featuring explicit cubic Bézier (`C`) curves for true
 /// `G2`/`G3` biarc fitting and three CAM-ready `<g id="...">` layers:

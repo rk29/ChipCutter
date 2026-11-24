@@ -19,18 +19,20 @@
 
 use chip_cad::{CadDocument, CurveKind, OrientedEdgeUse, SurfaceKind, sample_svg_badge_bytes};
 use chip_cam::{
-    BoxAnchor27, Deburr3DParams, DovetailMode, DovetailParams, FeedOptimizationConfig, FixtureBody,
-    FlipAxis, FlipJigConfig, FlipJigPinCount, GeometrySelectionItem, HeightReference, HeightSpec,
-    HoleMachiningMode, MachiningBoundaryMode, Operation, OperationKind, PocketStrategyKind,
-    RestMachiningConfig, RestMachiningMode, Setup, SlotUndercutMode, SlotUndercutParams,
+    BoxAnchor27, Deburr3DParams, DovetailMode, DovetailParams, FeedOptimizationConfig,
+    FixedBoxXyAlign, FixedBoxZAlign, FixtureBody, FixtureKind, FixtureZRef, FlipAxis,
+    FlipJigConfig, FlipJigPinCount, GeometrySelectionItem, HeightReference, HeightSpec,
+    HoleMachiningMode, MachiningBoundaryMode, Operation, OperationKind, OperationRotaryMode,
+    PocketStrategyKind, RestMachiningConfig, RestMachiningMode, RotaryAxisKind, RotaryDirection,
+    RotaryDriveMode, Setup, SharedAvoidRegion, SlotUndercutMode, SlotUndercutParams,
     SlotUndercutPreset, SoftJawBoltPattern, SoftJawConfig, SoftJawOutputMode, StockConfig,
     StrategyParams, TabProfileKind, ToolContainmentMode, UndercutEntryMode, ViseClampAxis,
     WcsOriginMode, WorkOffsetSlot, build_soft_jaw_plan, build_two_sided_flip_jig,
 };
 use chip_math::{ArcPolyline2D, ArcSegment2D, DVec2, DisplayUnit, ParamLength, approx_eq};
 use chip_sketch::{
-    SketchAnchor, SketchEntity, SketchEntityEntry, SketchLayer, SketchPlaneRef, SvgImportOptions,
-    import_svg_bytes,
+    RectAnchorMode, SketchAnchor, SketchEntity, SketchEntityEntry, SketchLayer, SketchPlaneRef,
+    SvgImportOptions, import_svg_bytes,
 };
 use chip_tools::{CutterGeometry, Tool, starter_undercut_tools};
 
@@ -1236,5 +1238,408 @@ pub fn build_mesh_3mf_bracket_project(
         proj.setups[0].operations.push(op_scallop);
     }
 
+    proj
+}
+
+/// Builds the Phase 23 **Clamp & Boss Keep-Out Plate (Avoid / Keep-Out Regions)** sample
+/// (`--sample keepout-clamps`) on `sample_keepout_clamp_plate_step_bytes()` (`100 × 70 × 18 mm`
+/// filleted flange plate with raised `30 × 26 × 8 mm` central boss):
+/// - Sits on an MDF `Spoilboard` with two `ToeClamp` fixtures overhanging the `-X` and `+X` stock
+///   and flange edges plus a 2D sketch (`Keep-Out Zones`) surrounding the central boss,
+/// - Defines a reusable [`SharedAvoidRegion`] (`"avoid_clamps_boss"`) bundling both Toe Clamps
+///   and the sketched boss keep-out rectangle (`radial_clearance = 1.0 mm`), shared across:
+///   1. `1. Face Stock Top (Avoid Clamps & Boss)` (`Facing`),
+///   2. `2. 3D Adaptive Roughing (Model Bounds + Offsets)` (`Adaptive3D` + `ModelBoundingBox`),
+///   3. `3. 3D Parallel Finish (Shared Keep-Out)` (`Parallel3D`),
+/// - Plus `4. Outer Flange Contour (Avoid All Fixtures)` (`Contour2D`, `avoid_all_fixtures = true`),
+///   verified `0` `FixtureCollision`, `0` gouges, and `0` rapid crashes in `chip-sim`.
+pub fn build_keepout_clamps_project(
+    doc: &CadDocument,
+    model_path: String,
+    sha256_hex: &str,
+    available_tools: &[Tool],
+) -> ProjectDocument {
+    let mut proj = ProjectDocument::new("Clamp & Boss Keep-Out Plate (Avoid / Keep-Out Regions)");
+    proj.models = vec![ModelEntry {
+        id: "model_1".to_string(),
+        path: model_path,
+        sha256: sha256_hex.to_string(),
+        role: Default::default(),
+        unit_override: None,
+        transform: chip_cad::ModelTransform::IDENTITY,
+    }];
+
+    for t in available_tools {
+        proj.ensure_tool_embedded(t);
+    }
+
+    let flat_6mm = find_flat_endmill(&proj.tools, 6.0, 0.5).or_else(|| proj.tools.first().cloned());
+
+    let mut setup = Setup::new(
+        "setup_1",
+        "Setup 1 — Clamped Plate & Boss Keep-Out (G54)",
+        WorkOffsetSlot::G54,
+    );
+    setup.wcs.origin = WcsOriginMode::StockBoxPoint {
+        anchor: BoxAnchor27::TOP_CENTER,
+    };
+    setup.stock = StockConfig::RelativeBox {
+        symmetric_xy: false,
+        side_pos_x: ParamLength::from_mm(12.0),
+        side_neg_x: ParamLength::from_mm(12.0),
+        side_pos_y: ParamLength::from_mm(8.0),
+        side_neg_y: ParamLength::from_mm(8.0),
+        top_offset_z: ParamLength::from_mm(2.0),
+        bottom_offset_z: ParamLength::from_mm(0.0),
+        sheet_thickness_z: ParamLength::from_mm(18.0),
+        round_increment_mm: None,
+    };
+    setup.heights.clearance = HeightSpec::new(HeightReference::StockTop, 24.0);
+    setup.auto_avoid_fixtures_on_rapids = true;
+
+    // 1. Sacrificial MDF Spoilboard sitting directly beneath StockBottom
+    setup.fixtures.push(FixtureBody::default_spoilboard(
+        "spoilboard",
+        "MDF Spoilboard",
+    ));
+
+    // 2. Two Toe Clamps overhanging the -X and +X stock & outer flange edges (nose at X = ±47 mm)
+    for (id, name, anchor_xy, yaw_deg) in [
+        (
+            "clamp_neg_x",
+            "Left Toe Clamp (-X)",
+            DVec2::new(-62.0, 0.0),
+            180.0,
+        ),
+        (
+            "clamp_pos_x",
+            "Right Toe Clamp (+X)",
+            DVec2::new(62.0, 0.0),
+            0.0,
+        ),
+    ] {
+        let mut clamp = FixtureBody::default_toe_clamp(id, name, anchor_xy, yaw_deg);
+        clamp.clearance_margin = ParamLength::from_mm(1.0);
+        if let FixtureKind::ToeClamp {
+            z_reference,
+            z_offset,
+            strap_length,
+            strap_width,
+            strap_height,
+            nose_overhang,
+            stud_diameter,
+            stud_height_above_strap,
+            ..
+        } = &mut clamp.kind
+        {
+            *z_reference = FixtureZRef::StockTop;
+            *z_offset = ParamLength::from_mm(0.0);
+            *strap_length = ParamLength::from_mm(42.0);
+            *strap_width = ParamLength::from_mm(16.0);
+            *strap_height = ParamLength::from_mm(8.0);
+            *nose_overhang = ParamLength::from_mm(15.0);
+            *stud_diameter = ParamLength::from_mm(8.0);
+            *stud_height_above_strap = ParamLength::from_mm(10.0);
+        }
+        setup.fixtures.push(clamp);
+    }
+
+    // 3. 2D Sketch layer containing the protective Keep-Out rectangle around the central boss
+    let mut sk_keepout = SketchLayer::new("sk_keepout_zones", "Keep-Out Zones", "setup_1");
+    sk_keepout.anchor = SketchAnchor::SetupXy {
+        setup_id: "setup_1".to_string(),
+        plane_ref: SketchPlaneRef::StockTop,
+        z_offset: ParamLength::from_mm(0.0),
+    };
+    sk_keepout.entities.push(SketchEntityEntry {
+        id: "ent_boss_keepout".to_string(),
+        name: "Central Boss Keep-Out".to_string(),
+        sub_layer: Some("KEEPOUT".to_string()),
+        is_construction: false,
+        entity: SketchEntity::Rectangle {
+            anchor: RectAnchorMode::Center,
+            x: ParamLength::from_mm(0.0),
+            y: ParamLength::from_mm(0.0),
+            width: ParamLength::from_mm(34.0),
+            height: ParamLength::from_mm(30.0),
+            corner_radius: ParamLength::from_mm(2.0),
+            rotation_deg: 0.0,
+        },
+    });
+    sk_keepout.rebuild_regions(None);
+    proj.sketches.push(sk_keepout);
+
+    // 4. Shared Project Avoid / Keep-Out Region bundling both Toe Clamps + sketched central boss
+    let mut shared_avoid = SharedAvoidRegion::new("avoid_clamps_boss", "Clamps & Boss Keep-Out");
+    shared_avoid.fixture_ids = vec!["clamp_neg_x".to_string(), "clamp_pos_x".to_string()];
+    shared_avoid
+        .selections
+        .push(GeometrySelectionItem::SketchEntity {
+            sketch_id: "sk_keepout_zones".to_string(),
+            entity_id: "ent_boss_keepout".to_string(),
+            reverse: false,
+            side_flip: false,
+        });
+    shared_avoid.radial_clearance = Some(ParamLength::from_mm(1.0));
+    proj.avoid_regions.push(shared_avoid);
+
+    let outer_loop_binding = doc
+        .faces
+        .iter()
+        .find(|f| {
+            matches!(
+                f.surface,
+                SurfaceKind::Plane { origin_mm, normal }
+                if normal.z < -0.99 && origin_mm.z.abs() < 0.05
+            )
+        })
+        .and_then(|f| f.outer_loop)
+        .and_then(|lid| doc.bind_loop(lid));
+
+    if let Some(em) = &flat_6mm {
+        // Op 1: Face Stock Top (`StockBox` + shared `"avoid_clamps_boss"`)
+        let mut op1 = Operation::new(
+            "op_1_face_avoid_clamps_boss",
+            "Face Stock Top (Avoid Clamps & Boss)",
+            OperationKind::Facing,
+        );
+        op1.tool_id = Some(em.id.clone());
+        op1.preset_id = em.presets.first().map(|p| p.id.clone());
+        op1.heights.top = HeightSpec::new(HeightReference::StockTop, 0.0);
+        op1.heights.bottom = HeightSpec::new(HeightReference::ModelTop, 0.0);
+        op1.passes.multiple_depths = false;
+        op1.passes.stock_to_leave_axial = ParamLength::from_mm(0.0);
+        op1.avoid
+            .shared_region_ids
+            .push("avoid_clamps_boss".to_string());
+        if let StrategyParams::Facing(p) = op1.strategy_mut() {
+            p.boundary.boundary_mode = MachiningBoundaryMode::StockBox;
+            p.pass_extension = ParamLength::from_mm(1.5);
+        }
+        setup.operations.push(op1);
+
+        // Op 2: 3D Adaptive Roughing (`ModelBoundingBox` + signed per-side offsets + shared keep-out)
+        let mut op2 = Operation::new(
+            "op_2_adaptive_model_bounds",
+            "3D Adaptive Roughing (Model Bounds + Offsets)",
+            OperationKind::Adaptive3D,
+        );
+        op2.tool_id = Some(em.id.clone());
+        op2.preset_id = em.presets.first().map(|p| p.id.clone());
+        op2.heights.top = HeightSpec::new(HeightReference::ModelTop, 0.0);
+        op2.heights.bottom = HeightSpec::new(HeightReference::ModelBottom, 10.0);
+        op2.passes.stock_to_leave_radial = ParamLength::from_mm(0.25);
+        op2.passes.stock_to_leave_axial = ParamLength::from_mm(0.2);
+        op2.avoid
+            .shared_region_ids
+            .push("avoid_clamps_boss".to_string());
+        if let StrategyParams::Adaptive3D(p) = op2.strategy_mut() {
+            p.boundary.boundary_mode = MachiningBoundaryMode::ModelBoundingBox;
+            p.boundary.model_bounds_offset_x_neg = ParamLength::from_mm(-1.0);
+            p.boundary.model_bounds_offset_x_pos = ParamLength::from_mm(-1.0);
+            p.boundary.model_bounds_offset_y_neg = ParamLength::from_mm(3.0);
+            p.boundary.model_bounds_offset_y_pos = ParamLength::from_mm(3.0);
+            p.max_roughing_stepdown = ParamLength::from_mm(4.0);
+            p.fine_stepdown = ParamLength::from_mm(2.0);
+            p.detect_flats = true;
+            p.adaptive.optimal_load = ParamLength::from_mm(2.0);
+        }
+        setup.operations.push(op2);
+
+        // Op 3: 3D Parallel Finish (linked to the exact same shared `"avoid_clamps_boss"`)
+        let mut op3 = Operation::new(
+            "op_3_parallel_shared_keepout",
+            "3D Parallel Finish (Shared Keep-Out)",
+            OperationKind::Parallel3D,
+        );
+        op3.tool_id = Some(em.id.clone());
+        op3.preset_id = em.presets.first().map(|p| p.id.clone());
+        op3.heights.top = HeightSpec::new(HeightReference::ModelTop, 0.0);
+        op3.heights.bottom = HeightSpec::new(HeightReference::ModelBottom, 10.0);
+        op3.passes.stock_to_leave_radial = ParamLength::from_mm(0.0);
+        op3.passes.stock_to_leave_axial = ParamLength::from_mm(0.0);
+        op3.avoid
+            .shared_region_ids
+            .push("avoid_clamps_boss".to_string());
+        if let StrategyParams::Parallel3D(p) = op3.strategy_mut() {
+            p.boundary.boundary_mode = MachiningBoundaryMode::ModelBoundingBox;
+            p.boundary.model_bounds_offset_x_neg = ParamLength::from_mm(-1.0);
+            p.boundary.model_bounds_offset_x_pos = ParamLength::from_mm(-1.0);
+            p.boundary.model_bounds_offset_y_neg = ParamLength::from_mm(2.0);
+            p.boundary.model_bounds_offset_y_pos = ParamLength::from_mm(2.0);
+            p.boundary.tool_containment = ToolContainmentMode::ToolCenterOnBoundary;
+            p.use_cusp_height = false;
+            p.stepover = ParamLength::from_mm(1.8);
+            p.pass_angle_deg = 0.0;
+        }
+        setup.operations.push(op3);
+
+        // Op 4: Outer Flange Contour (`avoid_all_fixtures = true` automatically clips around clamps!)
+        if let Some(bind) = outer_loop_binding {
+            let mut op4 = Operation::new(
+                "op_4_contour_avoid_fixtures",
+                "Outer Flange Contour (Avoid All Fixtures)",
+                OperationKind::Contour2D,
+            );
+            op4.tool_id = Some(em.id.clone());
+            op4.preset_id = em.presets.first().map(|p| p.id.clone());
+            op4.heights.top = HeightSpec::new(HeightReference::ModelBottom, 10.0);
+            op4.heights.bottom = HeightSpec::new(HeightReference::ModelBottom, 0.5);
+            op4.passes.multiple_depths = true;
+            op4.passes.max_stepdown = ParamLength::from_mm(3.5);
+            op4.passes.stock_to_leave_radial = ParamLength::from_mm(0.0);
+            op4.passes.stock_to_leave_axial = ParamLength::from_mm(0.0);
+            op4.avoid.avoid_all_fixtures = true;
+            op4.avoid.radial_clearance = ParamLength::from_mm(1.0);
+            op4.selections.push(GeometrySelectionItem::ClosedLoop {
+                binding: bind,
+                reverse: false,
+                side_flip: false,
+            });
+            setup.operations.push(op4);
+        }
+    }
+
+    proj.setups = vec![setup];
+    proj
+}
+
+/// Builds the Phase 23 **Indexed 4-Sided Bar (Model Bounds & Auto-Rotate 3+1)** sample
+/// (`--sample indexed-model-bounds`) on `sample_indexed_4sided_bar_step_bytes()` (`70 × 30 × 30 mm`
+/// 4-sided sculpted bar with distinct features on `0°`, `90°`, `180°`, and `270°` faces):
+/// - Held in `FixedBox` stock (`82 × 34 × 34 mm`) using **`FixedBoxZAlign::CenterZ`** squarely
+///   centered on the `X` (`A`) rotary axis with a `-X` chuck (`chuck_length = 20 mm`,
+///   `chuck_diameter = 65 mm`),
+/// - Sequences 4 `Indexed3Plus1` operations (`0°`, `90°`, `180°` `Adaptive3D` + `270°` `Parallel3D`
+///   finishing pass), each using `MachiningBoundaryMode::ModelBoundingBox` with explicit signed
+///   per-side offsets (`-X = -1.0 mm` keeping extra clearance from the chuck, `+X = +2.0 mm`,
+///   `-Y/+Y = +1.5 mm`) and automatic viewport upright rotation on operation selection.
+pub fn build_indexed_model_bounds_project(
+    model_path: String,
+    sha256_hex: &str,
+    available_tools: &[Tool],
+) -> ProjectDocument {
+    let mut proj = ProjectDocument::new("Indexed 4-Sided Bar (Model Bounds & Auto-Rotate 3+1)");
+    proj.models = vec![ModelEntry {
+        id: "model_1".to_string(),
+        path: model_path,
+        sha256: sha256_hex.to_string(),
+        role: Default::default(),
+        unit_override: None,
+        transform: chip_cad::ModelTransform::IDENTITY,
+    }];
+
+    for t in available_tools {
+        proj.ensure_tool_embedded(t);
+    }
+
+    let flat_6mm = find_flat_endmill(&proj.tools, 6.0, 0.5).or_else(|| proj.tools.first().cloned());
+    let ball_6mm = proj
+        .tools
+        .iter()
+        .find(|t| {
+            matches!(
+                t.geometry,
+                CutterGeometry::BallEndmill { diameter_mm, .. } if (diameter_mm - 6.0).abs() < 0.5
+            )
+        })
+        .cloned()
+        .or_else(|| flat_6mm.clone());
+
+    let mut setup = Setup::new(
+        "setup_1",
+        "Setup 1 — Indexed 3+1 Bar (Center-Z Stock)",
+        WorkOffsetSlot::G54,
+    );
+    setup.post_profile = "linuxcnc_4axis".to_string();
+    setup.wcs.origin = WcsOriginMode::StockBoxPoint {
+        anchor: BoxAnchor27::VOLUMETRIC_CENTER,
+    };
+    setup.stock = StockConfig::FixedBox {
+        width_x: ParamLength::from_mm(88.0),
+        depth_y: ParamLength::from_mm(34.0),
+        height_z: ParamLength::from_mm(34.0),
+        xy_align: FixedBoxXyAlign::CenterXy,
+        z_align: FixedBoxZAlign::CenterZ,
+    };
+    setup.rotary.mode = RotaryDriveMode::Indexed3Plus1;
+    setup.rotary.axis = RotaryAxisKind::XAxis;
+    setup.rotary.direction = RotaryDirection::RightHandCcw;
+    setup.rotary.clearance_radial_offset = ParamLength::from_mm(10.0);
+    setup.rotary.chuck_end_positive = false;
+    setup.rotary.chuck_length = ParamLength::from_mm(20.0);
+    setup.rotary.chuck_diameter = ParamLength::from_mm(65.0);
+
+    // Ops 1..3: Indexed 0°, 90°, 180° Adaptive3D Roughing with ModelBoundingBox + signed offsets
+    if let Some(em) = &flat_6mm {
+        for (id, name, angle_deg) in [
+            (
+                "op_1_idx0_adaptive",
+                "Indexed 0° Adaptive Rough (Model Bounds)",
+                0.0_f64,
+            ),
+            (
+                "op_2_idx90_adaptive",
+                "Indexed 90° Adaptive Rough (Model Bounds)",
+                90.0_f64,
+            ),
+            (
+                "op_3_idx180_adaptive",
+                "Indexed 180° Adaptive Rough (Model Bounds)",
+                180.0_f64,
+            ),
+        ] {
+            let mut op = Operation::new(id, name, OperationKind::Adaptive3D);
+            op.tool_id = Some(em.id.clone());
+            op.preset_id = em.presets.first().map(|p| p.id.clone());
+            op.rotary = OperationRotaryMode::Indexed3Plus1 { angle_deg };
+            op.heights.top = HeightSpec::new(HeightReference::StockTop, 0.0);
+            op.heights.bottom = HeightSpec::new(HeightReference::ModelTop, -4.0);
+            op.passes.stock_to_leave_radial = ParamLength::from_mm(0.0);
+            op.passes.stock_to_leave_axial = ParamLength::from_mm(0.0);
+            if let StrategyParams::Adaptive3D(p) = op.strategy_mut() {
+                p.boundary.boundary_mode = MachiningBoundaryMode::ModelBoundingBox;
+                p.boundary.model_bounds_offset_x_neg = ParamLength::from_mm(-1.0);
+                p.boundary.model_bounds_offset_x_pos = ParamLength::from_mm(2.0);
+                p.boundary.model_bounds_offset_y_neg = ParamLength::from_mm(1.5);
+                p.boundary.model_bounds_offset_y_pos = ParamLength::from_mm(1.5);
+                p.max_roughing_stepdown = ParamLength::from_mm(3.0);
+                p.fine_stepdown = ParamLength::from_mm(1.5);
+                p.detect_flats = true;
+                p.adaptive.optimal_load = ParamLength::from_mm(1.8);
+            }
+            setup.operations.push(op);
+        }
+    }
+
+    // Op 4: Indexed 270° Parallel3D Finishing over the convex circular-arc ridge (Model Bounds)
+    if let Some(ball) = &ball_6mm {
+        let mut op4 = Operation::new(
+            "op_4_idx270_parallel_finish",
+            "Indexed 270° Parallel Finish (Model Bounds)",
+            OperationKind::Parallel3D,
+        );
+        op4.tool_id = Some(ball.id.clone());
+        op4.preset_id = ball.presets.first().map(|p| p.id.clone());
+        op4.rotary = OperationRotaryMode::Indexed3Plus1 { angle_deg: 270.0 };
+        op4.heights.top = HeightSpec::new(HeightReference::StockTop, 0.0);
+        op4.heights.bottom = HeightSpec::new(HeightReference::ModelTop, -4.0);
+        op4.passes.stock_to_leave_radial = ParamLength::from_mm(0.0);
+        op4.passes.stock_to_leave_axial = ParamLength::from_mm(0.0);
+        if let StrategyParams::Parallel3D(p) = op4.strategy_mut() {
+            p.boundary.boundary_mode = MachiningBoundaryMode::ModelBoundingBox;
+            p.boundary.model_bounds_offset_x_neg = ParamLength::from_mm(-1.0);
+            p.boundary.model_bounds_offset_x_pos = ParamLength::from_mm(2.0);
+            p.boundary.model_bounds_offset_y_neg = ParamLength::from_mm(1.5);
+            p.boundary.model_bounds_offset_y_pos = ParamLength::from_mm(1.5);
+            p.boundary.tool_containment = ToolContainmentMode::ToolCenterOnBoundary;
+            p.use_cusp_height = true;
+            p.cusp_height = ParamLength::from_mm(0.03);
+            p.pass_angle_deg = 0.0;
+        }
+        setup.operations.push(op4);
+    }
+
+    proj.setups = vec![setup];
     proj
 }

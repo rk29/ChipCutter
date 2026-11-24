@@ -37,6 +37,8 @@ pub enum SampleProjectId {
     DovetailRailKeyway,
     SvgBadgeSign,
     Mesh3mfBracket,
+    KeepOutClamps,
+    IndexedModelBounds,
 }
 
 impl SampleProjectId {
@@ -67,6 +69,8 @@ impl SampleProjectId {
             Self::DovetailRailKeyway => "dovetail-rail-keyway",
             Self::SvgBadgeSign => "svg-badge",
             Self::Mesh3mfBracket => "mesh-3mf-bracket",
+            Self::KeepOutClamps => "keepout-clamps",
+            Self::IndexedModelBounds => "indexed-model-bounds",
         }
     }
 
@@ -103,8 +107,10 @@ impl SampleProjectId {
             "dovetail-rail-keyway" | "dovetail-rail" => Ok(Self::DovetailRailKeyway),
             "svg-badge" | "svg-badge-sign" => Ok(Self::SvgBadgeSign),
             "mesh-3mf-bracket" | "mesh-3mf" | "3mf-bracket" => Ok(Self::Mesh3mfBracket),
+            "keepout-clamps" | "keepout" | "avoid-clamps" => Ok(Self::KeepOutClamps),
+            "indexed-model-bounds" | "model-bounds" | "indexed-bar" => Ok(Self::IndexedModelBounds),
             other => Err(format!(
-                "invalid --sample '{other}'; expected one of: cam-torture, adaptive-rest, pure-2d, nameplate, vcarve, multi-feature, tilted-bracket, revision-v1, revision-v2, sample-plate, mesh-dome, mesh-wave, rotary-shaft, rotary-wrap, rotary-4axis, thread-mill, two-sided-vise, undercut-deburr, feed-opt-pocket, flip-jig-softjaws, curved-deburr-3d, dovetail-rail-keyway, svg-badge, mesh-3mf-bracket"
+                "invalid --sample '{other}'; expected one of: cam-torture, adaptive-rest, pure-2d, nameplate, vcarve, multi-feature, tilted-bracket, revision-v1, revision-v2, sample-plate, mesh-dome, mesh-wave, rotary-shaft, rotary-wrap, rotary-4axis, thread-mill, two-sided-vise, undercut-deburr, feed-opt-pocket, flip-jig-softjaws, curved-deburr-3d, dovetail-rail-keyway, svg-badge, mesh-3mf-bracket, keepout-clamps, indexed-model-bounds"
             )),
         }
     }
@@ -335,6 +341,22 @@ pub const SAMPLE_CATALOG: &[SampleCardSpec] = &[
         title: "Sculpted Mount Bracket (Unit-Aware 3MF Mesh)",
         badge: "3D 3MF · 2 Ops",
         summary: "80×56×20mm watertight millimeter .3mf sculpted mounting bracket machined with 3D Adaptive Roughing and 3D Constant-Scallop Finishing.",
+    },
+    SampleCardSpec {
+        id: SampleProjectId::KeepOutClamps,
+        category: SampleCategory::Step3D,
+        icon: IconKind::OrthoCube,
+        title: "Clamp & Boss Keep-Out Plate (Avoid / Keep-Out Regions)",
+        badge: "Shared Avoid · 4 Ops",
+        summary: "100×70×18mm filleted plate on MDF spoilboard with two overhanging toe clamps and a sketched central boss bundled into a Shared Keep-Out region across Facing, 3D Adaptive (Model Bounds), 3D Parallel, plus Avoid-All-Fixtures Contour.",
+    },
+    SampleCardSpec {
+        id: SampleProjectId::IndexedModelBounds,
+        category: SampleCategory::Step3D,
+        icon: IconKind::OrthoCube,
+        title: "Indexed 4-Sided Bar (Model Bounds & Auto-Rotate 3+1)",
+        badge: "3+1 Indexed · Center-Z",
+        summary: "70×30×30mm 4-sided sculpted STEP bar in Fixed-Box Center-Z stock on the A-axis, showcasing Model Bounds signed per-side offsets and automatic viewport rotation across 0°/90°/180°/270°.",
     },
 ];
 
@@ -836,7 +858,15 @@ mod tests {
             SampleProjectId::from_cli_slug("mesh-3mf-bracket"),
             Ok(SampleProjectId::Mesh3mfBracket)
         );
-        assert_eq!(SAMPLE_CATALOG.len(), 23);
+        assert_eq!(
+            SampleProjectId::from_cli_slug("keepout-clamps"),
+            Ok(SampleProjectId::KeepOutClamps)
+        );
+        assert_eq!(
+            SampleProjectId::from_cli_slug("indexed-model-bounds"),
+            Ok(SampleProjectId::IndexedModelBounds)
+        );
+        assert_eq!(SAMPLE_CATALOG.len(), 25);
         assert!(SampleProjectId::from_cli_slug("nonexistent").is_err());
     }
 }

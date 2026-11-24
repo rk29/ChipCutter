@@ -21,6 +21,8 @@ pub use fixtures::{
     SampleStepError, sample_ambiguous_twin_hole_step, sample_cam_torture_block_step,
     sample_curved_deburr_overhang_step, sample_curved_deburr_overhang_step_bytes,
     sample_dovetail_rail_keyway_step, sample_dovetail_rail_keyway_step_bytes,
+    sample_indexed_4sided_bar_step, sample_indexed_4sided_bar_step_bytes,
+    sample_keepout_clamp_plate_step, sample_keepout_clamp_plate_step_bytes,
     sample_machined_plate_step, sample_machined_plate_step_inches,
     sample_multi_feature_bracket_step, sample_overhang_flange_step,
     sample_periodic_helical_sweep_step, sample_revised_part_pair_step,

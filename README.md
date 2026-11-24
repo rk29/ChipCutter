@@ -6,7 +6,7 @@ It turns 3D **STEP** B-Rep CAD solids (`AP203` / `AP214` / `AP242`), 3D triangle
 
 ![ChipCutter Desktop CAM Interface — Simultaneous 4-Axis Helical Flute](docs/images/chipcutter-gui.png)
 
-> **Project Website & Illustrated Docs:** [**https://rk29.github.io/ChipCutter/**](https://rk29.github.io/ChipCutter/) · [**Sample Projects Gallery (24 Samples)**](docs/samples/README.md) · [**Tutorials (00–22)**](docs/tutorials/README.md)
+> **Project Website & Illustrated Docs:** [**https://rk29.github.io/ChipCutter/**](https://rk29.github.io/ChipCutter/) · [**Sample Projects Gallery (26 Samples)**](docs/samples/README.md) · [**Tutorials (00–22)**](docs/tutorials/README.md)
 
 ---
 
@@ -219,7 +219,7 @@ cargo run -p chip-cli -- machines export my-carvera -o my-carvera.machine.toml
 
 ## Documentation
 
-- [**`docs/samples/`**](docs/samples/README.md) — **Illustrated Sample Projects Gallery** with thumbnails of all 24 documented built-in STEP, Workholding, Undercut & 3D Deburr, Thread Mill, Mesh (`STL`/`OBJ`/`3MF`), 4th-Axis Rotary, Pure-2D (`DXF`/`SVG`), and V-Carve samples plus per-Setup and per-Operation completion simulation screenshots
+- [**`docs/samples/`**](docs/samples/README.md) — **Illustrated Sample Projects Gallery** with thumbnails of all 26 documented built-in STEP, Workholding, Undercut & 3D Deburr, Thread Mill, Mesh (`STL`/`OBJ`/`3MF`), 4th-Axis Rotary, Pure-2D (`DXF`/`SVG`), and V-Carve samples plus per-Setup and per-Operation completion simulation screenshots
 - [**`docs/tutorials/`**](docs/tutorials/README.md) — Illustrated step-by-step Getting Started, 2.5D, Helical Thread Milling, Two-Sided Flip Workholding & Soft Jaws, GPU Simulation & Feedrate Optimization, 3D Edge Deburring, Undercut/T-Slot/Dovetail/Lollipop Milling, 3-Axis Surface, 4th-Axis Rotary, Machine Definitions, Model Orientation/Scaling, Tri-Dexel Simulation & Error Metrics, & Production Workflow tutorials (`00`–`22`)
 - [**`ARCHITECTURE.md`**](ARCHITECTURE.md) — End-to-end data pipeline, crate dependency graph, threading/caching model, and 3D render passes
 - [**`DEVELOPMENT.md`**](DEVELOPMENT.md) — Workspace layout, platform build prerequisites, native Linux/macOS/Windows setup, and headless CI instructions

@@ -38,6 +38,8 @@ pub(crate) enum LoadPurpose {
     SeedCurvedDeburr3D,
     SeedDovetailRailKeyway,
     SeedMesh3mfBracket,
+    SeedKeepOutClamps,
+    SeedIndexedModelBounds,
     ReloadRebind { update_path: bool },
 }
 

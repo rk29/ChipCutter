@@ -634,6 +634,12 @@ impl ChipCutterApp {
             SampleProjectId::Mesh3mfBracket => {
                 self.spawn_mesh_3mf_bracket_load(ctx.clone());
             }
+            SampleProjectId::KeepOutClamps => {
+                self.spawn_keepout_clamps_load(ctx.clone());
+            }
+            SampleProjectId::IndexedModelBounds => {
+                self.spawn_indexed_model_bounds_load(ctx.clone());
+            }
         }
     }
 

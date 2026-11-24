@@ -4,12 +4,14 @@ use chip_cad::{CadDocument, CadPicker, TopologyGraph};
 use chip_project::{
     ModelEntry, OperationReloadOutcome, ProjectDocument, build_adaptive_rest_demo_project,
     build_cam_torture_project, build_curved_deburr_3d_project, build_dovetail_rail_keyway_project,
-    build_feed_opt_pocket_project, build_flip_jig_softjaws_project, build_mesh_3mf_bracket_project,
-    build_multi_feature_bracket_project, build_relief_wave_mesh_project,
-    build_revision_v1_demo_project, build_rotary_helical_flute_project,
-    build_rotary_shaft_preview_project, build_sculpted_mesh_dome_project,
-    build_thread_mill_manifold_project, build_two_sided_vise_workholding_project,
-    build_undercut_deburr_block_project, portable_model_path, rebind_project_to_reloaded_cad,
+    build_feed_opt_pocket_project, build_flip_jig_softjaws_project,
+    build_indexed_model_bounds_project, build_keepout_clamps_project,
+    build_mesh_3mf_bracket_project, build_multi_feature_bracket_project,
+    build_relief_wave_mesh_project, build_revision_v1_demo_project,
+    build_rotary_helical_flute_project, build_rotary_shaft_preview_project,
+    build_sculpted_mesh_dome_project, build_thread_mill_manifold_project,
+    build_two_sided_vise_workholding_project, build_undercut_deburr_block_project,
+    portable_model_path, rebind_project_to_reloaded_cad,
 };
 
 use crate::{
@@ -421,6 +423,48 @@ impl ChipCutterApp {
                 }
                 self.show_27pt_dots = false;
             }
+            LoadPurpose::SeedKeepOutClamps => {
+                self.prepare_for_project_replacement(None, None);
+                self.project_file_path = None;
+                self.project.machine_id = None;
+                self.sync_active_machine_tools();
+                self.project = build_keepout_clamps_project(
+                    &doc,
+                    doc.source_name.clone(),
+                    &sha256_hex,
+                    &self.global_tools.tools,
+                );
+                self.sync_active_machine_tools();
+                if !self.project.setups[0].operations.is_empty() {
+                    self.inspector_focus = InspectorFocus::Operation {
+                        setup_idx: 0,
+                        op_idx: 0,
+                    };
+                    self.op_tab = OperationTab::Geometry;
+                }
+                self.highlight.show_fixtures = true;
+                self.show_27pt_dots = false;
+            }
+            LoadPurpose::SeedIndexedModelBounds => {
+                self.prepare_for_project_replacement(None, None);
+                self.project_file_path = None;
+                self.project.machine_id = None;
+                self.sync_active_machine_tools();
+                self.project = build_indexed_model_bounds_project(
+                    doc.source_name.clone(),
+                    &sha256_hex,
+                    &self.global_tools.tools,
+                );
+                self.sync_active_machine_tools();
+                if !self.project.setups[0].operations.is_empty() {
+                    self.inspector_focus = InspectorFocus::Operation {
+                        setup_idx: 0,
+                        op_idx: 0,
+                    };
+                    self.op_tab = OperationTab::Geometry;
+                }
+                self.show_27pt_dots = false;
+            }
             LoadPurpose::FreshImport { update_model_entry } => {
                 self.sim_panel.reset_for_new_project();
                 self.gcode_panel.invalidate_preview();
@@ -550,6 +594,8 @@ impl ChipCutterApp {
                 | LoadPurpose::SeedCurvedDeburr3D
                 | LoadPurpose::SeedDovetailRailKeyway
                 | LoadPurpose::SeedMesh3mfBracket
+                | LoadPurpose::SeedKeepOutClamps
+                | LoadPurpose::SeedIndexedModelBounds
         ) {
             self.auto_sim_after_gen = true;
             self.trigger_generate_dirty(None, None);
