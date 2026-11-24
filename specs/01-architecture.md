@@ -47,68 +47,65 @@ ChipCutter/
 
 ---
 
-## Crate Dependency Graph
+## Layered Crate Architecture
 ```mermaid
-flowchart TD
-    MATH["chip-math"]
-    BVH["chip-bvh"]
-    GEOM2D["chip-geom2d"]
-    TOOLS["chip-tools"]
-    STOCK["chip-stock"]
-    CAD["chip-cad"]
-    SKETCH["chip-sketch"]
-    CAM["chip-cam"]
-    SIM["chip-sim"]
-    POST["chip-post"]
-    PROJECT["chip-project"]
-    CLI["chip-cli"]
-    GUI["chip-gui"]
+flowchart TB
+    subgraph L6["Layer 6 — Applications"]
+        GUI["chip-gui\nDesktop App (eframe / egui / wgpu)"]
+        CLI["chip-cli\nHeadless CLI (chipcutter)"]
+    end
+
+    subgraph L5["Layer 5 — Project & Pipeline Orchestration"]
+        PROJECT["chip-project\n.chip.toml / .chipz · JobDispatcher · Cache · UndoHistory · Reload"]
+    end
+
+    subgraph L4["Layer 4 — Simulation & Post-Processing"]
+        SIM["chip-sim\nSimulation Driver · 6-Rule Verifier · Timeline"]
+        POST["chip-post\n.post.toml Profiles · G-Code Emitter"]
+    end
+
+    subgraph L3["Layer 3 — CAM Toolpath Engine"]
+        CAM["chip-cam\nSetups · WCS · 18 Strategies · Fixtures · Keep-Outs · ClEvent IR"]
+    end
+
+    subgraph L2["Layer 2 — Domain Geometry & Volumetric Stock"]
+        CAD["chip-cad\nSTEP / STL / OBJ / 3MF · B-Rep"]
+        SKETCH["chip-sketch\n2D Sketches · DXF / SVG · Text"]
+        STOCK["chip-stock\nHeightfield · Tri-Dexel · Cylindrical"]
+    end
+
+    subgraph L1["Layer 1 — Spatial, 2D Kernel, & Tooling Primitives"]
+        BVH["chip-bvh\nFlat SAH BVH · TriMesh3D"]
+        GEOM2D["chip-geom2d\nExact 2D Offsets · Booleans"]
+        TOOLS["chip-tools\nCutters · Envelopes · Machines"]
+    end
+
+    subgraph L0["Layer 0 — Foundation"]
+        MATH["chip-math\nCanonical f64 mm · Units · RigidFrame3 · ArcPolyline2D · Expressions"]
+    end
+
+    GUI --> PROJECT
+    CLI --> PROJECT
+
+    PROJECT --> SIM
+    PROJECT --> POST
+
+    SIM --> CAM
+    POST --> CAM
+
+    CAM --> CAD
+    CAM --> SKETCH
+    CAM --> STOCK
+
+    CAD --> BVH
+    SKETCH --> GEOM2D
+    STOCK --> TOOLS
 
     BVH --> MATH
     GEOM2D --> MATH
     TOOLS --> MATH
-
-    STOCK --> MATH
-    STOCK --> BVH
-    STOCK --> TOOLS
-
-    CAD --> MATH
-    CAD --> BVH
-
-    SKETCH --> MATH
-    SKETCH --> GEOM2D
-
-    CAM --> MATH
-    CAM --> BVH
-    CAM --> GEOM2D
-    CAM --> CAD
-    CAM --> SKETCH
-    CAM --> STOCK
-    CAM --> TOOLS
-
-    SIM --> MATH
-    SIM --> BVH
-    SIM --> CAD
-    SIM --> CAM
-    SIM --> STOCK
-    SIM --> TOOLS
-
-    POST --> MATH
-    POST --> TOOLS
-    POST --> CAM
-
-    PROJECT --> MATH
-    PROJECT --> CAD
-    PROJECT --> SKETCH
-    PROJECT --> TOOLS
-    PROJECT --> CAM
-    PROJECT --> SIM
-    PROJECT --> POST
-
-    CLI --> PROJECT
-    GUI --> PROJECT
 ```
-> Note: `chip-cli` and `chip-gui` also depend directly on lower crates (`chip-math`, `chip-cad`, `chip-sketch`, `chip-tools`, `chip-cam`, `chip-sim`, `chip-post`) for public types and APIs, all transitively rooted under `chip-project`. `chip-cam` uses `chip-sim` strictly as a `[dev-dependency]` for verification tests (no runtime cycle).
+> **Dependency Rule:** Components may only depend on components in **strictly lower layers** (never on peers in the same layer or components in higher layers). Arrows above indicate the primary layer progression; higher layers may also import types directly from any lower layer (for example, `chip-cam` and `chip-gui` also depend directly on `chip-math` and `chip-tools`). `chip-cam` uses `chip-sim` strictly as a `[dev-dependency]` for verification tests (no runtime cycle).
 
 ---
 
