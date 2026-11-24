@@ -7,6 +7,7 @@ Browse every built-in sample project included in **ChipCutter**. Click any thumb
 > ```bash
 > chip-gui --sample <slug>
 > ```
+> Inspect any operation's live 3D cutting-area or rotary boundary preview on the Operation Inspector's **`[Geometry]`** tab, and configure simulation engine (`Heightmap` / `Tri-Dexel`), resolution, compute backend (`Auto` / `GPU` / `CPU`), and smooth **Mesh Skinning** under **`Settings → Simulation`** (`Ctrl+,` or the Simulation Timeline status chip).
 
 ---
 

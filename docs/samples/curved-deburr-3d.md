@@ -19,9 +19,9 @@ This `80 × 50 × 23 mm` sculpted STEP solid—combining a planar stepped shelf 
 | **Part & Stock** | `80 × 50 × 23 mm` STEP solid with stepped shelf, vertical inside wall, 3D circular-arc arch, and `+X` overhang lip |
 | **3D Surfacing & Relief** | Op 1 `3D Adaptive` (`Ø6 mm` Flat) · Op 2 `3D Parallel` (`Ø6 mm` Ball, `0.03 mm` cusp) · Op 3 `Side Overhang Relief Groove` (`Ø12 × 4 mm` Slot Mill) |
 | **3D Deburring Cutters** | Op 4 **`90°` Chamfer Mill** (auto-detect + `FlatBvh` wall trim) · Op 5 **`Ø6 mm` Ball Endmill** (curved arch rims) · Op 6 **`Ø6 mm` Lollipop Endmill** (underside back-chamfer) |
-| **Simulation Engine** | Volumetric **Tri-Dexel** (CPU & GPU compute parity, `0` critical errors, `>= 90%` In-Tol) |
+| **Simulation Engine** | Volumetric **Tri-Dexel** with smooth **Mesh Skinning** (`Settings → Simulation`, `Ctrl+,`; CPU & GPU compute parity, `0` critical errors, `>= 90%` In-Tol) |
 
-- **Automatic `FlatBvh` Inside-Corner Wall Trimming:** When the `90°` Chamfer Mill traces the stepped shelf and curved boss edges, ChipCutter automatically evaluates full cutter/neck/shank clearance against the vertical `X = 35 mm` neighbor wall and trims back cleanly by `wall_clearance = 0.15 mm` with smooth tangent leads.
+- **Automatic `FlatBvh` Inside-Corner Wall Trimming & `[Geometry]` Boundary Clipping:** When the `90°` Chamfer Mill traces auto-detected edges on the stepped shelf and curved boss, ChipCutter evaluates full cutter/neck/shank clearance against the vertical `X = 35 mm` neighbor wall (trimming back cleanly by `wall_clearance = 0.15 mm` with smooth tangent leads) and lets you constrain `Auto-Detect Edges` via the unified **`[Geometry]` → `Cutting Area / Machining Boundary`** card with live 3D boundary preview (Op 2 `3D Parallel` also uses true projected `Model Silhouette`).
 - **Curved Non-Planar 3D Arc Tracking:** Follows true 3D curved B-Rep circular arcs (`chord_tolerance = 0.005 mm`) with simultaneous `X/Y/Z` bisector contact using both `ChamferMill` and `BallEndmill` cutters.
 - **Lollipop Underside Back-Chamfering:** Reaches beneath the `+X` overhang lip (`Z = 9.5 mm`) with `allow_underside_back_chamfer = true` to break the underside edge without flipping the part.
 

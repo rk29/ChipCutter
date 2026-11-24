@@ -18,7 +18,7 @@ This two-setup woodworking / hardwood sign sample demonstrates ChipCutter's **3D
   - Uses a `Ø6 mm` flat endmill for Stage 1 bulk flat-floor pocketing inside wide strokes, followed by a `60°` V-bit for Stage 2 razor-sharp 3D medial-axis bevels and corner climbs.
   - Carves full-depth variable-Z medial-axis subtitle text (`"CAM v2"`) and cuts the outer filleted sign plaque with triangular ramped holding tabs.
 - **Setup 2 (`G55` — Mated Male V-Inlay Plug):**
-  - Automatically mirrors the crest and lettering across X and offsets the bevel engagement (`start_depth = 2.0 mm`, `glue_gap_bottom = 1.0 mm`) to machine a contrasting hardwood plug that glues seamlessly into the Setup 1 female cavity.
+  - Switch the **Active Setup** (`Active` badge in the CAM Browser) to `G55` to inspect and simulate the mirrored plug: automatically mirrors the crest and lettering across X and offsets the bevel engagement (`start_depth = 2.0 mm`, `glue_gap_bottom = 1.0 mm`) to machine a contrasting hardwood plug that glues seamlessly into the Setup 1 female cavity.
 
 Related step-by-step guide: [Tutorial 07 (3D V-Carving, Two-Tool Flat Clearance, & Mated V-Inlays)](../tutorials/07-vcarve-inlays.md).
 

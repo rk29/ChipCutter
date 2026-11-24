@@ -16,7 +16,7 @@ This `80 × 60 × 20 mm` aluminum manifold block showcases ChipCutter's complete
 
 - **Built-In ISO Metric & Unified Presets:** Combines internal **`M8 × 1.25`** (`Ø6.80 mm` pilot), internal **`1/4-20 UNC`** (`Ø5.11 mm` pilot), and external **`M12 × 1.75`** threading around a proud `Ø12.0 mm` circular boss in one `G54` setup.
 - **Automatic Climb Kinematics & Centerline Feed Compensation:** Emits **Bottom-Up `G3` (Climb)** helical passes with centerline tangent arc-in/out for internal right-hand bores, **Top-Down `G2` (Climb)** passes with external tangent leads for the circular boss, equal-area radial roughing passes, spring passes, and automatic arc-curvature feedrate compensation.
-- **True 3D Undercut Verification:** Verified crash-free in both fast Heightmap and **Tri-Dexel (Volumetric 3D)** simulation, displaying real helical undercut grooves and checking relieved-neck tool clearance.
+- **True 3D Undercut Verification:** Verified crash-free in both fast Heightmap and **Tri-Dexel (Volumetric 3D)** simulation with smooth **Simulation Mesh Skinning** (configured in **`Settings → Simulation`** via `Ctrl+,` or the Simulation Timeline status chip), displaying real helical undercut grooves and checking relieved-neck tool clearance.
 
 Related step-by-step guide: [Tutorial 18 (Helical Thread Milling)](../tutorials/18-thread-milling.md).
 

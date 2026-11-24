@@ -16,7 +16,8 @@ The **Sculpted Dome** demonstrates ChipCutter's 3-axis surface milling pipeline 
 
 - **3D Adaptive Roughing:** Removes bulk raw stock around the hemisphere using constant-engagement trochoidal peels with coarse stepdowns and intermediate fine step-ups to eliminate steep staircase terraces.
 - **3D Waterline Semi-Finish:** Traces constant-Z contour levels around the dome using adaptive Z-stepdowns on shallower slopes.
-- **3D Pencil Fillet Cleanup:** Automatically detects the concave base fillet crease where the dome meets the flat pedestal using morphological ball-in-ball Minkowski rest residual analysis and cleans it up with a `Ø3 mm` ball endmill.
+- **3D Pencil Fillet Cleanup:** Automatically detects the concave base fillet crease where the dome meets the flat pedestal using morphological ball-in-ball Minkowski rest residual analysis and cleans it up with a `Ø3 mm` ball endmill constrained to the true projected **`Model Silhouette`** (`Tool Inside`) via the **`[Geometry]` → `Cutting Area / Machining Boundary`** card with live 3D boundary preview.
+- **Smooth Volumetric Inspection:** Toggle crease-preserving **Simulation Mesh Skinning**, engine (`Heightmap` / `Tri-Dexel`), resolution, and GPU compute backend under **`Settings → Simulation`** (`Ctrl+,` or the Simulation Timeline status chip).
 
 Related step-by-step guides: [Tutorial 08 (3D Adaptive Roughing & 3D Waterline / Z-Level)](../tutorials/08-3d-adaptive-waterline.md) and [Tutorial 17 (Tri-Dexel Simulation & Error Metrics)](../tutorials/17-tridexel-simulation-error-metrics.md).
 

@@ -23,7 +23,7 @@ This `100 × 80 × 20 mm` aluminum block with a `10 mm` deep sharp-corner pocket
 
 - **Sharp-Corner Lookahead & Internal-Arc Scaling:** Automatically scales centerline feedrate down on concave arcs (`F_center = F_nom · (R_path - R_tool) / R_path`) and ramps smoothly into sharp `90°` pocket corners to prevent radial engagement spikes and chatter.
 - **Radial Chip-Thinning Boost:** Boosts feedrate up to `1.5×` during light-engagement (`1.5 mm` optimal load) straight adaptive peels to maintain target chipload and cut cycle time.
-- **Modulated Feedrate Telemetry:** Inspect live `min / avg / max` modulated cutting feedrates directly inside the **Simulation Timeline** and verify every modulated `F` word in the G-Code Preview pane.
+- **Modulated Feedrate Telemetry & Simulation Settings:** Inspect live `min / avg / max` modulated cutting feedrates directly inside the **Simulation Timeline**, view wall-clock generation/simulation timings in the **Activity Log**, and configure Engine / Resolution / GPU Backend / smooth **Mesh Skinning** via **`Settings → Simulation`** (`Ctrl+,` or the Simulation Timeline status chip). Verify every modulated `F` word in the G-Code Preview pane.
 
 Related step-by-step guide: [Tutorial 20 (GPU-Accelerated Simulation, Benchmarking, & Feedrate Optimization)](../tutorials/20-gpu-simulation-feed-optimization.md).
 

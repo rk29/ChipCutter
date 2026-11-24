@@ -16,7 +16,8 @@ This sample showcases **high-efficiency constant-engagement 2D Adaptive / Trocho
 
 - Large-cutter **2D Adaptive** roughing (`Ø10 mm`) removes bulk metal quickly at full axial depth and controlled radial load (`optimal_load`) with smooth micro-lift stay-down links and radial chip-thinning feed compensation.
 - A follow-up **Rest Machining** pass with a smaller `Ø3 mm` endmill subtracts the exact swept footprint of the preceding roughing operation and machines **only** the uncut corner fillets—eliminating wasted air cutting.
-- Open-boundary adaptive clearing demonstrates automatic outside-stock air entry on the open shoulder step.
+- Open-boundary adaptive clearing demonstrates automatic outside-stock air entry on the open shoulder step (and `[Geometry]` → `Cutting Area / Machining Boundary` exposes `Pocket Area Mode` boss-clearing and `Open Outer Boundary` controls with live 3D previews).
+- Generation and simulation wall-clock runtimes are logged automatically in the **Activity Log** alongside live **Simulation Timeline** verification.
 
 Related step-by-step guide: [Tutorial 05 (2D Adaptive Clearing & 2.5D Rest Machining)](../tutorials/05-adaptive-rest-machining.md).
 

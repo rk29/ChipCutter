@@ -70,6 +70,8 @@ pick_free_x_display() {
   echo "$d"
 }
 
+CAPTURE_TIMEOUT_SEC="${CAPTURE_TIMEOUT_SEC:-180}"
+
 capture_shot() {
   local out_rel="$1"
   shift
@@ -79,6 +81,7 @@ capture_shot() {
   disp="$(pick_free_x_display)"
   echo "[capture] -> $out_rel (display :$disp)"
   WAYLAND_DISPLAY= WINIT_UNIX_BACKEND=x11 WGPU_BACKEND=vulkan \
+    timeout --foreground "$CAPTURE_TIMEOUT_SEC" \
     xvfb-run -n "$disp" -s "-screen 0 1440x900x24" \
     "$BIN" --theme "$THEME" --self-test-screenshot "$out_abs" "$@"
 }
@@ -706,12 +709,12 @@ capture_10_rotary_wrapping_surfacing() {
     --capture-sim-cutter true \
     --capture-sim-progress 0.96
 
-  # 4. 4th-Axis Rotary Surfacing Inspector in Axial Parallel + partial angular sector
+  # 4. 4th-Axis Rotary Surfacing Inspector (Op 2: Axial Parallel + -60°..+60° partial angular sector & 3D cutting-area preview in [Geometry])
   capture_shot "$dir/04-rotary2linear-axial-parallel.png" \
     "$proj_axial" \
     --capture-generate \
     --capture-view iso \
-    --capture-focus op:0:passes \
+    --capture-focus op:1:geometry \
     --capture-isolate-op \
     --capture-sim-stock false \
     --capture-sim-cutter false
@@ -808,22 +811,22 @@ capture_12_simultaneous_4axis_milling() {
     --capture-sim-stock false \
     --capture-sim-cutter false
 
-  # 2. Simultaneous 4-Axis Inspector (Auto Surface-Normal Tilt + Simultaneous Spiral)
+  # 2. Simultaneous 4-Axis Inspector (Op 2: Auto Surface-Normal Tilt 18° + Simultaneous Helical Spiral)
   capture_shot "$dir/02-auto-tilt-spiral-passes.png" \
     "$proj_full" \
     --capture-generate \
     --capture-view iso \
-    --capture-focus op:0:passes \
+    --capture-focus op:1:passes \
     --capture-isolate-op \
     --capture-sim-stock false \
     --capture-sim-cutter false
 
-  # 3. Simultaneous 4-Axis Inspector (Axial / Helical Flowline + Fixed Lateral Offset)
+  # 3. Simultaneous 4-Axis Inspector (Op 3: Axial / Helical Flowline + Fixed Lateral Offset 2.5 mm)
   capture_shot "$dir/03-fixed-offset-flowline.png" \
     "$proj_full" \
     --capture-generate \
     --capture-view iso \
-    --capture-focus op:1:passes \
+    --capture-focus op:2:passes \
     --capture-isolate-op \
     --capture-sim-stock false \
     --capture-sim-cutter false

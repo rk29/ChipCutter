@@ -22,7 +22,7 @@ This two-setup shop-floor workholding showcase machines a watertight `64 × 50 �
 | **Safety & Avoidance** | **Auto-Avoid Fixtures on Rapids** + Rule 6 `FixtureCollision` (`0` crashes) | Rest-aware skirt clearing skips already-machined Op-1 air (`0` crashes) |
 
 - **Automatic Safe-Rapid Lifting (`Auto-Avoid Fixtures`):** Setup 1 automatically inspects every `G0` rapid and stay-down link against the vise jaws and tall toe-clamp studs (accounting for flute, shank, and holder clearance) and lifts safely over hardware without altering cutting passes.
-- **Exact Volumetric Stock Carryover (`G54` -> `G55`):** Setup 2 initializes at `t = 0.0` from Setup 1's exact flipped Tri-Dexel solid rather than a fresh rectangular billet—so Op 2.2 clears only the remaining `2.0 mm` bottom flange skirt without air-cutting finished Op-1 walls or colliding with the stepped soft jaws.
+- **Exact Volumetric Stock Carryover (`G54` -> `G55`) & Active Setup Workflow:** Switch the **Active Setup** (`Active` badge in the CAM Browser) to inspect Setup 2, which initializes at `t = 0.0` from Setup 1's exact flipped Tri-Dexel solid (with smooth **Simulation Mesh Skinning** via `Settings → Simulation`, `Ctrl+,`) rather than a fresh rectangular billet—so Op 2.2 clears only the remaining `2.0 mm` bottom flange skirt without air-cutting finished Op-1 walls or colliding with the stepped soft jaws.
 
 Related step-by-step guide: [Tutorial 19 (Two-Sided Flip Workholding, 3D Fixtures, & Auto Soft Jaws)](../tutorials/19-workholding-flip-jigs-soft-jaws.md).
 

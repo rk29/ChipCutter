@@ -34,6 +34,8 @@ pick_free_x_display() {
     echo "$d"
 }
 
+CAPTURE_TIMEOUT_SEC="${CAPTURE_TIMEOUT_SEC:-180}"
+
 run_capture() {
     local slug="$1"
     local filename="$2"
@@ -44,6 +46,7 @@ run_capture() {
     disp="$(pick_free_x_display)"
     echo "  -> [$slug] $filename (display :$disp)"
     WAYLAND_DISPLAY= WINIT_UNIX_BACKEND=x11 WGPU_BACKEND=vulkan \
+        timeout --foreground "$CAPTURE_TIMEOUT_SEC" \
         xvfb-run -n "$disp" -s "-screen 0 1440x900x24" "$BIN" \
         --sample "$slug" \
         --theme dark \

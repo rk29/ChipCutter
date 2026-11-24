@@ -19,7 +19,7 @@ This `90 × 50 × 22 mm` precision linear-slide block (`90 × 50 × 23 mm` raw b
 | **Part & Stock** | `90 × 50 × 22 mm` STEP slide block machined from `90 × 50 × 23 mm` billet (`1.0 mm` top allowance) |
 | **Features** | Blind `10 × 6 mm` top keyway entered via `Ø8.0 mm` pre-drilled entry bore + dual-flank **External `60°` Dovetail Rail** (`5.0 mm` depth along `-Y` and `+Y`) |
 | **Cutters Used** | `Ø6 mm` Flat Endmill (`T1`), `Ø12 mm 60°` Dovetail Cutter |
-| **Simulation Engine** | Volumetric **Tri-Dexel** Fine (CPU & GPU compute parity, `0` critical errors, `max_gouge <= 0.02 mm`, `>= 90%` In-Tol) |
+| **Simulation Engine** | Volumetric **Tri-Dexel** Fine with smooth **Mesh Skinning** (`Settings → Simulation`, `Ctrl+,`; CPU & GPU compute parity, `0` critical errors, `max_gouge <= 0.02 mm`, `>= 90%` In-Tol) |
 
 - **Blind Keyway with `EntryBoreCenter` Lead-In:** Instead of plunging an undercut cutter into solid stock, Op 2 helically bores an `Ø8.0 mm` clearance hole first, and Op 3 (`SlotUndercutMode::Keyway` + `UndercutEntryMode::EntryBoreCenter`) plunges exclusively inside the open bore, machines out along the blind keyway, and returns to the bore centerline before retracting `+Z`.
 - **Dual-Flank External Dovetail Rail (`DovetailMode::ExternalRail`):** Machines both opposing `-Y` and `+Y` angled rail flanks in a single operation using progressive `0.6 mm` lateral stepovers, a `0.1 mm` finish pass, and a final spring pass with safe `8.0 mm` open-end extensions.

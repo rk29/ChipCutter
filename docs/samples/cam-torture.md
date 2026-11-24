@@ -14,11 +14,12 @@ chip-gui --sample cam-torture
 
 The **CAM Torture Block** is ChipCutter's flagship end-to-end 2.5D prismatic STEP benchmark. Starting from a rectangular raw aluminum billet with extra top and side stock allowance, it exercises every core 2.5D milling strategy in a single `G54` Setup:
 
-- **Stock facing** across the top billet allowance.
-- **Multi-level pocketing** around a raised boss, an open-shoulder air-entry step, and a closed interior pocket with a central island.
+- **Stock facing** across the top billet allowance (configurable via **`[Geometry]` → `Cutting Area / Machining Boundary`** for `Stock Bounds`, true `Model Silhouette`, or exact-polygon `Selected Regions`).
+- **Multi-level pocketing** around a raised boss, an open-shoulder air-entry step, and a closed interior pocket with a central island (`[Geometry]` also supports `Pocket Area Mode` boss-clearing and `Open Outer Boundary`).
 - **Helical bore interpolation** for an oversized `Ø18 mm` counterbore plus **4x through-hole peck drilling**.
 - **Outer perimeter profiling with holding tabs** to retain the finished part in the raw blank.
 - **45° edge chamfering** along the stepped shoulder with automatic adjacent-floor gouge protection.
+- **Timing & Simulation Controls:** Wall-clock generation and simulation durations are logged in the **Activity Log**; configure simulation engine, resolution, compute backend, and smooth **Mesh Skinning** via **`Settings → Simulation`** (`Ctrl+,` or the Simulation Timeline status chip).
 
 Related step-by-step guides: [Tutorial 01 (Facing)](../tutorials/01-facing.md), [Tutorial 02 (2D Contour & Tabs)](../tutorials/02-2d-contour-tabs.md), [Tutorial 03 (2D Pocket)](../tutorials/03-2d-pocket.md), [Tutorial 04 (Drilling & Helical Bore)](../tutorials/04-drilling-helical-bore.md), [Tutorial 06 (Edge Chamfering)](../tutorials/06-chamfer-curve-trace.md), and [Tutorial 17 (Tri-Dexel Simulation & Error Metrics)](../tutorials/17-tridexel-simulation-error-metrics.md).
 

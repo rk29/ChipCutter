@@ -14,7 +14,7 @@ chip-gui --sample rotary-shaft
 
 This `Ø40 × 80 mm` cylindrical shaft combines **continuous 4th-axis rotary surfacing (`Z+X+A`)** with **4-sided Indexed `3+1` multi-face milling** in a single rotary Setup with polar `CylindricalStock` simulation and rotary chuck collision verification:
 
-- **Continuous Spiral Surfacing:** Uses a `Ø6 mm` ball endmill locked to centerline (`Y = 0`) to continuously turn the grooved collar and eccentric 3-lobe cam profile while rotating the `A`-axis.
+- **Continuous Spiral Surfacing with `-U / +U` Axial Boundary:** Uses a `Ø6 mm` ball endmill locked to centerline (`Y = 0`) to continuously turn the grooved collar and eccentric 3-lobe cam profile while rotating the `A`-axis. Under **`[Geometry]` → `4th-Axis Rotary Cutting Area (-U / +U)`**, `Start Margin (-U) = 34 mm` and `End Margin (+U) = 8 mm` isolate the collar/cam span cleanly from the chuck jaws and the wrenching-flat zone with a live 3D cylindrical sector and chuck-guard keep-out preview.
 - **Indexed `3+1` Wrenching Flats (`0°`, `90°`, `180°`, `270°`):** Rotates the chuck at safe clearance radius to each cardinal angle and pockets a crisp wrenching flat on all four sides of the shaft.
 
 Related step-by-step guides: [Tutorial 10 (4th-Axis Rotary Wrapping & Continuous Surfacing)](../tutorials/10-rotary-wrapping-surfacing.md) and [Tutorial 11 (Indexed `3+1` Multi-Face Milling)](../tutorials/11-indexed-3plus1-milling.md).

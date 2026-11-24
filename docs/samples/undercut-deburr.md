@@ -19,10 +19,10 @@ This `100 × 80 × 28 mm` aluminum manifold/fixture block exercises ChipCutter's
 | **Part & Stock** | `100 × 80 × 28 mm` STEP block machined from `100 × 80 × 29 mm` raw billet (`1.0 mm` top facing allowance) |
 | **Undercut Features** | DIN 650 **M8 T-Slot** (`Y = 20 mm`), **`60°` Dovetail Guideway** (`Y = 52 mm`), **`+Y` Concave Overhang Groove** (`Z = 19.8..24.5 mm`) |
 | **Cutters Used** | `Ø6 mm` Flat Endmill, `Ø12 × 4 mm` Slot/T-Slot Mill, `Ø12 mm 60°` Dovetail Cutter, `Ø6 mm` Lollipop Endmill |
-| **Simulation Engine** | Volumetric **Tri-Dexel** (CPU & GPU compute parity, `0` critical errors, `>= 98%` In-Tol) |
+| **Simulation Engine** | Volumetric **Tri-Dexel** with smooth **Mesh Skinning** (`Settings → Simulation`, `Ctrl+,`; CPU & GPU compute parity, `0` critical errors, `>= 98%` In-Tol) |
 
 - **Mandatory Throat Pre-Clearing:** Clears both `8.5 mm` vertical throats down to `Z = 14.0 mm` with a flat endmill before any relieved-neck undercut tool enters—preventing shank/neck crashes and ensuring realistic chip evacuation.
-- **True 3D Undercut Strategies:** Combines `SlotUndercut` (DIN 650 M8 T-Slot preset with spring pass), `Dovetail` (progressive lateral stepovers to `60°` flanks), `Undercut3D` (upper-hemisphere Lollipop overhang finishing with automatic neck-ceiling clipping), and `Deburr3D` (auto-detected top edges plus underside overhang back-chamfering).
+- **True 3D Undercut Strategies & `[Geometry]` Boundary Controls:** Combines `SlotUndercut` (DIN 650 M8 T-Slot preset with spring pass), `Dovetail` (progressive lateral stepovers to `60°` flanks), `Undercut3D` (upper-hemisphere Lollipop overhang finishing with automatic neck-ceiling clipping), and `Deburr3D` (auto-detected top edges plus underside overhang back-chamfering)—both `Undercut3D` and `Deburr3D` expose the unified **`[Geometry]` → `Cutting Area / Machining Boundary`** card with live 3D boundary previews.
 
 Related step-by-step guides: [Tutorial 22 (Undercut Milling: Keyways, T-Slots, Dovetails, & Lollipop 3D Undercuts)](../tutorials/22-undercut-tslot-dovetail-lollipop.md) and [Tutorial 21 (3D Edge Deburring & Non-Planar Chamfering)](../tutorials/21-3d-edge-deburring-nonplanar-chamfering.md).
 

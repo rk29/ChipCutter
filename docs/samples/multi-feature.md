@@ -12,7 +12,7 @@ chip-gui --sample multi-feature
 
 ## Overview & What It Demonstrates
 
-The **Prismatic Multi-Feature Bracket** is a clean, minimal starter 3D STEP assembly ideal for learning ChipCutter's core CAD-to-CAM workflow (`Ctrl+G` generation, 3D stock simulation, and G-code posting) without the complexity of an 8-operation job:
+The **Prismatic Multi-Feature Bracket** is a clean, minimal starter 3D STEP assembly ideal for learning ChipCutter's core CAD-to-CAM workflow (**Active Setup** top action bar, `Ctrl+G` generation with Activity Log execution timing, `Settings → Simulation` via `Ctrl+,`, 3D stock simulation, and G-code posting) without the complexity of an 8-operation job:
 
 - **Planar face pocketing** bound directly to the interior pocket floor of the STEP solid (automatic Z-top and Z-bottom inference).
 - **Through-hole drilling** on four symmetric `Ø6 mm` corner mounting holes bound to cylindrical B-Rep faces.
