@@ -549,7 +549,7 @@ Standardizes how machinists specify *what area to cut* across 3-axis, 4th-axis r
 
 ---
 
-## Phase 23 — Per-Operation Keep-Out Regions, Model Bounds, Sketch Quick-Select Polish, & Indexed 4th-Axis Auto-Rotate (Planned — M84–M86)
+## Phase 23 — Per-Operation Keep-Out Regions, Model Bounds, Sketch Quick-Select Polish, & Indexed 4th-Axis Auto-Rotate (Completed — M84–M86)
 
 Completes the cutting-area workflow started in Phase 22 by adding an explicit rectangular **Model Bounds** XY boundary source, auto-expanding **2D Sketch Quick-Select** controls, automatic **Indexed 3+1 viewport rotation** so the machined face sits upright under `+Z` while editing, and first-class **Per-Operation Avoid / Keep-Out Regions** (faces, 2D sketch loops, and Setup workholding fixtures) subtracted directly from cutting areas with red-tinted 3D viewport overlays.
 

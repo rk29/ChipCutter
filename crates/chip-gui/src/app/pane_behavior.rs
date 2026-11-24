@@ -75,6 +75,7 @@ impl PaneBehavior<'_> {
                     op_tab: &mut self.app.op_tab,
                     pick_mode: &mut self.app.pick_mode,
                     hidden_operation_ids: &mut self.app.hidden_operation_ids,
+                    editing_shared_avoid_id: &mut self.app.editing_shared_avoid_id,
                 },
             );
 
@@ -342,19 +343,58 @@ impl PaneBehavior<'_> {
             );
         }
 
+        let is_op_geom_pick = matches!(
+            self.app.pick_mode,
+            ViewportPickMode::OpPlanarFaces { .. }
+                | ViewportPickMode::OpClosedLoops { .. }
+                | ViewportPickMode::OpOpenChain { .. }
+                | ViewportPickMode::OpCylindricalHoles { .. }
+        );
+        let avoid_target_label: Option<String> = if is_op_geom_pick {
+            if let Some(eid) = self.app.editing_shared_avoid_id.as_deref() {
+                self.app
+                    .project
+                    .avoid_region(eid)
+                    .map(|sr| format!("Avoid: {}", sr.name))
+            } else if self.app.geometry_pick_target
+                == crate::panels::GeometryPickTarget::AvoidKeepOut
+            {
+                Some("Avoid / Keep-Out".to_string())
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         let guidance_badge = match self.app.pick_mode {
             ViewportPickMode::OpPlanarFaces { setup_idx, op_idx }
             | ViewportPickMode::OpClosedLoops { setup_idx, op_idx }
             | ViewportPickMode::OpOpenChain {
                 setup_idx, op_idx, ..
             }
-            | ViewportPickMode::OpCylindricalHoles { setup_idx, op_idx } => self
-                .app
-                .project
-                .setups
-                .get(setup_idx)
-                .and_then(|s| s.operations.get(op_idx))
-                .map(|op| format!("{} selected", op.selections.len())),
+            | ViewportPickMode::OpCylindricalHoles { setup_idx, op_idx } => {
+                if let Some(eid) = self.app.editing_shared_avoid_id.as_deref()
+                    && let Some(sr) = self.app.project.avoid_region(eid)
+                {
+                    Some(format!("{} avoid", sr.selections.len()))
+                } else if self.app.geometry_pick_target
+                    == crate::panels::GeometryPickTarget::AvoidKeepOut
+                {
+                    self.app
+                        .project
+                        .setups
+                        .get(setup_idx)
+                        .and_then(|s| s.operations.get(op_idx))
+                        .map(|op| format!("{} avoid", op.avoid.selections.len()))
+                } else {
+                    self.app
+                        .project
+                        .setups
+                        .get(setup_idx)
+                        .and_then(|s| s.operations.get(op_idx))
+                        .map(|op| format!("{} selected", op.selections.len()))
+                }
+            }
             ViewportPickMode::PlaceContourTab { setup_idx, op_idx } => self
                 .app
                 .project
@@ -384,13 +424,19 @@ impl PaneBehavior<'_> {
                 .map(|s| format!("{} fixture(s)", s.fixtures.len())),
             _ => None,
         };
-        if let Some(g_act) =
-            draw_viewport_guidance_hud(ui, avail, self.app.pick_mode, guidance_badge.as_deref())
-        {
+        if let Some(g_act) = draw_viewport_guidance_hud(
+            ui,
+            avail,
+            self.app.pick_mode,
+            guidance_badge.as_deref(),
+            avoid_target_label.as_deref(),
+        ) {
             match g_act {
                 GuidanceHudAction::Done | GuidanceHudAction::Cancel => {
                     self.app.sketch_author_start_xy = None;
                     self.app.pick_mode = ViewportPickMode::InspectEntity;
+                    self.app.geometry_pick_target = crate::panels::GeometryPickTarget::CuttingArea;
+                    self.app.editing_shared_avoid_id = None;
                     self.app.highlight.preview_tab_marker_wcs = None;
                 }
                 GuidanceHudAction::ResetChainStart => {
@@ -651,6 +697,8 @@ impl PaneBehavior<'_> {
                             extracted: extracted_ref,
                             tab: &mut self.app.op_tab,
                             pick_mode: &mut self.app.pick_mode,
+                            pick_target: &mut self.app.geometry_pick_target,
+                            editing_shared_avoid_id: &mut self.app.editing_shared_avoid_id,
                             lock_chipload: &mut self.app.lock_chipload,
                             show_z_planes: &mut self.app.show_z_planes,
                             auto_rotate_indexed_op: &mut self.app.prefs.auto_rotate_indexed_op,

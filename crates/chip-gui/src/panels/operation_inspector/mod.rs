@@ -1,3 +1,4 @@
+pub mod avoid_card;
 pub mod geometry_tab;
 pub mod heights_tab;
 pub mod linking_tab;
@@ -6,14 +7,22 @@ pub mod tool_tab;
 
 use chip_cad::CadDocument;
 use chip_cam::{
-    ExtractedSelectionSummary, OperationStatus, ResolvedHeights, ResolvedSetup, SurfaceMesh3D,
+    ExtractedSelectionSummary, OperationStatus, ResolvedHeights, ResolvedSetup, SharedAvoidRegion,
+    SurfaceMesh3D,
 };
 use chip_math::{DVec3, EvalContext};
 use chip_project::{ProjectDocument, UndoHistory};
 use chip_tools::{ToolId, ToolLibrary, ToolOperationClass};
 
+use self::avoid_card::{
+    AvoidCardAction, AvoidCardSetupView, create_and_link_shared_avoid,
+    detach_shared_avoid_to_local, mark_ops_dirty_with_rest, mark_shared_avoid_dependents_dirty,
+    promote_local_avoid_to_shared, set_shared_avoid_for_all_setup_ops, toggle_shared_avoid_link,
+};
 use crate::{
-    panels::{OperationTab, ViewportPickMode, browser::default_pick_mode_for_op},
+    panels::{
+        GeometryPickTarget, OperationTab, ViewportPickMode, browser::default_pick_mode_for_op,
+    },
     theme::ThemeTokens,
     viewport::BoundaryPreviewOverlay,
     widgets::{BannerKind, IconKind, inline_banner, inline_icon, static_card},
@@ -41,6 +50,8 @@ pub struct OperationInspectorCtx<'a> {
     pub extracted: Option<Result<&'a ExtractedSelectionSummary, &'a str>>,
     pub tab: &'a mut OperationTab,
     pub pick_mode: &'a mut ViewportPickMode,
+    pub pick_target: &'a mut GeometryPickTarget,
+    pub editing_shared_avoid_id: &'a mut Option<String>,
     pub lock_chipload: &'a mut bool,
     pub show_z_planes: &'a mut bool,
     pub auto_rotate_indexed_op: &'a mut bool,
@@ -67,6 +78,8 @@ pub fn show_operation_inspector(
         extracted,
         tab,
         pick_mode,
+        pick_target,
+        editing_shared_avoid_id,
         lock_chipload,
         show_z_planes,
         auto_rotate_indexed_op,
@@ -80,10 +93,17 @@ pub fn show_operation_inspector(
     }
 
     let display_unit = project.display_units;
-    // Snapshot only the single active Operation (never cloning `project.tools` or other Setups/Operations on idle frames!)
+    // Snapshot only the single active Operation (and the actively edited SharedAvoidRegion, if any)
+    // so idle 60 FPS frames perform zero `ProjectDocument` clones!
     let pre_op = project.setups[setup_idx].operations[op_idx].clone();
+    let pre_shared: Option<(usize, SharedAvoidRegion)> = editing_shared_avoid_id
+        .as_deref()
+        .and_then(|eid| project.avoid_regions.iter().position(|r| r.id == eid))
+        .map(|idx| (idx, project.avoid_regions[idx].clone()));
     let pre_tools_len = project.tools.len();
     let mut mutated_label: Option<&'static str> = None;
+    let mut shared_mutated_label: Option<(&'static str, String)> = None;
+    let mut deferred_avoid_action: Option<AvoidCardAction> = None;
     let mut create_sketch_requested = false;
 
     let op_kind = project.setups[setup_idx].operations[op_idx].kind;
@@ -123,6 +143,8 @@ pub fn show_operation_inspector(
                 .clicked()
             {
                 *pick_mode = ViewportPickMode::InspectEntity;
+                *pick_target = GeometryPickTarget::CuttingArea;
+                *editing_shared_avoid_id = None;
             }
             if ui
                 .selectable_value(tab, OperationTab::Geometry, "Geometry")
@@ -137,6 +159,8 @@ pub fn show_operation_inspector(
                 .clicked()
             {
                 *pick_mode = ViewportPickMode::InspectEntity;
+                *pick_target = GeometryPickTarget::CuttingArea;
+                *editing_shared_avoid_id = None;
             }
             if ui
                 .selectable_value(tab, OperationTab::Passes, "Passes")
@@ -144,6 +168,8 @@ pub fn show_operation_inspector(
                 .clicked()
             {
                 *pick_mode = ViewportPickMode::InspectEntity;
+                *pick_target = GeometryPickTarget::CuttingArea;
+                *editing_shared_avoid_id = None;
             }
             if ui
                 .selectable_value(tab, OperationTab::Linking, "Linking")
@@ -151,6 +177,8 @@ pub fn show_operation_inspector(
                 .clicked()
             {
                 *pick_mode = ViewportPickMode::InspectEntity;
+                *pick_target = GeometryPickTarget::CuttingArea;
+                *editing_shared_avoid_id = None;
             }
         });
     });
@@ -249,10 +277,13 @@ pub fn show_operation_inspector(
                     .as_ref()
                     .and_then(|tid| project.tool(tid).or_else(|| global_tools.tool(tid)))
                     .cloned();
+                let avoid_setup_view = AvoidCardSetupView::from_project(project, setup_idx);
                 geometry_tab::show_geometry_tab(
                     ui,
                     geometry_tab::GeometryTabCtx {
                         op: &mut project.setups[setup_idx].operations[op_idx],
+                        shared_avoid_regions: &mut project.avoid_regions,
+                        avoid_setup_view: &avoid_setup_view,
                         sketches: &project.sketches,
                         setup_idx,
                         op_idx,
@@ -266,7 +297,11 @@ pub fn show_operation_inspector(
                         boundary_preview,
                         extracted,
                         pick_mode,
+                        pick_target,
+                        editing_shared_avoid_id,
                         mutated_label: &mut mutated_label,
+                        shared_mutated_label: &mut shared_mutated_label,
+                        deferred_avoid_action: &mut deferred_avoid_action,
                         create_sketch_requested: &mut create_sketch_requested,
                     },
                 );
@@ -394,8 +429,78 @@ pub fn show_operation_inspector(
         let mut pre_doc = project.clone();
         pre_doc.tools.truncate(pre_tools_len);
         pre_doc.setups[setup_idx].operations[op_idx] = pre_op;
+        if let Some((s_idx, prev_sr)) = pre_shared.as_ref()
+            && *s_idx < pre_doc.avoid_regions.len()
+        {
+            pre_doc.avoid_regions[*s_idx] = prev_sr.clone();
+        }
         history.record_before_edit(action, None, &pre_doc);
-        project.setups[setup_idx].operations[op_idx].mark_dirty();
+        mark_ops_dirty_with_rest(&mut project.setups[setup_idx], &[op_idx]);
+    } else if let Some((action, shared_id)) = shared_mutated_label {
+        let mut pre_doc = project.clone();
+        if let Some((s_idx, prev_sr)) = pre_shared
+            && s_idx < pre_doc.avoid_regions.len()
+        {
+            pre_doc.avoid_regions[s_idx] = prev_sr;
+        }
+        history.record_before_edit(action, None, &pre_doc);
+        mark_shared_avoid_dependents_dirty(project, &shared_id);
+    }
+
+    if let Some(avoid_act) = deferred_avoid_action {
+        match avoid_act {
+            AvoidCardAction::PromoteLocalToShared { name } => {
+                let _ =
+                    promote_local_avoid_to_shared(project, history, setup_idx, op_idx, Some(&name));
+            }
+            AvoidCardAction::CreateNewShared => {
+                if let Some(new_id) =
+                    create_and_link_shared_avoid(project, history, setup_idx, op_idx, None)
+                {
+                    *editing_shared_avoid_id = Some(new_id);
+                    *pick_target = GeometryPickTarget::AvoidKeepOut;
+                    if *pick_mode == ViewportPickMode::InspectEntity {
+                        *pick_mode = ViewportPickMode::OpPlanarFaces { setup_idx, op_idx };
+                    }
+                }
+            }
+            AvoidCardAction::ToggleLinkOnOp {
+                target_op_idx,
+                shared_id,
+            } => {
+                let _ = toggle_shared_avoid_link(
+                    project,
+                    history,
+                    setup_idx,
+                    target_op_idx,
+                    &shared_id,
+                );
+                if target_op_idx == op_idx
+                    && editing_shared_avoid_id.as_deref() == Some(shared_id.as_str())
+                    && !project.setups[setup_idx].operations[op_idx]
+                        .avoid
+                        .shared_region_ids
+                        .contains(&shared_id)
+                {
+                    *editing_shared_avoid_id = None;
+                }
+            }
+            AvoidCardAction::SetLinkForAllSetupOps { shared_id, link } => {
+                let _ = set_shared_avoid_for_all_setup_ops(
+                    project, history, setup_idx, &shared_id, link,
+                );
+                if !link && editing_shared_avoid_id.as_deref() == Some(shared_id.as_str()) {
+                    *editing_shared_avoid_id = None;
+                }
+            }
+            AvoidCardAction::DetachToLocal { shared_id } => {
+                let _ =
+                    detach_shared_avoid_to_local(project, history, setup_idx, op_idx, &shared_id);
+                if editing_shared_avoid_id.as_deref() == Some(shared_id.as_str()) {
+                    *editing_shared_avoid_id = None;
+                }
+            }
+        }
     }
 
     create_sketch_requested.then_some(OperationInspectorAction::CreateSketch)
@@ -494,6 +599,8 @@ mod tests {
         let mut history = UndoHistory::default();
         let mut cur_tab = tab;
         let mut pick_mode = ViewportPickMode::InspectEntity;
+        let mut pick_target = GeometryPickTarget::CuttingArea;
+        let mut editing_shared_avoid_id: Option<String> = None;
         let mut lock_chipload = true;
         let mut show_z_planes = false;
         let mut auto_rotate_indexed_op = true;
@@ -525,6 +632,8 @@ mod tests {
                             extracted: None,
                             tab: &mut cur_tab,
                             pick_mode: &mut pick_mode,
+                            pick_target: &mut pick_target,
+                            editing_shared_avoid_id: &mut editing_shared_avoid_id,
                             lock_chipload: &mut lock_chipload,
                             show_z_planes: &mut show_z_planes,
                             auto_rotate_indexed_op: &mut auto_rotate_indexed_op,
@@ -751,6 +860,8 @@ mod tests {
         let mut history = UndoHistory::default();
         let mut tab = OperationTab::Geometry;
         let mut pick_mode = ViewportPickMode::InspectEntity;
+        let mut pick_target = GeometryPickTarget::CuttingArea;
+        let mut editing_shared_avoid_id: Option<String> = None;
         let mut lock_chipload = true;
         let mut show_z_planes = false;
         let mut auto_rotate_indexed_op = true;
@@ -784,6 +895,8 @@ mod tests {
                             extracted: None,
                             tab: &mut tab,
                             pick_mode: &mut pick_mode,
+                            pick_target: &mut pick_target,
+                            editing_shared_avoid_id: &mut editing_shared_avoid_id,
                             lock_chipload: &mut lock_chipload,
                             show_z_planes: &mut show_z_planes,
                             auto_rotate_indexed_op: &mut auto_rotate_indexed_op,
@@ -822,6 +935,8 @@ mod tests {
                             extracted: None,
                             tab: &mut tab,
                             pick_mode: &mut pick_mode,
+                            pick_target: &mut pick_target,
+                            editing_shared_avoid_id: &mut editing_shared_avoid_id,
                             lock_chipload: &mut lock_chipload,
                             show_z_planes: &mut show_z_planes,
                             auto_rotate_indexed_op: &mut auto_rotate_indexed_op,
@@ -891,6 +1006,8 @@ mod tests {
                         extracted: None,
                         tab: &mut tab,
                         pick_mode: &mut pick_mode,
+                        pick_target: &mut pick_target,
+                        editing_shared_avoid_id: &mut editing_shared_avoid_id,
                         lock_chipload: &mut lock_chipload,
                         show_z_planes: &mut show_z_planes,
                         auto_rotate_indexed_op: &mut auto_rotate_indexed_op,
@@ -1001,6 +1118,8 @@ mod tests {
         let mut history = UndoHistory::default();
         let mut tab = OperationTab::Geometry;
         let mut pick_mode = ViewportPickMode::InspectEntity;
+        let mut pick_target = GeometryPickTarget::CuttingArea;
+        let mut editing_shared_avoid_id: Option<String> = None;
         let mut lock_chipload = true;
         let mut show_z_planes = false;
         let mut auto_rotate = true;
@@ -1042,6 +1161,8 @@ mod tests {
                                 extracted: None,
                                 tab: &mut tab,
                                 pick_mode: &mut pick_mode,
+                                pick_target: &mut pick_target,
+                                editing_shared_avoid_id: &mut editing_shared_avoid_id,
                                 lock_chipload: &mut lock_chipload,
                                 show_z_planes: &mut show_z_planes,
                                 auto_rotate_indexed_op: &mut auto_rotate,
@@ -1161,5 +1282,470 @@ mod tests {
             ],
         );
         assert_eq!(create_act, Some(OperationInspectorAction::CreateSketch));
+    }
+
+    #[test]
+    fn m86_avoid_keepout_ui_shared_regions_fixtures_pick_target_and_undo() {
+        use chip_cam::{FixtureBody, GeometrySelectionItem, SharedAvoidRegion};
+        use chip_math::DVec2;
+        use chip_sketch::{RectAnchorMode, SketchEntity, SketchEntityEntry, SketchLayer};
+
+        use crate::panels::browser::{CamBrowserCtx, show_cam_browser};
+        use crate::panels::{InspectorFocus, SetupTab};
+
+        let tools = default_starter_tool_library();
+        let rs_box = make_resolved_box_setup();
+        let mut proj = ProjectDocument::new("m86_avoid_ui_test");
+        proj.tools = tools.tools.clone();
+
+        // Add a Setup fixture clamp and a 2D keep-out sketch
+        proj.setups[0].fixtures.push(FixtureBody::default_toe_clamp(
+            "clamp_1",
+            "Toe Clamp 1",
+            DVec2::new(-35.0, 0.0),
+            180.0,
+        ));
+        let mut sk = SketchLayer::new("sk_ko", "Keep-Out Sketch", "setup_1");
+        sk.entities.push(SketchEntityEntry {
+            id: "ko_rect".to_string(),
+            name: "Clamp Zone".to_string(),
+            sub_layer: None,
+            is_construction: false,
+            entity: SketchEntity::Rectangle {
+                anchor: RectAnchorMode::Center,
+                x: ParamLength::from_mm(0.0),
+                y: ParamLength::from_mm(0.0),
+                width: ParamLength::from_mm(20.0),
+                height: ParamLength::from_mm(12.0),
+                corner_radius: ParamLength::from_mm(0.0),
+                rotation_deg: 0.0,
+            },
+        });
+        sk.rebuild_regions(None);
+        proj.sketches = vec![sk];
+
+        let mut op1 = Operation::new("op_1", "Rough Adaptive", OperationKind::Adaptive3D);
+        op1.tool_id = Some(tools.tools[0].id.clone());
+        op1.runtime_status = OperationStatus::Clean;
+        op1.avoid
+            .selections
+            .push(GeometrySelectionItem::SketchEntity {
+                sketch_id: "sk_ko".to_string(),
+                entity_id: "ko_rect".to_string(),
+                reverse: false,
+                side_flip: false,
+            });
+        let mut op2 = Operation::new("op_2", "Finish Waterline", OperationKind::Waterline3D);
+        op2.tool_id = Some(tools.tools[0].id.clone());
+        op2.runtime_status = OperationStatus::Clean;
+        proj.setups[0].operations = vec![op1, op2];
+
+        fn find_text_center(shape: &egui::Shape, needle: &str) -> Option<egui::Pos2> {
+            match shape {
+                egui::Shape::Text(t) if t.galley.text() == needle => {
+                    Some(t.pos + t.galley.size() * 0.5)
+                }
+                egui::Shape::Vec(v) => v.iter().find_map(|s| find_text_center(s, needle)),
+                _ => None,
+            }
+        }
+        fn click_events(pt: egui::Pos2) -> Vec<egui::Event> {
+            vec![
+                egui::Event::PointerMoved(pt),
+                egui::Event::PointerButton {
+                    pos: pt,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+                egui::Event::PointerButton {
+                    pos: pt,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]
+        }
+
+        let ctx = egui::Context::default();
+        let mut history = UndoHistory::default();
+        let mut tab = OperationTab::Geometry;
+        let mut pick_mode = ViewportPickMode::InspectEntity;
+        let mut pick_target = GeometryPickTarget::CuttingArea;
+        let mut editing_shared_avoid_id: Option<String> = None;
+        let mut lock_chipload = true;
+        let mut show_z_planes = false;
+        let mut auto_rotate = true;
+        let mut open_tool_manager = false;
+
+        let mut run_op = |ctx: &egui::Context,
+                          proj: &mut ProjectDocument,
+                          op_idx: usize,
+                          history: &mut UndoHistory,
+                          pick_mode: &mut ViewportPickMode,
+                          pick_target: &mut GeometryPickTarget,
+                          editing_shared_avoid_id: &mut Option<String>,
+                          events: Vec<egui::Event>|
+         -> Vec<egui::epaint::ClippedShape> {
+            let mut out = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(460.0, 1800.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    egui::CentralPanel::default().show(ui, |ui| {
+                        show_operation_inspector(
+                            ui,
+                            OperationInspectorCtx {
+                                project: proj,
+                                setup_idx: 0,
+                                op_idx,
+                                global_tools: &tools,
+                                history,
+                                cad_doc: None,
+                                resolved_setup: Some(&rs_box),
+                                surface_mesh: None,
+                                boundary_preview: None,
+                                selected_face_normal_wcs: None,
+                                extracted: None,
+                                tab: &mut tab,
+                                pick_mode,
+                                pick_target,
+                                editing_shared_avoid_id,
+                                lock_chipload: &mut lock_chipload,
+                                show_z_planes: &mut show_z_planes,
+                                auto_rotate_indexed_op: &mut auto_rotate,
+                                open_tool_manager: &mut open_tool_manager,
+                                sim_engine: chip_sim::SimEngineKind::TriDexel,
+                            },
+                        );
+                    });
+                },
+            );
+            out.textures_delta.clear();
+            out.shapes
+        };
+
+        // 1. Auto-expanded Avoid / Keep-Out Regions card renders fixtures, clearances, and Save Local as Shared…
+        let _ = run_op(
+            &ctx,
+            &mut proj,
+            0,
+            &mut history,
+            &mut pick_mode,
+            &mut pick_target,
+            &mut editing_shared_avoid_id,
+            Vec::new(),
+        );
+        let shapes1 = run_op(
+            &ctx,
+            &mut proj,
+            0,
+            &mut history,
+            &mut pick_mode,
+            &mut pick_target,
+            &mut editing_shared_avoid_id,
+            Vec::new(),
+        );
+        let mut texts1 = Vec::new();
+        collect_shape_texts(&shapes1, &mut texts1);
+        let joined1 = texts1.join("\n");
+        assert!(
+            joined1.contains("Avoid / Keep-Out Regions")
+                && joined1.contains("Save Local as Shared…")
+                && joined1.contains("Avoid All Setup Fixtures")
+                && joined1.contains("[ ] Toe Clamp 1")
+                && joined1.contains("Radial Clearance")
+                && joined1.contains("Axial Clearance"),
+            "expected Avoid / Keep-Out controls to be visible; got:\n{joined1}"
+        );
+
+        // 2. Toggle individual fixture chip `[ ] Toe Clamp 1` -> adds `clamp_1`, records Undo, marks Dirty
+        let clamp_pt = shapes1
+            .iter()
+            .find_map(|cs| find_text_center(&cs.shape, "[ ] Toe Clamp 1"))
+            .expect("[ ] Toe Clamp 1 chip must be painted");
+        let _ = run_op(
+            &ctx,
+            &mut proj,
+            0,
+            &mut history,
+            &mut pick_mode,
+            &mut pick_target,
+            &mut editing_shared_avoid_id,
+            click_events(clamp_pt),
+        );
+        assert_eq!(
+            proj.setups[0].operations[0].avoid.fixture_ids,
+            vec!["clamp_1"]
+        );
+        assert_eq!(
+            proj.setups[0].operations[0].runtime_status,
+            OperationStatus::Dirty
+        );
+        assert!(history.can_undo());
+
+        // 3. Toggle `Avoid All Setup Fixtures` checkbox -> sets avoid_all_fixtures = true
+        let shapes2 = run_op(
+            &ctx,
+            &mut proj,
+            0,
+            &mut history,
+            &mut pick_mode,
+            &mut pick_target,
+            &mut editing_shared_avoid_id,
+            Vec::new(),
+        );
+        let all_fix_pt = shapes2
+            .iter()
+            .find_map(|cs| find_text_center(&cs.shape, "Avoid All Setup Fixtures"))
+            .expect("Avoid All Setup Fixtures checkbox must be painted");
+        let _ = run_op(
+            &ctx,
+            &mut proj,
+            0,
+            &mut history,
+            &mut pick_mode,
+            &mut pick_target,
+            &mut editing_shared_avoid_id,
+            click_events(all_fix_pt),
+        );
+        assert!(proj.setups[0].operations[0].avoid.avoid_all_fixtures);
+
+        // Undo reverts `avoid_all_fixtures` back to false while preserving `clamp_1`
+        assert!(history.undo(&mut proj).is_some());
+        assert!(!proj.setups[0].operations[0].avoid.avoid_all_fixtures);
+        assert_eq!(
+            proj.setups[0].operations[0].avoid.fixture_ids,
+            vec!["clamp_1"]
+        );
+
+        // 4. Promote local keep-out via `Save Local as Shared…` -> `Save` in one atomic Undo step
+        let shapes3 = run_op(
+            &ctx,
+            &mut proj,
+            0,
+            &mut history,
+            &mut pick_mode,
+            &mut pick_target,
+            &mut editing_shared_avoid_id,
+            Vec::new(),
+        );
+        let save_local_pt = shapes3
+            .iter()
+            .find_map(|cs| find_text_center(&cs.shape, "Save Local as Shared…"))
+            .expect("Save Local as Shared… button must be painted");
+        let _ = run_op(
+            &ctx,
+            &mut proj,
+            0,
+            &mut history,
+            &mut pick_mode,
+            &mut pick_target,
+            &mut editing_shared_avoid_id,
+            click_events(save_local_pt),
+        );
+        let shapes_prompt = run_op(
+            &ctx,
+            &mut proj,
+            0,
+            &mut history,
+            &mut pick_mode,
+            &mut pick_target,
+            &mut editing_shared_avoid_id,
+            Vec::new(),
+        );
+        let confirm_pt = shapes_prompt
+            .iter()
+            .find_map(|cs| find_text_center(&cs.shape, "Save"))
+            .expect("Save confirm button must be painted");
+        let _ = run_op(
+            &ctx,
+            &mut proj,
+            0,
+            &mut history,
+            &mut pick_mode,
+            &mut pick_target,
+            &mut editing_shared_avoid_id,
+            click_events(confirm_pt),
+        );
+        assert_eq!(proj.avoid_regions.len(), 1);
+        let promoted_id = proj.avoid_regions[0].id.clone();
+        assert_eq!(proj.avoid_regions[0].selections.len(), 1);
+        assert_eq!(proj.avoid_regions[0].fixture_ids, vec!["clamp_1"]);
+        assert!(proj.setups[0].operations[0].avoid.selections.is_empty());
+        assert!(proj.setups[0].operations[0].avoid.fixture_ids.is_empty());
+        assert_eq!(
+            proj.setups[0].operations[0].avoid.shared_region_ids,
+            vec![promoted_id.clone()]
+        );
+
+        // 5. Link shared region on Op 2 as well, then enter Edit mode on Op 1 and verify banner!
+        assert!(avoid_card::toggle_shared_avoid_link(
+            &mut proj,
+            &mut history,
+            0,
+            1,
+            &promoted_id
+        ));
+        assert_eq!(proj.avoid_region_usage_count(&promoted_id), 2);
+        assert_eq!(
+            proj.setups[0].operations[1].runtime_status,
+            OperationStatus::Dirty
+        );
+
+        let shapes_linked = run_op(
+            &ctx,
+            &mut proj,
+            0,
+            &mut history,
+            &mut pick_mode,
+            &mut pick_target,
+            &mut editing_shared_avoid_id,
+            Vec::new(),
+        );
+        let edit_pt = shapes_linked
+            .iter()
+            .find_map(|cs| find_text_center(&cs.shape, "Edit"))
+            .expect("Edit button on linked shared region must be painted");
+        let _ = run_op(
+            &ctx,
+            &mut proj,
+            0,
+            &mut history,
+            &mut pick_mode,
+            &mut pick_target,
+            &mut editing_shared_avoid_id,
+            click_events(edit_pt),
+        );
+        assert_eq!(
+            editing_shared_avoid_id.as_deref(),
+            Some(promoted_id.as_str())
+        );
+        assert_eq!(pick_target, GeometryPickTarget::AvoidKeepOut);
+        assert!(matches!(pick_mode, ViewportPickMode::OpPlanarFaces { .. }));
+
+        let shapes_editing = run_op(
+            &ctx,
+            &mut proj,
+            0,
+            &mut history,
+            &mut pick_mode,
+            &mut pick_target,
+            &mut editing_shared_avoid_id,
+            Vec::new(),
+        );
+        let mut edit_texts = Vec::new();
+        collect_shape_texts(&shapes_editing, &mut edit_texts);
+        let edit_joined = edit_texts.join("\n");
+        assert!(
+            edit_joined.contains("Editing Shared Region:")
+                && edit_joined.contains("linked to 2 operation(s)"),
+            "expected shared-region edit banner; got:\n{edit_joined}"
+        );
+
+        // 6. Switch Pick Target back to `Cutting Area` via segmented toggle -> exits shared edit
+        let cut_pt = shapes_editing
+            .iter()
+            .find_map(|cs| find_text_center(&cs.shape, "Cutting Area"))
+            .expect("Cutting Area pick target button must be painted");
+        let _ = run_op(
+            &ctx,
+            &mut proj,
+            0,
+            &mut history,
+            &mut pick_mode,
+            &mut pick_target,
+            &mut editing_shared_avoid_id,
+            click_events(cut_pt),
+        );
+        assert_eq!(pick_target, GeometryPickTarget::CuttingArea);
+        assert!(editing_shared_avoid_id.is_none());
+
+        // 7. Detach to Local on Op 2 copies selections & fixtures and unlinks shared ID
+        assert!(avoid_card::detach_shared_avoid_to_local(
+            &mut proj,
+            &mut history,
+            0,
+            1,
+            &promoted_id
+        ));
+        assert!(
+            proj.setups[0].operations[1]
+                .avoid
+                .shared_region_ids
+                .is_empty()
+        );
+        assert_eq!(proj.setups[0].operations[1].avoid.selections.len(), 1);
+        assert_eq!(
+            proj.setups[0].operations[1].avoid.fixture_ids,
+            vec!["clamp_1"]
+        );
+        assert_eq!(proj.avoid_region_usage_count(&promoted_id), 1);
+
+        // 8. CAM Browser renders `Keep-Out Regions (1)` with usage badge `used by 1 op`
+        let browser_ctx = egui::Context::default();
+        let tp_cache = chip_project::ToolpathCache::new(8);
+        let mut active_setup_idx = 0;
+        let mut focus = InspectorFocus::Operation {
+            setup_idx: 0,
+            op_idx: 0,
+        };
+        let mut setup_tab = SetupTab::Wcs;
+        let mut hidden_ops = std::collections::HashSet::new();
+        let mut browser_out = browser_ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(320.0, 1200.0),
+                )),
+                ..Default::default()
+            },
+            |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
+                    let _ = show_cam_browser(
+                        ui,
+                        CamBrowserCtx {
+                            project: &mut proj,
+                            global_tools: &tools,
+                            history: &mut history,
+                            toolpath_cache: &tp_cache,
+                            cad_doc: None,
+                            cad_revision: 0,
+                            active_setup_idx: &mut active_setup_idx,
+                            focus: &mut focus,
+                            setup_tab: &mut setup_tab,
+                            op_tab: &mut tab,
+                            pick_mode: &mut pick_mode,
+                            hidden_operation_ids: &mut hidden_ops,
+                            editing_shared_avoid_id: &mut editing_shared_avoid_id,
+                        },
+                    );
+                });
+            },
+        );
+        browser_out.textures_delta.clear();
+        let mut b_texts = Vec::new();
+        collect_shape_texts(&browser_out.shapes, &mut b_texts);
+        let b_joined = b_texts.join("\n");
+        assert!(
+            b_joined.contains("Keep-Out Regions (1)") && b_joined.contains("used by 1 op"),
+            "CAM Browser must display Keep-Out Regions (1) and usage count; got:\n{b_joined}"
+        );
+
+        // Verify safe delete via ProjectDocument::remove_avoid_region cleans Op 1's shared link
+        let _unused = SharedAvoidRegion::new("tmp", "Tmp");
+        assert!(proj.remove_avoid_region(&promoted_id));
+        assert!(proj.avoid_regions.is_empty());
+        assert!(
+            proj.setups[0].operations[0]
+                .avoid
+                .shared_region_ids
+                .is_empty()
+        );
     }
 }

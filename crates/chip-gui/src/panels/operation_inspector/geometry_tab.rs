@@ -2,14 +2,18 @@ use chip_cad::{CadDocument, FaceId, find_coplanar_faces, find_same_diameter_hole
 use chip_cam::{
     ExtractedFeature25D, ExtractedSelectionSummary, GeometrySelectionItem, MachiningBoundaryMode,
     Operation, OperationKind, PocketBoundaryMode, ResolvedHeights, ResolvedRotaryWindow,
-    ResolvedSetup, RotaryAxialBoundaryMode, StrategyParams, SurfaceMesh3D, ToolContainmentMode,
+    ResolvedSetup, RotaryAxialBoundaryMode, SharedAvoidRegion, StrategyParams, SurfaceMesh3D,
+    ToolContainmentMode,
 };
 use chip_math::{ArcSegment2D, DisplayUnit, EvalContext};
 use chip_sketch::SketchLayer;
 use chip_tools::Tool;
 
+use super::avoid_card::{
+    AvoidCardAction, AvoidCardCtx, AvoidCardSetupView, show_avoid_regions_card,
+};
 use crate::{
-    panels::ViewportPickMode,
+    panels::{GeometryPickTarget, ViewportPickMode},
     theme::ThemeTokens,
     viewport::{BoundaryPreviewOverlay, resolve_rotary_window_for_preview},
     widgets::{
@@ -125,6 +129,8 @@ fn pocket_area_ui_label(mode: PocketBoundaryMode) -> &'static str {
 
 pub struct GeometryTabCtx<'a> {
     pub op: &'a mut Operation,
+    pub shared_avoid_regions: &'a mut [SharedAvoidRegion],
+    pub avoid_setup_view: &'a AvoidCardSetupView,
     pub sketches: &'a [SketchLayer],
     pub setup_idx: usize,
     pub op_idx: usize,
@@ -138,13 +144,19 @@ pub struct GeometryTabCtx<'a> {
     pub boundary_preview: Option<&'a BoundaryPreviewOverlay>,
     pub extracted: Option<Result<&'a ExtractedSelectionSummary, &'a str>>,
     pub pick_mode: &'a mut ViewportPickMode,
+    pub pick_target: &'a mut GeometryPickTarget,
+    pub editing_shared_avoid_id: &'a mut Option<String>,
     pub mutated_label: &'a mut Option<&'static str>,
+    pub shared_mutated_label: &'a mut Option<(&'static str, String)>,
+    pub deferred_avoid_action: &'a mut Option<AvoidCardAction>,
     pub create_sketch_requested: &'a mut bool,
 }
 
 pub fn show_geometry_tab(ui: &mut egui::Ui, ctx: GeometryTabCtx<'_>) {
     let GeometryTabCtx {
         op,
+        shared_avoid_regions,
+        avoid_setup_view,
         sketches,
         setup_idx,
         op_idx,
@@ -158,7 +170,11 @@ pub fn show_geometry_tab(ui: &mut egui::Ui, ctx: GeometryTabCtx<'_>) {
         boundary_preview,
         extracted,
         pick_mode,
+        pick_target,
+        editing_shared_avoid_id,
         mutated_label,
+        shared_mutated_label,
+        deferred_avoid_action,
         create_sketch_requested,
     } = ctx;
 
@@ -216,13 +232,77 @@ pub fn show_geometry_tab(ui: &mut egui::Ui, ctx: GeometryTabCtx<'_>) {
         }
     }
 
-    let pick_default_open = pick_card_default_open(op);
+    // 2. Collapsible Avoid / Keep-Out Regions card (auto-expanded when `!op.avoid.is_empty()` or editing shared)
+    show_avoid_regions_card(
+        ui,
+        AvoidCardCtx {
+            op,
+            shared_regions: shared_avoid_regions,
+            sketches,
+            setup_view: avoid_setup_view,
+            setup_idx,
+            op_idx,
+            eval_ctx,
+            pick_mode,
+            pick_target,
+            editing_shared_avoid_id,
+            mutated_label,
+            shared_mutated_label,
+            deferred_action: deferred_avoid_action,
+        },
+    );
+
+    let pick_default_open = pick_card_default_open(op)
+        || *pick_target == GeometryPickTarget::AvoidKeepOut
+        || editing_shared_avoid_id.is_some();
     section_card(
         ui,
         ("geom_pick_card", setup_idx, op_idx, pick_default_open),
         "Interactive 3D Pick Mode",
         pick_default_open,
         |ui| {
+            let tok = ThemeTokens::from_ui(ui);
+            let is_avoid_target = *pick_target == GeometryPickTarget::AvoidKeepOut
+                || editing_shared_avoid_id.is_some();
+            ui.horizontal_wrapped(|ui| {
+                ui.strong("Pick Target:");
+                if ui
+                    .selectable_label(!is_avoid_target, "Cutting Area")
+                    .on_hover_text("Route 3D viewport picks into this operation's cutting geometry")
+                    .clicked()
+                {
+                    *pick_target = GeometryPickTarget::CuttingArea;
+                    *editing_shared_avoid_id = None;
+                }
+                let avoid_lbl = if let Some(eid) = editing_shared_avoid_id.as_deref()
+                    && let Some(sr) = shared_avoid_regions.iter().find(|r| r.id == eid)
+                {
+                    format!("Avoid: {}", sr.name)
+                } else {
+                    "Avoid / Keep-Out".to_string()
+                };
+                if ui
+                    .selectable_label(
+                        is_avoid_target,
+                        egui::RichText::new(avoid_lbl).color(if is_avoid_target {
+                            tok.error_fg
+                        } else {
+                            tok.text_primary
+                        }),
+                    )
+                    .on_hover_text(
+                        "Route 3D viewport picks into Avoid / Keep-Out regions (excludes faces, loops, holes, or sketches from toolpath)",
+                    )
+                    .clicked()
+                {
+                    *pick_target = GeometryPickTarget::AvoidKeepOut;
+                    if *pick_mode == ViewportPickMode::InspectEntity {
+                        *pick_mode = ViewportPickMode::OpPlanarFaces { setup_idx, op_idx };
+                    }
+                }
+            });
+            ui.add_space(3.0);
+
             let is_faces = matches!(pick_mode, ViewportPickMode::OpPlanarFaces { .. });
             let is_loops = matches!(pick_mode, ViewportPickMode::OpClosedLoops { .. });
             let is_chain = matches!(pick_mode, ViewportPickMode::OpOpenChain { .. });

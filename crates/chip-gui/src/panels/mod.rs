@@ -112,6 +112,16 @@ pub enum OperationTab {
     Linking,
 }
 
+/// Destination for interactive 3D/2D geometry picking inside Operation `[Geometry]`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GeometryPickTarget {
+    /// Route viewport clicks into the operation's primary cutting geometry (`op.selections`).
+    #[default]
+    CuttingArea,
+    /// Route viewport clicks into `op.avoid.selections` (or the actively edited `SharedAvoidRegion`).
+    AvoidKeepOut,
+}
+
 /// Interactive 3D viewport selection capture mode driven by Setup WCS or Operation Geometry/Passes tabs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ViewportPickMode {

@@ -173,13 +173,20 @@ fn render_stock_geom_body(
         ..
     } = view;
 
+    let is_rotary_enabled = !setup.rotary.is_disabled();
     inspector_grid(ui, ("stock_geom_grid", setup_idx), |ui| {
         grid_row(
             ui,
             "Stock Mode",
             Some("Raw stock blank shape and sizing mode"),
             |ui| {
-                render_stock_mode_combo(ui, setup_idx, &mut setup.stock, mutated_label);
+                render_stock_mode_combo(
+                    ui,
+                    setup_idx,
+                    is_rotary_enabled,
+                    &mut setup.stock,
+                    mutated_label,
+                );
             },
         );
 
@@ -273,6 +280,7 @@ fn render_stock_geom_body(
 fn render_stock_mode_combo(
     ui: &mut egui::Ui,
     setup_idx: usize,
+    is_rotary_enabled: bool,
     stock: &mut StockConfig,
     mutated_label: &mut Option<&'static str>,
 ) {
@@ -299,12 +307,17 @@ fn render_stock_mode_combo(
                 .clicked()
                 && !is_fbox
             {
+                let default_z_align = if is_rotary_enabled {
+                    FixedBoxZAlign::CenterZ
+                } else {
+                    FixedBoxZAlign::default()
+                };
                 *stock = StockConfig::FixedBox {
                     width_x: mm(100.0),
                     depth_y: mm(80.0),
                     height_z: mm(25.0),
                     xy_align: FixedBoxXyAlign::CenterXy,
-                    z_align: FixedBoxZAlign::default(),
+                    z_align: default_z_align,
                 };
                 *mutated_label = Some("Change Stock Mode to Fixed Box");
             }
@@ -466,21 +479,130 @@ fn render_stock_offsets_body(
             StockConfig::FixedBox {
                 xy_align, z_align, ..
             } => {
-                match xy_align {
-                    FixedBoxXyAlign::CenterXy => {
-                        grid_row(
-                            g.ui,
-                            "XY Alignment",
-                            Some("Part XY placement inside fixed stock"),
-                            |ui| {
-                                ui.label("Centered in XY");
-                            },
-                        );
-                    }
-                    FixedBoxXyAlign::OffsetFromFrontLeft { dx, dy } => {
-                        g.len("Front-Left ΔX", "fbox_dx", dx, "Edit Fixed Stock XY Offset");
-                        g.len("Front-Left ΔY", "fbox_dy", dy, "Edit Fixed Stock XY Offset");
-                    }
+                let mm = ParamLength::from_mm;
+                let xy_label = match xy_align {
+                    FixedBoxXyAlign::CenterXy => "Centered in XY",
+                    FixedBoxXyAlign::OffsetFromFrontLeft { .. } => "Offset from Front-Left",
+                };
+                let mut xy_changed = false;
+                grid_row(
+                    g.ui,
+                    "XY Alignment",
+                    Some("Control how the model is placed in XY inside the fixed-size box stock"),
+                    |ui| {
+                        egui::ComboBox::from_id_salt(("fbox_xy_align_cb", setup_idx))
+                            .width(INPUT_COL_WIDTH + 44.0)
+                            .truncate()
+                            .selected_text(xy_label)
+                            .show_ui(ui, |ui| {
+                                let is_center = matches!(xy_align, FixedBoxXyAlign::CenterXy);
+                                if ui
+                                    .selectable_label(is_center, "Centered in XY")
+                                    .on_hover_text(
+                                        "Center the model symmetrically along both X and Y inside the fixed stock blank",
+                                    )
+                                    .clicked()
+                                    && !is_center
+                                {
+                                    *xy_align = FixedBoxXyAlign::CenterXy;
+                                    xy_changed = true;
+                                }
+                                let is_fl =
+                                    matches!(xy_align, FixedBoxXyAlign::OffsetFromFrontLeft { .. });
+                                if ui
+                                    .selectable_label(is_fl, "Offset from Front-Left")
+                                    .on_hover_text(
+                                        "Position the model at explicit ΔX / ΔY offsets from the stock front-left (-X, -Y) corner",
+                                    )
+                                    .clicked()
+                                    && !is_fl
+                                {
+                                    *xy_align = FixedBoxXyAlign::OffsetFromFrontLeft {
+                                        dx: mm(5.0),
+                                        dy: mm(5.0),
+                                    };
+                                    xy_changed = true;
+                                }
+                            })
+                            .response
+                            .on_hover_text("Select XY alignment of model inside fixed-size box stock");
+                    },
+                );
+                if xy_changed {
+                    *g.mutated = Some("Change Fixed Stock XY Alignment");
+                }
+                if let FixedBoxXyAlign::OffsetFromFrontLeft { dx, dy } = xy_align {
+                    g.len("Front-Left ΔX", "fbox_dx", dx, "Edit Fixed Stock XY Offset");
+                    g.len("Front-Left ΔY", "fbox_dy", dy, "Edit Fixed Stock XY Offset");
+                }
+
+                let z_label = match z_align {
+                    FixedBoxZAlign::OffsetFromTop { .. } => "Offset from Top (+Z)",
+                    FixedBoxZAlign::OffsetFromBottom { .. } => "Offset from Bottom (-Z)",
+                    FixedBoxZAlign::CenterZ => "Centered in Z",
+                };
+                let mut z_changed = false;
+                grid_row(
+                    g.ui,
+                    "Z Alignment",
+                    Some(
+                        "Control how the model is placed vertically in Z inside the fixed-size box stock (use Centered in Z for rectangular rotary bar stock)",
+                    ),
+                    |ui| {
+                        egui::ComboBox::from_id_salt(("fbox_z_align_cb", setup_idx))
+                            .width(INPUT_COL_WIDTH + 44.0)
+                            .truncate()
+                            .selected_text(z_label)
+                            .show_ui(ui, |ui| {
+                                let is_top =
+                                    matches!(z_align, FixedBoxZAlign::OffsetFromTop { .. });
+                                if ui
+                                    .selectable_label(is_top, "Offset from Top (+Z)")
+                                    .on_hover_text(
+                                        "Place stock top above model top by the specified Top Allowance",
+                                    )
+                                    .clicked()
+                                    && !is_top
+                                {
+                                    *z_align = FixedBoxZAlign::OffsetFromTop {
+                                        top_allowance: mm(1.0),
+                                    };
+                                    z_changed = true;
+                                }
+                                let is_bot =
+                                    matches!(z_align, FixedBoxZAlign::OffsetFromBottom { .. });
+                                if ui
+                                    .selectable_label(is_bot, "Offset from Bottom (-Z)")
+                                    .on_hover_text(
+                                        "Place stock bottom below model bottom by the specified Bottom Allowance",
+                                    )
+                                    .clicked()
+                                    && !is_bot
+                                {
+                                    *z_align = FixedBoxZAlign::OffsetFromBottom {
+                                        bottom_allowance: mm(1.0),
+                                    };
+                                    z_changed = true;
+                                }
+                                let is_center = matches!(z_align, FixedBoxZAlign::CenterZ);
+                                if ui
+                                    .selectable_label(is_center, "Centered in Z")
+                                    .on_hover_text(
+                                        "Center the model symmetrically along Z inside the fixed box stock (recommended for 4th-axis rectangular bar stock)",
+                                    )
+                                    .clicked()
+                                    && !is_center
+                                {
+                                    *z_align = FixedBoxZAlign::CenterZ;
+                                    z_changed = true;
+                                }
+                            })
+                            .response
+                            .on_hover_text("Select Z alignment of model inside fixed-size box stock");
+                    },
+                );
+                if z_changed {
+                    *g.mutated = Some("Change Fixed Stock Z Alignment");
                 }
                 match z_align {
                     FixedBoxZAlign::OffsetFromTop { top_allowance } => {
@@ -499,11 +621,7 @@ fn render_stock_offsets_body(
                             "Edit Fixed Stock Bottom Allowance",
                         );
                     }
-                    FixedBoxZAlign::CenterZ => {
-                        grid_row(g.ui, "Z Alignment", None, |ui| {
-                            ui.label("Centered in Z");
-                        });
-                    }
+                    FixedBoxZAlign::CenterZ => {}
                 }
             }
             StockConfig::RelativeCylinder {
@@ -543,4 +661,293 @@ fn render_stock_offsets_body(
             }
         }
     });
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use chip_cam::{
+        FixedBoxXyAlign, FixedBoxZAlign, Operation, OperationKind, OperationStatus,
+        RotaryDriveMode, StockConfig,
+    };
+    use chip_math::ParamLength;
+    use chip_project::{ProjectDocument, UndoHistory};
+
+    use crate::panels::{
+        SetupTab, ViewportPickMode,
+        setup_inspector::{FixtureSafetySummary, SetupInspectorCtx, show_setup_inspector},
+    };
+
+    fn collect_texts(shapes: &[egui::epaint::ClippedShape], out: &mut Vec<String>) {
+        fn visit(shape: &egui::Shape, out: &mut Vec<String>) {
+            match shape {
+                egui::Shape::Text(t) => out.push(t.galley.text().to_string()),
+                egui::Shape::Vec(v) => {
+                    for s in v {
+                        visit(s, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        for cs in shapes {
+            visit(&cs.shape, out);
+        }
+    }
+
+    fn find_text_center(shape: &egui::Shape, needle: &str) -> Option<egui::Pos2> {
+        match shape {
+            egui::Shape::Text(t) if t.galley.text() == needle => {
+                Some(t.pos + t.galley.size() * 0.5)
+            }
+            egui::Shape::Vec(v) => v.iter().find_map(|s| find_text_center(s, needle)),
+            _ => None,
+        }
+    }
+
+    fn click_at(pt: egui::Pos2) -> Vec<egui::Event> {
+        vec![
+            egui::Event::PointerMoved(pt),
+            egui::Event::PointerButton {
+                pos: pt,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+            egui::Event::PointerButton {
+                pos: pt,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]
+    }
+
+    fn run_stock_tab_frame(
+        ctx: &egui::Context,
+        project: &mut ProjectDocument,
+        history: &mut UndoHistory,
+        events: Vec<egui::Event>,
+    ) -> Vec<egui::epaint::ClippedShape> {
+        let mut tab = SetupTab::Stock;
+        let mut pick_mode = ViewportPickMode::InspectEntity;
+        let mut sel_fix = None;
+        let mut show_fix = true;
+        let mut show_27 = false;
+        let mut show_z = false;
+        let mut open_mm = false;
+        let mut m_changed = false;
+        let mut sw_mid = None;
+        let mut imp_fix = false;
+        let mut open_fj = false;
+        let mut open_sj = false;
+        let mut out = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(440.0, 1200.0),
+                )),
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
+                    let _ = show_setup_inspector(
+                        ui,
+                        SetupInspectorCtx {
+                            project,
+                            setup_idx: 0,
+                            history,
+                            cad_doc: None,
+                            resolved: None,
+                            resolved_fixtures: &[],
+                            fixture_safety: FixtureSafetySummary::default(),
+                            tab: &mut tab,
+                            pick_mode: &mut pick_mode,
+                            selected_fixture_idx: &mut sel_fix,
+                            show_fixtures: &mut show_fix,
+                            show_27pt_dots: &mut show_27,
+                            show_z_planes: &mut show_z,
+                            machines: &[],
+                            open_machine_manager: &mut open_mm,
+                            machine_changed: &mut m_changed,
+                            switch_machine_id: &mut sw_mid,
+                            import_fixture_requested: &mut imp_fix,
+                            open_flip_jig_wizard: &mut open_fj,
+                            open_soft_jaw_wizard: &mut open_sj,
+                        },
+                    );
+                });
+            },
+        );
+        out.textures_delta.clear();
+        out.shapes
+    }
+
+    #[test]
+    fn m86_fixed_box_xy_z_alignment_controls_and_rotary_center_z_default() {
+        // 1. Standard 3-axis Setup: switching Stock Mode to Fixed-Size Box Stock defaults z_align to OffsetFromTop
+        let ctx3 = egui::Context::default();
+        let mut proj3 = ProjectDocument::new("fixed_box_3axis");
+        let mut op = Operation::new("op1", "Face", OperationKind::Facing);
+        op.runtime_status = OperationStatus::Clean;
+        proj3.setups[0].operations = vec![op];
+        let mut hist3 = UndoHistory::default();
+
+        let _ = run_stock_tab_frame(&ctx3, &mut proj3, &mut hist3, Vec::new());
+        let s1 = run_stock_tab_frame(&ctx3, &mut proj3, &mut hist3, Vec::new());
+        let mode_pt = s1
+            .iter()
+            .find_map(|cs| find_text_center(&cs.shape, "Relative Box Stock"))
+            .expect("Stock Mode combo must show Relative Box Stock");
+        let _ = run_stock_tab_frame(&ctx3, &mut proj3, &mut hist3, click_at(mode_pt));
+        let s_open = run_stock_tab_frame(&ctx3, &mut proj3, &mut hist3, Vec::new());
+        let fbox_pt = s_open
+            .iter()
+            .find_map(|cs| find_text_center(&cs.shape, "Fixed-Size Box Stock"))
+            .expect("Fixed-Size Box Stock option must be painted");
+        let _ = run_stock_tab_frame(&ctx3, &mut proj3, &mut hist3, click_at(fbox_pt));
+        assert!(matches!(
+            proj3.setups[0].stock,
+            StockConfig::FixedBox {
+                xy_align: FixedBoxXyAlign::CenterXy,
+                z_align: FixedBoxZAlign::OffsetFromTop { .. },
+                ..
+            }
+        ));
+        assert_eq!(
+            proj3.setups[0].operations[0].runtime_status,
+            OperationStatus::Dirty
+        );
+        assert!(hist3.can_undo());
+
+        // 2. Switch XY Alignment from Centered in XY -> Offset from Front-Left and verify Front-Left ΔX/ΔY render
+        let _ = run_stock_tab_frame(&ctx3, &mut proj3, &mut hist3, Vec::new());
+        let s_fb = run_stock_tab_frame(&ctx3, &mut proj3, &mut hist3, Vec::new());
+        let xy_pt = s_fb
+            .iter()
+            .find_map(|cs| find_text_center(&cs.shape, "Centered in XY"))
+            .expect("XY Alignment combo must render Centered in XY");
+        let _ = run_stock_tab_frame(&ctx3, &mut proj3, &mut hist3, click_at(xy_pt));
+        let s_xy_open = run_stock_tab_frame(&ctx3, &mut proj3, &mut hist3, Vec::new());
+        let fl_pt = s_xy_open
+            .iter()
+            .find_map(|cs| find_text_center(&cs.shape, "Offset from Front-Left"))
+            .expect("Offset from Front-Left option must be painted");
+        let _ = run_stock_tab_frame(&ctx3, &mut proj3, &mut hist3, click_at(fl_pt));
+        assert!(matches!(
+            proj3.setups[0].stock,
+            StockConfig::FixedBox {
+                xy_align: FixedBoxXyAlign::OffsetFromFrontLeft { .. },
+                ..
+            }
+        ));
+        let _ = run_stock_tab_frame(&ctx3, &mut proj3, &mut hist3, Vec::new());
+        let s_after_xy = run_stock_tab_frame(&ctx3, &mut proj3, &mut hist3, Vec::new());
+        let mut t_xy = Vec::new();
+        collect_texts(&s_after_xy, &mut t_xy);
+        let j_xy = t_xy.join("\n");
+        assert!(
+            j_xy.contains("Front-Left ΔX") && j_xy.contains("Front-Left ΔY"),
+            "OffsetFromFrontLeft must display Front-Left ΔX / ΔY inputs; got:\n{j_xy}"
+        );
+
+        // 3. Switch Z Alignment from Offset from Top (+Z) -> Offset from Bottom (-Z) -> Centered in Z
+        let z_pt = s_after_xy
+            .iter()
+            .find_map(|cs| find_text_center(&cs.shape, "Offset from Top (+Z)"))
+            .expect("Z Alignment combo must render Offset from Top (+Z)");
+        let _ = run_stock_tab_frame(&ctx3, &mut proj3, &mut hist3, click_at(z_pt));
+        let s_z_open = run_stock_tab_frame(&ctx3, &mut proj3, &mut hist3, Vec::new());
+        let bot_pt = s_z_open
+            .iter()
+            .find_map(|cs| find_text_center(&cs.shape, "Offset from Bottom (-Z)"))
+            .expect("Offset from Bottom (-Z) option must be painted");
+        let _ = run_stock_tab_frame(&ctx3, &mut proj3, &mut hist3, click_at(bot_pt));
+        assert!(matches!(
+            proj3.setups[0].stock,
+            StockConfig::FixedBox {
+                z_align: FixedBoxZAlign::OffsetFromBottom { .. },
+                ..
+            }
+        ));
+        let _ = run_stock_tab_frame(&ctx3, &mut proj3, &mut hist3, Vec::new());
+        let s_bot = run_stock_tab_frame(&ctx3, &mut proj3, &mut hist3, Vec::new());
+        let mut t_bot = Vec::new();
+        collect_texts(&s_bot, &mut t_bot);
+        assert!(
+            t_bot.join("\n").contains("Bottom Allowance (-Z)"),
+            "OffsetFromBottom must display Bottom Allowance (-Z)"
+        );
+
+        let z_pt2 = s_bot
+            .iter()
+            .find_map(|cs| find_text_center(&cs.shape, "Offset from Bottom (-Z)"))
+            .expect("Z Alignment combo must render Offset from Bottom (-Z)");
+        let _ = run_stock_tab_frame(&ctx3, &mut proj3, &mut hist3, click_at(z_pt2));
+        let s_z_open2 = run_stock_tab_frame(&ctx3, &mut proj3, &mut hist3, Vec::new());
+        let cz_pt = s_z_open2
+            .iter()
+            .find_map(|cs| find_text_center(&cs.shape, "Centered in Z"))
+            .expect("Centered in Z option must be painted");
+        let _ = run_stock_tab_frame(&ctx3, &mut proj3, &mut hist3, click_at(cz_pt));
+        assert!(matches!(
+            proj3.setups[0].stock,
+            StockConfig::FixedBox {
+                z_align: FixedBoxZAlign::CenterZ,
+                ..
+            }
+        ));
+
+        // Undo reverts Z Alignment back to OffsetFromBottom
+        assert!(hist3.undo(&mut proj3).is_some());
+        assert!(matches!(
+            proj3.setups[0].stock,
+            StockConfig::FixedBox {
+                z_align: FixedBoxZAlign::OffsetFromBottom { .. },
+                ..
+            }
+        ));
+
+        // 4. Rotary-enabled Setup: switching Stock Mode to Fixed-Size Box Stock auto-defaults z_align to CenterZ!
+        let ctx_rot = egui::Context::default();
+        let mut proj_rot = ProjectDocument::new("fixed_box_rotary");
+        proj_rot.setups[0].rotary.mode = RotaryDriveMode::Indexed3Plus1;
+        proj_rot.setups[0].stock = StockConfig::RelativeBox {
+            side_pos_x: ParamLength::from_mm(2.0),
+            side_neg_x: ParamLength::from_mm(2.0),
+            side_pos_y: ParamLength::from_mm(2.0),
+            side_neg_y: ParamLength::from_mm(2.0),
+            symmetric_xy: true,
+            top_offset_z: ParamLength::from_mm(1.0),
+            bottom_offset_z: ParamLength::from_mm(1.0),
+            sheet_thickness_z: ParamLength::from_mm(12.0),
+            round_increment_mm: None,
+        };
+        let mut hist_rot = UndoHistory::default();
+        let _ = run_stock_tab_frame(&ctx_rot, &mut proj_rot, &mut hist_rot, Vec::new());
+        let sr1 = run_stock_tab_frame(&ctx_rot, &mut proj_rot, &mut hist_rot, Vec::new());
+        let rmode_pt = sr1
+            .iter()
+            .find_map(|cs| find_text_center(&cs.shape, "Relative Box Stock"))
+            .expect("Rotary Stock Mode combo must show Relative Box Stock");
+        let _ = run_stock_tab_frame(&ctx_rot, &mut proj_rot, &mut hist_rot, click_at(rmode_pt));
+        let sr_open = run_stock_tab_frame(&ctx_rot, &mut proj_rot, &mut hist_rot, Vec::new());
+        let rfbox_pt = sr_open
+            .iter()
+            .find_map(|cs| find_text_center(&cs.shape, "Fixed-Size Box Stock"))
+            .expect("Fixed-Size Box Stock option must be painted");
+        let _ = run_stock_tab_frame(&ctx_rot, &mut proj_rot, &mut hist_rot, click_at(rfbox_pt));
+        assert!(
+            matches!(
+                proj_rot.setups[0].stock,
+                StockConfig::FixedBox {
+                    z_align: FixedBoxZAlign::CenterZ,
+                    ..
+                }
+            ),
+            "rotary-enabled Setup switching to FixedBox must auto-default z_align to CenterZ; got {:?}",
+            proj_rot.setups[0].stock
+        );
+    }
 }

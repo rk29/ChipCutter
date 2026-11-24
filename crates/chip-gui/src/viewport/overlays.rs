@@ -383,6 +383,7 @@ pub fn draw_viewport_guidance_hud(
     viewport_rect: egui::Rect,
     pick_mode: ViewportPickMode,
     context_badge: Option<&str>,
+    avoid_target_label: Option<&str>,
 ) -> Option<GuidanceHudAction> {
     let (title, instruction, supports_done) = pick_mode.guidance_info()?;
     if viewport_rect.width() < 340.0 || viewport_rect.height() < 120.0 {
@@ -390,6 +391,17 @@ pub fn draw_viewport_guidance_hud(
     }
 
     let tok = ThemeTokens::from_ui(ui);
+    let is_avoid_pick = avoid_target_label.is_some();
+    let accent_stroke = if is_avoid_pick {
+        tok.error_border
+    } else {
+        tok.accent
+    };
+    let accent_icon = if is_avoid_pick {
+        tok.error_fg
+    } else {
+        tok.accent
+    };
     // Reserve space for top-left Setup pill and top-right ViewCube (`162px`)
     let max_card_w = (viewport_rect.width() - 340.0).clamp(290.0, 560.0);
     let card_h = 48.0;
@@ -406,7 +418,7 @@ pub fn draw_viewport_guidance_hud(
         card_rect,
         egui::CornerRadius::same(7),
         tok.hud_bg,
-        egui::Stroke::new(1.2, tok.accent),
+        egui::Stroke::new(if is_avoid_pick { 1.6 } else { 1.2 }, accent_stroke),
         egui::StrokeKind::Inside,
     );
 
@@ -432,10 +444,23 @@ pub fn draw_viewport_guidance_hud(
     );
 
     hud_ui.horizontal(|ui| {
-        inline_icon(ui, icon, tok.accent, 14.0);
+        inline_icon(ui, icon, accent_icon, 14.0);
+        if let Some(avoid_lbl) = avoid_target_label {
+            ui.colored_label(
+                tok.error_fg,
+                egui::RichText::new(format!("[{avoid_lbl}]")).strong(),
+            );
+        }
         ui.strong(title);
         if let Some(badge) = context_badge {
-            ui.colored_label(tok.info_fg, format!("· {badge}"));
+            ui.colored_label(
+                if is_avoid_pick {
+                    tok.error_fg
+                } else {
+                    tok.info_fg
+                },
+                format!("· {badge}"),
+            );
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 4.0;

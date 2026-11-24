@@ -957,6 +957,8 @@ fn emit_boundary_preview_visuals(
             nominal_region,
             effective_region,
             show_effective,
+            avoid_nominal_region,
+            avoid_effective_region,
             top_z_wcs,
             bottom_z_wcs,
             ..
@@ -986,36 +988,38 @@ fn emit_boundary_preview_visuals(
             let z_bot = *bottom_z_wcs;
             let has_depth = (*top_z_wcs - *bottom_z_wcs).abs() > 0.25;
 
-            emit_region_set_loops(
-                nominal_region,
-                wcs_frame,
-                z_top,
-                nominal_col,
-                3.0,
-                false,
-                edges,
-            );
-            if has_depth {
+            if !nominal_region.is_empty() {
                 emit_region_set_loops(
                     nominal_region,
                     wcs_frame,
-                    z_bot,
-                    nominal_bottom_col,
-                    1.5,
+                    z_top,
+                    nominal_col,
+                    3.0,
                     false,
                     edges,
                 );
-                emit_region_vertical_ticks(
-                    nominal_region,
-                    wcs_frame,
-                    z_top,
-                    z_bot,
-                    drop_col,
-                    1.3,
-                    edges,
-                );
+                if has_depth {
+                    emit_region_set_loops(
+                        nominal_region,
+                        wcs_frame,
+                        z_bot,
+                        nominal_bottom_col,
+                        1.5,
+                        false,
+                        edges,
+                    );
+                    emit_region_vertical_ticks(
+                        nominal_region,
+                        wcs_frame,
+                        z_top,
+                        z_bot,
+                        drop_col,
+                        1.3,
+                        edges,
+                    );
+                }
             }
-            if *show_effective {
+            if *show_effective && !effective_region.is_empty() {
                 emit_region_set_loops(
                     effective_region,
                     wcs_frame,
@@ -1026,11 +1030,24 @@ fn emit_boundary_preview_visuals(
                     edges,
                 );
             }
+            emit_avoid_region_2d_visuals(
+                avoid_nominal_region,
+                avoid_effective_region,
+                wcs_frame,
+                *top_z_wcs,
+                *bottom_z_wcs,
+                is_light,
+                overlay_tris,
+                edges,
+            );
         }
         BoundaryPreviewOverlay::StockOuterEnvelope {
             stock_region,
+            avoid_nominal_region,
+            avoid_effective_region,
             top_z_wcs,
             bottom_z_wcs,
+            ..
         } => {
             let top_col = if is_light {
                 [0.04, 0.56, 0.48, 0.98]
@@ -1064,17 +1081,266 @@ fn emit_boundary_preview_visuals(
                     edges,
                 );
             }
+            emit_avoid_region_2d_visuals(
+                avoid_nominal_region,
+                avoid_effective_region,
+                wcs_frame,
+                *top_z_wcs,
+                *bottom_z_wcs,
+                is_light,
+                overlay_tris,
+                edges,
+            );
         }
-        BoundaryPreviewOverlay::RotarySector { rotary, window } => {
+        BoundaryPreviewOverlay::RotarySector {
+            rotary,
+            window,
+            avoid_axial_bands,
+            ..
+        } => {
             emit_rotary_sector_preview(
                 rotary,
                 window,
+                avoid_axial_bands,
                 wcs_frame,
                 sim_rotary_deg,
                 is_light,
                 overlay_tris,
                 edges,
             );
+        }
+    }
+}
+
+/// Emits crisp coral/red 2.5D & 3-axis Avoid / Keep-Out overlays:
+/// translucent top-plane fill + solid nominal outline + subtle vertical prism ticks +
+/// dashed outer tool-center clearance ring (`avoid_effective_region`).
+#[allow(clippy::too_many_arguments)]
+fn emit_avoid_region_2d_visuals(
+    avoid_nominal_region: &RegionSet2D,
+    avoid_effective_region: &RegionSet2D,
+    wcs_frame: &RigidFrame3,
+    top_z_wcs: f64,
+    bottom_z_wcs: f64,
+    is_light: bool,
+    overlay_tris: &mut Vec<OverlayVertexGpu>,
+    edges: &mut Vec<EdgeInstanceGpu>,
+) {
+    if avoid_nominal_region.is_empty() && avoid_effective_region.is_empty() {
+        return;
+    }
+
+    let nominal_col = if is_light {
+        [0.86, 0.14, 0.18, 0.98]
+    } else {
+        [1.0, 0.32, 0.34, 0.98]
+    };
+    let nominal_bot_col = if is_light {
+        [0.86, 0.14, 0.18, 0.38]
+    } else {
+        [1.0, 0.32, 0.34, 0.38]
+    };
+    let fill_col = if is_light {
+        [0.90, 0.16, 0.20, 0.20]
+    } else {
+        [1.0, 0.24, 0.28, 0.24]
+    };
+    let effective_col = if is_light {
+        [0.78, 0.22, 0.10, 0.90]
+    } else {
+        [1.0, 0.56, 0.44, 0.90]
+    };
+
+    let z_top = top_z_wcs + 0.12;
+    let z_bot = bottom_z_wcs;
+    let has_depth = (top_z_wcs - bottom_z_wcs).abs() > 0.25;
+
+    if !avoid_nominal_region.is_empty() {
+        emit_region_set_top_fill(
+            avoid_nominal_region,
+            wcs_frame,
+            z_top,
+            fill_col,
+            overlay_tris,
+        );
+        emit_region_set_loops(
+            avoid_nominal_region,
+            wcs_frame,
+            z_top + 0.03,
+            nominal_col,
+            3.0,
+            false,
+            edges,
+        );
+        if has_depth {
+            emit_region_set_loops(
+                avoid_nominal_region,
+                wcs_frame,
+                z_bot,
+                nominal_bot_col,
+                1.5,
+                false,
+                edges,
+            );
+            emit_region_vertical_ticks(
+                avoid_nominal_region,
+                wcs_frame,
+                z_top,
+                z_bot,
+                nominal_bot_col,
+                1.3,
+                edges,
+            );
+        }
+    }
+
+    if !avoid_effective_region.is_empty() {
+        emit_region_set_loops(
+            avoid_effective_region,
+            wcs_frame,
+            top_z_wcs + 0.20,
+            effective_col,
+            2.3,
+            true,
+            edges,
+        );
+    }
+}
+
+/// Samples a closed [`ArcPolyline2D`] into a simple 2D polygon point list for translucent fill.
+fn sample_closed_polyline_points(poly: &ArcPolyline2D) -> Vec<DVec2> {
+    let mut pts = Vec::new();
+    for seg in &poly.segments {
+        match *seg {
+            ArcSegment2D::Line { start, .. } => {
+                if pts
+                    .last()
+                    .is_none_or(|p: &DVec2| p.distance_squared(start) > 1e-8)
+                {
+                    pts.push(start);
+                }
+            }
+            ArcSegment2D::Arc { start, .. } => {
+                let sweep = seg.signed_sweep_rad().abs();
+                let steps = ((sweep / (10.0_f64.to_radians())).ceil() as usize).clamp(4, 48);
+                if pts
+                    .last()
+                    .is_none_or(|p: &DVec2| p.distance_squared(start) > 1e-8)
+                {
+                    pts.push(start);
+                }
+                for k in 1..steps {
+                    if let Some((pt, _)) = seg.eval_at((k as f64) / (steps as f64))
+                        && pts
+                            .last()
+                            .is_none_or(|p: &DVec2| p.distance_squared(pt) > 1e-8)
+                    {
+                        pts.push(pt);
+                    }
+                }
+            }
+        }
+    }
+    if pts.len() >= 2
+        && let (Some(first), Some(last)) = (pts.first(), pts.last())
+        && first.distance_squared(*last) <= 1e-8
+    {
+        pts.pop();
+    }
+    pts
+}
+
+fn cross_2d(a: DVec2, b: DVec2, c: DVec2) -> f64 {
+    (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)
+}
+
+fn point_in_tri_2d(p: DVec2, a: DVec2, b: DVec2, c: DVec2) -> bool {
+    let c1 = cross_2d(a, b, p);
+    let c2 = cross_2d(b, c, p);
+    let c3 = cross_2d(c, a, p);
+    c1 >= -1e-9 && c2 >= -1e-9 && c3 >= -1e-9
+}
+
+/// Simple ear-clipping triangulator for a CCW 2D polygon (handles convex and concave shapes).
+fn triangulate_ccw_polygon_2d(pts: &[DVec2]) -> Vec<[usize; 3]> {
+    let n = pts.len();
+    if n < 3 {
+        return Vec::new();
+    }
+    let mut area2 = 0.0_f64;
+    for i in 0..n {
+        let a = pts[i];
+        let b = pts[(i + 1) % n];
+        area2 += a.x * b.y - b.x * a.y;
+    }
+    let mut ring: Vec<usize> = if area2 >= 0.0 {
+        (0..n).collect()
+    } else {
+        (0..n).rev().collect()
+    };
+    let mut tris = Vec::with_capacity(n.saturating_sub(2));
+    let mut guard = n * n + 8;
+    while ring.len() > 3 && guard > 0 {
+        guard -= 1;
+        let m = ring.len();
+        let mut clipped = false;
+        for i in 0..m {
+            let i_prev = ring[(i + m - 1) % m];
+            let i_curr = ring[i];
+            let i_next = ring[(i + 1) % m];
+            let a = pts[i_prev];
+            let b = pts[i_curr];
+            let c = pts[i_next];
+            if cross_2d(a, b, c) <= 1e-9 {
+                continue;
+            }
+            let mut contains_other = false;
+            for &idx in &ring {
+                if idx == i_prev || idx == i_curr || idx == i_next {
+                    continue;
+                }
+                if point_in_tri_2d(pts[idx], a, b, c) {
+                    contains_other = true;
+                    break;
+                }
+            }
+            if !contains_other {
+                tris.push([i_prev, i_curr, i_next]);
+                ring.remove(i);
+                clipped = true;
+                break;
+            }
+        }
+        if !clipped {
+            break;
+        }
+    }
+    if ring.len() == 3 {
+        tris.push([ring[0], ring[1], ring[2]]);
+    }
+    tris
+}
+
+fn emit_region_set_top_fill(
+    region: &RegionSet2D,
+    wcs_frame: &RigidFrame3,
+    z_wcs: f64,
+    color: [f32; 4],
+    overlay_tris: &mut Vec<OverlayVertexGpu>,
+) {
+    let to_w = |p: DVec2| wcs_frame.local_to_world_point(DVec3::new(p.x, p.y, z_wcs));
+    for r in &region.regions {
+        let pts = sample_closed_polyline_points(&r.outer_ccw);
+        if pts.len() < 3 {
+            continue;
+        }
+        for [i0, i1, i2] in triangulate_ccw_polygon_2d(&pts) {
+            for p in [pts[i0], pts[i1], pts[i2]] {
+                overlay_tris.push(OverlayVertexGpu {
+                    pos_mm: dvec3_f32(to_w(p)),
+                    color,
+                });
+            }
         }
     }
 }
@@ -1219,9 +1485,11 @@ fn emit_region_vertical_ticks(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn emit_rotary_sector_preview(
     rot: &ResolvedRotaryConfig,
     window: &chip_cam::ResolvedRotaryWindow,
+    avoid_axial_bands: &[(f64, f64)],
     wcs_frame: &RigidFrame3,
     sim_rotary_deg: f64,
     is_light: bool,
@@ -1406,6 +1674,63 @@ fn emit_rotary_sector_preview(
                     color: [guard_wire[0], guard_wire[1], guard_wire[2], 0.65],
                     width_px: 1.6,
                 });
+            }
+        }
+    }
+
+    // 4. Translucent coral/red rotary axial Avoid / Keep-Out sleeve bands (`[u_lo, u_hi]`)
+    if !avoid_axial_bands.is_empty() {
+        let r_avoid = r_sleeve + 0.42;
+        let band_segs = 36usize;
+        let band_fill = if is_light {
+            [0.90, 0.16, 0.20, 0.26]
+        } else {
+            [1.0, 0.26, 0.30, 0.28]
+        };
+        let band_ring = if is_light {
+            [0.86, 0.12, 0.16, 0.98]
+        } else {
+            [1.0, 0.34, 0.36, 0.98]
+        };
+        let band_rib = if is_light {
+            [0.86, 0.16, 0.18, 0.62]
+        } else {
+            [1.0, 0.42, 0.40, 0.60]
+        };
+
+        for &(u_lo, u_hi) in avoid_axial_bands {
+            if !u_lo.is_finite() || !u_hi.is_finite() || u_hi <= u_lo + 1e-4 {
+                continue;
+            }
+            let mut b0 = Vec::with_capacity(band_segs + 1);
+            let mut b1 = Vec::with_capacity(band_segs + 1);
+            for k in 0..=band_segs {
+                let th = (k as f64 / band_segs as f64) * 360.0;
+                b0.push(sector_world(u_lo, th, r_avoid));
+                b1.push(sector_world(u_hi, th, r_avoid));
+            }
+            for k in 0..band_segs {
+                push_quad_tris(overlay_tris, b0[k], b1[k], b1[k + 1], b0[k + 1], band_fill);
+                edges.push(EdgeInstanceGpu {
+                    p0_mm: dvec3_f32(b0[k]),
+                    p1_mm: dvec3_f32(b0[k + 1]),
+                    color: band_ring,
+                    width_px: 2.8,
+                });
+                edges.push(EdgeInstanceGpu {
+                    p0_mm: dvec3_f32(b1[k]),
+                    p1_mm: dvec3_f32(b1[k + 1]),
+                    color: band_ring,
+                    width_px: 2.8,
+                });
+                if k % 4 == 0 {
+                    edges.push(EdgeInstanceGpu {
+                        p0_mm: dvec3_f32(b0[k]),
+                        p1_mm: dvec3_f32(b1[k]),
+                        color: band_rib,
+                        width_px: 1.5,
+                    });
+                }
             }
         }
     }

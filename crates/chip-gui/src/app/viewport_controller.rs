@@ -22,8 +22,11 @@ use chip_sketch::{
 use crate::{
     app::ChipCutterApp,
     panels::{
-        FixturePlaceKind, InspectorFocus, OperationTab, SetupTab, SketchAuthorTool,
-        ViewportPickMode,
+        FixturePlaceKind, GeometryPickTarget, InspectorFocus, OperationTab, SetupTab,
+        SketchAuthorTool, ViewportPickMode,
+        operation_inspector::avoid_card::{
+            mark_ops_dirty_with_rest, mark_shared_avoid_dependents_dirty,
+        },
     },
     viewport::{
         BoundaryPreviewInput, FixtureVisualMesh, SketchLayerVisual, ToolpathRenderEntry,
@@ -340,7 +343,11 @@ impl ChipCutterApp {
                                 frame_geo_sig: cached_geo.sig,
                                 display_unit: self.project.display_units,
                                 doc: doc_opt,
+                                sketches: &self.project.sketches,
                                 resolved_setup: eff_rs.as_ref(),
+                                fixtures_frame: &rs.frame,
+                                resolved_fixtures: &cached_geo.resolved_fixtures,
+                                shared_avoid_regions: &self.project.avoid_regions,
                                 op,
                                 active_tool,
                                 extracted: extracted_opt,
@@ -542,6 +549,83 @@ impl ChipCutterApp {
         best_hit
     }
 
+    /// Toggles (or appends for `OpenChain`) a picked `GeometrySelectionItem` into either:
+    /// 1. the actively edited [`chip_cam::SharedAvoidRegion`] (`editing_shared_avoid_id`),
+    /// 2. the operation's local `op.avoid.selections` (`GeometryPickTarget::AvoidKeepOut`), or
+    /// 3. the operation's primary `op.selections` (`GeometryPickTarget::CuttingArea`).
+    ///
+    /// Records an atomic Undo step and marks affected + downstream Rest operations `Dirty`.
+    fn apply_geometry_pick_toggle<F>(
+        &mut self,
+        setup_idx: usize,
+        op_idx: usize,
+        undo_label: &str,
+        new_item: GeometrySelectionItem,
+        toggle_match: Option<F>,
+    ) where
+        F: Fn(&GeometrySelectionItem) -> bool,
+    {
+        if let Some(eid) = self.editing_shared_avoid_id.clone()
+            && self.project.avoid_region(&eid).is_some()
+        {
+            self.history.record_before_edit(
+                format!("{undo_label} (Shared Avoid)"),
+                None,
+                &self.project,
+            );
+            if let Some(sr) = self.project.avoid_region_mut(&eid) {
+                if let Some(pred) = toggle_match
+                    && let Some(pos) = sr.selections.iter().position(pred)
+                {
+                    sr.selections.remove(pos);
+                } else {
+                    sr.selections.push(new_item);
+                }
+            }
+            mark_shared_avoid_dependents_dirty(&mut self.project, &eid);
+            return;
+        }
+
+        if setup_idx >= self.project.setups.len()
+            || op_idx >= self.project.setups[setup_idx].operations.len()
+        {
+            return;
+        }
+
+        if self.geometry_pick_target == GeometryPickTarget::AvoidKeepOut {
+            self.history
+                .record_before_edit(format!("{undo_label} (Avoid)"), None, &self.project);
+            let sels = &mut self.project.setups[setup_idx].operations[op_idx]
+                .avoid
+                .selections;
+            if let Some(pred) = toggle_match
+                && let Some(pos) = sels.iter().position(pred)
+            {
+                sels.remove(pos);
+            } else {
+                sels.push(new_item);
+            }
+            mark_ops_dirty_with_rest(&mut self.project.setups[setup_idx], &[op_idx]);
+            return;
+        }
+
+        self.history
+            .record_before_edit(undo_label, None, &self.project);
+        let op_mut = &mut self.project.setups[setup_idx].operations[op_idx];
+        if matches!(op_mut.runtime_status, OperationStatus::NeedsRepick { .. }) {
+            op_mut.selections.clear();
+        }
+        let sels = &mut op_mut.selections;
+        if let Some(pred) = toggle_match
+            && let Some(pos) = sels.iter().position(pred)
+        {
+            sels.remove(pos);
+        } else {
+            sels.push(new_item);
+        }
+        mark_ops_dirty_with_rest(&mut self.project.setups[setup_idx], &[op_idx]);
+    }
+
     pub(crate) fn handle_viewport_sketch_click(&mut self, hit: SketchPickHit) {
         match self.pick_mode {
             ViewportPickMode::InspectEntity => {
@@ -560,12 +644,6 @@ impl ChipCutterApp {
             | ViewportPickMode::OpOpenChain {
                 setup_idx, op_idx, ..
             } => {
-                let Some(setup) = self.project.setups.get(setup_idx) else {
-                    return;
-                };
-                if op_idx >= setup.operations.len() {
-                    return;
-                }
                 let new_item = match hit {
                     SketchPickHit::Region {
                         sketch_id,
@@ -586,18 +664,14 @@ impl ChipCutterApp {
                         side_flip: false,
                     },
                 };
-
-                self.history
-                    .record_before_edit("Toggle 2D Sketch Selection", None, &self.project);
-                let op_mut = &mut self.project.setups[setup_idx].operations[op_idx];
-                if matches!(op_mut.runtime_status, OperationStatus::NeedsRepick { .. }) {
-                    op_mut.selections.clear();
-                }
-                if let Some(pos) =
-                    op_mut
-                        .selections
-                        .iter()
-                        .position(|existing| match (existing, &new_item) {
+                let match_item = new_item.clone();
+                self.apply_geometry_pick_toggle(
+                    setup_idx,
+                    op_idx,
+                    "Toggle 2D Sketch Selection",
+                    new_item,
+                    Some(
+                        move |existing: &GeometrySelectionItem| match (existing, &match_item) {
                             (
                                 GeometrySelectionItem::SketchRegion {
                                     sketch_id: a,
@@ -621,13 +695,9 @@ impl ChipCutterApp {
                                 },
                             ) => a == b && ea == eb,
                             _ => false,
-                        })
-                {
-                    op_mut.selections.remove(pos);
-                } else {
-                    op_mut.selections.push(new_item);
-                }
-                op_mut.mark_dirty();
+                        },
+                    ),
+                );
             }
             _ => {}
         }
@@ -760,27 +830,17 @@ impl ChipCutterApp {
             ViewportPickMode::OpPlanarFaces { setup_idx, op_idx } => {
                 if let PickTarget::Face(fid) = target
                     && let Some(bind) = doc.bind_face(fid)
-                    && let Some(setup) = self.project.setups.get(setup_idx)
-                    && op_idx < setup.operations.len()
                 {
-                    self.history.record_before_edit(
+                    let fid_idx = fid.0;
+                    self.apply_geometry_pick_toggle(
+                        setup_idx,
+                        op_idx,
                         "Toggle Planar Face Selection",
-                        None,
-                        &self.project,
+                        GeometrySelectionItem::PlanarFace { binding: bind },
+                        Some(move |s: &GeometrySelectionItem| {
+                            matches!(s, GeometrySelectionItem::PlanarFace { binding } if binding.last_index == fid_idx)
+                        }),
                     );
-                    let op_mut = &mut self.project.setups[setup_idx].operations[op_idx];
-                    if matches!(op_mut.runtime_status, OperationStatus::NeedsRepick { .. }) {
-                        op_mut.selections.clear();
-                    }
-                    let sels = &mut op_mut.selections;
-                    if let Some(pos) = sels.iter().position(|s| {
-                        matches!(s, GeometrySelectionItem::PlanarFace { binding } if binding.last_index == fid.0)
-                    }) {
-                        sels.remove(pos);
-                    } else {
-                        sels.push(GeometrySelectionItem::PlanarFace { binding: bind });
-                    }
-                    op_mut.mark_dirty();
                 }
             }
             ViewportPickMode::OpClosedLoops { setup_idx, op_idx } => {
@@ -791,31 +851,21 @@ impl ChipCutterApp {
                 };
                 if let Some(lid) = lid_opt
                     && let Some(bind) = doc.bind_loop(lid)
-                    && let Some(setup) = self.project.setups.get(setup_idx)
-                    && op_idx < setup.operations.len()
                 {
-                    self.history.record_before_edit(
+                    let lid_idx = lid.0;
+                    self.apply_geometry_pick_toggle(
+                        setup_idx,
+                        op_idx,
                         "Toggle Closed Loop Selection",
-                        None,
-                        &self.project,
-                    );
-                    let op_mut = &mut self.project.setups[setup_idx].operations[op_idx];
-                    if matches!(op_mut.runtime_status, OperationStatus::NeedsRepick { .. }) {
-                        op_mut.selections.clear();
-                    }
-                    let sels = &mut op_mut.selections;
-                    if let Some(pos) = sels.iter().position(|s| {
-                        matches!(s, GeometrySelectionItem::ClosedLoop { binding, .. } if binding.last_index == lid.0)
-                    }) {
-                        sels.remove(pos);
-                    } else {
-                        sels.push(GeometrySelectionItem::ClosedLoop {
+                        GeometrySelectionItem::ClosedLoop {
                             binding: bind,
                             reverse: false,
                             side_flip: false,
-                        });
-                    }
-                    op_mut.mark_dirty();
+                        },
+                        Some(move |s: &GeometrySelectionItem| {
+                            matches!(s, GeometrySelectionItem::ClosedLoop { binding, .. } if binding.last_index == lid_idx)
+                        }),
+                    );
                 }
             }
             ViewportPickMode::OpOpenChain {
@@ -841,30 +891,22 @@ impl ChipCutterApp {
                             if let Some(chain_uses) = m.topo.find_open_edge_chain(doc, se, eid)
                                 && let (Some(sb), Some(eb), Some(s_rec)) =
                                     (doc.bind_edge(se), doc.bind_edge(eid), doc.edge(se))
-                                && let Some(setup) = self.project.setups.get(setup_idx)
-                                && op_idx < setup.operations.len()
                             {
-                                self.history.record_before_edit(
+                                let body_id = s_rec.body_id;
+                                self.apply_geometry_pick_toggle(
+                                    setup_idx,
+                                    op_idx,
                                     "Add Open Edge Chain",
-                                    None,
-                                    &self.project,
+                                    GeometrySelectionItem::OpenChain {
+                                        body_id,
+                                        start_edge: sb,
+                                        end_edge: eb,
+                                        resolved_edges: chain_uses,
+                                        reverse: false,
+                                        side_flip: false,
+                                    },
+                                    Option::<fn(&GeometrySelectionItem) -> bool>::None,
                                 );
-                                let op_mut = &mut self.project.setups[setup_idx].operations[op_idx];
-                                if matches!(
-                                    op_mut.runtime_status,
-                                    OperationStatus::NeedsRepick { .. }
-                                ) {
-                                    op_mut.selections.clear();
-                                }
-                                op_mut.selections.push(GeometrySelectionItem::OpenChain {
-                                    body_id: s_rec.body_id,
-                                    start_edge: sb,
-                                    end_edge: eb,
-                                    resolved_edges: chain_uses,
-                                    reverse: false,
-                                    side_flip: false,
-                                });
-                                op_mut.mark_dirty();
                             } else {
                                 self.logs.push(format!(
                                     "Could not find connected open edge path from Edge #{} to Edge #{}.",
@@ -883,24 +925,17 @@ impl ChipCutterApp {
             ViewportPickMode::OpCylindricalHoles { setup_idx, op_idx } => {
                 if let PickTarget::Face(fid) = target
                     && let Some(bind) = doc.bind_face(fid)
-                    && let Some(setup) = self.project.setups.get(setup_idx)
-                    && op_idx < setup.operations.len()
                 {
-                    self.history
-                        .record_before_edit("Toggle Cylindrical Hole", None, &self.project);
-                    let op_mut = &mut self.project.setups[setup_idx].operations[op_idx];
-                    if matches!(op_mut.runtime_status, OperationStatus::NeedsRepick { .. }) {
-                        op_mut.selections.clear();
-                    }
-                    let sels = &mut op_mut.selections;
-                    if let Some(pos) = sels.iter().position(|s| {
-                        matches!(s, GeometrySelectionItem::CylindricalHole { binding } if binding.last_index == fid.0)
-                    }) {
-                        sels.remove(pos);
-                    } else {
-                        sels.push(GeometrySelectionItem::CylindricalHole { binding: bind });
-                    }
-                    op_mut.mark_dirty();
+                    let fid_idx = fid.0;
+                    self.apply_geometry_pick_toggle(
+                        setup_idx,
+                        op_idx,
+                        "Toggle Cylindrical Hole",
+                        GeometrySelectionItem::CylindricalHole { binding: bind },
+                        Some(move |s: &GeometrySelectionItem| {
+                            matches!(s, GeometrySelectionItem::CylindricalHole { binding } if binding.last_index == fid_idx)
+                        }),
+                    );
                 }
             }
             ViewportPickMode::PlaceContourTab { .. } | ViewportPickMode::SketchAuthor { .. } => {}

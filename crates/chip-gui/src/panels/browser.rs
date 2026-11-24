@@ -1,6 +1,7 @@
 use chip_cad::CadDocument;
 use chip_cam::{
-    Operation, OperationKind, OperationStatus, RestMachiningMode, Setup, WorkOffsetSlot,
+    Operation, OperationKind, OperationStatus, RestMachiningMode, Setup, SharedAvoidRegion,
+    WorkOffsetSlot,
 };
 use chip_project::{ProjectDocument, ToolpathCache, UndoHistory, resolve_upstream_rest_op_indices};
 use chip_tools::ToolLibrary;
@@ -8,7 +9,11 @@ use egui::{CornerRadius, CursorIcon, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2
 
 use crate::{
     panels::{
-        InspectorFocus, OperationTab, SetupTab, ViewportPickMode, diagnostics::format_cycle_time,
+        InspectorFocus, OperationTab, SetupTab, ViewportPickMode,
+        diagnostics::format_cycle_time,
+        operation_inspector::avoid_card::{
+            mark_shared_avoid_dependents_dirty, next_shared_avoid_id_and_name,
+        },
     },
     theme::ThemeTokens,
     widgets::{
@@ -47,6 +52,7 @@ pub struct CamBrowserCtx<'a> {
     pub op_tab: &'a mut OperationTab,
     pub pick_mode: &'a mut ViewportPickMode,
     pub hidden_operation_ids: &'a mut std::collections::HashSet<String>,
+    pub editing_shared_avoid_id: &'a mut Option<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -242,6 +248,7 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
         op_tab,
         pick_mode,
         hidden_operation_ids,
+        editing_shared_avoid_id,
     } = ctx;
     let mut emitted_action = None;
 
@@ -540,6 +547,237 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                     });
                 },
             );
+
+            // 1c. Shared Keep-Out Regions (`ProjectDocument::avoid_regions`, M85–M86)
+            let avoid_title = format!("Keep-Out Regions ({})", project.avoid_regions.len());
+            let mut deferred_avoid_add = false;
+            let mut deferred_avoid_toggle_suppress: Option<usize> = None;
+            let mut deferred_avoid_duplicate: Option<usize> = None;
+            let mut deferred_avoid_delete: Option<String> = None;
+            let mut deferred_avoid_rename: Option<(usize, String)> = None;
+            let rename_id_key = ui.make_persistent_id("browser_avoid_renaming_id");
+            let rename_buf_key = ui.make_persistent_id("browser_avoid_renaming_buf");
+            let mut renaming_id: Option<String> = ui
+                .data_mut(|d| d.get_temp::<Option<String>>(rename_id_key))
+                .flatten();
+            let mut renaming_buf: String = ui
+                .data_mut(|d| d.get_temp::<String>(rename_buf_key))
+                .unwrap_or_default();
+
+            section_card(
+                ui,
+                "browser_avoid_regions_card",
+                &avoid_title,
+                !project.avoid_regions.is_empty(),
+                |ui| {
+                    let tok = ThemeTokens::from_ui(ui);
+                    if project.avoid_regions.is_empty() {
+                        ui.weak(
+                            "No shared keep-out regions yet. Promote from Operation → [Geometry] or add below.",
+                        );
+                    } else {
+                        for r_idx in 0..project.avoid_regions.len() {
+                            let r = &project.avoid_regions[r_idx];
+                            let rid = r.id.clone();
+                            let rname = r.name.clone();
+                            let is_sup = r.suppressed;
+                            let is_editing =
+                                editing_shared_avoid_id.as_deref() == Some(rid.as_str());
+                            let usage = project.avoid_region_usage_count(&rid);
+                            let usage_txt = if usage == 1 {
+                                "used by 1 op".to_string()
+                            } else {
+                                format!("used by {usage} ops")
+                            };
+
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 3.0;
+                                let mut active = !is_sup;
+                                if ui
+                                    .checkbox(&mut active, "")
+                                    .on_hover_text(if is_sup {
+                                        "Suppressed — check to re-enable this shared keep-out region across all linked operations"
+                                    } else {
+                                        "Active — uncheck to suppress this shared keep-out region across all linked operations"
+                                    })
+                                    .changed()
+                                {
+                                    deferred_avoid_toggle_suppress = Some(r_idx);
+                                }
+
+                                if renaming_id.as_deref() == Some(rid.as_str()) {
+                                    let resp = ui.add(
+                                        egui::TextEdit::singleline(&mut renaming_buf)
+                                            .desired_width((ui.available_width() - 42.0).max(60.0)),
+                                    );
+                                    let enter = resp.lost_focus()
+                                        && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                                    if ui.small_button("OK").clicked() || enter {
+                                        let trimmed = renaming_buf.trim();
+                                        if !trimmed.is_empty() && trimmed != rname {
+                                            deferred_avoid_rename =
+                                                Some((r_idx, trimmed.to_string()));
+                                        }
+                                        renaming_id = None;
+                                    }
+                                    if ui.small_button("×").clicked()
+                                        || (resp.lost_focus()
+                                            && ui.input(|i| i.key_pressed(egui::Key::Escape)))
+                                    {
+                                        renaming_id = None;
+                                    }
+                                } else {
+                                    let item_count = r.selections.len() + r.fixture_ids.len();
+                                    let lbl = format!("{rname} ({item_count})");
+                                    let rich = if is_sup {
+                                        egui::RichText::new(lbl).strikethrough().weak()
+                                    } else if is_editing {
+                                        egui::RichText::new(lbl).strong().color(tok.error_fg)
+                                    } else {
+                                        egui::RichText::new(lbl)
+                                    };
+                                    let lbl_w = (ui.available_width() - 104.0).max(48.0);
+                                    let resp = ui
+                                        .add_sized(
+                                            [lbl_w, 20.0],
+                                            egui::Button::selectable(is_editing, rich).truncate(),
+                                        )
+                                        .on_hover_text(format!(
+                                            "{rname} · {usage_txt} (double-click to rename, right-click for actions)"
+                                        ));
+                                    if resp.double_clicked() {
+                                        renaming_id = Some(rid.clone());
+                                        renaming_buf = rname.clone();
+                                    }
+                                    resp.context_menu(|ui| {
+                                        if ui.button("Rename").clicked() {
+                                            renaming_id = Some(rid.clone());
+                                            renaming_buf = rname.clone();
+                                            ui.close();
+                                        }
+                                        if ui
+                                            .button(if is_sup { "Enable" } else { "Suppress" })
+                                            .clicked()
+                                        {
+                                            deferred_avoid_toggle_suppress = Some(r_idx);
+                                            ui.close();
+                                        }
+                                        if ui.button("Duplicate").clicked() {
+                                            deferred_avoid_duplicate = Some(r_idx);
+                                            ui.close();
+                                        }
+                                        ui.separator();
+                                        if ui.button("Delete").clicked() {
+                                            deferred_avoid_delete = Some(rid.clone());
+                                            ui.close();
+                                        }
+                                    });
+
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            ui.spacing_mut().item_spacing.x = 2.0;
+                                            if small_icon_button(
+                                                ui,
+                                                IconKind::Trash,
+                                                "Delete shared keep-out region (safely unlinks all operations)",
+                                            )
+                                            .clicked()
+                                            {
+                                                deferred_avoid_delete = Some(rid.clone());
+                                            }
+                                            if small_icon_button(
+                                                ui,
+                                                IconKind::Duplicate,
+                                                "Duplicate shared keep-out region",
+                                            )
+                                            .clicked()
+                                            {
+                                                deferred_avoid_duplicate = Some(r_idx);
+                                            }
+                                            ui.label(
+                                                egui::RichText::new(usage_txt)
+                                                    .small()
+                                                    .color(tok.text_muted),
+                                            );
+                                        },
+                                    );
+                                }
+                            });
+                        }
+                    }
+
+                    ui.add_space(2.0);
+                    ui.horizontal_wrapped(|ui| {
+                        if ui
+                            .small_button("+ Keep-Out")
+                            .on_hover_text(
+                                "Create a new project-level reusable Shared Avoid / Keep-Out region",
+                            )
+                            .clicked()
+                        {
+                            deferred_avoid_add = true;
+                        }
+                    });
+                },
+            );
+
+            ui.data_mut(|d| {
+                d.insert_temp(rename_id_key, renaming_id);
+                d.insert_temp(rename_buf_key, renaming_buf);
+            });
+
+            if deferred_avoid_add {
+                history.record_before_edit("Add Shared Keep-Out Region", None, project);
+                let (id, name) = next_shared_avoid_id_and_name(project, None);
+                project
+                    .avoid_regions
+                    .push(SharedAvoidRegion::new(id, name.clone()));
+                emitted_action = Some(BrowserAction::Log(format!(
+                    "Created shared keep-out region '{name}'."
+                )));
+            }
+            if let Some((r_idx, new_name)) = deferred_avoid_rename
+                && r_idx < project.avoid_regions.len()
+            {
+                history.record_before_edit("Rename Shared Keep-Out Region", None, project);
+                project.avoid_regions[r_idx].name = new_name;
+            }
+            if let Some(r_idx) = deferred_avoid_toggle_suppress
+                && r_idx < project.avoid_regions.len()
+            {
+                history.record_before_edit("Toggle Shared Keep-Out Suppress", None, project);
+                let rid = project.avoid_regions[r_idx].id.clone();
+                project.avoid_regions[r_idx].suppressed = !project.avoid_regions[r_idx].suppressed;
+                mark_shared_avoid_dependents_dirty(project, &rid);
+            }
+            if let Some(r_idx) = deferred_avoid_duplicate
+                && r_idx < project.avoid_regions.len()
+            {
+                history.record_before_edit("Duplicate Shared Keep-Out Region", None, project);
+                let mut dup = project.avoid_regions[r_idx].clone();
+                let copy_name = format!("{} (Copy)", dup.name);
+                let (new_id, new_name) = next_shared_avoid_id_and_name(project, Some(&copy_name));
+                dup.id = new_id;
+                dup.name = new_name.clone();
+                project.avoid_regions.insert(r_idx + 1, dup);
+                emitted_action = Some(BrowserAction::Log(format!(
+                    "Duplicated shared keep-out region as '{new_name}'."
+                )));
+            }
+            if let Some(del_id) = deferred_avoid_delete {
+                history.record_before_edit("Delete Shared Keep-Out Region", None, project);
+                // Mark downstream Rest dependents dirty for any op referencing `del_id` before pruning
+                mark_shared_avoid_dependents_dirty(project, &del_id);
+                if project.remove_avoid_region(&del_id) {
+                    if editing_shared_avoid_id.as_deref() == Some(del_id.as_str()) {
+                        *editing_shared_avoid_id = None;
+                    }
+                    emitted_action = Some(BrowserAction::Log(format!(
+                        "Deleted shared keep-out region '{del_id}' and unlinked referencing operations."
+                    )));
+                }
+            }
 
             // 2. Project-Embedded Tools section (inline Add, Remove, & Remove Unused controls)
             let usage_map = project.tool_usage_map();

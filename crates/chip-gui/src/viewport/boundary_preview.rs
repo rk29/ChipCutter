@@ -6,26 +6,32 @@
 //! mesh projections or polygon allocations on idle 60 FPS frames.
 
 use std::{
+    borrow::Cow,
     hash::{Hash as _, Hasher as _},
     sync::Arc,
 };
 
 use chip_cad::CadDocument;
 use chip_cam::{
-    ExtractedFeature25D, ExtractedSelectionSummary, MachiningBoundaryMode, Operation,
-    OperationKind, PocketBoundaryMode, PocketRegion2D, RegionSet2D, ResolvedHeights,
-    ResolvedRotaryConfig, ResolvedRotaryWindow, ResolvedSetup, ResolvedStockGeometry,
-    RotaryWindowInput, StockAxis, StrategyParams, SurfaceMesh3D, ToolContainmentMode,
-    rect_region_2d, resolve_3d_boundary_config_detailed, resolve_rotary_window, stock_xy_region,
+    AvoidAxialBandsInput, AvoidRegionInput, ExtractedFeature25D, ExtractedSelectionSummary,
+    MachiningBoundaryMode, Operation, OperationKind, PocketBoundaryMode, PocketRegion2D,
+    RegionSet2D, ResolvedAvoidAxialBands, ResolvedAvoidRegion2D, ResolvedFixtureSolid,
+    ResolvedHeights, ResolvedRotaryConfig, ResolvedRotaryWindow, ResolvedSetup,
+    ResolvedStockGeometry, RotaryWindowInput, SharedAvoidRegion, StockAxis, StrategyParams,
+    SurfaceMesh3D, ToolContainmentMode, rect_region_2d, resolve_3d_boundary_config_detailed,
+    resolve_avoid_axial_bands, resolve_avoid_region_2d, resolve_rotary_window, stock_xy_region,
+    transform_fixtures_to_frame,
 };
 use chip_math::{Aabb3, DVec2, DVec3, DisplayUnit, EvalContext, RigidFrame3};
+use chip_sketch::SketchLayer;
 use chip_tools::Tool;
 
 /// Resolved 3D viewport cutting-area preview geometry rendered when `OperationTab::Geometry` is active.
 #[derive(Debug, Clone, PartialEq)]
 pub enum BoundaryPreviewOverlay {
-    /// 2.5D (`Facing`) & 3-Axis (`Adaptive3D`, `Waterline3D`, `Parallel3D`, `Scallop3D`,
-    /// `Pencil3D`, `Undercut3D`, `Deburr3D`) XY machining containment preview.
+    /// 2.5D (`Facing`, `Pocket2D`, `Contour2D`, `DrillBore`, `VCarve`, etc.) & 3-Axis
+    /// (`Adaptive3D`, `Waterline3D`, `Parallel3D`, `Scallop3D`, `Pencil3D`, `Undercut3D`, `Deburr3D`)
+    /// XY machining containment + coral/red Avoid / Keep-Out preview.
     Planar2D {
         /// Nominal cutting boundary loops before tool-radius / offset dilation.
         nominal_region: RegionSet2D,
@@ -33,24 +39,49 @@ pub enum BoundaryPreviewOverlay {
         effective_region: RegionSet2D,
         /// `true` when `effective_region` differs meaningfully from `nominal_region`.
         show_effective: bool,
+        /// Un-inflated Avoid / Keep-Out footprints (local + linked shared + Z-overlapping fixtures).
+        avoid_nominal_region: RegionSet2D,
+        /// Tool-center excluded Avoid / Keep-Out footprints (`tool_r + radial_clearance`, plus shank/holder tiers).
+        avoid_effective_region: RegionSet2D,
         /// Upper Z reference plane in Setup WCS (`heights.top_z_wcs`).
         top_z_wcs: f64,
         /// Lower Z reference plane in Setup WCS (`heights.bottom_z_wcs`).
         bottom_z_wcs: f64,
-        /// Any non-fatal boundary warnings surfaced by resolution.
+        /// Any non-fatal boundary or keep-out warnings surfaced by resolution.
         warnings: Vec<String>,
     },
-    /// 4th-Axis Rotary (`Rotary2Linear`, `Rotary4AxisSim`) cylindrical cutting sector & chuck keep-out.
+    /// 4th-Axis Rotary (`Rotary2Linear`, `Rotary4AxisSim`) cylindrical cutting sector, chuck keep-out,
+    /// and coral/red axial Avoid / Keep-Out sleeve bands.
     RotarySector {
         rotary: ResolvedRotaryConfig,
         window: ResolvedRotaryWindow,
+        /// Un-inflated rotary axial keep-out bands `[u_lo, u_hi]` (`mm`).
+        avoid_nominal_bands: Vec<(f64, f64)>,
+        /// Tool-center effective rotary axial keep-out bands `[u_lo, u_hi]` (`mm`).
+        avoid_axial_bands: Vec<(f64, f64)>,
+        /// Any non-fatal keep-out warnings surfaced by resolution.
+        warnings: Vec<String>,
     },
     /// `Pocket2D` / `Adaptive2D` in `ClearOutsideSelectedToStock` mode: outer stock clearing envelope.
     StockOuterEnvelope {
         stock_region: RegionSet2D,
+        avoid_nominal_region: RegionSet2D,
+        avoid_effective_region: RegionSet2D,
         top_z_wcs: f64,
         bottom_z_wcs: f64,
+        warnings: Vec<String>,
     },
+}
+
+impl BoundaryPreviewOverlay {
+    /// Returns any non-fatal boundary or keep-out warnings stored on this overlay.
+    pub fn warnings(&self) -> &[String] {
+        match self {
+            Self::Planar2D { warnings, .. }
+            | Self::RotarySector { warnings, .. }
+            | Self::StockOuterEnvelope { warnings, .. } => warnings,
+        }
+    }
 }
 
 /// Inputs required to evaluate or retrieve a cached [`BoundaryPreviewOverlay`].
@@ -62,7 +93,13 @@ pub struct BoundaryPreviewInput<'a> {
     pub frame_geo_sig: u64,
     pub display_unit: DisplayUnit,
     pub doc: Option<&'a CadDocument>,
+    pub sketches: &'a [SketchLayer],
     pub resolved_setup: &'a ResolvedSetup,
+    /// WCS frame in which `resolved_fixtures` are currently expressed (matches `resolved_setup.frame`
+    /// for standard setups, or the base Setup WCS when `resolved_setup` is an `Indexed3Plus1` virtual setup).
+    pub fixtures_frame: &'a RigidFrame3,
+    pub resolved_fixtures: &'a [ResolvedFixtureSolid],
+    pub shared_avoid_regions: &'a [SharedAvoidRegion],
     pub op: &'a Operation,
     pub active_tool: Option<&'a Tool>,
     pub extracted: Option<&'a ExtractedSelectionSummary>,
@@ -260,6 +297,53 @@ fn compute_boundary_preview_signature(input: &BoundaryPreviewInput<'_>) -> u64 {
     } else {
         0_u8.hash(&mut h);
     }
+
+    // Hash Avoid / Keep-Out configuration, linked shared definitions, and active Setup fixtures
+    format!("{:?}", input.op.avoid).hash(&mut h);
+    if !input.op.avoid.is_empty() {
+        for sid in &input.op.avoid.shared_region_ids {
+            sid.hash(&mut h);
+            if let Some(sr) = input.shared_avoid_regions.iter().find(|r| r.id == *sid) {
+                format!("{sr:?}").hash(&mut h);
+            } else {
+                0_u8.hash(&mut h);
+            }
+        }
+        let ff = input.fixtures_frame;
+        for v in [ff.origin_mm, ff.x_axis, ff.y_axis, ff.z_axis] {
+            v.x.to_bits().hash(&mut h);
+            v.y.to_bits().hash(&mut h);
+            v.z.to_bits().hash(&mut h);
+        }
+        input.resolved_fixtures.len().hash(&mut h);
+        for fix in input.resolved_fixtures {
+            fix.fixture_id.hash(&mut h);
+            fix.is_spoilboard.hash(&mut h);
+            fix.clearance_margin_mm.to_bits().hash(&mut h);
+            fix.allowed_overcut_mm.to_bits().hash(&mut h);
+            fix.mesh_wcs.vertices.len().hash(&mut h);
+            fix.mesh_wcs.triangles.len().hash(&mut h);
+            for v in [fix.aabb_wcs.min, fix.aabb_wcs.max] {
+                v.x.to_bits().hash(&mut h);
+                v.y.to_bits().hash(&mut h);
+                v.z.to_bits().hash(&mut h);
+            }
+        }
+        input.sketches.len().hash(&mut h);
+        for sk in input.sketches {
+            sk.id.hash(&mut h);
+            format!("{:?}", sk.anchor).hash(&mut h);
+            sk.entities.len().hash(&mut h);
+            sk.regions.len().hash(&mut h);
+            let ab = sk.exact_aabb();
+            if ab.is_valid() {
+                ab.min.x.to_bits().hash(&mut h);
+                ab.min.y.to_bits().hash(&mut h);
+                ab.max.x.to_bits().hash(&mut h);
+                ab.max.y.to_bits().hash(&mut h);
+            }
+        }
+    }
     h.finish()
 }
 
@@ -361,6 +445,85 @@ fn aabb_proxy_surface_mesh(aabb: &Aabb3) -> SurfaceMesh3D {
     SurfaceMesh3D::from_indexed_triangles(verts, Vec::new(), *aabb)
 }
 
+fn fixtures_in_setup_frame<'a>(
+    input: &'a BoundaryPreviewInput<'a>,
+) -> Cow<'a, [ResolvedFixtureSolid]> {
+    if input.resolved_fixtures.is_empty() {
+        return Cow::Borrowed(&[]);
+    }
+    let src = input.fixtures_frame;
+    let dst = &input.resolved_setup.frame;
+    let same = src.origin_mm.distance_squared(dst.origin_mm) <= 1e-18
+        && src.x_axis.distance_squared(dst.x_axis) <= 1e-18
+        && src.y_axis.distance_squared(dst.y_axis) <= 1e-18
+        && src.z_axis.distance_squared(dst.z_axis) <= 1e-18;
+    if same {
+        Cow::Borrowed(input.resolved_fixtures)
+    } else {
+        Cow::Owned(transform_fixtures_to_frame(
+            input.resolved_fixtures,
+            src,
+            dst,
+        ))
+    }
+}
+
+fn resolve_preview_avoid_2d(
+    input: &BoundaryPreviewInput<'_>,
+    tool_r: f64,
+    bottom_z_wcs: f64,
+    top_z_wcs: f64,
+) -> ResolvedAvoidRegion2D {
+    if input.op.avoid.is_empty() {
+        return ResolvedAvoidRegion2D::default();
+    }
+    let empty_doc = CadDocument::empty();
+    let doc_ref = input.doc.unwrap_or(&empty_doc);
+    let fixtures = fixtures_in_setup_frame(input);
+    resolve_avoid_region_2d(&AvoidRegionInput {
+        doc: doc_ref,
+        sketches: input.sketches,
+        setup: input.resolved_setup,
+        avoid: &input.op.avoid,
+        shared_regions: input.shared_avoid_regions,
+        fixtures: fixtures.as_ref(),
+        tool: input.active_tool,
+        tool_radius_mm: tool_r,
+        z_bottom_wcs: bottom_z_wcs,
+        z_top_wcs: top_z_wcs,
+        display_unit: input.display_unit,
+    })
+}
+
+fn resolve_preview_avoid_rotary(
+    input: &BoundaryPreviewInput<'_>,
+    rot: &ResolvedRotaryConfig,
+    tool_r: f64,
+    r_floor: f64,
+    r_outer: f64,
+) -> ResolvedAvoidAxialBands {
+    if input.op.avoid.is_empty() {
+        return ResolvedAvoidAxialBands::default();
+    }
+    let empty_doc = CadDocument::empty();
+    let doc_ref = input.doc.unwrap_or(&empty_doc);
+    let fixtures = fixtures_in_setup_frame(input);
+    resolve_avoid_axial_bands(&AvoidAxialBandsInput {
+        doc: doc_ref,
+        sketches: input.sketches,
+        setup: input.resolved_setup,
+        rot,
+        avoid: &input.op.avoid,
+        shared_regions: input.shared_avoid_regions,
+        fixtures: fixtures.as_ref(),
+        tool: input.active_tool,
+        tool_radius_mm: tool_r,
+        r_floor,
+        r_outer,
+        display_unit: input.display_unit,
+    })
+}
+
 fn compute_overlay(
     input: &BoundaryPreviewInput<'_>,
     surface_mesh: Option<&SurfaceMesh3D>,
@@ -386,6 +549,10 @@ fn compute_overlay(
     let stock_aabb = rs.stock.aabb_wcs();
     let top_z_wcs = rh.as_ref().map_or(stock_aabb.max.z, |h| h.top_z_wcs);
     let bottom_z_wcs = rh.as_ref().map_or(stock_aabb.min.z, |h| h.bottom_z_wcs);
+    let tool_r = 0.5
+        * input
+            .active_tool
+            .map_or(6.0, |t| t.geometry.cutting_diameter_mm());
 
     // 1. 4th-Axis Rotary (`Rotary2Linear`, `Rotary4AxisSim`)
     if op.kind.is_rotary_native() {
@@ -401,20 +568,23 @@ fn compute_overlay(
             &eval_ctx,
         )?
         .ok()?;
+        let avoid_bands =
+            resolve_preview_avoid_rotary(input, &rot, tool_r, win.r_floor, win.r_ceiling);
         return Some(BoundaryPreviewOverlay::RotarySector {
             rotary: rot,
             window: win,
+            avoid_nominal_bands: avoid_bands.nominal_bands,
+            avoid_axial_bands: avoid_bands.effective_bands,
+            warnings: avoid_bands.warnings,
         });
     }
+
+    let avoid_2d = resolve_preview_avoid_2d(input, tool_r, bottom_z_wcs, top_z_wcs);
 
     // 2. 2.5D Facing & 3-Axis / Undercut3D / Deburr3D Machining Boundary
     if let Some(boundary_raw) = op.machining_boundary() {
         let mut boundary = boundary_raw.clone();
         boundary.reevaluate(&eval_ctx);
-        let tool_r = 0.5
-            * input
-                .active_tool
-                .map_or(6.0, |t| t.geometry.cutting_diameter_mm());
         let empty_sel = ExtractedSelectionSummary::default();
         let sel_ref = input.extracted.unwrap_or(&empty_sel);
 
@@ -429,6 +599,7 @@ fn compute_overlay(
                 &boundary,
                 tool_r,
                 show_effective,
+                avoid_2d,
                 top_z_wcs,
                 bottom_z_wcs,
             ));
@@ -442,12 +613,15 @@ fn compute_overlay(
             &empty_mesh
         };
 
-        let resolved =
+        let mut resolved =
             resolve_3d_boundary_config_detailed(surf_ref, rs, sel_ref, &boundary, tool_r);
+        resolved.warnings.extend(avoid_2d.warnings);
         return Some(BoundaryPreviewOverlay::Planar2D {
             nominal_region: resolved.nominal_region,
             effective_region: resolved.effective_region,
             show_effective,
+            avoid_nominal_region: avoid_2d.nominal_region,
+            avoid_effective_region: avoid_2d.effective_region,
             top_z_wcs,
             bottom_z_wcs,
             warnings: resolved.warnings,
@@ -460,8 +634,26 @@ fn compute_overlay(
     {
         return Some(BoundaryPreviewOverlay::StockOuterEnvelope {
             stock_region: stock_xy_region(rs),
+            avoid_nominal_region: avoid_2d.nominal_region,
+            avoid_effective_region: avoid_2d.effective_region,
             top_z_wcs,
             bottom_z_wcs,
+            warnings: avoid_2d.warnings,
+        });
+    }
+
+    // 4. All other 2.5D strategies (`Pocket2D`, `Contour2D`, `DrillBore`, `VCarve`, etc.):
+    //    render red Avoid / Keep-Out overlays whenever keep-out regions are configured!
+    if !avoid_2d.is_empty() || !avoid_2d.warnings.is_empty() {
+        return Some(BoundaryPreviewOverlay::Planar2D {
+            nominal_region: RegionSet2D::empty(),
+            effective_region: RegionSet2D::empty(),
+            show_effective: false,
+            avoid_nominal_region: avoid_2d.nominal_region,
+            avoid_effective_region: avoid_2d.effective_region,
+            top_z_wcs,
+            bottom_z_wcs,
+            warnings: avoid_2d.warnings,
         });
     }
 
@@ -476,6 +668,7 @@ fn resolve_facing_preview(
     boundary: &chip_cam::MachiningBoundaryConfig,
     tool_r: f64,
     show_effective: bool,
+    avoid_2d: ResolvedAvoidRegion2D,
     top_z_wcs: f64,
     bottom_z_wcs: f64,
 ) -> BoundaryPreviewOverlay {
@@ -495,11 +688,15 @@ fn resolve_facing_preview(
             None
         };
         if let Some(surf) = surf_opt {
-            let res = resolve_3d_boundary_config_detailed(surf, rs, selection, boundary, tool_r);
+            let mut res =
+                resolve_3d_boundary_config_detailed(surf, rs, selection, boundary, tool_r);
+            res.warnings.extend(avoid_2d.warnings);
             return BoundaryPreviewOverlay::Planar2D {
                 nominal_region: res.nominal_region,
                 effective_region: res.effective_region,
                 show_effective,
+                avoid_nominal_region: avoid_2d.nominal_region,
+                avoid_effective_region: avoid_2d.effective_region,
                 top_z_wcs,
                 bottom_z_wcs,
                 warnings: res.warnings,
@@ -622,10 +819,13 @@ fn resolve_facing_preview(
         nominal_region.clone()
     };
 
+    warnings.extend(avoid_2d.warnings);
     BoundaryPreviewOverlay::Planar2D {
         nominal_region,
         effective_region,
         show_effective,
+        avoid_nominal_region: avoid_2d.nominal_region,
+        avoid_effective_region: avoid_2d.effective_region,
         top_z_wcs,
         bottom_z_wcs,
         warnings,
@@ -723,7 +923,11 @@ mod tests {
             frame_geo_sig: 42,
             display_unit: DisplayUnit::Millimeter,
             doc: None,
+            sketches: &[],
             resolved_setup: &rs,
+            fixtures_frame: &rs.frame,
+            resolved_fixtures: &[],
+            shared_avoid_regions: &[],
             op: &op,
             active_tool: Some(&tool6),
             extracted: None,
@@ -741,7 +945,11 @@ mod tests {
                 frame_geo_sig: 42,
                 display_unit: DisplayUnit::Millimeter,
                 doc: None,
+                sketches: &[],
                 resolved_setup: &rs,
+                fixtures_frame: &rs.frame,
+                resolved_fixtures: &[],
+                shared_avoid_regions: &[],
                 op: &op,
                 active_tool: Some(&tool6),
                 extracted: None,
@@ -760,7 +968,11 @@ mod tests {
                 frame_geo_sig: 42,
                 display_unit: DisplayUnit::Millimeter,
                 doc: None,
+                sketches: &[],
                 resolved_setup: &rs,
+                fixtures_frame: &rs.frame,
+                resolved_fixtures: &[],
+                shared_avoid_regions: &[],
                 op: &op,
                 active_tool: Some(&tool6),
                 extracted: None,
@@ -785,7 +997,11 @@ mod tests {
                 frame_geo_sig: 42,
                 display_unit: DisplayUnit::Millimeter,
                 doc: None,
+                sketches: &[],
                 resolved_setup: &rs,
+                fixtures_frame: &rs.frame,
+                resolved_fixtures: &[],
+                shared_avoid_regions: &[],
                 op: &op,
                 active_tool: Some(&tool6),
                 extracted: None,
@@ -817,7 +1033,11 @@ mod tests {
             frame_geo_sig: 42,
             display_unit: DisplayUnit::Millimeter,
             doc: None,
+            sketches: &[],
             resolved_setup: &rs,
+            fixtures_frame: &rs.frame,
+            resolved_fixtures: &[],
+            shared_avoid_regions: &[],
             op: &op,
             active_tool: Some(&tool10),
             extracted: None,
@@ -848,7 +1068,11 @@ mod tests {
                 frame_geo_sig: 7,
                 display_unit: DisplayUnit::Millimeter,
                 doc: None,
+                sketches: &[],
                 resolved_setup: &rs_rot,
+                fixtures_frame: &rs_rot.frame,
+                resolved_fixtures: &[],
+                shared_avoid_regions: &[],
                 op: &rot_op,
                 active_tool: Some(&tool6),
                 extracted: None,
@@ -878,7 +1102,11 @@ mod tests {
                 frame_geo_sig: 8,
                 display_unit: DisplayUnit::Millimeter,
                 doc: None,
+                sketches: &[],
                 resolved_setup: &rs_box,
+                fixtures_frame: &rs_box.frame,
+                resolved_fixtures: &[],
+                shared_avoid_regions: &[],
                 op: &pkt,
                 active_tool: Some(&tool6),
                 extracted: None,
@@ -932,7 +1160,11 @@ mod tests {
                 frame_geo_sig: 100,
                 display_unit: DisplayUnit::Millimeter,
                 doc: None,
+                sketches: &[],
                 resolved_setup: &rs,
+                fixtures_frame: &rs.frame,
+                resolved_fixtures: &[],
+                shared_avoid_regions: &[],
                 op: &op,
                 active_tool: Some(&tool6),
                 extracted: None,
@@ -962,7 +1194,11 @@ mod tests {
                 frame_geo_sig: 100,
                 display_unit: DisplayUnit::Millimeter,
                 doc: None,
+                sketches: &[],
                 resolved_setup: &virtual_90,
+                fixtures_frame: &rs.frame,
+                resolved_fixtures: &[],
+                shared_avoid_regions: &[],
                 op: &op,
                 active_tool: Some(&tool6),
                 extracted: None,
@@ -1005,12 +1241,223 @@ mod tests {
                 frame_geo_sig: 100,
                 display_unit: DisplayUnit::Millimeter,
                 doc: None,
+                sketches: &[],
                 resolved_setup: &virtual_90,
+                fixtures_frame: &rs.frame,
+                resolved_fixtures: &[],
+                shared_avoid_regions: &[],
                 op: &op,
                 active_tool: Some(&tool6),
                 extracted: None,
             });
             assert_eq!(cache.recompute_count(), 3 + side as u64);
         }
+    }
+
+    #[test]
+    fn m86_avoid_region_cache_invalidation_and_zero_idle_recompute() {
+        use chip_cam::{
+            FixtureBody, GeometrySelectionItem, SharedAvoidRegion, resolve_fixture_body,
+        };
+        use chip_sketch::{RectAnchorMode, SketchEntity, SketchEntityEntry, SketchLayer};
+
+        let rs = sample_box_setup();
+        let tools = default_starter_tool_library();
+        let tool6 = tools.tools.first().unwrap().clone();
+
+        let mut sk = SketchLayer::new("sk_avoid", "Keep-Out Sketch", "s1");
+        sk.entities.push(SketchEntityEntry {
+            id: "ko_rect".to_string(),
+            name: "Clamp Rect".to_string(),
+            sub_layer: None,
+            is_construction: false,
+            entity: SketchEntity::Rectangle {
+                anchor: RectAnchorMode::Center,
+                x: ParamLength::from_mm(10.0),
+                y: ParamLength::from_mm(0.0),
+                width: ParamLength::from_mm(20.0),
+                height: ParamLength::from_mm(12.0),
+                corner_radius: ParamLength::from_mm(0.0),
+                rotation_deg: 0.0,
+            },
+        });
+        sk.rebuild_regions(None);
+
+        let eval_ctx = rs.eval_context(DisplayUnit::Millimeter);
+        let mut clamp =
+            FixtureBody::default_toe_clamp("clamp_1", "Toe Clamp 1", DVec2::new(-35.0, 0.0), 180.0);
+        let mut resolved_fix = vec![
+            resolve_fixture_body(&clamp, &rs.stock.aabb_wcs(), &eval_ctx, &mut |_| None).unwrap(),
+        ];
+
+        let mut shared = SharedAvoidRegion::new("sh_clamp", "Clamp Zone A");
+        shared.selections.push(GeometrySelectionItem::SketchEntity {
+            sketch_id: "sk_avoid".to_string(),
+            entity_id: "ko_rect".to_string(),
+            reverse: false,
+            side_flip: false,
+        });
+        let mut shared_regions = vec![shared];
+
+        let mut op = Operation::new("op_face", "Face Mill", OperationKind::Facing);
+        op.avoid.shared_region_ids.push("sh_clamp".to_string());
+        op.avoid.radial_clearance = ParamLength::from_mm(1.0);
+
+        let mut cache = BoundaryPreviewCache::default();
+        let first = cache
+            .get_or_compute(&BoundaryPreviewInput {
+                active: true,
+                setup_idx: 0,
+                op_idx: 0,
+                cad_rev: 1,
+                frame_geo_sig: 55,
+                display_unit: DisplayUnit::Millimeter,
+                doc: None,
+                sketches: std::slice::from_ref(&sk),
+                resolved_setup: &rs,
+                fixtures_frame: &rs.frame,
+                resolved_fixtures: &resolved_fix,
+                shared_avoid_regions: &shared_regions,
+                op: &op,
+                active_tool: Some(&tool6),
+                extracted: None,
+            })
+            .unwrap();
+        assert_eq!(cache.recompute_count(), 1);
+        let (nom_area_1, eff_area_1) = match first.as_ref() {
+            BoundaryPreviewOverlay::Planar2D {
+                avoid_nominal_region,
+                avoid_effective_region,
+                ..
+            } => (
+                avoid_nominal_region.total_area_mm2(),
+                avoid_effective_region.total_area_mm2(),
+            ),
+            other => panic!("expected Planar2D, got {other:?}"),
+        };
+        assert!(
+            nom_area_1 > 200.0,
+            "expected ~240 mm² sketch avoid footprint"
+        );
+        assert!(
+            eff_area_1 > nom_area_1 + 100.0,
+            "effective avoid footprint must inflate by tool_r + radial_clearance"
+        );
+
+        // Idle frames -> zero recomputation
+        for _ in 0..8 {
+            let _ = cache.get_or_compute(&BoundaryPreviewInput {
+                active: true,
+                setup_idx: 0,
+                op_idx: 0,
+                cad_rev: 1,
+                frame_geo_sig: 55,
+                display_unit: DisplayUnit::Millimeter,
+                doc: None,
+                sketches: std::slice::from_ref(&sk),
+                resolved_setup: &rs,
+                fixtures_frame: &rs.frame,
+                resolved_fixtures: &resolved_fix,
+                shared_avoid_regions: &shared_regions,
+                op: &op,
+                active_tool: Some(&tool6),
+                extracted: None,
+            });
+        }
+        assert_eq!(cache.recompute_count(), 1, "idle frames must not recompute");
+
+        // Editing linked SharedAvoidRegion (adding fixture_id) invalidates cache immediately
+        shared_regions[0].fixture_ids.push("clamp_1".to_string());
+        let with_fix = cache
+            .get_or_compute(&BoundaryPreviewInput {
+                active: true,
+                setup_idx: 0,
+                op_idx: 0,
+                cad_rev: 1,
+                frame_geo_sig: 55,
+                display_unit: DisplayUnit::Millimeter,
+                doc: None,
+                sketches: std::slice::from_ref(&sk),
+                resolved_setup: &rs,
+                fixtures_frame: &rs.frame,
+                resolved_fixtures: &resolved_fix,
+                shared_avoid_regions: &shared_regions,
+                op: &op,
+                active_tool: Some(&tool6),
+                extracted: None,
+            })
+            .unwrap();
+        assert_eq!(cache.recompute_count(), 2);
+        let BoundaryPreviewOverlay::Planar2D {
+            avoid_nominal_region: nom_with_fix,
+            ..
+        } = with_fix.as_ref()
+        else {
+            panic!("expected Planar2D");
+        };
+        assert!(
+            nom_with_fix.total_area_mm2() > nom_area_1 + 50.0,
+            "adding fixture to shared avoid region must expand nominal keep-out preview"
+        );
+
+        // Moving fixture position invalidates cache immediately
+        if let chip_cam::FixtureKind::ToeClamp {
+            ref mut anchor_xy, ..
+        } = clamp.kind
+        {
+            *anchor_xy = [ParamLength::from_mm(-25.0), ParamLength::from_mm(12.0)];
+        }
+        resolved_fix = vec![
+            resolve_fixture_body(&clamp, &rs.stock.aabb_wcs(), &eval_ctx, &mut |_| None).unwrap(),
+        ];
+        let _ = cache.get_or_compute(&BoundaryPreviewInput {
+            active: true,
+            setup_idx: 0,
+            op_idx: 0,
+            cad_rev: 1,
+            frame_geo_sig: 55,
+            display_unit: DisplayUnit::Millimeter,
+            doc: None,
+            sketches: std::slice::from_ref(&sk),
+            resolved_setup: &rs,
+            fixtures_frame: &rs.frame,
+            resolved_fixtures: &resolved_fix,
+            shared_avoid_regions: &shared_regions,
+            op: &op,
+            active_tool: Some(&tool6),
+            extracted: None,
+        });
+        assert_eq!(cache.recompute_count(), 3);
+
+        // Editing op.avoid.radial_clearance invalidates cache and grows effective area
+        op.avoid.radial_clearance = ParamLength::from_mm(4.0);
+        let wider = cache
+            .get_or_compute(&BoundaryPreviewInput {
+                active: true,
+                setup_idx: 0,
+                op_idx: 0,
+                cad_rev: 1,
+                frame_geo_sig: 55,
+                display_unit: DisplayUnit::Millimeter,
+                doc: None,
+                sketches: std::slice::from_ref(&sk),
+                resolved_setup: &rs,
+                fixtures_frame: &rs.frame,
+                resolved_fixtures: &resolved_fix,
+                shared_avoid_regions: &shared_regions,
+                op: &op,
+                active_tool: Some(&tool6),
+                extracted: None,
+            })
+            .unwrap();
+        assert_eq!(cache.recompute_count(), 4);
+        let BoundaryPreviewOverlay::Planar2D {
+            avoid_effective_region: eff_wider,
+            ..
+        } = wider.as_ref()
+        else {
+            panic!("expected Planar2D");
+        };
+        assert!(eff_wider.total_area_mm2() > eff_area_1 + 200.0);
     }
 }

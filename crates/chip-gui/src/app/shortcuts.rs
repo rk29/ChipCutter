@@ -91,6 +91,8 @@ impl ChipCutterApp {
                 // Cancelled first rubber-band click while staying in SketchAuthor tool
             } else if self.pick_mode != ViewportPickMode::InspectEntity {
                 self.pick_mode = ViewportPickMode::InspectEntity;
+                self.geometry_pick_target = crate::panels::GeometryPickTarget::CuttingArea;
+                self.editing_shared_avoid_id = None;
                 self.highlight.preview_tab_marker_wcs = None;
             } else if self.dispatcher.is_busy() {
                 let elapsed = self.dispatcher.batch_elapsed();
