@@ -20,6 +20,102 @@ rotate_deg = [
     0.0,
 ]
 
+[[sketches]]
+id = "sketch_1"
+name = "Sketch 1 (Setup XY)"
+visible = true
+
+[sketches.anchor]
+kind = "setup_xy"
+setup_id = "setup_1"
+plane_ref = "stock_top"
+
+[sketches.anchor.z_offset]
+value_mm = 0.0
+
+[sketches.cut_depth_default]
+value_mm = 6.0
+
+[[sketches.entities]]
+id = "rect_1"
+name = "Rectangle 1"
+is_construction = false
+
+[sketches.entities.entity]
+type = "rectangle"
+anchor = "center"
+rotation_deg = 0.0
+
+[sketches.entities.entity.x]
+value_mm = 3.0
+
+[sketches.entities.entity.y]
+value_mm = 0.0
+
+[sketches.entities.entity.width]
+value_mm = 66.0
+
+[sketches.entities.entity.height]
+value_mm = 40.0
+
+[sketches.entities.entity.corner_radius]
+value_mm = 0.0
+
+[[sketches.regions]]
+id = "region_1"
+area_mm2 = 2640.0
+
+[sketches.regions.outer_ccw]
+closed = true
+
+[[sketches.regions.outer_ccw.segments]]
+
+[sketches.regions.outer_ccw.segments.Line]
+start = [
+    -30.0,
+    -20.0,
+]
+end = [
+    36.0,
+    -20.0,
+]
+
+[[sketches.regions.outer_ccw.segments]]
+
+[sketches.regions.outer_ccw.segments.Line]
+start = [
+    36.0,
+    -20.0,
+]
+end = [
+    36.0,
+    20.0,
+]
+
+[[sketches.regions.outer_ccw.segments]]
+
+[sketches.regions.outer_ccw.segments.Line]
+start = [
+    36.0,
+    20.0,
+]
+end = [
+    -30.0,
+    20.0,
+]
+
+[[sketches.regions.outer_ccw.segments]]
+
+[sketches.regions.outer_ccw.segments.Line]
+start = [
+    -30.0,
+    20.0,
+]
+end = [
+    -30.0,
+    -20.0,
+]
+
 [[tools]]
 id = "carvera_t2_3175mm_25loc_1fl"
 tool_number = 2
@@ -153,17 +249,22 @@ value_mm = 0.0
 value_mm = 0.0
 
 [setups.stock]
-type = "fixed_cylinder"
-axis = "x"
+type = "fixed_box"
 
-[setups.stock.diameter]
-value_mm = 42.0
+[setups.stock.width_x]
+value_mm = 70.0
 
-[setups.stock.length]
-value_mm = 80.0
+[setups.stock.depth_y]
+value_mm = 39.0
 
-[setups.stock.axial_top_offset]
-value_mm = 0.0
+[setups.stock.height_z]
+value_mm = 39.0
+
+[setups.stock.xy_align]
+mode = "center_xy"
+
+[setups.stock.z_align]
+mode = "center_z"
 
 [setups.rotary]
 mode = "simultaneous4_axis"
@@ -208,10 +309,15 @@ name = "3D Adaptive 0 deg"
 kind = "adaptive_3d"
 suppressed = false
 tool_id = "carvera_t2_3175mm_25loc_1fl"
-preset_id = "carvera_al6061_deep"
-selections = []
+preset_id = "carvera_wood_deep"
 
 [setups.operations.feed_overrides]
+
+[[setups.operations.selections]]
+kind = "sketch_layer_all"
+sketch_id = "sketch_1"
+reverse = false
+side_flip = false
 
 [setups.operations.heights.clearance]
 reference = "setup_clearance"
@@ -312,13 +418,26 @@ angle_deg = 0.0
 
 [setups.operations.strategy]
 strategy_kind = "adaptive_3d"
-boundary_mode = "model_silhouette"
+boundary_mode = "selected_regions"
 tool_containment = "tool_center_on_boundary"
+silhouette_fill_holes = true
 detect_flats = true
 flat_area_min_mm2 = 4.0
 
 [setups.operations.strategy.boundary_offset]
-value_mm = 0.5
+value_mm = 0.0
+
+[setups.operations.strategy.model_bounds_offset_x_neg]
+value_mm = 0.0
+
+[setups.operations.strategy.model_bounds_offset_x_pos]
+value_mm = 0.0
+
+[setups.operations.strategy.model_bounds_offset_y_neg]
+value_mm = 0.0
+
+[setups.operations.strategy.model_bounds_offset_y_pos]
+value_mm = 0.0
 
 [setups.operations.strategy.adaptive]
 cut_direction = "climb"
@@ -349,10 +468,15 @@ name = "3D Adaptive 90 deg"
 kind = "adaptive_3d"
 suppressed = false
 tool_id = "carvera_t2_3175mm_25loc_1fl"
-preset_id = "carvera_al6061_deep"
-selections = []
+preset_id = "carvera_wood_deep"
 
 [setups.operations.feed_overrides]
+
+[[setups.operations.selections]]
+kind = "sketch_layer_all"
+sketch_id = "sketch_1"
+reverse = false
+side_flip = false
 
 [setups.operations.heights.clearance]
 reference = "setup_clearance"
@@ -462,13 +586,26 @@ angle_deg = 90.0
 
 [setups.operations.strategy]
 strategy_kind = "adaptive_3d"
-boundary_mode = "model_silhouette"
+boundary_mode = "selected_regions"
 tool_containment = "tool_center_on_boundary"
+silhouette_fill_holes = true
 detect_flats = true
 flat_area_min_mm2 = 4.0
 
 [setups.operations.strategy.boundary_offset]
-value_mm = 0.5
+value_mm = 0.0
+
+[setups.operations.strategy.model_bounds_offset_x_neg]
+value_mm = 0.0
+
+[setups.operations.strategy.model_bounds_offset_x_pos]
+value_mm = 0.0
+
+[setups.operations.strategy.model_bounds_offset_y_neg]
+value_mm = 0.0
+
+[setups.operations.strategy.model_bounds_offset_y_pos]
+value_mm = 0.0
 
 [setups.operations.strategy.adaptive]
 cut_direction = "climb"
@@ -499,10 +636,15 @@ name = "3D Adaptive 180 deg"
 kind = "adaptive_3d"
 suppressed = false
 tool_id = "carvera_t2_3175mm_25loc_1fl"
-preset_id = "carvera_al6061_deep"
-selections = []
+preset_id = "carvera_wood_deep"
 
 [setups.operations.feed_overrides]
+
+[[setups.operations.selections]]
+kind = "sketch_layer_all"
+sketch_id = "sketch_1"
+reverse = false
+side_flip = false
 
 [setups.operations.heights.clearance]
 reference = "setup_clearance"
@@ -612,13 +754,26 @@ angle_deg = 180.0
 
 [setups.operations.strategy]
 strategy_kind = "adaptive_3d"
-boundary_mode = "model_silhouette"
+boundary_mode = "selected_regions"
 tool_containment = "tool_center_on_boundary"
+silhouette_fill_holes = true
 detect_flats = true
 flat_area_min_mm2 = 4.0
 
 [setups.operations.strategy.boundary_offset]
-value_mm = 0.5
+value_mm = 0.0
+
+[setups.operations.strategy.model_bounds_offset_x_neg]
+value_mm = 0.0
+
+[setups.operations.strategy.model_bounds_offset_x_pos]
+value_mm = 0.0
+
+[setups.operations.strategy.model_bounds_offset_y_neg]
+value_mm = 0.0
+
+[setups.operations.strategy.model_bounds_offset_y_pos]
+value_mm = 0.0
 
 [setups.operations.strategy.adaptive]
 cut_direction = "climb"
@@ -649,10 +804,15 @@ name = "3D Adaptive 270 deg"
 kind = "adaptive_3d"
 suppressed = false
 tool_id = "carvera_t2_3175mm_25loc_1fl"
-preset_id = "carvera_al6061_deep"
-selections = []
+preset_id = "carvera_wood_deep"
 
 [setups.operations.feed_overrides]
+
+[[setups.operations.selections]]
+kind = "sketch_layer_all"
+sketch_id = "sketch_1"
+reverse = false
+side_flip = false
 
 [setups.operations.heights.clearance]
 reference = "setup_clearance"
@@ -762,13 +922,26 @@ angle_deg = 270.0
 
 [setups.operations.strategy]
 strategy_kind = "adaptive_3d"
-boundary_mode = "model_silhouette"
+boundary_mode = "selected_regions"
 tool_containment = "tool_center_on_boundary"
+silhouette_fill_holes = true
 detect_flats = true
 flat_area_min_mm2 = 4.0
 
 [setups.operations.strategy.boundary_offset]
-value_mm = 0.5
+value_mm = 0.0
+
+[setups.operations.strategy.model_bounds_offset_x_neg]
+value_mm = 0.0
+
+[setups.operations.strategy.model_bounds_offset_x_pos]
+value_mm = 0.0
+
+[setups.operations.strategy.model_bounds_offset_y_neg]
+value_mm = 0.0
+
+[setups.operations.strategy.model_bounds_offset_y_pos]
+value_mm = 0.0
 
 [setups.operations.strategy.adaptive]
 cut_direction = "climb"
@@ -799,7 +972,7 @@ name = "Simultaneous 4-Axis"
 kind = "rotary_4axis_sim"
 suppressed = false
 tool_id = "carvera_t5_3175mm_2fl_ball"
-preset_id = "carvera_ball_al"
+preset_id = "carvera_ball_wood"
 selections = []
 
 [setups.operations.feed_overrides]
@@ -905,6 +1078,8 @@ tilt_mode = "surface_normal_auto_tilt"
 max_tilt_deg = 18.0
 tilt_smoothing_window = 3
 use_cusp_height = true
+axial_boundary_mode = "model_bounds"
+axial_containment = "tool_center_on_boundary"
 start_angle_deg = 0.0
 end_angle_deg = 360.0
 angular_sample_deg = 2.5
@@ -922,6 +1097,12 @@ value_mm = 0.02
 value_mm = 0.0
 
 [setups.operations.strategy.axial_margin_end]
+value_mm = 0.0
+
+[setups.operations.strategy.explicit_u_start]
+value_mm = 0.0
+
+[setups.operations.strategy.explicit_u_end]
 value_mm = 0.0
 
 [setups.operations.strategy.axial_sample_step]
