@@ -483,9 +483,9 @@ impl ChipCutterApp {
             | ViewportPickMode::PickModelLayFlatFace { .. } => PickFilter::FacesOnly,
             ViewportPickMode::SetupWcsOriginFeature { .. } => PickFilter::Any,
             ViewportPickMode::OpClosedLoops { .. } => PickFilter::EdgeLoops,
-            ViewportPickMode::OpOpenChain { .. } | ViewportPickMode::PlaceContourTab { .. } => {
-                PickFilter::EdgesOnly
-            }
+            ViewportPickMode::OpOpenChain { .. }
+            | ViewportPickMode::PlaceContourTab { .. }
+            | ViewportPickMode::SetupWcsXyPlaneXEdge { .. } => PickFilter::EdgesOnly,
             ViewportPickMode::OpCylindricalHoles { .. } => PickFilter::CylindricalHolesOnly,
             ViewportPickMode::SketchAuthor { .. } | ViewportPickMode::PlaceFixtureClamp { .. } => {
                 PickFilter::Any
@@ -780,6 +780,32 @@ impl ChipCutterApp {
                         *face_ref = bind;
                     }
                     self.pick_mode = ViewportPickMode::InspectEntity;
+                }
+            }
+            ViewportPickMode::SetupWcsXyPlaneXEdge { setup_idx } => {
+                if setup_idx < self.project.setups.len() {
+                    let edge_opt = match target {
+                        PickTarget::Edge(eid) | PickTarget::Loop { seed_edge: eid, .. } => {
+                            doc.bind_edge(eid)
+                        }
+                        PickTarget::Face(_) => None,
+                    };
+                    if let Some(bind) = edge_opt {
+                        self.history.record_before_edit(
+                            "Pick Setup WCS XY Plane +X Edge",
+                            None,
+                            &self.project,
+                        );
+                        if let WcsOrientationMode::SelectXYPlane { x_edge_ref, .. } =
+                            &mut self.project.setups[setup_idx].wcs.orientation
+                        {
+                            *x_edge_ref = Some(bind);
+                        }
+                        for op in &mut self.project.setups[setup_idx].operations {
+                            op.mark_dirty();
+                        }
+                        self.pick_mode = ViewportPickMode::InspectEntity;
+                    }
                 }
             }
             ViewportPickMode::SetupWcsOriginFeature { setup_idx } => {
@@ -1790,5 +1816,20 @@ mod tests {
                 hit_on_ray.distance(sample_cad_pt)
             );
         }
+    }
+
+    #[test]
+    fn m88_select_xy_plane_x_edge_pick_mode_metadata() {
+        let mode = ViewportPickMode::SetupWcsXyPlaneXEdge { setup_idx: 0 };
+        let banner = mode
+            .banner_text()
+            .expect("SetupWcsXyPlaneXEdge must provide a viewport pick banner");
+        assert!(banner.contains("+X Edge"));
+        let (title, instr, done) = mode
+            .guidance_info()
+            .expect("SetupWcsXyPlaneXEdge must provide guidance HUD info");
+        assert!(title.contains("+X Edge"));
+        assert!(instr.contains("edge"));
+        assert!(!done);
     }
 }

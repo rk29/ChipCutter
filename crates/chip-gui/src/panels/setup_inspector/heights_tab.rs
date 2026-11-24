@@ -7,6 +7,15 @@ use crate::widgets::{
 
 use super::SetupGrid;
 
+const SETUP_RETRACT_REFS: [HeightReference; 6] = [
+    HeightReference::StockTop,
+    HeightReference::StockBottom,
+    HeightReference::ModelTop,
+    HeightReference::ModelBottom,
+    HeightReference::WcsOrigin,
+    HeightReference::SetupClearance,
+];
+
 pub(super) struct HeightsTabCtx<'a> {
     pub(super) setup: &'a mut Setup,
     pub(super) setup_idx: usize,
@@ -50,6 +59,7 @@ pub(super) fn show_heights_tab(ui: &mut egui::Ui, ctx: HeightsTabCtx<'_>) {
                     "Clearance Datum",
                     ("setup_clr_ref", setup_idx),
                     &mut setup.heights.clearance.reference,
+                    &HeightReference::SETUP_REFS,
                     "Change Setup Clearance Reference",
                     mutated_label,
                 );
@@ -70,6 +80,7 @@ pub(super) fn show_heights_tab(ui: &mut egui::Ui, ctx: HeightsTabCtx<'_>) {
                     "Retract Datum",
                     ("setup_ret_ref", setup_idx),
                     &mut setup.heights.retract.reference,
+                    &SETUP_RETRACT_REFS,
                     "Change Setup Retract Reference",
                     g.mutated,
                 );
@@ -106,6 +117,7 @@ fn render_setup_height_ref_row(
     label: &str,
     salt: (&str, usize),
     val: &mut HeightReference,
+    allowed_refs: &[HeightReference],
     undo: &'static str,
     mutated: &mut Option<&'static str>,
 ) {
@@ -118,7 +130,7 @@ fn render_setup_height_ref_row(
                 .width(INPUT_COL_WIDTH + 30.0)
                 .selected_text(val.label())
                 .show_ui(ui, |ui| {
-                    for r in HeightReference::SETUP_REFS {
+                    for &r in allowed_refs {
                         if ui
                             .selectable_value(val, r, r.label())
                             .on_hover_text(format!("Measure height offset from {}", r.label()))

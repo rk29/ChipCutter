@@ -586,12 +586,18 @@ impl PaneBehavior<'_> {
                     let mut import_fixture_requested = false;
                     let mut open_flip_jig_wizard = false;
                     let mut open_soft_jaw_wizard = false;
+                    let project_dir = self
+                        .app
+                        .project_file_path
+                        .as_deref()
+                        .and_then(std::path::Path::parent);
                     let align = show_setup_inspector(
                         ui,
                         SetupInspectorCtx {
                             project: &mut self.app.project,
                             setup_idx,
                             history: &mut self.app.history,
+                            project_dir,
                             cad_doc: cad_ref,
                             resolved: resolved_ref,
                             resolved_fixtures: resolved_fixtures_ref,

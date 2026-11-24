@@ -6,14 +6,15 @@ mod wcs_tab;
 
 use std::fmt::Debug;
 use std::hash::Hash;
+use std::path::Path;
 
-use chip_cad::CadDocument;
+use chip_cad::{BodyId, CadDocument};
 use chip_cam::{
     AxisAnchor, BoxAnchor27, FixtureBody, ResolvedFixtureSolid, ResolvedSetup, RotaryConfig, Setup,
     SetupHeights, StockConfig, WcsConfig, WorkOffsetSlot,
 };
 use chip_math::{EvalContext, ParamLength};
-use chip_post::builtin_post_profiles;
+use chip_post::{PostProfileSource, load_available_post_profiles};
 use chip_project::{ModelEntry, ProjectDocument, UndoHistory};
 use chip_tools::MachineDefinition;
 
@@ -46,6 +47,7 @@ pub struct SetupInspectorCtx<'a> {
     pub project: &'a mut ProjectDocument,
     pub setup_idx: usize,
     pub history: &'a mut UndoHistory,
+    pub project_dir: Option<&'a Path>,
     pub cad_doc: Option<&'a CadDocument>,
     pub resolved: Option<Result<&'a ResolvedSetup, &'a str>>,
     pub resolved_fixtures: &'a [ResolvedFixtureSolid],
@@ -69,6 +71,7 @@ pub struct SetupInspectorCtx<'a> {
 /// fields (never cloning `project.tools` or `setup.operations` on idle 60 FPS frames!).
 struct SetupParamsSnapshot {
     name: String,
+    target_bodies: Vec<BodyId>,
     wcs_slot: WorkOffsetSlot,
     post_profile: String,
     wcs: WcsConfig,
@@ -84,6 +87,7 @@ impl SetupParamsSnapshot {
     fn capture(setup: &Setup) -> Self {
         Self {
             name: setup.name.clone(),
+            target_bodies: setup.target_bodies.clone(),
             wcs_slot: setup.wcs_slot,
             post_profile: setup.post_profile.clone(),
             wcs: setup.wcs.clone(),
@@ -98,6 +102,7 @@ impl SetupParamsSnapshot {
 
     fn restore_into(self, setup: &mut Setup) {
         setup.name = self.name;
+        setup.target_bodies = self.target_bodies;
         setup.wcs_slot = self.wcs_slot;
         setup.post_profile = self.post_profile;
         setup.wcs = self.wcs;
@@ -162,6 +167,7 @@ pub fn show_setup_inspector(ui: &mut egui::Ui, ctx: SetupInspectorCtx<'_>) -> bo
         project,
         setup_idx,
         history,
+        project_dir,
         cad_doc,
         resolved,
         resolved_fixtures,
@@ -391,6 +397,7 @@ pub fn show_setup_inspector(ui: &mut egui::Ui, ctx: SetupInspectorCtx<'_>) -> bo
                     WcsTabCtx {
                         setup,
                         setup_idx,
+                        project_dir,
                         cad_doc,
                         eval_ctx: &eval_ctx,
                         pick_mode,
@@ -507,6 +514,7 @@ pub(super) fn is_setup_wcs_pick_mode(mode: ViewportPickMode, setup_idx: usize) -
         ViewportPickMode::SetupWcsZ { setup_idx: s }
             | ViewportPickMode::SetupWcsX { setup_idx: s }
             | ViewportPickMode::SetupWcsXyPlane { setup_idx: s }
+            | ViewportPickMode::SetupWcsXyPlaneXEdge { setup_idx: s }
             | ViewportPickMode::SetupWcsOriginFeature { setup_idx: s }
             if s == setup_idx
     )
@@ -516,8 +524,19 @@ pub(super) fn render_post_body(
     ui: &mut egui::Ui,
     setup: &mut Setup,
     setup_idx: usize,
+    project_dir: Option<&Path>,
     mutated_label: &mut Option<&'static str>,
 ) {
+    let available_posts = load_available_post_profiles(project_dir);
+    let active_prof = available_posts
+        .iter()
+        .find(|p| p.id.eq_ignore_ascii_case(&setup.post_profile));
+    let selected_lbl = match active_prof {
+        Some(p) if p.is_builtin => p.name.clone(),
+        Some(p) => format!("{} [Custom]", p.name),
+        None => post_profile_short_label(&setup.post_profile).to_string(),
+    };
+
     inspector_grid(ui, ("setup_post_grid", setup_idx), |ui| {
         grid_row(
             ui,
@@ -527,13 +546,31 @@ pub(super) fn render_post_body(
                 egui::ComboBox::from_id_salt(("setup_post_cb", setup_idx))
                     .width(INPUT_COL_WIDTH + 54.0)
                     .truncate()
-                    .selected_text(post_profile_short_label(&setup.post_profile))
+                    .selected_text(selected_lbl)
                     .show_ui(ui, |ui| {
-                        for prof in builtin_post_profiles() {
-                            let lbl = format!("{} ({})", prof.name, prof.id);
+                        for prof in &available_posts {
+                            let lbl = if prof.is_builtin {
+                                format!("{} ({})", prof.name, prof.id)
+                            } else {
+                                format!("{} ({}) [Custom]", prof.name, prof.id)
+                            };
+                            let tip = match prof.source {
+                                PostProfileSource::BuiltIn => {
+                                    "Select this built-in CNC controller post-processor dialect"
+                                }
+                                PostProfileSource::UserConfig => {
+                                    "Select this custom post-processor profile from user configuration"
+                                }
+                                PostProfileSource::ProjectOrBundle => {
+                                    "Select this custom post-processor profile bundled with the project"
+                                }
+                                PostProfileSource::ExplicitFile => {
+                                    "Select this custom post-processor profile loaded from disk"
+                                }
+                            };
                             if ui
-                                .selectable_value(&mut setup.post_profile, prof.id, lbl)
-                                .on_hover_text("Select this CNC controller post-processor dialect")
+                                .selectable_value(&mut setup.post_profile, prof.id.clone(), lbl)
+                                .on_hover_text(tip)
                                 .changed()
                             {
                                 *mutated_label = Some("Change Post Profile");
@@ -542,22 +579,47 @@ pub(super) fn render_post_body(
                     })
                     .response
                     .on_hover_text(
-                        "Choose the CNC controller G-code post-processor profile for this Setup",
+                        "Choose the CNC controller G-code post-processor profile for this Setup (built-in or custom .post.toml)",
                     );
             },
         );
     });
 
     ui.add_space(4.0);
+    let active_prof = available_posts
+        .iter()
+        .find(|p| p.id.eq_ignore_ascii_case(&setup.post_profile));
     let extended_slot = matches!(
         setup.wcs_slot,
         WorkOffsetSlot::G59_1 | WorkOffsetSlot::G59_2 | WorkOffsetSlot::G59_3
     );
-    if extended_slot && setup.post_profile == "grbl" {
+    let blocks_extended_wcs =
+        active_prof.map_or(setup.post_profile == "grbl", |p| !p.allow_extended_wcs);
+    if extended_slot && blocks_extended_wcs {
         inline_banner(
             ui,
             BannerKind::Warn,
-            "Standard GRBL 1.1 only supports G54–G59; switch to grblHAL or LinuxCNC for G59.1–G59.3.",
+            "Standard GRBL 1.1 only supports G54-G59; switch to grblHAL or LinuxCNC for G59.1-G59.3.",
+        );
+    } else if let Some(prof) = active_prof
+        && prof.source == PostProfileSource::ProjectOrBundle
+    {
+        inline_banner(
+            ui,
+            BannerKind::Warn,
+            format!(
+                "[Custom] Project post profile '{}' loaded from project directory - review G-code before machining.",
+                prof.id
+            ),
+        );
+    } else if let Some(prof) = active_prof
+        && !prof.is_builtin
+        && !prof.description.trim().is_empty()
+    {
+        inline_banner(
+            ui,
+            BannerKind::Info,
+            format!("[Custom] {}", prof.description.trim()),
         );
     } else {
         inline_banner(
@@ -623,4 +685,756 @@ pub(super) fn show_27pt_xy_matrix(ui: &mut egui::Ui, anchor: &mut BoxAnchor27) -
             }
         });
     changed
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use std::path::Path;
+
+    use chip_cad::{
+        BodyId, CadDocument, EntitySignatureKind, GeometricSignature, SelectionBinding, SolidBody,
+    };
+    use chip_cam::{
+        FixtureBody, HeightReference, Operation, OperationKind, OperationStatus, WcsAxisRef,
+        WcsFeaturePointRef, WcsOrientationMode, WcsOriginMode,
+    };
+    use chip_math::{Aabb3, DVec3, ParamLength};
+    use chip_project::{ProjectDocument, UndoHistory};
+
+    use crate::panels::{
+        SetupTab, ViewportPickMode,
+        setup_inspector::{FixtureSafetySummary, SetupInspectorCtx, show_setup_inspector},
+    };
+
+    fn collect_texts(shapes: &[egui::epaint::ClippedShape], out: &mut Vec<String>) {
+        fn visit(shape: &egui::Shape, out: &mut Vec<String>) {
+            match shape {
+                egui::Shape::Text(t) => out.push(t.galley.text().to_string()),
+                egui::Shape::Vec(v) => {
+                    for s in v {
+                        visit(s, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        for cs in shapes {
+            visit(&cs.shape, out);
+        }
+    }
+
+    fn find_text_center(shape: &egui::Shape, needle: &str) -> Option<egui::Pos2> {
+        match shape {
+            egui::Shape::Text(t) if t.galley.text() == needle => {
+                Some(t.pos + t.galley.size() * 0.5)
+            }
+            egui::Shape::Vec(v) => v.iter().find_map(|s| find_text_center(s, needle)),
+            _ => None,
+        }
+    }
+
+    fn find_text_containing(shape: &egui::Shape, needle: &str) -> Option<egui::Pos2> {
+        match shape {
+            egui::Shape::Text(t) if t.galley.text().contains(needle) => {
+                Some(t.pos + t.galley.size() * 0.5)
+            }
+            egui::Shape::Vec(v) => v.iter().find_map(|s| find_text_containing(s, needle)),
+            _ => None,
+        }
+    }
+
+    fn click_at(pt: egui::Pos2) -> Vec<egui::Event> {
+        vec![
+            egui::Event::PointerMoved(pt),
+            egui::Event::PointerButton {
+                pos: pt,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+            egui::Event::PointerButton {
+                pos: pt,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]
+    }
+
+    fn dummy_binding(kind: EntitySignatureKind, idx: u32) -> SelectionBinding {
+        SelectionBinding {
+            body_id: BodyId(0),
+            last_index: idx,
+            signature: GeometricSignature {
+                kind,
+                normal_or_axis: DVec3::Z,
+                centroid_mm: DVec3::ZERO,
+                characteristic_measure: 10.0,
+                aabb_mm: Aabb3::new(DVec3::ZERO, DVec3::new(10.0, 10.0, 10.0)),
+            },
+        }
+    }
+
+    fn two_body_cad_doc() -> CadDocument {
+        let mut doc = CadDocument::empty();
+        doc.bodies.push(SolidBody {
+            id: BodyId(0),
+            name: "Base Plate".to_string(),
+            faces: Vec::new(),
+            edges: Vec::new(),
+            aabb_mm: Aabb3::new(DVec3::ZERO, DVec3::new(50.0, 50.0, 10.0)),
+        });
+        doc.bodies.push(SolidBody {
+            id: BodyId(1),
+            name: "Clamp Bracket".to_string(),
+            faces: Vec::new(),
+            edges: Vec::new(),
+            aabb_mm: Aabb3::new(DVec3::new(60.0, 0.0, 0.0), DVec3::new(90.0, 40.0, 12.0)),
+        });
+        doc.aabb_mm = Aabb3::new(DVec3::ZERO, DVec3::new(90.0, 50.0, 12.0));
+        doc
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn run_setup_frame(
+        ctx: &egui::Context,
+        project: &mut ProjectDocument,
+        history: &mut UndoHistory,
+        tab: &mut SetupTab,
+        pick_mode: &mut ViewportPickMode,
+        project_dir: Option<&Path>,
+        cad_doc: Option<&CadDocument>,
+        events: Vec<egui::Event>,
+    ) -> Vec<egui::epaint::ClippedShape> {
+        let mut sel_fix = Some(0);
+        let mut show_fix = true;
+        let mut show_27 = false;
+        let mut show_z = false;
+        let mut open_mm = false;
+        let mut m_changed = false;
+        let mut sw_mid = None;
+        let mut imp_fix = false;
+        let mut open_fj = false;
+        let mut open_sj = false;
+        let mut out = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(480.0, 1400.0),
+                )),
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
+                    let _ = show_setup_inspector(
+                        ui,
+                        SetupInspectorCtx {
+                            project,
+                            setup_idx: 0,
+                            history,
+                            project_dir,
+                            cad_doc,
+                            resolved: None,
+                            resolved_fixtures: &[],
+                            fixture_safety: FixtureSafetySummary::default(),
+                            tab,
+                            pick_mode,
+                            selected_fixture_idx: &mut sel_fix,
+                            show_fixtures: &mut show_fix,
+                            show_27pt_dots: &mut show_27,
+                            show_z_planes: &mut show_z,
+                            machines: &[],
+                            open_machine_manager: &mut open_mm,
+                            machine_changed: &mut m_changed,
+                            switch_machine_id: &mut sw_mid,
+                            import_fixture_requested: &mut imp_fix,
+                            open_flip_jig_wizard: &mut open_fj,
+                            open_soft_jaw_wizard: &mut open_sj,
+                        },
+                    );
+                });
+            },
+        );
+        out.textures_delta.clear();
+        out.shapes
+    }
+
+    #[test]
+    fn m88_setup_inspector_custom_post_profile_selection_and_badge() {
+        let tmp =
+            std::env::temp_dir().join(format!("chipcutter_m88_custom_post_{}", std::process::id()));
+        let posts_dir = tmp.join("posts");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&posts_dir).unwrap();
+        let custom_toml = chip_post::BUILTIN_GRBL_TOML
+            .replace("id = \"grbl\"", "id = \"shop_custom_mill\"")
+            .replace(
+                "name = \"GRBL 1.1 / FluidNC (Split by Tool)\"",
+                "name = \"Shop Custom Mill\"",
+            );
+        std::fs::write(posts_dir.join("shop_custom_mill.post.toml"), custom_toml).unwrap();
+
+        let ctx = egui::Context::default();
+        let mut proj = ProjectDocument::new("custom_post_test");
+        let mut op = Operation::new("op1", "Face", OperationKind::Facing);
+        op.runtime_status = OperationStatus::Clean;
+        proj.setups[0].operations = vec![op];
+        let mut hist = UndoHistory::default();
+        let mut tab = SetupTab::Wcs;
+        let mut pick_mode = ViewportPickMode::InspectEntity;
+
+        let _ = run_setup_frame(
+            &ctx,
+            &mut proj,
+            &mut hist,
+            &mut tab,
+            &mut pick_mode,
+            Some(&tmp),
+            None,
+            Vec::new(),
+        );
+        let s1 = run_setup_frame(
+            &ctx,
+            &mut proj,
+            &mut hist,
+            &mut tab,
+            &mut pick_mode,
+            Some(&tmp),
+            None,
+            Vec::new(),
+        );
+        let post_cb_pt = s1
+            .iter()
+            .find_map(|cs| find_text_containing(&cs.shape, "GRBL 1.1"))
+            .expect("Post Profile combo must display active GRBL profile");
+        let _ = run_setup_frame(
+            &ctx,
+            &mut proj,
+            &mut hist,
+            &mut tab,
+            &mut pick_mode,
+            Some(&tmp),
+            None,
+            click_at(post_cb_pt),
+        );
+        let s_open = run_setup_frame(
+            &ctx,
+            &mut proj,
+            &mut hist,
+            &mut tab,
+            &mut pick_mode,
+            Some(&tmp),
+            None,
+            Vec::new(),
+        );
+        let custom_pt = s_open
+            .iter()
+            .find_map(|cs| find_text_containing(&cs.shape, "[Custom]"))
+            .expect("Custom .post.toml profile must appear with [Custom] badge in Setup Inspector");
+        let _ = run_setup_frame(
+            &ctx,
+            &mut proj,
+            &mut hist,
+            &mut tab,
+            &mut pick_mode,
+            Some(&tmp),
+            None,
+            click_at(custom_pt),
+        );
+
+        assert_eq!(proj.setups[0].post_profile, "shop_custom_mill");
+        // Changing post profile is post-only and must not dirty Clean toolpaths
+        assert_eq!(
+            proj.setups[0].operations[0].runtime_status,
+            OperationStatus::Clean
+        );
+        assert!(hist.can_undo());
+        assert!(hist.undo(&mut proj).is_some());
+        assert_eq!(proj.setups[0].post_profile, "grbl");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn m88_setup_inspector_target_bodies_toggle_and_undo() {
+        let doc = two_body_cad_doc();
+        let ctx = egui::Context::default();
+        let mut proj = ProjectDocument::new("multi_body_test");
+        let mut op = Operation::new("op1", "Face", OperationKind::Facing);
+        op.runtime_status = OperationStatus::Clean;
+        proj.setups[0].operations = vec![op];
+        let mut hist = UndoHistory::default();
+        let mut tab = SetupTab::Wcs;
+        let mut pick_mode = ViewportPickMode::InspectEntity;
+
+        let _ = run_setup_frame(
+            &ctx,
+            &mut proj,
+            &mut hist,
+            &mut tab,
+            &mut pick_mode,
+            None,
+            Some(&doc),
+            Vec::new(),
+        );
+        let s1 = run_setup_frame(
+            &ctx,
+            &mut proj,
+            &mut hist,
+            &mut tab,
+            &mut pick_mode,
+            None,
+            Some(&doc),
+            Vec::new(),
+        );
+        let all_pt = s1
+            .iter()
+            .find_map(|cs| find_text_center(&cs.shape, "All Part Bodies"))
+            .expect("Target Bodies card must render 'All Part Bodies' checkbox for 2-body CAD");
+
+        // Uncheck "All Part Bodies" -> explicit mode with both bodies initially selected
+        let _ = run_setup_frame(
+            &ctx,
+            &mut proj,
+            &mut hist,
+            &mut tab,
+            &mut pick_mode,
+            None,
+            Some(&doc),
+            click_at(all_pt),
+        );
+        assert_eq!(proj.setups[0].target_bodies, vec![BodyId(0), BodyId(1)]);
+        assert_eq!(
+            proj.setups[0].operations[0].runtime_status,
+            OperationStatus::Dirty
+        );
+
+        let _ = run_setup_frame(
+            &ctx,
+            &mut proj,
+            &mut hist,
+            &mut tab,
+            &mut pick_mode,
+            None,
+            Some(&doc),
+            Vec::new(),
+        );
+        let s2 = run_setup_frame(
+            &ctx,
+            &mut proj,
+            &mut hist,
+            &mut tab,
+            &mut pick_mode,
+            None,
+            Some(&doc),
+            Vec::new(),
+        );
+        let body1_pt = s2
+            .iter()
+            .find_map(|cs| find_text_containing(&cs.shape, "Clamp Bracket"))
+            .expect("Explicit mode must show per-body checkbox for Clamp Bracket");
+        let _ = run_setup_frame(
+            &ctx,
+            &mut proj,
+            &mut hist,
+            &mut tab,
+            &mut pick_mode,
+            None,
+            Some(&doc),
+            click_at(body1_pt),
+        );
+        assert_eq!(proj.setups[0].target_bodies, vec![BodyId(0)]);
+
+        // Undo restores [0, 1], second Undo restores [] (All Part Bodies)
+        assert!(hist.undo(&mut proj).is_some());
+        assert_eq!(proj.setups[0].target_bodies, vec![BodyId(0), BodyId(1)]);
+        assert!(hist.undo(&mut proj).is_some());
+        assert!(proj.setups[0].target_bodies.is_empty());
+    }
+
+    #[test]
+    fn m88_wcs_xy_plane_x_edge_z_and_x_clear_and_edge_origin_segments() {
+        let doc = two_body_cad_doc();
+        let ctx = egui::Context::default();
+        let mut proj = ProjectDocument::new("wcs_picking_test");
+        let face_bind = dummy_binding(EntitySignatureKind::PlanarFace, 2);
+        let edge_bind = dummy_binding(EntitySignatureKind::LineEdge, 7);
+
+        // 1. SelectXYPlane: Pick X Edge activates SetupWcsXyPlaneXEdge; Clear (Auto) clears x_edge_ref with Undo
+        proj.setups[0].wcs.orientation = WcsOrientationMode::SelectXYPlane {
+            face_ref: face_bind.clone(),
+            flip_z: false,
+            x_edge_ref: Some(edge_bind.clone()),
+            clock_90: 0,
+            extra_z_rot_deg: 0.0,
+        };
+        proj.setups[0].wcs.origin = WcsOriginMode::SelectedCadFeature {
+            feature: WcsFeaturePointRef::EdgeMidpoint(edge_bind.clone()),
+        };
+
+        let mut hist = UndoHistory::default();
+        let mut tab = SetupTab::Wcs;
+        let mut pick_mode = ViewportPickMode::InspectEntity;
+
+        let _ = run_setup_frame(
+            &ctx,
+            &mut proj,
+            &mut hist,
+            &mut tab,
+            &mut pick_mode,
+            None,
+            Some(&doc),
+            Vec::new(),
+        );
+        let s1 = run_setup_frame(
+            &ctx,
+            &mut proj,
+            &mut hist,
+            &mut tab,
+            &mut pick_mode,
+            None,
+            Some(&doc),
+            Vec::new(),
+        );
+        let mut texts = Vec::new();
+        collect_texts(&s1, &mut texts);
+        assert!(
+            texts.iter().any(|t| t == "Edge #7"),
+            "SelectXYPlane must render bound x_edge_ref readout Edge #7"
+        );
+
+        let pick_x_pt = s1
+            .iter()
+            .find_map(|cs| find_text_center(&cs.shape, "Pick X Edge"))
+            .expect("SelectXYPlane must show 'Pick X Edge' button");
+        let _ = run_setup_frame(
+            &ctx,
+            &mut proj,
+            &mut hist,
+            &mut tab,
+            &mut pick_mode,
+            None,
+            Some(&doc),
+            click_at(pick_x_pt),
+        );
+        assert_eq!(
+            pick_mode,
+            ViewportPickMode::SetupWcsXyPlaneXEdge { setup_idx: 0 }
+        );
+
+        // Re-render after pick banner appears (banner shifts content down) and click "Clear (Auto)"
+        let _ = run_setup_frame(
+            &ctx,
+            &mut proj,
+            &mut hist,
+            &mut tab,
+            &mut pick_mode,
+            None,
+            Some(&doc),
+            Vec::new(),
+        );
+        let s_after_pick = run_setup_frame(
+            &ctx,
+            &mut proj,
+            &mut hist,
+            &mut tab,
+            &mut pick_mode,
+            None,
+            Some(&doc),
+            Vec::new(),
+        );
+        let clear_pt = s_after_pick
+            .iter()
+            .find_map(|cs| find_text_center(&cs.shape, "Clear (Auto)"))
+            .expect("SelectXYPlane with bound x_edge_ref must show 'Clear (Auto)'");
+        let _ = run_setup_frame(
+            &ctx,
+            &mut proj,
+            &mut hist,
+            &mut tab,
+            &mut pick_mode,
+            None,
+            Some(&doc),
+            click_at(clear_pt),
+        );
+        assert!(matches!(
+            proj.setups[0].wcs.orientation,
+            WcsOrientationMode::SelectXYPlane {
+                x_edge_ref: None,
+                ..
+            }
+        ));
+        assert_eq!(pick_mode, ViewportPickMode::InspectEntity);
+        assert!(hist.undo(&mut proj).is_some());
+        assert!(matches!(
+            proj.setups[0].wcs.orientation,
+            WcsOrientationMode::SelectXYPlane {
+                x_edge_ref: Some(_),
+                ..
+            }
+        ));
+
+        // 2. EdgeStart / EdgeMidpoint / EdgeEnd segmented buttons preserve exact SelectionBinding
+        let _ = run_setup_frame(
+            &ctx,
+            &mut proj,
+            &mut hist,
+            &mut tab,
+            &mut pick_mode,
+            None,
+            Some(&doc),
+            Vec::new(),
+        );
+        let s_edge = run_setup_frame(
+            &ctx,
+            &mut proj,
+            &mut hist,
+            &mut tab,
+            &mut pick_mode,
+            None,
+            Some(&doc),
+            Vec::new(),
+        );
+        let start_pt = s_edge
+            .iter()
+            .find_map(|cs| find_text_center(&cs.shape, "Start"))
+            .expect("Edge origin must render 'Start' segment");
+        let _ = run_setup_frame(
+            &ctx,
+            &mut proj,
+            &mut hist,
+            &mut tab,
+            &mut pick_mode,
+            None,
+            Some(&doc),
+            click_at(start_pt),
+        );
+        assert_eq!(
+            proj.setups[0].wcs.origin,
+            WcsOriginMode::SelectedCadFeature {
+                feature: WcsFeaturePointRef::EdgeStart(edge_bind.clone())
+            }
+        );
+
+        let end_pt = s_edge
+            .iter()
+            .find_map(|cs| find_text_center(&cs.shape, "End"))
+            .expect("Edge origin must render 'End' segment");
+        let _ = run_setup_frame(
+            &ctx,
+            &mut proj,
+            &mut hist,
+            &mut tab,
+            &mut pick_mode,
+            None,
+            Some(&doc),
+            click_at(end_pt),
+        );
+        assert_eq!(
+            proj.setups[0].wcs.origin,
+            WcsOriginMode::SelectedCadFeature {
+                feature: WcsFeaturePointRef::EdgeEnd(edge_bind.clone())
+            }
+        );
+        assert!(hist.undo(&mut proj).is_some());
+        assert_eq!(
+            proj.setups[0].wcs.origin,
+            WcsOriginMode::SelectedCadFeature {
+                feature: WcsFeaturePointRef::EdgeStart(edge_bind.clone())
+            }
+        );
+
+        // 3. SelectZAndX: Clear (Auto) button beside x_ref clears to None with Undo
+        proj.setups[0].wcs.orientation = WcsOrientationMode::SelectZAndX {
+            z_ref: WcsAxisRef::FaceAxis(face_bind),
+            flip_z: false,
+            x_ref: Some(WcsAxisRef::EdgeDirection(edge_bind)),
+            flip_x: false,
+            clock_90: 0,
+            extra_z_rot_deg: 0.0,
+        };
+        let _ = run_setup_frame(
+            &ctx,
+            &mut proj,
+            &mut hist,
+            &mut tab,
+            &mut pick_mode,
+            None,
+            Some(&doc),
+            Vec::new(),
+        );
+        let s_zx = run_setup_frame(
+            &ctx,
+            &mut proj,
+            &mut hist,
+            &mut tab,
+            &mut pick_mode,
+            None,
+            Some(&doc),
+            Vec::new(),
+        );
+        let clear_zx_pt = s_zx
+            .iter()
+            .find_map(|cs| find_text_center(&cs.shape, "Clear (Auto)"))
+            .expect("SelectZAndX with set x_ref must render 'Clear (Auto)'");
+        let _ = run_setup_frame(
+            &ctx,
+            &mut proj,
+            &mut hist,
+            &mut tab,
+            &mut pick_mode,
+            None,
+            Some(&doc),
+            click_at(clear_zx_pt),
+        );
+        assert!(matches!(
+            proj.setups[0].wcs.orientation,
+            WcsOrientationMode::SelectZAndX { x_ref: None, .. }
+        ));
+        assert!(hist.undo(&mut proj).is_some());
+        assert!(matches!(
+            proj.setups[0].wcs.orientation,
+            WcsOrientationMode::SelectZAndX { x_ref: Some(_), .. }
+        ));
+    }
+
+    #[test]
+    fn m88_heights_tab_retract_setup_clearance_and_fixtures_tab_color_reset() {
+        // 1. Heights tab: Retract Datum offers Setup Clearance and resolves cleanly
+        let ctx = egui::Context::default();
+        let mut proj = ProjectDocument::new("heights_fixtures_test");
+        proj.setups[0].heights.clearance.reference = HeightReference::StockTop;
+        proj.setups[0].heights.clearance.offset = ParamLength::from_mm(12.0);
+        proj.setups[0].heights.retract.reference = HeightReference::ModelTop;
+        proj.setups[0].heights.retract.offset = ParamLength::from_mm(-3.0);
+        let mut hist = UndoHistory::default();
+        let mut tab = SetupTab::Heights;
+        let mut pick_mode = ViewportPickMode::InspectEntity;
+
+        let _ = run_setup_frame(
+            &ctx,
+            &mut proj,
+            &mut hist,
+            &mut tab,
+            &mut pick_mode,
+            None,
+            None,
+            Vec::new(),
+        );
+        let s_h = run_setup_frame(
+            &ctx,
+            &mut proj,
+            &mut hist,
+            &mut tab,
+            &mut pick_mode,
+            None,
+            None,
+            Vec::new(),
+        );
+        let ret_cb_pt = s_h
+            .iter()
+            .find_map(|cs| find_text_center(&cs.shape, "Model Top"))
+            .expect("Retract Datum combo must display Model Top");
+        let _ = run_setup_frame(
+            &ctx,
+            &mut proj,
+            &mut hist,
+            &mut tab,
+            &mut pick_mode,
+            None,
+            None,
+            click_at(ret_cb_pt),
+        );
+        let s_h_open = run_setup_frame(
+            &ctx,
+            &mut proj,
+            &mut hist,
+            &mut tab,
+            &mut pick_mode,
+            None,
+            None,
+            Vec::new(),
+        );
+        let sc_pt = s_h_open
+            .iter()
+            .find_map(|cs| find_text_center(&cs.shape, "Setup Clearance"))
+            .expect("Retract Datum dropdown must include Setup Clearance");
+        let _ = run_setup_frame(
+            &ctx,
+            &mut proj,
+            &mut hist,
+            &mut tab,
+            &mut pick_mode,
+            None,
+            None,
+            click_at(sc_pt),
+        );
+        assert_eq!(
+            proj.setups[0].heights.retract.reference,
+            HeightReference::SetupClearance
+        );
+        let aabb = Aabb3::new(DVec3::new(0.0, 0.0, -10.0), DVec3::new(50.0, 50.0, 0.0));
+        let (clr_z, ret_z) = proj.setups[0].heights.resolve(&aabb, &aabb).unwrap();
+        assert!((clr_z - 12.0).abs() < 1e-6);
+        assert!((ret_z - 9.0).abs() < 1e-6);
+        assert!(hist.undo(&mut proj).is_some());
+        assert_eq!(
+            proj.setups[0].heights.retract.reference,
+            HeightReference::ModelTop
+        );
+
+        // 2. Fixtures tab: color swatch row + Reset button clears color_rgba with Undo
+        let mut vise = FixtureBody::default_vise("vise_1", "Machinist Vise 1");
+        vise.color_rgba = Some([0.2, 0.75, 0.35, 0.5]);
+        proj.setups[0].fixtures.push(vise);
+        tab = SetupTab::Fixtures;
+        let _ = run_setup_frame(
+            &ctx,
+            &mut proj,
+            &mut hist,
+            &mut tab,
+            &mut pick_mode,
+            None,
+            None,
+            Vec::new(),
+        );
+        let s_f = run_setup_frame(
+            &ctx,
+            &mut proj,
+            &mut hist,
+            &mut tab,
+            &mut pick_mode,
+            None,
+            None,
+            Vec::new(),
+        );
+        let mut f_texts = Vec::new();
+        collect_texts(&s_f, &mut f_texts);
+        assert!(
+            f_texts.iter().any(|t| t == "Color"),
+            "Fixtures tab must render Color row"
+        );
+        let reset_pt = s_f
+            .iter()
+            .find_map(|cs| find_text_center(&cs.shape, "Reset"))
+            .expect("Custom fixture color must show 'Reset' button");
+        let _ = run_setup_frame(
+            &ctx,
+            &mut proj,
+            &mut hist,
+            &mut tab,
+            &mut pick_mode,
+            None,
+            None,
+            click_at(reset_pt),
+        );
+        assert_eq!(proj.setups[0].fixtures[0].color_rgba, None);
+        assert!(hist.undo(&mut proj).is_some());
+        assert_eq!(
+            proj.setups[0].fixtures[0].color_rgba,
+            Some([0.2, 0.75, 0.35, 0.5])
+        );
+    }
 }

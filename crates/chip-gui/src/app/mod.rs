@@ -772,6 +772,7 @@ impl ChipCutterApp {
             sk.regions.len().hash(&mut h);
         }
         if let Some(setup) = self.project.setups.get(self.active_setup_idx) {
+            format!("{:?}", setup.target_bodies).hash(&mut h);
             format!("{:?}", setup.wcs).hash(&mut h);
             format!("{:?}", setup.stock).hash(&mut h);
             format!("{:?}", setup.heights).hash(&mut h);

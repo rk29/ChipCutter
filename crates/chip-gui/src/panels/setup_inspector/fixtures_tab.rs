@@ -554,6 +554,42 @@ pub(super) fn show_fixtures_tab(ui: &mut egui::Ui, ctx: FixturesTabCtx<'_>) {
                         }
                     },
                 );
+                grid_row(
+                    ui,
+                    "Color",
+                    Some(
+                        "Optional RGBA viewport color override (uses fixture type default when unset)",
+                    ),
+                    |ui| {
+                        ui.horizontal(|ui| {
+                            let mut rgba = fix.effective_color_rgba();
+                            if ui
+                                .color_edit_button_rgba_unmultiplied(&mut rgba)
+                                .on_hover_text(
+                                    "Customize translucent 3D viewport RGBA color for this fixture",
+                                )
+                                .changed()
+                            {
+                                fix.color_rgba = Some(rgba);
+                                *mutated_label = Some("Edit Fixture Color");
+                            }
+                            if fix.color_rgba.is_some() {
+                                if ui
+                                    .small_button("Reset")
+                                    .on_hover_text(
+                                        "Reset fixture color back to its default type color",
+                                    )
+                                    .clicked()
+                                {
+                                    fix.color_rgba = None;
+                                    *mutated_label = Some("Reset Fixture Color");
+                                }
+                            } else {
+                                ui.weak("Default");
+                            }
+                        });
+                    },
+                );
             });
         },
     );

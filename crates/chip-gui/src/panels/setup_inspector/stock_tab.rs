@@ -211,19 +211,56 @@ fn render_stock_geom_body(
                     );
                 }
                 let mut round_on = round_increment_mm.is_some();
-                if grid_row(
+                grid_row(
                     g.ui,
                     "Round Saw Blank",
-                    Some("Round total stock up to 5 mm step"),
+                    Some(
+                        "Round computed stock blank dimensions up to a standard saw-cut increment",
+                    ),
                     |ui| {
-                        ui.checkbox(&mut round_on, "Up to 5 mm step")
-                            .on_hover_text("Round computed stock blank dimensions up to the nearest 5 mm increment")
-                            .changed()
+                        ui.horizontal(|ui| {
+                            if ui
+                                .checkbox(&mut round_on, "Round up")
+                                .on_hover_text(
+                                    "Round computed stock blank dimensions up to the nearest saw-cut step",
+                                )
+                                .changed()
+                            {
+                                *round_increment_mm = round_on.then_some(5.0);
+                                *g.mutated = Some("Toggle Stock Rounding");
+                            }
+                            if let Some(inc_mm) = round_increment_mm {
+                                let mut disp_val = display_unit.from_mm(*inc_mm);
+                                let min_disp = display_unit.from_mm(0.1);
+                                let max_disp = display_unit.from_mm(250.0);
+                                let speed = if display_unit == DisplayUnit::Inch {
+                                    0.05
+                                } else {
+                                    0.5
+                                };
+                                let max_dec = if display_unit == DisplayUnit::Inch { 4 } else { 2 };
+                                let resp = ui
+                                    .add(
+                                        egui::DragValue::new(&mut disp_val)
+                                            .speed(speed)
+                                            .range(min_disp..=max_disp)
+                                            .max_decimals(max_dec)
+                                            .suffix(format!(" {}", display_unit.suffix())),
+                                    )
+                                    .on_hover_text(
+                                        "Stock blank rounding increment (e.g. 5 mm, 10 mm, 0.25 in / 6.35 mm, 0.5 in / 12.7 mm)",
+                                    );
+                                if resp.changed() {
+                                    let new_mm = display_unit.to_mm(disp_val).clamp(0.1, 250.0);
+                                    if new_mm.is_finite() {
+                                        *inc_mm = new_mm;
+                                        *g.mutated = Some("Edit Stock Rounding Increment");
+                                    }
+                                }
+                            }
+                        });
                     },
-                ) {
-                    *round_increment_mm = round_on.then_some(5.0);
-                    *g.mutated = Some("Toggle Stock Rounding");
-                }
+                );
             }
             StockConfig::FixedBox {
                 width_x,
@@ -758,6 +795,7 @@ mod tests {
                             project,
                             setup_idx: 0,
                             history,
+                            project_dir: None,
                             cad_doc: None,
                             resolved: None,
                             resolved_fixtures: &[],
@@ -949,5 +987,107 @@ mod tests {
             "rotary-enabled Setup switching to FixedBox must auto-default z_align to CenterZ; got {:?}",
             proj_rot.setups[0].stock
         );
+    }
+
+    #[test]
+    fn m88_stock_rounding_increment_preserves_custom_and_converts_units() {
+        let ctx = egui::Context::default();
+        let mut proj = ProjectDocument::new("round_inc_test");
+        proj.display_units = chip_math::DisplayUnit::Inch;
+        if let StockConfig::RelativeBox {
+            round_increment_mm, ..
+        } = &mut proj.setups[0].stock
+        {
+            *round_increment_mm = Some(6.35);
+        }
+        let mut hist = UndoHistory::default();
+
+        // 1. Rendering in Inch mode preserves custom 6.35 mm (0.25 in) without overwriting to 5.0 mm
+        let _ = run_stock_tab_frame(&ctx, &mut proj, &mut hist, Vec::new());
+        let s1 = run_stock_tab_frame(&ctx, &mut proj, &mut hist, Vec::new());
+        if let StockConfig::RelativeBox {
+            round_increment_mm, ..
+        } = &proj.setups[0].stock
+        {
+            assert_eq!(*round_increment_mm, Some(6.35));
+        } else {
+            panic!("expected RelativeBox");
+        }
+        let mut texts = Vec::new();
+        collect_texts(&s1, &mut texts);
+        let joined = texts.join("\n");
+        assert!(
+            texts.iter().any(|t| t == "0.25") && texts.iter().any(|t| t.trim() == "in"),
+            "Inch mode must display 6.35 mm as 0.25 in; got:\n{joined}"
+        );
+
+        // 2. Edit the DragValue in Inch mode: click to enter edit mode, then type "0.5" + Enter -> 12.7 mm
+        let dv_pt = s1
+            .iter()
+            .find_map(|cs| find_text_center(&cs.shape, "0.25"))
+            .expect("Rounding increment DragValue must display '0.25'");
+        let _ = run_stock_tab_frame(&ctx, &mut proj, &mut hist, click_at(dv_pt));
+        let edit_events = vec![
+            egui::Event::Key {
+                key: egui::Key::A,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::COMMAND,
+            },
+            egui::Event::Text("0.5".to_string()),
+            egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ];
+        let _ = run_stock_tab_frame(&ctx, &mut proj, &mut hist, edit_events);
+        let _ = run_stock_tab_frame(&ctx, &mut proj, &mut hist, Vec::new());
+        if let StockConfig::RelativeBox {
+            round_increment_mm, ..
+        } = &proj.setups[0].stock
+        {
+            let v = round_increment_mm.expect("round increment must remain Some");
+            assert!(
+                (v - 12.7).abs() < 1e-6,
+                "0.5 in must convert to 12.7 mm; got {v}"
+            );
+        } else {
+            panic!("expected RelativeBox");
+        }
+
+        // 3. Uncheck "Round up" -> None, re-check -> defaults to 5.0 mm, Undo reverts cleanly
+        let s2 = run_stock_tab_frame(&ctx, &mut proj, &mut hist, Vec::new());
+        let cb_pt = s2
+            .iter()
+            .find_map(|cs| find_text_center(&cs.shape, "Round up"))
+            .expect("Round Saw Blank row must render 'Round up' checkbox");
+        let _ = run_stock_tab_frame(&ctx, &mut proj, &mut hist, click_at(cb_pt));
+        assert!(matches!(
+            proj.setups[0].stock,
+            StockConfig::RelativeBox {
+                round_increment_mm: None,
+                ..
+            }
+        ));
+        let _ = run_stock_tab_frame(&ctx, &mut proj, &mut hist, click_at(cb_pt));
+        assert!(matches!(
+            proj.setups[0].stock,
+            StockConfig::RelativeBox {
+                round_increment_mm: Some(v),
+                ..
+            } if (v - 5.0).abs() < 1e-6
+        ));
+        assert!(hist.undo(&mut proj).is_some());
+        assert!(matches!(
+            proj.setups[0].stock,
+            StockConfig::RelativeBox {
+                round_increment_mm: None,
+                ..
+            }
+        ));
     }
 }

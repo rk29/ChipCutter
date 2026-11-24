@@ -136,6 +136,9 @@ pub enum ViewportPickMode {
     SetupWcsXyPlane {
         setup_idx: usize,
     },
+    SetupWcsXyPlaneXEdge {
+        setup_idx: usize,
+    },
     SetupWcsOriginFeature {
         setup_idx: usize,
     },
@@ -192,6 +195,10 @@ impl ViewportPickMode {
             Self::SetupWcsXyPlane { .. } => {
                 Some("Picking Setup WCS XY Plane: Click a planar face (Esc to cancel)".to_string())
             }
+            Self::SetupWcsXyPlaneXEdge { .. } => Some(
+                "Picking Setup WCS +X Edge: Click a straight edge to align +X in the XY plane (Esc to cancel)"
+                    .to_string(),
+            ),
             Self::SetupWcsOriginFeature { .. } => {
                 Some("Picking WCS Origin Feature: Click a hole wall, circular edge, or edge midpoint (Esc to cancel)".to_string())
             }
@@ -255,6 +262,11 @@ impl ViewportPickMode {
             Self::SetupWcsXyPlane { .. } => Some((
                 "Setup WCS XY Plane",
                 "Click a planar B-Rep face to align WCS Z & origin".to_string(),
+                false,
+            )),
+            Self::SetupWcsXyPlaneXEdge { .. } => Some((
+                "Setup WCS +X Edge",
+                "Click a straight B-Rep edge in 3D to align Setup +X in the XY plane".to_string(),
                 false,
             )),
             Self::SetupWcsOriginFeature { .. } => Some((

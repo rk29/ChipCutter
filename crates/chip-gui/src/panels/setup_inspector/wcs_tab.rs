@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use chip_cad::CadDocument;
 use chip_cam::{
     AxisAnchor, BoxAnchor27, Setup, WcsAxisRef, WcsFeaturePointRef, WcsOrientationMode,
@@ -16,6 +18,7 @@ use super::{SetupGrid, render_post_body, render_work_offset_row, show_27pt_xy_ma
 pub(super) struct WcsTabCtx<'a> {
     pub(super) setup: &'a mut Setup,
     pub(super) setup_idx: usize,
+    pub(super) project_dir: Option<&'a Path>,
     pub(super) cad_doc: Option<&'a CadDocument>,
     pub(super) eval_ctx: &'a EvalContext,
     pub(super) pick_mode: &'a mut ViewportPickMode,
@@ -25,6 +28,18 @@ pub(super) struct WcsTabCtx<'a> {
 
 pub(super) fn show_wcs_tab(ui: &mut egui::Ui, mut ctx: WcsTabCtx<'_>) {
     let idx = ctx.setup_idx;
+    let body_count = ctx.cad_doc.map_or(0, |d| d.bodies.len());
+    if body_count > 1 || !ctx.setup.target_bodies.is_empty() {
+        section_card(
+            ui,
+            ("setup_target_bodies_card", idx),
+            "Target Bodies",
+            true,
+            |ui| {
+                render_target_bodies_body(ui, &mut ctx);
+            },
+        );
+    }
     section_card(
         ui,
         ("wcs_orient_card", idx),
@@ -49,9 +64,103 @@ pub(super) fn show_wcs_tab(ui: &mut egui::Ui, mut ctx: WcsTabCtx<'_>) {
         "Post-Processor & Output",
         true,
         |ui| {
-            render_post_body(ui, ctx.setup, idx, ctx.mutated_label);
+            render_post_body(ui, ctx.setup, idx, ctx.project_dir, ctx.mutated_label);
         },
     );
+}
+
+fn render_target_bodies_body(ui: &mut egui::Ui, ctx: &mut WcsTabCtx<'_>) {
+    let bodies = ctx.cad_doc.map_or(&[][..], |d| d.bodies.as_slice());
+    let mut all_bodies = ctx.setup.target_bodies.is_empty();
+    let can_select_explicit = !bodies.is_empty();
+
+    ui.horizontal_wrapped(|ui| {
+        let resp = ui
+            .add_enabled(
+                !all_bodies || can_select_explicit,
+                egui::Checkbox::new(&mut all_bodies, "All Part Bodies"),
+            )
+            .on_hover_text(
+                "Machine all solid part bodies in this Setup (uncheck to select specific bodies for stock bounds, 3D surfacing, and simulation)",
+            );
+        if resp.changed() {
+            if all_bodies {
+                ctx.setup.target_bodies.clear();
+                *ctx.mutated_label = Some("Target All Part Bodies");
+            } else if !bodies.is_empty() {
+                ctx.setup.target_bodies = bodies.iter().map(|b| b.id).collect();
+                ctx.setup.target_bodies.sort_by_key(|b| b.0);
+                ctx.setup.target_bodies.dedup();
+                *ctx.mutated_label = Some("Select Target Part Bodies");
+            }
+        }
+        if !ctx.setup.target_bodies.is_empty() {
+            ui.weak(format!(
+                "({} of {} selected)",
+                ctx.setup.target_bodies.len(),
+                bodies.len()
+            ));
+        }
+    });
+
+    if !ctx.setup.target_bodies.is_empty() {
+        ui.add_space(3.0);
+        for body in bodies {
+            let mut included = ctx.setup.target_bodies.contains(&body.id);
+            let is_last_checked = included && ctx.setup.target_bodies.len() <= 1;
+            let body_lbl = if body.name.trim().is_empty() {
+                format!("Body #{}", body.id.0)
+            } else {
+                format!("{} (#{})", body.name.trim(), body.id.0)
+            };
+            let tip = if is_last_checked {
+                "At least one body must remain checked; enable 'All Part Bodies' above to include all"
+            } else {
+                "Include or exclude this solid body from Setup stock bounds, 3D surfacing, and simulation"
+            };
+            if ui
+                .add_enabled(
+                    !is_last_checked,
+                    egui::Checkbox::new(&mut included, body_lbl),
+                )
+                .on_hover_text(tip)
+                .changed()
+            {
+                if included {
+                    if !ctx.setup.target_bodies.contains(&body.id) {
+                        ctx.setup.target_bodies.push(body.id);
+                        ctx.setup.target_bodies.sort_by_key(|b| b.0);
+                    }
+                } else {
+                    ctx.setup.target_bodies.retain(|id| *id != body.id);
+                }
+                *ctx.mutated_label = Some("Change Setup Target Bodies");
+            }
+        }
+
+        let stale_count = ctx
+            .setup
+            .target_bodies
+            .iter()
+            .filter(|bid| !bodies.iter().any(|b| b.id == **bid))
+            .count();
+        if stale_count > 0 {
+            ui.add_space(2.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.weak(format!(
+                    "{stale_count} target body ID(s) not found in loaded CAD model."
+                ));
+                if ui
+                    .small_button("Reset to All")
+                    .on_hover_text("Clear explicit body filter and target all part bodies")
+                    .clicked()
+                {
+                    ctx.setup.target_bodies.clear();
+                    *ctx.mutated_label = Some("Target All Part Bodies");
+                }
+            });
+        }
+    }
 }
 
 fn render_wcs_orient_body(ui: &mut egui::Ui, ctx: &mut WcsTabCtx<'_>) {
@@ -225,6 +334,7 @@ fn render_wcs_orient_body(ui: &mut egui::Ui, ctx: &mut WcsTabCtx<'_>) {
                 extra_z_rot_deg,
             } => {
                 let z_desc = describe_axis_ref(Some(z_ref));
+                let mut unused_clear = false;
                 render_axis_pick_spec_row(
                     ui,
                     AxisPickSpec {
@@ -234,12 +344,16 @@ fn render_wcs_orient_body(ui: &mut egui::Ui, ctx: &mut WcsTabCtx<'_>) {
                         target_mode: ViewportPickMode::SetupWcsZ { setup_idx },
                         flip_lbl: "Flip Z",
                         flip_undo: "Flip WCS Z Axis",
+                        show_clear: false,
                     },
                     ctx.pick_mode,
                     flip_z,
+                    &mut unused_clear,
                     ctx.mutated_label,
                 );
                 let x_desc = describe_axis_ref(x_ref.as_ref());
+                let x_is_set = x_ref.is_some();
+                let mut clear_x_ref = false;
                 render_axis_pick_spec_row(
                     ui,
                     AxisPickSpec {
@@ -249,11 +363,20 @@ fn render_wcs_orient_body(ui: &mut egui::Ui, ctx: &mut WcsTabCtx<'_>) {
                         target_mode: ViewportPickMode::SetupWcsX { setup_idx },
                         flip_lbl: "Flip X",
                         flip_undo: "Flip WCS X Axis",
+                        show_clear: x_is_set,
                     },
                     ctx.pick_mode,
                     flip_x,
+                    &mut clear_x_ref,
                     ctx.mutated_label,
                 );
+                if clear_x_ref {
+                    *x_ref = None;
+                    if *ctx.pick_mode == (ViewportPickMode::SetupWcsX { setup_idx }) {
+                        *ctx.pick_mode = ViewportPickMode::InspectEntity;
+                    }
+                    *ctx.mutated_label = Some("Clear WCS +X Axis");
+                }
                 grid_row(
                     ui,
                     "X Clocking",
@@ -277,9 +400,9 @@ fn render_wcs_orient_body(ui: &mut egui::Ui, ctx: &mut WcsTabCtx<'_>) {
             WcsOrientationMode::SelectXYPlane {
                 face_ref,
                 flip_z,
+                x_edge_ref,
                 clock_90,
                 extra_z_rot_deg,
-                ..
             } => {
                 let target = ViewportPickMode::SetupWcsXyPlane { setup_idx };
                 grid_row(
@@ -299,6 +422,47 @@ fn render_wcs_orient_body(ui: &mut egui::Ui, ctx: &mut WcsTabCtx<'_>) {
                             } else {
                                 target
                             };
+                        }
+                    },
+                );
+                let x_edge_target = ViewportPickMode::SetupWcsXyPlaneXEdge { setup_idx };
+                grid_row(
+                    ui,
+                    "+X Edge",
+                    Some("Optional straight B-Rep edge aligning Setup +X within the XY plane"),
+                    |ui| {
+                        let desc = match x_edge_ref {
+                            Some(eb) => format!("Edge #{}", eb.last_index),
+                            None => "Auto".to_string(),
+                        };
+                        ui.label(desc);
+                        let on = *ctx.pick_mode == x_edge_target;
+                        if ui
+                            .selectable_label(on, "Pick X Edge")
+                            .on_hover_text(
+                                "Click a straight 3D CAD edge in the viewport to align Setup +X",
+                            )
+                            .clicked()
+                        {
+                            *ctx.pick_mode = if on {
+                                ViewportPickMode::InspectEntity
+                            } else {
+                                x_edge_target
+                            };
+                        }
+                        if x_edge_ref.is_some()
+                            && ui
+                                .small_button("Clear (Auto)")
+                                .on_hover_text(
+                                    "Clear explicit +X edge reference and derive +X automatically from the XY plane",
+                                )
+                                .clicked()
+                        {
+                            *x_edge_ref = None;
+                            if *ctx.pick_mode == x_edge_target {
+                                *ctx.pick_mode = ViewportPickMode::InspectEntity;
+                            }
+                            *ctx.mutated_label = Some("Clear WCS XY Plane +X Edge");
                         }
                     },
                 );
@@ -377,6 +541,7 @@ struct AxisPickSpec<'a> {
     target_mode: ViewportPickMode,
     flip_lbl: &'static str,
     flip_undo: &'static str,
+    show_clear: bool,
 }
 
 fn render_axis_pick_spec_row(
@@ -384,6 +549,7 @@ fn render_axis_pick_spec_row(
     spec: AxisPickSpec<'_>,
     pick_mode: &mut ViewportPickMode,
     flip: &mut bool,
+    clear_clicked: &mut bool,
     mutated: &mut Option<&'static str>,
 ) {
     grid_row(
@@ -412,6 +578,16 @@ fn render_axis_pick_spec_row(
                 .changed()
             {
                 *mutated = Some(spec.flip_undo);
+            }
+            if spec.show_clear
+                && ui
+                    .small_button("Clear (Auto)")
+                    .on_hover_text(
+                        "Clear explicit +X reference and derive +X automatically from +Z",
+                    )
+                    .clicked()
+            {
+                *clear_clicked = true;
             }
         },
     );
@@ -595,6 +771,54 @@ fn render_wcs_origin_body(ui: &mut egui::Ui, ctx: &mut WcsTabCtx<'_>) {
                                 .changed()
                             {
                                 *ctx.mutated_label = Some("Toggle Bore Top/Bottom Origin");
+                            }
+                        },
+                    );
+                }
+                let edge_anchor = match feature {
+                    WcsFeaturePointRef::EdgeStart(b) => Some((0u8, b.clone())),
+                    WcsFeaturePointRef::EdgeMidpoint(b) => Some((1u8, b.clone())),
+                    WcsFeaturePointRef::EdgeEnd(b) => Some((2u8, b.clone())),
+                    _ => None,
+                };
+                if let Some((cur_pos, binding)) = edge_anchor {
+                    grid_row(
+                        ui,
+                        "Edge Point",
+                        Some(
+                            "Choose whether WCS zero sits at the start, midpoint, or end of the bound edge",
+                        ),
+                        |ui| {
+                            for (pos_id, lbl, tip) in [
+                                (
+                                    0u8,
+                                    "Start",
+                                    "Anchor WCS origin at the start vertex of the bound edge",
+                                ),
+                                (
+                                    1u8,
+                                    "Midpoint",
+                                    "Anchor WCS origin at the midpoint of the bound edge",
+                                ),
+                                (
+                                    2u8,
+                                    "End",
+                                    "Anchor WCS origin at the end vertex of the bound edge",
+                                ),
+                            ] {
+                                if ui
+                                    .selectable_label(cur_pos == pos_id, lbl)
+                                    .on_hover_text(tip)
+                                    .clicked()
+                                    && cur_pos != pos_id
+                                {
+                                    *feature = match pos_id {
+                                        0 => WcsFeaturePointRef::EdgeStart(binding.clone()),
+                                        1 => WcsFeaturePointRef::EdgeMidpoint(binding.clone()),
+                                        _ => WcsFeaturePointRef::EdgeEnd(binding.clone()),
+                                    };
+                                    *ctx.mutated_label = Some("Change WCS Edge Origin Point");
+                                }
                             }
                         },
                     );

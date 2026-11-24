@@ -27,7 +27,7 @@ pub struct MachineManagerActions {
 }
 
 /// Persistent UI state for the floating **Machine Manager** modal (`M31`).
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct MachineManagerModalState {
     pub open: bool,
     pub selected_idx: usize,
@@ -36,12 +36,44 @@ pub struct MachineManagerModalState {
     pub clone_new_id: String,
     pub clone_new_name: String,
     pub copy_source_machine_idx: usize,
+    pub new_shank_draft_mm: f64,
     pub status_banner: Option<(bool, String)>,
+    #[cfg(test)]
+    pub(crate) custom_save_dir: Option<std::path::PathBuf>,
+}
+
+impl Default for MachineManagerModalState {
+    fn default() -> Self {
+        Self {
+            open: false,
+            selected_idx: 0,
+            tab: MachineEditorTab::SpecsKinematics,
+            clone_draft_open: false,
+            clone_new_id: String::new(),
+            clone_new_name: String::new(),
+            copy_source_machine_idx: 0,
+            new_shank_draft_mm: 6.0,
+            status_banner: None,
+            #[cfg(test)]
+            custom_save_dir: None,
+        }
+    }
 }
 
 impl MachineManagerModalState {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    fn persist_machine(
+        &self,
+        machine: &MachineDefinition,
+    ) -> Result<std::path::PathBuf, chip_tools::MachineStorageError> {
+        #[cfg(test)]
+        if let Some(dir) = &self.custom_save_dir {
+            return chip_tools::save_user_machine_in(machine, dir);
+        }
+        save_user_machine(machine)
     }
 
     pub fn open_selecting(&mut self, machines: &[MachineDefinition], machine_id: &str) {
@@ -78,7 +110,7 @@ impl MachineManagerModalState {
 
         egui::Window::new("ChipCutter Machine Manager")
             .open(&mut keep_open)
-            .default_size([920.0, 600.0])
+            .default_size([940.0, 700.0])
             .resizable(true)
             .show(ctx, |ui| {
                 // Top action toolbar
@@ -299,7 +331,7 @@ impl MachineManagerModalState {
                     cols[0].heading(format!("Machines ({})", machines.len()));
                     egui::ScrollArea::vertical()
                         .id_salt("machine_manager_list")
-                        .max_height(470.0)
+                        .max_height(560.0)
                         .show(&mut cols[0], |ui| {
                             for (idx, m) in machines.iter().enumerate() {
                                 let selected = idx == self.selected_idx;
@@ -398,7 +430,7 @@ impl MachineManagerModalState {
 
                     egui::ScrollArea::vertical()
                         .id_salt("machine_manager_editor")
-                        .max_height(410.0)
+                        .max_height(520.0)
                         .show(right, |ui| {
                             match self.tab {
                                 MachineEditorTab::SpecsKinematics => {
@@ -434,6 +466,30 @@ impl MachineManagerModalState {
                                                         None
                                                     } else {
                                                         Some(mfr)
+                                                    };
+                                                    dirty = true;
+                                                }
+                                                ui.end_row();
+
+                                                ui.label("Description:");
+                                                let mut desc =
+                                                    m.description.clone().unwrap_or_default();
+                                                if ui
+                                                    .add(
+                                                        egui::TextEdit::multiline(&mut desc)
+                                                            .desired_rows(2)
+                                                            .desired_width(280.0)
+                                                            .hint_text("Optional notes about this CNC machine"),
+                                                    )
+                                                    .on_hover_text(
+                                                        "Optional multi-line notes or setup remarks saved inside .machine.toml",
+                                                    )
+                                                    .changed()
+                                                {
+                                                    m.description = if desc.trim().is_empty() {
+                                                        None
+                                                    } else {
+                                                        Some(desc)
                                                     };
                                                     dirty = true;
                                                 }
@@ -493,6 +549,44 @@ impl MachineManagerModalState {
                                                 });
                                                 ui.end_row();
 
+                                                ui.label("Spindle Power (W):");
+                                                ui.horizontal(|ui| {
+                                                    let mut has_power =
+                                                        m.spindle.power_watts.is_some();
+                                                    if ui
+                                                        .checkbox(&mut has_power, "Rated")
+                                                        .on_hover_text(
+                                                            "Specify continuous spindle motor power rating in watts",
+                                                        )
+                                                        .changed()
+                                                    {
+                                                        m.spindle.power_watts =
+                                                            has_power.then_some(1_500.0);
+                                                        dirty = true;
+                                                    }
+                                                    if let Some(watts) = &mut m.spindle.power_watts
+                                                    {
+                                                        if ui
+                                                            .add(
+                                                                egui::DragValue::new(watts)
+                                                                    .speed(50.0)
+                                                                    .range(50.0..=50_000.0)
+                                                                    .max_decimals(0)
+                                                                    .suffix(" W"),
+                                                            )
+                                                            .on_hover_text(
+                                                                "Continuous spindle motor power rating (watts)",
+                                                            )
+                                                            .changed()
+                                                        {
+                                                            dirty = true;
+                                                        }
+                                                    } else {
+                                                        ui.weak("Unspecified");
+                                                    }
+                                                });
+                                                ui.end_row();
+
                                                 ui.label("Collet / Holder:");
                                                 if ui
                                                     .text_edit_singleline(&mut m.spindle.collet_type)
@@ -501,6 +595,130 @@ impl MachineManagerModalState {
                                                 {
                                                     dirty = true;
                                                 }
+                                                ui.end_row();
+
+                                                ui.label("Supported Shanks:");
+                                                ui.vertical(|ui| {
+                                                    let mut remove_shank_idx: Option<usize> = None;
+                                                    ui.horizontal_wrapped(|ui| {
+                                                        if m.spindle
+                                                            .supported_shank_diameters_mm
+                                                            .is_empty()
+                                                        {
+                                                            ui.weak("Any shank diameter (unrestricted)");
+                                                        } else {
+                                                            for (s_idx, &dia) in m
+                                                                .spindle
+                                                                .supported_shank_diameters_mm
+                                                                .iter()
+                                                                .enumerate()
+                                                            {
+                                                                if ui
+                                                                    .small_button(format!(
+                                                                        "{} mm [x]",
+                                                                        format_shank_mm(dia)
+                                                                    ))
+                                                                    .on_hover_text(
+                                                                        "Click to remove this supported collet shank diameter",
+                                                                    )
+                                                                    .clicked()
+                                                                {
+                                                                    remove_shank_idx = Some(s_idx);
+                                                                }
+                                                            }
+                                                        }
+                                                    });
+                                                    if let Some(r_idx) = remove_shank_idx {
+                                                        m.spindle
+                                                            .supported_shank_diameters_mm
+                                                            .remove(r_idx);
+                                                        dirty = true;
+                                                    }
+                                                    ui.horizontal_wrapped(|ui| {
+                                                        ui.add(
+                                                            egui::DragValue::new(
+                                                                &mut self.new_shank_draft_mm,
+                                                            )
+                                                            .speed(0.1)
+                                                            .range(0.5..=50.0)
+                                                            .max_decimals(3)
+                                                            .suffix(" mm"),
+                                                        )
+                                                        .on_hover_text(
+                                                            "Custom collet shank diameter to add (mm)",
+                                                        );
+                                                        if ui
+                                                            .small_button("+ Add Shank")
+                                                            .on_hover_text(
+                                                                "Add the specified shank diameter to this spindle's supported collet list",
+                                                            )
+                                                            .clicked()
+                                                            && self.new_shank_draft_mm.is_finite()
+                                                            && self.new_shank_draft_mm > 0.0
+                                                        {
+                                                            let exists = m
+                                                                .spindle
+                                                                .supported_shank_diameters_mm
+                                                                .iter()
+                                                                .any(|d| {
+                                                                    (*d - self.new_shank_draft_mm)
+                                                                        .abs()
+                                                                        < 1e-3
+                                                                });
+                                                            if !exists {
+                                                                m.spindle
+                                                                    .supported_shank_diameters_mm
+                                                                    .push(self.new_shank_draft_mm);
+                                                                m.spindle
+                                                                    .supported_shank_diameters_mm
+                                                                    .sort_by(f64::total_cmp);
+                                                                dirty = true;
+                                                            }
+                                                        }
+                                                    });
+                                                    ui.horizontal_wrapped(|ui| {
+                                                        ui.weak("Presets:");
+                                                        for preset in
+                                                            [3.175_f64, 4.0, 6.0, 6.35, 8.0, 12.0]
+                                                        {
+                                                            let present = m
+                                                                .spindle
+                                                                .supported_shank_diameters_mm
+                                                                .iter()
+                                                                .any(|d| (*d - preset).abs() < 1e-3);
+                                                            if ui
+                                                                .selectable_label(
+                                                                    present,
+                                                                    format!(
+                                                                        "{} mm",
+                                                                        format_shank_mm(preset)
+                                                                    ),
+                                                                )
+                                                                .on_hover_text(
+                                                                    "Toggle this standard collet shank diameter",
+                                                                )
+                                                                .clicked()
+                                                            {
+                                                                if present {
+                                                                    m.spindle
+                                                                        .supported_shank_diameters_mm
+                                                                        .retain(|d| {
+                                                                            (*d - preset).abs()
+                                                                                >= 1e-3
+                                                                        });
+                                                                } else {
+                                                                    m.spindle
+                                                                        .supported_shank_diameters_mm
+                                                                        .push(preset);
+                                                                    m.spindle
+                                                                        .supported_shank_diameters_mm
+                                                                        .sort_by(f64::total_cmp);
+                                                                }
+                                                                dirty = true;
+                                                            }
+                                                        }
+                                                    });
+                                                });
                                                 ui.end_row();
 
                                                 ui.label("Tool Change:");
@@ -621,6 +839,23 @@ impl MachineManagerModalState {
                                                         .on_hover_text("Estimated seconds per tool change added to simulated cycle time")
                                                         .changed();
                                                 });
+                                                ui.end_row();
+
+                                                ui.label("Junction Deviation:");
+                                                dirty |= ui
+                                                    .add(
+                                                        egui::DragValue::new(
+                                                            &mut m.kinematics.junction_deviation_mm,
+                                                        )
+                                                        .speed(0.005)
+                                                        .range(0.0..=5.0)
+                                                        .fixed_decimals(3)
+                                                        .suffix(" mm"),
+                                                    )
+                                                    .on_hover_text(
+                                                        "Corner-blending junction deviation used for cycle-time lookahead estimation (mm)",
+                                                    )
+                                                    .changed();
                                                 ui.end_row();
 
                                                 ui.label("Default Post Profile:");
@@ -911,7 +1146,7 @@ impl MachineManagerModalState {
                     }
 
                     if dirty && !is_builtin {
-                        match save_user_machine(&machines[self.selected_idx]) {
+                        match self.persist_machine(&machines[self.selected_idx]) {
                             Ok(_) => {
                                 actions.machines_modified = true;
                                 self.status_banner = Some((
@@ -932,5 +1167,267 @@ impl MachineManagerModalState {
 
         self.open = keep_open;
         actions
+    }
+}
+
+fn format_shank_mm(dia_mm: f64) -> String {
+    let raw = format!("{dia_mm:.3}");
+    raw.trim_end_matches('0').trim_end_matches('.').to_string()
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use chip_tools::{MachineDefinition, builtin_generic_machine, clone_machine_definition};
+
+    use super::{MachineManagerActions, MachineManagerModalState};
+
+    fn find_text_center(shape: &egui::Shape, needle: &str) -> Option<egui::Pos2> {
+        match shape {
+            egui::Shape::Text(t) if t.galley.text() == needle => {
+                Some(t.pos + t.galley.size() * 0.5)
+            }
+            egui::Shape::Vec(v) => v.iter().find_map(|s| find_text_center(s, needle)),
+            _ => None,
+        }
+    }
+
+    fn click_at(pt: egui::Pos2) -> Vec<egui::Event> {
+        vec![
+            egui::Event::PointerMoved(pt),
+            egui::Event::PointerButton {
+                pos: pt,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+            egui::Event::PointerButton {
+                pos: pt,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]
+    }
+
+    fn type_replace_events(text: &str, commit_enter: bool) -> Vec<egui::Event> {
+        let mut ev = vec![
+            egui::Event::Key {
+                key: egui::Key::A,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::COMMAND,
+            },
+            egui::Event::Text(text.to_string()),
+        ];
+        if commit_enter {
+            ev.push(egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            });
+        }
+        ev
+    }
+
+    fn run_mm_frame(
+        ctx: &egui::Context,
+        state: &mut MachineManagerModalState,
+        machines: &mut Vec<MachineDefinition>,
+        logs: &mut Vec<String>,
+        events: Vec<egui::Event>,
+    ) -> (Vec<egui::epaint::ClippedShape>, MachineManagerActions) {
+        let mut actions = MachineManagerActions::default();
+        let mut out = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1100.0, 900.0),
+                )),
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                actions = state.show(ui.ctx(), machines, "generic", "generic", logs);
+            },
+        );
+        out.textures_delta.clear();
+        (out.shapes, actions)
+    }
+
+    #[test]
+    fn m88_machine_manager_fields_readonly_builtin_and_custom_toml_roundtrip() {
+        let tmp =
+            std::env::temp_dir().join(format!("chipcutter_m88_machine_mgr_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let builtin = builtin_generic_machine();
+        let mut custom =
+            clone_machine_definition(&builtin, "shop-bench-mill", "Shop Bench Mill").unwrap();
+        custom.description = None;
+        custom.spindle.power_watts = Some(1_500.0);
+        custom.spindle.supported_shank_diameters_mm = vec![3.175, 6.0];
+        custom.kinematics.junction_deviation_mm = 0.05;
+
+        let mut machines = vec![builtin.clone(), custom];
+        let mut logs = Vec::new();
+        let ctx = egui::Context::default();
+        let mut state = MachineManagerModalState::new();
+        state.open = true;
+        state.selected_idx = 0; // Built-in first
+        state.custom_save_dir = Some(tmp.clone());
+
+        // 1. Built-in machine must remain strictly read-only when clicking "+ Add Shank" or presets
+        let _ = run_mm_frame(&ctx, &mut state, &mut machines, &mut logs, Vec::new());
+        let (s_bi, _) = run_mm_frame(&ctx, &mut state, &mut machines, &mut logs, Vec::new());
+        let add_bi_pt = s_bi
+            .iter()
+            .find_map(|cs| find_text_center(&cs.shape, "+ Add Shank"))
+            .expect("Built-in Specs tab must still render '+ Add Shank' (disabled)");
+        state.new_shank_draft_mm = 9.5;
+        let (_, bi_act) = run_mm_frame(
+            &ctx,
+            &mut state,
+            &mut machines,
+            &mut logs,
+            click_at(add_bi_pt),
+        );
+        assert!(!bi_act.machines_modified);
+        assert_eq!(machines[0], builtin);
+
+        // 2. Switch to custom machine and edit Description, Spindle Power, Shanks, and Junction Deviation
+        state.selected_idx = 1;
+        state.new_shank_draft_mm = 5.0;
+        let _ = run_mm_frame(&ctx, &mut state, &mut machines, &mut logs, Vec::new());
+        let (s_c1, _) = run_mm_frame(&ctx, &mut state, &mut machines, &mut logs, Vec::new());
+
+        // Edit Description
+        let desc_pt = s_c1
+            .iter()
+            .find_map(|cs| find_text_center(&cs.shape, "Optional notes about this CNC machine"))
+            .expect("Custom machine must show Description hint text");
+        let _ = run_mm_frame(
+            &ctx,
+            &mut state,
+            &mut machines,
+            &mut logs,
+            click_at(desc_pt),
+        );
+        let (_, act_desc) = run_mm_frame(
+            &ctx,
+            &mut state,
+            &mut machines,
+            &mut logs,
+            type_replace_events("Rigid cast-iron benchtop mill", false),
+        );
+        assert!(act_desc.machines_modified);
+        assert_eq!(
+            machines[1].description.as_deref(),
+            Some("Rigid cast-iron benchtop mill")
+        );
+
+        // Edit Spindle Power (W): 1500 W -> 2200 W
+        let (s_c2, _) = run_mm_frame(&ctx, &mut state, &mut machines, &mut logs, Vec::new());
+        let pwr_pt = s_c2
+            .iter()
+            .find_map(|cs| find_text_center(&cs.shape, "1500"))
+            .expect("Spindle Power DragValue must show '1500'");
+        let _ = run_mm_frame(&ctx, &mut state, &mut machines, &mut logs, click_at(pwr_pt));
+        let _ = run_mm_frame(
+            &ctx,
+            &mut state,
+            &mut machines,
+            &mut logs,
+            type_replace_events("2200", true),
+        );
+        let _ = run_mm_frame(&ctx, &mut state, &mut machines, &mut logs, Vec::new());
+        assert_eq!(machines[1].spindle.power_watts, Some(2200.0));
+
+        // Add custom shank 5.0 mm via "+ Add Shank"
+        let (s_c3, _) = run_mm_frame(&ctx, &mut state, &mut machines, &mut logs, Vec::new());
+        let add_pt = s_c3
+            .iter()
+            .find_map(|cs| find_text_center(&cs.shape, "+ Add Shank"))
+            .expect("'+ Add Shank' button must be rendered");
+        let _ = run_mm_frame(&ctx, &mut state, &mut machines, &mut logs, click_at(add_pt));
+        assert_eq!(
+            machines[1].spindle.supported_shank_diameters_mm,
+            vec![3.175, 5.0, 6.0]
+        );
+
+        // Toggle quick preset "6.35 mm" ON
+        let (s_c4, _) = run_mm_frame(&ctx, &mut state, &mut machines, &mut logs, Vec::new());
+        let preset_pt = s_c4
+            .iter()
+            .find_map(|cs| find_text_center(&cs.shape, "6.35 mm"))
+            .expect("Quick preset chip '6.35 mm' must be rendered");
+        let _ = run_mm_frame(
+            &ctx,
+            &mut state,
+            &mut machines,
+            &mut logs,
+            click_at(preset_pt),
+        );
+        assert_eq!(
+            machines[1].spindle.supported_shank_diameters_mm,
+            vec![3.175, 5.0, 6.0, 6.35]
+        );
+
+        // Remove chip "6 mm [x]"
+        let (s_c5, _) = run_mm_frame(&ctx, &mut state, &mut machines, &mut logs, Vec::new());
+        let rem_pt = s_c5
+            .iter()
+            .find_map(|cs| find_text_center(&cs.shape, "6 mm [x]"))
+            .expect("Supported shank chip '6 mm [x]' must be rendered");
+        let _ = run_mm_frame(&ctx, &mut state, &mut machines, &mut logs, click_at(rem_pt));
+        assert_eq!(
+            machines[1].spindle.supported_shank_diameters_mm,
+            vec![3.175, 5.0, 6.35]
+        );
+
+        // Edit Junction Deviation: 0.050 mm -> 0.025 mm
+        let (s_c6, _) = run_mm_frame(&ctx, &mut state, &mut machines, &mut logs, Vec::new());
+        let jd_pt = s_c6
+            .iter()
+            .find_map(|cs| find_text_center(&cs.shape, "0.050"))
+            .expect("Junction Deviation DragValue must display '0.050'");
+        let _ = run_mm_frame(&ctx, &mut state, &mut machines, &mut logs, click_at(jd_pt));
+        let _ = run_mm_frame(
+            &ctx,
+            &mut state,
+            &mut machines,
+            &mut logs,
+            type_replace_events("0.025", true),
+        );
+        let _ = run_mm_frame(&ctx, &mut state, &mut machines, &mut logs, Vec::new());
+        assert!(
+            (machines[1].kinematics.junction_deviation_mm - 0.025).abs() < 1e-6,
+            "junction_deviation_mm must update to 0.025; got {}",
+            machines[1].kinematics.junction_deviation_mm
+        );
+
+        // 3. Verify .machine.toml disk roundtrip preserves every edited field!
+        let saved_path = tmp.join("shop-bench-mill.machine.toml");
+        assert!(
+            saved_path.is_file(),
+            "Custom machine TOML must be saved on edit"
+        );
+        let reloaded = MachineDefinition::load_from_path(&saved_path).unwrap();
+        assert_eq!(
+            reloaded.description.as_deref(),
+            Some("Rigid cast-iron benchtop mill")
+        );
+        assert_eq!(reloaded.spindle.power_watts, Some(2200.0));
+        assert_eq!(
+            reloaded.spindle.supported_shank_diameters_mm,
+            vec![3.175, 5.0, 6.35]
+        );
+        assert!((reloaded.kinematics.junction_deviation_mm - 0.025).abs() < 1e-9);
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }
