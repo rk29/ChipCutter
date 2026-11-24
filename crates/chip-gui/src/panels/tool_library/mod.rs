@@ -10,8 +10,12 @@ use chip_tools::{
     starter_tslot_12mm,
 };
 
+use crate::widgets::{grid_row, inspector_grid, section_card};
+
 use self::{
-    geometry_editor::{draw_cutter_schematic, edit_offset_number_row, show_cutter_geometry_editor},
+    geometry_editor::{
+        TOOL_COMBO_W, draw_cutter_schematic, edit_offset_number_row, show_cutter_geometry_editor,
+    },
     presets_editor::show_presets_editor,
 };
 
@@ -30,15 +34,15 @@ pub struct ToolLibraryMachineActions {
     pub save_active_machine_tools: bool,
 }
 
-const TOOL_NUMBER_LABEL: &str = "Tool Number (T#):";
+const TOOL_NUMBER_LABEL: &str = "Tool Number (T)";
 const TOOL_NUMBER_TOOLTIP: &str =
     "Tool slot / pocket number emitted in tool-change G-code (e.g., T1 M6).";
 
-const LENGTH_OFFSET_LABEL: &str = "Length Offset (H#):";
-const LENGTH_OFFSET_TOOLTIP: &str = "Tool length offset register emitted with G43 H# (e.g., G43 H1) for Z height compensation. Typically matches Tool Number (T#).";
+const LENGTH_OFFSET_LABEL: &str = "Length Offset (H)";
+const LENGTH_OFFSET_TOOLTIP: &str = "Tool length offset register emitted with G43 H# (e.g., G43 H1) for Z height compensation. Typically matches Tool Number (T).";
 
-const DIAMETER_OFFSET_LABEL: &str = "Diameter Offset (D#):";
-const DIAMETER_OFFSET_TOOLTIP: &str = "Cutter diameter/radius wear compensation register emitted with G41/G42 D# (e.g., G41 D1). Typically matches Tool Number (T#).";
+const DIAMETER_OFFSET_LABEL: &str = "Diameter Offset (D)";
+const DIAMETER_OFFSET_TOOLTIP: &str = "Cutter diameter/radius wear compensation register emitted with G41/G42 D# (e.g., G41 D1). Typically matches Tool Number (T).";
 
 const NATIVE_UNIT_TOOLTIP: &str = "Preferred display unit for this cutter's dimensions and presets (stored internally in millimeters).";
 
@@ -103,10 +107,14 @@ impl ToolLibraryModalState {
         let is_readonly_builtin = active_machine_opt.is_some_and(|m| m.is_builtin);
 
         egui::Window::new("ChipCutter Tool Library & Cutting Presets")
+            .id(egui::Id::unique("chipcutter_tool_library_modal"))
             .open(&mut keep_open)
-            .default_size([880.0, 660.0])
+            .default_size([920.0, 680.0])
+            .min_size([740.0, 480.0])
             .resizable(true)
+            .collapsible(false)
             .show(ctx, |ui| {
+                ui.set_min_width(ui.available_width().max(720.0));
                 // Machine Scope Bar
                 if let Some(mc) = &machine_ctx {
                     ui.horizontal_wrapped(|ui| {
@@ -571,239 +579,334 @@ impl ToolLibraryModalState {
                     self.pending_delete_tool_id = None;
                 }
 
-                ui.columns(2, |cols| {
+                let body_w = ui.available_width().max(700.0);
+                let body_h = ui.available_height().max(320.0);
+                let left_w = (body_w * 0.36).clamp(276.0, 340.0);
+                let gap_w = 10.0_f32;
+                let right_w = (body_w - left_w - gap_w - 2.0).max(380.0);
+                let list_h = (body_h - 210.0).clamp(150.0, 320.0);
+
+                ui.horizontal_top(|ui| {
+                    ui.spacing_mut().item_spacing.x = gap_w;
+
                     // Left column: cutter list + 2D profile schematic
-                    cols[0].strong(format!(
-                        "{} ({} tools)",
-                        global_lib.name,
-                        global_lib.tools.len()
-                    ));
-                    egui::ScrollArea::vertical()
-                        .id_salt("tool_lib_left_list")
-                        .max_height(280.0)
-                        .show(&mut cols[0], |ui| {
-                            let scroll_now = std::mem::take(&mut self.scroll_to_selected);
-                            for (idx, t) in global_lib.tools.iter().enumerate() {
-                                let sel = idx == self.selected_tool_idx;
-                                let resp = ui
-                                    .selectable_label(sel, t.summary_label())
-                                    .on_hover_text("Inspect or edit this cutting tool's geometry and material presets");
-                                if sel && scroll_now {
-                                    resp.scroll_to_me(Some(egui::Align::Center));
-                                }
-                                if resp.clicked() {
-                                    self.selected_tool_idx = idx;
-                                    self.selected_preset_idx = 0;
-                                    self.pending_delete_tool_id = None;
-                                }
-                            }
-                        });
-
-                    cols[0].separator();
-                    let preview_tool = &global_lib.tools[self.selected_tool_idx];
-                    cols[0].strong("2D Cutter Profile Preview");
-                    draw_cutter_schematic(&mut cols[0], preview_tool);
-
-                    cols[0].horizontal(|ui| {
-                        if ui
-                            .button("Sync / Embed into Active Project")
-                            .on_hover_text("Copy/update this tool inside `.chip.toml` and mark dependent operations Dirty")
-                            .clicked()
-                        {
-                            history.record_before_edit("Sync Tool into Project", None, project);
-                            project.sync_tool_from_global(preview_tool);
-                            self.status_banner = Some(format!(
-                                "Synced T{} ('{}') into project.",
-                                preview_tool.tool_number, preview_tool.name
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(left_w, body_h),
+                        egui::Layout::top_down(egui::Align::LEFT),
+                        |ui| {
+                            ui.set_max_width(left_w);
+                            ui.strong(format!(
+                                "{} ({} tools)",
+                                global_lib.name,
+                                global_lib.tools.len()
                             ));
-                        }
-                    });
-
-                    // Right column: Geometry + Coupled Cutting Presets editor
-                    let tool = &mut global_lib.tools[self.selected_tool_idx];
-                    egui::ScrollArea::vertical()
-                        .id_salt("tool_lib_right_editor")
-                        .show(&mut cols[1], |ui| {
-                            ui.add_enabled_ui(!is_readonly_builtin, |ui| {
-                            ui.strong("Cutter Identity & Offsets");
-                            egui::Grid::new("tool_identity_offsets_grid")
-                                .num_columns(2)
-                                .spacing([10.0, 4.0])
+                            egui::ScrollArea::vertical()
+                                .id_salt("tool_lib_left_list")
+                                .max_height(list_h)
+                                .auto_shrink([false, false])
                                 .show(ui, |ui| {
-                                    ui.label("Name:");
-                                    ui.text_edit_singleline(&mut tool.name)
-                                        .on_hover_text("Descriptive name for this cutting tool (shown in Toolpath Browser and G-code comments)");
-                                    ui.end_row();
-
-                                    edit_offset_number_row(
-                                        ui,
-                                        TOOL_NUMBER_LABEL,
-                                        TOOL_NUMBER_TOOLTIP,
-                                        &mut tool.tool_number,
-                                    );
-                                    edit_offset_number_row(
-                                        ui,
-                                        LENGTH_OFFSET_LABEL,
-                                        LENGTH_OFFSET_TOOLTIP,
-                                        &mut tool.length_offset_number,
-                                    );
-                                    edit_offset_number_row(
-                                        ui,
-                                        DIAMETER_OFFSET_LABEL,
-                                        DIAMETER_OFFSET_TOOLTIP,
-                                        &mut tool.diameter_offset_number,
-                                    );
-
-                                    ui.add(egui::Label::new("Unit:").sense(egui::Sense::hover()))
-                                        .on_hover_text(NATIVE_UNIT_TOOLTIP);
-                                    ui.horizontal(|ui| {
-                                        ui.selectable_value(
-                                            &mut tool.native_unit,
-                                            DisplayUnit::Millimeter,
-                                            "mm",
-                                        )
-                                        .on_hover_text(NATIVE_UNIT_TOOLTIP);
-                                        ui.selectable_value(
-                                            &mut tool.native_unit,
-                                            DisplayUnit::Inch,
-                                            "in",
-                                        )
-                                        .on_hover_text(NATIVE_UNIT_TOOLTIP);
-                                    });
-                                    ui.end_row();
-
-                                    let spindle_tip =
-                                        "Spindle rotation direction emitted in G-code (M3 clockwise or M4 counter-clockwise)";
-                                    ui.add(
-                                        egui::Label::new("Spindle Direction:")
-                                            .sense(egui::Sense::hover()),
-                                    )
-                                    .on_hover_text(spindle_tip);
-                                    ui.horizontal(|ui| {
-                                        ui.selectable_value(
-                                            &mut tool.spindle_direction,
-                                            SpindleDirection::Cw,
-                                            SpindleDirection::Cw.label(),
-                                        )
-                                        .on_hover_text(spindle_tip);
-                                        ui.selectable_value(
-                                            &mut tool.spindle_direction,
-                                            SpindleDirection::Ccw,
-                                            SpindleDirection::Ccw.label(),
-                                        )
-                                        .on_hover_text(spindle_tip);
-                                    });
-                                    ui.end_row();
-
-                                    let coolant_tip =
-                                        "Default coolant command used when a preset or operation does not override coolant";
-                                    ui.add(
-                                        egui::Label::new("Default Coolant:")
-                                            .sense(egui::Sense::hover()),
-                                    )
-                                    .on_hover_text(coolant_tip);
-                                    egui::ComboBox::from_id_salt("tool_default_coolant_cb")
-                                        .selected_text(tool.default_coolant.label())
-                                        .show_ui(ui, |ui| {
-                                            for c in CoolantMode::ALL {
-                                                ui.selectable_value(
-                                                    &mut tool.default_coolant,
-                                                    c,
-                                                    c.label(),
-                                                )
-                                                .on_hover_text(coolant_tip);
-                                            }
-                                        })
-                                        .response
-                                        .on_hover_text(coolant_tip);
-                                    ui.end_row();
-
-                                    let vendor_tip =
-                                        "Optional cutter manufacturer or supplier name (e.g., Harvey Tool, Datron, Lakeshore Carbide)";
-                                    ui.add(
-                                        egui::Label::new("Vendor:").sense(egui::Sense::hover()),
-                                    )
-                                    .on_hover_text(vendor_tip);
-                                    let mut vendor_buf = tool.vendor.clone().unwrap_or_default();
-                                    if ui
-                                        .add(
-                                            egui::TextEdit::singleline(&mut vendor_buf)
-                                                .hint_text("Manufacturer / supplier"),
-                                        )
-                                        .on_hover_text(vendor_tip)
-                                        .changed()
-                                    {
-                                        tool.vendor = if vendor_buf.trim().is_empty() {
-                                            None
-                                        } else {
-                                            Some(vendor_buf)
-                                        };
+                                    ui.set_width((left_w - 14.0).max(200.0));
+                                    let scroll_now = std::mem::take(&mut self.scroll_to_selected);
+                                    for (idx, t) in global_lib.tools.iter().enumerate() {
+                                        let sel = idx == self.selected_tool_idx;
+                                        let resp = ui
+                                            .selectable_label(sel, t.summary_label())
+                                            .on_hover_text("Inspect or edit this cutting tool's geometry and material presets");
+                                        if sel && scroll_now {
+                                            resp.scroll_to_me(Some(egui::Align::Center));
+                                        }
+                                        if resp.clicked() {
+                                            self.selected_tool_idx = idx;
+                                            self.selected_preset_idx = 0;
+                                            self.pending_delete_tool_id = None;
+                                        }
                                     }
-                                    ui.end_row();
-
-                                    let sku_tip =
-                                        "Optional manufacturer catalog SKU or part number for reordering";
-                                    ui.add(
-                                        egui::Label::new("Product ID:")
-                                            .sense(egui::Sense::hover()),
-                                    )
-                                    .on_hover_text(sku_tip);
-                                    let mut sku_buf = tool.product_id.clone().unwrap_or_default();
-                                    if ui
-                                        .add(
-                                            egui::TextEdit::singleline(&mut sku_buf)
-                                                .hint_text("Catalog SKU / part #"),
-                                        )
-                                        .on_hover_text(sku_tip)
-                                        .changed()
-                                    {
-                                        tool.product_id = if sku_buf.trim().is_empty() {
-                                            None
-                                        } else {
-                                            Some(sku_buf)
-                                        };
-                                    }
-                                    ui.end_row();
                                 });
 
-                            let unit = tool.native_unit;
                             ui.separator();
-                            let tok = crate::theme::ThemeTokens::from_ui(ui);
+                            let preview_tool = &global_lib.tools[self.selected_tool_idx];
+                            ui.strong("2D Cutter Profile Preview");
+                            draw_cutter_schematic(ui, preview_tool);
+
                             ui.horizontal(|ui| {
-                                ui.strong("Physical Geometry");
-                                match tool.validate() {
-                                    Ok(()) => {
-                                        crate::widgets::status_badge_icon(
-                                            ui,
-                                            crate::widgets::StatusBadgeKind::Clean,
-                                            None,
-                                        );
-                                        ui.colored_label(tok.clean_fg, "Geometry Valid");
-                                    }
-                                    Err(err) => {
-                                        crate::widgets::status_badge_icon(
-                                            ui,
-                                            crate::widgets::StatusBadgeKind::Error,
-                                            None,
-                                        );
-                                        ui.colored_label(tok.error_fg, err.to_string());
-                                    }
+                                if ui
+                                    .button("Sync / Embed into Active Project")
+                                    .on_hover_text("Copy/update this tool inside `.chip.toml` and mark dependent operations Dirty")
+                                    .clicked()
+                                {
+                                    history.record_before_edit("Sync Tool into Project", None, project);
+                                    project.sync_tool_from_global(preview_tool);
+                                    self.status_banner = Some(format!(
+                                        "Synced T{} ('{}') into project.",
+                                        preview_tool.tool_number, preview_tool.name
+                                    ));
                                 }
                             });
+                        },
+                    );
 
-                            show_cutter_geometry_editor(ui, tool, unit);
+                    // Right column: Aligned two-column collapsible property cards
+                    let tool = &mut global_lib.tools[self.selected_tool_idx];
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(right_w, body_h),
+                        egui::Layout::top_down(egui::Align::LEFT),
+                        |ui| {
+                            egui::ScrollArea::vertical()
+                                .id_salt("tool_lib_right_editor")
+                                .auto_shrink([false, false])
+                                .show(ui, |ui| {
+                                    ui.set_width((right_w - 14.0).max(340.0));
 
-                            if show_presets_editor(
-                                ui,
-                                tool,
-                                unit,
-                                &mut self.selected_preset_idx,
-                                &mut self.lock_chipload,
-                            ) {
-                                actions.save_active_machine_tools = true;
-                            }
-                            });
-                        });
+                                    // 1. Tool Identity (expanded by default)
+                                    section_card(
+                                        ui,
+                                        "tool_lib_identity_card",
+                                        "Tool Identity",
+                                        true,
+                                        |ui| {
+                                            ui.add_enabled_ui(!is_readonly_builtin, |ui| {
+                                                inspector_grid(ui, "tool_identity_grid", |ui| {
+                                                    let name_tip = "Descriptive name for this cutting tool (shown in Toolpath Browser and G-code comments)";
+                                                    grid_row(ui, "Name", Some(name_tip), |ui| {
+                                                        ui.add(
+                                                            egui::TextEdit::singleline(&mut tool.name)
+                                                                .desired_width(TOOL_COMBO_W),
+                                                        )
+                                                        .on_hover_text(name_tip);
+                                                    });
+
+                                                    edit_offset_number_row(
+                                                        ui,
+                                                        TOOL_NUMBER_LABEL,
+                                                        TOOL_NUMBER_TOOLTIP,
+                                                        &mut tool.tool_number,
+                                                    );
+
+                                                    grid_row(
+                                                        ui,
+                                                        "Native Unit",
+                                                        Some(NATIVE_UNIT_TOOLTIP),
+                                                        |ui| {
+                                                            ui.selectable_value(
+                                                                &mut tool.native_unit,
+                                                                DisplayUnit::Millimeter,
+                                                                "mm",
+                                                            )
+                                                            .on_hover_text(NATIVE_UNIT_TOOLTIP);
+                                                            ui.selectable_value(
+                                                                &mut tool.native_unit,
+                                                                DisplayUnit::Inch,
+                                                                "in",
+                                                            )
+                                                            .on_hover_text(NATIVE_UNIT_TOOLTIP);
+                                                        },
+                                                    );
+
+                                                    let spindle_tip = "Spindle rotation direction emitted in G-code (M3 clockwise or M4 counter-clockwise)";
+                                                    grid_row(
+                                                        ui,
+                                                        "Spindle Direction",
+                                                        Some(spindle_tip),
+                                                        |ui| {
+                                                            ui.selectable_value(
+                                                                &mut tool.spindle_direction,
+                                                                SpindleDirection::Cw,
+                                                                SpindleDirection::Cw.label(),
+                                                            )
+                                                            .on_hover_text(spindle_tip);
+                                                            ui.selectable_value(
+                                                                &mut tool.spindle_direction,
+                                                                SpindleDirection::Ccw,
+                                                                SpindleDirection::Ccw.label(),
+                                                            )
+                                                            .on_hover_text(spindle_tip);
+                                                        },
+                                                    );
+
+                                                    let coolant_tip = "Default coolant command used when a preset or operation does not override coolant";
+                                                    grid_row(
+                                                        ui,
+                                                        "Default Coolant",
+                                                        Some(coolant_tip),
+                                                        |ui| {
+                                                            egui::ComboBox::from_id_salt(
+                                                                "tool_default_coolant_cb",
+                                                            )
+                                                            .width(TOOL_COMBO_W)
+                                                            .selected_text(
+                                                                tool.default_coolant.label(),
+                                                            )
+                                                            .show_ui(ui, |ui| {
+                                                                for c in CoolantMode::ALL {
+                                                                    ui.selectable_value(
+                                                                        &mut tool.default_coolant,
+                                                                        c,
+                                                                        c.label(),
+                                                                    )
+                                                                    .on_hover_text(coolant_tip);
+                                                                }
+                                                            })
+                                                            .response
+                                                            .on_hover_text(coolant_tip);
+                                                        },
+                                                    );
+                                                });
+                                            });
+                                        },
+                                    );
+
+                                    let unit = tool.native_unit;
+
+                                    // 2. Physical Geometry (expanded by default)
+                                    section_card(
+                                        ui,
+                                        "tool_lib_geometry_card",
+                                        "Physical Geometry",
+                                        true,
+                                        |ui| {
+                                            let tok = crate::theme::ThemeTokens::from_ui(ui);
+                                            ui.horizontal(|ui| match tool.validate() {
+                                                Ok(()) => {
+                                                    crate::widgets::status_badge_icon(
+                                                        ui,
+                                                        crate::widgets::StatusBadgeKind::Clean,
+                                                        None,
+                                                    );
+                                                    ui.colored_label(
+                                                        tok.clean_fg,
+                                                        "Geometry Valid",
+                                                    );
+                                                }
+                                                Err(err) => {
+                                                    crate::widgets::status_badge_icon(
+                                                        ui,
+                                                        crate::widgets::StatusBadgeKind::Error,
+                                                        None,
+                                                    );
+                                                    ui.colored_label(tok.error_fg, err.to_string());
+                                                }
+                                            });
+                                            ui.add_space(4.0);
+                                            ui.add_enabled_ui(!is_readonly_builtin, |ui| {
+                                                show_cutter_geometry_editor(ui, tool, unit);
+                                            });
+                                        },
+                                    );
+
+                                    // 3. Material Cutting Presets (expanded by default)
+                                    section_card(
+                                        ui,
+                                        "tool_lib_presets_card",
+                                        "Material Cutting Presets",
+                                        true,
+                                        |ui| {
+                                            ui.add_enabled_ui(!is_readonly_builtin, |ui| {
+                                                if show_presets_editor(
+                                                    ui,
+                                                    tool,
+                                                    unit,
+                                                    &mut self.selected_preset_idx,
+                                                    &mut self.lock_chipload,
+                                                ) {
+                                                    actions.save_active_machine_tools = true;
+                                                }
+                                            });
+                                        },
+                                    );
+
+                                    // 4. Controller Offsets (H / D) (collapsed by default)
+                                    section_card(
+                                        ui,
+                                        "tool_lib_offsets_card",
+                                        "Controller Offsets (H / D)",
+                                        false,
+                                        |ui| {
+                                            ui.add_enabled_ui(!is_readonly_builtin, |ui| {
+                                                inspector_grid(ui, "tool_offsets_grid", |ui| {
+                                                    edit_offset_number_row(
+                                                        ui,
+                                                        LENGTH_OFFSET_LABEL,
+                                                        LENGTH_OFFSET_TOOLTIP,
+                                                        &mut tool.length_offset_number,
+                                                    );
+                                                    edit_offset_number_row(
+                                                        ui,
+                                                        DIAMETER_OFFSET_LABEL,
+                                                        DIAMETER_OFFSET_TOOLTIP,
+                                                        &mut tool.diameter_offset_number,
+                                                    );
+                                                });
+                                            });
+                                        },
+                                    );
+
+                                    // 5. Vendor & Catalog Info (collapsed by default)
+                                    section_card(
+                                        ui,
+                                        "tool_lib_vendor_card",
+                                        "Vendor & Catalog Info",
+                                        false,
+                                        |ui| {
+                                            ui.add_enabled_ui(!is_readonly_builtin, |ui| {
+                                                inspector_grid(ui, "tool_vendor_grid", |ui| {
+                                                    let vendor_tip = "Optional cutter manufacturer or supplier name (e.g., Harvey Tool, Datron, Lakeshore Carbide)";
+                                                    grid_row(ui, "Vendor", Some(vendor_tip), |ui| {
+                                                        let mut vendor_buf =
+                                                            tool.vendor.clone().unwrap_or_default();
+                                                        if ui
+                                                            .add(
+                                                                egui::TextEdit::singleline(
+                                                                    &mut vendor_buf,
+                                                                )
+                                                                .desired_width(TOOL_COMBO_W)
+                                                                .hint_text(
+                                                                    "Manufacturer / supplier",
+                                                                ),
+                                                            )
+                                                            .on_hover_text(vendor_tip)
+                                                            .changed()
+                                                        {
+                                                            tool.vendor =
+                                                                if vendor_buf.trim().is_empty() {
+                                                                    None
+                                                                } else {
+                                                                    Some(vendor_buf)
+                                                                };
+                                                        }
+                                                    });
+
+                                                    let sku_tip = "Optional manufacturer catalog SKU or part number for reordering";
+                                                    grid_row(ui, "Product ID", Some(sku_tip), |ui| {
+                                                        let mut sku_buf = tool
+                                                            .product_id
+                                                            .clone()
+                                                            .unwrap_or_default();
+                                                        if ui
+                                                            .add(
+                                                                egui::TextEdit::singleline(
+                                                                    &mut sku_buf,
+                                                                )
+                                                                .desired_width(TOOL_COMBO_W)
+                                                                .hint_text("Catalog SKU / part #"),
+                                                            )
+                                                            .on_hover_text(sku_tip)
+                                                            .changed()
+                                                        {
+                                                            tool.product_id =
+                                                                if sku_buf.trim().is_empty() {
+                                                                    None
+                                                                } else {
+                                                                    Some(sku_buf)
+                                                                };
+                                                        }
+                                                    });
+                                                });
+                                            });
+                                        },
+                                    );
+                                });
+                        },
+                    );
                 });
             });
 
@@ -892,7 +995,7 @@ mod tests {
         let base_input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
-                egui::vec2(1280.0, 800.0),
+                egui::vec2(1280.0, 900.0),
             )),
             ..Default::default()
         };
@@ -917,8 +1020,83 @@ mod tests {
             &mut logs,
         );
 
-        let texts = collect_text_shapes(&settled.shapes);
+        let initial_texts = collect_text_shapes(&settled.shapes);
+        assert!(
+            initial_texts.iter().any(|(t, _)| t == TOOL_NUMBER_LABEL),
+            "Tool Number (T) must be visible by default in Tool Identity card"
+        );
+        assert!(
+            !initial_texts.iter().any(|(t, _)| t == LENGTH_OFFSET_LABEL),
+            "Length Offset (H) must be hidden by default while Controller Offsets (H / D) card is collapsed"
+        );
+        assert!(
+            !initial_texts
+                .iter()
+                .any(|(t, _)| t == DIAMETER_OFFSET_LABEL),
+            "Diameter Offset (D) must be hidden by default while Controller Offsets (H / D) card is collapsed"
+        );
+
+        // Collapse Physical Geometry & Material Cutting Presets so Controller Offsets (H / D)
+        // is visible without scrolling, then expand Controller Offsets (H / D).
         let mut t = 1.0;
+        for header_title in [
+            "Physical Geometry",
+            "Material Cutting Presets",
+            "Controller Offsets (H / D)",
+        ] {
+            let cur_out = run_modal_frame(
+                &ctx,
+                egui::RawInput {
+                    time: Some(t),
+                    ..base_input.clone()
+                },
+                &mut modal,
+                &mut global_lib,
+                &mut project,
+                &mut history,
+                &mut logs,
+            );
+            t += 0.5;
+            let cur_texts = collect_text_shapes(&cur_out.shapes);
+            let hdr_pos = cur_texts
+                .iter()
+                .find(|(txt, _)| txt == header_title)
+                .unwrap_or_else(|| {
+                    panic!("expected section card header '{header_title}' to render")
+                })
+                .1
+                .center();
+            let _ = run_modal_frame(
+                &ctx,
+                egui::RawInput {
+                    time: Some(t),
+                    events: click_at(hdr_pos),
+                    ..base_input.clone()
+                },
+                &mut modal,
+                &mut global_lib,
+                &mut project,
+                &mut history,
+                &mut logs,
+            );
+            t += 0.5;
+        }
+
+        let expanded = run_modal_frame(
+            &ctx,
+            egui::RawInput {
+                time: Some(t),
+                ..base_input.clone()
+            },
+            &mut modal,
+            &mut global_lib,
+            &mut project,
+            &mut history,
+            &mut logs,
+        );
+        t += 0.5;
+
+        let texts = collect_text_shapes(&expanded.shapes);
         for &(expected_label, value_text, expected_tooltip) in &[
             (TOOL_NUMBER_LABEL, "11", TOOL_NUMBER_TOOLTIP),
             (LENGTH_OFFSET_LABEL, "22", LENGTH_OFFSET_TOOLTIP),
@@ -1101,7 +1279,7 @@ mod tests {
                 "expected cutter type selector to display 'Thread Mill'"
             );
             assert!(
-                texts.iter().any(|(t, _)| t == "Neck Length (Reach):"),
+                texts.iter().any(|(t, _)| t == "Neck Length (Reach)"),
                 "expected Thread Mill geometry fields to render"
             );
             assert!(
@@ -1140,9 +1318,9 @@ mod tests {
         };
 
         for (idx, expected_kind, expected_field) in [
-            (lolli_idx, "Lollipop Endmill", "Sphere Join Height:"),
-            (slot_idx, "Slot / T-Slot Mill", "Cutting Thickness:"),
-            (dove_idx, "Dovetail Cutter", "Top Ø (Derived):"),
+            (lolli_idx, "Lollipop Endmill", "Sphere Join Height"),
+            (slot_idx, "Slot / T-Slot Mill", "Cutting Thickness"),
+            (dove_idx, "Dovetail Cutter", "Top Dia (Derived)"),
         ] {
             modal.selected_tool_idx = idx;
             let _ = run_modal_frame(
@@ -1257,12 +1435,12 @@ mod tests {
         );
         let texts = collect_text_shapes(&settled.shapes);
         for expected in [
-            "Spindle Direction:",
+            "Tool Identity",
+            "Physical Geometry",
+            "Spindle Direction",
             "CW (M3)",
             "CCW (M4)",
-            "Default Coolant:",
-            "Vendor:",
-            "Product ID:",
+            "Default Coolant",
             "Duplicate Tool",
             "Delete Tool",
         ] {
@@ -1271,6 +1449,15 @@ mod tests {
                 "expected Tool Library label/button '{expected}' to render"
             );
         }
+        // Vendor & Product ID live inside the default-collapsed Vendor & Catalog Info card.
+        assert!(
+            !texts.iter().any(|(t, _)| t == "Vendor"),
+            "Vendor field must be collapsed by default"
+        );
+        assert!(
+            !texts.iter().any(|(t, _)| t == "Product ID"),
+            "Product ID field must be collapsed by default"
+        );
 
         // 2. Click CCW (M4) -> mutates spindle_direction.
         let ccw_pos = texts
@@ -1331,7 +1518,41 @@ mod tests {
         );
         assert_eq!(global_lib.tools[0].default_coolant, CoolantMode::Flood);
 
-        // 4. Edit Vendor and Product ID text boxes.
+        // 4. Collapse Physical Geometry & Material Cutting Presets, then expand Vendor & Catalog Info
+        //    and edit Vendor and Product ID text boxes.
+        for header_title in [
+            "Physical Geometry",
+            "Material Cutting Presets",
+            "Vendor & Catalog Info",
+        ] {
+            let cur_out = run_modal_frame(
+                &ctx,
+                base_input(Vec::new(), &mut time),
+                &mut modal,
+                &mut global_lib,
+                &mut project,
+                &mut history,
+                &mut logs,
+            );
+            let hdr_pos = collect_text_shapes(&cur_out.shapes)
+                .into_iter()
+                .find(|(t, _)| t == header_title)
+                .unwrap_or_else(|| {
+                    panic!("expected section card header '{header_title}' to render")
+                })
+                .1
+                .center();
+            let _ = run_modal_frame(
+                &ctx,
+                base_input(click_at(hdr_pos), &mut time),
+                &mut modal,
+                &mut global_lib,
+                &mut project,
+                &mut history,
+                &mut logs,
+            );
+        }
+
         let after_cool = run_modal_frame(
             &ctx,
             base_input(Vec::new(), &mut time),
@@ -1342,6 +1563,8 @@ mod tests {
             &mut logs,
         );
         let texts_ac = collect_text_shapes(&after_cool.shapes);
+        assert!(texts_ac.iter().any(|(t, _)| t == "Vendor"));
+        assert!(texts_ac.iter().any(|(t, _)| t == "Product ID"));
         let vendor_hint = texts_ac
             .iter()
             .find(|(t, _)| t == "Manufacturer / supplier")
@@ -1590,11 +1813,11 @@ mod tests {
             &mut time,
         );
         for expected in [
-            "Material:",
-            "Coolant Override:",
-            "Lead Feed:",
-            "Ramp Feed:",
-            "Plunge Feed:",
+            "Material",
+            "Coolant Override",
+            "Lead Feed",
+            "Ramp Feed",
+            "Plunge Feed",
             "- Delete Preset",
         ] {
             assert!(
@@ -1663,7 +1886,7 @@ mod tests {
         let lead_orig = preset_tool.presets[0].lead_feed_mm_min;
         let ramp_orig = preset_tool.presets[0].ramp_feed_mm_min;
         let plunge_orig = preset_tool.presets[0].plunge_feed_mm_min;
-        for lbl in ["Lead Feed:", "Ramp Feed:", "Plunge Feed:"] {
+        for lbl in ["Lead Feed", "Ramp Feed", "Plunge Feed"] {
             let p_now = run_presets(
                 Vec::new(),
                 &mut preset_tool,
@@ -1796,5 +2019,62 @@ mod tests {
         );
         assert_eq!(preset_tool.presets.len(), 1);
         assert_eq!(sel_preset, 0);
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
+    fn tool_library_window_opens_full_width_and_stays_stable_for_30_frames() {
+        let ctx = egui::Context::default();
+        let mut modal = ToolLibraryModalState::new();
+        modal.open = true;
+        let mut global_lib = default_starter_tool_library();
+        let mut project = ProjectDocument::new("tl_size_test");
+        let mut history = UndoHistory::new(8);
+        let mut logs = Vec::new();
+        let win_id = egui::Id::unique("chipcutter_tool_library_modal");
+
+        let mut rects = Vec::new();
+        for frame in 0..30 {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1400.0, 900.0),
+                )),
+                time: Some(frame as f64 * 0.016),
+                ..Default::default()
+            };
+            let _ = run_modal_frame(
+                &ctx,
+                input,
+                &mut modal,
+                &mut global_lib,
+                &mut project,
+                &mut history,
+                &mut logs,
+            );
+            let rect = ctx
+                .memory(|m| m.area_rect(win_id))
+                .expect("Tool Library window rect must exist");
+            rects.push(rect);
+        }
+
+        assert!(
+            rects[0].width() >= 860.0,
+            "Frame 1 Tool Library window should open at full width (>= 860 px), got {:.1} px",
+            rects[0].width()
+        );
+        let base_w = rects[1].width();
+        let base_h = rects[1].height();
+        for (idx, r) in rects.iter().enumerate().skip(2) {
+            assert!(
+                (r.width() - base_w).abs() < 1.0 && (r.height() - base_h).abs() < 1.0,
+                "Tool Library window crept on frame {}: ({:.2}, {:.2}) vs frame 2 ({:.2}, {:.2})",
+                idx + 1,
+                r.width(),
+                r.height(),
+                base_w,
+                base_h
+            );
+        }
     }
 }

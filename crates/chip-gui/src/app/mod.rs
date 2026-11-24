@@ -1401,4 +1401,112 @@ mod phase21_ui_tests {
             assert_eq!(app.modals.machine_tool_swap.open, !target_has_exact);
         }
     }
+
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn edit_menu_exposes_project_properties_manage_tools_and_application_settings() {
+        fn collect_texts(shapes: &[egui::epaint::ClippedShape]) -> Vec<(String, egui::Rect)> {
+            fn visit(shape: &egui::Shape, out: &mut Vec<(String, egui::Rect)>) {
+                match shape {
+                    egui::Shape::Text(ts) => {
+                        out.push((ts.galley.text().to_string(), ts.visual_bounding_rect()));
+                    }
+                    egui::Shape::Vec(v) => {
+                        for s in v {
+                            visit(s, out);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let mut out = Vec::new();
+            for cs in shapes {
+                visit(&cs.shape, &mut out);
+            }
+            out
+        }
+        fn click_at(pos: egui::Pos2) -> Vec<egui::Event> {
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]
+        }
+
+        let ctx = egui::Context::default();
+        let mut app = ChipCutterApp::new_headless_for_test(&ctx);
+        let mut time = 1.0;
+
+        let run_menu = |app: &mut ChipCutterApp, events: Vec<egui::Event>, t: &mut f64| {
+            *t += 0.1;
+            let mut out = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1280.0, 800.0),
+                    )),
+                    time: Some(*t),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    let c = ui.ctx().clone();
+                    app.draw_menu_bar(ui, &c);
+                },
+            );
+            out.textures_delta.clear();
+            collect_texts(&out.shapes)
+        };
+
+        // Click "Edit" menu and verify all 3 entries exist & open their modals.
+        for (item_label, check_opened) in [
+            (
+                "Project Properties...",
+                (|a: &ChipCutterApp| a.modals.project_properties.open)
+                    as fn(&ChipCutterApp) -> bool,
+            ),
+            ("Manage Tools...", |a: &ChipCutterApp| {
+                a.modals.tool_library.open
+            }),
+            ("Application Settings... (Ctrl+,)", |a: &ChipCutterApp| {
+                a.modals.settings.open
+            }),
+        ] {
+            let bar_texts = run_menu(&mut app, Vec::new(), &mut time);
+            let edit_pos = bar_texts
+                .iter()
+                .find(|(t, _)| t == "Edit")
+                .expect("Edit menu must render")
+                .1
+                .center();
+            let _ = run_menu(&mut app, click_at(edit_pos), &mut time);
+            let menu_texts = run_menu(&mut app, Vec::new(), &mut time);
+            let item_pos = menu_texts
+                .iter()
+                .find(|(t, _)| t == item_label)
+                .unwrap_or_else(|| panic!("Edit menu must contain '{item_label}'"))
+                .1
+                .center();
+            let _ = run_menu(&mut app, click_at(item_pos), &mut time);
+            assert!(
+                check_opened(&app),
+                "Clicking Edit -> '{item_label}' must open its modal"
+            );
+        }
+
+        // Command Palette action also opens Project Properties.
+        app.modals.project_properties.open = false;
+        app.execute_palette_command(CommandId::OpenProjectProperties, &ctx);
+        assert!(app.modals.project_properties.open);
+    }
 }

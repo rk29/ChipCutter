@@ -199,6 +199,11 @@ impl ChipCutterApp {
             CommandId::SaveProject => {
                 let _ = self.save_project_dialog();
             }
+            CommandId::OpenProjectProperties => {
+                self.modals
+                    .project_properties
+                    .open_for_project(&self.project.project_name);
+            }
             CommandId::ExportChipzBundle => self.export_chipz_dialog(),
             CommandId::ImportStepModel => self.open_step_dialog(ctx),
             CommandId::ImportMesh3D => self.modals.mesh_import.open_with_file_picker(),

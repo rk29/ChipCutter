@@ -84,7 +84,7 @@ impl SimulationPanelState {
                             tok.info_border,
                             tok.info_fg,
                             format!(
-                                "Engine: {} · Detail: {} · Surface: {}\nActive backend: GPU Compute ({}) — {}\n{}\n\nClick to configure Simulation Engine, Detail Level, Backend, and Mesh Skinning in Settings.",
+                                "Engine: {} · Detail: {} · Surface: {}\nActive backend: GPU Compute ({}) — {}\n{}\n\nClick to configure Simulation Engine, Detail Level, Backend, and Mesh Skinning in Application Settings.",
                                 self.engine.label(),
                                 self.resolution.label_for_engine(self.engine),
                                 skin_short,

@@ -1,4 +1,4 @@
-//! Unified **Settings** modal (`prefs.toml`-backed) consolidating infrequently changed
+//! Unified **Application Settings** modal (`prefs.toml`-backed) consolidating infrequently changed
 //! Appearance, Viewport Navigation, Simulation Engine/Resolution/Skinning, and Machine Defaults.
 
 use chip_math::DisplayUnit;
@@ -14,6 +14,7 @@ use crate::{
 };
 
 const SETTINGS_COMBO_W: f32 = INPUT_COL_WIDTH + 116.0;
+const APPLICATION_SETTINGS_WINDOW_ID: &str = "chipcutter_application_settings_modal";
 
 /// Category sections in the Settings sidebar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -89,7 +90,7 @@ pub struct SettingsModalActions {
     pub open_machine_manager: bool,
 }
 
-/// Renders the unified **Settings** dialog when `state.open == true`.
+/// Renders the unified **Application Settings** dialog when `state.open == true`.
 pub fn show_settings_modal(
     ctx: &egui::Context,
     state: &mut SettingsModalState,
@@ -108,39 +109,45 @@ pub fn show_settings_modal(
     let tok = ThemeTokens::for_theme(sctx.theme);
     let mut keep_open = state.open;
 
-    egui::Window::new("Settings")
+    egui::Window::new("Application Settings")
+        .id(egui::Id::unique(APPLICATION_SETTINGS_WINDOW_ID))
         .open(&mut keep_open)
-        .default_size([740.0, 500.0])
-        .min_size([560.0, 380.0])
+        .default_size([760.0, 520.0])
+        .min_size([680.0, 440.0])
         .resizable(true)
         .collapsible(false)
         .show(ctx, |ui| {
-            let total_w = ui.available_width().max(540.0);
-            let body_h = ui.available_height().max(400.0);
-            let rail_w = 180.0_f32;
+            let total_w = ui.available_width().max(660.0);
+            let body_h = ui.available_height().max(380.0);
+            let rail_w = 184.0_f32;
             let gap_w = 10.0_f32;
-            let content_w = (total_w - rail_w - gap_w).max(340.0);
+            let content_w = (total_w - rail_w - gap_w - 2.0).max(360.0);
 
             ui.horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing.x = gap_w;
+
                 // Left category rail
                 ui.allocate_ui_with_layout(
                     egui::vec2(rail_w, body_h),
                     egui::Layout::top_down(egui::Align::LEFT),
                     |ui| {
+                        let inner_rail_w = (rail_w - 14.0).max(120.0);
+                        let inner_rail_h = (body_h - 14.0).max(200.0);
                         egui::Frame::NONE
                             .fill(tok.panel_bg)
                             .stroke(Stroke::new(1.0, tok.border))
                             .corner_radius(CornerRadius::same(6))
                             .inner_margin(egui::Margin::same(6))
                             .show(ui, |ui| {
-                                ui.set_min_width(rail_w - 14.0);
-                                ui.set_min_height((body_h - 14.0).max(360.0));
+                                ui.set_min_width(inner_rail_w);
+                                ui.set_max_width(inner_rail_w);
+                                ui.set_min_height(inner_rail_h);
                                 ui.spacing_mut().item_spacing.y = 4.0;
                                 for section in SettingsSection::ALL {
                                     let selected = state.active_section == section;
                                     if ui
                                         .add_sized(
-                                            [rail_w - 16.0, 28.0],
+                                            [inner_rail_w, 28.0],
                                             egui::Button::selectable(selected, section.label()),
                                         )
                                         .clicked()
@@ -152,10 +159,8 @@ pub fn show_settings_modal(
                     },
                 );
 
-                ui.add_space(gap_w);
-
                 // Right scrollable content pane (explicit top-down layout & width so
-                // section_card / inspector_grid never collapse inside horizontal_top)
+                // section_card / inspector_grid never collapse or creep inside horizontal_top)
                 ui.allocate_ui_with_layout(
                     egui::vec2(content_w, body_h),
                     egui::Layout::top_down(egui::Align::LEFT),
@@ -164,7 +169,7 @@ pub fn show_settings_modal(
                             .id_salt(("settings_scroll", state.active_section as u8))
                             .auto_shrink([false, false])
                             .show(ui, |ui| {
-                                ui.set_min_width((content_w - 12.0).max(320.0));
+                                ui.set_width((content_w - 14.0).max(320.0));
                                 match state.active_section {
                                     SettingsSection::General => {
                                         show_general_section(ui, &mut sctx, &mut actions);
@@ -745,6 +750,93 @@ mod tests {
                 "section {section:?} must render visible control containing '{needle}'; found: {:?}",
                 texts.iter().map(|(t, r)| (t, r.size())).collect::<Vec<_>>()
             );
+            assert!(
+                texts.iter().any(|(t, _)| t == "Application Settings"),
+                "dialog title must be 'Application Settings'"
+            );
+        }
+    }
+
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn application_settings_window_opens_full_width_with_zero_creep_for_30_frames() {
+        let machines = chip_tools::builtin_machine_definitions();
+        let win_id = egui::Id::unique(super::APPLICATION_SETTINGS_WINDOW_ID);
+
+        for section in SettingsSection::ALL {
+            let ctx = egui::Context::default();
+            let mut state = SettingsModalState::default();
+            state.open_section(section);
+
+            let mut prefs = UserPreferences::default();
+            let mut mouse_preset = MousePreset::Fusion360;
+            let mut orbit_mode = OrbitMode::TurntableZUp;
+            let mut show_z_planes = true;
+            let mut show_all_setup_toolpaths = true;
+            let mut show_grid = true;
+            let mut sim_engine = SimEngineKind::TriDexel;
+            let mut sim_resolution = SimResolution::Standard;
+            let mut sim_backend = SimComputeBackendChoice::Auto;
+            let mut sim_mesh_skinning = true;
+
+            let mut rects = Vec::new();
+            for frame in 0..30 {
+                let input = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::Vec2::new(1400.0, 900.0),
+                    )),
+                    time: Some(frame as f64 * 0.016),
+                    ..Default::default()
+                };
+                let mut out = ctx.run_ui(input, |ui| {
+                    let _ = show_settings_modal(
+                        ui.ctx(),
+                        &mut state,
+                        SettingsModalCtx {
+                            theme: AppTheme::Dark,
+                            project_units: DisplayUnit::Millimeter,
+                            prefs: &mut prefs,
+                            mouse_preset: &mut mouse_preset,
+                            orbit_mode: &mut orbit_mode,
+                            orthographic: true,
+                            show_z_planes: &mut show_z_planes,
+                            show_all_setup_toolpaths: &mut show_all_setup_toolpaths,
+                            show_grid: &mut show_grid,
+                            sim_engine: &mut sim_engine,
+                            sim_resolution: &mut sim_resolution,
+                            sim_backend: &mut sim_backend,
+                            sim_mesh_skinning: &mut sim_mesh_skinning,
+                            gpu_adapter_info: None,
+                            machines: &machines,
+                        },
+                    );
+                });
+                out.textures_delta.clear();
+                let rect = ctx
+                    .memory(|m| m.area_rect(win_id))
+                    .expect("Application Settings window rect must exist");
+                rects.push(rect);
+            }
+
+            assert!(
+                rects[0].width() >= 720.0,
+                "section {section:?}: Frame 1 Application Settings window must open at full width (>= 720 px), got {:.1} px",
+                rects[0].width()
+            );
+            let base_w = rects[1].width();
+            let base_h = rects[1].height();
+            for (idx, r) in rects.iter().enumerate().skip(2) {
+                assert!(
+                    (r.width() - base_w).abs() < 1.0 && (r.height() - base_h).abs() < 1.0,
+                    "section {section:?}: Application Settings window crept on frame {}: ({:.2}, {:.2}) vs frame 2 ({:.2}, {:.2})",
+                    idx + 1,
+                    r.width(),
+                    r.height(),
+                    base_w,
+                    base_h
+                );
+            }
         }
     }
 }

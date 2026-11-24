@@ -295,14 +295,14 @@ impl ChipCutterApp {
                         self.modals.tool_library.open = true;
                     }
 
-                    // Right-aligned Utility controls (Command Palette & Settings)
+                    // Right-aligned Utility controls (Command Palette & Application Settings)
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.spacing_mut().item_spacing.x = 4.0;
                         if icon_button(
                             ui,
                             IconKind::Settings,
                             None,
-                            "Open Settings & Preferences (Ctrl+,)",
+                            "Application Settings (Ctrl+,)",
                         )
                         .clicked()
                         {

@@ -16,6 +16,7 @@ pub enum CommandId {
     NewProject,
     OpenProject,
     SaveProject,
+    OpenProjectProperties,
     ExportChipzBundle,
     ImportStepModel,
     ImportMesh3D,
@@ -157,6 +158,13 @@ pub const PALETTE_COMMANDS: &[PaletteEntry] = &[
         category: "File",
         label: "New Blank Project",
         keywords: "new clear blank untitled project",
+        shortcut: None,
+    },
+    PaletteEntry {
+        id: CommandId::OpenProjectProperties,
+        category: "Project",
+        label: "Project Properties...",
+        keywords: "project properties rename name units machine summary metadata",
         shortcut: None,
     },
     PaletteEntry {
@@ -407,8 +415,8 @@ pub const PALETTE_COMMANDS: &[PaletteEntry] = &[
     PaletteEntry {
         id: CommandId::OpenToolLibrary,
         category: "Tools",
-        label: "Open Tool Library & SFM/Chipload Manager…",
-        keywords: "tools cutter endmill vbit drill fusion library",
+        label: "Manage Tools / Open Tool Library...",
+        keywords: "manage tools cutter endmill vbit drill fusion library",
         shortcut: None,
     },
     PaletteEntry {
@@ -491,8 +499,8 @@ pub const PALETTE_COMMANDS: &[PaletteEntry] = &[
     PaletteEntry {
         id: CommandId::OpenSettings,
         category: "Settings",
-        label: "Open Settings & Preferences…",
-        keywords: "settings preferences theme units simulation engine resolution mesh skinning mouse navigation",
+        label: "Open Application Settings",
+        keywords: "application settings preferences theme units simulation engine resolution mesh skinning mouse navigation",
         shortcut: Some("Ctrl+,"),
     },
     PaletteEntry {
@@ -1042,6 +1050,36 @@ mod tests {
             (
                 CommandId::AddOpUndercut3D,
                 &["3d undercut", "lollipop", "overhang"][..],
+            ),
+        ] {
+            let entry = PALETTE_COMMANDS
+                .iter()
+                .find(|e| e.id == id)
+                .unwrap_or_else(|| panic!("{id:?} entry present"));
+            let searchable = format!("{} {} {}", entry.category, entry.label, entry.keywords);
+            for query in queries {
+                assert!(
+                    fuzzy_match_score(query, &searchable).is_some(),
+                    "expected {id:?} to match query '{query}'"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn command_palette_matches_project_properties_manage_tools_and_application_settings() {
+        for (id, queries) in [
+            (
+                CommandId::OpenProjectProperties,
+                &["project properties", "rename project"][..],
+            ),
+            (
+                CommandId::OpenToolLibrary,
+                &["manage tools", "tool library"][..],
+            ),
+            (
+                CommandId::OpenSettings,
+                &["application settings", "preferences"][..],
             ),
         ] {
             let entry = PALETTE_COMMANDS

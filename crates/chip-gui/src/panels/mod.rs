@@ -9,6 +9,7 @@ pub mod mesh_import_modal;
 pub mod model_inspector;
 pub mod operation_inspector;
 pub mod post_profile_inspector;
+pub mod project_properties;
 pub mod settings;
 pub mod setup_inspector;
 pub mod simulation;

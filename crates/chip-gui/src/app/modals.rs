@@ -11,6 +11,9 @@ use crate::{
         machine_tool_swap::MachineToolSwapModalState,
         mesh_import_modal::MeshImportModalState,
         post_profile_inspector::PostProfileInspectorModalState,
+        project_properties::{
+            ProjectPropertiesCtx, ProjectPropertiesModalState, show_project_properties_modal,
+        },
         settings::{SettingsModalCtx, SettingsModalState, show_settings_modal},
         tool_library::{ToolLibraryMachineContext, ToolLibraryModalState},
         vector_import_modal::{VectorImportModalState, VectorModalAction, VectorModalCtx},
@@ -30,6 +33,7 @@ pub struct ModalStates {
     pub(crate) machine_manager: MachineManagerModalState,
     pub(crate) post_profile_inspector: PostProfileInspectorModalState,
     pub(crate) machine_tool_swap: MachineToolSwapModalState,
+    pub(crate) project_properties: ProjectPropertiesModalState,
     pub(crate) settings: SettingsModalState,
     pub(crate) mesh_import: MeshImportModalState,
     pub(crate) vector_import: VectorImportModalState,
@@ -56,6 +60,7 @@ impl ModalStates {
             machine_manager: MachineManagerModalState::new(),
             post_profile_inspector: PostProfileInspectorModalState::new(),
             machine_tool_swap: MachineToolSwapModalState::default(),
+            project_properties: ProjectPropertiesModalState::default(),
             settings: SettingsModalState::default(),
             mesh_import: MeshImportModalState::default(),
             vector_import: VectorImportModalState::default(),
@@ -263,6 +268,45 @@ impl ChipCutterApp {
                 summary.updated_operation_count,
                 summary.pruned_unused_count
             ));
+        }
+
+        let pp_actions = show_project_properties_modal(
+            ctx,
+            &mut self.modals.project_properties,
+            ProjectPropertiesCtx {
+                project: &self.project,
+                project_file_path: self.project_file_path.as_deref(),
+                machines: &self.machines,
+            },
+        );
+        if let Some(new_name) = pp_actions.rename_project {
+            let trimmed = new_name.trim();
+            if !trimmed.is_empty() && trimmed != self.project.project_name {
+                self.history
+                    .record_before_edit("Rename Project", None, &self.project);
+                self.project.project_name = trimmed.to_string();
+                self.logs.push(format!(
+                    "Renamed project to '{}'.",
+                    self.project.project_name
+                ));
+            }
+        }
+        if let Some(new_units) = pp_actions.display_units_changed
+            && new_units != self.project.display_units
+        {
+            self.history
+                .record_before_edit("Change Display Units", None, &self.project);
+            self.project.display_units = new_units;
+            self.refresh_dependent_expressions();
+        }
+        if let Some(new_mid) = pp_actions.switch_machine_id {
+            self.request_machine_switch(new_mid, false);
+        }
+        if pp_actions.open_machine_manager {
+            let cur_id = self.project.effective_machine_id().to_string();
+            self.modals
+                .machine_manager
+                .open_selecting(&self.machines, &cur_id);
         }
 
         let gpu_info_owned = self.sim_panel.gpu_adapter_info().cloned();

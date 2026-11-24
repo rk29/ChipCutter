@@ -337,8 +337,31 @@ impl ChipCutterApp {
             }
             ui.separator();
             if ui
-                .button("Settings… (Ctrl+,)")
-                .on_hover_text("Configure theme, units, mouse navigation, simulation engine/detail/skinning, and default machine")
+                .button("Project Properties...")
+                .on_hover_text(
+                    "Edit project name, display units, target CNC machine, and inspect project summary",
+                )
+                .clicked()
+            {
+                self.modals
+                    .project_properties
+                    .open_for_project(&self.project.project_name);
+                ui.close();
+            }
+            if ui
+                .button("Manage Tools...")
+                .on_hover_text("Open the Tool Library & Cutting Presets manager for the active machine")
+                .clicked()
+            {
+                self.modals.tool_library.open = true;
+                ui.close();
+            }
+            ui.separator();
+            if ui
+                .button("Application Settings... (Ctrl+,)")
+                .on_hover_text(
+                    "Configure application-level theme, units, mouse navigation, simulation engine/detail/skinning, and default machine",
+                )
                 .clicked()
             {
                 self.modals.settings.open = true;

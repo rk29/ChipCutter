@@ -1,242 +1,271 @@
 use chip_math::DisplayUnit;
 use chip_tools::{CutterGeometry, Tool};
 
+use crate::widgets::{INPUT_COL_WIDTH, grid_row, inspector_grid};
+
+pub(super) const TOOL_NUM_W: f32 = INPUT_COL_WIDTH + 28.0;
+pub(super) const TOOL_COMBO_W: f32 = INPUT_COL_WIDTH + 96.0;
+
 pub(super) fn show_cutter_geometry_editor(ui: &mut egui::Ui, tool: &mut Tool, unit: DisplayUnit) {
-    // Cutter Type switcher
     let cur_label = tool.geometry.kind_label();
-    egui::ComboBox::from_id_salt("cutter_type_switch")
-        .selected_text(cur_label)
-        .show_ui(ui, |ui| {
-            let d = tool.geometry.cutting_diameter_mm();
-            let fl = tool.geometry.flute_length_mm();
-            let oal = tool.geometry.overall_length_mm();
-            let shk = tool.geometry.shank_diameter_mm();
-            let n = tool.geometry.flutes();
+    inspector_grid(ui, ("tool_geometry_grid", cur_label), |ui| {
+        grid_row(
+            ui,
+            "Cutter Type",
+            Some("Select physical cutter profile geometry"),
+            |ui| {
+                egui::ComboBox::from_id_salt("cutter_type_switch")
+                    .width(TOOL_COMBO_W)
+                    .selected_text(cur_label)
+                    .show_ui(ui, |ui| {
+                        let d = tool.geometry.cutting_diameter_mm();
+                        let fl = tool.geometry.flute_length_mm();
+                        let oal = tool.geometry.overall_length_mm();
+                        let shk = tool.geometry.shank_diameter_mm();
+                        let n = tool.geometry.flutes();
 
-            if ui
-                .selectable_label(
-                    matches!(tool.geometry, CutterGeometry::FlatEndmill { .. }),
-                    "Flat Endmill",
-                )
-                .on_hover_text("Square-corner flat-bottom milling cutter")
-                .clicked()
-            {
-                tool.geometry = CutterGeometry::FlatEndmill {
-                    diameter_mm: d,
-                    flute_length_mm: fl,
-                    overall_length_mm: oal,
-                    shank_diameter_mm: shk,
-                    flutes: n,
-                };
-            }
-            if ui
-                .selectable_label(
-                    matches!(tool.geometry, CutterGeometry::BullNoseEndmill { .. }),
-                    "Bull-Nose Endmill",
-                )
-                .on_hover_text("Flat-bottom endmill with a defined corner fillet radius")
-                .clicked()
-            {
-                tool.geometry = CutterGeometry::BullNoseEndmill {
-                    diameter_mm: d,
-                    corner_radius_mm: (0.1 * d).max(0.2),
-                    flute_length_mm: fl,
-                    overall_length_mm: oal,
-                    shank_diameter_mm: shk,
-                    flutes: n,
-                };
-            }
-            if ui
-                .selectable_label(
-                    matches!(tool.geometry, CutterGeometry::BallEndmill { .. }),
-                    "Ball Endmill",
-                )
-                .on_hover_text("Hemispherical ball-nose cutter for 3D surface finishing")
-                .clicked()
-            {
-                tool.geometry = CutterGeometry::BallEndmill {
-                    diameter_mm: d,
-                    flute_length_mm: fl,
-                    overall_length_mm: oal,
-                    shank_diameter_mm: shk,
-                    flutes: n,
-                };
-            }
-            if ui
-                .selectable_label(
-                    matches!(tool.geometry, CutterGeometry::ChamferMill { .. }),
-                    "Chamfer / Spot Mill",
-                )
-                .on_hover_text(
-                    "Conical V-bit or chamfer cutter for bevels, spot drilling, and V-carving",
-                )
-                .clicked()
-            {
-                tool.geometry = CutterGeometry::ChamferMill {
-                    diameter_mm: d,
-                    tip_diameter_mm: 0.2,
-                    included_angle_deg: 90.0,
-                    flute_length_mm: fl,
-                    overall_length_mm: oal,
-                    shank_diameter_mm: shk,
-                    flutes: n,
-                };
-            }
-            if ui
-                .selectable_label(
-                    matches!(tool.geometry, CutterGeometry::TwistDrill { .. }),
-                    "Twist Drill",
-                )
-                .on_hover_text("Pointed twist drill for axial drilling and peck cycles")
-                .clicked()
-            {
-                tool.geometry = CutterGeometry::TwistDrill {
-                    diameter_mm: d,
-                    point_angle_deg: 118.0,
-                    flute_length_mm: fl,
-                    overall_length_mm: oal,
-                    shank_diameter_mm: shk,
-                    flutes: 2,
-                };
-            }
-            if ui
-                .selectable_label(
-                    matches!(tool.geometry, CutterGeometry::FaceMill { .. }),
-                    "Face / Fly Cutter",
-                )
-                .on_hover_text("Large-diameter indexable face mill or fly cutter for stock facing")
-                .clicked()
-            {
-                tool.geometry = CutterGeometry::FaceMill {
-                    cutting_diameter_mm: d,
-                    outside_diameter_mm: d * 1.05,
-                    corner_radius_mm: 0.8,
-                    flute_length_mm: fl,
-                    overall_length_mm: oal,
-                    shank_diameter_mm: shk,
-                    flutes: n,
-                };
-            }
-            if ui
-                .selectable_label(
-                    matches!(tool.geometry, CutterGeometry::ThreadMill { .. }),
-                    "Thread Mill",
-                )
-                .on_hover_text(
-                    "Relieved-neck single-point or multi-form helical thread mill cutter",
-                )
-                .clicked()
-            {
-                let tm_d = d.max(1.0);
-                let tm_oal = oal.max(25.0);
-                let tm_fl = 1.25_f64.min(0.25 * tm_oal).max(0.5);
-                let tm_neck_len = fl.max(tm_fl + 4.0).min(tm_oal - 4.0).max(tm_fl + 0.5);
-                let tm_neck_d = (0.60 * tm_d).max(0.4).min(tm_d - 0.1);
-                tool.geometry = CutterGeometry::ThreadMill {
-                    diameter_mm: tm_d,
-                    neck_diameter_mm: tm_neck_d,
-                    neck_length_mm: tm_neck_len,
-                    pitch_mm: 1.0,
-                    teeth_count: 1,
-                    thread_angle_deg: 60.0,
-                    flute_length_mm: tm_fl,
-                    overall_length_mm: tm_oal,
-                    shank_diameter_mm: shk.max(tm_neck_d),
-                    flutes: n.clamp(1, 12),
-                };
-            }
-            if ui
-                .selectable_label(
-                    matches!(tool.geometry, CutterGeometry::LollipopEndmill { .. }),
-                    "Lollipop Endmill",
-                )
-                .on_hover_text(
-                    "Spherical ball head on a relieved slim neck for 3D underside deburring and concave undercuts",
-                )
-                .clicked()
-            {
-                let lp_d = d.max(2.0);
-                let lp_neck_d = (0.50 * lp_d).max(0.5).min(lp_d - 0.2);
-                let lp_fl = CutterGeometry::lollipop_sphere_height_mm(lp_d, lp_neck_d);
-                let lp_oal = oal.max(lp_fl + 18.0);
-                let lp_neck_len = fl.max(lp_fl + 8.0).min(lp_oal - 4.0).max(lp_fl + 0.5);
-                tool.geometry = CutterGeometry::LollipopEndmill {
-                    diameter_mm: lp_d,
-                    neck_diameter_mm: lp_neck_d,
-                    neck_length_mm: lp_neck_len,
-                    flute_length_mm: lp_fl,
-                    overall_length_mm: lp_oal,
-                    shank_diameter_mm: shk.max(lp_neck_d),
-                    flutes: n.clamp(2, 12),
-                };
-                tool.stickout_length_mm = tool.stickout_length_mm.max(lp_neck_len + 2.0);
-            }
-            if ui
-                .selectable_label(
-                    matches!(tool.geometry, CutterGeometry::SlotMill { .. }),
-                    "Slot / T-Slot Mill",
-                )
-                .on_hover_text(
-                    "Horizontal Woodruff / keyway / T-slot disc cutter with relieved cylindrical neck",
-                )
-                .clicked()
-            {
-                let sm_d = d.max(6.0);
-                let sm_thick = (0.33 * sm_d).clamp(1.5, 6.0);
-                let sm_neck_d = (0.42 * sm_d).max(1.5).min(sm_d - 0.5);
-                let sm_oal = oal.max(sm_thick + 22.0);
-                let sm_neck_len = fl.max(sm_thick + 10.0).min(sm_oal - 4.0).max(sm_thick + 0.5);
-                tool.geometry = CutterGeometry::SlotMill {
-                    diameter_mm: sm_d,
-                    cutting_thickness_mm: sm_thick,
-                    corner_radius_mm: (0.05 * sm_thick).min(0.25),
-                    neck_diameter_mm: sm_neck_d,
-                    neck_length_mm: sm_neck_len,
-                    overall_length_mm: sm_oal,
-                    shank_diameter_mm: shk.max(sm_neck_d),
-                    flutes: n.clamp(2, 12),
-                };
-                tool.stickout_length_mm = tool.stickout_length_mm.max(sm_neck_len + 2.0);
-            }
-            if ui
-                .selectable_label(
-                    matches!(tool.geometry, CutterGeometry::DovetailCutter { .. }),
-                    "Dovetail Cutter",
-                )
-                .on_hover_text(
-                    "Inverted tapered frustum cutter with relieved neck for angled dovetail rails and slots",
-                )
-                .clicked()
-            {
-                let dt_d = d.max(6.0);
-                let dt_angle = 60.0_f64;
-                let dt_h = (0.40 * dt_d).clamp(2.0, 8.0);
-                let dt_rc = (0.04 * dt_h).min(0.2);
-                let dt_top_d =
-                    CutterGeometry::dovetail_top_diameter_mm(dt_d, dt_angle, dt_h, dt_rc)
-                        .max(1.0);
-                let dt_neck_d = (0.88 * dt_top_d).max(1.0).min(dt_top_d - 0.05);
-                let dt_oal = oal.max(dt_h + 22.0);
-                let dt_neck_len = fl.max(dt_h + 10.0).min(dt_oal - 4.0).max(dt_h + 0.5);
-                tool.geometry = CutterGeometry::DovetailCutter {
-                    diameter_mm: dt_d,
-                    side_angle_deg: dt_angle,
-                    cutting_height_mm: dt_h,
-                    corner_radius_mm: dt_rc,
-                    neck_diameter_mm: dt_neck_d,
-                    neck_length_mm: dt_neck_len,
-                    overall_length_mm: dt_oal,
-                    shank_diameter_mm: shk.max(dt_neck_d),
-                    flutes: n.clamp(2, 12),
-                };
-                tool.stickout_length_mm = tool.stickout_length_mm.max(dt_neck_len + 2.0);
-            }
-        })
-        .response
-        .on_hover_text("Select physical cutter profile geometry");
+                        if ui
+                            .selectable_label(
+                                matches!(tool.geometry, CutterGeometry::FlatEndmill { .. }),
+                                "Flat Endmill",
+                            )
+                            .on_hover_text("Square-corner flat-bottom milling cutter")
+                            .clicked()
+                        {
+                            tool.geometry = CutterGeometry::FlatEndmill {
+                                diameter_mm: d,
+                                flute_length_mm: fl,
+                                overall_length_mm: oal,
+                                shank_diameter_mm: shk,
+                                flutes: n,
+                            };
+                        }
+                        if ui
+                            .selectable_label(
+                                matches!(tool.geometry, CutterGeometry::BullNoseEndmill { .. }),
+                                "Bull-Nose Endmill",
+                            )
+                            .on_hover_text(
+                                "Flat-bottom endmill with a defined corner fillet radius",
+                            )
+                            .clicked()
+                        {
+                            tool.geometry = CutterGeometry::BullNoseEndmill {
+                                diameter_mm: d,
+                                corner_radius_mm: (0.1 * d).max(0.2),
+                                flute_length_mm: fl,
+                                overall_length_mm: oal,
+                                shank_diameter_mm: shk,
+                                flutes: n,
+                            };
+                        }
+                        if ui
+                            .selectable_label(
+                                matches!(tool.geometry, CutterGeometry::BallEndmill { .. }),
+                                "Ball Endmill",
+                            )
+                            .on_hover_text("Hemispherical ball-nose cutter for 3D surface finishing")
+                            .clicked()
+                        {
+                            tool.geometry = CutterGeometry::BallEndmill {
+                                diameter_mm: d,
+                                flute_length_mm: fl,
+                                overall_length_mm: oal,
+                                shank_diameter_mm: shk,
+                                flutes: n,
+                            };
+                        }
+                        if ui
+                            .selectable_label(
+                                matches!(tool.geometry, CutterGeometry::ChamferMill { .. }),
+                                "Chamfer / Spot Mill",
+                            )
+                            .on_hover_text(
+                                "Conical V-bit or chamfer cutter for bevels, spot drilling, and V-carving",
+                            )
+                            .clicked()
+                        {
+                            tool.geometry = CutterGeometry::ChamferMill {
+                                diameter_mm: d,
+                                tip_diameter_mm: 0.2,
+                                included_angle_deg: 90.0,
+                                flute_length_mm: fl,
+                                overall_length_mm: oal,
+                                shank_diameter_mm: shk,
+                                flutes: n,
+                            };
+                        }
+                        if ui
+                            .selectable_label(
+                                matches!(tool.geometry, CutterGeometry::TwistDrill { .. }),
+                                "Twist Drill",
+                            )
+                            .on_hover_text("Pointed twist drill for axial drilling and peck cycles")
+                            .clicked()
+                        {
+                            tool.geometry = CutterGeometry::TwistDrill {
+                                diameter_mm: d,
+                                point_angle_deg: 118.0,
+                                flute_length_mm: fl,
+                                overall_length_mm: oal,
+                                shank_diameter_mm: shk,
+                                flutes: 2,
+                            };
+                        }
+                        if ui
+                            .selectable_label(
+                                matches!(tool.geometry, CutterGeometry::FaceMill { .. }),
+                                "Face / Fly Cutter",
+                            )
+                            .on_hover_text(
+                                "Large-diameter indexable face mill or fly cutter for stock facing",
+                            )
+                            .clicked()
+                        {
+                            tool.geometry = CutterGeometry::FaceMill {
+                                cutting_diameter_mm: d,
+                                outside_diameter_mm: d * 1.05,
+                                corner_radius_mm: 0.8,
+                                flute_length_mm: fl,
+                                overall_length_mm: oal,
+                                shank_diameter_mm: shk,
+                                flutes: n,
+                            };
+                        }
+                        if ui
+                            .selectable_label(
+                                matches!(tool.geometry, CutterGeometry::ThreadMill { .. }),
+                                "Thread Mill",
+                            )
+                            .on_hover_text(
+                                "Relieved-neck single-point or multi-form helical thread mill cutter",
+                            )
+                            .clicked()
+                        {
+                            let tm_d = d.max(1.0);
+                            let tm_oal = oal.max(25.0);
+                            let tm_fl = 1.25_f64.min(0.25 * tm_oal).max(0.5);
+                            let tm_neck_len =
+                                fl.max(tm_fl + 4.0).min(tm_oal - 4.0).max(tm_fl + 0.5);
+                            let tm_neck_d = (0.60 * tm_d).max(0.4).min(tm_d - 0.1);
+                            tool.geometry = CutterGeometry::ThreadMill {
+                                diameter_mm: tm_d,
+                                neck_diameter_mm: tm_neck_d,
+                                neck_length_mm: tm_neck_len,
+                                pitch_mm: 1.0,
+                                teeth_count: 1,
+                                thread_angle_deg: 60.0,
+                                flute_length_mm: tm_fl,
+                                overall_length_mm: tm_oal,
+                                shank_diameter_mm: shk.max(tm_neck_d),
+                                flutes: n.clamp(1, 12),
+                            };
+                        }
+                        if ui
+                            .selectable_label(
+                                matches!(tool.geometry, CutterGeometry::LollipopEndmill { .. }),
+                                "Lollipop Endmill",
+                            )
+                            .on_hover_text(
+                                "Spherical ball head on a relieved slim neck for 3D underside deburring and concave undercuts",
+                            )
+                            .clicked()
+                        {
+                            let lp_d = d.max(2.0);
+                            let lp_neck_d = (0.50 * lp_d).max(0.5).min(lp_d - 0.2);
+                            let lp_fl = CutterGeometry::lollipop_sphere_height_mm(lp_d, lp_neck_d);
+                            let lp_oal = oal.max(lp_fl + 18.0);
+                            let lp_neck_len =
+                                fl.max(lp_fl + 8.0).min(lp_oal - 4.0).max(lp_fl + 0.5);
+                            tool.geometry = CutterGeometry::LollipopEndmill {
+                                diameter_mm: lp_d,
+                                neck_diameter_mm: lp_neck_d,
+                                neck_length_mm: lp_neck_len,
+                                flute_length_mm: lp_fl,
+                                overall_length_mm: lp_oal,
+                                shank_diameter_mm: shk.max(lp_neck_d),
+                                flutes: n.clamp(2, 12),
+                            };
+                            tool.stickout_length_mm = tool.stickout_length_mm.max(lp_neck_len + 2.0);
+                        }
+                        if ui
+                            .selectable_label(
+                                matches!(tool.geometry, CutterGeometry::SlotMill { .. }),
+                                "Slot / T-Slot Mill",
+                            )
+                            .on_hover_text(
+                                "Horizontal Woodruff / keyway / T-slot disc cutter with relieved cylindrical neck",
+                            )
+                            .clicked()
+                        {
+                            let sm_d = d.max(6.0);
+                            let sm_thick = (0.33 * sm_d).clamp(1.5, 6.0);
+                            let sm_neck_d = (0.42 * sm_d).max(1.5).min(sm_d - 0.5);
+                            let sm_oal = oal.max(sm_thick + 22.0);
+                            let sm_neck_len =
+                                fl.max(sm_thick + 10.0).min(sm_oal - 4.0).max(sm_thick + 0.5);
+                            tool.geometry = CutterGeometry::SlotMill {
+                                diameter_mm: sm_d,
+                                cutting_thickness_mm: sm_thick,
+                                corner_radius_mm: (0.05 * sm_thick).min(0.25),
+                                neck_diameter_mm: sm_neck_d,
+                                neck_length_mm: sm_neck_len,
+                                overall_length_mm: sm_oal,
+                                shank_diameter_mm: shk.max(sm_neck_d),
+                                flutes: n.clamp(2, 12),
+                            };
+                            tool.stickout_length_mm = tool.stickout_length_mm.max(sm_neck_len + 2.0);
+                        }
+                        if ui
+                            .selectable_label(
+                                matches!(tool.geometry, CutterGeometry::DovetailCutter { .. }),
+                                "Dovetail Cutter",
+                            )
+                            .on_hover_text(
+                                "Inverted tapered frustum cutter with relieved neck for angled dovetail rails and slots",
+                            )
+                            .clicked()
+                        {
+                            let dt_d = d.max(6.0);
+                            let dt_angle = 60.0_f64;
+                            let dt_h = (0.40 * dt_d).clamp(2.0, 8.0);
+                            let dt_rc = (0.04 * dt_h).min(0.2);
+                            let dt_top_d = CutterGeometry::dovetail_top_diameter_mm(
+                                dt_d, dt_angle, dt_h, dt_rc,
+                            )
+                            .max(1.0);
+                            let dt_neck_d = (0.88 * dt_top_d).max(1.0).min(dt_top_d - 0.05);
+                            let dt_oal = oal.max(dt_h + 22.0);
+                            let dt_neck_len =
+                                fl.max(dt_h + 10.0).min(dt_oal - 4.0).max(dt_h + 0.5);
+                            tool.geometry = CutterGeometry::DovetailCutter {
+                                diameter_mm: dt_d,
+                                side_angle_deg: dt_angle,
+                                cutting_height_mm: dt_h,
+                                corner_radius_mm: dt_rc,
+                                neck_diameter_mm: dt_neck_d,
+                                neck_length_mm: dt_neck_len,
+                                overall_length_mm: dt_oal,
+                                shank_diameter_mm: shk.max(dt_neck_d),
+                                flutes: n.clamp(2, 12),
+                            };
+                            tool.stickout_length_mm = tool.stickout_length_mm.max(dt_neck_len + 2.0);
+                        }
+                    })
+                    .response
+                    .on_hover_text("Select physical cutter profile geometry");
+            },
+        );
 
-    edit_cutter_geometry_fields(ui, &mut tool.geometry, unit);
-    edit_mm_drag(ui, "Holder Stickout:", &mut tool.stickout_length_mm, unit);
+        edit_cutter_geometry_fields(ui, &mut tool.geometry, unit);
+        edit_mm_grid_row(
+            ui,
+            "Holder Stickout",
+            "Extension length of the cutter protruding below the collet or tool holder nose",
+            &mut tool.stickout_length_mm,
+            unit,
+        );
+    });
 }
 
 pub(super) fn edit_offset_number_row(
@@ -245,23 +274,16 @@ pub(super) fn edit_offset_number_row(
     tooltip: &str,
     value: &mut u32,
 ) {
-    ui.add(egui::Label::new(label).sense(egui::Sense::hover()))
+    grid_row(ui, label, Some(tooltip), |ui| {
+        ui.add_sized(
+            [TOOL_NUM_W, 20.0],
+            egui::DragValue::new(value).range(1..=999),
+        )
         .on_hover_text(tooltip);
-    ui.add(egui::DragValue::new(value).range(1..=999))
-        .on_hover_text(tooltip);
-    ui.end_row();
+    });
 }
 
-pub(super) fn edit_mm_drag(ui: &mut egui::Ui, label: &str, val_mm: &mut f64, unit: DisplayUnit) {
-    let tip = format!(
-        "Edit {} in current tool units ({})",
-        label.trim_end_matches(':'),
-        unit.suffix()
-    );
-    edit_mm_drag_with_tip(ui, label, &tip, val_mm, unit);
-}
-
-fn edit_mm_drag_with_tip(
+pub(super) fn edit_mm_grid_row(
     ui: &mut egui::Ui,
     label: &str,
     tooltip: &str,
@@ -269,11 +291,10 @@ fn edit_mm_drag_with_tip(
     unit: DisplayUnit,
 ) {
     let mut disp = unit.from_mm(*val_mm);
-    ui.horizontal(|ui| {
-        ui.add(egui::Label::new(label).sense(egui::Sense::hover()))
-            .on_hover_text(tooltip);
+    grid_row(ui, label, Some(tooltip), |ui| {
         if ui
-            .add(
+            .add_sized(
+                [TOOL_NUM_W, 20.0],
                 egui::DragValue::new(&mut disp)
                     .speed(0.05)
                     .max_decimals(4)
@@ -288,30 +309,19 @@ fn edit_mm_drag_with_tip(
     });
 }
 
-fn edit_mm_grid_row(
-    ui: &mut egui::Ui,
-    label: &str,
-    tooltip: &str,
-    val_mm: &mut f64,
-    unit: DisplayUnit,
-) {
-    let mut disp = unit.from_mm(*val_mm);
-    ui.add(egui::Label::new(label).sense(egui::Sense::hover()))
-        .on_hover_text(tooltip);
-    if ui
-        .add(
-            egui::DragValue::new(&mut disp)
-                .speed(0.05)
-                .max_decimals(4)
-                .range(0.0..=1_000.0)
-                .suffix(format!(" {}", unit.suffix())),
+fn edit_mm_auto_tip_row(ui: &mut egui::Ui, label: &str, val_mm: &mut f64, unit: DisplayUnit) {
+    let tip = format!("Edit {label} in current tool units ({})", unit.suffix());
+    edit_mm_grid_row(ui, label, &tip, val_mm, unit);
+}
+
+fn edit_flutes_row(ui: &mut egui::Ui, label: &str, tooltip: &str, flutes: &mut u32, max: u32) {
+    grid_row(ui, label, Some(tooltip), |ui| {
+        ui.add_sized(
+            [TOOL_NUM_W, 20.0],
+            egui::DragValue::new(flutes).range(1..=max),
         )
-        .on_hover_text(tooltip)
-        .changed()
-    {
-        *val_mm = unit.to_mm(disp);
-    }
-    ui.end_row();
+        .on_hover_text(tooltip);
+    });
 }
 
 fn edit_cutter_geometry_fields(ui: &mut egui::Ui, geom: &mut CutterGeometry, unit: DisplayUnit) {
@@ -330,15 +340,17 @@ fn edit_cutter_geometry_fields(ui: &mut egui::Ui, geom: &mut CutterGeometry, uni
             shank_diameter_mm,
             flutes,
         } => {
-            edit_mm_drag(ui, "Cutting Diameter:", diameter_mm, unit);
-            edit_mm_drag(ui, "Flute Length:", flute_length_mm, unit);
-            edit_mm_drag(ui, "Overall Length:", overall_length_mm, unit);
-            edit_mm_drag(ui, "Shank Diameter:", shank_diameter_mm, unit);
-            ui.horizontal(|ui| {
-                ui.label("Flutes:");
-                ui.add(egui::DragValue::new(flutes).range(1..=24))
-                    .on_hover_text("Number of cutting flutes on the tool");
-            });
+            edit_mm_auto_tip_row(ui, "Cutting Diameter", diameter_mm, unit);
+            edit_mm_auto_tip_row(ui, "Flute Length", flute_length_mm, unit);
+            edit_mm_auto_tip_row(ui, "Overall Length", overall_length_mm, unit);
+            edit_mm_auto_tip_row(ui, "Shank Diameter", shank_diameter_mm, unit);
+            edit_flutes_row(
+                ui,
+                "Flutes",
+                "Number of cutting flutes on the tool",
+                flutes,
+                24,
+            );
         }
         CutterGeometry::BullNoseEndmill {
             diameter_mm,
@@ -348,16 +360,18 @@ fn edit_cutter_geometry_fields(ui: &mut egui::Ui, geom: &mut CutterGeometry, uni
             shank_diameter_mm,
             flutes,
         } => {
-            edit_mm_drag(ui, "Cutting Diameter:", diameter_mm, unit);
-            edit_mm_drag(ui, "Corner Radius:", corner_radius_mm, unit);
-            edit_mm_drag(ui, "Flute Length:", flute_length_mm, unit);
-            edit_mm_drag(ui, "Overall Length:", overall_length_mm, unit);
-            edit_mm_drag(ui, "Shank Diameter:", shank_diameter_mm, unit);
-            ui.horizontal(|ui| {
-                ui.label("Flutes:");
-                ui.add(egui::DragValue::new(flutes).range(1..=24))
-                    .on_hover_text("Number of cutting flutes on the bull-nose cutter");
-            });
+            edit_mm_auto_tip_row(ui, "Cutting Diameter", diameter_mm, unit);
+            edit_mm_auto_tip_row(ui, "Corner Radius", corner_radius_mm, unit);
+            edit_mm_auto_tip_row(ui, "Flute Length", flute_length_mm, unit);
+            edit_mm_auto_tip_row(ui, "Overall Length", overall_length_mm, unit);
+            edit_mm_auto_tip_row(ui, "Shank Diameter", shank_diameter_mm, unit);
+            edit_flutes_row(
+                ui,
+                "Flutes",
+                "Number of cutting flutes on the bull-nose cutter",
+                flutes,
+                24,
+            );
         }
         CutterGeometry::ChamferMill {
             diameter_mm,
@@ -368,25 +382,29 @@ fn edit_cutter_geometry_fields(ui: &mut egui::Ui, geom: &mut CutterGeometry, uni
             shank_diameter_mm,
             flutes,
         } => {
-            edit_mm_drag(ui, "Cutting Diameter:", diameter_mm, unit);
-            edit_mm_drag(ui, "Tip Diameter:", tip_diameter_mm, unit);
-            ui.horizontal(|ui| {
-                ui.label("Included Angle:");
-                ui.add(
+            edit_mm_auto_tip_row(ui, "Cutting Diameter", diameter_mm, unit);
+            edit_mm_auto_tip_row(ui, "Tip Diameter", tip_diameter_mm, unit);
+            let ang_tip =
+                "Full included cone angle of the chamfer mill or V-bit (e.g., 60 or 90 degrees)";
+            grid_row(ui, "Included Angle", Some(ang_tip), |ui| {
+                ui.add_sized(
+                    [TOOL_NUM_W, 20.0],
                     egui::DragValue::new(included_angle_deg)
                         .range(10.0..=170.0)
                         .suffix("°"),
                 )
-                .on_hover_text("Full included cone angle of the chamfer mill or V-bit (e.g., 60 or 90 degrees)");
+                .on_hover_text(ang_tip);
             });
-            edit_mm_drag(ui, "Flute Length:", flute_length_mm, unit);
-            edit_mm_drag(ui, "Overall Length:", overall_length_mm, unit);
-            edit_mm_drag(ui, "Shank Diameter:", shank_diameter_mm, unit);
-            ui.horizontal(|ui| {
-                ui.label("Flutes:");
-                ui.add(egui::DragValue::new(flutes).range(1..=24))
-                    .on_hover_text("Number of cutting flutes on the chamfer/V-bit cutter");
-            });
+            edit_mm_auto_tip_row(ui, "Flute Length", flute_length_mm, unit);
+            edit_mm_auto_tip_row(ui, "Overall Length", overall_length_mm, unit);
+            edit_mm_auto_tip_row(ui, "Shank Diameter", shank_diameter_mm, unit);
+            edit_flutes_row(
+                ui,
+                "Flutes",
+                "Number of cutting flutes on the chamfer/V-bit cutter",
+                flutes,
+                24,
+            );
         }
         CutterGeometry::TwistDrill {
             diameter_mm,
@@ -396,24 +414,21 @@ fn edit_cutter_geometry_fields(ui: &mut egui::Ui, geom: &mut CutterGeometry, uni
             shank_diameter_mm,
             flutes,
         } => {
-            edit_mm_drag(ui, "Drill Diameter:", diameter_mm, unit);
-            ui.horizontal(|ui| {
-                ui.label("Point Angle:");
-                ui.add(
+            edit_mm_auto_tip_row(ui, "Drill Diameter", diameter_mm, unit);
+            let pt_tip = "Drill tip point angle (commonly 118 or 135 degrees)";
+            grid_row(ui, "Point Angle", Some(pt_tip), |ui| {
+                ui.add_sized(
+                    [TOOL_NUM_W, 20.0],
                     egui::DragValue::new(point_angle_deg)
                         .range(60.0..=160.0)
                         .suffix("°"),
                 )
-                .on_hover_text("Drill tip point angle (commonly 118 or 135 degrees)");
+                .on_hover_text(pt_tip);
             });
-            edit_mm_drag(ui, "Flute Length:", flute_length_mm, unit);
-            edit_mm_drag(ui, "Overall Length:", overall_length_mm, unit);
-            edit_mm_drag(ui, "Shank Diameter:", shank_diameter_mm, unit);
-            ui.horizontal(|ui| {
-                ui.label("Flutes:");
-                ui.add(egui::DragValue::new(flutes).range(1..=8))
-                    .on_hover_text("Number of flutes on the drill bit");
-            });
+            edit_mm_auto_tip_row(ui, "Flute Length", flute_length_mm, unit);
+            edit_mm_auto_tip_row(ui, "Overall Length", overall_length_mm, unit);
+            edit_mm_auto_tip_row(ui, "Shank Diameter", shank_diameter_mm, unit);
+            edit_flutes_row(ui, "Flutes", "Number of flutes on the drill bit", flutes, 8);
         }
         CutterGeometry::FaceMill {
             cutting_diameter_mm,
@@ -424,17 +439,19 @@ fn edit_cutter_geometry_fields(ui: &mut egui::Ui, geom: &mut CutterGeometry, uni
             shank_diameter_mm,
             flutes,
         } => {
-            edit_mm_drag(ui, "Cutting Diameter:", cutting_diameter_mm, unit);
-            edit_mm_drag(ui, "Outside Diameter:", outside_diameter_mm, unit);
-            edit_mm_drag(ui, "Insert Corner R:", corner_radius_mm, unit);
-            edit_mm_drag(ui, "Axial Depth:", flute_length_mm, unit);
-            edit_mm_drag(ui, "Overall Length:", overall_length_mm, unit);
-            edit_mm_drag(ui, "Arbor/Shank Dia:", shank_diameter_mm, unit);
-            ui.horizontal(|ui| {
-                ui.label("Inserts / Flutes:");
-                ui.add(egui::DragValue::new(flutes).range(1..=16))
-                    .on_hover_text("Number of carbide inserts or cutting teeth on the face mill");
-            });
+            edit_mm_auto_tip_row(ui, "Cutting Diameter", cutting_diameter_mm, unit);
+            edit_mm_auto_tip_row(ui, "Outside Diameter", outside_diameter_mm, unit);
+            edit_mm_auto_tip_row(ui, "Insert Corner R", corner_radius_mm, unit);
+            edit_mm_auto_tip_row(ui, "Axial Depth", flute_length_mm, unit);
+            edit_mm_auto_tip_row(ui, "Overall Length", overall_length_mm, unit);
+            edit_mm_auto_tip_row(ui, "Arbor/Shank Dia", shank_diameter_mm, unit);
+            edit_flutes_row(
+                ui,
+                "Inserts / Flutes",
+                "Number of carbide inserts or cutting teeth on the face mill",
+                flutes,
+                16,
+            );
         }
         CutterGeometry::ThreadMill {
             diameter_mm,
@@ -448,40 +465,41 @@ fn edit_cutter_geometry_fields(ui: &mut egui::Ui, geom: &mut CutterGeometry, uni
             shank_diameter_mm,
             flutes,
         } => {
-            edit_mm_drag_with_tip(
+            edit_mm_grid_row(
                 ui,
-                "Cutting Diameter:",
+                "Cutting Diameter",
                 "Outer crest cutting diameter of the thread mill teeth (must be smaller than internal minor diameter)",
                 diameter_mm,
                 unit,
             );
-            edit_mm_drag_with_tip(
+            edit_mm_grid_row(
                 ui,
-                "Neck Diameter:",
+                "Neck Diameter",
                 "Relieved slim neck diameter behind the cutting teeth for deep internal bore clearance",
                 neck_diameter_mm,
                 unit,
             );
-            edit_mm_drag_with_tip(
+            edit_mm_grid_row(
                 ui,
-                "Neck Length (Reach):",
+                "Neck Length (Reach)",
                 "Usable relieved reach from tip to shank taper (maximum thread depth without shank collision)",
                 neck_length_mm,
                 unit,
             );
-            edit_mm_drag_with_tip(
+            edit_mm_grid_row(
                 ui,
-                "Cutter Pitch:",
+                "Cutter Pitch",
                 "Nominal thread pitch spacing of the cutter form (multi-form cutters must match target pitch within 0.02 mm)",
                 pitch_mm,
                 unit,
             );
-            ui.horizontal(|ui| {
-                let teeth_tip = "Number of axial thread teeth: 1 = Single-Point (cuts any pitch), >1 = Multi-Form (cuts full depth in fewer turns)";
-                ui.add(egui::Label::new("Teeth Count:").sense(egui::Sense::hover()))
-                    .on_hover_text(teeth_tip);
-                ui.add(egui::DragValue::new(teeth_count).range(1..=32))
-                    .on_hover_text(teeth_tip);
+            let teeth_tip = "Number of axial thread teeth: 1 = Single-Point (cuts any pitch), >1 = Multi-Form (cuts full depth in fewer turns)";
+            grid_row(ui, "Teeth Count", Some(teeth_tip), |ui| {
+                ui.add_sized(
+                    [TOOL_NUM_W, 20.0],
+                    egui::DragValue::new(teeth_count).range(1..=32),
+                )
+                .on_hover_text(teeth_tip);
                 let mode_tag = if *teeth_count <= 1 {
                     "(Single-Point)"
                 } else {
@@ -489,46 +507,44 @@ fn edit_cutter_geometry_fields(ui: &mut egui::Ui, geom: &mut CutterGeometry, uni
                 };
                 ui.weak(mode_tag).on_hover_text(teeth_tip);
             });
-            ui.horizontal(|ui| {
-                let ang_tip =
-                    "Included thread flank angle (60 deg for ISO Metric and Unified UNC/UNF)";
-                ui.add(egui::Label::new("Thread Angle:").sense(egui::Sense::hover()))
-                    .on_hover_text(ang_tip);
-                ui.add(
+            let ang_tip = "Included thread flank angle (60 deg for ISO Metric and Unified UNC/UNF)";
+            grid_row(ui, "Thread Angle", Some(ang_tip), |ui| {
+                ui.add_sized(
+                    [TOOL_NUM_W, 20.0],
                     egui::DragValue::new(thread_angle_deg)
                         .range(29.0..=90.0)
                         .suffix("°"),
                 )
                 .on_hover_text(ang_tip);
             });
-            edit_mm_drag_with_tip(
+            edit_mm_grid_row(
                 ui,
-                "Flute Length:",
+                "Flute Length",
                 "Axial length of the cutting tooth band at the cutter tip (must be <= Neck Length)",
                 flute_length_mm,
                 unit,
             );
-            edit_mm_drag_with_tip(
+            edit_mm_grid_row(
                 ui,
-                "Overall Length:",
+                "Overall Length",
                 "Total overall length (OAL) of the thread mill from tip to shank end",
                 overall_length_mm,
                 unit,
             );
-            edit_mm_drag_with_tip(
+            edit_mm_grid_row(
                 ui,
-                "Shank Diameter:",
+                "Shank Diameter",
                 "Cylindrical collet/holder shank diameter",
                 shank_diameter_mm,
                 unit,
             );
-            ui.horizontal(|ui| {
-                let fl_tip = "Number of radial cutting flutes around the thread mill circumference";
-                ui.add(egui::Label::new("Flutes:").sense(egui::Sense::hover()))
-                    .on_hover_text(fl_tip);
-                ui.add(egui::DragValue::new(flutes).range(1..=12))
-                    .on_hover_text(fl_tip);
-            });
+            edit_flutes_row(
+                ui,
+                "Flutes",
+                "Number of radial cutting flutes around the thread mill circumference",
+                flutes,
+                12,
+            );
         }
         CutterGeometry::LollipopEndmill {
             diameter_mm,
@@ -539,75 +555,70 @@ fn edit_cutter_geometry_fields(ui: &mut egui::Ui, geom: &mut CutterGeometry, uni
             shank_diameter_mm,
             flutes,
         } => {
-            egui::Grid::new("lollipop_geom_grid")
-                .num_columns(2)
-                .spacing([10.0, 4.0])
-                .show(ui, |ui| {
-                    edit_mm_grid_row(
-                        ui,
-                        "Cutting Diameter:",
-                        "Full spherical cutting head diameter (D) of the lollipop endmill",
-                        diameter_mm,
-                        unit,
-                    );
-                    edit_mm_grid_row(
-                        ui,
-                        "Neck Diameter:",
-                        "Relieved cylindrical neck diameter behind the spherical head (must be < Cutting Diameter)",
-                        neck_diameter_mm,
-                        unit,
-                    );
-                    edit_mm_grid_row(
-                        ui,
-                        "Neck Length (Reach):",
-                        "Usable relieved reach from tip to shank taper (must be >= Flute Height and < Overall Length)",
-                        neck_length_mm,
-                        unit,
-                    );
-                    edit_mm_grid_row(
-                        ui,
-                        "Flute Height:",
-                        "Axial height of the spherical cutting head up to the neck join (defaults to R + sqrt(R^2 - r_neck^2))",
-                        flute_length_mm,
-                        unit,
-                    );
-                    let join_h =
-                        CutterGeometry::lollipop_sphere_height_mm(*diameter_mm, *neck_diameter_mm);
-                    let join_tip = "Analytic height where the spherical head intersects the relieved neck cylinder";
-                    ui.add(egui::Label::new("Sphere Join Height:").sense(egui::Sense::hover()))
-                        .on_hover_text(join_tip);
-                    ui.horizontal(|ui| {
-                        ui.weak(unit.format_length(join_h)).on_hover_text(join_tip);
-                        if ui
-                            .small_button("Sync")
-                            .on_hover_text("Set Flute Height to the exact analytic sphere-to-neck join height")
-                            .clicked()
-                        {
-                            *flute_length_mm = join_h;
-                        }
-                    });
-                    ui.end_row();
-                    edit_mm_grid_row(
-                        ui,
-                        "Overall Length:",
-                        "Total overall length (OAL) of the lollipop endmill from tip to shank end",
-                        overall_length_mm,
-                        unit,
-                    );
-                    edit_mm_grid_row(
-                        ui,
-                        "Shank Diameter:",
-                        "Cylindrical collet/holder shank diameter",
-                        shank_diameter_mm,
-                        unit,
-                    );
-                    let fl_tip = "Number of cutting flutes around the spherical lollipop head";
-                    ui.add(egui::Label::new("Flutes:").sense(egui::Sense::hover()))
-                        .on_hover_text(fl_tip);
-                    ui.add(egui::DragValue::new(flutes).range(1..=12))
-                        .on_hover_text(fl_tip);
-                    ui.end_row();
-                });
+            edit_mm_grid_row(
+                ui,
+                "Cutting Diameter",
+                "Full spherical cutting head diameter (D) of the lollipop endmill",
+                diameter_mm,
+                unit,
+            );
+            edit_mm_grid_row(
+                ui,
+                "Neck Diameter",
+                "Relieved cylindrical neck diameter behind the spherical head (must be < Cutting Diameter)",
+                neck_diameter_mm,
+                unit,
+            );
+            edit_mm_grid_row(
+                ui,
+                "Neck Length (Reach)",
+                "Usable relieved reach from tip to shank taper (must be >= Flute Height and < Overall Length)",
+                neck_length_mm,
+                unit,
+            );
+            edit_mm_grid_row(
+                ui,
+                "Flute Height",
+                "Axial height of the spherical cutting head up to the neck join (defaults to R + sqrt(R^2 - r_neck^2))",
+                flute_length_mm,
+                unit,
+            );
+            let join_h = CutterGeometry::lollipop_sphere_height_mm(*diameter_mm, *neck_diameter_mm);
+            let join_tip =
+                "Analytic height where the spherical head intersects the relieved neck cylinder";
+            grid_row(ui, "Sphere Join Height", Some(join_tip), |ui| {
+                ui.weak(unit.format_length(join_h)).on_hover_text(join_tip);
+                if ui
+                    .small_button("Sync")
+                    .on_hover_text(
+                        "Set Flute Height to the exact analytic sphere-to-neck join height",
+                    )
+                    .clicked()
+                {
+                    *flute_length_mm = join_h;
+                }
+            });
+            edit_mm_grid_row(
+                ui,
+                "Overall Length",
+                "Total overall length (OAL) of the lollipop endmill from tip to shank end",
+                overall_length_mm,
+                unit,
+            );
+            edit_mm_grid_row(
+                ui,
+                "Shank Diameter",
+                "Cylindrical collet/holder shank diameter",
+                shank_diameter_mm,
+                unit,
+            );
+            edit_flutes_row(
+                ui,
+                "Flutes",
+                "Number of cutting flutes around the spherical lollipop head",
+                flutes,
+                12,
+            );
         }
         CutterGeometry::SlotMill {
             diameter_mm,
@@ -619,66 +630,62 @@ fn edit_cutter_geometry_fields(ui: &mut egui::Ui, geom: &mut CutterGeometry, uni
             shank_diameter_mm,
             flutes,
         } => {
-            egui::Grid::new("slot_mill_geom_grid")
-                .num_columns(2)
-                .spacing([10.0, 4.0])
-                .show(ui, |ui| {
-                    edit_mm_grid_row(
-                        ui,
-                        "Cutting Diameter:",
-                        "Outer cutting disc diameter (D) of the horizontal T-slot / keyway mill",
-                        diameter_mm,
-                        unit,
-                    );
-                    edit_mm_grid_row(
-                        ui,
-                        "Cutting Thickness:",
-                        "Axial disc cutting height / kerf width (H_cut) of the slot cutter",
-                        cutting_thickness_mm,
-                        unit,
-                    );
-                    edit_mm_grid_row(
-                        ui,
-                        "Corner Radius:",
-                        "Top and bottom disc edge fillet radius (must be <= 0.5 * Cutting Thickness)",
-                        corner_radius_mm,
-                        unit,
-                    );
-                    edit_mm_grid_row(
-                        ui,
-                        "Neck Diameter:",
-                        "Relieved cylindrical neck diameter above the cutting disc (must clear the pre-cut slot)",
-                        neck_diameter_mm,
-                        unit,
-                    );
-                    edit_mm_grid_row(
-                        ui,
-                        "Neck Length (Reach):",
-                        "Usable relieved reach from tip to shank taper (must be >= Cutting Thickness and < Overall Length)",
-                        neck_length_mm,
-                        unit,
-                    );
-                    edit_mm_grid_row(
-                        ui,
-                        "Overall Length:",
-                        "Total overall length (OAL) of the slot mill from tip to shank end",
-                        overall_length_mm,
-                        unit,
-                    );
-                    edit_mm_grid_row(
-                        ui,
-                        "Shank Diameter:",
-                        "Cylindrical collet/holder shank diameter",
-                        shank_diameter_mm,
-                        unit,
-                    );
-                    let fl_tip = "Number of cutting teeth / flutes around the slot disc perimeter";
-                    ui.add(egui::Label::new("Flutes:").sense(egui::Sense::hover()))
-                        .on_hover_text(fl_tip);
-                    ui.add(egui::DragValue::new(flutes).range(1..=16))
-                        .on_hover_text(fl_tip);
-                    ui.end_row();
-                });
+            edit_mm_grid_row(
+                ui,
+                "Cutting Diameter",
+                "Outer cutting disc diameter (D) of the horizontal T-slot / keyway mill",
+                diameter_mm,
+                unit,
+            );
+            edit_mm_grid_row(
+                ui,
+                "Cutting Thickness",
+                "Axial disc cutting height / kerf width (H_cut) of the slot cutter",
+                cutting_thickness_mm,
+                unit,
+            );
+            edit_mm_grid_row(
+                ui,
+                "Corner Radius",
+                "Top and bottom disc edge fillet radius (must be <= 0.5 * Cutting Thickness)",
+                corner_radius_mm,
+                unit,
+            );
+            edit_mm_grid_row(
+                ui,
+                "Neck Diameter",
+                "Relieved cylindrical neck diameter above the cutting disc (must clear the pre-cut slot)",
+                neck_diameter_mm,
+                unit,
+            );
+            edit_mm_grid_row(
+                ui,
+                "Neck Length (Reach)",
+                "Usable relieved reach from tip to shank taper (must be >= Cutting Thickness and < Overall Length)",
+                neck_length_mm,
+                unit,
+            );
+            edit_mm_grid_row(
+                ui,
+                "Overall Length",
+                "Total overall length (OAL) of the slot mill from tip to shank end",
+                overall_length_mm,
+                unit,
+            );
+            edit_mm_grid_row(
+                ui,
+                "Shank Diameter",
+                "Cylindrical collet/holder shank diameter",
+                shank_diameter_mm,
+                unit,
+            );
+            edit_flutes_row(
+                ui,
+                "Flutes",
+                "Number of cutting teeth / flutes around the slot disc perimeter",
+                flutes,
+                16,
+            );
         }
         CutterGeometry::DovetailCutter {
             diameter_mm,
@@ -691,99 +698,94 @@ fn edit_cutter_geometry_fields(ui: &mut egui::Ui, geom: &mut CutterGeometry, uni
             shank_diameter_mm,
             flutes,
         } => {
-            egui::Grid::new("dovetail_geom_grid")
-                .num_columns(2)
-                .spacing([10.0, 4.0])
-                .show(ui, |ui| {
-                    edit_mm_grid_row(
-                        ui,
-                        "Cutting Diameter:",
-                        "Major bottom cutting diameter (D_bot) at the widest end of the dovetail cutter",
-                        diameter_mm,
-                        unit,
-                    );
-                    let ang_tip = "Dovetail flank angle measured from the horizontal floor (typically 45° or 60°, valid range 15°..85°)";
-                    ui.add(egui::Label::new("Side Angle:").sense(egui::Sense::hover()))
-                        .on_hover_text(ang_tip);
-                    ui.add(
-                        egui::DragValue::new(side_angle_deg)
-                            .speed(0.5)
-                            .range(15.5..=84.5)
-                            .suffix("°"),
-                    )
-                    .on_hover_text(ang_tip);
-                    ui.end_row();
-                    edit_mm_grid_row(
-                        ui,
-                        "Cutting Height:",
-                        "Axial height of the inverted conical dovetail flutes (H_cut)",
-                        cutting_height_mm,
-                        unit,
-                    );
-                    edit_mm_grid_row(
-                        ui,
-                        "Corner Radius:",
-                        "Optional bottom outer corner radius (must be <= 0.5 * Cutting Height)",
-                        corner_radius_mm,
-                        unit,
-                    );
-                    let top_d = CutterGeometry::dovetail_top_diameter_mm(
-                        *diameter_mm,
-                        *side_angle_deg,
-                        *cutting_height_mm,
-                        *corner_radius_mm,
-                    );
-                    let top_tip = "Derived minor diameter at the top of the dovetail cutting cone (Neck Diameter must be <= Top Ø)";
-                    ui.add(egui::Label::new("Top Ø (Derived):").sense(egui::Sense::hover()))
-                        .on_hover_text(top_tip);
-                    let tok = crate::theme::ThemeTokens::from_ui(ui);
-                    let top_text = if top_d > 0.0 {
-                        unit.format_length(top_d)
-                    } else {
-                        "Invalid (<= 0)".to_string()
-                    };
-                    let top_col = if top_d <= 1e-4 || *neck_diameter_mm > top_d + 1e-6 {
-                        tok.error_fg
-                    } else {
-                        tok.info_fg
-                    };
-                    ui.colored_label(top_col, top_text).on_hover_text(top_tip);
-                    ui.end_row();
-                    edit_mm_grid_row(
-                        ui,
-                        "Neck Diameter:",
-                        "Relieved cylindrical neck diameter above the dovetail cone (must be <= derived Top Ø)",
-                        neck_diameter_mm,
-                        unit,
-                    );
-                    edit_mm_grid_row(
-                        ui,
-                        "Neck Length (Reach):",
-                        "Usable relieved reach from tip to shank taper (must be >= Cutting Height and < Overall Length)",
-                        neck_length_mm,
-                        unit,
-                    );
-                    edit_mm_grid_row(
-                        ui,
-                        "Overall Length:",
-                        "Total overall length (OAL) of the dovetail cutter from tip to shank end",
-                        overall_length_mm,
-                        unit,
-                    );
-                    edit_mm_grid_row(
-                        ui,
-                        "Shank Diameter:",
-                        "Cylindrical collet/holder shank diameter",
-                        shank_diameter_mm,
-                        unit,
-                    );
-                    let fl_tip = "Number of cutting flutes around the dovetail cutter";
-                    ui.add(egui::Label::new("Flutes:").sense(egui::Sense::hover()))
-                        .on_hover_text(fl_tip);
-                    ui.add(egui::DragValue::new(flutes).range(1..=12))
-                        .on_hover_text(fl_tip);
-                    ui.end_row();
-                });
+            edit_mm_grid_row(
+                ui,
+                "Cutting Diameter",
+                "Major bottom cutting diameter (D_bot) at the widest end of the dovetail cutter",
+                diameter_mm,
+                unit,
+            );
+            let ang_tip = "Dovetail flank angle measured from the horizontal floor (typically 45° or 60°, valid range 15°..85°)";
+            grid_row(ui, "Side Angle", Some(ang_tip), |ui| {
+                ui.add_sized(
+                    [TOOL_NUM_W, 20.0],
+                    egui::DragValue::new(side_angle_deg)
+                        .speed(0.5)
+                        .range(15.5..=84.5)
+                        .suffix("°"),
+                )
+                .on_hover_text(ang_tip);
+            });
+            edit_mm_grid_row(
+                ui,
+                "Cutting Height",
+                "Axial height of the inverted conical dovetail flutes (H_cut)",
+                cutting_height_mm,
+                unit,
+            );
+            edit_mm_grid_row(
+                ui,
+                "Corner Radius",
+                "Optional bottom outer corner radius (must be <= 0.5 * Cutting Height)",
+                corner_radius_mm,
+                unit,
+            );
+            let top_d = CutterGeometry::dovetail_top_diameter_mm(
+                *diameter_mm,
+                *side_angle_deg,
+                *cutting_height_mm,
+                *corner_radius_mm,
+            );
+            let top_tip = "Derived minor diameter at the top of the dovetail cutting cone (Neck Diameter must be <= Top Dia)";
+            let tok = crate::theme::ThemeTokens::from_ui(ui);
+            let top_text = if top_d > 0.0 {
+                unit.format_length(top_d)
+            } else {
+                "Invalid (<= 0)".to_string()
+            };
+            let top_col = if top_d <= 1e-4 || *neck_diameter_mm > top_d + 1e-6 {
+                tok.error_fg
+            } else {
+                tok.info_fg
+            };
+            grid_row(ui, "Top Dia (Derived)", Some(top_tip), |ui| {
+                ui.colored_label(top_col, top_text).on_hover_text(top_tip);
+            });
+            edit_mm_grid_row(
+                ui,
+                "Neck Diameter",
+                "Relieved cylindrical neck diameter above the dovetail cone (must be <= derived Top Dia)",
+                neck_diameter_mm,
+                unit,
+            );
+            edit_mm_grid_row(
+                ui,
+                "Neck Length (Reach)",
+                "Usable relieved reach from tip to shank taper (must be >= Cutting Height and < Overall Length)",
+                neck_length_mm,
+                unit,
+            );
+            edit_mm_grid_row(
+                ui,
+                "Overall Length",
+                "Total overall length (OAL) of the dovetail cutter from tip to shank end",
+                overall_length_mm,
+                unit,
+            );
+            edit_mm_grid_row(
+                ui,
+                "Shank Diameter",
+                "Cylindrical collet/holder shank diameter",
+                shank_diameter_mm,
+                unit,
+            );
+            edit_flutes_row(
+                ui,
+                "Flutes",
+                "Number of cutting flutes around the dovetail cutter",
+                flutes,
+                12,
+            );
         }
     }
 }
