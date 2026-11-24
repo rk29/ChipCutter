@@ -77,7 +77,7 @@ At the top of the right **Inspector** (above the scrollable tab content), the **
 
 You now have two clean recovery paths depending on the engineering change:
 - **If the feature moved drastically or was replaced by a different face/hole:** Click **`Clear Orphaned & Re-Pick in 3D`** inside the **`CAD Feature Needs Re-Pick`** card. ChipCutter clears only the broken selection, activates the appropriate 3D picking mode (`Cylindrical Holes`, `Planar Faces`, etc.), and preserves your tool, speeds/feeds, heights, passes, and holding tabs—click the replacement feature in the **3D CAD Viewport** and press **`Ctrl+G`**.
-- **If the feature was intentionally deleted in `v2` (as in this ECO):** Right-click **`5. Mounting Hole (Deleted in v2)`** in the left **CAM Browser** and click **`Suppress Operation`** (or hover the row and click the eye icon) to retain the operation for audit history, or press **`Del`** (or **`Edit → Delete Selected (Del)`** in the **top menu bar**) to remove it.
+- **If the feature was intentionally deleted in `v2` (as in this ECO):** Uncheck the checkbox on **`5. Mounting Hole (Deleted in v2)`** in the left **CAM Browser** (or right-click the row and choose **`Suppress Operation`**) to retain the operation for audit history without generating or posting it, or press **`Del`** (or **`Edit → Delete Selected (Del)`** in the **top menu bar**) to remove it. *(Hovering the row and clicking the eye icon only toggles 3D viewport toolpath visibility while keeping the operation active.)*
 
 ---
 

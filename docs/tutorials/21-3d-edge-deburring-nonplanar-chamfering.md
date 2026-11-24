@@ -13,7 +13,7 @@ ChipCutter's **`3D Edge Deburr / Chamfer`** (`OperationKind::Deburr3D`) strategy
 By the end of this tutorial you will be able to:
 
 1. Create and inspect a relieved-neck **`Lollipop Endmill`** in the **Tool Library** (`Cutting Diameter`, `Neck Diameter`, `Neck Length (Reach)`, `Flute Height`, and analytic **`Sphere Join Height`**).
-2. Configure **`3D Edge Deburr / Chamfer`** with **`Auto-Detect Edges`** (`Min Edge Angle`, `Exclude Vertical`) as well as explicit 3D B-Rep edge chains.
+2. Configure **`3D Edge Deburr / Chamfer`** with **`Auto-Detect Edges`** (`Min Edge Angle`, `Exclude Vertical`), constrain auto-detected edges spatially via the **`Geometry → Cutting Area / Machining Boundary`** card (`Stock Bounds`, `Model Silhouette`, or `Selected Regions` + `Tool Containment` + signed `Boundary Offset` with live 3D boundary preview), or pick explicit 3D B-Rep edge chains.
 3. Rely on automatic **`FlatBvh` inside-corner wall collision trimming** (`Wall Clearance`), circular corner rolls, and tangent lead-in/out arcs to stop cleanly before adjacent vertical walls and stepped bosses.
 4. Compare **Chamfer Mill** vs. **Ball Endmill** contact across non-planar circular-arc arches.
 5. Enable **`Underside Chamfer` → `Back-Chamfer (Lollipop)`** to chamfer downward-facing overhang rims from underneath while keeping the relieved neck safely clear of vertical walls.
@@ -64,18 +64,21 @@ chip-gui docs/tutorials/assets/21-overhang-flange.step
 
 In `--sample curved-deburr-3d`, Operations 1–3 rough and finish the stepped shelf (`Z = 14.0 mm`), the curved circular-arc arch (`Z = 15.0..23.0 mm`), and the `+X` side overhang relief groove (`Z = 3.0..9.5 mm`). Now inspect Operation 4:
 
-1. In the left **CAM Browser**, select **`4. 3D Deburr — Chamfer Mill (Wall-Trimmed)`** (or add a new operation via **`+ Op…` → `3D Edge Deburr / Chamfer`**) and open **`Operation Inspector → Passes`**.
-2. Notice the live blue compatibility banner at the top of the card:
+1. In the left **CAM Browser**, select **`4. 3D Deburr — Chamfer Mill (Wall-Trimmed)`** (or confirm **`Setup 1`** is the **Active Setup** and add a new operation via **`+ Op… → 3D Edge Deburr / Chamfer`** in the **top toolbar**, or **`Operations → + 3D Edge Deburr / Chamfer`** in the **top menu bar**).
+2. Open **`Operation Inspector → Geometry`** to inspect the **`Cutting Area / Machining Boundary`** card at the top:
+   - Whenever **`Auto-Detect Edges`** is active (no explicit 3D edge chains picked below), this card spatially constrains which auto-detected sharp edges are machined: choose **`Boundary Source`** (**`Stock Bounds`**, **`Model Silhouette`**, or **`Selected Regions`** using 2D contours, planar faces, or sketch regions), **`Tool Containment`** (**`Tool Inside Boundary`**, **`Tool Center on Boundary`**, or **`Tool Outside Boundary`**), and a signed **`Boundary Offset`** (`+` expands outward, `-` insets inward).
+   - A live summary displays the resolved `XY` span and `Tool-Center Shift`, while the **3D CAD Viewport** renders a live **3D boundary preview** (solid cyan nominal boundary loop + dashed amber effective tool-center boundary loop). Picking explicit 3D edge loops or open chains below overrides Auto-Detect mode.
+3. Now switch to **`Operation Inspector → Passes`** and notice the live blue compatibility banner at the top of the card:
    - **`Chamfer Mill (90° cone): constant-width conical flank contact with 0.650 mm tip clearance.`**
    - ChipCutter validates immediately that `chamfer_width + tip_offset * tan(included_angle / 2)` fits inside the Chamfer Mill's flute radius and warns you before generation if the requested bevel exceeds flute capacity.
-3. Review the **`3D Deburr Passes`** card parameters:
+4. Review the **`3D Deburr Passes`** card parameters:
    - **`Chamfer Width:`** `0.45 mm` — constant edge-break leg width measured along the adjacent B-Rep faces.
    - **`Tip Offset:`** `0.65 mm` — axial distance above the pointed tip so cutting occurs on the stronger conical flank rather than the zero-SFM tip.
    - **`Wall Clearance:`** `0.15 mm` — minimum safety margin enforced against adjacent vertical walls, stepped bosses, and inside corners.
    - **`Edge Extension:`** `0 mm` — optional tangent extension past open edge ends prior to collision trimming.
-   - **`Auto-Detect Edges` → `Scan Sharp Convex Edges`:** Checked. Automatically discovers every sharp convex 3D edge on the solid whose dihedral normal-change angle exceeds **`Min Edge Angle` (`15.0°`)** while **`Exclude Vertical` → `Skip ±Z Vertical Edges`** ignores vertical side-wall corners.
+   - **`Auto-Detect Edges` → `Scan Sharp Convex Edges`:** Checked. Automatically discovers every sharp convex 3D edge on the solid (within the **`Geometry → Cutting Area / Machining Boundary`** XY region) whose dihedral normal-change angle exceeds **`Min Edge Angle` (`15.0°`)** while **`Exclude Vertical` → `Skip ±Z Vertical Edges`** ignores vertical side-wall corners.
    - **`Chord Tolerance:`** `0.005 mm` — maximum 3D chord-sagitta deviation when subdividing curved non-planar B-Rep edges.
-4. Press **`Ctrl+G`** and inspect the isolated viewport toolpath:
+5. Press **`Ctrl+G`** and inspect the isolated viewport toolpath:
    - Watch how the toolpath traces both the flat `Z = 14.0 mm` shelf perimeter and the curved `X = 35..80 mm` arch seamlessly in `X + Y + Z`.
    - Look closely at the stepped boss junction at **`X = 35.0 mm`**: ChipCutter's **`FlatBvh` wall-collision trimmer** automatically trims the shelf deburr pass short of the vertical `Z = 14..19 mm` boss wall by `R_tool_at_wall + Wall Clearance`, adding smooth tangent lead-out/lead-in arcs and circular corner rolls so the Chamfer Mill never nicks the vertical wall!
 
@@ -119,9 +122,9 @@ Traditional 3-axis chamfering cannot reach downward-facing overhang lips without
 
 Because a sharp CAD edge is mathematically unmodeled (`0 mm` bevel in the STEP file), breaking that edge intentionally removes a small controlled triangle of material along the sharp corner. ChipCutter's volumetric verifier automatically passes each `Deburr3D` operation's **`intentional_edge_break_mm`** (`chamfer_width`) to the gouge checker—allowing the exact intentional edge break while still catching any real wall collision, neck rub, or shank crash with full strictness.
 
-1. Switch to the bottom **`Simulation Timeline`** tab.
-2. Select **`Tri-Dexel (Volumetric 3D)`**, **`Fine (288)`**, and **`GPU`** (or **`Auto (GPU)`**), then check **`3D Stock`**, **`Color by Op`**, and **`3D Cutter`**.
-3. Click **`Refresh Simulation`** (or scrub to `100%`, `00:14:47 / 00:14:47`) and verify:
+1. Open **`Edit → Settings… → Simulation`** (`Ctrl+,`, the toolbar gear icon, or click the compact Simulation status chip on the **`Simulation Timeline`** top bar).
+2. Set **`Simulation Engine`** = **`Tri-Dexel (Volumetric 3D)`**, **`Detail Level`** = **`Fine (288)`**, and **`Compute Backend`** = **`GPU (Compute)`** (or **`Auto (GPU with CPU fallback)`**)—you can also toggle **`Smooth Skinned Surfaces (Mesh Skinning)`** for visually smoother curved arches.
+3. Click **`Simulate`** in the **top toolbar** (tracking progress in the toolbar bar with `Esc` cancel and logging wall-clock execution time in **`Diagnostics & Log`**), then in **`Simulation Timeline`** check **`3D Stock`**, **`Color by Op`**, and **`3D Cutter`**, scrub to `100%` (`00:14:47 / 00:14:47`), and verify:
    - Status badge reads green **`Verified Crash-Free`** (`0` critical errors, `0` wall collisions, `0` shank/neck crashes).
    - The gold revolved **`T13 Lollipop Endmill`** sphere and slender relieved neck sit cleanly above the finished `+X` undercut groove and beveled 3D arch rims.
    - Quantitative Tri-Dexel metrology reads **`Eff: 99.7%`**, **`RMS: 0.0359 mm`**, and **`In-Tol: 95.6%`** at `Tol: +/- 0.050 mm`.
@@ -141,6 +144,14 @@ Because a sharp CAD edge is mathematically unmodeled (`0 mm` bevel in the STEP f
 ---
 
 ## 4. Key Parameters Reference
+
+### `Cutting Area / Machining Boundary` (`Operation Inspector → Geometry`, Auto-Detect Mode)
+
+| UI Label | Options / Default | Purpose |
+|---|---|---|
+| **`Boundary Source`** | `Stock Bounds` · `Model Silhouette` · `Selected Regions` | Constrains **`Auto-Detect Edges`** spatially to a 2D XY region (pick 2D contours/planar faces/sketch regions when using `Selected Regions`; explicit 3D edge selections override Auto-Detect) |
+| **`Tool Containment`** | `Tool Inside Boundary` · `Tool Center on Boundary` · `Tool Outside Boundary` | Controls cutter placement relative to the nominal boundary with live `Tool-Center Shift` readout & 3D boundary preview |
+| **`Boundary Offset`** | Signed length (`0.0 mm` default; `+` expands, `-` insets) | Fine-tunes the XY inclusion region around the nominal boundary |
 
 ### `3D Deburr Passes` (`Operation Inspector → Passes`)
 
@@ -174,7 +185,7 @@ Because a sharp CAD edge is mathematically unmodeled (`0 mm` bevel in the STEP f
 Before posting G-code for any 3D deburring or back-chamfering job:
 
 1. Press **`Ctrl+G`** and verify every `Deburr3D` operation displays a green **`Clean`** badge with `0` warnings.
-2. Switch the **Simulation Timeline** engine to **`Tri-Dexel (Volumetric 3D)`** (`Fine (288)` recommended whenever Lollipop underside back-chamfering is active—2.5D Heightmap cannot see underside roofs!).
+2. Confirm **`Settings → Simulation`** (click the Simulation status chip on **`Simulation Timeline`**, or `Ctrl+,`) is set to **`Tri-Dexel (Volumetric 3D)`** (`Fine (288)` recommended whenever Lollipop underside back-chamfering is active—2.5D Heightmap cannot see underside roofs, and **`Simulation Timeline`** displays an amber **`Undercut cutter active — Heightmap is 2.5D`** pill with a 1-click **`Use Tri-Dexel`** button if Heightmap is active!), then click **`Simulate`** in the **top toolbar**.
 3. Confirm **`Verified Crash-Free`** (`0` critical errors) and inspect the trimmed ends near vertical bosses to confirm smooth lead-in/lead-out arcs with zero wall nicks.
 4. For Lollipop underside passes, scrub slowly through entry and exit to verify the cutter drops to cutting depth in open air, engages horizontally, and pulls completely clear of the overhang lip before retracting `+Z`.
 

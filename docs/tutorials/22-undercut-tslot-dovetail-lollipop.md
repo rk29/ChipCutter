@@ -16,8 +16,8 @@ By the end of this tutorial you will be able to:
 2. Sequence mandatory **throat pre-clearing** with a Flat Endmill before any undercut cutter enters—and understand how **Tri-Dexel** catches missing pre-slots.
 3. Machine a **DIN 650 M8 T-Slot** (`Both Ends Through`) and a **Blind Keyway** (`Pre-Cleared Entry Bore`) with `SlotUndercut`.
 4. Machine both an **Internal `60°` Dovetail Guideway** and an **External `60°` Dovetail Rail** with `Dovetail`.
-5. Finish a concave overhanging 3D wall with **`3D Lollipop Undercut`** (`Undercut3D`), controlling `Min Overhang`, `Neck Clearance`, and `Lead-Out Pull`.
-6. Verify undercut roofs, mid-cut revolved cutters, and signed **Error Heatmap** metrology (`98–99%` In-Tol, `0` critical crashes) in **GPU Tri-Dexel (`Fine (288)`)** and export verified **GRBL** and **LinuxCNC** G-code.
+5. Finish a concave overhanging 3D wall with **`3D Lollipop Undercut`** (`Undercut3D`), bounding the XY scan window in **`Geometry → Cutting Area / Machining Boundary`** with live 3D boundary preview and tuning `Min Overhang`, `Neck Clearance`, and `Lead-Out Pull` in **`Passes`**.
+6. Verify undercut roofs, mid-cut revolved cutters, and signed **Error Heatmap** metrology (`98–99%` In-Tol, `0` critical crashes) in **GPU Tri-Dexel (`Fine (288)`)** (configured via **`Edit → Settings… → Simulation`** or the Simulation status chip) and export verified **GRBL** and **LinuxCNC** G-code.
 
 ---
 
@@ -65,7 +65,7 @@ chip-gui docs/tutorials/assets/22-undercut-deburr-block.step
 1. In `undercut-deburr`, verify the first two operations run with **`T1 — Ø6.000 mm Flat Endmill`**:
    - **Op 1 (`Face Top`):** Decks the `1.0 mm` top facing allowance (`StockTop → ModelTop`, `Z = 29.0 → 28.0 mm`).
    - **Op 2 (`Pre-Slot Throats (T-Slot & Dovetail)`):** Uses `SlotUndercut` in **`Keyway (Parallel Slot)`** mode with **`Slot Width = 8.5 mm`**, **`Throat Width = 8.5 mm`**, **`Slot Height = 14 mm`**, **`Radial Stepover = 1.5 mm`**, **`Axial Stepdown = 7 mm`**, and **`Both Ends Through`** (`Entry Extension = 6 mm`) on both slot floor faces (`Y = 20 mm` and `Y = 52 mm`).
-2. Press **`Ctrl+G`**, switch to **`Simulation Timeline`** → **`Tri-Dexel (Volumetric 3D)`** (`Fine (288)` / `GPU`), and scrub to the end of **Op 2** (`00:02:12 / 00:13:27`).
+2. Press **`Ctrl+G`**, click the compact **Simulation status chip** on **`Simulation Timeline`** (or **`Edit → Settings… → Simulation`**, `Ctrl+,`) to confirm **`Tri-Dexel (Volumetric 3D)`**, **`Fine (288)`**, and **`GPU (Compute)`** (or **`Auto`**), click **`Simulate`** in the **top toolbar**, and scrub to the end of **Op 2** (`00:02:12 / 00:13:27`).
 3. Confirm both `8.5 mm`-wide vertical throats are completely cleared down to the `Z = 14.0 mm` floor before `T14` or `T15` ever enters the block.
 
 ![Tri-Dexel Fine simulation immediately after Op 2 Pre-Slot Throats showing both 8.5 mm vertical throats cleared cleanly to Z=14 mm with T1 Flat Endmill](../images/tutorials/22-undercut-tslot-dovetail-lollipop/02-preslot-throats.png)
@@ -80,6 +80,7 @@ chip-gui docs/tutorials/assets/22-undercut-deburr-block.step
    - **`Throat clearance OK: 0.500 mm radial neck clearance at full undercut width (neck Ø5.000 mm in 8.500 mm throat).`**
    - Because `14.5 mm` head width minus `12.0 mm` disc diameter leaves `1.25 mm` lateral travel per side, the `Ø5.0 mm` neck (`R = 2.50 mm`) reaches `1.25 + 2.50 = 3.75 mm` from centerline—leaving `4.25 − 3.75 = 0.500 mm` of positive clearance against the `8.5 mm` throat wall!
 4. Configure progressive cuts and safe entry/exit:
+   - Notice the **`Stock to Leave`** card directly above **`Slot / Keyway / T-Slot Passes`** exposes **`Radial Stock`** and **`Axial Stock`** cleanly (while hiding unused `Multiple Depths` since `Slot Height` + `Axial Stepdown` control Z levels): use **`Stock to Leave`** when reserving final uncut wall/floor stock for a *subsequent* operation, and **`Finish Allowance`** inside the strategy card for *this* operation's own final finishing pass.
    - **`Radial Stepover = 0.75 mm`**, **`Axial Stepdown = 3 mm`** (automatically splits the `6.0 mm` head height into 2 overlapping Z passes for the `4.0 mm`-thick disc!).
    - **`Finish Allowance = 0.15 mm`** + **`Spring Pass` (`Repeat Final Wall Pass`)** checked.
    - **`Entry / Exit Mode = Both Ends Through (Open Air)`** with **`Entry Extension = 8 mm`** (every vertical Z move occurs `8.0 mm` past the open block ends in clear air).
@@ -95,10 +96,10 @@ chip-gui docs/tutorials/assets/22-undercut-deburr-block.step
 2. Verify the live angle-match & neck-clearance banner:
    - **`60° Dovetail match OK: 0.510 mm radial neck clearance in 8.500 mm throat (final lateral offset 0.990 mm).`**
    - *(Safety Guard: If your target `Side Angle` differs from the assigned Dovetail Cutter by more than `±0.5°`, or if `Dovetail Depth` exceeds the cutter's `Cutting Height`, ChipCutter displays a red inline Error banner and blocks unsafe toolpath generation.)*
-3. Review the **`Dovetail Slot / Rail Passes`** parameters:
+3. Review the **`Stock to Leave`** card (`Radial Stock` / `Axial Stock` for leaving stock for a separate finishing op) and the **`Dovetail Slot / Rail Passes`** parameters:
    - **`Dovetail Mode:`** `Internal Dovetail Slot`
    - **`Top Throat Width:`** `8.5 mm` · **`Dovetail Depth:`** `5 mm` · **`Side Angle:`** `60.0°`
-   - **`Radial Stepover:`** `0.6 mm` · **`Finish Allowance:`** `0.1 mm` · **`Spring Pass`:** Checked
+   - **`Radial Stepover:`** `0.6 mm` · **`Finish Allowance:`** `0.1 mm` *(lateral stock reserved for this operation's own final angled flank pass)* · **`Spring Pass`:** Checked
    - **`Entry / Exit Mode:`** `Both Ends Through (Open Air)` · **`Entry Extension:`** `8 mm` · **`Climb Direction`:** Checked
 4. Scrub the timeline into **Op 4** (around `00:07:32 / 00:13:27`) to inspect the inverted conical **`T15` Dovetail Cutter** stepping progressively outward into both `60°` flanks—always returning laterally to the throat centerline in open air before shifting or retracting!
 
@@ -116,7 +117,7 @@ Now explore the two complementary undercut modes in `--sample dovetail-rail-keyw
    - **Op 2 (`2. Pre-Drill Keyway Entry Bore (Ø8 mm)`):** Helically bores a **`Ø8.0 mm`** cylindrical entry pocket at `(X = 24, Y = 25)` down to `Z = 14.0 mm` (`bore_dia >= cutter_dia + 0.5 mm`).
    - **Op 3 (`3. Blind Top Keyway (Entry Bore)`):** Uses **`SlotUndercut`** in **`Keyway (Parallel Slot)`** mode with **`Entry / Exit Mode = Pre-Cleared Entry Bore`**. Notice on the **`Geometry`** tab that **both** the blind keyway floor face **and** the cylindrical entry bore are selected—guaranteeing the cutter descends vertically strictly inside the pre-bored hole, mills horizontally to both blind ends, returns to the bore centerline, and retracts `+Z` cleanly.
    - **Op 4 (`4. External 60° Dovetail Rail Flanks`):** Uses **`Dovetail`** in **`External Dovetail Rail`** mode along both `-Y` and `+Y` exterior edges (`Dovetail Depth = 5 mm`, `Side Angle = 60.0°`, `Radial Stepover = 0.6 mm`, `Finish Allowance = 0.1 mm`, `Spring Pass`, `Entry Extension = 8 mm`). Notice the live info banner: **`60° External Dovetail Rail (Ø12.000 mm cutter, 5.000 mm flank height): horizontal pull-away before +Z retract active.`**
-3. Simulate in **`Tri-Dexel (Volumetric 3D)`** (`Fine (288)` / `GPU`) and verify **`In-Tol: 98.9%`**, **`Max Gouge: -0.000 mm`**, and **`Verified Crash-Free`**.
+3. Click **`Simulate`** in the **top toolbar** with **`Tri-Dexel (Volumetric 3D)`** (`Fine (288)` / `GPU`) active in **`Settings → Simulation`** and verify **`In-Tol: 98.9%`**, **`Max Gouge: -0.000 mm`**, and **`Verified Crash-Free`**.
 
 ![External 60-degree Dovetail Rail and Blind Keyway with Entry Bore in Tri-Dexel Fine simulation showing revolved T15 DovetailCutter, 98.9% In-Tol, and 0.000 mm Max Gouge](../images/tutorials/22-undercut-tslot-dovetail-lollipop/05-dovetail-rail-keyway.png)
 
@@ -126,15 +127,17 @@ Now explore the two complementary undercut modes in `--sample dovetail-rail-keyw
 
 Return to `chip-gui --sample undercut-deburr` to machine the contoured overhanging groove along the `+Y` exterior wall (`Z_model = 19.8..24.5 mm`):
 
-1. Select **Op 5 (`Lollipop Overhang Undercut`)** (`T13 — Ø6 mm LollipopEndmill`) and open **`Operation Inspector → Passes`**.
-2. Read the live horizontal overhang-reach banner:
+1. Select **Op 5 (`Lollipop Overhang Undercut`)** (`T13 — Ø6 mm LollipopEndmill`; or add via **`+ Op… → 3D Lollipop Undercut`** in the **top toolbar** on the **Active Setup**) and inspect **`Operation Inspector → Geometry`**:
+   - The **`Cutting Area / Machining Boundary`** card lets you constrain the XY overhang scan window via **`Boundary Source`** (**`Stock Bounds`**, **`Model Silhouette`**, or **`Selected Regions`** with 2D contours/planar faces/sketch regions), **`Tool Containment`** (**`Tool Inside Boundary`**, **`Tool Center on Boundary`**, **`Tool Outside Boundary`**), and a signed **`Boundary Offset`** (`+` expands outward, `-` insets inward).
+   - Watch the live `XY` span & `Tool-Center Shift` readout in the card and the live **3D viewport boundary preview** (solid cyan nominal boundary loop + dashed amber effective tool-center boundary loop) combine with the **`Heights`** Z-band to bracket the exact overhanging cavity.
+2. Switch to **`Operation Inspector → Passes`** and read the live horizontal overhang-reach banner:
    - **`Lollipop Ø6.000 mm / neck Ø3.000 mm (reach 18.000 mm): max safe horizontal overhang depth 1.250 mm with 0.250 mm neck clearance.`**
    - ChipCutter computes $(D - D_{\text{neck}})/2 - \text{neck\_clearance} = (6.0 - 3.0)/2 - 0.25 = 1.250\text{ mm}$ and automatically clips any deeper ceiling recesses that the relieved neck cannot safely reach!
 3. Review the **`3D Lollipop Undercut Passes`** parameters:
    - **`Cusp-Based Step` (`Derive from Target Cusp`):** Unchecked for fixed **`Z Stepdown = 0.25 mm`**, or check it to automatically compute vertical slice spacing from **`Target Cusp`** (e.g., `0.02 mm`) and the Lollipop sphere radius.
    - **`Min Overhang:`** `5.0°` — targets downward-facing overhang triangles where surface normal $n_z \le -\sin(5^\circ)$.
    - **`Neck Clearance:`** `0.25 mm` — radial safety clearance enforced between the relieved neck/shank and overhanging roofs above.
-   - **`Stock to Leave:`** `0 mm` — uniform normal finishing allowance.
+   - **`Stock to Leave:`** `0 mm` — uniform surface-normal finishing allowance.
    - **`Lead-Out Pull:`** `4 mm` — horizontal pull-away distance into open air away from the overhanging roof before every `+Z` retract.
    - Check **`Heights`**: `Top = Model Top - 3.5 mm`, `Bottom = Model Top - 8.2 mm` isolates the `+Y` overhang groove cleanly above the `Z = 14..19 mm` dovetail cavity.
 4. Switch the viewport to the **`Back`** view (`+Y` face) and scrub into **Op 5** (`00:11:50 / 00:13:27`) to watch the gold spherical **`T13` Lollipop Endmill** sweeping horizontal Z-slices cleanly underneath the upper flange lip.
@@ -146,8 +149,8 @@ Return to `chip-gui --sample undercut-deburr` to machine the contoured overhangi
 ### Step 7 — GPU Tri-Dexel Fine Error Heatmap & Metrology Verification
 
 1. Still in `undercut-deburr`, switch the viewport back to **`Iso`** and scrub to **`100%`** (`00:13:27 / 00:13:27`, after Op 6 `3D Edge Deburr & Back-Chamfer` finishes).
-2. In the **`Simulation Timeline`** toolbar:
-   - Confirm **`Tri-Dexel (Volumetric 3D)`**, **`Fine (288)`**, and **`GPU`** (`GPU · Radeon 780M`).
+2. In the **`Simulation Timeline`** top bar:
+   - Confirm the Simulation status chip reads **`Tri-Dexel · Fine · GPU (<Adapter>)`** (click the chip or press **`Ctrl+,`** → **`Simulation`** to change Engine, Detail Level, Backend, or **`Smooth Skinned Surfaces`**).
    - Check **`Error Heatmap`** and uncheck **`3D Cutter`** to inspect the entire machined block unobstructed.
 3. Read the final volumetric metrology bar:
    - **`Verified Crash-Free`** (`0` critical crashes, `0` neck collisions, `0` roof retracts).
@@ -171,7 +174,8 @@ Return to `chip-gui --sample undercut-deburr` to machine the contoured overhangi
 | **`Slot Height`** | `slot_height` | `6.0 mm` | Axial undercut head height (auto-split into overlapping Z levels when `> cutting_thickness`) |
 | **`Radial Stepover`** | `radial_stepover` | `0.8 mm` | Progressive lateral roughing stepover per side (`0.5–1.0 mm` Al · `0.25–0.5 mm` steel) |
 | **`Axial Stepdown`** | `axial_stepdown` | `flute_len * 0.8` | Vertical overlap stepdown across multi-Z slot passes |
-| **`Finish Allowance`** | `finish_allowance` | `0.15 mm` | Lateral finishing stock reserved on both walls (`0.10–0.20 mm`) |
+| **`Stock to Leave` (`Radial` / `Axial`)** | `passes.stock_to_leave_*` | `0.0 mm` | Transparent card above strategy passes; reserves final uncut wall/floor stock for a subsequent finishing op (distinct from `Finish Allowance` below) |
+| **`Finish Allowance`** | `finish_allowance` | `0.15 mm` | Lateral finishing stock reserved on both walls for *this* operation's own final finishing pass (`0.10–0.20 mm`) |
 | **`Spring Pass`** | `spring_pass` | Off (`false`) | Check to append an extra zero-stock pass eliminating thin-neck deflection |
 | **`Entry / Exit Mode`** | `entry_mode` | `Open End` | `Open End (Enter & Exit Same End)`, `Pre-Cleared Entry Bore`, or `Both Ends Through (Open Air)` |
 | **`Entry Extension`** | `entry_extension` | `tool_r + 2.0` | Horizontal clearance past open slot ends so all Z moves stay in open air (`>= R_tool + 2 mm`) |
@@ -185,15 +189,17 @@ Return to `chip-gui --sample undercut-deburr` to machine the contoured overhangi
 | **`Dovetail Depth`** | `dovetail_depth` | `5.0 mm` | Axial height of the angled flank (validated `<= cutter.cutting_height_mm`) |
 | **`Side Angle`** | `side_angle_deg` | `60.0°` | Target flank angle from horizontal floor (validated strictly within `±0.5°` of assigned cutter) |
 | **`Radial Stepover`** | `radial_stepover` | `0.6 mm` | Progressive lateral roughing stepover into the angled flank (`0.4–0.8 mm` Al) |
-| **`Finish Allowance`** | `finish_allowance` | `0.1 mm` | Final angled flank finishing pass stock (`0.05–0.15 mm`) |
+| **`Stock to Leave` (`Radial` / `Axial`)** | `passes.stock_to_leave_*` | `0.0 mm` | Transparent card above strategy passes; reserves final uncut flank/floor stock for a separate finishing op (distinct from `Finish Allowance` below) |
+| **`Finish Allowance`** | `finish_allowance` | `0.1 mm` | Lateral stock reserved for *this* operation's own final angled flank finishing pass (`0.05–0.15 mm`) |
 | **`Spring Pass`** | `spring_pass` | Off (`false`) | Recommended On for tight-fit sliding dovetail guideways |
 | **`Entry / Exit Mode`** | `entry_mode` | `Open End` | `Open End`, `Pre-Cleared Entry Bore`, or `Both Ends Through` (`InternalSlot` only) |
 | **`Entry Extension`** | `entry_extension` | `tool_r + 2.0` | Open-air horizontal lead/pull-away distance before every `+Z` retract |
 
-### `3D Lollipop Undercut Passes` (`OperationKind::Undercut3D`)
+### `3D Lollipop Undercut` (`OperationKind::Undercut3D` — `Geometry` & `Passes`)
 
 | UI Label | Config Field | Default | Notes / Recommended Values |
 |---|---|---|---|
+| **`Cutting Area / Machining Boundary`** (`Geometry` tab) | `boundary_mode`, `tool_containment`, `boundary_offset` | `Model Silhouette` · `Tool Inside Boundary` · `0.0 mm` | Constrains the XY overhang scan window (`Stock Bounds`, `Model Silhouette`, or `Selected Regions`) with signed `Boundary Offset` & live 3D boundary preview |
 | **`Cusp-Based Step`** | `use_cusp_height` | Off (`false`) | Check to compute Z-slice spacing automatically from `Target Cusp` and sphere radius |
 | **`Z Stepdown` / `Target Cusp`** | `z_stepdown` / `target_cusp` | `0.4 mm` / `0.025 mm` | Fixed Z-slice step (`0.15–0.4 mm`) or spherical scallop height (`0.01–0.03 mm`) |
 | **`Min Overhang`** | `min_overhang_angle_deg` | `5.0°` | Minimum downward tilt below horizontal equator (`n_z <= -sin(angle)`) |
@@ -215,7 +221,7 @@ Return to `chip-gui --sample undercut-deburr` to machine the contoured overhangi
 ## 5. Generate (`Ctrl+G`) & Tri-Dexel Verification Gate
 
 1. Press **`Ctrl+G`** and verify all 6 operations in `undercut-deburr` (or all 4 operations in `dovetail-rail-keyway`) show green **`Clean`** badges (`0` warnings, `0` errors).
-2. Confirm **`Simulation Timeline`** is set to **`Tri-Dexel (Volumetric 3D)`** (`Fine (288)` on **`GPU`**) and shows **`Verified Crash-Free`** (`0` critical errors).
+2. Confirm **`Settings → Simulation`** (click the Simulation status chip on **`Simulation Timeline`**, or `Ctrl+,`) is set to **`Tri-Dexel (Volumetric 3D)`** (`Fine (288)` on **`GPU`**), click **`Simulate`** in the **top toolbar**, and verify **`Verified Crash-Free`** (`0` critical errors; wall-clock runtime is logged in **`Diagnostics & Log`**).
 3. Verify the **Error Heatmap** shows **`In-Tol >= 98%`** and **`Eff >= 99.5%`**, with zero red gouges on the overhanging slot roofs or vertical throat walls.
 
 ---

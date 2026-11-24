@@ -66,20 +66,20 @@ The summary banner under **`Stock Geometry & Dimensions`** confirms **`Model: 16
 
 ### Step 3 — Assign 4 Pure-2D Operations by DXF Sub-Layer
 
-Targeting DXF sub-layers keeps your CAM tree clean and associative even when a drawing contains dozens of features. Add four operations under `Setup 1` (via **`+ Op…`** / **`+ Cont`** in the left **CAM Browser**, or **`Operations`** in the **top menu bar**):
+Targeting DXF sub-layers keeps your CAM tree clean and associative even when a drawing contains dozens of features. Confirm **`Setup 1`** is the **Active Setup** (shown with the **`Active`** badge in the left **CAM Browser**), then add four operations using the **top toolbar** (`+ Op…` / `+ Contour`) or **`Operations`** in the **top menu bar**:
 
-1. **`Op 1 — 4x Ø6mm Mounting Holes` (`+ Op… → Drill / Helical Bore`):**
+1. **`Op 1 — 4x Ø6mm Mounting Holes` (`+ Op… → Drill / Helical Bore` in the top toolbar):**
    - **`Tool`** tab (`Active Cutter`): **`T6 — 6.0mm 118° Carbide Stub Drill`**.
    - **`Geometry`** tab (`2D Sketch Layers & Quick Select` card): click **`+ [HOLES]`** on your sketch row (automatically picks all `4× Ø6 mm` corner circles).
-2. **`Op 2 — Display Recess + Boss Island` (`+ Op… → 2D Pocket`):**
+2. **`Op 2 — Display Recess + Boss Island` (`+ Op… → 2D Pocket` in the top toolbar):**
    - **`Tool`** tab (`Active Cutter`): **`T1 — 6mm 3FL Carbide Flat Endmill`**.
    - **`Geometry`** tab (`2D Sketch Layers & Quick Select` card): click **`+ [POCKETS]`** (ChipCutter automatically preserves the inner `20 × 12 mm` boss island!).
    - **`Heights`** tab (`Z-Height Planes & Offsets` card): set **`Bottom Ref`** = **`Stock Top`** and **`Bottom Offset`** = `-3.0 mm` (half-depth blind recess).
-3. **`Op 3 — Vent Slot Through-Cutout` (`+ Op… → 2D Pocket`):**
+3. **`Op 3 — Vent Slot Through-Cutout` (`+ Op… → 2D Pocket` in the top toolbar):**
    - **`Tool`** tab (`Active Cutter`): **`T1 — 6mm 3FL Carbide Flat Endmill`**.
    - **`Geometry`** tab (`2D Sketch Layers & Quick Select` card): click **`+ [CUTOUTS]`** (the expanded `INSERT`ed `VENT_SLOT` stadium).
    - **`Heights`** tab (`Z-Height Planes & Offsets` card): set **`Bottom Ref`** = **`Stock Bottom`** and **`Bottom Offset`** = `0 mm` (full `6.0 mm` through-cutout).
-4. **`Op 4 — Outer Panel Profile + Tabs` (`+ Cont` in left CAM Browser, or `Operations → + 2D Contour / Profile`):**
+4. **`Op 4 — Outer Panel Profile + Tabs` (`+ Contour` in the top toolbar, or `Operations → + 2D Contour / Profile`):**
    - **`Tool`** tab (`Active Cutter`): **`T1 — 6mm 3FL Carbide Flat Endmill`**.
    - **`Geometry`** tab (`2D Sketch Layers & Quick Select` card): click **`+ [OUTLINE]`**.
    - **`Heights`** tab (`Z-Height Planes & Offsets` card): **`Bottom Ref`** = **`Stock Bottom`**, **`Bottom Offset`** = `0 mm`.

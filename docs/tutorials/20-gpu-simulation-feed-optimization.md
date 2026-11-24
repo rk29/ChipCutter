@@ -4,13 +4,13 @@
 
 High-resolution 3D volumetric stock verification and smooth, chatter-free corner cutting both come down to physics and throughput. ChipCutter combines two complementary engines to close the loop between fast visual inspection and machine-friendly G-code:
 
-- **`wgpu` Compute Simulation & Direct GPU Stock Rendering:** Runs 2.5D **Heightmap**, 3D volumetric **Tri-Dexel**, and 4th-axis **Cylindrical** material removal, crash/gouge verification, and parallel-reduction error metrology directly on your Vulkan/Metal/DX12 GPU (`Auto (GPU)` / `GPU` / `CPU`), rendering stock buffers straight to the viewport with zero CPU readback and `< 0.1 ms` live **Error Heatmap** updates.
+- **`wgpu` Compute Simulation & Direct GPU Stock Rendering:** Runs 2.5D **Heightmap**, 3D volumetric **Tri-Dexel**, and 4th-axis **Cylindrical** material removal, crash/gouge verification, and parallel-reduction error metrology directly on your Vulkan/Metal/DX12 GPU (`Auto (GPU with CPU fallback)` / `GPU (Compute)` / `CPU (Exact)`), rendering stock buffers straight to the viewport with zero CPU readback, optional crease-preserving **Smooth Skinned Surfaces (Mesh Skinning)**, and `< 0.1 ms` live **Error Heatmap** updates.
 - **Engagement-Aware Feedrate Optimization (`FeedOptimizationConfig`):** Post-processes generated cutting toolpaths across 2.5D, 3-axis, V-carve, and 4th-axis strategies to automatically slow down into sharp corners and tight concave internal arcs—and optionally boost straight light-engagement passes for constant chipload—while preserving exact geometry and never altering rapids, plunges, or ramps.
 
 By the end of this tutorial you will be able to:
 
-1. Switch between **`Auto (GPU)`**, **`GPU (Compute)`**, and **`CPU (Exact)`** in the **Simulation Timeline** toolbar, read the live adapter pill (**`GPU · <Adapter>`** vs. **`CPU (Exact)`** / **`CPU Fallback`**), and inspect per-stage timing breakdowns (`setup`, `sweep`, `metrics`, and `seg/s`).
-2. Use **Direct GPU Stock Rendering** on **Tri-Dexel (`Fine (288)`)** and 4th-axis **Cylindrical (`Ultra (2048)`)** simulations while tuning the **Error Heatmap** `Tol: +/-` band live in `< 0.1 ms` with zero CPU re-meshing.
+1. Configure **`Simulation Engine`**, **`Detail Level`** (`Standard` / `Fine` / `Ultra`), **`Compute Backend`** (`Auto (GPU with CPU fallback)`, `GPU (Compute)`, `CPU (Exact)`), and **`Smooth Skinned Surfaces (Mesh Skinning)`** in **`Edit → Settings… → Simulation`** (`Ctrl+,`, toolbar gear icon, **`Simulate → Simulation Settings…`**, or by clicking the compact Simulation status chip on the **`Simulation Timeline`** top bar), read the live chip (`Tri-Dexel · Fine · GPU (<Adapter>)` vs. `CPU` / `CPU Fallback`), and inspect per-stage timing breakdowns (`setup`, `sweep`, `metrics`, and `seg/s`) plus wall-clock execution time in **`Diagnostics & Log`**.
+2. Use **Direct GPU Stock Rendering** on **Tri-Dexel (`Fine (288)`)** and 4th-axis **Cylindrical (`Ultra (2048)`)** simulations while tuning the **Error Heatmap** `Tol: +/-` band live in `< 0.1 ms` with zero CPU re-meshing (triggering runs via **`Simulate`** in the **top toolbar** with live progress bar and `Esc` cancel).
 3. Configure the **`Feed Optimization`** card in **`Operation Inspector → Passes`** (**Corner Slowdown**, **Min Feed %**, **Corner Threshold**, **Slowdown Distance**, **Internal Arcs**, and **Chip-Thinning Boost**).
 4. Inspect live modulated feedrate telemetry (**`Feed Opt: <min>–<max> mm/min (<N> mod)`** and per-segment `F=...` HUD readouts) while scrubbing through sharp concave corners and internal arcs.
 5. Tune 3D and 4th-axis surface finish quality using **Target Cusp Height** / **Max Cusp Height** alongside **In-Tol %**, **RMS**, and **Max Gouge** metrology.
@@ -45,16 +45,18 @@ chip-gui --sample rotary-4axis
 
 ### Step 1 — Selecting the GPU Compute Backend & Reading Stage Timings
 
-1. Open **`Sculpted Dome (STL Mesh)`** (`--sample mesh-dome`) and press **`Ctrl+G`** to generate all three operations (`3D Adaptive Roughing`, `3D Waterline Semi-Finish`, and `3D Pencil Fillet Cleanup`).
-2. Open the bottom **`Simulation Timeline`** tab and configure the toolbar controls from left to right:
-   - **Engine:** Switch to **`Tri-Dexel (Volumetric 3D)`**.
-   - **Resolution:** Select **`Fine (288)`** (`288³` isotropic 3D dexel lattice).
-   - **Backend:** Choose **`Auto (GPU)`** (recommended default—uses `wgpu` Compute automatically and falls back transparently to exact CPU + Rayon if no compute adapter is available) or explicitly pin **`GPU (Compute)`** / **`CPU (Exact)`**. Your choice is persisted automatically in `~/.config/chipcutter/prefs.toml`.
-3. Look at the compact status pill immediately to the right of the Backend dropdown:
-   - **`GPU · <Adapter>`** (blue badge, e.g., **`GPU · Radeon 780M`**): GPU compute and zero-readback direct stock rendering are active.
-   - **`CPU (Exact)`** (neutral badge): Explicit exact CPU + Rayon verification mode (ideal for bit-level cross-checking).
-   - **`CPU Fallback`** (amber badge): No compute GPU adapter was detected, so ChipCutter ran exact CPU simulation automatically.
-4. **Hover your mouse over the `GPU · <Adapter>` pill** to read the live per-stage benchmark tooltip:
+1. Open **`Sculpted Dome (STL Mesh)`** (`--sample mesh-dome`) and press **`Ctrl+G`** (or click **`Generate`** in the **top toolbar**) to generate all three operations (`3D Adaptive Roughing`, `3D Waterline Semi-Finish`, and `3D Pencil Fillet Cleanup`).
+2. Open **`Edit → Settings… → Simulation`** (`Ctrl+,`, the **gear icon** on the far right of the **top toolbar**, **`Simulate → Simulation Settings…`**, or click the compact **Simulation status chip** on the left of the bottom **`Simulation Timeline`** top bar, e.g. **`Heightmap · Standard · GPU (Radeon 780M)`**) and configure **`Simulation Engine & Detail Level`**:
+   - **`Simulation Engine`:** Switch to **`Tri-Dexel (Volumetric 3D)`**.
+   - **`Detail Level`:** Select **`Fine (288)`** (`288³` isotropic 3D dexel lattice).
+   - **`Compute Backend`:** Choose **`Auto (GPU with CPU fallback)`** (recommended default—uses `wgpu` Compute automatically and falls back transparently to exact CPU + Rayon if no compute adapter is available) or explicitly pin **`GPU (Compute)`** / **`CPU (Exact)`**. Your choices are persisted automatically in `~/.config/chipcutter/prefs.toml`.
+   - **`Surface Display`:** Optionally check **`Smooth Skinned Surfaces (Mesh Skinning)`** to apply crease-preserving visual smoothing across curved/helical surfaces while keeping 90° corners crisp *(purely visual—never changes volumetric gouge checks or quantitative metrology)*.
+3. Close **Settings** (changing Engine, Detail Level, or Backend triggers a fresh run automatically, or click **`Simulate`** in the **top toolbar** anytime—a live progress bar appears beside **`Simulate`** with **`Cancel`** / `Esc` support, and **`Diagnostics & Log`** logs the exact wall-clock execution time when finished).
+4. Look at the compact clickable **Simulation status chip** at the left of the **`Simulation Timeline`** bar:
+   - **`Tri-Dexel · Fine · GPU (<Adapter>)`** (blue chip, e.g., **`Tri-Dexel · Fine · GPU (Radeon 780M)`**): GPU compute and zero-readback direct stock rendering are active.
+   - **`Tri-Dexel · Fine · CPU`** (neutral chip): Explicit exact CPU + Rayon verification mode (ideal for bit-level cross-checking).
+   - **`Tri-Dexel · Fine · CPU Fallback`** (amber chip): No compute GPU adapter was detected, so ChipCutter ran exact CPU simulation automatically.
+5. **Hover your mouse over the Simulation status chip** to read the active engine, detail level, surface mode (`Skinned` vs. `Crisp`), GPU adapter/API, and live per-stage benchmark tooltip:
    - `Last run: <total> ms (setup <target_setup> ms · sweep <sweep> ms · metrics <metrics> ms) · <N> segs (<R> seg/s)`
    - Notice that background simulation runs on an isolated worker thread and `wgpu` queue, keeping the viewport camera and window resize completely responsive even during dense `Fine` / `Ultra` sweeps.
 
@@ -67,10 +69,10 @@ chip-gui --sample rotary-4axis
 When running on the GPU backend, ChipCutter renders machined stock directly from VRAM storage buffers (`Heightfield`, `Cylindrical`, and indirect-draw `Tri-Dexel`) without copying megabytes of mesh data back to the CPU. Toggling **`Error Heatmap`** or dragging **`Tol: +/-`** updates only a single 336-byte visual uniform buffer on the GPU (`< 0.1 ms`, zero re-sweep and zero CPU re-meshing).
 
 1. Launch **`Simultaneous 4-Axis Helical Flute`** (`--sample rotary-4axis`) and press **`Ctrl+G`**.
-2. In the **`Simulation Timeline`** toolbar:
-   - Set **Resolution** to **`Ultra (2048)`** and **Backend** to **`GPU`**.
-   - Click **`Refresh Simulation`** and notice how quickly the GPU sweeps tens of thousands of simultaneous `X+Y+Z+A` segments compared to CPU Ultra mode.
-3. Check **`Error Heatmap`** in the toolbar (and optionally uncheck **`3D Cutter`** for a clear view of the machined flutes).
+2. Click the **Simulation status chip** on **`Simulation Timeline`** (or press **`Ctrl+,`** → **`Simulation`**):
+   - Set **`Detail Level`** to **`Ultra (2048)`** and **`Compute Backend`** to **`GPU (Compute)`**.
+   - Click **`Simulate`** in the **top toolbar** (if not already running) and watch the toolbar progress bar and **`Diagnostics & Log`** wall-clock timing—the GPU sweeps tens of thousands of simultaneous `X+Y+Z+A` segments in a fraction of CPU Ultra time.
+3. Check **`Error Heatmap`** on the **`Simulation Timeline`** top bar (and optionally uncheck **`3D Cutter`** for a clear view of the machined flutes).
 4. Drag the **`Tol: +/- 0.050 mm`** field tighter (for example `+/- 0.025 mm`) or looser (`+/- 0.100 mm`):
    - The diverging heatmap band (**Red/Yellow** = Gouge `-`, **Green** = Within `±Tol`, **Cyan/Blue** = Uncut Excess `+`) updates instantaneously in real time.
    - Notice how the finished helical flutes show tight conformance (`Max Gouge: -0.015 mm`, **`Verified Crash-Free`**), while the unmachined dark-blue collars on both ends accurately mark the chuck/tailstock excess (`+1.011 mm`).
@@ -106,7 +108,7 @@ Sharp `90°` concave pocket corners and small-radius internal arcs cause instant
 ### Step 4 — Inspecting Modulated Feedrate Telemetry in Simulation Timeline
 
 1. Press **`Ctrl+G`** to regenerate both operations in `feed-opt-pocket`.
-2. Switch to the bottom **`Simulation Timeline`** tab, select **`Tri-Dexel (Volumetric 3D)`** (`Standard (160)` or `Fine (288)`), **`GPU`**, and check **`3D Stock`** + **`3D Cutter`**.
+2. Click the **Simulation status chip** on **`Simulation Timeline`** (or **`Edit → Settings… → Simulation`**) to select **`Tri-Dexel (Volumetric 3D)`**, **`Standard (160)`** or **`Fine (288)`**, and **`GPU (Compute)`** (or **`Auto (GPU with CPU fallback)`**), click **`Simulate`** in the **top toolbar**, and check **`3D Stock`** + **`3D Cutter`**.
 3. Scrub the timeline into **`Op 2: 2. Sharp-Corner & Boss Finish (Feed-Optimized)`** (around `00:06:53 / 00:07:49`, ~`88%` progress) and read the live controller HUD row:
    - Active motion readout: **`G1 | F=1774 mm/min | S=13793 | Seg 2377/2528`** — use the **Left/Right Arrow** keys (or `<` / `>` step buttons) around a `90°` pocket corner to watch `F` step smoothly down approaching the apex and recover cleanly on the next straight wall.
    - Modulated feed telemetry pill: **`Feed Opt: 608–2048 mm/min (1558 mod)`** — confirms the exact minimum-to-maximum modulated cutting feedrate span and the count of modulated cutting segments across the Setup.
@@ -122,23 +124,24 @@ Pair **GPU Ultra Error Heatmap** with cusp-height controls to dial in curved 3D 
 
 1. On **3D Waterline / Z-Level** (`--sample mesh-dome`, Op 2 shown in Step 1) or **3D Constant-Scallop**, enable **`Adaptive Stepdown`** and tighten **`Max Cusp Height`** (e.g., `0.08 mm` semi-finish → `0.015–0.025 mm` fine finish).
 2. On **Simultaneous 4-Axis** (`--sample rotary-4axis`, Op 2 shown in Step 2), check **`Stepover Mode → Use Target Cusp Height`** and lower **`Target Cusp`** (e.g., `0.05 mm` → `0.02 mm`).
-3. Press **`Ctrl+G`** → **`Refresh Simulation`** on **`GPU`**:
+3. Press **`Ctrl+G`** → click **`Simulate`** in the **top toolbar** (with **`GPU (Compute)`** or **`Auto`** active in **`Settings → Simulation`**):
    - Watch **RMS (`mm`)**, **P95/P99 (`mm`)**, and **In-Tol %** improve immediately across the machined region, and click **`Locate`** next to **`Max Excess`** or **`Max Gouge`** to zoom straight onto any remaining scallop ridge.
 
 ---
 
 ## 4. Key Parameters Reference
 
-### Simulation Backend & Resolution Controls (`Simulation Timeline` Toolbar)
+### Simulation Engine, Backend, & Detail Controls (`Edit → Settings… → Simulation` / Click Simulation Status Chip)
 
 | Control / Preset | Grid / Behavior | Recommended Usage & Notes |
 |---|---|---|
-| **`Backend: Auto (GPU)`** | Uses `wgpu` Compute (Vulkan/Metal/DX12) when available; transparent CPU + Rayon fallback | Best everyday default; zero-readback direct stock rendering & `< 0.1 ms` Error Heatmap slider |
-| **`Backend: GPU (Compute)`** | Explicitly prefers GPU compute & VRAM checkpoints | Best for `Fine` / `Ultra` 3D & 4th-axis inspection and GPU throughput benchmarking |
-| **`Backend: CPU (Exact)`** | Forces exact CPU + Rayon volumetric kernel & CPU-tessellated stock | Ideal for numerical parity verification against GPU runs or headless machines without a GPU |
-| **`Standard`** | `Heightmap: 512` · `Tri-Dexel: 160³` | Instant interactive iteration during initial toolpath drafting |
-| **`Fine`** | `Heightmap: 1024` · `Tri-Dexel: 288³` | High-precision 3D wall/fillet inspection & quantitative metrology |
-| **`Ultra`** | `Heightmap: 2048` · `Tri-Dexel: 448³` | Final fine-scallop & 4th-axis rotary surface inspection (GPU strongly recommended — up to `5.6×` faster!) |
+| **`Compute Backend: Auto (GPU with CPU fallback)`** | Uses `wgpu` Compute (Vulkan/Metal/DX12) when available; transparent CPU + Rayon fallback | Best everyday default; zero-readback direct stock rendering & `< 0.1 ms` Error Heatmap slider |
+| **`Compute Backend: GPU (Compute)`** | Explicitly prefers GPU compute & VRAM checkpoints | Best for `Fine` / `Ultra` 3D & 4th-axis inspection and GPU throughput benchmarking |
+| **`Compute Backend: CPU (Exact)`** | Forces exact CPU + Rayon volumetric kernel & CPU-tessellated stock | Ideal for numerical parity verification against GPU runs or headless machines without a GPU |
+| **`Detail Level: Standard`** | `Heightmap: 512` · `Tri-Dexel: 160³` | Instant interactive iteration during initial toolpath drafting |
+| **`Detail Level: Fine`** | `Heightmap: 1024` · `Tri-Dexel: 288³` | High-precision 3D wall/fillet inspection & quantitative metrology |
+| **`Detail Level: Ultra`** | `Heightmap: 2048` · `Tri-Dexel: 448³` | Final fine-scallop & 4th-axis rotary surface inspection (GPU strongly recommended — up to `5.6×` faster!) |
+| **`Smooth Skinned Surfaces (Mesh Skinning)`** | Crease-preserving surface relaxation & vertex-normal interpolation | Smooths curved/helical simulated meshes visually while keeping 90° edges sharp; never affects gouge checks or metrology |
 | **VRAM Checkpoints** | Periodic GPU stock snapshots cached in VRAM (evicted safely on memory pressure) | Enables fast timeline scrubbing without re-sweeping from `t = 0` |
 
 ### Engagement-Aware Feed Optimization (`Operation Inspector → Passes → Feed Optimization`)

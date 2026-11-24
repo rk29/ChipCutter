@@ -7,6 +7,7 @@ When machining deep multi-start helical flutes, twisted impeller channels, or st
 In this tutorial you will work on the 3-start helical flute shaft ([`assets/10-helical-flute-shaft.stl`](assets/10-helical-flute-shaft.stl)) and learn how to:
 
 - Configure a **`Simultaneous 4-Axis (X+Y+Z+R)`** Setup (`X/A` or `Y/B`) and understand why ChipCutter's validator enforces Setup drive-mode compatibility.
+- Define the axial (`-U / +U`) and angular cutting window in **`Geometry → 4th-Axis Rotary Cutting Area (-U / +U)`** (`Axial Source`, `Axial Containment`, signed `Start Margin (-U)` / `End Margin (+U)` with mandatory chuck keep-out, and angular presets) with live 3D cylindrical sector + chuck-guard preview and live **`R_max` / `R_min`** radial readouts on **`Heights`**.
 - Compare **`Auto Surface-Normal Tilt`** (`Max Auto Tilt`, `Tilt Smoothing`) against **`Fixed Lateral Offset`** (`Lateral Offset = 2.5 mm`).
 - Compare **`Simultaneous Helical Spiral`** against **`Axial / Helical Flowline`** pass patterns.
 - Verify off-centerline cutter flanks, tool holder clearance, chuck clearance, and target-STL gouge freedom (`<= 0.02 mm`) in **`CylindricalStock`** while watching live **`X`, `Y ≠ 0`, `Z`, `A`** HUD readouts.
@@ -55,10 +56,16 @@ chip-gui docs/tutorials/assets/10-helical-flute-shaft.stl
 ### Step 2 — Auto Surface-Normal Tilt + Simultaneous Helical Spiral (`Ops 1 & 2`)
 
 1. **`Op 1 — 4-Axis Helical Roughing (Auto-Tilt)`:**
-   - Click **`+ Op… → Simultaneous 4-Axis (X+Y+Z+A)`** under `Setup 1` in the left **CAM Browser** (or **`Operations → + Simultaneous 4-Axis (X+Y+Z+A)`** in the **top menu bar**). In the right **Inspector** **`Tool`** tab (`Active Cutter`), choose **`T4 — 6mm 2FL Carbide Ball Endmill`**.
+   - Ensure `Setup 1` is the **Active Setup** (highlighted with the **`Active`** badge in the left **CAM Browser**), then click **`+ Op… → Simultaneous 4-Axis (X+Y+Z+A)`** in the **top toolbar** (or **`Operations → + Simultaneous 4-Axis (X+Y+Z+A)`** in the **top menu bar**). In the right **Inspector** **`Tool`** tab (**`Active Cutter`**), choose **`T4 — 6mm 2FL Carbide Ball Endmill`**.
+   - Open the **`Geometry`** tab in the right **Inspector** and configure the **`4th-Axis Rotary Cutting Area (-U / +U)`** card:
+     - Keep **`Axial Source`** = **`Model Bounds`** (or switch to **`Stock Bounds`**, **`Selected Geometry (-U..+U)`**, or **`Explicit Range`** with explicit `Start U (-U)` / `End U (+U)` limits) and **`Axial Containment`** = **`Tool Inside`** (`Tool Center` and chuck-safe `Tool Outside` are also available).
+     - Set **`Start Margin (-U)`** = `11 mm` and **`End Margin (+U)`** = `11 mm` to focus cleanly on the helical flute span. *(Positive margins trim inward; negative margins extend outward for shoulder relief while strictly respecting the mandatory rotary chuck keep-out guard—tool radius + `0.5 mm` clearance—with an inline warning if clamped.)*
+     - Keep **`Angular Presets`** = **`Full 360°`** (`Start Angle (°)` = `0°`, `End Angle (°)` = `360°`; use **`0–180°`** or **`±90°`** for partial-sector cuts).
+     - Watch the live **`Effective U` / `Chuck Guard` / `Sector` / `R`** summary readout inside the card and the live **translucent 3D cylindrical sector + chuck guard preview** in the **3D CAD Viewport** update immediately as you edit!
+   - *(Optional)* Open the **`Heights`** tab to verify that **`Top`** and **`Bottom`** map directly to live **`Outer Radius (R_max)`** and **`Core Floor Radius (R_min)`** readouts measured from the rotary centerline (shown beside `Top Offset`, `Bottom Offset`, and inside **`Resolved WCS Z Hierarchy`**).
    - Switch to the **`Passes`** tab in the right **Inspector**:
      - Under **`Depth Passes & Stock to Leave`**, keep **`Multiple Depths`** (`Enable Z Stepdowns`) checked so **`Maximum Stepdown`** (`3.0 mm`) is visible, and set **`Radial Stock`** = `0.25 mm` and **`Axial Stock`** = `0.25 mm`.
-     - Under **`Simultaneous 4-Axis (X+Y+Z+A/B)`**, set **`Pattern`** = **`Simultaneous Helical Spiral`**, confirm **`Tilt / Offset`** = **`Auto Surface-Normal Tilt`** **first** so **`Max Auto Tilt`** (`16.0°`) and **`Tilt Smoothing`** (`3 cells`) are displayed, leave **`Stepover Mode`** (`Use Target Cusp Height`) unchecked so **`Stepover`** (`2.6 mm`) is displayed, and set **`Start Margin (-U)`** = `11 mm` and **`End Margin (+U)`** = `11 mm` to focus cleanly on the helical flute span.
+     - Under **`Simultaneous 4-Axis (X+Y+Z+A/B)`**, set **`Pattern`** = **`Simultaneous Helical Spiral`**, confirm **`Tilt / Offset`** = **`Auto Surface-Normal Tilt`** **first** so **`Max Auto Tilt`** (`16.0°`) and **`Tilt Smoothing`** (`3 cells`) are displayed, and leave **`Stepover Mode`** (`Use Target Cusp Height`) unchecked so **`Stepover`** (`2.6 mm`) is displayed.
 2. **`Op 2 — 4-Axis Spiral Finish (Auto-Tilt 18°)`:**
    - Duplicate Op 1 via **`Ctrl+D`** (or **`Edit → Duplicate Operation (Ctrl+D)`** in the **top menu bar**, or right-click Op 1 in the left **CAM Browser** → **`Duplicate Operation (Ctrl+D)`**).
    - In the right **Inspector** **`Passes`** tab, uncheck **`Multiple Depths`** (`Enable Z Stepdowns`), set **`Radial Stock`** = `0 mm` and **`Axial Stock`** = `0 mm`, refine **`Stepover`** = `1.5 mm`, and raise **`Max Auto Tilt`** = `18.0°` with **`Tilt Smoothing`** = `3 cells`.
@@ -89,17 +96,21 @@ Compare Shot 2 (`Simultaneous Helical Spiral` + `Auto Surface-Normal Tilt`) with
 
 ## 4. Key Parameters Reference
 
-All strategy parameters below are located in **`Right Inspector → Passes → Simultaneous 4-Axis (X+Y+Z+A/B)`**:
+Cutting-area bounds live in **`Right Inspector → Geometry → 4th-Axis Rotary Cutting Area (-U / +U)`** (with radial `R_max` / `R_min` limits on **`Heights`**), while motion and tilt controls live in **`Right Inspector → Passes → Simultaneous 4-Axis (X+Y+Z+A/B)`**:
 
-| Parameter | Safe Starting Value | Purpose & Tuning Guidance |
-|---|---|---|
-| **`Pattern`** | **`Simultaneous Helical Spiral`** / **`Axial / Helical Flowline`** | Spiral gives uninterrupted multi-turn finishing; Flowline runs lengthwise axial strips |
-| **`Tilt / Offset`** | **`Auto Surface-Normal Tilt`** / **`Fixed Lateral Offset`** | Selects between **`Max Auto Tilt`** + **`Tilt Smoothing`** vs. explicit **`Lateral Offset`** |
-| **`Max Auto Tilt`** | `12° – 20°` | Shown when **`Tilt / Offset`** = **`Auto Surface-Normal Tilt`**; caps maximum effective lateral tilt angle |
-| **`Tilt Smoothing`** | `3 – 5 cells` | Shown when **`Tilt / Offset`** = **`Auto Surface-Normal Tilt`**; smooths simultaneous `Y` and `A` velocity |
-| **`Lateral Offset`** | `2.0 – 3.5 mm` | Shown when **`Tilt / Offset`** = **`Fixed Lateral Offset`**; constant cross-axis shift (`mm`) off centerline |
-| **`Stepover Mode`** (`Use Target Cusp Height`) / **`Stepover`** / **`Target Cusp`** | `1.5 mm` (or `0.03–0.05 mm` cusp) | Unchecked = reveals **`Stepover`**; checked = reveals **`Target Cusp`** |
-| **`Start Margin (-U)`** / **`End Margin (+U)`** | `>= 11 mm` (clear of chuck & tailstock) | Trims machining window safely inside the fluted region away from chuck jaws |
+| Parameter | Tab / Card | Safe Starting Value | Purpose & Tuning Guidance |
+|---|---|---|---|
+| **`Axial Source`** | `Geometry → 4th-Axis Rotary Cutting Area` | **`Model Bounds`** (or **`Stock Bounds`**, **`Selected Geometry (-U..+U)`**, **`Explicit Range`**) | Determines the nominal `-U..+U` axial span along the rotary centerline; **`Explicit Range`** reveals `Start U (-U)` / `End U (+U)` |
+| **`Axial Containment`** | `Geometry → 4th-Axis Rotary Cutting Area` | **`Tool Inside`** / **`Tool Center`** / **`Tool Outside`** | Controls whether cutter perimeter stays inside, rides on, or extends past `-U/+U` for shoulder relief (chuck-safe) |
+| **`Start Margin (-U)`** / **`End Margin (+U)`** | `Geometry → 4th-Axis Rotary Cutting Area` | `>= 11 mm` (clear of chuck & tailstock) | Signed axial margins (`> 0` trims inward, `< 0` extends outward for shoulder relief while strictly respecting the mandatory rotary chuck keep-out guard) |
+| **`Start Angle (°)`** / **`End Angle (°)`** / **`Angular Presets`** | `Geometry → 4th-Axis Rotary Cutting Area` | **`Full 360°`** (`0°..360°`; presets: `Full 360°`, `0–180°`, `±90°`) | Limits angular machining window around the 4th axis with a live translucent 3D cylindrical sector + chuck guard preview |
+| **`Top`** / **`Bottom`** (`R_max` / `R_min`) | `Heights → Z-Height Planes & Offsets` | `Stock Top` → `Model Bottom` | Maps directly to live **`Outer Radius (R_max)`** and **`Core Floor Radius (R_min)`** readouts from the rotary centerline |
+| **`Pattern`** | `Passes → Simultaneous 4-Axis` | **`Simultaneous Helical Spiral`** / **`Axial / Helical Flowline`** | Spiral gives uninterrupted multi-turn finishing; Flowline runs lengthwise axial strips |
+| **`Tilt / Offset`** | `Passes → Simultaneous 4-Axis` | **`Auto Surface-Normal Tilt`** / **`Fixed Lateral Offset`** | Selects between **`Max Auto Tilt`** + **`Tilt Smoothing`** vs. explicit **`Lateral Offset`** |
+| **`Max Auto Tilt`** | `Passes → Simultaneous 4-Axis` | `12° – 20°` | Shown when **`Tilt / Offset`** = **`Auto Surface-Normal Tilt`**; caps maximum effective lateral tilt angle |
+| **`Tilt Smoothing`** | `Passes → Simultaneous 4-Axis` | `3 – 5 cells` | Shown when **`Tilt / Offset`** = **`Auto Surface-Normal Tilt`**; smooths simultaneous `Y` and `A` velocity |
+| **`Lateral Offset`** | `Passes → Simultaneous 4-Axis` | `2.0 – 3.5 mm` | Shown when **`Tilt / Offset`** = **`Fixed Lateral Offset`**; constant cross-axis shift (`mm`) off centerline |
+| **`Stepover Mode`** (`Use Target Cusp Height`) / **`Stepover`** / **`Target Cusp`** | `Passes → Simultaneous 4-Axis` | `1.5 mm` (or `0.03–0.05 mm` cusp) | Unchecked = reveals **`Stepover`**; checked = reveals **`Target Cusp`** |
 
 ---
 

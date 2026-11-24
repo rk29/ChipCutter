@@ -41,7 +41,7 @@ The starter manifold solid (`80 × 60 × 20 mm`) contains:
 
 ### Step 1 — Inspect & Define `Thread Mill` Cutters in Tool Library Manager
 
-1. Open **`Tools → Tool Library Manager…`** (or press **`Ctrl+K`** and type `Tool Library`).
+1. Click **`Tools`** in the **top toolbar** (or press **`Ctrl+K`** and type `Tool Library`, or click **`Edit…`** beside **`Active Cutter`** on an operation's **`Tool`** tab).
 2. Select **`T9 — 4.75mm 3FL 60° Single-Point Thread Mill (M6–M12)`** in the tool list to view its relieved-neck `60°` V-tooth profile schematic and geometry fields:
    - **`Diameter` (`4.75 mm`):** Cutting tooth tip outer diameter—must be strictly smaller than the internal thread's minor diameter (`Ø6.65 mm` for `M8 × 1.25`, `Ø4.98 mm` for `1/4-20 UNC`).
    - **`Neck Dia` (`2.85 mm`) & `Neck Length` (`16.0 mm`):** Relieved undercut neck that lets the tooth sweep outward into the thread walls while keeping the neck clear of the pilot hole bore up to `16 mm` deep.
@@ -63,11 +63,11 @@ Before any thread mill enters the part, the stock top, proud boss deck, and pilo
 
 ### Step 3 — Internal `M8 × 1.25` & `1/4-20 UNC` Thread Milling (`Ops 4 & 5`)
 
-1. Click **`+ Op… → Helical Thread Mill`** under `Setup 1` in the left **CAM Browser** (or **`Operations → + Helical Thread Mill`** in the top menu bar).
+1. Confirm **`Setup 1`** is the **Active Setup** (`Active` badge in the left **CAM Browser**), then click **`+ Op… → Thread Mill`** in the **top toolbar** (or **`Operations → + Thread Mill`** in the **top menu bar**).
 2. On the **`Tool`** tab, choose **`T9 — 4.75mm 3FL 60° Single-Point Thread Mill (M6–M12)`**.
-3. On the **`Geometry`** tab, click **`Pick Holes…`** and select the two `Ø6.80 mm` cylindrical pilot holes (click one and use **`+ Same Ø`**).
+3. On the **`Geometry`** tab, select **`Cylindrical Holes`** under **`Interactive 3D Pick Mode`** and click the two `Ø6.80 mm` cylindrical pilot holes (click one and use **`+ Same Ø`**).
 4. On the **`Heights`** tab, leave **`Top`** at `From Selection` (`+0.0 mm`, `Z = 12.0 mm`) and set **`Bottom`** to `From Selection` `+2.0 mm` (`Z = 2.0 mm`, giving `10.0 mm` = 8 full thread pitches comfortably within `T9`'s `16.0 mm` neck reach).
-5. Switch to the **`Passes`** tab and configure the two aligned cards:
+5. Switch to the **`Passes`** tab *(notice `ThreadMill` automatically hides unused **`Multiple Depths`** and **`Radial Stock`** controls, showing only **`Stock to Leave`** (`Axial Stock`) alongside the two dedicated thread cards)* and configure:
    - **`Thread Specification`:**
      - **`Thread Form`:** `Internal Hole`
      - **`Standard`:** `ISO Metric Coarse` → **`Thread Size`:** **`M8 x 1.25`** (auto-populates `Major Dia = 8.000 mm`, `Pitch = 1.250 mm`, and displays `Tap Drill: 6.800 mm | Minor Dia: 6.647 mm` in **`Thread Info`**).
@@ -84,7 +84,7 @@ Before any thread mill enters the part, the stock top, proud boss deck, and pilo
 
 ### Step 4 — External `M12 × 1.75` Boss Thread Milling (`Op 6`)
 
-1. Add a third **`Helical Thread Mill`** operation named **`External M12 x 1.75 Boss Thread`**.
+1. Add a third **`Thread Mill`** operation (`+ Op… → Thread Mill` in the **top toolbar**) named **`External M12 x 1.75 Boss Thread`**.
 2. On the **`Tool`** tab, select **`T11 — 8.0mm 3FL 60° Single-Point Thread Mill (M10–M24 / Ext)`**.
 3. On the **`Geometry`** tab, pick the circular planar top face of the proud `Ø12.0 mm` boss (`Z = 20.0 mm`). ChipCutter extracts the boss center, diameter (`12.0 mm`), top (`Z = 20.0 mm`), and adjacent deck floor (`Z = 12.0 mm`) automatically.
 4. On the **`Heights`** tab, set **`Bottom`** to `From Selection` `+1.0 mm` (`Z = 13.0 mm`) so the cutter tip stops `1.0 mm` clear of the `Z = 12.0 mm` manifold deck (`7.0 mm` = 4 full `1.75 mm` pitches).
@@ -119,8 +119,8 @@ All parameters below live in **`Right Inspector → Passes`** (`Thread Specifica
 
 Fast 2.5D heightmap simulation verifies safety and clears the bore/boss footprint, while **Tri-Dexel (Volumetric 3D)** simulation models all three orthogonal ray axes (`X`, `Y`, `Z`)—physically carving the actual **3D helical undercut thread grooves** along both internal bore walls and the external boss cylinder!
 
-1. Press **`Ctrl+G`** to generate all 6 operations cleanly.
-2. Open the bottom **`Simulation Timeline`** tab, switch **`Engine`** to **`Tri-Dexel (Volumetric 3D)`**, and click **`Refresh Simulation`** (if not auto-triggered).
+1. Press **`Ctrl+G`** (or click **`Generate`** in the **top toolbar**) to generate all 6 operations cleanly.
+2. Open **`Edit → Settings… → Simulation`** (`Ctrl+,`, the top toolbar gear icon, or click the Simulation status chip on the **`Simulation Timeline`** top bar) and set **`Simulation Engine`** to **`Tri-Dexel (Volumetric 3D)`** *(if Heightmap is still active, **`Simulation Timeline`** also displays an amber **`Undercut cutter active — Heightmap is 2.5D`** pill with a 1-click **`Use Tri-Dexel`** button)*. Then click **`Simulate`** in the **top toolbar** (progress appears in the toolbar bar with `Esc` cancel, and wall-clock duration is logged in **`Diagnostics & Log`**).
 3. Scrub to the end (`100%`) and orbit around the manifold block:
    - Inspect the crisp **`M12 × 1.75`** external helical thread grooves carved around the proud circular boss.
    - Inspect the internal **`M8 × 1.25`** and **`1/4-20 UNC`** helical grooves inside the four manifold ports and the revolved 3D relieved-neck `Thread Mill` cutter.
@@ -173,4 +173,4 @@ chipcutter build /tmp/18-thread-milling.chip.toml \
 - **Previous:** [Tutorial 17 — Tri-Dexel Volumetric Simulation & Quantitative Error-Volume Analysis](17-tridexel-simulation-error-metrics.md)
 - **Next:** [Tutorial 19 — Two-Sided Flip Workholding, 3D Fixtures, & Auto Soft Jaws](19-workholding-flip-jigs-soft-jaws.md)
 - **Sample Showcase:** [Threaded Manifold Block (Helical Thread Milling)](../samples/thread-mill.md)
-- **Index:** [All Tutorials (`00`–`19`)](README.md)
+- **Index:** [All Tutorials (`00`–`22`)](README.md)

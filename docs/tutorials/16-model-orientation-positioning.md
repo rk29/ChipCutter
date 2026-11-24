@@ -74,7 +74,7 @@ Notice two problems immediately visible in the top card:
    - *(Need a quick unit rescue on a mis-exported file? Use the **`×25.4`** or **`/25.4`** preset buttons.)*
 3. Under **Quick Placement**, click **`Center XY on Origin`** and **`Drop Bottom to Z = 0`**.
    - **`Z Range`** now reads **`[0.0 .. 27.0] mm`** and the model is centered symmetrically around `X = 0, Y = 0`.
-4. Add a **`3D Adaptive Roughing`** operation (`Ø6 mm` Flat Endmill) and a **`3D Parallel Surface Finish`** operation (`Ø6 mm` Ball Endmill) under **Setup 1**, then press **`Ctrl+G`** to generate and verify:
+4. Confirm **Setup 1** is the **Active Setup** (`Active` badge in the left **CAM Browser**), add a **`3D Adaptive Roughing`** operation (`+ Op… → 3D Adaptive Roughing` in the **top toolbar**, `Ø6 mm` Flat Endmill) and a **`3D Parallel Finishing`** operation (`+ Op… → 3D Parallel Finishing`, `Ø6 mm` Ball Endmill), then press **`Ctrl+G`** to generate and verify:
 
 ![Upright 1.5x-scaled STL centered at Z=0 with Model Transform Inspector and verified 3D Adaptive and Parallel toolpaths](../images/tutorials/16-model-orientation-positioning/02-model-transform-inspector.png)
 
@@ -115,7 +115,7 @@ When a STEP part is tilted in CAD space—or when you need to flip a part upside
    - *(Need a fixture shim or edge-finder offset? Use **`Additional Offset X / Y / Z`** right below the origin selector.)*
 5. Click **`Align Top`** next to **Setup Name** to snap the 3D camera straight down Setup 1's `+Z` spindle axis.
 6. Under **Stock**, set a **`Relative Box`** with `2 mm` side margin, `1.5 mm` top allowance, and `2.0 mm` bottom vise-holding stock ("hat" material to be faced off in Op 2).
-7. Add **1. Face Top Stock**, **2. Center Pocket**, and **3. Drill Mounting Holes**, then press **`Ctrl+G`**:
+7. With **Setup 1** active (`Active` badge in the CAM Browser), use **`+ Op…`** in the **top toolbar** (or the **`Operations`** menu) to add **1. Face Top Stock**, **2. Center Pocket**, and **3. Drill Mounting Holes**, then press **`Ctrl+G`**:
 
 ![Tilted STEP bracket aligned via Setup 1 G54 Z and X WCS showing 27-point origin dots and verified top toolpaths](../images/tutorials/16-model-orientation-positioning/03-tilted-step-wcs-align.png)
 
@@ -124,8 +124,8 @@ When a STEP part is tilted in CAD space—or when you need to flip a part upside
 1. Click **`+ Setup`** in the top-right of the CAM Browser. ChipCutter automatically assigns **`G55 (Offset 2)`**.
 2. In Setup 2's **`WCS & Post`** tab, pick the exact same reference face (`Face #0`) and edge (`Edge #0`), but leave **`Flip Z` unchecked** so Setup 2's **`+Z`** spindle arrow points straight out of the *underside* of the bracket!
 3. Set **WCS Origin** to **Stock Top Center** and **Stock** to **`Relative Box`** with `0 mm` side margin and **`2.0 mm` Top Offset** (representing the `2.0 mm` vise-holding hat left over from Setup 1).
-4. Add a **`Facing`** operation (`Ø38 mm` Face Mill) to machine off the underside hat stock cleanly to final thickness.
-5. Press **`Ctrl+G`** and run **3D Simulation** on Setup 2:
+4. With **Setup 2** now the **Active Setup** (or click **`Activate`** on Setup 2 in the CAM Browser), add a **`Facing`** operation (`+ Op… → Facing` in the **top toolbar**, `Ø38 mm` Face Mill) to machine off the underside hat stock cleanly to final thickness.
+5. Press **`Ctrl+G`** and click **`Simulate`** in the **top toolbar** to verify Setup 2:
 
 ![Setup 2 G55 flipped upside down with live 3D machined stock and revolved face mill verifying Op 2 crash-free](../images/tutorials/16-model-orientation-positioning/04-setup2-flipped-op2.png)
 
@@ -162,8 +162,8 @@ Both **Setup 1 (`G54`)** and **Setup 2 (`G55`)** stay linked to the exact same u
 ## 5. Generate (`Ctrl+G`) & 3D Simulation Verification
 
 1. Press **`Ctrl+G`** to generate all dirty operations in parallel across the active Setup (or click **`Gen`** on individual Setups in the CAM Browser).
-2. Open the bottom **`Simulation Timeline`** tab and click **`Refresh Simulation`**.
-3. Confirm the green **`Verified Crash-Free`** badge (checking rapid-into-stock crashes, target B-Rep/mesh gouges `> 0.02 mm`, flute/shank rubs, holder collisions, and non-center-cutting plunges).
+2. Click **`Simulate`** in the **top toolbar** (or **`Simulate → Run / Refresh Simulation`** in the **top menu bar**)—the compact toolbar progress bar tracks execution and lets you cancel anytime with **`Esc`** (or **`Cancel`**), and **`Diagnostics & Log`** records the wall-clock runtime.
+3. In the bottom **`Simulation Timeline`** tab, confirm the green **`Verified Crash-Free`** badge (checking rapid-into-stock crashes, target B-Rep/mesh gouges `> 0.02 mm`, flute/shank rubs, holder collisions, and non-center-cutting plunges).
 4. Toggle **`3D Stock`** and **`3D Cutter`** and scrub the timeline to verify both Setup 1 (`G54`) and Setup 2 (`G55`) clear cleanly.
 
 ---

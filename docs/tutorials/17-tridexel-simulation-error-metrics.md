@@ -12,12 +12,12 @@ ChipCutter now offers **two selectable physical stock simulation engines** side-
 | **`Tri-Dexel (Volumetric 3D)`** | 3 orthogonal sorted interval grids (`X`-rays, `Y`-rays, `Z`-rays) + sharp Dual-Vertex Surface Nets mesher | Crisp vertical walls with zero stair-stepping, 3D sculpted reliefs, undercuts, and accurate 3D volumetric error/RMS metrology | High-precision 3D |
 
 > [!TIP]
-> **Want GPU-accelerated simulation & live `< 0.1 ms` Error Heatmap tuning?** See [**Tutorial 20 — GPU-Accelerated Simulation, Benchmarking, & Feedrate Optimization**](20-gpu-simulation-feed-optimization.md) to enable the `wgpu` Compute backend (`Auto (GPU)` / `GPU`), benchmark `--backend gpu --benchmark --json` throughput against CPU, and optimize corner/arc cutting feedrates.
+> **Want GPU-accelerated simulation & live `< 0.1 ms` Error Heatmap tuning?** See [**Tutorial 20 — GPU-Accelerated Simulation, Benchmarking, & Feedrate Optimization**](20-gpu-simulation-feed-optimization.md) to configure **`Compute Backend`** (`Auto (GPU with CPU fallback)` / `GPU (Compute)` / `CPU (Exact)`) in **`Edit → Settings… → Simulation`**, benchmark `--backend gpu --benchmark --json` throughput against CPU, and optimize corner/arc cutting feedrates.
 
 In this tutorial you will learn how to:
 
-1. Switch between **`Heightmap (Fast)`** and **`Tri-Dexel (Volumetric 3D)`** in the **Simulation Timeline** toolbar (and **`Simulate → Engine`** menu), with your preference persisted automatically in `prefs.toml`.
-2. Toggle the live **`Error Heatmap`** (`Red = Gouge`, `Green = Within ±Tol`, `Blue = Uncut Excess`) and adjust the tolerance band (`+/- 0.050 mm`) to visually pinpoint residual scallops, unmachined bevels, or overcuts on both prismatic STEP solids and 3D STL meshes.
+1. Switch between **`Heightmap (Fast)`** and **`Tri-Dexel (Volumetric 3D)`**, select **`Detail Level`** (`Standard` / `Fine` / `Ultra`), and toggle **`Smooth Skinned Surfaces (Mesh Skinning)`** in **`Edit → Settings… → Simulation`** (`Ctrl+,`, the top toolbar gear icon, **`Simulate → Simulation Settings…`**, or by clicking the compact Simulation status chip on the **`Simulation Timeline`** top bar), with all preferences persisted automatically in `prefs.toml`.
+2. Run simulation via **`Simulate`** in the **top toolbar** (with live progress bar, `Esc` cancel, and wall-clock execution time logged in **`Diagnostics & Log`**), toggle the live **`Error Heatmap`** (`Red = Gouge`, `Green = Within ±Tol`, `Blue = Uncut Excess`), and adjust the tolerance band (`+/- 0.050 mm`) to visually pinpoint residual scallops, unmachined bevels, or overcuts on both prismatic STEP solids and 3D STL meshes.
 3. Interpret the **Error Metrics** dashboard (**Total / Excess / Gouge Volume**, **Removal Efficiency %**, **RMS**, **MAE**, **Bias**, **P95/P99**, **In-Tolerance %**), click **`Locate`** to snap the camera directly onto the worst excess or gouge spot, and expand **Per-Operation Error Progression**.
 4. Export machine-readable `StockErrorReport` JSON via **`chipcutter simulate --engine tri-dexel --tolerance 0.05 --report`** to compare roughing/finishing strategies or benchmark toolpath improvements headlessly.
 
@@ -46,13 +46,19 @@ chip-gui --sample mesh-dome
 
 ### Part A — Running Tri-Dexel Volumetric Simulation on a Multi-Feature STEP Solid
 
-#### Step 1 — Generate Toolpaths & Select `Tri-Dexel (Volumetric 3D)`
+#### Step 1 — Generate Toolpaths & Select `Tri-Dexel (Volumetric 3D)` in Settings
 
-1. Open **`CAM Torture Block`** (`--sample cam-torture`) and press **`Ctrl+G`** to generate all 8 operations.
-2. In the bottom **`Simulation Timeline`** tab:
-   - Open the **Engine** dropdown next to **`Refresh Simulation`** and switch from **`Heightmap (Fast)`** to **`Tri-Dexel (Volumetric 3D)`**.
-   - ChipCutter automatically triggers a background `rayon`-parallel Tri-Dexel simulation and remembers your engine choice in `~/.config/chipcutter/prefs.toml`.
-3. Confirm the green **`Verified Crash-Free`** badge, click **`End`** (or scrub the timeline slider) to inspect the finished volumetric stock with crisp vertical walls, circular counterbore, island pocket, and holding tabs:
+1. Open **`CAM Torture Block`** (`--sample cam-torture`) and press **`Ctrl+G`** (or click **`Generate`** in the **top toolbar**) to generate all 8 operations.
+2. Open **`Settings → Simulation`** via any of four shortcuts:
+   - Click the compact **Simulation status chip** on the left of the bottom **`Simulation Timeline`** bar (for example **`Heightmap · Standard · GPU (Radeon 780M)`** or **`Heightmap · Standard · CPU`**).
+   - Press **`Ctrl+,`** (or click the **gear icon** at the far right of the **top toolbar**, or **`Edit → Settings… (Ctrl+,)`**) and choose **`Simulation`** in the left sidebar.
+   - Or choose **`Simulate → Simulation Settings…`** from the **top menu bar**.
+3. Under **`Simulation Engine & Detail Level`**:
+   - Set **`Simulation Engine`** to **`Tri-Dexel (Volumetric 3D)`**.
+   - Choose **`Detail Level`** (`Standard (160)`, `Fine (288)`, or `Ultra (448)`) and **`Compute Backend`** (`Auto (GPU with CPU fallback)`, `GPU (Compute)`, or `CPU (Exact)`).
+   - Optionally check **`Surface Display` → `Smooth Skinned Surfaces (Mesh Skinning)`** to apply crease-preserving mesh skinning that visually relaxes smooth curved and helical surfaces while keeping crisp 90° edges sharp *(strictly visual—never alters volumetric gouge checks or quantitative error metrology)*.
+   - ChipCutter persists your settings in `~/.config/chipcutter/prefs.toml` and automatically re-runs simulation in the background (or click **`Simulate`** in the **top toolbar** anytime—a live progress bar appears beside **`Simulate`**, press **`Esc`** or click **`Cancel`** to abort, and **`Diagnostics & Log`** logs the exact wall-clock execution time on completion).
+4. Confirm the green **`Verified Crash-Free`** badge on **`Simulation Timeline`**, click **`End`** (or scrub the timeline slider) to inspect the finished volumetric stock with crisp vertical walls, circular counterbore, island pocket, and holding tabs:
 
 ![Tri-Dexel 3D volumetric simulation of CAM Torture Block showing sharp vertical walls, 3D cutter, and quantitative Error Metrics bar](../images/tutorials/17-tridexel-simulation-error-metrics/01-tridexel-volumetric-stock.png)
 
@@ -80,8 +86,8 @@ chip-gui --sample mesh-dome
 
 #### Step 3 — Inspect 3D Scallops & Unmachined Regions on `Sculpted Dome (STL Mesh)`
 
-1. Open **`Sculpted Dome (STL Mesh)`** (`--sample mesh-dome`), press **`Ctrl+G`**, select **`Tri-Dexel (Volumetric 3D)`**, and check **`Error Heatmap`**.
-2. Switch the bottom pane to **`Diagnostics & Log`** to inspect the verified Tri-Dexel crash status, error-volume summary, and per-operation cycle time side by side:
+1. Open **`Sculpted Dome (STL Mesh)`** (`--sample mesh-dome`), press **`Ctrl+G`**, confirm the Simulation status chip shows **`Tri-Dexel`** (click the chip to open **`Settings → Simulation`** if needed—try toggling **`Smooth Skinned Surfaces (Mesh Skinning)`** on this curved dome!), click **`Simulate`** in the **top toolbar**, and check **`Error Heatmap`**.
+2. Switch the bottom pane to **`Diagnostics & Log`** to inspect the verified Tri-Dexel crash status, wall-clock simulation execution time, error-volume summary, and per-operation cycle time side by side:
 
 ![Tri-Dexel Error Heatmap on 3D Sculpted Dome STL alongside Diagnostics & Log error-volume and RMS verification readout](../images/tutorials/17-tridexel-simulation-error-metrics/03-sculpted-dome-heatmap-diagnostics.png)
 
@@ -96,7 +102,9 @@ chip-gui --sample mesh-dome
 
 | Metric / Control | Formula / Meaning | How to Use It |
 |---|---|---|
-| **`Engine`** (`Heightmap` / `Tri-Dexel`) | Chooses fast 2.5D Z-dexel heightmap vs. full 3D 3-axis Tri-Dexel volumetric stock | Keep `Heightmap` for rapid drafts; switch to `Tri-Dexel` for crisp vertical walls, undercuts, and final 3D metrology |
+| **`Simulation Engine`** (`Settings → Simulation`) | **`Heightmap (Fast)`** (2.5D Z-dexel) vs. **`Tri-Dexel (Volumetric 3D)`** (3-axis orthogonal ray grids) | Click the Simulation status chip (or `Ctrl+,`) to switch; keep `Heightmap` for rapid drafts, `Tri-Dexel` for crisp vertical walls, undercuts, and 3D metrology |
+| **`Detail Level`** (`Settings → Simulation`) | **`Standard`** (`512` / `160`), **`Fine`** (`1024` / `288`), **`Ultra`** (`2048` / `448`) | Controls volumetric grid resolution; higher detail yields sharper edges and tighter error metrology |
+| **`Smooth Skinned Surfaces (Mesh Skinning)`** (`Settings → Simulation`) | Crease-preserving visual mesh skinning & vertex-normal interpolation | Relaxes smooth curved/helical surfaces while keeping 90° corners crisp; purely visual (zero effect on gouge checks or error metrics) |
 | **`Total Err Vol (mm³ / %)`** | `Excess Volume + Gouge Volume` (symmetric difference `V(M Δ T)`) and `% of target volume` | Primary single-number volumetric accuracy benchmark across toolpath revisions |
 | **`Excess (mm³)`** | Uncut material left outside the target solid (`V(M \ T)`) | Measures remaining rest stock, corner fillets, holding tabs, and 3D scallops |
 | **`Gouge (mm³)`** | Material removed from inside the target solid (`V(T \ M)`) | Must be `~0 mm³` on verified production setups (excluding intentional unmodeled edge breaks) |
@@ -174,4 +182,4 @@ jq '.setups[0].error_report | {
 
 - **Previous:** [Tutorial 16 — Rotating, Laying Flat, Scaling, & Moving STEP & STL Models](16-model-orientation-positioning.md)
 - **Next:** [Tutorial 18 — Helical Thread Milling (Internal Holes & External Bosses)](18-thread-milling.md)
-- **Index:** [All Tutorials (`00`–`20`)](README.md)
+- **Index:** [All Tutorials (`00`–`22`)](README.md)

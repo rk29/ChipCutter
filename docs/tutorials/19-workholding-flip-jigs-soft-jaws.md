@@ -58,6 +58,7 @@ When milling a billet part in a vise from both sides, you leave extra sacrificia
    - To add strap/toe clamps (e.g., on sacrificial ears or vise shoulders), either click **`+ Toe Clamp`** for numeric placement or click **`Place Clamp in Viewport…`** and click directly on a stock edge in the 3D viewport to auto-orient a clamp with its heel riser and tall T-slot stud tower.
    - Verify the blue status banner reads **`Auto-Avoid Rapids enabled`**; after pressing **`Ctrl+G`**, it reports the exact number of `G0` rapid jumps automatically lifted over your fixtures (and the maximum lifted Z height).
 3. **Stop Op-1 Roughing Safely Above the Vise Jaws:**
+   - With **`Setup 1`** active (`Active` badge in the left **CAM Browser**), add operations via **`+ Op…`** in the **top toolbar** (or **`Operations`** in the **top menu bar**):
    - **`Op 1.1 — Face Stock Top` (`Facing`, `T1` Ø6 mm Flat Endmill):** Decks `StockTop` down to `ModelTop` (`1.0 mm`).
    - **`Op 1.2 — 3D Adaptive Top Boss & Flange` (`3D Adaptive Roughing`, `T1` Ø6 mm Flat Endmill):** Sets **`Top`** = `ModelTop` and **`Bottom`** = **`ModelBottom + 2.0 mm`**. Stopping `2 mm` above `ModelBottom` guarantees the cutter finishes the top boss and flange cleanly while leaving a `2 mm` skirt + `5 mm` hat stock well clear of the vise jaws below!
 
@@ -88,6 +89,7 @@ Now flip the part `180°` upside down so the `5 mm` hat stock faces **up (`+Z`)*
    - On **`Setup 2 → Fixtures`**, click **`+ Vise`**, enable **`Auto-avoid on rapids`**, and configure stepped soft jaws gripping the already-machined Op-1 boss:
      - **`Grip Depth`** = `7.0 mm`, **`Step Shelf Depth`** = `4.0 mm`, **`Step Shelf Height`** = `4.0 mm`, **`Include Parallels`** = unchecked (the machined step shelf supports the part directly!).
 4. **Add Op-2 Hat Facing & Rest-Aware Skirt Profiling:**
+   - Confirm **`Setup 2`** is the **Active Setup** (click **`Activate`** on `Setup 2` in the left **CAM Browser** if `Setup 1` is still active), then add both operations from **`+ Op…`** in the **top toolbar**:
    - **`Op 2.1 — Face Bottom Hat Stock` (`Facing`):** `Top = StockTop`, `Bottom = ModelTop` (`5.0 mm` total depth with `Multiple Depths` enabled, `Max Stepdown = 2.5 mm`) — removes the entire `5 mm` hat cleanly down to the finished underside of the flange.
    - **`Op 2.2 — Rest Profile Bottom Skirt` (`3D Adaptive Roughing`):** `Top = ModelTop`, `Bottom = ModelTop - 3.5 mm` — because Setup 2 carries over Setup 1's remaining Tri-Dexel stock, Op 2.2 clears **only** the remaining `2 mm` unmachined outer flange skirt (with a slight `1.5 mm` overlap for a seamless wall blend) and never plunges down into the soft jaws!
 
@@ -187,11 +189,11 @@ For parts with curved, stepped, or irregular outer profiles that flat vise jaws 
 ## 5. Generate (`Ctrl+G`), Tri-Dexel Carryover, & Rule 6 Verification
 
 1. Press **`Operations → Generate All Setups`** (or select each Setup and press **`Ctrl+G`**) so both `Setup 1` and `Setup 2` are `Clean` (upstream `Setup 1` must be generated so `Setup 2` can carry over its machined Tri-Dexel volume!).
-2. Select **`Setup 2 — Flip Bottom Op (G55)`** in the CAM Browser.
-3. Open the bottom **`Simulation Timeline`** pane, switch **`Engine`** to **`Tri-Dexel (Volumetric 3D)`**, and click **`Refresh Simulation`**.
+2. Select **`Setup 2 — Flip Bottom Op (G55)`** in the CAM Browser (click its header or **`Activate`** so it becomes the **Active Setup**).
+3. Click the compact **Simulation status chip** on the bottom **`Simulation Timeline`** top bar (or open **`Edit → Settings… → Simulation`**, `Ctrl+,`) and set **`Simulation Engine`** to **`Tri-Dexel (Volumetric 3D)`**, then click **`Simulate`** in the **top toolbar** (notice the **`Carried over from Setup 1…`** badge appears on the **`Simulation Timeline`** bar, and **`Diagnostics & Log`** logs the wall-clock execution time).
 4. Scrub from `0%` to `100%`:
    - At `0%`, notice the stock already has **Setup 1's machined top boss and flange carved out on the underside** (resting inside the translucent soft jaws), with only the `5 mm` hat stock and `2 mm` outer skirt remaining on top!
-   - At `100%`, inspect the fully machined two-sided bracket, confirm **`Verified Crash-Free`** (`0 Crashes`, `0 Target Gouges`, **`0 Fixture Collisions`**), and toggle **`Error Deviation Heatmap`** to check cumulative two-setup surface accuracy (`In-Tol >= 95%`).
+   - At `100%`, inspect the fully machined two-sided bracket, confirm **`Verified Crash-Free`** (`0 Crashes`, `0 Target Gouges`, **`0 Fixture Collisions`**), and toggle **`Error Heatmap`** to check cumulative two-setup surface accuracy (`In-Tol >= 95%`).
 5. **How Rule 6 (`FixtureCollision`) Protects Your Machine:**
    - Every cutting move, plunge, shank, and tool holder sweep is checked against all enabled 3D fixtures (`ViseJaws`, `ToeClamp`, `Spoilboard`, `BoxKeepOut`, `CylinderKeepOut`, and imported fixture meshes) plus their `Clearance Margin`.
    - If a toolpath ever grazes a clamp, jaw, or dowel pin (for example, if you lower `Op 1.2` Bottom too deep into the vise jaws or disable `Auto-avoid on rapids`), ChipCutter highlights the colliding fixture **crimson** in the 3D viewport, logs the exact collision position in **`Diagnostics & Log`**, and blocks unsafe G-code export until resolved.
@@ -265,4 +267,4 @@ chipcutter build /tmp/19-plate-softjaws.chip.toml -o /tmp/out_softjaws_linuxcnc 
 
 - **Previous:** [Tutorial 18 — Helical Thread Milling (Internal Holes & External Bosses)](18-thread-milling.md)
 - **Next:** [Tutorial 20 — GPU-Accelerated Simulation, Benchmarking, & Feedrate Optimization](20-gpu-simulation-feed-optimization.md)
-- **Index:** [All Tutorials (`00`–`20`)](README.md)
+- **Index:** [All Tutorials (`00`–`22`)](README.md)
