@@ -29,7 +29,7 @@ In the left **CAM Browser**, click **`Stock & WCS`** under `Setup 1`, open the *
 
 ### Step 1 — Machine a Modeled `45°` CAD Bevel (`Op 1 → Passes`)
 
-1. Add a chamfer operation via **`Operations → + Edge Chamfer / Trace`** in the **top menu bar** (or **`+ Op… → Edge Chamfer / Trace`** under `Setup 1` in the left **CAM Browser**). In the right **Inspector**, open the **`Tool`** tab and select **`T5 — 6mm 90° Carbide Chamfer / Spot Mill`** in **`Active Cutter`** under **`Cutter & Material Preset`**.
+1. With `Setup 1` **`Active`** in the left **CAM Browser**, click **`+ Op… → Edge Chamfer / Trace`** in the **top toolbar** (or **`Operations → + Edge Chamfer / Trace`** in the **top menu bar**). In the right **Inspector**, open the **`Tool`** tab and select **`T5 — 6mm 90° Carbide Chamfer / Spot Mill`** in **`Active Cutter`** under **`Cutter & Material Preset`**.
 2. Open the **`Geometry`** tab in the right **Inspector**, click **`Planar Faces`** under **`Interactive 3D Pick Mode`**, and click the sloped **`45° × 1.5 mm` front bevel face** of the block in the center **3D CAD Viewport**.
 3. Switch to the **`Passes`** tab in the right **Inspector** and configure the **`Chamfer & 2D Curve Trace`** card in order:
    - First set **`Mode`** = **`Edge Chamfering`** so **`CAD Source`**, **`Tip Offset`**, and **`Floor Guard`** are displayed.
@@ -39,13 +39,13 @@ In the left **CAM Browser**, click **`Stock & WCS`** under `Setup 1`, open the *
 
 ![Modeled 45-Degree Front Bevel Chamfer Toolpath](../images/tutorials/06-chamfer-curve-trace/01-modeled-chamfer-passes.png)
 
-ChipCutter computes the exact radial and axial offset from `T5`'s included angle (`90°`), `tip_dia`, `Tip Offset`, and the B-Rep bevel face width (`1.5 mm`) automatically.
+ChipCutter computes the exact radial and axial offset from `T5`'s included angle (`90°`), `tip_dia`, `Tip Offset`, and the B-Rep bevel face width (`1.5 mm`) automatically. *(Opening the **`Heights`** tab confirms this with a contextual banner: in **`Edge Chamfering`** mode, Z depth is derived automatically from the selected chamfer edge + **`Tip Offset`** in **`Passes`**.)*
 
 ### Step 2 — Deburr a Sharp Unmodeled `90°` Edge (`Op 2 → Passes`)
 
 Most shop drawings leave minor edge breaks unmodeled in CAD ("break all sharp edges `0.5–0.75 mm`").
 
-1. Add a second **`Edge Chamfer / Trace`** operation via **`Operations → + Edge Chamfer / Trace`** in the **top menu bar** (or **`+ Op… → Edge Chamfer / Trace`** in the left **CAM Browser**) and select **`T5 — 6mm 90° Carbide Chamfer / Spot Mill`** in the **`Tool`** tab.
+1. Add a second **`Edge Chamfer / Trace`** operation via **`+ Op… → Edge Chamfer / Trace`** in the **top toolbar** (or **`Operations → + Edge Chamfer / Trace`** in the **top menu bar**) and select **`T5 — 6mm 90° Carbide Chamfer / Spot Mill`** in the **`Tool`** tab.
 2. Open the **`Geometry`** tab in the right **Inspector**, click **`Open Chain`** under **`Interactive 3D Pick Mode`**, and click the sharp back top edge (`Y = 70 mm, Z = 18 mm`) in the **3D CAD Viewport** twice (once for the start edge, once for the end edge on a single-edge chain).
 3. Switch to the **`Passes`** tab in the right **Inspector** (`Chamfer & 2D Curve Trace` card):
    - First confirm **`Mode`** = **`Edge Chamfering`**, then under **`CAD Source`** click **`Sharp Edge`** so **`Chamfer Width`** appears below it.
@@ -61,7 +61,7 @@ Most shop drawings leave minor edge breaks unmodeled in CAD ("break all sharp ed
    - Type `CHIP-06` in **`Text Content (multi-line):`**.
    - Open **`Font Family`** and select **`Hershey Simplex Sans (1-Line)`** (single-line stroke font — no double outlines!).
    - Set **`Cap Height`** = `12 mm`, **`Origin X`** = `50 mm`, **`Origin Y`** = `36 mm`, and set **`Alignment`** to **`Center`** / **`Middle`**.
-3. Create the engraving operation either by clicking **`+ 1-Pass Trace`** under **`1-Click CAM Operation from Sketch:`** inside the **`Entities & Regions`** card, or via **`Operations → + Edge Chamfer / Trace`** in the **top menu bar**:
+3. Create the engraving operation either by clicking **`+ 1-Pass Trace`** under **`1-Click CAM Operation from Sketch:`** inside the **`Entities & Regions`** card, or via **`+ Op… → Edge Chamfer / Trace`** in the **top toolbar** (**`Operations → + Edge Chamfer / Trace`** in the **top menu bar**):
    - In the right **Inspector** **`Tool`** tab, select **`T5 — 6mm 90° Carbide Chamfer / Spot Mill`** in **`Active Cutter`**.
    - In the **`Geometry`** tab (if created from the menu), click **`+ All`** on your sketch row inside the **`2D Sketch Layers & Quick Select`** card.
    - In the **`Heights`** tab (`Z-Height Planes & Offsets` card), set **`Bottom Ref`** = **`Stock Top`** and **`Bottom Offset`** = `-0.4 mm` (`0.4 mm` engraving depth).
@@ -89,7 +89,7 @@ Because Hershey fonts are true single-stroke vectors, every character cuts in **
 
 ## 5. Generate (`Ctrl+G`) & 3D Simulation Verification
 
-Press **`Ctrl+G`** (or click **`Generate`** in the **top toolbar**) and click **`Simulate`** in the **top toolbar** (opening the bottom **`Simulation Timeline`** tab), scrubbing near completion (`95%`):
+Press **`Ctrl+G`** (or click **`Generate`** in the **top toolbar**; **`Diagnostics & Log`** logs wall-clock generation time alongside estimated CNC cycle time) and click **`Simulate`** in the **top toolbar** (opening the bottom **`Simulation Timeline`** tab), scrubbing near completion (`95%`):
 
 ![3D Simulation of Modeled Front Bevel, Back Deburr, and Hershey Engraving](../images/tutorials/06-chamfer-curve-trace/04-chamfer-trace-simulation.png)
 

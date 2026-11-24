@@ -30,12 +30,13 @@ Start with an **empty project** and load the minimal contour plate included with
 ### Step 1 — Set Stock Margin & Pick the Outer Contour Loop (`Op 1 → Geometry`)
 
 1. In the left **CAM Browser**, click **`Stock & WCS`** under `Setup 1`, switch to the **`Stock`** tab in the right **Inspector**, and under **`Stock Offsets`** (with **`Symmetric XY`** / `Mirror ±X / ±Y` checked) set **`Side X Margin (±X)`** = `4 mm`, **`Side Y Margin (±Y)`** = `4 mm`, and **`Top Allowance (+Z)`** = `0 mm` so the `100 × 70 × 12 mm` plate sits cleanly inside a `108 × 78 × 12 mm` raw blank.
-2. Add a single contour operation via **`Operations → + 2D Contour / Profile`** in the **top menu bar** (or click **`+ Cont`** under `Setup 1` in the left **CAM Browser**). In the right **Inspector**, open the **`Tool`** tab and select **`T1 — 6mm 3FL Carbide Flat Endmill`** in the **`Active Cutter`** dropdown under **`Cutter & Material Preset`**.
+2. With `Setup 1` **`Active`** in the left **CAM Browser**, click **`+ Contour`** in the **top toolbar** (or **`Operations → + 2D Contour / Profile`** in the **top menu bar**). In the right **Inspector**, open the **`Tool`** tab and select **`T1 — 6mm 3FL Carbide Flat Endmill`** in the **`Active Cutter`** dropdown under **`Cutter & Material Preset`**.
 3. Open the **`Geometry`** tab in the right **Inspector**, confirm **`Closed Loops`** is selected under **`Interactive 3D Pick Mode`**, and click the bottom outer perimeter loop of the plate in the center **3D CAD Viewport** (so `Bottom Z` automatically snaps to `Model Bottom`):
 
 ![2D Contour Closed Loop Selection on Minimal Plate](../images/tutorials/02-2d-contour-tabs/01-contour-geometry.png)
 
 - Use **`Open Chain`** instead of **`Closed Loops`** (in **`Interactive 3D Pick Mode`**) whenever you only want to machine part of a perimeter (click the start edge, then the end edge in the **3D CAD Viewport** to auto-trace the shortest connected path).
+- The **`Cutting Area / Machining Boundary`** card at the top of **`Geometry`** also provides **`Stock Clip`** (**`Clip to Stock Bounds`**) to trim contour passes inside Setup Stock XY bounds and **`Open Chain Extension`** to extend open 2D profile starts and ends tangentially past stock edges.
 - If a loop offsets onto the wrong side of the wall, click **`Flip Side`** or **`Rev`** on that item's row inside the **`Selected Entities`** card in the right **Inspector**.
 
 ### Step 2 — Configure Stepdowns, Wall Finishing, & Holding Tabs (`Op 1 → Passes`)
@@ -69,6 +70,7 @@ Switch to the **`Linking`** tab in the right **Inspector** to control how the cu
 
 | Parameter | Location | Purpose & Recommended Starting Values |
 |---|---|---|
+| **`Stock Clip`** & **`Open Chain Extension`** | `Right Inspector → Geometry → Cutting Area / Machining Boundary` | Check **`Clip to Stock Bounds`** to keep contour passes trimmed inside Setup Stock XY bounds; set **`Open Chain Extension`** to tangentially lead open chains past stock edges. |
 | **`Compensation`** | `Right Inspector → Passes → 2D Contour Strategy` | **`Left (Climb Milling)`** is standard on rigid CNC machines for best surface finish; **`Right (Conventional)`** reduces grab on flexible setups; **`Center (On Curve)`** cuts directly on the curve. |
 | **`G41/G42 Wear`** | `Right Inspector → Passes → 2D Contour Strategy` | Emits controller cutter-radius wear compensation metadata when dialing in tight outside dimensions at the machine. |
 | **`Spiral Ramp`** | `Right Inspector → Passes → 2D Contour Strategy` | Ramps continuously around closed contours down to `Bottom Z`, eliminating discrete Z-step witness lines. |
@@ -81,7 +83,7 @@ Switch to the **`Linking`** tab in the right **Inspector** to control how the cu
 
 ## 5. Generate (`Ctrl+G`) & 3D Simulation Verification
 
-Press **`Ctrl+G`** (or click **`Generate`** in the **top toolbar**) and click **`Simulate`** in the **top toolbar** (which opens the bottom **`Simulation Timeline`** tab), scrubbing near completion (`95%`):
+Press **`Ctrl+G`** (or click **`Generate`** in the **top toolbar**; **`Diagnostics & Log`** records wall-clock generation time alongside estimated CNC cycle time) and click **`Simulate`** in the **top toolbar** (which opens the bottom **`Simulation Timeline`** tab), scrubbing near completion (`95%`):
 
 ![3D Simulation of Contoured Plate Retained by Holding Tabs](../images/tutorials/02-2d-contour-tabs/04-contour-simulation.png)
 

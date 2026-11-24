@@ -36,7 +36,7 @@ From the **Start or Open a Job** card on the left side of the **Welcome to ChipC
 - **Browse Sample Projects Gallery…** to explore ready-to-machine 3D STEP, 3D Mesh, Rotary, Adaptive + Rest, Typography, and V-Carve jobs.
 
 > [!TIP]
-> You can switch between **Studio Dark** and **Daylight Light** themes at any time using the **`Dark`** / **`Light`** button on the far right of the **top toolbar** (or **`View → Workspace Theme`** in the **top menu bar**, or `--theme light` on launch). Your preference persists automatically in `~/.config/chipcutter/prefs.toml`.
+> You can switch between **Studio Dark** and **Daylight Light** themes (or change default **`mm`** / **`in`** units) at any time via **`Edit → Settings…`** (**`Ctrl+,`**, or click the far-right **Settings gear** icon on the **top toolbar**) → **`General & Appearance`** → **`Workspace Theme`** (or pass `--theme light` on launch). Your preference persists automatically in `~/.config/chipcutter/prefs.toml`.
 
 Click **Browse Sample Projects Gallery…** on the Welcome Overlay (or open **`Help → Sample Projects Gallery…`** / **`File → Sample Projects Gallery…`** in the **top menu bar** at any time):
 
@@ -55,19 +55,19 @@ Once **Prismatic Multi-Feature Bracket** (`90 × 70 × 20 mm`) is loaded and gen
 ### Workspace Regions
 
 1. **Top Menu Bar & Single-Row Top Toolbar:**
-   - **Top menu bar:** **`File`**, **`Edit`**, **`Setup`**, **`Operations`**, **`Tools`**, **`Simulate`**, **`Post`**, **`View`**, and **`Help`**, with the active model/job summary on the right.
-   - **Top toolbar (left cluster):** **`Open`**, **`Save`**, **`.chipz`**, **`DXF/SVG`**, the icon-only **Reload** button (visible when a 3D model is loaded, `Ctrl+R`), and icon-only Undo/Redo buttons (`Ctrl+Z` / `Ctrl+Y`).
-   - **Top toolbar (middle cluster):** Quick-add **`+ Sketch`**, **`+ Adaptive`**, **`+ V-Carve`**, plus primary workflow buttons **`Generate`** (`Ctrl+G`), **`Simulate`**, **`Post`**, and **`Tools`**.
-   - **Top toolbar (right cluster):** **`Ctrl+K`** (Command Palette), display unit toggles (**`mm`** / **`in`**), and theme toggle (**`Dark`** / **`Light`**).
+   - **Top menu bar:** **`File`**, **`Edit`**, **`Setup`**, **`Operations`**, **`Simulate`**, **`Post`**, **`View`**, and **`Help`**, with the active model/job summary on the right.
+   - **Top toolbar (left cluster):** **`Open`** (`Ctrl+O`), **`Save`** (`Ctrl+S`), **`.chipz`**, **`DXF/SVG`**, the icon-only **Reload** button (visible when a 3D model is loaded, `Ctrl+R`), and icon-only Undo/Redo buttons (`Ctrl+Z` / `Ctrl+Y`).
+   - **Top toolbar (operation & workflow clusters):** Quick-add buttons **`+ Sketch`**, **`+ Adaptive`**, **`+ Contour`**, **`+ V-Carve`**, and **`+ Op…`** (which add directly to the currently **`Active`** Setup), primary workflow buttons **`Generate`** (`Ctrl+G`), **`Simulate`**, and **`Post`** (with live **`Cancel`** buttons and a unified compact progress bar next to them), plus the single **`Tools`** button.
+   - **Top toolbar (right cluster):** Icon-only **Command Palette** search button (`Ctrl+K`) and **Settings** gear button (`Ctrl+,`), opening the unified **Settings** window (`General & Appearance` for Theme & Display Units, `Viewport & Navigation` for Mouse Preset & Orbit Mode, `Simulation` for Engine/Detail Level/Compute Backend/Mesh Skinning, and `Machine Defaults`).
 2. **CAM Browser (Left Pane):**
-   - Header bar: Project name, **`+ Setup`**, and **`Tools`**.
-   - **`Models`** section: Loaded STEP or mesh summary (`29 faces · 40 loops · 72 edges`) with **`Import STEP…`**, **`Import Mesh…`**, **`Reload (Ctrl+R)`** & **`Replace…`** (visible when a STEP solid is loaded), and **`Sample Gallery…`**.
+   - Header bar: Project name and **`+ Setup`**.
+   - **`Models`** section: Loaded STEP or mesh summary (`29 faces · 40 loops · 72 edges`) with **`Orient / Scale`** (when a 3D model is loaded), **`Import STEP…`**, **`Import Mesh…`**, **`Reload (Ctrl+R)`** & **`Replace…`** (visible when a STEP solid is loaded), and **`Sample Gallery…`**.
    - **`2D Sketches (N)`** section: Parametric or imported 2D vector layers (collapsed when empty; expand to access **`+ New Sketch`**, **`+ Sketch on Face`** when a 3D model is loaded, and **`+ Import DXF/SVG…`**).
-   - **`Project Tools (N)`** section: Tools embedded in this `.chip.toml` project (collapsed by default).
-   - **`Setup 1 — Top Op [G54]`:** **`Stock & WCS`** node, quick-action buttons (**`Gen`**, **`Top`**), operation creation bar (**`+ Adap`**, **`+ Cont`**, **`+ VCarve`**, **`+ Op…`**), and ordered machining operations (`1. Center Cavity Pocket`, `2. 4x Ø6mm Mounting Holes`), each displaying a status badge, strategy icon, tool badge (`T1`, `T6`), and estimated cycle time.
+   - **`Project Tools (N)`** section: Tools embedded in this `.chip.toml` project (collapsed by default; expand to use **`+ Add Tool…`** with live filtering, inspect per-tool usage badges like `1 op` / `Unused`, delete unused tools inline, or click **`Remove Unused (N)`**).
+   - **`Setup 1 — Top Op [G54]`:** Displays an **`Active`** badge pill in the Setup card header (with multiple Setups, click a Setup title or **`Activate`** to make it active so top-toolbar operations add to it), **`Stock & WCS`** node, quick-action buttons (**`Gen`**, **`Top`**), and ordered machining operations (`1. Center Cavity Pocket`, `2. 4x Ø6mm Mounting Holes`), each displaying a status badge, strategy icon, tool badge (`T1`, `T6`), and estimated cycle time.
 3. **3D CAD Viewport (Center Pane):**
    - **ViewCube (top-right corner):** Click **`Top`**, **`Front`**, **`Right`**, **`Iso`**, **`Left`**, or **`Bot`** (or the `X`/`Y`/`Z` axis tips) to snap the camera.
-   - **Floating View HUD (bottom-center):** Toggle **`Ortho`** / **`Persp`** (`P`), **`Fit`** (`F`), **`Top`**, layer visibility pills (**`Paths`**, **`Rapids`**, **`Stock`**, **`Ghost`**), mouse preset dropdown (**`Fusion 360`**, **`SolidWorks`**, **`FreeCAD/Blender`**), and orbit mode toggle (**`+Z Up`** for Turntable vs. **`Free`** for Free Trackball).
+   - **Floating View HUD (bottom-center):** Toggle **`Ortho`** / **`Persp`** (`P`), **`Fit`** (`F`), **`Top`**, and layer visibility pills (**`Paths`**, **`Rapids`**, **`Stock`**, **`Fixtures`**, **`Ghost`**). Configure your **`Mouse Preset`** (`Fusion 360`, `SolidWorks`, `FreeCAD / Blender`) and **`Orbit Mode`** (`Turntable (+Z Up)` vs. `Free Trackball`) under **`Edit → Settings…` → `Viewport & Navigation`** (`Ctrl+,`).
 4. **Inspector (Right Pane):** Context-sensitive two-column property cards for whichever Setup, Operation, 2D Sketch, or CAD entity is focused.
 5. **Bottom Docked Pane:** Tabbed workspace area switching between **`Simulation Timeline`**, **`G-Code Preview`**, and **`Diagnostics & Log`**.
 
@@ -76,6 +76,7 @@ Once **Prismatic Multi-Feature Bracket** (`90 × 70 × 20 mm`) is loaded and gen
 | Shortcut | Action |
 |---|---|
 | `Ctrl+K` | Open fuzzy **Command Palette** (search any action, view, or sample) |
+| `Ctrl+,` | Open unified **Settings & Preferences** (Theme, Units, Navigation, Simulation, Machine Defaults) |
 | `F1` / `?` | Open **Keyboard Shortcuts & Mouse Reference** cheat-sheet |
 | `Ctrl+G` | Generate all `Dirty` toolpaths on background worker threads |
 | `Space` | Play / Pause 3D Simulation timeline playback |
@@ -83,7 +84,7 @@ Once **Prismatic Multi-Feature Bracket** (`90 × 70 × 20 mm`) is loaded and gen
 | `Ctrl+Z` / `Ctrl+Y` | Instant Undo / Redo (`100` steps) |
 | `Ctrl+Up` / `Ctrl+Down` | Reorder focused operation inside its Setup |
 | `Ctrl+D` / `Del` | Duplicate or delete focused operation / sketch entity |
-| `Esc` | Exit active 3D pick or sketch drawing mode / cancel background jobs |
+| `Esc` | Exit active 3D pick or sketch drawing mode / cancel in-flight generation or simulation |
 
 ---
 
@@ -93,7 +94,7 @@ In the left **CAM Browser**, click **`Stock & WCS`** under `Setup 1 — Top Op [
 
 ![Setup WCS Origin and 27-Point Stock Overlay](../images/tutorials/00-getting-started/04-setup-wcs-stock.png)
 
-The Setup Inspector has four tabs along the top of the right **Inspector** pane:
+The Setup Inspector has five tabs along the top of the right **Inspector** pane:
 
 - **`WCS & Post`:**
   - **`Target CNC Machine`** card: Choose the target **`Machine`** profile, click **`Apply Machine Defaults`**, or open **`Manage Machines…`**.
@@ -101,6 +102,7 @@ The Setup Inspector has four tabs along the top of the right **Inspector** pane:
   - **`WCS Origin (X0 Y0 Z0)`** card: Choose **`Origin Reference`** (**`Stock 27-Pt`**, **`Model 27-Pt`**, or **`CAD Feature`**). In 27-point mode, check **`Interactive 27-pt overlay`** (`3D Viewport Dots`) to display clickable anchor dots on the stock or model, or pick directly from **`Z Level:`** (**`Top`**, **`Mid-Z`**, **`Bottom`**) and the 3×3 XY grid (here **`Top Front-Left`**, matching the RGB XYZ triad in the viewport).
   - **`Post-Processor & Output`** card: Select the Setup's default **`Post Profile`**.
 - **`Stock`:** Under **`Stock Geometry & Dimensions`**, choose **`Stock Mode`** (**`Relative Box Stock`**, **`Fixed-Size Box Stock`**, **`Relative Cylindrical Stock`**, or **`Fixed Cylindrical Stock`**), then tune margins under **`Stock Offsets`**. The translucent gold wireframe in the **3D CAD Viewport** updates live.
+- **`Fixtures`:** Add vises, toe clamps, spoilboards, keep-out zones, or imported 3D fixture meshes and enable automatic rapid-lift avoidance (covered in Tutorial 19).
 - **`4th Axis`:** Configure **`Rotary Mode`** (**`Disabled (3-Axis)`**, **`2-Linear + Rotary (Z+X / Z+Y)`**, **`Indexed 3+1 Positioning`**, or **`Simultaneous 4-Axis (X+Y+Z+R)`**), rotary axis, chuck keep-out dimensions, and clearance radius (covered in Tutorials 10–12).
 - **`Heights`:** Under **`Safe Z Clearance & Retract`**, define Setup-level **`Clearance Datum`** / **`Clearance Offset`** and **`Retract Datum`** / **`Retract Offset`** planes. ChipCutter enforces the physical safety ordering:
   ```text
@@ -112,9 +114,11 @@ The Setup Inspector has four tabs along the top of the right **Inspector** pane:
 
 ## 5. Exploring the Tool Library & Parametric Expressions
 
-Click **`Tools`** in the **top toolbar** (or **`Tools → Tool Library Manager…`** in the **top menu bar**, or **`Tools`** at the top-right of the left **CAM Browser**) to open the **ChipCutter Tool Library & Cutting Presets** window:
+Click **`Tools`** in the **top toolbar** (or click **`Edit…`** next to **`Active Cutter`** on any operation's **`Tool`** tab) to open the **ChipCutter Tool Library & Cutting Presets** window:
 
 ![ChipCutter Tool Library and Cutting Presets Modal](../images/tutorials/00-getting-started/05-tool-library.png)
+
+Inside any operation's **`Tool`** tab, the **`Active Cutter`** dropdown automatically groups compatible cutters under **`Project Tools`** and **`Machine Library (auto-embeds)`** (with an inline **`Search tools…`** filter when more than 6 compatible cutters are available). You can also manage embedded project cutters directly from the **`Project Tools`** card in the left **CAM Browser** (**`+ Add Tool…`**, usage badges, and **`Remove Unused (N)`**).
 
 ChipCutter ships with an 8-cutter **Starter Shop Library** stored in your user config directory (`default.tools.toml`), and you can also import existing **Fusion 360 `.json` / `.tools`** libraries:
 
@@ -146,20 +150,22 @@ Any dimensional input in Setup or Operation Inspectors accepts unit conversions,
 
 ChipCutter uses **explicit regeneration**: editing a parameter, tool, setup, or selection updates the document immediately (with `< 1 ms` Undo/Redo) and marks affected operations **`Dirty`** (amber refresh badge) without freezing the UI.
 
-1. Press **`Ctrl+G`** (or click **`Generate`** in the **top toolbar**) to compute all dirty operations in parallel on background `rayon` workers. Clean operations turn emerald (**✓**) in the left **CAM Browser** and display their estimated cycle times.
-2. Click **`Simulate`** in the **top toolbar** (which automatically focuses the bottom **`Simulation Timeline`** tab and runs the 2.5D Z-dexel heightmap material-removal simulation and 5-rule physical crash/gouge verifier; you can also click **`Run Simulation`** / **`Refresh Simulation`** inside **`Simulation Timeline`**):
+1. Press **`Ctrl+G`** (or click **`Generate`** in the **top toolbar**) to compute all dirty operations in parallel on background `rayon` workers (progress appears in the compact top-toolbar progress bar; press **`Esc`** or click **`Cancel`** to abort). Clean operations turn emerald (**✓**) in the left **CAM Browser**, display their estimated cycle times, and log both wall-clock execution time and estimated CNC cycle time in **`Diagnostics & Log`** (e.g., `Generated 'Center Cavity Pocket' in 142ms (… passes, est. cycle …s, …)`).
+2. Click **`Simulate`** in the **top toolbar** (or **`Simulate → Run / Refresh Simulation`** in the **top menu bar**), which focuses the bottom **`Simulation Timeline`** tab, tracks progress in the top-toolbar progress bar (`Esc` to cancel), and runs volumetric stock-removal simulation and 6-rule physical crash/gouge/fixture verification (logging wall-clock runtime alongside simulated cycle time in **`Diagnostics & Log`**):
 
 ![3D Machined Stock Simulation and Cutter Playback](../images/tutorials/00-getting-started/06-simulation-stock.png)
 
 Inside the bottom **`Simulation Timeline`** tab (transport controls appear once simulation finishes):
-- Toggle **`3D Stock`** to inspect the live machined heightmap mesh, **`Color by Op`** to distinguish each tool/strategy, **`3D Cutter`** to display the revolved flutes/shank/holder assembly, and **`Progressive Trail`** to draw toolpaths up to the active scrub position.
-- Press **`Space`** or drag the timeline scrubber (`00:01:43 / 00:02:02`) to step through cuts using the transport buttons (**Skip-Start** icon, **`Seg`** step backward, **`Play`** / **`Pause`**, **`Seg`** step forward, **`Next Op`**, **`Next Tool`**, and **`End`**).
-- Confirm the green **`Verified Crash-Free`** badge before posting. The 5-rule verifier checks for:
+- Click the compact status chip on the far left of the **`Simulation Timeline`** bar (e.g., `Heightmap · Standard · GPU (…)`) — or open **`Edit → Settings…` → `Simulation`** (`Ctrl+,`) — to configure **`Simulation Engine`** (`Heightmap (Fast)` vs. `Tri-Dexel (Volumetric 3D)`), **`Detail Level`** (`Standard`, `Fine`, `Ultra`), **`Compute Backend`** (`Auto`, `GPU`, `CPU`), and **`Smooth Skinned Surfaces (Mesh Skinning)`**.
+- Toggle **`3D Stock`** to inspect the live machined stock solid, **`Color by Op`** to distinguish each tool/strategy, **`Error Heatmap`** for stock-vs-target deviation coloring, **`3D Cutter`** to display the revolved flutes/shank/holder assembly, and **`Progressive Trail`** to draw toolpaths up to the active scrub position.
+- Press **`Space`** or drag the timeline scrubber (`00:01:43 / 00:02:02`) to step through cuts using the transport buttons (**Skip-Start**, **Step Backward** (`Left Arrow`), **`Play`** / **`Pause`**, **Step Forward** (`Right Arrow`), **`Next Op`**, **`Next Tool`**, and **`End`**).
+- Confirm the green **`Verified Crash-Free`** badge before posting. The 6-rule verifier checks for:
   1. `G0` rapid moves into uncut stock,
   2. Target B-Rep part gouges (`> 0.02 mm`),
   3. Non-cutting shank or flute-length rubs,
-  4. Tool-holder collisions, and
-  5. Unsafe vertical plunges with non-center-cutting tools.
+  4. Tool-holder collisions,
+  5. Unsafe vertical plunges with non-center-cutting tools, and
+  6. Workholding fixture / chuck collisions.
 
 ---
 

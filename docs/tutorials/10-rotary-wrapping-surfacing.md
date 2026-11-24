@@ -57,12 +57,12 @@ Inspect the **3D CAD Viewport** gizmo before adding any operations: the golden c
 1. Author or import your 2D artwork on **`Setup XY`** sketches (**`+ Sketch`** or **`DXF/SVG`** in the **top toolbar**):
    - **`Wrapped Logo 'CHIP'`:** Bold TrueType `"CHIP"` text (`Cap Height = 14 mm`, `Orientation` rotated **`90°`**) so the lettering reads circumferentially around the barrel (`Y` maps to circumference `s = R · θ`, where a `Ø40 mm` cylinder has circumference `π × 40 ≈ 125.66 mm`).
    - **`Circumferential Flute`:** A `12 × 34 mm` rounded rectangle (`Fillet R = 4 mm`) centered at `Position X = -14 mm, Position Y = 0 mm`.
-2. Add **`Op 1: Wrapped V-Carve 'CHIP'`** via **`+ V-Carve`** in the **top toolbar** (assigning **`T5 — 6mm 90° Carbide Chamfer / Spot Mill`** in the **`Tool`** tab) and **`Op 2: Wrapped Flute Pocket`** via **`+ Op… → 2D Pocket`** in the left **CAM Browser** (assigning **`T3 — 1/8 in 2FL Carbide Flat`** in **`Tool`**). You can wrap **`2D Contour / Profile`** operations the exact same way.
+2. With `Setup 1` **`Active`** in the left **CAM Browser**, add **`Op 1: Wrapped V-Carve 'CHIP'`** via **`+ V-Carve`** in the **top toolbar** (assigning **`T5 — 6mm 90° Carbide Chamfer / Spot Mill`** in the **`Tool`** tab) and **`Op 2: Wrapped Flute Pocket`** via **`+ Op… → 2D Pocket`** in the **top toolbar** (or **`Operations → + 2D Pocket`** in the **top menu bar**, assigning **`T3 — 1/8 in 2FL Carbide Flat`** in **`Tool`**). You can wrap **`2D Contour / Profile`** operations the exact same way.
 3. On each operation's **`Heights`** tab in the right **Inspector** (`Z-Height Planes & Offsets` card), set **`Top Ref`** = **`Stock Top`** with **`Top Offset`** = `0 mm`, and **`Bottom Ref`** = **`Stock Top`** with **`Bottom Offset`** = `-2.5 mm` (`-1.8 mm` for the flute pocket).
 4. On the **`Passes`** tab in the right **Inspector**, locate the **`4th-Axis Indexing / Wrapping`** card (visible because Setup 1's **`4th Axis`** is enabled):
    - **First** click **`Wrap 2D`** on the **`Rotary Mode`** row so **`Wrap Radius`**, **`Axial Offset`**, and **`Angle Offset`** appear below it.
    - Set **`Wrap Radius`** = **`20 mm`** (or expression **`rotary_radius`** so changing stock diameter updates the wrap radius automatically).
-   - Leave **`Axial Offset`** = `0 mm` and **`Angle Offset`** = `0°` (adjust **`Angle Offset`** to clock artwork cleanly around the circumference).
+   - Leave **`Axial Offset`** = `0 mm` and **`Angle Offset`** = `0°` (adjust **`Angle Offset`** to clock artwork cleanly around the circumference). ChipCutter enforces mandatory **rotary chuck keep-out safety** on **`Wrap 2D`** (`WrapCylinder`) operations as well, guarding wrapped paths against the chuck envelope configured in `Setup → 4th Axis`.
 5. Press **`Ctrl+G`** (or click **`Generate`** in the **top toolbar**):
 
 ![Wrapped V-Carve 'CHIP' Passes Tab — Wrap 2D Mode and Wrapped 3D Toolpath](../images/tutorials/10-rotary-wrapping-surfacing/02-wrap2d-vcarve-inspector.png)
@@ -85,17 +85,23 @@ Watch the polar stock mesh rotate in lockstep beneath the live 3D cutter in the 
 Now open the **Tutorial 10 Axial Parallel & Spiral** project (`/tmp/10-rotary-axial.chip.toml` on `09-rotary-shaft.stl`) to compare both **`4th-Axis Rotary Surfacing`** patterns on a 3D shaft mesh (`Ø40 × 80 mm` with a turned central collar groove and 3-lobe cam):
 
 1. **`Op 1 — Rotary Continuous Spiral (360°)`:**
-   - Uses **`T4 — 6mm 2FL Carbide Ball Endmill`**. In the right **Inspector** **`Passes`** tab: under **`Depth Passes & Stock to Leave`**, keep **`Multiple Depths`** (`Enable Z Stepdowns`) checked so **`Maximum Stepdown`** (`3.0 mm`) is visible; under **`4th-Axis Rotary Surfacing (Z+X / Z+Y)`**, set **`Pattern`** = **`Continuous Helical Spiral`**, leave **`Stepover Mode`** (`Use Target Cusp Height`) unchecked so **`Stepover`** (`1.6 mm`) is visible, keep **`Angle Window (°)`** = `0°` to `360°`, and set **`Start Margin (-U)`** = `34 mm` and **`End Margin (+U)`** = `8 mm` to stay clear of the chuck and the front wrenching flats.
+   - Uses **`T4 — 6mm 2FL Carbide Ball Endmill`**.
+   - In the right **Inspector** **`Geometry`** tab, open **`4th-Axis Rotary Cutting Area (-U / +U)`**:
+     - Choose **`Axial Source`** (**`Stock Bounds`**, **`Model Bounds`**, **`Selected Geometry (-U..+U)`**, or **`Explicit Range`** revealing **`Start U (-U)`** / **`End U (+U)`**) and **`Axial Containment`** (**`Tool Inside`**, **`Tool Center`**, or **`Tool Outside`**).
+     - Set signed **`Start Margin (-U)`** = `34 mm` and **`End Margin (+U)`** = `8 mm` to stay clear of the chuck and the front wrenching flats. *(Positive margins trim inward; negative margins extend outward for shoulder overrun/relief while strictly clamped by the mandatory rotary chuck keep-out guard!)*
+     - Keep **`Start Angle (°)`** = `0°` and **`End Angle (°)`** = `360°` (or click the **`Full 360°`** chip on **`Angular Presets`**). Watch the live 3D cylindrical sector + chuck-guard overlay in the viewport and the live `Effective U`, `Chuck Guard`, `Sector`, and `R` readout in the card!
+   - In the **`Heights`** tab, notice the contextual banner and live radial readouts: **`Top Height`** maps directly to the outer radial ceiling (**`R_max`**) and **`Bottom Height`** maps to the core floor radius (**`R_min`**), shown beside the offset inputs and inside **`Resolved WCS Z Hierarchy`**.
+   - In the **`Passes`** tab: under **`Depth Passes & Stock to Leave`**, keep **`Multiple Depths`** (`Enable Z Stepdowns`) checked so **`Maximum Stepdown`** (`3.0 mm`) is visible; under **`4th-Axis Rotary Surfacing (Z+X / Z+Y)`**, set **`Pattern`** = **`Continuous Helical Spiral`** and leave **`Stepover Mode`** (`Use Target Cusp Height`) unchecked so **`Stepover`** (`1.6 mm`) is visible.
    - Because `Continuous Helical Spiral` advances axially in one uninterrupted helix per radial depth layer, there are **zero inter-layer unwinding retracts**.
 2. **`Op 2 — Rotary Axial Parallel (-60°..+60°)`:**
-   - Add a second **`4th-Axis Rotary Surfacing`** operation via **`+ Op… → 4th-Axis Rotary Surfacing`** in the left **CAM Browser** (or **`Operations → + 4th-Axis Rotary Surfacing`** in the **top menu bar**), assign **`T4 — 6mm 2FL Carbide Ball Endmill`** in the **`Tool`** tab, and on the **`Passes`** tab uncheck **`Multiple Depths`** (`Enable Z Stepdowns`) under **`Depth Passes & Stock to Leave`** for a finishing pass.
-   - Under **`4th-Axis Rotary Surfacing (Z+X / Z+Y)`**, switch **`Pattern`** to **`Axial Parallel (Index & Sweep)`** with **`Cut Direction`** = **`Both Ways (Zig-Zag)`** and **`Stepover`** = `1.2 mm` (with **`Use Target Cusp Height`** unchecked).
-   - Narrow **`Angle Window (°)`** to **`-60°`** to **`60°`** to target a single `120°` cam-lobe sector lengthwise without re-machining the back of the shaft.
+   - Add a second **`4th-Axis Rotary Surfacing`** operation via **`+ Op… → 4th-Axis Rotary Surfacing`** in the **top toolbar** (or **`Operations → + 4th-Axis Rotary Surfacing`** in the **top menu bar**), and assign **`T4 — 6mm 2FL Carbide Ball Endmill`** in the **`Tool`** tab.
+   - In the **`Geometry`** tab (`4th-Axis Rotary Cutting Area (-U / +U)`), narrow **`Start Angle (°)`** to **`-60°`** and **`End Angle (°)`** to **`60°`** (or use the one-click **`Angular Presets`** chips **`Full 360°`**, **`0–180°`**, **`±90°`**) to target a single `120°` cam-lobe sector lengthwise without re-machining the back of the shaft—verifying the live 3D cylindrical sector preview in the viewport.
+   - On the **`Passes`** tab, uncheck **`Multiple Depths`** (`Enable Z Stepdowns`) under **`Depth Passes & Stock to Leave`** for a finishing pass, and under **`4th-Axis Rotary Surfacing (Z+X / Z+Y)`**, switch **`Pattern`** to **`Axial Parallel (Index & Sweep)`** with **`Cut Direction`** = **`Both Ways (Zig-Zag)`** and **`Stepover`** = `1.2 mm` (with **`Use Target Cusp Height`** unchecked).
    - Press **`Ctrl+G`** and select `Op 2` in the left **CAM Browser**:
 
 ![4th-Axis Rotary Surfacing Inspector — Axial Parallel Pattern with -60° to +60° Partial Angular Window](../images/tutorials/10-rotary-wrapping-surfacing/04-rotary2linear-axial-parallel.png)
 
-In **`Axial Parallel (Index & Sweep)`** mode, the chuck indexes cleanly in small circumferential steps while the spindle sweeps back and forth along `X`—ideal for wood grain alignment, long flutes, or localized angular patches (`Angle Window (°)`).
+In **`Axial Parallel (Index & Sweep)`** mode, the chuck indexes cleanly in small circumferential steps while the spindle sweeps back and forth along `X`—ideal for wood grain alignment, long flutes, or localized angular patches configured in **`Geometry → 4th-Axis Rotary Cutting Area (-U / +U)`**.
 
 ---
 
@@ -106,19 +112,21 @@ In **`Axial Parallel (Index & Sweep)`** mode, the chuck indexes cleanly in small
 | `Right Inspector → Setup → 4th Axis → 4th-Axis Rotary Kinematics` | **`Rotary Axis`** | **`X Axis (A-Axis)`** or **`Y Axis (B-Axis)`** | Shown after enabling **`Rotary Mode`**; `X/A` locks `Y=0`, `Y/B` locks `X=0` |
 | `Right Inspector → Setup → 4th Axis → 4th-Axis Rotary Kinematics` | **`Direction`** | **`Right-Hand Rule (CCW)`** | Switch to **`Inverted (CW)`** if your hardware rotates opposite ISO right-hand rule |
 | `Right Inspector → Setup → 4th Axis → Centerline, Clearance & Chuck` | **`Clearance Margin`** | `10 – 12 mm` above stock OD | All `G0` rotary positioning moves occur at or above this clearance cylinder |
-| `Right Inspector → Setup → 4th Axis → Centerline, Clearance & Chuck` | **`Chuck Diameter`** / **`Chuck Length`** | Match physical 3-jaw/4-jaw chuck | Enforced as a hard collision keep-out zone in `CylindricalStock` simulation |
+| `Right Inspector → Setup → 4th Axis → Centerline, Clearance & Chuck` | **`Chuck Diameter`** / **`Chuck Length`** | Match physical 3-jaw/4-jaw chuck | Enforced as a mandatory hard keep-out guard across `Rotary2Linear`, `Wrap 2D`, and `Indexed 3+1` ops and `CylindricalStock` simulation |
+| `Right Inspector → Geometry → 4th-Axis Rotary Cutting Area (-U / +U)` | **`Axial Source`** & **`Axial Containment`** | `Model Bounds` / `Tool Center` | Derives nominal `-U..+U` span (`Stock Bounds`, `Model Bounds`, `Selected Geometry (-U..+U)`, or `Explicit Range`) and cutter containment (`Tool Inside`, `Tool Center`, `Tool Outside`) with live 3D cylindrical sector + chuck-guard preview |
+| `Right Inspector → Geometry → 4th-Axis Rotary Cutting Area (-U / +U)` | **`Start Margin (-U)`** / **`End Margin (+U)`** | Signed (`>= 0` trims inward, `< 0` shoulder overrun) | Trims away from chuck/tailstock or extends past shoulders while strictly clamped by the mandatory rotary chuck keep-out guard |
+| `Right Inspector → Geometry → 4th-Axis Rotary Cutting Area (-U / +U)` | **`Start Angle (°)`** / **`End Angle (°)`** & **`Angular Presets`** | `0°` to `360°` (chips: `Full 360°`, `0–180°`, `±90°`) | Restricts surfacing to a specific angular sector around the shaft |
+| `Right Inspector → Heights → Z-Height Planes & Offsets` | **`Top Height` (`R_max`)** / **`Bottom Height` (`R_min`)** | Live radial ceiling & core floor readouts | Maps `Top Height` to outer radius `R_max` and `Bottom Height` to minimum core radius `R_min` measured from the rotary centerline |
 | `Right Inspector → Passes → 4th-Axis Indexing / Wrapping` | **`Wrap Radius`** | `rotary_radius` (`20 mm`) | Shown after clicking **`Wrap 2D`**; planar `Z = 0` maps onto this radius |
 | `Right Inspector → Passes → 4th-Axis Indexing / Wrapping` | **`Angle Offset`** | `0°` (adjustable `-360°..360°`) | Shown after clicking **`Wrap 2D`**; clocks wrapped 2D sketches around the cylinder |
 | `Right Inspector → Passes → 4th-Axis Rotary Surfacing (Z+X / Z+Y)` | **`Pattern`** | **`Continuous Helical Spiral`** / **`Axial Parallel (Index & Sweep)`** | Spiral gives uninterrupted 360° cuts; Axial Parallel sweeps lengthwise lanes |
-| `Right Inspector → Passes → 4th-Axis Rotary Surfacing (Z+X / Z+Y)` | **`Angle Window (°)`** | `0°` to `360°` (or partial e.g. `-60°` to `60°`) | Restricts surfacing to a specific angular sector around the shaft |
-| `Right Inspector → Passes → 4th-Axis Rotary Surfacing (Z+X / Z+Y)` | **`Start Margin (-U)`** / **`End Margin (+U)`** | `>= chuck clearance` | Keeps the cutter safely outside the chuck jaws (`-U`) and tailstock (`+U`) |
 
 ---
 
 ## 5. Generate (`Ctrl+G`) & Cylindrical 3D Simulation
 
-1. Press **`Ctrl+G`** (or click **`Generate`** in the **top toolbar**) to regenerate all operations in parallel via `rayon`.
-2. Click **`Simulate`** in the **top toolbar** (selecting **`Standard (512)`** in the bottom **`Simulation Timeline`** resolution dropdown) and confirm **`Verified Crash-Free`** on both the wrapped cylinder project and the `Continuous Helical Spiral` + `Axial Parallel` shaft project:
+1. Press **`Ctrl+G`** (or click **`Generate`** in the **top toolbar**) to regenerate all operations in parallel via `rayon` (**`Diagnostics & Log`** logs wall-clock generation time alongside estimated CNC cycle time).
+2. Click **`Simulate`** in the **top toolbar** (to adjust **`Detail Level`** (`Standard`, `Fine`, `Ultra`) or **`Smooth Skinned Surfaces (Mesh Skinning)`**, click the compact simulation status chip on the **`Simulation Timeline`** top bar or open **`Edit → Settings…` → `Simulation`** (`Ctrl+,`)) and confirm **`Verified Crash-Free`** on both the wrapped cylinder project and the `Continuous Helical Spiral` + `Axial Parallel` shaft project:
    - **`Rapid-into-Stock Crash`:** `0` crashes (`G0` moves always retract to the clearance cylinder before indexing).
    - **`Target Model Gouge`:** `0` gouges across the collar groove and 3-lobe cam (`<= 0.02 mm`).
    - **`Holder / Collet Collision`:** `0` chuck or tool-holder collisions.

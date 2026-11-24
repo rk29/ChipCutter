@@ -31,11 +31,13 @@ In the left **CAM Browser**, click **`Stock & WCS`** under `Setup 1`, open the *
 
 ### Step 1 — Add a 2D Adaptive Roughing Operation (`Op 1 → Geometry`)
 
-1. Click **`+ Adaptive`** in the **top toolbar** (or **`Operations → + 2D Adaptive / Trochoidal Clearing`** in the **top menu bar**, or **`+ Adap`** under `Setup 1` in the left **CAM Browser**) to add the adaptive clearing operation.
+1. With `Setup 1` **`Active`** in the left **CAM Browser**, click **`+ Adaptive`** in the **top toolbar** (or **`Operations → + 2D Adaptive / Trochoidal Clearing`** in the **top menu bar**) to add the adaptive clearing operation.
 2. In the right **Inspector**, open the **`Tool`** tab and open **`Active Cutter`** under **`Cutter & Material Preset`**:
    - If you opened the pre-seeded `--tutorial 05-adaptive-rest` project (or `--sample adaptive-rest`), select **`T10 — 10mm 3FL Carbide Flat Endmill`** (`22 mm` flute length — plenty of clearance for a full `10 mm` axial cut).
    - If you started from an empty project using the default 8-tool starter library, select **`T1 — 6mm 3FL Carbide Flat Endmill`** (or clone a custom machine in **Tool Library Manager** via **`Tools`** in the **top toolbar** and click **`+ New Cutter`** to define a `Ø10 mm` flat endmill).
-3. Switch to the **`Geometry`** tab in the right **Inspector**, confirm **`Planar Faces`** is selected under **`Interactive 3D Pick Mode`**, and click the recessed pocket floor (`Z = -10.000 mm`) in the center **3D CAD Viewport**:
+3. Switch to the **`Geometry`** tab in the right **Inspector**:
+   - Under **`Cutting Area / Machining Boundary`**, keep **`Pocket Area Mode`** on **`Inside Selected Pockets`** for this enclosed cavity. *(When roughing around standing bosses from the outside of raw billet stock, switch to **`Clear Outside Selected Bosses to Stock`** to preview the Setup Stock XY envelope live in 3D and clear surrounding stock with open-air entry; for 2D sketch or closed-loop selections, you can also check **`Open Outer Boundary`** / **`Treat Outer Loop as Open Air`**.)*
+   - Confirm **`Planar Faces`** is selected under **`Interactive 3D Pick Mode`**, and click the recessed pocket floor (`Z = -10.000 mm`) in the center **3D CAD Viewport**:
 
 ![Deep Pocket Floor Selection on Minimal Adaptive Block](../images/tutorials/05-adaptive-rest-machining/01-adaptive-geometry.png)
 
@@ -63,7 +65,7 @@ Notice in the **3D CAD Viewport** that the `Ø10 mm` (`R5.0 mm`) rougher cannot 
 
 Instead of re-machining the entire pocket with a tiny tool, chain a second adaptive operation that subtracts `Op 1`'s swept material automatically:
 
-1. Click **`+ Adaptive`** in the **top toolbar** (or **`+ Adap`** in the left **CAM Browser**) to add the rest-machining operation, then in the right **Inspector** **`Tool`** tab select **`T3 — 1/8 in 2FL Carbide Flat`** (or `Ø3 mm` flat endmill) under **`Active Cutter`**.
+1. Click **`+ Adaptive`** in the **top toolbar** (or **`Operations → + 2D Adaptive / Trochoidal Clearing`** in the **top menu bar**) to add the rest-machining operation, then in the right **Inspector** **`Tool`** tab select **`T3 — 1/8 in 2FL Carbide Flat`** (or `Ø3 mm` flat endmill) under **`Active Cutter`**.
 2. In the right **Inspector** **`Geometry`** tab (`Planar Faces`), click the **exact same pocket floor** in the **3D CAD Viewport**.
 3. Switch to the **`Passes`** tab in the right **Inspector**:
    - Under **`Depth Passes & Stock to Leave`**, set **`Radial Stock`** = `0 mm` and **`Axial Stock`** = `0 mm`.
@@ -80,6 +82,7 @@ Notice how `Op 2`'s toolpath appears **only** in the four uncut corner wedges an
 
 | Parameter | Location | Purpose & Recommended Starting Values |
 |---|---|---|
+| **`Pocket Area Mode`** & **`Open Outer Boundary`** | `Right Inspector → Geometry → Cutting Area / Machining Boundary` | **`Inside Selected Pockets`** clears enclosed cavities (with optional **`Treat Outer Loop as Open Air`** for 2D sketches/closed loops); **`Clear Outside Selected Bosses to Stock`** leaves selected faces/contours standing as bosses and roughs surrounding stock out to Setup Stock XY bounds with live 3D stock-envelope preview. |
 | **`Optimal Load`** (`ae`) | `Right Inspector → Passes → 2D Adaptive Clearing` | Shown when **`Clearing Mode`** = **`Adaptive`**. Maximum radial engagement maintained by trochoidal arcs: **`0.15–0.25 × tool_d`** in aluminum, **`0.08–0.15 × tool_d`** in steel. |
 | **`Cut Direction`** | `Right Inspector → Passes → 2D Adaptive Clearing` | **`Climb (Down-Milling)`** (standard for metal), **`Conventional (Up-Milling)`**, or **`Both Ways (Alternating)`**. |
 | **`Micro-Lift Z`** | `Right Inspector → Passes → 2D Adaptive Clearing` | Small axial lift (`0.15–0.35 mm`) during stay-down linking arcs so the cutter clears chips without full Z retracts. |
@@ -91,7 +94,7 @@ Notice how `Op 2`'s toolpath appears **only** in the four uncut corner wedges an
 
 ## 5. Generate (`Ctrl+G`) & 3D Simulation Verification
 
-Press **`Ctrl+G`** (or click **`Generate`** in the **top toolbar**), click **`Simulate`** in the **top toolbar** (opening the bottom **`Simulation Timeline`** tab), confirm **`3D Stock`** and **`Color by Op`** are checked in the **`Simulation Timeline`** top bar, and scrub near completion (`98%`):
+Press **`Ctrl+G`** (or click **`Generate`** in the **top toolbar**; **`Diagnostics & Log`** logs wall-clock generation time alongside estimated CNC cycle time), click **`Simulate`** in the **top toolbar** (opening the bottom **`Simulation Timeline`** tab), confirm **`3D Stock`** and **`Color by Op`** are checked in the **`Simulation Timeline`** top bar, and scrub near completion (`98%`):
 
 ![3D Simulation Showing Adaptive Bulk Roughing and Rest Corner Cleanup](../images/tutorials/05-adaptive-rest-machining/04-adaptive-rest-simulation.png)
 

@@ -48,7 +48,7 @@ chip-gui --sample rotary-shaft
 
 ### Step 2 — Align an Operation to an Angled `45°` 3D STEP Face (`Align to Selected 3D Face`)
 
-1. Add a **`2D Pocket`** operation via **`+ Op… → 2D Pocket`** under `Setup 1` in the left **CAM Browser** (or **`Operations → + 2D Pocket`** in the **top menu bar**). In the right **Inspector** **`Tool`** tab (`Active Cutter`), select **`T1 — 6mm 3FL Carbide Flat Endmill`**.
+1. With `Setup 1` **`Active`** in the left **CAM Browser**, click **`+ Op… → 2D Pocket`** in the **top toolbar** (or **`Operations → + 2D Pocket`** in the **top menu bar**). In the right **Inspector** **`Tool`** tab (`Active Cutter`), select **`T1 — 6mm 3FL Carbide Flat Endmill`**.
 2. Open the **`Geometry`** tab in the right **Inspector**, confirm **`Planar Faces`** is selected under **`Interactive 3D Pick Mode`**, click the **`45°` beveled planar facet** on the upper-back corner of the STEP block in the center **3D CAD Viewport** to add it to **`Selected Entities`**, and then click **`Done`** on the top-center viewport guidance bar (or press **`Esc`**) to exit geometry-pick mode.
 3. To enable **`3D Face Align`** on the **`Passes`** tab (which reads the active viewport inspection face): click the **`45°` beveled planar facet** once in the **3D CAD Viewport** while in normal inspect mode (the right **Inspector** briefly switches to **`B-Rep Entity Inspector`** showing that face), then click your pocket operation again in the left **CAM Browser**.
 4. Switch to the **`Passes`** tab in the right **Inspector**:
@@ -59,7 +59,7 @@ chip-gui --sample rotary-shaft
 
 ![4th-Axis Indexing / Wrapping Card in Indexed 3+1 Mode — A-Axis Index 45°, Quick Index Buttons, and Align to Selected 3D Face](../images/tutorials/11-indexed-3plus1-milling/02-align-3d-face-inspector.png)
 
-Look at the **3D CAD Viewport**: ChipCutter constructs a rotated virtual Setup (`build_indexed_virtual_setup`), computes exact multi-depth `2D Pocket` passes parallel to the `45°` bevel, and prepends a safe clearance-radius rapid retract before rotating `A` to `45°`.
+Look at the **3D CAD Viewport**: ChipCutter constructs a rotated virtual Setup (`build_indexed_virtual_setup`), computes exact multi-depth `2D Pocket` passes parallel to the `45°` bevel, enforces mandatory **rotary chuck keep-out safety** against the chuck envelope configured in `Setup → 4th Axis`, and prepends a safe clearance-radius rapid retract before rotating `A` to `45°`.
 
 ### Step 3 — Machine All Five Faces (`0°`, `45°`, `90°`, `180°`, `270°`) in One Chucking
 
@@ -81,8 +81,8 @@ Every operation's toolpath wraps cleanly onto its target face around the prismat
 
 You can also mix **`Indexed 3+1`** operations with **`4th-Axis Rotary Surfacing`** inside a single Setup! Open `--sample rotary-shaft` (or generate via `--tutorial 11-indexed-shaft` on `09-rotary-shaft.stl`):
 
-1. **`Op 1`** runs **`Continuous Helical Spiral`** surfacing (`T4` `Ø6 mm` Ball Endmill) over the central collar groove and 3-lobe cam.
-2. **`Ops 2–5`** target a single **`Wrench Flat Window`** 2D sketch (`18 × 36 mm` rectangle over `X ∈ [-24.5, -6.5]`) with `T1` (`Ø6 mm` Flat Endmill), cutting `6.0 mm` deep from `Top Ref = Stock Top` (`Top Offset = 0.5 mm`) in `2.0 mm` stepdowns at **`0°`**, **`90°`**, **`180°`**, and **`270°`** using the **`Quick Index`** buttons inside **`Passes → 4th-Axis Indexing / Wrapping`**.
+1. **`Op 1`** runs **`Continuous Helical Spiral`** surfacing (`T4` `Ø6 mm` Ball Endmill) over the central collar groove and 3-lobe cam—with its axial `-U / +U` span, **`Axial Source`**, **`Axial Containment`**, signed **`Start Margin (-U)`** / **`End Margin (+U)`**, and angular sector (`Start Angle (°)` / `End Angle (°)` / `Angular Presets`) configured in **`Geometry → 4th-Axis Rotary Cutting Area (-U / +U)`** (with live 3D cylindrical sector + chuck-guard preview) and radial `R_max` / `R_min` bounds shown live in **`Heights`**.
+2. **`Ops 2–5`** target a single **`Wrench Flat Window`** 2D sketch (`18 × 36 mm` rectangle over `X ∈ [-24.5, -6.5]`) with `T1` (`Ø6 mm` Flat Endmill), cutting `6.0 mm` deep from `Top Ref = Stock Top` (`Top Offset = 0.5 mm`) in `2.0 mm` stepdowns at **`0°`**, **`90°`**, **`180°`**, and **`270°`** using the **`Quick Index`** buttons inside **`Passes → 4th-Axis Indexing / Wrapping`** (automatically guarded by the Setup's mandatory rotary chuck keep-out).
 3. Click **`Simulate`** in the **top toolbar** (opening the bottom **`Simulation Timeline`** tab) and scrub to ~92%:
 
 ![CylindricalStock Simulation of Rotary Indexed Shaft — 4 Cardinal Wrench Flats + Continuous Spiral Collar & Cam](../images/tutorials/11-indexed-3plus1-milling/04-rotary-shaft-flats-sim.png)
@@ -96,7 +96,8 @@ Watch the live **`Simulation Timeline`** HUD report **`Op 4: Indexed 3+1 Flat (1
 | Location | Parameter | Recommended Value | Purpose & Safety Notes |
 |---|---|---|---|
 | `Right Inspector → Setup → Stock → Stock Geometry & Dimensions` | **`Fixed-Size Box Stock`** | Part `Y/Z` + `4 mm`, `X` + `20 mm` | Set **`Top Allowance (+Z)`** = `2 mm` under **`Stock Offsets`** to center in Z; extra `-X` stickout clears the chuck |
-| `Right Inspector → Setup → 4th Axis → Centerline, Clearance & Chuck` | **`Clearance Margin`** | `>= 10 mm` above stock corner radius | Shown after enabling **`Rotary Mode`**; for `36 × 36 mm` square stock, `R_corner = 25.46 mm` -> `R_clearance = 35.46 mm` |
+| `Right Inspector → Setup → 4th Axis → Centerline, Clearance & Chuck` | **`Clearance Margin`** & **`Chuck`** | `>= 10 mm` above stock corner radius | Shown after enabling **`Rotary Mode`**; for `36 × 36 mm` square stock, `R_corner = 25.46 mm` -> `R_clearance = 35.46 mm`; chuck geometry enforces mandatory keep-out safety across **`Indexed 3+1`** and rotary surfacing ops |
+| `Right Inspector → Geometry → 4th-Axis Rotary Cutting Area (-U / +U)` | **`Axial Source`**, **`Axial Containment`**, **`Start/End Margin`**, & **`Start/End Angle`** | Used on mixed **`4th-Axis Rotary Surfacing`** ops | Bounds rotary surfacing axially and angularly with live 3D cylindrical sector + chuck-guard preview; **`Heights`** shows live `R_max` / `R_min` radial bounds |
 | `Right Inspector → Passes → 4th-Axis Indexing / Wrapping` | **`Rotary Mode`** | **`Indexed 3+1`** | Card shown when Setup **`4th Axis`** is enabled; click **`Indexed 3+1`** to reveal angle & align controls |
 | `Right Inspector → Passes → 4th-Axis Indexing / Wrapping` | **`Quick Index`** | **`0°`** / **`90°`** / **`180°`** / **`270°`** | One-click cardinal face indexing for 4-sided blocks and wrench flats |
 | `Right Inspector → Passes → 4th-Axis Indexing / Wrapping` | **`3D Face Align`** (`Align to Selected 3D Face` / `Align to Face (<angle>°)`) | Any planar STEP face | Click a planar face in the **3D CAD Viewport** in inspect mode first to enable the button and compute exact `deg ∈ [0, 360)` |
@@ -105,7 +106,7 @@ Watch the live **`Simulation Timeline`** HUD report **`Op 4: Indexed 3+1 Flat (1
 
 ## 5. Generate (`Ctrl+G`) & Cylindrical 3D Simulation
 
-1. Press **`Ctrl+G`** (or click **`Generate`** in the **top toolbar**) and click **`Simulate`** in the **top toolbar** (opening the bottom **`Simulation Timeline`** tab) on either project.
+1. Press **`Ctrl+G`** (or click **`Generate`** in the **top toolbar**; **`Diagnostics & Log`** logs wall-clock generation time alongside estimated CNC cycle time) and click **`Simulate`** in the **top toolbar** (opening the bottom **`Simulation Timeline`** tab; configure Detail Level or **`Smooth Skinned Surfaces (Mesh Skinning)`** via the compact status chip or **`Edit → Settings…` → `Simulation`**, `Ctrl+,`) on either project.
 2. Confirm **`3D Stock`**, **`Color by Op`**, and **`3D Cutter`** are checked in **`Simulation Timeline`** and verify **`Verified Crash-Free`**:
    - On the square bar STEP job, `CylindricalStock` initializes the exact square bar cross-section (`90 × 36 × 36 mm`) and carves all five indexed faces cleanly into the finished chamfered prism while leaving unmachined chucking stubs on both ends.
    - Zero `Rapid-into-Stock Crash`, zero `Target Model Gouge`, and zero `Holder / Collet Collision` diagnostics are reported.

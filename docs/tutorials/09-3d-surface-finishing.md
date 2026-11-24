@@ -6,7 +6,7 @@
 
 In this tutorial you will machine a sculpted sinusoidal Wavefront `.obj` relief ([`09-relief-wave.obj`](assets/09-relief-wave.obj)) and pair it with the Sculpted Dome STL ([`08-sculpted-dome.stl`](assets/08-sculpted-dome.stl)) to master:
 
-- **3D Parallel / Raster Finishing (`Parallel3D`):** Cusp-height-driven stepover (`0.04 mm`), angled `45°` scanlines, perpendicular **`Cross-Pass (+90°)`**, and **`Slope Range (0°–60°)`** shallow-surface filtering.
+- **3D Parallel / Raster Finishing (`Parallel3D`):** Cusp-height-driven stepover (`0.04 mm`), angled `45°` scanlines, perpendicular **`Cross-Pass (+90°)`**, and **`Min Slope (°)` / `Max Slope (°)`** (`0°–60°`) shallow-surface filtering.
 - **3D Constant-Scallop Finishing (`Scallop3D`):** Geodesic iso-contours maintaining uniform 3D scallop height across varying slopes with **`Inside -> Out`** ordering, **`Min / Max Stepover`** clamps, and analytical **`3D Rest Machining`** (`Prev Tool` / `FromPreviousTool`).
 - **3D Pencil / Fillet Cleanup (`Pencil3D`):** Detecting bi-tangent concave valleys left behind by a larger ball endmill (`Reference Tool Ø = 6 mm`) and tracing clean crease + lateral **`Offset Passes`** with a smaller `T11` `Ø3 mm` ball cutter.
 - Verifying the finished sculpted surface in **3D Z-dexel simulation** (`✓ Verified Crash-Free`) and exporting verified **LinuxCNC / GRBL** G-code.
@@ -39,27 +39,27 @@ chip-gui docs/tutorials/assets/09-relief-wave.obj
 
 ![Imported Relief Wave OBJ Mesh with Watertightness Diagnostics and Relative Box Stock](../images/tutorials/09-3d-surface-finishing/01-relief-wave-import.png)
 
-3. Add **`Op 1`** via **`+ Op… → 3D Adaptive Roughing`** under `Setup 1` in the left **CAM Browser** (or **`Operations → + 3D Adaptive Roughing`** in the **top menu bar**):
+3. With `Setup 1` **`Active`** in the left **CAM Browser**, add **`Op 1`** via **`+ Op… → 3D Adaptive Roughing`** in the **top toolbar** (or **`Operations → + 3D Adaptive Roughing`** in the **top menu bar**):
    - **`Tool`** tab (`Active Cutter`): **`T1 — 6mm 3FL Carbide Flat Endmill`**.
    - **`Heights`** tab (`Z-Height Planes & Offsets`): **`Bottom Ref`** = **`Model Top`**, **`Bottom Offset`** = `-9.0 mm`.
-   - **`Passes`** tab: under **`Depth Passes & Stock to Leave`**, set **`Radial Stock`** = `0.4 mm` and **`Axial Stock`** = `0.25 mm`; under **`3D Adaptive Roughing`**, set **`Optimal Load (ae)`** = `1.5 mm`, **`Rough Stepdown`** = `4 mm`, and **`Fine Step-Up`** = `2 mm` to strip the bulk stock down to a thin roughing skin.
+   - **`Passes`** tab: under **`Stock to Leave`** (`Adaptive3D` hides unused `Multiple Depths`), set **`Radial Stock`** = `0.4 mm` and **`Axial Stock`** = `0.25 mm`; under **`3D Adaptive Roughing`**, set **`Optimal Load (ae)`** = `1.5 mm`, **`Rough Stepdown`** = `4 mm`, and **`Fine Step-Up`** = `2 mm` to strip the bulk stock down to a thin roughing skin.
 
-### Step 2 — Shallow Surface Finishing with `3D Parallel Finishing` (`Op 2 → Passes`)
+### Step 2 — Shallow Surface Finishing with `3D Parallel Finishing` (`Op 2 → Geometry / Passes`)
 
 **3D Parallel Finishing** drapes evenly spaced 2D scanlines directly onto the mesh using exact `f64` Drop-Cutter contact evaluation—ideal for gentle reliefs, smooth wave crests, and shallow slopes:
 
-1. Click **`+ Op… → 3D Parallel Finishing`** under `Setup 1` in the left **CAM Browser** (or **`Operations → + 3D Parallel Finishing`** in the **top menu bar**).
+1. Click **`+ Op… → 3D Parallel Finishing`** in the **top toolbar** (or **`Operations → + 3D Parallel Finishing`** in the **top menu bar**).
 2. In the right **Inspector** **`Tool`** tab, select **`T4 — 6mm 2FL Carbide Ball Endmill`** in **`Active Cutter`**.
-3. In the **`Heights`** tab (`Z-Height Planes & Offsets`), set **`Bottom Ref`** = **`Model Top`** and **`Bottom Offset`** = `-10.0 mm`.
-4. Switch to the **`Passes`** tab in the right **Inspector**:
-   - Under **`Depth Passes & Stock to Leave`**, set **`Radial Stock`** = `0 mm` and **`Axial Stock`** = `0 mm`.
+3. Open the **`Geometry`** tab in the right **Inspector**: under **`Cutting Area / Machining Boundary`**, keep **`Boundary Source`** = **`Model Silhouette`** (true projected XY silhouette of the relief mesh) and **`Tool Containment`** = **`Tool Center on Boundary`** (watch the live 3D nominal + dashed effective tool-center boundary preview in the viewport).
+4. In the **`Heights`** tab (`Z-Height Planes & Offsets`), set **`Bottom Ref`** = **`Model Top`** and **`Bottom Offset`** = `-10.0 mm`.
+5. Switch to the **`Passes`** tab in the right **Inspector**:
+   - Under **`Stock to Leave`** (`Parallel3D` hides unused `Multiple Depths`), set **`Radial Stock`** = `0 mm` and **`Axial Stock`** = `0 mm`.
    - Under **`3D Parallel / Raster Finishing`**:
      - Keep **`Cusp Stepover`** (`Use Cusp Height`) checked **first** so **`Target Cusp Height`** is displayed (unchecking it switches to explicit **`Stepover`**), and set **`Target Cusp Height`** = `0.04 mm`—ChipCutter analytically derives the exact raster stepover from the ball cutter's `R = 3.0 mm` spherical radius.
      - Set **`Pass Angle`** = `45°` so passes sweep diagonally across both X and Y wave gradients instead of riding straight along a single ridge.
      - Check **`Cross-Pass (+90°)`** (`Add +90° Pass`) to append a perpendicular `135°` finishing sweep that erases directional cusps.
-     - Keep **`Cut Direction`** = **`Both Ways (Zig-Zag)`** and set **`Slope Range (°)`** = `0°` to `60°` so raster passes cover the entire sculpted wave face while skipping the vertical `90°` outer skirt walls.
-   - Under **`3D Machining Boundary`**, keep **`Boundary Source`** = **`Model Silhouette`** and **`Tool Containment`** = **`Tool Center on Boundary`**.
-5. Press **`Ctrl+G`** (or click **`Generate`** in the **top toolbar**):
+     - Keep **`Cut Direction`** = **`Both Ways (Zig-Zag)`** and set **`Min Slope (°)`** = `0°` and **`Max Slope (°)`** = `60°` so raster passes cover the entire sculpted wave face while skipping the vertical `90°` outer skirt walls.
+6. Press **`Ctrl+G`** (or click **`Generate`** in the **top toolbar**):
 
 ![3D Parallel Finishing Inspector with 45-Degree Cross-Pass Raster Toolpath on Relief Wave](../images/tutorials/09-3d-surface-finishing/02-parallel3d-passes.png)
 
@@ -67,9 +67,9 @@ chip-gui docs/tutorials/assets/09-relief-wave.obj
 
 Whereas parallel scanlines project a fixed horizontal XY grid (which stretches apart on steeper slopes), **3D Constant-Scallop** advances geodesic 3D iso-contours across the true surface arc length—automatically tightening XY spacing wherever the surface slopes steeper. Combining it with **`3D Rest Machining`** restricts finishing strictly to areas where a larger reference cutter left excess residual stock:
 
-1. Click **`+ Op… → 3D Constant-Scallop`** under `Setup 1` in the left **CAM Browser** (or **`Operations → + 3D Constant-Scallop`** in the **top menu bar**). In the right **Inspector**, select **`T4 — 6mm 2FL Carbide Ball Endmill`** in **`Tool`**, and in **`Heights`** (`Z-Height Planes & Offsets`) set **`Bottom Ref`** = **`Model Top`** and **`Bottom Offset`** = `-10.0 mm`.
+1. Click **`+ Op… → 3D Constant-Scallop`** in the **top toolbar** (or **`Operations → + 3D Constant-Scallop`** in the **top menu bar**). In the right **Inspector**, select **`T4 — 6mm 2FL Carbide Ball Endmill`** in **`Tool`**, verify **`Boundary Source`** in **`Geometry → Cutting Area / Machining Boundary`** (`Model Silhouette` or **`Selected Regions`** with live 3D preview), and in **`Heights`** (`Z-Height Planes & Offsets`) set **`Bottom Ref`** = **`Model Top`** and **`Bottom Offset`** = `-10.0 mm`.
 2. Switch to the **`Passes`** tab in the right **Inspector**:
-   - Under **`Depth Passes & Stock to Leave`**, set **`Radial Stock`** = `0 mm` and **`Axial Stock`** = `0 mm`.
+   - Under **`Stock to Leave`** (`Scallop3D` hides unused `Multiple Depths`), set **`Radial Stock`** = `0 mm` and **`Axial Stock`** = `0 mm`.
    - Under **`3D Rest Machining`**, click **`Prev Tool`** on the **`Rest Mode`** row **first** so **`Prev. Tool Ø`**, **`Prev. Radial Stock`**, **`Blend Overlap`**, and **`Min Thickness`** appear below it, then set:
      - **`Prev. Tool Ø`** = `12 mm` (virtual larger reference ball cutter),
      - **`Prev. Radial Stock`** = `0.25 mm`,
@@ -91,18 +91,18 @@ Whenever a larger ball endmill (e.g., `Ø6 mm`, `R = 3 mm`) finishes a sculpted 
 
 To see `Pencil3D` in action on a sharp dome-to-pedestal fillet:
 
-1. Open the Sculpted Dome sample (`chip-gui --sample mesh-dome`, or **`Sample Projects Gallery…`** → **`Sculpted Dome (Watertight STL Mesh)`**, which already embeds `T11`), or add **`+ Op… → 3D Pencil Cleanup`** under `Setup 1` in the left **CAM Browser** (or **`Operations → + 3D Pencil Cleanup`** in the **top menu bar**) on your Tutorial 08 project.
+1. Open the Sculpted Dome sample (`chip-gui --sample mesh-dome`, or **`Sample Projects Gallery…`** → **`Sculpted Dome (Watertight STL Mesh)`**, which already embeds `T11`), or click **`+ Op… → 3D Pencil Cleanup`** in the **top toolbar** (or **`Operations → + 3D Pencil Cleanup`** in the **top menu bar**) on your Tutorial 08 project.
 2. In the right **Inspector** **`Tool`** tab (`Active Cutter`), select **`T11 — 3mm 2FL Carbide Ball Endmill`** (if building from scratch on the default 8-tool starter library, clone a custom machine in **Tool Library Manager** and add a `Ø3 mm` Ball Endmill via **`+ New Cutter`**).
-3. In the **`Heights`** tab (`Z-Height Planes & Offsets`), set **`Bottom Ref`** = **`Model Top`** and **`Bottom Offset`** = `-25.0 mm`.
-4. Switch to the **`Passes`** tab in the right **Inspector**:
-   - Under **`Depth Passes & Stock to Leave`**, set **`Radial Stock`** = `0 mm` and **`Axial Stock`** = `0 mm`.
+3. In the **`Geometry`** tab (`Cutting Area / Machining Boundary`), keep **`Boundary Source`** = **`Model Silhouette`** and **`Tool Containment`** = **`Tool Inside Boundary`**.
+4. In the **`Heights`** tab (`Z-Height Planes & Offsets`), set **`Bottom Ref`** = **`Model Top`** and **`Bottom Offset`** = `-25.0 mm`.
+5. Switch to the **`Passes`** tab in the right **Inspector**:
+   - Under **`Stock to Leave`** (`Pencil3D` hides unused `Multiple Depths`), set **`Radial Stock`** = `0 mm` and **`Axial Stock`** = `0 mm`.
    - Under **`3D Pencil / Fillet Cleanup`**:
      - Set **`Reference Tool Ø`** = `6 mm` (matches the `T4` `Ø6 mm` ball endmill used in the previous finishing op),
      - Set **`Valley Threshold`** = `0.15 mm` (minimum residual fillet thickness `z_drop(Ø6) - z_drop(Ø3)` required to trigger a valley pass),
      - Set **`Offset Passes`** = `1` **first** so **`Offset Stepover`** appears below it (adds one lateral cleanup shoulder pass on each side of the detected bi-tangent valley centerline),
      - Set **`Offset Stepover`** = `0.35 mm` and **`Smoothing Tol`** = `0.005 mm`.
-   - Under **`3D Machining Boundary`**, keep **`Boundary Source`** = **`Model Silhouette`** and **`Tool Containment`** = **`Tool Inside Boundary`**.
-5. Press **`Ctrl+G`**:
+6. Press **`Ctrl+G`**:
 
 ![3D Pencil Cleanup Highlighting Concave Dome-to-Pedestal Fillet Crease with T11 3mm Ball Endmill](../images/tutorials/09-3d-surface-finishing/04-pencil3d-fillet.png)
 
@@ -114,9 +114,10 @@ Look at the viewport: **`Pencil3D`** isolates the exact circular concave valley 
 
 | Parameter | Location | Purpose & Recommended Starting Values |
 |---|---|---|
+| **`Boundary Source`**, **`Tool Containment`**, & **`Boundary Offset`** | `Right Inspector → Geometry → Cutting Area / Machining Boundary` | Constrains XY finishing to **`Stock Bounds`**, true projected **`Model Silhouette`**, or **`Selected Regions`** with live 3D nominal + dashed effective tool-center boundary previews (`Tool Inside Boundary`, `Tool Center on Boundary`, or `Tool Outside Boundary` + signed **`Boundary Offset`**). |
 | **`Cusp Stepover`** (`Use Cusp Height`) & **`Target Cusp Height`** | `Right Inspector → Passes → 3D Parallel / Raster Finishing` | Checked = reveals **`Target Cusp Height`** (`0.02–0.05 mm`) to compute scanline spacing from ball radius; unchecked = reveals explicit **`Stepover`**. |
 | **`Pass Angle`** & **`Cross-Pass (+90°)`** | `Right Inspector → Passes → 3D Parallel / Raster Finishing` | Rotates scanlines (`0°`, `45°`, `90°`) to avoid riding parallel to ridges; check **`Cross-Pass (+90°)`** (`Add +90° Pass`) for a perpendicular second pass. |
-| **`Slope Range (°)`** | `Right Inspector → Passes` (`3D Parallel / Raster Finishing` & `3D Constant-Scallop Finishing`) | Restricts finishing by surface tilt (`0°–45°` or `0°–60°` for shallow raster finishing paired with steep `Waterline3D` walls). |
+| **`Min Slope (°)`** / **`Max Slope (°)`** | `Right Inspector → Passes` (`3D Parallel / Raster Finishing` & `3D Constant-Scallop Finishing`) | Restricts finishing by surface tilt (`0°` to `45°` or `0°` to `60°` for shallow raster finishing paired with steep `Waterline3D` walls). |
 | **`Min Stepover`** / **`Max Stepover`** | `Right Inspector → Passes → 3D Constant-Scallop Finishing` | Clamps 3D geodesic arc-length stepover (`Min = 0.15–0.3 mm`, `Max = 1.0–2.0 mm`) so tight ridges don't over-densify and flats stay crisp. |
 | **`Ordering`** (`Inside -> Out`) | `Right Inspector → Passes → 3D Constant-Scallop Finishing` | Unchecked = outside-in from boundary; checked = **`Inside -> Out`** radiating smoothly from peaks outward. |
 | **`Rest Mode`** (`Prev Tool`) | `Right Inspector → Passes → 3D Rest Machining` | Click **`Prev Tool`** to reveal **`Prev. Tool Ø`**, **`Prev. Radial Stock`**, **`Blend Overlap`**, and **`Min Thickness`**. |
@@ -127,7 +128,7 @@ Look at the viewport: **`Pencil3D`** isolates the exact circular concave valley 
 
 ## 5. Generate (`Ctrl+G`) & 3D Simulation Verification
 
-Back on the **Relief Wave** project (`09-relief-wave.obj`), press **`Ctrl+G`** (or click **`Generate`** in the **top toolbar**), click **`Simulate`** in the **top toolbar** (opening the bottom **`Simulation Timeline`** tab), confirm **`3D Stock`**, **`Color by Op`**, and **`3D Cutter`** are checked in the **`Simulation Timeline`** top bar, and scrub to `96%`:
+Back on the **Relief Wave** project (`09-relief-wave.obj`), press **`Ctrl+G`** (or click **`Generate`** in the **top toolbar**; **`Diagnostics & Log`** logs wall-clock generation time alongside estimated CNC cycle time), click **`Simulate`** in the **top toolbar** (opening the bottom **`Simulation Timeline`** tab; click its compact status chip or **`Edit → Settings…` → `Simulation`** (`Ctrl+,`) to toggle **`Smooth Skinned Surfaces (Mesh Skinning)`** for smooth curved relief visualization), confirm **`3D Stock`**, **`Color by Op`**, and **`3D Cutter`** are checked in the **`Simulation Timeline`** top bar, and scrub to `96%`:
 
 ![3D Machined Stock Simulation of Finished Sinusoidal Relief Wave Showing Verified Crash-Free Status](../images/tutorials/09-3d-surface-finishing/05-finishing-simulation.png)
 

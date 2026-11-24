@@ -31,8 +31,10 @@ In the left **CAM Browser**, click **`Stock & WCS`** under `Setup 1`, open the *
 
 ### Step 1 — Select the Closed Multi-Island Pocket Floor (`Op 1 → Geometry`)
 
-1. Add a 2D Pocket operation via **`Operations → + 2D Pocket`** in the **top menu bar** (or **`+ Op… → 2D Pocket`** under `Setup 1` in the left **CAM Browser**). In the right **Inspector**, open the **`Tool`** tab and select **`T1 — 6mm 3FL Carbide Flat Endmill`** in the **`Active Cutter`** dropdown under **`Cutter & Material Preset`**.
-2. Switch to the **`Geometry`** tab in the right **Inspector**, confirm **`Planar Faces`** is selected under **`Interactive 3D Pick Mode`**, and click the recessed pocket floor around the central `Ø14 mm` cylinder in the center **3D CAD Viewport**:
+1. With `Setup 1` **`Active`** in the left **CAM Browser**, click **`+ Op… → 2D Pocket`** in the **top toolbar** (or **`Operations → + 2D Pocket`** in the **top menu bar**). In the right **Inspector**, open the **`Tool`** tab and select **`T1 — 6mm 3FL Carbide Flat Endmill`** in the **`Active Cutter`** dropdown under **`Cutter & Material Preset`**.
+2. Switch to the **`Geometry`** tab in the right **Inspector**:
+   - Under **`Cutting Area / Machining Boundary`** at the top of **`Geometry`**, leave **`Pocket Area Mode`** on **`Inside Selected Pockets`** (when machining raised bosses/islands out of raw stock instead of an enclosed cavity, switch to **`Clear Outside Selected Bosses to Stock`** to preview the Setup Stock XY envelope live in 3D and clear everything around the selected faces/contours from open air; for 2D sketches or closed loops, you can also check **`Open Outer Boundary`** / **`Treat Outer Loop as Open Air`**).
+   - Confirm **`Planar Faces`** is selected under **`Interactive 3D Pick Mode`**, and click the recessed pocket floor around the central `Ø14 mm` cylinder in the center **3D CAD Viewport**:
 
 ![Closed Multi-Island Pocket Floor Selection on Minimal Pocket Block](../images/tutorials/03-2d-pocket/01-island-pocket-geometry.png)
 
@@ -56,7 +58,7 @@ Switch to the **`Passes`** tab in the right **Inspector** to inspect **`Depth Pa
 
 ### Step 3 — Add an Open-Shoulder Pocket (`Op 2 → Passes`)
 
-1. Add a second **`2D Pocket`** operation via **`Operations → + 2D Pocket`** in the **top menu bar** (or **`+ Op… → 2D Pocket`** in the left **CAM Browser**) using the same **`T1 — 6mm 3FL Carbide Flat Endmill`** in the **`Tool`** tab.
+1. Add a second **`2D Pocket`** operation via **`+ Op… → 2D Pocket`** in the **top toolbar** (or **`Operations → + 2D Pocket`** in the **top menu bar**) using the same **`T1 — 6mm 3FL Carbide Flat Endmill`** in the **`Tool`** tab.
 2. In the right **Inspector** **`Geometry`** tab, confirm **`Planar Faces`** is selected under **`Interactive 3D Pick Mode`** and click the lowered right-hand step shelf (`6 mm` deep) in the **3D CAD Viewport**.
 3. Switch to the **`Passes`** tab in the right **Inspector** and press **`Ctrl+G`** (or click **`Generate`** in the **top toolbar**):
 
@@ -70,6 +72,7 @@ Because three sides of the step face open air, ChipCutter classifies them as **o
 
 | Parameter | Location | Purpose & Recommended Starting Values |
 |---|---|---|
+| **`Pocket Area Mode`** & **`Open Outer Boundary`** | `Right Inspector → Geometry → Cutting Area / Machining Boundary` | **`Inside Selected Pockets`** clears enclosed cavities (with optional **`Treat Outer Loop as Open Air`** for 2D sketches/closed loops); **`Clear Outside Selected Bosses to Stock`** leaves selected faces/contours standing as bosses and clears surrounding stock out to Setup Stock XY bounds with a live 3D stock-envelope preview. |
 | **`Clearing Mode`** | `Right Inspector → Passes → 2D Pocket Strategy` | **`Offset`** (smooth arc-preserving contour-parallel rings around walls & islands) or **`Zig-Zag`** (fast parallel raster; selecting **`Zig-Zag`** reveals **`Raster Angle`**). |
 | **`Stepover`** | `Right Inspector → Passes → 2D Pocket Strategy` | Radial width of cut (`ae`, shown in **`Offset`** and **`Zig-Zag`** modes). Typical range: **`tool_d * 0.35`**–**`tool_d * 0.5`** in aluminum/hardwood; reduce to `tool_d * 0.25` in steel. |
 | **`Pass Order`** | `Right Inspector → Passes → 2D Pocket Strategy` | Shown in **`Offset`** and **`Zig-Zag`** modes. Keep **`Automatic (Inside-Out Closed / Outside-In Open)`** so closed pockets clear **`Inside -> Out`** from a helical entry and open shoulders clear **`Outside -> In`** from air. |
@@ -85,7 +88,7 @@ Because three sides of the step face open air, ChipCutter classifies them as **o
 
 ## 5. Generate (`Ctrl+G`) & 3D Simulation Verification
 
-Press **`Ctrl+G`** (or click **`Generate`** in the **top toolbar**) and click **`Simulate`** in the **top toolbar** (opening the bottom **`Simulation Timeline`** tab), scrubbing near completion (`95%`):
+Press **`Ctrl+G`** (or click **`Generate`** in the **top toolbar**; **`Diagnostics & Log`** logs both wall-clock generation duration and estimated CNC cycle time) and click **`Simulate`** in the **top toolbar** (opening the bottom **`Simulation Timeline`** tab), scrubbing near completion (`95%`):
 
 ![3D Simulation of Closed Island Pocket and Open-Shoulder Step](../images/tutorials/03-2d-pocket/04-pocket-simulation.png)
 

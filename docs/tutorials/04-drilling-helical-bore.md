@@ -31,7 +31,7 @@ In the left **CAM Browser**, click **`Stock & WCS`** under `Setup 1`, open the *
 
 ### Step 1 — Batch-Pick the 4× `Ø6 mm` Through-Holes (`Op 1 → Geometry`)
 
-1. Add a drilling operation via **`Operations → + Drill / Helical Bore`** in the **top menu bar** (or **`+ Op… → Drill / Helical Bore`** under `Setup 1` in the left **CAM Browser**). In the right **Inspector**, open the **`Tool`** tab and select **`T6 — 6.0mm 118° Carbide Stub Drill`** in the **`Active Cutter`** dropdown under **`Cutter & Material Preset`**.
+1. With `Setup 1` **`Active`** in the left **CAM Browser**, click **`+ Op… → Drill / Helical Bore`** in the **top toolbar** (or **`Operations → + Drill / Helical Bore`** in the **top menu bar**). In the right **Inspector**, open the **`Tool`** tab and select **`T6 — 6.0mm 118° Carbide Stub Drill`** in the **`Active Cutter`** dropdown under **`Cutter & Material Preset`**.
 2. Open the **`Geometry`** tab in the right **Inspector**, confirm **`Cylindrical Holes`** is selected under **`Interactive 3D Pick Mode`**, click any one of the four corner `Ø6 mm` hole walls in the center **3D CAD Viewport**, and then click **`+ Same Ø`** under **`Auto-Expand`** in the **`Interactive 3D Pick Mode`** card to select all four matching holes automatically:
 
 ![Batch-Picking Four Corner Ø6mm Through-Holes on Minimal Plate](../images/tutorials/04-drilling-helical-bore/01-drill-holes-geometry.png)
@@ -53,7 +53,7 @@ Switch to the **`Passes`** tab in the right **Inspector**, configure the **`Dril
 
 When a bore is wider than your drill bit (or you want a flat bottom instead of a 118° drill-point cone), use a center-cutting flat endmill in **`Helical Bore Milling`** mode:
 
-1. Add a second **`Drill / Helical Bore`** operation via **`Operations → + Drill / Helical Bore`** in the **top menu bar** (or **`+ Op… → Drill / Helical Bore`** in the left **CAM Browser**). In the right **Inspector**, open the **`Tool`** tab and select **`T1 — 6mm 3FL Carbide Flat Endmill`** in **`Active Cutter`**.
+1. Add a second **`Drill / Helical Bore`** operation via **`+ Op… → Drill / Helical Bore`** in the **top toolbar** (or **`Operations → + Drill / Helical Bore`** in the **top menu bar**). In the right **Inspector**, open the **`Tool`** tab and select **`T1 — 6mm 3FL Carbide Flat Endmill`** in **`Active Cutter`**.
 2. Open the **`Geometry`** tab in the right **Inspector**, confirm **`Cylindrical Holes`** is selected under **`Interactive 3D Pick Mode`**, and click the central `Ø18 mm` counterbore wall (`10 mm` deep blind bore) in the **3D CAD Viewport**.
 3. Switch to the **`Passes`** tab in the right **Inspector** (`Drill & Helical Bore` card), set **`Hole Mode`** = **`Helical Bore Milling`**, **uncheck `Breakthrough`** (`Enabled`) since this is a blind counterbore, verify **`Helical Pitch`** = `2.5°` and **`Bore Finish`** (`Enabled`) checked, and press **`Ctrl+G`**:
 
@@ -80,7 +80,7 @@ When a bore is wider than your drill bit (or you want a flat bottom instead of a
 
 ## 5. Generate (`Ctrl+G`) & 3D Simulation Verification
 
-Press **`Ctrl+G`** (or click **`Generate`** in the **top toolbar**) and click **`Simulate`** in the **top toolbar** (opening the bottom **`Simulation Timeline`** tab), scrubbing near completion (`95%`):
+Press **`Ctrl+G`** (or click **`Generate`** in the **top toolbar**; **`Diagnostics & Log`** logs wall-clock generation time alongside estimated CNC cycle time) and click **`Simulate`** in the **top toolbar** (opening the bottom **`Simulation Timeline`** tab), scrubbing near completion (`95%`):
 
 ![3D Simulation of 4x Drilled Holes and Helically Bored Central Counterbore](../images/tutorials/04-drilling-helical-bore/04-drill-bore-simulation.png)
 

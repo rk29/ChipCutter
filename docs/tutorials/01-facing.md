@@ -8,7 +8,8 @@ In this tutorial you will start from an **empty project**, import a minimal rect
 
 - Configure **Stock Top Allowance (`+Z`)** above the part so there is material to deck off.
 - Add a single **Facing** operation and select a multi-insert **Face Mill** (`T7`) or flat endmill (`T1`).
-- Tune **`Cut Mode`** (`Both Ways (Zig-Zag + U-Arcs)` vs. `One Way (Climb)` / `One Way (Conventional)`), **`Stepover`**, **`Extension`**, and **`Auto Longest XY`** orientation.
+- Constrain the facing area with **`Cutting Area / Machining Boundary`** in **`Geometry`** (**`Stock Bounds`**, true projected **`Model Silhouette`**, or **`Selected Regions`** with exact polygon & raised-island clipping, **`Tool Containment`**, and signed **`Boundary Offset`**) plus live 3D boundary previews.
+- Tune **`Cut Mode`** (`Both Ways (Zig-Zag + U-Arcs)` vs. `One Way (Climb)` / `One Way (Conventional)`), **`Stepover`**, **`Extension`**, **`Auto Longest XY`** orientation, and an optional **`Finish Pass`** (`Dedicated Finishing Stepdown`).
 - Verify the `Stock Top → Model Top` Z-height range, inspect the decked billet in **3D Simulation**, and export verified **GRBL** or **LinuxCNC** G-code.
 
 ---
@@ -38,15 +39,18 @@ Start with an **empty project** and load the minimal billet STEP file included w
 > [!TIP]
 > If your raw billet is already ground to exact finished thickness (`Top Allowance (+Z) = 0 mm`), you can skip Facing—never set `Bottom Ref` below `Model Top` or you will undersize the entire part.
 
-### Step 2 — Add a Facing Operation & Configure Passes (`Op 1 → Passes`)
+### Step 2 — Add a Facing Operation, Verify Cutting Area, & Configure Passes (`Op 1 → Geometry / Passes`)
 
-1. In the **top menu bar**, click **`Operations → + Facing`** (or click **`+ Op… → Facing`** under `Setup 1` in the left **CAM Browser**) to add **`1. Facing 1`**.
+1. With `Setup 1` showing its **`Active`** badge in the left **CAM Browser**, click **`+ Op… → Facing`** in the **top toolbar** (or **`Operations → + Facing`** in the **top menu bar**) to add **`1. Facing 1`**.
 2. In the right **Inspector**, open the **`Tool`** tab, expand the **`Active Cutter`** dropdown under **`Cutter & Material Preset`**, and select **`T7 — 38mm 3-Insert APKT Face Mill`** (or pick `T1 — 6mm 3FL Carbide Flat Endmill` if your spindle/router does not accept a face mill).
-3. Switch to the **`Passes`** tab in the right **Inspector** and press **`Ctrl+G`** (or click **`Generate`** in the **top toolbar**) to generate the toolpath:
+3. *(Optional)* Open the **`Geometry`** tab to inspect **`Cutting Area / Machining Boundary`** and its live 3D boundary preview in the viewport:
+   - Leave **`Boundary Source`** on **`Stock Bounds`** (default) to face the entire raw billet.
+   - On stepped parts or irregular castings, switch **`Boundary Source`** to **`Model Silhouette`** (true projected outer silhouette) or **`Selected Regions`** (pick planar faces or closed 2D contours—ChipCutter clips facing passes cleanly to exact polygons and around raised islands, and reveals **`Island Radial Stock`** under **`Passes → Depth Passes & Stock to Leave`**). You can also fine-tune **`Tool Containment`** and signed **`Boundary Offset`** (`+` expands outward, `-` insets inward).
+4. Switch to the **`Passes`** tab in the right **Inspector** and press **`Ctrl+G`** (or click **`Generate`** in the **top toolbar**) to generate the toolpath:
 
 ![Facing Strategy Parameters and Clean Billet Toolpath](../images/tutorials/01-facing/02-facing-passes.png)
 
-Notice how the facing passes under **`Facing Strategy`** automatically align along the longest stock axis (**`Auto Longest XY`** checked), extend cleanly past the billet edges (**`Extension = tool_d * 0.55`** = `20.900 mm`) so the cutter enters and exits in air, and connect adjacent passes with smooth U-turn arcs (`G2`/`G3`).
+Notice how the facing passes under **`Facing Strategy`** automatically align along the longest stock axis (**`Auto Longest XY`** checked), extend cleanly past the billet edges (**`Extension = tool_d * 0.55`** = `20.900 mm`) so the cutter enters and exits in air, and connect adjacent passes with smooth U-turn arcs (`G2`/`G3`). To reserve a light final skim pass at `Bottom Z` for a mirror finish, check **`Finish Pass`** (`Dedicated Finishing Stepdown`) to reveal **`Finish Stepdown`** (e.g., `0.25 mm`).
 
 ### Step 3 — Verify Facing Z Heights (`Op 1 → Heights`)
 
@@ -64,17 +68,19 @@ Switch to the **`Heights`** tab in the right **Inspector** to confirm the vertic
 
 | Parameter | Location | Purpose & Recommended Starting Values |
 |---|---|---|
+| **`Boundary Source`**, **`Tool Containment`**, & **`Boundary Offset`** | `Right Inspector → Geometry → Cutting Area / Machining Boundary` | Defaults to **`Stock Bounds`**; switch to projected **`Model Silhouette`** or **`Selected Regions`** (with exact polygon & raised-island clipping) and tune **`Tool Containment`** + signed **`Boundary Offset`** with live 3D viewport preview. |
 | **`Cut Mode`** | `Right Inspector → Passes → Facing Strategy` | **`Both Ways (Zig-Zag + U-Arcs)`** alternates climb/conventional passes with smooth U-turn arcs for fastest cycle time; **`One Way (Climb)`** or **`One Way (Conventional)`** retracts and cuts every pass in the same direction for a uniform surface finish. |
 | **`Stepover`** | `Right Inspector → Passes → Facing Strategy` | Radial width of cut (`ae`). Defaults to **`tool_d * 0.7`** (`26.600 mm` for `T7`); use `tool_d * 0.6`–`tool_d * 0.75` for face mills and `tool_d * 0.6` for flat endmills. |
 | **`Extension`** | `Right Inspector → Passes → Facing Strategy` | Distance the tool center overruns each end of the stock (defaults to **`tool_d * 0.55`** = `20.900 mm` for `T7`) so the cutter enters from air and leaves no uncut corner crescents. |
 | **`Auto Longest XY`** / **`Pass Angle`** | `Right Inspector → Passes → Facing Strategy` | Automatically orients passes along the longest XY stock axis to minimize reversals; uncheck **`Auto Longest XY`** (`Enabled`) to reveal **`Pass Angle`** (degrees). |
-| **`Multiple Depths`** / **`Maximum Stepdown`** | `Right Inspector → Passes → Depth Passes & Stock to Leave` | Check **`Multiple Depths`** (`Enable Z Stepdowns`) to reveal **`Maximum Stepdown`** and split deep top allowances into safe Z levels (e.g., `0.5–1.5 mm` per pass depending on machine rigidity). |
+| **`Finish Pass`** / **`Finish Stepdown`** | `Right Inspector → Passes → Facing Strategy` | Check **`Finish Pass`** (`Dedicated Finishing Stepdown`) to reveal **`Finish Stepdown`** (`0.15–0.30 mm`) and reserve a light final axial skim cut at `Bottom Z`. |
+| **`Multiple Depths`** / **`Maximum Stepdown`** | `Right Inspector → Passes → Depth Passes & Stock to Leave` | Check **`Multiple Depths`** (`Enable Z Stepdowns`) to reveal **`Maximum Stepdown`** and split deep top allowances into safe Z levels (e.g., `0.5–1.5 mm` per pass depending on machine rigidity). When facing **`Selected Regions`**, **`Island Radial Stock`** also appears here to leave clearance around raised islands. |
 
 ---
 
 ## 5. Generate (`Ctrl+G`) & 3D Simulation Verification
 
-1. Press **`Ctrl+G`** (or click **`Generate`** in the **top toolbar**) and confirm the emerald **✓** badge on the operation in the left **CAM Browser**.
+1. Press **`Ctrl+G`** (or click **`Generate`** in the **top toolbar**) and confirm the emerald **✓** badge on the operation in the left **CAM Browser** (the bottom **`Diagnostics & Log`** Activity Log reports both wall-clock generation time and estimated CNC cycle time).
 2. Click **`Simulate`** in the **top toolbar** (which switches to the bottom **`Simulation Timeline`** tab and runs simulation), confirm **`3D Stock`** and **`3D Cutter`** are checked in the **`Simulation Timeline`** top bar, and scrub across the facing pass:
 
 ![3D Simulation of 38mm APKT Face Mill Decking the Billet](../images/tutorials/01-facing/04-facing-simulation.png)

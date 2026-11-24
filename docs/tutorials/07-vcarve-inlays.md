@@ -32,13 +32,13 @@ No external CAD file is needed:
 
 ### Step 1 — Full-Depth 3D Medial-Axis V-Carving (`Setup 1 → Op 1`)
 
-1. Click **`+ V-Carve`** in the **top toolbar** (or **`Operations → + V-Carve / Bevel Inlay`** in the **top menu bar**, or **`+ VCarve`** under `Setup 1` in the left **CAM Browser**). In the right **Inspector** **`Tool`** tab, confirm **`T8 — 6mm 60° Carbide Engraving V-Bit`** is selected in **`Active Cutter`**.
+1. With `Setup 1` **`Active`** in the left **CAM Browser**, click **`+ V-Carve`** in the **top toolbar** (or **`Operations → + V-Carve / Bevel Inlay`** in the **top menu bar**). In the right **Inspector** **`Tool`** tab, confirm **`T8 — 6mm 60° Carbide Engraving V-Bit`** is selected in **`Active Cutter`**.
 2. Open the **`Geometry`** tab in the right **Inspector** and click **`+ All`** on your sketch row inside the **`2D Sketch Layers & Quick Select`** card (ChipCutter automatically classifies closed outer letter contours and counter-islands like the inside of `'P'`).
 3. Switch to the **`Passes`** tab in the right **Inspector**, uncheck **`Flat Floor Limit`** (**`Limit Max Depth`**) under **`V-Carve Strategy`** (it is checked by default), and press **`Ctrl+G`** (or click **`Generate`** in the **top toolbar**):
 
 ![Full-Depth 3D Medial-Axis V-Carving with Voronoi Corner Climbs](../images/tutorials/07-vcarve-inlays/01-vcarve-medial-axis.png)
 
-Look closely at the 3D toolpath: the V-bit plunges deeper along the wide stems of `'C'`, `'H'`, `'I'`, and `'P'` and climbs cleanly upward in 3D `(X, Y, Z)` right out to every crisp corner vertex.
+Look closely at the 3D toolpath: the V-bit plunges deeper along the wide stems of `'C'`, `'H'`, `'I'`, and `'P'` and climbs cleanly upward in 3D `(X, Y, Z)` right out to every crisp corner vertex. *(As noted by the contextual info banner in the **`Heights`** tab, **`V-Carve`** uses **`Top Height`** to establish the carving surface plane while maximum carving depth is governed by **`Flat Depth`** in **`Passes`** rather than **`Bottom Height`**.)*
 
 ### Step 2 — Clamp `Flat Depth` & Enable Two-Stage Flat Area Clearance
 
@@ -68,14 +68,14 @@ Inspect the machined hardwood stock in the **3D CAD Viewport**: crisp `60°` bev
 
 To create a contrasting wood inlay (for example, walnut `"CHIP"` inlaid into a maple plaque):
 
-1. Click **`+ Setup`** at the top-right of the left **CAM Browser** (or **`Setup → New Setup`** in the **top menu bar**) to add **`Setup 2 — Op 2 [G55]`**. In the right **Inspector**, rename **`Setup Name`** to `Setup 2 — Male V-Inlay Plug`, configure matching `120 × 55 × 15 mm` **`Fixed-Size Box Stock`** (`Top Allowance (+Z)` = `0 mm`) on the **`Stock`** tab, and set **`Origin Reference`** = **`Stock 27-Pt`** → **`Top`** + **`Center Y` / `C`** (`Top Center`) on the **`WCS & Post`** tab.
-2. Add a **`V-Carve / Bevel Inlay`** operation (**`+ V-Carve`** in the **top toolbar** or **`+ VCarve`** under `Setup 2` in the left **CAM Browser**), select **`T8 — 6mm 60° Carbide Engraving V-Bit`** in **`Tool`**, click **`+ All`** on your `"CHIP"` sketch in **`Geometry`**, and on the **`Passes`** tab check **`Flat Floor Limit`** (`Limit Max Depth`), set **`Flat Depth`** = `3.0 mm`, and select **`T3 — 1/8 in 2FL Carbide Flat`** in **`Clearing Tool`**.
+1. Click **`+ Setup`** at the top-right of the left **CAM Browser** (or **`Setup → New Setup`** in the **top menu bar**) to add **`Setup 2 — Op 2 [G55]`** (which automatically receives the **`Active`** badge pill in the left **CAM Browser**; you can switch active Setups anytime by clicking a Setup header or its **`Activate`** button). In the right **Inspector**, rename **`Setup Name`** to `Setup 2 — Male V-Inlay Plug`, configure matching `120 × 55 × 15 mm` **`Fixed-Size Box Stock`** (`Top Allowance (+Z)` = `0 mm`) on the **`Stock`** tab, and set **`Origin Reference`** = **`Stock 27-Pt`** → **`Top`** + **`Center Y` / `C`** (`Top Center`) on the **`WCS & Post`** tab.
+2. With `Setup 2` **`Active`**, click **`+ V-Carve`** in the **top toolbar** (or **`Operations → + V-Carve / Bevel Inlay`** in the **top menu bar**), select **`T8 — 6mm 60° Carbide Engraving V-Bit`** in **`Tool`**, click **`+ All`** on your `"CHIP"` sketch in **`Geometry`**, and on the **`Passes`** tab check **`Flat Floor Limit`** (`Limit Max Depth`), set **`Flat Depth`** = `3.0 mm`, and select **`T3 — 1/8 in 2FL Carbide Flat`** in **`Clearing Tool`**.
 3. Scroll to the **`Mated Male V-Inlay Plug`** card in **`Passes`**, click **`Male Plug`** on the **`Inlay Mode`** row **first** so the male inlay fields appear below it, then set:
    - **`Start Depth`** = `2.0 mm` — controls how deep the tapered male bevel seats into the `3.0 mm`-deep female cavity (`2.0 mm` wedge engagement leaves `1.0 mm` of bottom glue space inside the female pocket!).
    - **`Bottom Glue Gap`** = `1.0 mm` — extra clearance machined around the base of the male plug (`total plug height = Start Depth + Bottom Glue Gap = 3.0 mm`) so the plug seats tightly on its tapered `60°` walls and leaves a clean `1.0 mm` saw/flush-trim gap between the two boards before gluing.
    - **`Border Margin`** = `5.0 mm` — cleared frame width machined around the raised male inlay plug.
    - **`Mirror Artwork`** → keep **`Mirror X`** checked — automatically mirrors the artwork across `X = 0` so the flipped plug drops face-down into the female cavity in the correct reading orientation!
-4. Press **`Ctrl+G`** and click **`Simulate`** in the **top toolbar** for `Setup 2`:
+4. Press **`Ctrl+G`** (the bottom **`Diagnostics & Log`** Activity Log reports wall-clock generation time alongside estimated CNC cycle time) and click **`Simulate`** in the **top toolbar** for `Setup 2`:
 
 ![Setup 2 Mirrored Male V-Inlay Plug Parameters and 3D Simulation](../images/tutorials/07-vcarve-inlays/04-vcarve-male-inlay-plug.png)
 
@@ -99,7 +99,7 @@ Notice the raised, mirrored `"CHIP"` prism standing proud of the cleared backgro
 
 ## 5. Post-Processing: GRBL Automatic Two-File Split vs. LinuxCNC ATC
 
-Click **`Stock & WCS`** under `Setup 1 [G54]` in the left **CAM Browser** to make `Setup 1` active, then click **`Post`** in the **top toolbar** (or select the bottom **`G-Code Preview`** tab) with **`GRBL 1.1 / FluidNC (Split by Tool)`** selected in **`Post Profile:`**:
+Click **`Activate`** (or the Setup title / **`Stock & WCS`**) on `Setup 1 [G54]` in the left **CAM Browser** to make `Setup 1` active again, then click **`Post`** in the **top toolbar** (or select the bottom **`G-Code Preview`** tab) with **`GRBL 1.1 / FluidNC (Split by Tool)`** selected in **`Post Profile:`**:
 
 ![GRBL Split-by-Tool G-Code Output Splitting Stage 1 T3 and Stage 2 T8](../images/tutorials/07-vcarve-inlays/05-vcarve-gcode-grbl-split.png)
 
