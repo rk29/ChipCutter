@@ -45,6 +45,14 @@ Expose Milestone 85's **Per-Operation & Shared Avoid / Keep-Out Regions** intuit
 - Add a collapsible **`Keep-Out Regions (N)`** section in the **CAM Browser** (`cam_browser.rs`, shown when `!project.avoid_regions.is_empty()` or via `+ Keep-Out`) displaying each shared region's name, usage count (`used by 3 ops`), rename, suppress toggle, duplicate, and safe delete (pruning stale `shared_region_ids` across all operations in one atomic Undo step).
 - Ensure every mutation sets `mutated_label`, pushing an atomic Undo snapshot and marking all affected operations (and downstream Rest ops) `Dirty`.
 
+### 1b. Fixed-Box Stock `XY Alignment` & `Z Alignment` Controls (`Stock Offsets`)
+
+#### [MODIFY] `crates/chip-gui/src/panels/setup_inspector/stock_tab.rs`
+- In `render_stock_offsets_body` (`StockConfig::FixedBox`), add interactive `ComboBox` selectors for:
+  - **`XY Alignment`:** `Centered in XY` (`FixedBoxXyAlign::CenterXy`) vs. `Offset from Front-Left` (`FixedBoxXyAlign::OffsetFromFrontLeft { dx, dy }`), displaying the `Front-Left ΔX` / `Front-Left ΔY` expression inputs whenever `OffsetFromFrontLeft` is selected.
+  - **`Z Alignment`:** `Offset from Top (+Z)` (`FixedBoxZAlign::OffsetFromTop { top_allowance }`), `Offset from Bottom (-Z)` (`FixedBoxZAlign::OffsetFromBottom { bottom_allowance }`), and `Centered in Z` (`FixedBoxZAlign::CenterZ`), displaying the corresponding allowance input when top/bottom offset is active.
+- When switching `Stock Mode` to `Fixed-Size Box Stock` in `render_stock_mode_combo`, default `z_align` to `FixedBoxZAlign::CenterZ` whenever `!setup.rotary.is_disabled()` (keeping `OffsetFromTop { 1.0 mm }` for standard 3-axis setups) so rectangular bar stock automatically centers the model on the rotary axis!
+
 ---
 
 ### 2. Red-Tinted 3D Viewport Keep-Out Overlays
@@ -81,7 +89,7 @@ Expose Milestone 85's **Per-Operation & Shared Avoid / Keep-Out Regions** intuit
 ## Verification Plan
 
 1. **GUI & Cache Regression Tests (`chip-gui`):**
-   - Headless `egui` tests verifying `[Geometry]` renders `Avoid / Keep-Out Regions`, promotes local keep-out selections via `Save Local as Shared…`, links/unlinks shared keep-out chips across multiple operations, detaches to local, toggles `avoid_all_fixtures` and individual fixture chips, edits `radial_clearance`/`axial_clearance`, records Undo steps, and switches viewport pick target between `Cutting Area` and `Avoid / Keep-Out`.
+   - Headless `egui` tests verifying `[Geometry]` renders `Avoid / Keep-Out Regions`, promotes local keep-out selections via `Save Local as Shared…`, links/unlinks shared keep-out chips across multiple operations, detaches to local, toggles `avoid_all_fixtures` and individual fixture chips, edits `radial_clearance`/`axial_clearance`, records Undo steps, and switches viewport pick target between `Cutting Area` and `Avoid / Keep-Out`, plus Setup `Stock Offsets` tests switching `FixedBox` `XY Alignment` and `Z Alignment` (`Offset from Top` / `Offset from Bottom` / `Centered in Z`) and auto-defaulting rotary Setups to `CenterZ`.
    - `BoundaryPreviewCache` tests verifying `avoid_nominal_region` / `avoid_effective_region` update immediately when `op.avoid`, a linked `SharedAvoidRegion`, or fixture positions change and perform zero recomputations on idle frames.
 2. **Docs & Samples Parity:**
    - `WGPU_BACKEND=vulkan cargo test --locked -p chip-gui --test docs_samples_parity`
