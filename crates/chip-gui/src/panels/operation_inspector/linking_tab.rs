@@ -1,5 +1,5 @@
 use chip_cam::{EntryStrategy, Operation, RetractPolicy};
-use chip_math::EvalContext;
+use chip_math::{DVec2, EvalContext};
 
 use crate::widgets::{INPUT_COL_WIDTH, edit_param_length, grid_row, inspector_grid, section_card};
 
@@ -13,6 +13,8 @@ pub fn show_linking_tab(
     eval_ctx: &EvalContext,
     mutated_label: &mut Option<&'static str>,
 ) {
+    let display_unit = eval_ctx.default_unit;
+
     section_card(
         ui,
         ("lnk_retract_card", setup_idx, op_idx),
@@ -80,7 +82,7 @@ pub fn show_linking_tab(
                     ui,
                     "Entry Mode",
                     Some(
-                        "Closed-cavity plunge strategy (helical ramp, linear ramp, or direct plunge)",
+                        "Closed-cavity entry strategy (helical ramp, linear ramp, direct plunge, or pre-drilled pilot hole)",
                     ),
                     |ui| {
                         egui::ComboBox::from_id_salt(("lnk_ent", setup_idx, op_idx))
@@ -97,16 +99,88 @@ pub fn show_linking_tab(
                                         .selectable_label(op.linking.entry_mode == mode, lbl)
                                         .on_hover_text(format!("Enter closed pockets using {lbl}"))
                                         .clicked()
+                                        && op.linking.entry_mode != mode
                                     {
                                         op.linking.entry_mode = mode;
                                         *mutated_label = Some("Change Entry Strategy");
                                     }
                                 }
+                                let is_pre_drilled = matches!(
+                                    op.linking.entry_mode,
+                                    EntryStrategy::PreDrilled { .. }
+                                );
+                                if ui
+                                    .selectable_label(is_pre_drilled, "Pre-Drilled Point")
+                                    .on_hover_text(
+                                        "Plunge directly at a pre-drilled pilot hole XY coordinate in Setup WCS before feeding into the pocket",
+                                    )
+                                    .clicked()
+                                    && !is_pre_drilled
+                                {
+                                    op.linking.entry_mode = EntryStrategy::PreDrilled {
+                                        point_wcs: DVec2::ZERO,
+                                    };
+                                    *mutated_label = Some("Change Entry Strategy");
+                                }
                             })
                             .response
-                            .on_hover_text("Select closed-cavity plunge strategy (helical ramp, linear ramp, or direct plunge)");
+                            .on_hover_text("Select closed-cavity entry strategy (helical ramp, linear ramp, direct plunge, or pre-drilled point)");
                     },
                 );
+                if let EntryStrategy::PreDrilled { point_wcs } = &mut op.linking.entry_mode {
+                    let coord_decimals = if display_unit == chip_math::DisplayUnit::Inch {
+                        4
+                    } else {
+                        3
+                    };
+                    let coord_speed = display_unit.from_mm(0.5);
+                    let coord_min = display_unit.from_mm(-10_000.0);
+                    let coord_max = display_unit.from_mm(10_000.0);
+                    let mut x_disp = display_unit.from_mm(point_wcs.x);
+                    grid_row(
+                        ui,
+                        "Pre-Drill X",
+                        Some("Pre-drilled pilot hole X coordinate in Setup WCS"),
+                        |ui| {
+                            if ui
+                                .add(
+                                    egui::DragValue::new(&mut x_disp)
+                                        .speed(coord_speed)
+                                        .max_decimals(coord_decimals)
+                                        .range(coord_min..=coord_max)
+                                        .suffix(format!(" {}", display_unit.suffix())),
+                                )
+                                .on_hover_text("Pre-drilled pilot hole X coordinate in Setup WCS")
+                                .changed()
+                            {
+                                point_wcs.x = display_unit.to_mm(x_disp);
+                                *mutated_label = Some("Edit Pre-Drilled Entry Point");
+                            }
+                        },
+                    );
+                    let mut y_disp = display_unit.from_mm(point_wcs.y);
+                    grid_row(
+                        ui,
+                        "Pre-Drill Y",
+                        Some("Pre-drilled pilot hole Y coordinate in Setup WCS"),
+                        |ui| {
+                            if ui
+                                .add(
+                                    egui::DragValue::new(&mut y_disp)
+                                        .speed(coord_speed)
+                                        .max_decimals(coord_decimals)
+                                        .range(coord_min..=coord_max)
+                                        .suffix(format!(" {}", display_unit.suffix())),
+                                )
+                                .on_hover_text("Pre-drilled pilot hole Y coordinate in Setup WCS")
+                                .changed()
+                            {
+                                point_wcs.y = display_unit.to_mm(y_disp);
+                                *mutated_label = Some("Edit Pre-Drilled Entry Point");
+                            }
+                        },
+                    );
+                }
                 grid_row(
                     ui,
                     "Ramp Angle",
@@ -240,22 +314,114 @@ pub fn show_linking_tab(
                             }
                         },
                     );
+                }
+                grid_row(
+                    ui,
+                    "Lead-Out",
+                    Some(
+                        "Mirror Lead-In arc/tangent geometry symmetrically when exiting contour wall, or uncheck to configure independent lead-out",
+                    ),
+                    |ui| {
+                        if ui
+                            .checkbox(&mut op.linking.lead_out_same_as_in, "Mirror Lead-In")
+                            .on_hover_text("Mirror the Lead-In arc and tangent length symmetrically when exiting the contour wall; uncheck to configure Lead-Out independently")
+                            .changed()
+                        {
+                            *mutated_label = Some("Toggle Mirror Lead-Out");
+                        }
+                    },
+                );
+                if !op.linking.lead_out_same_as_in {
                     grid_row(
                         ui,
-                        "Lead-Out",
+                        "Tangent Lead-Out",
                         Some(
-                            "Mirror Lead-In arc/tangent geometry symmetrically when exiting contour wall",
+                            "Smooth arc/tangent exit off contour walls to prevent dwell witness marks",
                         ),
                         |ui| {
                             if ui
-                                .checkbox(&mut op.linking.lead_out_same_as_in, "Mirror Lead-In")
-                                .on_hover_text("Mirror the Lead-In arc and tangent length symmetrically when exiting the contour wall")
+                                .checkbox(&mut op.linking.lead_out.enabled, "Enabled")
+                                .on_hover_text("Exit contour walls smoothly via an independent tangent arc/linear lead-out")
                                 .changed()
                             {
-                                *mutated_label = Some("Toggle Mirror Lead-Out");
+                                *mutated_label = Some("Toggle Lead-Out");
                             }
                         },
                     );
+                    if op.linking.lead_out.enabled {
+                        grid_row(
+                            ui,
+                            "Lead-Out Radius",
+                            Some("XY arc radius of the independent tangent lead-out move"),
+                            |ui| {
+                                if edit_param_length(
+                                    ui,
+                                    ("lnk_lohr", setup_idx, op_idx),
+                                    &mut op.linking.lead_out.horizontal_radius,
+                                    eval_ctx,
+                                    INPUT_COL_WIDTH,
+                                ) {
+                                    *mutated_label = Some("Edit Lead-Out Radius");
+                                }
+                            },
+                        );
+                        grid_row(
+                            ui,
+                            "Lead-Out Sweep",
+                            Some(
+                                "Included XY arc sweep angle (°) of the independent tangent lead-out move",
+                            ),
+                            |ui| {
+                                if ui
+                                    .add(
+                                        egui::DragValue::new(
+                                            &mut op.linking.lead_out.horizontal_sweep_deg,
+                                        )
+                                        .range(0.0..=180.0)
+                                        .suffix("°"),
+                                    )
+                                    .on_hover_text("Included XY arc sweep angle in degrees for the independent tangent lead-out")
+                                    .changed()
+                                {
+                                    *mutated_label = Some("Edit Lead-Out Sweep");
+                                }
+                            },
+                        );
+                        grid_row(
+                            ui,
+                            "Lead-Out Linear",
+                            Some(
+                                "Straight tangent segment length between wall and horizontal lead-out arc",
+                            ),
+                            |ui| {
+                                if edit_param_length(
+                                    ui,
+                                    ("lnk_lolin", setup_idx, op_idx),
+                                    &mut op.linking.lead_out.linear_length,
+                                    eval_ctx,
+                                    INPUT_COL_WIDTH,
+                                ) {
+                                    *mutated_label = Some("Edit Lead-Out Linear");
+                                }
+                            },
+                        );
+                        grid_row(
+                            ui,
+                            "Lead-Out Vert. R",
+                            Some("Vertical Z arc radius blending horizontal lead-out into retract"),
+                            |ui| {
+                                if edit_param_length(
+                                    ui,
+                                    ("lnk_lovr", setup_idx, op_idx),
+                                    &mut op.linking.lead_out.vertical_radius,
+                                    eval_ctx,
+                                    INPUT_COL_WIDTH,
+                                ) {
+                                    *mutated_label = Some("Edit Vertical Lead-Out Radius");
+                                }
+                            },
+                        );
+                    }
                 }
                 grid_row(
                     ui,

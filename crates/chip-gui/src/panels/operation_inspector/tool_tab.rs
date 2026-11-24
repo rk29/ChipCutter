@@ -436,8 +436,21 @@ pub fn show_tool_tab(ui: &mut egui::Ui, ctx: ToolTabCtx<'_>) {
     );
 
     let eff2 = op.effective_cutting_params(&active_tool);
+    let preset_baseline = {
+        let mut base_op = op.clone();
+        base_op.feed_overrides.clear_all();
+        base_op.effective_cutting_params(&active_tool)
+    };
     let cur_fz_mm =
         chipload_from_feed(eff2.spindle_rpm, flutes, eff2.cutting_feed_mm_min).unwrap_or(0.0);
+    let feed_min_disp = display_unit.feed_from_mm_min(1.0);
+    let feed_max_disp = display_unit.feed_from_mm_min(25_000.0);
+    let feed_speed_disp = display_unit.feed_from_mm_min(5.0);
+    let feed_decimals = if display_unit == DisplayUnit::Inch {
+        2
+    } else {
+        1
+    };
 
     section_card(
         ui,
@@ -447,24 +460,44 @@ pub fn show_tool_tab(ui: &mut egui::Ui, ctx: ToolTabCtx<'_>) {
         |ui| {
             inspector_grid(ui, ("tool_feed_grid", setup_idx, op_idx), |ui| {
                 let mut vf_disp = display_unit.feed_from_mm_min(eff2.cutting_feed_mm_min);
+                let preset_vf_disp =
+                    display_unit.feed_from_mm_min(preset_baseline.cutting_feed_mm_min);
                 grid_row(
                     ui,
                     "Cutting Feed",
-                    Some("Linear XY cutting feedrate Vf = RPM · flutes · fz"),
+                    Some("Linear XY cutting feedrate Vf = RPM * flutes * fz"),
                     |ui| {
                         let r = ui
                             .add(
                                 egui::DragValue::new(&mut vf_disp)
-                                    .speed(5.0)
-                                    .range(1.0..=25_000.0)
+                                    .speed(feed_speed_disp)
+                                    .max_decimals(feed_decimals)
+                                    .range(feed_min_disp..=feed_max_disp)
                                     .suffix(format!(" {}", display_unit.feed_suffix())),
                             )
-                            .on_hover_text(
-                                "Linear XY cutting feedrate; automatically updates Chipload",
-                            );
+                            .on_hover_text(format!(
+                                "Linear XY cutting feedrate; automatically updates Chipload (preset: {:.1} {})",
+                                preset_vf_disp,
+                                display_unit.feed_suffix()
+                            ));
                         if op.feed_overrides.cutting_feed_mm_min.is_some() {
-                            ui.colored_label(tok.dirty_fg, "*")
-                                .on_hover_text("Overridden from material preset");
+                            ui.colored_label(tok.dirty_fg, "*").on_hover_text(format!(
+                                "Overridden from material preset ({:.1} {})",
+                                preset_vf_disp,
+                                display_unit.feed_suffix()
+                            ));
+                            if ui
+                                .small_button("Reset")
+                                .on_hover_text(format!(
+                                    "Revert Cutting Feed to preset ({:.1} {})",
+                                    preset_vf_disp,
+                                    display_unit.feed_suffix()
+                                ))
+                                .clicked()
+                            {
+                                op.feed_overrides.cutting_feed_mm_min = None;
+                                *mutated_label = Some("Reset Cutting Feedrate");
+                            }
                         }
                         if r.changed() {
                             op.feed_overrides.cutting_feed_mm_min =
@@ -499,7 +532,114 @@ pub fn show_tool_tab(ui: &mut egui::Ui, ctx: ToolTabCtx<'_>) {
                     },
                 );
 
+                // Lead-In / Lead-Out Feedrate override
+                show_feed_override_row(
+                    ui,
+                    FeedOverrideRowSpec {
+                        label: "Lead Feed",
+                        tooltip: "Feedrate for tangent lead-in and lead-out arc/linear moves",
+                        effective_mm_min: eff2.lead_feed_mm_min,
+                        preset_mm_min: preset_baseline.lead_feed_mm_min,
+                        display_unit,
+                        tok: &tok,
+                        edit_undo_label: "Adjust Lead Feedrate",
+                        reset_undo_label: "Reset Lead Feedrate",
+                    },
+                    &mut op.feed_overrides.lead_feed_mm_min,
+                    mutated_label,
+                );
+
+                // Ramp Feedrate override
+                show_feed_override_row(
+                    ui,
+                    FeedOverrideRowSpec {
+                        label: "Ramp Feed",
+                        tooltip: "Feedrate during helical and linear cavity entry ramps",
+                        effective_mm_min: eff2.ramp_feed_mm_min,
+                        preset_mm_min: preset_baseline.ramp_feed_mm_min,
+                        display_unit,
+                        tok: &tok,
+                        edit_undo_label: "Adjust Ramp Feedrate",
+                        reset_undo_label: "Reset Ramp Feedrate",
+                    },
+                    &mut op.feed_overrides.ramp_feed_mm_min,
+                    mutated_label,
+                );
+
+                // Plunge Feedrate override
+                show_feed_override_row(
+                    ui,
+                    FeedOverrideRowSpec {
+                        label: "Plunge Feed",
+                        tooltip: "Vertical Z plunge and drilling feedrate",
+                        effective_mm_min: eff2.plunge_feed_mm_min,
+                        preset_mm_min: preset_baseline.plunge_feed_mm_min,
+                        display_unit,
+                        tok: &tok,
+                        edit_undo_label: "Adjust Plunge Feedrate",
+                        reset_undo_label: "Reset Plunge Feedrate",
+                    },
+                    &mut op.feed_overrides.plunge_feed_mm_min,
+                    mutated_label,
+                );
+
+                // Axial Stepdown override
+                let mut ap_disp = display_unit.from_mm(eff2.stepdown_mm);
+                let preset_ap_str = display_unit.format_length(preset_baseline.stepdown_mm);
+                let len_min = display_unit.from_mm(0.01);
+                let len_max = display_unit.from_mm(500.0);
+                let len_speed = display_unit.from_mm(0.05);
+                let len_decimals = if display_unit == DisplayUnit::Inch {
+                    4
+                } else {
+                    3
+                };
+                grid_row(
+                    ui,
+                    "Axial Stepdown",
+                    Some(
+                        "Per-operation axial depth of cut (ap) override (defaults to material preset)",
+                    ),
+                    |ui| {
+                        let r = ui
+                            .add(
+                                egui::DragValue::new(&mut ap_disp)
+                                    .speed(len_speed)
+                                    .max_decimals(len_decimals)
+                                    .range(len_min..=len_max)
+                                    .suffix(format!(" {}", display_unit.suffix())),
+                            )
+                            .on_hover_text(format!(
+                                "Per-operation axial stepdown override (preset: {preset_ap_str})"
+                            ));
+                        if r.changed() {
+                            op.feed_overrides.stepdown_mm = Some(display_unit.to_mm(ap_disp));
+                            *mutated_label = Some("Adjust Stepdown Override");
+                        }
+                        if op.feed_overrides.stepdown_mm.is_some() {
+                            ui.colored_label(tok.dirty_fg, "*").on_hover_text(format!(
+                                "Overridden from material preset ({preset_ap_str})"
+                            ));
+                            if ui
+                                .small_button("Reset")
+                                .on_hover_text(format!(
+                                    "Revert Axial Stepdown to preset ({preset_ap_str})"
+                                ))
+                                .clicked()
+                            {
+                                op.feed_overrides.stepdown_mm = None;
+                                *mutated_label = Some("Reset Stepdown Override");
+                            }
+                        } else {
+                            ui.weak("(preset)").on_hover_text(format!(
+                                "Inherited from material preset ({preset_ap_str})"
+                            ));
+                        }
+                    },
+                );
+
                 let mut ae_disp = display_unit.from_mm(eff2.stepover_mm);
+                let preset_ae_str = display_unit.format_length(preset_baseline.stepover_mm);
                 grid_row(
                     ui,
                     "Radial Stepover",
@@ -510,18 +650,33 @@ pub fn show_tool_tab(ui: &mut egui::Ui, ctx: ToolTabCtx<'_>) {
                         if ui
                             .add(
                                 egui::DragValue::new(&mut ae_disp)
-                                    .speed(0.05)
-                                    .range(0.01..=500.0)
+                                    .speed(len_speed)
+                                    .max_decimals(len_decimals)
+                                    .range(len_min..=len_max)
                                     .suffix(format!(" {}", display_unit.suffix())),
                             )
+                            .on_hover_text(format!(
+                                "Radial stepover override (preset: {preset_ae_str})"
+                            ))
                             .changed()
                         {
                             op.feed_overrides.stepover_mm = Some(display_unit.to_mm(ae_disp));
                             *mutated_label = Some("Adjust Stepover");
                         }
                         if op.feed_overrides.stepover_mm.is_some() {
-                            ui.colored_label(tok.dirty_fg, "*")
-                                .on_hover_text("Overridden from material preset");
+                            ui.colored_label(tok.dirty_fg, "*").on_hover_text(format!(
+                                "Overridden from material preset ({preset_ae_str})"
+                            ));
+                            if ui
+                                .small_button("Reset")
+                                .on_hover_text(format!(
+                                    "Revert Radial Stepover to preset ({preset_ae_str})"
+                                ))
+                                .clicked()
+                            {
+                                op.feed_overrides.stepover_mm = None;
+                                *mutated_label = Some("Reset Stepover");
+                            }
                         }
                     },
                 );
@@ -544,8 +699,21 @@ pub fn show_tool_tab(ui: &mut egui::Ui, ctx: ToolTabCtx<'_>) {
                                 }
                             });
                         if op.feed_overrides.coolant.is_some() {
-                            ui.colored_label(tok.dirty_fg, "*")
-                                .on_hover_text("Overridden from material preset");
+                            ui.colored_label(tok.dirty_fg, "*").on_hover_text(format!(
+                                "Overridden from material preset ({})",
+                                preset_baseline.coolant.label()
+                            ));
+                            if ui
+                                .small_button("Reset")
+                                .on_hover_text(format!(
+                                    "Revert Coolant to preset/tool default ({})",
+                                    preset_baseline.coolant.label()
+                                ))
+                                .clicked()
+                            {
+                                op.feed_overrides.coolant = None;
+                                *mutated_label = Some("Reset Operation Coolant");
+                            }
                         }
                     },
                 );
@@ -573,4 +741,71 @@ pub fn show_tool_tab(ui: &mut egui::Ui, ctx: ToolTabCtx<'_>) {
             }
         },
     );
+}
+
+struct FeedOverrideRowSpec<'a> {
+    label: &'static str,
+    tooltip: &'static str,
+    effective_mm_min: f64,
+    preset_mm_min: f64,
+    display_unit: DisplayUnit,
+    tok: &'a ThemeTokens,
+    edit_undo_label: &'static str,
+    reset_undo_label: &'static str,
+}
+
+fn show_feed_override_row(
+    ui: &mut egui::Ui,
+    spec: FeedOverrideRowSpec<'_>,
+    override_slot: &mut Option<f64>,
+    mutated_label: &mut Option<&'static str>,
+) {
+    let u = spec.display_unit;
+    let mut disp = u.feed_from_mm_min(spec.effective_mm_min);
+    let preset_disp = u.feed_from_mm_min(spec.preset_mm_min);
+    let min_disp = u.feed_from_mm_min(1.0);
+    let max_disp = u.feed_from_mm_min(25_000.0);
+    let speed_disp = u.feed_from_mm_min(5.0);
+    let decimals = if u == DisplayUnit::Inch { 2 } else { 1 };
+    let suffix = u.feed_suffix();
+
+    grid_row(ui, spec.label, Some(spec.tooltip), |ui| {
+        let r = ui
+            .add(
+                egui::DragValue::new(&mut disp)
+                    .speed(speed_disp)
+                    .max_decimals(decimals)
+                    .range(min_disp..=max_disp)
+                    .suffix(format!(" {suffix}")),
+            )
+            .on_hover_text(format!(
+                "{} (preset: {:.1} {suffix})",
+                spec.tooltip, preset_disp
+            ));
+        if r.changed() {
+            *override_slot = Some(u.feed_to_mm_min(disp));
+            *mutated_label = Some(spec.edit_undo_label);
+        }
+        if override_slot.is_some() {
+            ui.colored_label(spec.tok.dirty_fg, "*")
+                .on_hover_text(format!(
+                    "Overridden from material preset ({preset_disp:.1} {suffix})"
+                ));
+            if ui
+                .small_button("Reset")
+                .on_hover_text(format!(
+                    "Revert {} to material preset ({preset_disp:.1} {suffix})",
+                    spec.label
+                ))
+                .clicked()
+            {
+                *override_slot = None;
+                *mutated_label = Some(spec.reset_undo_label);
+            }
+        } else {
+            ui.weak("(preset)").on_hover_text(format!(
+                "Inherited from material preset ({preset_disp:.1} {suffix})"
+            ));
+        }
+    });
 }

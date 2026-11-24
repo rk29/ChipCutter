@@ -69,6 +69,8 @@ pub(super) fn show_facing_params(
 pub(super) fn show_contour2d_params(
     ui: &mut egui::Ui,
     p: &mut Contour2DParams,
+    tool_feed_preview: Option<(f64, f64)>,
+    display_unit: DisplayUnit,
     mut item: PassItemCtx<'_>,
     pick_mode: &mut ViewportPickMode,
 ) {
@@ -124,6 +126,56 @@ pub(super) fn show_contour2d_params(
                 &mut p.finish_stepover,
                 "Edit Finish Stepover",
             );
+            let mut has_finish_feed = p.finish_feed_mm_min.is_some();
+            let default_finish_feed_mm = tool_feed_preview
+                .map(|(_, nom_feed)| (0.75 * nom_feed).max(10.0))
+                .unwrap_or(600.0);
+            let feed_min = display_unit.feed_from_mm_min(1.0);
+            let feed_max = display_unit.feed_from_mm_min(25_000.0);
+            let feed_speed = display_unit.feed_from_mm_min(5.0);
+            let feed_decimals = if display_unit == DisplayUnit::Inch {
+                2
+            } else {
+                1
+            };
+            f.set_tip(
+                "Optional dedicated XY feedrate for contour finishing passes (defaults to nominal cutting feed)",
+            );
+            f.row("Finish Pass Feed", |ui, mutated| {
+                if ui
+                    .checkbox(&mut has_finish_feed, "Override")
+                    .on_hover_text(
+                        "Use a custom feedrate on contour finishing passes instead of the nominal cutting feedrate",
+                    )
+                    .changed()
+                {
+                    p.finish_feed_mm_min = if has_finish_feed {
+                        Some(default_finish_feed_mm)
+                    } else {
+                        None
+                    };
+                    *mutated = Some("Toggle Contour Finish Feed");
+                }
+                if let Some(ff_mm) = &mut p.finish_feed_mm_min {
+                    let mut disp = display_unit.feed_from_mm_min(*ff_mm);
+                    if ui
+                        .add(
+                            egui::DragValue::new(&mut disp)
+                                .speed(feed_speed)
+                                .max_decimals(feed_decimals)
+                                .range(feed_min..=feed_max)
+                                .suffix(format!(" {}", display_unit.feed_suffix())),
+                        )
+                        .on_hover_text("Dedicated linear XY feedrate for contour finishing passes")
+                        .changed()
+                    {
+                        *ff_mm = display_unit.feed_to_mm_min(disp);
+                        *mutated = Some("Edit Contour Finish Feed");
+                    }
+                } else {
+                    ui.weak("(cutting feed)");
+                }
+            });
             f.set_tip("Repeat final contour pass at zero extra offset to eliminate deflection");
             f.toggle(
                 "Spring Pass",
@@ -422,6 +474,12 @@ fn show_adaptive_card(
             item.grid(ui, "passes_adaptive_grid", |f| {
                 f.set_tip("Target maximum radial engagement (ae) maintained via trochoidal arcs");
                 f.len("Optimal Load", &mut adp.optimal_load, "Edit Optimal Load");
+                f.set_tip("Minimum trochoidal loop radius permitted in tight pockets and corners");
+                f.len(
+                    "Min Trochoid R",
+                    &mut adp.min_trochoid_radius,
+                    "Edit Min Trochoid Radius",
+                );
                 f.set_tip("Climb, Conventional, or Bi-Directional adaptive engagement");
                 f.combo(
                     "Cut Direction",
@@ -503,10 +561,55 @@ pub(super) fn show_drill_bore_params(
         );
         if matches!(
             p.cycle_kind,
+            DrillCycleKind::Spot | DrillCycleKind::ChipBreak | DrillCycleKind::DeepPeck
+        ) {
+            f.set_tip("Bottom-of-hole dwell duration in seconds (G82 P dwell or chip-clearing pause)");
+            f.drag(
+                "Dwell (s)",
+                &mut p.dwell_seconds,
+                0.0..=30.0,
+                (0.1, " s"),
+                "Edit Drill Dwell",
+            );
+        }
+        if matches!(
+            p.cycle_kind,
             DrillCycleKind::ChipBreak | DrillCycleKind::DeepPeck
         ) {
             f.set_tip("Incremental axial peck step (Q) before chip-break or full retract");
             f.len("Peck Depth", &mut p.peck_depth, "Edit Peck Depth");
+            if p.cycle_kind == DrillCycleKind::ChipBreak {
+                f.set_tip("Partial Z retract distance between G73 chip-breaking pecks to snap stringy chips");
+                f.len(
+                    "Chip-Break Retract",
+                    &mut p.chip_break_retract,
+                    "Edit Chip-Break Retract",
+                );
+            }
+            let mut use_dec = p.decreasing_peck_factor.is_some();
+            f.set_tip("Progressively reduce peck depth with each step to improve chip evacuation in deep holes");
+            f.row("Decreasing Peck", |ui, mutated| {
+                if ui
+                    .checkbox(&mut use_dec, "Enable")
+                    .on_hover_text("Multiply each subsequent peck depth by a decay factor down to Min Peck Depth")
+                    .changed()
+                {
+                    p.decreasing_peck_factor = if use_dec { Some(0.8) } else { None };
+                    *mutated = Some("Toggle Decreasing Peck");
+                }
+            });
+            if let Some(factor) = &mut p.decreasing_peck_factor {
+                f.set_tip("Per-peck depth multiplier (0.25x to 1.0x) applied after each peck");
+                f.drag(
+                    "Peck Decay Factor",
+                    factor,
+                    0.25..=1.0,
+                    (0.02, "x"),
+                    "Edit Decreasing Peck Factor",
+                );
+                f.set_tip("Minimum axial peck depth floor when decreasing peck reduction is enabled");
+                f.len("Min Peck Depth", &mut p.min_peck_depth, "Edit Min Peck Depth");
+            }
         }
         f.set_tip("Extend drill depth by drill cone height so full diameter clears bottom");
         f.toggle(
@@ -522,16 +625,45 @@ pub(super) fn show_drill_bore_params(
                 "Edit Breakthrough Extra",
             );
         }
-        f.set_tip("Helical ramp angle (°) when interpolating holes larger than cutter diameter");
-        f.drag(
-            "Helical Pitch",
-            &mut p.bore_ramp_angle_deg,
-            0.5..=15.0,
-            (0.2, "°"),
-            "Edit Bore Ramp Angle",
-        );
+        let mut use_fixed_pitch = p.bore_pitch_per_rev.is_some();
+        f.set_tip("Override helical ramp angle with an explicit axial Z drop per full 360-degree revolution");
+        f.row("Fixed Bore Pitch", |ui, mutated| {
+            if ui
+                .checkbox(&mut use_fixed_pitch, "Override Pitch/Rev")
+                .on_hover_text("Specify an exact Z drop per helical revolution instead of computing from ramp angle")
+                .changed()
+            {
+                p.bore_pitch_per_rev = if use_fixed_pitch {
+                    Some(ParamLength::from_mm(1.0))
+                } else {
+                    None
+                };
+                *mutated = Some("Toggle Bore Pitch Override");
+            }
+        });
+        if let Some(pitch) = &mut p.bore_pitch_per_rev {
+            f.set_tip("Axial Z descent per full 360-degree helical revolution (overrides Helical Pitch angle)");
+            f.len("Pitch / Rev", pitch, "Edit Bore Pitch Per Rev");
+        } else {
+            f.set_tip("Helical ramp angle (°) when interpolating holes larger than cutter diameter");
+            f.drag(
+                "Helical Pitch",
+                &mut p.bore_ramp_angle_deg,
+                0.5..=15.0,
+                (0.2, "°"),
+                "Edit Bore Ramp Angle",
+            );
+        }
         f.set_tip("Add a full-circle radial finishing pass at hole bottom");
         f.toggle("Bore Finish", &mut p.bore_finish_pass, "Toggle Bore Finish");
+        if p.bore_finish_pass {
+            f.set_tip("Radial stock allowance left for the final full-circle helical bore finishing pass");
+            f.len(
+                "Bore Finish Step",
+                &mut p.bore_finish_stepover,
+                "Edit Bore Finish Stepover",
+            );
+        }
         f.set_tip("Repeat circular finishing pass to eliminate radial cutter deflection");
         f.toggle("Bore Spring", &mut p.bore_spring_pass, "Toggle Bore Spring");
     });

@@ -51,6 +51,7 @@ pub struct ToolLibraryModalState {
     pub lock_chipload: bool,
     pub status_banner: Option<String>,
     pub scroll_to_selected: bool,
+    pub pending_delete_tool_id: Option<ToolId>,
 }
 
 impl ToolLibraryModalState {
@@ -62,6 +63,7 @@ impl ToolLibraryModalState {
             lock_chipload: true,
             status_banner: None,
             scroll_to_selected: false,
+            pending_delete_tool_id: None,
         }
     }
 
@@ -102,7 +104,7 @@ impl ToolLibraryModalState {
 
         egui::Window::new("ChipCutter Tool Library & Cutting Presets")
             .open(&mut keep_open)
-            .default_size([860.0, 590.0])
+            .default_size([880.0, 660.0])
             .resizable(true)
             .show(ctx, |ui| {
                 // Machine Scope Bar
@@ -131,6 +133,7 @@ impl ToolLibraryModalState {
                                         actions.switch_machine_id = Some(m.id.clone());
                                         self.selected_tool_idx = 0;
                                         self.selected_preset_idx = 0;
+                                        self.pending_delete_tool_id = None;
                                     }
                                 }
                             })
@@ -218,6 +221,7 @@ impl ToolLibraryModalState {
                         });
                         self.selected_tool_idx = global_lib.tools.len() - 1;
                         self.selected_preset_idx = 0;
+                        self.pending_delete_tool_id = None;
                         actions.save_active_machine_tools = true;
                     }
 
@@ -266,6 +270,7 @@ impl ToolLibraryModalState {
                                 global_lib.tools.push(tool);
                                 self.selected_tool_idx = global_lib.tools.len() - 1;
                                 self.selected_preset_idx = 0;
+                                self.pending_delete_tool_id = None;
                                 actions.save_active_machine_tools = true;
                                 ui.close();
                             }
@@ -278,6 +283,89 @@ impl ToolLibraryModalState {
                             "Clone the built-in machine first to add custom cutters",
                         );
                     });
+
+                    let has_selected_tool = !global_lib.tools.is_empty();
+                    if ui
+                        .add_enabled(
+                            !is_readonly_builtin && has_selected_tool,
+                            egui::Button::new("Duplicate Tool"),
+                        )
+                        .on_hover_text(
+                            "Clone the selected cutter with a new unique tool number and ID",
+                        )
+                        .on_disabled_hover_text(if is_readonly_builtin {
+                            "Clone the built-in machine first to duplicate cutters"
+                        } else {
+                            "Select a cutter first to duplicate it"
+                        })
+                        .clicked()
+                    {
+                        let sel_idx = self.selected_tool_idx.min(global_lib.tools.len() - 1);
+                        let mut dup = global_lib.tools[sel_idx].clone();
+                        let next_n = global_lib
+                            .tools
+                            .iter()
+                            .map(|t| t.tool_number)
+                            .max()
+                            .unwrap_or(0)
+                            + 1;
+                        let mut copy_idx = 1usize;
+                        let mut new_id = ToolId(format!("{}_copy_t{next_n}", dup.id.0));
+                        while global_lib.tools.iter().any(|t| t.id == new_id) {
+                            copy_idx += 1;
+                            new_id = ToolId(format!("{}_copy{copy_idx}_t{next_n}", dup.id.0));
+                        }
+                        dup.id = new_id;
+                        dup.tool_number = next_n;
+                        dup.length_offset_number = next_n;
+                        dup.diameter_offset_number = next_n;
+                        dup.name = format!("{} (Copy)", dup.name);
+                        let dup_name = dup.name.clone();
+                        global_lib.tools.push(dup);
+                        self.selected_tool_idx = global_lib.tools.len() - 1;
+                        self.selected_preset_idx = 0;
+                        self.scroll_to_selected = true;
+                        self.pending_delete_tool_id = None;
+                        actions.save_active_machine_tools = true;
+                        self.status_banner = Some(format!(
+                            "Duplicated tool as T{next_n} ('{dup_name}')."
+                        ));
+                    }
+
+                    if ui
+                        .add_enabled(
+                            !is_readonly_builtin && has_selected_tool,
+                            egui::Button::new("Delete Tool"),
+                        )
+                        .on_hover_text("Remove the selected cutter from this tool library")
+                        .on_disabled_hover_text(if is_readonly_builtin {
+                            "Clone the built-in machine first to delete cutters"
+                        } else {
+                            "No cutter selected to delete"
+                        })
+                        .clicked()
+                    {
+                        let sel_idx = self.selected_tool_idx.min(global_lib.tools.len() - 1);
+                        let target_id = global_lib.tools[sel_idx].id.clone();
+                        let refs = referencing_operations(project, &target_id);
+                        if refs.is_empty() {
+                            let removed = global_lib.tools.remove(sel_idx);
+                            if !global_lib.tools.is_empty() {
+                                self.selected_tool_idx = sel_idx.min(global_lib.tools.len() - 1);
+                            } else {
+                                self.selected_tool_idx = 0;
+                            }
+                            self.selected_preset_idx = 0;
+                            self.pending_delete_tool_id = None;
+                            actions.save_active_machine_tools = true;
+                            self.status_banner = Some(format!(
+                                "Deleted T{} ('{}') from library.",
+                                removed.tool_number, removed.name
+                            ));
+                        } else {
+                            self.pending_delete_tool_id = Some(target_id);
+                        }
+                    }
 
                     if ui
                         .add_enabled(
@@ -406,11 +494,81 @@ impl ToolLibraryModalState {
                 ui.separator();
 
                 if global_lib.tools.is_empty() {
+                    self.pending_delete_tool_id = None;
                     ui.weak("Library is empty. Click '+ New Cutter' or import a Fusion 360 library.");
                     return;
                 }
                 if self.selected_tool_idx >= global_lib.tools.len() {
                     self.selected_tool_idx = global_lib.tools.len() - 1;
+                }
+
+                // Active-operation usage warning & confirmation guard for in-use tool deletion.
+                let selected_id = global_lib.tools[self.selected_tool_idx].id.clone();
+                let active_refs = referencing_operations(project, &selected_id);
+                if !active_refs.is_empty() {
+                    let preview_refs = if active_refs.len() <= 3 {
+                        active_refs.join(", ")
+                    } else {
+                        format!(
+                            "{}, +{} more",
+                            active_refs[..3].join(", "),
+                            active_refs.len() - 3
+                        )
+                    };
+                    let pending_this = self.pending_delete_tool_id.as_ref() == Some(&selected_id);
+                    if pending_this && !is_readonly_builtin {
+                        crate::widgets::inline_banner(
+                            ui,
+                            crate::widgets::BannerKind::Warn,
+                            format!(
+                                "In-use warning: referenced by {} active operation(s) ({preview_refs}). Removing deletes it from this machine library only (project-embedded copy remains intact).",
+                                active_refs.len()
+                            ),
+                        );
+                        ui.horizontal(|ui| {
+                            if ui
+                                .button("Confirm Delete Tool")
+                                .on_hover_text("Remove this cutter from the library while keeping any project-embedded copy")
+                                .clicked()
+                            {
+                                let removed = global_lib.tools.remove(self.selected_tool_idx);
+                                if !global_lib.tools.is_empty() {
+                                    self.selected_tool_idx =
+                                        self.selected_tool_idx.min(global_lib.tools.len() - 1);
+                                } else {
+                                    self.selected_tool_idx = 0;
+                                }
+                                self.selected_preset_idx = 0;
+                                self.pending_delete_tool_id = None;
+                                actions.save_active_machine_tools = true;
+                                self.status_banner = Some(format!(
+                                    "Deleted in-use T{} ('{}') from library.",
+                                    removed.tool_number, removed.name
+                                ));
+                            }
+                            if ui
+                                .button("Cancel")
+                                .on_hover_text("Keep this tool in the library")
+                                .clicked()
+                            {
+                                self.pending_delete_tool_id = None;
+                            }
+                        });
+                        if global_lib.tools.is_empty() {
+                            return;
+                        }
+                    } else {
+                        crate::widgets::inline_banner(
+                            ui,
+                            crate::widgets::BannerKind::Warn,
+                            format!(
+                                "Referenced by {} active operation(s): {preview_refs}",
+                                active_refs.len()
+                            ),
+                        );
+                    }
+                } else if self.pending_delete_tool_id.is_some() {
+                    self.pending_delete_tool_id = None;
                 }
 
                 ui.columns(2, |cols| {
@@ -436,6 +594,7 @@ impl ToolLibraryModalState {
                                 if resp.clicked() {
                                     self.selected_tool_idx = idx;
                                     self.selected_preset_idx = 0;
+                                    self.pending_delete_tool_id = None;
                                 }
                             }
                         });
@@ -512,47 +671,137 @@ impl ToolLibraryModalState {
                                         .on_hover_text(NATIVE_UNIT_TOOLTIP);
                                     });
                                     ui.end_row();
+
+                                    let spindle_tip =
+                                        "Spindle rotation direction emitted in G-code (M3 clockwise or M4 counter-clockwise)";
+                                    ui.add(
+                                        egui::Label::new("Spindle Direction:")
+                                            .sense(egui::Sense::hover()),
+                                    )
+                                    .on_hover_text(spindle_tip);
+                                    ui.horizontal(|ui| {
+                                        ui.selectable_value(
+                                            &mut tool.spindle_direction,
+                                            SpindleDirection::Cw,
+                                            SpindleDirection::Cw.label(),
+                                        )
+                                        .on_hover_text(spindle_tip);
+                                        ui.selectable_value(
+                                            &mut tool.spindle_direction,
+                                            SpindleDirection::Ccw,
+                                            SpindleDirection::Ccw.label(),
+                                        )
+                                        .on_hover_text(spindle_tip);
+                                    });
+                                    ui.end_row();
+
+                                    let coolant_tip =
+                                        "Default coolant command used when a preset or operation does not override coolant";
+                                    ui.add(
+                                        egui::Label::new("Default Coolant:")
+                                            .sense(egui::Sense::hover()),
+                                    )
+                                    .on_hover_text(coolant_tip);
+                                    egui::ComboBox::from_id_salt("tool_default_coolant_cb")
+                                        .selected_text(tool.default_coolant.label())
+                                        .show_ui(ui, |ui| {
+                                            for c in CoolantMode::ALL {
+                                                ui.selectable_value(
+                                                    &mut tool.default_coolant,
+                                                    c,
+                                                    c.label(),
+                                                )
+                                                .on_hover_text(coolant_tip);
+                                            }
+                                        })
+                                        .response
+                                        .on_hover_text(coolant_tip);
+                                    ui.end_row();
+
+                                    let vendor_tip =
+                                        "Optional cutter manufacturer or supplier name (e.g., Harvey Tool, Datron, Lakeshore Carbide)";
+                                    ui.add(
+                                        egui::Label::new("Vendor:").sense(egui::Sense::hover()),
+                                    )
+                                    .on_hover_text(vendor_tip);
+                                    let mut vendor_buf = tool.vendor.clone().unwrap_or_default();
+                                    if ui
+                                        .add(
+                                            egui::TextEdit::singleline(&mut vendor_buf)
+                                                .hint_text("Manufacturer / supplier"),
+                                        )
+                                        .on_hover_text(vendor_tip)
+                                        .changed()
+                                    {
+                                        tool.vendor = if vendor_buf.trim().is_empty() {
+                                            None
+                                        } else {
+                                            Some(vendor_buf)
+                                        };
+                                    }
+                                    ui.end_row();
+
+                                    let sku_tip =
+                                        "Optional manufacturer catalog SKU or part number for reordering";
+                                    ui.add(
+                                        egui::Label::new("Product ID:")
+                                            .sense(egui::Sense::hover()),
+                                    )
+                                    .on_hover_text(sku_tip);
+                                    let mut sku_buf = tool.product_id.clone().unwrap_or_default();
+                                    if ui
+                                        .add(
+                                            egui::TextEdit::singleline(&mut sku_buf)
+                                                .hint_text("Catalog SKU / part #"),
+                                        )
+                                        .on_hover_text(sku_tip)
+                                        .changed()
+                                    {
+                                        tool.product_id = if sku_buf.trim().is_empty() {
+                                            None
+                                        } else {
+                                            Some(sku_buf)
+                                        };
+                                    }
+                                    ui.end_row();
                                 });
 
                             let unit = tool.native_unit;
                             ui.separator();
-                            ui.strong("Physical Geometry");
-
-
-                            show_cutter_geometry_editor(ui, tool, unit);
-
                             let tok = crate::theme::ThemeTokens::from_ui(ui);
-                            match tool.validate() {
-                                Ok(()) => {
-                                    ui.horizontal(|ui| {
+                            ui.horizontal(|ui| {
+                                ui.strong("Physical Geometry");
+                                match tool.validate() {
+                                    Ok(()) => {
                                         crate::widgets::status_badge_icon(
                                             ui,
                                             crate::widgets::StatusBadgeKind::Clean,
                                             None,
                                         );
                                         ui.colored_label(tok.clean_fg, "Geometry Valid");
-                                    });
-                                }
-                                Err(err) => {
-                                    ui.horizontal(|ui| {
+                                    }
+                                    Err(err) => {
                                         crate::widgets::status_badge_icon(
                                             ui,
                                             crate::widgets::StatusBadgeKind::Error,
                                             None,
                                         );
                                         ui.colored_label(tok.error_fg, err.to_string());
-                                    });
+                                    }
                                 }
-                            }
+                            });
 
+                            show_cutter_geometry_editor(ui, tool, unit);
 
-                            show_presets_editor(
+                            if show_presets_editor(
                                 ui,
                                 tool,
                                 unit,
                                 &mut self.selected_preset_idx,
                                 &mut self.lock_chipload,
-                            );
+                            ) {
+                                actions.save_active_machine_tools = true;
+                            }
                             });
                         });
                 });
@@ -561,6 +810,20 @@ impl ToolLibraryModalState {
         self.open = keep_open;
         actions
     }
+}
+
+fn referencing_operations(project: &ProjectDocument, tool_id: &ToolId) -> Vec<String> {
+    let mut refs = Vec::new();
+    for setup in &project.setups {
+        for op in &setup.operations {
+            let uses_primary = op.tool_id.as_ref() == Some(tool_id);
+            let uses_clearing = op.clearing_tool_id() == Some(tool_id);
+            if uses_primary || uses_clearing {
+                refs.push(format!("{} / {}", setup.name, op.name));
+            }
+        }
+    }
+    refs
 }
 
 #[cfg(test)]
@@ -914,5 +1177,624 @@ mod tests {
                 "expected '{expected_kind}' starter tool to validate cleanly"
             );
         }
+    }
+
+    fn click_at(pos: egui::Pos2) -> Vec<egui::Event> {
+        vec![
+            egui::Event::PointerMoved(pos),
+            egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+            egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
+    fn m87_tool_metadata_crud_and_presets_editor_regression() {
+        use chip_cam::{Operation, OperationKind};
+        use chip_tools::builtin_machine_definitions;
+
+        let ctx = egui::Context::default();
+        let mut global_lib = default_starter_tool_library();
+        let initial_len = global_lib.tools.len();
+        assert!(initial_len >= 2);
+        // Ensure tool 0 starts with 1 preset and CW / non-Flood coolant for deterministic testing.
+        global_lib.tools[0].spindle_direction = SpindleDirection::Cw;
+        global_lib.tools[0].default_coolant = CoolantMode::AirBlast;
+        global_lib.tools[0].vendor = None;
+        global_lib.tools[0].product_id = None;
+        global_lib.tools[0].native_unit = DisplayUnit::Millimeter;
+        global_lib.tools[0].presets.truncate(1);
+        global_lib.tools[0].presets[0].coolant_override = None;
+
+        let mut modal = ToolLibraryModalState::new();
+        modal.open = true;
+        let mut project = ProjectDocument::new("m87_tl");
+        let mut history = UndoHistory::new(8);
+        let mut logs = Vec::new();
+        let mut time = 1.0;
+
+        let base_input = |events: Vec<egui::Event>, t: &mut f64| {
+            *t += 0.25;
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1280.0, 1400.0),
+                )),
+                time: Some(*t),
+                events,
+                ..Default::default()
+            }
+        };
+
+        // 1. Settle layout and verify new metadata labels render.
+        let _ = run_modal_frame(
+            &ctx,
+            base_input(Vec::new(), &mut time),
+            &mut modal,
+            &mut global_lib,
+            &mut project,
+            &mut history,
+            &mut logs,
+        );
+        let settled = run_modal_frame(
+            &ctx,
+            base_input(Vec::new(), &mut time),
+            &mut modal,
+            &mut global_lib,
+            &mut project,
+            &mut history,
+            &mut logs,
+        );
+        let texts = collect_text_shapes(&settled.shapes);
+        for expected in [
+            "Spindle Direction:",
+            "CW (M3)",
+            "CCW (M4)",
+            "Default Coolant:",
+            "Vendor:",
+            "Product ID:",
+            "Duplicate Tool",
+            "Delete Tool",
+        ] {
+            assert!(
+                texts.iter().any(|(t, _)| t == expected),
+                "expected Tool Library label/button '{expected}' to render"
+            );
+        }
+
+        // 2. Click CCW (M4) -> mutates spindle_direction.
+        let ccw_pos = texts
+            .iter()
+            .find(|(t, _)| t == "CCW (M4)")
+            .expect("CCW (M4) toggle must render")
+            .1
+            .center();
+        let _ = run_modal_frame(
+            &ctx,
+            base_input(click_at(ccw_pos), &mut time),
+            &mut modal,
+            &mut global_lib,
+            &mut project,
+            &mut history,
+            &mut logs,
+        );
+        assert_eq!(global_lib.tools[0].spindle_direction, SpindleDirection::Ccw);
+
+        // 3. Edit Default Coolant via ComboBox -> Flood (M8).
+        let cool_rect = texts
+            .iter()
+            .find(|(t, _)| t == "Air Blast")
+            .expect("Default Coolant combo must show Air Blast")
+            .1;
+        let _ = run_modal_frame(
+            &ctx,
+            base_input(click_at(cool_rect.center()), &mut time),
+            &mut modal,
+            &mut global_lib,
+            &mut project,
+            &mut history,
+            &mut logs,
+        );
+        let opened_cool = run_modal_frame(
+            &ctx,
+            base_input(Vec::new(), &mut time),
+            &mut modal,
+            &mut global_lib,
+            &mut project,
+            &mut history,
+            &mut logs,
+        );
+        let flood_pos = collect_text_shapes(&opened_cool.shapes)
+            .into_iter()
+            .find(|(t, _)| t == "Flood (M8)")
+            .expect("Flood (M8) option must render in coolant popup")
+            .1
+            .center();
+        let _ = run_modal_frame(
+            &ctx,
+            base_input(click_at(flood_pos), &mut time),
+            &mut modal,
+            &mut global_lib,
+            &mut project,
+            &mut history,
+            &mut logs,
+        );
+        assert_eq!(global_lib.tools[0].default_coolant, CoolantMode::Flood);
+
+        // 4. Edit Vendor and Product ID text boxes.
+        let after_cool = run_modal_frame(
+            &ctx,
+            base_input(Vec::new(), &mut time),
+            &mut modal,
+            &mut global_lib,
+            &mut project,
+            &mut history,
+            &mut logs,
+        );
+        let texts_ac = collect_text_shapes(&after_cool.shapes);
+        let vendor_hint = texts_ac
+            .iter()
+            .find(|(t, _)| t == "Manufacturer / supplier")
+            .expect("Vendor hint must render")
+            .1
+            .center();
+        let _ = run_modal_frame(
+            &ctx,
+            base_input(click_at(vendor_hint), &mut time),
+            &mut modal,
+            &mut global_lib,
+            &mut project,
+            &mut history,
+            &mut logs,
+        );
+        let _ = run_modal_frame(
+            &ctx,
+            base_input(
+                vec![egui::Event::Text("Harvey Tool".to_string())],
+                &mut time,
+            ),
+            &mut modal,
+            &mut global_lib,
+            &mut project,
+            &mut history,
+            &mut logs,
+        );
+        assert_eq!(global_lib.tools[0].vendor.as_deref(), Some("Harvey Tool"));
+
+        let sku_hint = texts_ac
+            .iter()
+            .find(|(t, _)| t == "Catalog SKU / part #")
+            .expect("Product ID hint must render")
+            .1
+            .center();
+        let _ = run_modal_frame(
+            &ctx,
+            base_input(click_at(sku_hint), &mut time),
+            &mut modal,
+            &mut global_lib,
+            &mut project,
+            &mut history,
+            &mut logs,
+        );
+        let _ = run_modal_frame(
+            &ctx,
+            base_input(vec![egui::Event::Text("HT-98765".to_string())], &mut time),
+            &mut modal,
+            &mut global_lib,
+            &mut project,
+            &mut history,
+            &mut logs,
+        );
+        assert_eq!(global_lib.tools[0].product_id.as_deref(), Some("HT-98765"));
+
+        // 5. Duplicate Tool adds a cloned copy with unique ID and incremented tool number.
+        let dup_pos = texts_ac
+            .iter()
+            .find(|(t, _)| t == "Duplicate Tool")
+            .expect("Duplicate Tool button must render")
+            .1
+            .center();
+        let _ = run_modal_frame(
+            &ctx,
+            base_input(click_at(dup_pos), &mut time),
+            &mut modal,
+            &mut global_lib,
+            &mut project,
+            &mut history,
+            &mut logs,
+        );
+        assert_eq!(global_lib.tools.len(), initial_len + 1);
+        let dup_idx = global_lib.tools.len() - 1;
+        assert_eq!(modal.selected_tool_idx, dup_idx);
+        assert!(global_lib.tools[dup_idx].name.ends_with("(Copy)"));
+        assert_ne!(global_lib.tools[dup_idx].id, global_lib.tools[0].id);
+
+        // 6. Delete unused duplicated tool removes it immediately.
+        let del_frame = run_modal_frame(
+            &ctx,
+            base_input(Vec::new(), &mut time),
+            &mut modal,
+            &mut global_lib,
+            &mut project,
+            &mut history,
+            &mut logs,
+        );
+        let del_pos = collect_text_shapes(&del_frame.shapes)
+            .into_iter()
+            .find(|(t, _)| t == "Delete Tool")
+            .expect("Delete Tool button must render")
+            .1
+            .center();
+        let _ = run_modal_frame(
+            &ctx,
+            base_input(click_at(del_pos), &mut time),
+            &mut modal,
+            &mut global_lib,
+            &mut project,
+            &mut history,
+            &mut logs,
+        );
+        assert_eq!(global_lib.tools.len(), initial_len);
+
+        // 7. In-use tool shows usage warning and requires confirmation click.
+        modal.selected_tool_idx = 0;
+        let t0 = global_lib.tools[0].clone();
+        project.ensure_tool_embedded(&t0);
+        let mut op = Operation::new("op_in_use", "Rough Pocket", OperationKind::Pocket2D);
+        op.tool_id = Some(t0.id.clone());
+        project.setups[0].operations.push(op);
+
+        let warn_frame = run_modal_frame(
+            &ctx,
+            base_input(Vec::new(), &mut time),
+            &mut modal,
+            &mut global_lib,
+            &mut project,
+            &mut history,
+            &mut logs,
+        );
+        let warn_texts = collect_text_shapes(&warn_frame.shapes);
+        assert!(
+            warn_texts
+                .iter()
+                .any(|(t, _)| t.contains("Referenced by 1 active operation(s)")),
+            "expected in-use warning banner for tool referenced by operation"
+        );
+        let del_in_use_pos = warn_texts
+            .iter()
+            .find(|(t, _)| t == "Delete Tool")
+            .expect("Delete Tool button must render")
+            .1
+            .center();
+        let confirm_frame = run_modal_frame(
+            &ctx,
+            base_input(click_at(del_in_use_pos), &mut time),
+            &mut modal,
+            &mut global_lib,
+            &mut project,
+            &mut history,
+            &mut logs,
+        );
+        assert_eq!(
+            global_lib.tools.len(),
+            initial_len,
+            "first click on Delete Tool for in-use cutter must guard deletion"
+        );
+        assert_eq!(modal.pending_delete_tool_id.as_ref(), Some(&t0.id));
+        let confirm_pos = collect_text_shapes(&confirm_frame.shapes)
+            .into_iter()
+            .find(|(t, _)| t == "Confirm Delete Tool")
+            .expect("Confirm Delete Tool button must render")
+            .1
+            .center();
+        let _ = run_modal_frame(
+            &ctx,
+            base_input(click_at(confirm_pos), &mut time),
+            &mut modal,
+            &mut global_lib,
+            &mut project,
+            &mut history,
+            &mut logs,
+        );
+        assert_eq!(global_lib.tools.len(), initial_len - 1);
+        assert!(
+            project.tool(&t0.id).is_some(),
+            "project-embedded copy must remain intact after removing from machine library"
+        );
+
+        // 8. Built-in read-only machine disables Duplicate Tool & Delete Tool.
+        let builtin_machines = builtin_machine_definitions();
+        let builtin_id = builtin_machines[0].id.clone();
+        let count_before_ro = global_lib.tools.len();
+        let mut ro_out = ctx.run_ui(base_input(Vec::new(), &mut time), |ui| {
+            let _ = modal.show_with_machine(
+                ui.ctx(),
+                &mut global_lib,
+                &mut project,
+                &mut history,
+                &mut logs,
+                Some(ToolLibraryMachineContext {
+                    machines: &builtin_machines,
+                    active_machine_id: &builtin_id,
+                }),
+            );
+        });
+        ro_out.textures_delta.clear();
+        let ro_dup_pos = collect_text_shapes(&ro_out.shapes)
+            .into_iter()
+            .find(|(t, _)| t == "Duplicate Tool")
+            .expect("Duplicate Tool button must render")
+            .1
+            .center();
+        let mut ro_click = ctx.run_ui(base_input(click_at(ro_dup_pos), &mut time), |ui| {
+            let _ = modal.show_with_machine(
+                ui.ctx(),
+                &mut global_lib,
+                &mut project,
+                &mut history,
+                &mut logs,
+                Some(ToolLibraryMachineContext {
+                    machines: &builtin_machines,
+                    active_machine_id: &builtin_id,
+                }),
+            );
+        });
+        ro_click.textures_delta.clear();
+        assert_eq!(
+            global_lib.tools.len(),
+            count_before_ro,
+            "Duplicate Tool must be disabled on read-only built-in machines"
+        );
+
+        // 9. Presets Editor: Material, Coolant Override, Lead/Ramp/Plunge feeds (in Inch), + Preset & - Delete Preset.
+        let preset_ctx = egui::Context::default();
+        let mut preset_tool = t0;
+        preset_tool.presets.truncate(1);
+        preset_tool.presets[0].material = "Aluminum 6061".to_string();
+        preset_tool.presets[0].coolant_override = None;
+        preset_tool.presets[0].lead_feed_mm_min = 600.0;
+        preset_tool.presets[0].ramp_feed_mm_min = 400.0;
+        preset_tool.presets[0].plunge_feed_mm_min = 250.0;
+        let mut sel_preset = 0usize;
+        let mut lock_cl = true;
+
+        let run_presets = |events: Vec<egui::Event>,
+                           tool: &mut Tool,
+                           sel: &mut usize,
+                           lock: &mut bool,
+                           t: &mut f64| {
+            let mut out = preset_ctx.run_ui(base_input(events, t), |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
+                    show_presets_editor(ui, tool, DisplayUnit::Inch, sel, lock);
+                });
+            });
+            out.textures_delta.clear();
+            collect_text_shapes(&out.shapes)
+        };
+
+        let p_texts = run_presets(
+            Vec::new(),
+            &mut preset_tool,
+            &mut sel_preset,
+            &mut lock_cl,
+            &mut time,
+        );
+        for expected in [
+            "Material:",
+            "Coolant Override:",
+            "Lead Feed:",
+            "Ramp Feed:",
+            "Plunge Feed:",
+            "- Delete Preset",
+        ] {
+            assert!(
+                p_texts.iter().any(|(t, _)| t == expected),
+                "expected preset editor control '{expected}' to render"
+            );
+        }
+        // Delete Preset disabled when only 1 preset exists.
+        let del_p_pos = p_texts
+            .iter()
+            .find(|(t, _)| t == "- Delete Preset")
+            .expect("- Delete Preset button must render")
+            .1
+            .center();
+        let _ = run_presets(
+            click_at(del_p_pos),
+            &mut preset_tool,
+            &mut sel_preset,
+            &mut lock_cl,
+            &mut time,
+        );
+        assert_eq!(
+            preset_tool.presets.len(),
+            1,
+            "Delete Preset must be guarded when only 1 preset exists"
+        );
+
+        let drag_preset_widget = |pos: egui::Pos2,
+                                  dx: f32,
+                                  tool: &mut Tool,
+                                  sel: &mut usize,
+                                  lock: &mut bool,
+                                  t: &mut f64| {
+            let end = egui::pos2(pos.x + dx, pos.y);
+            let _ = run_presets(
+                vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+                tool,
+                sel,
+                lock,
+                t,
+            );
+            let _ = run_presets(vec![egui::Event::PointerMoved(end)], tool, sel, lock, t);
+            let _ = run_presets(
+                vec![egui::Event::PointerButton {
+                    pos: end,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+                tool,
+                sel,
+                lock,
+                t,
+            );
+        };
+
+        // Edit Lead/Ramp/Plunge feed DragValues in Inch mode (ipm) -> verify canonical mm/min mutation.
+        let lead_orig = preset_tool.presets[0].lead_feed_mm_min;
+        let ramp_orig = preset_tool.presets[0].ramp_feed_mm_min;
+        let plunge_orig = preset_tool.presets[0].plunge_feed_mm_min;
+        for lbl in ["Lead Feed:", "Ramp Feed:", "Plunge Feed:"] {
+            let p_now = run_presets(
+                Vec::new(),
+                &mut preset_tool,
+                &mut sel_preset,
+                &mut lock_cl,
+                &mut time,
+            );
+            let lbl_rect = p_now
+                .iter()
+                .find(|(t, _)| t == lbl)
+                .expect("preset feed label must render")
+                .1;
+            let drag_rect = p_now
+                .iter()
+                .find(|(t, r)| {
+                    t.ends_with(" ipm") && (r.center().y - lbl_rect.center().y).abs() < 12.0
+                })
+                .expect("unit-aware ipm DragValue must render next to feed label")
+                .1;
+            drag_preset_widget(
+                drag_rect.center(),
+                40.0,
+                &mut preset_tool,
+                &mut sel_preset,
+                &mut lock_cl,
+                &mut time,
+            );
+        }
+        assert_ne!(preset_tool.presets[0].lead_feed_mm_min, lead_orig);
+        assert_ne!(preset_tool.presets[0].ramp_feed_mm_min, ramp_orig);
+        assert_ne!(preset_tool.presets[0].plunge_feed_mm_min, plunge_orig);
+
+        // Edit preset Material text and Coolant Override ComboBox.
+        let p_mat = run_presets(
+            Vec::new(),
+            &mut preset_tool,
+            &mut sel_preset,
+            &mut lock_cl,
+            &mut time,
+        );
+        let mat_val_pos = p_mat
+            .iter()
+            .find(|(t, _)| t == "Aluminum 6061")
+            .expect("Material text edit must render")
+            .1
+            .center();
+        let _ = run_presets(
+            click_at(mat_val_pos),
+            &mut preset_tool,
+            &mut sel_preset,
+            &mut lock_cl,
+            &mut time,
+        );
+        let _ = run_presets(
+            vec![egui::Event::Text(" T6".to_string())],
+            &mut preset_tool,
+            &mut sel_preset,
+            &mut lock_cl,
+            &mut time,
+        );
+        assert!(preset_tool.presets[0].material.contains("T6"));
+
+        let cool_ovr_pos = p_mat
+            .iter()
+            .find(|(t, _)| t.starts_with("Tool Default"))
+            .expect("Coolant Override combo must render")
+            .1
+            .center();
+        let _ = run_presets(
+            click_at(cool_ovr_pos),
+            &mut preset_tool,
+            &mut sel_preset,
+            &mut lock_cl,
+            &mut time,
+        );
+        let opened_ovr = run_presets(
+            Vec::new(),
+            &mut preset_tool,
+            &mut sel_preset,
+            &mut lock_cl,
+            &mut time,
+        );
+        let mist_pos = opened_ovr
+            .iter()
+            .find(|(t, _)| t == "Mist (M7)")
+            .expect("Mist (M7) option must render")
+            .1
+            .center();
+        let _ = run_presets(
+            click_at(mist_pos),
+            &mut preset_tool,
+            &mut sel_preset,
+            &mut lock_cl,
+            &mut time,
+        );
+        assert_eq!(
+            preset_tool.presets[0].coolant_override,
+            Some(CoolantMode::Mist)
+        );
+
+        // Add a second preset, then delete it cleanly.
+        let add_p_pos = p_mat
+            .iter()
+            .find(|(t, _)| t == "+ Preset")
+            .expect("+ Preset button must render")
+            .1
+            .center();
+        let after_add = run_presets(
+            click_at(add_p_pos),
+            &mut preset_tool,
+            &mut sel_preset,
+            &mut lock_cl,
+            &mut time,
+        );
+        assert_eq!(preset_tool.presets.len(), 2);
+        assert_eq!(sel_preset, 1);
+
+        let del_p2_pos = after_add
+            .iter()
+            .find(|(t, _)| t == "- Delete Preset")
+            .expect("- Delete Preset button must render")
+            .1
+            .center();
+        let _ = run_presets(
+            click_at(del_p2_pos),
+            &mut preset_tool,
+            &mut sel_preset,
+            &mut lock_cl,
+            &mut time,
+        );
+        assert_eq!(preset_tool.presets.len(), 1);
+        assert_eq!(sel_preset, 0);
     }
 }

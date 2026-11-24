@@ -1,5 +1,5 @@
 use chip_math::DisplayUnit;
-use chip_tools::{CuttingPreset, SurfaceSpeedPresetSpec, Tool};
+use chip_tools::{CoolantMode, CuttingPreset, SurfaceSpeedPresetSpec, Tool};
 
 use super::geometry_editor::edit_mm_drag;
 
@@ -9,7 +9,8 @@ pub(super) fn show_presets_editor(
     unit: DisplayUnit,
     selected_preset_idx: &mut usize,
     lock_chipload: &mut bool,
-) {
+) -> bool {
+    let mut presets_list_changed = false;
     ui.separator();
     ui.horizontal(|ui| {
         ui.strong("Material Cutting Presets");
@@ -20,7 +21,12 @@ pub(super) fn show_presets_editor(
         {
             let d = tool.geometry.cutting_diameter_mm();
             let fl = tool.geometry.flutes();
-            let pid = format!("preset_{}", tool.presets.len() + 1);
+            let mut next_idx = tool.presets.len() + 1;
+            let mut pid = format!("preset_{next_idx}");
+            while tool.presets.iter().any(|p| p.id == pid) {
+                next_idx += 1;
+                pid = format!("preset_{next_idx}");
+            }
             tool.presets
                 .push(CuttingPreset::from_surface_speed(SurfaceSpeedPresetSpec {
                     id: &pid,
@@ -35,12 +41,26 @@ pub(super) fn show_presets_editor(
                     coolant_override: None,
                 }));
             *selected_preset_idx = tool.presets.len() - 1;
+            presets_list_changed = true;
+        }
+
+        let can_delete = tool.presets.len() > 1;
+        if ui
+            .add_enabled(can_delete, egui::Button::new("- Delete Preset").small())
+            .on_hover_text("Remove the currently selected material cutting preset")
+            .on_disabled_hover_text("At least one cutting preset must remain on the tool")
+            .clicked()
+        {
+            let rm_idx = (*selected_preset_idx).min(tool.presets.len().saturating_sub(1));
+            tool.presets.remove(rm_idx);
+            *selected_preset_idx = rm_idx.min(tool.presets.len().saturating_sub(1));
+            presets_list_changed = true;
         }
     });
 
     if !tool.presets.is_empty() {
         if *selected_preset_idx >= tool.presets.len() {
-            *selected_preset_idx = 0;
+            *selected_preset_idx = tool.presets.len() - 1;
         }
         ui.horizontal_wrapped(|ui| {
             for (pi, p) in tool.presets.iter().enumerate() {
@@ -58,19 +78,48 @@ pub(super) fn show_presets_editor(
 
         let dia_mm = tool.geometry.cutting_diameter_mm();
         let flutes = tool.geometry.flutes();
+        let default_coolant_label = tool.default_coolant.label();
         let preset = &mut tool.presets[*selected_preset_idx];
 
         ui.checkbox(
-                                    &mut *lock_chipload,
-                                    "Lock Chipload when editing RPM / Surface Speed",
-                                )
-                                .on_hover_text(
-                                    "When checked, changing RPM or surface speed automatically scales cutting feed to keep chipload per tooth constant",
-                                );
+            &mut *lock_chipload,
+            "Lock Chipload when editing RPM / Surface Speed",
+        )
+        .on_hover_text(
+            "When checked, changing RPM or surface speed automatically scales cutting feed to keep chipload per tooth constant",
+        );
         ui.horizontal(|ui| {
             ui.label("Preset Name:");
             ui.text_edit_singleline(&mut preset.name)
                 .on_hover_text("Descriptive name for this material/cutting preset");
+        });
+        ui.horizontal(|ui| {
+            ui.label("Material:");
+            ui.text_edit_singleline(&mut preset.material)
+                .on_hover_text("Workpiece material targeted by this preset (e.g., Aluminum 6061, Hardwood, Mild Steel)");
+        });
+        ui.horizontal(|ui| {
+            ui.label("Coolant Override:");
+            let cur_cool_text = match preset.coolant_override {
+                None => format!("Tool Default ({default_coolant_label})"),
+                Some(c) => c.label().to_string(),
+            };
+            egui::ComboBox::from_id_salt(("preset_coolant_override_cb", *selected_preset_idx))
+                .selected_text(cur_cool_text)
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(
+                        &mut preset.coolant_override,
+                        None,
+                        format!("Tool Default ({default_coolant_label})"),
+                    )
+                    .on_hover_text("Inherit the tool's default coolant mode");
+                    for c in CoolantMode::ALL {
+                        ui.selectable_value(&mut preset.coolant_override, Some(c), c.label())
+                            .on_hover_text(format!("Override coolant to {} for this material preset", c.label()));
+                    }
+                })
+                .response
+                .on_hover_text("Optional per-material coolant override (defaults to the cutter's default coolant)");
         });
 
         let mut rpm = preset.spindle_rpm;
@@ -114,14 +163,20 @@ pub(super) fn show_presets_editor(
             }
         });
 
+        let feed_min = unit.feed_from_mm_min(1.0);
+        let feed_max = unit.feed_from_mm_min(25_000.0);
+        let feed_speed = unit.feed_from_mm_min(5.0);
+        let feed_decimals = if unit == DisplayUnit::Inch { 2 } else { 1 };
+
         let mut vf_disp = unit.feed_from_mm_min(preset.cutting_feed_mm_min);
         ui.horizontal(|ui| {
             ui.label("Cutting Feed:");
             if ui
                 .add(
                     egui::DragValue::new(&mut vf_disp)
-                        .speed(5.0)
-                        .range(1.0..=25_000.0)
+                        .speed(feed_speed)
+                        .max_decimals(feed_decimals)
+                        .range(feed_min..=feed_max)
                         .suffix(format!(" {}", unit.feed_suffix())),
                 )
                 .on_hover_text("Linear XY cutting feed rate; automatically updates Chipload")
@@ -148,6 +203,28 @@ pub(super) fn show_presets_editor(
                 preset.set_chipload_mm_tooth(unit.chipload_to_mm(fz_disp), flutes);
             }
         });
+
+        edit_preset_feed_row(
+            ui,
+            "Lead Feed:",
+            "Feedrate used for tangent lead-in and lead-out moves",
+            &mut preset.lead_feed_mm_min,
+            unit,
+        );
+        edit_preset_feed_row(
+            ui,
+            "Ramp Feed:",
+            "Feedrate used for helical and linear cavity entry ramps",
+            &mut preset.ramp_feed_mm_min,
+            unit,
+        );
+        edit_preset_feed_row(
+            ui,
+            "Plunge Feed:",
+            "Feedrate used for vertical Z plunges and axial drilling cycles",
+            &mut preset.plunge_feed_mm_min,
+            unit,
+        );
 
         edit_mm_drag(
             ui,
@@ -193,4 +270,36 @@ pub(super) fn show_presets_editor(
             }
         });
     }
+    presets_list_changed
+}
+
+fn edit_preset_feed_row(
+    ui: &mut egui::Ui,
+    label: &str,
+    tooltip: &str,
+    val_mm_min: &mut f64,
+    unit: DisplayUnit,
+) {
+    let feed_min = unit.feed_from_mm_min(1.0);
+    let feed_max = unit.feed_from_mm_min(25_000.0);
+    let feed_speed = unit.feed_from_mm_min(5.0);
+    let feed_decimals = if unit == DisplayUnit::Inch { 2 } else { 1 };
+    let mut disp = unit.feed_from_mm_min(*val_mm_min);
+    ui.horizontal(|ui| {
+        ui.add(egui::Label::new(label).sense(egui::Sense::hover()))
+            .on_hover_text(tooltip);
+        if ui
+            .add(
+                egui::DragValue::new(&mut disp)
+                    .speed(feed_speed)
+                    .max_decimals(feed_decimals)
+                    .range(feed_min..=feed_max)
+                    .suffix(format!(" {}", unit.feed_suffix())),
+            )
+            .on_hover_text(tooltip)
+            .changed()
+        {
+            *val_mm_min = unit.feed_to_mm_min(disp);
+        }
+    });
 }

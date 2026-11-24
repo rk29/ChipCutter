@@ -5,9 +5,17 @@ use chip_tools::ToolId;
 use super::{COMBO_COL_WIDTH, PassItemCtx};
 use crate::widgets::{BannerKind, inline_banner, section_card};
 
+/// Stage 1 flat-clearing cutter candidate and its available cutting presets.
+#[derive(Debug, Clone)]
+pub struct ClearingToolCandidate {
+    pub id: ToolId,
+    pub label: String,
+    pub presets: Vec<(String, String)>,
+}
+
 pub(super) struct VCarveParamsUiCtx<'a> {
     pub p: &'a mut VCarveParams,
-    pub clearing_tool_candidates: &'a [(ToolId, String, Option<String>)],
+    pub clearing_tool_candidates: &'a [ClearingToolCandidate],
     pub item: PassItemCtx<'a>,
 }
 
@@ -73,8 +81,8 @@ pub(super) fn show_vcarve_params(ui: &mut egui::Ui, ctx: VCarveParamsUiCtx<'_>) 
                     None => "None (V-Bit Clears All)".to_string(),
                     Some(cid) => clearing_tool_candidates
                         .iter()
-                        .find(|(id, _, _)| id == cid)
-                        .map_or_else(|| cid.0.clone(), |(_, lbl, _)| lbl.clone()),
+                        .find(|cand| &cand.id == cid)
+                        .map_or_else(|| cid.0.clone(), |cand| cand.label.clone()),
                 };
 
                 item.grid(ui, "vc_clearance_grid", |f| {
@@ -96,16 +104,17 @@ pub(super) fn show_vcarve_params(ui: &mut egui::Ui, ctx: VCarveParamsUiCtx<'_>) 
                                     p.clearing_preset_id = None;
                                     *mutated = Some("Clear V-Carve Secondary Tool");
                                 }
-                                for (tid, lbl, default_preset) in clearing_tool_candidates {
-                                    let is_sel = p.clearing_tool_id.as_ref() == Some(tid);
+                                for cand in clearing_tool_candidates {
+                                    let is_sel = p.clearing_tool_id.as_ref() == Some(&cand.id);
                                     if ui
-                                        .selectable_label(is_sel, lbl)
+                                        .selectable_label(is_sel, &cand.label)
                                         .on_hover_text("Use this flat/bull-nose endmill to clear wide flat interiors before the V-bit pass")
                                         .clicked()
                                         && !is_sel
                                     {
-                                        p.clearing_tool_id = Some(tid.clone());
-                                        p.clearing_preset_id = default_preset.clone();
+                                        p.clearing_tool_id = Some(cand.id.clone());
+                                        p.clearing_preset_id =
+                                            cand.presets.first().map(|(pid, _)| pid.clone());
                                         *mutated = Some("Select V-Carve Secondary Clearing Tool");
                                     }
                                 }
@@ -114,7 +123,59 @@ pub(super) fn show_vcarve_params(ui: &mut egui::Ui, ctx: VCarveParamsUiCtx<'_>) 
                             .on_hover_text("Optional secondary flat endmill for Stage 1 flat-area clearance before V-bit beveling");
                     });
 
-                    if p.clearing_tool_id.is_some() {
+                    if let Some(cid) = p.clearing_tool_id.as_ref() {
+                        let tool_presets = clearing_tool_candidates
+                            .iter()
+                            .find(|cand| &cand.id == cid)
+                            .map(|cand| cand.presets.as_slice())
+                            .unwrap_or(&[]);
+                        let cur_preset_lbl = match &p.clearing_preset_id {
+                            None => "Auto (First Preset)".to_string(),
+                            Some(pid) => tool_presets
+                                .iter()
+                                .find(|(id, _)| id == pid)
+                                .map_or_else(|| pid.clone(), |(_, name)| name.clone()),
+                        };
+                        f.set_tip(
+                            "Material cutting preset used for Stage 1 flat-clearing tool RPM, feedrates, stepdown, and coolant",
+                        );
+                        f.row("Clearing Preset", |ui, mutated| {
+                            egui::ComboBox::from_id_salt(("vc_clear_preset", setup_idx, op_idx))
+                                .selected_text(cur_preset_lbl)
+                                .width(COMBO_COL_WIDTH)
+                                .truncate()
+                                .show_ui(ui, |ui| {
+                                    let is_auto = p.clearing_preset_id.is_none();
+                                    if ui
+                                        .selectable_label(is_auto, "Auto (First Preset)")
+                                        .on_hover_text(
+                                            "Automatically use the clearing tool's first cutting preset",
+                                        )
+                                        .clicked()
+                                        && !is_auto
+                                    {
+                                        p.clearing_preset_id = None;
+                                        *mutated = Some("Change V-Carve Clearing Preset");
+                                    }
+                                    for (pid, pname) in tool_presets {
+                                        let is_sel = p.clearing_preset_id.as_deref() == Some(pid.as_str());
+                                        if ui
+                                            .selectable_label(is_sel, pname)
+                                            .on_hover_text(
+                                                "Use this material preset for Stage 1 flat-area clearance",
+                                            )
+                                            .clicked()
+                                            && !is_sel
+                                        {
+                                            p.clearing_preset_id = Some(pid.clone());
+                                            *mutated = Some("Change V-Carve Clearing Preset");
+                                        }
+                                    }
+                                })
+                                .response
+                                .on_hover_text("Select material cutting preset for the Stage 1 flat-clearing tool");
+                        });
+
                         f.set_tip("Clearing toolpath pattern for flat interior regions");
                         f.row("Stage 1 Pattern", |ui, mutated| {
                             for kind in VCarveClearingKind::ALL {

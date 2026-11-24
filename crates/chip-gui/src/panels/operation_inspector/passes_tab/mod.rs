@@ -13,7 +13,9 @@ use chip_cam::{
     compute_index_angle_for_normal,
 };
 use chip_math::{DVec3, DisplayUnit, EvalContext, ParamLength};
-use chip_tools::{CutterGeometry, ToolId};
+use chip_tools::CutterGeometry;
+
+pub use self::vcarve::ClearingToolCandidate;
 
 use crate::{
     panels::ViewportPickMode,
@@ -202,7 +204,7 @@ pub struct PassesTabCtx<'a> {
     pub op: &'a mut Operation,
     pub has_3d_model: bool,
     pub preceding_ops: &'a [(String, String)],
-    pub clearing_tool_candidates: &'a [(ToolId, String, Option<String>)],
+    pub clearing_tool_candidates: &'a [ClearingToolCandidate],
     pub assigned_tool_geom: Option<&'a CutterGeometry>,
     pub tool_feed_preview: Option<(f64, f64)>,
     pub resolved_thread_depth_mm: Option<f64>,
@@ -431,7 +433,14 @@ pub fn show_passes_tab(ui: &mut egui::Ui, ctx: PassesTabCtx<'_>) {
     let has_explicit_selections = !op.selections.is_empty();
     match op.strategy_mut() {
         StrategyParams::Facing(p) => milling_2d::show_facing_params(ui, p, item),
-        StrategyParams::Contour2D(p) => milling_2d::show_contour2d_params(ui, p, item, pick_mode),
+        StrategyParams::Contour2D(p) => milling_2d::show_contour2d_params(
+            ui,
+            p,
+            tool_feed_preview,
+            display_unit,
+            item,
+            pick_mode,
+        ),
         StrategyParams::Pocket2D(p) => milling_2d::show_pocket2d_params(
             ui,
             milling_2d::PocketParamsUiCtx {

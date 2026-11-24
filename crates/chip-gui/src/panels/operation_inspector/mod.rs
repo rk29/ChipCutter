@@ -12,7 +12,7 @@ use chip_cam::{
 };
 use chip_math::{DVec3, EvalContext};
 use chip_project::{ProjectDocument, UndoHistory};
-use chip_tools::{ToolId, ToolLibrary, ToolOperationClass};
+use chip_tools::{ToolLibrary, ToolOperationClass};
 
 use self::avoid_card::{
     AvoidCardAction, AvoidCardSetupView, create_and_link_shared_avoid,
@@ -362,26 +362,28 @@ pub fn show_operation_inspector(
                             })
                         })
                     });
-                let mut clearing_tool_candidates: Vec<(ToolId, String, Option<String>)> =
+                let mut clearing_tool_candidates: Vec<passes_tab::ClearingToolCandidate> =
                     Vec::new();
                 for t in project.tools.iter().chain(global_tools.tools.iter()) {
                     if t.geometry
                         .supports_operation(ToolOperationClass::VCarveFlatClearance)
-                        && !clearing_tool_candidates
-                            .iter()
-                            .any(|(id, _, _)| *id == t.id)
+                        && !clearing_tool_candidates.iter().any(|cand| cand.id == t.id)
                     {
-                        let preset_id = t.presets.first().map(|p| p.id.clone());
-                        clearing_tool_candidates.push((
-                            t.id.clone(),
-                            format!(
+                        let presets = t
+                            .presets
+                            .iter()
+                            .map(|p| (p.id.clone(), p.name.clone()))
+                            .collect();
+                        clearing_tool_candidates.push(passes_tab::ClearingToolCandidate {
+                            id: t.id.clone(),
+                            label: format!(
                                 "T{} — {} (Ø{:.2} mm)",
                                 t.tool_number,
                                 t.name,
                                 t.geometry.cutting_diameter_mm()
                             ),
-                            preset_id,
-                        ));
+                            presets,
+                        });
                     }
                 }
                 passes_tab::show_passes_tab(
@@ -1747,5 +1749,957 @@ mod tests {
                 .shared_region_ids
                 .is_empty()
         );
+    }
+
+    fn collect_text_rects(shapes: &[egui::epaint::ClippedShape]) -> Vec<(String, egui::Rect)> {
+        fn visit(shape: &egui::Shape, out: &mut Vec<(String, egui::Rect)>) {
+            match shape {
+                egui::Shape::Text(t) => {
+                    out.push((t.galley.text().to_owned(), t.visual_bounding_rect()));
+                }
+                egui::Shape::Vec(v) => {
+                    for s in v {
+                        visit(s, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        for cs in shapes {
+            visit(&cs.shape, &mut out);
+        }
+        out
+    }
+
+    fn click_pos_events(pos: egui::Pos2) -> Vec<egui::Event> {
+        vec![
+            egui::Event::PointerMoved(pos),
+            egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+            egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn drag_inspector_widget(
+        ctx: &egui::Context,
+        proj: &mut ProjectDocument,
+        rs: &ResolvedSetup,
+        tools: &ToolLibrary,
+        history: &mut UndoHistory,
+        tab: OperationTab,
+        pos: egui::Pos2,
+        dx: f32,
+        time: &mut f64,
+    ) -> Vec<(String, egui::Rect)> {
+        let end = egui::pos2(pos.x + dx, pos.y);
+        let _ = run_inspector_frame(
+            ctx,
+            proj,
+            rs,
+            tools,
+            history,
+            tab,
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+            time,
+        );
+        let _ = run_inspector_frame(
+            ctx,
+            proj,
+            rs,
+            tools,
+            history,
+            tab,
+            vec![egui::Event::PointerMoved(end)],
+            time,
+        );
+        run_inspector_frame(
+            ctx,
+            proj,
+            rs,
+            tools,
+            history,
+            tab,
+            vec![egui::Event::PointerButton {
+                pos: end,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            time,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn open_inspector_combo(
+        ctx: &egui::Context,
+        proj: &mut ProjectDocument,
+        rs: &ResolvedSetup,
+        tools: &ToolLibrary,
+        history: &mut UndoHistory,
+        tab: OperationTab,
+        pos: egui::Pos2,
+        time: &mut f64,
+    ) -> Vec<(String, egui::Rect)> {
+        let _ = run_inspector_frame(
+            ctx,
+            proj,
+            rs,
+            tools,
+            history,
+            tab,
+            click_pos_events(pos),
+            time,
+        );
+        run_inspector_frame(ctx, proj, rs, tools, history, tab, Vec::new(), time)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn run_inspector_frame(
+        ctx: &egui::Context,
+        proj: &mut ProjectDocument,
+        rs: &ResolvedSetup,
+        tools: &ToolLibrary,
+        history: &mut UndoHistory,
+        tab: OperationTab,
+        events: Vec<egui::Event>,
+        time: &mut f64,
+    ) -> Vec<(String, egui::Rect)> {
+        *time += 0.25;
+        let mut cur_tab = tab;
+        let mut pick_mode = ViewportPickMode::InspectEntity;
+        let mut pick_target = GeometryPickTarget::CuttingArea;
+        let mut editing_shared_avoid_id: Option<String> = None;
+        let mut lock_chipload = true;
+        let mut show_z_planes = false;
+        let mut auto_rotate_indexed_op = true;
+        let mut open_tool_manager = false;
+        let mut out = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(480.0, 2200.0),
+                )),
+                time: Some(*time),
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
+                    show_operation_inspector(
+                        ui,
+                        OperationInspectorCtx {
+                            project: proj,
+                            setup_idx: 0,
+                            op_idx: 0,
+                            global_tools: tools,
+                            history,
+                            cad_doc: None,
+                            resolved_setup: Some(rs),
+                            surface_mesh: None,
+                            boundary_preview: None,
+                            selected_face_normal_wcs: None,
+                            extracted: None,
+                            tab: &mut cur_tab,
+                            pick_mode: &mut pick_mode,
+                            pick_target: &mut pick_target,
+                            editing_shared_avoid_id: &mut editing_shared_avoid_id,
+                            lock_chipload: &mut lock_chipload,
+                            show_z_planes: &mut show_z_planes,
+                            auto_rotate_indexed_op: &mut auto_rotate_indexed_op,
+                            open_tool_manager: &mut open_tool_manager,
+                            sim_engine: chip_sim::SimEngineKind::TriDexel,
+                        },
+                    );
+                });
+            },
+        );
+        out.textures_delta.clear();
+        collect_text_rects(&out.shapes)
+    }
+
+    fn find_widget_on_row(
+        rects: &[(String, egui::Rect)],
+        row_label: &str,
+        predicate: impl Fn(&str) -> bool,
+    ) -> egui::Pos2 {
+        let lbl_rect = rects
+            .iter()
+            .find(|(t, _)| t == row_label)
+            .unwrap_or_else(|| panic!("expected row label '{row_label}' to render"))
+            .1;
+        rects
+            .iter()
+            .find(|(t, r)| {
+                r.min.x > lbl_rect.max.x - 4.0
+                    && (r.center().y - lbl_rect.center().y).abs() < 12.0
+                    && predicate(t)
+            })
+            .unwrap_or_else(|| panic!("expected control matching predicate on row '{row_label}'"))
+            .1
+            .center()
+    }
+
+    #[test]
+    fn m87_tool_tab_feed_overrides_and_reset_with_undo() {
+        let tools = default_starter_tool_library();
+        let rs = make_resolved_box_setup();
+        let mut proj = ProjectDocument::new("m87_tool_tab");
+        proj.display_units = DisplayUnit::Inch;
+        proj.tools = tools.tools.clone();
+        let mut op = Operation::new("op1", "Pocket", OperationKind::Pocket2D);
+        op.tool_id = Some(tools.tools[0].id.clone());
+        proj.setups[0].operations = vec![op];
+
+        let ctx = egui::Context::default();
+        let mut history = UndoHistory::new(32);
+        let mut time = 1.0;
+
+        let _ = run_inspector_frame(
+            &ctx,
+            &mut proj,
+            &rs,
+            &tools,
+            &mut history,
+            OperationTab::Tool,
+            Vec::new(),
+            &mut time,
+        );
+
+        // Mutate Lead Feed, Ramp Feed, Plunge Feed (in Inch / ipm), and Axial Stepdown (in).
+        for (row, suffix, expected_undo, expected_reset) in [
+            (
+                "Lead Feed",
+                " ipm",
+                "Adjust Lead Feedrate",
+                "Reset Lead Feedrate",
+            ),
+            (
+                "Ramp Feed",
+                " ipm",
+                "Adjust Ramp Feedrate",
+                "Reset Ramp Feedrate",
+            ),
+            (
+                "Plunge Feed",
+                " ipm",
+                "Adjust Plunge Feedrate",
+                "Reset Plunge Feedrate",
+            ),
+            (
+                "Axial Stepdown",
+                " in",
+                "Adjust Stepdown Override",
+                "Reset Stepdown Override",
+            ),
+        ] {
+            let rects = run_inspector_frame(
+                &ctx,
+                &mut proj,
+                &rs,
+                &tools,
+                &mut history,
+                OperationTab::Tool,
+                Vec::new(),
+                &mut time,
+            );
+            let drag_pt = find_widget_on_row(&rects, row, |t| t.ends_with(suffix));
+            let after_drag = drag_inspector_widget(
+                &ctx,
+                &mut proj,
+                &rs,
+                &tools,
+                &mut history,
+                OperationTab::Tool,
+                drag_pt,
+                35.0,
+                &mut time,
+            );
+            assert_eq!(
+                history.peek_undo_label(),
+                Some(expected_undo),
+                "dragging {row} must record undo label '{expected_undo}'"
+            );
+            let reset_pt = find_widget_on_row(&after_drag, row, |t| t == "Reset");
+            let _ = run_inspector_frame(
+                &ctx,
+                &mut proj,
+                &rs,
+                &tools,
+                &mut history,
+                OperationTab::Tool,
+                click_pos_events(reset_pt),
+                &mut time,
+            );
+            assert_eq!(
+                history.peek_undo_label(),
+                Some(expected_reset),
+                "clicking Reset on {row} must record undo label '{expected_reset}'"
+            );
+        }
+
+        let ov = &proj.setups[0].operations[0].feed_overrides;
+        assert!(ov.lead_feed_mm_min.is_none());
+        assert!(ov.ramp_feed_mm_min.is_none());
+        assert!(ov.plunge_feed_mm_min.is_none());
+        assert!(ov.stepdown_mm.is_none());
+    }
+
+    #[test]
+    fn m87_linking_tab_independent_lead_out_and_pre_drilled_entry_with_undo() {
+        use chip_cam::EntryStrategy;
+
+        let tools = default_starter_tool_library();
+        let rs = make_resolved_box_setup();
+        let mut proj = ProjectDocument::new("m87_linking");
+        proj.display_units = DisplayUnit::Millimeter;
+        proj.tools = tools.tools.clone();
+        let mut op = Operation::new("op_lnk", "Contour", OperationKind::Contour2D);
+        op.tool_id = Some(tools.tools[0].id.clone());
+        // Disable lead-in to prove Lead-Out / Mirror Lead-In is decoupled from lead_in.enabled!
+        op.linking.lead_in.enabled = false;
+        op.linking.lead_out_same_as_in = true;
+        op.linking.lead_out.enabled = true;
+        proj.setups[0].operations = vec![op];
+
+        let ctx = egui::Context::default();
+        let mut history = UndoHistory::new(32);
+        let mut time = 1.0;
+
+        let rects = run_inspector_frame(
+            &ctx,
+            &mut proj,
+            &rs,
+            &tools,
+            &mut history,
+            OperationTab::Linking,
+            Vec::new(),
+            &mut time,
+        );
+        // Mirror Lead-In must render even when lead_in.enabled == false.
+        let mirror_pt = find_widget_on_row(&rects, "Lead-Out", |t| t == "Mirror Lead-In");
+        let after_unmirror = run_inspector_frame(
+            &ctx,
+            &mut proj,
+            &rs,
+            &tools,
+            &mut history,
+            OperationTab::Linking,
+            click_pos_events(mirror_pt),
+            &mut time,
+        );
+        assert!(!proj.setups[0].operations[0].linking.lead_out_same_as_in);
+        assert_eq!(history.peek_undo_label(), Some("Toggle Mirror Lead-Out"));
+
+        // Verify all 5 independent Lead-Out controls render.
+        for lbl in [
+            "Tangent Lead-Out",
+            "Lead-Out Radius",
+            "Lead-Out Sweep",
+            "Lead-Out Linear",
+            "Lead-Out Vert. R",
+        ] {
+            assert!(
+                after_unmirror.iter().any(|(t, _)| t == lbl),
+                "expected independent lead-out control '{lbl}' to render"
+            );
+        }
+
+        // Mutate Lead-Out Sweep DragValue and verify undo label.
+        let sweep_pt = find_widget_on_row(&after_unmirror, "Lead-Out Sweep", |t| t.ends_with('°'));
+        let orig_sweep = proj.setups[0].operations[0]
+            .linking
+            .lead_out
+            .horizontal_sweep_deg;
+        let _ = drag_inspector_widget(
+            &ctx,
+            &mut proj,
+            &rs,
+            &tools,
+            &mut history,
+            OperationTab::Linking,
+            sweep_pt,
+            25.0,
+            &mut time,
+        );
+        assert_ne!(
+            proj.setups[0].operations[0]
+                .linking
+                .lead_out
+                .horizontal_sweep_deg,
+            orig_sweep
+        );
+        assert_eq!(history.peek_undo_label(), Some("Edit Lead-Out Sweep"));
+
+        // Mutate Lead-Out Radius ParamLength via Enter text edit.
+        let r_rects = run_inspector_frame(
+            &ctx,
+            &mut proj,
+            &rs,
+            &tools,
+            &mut history,
+            OperationTab::Linking,
+            Vec::new(),
+            &mut time,
+        );
+        let lo_rad_pt = find_widget_on_row(&r_rects, "Lead-Out Radius", |t| !t.is_empty());
+        let _ = run_inspector_frame(
+            &ctx,
+            &mut proj,
+            &rs,
+            &tools,
+            &mut history,
+            OperationTab::Linking,
+            click_pos_events(lo_rad_pt),
+            &mut time,
+        );
+        let _ = run_inspector_frame(
+            &ctx,
+            &mut proj,
+            &rs,
+            &tools,
+            &mut history,
+            OperationTab::Linking,
+            vec![
+                egui::Event::Key {
+                    key: egui::Key::A,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::COMMAND,
+                },
+                egui::Event::Text("2.75".to_string()),
+                egui::Event::Key {
+                    key: egui::Key::Enter,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+            &mut time,
+        );
+        assert!(
+            (proj.setups[0].operations[0]
+                .linking
+                .lead_out
+                .horizontal_radius
+                .value_mm
+                - 2.75)
+                .abs()
+                < 1e-6
+        );
+        assert_eq!(history.peek_undo_label(), Some("Edit Lead-Out Radius"));
+
+        // Toggle Tangent Lead-Out off and verify Undo label.
+        let lo_en_pt = find_widget_on_row(&r_rects, "Tangent Lead-Out", |t| t == "Enabled");
+        let _ = run_inspector_frame(
+            &ctx,
+            &mut proj,
+            &rs,
+            &tools,
+            &mut history,
+            OperationTab::Linking,
+            click_pos_events(lo_en_pt),
+            &mut time,
+        );
+        assert!(!proj.setups[0].operations[0].linking.lead_out.enabled);
+        assert_eq!(history.peek_undo_label(), Some("Toggle Lead-Out"));
+
+        // Select Pre-Drilled Point from Entry Mode ComboBox and mutate X & Y in Inch units.
+        proj.display_units = DisplayUnit::Inch;
+        let ent_rects = run_inspector_frame(
+            &ctx,
+            &mut proj,
+            &rs,
+            &tools,
+            &mut history,
+            OperationTab::Linking,
+            Vec::new(),
+            &mut time,
+        );
+        let ent_combo_pt = find_widget_on_row(&ent_rects, "Entry Mode", |t| t == "Helical Ramp");
+        let ent_popup = open_inspector_combo(
+            &ctx,
+            &mut proj,
+            &rs,
+            &tools,
+            &mut history,
+            OperationTab::Linking,
+            ent_combo_pt,
+            &mut time,
+        );
+        let pre_opt = ent_popup
+            .iter()
+            .find(|(t, _)| t == "Pre-Drilled Point")
+            .expect("Pre-Drilled Point must appear in Entry Mode dropdown")
+            .1
+            .center();
+        let _ = run_inspector_frame(
+            &ctx,
+            &mut proj,
+            &rs,
+            &tools,
+            &mut history,
+            OperationTab::Linking,
+            click_pos_events(pre_opt),
+            &mut time,
+        );
+        assert!(matches!(
+            proj.setups[0].operations[0].linking.entry_mode,
+            EntryStrategy::PreDrilled { .. }
+        ));
+        assert_eq!(history.peek_undo_label(), Some("Change Entry Strategy"));
+
+        let after_pre = run_inspector_frame(
+            &ctx,
+            &mut proj,
+            &rs,
+            &tools,
+            &mut history,
+            OperationTab::Linking,
+            Vec::new(),
+            &mut time,
+        );
+        let x_pt = find_widget_on_row(&after_pre, "Pre-Drill X", |t| t.ends_with(" in"));
+        let _ = drag_inspector_widget(
+            &ctx,
+            &mut proj,
+            &rs,
+            &tools,
+            &mut history,
+            OperationTab::Linking,
+            x_pt,
+            25.0,
+            &mut time,
+        );
+        assert_eq!(
+            history.peek_undo_label(),
+            Some("Edit Pre-Drilled Entry Point")
+        );
+        let y_pt = find_widget_on_row(&after_pre, "Pre-Drill Y", |t| t.ends_with(" in"));
+        let _ = drag_inspector_widget(
+            &ctx,
+            &mut proj,
+            &rs,
+            &tools,
+            &mut history,
+            OperationTab::Linking,
+            y_pt,
+            25.0,
+            &mut time,
+        );
+        assert_eq!(
+            history.peek_undo_label(),
+            Some("Edit Pre-Drilled Entry Point")
+        );
+        if let EntryStrategy::PreDrilled { point_wcs } =
+            proj.setups[0].operations[0].linking.entry_mode
+        {
+            assert!(point_wcs.x.abs() > 0.1 && point_wcs.y.abs() > 0.1);
+        } else {
+            panic!("expected PreDrilled entry mode");
+        }
+    }
+
+    #[test]
+    fn m87_passes_tab_missing_strategy_params_and_undo() {
+        use chip_cam::DrillCycleKind;
+        use chip_tools::{CuttingPreset, SurfaceSpeedPresetSpec};
+
+        let mut tools = default_starter_tool_library();
+        // Add a second preset to tool 0 (flat endmill) for VCarve Clearing Preset testing.
+        let flat_tool = tools
+            .tools
+            .iter_mut()
+            .find(|t| {
+                t.geometry
+                    .supports_operation(ToolOperationClass::VCarveFlatClearance)
+            })
+            .expect("starter library must include a flat endmill");
+        let flat_id = flat_tool.id.clone();
+        let flat_d = flat_tool.geometry.cutting_diameter_mm();
+        let flat_fl = flat_tool.geometry.flutes();
+        flat_tool
+            .presets
+            .push(CuttingPreset::from_surface_speed(SurfaceSpeedPresetSpec {
+                id: "hardwood_clear",
+                name: "Hardwood Clearance",
+                material: "Hardwood",
+                diameter_mm: flat_d,
+                flutes: flat_fl,
+                surface_speed_m_min: 300.0,
+                chipload_mm_tooth: 0.06,
+                default_stepdown_mm: 2.0,
+                default_stepover_mm: 2.0,
+                coolant_override: Some(chip_tools::CoolantMode::AirBlast),
+            }));
+
+        let rs = make_resolved_box_setup();
+        let ctx = egui::Context::default();
+        let mut history = UndoHistory::new(64);
+        let mut time = 1.0;
+
+        // 1. DrillBore: Dwell, Chip-Break Retract, Decreasing Peck + Min Peck Depth, Fixed Bore Pitch, Bore Finish Step.
+        {
+            let mut proj = ProjectDocument::new("m87_drill");
+            proj.tools = tools.tools.clone();
+            let mut op = Operation::new("op_dr", "Drill", OperationKind::DrillBore);
+            op.tool_id = Some(flat_id.clone());
+            if let StrategyParams::DrillBore(p) = op.strategy_mut() {
+                p.cycle_kind = DrillCycleKind::ChipBreak;
+                p.bore_finish_pass = true;
+            }
+            proj.setups[0].operations = vec![op];
+
+            let rects = run_inspector_frame(
+                &ctx,
+                &mut proj,
+                &rs,
+                &tools,
+                &mut history,
+                OperationTab::Passes,
+                Vec::new(),
+                &mut time,
+            );
+            for expected in [
+                "Dwell (s)",
+                "Chip-Break Retract",
+                "Decreasing Peck",
+                "Fixed Bore Pitch",
+                "Bore Finish Step",
+            ] {
+                assert!(
+                    rects.iter().any(|(t, _)| t == expected),
+                    "DrillBore (ChipBreak) must render '{expected}'"
+                );
+            }
+
+            // Edit Dwell (s)
+            let dwell_pt = find_widget_on_row(&rects, "Dwell (s)", |t| t.ends_with(" s"));
+            let _ = drag_inspector_widget(
+                &ctx,
+                &mut proj,
+                &rs,
+                &tools,
+                &mut history,
+                OperationTab::Passes,
+                dwell_pt,
+                25.0,
+                &mut time,
+            );
+            assert_eq!(history.peek_undo_label(), Some("Edit Drill Dwell"));
+
+            // Enable Decreasing Peck -> reveals Peck Decay Factor & Min Peck Depth
+            let dec_pt = find_widget_on_row(&rects, "Decreasing Peck", |t| t == "Enable");
+            let after_dec = run_inspector_frame(
+                &ctx,
+                &mut proj,
+                &rs,
+                &tools,
+                &mut history,
+                OperationTab::Passes,
+                click_pos_events(dec_pt),
+                &mut time,
+            );
+            assert_eq!(history.peek_undo_label(), Some("Toggle Decreasing Peck"));
+            assert!(after_dec.iter().any(|(t, _)| t == "Peck Decay Factor"));
+            assert!(after_dec.iter().any(|(t, _)| t == "Min Peck Depth"));
+
+            let decay_pt =
+                find_widget_on_row(&after_dec, "Peck Decay Factor", |t| t.ends_with('x'));
+            let _ = drag_inspector_widget(
+                &ctx,
+                &mut proj,
+                &rs,
+                &tools,
+                &mut history,
+                OperationTab::Passes,
+                decay_pt,
+                -20.0,
+                &mut time,
+            );
+            assert_eq!(
+                history.peek_undo_label(),
+                Some("Edit Decreasing Peck Factor")
+            );
+
+            // Enable Fixed Bore Pitch -> reveals Pitch / Rev
+            let pitch_toggle = find_widget_on_row(&after_dec, "Fixed Bore Pitch", |t| {
+                t == "Override Pitch/Rev"
+            });
+            let after_pitch = run_inspector_frame(
+                &ctx,
+                &mut proj,
+                &rs,
+                &tools,
+                &mut history,
+                OperationTab::Passes,
+                click_pos_events(pitch_toggle),
+                &mut time,
+            );
+            assert_eq!(
+                history.peek_undo_label(),
+                Some("Toggle Bore Pitch Override")
+            );
+            assert!(after_pitch.iter().any(|(t, _)| t == "Pitch / Rev"));
+
+            // Verify Spot (G82) also shows Dwell (s)
+            if let StrategyParams::DrillBore(p) = proj.setups[0].operations[0].strategy_mut() {
+                p.cycle_kind = DrillCycleKind::Spot;
+            }
+            let spot_rects = run_inspector_frame(
+                &ctx,
+                &mut proj,
+                &rs,
+                &tools,
+                &mut history,
+                OperationTab::Passes,
+                Vec::new(),
+                &mut time,
+            );
+            assert!(spot_rects.iter().any(|(t, _)| t == "Dwell (s)"));
+        }
+
+        // 2. Contour2D: optional Finish Pass Feed when finish_passes > 0
+        {
+            let mut proj = ProjectDocument::new("m87_contour");
+            proj.display_units = DisplayUnit::Inch;
+            proj.tools = tools.tools.clone();
+            let mut op = Operation::new("op_cnt", "Contour", OperationKind::Contour2D);
+            op.tool_id = Some(flat_id.clone());
+            if let StrategyParams::Contour2D(p) = op.strategy_mut() {
+                p.finish_passes = 1;
+            }
+            proj.setups[0].operations = vec![op];
+
+            let rects = run_inspector_frame(
+                &ctx,
+                &mut proj,
+                &rs,
+                &tools,
+                &mut history,
+                OperationTab::Passes,
+                Vec::new(),
+                &mut time,
+            );
+            let ovr_pt = find_widget_on_row(&rects, "Finish Pass Feed", |t| t == "Override");
+            let after_ovr = run_inspector_frame(
+                &ctx,
+                &mut proj,
+                &rs,
+                &tools,
+                &mut history,
+                OperationTab::Passes,
+                click_pos_events(ovr_pt),
+                &mut time,
+            );
+            assert_eq!(
+                history.peek_undo_label(),
+                Some("Toggle Contour Finish Feed")
+            );
+            let ff_pt = find_widget_on_row(&after_ovr, "Finish Pass Feed", |t| t.ends_with(" ipm"));
+            let _ = drag_inspector_widget(
+                &ctx,
+                &mut proj,
+                &rs,
+                &tools,
+                &mut history,
+                OperationTab::Passes,
+                ff_pt,
+                30.0,
+                &mut time,
+            );
+            assert_eq!(history.peek_undo_label(), Some("Edit Contour Finish Feed"));
+            if let StrategyParams::Contour2D(p) = proj.setups[0].operations[0].resolved_strategy() {
+                assert!(p.finish_feed_mm_min.is_some());
+            }
+        }
+
+        // 3. Adaptive2D & Adaptive3D: Min Trochoid R + Adaptive3D Stay-Down Feed, Max RCT Boost, Min Flat Area
+        {
+            let mut proj = ProjectDocument::new("m87_adp2d");
+            proj.tools = tools.tools.clone();
+            let mut op = Operation::new("op_a2", "Adaptive 2D", OperationKind::Pocket2D);
+            op.tool_id = Some(flat_id.clone());
+            if let StrategyParams::Pocket2D(p) = op.strategy_mut() {
+                p.strategy = PocketStrategyKind::Adaptive(AdaptiveClearingParams::default());
+            }
+            proj.setups[0].operations = vec![op];
+            let rects = run_inspector_frame(
+                &ctx,
+                &mut proj,
+                &rs,
+                &tools,
+                &mut history,
+                OperationTab::Passes,
+                Vec::new(),
+                &mut time,
+            );
+            assert!(
+                rects.iter().any(|(t, _)| t == "Min Trochoid R"),
+                "2D Adaptive must render Min Trochoid R"
+            );
+        }
+        {
+            let mut proj = ProjectDocument::new("m87_adp3d");
+            proj.display_units = DisplayUnit::Millimeter;
+            proj.tools = tools.tools.clone();
+            let mut op = Operation::new("op_a3", "Adaptive 3D", OperationKind::Adaptive3D);
+            op.tool_id = Some(flat_id.clone());
+            proj.setups[0].operations = vec![op];
+
+            let rects = run_inspector_frame(
+                &ctx,
+                &mut proj,
+                &rs,
+                &tools,
+                &mut history,
+                OperationTab::Passes,
+                Vec::new(),
+                &mut time,
+            );
+            for expected in [
+                "Min Trochoid R",
+                "Min Flat Area",
+                "Stay-Down Feed",
+                "Max RCT Boost",
+            ] {
+                assert!(
+                    rects.iter().any(|(t, _)| t == expected),
+                    "3D Adaptive must render '{expected}'"
+                );
+            }
+            let flat_pt = find_widget_on_row(&rects, "Min Flat Area", |t| t.ends_with(" mm2"));
+            let _ = drag_inspector_widget(
+                &ctx,
+                &mut proj,
+                &rs,
+                &tools,
+                &mut history,
+                OperationTab::Passes,
+                flat_pt,
+                25.0,
+                &mut time,
+            );
+            assert_eq!(
+                history.peek_undo_label(),
+                Some("Edit 3D Adaptive Min Flat Area")
+            );
+
+            let stay_pt = find_widget_on_row(&rects, "Stay-Down Feed", |t| t.ends_with('x'));
+            let _ = drag_inspector_widget(
+                &ctx,
+                &mut proj,
+                &rs,
+                &tools,
+                &mut history,
+                OperationTab::Passes,
+                stay_pt,
+                20.0,
+                &mut time,
+            );
+            assert_eq!(
+                history.peek_undo_label(),
+                Some("Edit 3D Adaptive Stay-Down Feed Multiplier")
+            );
+
+            let rct_pt = find_widget_on_row(&rects, "Max RCT Boost", |t| t.ends_with('x'));
+            let _ = drag_inspector_widget(
+                &ctx,
+                &mut proj,
+                &rs,
+                &tools,
+                &mut history,
+                OperationTab::Passes,
+                rct_pt,
+                20.0,
+                &mut time,
+            );
+            assert_eq!(
+                history.peek_undo_label(),
+                Some("Edit 3D Adaptive Max Chip-Thinning Multiplier")
+            );
+        }
+
+        // 4. VCarve: Clearing Preset ComboBox populated from Stage 1 flat-clearing tool's presets.
+        {
+            let mut proj = ProjectDocument::new("m87_vcarve");
+            proj.tools = tools.tools.clone();
+            let mut op = Operation::new("op_vc", "V-Carve", OperationKind::VCarve);
+            op.tool_id = Some(flat_id.clone());
+            if let StrategyParams::VCarve(p) = op.strategy_mut() {
+                p.flat_depth = Some(ParamLength::from_mm(3.0));
+                p.clearing_tool_id = Some(flat_id.clone());
+                p.clearing_preset_id = None;
+            }
+            proj.setups[0].operations = vec![op];
+
+            let rects = run_inspector_frame(
+                &ctx,
+                &mut proj,
+                &rs,
+                &tools,
+                &mut history,
+                OperationTab::Passes,
+                Vec::new(),
+                &mut time,
+            );
+            let preset_cb =
+                find_widget_on_row(&rects, "Clearing Preset", |t| t == "Auto (First Preset)");
+            let popup = open_inspector_combo(
+                &ctx,
+                &mut proj,
+                &rs,
+                &tools,
+                &mut history,
+                OperationTab::Passes,
+                preset_cb,
+                &mut time,
+            );
+            let hw_opt = popup
+                .iter()
+                .find(|(t, _)| t == "Hardwood Clearance")
+                .expect("Hardwood Clearance preset must appear in Clearing Preset ComboBox")
+                .1
+                .center();
+            let _ = run_inspector_frame(
+                &ctx,
+                &mut proj,
+                &rs,
+                &tools,
+                &mut history,
+                OperationTab::Passes,
+                click_pos_events(hw_opt),
+                &mut time,
+            );
+            assert_eq!(
+                history.peek_undo_label(),
+                Some("Change V-Carve Clearing Preset")
+            );
+            if let StrategyParams::VCarve(p) = proj.setups[0].operations[0].resolved_strategy() {
+                assert_eq!(p.clearing_preset_id.as_deref(), Some("hardwood_clear"));
+            } else {
+                panic!("expected VCarve strategy");
+            }
+        }
     }
 }

@@ -71,6 +71,15 @@ impl DisplayUnit {
         }
     }
 
+    /// Converts an area expressed in `mm²` or `in²` into canonical `mm²`.
+    #[inline]
+    pub fn area_to_mm2(self, val: f64) -> f64 {
+        match self {
+            Self::Millimeter => val,
+            Self::Inch => val * (MM_PER_INCH * MM_PER_INCH),
+        }
+    }
+
     /// Feedrate unit suffix (`"mm/min"` or `"ipm"`).
     pub const fn feed_suffix(self) -> &'static str {
         match self {
@@ -168,6 +177,12 @@ mod tests {
     fn unit_conversions_are_exact() {
         assert!(approx_eq(DisplayUnit::Inch.to_mm(0.25), 6.35, 1e-12));
         assert!(approx_eq(DisplayUnit::Inch.from_mm(25.4), 1.0, 1e-12));
+        assert!(approx_eq(
+            DisplayUnit::Inch.area_from_mm2(645.16),
+            1.0,
+            1e-12
+        ));
+        assert!(approx_eq(DisplayUnit::Inch.area_to_mm2(1.0), 645.16, 1e-12));
         assert_eq!(DisplayUnit::Millimeter.format_length(12.5), "12.500 mm");
         assert_eq!(DisplayUnit::Inch.format_length(6.35), "0.2500 in");
     }

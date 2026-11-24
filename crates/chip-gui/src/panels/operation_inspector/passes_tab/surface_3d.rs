@@ -3,6 +3,7 @@ use chip_cam::{
     Rotary2LinearParams, Rotary4AxisPattern, Rotary4AxisSimParams, RotaryCutDirection,
     RotaryPatternMode, RotaryTiltMode, Scallop3DParams, Waterline3DParams, WaterlineOrderMode,
 };
+use chip_math::DisplayUnit;
 
 use super::{COMBO_COL_WIDTH, PassItemCtx};
 use crate::widgets::section_card;
@@ -134,6 +135,7 @@ pub(super) fn show_adaptive3d_params(
     mut item: PassItemCtx<'_>,
 ) {
     let (setup_idx, op_idx) = item.ids();
+    let unit = item.eval_ctx.default_unit;
 
     section_card(
         ui,
@@ -147,6 +149,12 @@ pub(super) fn show_adaptive3d_params(
                     "Optimal Load (ae)",
                     &mut p.adaptive.optimal_load,
                     "Edit 3D Adaptive Optimal Load",
+                );
+                f.set_tip("Minimum trochoidal loop radius permitted in tight 3D pockets and corners");
+                f.len(
+                    "Min Trochoid R",
+                    &mut p.adaptive.min_trochoid_radius,
+                    "Edit 3D Adaptive Min Trochoid Radius",
                 );
                 f.set_tip("Primary coarse roughing Z stepdown (ap)");
                 f.len(
@@ -167,11 +175,51 @@ pub(super) fn show_adaptive3d_params(
                     "Land on flat plateaus",
                     "Toggle 3D Adaptive Detect Flats",
                 );
+                if p.detect_flats {
+                    let area_suffix = match unit {
+                        DisplayUnit::Millimeter => " mm2",
+                        DisplayUnit::Inch => " in2",
+                    };
+                    let area_decimals = if unit == DisplayUnit::Inch { 4 } else { 2 };
+                    let mut area_disp = unit.area_from_mm2(p.flat_area_min_mm2);
+                    let area_min = unit.area_from_mm2(0.1);
+                    let area_max = unit.area_from_mm2(100_000.0);
+                    let area_speed = unit.area_from_mm2(0.5);
+                    f.set_tip(
+                        "Minimum horizontal plateau area required to inject an exact flat-landing Z level",
+                    );
+                    f.row("Min Flat Area", |ui, mutated| {
+                        if ui
+                            .add(
+                                egui::DragValue::new(&mut area_disp)
+                                    .speed(area_speed)
+                                    .max_decimals(area_decimals)
+                                    .range(area_min..=area_max)
+                                    .suffix(area_suffix),
+                            )
+                            .on_hover_text(
+                                "Minimum horizontal plateau surface area considered for flat-level detection",
+                            )
+                            .changed()
+                        {
+                            p.flat_area_min_mm2 = unit.area_to_mm2(area_disp).max(0.01);
+                            *mutated = Some("Edit 3D Adaptive Min Flat Area");
+                        }
+                    });
+                }
                 f.set_tip("Small Z micro-lift during high-speed non-cutting stay-down links");
                 f.len(
                     "Micro-Lift Z",
                     &mut p.adaptive.micro_lift_z,
                     "Edit 3D Adaptive Micro-Lift",
+                );
+                f.set_tip("Feedrate multiplier applied during high-speed non-cutting stay-down links");
+                f.drag(
+                    "Stay-Down Feed",
+                    &mut p.adaptive.no_engagement_feed_multiplier,
+                    1.0..=5.0,
+                    (0.1, "x"),
+                    "Edit 3D Adaptive Stay-Down Feed Multiplier",
                 );
                 f.set_tip("Boost feedrate automatically to maintain constant chip thickness at light radial loads");
                 f.check(
@@ -180,6 +228,16 @@ pub(super) fn show_adaptive3d_params(
                     "Compensate Feedrate",
                     "Toggle 3D Adaptive Chip Thinning",
                 );
+                if p.adaptive.auto_chip_thinning {
+                    f.set_tip("Upper cap on radial chip-thinning feedrate multiplier");
+                    f.drag(
+                        "Max RCT Boost",
+                        &mut p.adaptive.max_thinning_feed_multiplier,
+                        1.0..=3.5,
+                        (0.05, "x"),
+                        "Edit 3D Adaptive Max Chip-Thinning Multiplier",
+                    );
+                }
                 f.set_tip("Preferred milling direction along trochoidal peels");
                 f.row("Cut Direction", |ui, mutated| {
                     let prev = p.adaptive.cut_direction;
