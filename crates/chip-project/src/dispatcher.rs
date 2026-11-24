@@ -11,8 +11,8 @@ use std::{
 use chip_cad::CadDocument;
 use chip_cam::{
     CamError, FixtureKind, GeneratedToolpath, Operation, OperationGenRequest, OperationRotaryMode,
-    OperationStatus, Setup, UpstreamSweptInput, generate_operation_toolpath_with_fixtures,
-    normalize_indexed_angle_deg, resolve_setup_fixtures,
+    OperationStatus, Setup, SharedAvoidRegion, UpstreamSweptInput,
+    generate_operation_toolpath_with_fixtures, normalize_indexed_angle_deg, resolve_setup_fixtures,
 };
 use chip_math::DisplayUnit;
 use chip_sim::{SimComputeBackendChoice, SimResolution, TriDexelStock};
@@ -84,6 +84,7 @@ pub enum DispatcherEvent {
 struct QueuedOpTask {
     setup: Setup,
     sketches: Arc<Vec<SketchLayer>>,
+    shared_avoid_regions: Arc<Vec<SharedAvoidRegion>>,
     fixture_docs: Arc<BTreeMap<String, Arc<CadDocument>>>,
     machine_z_travel_mm: Option<f64>,
     op: Operation,
@@ -506,6 +507,7 @@ impl JobDispatcher {
         }
         self.active_cad = Some((Arc::clone(&cad_doc), cad_revision));
         let shared_sketches = Arc::new(project.sketches.clone());
+        let shared_avoid_regions = Arc::new(project.avoid_regions.clone());
         let mut tasks = Vec::new();
         let mut queued_count = 0usize;
 
@@ -692,6 +694,7 @@ impl JobDispatcher {
                         tasks.push(QueuedOpTask {
                             setup: project.setups[s_idx].clone(),
                             sketches: Arc::clone(&shared_sketches),
+                            shared_avoid_regions: Arc::clone(&shared_avoid_regions),
                             fixture_docs: Arc::clone(&self.active_fixture_docs),
                             machine_z_travel_mm: machine_z,
                             op: project.setups[s_idx].operations[o_idx].clone(),
@@ -1009,6 +1012,7 @@ impl JobDispatcher {
             && saved_rev == cad_revision
         {
             let shared_sketches = Arc::new(project.sketches.clone());
+            let shared_avoid_regions = Arc::new(project.avoid_regions.clone());
             let mut next_tasks = Vec::new();
             let mut to_spawn_carryover: Vec<(usize, u64)> = Vec::new();
             let mut to_spawn_in_setup_carryover: Vec<(usize, Vec<usize>, u64)> = Vec::new();
@@ -1124,6 +1128,7 @@ impl JobDispatcher {
                             next_tasks.push(QueuedOpTask {
                                 setup: project.setups[s_idx].clone(),
                                 sketches: Arc::clone(&shared_sketches),
+                                shared_avoid_regions: Arc::clone(&shared_avoid_regions),
                                 fixture_docs: Arc::clone(&self.active_fixture_docs),
                                 machine_z_travel_mm: machine_z,
                                 op: project.setups[s_idx].operations[o_idx].clone(),
@@ -1229,9 +1234,13 @@ fn execute_single_task(
     let tool = task.tool.as_ref().ok_or_else(|| CamError::MissingTool {
         op_name: task.op.name.clone(),
     })?;
-    let resolved_fixtures = if task.setup.auto_avoid_fixtures_on_rapids
-        && task.setup.fixtures.iter().any(|f| f.enabled)
-    {
+    let needs_fixtures = task.setup.fixtures.iter().any(|f| f.enabled)
+        && (task.setup.auto_avoid_fixtures_on_rapids
+            || task
+                .op
+                .avoid
+                .references_fixtures(&task.shared_avoid_regions));
+    let resolved_fixtures = if needs_fixtures {
         resolve_setup_fixtures(&task.setup, &resolved_setup, task.display_unit, |id| {
             task.fixture_docs.get(id).map(Arc::as_ref)
         })?
@@ -1250,6 +1259,8 @@ fn execute_single_task(
             is_first_tool_in_setup: task.is_first_tool_in_setup,
             upstream_rest: &task.upstream_rest,
             carryover_stock: task.carryover_stock.clone(),
+            fixtures: &resolved_fixtures,
+            shared_avoid_regions: &task.shared_avoid_regions,
             cancel: &task.cancel_token,
         },
         &resolved_fixtures,
@@ -1312,7 +1323,11 @@ pub fn generate_project_blocking_in_dir(
     }
 
     let needs_imported_fixtures = project.setups.iter().any(|s| {
-        s.auto_avoid_fixtures_on_rapids
+        let setup_uses_fixtures = s.auto_avoid_fixtures_on_rapids
+            || s.operations
+                .iter()
+                .any(|o| !o.suppressed && o.avoid.references_fixtures(&project.avoid_regions));
+        setup_uses_fixtures
             && s.fixtures
                 .iter()
                 .any(|f| f.enabled && matches!(f.kind, FixtureKind::ImportedModel { .. }))
@@ -1335,6 +1350,7 @@ pub fn generate_project_blocking_in_dir(
 
     let mut processed: HashSet<(usize, usize)> = HashSet::new();
     let shared_sketches = Arc::new(project.sketches.clone());
+    let shared_avoid_regions = Arc::new(project.avoid_regions.clone());
     let mut carryover_cache: HashMap<(usize, u64), Arc<TriDexelStock>> = HashMap::new();
     let mut carryover_errors: HashMap<(usize, u64), String> = HashMap::new();
 
@@ -1514,6 +1530,7 @@ pub fn generate_project_blocking_in_dir(
                             QueuedOpTask {
                                 setup: project.setups[s_idx].clone(),
                                 sketches: Arc::clone(&shared_sketches),
+                                shared_avoid_regions: Arc::clone(&shared_avoid_regions),
                                 fixture_docs: Arc::clone(&shared_fixture_docs),
                                 machine_z_travel_mm,
                                 op: op.clone(),

@@ -4,7 +4,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     heights::OperationHeights,
-    params::{LinkingParams, MachiningBoundaryConfig, PassesParams, StrategyParams},
+    params::{
+        AvoidRegionConfig, LinkingParams, MachiningBoundaryConfig, PassesParams, StrategyParams,
+    },
     rotary::OperationRotaryMode,
     selection::GeometrySelectionItem,
 };
@@ -298,6 +300,8 @@ pub struct Operation {
     pub passes: PassesParams,
     #[serde(default)]
     pub linking: LinkingParams,
+    #[serde(default, skip_serializing_if = "AvoidRegionConfig::is_empty")]
+    pub avoid: AvoidRegionConfig,
     #[serde(default, skip_serializing_if = "OperationRotaryMode::is_none")]
     pub rotary: OperationRotaryMode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -377,6 +381,7 @@ impl Operation {
             heights,
             passes,
             linking: LinkingParams::default(),
+            avoid: AvoidRegionConfig::default(),
             rotary: OperationRotaryMode::None,
             strategy: Some(StrategyParams::default_for_kind(kind)),
             runtime_status: OperationStatus::Dirty,
@@ -485,11 +490,12 @@ impl Operation {
         self.strategy_mut().machining_boundary_mut()
     }
 
-    /// Re-evaluates all inline parameter formulas (`heights`, `passes`, `linking`, `strategy`) under `ctx`.
+    /// Re-evaluates all inline parameter formulas (`heights`, `passes`, `linking`, `avoid`, `strategy`) under `ctx`.
     pub fn reevaluate_all(&mut self, ctx: &EvalContext) {
         self.heights.reevaluate(ctx);
         self.passes.reevaluate(ctx);
         self.linking.reevaluate(ctx);
+        self.avoid.reevaluate(ctx);
         self.rotary.reevaluate(ctx);
         if let Some(s) = &mut self.strategy {
             s.reevaluate(ctx);

@@ -355,6 +355,8 @@ fn relief_wave_09_finishing_tridexel_oracle_eliminates_gouge() {
         is_first_tool_in_setup: true,
         upstream_rest: &[],
         carryover_stock: None,
+        fixtures: &[],
+        shared_avoid_regions: &[],
         cancel: &cancel,
     })
     .unwrap();
@@ -369,6 +371,8 @@ fn relief_wave_09_finishing_tridexel_oracle_eliminates_gouge() {
         is_first_tool_in_setup: false,
         upstream_rest: &[],
         carryover_stock: None,
+        fixtures: &[],
+        shared_avoid_regions: &[],
         cancel: &cancel,
     })
     .unwrap();
@@ -383,6 +387,8 @@ fn relief_wave_09_finishing_tridexel_oracle_eliminates_gouge() {
         is_first_tool_in_setup: false,
         upstream_rest: &[],
         carryover_stock: None,
+        fixtures: &[],
+        shared_avoid_regions: &[],
         cancel: &cancel,
     })
     .unwrap();
@@ -466,6 +472,8 @@ fn pencil3d_diagonal_concave_fillet_subcell_centering_tracks_exact_crease_within
         is_first_tool_in_setup: true,
         upstream_rest: &[],
         carryover_stock: None,
+        fixtures: &[],
+        shared_avoid_regions: &[],
         cancel: &cancel,
     })
     .unwrap();
@@ -570,6 +578,8 @@ fn waterline3d_localized_shallow_shelf_inserts_adaptive_z_levels_despite_small_a
         is_first_tool_in_setup: true,
         upstream_rest: &[],
         carryover_stock: None,
+        fixtures: &[],
+        shared_avoid_regions: &[],
         cancel: &cancel,
     })
     .unwrap();
@@ -584,6 +594,8 @@ fn waterline3d_localized_shallow_shelf_inserts_adaptive_z_levels_despite_small_a
         is_first_tool_in_setup: true,
         upstream_rest: &[],
         carryover_stock: None,
+        fixtures: &[],
+        shared_avoid_regions: &[],
         cancel: &cancel,
     })
     .unwrap();
@@ -716,6 +728,8 @@ fn sculpted_dome_08_tridexel_oracle_zero_gouge_and_clean_crown() {
         is_first_tool_in_setup: true,
         upstream_rest: &[],
         carryover_stock: None,
+        fixtures: &[],
+        shared_avoid_regions: &[],
         cancel: &cancel,
     })
     .unwrap();
@@ -730,6 +744,8 @@ fn sculpted_dome_08_tridexel_oracle_zero_gouge_and_clean_crown() {
         is_first_tool_in_setup: false,
         upstream_rest: &[],
         carryover_stock: None,
+        fixtures: &[],
+        shared_avoid_regions: &[],
         cancel: &cancel,
     })
     .unwrap();
@@ -744,6 +760,8 @@ fn sculpted_dome_08_tridexel_oracle_zero_gouge_and_clean_crown() {
         is_first_tool_in_setup: false,
         upstream_rest: &[],
         carryover_stock: None,
+        fixtures: &[],
+        shared_avoid_regions: &[],
         cancel: &cancel,
     })
     .unwrap();
@@ -919,6 +937,8 @@ fn adaptive3d_indexed_helical_loft_zero_gouge_and_zero_rapid_crashes() {
         is_first_tool_in_setup: true,
         upstream_rest: &[],
         carryover_stock: None,
+        fixtures: &[],
+        shared_avoid_regions: &[],
         cancel: &cancel,
     })
     .unwrap();
@@ -1022,6 +1042,8 @@ fn adaptive3d_indexed_helical_loft_zero_gouge_and_zero_rapid_crashes() {
             is_first_tool_in_setup: idx == 0,
             upstream_rest: &[],
             carryover_stock: None,
+            fixtures: &[],
+            shared_avoid_regions: &[],
             cancel: &cancel,
         })
         .unwrap();

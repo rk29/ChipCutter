@@ -297,6 +297,8 @@ fn adaptive3d_and_waterline3d_wider_shank_overhang_pass_tridexel_zero_collisions
         is_first_tool_in_setup: true,
         upstream_rest: &[],
         carryover_stock: None,
+        fixtures: &[],
+        shared_avoid_regions: &[],
         cancel: &cancel,
     })
     .unwrap();
@@ -333,6 +335,8 @@ fn adaptive3d_and_waterline3d_wider_shank_overhang_pass_tridexel_zero_collisions
         is_first_tool_in_setup: false,
         upstream_rest: &[],
         carryover_stock: None,
+        fixtures: &[],
+        shared_avoid_regions: &[],
         cancel: &cancel,
     })
     .unwrap();
@@ -447,6 +451,8 @@ fn adaptive3d_and_waterline3d_holder_clearance_avoids_tall_overhang_in_tridexel(
         is_first_tool_in_setup: true,
         upstream_rest: &[],
         carryover_stock: None,
+        fixtures: &[],
+        shared_avoid_regions: &[],
         cancel: &cancel,
     })
     .unwrap();
@@ -481,6 +487,8 @@ fn adaptive3d_and_waterline3d_holder_clearance_avoids_tall_overhang_in_tridexel(
         is_first_tool_in_setup: false,
         upstream_rest: &[],
         carryover_stock: None,
+        fixtures: &[],
+        shared_avoid_regions: &[],
         cancel: &cancel,
     })
     .unwrap();
@@ -662,6 +670,8 @@ fn overhang_guard_warns_and_opt_in_avoidance_protects_25d_ops_beneath_bridge() {
         is_first_tool_in_setup: true,
         upstream_rest: &[],
         carryover_stock: None,
+        fixtures: &[],
+        shared_avoid_regions: &[],
         cancel: &cancel,
     })
     .unwrap();
@@ -686,6 +696,8 @@ fn overhang_guard_warns_and_opt_in_avoidance_protects_25d_ops_beneath_bridge() {
         is_first_tool_in_setup: true,
         upstream_rest: &[],
         carryover_stock: None,
+        fixtures: &[],
+        shared_avoid_regions: &[],
         cancel: &cancel,
     })
     .unwrap();
@@ -722,6 +734,8 @@ fn overhang_guard_warns_and_opt_in_avoidance_protects_25d_ops_beneath_bridge() {
         is_first_tool_in_setup: false,
         upstream_rest: &[],
         carryover_stock: None,
+        fixtures: &[],
+        shared_avoid_regions: &[],
         cancel: &cancel,
     })
     .unwrap();
@@ -746,6 +760,8 @@ fn overhang_guard_warns_and_opt_in_avoidance_protects_25d_ops_beneath_bridge() {
         is_first_tool_in_setup: false,
         upstream_rest: &[],
         carryover_stock: None,
+        fixtures: &[],
+        shared_avoid_regions: &[],
         cancel: &cancel,
     })
     .unwrap();
@@ -782,6 +798,8 @@ fn overhang_guard_warns_and_opt_in_avoidance_protects_25d_ops_beneath_bridge() {
         is_first_tool_in_setup: false,
         upstream_rest: &[],
         carryover_stock: None,
+        fixtures: &[],
+        shared_avoid_regions: &[],
         cancel: &cancel,
     })
     .unwrap();
@@ -806,6 +824,8 @@ fn overhang_guard_warns_and_opt_in_avoidance_protects_25d_ops_beneath_bridge() {
         is_first_tool_in_setup: false,
         upstream_rest: &[],
         carryover_stock: None,
+        fixtures: &[],
+        shared_avoid_regions: &[],
         cancel: &cancel,
     })
     .unwrap();
@@ -848,6 +868,8 @@ fn overhang_guard_warns_and_opt_in_avoidance_protects_25d_ops_beneath_bridge() {
         is_first_tool_in_setup: false,
         upstream_rest: &[],
         carryover_stock: None,
+        fixtures: &[],
+        shared_avoid_regions: &[],
         cancel: &cancel,
     })
     .unwrap();
@@ -872,6 +894,8 @@ fn overhang_guard_warns_and_opt_in_avoidance_protects_25d_ops_beneath_bridge() {
         is_first_tool_in_setup: false,
         upstream_rest: &[],
         carryover_stock: None,
+        fixtures: &[],
+        shared_avoid_regions: &[],
         cancel: &cancel,
     })
     .unwrap();
@@ -989,6 +1013,8 @@ fn normal_prismatic_step_bracket_emits_zero_false_overhang_warnings() {
         is_first_tool_in_setup: true,
         upstream_rest: &[],
         carryover_stock: None,
+        fixtures: &[],
+        shared_avoid_regions: &[],
         cancel: &cancel,
     })
     .unwrap();
@@ -1026,6 +1052,8 @@ fn normal_prismatic_step_bracket_emits_zero_false_overhang_warnings() {
         is_first_tool_in_setup: false,
         upstream_rest: &[],
         carryover_stock: None,
+        fixtures: &[],
+        shared_avoid_regions: &[],
         cancel: &cancel,
     })
     .unwrap();
@@ -1064,6 +1092,8 @@ fn normal_prismatic_step_bracket_emits_zero_false_overhang_warnings() {
         is_first_tool_in_setup: false,
         upstream_rest: &[],
         carryover_stock: None,
+        fixtures: &[],
+        shared_avoid_regions: &[],
         cancel: &cancel,
     })
     .unwrap();
@@ -1109,6 +1139,8 @@ fn normal_prismatic_step_bracket_emits_zero_false_overhang_warnings() {
         is_first_tool_in_setup: false,
         upstream_rest: &[],
         carryover_stock: None,
+        fixtures: &[],
+        shared_avoid_regions: &[],
         cancel: &cancel,
     })
     .unwrap();
@@ -1141,6 +1173,8 @@ fn normal_prismatic_step_bracket_emits_zero_false_overhang_warnings() {
         is_first_tool_in_setup: false,
         upstream_rest: &[],
         carryover_stock: None,
+        fixtures: &[],
+        shared_avoid_regions: &[],
         cancel: &cancel,
     })
     .unwrap();

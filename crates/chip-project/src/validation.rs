@@ -185,6 +185,33 @@ pub fn validate_project_with_machine(
         }
     }
 
+    // 2a. Validate project-level reusable Shared Avoid / Keep-Out regions
+    for shared in &project.avoid_regions {
+        let scope = format!("Shared Avoid Region '{}'", shared.name);
+        if let Some(ref rad) = shared.radial_clearance
+            && (!rad.value_mm.is_finite() || rad.value_mm < -1e-9)
+        {
+            report.push_error(
+                &scope,
+                format!(
+                    "shared avoid radial_clearance ({:.3} mm) must be finite and >= 0.",
+                    rad.value_mm
+                ),
+            );
+        }
+        if let Some(ref ax) = shared.axial_clearance
+            && (!ax.value_mm.is_finite() || ax.value_mm < -1e-9)
+        {
+            report.push_error(
+                &scope,
+                format!(
+                    "shared avoid axial_clearance ({:.3} mm) must be finite and >= 0.",
+                    ax.value_mm
+                ),
+            );
+        }
+    }
+
     // 2b. Validate multi-setup volumetric stock carryover references (must precede current setup)
     for (s_idx, setup) in project.setups.iter().enumerate() {
         if let Some(ref src_id) = setup.carryover_from_setup_id {
@@ -460,6 +487,79 @@ pub fn validate_project_with_machine(
                                     op.name
                                 ),
                             );
+                        }
+                    }
+                }
+
+                // Validate per-operation & linked shared Avoid / Keep-Out regions (`M85`)
+                {
+                    let mut eval_avoid = op.avoid.clone();
+                    if let Some(tid) = &op.tool_id
+                        && let Some(tool) = project.tool(tid)
+                    {
+                        let mut avoid_ctx = eval_ctx.clone();
+                        tool.populate_eval_context(&mut avoid_ctx);
+                        eval_avoid.reevaluate(&avoid_ctx);
+                    } else {
+                        eval_avoid.reevaluate(&eval_ctx);
+                    }
+                    if !eval_avoid.radial_clearance.value_mm.is_finite()
+                        || eval_avoid.radial_clearance.value_mm < -1e-9
+                    {
+                        report.push_error(
+                            &op_scope,
+                            format!(
+                                "Avoid / Keep-Out radial_clearance ({:.3} mm) must be finite and >= 0.",
+                                eval_avoid.radial_clearance.value_mm
+                            ),
+                        );
+                    }
+                    if !eval_avoid.axial_clearance.value_mm.is_finite()
+                        || eval_avoid.axial_clearance.value_mm < -1e-9
+                    {
+                        report.push_error(
+                            &op_scope,
+                            format!(
+                                "Avoid / Keep-Out axial_clearance ({:.3} mm) must be finite and >= 0.",
+                                eval_avoid.axial_clearance.value_mm
+                            ),
+                        );
+                    }
+                    for fid in &op.avoid.fixture_ids {
+                        if !setup.fixtures.iter().any(|f| f.id == *fid) {
+                            report.push_error(
+                                &op_scope,
+                                format!(
+                                    "Avoid / Keep-Out references missing fixture_id '{fid}' in Setup '{}'.",
+                                    setup.name
+                                ),
+                            );
+                        }
+                    }
+                    for sid in &op.avoid.shared_region_ids {
+                        match project.avoid_region(sid) {
+                            None => {
+                                report.push_error(
+                                    &op_scope,
+                                    format!(
+                                        "Avoid / Keep-Out references missing shared_region_id '{sid}'."
+                                    ),
+                                );
+                            }
+                            Some(shared) if !shared.suppressed => {
+                                for fid in &shared.fixture_ids {
+                                    if !setup.fixtures.iter().any(|f| f.id == *fid) {
+                                        report.push_error(
+                                            &op_scope,
+                                            format!(
+                                                "Linked shared Avoid / Keep-Out '{}' references missing fixture_id '{fid}' in Setup '{}'.",
+                                                shared.name, setup.name
+                                            ),
+                                        );
+                                    }
+                                }
+                            }
+                            Some(_) => {}
                         }
                     }
                 }

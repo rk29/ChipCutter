@@ -9,6 +9,7 @@ use chip_math::{Aabb2, ArcPolyline2D, ArcSegment2D, DVec2, DVec3, ParamLength};
 use chip_tools::{CutterGeometry, Tool, ToolOperationClass};
 
 use crate::{
+    avoid_regions::clip_polyline_outside_avoid,
     cl_data::{ClEvent, MotionRole},
     heights::ResolvedHeights,
     medial::{MedialChain2D, MedialNode2D, extract_medial_axis_chains},
@@ -20,6 +21,7 @@ use crate::{
     rest2d::RegionSet2D,
     selection::{ExtractedFeature25D, ExtractedSelectionSummary},
     strategies::{StrategyExecContext, compute_z_levels, pocket2d},
+    surface3d::is_2d_segment_clear_of_avoid,
     toolpath::{ClearingSubToolpath, GeneratedToolpath, SegmentMotion3D, ToolpathBuilder},
     wcs::CamError,
 };
@@ -134,6 +136,11 @@ pub fn generate_vcarve(
     }
 
     // 5. Stage 2: V-Bit Bevel, Sharp 3D Corner Climbs, Medial Strokes, & Rest-Machined Flat Corners!
+    let avoid_2d = ctx.resolve_avoid_2d(top_z - target_max_depth, top_z);
+    builder.warnings.extend(avoid_2d.warnings);
+    let avoid_keepout = avoid_2d.effective_region;
+    let avoid_keepout_opt = (!avoid_keepout.is_empty()).then_some(&avoid_keepout);
+
     let retract_z = ctx.safe_retract_z();
     let vbit_flat_step = params
         .vbit_flat_stepover
@@ -156,6 +163,7 @@ pub fn generate_vcarve(
                         retract_z,
                     },
                     &z_levels,
+                    avoid_keepout_opt,
                 )?;
             }
             Some(d_flat) => {
@@ -173,6 +181,7 @@ pub fn generate_vcarve(
                         vbit_flat_step,
                         retract_z,
                         stage1_swept: stage1_swept_coverage.as_ref(),
+                        avoid_keepout: avoid_keepout_opt,
                     },
                     &z_levels,
                 )?;
@@ -200,6 +209,7 @@ struct FlatVCarveSpec<'a> {
     vbit_flat_step: f64,
     retract_z: f64,
     stage1_swept: Option<&'a RegionSet2D>,
+    avoid_keepout: Option<&'a RegionSet2D>,
 }
 
 fn collect_source_vcarve_regions(
@@ -451,9 +461,11 @@ fn try_generate_flat_clearing_stage(
 
     let stage1_ctx = StrategyExecContext {
         doc: ctx.doc,
+        sketches: ctx.sketches,
         setup: ctx.setup,
         op: ctx.op,
         tool: clear_tool,
+        display_unit: ctx.display_unit,
         cutting: clear_cutting,
         heights: stage1_heights,
         passes: stage1_passes,
@@ -471,6 +483,8 @@ fn try_generate_flat_clearing_stage(
         },
         upstream_rest: &[],
         carryover_stock: ctx.carryover_stock,
+        fixtures: ctx.fixtures,
+        shared_avoid_regions: ctx.shared_avoid_regions,
         is_first_tool_in_setup: ctx.is_first_tool_in_setup,
         clearing_tool: None,
         cancel: ctx.cancel,
@@ -585,6 +599,7 @@ fn emit_pure_medial_vcarve_region(
     region: &PocketRegion2D,
     kin: &VBitKinematics,
     z_levels: &[f64],
+    avoid_keepout: Option<&RegionSet2D>,
 ) -> Result<(), CamError> {
     // Tight 0.005 mm chord tolerance for pure medial V-carving so narrow serif tips
     // and sharp 3D corner climbs carve cleanly with zero flattened blunting.
@@ -620,7 +635,16 @@ fn emit_pure_medial_vcarve_region(
         };
 
         for chain in &chains {
-            emit_medial_chain_at_level(ctx, builder, chain, kin, None, z_floor_lvl, prev_z_lvl);
+            emit_medial_chain_at_level(
+                ctx,
+                builder,
+                chain,
+                kin,
+                None,
+                z_floor_lvl,
+                prev_z_lvl,
+                avoid_keepout,
+            );
         }
     }
     Ok(())
@@ -724,7 +748,14 @@ fn emit_flat_clamped_vcarve_region(
                 let mut loops = Vec::new();
                 collect_offset_loops_inside_out(&tree, &mut loops);
                 for lp in loops {
-                    emit_constant_z_loop(ctx, builder, &lp, z_lvl, spec.retract_z);
+                    emit_constant_z_loop(
+                        ctx,
+                        builder,
+                        &lp,
+                        z_lvl,
+                        spec.retract_z,
+                        spec.avoid_keepout,
+                    );
                 }
             }
         }
@@ -732,9 +763,16 @@ fn emit_flat_clamped_vcarve_region(
         // 1b. Exact Bevel Wall Perimeter Pass at `z_lvl` (`OffsetInward(region, r_lvl)`)
         // If `d_lvl > max_cone_depth`, step outward slightly to clear upper cone terrace cleanly
         for bevel_reg in region.erode_inward(r_lvl) {
-            emit_constant_z_loop(ctx, builder, &bevel_reg.outer_ccw, z_lvl, spec.retract_z);
+            emit_constant_z_loop(
+                ctx,
+                builder,
+                &bevel_reg.outer_ccw,
+                z_lvl,
+                spec.retract_z,
+                spec.avoid_keepout,
+            );
             for isl in &bevel_reg.islands_cw {
-                emit_constant_z_loop(ctx, builder, isl, z_lvl, spec.retract_z);
+                emit_constant_z_loop(ctx, builder, isl, z_lvl, spec.retract_z, spec.avoid_keepout);
             }
             let _ = spec.max_cone_depth;
         }
@@ -756,6 +794,7 @@ fn emit_flat_clamped_vcarve_region(
                 Some(r_max),
                 z_lvl.max(z_flat),
                 prev_z_lvl,
+                spec.avoid_keepout,
             );
         }
     }
@@ -782,45 +821,63 @@ fn emit_constant_z_loop(
     poly: &ArcPolyline2D,
     z_cut: f64,
     retract_z: f64,
+    avoid_keepout: Option<&RegionSet2D>,
 ) {
-    let Some((s_xy, _)) = poly.sample_at_fraction(0.0) else {
-        return;
-    };
-    builder.pass_count += 1;
-    let need_retract = builder.current_pos().is_none_or(|cur| {
-        let xy_jump = DVec2::new(cur.x, cur.y).distance(s_xy);
-        xy_jump > 1.5 || (cur.z - z_cut).abs() > 2.0
-    });
-    if need_retract {
-        if let Some(cur) = builder.current_pos()
-            && cur.z < retract_z - 1e-6
-        {
-            builder.rapid_to(DVec3::new(cur.x, cur.y, retract_z));
-        }
-        builder.rapid_to(DVec3::new(s_xy.x, s_xy.y, retract_z));
-        builder.rapid_to(DVec3::new(s_xy.x, s_xy.y, ctx.heights.feed_z_wcs));
-        builder.linear_to(
-            DVec3::new(s_xy.x, s_xy.y, z_cut),
-            ctx.cutting.plunge_feed_mm_min,
-            MotionRole::Plunge,
-        );
+    let spans: Vec<ArcPolyline2D> = if let Some(av) = avoid_keepout
+        && !av.is_empty()
+    {
+        clip_polyline_outside_avoid(poly, av)
+            .into_iter()
+            .filter(|sp| sp.perimeter() > 0.05)
+            .collect()
     } else {
-        builder.linear_to(
-            DVec3::new(s_xy.x, s_xy.y, z_cut),
-            ctx.cutting.lead_feed_mm_min,
-            MotionRole::LinkTransition,
+        vec![poly.clone()]
+    };
+
+    for span in &spans {
+        let Some((s_xy, _)) = span.sample_at_fraction(0.0) else {
+            continue;
+        };
+        builder.pass_count += 1;
+        let need_retract = builder.current_pos().is_none_or(|cur| {
+            let cur_xy = DVec2::new(cur.x, cur.y);
+            let xy_jump = cur_xy.distance(s_xy);
+            xy_jump > 1.5
+                || (cur.z - z_cut).abs() > 2.0
+                || avoid_keepout.is_some_and(|av| !is_2d_segment_clear_of_avoid(cur_xy, s_xy, av))
+        });
+        if need_retract {
+            if let Some(cur) = builder.current_pos()
+                && cur.z < retract_z - 1e-6
+            {
+                builder.rapid_to(DVec3::new(cur.x, cur.y, retract_z));
+            }
+            builder.rapid_to(DVec3::new(s_xy.x, s_xy.y, retract_z));
+            builder.rapid_to(DVec3::new(s_xy.x, s_xy.y, ctx.heights.feed_z_wcs));
+            builder.linear_to(
+                DVec3::new(s_xy.x, s_xy.y, z_cut),
+                ctx.cutting.plunge_feed_mm_min,
+                MotionRole::Plunge,
+            );
+        } else {
+            builder.linear_to(
+                DVec3::new(s_xy.x, s_xy.y, z_cut),
+                ctx.cutting.lead_feed_mm_min,
+                MotionRole::LinkTransition,
+            );
+        }
+
+        builder.emit_polyline_2d_z_interp(
+            span,
+            z_cut,
+            z_cut,
+            ctx.cutting.cutting_feed_mm_min,
+            MotionRole::Cut,
         );
     }
-
-    builder.emit_polyline_2d_z_interp(
-        poly,
-        z_cut,
-        z_cut,
-        ctx.cutting.cutting_feed_mm_min,
-        MotionRole::Cut,
-    );
 }
 
+#[allow(clippy::too_many_arguments)]
 fn emit_medial_chain_at_level(
     ctx: &StrategyExecContext<'_>,
     builder: &mut ToolpathBuilder,
@@ -829,6 +886,7 @@ fn emit_medial_chain_at_level(
     r_flat_clip: Option<f64>,
     z_floor_lvl: f64,
     prev_z_lvl: f64,
+    avoid_keepout: Option<&RegionSet2D>,
 ) {
     if chain.samples.is_empty() {
         return;
@@ -837,6 +895,9 @@ fn emit_medial_chain_at_level(
     // Single-point dimple (e.g. circular dot 'i' / '!')
     if chain.samples.len() == 1 {
         let s = chain.samples[0];
+        if avoid_keepout.is_some_and(|av| av.contains_point(s.pos_wcs)) {
+            return;
+        }
         if r_flat_clip.is_some_and(|rc| s.clearance_radius_mm > rc + 1e-4) {
             return;
         }
@@ -865,10 +926,18 @@ fn emit_medial_chain_at_level(
     }
 
     // Clip chain into continuous sub-polylines where `r <= r_flat_clip` (splitting exact crossing `r == r_flat_clip`!)
-    let clipped_subchains = match r_flat_clip {
+    let mut clipped_subchains = match r_flat_clip {
         Some(r_lim) => clip_medial_chain_below_radius(&chain.samples, r_lim),
         None => vec![chain.samples.clone()],
     };
+    if let Some(av) = avoid_keepout
+        && !av.is_empty()
+    {
+        clipped_subchains = clipped_subchains
+            .into_iter()
+            .flat_map(|sub| clip_medial_samples_outside_region(&sub, av))
+            .collect();
+    }
 
     for sub in clipped_subchains {
         if sub.len() < 2 {
@@ -903,9 +972,16 @@ fn emit_medial_chain_at_level(
         }
 
         let start = pts_3d[0];
-        let can_link = builder
-            .current_pos()
-            .is_some_and(|cur| cur.distance(start) <= 0.05);
+        let can_link = builder.current_pos().is_some_and(|cur| {
+            cur.distance(start) <= 0.05
+                && avoid_keepout.is_none_or(|av| {
+                    is_2d_segment_clear_of_avoid(
+                        DVec2::new(cur.x, cur.y),
+                        DVec2::new(start.x, start.y),
+                        av,
+                    )
+                })
+        });
         if !can_link {
             if let Some(cur) = builder.current_pos()
                 && cur.z < kin.retract_z - 1e-6
@@ -922,6 +998,109 @@ fn emit_medial_chain_at_level(
             builder.linear_to(pt, ctx.cutting.cutting_feed_mm_min, MotionRole::Cut);
         }
     }
+}
+
+/// Splits a medial-axis node chain into contiguous sub-chains lying strictly outside `avoid`,
+/// binary-refining boundary crossings to `< 0.01 mm`.
+fn clip_medial_samples_outside_region(
+    samples: &[MedialNode2D],
+    avoid: &RegionSet2D,
+) -> Vec<Vec<MedialNode2D>> {
+    if samples.len() < 2 || avoid.is_empty() {
+        return vec![samples.to_vec()];
+    }
+    let lerp_node = |a: MedialNode2D, b: MedialNode2D, t: f64| MedialNode2D {
+        pos_wcs: a.pos_wcs.lerp(b.pos_wcs, t),
+        clearance_radius_mm: a.clearance_radius_mm
+            + (b.clearance_radius_mm - a.clearance_radius_mm) * t,
+    };
+    let refine_exit = |outside: MedialNode2D, inside: MedialNode2D| -> MedialNode2D {
+        let mut lo = 0.0_f64;
+        let mut hi = 1.0_f64;
+        for _ in 0..8 {
+            let mid = 0.5 * (lo + hi);
+            let p = outside.pos_wcs.lerp(inside.pos_wcs, mid);
+            if avoid.contains_point(p) {
+                hi = mid;
+            } else {
+                lo = mid;
+            }
+        }
+        lerp_node(outside, inside, lo)
+    };
+
+    let mut out: Vec<Vec<MedialNode2D>> = Vec::new();
+    let mut cur: Vec<MedialNode2D> = Vec::new();
+
+    for w in samples.windows(2) {
+        let a = w[0];
+        let b = w[1];
+        let seg_len = a.pos_wcs.distance(b.pos_wcs);
+        let n_sub = (seg_len / 0.15).ceil().clamp(1.0, 64.0) as usize;
+        let mut prev = a;
+        let mut prev_out = !avoid.contains_point(prev.pos_wcs);
+
+        for k in 1..=n_sub {
+            let next = if k == n_sub {
+                b
+            } else {
+                lerp_node(a, b, k as f64 / n_sub as f64)
+            };
+            let next_out = !avoid.contains_point(next.pos_wcs);
+            match (prev_out, next_out) {
+                (true, true) => {
+                    if cur.is_empty() {
+                        cur.push(prev);
+                    }
+                    if cur
+                        .last()
+                        .is_none_or(|l| l.pos_wcs.distance_squared(next.pos_wcs) > 1e-10)
+                    {
+                        cur.push(next);
+                    }
+                }
+                (true, false) => {
+                    let hit = refine_exit(prev, next);
+                    if cur.is_empty() {
+                        cur.push(prev);
+                    }
+                    if cur
+                        .last()
+                        .is_none_or(|l| l.pos_wcs.distance_squared(hit.pos_wcs) > 1e-10)
+                    {
+                        cur.push(hit);
+                    }
+                    if cur.len() >= 2 {
+                        out.push(std::mem::take(&mut cur));
+                    } else {
+                        cur.clear();
+                    }
+                }
+                (false, true) => {
+                    let hit = refine_exit(next, prev);
+                    cur.clear();
+                    cur.push(hit);
+                    if hit.pos_wcs.distance_squared(next.pos_wcs) > 1e-10 {
+                        cur.push(next);
+                    }
+                }
+                (false, false) => {
+                    if cur.len() >= 2 {
+                        out.push(std::mem::take(&mut cur));
+                    } else {
+                        cur.clear();
+                    }
+                }
+            }
+            prev = next;
+            prev_out = next_out;
+        }
+    }
+
+    if cur.len() >= 2 {
+        out.push(cur);
+    }
+    out
 }
 
 fn clip_medial_chain_below_radius(samples: &[MedialNode2D], r_lim: f64) -> Vec<Vec<MedialNode2D>> {

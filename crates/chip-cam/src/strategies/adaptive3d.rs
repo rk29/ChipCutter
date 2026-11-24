@@ -56,17 +56,26 @@ pub fn generate_adaptive3d(
         });
     }
 
-    // Resolve 2D tool-center containment boundary uniformly across StockBox, ModelSilhouette, and SelectedRegions.
-    let resolved_boundary = resolve_3d_boundary_config_detailed(
+    // Resolve 2D tool-center containment boundary uniformly across StockBox, ModelSilhouette, and SelectedRegions,
+    // subtracting any per-operation or linked shared Avoid / Keep-Out regions.
+    let mut resolved_boundary = resolve_3d_boundary_config_detailed(
         &surface,
         ctx.setup,
         &ctx.selection,
         &params.boundary,
         tool_r,
     );
+    let avoid_2d = ctx.resolve_avoid_2d(z_bottom, z_top);
+    let had_avoid = !avoid_2d.effective_region.is_empty();
+    resolved_boundary.apply_avoid(avoid_2d);
     builder.warnings.extend(resolved_boundary.warnings);
     let containment = resolved_boundary.effective_region;
     if containment.is_empty() {
+        if had_avoid {
+            builder
+                .warnings
+                .push("Avoid / Keep-Out regions excluded 100% of the cutting area.".to_string());
+        }
         return Err(CamError::EmptyToolpath {
             op_name: ctx.op.name.clone(),
         });

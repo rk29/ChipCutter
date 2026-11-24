@@ -1,6 +1,7 @@
 use chip_math::{ArcPolyline2D, ArcSegment2D, DVec2, DVec3};
 
 use crate::{
+    avoid_regions::clip_polyline_outside_avoid,
     cl_data::{ArcPlane, ClEvent, CutterCompMode, MotionRole},
     offset2d::{clip_scanline_to_region, offset_polyline},
     params::{
@@ -150,6 +151,11 @@ pub fn generate_contour2d(
         .then(|| stock_xy_region(ctx.setup))
         .filter(|r| !r.is_empty());
 
+    let avoid_2d = ctx.resolve_avoid_2d(target_bottom_z, ctx.heights.top_z_wcs);
+    builder.warnings.extend(avoid_2d.warnings);
+    let avoid_keepout = avoid_2d.effective_region;
+    let has_avoid_keepout = !avoid_keepout.is_empty();
+
     let overhang_cutter = SurfaceCutterProfile::from_tool(
         ctx.tool,
         radial_leave.max(0.0),
@@ -281,6 +287,7 @@ pub fn generate_contour2d(
                         && loop_tabs_s_mm.is_empty()
                         && !rest_enabled
                         && !avoid_overhangs
+                        && !has_avoid_keepout
                     {
                         emit_continuous_spiral_contour(
                             ctx,
@@ -295,7 +302,7 @@ pub fn generate_contour2d(
                                 cut_role,
                             },
                         );
-                    } else if rest_enabled || avoid_overhangs {
+                    } else if rest_enabled || avoid_overhangs || has_avoid_keepout {
                         for &z_cut in &z_levels {
                             ctx.check_cancel()?;
                             let mut spans = if rest_enabled {
@@ -311,12 +318,12 @@ pub fn generate_contour2d(
                             } else {
                                 vec![poly.clone()]
                             };
-                            let avoid_z = overhang_field
+                            let overhang_z = overhang_field
                                 .as_ref()
                                 .map(|f| f.avoidance_region_z(z_cut))
                                 .filter(|r| !r.is_empty());
                             if let (Some(surf), Some(avoid)) =
-                                (overhang_surface.as_ref(), avoid_z.as_ref())
+                                (overhang_surface.as_ref(), overhang_z.as_ref())
                             {
                                 spans = spans
                                     .iter()
@@ -331,6 +338,20 @@ pub fn generate_contour2d(
                                     })
                                     .collect();
                             }
+                            if has_avoid_keepout {
+                                spans = spans
+                                    .iter()
+                                    .flat_map(|sp| clip_polyline_outside_avoid(sp, &avoid_keepout))
+                                    .filter(|sp| sp.perimeter() > 0.05)
+                                    .collect();
+                            }
+                            let combined_avoid_z: Option<RegionSet2D> =
+                                match (overhang_z.as_ref(), has_avoid_keepout) {
+                                    (Some(ov), true) => Some(ov.union(&avoid_keepout)),
+                                    (Some(ov), false) => Some(ov.clone()),
+                                    (None, true) => Some(avoid_keepout.clone()),
+                                    (None, false) => None,
+                                };
                             for span in &spans {
                                 let span_tabs: Vec<f64> = if !src_tab_s_norms.is_empty()
                                     && extra_radial <= 1e-4
@@ -353,7 +374,7 @@ pub fn generate_contour2d(
                                         tool_r,
                                         cut_feed,
                                         cut_role,
-                                        avoid_z: avoid_z.as_ref(),
+                                        avoid_z: combined_avoid_z.as_ref(),
                                     },
                                 );
                             }

@@ -21,7 +21,7 @@ use crate::{
     strategies::StrategyExecContext,
     surface3d::{
         RestMaskGrid2D, SurfaceCutterProfile, SurfaceLinkConfig, SurfaceMesh3D, build_3d_rest_mask,
-        drop_cutter_z_with_scratch, emit_final_surface_retract, emit_surface_safe_link,
+        drop_cutter_z_with_scratch, emit_final_surface_retract, emit_surface_safe_link_with_avoid,
         finishing::{
             is_overhang_shadow_transition, simplify_3d_polyline_gouge_safe,
             split_chains_at_overhang_cliffs,
@@ -100,16 +100,26 @@ pub fn generate_scallop3d(
         });
     }
 
-    let resolved_boundary = resolve_3d_boundary_config_detailed(
+    let mut resolved_boundary = resolve_3d_boundary_config_detailed(
         &surface,
         ctx.setup,
         &ctx.selection,
         &params.boundary,
         tool_r,
     );
+    let avoid_2d = ctx.resolve_avoid_2d(z_bottom, z_top);
+    let had_avoid = !avoid_2d.effective_region.is_empty();
+    resolved_boundary.apply_avoid(avoid_2d);
     builder.warnings.extend(resolved_boundary.warnings);
+    let avoid_keepout = resolved_boundary.avoid_effective_region;
+    let avoid_keepout_opt = (!avoid_keepout.is_empty()).then_some(&avoid_keepout);
     let containment = resolved_boundary.effective_region;
     let Some(bounds) = region_aabb_2d(&containment) else {
+        if had_avoid {
+            builder
+                .warnings
+                .push("Avoid / Keep-Out regions excluded 100% of the cutting area.".to_string());
+        }
         return Err(CamError::EmptyToolpath {
             op_name: ctx.op.name.clone(),
         });
@@ -456,11 +466,12 @@ pub fn generate_scallop3d(
             }
 
             for sub_chain in split_chains_at_overhang_cliffs(&surface, &cutter, chain) {
-                emit_surface_safe_link(
+                emit_surface_safe_link_with_avoid(
                     &surface,
                     &cutter,
                     sub_chain[0],
                     &link_cfg,
+                    avoid_keepout_opt,
                     &mut bvh_scratch,
                     builder,
                 );

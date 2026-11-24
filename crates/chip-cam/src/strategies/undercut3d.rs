@@ -175,16 +175,24 @@ pub fn generate_undercut3d(
         neck_clearance: params.neck_clearance.value_mm.max(0.0),
     };
 
-    // Resolve 2D XY tool-center containment boundary from `params.boundary`
-    let resolved_boundary = resolve_3d_boundary_config_detailed(
+    // Resolve 2D XY tool-center containment boundary from `params.boundary` minus Avoid / Keep-Out regions
+    let mut resolved_boundary = resolve_3d_boundary_config_detailed(
         &surface,
         ctx.setup,
         &ctx.selection,
         &params.boundary,
         specs.eff_r,
     );
+    let avoid_2d = ctx.resolve_avoid_2d(ctx.heights.bottom_z_wcs, ctx.heights.top_z_wcs);
+    let had_avoid = !avoid_2d.effective_region.is_empty();
+    resolved_boundary.apply_avoid(avoid_2d);
     builder.warnings.extend(resolved_boundary.warnings);
     if resolved_boundary.effective_region.is_empty() {
+        if had_avoid {
+            builder
+                .warnings
+                .push("Avoid / Keep-Out regions excluded 100% of the cutting area.".to_string());
+        }
         return Err(CamError::EmptyToolpath {
             op_name: ctx.op.name.clone(),
         });
@@ -1078,6 +1086,8 @@ mod tests {
                 is_first_tool_in_setup: true,
                 upstream_rest: &[],
                 carryover_stock: None,
+                fixtures: &[],
+                shared_avoid_regions: &[],
                 cancel: &cancel,
             },
             &fixtures,

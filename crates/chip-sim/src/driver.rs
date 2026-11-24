@@ -3390,6 +3390,8 @@ mod tests {
                 is_first_tool_in_setup: true,
                 upstream_rest: &[],
                 carryover_stock: None,
+                fixtures: &[],
+                shared_avoid_regions: &[],
                 cancel: &cancel,
             })
             .unwrap();
@@ -3531,6 +3533,8 @@ mod tests {
                 is_first_tool_in_setup: true,
                 upstream_rest: &[],
                 carryover_stock: None,
+                fixtures: &[],
+                shared_avoid_regions: &[],
                 cancel: &cancel,
             })
             .unwrap();
@@ -3703,6 +3707,8 @@ mod tests {
                 is_first_tool_in_setup: generated.is_empty(),
                 upstream_rest: &[],
                 carryover_stock: None,
+                fixtures: &[],
+                shared_avoid_regions: &[],
                 cancel: &cancel,
             })
             .unwrap();

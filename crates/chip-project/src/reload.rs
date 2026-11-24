@@ -164,9 +164,45 @@ pub fn rebind_project_to_reloaded_cad(
         }
     }
 
+    // Step 0b: Re-bind associative 3D/2D selections inside reusable `ProjectDocument::avoid_regions`
+    let mut broken_shared_avoid_reasons: HashMap<String, String> = HashMap::new();
+    let mut updated_shared_avoid_ids: HashSet<String> = HashSet::new();
+    for shared in &mut project.avoid_regions {
+        if shared.selections.is_empty() {
+            continue;
+        }
+        let (updated_sels, changed_cnt, failures) = rebind_selection_list(
+            &shared.selections,
+            new_doc,
+            topo,
+            &broken_sketch_reasons,
+            &updated_sketch_indices,
+        );
+        if !updated_sels.is_empty() {
+            shared.selections = updated_sels;
+        }
+        if changed_cnt > 0 {
+            updated_shared_avoid_ids.insert(shared.id.clone());
+        }
+        if !failures.is_empty() {
+            let msg = format!(
+                "Shared Avoid / Keep-Out '{}' failed to re-bind: {}",
+                shared.name,
+                failures.join(" ")
+            );
+            report.setup_wcs_warnings.push(msg.clone());
+            broken_shared_avoid_reasons.insert(shared.id.clone(), msg);
+        }
+    }
+
     let display_unit = project.display_units;
     let project_tools = project.tools.clone();
     let project_sketches = project.sketches.clone();
+    let shared_suppressed_map: HashMap<String, bool> = project
+        .avoid_regions
+        .iter()
+        .map(|r| (r.id.clone(), r.suppressed))
+        .collect();
 
     for setup in &mut project.setups {
         // Clamp target_bodies if body count shrank
@@ -181,7 +217,7 @@ pub fn rebind_project_to_reloaded_cad(
             .resolve_with_sketches(new_doc, &project_sketches, display_unit)
             .ok();
 
-        // Step 2: Re-bind Operation geometry selections
+        // Step 2: Re-bind Operation geometry selections (both primary `op.selections` and `op.avoid.selections`)
         for op in &mut setup.operations {
             if op.suppressed {
                 report
@@ -194,217 +230,51 @@ pub fn rebind_project_to_reloaded_cad(
                 continue;
             }
 
-            if op.selections.is_empty() {
-                if let Some(rs) = &resolved_setup_opt {
-                    let mut eval_ctx = rs.eval_context(display_unit);
-                    if let Some(tid) = &op.tool_id
-                        && let Some(t) = project_tools.iter().find(|t| &t.id == tid)
-                    {
-                        t.populate_eval_context(&mut eval_ctx);
-                    }
-                    op.reevaluate_all(&eval_ctx);
-                }
-                op.runtime_status = OperationStatus::Dirty;
-                report.rebound_dirty_count += 1;
-                report
-                    .operation_outcomes
-                    .push(OperationReloadOutcome::ReboundDirty {
-                        setup_name: setup.name.clone(),
-                        op_id: op.id.clone(),
-                        op_name: op.name.clone(),
-                        updated_indices: 0,
-                    });
-                continue;
-            }
-
-            let mut updated_selections: Vec<GeometrySelectionItem> =
-                Vec::with_capacity(op.selections.len());
-            let mut claimed_faces: HashSet<FaceId> = HashSet::new();
-            let mut claimed_coaxial_reps: HashSet<FaceId> = HashSet::new();
             let mut changed_index_count = 0usize;
             let mut failure_reasons: Vec<String> = Vec::new();
 
-            for item in &op.selections {
-                match item {
-                    GeometrySelectionItem::PlanarFace { binding } => {
-                        match rematch_face(new_doc, binding) {
-                            RematchOutcome::Matched {
-                                id,
-                                updated_binding,
-                                index_changed,
-                                ..
-                            } => {
-                                if !claimed_faces.insert(id) {
-                                    failure_reasons.push(format!(
-                                        "Planar Face #{} merged into an already-selected face #{}.",
-                                        binding.last_index, id.0
-                                    ));
-                                } else {
-                                    if index_changed {
-                                        changed_index_count += 1;
-                                    }
-                                    updated_selections.push(GeometrySelectionItem::PlanarFace {
-                                        binding: updated_binding,
-                                    });
-                                }
-                            }
-                            RematchOutcome::Ambiguous { message, .. }
-                            | RematchOutcome::Missing { message } => {
-                                failure_reasons.push(message);
-                            }
-                        }
-                    }
-                    GeometrySelectionItem::ClosedLoop {
-                        binding,
-                        reverse,
-                        side_flip,
-                    } => match rematch_loop(new_doc, binding) {
-                        RematchOutcome::Matched {
-                            updated_binding,
-                            index_changed,
-                            ..
-                        } => {
-                            if index_changed {
-                                changed_index_count += 1;
-                            }
-                            updated_selections.push(GeometrySelectionItem::ClosedLoop {
-                                binding: updated_binding,
-                                reverse: *reverse,
-                                side_flip: *side_flip,
-                            });
-                        }
-                        RematchOutcome::Ambiguous { message, .. }
-                        | RematchOutcome::Missing { message } => {
-                            failure_reasons.push(message);
-                        }
-                    },
-                    GeometrySelectionItem::OpenChain {
-                        start_edge,
-                        end_edge,
-                        reverse,
-                        side_flip,
-                        ..
-                    } => {
-                        let s_out = rematch_edge(new_doc, start_edge);
-                        let e_out = rematch_edge(new_doc, end_edge);
-                        match (s_out, e_out) {
-                            (
-                                RematchOutcome::Matched {
-                                    id: s_eid,
-                                    updated_binding: s_bind,
-                                    index_changed: s_chg,
-                                    ..
-                                },
-                                RematchOutcome::Matched {
-                                    id: e_eid,
-                                    updated_binding: e_bind,
-                                    index_changed: e_chg,
-                                    ..
-                                },
-                            ) => {
-                                if let Some(chained) =
-                                    topo.find_open_edge_chain(new_doc, s_eid, e_eid)
-                                {
-                                    if s_chg || e_chg {
-                                        changed_index_count += 1;
-                                    }
-                                    updated_selections.push(GeometrySelectionItem::OpenChain {
-                                        body_id: s_bind.body_id,
-                                        start_edge: s_bind,
-                                        end_edge: e_bind,
-                                        resolved_edges: chained,
-                                        reverse: *reverse,
-                                        side_flip: *side_flip,
-                                    });
-                                } else {
-                                    failure_reasons.push(format!(
-                                        "Open chain between re-matched Edge #{} and Edge #{} is no longer connected.",
-                                        s_eid.0, e_eid.0
-                                    ));
-                                }
-                            }
-                            (
-                                RematchOutcome::Ambiguous { message, .. }
-                                | RematchOutcome::Missing { message },
-                                _,
-                            )
-                            | (
-                                _,
-                                RematchOutcome::Ambiguous { message, .. }
-                                | RematchOutcome::Missing { message },
-                            ) => {
-                                failure_reasons.push(message);
-                            }
-                        }
-                    }
-                    GeometrySelectionItem::CylindricalHole { binding } => {
-                        match rematch_face(new_doc, binding) {
-                            RematchOutcome::Matched {
-                                id,
-                                updated_binding,
-                                index_changed,
-                                ..
-                            } => {
-                                let group = expand_coaxial_hole_faces(new_doc, id);
-                                let rep = group.iter().copied().min().unwrap_or(id);
-                                // Note: if the original operation stored both half-cylinder faces of a single hole,
-                                // check whether `binding` was already coaxial with an earlier item OR a distinct hole!
-                                // Allow coaxial siblings only if their old centroids matched within `0.1 mm`; otherwise guard 1-to-1!
-                                let was_same_coaxial_in_old = op.selections.iter().any(|other| {
-                                    if let GeometrySelectionItem::CylindricalHole { binding: ob } =
-                                        other
-                                    {
-                                        ob.last_index != binding.last_index
-                                            && (ob.signature.centroid_mm
-                                                - binding.signature.centroid_mm)
-                                                .length()
-                                                <= 0.25
-                                    } else {
-                                        false
-                                    }
-                                });
+            if !op.selections.is_empty() {
+                let (updated_selections, chg, fails) = rebind_selection_list(
+                    &op.selections,
+                    new_doc,
+                    topo,
+                    &broken_sketch_reasons,
+                    &updated_sketch_indices,
+                );
+                if !updated_selections.is_empty() {
+                    op.selections = updated_selections;
+                }
+                changed_index_count += chg;
+                failure_reasons.extend(fails);
+            }
 
-                                if !was_same_coaxial_in_old && !claimed_coaxial_reps.insert(rep) {
-                                    failure_reasons.push(format!(
-                                        "Hole #{} collided onto already-matched Hole #{}; original hole was likely deleted.",
-                                        binding.last_index, id.0
-                                    ));
-                                } else {
-                                    claimed_coaxial_reps.insert(rep);
-                                    if index_changed {
-                                        changed_index_count += 1;
-                                    }
-                                    updated_selections.push(
-                                        GeometrySelectionItem::CylindricalHole {
-                                            binding: updated_binding,
-                                        },
-                                    );
-                                }
-                            }
-                            RematchOutcome::Ambiguous { message, .. }
-                            | RematchOutcome::Missing { message } => {
-                                failure_reasons.push(message);
-                            }
-                        }
-                    }
-                    GeometrySelectionItem::SketchRegion { sketch_id, .. }
-                    | GeometrySelectionItem::SketchEntity { sketch_id, .. }
-                    | GeometrySelectionItem::SketchLayerAll { sketch_id, .. } => {
-                        if let Some(err) = broken_sketch_reasons.get(sketch_id) {
-                            failure_reasons.push(err.clone());
-                        } else {
-                            if updated_sketch_indices.contains(sketch_id) {
-                                changed_index_count += 1;
-                            }
-                            updated_selections.push(item.clone());
-                        }
-                    }
+            if !op.avoid.selections.is_empty() {
+                let (updated_avoid, chg, fails) = rebind_selection_list(
+                    &op.avoid.selections,
+                    new_doc,
+                    topo,
+                    &broken_sketch_reasons,
+                    &updated_sketch_indices,
+                );
+                if !updated_avoid.is_empty() {
+                    op.avoid.selections = updated_avoid;
+                }
+                changed_index_count += chg;
+                for f in fails {
+                    failure_reasons.push(format!("Avoid / Keep-Out: {f}"));
                 }
             }
 
-            // Always commit surviving updated bindings so valid selections stay fresh!
-            if !updated_selections.is_empty() {
-                op.selections = updated_selections;
+            for sid in &op.avoid.shared_region_ids {
+                if shared_suppressed_map.get(sid).copied().unwrap_or(false) {
+                    continue;
+                }
+                if updated_shared_avoid_ids.contains(sid) {
+                    changed_index_count += 1;
+                }
+                if let Some(reason) = broken_shared_avoid_reasons.get(sid) {
+                    failure_reasons.push(reason.clone());
+                }
             }
 
             if failure_reasons.is_empty() {
@@ -415,12 +285,14 @@ pub fn rebind_project_to_reloaded_cad(
                     {
                         t.populate_eval_context(&mut eval_ctx);
                     }
-                    if let Ok(sum) = extract_selection_features_with_sketches(
-                        new_doc,
-                        &project_sketches,
-                        rs,
-                        &op.selections,
-                    ) {
+                    if !op.selections.is_empty()
+                        && let Ok(sum) = extract_selection_features_with_sketches(
+                            new_doc,
+                            &project_sketches,
+                            rs,
+                            &op.selections,
+                        )
+                    {
                         eval_ctx.set_var("feature_top_z", sum.inferred_top_z_wcs);
                         eval_ctx.set_var("feature_bottom_z", sum.inferred_bottom_z_wcs);
                         if let Some(hd) = sum.primary_hole_diameter_mm {
@@ -458,6 +330,186 @@ pub fn rebind_project_to_reloaded_cad(
     }
 
     report
+}
+
+fn rebind_selection_list(
+    selections: &[GeometrySelectionItem],
+    new_doc: &CadDocument,
+    topo: &TopologyGraph,
+    broken_sketch_reasons: &HashMap<String, String>,
+    updated_sketch_indices: &HashSet<String>,
+) -> (Vec<GeometrySelectionItem>, usize, Vec<String>) {
+    let mut updated_selections: Vec<GeometrySelectionItem> = Vec::with_capacity(selections.len());
+    let mut claimed_faces: HashSet<FaceId> = HashSet::new();
+    let mut claimed_coaxial_reps: HashSet<FaceId> = HashSet::new();
+    let mut changed_index_count = 0usize;
+    let mut failure_reasons: Vec<String> = Vec::new();
+
+    for item in selections {
+        match item {
+            GeometrySelectionItem::PlanarFace { binding } => match rematch_face(new_doc, binding) {
+                RematchOutcome::Matched {
+                    id,
+                    updated_binding,
+                    index_changed,
+                    ..
+                } => {
+                    if !claimed_faces.insert(id) {
+                        failure_reasons.push(format!(
+                            "Planar Face #{} merged into an already-selected face #{}.",
+                            binding.last_index, id.0
+                        ));
+                    } else {
+                        if index_changed {
+                            changed_index_count += 1;
+                        }
+                        updated_selections.push(GeometrySelectionItem::PlanarFace {
+                            binding: updated_binding,
+                        });
+                    }
+                }
+                RematchOutcome::Ambiguous { message, .. } | RematchOutcome::Missing { message } => {
+                    failure_reasons.push(message);
+                }
+            },
+            GeometrySelectionItem::ClosedLoop {
+                binding,
+                reverse,
+                side_flip,
+            } => match rematch_loop(new_doc, binding) {
+                RematchOutcome::Matched {
+                    updated_binding,
+                    index_changed,
+                    ..
+                } => {
+                    if index_changed {
+                        changed_index_count += 1;
+                    }
+                    updated_selections.push(GeometrySelectionItem::ClosedLoop {
+                        binding: updated_binding,
+                        reverse: *reverse,
+                        side_flip: *side_flip,
+                    });
+                }
+                RematchOutcome::Ambiguous { message, .. } | RematchOutcome::Missing { message } => {
+                    failure_reasons.push(message);
+                }
+            },
+            GeometrySelectionItem::OpenChain {
+                start_edge,
+                end_edge,
+                reverse,
+                side_flip,
+                ..
+            } => {
+                let s_out = rematch_edge(new_doc, start_edge);
+                let e_out = rematch_edge(new_doc, end_edge);
+                match (s_out, e_out) {
+                    (
+                        RematchOutcome::Matched {
+                            id: s_eid,
+                            updated_binding: s_bind,
+                            index_changed: s_chg,
+                            ..
+                        },
+                        RematchOutcome::Matched {
+                            id: e_eid,
+                            updated_binding: e_bind,
+                            index_changed: e_chg,
+                            ..
+                        },
+                    ) => {
+                        if let Some(chained) = topo.find_open_edge_chain(new_doc, s_eid, e_eid) {
+                            if s_chg || e_chg {
+                                changed_index_count += 1;
+                            }
+                            updated_selections.push(GeometrySelectionItem::OpenChain {
+                                body_id: s_bind.body_id,
+                                start_edge: s_bind,
+                                end_edge: e_bind,
+                                resolved_edges: chained,
+                                reverse: *reverse,
+                                side_flip: *side_flip,
+                            });
+                        } else {
+                            failure_reasons.push(format!(
+                                "Open chain between re-matched Edge #{} and Edge #{} is no longer connected.",
+                                s_eid.0, e_eid.0
+                            ));
+                        }
+                    }
+                    (
+                        RematchOutcome::Ambiguous { message, .. }
+                        | RematchOutcome::Missing { message },
+                        _,
+                    )
+                    | (
+                        _,
+                        RematchOutcome::Ambiguous { message, .. }
+                        | RematchOutcome::Missing { message },
+                    ) => {
+                        failure_reasons.push(message);
+                    }
+                }
+            }
+            GeometrySelectionItem::CylindricalHole { binding } => {
+                match rematch_face(new_doc, binding) {
+                    RematchOutcome::Matched {
+                        id,
+                        updated_binding,
+                        index_changed,
+                        ..
+                    } => {
+                        let group = expand_coaxial_hole_faces(new_doc, id);
+                        let rep = group.iter().copied().min().unwrap_or(id);
+                        let was_same_coaxial_in_old = selections.iter().any(|other| {
+                            if let GeometrySelectionItem::CylindricalHole { binding: ob } = other {
+                                ob.last_index != binding.last_index
+                                    && (ob.signature.centroid_mm - binding.signature.centroid_mm)
+                                        .length()
+                                        <= 0.25
+                            } else {
+                                false
+                            }
+                        });
+
+                        if !was_same_coaxial_in_old && !claimed_coaxial_reps.insert(rep) {
+                            failure_reasons.push(format!(
+                                "Hole #{} collided onto already-matched Hole #{}; original hole was likely deleted.",
+                                binding.last_index, id.0
+                            ));
+                        } else {
+                            claimed_coaxial_reps.insert(rep);
+                            if index_changed {
+                                changed_index_count += 1;
+                            }
+                            updated_selections.push(GeometrySelectionItem::CylindricalHole {
+                                binding: updated_binding,
+                            });
+                        }
+                    }
+                    RematchOutcome::Ambiguous { message, .. }
+                    | RematchOutcome::Missing { message } => {
+                        failure_reasons.push(message);
+                    }
+                }
+            }
+            GeometrySelectionItem::SketchRegion { sketch_id, .. }
+            | GeometrySelectionItem::SketchEntity { sketch_id, .. }
+            | GeometrySelectionItem::SketchLayerAll { sketch_id, .. } => {
+                if let Some(err) = broken_sketch_reasons.get(sketch_id) {
+                    failure_reasons.push(err.clone());
+                } else {
+                    if updated_sketch_indices.contains(sketch_id) {
+                        changed_index_count += 1;
+                    }
+                    updated_selections.push(item.clone());
+                }
+            }
+        }
+    }
+
+    (updated_selections, changed_index_count, failure_reasons)
 }
 
 fn rebind_setup_wcs(

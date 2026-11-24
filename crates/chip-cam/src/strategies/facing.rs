@@ -257,6 +257,17 @@ pub fn generate_facing(
     let retract_z = ctx.safe_retract_z();
     let feed_z = ctx.heights.feed_z_wcs;
 
+    let mut island_avoid = island_avoid;
+    let avoid_2d = ctx.resolve_avoid_2d(target_bottom_z, eff_top_z);
+    builder.warnings.extend(avoid_2d.warnings);
+    if !avoid_2d.effective_region.is_empty() {
+        island_avoid = if island_avoid.is_empty() {
+            avoid_2d.effective_region
+        } else {
+            island_avoid.union(&avoid_2d.effective_region)
+        };
+    }
+
     let overhang_cutter = SurfaceCutterProfile::from_tool(
         ctx.tool,
         0.0,

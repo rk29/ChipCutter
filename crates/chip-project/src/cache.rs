@@ -106,10 +106,30 @@ pub fn compute_operation_input_hash(
         }
     }
 
-    // Fold enabled 3D Workholding fixtures + rapid-avoidance toggle (skipped when no fixtures exist
-    // and `auto_avoid_fixtures_on_rapids` is default `true` so v1/v2/v3 hashes stay bit-identical!)
+    // Fold linked reusable `SharedAvoidRegion` definitions (skipped when `shared_region_ids.is_empty()`
+    // so existing v1/v2/v3 hashes stay bit-identical!)
+    if !op.avoid.shared_region_ids.is_empty() {
+        hasher.update(b"|shared_avoid_v1:");
+        for sid in &op.avoid.shared_region_ids {
+            hasher.update(sid.as_bytes());
+            hasher.update(b"=");
+            if let Some(shared) = project.avoid_region(sid) {
+                if let Ok(s) = toml::to_string(shared) {
+                    hasher.update(s.as_bytes());
+                }
+            } else {
+                hasher.update(b"<missing>");
+            }
+            hasher.update(b";");
+        }
+    }
+
+    // Fold enabled 3D Workholding fixtures + rapid-avoidance toggle (skipped when no fixtures exist,
+    // `auto_avoid_fixtures_on_rapids` is default `true`, and `op.avoid` does not reference fixtures
+    // so v1/v2/v3 hashes stay bit-identical!)
     let any_enabled_fixture = setup.fixtures.iter().any(|f| f.enabled);
-    if any_enabled_fixture || !setup.auto_avoid_fixtures_on_rapids {
+    let op_refs_fixtures = op.avoid.references_fixtures(&project.avoid_regions);
+    if any_enabled_fixture || !setup.auto_avoid_fixtures_on_rapids || op_refs_fixtures {
         hasher.update(b"|workholding_v1:");
         hasher.update([u8::from(setup.auto_avoid_fixtures_on_rapids)]);
         for fix in &setup.fixtures {

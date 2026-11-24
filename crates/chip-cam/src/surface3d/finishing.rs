@@ -822,11 +822,27 @@ pub struct SurfaceLinkConfig {
 
 /// Connects `builder.current_pos()` to the start of the next 3D pass `to_wcs` using either a
 /// collision-checked surface-hugging stay-down link or a safe retract/rapid/plunge sequence.
+/// Emits a gouge-proof link from `builder.current_pos()` to `to_wcs`, either via a short
+/// surface-hugging stay-down link or a safe retract + rapid traverse + vertical approach.
 pub fn emit_surface_safe_link(
     surface: &SurfaceMesh3D,
     cutter: &SurfaceCutterProfile,
     to_wcs: DVec3,
     cfg: &SurfaceLinkConfig,
+    bvh_scratch: &mut Vec<usize>,
+    builder: &mut ToolpathBuilder,
+) {
+    emit_surface_safe_link_with_avoid(surface, cutter, to_wcs, cfg, None, bvh_scratch, builder);
+}
+
+/// Like [`emit_surface_safe_link`], but forces a safe retract + rapid traverse whenever the XY
+/// chord between `builder.current_pos()` and `to_wcs` crosses `avoid_region`.
+pub fn emit_surface_safe_link_with_avoid(
+    surface: &SurfaceMesh3D,
+    cutter: &SurfaceCutterProfile,
+    to_wcs: DVec3,
+    cfg: &SurfaceLinkConfig,
+    avoid_region: Option<&RegionSet2D>,
     bvh_scratch: &mut Vec<usize>,
     builder: &mut ToolpathBuilder,
 ) {
@@ -841,10 +857,22 @@ pub fn emit_surface_safe_link(
         }
 
         // Try gouge-proof surface-hugging stay-down link for short adjacent stepovers,
-        // except when descending steeply off a split overhang cliff (always retract & plunge cleanly).
+        // except when descending steeply off a split overhang cliff or crossing an Avoid / Keep-Out region.
         let steep_cliff_drop =
             (from_wcs.z - to_wcs.z) > 1.5 && dist_xy < (from_wcs.z - to_wcs.z) * 0.5;
-        if !steep_cliff_drop && dist_xy <= cfg.stay_down_limit_mm && dist_xy > 1e-4 {
+        let crosses_avoid = avoid_region.is_some_and(|av| {
+            !av.is_empty()
+                && !crate::surface3d::is_2d_segment_clear_of_avoid(
+                    DVec2::new(from_wcs.x, from_wcs.y),
+                    DVec2::new(to_wcs.x, to_wcs.y),
+                    av,
+                )
+        });
+        if !steep_cliff_drop
+            && !crosses_avoid
+            && dist_xy <= cfg.stay_down_limit_mm
+            && dist_xy > 1e-4
+        {
             let step = cfg.sample_step_mm.clamp(0.10, 0.25);
             let n = (dist_xy / step).ceil().max(3.0) as usize;
             let mut raw_link = Vec::with_capacity(n + 3);

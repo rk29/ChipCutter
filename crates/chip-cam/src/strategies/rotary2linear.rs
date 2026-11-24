@@ -122,53 +122,99 @@ pub fn generate_rotary2linear(
     let plunge_feed = ctx.cutting.plunge_feed_mm_min.min(cut_feed).max(10.0);
     let smooth_tol = params.smoothing_tolerance.value_mm.clamp(0.0, 0.25);
 
-    match params.pattern {
-        RotaryPatternMode::ContinuousSpiral => {
-            emit_continuous_spiral(
-                ctx,
-                &base_mesh,
-                &rot,
-                &cutter,
-                u_start,
-                u_end,
-                start_deg,
-                end_deg,
-                is_full_turn,
-                r_floor,
-                r_ceiling_override,
-                stepover_mm,
-                d_theta,
-                params.cut_direction,
-                cut_feed,
-                plunge_feed,
-                smooth_tol,
-                builder,
-            )?;
+    let avoid_bands = ctx.resolve_avoid_axial_bands(&rot, r_floor, r_outer_est);
+    builder.warnings.extend(avoid_bands.warnings);
+    let allowed_spans = if avoid_bands.effective_bands.is_empty() {
+        vec![(u_start, u_end)]
+    } else {
+        let spans = crate::avoid_regions::subtract_u_intervals_1d(
+            (u_start, u_end),
+            &avoid_bands.effective_bands,
+            0.05,
+        );
+        if spans.is_empty() {
+            builder.warnings.push(
+                "Avoid / Keep-Out bands excluded 100% of the rotary axial window.".to_string(),
+            );
+            return Err(CamError::EmptyToolpath {
+                op_name: ctx.op.name.clone(),
+            });
         }
-        RotaryPatternMode::AxialParallel => {
-            emit_axial_parallel(
-                ctx,
-                &base_mesh,
-                &rot,
-                &cutter,
-                &u_samples,
-                start_deg,
-                end_deg,
-                is_full_turn,
-                r_outer_est,
-                r_floor,
-                r_ceiling_override,
-                stepover_mm,
-                params.cut_direction,
-                cut_feed,
-                plunge_feed,
-                smooth_tol,
-                builder,
-            )?;
+        spans
+    };
+
+    let safe_z_wcs = rot.center_wcs.z + rot.clearance_radius_mm.max(r_outer_est + 5.0);
+    for (span_idx, &(span_u_start, span_u_end)) in allowed_spans.iter().enumerate() {
+        ctx.check_cancel()?;
+        if span_idx > 0
+            && let Some(last) = builder.current_pos()
+            && last.z < safe_z_wcs - 1e-4
+        {
+            builder.rotary_rapid_to(
+                DVec3::new(last.x, last.y, safe_z_wcs),
+                builder.current_rotary_deg(),
+            );
+        }
+        match params.pattern {
+            RotaryPatternMode::ContinuousSpiral => {
+                emit_continuous_spiral(
+                    ctx,
+                    &base_mesh,
+                    &rot,
+                    &cutter,
+                    span_u_start,
+                    span_u_end,
+                    start_deg,
+                    end_deg,
+                    is_full_turn,
+                    r_floor,
+                    r_ceiling_override,
+                    stepover_mm,
+                    d_theta,
+                    params.cut_direction,
+                    cut_feed,
+                    plunge_feed,
+                    smooth_tol,
+                    builder,
+                )?;
+            }
+            RotaryPatternMode::AxialParallel => {
+                let span_u_samples: Vec<f64> = if allowed_spans.len() == 1
+                    && (span_u_start - u_start).abs() <= 1e-9
+                    && (span_u_end - u_end).abs() <= 1e-9
+                {
+                    u_samples.clone()
+                } else {
+                    let sn_u = (((span_u_end - span_u_start) / axial_sample).ceil() as usize)
+                        .clamp(4, 2_000);
+                    let sdu = (span_u_end - span_u_start) / (sn_u as f64);
+                    (0..=sn_u)
+                        .map(|i| span_u_start + (i as f64) * sdu)
+                        .collect()
+                };
+                emit_axial_parallel(
+                    ctx,
+                    &base_mesh,
+                    &rot,
+                    &cutter,
+                    &span_u_samples,
+                    start_deg,
+                    end_deg,
+                    is_full_turn,
+                    r_outer_est,
+                    r_floor,
+                    r_ceiling_override,
+                    stepover_mm,
+                    params.cut_direction,
+                    cut_feed,
+                    plunge_feed,
+                    smooth_tol,
+                    builder,
+                )?;
+            }
         }
     }
 
-    let safe_z_wcs = rot.center_wcs.z + rot.clearance_radius_mm.max(r_outer_est + 5.0);
     if let Some(last) = builder.current_pos()
         && last.z < safe_z_wcs - 1e-4
     {

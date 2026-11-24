@@ -529,26 +529,39 @@ pub fn generate_deburr3d(
 
     // 3. Build target B-Rep TriMesh3D + FlatBvh in Setup WCS for full-assembly collision trimming
     let target_mesh = ctx.doc.build_wcs_tri_mesh(&[], &ctx.setup.frame);
-    let xy_containment: Option<RegionSet2D> = if use_auto_detect {
+    let avoid_2d = ctx.resolve_avoid_2d(ctx.heights.bottom_z_wcs, ctx.heights.top_z_wcs);
+    let had_avoid = !avoid_2d.effective_region.is_empty();
+    let (xy_containment, avoid_keepout): (Option<RegionSet2D>, RegionSet2D) = if use_auto_detect {
         let surface = SurfaceMesh3D::from_tri_mesh(target_mesh.clone());
         let tool_r = 0.5 * ctx.tool.geometry.cutting_diameter_mm().max(0.1);
-        let resolved_boundary = resolve_3d_boundary_config_detailed(
+        let mut resolved_boundary = resolve_3d_boundary_config_detailed(
             &surface,
             ctx.setup,
             &ctx.selection,
             &params.boundary,
             tool_r,
         );
+        resolved_boundary.apply_avoid(avoid_2d);
         builder.warnings.extend(resolved_boundary.warnings);
         if resolved_boundary.effective_region.is_empty() {
+            if had_avoid {
+                builder.warnings.push(
+                    "Avoid / Keep-Out regions excluded 100% of the cutting area.".to_string(),
+                );
+            }
             return Err(CamError::EmptyToolpath {
                 op_name: ctx.op.name.clone(),
             });
         }
-        Some(resolved_boundary.effective_region)
+        (
+            Some(resolved_boundary.effective_region),
+            resolved_boundary.avoid_effective_region,
+        )
     } else {
-        None
+        builder.warnings.extend(avoid_2d.warnings);
+        (None, avoid_2d.effective_region)
     };
+    let avoid_keepout_opt = (!avoid_keepout.is_empty()).then_some(&avoid_keepout);
     let envelope = AnalyticCutterEnvelope::from_geometry(&ctx.tool.geometry);
     let stickout_mm = ctx
         .tool
@@ -586,6 +599,7 @@ pub fn generate_deburr3d(
                 wall_clearance,
                 params.allow_underside_back_chamfer,
                 xy_containment.as_ref(),
+                avoid_keepout_opt,
                 &mut cand_buf,
             );
 
@@ -1580,11 +1594,17 @@ struct TrimmedSubChain {
 }
 
 #[inline]
-fn tip_xy_in_containment(tip_wcs: DVec3, xy_containment: Option<&RegionSet2D>) -> bool {
-    xy_containment.is_none_or(|reg| {
-        let pt = DVec2::new(tip_wcs.x, tip_wcs.y);
-        reg.contains_point(pt) || reg.min_distance_to_boundary(pt) <= 0.02
-    })
+fn tip_xy_in_containment(
+    tip_wcs: DVec3,
+    xy_containment: Option<&RegionSet2D>,
+    avoid_keepout: Option<&RegionSet2D>,
+) -> bool {
+    let pt = DVec2::new(tip_wcs.x, tip_wcs.y);
+    if avoid_keepout.is_some_and(|av| av.contains_point(pt)) {
+        return false;
+    }
+    xy_containment
+        .is_none_or(|reg| reg.contains_point(pt) || reg.min_distance_to_boundary(pt) <= 0.02)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1599,6 +1619,7 @@ fn trim_chain_against_target(
     wall_clearance: f64,
     allow_underside: bool,
     xy_containment: Option<&RegionSet2D>,
+    avoid_keepout: Option<&RegionSet2D>,
     cand_buf: &mut Vec<usize>,
 ) -> Vec<TrimmedSubChain> {
     let n = chain.samples.len();
@@ -1619,7 +1640,7 @@ fn trim_chain_against_target(
             allow_underside,
         );
         let ok = if let Some(cs) = sol {
-            tip_xy_in_containment(cs.tip_wcs, xy_containment)
+            tip_xy_in_containment(cs.tip_wcs, xy_containment, avoid_keepout)
                 && is_station_collision_free(
                     s,
                     &cs,
@@ -1686,6 +1707,7 @@ fn trim_chain_against_target(
                 wall_clearance,
                 allow_underside,
                 xy_containment,
+                avoid_keepout,
                 cand_buf,
             )
             && refined.sol.tip_wcs.distance(
@@ -1720,6 +1742,7 @@ fn trim_chain_against_target(
                 wall_clearance,
                 allow_underside,
                 xy_containment,
+                avoid_keepout,
                 cand_buf,
             )
             && let Some(last) = stations.last()
@@ -1784,6 +1807,7 @@ fn binary_refine_boundary(
     wall_clearance: f64,
     allow_underside: bool,
     xy_containment: Option<&RegionSet2D>,
+    avoid_keepout: Option<&RegionSet2D>,
     cand_buf: &mut Vec<usize>,
 ) -> Option<SolvedStation> {
     let mut lo = 0.0_f64;
@@ -1801,7 +1825,7 @@ fn binary_refine_boundary(
             wall_clearance,
             allow_underside,
         ) {
-            if tip_xy_in_containment(sol.tip_wcs, xy_containment)
+            if tip_xy_in_containment(sol.tip_wcs, xy_containment, avoid_keepout)
                 && is_station_collision_free(
                     &sample,
                     &sol,

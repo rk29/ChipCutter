@@ -1,6 +1,7 @@
 //! Setups, Work Coordinate Systems (WCS), stock definitions, 2.5D B-Rep feature extraction,
 //! Z-height hierarchy resolution, and CAM operation models (`chip-cam`).
 
+pub mod avoid_regions;
 pub mod cl_data;
 pub mod feed_opt;
 pub mod fixture_avoidance;
@@ -22,6 +23,11 @@ pub mod wcs;
 pub mod workholding;
 pub mod workholding_wizards;
 
+pub use avoid_regions::{
+    AvoidAxialBandsInput, AvoidRegionInput, ResolvedAvoidAxialBands, ResolvedAvoidRegion2D,
+    is_u_in_bands, merge_u_intervals_1d, resolve_avoid_axial_bands, resolve_avoid_region_2d,
+    subtract_u_intervals_1d, transform_fixtures_to_frame,
+};
 pub use chip_bvh::TriMesh3D;
 pub use chip_sketch;
 pub use cl_data::{ArcDir, ArcPlane, ClEvent, CutterCompMode, DrillCycleKind, MotionRole};
@@ -50,20 +56,20 @@ pub use operation::{
     EffectiveCuttingParams, Operation, OperationFeedOverrides, OperationKind, OperationStatus,
 };
 pub use params::{
-    Adaptive3DParams, AdaptiveClearingParams, AdaptiveCutDirection, ChamferSourceMode,
-    ChamferTraceMode, ChamferTraceParams, Contour2DParams, ContourCompensation, Deburr3DParams,
-    DovetailMode, DovetailParams, DrillBoreParams, EntryStrategy, FacingCutMode, FacingParams,
-    FeedOptimizationConfig, HoldingTabsConfig, HoleMachiningMode, LeadConfig, LinkingParams,
-    MachiningBoundaryConfig, MachiningBoundaryMode, ManualTabAnchor, Parallel3DParams,
-    ParallelCutDirection, PassesParams, Pencil3DParams, Pocket2DParams, PocketBoundaryMode,
-    PocketPassOrder, PocketStrategyKind, RestMachiningConfig, RestMachiningMode, RetractPolicy,
-    Rotary2LinearParams, Rotary4AxisPattern, Rotary4AxisSimParams, RotaryAxialBoundaryConfig,
-    RotaryAxialBoundaryMode, RotaryCutDirection, RotaryPatternMode, RotaryTiltMode,
-    Scallop3DParams, SlotUndercutMode, SlotUndercutParams, SlotUndercutPreset,
-    SlotUndercutPresetSpec, StrategyParams, TabPlacementMode, TabProfileKind, ThreadCutDirection,
-    ThreadFormKind, ThreadHandedness, ThreadMillParams, ToolContainmentMode, Undercut3DParams,
-    UndercutEntryMode, VCarveClearingKind, VCarveInlayMode, VCarveParams, Waterline3DParams,
-    WaterlineOrderMode,
+    Adaptive3DParams, AdaptiveClearingParams, AdaptiveCutDirection, AvoidRegionConfig,
+    ChamferSourceMode, ChamferTraceMode, ChamferTraceParams, Contour2DParams, ContourCompensation,
+    DEFAULT_AVOID_CLEARANCE_MM, Deburr3DParams, DovetailMode, DovetailParams, DrillBoreParams,
+    EntryStrategy, FacingCutMode, FacingParams, FeedOptimizationConfig, HoldingTabsConfig,
+    HoleMachiningMode, LeadConfig, LinkingParams, MachiningBoundaryConfig, MachiningBoundaryMode,
+    ManualTabAnchor, Parallel3DParams, ParallelCutDirection, PassesParams, Pencil3DParams,
+    Pocket2DParams, PocketBoundaryMode, PocketPassOrder, PocketStrategyKind, RestMachiningConfig,
+    RestMachiningMode, RetractPolicy, Rotary2LinearParams, Rotary4AxisPattern,
+    Rotary4AxisSimParams, RotaryAxialBoundaryConfig, RotaryAxialBoundaryMode, RotaryCutDirection,
+    RotaryPatternMode, RotaryTiltMode, Scallop3DParams, SharedAvoidRegion, SlotUndercutMode,
+    SlotUndercutParams, SlotUndercutPreset, SlotUndercutPresetSpec, StrategyParams,
+    TabPlacementMode, TabProfileKind, ThreadCutDirection, ThreadFormKind, ThreadHandedness,
+    ThreadMillParams, ToolContainmentMode, Undercut3DParams, UndercutEntryMode, VCarveClearingKind,
+    VCarveInlayMode, VCarveParams, Waterline3DParams, WaterlineOrderMode,
 };
 pub use rest2d::{
     ContourRestClipQuery, PocketRestQuery, RegionSet2D, RestPocketWorkItem, UpstreamSweptInput,
@@ -115,11 +121,11 @@ pub use surface3d::{
     check_hole_column_overhang, clip_2d_contour_outside_overhangs, clip_polyline_to_region,
     detect_flat_plateaus, drop_cutter_points_parallel, drop_cutter_z,
     drop_cutter_z_detailed_with_scratch, drop_cutter_z_with_scratch, emit_final_surface_retract,
-    emit_surface_safe_link, project_surface_z_slab_xy, push_cutter_region_z, rect_region_2d,
-    refine_convex_chords_3d, region_aabb_2d, resolve_3d_boundary_config_detailed,
-    resolve_3d_containment_region, resolve_3d_containment_region_detailed,
-    sample_surface_slope_deg, simplify_3d_polyline_rdp, slice_surface_contours_z,
-    stepover_for_cusp_height, stock_xy_region,
+    emit_surface_safe_link, emit_surface_safe_link_with_avoid, project_surface_z_slab_xy,
+    push_cutter_region_z, rect_region_2d, refine_convex_chords_3d, region_aabb_2d,
+    resolve_3d_boundary_config_detailed, resolve_3d_containment_region,
+    resolve_3d_containment_region_detailed, sample_surface_slope_deg, simplify_3d_polyline_rdp,
+    slice_surface_contours_z, stepover_for_cusp_height, stock_xy_region,
 };
 pub use thread_tables::{
     ISO_60_H_OVER_P, ThreadSpecEntry, ThreadStandardKind, all_thread_specs, find_thread_spec,

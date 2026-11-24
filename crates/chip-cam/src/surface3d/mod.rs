@@ -24,8 +24,8 @@ pub use drop_cutter::{
 };
 pub use finishing::{
     RestMaskGrid2D, SurfaceLinkConfig, build_3d_rest_mask, compute_morphological_rest_residual,
-    emit_final_surface_retract, emit_surface_safe_link, refine_convex_chords_3d, region_aabb_2d,
-    simplify_3d_polyline_rdp, stepover_for_cusp_height,
+    emit_final_surface_retract, emit_surface_safe_link, emit_surface_safe_link_with_avoid,
+    refine_convex_chords_3d, region_aabb_2d, simplify_3d_polyline_rdp, stepover_for_cusp_height,
 };
 pub use levels::{
     ResolvedBoundary2D, clip_polyline_to_region, detect_flat_plateaus, rect_region_2d,

@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use chip_math::{ArcPolyline2D, DVec2, DVec3};
 
 use crate::{
+    avoid_regions::clip_polyline_outside_avoid,
     cl_data::MotionRole,
     offset2d::{
         OffsetRegionNode, PocketRegion2D, build_offset_region_tree, clip_scanline_to_region,
@@ -567,6 +568,11 @@ pub fn generate_pocket2d(
         .value_mm
         .max(stepover * 1.6);
 
+    let avoid_2d = ctx.resolve_avoid_2d(target_bottom_z, ctx.heights.top_z_wcs);
+    builder.warnings.extend(avoid_2d.warnings);
+    let avoid_keepout = avoid_2d.effective_region;
+    let has_avoid_keepout = !avoid_keepout.is_empty();
+
     let overhang_cutter = SurfaceCutterProfile::from_tool(
         ctx.tool,
         radial_leave.max(0.0),
@@ -698,7 +704,14 @@ pub fn generate_pocket2d(
                 .as_ref()
                 .map(|f| f.avoidance_region_z(z_cut))
                 .filter(|r| !r.is_empty());
-            if let Some(ref avoid) = overhang_avoid {
+            let combined_avoid: Option<RegionSet2D> =
+                match (overhang_avoid.as_ref(), has_avoid_keepout) {
+                    (Some(ov), true) => Some(ov.union(&avoid_keepout)),
+                    (Some(ov), false) => Some(ov.clone()),
+                    (None, true) => Some(avoid_keepout.clone()),
+                    (None, false) => None,
+                };
+            if let Some(ref avoid) = combined_avoid {
                 let mut safe_items = Vec::new();
                 for (orig_reg, orig_air) in work_items {
                     let diff = RegionSet2D::from_single(orig_reg).difference(avoid);
@@ -892,6 +905,13 @@ pub fn generate_pocket2d(
                                 })
                                 .collect();
                         }
+                        if has_avoid_keepout {
+                            finish_spans = finish_spans
+                                .iter()
+                                .flat_map(|sp| clip_polyline_outside_avoid(sp, &avoid_keepout))
+                                .filter(|sp| sp.perimeter() > 0.05)
+                                .collect();
+                        }
 
                         for span in &finish_spans {
                             let Some((s_xy, _)) = span.sample_at_fraction(0.0) else {
@@ -902,7 +922,7 @@ pub fn generate_pocket2d(
                                 (cur.z - z_cut).abs() <= 1e-4
                                     && cur_xy.distance(s_xy) <= stay_down_limit
                                     && is_chord_inside_region(cur_xy, s_xy, fin_reg)
-                                    && overhang_avoid.as_ref().is_none_or(|av| {
+                                    && combined_avoid.as_ref().is_none_or(|av| {
                                         is_2d_segment_clear_of_avoid(cur_xy, s_xy, av)
                                     })
                             });
@@ -1503,6 +1523,8 @@ mod tests {
             is_first_tool_in_setup: true,
             upstream_rest: &[],
             carryover_stock: None,
+            fixtures: &[],
+            shared_avoid_regions: &[],
             cancel: &cancel,
         })
         .unwrap();
@@ -1552,6 +1574,8 @@ mod tests {
             is_first_tool_in_setup: false,
             upstream_rest: &up,
             carryover_stock: None,
+            fixtures: &[],
+            shared_avoid_regions: &[],
             cancel: &cancel,
         })
         .unwrap();

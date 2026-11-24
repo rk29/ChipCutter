@@ -231,6 +231,8 @@ fn facing_l_shape_with_raised_boss_clips_missing_quadrant_and_avoids_boss_gouges
         is_first_tool_in_setup: true,
         upstream_rest: &[],
         carryover_stock: None,
+        fixtures: &[],
+        shared_avoid_regions: &[],
         cancel: &cancel,
     })
     .unwrap();
@@ -377,6 +379,8 @@ fn facing_model_silhouette_and_stock_box_containment_modes_and_offset() {
                 is_first_tool_in_setup: true,
                 upstream_rest: &[],
                 carryover_stock: None,
+                fixtures: &[],
+                shared_avoid_regions: &[],
                 cancel: &cancel,
             })
             .unwrap()
@@ -531,6 +535,8 @@ fn pocket2d_and_adaptive2d_clear_outside_selected_boss_to_stock_gouge_free() {
             is_first_tool_in_setup: true,
             upstream_rest: &[],
             carryover_stock: None,
+            fixtures: &[],
+            shared_avoid_regions: &[],
             cancel: &cancel,
         })
         .unwrap();
@@ -665,6 +671,8 @@ fn pocket2d_sketch_treat_outer_boundary_as_open_approaches_from_outside() {
             is_first_tool_in_setup: true,
             upstream_rest: &[],
             carryover_stock: None,
+            fixtures: &[],
+            shared_avoid_regions: &[],
             cancel: &cancel,
         })
         .unwrap()
@@ -794,6 +802,8 @@ fn contour2d_open_chain_extension_and_clip_to_stock_bounds() {
         is_first_tool_in_setup: true,
         upstream_rest: &[],
         carryover_stock: None,
+        fixtures: &[],
+        shared_avoid_regions: &[],
         cancel: &cancel,
     })
     .unwrap();
@@ -843,6 +853,8 @@ fn contour2d_open_chain_extension_and_clip_to_stock_bounds() {
         is_first_tool_in_setup: true,
         upstream_rest: &[],
         carryover_stock: None,
+        fixtures: &[],
+        shared_avoid_regions: &[],
         cancel: &cancel,
     })
     .unwrap();

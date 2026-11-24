@@ -1,6 +1,8 @@
 use chip_math::{DEFAULT_ARC_FIT_TOL_MM, DVec2, EvalContext, ParamLength};
 use serde::{Deserialize, Serialize};
 
+use crate::selection::GeometrySelectionItem;
+
 pub(super) fn default_one_u32() -> u32 {
     1
 }
@@ -394,5 +396,132 @@ impl LinkingParams {
         self.lead_in.reevaluate(ctx);
         self.lead_out.reevaluate(ctx);
         let _ = self.seam_overlap.reevaluate(ctx);
+    }
+}
+
+/// Default radial and axial clearance (`0.5 mm`) added around Avoid / Keep-Out regions.
+pub const DEFAULT_AVOID_CLEARANCE_MM: f64 = 0.5;
+
+fn default_avoid_clearance() -> ParamLength {
+    ParamLength::from_mm(DEFAULT_AVOID_CLEARANCE_MM)
+}
+
+/// Reusable named Avoid / Keep-Out region stored on `ProjectDocument::avoid_regions`
+/// and referenced by ID from any number of operations (within the same Setup or across Setups).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SharedAvoidRegion {
+    pub id: String,
+    pub name: String,
+    /// 3D faces, closed loops, holes, or 2D sketch regions/entities/layers to stay out of.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub selections: Vec<GeometrySelectionItem>,
+    /// Optional Setup `FixtureBody::id` entries grouped into this shared keep-out region.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fixture_ids: Vec<String>,
+    /// Optional radial clearance override (`mm`); when `None`, inherits the operation's `avoid.radial_clearance`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub radial_clearance: Option<ParamLength>,
+    /// Optional axial clearance override (`mm`); when `None`, inherits the operation's `avoid.axial_clearance`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub axial_clearance: Option<ParamLength>,
+    /// Temporarily disable this shared region across all linked operations without deleting it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub suppressed: bool,
+}
+
+impl SharedAvoidRegion {
+    pub fn new(id: impl Into<String>, name: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+            selections: Vec::new(),
+            fixture_ids: Vec::new(),
+            radial_clearance: None,
+            axial_clearance: None,
+            suppressed: false,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.selections.is_empty() && self.fixture_ids.is_empty()
+    }
+
+    pub fn reevaluate(&mut self, ctx: &EvalContext) {
+        if let Some(r) = &mut self.radial_clearance {
+            let _ = r.reevaluate(ctx);
+        }
+        if let Some(a) = &mut self.axial_clearance {
+            let _ = a.reevaluate(ctx);
+        }
+    }
+}
+
+/// Per-operation Avoid / Keep-Out region configuration (`Operation::avoid`).
+///
+/// Combines operation-local geometry/fixture exclusions with reusable named [`SharedAvoidRegion`]
+/// references stored on `ProjectDocument::avoid_regions`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AvoidRegionConfig {
+    /// IDs of reusable `ProjectDocument::avoid_regions` linked to this operation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shared_region_ids: Vec<String>,
+    /// Operation-local 3D faces, closed loops, holes, or 2D sketch regions/layers to stay out of.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub selections: Vec<GeometrySelectionItem>,
+    /// Specific Setup `FixtureBody::id` entries to subtract from the operation's cutting area.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fixture_ids: Vec<String>,
+    /// Automatically subtract ALL non-suppressed Setup fixtures overlapping the operation's Z band.
+    #[serde(default)]
+    pub avoid_all_fixtures: bool,
+    /// Extra XY / radial clearance (`mm`, default `0.5 mm`) added around keep-out boundaries.
+    #[serde(default = "default_avoid_clearance")]
+    pub radial_clearance: ParamLength,
+    /// Extra Z / axial clearance (`mm`, default `0.5 mm`) for Z-band overlap and rotary axial exclusion.
+    #[serde(default = "default_avoid_clearance")]
+    pub axial_clearance: ParamLength,
+}
+
+impl Default for AvoidRegionConfig {
+    fn default() -> Self {
+        Self {
+            shared_region_ids: Vec::new(),
+            selections: Vec::new(),
+            fixture_ids: Vec::new(),
+            avoid_all_fixtures: false,
+            radial_clearance: default_avoid_clearance(),
+            axial_clearance: default_avoid_clearance(),
+        }
+    }
+}
+
+impl AvoidRegionConfig {
+    /// Returns `true` when no avoid regions or fixture exclusions are configured so untouched
+    /// `.chip.toml` / `.chipz` files omit the section completely (100% backward compatible).
+    pub fn is_empty(&self) -> bool {
+        self.shared_region_ids.is_empty()
+            && self.selections.is_empty()
+            && self.fixture_ids.is_empty()
+            && !self.avoid_all_fixtures
+    }
+
+    /// Returns `true` when this operation references Setup fixtures either directly
+    /// (`avoid_all_fixtures` / local `fixture_ids`) or via any linked non-suppressed
+    /// [`SharedAvoidRegion::fixture_ids`].
+    pub fn references_fixtures(&self, shared_regions: &[SharedAvoidRegion]) -> bool {
+        if self.avoid_all_fixtures || !self.fixture_ids.is_empty() {
+            return true;
+        }
+        self.shared_region_ids.iter().any(|sid| {
+            shared_regions
+                .iter()
+                .find(|r| r.id == *sid)
+                .is_some_and(|r| !r.suppressed && !r.fixture_ids.is_empty())
+        })
+    }
+
+    pub fn reevaluate(&mut self, ctx: &EvalContext) {
+        let _ = self.radial_clearance.reevaluate(ctx);
+        let _ = self.axial_clearance.reevaluate(ctx);
     }
 }

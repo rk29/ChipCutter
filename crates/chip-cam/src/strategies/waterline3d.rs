@@ -66,16 +66,25 @@ pub fn generate_waterline3d(
         });
     }
 
-    let resolved_boundary = resolve_3d_boundary_config_detailed(
+    let mut resolved_boundary = resolve_3d_boundary_config_detailed(
         &surface,
         ctx.setup,
         &ctx.selection,
         &params.boundary,
         tool_r,
     );
+    let avoid_2d = ctx.resolve_avoid_2d(z_bottom, z_top);
+    let had_avoid = !avoid_2d.effective_region.is_empty();
+    resolved_boundary.apply_avoid(avoid_2d);
     builder.warnings.extend(resolved_boundary.warnings);
+    let avoid_keepout = resolved_boundary.avoid_effective_region;
     let containment = resolved_boundary.effective_region;
     if containment.is_empty() {
+        if had_avoid {
+            builder
+                .warnings
+                .push("Avoid / Keep-Out regions excluded 100% of the cutting area.".to_string());
+        }
         return Err(CamError::EmptyToolpath {
             op_name: ctx.op.name.clone(),
         });
@@ -324,7 +333,9 @@ pub fn generate_waterline3d(
                     !avoid.contains_point(start_xy)
                         || avoid.min_distance_to_boundary(start_xy) <= 0.01
                 };
-                if clear_prev && clear_curr {
+                let clear_keepout = avoid_keepout.is_empty()
+                    || segment_clear_of_avoid(prev_xy, start_xy, &avoid_keepout);
+                if clear_prev && clear_curr && clear_keepout {
                     // Move horizontally at `prev_p.z` (strictly clear of `prev_avoid`), then ramp to `wc.z_wcs`!
                     if dist_xy > 1e-4 {
                         builder.linear_to(

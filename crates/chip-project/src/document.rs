@@ -8,7 +8,7 @@ use chip_cad::{
     CadDocument, CadError, CadKernel, MeshImportOptions, MeshUnitKind, ModelTransform,
     MonstertruckKernel, is_mesh_extension, load_mesh_cad_document,
 };
-use chip_cam::{Setup, StrategyParams, WorkOffsetSlot};
+use chip_cam::{Setup, SharedAvoidRegion, StrategyParams, WorkOffsetSlot};
 use chip_math::{DEFAULT_TESS_CHORD_TOL_MM, DisplayUnit, ParamLength};
 use chip_sketch::{CustomFontMap, SketchEntity, SketchFontSource, SketchLayer};
 use chip_tools::{DEFAULT_MACHINE_ID, MachineDefinition, Tool, ToolId};
@@ -115,6 +115,9 @@ pub struct ProjectDocument {
     /// Planar 2D Sketch Layers (DXF/SVG imports, 2D CAM shapes, & Pure-2D job geometry; `11-sketches-vectors.md`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sketches: Vec<SketchLayer>,
+    /// Reusable named Avoid / Keep-Out regions linkable by ID across any number of operations & setups.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub avoid_regions: Vec<SharedAvoidRegion>,
     /// Project-embedded snapshots of tools referenced by operations (`04-tool-library.md`).
     #[serde(default)]
     pub tools: Vec<Tool>,
@@ -140,6 +143,7 @@ impl ProjectDocument {
             machine_id: None,
             models: Vec::new(),
             sketches: Vec::new(),
+            avoid_regions: Vec::new(),
             tools: Vec::new(),
             setups: vec![Setup::new(
                 "setup_1",
@@ -185,6 +189,43 @@ impl ProjectDocument {
 
     pub fn sketch_mut(&mut self, id: &str) -> Option<&mut SketchLayer> {
         self.sketches.iter_mut().find(|s| s.id == id)
+    }
+
+    /// Looks up a project-level reusable [`SharedAvoidRegion`] by `id`.
+    pub fn avoid_region(&self, id: &str) -> Option<&SharedAvoidRegion> {
+        self.avoid_regions.iter().find(|r| r.id == id)
+    }
+
+    /// Looks up a mutable project-level reusable [`SharedAvoidRegion`] by `id`.
+    pub fn avoid_region_mut(&mut self, id: &str) -> Option<&mut SharedAvoidRegion> {
+        self.avoid_regions.iter_mut().find(|r| r.id == id)
+    }
+
+    /// Removes the [`SharedAvoidRegion`] with `id`, prunes all stale `shared_region_ids`
+    /// references across every Setup/Operation, and marks affected operations `Dirty`.
+    pub fn remove_avoid_region(&mut self, id: &str) -> bool {
+        let before = self.avoid_regions.len();
+        self.avoid_regions.retain(|r| r.id != id);
+        let removed = self.avoid_regions.len() < before;
+        for setup in &mut self.setups {
+            for op in &mut setup.operations {
+                let before_refs = op.avoid.shared_region_ids.len();
+                op.avoid.shared_region_ids.retain(|rid| rid != id);
+                if op.avoid.shared_region_ids.len() < before_refs {
+                    op.mark_dirty();
+                }
+            }
+        }
+        removed
+    }
+
+    /// Counts how many operations across all Setups reference the [`SharedAvoidRegion`] `id`.
+    pub fn avoid_region_usage_count(&self, id: &str) -> usize {
+        self.setups
+            .iter()
+            .flat_map(|s| s.operations.iter())
+            .filter(|op| op.avoid.shared_region_ids.iter().any(|rid| rid == id))
+            .count()
     }
 
     /// Returns the primary machined target part model (`role == ModelRole::Part`), ignoring

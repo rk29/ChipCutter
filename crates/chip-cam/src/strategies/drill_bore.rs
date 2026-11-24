@@ -72,12 +72,25 @@ pub fn generate_drill_bore(
     let overhang_surface = (ctx.passes.avoid_model_overhangs && ctx.doc.has_3d_geometry())
         .then(|| SurfaceMesh3D::from_cad_document(ctx.doc, &[], &ctx.setup.frame));
 
+    let z_top_shift = ctx.heights.top_z_wcs - ctx.selection.inferred_top_z_wcs;
+    let z_bot_shift = ctx.heights.bottom_z_wcs - ctx.selection.inferred_bottom_z_wcs;
+    let min_hole_bottom_z = holes
+        .iter()
+        .map(|h| (h.bottom_z_wcs + z_bot_shift) + ctx.passes.stock_to_leave_axial.value_mm)
+        .fold(f64::INFINITY, f64::min);
+    let max_hole_top_z = holes
+        .iter()
+        .map(|h| h.top_z_wcs + z_top_shift)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let avoid_2d = ctx.resolve_avoid_2d(min_hole_bottom_z, max_hole_top_z);
+    builder.warnings.extend(avoid_2d.warnings);
+    let avoid_keepout = avoid_2d.effective_region;
+    let mut skipped_avoid_holes = 0usize;
+
     for (idx, hole) in holes.iter().enumerate() {
         ctx.check_cancel()?;
 
         // Allow per-hole top/bottom when FromSelection is active, while honoring explicit user offsets
-        let z_top_shift = ctx.heights.top_z_wcs - ctx.selection.inferred_top_z_wcs;
-        let z_bot_shift = ctx.heights.bottom_z_wcs - ctx.selection.inferred_bottom_z_wcs;
         let hole_top_z = hole.top_z_wcs + z_top_shift;
         let hole_bottom_z =
             (hole.bottom_z_wcs + z_bot_shift) + ctx.passes.stock_to_leave_axial.value_mm;
@@ -99,6 +112,22 @@ pub fn generate_drill_bore(
                 can_bore && !is_drill_geom && tool_d < hole.diameter_mm - 0.05
             }
         };
+
+        if !avoid_keepout.is_empty() {
+            let orbit_r = if use_bore {
+                (0.5 * hole.diameter_mm - 0.5 * tool_d - ctx.passes.stock_to_leave_radial.value_mm)
+                    .max(0.0)
+            } else {
+                0.0
+            };
+            let blocked_by_avoid = avoid_keepout.contains_point(hole.center_wcs)
+                || (orbit_r > 0.05
+                    && avoid_keepout.min_distance_to_boundary(hole.center_wcs) < orbit_r);
+            if blocked_by_avoid {
+                skipped_avoid_holes += 1;
+                continue;
+            }
+        }
 
         if let Some(ref surf) = overhang_surface {
             let orbit_r = if use_bore {
@@ -186,6 +215,12 @@ pub fn generate_drill_bore(
                 feed_mm_min: ctx.cutting.plunge_feed_mm_min,
             });
         }
+    }
+
+    if skipped_avoid_holes > 0 {
+        builder.warnings.push(format!(
+            "Skipped {skipped_avoid_holes} hole(s) inside Avoid / Keep-Out region."
+        ));
     }
 
     Ok(())
@@ -453,6 +488,7 @@ fn emit_helical_bore(
     }
 
     builder.rapid_to(DVec3::new(c.x, c.y, retract_z));
+
     Ok(())
 }
 

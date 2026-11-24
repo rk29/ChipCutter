@@ -231,6 +231,8 @@ fn three_angle_indexed_adaptive3d_volumetric_carryover_reduces_air_cutting_with_
         is_first_tool_in_setup: false,
         upstream_rest: &cross_angle_upstream,
         carryover_stock: None,
+        fixtures: &[],
+        shared_avoid_regions: &[],
         cancel: &cancel,
     })
     .unwrap();

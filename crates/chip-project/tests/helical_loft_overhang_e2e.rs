@@ -228,6 +228,8 @@ fn m72_triple_helix_full_assembly_clearance_and_25d_overhang_guard() {
         is_first_tool_in_setup: true,
         upstream_rest: &[],
         carryover_stock: None,
+        fixtures: &[],
+        shared_avoid_regions: &[],
         cancel: &cancel,
     })
     .unwrap();
@@ -242,6 +244,8 @@ fn m72_triple_helix_full_assembly_clearance_and_25d_overhang_guard() {
         is_first_tool_in_setup: false,
         upstream_rest: &[],
         carryover_stock: None,
+        fixtures: &[],
+        shared_avoid_regions: &[],
         cancel: &cancel,
     })
     .unwrap();
@@ -359,6 +363,8 @@ fn m72_triple_helix_full_assembly_clearance_and_25d_overhang_guard() {
         is_first_tool_in_setup: true,
         upstream_rest: &[],
         carryover_stock: None,
+        fixtures: &[],
+        shared_avoid_regions: &[],
         cancel: &cancel,
     })
     .unwrap();
@@ -383,6 +389,8 @@ fn m72_triple_helix_full_assembly_clearance_and_25d_overhang_guard() {
         is_first_tool_in_setup: true,
         upstream_rest: &[],
         carryover_stock: None,
+        fixtures: &[],
+        shared_avoid_regions: &[],
         cancel: &cancel,
     })
     .unwrap();
@@ -667,6 +675,8 @@ fn m74_triple_helix_overhang_safe_finishing_and_swept_soft_jaws() {
         is_first_tool_in_setup: true,
         upstream_rest: &[],
         carryover_stock: None,
+        fixtures: &[],
+        shared_avoid_regions: &[],
         cancel: &cancel,
     })
     .unwrap();
@@ -681,6 +691,8 @@ fn m74_triple_helix_overhang_safe_finishing_and_swept_soft_jaws() {
         is_first_tool_in_setup: false,
         upstream_rest: &[],
         carryover_stock: None,
+        fixtures: &[],
+        shared_avoid_regions: &[],
         cancel: &cancel,
     })
     .unwrap();
@@ -695,6 +707,8 @@ fn m74_triple_helix_overhang_safe_finishing_and_swept_soft_jaws() {
         is_first_tool_in_setup: false,
         upstream_rest: &[],
         carryover_stock: None,
+        fixtures: &[],
+        shared_avoid_regions: &[],
         cancel: &cancel,
     })
     .unwrap();
@@ -891,6 +905,8 @@ fn m75_partial_sector_zigzag_rotary2linear_and_rotary4axis_sim_gouge_free() {
         is_first_tool_in_setup: true,
         upstream_rest: &[],
         carryover_stock: None,
+        fixtures: &[],
+        shared_avoid_regions: &[],
         cancel: &cancel,
     })
     .unwrap();
@@ -957,6 +973,8 @@ fn m75_partial_sector_zigzag_rotary2linear_and_rotary4axis_sim_gouge_free() {
         is_first_tool_in_setup: true,
         upstream_rest: &[],
         carryover_stock: None,
+        fixtures: &[],
+        shared_avoid_regions: &[],
         cancel: &cancel,
     })
     .unwrap();
@@ -1028,6 +1046,8 @@ fn m75_partial_sector_zigzag_rotary2linear_and_rotary4axis_sim_gouge_free() {
         is_first_tool_in_setup: true,
         upstream_rest: &[],
         carryover_stock: None,
+        fixtures: &[],
+        shared_avoid_regions: &[],
         cancel: &cancel,
     })
     .unwrap();
@@ -1159,6 +1179,8 @@ fn m75_rotary4axis_auto_tilt_improves_overhanging_helical_grooves_vs_rotary2line
         is_first_tool_in_setup: true,
         upstream_rest: &[],
         carryover_stock: None,
+        fixtures: &[],
+        shared_avoid_regions: &[],
         cancel: &cancel,
     })
     .unwrap();
@@ -1173,6 +1195,8 @@ fn m75_rotary4axis_auto_tilt_improves_overhanging_helical_grooves_vs_rotary2line
         is_first_tool_in_setup: true,
         upstream_rest: &[],
         carryover_stock: None,
+        fixtures: &[],
+        shared_avoid_regions: &[],
         cancel: &cancel,
     })
     .unwrap();

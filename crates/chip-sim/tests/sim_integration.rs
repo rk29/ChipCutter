@@ -1285,6 +1285,8 @@ fn heightmap_and_tridexel_pre_drilled_step_hole_thread_mill_report_zero_critical
         is_first_tool_in_setup: true,
         upstream_rest: &[],
         carryover_stock: None,
+        fixtures: &[],
+        shared_avoid_regions: &[],
         cancel: &cancel,
     })
     .unwrap();
@@ -1321,6 +1323,8 @@ fn heightmap_and_tridexel_pre_drilled_step_hole_thread_mill_report_zero_critical
         is_first_tool_in_setup: false,
         upstream_rest: &[],
         carryover_stock: None,
+        fixtures: &[],
+        shared_avoid_regions: &[],
         cancel: &cancel,
     })
     .unwrap();
@@ -2736,6 +2740,8 @@ fn m66_tslot_undercut_cpu_and_gpu_tridexel_parity() {
         is_first_tool_in_setup: true,
         upstream_rest: &[],
         carryover_stock: None,
+        fixtures: &[],
+        shared_avoid_regions: &[],
         cancel: &cancel,
     })
     .unwrap();
@@ -2750,6 +2756,8 @@ fn m66_tslot_undercut_cpu_and_gpu_tridexel_parity() {
         is_first_tool_in_setup: false,
         upstream_rest: &[],
         carryover_stock: None,
+        fixtures: &[],
+        shared_avoid_regions: &[],
         cancel: &cancel,
     })
     .unwrap();
@@ -2982,6 +2990,8 @@ fn m66_dovetail_60deg_cpu_and_gpu_tridexel_parity() {
         is_first_tool_in_setup: false,
         upstream_rest: &[],
         carryover_stock: None,
+        fixtures: &[],
+        shared_avoid_regions: &[],
         cancel: &cancel,
     })
     .unwrap_err();
@@ -2998,6 +3008,8 @@ fn m66_dovetail_60deg_cpu_and_gpu_tridexel_parity() {
         is_first_tool_in_setup: true,
         upstream_rest: &[],
         carryover_stock: None,
+        fixtures: &[],
+        shared_avoid_regions: &[],
         cancel: &cancel,
     })
     .unwrap();
@@ -3012,6 +3024,8 @@ fn m66_dovetail_60deg_cpu_and_gpu_tridexel_parity() {
         is_first_tool_in_setup: false,
         upstream_rest: &[],
         carryover_stock: None,
+        fixtures: &[],
+        shared_avoid_regions: &[],
         cancel: &cancel,
     })
     .unwrap();

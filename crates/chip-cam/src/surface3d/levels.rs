@@ -23,10 +23,28 @@ use crate::{
 pub struct ResolvedBoundary2D {
     /// Raw nominal boundary loops before tool-radius / offset dilation (for viewport display).
     pub nominal_region: RegionSet2D,
-    /// Effective tool-center containment region after `tool_containment` + `boundary_offset`.
+    /// Effective tool-center containment region after `tool_containment` + `boundary_offset`
+    /// (and after subtracting `avoid_effective_region` when keep-out regions are active).
     pub effective_region: RegionSet2D,
+    /// Raw nominal Avoid / Keep-Out footprints (for 3D viewport keep-out overlay display).
+    pub avoid_nominal_region: RegionSet2D,
+    /// Effective tool-center Avoid / Keep-Out footprints subtracted from `effective_region`.
+    pub avoid_effective_region: RegionSet2D,
     /// Non-fatal diagnostic warnings (e.g., `SelectedRegions` chosen with no selections).
     pub warnings: Vec<String>,
+}
+
+impl ResolvedBoundary2D {
+    /// Subtracts `avoid.effective_region` from `self.effective_region` and stores both nominal
+    /// and effective keep-out footprints plus any warnings onto `self`.
+    pub fn apply_avoid(&mut self, avoid: crate::avoid_regions::ResolvedAvoidRegion2D) {
+        self.warnings.extend(avoid.warnings);
+        if !avoid.effective_region.is_empty() && !self.effective_region.is_empty() {
+            self.effective_region = self.effective_region.difference(&avoid.effective_region);
+        }
+        self.avoid_nominal_region = avoid.nominal_region;
+        self.avoid_effective_region = avoid.effective_region;
+    }
 }
 
 /// Detects significant upward-facing horizontal flat plateaus on `surface` inside `[z_min, z_max]`,
@@ -311,6 +329,8 @@ fn resolve_3d_containment_region_impl(
     ResolvedBoundary2D {
         nominal_region,
         effective_region,
+        avoid_nominal_region: RegionSet2D::empty(),
+        avoid_effective_region: RegionSet2D::empty(),
         warnings,
     }
 }

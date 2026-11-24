@@ -326,6 +326,8 @@ fn overhang_t_flange_pencil3d_and_rest_mask_suppress_shadow_while_preserving_hub
         is_first_tool_in_setup: true,
         upstream_rest: &[],
         carryover_stock: None,
+        fixtures: &[],
+        shared_avoid_regions: &[],
         cancel: &cancel,
     })
     .unwrap();
@@ -488,6 +490,8 @@ fn parallel3d_and_scallop3d_on_overhanging_flange_zero_gouge_zero_crash_no_cliff
         is_first_tool_in_setup: true,
         upstream_rest: &[],
         carryover_stock: None,
+        fixtures: &[],
+        shared_avoid_regions: &[],
         cancel: &cancel,
     })
     .unwrap();
@@ -503,6 +507,8 @@ fn parallel3d_and_scallop3d_on_overhanging_flange_zero_gouge_zero_crash_no_cliff
         is_first_tool_in_setup: false,
         upstream_rest: &[],
         carryover_stock: None,
+        fixtures: &[],
+        shared_avoid_regions: &[],
         cancel: &cancel,
     })
     .unwrap();
@@ -776,6 +782,8 @@ fn parallel3d_and_scallop3d_on_twisted_overhanging_helical_loft_zero_gouge_zero_
         is_first_tool_in_setup: true,
         upstream_rest: &[],
         carryover_stock: None,
+        fixtures: &[],
+        shared_avoid_regions: &[],
         cancel: &cancel,
     })
     .unwrap();
@@ -791,6 +799,8 @@ fn parallel3d_and_scallop3d_on_twisted_overhanging_helical_loft_zero_gouge_zero_
         is_first_tool_in_setup: false,
         upstream_rest: &[],
         carryover_stock: None,
+        fixtures: &[],
+        shared_avoid_regions: &[],
         cancel: &cancel,
     })
     .unwrap();

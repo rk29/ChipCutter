@@ -319,6 +319,8 @@ fn true_model_silhouette_is_circular_eliminates_corner_air_cuts_and_warns_on_emp
         is_first_tool_in_setup: true,
         upstream_rest: &[],
         carryover_stock: None,
+        fixtures: &[],
+        shared_avoid_regions: &[],
         cancel: &cancel,
     })
     .unwrap();
@@ -359,6 +361,8 @@ fn true_model_silhouette_is_circular_eliminates_corner_air_cuts_and_warns_on_emp
         is_first_tool_in_setup: false,
         upstream_rest: &[],
         carryover_stock: None,
+        fixtures: &[],
+        shared_avoid_regions: &[],
         cancel: &cancel,
     })
     .unwrap();
@@ -389,6 +393,8 @@ fn true_model_silhouette_is_circular_eliminates_corner_air_cuts_and_warns_on_emp
         is_first_tool_in_setup: true,
         upstream_rest: &[],
         carryover_stock: None,
+        fixtures: &[],
+        shared_avoid_regions: &[],
         cancel: &cancel,
     })
     .unwrap();
@@ -494,6 +500,8 @@ fn adaptive3d_honors_stockbox_containment_negative_offset_and_cylindrical_z_stoc
             is_first_tool_in_setup: true,
             upstream_rest: &[],
             carryover_stock: None,
+            fixtures: &[],
+            shared_avoid_regions: &[],
             cancel: &cancel,
         })
         .unwrap();
@@ -593,6 +601,8 @@ fn adaptive3d_honors_stockbox_containment_negative_offset_and_cylindrical_z_stoc
         is_first_tool_in_setup: true,
         upstream_rest: &[],
         carryover_stock: None,
+        fixtures: &[],
+        shared_avoid_regions: &[],
         cancel: &cancel,
     })
     .unwrap();
@@ -694,6 +704,8 @@ fn undercut3d_respects_selected_regions_containment_offset_and_passes_sim() {
             is_first_tool_in_setup: true,
             upstream_rest: &[],
             carryover_stock: None,
+            fixtures: &[],
+            shared_avoid_regions: &[],
             cancel: &cancel,
         })
         .unwrap();
@@ -797,6 +809,8 @@ fn deburr3d_auto_detect_respects_selected_regions_and_passes_sim() {
         is_first_tool_in_setup: true,
         upstream_rest: &[],
         carryover_stock: None,
+        fixtures: &[],
+        shared_avoid_regions: &[],
         cancel: &cancel,
     })
     .unwrap();
@@ -863,6 +877,8 @@ fn deburr3d_auto_detect_respects_selected_regions_and_passes_sim() {
         is_first_tool_in_setup: true,
         upstream_rest: &[],
         carryover_stock: None,
+        fixtures: &[],
+        shared_avoid_regions: &[],
         cancel: &cancel,
     })
     .unwrap();
@@ -1056,6 +1072,8 @@ fn model_silhouette_fill_through_holes_option_toggles_interior_void_machining() 
         is_first_tool_in_setup: true,
         upstream_rest: &[],
         carryover_stock: None,
+        fixtures: &[],
+        shared_avoid_regions: &[],
         cancel: &cancel,
     })
     .unwrap();
@@ -1090,6 +1108,8 @@ fn model_silhouette_fill_through_holes_option_toggles_interior_void_machining() 
         is_first_tool_in_setup: true,
         upstream_rest: &[],
         carryover_stock: None,
+        fixtures: &[],
+        shared_avoid_regions: &[],
         cancel: &cancel,
     })
     .unwrap();
@@ -1373,6 +1393,8 @@ fn m84_model_bounding_box_offsets_sharp_corners_collapse_guard_and_sim_verificat
         is_first_tool_in_setup: true,
         upstream_rest: &[],
         carryover_stock: None,
+        fixtures: &[],
+        shared_avoid_regions: &[],
         cancel: &cancel,
     })
     .unwrap();
@@ -1387,6 +1409,8 @@ fn m84_model_bounding_box_offsets_sharp_corners_collapse_guard_and_sim_verificat
         is_first_tool_in_setup: false,
         upstream_rest: &[],
         carryover_stock: None,
+        fixtures: &[],
+        shared_avoid_regions: &[],
         cancel: &cancel,
     })
     .unwrap();

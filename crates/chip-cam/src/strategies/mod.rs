@@ -31,17 +31,21 @@ use chip_stock::{SimResolution, TriDexelStock};
 use chip_tools::Tool;
 
 use crate::{
+    avoid_regions::{
+        AvoidAxialBandsInput, AvoidRegionInput, ResolvedAvoidAxialBands, ResolvedAvoidRegion2D,
+        resolve_avoid_axial_bands, resolve_avoid_region_2d, transform_fixtures_to_frame,
+    },
     cl_data::ClEvent,
     fixture_avoidance::route_toolpath_around_fixtures,
     heights::ResolvedHeights,
     operation::{EffectiveCuttingParams, Operation, OperationKind},
     params::{
         ChamferSourceMode, ChamferTraceMode, ContourCompensation, LinkingParams, PassesParams,
-        RetractPolicy, StrategyParams,
+        RetractPolicy, SharedAvoidRegion, StrategyParams,
     },
     rest2d::{UpstreamSweptInput, filter_upstream_for_indexed_angle},
     rotary::{
-        OperationRotaryMode, RotaryAxisKind, build_indexed_virtual_setup,
+        OperationRotaryMode, ResolvedRotaryConfig, RotaryAxisKind, build_indexed_virtual_setup,
         validate_toolpath_rotary_chuck_clearance,
     },
     selection::{
@@ -59,9 +63,11 @@ use crate::{
 /// Resolved immutable context passed into each 2.5D / 3-axis toolpath strategy generator.
 pub struct StrategyExecContext<'a> {
     pub doc: &'a CadDocument,
+    pub sketches: &'a [SketchLayer],
     pub setup: &'a ResolvedSetup,
     pub op: &'a Operation,
     pub tool: &'a Tool,
+    pub display_unit: DisplayUnit,
     pub cutting: EffectiveCuttingParams,
     pub heights: ResolvedHeights,
     pub passes: PassesParams,
@@ -69,6 +75,8 @@ pub struct StrategyExecContext<'a> {
     pub selection: ExtractedSelectionSummary,
     pub upstream_rest: &'a [UpstreamSweptInput],
     pub carryover_stock: Option<&'a TriDexelStock>,
+    pub fixtures: &'a [ResolvedFixtureSolid],
+    pub shared_avoid_regions: &'a [SharedAvoidRegion],
     pub is_first_tool_in_setup: bool,
     pub clearing_tool: Option<&'a Tool>,
     pub cancel: &'a AtomicBool,
@@ -91,10 +99,51 @@ impl StrategyExecContext<'_> {
             RetractPolicy::FullClearance => self.heights.clearance_z_wcs,
         }
     }
+
+    /// Resolves 2D XY Avoid / Keep-Out regions (`op.avoid` + linked non-suppressed shared regions
+    /// + Z-band overlapping fixtures) for `[z_bottom_wcs, z_top_wcs]`.
+    pub fn resolve_avoid_2d(&self, z_bottom_wcs: f64, z_top_wcs: f64) -> ResolvedAvoidRegion2D {
+        resolve_avoid_region_2d(&AvoidRegionInput {
+            doc: self.doc,
+            sketches: self.sketches,
+            setup: self.setup,
+            avoid: &self.op.avoid,
+            shared_regions: self.shared_avoid_regions,
+            fixtures: self.fixtures,
+            tool: Some(self.tool),
+            tool_radius_mm: 0.5 * self.tool.geometry.cutting_diameter_mm().max(0.1),
+            z_bottom_wcs,
+            z_top_wcs,
+            display_unit: self.display_unit,
+        })
+    }
+
+    /// Resolves 1D rotary axial Avoid / Keep-Out intervals `[u_lo, u_hi]` along `rot.axis`.
+    pub fn resolve_avoid_axial_bands(
+        &self,
+        rot: &ResolvedRotaryConfig,
+        r_floor: f64,
+        r_outer: f64,
+    ) -> ResolvedAvoidAxialBands {
+        resolve_avoid_axial_bands(&AvoidAxialBandsInput {
+            doc: self.doc,
+            sketches: self.sketches,
+            setup: self.setup,
+            rot,
+            avoid: &self.op.avoid,
+            shared_regions: self.shared_avoid_regions,
+            fixtures: self.fixtures,
+            tool: Some(self.tool),
+            tool_radius_mm: 0.5 * self.tool.geometry.cutting_diameter_mm().max(0.1),
+            r_floor,
+            r_outer,
+            display_unit: self.display_unit,
+        })
+    }
 }
 
 /// Input bundle for [`generate_operation_toolpath_with_rest`] (supporting 2D sketches, upstream Rest Machining,
-/// and multi-setup carried-over `TriDexelStock` rest roughing).
+/// multi-setup carried-over `TriDexelStock` rest roughing, workholding fixtures, and shared Avoid / Keep-Out regions).
 pub struct OperationGenRequest<'a> {
     pub doc: &'a CadDocument,
     pub sketches: &'a [SketchLayer],
@@ -106,6 +155,8 @@ pub struct OperationGenRequest<'a> {
     pub is_first_tool_in_setup: bool,
     pub upstream_rest: &'a [UpstreamSweptInput],
     pub carryover_stock: Option<Arc<TriDexelStock>>,
+    pub fixtures: &'a [ResolvedFixtureSolid],
+    pub shared_avoid_regions: &'a [SharedAvoidRegion],
     pub cancel: &'a AtomicBool,
 }
 
@@ -114,14 +165,25 @@ pub struct OperationGenRequest<'a> {
 /// Z travel limits when provided.
 ///
 /// Exact no-op wrapper over [`generate_operation_toolpath_with_rest`] when `fixtures.is_empty()`
-/// or `!auto_avoid_fixtures_on_rapids`.
+/// or `!auto_avoid_fixtures_on_rapids` (while still forwarding `fixtures` into cutting-area
+/// Avoid / Keep-Out resolution whenever `req.fixtures` is empty).
 pub fn generate_operation_toolpath_with_fixtures(
     req: &OperationGenRequest<'_>,
     fixtures: &[ResolvedFixtureSolid],
     auto_avoid_fixtures_on_rapids: bool,
     machine_z_travel_mm: Option<f64>,
 ) -> Result<GeneratedToolpath, CamError> {
-    let mut tp = generate_operation_toolpath_with_rest(req)?;
+    let eff_fixtures = if req.fixtures.is_empty() && !fixtures.is_empty() {
+        fixtures
+    } else {
+        req.fixtures
+    };
+    let eff_req = OperationGenRequest {
+        fixtures: eff_fixtures,
+        carryover_stock: req.carryover_stock.clone(),
+        ..*req
+    };
+    let mut tp = generate_operation_toolpath_with_rest(&eff_req)?;
     if auto_avoid_fixtures_on_rapids && !fixtures.is_empty() {
         route_toolpath_around_fixtures(
             &mut tp,
@@ -171,6 +233,8 @@ pub fn generate_operation_toolpath(
         is_first_tool_in_setup,
         upstream_rest: &[],
         carryover_stock: None,
+        fixtures: &[],
+        shared_avoid_regions: &[],
         cancel,
     })
 }
@@ -262,6 +326,11 @@ pub fn generate_operation_toolpath_with_rest(
             } else {
                 None
             };
+            let rotated_fixtures = if req.fixtures.is_empty() {
+                Vec::new()
+            } else {
+                transform_fixtures_to_frame(req.fixtures, &req.setup.frame, &virtual_setup.frame)
+            };
             let mut inner_op = req.op.clone();
             inner_op.rotary = OperationRotaryMode::None;
             let local_tp = generate_operation_toolpath_inner(&OperationGenRequest {
@@ -275,6 +344,8 @@ pub fn generate_operation_toolpath_with_rest(
                 is_first_tool_in_setup: req.is_first_tool_in_setup,
                 upstream_rest: &filtered_upstream,
                 carryover_stock: rotated_carryover,
+                fixtures: &rotated_fixtures,
+                shared_avoid_regions: req.shared_avoid_regions,
                 cancel: req.cancel,
             })?;
             let wrapped = rotary_wrap::wrap_indexed_3plus1_toolpath(&local_tp, &rot, *angle_deg);
@@ -373,6 +444,8 @@ pub fn generate_operation_toolpath_with_rest(
                 is_first_tool_in_setup: req.is_first_tool_in_setup,
                 upstream_rest: &[],
                 carryover_stock: None,
+                fixtures: &[],
+                shared_avoid_regions: req.shared_avoid_regions,
                 cancel: req.cancel,
             })?;
             rotary_wrap::wrap_planar_toolpath_to_cylinder_checked(
@@ -403,6 +476,8 @@ fn generate_operation_toolpath_inner(
         is_first_tool_in_setup,
         upstream_rest,
         carryover_stock,
+        fixtures,
+        shared_avoid_regions,
         cancel,
     } = req;
     let doc = *doc;
@@ -415,6 +490,8 @@ fn generate_operation_toolpath_inner(
     let is_first_tool_in_setup = *is_first_tool_in_setup;
     let upstream_rest = *upstream_rest;
     let carryover_stock = carryover_stock.as_deref();
+    let fixtures = *fixtures;
+    let shared_avoid_regions = *shared_avoid_regions;
     let cancel = *cancel;
     if cancel.load(Ordering::Relaxed) {
         return Err(CamError::Cancelled);
@@ -484,9 +561,11 @@ fn generate_operation_toolpath_inner(
 
     let ctx = StrategyExecContext {
         doc,
+        sketches,
         setup,
         op,
         tool,
+        display_unit,
         cutting,
         heights,
         passes,
@@ -494,6 +573,8 @@ fn generate_operation_toolpath_inner(
         selection,
         upstream_rest,
         carryover_stock,
+        fixtures,
+        shared_avoid_regions,
         is_first_tool_in_setup,
         clearing_tool,
         cancel,
