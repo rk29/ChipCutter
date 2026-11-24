@@ -11,7 +11,9 @@ use chip_sim::{GpuStockRenderHandle, SimStockColorMode};
 use chip_sim::{SimStockMesh, SimToolMesh};
 use chip_sketch::{SketchLayer, SketchPickHit};
 
-use crate::{camera::CadCamera, theme::AppTheme};
+use crate::{
+    camera::CadCamera, theme::AppTheme, viewport::boundary_preview::BoundaryPreviewOverlay,
+};
 
 /// Pass #6 simulation machined-stock render source consumed by [`crate::viewport::ViewportRenderer`].
 ///
@@ -142,6 +144,8 @@ pub struct HighlightState {
     pub show_fixtures: bool,
     pub fixture_meshes: Vec<FixtureVisualMesh>,
     pub z_planes_wcs: Vec<ZPlaneVisual>,
+    /// Live cutting-area / machining-boundary 3D preview shown when `OperationTab::Geometry` is active.
+    pub boundary_preview: Option<Arc<BoundaryPreviewOverlay>>,
     pub ghost_part: bool,
     pub show_grid: bool,
     pub toolpaths: Vec<ToolpathRenderEntry>,
@@ -182,6 +186,7 @@ impl Default for HighlightState {
             show_fixtures: true,
             fixture_meshes: Vec::new(),
             z_planes_wcs: Vec::new(),
+            boundary_preview: None,
             ghost_part: false,
             show_grid: true,
             toolpaths: Vec::new(),
@@ -217,6 +222,7 @@ impl HighlightState {
         self.rotary = None;
         self.fixture_meshes.clear();
         self.z_planes_wcs.clear();
+        self.boundary_preview = None;
         self.toolpaths.clear();
         self.preview_tab_marker_wcs = None;
         self.sim_stock_source = None;

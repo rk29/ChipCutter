@@ -107,6 +107,7 @@ impl ChipCutterApp {
         self.fixture_models_revision = self.fixture_models_revision.wrapping_add(1);
         self.selected_fixture_idx = None;
         self.cached_frame_geo = None;
+        self.boundary_preview_cache.clear();
         self.active_setup_idx = 0;
         self.hidden_operation_ids.clear();
         self.inspector_focus = InspectorFocus::Setup { setup_idx: 0 };

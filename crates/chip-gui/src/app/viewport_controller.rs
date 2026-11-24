@@ -22,7 +22,10 @@ use crate::{
         FixturePlaceKind, InspectorFocus, OperationTab, SetupTab, SketchAuthorTool,
         ViewportPickMode,
     },
-    viewport::{FixtureVisualMesh, SketchLayerVisual, ToolpathRenderEntry, ZPlaneVisual},
+    viewport::{
+        BoundaryPreviewInput, FixtureVisualMesh, SketchLayerVisual, ToolpathRenderEntry,
+        ZPlaneVisual,
+    },
 };
 
 pub(crate) struct SketchAuthorInteractionInput {
@@ -45,6 +48,7 @@ impl ChipCutterApp {
         self.highlight.fixture_meshes.clear();
         self.highlight.chain_arrows.clear();
         self.highlight.z_planes_wcs.clear();
+        self.highlight.boundary_preview = None;
 
         let cached_geo = self.ensure_frame_geo_cached().clone();
         let resolved_opt = cached_geo.resolved_setup.and_then(Result::ok);
@@ -142,25 +146,65 @@ impl ChipCutterApp {
                 }
             }
             InspectorFocus::Operation { setup_idx, op_idx } => {
-                if let (Some(rs), Some(Ok(sum))) = (&resolved_opt, cached_geo.focused_extracted)
+                if let Some(rs) = &resolved_opt
                     && let Some(setup) = self.project.setups.get(setup_idx)
                     && let Some(op) = setup.operations.get(op_idx)
                 {
-                    for fid in sum.highlight_faces {
-                        self.highlight.extra_selected_faces.insert(fid);
+                    let extracted_opt = cached_geo
+                        .focused_extracted
+                        .as_ref()
+                        .and_then(|r| r.as_ref().ok());
+                    if let Some(sum) = extracted_opt {
+                        for &fid in &sum.highlight_faces {
+                            self.highlight.extra_selected_faces.insert(fid);
+                        }
+                        for &eid in &sum.highlight_edges {
+                            self.highlight.extra_selected_edges.insert(eid);
+                        }
+                        for rkey in &sum.highlight_sketch_regions {
+                            self.highlight
+                                .extra_selected_sketch_regions
+                                .insert(rkey.clone());
+                        }
+                        for ekey in &sum.highlight_sketch_entities {
+                            self.highlight
+                                .extra_selected_sketch_entities
+                                .insert(ekey.clone());
+                        }
+                        self.highlight.chain_arrows = sum.direction_arrows.clone();
                     }
-                    for eid in sum.highlight_edges {
-                        self.highlight.extra_selected_edges.insert(eid);
-                    }
-                    for rkey in sum.highlight_sketch_regions {
-                        self.highlight.extra_selected_sketch_regions.insert(rkey);
-                    }
-                    for ekey in sum.highlight_sketch_entities {
-                        self.highlight.extra_selected_sketch_entities.insert(ekey);
-                    }
-                    self.highlight.chain_arrows = sum.direction_arrows;
 
-                    if self.show_z_planes && self.op_tab == OperationTab::Heights {
+                    if self.op_tab == OperationTab::Geometry && setup_idx == self.active_setup_idx {
+                        let active_tool = op.tool_id.as_ref().and_then(|tid| {
+                            self.project
+                                .tool(tid)
+                                .or_else(|| self.global_tools.tool(tid))
+                        });
+                        let (doc_opt, cad_rev) = match &self.model {
+                            Some(m) => (Some(m.doc.as_ref()), m.revision),
+                            None => (None, 0),
+                        };
+                        self.highlight.boundary_preview = self
+                            .boundary_preview_cache
+                            .get_or_compute(&BoundaryPreviewInput {
+                                active: true,
+                                setup_idx,
+                                op_idx,
+                                cad_rev,
+                                frame_geo_sig: cached_geo.sig,
+                                display_unit: self.project.display_units,
+                                doc: doc_opt,
+                                resolved_setup: rs,
+                                op,
+                                active_tool,
+                                extracted: extracted_opt,
+                            });
+                    }
+
+                    if self.show_z_planes
+                        && self.op_tab == OperationTab::Heights
+                        && let Some(sum) = extracted_opt
+                    {
                         let mut ctx = rs.eval_context(self.project.display_units);
                         if let Some(tid) = &op.tool_id
                             && let Some(t) = self.project.tool(tid)

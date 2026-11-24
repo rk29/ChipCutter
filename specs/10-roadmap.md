@@ -527,7 +527,7 @@ Focuses on day-to-day usability and visual polish across the workspace: moving i
 
 ---
 
-## Phase 22 — Unified Cutting Area & Machining Boundary Controls Across Operations (Planned — M80–M83)
+## Phase 22 — Unified Cutting Area & Machining Boundary Controls Across Operations (Completed — M80–M83)
 
 Standardizes how machinists specify *what area to cut* across 3-axis, 4th-axis rotary, undercut/deburr, and 2.5D operations: replacing fake AABB silhouettes with true projected model silhouettes, giving both 4th-axis rotary operations full `-U`/`+U` axial boundary source, containment, signed offset, and outer radial ceiling controls, upgrading 2.5D Facing and Pocket/Adaptive cutting areas, consolidating all boundary controls into the Operation Inspector `[Geometry]` tab, and adding live 3D viewport boundary previews.
 

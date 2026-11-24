@@ -1,13 +1,13 @@
 use chip_cam::{
     AdaptiveClearingParams, AdaptiveCutDirection, ChamferSourceMode, ChamferTraceMode,
     ChamferTraceParams, Contour2DParams, ContourCompensation, DrillBoreParams, DrillCycleKind,
-    FacingCutMode, FacingParams, HoleMachiningMode, Pocket2DParams, PocketBoundaryMode,
-    PocketPassOrder, PocketStrategyKind, TabPlacementMode, TabProfileKind,
+    FacingCutMode, FacingParams, HoleMachiningMode, Pocket2DParams, PocketPassOrder,
+    PocketStrategyKind, TabPlacementMode, TabProfileKind,
 };
 use chip_math::{DisplayUnit, ParamLength};
 use chip_tools::compute_adaptive_thinning_feed;
 
-use super::{PassItemCtx, surface_3d::show_boundary_card_titled};
+use super::PassItemCtx;
 use crate::{
     panels::ViewportPickMode,
     widgets::{BannerKind, inline_banner, section_card},
@@ -18,7 +18,6 @@ pub(super) fn show_facing_params(
     p: &mut FacingParams,
     mut item: PassItemCtx<'_>,
 ) {
-    let (setup_idx, op_idx) = item.ids();
     item.card_grid(ui, "passes_facing_card", "Facing Strategy", |f| {
         f.set_tip("Zig-Zag bi-directional vs. One-Way facing raster direction");
         f.combo(
@@ -65,16 +64,6 @@ pub(super) fn show_facing_params(
             f.len("Finish Stepdown", fs, "Edit Facing Finishing Stepdown");
         }
     });
-
-    show_boundary_card_titled(
-        ui,
-        ("facing_boundary_card", setup_idx, op_idx),
-        "Facing Machining Boundary",
-        &mut p.boundary.boundary_mode,
-        &mut p.boundary.tool_containment,
-        &mut p.boundary.boundary_offset,
-        &mut item,
-    );
 }
 
 pub(super) fn show_contour2d_params(
@@ -142,19 +131,6 @@ pub(super) fn show_contour2d_params(
                 "Toggle Spring Pass",
             );
         }
-        f.set_tip("Extend open 2D profile start and end tangentially past stock edges");
-        f.len(
-            "Open Extension",
-            &mut p.open_chain_extension,
-            "Edit Open Chain Extension",
-        );
-        f.set_tip("Trim generated 2D contour passes to remain inside Setup Stock XY bounds");
-        f.check(
-            "Stock Clip",
-            &mut p.clip_to_stock_bounds,
-            "Clip to Stock XY Bounds",
-            "Toggle Contour Stock Clipping",
-        );
     });
 
     section_card(
@@ -338,27 +314,6 @@ pub(super) fn show_pocket2d_params(ui: &mut egui::Ui, ctx: PocketParamsUiCtx<'_>
     let eval_ctx = item.eval_ctx;
 
     item.card_grid(ui, "passes_pocket_card", "2D Pocket Strategy", |f| {
-        f.set_tip(
-            "Clear inside selected pockets, or treat selected contours/faces as raised bosses and clear outside them to the Stock XY boundary",
-        );
-        f.combo(
-            "Boundary Mode",
-            &mut p.boundary_mode,
-            (&PocketBoundaryMode::ALL, PocketBoundaryMode::label),
-            "Change Pocket Boundary Mode",
-        );
-        if p.boundary_mode == PocketBoundaryMode::SelectedPockets {
-            f.set_tip(
-                "Treat the outer boundary of selected 2D sketches or closed loops as open air so the cutter enters smoothly from outside",
-            );
-            f.check(
-                "Open Boundary",
-                &mut p.treat_outer_boundary_as_open,
-                "Treat Outer Boundary as Open",
-                "Toggle Open Outer Boundary",
-            );
-        }
-
         let cur_strat = match &p.strategy {
             PocketStrategyKind::ContourParallel => 0_u8,
             PocketStrategyKind::ZigZag { .. } => 1_u8,

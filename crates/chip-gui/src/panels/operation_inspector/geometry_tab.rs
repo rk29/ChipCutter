@@ -1,14 +1,125 @@
 use chip_cad::{CadDocument, FaceId, find_coplanar_faces, find_same_diameter_holes};
 use chip_cam::{
-    ExtractedFeature25D, ExtractedSelectionSummary, GeometrySelectionItem, Operation, OperationKind,
+    ExtractedFeature25D, ExtractedSelectionSummary, GeometrySelectionItem, MachiningBoundaryMode,
+    Operation, OperationKind, PocketBoundaryMode, ResolvedHeights, ResolvedRotaryWindow,
+    ResolvedSetup, RotaryAxialBoundaryMode, StrategyParams, SurfaceMesh3D, ToolContainmentMode,
 };
-use chip_math::{ArcSegment2D, DisplayUnit};
+use chip_math::{ArcSegment2D, DisplayUnit, EvalContext};
 use chip_sketch::SketchLayer;
+use chip_tools::Tool;
 
 use crate::{
     panels::ViewportPickMode,
-    widgets::{BannerKind, grid_row, inline_banner, inspector_grid, section_card, static_card},
+    theme::ThemeTokens,
+    viewport::{BoundaryPreviewOverlay, resolve_rotary_window_for_preview},
+    widgets::{
+        BannerKind, INPUT_COL_WIDTH, edit_param_length, grid_row, inline_banner, inspector_grid,
+        section_card, static_card,
+    },
 };
+
+const COMBO_COL_WIDTH: f32 = INPUT_COL_WIDTH + 54.0;
+
+const CONTAINMENT_ORDER: [ToolContainmentMode; 3] = [
+    ToolContainmentMode::ToolInsideBoundary,
+    ToolContainmentMode::ToolCenterOnBoundary,
+    ToolContainmentMode::ToolOutsideBoundary,
+];
+
+/// Category of Cutting Area / Machining Boundary card shown at the top of `[Geometry]`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CuttingAreaCardKind {
+    None,
+    MachiningBoundary2D,
+    RotaryAxial4Axis,
+    Pocket2DArea,
+    Contour2DArea,
+}
+
+/// Classifies which unified Cutting Area card `[Geometry]` displays for `op`.
+pub const fn cutting_area_card_kind(op: &Operation) -> CuttingAreaCardKind {
+    match op.kind {
+        OperationKind::Rotary2Linear | OperationKind::Rotary4AxisSim => {
+            CuttingAreaCardKind::RotaryAxial4Axis
+        }
+        OperationKind::Facing
+        | OperationKind::Adaptive3D
+        | OperationKind::Waterline3D
+        | OperationKind::Parallel3D
+        | OperationKind::Scallop3D
+        | OperationKind::Pencil3D
+        | OperationKind::Undercut3D
+        | OperationKind::Deburr3D => CuttingAreaCardKind::MachiningBoundary2D,
+        OperationKind::Pocket2D => CuttingAreaCardKind::Pocket2DArea,
+        OperationKind::Contour2D => CuttingAreaCardKind::Contour2DArea,
+        OperationKind::DrillBore
+        | OperationKind::ChamferTrace
+        | OperationKind::VCarve
+        | OperationKind::ThreadMill
+        | OperationKind::SlotUndercut
+        | OperationKind::Dovetail => CuttingAreaCardKind::None,
+    }
+}
+
+/// Returns whether the `Interactive 3D Pick Mode` section card should open by default for `op`.
+///
+/// Collapses by default on 3D surface ops (`Adaptive3D`, `Waterline3D`, `Parallel3D`, `Scallop3D`,
+/// `Pencil3D`, `Undercut3D`) and `Facing` whenever `Stock Bounds` or `Model Silhouette` is active,
+/// and on 4th-axis rotary ops unless `Selected Geometry (-U..+U)` is active.
+pub fn pick_card_default_open(op: &Operation) -> bool {
+    if op.kind.is_rotary_native() {
+        return op
+            .rotary_axial_boundary()
+            .is_some_and(|rb| rb.axial_boundary_mode == RotaryAxialBoundaryMode::SelectedGeometry);
+    }
+    if matches!(
+        op.kind,
+        OperationKind::Facing
+            | OperationKind::Adaptive3D
+            | OperationKind::Waterline3D
+            | OperationKind::Parallel3D
+            | OperationKind::Scallop3D
+            | OperationKind::Pencil3D
+            | OperationKind::Undercut3D
+    ) {
+        return op
+            .machining_boundary()
+            .is_none_or(|b| b.boundary_mode == MachiningBoundaryMode::SelectedRegions);
+    }
+    true
+}
+
+fn boundary_source_ui_label(mode: MachiningBoundaryMode) -> &'static str {
+    match mode {
+        MachiningBoundaryMode::StockBox => "Stock Bounds",
+        MachiningBoundaryMode::ModelSilhouette => "Model Silhouette",
+        MachiningBoundaryMode::SelectedRegions => "Selected Regions",
+    }
+}
+
+fn rotary_source_ui_label(mode: RotaryAxialBoundaryMode) -> &'static str {
+    match mode {
+        RotaryAxialBoundaryMode::StockBounds => "Stock Bounds",
+        RotaryAxialBoundaryMode::ModelBounds => "Model Bounds",
+        RotaryAxialBoundaryMode::SelectedGeometry => "Selected Geometry (-U..+U)",
+        RotaryAxialBoundaryMode::ExplicitRange => "Explicit Range",
+    }
+}
+
+fn rotary_containment_ui_label(mode: ToolContainmentMode) -> &'static str {
+    match mode {
+        ToolContainmentMode::ToolInsideBoundary => "Tool Inside",
+        ToolContainmentMode::ToolCenterOnBoundary => "Tool Center",
+        ToolContainmentMode::ToolOutsideBoundary => "Tool Outside",
+    }
+}
+
+fn pocket_area_ui_label(mode: PocketBoundaryMode) -> &'static str {
+    match mode {
+        PocketBoundaryMode::SelectedPockets => "Inside Selected Pockets",
+        PocketBoundaryMode::ClearOutsideSelectedToStock => "Clear Outside Selected Bosses to Stock",
+    }
+}
 
 pub struct GeometryTabCtx<'a> {
     pub op: &'a mut Operation,
@@ -16,7 +127,13 @@ pub struct GeometryTabCtx<'a> {
     pub setup_idx: usize,
     pub op_idx: usize,
     pub display_unit: DisplayUnit,
+    pub eval_ctx: &'a EvalContext,
     pub cad_doc: Option<&'a CadDocument>,
+    pub resolved_setup: Option<&'a ResolvedSetup>,
+    pub active_tool: Option<&'a Tool>,
+    pub surface_mesh: Option<&'a SurfaceMesh3D>,
+    pub resolved_heights: Option<&'a ResolvedHeights>,
+    pub boundary_preview: Option<&'a BoundaryPreviewOverlay>,
     pub extracted: Option<Result<&'a ExtractedSelectionSummary, &'a str>>,
     pub pick_mode: &'a mut ViewportPickMode,
     pub mutated_label: &'a mut Option<&'static str>,
@@ -29,50 +146,78 @@ pub fn show_geometry_tab(ui: &mut egui::Ui, ctx: GeometryTabCtx<'_>) {
         setup_idx,
         op_idx,
         display_unit,
+        eval_ctx,
         cad_doc,
+        resolved_setup,
+        active_tool,
+        surface_mesh,
+        resolved_heights,
+        boundary_preview,
         extracted,
         pick_mode,
         mutated_label,
     } = ctx;
 
-    if op.kind == OperationKind::Deburr3D {
-        inline_banner(
-            ui,
-            BannerKind::Info,
-            "3D Edge Deburr / Chamfer: pick explicit 3D B-Rep edge loops, open edge chains, planar faces, or holes below -- or leave empty / enable 'Auto-Detect Edges' in Passes to automatically chamfer all sharp convex 3D edges while trimming away from neighboring walls.",
-        );
-        ui.add_space(4.0);
-    } else if op.kind == OperationKind::Undercut3D {
-        inline_banner(
-            ui,
-            BannerKind::Info,
-            "3D Lollipop Undercut: automatically scans overhanging downward-facing surfaces on the active 3D solid/mesh within the Heights Z-band while trimming neck/shank collisions. Optionally pick 2D containment boundaries below.",
-        );
-        ui.add_space(4.0);
-    } else if matches!(
-        op.kind,
-        OperationKind::SlotUndercut | OperationKind::Dovetail
-    ) {
-        inline_banner(
-            ui,
-            BannerKind::Info,
-            "Undercut Slot / Dovetail: select a 2D Sketch centerline, B-Rep slot floor face, or open edge chain (plus a pre-cleared Cylindrical Entry Bore when using Entry Bore Center mode).",
-        );
-        ui.add_space(4.0);
-    } else if op.kind.is_3d_surface() {
-        inline_banner(
-            ui,
-            BannerKind::Info,
-            "3D Surface Operation: machines the active 3D mesh or STEP solid automatically inside Stock Bounds / Model Silhouette. Optionally pick 2D Sketch regions or B-Rep loops below and choose 'Selected 2D Contours' in Passes to constrain XY machining.",
-        );
-        ui.add_space(4.0);
+    // 1. Unified Cutting Area / Machining Boundary card at the top of [Geometry]
+    match cutting_area_card_kind(op) {
+        CuttingAreaCardKind::RotaryAxial4Axis => {
+            show_rotary_cutting_area_card(
+                ui,
+                op,
+                setup_idx,
+                op_idx,
+                display_unit,
+                eval_ctx,
+                cad_doc,
+                resolved_setup,
+                active_tool,
+                surface_mesh,
+                resolved_heights,
+                boundary_preview,
+                extracted.and_then(|r| r.ok()),
+                mutated_label,
+            );
+        }
+        CuttingAreaCardKind::MachiningBoundary2D => {
+            show_machining_boundary_card(
+                ui,
+                op,
+                setup_idx,
+                op_idx,
+                display_unit,
+                eval_ctx,
+                active_tool,
+                boundary_preview,
+                mutated_label,
+            );
+        }
+        CuttingAreaCardKind::Pocket2DArea => {
+            show_pocket_cutting_area_card(ui, op, setup_idx, op_idx, mutated_label);
+        }
+        CuttingAreaCardKind::Contour2DArea => {
+            show_contour_cutting_area_card(ui, op, setup_idx, op_idx, eval_ctx, mutated_label);
+        }
+        CuttingAreaCardKind::None => {
+            if matches!(
+                op.kind,
+                OperationKind::SlotUndercut | OperationKind::Dovetail
+            ) {
+                inline_banner(
+                    ui,
+                    BannerKind::Info,
+                    "Undercut Slot / Dovetail: select a 2D Sketch centerline, B-Rep slot floor face, or open edge chain (plus a pre-cleared Cylindrical Entry Bore when using Entry Bore Center mode).",
+                );
+                ui.add_space(4.0);
+            }
+        }
     }
 
+    let pick_default_open = pick_card_default_open(op);
     section_card(
         ui,
-        ("geom_pick_card", setup_idx, op_idx),
+        ("geom_pick_card", setup_idx, op_idx, pick_default_open),
         "Interactive 3D Pick Mode",
-        true,
+        pick_default_open,
         |ui| {
             let is_faces = matches!(pick_mode, ViewportPickMode::OpPlanarFaces { .. });
             let is_loops = matches!(pick_mode, ViewportPickMode::OpClosedLoops { .. });
@@ -173,7 +318,7 @@ pub fn show_geometry_tab(ui: &mut egui::Ui, ctx: GeometryTabCtx<'_>) {
             ui,
             ("geom_sketch_card", setup_idx, op_idx),
             "2D Sketch Layers & Quick Select",
-            true,
+            pick_default_open,
             |ui| {
                 inspector_grid(ui, ("geom_sketch_grid", setup_idx, op_idx), |ui| {
                     for sk in sketches {
@@ -232,17 +377,21 @@ pub fn show_geometry_tab(ui: &mut egui::Ui, ctx: GeometryTabCtx<'_>) {
     let sel_title = format!("Selected Entities ({})", op.selections.len());
     section_card(
         ui,
-        ("geom_sel_card", setup_idx, op_idx),
+        ("geom_sel_card", setup_idx, op_idx, pick_default_open),
         &sel_title,
-        true,
+        pick_default_open || !op.selections.is_empty(),
         |ui| {
             if op.selections.is_empty() {
-                let msg = if op.kind == OperationKind::Facing {
-                    "Facing defaults automatically to the Setup XY Stock boundary."
+                let msg = if op.kind.is_rotary_native() {
+                    "Switch Axial Boundary Source to 'Selected Geometry (-U..+U)' above and pick 3D faces, loops, edges, or sketches to bound the rotary cut axially."
+                } else if op.kind == OperationKind::Facing {
+                    "Facing uses the Cutting Area boundary above (defaults to Stock Bounds). Select planar faces or closed 2D contours when using 'Selected Regions'."
                 } else if op.kind == OperationKind::ThreadMill {
                     "Pick cylindrical holes/bosses in 3D or select circular 2D sketch contours."
                 } else if op.kind == OperationKind::Deburr3D {
-                    "Pick 3D B-Rep edge loops or open edge chains above, or leave empty to auto-detect sharp convex 3D edges."
+                    "Pick 3D B-Rep edge loops or open edge chains above, or leave empty to auto-detect sharp convex 3D edges inside the Machining Boundary."
+                } else if op.kind.is_3d_surface() || op.kind == OperationKind::Undercut3D {
+                    "Using automatic boundary source above. Switch Boundary Source to 'Selected Regions' and pick 2D contours or planar faces to constrain XY machining."
                 } else {
                     "Click entities directly in the 3D viewport above to add geometry."
                 };
@@ -285,6 +434,688 @@ pub fn show_geometry_tab(ui: &mut egui::Ui, ctx: GeometryTabCtx<'_>) {
         }
         None => {}
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn show_machining_boundary_card(
+    ui: &mut egui::Ui,
+    op: &mut Operation,
+    setup_idx: usize,
+    op_idx: usize,
+    display_unit: DisplayUnit,
+    eval_ctx: &EvalContext,
+    active_tool: Option<&Tool>,
+    boundary_preview: Option<&BoundaryPreviewOverlay>,
+    mutated_label: &mut Option<&'static str>,
+) {
+    let op_kind = op.kind;
+    let selections_empty = op.selections.is_empty();
+    let Some(boundary) = op.machining_boundary_mut() else {
+        return;
+    };
+
+    section_card(
+        ui,
+        ("geom_cutting_area_card", setup_idx, op_idx),
+        "Cutting Area / Machining Boundary",
+        true,
+        |ui| {
+            inspector_grid(ui, ("geom_cutting_area_grid", setup_idx, op_idx), |ui| {
+                grid_row(
+                    ui,
+                    "Boundary Source",
+                    Some(
+                        "2D XY region constraining this operation (Stock Bounds, projected Model Silhouette, or Selected Regions)",
+                    ),
+                    |ui| {
+                        let prev = boundary.boundary_mode;
+                        egui::ComboBox::from_id_salt(("geom_bmode", setup_idx, op_idx))
+                            .width(COMBO_COL_WIDTH)
+                            .truncate()
+                            .selected_text(boundary_source_ui_label(boundary.boundary_mode))
+                            .show_ui(ui, |ui| {
+                                for m in MachiningBoundaryMode::ALL {
+                                    ui.selectable_value(
+                                        &mut boundary.boundary_mode,
+                                        m,
+                                        boundary_source_ui_label(m),
+                                    )
+                                    .on_hover_text(format!(
+                                        "Constrain XY cutting area using {}",
+                                        boundary_source_ui_label(m)
+                                    ));
+                                }
+                            })
+                            .response
+                            .on_hover_text("Select 2D XY machining boundary source");
+                        if boundary.boundary_mode != prev {
+                            *mutated_label = Some("Change Machining Boundary Source");
+                        }
+                    },
+                );
+
+                grid_row(
+                    ui,
+                    "Tool Containment",
+                    Some(
+                        "Controls whether tool edge stays inside, center rides on, or edge extends outside the nominal boundary",
+                    ),
+                    |ui| {
+                        let prev = boundary.tool_containment;
+                        egui::ComboBox::from_id_salt(("geom_tcont", setup_idx, op_idx))
+                            .width(COMBO_COL_WIDTH)
+                            .truncate()
+                            .selected_text(boundary.tool_containment.label())
+                            .show_ui(ui, |ui| {
+                                for c in CONTAINMENT_ORDER {
+                                    ui.selectable_value(
+                                        &mut boundary.tool_containment,
+                                        c,
+                                        c.label(),
+                                    )
+                                    .on_hover_text(format!("Position cutter {}", c.label()));
+                                }
+                            })
+                            .response
+                            .on_hover_text(
+                                "Control cutter position relative to the machining boundary",
+                            );
+                        if boundary.tool_containment != prev {
+                            *mutated_label = Some("Change Tool Containment Mode");
+                        }
+                    },
+                );
+
+                grid_row(
+                    ui,
+                    "Boundary Offset",
+                    Some(
+                        "Signed XY offset applied to the machining boundary (+ expands outward, - insets inward)",
+                    ),
+                    |ui| {
+                        if edit_param_length(
+                            ui,
+                            ("geom_boff", setup_idx, op_idx),
+                            &mut boundary.boundary_offset,
+                            eval_ctx,
+                            INPUT_COL_WIDTH,
+                        ) {
+                            *mutated_label = Some("Edit Boundary Offset");
+                        }
+                    },
+                );
+            });
+
+            // Live resolved shift / XY span readout
+            let tok = ThemeTokens::from_ui(ui);
+            let tool_r = active_tool.map(|t| 0.5 * t.geometry.cutting_diameter_mm());
+            let shift_str = tool_r.map(|r| {
+                let c_shift = match boundary.tool_containment {
+                    ToolContainmentMode::ToolInsideBoundary => -r,
+                    ToolContainmentMode::ToolCenterOnBoundary => 0.0,
+                    ToolContainmentMode::ToolOutsideBoundary => r,
+                };
+                let net = c_shift + boundary.boundary_offset.value_mm;
+                let sign = if net > 1e-6 { "+" } else { "" };
+                format!(
+                    "Tool-Center Shift: {sign}{} (Ø{})",
+                    display_unit.format_length(net),
+                    display_unit.format_length(2.0 * r)
+                )
+            });
+            let span_str = if let Some(BoundaryPreviewOverlay::Planar2D { nominal_region, .. }) =
+                boundary_preview
+                && let Some(aabb) = region_set_aabb(nominal_region)
+            {
+                let dx = aabb.max.x - aabb.min.x;
+                let dy = aabb.max.y - aabb.min.y;
+                Some(format!(
+                    "XY: {} × {}",
+                    display_unit.format_length(dx),
+                    display_unit.format_length(dy)
+                ))
+            } else {
+                None
+            };
+            if shift_str.is_some() || span_str.is_some() {
+                ui.add_space(4.0);
+                let summary = match (span_str, shift_str) {
+                    (Some(a), Some(b)) => format!("{a}  ·  {b}"),
+                    (Some(a), None) => a,
+                    (None, Some(b)) => b,
+                    (None, None) => String::new(),
+                };
+                ui.colored_label(tok.text_secondary, summary);
+            }
+
+            if boundary.boundary_mode == MachiningBoundaryMode::SelectedRegions && selections_empty
+            {
+                ui.add_space(4.0);
+                inline_banner(
+                    ui,
+                    BannerKind::Warn,
+                    "Selected Regions is active with no geometry selected. Pick closed 2D contours, planar faces, or sketch regions below.",
+                );
+            }
+
+            if op_kind == OperationKind::Deburr3D {
+                ui.add_space(4.0);
+                inline_banner(
+                    ui,
+                    BannerKind::Info,
+                    "XY Machining Boundary constrains Auto-Detect Edges mode. Pick explicit 3D edge loops, open chains, or faces below to override.",
+                );
+            } else if op_kind == OperationKind::Undercut3D {
+                ui.add_space(4.0);
+                inline_banner(
+                    ui,
+                    BannerKind::Info,
+                    "Scans overhanging downward-facing surfaces within the Heights Z-band and XY Machining Boundary while trimming neck/shank collisions.",
+                );
+            }
+        },
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn show_rotary_cutting_area_card(
+    ui: &mut egui::Ui,
+    op: &mut Operation,
+    setup_idx: usize,
+    op_idx: usize,
+    display_unit: DisplayUnit,
+    eval_ctx: &EvalContext,
+    cad_doc: Option<&CadDocument>,
+    resolved_setup: Option<&ResolvedSetup>,
+    active_tool: Option<&Tool>,
+    surface_mesh: Option<&SurfaceMesh3D>,
+    resolved_heights: Option<&ResolvedHeights>,
+    boundary_preview: Option<&BoundaryPreviewOverlay>,
+    extracted: Option<&ExtractedSelectionSummary>,
+    mutated_label: &mut Option<&'static str>,
+) {
+    let selections_empty = op.selections.is_empty();
+    let mut mode_after = RotaryAxialBoundaryMode::ModelBounds;
+    let mut changed_any = false;
+
+    section_card(
+        ui,
+        ("geom_rotary_cutting_area_card", setup_idx, op_idx),
+        "4th-Axis Rotary Cutting Area (-U / +U)",
+        true,
+        |ui| {
+            if let Some(rb) = op.rotary_axial_boundary_mut() {
+                inspector_grid(ui, ("geom_rotary_area_grid", setup_idx, op_idx), |ui| {
+                    grid_row(
+                        ui,
+                        "Axial Source",
+                        Some(
+                            "Source determining the nominal -U..+U axial span along the rotary centerline",
+                        ),
+                        |ui| {
+                            let prev = rb.axial_boundary_mode;
+                            egui::ComboBox::from_id_salt(("geom_rot_bmode", setup_idx, op_idx))
+                                .width(COMBO_COL_WIDTH)
+                                .truncate()
+                                .selected_text(rotary_source_ui_label(rb.axial_boundary_mode))
+                                .show_ui(ui, |ui| {
+                                    for m in RotaryAxialBoundaryMode::ALL {
+                                        ui.selectable_value(
+                                            &mut rb.axial_boundary_mode,
+                                            m,
+                                            rotary_source_ui_label(m),
+                                        )
+                                        .on_hover_text(
+                                            format!(
+                                                "Bound rotary cut along -U/+U using {}",
+                                                rotary_source_ui_label(m)
+                                            ),
+                                        );
+                                    }
+                                })
+                                .response
+                                .on_hover_text(
+                                    "Select how -U..+U axial cutting limits are derived",
+                                );
+                            if rb.axial_boundary_mode != prev {
+                                *mutated_label = Some("Change Rotary Axial Boundary Source");
+                                changed_any = true;
+                            }
+                        },
+                    );
+
+                    grid_row(
+                        ui,
+                        "Axial Containment",
+                        Some(
+                            "Tool Inside keeps full cutter diameter inside -U/+U; Tool Center rides on -U/+U; Tool Outside extends by tool radius for shoulder relief (chuck-safe)",
+                        ),
+                        |ui| {
+                            let prev = rb.axial_containment;
+                            egui::ComboBox::from_id_salt(("geom_rot_tcont", setup_idx, op_idx))
+                                .width(COMBO_COL_WIDTH)
+                                .truncate()
+                                .selected_text(rotary_containment_ui_label(rb.axial_containment))
+                                .show_ui(ui, |ui| {
+                                    for c in CONTAINMENT_ORDER {
+                                        ui.selectable_value(
+                                            &mut rb.axial_containment,
+                                            c,
+                                            rotary_containment_ui_label(c),
+                                        )
+                                        .on_hover_text(c.label());
+                                    }
+                                })
+                                .response
+                                .on_hover_text(
+                                    "Position tool perimeter relative to -U / +U axial limits",
+                                );
+                            if rb.axial_containment != prev {
+                                *mutated_label = Some("Change Rotary Axial Containment");
+                                changed_any = true;
+                            }
+                        },
+                    );
+
+                    if rb.axial_boundary_mode == RotaryAxialBoundaryMode::ExplicitRange {
+                        grid_row(
+                            ui,
+                            "Start U (-U)",
+                            Some("Explicit starting coordinate along the rotary axis (-U end)"),
+                            |ui| {
+                                if edit_param_length(
+                                    ui,
+                                    ("geom_rot_u_start", setup_idx, op_idx),
+                                    &mut rb.explicit_u_start,
+                                    eval_ctx,
+                                    INPUT_COL_WIDTH,
+                                ) {
+                                    *mutated_label = Some("Edit Rotary Explicit Start U");
+                                    changed_any = true;
+                                }
+                            },
+                        );
+                        grid_row(
+                            ui,
+                            "End U (+U)",
+                            Some("Explicit ending coordinate along the rotary axis (+U end)"),
+                            |ui| {
+                                if edit_param_length(
+                                    ui,
+                                    ("geom_rot_u_end", setup_idx, op_idx),
+                                    &mut rb.explicit_u_end,
+                                    eval_ctx,
+                                    INPUT_COL_WIDTH,
+                                ) {
+                                    *mutated_label = Some("Edit Rotary Explicit End U");
+                                    changed_any = true;
+                                }
+                            },
+                        );
+                    }
+
+                    grid_row(
+                        ui,
+                        "Start Margin (-U)",
+                        Some(
+                            "Signed axial margin at the -U end: positive (> 0) trims inward, negative (< 0) extends outward for shoulder relief while strictly respecting the rotary chuck keep-out guard",
+                        ),
+                        |ui| {
+                            if edit_param_length(
+                                ui,
+                                ("geom_rot_m_start", setup_idx, op_idx),
+                                &mut rb.axial_margin_start,
+                                eval_ctx,
+                                INPUT_COL_WIDTH,
+                            ) {
+                                *mutated_label = Some("Edit Rotary Start Margin (-U)");
+                                changed_any = true;
+                            }
+                        },
+                    );
+
+                    grid_row(
+                        ui,
+                        "End Margin (+U)",
+                        Some(
+                            "Signed axial margin at the +U end: positive (> 0) trims inward, negative (< 0) extends outward for shoulder relief while strictly respecting the rotary chuck keep-out guard",
+                        ),
+                        |ui| {
+                            if edit_param_length(
+                                ui,
+                                ("geom_rot_m_end", setup_idx, op_idx),
+                                &mut rb.axial_margin_end,
+                                eval_ctx,
+                                INPUT_COL_WIDTH,
+                            ) {
+                                *mutated_label = Some("Edit Rotary End Margin (+U)");
+                                changed_any = true;
+                            }
+                        },
+                    );
+
+                    grid_row(
+                        ui,
+                        "Start Angle (°)",
+                        Some(
+                            "Starting angular boundary around the 4th rotary axis (0° to 360° = full circumference)",
+                        ),
+                        |ui| {
+                            if ui
+                                .add(
+                                    egui::DragValue::new(&mut rb.start_angle_deg)
+                                        .speed(2.0)
+                                        .range(-360.0..=360.0)
+                                        .suffix("°"),
+                                )
+                                .on_hover_text("Start angle around the 4th rotary axis")
+                                .changed()
+                            {
+                                if rb.end_angle_deg <= rb.start_angle_deg + 1.0 {
+                                    rb.end_angle_deg = rb.start_angle_deg + 1.0;
+                                }
+                                *mutated_label = Some("Edit Rotary Start Angle");
+                                changed_any = true;
+                            }
+                        },
+                    );
+
+                    grid_row(
+                        ui,
+                        "End Angle (°)",
+                        Some(
+                            "Ending angular boundary around the 4th rotary axis (0° to 360° = full circumference)",
+                        ),
+                        |ui| {
+                            if ui
+                                .add(
+                                    egui::DragValue::new(&mut rb.end_angle_deg)
+                                        .speed(2.0)
+                                        .range((rb.start_angle_deg + 1.0)..=720.0)
+                                        .suffix("°"),
+                                )
+                                .on_hover_text("End angle around the 4th rotary axis")
+                                .changed()
+                            {
+                                *mutated_label = Some("Edit Rotary End Angle");
+                                changed_any = true;
+                            }
+                        },
+                    );
+
+                    grid_row(
+                        ui,
+                        "Angular Presets",
+                        Some("Quick angular sector presets around the 4th rotary axis"),
+                        |ui| {
+                            for (lbl, s_deg, e_deg) in [
+                                ("Full 360°", 0.0_f64, 360.0_f64),
+                                ("0–180°", 0.0_f64, 180.0_f64),
+                                ("±90°", -90.0_f64, 90.0_f64),
+                            ] {
+                                let active = (rb.start_angle_deg - s_deg).abs() < 0.05
+                                    && (rb.end_angle_deg - e_deg).abs() < 0.05;
+                                if ui
+                                    .selectable_label(active, lbl)
+                                    .on_hover_text(format!(
+                                        "Set angular window to {s_deg:.0}°..{e_deg:.0}°"
+                                    ))
+                                    .clicked()
+                                {
+                                    rb.start_angle_deg = s_deg;
+                                    rb.end_angle_deg = e_deg;
+                                    *mutated_label = Some("Apply Rotary Angular Preset");
+                                    changed_any = true;
+                                }
+                            }
+                        },
+                    );
+                });
+                mode_after = rb.axial_boundary_mode;
+            }
+
+            // Live resolved rotary window readout (reuse cached overlay unless mutated this frame)
+            let resolved_window: Option<Result<ResolvedRotaryWindow, String>> = if !changed_any
+                && let Some(BoundaryPreviewOverlay::RotarySector { window, .. }) = boundary_preview
+            {
+                Some(Ok(window.clone()))
+            } else if let Some(rs) = resolved_setup {
+                resolve_rotary_window_for_preview(
+                    op,
+                    rs,
+                    cad_doc,
+                    surface_mesh,
+                    extracted,
+                    active_tool,
+                    resolved_heights,
+                    eval_ctx,
+                )
+            } else {
+                None
+            };
+
+            ui.add_space(5.0);
+            let tok = ThemeTokens::from_ui(ui);
+            match resolved_window {
+                Some(Ok(win)) => {
+                    let u_span_str = format!(
+                        "Effective U: [{:.2}, {:.2}] {} · Chuck Guard: {:.2} {}",
+                        display_unit.from_mm(win.u_start),
+                        display_unit.from_mm(win.u_end),
+                        display_unit.suffix(),
+                        display_unit.from_mm(win.chuck_guard_u),
+                        display_unit.suffix(),
+                    );
+                    ui.colored_label(tok.text_primary, u_span_str);
+                    ui.colored_label(
+                        tok.text_secondary,
+                        format!(
+                            "Sector: {:.0}°..{:.0}° · R: {:.2}..{:.2} {}",
+                            win.start_angle_deg,
+                            win.end_angle_deg,
+                            display_unit.from_mm(win.r_floor),
+                            display_unit.from_mm(win.r_ceiling),
+                            display_unit.suffix(),
+                        ),
+                    );
+                    if win.clamped_by_chuck {
+                        ui.add_space(4.0);
+                        inline_banner(
+                            ui,
+                            BannerKind::Warn,
+                            format!(
+                                "Clamped by Rotary Chuck Keep-Out Guard at {} (tool radius + 0.5 mm safety clearance).",
+                                display_unit.format_length(win.chuck_guard_u)
+                            ),
+                        );
+                    }
+                }
+                Some(Err(err)) => {
+                    inline_banner(ui, BannerKind::Error, err);
+                }
+                None => {
+                    if resolved_setup.and_then(|rs| rs.rotary).is_none() {
+                        inline_banner(
+                            ui,
+                            BannerKind::Warn,
+                            "4th-Axis Rotary is not enabled on the active Setup. Enable it in Setup → Rotary.",
+                        );
+                    }
+                }
+            }
+
+            if mode_after == RotaryAxialBoundaryMode::SelectedGeometry && selections_empty {
+                ui.add_space(4.0);
+                inline_banner(
+                    ui,
+                    BannerKind::Warn,
+                    "Selected Geometry (-U..+U) is active with no selections. Pick 3D faces, loops, edges, or sketches below (currently falling back to Model Bounds).",
+                );
+            }
+        },
+    );
+}
+
+fn show_pocket_cutting_area_card(
+    ui: &mut egui::Ui,
+    op: &mut Operation,
+    setup_idx: usize,
+    op_idx: usize,
+    mutated_label: &mut Option<&'static str>,
+) {
+    let selections_empty = op.selections.is_empty();
+    let StrategyParams::Pocket2D(p) = op.strategy_mut() else {
+        return;
+    };
+
+    section_card(
+        ui,
+        ("geom_pocket_area_card", setup_idx, op_idx),
+        "Cutting Area / Machining Boundary",
+        true,
+        |ui| {
+            inspector_grid(ui, ("geom_pocket_area_grid", setup_idx, op_idx), |ui| {
+                grid_row(
+                    ui,
+                    "Pocket Area Mode",
+                    Some(
+                        "Clear inside selected pockets, or treat selected contours/faces as raised bosses and clear outside them to Setup Stock XY bounds",
+                    ),
+                    |ui| {
+                        let prev = p.boundary_mode;
+                        egui::ComboBox::from_id_salt(("geom_pkt_bmode", setup_idx, op_idx))
+                            .width(COMBO_COL_WIDTH)
+                            .truncate()
+                            .selected_text(pocket_area_ui_label(p.boundary_mode))
+                            .show_ui(ui, |ui| {
+                                for m in PocketBoundaryMode::ALL {
+                                    ui.selectable_value(
+                                        &mut p.boundary_mode,
+                                        m,
+                                        pocket_area_ui_label(m),
+                                    )
+                                    .on_hover_text(pocket_area_ui_label(m));
+                                }
+                            })
+                            .response
+                            .on_hover_text("Choose whether to clear inside selected pockets or outside selected bosses to stock");
+                        if p.boundary_mode != prev {
+                            *mutated_label = Some("Change Pocket Area Mode");
+                        }
+                    },
+                );
+
+                if p.boundary_mode == PocketBoundaryMode::SelectedPockets {
+                    grid_row(
+                        ui,
+                        "Open Outer Boundary",
+                        Some(
+                            "Treat the outer boundary of selected 2D sketches or closed loops as open air so the cutter enters smoothly from outside",
+                        ),
+                        |ui| {
+                            if ui
+                                .checkbox(
+                                    &mut p.treat_outer_boundary_as_open,
+                                    "Treat Outer Loop as Open Air",
+                                )
+                                .on_hover_text(
+                                    "Allow horizontal open-air entry across the outer boundary of 2D sketch or closed-loop selections",
+                                )
+                                .changed()
+                            {
+                                *mutated_label = Some("Toggle Open Outer Boundary");
+                            }
+                        },
+                    );
+                }
+            });
+
+            if p.boundary_mode == PocketBoundaryMode::ClearOutsideSelectedToStock {
+                ui.add_space(4.0);
+                if selections_empty {
+                    inline_banner(
+                        ui,
+                        BannerKind::Warn,
+                        "Select one or more planar faces or closed 2D contours below to leave standing as raised bosses while clearing surrounding stock.",
+                    );
+                } else {
+                    inline_banner(
+                        ui,
+                        BannerKind::Info,
+                        "Clearing stock outside selected bosses out to Setup Stock XY bounds (shown in 3D viewport) with open-air entry.",
+                    );
+                }
+            }
+        },
+    );
+}
+
+fn show_contour_cutting_area_card(
+    ui: &mut egui::Ui,
+    op: &mut Operation,
+    setup_idx: usize,
+    op_idx: usize,
+    eval_ctx: &EvalContext,
+    mutated_label: &mut Option<&'static str>,
+) {
+    let StrategyParams::Contour2D(p) = op.strategy_mut() else {
+        return;
+    };
+
+    section_card(
+        ui,
+        ("geom_contour_area_card", setup_idx, op_idx),
+        "Cutting Area / Machining Boundary",
+        true,
+        |ui| {
+            inspector_grid(ui, ("geom_contour_area_grid", setup_idx, op_idx), |ui| {
+                grid_row(
+                    ui,
+                    "Stock Clip",
+                    Some("Trim generated 2D contour passes to remain inside Setup Stock XY bounds"),
+                    |ui| {
+                        if ui
+                            .checkbox(&mut p.clip_to_stock_bounds, "Clip to Stock Bounds")
+                            .on_hover_text(
+                                "Keep 2D contour toolpaths clipped inside Setup Stock XY bounds",
+                            )
+                            .changed()
+                        {
+                            *mutated_label = Some("Toggle Contour Stock Clipping");
+                        }
+                    },
+                );
+                grid_row(
+                    ui,
+                    "Open Chain Extension",
+                    Some("Extend open 2D profile start and end tangentially past stock edges"),
+                    |ui| {
+                        if edit_param_length(
+                            ui,
+                            ("geom_contour_open_ext", setup_idx, op_idx),
+                            &mut p.open_chain_extension,
+                            eval_ctx,
+                            INPUT_COL_WIDTH,
+                        ) {
+                            *mutated_label = Some("Edit Open Chain Extension");
+                        }
+                    },
+                );
+            });
+        },
+    );
+}
+
+fn region_set_aabb(region: &chip_cam::RegionSet2D) -> Option<chip_math::Aabb2> {
+    let mut out = chip_math::Aabb2::EMPTY;
+    for r in &region.regions {
+        let b = r.outer_ccw.exact_aabb();
+        if b.is_valid() {
+            out.extend_point(b.min);
+            out.extend_point(b.max);
+        }
+    }
+    out.is_valid().then_some(out)
 }
 
 fn expand_same_diameter_holes(

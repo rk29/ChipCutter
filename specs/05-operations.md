@@ -30,7 +30,7 @@ Every 2.5D operation shares five standardized parameter groups:
 
 ### 1. Facing
 Surfaces the top of the stock down to a flat target Z face (typically `Model Top` or `WCS Origin`).
-- **Geometry:** Defaults automatically to the Setup's XY Stock boundary (or a selected planar B-Rep face / closed 2D Sketch boundary).
+- **Geometry & Cutting Area (`MachiningBoundaryConfig` — *Phase 22*):** Uses the shared `MachiningBoundaryConfig` (`StockBounds` *(default)*, `ModelSilhouette` via true projected 2D mesh silhouette, or `SelectedRegions` clipping facing scanlines to exact selected planar face polygons + raised islands instead of collapsing selections to an `Aabb2`), paired with `ToolContainmentMode` (`ToolOutsideBoundary` default for clean edge roll-off, `ToolCenterOnBoundary`, `ToolInsideBoundary`) and signed `boundary_offset`.
 - **Parameters:**
   - `pass_direction_deg` (default `0°` along X, or auto along longest stock axis)
   - `stepover` (default `0.7 * tool_d`)
@@ -42,6 +42,7 @@ Surfaces the top of the stock down to a flat target Z face (typically `Model Top
 
 ### 2. 2D Contour / Profile
 Cuts along closed loops or open chains (from 3D B-Rep edges or 2D Sketch curves) on the outside, inside, or centerline.
+- **Cutting Area Controls (*Phase 22*):** Supports optional `clip_to_stock_bounds` (clipping generated 2D profile toolpaths strictly within the Setup Stock XY footprint) and `open_chain_extension` (tangentially extending open profile start/end segments past stock edges for clean lead-in/lead-out entry).
 - **Compensation:** Computer-calculated (`Left / Climb`, `Right / Conventional`, `Center / Off`) using exact tool radius + `stock_to_leave_radial`. *(Optional `Wear` cutter compensation flag `G41`/`G42` metadata in CL-data for LinuxCNC).*
 - **Passes:**
   - **Depth Passes:** `max_stepdown` (with `even_stepdowns` option) OR continuous **Spiral Ramp** around closed contours.
@@ -81,7 +82,9 @@ Clears flat-bottomed enclosed cavities (with arbitrary nested islands) and open-
        - Instead of retracting to `Retract Height` after each one-way trochoidal peel arc, the cutter arcs tangentially away from the cut wall (`lead_out_radius`, default `0.1 * tool_d`), lifts vertically by `micro_lift_z` (default `0.25 mm`), rapids/feeds back across the already-cleared cavity $M_k$ at `no_engagement_feedrate` (default `2.5 * cutting_feedrate`, routing around islands inside $M_k$ or falling back to `Retract Height` if obstructed), drops back to cutting Z, and arcs tangentially into the next peel pass.
      - **Automatic Radial Chip-Thinning Compensation:**
        - Optional `auto_chip_thinning: bool` toggle: when `optimal_load < 0.5 * tool_d`, scales cutting feedrate by $\frac{D}{2\sqrt{a_e(D - a_e)}}$ (clamped by `max_thinning_feed_multiplier`, default `2.0x`) so actual chip thickness matches the tool preset's target `feed_per_tooth`.
-- **Open-Edge Pockets:**
+- **Open-Edge Pockets & Boss-Clearing Mode (*Phase 22*):**
+  - **Pocket Area Mode (`PocketBoundaryMode`):** `SelectedPockets` *(default, clear inside selected faces/loops)* OR `ClearOutsideSelectedToStock` *(treat selected planar faces or closed 2D contours as raised bosses/islands left standing and clear all surrounding stock out to the Setup Stock XY boundary with open-air entry)*.
+  - **Open Outer Boundary (`treat_outer_boundary_as_open`):** For 2D Sketch and `ClosedLoop` selections in `SelectedPockets` mode, optionally tags the outer perimeter as open air so the cutter enters horizontally from outside without helical plunging.
   - Edges touching air/stock exterior are tagged `open`: the boundary is extended outward by `tool_r + overhang` along open segments, allowing horizontal air entry without helical plunging.
 - **Closed-Pocket Entry:**
   - **Helical Ramp *(Default)*:** Locates the largest inscribed circle inside each connected pocket/rest region, checks `helix_diameter` against `min_ramp_diameter`, and spirals down at `ramp_angle_deg` before expanding outward. Falls back automatically to linear profile/slot ramp when narrower than min helix diameter (or errors cleanly if narrower than `tool_d`).
@@ -175,9 +178,13 @@ Implemented as a shared, UI-agnostic `ClEvent` post-pass (`crates/chip-cam/src/f
 
 ---
 
-## 3-Axis Sculpted Surface Milling *(Phase 5, Phase 16, & Phase 20)*
+## 3-Axis Sculpted Surface Milling *(Phase 5, Phase 16, Phase 20, & Phase 22)*
 
 All 3-axis surface strategies (`Adaptive3D`, `Waterline3D`, `Parallel3D`, `Scallop3D`, `Pencil3D`) operate directly on canonical `f64` triangle meshes (`STL`/`OBJ`/`3MF`) and tessellated STEP B-Rep solids indexed by `chip-bvh`'s flat SAH `FlatBvh` using exact analytical `drop_cutter_z_with_scratch` and `push_cutter_region_z` kernels:
+
+- **Unified 2D XY Machining Boundary & True Projected Model Silhouette (`MachiningBoundaryConfig`, `resolve_3d_containment_region_detailed` — *Phase 22*):**
+  - All 3-axis strategies (`Adaptive3D`, `Waterline3D`, `Parallel3D`, `Scallop3D`, `Pencil3D`), `Undercut3D`, `Deburr3D` (constraining `Auto-Detect Edges`), and `Facing` share a backward-compatible `#[serde(flatten)]` `MachiningBoundaryConfig` (`boundary_mode`: `StockBox` | `ModelSilhouette` | `SelectedRegions`, `tool_containment`: `ToolInsideBoundary` | `ToolCenterOnBoundary` | `ToolOutsideBoundary`, and signed `boundary_offset`).
+  - `ModelSilhouette` computes the **true projected 2D XY silhouette polygon** of the 3D mesh via `project_surface_z_slab_xy` (instead of a rectangular AABB), while `StockBox` preserves true circular XY footprints for Z-axis cylindrical stock. Both `nominal_region` and `effective_region` are returned together in `ResolvedBoundary2D` so toolpath generation and live 3D viewport previews agree identically, with structured warnings when `SelectedRegions` has no selections.
 
 - **Full-Assembly Overhang & Shank/Holder Clearance (`SurfaceCutterProfile`, `PushCutterField`, `project_surface_z_slab_xy`):**
   - `SurfaceCutterProfile::from_tool` incorporates multi-tier upper-shank (`shank_diameter_mm > cutting_diameter_mm`, `dz >= flute_length_mm`) and collet/holder (`dz >= stickout_length_mm`) envelopes directly into analytical `drop_cutter_z` and monotonic `PushCutterField` queries—automatically lifting or offsetting paths away from overhanging helical blades without shank rubs or holder crashes, and emitting reach-limit warnings when upper tiers restrict depth.
@@ -193,9 +200,14 @@ All 3-axis surface strategies (`Adaptive3D`, `Waterline3D`, `Parallel3D`, `Scall
 
 ---
 
-## 4th-Axis Rotary Milling *(Phase 5, Phase 16, & Phase 20)*
+## 4th-Axis Rotary Milling *(Phase 5, Phase 16, Phase 20, & Phase 22)*
 
 Supports `TwoLinearPlusRotary` (`Z+X+A` / `Z+Y+B`), `Indexed3Plus1`, and `Simultaneous4Axis` (`X+Y+Z+A/B`) rotary Setups (`Rotary2Linear`, `Rotary4AxisSim`, `OperationRotaryMode::WrapCylinder`, and `OperationRotaryMode::Indexed3Plus1`):
+
+- **Unified `-U / +U` Axial Boundary, Radial Envelope, & Mandatory Chuck Keep-Out Guard (`RotaryAxialBoundaryConfig`, `resolve_rotary_window` — *Phase 22*):**
+  - Both `Rotary2Linear` and `Rotary4AxisSim` share a backward-compatible `#[serde(flatten)]` `RotaryAxialBoundaryConfig` supporting four axial boundary sources (`StockBounds`, `ModelBounds`, `SelectedGeometry` projecting 3D faces/loops/edges/sketches onto `-U..+U`, and `ExplicitRange { explicit_u_start, explicit_u_end }`), axial `ToolContainmentMode` (`ToolInside` / `ToolCenter` / `ToolOutside`), signed `-U`/`+U` margins (`> 0` trims inward, `< 0` extends outward for shoulder relief), and angular sector bounds `[start_angle_deg, end_angle_deg]`.
+  - `heights.top_z_wcs` acts as an explicit outer radial roughing ceiling `r_ceiling` (eliminating air-cutting on stepped shafts) paired with `heights.bottom_z_wcs` as core radius floor `r_floor`.
+  - A mandatory hard rotary chuck keep-out plane (`rotary_chuck_guard_u`, enforcing `tool_r + 0.5 mm` clearance from the chuck face) clamps native rotary windows and is validated across `WrapCylinder` and `Indexed3Plus1` operations (`validate_toolpath_rotary_chuck_clearance`), preventing chuck collisions even under negative margins or `ToolOutside` containment.
 
 - **Exact Direct BVH Rotary Drop-Cutter (`drop_cutter_rotary_at` / `drop_cutter_rotary_z_rel`):** Queries `base_mesh`'s `FlatBvh` directly in parallel (`rayon`) at arbitrary `(u, θ, c_cross)` by rotating only the narrow local cutter search volume/candidate triangles into part space—eliminating quantized grid-corner staircase lifts and per-angle full-mesh rebuilds.
 - **Adaptive Midpoint Chord-Sagitta Subdivision & Verified Partial-Sector `ZigZag` Linking:** Along every emitted spiral, axial-parallel, or helical flowline strip (`Rotary2Linear` and `Rotary4AxisSim`), recursively evaluates exact chord midpoints whenever convex peak sagitta exceeds `4 µm` (`2.5 µm` in 4-axis) or concave valley faceting exceeds `smooth_tol`, followed by tight convex-safe decimation (`max_convex_dip <= 0.002 mm`). Partial-sector (`< 360°`) `ZigZag` passes precompute `drop_cutter_rotary_z_rel`-verified axial `(u_prev -> u_cur)` `LinkTransition` strips (`step <= 0.25 mm`, clamped to each radial roughing shell) so diagonal helical blade crests are never clipped at sector endpoints.

@@ -590,6 +590,8 @@ impl PaneBehavior<'_> {
                             history: &mut self.app.history,
                             cad_doc: cad_ref,
                             resolved_setup: resolved_opt,
+                            surface_mesh: self.app.boundary_preview_cache.cached_surface(),
+                            boundary_preview: self.app.highlight.boundary_preview.as_deref(),
                             selected_face_normal_wcs,
                             extracted: extracted_ref,
                             tab: &mut self.app.op_tab,

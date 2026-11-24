@@ -46,7 +46,7 @@ use crate::{
     },
     prefs::{UserPreferences, load_or_default_prefs, save_prefs},
     theme::{AppTheme, ThemeTokens, apply_theme},
-    viewport::{HighlightState, ViewportRenderer},
+    viewport::{BoundaryPreviewCache, HighlightState, ViewportRenderer},
     widgets::ExpressionInput,
 };
 
@@ -171,6 +171,7 @@ pub struct ChipCutterApp {
     pub(crate) external_step_modified: bool,
     pub(crate) last_reload_banner: Option<(String, bool)>,
     pub(crate) cached_frame_geo: Option<CachedFrameGeo>,
+    pub(crate) boundary_preview_cache: BoundaryPreviewCache,
 
     pub(crate) pick_filter: PickFilter,
     pub(crate) highlight: HighlightState,
@@ -357,6 +358,7 @@ impl ChipCutterApp {
             external_step_modified: false,
             last_reload_banner: None,
             cached_frame_geo: None,
+            boundary_preview_cache: BoundaryPreviewCache::default(),
             pick_filter: PickFilter::Any,
             highlight: HighlightState {
                 theme: active_theme,
@@ -526,6 +528,7 @@ impl ChipCutterApp {
             external_step_modified: false,
             last_reload_banner: None,
             cached_frame_geo: None,
+            boundary_preview_cache: BoundaryPreviewCache::default(),
             pick_filter: PickFilter::Any,
             highlight: HighlightState {
                 theme: active_theme,

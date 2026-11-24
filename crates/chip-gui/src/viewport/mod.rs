@@ -1,3 +1,4 @@
+pub mod boundary_preview;
 pub mod gizmos;
 mod gpu_types;
 pub mod highlight;
@@ -8,6 +9,10 @@ pub mod scene_builders;
 mod sim_gpu_render;
 pub mod toolpath_instances;
 
+pub use boundary_preview::{
+    BoundaryPreviewCache, BoundaryPreviewInput, BoundaryPreviewOverlay,
+    resolve_rotary_window_for_preview,
+};
 pub use highlight::{
     FixtureVisualMesh, HighlightState, SimStockRenderSource, SketchLayerVisual,
     ToolpathRenderEntry, ZPlaneVisual,

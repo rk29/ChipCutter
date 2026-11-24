@@ -1,8 +1,7 @@
 use chip_cam::{
-    Adaptive3DParams, AdaptiveCutDirection, MachiningBoundaryMode, Parallel3DParams,
-    ParallelCutDirection, Pencil3DParams, Rotary2LinearParams, Rotary4AxisPattern,
-    Rotary4AxisSimParams, RotaryCutDirection, RotaryPatternMode, RotaryTiltMode, Scallop3DParams,
-    ToolContainmentMode, Waterline3DParams, WaterlineOrderMode,
+    Adaptive3DParams, AdaptiveCutDirection, Parallel3DParams, ParallelCutDirection, Pencil3DParams,
+    Rotary2LinearParams, Rotary4AxisPattern, Rotary4AxisSimParams, RotaryCutDirection,
+    RotaryPatternMode, RotaryTiltMode, Scallop3DParams, Waterline3DParams, WaterlineOrderMode,
 };
 
 use super::{COMBO_COL_WIDTH, PassItemCtx};
@@ -127,15 +126,6 @@ pub(super) fn show_waterline3d_params(
             });
         },
     );
-
-    show_3d_boundary_card(
-        ui,
-        ("wl3d_boundary_card", setup_idx, op_idx),
-        &mut p.boundary.boundary_mode,
-        &mut p.boundary.tool_containment,
-        &mut p.boundary.boundary_offset,
-        &mut item,
-    );
 }
 
 pub(super) fn show_adaptive3d_params(
@@ -211,15 +201,6 @@ pub(super) fn show_adaptive3d_params(
                 });
             });
         },
-    );
-
-    show_3d_boundary_card(
-        ui,
-        ("a3d_boundary_card", setup_idx, op_idx),
-        &mut p.boundary.boundary_mode,
-        &mut p.boundary.tool_containment,
-        &mut p.boundary.boundary_offset,
-        &mut item,
     );
 }
 
@@ -340,15 +321,6 @@ pub(super) fn show_parallel3d_params(
             });
         },
     );
-
-    show_3d_boundary_card(
-        ui,
-        ("par3d_boundary_card", setup_idx, op_idx),
-        &mut p.boundary.boundary_mode,
-        &mut p.boundary.tool_containment,
-        &mut p.boundary.boundary_offset,
-        &mut item,
-    );
 }
 
 pub(super) fn show_scallop3d_params(
@@ -439,15 +411,6 @@ pub(super) fn show_scallop3d_params(
             });
         },
     );
-
-    show_3d_boundary_card(
-        ui,
-        ("sc3d_boundary_card", setup_idx, op_idx),
-        &mut p.boundary.boundary_mode,
-        &mut p.boundary.tool_containment,
-        &mut p.boundary.boundary_offset,
-        &mut item,
-    );
 }
 
 pub(super) fn show_pencil3d_params(
@@ -503,96 +466,6 @@ pub(super) fn show_pencil3d_params(
             });
         },
     );
-
-    show_3d_boundary_card(
-        ui,
-        ("pen3d_boundary_card", setup_idx, op_idx),
-        &mut p.boundary.boundary_mode,
-        &mut p.boundary.tool_containment,
-        &mut p.boundary.boundary_offset,
-        &mut item,
-    );
-}
-
-pub(super) fn show_3d_boundary_card(
-    ui: &mut egui::Ui,
-    card_id: (&'static str, usize, usize),
-    boundary_mode: &mut MachiningBoundaryMode,
-    tool_containment: &mut ToolContainmentMode,
-    boundary_offset: &mut chip_math::ParamLength,
-    item: &mut PassItemCtx<'_>,
-) {
-    show_boundary_card_titled(
-        ui,
-        card_id,
-        "3D Machining Boundary",
-        boundary_mode,
-        tool_containment,
-        boundary_offset,
-        item,
-    );
-}
-
-pub(super) fn show_boundary_card_titled(
-    ui: &mut egui::Ui,
-    card_id: (&'static str, usize, usize),
-    title: &str,
-    boundary_mode: &mut MachiningBoundaryMode,
-    tool_containment: &mut ToolContainmentMode,
-    boundary_offset: &mut chip_math::ParamLength,
-    item: &mut PassItemCtx<'_>,
-) {
-    let (setup_idx, op_idx) = item.ids();
-    section_card(ui, card_id, title, true, |ui| {
-        item.grid(ui, card_id.0, |f| {
-            f.set_tip("2D XY containment boundary constraining 3D roughing/waterline motion");
-            f.row("Boundary Source", |ui, mutated| {
-                let prev = *boundary_mode;
-                egui::ComboBox::from_id_salt((card_id.0, "bmode", setup_idx, op_idx))
-                    .width(COMBO_COL_WIDTH)
-                    .truncate()
-                    .selected_text(boundary_mode.label())
-                    .show_ui(ui, |ui| {
-                        for m in MachiningBoundaryMode::ALL {
-                            ui.selectable_value(boundary_mode, m, m.label())
-                                .on_hover_text(format!("Constrain 3D toolpath using {}", m.label()));
-                        }
-                    })
-                    .response
-                    .on_hover_text("Select 2D XY containment boundary source for this 3D surface strategy");
-                if *boundary_mode != prev {
-                    *mutated = Some("Change 3D Boundary Source");
-                }
-            });
-            f.set_tip("How the tool perimeter is positioned relative to the 2D boundary");
-            f.row("Tool Containment", |ui, mutated| {
-                let prev = *tool_containment;
-                egui::ComboBox::from_id_salt((card_id.0, "tcont", setup_idx, op_idx))
-                    .width(COMBO_COL_WIDTH)
-                    .truncate()
-                    .selected_text(tool_containment.label())
-                    .show_ui(ui, |ui| {
-                        for c in ToolContainmentMode::ALL {
-                            ui.selectable_value(tool_containment, c, c.label())
-                                .on_hover_text(format!("Position cutter {}", c.label()));
-                        }
-                    })
-                    .response
-                    .on_hover_text("Control whether tool center, inside edge, or outside edge stays within the 2D boundary");
-                if *tool_containment != prev {
-                    *mutated = Some("Change 3D Tool Containment");
-                }
-            });
-            f.set_tip(
-                "Additional outward (+) or inward (-) XY margin applied to the machining boundary",
-            );
-            f.len(
-                "Boundary Offset",
-                boundary_offset,
-                "Edit 3D Boundary Offset",
-            );
-        });
-    });
 }
 
 pub(super) fn show_rotary2linear_params(
@@ -637,51 +510,6 @@ pub(super) fn show_rotary2linear_params(
                     f.set_tip("Axial pitch per revolution (Spiral) or circumferential lane spacing (Axial Parallel)");
                     f.len("Stepover", &mut p.stepover, "Edit Rotary Stepover");
                 }
-                f.set_tip("Starting rotary angle around the axis (0° to 360° = full circumference)");
-                f.row("Start Angle (°)", |ui, mutated| {
-                    if ui
-                        .add(
-                            egui::DragValue::new(&mut p.axial_boundary.start_angle_deg)
-                                .speed(2.0)
-                                .range(-360.0..=360.0)
-                                .suffix("°"),
-                        )
-                        .on_hover_text("Start angle around the 4th rotary axis")
-                        .changed()
-                    {
-                        if p.axial_boundary.end_angle_deg <= p.axial_boundary.start_angle_deg + 1.0 {
-                            p.axial_boundary.end_angle_deg = p.axial_boundary.start_angle_deg + 1.0;
-                        }
-                        *mutated = Some("Edit Rotary Start Angle");
-                    }
-                });
-                f.set_tip("Ending rotary angle around the axis (0° to 360° = full circumference)");
-                f.row("End Angle (°)", |ui, mutated| {
-                    if ui
-                        .add(
-                            egui::DragValue::new(&mut p.axial_boundary.end_angle_deg)
-                                .speed(2.0)
-                                .range((p.axial_boundary.start_angle_deg + 1.0)..=720.0)
-                                .suffix("°"),
-                        )
-                        .on_hover_text("End angle around the 4th rotary axis")
-                        .changed()
-                    {
-                        *mutated = Some("Edit Rotary End Angle");
-                    }
-                });
-                f.set_tip("Signed axial margin at the -U end (> 0 trims inward, < 0 extends outward; always chuck-safe)");
-                f.len(
-                    "Start Margin (-U)",
-                    &mut p.axial_boundary.axial_margin_start,
-                    "Edit Rotary Start Margin",
-                );
-                f.set_tip("Signed axial margin at the +U end (> 0 trims inward, < 0 extends outward; always chuck-safe)");
-                f.len(
-                    "End Margin (+U)",
-                    &mut p.axial_boundary.axial_margin_end,
-                    "Edit Rotary End Margin",
-                );
                 f.set_tip("Angular Drop-Cutter sampling resolution around the rotary axis");
                 f.drag(
                     "Angular Sample",
@@ -784,51 +612,6 @@ pub(super) fn show_rotary4axis_sim_params(
                     f.set_tip("Axial pitch per revolution (Spiral) or circumferential spacing (Flowline)");
                     f.len("Stepover", &mut p.stepover, "Edit 4-Axis Stepover");
                 }
-                f.set_tip("Starting rotary angle around the axis (0° to 360° = full circumference)");
-                f.row("Start Angle (°)", |ui, mutated| {
-                    if ui
-                        .add(
-                            egui::DragValue::new(&mut p.axial_boundary.start_angle_deg)
-                                .speed(2.0)
-                                .range(-360.0..=360.0)
-                                .suffix("°"),
-                        )
-                        .on_hover_text("Start angle around the 4th rotary axis")
-                        .changed()
-                    {
-                        if p.axial_boundary.end_angle_deg <= p.axial_boundary.start_angle_deg + 1.0 {
-                            p.axial_boundary.end_angle_deg = p.axial_boundary.start_angle_deg + 1.0;
-                        }
-                        *mutated = Some("Edit 4-Axis Start Angle");
-                    }
-                });
-                f.set_tip("Ending rotary angle around the axis (0° to 360° = full circumference)");
-                f.row("End Angle (°)", |ui, mutated| {
-                    if ui
-                        .add(
-                            egui::DragValue::new(&mut p.axial_boundary.end_angle_deg)
-                                .speed(2.0)
-                                .range((p.axial_boundary.start_angle_deg + 1.0)..=720.0)
-                                .suffix("°"),
-                        )
-                        .on_hover_text("End angle around the 4th rotary axis")
-                        .changed()
-                    {
-                        *mutated = Some("Edit 4-Axis End Angle");
-                    }
-                });
-                f.set_tip("Signed axial margin at the -U end (chuck side; always chuck-safe)");
-                f.len(
-                    "Start Margin (-U)",
-                    &mut p.axial_boundary.axial_margin_start,
-                    "Edit 4-Axis Start Margin",
-                );
-                f.set_tip("Signed axial margin at the +U end (tailstock side; always chuck-safe)");
-                f.len(
-                    "End Margin (+U)",
-                    &mut p.axial_boundary.axial_margin_end,
-                    "Edit 4-Axis End Margin",
-                );
                 f.set_tip("Angular Drop-Cutter sampling resolution around the rotary axis");
                 f.drag(
                     "Angular Sample",
