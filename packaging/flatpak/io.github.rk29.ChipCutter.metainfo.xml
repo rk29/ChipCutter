@@ -50,6 +50,11 @@
   </screenshots>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="0.23.0" date="2026-11-24">
+      <description>
+        <p>Phase 23 release: added explicit Model Bounds (MachiningBoundaryMode::ModelBoundingBox) with independent signed -X/+X/-Y/+Y per-side offsets and collapsed-bounds guarding across all 8 boundary-aware strategies; auto-expanding 2D Sketch Layers &amp; Quick Select with per-entity quick-add and empty-state + New Sketch action; automatic Indexed 3+1 4th-axis viewport rotation (rotating the 3D CAD model, raw box/cylinder stock wireframes, picking rays, Z-height planes, and live Geometry boundary previews upright under +Z); Fixed-Size Box Stock XY Alignment and Z Alignment dropdown controls in Setup Stock Offsets (auto-defaulting rotary setups to Centered in Z); first-class per-operation and project-wide reusable Shared Avoid / Keep-Out Regions (3D faces, 2D sketch loops, and Z-overlapping Setup fixtures with radial/axial clearance and tiered shank/holder inflation) subtracted cleanly across all 3D, 2.5D, and 4th-axis rotary strategies with interactive Geometry tab controls, CAM Browser shared region management, and high-contrast coral/red 3D viewport overlays; and two new built-in Sample Gallery projects (keepout-clamps and indexed-model-bounds, 26 total).</p>
+      </description>
+    </release>
     <release version="0.22.1" date="2026-11-24">
       <description>
         <p>Bug-fix &amp; usability release: added a "Fill through-holes" option (silhouette_fill_holes, default enabled) to Model Silhouette machining boundaries across all 3-axis, Undercut3D, Deburr3D, and Facing operations plus live 3D viewport boundary previews so interior through-holes do not leave uncut stock pillars; and fixed a Windows CI timeout in the m73_indexed_carryover integration test by restoring ToolOutsideBoundary containment and widening the async wave deadline.</p>
