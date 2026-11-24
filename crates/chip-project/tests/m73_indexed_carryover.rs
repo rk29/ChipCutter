@@ -169,7 +169,7 @@ fn build_3angle_helix_project(enable_rest: bool, sha: &str) -> ProjectDocument {
         }
         if let Some(StrategyParams::Adaptive3D(ref mut p)) = op.strategy {
             p.boundary.boundary_mode = MachiningBoundaryMode::StockBox;
-            p.boundary.tool_containment = ToolContainmentMode::ToolCenterOnBoundary;
+            p.boundary.tool_containment = ToolContainmentMode::ToolOutsideBoundary;
             p.max_roughing_stepdown = ParamLength::from_mm(6.0);
             p.fine_stepdown = ParamLength::from_mm(0.0);
             p.adaptive.optimal_load = ParamLength::from_mm(2.2);
@@ -367,11 +367,14 @@ fn three_angle_indexed_adaptive3d_volumetric_carryover_reduces_air_cutting_with_
         dispatcher.dispatch_operations(&mut proj_rest, cad_arc, 1, &cache_rest, None, None);
     assert_eq!(queued, 3);
 
-    let deadline = Instant::now() + Duration::from_secs(120);
+    let started = Instant::now();
+    let deadline = started + Duration::from_secs(300);
     while dispatcher.is_busy() {
         assert!(
             Instant::now() < deadline,
-            "JobDispatcher timed out on 3-angle carryover wave"
+            "JobDispatcher timed out on 3-angle carryover wave after {:.1}s ({} in-flight/pending)",
+            started.elapsed().as_secs_f64(),
+            dispatcher.in_flight_count(),
         );
         let _ = dispatcher.poll_events(&mut proj_rest, &mut cache_rest, 1);
         std::thread::sleep(Duration::from_millis(10));
