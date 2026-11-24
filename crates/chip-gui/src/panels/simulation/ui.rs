@@ -1,7 +1,10 @@
 use std::sync::Arc;
 
 use chip_math::{DisplayUnit, MM_PER_INCH};
-use chip_sim::{ScrubSnapshot, SimComputeBackendChoice, SimEngineKind, format_cycle_time_hms};
+use chip_sim::{
+    ScrubSnapshot, SimComputeBackendChoice, SimEngineKind, SimVerificationConfig,
+    format_cycle_time_hms,
+};
 
 use super::{
     SimPanelCtx, SimTriggerArgs, SimulationPanelState, SimulationUiAction,
@@ -33,12 +36,15 @@ impl SimulationPanelState {
             self.color_by_operation,
             self.show_error_heatmap,
             self.heatmap_tolerance_mm.to_bits(),
+            self.heatmap_max_scale_mm.to_bits(),
             self.show_cutter_assembly,
             self.trail_up_to_cutter,
         );
 
         // Top Control Bar: Compact Settings Chip, Carryover/Undercut Pills, Visual Toggles, Verification Status
         let mut engine_changed = false;
+        let mut simulate_all_clicked = false;
+        let mut export_json_clicked = false;
         let busy = self.is_busy();
         ui.horizontal_wrapped(|ui| {
             let tok = crate::theme::ThemeTokens::from_ui(ui);
@@ -284,6 +290,29 @@ impl SimulationPanelState {
                 );
 
             ui.separator();
+            if project.setups.len() > 1
+                && ui
+                    .add_enabled(!busy && cad_doc.is_some(), egui::Button::new("Simulate All Setups"))
+                    .on_hover_text(
+                        "Simulate and verify every Setup sequentially on a background worker (carrying over volumetric stock and computing cumulative end-of-job metrology)",
+                    )
+                    .clicked()
+            {
+                simulate_all_clicked = true;
+            }
+            let can_export_json = self.active_result.is_some() || self.multi_setup_summary.is_some();
+            if ui
+                .add_enabled(can_export_json, egui::Button::new("Export Metrology JSON..."))
+                .on_hover_text(
+                    "Save structured JSON error-volume, RMS deviation, and crash verification report to disk",
+                )
+                .on_disabled_hover_text("Run a simulation first to export a JSON metrology report")
+                .clicked()
+            {
+                export_json_clicked = true;
+            }
+
+            ui.separator();
             let up_to_date = self.is_verified_up_to_date(project, setup_idx, cache, cad_revision);
             if let Some(res) = &self.active_result
                 && self.active_setup_idx == setup_idx
@@ -347,7 +376,18 @@ impl SimulationPanelState {
             }
         });
 
-        if engine_changed
+        if simulate_all_clicked && let Some(doc) = cad_doc {
+            self.trigger_simulate_all_setups(SimTriggerArgs {
+                project,
+                setup_idx,
+                cad_doc: Arc::clone(doc),
+                cad_revision,
+                cache,
+                project_dir,
+                egui_ctx: ui.ctx().clone(),
+                logs,
+            });
+        } else if engine_changed
             && !self.is_busy()
             && self.active_result.is_some()
             && let Some(doc) = cad_doc
@@ -364,6 +404,100 @@ impl SimulationPanelState {
             });
         }
 
+        if export_json_clicked {
+            self.export_metrology_json_dialog(project, logs);
+        }
+
+        // Collapsible Verification Tolerances (SimVerificationConfig overrides, M89)
+        let default_vc = SimVerificationConfig::default();
+        let is_custom_vc = (self.verify_config.gouge_tol_mm - default_vc.gouge_tol_mm).abs() > 1e-6
+            || (self.verify_config.rapid_crash_tol_mm - default_vc.rapid_crash_tol_mm).abs() > 1e-6
+            || (self.verify_config.radial_wall_skin_mm - default_vc.radial_wall_skin_mm).abs()
+                > 1e-6;
+        let vc_hdr = if is_custom_vc {
+            "Verification Tolerances [Custom]"
+        } else {
+            "Verification Tolerances"
+        };
+        egui::CollapsingHeader::new(vc_hdr)
+            .id_salt("sim_verification_tolerances_header")
+            .default_open(false)
+            .show(ui, |ui| {
+                let (u_scale, u_sfx, dec, spd) = match display_unit {
+                    DisplayUnit::Millimeter => (1.0, " mm", 3usize, 0.002),
+                    DisplayUnit::Inch => (1.0 / MM_PER_INCH, " in", 4usize, 0.0001),
+                };
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("Gouge Tol:")
+                        .on_hover_text("Allowed axial target-model penetration before flagging a Target Model Gouge error");
+                    let mut g_disp = (self.verify_config.gouge_tol_mm * u_scale)
+                        .clamp(0.001 * u_scale, 2.0 * u_scale);
+                    if ui
+                        .add(
+                            egui::DragValue::new(&mut g_disp)
+                                .speed(spd)
+                                .range((0.001 * u_scale)..=(2.0 * u_scale))
+                                .fixed_decimals(dec)
+                                .suffix(u_sfx),
+                        )
+                        .on_hover_text("Target solid gouge verification threshold (default 0.020 mm)")
+                        .changed()
+                        && g_disp.is_finite()
+                    {
+                        self.verify_config.gouge_tol_mm = (g_disp / u_scale).clamp(0.001, 2.0);
+                    }
+
+                    ui.separator();
+                    ui.label("Rapid Crash Tol:")
+                        .on_hover_text("Allowed G0 rapid contact penetration into uncut stock before flagging a Rapid-into-Stock Crash");
+                    let mut r_disp = (self.verify_config.rapid_crash_tol_mm * u_scale)
+                        .clamp(0.001 * u_scale, 2.0 * u_scale);
+                    if ui
+                        .add(
+                            egui::DragValue::new(&mut r_disp)
+                                .speed(spd)
+                                .range((0.001 * u_scale)..=(2.0 * u_scale))
+                                .fixed_decimals(dec)
+                                .suffix(u_sfx),
+                        )
+                        .on_hover_text("Rapid-into-stock crash threshold (default 0.020 mm)")
+                        .changed()
+                        && r_disp.is_finite()
+                    {
+                        self.verify_config.rapid_crash_tol_mm = (r_disp / u_scale).clamp(0.001, 2.0);
+                    }
+
+                    ui.separator();
+                    ui.label("Radial Wall Skin:")
+                        .on_hover_text("Radial cliff skin margin preventing tangential wall quantization false-positives");
+                    let mut w_disp =
+                        (self.verify_config.radial_wall_skin_mm * u_scale).clamp(0.0, 1.0 * u_scale);
+                    if ui
+                        .add(
+                            egui::DragValue::new(&mut w_disp)
+                                .speed(spd)
+                                .range(0.0..=(1.0 * u_scale))
+                                .fixed_decimals(dec)
+                                .suffix(u_sfx),
+                        )
+                        .on_hover_text("Radial wall skin tolerance (default 0.018 mm)")
+                        .changed()
+                        && w_disp.is_finite()
+                    {
+                        self.verify_config.radial_wall_skin_mm = (w_disp / u_scale).clamp(0.0, 1.0);
+                    }
+
+                    ui.separator();
+                    if ui
+                        .add_enabled(is_custom_vc, egui::Button::new("Reset Defaults").small())
+                        .on_hover_text("Restore default crash & gouge verification tolerances (0.020 / 0.020 / 0.018 mm)")
+                        .clicked()
+                    {
+                        self.verify_config = SimVerificationConfig::default();
+                    }
+                });
+            });
+
         ui.separator();
 
         let Some(res) = self.active_result.clone() else {
@@ -371,6 +505,9 @@ impl SimulationPanelState {
                 ui.weak("Simulation running…");
             } else {
                 ui.weak("No stock simulation active for this Setup yet.");
+            }
+            if let Some(summary) = self.multi_setup_summary.clone() {
+                show_multi_setup_summary_card(ui, &summary);
             }
             return action;
         };
@@ -381,6 +518,9 @@ impl SimulationPanelState {
                 ui.weak(
                     "Click 'Simulate' on the top toolbar to simulate the currently selected Setup.",
                 );
+            }
+            if let Some(summary) = self.multi_setup_summary.clone() {
+                show_multi_setup_summary_card(ui, &summary);
             }
             return action;
         }
@@ -709,19 +849,25 @@ impl SimulationPanelState {
                     }
                 }
 
-                // Quantitative Stock-vs-Target Error-Volume & RMS Metrics Dashboard (Phase 11 M40)
+                // Quantitative Stock-vs-Target Error-Volume & RMS Metrics Dashboard (Phase 11 M40, M89)
                 if let Some(rep) = &active_err_report
                     && let Some(metric_act) = show_error_metrics_dashboard(
                         ui,
                         &res,
                         rep,
                         snap.as_ref(),
+                        display_unit,
                         &mut self.heatmap_tolerance_mm,
-                        self.heatmap_max_scale_mm,
+                        &mut self.heatmap_max_scale_mm,
                         &mut self.show_error_heatmap,
                     )
                 {
                     action = Some(metric_act);
+                }
+
+                // Multi-Setup Verification Chain Summary (M89)
+                if let Some(summary) = self.multi_setup_summary.clone() {
+                    show_multi_setup_summary_card(ui, &summary);
                 }
             });
 
@@ -731,6 +877,7 @@ impl SimulationPanelState {
                 self.color_by_operation,
                 self.show_error_heatmap,
                 self.heatmap_tolerance_mm.to_bits(),
+                self.heatmap_max_scale_mm.to_bits(),
                 self.show_cutter_assembly,
                 self.trail_up_to_cutter,
             ) != prev_vis_flags
@@ -740,6 +887,102 @@ impl SimulationPanelState {
 
         action
     }
+}
+
+fn show_multi_setup_summary_card(ui: &mut egui::Ui, summary: &super::MultiSetupSimSummary) {
+    let tok = crate::theme::ThemeTokens::from_ui(ui);
+    let total_crit: usize = summary
+        .setups
+        .iter()
+        .map(|s| s.result.critical_error_count())
+        .sum();
+    let total_warn: usize = summary
+        .setups
+        .iter()
+        .map(|s| s.result.warning_count())
+        .sum();
+    let total_time: f64 = summary
+        .setups
+        .iter()
+        .map(|s| s.result.timeline.total_time_sec)
+        .sum();
+
+    ui.add_space(4.0);
+    egui::Frame::group(ui.style())
+        .inner_margin(egui::Margin::symmetric(6, 4))
+        .show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.strong(format!(
+                    "Multi-Setup Verification Summary ({} setups · {})",
+                    summary.setups.len(),
+                    summary.engine.label()
+                ));
+                ui.separator();
+                ui.monospace(format!("Total Cycle: {}", format_cycle_time_hms(total_time)));
+                ui.separator();
+                if total_crit > 0 {
+                    ui.colored_label(
+                        tok.error_fg,
+                        egui::RichText::new(format!("{total_crit} Critical Crash/Gouge(s)"))
+                            .strong(),
+                    );
+                } else if total_warn > 0 {
+                    ui.colored_label(
+                        tok.warn_fg,
+                        format!("PASS (0 Crashes, {total_warn} Warning(s))"),
+                    );
+                } else {
+                    ui.colored_label(tok.clean_fg, "PASS (0 Crashes, 0 Warnings)");
+                }
+            });
+            egui::Grid::new("sim_multi_setup_summary_grid")
+                .striped(true)
+                .spacing([12.0, 2.0])
+                .show(ui, |ui| {
+                    ui.strong("Setup");
+                    ui.strong("Cycle");
+                    ui.strong("Removed (mm^3)");
+                    ui.strong("Crashes");
+                    ui.strong("Warnings");
+                    ui.strong("RMS (mm)");
+                    ui.strong("In-Tol %");
+                    ui.end_row();
+                    for entry in &summary.setups {
+                        let r = &entry.result;
+                        ui.label(&entry.setup_name);
+                        ui.monospace(format_cycle_time_hms(r.timeline.total_time_sec));
+                        ui.monospace(format!("{:.1}", r.removed_volume_mm3));
+                        let c = r.critical_error_count();
+                        if c > 0 {
+                            ui.colored_label(tok.error_fg, format!("{c}"));
+                        } else {
+                            ui.monospace("0");
+                        }
+                        ui.monospace(format!("{}", r.warning_count()));
+                        if let Some(er) = &r.error_report {
+                            ui.monospace(format!("{:.4}", er.rms_error_mm));
+                            ui.monospace(format!("{:.1}%", er.in_tolerance_surface_pct));
+                        } else {
+                            ui.weak("--");
+                            ui.weak("--");
+                        }
+                        ui.end_row();
+                    }
+                });
+            if let Some(cum) = &summary.cumulative_error_report {
+                ui.add_space(2.0);
+                ui.monospace(format!(
+                    "Cumulative End-of-Job (+/- {:.3} mm): Err Vol {:.1} mm^3 ({:.2}%) | Excess {:.1} | Gouge {:.1} | RMS {:.4} mm | In-Tol {:.1}%",
+                    cum.tolerance_mm,
+                    cum.total_error_volume_mm3,
+                    cum.error_volume_pct_of_target,
+                    cum.excess_volume_mm3,
+                    cum.gouge_volume_mm3,
+                    cum.rms_error_mm,
+                    cum.in_tolerance_surface_pct,
+                ));
+            }
+        });
 }
 
 /// Computes playback completion percentage in `[0.0, 100.0]` for the timeline scrubber.
@@ -779,8 +1022,45 @@ fn shorten_adapter_name(raw: &str) -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
+    use std::{
+        sync::Arc,
+        time::{Duration, Instant},
+    };
+
+    use chip_cad::sample_sculpted_dome_stl_bytes;
+    use chip_cam::{
+        BoxAnchor27, MotionRole, Operation, OperationKind, Setup, StockConfig, ToolpathBuilder,
+        WcsOriginMode, WorkOffsetSlot,
+    };
+    use chip_math::{DVec3, DisplayUnit, ParamLength};
+    use chip_project::{ProjectDocument, ToolpathCache, compute_operation_input_hash};
+    use chip_sim::{
+        MachineKinematicsConfig, SetupSimulationInput, SimOperationInput, SimResolution,
+        SimStockColorMode, SimVerificationConfig, run_setup_simulation,
+    };
+    use chip_tools::default_starter_tool_library;
+
     use super::compute_playback_percent;
+    use crate::panels::simulation::{SimPanelCtx, SimTriggerArgs, SimulationPanelState};
+
+    fn collect_texts(shapes: &[egui::epaint::ClippedShape], out: &mut Vec<String>) {
+        fn visit(shape: &egui::Shape, out: &mut Vec<String>) {
+            match shape {
+                egui::Shape::Text(t) => out.push(t.galley.text().to_string()),
+                egui::Shape::Vec(v) => {
+                    for s in v {
+                        visit(s, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        for cs in shapes {
+            visit(&cs.shape, out);
+        }
+    }
 
     #[test]
     fn playback_percent_handles_endpoints_midpoints_and_edge_cases() {
@@ -791,5 +1071,196 @@ mod tests {
         assert!((compute_playback_percent(-5.0, 120.0) - 0.0).abs() < 1e-9);
         assert!((compute_playback_percent(0.0, 0.0) - 100.0).abs() < 1e-9);
         assert!((compute_playback_percent(f64::NAN, 120.0) - 100.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn simulation_panel_renders_heatmap_scale_verify_tolerances_multi_setup_and_exports_json() {
+        let stl = sample_sculpted_dome_stl_bytes();
+        let doc = Arc::new(
+            chip_cad::load_mesh_cad_document(
+                "dome.stl",
+                &stl,
+                &chip_cad::MeshImportOptions::default(),
+            )
+            .unwrap(),
+        );
+        let lib = default_starter_tool_library();
+        let flat_6mm = lib.tools[0].clone();
+
+        let mut project = ProjectDocument::new("M89 Sim Test");
+        project.tools = lib.tools.clone();
+
+        let make_setup = |id: &str, name: &str, slot: WorkOffsetSlot| -> Setup {
+            let mut s = Setup::new(id, name, slot);
+            s.wcs.origin = WcsOriginMode::StockBoxPoint {
+                anchor: BoxAnchor27::TOP_CENTER,
+            };
+            s.stock = StockConfig::FixedBox {
+                width_x: ParamLength::from_mm(140.0),
+                depth_y: ParamLength::from_mm(140.0),
+                height_z: ParamLength::from_mm(45.0),
+                xy_align: chip_cam::FixedBoxXyAlign::CenterXy,
+                z_align: chip_cam::FixedBoxZAlign::CenterZ,
+            };
+            let mut op = Operation::new(format!("{id}_op1"), "Slot Pass", OperationKind::Facing);
+            op.tool_id = Some(flat_6mm.id.clone());
+            s.operations.push(op);
+            s
+        };
+        project.setups = vec![
+            make_setup("setup_1", "Setup 1 — Op 1", WorkOffsetSlot::G54),
+            make_setup("setup_2", "Setup 2 — Op 2", WorkOffsetSlot::G55),
+        ];
+
+        let mut cache = ToolpathCache::new(16);
+        let mut b = ToolpathBuilder::new("slot");
+        b.rapid_to(DVec3::new(-25.0, 0.0, 15.0));
+        b.linear_to(DVec3::new(-25.0, 0.0, -2.0), 300.0, MotionRole::Plunge);
+        b.linear_to(DVec3::new(25.0, 0.0, -2.0), 600.0, MotionRole::Cut);
+        b.rapid_to(DVec3::new(25.0, 0.0, 15.0));
+        let tp = Arc::new(b.finish());
+        for s_idx in 0..2 {
+            let hk = compute_operation_input_hash(&project, s_idx, 0, 1).unwrap();
+            let op_id = project.setups[s_idx].operations[0].id.clone();
+            cache.insert(op_id, hk, Arc::clone(&tp));
+        }
+
+        let resolved = project.setups[0]
+            .resolve(&doc, DisplayUnit::Millimeter)
+            .unwrap();
+        let sim = run_setup_simulation(&SetupSimulationInput {
+            doc: &doc,
+            setup: &resolved,
+            target_bodies: &[],
+            fixtures: &[],
+            operations: &[SimOperationInput {
+                op_id: "setup_1_op1",
+                op_name: "Slot Pass",
+                tool: &flat_6mm,
+                fallback_spindle_rpm: 12_000.0,
+                intentional_edge_break_mm: 0.0,
+                toolpath: &tp,
+            }],
+            resolution: SimResolution::Standard,
+            kinematics: MachineKinematicsConfig::default(),
+            verify_config: SimVerificationConfig::default(),
+            initial_stock: None,
+            initial_raw_volume_mm3: None,
+            carried_over_from_setup: None,
+            cancel: None,
+        })
+        .unwrap();
+
+        let mut panel = SimulationPanelState {
+            show_error_heatmap: true,
+            heatmap_tolerance_mm: 0.05,
+            heatmap_max_scale_mm: 2.5,
+            ..Default::default()
+        };
+        assert_eq!(
+            panel.active_stock_color_mode(),
+            SimStockColorMode::ErrorHeatmap {
+                tolerance_mm: 0.05,
+                max_scale_mm: 2.5,
+            }
+        );
+
+        let sig_before = panel.compute_setup_sim_signature(&project, 0, &cache, 1);
+        panel.verify_config.gouge_tol_mm = 0.04;
+        let sig_after = panel.compute_setup_sim_signature(&project, 0, &cache, 1);
+        assert_ne!(
+            sig_before, sig_after,
+            "changing SimVerificationConfig must invalidate cached simulation signature"
+        );
+
+        panel.active_run_id = 1;
+        panel.active_setup_idx = 0;
+        panel.active_signature = sig_after;
+        panel.active_result = Some(Arc::new(sim));
+
+        let ctx = egui::Context::default();
+        let mut logs = Vec::new();
+        let mut out = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1280.0, 500.0),
+                )),
+                ..Default::default()
+            },
+            |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
+                    let _ = panel.show_ui(
+                        ui,
+                        SimPanelCtx {
+                            project: &project,
+                            setup_idx: 0,
+                            cad_doc: Some(&doc),
+                            cad_revision: 1,
+                            cache: &cache,
+                            project_dir: None,
+                            logs: &mut logs,
+                        },
+                    );
+                });
+            },
+        );
+        out.textures_delta.clear();
+        let mut texts = Vec::new();
+        collect_texts(&out.shapes, &mut texts);
+        assert!(
+            texts.iter().any(|t| t.contains("Heatmap Max Scale")),
+            "expected Heatmap Max Scale label in simulation UI, got: {texts:?}"
+        );
+        assert!(
+            texts.iter().any(|t| t.contains("Verification Tolerances")),
+            "expected Verification Tolerances section in simulation UI"
+        );
+        assert!(
+            texts.iter().any(|t| t.contains("Simulate All Setups")),
+            "expected Simulate All Setups button for multi-setup project"
+        );
+        assert!(
+            texts.iter().any(|t| t.contains("Export Metrology JSON")),
+            "expected Export Metrology JSON button"
+        );
+
+        // Single-setup JSON report serialization
+        let json_str = panel.build_metrology_report_json(&project).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(parsed["project_name"], "M89 Sim Test");
+        assert!((parsed["heatmap_max_scale_mm"].as_f64().unwrap() - 2.5).abs() < 1e-6);
+        assert!((parsed["verify_config"]["gouge_tol_mm"].as_f64().unwrap() - 0.04).abs() < 1e-6);
+        assert_eq!(parsed["setups"].as_array().unwrap().len(), 1);
+
+        // Background multi-setup simulation chain
+        panel.verify_config = SimVerificationConfig::default();
+        panel.trigger_simulate_all_setups(SimTriggerArgs {
+            project: &project,
+            setup_idx: 0,
+            cad_doc: Arc::clone(&doc),
+            cad_revision: 1,
+            cache: &cache,
+            project_dir: None,
+            egui_ctx: ctx.clone(),
+            logs: &mut logs,
+        });
+        assert!(panel.is_busy());
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while panel.is_busy() && Instant::now() < deadline {
+            let _ = panel.poll_worker(&mut logs);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(!panel.is_busy(), "multi-setup simulation timed out");
+        let summary = panel
+            .multi_setup_summary
+            .as_ref()
+            .expect("multi_setup_summary should be populated");
+        assert_eq!(summary.setups.len(), 2);
+
+        let multi_json = panel.build_metrology_report_json(&project).unwrap();
+        let multi_val: serde_json::Value = serde_json::from_str(&multi_json).unwrap();
+        assert_eq!(multi_val["setups"].as_array().unwrap().len(), 2);
+        assert!(multi_val["cumulative_error_report"].is_object());
     }
 }

@@ -41,6 +41,7 @@ pub(crate) enum LoadPurpose {
     SeedKeepOutClamps,
     SeedIndexedModelBounds,
     ReloadRebind { update_path: bool },
+    ReloadMeshUnits,
 }
 
 pub(crate) struct LoadedPayload {
@@ -473,6 +474,36 @@ impl ChipCutterApp {
             if let LoadJobResult::Loaded { payload, .. } = &mut res {
                 payload.initial_transform = Some(initial_transform);
             }
+            let _ = tx.send(res);
+            egui_ctx.request_repaint();
+        });
+    }
+
+    pub(crate) fn spawn_mesh_unit_reload_from_bytes(
+        &mut self,
+        source_name: String,
+        raw_bytes: Vec<u8>,
+        source_path: Option<PathBuf>,
+        unit_override: Option<MeshUnitKind>,
+        egui_ctx: egui::Context,
+    ) {
+        let generation = self.begin_model_load_generation();
+        let unit_lbl = unit_override.map_or("Auto-Detect", |u| u.label());
+        self.logs.push(format!(
+            "Reloading 3D mesh '{source_name}' with import units '{unit_lbl}' on background worker..."
+        ));
+        let tx = self.job_tx.clone();
+        rayon::spawn(move || {
+            let t0 = Instant::now();
+            let res = parse_model_bytes_job(
+                generation,
+                source_name,
+                raw_bytes,
+                source_path,
+                unit_override,
+                LoadPurpose::ReloadMeshUnits,
+                t0,
+            );
             let _ = tx.send(res);
             egui_ctx.request_repaint();
         });

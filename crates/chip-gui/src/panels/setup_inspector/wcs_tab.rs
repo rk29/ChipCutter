@@ -23,6 +23,7 @@ pub(super) struct WcsTabCtx<'a> {
     pub(super) eval_ctx: &'a EvalContext,
     pub(super) pick_mode: &'a mut ViewportPickMode,
     pub(super) show_27pt_dots: &'a mut bool,
+    pub(super) open_post_inspector: &'a mut Option<String>,
     pub(super) mutated_label: &'a mut Option<&'static str>,
 }
 
@@ -64,7 +65,14 @@ pub(super) fn show_wcs_tab(ui: &mut egui::Ui, mut ctx: WcsTabCtx<'_>) {
         "Post-Processor & Output",
         true,
         |ui| {
-            render_post_body(ui, ctx.setup, idx, ctx.project_dir, ctx.mutated_label);
+            render_post_body(
+                ui,
+                ctx.setup,
+                idx,
+                ctx.project_dir,
+                ctx.open_post_inspector,
+                ctx.mutated_label,
+            );
         },
     );
 }

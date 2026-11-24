@@ -305,6 +305,58 @@ fn render_anchor_variant_rows(
         ))
     };
 
+    if st.ctx.project.setups.len() > 1 {
+        let setups_list: Vec<(String, String)> = st
+            .ctx
+            .project
+            .setups
+            .iter()
+            .map(|s| {
+                (
+                    s.id.clone(),
+                    format!("{} [{}]", s.name, s.wcs_slot.short_code()),
+                )
+            })
+            .collect();
+        let cur_setup_id = st.ctx.project.sketches[sketch_idx]
+            .anchor
+            .setup_id()
+            .to_string();
+        let cur_label = setups_list
+            .iter()
+            .find(|(id, _)| id == &cur_setup_id)
+            .map_or(cur_setup_id.as_str(), |(_, lbl)| lbl.as_str());
+        let mut chosen_setup_id = cur_setup_id.clone();
+        grid_row(
+            ui,
+            "Setup",
+            Some(
+                "Reassign this 2D Sketch layer to another clamping Setup's WCS frame & variable scope",
+            ),
+            |ui| {
+                egui::ComboBox::from_id_salt(("sk_setup_reassign", sketch_idx))
+                    .width(cb_w)
+                    .truncate()
+                    .selected_text(cur_label)
+                    .show_ui(ui, |ui| {
+                        for (sid, slbl) in &setups_list {
+                            ui.selectable_value(&mut chosen_setup_id, sid.clone(), slbl)
+                                .on_hover_text(format!("Anchor this 2D Sketch to {slbl}"));
+                        }
+                    })
+                    .response
+                    .on_hover_text("Choose which Setup WCS frame hosts this 2D Sketch");
+            },
+        );
+        if chosen_setup_id != cur_setup_id {
+            st.ctx.project.sketches[sketch_idx]
+                .anchor
+                .set_setup_id(chosen_setup_id);
+            st.undo_info = Some(("Reassign Sketch Setup", None));
+            st.rebuild_needed = true;
+        }
+    }
+
     match &mut st.ctx.project.sketches[sketch_idx].anchor {
         SketchAnchor::SetupXy {
             plane_ref,
@@ -738,4 +790,200 @@ fn create_quick_sketch_op(
         setup_idx: s_idx,
         op_idx: ops.len() - 1,
     })
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use chip_cam::{
+        GeometrySelectionItem, Operation, OperationKind, OperationStatus, Setup, WorkOffsetSlot,
+    };
+    use chip_math::{DisplayUnit, EvalContext, ParamLength};
+    use chip_project::{ProjectDocument, UndoHistory};
+    use chip_sketch::{
+        SketchAnchor, SketchEntity, SketchEntityEntry, SketchFontSource, SketchLayer,
+        SketchPlaneRef, SketchTextSpec,
+    };
+
+    use super::{SketchInspectorCtx, show_sketch_inspector};
+    use crate::panels::ViewportPickMode;
+
+    fn collect_texts(shapes: &[egui::epaint::ClippedShape], out: &mut Vec<String>) {
+        fn visit(shape: &egui::Shape, out: &mut Vec<String>) {
+            match shape {
+                egui::Shape::Text(t) => out.push(t.galley.text().to_string()),
+                egui::Shape::Vec(v) => {
+                    for s in v {
+                        visit(s, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        for cs in shapes {
+            visit(&cs.shape, out);
+        }
+    }
+
+    fn find_text(shape: &egui::Shape, needle: &str) -> Option<egui::Pos2> {
+        match shape {
+            egui::Shape::Text(t) if t.galley.text().contains(needle) => {
+                Some(t.pos + t.galley.size() * 0.5)
+            }
+            egui::Shape::Vec(v) => v.iter().find_map(|s| find_text(s, needle)),
+            _ => None,
+        }
+    }
+
+    fn click(pt: egui::Pos2) -> Vec<egui::Event> {
+        vec![
+            egui::Event::PointerMoved(pt),
+            egui::Event::PointerButton {
+                pos: pt,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+            egui::Event::PointerButton {
+                pos: pt,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]
+    }
+
+    #[test]
+    fn sketch_inspector_reassigns_setup_and_exposes_text_arc_fit_and_face_index() {
+        let mut project = ProjectDocument::new("Sketch M89 Test");
+        project.setups.push(Setup::new(
+            "setup_2",
+            "Setup 2 — Flip Op",
+            WorkOffsetSlot::G55,
+        ));
+
+        let mut op = Operation::new("op_1", "Engrave", OperationKind::VCarve);
+        op.runtime_status = OperationStatus::Clean;
+        op.selections.push(GeometrySelectionItem::SketchLayerAll {
+            sketch_id: "sk_1".to_string(),
+            sub_layer: None,
+            reverse: false,
+            side_flip: false,
+        });
+        project.setups[0].operations.push(op);
+
+        let mut sk = SketchLayer {
+            id: "sk_1".to_string(),
+            name: "Logo Sketch".to_string(),
+            visible: true,
+            anchor: SketchAnchor::SetupXy {
+                setup_id: "setup_1".to_string(),
+                plane_ref: SketchPlaneRef::StockTop,
+                z_offset: ParamLength::from_mm(0.0),
+            },
+            source_asset: None,
+            cut_depth_default: ParamLength::from_mm(3.0),
+            entities: vec![SketchEntityEntry {
+                id: "txt_1".to_string(),
+                name: "Label Text".to_string(),
+                sub_layer: None,
+                is_construction: false,
+                entity: SketchEntity::Text(SketchTextSpec {
+                    font: SketchFontSource::CustomFile {
+                        path: "fonts/custom_collection.ttc".to_string(),
+                        sha256: String::new(),
+                        face_index: 2,
+                    },
+                    arc_fit_tolerance_mm: 0.02,
+                    ..SketchTextSpec::default()
+                }),
+            }],
+            regions: Vec::new(),
+            diagnostics: Vec::new(),
+        };
+        sk.rebuild_regions(None);
+        project.sketches.push(sk);
+
+        let ctx = egui::Context::default();
+        let eval_ctx = EvalContext::new(DisplayUnit::Millimeter);
+        let mut history = UndoHistory::default();
+        let mut sel_ent = Some(0);
+        let mut snap = Some(1.0);
+        let mut author_start = None;
+        let mut pick_mode = ViewportPickMode::InspectEntity;
+
+        let mut run_frame = |events: Vec<egui::Event>| {
+            let mut out = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(520.0, 1200.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    egui::CentralPanel::default().show(ui, |ui| {
+                        let _ = show_sketch_inspector(
+                            ui,
+                            SketchInspectorCtx {
+                                project: &mut project,
+                                sketch_idx: 0,
+                                active_setup_idx: 0,
+                                selected_entity_idx: &mut sel_ent,
+                                snap_grid_mm: &mut snap,
+                                author_start_xy: &mut author_start,
+                                history: &mut history,
+                                pick_mode: &mut pick_mode,
+                                eval_ctx: &eval_ctx,
+                                has_cad_model: false,
+                                project_file: None,
+                            },
+                        );
+                    });
+                },
+            );
+            out.textures_delta.clear();
+            out
+        };
+
+        let out1 = run_frame(vec![]);
+        let mut texts = Vec::new();
+        collect_texts(&out1.shapes, &mut texts);
+        assert!(
+            texts.iter().any(|t| t.contains("Font Face Index")),
+            "expected Font Face Index control for CustomFile font, got: {texts:?}"
+        );
+        assert!(
+            texts.iter().any(|t| t.contains("Arc-Fit Tolerance")),
+            "expected Arc-Fit Tolerance control for outline text, got: {texts:?}"
+        );
+
+        // Open Setup reassignment ComboBox ("Setup 1 — Top Op [G54]") and pick Setup 2
+        let setup_cb_pt = out1
+            .shapes
+            .iter()
+            .find_map(|cs| find_text(&cs.shape, "Setup 1"))
+            .expect("Setup reassignment combo must render when project.setups.len() > 1");
+        let _ = run_frame(click(setup_cb_pt));
+        let out2 = run_frame(vec![]);
+        let setup2_pt = out2
+            .shapes
+            .iter()
+            .find_map(|cs| find_text(&cs.shape, "Setup 2"))
+            .expect("Setup 2 must appear in reassignment dropdown");
+        let _ = run_frame(click(setup2_pt));
+
+        assert_eq!(project.sketches[0].anchor.setup_id(), "setup_2");
+        assert_eq!(
+            project.setups[0].operations[0].runtime_status,
+            OperationStatus::Dirty,
+            "sketch-dependent operation must be marked Dirty after Setup reassignment"
+        );
+        assert_eq!(
+            history.undo(&mut project).as_deref(),
+            Some("Reassign Sketch Setup")
+        );
+        assert_eq!(project.sketches[0].anchor.setup_id(), "setup_1");
+    }
 }

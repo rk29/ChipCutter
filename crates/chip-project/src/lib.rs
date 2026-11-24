@@ -60,9 +60,11 @@ pub use pipeline::{
     CarryoverStockResult, ReadySetupOperation, SetupPostRequest, SetupSimRequest,
     collect_ready_setup_operations, compute_setup_carryover_stock, kinematics_for_post_profile,
     post_process_project_setup, resolve_kinematics_for_key, simulate_all_setups_with_choice,
-    simulate_project_setup, simulate_project_setup_in_dir, simulate_project_setup_with_choice,
+    simulate_all_setups_with_verify_and_progress, simulate_project_setup,
+    simulate_project_setup_in_dir, simulate_project_setup_with_choice,
     simulate_project_setup_with_choice_and_progress_in_dir,
     simulate_project_setup_with_choice_in_dir, simulate_project_setup_with_engine,
+    simulate_project_setup_with_verify_and_progress_in_dir,
 };
 pub use reload::{
     CadReloadReport, OperationReloadOutcome, cad_binding_to_sketch_face,

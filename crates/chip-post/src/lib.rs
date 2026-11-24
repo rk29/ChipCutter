@@ -16,9 +16,12 @@ pub use profile::{
     ArcCenterMode, BUILTIN_GRBL_ROTARY_WRAP_TOML, BUILTIN_GRBL_TOML, BUILTIN_GRBLHAL_4AXIS_TOML,
     BUILTIN_GRBLHAL_ATC_TOML, BUILTIN_LINUXCNC_4AXIS_TOML, BUILTIN_LINUXCNC_TOML, CommentStyle,
     LineNumberConfig, PostError, PostProfile, PostProfileSource, PostUnits, RotaryPostConfig,
-    SwapAxisTarget, ToolChangeMode, builtin_post_profiles, is_builtin_post_id,
-    load_available_post_profiles, resolve_post_profile, resolve_post_profile_cli_override,
-    user_post_profiles_dir, validate_post_id,
+    SwapAxisTarget, ToolChangeMode, allocate_unique_custom_post_id, builtin_post_profiles,
+    clone_post_profile, delete_user_post_profile, delete_user_post_profile_in,
+    export_post_profile_to_path, import_post_profile_from_path, import_post_profile_from_path_in,
+    is_builtin_post_id, load_available_post_profiles, load_available_post_profiles_in,
+    resolve_post_profile, resolve_post_profile_cli_override, sanitize_post_id,
+    save_user_post_profile, save_user_post_profile_in, user_post_profiles_dir, validate_post_id,
 };
 
 #[cfg(test)]

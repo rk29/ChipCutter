@@ -18,11 +18,11 @@ stateDiagram-v2
 
 ### Common Operation Parameters
 Every 2.5D operation shares five standardized parameter groups:
-1. **Tool & Feeds/Speeds:** Selected `ToolId`, optional `PresetId`, and local overrides (`RPM`, `feed`, `plunge`, `ramp`, `lead`, `coolant`).
+1. **Tool & Feeds/Speeds:** Selected `ToolId`, optional `PresetId`, and local overrides (`RPM`, `feed`, `plunge`, `ramp`, `lead`, `stepdown`, `coolant`) exposed directly in the Operation Inspector `[Tool]` tab alongside full preset/tool CRUD in the Tool Library Manager (*Phase 24*).
 2. **Geometry:** Ordered list of selections from either **3D STEP B-Rep topology** (`FaceId`, `LoopId`, `EdgeId`, `CylinderHole`) or **2D `SketchLayer` entities** (`SketchRegionId`, `SketchEntityId`, `SketchPointPattern`), all normalizing into CAD-agnostic `ExtractedFeature25D` primitives with chain direction arrows and side flip toggles visible in the viewport.
 3. **Heights:** `Clearance`, `Retract`, `Feed`, `Top`, and `Bottom` Z heights (each referencing Setup planes, Selection, Stock, or Model + signed offset expression).
-4. **Passes:** Multiple Z stepdowns (`max_stepdown`, optional `even_stepdowns` boolean), `stock_to_leave_radial`, `stock_to_leave_axial`, **Rest Machining** configuration (on Pocket/Adaptive, Contour, and V-Carve), opt-in `avoid_model_overhangs` 3D overhang avoidance on 2.5D strategies (`false` by default for byte-identical legacy projects), and finishing pass parameters.
-5. **Linking:** Safe retract policy (`Full Clearance`, `Minimum Retract`), entry strategy (plunge, linear ramp, helical ramp, open-air side entry), and horizontal/vertical lead-in & lead-out arcs/lines.
+4. **Passes:** Multiple Z stepdowns (`max_stepdown`, optional `even_stepdowns` boolean), `stock_to_leave_radial`, `stock_to_leave_axial`, **Rest Machining** configuration (on Pocket/Adaptive, Contour, and V-Carve), opt-in `avoid_model_overhangs` 3D overhang avoidance on 2.5D strategies (`false` by default for byte-identical legacy projects), and finishing pass parameters (including `Contour2D::finish_feed_mm_min`, `Adaptive2D`/`Adaptive3D` trochoidal/flat-step controls, `DrillBore` G82 dwell / G73 chip-break / peck decay / helical bore finish parameters, and `VCarve::clearing_preset_id`).
+5. **Linking:** Safe retract policy (`Full Clearance`, `Minimum Retract`), entry strategy (plunge, linear ramp, helical ramp, open-air side entry, and `PreDrilled` entry coordinates), and independent horizontal/vertical lead-in and lead-out arcs/lines.
 
 ---
 

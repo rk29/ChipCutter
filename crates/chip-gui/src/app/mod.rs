@@ -53,6 +53,7 @@ use crate::{
 pub(crate) struct LoadedModelState {
     pub raw_doc: Arc<CadDocument>,
     pub applied_transform: chip_cad::ModelTransform,
+    pub applied_unit_override: Option<chip_cad::MeshUnitKind>,
     pub doc: Arc<CadDocument>,
     pub picker: CadPicker,
     pub topo: TopologyGraph,
@@ -1168,6 +1169,62 @@ impl ChipCutterApp {
         true
     }
 
+    /// Re-parses the loaded primary triangle mesh on a background `rayon` worker whenever
+    /// `ModelEntry::unit_override` changes (including after Undo/Redo) without touching the
+    /// project's model list or losing `ModelTransform`.
+    pub(crate) fn reload_active_mesh_unit_override(&mut self, egui_ctx: &egui::Context) -> bool {
+        let Some(entry) = self.project.primary_part_model() else {
+            return false;
+        };
+        let desired_unit = entry.unit_override;
+        let Some(loaded) = &self.model else {
+            return false;
+        };
+        if loaded.doc.meshes.is_empty() && !is_mesh_path(Path::new(&entry.path)) {
+            return false;
+        }
+        let source_name = loaded.doc.source_name.clone();
+        let raw_bytes = loaded.raw_step_bytes.clone();
+        let source_path = loaded.source_path.clone();
+        if raw_bytes.is_empty() {
+            if let Some(path) = source_path {
+                self.spawn_model_file_load_with_options(
+                    path,
+                    desired_unit,
+                    crate::app::loader::LoadPurpose::ReloadMeshUnits,
+                    egui_ctx.clone(),
+                );
+                return true;
+            }
+            return false;
+        }
+        self.spawn_mesh_unit_reload_from_bytes(
+            source_name,
+            raw_bytes,
+            source_path,
+            desired_unit,
+            egui_ctx.clone(),
+        );
+        true
+    }
+
+    pub(crate) fn sync_loaded_model_unit_override(&mut self, egui_ctx: &egui::Context) -> bool {
+        if self.loading_in_flight {
+            return false;
+        }
+        let Some(desired_unit) = self.project.primary_part_model().map(|m| m.unit_override) else {
+            return false;
+        };
+        let needs_reload = self
+            .model
+            .as_ref()
+            .is_some_and(|m| !m.doc.meshes.is_empty() && m.applied_unit_override != desired_unit);
+        if !needs_reload {
+            return false;
+        }
+        self.reload_active_mesh_unit_override(egui_ctx)
+    }
+
     pub(crate) fn is_project_dirty(&self) -> bool {
         self.clean_undo_len != Some(self.history.undo_len())
     }
@@ -1232,6 +1289,7 @@ impl eframe::App for ChipCutterApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.poll_background_jobs(&ctx);
+        self.sync_loaded_model_unit_override(&ctx);
         self.sync_loaded_model_transform();
         self.sim_panel.update_playback_and_shortcuts(&ctx);
         self.sync_viewport_scene_state();

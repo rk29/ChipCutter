@@ -778,6 +778,7 @@ mod tests {
         let mut imp_fix = false;
         let mut open_fj = false;
         let mut open_sj = false;
+        let mut open_post: Option<String> = None;
         let mut out = ctx.run_ui(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
@@ -808,6 +809,7 @@ mod tests {
                             show_z_planes: &mut show_z,
                             machines: &[],
                             open_machine_manager: &mut open_mm,
+                            open_post_inspector: &mut open_post,
                             machine_changed: &mut m_changed,
                             switch_machine_id: &mut sw_mid,
                             import_fixture_requested: &mut imp_fix,

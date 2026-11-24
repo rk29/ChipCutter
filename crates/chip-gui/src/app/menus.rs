@@ -152,6 +152,14 @@ impl ChipCutterApp {
                 ui.close();
                 self.trigger_gcode_export_from_menu();
             }
+            if ui
+                .button("Export All Setups...")
+                .on_hover_text("Choose an output directory and batch-export sanitized G-code files for every Setup in this project")
+                .clicked()
+            {
+                ui.close();
+                self.trigger_export_all_setups_from_menu();
+            }
             ui.separator();
             if ui
                 .button("Import STEP Model…")
@@ -605,6 +613,26 @@ impl ChipCutterApp {
             {
                 ui.close();
                 self.trigger_gcode_export_from_menu();
+            }
+            if ui
+                .button("Export All Setups...")
+                .on_hover_text(
+                    "Choose an output directory and batch-export sanitized G-code files for every Setup in this project",
+                )
+                .clicked()
+            {
+                ui.close();
+                self.trigger_export_all_setups_from_menu();
+            }
+            if ui
+                .button("Post Profile Inspector / Customizer...")
+                .on_hover_text(
+                    "Inspect read-only built-in .post.toml profiles or clone & customize profiles in user config space",
+                )
+                .clicked()
+            {
+                ui.close();
+                self.open_post_profile_inspector(None);
             }
             ui.separator();
             let proj_dir = self

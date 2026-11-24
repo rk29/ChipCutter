@@ -37,6 +37,10 @@ pub enum PostError {
     UnknownProfile { id_or_path: String },
     #[error("invalid post-processor profile id '{id}'")]
     InvalidProfileId { id: String },
+    #[error("built-in post-processor profile '{id}' is read-only; clone it to a custom ID first")]
+    BuiltInReadOnly { id: String },
+    #[error("could not determine OS user configuration directory")]
+    NoUserConfigDir,
     #[error("unsafe output filename '{filename}' rejected")]
     UnsafeOutputFilename { filename: String },
     #[error("unsafe G-code line rejected: {reason}")]
@@ -100,6 +104,17 @@ pub enum CommentStyle {
     Semicolon,
 }
 
+impl CommentStyle {
+    pub const ALL: [Self; 2] = [Self::Parentheses, Self::Semicolon];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Parentheses => "Parentheses ( ... )",
+            Self::Semicolon => "Semicolon ; ...",
+        }
+    }
+}
+
 /// Circular arc center parameterization (`07-post-processor.md` §3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -108,6 +123,18 @@ pub enum ArcCenterMode {
     IncrementalIjk,
     AbsoluteIjk,
     Radius,
+}
+
+impl ArcCenterMode {
+    pub const ALL: [Self; 3] = [Self::IncrementalIjk, Self::AbsoluteIjk, Self::Radius];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::IncrementalIjk => "Incremental IJK (G91.1)",
+            Self::AbsoluteIjk => "Absolute IJK (G90.1)",
+            Self::Radius => "Radius (R)",
+        }
+    }
 }
 
 /// Multi-tool partitioning / ATC policy (`07-post-processor.md` §5).
@@ -121,6 +148,18 @@ pub enum ToolChangeMode {
     SplitFilesByTool,
     /// Suppresses `M6` when the entire job uses a single tool; emits `M6` if multiple tools exist.
     IgnoreIfSingleTool,
+}
+
+impl ToolChangeMode {
+    pub const ALL: [Self; 3] = [Self::M6, Self::SplitFilesByTool, Self::IgnoreIfSingleTool];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::M6 => "Single File (T# M6)",
+            Self::SplitFilesByTool => "Split Files by Tool",
+            Self::IgnoreIfSingleTool => "Ignore M6 if Single Tool",
+        }
+    }
 }
 
 /// Optional `N10`, `N20` block numbering config.
@@ -382,11 +421,14 @@ pub fn user_post_profiles_dir() -> Option<PathBuf> {
 }
 
 /// Discovers all available post profiles, merging compiled-in read-only built-in profiles
-/// with `.post.toml` files in `extra_search_dir` (project / `.chipz`) and `~/.config/chipcutter/posts/`.
+/// with `.post.toml` files in `extra_search_dir` (project / `.chipz`) and `user_dir`.
 ///
 /// Built-in post IDs are strictly read-only and can never be shadowed by untrusted project,
 /// `.chipz`, or user files; user config profiles take precedence over untrusted project/bundle posts.
-pub fn load_available_post_profiles(extra_search_dir: Option<&Path>) -> Vec<PostProfile> {
+pub fn load_available_post_profiles_in(
+    user_dir: Option<&Path>,
+    extra_search_dir: Option<&Path>,
+) -> Vec<PostProfile> {
     let mut profiles = builtin_post_profiles();
 
     let mut search_dirs: Vec<(PathBuf, PostProfileSource)> = Vec::new();
@@ -394,8 +436,8 @@ pub fn load_available_post_profiles(extra_search_dir: Option<&Path>) -> Vec<Post
         search_dirs.push((extra.to_path_buf(), PostProfileSource::ProjectOrBundle));
         search_dirs.push((extra.join("posts"), PostProfileSource::ProjectOrBundle));
     }
-    if let Some(user_dir) = user_post_profiles_dir() {
-        search_dirs.push((user_dir, PostProfileSource::UserConfig));
+    if let Some(udir) = user_dir {
+        search_dirs.push((udir.to_path_buf(), PostProfileSource::UserConfig));
     }
 
     for (dir, source) in search_dirs {
@@ -432,6 +474,184 @@ pub fn load_available_post_profiles(extra_search_dir: Option<&Path>) -> Vec<Post
     }
 
     profiles
+}
+
+/// Discovers all available post profiles, merging compiled-in read-only built-in profiles
+/// with `.post.toml` files in `extra_search_dir` (project / `.chipz`) and `~/.config/chipcutter/posts/`.
+///
+/// Built-in post IDs are strictly read-only and can never be shadowed by untrusted project,
+/// `.chipz`, or user files; user config profiles take precedence over untrusted project/bundle posts.
+pub fn load_available_post_profiles(extra_search_dir: Option<&Path>) -> Vec<PostProfile> {
+    let udir = user_post_profiles_dir();
+    load_available_post_profiles_in(udir.as_deref(), extra_search_dir)
+}
+
+/// Sanitizes an arbitrary string into a valid post-profile slug ID (`[a-z0-9_-]`).
+pub fn sanitize_post_id(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for ch in raw.trim().chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+        } else if matches!(ch, '-' | '_' | ' ' | '.')
+            && !out.ends_with('_')
+            && !out.ends_with('-')
+            && !out.is_empty()
+        {
+            out.push('_');
+        }
+    }
+    let trimmed = out.trim_matches(|c| c == '_' || c == '-').to_string();
+    if trimmed.is_empty() {
+        "custom_post".to_string()
+    } else {
+        trimmed
+    }
+}
+
+/// Picks a unique non-builtin custom post profile ID given `base_id` and `existing_ids`.
+pub fn allocate_unique_custom_post_id(base_id: &str, existing_ids: &[String]) -> String {
+    let clean = sanitize_post_id(base_id);
+    let is_taken = |cand: &str| -> bool {
+        is_builtin_post_id(cand) || existing_ids.iter().any(|e| e.eq_ignore_ascii_case(cand))
+    };
+    if !is_taken(&clean) {
+        return clean;
+    }
+    let custom = format!("{clean}_custom");
+    if !is_taken(&custom) {
+        return custom;
+    }
+    for n in 2..10_000 {
+        let cand = format!("{clean}_{n}");
+        if !is_taken(&cand) {
+            return cand;
+        }
+    }
+    format!("{clean}_user")
+}
+
+/// Clones any built-in or custom [`PostProfile`] into a mutable user custom profile
+/// (`is_builtin = false`, `source = PostProfileSource::UserConfig`).
+/// Rejects reserved built-in IDs with [`PostError::BuiltInReadOnly`].
+pub fn clone_post_profile(
+    source: &PostProfile,
+    new_id: impl Into<String>,
+    new_name: impl Into<String>,
+) -> Result<PostProfile, PostError> {
+    let new_id = new_id.into();
+    validate_post_id(&new_id)?;
+    if is_builtin_post_id(&new_id) {
+        return Err(PostError::BuiltInReadOnly { id: new_id });
+    }
+    let mut cloned = source.clone();
+    cloned.id = new_id;
+    let name_str = new_name.into();
+    cloned.name = if name_str.trim().is_empty() {
+        format!("{} (Custom)", source.name)
+    } else {
+        name_str.trim().to_string()
+    };
+    cloned.is_builtin = false;
+    cloned.source = PostProfileSource::UserConfig;
+    Ok(cloned)
+}
+
+/// Saves a custom user [`PostProfile`] into `user_dir/<id>.post.toml`.
+/// Rejects built-in / reserved post profile IDs with [`PostError::BuiltInReadOnly`].
+pub fn save_user_post_profile_in(
+    profile: &PostProfile,
+    user_dir: &Path,
+) -> Result<PathBuf, PostError> {
+    validate_post_id(&profile.id)?;
+    if profile.is_builtin || is_builtin_post_id(&profile.id) {
+        return Err(PostError::BuiltInReadOnly {
+            id: profile.id.clone(),
+        });
+    }
+    std::fs::create_dir_all(user_dir).map_err(|e| PostError::Io {
+        path: user_dir.display().to_string(),
+        message: e.to_string(),
+    })?;
+    let dest = user_dir.join(format!("{}.post.toml", profile.id));
+    let raw = profile.to_toml_string()?;
+    std::fs::write(&dest, raw).map_err(|e| PostError::Io {
+        path: dest.display().to_string(),
+        message: e.to_string(),
+    })?;
+    Ok(dest)
+}
+
+/// Saves a custom user [`PostProfile`] into OS user config space (`dirs::config_dir()/chipcutter/posts/`).
+pub fn save_user_post_profile(profile: &PostProfile) -> Result<PathBuf, PostError> {
+    let dir = user_post_profiles_dir().ok_or(PostError::NoUserConfigDir)?;
+    save_user_post_profile_in(profile, &dir)
+}
+
+/// Deletes a custom user `.post.toml` from `user_dir`. Rejects reserved built-in IDs.
+pub fn delete_user_post_profile_in(id: &str, user_dir: &Path) -> Result<(), PostError> {
+    validate_post_id(id)?;
+    if is_builtin_post_id(id) {
+        return Err(PostError::BuiltInReadOnly { id: id.to_string() });
+    }
+    let path = user_dir.join(format!("{id}.post.toml"));
+    if !path.exists() {
+        return Err(PostError::UnknownProfile {
+            id_or_path: id.to_string(),
+        });
+    }
+    std::fs::remove_file(&path).map_err(|e| PostError::Io {
+        path: path.display().to_string(),
+        message: e.to_string(),
+    })
+}
+
+/// Deletes a custom user `.post.toml` from OS user config space.
+pub fn delete_user_post_profile(id: &str) -> Result<(), PostError> {
+    let dir = user_post_profiles_dir().ok_or(PostError::NoUserConfigDir)?;
+    delete_user_post_profile_in(id, &dir)
+}
+
+/// Exports any [`PostProfile`] (built-in or custom) as a shareable `.post.toml` file.
+pub fn export_post_profile_to_path(profile: &PostProfile, dest: &Path) -> Result<(), PostError> {
+    if let Some(parent) = dest.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent).map_err(|e| PostError::Io {
+            path: parent.display().to_string(),
+            message: e.to_string(),
+        })?;
+    }
+    let raw = profile.to_toml_string()?;
+    std::fs::write(dest, raw).map_err(|e| PostError::Io {
+        path: dest.display().to_string(),
+        message: e.to_string(),
+    })
+}
+
+/// Imports a `.post.toml` file into `user_dir`, ensuring `is_builtin = false` and a unique
+/// non-builtin ID so built-in post profiles can never be shadowed.
+pub fn import_post_profile_from_path_in(
+    src: &Path,
+    user_dir: &Path,
+    existing_ids: &[String],
+) -> Result<PostProfile, PostError> {
+    let mut prof = PostProfile::load_from_path(src)?;
+    prof.is_builtin = false;
+    prof.source = PostProfileSource::UserConfig;
+    let unique = allocate_unique_custom_post_id(&prof.id, existing_ids);
+    prof.id = unique;
+    save_user_post_profile_in(&prof, user_dir)?;
+    Ok(prof)
+}
+
+/// Imports a `.post.toml` file into OS user config space (`dirs::config_dir()/chipcutter/posts/`).
+pub fn import_post_profile_from_path(src: &Path) -> Result<PostProfile, PostError> {
+    let dir = user_post_profiles_dir().ok_or(PostError::NoUserConfigDir)?;
+    let existing: Vec<String> = load_available_post_profiles_in(Some(&dir), None)
+        .into_iter()
+        .map(|p| p.id)
+        .collect();
+    import_post_profile_from_path_in(src, &dir, &existing)
 }
 
 /// Resolves a post profile strictly by profile ID (`grbl`, `grblhal_atc`, `linuxcnc`, or a

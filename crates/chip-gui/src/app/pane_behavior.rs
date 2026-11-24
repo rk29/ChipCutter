@@ -581,6 +581,7 @@ impl PaneBehavior<'_> {
                         }
                     };
                     let mut open_machine_manager = false;
+                    let mut open_post_inspector: Option<String> = None;
                     let mut machine_changed = false;
                     let mut switch_machine_id: Option<String> = None;
                     let mut import_fixture_requested = false;
@@ -610,6 +611,7 @@ impl PaneBehavior<'_> {
                             show_z_planes: &mut self.app.show_z_planes,
                             machines: &self.app.machines,
                             open_machine_manager: &mut open_machine_manager,
+                            open_post_inspector: &mut open_post_inspector,
                             machine_changed: &mut machine_changed,
                             switch_machine_id: &mut switch_machine_id,
                             import_fixture_requested: &mut import_fixture_requested,
@@ -638,6 +640,9 @@ impl PaneBehavior<'_> {
                             .modals
                             .machine_manager
                             .open_selecting(&self.app.machines, &active_mid);
+                    }
+                    if let Some(pid) = open_post_inspector {
+                        self.app.open_post_profile_inspector(Some(&pid));
                     }
                     if align {
                         self.app.cached_frame_geo = frame_geo.take();
@@ -734,6 +739,18 @@ impl PaneBehavior<'_> {
                             focus: &mut self.app.inspector_focus,
                         },
                     );
+                    if res.role_changed {
+                        self.app.reload_fixture_models_from_disk();
+                        self.app.sim_panel.cancel_in_flight();
+                        self.app.sim_panel.active_result = None;
+                        self.app.gcode_panel.invalidate_preview();
+                        frame_geo = None;
+                    }
+                    if res.mesh_reload_requested {
+                        let egui_ctx = ui.ctx().clone();
+                        self.app.reload_active_mesh_unit_override(&egui_ctx);
+                        frame_geo = None;
+                    }
                     if res.transform_changed {
                         self.app.sync_loaded_model_transform();
                         frame_geo = None;
@@ -1059,6 +1076,9 @@ impl PaneBehavior<'_> {
                 GCodeUiAction::JumpToCrash(diag) => {
                     self.app.jump_to_sim_diagnostic(&diag);
                 }
+                GCodeUiAction::OpenPostProfileInspector(post_id) => {
+                    self.app.open_post_profile_inspector(Some(&post_id));
+                }
             }
         }
     }
@@ -1097,6 +1117,7 @@ impl ChipCutterApp {
             || self.modals.sample_gallery.open
             || self.modals.tool_library.open
             || self.modals.machine_manager.open
+            || self.modals.post_profile_inspector.open
             || self.modals.command_palette.open
             || self.modals.shortcut_cheatsheet.open;
         let Some(st) = &mut self.self_test else {

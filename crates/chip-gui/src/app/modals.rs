@@ -10,6 +10,7 @@ use crate::{
         machine_manager::MachineManagerModalState,
         machine_tool_swap::MachineToolSwapModalState,
         mesh_import_modal::MeshImportModalState,
+        post_profile_inspector::PostProfileInspectorModalState,
         settings::{SettingsModalCtx, SettingsModalState, show_settings_modal},
         tool_library::{ToolLibraryMachineContext, ToolLibraryModalState},
         vector_import_modal::{VectorImportModalState, VectorModalAction, VectorModalCtx},
@@ -27,6 +28,7 @@ use crate::{
 pub struct ModalStates {
     pub(crate) tool_library: ToolLibraryModalState,
     pub(crate) machine_manager: MachineManagerModalState,
+    pub(crate) post_profile_inspector: PostProfileInspectorModalState,
     pub(crate) machine_tool_swap: MachineToolSwapModalState,
     pub(crate) settings: SettingsModalState,
     pub(crate) mesh_import: MeshImportModalState,
@@ -52,6 +54,7 @@ impl ModalStates {
         Self {
             tool_library: ToolLibraryModalState::new(),
             machine_manager: MachineManagerModalState::new(),
+            post_profile_inspector: PostProfileInspectorModalState::new(),
             machine_tool_swap: MachineToolSwapModalState::default(),
             settings: SettingsModalState::default(),
             mesh_import: MeshImportModalState::default(),
@@ -212,6 +215,34 @@ impl ChipCutterApp {
         }
         if mm_actions.machines_modified {
             self.sync_active_machine_tools();
+        }
+
+        if self.modals.post_profile_inspector.open {
+            let proj_dir = self.active_project_dir().map(std::path::Path::to_path_buf);
+            self.gcode_panel.ensure_profiles_loaded(proj_dir.as_deref());
+            let active_post_id = self
+                .project
+                .setups
+                .get(self.active_setup_idx)
+                .map_or_else(|| "grbl".to_string(), |s| s.post_profile.clone());
+            let post_actions = self.modals.post_profile_inspector.show(
+                ctx,
+                self.gcode_panel.available_profiles_mut(),
+                &active_post_id,
+                &mut self.logs,
+            );
+            if let Some(new_pid) = post_actions.select_setup_post_id
+                && self.active_setup_idx < self.project.setups.len()
+            {
+                self.history
+                    .record_before_edit("Change Post Profile", None, &self.project);
+                self.project.setups[self.active_setup_idx].post_profile = new_pid;
+                self.gcode_panel.invalidate_preview();
+            }
+            if post_actions.profiles_modified {
+                self.gcode_panel.refresh_profiles(proj_dir.as_deref());
+                self.gcode_panel.invalidate_preview();
+            }
         }
 
         if let Some(commit) = self.modals.machine_tool_swap.show(ctx, self.theme) {

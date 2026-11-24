@@ -3,7 +3,7 @@
 
 use std::path::Path;
 
-use chip_math::{EvalContext, ParamLength};
+use chip_math::{DisplayUnit, EvalContext, MM_PER_INCH, ParamLength};
 use chip_project::portable_model_path;
 use chip_sketch::{
     HersheyFontKind, PointPatternSpec, PolygonSizingMode, RectAnchorMode, SketchEntity,
@@ -579,13 +579,35 @@ fn render_text_editor(
     ui.add_space(4.0);
 
     let grid_changed = inspector_grid(ui, ("sk_ent_txt_grid", sk_idx, ei), |ui| {
-        let font_changed = grid_row(
+        let mut font_changed = grid_row(
             ui,
             "Font Family",
             Some("TrueType/OpenType or Hershey font"),
             |ui| render_font_picker_controls(ui, sk_idx, ei, &mut txt.font, project_file),
         )
         .map(|lbl| (lbl, None));
+
+        if let SketchFontSource::CustomFile { face_index, .. } = &mut txt.font
+            && grid_row(
+                ui,
+                "Font Face Index",
+                Some(
+                    "Face index inside multi-face .ttc / OpenType font collections (0 = first face)",
+                ),
+                |ui| {
+                    ui.add(egui::DragValue::new(face_index).range(0..=64))
+                        .on_hover_text(
+                            "Select which font face index to load from a multi-face .ttc font collection",
+                        )
+                        .changed()
+                },
+            )
+        {
+            font_changed = Some((
+                "Edit Custom Font Face Index",
+                Some(format!("sk_{sk_idx}_e_{ei}_tface")),
+            ));
+        }
 
         let mut g = EntityGrid {
             ui,
@@ -647,6 +669,38 @@ fn render_text_editor(
             .changed()
         }) {
             g.changed = Some(("Edit Text Line Spacing", g.coal("tls")));
+        }
+        if !txt.font.is_single_line() {
+            let (u_scale, u_sfx, dec, spd) = match eval_ctx.default_unit {
+                DisplayUnit::Millimeter => (1.0, " mm", 3usize, 0.002),
+                DisplayUnit::Inch => (1.0 / MM_PER_INCH, " in", 4usize, 0.0001),
+            };
+            let mut tol_disp =
+                (txt.arc_fit_tolerance_mm * u_scale).clamp(0.002 * u_scale, 0.5 * u_scale);
+            if grid_row(
+                g.ui,
+                "Arc-Fit Tolerance",
+                Some(
+                    "Maximum biarc chord error when fitting TrueType/OpenType glyph curves to G2/G3 arcs",
+                ),
+                |ui| {
+                    ui.add(
+                        egui::DragValue::new(&mut tol_disp)
+                            .speed(spd)
+                            .range((0.002 * u_scale)..=(0.5 * u_scale))
+                            .fixed_decimals(dec)
+                            .suffix(u_sfx),
+                    )
+                    .on_hover_text(
+                        "Curve-to-arc fitting tolerance for outline glyph contours (smaller = smoother curves, more arcs)",
+                    )
+                    .changed()
+                },
+            ) && tol_disp.is_finite()
+            {
+                txt.arc_fit_tolerance_mm = (tol_disp / u_scale).clamp(0.002, 0.5);
+                g.changed = Some(("Edit Text Arc-Fit Tolerance", g.coal("tafit")));
+            }
         }
         if let Some((lbl, k)) = render_text_orient_row(g.ui, txt) {
             g.changed = Some((lbl, k.and_then(|key| g.coal(key))));
@@ -733,10 +787,10 @@ fn render_font_picker_controls(
         })
         .response
         .on_hover_text("Select built-in outline font or single-stroke Hershey engraving font");
-    let tip = "Load a custom TrueType or OpenType font file (packed into .chipz under fonts/)";
+    let tip = "Load a custom TrueType or OpenType font file (.ttf, .otf, .ttc; packed into .chipz under fonts/)";
     if ui.small_button(".ttf/.otf…").on_hover_text(tip).clicked()
         && let Some(picked) = rfd::FileDialog::new()
-            .add_filter("TrueType / OpenType Font", &["ttf", "otf"])
+            .add_filter("TrueType / OpenType Font", &["ttf", "otf", "ttc"])
             .pick_file()
         && let Ok(bytes) = std::fs::read(&picked)
     {

@@ -1,11 +1,18 @@
-use chip_cad::{CadDocument, MAX_MODEL_SCALE, MIN_MODEL_SCALE, ModelTransform};
+use std::path::Path;
+
+use chip_cad::{
+    CadDocument, MAX_MODEL_SCALE, MIN_MODEL_SCALE, MeshUnitKind, ModelTransform, is_mesh_extension,
+};
 use chip_math::{DVec3, DisplayUnit};
-use chip_project::{ProjectDocument, UndoHistory};
+use chip_project::{ModelRole, ProjectDocument, UndoHistory};
 
 use crate::{
     panels::{InspectorFocus, ViewportPickMode},
     theme::ThemeTokens,
-    widgets::{BannerKind, grid_row, inline_banner, inspector_grid, section_card, static_card},
+    widgets::{
+        BannerKind, INPUT_COL_WIDTH, grid_row, inline_banner, inspector_grid, section_card,
+        static_card,
+    },
 };
 
 /// Context passed to [`show_model_inspector`].
@@ -23,6 +30,8 @@ pub struct ModelInspectorCtx<'a> {
 #[derive(Debug, Default, Clone, Copy)]
 pub struct ModelInspectorResult {
     pub transform_changed: bool,
+    pub role_changed: bool,
+    pub mesh_reload_requested: bool,
     pub fit_camera_requested: bool,
 }
 
@@ -52,9 +61,18 @@ pub fn show_model_inspector(ui: &mut egui::Ui, ctx: ModelInspectorCtx<'_>) -> Mo
     let unit = project.display_units;
     let tok = ThemeTokens::from_ui(ui);
     let is_mesh_only = !doc.meshes.is_empty() && doc.bodies.is_empty();
+    let is_mesh_entry = Path::new(&project.models[model_idx].path)
+        .extension()
+        .and_then(|s| s.to_str())
+        .is_some_and(is_mesh_extension)
+        || !doc.meshes.is_empty();
     let cur_aabb = doc.aabb_mm;
     let cur_size = cur_aabb.size();
+    let pre_role = project.models[model_idx].role;
+    let pre_unit_override = project.models[model_idx].unit_override;
     let pre_transform = project.models[model_idx].transform;
+    let mut new_role = pre_role;
+    let mut new_unit_override = pre_unit_override;
     let mut new_transform = pre_transform;
     let mut undo_label: Option<&'static str> = None;
 
@@ -140,6 +158,82 @@ pub fn show_model_inspector(ui: &mut egui::Ui, ctx: ModelInspectorCtx<'_>) -> Mo
                 inline_banner(ui, BannerKind::Info, msg);
                 ui.add_space(5.0);
             }
+
+            // 1b. Model Role & Mesh Import Units card (M89)
+            section_card(
+                ui,
+                ("model_role_units_card", model_idx),
+                "Model Role & Import Units",
+                true,
+                |ui| {
+                    inspector_grid(ui, ("model_role_units_grid", model_idx), |ui| {
+                        grid_row(
+                            ui,
+                            "Model Role",
+                            Some("Target Part drives stock bounds & gouge checks; Fixture / Workholding represents vises & clamps"),
+                            |ui| {
+                                egui::ComboBox::from_id_salt(("model_role_cb", model_idx))
+                                    .width(INPUT_COL_WIDTH + 48.0)
+                                    .selected_text(new_role.label())
+                                    .show_ui(ui, |ui| {
+                                        for role in [ModelRole::Part, ModelRole::Fixture] {
+                                            ui.selectable_value(&mut new_role, role, role.label())
+                                                .on_hover_text(match role {
+                                                    ModelRole::Part => "Treat this model as a machined target part solid",
+                                                    ModelRole::Fixture => "Treat this model as imported workholding hardware (excluded from stock bounds & target gouge checks)",
+                                                });
+                                        }
+                                    })
+                                    .response
+                                    .on_hover_text("Select whether this 3D model is a Target Part or Fixture / Workholding");
+                            },
+                        );
+
+                        if is_mesh_entry {
+                            grid_row(
+                                ui,
+                                "Import Units",
+                                Some("Physical unit override applied when loading unitless triangle meshes (.stl / .obj / .3mf)"),
+                                |ui| {
+                                    let cur_lbl = match new_unit_override {
+                                        None => match doc.meshes.first() {
+                                            Some(m) => {
+                                                format!("Auto-Detect ({})", m.applied_unit.short_label())
+                                            }
+                                            None => "Auto-Detect".to_string(),
+                                        },
+                                        Some(u) => u.label().to_string(),
+                                    };
+                                    egui::ComboBox::from_id_salt(("model_unit_override_cb", model_idx))
+                                        .width(INPUT_COL_WIDTH + 48.0)
+                                        .selected_text(cur_lbl)
+                                        .show_ui(ui, |ui| {
+                                            ui.selectable_value(
+                                                &mut new_unit_override,
+                                                None,
+                                                "Auto-Detect",
+                                            )
+                                            .on_hover_text("Use file header units (3MF) or heuristic mm/in detection");
+                                            for u in MeshUnitKind::ALL {
+                                                ui.selectable_value(
+                                                    &mut new_unit_override,
+                                                    Some(u),
+                                                    u.label(),
+                                                )
+                                                .on_hover_text(format!(
+                                                    "Reload triangle mesh interpreting raw coordinates in {}",
+                                                    u.label()
+                                                ));
+                                            }
+                                        })
+                                        .response
+                                        .on_hover_text("Override physical coordinates unit and cleanly reload this triangle mesh");
+                                },
+                            );
+                        }
+                    });
+                },
+            );
 
             // 2. Quick Orientation card
             section_card(
@@ -521,6 +615,28 @@ pub fn show_model_inspector(ui: &mut egui::Ui, ctx: ModelInspectorCtx<'_>) -> Mo
             );
         });
 
+    if new_role != pre_role {
+        history.record_before_edit("Change Model Role", None, project);
+        project.models[model_idx].role = new_role;
+        for setup in &mut project.setups {
+            for op in &mut setup.operations {
+                op.mark_dirty();
+            }
+        }
+        result.role_changed = true;
+    }
+
+    if new_unit_override != pre_unit_override {
+        history.record_before_edit("Change Mesh Import Units", None, project);
+        project.models[model_idx].unit_override = new_unit_override;
+        for setup in &mut project.setups {
+            for op in &mut setup.operations {
+                op.mark_dirty();
+            }
+        }
+        result.mesh_reload_requested = true;
+    }
+
     if let Some(action_lbl) = undo_label
         && new_transform != pre_transform
         && new_transform.validate().is_ok()
@@ -536,4 +652,215 @@ pub fn show_model_inspector(ui: &mut egui::Ui, ctx: ModelInspectorCtx<'_>) -> Mo
     }
 
     result
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use chip_cad::{
+        MeshImportOptions, MeshUnitKind, load_mesh_cad_document, sample_sculpted_dome_stl_bytes,
+    };
+    use chip_cam::{Operation, OperationKind, OperationStatus};
+    use chip_project::{ModelEntry, ModelRole, ProjectDocument, UndoHistory};
+
+    use crate::panels::{
+        InspectorFocus, ViewportPickMode,
+        model_inspector::{ModelInspectorCtx, show_model_inspector},
+    };
+
+    fn find_text(shape: &egui::Shape, needle: &str) -> Option<egui::Pos2> {
+        match shape {
+            egui::Shape::Text(t) if t.galley.text().contains(needle) => {
+                Some(t.pos + t.galley.size() * 0.5)
+            }
+            egui::Shape::Vec(v) => v.iter().find_map(|s| find_text(s, needle)),
+            _ => None,
+        }
+    }
+
+    fn click(pt: egui::Pos2) -> Vec<egui::Event> {
+        vec![
+            egui::Event::PointerMoved(pt),
+            egui::Event::PointerButton {
+                pos: pt,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+            egui::Event::PointerButton {
+                pos: pt,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]
+    }
+
+    #[test]
+    fn model_inspector_edits_role_and_mesh_unit_override_with_undo_and_dirty_invalidation() {
+        let stl = sample_sculpted_dome_stl_bytes();
+        let doc = load_mesh_cad_document("dome.stl", &stl, &MeshImportOptions::default()).unwrap();
+
+        let mut project = ProjectDocument::new("Mesh Role Unit Test");
+        project
+            .models
+            .push(ModelEntry::new("model_1", "dome.stl", "0".repeat(64)));
+        let mut op = Operation::new("op_1", "Surface", OperationKind::Parallel3D);
+        op.runtime_status = OperationStatus::Clean;
+        project.setups[0].operations.push(op);
+
+        let mut history = UndoHistory::default();
+        let mut lock_uniform = true;
+        let mut pick_mode = ViewportPickMode::InspectEntity;
+        let mut focus = InspectorFocus::Model { model_idx: 0 };
+        let ctx = egui::Context::default();
+
+        let run_frame = |events: Vec<egui::Event>,
+                         project: &mut ProjectDocument,
+                         history: &mut UndoHistory,
+                         lock_uniform: &mut bool,
+                         pick_mode: &mut ViewportPickMode,
+                         focus: &mut InspectorFocus| {
+            let mut res = Default::default();
+            let mut out = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(520.0, 900.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    egui::CentralPanel::default().show(ui, |ui| {
+                        res = show_model_inspector(
+                            ui,
+                            ModelInspectorCtx {
+                                project,
+                                model_idx: 0,
+                                history,
+                                cad_doc: Some(&doc),
+                                lock_uniform_scale: lock_uniform,
+                                pick_mode,
+                                focus,
+                            },
+                        );
+                    });
+                },
+            );
+            out.textures_delta.clear();
+            (out, res)
+        };
+
+        // 1. Open Model Role combo ("Target Part") and select "Fixture / Workholding"
+        let (out1, _) = run_frame(
+            vec![],
+            &mut project,
+            &mut history,
+            &mut lock_uniform,
+            &mut pick_mode,
+            &mut focus,
+        );
+        let role_pt = out1
+            .shapes
+            .iter()
+            .find_map(|cs| find_text(&cs.shape, "Target Part"))
+            .expect("Target Part role combo must render");
+        let _ = run_frame(
+            click(role_pt),
+            &mut project,
+            &mut history,
+            &mut lock_uniform,
+            &mut pick_mode,
+            &mut focus,
+        );
+        let (out2, _) = run_frame(
+            vec![],
+            &mut project,
+            &mut history,
+            &mut lock_uniform,
+            &mut pick_mode,
+            &mut focus,
+        );
+        let fixture_pt = out2
+            .shapes
+            .iter()
+            .find_map(|cs| find_text(&cs.shape, "Fixture / Workholding"))
+            .expect("Fixture / Workholding option must appear in Model Role combo");
+        let (_, res_role) = run_frame(
+            click(fixture_pt),
+            &mut project,
+            &mut history,
+            &mut lock_uniform,
+            &mut pick_mode,
+            &mut focus,
+        );
+        assert!(res_role.role_changed);
+        assert_eq!(project.models[0].role, ModelRole::Fixture);
+        assert_eq!(
+            project.setups[0].operations[0].runtime_status,
+            OperationStatus::Dirty
+        );
+        assert_eq!(
+            history.undo(&mut project).as_deref(),
+            Some("Change Model Role")
+        );
+        assert_eq!(project.models[0].role, ModelRole::Part);
+
+        // 2. Open Import Units combo ("Auto-Detect") and select "Inches (in)"
+        project.setups[0].operations[0].runtime_status = OperationStatus::Clean;
+        let (out3, _) = run_frame(
+            vec![],
+            &mut project,
+            &mut history,
+            &mut lock_uniform,
+            &mut pick_mode,
+            &mut focus,
+        );
+        let unit_pt = out3
+            .shapes
+            .iter()
+            .find_map(|cs| find_text(&cs.shape, "Auto-Detect"))
+            .expect("Auto-Detect import units combo must render for mesh model");
+        let _ = run_frame(
+            click(unit_pt),
+            &mut project,
+            &mut history,
+            &mut lock_uniform,
+            &mut pick_mode,
+            &mut focus,
+        );
+        let (out4, _) = run_frame(
+            vec![],
+            &mut project,
+            &mut history,
+            &mut lock_uniform,
+            &mut pick_mode,
+            &mut focus,
+        );
+        let inch_pt = out4
+            .shapes
+            .iter()
+            .find_map(|cs| find_text(&cs.shape, "Inches (in)"))
+            .expect("Inches (in) option must appear in Import Units combo");
+        let (_, res_unit) = run_frame(
+            click(inch_pt),
+            &mut project,
+            &mut history,
+            &mut lock_uniform,
+            &mut pick_mode,
+            &mut focus,
+        );
+        assert!(res_unit.mesh_reload_requested);
+        assert_eq!(project.models[0].unit_override, Some(MeshUnitKind::Inch));
+        assert_eq!(
+            project.setups[0].operations[0].runtime_status,
+            OperationStatus::Dirty
+        );
+        assert_eq!(
+            history.undo(&mut project).as_deref(),
+            Some("Change Mesh Import Units")
+        );
+        assert_eq!(project.models[0].unit_override, None);
+    }
 }

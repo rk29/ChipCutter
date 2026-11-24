@@ -16,14 +16,16 @@ use chip_cad::CadDocument;
 use chip_math::DVec3;
 use chip_project::{ProjectDocument, ToolpathCache};
 use chip_sim::{
-    ActiveSimBackendInfo, SetupSimulationResult, SimComputeBackendChoice, SimEngineKind,
-    SimProgressSnapshot, SimProgressTracker, SimResolution, SimStockColorMode, SimStockMesh,
-    SimToolMesh, StockErrorReport,
+    ActiveSimBackendInfo, SetupSimulationResult, SimComputeBackendChoice, SimDiagnostic,
+    SimEngineKind, SimProgressSnapshot, SimProgressTracker, SimResolution, SimStockColorMode,
+    SimStockMesh, SimTimingBreakdown, SimToolMesh, SimVerificationConfig, StockErrorReport,
+    StockModelKind, format_cycle_time_hms,
 };
 #[cfg(feature = "gpu-compute")]
 use chip_sim::{GpuSimContext, GpuStockRenderHandle};
 use chip_tools::ToolId;
 use crossbeam_channel::{Receiver, Sender, unbounded};
+use serde::Serialize;
 
 use crate::viewport::SimStockRenderSource;
 
@@ -34,6 +36,66 @@ struct InFlightSim {
     started_at: Instant,
     cancel: Arc<AtomicBool>,
     progress: Arc<SimProgressTracker>,
+}
+
+/// Per-setup entry captured by a background **Simulate All Setups** run (`M89`).
+#[derive(Debug, Clone)]
+pub struct MultiSetupSimEntry {
+    pub setup_idx: usize,
+    pub setup_id: String,
+    pub setup_name: String,
+    pub result: Arc<SetupSimulationResult>,
+}
+
+/// Completed multi-setup simulation & verification chain summary (`M89`).
+#[derive(Debug, Clone)]
+pub struct MultiSetupSimSummary {
+    pub engine: SimEngineKind,
+    pub resolution: SimResolution,
+    pub elapsed: Duration,
+    pub setups: Vec<MultiSetupSimEntry>,
+    pub cumulative_error_report: Option<StockErrorReport>,
+}
+
+/// Structured per-setup JSON metrology & crash verification payload exported by
+/// **Export Metrology JSON...** (`M89`).
+#[derive(Debug, Serialize)]
+pub struct SetupMetrologyReportJson {
+    pub setup_id: String,
+    pub setup_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub carried_over_from_setup: Option<String>,
+    pub engine: SimEngineKind,
+    pub stock_kind: String,
+    pub resolution: SimResolution,
+    pub backend: ActiveSimBackendInfo,
+    pub timing: SimTimingBreakdown,
+    pub total_time_sec: f64,
+    pub total_time_hms: String,
+    pub cutting_time_sec: f64,
+    pub rapid_time_sec: f64,
+    pub tool_change_time_sec: f64,
+    pub initial_stock_volume_mm3: f64,
+    pub remaining_stock_volume_mm3: f64,
+    pub removed_volume_mm3: f64,
+    pub critical_error_count: usize,
+    pub warning_count: usize,
+    pub diagnostics: Vec<SimDiagnostic>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_report: Option<StockErrorReport>,
+}
+
+/// Top-level JSON metrology report emitted by **Export Metrology JSON...** (`M89`).
+#[derive(Debug, Serialize)]
+pub struct SimMetrologyReportJson {
+    pub project_name: String,
+    pub passed: bool,
+    pub heatmap_tolerance_mm: f64,
+    pub heatmap_max_scale_mm: f64,
+    pub verify_config: SimVerificationConfig,
+    pub setups: Vec<SetupMetrologyReportJson>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cumulative_error_report: Option<StockErrorReport>,
 }
 
 /// Interactive UI & background worker state for `[Simulation Timeline]` (`06-simulation.md`).
@@ -47,6 +109,7 @@ pub struct SimulationPanelState {
     pub show_error_heatmap: bool,
     pub heatmap_tolerance_mm: f64,
     pub heatmap_max_scale_mm: f64,
+    pub verify_config: SimVerificationConfig,
     pub show_cutter_assembly: bool,
     pub trail_up_to_cutter: bool,
     pub scrub_by_distance: bool,
@@ -63,6 +126,7 @@ pub struct SimulationPanelState {
     pub(crate) active_setup_idx: usize,
     active_signature: u64,
     pub active_result: Option<Arc<SetupSimulationResult>>,
+    pub multi_setup_summary: Option<MultiSetupSimSummary>,
 
     remesh_worker: StockRemeshWorker,
     next_remesh_request_id: u64,
@@ -143,6 +207,7 @@ impl Default for SimulationPanelState {
             show_error_heatmap: false,
             heatmap_tolerance_mm: 0.05,
             heatmap_max_scale_mm: 1.0,
+            verify_config: SimVerificationConfig::default(),
             show_cutter_assembly: true,
             trail_up_to_cutter: false,
             scrub_by_distance: false,
@@ -157,6 +222,7 @@ impl Default for SimulationPanelState {
             active_setup_idx: 0,
             active_signature: 0,
             active_result: None,
+            multi_setup_summary: None,
             remesh_worker: StockRemeshWorker::new(),
             next_remesh_request_id: 1,
             min_accept_remesh_request_id: 1,
@@ -298,6 +364,7 @@ impl SimulationPanelState {
         self.active_setup_idx = 0;
         self.active_signature = 0;
         self.active_result = None;
+        self.multi_setup_summary = None;
         self.clear_stock_display_cache();
         self.cached_tool_key = None;
         self.cached_tool_mesh = None;
@@ -318,6 +385,12 @@ impl SimulationPanelState {
         self.engine.hash(&mut h);
         self.backend_choice.hash(&mut h);
         self.resolution.hash(&mut h);
+        self.verify_config.gouge_tol_mm.to_bits().hash(&mut h);
+        self.verify_config.rapid_crash_tol_mm.to_bits().hash(&mut h);
+        self.verify_config
+            .radial_wall_skin_mm
+            .to_bits()
+            .hash(&mut h);
         if let Some(setup) = project.setups.get(setup_idx) {
             setup.post_profile.hash(&mut h);
             setup.auto_avoid_fixtures_on_rapids.hash(&mut h);
@@ -417,6 +490,130 @@ impl SimulationPanelState {
             SimStockColorMode::ByOperation
         } else {
             SimStockColorMode::Metallic
+        }
+    }
+
+    /// Serializes the active single-setup simulation or completed multi-setup batch summary
+    /// into a structured pretty-printed JSON metrology & crash report (`M89`).
+    pub fn build_metrology_report_json(
+        &mut self,
+        project: &ProjectDocument,
+    ) -> Result<String, String> {
+        let tol_mm = self.heatmap_tolerance_mm.clamp(1e-4, 50.0);
+        let max_scale_mm = self.heatmap_max_scale_mm.clamp(0.05, 20.0);
+
+        let build_setup_entry = |setup_id: &str,
+                                 setup_name: &str,
+                                 sim: &SetupSimulationResult|
+         -> SetupMetrologyReportJson {
+            let err_report = sim.error_report.as_ref().map(|base| {
+                if (base.tolerance_mm - tol_mm).abs() <= 1e-6 {
+                    base.clone()
+                } else {
+                    sim.compute_error_report_at_tolerance(tol_mm)
+                        .unwrap_or_else(|| base.clone())
+                }
+            });
+            let stock_kind = match sim.stock_kind() {
+                StockModelKind::Heightfield25D => "heightfield",
+                StockModelKind::TriDexel3D => "tri_dexel",
+                StockModelKind::Cylindrical4Axis(_) => "cylindrical",
+            };
+            SetupMetrologyReportJson {
+                setup_id: setup_id.to_string(),
+                setup_name: setup_name.to_string(),
+                carried_over_from_setup: sim.carried_over_from_setup.clone(),
+                engine: sim.engine,
+                stock_kind: stock_kind.to_string(),
+                resolution: sim.resolution,
+                backend: sim.active_backend.clone(),
+                timing: sim.timing,
+                total_time_sec: sim.timeline.total_time_sec,
+                total_time_hms: format_cycle_time_hms(sim.timeline.total_time_sec),
+                cutting_time_sec: sim.timeline.total_cutting_time_sec,
+                rapid_time_sec: sim.timeline.total_rapid_time_sec,
+                tool_change_time_sec: sim.timeline.total_tool_change_time_sec,
+                initial_stock_volume_mm3: sim.initial_stock_volume_mm3,
+                remaining_stock_volume_mm3: sim.remaining_stock_volume_mm3,
+                removed_volume_mm3: sim.removed_volume_mm3,
+                critical_error_count: sim.critical_error_count(),
+                warning_count: sim.warning_count(),
+                diagnostics: sim.diagnostics.clone(),
+                error_report: err_report,
+            }
+        };
+
+        let (setups, cumulative_error_report) = if let Some(summary) = &self.multi_setup_summary {
+            let entries: Vec<SetupMetrologyReportJson> = summary
+                .setups
+                .iter()
+                .map(|s| build_setup_entry(&s.setup_id, &s.setup_name, s.result.as_ref()))
+                .collect();
+            let cumulative = entries.iter().rev().find_map(|e| e.error_report.clone());
+            (entries, cumulative)
+        } else if let Some(res) = self.active_result.clone() {
+            let (sid, sname) = project.setups.get(self.active_setup_idx).map_or_else(
+                || ("setup_1".to_string(), "Active Setup".to_string()),
+                |s| (s.id.clone(), s.name.clone()),
+            );
+            let entry = build_setup_entry(&sid, &sname, res.as_ref());
+            let cum = entry.error_report.clone();
+            (vec![entry], cum)
+        } else {
+            return Err("No simulation result available to export.".to_string());
+        };
+
+        let passed = setups.iter().all(|s| s.critical_error_count == 0);
+        let report = SimMetrologyReportJson {
+            project_name: project.project_name.clone(),
+            passed,
+            heatmap_tolerance_mm: tol_mm,
+            heatmap_max_scale_mm: max_scale_mm,
+            verify_config: self.verify_config,
+            setups,
+            cumulative_error_report,
+        };
+        serde_json::to_string_pretty(&report).map_err(|e| format!("JSON serialization error: {e}"))
+    }
+
+    /// Prompts for a `.json` destination path and writes the metrology & crash verification report.
+    pub fn export_metrology_json_dialog(
+        &mut self,
+        project: &ProjectDocument,
+        logs: &mut Vec<String>,
+    ) {
+        let json = match self.build_metrology_report_json(project) {
+            Ok(s) => s,
+            Err(err) => {
+                logs.push(format!("ERROR exporting metrology JSON: {err}"));
+                return;
+            }
+        };
+        let safe_stem: String = project
+            .project_name
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+            .collect();
+        let default_name = if safe_stem.trim_matches('_').is_empty() {
+            "simulation_metrology.json".to_string()
+        } else {
+            format!("{}_metrology.json", safe_stem.trim_matches('_'))
+        };
+        if let Some(dest) = rfd::FileDialog::new()
+            .add_filter("Simulation Metrology JSON", &["json"])
+            .set_file_name(default_name)
+            .save_file()
+        {
+            match std::fs::write(&dest, json) {
+                Ok(()) => logs.push(format!(
+                    "Exported simulation metrology JSON report to '{}'.",
+                    dest.display()
+                )),
+                Err(e) => logs.push(format!(
+                    "ERROR writing metrology JSON '{}': {e}",
+                    dest.display()
+                )),
+            }
         }
     }
 }

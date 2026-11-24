@@ -1,17 +1,19 @@
-use chip_math::DVec3;
+use chip_math::{DVec3, DisplayUnit, MM_PER_INCH};
 use chip_sim::{ScrubSnapshot, SetupSimulationResult, StockErrorReport, deviation_to_heatmap_rgba};
 
 use super::SimulationUiAction;
 
 /// Renders the quantitative Stock-vs-Target Error-Volume & RMS Metrology dashboard inside the
-/// Simulation Timeline pane (`06-simulation.md` / Phase 11 M40).
+/// Simulation Timeline pane (`06-simulation.md` / Phase 11 M40, extended M89).
+#[allow(clippy::too_many_arguments)]
 pub(super) fn show_error_metrics_dashboard(
     ui: &mut egui::Ui,
     res: &SetupSimulationResult,
     rep: &StockErrorReport,
     snap: Option<&ScrubSnapshot>,
+    display_unit: DisplayUnit,
     heatmap_tolerance_mm: &mut f64,
-    heatmap_max_scale_mm: f64,
+    heatmap_max_scale_mm: &mut f64,
     show_error_heatmap: &mut bool,
 ) -> Option<SimulationUiAction> {
     let mut action = None;
@@ -35,6 +37,11 @@ pub(super) fn show_error_metrics_dashboard(
         res.engine.short_slug()
     };
 
+    let (u_scale, u_sfx, tol_dec, tol_speed, scale_dec, scale_speed) = match display_unit {
+        DisplayUnit::Millimeter => (1.0, " mm", 3usize, 0.005, 2usize, 0.05),
+        DisplayUnit::Inch => (1.0 / MM_PER_INCH, " in", 4usize, 0.0002, 3usize, 0.002),
+    };
+
     egui::Frame::group(ui.style())
         .inner_margin(egui::Margin::symmetric(6, 3))
         .show(ui, |ui| {
@@ -51,25 +58,55 @@ pub(super) fn show_error_metrics_dashboard(
                     rep.material_removal_efficiency_pct
                 ));
                 ui.separator();
-                ui.label("Tol:")
-                    .on_hover_text("Tolerance band (+/- mm) shown in green on the Error Heatmap and used for In-Tol %");
-                ui.add(
-                    egui::DragValue::new(heatmap_tolerance_mm)
-                        .speed(0.005)
-                        .range(0.005..=5.0)
-                        .fixed_decimals(3)
-                        .prefix("+/- ")
-                        .suffix(" mm"),
-                )
-                .on_hover_text(
-                    "Adjust surface deviation pass tolerance (+/- mm); updates both Error Heatmap green band and In-Tol % live",
+                ui.label("Tol:").on_hover_text(
+                    "Tolerance band (+/-) shown in green on the Error Heatmap and used for In-Tol %",
                 );
+                let mut tol_disp = (*heatmap_tolerance_mm * u_scale).clamp(0.005 * u_scale, 5.0 * u_scale);
+                if ui
+                    .add(
+                        egui::DragValue::new(&mut tol_disp)
+                            .speed(tol_speed)
+                            .range((0.005 * u_scale)..=(5.0 * u_scale))
+                            .fixed_decimals(tol_dec)
+                            .prefix("+/- ")
+                            .suffix(u_sfx),
+                    )
+                    .on_hover_text(
+                        "Adjust surface deviation pass tolerance; updates both Error Heatmap green band and In-Tol % live",
+                    )
+                    .changed()
+                    && tol_disp.is_finite()
+                {
+                    *heatmap_tolerance_mm = (tol_disp / u_scale).clamp(0.005, 5.0);
+                }
+                ui.label("Heatmap Max Scale:").on_hover_text(
+                    "Full-saturation signed deviation magnitude for the red/blue Error Heatmap color bar",
+                );
+                let mut scale_disp =
+                    (*heatmap_max_scale_mm * u_scale).clamp(0.05 * u_scale, 20.0 * u_scale);
+                if ui
+                    .add(
+                        egui::DragValue::new(&mut scale_disp)
+                            .speed(scale_speed)
+                            .range((0.05 * u_scale)..=(20.0 * u_scale))
+                            .fixed_decimals(scale_dec)
+                            .prefix("+/- ")
+                            .suffix(u_sfx),
+                    )
+                    .on_hover_text(
+                        "Full-scale deviation saturation bound for the 3D Error Heatmap (0.05..20.0 mm); updates live",
+                    )
+                    .changed()
+                    && scale_disp.is_finite()
+                {
+                    *heatmap_max_scale_mm = (scale_disp / u_scale).clamp(0.05, 20.0);
+                }
                 ui.separator();
                 ui.checkbox(show_error_heatmap, "Heatmap")
                     .on_hover_text(
                         "Enable or disable the 3D Error Heatmap overlay (uncheck for faster stock display)",
                     );
-                paint_heatmap_legend(ui, *heatmap_tolerance_mm, heatmap_max_scale_mm);
+                paint_heatmap_legend(ui, *heatmap_tolerance_mm, *heatmap_max_scale_mm);
             });
 
             ui.horizontal_wrapped(|ui| {

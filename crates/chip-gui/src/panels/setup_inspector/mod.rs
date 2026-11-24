@@ -60,6 +60,7 @@ pub struct SetupInspectorCtx<'a> {
     pub show_z_planes: &'a mut bool,
     pub machines: &'a [MachineDefinition],
     pub open_machine_manager: &'a mut bool,
+    pub open_post_inspector: &'a mut Option<String>,
     pub machine_changed: &'a mut bool,
     pub switch_machine_id: &'a mut Option<String>,
     pub import_fixture_requested: &'a mut bool,
@@ -180,6 +181,7 @@ pub fn show_setup_inspector(ui: &mut egui::Ui, ctx: SetupInspectorCtx<'_>) -> bo
         show_z_planes,
         machines,
         open_machine_manager,
+        open_post_inspector,
         machine_changed,
         switch_machine_id,
         import_fixture_requested,
@@ -402,6 +404,7 @@ pub fn show_setup_inspector(ui: &mut egui::Ui, ctx: SetupInspectorCtx<'_>) -> bo
                         eval_ctx: &eval_ctx,
                         pick_mode,
                         show_27pt_dots,
+                        open_post_inspector,
                         mutated_label: &mut mutated_label,
                     },
                 ),
@@ -525,6 +528,7 @@ pub(super) fn render_post_body(
     setup: &mut Setup,
     setup_idx: usize,
     project_dir: Option<&Path>,
+    open_post_inspector: &mut Option<String>,
     mutated_label: &mut Option<&'static str>,
 ) {
     let available_posts = load_available_post_profiles(project_dir);
@@ -584,6 +588,17 @@ pub(super) fn render_post_body(
             },
         );
     });
+
+    ui.add_space(3.0);
+    if ui
+        .small_button("Inspect / Customize Post...")
+        .on_hover_text(
+            "Open the Post Profile Inspector / Customizer to view built-in dialect settings or clone to a custom .post.toml",
+        )
+        .clicked()
+    {
+        *open_post_inspector = Some(setup.post_profile.clone());
+    }
 
     ui.add_space(4.0);
     let active_prof = available_posts
@@ -812,6 +827,7 @@ mod tests {
         let mut show_27 = false;
         let mut show_z = false;
         let mut open_mm = false;
+        let mut open_post: Option<String> = None;
         let mut m_changed = false;
         let mut sw_mid = None;
         let mut imp_fix = false;
@@ -847,6 +863,7 @@ mod tests {
                             show_z_planes: &mut show_z,
                             machines: &[],
                             open_machine_manager: &mut open_mm,
+                            open_post_inspector: &mut open_post,
                             machine_changed: &mut m_changed,
                             switch_machine_id: &mut sw_mid,
                             import_fixture_requested: &mut imp_fix,

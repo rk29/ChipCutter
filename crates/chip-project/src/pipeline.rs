@@ -315,6 +315,7 @@ fn compute_setup_carryover_stock_with_cache(
             project_dir,
             SimEngineKind::TriDexel,
             choice,
+            SimVerificationConfig::default(),
             src_carryover.as_ref(),
             src_progress,
         )?;
@@ -427,6 +428,7 @@ pub fn compute_in_setup_carryover_stock(
         project_dir,
         SimEngineKind::TriDexel,
         choice,
+        SimVerificationConfig::default(),
         base_carryover.as_ref(),
         None,
     )?;
@@ -446,6 +448,7 @@ fn simulate_single_setup_inner(
     project_dir: Option<&Path>,
     engine: SimEngineKind,
     choice: SimComputeBackendChoice,
+    verify_config: SimVerificationConfig,
     carryover: Option<&CarryoverStockResult>,
     progress: Option<SimProgressScope<'_>>,
 ) -> Result<SetupSimulationResult, String> {
@@ -482,7 +485,7 @@ fn simulate_single_setup_inner(
             operations: &sim_inputs,
             resolution: req.resolution,
             kinematics: req.kinematics,
-            verify_config: SimVerificationConfig::default(),
+            verify_config,
             initial_stock: carryover.map(|c| &c.stock),
             initial_raw_volume_mm3: carryover.map(|c| c.initial_raw_volume_mm3),
             carried_over_from_setup: carryover.map(|c| c.source_setup_name.as_str()),
@@ -517,6 +520,26 @@ pub fn simulate_project_setup_with_choice_and_progress_in_dir(
     choice: SimComputeBackendChoice,
     progress: Option<SimProgressScope<'_>>,
 ) -> Result<SetupSimulationResult, String> {
+    simulate_project_setup_with_verify_and_progress_in_dir(
+        req,
+        project_dir,
+        engine,
+        choice,
+        SimVerificationConfig::default(),
+        progress,
+    )
+}
+
+/// Runs stock removal & 6-rule crash/gouge/fixture verification for a single Setup with explicit
+/// [`SimVerificationConfig`] tolerances and optional live progress reporting (`M89`).
+pub fn simulate_project_setup_with_verify_and_progress_in_dir(
+    req: &SetupSimRequest<'_>,
+    project_dir: Option<&Path>,
+    engine: SimEngineKind,
+    choice: SimComputeBackendChoice,
+    verify_config: SimVerificationConfig,
+    progress: Option<SimProgressScope<'_>>,
+) -> Result<SetupSimulationResult, String> {
     let setup = req
         .project
         .setups
@@ -549,6 +572,7 @@ pub fn simulate_project_setup_with_choice_and_progress_in_dir(
         project_dir,
         engine,
         choice,
+        verify_config,
         carryover.as_ref(),
         dst_progress,
     )
@@ -569,11 +593,52 @@ pub fn simulate_all_setups_with_choice(
     choice: SimComputeBackendChoice,
     cancel: Option<&AtomicBool>,
 ) -> Result<Vec<SetupSimulationResult>, String> {
-    let mut results = Vec::with_capacity(project.setups.len());
+    simulate_all_setups_with_verify_and_progress(
+        project,
+        cad_doc,
+        cad_revision,
+        cache,
+        project_dir,
+        resolution,
+        engine,
+        choice,
+        SimVerificationConfig::default(),
+        cancel,
+        None,
+    )
+}
+
+/// Simulates all Setups in `project` sequentially with custom [`SimVerificationConfig`] tolerances
+/// and optional live progress reporting (`M89`).
+#[allow(clippy::too_many_arguments)]
+pub fn simulate_all_setups_with_verify_and_progress(
+    project: &ProjectDocument,
+    cad_doc: &CadDocument,
+    cad_revision: u64,
+    cache: &ToolpathCache,
+    project_dir: Option<&Path>,
+    resolution: SimResolution,
+    engine: SimEngineKind,
+    choice: SimComputeBackendChoice,
+    verify_config: SimVerificationConfig,
+    cancel: Option<&AtomicBool>,
+    progress: Option<SimProgressScope<'_>>,
+) -> Result<Vec<SetupSimulationResult>, String> {
+    let n_setups = project.setups.len();
+    let mut results = Vec::with_capacity(n_setups);
     let mut chain_cache: HashMap<usize, (TriDexelStock, RigidFrame3, f64, String)> = HashMap::new();
 
     for (s_idx, setup) in project.setups.iter().enumerate() {
-        let kin = resolve_kinematics_for_key(&setup.post_profile, project_dir);
+        if cancel.is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed)) {
+            return Err("simulation cancelled".to_string());
+        }
+        let kin = if let Some(mid) = project.machine_id.as_deref()
+            && let Ok(machine) = chip_tools::resolve_machine_definition(mid, project_dir)
+        {
+            MachineKinematicsConfig::from_machine_spec(&machine.kinematics)
+        } else {
+            resolve_kinematics_for_key(&setup.post_profile, project_dir)
+        };
         let req = SetupSimRequest {
             project,
             setup_idx: s_idx,
@@ -596,6 +661,11 @@ pub fn simulate_all_setups_with_choice(
             None,
             None,
         )?;
+        let setup_scope = progress.map(|p| {
+            let start = s_idx as f64 / n_setups.max(1) as f64;
+            let end = (s_idx + 1) as f64 / n_setups.max(1) as f64;
+            p.sub_scope(start, end)
+        });
         let sim = simulate_single_setup_inner(
             &req,
             &resolved,
@@ -603,8 +673,9 @@ pub fn simulate_all_setups_with_choice(
             project_dir,
             engine,
             choice,
+            verify_config,
             carryover.as_ref(),
-            None,
+            setup_scope,
         )?;
 
         if let Some(td) = sim.as_tridexel() {

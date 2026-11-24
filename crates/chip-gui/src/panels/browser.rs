@@ -256,41 +256,121 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
         *active_setup_idx = project.setups.len() - 1;
     }
 
+    let proj_rename_active_key = ui.make_persistent_id("browser_project_renaming_active");
+    let proj_rename_buf_key = ui.make_persistent_id("browser_project_renaming_buf");
+    let proj_rename_just_opened_key = ui.make_persistent_id("browser_project_renaming_just_opened");
+    let mut proj_renaming: bool = ui
+        .data_mut(|d| d.get_temp::<bool>(proj_rename_active_key))
+        .unwrap_or(false);
+    let mut proj_rename_buf: String = ui
+        .data_mut(|d| d.get_temp::<String>(proj_rename_buf_key))
+        .unwrap_or_default();
+    let mut proj_rename_just_opened: bool = ui
+        .data_mut(|d| d.get_temp::<bool>(proj_rename_just_opened_key))
+        .unwrap_or(false);
+
     ui.horizontal(|ui| {
-        let title_w = (ui.available_width() - 66.0).max(60.0);
-        ui.add_sized(
-            [title_w, 18.0],
-            egui::Label::new(egui::RichText::new(&project.project_name).strong()).truncate(),
-        )
-        .on_hover_text(&project.project_name);
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui
-                .small_button("+ Setup")
-                .on_hover_text("Add a new clamping Setup (e.g., Op 2 Flip)")
-                .clicked()
-            {
-                history.record_before_edit("Add Setup", None, project);
-                let next_n = project.setups.len() + 1;
-                let slot = match next_n {
-                    1 => WorkOffsetSlot::G54,
-                    2 => WorkOffsetSlot::G55,
-                    3 => WorkOffsetSlot::G56,
-                    4 => WorkOffsetSlot::G57,
-                    _ => WorkOffsetSlot::G58,
-                };
-                project.setups.push(Setup::new(
-                    format!("setup_{next_n}"),
-                    format!("Setup {next_n} — Op {next_n}"),
-                    slot,
-                ));
-                let idx = project.setups.len() - 1;
-                *active_setup_idx = idx;
-                *focus = InspectorFocus::Setup { setup_idx: idx };
-                *setup_tab = SetupTab::Wcs;
-                *pick_mode = ViewportPickMode::InspectEntity;
-                emitted_action = Some(BrowserAction::Log(format!("Created Setup {next_n}.")));
+        if proj_renaming {
+            let edit_w = (ui.available_width() - 62.0).max(60.0);
+            let resp = ui.add(
+                egui::TextEdit::singleline(&mut proj_rename_buf)
+                    .id_salt("browser_project_name_edit")
+                    .desired_width(edit_w),
+            );
+            if proj_rename_just_opened {
+                resp.request_focus();
+                proj_rename_just_opened = false;
             }
-        });
+            let enter = ui.input(|i| i.key_pressed(egui::Key::Enter))
+                && (resp.has_focus() || resp.lost_focus());
+            let escape = ui.input(|i| i.key_pressed(egui::Key::Escape))
+                && (resp.has_focus() || resp.lost_focus());
+            if ui
+                .small_button("OK")
+                .on_hover_text("Commit new project name (Enter)")
+                .clicked()
+                || enter
+            {
+                let trimmed = proj_rename_buf.trim();
+                if !trimmed.is_empty() && trimmed != project.project_name {
+                    history.record_before_edit("Rename Project", None, project);
+                    project.project_name = trimmed.to_string();
+                    emitted_action = Some(BrowserAction::Log(format!(
+                        "Renamed project to '{}'.",
+                        project.project_name
+                    )));
+                }
+                proj_renaming = false;
+            }
+            if ui
+                .small_button("X")
+                .on_hover_text("Cancel project rename (Esc)")
+                .clicked()
+                || escape
+            {
+                proj_renaming = false;
+            }
+        } else {
+            let title_w = (ui.available_width() - 122.0).max(56.0);
+            let title_resp = ui
+                .add_sized(
+                    [title_w, 18.0],
+                    egui::Label::new(egui::RichText::new(&project.project_name).strong())
+                        .truncate()
+                        .sense(Sense::click()),
+                )
+                .on_hover_text(format!(
+                    "{} (double-click or click Rename to edit project name)",
+                    project.project_name
+                ));
+            if title_resp.double_clicked() {
+                proj_renaming = true;
+                proj_rename_just_opened = true;
+                proj_rename_buf = project.project_name.clone();
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .small_button("+ Setup")
+                    .on_hover_text("Add a new clamping Setup (e.g., Op 2 Flip)")
+                    .clicked()
+                {
+                    history.record_before_edit("Add Setup", None, project);
+                    let next_n = project.setups.len() + 1;
+                    let slot = match next_n {
+                        1 => WorkOffsetSlot::G54,
+                        2 => WorkOffsetSlot::G55,
+                        3 => WorkOffsetSlot::G56,
+                        4 => WorkOffsetSlot::G57,
+                        _ => WorkOffsetSlot::G58,
+                    };
+                    project.setups.push(Setup::new(
+                        format!("setup_{next_n}"),
+                        format!("Setup {next_n} — Op {next_n}"),
+                        slot,
+                    ));
+                    let idx = project.setups.len() - 1;
+                    *active_setup_idx = idx;
+                    *focus = InspectorFocus::Setup { setup_idx: idx };
+                    *setup_tab = SetupTab::Wcs;
+                    *pick_mode = ViewportPickMode::InspectEntity;
+                    emitted_action = Some(BrowserAction::Log(format!("Created Setup {next_n}.")));
+                }
+                if ui
+                    .small_button("Rename")
+                    .on_hover_text("Rename this project (undoable)")
+                    .clicked()
+                {
+                    proj_renaming = true;
+                    proj_rename_just_opened = true;
+                    proj_rename_buf = project.project_name.clone();
+                }
+            });
+        }
+    });
+    ui.data_mut(|d| {
+        d.insert_temp(proj_rename_active_key, proj_renaming);
+        d.insert_temp(proj_rename_buf_key, proj_rename_buf);
+        d.insert_temp(proj_rename_just_opened_key, proj_rename_just_opened);
     });
     ui.separator();
 
@@ -1678,6 +1758,7 @@ pub fn default_pick_mode_for_op(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 
@@ -1801,5 +1882,188 @@ mod tests {
                 op_idx: 0
             }
         );
+    }
+
+    #[test]
+    fn browser_inline_project_rename_commits_and_supports_atomic_undo() {
+        fn find_text(shape: &egui::Shape, needle: &str) -> Option<egui::Pos2> {
+            match shape {
+                egui::Shape::Text(t) if t.galley.text() == needle => {
+                    Some(t.pos + t.galley.size() * 0.5)
+                }
+                egui::Shape::Vec(v) => v.iter().find_map(|s| find_text(s, needle)),
+                _ => None,
+            }
+        }
+        fn click(pt: egui::Pos2) -> Vec<egui::Event> {
+            vec![
+                egui::Event::PointerMoved(pt),
+                egui::Event::PointerButton {
+                    pos: pt,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+                egui::Event::PointerButton {
+                    pos: pt,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]
+        }
+
+        let ctx = egui::Context::default();
+        let mut project = ProjectDocument::new("Original Job");
+        let global_tools = chip_tools::default_starter_tool_library();
+        let mut history = UndoHistory::default();
+        let cache = ToolpathCache::new(4);
+        let mut active_setup_idx = 0;
+        let mut focus = InspectorFocus::Setup { setup_idx: 0 };
+        let mut setup_tab = SetupTab::Wcs;
+        let mut op_tab = OperationTab::Geometry;
+        let mut pick_mode = ViewportPickMode::InspectEntity;
+        let mut hidden = std::collections::HashSet::new();
+        let mut editing_avoid = None;
+
+        let run_frame = |events: Vec<egui::Event>,
+                         project: &mut ProjectDocument,
+                         history: &mut UndoHistory,
+                         active_setup_idx: &mut usize,
+                         focus: &mut InspectorFocus,
+                         setup_tab: &mut SetupTab,
+                         op_tab: &mut OperationTab,
+                         pick_mode: &mut ViewportPickMode,
+                         hidden: &mut std::collections::HashSet<String>,
+                         editing_avoid: &mut Option<String>| {
+            let mut out = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(320.0, 600.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    egui::CentralPanel::default().show(ui, |ui| {
+                        let _ = show_cam_browser(
+                            ui,
+                            CamBrowserCtx {
+                                project,
+                                global_tools: &global_tools,
+                                history,
+                                toolpath_cache: &cache,
+                                cad_doc: None,
+                                cad_revision: 0,
+                                active_setup_idx,
+                                focus,
+                                setup_tab,
+                                op_tab,
+                                pick_mode,
+                                hidden_operation_ids: hidden,
+                                editing_shared_avoid_id: editing_avoid,
+                            },
+                        );
+                    });
+                },
+            );
+            out.textures_delta.clear();
+            out.shapes
+        };
+
+        // Frame 1: locate "Rename" button
+        let shapes1 = run_frame(
+            vec![],
+            &mut project,
+            &mut history,
+            &mut active_setup_idx,
+            &mut focus,
+            &mut setup_tab,
+            &mut op_tab,
+            &mut pick_mode,
+            &mut hidden,
+            &mut editing_avoid,
+        );
+        let rename_pt = shapes1
+            .iter()
+            .find_map(|cs| find_text(&cs.shape, "Rename"))
+            .expect("Rename button must be rendered in CAM Browser header");
+
+        // Frame 2: click "Rename" to open inline editor
+        let _ = run_frame(
+            click(rename_pt),
+            &mut project,
+            &mut history,
+            &mut active_setup_idx,
+            &mut focus,
+            &mut setup_tab,
+            &mut op_tab,
+            &mut pick_mode,
+            &mut hidden,
+            &mut editing_avoid,
+        );
+        // Frame 3: render inline editor (auto-focuses TextEdit) and locate OK button
+        let shapes3 = run_frame(
+            vec![],
+            &mut project,
+            &mut history,
+            &mut active_setup_idx,
+            &mut focus,
+            &mut setup_tab,
+            &mut op_tab,
+            &mut pick_mode,
+            &mut hidden,
+            &mut editing_avoid,
+        );
+        let ok_pt = shapes3
+            .iter()
+            .find_map(|cs| find_text(&cs.shape, "OK"))
+            .expect("OK button must appear while renaming project");
+
+        // Frame 4: select all + type replacement text into focused TextEdit
+        let events = vec![
+            egui::Event::Key {
+                key: egui::Key::A,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::COMMAND,
+            },
+            egui::Event::Text("Aluminum Manifold Rev B".to_string()),
+        ];
+        let _ = run_frame(
+            events,
+            &mut project,
+            &mut history,
+            &mut active_setup_idx,
+            &mut focus,
+            &mut setup_tab,
+            &mut op_tab,
+            &mut pick_mode,
+            &mut hidden,
+            &mut editing_avoid,
+        );
+        // Frame 5: click OK to commit
+        let _ = run_frame(
+            click(ok_pt),
+            &mut project,
+            &mut history,
+            &mut active_setup_idx,
+            &mut focus,
+            &mut setup_tab,
+            &mut op_tab,
+            &mut pick_mode,
+            &mut hidden,
+            &mut editing_avoid,
+        );
+
+        assert_eq!(project.project_name, "Aluminum Manifold Rev B");
+        assert!(history.can_undo());
+        assert_eq!(
+            history.undo(&mut project).as_deref(),
+            Some("Rename Project")
+        );
+        assert_eq!(project.project_name, "Original Job");
     }
 }

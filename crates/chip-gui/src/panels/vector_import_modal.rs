@@ -1,7 +1,7 @@
 use std::{collections::HashSet, path::PathBuf};
 
 use chip_cam::{BoxAnchor27, StockConfig, WcsOriginMode};
-use chip_math::{DisplayUnit, ParamLength};
+use chip_math::{DisplayUnit, MM_PER_INCH, ParamLength};
 use chip_project::{ProjectDocument, UndoHistory, portable_model_path};
 use chip_sketch::{
     DxfImportOptions, SketchAnchor, SketchDiagnosticKind, SketchLayer, SketchPlaneRef,
@@ -451,17 +451,55 @@ impl VectorImportModalState {
                             ui.end_row();
                         }
 
-                        ui.label("Gap-Heal Tolerance (mm):");
-                        if ui
-                            .add(
-                                egui::Slider::new(&mut self.join_tolerance_mm, 0.0..=0.50)
-                                    .fixed_decimals(3),
-                            )
-                            .on_hover_text("Maximum gap between open segment endpoints automatically stitched into closed loops (mm)")
-                            .changed()
-                        {
-                            self.dirty_preview = true;
-                        }
+                        let (u_scale, u_sfx, tol_dec, tol_spd) = match display_unit {
+                            DisplayUnit::Millimeter => (1.0, " mm", 3usize, 0.002),
+                            DisplayUnit::Inch => (1.0 / MM_PER_INCH, " in", 4usize, 0.0001),
+                        };
+                        ui.label("Join / Arc-Fit Tolerance:");
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label("Join:")
+                                .on_hover_text("Maximum gap between open segment endpoints automatically stitched into closed loops");
+                            let mut join_disp =
+                                (self.join_tolerance_mm * u_scale).clamp(0.0, 0.50 * u_scale);
+                            if ui
+                                .add(
+                                    egui::DragValue::new(&mut join_disp)
+                                        .speed(tol_spd)
+                                        .range(0.0..=(0.50 * u_scale))
+                                        .fixed_decimals(tol_dec)
+                                        .suffix(u_sfx),
+                                )
+                                .on_hover_text("Maximum gap between open segment endpoints automatically stitched into closed loops")
+                                .changed()
+                                && join_disp.is_finite()
+                            {
+                                self.join_tolerance_mm = (join_disp / u_scale).clamp(0.0, 0.50);
+                                self.dirty_preview = true;
+                            }
+
+                            ui.separator();
+                            ui.label("Arc-Fit Tolerance:")
+                                .on_hover_text("Maximum chord/biarc deviation when converting Bezier splines and curves into true G2/G3 arcs");
+                            let mut arc_disp = (self.arc_fit_tolerance_mm * u_scale)
+                                .clamp(0.001 * u_scale, 1.0 * u_scale);
+                            if ui
+                                .add(
+                                    egui::DragValue::new(&mut arc_disp)
+                                        .speed(tol_spd)
+                                        .range((0.001 * u_scale)..=(1.0 * u_scale))
+                                        .fixed_decimals(tol_dec)
+                                        .suffix(u_sfx),
+                                )
+                                .on_hover_text(
+                                    "Maximum deviation when fitting DXF splines and SVG Bezier curves to circular arcs (smaller = finer arcs)",
+                                )
+                                .changed()
+                                && arc_disp.is_finite()
+                            {
+                                self.arc_fit_tolerance_mm = (arc_disp / u_scale).clamp(0.001, 1.0);
+                                self.dirty_preview = true;
+                            }
+                        });
                         ui.end_row();
 
                         ui.label("Pure-2D Sheet Thickness (mm):");
@@ -642,5 +680,138 @@ impl VectorImportModalState {
         }
         self.open = keep_open;
         committed
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use chip_math::DisplayUnit;
+    use chip_project::{ProjectDocument, UndoHistory};
+    use chip_tools::default_starter_tool_library;
+
+    use super::{VectorImportModalState, VectorModalCtx};
+
+    fn collect_texts(shapes: &[egui::epaint::ClippedShape], out: &mut Vec<String>) {
+        fn visit(shape: &egui::Shape, out: &mut Vec<String>) {
+            match shape {
+                egui::Shape::Text(t) => out.push(t.galley.text().to_string()),
+                egui::Shape::Vec(v) => {
+                    for s in v {
+                        visit(s, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        for cs in shapes {
+            visit(&cs.shape, out);
+        }
+    }
+
+    #[test]
+    fn vector_import_modal_renders_unit_aware_arc_fit_tolerance_beside_join_tolerance() {
+        let ctx = egui::Context::default();
+        let mut modal = VectorImportModalState {
+            open: true,
+            arc_fit_tolerance_mm: 0.025,
+            ..Default::default()
+        };
+        let mut project = ProjectDocument::new("Vector Modal Test");
+        project.display_units = DisplayUnit::Millimeter;
+        let tools = default_starter_tool_library();
+        let mut history = UndoHistory::default();
+        let mut logs = Vec::new();
+
+        // Warmup frame so egui::Window completes initial auto-sizing before measuring text shapes
+        let mut warmup = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(800.0, 700.0),
+                )),
+                ..Default::default()
+            },
+            |ui| {
+                let _ = modal.show(
+                    ui.ctx(),
+                    VectorModalCtx {
+                        project: &mut project,
+                        project_file_path: None,
+                        active_setup_idx: 0,
+                        global_tools: &tools,
+                        history: &mut history,
+                        logs: &mut logs,
+                    },
+                );
+            },
+        );
+        warmup.textures_delta.clear();
+
+        let mut out_mm = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(800.0, 700.0),
+                )),
+                ..Default::default()
+            },
+            |ui| {
+                let _ = modal.show(
+                    ui.ctx(),
+                    VectorModalCtx {
+                        project: &mut project,
+                        project_file_path: None,
+                        active_setup_idx: 0,
+                        global_tools: &tools,
+                        history: &mut history,
+                        logs: &mut logs,
+                    },
+                );
+            },
+        );
+        out_mm.textures_delta.clear();
+        let mut texts_mm = Vec::new();
+        collect_texts(&out_mm.shapes, &mut texts_mm);
+        assert!(
+            texts_mm.iter().any(|t| t.contains("Arc-Fit Tolerance")),
+            "expected Arc-Fit Tolerance widget in vector import modal, got: {texts_mm:?}"
+        );
+        assert!(
+            texts_mm.iter().any(|t| t == "0.025") && texts_mm.iter().any(|t| t == " mm"),
+            "expected arc_fit_tolerance_mm formatted in mm, got: {texts_mm:?}"
+        );
+
+        // Switch project display units to Inch and verify unit conversion at UI boundary
+        project.display_units = DisplayUnit::Inch;
+        let mut out_in = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(800.0, 700.0),
+                )),
+                ..Default::default()
+            },
+            |ui| {
+                let _ = modal.show(
+                    ui.ctx(),
+                    VectorModalCtx {
+                        project: &mut project,
+                        project_file_path: None,
+                        active_setup_idx: 0,
+                        global_tools: &tools,
+                        history: &mut history,
+                        logs: &mut logs,
+                    },
+                );
+            },
+        );
+        out_in.textures_delta.clear();
+        let mut texts_in = Vec::new();
+        collect_texts(&out_in.shapes, &mut texts_in);
+        assert!(
+            texts_in.iter().any(|t| t == "0.0010") && texts_in.iter().any(|t| t == " in"),
+            "expected arc_fit_tolerance_mm (0.025 mm ~= 0.0010 in) formatted in inches, got: {texts_in:?}"
+        );
     }
 }

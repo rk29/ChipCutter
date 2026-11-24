@@ -508,6 +508,13 @@ impl ChipCutterApp {
                     );
                 }
             }
+            LoadPurpose::ReloadMeshUnits => {
+                self.sim_panel.reset_for_new_project();
+                self.gcode_panel.invalidate_preview();
+                self.auto_sim_after_gen = false;
+                self.highlight.preview_tab_marker_wcs = None;
+                fit_camera = true;
+            }
             LoadPurpose::ReloadRebind { update_path } => {
                 if let Some(seeded) = pre_seeded_project {
                     self.prepare_for_project_replacement(None, None);
@@ -567,6 +574,7 @@ impl ChipCutterApp {
         self.model = Some(LoadedModelState {
             raw_doc,
             applied_transform,
+            applied_unit_override: unit_override,
             doc: final_doc,
             picker: final_picker,
             topo: final_topo,

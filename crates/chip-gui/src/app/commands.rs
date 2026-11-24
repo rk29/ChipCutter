@@ -398,4 +398,39 @@ impl ChipCutterApp {
             &mut self.logs,
         );
     }
+
+    pub(crate) fn trigger_export_all_setups_from_menu(&mut self) {
+        focus_workspace_pane(&mut self.tree, WorkspacePane::GCodePreview);
+        let eff = self.effective_cad_arc();
+        let Some((cad_doc, cad_rev)) = eff else {
+            self.logs
+                .push("Cannot batch-export: load a model or 2D Sketch first.".to_string());
+            return;
+        };
+        let virtual_proj_path = self.virtual_project_file_path();
+        let proj_dir = virtual_proj_path.as_deref().and_then(Path::parent);
+        self.gcode_panel.ensure_profiles_loaded(proj_dir);
+        self.gcode_panel.export_all_setups_with_dialog(
+            &self.project,
+            cad_doc.as_ref(),
+            cad_rev,
+            &self.toolpath_cache,
+            virtual_proj_path.as_deref(),
+            &mut self.logs,
+        );
+    }
+
+    pub(crate) fn open_post_profile_inspector(&mut self, post_id: Option<&str>) {
+        let proj_dir = self.active_project_dir().map(std::path::Path::to_path_buf);
+        self.gcode_panel.refresh_profiles(proj_dir.as_deref());
+        let target_id = post_id.map(str::to_string).unwrap_or_else(|| {
+            self.project
+                .setups
+                .get(self.active_setup_idx)
+                .map_or_else(|| "grbl".to_string(), |s| s.post_profile.clone())
+        });
+        self.modals
+            .post_profile_inspector
+            .open_selecting(self.gcode_panel.available_profiles(), &target_id);
+    }
 }

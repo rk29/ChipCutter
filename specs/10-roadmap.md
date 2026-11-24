@@ -567,7 +567,7 @@ Completes the cutting-area workflow started in Phase 22 by adding an explicit re
 
 ---
 
-## Phase 24 — UI Completeness & Inspector Parity (Planned — M87–M89)
+## Phase 24 — UI Completeness & Inspector Parity (Completed — M87–M89)
 
 Closes every backend-vs-GUI gap uncovered across `chip-cam`, `chip-tools`, `chip-project`, `chip-sketch`, `chip-post`, and `chip-sim` so every active backend parameter, override, wizard option, and multi-setup workflow is directly accessible in `chip-gui` without editing TOML by hand.
 

@@ -59,13 +59,13 @@ Integrated into the central `egui` panel via `egui_wgpu::CallbackTrait` renderin
 
 ---
 
-## 2D Sketch Authoring & Import Workflows *(v2)*
+## 2D Sketch Authoring & Import Workflows *(v2, extended Phase 24)*
 - **Sketch Inspector & Floating Creation Bar:**
-  - Selecting or creating a `SketchLayer` in the **Sketches** browser section reveals Sketch Plane anchor settings (`Setup XY` vs. `Planar STEP Face`) and creation tools (`Rectangle`, `Circle`, `Slot`, `Polygon`, `Polyline`, `Hole Pattern`, `Text`).
-  - Clicking any `SketchEntity` opens its exact expression-backed parameters (`width`, `height`, `corner_radius`, `cap_height`, `font`, Hershey vs. TrueType mode, etc.) in the right-hand Inspector.
+  - Selecting or creating a `SketchLayer` in the **Sketches** browser section reveals Sketch Plane anchor settings (`Setup XY` vs. `Planar STEP Face`), multi-setup **`Setup`** reassignment (`ComboBox` whenever `project.setups.len() > 1`), and creation tools (`Rectangle`, `Circle`, `Slot`, `Polygon`, `Polyline`, `Hole Pattern`, `Text`).
+  - Clicking any `SketchEntity` opens its exact expression-backed parameters (`width`, `height`, `corner_radius`, `cap_height`, `font`, Hershey vs. TrueType mode, `arc_fit_tolerance_mm`, and custom `.ttc` `face_index`, etc.) in the right-hand Inspector.
 - **DXF / SVG Import Modal:**
   - Live bounding-box dimension preview (`X × Y` in display units) before confirming import so unitless DXFs (`mm` vs. `in`) and pixel SVGs (`96` / `72` / `90` DPI) are never accidentally imported at `25.4x` wrong scale!
-  - Exposes `join_tolerance_mm` (gap-healing preview reporting closed loops vs. open chains) and layer filtering.
+  - Exposes unit-aware **`Join Tolerance`** (`join_tolerance_mm`, gap-healing preview reporting closed loops vs. open chains), **`Arc-Fit Tolerance`** (`arc_fit_tolerance_mm`, Bézier/spline-to-biarc deviation), and DXF layer filtering.
 
 ---
 
@@ -119,6 +119,11 @@ Integrated into the central `egui` panel via `egui_wgpu::CallbackTrait` renderin
     - The **CAM Browser** includes a collapsible **`Keep-Out Regions (N)`** card showing every `SharedAvoidRegion`, its usage count (`used by N ops`), `+ Keep-Out`, inline rename, suppress toggle, duplicate, and safe delete (`ProjectDocument::remove_avoid_region`) in atomic Undo steps.
   - **Fixed-Size Box Stock Alignment (`Setup → [Stock] → Stock Offsets` — *Phase 23*):**
     - Exposes interactive **`XY Alignment`** (`Centered in XY` | `Offset from Front-Left` with `Front-Left ΔX` / `ΔY`) and **`Z Alignment`** (`Offset from Top (+Z)` | `Offset from Bottom (-Z)` | `Centered in Z`) selectors, auto-defaulting rotary-enabled Setups to `Centered in Z` when switching to `Fixed-Size Box Stock`.
+- **Complete Inspector Parity, Inline Project Rename, Batch Post, & Post Profile Inspector (*Phase 24 — M87–M89*):**
+  - **CAM Browser & Model Inspector:** Inline project rename (`project.project_name`) via double-click or `Rename` button on the root project node (with atomic Undo); post-import `ModelEntry::role` (`Target Part` / `Fixture / Workholding`) and triangle-mesh `ModelEntry::unit_override` selectors triggering clean background mesh reload + Undo.
+  - **Setup, Workholding, & Machine Manager Completeness:** Multi-body `Setup::target_bodies`, custom `.post.toml` dropdowns, `SelectXYPlane` `+X` edge picking, `EdgeStart`/`EdgeMidpoint`/`EdgeEnd` origin switching, `RelativeBox::round_increment_mm`, `SetupClearance` retract height ref, per-fixture color picker, wizard tool/WCS/counterbore/protrusion controls, and Machine Manager shank list, junction deviation, spindle watts, and description fields.
+  - **Multi-Setup Batch G-Code Export (`Export All Setups...`):** Accessible from `[G-Code Preview]`, `File → Export All Setups...`, and `Post → Export All Setups...`; writes sanitized per-Setup `.nc`/`.ngc` files into a chosen output folder using `chip-post`'s single-component filename & extension safety rules (`validate_safe_output_filename`), reporting per-setup status and warnings in the Activity Log and status banner.
+  - **Post Profile Inspector / Customizer Modal:** Accessible from `[G-Code Preview]`, Setup Inspector `[WCS & Post]`, and `Post → Post Profile Inspector / Customizer...`; inspects all `PostProfile` settings (units, decimals, line numbers, comment style, arc mode IJK/R, `max_arc_sweep_deg`, drill-cycle expansion, tool-change mode, G43/G41/G42, headers/footers, and `RotaryPostConfig`) as strictly **read-only** for built-in profiles with a 1-click **`Clone to Custom .post.toml`** workflow saving upgrade-safe custom profiles into `dirs::config_dir()/chipcutter/posts/`.
 - **Document Undo / Redo (`Ctrl+Z` / `Ctrl+Y`):**
   - Every committed mutation to Setups, Sketches, Selections, Operations, or Project Tools pushes a compact document state snapshot onto an Undo stack (default depth `100` steps, captured lazily only on actual mutation so idle 60 FPS frames perform zero document clones).
   - Heavy cached data (B-Rep meshes, generated toolpaths, swept 2D Rest polygons, heightmaps) is stored out-of-band by revision/key so Undo/Redo is instantaneous (`< 1 ms`).

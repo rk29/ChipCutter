@@ -1,6 +1,6 @@
 use std::{
     hash::{Hash as _, Hasher as _},
-    path::Path,
+    path::{Path, PathBuf},
     sync::Arc,
 };
 
@@ -16,11 +16,222 @@ use chip_sim::{SimDiagnostic, SimSeverity};
 
 use crate::panels::simulation::SimulationPanelState;
 
+/// Per-setup outcome produced by [`export_all_setups_to_dir`] (`M89`).
+#[derive(Debug, Clone)]
+pub struct BatchSetupExportItem {
+    pub setup_idx: usize,
+    pub setup_name: String,
+    pub post_profile_id: String,
+    pub files_written: Vec<PathBuf>,
+    pub lines_written: usize,
+    pub warnings: Vec<String>,
+    pub error: Option<String>,
+}
+
+/// Aggregated result of exporting all Setups in a project into an output directory (`M89`).
+#[derive(Debug, Clone)]
+pub struct BatchExportSummary {
+    pub output_dir: PathBuf,
+    pub setups: Vec<BatchSetupExportItem>,
+    pub total_files_written: usize,
+    pub total_lines: usize,
+}
+
+impl BatchExportSummary {
+    pub fn succeeded_setup_count(&self) -> usize {
+        self.setups
+            .iter()
+            .filter(|s| s.error.is_none() && !s.files_written.is_empty())
+            .count()
+    }
+
+    pub fn failed_setup_count(&self) -> usize {
+        self.setups.iter().filter(|s| s.error.is_some()).count()
+    }
+
+    pub fn total_warning_count(&self) -> usize {
+        self.setups.iter().map(|s| s.warnings.len()).sum()
+    }
+}
+
+fn sanitize_program_stem(raw: &str, fallback: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for ch in raw.trim().chars() {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_') {
+            out.push(ch);
+        } else if (ch.is_whitespace() || ch == '.') && !out.ends_with('_') && !out.is_empty() {
+            out.push('_');
+        }
+    }
+    let trimmed = out.trim_matches(|c| c == '_' || c == '-');
+    if trimmed.is_empty() {
+        fallback.to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+/// Post-processes and writes every Setup's G-code file(s) into `output_dir`, enforcing the
+/// same single-component filename & extension safety rules as `chipcutter build` (`M32` / `M89`).
+pub fn export_all_setups_to_dir(
+    project: &ProjectDocument,
+    cad_doc: &CadDocument,
+    cad_revision: u64,
+    cache: &ToolpathCache,
+    project_file_path: Option<&Path>,
+    extra_profiles: &[PostProfile],
+    output_dir: &Path,
+) -> Result<BatchExportSummary, String> {
+    if project.setups.is_empty() {
+        return Err("Project has no Setups to export.".to_string());
+    }
+    std::fs::create_dir_all(output_dir).map_err(|e| {
+        format!(
+            "Failed to create output directory '{}': {e}",
+            output_dir.display()
+        )
+    })?;
+
+    let proj_dir = project_file_path.and_then(Path::parent);
+    let mut available = load_available_post_profiles(proj_dir);
+    for custom in extra_profiles {
+        if let Some(existing) = available
+            .iter_mut()
+            .find(|p| !p.is_builtin && p.id.eq_ignore_ascii_case(&custom.id))
+        {
+            *existing = custom.clone();
+        } else if !available
+            .iter()
+            .any(|p| p.id.eq_ignore_ascii_case(&custom.id))
+        {
+            available.push(custom.clone());
+        }
+    }
+
+    let proj_label = project_file_path
+        .and_then(Path::file_name)
+        .and_then(|s| s.to_str())
+        .unwrap_or(&project.project_name);
+    let raw_base_stem = project_file_path
+        .and_then(Path::file_stem)
+        .and_then(|s| s.to_str())
+        .map(|s| s.trim_end_matches(".chip"))
+        .unwrap_or(&project.project_name);
+    let base_stem = sanitize_program_stem(raw_base_stem, "program");
+
+    let mut setups_out = Vec::with_capacity(project.setups.len());
+    let mut total_files_written = 0usize;
+    let mut total_lines = 0usize;
+
+    for (s_idx, setup) in project.setups.iter().enumerate() {
+        let mut warnings = Vec::new();
+        let Some(post_profile) = available
+            .iter()
+            .find(|p| p.id.eq_ignore_ascii_case(&setup.post_profile))
+            .cloned()
+        else {
+            setups_out.push(BatchSetupExportItem {
+                setup_idx: s_idx,
+                setup_name: setup.name.clone(),
+                post_profile_id: setup.post_profile.clone(),
+                files_written: Vec::new(),
+                lines_written: 0,
+                warnings,
+                error: Some(format!(
+                    "Unknown post-processor profile '{}'",
+                    setup.post_profile
+                )),
+            });
+            continue;
+        };
+
+        if post_profile.source == PostProfileSource::ProjectOrBundle {
+            warnings.push(format!(
+                "Uses custom post profile '{}' loaded from project/bundle directory; review header/footer G-code before machining.",
+                post_profile.id
+            ));
+        }
+
+        let setup_slug = sanitize_program_stem(&setup.id, &format!("setup_{}", s_idx + 1));
+        let setup_stem = if project.setups.len() > 1 {
+            format!("{base_stem}_{setup_slug}")
+        } else {
+            base_stem.clone()
+        };
+
+        let nc_files = match post_process_project_setup(&SetupPostRequest {
+            project,
+            setup_idx: s_idx,
+            cad_doc,
+            cad_revision,
+            cache,
+            post_profile: &post_profile,
+            project_label: proj_label,
+            program_stem: &setup_stem,
+        }) {
+            Ok(files) => files,
+            Err(err) => {
+                setups_out.push(BatchSetupExportItem {
+                    setup_idx: s_idx,
+                    setup_name: setup.name.clone(),
+                    post_profile_id: post_profile.id,
+                    files_written: Vec::new(),
+                    lines_written: 0,
+                    warnings,
+                    error: Some(err),
+                });
+                continue;
+            }
+        };
+
+        let mut written = Vec::new();
+        let mut setup_lines = 0usize;
+        let mut write_error = None;
+        for nc in nc_files {
+            warnings.extend(nc.warnings);
+            let safe_name = match validate_safe_output_filename(&nc.filename) {
+                Ok(name) => name,
+                Err(err) => {
+                    write_error = Some(format!("Unsafe output filename rejected: {err}"));
+                    break;
+                }
+            };
+            let dest = output_dir.join(safe_name);
+            if let Err(err) = std::fs::write(&dest, &nc.content) {
+                write_error = Some(format!("Failed writing '{}': {err}", dest.display()));
+                break;
+            }
+            setup_lines += nc.line_count;
+            total_lines += nc.line_count;
+            total_files_written += 1;
+            written.push(dest);
+        }
+
+        setups_out.push(BatchSetupExportItem {
+            setup_idx: s_idx,
+            setup_name: setup.name.clone(),
+            post_profile_id: post_profile.id,
+            files_written: written,
+            lines_written: setup_lines,
+            warnings,
+            error: write_error,
+        });
+    }
+
+    Ok(BatchExportSummary {
+        output_dir: output_dir.to_path_buf(),
+        setups: setups_out,
+        total_files_written,
+        total_lines,
+    })
+}
+
 /// Actions emitted by `[G-Code Preview]` back to `ChipCutterApp`.
 #[derive(Debug, Clone)]
 pub enum GCodeUiAction {
     RunSimulationFirst,
     JumpToCrash(SimDiagnostic),
+    OpenPostProfileInspector(String),
 }
 
 /// Context references passed to [`GCodePreviewPanelState::show_ui`] and `rebuild_preview_if_needed`.
@@ -47,6 +258,7 @@ pub struct GCodePreviewPanelState {
     pub selected_file_tab: usize,
     show_safety_gate_modal: bool,
     pending_unverified_warning: bool,
+    pub last_batch_export_banner: Option<(bool, String)>,
 }
 
 impl GCodePreviewPanelState {
@@ -59,9 +271,9 @@ impl GCodePreviewPanelState {
     pub fn refresh_profiles(&mut self, project_dir: Option<&Path>) {
         let mut list = load_available_post_profiles(project_dir);
         for custom in &self.custom_loaded_profiles {
-            if let Some(existing) = list.iter_mut().find(|p| p.id == custom.id) {
+            if let Some(existing) = list.iter_mut().find(|p| !p.is_builtin && p.id == custom.id) {
                 *existing = custom.clone();
-            } else {
+            } else if !list.iter().any(|p| p.id.eq_ignore_ascii_case(&custom.id)) {
                 list.push(custom.clone());
             }
         }
@@ -75,6 +287,10 @@ impl GCodePreviewPanelState {
 
     pub fn available_profiles(&self) -> &[PostProfile] {
         &self.available_profiles
+    }
+
+    pub fn available_profiles_mut(&mut self) -> &mut Vec<PostProfile> {
+        &mut self.available_profiles
     }
 
     pub fn invalidate_preview(&mut self) {
@@ -91,6 +307,7 @@ impl GCodePreviewPanelState {
     /// post profiles when switching projects, then refreshes available profiles for `project_dir`.
     pub fn reset_for_project(&mut self, project_dir: Option<&Path>) {
         self.custom_loaded_profiles.clear();
+        self.last_batch_export_banner = None;
         self.invalidate_preview();
         self.refresh_profiles(project_dir);
     }
@@ -246,6 +463,20 @@ impl GCodePreviewPanelState {
             }
 
             if ui
+                .small_button("Inspect / Customize Post...")
+                .on_hover_text(
+                    "Inspect built-in or custom .post.toml settings, or clone a read-only built-in profile into your user config folder",
+                )
+                .clicked()
+            {
+                let cur_id = project
+                    .setups
+                    .get(setup_idx)
+                    .map_or_else(|| "grbl".to_string(), |s| s.post_profile.clone());
+                action = Some(GCodeUiAction::OpenPostProfileInspector(cur_id));
+            }
+
+            if ui
                 .small_button("Load .post.toml…")
                 .on_hover_text("Load a custom TOML post-processor profile from disk")
                 .clicked()
@@ -317,6 +548,25 @@ impl GCodePreviewPanelState {
                 } else {
                     self.export_files_with_dialog(logs);
                 }
+            }
+
+            if project.setups.len() > 1
+                && ui
+                    .add_enabled(cad_doc.is_some(), egui::Button::new("Export All Setups..."))
+                    .on_hover_text(
+                        "Choose an output folder and batch-export sanitized G-code files for every Setup in this project",
+                    )
+                    .clicked()
+                && let Some(doc) = cad_doc
+            {
+                self.export_all_setups_with_dialog(
+                    project,
+                    doc.as_ref(),
+                    cad_revision,
+                    cache,
+                    project_file_path,
+                    logs,
+                );
             }
         });
 
@@ -418,6 +668,22 @@ impl GCodePreviewPanelState {
         }
 
         ui.separator();
+
+        if let Some((has_err, msg)) = self.last_batch_export_banner.clone() {
+            let tok = crate::theme::ThemeTokens::from_ui(ui);
+            let col = if has_err { tok.warn_fg } else { tok.clean_fg };
+            let mut dismiss = false;
+            ui.horizontal_wrapped(|ui| {
+                ui.colored_label(col, msg);
+                if ui.small_button("Dismiss").clicked() {
+                    dismiss = true;
+                }
+            });
+            if dismiss {
+                self.last_batch_export_banner = None;
+            }
+            ui.separator();
+        }
 
         if let Some(setup) = project.setups.get(setup_idx)
             && let Some(active_prof) = self
@@ -523,6 +789,74 @@ impl GCodePreviewPanelState {
         }
     }
 
+    pub fn export_all_setups_with_dialog(
+        &mut self,
+        project: &ProjectDocument,
+        cad_doc: &CadDocument,
+        cad_revision: u64,
+        cache: &ToolpathCache,
+        project_file_path: Option<&Path>,
+        logs: &mut Vec<String>,
+    ) {
+        let Some(dir) = rfd::FileDialog::new().pick_folder() else {
+            return;
+        };
+        match export_all_setups_to_dir(
+            project,
+            cad_doc,
+            cad_revision,
+            cache,
+            project_file_path,
+            &self.custom_loaded_profiles,
+            &dir,
+        ) {
+            Ok(summary) => {
+                for item in &summary.setups {
+                    if let Some(err) = &item.error {
+                        logs.push(format!(
+                            "[BATCH POST] Setup '{}' [{}] FAILED: {err}",
+                            item.setup_name, item.post_profile_id
+                        ));
+                    } else {
+                        logs.push(format!(
+                            "[BATCH POST] Setup '{}' [{}]: wrote {} file(s) ({} lines).",
+                            item.setup_name,
+                            item.post_profile_id,
+                            item.files_written.len(),
+                            item.lines_written
+                        ));
+                    }
+                    for w in &item.warnings {
+                        logs.push(format!(
+                            "[BATCH POST WARN] Setup '{}': {w}",
+                            item.setup_name
+                        ));
+                    }
+                }
+                let ok_n = summary.succeeded_setup_count();
+                let fail_n = summary.failed_setup_count();
+                let warn_n = summary.total_warning_count();
+                let banner = format!(
+                    "Batch Export to '{}': {}/{} Setup(s) exported ({} file(s), {} lines, {} warning(s), {} failed).",
+                    summary.output_dir.display(),
+                    ok_n,
+                    summary.setups.len(),
+                    summary.total_files_written,
+                    summary.total_lines,
+                    warn_n,
+                    fail_n,
+                );
+                logs.push(format!("[BATCH POST] {banner}"));
+                self.last_batch_export_banner = Some((fail_n > 0 || warn_n > 0, banner));
+            }
+            Err(err) => {
+                let msg = format!("Batch Export failed: {err}");
+                logs.push(format!("[BATCH POST ERROR] {msg}"));
+                self.last_batch_export_banner = Some((true, msg));
+            }
+        }
+    }
+
     fn export_files_with_dialog(&self, logs: &mut Vec<String>) {
         if self.cached_files.is_empty() {
             return;
@@ -590,5 +924,126 @@ fn gcode_line_color(line: &str, tok: &crate::theme::ThemeTokens) -> egui::Color3
         tok.gcode_spindle
     } else {
         tok.gcode_coord
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use std::sync::Arc;
+
+    use chip_cad::CadDocument;
+    use chip_cam::{
+        BoxAnchor27, ClEvent, MotionRole, Operation, OperationKind, Setup, StockConfig,
+        ToolpathBuilder, WcsOriginMode, WorkOffsetSlot,
+    };
+    use chip_math::{DVec3, ParamLength};
+    use chip_project::{
+        ProjectDocument, ToolpathCache, compute_operation_input_hash,
+        create_private_temp_extract_dir,
+    };
+    use chip_tools::{SpindleDirection, default_starter_tool_library};
+
+    use super::export_all_setups_to_dir;
+
+    #[test]
+    fn export_all_setups_writes_sanitized_non_empty_gcode_for_every_setup() {
+        let lib = default_starter_tool_library();
+        let tool = lib.tools[0].clone();
+
+        let mut project = ProjectDocument::new("../My Unsafe / Project: Name?");
+        project.tools = lib.tools.clone();
+
+        let make_setup = |id: &str, name: &str, slot: WorkOffsetSlot, post: &str| -> Setup {
+            let mut s = Setup::new(id, name, slot);
+            s.post_profile = post.to_string();
+            s.wcs.origin = WcsOriginMode::StockBoxPoint {
+                anchor: BoxAnchor27::TOP_CENTER,
+            };
+            s.stock = StockConfig::FixedBox {
+                width_x: ParamLength::from_mm(120.0),
+                depth_y: ParamLength::from_mm(120.0),
+                height_z: ParamLength::from_mm(30.0),
+                xy_align: chip_cam::FixedBoxXyAlign::CenterXy,
+                z_align: chip_cam::FixedBoxZAlign::CenterZ,
+            };
+            let mut op = Operation::new(format!("{id}_op1"), "Face Pass", OperationKind::Facing);
+            op.tool_id = Some(tool.id.clone());
+            s.operations.push(op);
+            s
+        };
+        project.setups = vec![
+            make_setup("setup/1", "Setup 1 — Op 1", WorkOffsetSlot::G54, "grbl"),
+            make_setup(
+                "setup..2",
+                "Setup 2 — Op 2",
+                WorkOffsetSlot::G55,
+                "linuxcnc",
+            ),
+        ];
+
+        let mut cache = ToolpathCache::new(16);
+        for s_idx in 0..2 {
+            let mut b = ToolpathBuilder::new(format!("op_{s_idx}"));
+            b.push_event(ClEvent::OperationStart {
+                op_id: format!("op_{s_idx}"),
+                op_name: "Face Pass".to_string(),
+                strategy_name: "Facing".to_string(),
+                est_time_sec: 10.0,
+            });
+            b.push_event(ClEvent::ToolChange {
+                tool_number: tool.tool_number,
+                length_offset: tool.length_offset_number,
+                diameter_offset: tool.diameter_offset_number,
+                tool_desc: tool.name.clone(),
+                is_first_tool: true,
+            });
+            b.push_event(ClEvent::SpindleStart {
+                rpm: 12_000.0,
+                direction: SpindleDirection::Cw,
+            });
+            b.rapid_to(DVec3::new(-20.0, 0.0, 10.0));
+            b.linear_to(DVec3::new(-20.0, 0.0, -1.0), 300.0, MotionRole::Plunge);
+            b.linear_to(DVec3::new(20.0, 0.0, -1.0), 800.0, MotionRole::Cut);
+            b.rapid_to(DVec3::new(20.0, 0.0, 10.0));
+            b.push_event(ClEvent::OperationEnd);
+            let hk = compute_operation_input_hash(&project, s_idx, 0, 1).unwrap();
+            let op_id = project.setups[s_idx].operations[0].id.clone();
+            cache.insert(op_id, hk, Arc::new(b.finish()));
+        }
+
+        let tmp = create_private_temp_extract_dir("chipcutter_m89_batch_export").unwrap();
+        let summary =
+            export_all_setups_to_dir(&project, &CadDocument::empty(), 1, &cache, None, &[], &tmp)
+                .unwrap();
+
+        assert_eq!(summary.setups.len(), 2);
+        assert_eq!(
+            summary.succeeded_setup_count(),
+            2,
+            "unexpected setup export outcomes: {:?}",
+            summary.setups
+        );
+        assert_eq!(summary.failed_setup_count(), 0);
+        assert!(summary.total_files_written >= 2);
+        assert!(summary.total_lines > 10);
+
+        for item in &summary.setups {
+            assert!(item.error.is_none(), "unexpected error: {:?}", item.error);
+            assert!(!item.files_written.is_empty());
+            for path in &item.files_written {
+                assert_eq!(
+                    path.parent(),
+                    Some(tmp.as_path()),
+                    "exported file must stay strictly inside output_dir: {}",
+                    path.display()
+                );
+                let text = std::fs::read_to_string(path).unwrap();
+                assert!(!text.trim().is_empty());
+                assert!(text.contains("G1"));
+            }
+        }
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

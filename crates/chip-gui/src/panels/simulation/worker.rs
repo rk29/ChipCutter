@@ -9,20 +9,23 @@ use chip_cad::CadDocument;
 use chip_cam::{FixtureKind, GeneratedToolpath, Operation, resolve_setup_fixtures};
 use chip_project::{
     SetupSimRequest, collect_ready_setup_operations, format_exec_duration,
-    resolve_kinematics_for_key, simulate_project_setup_with_choice_and_progress_in_dir,
+    resolve_kinematics_for_key, simulate_all_setups_with_verify_and_progress,
+    simulate_project_setup_with_verify_and_progress_in_dir,
 };
 #[cfg(feature = "gpu-compute")]
 use chip_sim::{GpuCheckpointCache, GpuSimContext, WgpuComputeBackend};
 use chip_sim::{
     ScrubSnapshot, SetupSimulationInput, SetupSimulationResult, SimEngineKind, SimError,
     SimMeshOptions, SimOperationInput, SimProgressTracker, SimStockColorMode, SimStockMesh,
-    SimVerificationConfig, SimulatedStock, SimulatedStockPlaybackExt, StockPlaybackCursor,
-    format_cycle_time_hms, run_setup_simulation_with_choice_and_progress,
+    SimulatedStock, SimulatedStockPlaybackExt, StockPlaybackCursor, format_cycle_time_hms,
+    run_setup_simulation_with_choice_and_progress,
 };
 use chip_tools::Tool;
 use crossbeam_channel::{Receiver, Sender, unbounded};
 
-use super::{InFlightSim, SimTriggerArgs, SimulationPanelState};
+use super::{
+    InFlightSim, MultiSetupSimEntry, MultiSetupSimSummary, SimTriggerArgs, SimulationPanelState,
+};
 
 struct OwnedSimOp {
     op: Operation,
@@ -38,6 +41,15 @@ pub(super) enum SimWorkerMsg {
         engine: SimEngineKind,
         elapsed: Duration,
         result: Result<Arc<SetupSimulationResult>, String>,
+    },
+    AllSetupsFinished {
+        run_id: u64,
+        active_setup_idx: usize,
+        active_signature: u64,
+        engine: SimEngineKind,
+        resolution: chip_sim::SimResolution,
+        elapsed: Duration,
+        result: Result<Vec<MultiSetupSimEntry>, String>,
     },
 }
 
@@ -588,6 +600,7 @@ impl SimulationPanelState {
         let engine = self.engine;
         let backend_choice = self.backend_choice;
         let resolution = self.resolution;
+        let verify_config = self.verify_config;
         let target_bodies = setup.target_bodies.clone();
         let setup_for_fixtures = setup.clone();
         let display_units = project.display_units;
@@ -634,7 +647,7 @@ impl SimulationPanelState {
                 // Multi-setup carryover path: resolves upstream Setup chain on this background
                 // thread using isolated headless GPU compute (`GpuSimContext::shared_headless()`),
                 // NEVER touching `eframe`'s presentation device!
-                let res = simulate_project_setup_with_choice_and_progress_in_dir(
+                let res = simulate_project_setup_with_verify_and_progress_in_dir(
                     &SetupSimRequest {
                         project: &proj_owned,
                         setup_idx,
@@ -648,6 +661,7 @@ impl SimulationPanelState {
                     proj_dir_owned.as_deref(),
                     engine,
                     backend_choice,
+                    verify_config,
                     Some(progress_tracker.full_scope()),
                 );
                 let mapped = match res {
@@ -704,7 +718,7 @@ impl SimulationPanelState {
                 operations: &refs,
                 resolution,
                 kinematics: kin,
-                verify_config: SimVerificationConfig::default(),
+                verify_config,
                 initial_stock: None,
                 initial_raw_volume_mm3: None,
                 carried_over_from_setup: None,
@@ -730,6 +744,111 @@ impl SimulationPanelState {
                 setup_idx,
                 signature,
                 engine,
+                elapsed: t0.elapsed(),
+                result: mapped,
+            });
+            egui_ctx.request_repaint();
+        });
+    }
+
+    /// Spawns a non-blocking `rayon` background job to simulate every Setup in `project`
+    /// sequentially (reusing Tri-Dexel carryover stock) and capture per-setup + cumulative
+    /// end-of-job metrology (`M89`).
+    pub fn trigger_simulate_all_setups(&mut self, args: SimTriggerArgs<'_>) {
+        let SimTriggerArgs {
+            project,
+            setup_idx,
+            cad_doc,
+            cad_revision,
+            cache,
+            project_dir,
+            egui_ctx,
+            logs,
+        } = args;
+        self.repaint_ctx = Some(egui_ctx.clone());
+        if project.setups.is_empty() {
+            return;
+        }
+        let any_ready = (0..project.setups.len())
+            .any(|si| !collect_ready_setup_operations(project, si, cache, cad_revision).is_empty());
+        if !any_ready {
+            logs.push(
+                "Cannot simulate all Setups: generate clean toolpaths first (Ctrl+G).".to_string(),
+            );
+            return;
+        }
+
+        self.cancel_in_flight();
+        let run_id = self.next_run_id;
+        self.next_run_id += 1;
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        let progress_repaint_ctx = egui_ctx.clone();
+        let progress_tracker = Arc::new(SimProgressTracker::with_callback(Arc::new(move || {
+            progress_repaint_ctx.request_repaint();
+        })));
+        self.in_flight = Some(InFlightSim {
+            run_id,
+            started_at: Instant::now(),
+            cancel: Arc::clone(&cancel_flag),
+            progress: Arc::clone(&progress_tracker),
+        });
+
+        let active_signature =
+            self.compute_setup_sim_signature(project, setup_idx, cache, cad_revision);
+        let engine = self.engine;
+        let backend_choice = self.backend_choice;
+        let resolution = self.resolution;
+        let verify_config = self.verify_config;
+        let proj_owned = project.clone();
+        let cache_owned = cache.clone();
+        let proj_dir_owned = project_dir.map(std::path::Path::to_path_buf);
+
+        logs.push(format!(
+            "Simulating all {} Setup(s) via {} [{}] at {} resolution on background worker...",
+            proj_owned.setups.len(),
+            engine.label(),
+            backend_choice.label(),
+            resolution.label_for_engine(engine),
+        ));
+
+        let tx = self.tx.clone();
+        rayon::spawn(move || {
+            let t0 = Instant::now();
+            let res = simulate_all_setups_with_verify_and_progress(
+                &proj_owned,
+                &cad_doc,
+                cad_revision,
+                &cache_owned,
+                proj_dir_owned.as_deref(),
+                resolution,
+                engine,
+                backend_choice,
+                verify_config,
+                Some(&cancel_flag),
+                Some(progress_tracker.full_scope()),
+            );
+            let mapped = match res {
+                Ok(sims) => Ok(proj_owned
+                    .setups
+                    .iter()
+                    .enumerate()
+                    .zip(sims)
+                    .map(|((idx, s), sim)| MultiSetupSimEntry {
+                        setup_idx: idx,
+                        setup_id: s.id.clone(),
+                        setup_name: s.name.clone(),
+                        result: Arc::new(sim),
+                    })
+                    .collect()),
+                Err(e) if e.contains("cancelled") => return,
+                Err(e) => Err(e),
+            };
+            let _ = tx.send(SimWorkerMsg::AllSetupsFinished {
+                run_id,
+                active_setup_idx: setup_idx,
+                active_signature,
+                engine,
+                resolution,
                 elapsed: t0.elapsed(),
                 result: mapped,
             });
@@ -790,6 +909,84 @@ impl SimulationPanelState {
                         Err(err) => {
                             logs.push(format!(
                                 "ERROR during {} simulation after {wall}: {err}",
+                                engine.label()
+                            ));
+                        }
+                    }
+                }
+                SimWorkerMsg::AllSetupsFinished {
+                    run_id,
+                    active_setup_idx,
+                    active_signature,
+                    engine,
+                    resolution,
+                    elapsed,
+                    result,
+                } => {
+                    if self
+                        .in_flight
+                        .as_ref()
+                        .is_some_and(|job| job.run_id == run_id)
+                    {
+                        self.in_flight = None;
+                    } else {
+                        continue;
+                    }
+                    let wall = format_exec_duration(elapsed);
+                    match result {
+                        Ok(entries) => {
+                            let total_crit: usize = entries
+                                .iter()
+                                .map(|e| e.result.critical_error_count())
+                                .sum();
+                            let total_warn: usize =
+                                entries.iter().map(|e| e.result.warning_count()).sum();
+                            let total_time: f64 = entries
+                                .iter()
+                                .map(|e| e.result.timeline.total_time_sec)
+                                .sum();
+                            let tol_mm = self.heatmap_tolerance_mm.clamp(1e-4, 50.0);
+                            let cumulative_error_report = entries.iter().rev().find_map(|e| {
+                                let base = e.result.error_report.as_ref()?;
+                                if (base.tolerance_mm - tol_mm).abs() <= 1e-6 {
+                                    Some(base.clone())
+                                } else {
+                                    e.result
+                                        .compute_error_report_at_tolerance(tol_mm)
+                                        .or_else(|| Some(base.clone()))
+                                }
+                            });
+                            logs.push(format!(
+                                "Simulated all {} Setup(s) in {wall} ({}) — Total Cycle {}, {total_crit} critical error(s), {total_warn} warning(s).",
+                                entries.len(),
+                                engine.label(),
+                                format_cycle_time_hms(total_time),
+                            ));
+                            if let Some(active_entry) = entries
+                                .iter()
+                                .find(|e| e.setup_idx == active_setup_idx)
+                                .or_else(|| entries.last())
+                            {
+                                self.current_time_sec = active_entry.result.timeline.total_time_sec;
+                                self.is_playing = false;
+                                self.active_run_id = run_id;
+                                self.active_setup_idx = active_entry.setup_idx;
+                                self.active_signature = active_signature;
+                                self.active_result = Some(Arc::clone(&active_entry.result));
+                                self.clear_stock_display_cache();
+                            }
+                            self.multi_setup_summary = Some(MultiSetupSimSummary {
+                                engine,
+                                resolution,
+                                elapsed,
+                                setups: entries,
+                                cumulative_error_report,
+                            });
+                            completed_new = true;
+                        }
+                        Err(err) => {
+                            logs.push(format!(
+                                "ERROR during multi-setup {} simulation after {wall}: {err}",
                                 engine.label()
                             ));
                         }
