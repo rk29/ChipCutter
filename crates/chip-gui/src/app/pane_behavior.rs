@@ -1,8 +1,7 @@
 use std::path::Path;
 
 use chip_cad::{CurveKind, PickFilter, PickTarget, SurfaceKind};
-use chip_cam::WcsOriginMode;
-use chip_sim::SimDiagnostic;
+use chip_cam::{MeasureSnapTarget, WcsOriginMode, apply_machinability_fix};
 
 use crate::{
     app::{ChipCutterApp, viewport_controller::SketchAuthorInteractionInput},
@@ -10,12 +9,15 @@ use crate::{
     panels::{
         InspectorFocus, OperationTab, SetupTab, ViewportPickMode,
         browser::{BrowserAction, CamBrowserCtx, show_cam_browser},
-        diagnostics::show_diagnostics_panel,
+        diagnostics::{DiagnosticsPanelAction, show_diagnostics_panel},
         gcode_preview::{GCodePanelCtx, GCodeUiAction},
         keepout_inspector::{KeepOutInspectorAction, KeepOutInspectorCtx, show_keepout_inspector},
         model_inspector::{ModelInspectorCtx, show_model_inspector},
         operation_inspector::{
-            OperationInspectorAction, OperationInspectorCtx, show_operation_inspector,
+            OperationInspectorAction, OperationInspectorCtx,
+            avoid_card::mark_ops_dirty_with_rest,
+            machinability_card::{evaluate_operation_machinability, primary_fixable_finding},
+            show_operation_inspector,
         },
         project_properties::{ProjectPropertiesCtx, show_project_inspector},
         project_tool_inspector::{
@@ -62,6 +64,14 @@ impl egui_tiles::Behavior<WorkspacePane> for PaneBehavior<'_> {
 impl PaneBehavior<'_> {
     fn ui_cam_browser(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
+        let active_machine = self.app.active_machine().cloned();
+        let resolved_active_setup = self
+            .app
+            .cached_frame_geo
+            .as_ref()
+            .and_then(|fg| fg.resolved_setup.as_ref())
+            .and_then(|r| r.as_ref().ok())
+            .cloned();
         egui::Frame::NONE.inner_margin(8.0).show(ui, |ui| {
             let eff_cad = self.app.effective_cad_arc();
             let cad_ref = self.app.model.as_ref().map(|m| m.doc.as_ref());
@@ -71,6 +81,8 @@ impl PaneBehavior<'_> {
                 CamBrowserCtx {
                     project: &mut self.app.project,
                     global_tools: &self.app.global_tools,
+                    active_machine: active_machine.as_ref(),
+                    resolved_active_setup: resolved_active_setup.as_ref(),
                     history: &mut self.app.history,
                     toolpath_cache: &self.app.toolpath_cache,
                     cad_doc: cad_ref,
@@ -815,6 +827,12 @@ impl PaneBehavior<'_> {
                             std::borrow::Cow::Borrowed(rs)
                         }
                     });
+                    let active_machine = self.app.active_machine().cloned();
+                    let force_expand_machinability = self
+                        .app
+                        .self_test
+                        .as_ref()
+                        .is_some_and(|st| st.capture.expand_machinability);
                     let op_action = show_operation_inspector(
                         ui,
                         OperationInspectorCtx {
@@ -822,6 +840,7 @@ impl PaneBehavior<'_> {
                             setup_idx,
                             op_idx,
                             global_tools: &self.app.global_tools,
+                            active_machine: active_machine.as_ref(),
                             history: &mut self.app.history,
                             cad_doc: cad_ref,
                             resolved_setup: eff_resolved.as_deref(),
@@ -835,6 +854,8 @@ impl PaneBehavior<'_> {
                             editing_shared_avoid_id: &mut self.app.editing_shared_avoid_id,
                             lock_chipload: &mut self.app.lock_chipload,
                             show_z_planes: &mut self.app.show_z_planes,
+                            show_reach_heatmap: &mut self.app.highlight.show_reach_heatmap,
+                            force_expand_machinability,
                             auto_rotate_indexed_op: &mut self.app.prefs.auto_rotate_indexed_op,
                             open_tool_manager: &mut self.app.modals.tool_library.open,
                             sim_engine: self.app.sim_panel.engine,
@@ -1315,15 +1336,16 @@ impl PaneBehavior<'_> {
     }
 
     fn ui_diagnostics(&mut self, ui: &mut egui::Ui) {
-        let mut jump_diag: Option<SimDiagnostic> = None;
+        let mut diag_action: Option<DiagnosticsPanelAction> = None;
         let active_machine = self.app.active_machine().cloned();
         let loaded_cad = self.app.model.as_ref().map(|m| m.doc.as_ref());
         egui::Frame::NONE.inner_margin(6.0).show(ui, |ui| {
             let cad_rev = self.app.effective_cad_arc().map_or(0, |(_, r)| r);
-            jump_diag = show_diagnostics_panel(
+            diag_action = show_diagnostics_panel(
                 ui,
                 &self.app.project,
                 self.app.active_setup_idx,
+                &self.app.global_tools,
                 &self.app.toolpath_cache,
                 cad_rev,
                 self.app.sim_panel.active_result.as_deref(),
@@ -1332,16 +1354,60 @@ impl PaneBehavior<'_> {
                 &self.app.logs,
             );
         });
-        if let Some(diag) = jump_diag {
-            self.app.jump_to_sim_diagnostic(&diag);
+        if let Some(action) = diag_action {
+            match action {
+                DiagnosticsPanelAction::JumpToSimDiagnostic(diag) => {
+                    self.app.jump_to_sim_diagnostic(&diag);
+                }
+                DiagnosticsPanelAction::FocusOperation { setup_idx, op_idx } => {
+                    self.app.active_setup_idx = setup_idx;
+                    self.app.inspector_focus = InspectorFocus::Operation { setup_idx, op_idx };
+                    self.app.op_tab = OperationTab::Tool;
+                    self.app.pick_mode = ViewportPickMode::InspectEntity;
+                    self.app.cached_frame_geo = None;
+                }
+                DiagnosticsPanelAction::ApplyMachinabilityFix {
+                    setup_idx,
+                    op_idx,
+                    fix,
+                } => {
+                    if let Some(setup) = self.app.project.setups.get(setup_idx)
+                        && op_idx < setup.operations.len()
+                    {
+                        let op_name = setup.operations[op_idx].name.clone();
+                        let fix_desc = fix.label();
+                        let pre_doc = self.app.project.clone();
+                        if apply_machinability_fix(
+                            &mut self.app.project.setups[setup_idx].operations[op_idx],
+                            &fix,
+                        ) {
+                            self.app.history.record_before_edit(
+                                "Apply Safe Machinability Fix",
+                                None,
+                                &pre_doc,
+                            );
+                            mark_ops_dirty_with_rest(
+                                &mut self.app.project.setups[setup_idx],
+                                &[op_idx],
+                            );
+                            self.app
+                                .logs
+                                .push(format!("Applied safe fix to '{op_name}': {fix_desc}."));
+                            self.app.cached_frame_geo = None;
+                        }
+                    }
+                }
+            }
         }
     }
 }
 
 impl ChipCutterApp {
     pub(crate) fn handle_self_test(&mut self, ctx: &egui::Context) {
-        let is_busy =
-            self.dispatcher.is_busy() || self.sim_panel.is_busy() || self.sim_panel.is_remeshing();
+        let is_busy = self.dispatcher.is_busy()
+            || self.sim_panel.is_busy()
+            || self.sim_panel.is_remeshing()
+            || self.reach_in_flight_key.is_some();
         let has_geo = self.has_geometry();
         let ready = has_geo
             || self.modals.welcome.open
@@ -1483,6 +1549,10 @@ impl ChipCutterApp {
 
         if let Some(focus) = capture.focus {
             match focus {
+                CaptureFocus::Project => {
+                    self.inspector_focus = InspectorFocus::Project;
+                    self.cached_frame_geo = None;
+                }
                 CaptureFocus::Setup { setup_idx, tab } => {
                     if setup_idx < self.project.setups.len() {
                         self.active_setup_idx = setup_idx;
@@ -1544,6 +1614,49 @@ impl ChipCutterApp {
         }
         if let Some(ghost) = capture.ghost_part {
             self.highlight.ghost_part = ghost;
+        }
+        if capture.reach_heatmap {
+            self.highlight.show_reach_heatmap = true;
+        }
+        if capture.apply_safe_fixes
+            && let InspectorFocus::Operation { setup_idx, op_idx } = self.inspector_focus
+        {
+            let active_machine = self.active_machine().cloned();
+            let rs_opt = self
+                .ensure_frame_geo_cached()
+                .resolved_setup
+                .as_ref()
+                .and_then(|r| r.as_ref().ok())
+                .cloned();
+            for _ in 0..4 {
+                let cad_ref = self.model.as_ref().map(|m| m.doc.as_ref());
+                let fix_opt = evaluate_operation_machinability(
+                    &self.project,
+                    setup_idx,
+                    op_idx,
+                    &self.global_tools,
+                    active_machine.as_ref(),
+                    rs_opt.as_ref(),
+                    cad_ref,
+                )
+                .and_then(|rep| {
+                    primary_fixable_finding(&rep).and_then(|f| f.suggested_fix.clone())
+                });
+                let Some(fix) = fix_opt else {
+                    break;
+                };
+                if !apply_machinability_fix(
+                    &mut self.project.setups[setup_idx].operations[op_idx],
+                    &fix,
+                ) {
+                    break;
+                }
+                mark_ops_dirty_with_rest(&mut self.project.setups[setup_idx], &[op_idx]);
+            }
+            self.cached_frame_geo = None;
+        }
+        if capture.measure_demo {
+            self.seed_capture_measure_demo();
         }
         if let Some(show_stock) = capture.show_sim_stock {
             self.sim_panel.show_machined_stock = show_stock;
@@ -1701,5 +1814,107 @@ impl ChipCutterApp {
             }
         }
         needs_resim
+    }
+
+    fn seed_capture_measure_demo(&mut self) {
+        self.pick_mode = ViewportPickMode::Measure;
+        self.measure_state.reset_all();
+        let rs_opt = self
+            .ensure_frame_geo_cached()
+            .resolved_setup
+            .as_ref()
+            .and_then(|r| r.as_ref().ok())
+            .cloned();
+        let (Some(model), Some(rs)) = (&self.model, rs_opt) else {
+            return;
+        };
+        let doc = &model.doc;
+
+        // Prefer two distinct internal cylindrical holes (center-to-center hole pitch)
+        let mut holes: Vec<MeasureSnapTarget> = Vec::new();
+        for face in &doc.faces {
+            if let SurfaceKind::Cylinder {
+                axis_origin_mm,
+                axis_dir,
+                radius_mm,
+                is_internal: true,
+            } = face.surface
+            {
+                let origin_wcs = rs.frame.world_to_local_point(axis_origin_mm);
+                let dir_wcs = rs.frame.world_to_local_dir(axis_dir).normalize_or_zero();
+                let dup = holes.iter().any(|h| match h {
+                    MeasureSnapTarget::BRepCylindricalFace {
+                        axis_origin_wcs, ..
+                    } => {
+                        (axis_origin_wcs.x - origin_wcs.x).hypot(axis_origin_wcs.y - origin_wcs.y)
+                            < 0.25
+                    }
+                    _ => false,
+                });
+                if !dup {
+                    let bmin = rs.frame.world_to_local_point(face.aabb_mm.min);
+                    let bmax = rs.frame.world_to_local_point(face.aabb_mm.max);
+                    let top_z = bmin.z.max(bmax.z);
+                    let bot_z = bmin.z.min(bmax.z);
+                    holes.push(MeasureSnapTarget::BRepCylindricalFace {
+                        face_id: face.id,
+                        axis_origin_wcs: chip_math::DVec3::new(origin_wcs.x, origin_wcs.y, top_z),
+                        axis_dir_wcs: dir_wcs,
+                        diameter_mm: radius_mm * 2.0,
+                        depth_mm: (top_z - bot_z).abs(),
+                        is_internal: true,
+                        top_z_wcs: top_z,
+                        bottom_z_wcs: bot_z,
+                    });
+                }
+            }
+        }
+        if holes.len() >= 2 {
+            let mut best = (0usize, 1usize, -1.0_f64);
+            for i in 0..holes.len() {
+                for j in (i + 1)..holes.len() {
+                    let d = holes[i].anchor_wcs().distance(holes[j].anchor_wcs());
+                    if d > best.2 {
+                        best = (i, j, d);
+                    }
+                }
+            }
+            self.measure_state.on_click_target(holes[best.0].clone());
+            self.measure_state.on_click_target(holes[best.1].clone());
+            self.highlight.measure_state = Some(self.measure_state.clone());
+            return;
+        }
+
+        // Fallback: top horizontal planar face vs deepest horizontal pocket floor
+        let mut planes: Vec<MeasureSnapTarget> = Vec::new();
+        for face in &doc.faces {
+            if let SurfaceKind::Plane { origin_mm, normal } = face.surface {
+                let n_wcs = rs.frame.world_to_local_dir(normal).normalize_or_zero();
+                if n_wcs.z > 0.99 {
+                    let c_world = 0.5 * (face.aabb_mm.min + face.aabb_mm.max);
+                    let pt_wcs = rs.frame.world_to_local_point(c_world);
+                    let z_wcs = rs.frame.world_to_local_point(origin_mm).z;
+                    planes.push(MeasureSnapTarget::BRepPlanarFace {
+                        face_id: face.id,
+                        point_wcs: chip_math::DVec3::new(pt_wcs.x, pt_wcs.y, z_wcs),
+                        normal_wcs: n_wcs,
+                        z_wcs,
+                        area_mm2: face.area_mm2,
+                    });
+                }
+            }
+        }
+        planes.sort_by(|a, b| {
+            let za = a.anchor_wcs().z;
+            let zb = b.anchor_wcs().z;
+            zb.total_cmp(&za)
+        });
+        if let (Some(top), Some(bot)) = (planes.first(), planes.last())
+            && (top.anchor_wcs().z - bot.anchor_wcs().z).abs() > 0.1
+        {
+            self.measure_state.on_click_target(top.clone());
+            self.measure_state.on_click_target(bot.clone());
+            self.highlight.measure_state = Some(self.measure_state.clone());
+        }
     }
 }

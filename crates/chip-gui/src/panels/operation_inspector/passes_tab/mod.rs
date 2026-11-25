@@ -8,15 +8,18 @@ pub mod vcarve;
 use std::ops::RangeInclusive;
 
 use chip_cam::{
-    FeedOptimizationConfig, MachiningBoundaryMode, Operation, OperationKind, OperationRotaryMode,
-    ResolvedRotaryConfig, RestMachiningConfig, RestMachiningMode, StrategyParams,
-    compute_index_angle_for_normal,
+    FeedOptimizationConfig, MachinabilityFix, MachiningBoundaryMode, Operation, OperationKind,
+    OperationMachinabilityReport, OperationRotaryMode, ResolvedRotaryConfig, RestMachiningConfig,
+    RestMachiningMode, StrategyParams, compute_index_angle_for_normal,
 };
 use chip_math::{DVec3, DisplayUnit, EvalContext, ParamLength};
 use chip_tools::CutterGeometry;
 
 pub use self::vcarve::ClearingToolCandidate;
 
+use super::machinability_card::{
+    PassesMachinabilityBannerAction, show_passes_machinability_banner,
+};
 use crate::{
     panels::ViewportPickMode,
     widgets::{
@@ -207,7 +210,9 @@ pub struct PassesTabCtx<'a> {
     pub clearing_tool_candidates: &'a [ClearingToolCandidate],
     pub assigned_tool_geom: Option<&'a CutterGeometry>,
     pub tool_feed_preview: Option<(f64, f64)>,
+    pub primary_hole_diameter_mm: Option<f64>,
     pub resolved_thread_depth_mm: Option<f64>,
+    pub machinability_report: Option<&'a OperationMachinabilityReport>,
     pub sim_engine: chip_sim::SimEngineKind,
     pub display_unit: DisplayUnit,
     pub setup_idx: usize,
@@ -217,6 +222,8 @@ pub struct PassesTabCtx<'a> {
     pub selected_face_normal_wcs: Option<DVec3>,
     pub auto_rotate_indexed_op: &'a mut bool,
     pub pick_mode: &'a mut ViewportPickMode,
+    pub applied_fix: &'a mut Option<MachinabilityFix>,
+    pub switch_to_tool_tab: &'a mut bool,
     pub mutated_label: &'a mut Option<&'static str>,
 }
 
@@ -283,7 +290,9 @@ pub fn show_passes_tab(ui: &mut egui::Ui, ctx: PassesTabCtx<'_>) {
         clearing_tool_candidates,
         assigned_tool_geom,
         tool_feed_preview,
+        primary_hole_diameter_mm,
         resolved_thread_depth_mm,
+        machinability_report,
         sim_engine,
         display_unit,
         setup_idx,
@@ -293,8 +302,18 @@ pub fn show_passes_tab(ui: &mut egui::Ui, ctx: PassesTabCtx<'_>) {
         selected_face_normal_wcs,
         auto_rotate_indexed_op,
         pick_mode,
+        applied_fix,
+        switch_to_tool_tab,
         mutated_label,
     } = ctx;
+
+    if let Some(report) = machinability_report {
+        match show_passes_machinability_banner(ui, report, setup_idx, op_idx) {
+            PassesMachinabilityBannerAction::None => {}
+            PassesMachinabilityBannerAction::ApplyFix(fix) => *applied_fix = Some(fix),
+            PassesMachinabilityBannerAction::InspectToolTab => *switch_to_tool_tab = true,
+        }
+    }
 
     let mut item = PassItemCtx {
         setup_idx,
@@ -431,6 +450,8 @@ pub fn show_passes_tab(ui: &mut egui::Ui, ctx: PassesTabCtx<'_>) {
     }
 
     let has_explicit_selections = !op.selections.is_empty();
+    let radial_stock_mm = op.passes.stock_to_leave_radial.value_mm;
+    let tool_diameter_mm = assigned_tool_geom.map(CutterGeometry::cutting_diameter_mm);
     match op.strategy_mut() {
         StrategyParams::Facing(p) => milling_2d::show_facing_params(ui, p, item),
         StrategyParams::Contour2D(p) => milling_2d::show_contour2d_params(
@@ -450,7 +471,16 @@ pub fn show_passes_tab(ui: &mut egui::Ui, ctx: PassesTabCtx<'_>) {
                 item,
             },
         ),
-        StrategyParams::DrillBore(p) => milling_2d::show_drill_bore_params(ui, p, item),
+        StrategyParams::DrillBore(p) => milling_2d::show_drill_bore_params(
+            ui,
+            milling_2d::DrillBoreUiCtx {
+                p,
+                tool_diameter_mm,
+                radial_stock_mm,
+                primary_hole_diameter_mm,
+                item,
+            },
+        ),
         StrategyParams::ChamferTrace(p) => milling_2d::show_chamfer_trace_params(ui, p, item),
         StrategyParams::VCarve(p) => vcarve::show_vcarve_params(
             ui,

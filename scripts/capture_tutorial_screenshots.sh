@@ -1462,6 +1462,232 @@ capture_22_undercut_milling() {
     --capture-sim-progress 1.0
 }
 
+capture_23_physics_machinability() {
+  local dir="docs/images/tutorials/23-physics-machinability-measurement"
+  local pocket_step="$REPO_ROOT/docs/tutorials/assets/05-adaptive-pocket.step"
+  local drill_tmp_step="$TMP_PROJ_DIR/04-drill-bore-plate.step"
+  local proj_physics="$TMP_PROJ_DIR/23-physics-6063.chip.toml"
+  local proj_measure="$TMP_PROJ_DIR/23-measure-drill.chip.toml"
+  local proj_reach="$TMP_PROJ_DIR/23-reach-pocket.chip.toml"
+
+  # Build a realistic Carvera Air + Aluminum 6063-T5 Extrusion project featuring:
+  # - Op 1: Hazardous high-L/D (9.5x) 3.175mm x 25mm 1FL O-flute pocket cut (triggers Critical snap/stall)
+  # - Op 2: Helical Bore operation exposing Inner-Arc Feed Comp + Chip-Clear Retract
+  cat > "$proj_physics" <<EOF
+schema_version = 3
+project_name = "6063-T5 Extrusion Bracket — Physics Advisor"
+display_units = "millimeter"
+machine_id = "carvera-air"
+
+[workpiece_material]
+material_id = "aluminum-6063-t5"
+
+[[models]]
+id = "model_1"
+path = "$pocket_step"
+sha256 = ""
+
+[[tools]]
+id = "t1_carvera_1fl_long"
+name = "3.175mm x 25mm 1FL O-Flute (Long Reach)"
+native_unit = "millimeter"
+tool_number = 1
+length_offset_number = 1
+diameter_offset_number = 1
+spindle_direction = "cw"
+default_coolant = "air_blast"
+stickout_length_mm = 30.0
+
+[tools.geometry]
+type = "flat_endmill"
+diameter_mm = 3.175
+flute_length_mm = 25.0
+overall_length_mm = 55.0
+shank_diameter_mm = 3.175
+flutes = 1
+
+[[tools.presets]]
+id = "al6063_conservative"
+name = "Aluminum 6063-T5 — Deep Slot"
+material = "Aluminum 6063-T5 Extrusion"
+spindle_rpm = 12000.0
+surface_speed_m_min = 119.7
+cutting_feed_mm_min = 300.0
+chipload_mm_tooth = 0.025
+lead_feed_mm_min = 240.0
+ramp_feed_mm_min = 160.0
+plunge_feed_mm_min = 120.0
+default_stepdown_mm = 0.5
+default_stepover_mm = 1.6
+coolant_override = "air_blast"
+
+[[setups]]
+id = "setup_1"
+name = "Setup 1 — 6063-T5 Extrusion"
+wcs_slot = "G54"
+post_profile = "grbl"
+
+[setups.stock]
+type = "relative_box"
+symmetric_xy = true
+side_pos_x = { value_mm = 2.0 }
+side_neg_x = { value_mm = 2.0 }
+side_pos_y = { value_mm = 2.0 }
+side_neg_y = { value_mm = 2.0 }
+top_offset_z = { value_mm = 0.0 }
+bottom_offset_z = { value_mm = 0.0 }
+
+[[setups.operations]]
+id = "op_1_pocket_hazard"
+name = "Deep Pocket Roughing (High L/D)"
+kind = "pocket_2d"
+tool_id = "t1_carvera_1fl_long"
+preset_id = "al6063_conservative"
+
+[setups.operations.feed_overrides]
+spindle_rpm = 12000.0
+cutting_feed_mm_min = 320.0
+stepdown_mm = 6.0
+stepover_mm = 3.0
+
+[setups.operations.passes]
+multiple_depths = true
+max_stepdown = { value_mm = 6.0 }
+
+[setups.operations.strategy]
+strategy_kind = "pocket_2d"
+stepover = { value_mm = 3.0 }
+
+[[setups.operations]]
+id = "op_2_helical_bore"
+name = "Deep Mounting Bore (Helical)"
+kind = "drill_bore"
+tool_id = "t1_carvera_1fl_long"
+preset_id = "al6063_conservative"
+
+[setups.operations.passes]
+multiple_depths = true
+max_stepdown = { value_mm = 0.5 }
+
+[setups.operations.strategy]
+strategy_kind = "drill_bore"
+mode = "helical_bore"
+bore_finish_pass = false
+bore_inner_arc_feed_comp = true
+bore_chip_clear_depth = { value_mm = 6.0 }
+EOF
+
+  # Reach / Min-R showcase project: 6mm Flat Endmill with 7mm flute length & 9mm stickout
+  # against the 10mm-deep sharp-corner pocket in 05-adaptive-pocket.step so both tight corners
+  # (amber) and deep flute/stickout zones (amber/crimson) light up clearly.
+  cat > "$proj_reach" <<EOF
+schema_version = 3
+project_name = "Reach & Min-Radius Inspection"
+display_units = "millimeter"
+machine_id = "generic"
+
+[workpiece_material]
+material_id = "aluminum-6061-t6"
+
+[[models]]
+id = "model_1"
+path = "$pocket_step"
+sha256 = ""
+
+[[tools]]
+id = "t_reach_6mm"
+name = "6mm 3FL Stub Flat (7mm Flute / 9mm Stickout)"
+native_unit = "millimeter"
+tool_number = 1
+length_offset_number = 1
+diameter_offset_number = 1
+spindle_direction = "cw"
+default_coolant = "mist"
+stickout_length_mm = 9.0
+
+[tools.geometry]
+type = "flat_endmill"
+diameter_mm = 6.0
+flute_length_mm = 7.0
+overall_length_mm = 40.0
+shank_diameter_mm = 6.0
+flutes = 3
+
+[[setups]]
+id = "setup_1"
+name = "Setup 1"
+wcs_slot = "G54"
+post_profile = "grbl"
+
+[[setups.operations]]
+id = "op_1_pocket_reach"
+name = "Pocket Reach Check"
+kind = "pocket_2d"
+tool_id = "t_reach_6mm"
+
+[setups.operations.strategy]
+strategy_kind = "pocket_2d"
+EOF
+
+  "$CLI_BIN" generate-sample-step "$drill_tmp_step" --tutorial 04-drill-bore --project-out "$proj_measure"
+
+  # 1. Project Inspector showing project-level Workpiece Material (Aluminum 6063-T5 Extrusion) & physics summary
+  capture_shot "$dir/01-project-material-inspector.png" \
+    "$proj_physics" \
+    --capture-view iso \
+    --capture-focus project \
+    --capture-sim-stock false \
+    --capture-sim-cutter false
+
+  # 2. Operation Inspector [Tool] Machinability & Safety card flagging Critical high-L/D snap & spindle stall hazard
+  capture_shot "$dir/02-machinability-hazard-card.png" \
+    "$proj_physics" \
+    --capture-view iso \
+    --capture-focus op:0:tool \
+    --capture-expand-machinability \
+    --capture-sim-stock false \
+    --capture-sim-cutter false
+
+  # 3. Operation Inspector [Tool] after applying 1-click Apply Safe Fix (clean OK state)
+  capture_shot "$dir/03-machinability-safe-ok.png" \
+    "$proj_physics" \
+    --capture-view iso \
+    --capture-focus op:0:tool \
+    --capture-apply-safe-fixes \
+    --capture-expand-machinability \
+    --capture-sim-stock false \
+    --capture-sim-cutter false
+
+  # 4. Helical Bore [Passes] safety controls + Setup-wide Diagnostics & Log Machinability table
+  capture_shot "$dir/04-helical-bore-passes-diagnostics.png" \
+    "$proj_physics" \
+    --capture-view iso \
+    --capture-focus op:1:passes \
+    --capture-pane diagnostics \
+    --capture-expand-machinability \
+    --capture-sim-stock false \
+    --capture-sim-cutter false
+
+  # 5. 3D viewport Measure mode showing exact-f64 hole-to-hole leader line & floating readout card
+  capture_shot "$dir/05-viewport-measure-mode.png" \
+    "$proj_measure" \
+    --capture-view iso \
+    --capture-focus op:0:passes \
+    --capture-measure-demo \
+    --capture-sim-stock false \
+    --capture-sim-cutter false
+
+  # 6. 3D viewport Reach / Min-R heatmap overlay (amber tight corners & crimson deep stickout zones)
+  capture_shot "$dir/06-viewport-reach-heatmap.png" \
+    "$proj_reach" \
+    --capture-view iso \
+    --capture-focus op:0:tool \
+    --capture-reach-heatmap \
+    --capture-expand-machinability \
+    --capture-sim-stock false \
+    --capture-sim-cutter false
+}
+
 if [[ -n "$TUTORIAL" ]]; then
   case "$TUTORIAL" in
     00-getting-started)
@@ -1533,6 +1759,9 @@ if [[ -n "$TUTORIAL" ]]; then
     22-undercut-tslot-dovetail-lollipop)
       capture_22_undercut_milling
       ;;
+    23-physics-machinability-measurement)
+      capture_23_physics_machinability
+      ;;
     *)
       echo "Unknown tutorial slug: $TUTORIAL" >&2
       exit 2
@@ -1580,6 +1809,9 @@ else
       capture_21_3d_deburr
       capture_22_undercut_milling
       ;;
+    96)
+      capture_23_physics_machinability
+      ;;
     all)
       capture_00_getting_started
       capture_01_facing
@@ -1604,9 +1836,10 @@ else
       capture_20_gpu_feed_opt
       capture_21_3d_deburr
       capture_22_undercut_milling
+      capture_23_physics_machinability
       ;;
     *)
-      echo "Unsupported milestone: $MILESTONE (available: 13, 14, 15, 22, 23, 24, 47, 63, 69, 70, all)" >&2
+      echo "Unsupported milestone: $MILESTONE (available: 13, 14, 15, 22, 23, 24, 47, 63, 69, 70, 96, all)" >&2
       exit 2
       ;;
   esac

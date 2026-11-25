@@ -603,7 +603,7 @@ Replaces the left-hand CAM Browser's flat card stack with a unified, collapsible
 
 ---
 
-## Phase 26 — Physics-Backed Safety, Project Material, & Machinability Inspector (Planned — M93–M96)
+## Phase 26 — Physics-Backed Safety, Project Material, & Machinability Inspector (Completed — M93–M96)
 
 Brings real-world cutting physics, tool-breakage protection, and in-viewport geometric inspection into ChipCutter so hobby and benchtop machinists catch spindle stalls, long-reach cutter deflection/snaps, dry aluminum chip-welding, helical bore wall overloads, tight internal corners, and flute/stickout reach violations before running a job.
 

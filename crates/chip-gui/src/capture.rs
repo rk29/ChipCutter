@@ -40,6 +40,7 @@ impl CaptureView {
 /// Inspector focus and active sub-tab applied before capturing a headless screenshot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CaptureFocus {
+    Project,
     Setup {
         setup_idx: usize,
         tab: SetupTab,
@@ -59,6 +60,7 @@ pub enum CaptureFocus {
 
 impl CaptureFocus {
     /// Parse a CLI focus token:
+    /// - `project`
     /// - `setup:<wcs|stock|heights>` or `setup:<setup_idx>:<wcs|stock|heights>`
     /// - `op:<op_idx>:<tool|geometry|heights|passes|linking>` or `op:<setup_idx>:<op_idx>:<tab>`
     /// - `sketch:<sketch_idx>`
@@ -67,6 +69,7 @@ impl CaptureFocus {
         let trimmed = raw.trim();
         let parts: Vec<&str> = trimmed.split(':').collect();
         match parts.as_slice() {
+            ["project"] => Ok(Self::Project),
             ["setup", tab_str] => Ok(Self::Setup {
                 setup_idx: 0,
                 tab: parse_setup_tab(tab_str)?,
@@ -93,7 +96,7 @@ impl CaptureFocus {
                 model_idx: parse_index(model_str, "model index")?,
             }),
             _ => Err(format!(
-                "invalid --capture-focus '{trimmed}'; expected 'setup:<wcs|stock|heights>', 'op:<idx>:<tool|geometry|heights|passes|linking>', 'sketch:<idx>', or 'model[:idx]'"
+                "invalid --capture-focus '{trimmed}'; expected 'project', 'setup:<wcs|stock|heights>', 'op:<idx>:<tool|geometry|heights|passes|linking>', 'sketch:<idx>', or 'model[:idx]'"
             )),
         }
     }
@@ -264,6 +267,10 @@ pub struct CaptureSpec {
     pub show_27pt_dots: Option<bool>,
     pub show_fixtures: Option<bool>,
     pub ghost_part: Option<bool>,
+    pub reach_heatmap: bool,
+    pub measure_demo: bool,
+    pub expand_machinability: bool,
+    pub apply_safe_fixes: bool,
     pub thumb_path: Option<std::path::PathBuf>,
 }
 
@@ -326,6 +333,7 @@ mod tests {
 
     #[test]
     fn parses_capture_focus_variants() {
+        assert_eq!(CaptureFocus::parse("project"), Ok(CaptureFocus::Project));
         assert_eq!(
             CaptureFocus::parse("setup:wcs"),
             Ok(CaptureFocus::Setup {

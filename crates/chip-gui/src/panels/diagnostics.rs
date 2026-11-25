@@ -1,19 +1,47 @@
 use std::time::{Duration, Instant};
 
 use chip_cad::CadDocument;
-use chip_cam::OperationStatus;
+use chip_cam::{MachinabilityFix, MachinabilitySeverity, OperationStatus};
 use chip_project::{ProjectDocument, ToolpathCache};
 use chip_sim::{SetupSimulationResult, SimDiagnostic, SimSeverity};
-use chip_tools::MachineDefinition;
+use chip_tools::{MachineDefinition, ToolLibrary};
 
 use crate::{
+    panels::operation_inspector::machinability_card::{
+        evaluate_setup_machinability, primary_fixable_finding, sanitize_physics_text,
+    },
     theme::ThemeTokens,
     widgets::{StatusBadgeKind, status_badge_icon},
 };
 
+/// Action emitted by [`show_diagnostics_panel`] back to the host workspace shell.
+#[derive(Debug, Clone, PartialEq)]
+pub enum DiagnosticsPanelAction {
+    /// Jump 3D camera & simulation timeline to a crash/gouge diagnostic move.
+    JumpToSimDiagnostic(SimDiagnostic),
+    /// Focus an operation inside the right-hand Operation Inspector.
+    FocusOperation { setup_idx: usize, op_idx: usize },
+    /// Apply a deterministic 1-click safe machinability fix inside an atomic Undo snapshot.
+    ApplyMachinabilityFix {
+        setup_idx: usize,
+        op_idx: usize,
+        fix: MachinabilityFix,
+    },
+}
+
 /// Formats all Activity Log entries as a newline-delimited plain-text block for display and clipboard copy.
 pub fn format_activity_log(logs: &[String]) -> String {
     logs.join("\n")
+}
+
+fn truncate_cell_label(text: &str, max_chars: usize) -> String {
+    let count = text.chars().count();
+    if count <= max_chars || max_chars <= 3 {
+        text.to_string()
+    } else {
+        let prefix: String = text.chars().take(max_chars - 3).collect();
+        format!("{prefix}...")
+    }
 }
 
 /// Collects fast in-memory machine envelope / spindle / feedrate / rotary warnings for the active
@@ -111,26 +139,28 @@ pub fn format_cycle_time(sec: f64) -> String {
 }
 
 /// Renders the bottom **Diagnostics & Log** pane (`08-ui-viewport.md` & `06-simulation.md` §4),
-/// returning `Some(SimDiagnostic)` when the user clicks `[Jump to Move]` on a crash/gouge/warning.
+/// returning [`DiagnosticsPanelAction`] when the user clicks `[Jump to Move]`, clicks an operation
+/// row in the Setup-wide **Machinability & Tool Safety** table, or triggers a 1-click safe fix.
 #[allow(clippy::too_many_arguments)]
 pub fn show_diagnostics_panel(
     ui: &mut egui::Ui,
     project: &ProjectDocument,
     active_setup_idx: usize,
+    global_tools: &ToolLibrary,
     cache: &ToolpathCache,
     cad_revision: u64,
     sim_result: Option<&SetupSimulationResult>,
     active_machine: Option<&MachineDefinition>,
     loaded_cad: Option<&CadDocument>,
     logs: &[String],
-) -> Option<SimDiagnostic> {
+) -> Option<DiagnosticsPanelAction> {
     let tok = ThemeTokens::from_ui(ui);
     let u = project.display_units;
-    let mut jump_target: Option<SimDiagnostic> = None;
+    let mut panel_action: Option<DiagnosticsPanelAction> = None;
 
     ui.columns(2, |cols| {
-        // Left column: Simulation Crash/Gouge Diagnostics + Active Setup Toolpath Summary
-        cols[0].strong("Simulation Verification & Toolpath Summary");
+        // Left column: Machinability & Tool Safety + Simulation Crash/Gouge Diagnostics + Summary
+        cols[0].strong("Machinability, Simulation Verification & Toolpath Summary");
         cols[0].separator();
 
         if let Some(setup) = project.setups.get(active_setup_idx) {
@@ -139,9 +169,218 @@ pub fn show_diagnostics_panel(
             let machine_warnings = active_machine
                 .map(|m| collect_active_setup_machine_warnings(project, setup, m, loaded_cad))
                 .unwrap_or_default();
+            let setup_mach = evaluate_setup_machinability(
+                project,
+                active_setup_idx,
+                global_tools,
+                active_machine,
+                loaded_cad,
+            );
             egui::ScrollArea::vertical()
                 .id_salt("diag_tp_summary")
                 .show(&mut cols[0], |ui| {
+                    if let Some(mach) = &setup_mach {
+                        let active_ops: Vec<(usize, &chip_cam::OperationMachinabilityReport)> = mach
+                            .operations
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, rep)| !rep.suppressed)
+                            .collect();
+                        let (hdr_col, hdr_badge) = match mach.severity {
+                            MachinabilitySeverity::Critical => (tok.error_fg, "CRITICAL"),
+                            MachinabilitySeverity::Warning => (tok.warn_fg, "WARN"),
+                            MachinabilitySeverity::Info => (tok.info_fg, "INFO"),
+                            MachinabilitySeverity::Ok => (tok.clean_fg, "OK"),
+                        };
+                        ui.horizontal_wrapped(|ui| {
+                            ui.strong("Machinability & Tool Safety");
+                            ui.colored_label(
+                                hdr_col,
+                                format!(
+                                    "[{hdr_badge}] ({} crit, {} warn)",
+                                    mach.critical_count, mach.warning_count
+                                ),
+                            );
+                        });
+                        if active_ops.is_empty() {
+                            ui.weak("No active operations in this Setup.");
+                        } else {
+                            egui::Grid::new(("diag_machinability_table", active_setup_idx))
+                                .num_columns(8)
+                                .striped(true)
+                                .spacing([6.0, 3.0])
+                                .show(ui, |ui| {
+                                    for col_hdr in [
+                                        "Operation",
+                                        "Tool",
+                                        "L/D",
+                                        "Spindle %",
+                                        "Defl (um)",
+                                        "h_max",
+                                        "Status",
+                                        "Action",
+                                    ] {
+                                        ui.label(
+                                            egui::RichText::new(col_hdr)
+                                                .small()
+                                                .strong()
+                                                .color(tok.text_secondary),
+                                        );
+                                    }
+                                    ui.end_row();
+
+                                    for (op_idx, rep) in active_ops {
+                                        let op_full = sanitize_physics_text(&rep.op_name);
+                                        let op_short = truncate_cell_label(&op_full, 24);
+                                        let row_resp = ui
+                                            .selectable_label(false, op_short)
+                                            .on_hover_text(format!(
+                                                "{op_full}\nClick to focus this Operation in the right Inspector"
+                                            ));
+                                        if row_resp.clicked() {
+                                            panel_action =
+                                                Some(DiagnosticsPanelAction::FocusOperation {
+                                                    setup_idx: active_setup_idx,
+                                                    op_idx,
+                                                });
+                                        }
+
+                                        let tool_full = rep
+                                            .tool_name
+                                            .as_deref()
+                                            .map(sanitize_physics_text)
+                                            .unwrap_or_else(|| "(none)".to_string());
+                                        let tool_short = truncate_cell_label(&tool_full, 20);
+                                        ui.label(
+                                            egui::RichText::new(tool_short)
+                                                .small()
+                                                .color(tok.text_secondary),
+                                        )
+                                        .on_hover_text(tool_full);
+
+                                        if let Some(m) = &rep.metrics {
+                                            let ld_col = if m.deflection.stickout_ld_ratio > 6.0 {
+                                                tok.warn_fg
+                                            } else {
+                                                tok.text_primary
+                                            };
+                                            ui.label(
+                                                egui::RichText::new(format!(
+                                                    "{:.1}x",
+                                                    m.deflection.stickout_ld_ratio
+                                                ))
+                                                .small()
+                                                .monospace()
+                                                .color(ld_col),
+                                            );
+
+                                            let (sp_txt, sp_col) = match m.spindle_load_pct {
+                                                Some(pct) if pct > 100.0 => {
+                                                    (format!("{pct:.0}%"), tok.error_fg)
+                                                }
+                                                Some(pct) if pct > 70.0 => {
+                                                    (format!("{pct:.0}%"), tok.warn_fg)
+                                                }
+                                                Some(pct) => {
+                                                    (format!("{pct:.0}%"), tok.text_primary)
+                                                }
+                                                None => ("-".to_string(), tok.text_muted),
+                                            };
+                                            ui.label(
+                                                egui::RichText::new(sp_txt)
+                                                    .small()
+                                                    .monospace()
+                                                    .color(sp_col),
+                                            );
+
+                                            let defl_col = if m.deflection.tip_deflection_mm > 0.060
+                                            {
+                                                tok.error_fg
+                                            } else if m.deflection.tip_deflection_mm > 0.025 {
+                                                tok.warn_fg
+                                            } else {
+                                                tok.text_primary
+                                            };
+                                            ui.label(
+                                                egui::RichText::new(format!(
+                                                    "{:.1}",
+                                                    m.deflection.tip_deflection_um
+                                                ))
+                                                .small()
+                                                .monospace()
+                                                .color(defl_col),
+                                            );
+
+                                            ui.label(
+                                                egui::RichText::new(format!(
+                                                    "{:.3}",
+                                                    m.effective_chip_thickness_mm
+                                                ))
+                                                .small()
+                                                .monospace()
+                                                .color(tok.text_primary),
+                                            );
+                                        } else {
+                                            for _ in 0..4 {
+                                                ui.label(
+                                                    egui::RichText::new("-")
+                                                        .small()
+                                                        .color(tok.text_muted),
+                                                );
+                                            }
+                                        }
+
+                                        let (st_txt, st_col) = match rep.severity {
+                                            MachinabilitySeverity::Critical => ("CRIT", tok.error_fg),
+                                            MachinabilitySeverity::Warning => ("WARN", tok.warn_fg),
+                                            MachinabilitySeverity::Info => ("INFO", tok.info_fg),
+                                            MachinabilitySeverity::Ok => ("OK", tok.clean_fg),
+                                        };
+                                        ui.label(
+                                            egui::RichText::new(st_txt)
+                                                .small()
+                                                .strong()
+                                                .color(st_col),
+                                        );
+
+                                        if let Some(finding) = primary_fixable_finding(rep)
+                                            && let Some(fix) = &finding.suggested_fix
+                                        {
+                                            let fix_tip = format!(
+                                                "{}: {}",
+                                                sanitize_physics_text(&finding.title),
+                                                sanitize_physics_text(&fix.label())
+                                            );
+                                            if ui
+                                                .push_id(("diag_mach_fix", active_setup_idx, op_idx), |ui| {
+                                                    ui.small_button("Apply Fix")
+                                                        .on_hover_text(fix_tip)
+                                                        .clicked()
+                                                })
+                                                .inner
+                                            {
+                                                panel_action = Some(
+                                                    DiagnosticsPanelAction::ApplyMachinabilityFix {
+                                                        setup_idx: active_setup_idx,
+                                                        op_idx,
+                                                        fix: fix.clone(),
+                                                    },
+                                                );
+                                            }
+                                        } else {
+                                            ui.label(
+                                                egui::RichText::new("-")
+                                                    .small()
+                                                    .color(tok.text_muted),
+                                            );
+                                        }
+                                        ui.end_row();
+                                    }
+                                });
+                        }
+                        ui.separator();
+                    }
+
                     if !machine_warnings.is_empty() {
                         for w in &machine_warnings {
                             ui.horizontal_wrapped(|ui| {
@@ -182,7 +421,11 @@ pub fn show_diagnostics_panel(
                                         )
                                         .clicked()
                                     {
-                                        jump_target = Some(diag.clone());
+                                        panel_action = Some(
+                                            DiagnosticsPanelAction::JumpToSimDiagnostic(
+                                                diag.clone(),
+                                            ),
+                                        );
                                     }
                                     ui.colored_label(
                                         col,
@@ -422,7 +665,7 @@ pub fn show_diagnostics_panel(
         }
     });
 
-    jump_target
+    panel_action
 }
 
 #[cfg(test)]
@@ -437,9 +680,12 @@ mod tests {
         cache: &ToolpathCache,
         logs: &[String],
     ) -> egui::FullOutput {
+        let tools = ToolLibrary::default();
         let mut out = ctx.run_ui(input, |ui| {
             egui::CentralPanel::default().show(ui, |ui| {
-                show_diagnostics_panel(ui, project, 0, cache, 0, None, None, None, logs);
+                let _ = show_diagnostics_panel(
+                    ui, project, 0, &tools, cache, 0, None, None, None, logs,
+                );
             });
         });
         out.textures_delta.clear();
@@ -710,5 +956,181 @@ mod tests {
             &[],
         );
         assert!(copied_texts(&out).is_empty());
+    }
+
+    #[test]
+    fn machinability_table_renders_and_routes_row_click_and_fix() {
+        use chip_cam::{Operation, OperationKind, Setup, StockConfig, WorkOffsetSlot};
+        use chip_math::ParamLength;
+        use chip_tools::{
+            ALUMINUM_6063_T5_ID, CutterGeometry, ProjectMaterialSelection, ToolId,
+            builtin_carvera_air_machine,
+        };
+
+        let machine = builtin_carvera_air_machine();
+        let mut project = ProjectDocument::new("DiagMach");
+        project.workpiece_material = Some(ProjectMaterialSelection::builtin(ALUMINUM_6063_T5_ID));
+        project.machine_id = Some(machine.id.clone());
+
+        let mut t1 = machine.tools[0].clone();
+        t1.id = ToolId("t_long".to_string());
+        t1.name = "3.175mm 1FL Long".to_string();
+        t1.geometry = CutterGeometry::FlatEndmill {
+            diameter_mm: 3.175,
+            flutes: 1,
+            flute_length_mm: 25.0,
+            shank_diameter_mm: 3.175,
+            overall_length_mm: 55.0,
+        };
+        t1.stickout_length_mm = 30.0;
+        t1.presets.clear();
+        project.tools = vec![t1.clone()];
+
+        let mut setup = Setup::new("s1", "Setup 1", WorkOffsetSlot::G54);
+        setup.stock = StockConfig::FixedBox {
+            width_x: ParamLength::from_mm(80.0),
+            depth_y: ParamLength::from_mm(60.0),
+            height_z: ParamLength::from_mm(25.0),
+            xy_align: Default::default(),
+            z_align: Default::default(),
+        };
+        let mut op = Operation::new("op_0", "Hazard Pocket", OperationKind::Pocket2D);
+        op.tool_id = Some(t1.id);
+        op.passes.multiple_depths = true;
+        op.passes.max_stepdown = ParamLength::from_mm(6.0);
+        op.feed_overrides.spindle_rpm = Some(12_000.0);
+        op.feed_overrides.cutting_feed_mm_min = Some(900.0);
+        op.feed_overrides.stepdown_mm = Some(6.0);
+        op.feed_overrides.stepover_mm = Some(2.0);
+        setup.operations = vec![op];
+        project.setups = vec![setup];
+
+        let tools = ToolLibrary::default();
+        let cache = ToolpathCache::new(16);
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1280.0, 420.0));
+
+        let run = |events: Vec<egui::Event>| -> (Vec<(String, egui::Rect)>, Option<DiagnosticsPanelAction>) {
+            let mut act = None;
+            let mut out = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(screen),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    egui::CentralPanel::default().show(ui, |ui| {
+                        act = show_diagnostics_panel(
+                            ui,
+                            &project,
+                            0,
+                            &tools,
+                            &cache,
+                            0,
+                            None,
+                            Some(&machine),
+                            None,
+                            &[],
+                        );
+                    });
+                },
+            );
+            out.textures_delta.clear();
+            let mut rects = Vec::new();
+            fn visit(shape: &egui::Shape, out: &mut Vec<(String, egui::Rect)>) {
+                match shape {
+                    egui::Shape::Text(t) => {
+                        out.push((t.galley.text().to_owned(), t.visual_bounding_rect()));
+                    }
+                    egui::Shape::Vec(v) => {
+                        for s in v {
+                            visit(s, out);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            for cs in &out.shapes {
+                visit(&cs.shape, &mut rects);
+            }
+            (rects, act)
+        };
+
+        let _ = run(Vec::new());
+        let (rects, _) = run(Vec::new());
+        assert!(
+            rects
+                .iter()
+                .any(|(t, _)| t == "Machinability & Tool Safety"),
+            "Diagnostics panel must render Machinability & Tool Safety heading"
+        );
+        assert!(
+            rects.iter().any(|(t, _)| t == "CRIT"),
+            "Diagnostics machinability table must render CRIT status badge"
+        );
+
+        // Clicking operation name routes to FocusOperation
+        let op_pos = rects
+            .iter()
+            .find(|(t, _)| t == "Hazard Pocket")
+            .expect("Operation row must render 'Hazard Pocket'")
+            .1
+            .center();
+        let (_, focus_act) = run(vec![
+            egui::Event::PointerMoved(op_pos),
+            egui::Event::PointerButton {
+                pos: op_pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+            egui::Event::PointerButton {
+                pos: op_pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]);
+        assert_eq!(
+            focus_act,
+            Some(DiagnosticsPanelAction::FocusOperation {
+                setup_idx: 0,
+                op_idx: 0
+            })
+        );
+
+        // Clicking Apply Fix emits ApplyMachinabilityFix
+        let fix_pos = rects
+            .iter()
+            .find(|(t, _)| t == "Apply Fix")
+            .expect("Hazardous operation row must render 'Apply Fix' button")
+            .1
+            .center();
+        let (_, fix_act) = run(vec![
+            egui::Event::PointerMoved(fix_pos),
+            egui::Event::PointerButton {
+                pos: fix_pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+            egui::Event::PointerButton {
+                pos: fix_pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]);
+        assert!(
+            matches!(
+                fix_act,
+                Some(DiagnosticsPanelAction::ApplyMachinabilityFix {
+                    setup_idx: 0,
+                    op_idx: 0,
+                    ..
+                })
+            ),
+            "Clicking Apply Fix must emit ApplyMachinabilityFix; got {fix_act:?}"
+        );
     }
 }

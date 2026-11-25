@@ -533,11 +533,23 @@ fn show_adaptive_card(
     );
 }
 
-pub(super) fn show_drill_bore_params(
-    ui: &mut egui::Ui,
-    p: &mut DrillBoreParams,
-    mut item: PassItemCtx<'_>,
-) {
+pub(super) struct DrillBoreUiCtx<'a> {
+    pub p: &'a mut DrillBoreParams,
+    pub tool_diameter_mm: Option<f64>,
+    pub radial_stock_mm: f64,
+    pub primary_hole_diameter_mm: Option<f64>,
+    pub item: PassItemCtx<'a>,
+}
+
+pub(super) fn show_drill_bore_params(ui: &mut egui::Ui, ctx: DrillBoreUiCtx<'_>) {
+    let DrillBoreUiCtx {
+        p,
+        tool_diameter_mm,
+        radial_stock_mm,
+        primary_hole_diameter_mm,
+        mut item,
+    } = ctx;
+    let tok = crate::theme::ThemeTokens::from_ui(ui);
     item.card_grid(ui, "passes_drill_card", "Drill & Helical Bore", |f| {
         f.set_tip("Auto-dispatch between axial drilling and helical boring by cutter diameter");
         f.combo(
@@ -666,6 +678,78 @@ pub(super) fn show_drill_bore_params(
         }
         f.set_tip("Repeat circular finishing pass to eliminate radial cutter deflection");
         f.toggle("Bore Spring", &mut p.bore_spring_pass, "Toggle Bore Spring");
+
+        if p.mode != HoleMachiningMode::Drill {
+            let amp_opt = match (primary_hole_diameter_mm, tool_diameter_mm) {
+                (Some(hole_d), Some(tool_d))
+                    if hole_d.is_finite() && tool_d.is_finite() && hole_d > tool_d + 0.04 =>
+                {
+                    let r_hole = 0.5 * hole_d;
+                    let r_orbit = (r_hole - 0.5 * tool_d - radial_stock_mm.max(0.0)).max(0.02);
+                    Some((r_hole / r_orbit, (r_orbit / r_hole).clamp(0.20, 1.0)))
+                }
+                _ => None,
+            };
+            f.set_tip(
+                "Scale helical bore tool-center feedrate by (r_orbit / R_hole) so cutting-edge wall chipload matches programmed feed",
+            );
+            f.row("Inner-Arc Feed Comp", |ui, mutated| {
+                if ui
+                    .checkbox(&mut p.bore_inner_arc_feed_comp, "Enabled")
+                    .on_hover_text(
+                        "Prevent concave internal-bore wall chipload overload by scaling centerline feed by r_orbit / R_hole",
+                    )
+                    .changed()
+                {
+                    *mutated = Some("Toggle Helical Inner-Arc Feed Comp");
+                }
+                if let Some((amp, scale)) = amp_opt {
+                    let (txt, col) = if p.bore_inner_arc_feed_comp {
+                        (
+                            format!("R_hole/r_orbit {amp:.2}x (F x{scale:.2})"),
+                            tok.clean_fg,
+                        )
+                    } else if amp > 1.35 {
+                        (format!("R_hole/r_orbit {amp:.2}x!"), tok.warn_fg)
+                    } else {
+                        (format!("R_hole/r_orbit {amp:.2}x"), tok.text_secondary)
+                    };
+                    ui.label(egui::RichText::new(txt).small().monospace().color(col));
+                }
+            });
+
+            let mut use_chip_clear = p.bore_chip_clear_depth.is_some();
+            f.set_tip(
+                "Periodically retract helical bore out to R-plane to evacuate chips in deep holes",
+            );
+            f.row("Chip-Clear Retract", |ui, mutated| {
+                if ui
+                    .checkbox(&mut use_chip_clear, "Enable")
+                    .on_hover_text(
+                        "Insert full Z retracts to R-plane every Clear Depth interval during deep helical boring",
+                    )
+                    .changed()
+                {
+                    p.bore_chip_clear_depth = if use_chip_clear {
+                        let def_mm = primary_hole_diameter_mm
+                            .map(|hd| (2.0 * hd).clamp(3.0, 10.0))
+                            .unwrap_or(6.0);
+                        Some(ParamLength::from_mm(def_mm))
+                    } else {
+                        None
+                    };
+                    *mutated = Some("Toggle Bore Chip-Clear Retract");
+                }
+            });
+            if let Some(clear_depth) = &mut p.bore_chip_clear_depth {
+                f.set_tip("Axial depth interval between full chip-evacuation retracts to R-plane");
+                f.len(
+                    "Clear Depth",
+                    clear_depth,
+                    "Edit Bore Chip-Clear Retract Depth",
+                );
+            }
+        }
     });
 }
 

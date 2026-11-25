@@ -95,14 +95,23 @@ ChipCutter models complete CNC machines as self-contained `.machine.toml` (`sche
 - **Core Schema (`MachineDefinition`):**
   - Identity & metadata: `schema_version`, `id` (slug `[a-z0-9._-]`), `name`, `manufacturer`, `description`, `is_builtin` (runtime-only, read-only guard).
   - **`travel_mm: MachineTravelEnvelope`:** `{ x_mm, y_mm, z_mm }` physical XYZ axis envelope.
-  - **`spindle: MachineSpindleSpec`:** `{ min_rpm, max_rpm, power_watts: Option<f64>, collet_type: String, supported_shank_diameters_mm: Vec<f64> }`.
+  - **`spindle: MachineSpindleSpec`:** `{ min_rpm, max_rpm, power_watts: Option<f64>, peak_torque_rpm: Option<f64>, drive_efficiency: Option<f64>, collet_type: String, supported_shank_diameters_mm: Vec<f64> }` (with `available_power_watts_at_rpm` torque-curve derating below `peak_torque_rpm`).
   - **`kinematics: MachineKinematicsSpec`:** `{ max_rapid_xy_mm_min, max_rapid_z_mm_min, max_cut_feed_xy_mm_min, max_cut_feed_z_mm_min, accel_mm_s2, junction_deviation_mm, tool_change_time_sec, max_rotary_rate_deg_min }` (feeds into cycle-time estimation and feed/spindle limit checks).
   - Tool changing & post defaults: `tool_change: MachineToolChangeKind::{Manual, QuickChange, AutomaticAtc}`, `has_toolsetter: bool`, `default_post_profile: String`.
   - **`rotary: Option<MachineRotaryDefaults>`:** Optional 4th-axis module limits and default chuck dimensions (`axis`, `max_stock_diameter_mm`, `max_stock_length_mm`, `chuck_diameter_mm`, `chuck_length_mm`, `default_post_profile_4axis`).
   - **Per-Machine Tool Library:** `tools: Vec<Tool>` (convertible to a `ToolLibrary` via `to_tool_library()`).
 - **7 Read-Only Built-In Machines & User Clones:**
-  - Built-in compiled presets: **`generic`** (`DEFAULT_MACHINE_ID`), **`milo-1.5`**, **`milo-2.0`**, **`voron-cascade`**, **`carvera`**, **`carvera-air`**, and **`carvera-z1`**. Built-in IDs are read-only and cannot be shadowed by user files so upgrades stay clean.
+  - Built-in compiled presets: **`generic`** (`DEFAULT_MACHINE_ID`), **`milo-1.5`**, **`milo-2.0`**, **`voron-cascade`**, **`carvera`**, **`carvera-air`**, and **`carvera-z1`**. Built-in IDs are read-only and cannot be shadowed by user files so upgrades stay clean. Carvera profiles include dedicated **Aluminum 6063-T5 Extrusion** presets (including conservative long-reach `3.175 x 25 mm` 1FL O-flute parameters with air-blast/mist coolant).
   - Users clone any built-in or custom machine into editable `.machine.toml` files stored in `~/.config/chipcutter/machines/` (OS user config directory), where custom travel, spindle, kinematics, post defaults, and dedicated tool sets are persisted.
 - **Project Binding & Interactive Machine-Switch Tool Swapping:**
   - `ProjectDocument::machine_id` links a project to a target machine (defaulting to `"generic"` when omitted) and syncs Setup post profiles and rotary chuck defaults via `apply_machine_defaults`.
   - Switching a project to a different machine in the GUI offers **interactive tool swapping**, matching or remapping each operation's embedded tool against the new machine's dedicated tool library (and checking shank/spindle compatibility) while keeping operations cleanly re-evaluated.
+
+---
+
+## Workpiece Material Physics Library & Cutting Mechanics *(Phase 26 — M93–M94)*
+- **Workpiece Material Profiles (`crates/chip-tools/src/materials.rs`):**
+  - `WorkpieceMaterialProfile` models physical cutting-mechanics constants per stock alloy/polymer/wood: `specific_cutting_energy_w_s_mm3` ($u_s$), `specific_cutting_force_n_mm2` ($K_c$), `radial_force_ratio` ($k_r$), `min_chip_thickness_mm` ($h_{\min}$), recommended carbide surface-speed & chipload envelopes, `gummy_chip_weld_risk`, and `preferred_coolant`.
+  - Ships with **11 curated built-in materials** (`aluminum-6061-t6`, `aluminum-6063-t5`, `aluminum-7075-t6`, `brass-c360`, `mild-steel-1018`, `stainless-304`, `acrylic-pmma`, `acetal-delrin`, `hdpe-plastic`, `hardwood-maple`, `plywood-mdf`) plus custom project-level overrides via `ProjectMaterialSelection::{builtin, custom}` and deterministic `match_best_preset_for_material(...)` preset matching.
+- **Engagement Physics & Flute-Aware Stepped Cantilever Deflection (`crates/chip-tools/src/machinability.rs`):**
+  - `compute_engagement_physics` evaluates `f64` **MRR** (`cm³/min`), torque-curve-derated **Spindle Load** (`W` & `%`), revolution-averaged and peak instantaneous per-tooth **Tangential/Radial Forces** (`N`), effective chip thickness $h_{\max}$ with radial chip thinning, concave internal-bore inner-arc wall feed amplification ($R_{\text{hole}} / r_{\text{orbit}}$), and stepped cantilever **Tip Deflection** (`µm` & `% D`) + extreme-fiber **Bending Safety Factor** using flute-count-aware core diameters (`1FL ≈ 0.54·D`, `2FL ≈ 0.62·D`, `3FL ≈ 0.72·D`, `4+FL ≈ 0.78·D`) and relieved-neck core diameters (`ThreadMill`, `LollipopEndmill`, `SlotMill`, `DovetailCutter`) with interrupted-cut fatigue knockdown.

@@ -144,6 +144,22 @@ struct GuiArgs {
     #[arg(long)]
     capture_ghost_part: Option<bool>,
 
+    /// Enable the 3D Reach / Min-Radius machinability heatmap overlay during capture.
+    #[arg(long)]
+    capture_reach_heatmap: bool,
+
+    /// Activate 3D Measure mode and snap an exact-f64 demo measurement before capture.
+    #[arg(long)]
+    capture_measure_demo: bool,
+
+    /// Force-expand the Operation Inspector Machinability & Safety card during capture (even when Ok).
+    #[arg(long)]
+    capture_expand_machinability: bool,
+
+    /// Apply suggested safe machinability fixes to the focused operation before capture.
+    #[arg(long)]
+    capture_apply_safe_fixes: bool,
+
     /// Also save a 480px-wide Lanczos3 thumbnail PNG of the captured screenshot to this path.
     #[arg(long)]
     capture_thumb: Option<PathBuf>,
@@ -196,6 +212,10 @@ fn main() -> eframe::Result {
         show_27pt_dots: args.capture_27pt_dots,
         show_fixtures: args.capture_fixtures,
         ghost_part: args.capture_ghost_part,
+        reach_heatmap: args.capture_reach_heatmap,
+        measure_demo: args.capture_measure_demo,
+        expand_machinability: args.capture_expand_machinability,
+        apply_safe_fixes: args.capture_apply_safe_fixes,
         thumb_path: args.capture_thumb,
     };
     let self_test = args

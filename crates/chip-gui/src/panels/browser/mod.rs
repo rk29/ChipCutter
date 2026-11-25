@@ -4,18 +4,23 @@ mod drag_reorder;
 mod tree_widget;
 
 use chip_cad::CadDocument;
-use chip_cam::{OperationStatus, SharedAvoidRegion};
+use chip_cam::{OperationStatus, ResolvedSetup, SharedAvoidRegion};
 use chip_project::{ProjectDocument, ToolpathCache, UndoHistory};
-use chip_tools::ToolLibrary;
+use chip_tools::{MachineDefinition, ToolLibrary};
 use egui::{Id, Rect};
 
 use crate::{
     panels::{
         InspectorFocus, OperationTab, SetupTab, ViewportPickMode,
         diagnostics::format_cycle_time,
-        operation_inspector::avoid_card::{
-            mark_shared_avoid_dependents_dirty, next_shared_avoid_id_and_name,
-            set_shared_avoid_for_all_setup_ops,
+        operation_inspector::{
+            avoid_card::{
+                mark_shared_avoid_dependents_dirty, next_shared_avoid_id_and_name,
+                set_shared_avoid_for_all_setup_ops,
+            },
+            machinability_card::{
+                compact_browser_warning_summary, evaluate_operation_machinability,
+            },
         },
         sketch_inspector::mark_sketch_dependent_ops_dirty,
     },
@@ -65,6 +70,8 @@ use tree_widget::{
 pub struct CamBrowserCtx<'a> {
     pub project: &'a mut ProjectDocument,
     pub global_tools: &'a ToolLibrary,
+    pub active_machine: Option<&'a MachineDefinition>,
+    pub resolved_active_setup: Option<&'a ResolvedSetup>,
     pub history: &'a mut UndoHistory,
     pub toolpath_cache: &'a ToolpathCache,
     pub cad_doc: Option<&'a CadDocument>,
@@ -127,6 +134,8 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
     let CamBrowserCtx {
         project,
         global_tools,
+        active_machine,
+        resolved_active_setup,
         history,
         toolpath_cache,
         cad_doc,
@@ -1900,7 +1909,7 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                                         .map_or(0.0, |c| c.toolpath.stats.total_est_time_sec)
                             });
 
-                            let (status_kind, hover_note) = if op.suppressed {
+                            let (status_kind, mut hover_note) = if op.suppressed {
                                 (
                                     StatusBadgeKind::Suppressed,
                                     Some("Suppressed (unchecked)".to_string()),
@@ -1936,6 +1945,26 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                                     ),
                                 }
                             };
+
+                            if !op.suppressed {
+                                let rs_for_op =
+                                    (s_idx == *active_setup_idx).then_some(resolved_active_setup).flatten();
+                                if let Some(rep) = evaluate_operation_machinability(
+                                    project,
+                                    s_idx,
+                                    o_idx,
+                                    global_tools,
+                                    active_machine,
+                                    rs_for_op,
+                                    cad_doc,
+                                ) && let Some(warn_line) = compact_browser_warning_summary(&rep)
+                                {
+                                    hover_note = match hover_note {
+                                        Some(existing) => Some(format!("{existing}\n{warn_line}")),
+                                        None => Some(warn_line),
+                                    };
+                                }
+                            }
 
                             let badge_txt = if op.suppressed {
                                 None
@@ -3070,6 +3099,8 @@ mod tests {
                             CamBrowserCtx {
                                 project: &mut self.project,
                                 global_tools: &self.global_tools,
+                                active_machine: None,
+                                resolved_active_setup: None,
                                 history: &mut self.history,
                                 toolpath_cache: &self.cache,
                                 cad_doc: None,
@@ -3215,6 +3246,7 @@ mod tests {
                         InspectorFocus::Operation { setup_idx, op_idx } => {
                             let mut lock_cl = true;
                             let mut show_z = true;
+                            let mut show_reach = false;
                             let mut auto_rot = true;
                             let mut open_tm = false;
                             let _ = show_operation_inspector(
@@ -3224,6 +3256,7 @@ mod tests {
                                     setup_idx,
                                     op_idx,
                                     global_tools: &self.global_tools,
+                                    active_machine: None,
                                     history: &mut self.history,
                                     cad_doc: None,
                                     resolved_setup: None,
@@ -3237,6 +3270,8 @@ mod tests {
                                     editing_shared_avoid_id: &mut self.editing_avoid,
                                     lock_chipload: &mut lock_cl,
                                     show_z_planes: &mut show_z,
+                                    show_reach_heatmap: &mut show_reach,
+                                    force_expand_machinability: false,
                                     auto_rotate_indexed_op: &mut auto_rot,
                                     open_tool_manager: &mut open_tm,
                                     sim_engine: chip_sim::SimEngineKind::Heightmap,

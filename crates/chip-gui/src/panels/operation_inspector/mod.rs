@@ -2,17 +2,18 @@ pub mod avoid_card;
 pub mod geometry_tab;
 pub mod heights_tab;
 pub mod linking_tab;
+pub mod machinability_card;
 pub mod passes_tab;
 pub mod tool_tab;
 
 use chip_cad::CadDocument;
 use chip_cam::{
-    ExtractedSelectionSummary, OperationStatus, ResolvedHeights, ResolvedSetup, SharedAvoidRegion,
-    SurfaceMesh3D,
+    ExtractedSelectionSummary, MachinabilityFix, OperationStatus, ResolvedHeights, ResolvedSetup,
+    SharedAvoidRegion, SurfaceMesh3D, apply_machinability_fix,
 };
 use chip_math::{DVec3, EvalContext};
 use chip_project::{ProjectDocument, UndoHistory};
-use chip_tools::{ToolLibrary, ToolOperationClass};
+use chip_tools::{MachineDefinition, ToolLibrary, ToolOperationClass};
 
 use self::avoid_card::{
     AvoidCardAction, AvoidCardSetupView, create_and_link_shared_avoid,
@@ -44,6 +45,7 @@ pub struct OperationInspectorCtx<'a> {
     pub setup_idx: usize,
     pub op_idx: usize,
     pub global_tools: &'a ToolLibrary,
+    pub active_machine: Option<&'a MachineDefinition>,
     pub history: &'a mut UndoHistory,
     pub cad_doc: Option<&'a CadDocument>,
     pub resolved_setup: Option<&'a ResolvedSetup>,
@@ -57,6 +59,8 @@ pub struct OperationInspectorCtx<'a> {
     pub editing_shared_avoid_id: &'a mut Option<String>,
     pub lock_chipload: &'a mut bool,
     pub show_z_planes: &'a mut bool,
+    pub show_reach_heatmap: &'a mut bool,
+    pub force_expand_machinability: bool,
     pub auto_rotate_indexed_op: &'a mut bool,
     pub open_tool_manager: &'a mut bool,
     pub sim_engine: chip_sim::SimEngineKind,
@@ -72,6 +76,7 @@ pub fn show_operation_inspector(
         setup_idx,
         op_idx,
         global_tools,
+        active_machine,
         history,
         cad_doc,
         resolved_setup,
@@ -85,6 +90,8 @@ pub fn show_operation_inspector(
         editing_shared_avoid_id,
         lock_chipload,
         show_z_planes,
+        show_reach_heatmap,
+        force_expand_machinability,
         auto_rotate_indexed_op,
         open_tool_manager,
         sim_engine,
@@ -107,6 +114,8 @@ pub fn show_operation_inspector(
     let mut mutated_label: Option<&'static str> = None;
     let mut shared_mutated_label: Option<(&'static str, String)> = None;
     let mut deferred_avoid_action: Option<AvoidCardAction> = None;
+    let mut applied_machinability_fix: Option<MachinabilityFix> = None;
+    let mut switch_to_tool_tab = false;
     let mut create_sketch_requested = false;
     let mut open_project_material_requested = false;
 
@@ -259,170 +268,222 @@ pub fn show_operation_inspector(
         .ok()
     });
 
+    let machinability_report = if matches!(*tab, OperationTab::Tool | OperationTab::Passes) {
+        machinability_card::evaluate_operation_machinability(
+            project,
+            setup_idx,
+            op_idx,
+            global_tools,
+            active_machine,
+            resolved_setup,
+            cad_doc,
+        )
+    } else {
+        None
+    };
+    let machine_name = active_machine
+        .map(|m| m.name.as_str())
+        .unwrap_or("Generic 3/4-Axis CNC Mill");
+    let primary_hole_diameter_mm = extracted
+        .and_then(|res| res.ok())
+        .and_then(|sum| sum.primary_hole_diameter_mm);
+
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
-        .show(ui, |ui| match *tab {
-            OperationTab::Tool => tool_tab::show_tool_tab(
-                ui,
-                tool_tab::ToolTabCtx {
-                    project,
-                    setup_idx,
-                    op_idx,
-                    global_tools,
-                    display_unit,
-                    lock_chipload,
-                    open_tool_manager,
-                    open_project_material: &mut open_project_material_requested,
-                    mutated_label: &mut mutated_label,
-                },
-            ),
-            OperationTab::Geometry => {
-                let active_tool = project.setups[setup_idx].operations[op_idx]
-                    .tool_id
-                    .as_ref()
-                    .and_then(|tid| project.tool(tid).or_else(|| global_tools.tool(tid)))
-                    .cloned();
-                let avoid_setup_view = AvoidCardSetupView::from_project(project, setup_idx);
-                geometry_tab::show_geometry_tab(
+        .show(ui, |ui| {
+            match *tab {
+                OperationTab::Tool => tool_tab::show_tool_tab(
                     ui,
-                    geometry_tab::GeometryTabCtx {
-                        op: &mut project.setups[setup_idx].operations[op_idx],
-                        shared_avoid_regions: &mut project.avoid_regions,
-                        avoid_setup_view: &avoid_setup_view,
-                        sketches: &project.sketches,
+                    tool_tab::ToolTabCtx {
+                        project,
                         setup_idx,
                         op_idx,
+                        global_tools,
                         display_unit,
-                        eval_ctx: &eval_ctx,
-                        cad_doc,
-                        resolved_setup,
-                        active_tool: active_tool.as_ref(),
-                        surface_mesh,
-                        resolved_heights: resolved_heights.as_ref(),
-                        boundary_preview,
-                        extracted,
-                        pick_mode,
-                        pick_target,
-                        editing_shared_avoid_id,
+                        lock_chipload,
+                        open_tool_manager,
+                        open_project_material: &mut open_project_material_requested,
+                        machinability_report: machinability_report.as_ref(),
+                        machine_name,
+                        show_reach_heatmap,
+                        force_expand_machinability,
+                        applied_fix: &mut applied_machinability_fix,
                         mutated_label: &mut mutated_label,
-                        shared_mutated_label: &mut shared_mutated_label,
-                        deferred_avoid_action: &mut deferred_avoid_action,
-                        create_sketch_requested: &mut create_sketch_requested,
                     },
-                );
-            }
-            OperationTab::Heights => heights_tab::show_heights_tab(
-                ui,
-                heights_tab::HeightsTabCtx {
-                    op: &mut project.setups[setup_idx].operations[op_idx],
-                    setup_idx,
-                    op_idx,
-                    display_unit,
-                    eval_ctx: &eval_ctx,
-                    resolved_setup,
-                    inf_top,
-                    inf_bot,
-                    show_z_planes,
-                    mutated_label: &mut mutated_label,
-                },
-            ),
-            OperationTab::Passes => {
-                let preceding_ops: Vec<(String, String)> = project.setups[setup_idx].operations
-                    [..op_idx]
-                    .iter()
-                    .filter(|o| !o.suppressed)
-                    .map(|o| (o.id.clone(), o.name.clone()))
-                    .collect();
-                let assigned_tool_geom = project.setups[setup_idx].operations[op_idx]
-                    .tool_id
-                    .as_ref()
-                    .and_then(|tid| project.tool(tid).or_else(|| global_tools.tool(tid)))
-                    .map(|t| t.geometry.clone());
-                let tool_feed_preview = project.setups[setup_idx].operations[op_idx]
-                    .tool_id
-                    .as_ref()
-                    .and_then(|tid| project.tool(tid).or_else(|| global_tools.tool(tid)))
-                    .map(|t| {
-                        let eff = project.setups[setup_idx].operations[op_idx]
-                            .effective_cutting_params(t);
-                        (t.geometry.cutting_diameter_mm(), eff.cutting_feed_mm_min)
-                    });
-                let resolved_thread_depth_mm = resolved_heights
-                    .as_ref()
-                    .map(|rh| {
-                        let axial_stock = project.setups[setup_idx].operations[op_idx]
-                            .passes
-                            .stock_to_leave_axial
-                            .value_mm;
-                        rh.top_z_wcs - (rh.bottom_z_wcs + axial_stock)
-                    })
-                    .or_else(|| {
-                        extracted.and_then(|res| {
-                            res.ok().map(|sum| {
-                                let axial_stock = project.setups[setup_idx].operations[op_idx]
-                                    .passes
-                                    .stock_to_leave_axial
-                                    .value_mm;
-                                sum.inferred_top_z_wcs - (sum.inferred_bottom_z_wcs + axial_stock)
-                            })
-                        })
-                    });
-                let mut clearing_tool_candidates: Vec<passes_tab::ClearingToolCandidate> =
-                    Vec::new();
-                for t in project.tools.iter().chain(global_tools.tools.iter()) {
-                    if t.geometry
-                        .supports_operation(ToolOperationClass::VCarveFlatClearance)
-                        && !clearing_tool_candidates.iter().any(|cand| cand.id == t.id)
-                    {
-                        let presets = t
-                            .presets
-                            .iter()
-                            .map(|p| (p.id.clone(), p.name.clone()))
-                            .collect();
-                        clearing_tool_candidates.push(passes_tab::ClearingToolCandidate {
-                            id: t.id.clone(),
-                            label: format!(
-                                "T{} — {} (Ø{:.2} mm)",
-                                t.tool_number,
-                                t.name,
-                                t.geometry.cutting_diameter_mm()
-                            ),
-                            presets,
-                        });
-                    }
+                ),
+                OperationTab::Geometry => {
+                    let active_tool = project.setups[setup_idx].operations[op_idx]
+                        .tool_id
+                        .as_ref()
+                        .and_then(|tid| project.tool(tid).or_else(|| global_tools.tool(tid)))
+                        .cloned();
+                    let avoid_setup_view = AvoidCardSetupView::from_project(project, setup_idx);
+                    geometry_tab::show_geometry_tab(
+                        ui,
+                        geometry_tab::GeometryTabCtx {
+                            op: &mut project.setups[setup_idx].operations[op_idx],
+                            shared_avoid_regions: &mut project.avoid_regions,
+                            avoid_setup_view: &avoid_setup_view,
+                            sketches: &project.sketches,
+                            setup_idx,
+                            op_idx,
+                            display_unit,
+                            eval_ctx: &eval_ctx,
+                            cad_doc,
+                            resolved_setup,
+                            active_tool: active_tool.as_ref(),
+                            surface_mesh,
+                            resolved_heights: resolved_heights.as_ref(),
+                            boundary_preview,
+                            extracted,
+                            pick_mode,
+                            pick_target,
+                            editing_shared_avoid_id,
+                            mutated_label: &mut mutated_label,
+                            shared_mutated_label: &mut shared_mutated_label,
+                            deferred_avoid_action: &mut deferred_avoid_action,
+                            create_sketch_requested: &mut create_sketch_requested,
+                        },
+                    );
                 }
-                passes_tab::show_passes_tab(
+                OperationTab::Heights => heights_tab::show_heights_tab(
                     ui,
-                    passes_tab::PassesTabCtx {
+                    heights_tab::HeightsTabCtx {
                         op: &mut project.setups[setup_idx].operations[op_idx],
-                        has_3d_model: cad_doc.is_some_and(CadDocument::has_3d_geometry),
-                        preceding_ops: &preceding_ops,
-                        clearing_tool_candidates: &clearing_tool_candidates,
-                        assigned_tool_geom: assigned_tool_geom.as_ref(),
-                        tool_feed_preview,
-                        resolved_thread_depth_mm,
-                        sim_engine,
-                        display_unit,
                         setup_idx,
                         op_idx,
+                        display_unit,
                         eval_ctx: &eval_ctx,
-                        resolved_rotary: resolved_setup.and_then(|rs| rs.rotary),
-                        selected_face_normal_wcs,
-                        auto_rotate_indexed_op,
-                        pick_mode,
+                        resolved_setup,
+                        inf_top,
+                        inf_bot,
+                        show_z_planes,
                         mutated_label: &mut mutated_label,
                     },
+                ),
+                OperationTab::Passes => {
+                    let preceding_ops: Vec<(String, String)> = project.setups[setup_idx].operations
+                        [..op_idx]
+                        .iter()
+                        .filter(|o| !o.suppressed)
+                        .map(|o| (o.id.clone(), o.name.clone()))
+                        .collect();
+                    let assigned_tool_geom = project.setups[setup_idx].operations[op_idx]
+                        .tool_id
+                        .as_ref()
+                        .and_then(|tid| project.tool(tid).or_else(|| global_tools.tool(tid)))
+                        .map(|t| t.geometry.clone());
+                    let tool_feed_preview = project.setups[setup_idx].operations[op_idx]
+                        .tool_id
+                        .as_ref()
+                        .and_then(|tid| project.tool(tid).or_else(|| global_tools.tool(tid)))
+                        .map(|t| {
+                            let eff = project.setups[setup_idx].operations[op_idx]
+                                .effective_cutting_params(t);
+                            (t.geometry.cutting_diameter_mm(), eff.cutting_feed_mm_min)
+                        });
+                    let resolved_thread_depth_mm = resolved_heights
+                        .as_ref()
+                        .map(|rh| {
+                            let axial_stock = project.setups[setup_idx].operations[op_idx]
+                                .passes
+                                .stock_to_leave_axial
+                                .value_mm;
+                            rh.top_z_wcs - (rh.bottom_z_wcs + axial_stock)
+                        })
+                        .or_else(|| {
+                            extracted.and_then(|res| {
+                                res.ok().map(|sum| {
+                                    let axial_stock = project.setups[setup_idx].operations[op_idx]
+                                        .passes
+                                        .stock_to_leave_axial
+                                        .value_mm;
+                                    sum.inferred_top_z_wcs
+                                        - (sum.inferred_bottom_z_wcs + axial_stock)
+                                })
+                            })
+                        });
+                    let mut clearing_tool_candidates: Vec<passes_tab::ClearingToolCandidate> =
+                        Vec::new();
+                    for t in project.tools.iter().chain(global_tools.tools.iter()) {
+                        if t.geometry
+                            .supports_operation(ToolOperationClass::VCarveFlatClearance)
+                            && !clearing_tool_candidates.iter().any(|cand| cand.id == t.id)
+                        {
+                            let presets = t
+                                .presets
+                                .iter()
+                                .map(|p| (p.id.clone(), p.name.clone()))
+                                .collect();
+                            clearing_tool_candidates.push(passes_tab::ClearingToolCandidate {
+                                id: t.id.clone(),
+                                label: format!(
+                                    "T{} — {} (Ø{:.2} mm)",
+                                    t.tool_number,
+                                    t.name,
+                                    t.geometry.cutting_diameter_mm()
+                                ),
+                                presets,
+                            });
+                        }
+                    }
+                    passes_tab::show_passes_tab(
+                        ui,
+                        passes_tab::PassesTabCtx {
+                            op: &mut project.setups[setup_idx].operations[op_idx],
+                            has_3d_model: cad_doc.is_some_and(CadDocument::has_3d_geometry),
+                            preceding_ops: &preceding_ops,
+                            clearing_tool_candidates: &clearing_tool_candidates,
+                            assigned_tool_geom: assigned_tool_geom.as_ref(),
+                            tool_feed_preview,
+                            primary_hole_diameter_mm,
+                            resolved_thread_depth_mm,
+                            machinability_report: machinability_report.as_ref(),
+                            sim_engine,
+                            display_unit,
+                            setup_idx,
+                            op_idx,
+                            eval_ctx: &eval_ctx,
+                            resolved_rotary: resolved_setup.and_then(|rs| rs.rotary),
+                            selected_face_normal_wcs,
+                            auto_rotate_indexed_op,
+                            pick_mode,
+                            applied_fix: &mut applied_machinability_fix,
+                            switch_to_tool_tab: &mut switch_to_tool_tab,
+                            mutated_label: &mut mutated_label,
+                        },
+                    );
+                }
+                OperationTab::Linking => linking_tab::show_linking_tab(
+                    ui,
+                    &mut project.setups[setup_idx].operations[op_idx],
+                    setup_idx,
+                    op_idx,
+                    &eval_ctx,
+                    &mut mutated_label,
+                ),
+            }
+            if force_expand_machinability
+                && matches!(*tab, OperationTab::Tool | OperationTab::Passes)
+            {
+                let (anchor, _) =
+                    ui.allocate_exact_size(egui::vec2(1.0, 2.0), egui::Sense::hover());
+                ui.scroll_to_rect_animation(
+                    anchor,
+                    Some(egui::Align::BOTTOM),
+                    egui::style::ScrollAnimation::none(),
                 );
             }
-            OperationTab::Linking => linking_tab::show_linking_tab(
-                ui,
-                &mut project.setups[setup_idx].operations[op_idx],
-                setup_idx,
-                op_idx,
-                &eval_ctx,
-                &mut mutated_label,
-            ),
         });
+
+    if let Some(fix) = applied_machinability_fix
+        && apply_machinability_fix(&mut project.setups[setup_idx].operations[op_idx], &fix)
+    {
+        mutated_label = Some("Apply Safe Machinability Fix");
+    }
+    if switch_to_tool_tab {
+        *tab = OperationTab::Tool;
+    }
 
     if let Some(action) = mutated_label {
         let maybe_embed = project.setups[setup_idx].operations[op_idx]
@@ -616,6 +677,7 @@ mod tests {
         let mut editing_shared_avoid_id: Option<String> = None;
         let mut lock_chipload = true;
         let mut show_z_planes = false;
+        let mut show_reach_heatmap = false;
         let mut auto_rotate_indexed_op = true;
         let mut open_tool_manager = false;
 
@@ -636,6 +698,7 @@ mod tests {
                             setup_idx: 0,
                             op_idx: 0,
                             global_tools: tools,
+                            active_machine: None,
                             history: &mut history,
                             cad_doc: None,
                             resolved_setup: Some(resolved_setup),
@@ -649,6 +712,8 @@ mod tests {
                             editing_shared_avoid_id: &mut editing_shared_avoid_id,
                             lock_chipload: &mut lock_chipload,
                             show_z_planes: &mut show_z_planes,
+                            show_reach_heatmap: &mut show_reach_heatmap,
+                            force_expand_machinability: false,
                             auto_rotate_indexed_op: &mut auto_rotate_indexed_op,
                             open_tool_manager: &mut open_tool_manager,
                             sim_engine: chip_sim::SimEngineKind::TriDexel,
@@ -877,6 +942,7 @@ mod tests {
         let mut editing_shared_avoid_id: Option<String> = None;
         let mut lock_chipload = true;
         let mut show_z_planes = false;
+        let mut show_reach_heatmap = false;
         let mut auto_rotate_indexed_op = true;
         let mut open_tool_manager = false;
 
@@ -899,6 +965,7 @@ mod tests {
                             setup_idx: 0,
                             op_idx: 0,
                             global_tools: &tools,
+                            active_machine: None,
                             history: &mut history,
                             cad_doc: None,
                             resolved_setup: Some(&rs_rot),
@@ -912,6 +979,8 @@ mod tests {
                             editing_shared_avoid_id: &mut editing_shared_avoid_id,
                             lock_chipload: &mut lock_chipload,
                             show_z_planes: &mut show_z_planes,
+                            show_reach_heatmap: &mut show_reach_heatmap,
+                            force_expand_machinability: false,
                             auto_rotate_indexed_op: &mut auto_rotate_indexed_op,
                             open_tool_manager: &mut open_tool_manager,
                             sim_engine: chip_sim::SimEngineKind::TriDexel,
@@ -939,6 +1008,7 @@ mod tests {
                             setup_idx: 0,
                             op_idx: 0,
                             global_tools: &tools,
+                            active_machine: None,
                             history: &mut history,
                             cad_doc: None,
                             resolved_setup: Some(&rs_rot),
@@ -952,6 +1022,8 @@ mod tests {
                             editing_shared_avoid_id: &mut editing_shared_avoid_id,
                             lock_chipload: &mut lock_chipload,
                             show_z_planes: &mut show_z_planes,
+                            show_reach_heatmap: &mut show_reach_heatmap,
+                            force_expand_machinability: false,
                             auto_rotate_indexed_op: &mut auto_rotate_indexed_op,
                             open_tool_manager: &mut open_tool_manager,
                             sim_engine: chip_sim::SimEngineKind::TriDexel,
@@ -1010,6 +1082,7 @@ mod tests {
                         setup_idx: 0,
                         op_idx: 0,
                         global_tools: &tools,
+                        active_machine: None,
                         history: &mut history,
                         cad_doc: None,
                         resolved_setup: Some(&rs_rot),
@@ -1023,6 +1096,8 @@ mod tests {
                         editing_shared_avoid_id: &mut editing_shared_avoid_id,
                         lock_chipload: &mut lock_chipload,
                         show_z_planes: &mut show_z_planes,
+                        show_reach_heatmap: &mut show_reach_heatmap,
+                        force_expand_machinability: false,
                         auto_rotate_indexed_op: &mut auto_rotate_indexed_op,
                         open_tool_manager: &mut open_tool_manager,
                         sim_engine: chip_sim::SimEngineKind::TriDexel,
@@ -1165,6 +1240,7 @@ mod tests {
                                 setup_idx: 0,
                                 op_idx: 0,
                                 global_tools: &tools,
+                                active_machine: None,
                                 history,
                                 cad_doc: None,
                                 resolved_setup: Some(&rs_rot),
@@ -1178,6 +1254,8 @@ mod tests {
                                 editing_shared_avoid_id: &mut editing_shared_avoid_id,
                                 lock_chipload: &mut lock_chipload,
                                 show_z_planes: &mut show_z_planes,
+                                show_reach_heatmap: &mut false,
+                                force_expand_machinability: false,
                                 auto_rotate_indexed_op: &mut auto_rotate,
                                 open_tool_manager: &mut open_tool_manager,
                                 sim_engine: chip_sim::SimEngineKind::TriDexel,
@@ -1418,6 +1496,7 @@ mod tests {
                                 setup_idx: 0,
                                 op_idx,
                                 global_tools: &tools,
+                                active_machine: None,
                                 history,
                                 cad_doc: None,
                                 resolved_setup: Some(&rs_box),
@@ -1431,6 +1510,8 @@ mod tests {
                                 editing_shared_avoid_id,
                                 lock_chipload: &mut lock_chipload,
                                 show_z_planes: &mut show_z_planes,
+                                show_reach_heatmap: &mut false,
+                                force_expand_machinability: false,
                                 auto_rotate_indexed_op: &mut auto_rotate,
                                 open_tool_manager: &mut open_tool_manager,
                                 sim_engine: chip_sim::SimEngineKind::TriDexel,
@@ -1727,6 +1808,8 @@ mod tests {
                         CamBrowserCtx {
                             project: &mut proj,
                             global_tools: &tools,
+                            active_machine: None,
+                            resolved_active_setup: None,
                             history: &mut history,
                             toolpath_cache: &tp_cache,
                             cad_doc: None,
@@ -1905,6 +1988,7 @@ mod tests {
         let mut editing_shared_avoid_id: Option<String> = None;
         let mut lock_chipload = true;
         let mut show_z_planes = false;
+        let mut show_reach_heatmap = false;
         let mut auto_rotate_indexed_op = true;
         let mut open_tool_manager = false;
         let mut out = ctx.run_ui(
@@ -1926,6 +2010,7 @@ mod tests {
                             setup_idx: 0,
                             op_idx: 0,
                             global_tools: tools,
+                            active_machine: None,
                             history,
                             cad_doc: None,
                             resolved_setup: Some(rs),
@@ -1939,6 +2024,8 @@ mod tests {
                             editing_shared_avoid_id: &mut editing_shared_avoid_id,
                             lock_chipload: &mut lock_chipload,
                             show_z_planes: &mut show_z_planes,
+                            show_reach_heatmap: &mut show_reach_heatmap,
+                            force_expand_machinability: false,
                             auto_rotate_indexed_op: &mut auto_rotate_indexed_op,
                             open_tool_manager: &mut open_tool_manager,
                             sim_engine: chip_sim::SimEngineKind::TriDexel,
@@ -2751,6 +2838,7 @@ mod tests {
             let mut editing_shared_avoid_id: Option<String> = None;
             let mut lock_chipload = true;
             let mut show_z_planes = false;
+            let mut show_reach_heatmap = false;
             let mut auto_rotate_indexed_op = true;
             let mut open_tool_manager = false;
             let mut action = None;
@@ -2774,6 +2862,7 @@ mod tests {
                                 setup_idx: 0,
                                 op_idx: 0,
                                 global_tools: &carvera_lib,
+                                active_machine: None,
                                 history,
                                 cad_doc: None,
                                 resolved_setup: Some(&rs),
@@ -2787,6 +2876,8 @@ mod tests {
                                 editing_shared_avoid_id: &mut editing_shared_avoid_id,
                                 lock_chipload: &mut lock_chipload,
                                 show_z_planes: &mut show_z_planes,
+                                show_reach_heatmap: &mut show_reach_heatmap,
+                                force_expand_machinability: false,
                                 auto_rotate_indexed_op: &mut auto_rotate_indexed_op,
                                 open_tool_manager: &mut open_tool_manager,
                                 sim_engine: chip_sim::SimEngineKind::TriDexel,

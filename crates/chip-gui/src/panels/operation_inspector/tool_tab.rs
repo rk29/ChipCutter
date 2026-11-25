@@ -1,3 +1,4 @@
+use chip_cam::{MachinabilityFix, OperationMachinabilityReport};
 use chip_math::DisplayUnit;
 use chip_project::ProjectDocument;
 use chip_tools::{
@@ -6,6 +7,7 @@ use chip_tools::{
     surface_speed_from_rpm,
 };
 
+use super::machinability_card::{MachinabilityCardCtx, show_machinability_card};
 use crate::{
     theme::ThemeTokens,
     widgets::{BannerKind, INPUT_COL_WIDTH, grid_row, inline_banner, inspector_grid, section_card},
@@ -22,6 +24,11 @@ pub struct ToolTabCtx<'a> {
     pub lock_chipload: &'a mut bool,
     pub open_tool_manager: &'a mut bool,
     pub open_project_material: &'a mut bool,
+    pub machinability_report: Option<&'a OperationMachinabilityReport>,
+    pub machine_name: &'a str,
+    pub show_reach_heatmap: &'a mut bool,
+    pub force_expand_machinability: bool,
+    pub applied_fix: &'a mut Option<MachinabilityFix>,
     pub mutated_label: &'a mut Option<&'static str>,
 }
 
@@ -35,6 +42,11 @@ pub fn show_tool_tab(ui: &mut egui::Ui, ctx: ToolTabCtx<'_>) {
         lock_chipload,
         open_tool_manager,
         open_project_material,
+        machinability_report,
+        machine_name,
+        show_reach_heatmap,
+        force_expand_machinability,
+        applied_fix,
         mutated_label,
     } = ctx;
 
@@ -770,6 +782,24 @@ pub fn show_tool_tab(ui: &mut egui::Ui, ctx: ToolTabCtx<'_>) {
             }
         },
     );
+
+    if let Some(report) = machinability_report {
+        let proj_mat_name = project.effective_workpiece_material().name;
+        if let Some(fix) = show_machinability_card(
+            ui,
+            MachinabilityCardCtx {
+                report,
+                material_name: &proj_mat_name,
+                machine_name,
+                setup_idx,
+                op_idx,
+                show_reach_heatmap,
+                force_open: force_expand_machinability,
+            },
+        ) {
+            *applied_fix = Some(fix);
+        }
+    }
 }
 
 struct FeedOverrideRowSpec<'a> {

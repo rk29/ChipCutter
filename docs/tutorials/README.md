@@ -52,6 +52,7 @@ Work through the guides in order if you are new to ChipCutter, or jump directly 
 | 20 | [**GPU-Accelerated Simulation, Benchmarking, & Feedrate Optimization**](20-gpu-simulation-feed-optimization.md) | **`Settings → Simulation`** `wgpu` Compute backend (`Auto` / `GPU` / `CPU`) & **Smooth Skinned Surfaces**, clickable Simulation status chip + timing tooltip & wall-clock Activity Log, zero-readback direct GPU stock rendering & `< 0.1 ms` **Error Heatmap** tuning, **Feed Optimization** (corner slowdown, internal-arc scaling, chip-thinning boost), modulated feed telemetry, cusp-height tuning, & `chipcutter simulate --backend gpu --benchmark --json` | `Feed-Optimized Adaptive Pocket` (`--sample feed-opt-pocket`), [`assets/20-feed-opt-pocket.step`](assets/20-feed-opt-pocket.step), `Sculpted Dome`, & `Simultaneous 4-Axis Helical Flute` | **Available** |
 | 21 | [**3D Edge Deburring & Non-Planar Chamfering (`Deburr3D`)**](21-3d-edge-deburring-nonplanar-chamfering.md) | Non-planar 3D B-Rep edge deburring (`ChamferMill`, `BallEndmill`, & `LollipopEndmill`), **`Geometry → Cutting Area / Machining Boundary`** (+ live 3D boundary preview) constraining **`Auto-Detect Edges`** (`Min Edge Angle`, `Exclude Vertical`), automatic `FlatBvh` inside-corner wall collision trimming (`Wall Clearance`), circular corner rolls, **Lollipop Underside Back-Chamfering**, & GPU Tri-Dexel verification (`intentional_edge_break_mm`) | `3D Curved & Underside Deburring` (`--sample curved-deburr-3d`), [`assets/21-sloped-boss-deburr.step`](assets/21-sloped-boss-deburr.step), & [`assets/21-overhang-flange.step`](assets/21-overhang-flange.step) | **Available** |
 | 22 | [**Undercut Milling: Keyways, T-Slots, Dovetails, & Lollipop 3D Undercuts**](22-undercut-tslot-dovetail-lollipop.md) | Relieved-neck `SlotMill`, `DovetailCutter` (live derived `Top Ø`), & `LollipopEndmill` cutters, mandatory throat pre-clearing, **DIN 650 / ASME T-Slots** & **Blind Keyways** (`SlotUndercut` + transparent `Stock to Leave` / `Finish Allowance`), **Internal `60°` Dovetail Slots & External Dovetail Rails** (`Dovetail`), **Lollipop 3D Overhang Undercuts** (`Undercut3D` + **`Geometry → Cutting Area / Machining Boundary`** & live 3D preview), & GPU Tri-Dexel Error Heatmap verification | `Undercut & 3D Deburr Block` (`--sample undercut-deburr`), `External 60° Dovetail Rail & Blind Keyway` (`--sample dovetail-rail-keyway`), & [`assets/22-undercut-deburr-block.step`](assets/22-undercut-deburr-block.step) | **Available** |
+| 23 | [**Physics-Backed Machinability Advisor, Click-to-Measure, & Reach Heatmap**](23-physics-machinability-measurement.md) | Project-level **Workpiece Material** library (**Aluminum 6063-T5 Extrusion** & 10 more + Custom), **`Machinability & Safety`** telemetry (`MRR`, torque-derated `Spindle Load`, `Tip Deflection`, flute-aware `Safety Factor`, `h_max`, `L/D`) + 1-click **`Apply Safe Fix`** (atomic Undo), helical bore **`Inner-Arc Feed Comp`** & **`Chip-Clear Retract`**, Setup-wide **`Diagnostics & Log`** safety table, exact-`f64` **`Measure (M)`** (`Set Op Bottom Z`), **`Reach / Min-R`** heatmap, & `chipcutter validate --physics` | [`assets/05-adaptive-pocket.step`](assets/05-adaptive-pocket.step) & [`assets/04-drill-bore-plate.step`](assets/04-drill-bore-plate.step) | **Available** |
 
 ---
 
@@ -95,7 +96,7 @@ chip-gui docs/tutorials/assets/01-facing-billet.step
 
 ## Tutorial Authoring & Screenshot Conventions
 
-All ChipCutter guides (`00`–`22`) follow a uniform 7-part structure so machinists and contributors can scan any strategy quickly:
+All ChipCutter guides (`00`–`23`) follow a uniform 7-part structure so machinists and contributors can scan any strategy quickly:
 
 1. **Goal & What You'll Learn** — Target machining outcome and key takeaways.
 2. **Prerequisites & Starter Project** — How to open the exact starter model or sample job.
@@ -113,8 +114,8 @@ Screenshots are stored under `docs/images/tutorials/<nn>-<slug>/<step>-<name>.pn
 # Capture screenshots for all tutorials across all milestones:
 ./scripts/capture_tutorial_screenshots.sh --milestone all
 
-# Capture only a single milestone (13, 14, 15, 22, 23, 24, 47, 63, 69, or 70):
-./scripts/capture_tutorial_screenshots.sh --milestone 70
+# Capture only a single milestone (13, 14, 15, 22, 23, 24, 47, 63, 69, 70, or 96):
+./scripts/capture_tutorial_screenshots.sh --milestone 96
 
 # Or capture a single tutorial in Daylight Light theme:
 ./scripts/capture_tutorial_screenshots.sh --tutorial 13-pure2d-dxf-svg-workflow --theme light

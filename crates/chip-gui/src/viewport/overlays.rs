@@ -907,9 +907,9 @@ pub fn draw_reach_legend_overlay(
     is_computing: bool,
     unit: DisplayUnit,
 ) {
-    let box_w = 188.0;
-    let box_h = 104.0;
-    if viewport_rect.width() < box_w + 24.0 || viewport_rect.height() < 290.0 {
+    let box_w = 216.0;
+    let box_h = 124.0;
+    if viewport_rect.width() < box_w + 24.0 || viewport_rect.height() < 310.0 {
         return;
     }
 

@@ -108,6 +108,9 @@ Machines cylindrical holes selected from the STEP B-Rep or 2D Sketch `Circle` / 
 #### B. Helical Bore Milling (when using an endmill with `tool_d < hole_d`)
 - Helically interpolates (`G2`/`G3` with simultaneous `Z` feed) at radius `R_path = (hole_d - tool_d) / 2 - stock_to_leave_radial` using `bore_pitch_per_rev` (or `bore_ramp_angle_deg`), performs a flat `360°` cleanup circle at `Bottom Z`, optional radial finish pass (`bore_finish_pass` / `bore_finish_stepover`) + `bore_spring_pass`, and arcs smoothly toward hole center before `G0` retracting so the cutter never drags up the finished bore wall.
 - For wide bores (`hole_d > 2 * tool_d - overlap`), automatically steps radially outward from a central helical core so no uncut pin is left in the middle.
+- **Helical Bore Safety Controls *(Phase 26 — M94)*:**
+  - **`bore_inner_arc_feed_comp: bool`:** Scales helical tool-center feedrates by `(r_orbit / R_hole).clamp(0.20, 1.0)` so actual cutting-edge periphery chipload matches programmed feed instead of amplifying by `R_hole / r_orbit` inside tight bores (defaults to `false` on legacy TOML deserialization for golden parity; enabled by default on newly created `DrillBore` operations).
+  - **`bore_chip_clear_depth: Option<ParamLength>`:** Periodically arcs to hole center, retracts fully to `Retract` plane (`r_plane_z`) to evacuate packed chips in deep bores, and ramps back down smoothly.
 
 ---
 
@@ -275,3 +278,14 @@ Phase 18 adds four specialized machining strategies built on exact `f64` B-Rep t
 ### 4. 3D Lollipop Undercut Finishing (`OperationKind::Undercut3D`)
 - **Overhang Surface Discovery:** Identifies downward-facing overhanging 3D triangles (`n_z <= -sin(min_overhang_angle_deg)`) within the active Z height band (and optional 2D containment region) on STEP solids or triangle meshes.
 - **Upper-Hemisphere Contact & Neck-Clearance Clipping:** Slices horizontal Z-levels (`z_stepdown` or spherical cusp-derived `use_cusp_height` / `target_cusp`), solves exact upper-hemisphere tangential contact `p_center = p_surf + (R + stock_to_leave) * n_surf`, verifies sphere, relieved-neck (`r_neck + neck_clearance`), and shank clearance against all overhanging ceilings via `FlatBvh` (automatically trimming unreachable deep recesses), and emits verified horizontal `lead_out_distance` open-air pull-aways before every `+Z` retract.
+
+---
+
+## Physics-Backed Machinability Advisor, Measurement, & Reach Analysis *(Phase 26 — M94–M95)*
+- **Machinability & Tool-Breakage Advisor (`crates/chip-cam/src/machinability_advisor.rs`):**
+  - Evaluates every active operation (`analyze_operation_machinability`, `analyze_setup_machinability`) against the project's `WorkpieceMaterialProfile`, the active `MachineDefinition` spindle curve, and the assigned cutter's flute/neck geometry—flagging `SpindlePowerStall` (`>70%` Warning, `>100%` Critical), `ToolDeflectionSnap` (`>25 µm` / `SF < 2.5` Warning; `>60 µm` / `>2% D` / `SF < 1.5` Critical), `ThinChipRubbingWeld` ($h_{\max} < h_{\min}$, with gummy/dry aluminum chip-welding advisories), `ChiploadOverload`, `HelicalInnerArcOverload` ($R_{\text{hole}} / r_{\text{orbit}} > 1.35\times$), `DeepBoreFullDepthFinish` (full-depth radial finish pass $> 2.5D$), `DeepHoleChipEvacuation` (deep narrow-annulus bore without chip-clear retract), and `SlowOpenAirPlunge` (`Info`).
+  - Pairs actionable findings with typed, deterministic 1-click fixes (`MachinabilityFix` executed via `apply_machinability_fix`) that mutate stepdown, stepover, feeds, helical inner-arc compensation, deep-bore finish pass, or bore chip-clear retract and mark the operation `Dirty`.
+- **Exact `f64` Geometry Measurement (`crates/chip-cam/src/measurement.rs`):**
+  - Snaps exact `f64` B-Rep vertices, circular/linear edges, planar faces, cylindrical holes, and 2D sketch entities (falling back to `f64`-promoted mesh hits) in Setup WCS coordinates, returning exact 3D Euclidean distance, `ΔX`/`ΔY`/`ΔZ`, parallel plane gap, dihedral angle, hole diameter/depth, and coaxial center-to-center pitch.
+- **Minimum-Radius & Cutter Reach Analysis (`crates/chip-cam/src/reach_analysis.rs`):**
+  - Background-cached B-Rep/mesh analysis classifying tight internal concave corners (`r < R_tool`, amber), narrow blocked slots (`width < D_tool`, amber), flute-length rub zones (`depth > flute_length`, amber), and stickout/collet reach violations (`depth > stickout_length`, crimson) relative to the active cutter and Setup `+Z` axis.
