@@ -300,6 +300,10 @@ impl ChipCutterApp {
             CommandId::OpenDiagnosticsLog => {
                 focus_workspace_pane(&mut self.tree, WorkspacePane::DiagnosticsLog);
             }
+            CommandId::ToggleMeasureTool => self.toggle_measure_mode(),
+            CommandId::ToggleReachHeatmap => {
+                self.highlight.show_reach_heatmap = !self.highlight.show_reach_heatmap;
+            }
             CommandId::FitToViewport => self.fit_scene_to_viewport(),
             CommandId::ToggleOrthoPerspective => self.camera.toggle_projection(),
             CommandId::AlignViewSetupTop => self.align_camera_to_active_setup(),

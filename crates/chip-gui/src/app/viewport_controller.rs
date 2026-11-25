@@ -2,12 +2,14 @@ use std::borrow::Cow;
 
 use chip_cad::{CurveKind, PickFilter, PickTarget, SurfaceKind};
 use chip_cam::{
-    ExtractedFeature25D, FixtureBody, FixtureKind, GeometrySelectionItem, ManualTabAnchor,
-    Operation, OperationRotaryMode, OperationStatus, ResolvedHeights, ResolvedRotaryConfig,
-    ResolvedSetup, StrategyParams, TabMarker3D, TabPlacementMode, TabProfileKind, WcsAxisRef,
-    WcsFeaturePointRef, WcsOrientationMode, WcsOriginMode, build_indexed_virtual_setup,
+    ExtractedFeature25D, FixtureBody, FixtureKind, GeometrySelectionItem, HeightReference,
+    HeightSpec, ManualTabAnchor, Operation, OperationRotaryMode, OperationStatus, ResolvedHeights,
+    ResolvedRotaryConfig, ResolvedSetup, StrategyParams, TabMarker3D, TabPlacementMode,
+    TabProfileKind, WcsAxisRef, WcsFeaturePointRef, WcsOrientationMode, WcsOriginMode,
+    analyze_machinability_reach, build_indexed_virtual_setup, compute_reach_cache_key,
     extract_selection_features_with_sketches, resolve_sketch_world_frame,
-    resolve_sketch_world_frame_with_doc,
+    resolve_sketch_world_frame_with_doc, snap_brep_pick_to_measure_target,
+    snap_mesh_hit_to_measure_target, snap_sketch_to_measure_target,
 };
 use chip_math::{Aabb2, DMat4, DVec2, DVec3, ParamLength, Ray3, RigidFrame3};
 use chip_project::cad_binding_to_sketch_face;
@@ -551,6 +553,251 @@ impl ChipCutterApp {
                 }
             }
         }
+
+        self.highlight.reach_analysis = if self.highlight.show_reach_heatmap {
+            self.reach_result.clone()
+        } else {
+            None
+        };
+        self.highlight.measure_state = if self.pick_mode == ViewportPickMode::Measure {
+            Some(self.measure_state.clone())
+        } else {
+            None
+        };
+    }
+
+    /// Toggles [`ViewportPickMode::Measure`] on or off cleanly.
+    pub(crate) fn toggle_measure_mode(&mut self) {
+        if self.pick_mode == ViewportPickMode::Measure {
+            self.measure_state.reset_all();
+            self.pick_mode = ViewportPickMode::InspectEntity;
+            self.highlight.measure_state = None;
+        } else {
+            self.sketch_author_start_xy = None;
+            self.measure_state.reset_all();
+            self.pick_mode = ViewportPickMode::Measure;
+            self.highlight.hovered = None;
+            self.highlight.hovered_sketch = None;
+            self.highlight.measure_state = Some(self.measure_state.clone());
+        }
+    }
+
+    /// Resolves the active cutter used for Minimum-Radius & Reach Heatmap analysis.
+    pub(crate) fn active_tool_for_reach(&self) -> Option<chip_tools::Tool> {
+        if let InspectorFocus::Operation { setup_idx, op_idx } = self.inspector_focus
+            && let Some(op) = self
+                .project
+                .setups
+                .get(setup_idx)
+                .and_then(|s| s.operations.get(op_idx))
+            && let Some(tid) = &op.tool_id
+            && let Some(t) = self
+                .project
+                .tool(tid)
+                .or_else(|| self.global_tools.tool(tid))
+        {
+            return Some(t.clone());
+        }
+        if let InspectorFocus::ProjectTool { tool_idx } = self.inspector_focus
+            && let Some(t) = self.project.tools.get(tool_idx)
+        {
+            return Some(t.clone());
+        }
+        if let Some(setup) = self.project.setups.get(self.active_setup_idx) {
+            for op in &setup.operations {
+                if let Some(tid) = &op.tool_id
+                    && let Some(t) = self
+                        .project
+                        .tool(tid)
+                        .or_else(|| self.global_tools.tool(tid))
+                {
+                    return Some(t.clone());
+                }
+            }
+        }
+        self.project
+            .tools
+            .first()
+            .or_else(|| self.global_tools.tools.first())
+            .cloned()
+    }
+
+    /// Dispatches [`analyze_machinability_reach`] on a background `rayon` task when the Reach /
+    /// Min-R overlay is enabled and the `(cad_revision, setup_hash, tool_hash)` cache key changed.
+    /// Idle frames with a matching cache key do zero work.
+    pub(crate) fn sync_reach_heatmap_worker(&mut self, egui_ctx: &egui::Context) {
+        if !self.highlight.show_reach_heatmap {
+            return;
+        }
+        let Some((cad_doc, cad_rev)) = self.effective_cad_arc() else {
+            self.reach_result = None;
+            self.reach_cache_key = None;
+            return;
+        };
+        let Some(tool) = self.active_tool_for_reach() else {
+            self.reach_result = None;
+            self.reach_cache_key = None;
+            return;
+        };
+        let Some(Ok(rs)) = self.active_resolved_setup() else {
+            return;
+        };
+        let Some(setup) = self.project.setups.get(self.active_setup_idx).cloned() else {
+            return;
+        };
+
+        let key = compute_reach_cache_key(cad_rev, &setup, &rs, &tool, &self.project.sketches);
+        if self.reach_cache_key == Some(key) || self.reach_in_flight_key == Some(key) {
+            return;
+        }
+
+        self.reach_in_flight_key = Some(key);
+        let sketches = self.project.sketches.clone();
+        let tx = self.reach_job_tx.clone();
+        let repaint_ctx = egui_ctx.clone();
+        rayon::spawn(move || {
+            let res = analyze_machinability_reach(&cad_doc, &sketches, &setup, &rs, &tool);
+            let _ = tx.send((key, std::sync::Arc::new(res)));
+            repaint_ctx.request_repaint();
+        });
+    }
+
+    /// Handles 3D viewport hover snapping and click progression inside [`ViewportPickMode::Measure`].
+    pub(crate) fn handle_measure_viewport_interaction(
+        &mut self,
+        ray: &Ray3,
+        mm_per_px: f64,
+        primary_click: bool,
+        right_click: bool,
+    ) {
+        if right_click {
+            if self.measure_state.result.is_some() {
+                self.measure_state.clear_measurement();
+                self.highlight.measure_state = Some(self.measure_state.clone());
+            } else {
+                self.toggle_measure_mode();
+            }
+            return;
+        }
+
+        let resolved_opt = self.active_resolved_setup().and_then(Result::ok);
+        let setup_frame = resolved_opt.map_or(RigidFrame3::IDENTITY, |rs| rs.frame);
+        let snap_radius_mm = (mm_per_px * 10.0).clamp(0.3, 6.0);
+
+        let mut best_t = f64::INFINITY;
+        let mut best_target = None;
+
+        // 1. Exact B-Rep pick + vertex/edge/plane/cylinder snap
+        if let Some(m) = &self.model {
+            let pick_ray = self.highlight.world_ray_to_cad_model_space(ray);
+            if let Some(hit) = m.picker.pick(&m.doc, &pick_ray, mm_per_px, PickFilter::Any)
+                && let Some(t) = snap_brep_pick_to_measure_target(
+                    &m.doc,
+                    &m.topo,
+                    &setup_frame,
+                    &hit,
+                    snap_radius_mm,
+                )
+            {
+                best_t = hit.ray_t;
+                best_target = Some(t);
+            }
+        }
+
+        // 2. Exact 2D Sketch vertex / circle center snap (wins if closer along camera ray)
+        if let Some(rs) = &resolved_opt {
+            let doc_has_bodies = self.model.is_some();
+            let has_cad_rot = self.highlight.has_active_cad_rotary_transform();
+            let cad_xf = if has_cad_rot {
+                self.highlight.cad_world_transform()
+            } else {
+                DMat4::IDENTITY
+            };
+            for sk in &self.project.sketches {
+                if !sk.visible {
+                    continue;
+                }
+                let mut wf = if let Some(m) = &self.model {
+                    resolve_sketch_world_frame_with_doc(&m.doc, sk, rs)
+                } else {
+                    resolve_sketch_world_frame(doc_has_bodies, sk, rs)
+                };
+                if has_cad_rot && matches!(sk.anchor, SketchAnchor::PlanarFace { .. }) {
+                    wf = transform_rigid_frame_by_dmat4(wf, cad_xf);
+                }
+                let denom = ray.dir.dot(wf.z_axis);
+                if denom.abs() <= 1e-6 {
+                    continue;
+                }
+                let t = (wf.origin_mm - ray.origin).dot(wf.z_axis) / denom;
+                if t <= 0.0 || t >= best_t + snap_radius_mm {
+                    continue;
+                }
+                let hit_world = ray.origin + ray.dir * t;
+                let hit_local = wf.world_to_local_point(hit_world);
+                if let Some(sk_target) = snap_sketch_to_measure_target(
+                    sk,
+                    &wf,
+                    &setup_frame,
+                    DVec2::new(hit_local.x, hit_local.y),
+                    snap_radius_mm,
+                ) {
+                    best_t = t;
+                    best_target = Some(sk_target);
+                }
+            }
+        }
+
+        // 3. Fallback to triangle mesh surface point for STL/OBJ/3MF when no B-Rep/Sketch target hit
+        if best_target.is_none()
+            && let Some(m) = &self.model
+        {
+            let pick_ray = self.highlight.world_ray_to_cad_model_space(ray);
+            if let Some((pt_world, normal_world)) = m.picker.pick_surface_normal(&m.doc, &pick_ray)
+            {
+                best_target = Some(snap_mesh_hit_to_measure_target(
+                    pt_world,
+                    normal_world,
+                    &setup_frame,
+                ));
+            }
+        }
+
+        self.measure_state.hovered_snap = best_target.clone();
+        if primary_click && let Some(target) = best_target {
+            self.measure_state.on_click_target(target);
+        }
+        self.highlight.measure_state = Some(self.measure_state.clone());
+    }
+
+    /// Applies a measured WCS Z coordinate to the focused Operation's Bottom Height with atomic Undo.
+    pub(crate) fn apply_measure_bottom_z_to_focused_op(&mut self, z_wcs: f64) {
+        if !z_wcs.is_finite() {
+            return;
+        }
+        if let InspectorFocus::Operation { setup_idx, op_idx } = self.inspector_focus
+            && setup_idx < self.project.setups.len()
+            && op_idx < self.project.setups[setup_idx].operations.len()
+        {
+            let op_name = self.project.setups[setup_idx].operations[op_idx]
+                .name
+                .clone();
+            self.history.record_before_edit(
+                "Set Operation Bottom Z from Measure",
+                None,
+                &self.project,
+            );
+            self.project.setups[setup_idx].operations[op_idx]
+                .heights
+                .bottom = HeightSpec::new(HeightReference::WcsOrigin, z_wcs);
+            mark_ops_dirty_with_rest(&mut self.project.setups[setup_idx], &[op_idx]);
+            self.cached_frame_geo = None;
+            self.logs.push(format!(
+                "Set Bottom Height of '{}' to WCS Z = {}.",
+                op_name,
+                self.project.display_units.format_length(z_wcs)
+            ));
+        }
     }
 
     pub(crate) fn effective_pick_filter(&self) -> PickFilter {
@@ -572,7 +819,8 @@ impl ChipCutterApp {
             ViewportPickMode::OpCylindricalHoles { .. } => PickFilter::CylindricalHolesOnly,
             ViewportPickMode::SketchAuthor { .. }
             | ViewportPickMode::PlaceFixtureClamp { .. }
-            | ViewportPickMode::PickKeepOutGeometry { .. } => PickFilter::Any,
+            | ViewportPickMode::PickKeepOutGeometry { .. }
+            | ViewportPickMode::Measure => PickFilter::Any,
         }
     }
 
@@ -1282,7 +1530,8 @@ impl ChipCutterApp {
                 }
             },
             ViewportPickMode::PickModelLayFlatFace { .. }
-            | ViewportPickMode::PlaceFixtureClamp { .. } => {}
+            | ViewportPickMode::PlaceFixtureClamp { .. }
+            | ViewportPickMode::Measure => {}
         }
     }
 
@@ -2073,5 +2322,227 @@ mod tests {
         assert!(title.contains("+X Edge"));
         assert!(instr.contains("edge"));
         assert!(!done);
+    }
+
+    #[test]
+    fn m95_measure_state_machine_set_bottom_z_undo_and_headless_cards() {
+        use chip_cad::FaceId;
+        use chip_cam::{
+            MeasureSnapTarget, MeasurementResult, OperationKind, ReachAnalysisResult,
+            ReachIssueKind, ReachSeverity,
+        };
+        use chip_math::DisplayUnit;
+
+        use crate::{
+            panels::command_palette::CommandId,
+            theme::{AppTheme, apply_theme},
+            viewport::{draw_measure_readout_card, draw_reach_legend_overlay},
+        };
+
+        let ctx = egui::Context::default();
+        let mut app = ChipCutterApp::new_headless_for_test(&ctx);
+        app.add_standard_operation(OperationKind::Pocket2D);
+        assert_eq!(
+            app.inspector_focus,
+            InspectorFocus::Operation {
+                setup_idx: 0,
+                op_idx: 0
+            }
+        );
+
+        // 1. Toggle Measure mode via Command Palette
+        app.execute_palette_command(CommandId::ToggleMeasureTool, &ctx);
+        assert_eq!(app.pick_mode, ViewportPickMode::Measure);
+        assert!(app.pick_mode.banner_text().unwrap().contains("Measure"));
+
+        // 2. Single pick -> SingleEntity
+        let top_plane = MeasureSnapTarget::BRepPlanarFace {
+            face_id: FaceId(1),
+            point_wcs: DVec3::new(10.0, 10.0, 0.0),
+            normal_wcs: DVec3::Z,
+            z_wcs: 0.0,
+            area_mm2: 500.0,
+        };
+        let floor_plane = MeasureSnapTarget::BRepPlanarFace {
+            face_id: FaceId(2),
+            point_wcs: DVec3::new(10.0, 10.0, -12.5),
+            normal_wcs: DVec3::Z,
+            z_wcs: -12.5,
+            area_mm2: 200.0,
+        };
+        app.measure_state.on_click_target(top_plane.clone());
+        assert!(matches!(
+            app.measure_state.result,
+            Some(MeasurementResult::SingleEntity { .. })
+        ));
+        assert!(app.measure_state.anchor2.is_none());
+
+        // 3. Two-point pick -> ParallelPlanes with exact 12.5 mm depth
+        app.measure_state.on_click_target(floor_plane.clone());
+        match &app.measure_state.result {
+            Some(MeasurementResult::ParallelPlanes {
+                perpendicular_gap_mm,
+                ..
+            }) => assert!((*perpendicular_gap_mm - 12.5).abs() < 1e-9),
+            other => panic!("expected ParallelPlanes, got {other:?}"),
+        }
+        assert_eq!(app.measure_state.suggested_bottom_z_wcs(), Some(-12.5));
+
+        // 4. Contextual "Set Op Bottom Z" records atomic Undo & mutates focused Op Bottom Height
+        app.apply_measure_bottom_z_to_focused_op(-12.5);
+        assert_eq!(
+            app.project.setups[0].operations[0].heights.bottom.reference,
+            HeightReference::WcsOrigin
+        );
+        assert!(
+            (app.project.setups[0].operations[0]
+                .heights
+                .bottom
+                .offset
+                .value_mm
+                + 12.5)
+                .abs()
+                < 1e-9
+        );
+        app.perform_undo();
+        assert_eq!(
+            app.project.setups[0].operations[0].heights.bottom.reference,
+            HeightReference::FromSelection
+        );
+
+        // 5. Third click starts a fresh single-entity pick; clear resets anchors
+        app.measure_state.on_click_target(top_plane);
+        assert!(matches!(
+            app.measure_state.result,
+            Some(MeasurementResult::SingleEntity { .. })
+        ));
+        assert!(app.measure_state.anchor2.is_none());
+        app.measure_state.clear_measurement();
+        assert!(app.measure_state.anchor1.is_none());
+        assert!(app.measure_state.result.is_none());
+
+        // 6. Esc exits Measure mode cleanly; M hotkey toggles Measure mode on and off
+        let mut out = ctx.run_ui(
+            egui::RawInput {
+                events: vec![egui::Event::Key {
+                    key: egui::Key::Escape,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+                ..Default::default()
+            },
+            |ui| {
+                let c = ui.ctx().clone();
+                app.handle_global_shortcuts(&c);
+            },
+        );
+        out.textures_delta.clear();
+        assert_eq!(app.pick_mode, ViewportPickMode::InspectEntity);
+
+        let mut out_m = ctx.run_ui(
+            egui::RawInput {
+                events: vec![egui::Event::Key {
+                    key: egui::Key::M,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+                ..Default::default()
+            },
+            |ui| {
+                let c = ui.ctx().clone();
+                app.handle_global_shortcuts(&c);
+            },
+        );
+        out_m.textures_delta.clear();
+        assert_eq!(app.pick_mode, ViewportPickMode::Measure);
+
+        let mut out_m2 = ctx.run_ui(
+            egui::RawInput {
+                events: vec![egui::Event::Key {
+                    key: egui::Key::M,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+                ..Default::default()
+            },
+            |ui| {
+                let c = ui.ctx().clone();
+                app.handle_global_shortcuts(&c);
+            },
+        );
+        out_m2.textures_delta.clear();
+        assert_eq!(app.pick_mode, ViewportPickMode::InspectEntity);
+
+        // 7. Toggle Reach Heatmap via Command Palette + render floating cards in Dark & Light
+        assert!(!app.highlight.show_reach_heatmap);
+        app.execute_palette_command(CommandId::ToggleReachHeatmap, &ctx);
+        assert!(app.highlight.show_reach_heatmap);
+
+        app.measure_state.on_click_target(floor_plane);
+        let sample_reach = ReachAnalysisResult {
+            tool_name: "6mm Flat".to_string(),
+            tool_diameter_mm: 6.0,
+            tool_flute_length_mm: 12.0,
+            tool_effective_reach_mm: 12.0,
+            tool_stickout_length_mm: 15.0,
+            min_internal_radius_mm: Some(2.0),
+            has_sharp_internal_corners: false,
+            max_feature_depth_mm: 18.0,
+            amber_count: 2,
+            crimson_count: 1,
+            tight_corner_count: 1,
+            narrow_slot_count: 0,
+            flute_exceeded_count: 1,
+            stickout_exceeded_count: 1,
+            highlight_faces: Vec::new(),
+            highlight_edges: Vec::new(),
+        };
+        let _ = (ReachIssueKind::TightCorner, ReachSeverity::Warning);
+
+        for theme in [AppTheme::Dark, AppTheme::Light] {
+            apply_theme(&ctx, theme);
+            let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(960.0, 640.0));
+            for _frame in 0..3 {
+                let mut frame_out = ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(rect),
+                        ..Default::default()
+                    },
+                    |ui| {
+                        let _ = draw_measure_readout_card(
+                            ui,
+                            rect,
+                            &app.measure_state,
+                            DisplayUnit::Millimeter,
+                            Some("Pocket 1"),
+                        );
+                        draw_reach_legend_overlay(
+                            ui,
+                            rect,
+                            Some(&sample_reach),
+                            false,
+                            DisplayUnit::Millimeter,
+                        );
+                    },
+                );
+                frame_out.textures_delta.clear();
+                // Verify zero exotic non-ASCII glyphs in rendered text shapes
+                for cs in &frame_out.shapes {
+                    if let egui::Shape::Text(ts) = &cs.shape {
+                        assert!(
+                            ts.galley.text().is_ascii(),
+                            "measure/reach HUD text must be plain ASCII, found: {:?}",
+                            ts.galley.text()
+                        );
+                    }
+                }
+            }
+        }
     }
 }

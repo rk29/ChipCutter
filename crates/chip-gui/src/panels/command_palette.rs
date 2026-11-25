@@ -68,6 +68,8 @@ pub enum CommandId {
     OpenDiagnosticsLog,
 
     // View, Camera, Theme, & Units
+    ToggleMeasureTool,
+    ToggleReachHeatmap,
     FitToViewport,
     ToggleOrthoPerspective,
     AlignViewSetupTop,
@@ -424,6 +426,20 @@ pub const PALETTE_COMMANDS: &[PaletteEntry] = &[
         category: "Tools",
         label: "Open Machine Manager (Milo, Carvera, Voron Cascade, Custom)…",
         keywords: "machine milo 1.5 2.0 carvera air z1 voron cascade generic definition envelope spindle clone export import",
+        shortcut: None,
+    },
+    PaletteEntry {
+        id: CommandId::ToggleMeasureTool,
+        category: "View",
+        label: "Toggle Click-to-Measure Tool",
+        keywords: "measure distance diameter radius angle depth inspect ruler wcs",
+        shortcut: Some("M"),
+    },
+    PaletteEntry {
+        id: CommandId::ToggleReachHeatmap,
+        category: "View",
+        label: "Toggle Minimum-Radius & Flute/Stickout Reach Heatmap",
+        keywords: "reach min radius heatmap fillet flute stickout corner machinability check",
         shortcut: None,
     },
     PaletteEntry {
@@ -930,6 +946,7 @@ pub fn show_shortcut_cheatsheet_modal(ctx: &egui::Context, state: &mut ShortcutC
                         ui,
                         "sc_vp",
                         &[
+                            ("M", "Toggle Click-to-Measure Tool"),
                             ("P", "Toggle Ortho / Perspective"),
                             ("F", "Fit Scene to Viewport"),
                             ("Space", "Play / Pause 3D Simulation"),

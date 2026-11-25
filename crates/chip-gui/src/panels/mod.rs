@@ -190,6 +190,7 @@ pub enum ViewportPickMode {
     PickKeepOutGeometry {
         region_idx: usize,
     },
+    Measure,
 }
 
 impl ViewportPickMode {
@@ -254,6 +255,10 @@ impl ViewportPickMode {
             )),
             Self::PickKeepOutGeometry { .. } => Some(
                 "Keep-Out Pick Active: Click planar faces, closed loops, holes, or 2D sketches in 3D to toggle keep-out geometry (Esc to cancel)"
+                    .to_string(),
+            ),
+            Self::Measure => Some(
+                "Measure Tool Active: Click 1st entity to inspect, 2nd entity for distance/angle (Esc to exit)"
                     .to_string(),
             ),
         }
@@ -357,6 +362,12 @@ impl ViewportPickMode {
             Self::PickKeepOutGeometry { .. } => Some((
                 "Pick 3D Avoid Geometry",
                 "Click planar faces, closed loops, holes, or 2D sketches in 3D to toggle keep-out regions"
+                    .to_string(),
+                true,
+            )),
+            Self::Measure => Some((
+                "Measure Tool",
+                "Click vertex, edge, hole, planar face, or sketch to inspect & measure (Esc to exit)"
                     .to_string(),
                 true,
             )),

@@ -734,6 +734,20 @@ impl ChipCutterApp {
                 "Show Z-Height Planes in Heights Tab",
             )
             .on_hover_text("Render color-coded Clearance, Retract, Top, and Bottom Z planes when editing Heights");
+            ui.checkbox(
+                &mut self.highlight.show_reach_heatmap,
+                "Show Reach / Min-R Heatmap",
+            )
+            .on_hover_text("Highlight tight internal fillets, blocked narrow slots, and deep pockets exceeding flute or stickout reach");
+            let mut measure_on = self.pick_mode == ViewportPickMode::Measure;
+            if ui
+                .checkbox(&mut measure_on, "Measure Tool (M)")
+                .on_hover_text("Click-to-Measure distances, hole diameters, Z depths, and dihedral angles in active Setup WCS")
+                .changed()
+            {
+                self.toggle_measure_mode();
+                ui.close();
+            }
             ui.separator();
             if ui
                 .button("Toggle Orthographic / Perspective (P)")

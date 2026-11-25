@@ -90,6 +90,9 @@ impl ChipCutterApp {
             if self.sketch_author_start_xy.take().is_some() {
                 // Cancelled first rubber-band click while staying in SketchAuthor tool
             } else if self.pick_mode != ViewportPickMode::InspectEntity {
+                if self.pick_mode == ViewportPickMode::Measure {
+                    self.measure_state.reset_all();
+                }
                 self.pick_mode = ViewportPickMode::InspectEntity;
                 self.geometry_pick_target = crate::panels::GeometryPickTarget::CuttingArea;
                 self.editing_shared_avoid_id = None;
@@ -143,6 +146,9 @@ impl ChipCutterApp {
             }
             if delete_key {
                 self.delete_focused_item();
+            }
+            if ctx.input(|i| !i.modifiers.any() && i.key_pressed(egui::Key::M)) {
+                self.toggle_measure_mode();
             }
             if ctx.input(|i| !i.modifiers.any() && i.key_pressed(egui::Key::P)) {
                 self.camera.toggle_projection();

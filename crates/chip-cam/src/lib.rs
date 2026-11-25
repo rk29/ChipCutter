@@ -6,10 +6,12 @@ pub mod cl_data;
 pub mod feed_opt;
 pub mod fixture_avoidance;
 pub mod heights;
+pub mod measurement;
 pub mod medial;
 pub mod offset2d;
 pub mod operation;
 pub mod params;
+pub mod reach_analysis;
 pub mod rest2d;
 pub mod rotary;
 pub mod selection;
@@ -43,6 +45,12 @@ pub use fixture_avoidance::{
     route_toolpath_around_fixtures,
 };
 pub use heights::{HeightReference, HeightSpec, OperationHeights, ResolvedHeights, SetupHeights};
+pub use measurement::{
+    MeasureSnapTarget, MeasurementResult, measure_pair, measure_single,
+    snap_brep_edge_to_measure_target, snap_brep_face_to_measure_target,
+    snap_brep_pick_to_measure_target, snap_mesh_hit_to_measure_target,
+    snap_sketch_to_measure_target,
+};
 pub use medial::{
     MedialChain2D, MedialNode2D, extract_interior_medial_nodes, extract_medial_axis_chains,
     find_medial_inscribed_pole,
@@ -70,6 +78,10 @@ pub use params::{
     TabPlacementMode, TabProfileKind, ThreadCutDirection, ThreadFormKind, ThreadHandedness,
     ThreadMillParams, ToolContainmentMode, Undercut3DParams, UndercutEntryMode, VCarveClearingKind,
     VCarveInlayMode, VCarveParams, Waterline3DParams, WaterlineOrderMode,
+};
+pub use reach_analysis::{
+    ReachAnalysisResult, ReachHighlightEdge, ReachHighlightFace, ReachIssueKind, ReachSeverity,
+    analyze_machinability_reach, compute_reach_cache_key, effective_non_rubbing_reach_mm,
 };
 pub use rest2d::{
     ContourRestClipQuery, PocketRestQuery, RegionSet2D, RestPocketWorkItem, UpstreamSweptInput,

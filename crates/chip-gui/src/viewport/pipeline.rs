@@ -2876,4 +2876,216 @@ mod tests {
             "3D Surface Nets skinning must sharply reduce stair-step luminance roughness (GPU {gpu_skin_r:.2} vs {gpu_crisp_r:.2}, CPU {cpu_skin_r:.2} vs {cpu_crisp_r:.2})"
         );
     }
+
+    #[test]
+    fn m95_offscreen_wgpu_renders_measure_leaders_and_reach_heatmap_in_dark_and_light() {
+        use std::sync::Arc;
+
+        use chip_cam::{
+            MeasureSnapTarget, ReachAnalysisResult, ReachHighlightEdge, ReachHighlightFace,
+            ReachIssueKind, ReachSeverity,
+        };
+        use chip_math::{DVec3, RigidFrame3};
+
+        use crate::{
+            camera::{CadCamera, StandardView},
+            theme::AppTheme,
+            viewport::{HighlightState, MeasureToolState, render_offscreen_rgba_on_device},
+        };
+
+        let instance =
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+        let Ok(adapter) =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::LowPower,
+                compatible_surface: None,
+                force_fallback_adapter: false,
+                ..Default::default()
+            }))
+        else {
+            return;
+        };
+        let Ok((device, queue)) =
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
+        else {
+            return;
+        };
+
+        let (w, h) = (320u32, 240u32);
+        let mut cam = CadCamera {
+            target_mm: DVec3::new(0.0, 0.0, 0.0),
+            distance_mm: 95.0,
+            ..CadCamera::default()
+        };
+        cam.set_standard_view(StandardView::Top);
+        cam.distance_mm = 95.0;
+
+        // Build synthetic Amber (left quad + edge) and Crimson (right quad + edge) reach regions
+        let reach = Arc::new(ReachAnalysisResult {
+            tool_name: "6mm Flat".to_string(),
+            tool_diameter_mm: 6.0,
+            tool_flute_length_mm: 12.0,
+            tool_effective_reach_mm: 12.0,
+            tool_stickout_length_mm: 15.0,
+            min_internal_radius_mm: Some(2.0),
+            has_sharp_internal_corners: false,
+            max_feature_depth_mm: 18.0,
+            amber_count: 2,
+            crimson_count: 2,
+            tight_corner_count: 1,
+            narrow_slot_count: 1,
+            flute_exceeded_count: 0,
+            stickout_exceeded_count: 0,
+            highlight_faces: vec![
+                ReachHighlightFace {
+                    face_id: None,
+                    kind: ReachIssueKind::TightCorner,
+                    severity: ReachSeverity::Warning,
+                    triangles_world: vec![
+                        (
+                            [
+                                DVec3::new(-28.0, -14.0, 0.0),
+                                DVec3::new(-6.0, -14.0, 0.0),
+                                DVec3::new(-6.0, 14.0, 0.0),
+                            ],
+                            DVec3::Z,
+                        ),
+                        (
+                            [
+                                DVec3::new(-28.0, -14.0, 0.0),
+                                DVec3::new(-6.0, 14.0, 0.0),
+                                DVec3::new(-28.0, 14.0, 0.0),
+                            ],
+                            DVec3::Z,
+                        ),
+                    ],
+                    measured_value_mm: 2.0,
+                    limit_value_mm: 3.0,
+                    detail: "Amber tight fillet".to_string(),
+                },
+                ReachHighlightFace {
+                    face_id: None,
+                    kind: ReachIssueKind::ExceedsStickout,
+                    severity: ReachSeverity::Critical,
+                    triangles_world: vec![
+                        (
+                            [
+                                DVec3::new(6.0, -14.0, 0.0),
+                                DVec3::new(28.0, -14.0, 0.0),
+                                DVec3::new(28.0, 14.0, 0.0),
+                            ],
+                            DVec3::Z,
+                        ),
+                        (
+                            [
+                                DVec3::new(6.0, -14.0, 0.0),
+                                DVec3::new(28.0, 14.0, 0.0),
+                                DVec3::new(6.0, 14.0, 0.0),
+                            ],
+                            DVec3::Z,
+                        ),
+                    ],
+                    measured_value_mm: 18.0,
+                    limit_value_mm: 15.0,
+                    detail: "Crimson stickout collision".to_string(),
+                },
+            ],
+            highlight_edges: vec![
+                ReachHighlightEdge {
+                    edge_id: None,
+                    kind: ReachIssueKind::TightCorner,
+                    severity: ReachSeverity::Warning,
+                    segments_world: vec![(
+                        DVec3::new(-28.0, -16.0, 0.2),
+                        DVec3::new(-6.0, -16.0, 0.2),
+                    )],
+                    measured_value_mm: 2.0,
+                    limit_value_mm: 3.0,
+                    detail: "Amber edge".to_string(),
+                },
+                ReachHighlightEdge {
+                    edge_id: None,
+                    kind: ReachIssueKind::NarrowSlotBlocked,
+                    severity: ReachSeverity::Critical,
+                    segments_world: vec![(
+                        DVec3::new(6.0, -16.0, 0.2),
+                        DVec3::new(28.0, -16.0, 0.2),
+                    )],
+                    measured_value_mm: 4.0,
+                    limit_value_mm: 6.0,
+                    detail: "Crimson edge".to_string(),
+                },
+            ],
+        });
+
+        let mut measure = MeasureToolState::default();
+        measure.on_click_target(MeasureSnapTarget::BRepVertex {
+            pos_wcs: DVec3::new(-20.0, 20.0, 0.0),
+        });
+        measure.on_click_target(MeasureSnapTarget::BRepVertex {
+            pos_wcs: DVec3::new(20.0, 24.0, 5.0),
+        });
+
+        for theme in [AppTheme::Dark, AppTheme::Light] {
+            let base_hl = HighlightState {
+                theme,
+                wcs_frame: RigidFrame3::IDENTITY,
+                show_stock: false,
+                show_grid: false,
+                ..HighlightState::default()
+            };
+            let base_px =
+                render_offscreen_rgba_on_device(&device, &queue, None, &cam, &base_hl, w, h)
+                    .unwrap();
+
+            let active_hl = HighlightState {
+                theme,
+                wcs_frame: RigidFrame3::IDENTITY,
+                show_stock: false,
+                show_grid: false,
+                show_reach_heatmap: true,
+                reach_analysis: Some(Arc::clone(&reach)),
+                measure_state: Some(measure.clone()),
+                ..HighlightState::default()
+            };
+            let active_px =
+                render_offscreen_rgba_on_device(&device, &queue, None, &cam, &active_hl, w, h)
+                    .unwrap();
+
+            let mut amber_px = 0usize;
+            let mut crimson_px = 0usize;
+            let mut changed_px = 0usize;
+            for i in 0..(w as usize * h as usize) {
+                let o = i * 4;
+                let (r, g, b) = (active_px[o], active_px[o + 1], active_px[o + 2]);
+                let diff = r
+                    .abs_diff(base_px[o])
+                    .max(g.abs_diff(base_px[o + 1]))
+                    .max(b.abs_diff(base_px[o + 2]));
+                if diff > 14 {
+                    changed_px += 1;
+                    // Amber: strongly warmer than blue with elevated green
+                    if r > b.saturating_add(30) && g > b.saturating_add(15) && r >= g {
+                        amber_px += 1;
+                    }
+                    // Crimson: red strongly dominates both green and blue
+                    if r > g.saturating_add(35) && r > b.saturating_add(35) {
+                        crimson_px += 1;
+                    }
+                }
+            }
+            assert!(
+                changed_px > 500,
+                "{theme:?}: expected measurement + reach overlays to visibly paint viewport (changed={changed_px})"
+            );
+            assert!(
+                amber_px > 200,
+                "{theme:?}: expected distinct Amber reach pixels (got {amber_px})"
+            );
+            assert!(
+                crimson_px > 200,
+                "{theme:?}: expected distinct Crimson reach pixels (got {crimson_px})"
+            );
+        }
+    }
 }

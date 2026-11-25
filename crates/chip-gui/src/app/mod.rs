@@ -17,8 +17,9 @@ use std::{
 
 use chip_cad::{CadDocument, CadPicker, PickFilter, TopologyGraph};
 use chip_cam::{
-    ExtractedSelectionSummary, FixtureBody, OperationStatus, ResolvedFixtureSolid, ResolvedSetup,
-    TriMesh3D, extract_selection_features_with_sketches, resolve_fixture_body,
+    ExtractedSelectionSummary, FixtureBody, OperationStatus, ReachAnalysisResult,
+    ResolvedFixtureSolid, ResolvedSetup, TriMesh3D, extract_selection_features_with_sketches,
+    resolve_fixture_body,
 };
 use chip_math::{Aabb3, DVec3, EvalContext};
 use chip_project::{
@@ -46,7 +47,7 @@ use crate::{
     },
     prefs::{UserPreferences, load_or_default_prefs, save_prefs},
     theme::{AppTheme, ThemeTokens, apply_theme},
-    viewport::{BoundaryPreviewCache, HighlightState, ViewportRenderer},
+    viewport::{BoundaryPreviewCache, HighlightState, MeasureToolState, ViewportRenderer},
     widgets::ExpressionInput,
 };
 
@@ -178,6 +179,12 @@ pub struct ChipCutterApp {
 
     pub(crate) pick_filter: PickFilter,
     pub(crate) highlight: HighlightState,
+    pub(crate) measure_state: MeasureToolState,
+    pub(crate) reach_cache_key: Option<u64>,
+    pub(crate) reach_in_flight_key: Option<u64>,
+    pub(crate) reach_job_tx: Sender<(u64, Arc<ReachAnalysisResult>)>,
+    pub(crate) reach_job_rx: Receiver<(u64, Arc<ReachAnalysisResult>)>,
+    pub(crate) reach_result: Option<Arc<ReachAnalysisResult>>,
 
     pub(crate) wb_tool_dia: ExpressionInput,
     pub(crate) wb_stepover: ExpressionInput,
@@ -272,6 +279,7 @@ impl ChipCutterApp {
         });
 
         let (job_tx, job_rx) = crossbeam_channel::unbounded();
+        let (reach_job_tx, reach_job_rx) = crossbeam_channel::unbounded();
         let machines = chip_tools::load_available_machines(None);
         let default_mid = prefs.default_machine_id.clone();
         let initial_machine = machines
@@ -373,6 +381,12 @@ impl ChipCutterApp {
                 ghost_part: false,
                 ..HighlightState::default()
             },
+            measure_state: MeasureToolState::default(),
+            reach_cache_key: None,
+            reach_in_flight_key: None,
+            reach_job_tx,
+            reach_job_rx,
+            reach_result: None,
             wb_tool_dia: ExpressionInput::new(6.35, Some("1/4 in")),
             wb_stepover: ExpressionInput::new(2.54, Some("tool_d * 0.4")),
             wb_clearance_z: ExpressionInput::new(26.0, Some("model_top_z + 10 mm")),
@@ -472,6 +486,7 @@ impl ChipCutterApp {
         let prefs = UserPreferences::default();
         let active_theme = prefs.theme;
         let (job_tx, job_rx) = crossbeam_channel::unbounded();
+        let (reach_job_tx, reach_job_rx) = crossbeam_channel::unbounded();
         let machines = chip_tools::load_available_machines(None);
         let global_tools = machines
             .first()
@@ -545,6 +560,12 @@ impl ChipCutterApp {
                 ghost_part: false,
                 ..HighlightState::default()
             },
+            measure_state: MeasureToolState::default(),
+            reach_cache_key: None,
+            reach_in_flight_key: None,
+            reach_job_tx,
+            reach_job_rx,
+            reach_result: None,
             wb_tool_dia: ExpressionInput::new(6.35, Some("1/4 in")),
             wb_stepover: ExpressionInput::new(2.54, Some("tool_d * 0.4")),
             wb_clearance_z: ExpressionInput::new(26.0, Some("model_top_z + 10 mm")),
@@ -1348,6 +1369,7 @@ impl eframe::App for ChipCutterApp {
         self.poll_background_jobs(&ctx);
         self.sync_loaded_model_unit_override(&ctx);
         self.sync_loaded_model_transform();
+        self.sync_reach_heatmap_worker(&ctx);
         self.sim_panel.update_playback_and_shortcuts(&ctx);
         self.sync_viewport_scene_state();
         self.draw_top_bars(ui);

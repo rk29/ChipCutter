@@ -119,6 +119,10 @@ impl ChipCutterApp {
         self.pick_mode = ViewportPickMode::InspectEntity;
         self.selected_sketch_entity_idx = None;
         self.sketch_author_start_xy = None;
+        self.measure_state.reset_all();
+        self.reach_cache_key = None;
+        self.reach_in_flight_key = None;
+        self.reach_result = None;
         self.highlight.clear_project_scene_state();
         self.modals.mesh_import.open = false;
         self.modals.vector_import.open = false;
@@ -564,6 +568,15 @@ impl ChipCutterApp {
         }
 
         let _ = self.sim_panel.poll_worker(&mut self.logs);
+
+        while let Ok((key, res)) = self.reach_job_rx.try_recv() {
+            if self.reach_in_flight_key == Some(key) {
+                self.reach_in_flight_key = None;
+            }
+            self.reach_cache_key = Some(key);
+            self.reach_result = Some(res);
+            egui_ctx.request_repaint();
+        }
     }
 }
 

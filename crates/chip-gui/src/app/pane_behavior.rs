@@ -26,8 +26,9 @@ use crate::{
         sketch_inspector::{SketchInspectorAction, SketchInspectorCtx, show_sketch_inspector},
     },
     viewport::{
-        GuidanceHudAction, ViewportHudAction, draw_view_cube_overlay, draw_viewport_bottom_hud,
-        draw_viewport_guidance_hud, draw_wcs_origin_27pt_overlay,
+        GuidanceHudAction, MeasureCardAction, ViewportHudAction, draw_measure_hover_label,
+        draw_measure_readout_card, draw_reach_legend_overlay, draw_view_cube_overlay,
+        draw_viewport_bottom_hud, draw_viewport_guidance_hud, draw_wcs_origin_27pt_overlay,
     },
 };
 
@@ -167,7 +168,24 @@ impl PaneBehavior<'_> {
         self.app.highlight.sketch_preview_polys.clear();
         self.app.highlight.sketch_snap_marker = None;
 
-        if let ViewportPickMode::PlaceContourTab { setup_idx, op_idx } = self.app.pick_mode {
+        if let ViewportPickMode::Measure = self.app.pick_mode {
+            if let Some(cursor_pos) = response.hover_pos()
+                && let Some(ray) = self.app.camera.screen_ray(cursor_pos, avail)
+            {
+                let mm_per_px = self.app.camera.mm_per_pixel(avail.height());
+                let primary_click = response.clicked_by(egui::PointerButton::Primary);
+                let right_click = response.clicked_by(egui::PointerButton::Secondary);
+                self.app.handle_measure_viewport_interaction(
+                    &ray,
+                    mm_per_px,
+                    primary_click,
+                    right_click,
+                );
+            } else {
+                self.app.measure_state.hovered_snap = None;
+                self.app.highlight.measure_state = Some(self.app.measure_state.clone());
+            }
+        } else if let ViewportPickMode::PlaceContourTab { setup_idx, op_idx } = self.app.pick_mode {
             if let Some(cursor_pos) = response.hover_pos()
                 && let Some(ray) = self.app.camera.screen_ray(cursor_pos, avail)
             {
@@ -466,6 +484,15 @@ impl PaneBehavior<'_> {
                 .setups
                 .get(setup_idx)
                 .map(|s| format!("{} fixture(s)", s.fixtures.len())),
+            ViewportPickMode::Measure => {
+                if self.app.measure_state.anchor2.is_some() {
+                    Some("2 picks".to_string())
+                } else if self.app.measure_state.anchor1.is_some() {
+                    Some("1st set - click 2nd".to_string())
+                } else {
+                    Some("Ready".to_string())
+                }
+            }
             _ => None,
         };
         if let Some(g_act) = draw_viewport_guidance_hud(
@@ -478,6 +505,8 @@ impl PaneBehavior<'_> {
             match g_act {
                 GuidanceHudAction::Done | GuidanceHudAction::Cancel => {
                     self.app.sketch_author_start_xy = None;
+                    self.app.measure_state.reset_all();
+                    self.app.highlight.measure_state = None;
                     self.app.pick_mode = ViewportPickMode::InspectEntity;
                     self.app.geometry_pick_target = crate::panels::GeometryPickTarget::CuttingArea;
                     self.app.editing_shared_avoid_id = None;
@@ -550,16 +579,66 @@ impl PaneBehavior<'_> {
             })
             .unwrap_or_else(|| "No Setup".to_string());
 
+        // Floating Measure hover snap label + Readout Card
+        if self.app.pick_mode == ViewportPickMode::Measure {
+            if let Some(hov) = &self.app.measure_state.hovered_snap {
+                draw_measure_hover_label(
+                    ui,
+                    avail,
+                    &self.app.camera,
+                    &self.app.highlight.wcs_frame,
+                    hov,
+                    self.app.project.display_units,
+                );
+            }
+            let focused_op_name = focused_active_op.map(|op| op.name.as_str());
+            if let Some(m_act) = draw_measure_readout_card(
+                ui,
+                avail,
+                &self.app.measure_state,
+                self.app.project.display_units,
+                focused_op_name,
+            ) {
+                match m_act {
+                    MeasureCardAction::CopyText(txt) => {
+                        ui.ctx().copy_text(txt.clone());
+                        self.app.logs.push(format!("Copied measurement: {txt}"));
+                    }
+                    MeasureCardAction::Clear => {
+                        self.app.measure_state.clear_measurement();
+                        self.app.highlight.measure_state = Some(self.app.measure_state.clone());
+                    }
+                    MeasureCardAction::SetOperationBottomZ(z_wcs) => {
+                        self.app.apply_measure_bottom_z_to_focused_op(z_wcs);
+                        self.app.sync_viewport_scene_state();
+                    }
+                }
+            }
+        }
+
+        // Compact Reach / Min-R Legend Pill below top-right ViewCube
+        if self.app.highlight.show_reach_heatmap {
+            draw_reach_legend_overlay(
+                ui,
+                avail,
+                self.app.reach_result.as_deref(),
+                self.app.reach_in_flight_key.is_some(),
+                self.app.project.display_units,
+            );
+        }
+
         if let Some(hud_act) = draw_viewport_bottom_hud(
             ui,
             avail,
             &mut self.app.camera,
             &mut self.app.highlight,
+            self.app.pick_mode,
             &setup_lbl,
         ) {
             match hud_act {
                 ViewportHudAction::FitToViewport => self.app.fit_scene_to_viewport(),
                 ViewportHudAction::AlignToSetupTop => self.app.align_camera_to_active_setup(),
+                ViewportHudAction::ToggleMeasureMode => self.app.toggle_measure_mode(),
             }
         }
     }

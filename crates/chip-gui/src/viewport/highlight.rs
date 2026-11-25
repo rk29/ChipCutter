@@ -2,8 +2,9 @@ use std::{collections::HashSet, sync::Arc};
 
 use chip_cad::{CadDocument, EdgeId, FaceId, PickTarget, expand_coaxial_hole_faces};
 use chip_cam::{
-    ChainDirectionArrow3D, GeneratedToolpath, ResolvedRotaryConfig, ResolvedStockGeometry,
-    TabMarker3D, TriMesh3D,
+    ChainDirectionArrow3D, GeneratedToolpath, MeasureSnapTarget, MeasurementResult,
+    ReachAnalysisResult, ResolvedRotaryConfig, ResolvedStockGeometry, TabMarker3D, TriMesh3D,
+    measure_pair, measure_single,
 };
 use chip_math::{ArcPolyline2D, DMat4, DVec2, DVec3, DisplayUnit, MM_PER_INCH, Ray3, RigidFrame3};
 #[cfg(feature = "gpu-compute")]
@@ -121,6 +122,59 @@ pub struct FixtureVisualMesh {
     pub selected: bool,
 }
 
+/// Interactive click-to-measure state machine for [`crate::panels::ViewportPickMode::Measure`].
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct MeasureToolState {
+    pub hovered_snap: Option<MeasureSnapTarget>,
+    pub anchor1: Option<MeasureSnapTarget>,
+    pub anchor2: Option<MeasureSnapTarget>,
+    pub result: Option<MeasurementResult>,
+}
+
+impl MeasureToolState {
+    /// Clears picked anchors and measurement result while keeping hover snap live.
+    pub fn clear_measurement(&mut self) {
+        self.anchor1 = None;
+        self.anchor2 = None;
+        self.result = None;
+    }
+
+    /// Resets all measurement state including hover snap (called on `Esc` / mode exit).
+    pub fn reset_all(&mut self) {
+        self.hovered_snap = None;
+        self.clear_measurement();
+    }
+
+    /// Advances the click-to-measure state machine on clicking `target`:
+    /// - Click 1 (or Click 3 after a completed pair): sets `anchor1` and computes `measure_single`.
+    /// - Click 2: sets `anchor2` and computes `measure_pair(anchor1, anchor2)`.
+    pub fn on_click_target(&mut self, target: MeasureSnapTarget) {
+        if self.anchor1.is_none() || self.anchor2.is_some() {
+            let res = measure_single(&target);
+            self.anchor1 = Some(target);
+            self.anchor2 = None;
+            self.result = Some(res);
+        } else if let Some(first) = &self.anchor1 {
+            let res = measure_pair(first, &target);
+            self.anchor2 = Some(target);
+            self.result = Some(res);
+        }
+    }
+
+    /// Returns a contextual Setup WCS Z height suitable for the **`Set Op Bottom Z`** helper button.
+    pub fn suggested_bottom_z_wcs(&self) -> Option<f64> {
+        match (&self.anchor1, &self.anchor2) {
+            (Some(a), Some(b)) => match (a.suggested_bottom_z_wcs(), b.suggested_bottom_z_wcs()) {
+                (Some(za), Some(zb)) => Some(za.min(zb)),
+                (Some(z), None) | (None, Some(z)) => Some(z),
+                (None, None) => None,
+            },
+            (Some(a), None) => a.suggested_bottom_z_wcs(),
+            _ => None,
+        }
+    }
+}
+
 /// Active hover, multi-selection, WCS, Stock, Z-plane, 2D Sketch, and Toolpath scene state fed into the 3D CAD/CAM viewport.
 #[derive(Debug, Clone)]
 pub struct HighlightState {
@@ -161,6 +215,12 @@ pub struct HighlightState {
     /// Current 4th-axis rotary angle (`deg`) during simulation playback (rotates wrapped toolpaths,
     /// ghost/CAD solid, and B-Rep edges in sync with cylindrical machined stock).
     pub sim_rotary_deg: f64,
+    /// Active click-to-measure hover/anchor/leader visual overlay when Measure mode is active.
+    pub measure_state: Option<MeasureToolState>,
+    /// Toggle for the Minimum-Radius & Flute/Stickout Reach Heatmap overlay.
+    pub show_reach_heatmap: bool,
+    /// Cached background-computed Minimum-Radius & Reach analysis result for rendering.
+    pub reach_analysis: Option<Arc<ReachAnalysisResult>>,
 }
 
 impl Default for HighlightState {
@@ -197,6 +257,9 @@ impl Default for HighlightState {
             sim_tool_mesh: None,
             sim_trail_limit: None,
             sim_rotary_deg: 0.0,
+            measure_state: None,
+            show_reach_heatmap: false,
+            reach_analysis: None,
         }
     }
 }
@@ -229,6 +292,8 @@ impl HighlightState {
         self.sim_tool_mesh = None;
         self.sim_trail_limit = None;
         self.sim_rotary_deg = 0.0;
+        self.measure_state = None;
+        self.reach_analysis = None;
     }
 
     /// Returns `true` when 4th-axis simulation playback is currently rotating the workpiece

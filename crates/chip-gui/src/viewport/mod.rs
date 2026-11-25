@@ -14,11 +14,12 @@ pub use boundary_preview::{
     resolve_rotary_window_for_preview,
 };
 pub use highlight::{
-    FixtureVisualMesh, HighlightState, SimStockRenderSource, SketchLayerVisual,
+    FixtureVisualMesh, HighlightState, MeasureToolState, SimStockRenderSource, SketchLayerVisual,
     ToolpathRenderEntry, ZPlaneVisual,
 };
 pub use overlays::{
-    GuidanceHudAction, ViewportHudAction, draw_view_cube_overlay, draw_viewport_bottom_hud,
-    draw_viewport_guidance_hud, draw_wcs_origin_27pt_overlay,
+    GuidanceHudAction, MeasureCardAction, ViewportHudAction, draw_measure_hover_label,
+    draw_measure_readout_card, draw_reach_legend_overlay, draw_view_cube_overlay,
+    draw_viewport_bottom_hud, draw_viewport_guidance_hud, draw_wcs_origin_27pt_overlay,
 };
 pub use pipeline::{ViewportRenderer, render_offscreen_png, render_offscreen_rgba_on_device};
