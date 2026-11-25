@@ -603,29 +603,47 @@ Replaces the left-hand CAM Browser's flat card stack with a unified, collapsible
 
 ---
 
+## Phase 26 — Physics-Backed Safety, Project Material, & Machinability Inspector (Planned — M93–M96)
+
+Brings real-world cutting physics, tool-breakage protection, and in-viewport geometric inspection into ChipCutter so hobby and benchtop machinists catch spindle stalls, long-reach cutter deflection/snaps, dry aluminum chip-welding, helical bore wall overloads, tight internal corners, and flute/stickout reach violations before running a job.
+
+### Milestone 93 — Project-Level Workpiece Material Library, 6063-T5 Preset, & Preset Auto-Matching (`plans/93-milestone-93-plan.md`)
+- **Workpiece Material Physics Catalog (`chip-tools`):** Add `WorkpieceMaterialProfile` (`u_s`, `K_c`, `k_r`, `h_min`, SFM/chipload envelopes, chip-weld risk, preferred coolant) with 11 curated built-in materials—including **Aluminum 6063-T5 Extrusion** (with gummy/chip-welding-safe 1FL O-flute presets and air-blast/mist defaults)—plus custom user overrides and `match_best_preset_for_material(...)`.
+- **Project-Level Material Storage & UI (`chip-project`, `chip-gui`):** Add optional `ProjectDocument::workpiece_material` (edited once in `Project Properties` / `Project Inspector`, never repeated per operation), auto-match cutting presets on new ops and machine swaps, and display an inherited `Project Material` badge in Operation Inspector `[Tool]`.
+
+### Milestone 94 — Physics-Backed Spindle Power, MRR, Tool Deflection / Breakage Advisor, & Helical Bore Inner-Arc Compensation (`plans/94-milestone-94-plan.md`)
+- **Core Machinability Physics & Advisor (`chip-tools`, `chip-cam`):** Implement flute-count-aware core diameter (`~0.54 × D` for 1FL O-flutes vs. 3FL, plus relieved-neck stepped cantilevers), cubic stickout deflection (`δ ∝ L³ / d_core⁴`), carbide bending-stress safety margins, machine spindle power/torque curves (`150–200 W` desktop vs. `1.5 kW` spindles), radial chip thinning (`h_max`), dry aluminum/6063 rubbing & chip-welding bounds, helical bore inner-arc wall feed amplification (`R_hole / r_orbit`), deep full-depth bore finish & chip-packing warnings, open-air plunge advisories, and typed 1-click `MachinabilityFix` actions.
+- **Helical Bore Safety & CLI Validation (`chip-cam`, `chip-project`, `chip-cli`):** Add backward-compatible opt-in `bore_inner_arc_feed_comp` and `bore_chip_clear_depth` to `DrillBoreParams` (keeping all 21 golden G-code files unchanged) and expose `chipcutter validate --physics` / JSON diagnostics with real-world BarTrim regression tests.
+
+### Milestone 95 — In-Viewport Click-to-Measure Tool & Minimum-Radius / Reach Heatmap (`plans/95-milestone-95-plan.md`)
+- **Exact `f64` Measurement & Reach Analysis (`chip-cam`):** Build exact Setup-WCS B-Rep/Sketch/mesh measurement (`3D` distance, `ΔX`/`ΔY`/`ΔZ`, hole diameter & center pitch, face-to-face depth & dihedral angle) and background-cached Minimum-Radius & Reach analysis (concave corner radii `< R_tool`, blocked narrow slots, flute-length rub zones, and stickout/collet reach violations).
+- **Interactive Viewport Mode & Heatmap (`chip-gui`):** Add `M` / Viewport HUD **`Measure`** mode (3D snap highlights, leader lines, copyable floating readout card with `Set Op Bottom Z`) and **`Reach / Min-R`** amber/crimson viewport overlay legible in both Studio Dark and Daylight Light.
+
+### Milestone 96 — Machinability Advisor UI, 1-Click Safe Fixes, Diagnostics Integration, Visual Verification, & Phase 26 Spec / Docs Sync (`plans/96-milestone-96-plan.md`)
+- **Advisor & Diagnostics UI (`chip-gui`):** Add live collapsible **`Machinability & Safety`** card in Operation Inspector (`[Tool]` / `[Passes]`) with MRR, spindle load `%`, tip deflection `µm`, bending safety factor, effective `h_max`, and 1-click **`Apply Safe Fix`** buttons (atomic Undo); expose `bore_inner_arc_feed_comp` & `bore_chip_clear_depth` in `[Passes]`; add Setup-wide Machinability summary in **`Diagnostics & Log`** and warning summaries in Project Tree tooltips.
+- **Visual Verification, Tutorial, & Spec Sync (`docs/`, `specs/`):** Verify Studio Dark & Daylight Light headless Vulkan captures, add illustrated Tutorial 23 (`23-physics-machinability-measurement.md`), and synchronize `specs/{04,05,08,09,10}-*.md`.
+
+---
+
 ## Future Phases
 
 ChipCutter's long-term roadmap focuses on bringing pro-grade CAM capabilities to hobby and benchtop machinists—making everyday job setup faster, safer, and easier to use without commercial CAM complexity or licensing cost.
 
-1. **Physics-Backed Safety & Machinability Guardrails:**
-   - **Project-Level Workpiece Material (`Project Properties`):** Store the workpiece material once at the **project level** (in `Project Properties` / `Project Inspector`, rather than repeating material selection per operation) so every operation automatically inherits the material's cutting physics (specific cutting energy, chip-welding/rubbing bounds) and default tool preset matching.
-   - **Spindle Power, MRR, & Tool Deflection / Breakage Advisor:** Compare each operation's material removal rate, radial chip thinning (`h_max`), and estimated radial/tangential cutting force against the active machine's real spindle power curve (e.g. `150 W` Carvera Z1 / `200 W` Carvera Air vs. `1.5 kW` Milo/Cascade) and the cutter's real bending stiffness—explicitly modeling **flute-count-aware core diameter** (e.g., 1-flute O-flutes have a `~0.52–0.58 × D` core with `~4×` lower `I ∝ d_core⁴` stiffness than 3-flute endmills), **cubic stickout sensitivity (`δ ∝ L³ / d_core⁴`)** on high-`L/D` long-reach cutters (e.g., `Ø3.175 × 25 mm LOC` at `28 mm` stickout, `L/D = 8.8×`), interrupted-cut impact shock & dry aluminum chip-welding / thin-chip rubbing thresholds, and carbide bending-stress safety margins—flagging stall risk, chatter, excessive deflection, or tool-snap hazard before cutting (plus flagging slow open-air plunges where a higher plunge feed is safe).
-   - **In-Viewport Measurement & Machinability Inspector:** Click-to-measure distances, hole diameters, depths, and angles directly in the 3D viewport, plus a **Minimum-Radius & Reach Heatmap** highlighting tight internal corners smaller than the chosen cutter and pockets deeper than flute/neck reach.
-2. **Guided Operation Setup & Reusable Machining Recipes:**
+1. **Guided Operation Setup & Reusable Machining Recipes:**
    - **Guided Operation Setup Mode (Automatic Feature Recognition):** Interactive workflow inspecting imported STEP/mesh/sketch geometry against the active Setup WCS, stock, and target machine's tool library to automatically recognize machinable features and propose a sequenced operation plan—**Facing**, **2D Adaptive / Pocket**, **Drill vs. Helical Bore / Thread Mill**, **2D Contour + Tabs**, **Edge Chamfer**, and **3D Roughing/Finishing**—letting the machinist review, tweak, accept, or skip each step.
    - **Reusable Operation Templates & Recipes:** Save proven multi-op patterns (e.g., *"6061-T6 Pocket + Finish + Chamfer"* or *"M6 Counterbored Hole = Spot + Drill + Helical Bore"*) and apply them in one click to new parts.
-3. **In-Machine Probing Operations (`G38.2`):**
+2. **In-Machine Probing Operations (`G38.2`):**
    - **Probing Operations (`G38.2`):** First-class WCS corner, bore/boss center, Z-surface, and 2-point rotation/skew probing cycles integrated directly into Setups for grblHAL/Carvera and LinuxCNC controllers.
-4. **2D Sheet Nesting, Multi-Part Arrays, & PCB Isolation Milling:**
+3. **2D Sheet Nesting, Multi-Part Arrays, & PCB Isolation Milling:**
    - **2D Sheet Nesting & Multi-Part Arrays:** Pack multiple parts onto plate, plywood, or composite sheets with tool-diameter spacing, grain-direction rules, and automatic tabs.
    - **PCB Isolation Milling & Drilling (Gerber / Excellon):** Isolation routing, copper rub-out, Excellon drill import, and height-probe leveling hooks.
-5. **Frictionless CAD Prep, Verification, & Ecosystem:**
+4. **Frictionless CAD Prep, Verification, & Ecosystem:**
    - **Live CAD Auto-Reload & Diff Preview:** Watch exported `.step`/`.dxf`/`.svg` files from FreeCAD/Fusion/Onshape, reload automatically on save, and visually highlight changed faces and re-matched selections.
    - **STL / Mesh 2.5D Feature Extraction:** Auto-detect flat Z-planes, cylindrical holes, and outer silhouettes from triangle meshes so STL models can use fast 2.5D strategies in addition to 3D surface passes.
    - **Standalone G-Code Backplot & Crash Verification Mode:** Open any external `.nc`/`.ngc` file and run ChipCutter's Tri-Dexel simulator and 6-rule crash verifier on it.
-   - **Broader Tool Library Interop & Printable Setup Sheets:** Import tool libraries from FreeCAD (`.fctb`), Carbide Create, and Vectric alongside Fusion 360; richer material presets (**Aluminum 6063-T5 extrusion** with gummy/chip-welding-safe 1FL O-flute parameters, air-blast/mist defaults, and lighter interrupted-cut engagement alongside 6061-T6, brass, acetal/Delrin, G10/carbon fiber, mild steel, and hardwoods); and printable HTML/PDF setup sheets with isometric views, WCS origin diagrams, stock dimensions, tool stickout checklists, and cycle times.
+   - **Broader Tool Library Interop & Printable Setup Sheets:** Import tool libraries from FreeCAD (`.fctb`), Carbide Create, and Vectric alongside Fusion 360, and generate printable HTML/PDF setup sheets with isometric views, WCS origin diagrams, stock dimensions, tool stickout checklists, and cycle times.
    - **Additional Controller Dialects & CAD Kernel Backends:** Fanuc/Haas, Mach4, Masso, and Centroid post dialects, plus an optional OpenCASCADE (`opencascade-rs`) `CadKernel` feature backend.
-6. **Functional & Behavioral User-Level Testing:**
+5. **Functional & Behavioral User-Level Testing:**
    - Durable end-to-end user-journey and GUI behavioral test harness (`egui_kittest` / headless interactive workflows + CLI workflows) verifying every feature from a machinist's point of view without brittle coupling to internal implementation details.
-7. **Tutorials for Upcoming Future-Phase Capabilities:**
-   - Dedicated illustrated guides and sample projects accompanying upcoming future-phase capabilities (physics machinability advisor, guided operation setup, probing, 2D nesting, and PCB isolation milling).
+6. **Tutorials for Upcoming Future-Phase Capabilities:**
+   - Dedicated illustrated guides and sample projects accompanying upcoming future-phase capabilities (guided operation setup, probing, 2D nesting, and PCB isolation milling).
