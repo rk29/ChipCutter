@@ -1056,7 +1056,7 @@ pub fn show_avoid_regions_card(ui: &mut egui::Ui, ctx: AvoidCardCtx<'_>) {
     );
 }
 
-fn show_sketch_avoid_quick_add(
+pub(crate) fn show_sketch_avoid_quick_add(
     ui: &mut egui::Ui,
     sketches: &[SketchLayer],
     target_selections: &mut Vec<GeometrySelectionItem>,

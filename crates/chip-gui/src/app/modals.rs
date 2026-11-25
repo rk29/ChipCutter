@@ -77,6 +77,63 @@ impl ModalStates {
 }
 
 impl ChipCutterApp {
+    /// Applies side-effect actions emitted by either the `Edit -> Project Properties...` modal
+    /// or the right-hand **Project Inspector** pane (`InspectorFocus::Project`).
+    pub(crate) fn apply_project_properties_actions(
+        &mut self,
+        pp_actions: crate::panels::project_properties::ProjectPropertiesActions,
+    ) {
+        if let Some(new_name) = pp_actions.rename_project {
+            let trimmed = new_name.trim();
+            if !trimmed.is_empty() && trimmed != self.project.project_name {
+                self.history
+                    .record_before_edit("Rename Project", None, &self.project);
+                self.project.project_name = trimmed.to_string();
+                self.logs.push(format!(
+                    "Renamed project to '{}'.",
+                    self.project.project_name
+                ));
+            }
+        }
+        if let Some(new_units) = pp_actions.display_units_changed
+            && new_units != self.project.display_units
+        {
+            self.history
+                .record_before_edit("Change Display Units", None, &self.project);
+            self.project.display_units = new_units;
+            self.refresh_dependent_expressions();
+        }
+        if let Some(new_mid) = pp_actions.switch_machine_id {
+            self.request_machine_switch(new_mid, false);
+        }
+        if pp_actions.open_machine_manager {
+            let cur_id = self.project.effective_machine_id().to_string();
+            self.modals
+                .machine_manager
+                .open_selecting(&self.machines, &cur_id);
+        }
+    }
+
+    /// Opens the Tool Library Manager, optionally focusing and scrolling to `select_tool_id`.
+    pub(crate) fn open_tool_library_for_tool(
+        &mut self,
+        select_tool_id: Option<&chip_tools::ToolId>,
+    ) {
+        self.modals.tool_library.open = true;
+        if let Some(tid) = select_tool_id {
+            if !self.global_tools.tools.iter().any(|t| &t.id == tid)
+                && let Some(pt) = self.project.tool(tid).cloned()
+            {
+                self.global_tools.tools.push(pt);
+            }
+            if let Some(idx) = self.global_tools.tools.iter().position(|t| &t.id == tid) {
+                self.modals.tool_library.selected_tool_idx = idx;
+                self.modals.tool_library.selected_preset_idx = 0;
+                self.modals.tool_library.scroll_to_selected = true;
+            }
+        }
+    }
+
     /// Unified machine-switching entry point called by Setup Inspector, Machine Manager, and
     /// Tool Library. If existing operations use tools absent from the target machine, opens the
     /// interactive **Swap Machine Tools** dialog; otherwise switches immediately.
@@ -279,35 +336,7 @@ impl ChipCutterApp {
                 machines: &self.machines,
             },
         );
-        if let Some(new_name) = pp_actions.rename_project {
-            let trimmed = new_name.trim();
-            if !trimmed.is_empty() && trimmed != self.project.project_name {
-                self.history
-                    .record_before_edit("Rename Project", None, &self.project);
-                self.project.project_name = trimmed.to_string();
-                self.logs.push(format!(
-                    "Renamed project to '{}'.",
-                    self.project.project_name
-                ));
-            }
-        }
-        if let Some(new_units) = pp_actions.display_units_changed
-            && new_units != self.project.display_units
-        {
-            self.history
-                .record_before_edit("Change Display Units", None, &self.project);
-            self.project.display_units = new_units;
-            self.refresh_dependent_expressions();
-        }
-        if let Some(new_mid) = pp_actions.switch_machine_id {
-            self.request_machine_switch(new_mid, false);
-        }
-        if pp_actions.open_machine_manager {
-            let cur_id = self.project.effective_machine_id().to_string();
-            self.modals
-                .machine_manager
-                .open_selecting(&self.machines, &cur_id);
-        }
+        self.apply_project_properties_actions(pp_actions);
 
         let gpu_info_owned = self.sim_panel.gpu_adapter_info().cloned();
         let settings_actions = show_settings_modal(

@@ -10,7 +10,7 @@ mod sim_gpu_render;
 pub mod toolpath_instances;
 
 pub use boundary_preview::{
-    BoundaryPreviewCache, BoundaryPreviewInput, BoundaryPreviewOverlay,
+    BoundaryPreviewCache, BoundaryPreviewInput, BoundaryPreviewOverlay, SharedAvoidPreviewInput,
     resolve_rotary_window_for_preview,
 };
 pub use highlight::{

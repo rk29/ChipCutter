@@ -400,6 +400,13 @@ pub(super) fn show_fixtures_tab(ui: &mut egui::Ui, ctx: FixturesTabCtx<'_>) {
     }
 
     // 2. Compact Fixture Bodies List
+    let last_scrolled_id = ui.make_persistent_id(("setup_fixture_last_scrolled", setup_idx));
+    let last_scrolled: Option<usize> = ui.ctx().data_mut(|d| d.get_temp(last_scrolled_id));
+    let should_scroll_selected = last_scrolled != *selected_fixture_idx;
+    if should_scroll_selected {
+        ui.ctx()
+            .data_mut(|d| d.insert_temp(last_scrolled_id, *selected_fixture_idx));
+    }
     let mut dup_idx: Option<usize> = None;
     let mut del_idx: Option<usize> = None;
     section_card(
@@ -409,7 +416,7 @@ pub(super) fn show_fixtures_tab(ui: &mut egui::Ui, ctx: FixturesTabCtx<'_>) {
         true,
         |ui| {
             for (f_idx, fix) in setup.fixtures.iter_mut().enumerate() {
-                ui.horizontal(|ui| {
+                let row_out = ui.horizontal(|ui| {
                     if ui
                         .checkbox(&mut fix.enabled, "")
                         .on_hover_text(
@@ -421,16 +428,15 @@ pub(super) fn show_fixtures_tab(ui: &mut egui::Ui, ctx: FixturesTabCtx<'_>) {
                     }
                     let is_sel = *selected_fixture_idx == Some(f_idx);
                     let row_lbl = format!("{} [{}]", fix.name, fix.kind.short_badge());
-                    if ui
+                    let lbl_resp = ui
                         .selectable_label(is_sel, row_lbl)
-                        .on_hover_text("Click to edit this fixture's geometry and safety margins")
-                        .clicked()
-                    {
+                        .on_hover_text("Click to edit this fixture's geometry and safety margins");
+                    if lbl_resp.clicked() {
                         *selected_fixture_idx = Some(f_idx);
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui
-                            .small_button("×")
+                            .small_button("x")
                             .on_hover_text("Delete this workholding fixture")
                             .clicked()
                         {
@@ -445,6 +451,9 @@ pub(super) fn show_fixtures_tab(ui: &mut egui::Ui, ctx: FixturesTabCtx<'_>) {
                         }
                     });
                 });
+                if should_scroll_selected && *selected_fixture_idx == Some(f_idx) {
+                    row_out.response.scroll_to_me(Some(egui::Align::Center));
+                }
             }
         },
     );

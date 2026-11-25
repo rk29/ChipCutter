@@ -322,14 +322,14 @@ pub fn tree_row(
         Pos2::new(main_left, row_rect.top()),
         Pos2::new(main_right, row_rect.bottom()),
     );
-    let sense = if spec.draggable {
-        Sense::click_and_drag()
+    let (sense, hover_cursor) = if spec.draggable {
+        (Sense::click_and_drag(), CursorIcon::Grab)
     } else {
-        Sense::click()
+        (Sense::click(), CursorIcon::PointingHand)
     };
     let mut main_resp = ui
         .interact(main_rect, spec.node_id.with("row"), sense)
-        .on_hover_cursor(CursorIcon::PointingHand);
+        .on_hover_cursor(hover_cursor);
     if let Some(tip) = spec.tooltip {
         main_resp = main_resp.on_hover_text(tip);
     }

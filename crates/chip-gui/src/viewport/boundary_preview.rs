@@ -105,6 +105,20 @@ pub struct BoundaryPreviewInput<'a> {
     pub extracted: Option<&'a ExtractedSelectionSummary>,
 }
 
+/// Inputs required to evaluate a standalone coral/red 3D viewport preview for a selected
+/// project-level [`SharedAvoidRegion`] (`InspectorFocus::KeepOutRegion`).
+pub struct SharedAvoidPreviewInput<'a> {
+    pub region_idx: usize,
+    pub cad_rev: u64,
+    pub frame_geo_sig: u64,
+    pub display_unit: DisplayUnit,
+    pub doc: Option<&'a CadDocument>,
+    pub sketches: &'a [SketchLayer],
+    pub resolved_setup: &'a ResolvedSetup,
+    pub resolved_fixtures: &'a [ResolvedFixtureSolid],
+    pub shared_region: &'a SharedAvoidRegion,
+}
+
 /// Persistent per-app cache holding the latest [`SurfaceMesh3D`] and [`BoundaryPreviewOverlay`].
 #[derive(Debug, Default)]
 pub struct BoundaryPreviewCache {
@@ -188,6 +202,92 @@ impl BoundaryPreviewCache {
         };
 
         let computed = compute_overlay(input, surface_ref).map(Arc::new);
+        self.last_sig = Some(sig);
+        self.overlay = computed.clone();
+        self.recompute_count += 1;
+        computed
+    }
+
+    /// Resolves (or returns the cached) standalone coral/red keep-out [`BoundaryPreviewOverlay`]
+    /// when a [`SharedAvoidRegion`] is selected directly in the Project Tree.
+    pub fn get_or_compute_shared_avoid(
+        &mut self,
+        input: &SharedAvoidPreviewInput<'_>,
+    ) -> Option<Arc<BoundaryPreviewOverlay>> {
+        if input.shared_region.selections.is_empty() && input.shared_region.fixture_ids.is_empty() {
+            return None;
+        }
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        0xA701_u16.hash(&mut h);
+        input.region_idx.hash(&mut h);
+        input.cad_rev.hash(&mut h);
+        input.frame_geo_sig.hash(&mut h);
+        format!("{:?}", input.display_unit).hash(&mut h);
+        format!("{:?}", input.shared_region).hash(&mut h);
+        let sig = h.finish();
+        if self.last_sig == Some(sig) {
+            return self.overlay.clone();
+        }
+
+        let mut preview_region = input.shared_region.clone();
+        // Always preview nominal geometry while actively inspecting this region, even if suppressed
+        preview_region.suppressed = false;
+        let avoid_cfg = chip_cam::AvoidRegionConfig {
+            shared_region_ids: vec![preview_region.id.clone()],
+            radial_clearance: preview_region.radial_clearance.clone().unwrap_or_else(|| {
+                chip_math::ParamLength::from_mm(chip_cam::DEFAULT_AVOID_CLEARANCE_MM)
+            }),
+            axial_clearance: preview_region.axial_clearance.clone().unwrap_or_else(|| {
+                chip_math::ParamLength::from_mm(chip_cam::DEFAULT_AVOID_CLEARANCE_MM)
+            }),
+            ..chip_cam::AvoidRegionConfig::default()
+        };
+        let stock_aabb = input.resolved_setup.stock.aabb_wcs();
+        let top_z_wcs = if stock_aabb.is_valid() {
+            stock_aabb.max.z
+        } else {
+            0.0
+        };
+        let bottom_z_wcs = if stock_aabb.is_valid() {
+            stock_aabb.min.z
+        } else {
+            -10.0
+        };
+        let empty_doc = CadDocument::empty();
+        let doc_ref = input.doc.unwrap_or(&empty_doc);
+        let shared_slice = [preview_region];
+        let avoid_2d = resolve_avoid_region_2d(&AvoidRegionInput {
+            doc: doc_ref,
+            sketches: input.sketches,
+            setup: input.resolved_setup,
+            avoid: &avoid_cfg,
+            shared_regions: &shared_slice,
+            fixtures: input.resolved_fixtures,
+            tool: None,
+            tool_radius_mm: 0.0,
+            z_bottom_wcs: bottom_z_wcs,
+            z_top_wcs: top_z_wcs,
+            display_unit: input.display_unit,
+        });
+        let computed = if avoid_2d.is_empty() && avoid_2d.warnings.is_empty() {
+            None
+        } else {
+            let avoid_effective_region = if input.shared_region.suppressed {
+                RegionSet2D::default()
+            } else {
+                avoid_2d.effective_region
+            };
+            Some(Arc::new(BoundaryPreviewOverlay::Planar2D {
+                nominal_region: RegionSet2D::default(),
+                effective_region: RegionSet2D::default(),
+                show_effective: false,
+                avoid_nominal_region: avoid_2d.nominal_region,
+                avoid_effective_region,
+                top_z_wcs,
+                bottom_z_wcs,
+                warnings: avoid_2d.warnings,
+            }))
+        };
         self.last_sig = Some(sig);
         self.overlay = computed.clone();
         self.recompute_count += 1;

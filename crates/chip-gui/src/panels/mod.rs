@@ -3,6 +3,7 @@ pub mod browser;
 pub mod command_palette;
 pub mod diagnostics;
 pub mod gcode_preview;
+pub mod keepout_inspector;
 pub mod machine_manager;
 pub mod machine_tool_swap;
 pub mod mesh_import_modal;
@@ -10,6 +11,7 @@ pub mod model_inspector;
 pub mod operation_inspector;
 pub mod post_profile_inspector;
 pub mod project_properties;
+pub mod project_tool_inspector;
 pub mod settings;
 pub mod setup_inspector;
 pub mod simulation;
@@ -68,9 +70,12 @@ impl SketchAuthorTool {
 /// Currently inspected node in the right-hand Inspector pane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InspectorFocus {
+    Project,
     CadEntity,
     Model { model_idx: usize },
     Sketch { sketch_idx: usize },
+    KeepOutRegion { region_idx: usize },
+    ProjectTool { tool_idx: usize },
     Setup { setup_idx: usize },
     Operation { setup_idx: usize, op_idx: usize },
 }
@@ -182,6 +187,9 @@ pub enum ViewportPickMode {
         setup_idx: usize,
         kind: FixturePlaceKind,
     },
+    PickKeepOutGeometry {
+        region_idx: usize,
+    },
 }
 
 impl ViewportPickMode {
@@ -244,6 +252,10 @@ impl ViewportPickMode {
                 kind.label(),
                 kind.label()
             )),
+            Self::PickKeepOutGeometry { .. } => Some(
+                "Keep-Out Pick Active: Click planar faces, closed loops, holes, or 2D sketches in 3D to toggle keep-out geometry (Esc to cancel)"
+                    .to_string(),
+            ),
         }
     }
 
@@ -339,6 +351,12 @@ impl ViewportPickMode {
                     FixturePlaceKind::CylinderKeepOut => "Place Cylinder Keep-Out in 3D",
                 },
                 "Click on a stock edge, corner, or spoilboard to drop & auto-orient workholding"
+                    .to_string(),
+                true,
+            )),
+            Self::PickKeepOutGeometry { .. } => Some((
+                "Pick 3D Avoid Geometry",
+                "Click planar faces, closed loops, holes, or 2D sketches in 3D to toggle keep-out regions"
                     .to_string(),
                 true,
             )),

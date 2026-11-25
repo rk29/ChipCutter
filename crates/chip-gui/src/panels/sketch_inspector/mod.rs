@@ -658,6 +658,14 @@ fn is_sketch_pick_mode(mode: ViewportPickMode, sketch_idx: usize) -> bool {
     )
 }
 
+pub(crate) fn create_default_sketch_entity(
+    n: usize,
+    spec: u8,
+    sub_layer: Option<&str>,
+) -> SketchEntityEntry {
+    ent_entry(n, spec, sub_layer)
+}
+
 fn ent_entry(n: usize, spec: u8, sub_layer: Option<&str>) -> SketchEntityEntry {
     let mm = ParamLength::from_mm;
     let (p, title) = match spec {
@@ -715,7 +723,7 @@ fn ent_entry(n: usize, spec: u8, sub_layer: Option<&str>) -> SketchEntityEntry {
     }
 }
 
-fn mark_sketch_dependent_ops_dirty(project: &mut ProjectDocument, sketch_id: &str) {
+pub(crate) fn mark_sketch_dependent_ops_dirty(project: &mut ProjectDocument, sketch_id: &str) {
     for setup in &mut project.setups {
         for op in &mut setup.operations {
             let uses = op.selections.iter().any(|s| match s {

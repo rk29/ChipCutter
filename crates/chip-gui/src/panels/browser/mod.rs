@@ -1,11 +1,13 @@
 mod actions;
+mod context_menus;
+mod drag_reorder;
 mod tree_widget;
 
 use chip_cad::CadDocument;
 use chip_cam::{OperationStatus, SharedAvoidRegion};
 use chip_project::{ProjectDocument, ToolpathCache, UndoHistory};
 use chip_tools::ToolLibrary;
-use egui::{CursorIcon, Id, Pos2, Rect, Stroke};
+use egui::{Id, Rect};
 
 use crate::{
     panels::{
@@ -13,16 +15,23 @@ use crate::{
         diagnostics::format_cycle_time,
         operation_inspector::avoid_card::{
             mark_shared_avoid_dependents_dirty, next_shared_avoid_id_and_name,
+            set_shared_avoid_for_all_setup_ops,
         },
+        sketch_inspector::mark_sketch_dependent_ops_dirty,
     },
     theme::ThemeTokens,
     widgets::{IconKind, StatusBadgeKind, small_icon_button, status_badge_icon},
 };
 
 pub use actions::{
-    BrowserAction, create_default_operation_in_setup, default_pick_mode_for_op,
-    delete_operation_in_setup, duplicate_operation_in_setup, format_compact_cycle_time,
-    move_operation_to_slot,
+    AddOperationPreset, BrowserAction, QuickFixturePreset, SketchEntityPreset,
+    create_default_operation_in_setup, default_pick_mode_for_op, delete_operation_in_setup,
+    duplicate_operation_in_setup, format_compact_cycle_time,
+};
+pub use drag_reorder::{
+    DragSection, DraggedTreeItem, move_avoid_region_to_slot, move_fixture_to_slot,
+    move_operation_to_slot, move_setup_to_slot, move_sketch_entity_to_slot, move_sketch_to_slot,
+    remap_index_after_slot_move, resolve_drop_slot_for_section,
 };
 pub use tree_widget::{
     TreeNavAction, TreeNavKey, TreeNodeKey, VisibleTreeNode, is_node_open,
@@ -30,12 +39,25 @@ pub use tree_widget::{
 };
 
 use actions::{
-    add_new_setup, format_operation_badge, invalidate_changed_rest_dependents, model_display_name,
-    snapshot_rest_upstream_ids,
+    add_fixture_preset_in_setup, add_new_setup, add_sketch_entity_preset,
+    create_adaptive_2d_operation_in_setup, duplicate_fixture_in_setup, duplicate_setup_in_project,
+    duplicate_sketch_entity_in_sketch, duplicate_sketch_in_project, format_operation_badge,
+    invalidate_changed_rest_dependents, model_display_name, snapshot_rest_upstream_ids,
 };
+use context_menus::{
+    DeferredBrowserMutations, InlineRenameState, apply_expand_collapse_all,
+    render_inline_rename_row, show_avoid_folder_context_menu, show_avoid_item_context_menu,
+    show_fixture_item_context_menu, show_fixtures_folder_context_menu,
+    show_model_item_context_menu, show_models_folder_context_menu,
+    show_operation_item_context_menu, show_project_root_context_menu, show_setup_item_context_menu,
+    show_setups_folder_context_menu, show_sketch_entity_context_menu,
+    show_sketch_item_context_menu, show_sketches_folder_context_menu, show_tool_item_context_menu,
+    show_tools_folder_context_menu, start_inline_rename_for_key,
+};
+use drag_reorder::handle_section_drag_overlay;
 use tree_widget::{
-    TREE_INDENT_STEP, TreeRowSpec, poll_tree_nav_key, tree_badge_pill, tree_folder_menu_button,
-    tree_hint_row, tree_row,
+    TreeRowSpec, poll_tree_nav_key, tree_badge_pill, tree_folder_menu_button, tree_hint_row,
+    tree_row,
 };
 
 /// Context references passed to [`show_cam_browser`].
@@ -57,36 +79,6 @@ pub struct CamBrowserCtx<'a> {
     pub selected_fixture_idx: &'a mut Option<usize>,
 }
 
-#[derive(Debug, Clone, Copy)]
-struct DraggedOpState {
-    setup_idx: usize,
-    op_idx: usize,
-}
-
-#[derive(Default)]
-struct DeferredBrowserMutations {
-    add_setup: bool,
-    sketch_vis_toggle: Option<usize>,
-    sketch_delete: Option<usize>,
-    sketch_entity_delete: Option<(usize, usize)>,
-    avoid_add: bool,
-    avoid_toggle_suppress: Option<usize>,
-    avoid_duplicate: Option<usize>,
-    avoid_delete: Option<String>,
-    avoid_rename: Option<(usize, String)>,
-    add_tool: Option<chip_tools::Tool>,
-    remove_tool: Option<chip_tools::ToolId>,
-    prune_unused_tools: bool,
-    setup_delete: Option<usize>,
-    fixture_toggle_enabled: Option<(usize, usize)>,
-    fixture_delete: Option<(usize, usize)>,
-    op_move_slot: Option<(usize, usize, usize)>,
-    op_delete: Option<(usize, usize)>,
-    op_duplicate: Option<(usize, usize)>,
-    op_toggle_suppress: Option<(usize, usize)>,
-    op_toggle_visibility: Option<String>,
-}
-
 fn node_id_for(scope: Id, key: &TreeNodeKey) -> Id {
     scope.with("tree_node").with(key)
 }
@@ -99,6 +91,7 @@ fn focus_to_tree_key(
     primary_model_idx: usize,
 ) -> TreeNodeKey {
     match focus {
+        InspectorFocus::Project => TreeNodeKey::Project,
         InspectorFocus::CadEntity => TreeNodeKey::Model(primary_model_idx),
         InspectorFocus::Model { model_idx } => TreeNodeKey::Model(model_idx),
         InspectorFocus::Sketch { sketch_idx } => match selected_sketch_entity_idx {
@@ -108,6 +101,8 @@ fn focus_to_tree_key(
             },
             None => TreeNodeKey::Sketch(sketch_idx),
         },
+        InspectorFocus::KeepOutRegion { region_idx } => TreeNodeKey::AvoidRegion(region_idx),
+        InspectorFocus::ProjectTool { tool_idx } => TreeNodeKey::Tool(tool_idx),
         InspectorFocus::Setup { setup_idx } => {
             if setup_tab == SetupTab::Fixtures
                 && let Some(fixture_idx) = selected_fixture_idx
@@ -152,16 +147,14 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
     }
 
     let tree_scope = ui.make_persistent_id("cam_project_tree");
-    let drag_state_id = tree_scope.with("op_drag");
+    let drag_state_id = tree_scope.with("tree_drag_item");
     let nav_focus_id = tree_scope.with("kbd_focus_key");
     let nav_active_id = tree_scope.with("kbd_active");
-    let rename_hook_id = tree_scope.with("pending_rename_key");
-    let rename_id_key = ui.make_persistent_id("browser_avoid_renaming_id");
-    let rename_buf_key = ui.make_persistent_id("browser_avoid_renaming_buf");
+    let inline_rename_id = tree_scope.with("inline_rename_state");
 
-    let mut active_drag: Option<DraggedOpState> = ui
+    let mut active_drag: Option<DraggedTreeItem> = ui
         .ctx()
-        .data_mut(|d| d.get_temp::<DraggedOpState>(drag_state_id));
+        .data_mut(|d| d.get_temp::<DraggedTreeItem>(drag_state_id));
     let primary_model_idx = project.primary_part_model_index().unwrap_or(0);
     let mut kbd_focused_key: Option<TreeNodeKey> = ui
         .ctx()
@@ -179,12 +172,10 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
         .ctx()
         .data_mut(|d| d.get_temp::<bool>(nav_active_id))
         .unwrap_or(false);
-    let mut renaming_id: Option<String> = ui
-        .data_mut(|d| d.get_temp::<Option<String>>(rename_id_key))
+    let mut rename_state: Option<InlineRenameState> = ui
+        .ctx()
+        .data_mut(|d| d.get_temp::<Option<InlineRenameState>>(inline_rename_id))
         .flatten();
-    let mut renaming_buf: String = ui
-        .data_mut(|d| d.get_temp::<String>(rename_buf_key))
-        .unwrap_or_default();
 
     let mut pending = DeferredBrowserMutations::default();
     let mut visible_nodes: Vec<VisibleTreeNode> = Vec::with_capacity(32);
@@ -202,6 +193,7 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
             // -----------------------------------------------------------------
             let root_key = TreeNodeKey::Project;
             let root_id = node_id_for(tree_scope, &root_key);
+            let root_selected = *focus == InspectorFocus::Project;
             let root_out = tree_row(
                 ui,
                 TreeRowSpec {
@@ -216,11 +208,11 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                     italic: false,
                     has_children: true,
                     default_open: true,
-                    selected: false,
+                    selected: root_selected,
                     keyboard_focused: tree_kbd_active
                         && kbd_focused_key.as_ref() == Some(&root_key),
                     draggable: false,
-                    tooltip: Some("Project root (edit metadata via Edit -> Project Properties...)"),
+                    tooltip: Some("Click to inspect Project Properties (Right-click for project actions)"),
                 },
                 |ui, _hovered| {
                     if ui
@@ -239,10 +231,18 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                 has_children: true,
                 is_open: root_out.is_open,
             });
-            if root_out.response.clicked() || root_out.chevron_toggled {
+            if root_out.response.clicked() {
+                *focus = InspectorFocus::Project;
+                *pick_mode = ViewportPickMode::InspectEntity;
+                kbd_focused_key = Some(root_key.clone());
+                any_row_clicked = true;
+            } else if root_out.chevron_toggled {
                 kbd_focused_key = Some(root_key.clone());
                 any_row_clicked = true;
             }
+            root_out.response.context_menu(|ui| {
+                show_project_root_context_menu(ui, &mut pending, &mut emitted_action);
+            });
 
             if !root_out.is_open {
                 return;
@@ -288,11 +288,11 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                         "tree_models_add_menu",
                         "Import STEP, 3D Mesh, or open Sample Gallery",
                         |ui| {
-                            if ui.button("Import STEP…").clicked() {
+                            if ui.button("Import STEP...").clicked() {
                                 emitted_action = Some(BrowserAction::OpenStepDialog);
                                 ui.close();
                             }
-                            if ui.button("Import Mesh (.stl / .obj / .3mf)…").clicked() {
+                            if ui.button("Import Mesh (.stl / .obj / .3mf)...").clicked() {
                                 emitted_action =
                                     Some(BrowserAction::OpenMeshImportModal { browse_file: true });
                                 ui.close();
@@ -303,13 +303,13 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                                     emitted_action = Some(BrowserAction::ReloadStepModel);
                                     ui.close();
                                 }
-                                if ui.button("Replace STEP…").clicked() {
+                                if ui.button("Replace STEP...").clicked() {
                                     emitted_action = Some(BrowserAction::ReplaceStepDialog);
                                     ui.close();
                                 }
                             }
                             ui.separator();
-                            if ui.button("Sample Gallery…").clicked() {
+                            if ui.button("Sample Gallery...").clicked() {
                                 emitted_action = Some(BrowserAction::OpenSampleGallery);
                                 ui.close();
                             }
@@ -328,6 +328,9 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                 kbd_focused_key = Some(models_key.clone());
                 any_row_clicked = true;
             }
+            models_out.response.context_menu(|ui| {
+                show_models_folder_context_menu(ui, &mut emitted_action);
+            });
 
             if models_out.is_open {
                 if !project.models.is_empty() {
@@ -350,14 +353,14 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                                     "Open edges"
                                 };
                                 format!(
-                                    "{} · {} tris · {} verts · {status}",
+                                    "{} | {} tris | {} verts | {status}",
                                     mesh.format.label(),
                                     mesh.diagnostics.valid_triangle_count,
                                     mesh.diagnostics.welded_vertex_count
                                 )
                             } else {
                                 format!(
-                                    "{} · {} faces · {} loops · {} edges",
+                                    "{} | {} faces | {} loops | {} edges",
                                     entry.path,
                                     doc.faces.len(),
                                     doc.loops.len(),
@@ -426,6 +429,18 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                             kbd_focused_key = Some(key);
                             any_row_clicked = true;
                         }
+                        out.response.context_menu(|ui| {
+                            show_model_item_context_menu(
+                                ui,
+                                m_idx,
+                                is_primary,
+                                cad_doc.is_some(),
+                                true,
+                                focus,
+                                pick_mode,
+                                &mut emitted_action,
+                            );
+                        });
                     }
                 } else if let Some(doc) = cad_doc {
                     let key = TreeNodeKey::Model(0);
@@ -478,6 +493,18 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                         kbd_focused_key = Some(key);
                         any_row_clicked = true;
                     }
+                    out.response.context_menu(|ui| {
+                        show_model_item_context_menu(
+                            ui,
+                            0,
+                            true,
+                            true,
+                            false,
+                            focus,
+                            pick_mode,
+                            &mut emitted_action,
+                        );
+                    });
                 } else {
                     tree_hint_row(ui, 2, "No 3D STEP or mesh model loaded");
                 }
@@ -520,13 +547,13 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                                 ui.close();
                             }
                             if cad_doc.is_some()
-                                && ui.button("New 2D Sketch on 3D Face…").clicked()
+                                && ui.button("New 2D Sketch on 3D Face...").clicked()
                             {
                                 emitted_action = Some(BrowserAction::StartPickSketchHostFace);
                                 ui.close();
                             }
                             ui.separator();
-                            if ui.button("Import DXF / SVG…").clicked() {
+                            if ui.button("Import DXF / SVG...").clicked() {
                                 emitted_action = Some(BrowserAction::OpenVectorImportModal {
                                     browse_file: true,
                                 });
@@ -547,103 +574,166 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                 kbd_focused_key = Some(sketches_key.clone());
                 any_row_clicked = true;
             }
+            sketches_out.response.context_menu(|ui| {
+                show_sketches_folder_context_menu(ui, cad_doc.is_some(), &mut emitted_action);
+            });
 
             if sketches_out.is_open {
-                if project.sketches.is_empty() {
+                let sk_len = project.sketches.len();
+                if sk_len == 0 {
                     tree_hint_row(ui, 2, "No 2D sketches yet");
                 } else {
+                    let mut sketch_row_rects: Vec<Rect> = Vec::with_capacity(sk_len);
                     for (sk_idx, sk) in project.sketches.iter().enumerate() {
                         let sk_key = TreeNodeKey::Sketch(sk_idx);
                         let sk_id = node_id_for(tree_scope, &sk_key);
                         let has_entities = !sk.entities.is_empty();
+                        let sk_visible = sk.visible;
+                        let sk_name = sk.name.clone();
                         let is_sketch_focused =
                             *focus == InspectorFocus::Sketch { sketch_idx: sk_idx };
-                        let sk_open_preview =
-                            has_entities && is_node_open(ui, sk_id, false);
+                        let sk_open_preview = has_entities && is_node_open(ui, sk_id, false);
                         let is_sk_row_selected = is_sketch_focused
                             && (!sk_open_preview || selected_sketch_entity_idx.is_none());
-                        let tip = format!(
-                            "{} ({} region(s), {} entity/entities)",
-                            sk.name,
-                            sk.regions.len(),
-                            sk.entities.len()
-                        );
-                        let sk_visible = sk.visible;
-                        let sk_out = tree_row(
-                            ui,
-                            TreeRowSpec {
-                                node_id: sk_id,
-                                depth: 2,
-                                icon: IconKind::Sketch2D,
-                                icon_color: if !sk_visible {
-                                    tok.suppressed_fg
-                                } else if is_sk_row_selected {
-                                    tok.accent
-                                } else {
-                                    tok.text_secondary
-                                },
-                                label: &sk.name,
-                                label_color: if sk_visible {
-                                    tok.text_primary
-                                } else {
-                                    tok.text_muted
-                                },
-                                bold: false,
-                                strikethrough: false,
-                                italic: false,
-                                has_children: has_entities,
-                                default_open: false,
-                                selected: is_sk_row_selected,
-                                keyboard_focused: tree_kbd_active
-                                    && kbd_focused_key.as_ref() == Some(&sk_key),
-                                draggable: false,
-                                tooltip: Some(&tip),
-                            },
-                            |ui, hovered| {
-                                if hovered
-                                    && small_icon_button(ui, IconKind::Trash, "Delete Sketch Layer")
-                                        .clicked()
-                                {
-                                    pending.sketch_delete = Some(sk_idx);
-                                }
-                                if small_icon_button(
-                                    ui,
-                                    if sk_visible {
-                                        IconKind::Eye
-                                    } else {
-                                        IconKind::EyeOff
-                                    },
-                                    if sk_visible {
-                                        "Hide 2D Sketch in 3D viewport"
-                                    } else {
-                                        "Show 2D Sketch in 3D viewport"
-                                    },
-                                )
-                                .clicked()
-                                {
-                                    pending.sketch_vis_toggle = Some(sk_idx);
-                                }
-                            },
-                        );
-                        visible_nodes.push(VisibleTreeNode {
-                            key: sk_key.clone(),
-                            node_id: sk_id,
-                            parent: Some(sketches_key.clone()),
-                            has_children: has_entities,
-                            is_open: sk_out.is_open,
+                        let is_sk_dragged = active_drag.is_some_and(|d| {
+                            d.section == DragSection::Sketches && d.item_idx == sk_idx
                         });
-                        if sk_out.response.clicked() {
-                            *focus = InspectorFocus::Sketch { sketch_idx: sk_idx };
-                            *selected_sketch_entity_idx = None;
-                            *pick_mode = ViewportPickMode::InspectEntity;
-                            kbd_focused_key = Some(sk_key.clone());
-                            any_row_clicked = true;
-                        } else if sk_out.chevron_toggled {
-                            kbd_focused_key = Some(sk_key.clone());
-                            any_row_clicked = true;
+
+                        let sk_is_open;
+                        if rename_state.as_ref().is_some_and(|r| r.key == sk_key) {
+                            let r_rect = ui.available_rect_before_wrap();
+                            if let Some(commit) = render_inline_rename_row(
+                                ui,
+                                2,
+                                IconKind::Sketch2D,
+                                tok.accent,
+                                &mut rename_state,
+                            ) {
+                                pending.inline_rename_commit = Some(commit);
+                            }
+                            sk_is_open = sk_open_preview;
+                            sketch_row_rects.push(Rect::from_min_size(
+                                r_rect.min,
+                                egui::vec2(r_rect.width(), tree_widget::TREE_ROW_HEIGHT),
+                            ));
+                            visible_nodes.push(VisibleTreeNode {
+                                key: sk_key.clone(),
+                                node_id: sk_id,
+                                parent: Some(sketches_key.clone()),
+                                has_children: has_entities,
+                                is_open: sk_is_open,
+                            });
+                        } else {
+                            let tip = format!(
+                                "{sk_name} ({} region(s), {} entity/entities)",
+                                sk.regions.len(),
+                                sk.entities.len()
+                            );
+                            let sk_out = tree_row(
+                                ui,
+                                TreeRowSpec {
+                                    node_id: sk_id,
+                                    depth: 2,
+                                    icon: IconKind::Sketch2D,
+                                    icon_color: if !sk_visible {
+                                        tok.suppressed_fg
+                                    } else if is_sk_row_selected || is_sk_dragged {
+                                        tok.accent
+                                    } else {
+                                        tok.text_secondary
+                                    },
+                                    label: &sk_name,
+                                    label_color: if sk_visible {
+                                        tok.text_primary
+                                    } else {
+                                        tok.text_muted
+                                    },
+                                    bold: false,
+                                    strikethrough: false,
+                                    italic: false,
+                                    has_children: has_entities,
+                                    default_open: false,
+                                    selected: is_sk_row_selected || is_sk_dragged,
+                                    keyboard_focused: tree_kbd_active
+                                        && kbd_focused_key.as_ref() == Some(&sk_key),
+                                    draggable: sk_len > 1,
+                                    tooltip: Some(&tip),
+                                },
+                                |ui, hovered| {
+                                    if hovered
+                                        && active_drag.is_none()
+                                        && small_icon_button(
+                                            ui,
+                                            IconKind::Trash,
+                                            "Delete Sketch Layer",
+                                        )
+                                        .clicked()
+                                    {
+                                        pending.sketch_delete = Some(sk_idx);
+                                    }
+                                    if small_icon_button(
+                                        ui,
+                                        if sk_visible {
+                                            IconKind::Eye
+                                        } else {
+                                            IconKind::EyeOff
+                                        },
+                                        if sk_visible {
+                                            "Hide 2D Sketch in 3D viewport"
+                                        } else {
+                                            "Show 2D Sketch in 3D viewport"
+                                        },
+                                    )
+                                    .clicked()
+                                    {
+                                        pending.sketch_vis_toggle = Some(sk_idx);
+                                    }
+                                },
+                            );
+                            sk_is_open = sk_out.is_open;
+                            sketch_row_rects.push(sk_out.row_rect);
+                            visible_nodes.push(VisibleTreeNode {
+                                key: sk_key.clone(),
+                                node_id: sk_id,
+                                parent: Some(sketches_key.clone()),
+                                has_children: has_entities,
+                                is_open: sk_is_open,
+                            });
+                            if sk_out.response.clicked() {
+                                *focus = InspectorFocus::Sketch { sketch_idx: sk_idx };
+                                *selected_sketch_entity_idx = None;
+                                *pick_mode = ViewportPickMode::InspectEntity;
+                                kbd_focused_key = Some(sk_key.clone());
+                                any_row_clicked = true;
+                            } else if sk_out.chevron_toggled {
+                                kbd_focused_key = Some(sk_key.clone());
+                                any_row_clicked = true;
+                            }
+                            if sk_out.response.drag_started() && sk_len > 1 {
+                                let st = DraggedTreeItem {
+                                    section: DragSection::Sketches,
+                                    item_idx: sk_idx,
+                                };
+                                active_drag = Some(st);
+                                ui.ctx().data_mut(|d| d.insert_temp(drag_state_id, st));
+                            }
+                            sk_out.response.context_menu(|ui| {
+                                show_sketch_item_context_menu(
+                                    ui,
+                                    sk_idx,
+                                    sk_len,
+                                    sk_visible,
+                                    &sk_name,
+                                    &mut pending,
+                                    &mut rename_state,
+                                    &mut emitted_action,
+                                );
+                            });
                         }
 
-                        if sk_out.is_open {
+                        if sk_is_open {
+                            let ent_len = sk.entities.len();
+                            let mut entity_row_rects: Vec<Rect> = Vec::with_capacity(ent_len);
                             for (ent_idx, ent) in sk.entities.iter().enumerate() {
                                 let ent_key = TreeNodeKey::SketchEntity {
                                     sketch_idx: sk_idx,
@@ -653,54 +743,86 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                                 let is_ent_sel = is_sketch_focused
                                     && *selected_sketch_entity_idx == Some(ent_idx);
                                 let ent_icon = IconKind::for_sketch_entity(&ent.entity);
-                                let ent_tip = format!(
-                                    "{} ({})",
-                                    ent.name,
-                                    ent.entity.kind_label()
-                                );
+                                let ent_name = ent.name.clone();
+                                let ent_is_const = ent.is_construction;
+                                let is_ent_dragged = active_drag.is_some_and(|d| {
+                                    d.section == DragSection::SketchEntities { sketch_idx: sk_idx }
+                                        && d.item_idx == ent_idx
+                                });
+
+                                if rename_state.as_ref().is_some_and(|r| r.key == ent_key) {
+                                    let r_rect = ui.available_rect_before_wrap();
+                                    if let Some(commit) = render_inline_rename_row(
+                                        ui,
+                                        3,
+                                        ent_icon,
+                                        tok.accent,
+                                        &mut rename_state,
+                                    ) {
+                                        pending.inline_rename_commit = Some(commit);
+                                    }
+                                    entity_row_rects.push(Rect::from_min_size(
+                                        r_rect.min,
+                                        egui::vec2(r_rect.width(), tree_widget::TREE_ROW_HEIGHT),
+                                    ));
+                                    visible_nodes.push(VisibleTreeNode {
+                                        key: ent_key,
+                                        node_id: ent_id,
+                                        parent: Some(sk_key.clone()),
+                                        has_children: false,
+                                        is_open: false,
+                                    });
+                                    continue;
+                                }
+
+                                let ent_tip =
+                                    format!("{ent_name} ({})", ent.entity.kind_label());
                                 let ent_out = tree_row(
                                     ui,
                                     TreeRowSpec {
                                         node_id: ent_id,
                                         depth: 3,
                                         icon: ent_icon,
-                                        icon_color: if is_ent_sel {
+                                        icon_color: if is_ent_sel || is_ent_dragged {
                                             tok.accent
-                                        } else if ent.is_construction {
+                                        } else if ent_is_const {
                                             tok.text_muted
                                         } else {
                                             tok.text_secondary
                                         },
-                                        label: &ent.name,
-                                        label_color: if ent.is_construction {
+                                        label: &ent_name,
+                                        label_color: if ent_is_const {
                                             tok.text_muted
                                         } else {
                                             tok.text_primary
                                         },
                                         bold: false,
                                         strikethrough: false,
-                                        italic: ent.is_construction,
+                                        italic: ent_is_const,
                                         has_children: false,
                                         default_open: false,
-                                        selected: is_ent_sel,
+                                        selected: is_ent_sel || is_ent_dragged,
                                         keyboard_focused: tree_kbd_active
                                             && kbd_focused_key.as_ref() == Some(&ent_key),
-                                        draggable: false,
+                                        draggable: ent_len > 1,
                                         tooltip: Some(&ent_tip),
                                     },
                                     |ui, _hovered| {
-                                        if ent.is_construction {
+                                        if ent_is_const {
                                             tree_badge_pill(
                                                 ui,
                                                 "Const",
                                                 tok.elevated_bg,
                                                 Some(tok.border),
                                                 tok.text_muted,
-                                                Some("Construction geometry (excluded from regions)"),
+                                                Some(
+                                                    "Construction geometry (excluded from regions)",
+                                                ),
                                             );
                                         }
                                     },
                                 );
+                                entity_row_rects.push(ent_out.row_rect);
                                 visible_nodes.push(VisibleTreeNode {
                                     key: ent_key.clone(),
                                     node_id: ent_id,
@@ -715,8 +837,51 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                                     kbd_focused_key = Some(ent_key);
                                     any_row_clicked = true;
                                 }
+                                if ent_out.response.drag_started() && ent_len > 1 {
+                                    let st = DraggedTreeItem {
+                                        section: DragSection::SketchEntities {
+                                            sketch_idx: sk_idx,
+                                        },
+                                        item_idx: ent_idx,
+                                    };
+                                    active_drag = Some(st);
+                                    ui.ctx().data_mut(|d| d.insert_temp(drag_state_id, st));
+                                }
+                                ent_out.response.context_menu(|ui| {
+                                    show_sketch_entity_context_menu(
+                                        ui,
+                                        sk_idx,
+                                        ent_idx,
+                                        ent_len,
+                                        &ent_name,
+                                        &mut pending,
+                                        &mut rename_state,
+                                    );
+                                });
+                            }
+
+                            if let Some((from_i, to_slot)) = handle_section_drag_overlay(
+                                ui,
+                                &mut active_drag,
+                                DragSection::SketchEntities { sketch_idx: sk_idx },
+                                3,
+                                &entity_row_rects,
+                                drag_state_id,
+                            ) {
+                                pending.sketch_entity_move_slot = Some((sk_idx, from_i, to_slot));
                             }
                         }
+                    }
+
+                    if let Some((from_i, to_slot)) = handle_section_drag_overlay(
+                        ui,
+                        &mut active_drag,
+                        DragSection::Sketches,
+                        2,
+                        &sketch_row_rects,
+                        drag_state_id,
+                    ) {
+                        pending.sketch_move_slot = Some((from_i, to_slot));
                     }
                 }
             }
@@ -770,17 +935,26 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                 kbd_focused_key = Some(avoid_key.clone());
                 any_row_clicked = true;
             }
+            avoid_out.response.context_menu(|ui| {
+                show_avoid_folder_context_menu(ui, &mut pending);
+            });
 
             if avoid_out.is_open {
-                if project.avoid_regions.is_empty() {
+                let avoid_len = project.avoid_regions.len();
+                if avoid_len == 0 {
                     tree_hint_row(ui, 2, "No shared keep-out regions yet");
                 } else {
-                    for r_idx in 0..project.avoid_regions.len() {
+                    let mut avoid_row_rects: Vec<Rect> = Vec::with_capacity(avoid_len);
+                    for r_idx in 0..avoid_len {
                         let r = &project.avoid_regions[r_idx];
                         let rid = r.id.clone();
                         let rname = r.name.clone();
                         let is_sup = r.suppressed;
-                        let is_editing = editing_shared_avoid_id.as_deref() == Some(rid.as_str());
+                        let is_selected = *focus == InspectorFocus::KeepOutRegion { region_idx: r_idx }
+                            || editing_shared_avoid_id.as_deref() == Some(rid.as_str());
+                        let is_dragged = active_drag.is_some_and(|d| {
+                            d.section == DragSection::AvoidRegions && d.item_idx == r_idx
+                        });
                         let usage = project.avoid_region_usage_count(&rid);
                         let usage_txt = if usage == 1 {
                             "used by 1 op".to_string()
@@ -790,29 +964,21 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                         let r_key = TreeNodeKey::AvoidRegion(r_idx);
                         let r_id = node_id_for(tree_scope, &r_key);
 
-                        if renaming_id.as_deref() == Some(rid.as_str()) {
-                            ui.horizontal(|ui| {
-                                ui.add_space(TREE_INDENT_STEP * 2.0 + 20.0);
-                                let resp = ui.add(
-                                    egui::TextEdit::singleline(&mut renaming_buf)
-                                        .desired_width((ui.available_width() - 62.0).max(60.0)),
-                                );
-                                let enter = resp.lost_focus()
-                                    && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                                if ui.small_button("OK").clicked() || enter {
-                                    let trimmed = renaming_buf.trim();
-                                    if !trimmed.is_empty() && trimmed != rname {
-                                        pending.avoid_rename = Some((r_idx, trimmed.to_string()));
-                                    }
-                                    renaming_id = None;
-                                }
-                                if ui.small_button("Esc").clicked()
-                                    || (resp.lost_focus()
-                                        && ui.input(|i| i.key_pressed(egui::Key::Escape)))
-                                {
-                                    renaming_id = None;
-                                }
-                            });
+                        if rename_state.as_ref().is_some_and(|st| st.key == r_key) {
+                            let r_rect = ui.available_rect_before_wrap();
+                            if let Some(commit) = render_inline_rename_row(
+                                ui,
+                                2,
+                                IconKind::KeepOutZone,
+                                tok.warn_fg,
+                                &mut rename_state,
+                            ) {
+                                pending.inline_rename_commit = Some(commit);
+                            }
+                            avoid_row_rects.push(Rect::from_min_size(
+                                r_rect.min,
+                                egui::vec2(r_rect.width(), tree_widget::TREE_ROW_HEIGHT),
+                            ));
                             visible_nodes.push(VisibleTreeNode {
                                 key: r_key,
                                 node_id: r_id,
@@ -825,7 +991,7 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
 
                         let item_count = r.selections.len() + r.fixture_ids.len();
                         let tip = format!(
-                            "{rname} ({item_count} item(s)) · {usage_txt} (double-click or F2 to rename)"
+                            "{rname} ({item_count} item(s)) | {usage_txt} (Click to edit, F2 to rename)"
                         );
                         let r_out = tree_row(
                             ui,
@@ -835,7 +1001,7 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                                 icon: IconKind::KeepOutZone,
                                 icon_color: if is_sup {
                                     tok.suppressed_fg
-                                } else if is_editing {
+                                } else if is_selected || is_dragged {
                                     tok.error_fg
                                 } else {
                                     tok.warn_fg
@@ -843,20 +1009,20 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                                 label: &rname,
                                 label_color: if is_sup {
                                     tok.suppressed_fg
-                                } else if is_editing {
+                                } else if is_selected {
                                     tok.error_fg
                                 } else {
                                     tok.text_primary
                                 },
-                                bold: is_editing,
+                                bold: is_selected,
                                 strikethrough: is_sup,
                                 italic: false,
                                 has_children: false,
                                 default_open: false,
-                                selected: is_editing,
+                                selected: is_selected || is_dragged,
                                 keyboard_focused: tree_kbd_active
                                     && kbd_focused_key.as_ref() == Some(&r_key),
-                                draggable: false,
+                                draggable: avoid_len > 1,
                                 tooltip: Some(&tip),
                             },
                             |ui, hovered| {
@@ -864,15 +1030,15 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                                 if ui
                                     .checkbox(&mut active, "")
                                     .on_hover_text(if is_sup {
-                                        "Suppressed — check to re-enable this keep-out region"
+                                        "Suppressed - check to re-enable this keep-out region"
                                     } else {
-                                        "Active — uncheck to suppress this keep-out region"
+                                        "Active - uncheck to suppress this keep-out region"
                                     })
                                     .changed()
                                 {
                                     pending.avoid_toggle_suppress = Some(r_idx);
                                 }
-                                if hovered {
+                                if hovered && active_drag.is_none() {
                                     if small_icon_button(
                                         ui,
                                         IconKind::Trash,
@@ -903,6 +1069,7 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                                 }
                             },
                         );
+                        avoid_row_rects.push(r_out.row_rect);
                         visible_nodes.push(VisibleTreeNode {
                             key: r_key.clone(),
                             node_id: r_id,
@@ -911,43 +1078,52 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                             is_open: false,
                         });
                         if r_out.response.clicked() {
+                            *focus = InspectorFocus::KeepOutRegion { region_idx: r_idx };
                             *editing_shared_avoid_id = Some(rid.clone());
+                            *pick_mode = ViewportPickMode::InspectEntity;
                             kbd_focused_key = Some(r_key);
                             any_row_clicked = true;
                         }
-                        if r_out.response.double_clicked() {
-                            renaming_id = Some(rid.clone());
-                            renaming_buf = rname.clone();
+                        if r_out.response.drag_started() && avoid_len > 1 {
+                            let st = DraggedTreeItem {
+                                section: DragSection::AvoidRegions,
+                                item_idx: r_idx,
+                            };
+                            active_drag = Some(st);
+                            ui.ctx().data_mut(|d| d.insert_temp(drag_state_id, st));
                         }
                         r_out.response.context_menu(|ui| {
-                            if ui.button("Rename").clicked() {
-                                renaming_id = Some(rid.clone());
-                                renaming_buf = rname.clone();
-                                ui.close();
-                            }
-                            if ui
-                                .button(if is_sup { "Enable" } else { "Suppress" })
-                                .clicked()
-                            {
-                                pending.avoid_toggle_suppress = Some(r_idx);
-                                ui.close();
-                            }
-                            if ui.button("Duplicate").clicked() {
-                                pending.avoid_duplicate = Some(r_idx);
-                                ui.close();
-                            }
-                            ui.separator();
-                            if ui.button("Delete").clicked() {
-                                pending.avoid_delete = Some(rid.clone());
-                                ui.close();
-                            }
+                            show_avoid_item_context_menu(
+                                ui,
+                                r_idx,
+                                avoid_len,
+                                &rid,
+                                &rname,
+                                is_sup,
+                                focus,
+                                editing_shared_avoid_id,
+                                pick_mode,
+                                &mut pending,
+                                &mut rename_state,
+                            );
                         });
+                    }
+
+                    if let Some((from_i, to_slot)) = handle_section_drag_overlay(
+                        ui,
+                        &mut active_drag,
+                        DragSection::AvoidRegions,
+                        2,
+                        &avoid_row_rects,
+                        drag_state_id,
+                    ) {
+                        pending.avoid_move_slot = Some((from_i, to_slot));
                     }
                 }
             }
 
             // -----------------------------------------------------------------
-            // 4. Project Tools (N)
+            // 4. Project Tools (N)  [Never drag-reorderable]
             // -----------------------------------------------------------------
             let usage_map = project.tool_usage_map();
             let unused_count = project.unused_tool_ids().len();
@@ -989,7 +1165,7 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                                 ui.add(
                                     egui::TextEdit::singleline(&mut filter_text)
                                         .desired_width(170.0)
-                                        .hint_text("diameter, flat, ball, v-bit…"),
+                                        .hint_text("diameter, flat, ball, v-bit..."),
                                 );
                             });
                             ui.data_mut(|d| d.insert_temp(filter_id, filter_text.clone()));
@@ -1053,7 +1229,7 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                             tok.warn_bg,
                             Some(tok.warn_border),
                             tok.warn_fg,
-                            Some("Unused tools can be removed from the + menu"),
+                            Some("Unused tools can be removed from the + menu or right-click menu"),
                         );
                     }
                 },
@@ -1069,6 +1245,14 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                 kbd_focused_key = Some(tools_key.clone());
                 any_row_clicked = true;
             }
+            tools_out.response.context_menu(|ui| {
+                show_tools_folder_context_menu(
+                    ui,
+                    unused_count,
+                    &mut pending,
+                    &mut emitted_action,
+                );
+            });
 
             if tools_out.is_open {
                 if project.tools.is_empty() {
@@ -1079,7 +1263,8 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                         let use_count = usages.map_or(0, Vec::len);
                         let t_key = TreeNodeKey::Tool(t_idx);
                         let t_id = node_id_for(tree_scope, &t_key);
-                        let main_txt = format!("T{} · {}", tool.tool_number, tool.name);
+                        let is_t_sel = *focus == InspectorFocus::ProjectTool { tool_idx: t_idx };
+                        let main_txt = format!("T{} - {}", tool.tool_number, tool.name);
                         let tip = if use_count == 0 {
                             format!("{} (unused)", tool.summary_label())
                         } else {
@@ -1088,15 +1273,20 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                                 .flatten()
                                 .map(|u| u.op_name.as_str())
                                 .collect();
-                            format!("{} · used by {}", tool.summary_label(), names.join(", "))
+                            format!("{} | used by {}", tool.summary_label(), names.join(", "))
                         };
+                        let in_machine_lib = global_tools.tool(&tool.id).is_some();
                         let t_out = tree_row(
                             ui,
                             TreeRowSpec {
                                 node_id: t_id,
                                 depth: 2,
                                 icon: IconKind::Tool,
-                                icon_color: tok.text_secondary,
+                                icon_color: if is_t_sel {
+                                    tok.accent
+                                } else {
+                                    tok.text_secondary
+                                },
                                 label: &main_txt,
                                 label_color: tok.text_primary,
                                 bold: false,
@@ -1104,7 +1294,7 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                                 italic: false,
                                 has_children: false,
                                 default_open: false,
-                                selected: false,
+                                selected: is_t_sel,
                                 keyboard_focused: tree_kbd_active
                                     && kbd_focused_key.as_ref() == Some(&t_key),
                                 draggable: false,
@@ -1159,9 +1349,21 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                             is_open: false,
                         });
                         if t_out.response.clicked() {
+                            *focus = InspectorFocus::ProjectTool { tool_idx: t_idx };
+                            *pick_mode = ViewportPickMode::InspectEntity;
                             kbd_focused_key = Some(t_key);
                             any_row_clicked = true;
                         }
+                        t_out.response.context_menu(|ui| {
+                            show_tool_item_context_menu(
+                                ui,
+                                &tool.id,
+                                in_machine_lib,
+                                use_count,
+                                &mut pending,
+                                &mut emitted_action,
+                            );
+                        });
                     }
                 }
             }
@@ -1209,9 +1411,13 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                 kbd_focused_key = Some(setups_key.clone());
                 any_row_clicked = true;
             }
+            setups_out.response.context_menu(|ui| {
+                show_setups_folder_context_menu(ui, &mut pending);
+            });
 
             if setups_out.is_open {
                 let setup_count = project.setups.len();
+                let mut setup_row_rects: Vec<Rect> = Vec::with_capacity(setup_count);
                 for s_idx in 0..setup_count {
                     let is_active_setup = *active_setup_idx == s_idx;
                     let s_key = TreeNodeKey::Setup(s_idx);
@@ -1221,138 +1427,167 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                     let fixture_selected_here = *focus == InspectorFocus::Setup { setup_idx: s_idx }
                         && *setup_tab == SetupTab::Fixtures
                         && selected_fixture_idx.is_some();
-                    let is_setup_sel =
-                        *focus == InspectorFocus::Setup { setup_idx: s_idx } && !fixture_selected_here;
-                    let setup_tip = if is_active_setup {
-                        format!(
-                            "{setup_name} [{wcs_code}] (Active Setup — new operations are added here)"
-                        )
-                    } else {
-                        format!("Click to activate and inspect {setup_name} [{wcs_code}]")
-                    };
+                    let is_setup_sel = *focus == InspectorFocus::Setup { setup_idx: s_idx }
+                        && !fixture_selected_here;
+                    let is_setup_dragged = active_drag.is_some_and(|d| {
+                        d.section == DragSection::Setups && d.item_idx == s_idx
+                    });
 
-                    let s_out = tree_row(
-                        ui,
-                        TreeRowSpec {
+                    let s_is_open;
+                    if rename_state.as_ref().is_some_and(|r| r.key == s_key) {
+                        let r_rect = ui.available_rect_before_wrap();
+                        if let Some(commit) = render_inline_rename_row(
+                            ui,
+                            2,
+                            IconKind::Setup,
+                            tok.accent,
+                            &mut rename_state,
+                        ) {
+                            pending.inline_rename_commit = Some(commit);
+                        }
+                        s_is_open = is_node_open(ui, s_id, is_active_setup);
+                        setup_row_rects.push(Rect::from_min_size(
+                            r_rect.min,
+                            egui::vec2(r_rect.width(), tree_widget::TREE_ROW_HEIGHT),
+                        ));
+                        visible_nodes.push(VisibleTreeNode {
+                            key: s_key.clone(),
                             node_id: s_id,
-                            depth: 2,
-                            icon: IconKind::Setup,
-                            icon_color: if is_active_setup || is_setup_sel {
-                                tok.accent
-                            } else {
-                                tok.text_secondary
-                            },
-                            label: &setup_name,
-                            label_color: tok.text_primary,
-                            bold: is_active_setup,
-                            strikethrough: false,
-                            italic: false,
+                            parent: Some(setups_key.clone()),
                             has_children: true,
-                            default_open: is_active_setup,
-                            selected: is_setup_sel,
-                            keyboard_focused: tree_kbd_active
-                                && kbd_focused_key.as_ref() == Some(&s_key),
-                            draggable: false,
-                            tooltip: Some(&setup_tip),
-                        },
-                        |ui, hovered| {
-                            if hovered {
-                                if setup_count > 1
-                                    && small_icon_button(ui, IconKind::Trash, "Delete Setup")
-                                        .clicked()
-                                {
-                                    pending.setup_delete = Some(s_idx);
-                                }
-                                if small_icon_button(
-                                    ui,
-                                    IconKind::TopView,
-                                    "Align camera down this Setup's +Z spindle axis",
-                                )
-                                .clicked()
-                                {
-                                    *active_setup_idx = s_idx;
-                                    emitted_action = Some(BrowserAction::AlignCameraToActiveSetup);
-                                }
-                                if small_icon_button(
-                                    ui,
-                                    IconKind::Generate,
-                                    "Generate dirty toolpaths in this Setup (Ctrl+G)",
-                                )
-                                .clicked()
-                                {
-                                    *active_setup_idx = s_idx;
-                                    emitted_action = Some(BrowserAction::GenerateSetup(s_idx));
-                                }
-                            } else {
-                                if is_active_setup {
+                            is_open: s_is_open,
+                        });
+                    } else {
+                        let setup_tip = if is_active_setup {
+                            format!(
+                                "{setup_name} [{wcs_code}] (Active Setup - new operations are added here)"
+                            )
+                        } else {
+                            format!("Click to activate and inspect {setup_name} [{wcs_code}]")
+                        };
+
+                        let s_out = tree_row(
+                            ui,
+                            TreeRowSpec {
+                                node_id: s_id,
+                                depth: 2,
+                                icon: IconKind::Setup,
+                                icon_color: if is_active_setup || is_setup_sel || is_setup_dragged {
+                                    tok.accent
+                                } else {
+                                    tok.text_secondary
+                                },
+                                label: &setup_name,
+                                label_color: tok.text_primary,
+                                bold: is_active_setup,
+                                strikethrough: false,
+                                italic: false,
+                                has_children: true,
+                                default_open: is_active_setup,
+                                selected: is_setup_sel || is_setup_dragged,
+                                keyboard_focused: tree_kbd_active
+                                    && kbd_focused_key.as_ref() == Some(&s_key),
+                                draggable: setup_count > 1,
+                                tooltip: Some(&setup_tip),
+                            },
+                            |ui, hovered| {
+                                if hovered && active_drag.is_none() {
+                                    if setup_count > 1
+                                        && small_icon_button(ui, IconKind::Trash, "Delete Setup")
+                                            .clicked()
+                                    {
+                                        pending.setup_delete = Some(s_idx);
+                                    }
+                                    if small_icon_button(
+                                        ui,
+                                        IconKind::TopView,
+                                        "Align camera down this Setup's +Z spindle axis",
+                                    )
+                                    .clicked()
+                                    {
+                                        *active_setup_idx = s_idx;
+                                        emitted_action =
+                                            Some(BrowserAction::AlignCameraToActiveSetup);
+                                    }
+                                    if small_icon_button(
+                                        ui,
+                                        IconKind::Generate,
+                                        "Generate dirty toolpaths in this Setup (Ctrl+G)",
+                                    )
+                                    .clicked()
+                                    {
+                                        *active_setup_idx = s_idx;
+                                        emitted_action = Some(BrowserAction::GenerateSetup(s_idx));
+                                    }
+                                } else {
+                                    if is_active_setup {
+                                        tree_badge_pill(
+                                            ui,
+                                            "Active",
+                                            tok.accent,
+                                            None,
+                                            tok.accent_on_fg,
+                                            Some("Active Setup"),
+                                        );
+                                    }
                                     tree_badge_pill(
                                         ui,
-                                        "Active",
-                                        tok.accent,
-                                        None,
-                                        tok.accent_on_fg,
-                                        Some("Active Setup"),
+                                        wcs_code,
+                                        tok.elevated_bg,
+                                        Some(tok.border),
+                                        tok.text_muted,
+                                        Some("Work Coordinate Offset"),
                                     );
                                 }
-                                tree_badge_pill(
-                                    ui,
-                                    wcs_code,
-                                    tok.elevated_bg,
-                                    Some(tok.border),
-                                    tok.text_muted,
-                                    Some("Work Coordinate Offset"),
-                                );
-                            }
-                        },
-                    );
-                    visible_nodes.push(VisibleTreeNode {
-                        key: s_key.clone(),
-                        node_id: s_id,
-                        parent: Some(setups_key.clone()),
-                        has_children: true,
-                        is_open: s_out.is_open,
-                    });
-                    if s_out.response.clicked() {
-                        *active_setup_idx = s_idx;
-                        *focus = InspectorFocus::Setup { setup_idx: s_idx };
-                        if *setup_tab == SetupTab::Fixtures {
-                            *selected_fixture_idx = None;
-                        }
-                        *pick_mode = ViewportPickMode::InspectEntity;
-                        kbd_focused_key = Some(s_key.clone());
-                        any_row_clicked = true;
-                    } else if s_out.chevron_toggled {
-                        kbd_focused_key = Some(s_key.clone());
-                        any_row_clicked = true;
-                    }
-                    s_out.response.context_menu(|ui| {
-                        if ui.button("Set Active").clicked() {
+                            },
+                        );
+                        s_is_open = s_out.is_open;
+                        setup_row_rects.push(s_out.row_rect);
+                        visible_nodes.push(VisibleTreeNode {
+                            key: s_key.clone(),
+                            node_id: s_id,
+                            parent: Some(setups_key.clone()),
+                            has_children: true,
+                            is_open: s_is_open,
+                        });
+                        if s_out.response.clicked() {
                             *active_setup_idx = s_idx;
                             *focus = InspectorFocus::Setup { setup_idx: s_idx };
+                            if *setup_tab == SetupTab::Fixtures {
+                                *selected_fixture_idx = None;
+                            }
                             *pick_mode = ViewportPickMode::InspectEntity;
-                            ui.close();
+                            kbd_focused_key = Some(s_key.clone());
+                            any_row_clicked = true;
+                        } else if s_out.chevron_toggled {
+                            kbd_focused_key = Some(s_key.clone());
+                            any_row_clicked = true;
                         }
-                        if ui.button("Generate Setup").clicked() {
-                            *active_setup_idx = s_idx;
-                            emitted_action = Some(BrowserAction::GenerateSetup(s_idx));
-                            ui.close();
+                        if s_out.response.drag_started() && setup_count > 1 {
+                            let st = DraggedTreeItem {
+                                section: DragSection::Setups,
+                                item_idx: s_idx,
+                            };
+                            active_drag = Some(st);
+                            ui.ctx().data_mut(|d| d.insert_temp(drag_state_id, st));
                         }
-                        if ui.button("Align Camera to Top").clicked() {
-                            *active_setup_idx = s_idx;
-                            emitted_action = Some(BrowserAction::AlignCameraToActiveSetup);
-                            ui.close();
-                        }
-                        ui.separator();
-                        if ui
-                            .add_enabled(setup_count > 1, egui::Button::new("Delete Setup"))
-                            .clicked()
-                        {
-                            pending.setup_delete = Some(s_idx);
-                            ui.close();
-                        }
-                    });
+                        s_out.response.context_menu(|ui| {
+                            show_setup_item_context_menu(
+                                ui,
+                                s_idx,
+                                setup_count,
+                                &setup_name,
+                                active_setup_idx,
+                                focus,
+                                pick_mode,
+                                &mut pending,
+                                &mut rename_state,
+                                &mut emitted_action,
+                            );
+                        });
+                    }
 
-                    if !s_out.is_open {
+                    if !s_is_open {
                         continue;
                     }
 
@@ -1406,8 +1641,17 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                         kbd_focused_key = Some(fix_folder_key.clone());
                         any_row_clicked = true;
                     }
+                    fix_folder_out.response.context_menu(|ui| {
+                        show_fixtures_folder_context_menu(
+                            ui,
+                            s_idx,
+                            &mut pending,
+                            &mut emitted_action,
+                        );
+                    });
 
                     if fix_folder_out.is_open {
+                        let mut fix_row_rects: Vec<Rect> = Vec::with_capacity(fix_count);
                         for (f_idx, fix) in project.setups[s_idx].fixtures.iter().enumerate() {
                             let f_key = TreeNodeKey::Fixture {
                                 setup_idx: s_idx,
@@ -1417,8 +1661,38 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                             let is_f_sel = *focus == InspectorFocus::Setup { setup_idx: s_idx }
                                 && *setup_tab == SetupTab::Fixtures
                                 && *selected_fixture_idx == Some(f_idx);
+                            let is_f_dragged = active_drag.is_some_and(|d| {
+                                d.section == DragSection::Fixtures { setup_idx: s_idx }
+                                    && d.item_idx == f_idx
+                            });
                             let f_enabled = fix.enabled;
                             let f_name = fix.name.clone();
+
+                            if rename_state.as_ref().is_some_and(|r| r.key == f_key) {
+                                let r_rect = ui.available_rect_before_wrap();
+                                if let Some(commit) = render_inline_rename_row(
+                                    ui,
+                                    4,
+                                    IconKind::Fixture,
+                                    tok.accent,
+                                    &mut rename_state,
+                                ) {
+                                    pending.inline_rename_commit = Some(commit);
+                                }
+                                fix_row_rects.push(Rect::from_min_size(
+                                    r_rect.min,
+                                    egui::vec2(r_rect.width(), tree_widget::TREE_ROW_HEIGHT),
+                                ));
+                                visible_nodes.push(VisibleTreeNode {
+                                    key: f_key,
+                                    node_id: f_id,
+                                    parent: Some(fix_folder_key.clone()),
+                                    has_children: false,
+                                    is_open: false,
+                                });
+                                continue;
+                            }
+
                             let f_out = tree_row(
                                 ui,
                                 TreeRowSpec {
@@ -1427,7 +1701,7 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                                     icon: IconKind::Fixture,
                                     icon_color: if !f_enabled {
                                         tok.suppressed_fg
-                                    } else if is_f_sel {
+                                    } else if is_f_sel || is_f_dragged {
                                         tok.accent
                                     } else {
                                         tok.text_secondary
@@ -1443,10 +1717,10 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                                     italic: false,
                                     has_children: false,
                                     default_open: false,
-                                    selected: is_f_sel,
+                                    selected: is_f_sel || is_f_dragged,
                                     keyboard_focused: tree_kbd_active
                                         && kbd_focused_key.as_ref() == Some(&f_key),
-                                    draggable: false,
+                                    draggable: fix_count > 1,
                                     tooltip: Some("Click to edit this workholding fixture"),
                                 },
                                 |ui, _hovered| {
@@ -1454,9 +1728,9 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                                     if ui
                                         .checkbox(&mut enabled_box, "")
                                         .on_hover_text(if f_enabled {
-                                            "Active fixture — uncheck to suppress from collision checks & rapid avoidance"
+                                            "Active fixture - uncheck to suppress from collision checks & rapid avoidance"
                                         } else {
-                                            "Suppressed fixture — check to re-enable"
+                                            "Suppressed fixture - check to re-enable"
                                         })
                                         .changed()
                                     {
@@ -1464,6 +1738,7 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                                     }
                                 },
                             );
+                            fix_row_rects.push(f_out.row_rect);
                             visible_nodes.push(VisibleTreeNode {
                                 key: f_key.clone(),
                                 node_id: f_id,
@@ -1480,6 +1755,37 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                                 kbd_focused_key = Some(f_key);
                                 any_row_clicked = true;
                             }
+                            if f_out.response.drag_started() && fix_count > 1 {
+                                let st = DraggedTreeItem {
+                                    section: DragSection::Fixtures { setup_idx: s_idx },
+                                    item_idx: f_idx,
+                                };
+                                active_drag = Some(st);
+                                ui.ctx().data_mut(|d| d.insert_temp(drag_state_id, st));
+                            }
+                            f_out.response.context_menu(|ui| {
+                                show_fixture_item_context_menu(
+                                    ui,
+                                    s_idx,
+                                    f_idx,
+                                    fix_count,
+                                    f_enabled,
+                                    &f_name,
+                                    &mut pending,
+                                    &mut rename_state,
+                                );
+                            });
+                        }
+
+                        if let Some((from_i, to_slot)) = handle_section_drag_overlay(
+                            ui,
+                            &mut active_drag,
+                            DragSection::Fixtures { setup_idx: s_idx },
+                            4,
+                            &fix_row_rects,
+                            drag_state_id,
+                        ) {
+                            pending.fixture_move_slot = Some((s_idx, from_i, to_slot));
                         }
                     }
 
@@ -1495,6 +1801,40 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                         let cached_tp =
                             toolpath_cache.get_for_operation(project, s_idx, o_idx, cad_revision);
                         let op = &project.setups[s_idx].operations[o_idx];
+                        let op_key = TreeNodeKey::Operation {
+                            setup_idx: s_idx,
+                            op_idx: o_idx,
+                        };
+                        let op_node_id = node_id_for(tree_scope, &op_key);
+                        let op_id_clone = op.id.clone();
+                        let op_name_clone = op.name.clone();
+                        let op_kind_val = op.kind;
+                        let op_is_adap = op.is_adaptive_2d();
+
+                        if rename_state.as_ref().is_some_and(|r| r.key == op_key) {
+                            let r_rect = ui.available_rect_before_wrap();
+                            if let Some(commit) = render_inline_rename_row(
+                                ui,
+                                3,
+                                IconKind::for_operation(op_kind_val, op_is_adap),
+                                tok.accent,
+                                &mut rename_state,
+                            ) {
+                                pending.inline_rename_commit = Some(commit);
+                            }
+                            row_rects.push(Rect::from_min_size(
+                                r_rect.min,
+                                egui::vec2(r_rect.width(), tree_widget::TREE_ROW_HEIGHT),
+                            ));
+                            visible_nodes.push(VisibleTreeNode {
+                                key: op_key,
+                                node_id: op_node_id,
+                                parent: Some(s_key.clone()),
+                                has_children: false,
+                                is_open: false,
+                            });
+                            continue;
+                        }
 
                         let est_sec = cached_tp.as_ref().map(|(_, tp)| {
                             tp.stats.total_est_time_sec
@@ -1524,11 +1864,11 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                                 ),
                                 OperationStatus::Dirty => (
                                     StatusBadgeKind::Dirty,
-                                    Some("Dirty — press Ctrl+G to regenerate".to_string()),
+                                    Some("Dirty - press Ctrl+G to regenerate".to_string()),
                                 ),
                                 OperationStatus::Generating => (
                                     StatusBadgeKind::Dirty,
-                                    Some("Generating on background thread…".to_string()),
+                                    Some("Generating on background thread...".to_string()),
                                 ),
                                 OperationStatus::Error { message } => {
                                     (StatusBadgeKind::Error, Some(message.clone()))
@@ -1547,29 +1887,22 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                         };
 
                         let mode_tag = match (op.is_adaptive_2d(), op.has_rest_machining()) {
-                            (true, true) => " · Adp+Rest",
+                            (true, true) => " | Adp+Rest",
                             (true, false) => "",
-                            (false, true) => " · Rest",
+                            (false, true) => " | Rest",
                             (false, false) => "",
                         };
                         let label_txt = format!("{}. {}{mode_tag}", o_idx + 1, op.name);
-                        let op_id_clone = op.id.clone();
-                        let op_kind_val = op.kind;
-                        let op_is_adap = op.is_adaptive_2d();
                         let is_sup = op.suppressed;
                         let is_hidden_in_vp = hidden_operation_ids.contains(&op_id_clone);
                         let is_needs_repick = !is_sup
                             && matches!(op.runtime_status, OperationStatus::NeedsRepick { .. });
                         let is_gen =
                             !is_sup && matches!(op.runtime_status, OperationStatus::Generating);
-                        let is_being_dragged = active_drag
-                            .is_some_and(|d| d.setup_idx == s_idx && d.op_idx == o_idx);
-
-                        let op_key = TreeNodeKey::Operation {
-                            setup_idx: s_idx,
-                            op_idx: o_idx,
-                        };
-                        let op_node_id = node_id_for(tree_scope, &op_key);
+                        let is_being_dragged = active_drag.is_some_and(|d| {
+                            d.section == DragSection::Operations { setup_idx: s_idx }
+                                && d.item_idx == o_idx
+                        });
 
                         let op_out = tree_row(
                             ui,
@@ -1579,7 +1912,7 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                                 icon: IconKind::for_operation(op_kind_val, op_is_adap),
                                 icon_color: if is_sup {
                                     tok.suppressed_fg
-                                } else if is_sel {
+                                } else if is_sel || is_being_dragged {
                                     tok.accent
                                 } else {
                                     tok.text_secondary
@@ -1603,15 +1936,13 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                             },
                             |ui, hovered| {
                                 let show_hover_tools = hovered && active_drag.is_none();
-                                // Right-to-left order renders visually left-to-right as:
-                                // [Status] [T1 · 42s] [eye] [suppress]
                                 let mut active = !is_sup;
                                 if ui
                                     .checkbox(&mut active, "")
                                     .on_hover_text(if is_sup {
-                                        "Suppressed — check to re-enable this operation for simulation & G-code"
+                                        "Suppressed - check to re-enable this operation for simulation & G-code"
                                     } else {
-                                        "Active — uncheck to suppress this operation from simulation & G-code"
+                                        "Active - uncheck to suppress this operation from simulation & G-code"
                                     })
                                     .changed()
                                 {
@@ -1702,150 +2033,58 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                             any_row_clicked = true;
                         }
                         if op_out.response.drag_started() && op_len > 1 {
-                            let st = DraggedOpState {
-                                setup_idx: s_idx,
-                                op_idx: o_idx,
+                            let st = DraggedTreeItem {
+                                section: DragSection::Operations { setup_idx: s_idx },
+                                item_idx: o_idx,
                             };
                             active_drag = Some(st);
                             ui.ctx().data_mut(|d| d.insert_temp(drag_state_id, st));
                         }
 
                         op_out.response.context_menu(|ui| {
-                            if ui
-                                .button("Generate Toolpath")
-                                .on_hover_text("Compute or refresh the toolpath for this operation")
-                                .clicked()
-                            {
-                                emitted_action = Some(BrowserAction::GenerateSingleOp {
-                                    setup_idx: s_idx,
-                                    op_id: op_id_clone.clone(),
-                                });
-                                ui.close();
-                            }
-                            if ui
-                                .button("Duplicate Operation (Ctrl+D)")
-                                .on_hover_text("Insert a copy of this operation directly beneath it")
-                                .clicked()
-                            {
-                                pending.op_duplicate = Some((s_idx, o_idx));
-                                ui.close();
-                            }
-                            ui.separator();
-                            if ui
-                                .add_enabled(o_idx > 0, egui::Button::new("Move Up (Ctrl+Up)"))
-                                .on_hover_text(
-                                    "Move this operation earlier in the Setup execution order",
-                                )
-                                .on_disabled_hover_text("Already at the top of the Setup")
-                                .clicked()
-                            {
-                                pending.op_move_slot = Some((s_idx, o_idx, o_idx - 1));
-                                ui.close();
-                            }
-                            if ui
-                                .add_enabled(
-                                    o_idx + 1 < op_len,
-                                    egui::Button::new("Move Down (Ctrl+Down)"),
-                                )
-                                .on_hover_text(
-                                    "Move this operation later in the Setup execution order",
-                                )
-                                .on_disabled_hover_text("Already at the bottom of the Setup")
-                                .clicked()
-                            {
-                                pending.op_move_slot = Some((s_idx, o_idx, o_idx + 2));
-                                ui.close();
-                            }
-                            ui.separator();
-                            if ui
-                                .button(if is_hidden_in_vp {
-                                    "Show Toolpath in Viewport"
-                                } else {
-                                    "Hide Toolpath in Viewport"
-                                })
-                                .on_hover_text(
-                                    "Toggle 3D viewport visibility of this operation's toolpath without suppressing simulation or G-code",
-                                )
-                                .clicked()
-                            {
-                                pending.op_toggle_visibility = Some(op_id_clone.clone());
-                                ui.close();
-                            }
-                            if ui
-                                .button(if is_sup {
-                                    "Enable Operation"
-                                } else {
-                                    "Suppress Operation"
-                                })
-                                .on_hover_text(
-                                    "Enable or suppress this operation in generation, simulation, and G-code posting",
-                                )
-                                .clicked()
-                            {
-                                pending.op_toggle_suppress = Some((s_idx, o_idx));
-                                ui.close();
-                            }
-                            if ui
-                                .button("Delete Operation (Del)")
-                                .on_hover_text(
-                                    "Permanently remove this operation from the Setup (undoable with Ctrl+Z)",
-                                )
-                                .clicked()
-                            {
-                                pending.op_delete = Some((s_idx, o_idx));
-                                ui.close();
-                            }
+                            show_operation_item_context_menu(
+                                ui,
+                                s_idx,
+                                o_idx,
+                                op_len,
+                                &op_id_clone,
+                                &op_name_clone,
+                                is_sup,
+                                is_hidden_in_vp,
+                                &mut pending,
+                                &mut rename_state,
+                                &mut emitted_action,
+                            );
                         });
 
                         row_rects.push(op_out.row_rect);
                     }
 
-                    // Live drag-and-drop insertion indicator & drop within this Setup
-                    if let Some(drag) = active_drag
-                        && drag.setup_idx == s_idx
-                        && !row_rects.is_empty()
-                    {
-                        ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
-                        if let Some(ptr) = ui.input(|i| i.pointer.interact_pos()) {
-                            let mut slot = op_len;
-                            for (idx, r) in row_rects.iter().enumerate() {
-                                if ptr.y < r.center().y {
-                                    slot = idx;
-                                    break;
-                                }
-                            }
-                            if slot != drag.op_idx && slot != drag.op_idx + 1 {
-                                let y_line = if slot == 0 {
-                                    row_rects[0].top() - 1.0
-                                } else if slot >= row_rects.len() {
-                                    row_rects[row_rects.len() - 1].bottom() + 1.0
-                                } else {
-                                    0.5 * (row_rects[slot - 1].bottom() + row_rects[slot].top())
-                                };
-                                let x_left = row_rects[0].left() + TREE_INDENT_STEP * 3.0 + 4.0;
-                                let x_right = row_rects[0].right() - 4.0;
-                                ui.painter().line_segment(
-                                    [Pos2::new(x_left, y_line), Pos2::new(x_right, y_line)],
-                                    Stroke::new(2.0, tok.accent),
-                                );
-                                ui.painter().circle_filled(
-                                    Pos2::new(x_left, y_line),
-                                    3.2,
-                                    tok.accent,
-                                );
-                            }
-                            if ui.input(|i| i.pointer.any_released()) {
-                                pending.op_move_slot = Some((s_idx, drag.op_idx, slot));
-                                active_drag = None;
-                                ui.ctx()
-                                    .data_mut(|d| d.remove::<DraggedOpState>(drag_state_id));
-                            }
-                        }
+                    if let Some((from_i, to_slot)) = handle_section_drag_overlay(
+                        ui,
+                        &mut active_drag,
+                        DragSection::Operations { setup_idx: s_idx },
+                        3,
+                        &row_rects,
+                        drag_state_id,
+                    ) {
+                        pending.op_move_slot = Some((s_idx, from_i, to_slot));
                     }
 
                     if op_len == 0 {
                         tree_hint_row(ui, 3, "No operations yet");
                     }
+                }
+
+                if let Some((from_i, to_slot)) = handle_section_drag_overlay(
+                    ui,
+                    &mut active_drag,
+                    DragSection::Setups,
+                    2,
+                    &setup_row_rects,
+                    drag_state_id,
+                ) {
+                    pending.setup_move_slot = Some((from_i, to_slot));
                 }
             }
         });
@@ -1886,13 +2125,8 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                     kbd_focused_key = Some(key);
                 }
                 TreeNavAction::Rename(key) => {
-                    ui.ctx()
-                        .data_mut(|d| d.insert_temp(rename_hook_id, key.clone()));
-                    if let TreeNodeKey::AvoidRegion(r_idx) = key
-                        && r_idx < project.avoid_regions.len()
-                    {
-                        renaming_id = Some(project.avoid_regions[r_idx].id.clone());
-                        renaming_buf = project.avoid_regions[r_idx].name.clone();
+                    if let Some(st) = start_inline_rename_for_key(&key, project) {
+                        rename_state = Some(st);
                     }
                 }
                 TreeNavAction::Delete(key) => match key {
@@ -1933,12 +2167,14 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
         }
     }
 
+    // Apply Expand All / Collapse All
+    if let Some(expand) = pending.expand_collapse_all {
+        apply_expand_collapse_all(ui, tree_scope, project, expand);
+    }
+
     // Persist temp UI states
-    ui.data_mut(|d| {
-        d.insert_temp(rename_id_key, renaming_id);
-        d.insert_temp(rename_buf_key, renaming_buf);
-    });
     ui.ctx().data_mut(|d| {
+        d.insert_temp(inline_rename_id, rename_state);
         if let Some(k) = kbd_focused_key {
             d.insert_temp(nav_focus_id, k);
         }
@@ -1947,12 +2183,16 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
 
     if active_drag.is_some() && ui.input(|i| i.pointer.any_released()) {
         ui.ctx()
-            .data_mut(|d| d.remove::<DraggedOpState>(drag_state_id));
+            .data_mut(|d| d.remove::<DraggedTreeItem>(drag_state_id));
     }
 
     // -------------------------------------------------------------------------
-    // Apply deferred mutations cleanly with atomic Undo snapshots
+    // Apply deferred mutations cleanly with atomic Undo & Dirty propagation
     // -------------------------------------------------------------------------
+    if let Some((key, new_name)) = pending.inline_rename_commit {
+        apply_inline_rename_commit(project, history, &key, new_name);
+    }
+
     if pending.add_setup {
         emitted_action = Some(add_new_setup(
             project,
@@ -1963,6 +2203,86 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
             pick_mode,
         ));
     }
+    if let Some(s_idx) = pending.setup_duplicate
+        && s_idx < project.setups.len()
+    {
+        history.record_before_edit("Duplicate Setup", None, project);
+        if let Some(new_idx) = duplicate_setup_in_project(project, s_idx) {
+            *active_setup_idx = new_idx;
+            *focus = InspectorFocus::Setup { setup_idx: new_idx };
+            *pick_mode = ViewportPickMode::InspectEntity;
+            emitted_action = Some(BrowserAction::InvalidateFrameCache);
+        }
+    }
+    if let Some((from_s, to_slot)) = pending.setup_move_slot
+        && from_s < project.setups.len()
+        && to_slot != from_s
+        && to_slot != from_s + 1
+    {
+        history.record_before_edit("Reorder Setup", None, project);
+        if move_setup_to_slot(project, from_s, to_slot, active_setup_idx, focus).is_some() {
+            emitted_action = Some(BrowserAction::InvalidateFrameCache);
+        }
+    }
+    if let Some((s_idx, op_preset)) = pending.setup_add_op
+        && s_idx < project.setups.len()
+    {
+        history.record_before_edit(format!("Add {}", op_preset.label()), None, project);
+        let new_op = match op_preset {
+            AddOperationPreset::Adaptive2D => {
+                create_adaptive_2d_operation_in_setup(project, global_tools, s_idx)
+            }
+            AddOperationPreset::Standard(kind) => {
+                create_default_operation_in_setup(project, global_tools, s_idx, kind)
+            }
+        };
+        if let Some(o_idx) = new_op {
+            let kind = project.setups[s_idx].operations[o_idx].kind;
+            *active_setup_idx = s_idx;
+            *focus = InspectorFocus::Operation {
+                setup_idx: s_idx,
+                op_idx: o_idx,
+            };
+            *op_tab = if kind == chip_cam::OperationKind::Facing || kind.is_3d_surface() {
+                OperationTab::Passes
+            } else {
+                OperationTab::Geometry
+            };
+            *pick_mode = default_pick_mode_for_op(s_idx, o_idx, kind, *op_tab);
+            set_node_open(
+                ui,
+                node_id_for(tree_scope, &TreeNodeKey::Setup(s_idx)),
+                true,
+            );
+            emitted_action = Some(BrowserAction::InvalidateFrameCache);
+        }
+    }
+    if let Some((s_idx, preset)) = pending.setup_add_fixture
+        && s_idx < project.setups.len()
+    {
+        history.record_before_edit(format!("Add {}", preset.menu_label()), None, project);
+        if let Some(f_idx) = add_fixture_preset_in_setup(project, s_idx, preset) {
+            *active_setup_idx = s_idx;
+            *focus = InspectorFocus::Setup { setup_idx: s_idx };
+            *setup_tab = SetupTab::Fixtures;
+            *selected_fixture_idx = Some(f_idx);
+            *pick_mode = ViewportPickMode::InspectEntity;
+            set_node_open(
+                ui,
+                node_id_for(tree_scope, &TreeNodeKey::Setup(s_idx)),
+                true,
+            );
+            set_node_open(
+                ui,
+                node_id_for(
+                    tree_scope,
+                    &TreeNodeKey::FixturesFolder { setup_idx: s_idx },
+                ),
+                true,
+            );
+            emitted_action = Some(BrowserAction::InvalidateFrameCache);
+        }
+    }
 
     if let Some(ti) = pending.sketch_vis_toggle
         && ti < project.sketches.len()
@@ -1970,16 +2290,91 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
         history.record_before_edit("Toggle Sketch Visibility", None, project);
         project.sketches[ti].visible = !project.sketches[ti].visible;
     }
+    if let Some((sk_idx, preset)) = pending.sketch_add_entity
+        && sk_idx < project.sketches.len()
+    {
+        history.record_before_edit(format!("Add Sketch {}", preset.menu_label()), None, project);
+        if let Some(ent_idx) = add_sketch_entity_preset(project, sk_idx, preset) {
+            *focus = InspectorFocus::Sketch { sketch_idx: sk_idx };
+            *selected_sketch_entity_idx = Some(ent_idx);
+            *pick_mode = ViewportPickMode::InspectEntity;
+            set_node_open(
+                ui,
+                node_id_for(tree_scope, &TreeNodeKey::Sketch(sk_idx)),
+                true,
+            );
+            emitted_action = Some(BrowserAction::InvalidateFrameCache);
+        }
+    }
+    if let Some(sk_idx) = pending.sketch_duplicate
+        && sk_idx < project.sketches.len()
+    {
+        history.record_before_edit("Duplicate Sketch Layer", None, project);
+        if let Some(new_idx) = duplicate_sketch_in_project(project, sk_idx) {
+            *focus = InspectorFocus::Sketch {
+                sketch_idx: new_idx,
+            };
+            *selected_sketch_entity_idx = None;
+            emitted_action = Some(BrowserAction::InvalidateFrameCache);
+        }
+    }
+    if let Some((from_sk, to_slot)) = pending.sketch_move_slot
+        && from_sk < project.sketches.len()
+        && to_slot != from_sk
+        && to_slot != from_sk + 1
+    {
+        history.record_before_edit("Reorder Sketch Layer", None, project);
+        let _ = move_sketch_to_slot(project, from_sk, to_slot, focus);
+    }
     if let Some(di) = pending.sketch_delete
         && di < project.sketches.len()
     {
         history.record_before_edit("Delete Sketch Layer", None, project);
+        let del_sk_id = project.sketches[di].id.clone();
         project.sketches.remove(di);
+        mark_sketch_dependent_ops_dirty(project, &del_sk_id);
         *selected_sketch_entity_idx = None;
         if matches!(*focus, InspectorFocus::Sketch { .. }) {
             *focus = InspectorFocus::Setup {
                 setup_idx: *active_setup_idx,
             };
+        }
+        emitted_action = Some(BrowserAction::InvalidateFrameCache);
+    }
+
+    if let Some((sk_idx, ent_idx)) = pending.sketch_entity_toggle_construction
+        && sk_idx < project.sketches.len()
+        && ent_idx < project.sketches[sk_idx].entities.len()
+    {
+        history.record_before_edit("Toggle Sketch Entity Construction", None, project);
+        project.sketches[sk_idx].entities[ent_idx].is_construction =
+            !project.sketches[sk_idx].entities[ent_idx].is_construction;
+        project.sketches[sk_idx].rebuild_regions(None);
+        let sk_id = project.sketches[sk_idx].id.clone();
+        mark_sketch_dependent_ops_dirty(project, &sk_id);
+        emitted_action = Some(BrowserAction::InvalidateFrameCache);
+    }
+    if let Some((sk_idx, ent_idx)) = pending.sketch_entity_duplicate
+        && sk_idx < project.sketches.len()
+        && ent_idx < project.sketches[sk_idx].entities.len()
+    {
+        history.record_before_edit("Duplicate Sketch Entity", None, project);
+        if let Some(new_idx) = duplicate_sketch_entity_in_sketch(project, sk_idx, ent_idx) {
+            *focus = InspectorFocus::Sketch { sketch_idx: sk_idx };
+            *selected_sketch_entity_idx = Some(new_idx);
+            emitted_action = Some(BrowserAction::InvalidateFrameCache);
+        }
+    }
+    if let Some((sk_idx, from_e, to_slot)) = pending.sketch_entity_move_slot
+        && sk_idx < project.sketches.len()
+        && to_slot != from_e
+        && to_slot != from_e + 1
+    {
+        history.record_before_edit("Reorder Sketch Entity", None, project);
+        if move_sketch_entity_to_slot(project, sk_idx, from_e, to_slot, selected_sketch_entity_idx)
+            .is_some()
+        {
+            emitted_action = Some(BrowserAction::InvalidateFrameCache);
         }
     }
     if let Some((sk_idx, ent_idx)) = pending.sketch_entity_delete
@@ -1989,12 +2384,15 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
         history.record_before_edit("Delete Sketch Entity", None, project);
         project.sketches[sk_idx].entities.remove(ent_idx);
         project.sketches[sk_idx].rebuild_regions(None);
+        let sk_id = project.sketches[sk_idx].id.clone();
+        mark_sketch_dependent_ops_dirty(project, &sk_id);
         let rem = project.sketches[sk_idx].entities.len();
         *selected_sketch_entity_idx = if rem > 0 {
             Some(ent_idx.min(rem - 1))
         } else {
             None
         };
+        emitted_action = Some(BrowserAction::InvalidateFrameCache);
     }
 
     if pending.avoid_add {
@@ -2002,16 +2400,21 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
         let (id, name) = next_shared_avoid_id_and_name(project, None);
         project
             .avoid_regions
-            .push(SharedAvoidRegion::new(id, name.clone()));
+            .push(SharedAvoidRegion::new(id.clone(), name.clone()));
+        let new_idx = project.avoid_regions.len() - 1;
+        *focus = InspectorFocus::KeepOutRegion {
+            region_idx: new_idx,
+        };
+        *editing_shared_avoid_id = Some(id);
+        *pick_mode = ViewportPickMode::InspectEntity;
+        set_node_open(
+            ui,
+            node_id_for(tree_scope, &TreeNodeKey::AvoidRegionsFolder),
+            true,
+        );
         emitted_action = Some(BrowserAction::Log(format!(
             "Created shared keep-out region '{name}'."
         )));
-    }
-    if let Some((r_idx, new_name)) = pending.avoid_rename
-        && r_idx < project.avoid_regions.len()
-    {
-        history.record_before_edit("Rename Shared Keep-Out Region", None, project);
-        project.avoid_regions[r_idx].name = new_name;
     }
     if let Some(r_idx) = pending.avoid_toggle_suppress
         && r_idx < project.avoid_regions.len()
@@ -2020,6 +2423,14 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
         let rid = project.avoid_regions[r_idx].id.clone();
         project.avoid_regions[r_idx].suppressed = !project.avoid_regions[r_idx].suppressed;
         mark_shared_avoid_dependents_dirty(project, &rid);
+        emitted_action = Some(BrowserAction::InvalidateFrameCache);
+    }
+    if let Some(rid) = pending.avoid_apply_to_active_setup
+        && set_shared_avoid_for_all_setup_ops(project, history, *active_setup_idx, &rid, true)
+    {
+        emitted_action = Some(BrowserAction::Log(format!(
+            "Applied keep-out region '{rid}' to all operations in active Setup."
+        )));
     }
     if let Some(r_idx) = pending.avoid_duplicate
         && r_idx < project.avoid_regions.len()
@@ -2028,12 +2439,23 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
         let mut dup = project.avoid_regions[r_idx].clone();
         let copy_name = format!("{} (Copy)", dup.name);
         let (new_id, new_name) = next_shared_avoid_id_and_name(project, Some(&copy_name));
-        dup.id = new_id;
+        dup.id = new_id.clone();
         dup.name = new_name.clone();
-        project.avoid_regions.insert(r_idx + 1, dup);
+        let dst = r_idx + 1;
+        project.avoid_regions.insert(dst, dup);
+        *focus = InspectorFocus::KeepOutRegion { region_idx: dst };
+        *editing_shared_avoid_id = Some(new_id);
         emitted_action = Some(BrowserAction::Log(format!(
             "Duplicated shared keep-out region as '{new_name}'."
         )));
+    }
+    if let Some((from_r, to_slot)) = pending.avoid_move_slot
+        && from_r < project.avoid_regions.len()
+        && to_slot != from_r
+        && to_slot != from_r + 1
+    {
+        history.record_before_edit("Reorder Shared Keep-Out Region", None, project);
+        let _ = move_avoid_region_to_slot(project, from_r, to_slot, focus);
     }
     if let Some(del_id) = pending.avoid_delete {
         history.record_before_edit("Delete Shared Keep-Out Region", None, project);
@@ -2041,6 +2463,17 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
         if project.remove_avoid_region(&del_id) {
             if editing_shared_avoid_id.as_deref() == Some(del_id.as_str()) {
                 *editing_shared_avoid_id = None;
+            }
+            if let InspectorFocus::KeepOutRegion { region_idx } = *focus {
+                *focus = if !project.avoid_regions.is_empty() {
+                    InspectorFocus::KeepOutRegion {
+                        region_idx: region_idx.min(project.avoid_regions.len() - 1),
+                    }
+                } else {
+                    InspectorFocus::Setup {
+                        setup_idx: *active_setup_idx,
+                    }
+                };
             }
             emitted_action = Some(BrowserAction::Log(format!(
                 "Deleted shared keep-out region '{del_id}' and unlinked referencing operations."
@@ -2056,9 +2489,28 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
             "Added tool to project: {label}."
         )));
     }
+    if let Some(sync_id) = pending.sync_tool_from_machine
+        && let Some(gt) = global_tools.tool(&sync_id).cloned()
+    {
+        history.record_before_edit("Sync Tool from Machine Library", None, project);
+        let lbl = gt.summary_label();
+        project.sync_tool_from_global(&gt);
+        emitted_action = Some(BrowserAction::Log(format!(
+            "Synced project tool from machine library: {lbl}."
+        )));
+    }
     if let Some(rm_id) = pending.remove_tool {
         history.record_before_edit("Remove Project Tool", None, project);
         if project.remove_tool_if_unused(&rm_id) {
+            if let InspectorFocus::ProjectTool { tool_idx } = *focus {
+                *focus = if !project.tools.is_empty() {
+                    InspectorFocus::ProjectTool {
+                        tool_idx: tool_idx.min(project.tools.len() - 1),
+                    }
+                } else {
+                    InspectorFocus::Project
+                };
+            }
             emitted_action = Some(BrowserAction::Log(format!(
                 "Removed unused tool '{}' from project.",
                 rm_id.0
@@ -2069,6 +2521,15 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
         history.record_before_edit("Remove Unused Project Tools", None, project);
         let removed = project.prune_unused_tools();
         if removed > 0 {
+            if let InspectorFocus::ProjectTool { tool_idx } = *focus {
+                *focus = if !project.tools.is_empty() {
+                    InspectorFocus::ProjectTool {
+                        tool_idx: tool_idx.min(project.tools.len() - 1),
+                    }
+                } else {
+                    InspectorFocus::Project
+                };
+            }
             emitted_action = Some(BrowserAction::Log(format!(
                 "Removed {removed} unused tool(s) from project."
             )));
@@ -2088,6 +2549,33 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
         history.record_before_edit("Toggle Fixture Enabled", None, project);
         project.setups[s_idx].fixtures[f_idx].enabled =
             !project.setups[s_idx].fixtures[f_idx].enabled;
+        for op in &mut project.setups[s_idx].operations {
+            op.mark_dirty();
+        }
+        emitted_action = Some(BrowserAction::InvalidateFrameCache);
+    }
+    if let Some((s_idx, f_idx)) = pending.fixture_duplicate
+        && s_idx < project.setups.len()
+        && f_idx < project.setups[s_idx].fixtures.len()
+    {
+        history.record_before_edit("Duplicate Fixture", None, project);
+        if let Some(new_idx) = duplicate_fixture_in_setup(project, s_idx, f_idx) {
+            *active_setup_idx = s_idx;
+            *focus = InspectorFocus::Setup { setup_idx: s_idx };
+            *setup_tab = SetupTab::Fixtures;
+            *selected_fixture_idx = Some(new_idx);
+            emitted_action = Some(BrowserAction::InvalidateFrameCache);
+        }
+    }
+    if let Some((s_idx, from_f, to_slot)) = pending.fixture_move_slot
+        && s_idx < project.setups.len()
+        && to_slot != from_f
+        && to_slot != from_f + 1
+    {
+        history.record_before_edit("Reorder Fixture", None, project);
+        if move_fixture_to_slot(project, s_idx, from_f, to_slot, selected_fixture_idx).is_some() {
+            emitted_action = Some(BrowserAction::InvalidateFrameCache);
+        }
     }
     if let Some((s_idx, f_idx)) = pending.fixture_delete
         && s_idx < project.setups.len()
@@ -2095,12 +2583,16 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
     {
         history.record_before_edit("Delete Fixture", None, project);
         project.setups[s_idx].fixtures.remove(f_idx);
+        for op in &mut project.setups[s_idx].operations {
+            op.mark_dirty();
+        }
         let rem = project.setups[s_idx].fixtures.len();
         *selected_fixture_idx = if rem > 0 {
             Some(f_idx.min(rem - 1))
         } else {
             None
         };
+        emitted_action = Some(BrowserAction::InvalidateFrameCache);
     }
 
     if let Some(del_idx) = pending.setup_delete
@@ -2108,11 +2600,21 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
         && del_idx < project.setups.len()
     {
         history.record_before_edit("Delete Setup", None, project);
+        let removed_id = project.setups[del_idx].id.clone();
         project.setups.remove(del_idx);
+        for s in &mut project.setups {
+            if s.carryover_from_setup_id.as_deref() == Some(removed_id.as_str()) {
+                s.carryover_from_setup_id = None;
+                for op in &mut s.operations {
+                    op.mark_dirty();
+                }
+            }
+        }
         *active_setup_idx = (*active_setup_idx).min(project.setups.len().saturating_sub(1));
         *focus = InspectorFocus::Setup {
             setup_idx: *active_setup_idx,
         };
+        emitted_action = Some(BrowserAction::InvalidateFrameCache);
     }
 
     if let Some((s_idx, o_idx)) = pending.op_duplicate
@@ -2173,6 +2675,54 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
     emitted_action
 }
 
+fn apply_inline_rename_commit(
+    project: &mut ProjectDocument,
+    history: &mut UndoHistory,
+    key: &TreeNodeKey,
+    new_name: String,
+) {
+    match *key {
+        TreeNodeKey::Setup(s_idx) if s_idx < project.setups.len() => {
+            history.record_before_edit("Rename Setup", None, project);
+            project.setups[s_idx].name = new_name;
+        }
+        TreeNodeKey::Operation { setup_idx, op_idx }
+            if setup_idx < project.setups.len()
+                && op_idx < project.setups[setup_idx].operations.len() =>
+        {
+            history.record_before_edit("Rename Operation", None, project);
+            project.setups[setup_idx].operations[op_idx].name = new_name;
+        }
+        TreeNodeKey::Sketch(sk_idx) if sk_idx < project.sketches.len() => {
+            history.record_before_edit("Rename Sketch", None, project);
+            project.sketches[sk_idx].name = new_name;
+        }
+        TreeNodeKey::SketchEntity {
+            sketch_idx,
+            entity_idx,
+        } if sketch_idx < project.sketches.len()
+            && entity_idx < project.sketches[sketch_idx].entities.len() =>
+        {
+            history.record_before_edit("Rename Sketch Entity", None, project);
+            project.sketches[sketch_idx].entities[entity_idx].name = new_name;
+        }
+        TreeNodeKey::AvoidRegion(r_idx) if r_idx < project.avoid_regions.len() => {
+            history.record_before_edit("Rename Shared Keep-Out Region", None, project);
+            project.avoid_regions[r_idx].name = new_name;
+        }
+        TreeNodeKey::Fixture {
+            setup_idx,
+            fixture_idx,
+        } if setup_idx < project.setups.len()
+            && fixture_idx < project.setups[setup_idx].fixtures.len() =>
+        {
+            history.record_before_edit("Rename Fixture", None, project);
+            project.setups[setup_idx].fixtures[fixture_idx].name = new_name;
+        }
+        _ => {}
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn apply_tree_node_selection(
     key: &TreeNodeKey,
@@ -2187,6 +2737,10 @@ fn apply_tree_node_selection(
     selected_fixture_idx: &mut Option<usize>,
 ) {
     match *key {
+        TreeNodeKey::Project => {
+            *focus = InspectorFocus::Project;
+            *pick_mode = ViewportPickMode::InspectEntity;
+        }
         TreeNodeKey::Model(model_idx) => {
             *focus = InspectorFocus::Model { model_idx };
             *pick_mode = ViewportPickMode::InspectEntity;
@@ -2207,7 +2761,13 @@ fn apply_tree_node_selection(
             *pick_mode = ViewportPickMode::InspectEntity;
         }
         TreeNodeKey::AvoidRegion(r_idx) if r_idx < project.avoid_regions.len() => {
+            *focus = InspectorFocus::KeepOutRegion { region_idx: r_idx };
             *editing_shared_avoid_id = Some(project.avoid_regions[r_idx].id.clone());
+            *pick_mode = ViewportPickMode::InspectEntity;
+        }
+        TreeNodeKey::Tool(tool_idx) if tool_idx < project.tools.len() => {
+            *focus = InspectorFocus::ProjectTool { tool_idx };
+            *pick_mode = ViewportPickMode::InspectEntity;
         }
         TreeNodeKey::Setup(setup_idx) if setup_idx < project.setups.len() => {
             *active_setup_idx = setup_idx;
@@ -2259,11 +2819,23 @@ mod tests {
     use chip_cam::{
         FixtureBody, Operation, OperationKind, RestMachiningMode, Setup, WorkOffsetSlot,
     };
-    use chip_math::ParamLength;
+    use chip_math::{EvalContext, ParamLength};
     use chip_project::ModelEntry;
     use chip_sketch::{SketchEntity, SketchEntityEntry, SketchLayer};
+    use egui::Pos2;
 
-    use crate::theme::{AppTheme, apply_theme};
+    use crate::{
+        panels::{
+            keepout_inspector::{KeepOutInspectorCtx, show_keepout_inspector},
+            model_inspector::{ModelInspectorCtx, show_model_inspector},
+            operation_inspector::{OperationInspectorCtx, show_operation_inspector},
+            project_properties::{ProjectPropertiesCtx, show_project_inspector},
+            project_tool_inspector::{ProjectToolInspectorCtx, show_project_tool_inspector},
+            setup_inspector::{FixtureSafetySummary, SetupInspectorCtx, show_setup_inspector},
+            sketch_inspector::{SketchInspectorCtx, show_sketch_inspector},
+        },
+        theme::{AppTheme, apply_theme},
+    };
 
     fn collect_texts(shape: &egui::Shape, out: &mut Vec<String>) {
         match shape {
@@ -2286,6 +2858,40 @@ mod tests {
             }
         }
         shapes.iter().find_map(|cs| visit(&cs.shape, needle))
+    }
+
+    fn find_text_rect_containing(
+        shapes: &[egui::epaint::ClippedShape],
+        needle: &str,
+    ) -> Option<Rect> {
+        fn visit(shape: &egui::Shape, needle: &str) -> Option<Rect> {
+            match shape {
+                egui::Shape::Text(t) if t.galley.text().contains(needle) => {
+                    Some(t.visual_bounding_rect())
+                }
+                egui::Shape::Vec(v) => v.iter().find_map(|s| visit(s, needle)),
+                _ => None,
+            }
+        }
+        shapes.iter().find_map(|cs| visit(&cs.shape, needle))
+    }
+
+    fn click_btn(pos: Pos2, button: egui::PointerButton) -> Vec<egui::Event> {
+        vec![
+            egui::Event::PointerMoved(pos),
+            egui::Event::PointerButton {
+                pos,
+                button,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+            egui::Event::PointerButton {
+                pos,
+                button,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]
     }
 
     fn build_rich_test_project() -> ProjectDocument {
@@ -2334,6 +2940,257 @@ mod tests {
         project
     }
 
+    struct BrowserTestHarness {
+        ctx: egui::Context,
+        inspector_ctx: egui::Context,
+        project: ProjectDocument,
+        global_tools: ToolLibrary,
+        machines: Vec<chip_tools::MachineDefinition>,
+        history: UndoHistory,
+        cache: ToolpathCache,
+        active_setup_idx: usize,
+        focus: InspectorFocus,
+        setup_tab: SetupTab,
+        op_tab: OperationTab,
+        pick_mode: ViewportPickMode,
+        pick_target: crate::panels::GeometryPickTarget,
+        hidden: std::collections::HashSet<String>,
+        editing_avoid: Option<String>,
+        sel_ent: Option<usize>,
+        sel_fix: Option<usize>,
+        time: f64,
+    }
+
+    impl BrowserTestHarness {
+        fn new(project: ProjectDocument) -> Self {
+            Self {
+                ctx: egui::Context::default(),
+                inspector_ctx: egui::Context::default(),
+                project,
+                global_tools: chip_tools::default_starter_tool_library(),
+                machines: chip_tools::builtin_machine_definitions(),
+                history: UndoHistory::default(),
+                cache: ToolpathCache::new(4),
+                active_setup_idx: 0,
+                focus: InspectorFocus::Setup { setup_idx: 0 },
+                setup_tab: SetupTab::Wcs,
+                op_tab: OperationTab::Geometry,
+                pick_mode: ViewportPickMode::InspectEntity,
+                pick_target: crate::panels::GeometryPickTarget::CuttingArea,
+                hidden: std::collections::HashSet::new(),
+                editing_avoid: None,
+                sel_ent: None,
+                sel_fix: None,
+                time: 1.0,
+            }
+        }
+
+        fn step(
+            &mut self,
+            events: Vec<egui::Event>,
+        ) -> (Vec<egui::epaint::ClippedShape>, Option<BrowserAction>) {
+            self.time += 0.1;
+            let mut action = None;
+            let mut out = self.ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(360.0, 960.0))),
+                    time: Some(self.time),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    egui::CentralPanel::default().show(ui, |ui| {
+                        action = show_cam_browser(
+                            ui,
+                            CamBrowserCtx {
+                                project: &mut self.project,
+                                global_tools: &self.global_tools,
+                                history: &mut self.history,
+                                toolpath_cache: &self.cache,
+                                cad_doc: None,
+                                cad_revision: 0,
+                                active_setup_idx: &mut self.active_setup_idx,
+                                focus: &mut self.focus,
+                                setup_tab: &mut self.setup_tab,
+                                op_tab: &mut self.op_tab,
+                                pick_mode: &mut self.pick_mode,
+                                hidden_operation_ids: &mut self.hidden,
+                                editing_shared_avoid_id: &mut self.editing_avoid,
+                                selected_sketch_entity_idx: &mut self.sel_ent,
+                                selected_fixture_idx: &mut self.sel_fix,
+                            },
+                        );
+                    });
+                },
+            );
+            out.textures_delta.clear();
+            (out.shapes, action)
+        }
+
+        fn render_active_inspector(&mut self) -> Vec<String> {
+            self.time += 0.1;
+            let eval_ctx = EvalContext::new(self.project.display_units);
+            let mut out = self.inspector_ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(420.0, 900.0))),
+                    time: Some(self.time),
+                    ..Default::default()
+                },
+                |ui| {
+                    egui::CentralPanel::default().show(ui, |ui| match self.focus {
+                        InspectorFocus::Project => {
+                            let _ = show_project_inspector(
+                                ui,
+                                ProjectPropertiesCtx {
+                                    project: &self.project,
+                                    project_file_path: None,
+                                    machines: &self.machines,
+                                },
+                            );
+                        }
+                        InspectorFocus::Model { model_idx } => {
+                            let mut lock = true;
+                            let _ = show_model_inspector(
+                                ui,
+                                ModelInspectorCtx {
+                                    project: &mut self.project,
+                                    model_idx,
+                                    history: &mut self.history,
+                                    cad_doc: None,
+                                    lock_uniform_scale: &mut lock,
+                                    pick_mode: &mut self.pick_mode,
+                                    focus: &mut self.focus,
+                                },
+                            );
+                        }
+                        InspectorFocus::Sketch { sketch_idx } => {
+                            let mut snap = None;
+                            let mut start_xy = None;
+                            let _ = show_sketch_inspector(
+                                ui,
+                                SketchInspectorCtx {
+                                    project: &mut self.project,
+                                    sketch_idx,
+                                    active_setup_idx: self.active_setup_idx,
+                                    selected_entity_idx: &mut self.sel_ent,
+                                    snap_grid_mm: &mut snap,
+                                    author_start_xy: &mut start_xy,
+                                    history: &mut self.history,
+                                    pick_mode: &mut self.pick_mode,
+                                    eval_ctx: &eval_ctx,
+                                    has_cad_model: false,
+                                    project_file: None,
+                                },
+                            );
+                        }
+                        InspectorFocus::KeepOutRegion { region_idx } => {
+                            let _ = show_keepout_inspector(
+                                ui,
+                                KeepOutInspectorCtx {
+                                    project: &mut self.project,
+                                    region_idx,
+                                    active_setup_idx: self.active_setup_idx,
+                                    history: &mut self.history,
+                                    eval_ctx: &eval_ctx,
+                                    pick_mode: &mut self.pick_mode,
+                                    editing_shared_avoid_id: &mut self.editing_avoid,
+                                    focus: &mut self.focus,
+                                },
+                            );
+                        }
+                        InspectorFocus::ProjectTool { tool_idx } => {
+                            let _ = show_project_tool_inspector(
+                                ui,
+                                ProjectToolInspectorCtx {
+                                    project: &self.project,
+                                    global_tools: &self.global_tools,
+                                    tool_idx,
+                                },
+                            );
+                        }
+                        InspectorFocus::Setup { setup_idx } => {
+                            let mut show_fix = true;
+                            let mut show_dots = true;
+                            let mut show_z = true;
+                            let mut open_mm = false;
+                            let mut open_post = None;
+                            let mut m_ch = false;
+                            let mut sw_m = None;
+                            let mut imp_f = false;
+                            let mut fj = false;
+                            let mut sj = false;
+                            let _ = show_setup_inspector(
+                                ui,
+                                SetupInspectorCtx {
+                                    project: &mut self.project,
+                                    setup_idx,
+                                    history: &mut self.history,
+                                    project_dir: None,
+                                    cad_doc: None,
+                                    resolved: None,
+                                    resolved_fixtures: &[],
+                                    fixture_safety: FixtureSafetySummary::default(),
+                                    tab: &mut self.setup_tab,
+                                    pick_mode: &mut self.pick_mode,
+                                    selected_fixture_idx: &mut self.sel_fix,
+                                    show_fixtures: &mut show_fix,
+                                    show_27pt_dots: &mut show_dots,
+                                    show_z_planes: &mut show_z,
+                                    machines: &self.machines,
+                                    open_machine_manager: &mut open_mm,
+                                    open_post_inspector: &mut open_post,
+                                    machine_changed: &mut m_ch,
+                                    switch_machine_id: &mut sw_m,
+                                    import_fixture_requested: &mut imp_f,
+                                    open_flip_jig_wizard: &mut fj,
+                                    open_soft_jaw_wizard: &mut sj,
+                                },
+                            );
+                        }
+                        InspectorFocus::Operation { setup_idx, op_idx } => {
+                            let mut lock_cl = true;
+                            let mut show_z = true;
+                            let mut auto_rot = true;
+                            let mut open_tm = false;
+                            let _ = show_operation_inspector(
+                                ui,
+                                OperationInspectorCtx {
+                                    project: &mut self.project,
+                                    setup_idx,
+                                    op_idx,
+                                    global_tools: &self.global_tools,
+                                    history: &mut self.history,
+                                    cad_doc: None,
+                                    resolved_setup: None,
+                                    surface_mesh: None,
+                                    boundary_preview: None,
+                                    selected_face_normal_wcs: None,
+                                    extracted: None,
+                                    tab: &mut self.op_tab,
+                                    pick_mode: &mut self.pick_mode,
+                                    pick_target: &mut self.pick_target,
+                                    editing_shared_avoid_id: &mut self.editing_avoid,
+                                    lock_chipload: &mut lock_cl,
+                                    show_z_planes: &mut show_z,
+                                    auto_rotate_indexed_op: &mut auto_rot,
+                                    open_tool_manager: &mut open_tm,
+                                    sim_engine: chip_sim::SimEngineKind::Heightmap,
+                                },
+                            );
+                        }
+                        InspectorFocus::CadEntity => {}
+                    });
+                },
+            );
+            out.textures_delta.clear();
+            let mut texts = Vec::new();
+            for cs in &out.shapes {
+                collect_texts(&cs.shape, &mut texts);
+            }
+            texts
+        }
+    }
+
     #[test]
     fn move_duplicate_and_delete_propagate_rest_machining_dirty_state() {
         let mut setup = Setup::new("s1", "Setup 1", WorkOffsetSlot::G54);
@@ -2371,6 +3228,441 @@ mod tests {
         assert!(delete_operation_in_setup(&mut setup, 1));
         assert_eq!(setup.operations[1].id, "op_3");
         assert_eq!(setup.operations[1].runtime_status, OperationStatus::Dirty);
+    }
+
+    #[test]
+    fn all_six_drag_reorder_helpers_preserve_focus_propagate_dirty_and_reject_cross_section() {
+        let mut project = build_rich_test_project();
+
+        // 1. Setups + carryover dirty propagation
+        let mut s2 = Setup::new("setup_2", "Setup 2 - Op 2", WorkOffsetSlot::G55);
+        s2.carryover_from_setup_id = Some("setup_1".to_string());
+        let mut s2_op = Operation::new("s2_op1", "Op 2 Finish", OperationKind::Contour2D);
+        s2_op.runtime_status = OperationStatus::Clean;
+        s2.operations.push(s2_op);
+        let s3 = Setup::new("setup_3", "Setup 3 - Op 3", WorkOffsetSlot::G56);
+        project.setups.push(s2);
+        project.setups.push(s3);
+
+        let mut active_setup = 1usize;
+        let mut focus = InspectorFocus::Setup { setup_idx: 1 };
+        // Move setup_3 (idx 2) before setup_2 (slot 1) -> setup_2's upstream ordering changed!
+        let dst = move_setup_to_slot(&mut project, 2, 1, &mut active_setup, &mut focus);
+        assert_eq!(dst, Some(1));
+        assert_eq!(active_setup, 2, "active_setup_idx must track setup_2");
+        assert_eq!(focus, InspectorFocus::Setup { setup_idx: 2 });
+        assert_eq!(
+            project.setups[2].operations[0].runtime_status,
+            OperationStatus::Dirty,
+            "carryover-dependent setup must be marked Dirty when upstream ordering changes"
+        );
+
+        // 2. Sketches
+        project
+            .sketches
+            .push(SketchLayer::new("sk_2", "Text Engraving", "setup_1"));
+        focus = InspectorFocus::Sketch { sketch_idx: 0 };
+        assert_eq!(move_sketch_to_slot(&mut project, 0, 2, &mut focus), Some(1));
+        assert_eq!(project.sketches[0].id, "sk_2");
+        assert_eq!(project.sketches[1].id, "sk_1");
+        assert_eq!(focus, InspectorFocus::Sketch { sketch_idx: 1 });
+
+        // 3. Sketch Entities
+        project.sketches[1].entities.push(SketchEntityEntry {
+            id: "ent_2".to_string(),
+            name: "Inner Hole".to_string(),
+            sub_layer: None,
+            is_construction: false,
+            entity: SketchEntity::new_circle(
+                ParamLength::from_mm(0.0),
+                ParamLength::from_mm(0.0),
+                ParamLength::from_mm(6.0),
+            ),
+        });
+        let mut sel_ent = Some(1);
+        assert_eq!(
+            move_sketch_entity_to_slot(&mut project, 1, 1, 0, &mut sel_ent),
+            Some(0)
+        );
+        assert_eq!(project.sketches[1].entities[0].id, "ent_2");
+        assert_eq!(sel_ent, Some(0));
+
+        // 4. Keep-Out Regions
+        project
+            .avoid_regions
+            .push(SharedAvoidRegion::new("avoid_2", "Toe Clamp North"));
+        focus = InspectorFocus::KeepOutRegion { region_idx: 1 };
+        assert_eq!(
+            move_avoid_region_to_slot(&mut project, 1, 0, &mut focus),
+            Some(0)
+        );
+        assert_eq!(project.avoid_regions[0].id, "avoid_2");
+        assert_eq!(focus, InspectorFocus::KeepOutRegion { region_idx: 0 });
+
+        // 5. Fixtures
+        project.setups[0]
+            .fixtures
+            .push(FixtureBody::default_spoilboard("fix_2", "MDF Spoilboard"));
+        let mut sel_fix = Some(0);
+        assert_eq!(
+            move_fixture_to_slot(&mut project, 0, 0, 2, &mut sel_fix),
+            Some(1)
+        );
+        assert_eq!(project.setups[0].fixtures[1].id, "fix_1");
+        assert_eq!(sel_fix, Some(1));
+
+        // 6. Strict cross-section boundary rejection
+        let rects = vec![
+            Rect::from_min_size(Pos2::new(0.0, 0.0), egui::vec2(200.0, 24.0)),
+            Rect::from_min_size(Pos2::new(0.0, 25.0), egui::vec2(200.0, 24.0)),
+        ];
+        let dragged_op_s0 = DraggedTreeItem {
+            section: DragSection::Operations { setup_idx: 0 },
+            item_idx: 0,
+        };
+        assert_eq!(
+            resolve_drop_slot_for_section(
+                dragged_op_s0,
+                DragSection::Operations { setup_idx: 1 },
+                &rects,
+                Pos2::new(50.0, 10.0)
+            ),
+            None,
+            "Operation from Setup 0 must never drop into Setup 1"
+        );
+        assert_eq!(
+            resolve_drop_slot_for_section(
+                dragged_op_s0,
+                DragSection::Fixtures { setup_idx: 0 },
+                &rects,
+                Pos2::new(50.0, 10.0)
+            ),
+            None,
+            "Operation must never drop into Fixtures section"
+        );
+        assert_eq!(
+            resolve_drop_slot_for_section(
+                dragged_op_s0,
+                DragSection::Operations { setup_idx: 0 },
+                &rects,
+                Pos2::new(50.0, 45.0)
+            ),
+            Some(2),
+            "Same-section drop resolves cleanly"
+        );
+    }
+
+    #[test]
+    fn selecting_all_nine_tree_node_types_activates_exact_focus_and_renders_right_panel() {
+        let mut h = BrowserTestHarness::new(build_rich_test_project());
+        let (shapes, _) = h.step(Vec::new());
+
+        // Expand Sketch so its child entity is visible too
+        let sk_rect = find_text_rect(&shapes, "Mounting Holes").expect("sketch label");
+        let _ = h.step(click_btn(
+            Pos2::new(sk_rect.left() - 28.0, sk_rect.center().y),
+            egui::PointerButton::Primary,
+        ));
+        let (shapes, _) = h.step(Vec::new());
+
+        // 1. Project root -> InspectorFocus::Project
+        let pos = find_text_rect(&shapes, "Aluminum Manifold Rev B")
+            .expect("project root")
+            .center();
+        let _ = h.step(click_btn(pos, egui::PointerButton::Primary));
+        assert_eq!(h.focus, InspectorFocus::Project);
+        let texts = h.render_active_inspector();
+        assert!(texts.iter().any(|t| t == "Project Properties"));
+        assert!(texts.iter().any(|t| t == "Project Summary"));
+
+        // 2. Model -> InspectorFocus::Model
+        let pos = find_text_rect(&shapes, "manifold.step")
+            .expect("model row")
+            .center();
+        let _ = h.step(click_btn(pos, egui::PointerButton::Primary));
+        assert_eq!(h.focus, InspectorFocus::Model { model_idx: 0 });
+        let _ = h.render_active_inspector();
+
+        // 3. Sketch -> InspectorFocus::Sketch (entity None)
+        let pos = find_text_rect(&shapes, "Mounting Holes")
+            .expect("sketch row")
+            .center();
+        let _ = h.step(click_btn(pos, egui::PointerButton::Primary));
+        assert_eq!(h.focus, InspectorFocus::Sketch { sketch_idx: 0 });
+        assert_eq!(h.sel_ent, None);
+        let texts = h.render_active_inspector();
+        assert!(texts.iter().any(|t| t == "2D Sketch Layer"));
+
+        // 4. SketchEntity -> InspectorFocus::Sketch + selected_sketch_entity_idx = Some(0)
+        let pos = find_text_rect(&shapes, "Outer Pocket")
+            .expect("sketch entity row")
+            .center();
+        let _ = h.step(click_btn(pos, egui::PointerButton::Primary));
+        assert_eq!(h.focus, InspectorFocus::Sketch { sketch_idx: 0 });
+        assert_eq!(h.sel_ent, Some(0));
+        let texts = h.render_active_inspector();
+        assert!(texts.iter().any(|t| t.contains("Outer Pocket")));
+
+        // 5. KeepOutRegion -> InspectorFocus::KeepOutRegion
+        let pos = find_text_rect(&shapes, "Strap Clamps")
+            .expect("keep-out row")
+            .center();
+        let _ = h.step(click_btn(pos, egui::PointerButton::Primary));
+        assert_eq!(h.focus, InspectorFocus::KeepOutRegion { region_idx: 0 });
+        let texts = h.render_active_inspector();
+        assert!(texts.iter().any(|t| t == "Keep-Out Region"));
+        assert!(texts.iter().any(|t| t.contains("Pick 3D Avoid Geometry")));
+        assert!(texts.iter().any(|t| t.contains("Linked Operations")));
+
+        // 6. ProjectTool -> InspectorFocus::ProjectTool
+        let pos = find_text_rect_containing(&shapes, "T1 -")
+            .expect("project tool row")
+            .center();
+        let _ = h.step(click_btn(pos, egui::PointerButton::Primary));
+        assert_eq!(h.focus, InspectorFocus::ProjectTool { tool_idx: 0 });
+        let texts = h.render_active_inspector();
+        assert!(texts.iter().any(|t| t == "Cutter Profile"));
+        assert!(texts.iter().any(|t| t == "Dimensions & Offsets"));
+        assert!(texts.iter().any(|t| t == "Edit in Tool Library..."));
+
+        // 7. Setup -> InspectorFocus::Setup
+        let pos = find_text_rect(&shapes, "Setup 1 — Top Op")
+            .expect("setup row")
+            .center();
+        let _ = h.step(click_btn(pos, egui::PointerButton::Primary));
+        assert_eq!(h.focus, InspectorFocus::Setup { setup_idx: 0 });
+        let texts = h.render_active_inspector();
+        assert!(texts.iter().any(|t| t == "Setup Name"));
+
+        // 8. Fixture -> InspectorFocus::Setup + SetupTab::Fixtures + selected_fixture_idx = Some(0)
+        let pos = find_text_rect(&shapes, "Kurt 4in Vise")
+            .expect("fixture row")
+            .center();
+        let _ = h.step(click_btn(pos, egui::PointerButton::Primary));
+        assert_eq!(h.focus, InspectorFocus::Setup { setup_idx: 0 });
+        assert_eq!(h.setup_tab, SetupTab::Fixtures);
+        assert_eq!(h.sel_fix, Some(0));
+        let texts = h.render_active_inspector();
+        assert!(texts.iter().any(|t| t == "Selected Fixture Settings"));
+
+        // 9. Operation -> InspectorFocus::Operation
+        let pos = find_text_rect(&shapes, "1. Adaptive Rough")
+            .expect("operation row")
+            .center();
+        let _ = h.step(click_btn(pos, egui::PointerButton::Primary));
+        assert_eq!(
+            h.focus,
+            InspectorFocus::Operation {
+                setup_idx: 0,
+                op_idx: 0
+            }
+        );
+        let _ = h.render_active_inspector();
+    }
+
+    #[test]
+    fn context_menu_actions_inline_f2_rename_undo_and_dirty_propagation() {
+        let mut project = build_rich_test_project();
+        project.setups[0].operations[0].runtime_status = OperationStatus::Clean;
+        let mut h = BrowserTestHarness::new(project);
+        let (shapes, _) = h.step(Vec::new());
+
+        // 1. Right-click Keep-Out Region -> Apply to Active Setup Ops -> links op + dirties + Undo
+        let avoid_pos = find_text_rect(&shapes, "Strap Clamps")
+            .expect("keep-out row")
+            .center();
+        let _ = h.step(click_btn(avoid_pos, egui::PointerButton::Secondary));
+        let (menu_shapes, _) = h.step(Vec::new());
+        let apply_pos = find_text_rect(&menu_shapes, "Apply to Active Setup Ops")
+            .expect("Apply to Active Setup Ops context item")
+            .center();
+        let _ = h.step(click_btn(apply_pos, egui::PointerButton::Primary));
+        assert!(
+            h.project.setups[0].operations[0]
+                .avoid
+                .shared_region_ids
+                .contains(&"avoid_1".to_string())
+        );
+        assert_eq!(
+            h.project.setups[0].operations[0].runtime_status,
+            OperationStatus::Dirty
+        );
+
+        // Mark op Clean again, then right-click Keep-Out Region -> Suppress -> dirties + atomic Undo
+        h.project.setups[0].operations[0].runtime_status = OperationStatus::Clean;
+        let (shapes, _) = h.step(Vec::new());
+        let avoid_pos = find_text_rect(&shapes, "Strap Clamps")
+            .expect("keep-out row")
+            .center();
+        let _ = h.step(click_btn(avoid_pos, egui::PointerButton::Secondary));
+        let (menu_shapes, _) = h.step(Vec::new());
+        let sup_pos = find_text_rect(&menu_shapes, "Suppress")
+            .expect("Suppress context item")
+            .center();
+        let _ = h.step(click_btn(sup_pos, egui::PointerButton::Primary));
+        assert!(h.project.avoid_regions[0].suppressed);
+        assert_eq!(
+            h.project.setups[0].operations[0].runtime_status,
+            OperationStatus::Dirty,
+            "suppressing linked Keep-Out Region must dirty referencing operations"
+        );
+        assert_eq!(
+            h.history.undo(&mut h.project).as_deref(),
+            Some("Toggle Shared Keep-Out Suppress")
+        );
+        assert!(!h.project.avoid_regions[0].suppressed);
+
+        // 2. Inline F2 rename on Operation -> Escape cancels without mutating or pushing Undo
+        let (shapes, _) = h.step(Vec::new());
+        let op_pos = find_text_rect(&shapes, "1. Adaptive Rough")
+            .expect("operation row")
+            .center();
+        let _ = h.step(click_btn(op_pos, egui::PointerButton::Primary));
+        let _ = h.step(vec![egui::Event::Key {
+            key: egui::Key::F2,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }]);
+        let _ = h.step(vec![
+            egui::Event::Text("Cancelled Name".to_string()),
+            egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]);
+        assert_eq!(h.project.setups[0].operations[0].name, "Adaptive Rough");
+
+        // 3. Inline F2 rename on Operation -> type new name + Enter -> atomic Undo
+        let _ = h.step(Vec::new());
+        let _ = h.step(vec![egui::Event::Key {
+            key: egui::Key::F2,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }]);
+        let _ = h.step(Vec::new());
+        let _ = h.step(vec![
+            egui::Event::Key {
+                key: egui::Key::A,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::COMMAND,
+            },
+            egui::Event::Text("Roughing Pocket Pass".to_string()),
+            egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]);
+        assert_eq!(
+            h.project.setups[0].operations[0].name,
+            "Roughing Pocket Pass"
+        );
+        assert_eq!(
+            h.history.undo(&mut h.project).as_deref(),
+            Some("Rename Operation")
+        );
+        assert_eq!(h.project.setups[0].operations[0].name, "Adaptive Rough");
+
+        // 4. Right-click Setup -> Duplicate Setup -> atomic Undo
+        let (shapes, _) = h.step(Vec::new());
+        let setup_pos = find_text_rect(&shapes, "Setup 1 — Top Op")
+            .expect("setup row")
+            .center();
+        let _ = h.step(click_btn(setup_pos, egui::PointerButton::Secondary));
+        let (menu_shapes, _) = h.step(Vec::new());
+        let dup_pos = find_text_rect(&menu_shapes, "Duplicate Setup")
+            .expect("Duplicate Setup item")
+            .center();
+        let _ = h.step(click_btn(dup_pos, egui::PointerButton::Primary));
+        assert_eq!(h.project.setups.len(), 2);
+        assert_eq!(
+            h.history.undo(&mut h.project).as_deref(),
+            Some("Duplicate Setup")
+        );
+        assert_eq!(h.project.setups.len(), 1);
+
+        // 5. Right-click Project Tool -> Sync from Machine Library -> marks referencing op Dirty + Undo
+        h.project.setups[0].operations[0].runtime_status = OperationStatus::Clean;
+        let (shapes, _) = h.step(Vec::new());
+        let tool_pos = find_text_rect_containing(&shapes, "T1 -")
+            .expect("tool row")
+            .center();
+        let _ = h.step(click_btn(tool_pos, egui::PointerButton::Secondary));
+        let (menu_shapes, _) = h.step(Vec::new());
+        let sync_pos = find_text_rect(&menu_shapes, "Sync from Machine Library")
+            .expect("Sync from Machine Library item")
+            .center();
+        let _ = h.step(click_btn(sync_pos, egui::PointerButton::Primary));
+        assert_eq!(
+            h.project.setups[0].operations[0].runtime_status,
+            OperationStatus::Dirty
+        );
+        assert_eq!(
+            h.history.undo(&mut h.project).as_deref(),
+            Some("Sync Tool from Machine Library")
+        );
+
+        // 6. Right-click Fixture -> Duplicate -> atomic Undo + dirties setup ops
+        h.project.setups[0].operations[0].runtime_status = OperationStatus::Clean;
+        let (shapes, _) = h.step(Vec::new());
+        let fix_pos = find_text_rect(&shapes, "Kurt 4in Vise")
+            .expect("fixture row")
+            .center();
+        let _ = h.step(click_btn(fix_pos, egui::PointerButton::Secondary));
+        let (menu_shapes, _) = h.step(Vec::new());
+        let dup_fix_pos = find_text_rect(&menu_shapes, "Duplicate")
+            .expect("Fixture Duplicate item")
+            .center();
+        let _ = h.step(click_btn(dup_fix_pos, egui::PointerButton::Primary));
+        assert_eq!(h.project.setups[0].fixtures.len(), 2);
+        assert_eq!(
+            h.project.setups[0].operations[0].runtime_status,
+            OperationStatus::Dirty
+        );
+        assert_eq!(
+            h.history.undo(&mut h.project).as_deref(),
+            Some("Duplicate Fixture")
+        );
+        assert_eq!(h.project.setups[0].fixtures.len(), 1);
+
+        // 7. Right-click Project Root -> Collapse All hides child nodes; Expand All restores them
+        let (shapes, _) = h.step(Vec::new());
+        let root_pos = find_text_rect(&shapes, "Aluminum Manifold Rev B")
+            .expect("root row")
+            .center();
+        let _ = h.step(click_btn(root_pos, egui::PointerButton::Secondary));
+        let (menu_shapes, _) = h.step(Vec::new());
+        let collapse_pos = find_text_rect(&menu_shapes, "Collapse All")
+            .expect("Collapse All item")
+            .center();
+        let _ = h.step(click_btn(collapse_pos, egui::PointerButton::Primary));
+        let (collapsed_shapes, _) = h.step(Vec::new());
+        assert!(
+            find_text_rect(&collapsed_shapes, "1. Adaptive Rough").is_none(),
+            "Collapse All must collapse folder children"
+        );
+        let _ = h.step(click_btn(root_pos, egui::PointerButton::Secondary));
+        let (menu_shapes, _) = h.step(Vec::new());
+        let expand_pos = find_text_rect(&menu_shapes, "Expand All")
+            .expect("Expand All item")
+            .center();
+        let _ = h.step(click_btn(expand_pos, egui::PointerButton::Primary));
+        let (expanded_shapes, _) = h.step(Vec::new());
+        assert!(
+            find_text_rect(&expanded_shapes, "Outer Pocket").is_some(),
+            "Expand All must expand nested Sketch children"
+        );
     }
 
     #[test]
@@ -2452,55 +3744,11 @@ mod tests {
 
     #[test]
     fn browser_header_shows_project_title_and_add_setup_without_inline_rename_button() {
-        let ctx = egui::Context::default();
-        let mut project = ProjectDocument::new("Aluminum Manifold Rev B");
-        let global_tools = chip_tools::default_starter_tool_library();
-        let mut history = UndoHistory::default();
-        let cache = ToolpathCache::new(4);
-        let mut active_setup_idx = 0;
-        let mut focus = InspectorFocus::Setup { setup_idx: 0 };
-        let mut setup_tab = SetupTab::Wcs;
-        let mut op_tab = OperationTab::Geometry;
-        let mut pick_mode = ViewportPickMode::InspectEntity;
-        let mut hidden = std::collections::HashSet::new();
-        let mut editing_avoid = None;
-        let mut sel_ent = None;
-        let mut sel_fix = None;
-
-        let mut out = ctx.run_ui(
-            egui::RawInput {
-                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(320.0, 600.0))),
-                ..Default::default()
-            },
-            |ui| {
-                egui::CentralPanel::default().show(ui, |ui| {
-                    let _ = show_cam_browser(
-                        ui,
-                        CamBrowserCtx {
-                            project: &mut project,
-                            global_tools: &global_tools,
-                            history: &mut history,
-                            toolpath_cache: &cache,
-                            cad_doc: None,
-                            cad_revision: 0,
-                            active_setup_idx: &mut active_setup_idx,
-                            focus: &mut focus,
-                            setup_tab: &mut setup_tab,
-                            op_tab: &mut op_tab,
-                            pick_mode: &mut pick_mode,
-                            hidden_operation_ids: &mut hidden,
-                            editing_shared_avoid_id: &mut editing_avoid,
-                            selected_sketch_entity_idx: &mut sel_ent,
-                            selected_fixture_idx: &mut sel_fix,
-                        },
-                    );
-                });
-            },
-        );
-        out.textures_delta.clear();
+        let mut h = BrowserTestHarness::new(ProjectDocument::new("Aluminum Manifold Rev B"));
+        let (shapes, _) = h.step(Vec::new());
 
         let mut texts = Vec::new();
-        for cs in &out.shapes {
+        for cs in &shapes {
             collect_texts(&cs.shape, &mut texts);
         }
         assert!(
@@ -2520,79 +3768,10 @@ mod tests {
     #[test]
     fn project_tree_renders_full_hierarchy_and_persists_expand_collapse_across_frames() {
         for theme in AppTheme::ALL {
-            let ctx = egui::Context::default();
-            apply_theme(&ctx, theme);
-            let mut project = build_rich_test_project();
-            let global_tools = chip_tools::default_starter_tool_library();
-            let mut history = UndoHistory::default();
-            let cache = ToolpathCache::new(4);
-            let mut active_setup_idx = 0;
-            let mut focus = InspectorFocus::Setup { setup_idx: 0 };
-            let mut setup_tab = SetupTab::Wcs;
-            let mut op_tab = OperationTab::Geometry;
-            let mut pick_mode = ViewportPickMode::InspectEntity;
-            let mut hidden = std::collections::HashSet::new();
-            let mut editing_avoid = None;
-            let mut sel_ent = None;
-            let mut sel_fix = None;
+            let mut h = BrowserTestHarness::new(build_rich_test_project());
+            apply_theme(&h.ctx, theme);
 
-            let mut run_frame = |raw: egui::RawInput,
-                                 project: &mut ProjectDocument,
-                                 active_setup_idx: &mut usize,
-                                 focus: &mut InspectorFocus,
-                                 setup_tab: &mut SetupTab,
-                                 op_tab: &mut OperationTab,
-                                 pick_mode: &mut ViewportPickMode,
-                                 hidden: &mut std::collections::HashSet<String>,
-                                 editing_avoid: &mut Option<String>,
-                                 sel_ent: &mut Option<usize>,
-                                 sel_fix: &mut Option<usize>|
-             -> Vec<egui::epaint::ClippedShape> {
-                let mut out = ctx.run_ui(raw, |ui| {
-                    egui::CentralPanel::default().show(ui, |ui| {
-                        let _ = show_cam_browser(
-                            ui,
-                            CamBrowserCtx {
-                                project,
-                                global_tools: &global_tools,
-                                history: &mut history,
-                                toolpath_cache: &cache,
-                                cad_doc: None,
-                                cad_revision: 0,
-                                active_setup_idx,
-                                focus,
-                                setup_tab,
-                                op_tab,
-                                pick_mode,
-                                hidden_operation_ids: hidden,
-                                editing_shared_avoid_id: editing_avoid,
-                                selected_sketch_entity_idx: sel_ent,
-                                selected_fixture_idx: sel_fix,
-                            },
-                        );
-                    });
-                });
-                out.textures_delta.clear();
-                out.shapes
-            };
-
-            let raw = egui::RawInput {
-                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(340.0, 900.0))),
-                ..Default::default()
-            };
-            let shapes1 = run_frame(
-                raw.clone(),
-                &mut project,
-                &mut active_setup_idx,
-                &mut focus,
-                &mut setup_tab,
-                &mut op_tab,
-                &mut pick_mode,
-                &mut hidden,
-                &mut editing_avoid,
-                &mut sel_ent,
-                &mut sel_fix,
-            );
+            let (shapes1, _) = h.step(Vec::new());
             let mut texts1 = Vec::new();
             for cs in &shapes1 {
                 collect_texts(&cs.shape, &mut texts1);
@@ -2622,62 +3801,16 @@ mod tests {
                     "{theme:?}: expected '{expected}' in tree output:\n{joined1}"
                 );
             }
-            // Sketch entity children must start collapsed by default
             assert!(
                 !joined1.contains("Outer Pocket"),
                 "{theme:?}: expected sketch entities collapsed by default"
             );
 
-            // Click the Sketch disclosure chevron to expand it
             let sk_rect = find_text_rect(&shapes1, "Mounting Holes").expect("sketch label rect");
             let chev_click_pos = Pos2::new(sk_rect.left() - 28.0, sk_rect.center().y);
-            let click_raw = |pos: Pos2| egui::RawInput {
-                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(340.0, 900.0))),
-                events: vec![
-                    egui::Event::PointerMoved(pos),
-                    egui::Event::PointerButton {
-                        pos,
-                        button: egui::PointerButton::Primary,
-                        pressed: true,
-                        modifiers: egui::Modifiers::NONE,
-                    },
-                    egui::Event::PointerButton {
-                        pos,
-                        button: egui::PointerButton::Primary,
-                        pressed: false,
-                        modifiers: egui::Modifiers::NONE,
-                    },
-                ],
-                ..Default::default()
-            };
-            let _ = run_frame(
-                click_raw(chev_click_pos),
-                &mut project,
-                &mut active_setup_idx,
-                &mut focus,
-                &mut setup_tab,
-                &mut op_tab,
-                &mut pick_mode,
-                &mut hidden,
-                &mut editing_avoid,
-                &mut sel_ent,
-                &mut sel_fix,
-            );
+            let _ = h.step(click_btn(chev_click_pos, egui::PointerButton::Primary));
 
-            // Next frame with no input: expanded state must persist and show "Outer Pocket"
-            let shapes2 = run_frame(
-                raw.clone(),
-                &mut project,
-                &mut active_setup_idx,
-                &mut focus,
-                &mut setup_tab,
-                &mut op_tab,
-                &mut pick_mode,
-                &mut hidden,
-                &mut editing_avoid,
-                &mut sel_ent,
-                &mut sel_fix,
-            );
+            let (shapes2, _) = h.step(Vec::new());
             let mut texts2 = Vec::new();
             for cs in &shapes2 {
                 collect_texts(&cs.shape, &mut texts2);
@@ -2687,42 +3820,16 @@ mod tests {
                 "{theme:?}: expanded Sketch entity must persist across frames; got {texts2:?}"
             );
 
-            // Click the expanded Sketch Entity and verify InspectorFocus + selected_sketch_entity_idx
             let ent_rect = find_text_rect(&shapes2, "Outer Pocket").expect("entity label rect");
-            let _ = run_frame(
-                click_raw(ent_rect.center()),
-                &mut project,
-                &mut active_setup_idx,
-                &mut focus,
-                &mut setup_tab,
-                &mut op_tab,
-                &mut pick_mode,
-                &mut hidden,
-                &mut editing_avoid,
-                &mut sel_ent,
-                &mut sel_fix,
-            );
-            assert_eq!(focus, InspectorFocus::Sketch { sketch_idx: 0 });
-            assert_eq!(sel_ent, Some(0));
+            let _ = h.step(click_btn(ent_rect.center(), egui::PointerButton::Primary));
+            assert_eq!(h.focus, InspectorFocus::Sketch { sketch_idx: 0 });
+            assert_eq!(h.sel_ent, Some(0));
 
-            // Click the Setup Fixture and verify SetupTab::Fixtures + selected_fixture_idx
             let fix_rect = find_text_rect(&shapes2, "Kurt 4in Vise").expect("fixture label rect");
-            let _ = run_frame(
-                click_raw(fix_rect.center()),
-                &mut project,
-                &mut active_setup_idx,
-                &mut focus,
-                &mut setup_tab,
-                &mut op_tab,
-                &mut pick_mode,
-                &mut hidden,
-                &mut editing_avoid,
-                &mut sel_ent,
-                &mut sel_fix,
-            );
-            assert_eq!(focus, InspectorFocus::Setup { setup_idx: 0 });
-            assert_eq!(setup_tab, SetupTab::Fixtures);
-            assert_eq!(sel_fix, Some(0));
+            let _ = h.step(click_btn(fix_rect.center(), egui::PointerButton::Primary));
+            assert_eq!(h.focus, InspectorFocus::Setup { setup_idx: 0 });
+            assert_eq!(h.setup_tab, SetupTab::Fixtures);
+            assert_eq!(h.sel_fix, Some(0));
         }
     }
 
@@ -2757,7 +3864,6 @@ mod tests {
             },
         ];
 
-        // Down steps through visible rows
         assert_eq!(
             resolve_tree_keyboard_nav(
                 &collapsed_tree,
@@ -2766,7 +3872,6 @@ mod tests {
             ),
             vec![TreeNavAction::Select(TreeNodeKey::SketchesFolder)]
         );
-        // Up steps backward
         assert_eq!(
             resolve_tree_keyboard_nav(
                 &collapsed_tree,
@@ -2775,7 +3880,6 @@ mod tests {
             ),
             vec![TreeNavAction::Select(TreeNodeKey::SketchesFolder)]
         );
-        // Right on closed parent expands it
         assert_eq!(
             resolve_tree_keyboard_nav(
                 &collapsed_tree,
@@ -2810,7 +3914,6 @@ mod tests {
             },
         ];
 
-        // Right on open parent jumps to first child
         assert_eq!(
             resolve_tree_keyboard_nav(
                 &expanded_tree,
@@ -2822,7 +3925,6 @@ mod tests {
                 entity_idx: 0
             })]
         );
-        // Left on leaf jumps to parent
         assert_eq!(
             resolve_tree_keyboard_nav(
                 &expanded_tree,
@@ -2834,7 +3936,6 @@ mod tests {
             ),
             vec![TreeNavAction::Select(TreeNodeKey::Sketch(0))]
         );
-        // Left on open parent collapses it
         assert_eq!(
             resolve_tree_keyboard_nav(
                 &expanded_tree,
@@ -2846,7 +3947,6 @@ mod tests {
                 open: false
             }]
         );
-        // F2 & Delete emit Rename / Delete actions
         assert_eq!(
             resolve_tree_keyboard_nav(
                 &expanded_tree,
@@ -2867,101 +3967,12 @@ mod tests {
 
     #[test]
     fn headless_egui_keyboard_navigation_expands_and_selects_in_tree() {
-        struct NavHarness {
-            ctx: egui::Context,
-            project: ProjectDocument,
-            global_tools: ToolLibrary,
-            history: UndoHistory,
-            cache: ToolpathCache,
-            active_setup_idx: usize,
-            focus: InspectorFocus,
-            setup_tab: SetupTab,
-            op_tab: OperationTab,
-            pick_mode: ViewportPickMode,
-            hidden: std::collections::HashSet<String>,
-            editing_avoid: Option<String>,
-            sel_ent: Option<usize>,
-            sel_fix: Option<usize>,
-        }
-
-        impl NavHarness {
-            fn step(&mut self, events: Vec<egui::Event>) -> Vec<egui::epaint::ClippedShape> {
-                let mut out = self.ctx.run_ui(
-                    egui::RawInput {
-                        screen_rect: Some(Rect::from_min_size(
-                            Pos2::ZERO,
-                            egui::vec2(340.0, 900.0),
-                        )),
-                        events,
-                        ..Default::default()
-                    },
-                    |ui| {
-                        egui::CentralPanel::default().show(ui, |ui| {
-                            let _ = show_cam_browser(
-                                ui,
-                                CamBrowserCtx {
-                                    project: &mut self.project,
-                                    global_tools: &self.global_tools,
-                                    history: &mut self.history,
-                                    toolpath_cache: &self.cache,
-                                    cad_doc: None,
-                                    cad_revision: 0,
-                                    active_setup_idx: &mut self.active_setup_idx,
-                                    focus: &mut self.focus,
-                                    setup_tab: &mut self.setup_tab,
-                                    op_tab: &mut self.op_tab,
-                                    pick_mode: &mut self.pick_mode,
-                                    hidden_operation_ids: &mut self.hidden,
-                                    editing_shared_avoid_id: &mut self.editing_avoid,
-                                    selected_sketch_entity_idx: &mut self.sel_ent,
-                                    selected_fixture_idx: &mut self.sel_fix,
-                                },
-                            );
-                        });
-                    },
-                );
-                out.textures_delta.clear();
-                out.shapes
-            }
-        }
-
-        let mut h = NavHarness {
-            ctx: egui::Context::default(),
-            project: build_rich_test_project(),
-            global_tools: chip_tools::default_starter_tool_library(),
-            history: UndoHistory::default(),
-            cache: ToolpathCache::new(4),
-            active_setup_idx: 0,
-            focus: InspectorFocus::Setup { setup_idx: 0 },
-            setup_tab: SetupTab::Wcs,
-            op_tab: OperationTab::Geometry,
-            pick_mode: ViewportPickMode::InspectEntity,
-            hidden: std::collections::HashSet::new(),
-            editing_avoid: None,
-            sel_ent: None,
-            sel_fix: None,
-        };
-
-        let shapes = h.step(Vec::new());
+        let mut h = BrowserTestHarness::new(build_rich_test_project());
+        let (shapes, _) = h.step(Vec::new());
         let sk_pos = find_text_rect(&shapes, "Mounting Holes")
             .expect("sketch row")
             .center();
-        // Click sketch row to give tree keyboard focus
-        let _ = h.step(vec![
-            egui::Event::PointerMoved(sk_pos),
-            egui::Event::PointerButton {
-                pos: sk_pos,
-                button: egui::PointerButton::Primary,
-                pressed: true,
-                modifiers: egui::Modifiers::NONE,
-            },
-            egui::Event::PointerButton {
-                pos: sk_pos,
-                button: egui::PointerButton::Primary,
-                pressed: false,
-                modifiers: egui::Modifiers::NONE,
-            },
-        ]);
+        let _ = h.step(click_btn(sk_pos, egui::PointerButton::Primary));
         assert_eq!(h.focus, InspectorFocus::Sketch { sketch_idx: 0 });
         assert_eq!(h.sel_ent, None);
 
@@ -2975,21 +3986,17 @@ mod tests {
             }]
         };
 
-        // Right expands collapsed Sketch
         let _ = h.step(key_evt(egui::Key::ArrowRight));
-        // Next frame renders child entity; Right again selects first child entity
         let _ = h.step(key_evt(egui::Key::ArrowRight));
         assert_eq!(h.focus, InspectorFocus::Sketch { sketch_idx: 0 });
         assert_eq!(h.sel_ent, Some(0));
 
-        // Left jumps back to parent Sketch
         let _ = h.step(key_evt(egui::Key::ArrowLeft));
         assert_eq!(h.focus, InspectorFocus::Sketch { sketch_idx: 0 });
         assert_eq!(h.sel_ent, None);
 
-        // Left again collapses the Sketch
         let _ = h.step(key_evt(egui::Key::ArrowLeft));
-        let shapes_after = h.step(Vec::new());
+        let (shapes_after, _) = h.step(Vec::new());
         let mut texts = Vec::new();
         for cs in &shapes_after {
             collect_texts(&cs.shape, &mut texts);

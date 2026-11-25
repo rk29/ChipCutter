@@ -29,8 +29,8 @@ use crate::{
         },
     },
     viewport::{
-        BoundaryPreviewInput, FixtureVisualMesh, SketchLayerVisual, ToolpathRenderEntry,
-        ZPlaneVisual,
+        BoundaryPreviewInput, FixtureVisualMesh, SharedAvoidPreviewInput, SketchLayerVisual,
+        ToolpathRenderEntry, ZPlaneVisual,
     },
 };
 
@@ -196,18 +196,28 @@ impl ChipCutterApp {
                         .collect()
                 })
                 .unwrap_or_default();
+            let keepout_fixture_ids: &[String] = match self.inspector_focus {
+                InspectorFocus::KeepOutRegion { region_idx } => self
+                    .project
+                    .avoid_regions
+                    .get(region_idx)
+                    .map_or(&[], |sr| sr.fixture_ids.as_slice()),
+                _ => &[],
+            };
             for (sol, mesh_arc) in cached_geo
                 .resolved_fixtures
                 .iter()
                 .zip(cached_geo.fixture_mesh_arcs.iter())
             {
+                let is_selected_fixture = selected_fix_id == Some(sol.fixture_id.as_str())
+                    || keepout_fixture_ids.iter().any(|id| id == &sol.fixture_id);
                 self.highlight.fixture_meshes.push(FixtureVisualMesh {
                     revision: cached_geo.sig,
                     fixture_id: sol.fixture_id.clone(),
                     mesh: std::sync::Arc::clone(mesh_arc),
                     base_rgba: sol.color_rgba,
                     colliding: colliding_fixture_ids.contains(sol.fixture_id.as_str()),
-                    selected: selected_fix_id == Some(sol.fixture_id.as_str()),
+                    selected: is_selected_fixture,
                 });
             }
             let has_cad_rot = self.highlight.has_active_cad_rotary_transform();
@@ -408,7 +418,80 @@ impl ChipCutterApp {
                     }
                 }
             }
-            InspectorFocus::CadEntity
+            InspectorFocus::KeepOutRegion { region_idx } => {
+                if let Some(rs) = &resolved_opt
+                    && let Some(sr) = self.project.avoid_regions.get(region_idx)
+                {
+                    let (doc_opt, cad_rev) = match &self.model {
+                        Some(m) => (Some(m.doc.as_ref()), m.revision),
+                        None => (None, 0),
+                    };
+                    if let Some(doc) = doc_opt
+                        && let Ok(sum) = extract_selection_features_with_sketches(
+                            doc,
+                            &self.project.sketches,
+                            rs,
+                            &sr.selections,
+                        )
+                    {
+                        for &fid in &sum.highlight_faces {
+                            self.highlight.extra_selected_faces.insert(fid);
+                        }
+                        for &eid in &sum.highlight_edges {
+                            self.highlight.extra_selected_edges.insert(eid);
+                        }
+                        for rkey in &sum.highlight_sketch_regions {
+                            self.highlight
+                                .extra_selected_sketch_regions
+                                .insert(rkey.clone());
+                        }
+                        for ekey in &sum.highlight_sketch_entities {
+                            self.highlight
+                                .extra_selected_sketch_entities
+                                .insert(ekey.clone());
+                        }
+                    } else {
+                        for sel in &sr.selections {
+                            match sel {
+                                GeometrySelectionItem::SketchRegion {
+                                    sketch_id,
+                                    region_id,
+                                } => {
+                                    self.highlight
+                                        .extra_selected_sketch_regions
+                                        .insert((sketch_id.clone(), region_id.clone()));
+                                }
+                                GeometrySelectionItem::SketchEntity {
+                                    sketch_id,
+                                    entity_id,
+                                    ..
+                                } => {
+                                    self.highlight
+                                        .extra_selected_sketch_entities
+                                        .insert((sketch_id.clone(), entity_id.clone()));
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    self.highlight.boundary_preview = self
+                        .boundary_preview_cache
+                        .get_or_compute_shared_avoid(&SharedAvoidPreviewInput {
+                            region_idx,
+                            cad_rev,
+                            frame_geo_sig: cached_geo.sig,
+                            display_unit: self.project.display_units,
+                            doc: doc_opt,
+                            sketches: &self.project.sketches,
+                            resolved_setup: rs,
+                            resolved_fixtures: &cached_geo.resolved_fixtures,
+                            shared_region: sr,
+                        });
+                }
+            }
+            InspectorFocus::Project
+            | InspectorFocus::ProjectTool { .. }
+            | InspectorFocus::CadEntity
             | InspectorFocus::Model { .. }
             | InspectorFocus::Sketch { .. } => {}
         }
@@ -487,9 +570,9 @@ impl ChipCutterApp {
             | ViewportPickMode::PlaceContourTab { .. }
             | ViewportPickMode::SetupWcsXyPlaneXEdge { .. } => PickFilter::EdgesOnly,
             ViewportPickMode::OpCylindricalHoles { .. } => PickFilter::CylindricalHolesOnly,
-            ViewportPickMode::SketchAuthor { .. } | ViewportPickMode::PlaceFixtureClamp { .. } => {
-                PickFilter::Any
-            }
+            ViewportPickMode::SketchAuthor { .. }
+            | ViewportPickMode::PlaceFixtureClamp { .. }
+            | ViewportPickMode::PickKeepOutGeometry { .. } => PickFilter::Any,
         }
     }
 
@@ -626,6 +709,41 @@ impl ChipCutterApp {
         mark_ops_dirty_with_rest(&mut self.project.setups[setup_idx], &[op_idx]);
     }
 
+    /// Toggles `new_item` directly inside `project.avoid_regions[region_idx]` with atomic Undo
+    /// and dependent operation dirty propagation (used by `ViewportPickMode::PickKeepOutGeometry`).
+    fn apply_keepout_region_pick_toggle<F>(
+        &mut self,
+        region_idx: usize,
+        undo_label: &str,
+        new_item: GeometrySelectionItem,
+        toggle_match: F,
+    ) where
+        F: Fn(&GeometrySelectionItem) -> bool,
+    {
+        let Some(rid) = self
+            .project
+            .avoid_regions
+            .get(region_idx)
+            .map(|r| r.id.clone())
+        else {
+            return;
+        };
+        self.history.record_before_edit(
+            format!("{undo_label} (Shared Avoid)"),
+            None,
+            &self.project,
+        );
+        if let Some(sr) = self.project.avoid_regions.get_mut(region_idx) {
+            if let Some(pos) = sr.selections.iter().position(toggle_match) {
+                sr.selections.remove(pos);
+            } else {
+                sr.selections.push(new_item);
+            }
+        }
+        mark_shared_avoid_dependents_dirty(&mut self.project, &rid);
+        self.cached_frame_geo = None;
+    }
+
     pub(crate) fn handle_viewport_sketch_click(&mut self, hit: SketchPickHit) {
         match self.pick_mode {
             ViewportPickMode::InspectEntity => {
@@ -637,6 +755,59 @@ impl ChipCutterApp {
                     self.inspector_focus = InspectorFocus::Sketch { sketch_idx: idx };
                 }
                 self.highlight.selected_sketch = Some(hit);
+            }
+            ViewportPickMode::PickKeepOutGeometry { region_idx } => {
+                let new_item = match hit {
+                    SketchPickHit::Region {
+                        sketch_id,
+                        region_id,
+                        ..
+                    } => GeometrySelectionItem::SketchRegion {
+                        sketch_id,
+                        region_id,
+                    },
+                    SketchPickHit::Entity {
+                        sketch_id,
+                        entity_id,
+                        ..
+                    } => GeometrySelectionItem::SketchEntity {
+                        sketch_id,
+                        entity_id,
+                        reverse: false,
+                        side_flip: false,
+                    },
+                };
+                let match_item = new_item.clone();
+                self.apply_keepout_region_pick_toggle(
+                    region_idx,
+                    "Toggle 2D Sketch Selection",
+                    new_item,
+                    move |existing| match (existing, &match_item) {
+                        (
+                            GeometrySelectionItem::SketchRegion {
+                                sketch_id: a,
+                                region_id: ra,
+                            },
+                            GeometrySelectionItem::SketchRegion {
+                                sketch_id: b,
+                                region_id: rb,
+                            },
+                        ) => a == b && ra == rb,
+                        (
+                            GeometrySelectionItem::SketchEntity {
+                                sketch_id: a,
+                                entity_id: ea,
+                                ..
+                            },
+                            GeometrySelectionItem::SketchEntity {
+                                sketch_id: b,
+                                entity_id: eb,
+                                ..
+                            },
+                        ) => a == b && ea == eb,
+                        _ => false,
+                    },
+                );
             }
             ViewportPickMode::OpPlanarFaces { setup_idx, op_idx }
             | ViewportPickMode::OpClosedLoops { setup_idx, op_idx }
@@ -1039,6 +1210,77 @@ impl ChipCutterApp {
                     self.align_camera_to_sketch(sketch_idx);
                 }
             }
+            ViewportPickMode::PickKeepOutGeometry { region_idx } => match target {
+                PickTarget::Face(fid) => {
+                    let is_cyl_hole = doc.face(fid).is_some_and(|f| {
+                        matches!(
+                            f.surface,
+                            SurfaceKind::Cylinder {
+                                is_internal: true,
+                                ..
+                            }
+                        )
+                    });
+                    if let Some(bind) = doc.bind_face(fid) {
+                        let fid_idx = fid.0;
+                        if is_cyl_hole {
+                            self.apply_keepout_region_pick_toggle(
+                                region_idx,
+                                "Toggle Cylindrical Hole",
+                                GeometrySelectionItem::CylindricalHole { binding: bind },
+                                move |s| {
+                                    matches!(s, GeometrySelectionItem::CylindricalHole { binding } if binding.last_index == fid_idx)
+                                },
+                            );
+                        } else {
+                            self.apply_keepout_region_pick_toggle(
+                                region_idx,
+                                "Toggle Planar Face",
+                                GeometrySelectionItem::PlanarFace { binding: bind },
+                                move |s| {
+                                    matches!(s, GeometrySelectionItem::PlanarFace { binding } if binding.last_index == fid_idx)
+                                },
+                            );
+                        }
+                    }
+                }
+                PickTarget::Loop { loop_id, .. } => {
+                    if let Some(bind) = doc.bind_loop(loop_id) {
+                        let lid_idx = loop_id.0;
+                        self.apply_keepout_region_pick_toggle(
+                            region_idx,
+                            "Toggle Closed Loop",
+                            GeometrySelectionItem::ClosedLoop {
+                                binding: bind,
+                                reverse: false,
+                                side_flip: false,
+                            },
+                            move |s| {
+                                matches!(s, GeometrySelectionItem::ClosedLoop { binding, .. } if binding.last_index == lid_idx)
+                            },
+                        );
+                    }
+                }
+                PickTarget::Edge(eid) => {
+                    if let Some(lid) = doc.edge(eid).and_then(|e| e.loops.first().copied())
+                        && let Some(bind) = doc.bind_loop(lid)
+                    {
+                        let lid_idx = lid.0;
+                        self.apply_keepout_region_pick_toggle(
+                            region_idx,
+                            "Toggle Closed Loop",
+                            GeometrySelectionItem::ClosedLoop {
+                                binding: bind,
+                                reverse: false,
+                                side_flip: false,
+                            },
+                            move |s| {
+                                matches!(s, GeometrySelectionItem::ClosedLoop { binding, .. } if binding.last_index == lid_idx)
+                            },
+                        );
+                    }
+                }
+            },
             ViewportPickMode::PickModelLayFlatFace { .. }
             | ViewportPickMode::PlaceFixtureClamp { .. } => {}
         }

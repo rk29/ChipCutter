@@ -793,6 +793,11 @@ impl ChipCutterApp {
             format!("{:?}", op.rotary).hash(&mut h);
             matches!(op.runtime_status, OperationStatus::NeedsRepick { .. }).hash(&mut h);
         }
+        if let InspectorFocus::KeepOutRegion { region_idx } = self.inspector_focus
+            && let Some(sr) = self.project.avoid_regions.get(region_idx)
+        {
+            format!("{sr:?}").hash(&mut h);
+        }
         h.finish()
     }
 
@@ -1035,6 +1040,58 @@ impl ChipCutterApp {
         }
         self.fixture_models_revision = self.fixture_models_revision.wrapping_add(1);
         self.cached_frame_geo = None;
+    }
+
+    /// Removes `project.models[model_idx]` with atomic Undo, clearing loaded CAD or fixture state
+    /// and marking operations Dirty cleanly.
+    pub(crate) fn remove_project_model(&mut self, model_idx: usize) {
+        if model_idx >= self.project.models.len() {
+            return;
+        }
+        let is_primary = self.project.primary_part_model_index() == Some(model_idx);
+        let removed_entry = self.project.models[model_idx].clone();
+        self.history
+            .record_before_edit("Remove Model", None, &self.project);
+        self.project.models.remove(model_idx);
+        for setup in &mut self.project.setups {
+            if removed_entry.role.is_fixture() {
+                setup.fixtures.retain(|f| {
+                    !matches!(
+                        &f.kind,
+                        chip_cam::FixtureKind::ImportedModel { model_id, .. }
+                            if model_id == &removed_entry.id
+                    )
+                });
+            }
+            for op in &mut setup.operations {
+                op.mark_dirty();
+            }
+        }
+        if is_primary {
+            self.model = None;
+            self.highlight.hovered = None;
+            self.highlight.selected = None;
+        }
+        if removed_entry.role.is_fixture() {
+            self.reload_fixture_models_from_disk();
+        }
+        self.sim_panel.cancel_in_flight();
+        self.sim_panel.active_result = None;
+        self.gcode_panel.invalidate_preview();
+        self.boundary_preview_cache.clear();
+        self.cached_frame_geo = None;
+        if matches!(
+            self.inspector_focus,
+            InspectorFocus::Model { .. } | InspectorFocus::CadEntity
+        ) {
+            self.inspector_focus = InspectorFocus::Setup {
+                setup_idx: self
+                    .active_setup_idx
+                    .min(self.project.setups.len().saturating_sub(1)),
+            };
+        }
+        self.logs
+            .push(format!("Removed model '{}'.", removed_entry.path));
     }
 
     pub(crate) fn import_fixture_model_dialog(&mut self, setup_idx: usize) {

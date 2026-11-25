@@ -12,10 +12,9 @@ use chip_tools::{
 
 use crate::widgets::{grid_row, inspector_grid, section_card};
 
+pub(crate) use self::geometry_editor::draw_cutter_schematic;
 use self::{
-    geometry_editor::{
-        TOOL_COMBO_W, draw_cutter_schematic, edit_offset_number_row, show_cutter_geometry_editor,
-    },
+    geometry_editor::{TOOL_COMBO_W, edit_offset_number_row, show_cutter_geometry_editor},
     presets_editor::show_presets_editor,
 };
 

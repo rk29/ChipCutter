@@ -9,10 +9,11 @@ use chip_tools::MachineDefinition;
 
 use crate::{
     theme::ThemeTokens,
-    widgets::{INPUT_COL_WIDTH, grid_row, inspector_grid, section_card},
+    widgets::{INPUT_COL_WIDTH, grid_row, inspector_grid, section_card, static_card},
 };
 
 const PROP_CONTROL_W: f32 = INPUT_COL_WIDTH + 138.0;
+const INSPECTOR_CONTROL_W: f32 = INPUT_COL_WIDTH + 48.0;
 const PROJECT_PROPERTIES_WINDOW_ID: &str = "chipcutter_project_properties_modal";
 
 /// Persistent UI state for the **Project Properties** dialog.
@@ -46,6 +47,261 @@ pub struct ProjectPropertiesActions {
     pub display_units_changed: Option<DisplayUnit>,
     pub switch_machine_id: Option<String>,
     pub open_machine_manager: bool,
+}
+
+/// Renders the shared **General** & **Project Summary** aligned two-column `section_card` content
+/// used by both the `Edit -> Project Properties...` modal and the right-hand **Project Inspector**.
+pub fn show_project_properties_cards(
+    ui: &mut egui::Ui,
+    id_scope: &str,
+    control_width: f32,
+    name_draft: &mut String,
+    pctx: &ProjectPropertiesCtx<'_>,
+    commit_name_requested: &mut bool,
+) -> ProjectPropertiesActions {
+    let mut actions = ProjectPropertiesActions::default();
+    let tok = ThemeTokens::from_ui(ui);
+
+    section_card(
+        ui,
+        (id_scope, "project_props_general_card"),
+        "General",
+        true,
+        |ui| {
+            inspector_grid(ui, (id_scope, "project_props_general_grid"), |ui| {
+                let name_tip = "Project display name shown in the window title, CAM Browser, and posted G-code headers (undoable)";
+                grid_row(ui, "Project Name", Some(name_tip), |ui| {
+                    let edit_resp = ui
+                        .add(
+                            egui::TextEdit::singleline(name_draft)
+                                .id_salt((id_scope, "project_props_name_edit"))
+                                .desired_width(control_width),
+                        )
+                        .on_hover_text(name_tip);
+                    let trimmed = name_draft.trim();
+                    let is_dirty = !trimmed.is_empty() && trimmed != pctx.project.project_name;
+                    let enter_pressed = (edit_resp.has_focus() || edit_resp.lost_focus())
+                        && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    if ui
+                        .add_enabled(is_dirty, egui::Button::new("Apply").small())
+                        .on_hover_text("Commit new project name (Enter)")
+                        .on_disabled_hover_text("Edit the project name above to apply")
+                        .clicked()
+                        || (is_dirty && (enter_pressed || edit_resp.lost_focus()))
+                    {
+                        *commit_name_requested = true;
+                    }
+                });
+
+                let units_tip = "Display lengths and feedrates for this project (stored internally in millimeters; undoable)";
+                grid_row(ui, "Display Units", Some(units_tip), |ui| {
+                    let mut u_sel = pctx.project.display_units;
+                    ui.selectable_value(&mut u_sel, DisplayUnit::Millimeter, "Millimeters (mm)")
+                        .on_hover_text(units_tip);
+                    ui.selectable_value(&mut u_sel, DisplayUnit::Inch, "Inches (in)")
+                        .on_hover_text(units_tip);
+                    if u_sel != pctx.project.display_units {
+                        actions.display_units_changed = Some(u_sel);
+                    }
+                });
+
+                let active_mid = pctx.project.effective_machine_id();
+                let active_machine = pctx
+                    .machines
+                    .iter()
+                    .find(|m| m.id.eq_ignore_ascii_case(active_mid))
+                    .or_else(|| pctx.machines.first());
+                let active_label = active_machine.map_or(active_mid, |m| m.name.as_str());
+                let machine_tip = "Target CNC machine profile for travel envelope, spindle RPM limits, and tool library";
+                grid_row(ui, "Target CNC Machine", Some(machine_tip), |ui| {
+                    egui::ComboBox::from_id_salt((id_scope, "project_props_machine_cb"))
+                        .width(control_width)
+                        .truncate()
+                        .selected_text(active_label)
+                        .show_ui(ui, |ui| {
+                            for m in pctx.machines {
+                                let tag = if m.is_builtin {
+                                    "[Built-In]"
+                                } else {
+                                    "[Custom]"
+                                };
+                                let is_cur = m.id.eq_ignore_ascii_case(active_mid);
+                                if ui
+                                    .selectable_label(
+                                        is_cur,
+                                        format!("{} {} ({} tools)", m.name, tag, m.tools.len()),
+                                    )
+                                    .on_hover_text(
+                                        "Switch this project's target CNC machine profile",
+                                    )
+                                    .clicked()
+                                    && !is_cur
+                                {
+                                    actions.switch_machine_id = Some(m.id.clone());
+                                }
+                            }
+                        })
+                        .response
+                        .on_hover_text(machine_tip);
+
+                    if ui
+                        .button("Manage Machines...")
+                        .on_hover_text(
+                            "Open Machine Manager to inspect, clone, or configure CNC machine profiles",
+                        )
+                        .clicked()
+                    {
+                        actions.open_machine_manager = true;
+                    }
+                });
+            });
+        },
+    );
+
+    section_card(
+        ui,
+        (id_scope, "project_props_summary_card"),
+        "Project Summary",
+        true,
+        |ui| {
+            let file_path_text = pctx.project_file_path.map_or_else(
+                || "Unsaved Project".to_string(),
+                |p| p.display().to_string(),
+            );
+            let schema_text = format!("v{}", pctx.project.schema_version);
+            let models_text = if pctx.project.models.is_empty() {
+                "0 models".to_string()
+            } else {
+                format!("{} model(s)", pctx.project.models.len())
+            };
+            let total_ops: usize = pctx.project.setups.iter().map(|s| s.operations.len()).sum();
+            let setups_ops_text = format!(
+                "{} setup(s) / {} operation(s)",
+                pctx.project.setups.len(),
+                total_ops
+            );
+            let tools_text = format!("{} tool(s)", pctx.project.tools.len());
+            let sketches_text = format!("{} sketch(es)", pctx.project.sketches.len());
+            let avoid_text = format!("{} region(s)", pctx.project.avoid_regions.len());
+
+            inspector_grid(ui, (id_scope, "project_props_summary_grid"), |ui| {
+                summary_row(
+                    ui,
+                    &tok,
+                    "File Path",
+                    &file_path_text,
+                    Some("On-disk location of the active .chip.toml project file"),
+                );
+                summary_row(
+                    ui,
+                    &tok,
+                    "Schema Version",
+                    &schema_text,
+                    Some("Project document serialization schema version"),
+                );
+                summary_row(
+                    ui,
+                    &tok,
+                    "Models",
+                    &models_text,
+                    Some("Linked 3D STEP solids and triangle meshes in this project"),
+                );
+                summary_row(
+                    ui,
+                    &tok,
+                    "Setups / Operations",
+                    &setups_ops_text,
+                    Some("Total clamping Setups and CAM operations in this project"),
+                );
+                summary_row(
+                    ui,
+                    &tok,
+                    "Project Tools",
+                    &tools_text,
+                    Some("Embedded cutter snapshots stored inside this project"),
+                );
+                summary_row(
+                    ui,
+                    &tok,
+                    "2D Sketches",
+                    &sketches_text,
+                    Some("Parametric and imported DXF/SVG 2D sketch layers"),
+                );
+                summary_row(
+                    ui,
+                    &tok,
+                    "Shared Keep-Out Regions",
+                    &avoid_text,
+                    Some("Reusable project-level shared Avoid / Keep-Out regions"),
+                );
+            });
+        },
+    );
+
+    actions
+}
+
+/// Renders the right-hand **Project Inspector** pane (`InspectorFocus::Project`), sharing the exact
+/// same `General` & `Project Summary` cards as `Edit -> Project Properties...`.
+pub fn show_project_inspector(
+    ui: &mut egui::Ui,
+    pctx: ProjectPropertiesCtx<'_>,
+) -> ProjectPropertiesActions {
+    let draft_id = ui.make_persistent_id("project_inspector_name_draft");
+    let synced_id = ui.make_persistent_id("project_inspector_synced_name");
+    let mut name_draft = ui
+        .ctx()
+        .data_mut(|d| d.get_temp::<String>(draft_id))
+        .unwrap_or_else(|| pctx.project.project_name.clone());
+    let mut synced_name = ui
+        .ctx()
+        .data_mut(|d| d.get_temp::<String>(synced_id))
+        .unwrap_or_else(|| pctx.project.project_name.clone());
+
+    if synced_name != pctx.project.project_name {
+        name_draft = pctx.project.project_name.clone();
+        synced_name = pctx.project.project_name.clone();
+    }
+
+    let mut commit_name_requested = false;
+    let mut actions = ProjectPropertiesActions::default();
+
+    static_card(ui, None, |ui| {
+        ui.horizontal(|ui| {
+            ui.strong("Project Properties");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.weak(format!("v{}", pctx.project.schema_version));
+            });
+        });
+    });
+
+    egui::ScrollArea::vertical()
+        .id_salt("project_inspector_scroll")
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            actions = show_project_properties_cards(
+                ui,
+                "inspector",
+                INSPECTOR_CONTROL_W,
+                &mut name_draft,
+                &pctx,
+                &mut commit_name_requested,
+            );
+        });
+
+    if commit_name_requested {
+        let trimmed = name_draft.trim();
+        if !trimmed.is_empty() && trimmed != pctx.project.project_name {
+            actions.rename_project = Some(trimmed.to_string());
+            synced_name = trimmed.to_string();
+        }
+    }
+
+    ui.ctx().data_mut(|d| {
+        d.insert_temp(draft_id, name_draft);
+        d.insert_temp(synced_id, synced_name);
+    });
+    actions
 }
 
 /// Renders the **Project Properties** modal when `state.open == true`.
@@ -97,216 +353,13 @@ pub fn show_project_properties_modal(
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
                             ui.set_width((total_w - 14.0).max(380.0));
-                            let tok = ThemeTokens::from_ui(ui);
-
-                            section_card(
+                            actions = show_project_properties_cards(
                                 ui,
-                                "project_props_general_card",
-                                "General",
-                                true,
-                                |ui| {
-                                    inspector_grid(ui, "project_props_general_grid", |ui| {
-                                        let name_tip = "Project display name shown in the window title, CAM Browser, and posted G-code headers (undoable)";
-                                        grid_row(ui, "Project Name", Some(name_tip), |ui| {
-                                            let edit_resp = ui
-                                                .add(
-                                                    egui::TextEdit::singleline(&mut state.name_draft)
-                                                        .id_salt("project_props_name_edit")
-                                                        .desired_width(PROP_CONTROL_W),
-                                                )
-                                                .on_hover_text(name_tip);
-                                            let trimmed = state.name_draft.trim();
-                                            let is_dirty = !trimmed.is_empty()
-                                                && trimmed != pctx.project.project_name;
-                                            let enter_pressed = (edit_resp.has_focus()
-                                                || edit_resp.lost_focus())
-                                                && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                                            if ui
-                                                .add_enabled(
-                                                    is_dirty,
-                                                    egui::Button::new("Apply").small(),
-                                                )
-                                                .on_hover_text("Commit new project name (Enter)")
-                                                .on_disabled_hover_text(
-                                                    "Edit the project name above to apply",
-                                                )
-                                                .clicked()
-                                                || (is_dirty
-                                                    && (enter_pressed || edit_resp.lost_focus()))
-                                            {
-                                                commit_name_requested = true;
-                                            }
-                                        });
-
-                                        let units_tip = "Display lengths and feedrates for this project (stored internally in millimeters; undoable)";
-                                        grid_row(ui, "Display Units", Some(units_tip), |ui| {
-                                            let mut u_sel = pctx.project.display_units;
-                                            ui.selectable_value(
-                                                &mut u_sel,
-                                                DisplayUnit::Millimeter,
-                                                "Millimeters (mm)",
-                                            )
-                                            .on_hover_text(units_tip);
-                                            ui.selectable_value(
-                                                &mut u_sel,
-                                                DisplayUnit::Inch,
-                                                "Inches (in)",
-                                            )
-                                            .on_hover_text(units_tip);
-                                            if u_sel != pctx.project.display_units {
-                                                actions.display_units_changed = Some(u_sel);
-                                            }
-                                        });
-
-                                        let active_mid = pctx.project.effective_machine_id();
-                                        let active_machine = pctx
-                                            .machines
-                                            .iter()
-                                            .find(|m| m.id.eq_ignore_ascii_case(active_mid))
-                                            .or_else(|| pctx.machines.first());
-                                        let active_label = active_machine
-                                            .map_or(active_mid, |m| m.name.as_str());
-                                        let machine_tip = "Target CNC machine profile for travel envelope, spindle RPM limits, and tool library";
-                                        grid_row(ui, "Target CNC Machine", Some(machine_tip), |ui| {
-                                            egui::ComboBox::from_id_salt("project_props_machine_cb")
-                                                .width(PROP_CONTROL_W)
-                                                .selected_text(active_label)
-                                                .show_ui(ui, |ui| {
-                                                    for m in pctx.machines {
-                                                        let tag = if m.is_builtin {
-                                                            "[Built-In]"
-                                                        } else {
-                                                            "[Custom]"
-                                                        };
-                                                        let is_cur = m
-                                                            .id
-                                                            .eq_ignore_ascii_case(active_mid);
-                                                        if ui
-                                                            .selectable_label(
-                                                                is_cur,
-                                                                format!(
-                                                                    "{} {} ({} tools)",
-                                                                    m.name,
-                                                                    tag,
-                                                                    m.tools.len()
-                                                                ),
-                                                            )
-                                                            .on_hover_text(
-                                                                "Switch this project's target CNC machine profile",
-                                                            )
-                                                            .clicked()
-                                                            && !is_cur
-                                                        {
-                                                            actions.switch_machine_id =
-                                                                Some(m.id.clone());
-                                                        }
-                                                    }
-                                                })
-                                                .response
-                                                .on_hover_text(machine_tip);
-
-                                            if ui
-                                                .button("Manage Machines...")
-                                                .on_hover_text(
-                                                    "Open Machine Manager to inspect, clone, or configure CNC machine profiles",
-                                                )
-                                                .clicked()
-                                            {
-                                                actions.open_machine_manager = true;
-                                            }
-                                        });
-                                    });
-                                },
-                            );
-
-                            section_card(
-                                ui,
-                                "project_props_summary_card",
-                                "Project Summary",
-                                true,
-                                |ui| {
-                                    let file_path_text = pctx.project_file_path.map_or_else(
-                                        || "Unsaved Project".to_string(),
-                                        |p| p.display().to_string(),
-                                    );
-                                    let schema_text = format!("v{}", pctx.project.schema_version);
-                                    let models_text = if pctx.project.models.is_empty() {
-                                        "0 models".to_string()
-                                    } else {
-                                        format!("{} model(s)", pctx.project.models.len())
-                                    };
-                                    let total_ops: usize = pctx
-                                        .project
-                                        .setups
-                                        .iter()
-                                        .map(|s| s.operations.len())
-                                        .sum();
-                                    let setups_ops_text = format!(
-                                        "{} setup(s) / {} operation(s)",
-                                        pctx.project.setups.len(),
-                                        total_ops
-                                    );
-                                    let tools_text =
-                                        format!("{} tool(s)", pctx.project.tools.len());
-                                    let sketches_text =
-                                        format!("{} sketch(es)", pctx.project.sketches.len());
-                                    let avoid_text = format!(
-                                        "{} region(s)",
-                                        pctx.project.avoid_regions.len()
-                                    );
-
-                                    inspector_grid(ui, "project_props_summary_grid", |ui| {
-                                        summary_row(
-                                            ui,
-                                            &tok,
-                                            "File Path",
-                                            &file_path_text,
-                                            Some("On-disk location of the active .chip.toml project file"),
-                                        );
-                                        summary_row(
-                                            ui,
-                                            &tok,
-                                            "Schema Version",
-                                            &schema_text,
-                                            Some("Project document serialization schema version"),
-                                        );
-                                        summary_row(
-                                            ui,
-                                            &tok,
-                                            "Models",
-                                            &models_text,
-                                            Some("Linked 3D STEP solids and triangle meshes in this project"),
-                                        );
-                                        summary_row(
-                                            ui,
-                                            &tok,
-                                            "Setups / Operations",
-                                            &setups_ops_text,
-                                            Some("Total clamping Setups and CAM operations in this project"),
-                                        );
-                                        summary_row(
-                                            ui,
-                                            &tok,
-                                            "Project Tools",
-                                            &tools_text,
-                                            Some("Embedded cutter snapshots stored inside this project"),
-                                        );
-                                        summary_row(
-                                            ui,
-                                            &tok,
-                                            "2D Sketches",
-                                            &sketches_text,
-                                            Some("Parametric and imported DXF/SVG 2D sketch layers"),
-                                        );
-                                        summary_row(
-                                            ui,
-                                            &tok,
-                                            "Shared Keep-Out Regions",
-                                            &avoid_text,
-                                            Some("Reusable project-level shared Avoid / Keep-Out regions"),
-                                        );
-                                    });
-                                },
+                                "modal",
+                                PROP_CONTROL_W,
+                                &mut state.name_draft,
+                                &pctx,
+                                &mut commit_name_requested,
                             );
                         });
                 },

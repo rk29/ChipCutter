@@ -12,9 +12,14 @@ use crate::{
         browser::{BrowserAction, CamBrowserCtx, show_cam_browser},
         diagnostics::show_diagnostics_panel,
         gcode_preview::{GCodePanelCtx, GCodeUiAction},
+        keepout_inspector::{KeepOutInspectorAction, KeepOutInspectorCtx, show_keepout_inspector},
         model_inspector::{ModelInspectorCtx, show_model_inspector},
         operation_inspector::{
             OperationInspectorAction, OperationInspectorCtx, show_operation_inspector,
+        },
+        project_properties::{ProjectPropertiesCtx, show_project_inspector},
+        project_tool_inspector::{
+            ProjectToolInspectorAction, ProjectToolInspectorCtx, show_project_tool_inspector,
         },
         setup_inspector::{FixtureSafetySummary, SetupInspectorCtx, show_setup_inspector},
         simulation::{SimPanelCtx, SimulationUiAction},
@@ -83,6 +88,15 @@ impl PaneBehavior<'_> {
 
             if let Some(act) = action {
                 match act {
+                    BrowserAction::OpenProjectProperties => {
+                        self.app
+                            .modals
+                            .project_properties
+                            .open_for_project(&self.app.project.project_name);
+                    }
+                    BrowserAction::OpenToolLibrary { select_tool_id } => {
+                        self.app.open_tool_library_for_tool(select_tool_id.as_ref());
+                    }
                     BrowserAction::OpenStepDialog => self.app.open_step_dialog(&ctx),
                     BrowserAction::OpenMeshImportModal { browse_file } => {
                         if browse_file {
@@ -100,6 +114,9 @@ impl PaneBehavior<'_> {
                     }
                     BrowserAction::ReloadStepModel => self.app.reload_active_step_model(&ctx),
                     BrowserAction::ReplaceStepDialog => self.app.replace_step_dialog(&ctx),
+                    BrowserAction::RemoveModel(m_idx) => {
+                        self.app.remove_project_model(m_idx);
+                    }
                     BrowserAction::OpenSampleGallery => {
                         self.app.modals.sample_gallery.open = true;
                     }
@@ -111,8 +128,17 @@ impl PaneBehavior<'_> {
                             setup_idx: self.app.active_setup_idx,
                         };
                     }
+                    BrowserAction::LookAtSketch(sk_idx) => {
+                        self.app.align_camera_to_sketch(sk_idx);
+                    }
                     BrowserAction::AlignCameraToActiveSetup => {
                         self.app.align_camera_to_active_setup();
+                    }
+                    BrowserAction::OpenFlipJigWizard(s_idx) => {
+                        self.app.modals.flip_jig_wizard.open_for_setup(s_idx);
+                    }
+                    BrowserAction::OpenSoftJawWizard(s_idx) => {
+                        self.app.modals.soft_jaw_wizard.open_for_setup(s_idx);
                     }
                     BrowserAction::GenerateSetup(s_idx) => {
                         self.app.trigger_generate_dirty(Some(s_idx), None);
@@ -120,6 +146,9 @@ impl PaneBehavior<'_> {
                     BrowserAction::GenerateSingleOp { setup_idx, op_id } => {
                         self.app
                             .trigger_generate_dirty(Some(setup_idx), Some(&op_id));
+                    }
+                    BrowserAction::InvalidateFrameCache => {
+                        self.app.cached_frame_geo = None;
                     }
                     BrowserAction::Log(msg) => {
                         self.app.logs.push(msg);
@@ -352,23 +381,36 @@ impl PaneBehavior<'_> {
                 | ViewportPickMode::OpOpenChain { .. }
                 | ViewportPickMode::OpCylindricalHoles { .. }
         );
-        let avoid_target_label: Option<String> = if is_op_geom_pick {
-            if let Some(eid) = self.app.editing_shared_avoid_id.as_deref() {
+        let avoid_target_label: Option<String> =
+            if let ViewportPickMode::PickKeepOutGeometry { region_idx } = self.app.pick_mode {
                 self.app
                     .project
-                    .avoid_region(eid)
+                    .avoid_regions
+                    .get(region_idx)
                     .map(|sr| format!("Avoid: {}", sr.name))
-            } else if self.app.geometry_pick_target
-                == crate::panels::GeometryPickTarget::AvoidKeepOut
-            {
-                Some("Avoid / Keep-Out".to_string())
+            } else if is_op_geom_pick {
+                if let Some(eid) = self.app.editing_shared_avoid_id.as_deref() {
+                    self.app
+                        .project
+                        .avoid_region(eid)
+                        .map(|sr| format!("Avoid: {}", sr.name))
+                } else if self.app.geometry_pick_target
+                    == crate::panels::GeometryPickTarget::AvoidKeepOut
+                {
+                    Some("Avoid / Keep-Out".to_string())
+                } else {
+                    None
+                }
             } else {
                 None
-            }
-        } else {
-            None
-        };
+            };
         let guidance_badge = match self.app.pick_mode {
+            ViewportPickMode::PickKeepOutGeometry { region_idx } => self
+                .app
+                .project
+                .avoid_regions
+                .get(region_idx)
+                .map(|sr| format!("{} avoid", sr.selections.len())),
             ViewportPickMode::OpPlanarFaces { setup_idx, op_idx }
             | ViewportPickMode::OpClosedLoops { setup_idx, op_idx }
             | ViewportPickMode::OpOpenChain {
@@ -759,6 +801,107 @@ impl PaneBehavior<'_> {
                     }
                     if res.fit_camera_requested {
                         self.app.fit_scene_to_viewport();
+                    }
+                }
+                InspectorFocus::Project => {
+                    let pp_actions = show_project_inspector(
+                        ui,
+                        ProjectPropertiesCtx {
+                            project: &self.app.project,
+                            project_file_path: self.app.project_file_path.as_deref(),
+                            machines: &self.app.machines,
+                        },
+                    );
+                    self.app.apply_project_properties_actions(pp_actions);
+                }
+                InspectorFocus::KeepOutRegion { region_idx } => {
+                    let eval_ctx = self.app.eval_context();
+                    let act = show_keepout_inspector(
+                        ui,
+                        KeepOutInspectorCtx {
+                            project: &mut self.app.project,
+                            region_idx,
+                            active_setup_idx: self.app.active_setup_idx,
+                            history: &mut self.app.history,
+                            eval_ctx: &eval_ctx,
+                            pick_mode: &mut self.app.pick_mode,
+                            editing_shared_avoid_id: &mut self.app.editing_shared_avoid_id,
+                            focus: &mut self.app.inspector_focus,
+                        },
+                    );
+                    if let Some(action) = act {
+                        match action {
+                            KeepOutInspectorAction::InvalidateFrameCache => {
+                                frame_geo = None;
+                            }
+                            KeepOutInspectorAction::Log(msg) => {
+                                self.app.logs.push(msg);
+                                frame_geo = None;
+                            }
+                        }
+                    }
+                }
+                InspectorFocus::ProjectTool { tool_idx } => {
+                    let act = show_project_tool_inspector(
+                        ui,
+                        ProjectToolInspectorCtx {
+                            project: &self.app.project,
+                            global_tools: &self.app.global_tools,
+                            tool_idx,
+                        },
+                    );
+                    if let Some(action) = act {
+                        match action {
+                            ProjectToolInspectorAction::EditInToolLibrary(tid) => {
+                                self.app.open_tool_library_for_tool(Some(&tid));
+                            }
+                            ProjectToolInspectorAction::SyncFromMachineLibrary(tid) => {
+                                if let Some(gt) = self.app.global_tools.tool(&tid).cloned() {
+                                    self.app.history.record_before_edit(
+                                        "Sync Tool from Machine Library",
+                                        None,
+                                        &self.app.project,
+                                    );
+                                    let lbl = gt.summary_label();
+                                    self.app.project.sync_tool_from_global(&gt);
+                                    self.app
+                                        .logs
+                                        .push(format!("Synced project tool from machine: {lbl}."));
+                                    frame_geo = None;
+                                }
+                            }
+                            ProjectToolInspectorAction::RemoveFromProject(tid) => {
+                                self.app.history.record_before_edit(
+                                    "Remove Project Tool",
+                                    None,
+                                    &self.app.project,
+                                );
+                                if self.app.project.remove_tool_if_unused(&tid) {
+                                    self.app.logs.push(format!(
+                                        "Removed unused tool '{}' from project.",
+                                        tid.0
+                                    ));
+                                    self.app.inspector_focus = if !self.app.project.tools.is_empty()
+                                    {
+                                        InspectorFocus::ProjectTool {
+                                            tool_idx: tool_idx
+                                                .min(self.app.project.tools.len() - 1),
+                                        }
+                                    } else {
+                                        InspectorFocus::Project
+                                    };
+                                    frame_geo = None;
+                                }
+                            }
+                            ProjectToolInspectorAction::FocusOperation { setup_idx, op_idx } => {
+                                self.app.active_setup_idx = setup_idx;
+                                self.app.inspector_focus =
+                                    InspectorFocus::Operation { setup_idx, op_idx };
+                                self.app.op_tab = OperationTab::Tool;
+                                self.app.pick_mode = ViewportPickMode::InspectEntity;
+                                frame_geo = None;
+                            }
+                        }
                     }
                 }
                 InspectorFocus::Sketch { sketch_idx } => {

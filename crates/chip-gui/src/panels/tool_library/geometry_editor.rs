@@ -790,7 +790,7 @@ fn edit_cutter_geometry_fields(ui: &mut egui::Ui, geom: &mut CutterGeometry, uni
     }
 }
 
-pub(super) fn draw_cutter_schematic(ui: &mut egui::Ui, tool: &Tool) {
+pub(crate) fn draw_cutter_schematic(ui: &mut egui::Ui, tool: &Tool) {
     let tok = crate::theme::ThemeTokens::from_ui(ui);
     let (rect, _) = ui.allocate_exact_size(egui::vec2(260.0, 128.0), egui::Sense::hover());
     let painter = ui.painter_at(rect);
