@@ -585,6 +585,24 @@ Closes every backend-vs-GUI gap uncovered across `chip-cam`, `chip-tools`, `chip
 
 ---
 
+## Phase 25 — Hierarchical Project Tree View, Procedural Icons, Context Menus, & Drag Reordering (Planned — M90–M92)
+
+Replaces the left-hand CAM Browser's flat card stack with a unified, collapsible **Project Tree View** rooted at the active project (`Project` -> `Models`, `Sketches` & child entities, `Keep-Out Regions`, `Project Tools`, and `Setups` -> `Fixtures` & `Operations`), complete with dedicated procedural vector icons for every item type, consistent right-click context menus (common actions + type-safe sub-item creation), section-scoped drag-and-drop reordering, and immediate selection-to-right-panel editing for every node type.
+
+### Milestone 90 — Procedural Tree Icon Suite & Hierarchical Project Tree-View Browser Architecture (`plans/90-milestone-90-plan.md`)
+- **Complete Procedural Vector Icons (`chip-gui`):** Expand `IconKind` with dedicated crisp vector icons for tree containers (`Project`, `ModelsFolder`, `MeshModel`, `FixtureModel`, `KeepOutZone`, `Setup`, `Fixture`), all 7 sketch entity types, and all 18 operation strategies (adding dedicated 3D and 4th-axis icons).
+- **Hierarchical Tree-View Browser (`chip-gui`):** Refactor `panels/browser.rs` into a modular `panels/browser/` tree view rooted at `<project.project_name>` with collapsible sections, tree guide lines, item names + compact badges, expand/collapse state memory, and keyboard navigation (`Up`/`Down`/`Left`/`Right`/`F2`/`Del`).
+
+### Milestone 91 — Tree Context Menus, Drag-and-Drop Reordering, & Selection-Driven Right-Panel Editors (`plans/91-milestone-91-plan.md`)
+- **Context Menus & Drag-and-Drop Reordering (`chip-gui`):** Add uniform right-click context menus on every node (common `Rename`, `Duplicate`, `Suppress`, `Show/Hide`, `Move Up/Down`, `Delete` + strict item-specific sub-item creation submenus), inline `F2`/menu renaming, and section-scoped drag-and-drop reordering across Operations, Setups, Sketches, Sketch Entities, Keep-Out Regions, and Fixtures with atomic Undo and Rest/Carryover dirty propagation.
+- **Right-Side Inspector Parity (`chip-gui`):** Extend `InspectorFocus` (`Project`, `KeepOutRegion`, `ProjectTool`, and focused `Fixture`/`SketchEntity` routing) with dedicated aligned two-column right-panel editors (`keepout_inspector.rs`, `project_tool_inspector.rs`, shared Project Inspector cards) so selecting any tree node opens its editor immediately.
+
+### Milestone 92 — Tree-View Visual Verification, Full Screenshot Refresh, & Phase 25 Spec / Tutorial Sync (`plans/92-milestone-92-plan.md`)
+- **Visual Verification & Full Screenshot Refresh (`chip-gui`, `docs/images/`):** Verify headless Vulkan screenshots of the Project Tree View, icons, and right-panel editors in both Studio Dark and Daylight Light themes, polish any contrast/truncation issues, and re-capture **all** repository screenshots (`docs/images/chipcutter-gui.png`, all tutorial screenshots via `scripts/capture_tutorial_screenshots.sh`, and all 26 Sample Gallery projects via `scripts/capture_sample_gallery.sh`).
+- **Spec & Tutorial Sync (`specs/`, `docs/tutorials/`):** Update tutorial instructions referencing old left-panel card buttons to match the new Project Tree View & context menus, and synchronize `specs/08-ui-viewport.md` and `specs/10-roadmap.md`.
+
+---
+
 ## Future Phases
 
 ChipCutter's long-term roadmap focuses on bringing pro-grade CAM capabilities to hobby and benchtop machinists—making everyday job setup faster, safer, and easier to use without commercial CAM complexity or licensing cost.
