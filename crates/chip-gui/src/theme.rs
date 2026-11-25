@@ -68,6 +68,7 @@ pub struct ThemeTokens {
     // Primary brand & interactive accents
     pub accent: Color32,
     pub accent_hover: Color32,
+    pub accent_soft: Color32,
     pub accent_on_fg: Color32,
 
     // Semantic status tokens
@@ -134,6 +135,7 @@ impl ThemeTokens {
 
                 accent: Color32::from_rgb(20, 108, 204),
                 accent_hover: Color32::from_rgb(32, 126, 224),
+                accent_soft: Color32::from_rgb(26, 48, 76),
                 accent_on_fg: Color32::from_rgb(255, 255, 255),
 
                 clean_fg: Color32::from_rgb(86, 224, 138),
@@ -193,6 +195,7 @@ impl ThemeTokens {
 
                 accent: Color32::from_rgb(16, 104, 198),
                 accent_hover: Color32::from_rgb(12, 88, 172),
+                accent_soft: Color32::from_rgb(220, 234, 252),
                 accent_on_fg: Color32::from_rgb(255, 255, 255),
 
                 clean_fg: Color32::from_rgb(14, 118, 62),

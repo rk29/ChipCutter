@@ -1699,6 +1699,8 @@ mod tests {
         };
         let mut setup_tab = SetupTab::Wcs;
         let mut hidden_ops = std::collections::HashSet::new();
+        let mut selected_sketch_entity_idx = None;
+        let mut selected_fixture_idx = None;
         let mut browser_out = browser_ctx.run_ui(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
@@ -1725,6 +1727,8 @@ mod tests {
                             pick_mode: &mut pick_mode,
                             hidden_operation_ids: &mut hidden_ops,
                             editing_shared_avoid_id: &mut editing_shared_avoid_id,
+                            selected_sketch_entity_idx: &mut selected_sketch_entity_idx,
+                            selected_fixture_idx: &mut selected_fixture_idx,
                         },
                     );
                 });

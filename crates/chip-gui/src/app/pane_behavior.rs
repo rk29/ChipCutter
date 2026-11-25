@@ -76,6 +76,8 @@ impl PaneBehavior<'_> {
                     pick_mode: &mut self.app.pick_mode,
                     hidden_operation_ids: &mut self.app.hidden_operation_ids,
                     editing_shared_avoid_id: &mut self.app.editing_shared_avoid_id,
+                    selected_sketch_entity_idx: &mut self.app.selected_sketch_entity_idx,
+                    selected_fixture_idx: &mut self.app.selected_fixture_idx,
                 },
             );
 

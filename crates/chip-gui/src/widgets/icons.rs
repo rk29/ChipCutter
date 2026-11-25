@@ -1,6 +1,10 @@
 use std::f32::consts::{FRAC_PI_4, PI, TAU};
+use std::path::Path;
 
+use chip_cad::is_mesh_extension;
 use chip_cam::OperationKind;
+use chip_project::ModelEntry;
+use chip_sketch::SketchEntity;
 use egui::{Color32, CornerRadius, Pos2, Rect, Response, Sense, Stroke, StrokeKind, Ui, Vec2};
 
 use crate::theme::ThemeTokens;
@@ -16,7 +20,7 @@ pub enum StatusBadgeKind {
 }
 
 /// Resolution-independent procedural vector icons rendered directly via `egui::Painter`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum IconKind {
     // Status badges
     StatusClean,
@@ -25,7 +29,18 @@ pub enum IconKind {
     StatusNeedsRepick,
     StatusSuppressed,
 
-    // Operations & entities
+    // Project hierarchy & document nodes
+    Project,
+    ModelsFolder,
+    MeshModel,
+    FixtureModel,
+    KeepOutZone,
+    Setup,
+    Fixture,
+    ChevronRight,
+    ChevronDown,
+
+    // Operations (2.5D, 3D, Undercut/Deburr, 4th-Axis)
     Facing,
     Contour2D,
     Pocket2D,
@@ -38,9 +53,25 @@ pub enum IconKind {
     ChamferTrace,
     Deburr3D,
     VCarve,
+    Adaptive3D,
+    Waterline3D,
+    Parallel3D,
+    Scallop3D,
+    Pencil3D,
+    Rotary2Linear,
+    Rotary4AxisSim,
+
+    // Sketch & CAD entities
     Sketch2D,
     StepModel,
     Tool,
+    EntityRect,
+    EntityCircle,
+    EntitySlot,
+    EntityPolygon,
+    EntityBoltCircle,
+    EntityPolyline,
+    EntityText,
 
     // Workflow & file actions
     FolderOpen,
@@ -86,8 +117,91 @@ pub enum IconKind {
 }
 
 impl IconKind {
+    /// Complete list of every [`IconKind`] variant (used for exhaustive rendering verification).
+    pub const ALL: &'static [Self] = &[
+        Self::StatusClean,
+        Self::StatusDirty,
+        Self::StatusError,
+        Self::StatusNeedsRepick,
+        Self::StatusSuppressed,
+        Self::Project,
+        Self::ModelsFolder,
+        Self::MeshModel,
+        Self::FixtureModel,
+        Self::KeepOutZone,
+        Self::Setup,
+        Self::Fixture,
+        Self::ChevronRight,
+        Self::ChevronDown,
+        Self::Facing,
+        Self::Contour2D,
+        Self::Pocket2D,
+        Self::Adaptive2D,
+        Self::DrillBore,
+        Self::ThreadMill,
+        Self::SlotUndercut,
+        Self::Dovetail,
+        Self::Undercut3D,
+        Self::ChamferTrace,
+        Self::Deburr3D,
+        Self::VCarve,
+        Self::Adaptive3D,
+        Self::Waterline3D,
+        Self::Parallel3D,
+        Self::Scallop3D,
+        Self::Pencil3D,
+        Self::Rotary2Linear,
+        Self::Rotary4AxisSim,
+        Self::Sketch2D,
+        Self::StepModel,
+        Self::Tool,
+        Self::EntityRect,
+        Self::EntityCircle,
+        Self::EntitySlot,
+        Self::EntityPolygon,
+        Self::EntityBoltCircle,
+        Self::EntityPolyline,
+        Self::EntityText,
+        Self::FolderOpen,
+        Self::Save,
+        Self::BundleZip,
+        Self::VectorImport,
+        Self::Reload,
+        Self::Undo,
+        Self::Redo,
+        Self::Plus,
+        Self::Generate,
+        Self::Simulate,
+        Self::PostGCode,
+        Self::CancelStop,
+        Self::Play,
+        Self::Pause,
+        Self::SkipStart,
+        Self::StepBack,
+        Self::StepForward,
+        Self::SkipNextOp,
+        Self::SkipEnd,
+        Self::Sun,
+        Self::Moon,
+        Self::Eye,
+        Self::EyeOff,
+        Self::FitView,
+        Self::TopView,
+        Self::OrthoCube,
+        Self::Trash,
+        Self::Duplicate,
+        Self::InfoCircle,
+        Self::Search,
+        Self::Sparkles,
+        Self::Keyboard,
+        Self::Crosshair,
+        Self::ArrowUp,
+        Self::ArrowDown,
+        Self::Settings,
+    ];
+
     pub const fn for_operation(kind: OperationKind, is_adaptive: bool) -> Self {
-        if is_adaptive {
+        if is_adaptive && matches!(kind, OperationKind::Pocket2D) {
             return Self::Adaptive2D;
         }
         match kind {
@@ -100,15 +214,15 @@ impl IconKind {
             OperationKind::Dovetail => Self::Dovetail,
             OperationKind::ChamferTrace => Self::ChamferTrace,
             OperationKind::VCarve => Self::VCarve,
-            OperationKind::Adaptive3D => Self::Adaptive2D,
-            OperationKind::Waterline3D => Self::Contour2D,
-            OperationKind::Parallel3D => Self::Facing,
-            OperationKind::Scallop3D => Self::Pocket2D,
-            OperationKind::Pencil3D => Self::ChamferTrace,
+            OperationKind::Adaptive3D => Self::Adaptive3D,
+            OperationKind::Waterline3D => Self::Waterline3D,
+            OperationKind::Parallel3D => Self::Parallel3D,
+            OperationKind::Scallop3D => Self::Scallop3D,
+            OperationKind::Pencil3D => Self::Pencil3D,
             OperationKind::Deburr3D => Self::Deburr3D,
             OperationKind::Undercut3D => Self::Undercut3D,
-            OperationKind::Rotary2Linear => Self::OrthoCube,
-            OperationKind::Rotary4AxisSim => Self::OrthoCube,
+            OperationKind::Rotary2Linear => Self::Rotary2Linear,
+            OperationKind::Rotary4AxisSim => Self::Rotary4AxisSim,
         }
     }
 
@@ -119,6 +233,33 @@ impl IconKind {
             StatusBadgeKind::Error => Self::StatusError,
             StatusBadgeKind::NeedsRepick => Self::StatusNeedsRepick,
             StatusBadgeKind::Suppressed => Self::StatusSuppressed,
+        }
+    }
+
+    pub const fn for_sketch_entity(entity: &SketchEntity) -> Self {
+        match entity {
+            SketchEntity::Rectangle { .. } => Self::EntityRect,
+            SketchEntity::Circle { .. } => Self::EntityCircle,
+            SketchEntity::Slot { .. } => Self::EntitySlot,
+            SketchEntity::RegularPolygon { .. } => Self::EntityPolygon,
+            SketchEntity::PointPattern(_) => Self::EntityBoltCircle,
+            SketchEntity::Polyline { .. } => Self::EntityPolyline,
+            SketchEntity::Text(_) => Self::EntityText,
+        }
+    }
+
+    pub fn for_model_entry(entry: &ModelEntry) -> Self {
+        if entry.role.is_fixture() {
+            return Self::FixtureModel;
+        }
+        let is_mesh = Path::new(&entry.path)
+            .extension()
+            .and_then(|s| s.to_str())
+            .is_some_and(is_mesh_extension);
+        if is_mesh {
+            Self::MeshModel
+        } else {
+            Self::StepModel
         }
     }
 }
@@ -215,6 +356,136 @@ pub fn paint_icon(painter: &egui::Painter, rect: Rect, icon: IconKind, color: Co
         IconKind::StatusSuppressed => {
             painter.circle_stroke(sq.center(), s * 0.38, stroke);
             painter.line_segment([p(0.24, 0.76), p(0.76, 0.24)], stroke);
+        }
+        IconKind::Project => {
+            painter.add(egui::Shape::closed_line(
+                vec![
+                    p(0.20, 0.12),
+                    p(0.62, 0.12),
+                    p(0.82, 0.32),
+                    p(0.82, 0.88),
+                    p(0.20, 0.88),
+                ],
+                stroke,
+            ));
+            painter.add(egui::Shape::line(
+                vec![p(0.62, 0.12), p(0.62, 0.32), p(0.82, 0.32)],
+                thin,
+            ));
+            painter.line_segment([p(0.32, 0.52), p(0.68, 0.52)], thin);
+            painter.line_segment([p(0.32, 0.68), p(0.58, 0.68)], thin);
+        }
+        IconKind::ModelsFolder => {
+            painter.add(egui::Shape::closed_line(
+                vec![
+                    p(0.10, 0.24),
+                    p(0.38, 0.24),
+                    p(0.46, 0.34),
+                    p(0.90, 0.34),
+                    p(0.90, 0.82),
+                    p(0.10, 0.82),
+                ],
+                stroke,
+            ));
+            painter.add(egui::Shape::closed_line(
+                vec![p(0.50, 0.44), p(0.64, 0.56), p(0.50, 0.68), p(0.36, 0.56)],
+                thin,
+            ));
+        }
+        IconKind::MeshModel => {
+            let top = vec![p(0.50, 0.14), p(0.84, 0.32), p(0.50, 0.50), p(0.16, 0.32)];
+            painter.add(egui::Shape::closed_line(top, thin));
+            painter.add(egui::Shape::line(
+                vec![
+                    p(0.16, 0.32),
+                    p(0.16, 0.68),
+                    p(0.50, 0.86),
+                    p(0.84, 0.68),
+                    p(0.84, 0.32),
+                ],
+                stroke,
+            ));
+            painter.line_segment([p(0.50, 0.50), p(0.50, 0.86)], thin);
+            // Triangulation diagonals across all 3 visible faces
+            painter.line_segment([p(0.16, 0.32), p(0.84, 0.32)], thin);
+            painter.line_segment([p(0.16, 0.32), p(0.50, 0.86)], thin);
+            painter.line_segment([p(0.84, 0.32), p(0.50, 0.86)], thin);
+        }
+        IconKind::FixtureModel => {
+            // L-shaped clamp jaw profile with clamping bolt
+            painter.add(egui::Shape::closed_line(
+                vec![
+                    p(0.14, 0.82),
+                    p(0.86, 0.82),
+                    p(0.86, 0.62),
+                    p(0.42, 0.62),
+                    p(0.42, 0.20),
+                    p(0.14, 0.20),
+                ],
+                stroke,
+            ));
+            painter.line_segment([p(0.66, 0.22), p(0.66, 0.60)], stroke);
+            painter.line_segment([p(0.52, 0.22), p(0.80, 0.22)], stroke);
+            painter.line_segment([p(0.56, 0.54), p(0.76, 0.54)], thin);
+        }
+        IconKind::KeepOutZone => {
+            painter.add(egui::Shape::closed_line(
+                vec![
+                    p(0.32, 0.12),
+                    p(0.68, 0.12),
+                    p(0.88, 0.32),
+                    p(0.88, 0.68),
+                    p(0.68, 0.88),
+                    p(0.32, 0.88),
+                    p(0.12, 0.68),
+                    p(0.12, 0.32),
+                ],
+                stroke,
+            ));
+            painter.line_segment([p(0.26, 0.74), p(0.74, 0.26)], stroke);
+        }
+        IconKind::Setup => {
+            // WCS triad (+Z up, +X right, +Y diagonal) + subtle stock corner bracket
+            painter.line_segment([p(0.26, 0.74), p(0.26, 0.16)], stroke);
+            painter.line_segment([p(0.26, 0.74), p(0.84, 0.74)], stroke);
+            painter.line_segment([p(0.26, 0.74), p(0.58, 0.44)], thin);
+            // Small arrowheads on +Z and +X
+            painter.add(egui::Shape::line(
+                vec![p(0.18, 0.26), p(0.26, 0.16), p(0.34, 0.26)],
+                thin,
+            ));
+            painter.add(egui::Shape::line(
+                vec![p(0.74, 0.66), p(0.84, 0.74), p(0.74, 0.82)],
+                thin,
+            ));
+            // Stock frame corner cue
+            painter.add(egui::Shape::line(
+                vec![p(0.50, 0.22), p(0.84, 0.22), p(0.84, 0.54)],
+                thin,
+            ));
+        }
+        IconKind::Fixture => {
+            // Mill vise jaws + base rail + lead screw
+            painter.line_segment([p(0.10, 0.80), p(0.90, 0.80)], stroke);
+            let left_jaw = Rect::from_min_max(p(0.14, 0.28), p(0.34, 0.80));
+            let right_jaw = Rect::from_min_max(p(0.66, 0.28), p(0.86, 0.80));
+            painter.rect_stroke(left_jaw, CornerRadius::same(1), stroke, StrokeKind::Inside);
+            painter.rect_stroke(right_jaw, CornerRadius::same(1), stroke, StrokeKind::Inside);
+            painter.line_segment([p(0.34, 0.56), p(0.66, 0.56)], thin);
+            painter.line_segment([p(0.14, 0.40), p(0.34, 0.40)], thin);
+            painter.line_segment([p(0.66, 0.40), p(0.86, 0.40)], thin);
+        }
+        IconKind::ChevronRight => {
+            painter.add(egui::Shape::line(
+                vec![p(0.34, 0.20), p(0.68, 0.50), p(0.34, 0.80)],
+                stroke,
+            ));
+        }
+        IconKind::ChevronDown => {
+            painter.add(egui::Shape::line(
+                vec![p(0.20, 0.34), p(0.50, 0.68), p(0.80, 0.34)],
+                stroke,
+            ));
         }
         IconKind::Facing => {
             painter.add(egui::Shape::line(
@@ -370,6 +641,221 @@ pub fn paint_icon(painter: &egui::Painter, rect: Rect, icon: IconKind, color: Co
                 vec![p(0.20, 0.24), p(0.50, 0.82), p(0.80, 0.24)],
                 stroke,
             ));
+        }
+        IconKind::Adaptive3D => {
+            // 3D terraced adaptive spiral: stepped base + upper trochoidal loop
+            let mut upper = Vec::with_capacity(17);
+            for i in 0..=16 {
+                let t = (i as f32) / 16.0;
+                let ang = t * 1.65 * TAU;
+                let rx = s * (0.08 + 0.26 * t);
+                let ry = s * (0.05 + 0.16 * t);
+                upper.push(Pos2::new(
+                    p(0.48, 0.36).x + rx * ang.cos(),
+                    p(0.48, 0.36).y + ry * ang.sin(),
+                ));
+            }
+            painter.add(egui::Shape::line(upper, stroke));
+            // Stepped Z-level terraces beneath
+            painter.add(egui::Shape::line(
+                vec![p(0.16, 0.62), p(0.40, 0.62), p(0.48, 0.74), p(0.84, 0.74)],
+                thin,
+            ));
+            painter.line_segment([p(0.22, 0.84), p(0.78, 0.84)], thin);
+        }
+        IconKind::Waterline3D => {
+            // Stacked Z-level topographic elevation contours
+            for (cy, rx, ry, st) in [
+                (0.74, 0.38, 0.12, stroke),
+                (0.50, 0.28, 0.10, stroke),
+                (0.26, 0.17, 0.08, thin),
+            ] {
+                let pts: Vec<Pos2> = (0..=16)
+                    .map(|i| {
+                        let a = (i as f32 / 16.0) * TAU;
+                        Pos2::new(
+                            sq.center().x + s * rx * a.cos(),
+                            p(0.50, cy).y + s * ry * a.sin(),
+                        )
+                    })
+                    .collect();
+                painter.add(egui::Shape::line(pts, st));
+            }
+        }
+        IconKind::Parallel3D => {
+            // Parallel 3D surface scanlines curving smoothly over a sculpted ridge
+            for y_base in [0.34, 0.56, 0.78] {
+                let pts: Vec<Pos2> = (0..=10)
+                    .map(|i| {
+                        let t = i as f32 / 10.0;
+                        let u = 0.12 + 0.76 * t;
+                        let v = y_base - 0.15 * (t * PI).sin();
+                        p(u, v)
+                    })
+                    .collect();
+                painter.add(egui::Shape::line(pts, stroke));
+            }
+        }
+        IconKind::Scallop3D => {
+            // Concentric 3D constant-scallop contour shells over a curved peak
+            for (rx, ry, st) in [(0.38, 0.32, stroke), (0.24, 0.20, thin)] {
+                let pts: Vec<Pos2> = (0..=18)
+                    .map(|i| {
+                        let a = (i as f32 / 18.0) * TAU;
+                        Pos2::new(
+                            sq.center().x + s * rx * a.cos(),
+                            sq.center().y + s * ry * a.sin(),
+                        )
+                    })
+                    .collect();
+                painter.add(egui::Shape::line(pts, st));
+            }
+            painter.circle_filled(sq.center(), sw * 0.85, color);
+        }
+        IconKind::Pencil3D => {
+            // Concave V-valley corner walls with ball-end cutter tracing the crease
+            painter.add(egui::Shape::line(
+                vec![p(0.14, 0.24), p(0.50, 0.82), p(0.86, 0.24)],
+                thin,
+            ));
+            painter.line_segment([p(0.50, 0.12), p(0.50, 0.40)], thin);
+            painter.circle_stroke(p(0.50, 0.56), s * 0.16, stroke);
+        }
+        IconKind::Rotary2Linear => {
+            // Horizontal rotary cylinder with axial cutting pass & rotation arrow
+            painter.line_segment([p(0.24, 0.30), p(0.82, 0.30)], stroke);
+            painter.line_segment([p(0.24, 0.70), p(0.82, 0.70)], stroke);
+            draw_arc(
+                painter,
+                p(0.82, 0.50),
+                s * 0.20,
+                -0.5 * PI,
+                0.5 * PI,
+                8,
+                stroke,
+            );
+            draw_arc(
+                painter,
+                p(0.24, 0.50),
+                s * 0.20,
+                0.5 * PI,
+                1.5 * PI,
+                8,
+                thin,
+            );
+            // Linear pass along cylinder axis + rotary arrow
+            painter.line_segment([p(0.26, 0.50), p(0.82, 0.50)], thin);
+            draw_arc(
+                painter,
+                p(0.24, 0.50),
+                s * 0.30,
+                0.65 * PI,
+                1.35 * PI,
+                8,
+                stroke,
+            );
+            painter.add(egui::Shape::line(
+                vec![p(0.10, 0.26), p(0.22, 0.20), p(0.24, 0.34)],
+                thin,
+            ));
+        }
+        IconKind::Rotary4AxisSim => {
+            // Simultaneous 4-axis cylinder + helical multi-axis wrap curve + A-axis arrow
+            painter.line_segment([p(0.16, 0.30), p(0.84, 0.30)], thin);
+            painter.line_segment([p(0.16, 0.70), p(0.84, 0.70)], thin);
+            let helix: Vec<Pos2> = (0..=16)
+                .map(|i| {
+                    let t = i as f32 / 16.0;
+                    let u = 0.16 + 0.68 * t;
+                    let v = 0.50 + 0.20 * (t * 2.5 * PI).sin();
+                    p(u, v)
+                })
+                .collect();
+            painter.add(egui::Shape::line(helix, stroke));
+            // Curved A-axis rotary arrow above
+            draw_arc(
+                painter,
+                p(0.50, 0.34),
+                s * 0.24,
+                -0.82 * PI,
+                -0.18 * PI,
+                8,
+                stroke,
+            );
+            painter.add(egui::Shape::line(
+                vec![p(0.64, 0.14), p(0.72, 0.22), p(0.60, 0.26)],
+                thin,
+            ));
+        }
+        IconKind::EntityRect => {
+            let r = Rect::from_min_max(p(0.16, 0.22), p(0.84, 0.78));
+            painter.rect_stroke(r, CornerRadius::same(1), stroke, StrokeKind::Inside);
+            for (u, v) in [(0.16, 0.22), (0.84, 0.22), (0.84, 0.78), (0.16, 0.78)] {
+                painter.circle_filled(p(u, v), sw * 0.65, color);
+            }
+        }
+        IconKind::EntityCircle => {
+            painter.circle_stroke(sq.center(), s * 0.35, stroke);
+            painter.circle_filled(sq.center(), sw * 0.75, color);
+        }
+        IconKind::EntitySlot => {
+            painter.line_segment([p(0.32, 0.30), p(0.68, 0.30)], stroke);
+            painter.line_segment([p(0.32, 0.70), p(0.68, 0.70)], stroke);
+            draw_arc(
+                painter,
+                p(0.32, 0.50),
+                s * 0.20,
+                0.5 * PI,
+                1.5 * PI,
+                8,
+                stroke,
+            );
+            draw_arc(
+                painter,
+                p(0.68, 0.50),
+                s * 0.20,
+                -0.5 * PI,
+                0.5 * PI,
+                8,
+                stroke,
+            );
+        }
+        IconKind::EntityPolygon => {
+            let pts: Vec<Pos2> = (0..6)
+                .map(|k| {
+                    let a = (k as f32) * (TAU / 6.0) - 0.5 * PI;
+                    Pos2::new(
+                        sq.center().x + s * 0.38 * a.cos(),
+                        sq.center().y + s * 0.38 * a.sin(),
+                    )
+                })
+                .collect();
+            painter.add(egui::Shape::closed_line(pts, stroke));
+        }
+        IconKind::EntityBoltCircle => {
+            painter.circle_stroke(sq.center(), s * 0.32, thin);
+            for k in 0..6 {
+                let a = (k as f32) * (TAU / 6.0);
+                let pt = Pos2::new(
+                    sq.center().x + s * 0.32 * a.cos(),
+                    sq.center().y + s * 0.32 * a.sin(),
+                );
+                painter.circle_filled(pt, sw * 0.85, color);
+            }
+        }
+        IconKind::EntityPolyline => {
+            let pts = vec![p(0.14, 0.74), p(0.36, 0.28), p(0.64, 0.68), p(0.86, 0.24)];
+            painter.add(egui::Shape::line(pts.clone(), stroke));
+            for pt in pts {
+                painter.circle_filled(pt, sw * 0.75, color);
+            }
+        }
+        IconKind::EntityText => {
+            painter.line_segment([p(0.18, 0.20), p(0.82, 0.20)], stroke);
+            painter.line_segment([p(0.18, 0.20), p(0.18, 0.30)], thin);
+            painter.line_segment([p(0.82, 0.20), p(0.82, 0.30)], thin);
+            painter.line_segment([p(0.50, 0.20), p(0.50, 0.82)], stroke);
+            painter.line_segment([p(0.34, 0.82), p(0.66, 0.82)], stroke);
         }
         IconKind::Sketch2D => {
             let r = Rect::from_min_max(p(0.14, 0.28), p(0.66, 0.80));
@@ -1091,5 +1577,124 @@ mod tests {
                 "expected {icon:?} to emit vector shapes"
             );
         }
+    }
+
+    #[test]
+    fn all_icon_kinds_render_cleanly_without_panic() {
+        let ctx = egui::Context::default();
+        for &icon in IconKind::ALL {
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 200.0))),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
+                    let (rect, _) = ui.allocate_exact_size(Vec2::splat(16.0), Sense::hover());
+                    paint_icon(ui.painter(), rect, icon, Color32::WHITE);
+                });
+            });
+            out.textures_delta.clear();
+            assert!(
+                !out.shapes.is_empty(),
+                "expected IconKind::{icon:?} to emit vector shapes"
+            );
+        }
+    }
+
+    #[test]
+    fn all_18_operation_kinds_map_to_distinct_icons() {
+        use std::collections::HashSet;
+
+        assert_eq!(OperationKind::ALL.len(), 18);
+        let mut seen = HashSet::new();
+        for kind in OperationKind::ALL {
+            let icon = IconKind::for_operation(kind, false);
+            assert!(
+                seen.insert(icon),
+                "duplicate icon {icon:?} mapped for OperationKind::{kind:?}"
+            );
+        }
+        // Adaptive 2D Pocket overrides to Adaptive2D, distinct from Adaptive3D
+        let adap_2d = IconKind::for_operation(OperationKind::Pocket2D, true);
+        assert_eq!(adap_2d, IconKind::Adaptive2D);
+        assert_ne!(
+            adap_2d,
+            IconKind::for_operation(OperationKind::Adaptive3D, false)
+        );
+    }
+
+    #[test]
+    fn sketch_entity_and_model_entry_helpers_map_distinctly() {
+        use chip_math::{ArcPolyline2D, ParamLength};
+        use chip_sketch::{
+            PointPatternSpec, PolygonSizingMode, RectAnchorMode, SketchTextSpec, SlotLengthMode,
+        };
+        use std::collections::HashSet;
+
+        let entities = [
+            SketchEntity::Rectangle {
+                anchor: RectAnchorMode::default(),
+                x: ParamLength::from_mm(0.0),
+                y: ParamLength::from_mm(0.0),
+                width: ParamLength::from_mm(20.0),
+                height: ParamLength::from_mm(10.0),
+                corner_radius: ParamLength::from_mm(0.0),
+                rotation_deg: 0.0,
+            },
+            SketchEntity::new_circle(
+                ParamLength::from_mm(0.0),
+                ParamLength::from_mm(0.0),
+                ParamLength::from_mm(10.0),
+            ),
+            SketchEntity::Slot {
+                mode: SlotLengthMode::default(),
+                x: ParamLength::from_mm(0.0),
+                y: ParamLength::from_mm(0.0),
+                length: ParamLength::from_mm(20.0),
+                width: ParamLength::from_mm(6.0),
+                angle_deg: 0.0,
+            },
+            SketchEntity::RegularPolygon {
+                center_x: ParamLength::from_mm(0.0),
+                center_y: ParamLength::from_mm(0.0),
+                sides: 6,
+                sizing: PolygonSizingMode::default(),
+                diameter: ParamLength::from_mm(12.0),
+                corner_radius: ParamLength::from_mm(0.0),
+                rotation_deg: 0.0,
+            },
+            SketchEntity::PointPattern(PointPatternSpec::BoltCircle {
+                center_x: ParamLength::from_mm(0.0),
+                center_y: ParamLength::from_mm(0.0),
+                bolt_circle_diameter: ParamLength::from_mm(30.0),
+                hole_diameter: ParamLength::from_mm(5.0),
+                count: 6,
+                start_angle_deg: 0.0,
+            }),
+            SketchEntity::new_polyline(ArcPolyline2D::default()),
+            SketchEntity::Text(SketchTextSpec::default()),
+        ];
+
+        let mut seen = HashSet::new();
+        for ent in &entities {
+            let ic = IconKind::for_sketch_entity(ent);
+            assert!(
+                seen.insert(ic),
+                "duplicate icon {ic:?} for sketch entity {}",
+                ent.kind_label()
+            );
+        }
+        assert_eq!(seen.len(), 7);
+
+        let step = ModelEntry::new("m1", "parts/bracket.step", "abc");
+        let stl = ModelEntry::new("m2", "parts/relief.STL", "def");
+        let obj = ModelEntry::new("m3", "parts/bust.obj", "ghi");
+        let mf3 = ModelEntry::new("m4", "parts/case.3mf", "jkl");
+        let fix = ModelEntry::new_fixture("f1", "fixtures/kurt_vise.step", "mno");
+        assert_eq!(IconKind::for_model_entry(&step), IconKind::StepModel);
+        assert_eq!(IconKind::for_model_entry(&stl), IconKind::MeshModel);
+        assert_eq!(IconKind::for_model_entry(&obj), IconKind::MeshModel);
+        assert_eq!(IconKind::for_model_entry(&mf3), IconKind::MeshModel);
+        assert_eq!(IconKind::for_model_entry(&fix), IconKind::FixtureModel);
     }
 }
