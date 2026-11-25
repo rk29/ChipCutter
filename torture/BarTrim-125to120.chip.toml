@@ -1,0 +1,524 @@
+schema_version = 3
+project_name = "Aluminum Bar Trim (125mm -> 120mm along -Y)"
+display_units = "millimeter"
+machine_id = "carvera-air"
+models = []
+
+[[sketches]]
+id = "sketch_1"
+name = "Bar Trim Layout (20 x 120mm along -Y)"
+visible = true
+regions = []
+
+[sketches.anchor]
+kind = "setup_xy"
+setup_id = "setup_1"
+plane_ref = "stock_top"
+
+[sketches.anchor.z_offset]
+value_mm = 0.0
+
+[sketches.cut_depth_default]
+value_mm = 20.0
+
+[[sketches.entities]]
+id = "ref_finished_bar"
+name = "Finished Bar Outline (20 x 120mm)"
+is_construction = false
+
+[sketches.entities.entity]
+type = "rectangle"
+anchor = "front_left"
+rotation_deg = 0.0
+
+[sketches.entities.entity.x]
+value_mm = 0.0
+
+[sketches.entities.entity.y]
+value_mm = -120.0
+
+[sketches.entities.entity.width]
+value_mm = 20.0
+
+[sketches.entities.entity.height]
+value_mm = 120.0
+
+[sketches.entities.entity.corner_radius]
+value_mm = 0.0
+
+[[sketches.entities]]
+id = "cut_line_y_neg120"
+name = "End Trim Cut Line (Y = -120mm)"
+is_construction = false
+
+[sketches.entities.entity]
+type = "polyline"
+scale = 1.0
+rotation_deg = 0.0
+
+[sketches.entities.entity.polyline]
+closed = false
+
+[[sketches.entities.entity.polyline.segments]]
+
+[sketches.entities.entity.polyline.segments.Line]
+start = [
+    20.0,
+    -120.0,
+]
+end = [
+    0.0,
+    -120.0,
+]
+
+[sketches.entities.entity.translate_x]
+value_mm = 0.0
+
+[sketches.entities.entity.translate_y]
+value_mm = 0.0
+
+[[sketches.entities]]
+id = "hole_5mm"
+name = "5mm Through Hole (10mm from Cut End)"
+is_construction = false
+
+[sketches.entities.entity]
+type = "circle"
+
+[sketches.entities.entity.center_x]
+value_mm = 10.0
+
+[sketches.entities.entity.center_y]
+value_mm = -110.0
+
+[sketches.entities.entity.diameter]
+value_mm = 5.0
+
+[[tools]]
+id = "carvera_t2_3175mm_25loc_1fl"
+tool_number = 2
+length_offset_number = 2
+diameter_offset_number = 2
+name = '3.175mm (1/8") x 25mm 1FL O-Flute Flat'
+vendor = "Makera (Essential Milling Bit Set - Extended)"
+product_id = "MAKERA-3175x25-1FL"
+native_unit = "millimeter"
+spindle_direction = "cw"
+default_coolant = "air_blast"
+stickout_length_mm = 28.0
+
+[tools.geometry]
+type = "flat_endmill"
+diameter_mm = 3.175
+flute_length_mm = 25.0
+overall_length_mm = 50.0
+shank_diameter_mm = 3.175
+flutes = 1
+
+[[tools.presets]]
+id = "carvera_al6061_deep"
+name = "Aluminum 6061 - Deep"
+material = "Aluminum 6061"
+spindle_rpm = 11028.059048887237
+surface_speed_m_min = 110.0
+cutting_feed_mm_min = 308.78565336884265
+chipload_mm_tooth = 0.028
+lead_feed_mm_min = 247.02852269507412
+ramp_feed_mm_min = 154.39282668442132
+plunge_feed_mm_min = 102.92855112294755
+default_stepdown_mm = 0.4
+default_stepover_mm = 0.8
+coolant_override = "air_blast"
+
+[[setups]]
+id = "setup_1"
+name = "Setup 1 — Vise Trim -Y End (125 -> 120mm)"
+target_bodies = []
+wcs_slot = "G54"
+post_profile = "grblhal_atc"
+
+[setups.wcs.orientation]
+mode = "model_orientation"
+flip_z = false
+flip_x = false
+clock_90 = 0
+
+[setups.wcs.origin]
+mode = "stock_box_point"
+
+[setups.wcs.origin.anchor]
+x = "center"
+y = "max"
+z = "max"
+
+[[setups.wcs.additional_offset_wcs]]
+value_mm = 0.0
+
+[[setups.wcs.additional_offset_wcs]]
+value_mm = 0.0
+
+[[setups.wcs.additional_offset_wcs]]
+value_mm = 0.0
+
+[setups.stock]
+type = "fixed_box"
+
+[setups.stock.width_x]
+value_mm = 20.0
+
+[setups.stock.depth_y]
+value_mm = 125.0
+
+[setups.stock.height_z]
+value_mm = 20.0
+
+[setups.stock.xy_align]
+mode = "offset_from_front_left"
+
+[setups.stock.xy_align.dx]
+value_mm = 0.0
+
+[setups.stock.xy_align.dy]
+value_mm = 5.0
+
+[setups.stock.z_align]
+mode = "offset_from_top"
+
+[setups.stock.z_align.top_allowance]
+value_mm = 0.0
+
+[setups.heights.clearance]
+reference = "stock_top"
+
+[setups.heights.clearance.offset]
+value_mm = 10.0
+
+[setups.heights.retract]
+reference = "stock_top"
+
+[setups.heights.retract.offset]
+value_mm = 5.0
+
+[setups.heights.default_feed_offset]
+value_mm = 2.0
+
+[[setups.fixtures]]
+id = "fixture_vise_1"
+name = "Machinist Vise (Rear 80mm Grip)"
+enabled = true
+
+[setups.fixtures.clearance_margin]
+value_mm = 1.0
+
+[setups.fixtures.kind]
+type = "vise_jaws"
+clamp_axis = "x"
+include_parallels = true
+fixed_jaw_side = "negative"
+
+[setups.fixtures.kind.jaw_width]
+value_mm = 80.0
+
+[setups.fixtures.kind.jaw_thickness]
+value_mm = 15.0
+
+[setups.fixtures.kind.jaw_height]
+value_mm = 25.0
+
+[setups.fixtures.kind.grip_depth]
+value_mm = 12.0
+
+[setups.fixtures.kind.parallel_thickness]
+value_mm = 3.175
+
+[setups.fixtures.kind.center_offset_along_jaw]
+value_mm = 22.5
+
+[[setups.operations]]
+id = "op_trim_y_end"
+name = "Trim -Y End to 120mm (Rough + Finish)"
+kind = "contour_2d"
+suppressed = true
+tool_id = "carvera_t2_3175mm_25loc_1fl"
+preset_id = "carvera_al6061_deep"
+
+[setups.operations.feed_overrides]
+plunge_feed_mm_min = 600.0
+
+[[setups.operations.selections]]
+kind = "sketch_entity"
+sketch_id = "sketch_1"
+entity_id = "cut_line_y_neg120"
+reverse = false
+side_flip = false
+
+[setups.operations.heights.clearance]
+reference = "setup_clearance"
+
+[setups.operations.heights.clearance.offset]
+value_mm = 0.0
+
+[setups.operations.heights.retract]
+reference = "setup_retract"
+
+[setups.operations.heights.retract.offset]
+value_mm = 0.0
+
+[setups.operations.heights.feed]
+reference = "stock_top"
+
+[setups.operations.heights.feed.offset]
+value_mm = 2.0
+
+[setups.operations.heights.top]
+reference = "stock_top"
+
+[setups.operations.heights.top.offset]
+value_mm = 0.0
+
+[setups.operations.heights.bottom]
+reference = "stock_bottom"
+
+[setups.operations.heights.bottom.offset]
+value_mm = -0.2
+
+[setups.operations.passes]
+multiple_depths = true
+even_stepdowns = true
+tolerance_mm = 0.01
+
+[setups.operations.passes.max_stepdown]
+value_mm = 2.2
+
+[setups.operations.passes.stock_to_leave_radial]
+value_mm = 0.0
+
+[setups.operations.passes.stock_to_leave_axial]
+value_mm = 0.0
+
+[setups.operations.linking]
+retract_policy = "minimum_retract"
+ramp_angle_deg = 2.5
+lead_out_same_as_in = true
+
+[setups.operations.linking.safe_stay_down_distance]
+expr = "tool_d * 2.0"
+value_mm = 12.0
+
+[setups.operations.linking.entry_mode]
+mode = "helical_ramp"
+
+[setups.operations.linking.min_ramp_diameter]
+expr = "tool_d * 0.4"
+value_mm = 2.4
+
+[setups.operations.linking.lead_in]
+enabled = false
+horizontal_sweep_deg = 90.0
+
+[setups.operations.linking.lead_in.horizontal_radius]
+expr = "tool_d * 0.25"
+value_mm = 1.5
+
+[setups.operations.linking.lead_in.linear_length]
+expr = "tool_d * 0.15"
+value_mm = 0.9
+
+[setups.operations.linking.lead_in.vertical_radius]
+value_mm = 0.0
+
+[setups.operations.linking.lead_out]
+enabled = true
+horizontal_sweep_deg = 90.0
+
+[setups.operations.linking.lead_out.horizontal_radius]
+expr = "tool_d * 0.25"
+value_mm = 1.5
+
+[setups.operations.linking.lead_out.linear_length]
+expr = "tool_d * 0.15"
+value_mm = 0.9
+
+[setups.operations.linking.lead_out.vertical_radius]
+value_mm = 0.0
+
+[setups.operations.linking.seam_overlap]
+value_mm = 0.0
+
+[setups.operations.strategy]
+strategy_kind = "contour_2d"
+compensation = "left_climb"
+wear_comp_metadata = false
+continuous_spiral_ramp = false
+roughing_passes = 16
+finish_passes = 1
+finish_feed_mm_min = 280.0
+repeat_finish_pass = true
+clip_to_stock_bounds = false
+
+[setups.operations.strategy.roughing_stepover]
+value_mm = 0.3
+
+[setups.operations.strategy.finish_stepover]
+value_mm = 0.1
+
+[setups.operations.strategy.open_chain_extension]
+value_mm = 3.0
+
+[setups.operations.strategy.tabs]
+enabled = false
+
+[setups.operations.strategy.tabs.placement]
+mode = "automatic"
+count = 4
+by_spacing = false
+
+[setups.operations.strategy.tabs.placement.target_spacing]
+value_mm = 60.0
+
+[setups.operations.strategy.tabs.profile]
+shape = "triangular"
+ramp_angle_deg = 25.0
+
+[setups.operations.strategy.tabs.width]
+value_mm = 6.0
+
+[setups.operations.strategy.tabs.height]
+value_mm = 1.6
+
+[[setups.operations]]
+id = "op_bore_5mm_hole"
+name = "Helical Bore 5mm Through Hole (Y = -110mm)"
+kind = "drill_bore"
+suppressed = false
+tool_id = "carvera_t2_3175mm_25loc_1fl"
+preset_id = "carvera_al6061_deep"
+
+[setups.operations.feed_overrides]
+
+[[setups.operations.selections]]
+kind = "sketch_entity"
+sketch_id = "sketch_1"
+entity_id = "hole_5mm"
+reverse = false
+side_flip = false
+
+[setups.operations.heights.clearance]
+reference = "setup_clearance"
+
+[setups.operations.heights.clearance.offset]
+value_mm = 0.0
+
+[setups.operations.heights.retract]
+reference = "setup_retract"
+
+[setups.operations.heights.retract.offset]
+value_mm = 0.0
+
+[setups.operations.heights.feed]
+reference = "stock_top"
+
+[setups.operations.heights.feed.offset]
+value_mm = 2.0
+
+[setups.operations.heights.top]
+reference = "stock_top"
+
+[setups.operations.heights.top.offset]
+value_mm = 0.0
+
+[setups.operations.heights.bottom]
+reference = "stock_bottom"
+
+[setups.operations.heights.bottom.offset]
+value_mm = -0.2
+
+[setups.operations.passes]
+multiple_depths = false
+even_stepdowns = false
+tolerance_mm = 0.01
+
+[setups.operations.passes.max_stepdown]
+value_mm = 0.4
+
+[setups.operations.passes.stock_to_leave_radial]
+value_mm = 0.0
+
+[setups.operations.passes.stock_to_leave_axial]
+value_mm = 0.0
+
+[setups.operations.linking]
+retract_policy = "minimum_retract"
+ramp_angle_deg = 2.5
+lead_out_same_as_in = true
+
+[setups.operations.linking.safe_stay_down_distance]
+expr = "tool_d * 2.0"
+value_mm = 12.0
+
+[setups.operations.linking.entry_mode]
+mode = "helical_ramp"
+
+[setups.operations.linking.min_ramp_diameter]
+expr = "tool_d * 0.4"
+value_mm = 2.4
+
+[setups.operations.linking.lead_in]
+enabled = false
+horizontal_sweep_deg = 90.0
+
+[setups.operations.linking.lead_in.horizontal_radius]
+expr = "tool_d * 0.25"
+value_mm = 1.5
+
+[setups.operations.linking.lead_in.linear_length]
+expr = "tool_d * 0.15"
+value_mm = 0.9
+
+[setups.operations.linking.lead_in.vertical_radius]
+value_mm = 0.0
+
+[setups.operations.linking.lead_out]
+enabled = true
+horizontal_sweep_deg = 90.0
+
+[setups.operations.linking.lead_out.horizontal_radius]
+expr = "tool_d * 0.25"
+value_mm = 1.5
+
+[setups.operations.linking.lead_out.linear_length]
+expr = "tool_d * 0.15"
+value_mm = 0.9
+
+[setups.operations.linking.lead_out.vertical_radius]
+value_mm = 0.0
+
+[setups.operations.linking.seam_overlap]
+value_mm = 0.0
+
+[setups.operations.strategy]
+strategy_kind = "drill_bore"
+mode = "helical_bore"
+cycle_kind = "simple"
+dwell_seconds = 0.0
+tip_breakthrough = true
+bore_ramp_angle_deg = 2.0
+bore_finish_pass = true
+bore_spring_pass = true
+optimize_hole_order = true
+
+[setups.operations.strategy.peck_depth]
+expr = "tool_d * 0.8"
+value_mm = 4.0
+
+[setups.operations.strategy.min_peck_depth]
+value_mm = 0.5
+
+[setups.operations.strategy.chip_break_retract]
+value_mm = 0.5
+
+[setups.operations.strategy.breakthrough_extra]
+value_mm = 0.5
+
+[setups.operations.strategy.bore_finish_stepover]
+value_mm = 0.1
