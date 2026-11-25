@@ -106,6 +106,37 @@ impl ChipCutterApp {
         if let Some(new_mid) = pp_actions.switch_machine_id {
             self.request_machine_switch(new_mid, false);
         }
+        if let Some(new_mat) = pp_actions.workpiece_material_changed
+            && self.project.workpiece_material.as_ref() != Some(&new_mat)
+        {
+            let coalesce_key = pp_actions
+                .workpiece_material_coalesce
+                .then_some("project_workpiece_material_custom");
+            self.history.record_before_edit(
+                "Change Workpiece Material",
+                coalesce_key,
+                &self.project,
+            );
+            self.project.workpiece_material = Some(new_mat);
+            let mat_name = self.project.effective_workpiece_material().name;
+            self.logs
+                .push(format!("Set project workpiece material to '{mat_name}'."));
+        }
+        if pp_actions.apply_matching_presets_to_ops {
+            let (needing, _) = self.project.count_operations_needing_preset_match();
+            if needing > 0 {
+                self.history.record_before_edit(
+                    "Apply Matching Material Presets",
+                    None,
+                    &self.project,
+                );
+                let updated = self.project.apply_matching_presets_for_material();
+                let mat_name = self.project.effective_workpiece_material().name;
+                self.logs.push(format!(
+                    "Applied matching '{mat_name}' presets to {updated} operation(s) (user overrides preserved)."
+                ));
+            }
+        }
         if pp_actions.open_machine_manager {
             let cur_id = self.project.effective_machine_id().to_string();
             self.modals

@@ -2,7 +2,8 @@ use chip_math::DisplayUnit;
 use chip_project::ProjectDocument;
 use chip_tools::{
     CoolantMode, Tool, ToolLibrary, chipload_from_feed, compute_radial_chip_thinning,
-    feed_from_chipload, rpm_from_surface_speed, surface_speed_from_rpm,
+    feed_from_chipload, match_best_preset_for_material, rpm_from_surface_speed,
+    surface_speed_from_rpm,
 };
 
 use crate::{
@@ -20,6 +21,7 @@ pub struct ToolTabCtx<'a> {
     pub display_unit: DisplayUnit,
     pub lock_chipload: &'a mut bool,
     pub open_tool_manager: &'a mut bool,
+    pub open_project_material: &'a mut bool,
     pub mutated_label: &'a mut Option<&'static str>,
 }
 
@@ -32,6 +34,7 @@ pub fn show_tool_tab(ui: &mut egui::Ui, ctx: ToolTabCtx<'_>) {
         display_unit,
         lock_chipload,
         open_tool_manager,
+        open_project_material,
         mutated_label,
     } = ctx;
 
@@ -44,6 +47,29 @@ pub fn show_tool_tab(ui: &mut egui::Ui, ctx: ToolTabCtx<'_>) {
         "Cutter & Material Preset",
         true,
         |ui| {
+            let proj_mat = project.effective_workpiece_material();
+            let mat_pill_tip = format!(
+                "Workpiece stock material is inherited from Project Properties (Kc {:.0} N/mm2 | us {:.2} J/mm3 | h_min {:.3} mm | {}). Click to edit in Project Inspector.",
+                proj_mat.specific_cutting_force_n_mm2,
+                proj_mat.specific_cutting_energy_w_s_mm3,
+                proj_mat.min_chip_thickness_mm,
+                proj_mat.preferred_coolant.label(),
+            );
+            ui.horizontal(|ui| {
+                let pill_btn = egui::Button::new(
+                    egui::RichText::new(format!("Project Material: {}", proj_mat.name))
+                        .small()
+                        .color(tok.text_primary),
+                )
+                .fill(tok.panel_bg)
+                .stroke(egui::Stroke::new(1.0, tok.border))
+                .corner_radius(egui::CornerRadius::same(10));
+                if ui.add(pill_btn).on_hover_text(mat_pill_tip).clicked() {
+                    *open_project_material = true;
+                }
+            });
+            ui.add_space(4.0);
+
             let cur_tid = project.setups[setup_idx].operations[op_idx].tool_id.clone();
             let mut selected_candidate: Option<Tool> = None;
 
@@ -227,10 +253,13 @@ pub fn show_tool_tab(ui: &mut egui::Ui, ctx: ToolTabCtx<'_>) {
                 );
 
                 if let Some(chosen) = selected_candidate.take() {
+                    let material = project.effective_workpiece_material();
+                    let matched_preset_id =
+                        match_best_preset_for_material(&chosen, &material).map(|p| p.id.clone());
                     project.ensure_tool_embedded(&chosen);
                     let op = &mut project.setups[setup_idx].operations[op_idx];
                     op.tool_id = Some(chosen.id.clone());
-                    op.preset_id = chosen.presets.first().map(|p| p.id.clone());
+                    op.preset_id = matched_preset_id;
                     op.feed_overrides.clear_all();
                     *mutated_label = Some("Assign Tool to Operation");
                 }

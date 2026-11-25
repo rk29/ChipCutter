@@ -11,7 +11,10 @@ use chip_cad::{
 use chip_cam::{Setup, SharedAvoidRegion, StrategyParams, WorkOffsetSlot};
 use chip_math::{DEFAULT_TESS_CHORD_TOL_MM, DisplayUnit, ParamLength};
 use chip_sketch::{CustomFontMap, SketchEntity, SketchFontSource, SketchLayer};
-use chip_tools::{DEFAULT_MACHINE_ID, MachineDefinition, Tool, ToolId};
+use chip_tools::{
+    DEFAULT_MACHINE_ID, MachineDefinition, ProjectMaterialSelection, Tool, ToolId,
+    WorkpieceMaterialProfile, match_best_preset_for_material, resolve_workpiece_material,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -110,6 +113,11 @@ pub struct ProjectDocument {
     /// omitted when `None` (defaults cleanly to `"generic"` for full backward compatibility).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub machine_id: Option<String>,
+    /// Optional project-level workpiece stock material selection (`chip_tools::materials`);
+    /// omitted when `None` (defaults cleanly to Aluminum 6061-T6 via
+    /// [`Self::effective_workpiece_material`] for 100% backward compatibility).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workpiece_material: Option<ProjectMaterialSelection>,
     #[serde(default)]
     pub models: Vec<ModelEntry>,
     /// Planar 2D Sketch Layers (DXF/SVG imports, 2D CAM shapes, & Pure-2D job geometry; `11-sketches-vectors.md`).
@@ -141,6 +149,7 @@ impl ProjectDocument {
             project_name: project_name.into(),
             display_units: DisplayUnit::Millimeter,
             machine_id: None,
+            workpiece_material: None,
             models: Vec::new(),
             sketches: Vec::new(),
             avoid_regions: Vec::new(),
@@ -159,6 +168,92 @@ impl ProjectDocument {
             .as_deref()
             .filter(|s| !s.trim().is_empty())
             .unwrap_or(DEFAULT_MACHINE_ID)
+    }
+
+    /// Resolves the effective project-level [`WorkpieceMaterialProfile`] (defaults to
+    /// Aluminum 6061-T6 when [`Self::workpiece_material`] is `None`).
+    pub fn effective_workpiece_material(&self) -> WorkpieceMaterialProfile {
+        resolve_workpiece_material(self.workpiece_material.as_ref())
+    }
+
+    /// Counts `(ops_needing_preset_update, ops_with_assigned_tool)` across all setups for the
+    /// current [`Self::effective_workpiece_material`].
+    pub fn count_operations_needing_preset_match(&self) -> (usize, usize) {
+        let material = self.effective_workpiece_material();
+        let mut needing_update = 0usize;
+        let mut with_tool = 0usize;
+        for setup in &self.setups {
+            for op in &setup.operations {
+                let mut op_needs = false;
+                if let Some(tid) = op.tool_id.as_ref()
+                    && let Some(tool) = self.tool(tid)
+                {
+                    with_tool += 1;
+                    if let Some(best) = match_best_preset_for_material(tool, &material)
+                        && op.preset_id.as_deref() != Some(best.id.as_str())
+                    {
+                        op_needs = true;
+                    }
+                }
+                if let Some(StrategyParams::VCarve(vp)) = &op.strategy
+                    && vp.clearing_preset_id.is_some()
+                    && let Some(ctid) = vp.clearing_tool_id.as_ref()
+                    && let Some(ctool) = self.tool(ctid)
+                    && let Some(best) = match_best_preset_for_material(ctool, &material)
+                    && vp.clearing_preset_id.as_deref() != Some(best.id.as_str())
+                {
+                    op_needs = true;
+                }
+                if op_needs {
+                    needing_update += 1;
+                }
+            }
+        }
+        (needing_update, with_tool)
+    }
+
+    /// Updates each operation's `preset_id` (and explicit V-Carve `clearing_preset_id`, if set)
+    /// to the best matching cutter preset for [`Self::effective_workpiece_material`], while
+    /// preserving any explicit user `feed_overrides` untouched and marking modified ops `Dirty`.
+    ///
+    /// Returns the number of operations whose preset changed.
+    pub fn apply_matching_presets_for_material(&mut self) -> usize {
+        let material = self.effective_workpiece_material();
+        let best_by_tool: BTreeMap<ToolId, String> = self
+            .tools
+            .iter()
+            .filter_map(|t| {
+                match_best_preset_for_material(t, &material).map(|p| (t.id.clone(), p.id.clone()))
+            })
+            .collect();
+
+        let mut updated = 0usize;
+        for setup in &mut self.setups {
+            for op in &mut setup.operations {
+                let mut changed = false;
+                if let Some(tid) = op.tool_id.as_ref()
+                    && let Some(best_pid) = best_by_tool.get(tid)
+                    && op.preset_id.as_deref() != Some(best_pid.as_str())
+                {
+                    op.preset_id = Some(best_pid.clone());
+                    changed = true;
+                }
+                if let Some(StrategyParams::VCarve(vp)) = &mut op.strategy
+                    && vp.clearing_preset_id.is_some()
+                    && let Some(ctid) = vp.clearing_tool_id.as_ref()
+                    && let Some(best_pid) = best_by_tool.get(ctid)
+                    && vp.clearing_preset_id.as_deref() != Some(best_pid.as_str())
+                {
+                    vp.clearing_preset_id = Some(best_pid.clone());
+                    changed = true;
+                }
+                if changed {
+                    op.mark_dirty();
+                    updated += 1;
+                }
+            }
+        }
+        updated
     }
 
     /// Associates this project with `machine` and optionally syncs each setup's
@@ -477,6 +572,7 @@ impl ProjectDocument {
             }
         }
 
+        let material = self.effective_workpiece_material();
         let mut updated_operation_count = 0usize;
         if !replacement_map.is_empty() {
             for setup in &mut self.setups {
@@ -487,7 +583,8 @@ impl ProjectDocument {
                         && new_tool.id != old_tid
                     {
                         op.tool_id = Some(new_tool.id.clone());
-                        op.preset_id = new_tool.presets.first().map(|p| p.id.clone());
+                        op.preset_id = match_best_preset_for_material(new_tool, &material)
+                            .map(|p| p.id.clone());
                         op.feed_overrides.clear_all();
                         op_changed = true;
                     }
@@ -1007,5 +1104,119 @@ mod tests {
         let plan2 = doc.plan_machine_tool_swap(&vbit_only_machine);
         assert_eq!(plan2.entries.len(), 1);
         assert_eq!(plan2.entries[0].suggested, ToolSwapChoice::KeepExisting);
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn workpiece_material_toml_roundtrip_and_apply_matching_presets_preserves_overrides() {
+        use chip_cam::{Operation, OperationKind, OperationStatus};
+        use chip_tools::{
+            ALUMINUM_6061_T6_ID, ALUMINUM_6063_T5_ID, CUSTOM_WORKPIECE_MATERIAL_ID,
+            ProjectMaterialSelection, builtin_carvera_machine,
+        };
+
+        use super::ProjectDocument;
+
+        // 1. Default project omits `workpiece_material` in TOML and resolves to 6061-T6
+        let doc_default = ProjectDocument::new("Legacy Clean Job");
+        assert!(doc_default.workpiece_material.is_none());
+        assert_eq!(
+            doc_default.effective_workpiece_material().id,
+            ALUMINUM_6061_T6_ID
+        );
+        let toml_default = doc_default.to_toml_string().unwrap();
+        assert!(
+            !toml_default.contains("workpiece_material"),
+            "unset workpiece_material must be omitted from TOML for zero legacy diff"
+        );
+        let reloaded_default = ProjectDocument::from_toml_str(&toml_default).unwrap();
+        assert_eq!(reloaded_default.workpiece_material, None);
+
+        // 2. Built-in 6063-T5 selection roundtrips losslessly
+        let mut doc_6063 = ProjectDocument::new("6063 Extrusion Bracket");
+        doc_6063.workpiece_material = Some(ProjectMaterialSelection::builtin(ALUMINUM_6063_T5_ID));
+        let toml_6063 = doc_6063.to_toml_string().unwrap();
+        assert!(toml_6063.contains("material_id = \"aluminum-6063-t5\""));
+        assert!(!toml_6063.contains("custom_name"));
+        let reloaded_6063 = ProjectDocument::from_toml_str(&toml_6063).unwrap();
+        assert_eq!(
+            reloaded_6063.workpiece_material,
+            doc_6063.workpiece_material
+        );
+        assert_eq!(
+            reloaded_6063.effective_workpiece_material().id,
+            ALUMINUM_6063_T5_ID
+        );
+
+        // 3. Custom material with physics overrides roundtrips losslessly
+        let mut doc_custom = ProjectDocument::new("Custom Billet");
+        doc_custom.workpiece_material = Some(ProjectMaterialSelection::custom(
+            "Shop 6063-T52",
+            0.88,
+            880.0,
+            0.011,
+        ));
+        let toml_custom = doc_custom.to_toml_string().unwrap();
+        let reloaded_custom = ProjectDocument::from_toml_str(&toml_custom).unwrap();
+        assert_eq!(
+            reloaded_custom.workpiece_material,
+            doc_custom.workpiece_material
+        );
+        let eff_custom = reloaded_custom.effective_workpiece_material();
+        assert_eq!(eff_custom.id, CUSTOM_WORKPIECE_MATERIAL_ID);
+        assert_eq!(eff_custom.name, "Shop 6063-T52");
+        assert!((eff_custom.specific_cutting_energy_w_s_mm3 - 0.88).abs() < 1e-9);
+        assert!((eff_custom.specific_cutting_force_n_mm2 - 880.0).abs() < 1e-9);
+        assert!((eff_custom.min_chip_thickness_mm - 0.011).abs() < 1e-9);
+
+        // 4. apply_matching_presets_for_material updates presets, preserves overrides, marks Dirty
+        let carvera = builtin_carvera_machine();
+        let t1 = carvera.tools.iter().find(|t| t.tool_number == 1).unwrap();
+        let t2 = carvera.tools.iter().find(|t| t.tool_number == 2).unwrap();
+        doc_6063.ensure_tool_embedded(t1);
+        doc_6063.ensure_tool_embedded(t2);
+
+        let mut op1 = Operation::new("op1", "Pocket 1", OperationKind::Pocket2D);
+        op1.tool_id = Some(t1.id.clone());
+        op1.preset_id = Some("carvera_atc_al6061".to_string());
+        op1.feed_overrides.spindle_rpm = Some(11_500.0);
+        op1.feed_overrides.cutting_feed_mm_min = Some(320.0);
+        op1.runtime_status = OperationStatus::Clean;
+
+        let mut op2 = Operation::new("op2", "Contour 1", OperationKind::Contour2D);
+        op2.tool_id = Some(t2.id.clone());
+        op2.preset_id = Some("carvera_atc_al6063_deep".to_string()); // already matched
+        op2.runtime_status = OperationStatus::Clean;
+
+        doc_6063.setups[0].operations = vec![op1, op2];
+        assert_eq!(doc_6063.count_operations_needing_preset_match(), (1, 2));
+
+        let updated = doc_6063.apply_matching_presets_for_material();
+        assert_eq!(updated, 1);
+        assert_eq!(
+            doc_6063.setups[0].operations[0].preset_id.as_deref(),
+            Some("carvera_atc_al6063")
+        );
+        // Explicit user overrides must remain untouched!
+        assert_eq!(
+            doc_6063.setups[0].operations[0].feed_overrides.spindle_rpm,
+            Some(11_500.0)
+        );
+        assert_eq!(
+            doc_6063.setups[0].operations[0]
+                .feed_overrides
+                .cutting_feed_mm_min,
+            Some(320.0)
+        );
+        assert_eq!(
+            doc_6063.setups[0].operations[0].runtime_status,
+            OperationStatus::Dirty
+        );
+        // Already-matched op2 stays Clean
+        assert_eq!(
+            doc_6063.setups[0].operations[1].runtime_status,
+            OperationStatus::Clean
+        );
+        assert_eq!(doc_6063.count_operations_needing_preset_match(), (0, 2));
     }
 }

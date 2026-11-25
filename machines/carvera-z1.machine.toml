@@ -80,6 +80,21 @@ default_stepover_mm = 0.75
 coolant_override = "air_blast"
 
 [[tools.presets]]
+id = "carvera_z1_al6063"
+name = "Aluminum 6063-T5"
+material = "Aluminum 6063-T5"
+spindle_rpm = 9223.467568160235
+surface_speed_m_min = 92.0
+cutting_feed_mm_min = 202.91628649952514
+chipload_mm_tooth = 0.022
+lead_feed_mm_min = 162.3330291996201
+ramp_feed_mm_min = 101.45814324976257
+plunge_feed_mm_min = 67.63876216650839
+default_stepdown_mm = 0.22
+default_stepover_mm = 0.55
+coolant_override = "air_blast"
+
+[[tools.presets]]
 id = "carvera_z1_plastic"
 name = "Acetal / Acrylic"
 material = "Engineering Plastic"
@@ -146,6 +161,21 @@ default_stepover_mm = 0.6
 coolant_override = "air_blast"
 
 [[tools.presets]]
+id = "carvera_z1_al6063_deep"
+name = "Aluminum 6063-T5 - Deep (Safe)"
+material = "Aluminum 6063-T5"
+spindle_rpm = 8822.44723910979
+surface_speed_m_min = 88.0
+cutting_feed_mm_min = 158.8040503039762
+chipload_mm_tooth = 0.018
+lead_feed_mm_min = 127.04324024318096
+ramp_feed_mm_min = 79.4020251519881
+plunge_feed_mm_min = 52.93468343465873
+default_stepdown_mm = 0.18
+default_stepover_mm = 0.4
+coolant_override = "air_blast"
+
+[[tools.presets]]
 id = "carvera_z1_wood_deep"
 name = "Hardwood / Epoxy Board - Deep"
 material = "Hardwood / Tooling Board"
@@ -197,6 +227,21 @@ default_stepover_mm = 0.55
 coolant_override = "air_blast"
 
 [[tools.presets]]
+id = "carvera_z1_2mm_al6063"
+name = "Aluminum 6063-T5 - Fine"
+material = "Aluminum 6063-T5"
+spindle_rpm = 10185.916357881302
+surface_speed_m_min = 64.0
+cutting_feed_mm_min = 152.78874536821954
+chipload_mm_tooth = 0.015
+lead_feed_mm_min = 122.23099629457563
+ramp_feed_mm_min = 76.39437268410977
+plunge_feed_mm_min = 50.92958178940651
+default_stepdown_mm = 0.18
+default_stepover_mm = 0.4
+coolant_override = "air_blast"
+
+[[tools.presets]]
 id = "carvera_z1_2mm_plastic"
 name = "Acetal / Hardwood - Fine"
 material = "Plastic / Hardwood"
@@ -245,6 +290,21 @@ ramp_feed_mm_min = 57.29577951308232
 plunge_feed_mm_min = 38.197186342054884
 default_stepdown_mm = 0.1
 default_stepover_mm = 0.25
+coolant_override = "air_blast"
+
+[[tools.presets]]
+id = "carvera_z1_1mm_al6063"
+name = "Aluminum 6063-T5 - Micro"
+material = "Aluminum 6063-T5"
+spindle_rpm = 10504.226244065092
+surface_speed_m_min = 33.0
+cutting_feed_mm_min = 105.04226244065092
+chipload_mm_tooth = 0.01
+lead_feed_mm_min = 84.03380995252074
+ramp_feed_mm_min = 52.52113122032546
+plunge_feed_mm_min = 35.01408748021697
+default_stepdown_mm = 0.08
+default_stepover_mm = 0.2
 coolant_override = "air_blast"
 
 [[tools.presets]]

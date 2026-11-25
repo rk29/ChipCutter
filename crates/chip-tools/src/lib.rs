@@ -7,6 +7,7 @@ pub mod envelope;
 pub mod feeds_speeds;
 pub mod fusion_import;
 pub mod machine;
+pub mod materials;
 pub mod model;
 pub mod storage;
 
@@ -39,6 +40,14 @@ pub use machine::{
     resolve_machine_definition_cli_override, resolve_machine_definition_cli_override_in,
     resolve_machine_definition_in, sanitize_machine_id, save_user_machine, save_user_machine_in,
     user_machines_dir, validate_machine_id,
+};
+pub use materials::{
+    ACETAL_DELRIN_ID, ACRYLIC_PMMA_ID, ALUMINUM_6061_T6_ID, ALUMINUM_6063_T5_ID,
+    ALUMINUM_7075_T6_ID, BRASS_C360_ID, CUSTOM_WORKPIECE_MATERIAL_ID,
+    DEFAULT_WORKPIECE_MATERIAL_ID, G10_CARBON_FIBER_ID, HARDWOOD_PLYWOOD_ID, HDPE_PLASTIC_ID,
+    MDF_ID, MILD_STEEL_1018_ID, MaterialCategory, ProjectMaterialSelection,
+    WorkpieceMaterialProfile, builtin_workpiece_materials, match_best_preset_for_material,
+    resolve_workpiece_material,
 };
 pub use model::{
     CoolantMode, CutterGeometry, SpindleDirection, Tool, ToolId, ToolOperationClass,

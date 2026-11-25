@@ -761,9 +761,16 @@ impl PaneBehavior<'_> {
                             sim_engine: self.app.sim_panel.engine,
                         },
                     );
-                    if matches!(op_action, Some(OperationInspectorAction::CreateSketch)) {
-                        self.app.create_new_setup_xy_sketch();
-                        frame_geo = None;
+                    match op_action {
+                        Some(OperationInspectorAction::CreateSketch) => {
+                            self.app.create_new_setup_xy_sketch();
+                            frame_geo = None;
+                        }
+                        Some(OperationInspectorAction::OpenProjectMaterial) => {
+                            self.app.inspector_focus = InspectorFocus::Project;
+                            frame_geo = None;
+                        }
+                        None => {}
                     }
                 }
                 InspectorFocus::CadEntity => {

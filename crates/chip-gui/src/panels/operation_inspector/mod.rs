@@ -33,6 +33,9 @@ use crate::{
 pub enum OperationInspectorAction {
     /// User clicked `+ New Sketch` inside the empty-state `2D Sketch Layers & Quick Select` card.
     CreateSketch,
+    /// User clicked the read-only `Project Material: <name>` pill in `[Tool]` to inspect/edit
+    /// the project-level workpiece material.
+    OpenProjectMaterial,
 }
 
 /// Context passed to [`show_operation_inspector`].
@@ -105,6 +108,7 @@ pub fn show_operation_inspector(
     let mut shared_mutated_label: Option<(&'static str, String)> = None;
     let mut deferred_avoid_action: Option<AvoidCardAction> = None;
     let mut create_sketch_requested = false;
+    let mut open_project_material_requested = false;
 
     let op_kind = project.setups[setup_idx].operations[op_idx].kind;
     let op_is_adaptive = project.setups[setup_idx].operations[op_idx].is_adaptive_2d();
@@ -268,6 +272,7 @@ pub fn show_operation_inspector(
                     display_unit,
                     lock_chipload,
                     open_tool_manager,
+                    open_project_material: &mut open_project_material_requested,
                     mutated_label: &mut mutated_label,
                 },
             ),
@@ -505,7 +510,13 @@ pub fn show_operation_inspector(
         }
     }
 
-    create_sketch_requested.then_some(OperationInspectorAction::CreateSketch)
+    if open_project_material_requested {
+        Some(OperationInspectorAction::OpenProjectMaterial)
+    } else if create_sketch_requested {
+        Some(OperationInspectorAction::CreateSketch)
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -2705,5 +2716,155 @@ mod tests {
                 panic!("expected VCarve strategy");
             }
         }
+    }
+
+    #[test]
+    fn tool_tab_shows_readonly_project_material_pill_and_automatch_on_tool_switch() {
+        use chip_tools::{ALUMINUM_6063_T5_ID, ProjectMaterialSelection, builtin_carvera_machine};
+
+        let ctx = egui::Context::default();
+        let carvera = builtin_carvera_machine();
+        let carvera_lib = carvera.to_tool_library();
+        let t1 = carvera.tools.iter().find(|t| t.tool_number == 1).unwrap();
+        let t2 = carvera.tools.iter().find(|t| t.tool_number == 2).unwrap();
+
+        let mut proj = ProjectDocument::new("M93 Tool Tab Test");
+        proj.workpiece_material = Some(ProjectMaterialSelection::builtin(ALUMINUM_6063_T5_ID));
+        proj.ensure_tool_embedded(t1);
+        let mut op = Operation::new("op1", "Pocket 1", OperationKind::Pocket2D);
+        op.tool_id = Some(t1.id.clone());
+        op.preset_id = Some("carvera_atc_al6063".to_string());
+        proj.setups[0].operations = vec![op];
+
+        let rs = make_resolved_box_setup();
+        let mut history = UndoHistory::default();
+        let mut time = 1.0;
+
+        let run_tool_tab = |events: Vec<egui::Event>,
+                            proj: &mut ProjectDocument,
+                            history: &mut UndoHistory,
+                            t: &mut f64| {
+            *t += 0.2;
+            let mut cur_tab = OperationTab::Tool;
+            let mut pick_mode = ViewportPickMode::InspectEntity;
+            let mut pick_target = GeometryPickTarget::CuttingArea;
+            let mut editing_shared_avoid_id: Option<String> = None;
+            let mut lock_chipload = true;
+            let mut show_z_planes = false;
+            let mut auto_rotate_indexed_op = true;
+            let mut open_tool_manager = false;
+            let mut action = None;
+
+            let mut out = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(420.0, 1100.0),
+                    )),
+                    time: Some(*t),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    egui::CentralPanel::default().show(ui, |ui| {
+                        action = show_operation_inspector(
+                            ui,
+                            OperationInspectorCtx {
+                                project: proj,
+                                setup_idx: 0,
+                                op_idx: 0,
+                                global_tools: &carvera_lib,
+                                history,
+                                cad_doc: None,
+                                resolved_setup: Some(&rs),
+                                surface_mesh: None,
+                                boundary_preview: None,
+                                selected_face_normal_wcs: None,
+                                extracted: None,
+                                tab: &mut cur_tab,
+                                pick_mode: &mut pick_mode,
+                                pick_target: &mut pick_target,
+                                editing_shared_avoid_id: &mut editing_shared_avoid_id,
+                                lock_chipload: &mut lock_chipload,
+                                show_z_planes: &mut show_z_planes,
+                                auto_rotate_indexed_op: &mut auto_rotate_indexed_op,
+                                open_tool_manager: &mut open_tool_manager,
+                                sim_engine: chip_sim::SimEngineKind::TriDexel,
+                            },
+                        );
+                    });
+                },
+            );
+            out.textures_delta.clear();
+            fn visit_rects(shape: &egui::Shape, out: &mut Vec<(String, egui::Rect)>) {
+                match shape {
+                    egui::Shape::Text(ts) => {
+                        out.push((ts.galley.text().to_string(), ts.visual_bounding_rect()));
+                    }
+                    egui::Shape::Vec(v) => {
+                        for s in v {
+                            visit_rects(s, out);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let mut rects = Vec::new();
+            for cs in &out.shapes {
+                visit_rects(&cs.shape, &mut rects);
+            }
+            (rects, action)
+        };
+
+        let (rects, _) = run_tool_tab(Vec::new(), &mut proj, &mut history, &mut time);
+        let pill_label = "Project Material: Aluminum 6063-T5 Extrusion";
+        let pill_pos = rects
+            .iter()
+            .find(|(txt, _)| txt == pill_label)
+            .expect("Operation Inspector [Tool] must render read-only Project Material pill")
+            .1
+            .center();
+        assert!(
+            !rects.iter().any(|(txt, _)| txt == "Stock Material"),
+            "Operation Inspector [Tool] must never render a per-operation Stock Material picker"
+        );
+
+        // Clicking the read-only pill emits OpenProjectMaterial
+        let (_, act) = run_tool_tab(
+            click_pos_events(pill_pos),
+            &mut proj,
+            &mut history,
+            &mut time,
+        );
+        assert_eq!(act, Some(OperationInspectorAction::OpenProjectMaterial));
+
+        // Switching tool from T1 to T2 (3.175x25 1FL) must auto-select 6063-T5 Deep preset!
+        let (rects2, _) = run_tool_tab(Vec::new(), &mut proj, &mut history, &mut time);
+        let tool_cb_pos = rects2
+            .iter()
+            .find(|(txt, _)| txt.contains("T1"))
+            .expect("Active Cutter ComboBox must render T1")
+            .1
+            .center();
+        let _ = run_tool_tab(
+            click_pos_events(tool_cb_pos),
+            &mut proj,
+            &mut history,
+            &mut time,
+        );
+        let (popup_rects, _) = run_tool_tab(Vec::new(), &mut proj, &mut history, &mut time);
+        let t2_opt = popup_rects
+            .iter()
+            .find(|(txt, _)| txt.contains("25mm 1FL"))
+            .expect("T2 25mm 1FL O-flute must appear in Active Cutter popup")
+            .1
+            .center();
+        let _ = run_tool_tab(click_pos_events(t2_opt), &mut proj, &mut history, &mut time);
+        assert_eq!(proj.setups[0].operations[0].tool_id.as_ref(), Some(&t2.id));
+        assert_eq!(
+            proj.setups[0].operations[0].preset_id.as_deref(),
+            Some("carvera_atc_al6063_deep"),
+            "Tool switch must auto-select matching 6063-T5 preset for project workpiece material"
+        );
     }
 }

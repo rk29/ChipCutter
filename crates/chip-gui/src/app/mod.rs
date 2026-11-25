@@ -1566,4 +1566,71 @@ mod phase21_ui_tests {
         app.execute_palette_command(CommandId::OpenProjectProperties, &ctx);
         assert!(app.modals.project_properties.open);
     }
+
+    #[test]
+    fn new_operations_automatch_project_workpiece_material_and_project_actions_undo() {
+        use chip_tools::{
+            ALUMINUM_6061_T6_ID, ALUMINUM_6063_T5_ID, CARVERA_MACHINE_ID, ProjectMaterialSelection,
+        };
+
+        use crate::panels::project_properties::ProjectPropertiesActions;
+
+        let ctx = egui::Context::default();
+        let mut app = ChipCutterApp::new_headless_for_test(&ctx);
+        app.request_machine_switch(CARVERA_MACHINE_ID.to_string(), true);
+        app.apply_project_properties_actions(ProjectPropertiesActions {
+            workpiece_material_changed: Some(ProjectMaterialSelection::builtin(
+                ALUMINUM_6063_T5_ID,
+            )),
+            ..Default::default()
+        });
+        assert_eq!(
+            app.project.effective_workpiece_material().id,
+            ALUMINUM_6063_T5_ID
+        );
+
+        // New standard & adaptive operations on Carvera auto-select the 6063-T5 preset!
+        app.add_standard_operation(OperationKind::Pocket2D);
+        app.create_new_adaptive_operation();
+        assert_eq!(
+            app.project.setups[0].operations[0].preset_id.as_deref(),
+            Some("carvera_atc_al6063")
+        );
+        assert_eq!(
+            app.project.setups[0].operations[1].preset_id.as_deref(),
+            Some("carvera_atc_al6063")
+        );
+
+        // Switch project material back to 6061-T6 and click Apply Matching Presets -> atomic Undo!
+        app.project.setups[0].operations[0]
+            .feed_overrides
+            .spindle_rpm = Some(12_345.0);
+        app.apply_project_properties_actions(ProjectPropertiesActions {
+            workpiece_material_changed: Some(ProjectMaterialSelection::builtin(
+                ALUMINUM_6061_T6_ID,
+            )),
+            ..Default::default()
+        });
+        app.apply_project_properties_actions(ProjectPropertiesActions {
+            apply_matching_presets_to_ops: true,
+            ..Default::default()
+        });
+        assert_eq!(
+            app.project.setups[0].operations[0].preset_id.as_deref(),
+            Some("carvera_atc_al6061")
+        );
+        assert_eq!(
+            app.project.setups[0].operations[0]
+                .feed_overrides
+                .spindle_rpm,
+            Some(12_345.0)
+        );
+
+        // Undo reverts Apply Matching Presets cleanly
+        app.perform_undo();
+        assert_eq!(
+            app.project.setups[0].operations[0].preset_id.as_deref(),
+            Some("carvera_atc_al6063")
+        );
+    }
 }

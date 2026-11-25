@@ -131,9 +131,11 @@ impl ChipCutterApp {
             .find(|t| OperationKind::Pocket2D.is_compatible_with_tool(t))
             .cloned()
         {
+            let material = self.project.effective_workpiece_material();
             self.project.ensure_tool_embedded(&t);
+            op.preset_id =
+                chip_tools::match_best_preset_for_material(&t, &material).map(|p| p.id.clone());
             op.tool_id = Some(t.id);
-            op.preset_id = t.presets.first().map(|p| p.id.clone());
         }
         self.project.setups[s_idx].operations.push(op);
         let o_idx = self.project.setups[s_idx].operations.len() - 1;
@@ -364,9 +366,11 @@ impl ChipCutterApp {
             .find(|t| OperationKind::VCarve.is_compatible_with_tool(t))
             .cloned()
         {
+            let material = self.project.effective_workpiece_material();
             self.project.ensure_tool_embedded(&t);
+            op.preset_id =
+                chip_tools::match_best_preset_for_material(&t, &material).map(|p| p.id.clone());
             op.tool_id = Some(t.id);
-            op.preset_id = t.presets.first().map(|p| p.id.clone());
         }
         self.project.setups[s_idx].operations.push(op);
         let o_idx = self.project.setups[s_idx].operations.len() - 1;

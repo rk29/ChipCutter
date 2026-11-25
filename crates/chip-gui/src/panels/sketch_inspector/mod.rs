@@ -789,8 +789,10 @@ fn create_quick_sketch_op(
         .iter()
         .find(|t| kind.is_compatible_with_tool(t))
     {
+        let material = ctx.project.effective_workpiece_material();
         op.tool_id = Some(t.id.clone());
-        op.preset_id = t.presets.first().map(|p| p.id.clone());
+        op.preset_id =
+            chip_tools::match_best_preset_for_material(t, &material).map(|p| p.id.clone());
     }
     let ops = &mut ctx.project.setups[s_idx].operations;
     ops.push(op);

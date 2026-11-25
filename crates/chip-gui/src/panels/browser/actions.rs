@@ -295,9 +295,11 @@ pub fn create_default_operation_in_setup(
         .find(|t| kind.is_compatible_with_tool(t))
         .cloned()
     {
+        let material = project.effective_workpiece_material();
         project.ensure_tool_embedded(&compat);
+        op.preset_id =
+            chip_tools::match_best_preset_for_material(&compat, &material).map(|p| p.id.clone());
         op.tool_id = Some(compat.id);
-        op.preset_id = compat.presets.first().map(|p| p.id.clone());
     }
     project.setups[setup_idx].operations.push(op);
     Some(project.setups[setup_idx].operations.len() - 1)
@@ -322,9 +324,11 @@ pub(super) fn create_adaptive_2d_operation_in_setup(
         .find(|t| OperationKind::Pocket2D.is_compatible_with_tool(t))
         .cloned()
     {
+        let material = project.effective_workpiece_material();
         project.ensure_tool_embedded(&compat);
+        op.preset_id =
+            chip_tools::match_best_preset_for_material(&compat, &material).map(|p| p.id.clone());
         op.tool_id = Some(compat.id);
-        op.preset_id = compat.presets.first().map(|p| p.id.clone());
     }
     project.setups[setup_idx].operations.push(op);
     Some(project.setups[setup_idx].operations.len() - 1)
