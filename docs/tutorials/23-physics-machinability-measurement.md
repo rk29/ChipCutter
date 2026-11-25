@@ -143,9 +143,17 @@ Run the exact same cutting-physics machinability analysis from CI scripts or the
 # Run geometric validation + cutting-physics machinability report (human-readable table)
 chipcutter validate job.chip.toml --physics
 
-# Machine-readable JSON physics report for automation / shop checklists
-chipcutter validate job.chip.toml --physics-json
+# Machine-readable JSON validation + physics report for automation / shop checklists
+chipcutter validate job.chip.toml --physics --json
 
 # Fail CI / pre-flight build with non-zero exit code if any Critical tool-snap or stall hazard exists
-chipcutter validate job.chip.toml --physics --fail-on-physics-critical --machine carvera-air
+chipcutter validate job.chip.toml --strict-physics --machine carvera-air
 ```
+
+---
+
+## See Also
+
+- [**Tutorial 24 — Avoid / Keep-Out Regions, Model Bounds, & Indexed 3+1 Auto-Rotate**](24-keepout-regions-cutting-boundaries.md)
+- [**Tutorial 25 — In-Viewport Click-to-Measure (`M`) & Minimum-Radius / Reach Heatmap**](25-in-viewport-measure-reach-heatmap.md)
+- [**Tutorial 26 — Aluminum 6063-T5 Extrusions, Deep Helical Bore Safety, & Custom Post Profiles**](26-aluminum-6063-helical-bore-safety.md)

@@ -1688,6 +1688,599 @@ EOF
     --capture-sim-cutter false
 }
 
+capture_24_keepout_boundaries() {
+  local dir="docs/images/tutorials/24-keepout-regions-cutting-boundaries"
+
+  # 1. Shared Keep-Out 3D coral/red overlay on Facing op
+  capture_shot "$dir/01-keepout-geometry-overlay.png" \
+    --sample keepout-clamps \
+    --capture-generate \
+    --capture-view iso \
+    --capture-focus op:0:geometry \
+    --capture-sim-stock false \
+    --capture-sim-cutter false
+
+  # 2. Model Bounds with signed -X/+X/-Y/+Y offsets + shared Keep-Out on 3D Adaptive
+  capture_shot "$dir/02-model-bounds-signed-offsets.png" \
+    --sample keepout-clamps \
+    --capture-generate \
+    --capture-view iso \
+    --capture-focus op:1:geometry \
+    --capture-sim-stock false \
+    --capture-sim-cutter false
+
+  # 3. Completed keepout-clamps simulation verifying zero fixture collisions
+  capture_shot "$dir/03-contour-avoid-fixtures-sim.png" \
+    --sample keepout-clamps \
+    --capture-generate \
+    --capture-sim-progress 1.0 \
+    --capture-sim-stock true \
+    --capture-sim-cutter true \
+    --capture-pane sim \
+    --capture-view iso \
+    --capture-focus op:3:geometry
+
+  # 4. Indexed 3+1 Auto-Rotate Viewport at A = 90 deg with Model Bounds preview
+  capture_shot "$dir/04-indexed-90-auto-rotate.png" \
+    --sample indexed-model-bounds \
+    --capture-generate \
+    --capture-view iso \
+    --capture-focus op:1:geometry \
+    --capture-sim-stock false \
+    --capture-sim-cutter false
+
+  # 5. Completed 4-sided Indexed simulation with Setup Stock Fixed-Box Centered in Z
+  capture_shot "$dir/05-indexed-4sided-sim.png" \
+    --sample indexed-model-bounds \
+    --capture-generate \
+    --capture-sim-progress 1.0 \
+    --capture-sim-stock true \
+    --capture-sim-cutter true \
+    --capture-pane sim \
+    --capture-view iso \
+    --capture-focus setup:0:stock
+}
+
+capture_25_measure_reach() {
+  local dir="docs/images/tutorials/25-in-viewport-measure-reach-heatmap"
+  local drill_step="$TMP_PROJ_DIR/25_drill_plate.step"
+  local proj_drill="$TMP_PROJ_DIR/25_measure_drill.chip.toml"
+  local chamfer_step="$TMP_PROJ_DIR/25_chamfer_block.step"
+  local proj_chamfer="$TMP_PROJ_DIR/25_measure_chamfer.chip.toml"
+  local pocket_step="$REPO_ROOT/docs/tutorials/assets/05-adaptive-pocket.step"
+  local proj_stub="$TMP_PROJ_DIR/25_reach_stub.chip.toml"
+  local proj_long="$TMP_PROJ_DIR/25_reach_long.chip.toml"
+
+  "$CLI_BIN" generate-sample-step "$drill_step" --tutorial 04-drill-bore --project-out "$proj_drill"
+  "$CLI_BIN" generate-sample-step "$chamfer_step" --tutorial 06-chamfer-trace --project-out "$proj_chamfer"
+
+  cat > "$proj_stub" <<EOF
+schema_version = 3
+project_name = "Reach Check — 6mm Stub Cutter"
+display_units = "millimeter"
+machine_id = "generic"
+
+[workpiece_material]
+material_id = "aluminum-6061-t6"
+
+[[models]]
+id = "model_1"
+path = "$pocket_step"
+sha256 = ""
+
+[[tools]]
+id = "t_stub_6mm"
+name = "6.0mm Stub 3FL Flat (7mm LOC / 9mm Stickout)"
+native_unit = "millimeter"
+tool_number = 1
+length_offset_number = 1
+diameter_offset_number = 1
+spindle_direction = "cw"
+default_coolant = "mist"
+stickout_length_mm = 9.0
+
+[tools.geometry]
+type = "flat_endmill"
+diameter_mm = 6.0
+flute_length_mm = 7.0
+overall_length_mm = 40.0
+shank_diameter_mm = 6.0
+flutes = 3
+
+[[setups]]
+id = "setup_1"
+name = "Setup 1"
+wcs_slot = "G54"
+post_profile = "grbl"
+
+[[setups.operations]]
+id = "op_1_pocket_stub"
+name = "Pocket Reach Check (Stub)"
+kind = "pocket_2d"
+tool_id = "t_stub_6mm"
+
+[setups.operations.strategy]
+strategy_kind = "pocket_2d"
+EOF
+
+  cat > "$proj_long" <<EOF
+schema_version = 3
+project_name = "Reach Check — 3.175mm Long-Reach"
+display_units = "millimeter"
+machine_id = "carvera-air"
+
+[workpiece_material]
+material_id = "aluminum-6063-t5"
+
+[[models]]
+id = "model_1"
+path = "$pocket_step"
+sha256 = ""
+
+[[tools]]
+id = "t_long_3175mm"
+name = "3.175mm x 25mm LOC 1FL O-Flute (28mm Stickout)"
+native_unit = "millimeter"
+tool_number = 2
+length_offset_number = 2
+diameter_offset_number = 2
+spindle_direction = "cw"
+default_coolant = "air_blast"
+stickout_length_mm = 28.0
+
+[tools.geometry]
+type = "flat_endmill"
+diameter_mm = 3.175
+flute_length_mm = 25.0
+overall_length_mm = 50.0
+shank_diameter_mm = 3.175
+flutes = 1
+
+[[setups]]
+id = "setup_1"
+name = "Setup 1"
+wcs_slot = "G54"
+post_profile = "grblhal_atc"
+
+[[setups.operations]]
+id = "op_1_pocket_long"
+name = "Pocket Reach Check (Long-Reach)"
+kind = "pocket_2d"
+tool_id = "t_long_3175mm"
+
+[setups.operations.strategy]
+strategy_kind = "pocket_2d"
+EOF
+
+  # 1. Bore-to-Bore Measure mode on 04-drill-bore-plate.step
+  capture_shot "$dir/01-measure-bore-to-bore.png" \
+    "$proj_drill" \
+    --capture-view iso \
+    --capture-focus op:0:passes \
+    --capture-measure-demo \
+    --capture-sim-stock false \
+    --capture-sim-cutter false
+
+  # 2. Planar / Bevel Measure mode on 06-chamfer-engrave-block.step
+  capture_shot "$dir/02-measure-chamfer-block.png" \
+    "$proj_chamfer" \
+    --capture-view iso \
+    --capture-focus op:0:geometry \
+    --capture-measure-demo \
+    --capture-sim-stock false \
+    --capture-sim-cutter false
+
+  # 3. Reach / Min-R Heatmap with 6mm stub cutter (Crimson unreachable walls + Amber corners)
+  capture_shot "$dir/03-reach-stub-cutter-crimson.png" \
+    "$proj_stub" \
+    --capture-view iso \
+    --capture-focus op:0:tool \
+    --capture-reach-heatmap \
+    --capture-expand-machinability \
+    --capture-sim-stock false \
+    --capture-sim-cutter false
+
+  # 4. Reach / Min-R Heatmap after switching to 3.175mm x 25mm LOC long-reach cutter (Crimson cleared)
+  capture_shot "$dir/04-reach-long-cutter-cleared.png" \
+    "$proj_long" \
+    --capture-view iso \
+    --capture-focus op:0:tool \
+    --capture-reach-heatmap \
+    --capture-expand-machinability \
+    --capture-sim-stock false \
+    --capture-sim-cutter false
+}
+
+capture_26_al6063_helical_bore() {
+  local dir="docs/images/tutorials/26-aluminum-6063-helical-bore-safety"
+  local proj_hazard="$TMP_PROJ_DIR/26_al6063_hazard.chip.toml"
+  local proj_safe="$TMP_PROJ_DIR/26_al6063_safe.chip.toml"
+
+  cat > "$proj_hazard" <<'EOF'
+schema_version = 3
+project_name = "6063-T5 Bar Trim & 5mm Bore (Carvera Air)"
+display_units = "millimeter"
+machine_id = "carvera-air"
+
+[workpiece_material]
+material_id = "aluminum-6063-t5"
+
+[[sketches]]
+id = "sketch_1"
+name = "20x120mm Bar & 5mm Hole"
+visible = true
+regions = []
+
+[sketches.anchor]
+kind = "setup_xy"
+setup_id = "setup_1"
+plane_ref = "stock_top"
+
+[sketches.anchor.z_offset]
+value_mm = 0.0
+
+[sketches.cut_depth_default]
+value_mm = 20.0
+
+[[sketches.entities]]
+id = "ref_bar"
+name = "Finished Bar (20 x 120mm)"
+is_construction = false
+
+[sketches.entities.entity]
+type = "rectangle"
+anchor = "front_left"
+rotation_deg = 0.0
+
+[sketches.entities.entity.x]
+value_mm = 0.0
+
+[sketches.entities.entity.y]
+value_mm = -120.0
+
+[sketches.entities.entity.width]
+value_mm = 20.0
+
+[sketches.entities.entity.height]
+value_mm = 120.0
+
+[sketches.entities.entity.corner_radius]
+value_mm = 0.0
+
+[[sketches.entities]]
+id = "cut_line"
+name = "End Trim Line (Y = -120mm)"
+is_construction = false
+
+[sketches.entities.entity]
+type = "polyline"
+scale = 1.0
+rotation_deg = 0.0
+
+[sketches.entities.entity.polyline]
+closed = false
+
+[[sketches.entities.entity.polyline.segments]]
+[sketches.entities.entity.polyline.segments.Line]
+start = [20.0, -120.0]
+end = [0.0, -120.0]
+
+[sketches.entities.entity.translate_x]
+value_mm = 0.0
+
+[sketches.entities.entity.translate_y]
+value_mm = 0.0
+
+[[sketches.entities]]
+id = "hole_5mm"
+name = "5mm Through Hole (Y = -110mm)"
+is_construction = false
+
+[sketches.entities.entity]
+type = "circle"
+
+[sketches.entities.entity.center_x]
+value_mm = 10.0
+
+[sketches.entities.entity.center_y]
+value_mm = -110.0
+
+[sketches.entities.entity.diameter]
+value_mm = 5.0
+
+[[tools]]
+id = "carvera_t2_3175mm_25loc_1fl"
+tool_number = 2
+length_offset_number = 2
+diameter_offset_number = 2
+name = '3.175mm (1/8") x 25mm 1FL O-Flute Flat'
+native_unit = "millimeter"
+spindle_direction = "cw"
+default_coolant = "air_blast"
+stickout_length_mm = 28.0
+
+[tools.geometry]
+type = "flat_endmill"
+diameter_mm = 3.175
+flute_length_mm = 25.0
+overall_length_mm = 50.0
+shank_diameter_mm = 3.175
+flutes = 1
+
+[[tools.presets]]
+id = "carvera_al6063_deep"
+name = "Aluminum 6063-T5 - Deep"
+material = "Aluminum 6063-T5"
+spindle_rpm = 11028.0
+surface_speed_m_min = 110.0
+cutting_feed_mm_min = 309.0
+chipload_mm_tooth = 0.028
+lead_feed_mm_min = 247.0
+ramp_feed_mm_min = 154.0
+plunge_feed_mm_min = 103.0
+default_stepdown_mm = 2.0
+default_stepover_mm = 0.3
+coolant_override = "air_blast"
+
+[[setups]]
+id = "setup_1"
+name = "Setup 1 — Vise Trim -Y End (125 -> 120mm)"
+wcs_slot = "G54"
+post_profile = "grblhal_atc"
+
+[setups.wcs.orientation]
+mode = "model_orientation"
+
+[setups.wcs.origin]
+mode = "stock_box_point"
+
+[setups.wcs.origin.anchor]
+x = "center"
+y = "max"
+z = "max"
+
+[setups.stock]
+type = "fixed_box"
+
+[setups.stock.width_x]
+value_mm = 20.0
+
+[setups.stock.depth_y]
+value_mm = 125.0
+
+[setups.stock.height_z]
+value_mm = 20.0
+
+[setups.stock.xy_align]
+mode = "offset_from_front_left"
+
+[setups.stock.xy_align.dx]
+value_mm = 0.0
+
+[setups.stock.xy_align.dy]
+value_mm = 5.0
+
+[setups.stock.z_align]
+mode = "offset_from_top"
+
+[setups.stock.z_align.top_allowance]
+value_mm = 0.0
+
+[setups.heights.clearance]
+reference = "stock_top"
+
+[setups.heights.clearance.offset]
+value_mm = 10.0
+
+[setups.heights.retract]
+reference = "stock_top"
+
+[setups.heights.retract.offset]
+value_mm = 5.0
+
+[setups.heights.default_feed_offset]
+value_mm = 2.0
+
+[[setups.fixtures]]
+id = "fixture_vise_1"
+name = "Machinist Vise (Rear 80mm Grip)"
+enabled = true
+
+[setups.fixtures.clearance_margin]
+value_mm = 1.0
+
+[setups.fixtures.kind]
+type = "vise_jaws"
+clamp_axis = "x"
+include_parallels = true
+fixed_jaw_side = "negative"
+
+[setups.fixtures.kind.jaw_width]
+value_mm = 80.0
+
+[setups.fixtures.kind.jaw_thickness]
+value_mm = 15.0
+
+[setups.fixtures.kind.jaw_height]
+value_mm = 25.0
+
+[setups.fixtures.kind.grip_depth]
+value_mm = 12.0
+
+[setups.fixtures.kind.parallel_thickness]
+value_mm = 3.175
+
+[setups.fixtures.kind.center_offset_along_jaw]
+value_mm = 22.5
+
+[[setups.operations]]
+id = "op_trim_y_end"
+name = "Trim -Y End to 120mm (Aggressive)"
+kind = "contour_2d"
+tool_id = "carvera_t2_3175mm_25loc_1fl"
+preset_id = "carvera_al6063_deep"
+
+[[setups.operations.selections]]
+kind = "sketch_entity"
+sketch_id = "sketch_1"
+entity_id = "cut_line"
+
+[setups.operations.heights.clearance]
+reference = "setup_clearance"
+
+[setups.operations.heights.clearance.offset]
+value_mm = 0.0
+
+[setups.operations.heights.retract]
+reference = "setup_retract"
+
+[setups.operations.heights.retract.offset]
+value_mm = 0.0
+
+[setups.operations.heights.feed]
+reference = "stock_top"
+
+[setups.operations.heights.feed.offset]
+value_mm = 2.0
+
+[setups.operations.heights.top]
+reference = "stock_top"
+
+[setups.operations.heights.top.offset]
+value_mm = 0.0
+
+[setups.operations.heights.bottom]
+reference = "stock_bottom"
+
+[setups.operations.heights.bottom.offset]
+value_mm = -0.2
+
+[setups.operations.passes]
+multiple_depths = true
+even_stepdowns = true
+
+[setups.operations.passes.max_stepdown]
+value_mm = 4.1
+
+[setups.operations.strategy]
+strategy_kind = "contour_2d"
+compensation = "left_climb"
+roughing_passes = 10
+finish_passes = 1
+repeat_finish_pass = true
+
+[setups.operations.strategy.roughing_stepover]
+value_mm = 0.5
+
+[setups.operations.strategy.finish_stepover]
+value_mm = 0.1
+
+[setups.operations.strategy.open_chain_extension]
+value_mm = 3.0
+
+[[setups.operations]]
+id = "op_bore_5mm"
+name = "Helical Bore 5mm Through Hole"
+kind = "drill_bore"
+tool_id = "carvera_t2_3175mm_25loc_1fl"
+preset_id = "carvera_al6063_deep"
+
+[[setups.operations.selections]]
+kind = "sketch_entity"
+sketch_id = "sketch_1"
+entity_id = "hole_5mm"
+
+[setups.operations.heights.clearance]
+reference = "setup_clearance"
+
+[setups.operations.heights.clearance.offset]
+value_mm = 0.0
+
+[setups.operations.heights.retract]
+reference = "setup_retract"
+
+[setups.operations.heights.retract.offset]
+value_mm = 0.0
+
+[setups.operations.heights.feed]
+reference = "stock_top"
+
+[setups.operations.heights.feed.offset]
+value_mm = 1.0
+
+[setups.operations.heights.top]
+reference = "stock_top"
+
+[setups.operations.heights.top.offset]
+value_mm = 0.0
+
+[setups.operations.heights.bottom]
+reference = "stock_bottom"
+
+[setups.operations.heights.bottom.offset]
+value_mm = -0.5
+
+[setups.operations.strategy]
+strategy_kind = "drill_bore"
+mode = "helical_bore"
+bore_ramp_angle_deg = 2.0
+bore_finish_pass = false
+bore_spring_pass = false
+bore_inner_arc_feed_comp = true
+
+[setups.operations.strategy.bore_chip_clear_depth]
+value_mm = 10.0
+EOF
+
+  sed \
+    -e 's/Trim -Y End to 120mm (Aggressive)/Trim -Y End to 120mm (Safe Tuned)/' \
+    -e 's/value_mm = 4.1/value_mm = 2.2/' \
+    -e 's/roughing_passes = 10/roughing_passes = 16/' \
+    -e 's/value_mm = 0.5/value_mm = 0.3/' \
+    "$proj_hazard" > "$proj_safe"
+  sed -i 's/value_mm = -0.3/value_mm = -0.5/' "$proj_safe"
+
+  # 1. Project Inspector showing Aluminum 6063-T5 Extrusion on Carvera Air
+  capture_shot "$dir/01-al6063-project-material-and-presets.png" \
+    "$proj_hazard" \
+    --capture-view iso \
+    --capture-focus project \
+    --capture-sim-stock false \
+    --capture-sim-cutter false
+
+  # 2. Op 1 Critical tool-snap hazard at ap=4.04 x ae=0.50 in 6063-T5
+  capture_shot "$dir/02-bar-trim-critical-hazard.png" \
+    "$proj_hazard" \
+    --capture-view iso \
+    --capture-focus op:0:tool \
+    --capture-expand-machinability \
+    --capture-sim-stock false \
+    --capture-sim-cutter false
+
+  # 3. Op 2 Deep Helical Bore [Passes] (Inner-Arc Feed Comp + Chip-Clear Retract) + Diagnostics table
+  capture_shot "$dir/03-helical-bore-safety-and-diagnostics.png" \
+    "$proj_safe" \
+    --capture-view iso \
+    --capture-focus op:1:passes \
+    --capture-pane diagnostics \
+    --capture-expand-machinability \
+    --capture-sim-stock false \
+    --capture-sim-cutter false
+
+  # 4. Safe tuned job generated & simulated in volumetric Tri-Dexel
+  capture_shot "$dir/04-bar-trim-safe-tridexel-sim.png" \
+    "$proj_safe" \
+    --capture-generate \
+    --capture-sim-engine tri-dexel \
+    --capture-sim-progress 1.0 \
+    --capture-sim-stock true \
+    --capture-sim-cutter true \
+    --capture-pane sim \
+    --capture-view iso \
+    --capture-focus op:0:tool \
+    --capture-expand-machinability
+}
+
 if [[ -n "$TUTORIAL" ]]; then
   case "$TUTORIAL" in
     00-getting-started)
@@ -1762,6 +2355,15 @@ if [[ -n "$TUTORIAL" ]]; then
     23-physics-machinability-measurement)
       capture_23_physics_machinability
       ;;
+    24-keepout-regions-cutting-boundaries)
+      capture_24_keepout_boundaries
+      ;;
+    25-in-viewport-measure-reach-heatmap)
+      capture_25_measure_reach
+      ;;
+    26-aluminum-6063-helical-bore-safety)
+      capture_26_al6063_helical_bore
+      ;;
     *)
       echo "Unknown tutorial slug: $TUTORIAL" >&2
       exit 2
@@ -1811,6 +2413,9 @@ else
       ;;
     96)
       capture_23_physics_machinability
+      capture_24_keepout_boundaries
+      capture_25_measure_reach
+      capture_26_al6063_helical_bore
       ;;
     all)
       capture_00_getting_started
@@ -1837,6 +2442,9 @@ else
       capture_21_3d_deburr
       capture_22_undercut_milling
       capture_23_physics_machinability
+      capture_24_keepout_boundaries
+      capture_25_measure_reach
+      capture_26_al6063_helical_bore
       ;;
     *)
       echo "Unsupported milestone: $MILESTONE (available: 13, 14, 15, 22, 23, 24, 47, 63, 69, 70, 96, all)" >&2
