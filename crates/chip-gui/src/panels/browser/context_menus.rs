@@ -240,6 +240,11 @@ pub(super) fn apply_expand_collapse_all(
             nid(TreeNodeKey::FixturesFolder { setup_idx: s_idx }),
             expand,
         );
+        set_node_open(
+            ui,
+            nid(TreeNodeKey::OperationsFolder { setup_idx: s_idx }),
+            expand,
+        );
     }
 }
 
@@ -666,7 +671,7 @@ pub(super) fn show_setups_folder_context_menu(ui: &mut Ui, pending: &mut Deferre
     }
 }
 
-fn show_add_operation_submenu(
+pub(super) fn show_add_operation_categories(
     ui: &mut Ui,
     setup_idx: usize,
     pending: &mut DeferredBrowserMutations,
@@ -699,40 +704,64 @@ fn show_add_operation_submenu(
         AddOperationPreset::Standard(OperationKind::Rotary4AxisSim),
     ];
 
-    ui.menu_button("Add Operation", |ui| {
-        ui.menu_button("2.5D Milling", |ui| {
-            for preset in OPS_25D {
-                if ui.button(preset.label()).clicked() {
-                    pending.setup_add_op = Some((setup_idx, preset));
-                    ui.close();
-                }
+    ui.menu_button("2.5D Milling", |ui| {
+        for preset in OPS_25D {
+            if ui.button(preset.label()).clicked() {
+                pending.setup_add_op = Some((setup_idx, preset));
+                ui.close();
             }
-        });
-        ui.menu_button("3D Surface", |ui| {
-            for preset in OPS_3D {
-                if ui.button(preset.label()).clicked() {
-                    pending.setup_add_op = Some((setup_idx, preset));
-                    ui.close();
-                }
-            }
-        });
-        ui.menu_button("Undercut & Deburr", |ui| {
-            for preset in OPS_UNDERCUT_DEBURR {
-                if ui.button(preset.label()).clicked() {
-                    pending.setup_add_op = Some((setup_idx, preset));
-                    ui.close();
-                }
-            }
-        });
-        ui.menu_button("4th-Axis Rotary", |ui| {
-            for preset in OPS_4AXIS {
-                if ui.button(preset.label()).clicked() {
-                    pending.setup_add_op = Some((setup_idx, preset));
-                    ui.close();
-                }
-            }
-        });
+        }
     });
+    ui.menu_button("3D Surface", |ui| {
+        for preset in OPS_3D {
+            if ui.button(preset.label()).clicked() {
+                pending.setup_add_op = Some((setup_idx, preset));
+                ui.close();
+            }
+        }
+    });
+    ui.menu_button("Undercut & Deburr", |ui| {
+        for preset in OPS_UNDERCUT_DEBURR {
+            if ui.button(preset.label()).clicked() {
+                pending.setup_add_op = Some((setup_idx, preset));
+                ui.close();
+            }
+        }
+    });
+    ui.menu_button("4th-Axis Rotary", |ui| {
+        for preset in OPS_4AXIS {
+            if ui.button(preset.label()).clicked() {
+                pending.setup_add_op = Some((setup_idx, preset));
+                ui.close();
+            }
+        }
+    });
+}
+
+fn show_add_operation_submenu(
+    ui: &mut Ui,
+    setup_idx: usize,
+    pending: &mut DeferredBrowserMutations,
+) {
+    ui.menu_button("Add Operation", |ui| {
+        show_add_operation_categories(ui, setup_idx, pending);
+    });
+}
+
+pub(super) fn show_operations_folder_context_menu(
+    ui: &mut Ui,
+    setup_idx: usize,
+    active_setup_idx: &mut usize,
+    pending: &mut DeferredBrowserMutations,
+    emitted_action: &mut Option<BrowserAction>,
+) {
+    show_add_operation_submenu(ui, setup_idx, pending);
+    ui.separator();
+    if ui.button("Generate Setup").clicked() {
+        *active_setup_idx = setup_idx;
+        *emitted_action = Some(BrowserAction::GenerateSetup(setup_idx));
+        ui.close();
+    }
 }
 
 fn show_add_fixture_submenu(

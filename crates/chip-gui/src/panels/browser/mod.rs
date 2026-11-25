@@ -46,11 +46,12 @@ use actions::{
 };
 use context_menus::{
     DeferredBrowserMutations, InlineRenameState, apply_expand_collapse_all,
-    render_inline_rename_row, show_avoid_folder_context_menu, show_avoid_item_context_menu,
-    show_fixture_item_context_menu, show_fixtures_folder_context_menu,
-    show_model_item_context_menu, show_models_folder_context_menu,
-    show_operation_item_context_menu, show_project_root_context_menu, show_setup_item_context_menu,
-    show_setups_folder_context_menu, show_sketch_entity_context_menu,
+    render_inline_rename_row, show_add_operation_categories, show_avoid_folder_context_menu,
+    show_avoid_item_context_menu, show_fixture_item_context_menu,
+    show_fixtures_folder_context_menu, show_model_item_context_menu,
+    show_models_folder_context_menu, show_operation_item_context_menu,
+    show_operations_folder_context_menu, show_project_root_context_menu,
+    show_setup_item_context_menu, show_setups_folder_context_menu, show_sketch_entity_context_menu,
     show_sketch_item_context_menu, show_sketches_folder_context_menu, show_tool_item_context_menu,
     show_tools_folder_context_menu, start_inline_rename_for_key,
 };
@@ -1781,290 +1782,351 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                         }
                     }
 
-                    // 5b. Setup -> Operations
+                    // 5b. Setup -> Operations (N)
                     let op_len = project.setups[s_idx].operations.len();
-                    let mut row_rects: Vec<Rect> = Vec::with_capacity(op_len);
-                    for o_idx in 0..op_len {
-                        let is_sel = *focus
-                            == InspectorFocus::Operation {
+                    let ops_folder_key = TreeNodeKey::OperationsFolder { setup_idx: s_idx };
+                    let ops_folder_id = node_id_for(tree_scope, &ops_folder_key);
+                    let ops_folder_label = format!("Operations ({op_len})");
+                    let ops_folder_out = tree_row(
+                        ui,
+                        TreeRowSpec {
+                            node_id: ops_folder_id,
+                            depth: 3,
+                            icon: IconKind::OperationsFolder,
+                            icon_color: tok.text_secondary,
+                            label: &ops_folder_label,
+                            label_color: tok.text_secondary,
+                            bold: false,
+                            strikethrough: false,
+                            italic: false,
+                            has_children: op_len > 0,
+                            default_open: true,
+                            selected: false,
+                            keyboard_focused: tree_kbd_active
+                                && kbd_focused_key.as_ref() == Some(&ops_folder_key),
+                            draggable: false,
+                            tooltip: Some("Ordered machining operations for this Setup"),
+                        },
+                        |ui, _hovered| {
+                            tree_folder_menu_button(
+                                ui,
+                                ("tree_ops_add_menu", s_idx),
+                                "Add a CAM Operation to this Setup",
+                                |ui| {
+                                    show_add_operation_categories(ui, s_idx, &mut pending);
+                                },
+                            );
+                        },
+                    );
+                    visible_nodes.push(VisibleTreeNode {
+                        key: ops_folder_key.clone(),
+                        node_id: ops_folder_id,
+                        parent: Some(s_key.clone()),
+                        has_children: op_len > 0,
+                        is_open: ops_folder_out.is_open,
+                    });
+                    if ops_folder_out.response.clicked() {
+                        *active_setup_idx = s_idx;
+                        kbd_focused_key = Some(ops_folder_key.clone());
+                        any_row_clicked = true;
+                    } else if ops_folder_out.chevron_toggled {
+                        kbd_focused_key = Some(ops_folder_key.clone());
+                        any_row_clicked = true;
+                    }
+                    ops_folder_out.response.context_menu(|ui| {
+                        show_operations_folder_context_menu(
+                            ui,
+                            s_idx,
+                            active_setup_idx,
+                            &mut pending,
+                            &mut emitted_action,
+                        );
+                    });
+
+                    if ops_folder_out.is_open {
+                        let mut row_rects: Vec<Rect> = Vec::with_capacity(op_len);
+                        for o_idx in 0..op_len {
+                            let is_sel = *focus
+                                == InspectorFocus::Operation {
+                                    setup_idx: s_idx,
+                                    op_idx: o_idx,
+                                };
+                            let cached_tp = toolpath_cache.get_for_operation(
+                                project,
+                                s_idx,
+                                o_idx,
+                                cad_revision,
+                            );
+                            let op = &project.setups[s_idx].operations[o_idx];
+                            let op_key = TreeNodeKey::Operation {
                                 setup_idx: s_idx,
                                 op_idx: o_idx,
                             };
-                        let cached_tp =
-                            toolpath_cache.get_for_operation(project, s_idx, o_idx, cad_revision);
-                        let op = &project.setups[s_idx].operations[o_idx];
-                        let op_key = TreeNodeKey::Operation {
-                            setup_idx: s_idx,
-                            op_idx: o_idx,
-                        };
-                        let op_node_id = node_id_for(tree_scope, &op_key);
-                        let op_id_clone = op.id.clone();
-                        let op_name_clone = op.name.clone();
-                        let op_kind_val = op.kind;
-                        let op_is_adap = op.is_adaptive_2d();
+                            let op_node_id = node_id_for(tree_scope, &op_key);
+                            let op_id_clone = op.id.clone();
+                            let op_name_clone = op.name.clone();
+                            let op_kind_val = op.kind;
+                            let op_is_adap = op.is_adaptive_2d();
 
-                        if rename_state.as_ref().is_some_and(|r| r.key == op_key) {
-                            let r_rect = ui.available_rect_before_wrap();
-                            if let Some(commit) = render_inline_rename_row(
-                                ui,
-                                3,
-                                IconKind::for_operation(op_kind_val, op_is_adap),
-                                tok.accent,
-                                &mut rename_state,
-                            ) {
-                                pending.inline_rename_commit = Some(commit);
+                            if rename_state.as_ref().is_some_and(|r| r.key == op_key) {
+                                let r_rect = ui.available_rect_before_wrap();
+                                if let Some(commit) = render_inline_rename_row(
+                                    ui,
+                                    4,
+                                    IconKind::for_operation(op_kind_val, op_is_adap),
+                                    tok.accent,
+                                    &mut rename_state,
+                                ) {
+                                    pending.inline_rename_commit = Some(commit);
+                                }
+                                row_rects.push(Rect::from_min_size(
+                                    r_rect.min,
+                                    egui::vec2(r_rect.width(), tree_widget::TREE_ROW_HEIGHT),
+                                ));
+                                visible_nodes.push(VisibleTreeNode {
+                                    key: op_key,
+                                    node_id: op_node_id,
+                                    parent: Some(ops_folder_key.clone()),
+                                    has_children: false,
+                                    is_open: false,
+                                });
+                                continue;
                             }
-                            row_rects.push(Rect::from_min_size(
-                                r_rect.min,
-                                egui::vec2(r_rect.width(), tree_widget::TREE_ROW_HEIGHT),
-                            ));
+
+                            let est_sec = cached_tp.as_ref().map(|(_, tp)| {
+                                tp.stats.total_est_time_sec
+                                    + tp.clearing_stage
+                                        .as_ref()
+                                        .map_or(0.0, |c| c.toolpath.stats.total_est_time_sec)
+                            });
+
+                            let (status_kind, hover_note) = if op.suppressed {
+                                (
+                                    StatusBadgeKind::Suppressed,
+                                    Some("Suppressed (unchecked)".to_string()),
+                                )
+                            } else {
+                                match &op.runtime_status {
+                                    OperationStatus::Clean => (
+                                        StatusBadgeKind::Clean,
+                                        est_sec.map(|sec| {
+                                            let passes = cached_tp
+                                                .as_ref()
+                                                .map_or(0, |(_, tp)| tp.stats.pass_count);
+                                            format!(
+                                                "Clean: {passes} pass(es), est. {} (drag or Ctrl+Up/Down to reorder)",
+                                                format_cycle_time(sec)
+                                            )
+                                        }),
+                                    ),
+                                    OperationStatus::Dirty => (
+                                        StatusBadgeKind::Dirty,
+                                        Some("Dirty - press Ctrl+G to regenerate".to_string()),
+                                    ),
+                                    OperationStatus::Generating => (
+                                        StatusBadgeKind::Dirty,
+                                        Some("Generating on background thread...".to_string()),
+                                    ),
+                                    OperationStatus::Error { message } => {
+                                        (StatusBadgeKind::Error, Some(message.clone()))
+                                    }
+                                    OperationStatus::NeedsRepick { message } => (
+                                        StatusBadgeKind::NeedsRepick,
+                                        Some(format!("Needs Re-Pick: {message}")),
+                                    ),
+                                }
+                            };
+
+                            let badge_txt = if op.suppressed {
+                                None
+                            } else {
+                                format_operation_badge(project, op, est_sec)
+                            };
+
+                            let mode_tag = match (op.is_adaptive_2d(), op.has_rest_machining()) {
+                                (true, true) => " | Adp+Rest",
+                                (true, false) => "",
+                                (false, true) => " | Rest",
+                                (false, false) => "",
+                            };
+                            let label_txt = format!("{}. {}{mode_tag}", o_idx + 1, op.name);
+                            let is_sup = op.suppressed;
+                            let is_hidden_in_vp = hidden_operation_ids.contains(&op_id_clone);
+                            let is_needs_repick = !is_sup
+                                && matches!(op.runtime_status, OperationStatus::NeedsRepick { .. });
+                            let is_gen = !is_sup
+                                && matches!(op.runtime_status, OperationStatus::Generating);
+                            let is_being_dragged = active_drag.is_some_and(|d| {
+                                d.section == DragSection::Operations { setup_idx: s_idx }
+                                    && d.item_idx == o_idx
+                            });
+
+                            let op_out = tree_row(
+                                ui,
+                                TreeRowSpec {
+                                    node_id: op_node_id,
+                                    depth: 4,
+                                    icon: IconKind::for_operation(op_kind_val, op_is_adap),
+                                    icon_color: if is_sup {
+                                        tok.suppressed_fg
+                                    } else if is_sel || is_being_dragged {
+                                        tok.accent
+                                    } else {
+                                        tok.text_secondary
+                                    },
+                                    label: &label_txt,
+                                    label_color: if is_sup {
+                                        tok.suppressed_fg
+                                    } else {
+                                        tok.text_primary
+                                    },
+                                    bold: false,
+                                    strikethrough: is_sup,
+                                    italic: false,
+                                    has_children: false,
+                                    default_open: false,
+                                    selected: is_sel || is_being_dragged,
+                                    keyboard_focused: tree_kbd_active
+                                        && kbd_focused_key.as_ref() == Some(&op_key),
+                                    draggable: op_len > 1,
+                                    tooltip: hover_note.as_deref(),
+                                },
+                                |ui, hovered| {
+                                    let show_hover_tools = hovered && active_drag.is_none();
+                                    let mut active = !is_sup;
+                                    if ui
+                                        .checkbox(&mut active, "")
+                                        .on_hover_text(if is_sup {
+                                            "Suppressed - check to re-enable this operation for simulation & G-code"
+                                        } else {
+                                            "Active - uncheck to suppress this operation from simulation & G-code"
+                                        })
+                                        .changed()
+                                    {
+                                        pending.op_toggle_suppress = Some((s_idx, o_idx));
+                                    }
+
+                                    if show_hover_tools {
+                                        if small_icon_button(
+                                            ui,
+                                            IconKind::Trash,
+                                            "Delete Operation (Del)",
+                                        )
+                                        .clicked()
+                                        {
+                                            pending.op_delete = Some((s_idx, o_idx));
+                                        }
+                                        if small_icon_button(
+                                            ui,
+                                            IconKind::Duplicate,
+                                            "Duplicate Operation (Ctrl+D)",
+                                        )
+                                        .clicked()
+                                        {
+                                            pending.op_duplicate = Some((s_idx, o_idx));
+                                        }
+                                    }
+
+                                    if (show_hover_tools || is_hidden_in_vp)
+                                        && small_icon_button(
+                                            ui,
+                                            if is_hidden_in_vp {
+                                                IconKind::EyeOff
+                                            } else {
+                                                IconKind::Eye
+                                            },
+                                            if is_hidden_in_vp {
+                                                "Show operation toolpath in 3D viewport"
+                                            } else {
+                                                "Hide operation toolpath in 3D viewport (keeps operation active)"
+                                            },
+                                        )
+                                        .clicked()
+                                    {
+                                        pending.op_toggle_visibility = Some(op_id_clone.clone());
+                                    }
+
+                                    if !show_hover_tools
+                                        && let Some(badge) = &badge_txt
+                                    {
+                                        tree_badge_pill(
+                                            ui,
+                                            badge,
+                                            tok.elevated_bg,
+                                            Some(tok.border),
+                                            tok.text_muted,
+                                            None,
+                                        );
+                                    }
+
+                                    if is_gen {
+                                        ui.add(egui::Spinner::new().size(13.0));
+                                    } else {
+                                        status_badge_icon(ui, status_kind, hover_note.as_deref());
+                                    }
+                                },
+                            );
+
                             visible_nodes.push(VisibleTreeNode {
-                                key: op_key,
+                                key: op_key.clone(),
                                 node_id: op_node_id,
-                                parent: Some(s_key.clone()),
+                                parent: Some(ops_folder_key.clone()),
                                 has_children: false,
                                 is_open: false,
                             });
-                            continue;
+
+                            if op_out.response.clicked() {
+                                *active_setup_idx = s_idx;
+                                *focus = InspectorFocus::Operation {
+                                    setup_idx: s_idx,
+                                    op_idx: o_idx,
+                                };
+                                if is_needs_repick {
+                                    *op_tab = OperationTab::Geometry;
+                                }
+                                *pick_mode =
+                                    default_pick_mode_for_op(s_idx, o_idx, op_kind_val, *op_tab);
+                                kbd_focused_key = Some(op_key);
+                                any_row_clicked = true;
+                            }
+                            if op_out.response.drag_started() && op_len > 1 {
+                                let st = DraggedTreeItem {
+                                    section: DragSection::Operations { setup_idx: s_idx },
+                                    item_idx: o_idx,
+                                };
+                                active_drag = Some(st);
+                                ui.ctx().data_mut(|d| d.insert_temp(drag_state_id, st));
+                            }
+
+                            op_out.response.context_menu(|ui| {
+                                show_operation_item_context_menu(
+                                    ui,
+                                    s_idx,
+                                    o_idx,
+                                    op_len,
+                                    &op_id_clone,
+                                    &op_name_clone,
+                                    is_sup,
+                                    is_hidden_in_vp,
+                                    &mut pending,
+                                    &mut rename_state,
+                                    &mut emitted_action,
+                                );
+                            });
+
+                            row_rects.push(op_out.row_rect);
                         }
 
-                        let est_sec = cached_tp.as_ref().map(|(_, tp)| {
-                            tp.stats.total_est_time_sec
-                                + tp.clearing_stage
-                                    .as_ref()
-                                    .map_or(0.0, |c| c.toolpath.stats.total_est_time_sec)
-                        });
-
-                        let (status_kind, hover_note) = if op.suppressed {
-                            (
-                                StatusBadgeKind::Suppressed,
-                                Some("Suppressed (unchecked)".to_string()),
-                            )
-                        } else {
-                            match &op.runtime_status {
-                                OperationStatus::Clean => (
-                                    StatusBadgeKind::Clean,
-                                    est_sec.map(|sec| {
-                                        let passes = cached_tp
-                                            .as_ref()
-                                            .map_or(0, |(_, tp)| tp.stats.pass_count);
-                                        format!(
-                                            "Clean: {passes} pass(es), est. {} (drag or Ctrl+Up/Down to reorder)",
-                                            format_cycle_time(sec)
-                                        )
-                                    }),
-                                ),
-                                OperationStatus::Dirty => (
-                                    StatusBadgeKind::Dirty,
-                                    Some("Dirty - press Ctrl+G to regenerate".to_string()),
-                                ),
-                                OperationStatus::Generating => (
-                                    StatusBadgeKind::Dirty,
-                                    Some("Generating on background thread...".to_string()),
-                                ),
-                                OperationStatus::Error { message } => {
-                                    (StatusBadgeKind::Error, Some(message.clone()))
-                                }
-                                OperationStatus::NeedsRepick { message } => (
-                                    StatusBadgeKind::NeedsRepick,
-                                    Some(format!("Needs Re-Pick: {message}")),
-                                ),
-                            }
-                        };
-
-                        let badge_txt = if op.suppressed {
-                            None
-                        } else {
-                            format_operation_badge(project, op, est_sec)
-                        };
-
-                        let mode_tag = match (op.is_adaptive_2d(), op.has_rest_machining()) {
-                            (true, true) => " | Adp+Rest",
-                            (true, false) => "",
-                            (false, true) => " | Rest",
-                            (false, false) => "",
-                        };
-                        let label_txt = format!("{}. {}{mode_tag}", o_idx + 1, op.name);
-                        let is_sup = op.suppressed;
-                        let is_hidden_in_vp = hidden_operation_ids.contains(&op_id_clone);
-                        let is_needs_repick = !is_sup
-                            && matches!(op.runtime_status, OperationStatus::NeedsRepick { .. });
-                        let is_gen =
-                            !is_sup && matches!(op.runtime_status, OperationStatus::Generating);
-                        let is_being_dragged = active_drag.is_some_and(|d| {
-                            d.section == DragSection::Operations { setup_idx: s_idx }
-                                && d.item_idx == o_idx
-                        });
-
-                        let op_out = tree_row(
+                        if let Some((from_i, to_slot)) = handle_section_drag_overlay(
                             ui,
-                            TreeRowSpec {
-                                node_id: op_node_id,
-                                depth: 3,
-                                icon: IconKind::for_operation(op_kind_val, op_is_adap),
-                                icon_color: if is_sup {
-                                    tok.suppressed_fg
-                                } else if is_sel || is_being_dragged {
-                                    tok.accent
-                                } else {
-                                    tok.text_secondary
-                                },
-                                label: &label_txt,
-                                label_color: if is_sup {
-                                    tok.suppressed_fg
-                                } else {
-                                    tok.text_primary
-                                },
-                                bold: false,
-                                strikethrough: is_sup,
-                                italic: false,
-                                has_children: false,
-                                default_open: false,
-                                selected: is_sel || is_being_dragged,
-                                keyboard_focused: tree_kbd_active
-                                    && kbd_focused_key.as_ref() == Some(&op_key),
-                                draggable: op_len > 1,
-                                tooltip: hover_note.as_deref(),
-                            },
-                            |ui, hovered| {
-                                let show_hover_tools = hovered && active_drag.is_none();
-                                let mut active = !is_sup;
-                                if ui
-                                    .checkbox(&mut active, "")
-                                    .on_hover_text(if is_sup {
-                                        "Suppressed - check to re-enable this operation for simulation & G-code"
-                                    } else {
-                                        "Active - uncheck to suppress this operation from simulation & G-code"
-                                    })
-                                    .changed()
-                                {
-                                    pending.op_toggle_suppress = Some((s_idx, o_idx));
-                                }
-
-                                if show_hover_tools {
-                                    if small_icon_button(
-                                        ui,
-                                        IconKind::Trash,
-                                        "Delete Operation (Del)",
-                                    )
-                                    .clicked()
-                                    {
-                                        pending.op_delete = Some((s_idx, o_idx));
-                                    }
-                                    if small_icon_button(
-                                        ui,
-                                        IconKind::Duplicate,
-                                        "Duplicate Operation (Ctrl+D)",
-                                    )
-                                    .clicked()
-                                    {
-                                        pending.op_duplicate = Some((s_idx, o_idx));
-                                    }
-                                }
-
-                                if (show_hover_tools || is_hidden_in_vp)
-                                    && small_icon_button(
-                                        ui,
-                                        if is_hidden_in_vp {
-                                            IconKind::EyeOff
-                                        } else {
-                                            IconKind::Eye
-                                        },
-                                        if is_hidden_in_vp {
-                                            "Show operation toolpath in 3D viewport"
-                                        } else {
-                                            "Hide operation toolpath in 3D viewport (keeps operation active)"
-                                        },
-                                    )
-                                    .clicked()
-                                {
-                                    pending.op_toggle_visibility = Some(op_id_clone.clone());
-                                }
-
-                                if !show_hover_tools
-                                    && let Some(badge) = &badge_txt
-                                {
-                                    tree_badge_pill(
-                                        ui,
-                                        badge,
-                                        tok.elevated_bg,
-                                        Some(tok.border),
-                                        tok.text_muted,
-                                        None,
-                                    );
-                                }
-
-                                if is_gen {
-                                    ui.add(egui::Spinner::new().size(13.0));
-                                } else {
-                                    status_badge_icon(ui, status_kind, hover_note.as_deref());
-                                }
-                            },
-                        );
-
-                        visible_nodes.push(VisibleTreeNode {
-                            key: op_key.clone(),
-                            node_id: op_node_id,
-                            parent: Some(s_key.clone()),
-                            has_children: false,
-                            is_open: false,
-                        });
-
-                        if op_out.response.clicked() {
-                            *active_setup_idx = s_idx;
-                            *focus = InspectorFocus::Operation {
-                                setup_idx: s_idx,
-                                op_idx: o_idx,
-                            };
-                            if is_needs_repick {
-                                *op_tab = OperationTab::Geometry;
-                            }
-                            *pick_mode =
-                                default_pick_mode_for_op(s_idx, o_idx, op_kind_val, *op_tab);
-                            kbd_focused_key = Some(op_key);
-                            any_row_clicked = true;
+                            &mut active_drag,
+                            DragSection::Operations { setup_idx: s_idx },
+                            4,
+                            &row_rects,
+                            drag_state_id,
+                        ) {
+                            pending.op_move_slot = Some((s_idx, from_i, to_slot));
                         }
-                        if op_out.response.drag_started() && op_len > 1 {
-                            let st = DraggedTreeItem {
-                                section: DragSection::Operations { setup_idx: s_idx },
-                                item_idx: o_idx,
-                            };
-                            active_drag = Some(st);
-                            ui.ctx().data_mut(|d| d.insert_temp(drag_state_id, st));
-                        }
-
-                        op_out.response.context_menu(|ui| {
-                            show_operation_item_context_menu(
-                                ui,
-                                s_idx,
-                                o_idx,
-                                op_len,
-                                &op_id_clone,
-                                &op_name_clone,
-                                is_sup,
-                                is_hidden_in_vp,
-                                &mut pending,
-                                &mut rename_state,
-                                &mut emitted_action,
-                            );
-                        });
-
-                        row_rects.push(op_out.row_rect);
-                    }
-
-                    if let Some((from_i, to_slot)) = handle_section_drag_overlay(
-                        ui,
-                        &mut active_drag,
-                        DragSection::Operations { setup_idx: s_idx },
-                        3,
-                        &row_rects,
-                        drag_state_id,
-                    ) {
-                        pending.op_move_slot = Some((s_idx, from_i, to_slot));
-                    }
-
-                    if op_len == 0 {
-                        tree_hint_row(ui, 3, "No operations yet");
                     }
                 }
 
@@ -2244,6 +2306,14 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
             set_node_open(
                 ui,
                 node_id_for(tree_scope, &TreeNodeKey::Setup(s_idx)),
+                true,
+            );
+            set_node_open(
+                ui,
+                node_id_for(
+                    tree_scope,
+                    &TreeNodeKey::OperationsFolder { setup_idx: s_idx },
+                ),
                 true,
             );
             emitted_action = Some(BrowserAction::InvalidateFrameCache);
@@ -2787,6 +2857,9 @@ fn apply_tree_node_selection(
             *setup_tab = SetupTab::Fixtures;
             *selected_fixture_idx = Some(fixture_idx);
             *pick_mode = ViewportPickMode::InspectEntity;
+        }
+        TreeNodeKey::OperationsFolder { setup_idx } if setup_idx < project.setups.len() => {
+            *active_setup_idx = setup_idx;
         }
         TreeNodeKey::Operation { setup_idx, op_idx }
             if setup_idx < project.setups.len()
@@ -3800,6 +3873,7 @@ mod tests {
                 "Active",
                 "Fixtures (1)",
                 "Kurt 4in Vise",
+                "Operations (1)",
                 "1. Adaptive Rough",
             ] {
                 assert!(
@@ -3836,6 +3910,23 @@ mod tests {
             assert_eq!(h.focus, InspectorFocus::Setup { setup_idx: 0 });
             assert_eq!(h.setup_tab, SetupTab::Fixtures);
             assert_eq!(h.sel_fix, Some(0));
+
+            // Collapsing Operations (1) hides child operations and persists across frames
+            let ops_rect =
+                find_text_rect(&shapes2, "Operations (1)").expect("operations folder label rect");
+            let ops_chev_pos = Pos2::new(ops_rect.left() - 28.0, ops_rect.center().y);
+            let _ = h.step(click_btn(ops_chev_pos, egui::PointerButton::Primary));
+            let (shapes3, _) = h.step(Vec::new());
+            assert!(
+                find_text_rect(&shapes3, "1. Adaptive Rough").is_none(),
+                "{theme:?}: collapsing Operations (1) must hide child operations"
+            );
+            let _ = h.step(click_btn(ops_chev_pos, egui::PointerButton::Primary));
+            let (shapes4, _) = h.step(Vec::new());
+            assert!(
+                find_text_rect(&shapes4, "1. Adaptive Rough").is_some(),
+                "{theme:?}: re-expanding Operations (1) must restore child operations"
+            );
         }
     }
 

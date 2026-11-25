@@ -44,6 +44,9 @@ pub enum TreeNodeKey {
         setup_idx: usize,
         fixture_idx: usize,
     },
+    OperationsFolder {
+        setup_idx: usize,
+    },
     Operation {
         setup_idx: usize,
         op_idx: usize,

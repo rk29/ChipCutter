@@ -32,6 +32,7 @@ pub enum IconKind {
     // Project hierarchy & document nodes
     Project,
     ModelsFolder,
+    OperationsFolder,
     MeshModel,
     FixtureModel,
     KeepOutZone,
@@ -126,6 +127,7 @@ impl IconKind {
         Self::StatusSuppressed,
         Self::Project,
         Self::ModelsFolder,
+        Self::OperationsFolder,
         Self::MeshModel,
         Self::FixtureModel,
         Self::KeepOutZone,
@@ -389,6 +391,23 @@ pub fn paint_icon(painter: &egui::Painter, rect: Rect, icon: IconKind, color: Co
             ));
             painter.add(egui::Shape::closed_line(
                 vec![p(0.50, 0.44), p(0.64, 0.56), p(0.50, 0.68), p(0.36, 0.56)],
+                thin,
+            ));
+        }
+        IconKind::OperationsFolder => {
+            painter.add(egui::Shape::closed_line(
+                vec![
+                    p(0.10, 0.24),
+                    p(0.38, 0.24),
+                    p(0.46, 0.34),
+                    p(0.90, 0.34),
+                    p(0.90, 0.82),
+                    p(0.10, 0.82),
+                ],
+                stroke,
+            ));
+            painter.add(egui::Shape::line(
+                vec![p(0.24, 0.48), p(0.74, 0.48), p(0.24, 0.66), p(0.74, 0.66)],
                 thin,
             ));
         }
