@@ -6,7 +6,7 @@ It turns 3D **STEP** B-Rep CAD solids (`AP203` / `AP214` / `AP242`), 3D triangle
 
 ![ChipCutter Desktop CAM Interface — Simultaneous 4-Axis Helical Flute](docs/images/chipcutter-gui.png)
 
-> **Project Website & Illustrated Docs:** [**https://rk29.github.io/ChipCutter/**](https://rk29.github.io/ChipCutter/) · [**Sample Projects Gallery (26 Samples)**](docs/samples/README.md) · [**Tutorials (00–22)**](docs/tutorials/README.md)
+> **Project Website & Illustrated Docs:** [**https://rk29.github.io/ChipCutter/**](https://rk29.github.io/ChipCutter/) · [**Sample Projects Gallery (26 Samples)**](docs/samples/README.md) · [**Tutorials (00–26)**](docs/tutorials/README.md)
 
 ---
 
@@ -106,6 +106,11 @@ Get-FileHash .\ChipCutter-<version>-windows-x86_64.msi -Algorithm SHA256
   - Ships with 7 read-only built-in profiles: **`Generic 3/4-Axis CNC Mill`**, **`Millennium Machines Milo v1.5 (LDO Kit)`**, **`Millennium Machines Milo v2.0`**, **`Voron Cascade`**, **`Makera Carvera`** (6-tool ATC + 4th-axis rotary), **`Makera Carvera Air`**, and **`Makera Carvera Z1`**—each paired with a tailored starter cutter library validated against its spindle, collet, and feed limits.
   - Each machine carries its own travel envelope, spindle RPM limits, simulation kinematics, default post-processor, rotary capacity, and dedicated tool library—with non-blocking envelope/RPM/feedrate diagnostics in GUI & CLI.
   - Built-in profiles remain read-only so application upgrades stay clean; clone any machine into upgrade-safe user configuration space (`~/.config/chipcutter/machines/*.machine.toml`), or export/share and import single-file `.machine.toml` bundles via the **Machine Manager** (`Setup → Machine Manager…`) or `chipcutter machines`.
+
+- **Project-Level Workpiece Material, Cutting-Physics Machinability Advisor, Click-to-Measure (`M`), & Reach Heatmap:**
+  - Set the project's **Workpiece Material** once in **Project Inspector / Project Properties** (`11` curated built-in materials including **Aluminum 6063-T5 Extrusion**, plus custom $K_c / u_s / h_{\min}$ constants) with automatic material-preset matching across operations and machine swaps.
+  - Real-time **`Machinability & Safety`** card in Operation Inspector **`[Tool]`** and Setup-wide summary table in **`Diagnostics & Log`** reporting **MRR**, torque-derated **Spindle Load (%)**, **Radial Force**, stepped-cantilever **Tip Deflection (`um`)**, **Bending Safety Factor** (flute-count-aware core stiffness), effective **`h_max`**, and **Stickout `L/D`**—with atomic-Undo 1-click **`Apply Safe Fix`** actions, helical bore **`Inner-Arc Feed Comp`** & **`Chip-Clear Retract`**, and headless CLI gating (`chipcutter validate --physics / --strict-physics --json`).
+  - Exact-`f64` Setup-WCS in-viewport **`Measure` (`M`)** tool (`3D Distance`, `dX/dY/dZ`, hole diameter/pitch/depth, `Copy`, `Set Op Bottom Z`) and background-cached **`Reach / Min-R`** 3D heatmap highlighting tight concave corners (amber) and flute/stickout reach violations (amber/crimson).
 
 - **Streamlined Tool Management, Machine-Switch Swapping, & Coupled SFM / Chipload Calculator:**
   - Supports Flat, Ball, Bull-Nose, Chamfer, Face Mill, Twist Drill, single-point / multi-form **Thread Mill**, `SlotMill`, `DovetailCutter`, and `LollipopEndmill` geometries with per-material cutting presets (`Aluminum 6061`, `Mild Steel`, `Hardwood`, `Acrylic`, etc.), radial chip-thinning compensation, `.tools.toml` libraries, and a **Fusion 360 `.json` / `.tools` (ZIP)** importer.
