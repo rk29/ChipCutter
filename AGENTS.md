@@ -83,4 +83,8 @@
   - `WGPU_BACKEND=vulkan cargo test --locked --workspace`
   - `cargo deny check` and `cargo deny --no-default-features --features chip-gui/flatpak-portal check`
   - Every new or modified toolpath strategy must include integration tests verified against `chip-sim`'s heightmap oracle asserting **zero `G0` rapid-into-stock collisions** and **zero target B-Rep gouges** beyond tolerance.
-  - When capturing headless GUI screenshots via `xvfb-run` on Linux, always pass `WAYLAND_DISPLAY= WINIT_UNIX_BACKEND=x11 WGPU_BACKEND=vulkan xvfb-run -a` so `winit` renders strictly inside Xvfb rather than opening visible windows on a host Wayland session.
+  - When capturing headless GUI screenshots via `xvfb-run` on Linux, always pass `WAYLAND_DISPLAY= WINIT_UNIX_BACKEND=x11 WGPU_BACKEND=vulkan timeout --foreground -k 5 <sec>s xvfb-run -a ... </dev/null` so `winit` renders strictly inside Xvfb without host Wayland windows or `SIGTTOU` hangs.
+- **`chip-gui` (`egui`) UI Guardrails:**
+  - **No Exotic Unicode Glyphs:** Bundled `egui` fonts lack symbols like `☑`, `☐`, `▾`, `▸`, `↳`, and `✓` (they render as tofu boxes). Always use procedural vector icons (`widgets::paint_icon` / `IconKind`) or plain ASCII (`[x]`, `[ ]`, `+`, `-`).
+  - **Zero Frame-to-Frame Resize Creep:** Never pair `ui.horizontal_top` + `ui.add_space(gap)` against `available_width()` inside modals or panels (extra `item_spacing.x` causes runaway per-frame growth); set `ui.spacing_mut().item_spacing.x = gap` and bound inner column widths strictly below total width, verified by multi-frame headless `egui` layout stability tests.
+  - **Respect Local User Shop Files:** Never stage, commit, revert, or delete untracked user projects/assets under `torture/` unless explicitly requested.
