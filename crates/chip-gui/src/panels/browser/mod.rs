@@ -214,15 +214,7 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                     draggable: false,
                     tooltip: Some("Click to inspect Project Properties (Right-click for project actions)"),
                 },
-                |ui, _hovered| {
-                    if ui
-                        .small_button("+ Setup")
-                        .on_hover_text("Add a new clamping Setup (e.g., Op 2 Flip)")
-                        .clicked()
-                    {
-                        pending.add_setup = true;
-                    }
-                },
+                |_ui, _hovered| {},
             );
             visible_nodes.push(VisibleTreeNode {
                 key: root_key.clone(),
@@ -3757,7 +3749,7 @@ mod tests {
     }
 
     #[test]
-    fn browser_header_shows_project_title_and_add_setup_without_inline_rename_button() {
+    fn browser_header_shows_project_title_without_redundant_root_buttons() {
         let mut h = BrowserTestHarness::new(ProjectDocument::new("Aluminum Manifold Rev B"));
         let (shapes, _) = h.step(Vec::new());
 
@@ -3770,8 +3762,8 @@ mod tests {
             "CAM Browser root must display the project title; got {texts:?}"
         );
         assert!(
-            texts.iter().any(|t| t == "+ Setup"),
-            "CAM Browser root must retain the + Setup button"
+            !texts.iter().any(|t| t == "+ Setup"),
+            "CAM Browser root must not show redundant + Setup button (Setups folder '+' handles adding setups)"
         );
         assert!(
             !texts.iter().any(|t| t == "Rename"),

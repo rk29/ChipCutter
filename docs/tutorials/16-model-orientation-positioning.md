@@ -121,7 +121,7 @@ When a STEP part is tilted in CAD space—or when you need to flip a part upside
 
 #### Step 2 — Add Setup 2 (`G55`) Flipped Upside Down for Op-2 Underside Facing
 
-1. Click **`+ Setup`** on the Project root row (or **`+`** on **`Setups`**) in the CAM Browser. ChipCutter automatically assigns **`G55 (Offset 2)`**.
+1. Click **`+`** on **`Setups`** (or right-click **`Setups`** → **`+ New Setup`**) in the CAM Browser. ChipCutter automatically assigns **`G55 (Offset 2)`**.
 2. In Setup 2's **`WCS & Post`** tab, pick the exact same reference face (`Face #0`) and edge (`Edge #0`), but leave **`Flip Z` unchecked** so Setup 2's **`+Z`** spindle arrow points straight out of the *underside* of the bracket!
 3. Set **WCS Origin** to **Stock Top Center** and **Stock** to **`Relative Box`** with `0 mm` side margin and **`2.0 mm` Top Offset** (representing the `2.0 mm` vise-holding hat left over from Setup 1).
 4. With **Setup 2** now the **Active Setup** (or click **`Setup 2`** under **`Setups`** in the CAM Browser to activate it), add a **`Facing`** operation (`+ Op… → Facing` in the **top toolbar**, `Ø38 mm` Face Mill) to machine off the underside hat stock cleanly to final thickness.
