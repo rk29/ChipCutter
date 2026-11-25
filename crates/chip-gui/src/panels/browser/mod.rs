@@ -529,7 +529,7 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                     strikethrough: false,
                     italic: false,
                     has_children: true,
-                    default_open: true,
+                    default_open: !project.sketches.is_empty(),
                     selected: false,
                     keyboard_focused: tree_kbd_active
                         && kbd_focused_key.as_ref() == Some(&sketches_key),
@@ -1143,7 +1143,7 @@ pub fn show_cam_browser(ui: &mut egui::Ui, ctx: CamBrowserCtx<'_>) -> Option<Bro
                     strikethrough: false,
                     italic: false,
                     has_children: true,
-                    default_open: !project.tools.is_empty(),
+                    default_open: false,
                     selected: false,
                     keyboard_focused: tree_kbd_active
                         && kbd_focused_key.as_ref() == Some(&tools_key),
@@ -3357,10 +3357,17 @@ mod tests {
         let mut h = BrowserTestHarness::new(build_rich_test_project());
         let (shapes, _) = h.step(Vec::new());
 
-        // Expand Sketch so its child entity is visible too
+        // Expand Sketch and Project Tools so child entities and tools are visible too
         let sk_rect = find_text_rect(&shapes, "Mounting Holes").expect("sketch label");
         let _ = h.step(click_btn(
-            Pos2::new(sk_rect.left() - 28.0, sk_rect.center().y),
+            Pos2::new(sk_rect.left() - 26.5, sk_rect.center().y),
+            egui::PointerButton::Primary,
+        ));
+        let (shapes, _) = h.step(Vec::new());
+        let tools_rect =
+            find_text_rect_containing(&shapes, "Project Tools (").expect("tools folder label");
+        let _ = h.step(click_btn(
+            Pos2::new(tools_rect.left() - 26.5, tools_rect.center().y),
             egui::PointerButton::Primary,
         ));
         let (shapes, _) = h.step(Vec::new());
@@ -3592,8 +3599,15 @@ mod tests {
         );
         assert_eq!(h.project.setups.len(), 1);
 
-        // 5. Right-click Project Tool -> Sync from Machine Library -> marks referencing op Dirty + Undo
+        // 5. Expand Project Tools, then right-click Project Tool -> Sync from Machine Library -> marks referencing op Dirty + Undo
         h.project.setups[0].operations[0].runtime_status = OperationStatus::Clean;
+        let (shapes, _) = h.step(Vec::new());
+        let tools_rect =
+            find_text_rect_containing(&shapes, "Project Tools (").expect("tools folder label");
+        let _ = h.step(click_btn(
+            Pos2::new(tools_rect.left() - 26.5, tools_rect.center().y),
+            egui::PointerButton::Primary,
+        ));
         let (shapes, _) = h.step(Vec::new());
         let tool_pos = find_text_rect_containing(&shapes, "T1 -")
             .expect("tool row")

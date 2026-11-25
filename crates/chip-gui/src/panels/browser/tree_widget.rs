@@ -12,12 +12,12 @@ use crate::{
 /// Standard compact row height for the hierarchical Project Tree View.
 pub const TREE_ROW_HEIGHT: f32 = 24.0;
 /// Horizontal indentation step per hierarchy nesting level.
-pub const TREE_INDENT_STEP: f32 = 14.0;
+pub const TREE_INDENT_STEP: f32 = 11.0;
 /// Size of procedural vector node icons inside tree rows.
 pub const TREE_ICON_SIZE: f32 = 14.0;
 
-const TREE_LEFT_PAD: f32 = 4.0;
-const TREE_CHEVRON_W: f32 = 16.0;
+pub(super) const TREE_LEFT_PAD: f32 = 3.0;
+pub(super) const TREE_CHEVRON_W: f32 = 13.0;
 
 /// Stable semantic identifier for every addressable row in the Project Tree.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -270,11 +270,11 @@ pub fn tree_row(
             .max_rect(trailing_bounds)
             .layout(Layout::right_to_left(egui::Align::Center)),
     );
-    trailing_ui.spacing_mut().item_spacing.x = 3.0;
+    trailing_ui.spacing_mut().item_spacing.x = 2.0;
     add_trailing(&mut trailing_ui, row_hovered_preview);
     let trailing_min = trailing_ui.min_rect();
     let main_right = if trailing_min.width() > 0.5 {
-        (trailing_min.left() - 4.0).max(main_left + 24.0)
+        (trailing_min.left() - 3.0).max(main_left + 24.0)
     } else {
         (row_rect.right() - 4.0).max(main_left + 24.0)
     };
@@ -380,7 +380,7 @@ pub fn tree_row(
         paint_icon(ui.painter(), icon_rect, spec.icon, spec.icon_color);
 
         // Paint single-line truncated label
-        let text_x = icon_rect.right() + 6.0;
+        let text_x = icon_rect.right() + 4.0;
         let text_max_w = (main_rect.right() - text_x).max(16.0);
         let font_id = FontId::proportional(if spec.bold { 12.5 } else { 12.0 });
         let mut fmt = TextFormat::simple(font_id, spec.label_color);
@@ -453,7 +453,7 @@ pub fn tree_badge_pill(
     let galley = ui
         .painter()
         .layout_no_wrap(text.to_owned(), FontId::proportional(10.5), fg);
-    let pill_w = galley.size().x + 10.0;
+    let pill_w = galley.size().x + 7.0;
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(pill_w, 16.0), Sense::hover());
     if ui.is_rect_visible(rect) {
         let stroke = border.map_or(Stroke::NONE, |b| Stroke::new(1.0, b));

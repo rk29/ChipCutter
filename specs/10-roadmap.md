@@ -585,7 +585,7 @@ Closes every backend-vs-GUI gap uncovered across `chip-cam`, `chip-tools`, `chip
 
 ---
 
-## Phase 25 — Hierarchical Project Tree View, Procedural Icons, Context Menus, & Drag Reordering (Planned — M90–M92)
+## Phase 25 — Hierarchical Project Tree View, Procedural Icons, Context Menus, & Drag Reordering (Completed — M90–M92)
 
 Replaces the left-hand CAM Browser's flat card stack with a unified, collapsible **Project Tree View** rooted at the active project (`Project` -> `Models`, `Sketches` & child entities, `Keep-Out Regions`, `Project Tools`, and `Setups` -> `Fixtures` & `Operations`), complete with dedicated procedural vector icons for every item type, consistent right-click context menus (common actions + type-safe sub-item creation), section-scoped drag-and-drop reordering, and immediate selection-to-right-panel editing for every node type.
 

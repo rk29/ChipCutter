@@ -42,7 +42,7 @@ Open it in `chip-gui`:
    - **`Gap-Heal Tolerance (mm):`** Keep the default **`0.050`**. ChipCutter's R-tree planarizer automatically removes the overlapping duplicate segment and heals the `0.03 mm` loop closure gap on the `POCKETS` layer into a watertight closed region with `1 interior island`.
    - **`Pure-2D Sheet Thickness (mm):`** Set to **`6.0`**.
    - **`DXF Layer Filter:`** (displayed for `.dxf` files with layers): leave all 4 DXF layers (`CUTOUTS`, `HOLES`, `OUTLINE`, `POCKETS`) checked so each layer remains selectable by name in operations.
-2. Click **`Start New Pure-2D Sheet Job`** at the bottom of the modal, then in the left **CAM Browser** expand **`2D Sketches (1)`** and click the imported sketch layer (`13-router-panel` / `Router Front Panel`) to inspect it in the right **Inspector**:
+2. Click **`Start New Pure-2D Sheet Job`** at the bottom of the modal, then in the left **CAM Browser** expand **`Sketches (1)`** and click the imported sketch layer (`13-router-panel` / `Router Front Panel`) to inspect it in the right **Inspector**:
 
 ![Imported DXF Router Panel in Pure-2D Workspace with Sketch Inspector](../images/tutorials/13-pure2d-dxf-svg-workflow/01-dxf-import-inspector.png)
 
@@ -55,7 +55,7 @@ Notice the right side of the **top menu bar** reads **`Pure-2D Job · 1 sketch l
 
 Because there is no 3D solid to infer Z thickness from, Pure-2D jobs define Z depth through the Setup's virtual sheet stock:
 
-1. In the left **CAM Browser**, click **`Stock & WCS`** under **`Setup 1`** and open the **`Stock`** tab in the right **Inspector**.
+1. In the left **CAM Browser**, click **`Setup 1`** under **`Setups`** and open the **`Stock`** tab in the right **Inspector**.
 2. Under **`Stock Geometry & Dimensions`**, keep **`Stock Mode`** = **`Relative Box Stock`** and confirm **`Sheet Thickness (Z)`** = `6 mm` (this field appears automatically in Pure-2D jobs when no 3D model is loaded).
 3. Under **`Stock Offsets`**, confirm **`Symmetric XY`** (`Mirror ±X / ±Y`) is checked so **`Side X Margin (±X)`** and **`Side Y Margin (±Y)`** are shown, then set **`Side X Margin (±X)`** = `4 mm`, **`Side Y Margin (±Y)`** = `4 mm`, **`Top Allowance (+Z)`** = `0 mm`, and **`Bottom Holding (-Z)`** = `0 mm`.
 4. Switch to the **`WCS & Post`** tab in the right **Inspector**: under **`WCS Origin (X0 Y0 Z0)`**, select **`Origin Reference`** = **`Stock 27-Pt`**, set **`Z Level:`** = **`Top`**, and click **`L`** in the **`Front (-Y)`** row so **`Active Anchor`** reads `Top Front-Left` (a natural spoilboard fence origin for sheet routing; `Stock Top` = `Z 0.000 mm`, `Stock Bottom` = `Z -6.000 mm`):

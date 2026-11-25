@@ -18,7 +18,7 @@ In this tutorial you will start from an **empty project**, import a minimal rect
 
 Start with an **empty project** and load the minimal billet STEP file included with this tutorial ([`01-facing-billet.step`](assets/01-facing-billet.step) — a plain `100 × 80 × 20 mm` block with 6 planar faces and no extra features):
 
-- **From the Welcome Overlay or Menu:** Launch ChipCutter (`chip-gui`), click **`Import 3D STEP Solid…`** in the **Welcome to ChipCutter** overlay (or **`File → Import STEP Model…`** in the **top menu bar**, or **`Import STEP…`** under **`Models`** in the left **CAM Browser**), and select `docs/tutorials/assets/01-facing-billet.step`.
+- **From the Welcome Overlay or Menu:** Launch ChipCutter (`chip-gui`), click **`Import 3D STEP Solid…`** in the **Welcome to ChipCutter** overlay (or **`File → Import STEP Model…`** in the **top menu bar**, or the **`+`** / right-click menu on **`Models`** in the left **CAM Browser** → **`Import STEP…`**), and select `docs/tutorials/assets/01-facing-billet.step`.
 - **Or open directly from the terminal:**
   ```bash
   chip-gui docs/tutorials/assets/01-facing-billet.step
@@ -30,7 +30,7 @@ Start with an **empty project** and load the minimal billet STEP file included w
 
 ### Step 1 — Set Stock Top Allowance (`Setup → Stock`)
 
-1. In the left **CAM Browser**, click **`Stock & WCS`** under `Setup 1 — Top Op [G54]`.
+1. In the left **CAM Browser**, click **`Setup 1 — Top Op`** under **`Setups`**.
 2. Switch to the **`Stock`** tab in the right **Inspector**.
 3. Under the **`Stock Offsets`** card, confirm **`Symmetric XY`** (`Mirror ±X / ±Y`) is checked so the symmetric margin fields are shown, then set **`Side X Margin (±X)`** = `0 mm`, **`Side Y Margin (±Y)`** = `0 mm`, and **`Top Allowance (+Z)`** = `2 mm` so your raw stock measures `100 × 80 × 22 mm` (`2.0 mm` of material above the `20 mm` finished billet):
 

@@ -39,8 +39,8 @@ chip-gui docs/tutorials/assets/10-helical-flute-shaft.stl
 
 ### Step 1 — Configure a `Simultaneous 4-Axis` Setup (`Setup 1 → 4th Axis`)
 
-1. Open `10-helical-flute-shaft.stl` (`Ø40 × 80 mm` watertight 3-start helical flute shaft aligned along `X`) via **`Import 3D Mesh (STL / OBJ / 3MF)…`** on the **Welcome to ChipCutter** overlay, **`File → Import 3D Mesh (.stl / .obj / .3mf)…`** in the **top menu bar**, or **`Import Mesh…`** under **`Models`** in the left **CAM Browser**.
-2. In the left **CAM Browser**, click **`Stock & WCS`** under `Setup 1`:
+1. Open `10-helical-flute-shaft.stl` (`Ø40 × 80 mm` watertight 3-start helical flute shaft aligned along `X`) via **`Import 3D Mesh (STL / OBJ / 3MF)…`** on the **Welcome to ChipCutter** overlay, **`File → Import 3D Mesh (.stl / .obj / .3mf)…`** in the **top menu bar**, or the **`+`** / right-click menu on **`Models`** in the left **CAM Browser** → **`Import Mesh (.stl / .obj / .3mf)…`**.
+2. In the left **CAM Browser**, click **`Setup 1`** under **`Setups`**:
    - On the **`WCS & Post`** tab in the right **Inspector**: under **`WCS Origin (X0 Y0 Z0)`**, select **`Origin Reference`** = **`Stock 27-Pt`**, set **`Z Level:`** = **`Mid-Z`**, and click **`C`** in the **`Center Y`** row (`Active Anchor` shows `Mid-Z Center`); under **`Post-Processor & Output`**, set **`Post Profile`** = **`grblHAL / FluidNC 4-Axis (XYZA / G93) (grblhal_4axis)`** (or **`LinuxCNC 4-Axis (XYZA / G93) (linuxcnc_4axis)`**).
    - On the **`Stock`** tab in the right **Inspector**: under **`Stock Geometry & Dimensions`**, change **`Stock Mode`** to **`Fixed Cylindrical Stock`** **first** so **`Bar Axis`**, **`Bar Diameter`**, and **`Bar Length`** appear below it, then set **`Bar Axis`** = **`WCS X Axis`**, **`Bar Diameter`** = `42 mm`, and **`Bar Length`** = `80 mm`.
 3. Switch to the **`4th Axis`** tab in the right **Inspector**:
@@ -67,7 +67,7 @@ chip-gui docs/tutorials/assets/10-helical-flute-shaft.stl
      - Under **`Depth Passes & Stock to Leave`**, keep **`Multiple Depths`** (`Enable Z Stepdowns`) checked so **`Maximum Stepdown`** (`3.0 mm`) is visible, and set **`Radial Stock`** = `0.25 mm` and **`Axial Stock`** = `0.25 mm`.
      - Under **`Simultaneous 4-Axis (X+Y+Z+A/B)`**, set **`Pattern`** = **`Simultaneous Helical Spiral`**, confirm **`Tilt / Offset`** = **`Auto Surface-Normal Tilt`** **first** so **`Max Auto Tilt`** (`16.0°`) and **`Tilt Smoothing`** (`3 cells`) are displayed, and leave **`Stepover Mode`** (`Use Target Cusp Height`) unchecked so **`Stepover`** (`2.6 mm`) is displayed.
 2. **`Op 2 — 4-Axis Spiral Finish (Auto-Tilt 18°)`:**
-   - Duplicate Op 1 via **`Ctrl+D`** (or **`Edit → Duplicate Operation (Ctrl+D)`** in the **top menu bar**, or right-click Op 1 in the left **CAM Browser** → **`Duplicate Operation (Ctrl+D)`**).
+   - Duplicate Op 1 via **`Ctrl+D`** (or **`Edit → Duplicate Operation (Ctrl+D)`** in the **top menu bar**, or right-click Op 1 in the left **CAM Browser** → **`Duplicate (Ctrl+D)`**).
    - In the right **Inspector** **`Passes`** tab, uncheck **`Multiple Depths`** (`Enable Z Stepdowns`), set **`Radial Stock`** = `0 mm` and **`Axial Stock`** = `0 mm`, refine **`Stepover`** = `1.5 mm`, and raise **`Max Auto Tilt`** = `18.0°` with **`Tilt Smoothing`** = `3 cells`.
    - Press **`Ctrl+G`** (or click **`Generate`** in the **top toolbar**) and select `Op 2` in the left **CAM Browser**:
 

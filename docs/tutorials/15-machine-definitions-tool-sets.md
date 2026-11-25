@@ -7,7 +7,7 @@ Real workshops rarely own just one "generic" CNC. A **Millennium Machines Milo v
 In this tutorial you will learn how to:
 
 - Select a target CNC machine for your project (`Generic 3/4-Axis CNC Mill`, **Millennium Machines Milo v1.5 (LDO Kit)**, **Millennium Machines Milo v2.0**, **Voron Cascade**, **Makera Carvera**, **Makera Carvera Air**, or **Makera Carvera Z1**) and apply its default post-processor, 4th-axis rotary defaults, and simulation kinematics.
-- Browse **machine-scoped Tool Libraries** via the single **`Tools`** button in the **top toolbar**, manage embedded project cutters directly from the actionable **`Project Tools`** card in the left **CAM Browser** (**`+ Add Tool…`**, per-tool usage badges, guarded delete, and **`Remove Unused (N)`**), and pick cutters quickly in the grouped, searchable **`Tool`** tab picker.
+- Browse **machine-scoped Tool Libraries** via the single **`Tools`** button in the **top toolbar**, manage embedded project cutters directly from the **`Project Tools (N)`** folder in the left **CAM Browser** (**`+`** searchable menu, per-tool usage badges, guarded delete, **`Remove Unused Tools (N)`**, and right-panel **Project Tool Inspector**), and pick cutters quickly in the grouped, searchable **`Tool`** tab picker.
 - Switch machines safely on an existing project using the interactive **`Switch Machine — <Target Machine>`** dialog, which automatically suggests the closest compatible replacement tools from the target machine's library.
 - Understand why **built-in machine definitions are strictly read-only** (so application upgrades keep them up to date) and **clone any built-in machine** into your upgrade-safe user configuration directory (`~/.config/chipcutter/machines/*.machine.toml`).
 - **Export / Share** a single self-contained `.machine.toml` file (containing all machine specs + its entire tool library) and **Import** profiles shared by other machinists.
@@ -65,15 +65,14 @@ ChipCutter ships with seven embedded, read-only machine definitions (also mirror
    - On a **built-in** machine (**`Read-Only Built-In`**), you can browse every cutter's geometry, cutting presets, and **`2D Cutter Profile Preview`**, and click **`Sync / Embed into Active Project`** (bottom-left) to copy a cutter into your project—or click **`Clone Machine to Edit Tools`** (top bar) to fork an editable custom copy in one click.
    - On a **custom** machine (**`Custom (Editable)`**), **`+ New Cutter`**, **`+ New Undercut...`**, **`Import Fusion 360 (.json / .tools)…`**, **`Load .tools.toml…`**, and **`Save Machine Tools`** in the top toolbar are all enabled and persist directly inside your custom `.machine.toml` file.
    - Inside **ChipCutter Machine Manager**'s **`Tools`** tab (when a **custom** machine is selected), you can also choose another machine in the **`Copy tool from:`** dropdown and click **`+ Add Tool`** to copy a single cutter (for example a `30°` V-bit from `Makera Carvera Air`) into your custom machine.
-3. Manage project-embedded cutters directly from the left **CAM Browser → `Project Tools`** card without even opening the modal:
-   - Click **`+ Add Tool…`** (with an inline filter box for diameter or cutter type) to embed any cutter from the active machine into the project.
-   - Every embedded tool shows a live usage badge (**`1 op`**, **`2 ops`**, or amber **`Unused`**) beside a guarded delete (trash) button—tools currently referenced by operations are protected from accidental deletion (hovering the disabled button lists the operations using it).
-   - Click **`Remove Unused (N)`** to clean up unreferenced embedded cutters in one undoable step.
+3. Manage project-embedded cutters directly from the left **CAM Browser → `Project Tools (N)`** folder without even opening the modal:
+   - Click the **`+`** menu button on **`Project Tools (N)`** (with an inline filter box for diameter or cutter type) to embed any cutter from the active machine into the project, or click **`Remove Unused Tools (N)`** (also in the right-click menu) to clean up unreferenced embedded cutters in one undoable step.
+   - Expand **`Project Tools (N)`** to see every embedded tool's live usage badge (**`1 op`**, **`2 ops`**, or amber **`unused`**); hover an unused tool to click its inline delete icon (or right-click → **`Remove from Project`**), and click any tool row to open its read-only **Project Tool Inspector** (with 2D schematic, clickable operation usage list, and **`Sync from Machine Library`**).
 4. On any operation's **`Tool`** tab, the **`Active Cutter`** dropdown is organized into **`Project Tools`** and **`Machine Library (auto-embeds)`** sections (with an inline **`Search tools…`** filter when more than 6 compatible cutters are available, an optional **`Show incompatible (N)`** toggle at the bottom, and an **`Edit…`** shortcut straight to the Tool Library).
 
 ### Step 4 — Switch Target Machine & Swap Incompatible Tools Automatically
 
-1. In the left **CAM Browser**, click **`Stock & WCS`** under `Setup 1`, and open the **`WCS & Post`** tab in the right **Inspector**.
+1. In the left **CAM Browser**, click **`Setup 1`** under **`Setups`**, and open the **`WCS & Post`** tab in the right **Inspector**.
 
 ![Setup Inspector Target CNC Machine card showing Makera Carvera Air travel, spindle, tool count, and default post](../images/tutorials/15-machine-definitions-tool-sets/03-setup-target-machine.png)
 

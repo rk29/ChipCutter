@@ -12,7 +12,8 @@ use crate::{
         browser::{
             actions::{AddOperationPreset, BrowserAction, QuickFixturePreset, SketchEntityPreset},
             tree_widget::{
-                TREE_ICON_SIZE, TREE_INDENT_STEP, TREE_ROW_HEIGHT, TreeNodeKey, set_node_open,
+                TREE_CHEVRON_W, TREE_ICON_SIZE, TREE_INDENT_STEP, TREE_LEFT_PAD, TREE_ROW_HEIGHT,
+                TreeNodeKey, set_node_open,
             },
         },
     },
@@ -148,7 +149,10 @@ pub(super) fn render_inline_rename_row(
     if ui.is_rect_visible(row_rect) {
         let guide_stroke = Stroke::new(1.0, tok.border.gamma_multiply(0.55));
         for lvl in 0..depth {
-            let gx = row_rect.left() + 4.0 + (lvl as f32) * TREE_INDENT_STEP + 8.0;
+            let gx = row_rect.left()
+                + TREE_LEFT_PAD
+                + (lvl as f32) * TREE_INDENT_STEP
+                + TREE_CHEVRON_W * 0.5;
             ui.painter().line_segment(
                 [
                     Pos2::new(gx, row_rect.top()),
@@ -159,7 +163,8 @@ pub(super) fn render_inline_rename_row(
         }
     }
 
-    let left_x = row_rect.left() + 4.0 + (depth as f32) * TREE_INDENT_STEP + 16.0;
+    let left_x =
+        row_rect.left() + TREE_LEFT_PAD + (depth as f32) * TREE_INDENT_STEP + TREE_CHEVRON_W;
     let icon_rect = Rect::from_min_size(
         Pos2::new(left_x + 2.0, row_rect.center().y - TREE_ICON_SIZE * 0.5),
         Vec2::splat(TREE_ICON_SIZE),

@@ -963,6 +963,134 @@ capture_14_associative_step_reload() {
     --capture-sim-progress 1.0
 }
 
+capture_15_machine_definitions() {
+  local dir="docs/images/tutorials/15-machine-definitions-tool-sets"
+  local part_step="$TMP_PROJ_DIR/part.step"
+  local proj_milo="$TMP_PROJ_DIR/15-milo.chip.toml"
+  local proj_carvera="$TMP_PROJ_DIR/15-carvera.chip.toml"
+
+  "$CLI_BIN" generate-sample-step "$part_step" --cam-torture --project-out "$proj_milo" --machine milo-1.5
+  "$CLI_BIN" generate-sample-step "$part_step" --cam-torture --project-out "$proj_carvera" --machine carvera-air
+
+  # 1. Machine Manager modal showing built-in Generic, Milo v1.5, Carvera Air, etc.
+  capture_shot "$dir/01-machine-manager-modal.png" \
+    "$proj_milo" \
+    --capture-modal machines
+
+  # 2. Tool Library modal scoped to Milo v1.5 (LDO Kit)
+  capture_shot "$dir/02-machine-scoped-tool-library.png" \
+    "$proj_milo" \
+    --capture-modal tools
+
+  # 3. Setup Inspector Target CNC Machine card showing Makera Carvera Air
+  capture_shot "$dir/03-setup-target-machine.png" \
+    "$proj_carvera" \
+    --capture-view iso \
+    --capture-focus setup:wcs \
+    --capture-27pt-dots true \
+    --capture-sim-stock false \
+    --capture-sim-cutter false
+}
+
+capture_16_model_orientation() {
+  local dir="docs/images/tutorials/16-model-orientation-positioning"
+  local yup_stl="$REPO_ROOT/docs/tutorials/assets/16-yup-bracket.stl"
+  local tilted_step="$REPO_ROOT/docs/tutorials/assets/16-tilted-bracket.step"
+  local proj_stl_empty="$TMP_PROJ_DIR/16-yup-empty.chip.toml"
+  local proj_stl_full="$TMP_PROJ_DIR/16-yup-full.chip.toml"
+  local proj_step_full="$TMP_PROJ_DIR/16-tilted-full.chip.toml"
+
+  "$CLI_BIN" generate-sample-step "$yup_stl" --tutorial 16-orient-stl --empty-project --project-out "$proj_stl_empty"
+  "$CLI_BIN" generate-sample-step "$yup_stl" --tutorial 16-orient-stl --project-out "$proj_stl_full"
+  "$CLI_BIN" generate-sample-step "$tilted_step" --tutorial 16-orient-step --project-out "$proj_step_full"
+
+  # 1. Sideways Y-up STL imported before orientation
+  capture_shot "$dir/01-yup-stl-before-transform.png" \
+    "$proj_stl_empty" \
+    --capture-view iso \
+    --capture-focus model \
+    --capture-sim-stock false \
+    --capture-sim-cutter false
+
+  # 2. Upright 1.5x-scaled STL centered at Z=0 with Model Transform Inspector
+  capture_shot "$dir/02-model-transform-inspector.png" \
+    "$proj_stl_full" \
+    --capture-generate \
+    --capture-view iso \
+    --capture-focus model \
+    --capture-pane sim \
+    --capture-sim-stock false \
+    --capture-sim-cutter false
+
+  # 3. Tilted STEP bracket aligned via Setup 1 G54 WCS
+  capture_shot "$dir/03-tilted-step-wcs-align.png" \
+    "$proj_step_full" \
+    --capture-generate \
+    --capture-view iso \
+    --capture-setup 0 \
+    --capture-focus setup:0:wcs \
+    --capture-27pt-dots true \
+    --capture-sim-stock false \
+    --capture-sim-cutter false
+
+  # 4. Setup 2 G55 flipped upside down with live 3D machined stock
+  capture_shot "$dir/04-setup2-flipped-op2.png" \
+    "$proj_step_full" \
+    --capture-generate \
+    --capture-view iso \
+    --capture-setup 1 \
+    --capture-focus setup:1:wcs \
+    --capture-pane sim \
+    --capture-sim-stock true \
+    --capture-sim-cutter true \
+    --capture-sim-progress 0.85
+}
+
+capture_17_tridexel_error_metrics() {
+  local dir="docs/images/tutorials/17-tridexel-simulation-error-metrics"
+
+  # 1. Tri-Dexel volumetric simulation of CAM Torture Block
+  capture_shot "$dir/01-tridexel-volumetric-stock.png" \
+    --sample cam-torture \
+    --capture-generate \
+    --capture-view iso \
+    --capture-focus op:1:passes \
+    --capture-pane sim \
+    --capture-sim-engine tri-dexel \
+    --capture-sim-resolution standard \
+    --capture-sim-stock true \
+    --capture-sim-cutter true \
+    --capture-sim-progress 1.0
+
+  # 2. Tri-Dexel signed Error Heatmap on CAM Torture Block
+  capture_shot "$dir/02-deviation-error-heatmap.png" \
+    --sample cam-torture \
+    --capture-generate \
+    --capture-view iso \
+    --capture-focus op:1:passes \
+    --capture-pane sim \
+    --capture-sim-engine tri-dexel \
+    --capture-sim-resolution standard \
+    --capture-sim-heatmap \
+    --capture-sim-stock true \
+    --capture-sim-cutter false \
+    --capture-sim-progress 1.0
+
+  # 3. Tri-Dexel Error Heatmap on 3D Sculpted Dome STL + Diagnostics & Log
+  capture_shot "$dir/03-sculpted-dome-heatmap-diagnostics.png" \
+    --sample mesh-dome \
+    --capture-generate \
+    --capture-view iso \
+    --capture-focus op:1:passes \
+    --capture-pane diagnostics \
+    --capture-sim-engine tri-dexel \
+    --capture-sim-resolution standard \
+    --capture-sim-heatmap \
+    --capture-sim-stock true \
+    --capture-sim-cutter false \
+    --capture-sim-progress 1.0
+}
+
 capture_18_thread_milling() {
   local dir="docs/images/tutorials/18-thread-milling"
   local step="$REPO_ROOT/docs/tutorials/assets/18-threaded-manifold.step"
@@ -1381,6 +1509,15 @@ if [[ -n "$TUTORIAL" ]]; then
     14-associative-step-reload)
       capture_14_associative_step_reload
       ;;
+    15-machine-definitions-tool-sets)
+      capture_15_machine_definitions
+      ;;
+    16-model-orientation-positioning)
+      capture_16_model_orientation
+      ;;
+    17-tridexel-simulation-error-metrics)
+      capture_17_tridexel_error_metrics
+      ;;
     18-thread-milling)
       capture_18_thread_milling
       ;;
@@ -1459,6 +1596,9 @@ else
       capture_12_simultaneous_4axis_milling
       capture_13_pure2d_dxf_svg_workflow
       capture_14_associative_step_reload
+      capture_15_machine_definitions
+      capture_16_model_orientation
+      capture_17_tridexel_error_metrics
       capture_18_thread_milling
       capture_19_workholding_flip_jigs_soft_jaws
       capture_20_gpu_feed_opt

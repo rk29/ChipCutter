@@ -59,16 +59,17 @@ Once **Prismatic Multi-Feature Bracket** (`90 × 70 × 20 mm`) is loaded and gen
    - **Top toolbar (left cluster):** **`Open`** (`Ctrl+O`), **`Save`** (`Ctrl+S`), **`.chipz`**, **`DXF/SVG`**, the icon-only **Reload** button (visible when a 3D model is loaded, `Ctrl+R`), and icon-only Undo/Redo buttons (`Ctrl+Z` / `Ctrl+Y`).
    - **Top toolbar (operation & workflow clusters):** Quick-add buttons **`+ Sketch`**, **`+ Adaptive`**, **`+ Contour`**, **`+ V-Carve`**, and **`+ Op…`** (which add directly to the currently **`Active`** Setup), primary workflow buttons **`Generate`** (`Ctrl+G`), **`Simulate`**, and **`Post`** (with live **`Cancel`** buttons and a unified compact progress bar next to them), plus the single **`Tools`** button.
    - **Top toolbar (right cluster):** Icon-only **Command Palette** search button (`Ctrl+K`) and **Settings** gear button (`Ctrl+,`), opening the unified **Settings** window (`General & Appearance` for Theme & Display Units, `Viewport & Navigation` for Mouse Preset & Orbit Mode, `Simulation` for Engine/Detail Level/Compute Backend/Mesh Skinning, and `Machine Defaults`).
-2. **CAM Browser (Left Pane):**
-   - Header bar: Project name and **`+ Setup`**.
-   - **`Models`** section: Loaded STEP or mesh summary (`29 faces · 40 loops · 72 edges`) with **`Orient / Scale`** (when a 3D model is loaded), **`Import STEP…`**, **`Import Mesh…`**, **`Reload (Ctrl+R)`** & **`Replace…`** (visible when a STEP solid is loaded), and **`Sample Gallery…`**.
-   - **`2D Sketches (N)`** section: Parametric or imported 2D vector layers (collapsed when empty; expand to access **`+ New Sketch`**, **`+ Sketch on Face`** when a 3D model is loaded, and **`+ Import DXF/SVG…`**).
-   - **`Project Tools (N)`** section: Tools embedded in this `.chip.toml` project (collapsed by default; expand to use **`+ Add Tool…`** with live filtering, inspect per-tool usage badges like `1 op` / `Unused`, delete unused tools inline, or click **`Remove Unused (N)`**).
-   - **`Setup 1 — Top Op [G54]`:** Displays an **`Active`** badge pill in the Setup card header (with multiple Setups, click a Setup title or **`Activate`** to make it active so top-toolbar operations add to it), **`Stock & WCS`** node, quick-action buttons (**`Gen`**, **`Top`**), and ordered machining operations (`1. Center Cavity Pocket`, `2. 4x Ø6mm Mounting Holes`), each displaying a status badge, strategy icon, tool badge (`T1`, `T6`), and estimated cycle time.
+2. **CAM Browser — Project Tree View (Left Pane):**
+   - **Project root (`<Project Name>`):** Click to open **Project Properties** in the right Inspector, click **`+ Setup`** to add a new clamping Setup, or right-click for quick creation, import, and **Expand All / Collapse All** actions.
+   - **`Models (N)` folder:** Lists loaded STEP solids, 3D meshes, and imported fixture models (click any model row to open the **Model Transform Inspector**; use the **`+`** or right-click menu to **Import STEP…**, **Import Mesh…**, **Reload (Ctrl+R)**, **Replace…**, or open the **Sample Gallery…**).
+   - **`Sketches (N)` folder:** Parametric or imported 2D vector layers (collapsed when empty; expand any sketch to view and reorder its child entities; use **`+`** or right-click for **New 2D Sketch (Setup XY)**, **New 2D Sketch on 3D Face…**, and **Import DXF / SVG…**).
+   - **`Keep-Out Regions (N)` folder:** Project-level reusable **`SharedAvoidRegion`** definitions (collapsed when empty; click any region to edit it in the right Inspector with live coral/red 3D overlays).
+   - **`Project Tools (N)` folder:** Tools embedded in this `.chip.toml` project (collapsed by default with an `N unused` pill; use **`+`** with live filtering to embed tools from the active machine or remove unused tools, and click any tool row to inspect its geometry & operation usages).
+   - **`Setups (N)` folder:** Lists clamping Setups (e.g., **`Setup 1 — Top Op`** with `G54` and **`Active`** badges; click any Setup row to activate and inspect it, or hover/right-click for **Generate Setup**, **Align View to Setup Top**, **Add Operation**, and **Add Fixture**), nested **`Fixtures (N)`** nodes, and ordered machining operations (`1. Center Cavity Pocket`, `2. 4x Ø6mm Mounting Holes`) with procedural strategy icons, status badges, tool/cycle-time pills (`T1 | 1m42s`), and drag-and-drop reordering.
 3. **3D CAD Viewport (Center Pane):**
    - **ViewCube (top-right corner):** Click **`Top`**, **`Front`**, **`Right`**, **`Iso`**, **`Left`**, or **`Bot`** (or the `X`/`Y`/`Z` axis tips) to snap the camera.
    - **Floating View HUD (bottom-center):** Toggle **`Ortho`** / **`Persp`** (`P`), **`Fit`** (`F`), **`Top`**, and layer visibility pills (**`Paths`**, **`Rapids`**, **`Stock`**, **`Fixtures`**, **`Ghost`**). Configure your **`Mouse Preset`** (`Fusion 360`, `SolidWorks`, `FreeCAD / Blender`) and **`Orbit Mode`** (`Turntable (+Z Up)` vs. `Free Trackball`) under **`Edit → Settings…` → `Viewport & Navigation`** (`Ctrl+,`).
-4. **Inspector (Right Pane):** Context-sensitive two-column property cards for whichever Setup, Operation, 2D Sketch, or CAD entity is focused.
+4. **Inspector (Right Pane):** Selection-driven two-column property cards for whichever tree node or CAD entity is focused (**Project**, **Model**, **2D Sketch / Entity**, **Keep-Out Region**, **Project Tool**, **Setup / Fixture**, **Operation**, or **B-Rep Entity**).
 5. **Bottom Docked Pane:** Tabbed workspace area switching between **`Simulation Timeline`**, **`G-Code Preview`**, and **`Diagnostics & Log`**.
 
 ### Essential Keyboard & Mouse Shortcuts
@@ -82,6 +83,8 @@ Once **Prismatic Multi-Feature Bracket** (`90 × 70 × 20 mm`) is loaded and gen
 | `Space` | Play / Pause 3D Simulation timeline playback |
 | `P` / `F` | Toggle Orthographic vs. Perspective / Fit scene to viewport |
 | `Ctrl+Z` / `Ctrl+Y` | Instant Undo / Redo (`100` steps) |
+| `Up`/`Down`/`Left`/`Right` | Navigate and expand/collapse rows in the Project Tree View |
+| `F2` | Inline-rename the focused Setup, Operation, Sketch, Entity, Keep-Out, or Fixture |
 | `Ctrl+Up` / `Ctrl+Down` | Reorder focused operation inside its Setup |
 | `Ctrl+D` / `Del` | Duplicate or delete focused operation / sketch entity |
 | `Esc` | Exit active 3D pick or sketch drawing mode / cancel in-flight generation or simulation |
@@ -90,7 +93,7 @@ Once **Prismatic Multi-Feature Bracket** (`90 × 70 × 20 mm`) is loaded and gen
 
 ## 4. Configuring Setup Stock, WCS Origin, & Safe Heights
 
-In the left **CAM Browser**, click **`Stock & WCS`** under `Setup 1 — Top Op [G54]` to open the **Setup Inspector** in the right **Inspector** pane:
+In the left **CAM Browser**, click **`Setup 1 — Top Op`** under **`Setups`** to open the **Setup Inspector** in the right **Inspector** pane:
 
 ![Setup WCS Origin and 27-Point Stock Overlay](../images/tutorials/00-getting-started/04-setup-wcs-stock.png)
 
@@ -118,7 +121,7 @@ Click **`Tools`** in the **top toolbar** (or click **`Edit…`** next to **`Acti
 
 ![ChipCutter Tool Library and Cutting Presets Modal](../images/tutorials/00-getting-started/05-tool-library.png)
 
-Inside any operation's **`Tool`** tab, the **`Active Cutter`** dropdown automatically groups compatible cutters under **`Project Tools`** and **`Machine Library (auto-embeds)`** (with an inline **`Search tools…`** filter when more than 6 compatible cutters are available). You can also manage embedded project cutters directly from the **`Project Tools`** card in the left **CAM Browser** (**`+ Add Tool…`**, usage badges, and **`Remove Unused (N)`**).
+Inside any operation's **`Tool`** tab, the **`Active Cutter`** dropdown automatically groups compatible cutters under **`Project Tools`** and **`Machine Library (auto-embeds)`** (with an inline **`Search tools…`** filter when more than 6 compatible cutters are available). You can also manage embedded project cutters directly under **`Project Tools`** in the left **CAM Browser** (use its **`+`** or right-click menu to add tools or remove unused ones, and click any tool row to inspect it).
 
 ChipCutter ships with an 8-cutter **Starter Shop Library** stored in your user config directory (`default.tools.toml`), and you can also import existing **Fusion 360 `.json` / `.tools`** libraries:
 

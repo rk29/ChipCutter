@@ -31,7 +31,7 @@ Two matching STEP revisions are included in `docs/tutorials/assets/`:
 
 Open the starter `Revision v1` job in `chip-gui`:
 
-- **From the Sample Projects Gallery:** Launch ChipCutter (`chip-gui`), click **`Browse Sample Projects Gallery…`** on the **Welcome to ChipCutter** overlay (or **`File → Sample Projects Gallery…`** / **`Help → Sample Projects Gallery…`** in the **top menu bar**, or **`Sample Gallery…`** under **`Models`** in the left **CAM Browser**), find the **`Associative CAD Revision Reload (v1 -> v2)`** card, and click **`Open Sample`**.
+- **From the Sample Projects Gallery:** Launch ChipCutter (`chip-gui`), click **`Browse Sample Projects Gallery…`** on the **Welcome to ChipCutter** overlay (or **`File → Sample Projects Gallery…`** / **`Help → Sample Projects Gallery…`** in the **top menu bar**, or the **`+`** / right-click menu on **`Models`** in the left **CAM Browser** → **`Sample Gallery…`**), find the **`Associative CAD Revision Reload (v1 -> v2)`** card, and click **`Open Sample`**.
 - **Or launch directly from the terminal:**
   ```bash
   chip-gui --sample revision-v1
@@ -51,7 +51,7 @@ All `6` operations show green **`Clean`** badges in the left **CAM Browser** (`F
 
 ### Step 2 — Reload `Revision v2` (`Ctrl+R` / `Replace…`) & Review the Reload Banner
 
-In production, you either overwrite the STEP file on disk and press **`Ctrl+R`** (or click **`Reload (Ctrl+R)`** under **`Models`** in the left **CAM Browser** or **`File → Reload STEP Model (Ctrl+R)`** in the **top menu bar**; ChipCutter also watches the active STEP file SHA-256 every 2 seconds and displays an alert banner with **`Reload & Re-Match (Ctrl+R)`** when CAD changes on disk), or click **`Replace…`** under **`Models`** in the left **CAM Browser** (or **`File → Replace STEP Model (Associative Re-Bind)…`** in the **top menu bar**) and select `docs/tutorials/assets/14-bracket-v2.step`. *(Note: **`Reload (Ctrl+R)`** and **`Replace…`** appear only when a 3D STEP solid is loaded.)*
+In production, you either overwrite the STEP file on disk and press **`Ctrl+R`** (or open the **`+`** menu on **`Models`** / right-click the model row in the left **CAM Browser** → **`Reload from Disk (Ctrl+R)`**, or **`File → Reload STEP Model (Ctrl+R)`** in the **top menu bar**; ChipCutter also watches the active STEP file SHA-256 every 2 seconds and displays an alert banner with **`Reload & Re-Match (Ctrl+R)`** when CAD changes on disk), or right-click the model row in **`Models`** → **`Replace Model…`** (or **`File → Replace STEP Model (Associative Re-Bind)…`** in the **top menu bar**) and select `docs/tutorials/assets/14-bracket-v2.step`. *(Note: reload and replace actions are enabled only when a 3D STEP solid is loaded.)*
 
 > [!TIP]
 > You can test the exact `v1 → v2` associative reload in one command via `chip-gui --sample revision-v2`, or click **`Reload Rev v2`** on the **`Associative CAD Revision Reload (v1 -> v2)`** card inside **`Sample Projects Gallery`**.
@@ -77,7 +77,7 @@ At the top of the right **Inspector** (above the scrollable tab content), the **
 
 You now have two clean recovery paths depending on the engineering change:
 - **If the feature moved drastically or was replaced by a different face/hole:** Click **`Clear Orphaned & Re-Pick in 3D`** inside the **`CAD Feature Needs Re-Pick`** card. ChipCutter clears only the broken selection, activates the appropriate 3D picking mode (`Cylindrical Holes`, `Planar Faces`, etc.), and preserves your tool, speeds/feeds, heights, passes, and holding tabs—click the replacement feature in the **3D CAD Viewport** and press **`Ctrl+G`**.
-- **If the feature was intentionally deleted in `v2` (as in this ECO):** Uncheck the checkbox on **`5. Mounting Hole (Deleted in v2)`** in the left **CAM Browser** (or right-click the row and choose **`Suppress Operation`**) to retain the operation for audit history without generating or posting it, or press **`Del`** (or **`Edit → Delete Selected (Del)`** in the **top menu bar**) to remove it. *(Hovering the row and clicking the eye icon only toggles 3D viewport toolpath visibility while keeping the operation active.)*
+- **If the feature was intentionally deleted in `v2` (as in this ECO):** Uncheck the checkbox on **`5. Mounting Hole (Deleted in v2)`** in the left **CAM Browser** (or right-click the row and choose **`Suppress`**) to retain the operation for audit history without generating or posting it, or press **`Del`** (or **`Edit → Delete Selected (Del)`** in the **top menu bar**) to remove it. *(Hovering the row and clicking the eye icon—or right-clicking → **`Hide Path`**—only toggles 3D viewport toolpath visibility while keeping the operation active.)*
 
 ---
 
@@ -85,7 +85,7 @@ You now have two clean recovery paths depending on the engineering change:
 
 | Concept / Control | Location | Behavior & Best Practices |
 |---|---|---|
-| **`Reload (Ctrl+R)`** / **`Replace…`** | `Left CAM Browser → Models` (or `Top Menu Bar → File → Reload STEP Model (Ctrl+R)` / `Replace STEP Model (Associative Re-Bind)…`) | Shown/enabled when a 3D STEP model is loaded. Re-reads the current STEP file (`Ctrl+R`) or swaps in a new revision path and runs WCS-first associative re-matching. |
+| **`Reload from Disk (Ctrl+R)`** / **`Replace Model…`** | `Left CAM Browser → Models (+ menu / model right-click)` (or `Top Menu Bar → File → Reload STEP Model (Ctrl+R)` / `Replace STEP Model (Associative Re-Bind)…`) | Shown/enabled when a 3D STEP model is loaded. Re-reads the current STEP file (`Ctrl+R`) or swaps in a new revision path and runs WCS-first associative re-matching. |
 | **WCS-First Re-Binding** | Automatic during reload | Re-binds Setup WCS face/edge orientation and origin references **before** evaluating operation signatures so rotated or shifted parts re-match accurately in Setup coordinates. |
 | **`GeometricSignature` Matching** | `chip-cad` / `chip-project` | Scores candidate faces/edges by surface/curve kind, normal direction, centroid proximity, area/radius similarity, and local topology—immune to STEP ID shuffling. |
 | **Open-Chain Healing** | Automatic for `OpenChain` selections | Re-matches start and end edges independently and runs shortest-path topology search to heal intermediate edges when a chain splits or changes edge count. |

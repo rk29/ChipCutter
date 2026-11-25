@@ -18,7 +18,7 @@ In this tutorial you will start from a bare binary STL mesh ([`08-sculpted-dome.
 
 Start with an **empty project** and load the watertight binary STL starter model included with this tutorial ([`08-sculpted-dome.stl`](assets/08-sculpted-dome.stl) — `70.000 × 70.000 × 33.000 mm`, `6,528 triangles`, `3,266 welded vertices`, `Watertight`):
 
-- **From the Welcome Overlay or Menu:** Launch ChipCutter (`chip-gui`), click **`Import 3D Mesh (STL / OBJ / 3MF)…`** on the **Welcome to ChipCutter** overlay (or **`File → Import 3D Mesh (.stl / .obj / .3mf)…`** in the **top menu bar**, or **`Import Mesh…`** under **`Models`** in the left **CAM Browser**), select `docs/tutorials/assets/08-sculpted-dome.stl`, verify **`Interpret coordinates as:`** = **`Millimeters (mm)`** in the **Import 3D Mesh (STL / OBJ / 3MF)** modal, and click **`Import 3D Mesh`**.
+- **From the Welcome Overlay or Menu:** Launch ChipCutter (`chip-gui`), click **`Import 3D Mesh (STL / OBJ / 3MF)…`** on the **Welcome to ChipCutter** overlay (or **`File → Import 3D Mesh (.stl / .obj / .3mf)…`** in the **top menu bar**, or the **`+`** / right-click menu on **`Models`** in the left **CAM Browser** → **`Import Mesh (.stl / .obj / .3mf)…`**), select `docs/tutorials/assets/08-sculpted-dome.stl`, verify **`Interpret coordinates as:`** = **`Millimeters (mm)`** in the **Import 3D Mesh (STL / OBJ / 3MF)** modal, and click **`Import 3D Mesh`**.
 - **Or open directly from the terminal:**
   ```bash
   chip-gui docs/tutorials/assets/08-sculpted-dome.stl
@@ -30,8 +30,8 @@ Start with an **empty project** and load the watertight binary STL starter model
 
 ### Step 1 — Inspect Imported Mesh & Configure Setup Stock / WCS (`Setup 1 → Stock`)
 
-1. Check the **`Models`** section in the left **CAM Browser** (and the right side of the **top menu bar**): ChipCutter confirms `Binary STL · 6528 tris · 3266 verts · Watertight`. Because binary STL files are unitless, ChipCutter defaults to **`Millimeters (mm)`** (`70.000 × 70.000 × 33.000 mm`), and you can override mesh units in the **Import 3D Mesh (STL / OBJ / 3MF)** modal whenever needed.
-2. Click **`Stock & WCS`** under `Setup 1` in the left **CAM Browser**:
+1. Hover or click the mesh row under **`Models`** in the left **CAM Browser** (or check the right side of the **top menu bar**): ChipCutter confirms `Binary STL · 6528 tris · 3266 verts · Watertight`. Because binary STL files are unitless, ChipCutter defaults to **`Millimeters (mm)`** (`70.000 × 70.000 × 33.000 mm`), and you can override mesh units in the **Import 3D Mesh (STL / OBJ / 3MF)** modal or the right-panel **Model Inspector** whenever needed.
+2. Click **`Setup 1`** under **`Setups`** in the left **CAM Browser**:
    - In the right **Inspector** **`WCS & Post`** tab (`WCS Origin (X0 Y0 Z0)` card), select **`Origin Reference`** = **`Stock 27-Pt`**, set **`Z Level:`** = **`Top`**, and click **`C`** in the **`Center Y`** row so **`Active Anchor`** shows `Top Center` (`Z = 0` sits on top of the billet, centered directly over the dome apex).
    - Switch to the **`Stock`** tab in the right **Inspector**, keep **`Stock Mode`** = **`Relative Box Stock`** under **`Stock Geometry & Dimensions`**, and under **`Stock Offsets`** (confirm **`Symmetric XY`** / `Mirror ±X / ±Y` is checked) set **`Side X Margin (±X)`** = `2 mm`, **`Side Y Margin (±Y)`** = `2 mm`, **`Top Allowance (+Z)`** = `1 mm`, and **`Bottom Holding (-Z)`** = `0 mm` (producing a `74.000 × 74.000 × 34.000 mm` stock billet):
 
@@ -41,7 +41,7 @@ Start with an **empty project** and load the watertight binary STL starter model
 
 Before roughing, add a lightweight 2D containment boundary on the Setup XY plane so you can control exactly where the roughing cutter is allowed to travel:
 
-1. Click **`+ Sketch`** in the **top toolbar** (or expand **`2D Sketches (0)`** in the left **CAM Browser** and click **`+ New Sketch`**). In the right **Inspector** (**2D Sketch Layer** → **`Sketch Anchor & Snap Grid`** card), set **`Sketch Name`** = **`Dome Window`**.
+1. Click **`+ Sketch`** in the **top toolbar** (or use the **`+`** / right-click menu on **`Sketches`** in the left **CAM Browser** → **`New 2D Sketch (Setup XY)`**). In the right **Inspector** (**2D Sketch Layer** → **`Sketch Anchor & Snap Grid`** card), set **`Sketch Name`** = **`Dome Window`**.
 2. Under **`Interactive Authoring Tools` → `Quick Insert at (0, 0):`**, click **`Rect`**. In the **`Parametric Rectangle Editor`** card below, keep **`Anchor Mode`** = **`Center (X, Y)`** and set **`Position X`** = `0 mm`, **`Position Y`** = `0 mm`, **`Width`** = `68 mm`, **`Height`** = `68 mm`, and **`Fillet R`** = `4 mm` enclosing the dome and pedestal top flange.
 3. With `Setup 1` **`Active`** in the left **CAM Browser**, click **`+ Op… → 3D Adaptive Roughing`** in the **top toolbar** (or **`Operations → + 3D Adaptive Roughing`** in the **top menu bar**) to add **`1. 3D Adaptive 1`**.
 4. In the right **Inspector** **`Tool`** tab (`Cutter & Material Preset`), select **`T1 — 6mm 3FL Carbide Flat Endmill`** in **`Active Cutter`**.

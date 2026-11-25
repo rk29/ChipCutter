@@ -17,13 +17,13 @@ In this tutorial you will start from an **empty project**, import a minimal hole
 
 Start with an **empty project** and load the minimal hole plate included with this tutorial ([`04-drill-bore-plate.step`](assets/04-drill-bore-plate.step) — a pre-squared `100 × 70 × 16 mm` plate with 4× `Ø6.0 mm` corner through-holes and 1× `Ø18.0 mm × 10 mm` deep central blind counterbore):
 
-- **From the Welcome Overlay or Menu:** Launch ChipCutter (`chip-gui`), click **`Import 3D STEP Solid…`** in the **Welcome to ChipCutter** overlay (or **`File → Import STEP Model…`** in the **top menu bar**, or **`Import STEP…`** under **`Models`** in the left **CAM Browser**), and select `docs/tutorials/assets/04-drill-bore-plate.step`.
+- **From the Welcome Overlay or Menu:** Launch ChipCutter (`chip-gui`), click **`Import 3D STEP Solid…`** in the **Welcome to ChipCutter** overlay (or **`File → Import STEP Model…`** in the **top menu bar**, or the **`+`** / right-click menu on **`Models`** in the left **CAM Browser** → **`Import STEP…`**), and select `docs/tutorials/assets/04-drill-bore-plate.step`.
 - **Or open directly from the terminal:**
   ```bash
   chip-gui docs/tutorials/assets/04-drill-bore-plate.step
   ```
 
-In the left **CAM Browser**, click **`Stock & WCS`** under `Setup 1`, open the **`Stock`** tab in the right **Inspector**, and under **`Stock Offsets`** (with **`Symmetric XY`** / `Mirror ±X / ±Y` checked) set **`Side X Margin (±X)`** = `0 mm`, **`Side Y Margin (±Y)`** = `0 mm`, and **`Top Allowance (+Z)`** = `0 mm` to represent pre-squared `100 × 70 × 16 mm` stock.
+In the left **CAM Browser**, click **`Setup 1`** under **`Setups`**, open the **`Stock`** tab in the right **Inspector**, and under **`Stock Offsets`** (with **`Symmetric XY`** / `Mirror ±X / ±Y` checked) set **`Side X Margin (±X)`** = `0 mm`, **`Side Y Margin (±Y)`** = `0 mm`, and **`Top Allowance (+Z)`** = `0 mm` to represent pre-squared `100 × 70 × 16 mm` stock.
 
 ---
 

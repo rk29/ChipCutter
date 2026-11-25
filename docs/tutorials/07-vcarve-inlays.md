@@ -18,10 +18,10 @@ In this tutorial you will start from an **empty Pure-2D project** (no 3D STEP mo
 No external CAD file is needed:
 
 1. Launch ChipCutter (`chip-gui`) and click **`New Pure-2D Parametric Sketch`** on the **Welcome to ChipCutter** overlay.
-2. In the left **CAM Browser**, click **`Stock & WCS`** under `Setup 1`:
+2. In the left **CAM Browser**, click **`Setup 1`** under **`Setups`**:
    - In the right **Inspector**, switch to the **`Stock`** tab. Under **`Stock Geometry & Dimensions`**, change **`Stock Mode`** to **`Fixed-Size Box Stock`** (which displays **`Width (WCS X)`**, **`Depth (WCS Y)`**, and **`Height (WCS Z)`**), enter `120 mm`, `55 mm`, and `15 mm`, and under **`Stock Offsets`** confirm **`XY Alignment`** reads `Centered in XY` and set **`Top Allowance (+Z)`** = `0 mm`.
    - Switch to the **`WCS & Post`** tab in the right **Inspector**. Under **`WCS Origin (X0 Y0 Z0)`**, select **`Origin Reference`** = **`Stock 27-Pt`**, set **`Z Level:`** = **`Top`**, and click **`C`** in the **`Center Y`** row (so **`Active Anchor`** reads `Top Center`).
-3. In the left **CAM Browser**, expand **`2D Sketches (1)`** and click the sketch layer. In the right **Inspector** (**2D Sketch Layer**), click **`Text`** under **`Interactive Authoring Tools` → `Quick Insert at (0, 0):`**, then in the **`TrueType & Hershey Typography`** card below set:
+3. In the left **CAM Browser**, expand **`Sketches (1)`** and click the sketch layer. In the right **Inspector** (**2D Sketch Layer**), click **`Text`** under **`Interactive Authoring Tools` → `Quick Insert at (0, 0):`**, then in the **`TrueType & Hershey Typography`** card below set:
    - **`Text Content (multi-line):`** = `CHIP`
    - **`Font Family`** = **`DejaVu Sans Bold (Outline)`**
    - **`Cap Height`** = `24 mm`, **`Spacing`** = `1.5 mm`, **`Origin X`** = `0 mm`, **`Origin Y`** = `0 mm`, **`Alignment`** = **`Center`** / **`Middle`**.
@@ -68,7 +68,7 @@ Inspect the machined hardwood stock in the **3D CAD Viewport**: crisp `60°` bev
 
 To create a contrasting wood inlay (for example, walnut `"CHIP"` inlaid into a maple plaque):
 
-1. Click **`+ Setup`** at the top-right of the left **CAM Browser** (or **`Setup → New Setup`** in the **top menu bar**) to add **`Setup 2 — Op 2 [G55]`** (which automatically receives the **`Active`** badge pill in the left **CAM Browser**; you can switch active Setups anytime by clicking a Setup header or its **`Activate`** button). In the right **Inspector**, rename **`Setup Name`** to `Setup 2 — Male V-Inlay Plug`, configure matching `120 × 55 × 15 mm` **`Fixed-Size Box Stock`** (`Top Allowance (+Z)` = `0 mm`) on the **`Stock`** tab, and set **`Origin Reference`** = **`Stock 27-Pt`** → **`Top`** + **`Center Y` / `C`** (`Top Center`) on the **`WCS & Post`** tab.
+1. Click **`+ Setup`** on the Project root row in the left **CAM Browser** (or **`Setup → New Setup`** in the **top menu bar**) to add **`Setup 2 — Op 2`** (`G55`, which automatically receives the **`Active`** badge pill in the left **CAM Browser**; you can switch active Setups anytime by clicking any Setup row under **`Setups`** or right-clicking → **`Set Active`**). In the right **Inspector**, rename **`Setup Name`** to `Setup 2 — Male V-Inlay Plug`, configure matching `120 × 55 × 15 mm` **`Fixed-Size Box Stock`** (`Top Allowance (+Z)` = `0 mm`) on the **`Stock`** tab, and set **`Origin Reference`** = **`Stock 27-Pt`** → **`Top`** + **`Center Y` / `C`** (`Top Center`) on the **`WCS & Post`** tab.
 2. With `Setup 2` **`Active`**, click **`+ V-Carve`** in the **top toolbar** (or **`Operations → + V-Carve / Bevel Inlay`** in the **top menu bar**), select **`T8 — 6mm 60° Carbide Engraving V-Bit`** in **`Tool`**, click **`+ All`** on your `"CHIP"` sketch in **`Geometry`**, and on the **`Passes`** tab check **`Flat Floor Limit`** (`Limit Max Depth`), set **`Flat Depth`** = `3.0 mm`, and select **`T3 — 1/8 in 2FL Carbide Flat`** in **`Clearing Tool`**.
 3. Scroll to the **`Mated Male V-Inlay Plug`** card in **`Passes`**, click **`Male Plug`** on the **`Inlay Mode`** row **first** so the male inlay fields appear below it, then set:
    - **`Start Depth`** = `2.0 mm` — controls how deep the tapered male bevel seats into the `3.0 mm`-deep female cavity (`2.0 mm` wedge engagement leaves `1.0 mm` of bottom glue space inside the female pocket!).
@@ -99,7 +99,7 @@ Notice the raised, mirrored `"CHIP"` prism standing proud of the cleared backgro
 
 ## 5. Post-Processing: GRBL Automatic Two-File Split vs. LinuxCNC ATC
 
-Click **`Activate`** (or the Setup title / **`Stock & WCS`**) on `Setup 1 [G54]` in the left **CAM Browser** to make `Setup 1` active again, then click **`Post`** in the **top toolbar** (or select the bottom **`G-Code Preview`** tab) with **`GRBL 1.1 / FluidNC (Split by Tool)`** selected in **`Post Profile:`**:
+Click **`Setup 1`** under **`Setups`** in the left **CAM Browser** (or right-click → **`Set Active`**) to make `Setup 1` active again, then click **`Post`** in the **top toolbar** (or select the bottom **`G-Code Preview`** tab) with **`GRBL 1.1 / FluidNC (Split by Tool)`** selected in **`Post Profile:`**:
 
 ![GRBL Split-by-Tool G-Code Output Splitting Stage 1 T3 and Stage 2 T8](../images/tutorials/07-vcarve-inlays/05-vcarve-gcode-grbl-split.png)
 

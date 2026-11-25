@@ -36,7 +36,7 @@ chip-gui docs/tutorials/assets/09-rotary-shaft.stl
 
 ### Step 1 — Configure Setup Rotary Kinematics (`Setup 1 → 4th Axis` tab)
 
-1. In the left **CAM Browser**, click **`Stock & WCS`** under **`Setup 1`**.
+1. In the left **CAM Browser**, click **`Setup 1`** under **`Setups`**.
 2. Switch to the **`Stock`** tab in the right **Inspector**: under **`Stock Geometry & Dimensions`**, change **`Stock Mode`** to **`Fixed Cylindrical Stock`** **first** so **`Bar Axis`**, **`Bar Diameter`**, and **`Bar Length`** appear below it, then set **`Bar Axis`** = **`WCS X Axis`**, **`Bar Diameter`** = `40 mm` (for Part A wrapping) or `42 mm` (for Part B shaft surfacing), and **`Bar Length`** = `80 mm`.
 3. Switch to the **`WCS & Post`** tab in the right **Inspector**:
    - Under **`WCS Origin (X0 Y0 Z0)`**, select **`Origin Reference`** = **`Stock 27-Pt`**, set **`Z Level:`** = **`Mid-Z`**, and click **`C`** in the **`Center Y`** row (so **`Active Anchor`** reads `Mid-Z Center`, placing `Y = 0, Z = 0` dead-center on the rotary spindle axis).

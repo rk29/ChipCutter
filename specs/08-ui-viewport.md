@@ -13,30 +13,43 @@ ChipCutter uses `eframe` with the `wgpu` backend and `egui_tiles` for a responsi
 │   [Tools]                                                      [Cmd (Ctrl+K)][Settings]│
 ├──────────────────────┬──────────────────────────────────────────┬──────────────────────┤
 │ CAM Browser          │ [Setup/WCS/Units] [Pick/Sketch HUD]      │ Inspector            │
-│ (Left Tile)          │                                          │ (Right Tile)         │
-│                      │           3D CAD / 2D Sketch             │ [Tool] [Geometry]    │
-│ ▼ Models             │           Viewport (4x MSAA `wgpu`)      │ [Heights] [Passes]   │
-│   • bracket.step     │                                [ViewCube]│ [Linking]            │
-│ ▼ 2D Sketches        │                                          │ Two-column aligned   │
-│   • Top Logo.svg     │                                          │ `inspector_grid` &   │
-│ ▼ Setup 1 [G54]      │                                          │ formula autocomplete │
-│   • Stock & WCS      │                                          │                      │
-│   ✓ 1. Adaptive T1   │                                          │                      │
-│   ✓ 2. V-Carve  T8   │         [Floating View / Layer HUD]      │                      │
+│ (Project Tree View)  │                                          │ (Selection-Driven)   │
+│                      │           3D CAD / 2D Sketch             │                      │
+│ ▼ Project   [+Setup] │           Viewport (4x MSAA `wgpu`)      │ Project | Model      │
+│   ▼ Models (1)   [+] │                                [ViewCube]│ Sketch  | Keep-Out   │
+│     bracket.step     │                                          │ Tool    | Setup      │
+│   ▼ Sketches (1) [+] │                                          │ Operation:           │
+│     ▸ Top Logo       │                                          │ [Tool] [Geometry]    │
+│   ▸ Keep-Out (1) [+] │                                          │ [Heights] [Passes]   │
+│   ▸ Tools (8)    [+] │                                          │ [Linking]            │
+│   ▼ Setups (1)   [+] │                                          │ Two-column aligned   │
+│     ▼ Setup 1 G54 Ac │                                          │ `inspector_grid` &   │
+│       ▸ Fixtures (0) │                                          │ formula autocomplete │
+│       1. Adaptive T1 │                                          │                      │
+│       2. V-Carve  T8 │         [Floating View / Layer HUD]      │                      │
 ├──────────────────────┴──────────────────────────────────────────┴──────────────────────┤
 │ Bottom Tile Tabs: [Simulation Timeline] | [G-Code Preview] | [Diagnostics & Log]       │
 └────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Design System, Vector Icons, & Status Badges *(v3)*
-- **Semantic Theme Tokens (`ThemeTokens`):** All panel backgrounds, card borders, accent highlights, semantic status colors, and 3D viewport background/grid colors derive from `ThemeTokens` (`AppTheme::Dark` and `AppTheme::Light`)—never scattered ad-hoc RGB literals.
-- **Procedural Vector Icons:** Crisp HiDPI `egui::Painter` vector glyphs for all operation families (including `ThreadMill`, `Deburr3D`, `SlotUndercut`, `Dovetail`, and `Undercut3D`), toolbar actions, visibility toggles, and browser status badges:
+### Design System, Vector Icons, & Hierarchical Project Tree View *(v3, extended Phase 25 — M90–M92)*
+- **Semantic Theme Tokens (`ThemeTokens`):** All panel backgrounds, card borders, accent highlights, semantic status colors, tree guide lines, and 3D viewport background/grid colors derive from `ThemeTokens` (`AppTheme::Dark` and `AppTheme::Light`)—never scattered ad-hoc RGB literals.
+- **Complete Procedural Vector Icon Suite (`widgets/icons.rs`):** Resolution-independent `egui::Painter` vector glyphs (`IconKind`) covering every tree container (`Project`, `ModelsFolder`, `StepModel`, `MeshModel`, `FixtureModel`, `KeepOutZone`, `Setup`, `Fixture`, `ChevronRight`, `ChevronDown`), cutters (`Tool`), all 7 sketch entity kinds (`EntityRect`, `EntityCircle`, `EntitySlot`, `EntityPolygon`, `EntityBoltCircle`, `EntityPolyline`, `EntityText`), all 18 operation strategies (including dedicated 3D and 4th-axis glyphs: `Facing`, `Contour2D`, `Pocket2D`, `Adaptive2D`, `DrillBore`, `ThreadMill`, `SlotUndercut`, `Dovetail`, `Undercut3D`, `ChamferTrace`, `Deburr3D`, `VCarve`, `Adaptive3D`, `Waterline3D`, `Parallel3D`, `Scallop3D`, `Pencil3D`, `Rotary2Linear`, `Rotary4AxisSim`), toolbar actions, visibility toggles, and browser status badges:
   - **Clean** (emerald check): Up-to-date cached toolpath, paired with `T#` and estimated cycle-time pill.
   - **Dirty** (amber refresh): Parameters, tool, setup, upstream Rest Machining op, CAD, or Sketch changed; awaits `Ctrl+G`.
   - **Generating** (animated spinner): Background `rayon` task in flight.
   - **Error / Needs Re-Pick** (coral warning): Validation error, empty cut, crash detected, or orphaned B-Rep selection after STEP reload.
   - **Suppressed** (muted slash-circle + strikethrough): Skipped in generation, Rest Machining coverage, and post output.
-- **Drag & Keyboard Browser Ergonomics:** Operations support drag-and-drop and `Ctrl+Up` / `Ctrl+Down` reordering, `Ctrl+D` duplication, `Delete` removal, and hover-revealed row actions so operation names remain readable even in narrow left panes.
+- **Hierarchical Project Tree View (`panels/browser/`):**
+  - Replaces flat browser cards with a unified, collapsible **Project Tree View** rooted at `<project.project_name>` (with a `+ Setup` quick button) containing five top-level folders: **`Models (N)`**, **`Sketches (N)`** (expanding to each sketch layer and its child **`SketchEntity`** nodes), **`Keep-Out Regions (N)`**, **`Project Tools (N)`** (collapsed by default with an `N unused` pill and searchable `+` menu), and **`Setups (N)`** (expanding to each Setup with `G54`–`G59.3` & `Active` badges, nested **`Fixtures (N)`** + fixture items, and ordered **`Operations`**).
+  - Renders subtle theme-matched vertical ancestor guide lines, persisted procedural disclosure chevrons (`Sketches`, `Keep-Out Regions`, and `Fixtures` auto-open when non-empty), accent selection bars, single-line ellipsis truncation, and full keyboard navigation (`Up`/`Down`/`Left`/`Right` tree traversal, `F2` inline rename, `Del` delete, `Ctrl+Up`/`Ctrl+Down` operation reorder, `Ctrl+D` operation duplicate).
+- **Unified Right-Click Context Menus & Inline `F2` Renaming (`browser/context_menus.rs`):**
+  - Every tree node exposes a consistent right-click context menu pairing common item actions (`Rename (F2)`, `Duplicate`, `Suppress`/`Unsuppress`, `Show`/`Hide`, `Move Up`/`Move Down`, `Delete`) with strict type-safe creation submenus (`Project` root: properties, tools, new Setup/Sketch/Keep-Out, STEP/Mesh/Vector import, Expand/Collapse All; `Models`: STEP/Mesh import, Reload/Replace, Sample Gallery; `Sketches`: new Setup XY / 3D-face sketch, DXF/SVG import, and `Add Entity` submenu; `Keep-Out Regions`: edit, suppress, apply to active setup; `Project Tools`: manage tools, sync from machine library, remove unused/tool; `Setups`: Set Active, Generate Setup, Align View to Setup Top, categorized `Add Operation` & `Add Fixture` submenus + Flip-Jig / Soft-Jaw wizards; `Operations`: Generate Operation, Show/Hide Path, Suppress, Rename, Duplicate, Reorder, Delete).
+  - Inline renaming (`F2` or `Rename (F2)`) opens an aligned in-row `TextEdit` on `Setup`, `Operation`, `Sketch`, `SketchEntity`, `AvoidRegion`, and `Fixture` nodes, committing atomically to Undo on `Enter` or focus loss and canceling on `Esc`.
+- **Section-Scoped Drag-and-Drop Reordering (`browser/drag_reorder.rs`):**
+  - Supports pointer drag-and-drop with an accent insertion indicator across all 6 semantically reorderable sections (**`Setups`**, **`Operations`**, **`Sketches`**, **`Sketch Entities`**, **`Keep-Out Regions`**, and **`Fixtures`**), enforcing strict parent-container isolation (`Models` and `Project Tools` are intentionally non-reorderable), preserving active selection/focus, recording atomic Undo snapshots, and automatically invalidating affected `FromPrecedingOperations` Rest Machining and `carryover_from_setup_id` multi-setup dependents.
+- **Complete Selection-Driven Right-Panel Routing (`InspectorFocus`):**
+  - Clicking any node in the Project Tree immediately focuses its aligned two-column right-panel editor: **`Project`** (shared Project Properties cards), **`Model`** / **`CadEntity`** (`model_inspector.rs`), **`Sketch`** / child **`SketchEntity`** (`sketch_inspector/`), **`KeepOutRegion`** (`keepout_inspector.rs` with live coral/red 3D keep-out overlays, fixture/sketch/3D pick controls, and clearance overrides), **`ProjectTool`** (`project_tool_inspector.rs` with read-only cutter summary, 2D schematic, operation usage links, Sync from Machine Library, and Open in Tool Library), **`Setup`** / child **`Fixture`** (`setup_inspector/`), and **`Operation`** (`operation_inspector/`).
 
 ---
 
@@ -65,7 +78,7 @@ Integrated into the central `egui` panel via an offscreen **`4x MSAA` `ViewportR
 
 ## 2D Sketch Authoring & Import Workflows *(v2, extended Phase 24)*
 - **Sketch Inspector & Interactive Authoring Tools:**
-  - Selecting or creating a `SketchLayer` in the **2D Sketches** browser section reveals Sketch Plane anchor settings (`Setup XY` vs. `Planar STEP Face`), multi-setup **`Setup`** reassignment (`ComboBox` whenever `project.setups.len() > 1`), 2D Snap Grid controls, and the **6 interactive sketch creation tools** (`Rectangle`, `Circle`, `Slot`, `Polygon`, `BoltCircle`, `PlaceText`); imported `Polyline` entities from DXF/SVG are also listed and editable (translation, uniform scale, rotation) in the Sketch Inspector.
+  - Selecting or creating a `SketchLayer` under **`Sketches`** in the Project Tree reveals Sketch Plane anchor settings (`Setup XY` vs. `Planar STEP Face`), multi-setup **`Setup`** reassignment (`ComboBox` whenever `project.setups.len() > 1`), 2D Snap Grid controls, and the **6 interactive sketch creation tools** (`Rectangle`, `Circle`, `Slot`, `Polygon`, `BoltCircle`, `PlaceText`); imported `Polyline` entities from DXF/SVG are also listed under the Sketch tree node and editable (translation, uniform scale, rotation) in the Sketch Inspector.
   - Clicking any `SketchEntity` opens its exact expression-backed parameters (`width`, `height`, `corner_radius`, `cap_height`, `font`, Hershey vs. TrueType mode, `arc_fit_tolerance_mm`, and custom `.ttc` `face_index`, etc.) in the right-hand Inspector.
 - **DXF / SVG Import Modal (`vector_import_modal.rs`):**
   - Live bounding-box dimension preview (`X × Y` in display units) before confirming import so unitless DXFs (`mm` vs. `in`) and pixel SVGs (`96` / `72` / `90` DPI) are never accidentally imported at `25.4x` wrong scale.
@@ -76,7 +89,7 @@ Integrated into the central `egui` panel via an offscreen **`4x MSAA` `ViewportR
   - Accessible from `File → Import 3D Mesh (.stl / .obj / .3mf)…` and the Welcome Overlay, with built-in sample previews (`Sample Dome (STL)`, `Sample Wave (OBJ)`).
   - Auto-detects 3MF header units or prompts for unitless STL/OBJ physical units (`mm`, `in`, `cm`, `m`, `ft`, `um`), displays live transformed bounding-box dimensions and watertight/manifold diagnostics, and provides pre-import orientation (`Y-Up → Z-Up`, `±90° X/Y/Z`), uniform **`Scale` / `Target Size`**, and **`Center XY`** / **`Drop Bottom to Z=0`** toggles.
 - **Model Transform & Orientation Inspector (`model_inspector.rs`):**
-  - Clicking any imported STEP solid or STL/OBJ/3MF mesh in the CAM Browser's `Models` card opens a two-column Inspector showing live transformed bounding-box size and Z range, post-import **`ModelEntry::role`** (`Target Part` / `Fixture / Workholding`) and triangle-mesh **`ModelEntry::unit_override`** selectors (triggering clean background reload + atomic Undo), quick orientation buttons (`Y-Up → Z-Up (+90° X)`, `±90° X/Y/Z`), interactive 3D **`Lay Flat on Clicked Face…`** (supporting STEP planar faces and mesh triangles), **`Center XY`**, **`Drop Bottom to Z=0`**, **`Align Top to Z=0`**, **`Reset`**, exact expression-capable `Rotate X/Y/Z`, `Move X/Y/Z`, and `Scale` (Uniform Lock or independent `X/Y/Z`) + `Target Size X/Y/Z` controls—all with `< 1 ms` Undo/Redo and automatic `Dirty` invalidation on dependent operations.
+  - Clicking any imported STEP solid or STL/OBJ/3MF mesh under **`Models`** in the Project Tree opens a two-column Inspector showing live transformed bounding-box size and Z range, post-import **`ModelEntry::role`** (`Target Part` / `Fixture / Workholding`) and triangle-mesh **`ModelEntry::unit_override`** selectors (triggering clean background reload + atomic Undo), quick orientation buttons (`Y-Up → Z-Up (+90° X)`, `±90° X/Y/Z`), interactive 3D **`Lay Flat on Clicked Face…`** (supporting STEP planar faces and mesh triangles), **`Center XY`**, **`Drop Bottom to Z=0`**, **`Align Top to Z=0`**, **`Reset`**, exact expression-capable `Rotate X/Y/Z`, `Move X/Y/Z`, and `Scale` (Uniform Lock or independent `X/Y/Z`) + `Target Size X/Y/Z` controls—all with `< 1 ms` Undo/Redo and automatic `Dirty` invalidation on dependent operations.
 
 ---
 
@@ -112,12 +125,12 @@ Integrated into the central `egui` panel via an offscreen **`4x MSAA` `ViewportR
   - Accessible via `Edit → Application Settings...` (`Ctrl+,`), the `Ctrl+K` Command Palette (`Open Application Settings`), the compact top-right `Application Settings` toolbar button, and the Simulation Timeline summary chip.
   - Organizes low-frequency workspace choices into four sections (**General & Appearance**: theme, project & default display units, startup Welcome screen, layout reset; **Viewport & Navigation**: mouse navigation preset, orbit mode, default projection, overlays; **Simulation**: engine, detail level, compute backend, and **Smooth Skinned Surfaces / Mesh Skinning**; **Machine Defaults**: default machine for new projects) and removes those infrequent controls from the main toolbar, viewport bottom HUD, and simulation timeline bar.
   - Persists `AppTheme`, default display units, default machine ID, mouse navigation preset, orbit mode, viewport visibility toggles, `sim_engine`, `sim_resolution`, `sim_backend`, `sim_mesh_skinning`, `egui_tiles` pane shares, and recent project paths across sessions in `prefs.toml`.
-- **Active-Setup Indication & Top Action Bar Operation Creation (*Phase 21*):**
-  - Each Setup card in the CAM Browser clearly highlights the **Active Setup** with an accent border and an `"Active"` badge pill (with 1-click activation on inactive setups), eliminating redundant per-card operation-add bars.
-  - Operation creation (`+ Sketch`, `+ Adaptive`, `+ Contour`, `+ V-Carve`, and categorized `"+ Op…"`) lives cleanly in the top action bar targeting the active Setup, with explicit visual separators between File/History, Geometry/Operations, CAM Pipeline, Tools, and right-aligned Utility groups.
-- **Streamlined Project Tool Management & Machine-Switch Tool Swapping (*Phase 21*):**
+- **Active-Setup Indication & Top Action Bar Operation Creation (*Phase 21, refined Phase 25*):**
+  - Each Setup row under **`Setups`** in the Project Tree highlights the **Active Setup** with bold styling, an accent icon, its WCS pill (`G54`–`G59.3`), and an `"Active"` badge pill (clicking any Setup row activates and inspects it; hover actions and right-click context menus provide Generate, Align View to Setup Top, Add Operation, Add Fixture, Duplicate, and Delete).
+  - Operation creation (`+ Sketch`, `+ Adaptive`, `+ Contour`, `+ V-Carve`, and categorized `"+ Op…"`) lives cleanly in the top action bar targeting the active Setup (and via each Setup's right-click **`Add Operation`** submenu), with explicit visual separators between File/History, Geometry/Operations, CAM Pipeline, Tools, and right-aligned Utility groups.
+- **Streamlined Project Tool Management & Machine-Switch Tool Swapping (*Phase 21, refined Phase 25*):**
   - Workspace chrome exposes a single top-toolbar `"Tools"` button alongside `Edit → Manage Tools...`, with `Machine Manager…` under the `Setup` menu.
-  - The CAM Browser's **`Project Tools`** card provides inline searchable **`+ Add Tool…`** (from the active machine library), per-tool usage badges (`N ops` / `Unused`), guarded per-tool removal, and 1-click **`Remove Unused (N)`** pruning.
+  - The Project Tree's **`Project Tools (N)`** folder (collapsed by default) provides a searchable **`+`** menu to embed tools from the active machine library, an `N unused` pill + `Remove Unused Tools (N)` action, per-tool usage badges (`1 op` / `N ops` / `unused`), guarded deletion, right-click actions, and a dedicated right-panel **Project Tool Inspector** when clicked.
   - The Operation Inspector's **Active Cutter** picker groups compatible `Project Tools` and `Machine Library` cutters first with inline search and an opt-in incompatible toggle.
   - Switching a project's target machine from Setup Inspector, Project Properties, Machine Manager, or Tool Library automatically inspects referenced operations (including V-Carve clearing tools) and opens a guided **`"Switch Machine — {target_machine.name}"`** dialog pre-selecting the closest compatible replacements and applying the swap (`"Switch Machine & Swap Tools"`) + optional unused-tool pruning in a single atomic Undo step.
 - **Consolidated `[Geometry]` Tab Cutting-Area Controls, Avoid / Keep-Out Manager, & Fixed-Box Alignment (*Phase 22–23*):**
@@ -128,7 +141,7 @@ Integrated into the central `egui` panel via an offscreen **`4x MSAA` `ViewportR
   - **Per-Operation & Shared `Avoid / Keep-Out Regions` UI (*Phase 23*):**
     - A collapsible **`Avoid / Keep-Out Regions`** card in `[Geometry]` (auto-expanded whenever `!op.avoid.is_empty()` or actively editing a shared region) exposes 1-click toggle chips for project-level `SharedAvoidRegion` entries, `Save Local as Shared…`, `+ New Shared`, inline `Edit` (with active coral/red banner, optional radial/axial clearance overrides, fixture chips, and sketch `+ Avoid`), `Detach to Local`, `Apply to Setup Ops…`, `Avoid All Setup Fixtures` + per-fixture chips, local sketch `+ Avoid` quick-add, removable local keep-out list, and `Radial Clearance` / `Axial Clearance` expression inputs.
     - A segmented **`Pick Target:`** (`Cutting Area` | `Avoid / Keep-Out`) toggle inside **`Interactive 3D Pick Mode`** routes 3D viewport and 2D sketch clicks directly into `op.avoid.selections` or the actively edited `SharedAvoidRegion`, accented by a coral/red `[Avoid / Keep-Out]` viewport Guidance HUD badge.
-    - The **CAM Browser** includes a collapsible **`Keep-Out Regions (N)`** card showing every `SharedAvoidRegion`, its usage count (`used by N ops`), `+ Keep-Out`, inline rename, suppress toggle, duplicate, and safe delete (`ProjectDocument::remove_avoid_region`) in atomic Undo steps.
+    - The **Project Tree** includes a collapsible **`Keep-Out Regions (N)`** folder showing every `SharedAvoidRegion`, its usage count (`used by N ops`), `+` quick-add, active/suppressed checkbox, inline `F2` rename, duplicate, drag-and-drop reorder, right-click context menu (`Edit Keep-Out Region`, `Apply to Active Setup Ops`, `Suppress`, `Delete`), and immediate right-panel editing via `keepout_inspector.rs` in atomic Undo steps.
   - **Fixed-Size Box Stock Alignment (`Setup → [Stock] → Stock Offsets` — *Phase 23*):**
     - Exposes interactive **`XY Alignment`** (`Centered in XY` | `Offset from Front-Left` with `Front-Left ΔX` / `ΔY`) and **`Z Alignment`** (`Offset from Top (+Z)` | `Offset from Bottom (-Z)` | `Centered in Z`) selectors, auto-defaulting rotary-enabled Setups to `Centered in Z` when switching to `Fixed-Size Box Stock`.
 - **Complete Inspector Parity, Project Properties, Batch Post, & Post Profile Inspector (*Phase 24 — M87–M89*):**

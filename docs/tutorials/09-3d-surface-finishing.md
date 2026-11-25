@@ -20,7 +20,7 @@ This tutorial uses two watertight starter meshes included in `docs/tutorials/ass
 1. **[`09-relief-wave.obj`](assets/09-relief-wave.obj)** — Sculpted sinusoidal Wavefront OBJ relief (`80.000 × 60.000 × 13.500 mm`, `3,296 triangles`, `1,650 welded vertices`, `Watertight`, native `# units: mm`).
 2. **[`08-sculpted-dome.stl`](assets/08-sculpted-dome.stl)** — Watertight hemispherical dome on square pedestal (`70.000 × 70.000 × 33.000 mm`) used in Step 4 to demonstrate concave fillet cleanup with **`Pencil3D`**.
 
-Launch ChipCutter directly with the Relief Wave mesh (or click **`Import 3D Mesh (STL / OBJ / 3MF)…`** on the **Welcome to ChipCutter** overlay, **`File → Import 3D Mesh (.stl / .obj / .3mf)…`** in the **top menu bar**, or **`Import Mesh…`** under **`Models`** in the left **CAM Browser**):
+Launch ChipCutter directly with the Relief Wave mesh (or click **`Import 3D Mesh (STL / OBJ / 3MF)…`** on the **Welcome to ChipCutter** overlay, **`File → Import 3D Mesh (.stl / .obj / .3mf)…`** in the **top menu bar**, or the **`+`** / right-click menu on **`Models`** in the left **CAM Browser** → **`Import Mesh (.stl / .obj / .3mf)…`**):
 
 ```bash
 chip-gui docs/tutorials/assets/09-relief-wave.obj
@@ -32,8 +32,8 @@ chip-gui docs/tutorials/assets/09-relief-wave.obj
 
 ### Step 1 — Import the Relief Wave OBJ & Rough Bulk Stock (`Setup 1` & `Op 1`)
 
-1. Inspect **`Models`** in the left **CAM Browser**: ChipCutter reads the OBJ unit tag and reports `Wavefront OBJ · 3296 tris · 1650 verts · Watertight`.
-2. Click **`Stock & WCS`** under `Setup 1` in the left **CAM Browser**:
+1. Hover or click the mesh row under **`Models`** in the left **CAM Browser**: ChipCutter reads the OBJ unit tag and reports `Wavefront OBJ · 3296 tris · 1650 verts · Watertight`.
+2. Click **`Setup 1`** under **`Setups`** in the left **CAM Browser**:
    - On the **`WCS & Post`** tab in the right **Inspector** (`WCS Origin (X0 Y0 Z0)` card), select **`Origin Reference`** = **`Stock 27-Pt`**, set **`Z Level:`** = **`Top`**, and click **`C`** in the **`Center Y`** row (`Top Center`).
    - Switch to the **`Stock`** tab in the right **Inspector**, keep **`Stock Mode`** = **`Relative Box Stock`** under **`Stock Geometry & Dimensions`**, and under **`Stock Offsets`** (with **`Symmetric XY`** / `Mirror ±X / ±Y` checked) set **`Side X Margin (±X)`** = `2 mm`, **`Side Y Margin (±Y)`** = `2 mm`, and **`Top Allowance (+Z)`** = `1 mm` (`84.000 × 64.000 × 14.500 mm` stock):
 

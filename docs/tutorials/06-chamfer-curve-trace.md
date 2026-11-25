@@ -15,13 +15,13 @@ In this tutorial you will start from an **empty project**, import a minimal cham
 
 Start with an **empty project** and load the minimal chamfer block included with this tutorial ([`06-chamfer-engrave-block.step`](assets/06-chamfer-engrave-block.step) — a pre-squared `100 × 70 × 18 mm` block with a modeled `45° × 1.5 mm` front bevel, a sharp `90°` back edge, and a clean flat top face):
 
-- **From the Welcome Overlay or Menu:** Launch ChipCutter (`chip-gui`), click **`Import 3D STEP Solid…`** in the **Welcome to ChipCutter** overlay (or **`File → Import STEP Model…`** in the **top menu bar**, or **`Import STEP…`** under **`Models`** in the left **CAM Browser**), and select `docs/tutorials/assets/06-chamfer-engrave-block.step`.
+- **From the Welcome Overlay or Menu:** Launch ChipCutter (`chip-gui`), click **`Import 3D STEP Solid…`** in the **Welcome to ChipCutter** overlay (or **`File → Import STEP Model…`** in the **top menu bar**, or the **`+`** / right-click menu on **`Models`** in the left **CAM Browser** → **`Import STEP…`**), and select `docs/tutorials/assets/06-chamfer-engrave-block.step`.
 - **Or open directly from the terminal:**
   ```bash
   chip-gui docs/tutorials/assets/06-chamfer-engrave-block.step
   ```
 
-In the left **CAM Browser**, click **`Stock & WCS`** under `Setup 1`, open the **`Stock`** tab in the right **Inspector**, and under **`Stock Offsets`** (with **`Symmetric XY`** / `Mirror ±X / ±Y` checked) set **`Side X Margin (±X)`** = `0 mm`, **`Side Y Margin (±Y)`** = `0 mm`, and **`Top Allowance (+Z)`** = `0 mm` to match the pre-squared `100 × 70 × 18 mm` billet.
+In the left **CAM Browser**, click **`Setup 1`** under **`Setups`**, open the **`Stock`** tab in the right **Inspector**, and under **`Stock Offsets`** (with **`Symmetric XY`** / `Mirror ±X / ±Y` checked) set **`Side X Margin (±X)`** = `0 mm`, **`Side Y Margin (±Y)`** = `0 mm`, and **`Top Allowance (+Z)`** = `0 mm` to match the pre-squared `100 × 70 × 18 mm` billet.
 
 ---
 
@@ -56,7 +56,7 @@ Most shop drawings leave minor edge breaks unmodeled in CAD ("break all sharp ed
 
 ### Step 3 — Engrave Single-Line Hershey Text (`Op 3 → Passes`)
 
-1. Click **`+ Sketch`** in the **top toolbar** (or expand **`2D Sketches (0)`** in the left **CAM Browser** and click **`+ New Sketch`**) to add a `2D Sketch` layer on `Setup XY` (which lies right on the `Z = 18 mm` top face when WCS origin is at `Top Front-Left`).
+1. Click **`+ Sketch`** in the **top toolbar** (or use the **`+`** / right-click menu on **`Sketches`** in the left **CAM Browser** → **`New 2D Sketch (Setup XY)`**) to add a `2D Sketch` layer on `Setup XY` (which lies right on the `Z = 18 mm` top face when WCS origin is at `Top Front-Left`).
 2. In the right **Inspector** (**2D Sketch Layer**), click **`Text`** under **`Interactive Authoring Tools` → `Quick Insert at (0, 0):`** to add a text entity and open the **`TrueType & Hershey Typography`** card below:
    - Type `CHIP-06` in **`Text Content (multi-line):`**.
    - Open **`Font Family`** and select **`Hershey Simplex Sans (1-Line)`** (single-line stroke font — no double outlines!).

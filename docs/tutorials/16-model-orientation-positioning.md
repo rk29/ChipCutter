@@ -8,7 +8,7 @@ ChipCutter provides **two complementary, non-destructive workflows**—neither o
 
 | Goal / Scenario | Recommended Tool | Why? |
 |---|---|---|
-| Fix a **Y-up STL/OBJ/3MF** exported sideways from Blender, Fusion, or a slicer | **Model Transform** (`Orient / Scale`) or **Mesh Import Modal** | Permanently converts raw mesh coordinates to CNC `+Z` up across all Setups before toolpathing. |
+| Fix a **Y-up STL/OBJ/3MF** exported sideways from Blender, Fusion, or a slicer | **Model Transform Inspector** or **Mesh Import Modal** | Permanently converts raw mesh coordinates to CNC `+Z` up across all Setups before toolpathing. |
 | **Lay a part flat** on a clicked planar STEP face or STL triangle and drop it to `Z = 0` | **Model Transform** → `Lay Flat on Clicked Face…` | Orients the model flat onto the table in 1 click without changing the source file on disk. |
 | **Scale** a mesh or STEP model (`0.5×`, `2×`, `×25.4`, `/25.4`, or exact **`Target Size X/Y/Z`**) | **Model Transform** (`Scale & Target Dimensions`) | Fits decorative reliefs, brackets, or unit-mismatched exports cleanly to your exact stock billet while keeping exact `f64` B-Rep/mesh accuracy. |
 | Center an off-origin CAD export at `X=0, Y=0` and `Z=0` (surviving `Ctrl+R` reload) | **Model Transform** (`Center XY`, `Drop Bottom to Z = 0`) | Persists in `.chip.toml` / `.chipz` and is automatically re-applied whenever you press `Ctrl+R` to reload a revised STEP file. |
@@ -49,12 +49,12 @@ chip-gui docs/tutorials/assets/16-tilted-bracket.step
 
 #### Step 1 — Preview Orientation & Scale in the Mesh Import Modal
 
-1. In an empty ChipCutter workspace, click **`Import Mesh…`** in the left **CAM Browser → Models** section (or open `16-yup-bracket.stl` directly).
+1. In an empty ChipCutter workspace, open the **`+`** or right-click menu on **`Models`** in the left **CAM Browser** and click **`Import Mesh (.stl / .obj / .3mf)…`** (or open `16-yup-bracket.stl` directly).
 2. In the **Import 3D Mesh (STL / OBJ / 3MF)** modal:
    - Confirm **Source Coordinate Units** is set to **`Millimeters (mm)`** (STL files do not store physical units, so always check the size readout to avoid a `25.4×` error).
    - Notice the **Initial Orientation, Scale, & Placement** card right inside the modal: you can click **`Y-Up -> Z-Up (+90° X)`**, adjust **`Scale`**, and check **`Center XY`** + **`Drop Bottom to Z = 0`** to see the upright physical bounding box live *before* clicking **Import 3D Mesh**.
 3. To see the full **Model Transform Inspector** workflow, leave **As-Is** selected first and click **`Import 3D Mesh`**.
-4. In the CAM Browser, click **`• 16-yup-bracket.stl (1 mesh)`** (or the **`Orient / Scale`** button beneath it) to open the **Model Transform, Orientation, & Scaling** Inspector on the right:
+4. In the CAM Browser, click **`16-yup-bracket.stl`** under **`Models`** (or right-click → **`Inspect / Transform`**) to open the **Model Transform, Orientation, & Scaling** Inspector on the right:
 
 ![Sideways Y-up STL imported before orientation showing 60x18x40 mm bounds and negative Z range](../images/tutorials/16-model-orientation-positioning/01-yup-stl-before-transform.png)
 
@@ -78,7 +78,7 @@ Notice two problems immediately visible in the top card:
 
 ![Upright 1.5x-scaled STL centered at Z=0 with Model Transform Inspector and verified 3D Adaptive and Parallel toolpaths](../images/tutorials/16-model-orientation-positioning/02-model-transform-inspector.png)
 
-Notice the **`· Xf`** badge on `16-yup-bracket.stl` in the CAM Browser, indicating an active non-destructive `ModelTransform`, and **`Verified Crash-Free`** in the Simulation bar. Press **`Ctrl+Z`** / **`Ctrl+Y`** at any time—model transforms participate in full 100-step Undo/Redo!
+Notice the **`Xf`** badge pill on `16-yup-bracket.stl` in the CAM Browser, indicating an active non-destructive `ModelTransform`, and **`Verified Crash-Free`** in the Simulation bar. Press **`Ctrl+Z`** / **`Ctrl+Y`** at any time—model transforms participate in full 100-step Undo/Redo!
 
 ---
 
@@ -86,7 +86,7 @@ Notice the **`· Xf`** badge on `16-yup-bracket.stl` in the CAM Browser, indicat
 
 Every control in the **Model Transform Inspector** works identically on **STEP B-Rep solids**:
 
-1. Click the STEP model row in **Models** (or click **`Orient / Scale`**).
+1. Click the STEP model row under **`Models`** (or right-click → **`Inspect / Transform`**).
 2. Rotate (`Y-Up -> Z-Up`, `±90° X/Y/Z`, **`Lay Flat on Clicked Face…`**, or exact **`Rotate X/Y/Z (°)`**), **uniformly scale** (`Scale` or `Target Size X/Y/Z`), and translate (`Center XY`, `Drop Bottom to Z = 0`, `Align Top to Z = 0`, or exact **`Move X/Y/Z`**).
 3. Under **uniform scaling** (with **`Lock Uniform Scale`** checked), ChipCutter transforms all analytic planes, cylinders, cones, circles, and B-Rep loops in exact `f64` math—so drilling `Ø6 mm` holes (or `Ø9 mm` holes after a `1.5×` uniform scale) still picks true cylindrical B-Rep faces and emits `G2`/`G3` arcs!
 4. **Associative Reload (`Ctrl+R`) Preservation:** Because `ModelTransform` is persisted on the `[[models]]` entry in `.chip.toml` (and inside `.chipz` bundles), reloading an edited STEP file from your CAD package (`Ctrl+R`) automatically re-applies your saved orientation, scale, and position before re-matching operations.
@@ -103,7 +103,7 @@ When a STEP part is tilted in CAD space—or when you need to flip a part upside
 #### Step 1 — Align Setup 1 (`G54`) to the Tilted Bracket
 
 1. Open [`docs/tutorials/assets/16-tilted-bracket.step`](assets/16-tilted-bracket.step). The `90 × 70 × 20 mm` bracket is tilted `30°` around X and `25°` around Z.
-2. In the CAM Browser, select **Setup 1 → Stock & WCS** and open the **`WCS & Post`** tab.
+2. In the CAM Browser, select **`Setup 1`** under **`Setups`** and open the **`WCS & Post`** tab.
 3. Under **Work Offset & Orientation**:
    - Set **Work Offset** to **`G54 (Offset 1)`**.
    - Switch **Orientation Mode** from `Model XYZ` to **`Z & X`** (or **`XY Plane`**).
@@ -121,10 +121,10 @@ When a STEP part is tilted in CAD space—or when you need to flip a part upside
 
 #### Step 2 — Add Setup 2 (`G55`) Flipped Upside Down for Op-2 Underside Facing
 
-1. Click **`+ Setup`** in the top-right of the CAM Browser. ChipCutter automatically assigns **`G55 (Offset 2)`**.
+1. Click **`+ Setup`** on the Project root row (or **`+`** on **`Setups`**) in the CAM Browser. ChipCutter automatically assigns **`G55 (Offset 2)`**.
 2. In Setup 2's **`WCS & Post`** tab, pick the exact same reference face (`Face #0`) and edge (`Edge #0`), but leave **`Flip Z` unchecked** so Setup 2's **`+Z`** spindle arrow points straight out of the *underside* of the bracket!
 3. Set **WCS Origin** to **Stock Top Center** and **Stock** to **`Relative Box`** with `0 mm` side margin and **`2.0 mm` Top Offset** (representing the `2.0 mm` vise-holding hat left over from Setup 1).
-4. With **Setup 2** now the **Active Setup** (or click **`Activate`** on Setup 2 in the CAM Browser), add a **`Facing`** operation (`+ Op… → Facing` in the **top toolbar**, `Ø38 mm` Face Mill) to machine off the underside hat stock cleanly to final thickness.
+4. With **Setup 2** now the **Active Setup** (or click **`Setup 2`** under **`Setups`** in the CAM Browser to activate it), add a **`Facing`** operation (`+ Op… → Facing` in the **top toolbar**, `Ø38 mm` Face Mill) to machine off the underside hat stock cleanly to final thickness.
 5. Press **`Ctrl+G`** and click **`Simulate`** in the **top toolbar** to verify Setup 2:
 
 ![Setup 2 G55 flipped upside down with live 3D machined stock and revolved face mill verifying Op 2 crash-free](../images/tutorials/16-model-orientation-positioning/04-setup2-flipped-op2.png)
@@ -135,7 +135,7 @@ Both **Setup 1 (`G54`)** and **Setup 2 (`G55`)** stay linked to the exact same u
 
 ## 4. Key Parameters Reference
 
-### Model Transform Inspector (`Models → Orient / Scale`)
+### Model Transform Inspector (`Models → <model>`)
 
 | Control | Canonical Order / Behavior | Typical Use |
 |---|---|---|
@@ -161,7 +161,7 @@ Both **Setup 1 (`G54`)** and **Setup 2 (`G55`)** stay linked to the exact same u
 
 ## 5. Generate (`Ctrl+G`) & 3D Simulation Verification
 
-1. Press **`Ctrl+G`** to generate all dirty operations in parallel across the active Setup (or click **`Gen`** on individual Setups in the CAM Browser).
+1. Press **`Ctrl+G`** to generate all dirty operations in parallel across the active Setup (or hover any Setup row in the CAM Browser and click its **Generate** icon, or right-click → **`Generate Setup`**).
 2. Click **`Simulate`** in the **top toolbar** (or **`Simulate → Run / Refresh Simulation`** in the **top menu bar**)—the compact toolbar progress bar tracks execution and lets you cancel anytime with **`Esc`** (or **`Cancel`**), and **`Diagnostics & Log`** records the wall-clock runtime.
 3. In the bottom **`Simulation Timeline`** tab, confirm the green **`Verified Crash-Free`** badge (checking rapid-into-stock crashes, target B-Rep/mesh gouges `> 0.02 mm`, flute/shank rubs, holder collisions, and non-center-cutting plunges).
 4. Toggle **`3D Stock`** and **`3D Cutter`** and scrub the timeline to verify both Setup 1 (`G54`) and Setup 2 (`G55`) clear cleanly.

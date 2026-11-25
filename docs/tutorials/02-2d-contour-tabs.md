@@ -17,7 +17,7 @@ In this tutorial you will start from an **empty project**, import a minimal moun
 
 Start with an **empty project** and load the minimal contour plate included with this tutorial ([`02-contour-plate.step`](assets/02-contour-plate.step) — a clean `100 × 70 × 12 mm` plate with an `R10` arc corner, a `45°` chamfer corner, and no extra pockets or holes):
 
-- **From the Welcome Overlay or Menu:** Launch ChipCutter (`chip-gui`), click **`Import 3D STEP Solid…`** in the **Welcome to ChipCutter** overlay (or **`File → Import STEP Model…`** in the **top menu bar**, or **`Import STEP…`** under **`Models`** in the left **CAM Browser**), and select `docs/tutorials/assets/02-contour-plate.step`.
+- **From the Welcome Overlay or Menu:** Launch ChipCutter (`chip-gui`), click **`Import 3D STEP Solid…`** in the **Welcome to ChipCutter** overlay (or **`File → Import STEP Model…`** in the **top menu bar**, or the **`+`** / right-click menu on **`Models`** in the left **CAM Browser** → **`Import STEP…`**), and select `docs/tutorials/assets/02-contour-plate.step`.
 - **Or open directly from the terminal:**
   ```bash
   chip-gui docs/tutorials/assets/02-contour-plate.step
@@ -29,7 +29,7 @@ Start with an **empty project** and load the minimal contour plate included with
 
 ### Step 1 — Set Stock Margin & Pick the Outer Contour Loop (`Op 1 → Geometry`)
 
-1. In the left **CAM Browser**, click **`Stock & WCS`** under `Setup 1`, switch to the **`Stock`** tab in the right **Inspector**, and under **`Stock Offsets`** (with **`Symmetric XY`** / `Mirror ±X / ±Y` checked) set **`Side X Margin (±X)`** = `4 mm`, **`Side Y Margin (±Y)`** = `4 mm`, and **`Top Allowance (+Z)`** = `0 mm` so the `100 × 70 × 12 mm` plate sits cleanly inside a `108 × 78 × 12 mm` raw blank.
+1. In the left **CAM Browser**, click **`Setup 1`** under **`Setups`**, switch to the **`Stock`** tab in the right **Inspector**, and under **`Stock Offsets`** (with **`Symmetric XY`** / `Mirror ±X / ±Y` checked) set **`Side X Margin (±X)`** = `4 mm`, **`Side Y Margin (±Y)`** = `4 mm`, and **`Top Allowance (+Z)`** = `0 mm` so the `100 × 70 × 12 mm` plate sits cleanly inside a `108 × 78 × 12 mm` raw blank.
 2. With `Setup 1` **`Active`** in the left **CAM Browser**, click **`+ Contour`** in the **top toolbar** (or **`Operations → + 2D Contour / Profile`** in the **top menu bar**). In the right **Inspector**, open the **`Tool`** tab and select **`T1 — 6mm 3FL Carbide Flat Endmill`** in the **`Active Cutter`** dropdown under **`Cutter & Material Preset`**.
 3. Open the **`Geometry`** tab in the right **Inspector**, confirm **`Closed Loops`** is selected under **`Interactive 3D Pick Mode`**, and click the bottom outer perimeter loop of the plate in the center **3D CAD Viewport** (so `Bottom Z` automatically snaps to `Model Bottom`):
 
