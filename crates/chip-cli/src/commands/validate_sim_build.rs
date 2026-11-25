@@ -1,11 +1,13 @@
 use std::{path::PathBuf, process::ExitCode};
 
+use chip_cam::MachinabilitySeverity;
 use chip_post::{
     PostProfileSource, resolve_post_profile, resolve_post_profile_cli_override,
     validate_safe_output_filename,
 };
 use chip_project::{
-    DiagnosticSeverity, SetupPostRequest, SetupSimRequest, ToolpathCache,
+    DiagnosticSeverity, ProjectMachinabilityReport, SetupPostRequest, SetupSimRequest,
+    ToolpathCache, ValidationDiagnostic, analyze_project_machinability,
     generate_project_blocking_in_dir, kinematics_for_post_profile, post_process_project_setup,
     simulate_all_setups_with_choice, simulate_project_setup_in_dir,
     simulate_project_setup_with_choice_in_dir, validate_project, validate_project_with_machine,
@@ -14,8 +16,11 @@ use chip_sim::{
     SetupSimulationResult, SimComputeBackendChoice, SimEngineKind, SimResolution, StockModelKind,
     format_cycle_time_hms,
 };
-use chip_tools::resolve_machine_definition_cli_override;
+use chip_tools::{
+    builtin_generic_machine, resolve_machine_definition, resolve_machine_definition_cli_override,
+};
 use clap::Args;
+use serde::Serialize;
 
 use crate::commands::{
     BuildFileSummaryJson, BuildSummaryJson, ProjectSimReportJson, SetupSimReportJson,
@@ -23,16 +28,34 @@ use crate::commands::{
     parse_sim_resolution,
 };
 
-pub fn run_validate(
-    project: PathBuf,
-    generate: bool,
-    machine_override: Option<String>,
-) -> Result<ExitCode, Box<dyn std::error::Error>> {
-    let loaded = load_project_or_chipz(&project)?;
+#[derive(Debug)]
+pub struct ValidateOptions {
+    pub project: PathBuf,
+    pub generate: bool,
+    pub machine_override: Option<String>,
+    pub physics: bool,
+    pub strict_physics: bool,
+    pub json: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct ValidateReportJson {
+    project_name: String,
+    machine_id: String,
+    passed: bool,
+    error_count: usize,
+    warning_count: usize,
+    diagnostics: Vec<ValidationDiagnostic>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    physics: Option<ProjectMachinabilityReport>,
+}
+
+pub fn run_validate(opts: ValidateOptions) -> Result<ExitCode, Box<dyn std::error::Error>> {
+    let loaded = load_project_or_chipz(&opts.project)?;
     let mut proj_doc = loaded.proj;
     let proj_dir = loaded.dir.as_deref();
     let loaded_cad = load_primary_cad_for_project(&proj_doc, proj_dir).ok();
-    let explicit_machine = match machine_override.as_deref() {
+    let explicit_machine = match opts.machine_override.as_deref() {
         Some(mid) => Some(resolve_machine_definition_cli_override(mid, proj_dir)?),
         None => None,
     };
@@ -43,76 +66,180 @@ pub fn run_validate(
         loaded_cad.as_ref(),
         explicit_machine.as_ref(),
     );
-    println!(
-        "=== ChipCutter Project Validation: '{}' ===",
-        proj_doc.project_name
-    );
     let active_machine_label = explicit_machine
         .as_ref()
-        .map_or(proj_doc.effective_machine_id(), |m| m.id.as_str());
-    println!(
-        "Machine: {} | Models: {} | Sketches: {} | Tools: {} | Setups: {}",
-        active_machine_label,
-        proj_doc.models.len(),
-        proj_doc.sketches.len(),
-        proj_doc.tools.len(),
-        proj_doc.setups.len()
-    );
-    for diag in &report.diagnostics {
-        let tag = match diag.severity {
-            DiagnosticSeverity::Warning => "WARN ",
-            DiagnosticSeverity::Error => "ERROR",
-        };
-        println!("  [{tag}] {}: {}", diag.scope, diag.message);
+        .map_or(proj_doc.effective_machine_id(), |m| m.id.as_str())
+        .to_string();
+
+    if !opts.json {
+        println!(
+            "=== ChipCutter Project Validation: '{}' ===",
+            proj_doc.project_name
+        );
+        println!(
+            "Machine: {} | Models: {} | Sketches: {} | Tools: {} | Setups: {}",
+            active_machine_label,
+            proj_doc.models.len(),
+            proj_doc.sketches.len(),
+            proj_doc.tools.len(),
+            proj_doc.setups.len()
+        );
+        for diag in &report.diagnostics {
+            let tag = match diag.severity {
+                DiagnosticSeverity::Warning => "WARN ",
+                DiagnosticSeverity::Error => "ERROR",
+            };
+            println!("  [{tag}] {}: {}", diag.scope, diag.message);
+        }
     }
 
     let mut gen_failed = false;
-    if generate {
+    if opts.generate {
         if let Some(cad_doc) = loaded_cad.as_ref() {
             let mut cache = ToolpathCache::new(64);
             let batch =
                 generate_project_blocking_in_dir(&mut proj_doc, cad_doc, proj_dir, &mut cache, 1);
-            println!("=== Toolpath Generation Summary ===");
-            for (scope, _id, tp) in &batch.generated {
-                println!(
-                    "  [OK  ] {}: {} pass(es), {} G1, {} G2/G3, {} drill, cut={:.1} mm, rapid={:.1} mm, est={:.1}s",
-                    scope,
-                    tp.stats.pass_count,
-                    tp.stats.linear_move_count,
-                    tp.stats.arc_move_count,
-                    tp.stats.drill_cycle_count,
-                    tp.stats.cutting_distance_mm,
-                    tp.stats.rapid_distance_mm,
-                    tp.stats.total_est_time_sec
-                );
-                for w in &tp.warnings {
-                    println!("         [WARN] {w}");
+            if !opts.json {
+                println!("=== Toolpath Generation Summary ===");
+                for (scope, _id, tp) in &batch.generated {
+                    println!(
+                        "  [OK  ] {}: {} pass(es), {} G1, {} G2/G3, {} drill, cut={:.1} mm, rapid={:.1} mm, est={:.1}s",
+                        scope,
+                        tp.stats.pass_count,
+                        tp.stats.linear_move_count,
+                        tp.stats.arc_move_count,
+                        tp.stats.drill_cycle_count,
+                        tp.stats.cutting_distance_mm,
+                        tp.stats.rapid_distance_mm,
+                        tp.stats.total_est_time_sec
+                    );
+                    for w in &tp.warnings {
+                        println!("         [WARN] {w}");
+                    }
                 }
             }
             for (scope, err_msg) in &batch.errors {
-                eprintln!("  [FAIL] {scope}: {err_msg}");
+                if !opts.json {
+                    eprintln!("  [FAIL] {scope}: {err_msg}");
+                }
                 gen_failed = true;
             }
         } else {
-            eprintln!("  [FAIL] Cannot generate toolpaths: no valid STEP model loaded.");
+            if !opts.json {
+                eprintln!("  [FAIL] Cannot generate toolpaths: no valid STEP model loaded.");
+            }
             gen_failed = true;
         }
     }
 
-    if report.is_valid() && !gen_failed {
+    let physics_report = if opts.physics {
+        let resolved_machine = match explicit_machine {
+            Some(m) => m,
+            None => resolve_machine_definition(proj_doc.effective_machine_id(), proj_dir)
+                .unwrap_or_else(|_| builtin_generic_machine()),
+        };
+        let phys = analyze_project_machinability(&proj_doc, &resolved_machine, loaded_cad.as_ref());
+        if !opts.json {
+            println!(
+                "=== Machinability & Cutting Physics (Material: {} | Machine: {}) ===",
+                phys.material_name, phys.machine_name
+            );
+            for s in &phys.setups {
+                for op in &s.operations {
+                    if op.suppressed {
+                        continue;
+                    }
+                    if let Some(m) = op.metrics {
+                        let load_str = m
+                            .spindle_load_pct
+                            .map_or_else(|| "n/a".to_string(), |p| format!("{p:.0}%"));
+                        let sf_str = if m.deflection.bending_safety_factor.is_finite() {
+                            format!("{:.2}", m.deflection.bending_safety_factor)
+                        } else {
+                            "inf".to_string()
+                        };
+                        println!(
+                            "  [{:<8}] {}/{}: MRR={:.2} cm^3/min | Load={} ({:.1}W) | Defl={:.1}um | SF={} | h_max={:.4}mm",
+                            op.severity.label(),
+                            s.setup_name,
+                            op.op_name,
+                            m.mrr_cm3_min,
+                            load_str,
+                            m.cutting_power_watts,
+                            m.deflection.tip_deflection_um,
+                            sf_str,
+                            m.effective_chip_thickness_mm
+                        );
+                    }
+                    for f in &op.findings {
+                        let fix_note = f
+                            .suggested_fix
+                            .as_ref()
+                            .map(|fx| format!(" -> Fix: {}", fx.label()))
+                            .unwrap_or_default();
+                        println!(
+                            "             [{}] {}: {}{}",
+                            f.severity.label(),
+                            f.title,
+                            f.detail,
+                            fix_note
+                        );
+                    }
+                }
+            }
+            println!(
+                "Physics summary: {} critical, {} warning(s), {} info (overall: {}).",
+                phys.critical_count,
+                phys.warning_count,
+                phys.info_count,
+                phys.severity.label()
+            );
+        }
+        Some(phys)
+    } else {
+        None
+    };
+
+    let strict_physics_failed = opts.strict_physics
+        && physics_report
+            .as_ref()
+            .is_some_and(|p| p.severity == MachinabilitySeverity::Critical || p.critical_count > 0);
+    let passed = report.is_valid() && !gen_failed && !strict_physics_failed;
+
+    if opts.json {
+        let payload = ValidateReportJson {
+            project_name: proj_doc.project_name.clone(),
+            machine_id: active_machine_label,
+            passed,
+            error_count: report.error_count(),
+            warning_count: report.warning_count(),
+            diagnostics: report.diagnostics,
+            physics: physics_report,
+        };
+        println!("{}", serde_json::to_string_pretty(&payload)?);
+    } else if passed {
         println!(
             "Validation PASSED ({} warning(s), 0 errors).",
             report.warning_count()
         );
-        Ok(ExitCode::SUCCESS)
+    } else if strict_physics_failed {
+        eprintln!(
+            "Validation FAILED (--strict-physics: {} critical machinability finding(s)).",
+            physics_report.as_ref().map_or(0, |p| p.critical_count)
+        );
     } else {
         eprintln!(
             "Validation FAILED ({} validation error(s), {} warning(s)).",
             report.error_count(),
             report.warning_count()
         );
-        Ok(ExitCode::FAILURE)
     }
+
+    Ok(if passed {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    })
 }
 
 #[derive(Debug, Args)]

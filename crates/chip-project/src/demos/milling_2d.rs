@@ -251,6 +251,8 @@ pub fn build_cam_torture_project(
         op.preset_id = em.presets.first().map(|p| p.id.clone());
         if let StrategyParams::DrillBore(p) = op.strategy_mut() {
             p.mode = HoleMachiningMode::HelicalBore;
+            // Preserve Phase 1 golden G-code snapshot parity on the legacy CAM Torture demo
+            p.bore_inner_arc_feed_comp = false;
         }
         op.selections
             .push(GeometrySelectionItem::CylindricalHole { binding: bind });
@@ -653,6 +655,8 @@ pub fn build_revision_v1_demo_project(
         op.preset_id = em.presets.first().map(|p| p.id.clone());
         if let StrategyParams::DrillBore(p) = op.strategy_mut() {
             p.mode = HoleMachiningMode::HelicalBore;
+            // Preserve Phase 1 golden G-code snapshot parity on the legacy CAM Torture demo
+            p.bore_inner_arc_feed_comp = false;
         }
         op.selections
             .push(GeometrySelectionItem::CylindricalHole { binding: bind });
@@ -1695,6 +1699,8 @@ pub fn build_thread_mill_manifold_project(
             p.bore_ramp_angle_deg = 4.0;
             p.bore_finish_pass = true;
             p.bore_finish_stepover = ParamLength::from_mm(0.15);
+            // Preserve Phase 4 golden G-code snapshot parity on the legacy Thread Mill demo
+            p.bore_inner_arc_feed_comp = false;
             p.optimize_hole_order = true;
         }
         for &fid in m8_hole_faces.iter().chain(unc_hole_faces.iter()) {

@@ -15,7 +15,9 @@ use crate::commands::{
         run_machines_list,
     },
     transform_model::{TransformModelArgs, run_transform_model},
-    validate_sim_build::{BuildArgs, SimulateArgs, run_build, run_simulate, run_validate},
+    validate_sim_build::{
+        BuildArgs, SimulateArgs, ValidateOptions, run_build, run_simulate, run_validate,
+    },
     workholding::{
         AddClampArgs, AddSpoilboardArgs, AddViseArgs, FlipJigArgs, SoftJawsArgs,
         run_workholding_add_clamp, run_workholding_add_spoilboard, run_workholding_add_vise,
@@ -44,6 +46,15 @@ struct ValidateArgs {
     /// Optional target machine definition ID or `.machine.toml` path override for validation.
     #[arg(long)]
     machine: Option<String>,
+    /// Run physics-backed spindle power, MRR, tool deflection, and machinability advisories.
+    #[arg(long)]
+    physics: bool,
+    /// Exit non-zero if any Critical machinability finding is detected (implies `--physics`).
+    #[arg(long)]
+    strict_physics: bool,
+    /// Emit structured JSON validation (and optional physics) report to stdout.
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Debug, Args)]
@@ -231,7 +242,14 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         Commands::TransformModel(args) => run_transform_model(*args),
         Commands::Import2d(args) => run_import_2d(*args),
         Commands::GenerateSampleStep(args) => run_generate_sample_step(*args),
-        Commands::Validate(args) => run_validate(args.project, args.generate, args.machine),
+        Commands::Validate(args) => run_validate(ValidateOptions {
+            project: args.project,
+            generate: args.generate,
+            machine_override: args.machine,
+            physics: args.physics || args.strict_physics,
+            strict_physics: args.strict_physics,
+            json: args.json,
+        }),
         Commands::Simulate(args) => run_simulate(*args),
         Commands::Build(args) => run_build(*args),
         Commands::ReloadStep(args) => run_reload_step(
@@ -398,6 +416,14 @@ mod tests {
                         "--add-setup",
                     ],
                     vec!["chipcutter", "list-posts"],
+                    vec![
+                        "chipcutter",
+                        "validate",
+                        "job.chip.toml",
+                        "--physics",
+                        "--strict-physics",
+                        "--json",
+                    ],
                 ] {
                     Cli::try_parse_from(&argv)
                         .unwrap_or_else(|e| panic!("failed to parse {argv:?}: {e}"));

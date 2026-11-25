@@ -2,24 +2,26 @@ use std::{borrow::Cow, path::Path};
 
 use chip_cad::CadDocument;
 use chip_cam::{
-    ExtractedFeature25D, FixtureKind, OperationRotaryMode, ResolvedHeights, RestMachiningMode,
-    RotaryAxialBoundaryMode, RotaryAxisKind, build_indexed_virtual_setup,
-    extract_rotary_selection_features, extract_selection_features_with_sketches,
-    resolve_fixture_body, rotary_chuck_guard_u,
+    ExtractedFeature25D, FixtureKind, MachinabilitySeverity, OperationRotaryMode, ResolvedHeights,
+    RestMachiningMode, RotaryAxialBoundaryMode, RotaryAxisKind, SetupMachinabilityReport,
+    analyze_setup_machinability, build_indexed_virtual_setup, extract_rotary_selection_features,
+    extract_selection_features_with_sketches, resolve_fixture_body, rotary_chuck_guard_u,
 };
 use chip_tools::{MachineDefinition, builtin_generic_machine, resolve_machine_definition};
+use serde::{Deserialize, Serialize};
 
 use crate::document::{ModelRole, ProjectDocument, compute_sha256_hex, resolve_model_path};
 
 /// Severity of a project validation diagnostic.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum DiagnosticSeverity {
     Warning,
     Error,
 }
 
 /// Structured validation finding on a `.chip.toml` project.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ValidationDiagnostic {
     pub severity: DiagnosticSeverity,
     pub scope: String,
@@ -1357,6 +1359,66 @@ pub fn validate_project_with_machine(
     }
 
     report
+}
+
+/// Project-wide physics-backed machinability & tool-breakage report across all Setups.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProjectMachinabilityReport {
+    pub project_name: String,
+    pub machine_id: String,
+    pub machine_name: String,
+    pub material_id: String,
+    pub material_name: String,
+    pub severity: MachinabilitySeverity,
+    pub critical_count: usize,
+    pub warning_count: usize,
+    pub info_count: usize,
+    pub setups: Vec<SetupMachinabilityReport>,
+}
+
+/// Analyzes cutting physics (spindle load, MRR, chip thinning, stepped cantilever deflection &
+/// carbide bending stress, and helical bore hazards) across every Setup and Operation in `project`.
+pub fn analyze_project_machinability(
+    project: &ProjectDocument,
+    machine: &MachineDefinition,
+    cad_doc: Option<&CadDocument>,
+) -> ProjectMachinabilityReport {
+    let material = project.effective_workpiece_material();
+    let mut setups = Vec::with_capacity(project.setups.len());
+    let mut severity = MachinabilitySeverity::Ok;
+    let mut critical_count = 0usize;
+    let mut warning_count = 0usize;
+    let mut info_count = 0usize;
+
+    for setup in &project.setups {
+        let rep = analyze_setup_machinability(
+            setup,
+            &project.tools,
+            &material,
+            machine,
+            cad_doc,
+            &project.sketches,
+            project.display_units,
+        );
+        severity = severity.max(rep.severity);
+        critical_count += rep.critical_count;
+        warning_count += rep.warning_count;
+        info_count += rep.info_count;
+        setups.push(rep);
+    }
+
+    ProjectMachinabilityReport {
+        project_name: project.project_name.clone(),
+        machine_id: machine.id.clone(),
+        machine_name: machine.name.clone(),
+        material_id: material.id,
+        material_name: material.name,
+        severity,
+        critical_count,
+        warning_count,
+        info_count,
+        setups,
+    }
 }
 
 #[cfg(test)]

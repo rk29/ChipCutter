@@ -2447,3 +2447,106 @@ fn cli_m68_tutorial_starter_generators_match_checked_in_assets_byte_for_byte() {
         }
     }
 }
+
+#[test]
+fn cli_m94_validate_physics_strict_physics_and_json_report() {
+    let tmp = TempTestDir::new("m94_validate_physics");
+    let proj_path = tmp.path().join("bartrim_face.chip.toml");
+
+    let air = chip_tools::builtin_carvera_air_machine();
+    let t2 = air
+        .tools
+        .iter()
+        .find(|t| t.tool_number == 2)
+        .unwrap()
+        .clone();
+    let mut proj = ProjectDocument::new("BarTrim CLI Physics");
+    proj.machine_id = Some(air.id.clone());
+    proj.workpiece_material = Some(chip_tools::ProjectMaterialSelection::builtin(
+        chip_tools::ALUMINUM_6063_T5_ID,
+    ));
+    proj.tools = vec![t2.clone()];
+    proj.setups[0].stock = chip_cam::StockConfig::FixedBox {
+        width_x: chip_math::ParamLength::from_mm(110.0),
+        depth_y: chip_math::ParamLength::from_mm(110.0),
+        height_z: chip_math::ParamLength::from_mm(20.2),
+        xy_align: chip_cam::FixedBoxXyAlign::CenterXy,
+        z_align: chip_cam::FixedBoxZAlign::OffsetFromTop {
+            top_allowance: chip_math::ParamLength::from_mm(0.0),
+        },
+    };
+    let mut op = Operation::new("op_face", "Face Stock", OperationKind::Facing);
+    op.tool_id = Some(t2.id.clone());
+    op.preset_id = Some("carvera_al6061_deep".to_string());
+    op.heights.top = HeightSpec::new(HeightReference::StockTop, 0.0);
+    op.heights.bottom = HeightSpec::new(HeightReference::StockTop, -8.08);
+    op.passes.max_stepdown = chip_math::ParamLength::from_mm(4.04);
+    if let chip_cam::StrategyParams::Facing(p) = op.strategy_mut() {
+        p.stepover = chip_math::ParamLength::from_mm(0.50);
+    }
+    proj.setups[0].operations.push(op);
+    proj.save_to_path(&proj_path).unwrap();
+
+    // 1. `--physics` (non-strict) succeeds while reporting CRITICAL deflection finding
+    let out_phys = Command::new(cli_bin())
+        .args(["validate", proj_path.to_str().unwrap(), "--physics"])
+        .output()
+        .expect("run validate --physics");
+    assert!(
+        out_phys.status.success(),
+        "validate --physics should exit 0 without --strict-physics:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out_phys.stdout),
+        String::from_utf8_lossy(&out_phys.stderr)
+    );
+    let stdout_phys = String::from_utf8_lossy(&out_phys.stdout);
+    assert!(stdout_phys.contains("Machinability & Cutting Physics"));
+    assert!(stdout_phys.contains("CRITICAL"));
+
+    // 2. `--strict-physics --json` fails non-zero and emits structured JSON with `physics` payload
+    let out_strict = Command::new(cli_bin())
+        .args([
+            "validate",
+            proj_path.to_str().unwrap(),
+            "--strict-physics",
+            "--json",
+        ])
+        .output()
+        .expect("run validate --strict-physics --json");
+    assert!(
+        !out_strict.status.success(),
+        "validate --strict-physics must exit non-zero on critical snap hazard"
+    );
+    let json_val: serde_json::Value =
+        serde_json::from_slice(&out_strict.stdout).expect("parse validate --json stdout");
+    assert_eq!(json_val["passed"], false);
+    assert_eq!(json_val["physics"]["severity"], "critical");
+    assert!(json_val["physics"]["critical_count"].as_u64().unwrap() >= 1);
+
+    // 3. Tuned safe parameters (2.02 x 0.30) pass `--strict-physics --json` cleanly!
+    proj.setups[0].operations[0].passes.max_stepdown = chip_math::ParamLength::from_mm(2.02);
+    if let chip_cam::StrategyParams::Facing(p) = proj.setups[0].operations[0].strategy_mut() {
+        p.stepover = chip_math::ParamLength::from_mm(0.30);
+    }
+    proj.save_to_path(&proj_path).unwrap();
+
+    let out_ok = Command::new(cli_bin())
+        .args([
+            "validate",
+            proj_path.to_str().unwrap(),
+            "--strict-physics",
+            "--json",
+        ])
+        .output()
+        .expect("run tuned validate --strict-physics --json");
+    assert!(
+        out_ok.status.success(),
+        "tuned validate --strict-physics must exit 0:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out_ok.stdout),
+        String::from_utf8_lossy(&out_ok.stderr)
+    );
+    let ok_json: serde_json::Value =
+        serde_json::from_slice(&out_ok.stdout).expect("parse tuned validate --json stdout");
+    assert_eq!(ok_json["passed"], true);
+    assert_eq!(ok_json["physics"]["severity"], "ok");
+    assert_eq!(ok_json["physics"]["critical_count"], 0);
+}

@@ -81,6 +81,13 @@ pub struct MachineSpindleSpec {
     pub max_rpm: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub power_watts: Option<f64>,
+    /// Rated base RPM at which the spindle reaches full `power_watts` (constant-torque linear
+    /// derating applies below this speed). When `None`, derived from spindle class & `max_rpm`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rated_power_rpm: Option<f64>,
+    /// Mechanical/electrical spindle drive efficiency in `(0.10..=1.0]` (defaults to `0.85`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spindle_efficiency: Option<f64>,
     #[serde(default = "default_collet_type")]
     pub collet_type: String,
     #[serde(default)]
@@ -97,6 +104,8 @@ impl Default for MachineSpindleSpec {
             min_rpm: 1_000.0,
             max_rpm: 24_000.0,
             power_watts: Some(1_500.0),
+            rated_power_rpm: None,
+            spindle_efficiency: None,
             collet_type: "ER16 / ER20".to_string(),
             supported_shank_diameters_mm: vec![3.0, 3.175, 4.0, 6.0, 6.35, 8.0, 10.0, 12.0],
         }
@@ -292,6 +301,22 @@ impl MachineDefinition {
             return Err(MachineStorageError::Validation {
                 id: self.id.clone(),
                 message: "spindle power_watts must be finite and > 0".to_string(),
+            });
+        }
+        if let Some(rpm) = s.rated_power_rpm
+            && (!rpm.is_finite() || rpm <= 0.0)
+        {
+            return Err(MachineStorageError::Validation {
+                id: self.id.clone(),
+                message: "spindle rated_power_rpm must be finite and > 0".to_string(),
+            });
+        }
+        if let Some(eff) = s.spindle_efficiency
+            && (!eff.is_finite() || !(0.05..=1.0).contains(&eff))
+        {
+            return Err(MachineStorageError::Validation {
+                id: self.id.clone(),
+                message: "spindle spindle_efficiency must be finite and in 0.05..=1.0".to_string(),
             });
         }
         let k = &self.kinematics;

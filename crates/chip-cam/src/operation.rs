@@ -369,6 +369,10 @@ impl Operation {
             }
             _ => {}
         }
+        let mut strategy = StrategyParams::default_for_kind(kind);
+        if let StrategyParams::DrillBore(p) = &mut strategy {
+            p.bore_inner_arc_feed_comp = true;
+        }
         Self {
             id: id.into(),
             name: name.into(),
@@ -383,7 +387,7 @@ impl Operation {
             linking: LinkingParams::default(),
             avoid: AvoidRegionConfig::default(),
             rotary: OperationRotaryMode::None,
-            strategy: Some(StrategyParams::default_for_kind(kind)),
+            strategy: Some(strategy),
             runtime_status: OperationStatus::Dirty,
         }
     }

@@ -226,6 +226,43 @@ pub fn generate_drill_bore(
     Ok(())
 }
 
+#[inline]
+fn bore_compensated_feed(base_feed: f64, orbit_r: f64, tool_r: f64, compensate: bool) -> f64 {
+    if !compensate || !base_feed.is_finite() || base_feed <= 0.0 || orbit_r <= 1e-6 {
+        return base_feed;
+    }
+    let cut_wall_r = orbit_r + tool_r;
+    if cut_wall_r <= 1e-6 {
+        return base_feed;
+    }
+    let scale = (orbit_r / cut_wall_r).clamp(0.20, 1.0);
+    base_feed * scale
+}
+
+fn compute_chip_clear_z_levels(
+    hole_top_z: f64,
+    hole_bottom_z: f64,
+    stage_depth_mm: f64,
+) -> Vec<f64> {
+    let total_depth = (hole_top_z - hole_bottom_z).max(0.0);
+    if total_depth <= stage_depth_mm + 1e-6 || !stage_depth_mm.is_finite() || stage_depth_mm <= 0.5
+    {
+        return vec![hole_bottom_z];
+    }
+    let n_stages = (total_depth / stage_depth_mm).ceil().max(1.0) as usize;
+    let dz = total_depth / (n_stages as f64);
+    let mut levels = Vec::with_capacity(n_stages);
+    for i in 1..=n_stages {
+        let z = if i == n_stages {
+            hole_bottom_z
+        } else {
+            hole_top_z - dz * (i as f64)
+        };
+        levels.push(z);
+    }
+    levels
+}
+
 fn emit_helical_bore(
     ctx: &StrategyExecContext<'_>,
     params: &DrillBoreParams,
@@ -242,6 +279,7 @@ fn emit_helical_bore(
     let tool_d = ctx.tool.geometry.cutting_diameter_mm();
     let tool_r = 0.5 * tool_d;
     let radial_leave = ctx.passes.stock_to_leave_radial.value_mm;
+    let comp = params.bore_inner_arc_feed_comp;
 
     let r_final = 0.5 * hole.diameter_mm - tool_r - radial_leave;
     if r_final <= 0.02 {
@@ -286,6 +324,11 @@ fn emit_helical_bore(
     // clearing the central helical core AND radial expansion rings at each Z level so tool engagement stays safe!
     let radial_stepover = ctx.cutting.stepover_mm.clamp(0.08 * tool_d, 0.45 * tool_d);
     let needs_radial_expansion = r_rough > r_core + 1e-4;
+    let chip_clear_depth = params
+        .bore_chip_clear_depth
+        .as_ref()
+        .map(|d| d.value_mm)
+        .filter(|&d| d.is_finite() && d > 0.5);
 
     let z_levels = if needs_radial_expansion {
         crate::strategies::compute_z_levels(
@@ -295,11 +338,18 @@ fn emit_helical_bore(
             ctx.passes.max_stepdown.value_mm,
             ctx.passes.even_stepdowns,
         )?
+    } else if let Some(clear_depth) = chip_clear_depth {
+        compute_chip_clear_z_levels(hole_top_z, hole_bottom_z, clear_depth)
     } else {
         vec![hole_bottom_z]
     };
 
+    let core_ramp_feed = bore_compensated_feed(ctx.cutting.ramp_feed_mm_min, r_core, tool_r, comp);
+    let core_cut_feed =
+        bore_compensated_feed(ctx.cutting.cutting_feed_mm_min, r_core, tool_r, comp);
+
     let mut prev_z = r_plane_z;
+    let mut last_chip_clear_z = hole_top_z;
     for &z_target in &z_levels {
         ctx.check_cancel()?;
         builder.pass_count += 1;
@@ -332,7 +382,7 @@ fn emit_helical_bore(
                 radius_mm: r_core,
                 ccw: true,
                 turns: 0,
-                feed_mm_min: ctx.cutting.ramp_feed_mm_min,
+                feed_mm_min: core_ramp_feed,
                 role: MotionRole::Ramp,
             });
             builder.arc_xy_to(XyArcMove {
@@ -341,20 +391,13 @@ fn emit_helical_bore(
                 radius_mm: r_core,
                 ccw: true,
                 turns: 0,
-                feed_mm_min: ctx.cutting.ramp_feed_mm_min,
+                feed_mm_min: core_ramp_feed,
                 role: MotionRole::Ramp,
             });
         }
 
         // Flat 360° cleanup circle at `r_core`, `z_target`
-        emit_full_circle_ccw(
-            builder,
-            c,
-            r_core,
-            z_target,
-            ctx.cutting.cutting_feed_mm_min,
-            MotionRole::Cut,
-        );
+        emit_full_circle_ccw(builder, c, r_core, z_target, core_cut_feed, MotionRole::Cut);
 
         // Radial step-out rings from `r_core` out to `r_rough` for wide bores (zero center pin!)
         if needs_radial_expansion {
@@ -372,13 +415,17 @@ fn emit_helical_bore(
                 // centered at `(c.x + 0.5*(cur_r - next_r), c.y)` with radius `0.5*(cur_r + next_r)`!
                 let trans_center = c + DVec2::new(0.5 * (cur_r - next_r), 0.0);
                 let trans_r = 0.5 * (cur_r + next_r);
+                let ring_lead_feed =
+                    bore_compensated_feed(ctx.cutting.lead_feed_mm_min, trans_r, tool_r, comp);
+                let ring_cut_feed =
+                    bore_compensated_feed(ctx.cutting.cutting_feed_mm_min, next_r, tool_r, comp);
                 builder.arc_xy_to(XyArcMove {
                     end_wcs: DVec3::new(c.x - next_r, c.y, z_target),
                     center_xy: trans_center,
                     radius_mm: trans_r,
                     ccw: true,
                     turns: 0,
-                    feed_mm_min: ctx.cutting.lead_feed_mm_min,
+                    feed_mm_min: ring_lead_feed,
                     role: MotionRole::LinkTransition,
                 });
                 // Complete full 360° circle at `next_r` starting from `-X` around to `+X`!
@@ -388,7 +435,7 @@ fn emit_helical_bore(
                     radius_mm: next_r,
                     ccw: true,
                     turns: 0,
-                    feed_mm_min: ctx.cutting.cutting_feed_mm_min,
+                    feed_mm_min: ring_cut_feed,
                     role: MotionRole::Cut,
                 });
                 builder.arc_xy_to(XyArcMove {
@@ -397,7 +444,7 @@ fn emit_helical_bore(
                     radius_mm: next_r,
                     ccw: true,
                     turns: 0,
-                    feed_mm_min: ctx.cutting.cutting_feed_mm_min,
+                    feed_mm_min: ring_cut_feed,
                     role: MotionRole::Cut,
                 });
                 builder.arc_xy_to(XyArcMove {
@@ -406,7 +453,7 @@ fn emit_helical_bore(
                     radius_mm: next_r,
                     ccw: true,
                     turns: 0,
-                    feed_mm_min: ctx.cutting.cutting_feed_mm_min,
+                    feed_mm_min: ring_cut_feed,
                     role: MotionRole::Cut,
                 });
                 cur_r = next_r;
@@ -421,7 +468,38 @@ fn emit_helical_bore(
             }
         }
 
-        prev_z = z_target;
+        // Optional Z-staged chip-clearing retract to `r_plane_z` between deep helical stages
+        if let Some(clear_depth) = chip_clear_depth
+            && z_target > hole_bottom_z + 1e-5
+            && (!needs_radial_expansion || (last_chip_clear_z - z_target) >= clear_depth - 1e-5)
+        {
+            // Tangent arc-off from `(c.x + r_core, c.y)` to hole center `(c.x, c.y)` before retract
+            let clear_lead_r = 0.5 * r_core;
+            let clear_lead_center = c + DVec2::new(clear_lead_r, 0.0);
+            builder.arc_xy_to(XyArcMove {
+                end_wcs: DVec3::new(c.x, c.y, z_target),
+                center_xy: clear_lead_center,
+                radius_mm: clear_lead_r,
+                ccw: true,
+                turns: 0,
+                feed_mm_min: ctx.cutting.lead_feed_mm_min,
+                role: MotionRole::LeadOut,
+            });
+            // Pull straight up to `r_plane_z` at cleared hole center to evacuate chips
+            builder.rapid_to(DVec3::new(c.x, c.y, r_plane_z));
+            // Reposition above stock at helix orbit start and feed cleanly down to just above floor
+            builder.rapid_to(DVec3::new(start_xy.x, start_xy.y, r_plane_z));
+            let resume_z = (z_target + 0.5).min(r_plane_z);
+            builder.linear_to(
+                DVec3::new(start_xy.x, start_xy.y, resume_z),
+                ctx.cutting.lead_feed_mm_min,
+                MotionRole::LeadIn,
+            );
+            prev_z = resume_z;
+            last_chip_clear_z = z_target;
+        } else {
+            prev_z = z_target;
+        }
     }
 
     // Optional radial finish pass + spring pass at `r_final`, `hole_bottom_z`
@@ -429,13 +507,17 @@ fn emit_helical_bore(
         let cur_r = r_rough;
         let trans_center = c + DVec2::new(0.5 * (cur_r - r_final), 0.0);
         let trans_r = 0.5 * (cur_r + r_final);
+        let finish_lead_feed =
+            bore_compensated_feed(ctx.cutting.lead_feed_mm_min, trans_r, tool_r, comp);
+        let finish_cut_feed =
+            bore_compensated_feed(ctx.cutting.cutting_feed_mm_min, r_final, tool_r, comp);
         builder.arc_xy_to(XyArcMove {
             end_wcs: DVec3::new(c.x - r_final, c.y, hole_bottom_z),
             center_xy: trans_center,
             radius_mm: trans_r,
             ccw: true,
             turns: 0,
-            feed_mm_min: ctx.cutting.lead_feed_mm_min,
+            feed_mm_min: finish_lead_feed,
             role: MotionRole::LeadIn,
         });
         // Full 360° finish pass (plus optional spring pass)
@@ -447,7 +529,7 @@ fn emit_helical_bore(
                 radius_mm: r_final,
                 ccw: true,
                 turns: 0,
-                feed_mm_min: ctx.cutting.cutting_feed_mm_min,
+                feed_mm_min: finish_cut_feed,
                 role: MotionRole::FinishCut,
             });
             builder.arc_xy_to(XyArcMove {
@@ -456,7 +538,7 @@ fn emit_helical_bore(
                 radius_mm: r_final,
                 ccw: true,
                 turns: 0,
-                feed_mm_min: ctx.cutting.cutting_feed_mm_min,
+                feed_mm_min: finish_cut_feed,
                 role: MotionRole::FinishCut,
             });
         }

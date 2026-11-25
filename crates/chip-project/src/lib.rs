@@ -72,6 +72,6 @@ pub use reload::{
 };
 pub use toml_io::ProjectIoError;
 pub use validation::{
-    DiagnosticSeverity, ProjectValidationReport, ValidationDiagnostic, validate_project,
-    validate_project_with_machine,
+    DiagnosticSeverity, ProjectMachinabilityReport, ProjectValidationReport, ValidationDiagnostic,
+    analyze_project_machinability, validate_project, validate_project_with_machine,
 };

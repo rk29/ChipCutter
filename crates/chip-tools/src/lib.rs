@@ -6,6 +6,7 @@ pub mod builtin_machines;
 pub mod envelope;
 pub mod feeds_speeds;
 pub mod fusion_import;
+pub mod machinability;
 pub mod machine;
 pub mod materials;
 pub mod model;
@@ -29,6 +30,13 @@ pub use feeds_speeds::{
 };
 pub use fusion_import::{
     FusionImportError, FusionImportReport, import_fusion_library_bytes, import_fusion_library_path,
+};
+pub use machinability::{
+    CARBIDE_TRS_MPA, CARBIDE_YOUNGS_MODULUS_MPA, CutPhysicsInput, CutPhysicsMetrics,
+    DEFAULT_SPINDLE_EFFICIENCY, DeflectionResult, HSS_TRS_MPA, HSS_YOUNGS_MODULUS_MPA,
+    ToolSubstrate, available_spindle_power_watts, cantilever_deflection_and_stress,
+    cantilever_deflection_and_stress_with_substrate, compute_engagement_physics,
+    effective_core_diameter_mm, engagement_arc_rad,
 };
 pub use machine::{
     DEFAULT_MACHINE_ID, MachineDefinition, MachineKinematicsSpec, MachineRotaryDefaults,

@@ -6,6 +6,7 @@ pub mod cl_data;
 pub mod feed_opt;
 pub mod fixture_avoidance;
 pub mod heights;
+pub mod machinability_advisor;
 pub mod measurement;
 pub mod medial;
 pub mod offset2d;
@@ -45,6 +46,11 @@ pub use fixture_avoidance::{
     route_toolpath_around_fixtures,
 };
 pub use heights::{HeightReference, HeightSpec, OperationHeights, ResolvedHeights, SetupHeights};
+pub use machinability_advisor::{
+    MachinabilityCheckKind, MachinabilityFinding, MachinabilityFix, MachinabilitySeverity,
+    OperationMachinabilityContext, OperationMachinabilityReport, SetupMachinabilityReport,
+    analyze_operation_machinability, analyze_setup_machinability, apply_machinability_fix,
+};
 pub use measurement::{
     MeasureSnapTarget, MeasurementResult, measure_pair, measure_single,
     snap_brep_edge_to_measure_target, snap_brep_face_to_measure_target,

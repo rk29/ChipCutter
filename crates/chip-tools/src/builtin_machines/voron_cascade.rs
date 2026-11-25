@@ -426,6 +426,8 @@ pub fn builtin_voron_cascade_machine() -> MachineDefinition {
             min_rpm: 8_000.0,
             max_rpm: 24_000.0,
             power_watts: Some(1_500.0),
+            rated_power_rpm: None,
+            spindle_efficiency: None,
             collet_type: "ER16 (3–8mm metric & imperial collets)".to_string(),
             supported_shank_diameters_mm: vec![3.0, 3.175, 4.0, 5.0, 6.0, 6.35, 8.0],
         },

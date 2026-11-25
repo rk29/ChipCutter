@@ -548,6 +548,16 @@ pub struct DrillBoreParams {
     pub bore_finish_stepover: ParamLength,
     #[serde(default)]
     pub bore_spring_pass: bool,
+    /// Scale helical bore center feeds by `(r_orbit / R_hole).clamp(0.20, 1.0)` so actual
+    /// cutting-edge wall chipload matches the programmed feedrate.
+    /// Defaults to `false` on legacy TOML deserialization for golden parity; enabled by
+    /// default on newly created `DrillBore` operations via `Operation::new`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub bore_inner_arc_feed_comp: bool,
+    /// Optional axial Z depth interval between full retracts to `r_plane_z` for deep
+    /// helical bore chip evacuation (`None` = continuous helix without intermediate retracts).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bore_chip_clear_depth: Option<ParamLength>,
     #[serde(default = "default_true")]
     pub optimize_hole_order: bool,
 }
@@ -589,6 +599,8 @@ impl Default for DrillBoreParams {
             bore_finish_pass: true,
             bore_finish_stepover: default_bore_finish_stepover(),
             bore_spring_pass: false,
+            bore_inner_arc_feed_comp: false,
+            bore_chip_clear_depth: None,
             optimize_hole_order: true,
         }
     }
@@ -604,6 +616,9 @@ impl DrillBoreParams {
             let _ = p.reevaluate(ctx);
         }
         let _ = self.bore_finish_stepover.reevaluate(ctx);
+        if let Some(d) = &mut self.bore_chip_clear_depth {
+            let _ = d.reevaluate(ctx);
+        }
     }
 }
 
