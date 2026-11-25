@@ -4,10 +4,10 @@ use std::sync::atomic::AtomicBool;
 
 use chip_cad::CadDocument;
 use chip_cam::{
-    ClEvent, DrillBoreParams, FixedBoxXyAlign, FixedBoxZAlign, GeometrySelectionItem,
+    BoxAnchor27, ClEvent, DrillBoreParams, FixedBoxXyAlign, FixedBoxZAlign, GeometrySelectionItem,
     HeightReference, HeightSpec, HoleMachiningMode, MachinabilityCheckKind, MachinabilitySeverity,
     MotionRole, Operation, OperationGenRequest, OperationKind, StockConfig, StrategyParams,
-    apply_machinability_fix, generate_operation_toolpath_with_rest,
+    WcsOriginMode, apply_machinability_fix, generate_operation_toolpath_with_rest,
 };
 use chip_math::{DisplayUnit, ParamLength};
 use chip_project::{
@@ -50,6 +50,9 @@ fn m94_bartrim_helical_bore_inner_arc_comp_chip_clear_and_tridexel_crash_free() 
     });
     proj.sketches.push(sk);
 
+    proj.setups[0].wcs.origin = WcsOriginMode::StockBoxPoint {
+        anchor: BoxAnchor27::TOP_CENTER,
+    };
     proj.setups[0].stock = StockConfig::FixedBox {
         width_x: ParamLength::from_mm(30.0),
         depth_y: ParamLength::from_mm(30.0),
@@ -265,6 +268,9 @@ fn m94_project_machinability_bartrim_facing_and_carvera_z1_vs_milo() {
     proj.machine_id = Some(air.id.clone());
     proj.workpiece_material = Some(ProjectMaterialSelection::builtin(ALUMINUM_6063_T5_ID));
     proj.tools = vec![t2.clone()];
+    proj.setups[0].wcs.origin = WcsOriginMode::StockBoxPoint {
+        anchor: BoxAnchor27::TOP_CENTER,
+    };
     proj.setups[0].stock = StockConfig::FixedBox {
         width_x: ParamLength::from_mm(80.0),
         depth_y: ParamLength::from_mm(25.0),

@@ -1530,12 +1530,12 @@ mod tests {
     }
 
     fn make_line_sketch(x0_wcs: f64, x1_wcs: f64, bore_wcs: Option<(DVec2, f64)>) -> SketchLayer {
-        // SetupXy sketches anchor (0, 0) at Stock Front-Left (`(-50, -50)` in TOP_CENTER WCS)
+        // Pure-2D FixedBox sketches map 1:1 to Setup WCS coordinates.
         let mut sk = SketchLayer::new("sk_slot", "Slot Centerline", "s_slot");
         let line = ArcPolyline2D {
             segments: vec![ArcSegment2D::Line {
-                start: DVec2::new(x0_wcs + 50.0, 50.0),
-                end: DVec2::new(x1_wcs + 50.0, 50.0),
+                start: DVec2::new(x0_wcs, 0.0),
+                end: DVec2::new(x1_wcs, 0.0),
             }],
             closed: false,
         };
@@ -1553,8 +1553,8 @@ mod tests {
                 sub_layer: None,
                 is_construction: false,
                 entity: SketchEntity::new_circle(
-                    ParamLength::from_mm(c.x + 50.0),
-                    ParamLength::from_mm(c.y + 50.0),
+                    ParamLength::from_mm(c.x),
+                    ParamLength::from_mm(c.y),
                     ParamLength::from_mm(dia),
                 ),
             });

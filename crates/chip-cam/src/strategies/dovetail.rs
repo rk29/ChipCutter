@@ -462,8 +462,8 @@ mod tests {
             is_construction: false,
             entity: SketchEntity::new_polyline(ArcPolyline2D {
                 segments: vec![ArcSegment2D::Line {
-                    start: DVec2::new(0.0, 50.0),
-                    end: DVec2::new(100.0, 50.0),
+                    start: DVec2::new(-50.0, 0.0),
+                    end: DVec2::new(50.0, 0.0),
                 }],
                 closed: false,
             }),

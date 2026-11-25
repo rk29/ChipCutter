@@ -516,6 +516,18 @@ fn render_stock_offsets_body(
             StockConfig::FixedBox {
                 xy_align, z_align, ..
             } => {
+                if view.is_pure_2d {
+                    let muted = crate::theme::ThemeTokens::from_ui(g.ui).text_muted;
+                    grid_row(g.ui, "Pure-2D Anchor", None, |ui| {
+                        ui.label(
+                            egui::RichText::new(
+                                "Anchored to Setup WCS Origin (sketch (0, 0) = WCS (0, 0); stock stays fixed when editing sketches).",
+                            )
+                            .small()
+                            .color(muted),
+                        );
+                    });
+                }
                 let mm = ParamLength::from_mm;
                 let xy_label = match xy_align {
                     FixedBoxXyAlign::CenterXy => "Centered in XY",

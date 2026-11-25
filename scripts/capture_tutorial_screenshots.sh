@@ -1933,7 +1933,7 @@ anchor = "front_left"
 rotation_deg = 0.0
 
 [sketches.entities.entity.x]
-value_mm = 0.0
+value_mm = -10.0
 
 [sketches.entities.entity.y]
 value_mm = -120.0
@@ -1962,8 +1962,8 @@ closed = false
 
 [[sketches.entities.entity.polyline.segments]]
 [sketches.entities.entity.polyline.segments.Line]
-start = [20.0, -120.0]
-end = [0.0, -120.0]
+start = [10.0, -120.0]
+end = [-10.0, -120.0]
 
 [sketches.entities.entity.translate_x]
 value_mm = 0.0
@@ -1980,7 +1980,7 @@ is_construction = false
 type = "circle"
 
 [sketches.entities.entity.center_x]
-value_mm = 10.0
+value_mm = 0.0
 
 [sketches.entities.entity.center_y]
 value_mm = -110.0

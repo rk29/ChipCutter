@@ -13,59 +13,68 @@ In this hands-on shop-floor tutorial you will build and audit a complete **Pure-
 
 ---
 
-## 2. Prerequisites & Starter Project
+## 2. Prerequisites & New Workspace
 
-This is a **Pure-2D** workflow (no external CAD file needed—just a built-in `2D Sketch` and `Fixed-Size Box Stock`), or you can start from a blank workspace:
+This is a **Pure-2D** workflow (no external CAD file needed—just a built-in `2D Sketch` and `Fixed-Size Box Stock`):
 
 ```bash
 chip-gui
 ```
 
-1. Select **`New Pure-2D Parametric Sketch`** from the Welcome Overlay (or click **`+ Sketch`** in the top toolbar).
-2. In **`Setup 1 → [Stock]`**, choose **`Fixed-Size Box Stock`**: `Width X = 20 mm`, `Depth Y = 125 mm`, `Height Z = 20 mm`, aligned `Offset from Front-Left` (`dX = 0`, `dY = 5 mm`) with `Offset from Top = 0 mm`.
-3. Add a rear **`Machinist Vise`** (`80 mm` jaw width) in **`Setup 1 → [Fixtures]`** gripping the rear `80 mm` of the bar so the cut end (`Y = -120 mm`) and `Ø5.0 mm` hole (`X = 10 mm, Y = -110 mm`) cantilever safely clear of the jaws.
+1. Select **`New Pure-2D Parametric Sketch`** from the Welcome Overlay (or click **`+ Sketch`** in the top toolbar) to open a fresh Pure-2D workspace with `Setup 1` and `Sketch 1`.
 
 ---
 
 ## 3. Step-by-Step GUI Walkthrough
 
-### Step 1 — Select `Aluminum 6063-T5 Extrusion` & `Makera Carvera Air` at the Project Level
+### Step 1 — Configure Project Material, Machine, Stock, Vise, & 2D Sketch
 
-1. Click the root **Project** node in the left **Project Tree** (or open **`Edit → Project Properties…`**).
-2. Set **`Target CNC Machine`** to **`Makera Carvera Air`** (`200 W` spindle, `1,000–13,000 RPM`).
-3. Under **`Workpiece Material`**, choose **`Aluminum 6063-T5 Extrusion`**.
-   - Review the physics summary: `Kc = 850 N/mm^2 | us = 0.85 J/mm^3 | h_min = 0.010 mm | Air Blast [Weld Risk]`.
-   - Click **`Apply Matching Presets to Ops`** whenever you switch materials on an existing project to update operation `preset_id` values cleanly without clobbering any custom `feed_overrides`.
-4. Confirm that every operation's **`[Tool]`** tab now displays the read-only clickable **`Project Material: Aluminum 6063-T5 Extrusion`** pill—no repeated per-operation material selection required.
+1. Click the root **Project** node in the left **Project Tree** (or open **`Edit → Project Properties…`**):
+   - Set **`Target CNC Machine`** to **`Makera Carvera Air`** (`200 W` spindle, `1,000–13,000 RPM`).
+   - Under **`Workpiece Material`**, choose **`Aluminum 6063-T5 Extrusion`** and review the live physics summary (`Kc = 850 N/mm^2 | us = 0.85 J/mm^3 | h_min = 0.010 mm | Air Blast [Weld Risk]`).
+   - *(Tip: whenever you later switch materials on an existing project that already has operations, click **`Apply Matching Presets to Ops`** here to update each operation's `preset_id` cleanly without clobbering any custom `feed_overrides`.)*
+2. Select **`Setup 1`** in the **Project Tree** and configure the workpiece & holding:
+   - **`[WCS & Post]`:** Set WCS Origin to **`Stock Box Point → Center-X, Max-Y, Max-Z`** so `(0, 0, 0)` sits at the top-center of the rear bar face and the bar extends forward along `-Y`.
+   - **`[Stock]`:** Choose **`Fixed-Size Box Stock`** (`Width X = 20 mm`, `Depth Y = 125 mm`, `Height Z = 20 mm`). In Pure-2D `Fixed-Size Box Stock` mode, the stock stays anchored to Setup WCS while you edit geometry, and sketch `(0, 0)` maps `1:1` to Setup WCS `(0, 0)`.
+   - **`[Fixtures]`:** Add a rear **`Machinist Vise`** (`80 mm` jaw width) gripping the rear `80 mm` of the bar so the `-Y` trim end (`Y = -120 mm`) and `Ø5.0 mm` hole (`X = 0 mm, Y = -110 mm`) cantilever safely clear of the jaws.
+3. Select **`Sketch 1`** under **`Sketches`** and draw the two 2D job features in Setup WCS coordinates:
+   - A horizontal **Line** across the bar end from `(+10, -120)` to `(-10, -120)` (our end-trim cut line).
+   - A **Circle** centered at `(0, -110)` with **`Diameter = 5.0 mm`** (our through-hole).
 
 ![Project Inspector showing Aluminum 6063-T5 Extrusion selected as the project-level workpiece material on Makera Carvera Air](../images/tutorials/26-aluminum-6063-helical-bore-safety/01-al6063-project-material-and-presets.png)
 
 ---
 
-### Step 2 — Audit the End-Trim Facing Contour (`ap = 4.04 mm × ae = 0.50 mm` → Safe)
+### Step 2 — Create Op 1 (`2D Contour`), Confirm Inherited Material, & Fix the High-`L/D` Snap Hazard
 
-1. Assign **`T2 — 3.175mm (1/8") x 25mm 1FL O-Flute Flat`** (`Stickout = 28.0 mm`, `L/D = 8.8x`, core diameter `~1.71 mm`) to **Op 1 (`Trim -Y End to 120mm`)** (`Contour2D` with `open_chain_extension = 3.0 mm` for clean open-air entry).
-2. Test an aggressive roughing setup (`max_stepdown = 4.1 mm`, `roughing_stepover = 0.50 mm`) and inspect **`Operation Inspector → [Tool] → Machinability & Safety`**:
+1. Click **`+ Contour`** (or **`+ Op… → 2D Contour`**) under **`Setup 1`** to create **Op 1** and name it **`Trim -Y End to 120mm`**.
+2. Open **`Operation Inspector → [Tool]`**:
+   - Confirm the read-only clickable **`Project Material: Aluminum 6063-T5 Extrusion`** pill appears automatically at the top—inherited from Step 1 with no per-operation material picker required.
+   - Assign **`T2 — 3.175mm (1/8") x 25mm 1FL O-Flute Flat`** (`Stickout = 28.0 mm`, `L/D = 8.8x`, core diameter `~1.71 mm`) and verify its matching `Aluminum 6063-T5` cutting preset is selected automatically.
+3. Open **`[Geometry]`** and select the `(+10, -120) → (-10, -120)` trim line from **`Sketch 1`**, setting **`Open-Chain Extension = 3.0 mm`** so the cutter plunges cleanly in open air off the side of the bar. In **`[Heights]`**, set `Top = Stock Top + 0.0 mm` and `Bottom = Stock Bottom - 0.2 mm` (`-20.2 mm`).
+4. In **`[Passes]`**, first test an aggressive roughing setup (`max_stepdown = 4.1 mm`, `roughing_stepover = 0.50 mm`), then switch back to **`[Tool] → Machinability & Safety`**:
    - The advisor immediately flags **`[CRITICAL]` Tool snap / severe deflection risk**, showing how the thin `1FL` core (`I ∝ d_core^4`, `~4×` less rigid than a 3-flute) plus cubic `L^3` stickout compliance drives tip deflection and carbide bending stress past safe limits in interrupted 6063 cuts.
    - Notice the **`[INFO]`** open-air plunge advisory as well: because Op 1 plunges outside the stock on its `3.0 mm` open-chain extension, raising `plunge_feed_mm_min` to `600 mm/min` on Op 1 **only** saves air-cut time without affecting Op 2's in-material bore!
-3. Click **`Apply Safe Fix`** (or dial in `max_stepdown = 2.2 mm` → `2.02 mm × 10` passes and `roughing_stepover = 0.30 mm`, `finish_stepover = 0.10 mm`, `finish_feed = 280 mm/min`, `repeat_finish_pass = true`) and verify Op 1 transitions cleanly to **`Machinability & Safety [OK]`**.
+5. Click **`Apply Safe Fix`** (or dial in `max_stepdown = 2.2 mm` → `2.02 mm × 10` passes and `roughing_stepover = 0.30 mm`, `finish_stepover = 0.10 mm`, `finish_feed = 280 mm/min`, `repeat_finish_pass = true`) and verify Op 1 transitions cleanly to **`Machinability & Safety [OK]`**.
 
 ![Operation Inspector Tool tab flagging a Critical high-L/D tool-snap hazard on the 25mm LOC 1FL O-flute in Aluminum 6063-T5 with 1-click Apply Safe Fix](../images/tutorials/26-aluminum-6063-helical-bore-safety/02-bar-trim-critical-hazard.png)
 
 ---
 
-### Step 3 — Protect the Deep `Ø5.0 mm × 20 mm` Helical Bore (`Inner-Arc Feed Comp` + `Chip-Clear Retract`)
+### Step 3 — Create Op 2 (`Drill / Bore`) & Protect the Deep `Ø5.0 mm × 20 mm` Helical Bore
 
-1. Select **Op 2 (`Helical Bore 5mm Through Hole`)** (`DrillBore` in **`Helical Bore Milling`** mode, `Bottom = Stock Bottom - 0.5 mm` = `-20.5 mm` for clean breakthrough across `20 mm ± 0.2` extrusion tolerance).
-2. Notice why a naive helical bore breaks small cutters in a `Ø5.0 mm` hole with a `Ø3.175 mm` tool (`r_orbit = 0.9125 mm`):
+1. Click **`+ Op… → Drill / Bore`** under **`Setup 1`** to create **Op 2** and name it **`Helical Bore 5mm Through Hole`**.
+2. In **`Operation Inspector → [Tool]`**, assign the same **`T2`** `3.175 × 25 mm` 1FL O-flute (confirming it also displays the inherited **`Project Material: Aluminum 6063-T5 Extrusion`** pill and matching 6063-T5 preset).
+3. In **`[Geometry]`**, select the `Ø5.0 mm` circle at `(0, -110)` from **`Sketch 1`**. In **`[Heights]`**, set `Feed = Stock Top + 1.0 mm` (`R-plane`) and `Bottom = Stock Bottom - 0.5 mm` (`-20.5 mm`) for clean breakthrough across `20 mm ± 0.2` extrusion tolerance.
+4. Open **`[Passes]`** and set Mode to **`Helical Bore Milling`**. Notice why a naive helical bore breaks small cutters in a `Ø5.0 mm` hole with a `Ø3.175 mm` tool (`r_orbit = 0.9125 mm`):
    - **Inner-Arc Feed Amplification (`2.74×–2.95×`):** Without compensation, `309 mm/min` at tool center drives the cutting edge at **`846–912 mm/min`** (`0.077–0.083 mm/tooth` — nearly `3×` preset chipload!).
    - **Full-Depth Finish Trap:** Leaving `bore_finish_pass = true` on a `20.5 mm` (`6.5 × D`) hole steps out radially at the bottom and takes the *entire* `20.5 mm` wall in a single concave lap.
    - **Deep-Hole Chip Packing (`4 × D`):** Only `0.91 mm/side` annulus clearance exists around the cutter—dry 6063 chips can pack and weld without periodic evacuation.
-3. Open **`Operation Inspector → [Passes]`** and configure all three protections (or click **`Apply Fix`** in the bottom **`Diagnostics & Log → Machinability & Tool Safety`** table):
+5. Configure all three protections right inside **`[Passes]`** (or click **`Apply Fix`** in the bottom **`Diagnostics & Log → Machinability & Tool Safety`** table):
    - Uncheck **`Finish Pass`** (`bore_finish_pass = false`, `bore_spring_pass = false`) so the helix cuts directly to `Ø5.00 mm` at a gentle `0.20 mm/rev` pitch.
    - Enable **`Inner-Arc Feed Comp`** (`bore_inner_arc_feed_comp = true`) — notice the live **`R_hole/r_orbit`** amplification readout and automatic wall-safe centerline feed scaling.
    - Enable **`Chip-Clear Retract`** (`bore_chip_clear_depth = 10.0 mm`) so halfway down the `20.5 mm` bore the cutter pulls smoothly to hole center, retracts to `R-plane` (`+1.0 mm`) to clear 6063 chips with air blast, and resumes safely.
-4. Check the bottom **`Diagnostics & Log → Machinability & Tool Safety`** table to confirm both Op 1 and Op 2 report green **`OK`** status.
+6. Now open the bottom **`Diagnostics & Log → Machinability & Tool Safety`** tab to confirm **both** Op 1 and Op 2 report green **`OK`** status.
 
 ![Helical Bore Passes tab with Inner-Arc Feed Comp and Chip-Clear Retract alongside the bottom Diagnostics & Log Machinability & Tool Safety table](../images/tutorials/26-aluminum-6063-helical-bore-safety/03-helical-bore-safety-and-diagnostics.png)
 

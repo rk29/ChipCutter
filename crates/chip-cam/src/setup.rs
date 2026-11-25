@@ -107,25 +107,69 @@ impl Setup {
             Err(e) => return Err(e),
         };
 
-        // 2. Tight bounding box of target B-Rep/mesh body/bodies OR Pure-2D virtual sheet in rotated axes
-        let model_rot_aabb = if doc.has_3d_geometry() {
-            compute_tight_oriented_model_aabb(doc, &self.target_bodies, &rot_frame)?
-        } else {
-            compute_pure_2d_sheet_rot_aabb(
-                &self.id,
-                sketches,
-                self.stock.pure_2d_sheet_thickness_mm(display_unit),
-                &rot_frame,
+        // 2–3. Resolve model bounds & oriented stock bounds in rotated axes.
+        // In Pure-2D mode (`!doc.has_3d_geometry()`) with `StockConfig::FixedBox`, anchor the fixed
+        // stock directly to the Setup WCS origin rather than the sketch entities' AABB so:
+        //   1. Moving a hole or sketch entity never drags the stock, WCS, or fixtures around, and
+        //   2. 2D sketch `(X, Y)` maps 1:1 to Setup WCS `(X, Y)` (matching Hybrid 3D mode).
+        let is_pure_2d_fixed_box =
+            !doc.has_3d_geometry() && matches!(self.stock, StockConfig::FixedBox { .. });
+        let (model_rot_aabb, stock_rot) = if is_pure_2d_fixed_box {
+            let mut stock_clone = self.stock.clone();
+            let base_ctx = EvalContext::new(display_unit);
+            stock_clone.reevaluate(&base_ctx);
+            let (wx, dy, hz) = match &stock_clone {
+                StockConfig::FixedBox {
+                    width_x,
+                    depth_y,
+                    height_z,
+                    ..
+                } => (width_x.value_mm, depth_y.value_mm, height_z.value_mm),
+                _ => (0.0, 0.0, 0.0),
+            };
+            for (name, v) in [("width_x", wx), ("depth_y", dy), ("height_z", hz)] {
+                if !v.is_finite() || v <= 0.0 {
+                    return Err(CamError::InvalidStockDimension {
+                        field: name,
+                        value_mm: v,
+                    });
+                }
+            }
+            let raw_aabb = Aabb3::new(DVec3::new(0.0, 0.0, -hz), DVec3::new(wx, dy, 0.0));
+            let anchor_raw = match &self.wcs.origin {
+                WcsOriginMode::StockBoxPoint { anchor }
+                | WcsOriginMode::ModelBoxPoint { anchor } => anchor.eval_on_aabb(&raw_aabb),
+                WcsOriginMode::SelectedCadFeature { .. } => {
+                    return Err(CamError::Pure2dRequiresBoxWcs);
+                }
+            };
+            let stock_aabb_rot = Aabb3::new(raw_aabb.min - anchor_raw, raw_aabb.max - anchor_raw);
+            (
+                stock_aabb_rot,
+                ResolvedStockGeometry::Box {
+                    aabb_wcs: stock_aabb_rot,
+                },
             )
-        };
+        } else {
+            let model_rot_aabb = if doc.has_3d_geometry() {
+                compute_tight_oriented_model_aabb(doc, &self.target_bodies, &rot_frame)?
+            } else {
+                compute_pure_2d_sheet_rot_aabb(
+                    &self.id,
+                    sketches,
+                    self.stock.pure_2d_sheet_thickness_mm(display_unit),
+                    &rot_frame,
+                )
+            };
 
-        // 3. Re-evaluate stock expressions with model dimensions
-        let mut stock_clone = self.stock.clone();
-        let base_ctx = EvalContext::new(display_unit)
-            .with_var("model_top_z", model_rot_aabb.max.z)
-            .with_var("model_bottom_z", model_rot_aabb.min.z);
-        stock_clone.reevaluate(&base_ctx);
-        let stock_rot = stock_clone.compute_oriented_bounds(&model_rot_aabb)?;
+            let mut stock_clone = self.stock.clone();
+            let base_ctx = EvalContext::new(display_unit)
+                .with_var("model_top_z", model_rot_aabb.max.z)
+                .with_var("model_bottom_z", model_rot_aabb.min.z);
+            stock_clone.reevaluate(&base_ctx);
+            let stock_rot = stock_clone.compute_oriented_bounds(&model_rot_aabb)?;
+            (model_rot_aabb, stock_rot)
+        };
         let stock_rot_aabb = stock_rot.aabb_wcs();
 
         // 4. Compute anchor point in rotated coordinates (before additional offset)
@@ -425,4 +469,95 @@ fn resolve_planar_face_sketch_frame(
     let _ = y_axis;
     RigidFrame3::from_z_and_x_hint(origin_mm, z_axis, Some(x_axis), false, false, 0)
         .unwrap_or_else(|_| setup.frame.with_origin(origin_mm))
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use crate::{AxisAnchor, BoxAnchor27, FixedBoxXyAlign, FixedBoxZAlign};
+    use chip_math::ParamLength;
+    use chip_sketch::{SketchEntity, SketchEntityEntry};
+
+    #[test]
+    fn pure_2d_fixed_box_keeps_stock_stationary_and_maps_sketch_1_to_1_with_wcs() {
+        let doc = CadDocument::empty();
+        let mut setup = Setup::new("setup_1", "Bar Setup", WorkOffsetSlot::G54);
+        setup.wcs.origin = WcsOriginMode::StockBoxPoint {
+            anchor: BoxAnchor27 {
+                x: AxisAnchor::Center,
+                y: AxisAnchor::Max,
+                z: AxisAnchor::Max,
+            },
+        };
+        setup.stock = StockConfig::FixedBox {
+            width_x: ParamLength::from_mm(20.0),
+            depth_y: ParamLength::from_mm(120.0),
+            height_z: ParamLength::from_mm(20.0),
+            xy_align: FixedBoxXyAlign::OffsetFromFrontLeft {
+                dx: ParamLength::from_mm(0.0),
+                dy: ParamLength::from_mm(5.0),
+            },
+            z_align: FixedBoxZAlign::OffsetFromTop {
+                top_allowance: ParamLength::from_mm(0.0),
+            },
+        };
+
+        let mut sk = SketchLayer::new("sketch_1", "Through Holes", "setup_1");
+        sk.entities.push(SketchEntityEntry {
+            id: "hole_5mm".to_string(),
+            name: "5mm Hole".to_string(),
+            sub_layer: None,
+            is_construction: false,
+            entity: SketchEntity::new_circle(
+                ParamLength::from_mm(0.0),
+                ParamLength::from_mm(-110.0),
+                ParamLength::from_mm(5.0),
+            ),
+        });
+        sk.rebuild_regions(None);
+
+        let rs1 = setup
+            .resolve_with_sketches(&doc, std::slice::from_ref(&sk), DisplayUnit::Millimeter)
+            .expect("resolve Pure-2D FixedBox");
+        let aabb1 = rs1.stock.aabb_wcs();
+        assert!((aabb1.min.x - (-10.0)).abs() < 1e-6);
+        assert!((aabb1.max.x - 10.0).abs() < 1e-6);
+        assert!((aabb1.min.y - (-120.0)).abs() < 1e-6);
+        assert!((aabb1.max.y - 0.0).abs() < 1e-6);
+        assert!((aabb1.min.z - (-20.0)).abs() < 1e-6);
+        assert!((aabb1.max.z - 0.0).abs() < 1e-6);
+
+        let sk_frame1 = resolve_sketch_world_frame(false, &sk, &rs1);
+        let hole_wcs1 = rs1
+            .frame
+            .world_to_local_point(sk_frame1.local_to_world_point(DVec3::new(0.0, -110.0, 0.0)));
+        assert!(
+            (hole_wcs1.x - 0.0).abs() < 1e-6 && (hole_wcs1.y - (-110.0)).abs() < 1e-6,
+            "hole at sketch (0, -110) must sit on WCS centerline (0, -110), got {hole_wcs1:?}"
+        );
+
+        // Move hole in sketch -> stock & WCS frame must stay completely stationary!
+        sk.entities[0].entity = SketchEntity::new_circle(
+            ParamLength::from_mm(4.5),
+            ParamLength::from_mm(-60.0),
+            ParamLength::from_mm(5.0),
+        );
+        sk.rebuild_regions(None);
+
+        let rs2 = setup
+            .resolve_with_sketches(&doc, std::slice::from_ref(&sk), DisplayUnit::Millimeter)
+            .expect("resolve after moving hole");
+        assert_eq!(rs1.frame.origin_mm, rs2.frame.origin_mm);
+        assert_eq!(rs1.stock.aabb_wcs(), rs2.stock.aabb_wcs());
+
+        let sk_frame2 = resolve_sketch_world_frame(false, &sk, &rs2);
+        let hole_wcs2 = rs2
+            .frame
+            .world_to_local_point(sk_frame2.local_to_world_point(DVec3::new(4.5, -60.0, 0.0)));
+        assert!(
+            (hole_wcs2.x - 4.5).abs() < 1e-6 && (hole_wcs2.y - (-60.0)).abs() < 1e-6,
+            "moved hole must land at exact WCS (4.5, -60), got {hole_wcs2:?}"
+        );
+    }
 }

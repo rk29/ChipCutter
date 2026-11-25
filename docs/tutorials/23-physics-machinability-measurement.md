@@ -45,7 +45,7 @@ chip-gui docs/tutorials/assets/04-drill-bore-plate.step
 
 ### Step 2 — Catch High-`L/D` Tool-Snap & Spindle-Load Hazards
 
-1. Select a **`2D Pocket`** operation using a long-reach **`3.175 mm × 25 mm 1FL O-Flute`** (`Stickout = 30.0 mm`, `L/D = 9.5x`) at an aggressive `6.0 mm` axial stepdown and `2.0 mm` stepover.
+1. Add a **`2D Pocket`** operation (`+ Op… → 2D Pocket`), select the pocket floor face, and assign a long-reach **`3.175 mm × 25 mm 1FL O-Flute`** (`Stickout = 30.0 mm`, `L/D = 9.5x`) with an aggressive `6.0 mm` axial stepdown and `2.0 mm` stepover.
 2. Open Operation Inspector **`[Tool]`** and scroll to **`Machinability & Safety [CRITICAL]`** (which auto-expands whenever a `Warning` or `Critical` hazard is active).
 3. Inspect the plain-ASCII live telemetry strip:
    - **`MRR (cm3/min)`** and **`Spindle Load (W / %)`** compared against the Carvera Air's torque-derated spindle power at `12,000 RPM`.
@@ -68,7 +68,7 @@ chip-gui docs/tutorials/assets/04-drill-bore-plate.step
 
 ### Step 4 — Helical Bore Safety & Setup-Wide Diagnostics
 
-1. Select a **`Drill / Bore`** operation configured for **`Helical Bore Milling`** and open **`Operation Inspector → [Passes]`**.
+1. Add a **`Drill / Bore`** operation (`+ Op… → Drill / Bore`), assign a `3.175 mm` endmill, configure **`Helical Bore Milling`**, and open **`Operation Inspector → [Passes]`**.
 2. Review the two dedicated helical bore safety controls at the bottom of the **`Drill & Helical Bore`** card:
    - **`Inner-Arc Feed Comp` (`bore_inner_arc_feed_comp`):** Scales centerline feed by `r_orbit / R_hole` so actual wall chipload stays within material limits instead of spiking inside narrow bores (with a live **`R_hole/r_orbit`** amplification readout when a cylindrical hole is selected).
    - **`Chip-Clear Retract` (`bore_chip_clear_depth`):** Enable and specify an expression-capable **`Clear Depth`** (e.g., `6 mm` or `hole_d * 2`) so deep bores periodically pull to center and retract cleanly to the R-plane to clear packed aluminum chips.
