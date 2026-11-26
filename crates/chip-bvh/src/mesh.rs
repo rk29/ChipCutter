@@ -1,6 +1,6 @@
 //! Canonical `f64` 3D triangle mesh (`TriMesh3D`) accelerated by a binned-SAH [`FlatBvh`].
 
-use chip_math::{Aabb3, DVec3, Ray3};
+use chip_math::{Aabb3, DVec3};
 use rayon::prelude::*;
 
 use crate::bvh::{
@@ -286,12 +286,6 @@ impl TriMesh3D {
                 ))
             })
             .map(|(_, hit)| hit)
-    }
-
-    /// Convenience wrapper over [`Self::raycast`] accepting a [`Ray3`].
-    #[inline]
-    pub fn raycast_ray(&self, ray: &Ray3, max_t: f64) -> Option<RayHit> {
-        self.raycast(ray.origin, ray.dir, max_t)
     }
 
     /// Finds all exact `f64` intersections along `(origin, dir)` within `[0.0, max_t]`, writing

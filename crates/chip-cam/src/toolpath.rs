@@ -48,12 +48,6 @@ impl ToolpathSegment3D {
         self.start_rotary_deg + (self.end_rotary_deg - self.start_rotary_deg) * u
     }
 
-    /// Returns `true` when this segment involves non-zero 4th-axis angular rotation.
-    #[inline]
-    pub fn has_rotary_motion(&self) -> bool {
-        (self.end_rotary_deg - self.start_rotary_deg).abs() > 1e-6
-    }
-
     /// Evaluates exact 3D WCS tool tip position at normalized parameter `t ∈ [0, 1]`.
     pub fn sample_point(&self, t: f64) -> DVec3 {
         let u = t.clamp(0.0, 1.0);

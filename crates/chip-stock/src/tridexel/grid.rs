@@ -397,11 +397,6 @@ impl DexelPlane {
         self.overflow.len()
     }
 
-    #[inline]
-    pub fn ray_index(&self, u: usize, v: usize) -> usize {
-        v * self.nu + u
-    }
-
     /// Reads the sorted spans of ray `(u, v)` without heap allocation.
     #[inline]
     pub fn ray_spans(&self, u: usize, v: usize) -> RaySpans<'_> {

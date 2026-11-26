@@ -10,5 +10,4 @@ workspace = true
 [dependencies]
 bytemuck.workspace = true
 chip-math.workspace = true
-glam.workspace = true
 rayon.workspace = true

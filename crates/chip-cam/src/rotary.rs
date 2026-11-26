@@ -1368,39 +1368,6 @@ pub fn validate_toolpath_rotary_chuck_clearance(
     Ok(())
 }
 
-/// Legacy helper resolving the chuck-cleared axial machining window `[u_start, u_end]` (`mm`)
-/// along `rot.axis` using `ModelBounds`, `ToolCenterOnBoundary`, and non-negative inward margins.
-pub fn resolve_rotary_axial_window(
-    rot: &ResolvedRotaryConfig,
-    base_mesh: &SurfaceMesh3D,
-    tool_diameter_mm: f64,
-    axial_margin_start_mm: f64,
-    axial_margin_end_mm: f64,
-    op_name: &str,
-) -> Result<(f64, f64), CamError> {
-    let boundary = RotaryAxialBoundaryConfig {
-        axial_boundary_mode: RotaryAxialBoundaryMode::ModelBounds,
-        axial_containment: ToolContainmentMode::ToolCenterOnBoundary,
-        axial_margin_start: ParamLength::from_mm(axial_margin_start_mm.max(0.0)),
-        axial_margin_end: ParamLength::from_mm(axial_margin_end_mm.max(0.0)),
-        ..RotaryAxialBoundaryConfig::default()
-    };
-    let win = resolve_rotary_window(&RotaryWindowInput {
-        rot,
-        frame: &RigidFrame3::IDENTITY,
-        doc: None,
-        base_mesh,
-        selections: &[],
-        extracted_selection: None,
-        boundary: &boundary,
-        tool_diameter_mm,
-        top_z_wcs: rot.center_wcs.z + rot.stock_outer_radius_mm,
-        bottom_z_wcs: rot.center_wcs.z,
-        op_name,
-    })?;
-    Ok((win.u_start, win.u_end))
-}
-
 /// Builds a rotated [`SurfaceMesh3D`] pre-filtered to ONLY triangles intersecting the exact
 /// cutter strip (`|cross - center| <= cross_half_width`, `u ∈ [u_start - cross_half_width, u_end + cross_half_width]`,
 /// `max.z >= z_floor`), eliminating ~85% of unreachable triangles prior to BVH construction with

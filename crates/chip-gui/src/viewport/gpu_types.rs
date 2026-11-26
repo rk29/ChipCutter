@@ -207,7 +207,7 @@ pub(crate) struct FrameTargets {
     pub(crate) msaa_color_view: wgpu::TextureView,
     _msaa_depth: wgpu::Texture,
     pub(crate) msaa_depth_view: wgpu::TextureView,
-    pub(crate) resolved_color: wgpu::Texture,
+    pub(crate) _resolved_color: wgpu::Texture,
     pub(crate) resolved_color_view: wgpu::TextureView,
 }
 
@@ -267,7 +267,7 @@ impl FrameTargets {
             msaa_color_view,
             _msaa_depth: msaa_depth,
             msaa_depth_view,
-            resolved_color,
+            _resolved_color: resolved_color,
             resolved_color_view,
         }
     }

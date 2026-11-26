@@ -336,6 +336,7 @@ pub fn apply_theme(ctx: &egui::Context, theme: AppTheme) {
 }
 
 /// Computes WCAG 2.1 relative luminance (`[0.0, 1.0]`) of an sRGB `Color32`.
+#[cfg(test)]
 pub fn wcag_relative_luminance(c: Color32) -> f64 {
     let channel = |u: u8| -> f64 {
         let s = f64::from(u) / 255.0;
@@ -349,6 +350,7 @@ pub fn wcag_relative_luminance(c: Color32) -> f64 {
 }
 
 /// Computes WCAG 2.1 contrast ratio (`[1.0, 21.0]`) between two opaque sRGB colors.
+#[cfg(test)]
 pub fn wcag_contrast_ratio(fg: Color32, bg: Color32) -> f64 {
     let l1 = wcag_relative_luminance(fg);
     let l2 = wcag_relative_luminance(bg);

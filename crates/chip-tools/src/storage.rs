@@ -45,14 +45,6 @@ impl Default for ToolLibrary {
 impl ToolLibrary {
     pub const CURRENT_SCHEMA_VERSION: u32 = 1;
 
-    pub fn new(name: impl Into<String>) -> Self {
-        Self {
-            schema_version: Self::CURRENT_SCHEMA_VERSION,
-            name: name.into(),
-            tools: Vec::new(),
-        }
-    }
-
     pub fn tool(&self, id: &ToolId) -> Option<&Tool> {
         self.tools.iter().find(|t| &t.id == id)
     }

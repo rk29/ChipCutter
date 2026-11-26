@@ -215,17 +215,6 @@ pub enum OperationStatus {
     },
 }
 
-impl OperationStatus {
-    pub const fn badge_icon(&self) -> &'static str {
-        match self {
-            Self::Clean => "[OK]",
-            Self::Dirty => "[*]",
-            Self::Generating => "[..]",
-            Self::Error { .. } | Self::NeedsRepick { .. } => "[!]",
-        }
-    }
-}
-
 /// Optional per-operation overrides on top of a [`Tool`]'s [`CuttingPreset`] (`04-tool-library.md`).
 /// Any `None` field inherits dynamically from the selected preset; `Some(val)` marks an explicit override.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]

@@ -621,16 +621,6 @@ impl SimulationTimeline {
         self.total_time_sec
     }
 
-    /// Jumps to the start timestamp of the previous operation before `t_sec`.
-    pub fn prev_operation_time(&self, t_sec: f64) -> f64 {
-        for op in self.operations.iter().rev() {
-            if op.start_time_sec < t_sec - 1e-4 {
-                return op.start_time_sec;
-            }
-        }
-        0.0
-    }
-
     /// Jumps to the next tool change timestamp after `t_sec` (or `total_time_sec` if none).
     pub fn next_tool_change_time(&self, t_sec: f64) -> f64 {
         for &tc in &self.tool_change_times_sec {

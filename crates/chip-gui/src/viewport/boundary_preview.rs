@@ -73,17 +73,6 @@ pub enum BoundaryPreviewOverlay {
     },
 }
 
-impl BoundaryPreviewOverlay {
-    /// Returns any non-fatal boundary or keep-out warnings stored on this overlay.
-    pub fn warnings(&self) -> &[String] {
-        match self {
-            Self::Planar2D { warnings, .. }
-            | Self::RotarySector { warnings, .. }
-            | Self::StockOuterEnvelope { warnings, .. } => warnings,
-        }
-    }
-}
-
 /// Inputs required to evaluate or retrieve a cached [`BoundaryPreviewOverlay`].
 pub struct BoundaryPreviewInput<'a> {
     pub active: bool,
@@ -139,6 +128,7 @@ impl BoundaryPreviewCache {
     }
 
     /// Number of times a non-trivial boundary preview was recomputed (for cache-invalidation tests).
+    #[cfg(test)]
     #[inline]
     pub const fn recompute_count(&self) -> u64 {
         self.recompute_count

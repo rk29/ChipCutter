@@ -10,7 +10,6 @@ workspace = true
 [dependencies]
 chip-math.workspace = true
 chip-geom2d.workspace = true
-glam.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 rstar.workspace = true

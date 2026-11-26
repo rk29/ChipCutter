@@ -322,7 +322,6 @@ pub fn drop_cutter_points_parallel(
 /// 1. Facet interior / rim contact,
 /// 2. All 3 triangle edges clipped to the cutter disk `d <= R_max`,
 /// 3. All 3 triangle vertices inside `d <= R_max`.
-#[allow(dead_code)]
 pub(crate) fn drop_cutter_triangle(
     cutter: &SurfaceCutterProfile,
     c_xy: DVec2,

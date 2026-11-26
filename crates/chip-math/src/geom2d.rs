@@ -368,15 +368,6 @@ impl ArcPolyline2D {
         self.segments.iter().map(ArcSegment2D::length).sum()
     }
 
-    pub fn aabb_endpoints(&self) -> Aabb2 {
-        let mut box2 = Aabb2::EMPTY;
-        for seg in &self.segments {
-            box2.extend_point(seg.start());
-            box2.extend_point(seg.end());
-        }
-        box2
-    }
-
     /// Exact 2D bounding box accounting for circular arc bulges beyond chord endpoints.
     pub fn exact_aabb(&self) -> Aabb2 {
         let mut box2 = Aabb2::EMPTY;

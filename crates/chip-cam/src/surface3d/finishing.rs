@@ -488,11 +488,6 @@ impl RestMaskGrid2D {
         }
         self.mask[iy as usize * self.nx + ix as usize]
     }
-
-    /// Returns the number of active cells in the mask.
-    pub fn active_count(&self) -> usize {
-        self.mask.iter().filter(|&&b| b).count()
-    }
 }
 
 /// Evaluates the exact morphological 3D residual stock height (`mm`) left behind by a larger
@@ -820,23 +815,9 @@ pub struct SurfaceLinkConfig {
     pub plunge_feed: f64,
 }
 
-/// Connects `builder.current_pos()` to the start of the next 3D pass `to_wcs` using either a
-/// collision-checked surface-hugging stay-down link or a safe retract/rapid/plunge sequence.
 /// Emits a gouge-proof link from `builder.current_pos()` to `to_wcs`, either via a short
-/// surface-hugging stay-down link or a safe retract + rapid traverse + vertical approach.
-pub fn emit_surface_safe_link(
-    surface: &SurfaceMesh3D,
-    cutter: &SurfaceCutterProfile,
-    to_wcs: DVec3,
-    cfg: &SurfaceLinkConfig,
-    bvh_scratch: &mut Vec<usize>,
-    builder: &mut ToolpathBuilder,
-) {
-    emit_surface_safe_link_with_avoid(surface, cutter, to_wcs, cfg, None, bvh_scratch, builder);
-}
-
-/// Like [`emit_surface_safe_link`], but forces a safe retract + rapid traverse whenever the XY
-/// chord between `builder.current_pos()` and `to_wcs` crosses `avoid_region`.
+/// surface-hugging stay-down link or a safe retract + rapid traverse + vertical approach, forcing
+/// a safe retract whenever the XY chord crosses `avoid_region`.
 pub fn emit_surface_safe_link_with_avoid(
     surface: &SurfaceMesh3D,
     cutter: &SurfaceCutterProfile,

@@ -850,6 +850,7 @@ fn create_vp_bind_group(
 /// Renders a scene headless on an existing shared `(wgpu::Device, wgpu::Queue)` (so zero-readback
 /// [`SimStockRenderSource::GpuGrid`] handles from [`chip_sim::GpuSimContext`] can be rendered on
 /// the exact same device) and returns tightly-packed RGBA8 pixel bytes (`width * height * 4`).
+#[cfg(test)]
 pub fn render_offscreen_rgba_on_device(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -890,7 +891,7 @@ pub fn render_offscreen_rgba_on_device(
         label: Some("chip_readback_encoder"),
     });
     encoder.copy_texture_to_buffer(
-        targets.resolved_color.as_image_copy(),
+        targets._resolved_color.as_image_copy(),
         wgpu::TexelCopyBufferInfo {
             buffer: &readback_buf,
             layout: wgpu::TexelCopyBufferLayout {
@@ -933,6 +934,7 @@ pub fn render_offscreen_rgba_on_device(
 
 /// Renders a [`CadDocument`] completely headless via `wgpu` (e.g. Mesa Lavapipe in CI)
 /// and encodes an RGBA8 PNG byte buffer.
+#[cfg(test)]
 pub fn render_offscreen_png(
     doc: &CadDocument,
     camera: &CadCamera,

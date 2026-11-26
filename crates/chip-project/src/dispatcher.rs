@@ -401,27 +401,6 @@ impl JobDispatcher {
         ids
     }
 
-    /// Signals cancellation for a single operation if currently generating or waiting in a DAG wave.
-    pub fn cancel_operation(&mut self, op_id: &str) -> bool {
-        let removed_pending = self.pending_wave.remove(op_id);
-        let removed_in_flight = if let Some((_, token)) = self.in_flight.remove(op_id) {
-            token.store(true, Ordering::Relaxed);
-            true
-        } else {
-            false
-        };
-        if removed_pending || removed_in_flight {
-            self.batch_ops.remove(op_id);
-        }
-        if !self.is_busy() {
-            self.batch_ops.clear();
-            self.batch_started_at = None;
-            self.batch_succeeded = 0;
-            self.batch_failed = 0;
-        }
-        removed_pending || removed_in_flight
-    }
-
     /// Signals cancellation for all in-flight and queued wave jobs (`Esc`).
     pub fn cancel_all(&mut self) -> usize {
         let count = self.in_flight.len() + self.pending_wave.len();

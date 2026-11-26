@@ -83,7 +83,6 @@ pub enum SketchInspectorAction {
     LookAtSketch(usize),
     InvalidateFrameCache,
     FocusOperation { setup_idx: usize, op_idx: usize },
-    Log(String),
 }
 
 /// Context passed into [`show_sketch_inspector`].

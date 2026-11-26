@@ -28,7 +28,7 @@ pub mod workholding_wizards;
 
 pub use avoid_regions::{
     AvoidAxialBandsInput, AvoidRegionInput, ResolvedAvoidAxialBands, ResolvedAvoidRegion2D,
-    is_u_in_bands, merge_u_intervals_1d, resolve_avoid_axial_bands, resolve_avoid_region_2d,
+    merge_u_intervals_1d, resolve_avoid_axial_bands, resolve_avoid_region_2d,
     subtract_u_intervals_1d, transform_fixtures_to_frame,
 };
 pub use chip_bvh::TriMesh3D;
@@ -42,8 +42,7 @@ pub use fixture_avoidance::{
     FixtureHit, FixtureRoutingSummary, ToolAssemblyPart, ToolAssemblyProfile,
     check_chord_fixture_collision, check_segment_fixture_collision,
     check_segment_fixture_collisions_all, check_segment_fixture_collisions_with_profile,
-    check_segments_fixture_collisions_par, min_safe_z_over_fixtures,
-    route_toolpath_around_fixtures,
+    check_segments_fixture_collisions_par, route_toolpath_around_fixtures,
 };
 pub use heights::{HeightReference, HeightSpec, OperationHeights, ResolvedHeights, SetupHeights};
 pub use machinability_advisor::{
@@ -102,9 +101,8 @@ pub use rotary::{
     compute_index_angle_for_normal, compute_inverse_time_feed_g93,
     compute_rotary_angular_feed_deg_min, compute_stock_rotary_envelope,
     compute_workpiece_arc_distance_mm, cylindrical_to_wcs, project_selections_onto_rotary_axis,
-    resolve_rotary_axial_window, resolve_rotary_target_deg, resolve_rotary_window,
-    rotary_chuck_guard_u, rotate_point_about_axis, validate_toolpath_rotary_chuck_clearance,
-    wcs_to_cylindrical,
+    resolve_rotary_target_deg, resolve_rotary_window, rotary_chuck_guard_u,
+    rotate_point_about_axis, validate_toolpath_rotary_chuck_clearance, wcs_to_cylindrical,
 };
 pub use selection::{
     ChainDirectionArrow3D, ExtractedFeature25D, ExtractedSelectionSummary, GeometrySelectionItem,
@@ -139,16 +137,15 @@ pub use surface3d::{
     check_hole_column_overhang, clip_2d_contour_outside_overhangs, clip_polyline_to_region,
     detect_flat_plateaus, drop_cutter_points_parallel, drop_cutter_z,
     drop_cutter_z_detailed_with_scratch, drop_cutter_z_with_scratch, emit_final_surface_retract,
-    emit_surface_safe_link, emit_surface_safe_link_with_avoid, project_surface_z_slab_xy,
-    push_cutter_region_z, rect_region_2d, refine_convex_chords_3d, region_aabb_2d,
-    resolve_3d_boundary_config_detailed, resolve_3d_containment_region,
+    emit_surface_safe_link_with_avoid, project_surface_z_slab_xy, push_cutter_region_z,
+    rect_region_2d, refine_convex_chords_3d, region_aabb_2d, resolve_3d_boundary_config_detailed,
     resolve_3d_containment_region_detailed, sample_surface_slope_deg, simplify_3d_polyline_rdp,
     slice_surface_contours_z, stepover_for_cusp_height, stock_xy_region,
 };
 pub use thread_tables::{
     ISO_60_H_OVER_P, ThreadSpecEntry, ThreadStandardKind, all_thread_specs, find_thread_spec,
-    iso60_minor_diameter_external_mm, iso60_minor_diameter_internal_mm, iso60_pitch_diameter_mm,
-    suggest_thread_for_hole_diameter, thread_specs_for_standard,
+    iso60_minor_diameter_internal_mm, iso60_pitch_diameter_mm, suggest_thread_for_hole_diameter,
+    thread_specs_for_standard,
 };
 pub use toolpath::{
     ClearingSubToolpath, DEFAULT_RAPID_RATE_MM_MIN, DrillCycleSpec, GeneratedToolpath,

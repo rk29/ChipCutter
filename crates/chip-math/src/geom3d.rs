@@ -107,41 +107,6 @@ impl Ray3 {
         self.origin + self.dir * t
     }
 
-    /// Slab intersection test against an `Aabb3` (expanded by `margin_mm`), returning entry `t`.
-    pub fn intersect_aabb(&self, aabb: &Aabb3, margin_mm: f64) -> Option<f64> {
-        if !aabb.is_valid() {
-            return None;
-        }
-        let min = aabb.min - DVec3::splat(margin_mm);
-        let max = aabb.max + DVec3::splat(margin_mm);
-
-        let mut t_min = 0.0_f64;
-        let mut t_max = f64::INFINITY;
-
-        for axis in 0..3 {
-            let o = self.origin[axis];
-            let d = self.dir[axis];
-            if d.abs() < 1e-14 {
-                if o < min[axis] || o > max[axis] {
-                    return None;
-                }
-            } else {
-                let inv_d = 1.0 / d;
-                let mut t1 = (min[axis] - o) * inv_d;
-                let mut t2 = (max[axis] - o) * inv_d;
-                if t1 > t2 {
-                    std::mem::swap(&mut t1, &mut t2);
-                }
-                t_min = t_min.max(t1);
-                t_max = t_max.min(t2);
-                if t_min > t_max {
-                    return None;
-                }
-            }
-        }
-        Some(t_min)
-    }
-
     /// Two-sided Möller–Trumbore ray-triangle intersection in `f64`, returning ray parameter `t >= 0`.
     pub fn intersect_triangle(&self, v0: DVec3, v1: DVec3, v2: DVec3) -> Option<f64> {
         let e1 = v1 - v0;

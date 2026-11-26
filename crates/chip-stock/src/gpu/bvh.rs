@@ -98,16 +98,6 @@ impl GpuMeshBvh {
             },
         }
     }
-
-    #[inline]
-    pub fn node_count(&self) -> u32 {
-        self.node_count
-    }
-
-    #[inline]
-    pub fn tri_count(&self) -> u32 {
-        self.tri_count
-    }
 }
 
 impl GpuSimContext {

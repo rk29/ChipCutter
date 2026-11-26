@@ -34,7 +34,7 @@ pub use cylindrical::{
 pub use gpu::{
     DEFAULT_GPU_CHECKPOINT_BUDGET_BYTES, GpuCheckpointCache, GpuCylindricalRenderData,
     GpuErrorHistogram, GpuHeightfieldRenderData, GpuMeshBvh, GpuSimContext, GpuStockRenderHandle,
-    GpuTriDexelRenderData, MAX_TRIDEXEL_EMIT_QUADS, MAX_TRIDEXEL_EMIT_VERTICES, PackedTriDexelQuad,
+    GpuTriDexelRenderData, MAX_TRIDEXEL_EMIT_QUADS, PackedTriDexelQuad,
     TRIDEXEL_DUAL_OFFSET_PACK_SCALE, TRIDEXEL_PACKED_QUAD_BYTES, WgpuComputeBackend,
     oct_decode_unit_normal, oct_encode_unit_normal, pack_oct_normal_pair_12bit,
     unpack_oct_normal_12bit,

@@ -324,15 +324,6 @@ impl SurfaceCutterProfile {
         prof
     }
 
-    /// Returns a flute-only copy of `self` with `assembly: None`.
-    #[inline]
-    pub const fn without_assembly(&self) -> Self {
-        Self {
-            assembly: None,
-            ..*self
-        }
-    }
-
     /// Returns a copy of `self` with an additional horizontal radial clearance margin (`extra_radial_mm >= 0`)
     /// folded analytically via horizontal disk Minkowski dilation (leaving flat axial contact heights exact).
     pub fn with_extra_radial_margin(&self, extra_radial_mm: f64) -> Self {
@@ -514,11 +505,5 @@ impl SurfaceCutterProfile {
     #[inline]
     pub fn profile_height_at_radius(&self, d: f64) -> Option<f64> {
         self.shape.profile_height_at_radius(d)
-    }
-
-    /// Horizontal cutter radius `r(dz)` at height `dz >= 0` above the cutter tip (`mm`).
-    #[inline]
-    pub fn radius_at_height(&self, dz: f64) -> f64 {
-        self.envelope.radius_at_dz(dz.max(0.0)).unwrap_or(0.0)
     }
 }

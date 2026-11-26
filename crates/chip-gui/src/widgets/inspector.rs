@@ -3,7 +3,7 @@
 
 use std::hash::Hash;
 
-use egui::{CornerRadius, Margin, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, Vec2};
+use egui::{CornerRadius, Margin, Pos2, Rect, Sense, Stroke, Ui, Vec2};
 
 use crate::{
     theme::ThemeTokens,
@@ -231,5 +231,4 @@ fn paint_disclosure_chevron(painter: &egui::Painter, rect: Rect, open: bool, col
             stroke,
         ));
     }
-    let _ = StrokeKind::Inside;
 }

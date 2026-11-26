@@ -19,12 +19,6 @@ pub const fn iso60_minor_diameter_internal_mm(major_diameter_mm: f64, pitch_mm: 
     major_diameter_mm - 1.25 * ISO_60_H_OVER_P * pitch_mm
 }
 
-/// Computes the exact ISO 68-1 / ASME B1.1 60° external minor diameter `d3 = D - (17/12) * H`.
-#[inline]
-pub const fn iso60_minor_diameter_external_mm(major_diameter_mm: f64, pitch_mm: f64) -> f64 {
-    major_diameter_mm - (17.0 / 12.0) * ISO_60_H_OVER_P * pitch_mm
-}
-
 /// Standard thread family classification (`45-milestone-45-plan.md`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

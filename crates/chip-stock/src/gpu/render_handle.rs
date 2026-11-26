@@ -144,9 +144,6 @@ const _: () = assert!(TRIDEXEL_PACKED_QUAD_BYTES == 32);
 /// WebGPU default `max_storage_buffer_binding_size`).
 pub const MAX_TRIDEXEL_EMIT_QUADS: u32 = 4_000_000;
 
-/// Maximum emitted vertices per Tri-Dexel GPU indirect draw (`6 × MAX_TRIDEXEL_EMIT_QUADS`).
-pub const MAX_TRIDEXEL_EMIT_VERTICES: u32 = MAX_TRIDEXEL_EMIT_QUADS * 6;
-
 /// Computes the exact inline quad capacity for `total_rays` clamped to both
 /// [`MAX_TRIDEXEL_EMIT_QUADS`] and the active device's `max_storage_buffer_binding_size`.
 pub(crate) fn compute_tridexel_max_quads(device: &wgpu::Device, total_rays: usize) -> u32 {
@@ -406,17 +403,6 @@ impl GpuTriDexelRenderData {
         data.ctx.queue().submit(std::iter::once(encoder.finish()));
 
         data
-    }
-
-    /// Re-dispatches the lightweight `< 0.5 ms` `tridexel_emit.wgsl` compute pass into `encoder`
-    /// ONLY when `color_mode` differs from the options already baked into `quad_buf`
-    /// (`mesh_skinning = false`). Returns `true` if a compute dispatch was recorded.
-    pub fn ensure_emitted_for_color_mode(
-        &self,
-        color_mode: SimStockColorMode,
-        encoder: &mut wgpu::CommandEncoder,
-    ) -> bool {
-        self.ensure_emitted_for_options(SimMeshOptions::from(color_mode), encoder)
     }
 
     /// Re-dispatches the lightweight `tridexel_emit.wgsl` compute pass into `encoder` ONLY when

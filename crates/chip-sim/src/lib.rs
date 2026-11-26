@@ -42,17 +42,16 @@ pub use chip_stock::{
 pub use chip_stock::{
     DEFAULT_GPU_CHECKPOINT_BUDGET_BYTES, GpuCheckpointCache, GpuCylindricalRenderData,
     GpuHeightfieldRenderData, GpuSimContext, GpuStockRenderHandle, GpuTriDexelRenderData,
-    MAX_TRIDEXEL_EMIT_QUADS, MAX_TRIDEXEL_EMIT_VERTICES, PackedTriDexelQuad,
-    TRIDEXEL_DUAL_OFFSET_PACK_SCALE, TRIDEXEL_PACKED_QUAD_BYTES, WgpuComputeBackend,
-    oct_decode_unit_normal, oct_encode_unit_normal, pack_oct_normal_pair_12bit,
-    unpack_oct_normal_12bit,
+    MAX_TRIDEXEL_EMIT_QUADS, PackedTriDexelQuad, TRIDEXEL_DUAL_OFFSET_PACK_SCALE,
+    TRIDEXEL_PACKED_QUAD_BYTES, WgpuComputeBackend, oct_decode_unit_normal, oct_encode_unit_normal,
+    pack_oct_normal_pair_12bit, unpack_oct_normal_12bit,
 };
-pub use cutter_profile::{SimToolMesh, ToolMeshZone, build_cutter_assembly_mesh};
+pub use cutter_profile::{SimToolMesh, build_cutter_assembly_mesh};
 pub use driver::{
     SetupSimulationInput, SetupSimulationResult, SimTimingBreakdown, SimulatedStockPlaybackExt,
-    run_setup_simulation, run_setup_simulation_with_backend,
-    run_setup_simulation_with_backend_and_progress, run_setup_simulation_with_choice,
-    run_setup_simulation_with_choice_and_progress, run_setup_simulation_with_engine,
+    run_setup_simulation, run_setup_simulation_with_backend_and_progress,
+    run_setup_simulation_with_choice, run_setup_simulation_with_choice_and_progress,
+    run_setup_simulation_with_engine,
 };
 #[cfg(feature = "gpu-compute")]
 pub use driver::{

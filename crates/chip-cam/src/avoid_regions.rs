@@ -806,14 +806,6 @@ pub fn subtract_u_intervals_1d(
     allowed
 }
 
-/// Returns `true` when axial coordinate `u` falls inside any interval in `bands`.
-#[inline]
-pub fn is_u_in_bands(u: f64, bands: &[(f64, f64)]) -> bool {
-    bands
-        .iter()
-        .any(|&(lo, hi)| u >= lo - 1e-6 && u <= hi + 1e-6)
-}
-
 /// Clips an open or closed [`chip_math::ArcPolyline2D`] strictly outside `avoid`, using binary
 /// boundary refinement (`< 0.001 mm`) at every entry/exit crossing so long linear or arc
 /// segments never overshoot into the keep-out region.

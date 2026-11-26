@@ -115,32 +115,6 @@ impl ToolAssemblyProfile {
             .max(self.holder_body_radius_mm)
     }
 
-    /// Evaluates the assembly radius (`mm`) and [`ToolAssemblyPart`] at axial height `dz >= 0`
-    /// above the cutter tip `(0, 0, 0)`.
-    #[inline]
-    pub fn radius_and_part_at_dz(&self, dz: f64) -> Option<(f64, ToolAssemblyPart)> {
-        if !dz.is_finite() || dz < -1e-9 {
-            return None;
-        }
-        let z = dz.max(0.0);
-        if z <= self.flute_length_mm {
-            let r = self
-                .envelope
-                .radius_at_dz(z)
-                .unwrap_or(self.cutting_radius_mm);
-            Some((r, ToolAssemblyPart::Flute))
-        } else if z < self.stickout_length_mm {
-            let r = if self.has_relieved_neck && z <= self.neck_length_mm {
-                self.neck_radius_mm
-            } else {
-                self.shank_radius_mm
-            };
-            Some((r, ToolAssemblyPart::Shank))
-        } else {
-            Some((self.holder_radius_at_dz(z), ToolAssemblyPart::Holder))
-        }
-    }
-
     /// Evaluates the collet nut / tapered holder cone radius at `dz >= stickout_length_mm`.
     #[inline]
     pub fn holder_radius_at_dz(&self, dz: f64) -> f64 {
@@ -459,16 +433,6 @@ pub fn check_segments_fixture_collisions_par(
 /// each fixture's `clearance_margin_mm`).
 ///
 /// Returns `None` if no fixture lies within the swept radial footprint of `p0 -> p1`.
-pub fn min_safe_z_over_fixtures(
-    p0: DVec3,
-    p1: DVec3,
-    tool: &Tool,
-    fixtures: &[ResolvedFixtureSolid],
-) -> Option<f64> {
-    let assembly = ToolAssemblyProfile::from_tool(tool);
-    min_safe_z_over_fixtures_with_profile(p0, p1, &assembly, fixtures)
-}
-
 fn min_safe_z_over_fixtures_with_profile(
     p0: DVec3,
     p1: DVec3,

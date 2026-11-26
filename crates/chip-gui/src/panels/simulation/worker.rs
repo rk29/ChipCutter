@@ -419,7 +419,7 @@ impl StockRemeshWorker {
         st.compute_gpu_ctx.as_ref().map(Arc::as_ptr)
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "gpu-compute"))]
     pub(super) fn processed_request_count(&self) -> u64 {
         self.wait_idle();
         let st = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());

@@ -748,12 +748,6 @@ pub enum VCarveInlayMode {
     },
 }
 
-impl VCarveInlayMode {
-    pub const fn is_male_plug(&self) -> bool {
-        matches!(self, Self::MalePlug { .. })
-    }
-}
-
 fn default_vcarve_clearing_allowance() -> ParamLength {
     ParamLength::from_mm(0.05)
 }

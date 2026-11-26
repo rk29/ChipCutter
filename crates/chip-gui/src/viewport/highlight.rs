@@ -47,6 +47,7 @@ pub enum SimStockRenderSource {
 
 impl SimStockRenderSource {
     /// Monotonic revision identifier used to skip redundant GPU vertex/index re-uploads.
+    #[cfg(test)]
     #[inline]
     pub const fn revision(&self) -> u64 {
         match self {
@@ -67,22 +68,13 @@ impl SimStockRenderSource {
     }
 
     /// Returns the underlying CPU mesh when backed by [`Self::CpuMesh`].
+    #[cfg(test)]
     #[inline]
     pub fn cpu_mesh(&self) -> Option<&Arc<SimStockMesh>> {
         match self {
             Self::CpuMesh { mesh, .. } => Some(mesh),
             #[cfg(feature = "gpu-compute")]
             Self::GpuGrid { .. } => None,
-        }
-    }
-
-    /// Returns the underlying GPU render handle when backed by [`Self::GpuGrid`].
-    #[cfg(feature = "gpu-compute")]
-    #[inline]
-    pub fn gpu_handle(&self) -> Option<&Arc<GpuStockRenderHandle>> {
-        match self {
-            Self::GpuGrid { handle, .. } => Some(handle),
-            Self::CpuMesh { .. } => None,
         }
     }
 }

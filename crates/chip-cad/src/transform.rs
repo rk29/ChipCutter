@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use chip_math::{Aabb3, DMat3, DMat4, DQuat, DVec3};
+use chip_math::{Aabb3, DMat3, DQuat, DVec3};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -122,18 +122,6 @@ impl ModelTransform {
             1.0 / self.scale[2].max(MIN_MODEL_SCALE),
         ));
         r * inv_s
-    }
-
-    /// Full `4×4` homogeneous affine transform matrix (`R * S` with translation `t`).
-    pub fn affine_matrix(&self) -> DMat4 {
-        let l = self.linear_matrix();
-        let t = DVec3::from_array(self.translate_mm);
-        DMat4::from_cols(
-            l.x_axis.extend(0.0),
-            l.y_axis.extend(0.0),
-            l.z_axis.extend(0.0),
-            t.extend(1.0),
-        )
     }
 
     /// Applies `p' = R * (S * p) + t` to a 3D point in canonical millimeters.

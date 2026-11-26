@@ -263,7 +263,7 @@ impl SimulationPanelState {
         }
     }
 
-    #[cfg(feature = "gpu-compute")]
+    #[cfg(all(test, feature = "gpu-compute"))]
     pub fn with_engine_and_gpu(engine: SimEngineKind, gpu_ctx: Option<Arc<GpuSimContext>>) -> Self {
         let mut s = Self::with_engine(engine);
         s.set_gpu_context(gpu_ctx);

@@ -66,11 +66,6 @@ impl WgpuComputeBackend {
         Self { ctx, inner }
     }
 
-    #[inline]
-    pub fn context(&self) -> &Arc<GpuSimContext> {
-        &self.ctx
-    }
-
     /// Rasterizes a WCS-space [`TriMesh3D`] target solid directly onto this backend's GPU target
     /// buffers using `bvh_distance.wgsl` (`FlatBvhNode` + `GpuTriangle` zero-conversion upload).
     pub fn rasterize_target_mesh_gpu(&mut self, target_mesh: &TriMesh3D) {

@@ -9,6 +9,5 @@ workspace = true
 
 [dependencies]
 chip-math.workspace = true
-glam.workspace = true
 cavalier_contours.workspace = true
 boostvoronoi.workspace = true

@@ -282,10 +282,6 @@ impl ProjectDocument {
         self.sketches.iter().find(|s| s.id == id)
     }
 
-    pub fn sketch_mut(&mut self, id: &str) -> Option<&mut SketchLayer> {
-        self.sketches.iter_mut().find(|s| s.id == id)
-    }
-
     /// Looks up a project-level reusable [`SharedAvoidRegion`] by `id`.
     pub fn avoid_region(&self, id: &str) -> Option<&SharedAvoidRegion> {
         self.avoid_regions.iter().find(|r| r.id == id)
@@ -329,19 +325,9 @@ impl ProjectDocument {
         self.models.iter().find(|m| m.role.is_part())
     }
 
-    /// Returns a mutable reference to the primary machined target part model.
-    pub fn primary_part_model_mut(&mut self) -> Option<&mut ModelEntry> {
-        self.models.iter_mut().find(|m| m.role.is_part())
-    }
-
     /// Returns the index in `self.models` of the primary machined target part model.
     pub fn primary_part_model_index(&self) -> Option<usize> {
         self.models.iter().position(|m| m.role.is_part())
-    }
-
-    /// Iterates over all machined target part models (`role == ModelRole::Part`).
-    pub fn part_models(&self) -> impl Iterator<Item = &ModelEntry> {
-        self.models.iter().filter(|m| m.role.is_part())
     }
 
     /// Iterates over all imported workholding fixture models (`role == ModelRole::Fixture`).
@@ -865,22 +851,6 @@ pub fn load_model_bytes_cad_doc(
         )
     } else {
         MonstertruckKernel.load_step_bytes(source_name, bytes, DEFAULT_TESS_CHORD_TOL_MM)
-    }
-}
-
-/// Unified CAD/Mesh loader from in-memory bytes that validates and applies `transform`.
-pub fn load_model_bytes_cad_doc_transformed(
-    source_name: &str,
-    bytes: &[u8],
-    unit_override: Option<MeshUnitKind>,
-    transform: &ModelTransform,
-) -> Result<CadDocument, CadError> {
-    transform.validate()?;
-    let raw = load_model_bytes_cad_doc(source_name, bytes, unit_override)?;
-    if transform.is_identity() {
-        Ok(raw)
-    } else {
-        Ok(raw.transformed(transform))
     }
 }
 

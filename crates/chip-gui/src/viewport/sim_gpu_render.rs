@@ -29,11 +29,6 @@ pub(crate) struct SimStockVisualUniformsGpu {
 }
 
 impl SimStockVisualUniformsGpu {
-    #[allow(dead_code)]
-    pub(crate) fn from_color_mode(color_mode: SimStockColorMode, has_target: bool) -> Self {
-        Self::from_options(SimMeshOptions::from(color_mode), has_target)
-    }
-
     pub(crate) fn from_options(options: SimMeshOptions, has_target: bool) -> Self {
         let (mode_id, tol_mm, max_scale_mm) = match options.color_mode {
             SimStockColorMode::Metallic => (0u32, 0.05_f32, 1.0_f32),

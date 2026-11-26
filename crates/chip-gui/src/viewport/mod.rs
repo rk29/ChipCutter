@@ -22,4 +22,6 @@ pub use overlays::{
     draw_measure_readout_card, draw_reach_legend_overlay, draw_view_cube_overlay,
     draw_viewport_bottom_hud, draw_viewport_guidance_hud, draw_wcs_origin_27pt_overlay,
 };
-pub use pipeline::{ViewportRenderer, render_offscreen_png, render_offscreen_rgba_on_device};
+pub use pipeline::ViewportRenderer;
+#[cfg(test)]
+pub use pipeline::{render_offscreen_png, render_offscreen_rgba_on_device};

@@ -128,14 +128,6 @@ impl SimulatedStock {
     }
 
     #[inline]
-    pub fn as_tridexel_mut(&mut self) -> Option<&mut TriDexelStock> {
-        match self {
-            Self::TriDexel(td) => Some(td),
-            _ => None,
-        }
-    }
-
-    #[inline]
     pub fn as_cylindrical(&self) -> Option<&CylindricalStock> {
         match self {
             Self::Cylindrical(cyl) => Some(cyl),

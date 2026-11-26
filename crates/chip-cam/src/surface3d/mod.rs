@@ -14,7 +14,7 @@ pub mod slab_projection;
 use chip_bvh::{
     ClosestPointHit, FlatBvh, RayHit, TriMesh3D, closest_point_on_triangle, ray_triangle_intersect,
 };
-use chip_cad::{BodyId, CadDocument, MeshTriangle, TriangleMeshBody};
+use chip_cad::{BodyId, CadDocument, MeshTriangle};
 use chip_math::{Aabb3, DVec3, RigidFrame3};
 
 pub use cutter::{AssemblyClearanceSpec, SurfaceCutterProfile, SurfaceCutterShape};
@@ -24,13 +24,13 @@ pub use drop_cutter::{
 };
 pub use finishing::{
     RestMaskGrid2D, SurfaceLinkConfig, build_3d_rest_mask, compute_morphological_rest_residual,
-    emit_final_surface_retract, emit_surface_safe_link, emit_surface_safe_link_with_avoid,
-    refine_convex_chords_3d, region_aabb_2d, simplify_3d_polyline_rdp, stepover_for_cusp_height,
+    emit_final_surface_retract, emit_surface_safe_link_with_avoid, refine_convex_chords_3d,
+    region_aabb_2d, simplify_3d_polyline_rdp, stepover_for_cusp_height,
 };
 pub use levels::{
     ResolvedBoundary2D, clip_polyline_to_region, detect_flat_plateaus, rect_region_2d,
-    resolve_3d_boundary_config_detailed, resolve_3d_containment_region,
-    resolve_3d_containment_region_detailed, sample_surface_slope_deg, stock_xy_region,
+    resolve_3d_boundary_config_detailed, resolve_3d_containment_region_detailed,
+    sample_surface_slope_deg, stock_xy_region,
 };
 pub use overhang_guard::{
     OverhangGuardReport, check_2d_toolpath_against_overhangs, check_hole_column_overhang,
@@ -82,18 +82,6 @@ impl SurfaceMesh3D {
             aabb_wcs,
             bvh,
         }
-    }
-
-    /// Builds a [`SurfaceMesh3D`] from a single [`TriangleMeshBody`] transformed into `setup_frame`.
-    pub fn from_triangle_mesh(mesh: &TriangleMeshBody, setup_frame: &RigidFrame3) -> Self {
-        let vertices_wcs: Vec<DVec3> = mesh
-            .vertices_mm
-            .iter()
-            .map(|&v| setup_frame.world_to_local_point(v))
-            .collect();
-
-        let indices: Vec<[u32; 3]> = mesh.triangles.iter().map(|t| t.indices).collect();
-        Self::from_tri_mesh(TriMesh3D::from_indexed(vertices_wcs, &indices))
     }
 
     /// Builds a unified [`SurfaceMesh3D`] in Setup WCS from all targeted bodies (`doc.meshes`

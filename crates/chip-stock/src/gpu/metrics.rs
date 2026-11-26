@@ -86,32 +86,6 @@ impl GpuErrorHistogram {
         }
         self.max_abs_mm
     }
-
-    /// Estimates `in_tolerance_surface_pct` at an arbitrary tolerance threshold `tol_mm`.
-    pub fn in_tolerance_surface_pct(&self, tol_mm: f64) -> f64 {
-        if self.total_samples == 0 {
-            return 100.0;
-        }
-        let tol = tol_mm.max(0.0);
-        let mut in_tol: f64 = 0.0;
-        for (bin, &cnt) in self.bins.iter().enumerate() {
-            if cnt == 0 {
-                continue;
-            }
-            let (lo, hi) = Self::bin_bounds(bin);
-            if hi <= tol {
-                in_tol += cnt as f64;
-            } else if lo < tol && hi > lo {
-                let frac = if bin == 0 {
-                    (tol / hi).clamp(0.0, 1.0)
-                } else {
-                    ((tol.ln() - lo.ln()) / (hi.ln() - lo.ln())).clamp(0.0, 1.0)
-                };
-                in_tol += (cnt as f64) * frac;
-            }
-        }
-        (100.0 * in_tol / (self.total_samples as f64)).clamp(0.0, 100.0)
-    }
 }
 
 /// Aggregated `f64` reduction totals produced by `stock_metrics.wgsl`.

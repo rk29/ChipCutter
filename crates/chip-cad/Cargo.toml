@@ -10,7 +10,6 @@ workspace = true
 [dependencies]
 chip-math.workspace = true
 chip-bvh.workspace = true
-glam.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 zip.workspace = true

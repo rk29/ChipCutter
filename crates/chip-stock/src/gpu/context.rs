@@ -259,16 +259,6 @@ impl GpuSimContext {
     }
 
     #[inline]
-    pub fn device_arc(&self) -> Arc<wgpu::Device> {
-        Arc::clone(&self.device)
-    }
-
-    #[inline]
-    pub fn queue_arc(&self) -> Arc<wgpu::Queue> {
-        Arc::clone(&self.queue)
-    }
-
-    #[inline]
     pub fn adapter_info(&self) -> &ActiveSimBackendInfo {
         &self.adapter_info
     }

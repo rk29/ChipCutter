@@ -15,7 +15,6 @@ chip-cad.workspace = true
 chip-sketch.workspace = true
 chip-stock.workspace = true
 chip-tools.workspace = true
-glam.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 rayon.workspace = true

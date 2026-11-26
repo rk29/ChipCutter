@@ -98,8 +98,6 @@ pub enum IconKind {
     SkipEnd,
 
     // Viewport & theme controls
-    Sun,
-    Moon,
     Eye,
     EyeOff,
     FitView,
@@ -110,15 +108,13 @@ pub enum IconKind {
     InfoCircle,
     Search,
     Sparkles,
-    Keyboard,
     Crosshair,
-    ArrowUp,
-    ArrowDown,
     Settings,
 }
 
 impl IconKind {
     /// Complete list of every [`IconKind`] variant (used for exhaustive rendering verification).
+    #[cfg(test)]
     pub const ALL: &'static [Self] = &[
         Self::StatusClean,
         Self::StatusDirty,
@@ -183,8 +179,6 @@ impl IconKind {
         Self::StepForward,
         Self::SkipNextOp,
         Self::SkipEnd,
-        Self::Sun,
-        Self::Moon,
         Self::Eye,
         Self::EyeOff,
         Self::FitView,
@@ -195,10 +189,7 @@ impl IconKind {
         Self::InfoCircle,
         Self::Search,
         Self::Sparkles,
-        Self::Keyboard,
         Self::Crosshair,
-        Self::ArrowUp,
-        Self::ArrowDown,
         Self::Settings,
     ];
 
@@ -1087,41 +1078,6 @@ pub fn paint_icon(painter: &egui::Painter, rect: Rect, icon: IconKind, color: Co
             ));
             painter.line_segment([p(0.78, 0.22), p(0.78, 0.78)], stroke);
         }
-        IconKind::Sun => {
-            painter.circle_stroke(sq.center(), s * 0.22, stroke);
-            for k in 0..8 {
-                let a = (k as f32) * FRAC_PI_4;
-                let p0 = Pos2::new(
-                    sq.center().x + s * 0.31 * a.cos(),
-                    sq.center().y + s * 0.31 * a.sin(),
-                );
-                let p1 = Pos2::new(
-                    sq.center().x + s * 0.44 * a.cos(),
-                    sq.center().y + s * 0.44 * a.sin(),
-                );
-                painter.line_segment([p0, p1], thin);
-            }
-        }
-        IconKind::Moon => {
-            draw_arc(
-                painter,
-                p(0.52, 0.50),
-                s * 0.34,
-                0.32 * PI,
-                1.68 * PI,
-                14,
-                stroke,
-            );
-            draw_arc(
-                painter,
-                p(0.68, 0.42),
-                s * 0.28,
-                0.55 * PI,
-                1.45 * PI,
-                12,
-                thin,
-            );
-        }
         IconKind::Eye => {
             draw_arc(
                 painter,
@@ -1219,32 +1175,12 @@ pub fn paint_icon(painter: &egui::Painter, rect: Rect, icon: IconKind, color: Co
                 thin,
             ));
         }
-        IconKind::Keyboard => {
-            let r = Rect::from_min_max(p(0.14, 0.26), p(0.86, 0.76));
-            painter.rect_stroke(r, CornerRadius::same(2), thin, StrokeKind::Inside);
-            for u in [0.30, 0.50, 0.70] {
-                painter.circle_filled(p(u, 0.43), sw * 0.48, color);
-            }
-            painter.line_segment([p(0.32, 0.62), p(0.68, 0.62)], thin);
-        }
         IconKind::Crosshair => {
             painter.circle_stroke(sq.center(), s * 0.28, thin);
             painter.line_segment([p(0.50, 0.12), p(0.50, 0.32)], thin);
             painter.line_segment([p(0.50, 0.68), p(0.50, 0.88)], thin);
             painter.line_segment([p(0.12, 0.50), p(0.32, 0.50)], thin);
             painter.line_segment([p(0.68, 0.50), p(0.88, 0.50)], thin);
-        }
-        IconKind::ArrowUp => {
-            painter.add(egui::Shape::line(
-                vec![p(0.22, 0.64), p(0.50, 0.32), p(0.78, 0.64)],
-                stroke,
-            ));
-        }
-        IconKind::ArrowDown => {
-            painter.add(egui::Shape::line(
-                vec![p(0.22, 0.36), p(0.50, 0.68), p(0.78, 0.36)],
-                stroke,
-            ));
         }
         IconKind::Settings => {
             let c = sq.center();

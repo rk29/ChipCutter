@@ -18,7 +18,7 @@ pub use context::GpuSimContext;
 pub use metrics::GpuErrorHistogram;
 pub use render_handle::{
     GpuCylindricalRenderData, GpuHeightfieldRenderData, GpuStockRenderHandle,
-    GpuTriDexelRenderData, MAX_TRIDEXEL_EMIT_QUADS, MAX_TRIDEXEL_EMIT_VERTICES, PackedTriDexelQuad,
+    GpuTriDexelRenderData, MAX_TRIDEXEL_EMIT_QUADS, PackedTriDexelQuad,
     TRIDEXEL_DUAL_OFFSET_PACK_SCALE, TRIDEXEL_PACKED_QUAD_BYTES, oct_decode_unit_normal,
     oct_encode_unit_normal, pack_oct_normal_pair_12bit, unpack_oct_normal_12bit,
 };

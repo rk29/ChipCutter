@@ -690,7 +690,6 @@ version = "0.26.0"
 dependencies = [
  "bytemuck",
  "chip-math",
- "glam",
  "rayon",
 ]
 
@@ -700,7 +699,6 @@ version = "0.26.0"
 dependencies = [
  "chip-bvh",
  "chip-math",
- "glam",
  "monstertruck-io",
  "monstertruck-meshing",
  "monstertruck-modeling",
@@ -722,7 +720,6 @@ dependencies = [
  "chip-sketch",
  "chip-stock",
  "chip-tools",
- "glam",
  "rayon",
  "serde",
  "thiserror 2.0.21",
@@ -743,7 +740,6 @@ dependencies = [
  "clap",
  "serde",
  "serde_json",
- "thiserror 2.0.21",
  "winresource",
 ]
 
@@ -754,7 +750,6 @@ dependencies = [
  "boostvoronoi",
  "cavalier_contours",
  "chip-math",
- "glam",
 ]
 
 [[package]]
@@ -855,7 +850,6 @@ dependencies = [
  "chip-geom2d",
  "chip-math",
  "dxf",
- "glam",
  "kurbo",
  "rstar",
  "serde",

@@ -1243,9 +1243,6 @@ impl PaneBehavior<'_> {
                     self.app.inspector_focus = InspectorFocus::Operation { setup_idx, op_idx };
                     self.app.op_tab = OperationTab::Geometry;
                 }
-                SketchInspectorAction::Log(msg) => {
-                    self.app.logs.push(msg);
-                }
             }
         }
         invalidated

@@ -1,15 +1,6 @@
 use chip_tools::{CutterEnvelopeShape, Tool};
-use serde::{Deserialize, Serialize};
 
 pub use chip_stock::{RadialCutterProfile, SimColoredVertex};
-
-/// Material zone of a 3D revolved cutter assembly mesh.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum ToolMeshZone {
-    CuttingFlutes,
-    Shank,
-    ColletHolder,
-}
 
 /// Revolved 3D triangle mesh for a [`Tool`] (`tip = (0, 0, 0)`, axis = `+Z` in Setup WCS).
 #[derive(Debug, Clone, Default)]

@@ -183,24 +183,6 @@ impl HeightfieldStock {
         self.origin_wcs.z + f64::from(z_local)
     }
 
-    #[inline]
-    pub fn cell_in_stock(&self, idx: usize) -> bool {
-        self.z_bottom[idx].is_finite()
-    }
-
-    #[inline]
-    pub fn cell_has_material(&self, idx: usize) -> bool {
-        self.z_bottom[idx].is_finite() && self.z_stock[idx] > self.z_bottom[idx]
-    }
-
-    #[inline]
-    pub fn cell_center_xy(&self, i: usize, j: usize) -> DVec2 {
-        DVec2::new(
-            self.origin_wcs.x + (i as f64 + 0.5) * self.dx_mm,
-            self.origin_wcs.y + (j as f64 + 0.5) * self.dy_mm,
-        )
-    }
-
     /// Samples remaining `z_stock` height (`mm` in WCS) at WCS `(x, y)` (`None` if outside stock or drilled through).
     pub fn sample_stock_z(&self, x_wcs: f64, y_wcs: f64) -> Option<f64> {
         if x_wcs < self.origin_wcs.x || y_wcs < self.origin_wcs.y {

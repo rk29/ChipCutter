@@ -99,10 +99,6 @@ pub struct SelfTestConfig {
 }
 
 impl SelfTestConfig {
-    pub fn new(screenshot_path: PathBuf) -> Self {
-        Self::with_capture(screenshot_path, CaptureSpec::default())
-    }
-
     pub fn with_capture(screenshot_path: PathBuf, capture: CaptureSpec) -> Self {
         Self {
             screenshot_path,
@@ -203,47 +199,6 @@ impl Drop for ChipCutterApp {
 }
 
 impl ChipCutterApp {
-    pub fn new(
-        cc: &eframe::CreationContext<'_>,
-        initial_path: Option<PathBuf>,
-        self_test: Option<SelfTestConfig>,
-    ) -> Self {
-        Self::new_with_demo(cc, initial_path, StartupDemoMode::None, self_test)
-    }
-
-    pub fn new_with_mode(
-        cc: &eframe::CreationContext<'_>,
-        initial_path: Option<PathBuf>,
-        demo_pure_2d: bool,
-        self_test: Option<SelfTestConfig>,
-    ) -> Self {
-        let mode = if demo_pure_2d {
-            StartupDemoMode::Pure2dPanel
-        } else {
-            StartupDemoMode::None
-        };
-        Self::new_with_demo(cc, initial_path, mode, self_test)
-    }
-
-    pub fn new_with_demo(
-        cc: &eframe::CreationContext<'_>,
-        initial_path: Option<PathBuf>,
-        demo_mode: StartupDemoMode,
-        self_test: Option<SelfTestConfig>,
-    ) -> Self {
-        Self::new_with_options(cc, initial_path, demo_mode, None, self_test)
-    }
-
-    pub fn new_with_demo_and_theme(
-        cc: &eframe::CreationContext<'_>,
-        initial_path: Option<PathBuf>,
-        demo_mode: StartupDemoMode,
-        initial_theme: AppTheme,
-        self_test: Option<SelfTestConfig>,
-    ) -> Self {
-        Self::new_with_options(cc, initial_path, demo_mode, Some(initial_theme), self_test)
-    }
-
     pub fn new_with_options(
         cc: &eframe::CreationContext<'_>,
         initial_path: Option<PathBuf>,

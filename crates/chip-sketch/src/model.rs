@@ -160,12 +160,6 @@ impl SketchAnchor {
         }
     }
 
-    pub fn z_offset(&self) -> &ParamLength {
-        match self {
-            Self::SetupXy { z_offset, .. } | Self::PlanarFace { z_offset, .. } => z_offset,
-        }
-    }
-
     pub fn z_offset_mut(&mut self) -> &mut ParamLength {
         match self {
             Self::SetupXy { z_offset, .. } | Self::PlanarFace { z_offset, .. } => z_offset,

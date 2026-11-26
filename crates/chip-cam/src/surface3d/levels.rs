@@ -335,29 +335,6 @@ fn resolve_3d_containment_region_impl(
     }
 }
 
-/// Resolves the 2D XY machining containment [`RegionSet2D`] (in tool-center coordinates) for
-/// 3-axis surface, undercut, and deburr operations.
-pub fn resolve_3d_containment_region(
-    surface: &SurfaceMesh3D,
-    setup: &ResolvedSetup,
-    selection: &ExtractedSelectionSummary,
-    mode: MachiningBoundaryMode,
-    containment: ToolContainmentMode,
-    extra_offset_mm: f64,
-    tool_radius_mm: f64,
-) -> RegionSet2D {
-    resolve_3d_containment_region_detailed(
-        surface,
-        setup,
-        selection,
-        mode,
-        containment,
-        extra_offset_mm,
-        tool_radius_mm,
-    )
-    .effective_region
-}
-
 /// Evaluates the effective local surface slope angle in degrees (`0° = flat horizontal`,
 /// `90° = vertical wall`) seen by `cutter` at `(pt_xy, z_level)` using exact Drop-Cutter
 /// central differences.

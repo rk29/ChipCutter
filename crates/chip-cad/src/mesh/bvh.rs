@@ -31,12 +31,6 @@ impl MeshBvh {
         }
     }
 
-    /// Returns the underlying GPU-compatible [`FlatBvh`].
-    #[inline]
-    pub fn flat_bvh(&self) -> &FlatBvh {
-        &self.bvh
-    }
-
     #[inline]
     pub fn bounds(&self) -> Aabb3 {
         self.bvh.bounds()

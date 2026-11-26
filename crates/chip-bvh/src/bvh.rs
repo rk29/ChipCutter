@@ -34,22 +34,6 @@ impl FlatBvhNode {
     pub const fn is_leaf(&self) -> bool {
         self.tri_count > 0
     }
-
-    #[inline]
-    pub fn aabb_f64(&self) -> Aabb3 {
-        Aabb3::new(
-            DVec3::new(
-                f64::from(self.aabb_min[0]),
-                f64::from(self.aabb_min[1]),
-                f64::from(self.aabb_min[2]),
-            ),
-            DVec3::new(
-                f64::from(self.aabb_max[0]),
-                f64::from(self.aabb_max[1]),
-                f64::from(self.aabb_max[2]),
-            ),
-        )
-    }
 }
 
 /// GPU-uploadable 48-byte flat triangle (`#[repr(C)]`, 16-byte aligned WGSL fields).

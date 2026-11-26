@@ -813,16 +813,6 @@ fn prepare_initial_stock_with_gpu(
     }
 }
 
-/// Single unified polymorphic setup simulation loop driving any [`SimStockBackend`]
-/// (`CpuExactBackend` today; `WgpuComputeBackend` plugs in here directly).
-pub fn run_setup_simulation_with_backend<B: SimStockBackend>(
-    input: &SetupSimulationInput<'_>,
-    engine: SimEngineKind,
-    backend: B,
-) -> Result<SetupSimulationResult, SimError> {
-    run_setup_simulation_with_backend_and_progress(input, engine, backend, None)
-}
-
 /// Single unified polymorphic setup simulation loop driving any [`SimStockBackend`] with optional
 /// live completion progress reporting (`0%`–`100%`).
 pub fn run_setup_simulation_with_backend_and_progress<B: SimStockBackend>(

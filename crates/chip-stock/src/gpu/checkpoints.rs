@@ -6,10 +6,9 @@ use std::collections::{BTreeMap, HashMap};
 use crate::{
     backend::StockCheckpointSnapshot,
     tridexel::{DexelSpan, FlatDexelSpan, INLINE_DEXEL_SLOTS},
-    types::Axis3,
 };
 
-use super::{backend::WgpuComputeBackend, context::GpuSimContext};
+use super::backend::WgpuComputeBackend;
 
 /// Default GPU checkpoint cache VRAM budget (`256 MiB`).
 pub const DEFAULT_GPU_CHECKPOINT_BUDGET_BYTES: usize = 256 * 1024 * 1024;
@@ -86,11 +85,6 @@ impl GpuCheckpointCache {
             hits: 0,
             misses: 0,
         }
-    }
-
-    #[inline]
-    pub const fn budget_bytes(&self) -> usize {
-        self.budget_bytes
     }
 
     #[inline]
@@ -205,135 +199,6 @@ impl GpuCheckpointCache {
         self.used_bytes += byte_size;
         self.entries.insert(
             completed_segments,
-            GpuCheckpointEntry {
-                byte_size,
-                last_used_tick: tick,
-                buffers,
-            },
-        );
-        true
-    }
-
-    /// Uploads a CPU [`StockCheckpointSnapshot`] into the VRAM LRU cache.
-    /// Returns `false` if the snapshot exceeds `budget_bytes`.
-    pub fn upload_from_cpu_snapshot(
-        &mut self,
-        ctx: &GpuSimContext,
-        cp: &StockCheckpointSnapshot,
-    ) -> bool {
-        let key = cp.completed_segments();
-        let byte_size = Self::snapshot_byte_size(cp);
-        if !self.evict_for(byte_size, Some(key)) {
-            return false;
-        }
-        let device = ctx.device();
-        let queue = ctx.queue();
-        let buffers = match cp {
-            StockCheckpointSnapshot::Heightfield {
-                z_stock,
-                last_op_idx,
-                ..
-            } => {
-                let cell_bytes = (z_stock.len() * std::mem::size_of::<f32>()) as u64;
-                let z_buf = device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("chip_gpu_cp_hf_z"),
-                    size: cell_bytes.max(16),
-                    usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
-                });
-                let op_buf = device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("chip_gpu_cp_hf_op"),
-                    size: cell_bytes.max(16),
-                    usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
-                });
-                if cell_bytes > 0 {
-                    queue.write_buffer(&z_buf, 0, bytemuck::cast_slice(z_stock));
-                    queue.write_buffer(&op_buf, 0, bytemuck::cast_slice(last_op_idx));
-                }
-                GpuCheckpointBuffers::Heightfield {
-                    z_stock: z_buf,
-                    last_op_idx: op_buf,
-                    cell_bytes,
-                }
-            }
-            StockCheckpointSnapshot::Cylindrical {
-                r_stock,
-                last_op_idx,
-                ..
-            } => {
-                let cell_bytes = (r_stock.len() * std::mem::size_of::<f32>()) as u64;
-                let r_buf = device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("chip_gpu_cp_cyl_r"),
-                    size: cell_bytes.max(16),
-                    usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
-                });
-                let op_buf = device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("chip_gpu_cp_cyl_op"),
-                    size: cell_bytes.max(16),
-                    usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
-                });
-                if cell_bytes > 0 {
-                    queue.write_buffer(&r_buf, 0, bytemuck::cast_slice(r_stock));
-                    queue.write_buffer(&op_buf, 0, bytemuck::cast_slice(last_op_idx));
-                }
-                GpuCheckpointBuffers::Cylindrical {
-                    r_stock: r_buf,
-                    last_op_idx: op_buf,
-                    cell_bytes,
-                }
-            }
-            StockCheckpointSnapshot::TriDexel { stock, .. } => {
-                let total_rays: usize = stock.planes.iter().map(|p| p.ray_count()).sum();
-                let total_slots = total_rays * INLINE_DEXEL_SLOTS;
-                let slots_bytes = (total_slots * std::mem::size_of::<FlatDexelSpan>()) as u64;
-                let counts_bytes = (total_rays * std::mem::size_of::<u32>()) as u64;
-                let m_slots = device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("chip_gpu_cp_td_slots"),
-                    size: slots_bytes.max(16),
-                    usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
-                });
-                let m_counts = device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("chip_gpu_cp_td_counts"),
-                    size: counts_bytes.max(16),
-                    usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
-                });
-                let mut ray_off = 0usize;
-                for axis in Axis3::ALL {
-                    let p = stock.plane(axis);
-                    let slot_off =
-                        (ray_off * INLINE_DEXEL_SLOTS * std::mem::size_of::<FlatDexelSpan>())
-                            as u64;
-                    let cnt_off = (ray_off * std::mem::size_of::<u32>()) as u64;
-                    if !p.slots.is_empty() {
-                        queue.write_buffer(&m_slots, slot_off, bytemuck::cast_slice(&p.slots));
-                        queue.write_buffer(&m_counts, cnt_off, bytemuck::cast_slice(&p.counts));
-                    }
-                    ray_off += p.ray_count();
-                }
-                let overflow = [
-                    stock.planes[0].overflow.clone(),
-                    stock.planes[1].overflow.clone(),
-                    stock.planes[2].overflow.clone(),
-                ];
-                GpuCheckpointBuffers::TriDexel {
-                    m_slots,
-                    m_counts,
-                    slots_bytes,
-                    counts_bytes,
-                    overflow,
-                }
-            }
-        };
-
-        let tick = self.next_tick();
-        self.used_bytes += byte_size;
-        self.entries.insert(
-            key,
             GpuCheckpointEntry {
                 byte_size,
                 last_used_tick: tick,
