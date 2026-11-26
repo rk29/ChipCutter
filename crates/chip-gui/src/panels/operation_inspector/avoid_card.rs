@@ -10,8 +10,8 @@ use crate::{
     panels::{GeometryPickTarget, ViewportPickMode},
     theme::ThemeTokens,
     widgets::{
-        BannerKind, INPUT_COL_WIDTH, edit_param_length, grid_row, inline_banner, inspector_grid,
-        section_card,
+        BannerKind, INPUT_COL_WIDTH, IconKind, edit_param_length, grid_row, inline_banner,
+        inspector_grid, section_card, small_icon_button,
     },
 };
 
@@ -612,10 +612,12 @@ pub fn show_avoid_regions_card(ui: &mut egui::Ui, ctx: AvoidCardCtx<'_>) {
                                             .truncate(),
                                     )
                                     .on_hover_text(item.short_label());
-                                    if ui
-                                        .small_button("×")
-                                        .on_hover_text("Remove from shared keep-out region")
-                                        .clicked()
+                                    if small_icon_button(
+                                        ui,
+                                        IconKind::Trash,
+                                        "Remove from shared keep-out region",
+                                    )
+                                    .clicked()
                                     {
                                         rm_idx = Some(i);
                                     }
@@ -979,10 +981,12 @@ pub fn show_avoid_regions_card(ui: &mut egui::Ui, ctx: AvoidCardCtx<'_>) {
                         )
                         .on_hover_text(item.short_label());
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui
-                                .small_button("×")
-                                .on_hover_text("Remove this local keep-out selection")
-                                .clicked()
+                            if small_icon_button(
+                                ui,
+                                IconKind::Trash,
+                                "Remove this local keep-out selection",
+                            )
+                            .clicked()
                             {
                                 remove_idx = Some(idx);
                             }

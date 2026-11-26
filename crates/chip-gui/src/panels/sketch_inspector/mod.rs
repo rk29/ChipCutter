@@ -23,8 +23,8 @@ use crate::{
     panels::{SketchAuthorTool, ViewportPickMode},
     theme::ThemeTokens,
     widgets::{
-        BannerKind, INPUT_COL_WIDTH, edit_param_length, grid_row, inline_banner, inspector_grid,
-        section_card, static_card,
+        BannerKind, INPUT_COL_WIDTH, IconKind, edit_param_length, grid_row, inline_banner,
+        inspector_grid, section_card, small_icon_button, static_card,
     },
 };
 
@@ -632,13 +632,10 @@ fn render_entity_row(
         )
         .truncate();
         sel = ui
-            .add_sized([(ui.available_width() - 56.0).max(60.0), 19.0], btn)
+            .add_sized([(ui.available_width() - 58.0).max(60.0), 19.0], btn)
             .clicked();
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            del = ui
-                .small_button("×")
-                .on_hover_text("Delete entity")
-                .clicked();
+            del = small_icon_button(ui, IconKind::Trash, "Delete entity").clicked();
             dup = ui
                 .small_button("Dup")
                 .on_hover_text("Duplicate entity")

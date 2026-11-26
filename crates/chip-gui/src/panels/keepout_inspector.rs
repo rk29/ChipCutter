@@ -15,8 +15,8 @@ use crate::{
     },
     theme::ThemeTokens,
     widgets::{
-        BannerKind, INPUT_COL_WIDTH, edit_param_length, grid_row, inline_banner, inspector_grid,
-        section_card, static_card,
+        BannerKind, INPUT_COL_WIDTH, IconKind, edit_param_length, grid_row, inline_banner,
+        inspector_grid, section_card, small_icon_button, static_card,
     },
 };
 
@@ -382,10 +382,12 @@ pub fn show_keepout_inspector(
                                 ui.with_layout(
                                     egui::Layout::right_to_left(egui::Align::Center),
                                     |ui| {
-                                        if ui
-                                            .small_button("x")
-                                            .on_hover_text("Remove selection from keep-out region")
-                                            .clicked()
+                                        if small_icon_button(
+                                            ui,
+                                            IconKind::Trash,
+                                            "Remove selection from keep-out region",
+                                        )
+                                        .clicked()
                                         {
                                             remove_idx = Some(i);
                                         }

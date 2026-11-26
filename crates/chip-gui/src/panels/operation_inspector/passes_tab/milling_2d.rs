@@ -10,7 +10,7 @@ use chip_tools::compute_adaptive_thinning_feed;
 use super::PassItemCtx;
 use crate::{
     panels::ViewportPickMode,
-    widgets::{BannerKind, inline_banner, section_card},
+    widgets::{BannerKind, IconKind, inline_banner, section_card, small_icon_button},
 };
 
 pub(super) fn show_facing_params(
@@ -334,9 +334,7 @@ fn show_manual_tabs_footer(
                 anchor.contour_index + 1,
                 anchor.s_norm * 100.0
             ));
-            if ui
-                .small_button("×")
-                .on_hover_text("Remove this manual holding tab anchor")
+            if small_icon_button(ui, IconKind::Trash, "Remove this manual holding tab anchor")
                 .clicked()
             {
                 del_anchor = Some(a_idx);
