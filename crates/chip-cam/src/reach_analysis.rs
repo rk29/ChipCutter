@@ -14,7 +14,7 @@ use std::{
 use chip_cad::{CadDocument, CurveKind, EdgeId, FaceId, SurfaceKind, expand_coaxial_hole_faces};
 use chip_math::{ArcPolyline2D, ArcSegment2D, DVec2, DVec3, RigidFrame3};
 use chip_sketch::{SketchEntity, SketchLayer};
-use chip_tools::{CutterGeometry, Tool};
+use chip_tools::{CutterGeometry, Tool, ToolAssemblyEnvelope};
 
 use crate::setup::{ResolvedSetup, Setup, resolve_sketch_world_frame_with_doc};
 
@@ -115,46 +115,7 @@ pub struct ReachAnalysisResult {
 /// Respects relieved necks (`neck_diameter_mm < cutting_diameter_mm` up to `neck_length_mm`) and
 /// reduced shanks (`shank_diameter_mm < cutting_diameter_mm` up to `stickout_length_mm`).
 pub fn effective_non_rubbing_reach_mm(tool: &Tool) -> f64 {
-    let flute = tool.geometry.flute_length_mm().max(0.0);
-    let stickout = tool.stickout_length_mm.max(flute);
-    let d_cut = tool.geometry.cutting_diameter_mm();
-
-    match tool.geometry {
-        CutterGeometry::ThreadMill {
-            neck_diameter_mm,
-            neck_length_mm,
-            ..
-        }
-        | CutterGeometry::LollipopEndmill {
-            neck_diameter_mm,
-            neck_length_mm,
-            ..
-        }
-        | CutterGeometry::SlotMill {
-            neck_diameter_mm,
-            neck_length_mm,
-            ..
-        }
-        | CutterGeometry::DovetailCutter {
-            neck_diameter_mm,
-            neck_length_mm,
-            ..
-        } => {
-            if neck_diameter_mm + 1e-3 < d_cut {
-                neck_length_mm.max(flute).min(stickout)
-            } else {
-                flute
-            }
-        }
-        _ => {
-            let shank = tool.geometry.shank_diameter_mm();
-            if shank > 0.0 && shank + 1e-3 < d_cut {
-                stickout
-            } else {
-                flute
-            }
-        }
-    }
+    ToolAssemblyEnvelope::from_tool(tool).effective_non_rubbing_reach_mm
 }
 
 /// Computes a deterministic cache key over `(cad_revision, setup, resolved_setup, tool, sketches)`

@@ -68,7 +68,7 @@ pub fn check_2d_toolpath_against_overhangs(
     segments: &[ToolpathSegment3D],
     min_ignored_z_wcs: Option<f64>,
 ) -> Option<OverhangGuardReport> {
-    if surface.triangles.is_empty() || !surface.aabb_wcs.is_valid() || segments.is_empty() {
+    if surface.triangles.is_empty() || !surface.bounds.is_valid() || segments.is_empty() {
         return None;
     }
 
@@ -87,7 +87,7 @@ pub fn check_2d_toolpath_against_overhangs(
         return None;
     }
     let effective_min_z = min_ignored_z_wcs.map_or(min_seg_z, |z| min_seg_z.max(z));
-    if surface.aabb_wcs.max.z <= effective_min_z + Z_TOL_MM {
+    if surface.bounds.max.z <= effective_min_z + Z_TOL_MM {
         return None;
     }
 
@@ -106,7 +106,7 @@ pub fn check_2d_toolpath_against_overhangs(
         }
         let seg_min_z = seg.start_wcs.z.min(seg.end_wcs.z);
         let seg_check_min_z = min_ignored_z_wcs.map_or(seg_min_z, |z| seg_min_z.max(z));
-        if surface.aabb_wcs.max.z <= seg_check_min_z + Z_TOL_MM {
+        if surface.bounds.max.z <= seg_check_min_z + Z_TOL_MM {
             return None;
         }
 
@@ -348,11 +348,11 @@ pub fn check_hole_column_overhang(
     orbit_radius_mm: f64,
     hole_bottom_z: f64,
 ) -> Option<f64> {
-    if surface.triangles.is_empty() || !surface.aabb_wcs.is_valid() {
+    if surface.triangles.is_empty() || !surface.bounds.is_valid() {
         return None;
     }
     const Z_TOL_MM: f64 = 0.15;
-    if surface.aabb_wcs.max.z <= hole_bottom_z + Z_TOL_MM {
+    if surface.bounds.max.z <= hole_bottom_z + Z_TOL_MM {
         return None;
     }
 

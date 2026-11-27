@@ -825,7 +825,7 @@ fn m74_triple_helix_overhang_safe_finishing_and_swept_soft_jaws() {
 
     let mut outside_sil = 0usize;
     let mut outside_pocket = 0usize;
-    for v in &jaw_surface.vertices_wcs {
+    for v in &jaw_surface.vertices {
         if v.z >= z_lo + 0.05 && v.z <= z_hi - 0.05 {
             let pt = DVec2::new(v.x, v.y);
             if !plan.part_silhouette_2d.contains_point(pt)

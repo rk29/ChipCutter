@@ -553,13 +553,7 @@ fn emit_structured_header(
         ),
     );
 
-    let total_sec = est_time_sec.max(0.0).round() as u64;
-    let hms = format!(
-        "{:02}:{:02}:{:02}",
-        total_sec / 3600,
-        (total_sec % 3600) / 60,
-        total_sec % 60
-    );
+    let hms = chip_math::format_cycle_time_hms(est_time_sec);
 
     let sep = "==========================================================";
     writer.push_comment_text(sep)?;

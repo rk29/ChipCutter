@@ -5,6 +5,10 @@
 //!   Stage 1 Pocket/Adaptive clearing + Stage 2 exact 2D Rest-Machined V-bit bevels & tight corners);
 //! - Optional **V-Inlay Male Plug** generation (`start_depth` + `glue_gap_bottom` + `border_margin`).
 
+use chip_geom2d::{
+    MedialChain2D, MedialNode2D, OffsetRegionNode, PocketRegion2D, build_offset_region_tree,
+    extract_medial_axis_chains,
+};
 use chip_math::{Aabb2, ArcPolyline2D, ArcSegment2D, DVec2, DVec3, ParamLength};
 use chip_tools::{CutterGeometry, Tool, ToolOperationClass};
 
@@ -12,8 +16,6 @@ use crate::{
     avoid_regions::clip_polyline_outside_avoid,
     cl_data::{ClEvent, MotionRole},
     heights::ResolvedHeights,
-    medial::{MedialChain2D, MedialNode2D, extract_medial_axis_chains},
-    offset2d::{PocketRegion2D, build_offset_region_tree},
     params::{
         AdaptiveClearingParams, Pocket2DParams, PocketPassOrder, PocketStrategyKind,
         VCarveClearingKind, VCarveInlayMode, VCarveParams,
@@ -802,10 +804,7 @@ fn emit_flat_clamped_vcarve_region(
     Ok(())
 }
 
-fn collect_offset_loops_inside_out(
-    node: &crate::offset2d::OffsetRegionNode,
-    out: &mut Vec<ArcPolyline2D>,
-) {
+fn collect_offset_loops_inside_out(node: &OffsetRegionNode, out: &mut Vec<ArcPolyline2D>) {
     for child in &node.children {
         collect_offset_loops_inside_out(child, out);
     }

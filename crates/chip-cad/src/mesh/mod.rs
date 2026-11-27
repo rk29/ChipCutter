@@ -1,4 +1,3 @@
-pub mod bvh;
 pub mod fixtures;
 pub mod obj;
 pub mod stl;
@@ -14,12 +13,12 @@ use crate::{
     model::{BodyId, CadDocument, FaceId, FaceTriangle, RenderMesh, RenderVertex, StepUnitKind},
 };
 
-pub use bvh::{MeshBvh, MeshRayHit};
 pub use fixtures::{
     sample_box_3mf_bytes, sample_helical_flute_shaft_stl_bytes, sample_relief_wave_obj_text,
     sample_rotary_shaft_stl_bytes, sample_sculpted_dome_stl_bytes, sample_sculpted_mount_3mf_bytes,
     sample_triple_helix_loft_stl_bytes, tutorial_yup_bracket_stl_bytes,
 };
+pub use stl::encode_binary_stl;
 
 /// Source file format of an imported triangle mesh.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -181,13 +180,6 @@ pub struct TriangleMeshBody {
     pub triangles: Vec<MeshTriangle>,
     pub aabb_mm: Aabb3,
     pub diagnostics: MeshDiagnostics,
-}
-
-impl TriangleMeshBody {
-    /// Builds a [`MeshBvh`] acceleration structure for this body.
-    pub fn build_bvh(&self) -> MeshBvh {
-        MeshBvh::build(&self.triangles)
-    }
 }
 
 /// Raw parsed triangle list in source file units prior to scaling and welding.
@@ -709,22 +701,26 @@ f -5/1/1 -4/2/1 -3/3/1 -2/4/1 -1/5/1
     fn mesh_bvh_xy_circle_z_slab_and_raycast_are_accurate() {
         let dome_bytes = sample_sculpted_dome_stl_bytes();
         let dome = load_mesh_bytes("dome.stl", &dome_bytes, &MeshImportOptions::default()).unwrap();
-        let bvh = dome.build_bvh();
+        let indexed: Vec<[u32; 3]> = dome.triangles.iter().map(|t| t.indices).collect();
+        let bvh_mesh = chip_bvh::TriMesh3D::from_indexed(dome.vertices_mm.clone(), &indexed);
 
         // Downward ray at (0, 0, 100) must strike dome apex at Z = 33.0 mm
         let ray = Ray3::new(DVec3::new(0.0, 0.0, 100.0), DVec3::new(0.0, 0.0, -1.0)).unwrap();
-        let hit = bvh
-            .raycast(&dome.vertices_mm, &dome.triangles, &ray)
+        let hit = bvh_mesh
+            .raycast(ray.origin, ray.dir, f64::INFINITY)
             .unwrap();
-        assert!(approx_eq(hit.point_mm.z, 33.0, 1e-4));
+        assert!(approx_eq(hit.point.z, 33.0, 1e-4));
 
         // XY circle query at center finds dome triangles; outside bounds finds none
-        assert!(!bvh.query_xy_circle(0.0, 0.0, 5.0).is_empty());
-        assert!(bvh.query_xy_circle(200.0, 200.0, 5.0).is_empty());
+        let mut scratch = Vec::new();
+        bvh_mesh.query_xy_circle_into(0.0, 0.0, 5.0, &mut scratch);
+        assert!(!scratch.is_empty());
+        bvh_mesh.query_xy_circle_into(200.0, 200.0, 5.0, &mut scratch);
+        assert!(scratch.is_empty());
 
         // Z-slab query around Z=20 finds hemisphere slice triangles
-        let slab = bvh.query_z_slab(19.5, 20.5);
-        assert!(!slab.is_empty());
+        bvh_mesh.query_z_slab_into(19.5, 20.5, &mut scratch);
+        assert!(!scratch.is_empty());
     }
 
     #[test]

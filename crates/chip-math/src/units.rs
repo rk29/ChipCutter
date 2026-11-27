@@ -169,6 +169,19 @@ impl DisplayUnit {
     }
 }
 
+/// Formats a non-negative duration in seconds as `HH:MM:SS`.
+pub fn format_cycle_time_hms(seconds: f64) -> String {
+    let total = if seconds.is_finite() {
+        seconds.max(0.0).round() as u64
+    } else {
+        0
+    };
+    let hrs = total / 3600;
+    let mins = (total % 3600) / 60;
+    let secs = total % 60;
+    format!("{hrs:02}:{mins:02}:{secs:02}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

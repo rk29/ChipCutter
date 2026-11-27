@@ -16,7 +16,10 @@ use std::f64::consts::TAU;
 
 use chip_bvh::FlatBvh;
 use chip_cad::CadDocument;
-use chip_geom2d::{PocketRegion2D, RegionSet2D, contours_to_region_set, simplify_rdp_2d};
+use chip_geom2d::{
+    PocketRegion2D, RegionSet2D, contours_to_region_set, simplify_rdp_2d,
+    triangulate_polygon_with_holes_2d,
+};
 use chip_math::{
     Aabb2, Aabb3, ArcPolyline2D, ArcSegment2D, DVec2, DVec3, DisplayUnit, ParamLength,
 };
@@ -362,7 +365,7 @@ pub fn extract_part_silhouette_2d(
     }
 
     let surface = SurfaceMesh3D::from_cad_document(doc, &setup.target_bodies, &resolved.frame);
-    if surface.triangles.is_empty() || !surface.aabb_wcs.is_valid() {
+    if surface.triangles.is_empty() || !surface.bounds.is_valid() {
         let b = resolved.model_aabb_wcs;
         if b.is_valid() {
             return Ok(rect_region_2d(b.min.x, b.min.y, b.max.x, b.max.y));
@@ -370,8 +373,8 @@ pub fn extract_part_silhouette_2d(
         return Err(CamError::EmptyCadDocument);
     }
 
-    let z_min_part = surface.aabb_wcs.min.z;
-    let z_max_part = surface.aabb_wcs.max.z;
+    let z_min_part = surface.bounds.min.z;
+    let z_max_part = surface.bounds.max.z;
     let (z_lo, z_hi) = match z_band {
         Some((lo, hi)) => (
             lo.clamp(z_min_part, z_max_part),
@@ -390,10 +393,10 @@ pub fn extract_part_silhouette_2d(
         Ok(swept)
     } else {
         Ok(rect_region_2d(
-            surface.aabb_wcs.min.x,
-            surface.aabb_wcs.min.y,
-            surface.aabb_wcs.max.x,
-            surface.aabb_wcs.max.y,
+            surface.bounds.min.x,
+            surface.bounds.min.y,
+            surface.bounds.max.x,
+            surface.bounds.max.y,
         ))
     }
 }
@@ -410,12 +413,12 @@ fn extract_swept_clamping_band_silhouette(
     z_lo: f64,
     z_hi: f64,
 ) -> RegionSet2D {
-    if surface.triangles.is_empty() || !surface.aabb_wcs.is_valid() {
+    if surface.triangles.is_empty() || !surface.bounds.is_valid() {
         return RegionSet2D::empty();
     }
 
-    let z_min_part = surface.aabb_wcs.min.z;
-    let z_max_part = surface.aabb_wcs.max.z;
+    let z_min_part = surface.bounds.min.z;
+    let z_max_part = surface.bounds.max.z;
     // Include coplanar part bottom/top caps when the band reaches the part's extreme Z, while
     // excluding a wider lower ledge ending strictly at `z_lo` when gripping an elevated band.
     let z_lo_clip = if z_lo <= z_min_part + 1e-5 {
@@ -453,14 +456,17 @@ fn extract_swept_clamping_band_silhouette(
             continue;
         }
         let [i0, i1, i2] = tri.indices;
-        let v0 = surface.vertices_wcs[i0 as usize];
-        let v1 = surface.vertices_wcs[i1 as usize];
-        let v2 = surface.vertices_wcs[i2 as usize];
+        let v0 = surface.vertices[i0 as usize];
+        let v1 = surface.vertices[i1 as usize];
+        let v2 = surface.vertices[i2 as usize];
 
-        let clipped = clip_triangle_to_z_slab(v0, v1, v2, z_lo_clip, z_hi_clip);
-        if clipped.len() < 3 {
+        let mut clipped_buf = [DVec3::ZERO; 7];
+        let clipped_len =
+            chip_bvh::clip_triangle_to_z_slab(v0, v1, v2, z_lo_clip, z_hi_clip, &mut clipped_buf);
+        if clipped_len < 3 {
             continue;
         }
+        let clipped = &clipped_buf[..clipped_len];
         let p0 = DVec2::new(clipped[0].x, clipped[0].y);
         for k in 1..(clipped.len() - 1) {
             let p1 = DVec2::new(clipped[k].x, clipped[k].y);
@@ -818,91 +824,17 @@ fn extract_swept_clamping_band_silhouette(
     RegionSet2D::from_regions(filled_hulls)
 }
 
-/// Clips 3D triangle `(v0, v1, v2)` to the horizontal Z slab `[z_lo, z_hi]` via exact
-/// Sutherland–Hodgman half-space clipping, returning a convex polygon of 0 or 3..=5 vertices.
-fn clip_triangle_to_z_slab(v0: DVec3, v1: DVec3, v2: DVec3, z_lo: f64, z_hi: f64) -> Vec<DVec3> {
-    let mut poly = Vec::with_capacity(6);
-    poly.push(v0);
-    poly.push(v1);
-    poly.push(v2);
-
-    // Clip against `z >= z_lo`
-    let mut next = Vec::with_capacity(6);
-    let n = poly.len();
-    for i in 0..n {
-        let a = poly[i];
-        let b = poly[(i + 1) % n];
-        let a_in = a.z >= z_lo;
-        let b_in = b.z >= z_lo;
-        if a_in {
-            next.push(a);
-        }
-        if a_in != b_in {
-            let dz = b.z - a.z;
-            if dz.abs() > 1e-15 {
-                let t = ((z_lo - a.z) / dz).clamp(0.0, 1.0);
-                next.push(a.lerp(b, t));
-            }
-        }
-    }
-    if next.len() < 3 {
-        return Vec::new();
-    }
-
-    // Clip against `z <= z_hi`
-    poly.clear();
-    let m = next.len();
-    for i in 0..m {
-        let a = next[i];
-        let b = next[(i + 1) % m];
-        let a_in = a.z <= z_hi;
-        let b_in = b.z <= z_hi;
-        if a_in {
-            poly.push(a);
-        }
-        if a_in != b_in {
-            let dz = b.z - a.z;
-            if dz.abs() > 1e-15 {
-                let t = ((z_hi - a.z) / dz).clamp(0.0, 1.0);
-                poly.push(a.lerp(b, t));
-            }
-        }
-    }
-    if poly.len() < 3 {
-        poly.clear();
-    }
-    poly
-}
-
 #[inline]
 fn point_in_or_near_triangle_2d(p: DVec2, a: DVec2, b: DVec2, c: DVec2, margin_sq: f64) -> bool {
-    let area2 = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
-    if area2.abs() > 1e-14 {
-        let inv = 1.0 / area2;
-        let w0 = ((b.x - p.x) * (c.y - p.y) - (b.y - p.y) * (c.x - p.x)) * inv;
-        let w1 = ((c.x - p.x) * (a.y - p.y) - (c.y - p.y) * (a.x - p.x)) * inv;
-        let w2 = 1.0 - w0 - w1;
-        if w0 >= -1e-10 && w1 >= -1e-10 && w2 >= -1e-10 {
-            return true;
-        }
+    if chip_math::point_in_triangle_2d(p, a, b, c) {
+        return true;
     }
     if margin_sq <= 0.0 {
         return false;
     }
-    point_segment_dist_sq_2d(p, a, b) <= margin_sq
-        || point_segment_dist_sq_2d(p, b, c) <= margin_sq
-        || point_segment_dist_sq_2d(p, c, a) <= margin_sq
-}
-
-#[inline]
-fn point_segment_dist_sq_2d(p: DVec2, a: DVec2, b: DVec2) -> f64 {
-    let ab = b - a;
-    let len_sq = ab.length_squared();
-    if len_sq <= 1e-18 {
-        return p.distance_squared(a);
-    }
-    let t = ((p - a).dot(ab) / len_sq).clamp(0.0, 1.0);
-    p.distance_squared(a + ab * t)
+    chip_math::point_to_segment_dist_sq_2d(p, a, b) <= margin_sq
+        || chip_math::point_to_segment_dist_sq_2d(p, b, c) <= margin_sq
+        || chip_math::point_to_segment_dist_sq_2d(p, c, a) <= margin_sq
 }
 
 fn refine_swept_chord<F>(
@@ -2432,228 +2364,6 @@ fn subdivide_ring_collinear(ring: &mut Vec<DVec2>, candidates: &[DVec2]) {
     *ring = out;
 }
 
-/// Exact `f64` 2D ear-clipping triangulator supporting a CCW outer ring with zero or more CW holes.
-///
-/// Holes are spliced into the outer boundary via non-intersecting mutual-visibility bridges
-/// (David Eberly's rightmost-vertex bridge algorithm) before ear clipping.
-fn triangulate_polygon_with_holes_2d(outer: &[DVec2], holes: &[Vec<DVec2>]) -> Vec<[DVec2; 3]> {
-    let mut poly = ensure_ring_orientation(outer.to_vec(), true);
-    if poly.len() < 3 {
-        return Vec::new();
-    }
-
-    // Sort holes descending by rightmost X so bridges never cross unprocessed holes
-    let mut ordered_holes: Vec<(f64, usize, Vec<DVec2>)> = holes
-        .iter()
-        .filter(|h| h.len() >= 3)
-        .filter_map(|h| {
-            let cw = ensure_ring_orientation(h.clone(), false);
-            let (idx, max_x) = cw
-                .iter()
-                .enumerate()
-                .max_by(|a, b| a.1.x.total_cmp(&b.1.x))
-                .map(|(i, p)| (i, p.x))?;
-            Some((max_x, idx, cw))
-        })
-        .collect();
-    ordered_holes.sort_by(|a, b| b.0.total_cmp(&a.0));
-
-    for (_, hole_right_idx, hole) in ordered_holes {
-        let m = hole[hole_right_idx];
-        if let Some(outer_idx) = find_visible_bridge_vertex(&poly, m) {
-            let mut merged = Vec::with_capacity(poly.len() + hole.len() + 2);
-            merged.extend_from_slice(&poly[..=outer_idx]);
-            for k in 0..=hole.len() {
-                merged.push(hole[(hole_right_idx + k) % hole.len()]);
-            }
-            merged.push(poly[outer_idx]);
-            merged.extend_from_slice(&poly[(outer_idx + 1)..]);
-            poly = merged;
-        }
-    }
-
-    ear_clip_simple_ccw(&poly)
-}
-
-fn find_visible_bridge_vertex(poly: &[DVec2], m: DVec2) -> Option<usize> {
-    let n = poly.len();
-    // 1. Cast horizontal ray `+X` from `m` to find closest intersection with an edge of `poly`
-    let mut best_x = f64::INFINITY;
-    let mut best_edge_idx: Option<usize> = None;
-    for i in 0..n {
-        let a = poly[i];
-        let b = poly[(i + 1) % n];
-        // Ray crosses upward or downward edge with y straddling m.y
-        let crosses = (a.y <= m.y && b.y > m.y) || (b.y <= m.y && a.y > m.y);
-        if !crosses {
-            continue;
-        }
-        let t = (m.y - a.y) / (b.y - a.y);
-        let x_hit = a.x + t * (b.x - a.x);
-        if x_hit >= m.x - 1e-9 && x_hit < best_x {
-            best_x = x_hit;
-            best_edge_idx = Some(i);
-        }
-    }
-
-    let edge_i = best_edge_idx?;
-    let a = poly[edge_i];
-    let b = poly[(edge_i + 1) % n];
-    let p_idx = if a.x >= b.x { edge_i } else { (edge_i + 1) % n };
-    let p = poly[p_idx];
-    let i_pt = DVec2::new(best_x, m.y);
-
-    // 2. Check if any reflex vertex of `poly` lies strictly inside triangle `(m, i_pt, p)`
-    let mut candidate_idx = p_idx;
-    let mut best_angle = f64::INFINITY;
-    let mut best_dist = f64::INFINITY;
-
-    for (idx, &v) in poly.iter().enumerate() {
-        if idx == p_idx {
-            continue;
-        }
-        if v.distance_squared(m) < 1e-12 || v.distance_squared(p) < 1e-12 {
-            continue;
-        }
-        if point_in_triangle_2d(v, m, i_pt, p) {
-            let dir = v - m;
-            let ang = dir.y.atan2(dir.x).abs();
-            let dist = dir.length_squared();
-            if ang < best_angle - 1e-9 || ((ang - best_angle).abs() <= 1e-9 && dist < best_dist) {
-                best_angle = ang;
-                best_dist = dist;
-                candidate_idx = idx;
-            }
-        }
-    }
-
-    Some(candidate_idx)
-}
-
-fn ear_clip_simple_ccw(poly: &[DVec2]) -> Vec<[DVec2; 3]> {
-    let n = poly.len();
-    if n < 3 {
-        return Vec::new();
-    }
-    let mut indices: Vec<usize> = (0..n).collect();
-    let mut tris = Vec::with_capacity(n.saturating_sub(2));
-
-    let mut guard = n * n + 16;
-    while indices.len() > 3 && guard > 0 {
-        guard -= 1;
-        let m = indices.len();
-        let mut clipped = false;
-
-        // Pick the best strictly-convex ear (preferring larger minimum angle / non-sliver)
-        let mut best_ear: Option<(usize, f64)> = None;
-        for i in 0..m {
-            let i_prev = indices[(i + m - 1) % m];
-            let i_curr = indices[i];
-            let i_next = indices[(i + 1) % m];
-            let a = poly[i_prev];
-            let b = poly[i_curr];
-            let c = poly[i_next];
-
-            let area2 = cross2d(b - a, c - a);
-            if area2 <= 1e-10 {
-                continue;
-            }
-            let mut contains_other = false;
-            for (k_pos, &idx) in indices.iter().enumerate() {
-                if k_pos == i || k_pos == (i + m - 1) % m || k_pos == (i + 1) % m {
-                    continue;
-                }
-                let p = poly[idx];
-                if p.distance_squared(a) <= 1e-12
-                    || p.distance_squared(b) <= 1e-12
-                    || p.distance_squared(c) <= 1e-12
-                {
-                    continue;
-                }
-                if point_in_triangle_2d(p, a, b, c) {
-                    contains_other = true;
-                    break;
-                }
-            }
-            if contains_other {
-                continue;
-            }
-            let perim2 =
-                a.distance_squared(b) + b.distance_squared(c) + c.distance_squared(a) + 1e-12;
-            let quality = area2 / perim2;
-            if best_ear.is_none_or(|(_, q)| quality > q) {
-                best_ear = Some((i, quality));
-            }
-        }
-
-        if let Some((ear_pos, _)) = best_ear {
-            let i_prev = indices[(ear_pos + m - 1) % m];
-            let i_curr = indices[ear_pos];
-            let i_next = indices[(ear_pos + 1) % m];
-            tris.push([poly[i_prev], poly[i_curr], poly[i_next]]);
-            indices.remove(ear_pos);
-            clipped = true;
-        }
-
-        if !clipped {
-            // Remove collinear / zero-area spikes if any remain
-            let mut removed_deg = false;
-            for i in 0..m {
-                let a = poly[indices[(i + m - 1) % m]];
-                let b = poly[indices[i]];
-                let c = poly[indices[(i + 1) % m]];
-                if cross2d(b - a, c - a).abs() <= 1e-8 {
-                    indices.remove(i);
-                    removed_deg = true;
-                    break;
-                }
-            }
-            if !removed_deg {
-                // Fallback: clip first positive-area ear
-                for i in 0..m {
-                    let a = poly[indices[(i + m - 1) % m]];
-                    let b = poly[indices[i]];
-                    let c = poly[indices[(i + 1) % m]];
-                    if cross2d(b - a, c - a) > 0.0 {
-                        tris.push([a, b, c]);
-                        indices.remove(i);
-                        removed_deg = true;
-                        break;
-                    }
-                }
-                if !removed_deg {
-                    break;
-                }
-            }
-        }
-    }
-
-    if indices.len() == 3 {
-        let a = poly[indices[0]];
-        let b = poly[indices[1]];
-        let c = poly[indices[2]];
-        if cross2d(b - a, c - a) > 1e-10 {
-            tris.push([a, b, c]);
-        }
-    }
-
-    tris
-}
-
-#[inline]
-fn cross2d(u: DVec2, v: DVec2) -> f64 {
-    u.x * v.y - u.y * v.x
-}
-
-fn point_in_triangle_2d(p: DVec2, a: DVec2, b: DVec2, c: DVec2) -> bool {
-    let area = cross2d(b - a, c - a);
-    let (b2, c2) = if area >= 0.0 { (b, c) } else { (c, b) };
-    let c1 = cross2d(b2 - a, p - a);
-    let c2v = cross2d(c2 - b2, p - b2);
-    let c3 = cross2d(a - c2, p - c2);
-    c1 >= -1e-9 && c2v >= -1e-9 && c3 >= -1e-9
-}
-
 /// Generates a guaranteed-watertight binary STL byte buffer for a single soft jaw in jaw-local
 /// coordinates `[0..w] × [0..d] × [0..h]` with contoured step pocket (`grip_depth` deep from `z = h`)
 /// and optional horizontal counterbored mounting bolt holes piercing `Y = 0..d`.
@@ -3049,43 +2759,12 @@ fn build_watertight_soft_jaw_stl_bytes(
         });
     }
 
-    let bytes = encode_binary_stl(header_label, &tris);
+    let bytes = chip_cad::encode_binary_stl(header_label, &tris);
     Ok((bytes, tris.len()))
 }
 
-fn encode_binary_stl(header_label: &str, tris: &[[DVec3; 3]]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(84 + tris.len() * 50);
-    let mut header = [0u8; 80];
-    let label_bytes = header_label.as_bytes();
-    let copy_len = label_bytes.len().min(79);
-    header[..copy_len].copy_from_slice(&label_bytes[..copy_len]);
-    out.extend_from_slice(&header);
-    out.extend_from_slice(&(tris.len() as u32).to_le_bytes());
-
-    for &[v0, v1, v2] in tris {
-        let n = (v1 - v0).cross(v2 - v0).normalize_or_zero();
-        for c in [n.x as f32, n.y as f32, n.z as f32] {
-            out.extend_from_slice(&c.to_le_bytes());
-        }
-        for v in [v0, v1, v2] {
-            for c in [v.x as f32, v.y as f32, v.z as f32] {
-                out.extend_from_slice(&c.to_le_bytes());
-            }
-        }
-        out.extend_from_slice(&0u16.to_le_bytes());
-    }
-    out
-}
-
 fn region_set_aabb(set: &RegionSet2D) -> Option<Aabb2> {
-    let mut acc = Aabb2::EMPTY;
-    for r in &set.regions {
-        let b = r.exact_aabb();
-        if b.is_valid() {
-            acc = acc.union(&b);
-        }
-    }
-    acc.is_valid().then_some(acc)
+    set.exact_aabb()
 }
 
 fn validate_positive_wiz(name: &str, field: &str, v: f64) -> Result<f64, CamError> {

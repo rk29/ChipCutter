@@ -683,14 +683,7 @@ impl SimulationTimeline {
     }
 }
 
-/// Formats seconds as `HH:MM:SS` (or `MM:SS.d` when requested).
-pub fn format_cycle_time_hms(seconds: f64) -> String {
-    let total = seconds.max(0.0).round() as u64;
-    let hrs = total / 3600;
-    let mins = (total % 3600) / 60;
-    let secs = total % 60;
-    format!("{hrs:02}:{mins:02}:{secs:02}")
-}
+pub use chip_math::format_cycle_time_hms;
 
 fn segment_unit_tangents(seg: &ToolpathSegment3D) -> (DVec3, DVec3) {
     match seg.motion {

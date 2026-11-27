@@ -1,8 +1,8 @@
+use chip_geom2d::{PocketRegion2D, clip_scanline_to_region};
 use chip_math::{Aabb2, ArcSegment2D, DVec2, DVec3};
 
 use crate::{
     cl_data::MotionRole,
-    offset2d::{PocketRegion2D, clip_scanline_to_region},
     params::{FacingCutMode, FacingParams, MachiningBoundaryMode, ToolContainmentMode},
     rest2d::RegionSet2D,
     selection::ExtractedFeature25D,
@@ -278,7 +278,7 @@ pub fn generate_facing(
         .then(|| SurfaceMesh3D::from_cad_document(ctx.doc, &[], &ctx.setup.frame));
     let overhang_field = overhang_surface
         .as_ref()
-        .filter(|s| !s.triangles.is_empty() && s.aabb_wcs.is_valid())
+        .filter(|s| !s.triangles.is_empty() && s.bounds.is_valid())
         .map(|s| PushCutterField::build_with_z_min(s, overhang_cutter, target_bottom_z));
 
     for (lvl_idx, &z_cut) in z_levels.iter().enumerate() {
@@ -575,7 +575,7 @@ fn resolve_facing_nominal_and_islands(
         MachiningBoundaryMode::ModelBoundingBox | MachiningBoundaryMode::ModelSilhouette => {
             if ctx.doc.has_3d_geometry() {
                 let surface = SurfaceMesh3D::from_cad_document(ctx.doc, &[], &ctx.setup.frame);
-                if !surface.triangles.is_empty() && surface.aabb_wcs.is_valid() {
+                if !surface.triangles.is_empty() && surface.bounds.is_valid() {
                     let mut cfg = params.boundary.clone();
                     cfg.tool_containment = ToolContainmentMode::ToolCenterOnBoundary;
                     cfg.boundary_offset = chip_math::ParamLength::from_mm(0.0);

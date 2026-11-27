@@ -1,9 +1,9 @@
+use chip_geom2d::offset_polyline;
 use chip_math::{ArcPolyline2D, DVec2, DVec3};
 use chip_tools::CutterGeometry;
 
 use crate::{
     cl_data::MotionRole,
-    offset2d::offset_polyline,
     params::{ChamferSourceMode, ChamferTraceMode, ChamferTraceParams, ContourCompensation},
     selection::ExtractedFeature25D,
     strategies::{StrategyExecContext, compute_z_levels},
@@ -192,7 +192,7 @@ fn generate_edge_chamfer(
         .fold(f64::INFINITY, f64::min);
     let overhang_field = overhang_surface
         .as_ref()
-        .filter(|s| !s.triangles.is_empty() && s.aabb_wcs.is_valid())
+        .filter(|s| !s.triangles.is_empty() && s.bounds.is_valid())
         .map(|s| PushCutterField::build_with_z_min(s, overhang_cutter, min_tip_z));
 
     for job in &jobs {
@@ -461,7 +461,7 @@ fn generate_curve_trace(
         .then(|| SurfaceMesh3D::from_cad_document(ctx.doc, &[], &ctx.setup.frame));
     let overhang_field = overhang_surface
         .as_ref()
-        .filter(|s| !s.triangles.is_empty() && s.aabb_wcs.is_valid())
+        .filter(|s| !s.triangles.is_empty() && s.bounds.is_valid())
         .map(|s| PushCutterField::build_with_z_min(s, overhang_cutter, target_bottom_z));
 
     for (raw_poly, side_flip) in &traces {

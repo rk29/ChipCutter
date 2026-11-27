@@ -413,7 +413,7 @@ fn classify_curve_3d(curve: &Curve3D, unit_scale: f64) -> CurveKind {
     let p_a = pts[0];
     let p_b = pts[5];
     let p_c = pts[11];
-    if let Some((center_mm, normal, radius_mm)) = circumcircle_3d(p_a, p_b, p_c)
+    if let Some((center_mm, normal, radius_mm)) = chip_math::circumcircle_3d(p_a, p_b, p_c)
         && radius_mm > COINCIDENCE_TOL_MM
         && radius_mm < 1e7
     {
@@ -441,23 +441,6 @@ fn classify_curve_3d(curve: &Curve3D, unit_scale: f64) -> CurveKind {
     }
 
     CurveKind::OtherNurbs
-}
-
-/// Computes the 3D circumcircle `(center, unit_normal, radius)` of three non-collinear points.
-fn circumcircle_3d(a: DVec3, b: DVec3, c: DVec3) -> Option<(DVec3, DVec3, f64)> {
-    let ab = b - a;
-    let ac = c - a;
-    let cross = ab.cross(ac);
-    let cross_sq = cross.length_squared();
-    if cross_sq < 1e-18 {
-        return None;
-    }
-    let normal = cross / cross_sq.sqrt();
-    let to_center = (cross.cross(ab) * ac.length_squared() + ac.cross(cross) * ab.length_squared())
-        / (2.0 * cross_sq);
-    let center = a + to_center;
-    let radius = to_center.length();
-    Some((center, normal, radius))
 }
 
 /// Classifies a B-Rep surface into `Plane`, `Cylinder` (with internal hole vs external boss flag!),

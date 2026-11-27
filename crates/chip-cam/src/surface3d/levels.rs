@@ -1,9 +1,9 @@
 use std::collections::BTreeMap;
 
+use chip_geom2d::PocketRegion2D;
 use chip_math::{ArcPolyline2D, ArcSegment2D, DVec2};
 
 use crate::{
-    offset2d::PocketRegion2D,
     params::{MachiningBoundaryConfig, MachiningBoundaryMode, ToolContainmentMode},
     rest2d::RegionSet2D,
     selection::{ExtractedFeature25D, ExtractedSelectionSummary},
@@ -67,9 +67,9 @@ pub fn detect_flat_plateaus(
             continue;
         }
         let [i0, i1, i2] = tri.indices;
-        let v0 = surface.vertices_wcs[i0 as usize];
-        let v1 = surface.vertices_wcs[i1 as usize];
-        let v2 = surface.vertices_wcs[i2 as usize];
+        let v0 = surface.vertices[i0 as usize];
+        let v1 = surface.vertices[i1 as usize];
+        let v2 = surface.vertices[i2 as usize];
         let z_avg = (v0.z + v1.z + v2.z) / 3.0;
         if z_avg < z_min - 1e-4 || z_avg > z_max + 1e-4 {
             continue;
@@ -121,23 +121,23 @@ fn model_silhouette_xy_region(
     setup: &ResolvedSetup,
     fill_holes: bool,
 ) -> RegionSet2D {
-    if !surface.aabb_wcs.is_valid() {
+    if !surface.bounds.is_valid() {
         return stock_xy_region(setup);
     }
     let aabb_rect = rect_region_2d(
-        surface.aabb_wcs.min.x,
-        surface.aabb_wcs.min.y,
-        surface.aabb_wcs.max.x,
-        surface.aabb_wcs.max.y,
+        surface.bounds.min.x,
+        surface.bounds.min.y,
+        surface.bounds.max.x,
+        surface.bounds.max.y,
     );
-    let span_x = (surface.aabb_wcs.max.x - surface.aabb_wcs.min.x).max(0.1);
-    let span_y = (surface.aabb_wcs.max.y - surface.aabb_wcs.min.y).max(0.1);
+    let span_x = (surface.bounds.max.x - surface.bounds.min.x).max(0.1);
+    let span_y = (surface.bounds.max.y - surface.bounds.min.y).max(0.1);
     let cell_mm = (span_x.max(span_y) / 300.0).clamp(0.05, 0.25);
 
     let projected = project_surface_z_slab_xy(
         surface,
-        surface.aabb_wcs.min.z - 1.0,
-        surface.aabb_wcs.max.z + 1.0,
+        surface.bounds.min.z - 1.0,
+        surface.bounds.max.z + 1.0,
         cell_mm,
     );
     if projected.is_empty() {
@@ -236,11 +236,11 @@ fn resolve_3d_containment_region_impl(
             let off_x_pos = finite_or_zero(model_bounds_offsets_mm[1]);
             let off_y_neg = finite_or_zero(model_bounds_offsets_mm[2]);
             let off_y_pos = finite_or_zero(model_bounds_offsets_mm[3]);
-            if surface.aabb_wcs.is_valid() {
-                let x_min = surface.aabb_wcs.min.x - off_x_neg;
-                let x_max = surface.aabb_wcs.max.x + off_x_pos;
-                let y_min = surface.aabb_wcs.min.y - off_y_neg;
-                let y_max = surface.aabb_wcs.max.y + off_y_pos;
+            if surface.bounds.is_valid() {
+                let x_min = surface.bounds.min.x - off_x_neg;
+                let x_max = surface.bounds.max.x + off_x_pos;
+                let y_min = surface.bounds.min.y - off_y_neg;
+                let y_max = surface.bounds.max.y + off_y_pos;
                 if x_max <= x_min + 1e-4 || y_max <= y_min + 1e-4 {
                     model_box_collapsed = true;
                     warnings.push(format!(

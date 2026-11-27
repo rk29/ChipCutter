@@ -1,14 +1,14 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use chip_geom2d::{
+    OffsetRegionNode, PocketRegion2D, build_offset_region_tree, clip_scanline_to_region,
+    find_helical_entry_pole,
+};
 use chip_math::{ArcPolyline2D, DVec2, DVec3};
 
 use crate::{
     avoid_regions::clip_polyline_outside_avoid,
     cl_data::MotionRole,
-    offset2d::{
-        OffsetRegionNode, PocketRegion2D, build_offset_region_tree, clip_scanline_to_region,
-        find_helical_entry_pole,
-    },
     params::{
         EntryStrategy, Pocket2DParams, PocketBoundaryMode, PocketPassOrder, PocketStrategyKind,
     },
@@ -583,7 +583,7 @@ pub fn generate_pocket2d(
         .then(|| SurfaceMesh3D::from_cad_document(ctx.doc, &[], &ctx.setup.frame));
     let overhang_field = overhang_surface
         .as_ref()
-        .filter(|s| !s.triangles.is_empty() && s.aabb_wcs.is_valid())
+        .filter(|s| !s.triangles.is_empty() && s.bounds.is_valid())
         .map(|s| PushCutterField::build_with_z_min(s, overhang_cutter, target_bottom_z));
 
     for (pkt_region, raw_floor_outer_ccw, has_open, skip_outer_finish) in &raw_pockets {

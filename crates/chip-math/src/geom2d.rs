@@ -96,6 +96,38 @@ pub enum ArcSegment2D {
 }
 
 impl ArcSegment2D {
+    /// Constructs a line or circular arc segment from endpoints `p0 -> p1` and a polyline
+    /// bulge factor `b = tan(Δθ / 4)` (`b > 0` CCW, `b < 0` CW, `|b| <= 1e-6` linear).
+    ///
+    /// Falls back to [`ArcSegment2D::Line`] for near-zero bulges, degenerate chords, or
+    /// non-finite / out-of-range radii (`<= 1e-5` or `>= 1e7`).
+    pub fn from_bulge(p0: DVec2, p1: DVec2, bulge: f64) -> Self {
+        if !p0.is_finite() || !p1.is_finite() || !bulge.is_finite() || bulge.abs() <= 1e-6 {
+            return Self::Line { start: p0, end: p1 };
+        }
+        let chord = p1 - p0;
+        let chord_len = chord.length();
+        if !chord_len.is_finite() || chord_len <= 1e-12 {
+            return Self::Line { start: p0, end: p1 };
+        }
+        let abs_b = bulge.abs();
+        let radius = 0.25 * chord_len * (abs_b + 1.0 / abs_b);
+        let mid = 0.5 * (p0 + p1);
+        let perp = DVec2::new(-chord.y, chord.x);
+        let center = mid + perp * (0.25 * (1.0 / bulge - bulge));
+        if radius.is_finite() && radius > 1e-5 && radius < 1e7 && center.is_finite() {
+            Self::Arc {
+                start: p0,
+                end: p1,
+                center,
+                radius,
+                ccw: bulge > 0.0,
+            }
+        } else {
+            Self::Line { start: p0, end: p1 }
+        }
+    }
+
     pub fn start(&self) -> DVec2 {
         match *self {
             Self::Line { start, .. } | Self::Arc { start, .. } => start,
@@ -364,6 +396,82 @@ pub struct ArcPolyline2D {
 }
 
 impl ArcPolyline2D {
+    /// Builds a closed `CCW` 2-arc circle of `radius` centered at `center`.
+    ///
+    /// Returns an empty [`ArcPolyline2D`] if `center` is non-finite or `radius <= 1e-6`.
+    pub fn circle(center: DVec2, radius: f64) -> Self {
+        if !center.is_finite() || !radius.is_finite() || radius <= 1e-6 {
+            return Self::default();
+        }
+        let p_r = center + DVec2::new(radius, 0.0);
+        let p_l = center - DVec2::new(radius, 0.0);
+        Self {
+            segments: vec![
+                ArcSegment2D::Arc {
+                    start: p_r,
+                    end: p_l,
+                    center,
+                    radius,
+                    ccw: true,
+                },
+                ArcSegment2D::Arc {
+                    start: p_l,
+                    end: p_r,
+                    center,
+                    radius,
+                    ccw: true,
+                },
+            ],
+            closed: true,
+        }
+    }
+
+    /// Applies uniform isotropic `scale`, counter-clockwise `rotation_deg`, and `translate_xy` to `self`.
+    pub fn transformed(&self, translate_xy: DVec2, scale: f64, rotation_deg: f64) -> Self {
+        let s = if scale.is_finite() && scale.abs() > 1e-6 {
+            scale
+        } else {
+            1.0
+        };
+        let (sin_r, cos_r) = rotation_deg.to_radians().sin_cos();
+        let map_pt = |p: DVec2| -> DVec2 {
+            let sp = p * s;
+            DVec2::new(cos_r * sp.x - sin_r * sp.y, sin_r * sp.x + cos_r * sp.y) + translate_xy
+        };
+        let rad_scale = s.abs();
+        let flip = s < 0.0;
+        let mut segs = Vec::with_capacity(self.segments.len());
+        for seg in &self.segments {
+            match *seg {
+                ArcSegment2D::Line { start, end } => {
+                    segs.push(ArcSegment2D::Line {
+                        start: map_pt(start),
+                        end: map_pt(end),
+                    });
+                }
+                ArcSegment2D::Arc {
+                    start,
+                    end,
+                    center,
+                    radius,
+                    ccw,
+                } => {
+                    segs.push(ArcSegment2D::Arc {
+                        start: map_pt(start),
+                        end: map_pt(end),
+                        center: map_pt(center),
+                        radius: radius * rad_scale,
+                        ccw: if flip { !ccw } else { ccw },
+                    });
+                }
+            }
+        }
+        Self {
+            segments: segs,
+            closed: self.closed,
+        }
+    }
+
     pub fn perimeter(&self) -> f64 {
         self.segments.iter().map(ArcSegment2D::length).sum()
     }
@@ -652,6 +760,129 @@ impl ArcPolyline2D {
     }
 }
 
+/// Computes `(center, radius, ccw)` of the 2D circle passing through `a -> m -> b`.
+pub fn circumcircle_through_three_points(
+    a: DVec2,
+    m: DVec2,
+    b: DVec2,
+) -> Option<(DVec2, f64, bool)> {
+    let d1 = m - a;
+    let d2 = b - m;
+    let cross = d1.x * d2.y - d1.y * d2.x;
+    if cross.abs() <= 1e-9 {
+        return None;
+    }
+
+    let ax = a.x;
+    let ay = a.y;
+    let bx = m.x - ax;
+    let by = m.y - ay;
+    let cx = b.x - ax;
+    let cy = b.y - ay;
+
+    let denom = 2.0 * (bx * cy - by * cx);
+    if denom.abs() <= 1e-11 {
+        return None;
+    }
+    let b2 = bx * bx + by * by;
+    let c2 = cx * cx + cy * cy;
+    let ux = (cy * b2 - by * c2) / denom;
+    let uy = (bx * c2 - cx * b2) / denom;
+    let center = DVec2::new(ax + ux, ay + uy);
+    let radius = center.distance(a);
+    let ccw = cross > 0.0;
+    Some((center, radius, ccw))
+}
+
+/// Exact `f64` 2D point-in-triangle test (orientation-independent, inclusive of edges within `1e-10`).
+#[inline]
+pub fn point_in_triangle_2d(p: DVec2, a: DVec2, b: DVec2, c: DVec2) -> bool {
+    let area2 = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+    if area2.abs() <= 1e-14 {
+        return false;
+    }
+    let inv = 1.0 / area2;
+    let w0 = ((b.x - p.x) * (c.y - p.y) - (b.y - p.y) * (c.x - p.x)) * inv;
+    let w1 = ((c.x - p.x) * (a.y - p.y) - (c.y - p.y) * (a.x - p.x)) * inv;
+    let w2 = 1.0 - w0 - w1;
+    w0 >= -1e-10 && w1 >= -1e-10 && w2 >= -1e-10
+}
+
+/// Closest point on 2D segment `(a, b)` to query point `p`.
+#[inline]
+pub fn closest_point_on_segment_2d(p: DVec2, a: DVec2, b: DVec2) -> DVec2 {
+    let ab = b - a;
+    let len_sq = ab.length_squared();
+    if len_sq <= 1e-18 {
+        return a;
+    }
+    let t = ((p - a).dot(ab) / len_sq).clamp(0.0, 1.0);
+    a + ab * t
+}
+
+/// Exact squared Euclidean distance from 2D point `p` to 2D segment `(a, b)`.
+#[inline]
+pub fn point_to_segment_dist_sq_2d(p: DVec2, a: DVec2, b: DVec2) -> f64 {
+    p.distance_squared(closest_point_on_segment_2d(p, a, b))
+}
+
+/// Exact Euclidean distance from 2D point `p` to 2D segment `(a, b)`.
+#[inline]
+pub fn point_to_segment_dist_2d(p: DVec2, a: DVec2, b: DVec2) -> f64 {
+    p.distance(closest_point_on_segment_2d(p, a, b))
+}
+
+/// Exact minimum 2D distance between segments `(p0, p1)` and `(q0, q1)`, returning
+/// `(distance, u_on_q)` where `q0.lerp(q1, u_on_q)` achieves the minimum distance.
+pub fn segment_to_segment_dist_2d(p0: DVec2, p1: DVec2, q0: DVec2, q1: DVec2) -> (f64, f64) {
+    let dp = p1 - p0;
+    let dq = q1 - q0;
+    let denom = dp.x * dq.y - dp.y * dq.x;
+    if denom.abs() > 1e-12 {
+        let r = q0 - p0;
+        let t = (r.x * dq.y - r.y * dq.x) / denom;
+        let u = (r.x * dp.y - r.y * dp.x) / denom;
+        if (-1e-9..=1.0 + 1e-9).contains(&t) && (-1e-9..=1.0 + 1e-9).contains(&u) {
+            return (0.0, u.clamp(0.0, 1.0));
+        }
+    }
+
+    let mut best_d = f64::INFINITY;
+    let mut best_u = 0.0;
+
+    // 1. Endpoints of `p` projected onto `q`
+    let q_len2 = dq.length_squared();
+    for &ep in &[p0, p1] {
+        let u = if q_len2 <= 1e-18 {
+            0.0
+        } else {
+            ((ep - q0).dot(dq) / q_len2).clamp(0.0, 1.0)
+        };
+        let d = ep.distance(q0 + dq * u);
+        if d < best_d {
+            best_d = d;
+            best_u = u;
+        }
+    }
+
+    // 2. Endpoints of `q` projected onto `p`
+    let p_len2 = dp.length_squared();
+    for &(eq, u_fixed) in &[(q0, 0.0), (q1, 1.0)] {
+        let t = if p_len2 <= 1e-18 {
+            0.0
+        } else {
+            ((eq - p0).dot(dp) / p_len2).clamp(0.0, 1.0)
+        };
+        let d = eq.distance(p0 + dp * t);
+        if d < best_d {
+            best_d = d;
+            best_u = u_fixed;
+        }
+    }
+
+    (best_d, best_u)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -713,5 +944,117 @@ mod tests {
         assert!(approx_eq(proj.distance_mm, 10.0, 1e-9));
         assert!(approx_eq(proj.point.x, center.x, 1e-9));
         assert!(approx_eq(proj.point.y, center.y + 10.0, 1e-9));
+    }
+
+    #[test]
+    fn from_bulge_recovers_exact_minor_semi_and_major_arcs() {
+        let r = 10.0;
+        // 90° CCW arc from (R, 0) to (0, R): bulge = tan(pi/8) = sqrt(2) - 1
+        let b90 = (std::f64::consts::FRAC_PI_2 * 0.25).tan();
+        let seg_ccw = ArcSegment2D::from_bulge(DVec2::new(r, 0.0), DVec2::new(0.0, r), b90);
+        match seg_ccw {
+            ArcSegment2D::Arc {
+                center,
+                radius,
+                ccw,
+                ..
+            } => {
+                assert!(ccw);
+                assert!(center.distance(DVec2::ZERO) < 1e-12);
+                assert!(approx_eq(radius, r, 1e-12));
+            }
+            _ => panic!("expected Arc"),
+        }
+
+        // 180° CCW semicircle: bulge = 1.0
+        let seg_semi = ArcSegment2D::from_bulge(DVec2::new(r, 0.0), DVec2::new(-r, 0.0), 1.0);
+        match seg_semi {
+            ArcSegment2D::Arc {
+                center,
+                radius,
+                ccw,
+                ..
+            } => {
+                assert!(ccw);
+                assert!(center.distance(DVec2::ZERO) < 1e-12);
+                assert!(approx_eq(radius, r, 1e-12));
+            }
+            _ => panic!("expected Arc"),
+        }
+
+        // 270° CW major arc from (R, 0) to (0, R): bulge = -tan(3*pi/8) = -(sqrt(2) + 1)
+        let b270_cw = -(3.0 * std::f64::consts::FRAC_PI_2 * 0.25).tan();
+        let seg_cw = ArcSegment2D::from_bulge(DVec2::new(r, 0.0), DVec2::new(0.0, r), b270_cw);
+        match seg_cw {
+            ArcSegment2D::Arc {
+                center,
+                radius,
+                ccw,
+                ..
+            } => {
+                assert!(!ccw);
+                assert!(center.distance(DVec2::ZERO) < 1e-12);
+                assert!(approx_eq(radius, r, 1e-12));
+            }
+            _ => panic!("expected Arc"),
+        }
+
+        // Zero bulge => Line
+        assert!(matches!(
+            ArcSegment2D::from_bulge(DVec2::ZERO, DVec2::new(5.0, 0.0), 0.0),
+            ArcSegment2D::Line { .. }
+        ));
+    }
+
+    #[test]
+    fn circle_transformed_and_2d_primitives_are_accurate() {
+        let c = ArcPolyline2D::circle(DVec2::new(2.0, 3.0), 5.0);
+        assert!(approx_eq(
+            c.signed_area(),
+            std::f64::consts::PI * 25.0,
+            1e-9
+        ));
+        let xf = c.transformed(DVec2::new(10.0, -4.0), 2.0, 90.0);
+        assert!(approx_eq(
+            xf.signed_area(),
+            std::f64::consts::PI * 100.0,
+            1e-9
+        ));
+
+        let (cc, cr, ccw) = circumcircle_through_three_points(
+            DVec2::new(10.0, 0.0),
+            DVec2::new(0.0, 10.0),
+            DVec2::new(-10.0, 0.0),
+        )
+        .unwrap();
+        assert!(cc.distance(DVec2::ZERO) < 1e-12);
+        assert!(approx_eq(cr, 10.0, 1e-12));
+        assert!(ccw);
+
+        assert!(point_in_triangle_2d(
+            DVec2::new(1.0, 1.0),
+            DVec2::ZERO,
+            DVec2::new(4.0, 0.0),
+            DVec2::new(0.0, 4.0)
+        ));
+        assert!(!point_in_triangle_2d(
+            DVec2::new(3.0, 3.0),
+            DVec2::ZERO,
+            DVec2::new(4.0, 0.0),
+            DVec2::new(0.0, 4.0)
+        ));
+        assert!(approx_eq(
+            point_to_segment_dist_2d(DVec2::new(5.0, 3.0), DVec2::ZERO, DVec2::new(10.0, 0.0)),
+            3.0,
+            1e-12
+        ));
+        let (d, u) = segment_to_segment_dist_2d(
+            DVec2::new(0.0, 0.0),
+            DVec2::new(10.0, 0.0),
+            DVec2::new(5.0, -2.0),
+            DVec2::new(5.0, 2.0),
+        );
+        assert!(approx_eq(d, 0.0, 1e-12));
+        assert!(approx_eq(u, 0.5, 1e-12));
     }
 }

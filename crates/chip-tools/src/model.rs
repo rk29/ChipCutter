@@ -259,6 +259,30 @@ impl CutterGeometry {
         }
     }
 
+    /// Nominal bottom corner fillet radius (`mm`) of this cutter (`0.5 * diameter` for
+    /// `BallEndmill` / `LollipopEndmill`, explicit `corner_radius_mm` for bull-nose / face /
+    /// slot / dovetail cutters, `0.0` otherwise).
+    pub fn corner_radius_mm(&self) -> f64 {
+        match *self {
+            Self::BullNoseEndmill {
+                corner_radius_mm, ..
+            }
+            | Self::FaceMill {
+                corner_radius_mm, ..
+            }
+            | Self::SlotMill {
+                corner_radius_mm, ..
+            }
+            | Self::DovetailCutter {
+                corner_radius_mm, ..
+            } => corner_radius_mm.max(0.0),
+            Self::BallEndmill { diameter_mm, .. } | Self::LollipopEndmill { diameter_mm, .. } => {
+                (0.5 * diameter_mm).max(0.0)
+            }
+            _ => 0.0,
+        }
+    }
+
     pub fn flute_length_mm(&self) -> f64 {
         match *self {
             Self::FlatEndmill {
@@ -953,4 +977,48 @@ impl Tool {
             self.name
         )
     }
+}
+
+/// Returns `true` when `candidate` is an exact machine-swap match for `reference`:
+/// identical [`ToolId`], same [`CutterGeometry`] variant, and cutting diameter within `1e-3 mm`.
+pub fn is_exact_tool_match(candidate: &Tool, reference: &Tool) -> bool {
+    candidate.id == reference.id
+        && std::mem::discriminant(&candidate.geometry)
+            == std::mem::discriminant(&reference.geometry)
+        && (candidate.geometry.cutting_diameter_mm() - reference.geometry.cutting_diameter_mm())
+            .abs()
+            < 1e-3
+}
+
+/// Ranks `candidates` as replacements for `reference` in deterministic preference order:
+/// 1. Same [`CutterGeometry`] variant first,
+/// 2. Closest cutting diameter (`mm`),
+/// 3. Closest flute count,
+/// 4. Lowest `tool_number`,
+/// 5. Lexicographic `id`.
+pub fn rank_replacement_tools(reference: &Tool, candidates: &[Tool]) -> Vec<Tool> {
+    let ref_disc = std::mem::discriminant(&reference.geometry);
+    let ref_dia = reference.geometry.cutting_diameter_mm();
+    let ref_flutes = reference.geometry.flutes();
+
+    let mut ranked = candidates.to_vec();
+    ranked.sort_by(|a, b| {
+        let a_same = std::mem::discriminant(&a.geometry) == ref_disc;
+        let b_same = std::mem::discriminant(&b.geometry) == ref_disc;
+        b_same
+            .cmp(&a_same)
+            .then_with(|| {
+                let da = (a.geometry.cutting_diameter_mm() - ref_dia).abs();
+                let db = (b.geometry.cutting_diameter_mm() - ref_dia).abs();
+                da.total_cmp(&db)
+            })
+            .then_with(|| {
+                let fa = a.geometry.flutes().abs_diff(ref_flutes);
+                let fb = b.geometry.flutes().abs_diff(ref_flutes);
+                fa.cmp(&fb)
+            })
+            .then_with(|| a.tool_number.cmp(&b.tool_number))
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    ranked
 }

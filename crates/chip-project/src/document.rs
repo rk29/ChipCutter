@@ -474,43 +474,17 @@ impl ProjectDocument {
             let Some(cur_tool) = self.tool(tid) else {
                 continue;
             };
-            let is_exact = target_machine.tools.iter().any(|cand| {
-                cand.id == cur_tool.id
-                    && std::mem::discriminant(&cand.geometry)
-                        == std::mem::discriminant(&cur_tool.geometry)
-                    && (cand.geometry.cutting_diameter_mm()
-                        - cur_tool.geometry.cutting_diameter_mm())
-                    .abs()
-                        < 1e-3
-            });
+            let is_exact = target_machine
+                .tools
+                .iter()
+                .any(|cand| chip_tools::is_exact_tool_match(cand, cur_tool));
             if is_exact {
                 exact_matches.push(tid.clone());
                 continue;
             }
 
             let cur_disc = std::mem::discriminant(&cur_tool.geometry);
-            let cur_dia = cur_tool.geometry.cutting_diameter_mm();
-            let cur_flutes = cur_tool.geometry.flutes();
-
-            let mut ranked: Vec<Tool> = target_machine.tools.clone();
-            ranked.sort_by(|a, b| {
-                let a_same = std::mem::discriminant(&a.geometry) == cur_disc;
-                let b_same = std::mem::discriminant(&b.geometry) == cur_disc;
-                b_same
-                    .cmp(&a_same)
-                    .then_with(|| {
-                        let da = (a.geometry.cutting_diameter_mm() - cur_dia).abs();
-                        let db = (b.geometry.cutting_diameter_mm() - cur_dia).abs();
-                        da.total_cmp(&db)
-                    })
-                    .then_with(|| {
-                        let fa = a.geometry.flutes().abs_diff(cur_flutes);
-                        let fb = b.geometry.flutes().abs_diff(cur_flutes);
-                        fa.cmp(&fb)
-                    })
-                    .then_with(|| a.tool_number.cmp(&b.tool_number))
-                    .then_with(|| a.id.cmp(&b.id))
-            });
+            let ranked = chip_tools::rank_replacement_tools(cur_tool, &target_machine.tools);
 
             let suggested = ranked
                 .first()

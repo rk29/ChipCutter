@@ -5,10 +5,10 @@
 //! with zero air-cutting, exact horizontal **flat-plateau detection**, and Milestone 6's
 //! constant-engagement trochoidal wavefront engine ([`generate_adaptive_region_slice`]).
 
+use chip_geom2d::PocketRegion2D;
 use chip_math::DVec3;
 
 use crate::{
-    offset2d::PocketRegion2D,
     params::{Adaptive3DParams, Pocket2DParams},
     rest2d::{RegionSet2D, swept_toolpath_coverage_2d},
     strategies::{
@@ -35,7 +35,7 @@ pub fn generate_adaptive3d(
     }
 
     let surface = SurfaceMesh3D::from_cad_document(ctx.doc, &[], &ctx.setup.frame);
-    if surface.triangles.is_empty() || !surface.aabb_wcs.is_valid() {
+    if surface.triangles.is_empty() || !surface.bounds.is_valid() {
         return Err(CamError::EmptyCadDocument);
     }
 
@@ -49,7 +49,7 @@ pub fn generate_adaptive3d(
     let z_bottom = ctx
         .heights
         .bottom_z_wcs
-        .max(surface.aabb_wcs.min.z + axial_stock);
+        .max(surface.bounds.min.z + axial_stock);
     if z_top <= z_bottom + 1e-4 {
         return Err(CamError::EmptyToolpath {
             op_name: ctx.op.name.clone(),

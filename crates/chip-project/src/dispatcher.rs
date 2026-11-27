@@ -17,7 +17,7 @@ use chip_cam::{
 use chip_math::DisplayUnit;
 use chip_sim::{SimComputeBackendChoice, SimResolution, TriDexelStock};
 use chip_sketch::SketchLayer;
-use chip_tools::{CutterGeometry, Tool, resolve_machine_definition};
+use chip_tools::{Tool, resolve_machine_definition};
 use crossbeam_channel::{Receiver, Sender};
 use rayon::prelude::*;
 
@@ -188,19 +188,6 @@ fn check_carryover_readiness(
     CarryoverReadiness::NeedCompute { digest }
 }
 
-fn cutter_corner_radius_mm(geom: &CutterGeometry) -> f64 {
-    match *geom {
-        CutterGeometry::BullNoseEndmill {
-            corner_radius_mm, ..
-        }
-        | CutterGeometry::FaceMill {
-            corner_radius_mm, ..
-        } => corner_radius_mm,
-        CutterGeometry::BallEndmill { diameter_mm, .. } => 0.5 * diameter_mm,
-        _ => 0.0,
-    }
-}
-
 fn check_upstream_readiness(
     project: &ProjectDocument,
     cache: &ToolpathCache,
@@ -239,7 +226,7 @@ fn check_upstream_readiness(
             .map(|t| {
                 (
                     t.geometry.cutting_diameter_mm(),
-                    cutter_corner_radius_mm(&t.geometry),
+                    t.geometry.corner_radius_mm(),
                 )
             })
             .unwrap_or((0.0, 0.0));

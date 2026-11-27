@@ -1624,77 +1624,6 @@ fn sample_closed_polyline_points(poly: &ArcPolyline2D) -> Vec<DVec2> {
     pts
 }
 
-fn cross_2d(a: DVec2, b: DVec2, c: DVec2) -> f64 {
-    (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)
-}
-
-fn point_in_tri_2d(p: DVec2, a: DVec2, b: DVec2, c: DVec2) -> bool {
-    let c1 = cross_2d(a, b, p);
-    let c2 = cross_2d(b, c, p);
-    let c3 = cross_2d(c, a, p);
-    c1 >= -1e-9 && c2 >= -1e-9 && c3 >= -1e-9
-}
-
-/// Simple ear-clipping triangulator for a CCW 2D polygon (handles convex and concave shapes).
-fn triangulate_ccw_polygon_2d(pts: &[DVec2]) -> Vec<[usize; 3]> {
-    let n = pts.len();
-    if n < 3 {
-        return Vec::new();
-    }
-    let mut area2 = 0.0_f64;
-    for i in 0..n {
-        let a = pts[i];
-        let b = pts[(i + 1) % n];
-        area2 += a.x * b.y - b.x * a.y;
-    }
-    let mut ring: Vec<usize> = if area2 >= 0.0 {
-        (0..n).collect()
-    } else {
-        (0..n).rev().collect()
-    };
-    let mut tris = Vec::with_capacity(n.saturating_sub(2));
-    let mut guard = n * n + 8;
-    while ring.len() > 3 && guard > 0 {
-        guard -= 1;
-        let m = ring.len();
-        let mut clipped = false;
-        for i in 0..m {
-            let i_prev = ring[(i + m - 1) % m];
-            let i_curr = ring[i];
-            let i_next = ring[(i + 1) % m];
-            let a = pts[i_prev];
-            let b = pts[i_curr];
-            let c = pts[i_next];
-            if cross_2d(a, b, c) <= 1e-9 {
-                continue;
-            }
-            let mut contains_other = false;
-            for &idx in &ring {
-                if idx == i_prev || idx == i_curr || idx == i_next {
-                    continue;
-                }
-                if point_in_tri_2d(pts[idx], a, b, c) {
-                    contains_other = true;
-                    break;
-                }
-            }
-            if !contains_other {
-                tris.push([i_prev, i_curr, i_next]);
-                ring.remove(i);
-                clipped = true;
-                break;
-            }
-        }
-        if !clipped {
-            break;
-        }
-    }
-    if ring.len() == 3 {
-        tris.push([ring[0], ring[1], ring[2]]);
-    }
-    tris
-}
-
 fn emit_region_set_top_fill(
     region: &RegionSet2D,
     wcs_frame: &RigidFrame3,
@@ -1708,7 +1637,7 @@ fn emit_region_set_top_fill(
         if pts.len() < 3 {
             continue;
         }
-        for [i0, i1, i2] in triangulate_ccw_polygon_2d(&pts) {
+        for [i0, i1, i2] in chip_geom2d::ear_clip_ccw_2d(&pts) {
             for p in [pts[i0], pts[i1], pts[i2]] {
                 overlay_tris.push(OverlayVertexGpu {
                     pos_mm: dvec3_f32(to_w(p)),

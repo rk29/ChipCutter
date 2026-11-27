@@ -230,36 +230,4 @@ fn try_fit_single_circular_arc(cubic: &CubicBez, tol_mm: f64) -> Option<ArcSegme
     Some(candidate)
 }
 
-/// Computes `(center, radius, ccw)` of the circle passing through `a -> m -> b`.
-pub fn circumcircle_through_three_points(
-    a: DVec2,
-    m: DVec2,
-    b: DVec2,
-) -> Option<(DVec2, f64, bool)> {
-    let d1 = m - a;
-    let d2 = b - m;
-    let cross = d1.x * d2.y - d1.y * d2.x;
-    if cross.abs() <= 1e-9 {
-        return None;
-    }
-
-    let ax = a.x;
-    let ay = a.y;
-    let bx = m.x - ax;
-    let by = m.y - ay;
-    let cx = b.x - ax;
-    let cy = b.y - ay;
-
-    let denom = 2.0 * (bx * cy - by * cx);
-    if denom.abs() <= 1e-11 {
-        return None;
-    }
-    let b2 = bx * bx + by * by;
-    let c2 = cx * cx + cy * cy;
-    let ux = (cy * b2 - by * c2) / denom;
-    let uy = (bx * c2 - cx * b2) / denom;
-    let center = DVec2::new(ax + ux, ay + uy);
-    let radius = center.distance(a);
-    let ccw = cross > 0.0;
-    Some((center, radius, ccw))
-}
+pub use chip_math::circumcircle_through_three_points;

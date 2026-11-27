@@ -759,6 +759,7 @@ dependencies = [
  "bytemuck",
  "chip-cad",
  "chip-cam",
+ "chip-geom2d",
  "chip-math",
  "chip-post",
  "chip-project",
@@ -837,6 +838,7 @@ dependencies = [
  "chip-cad",
  "chip-cam",
  "chip-math",
+ "chip-sketch",
  "chip-stock",
  "chip-tools",
  "serde",
@@ -846,7 +848,6 @@ dependencies = [
 name = "chip-sketch"
 version = "0.26.0"
 dependencies = [
- "cavalier_contours",
  "chip-geom2d",
  "chip-math",
  "dxf",

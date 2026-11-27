@@ -296,51 +296,7 @@ fn clean_vec3_array(v: DVec3) -> [f64; 3] {
     [clean_scalar(v.x), clean_scalar(v.y), clean_scalar(v.z)]
 }
 
-fn snap_angle_deg(deg: f64) -> f64 {
-    let mut a = deg % 360.0;
-    if a > 180.0 {
-        a -= 360.0;
-    } else if a <= -180.0 {
-        a += 360.0;
-    }
-    // Snap cleanly to exact multiples of 90° within 1e-6° so repeated 90° clicks stay crisp
-    let nearest_90 = (a / 90.0).round() * 90.0;
-    if (a - nearest_90).abs() <= 1e-6 {
-        if nearest_90.abs() <= 1e-6 {
-            0.0
-        } else if (nearest_90 + 180.0).abs() <= 1e-6 {
-            180.0
-        } else {
-            nearest_90
-        }
-    } else if a.abs() <= 1e-9 {
-        0.0
-    } else {
-        a
-    }
-}
-
-/// Extracts canonical XYZ Euler angles `[rx_deg, ry_deg, rz_deg]` such that
-/// `Rz(rz) * Ry(ry) * Rx(rx) == r`.
-pub fn rotation_matrix_to_xyz_euler_deg(r: DMat3) -> [f64; 3] {
-    let r20 = r.x_axis.z.clamp(-1.0, 1.0);
-    let ry = (-r20).asin();
-    let cos_y = ry.cos();
-    let (rx, rz) = if cos_y.abs() > 1e-7 {
-        let rx = r.y_axis.z.atan2(r.z_axis.z);
-        let rz = r.x_axis.y.atan2(r.x_axis.x);
-        (rx, rz)
-    } else {
-        let rz = 0.0;
-        let rx = (-r.z_axis.y).atan2(r.y_axis.y);
-        (rx, rz)
-    };
-    [
-        snap_angle_deg(rx.to_degrees()),
-        snap_angle_deg(ry.to_degrees()),
-        snap_angle_deg(rz.to_degrees()),
-    ]
-}
+pub use chip_math::rotation_matrix_to_xyz_euler_deg;
 
 fn transform_aabb_corners(aabb: Aabb3, xf: &ModelTransform) -> Aabb3 {
     if !aabb.is_valid() {

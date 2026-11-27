@@ -2,7 +2,7 @@
 //! chord decimation, adaptive convex-cliff subdivision, analytical 3D Rest Masking, and
 //! surface-safe collision-free 3D linking.
 
-use chip_math::{Aabb2, DVec2, DVec3};
+use chip_math::{Aabb2, DVec2, DVec3, point_in_triangle_2d};
 use rayon::prelude::*;
 
 use crate::{
@@ -10,8 +10,9 @@ use crate::{
     params::{RestMachiningConfig, RestMachiningMode},
     rest2d::{RegionSet2D, UpstreamSweptInput},
     surface3d::{
-        SurfaceCutterProfile, SurfaceCutterShape, SurfaceMesh3D, drop_cutter_points_parallel,
-        drop_cutter_z_with_scratch,
+        SurfaceCutterProfile, SurfaceCutterShape, SurfaceMesh3D,
+        drop_cutter::{drop_cutter_highest_contact, drop_cutter_triangle_contact_shape},
+        drop_cutter_points_parallel, drop_cutter_z_with_scratch,
     },
     toolpath::ToolpathBuilder,
 };
@@ -53,7 +54,11 @@ pub fn stepover_for_cusp_height(
     raw.clamp(min_step, max_step)
 }
 
-pub use chip_geom2d::simplify_3d_polyline_rdp;
+/// Simplifies a 3D finishing toolpath polyline using exact iterative 3D Ramer–Douglas–Peucker
+/// decimation with CAM finishing tolerance clamped to `[1e-4, 0.012] mm`.
+pub fn simplify_3d_polyline_rdp(pts: &[DVec3], tol_mm: f64) -> Vec<DVec3> {
+    chip_math::simplify_3d_polyline_rdp(pts, tol_mm.clamp(1e-4, 0.012))
+}
 
 /// Refines any segment in `chain` whose midpoint or quarter-points dip below exact `drop_cutter_z`
 /// (convex ridges/crests) or deviate excessively above concave valleys, ensuring chords never gouge
@@ -215,7 +220,7 @@ pub fn simplify_3d_polyline_gouge_safe(
         SurfaceCutterShape::Flat { .. } => 0.0,
     };
     let is_curved_tip = r_tip > 1e-4;
-    let z_min_part = surface.aabb_wcs.min.z;
+    let z_min_part = surface.bounds.min.z;
     let has_overhang = surface
         .triangles
         .iter()
@@ -784,23 +789,9 @@ pub fn build_3d_rest_mask(
     })
 }
 
-/// Computes the combined 2D bounding box of all outer contours in `region`.
+/// Computes the combined exact 2D bounding box of all outer contours in `region`.
 pub fn region_aabb_2d(region: &RegionSet2D) -> Option<Aabb2> {
-    let mut aabb = Aabb2::EMPTY;
-    for r in &region.regions {
-        for seg in &r.outer_ccw.segments {
-            match *seg {
-                chip_math::ArcSegment2D::Line { start, end } => {
-                    aabb = aabb.union(&Aabb2::from_points([start, end]));
-                }
-                chip_math::ArcSegment2D::Arc { center, radius, .. } => {
-                    let r_vec = DVec2::splat(radius.abs());
-                    aabb = aabb.union(&Aabb2::from_points([center - r_vec, center + r_vec]));
-                }
-            }
-        }
-    }
-    if aabb.is_valid() { Some(aabb) } else { None }
+    region.exact_aabb()
 }
 
 /// Parameters controlling gouge-free 3D linking between consecutive finishing passes.
@@ -1037,7 +1028,7 @@ pub fn suppress_overhang_shadow_residuals(
 
     // Fast path: if the mesh has no downward-facing triangles strictly above its lowest floor,
     // no overhang shadow can exist anywhere on the part.
-    let z_min_part = surface.aabb_wcs.min.z;
+    let z_min_part = surface.bounds.min.z;
     let has_any_overhang = surface
         .triangles
         .iter()
@@ -1110,11 +1101,11 @@ pub fn suppress_overhang_shadow_residuals(
                         continue;
                     }
                     let [i0, i1, i2] = tri.indices;
-                    let v0 = surface.vertices_wcs[i0 as usize];
-                    let v1 = surface.vertices_wcs[i1 as usize];
-                    let v2 = surface.vertices_wcs[i2 as usize];
+                    let v0 = surface.vertices[i0 as usize];
+                    let v1 = surface.vertices[i1 as usize];
+                    let v2 = surface.vertices[i2 as usize];
                     if let Some((z_tri, c_pt)) =
-                        drop_profile_triangle_with_contact(&ref_cutter, p_xy, v0, v1, v2)
+                        drop_cutter_triangle_contact_shape(&ref_cutter.shape, p_xy, v0, v1, v2)
                         && z_tri > best_connected_z
                         && overhang_ceiling_above_air_gap(
                             surface,
@@ -1182,7 +1173,7 @@ pub fn split_chains_at_overhang_cliffs(
         return Vec::new();
     }
 
-    let z_min_part = surface.aabb_wcs.min.z;
+    let z_min_part = surface.bounds.min.z;
     let has_any_overhang = surface
         .triangles
         .iter()
@@ -1256,9 +1247,9 @@ fn overhang_ceiling_above_air_gap(
     }
     let tri = &surface.triangles[tri_idx];
     let [i0, i1, i2] = tri.indices;
-    let v0 = surface.vertices_wcs[i0 as usize];
-    let v1 = surface.vertices_wcs[i1 as usize];
-    let v2 = surface.vertices_wcs[i2 as usize];
+    let v0 = surface.vertices[i0 as usize];
+    let v1 = surface.vertices[i1 as usize];
+    let v2 = surface.vertices[i2 as usize];
 
     let c_xy = DVec2::new(contact_pt.x, contact_pt.y);
     let centroid_xy = DVec2::new((v0.x + v1.x + v2.x) / 3.0, (v0.y + v1.y + v2.y) / 3.0);
@@ -1332,13 +1323,13 @@ fn column_overhang_bottom_above_gap(
             continue;
         }
         let [i0, i1, i2] = tri.indices;
-        let v0 = surface.vertices_wcs[i0 as usize];
-        let v1 = surface.vertices_wcs[i1 as usize];
-        let v2 = surface.vertices_wcs[i2 as usize];
+        let v0 = surface.vertices[i0 as usize];
+        let v1 = surface.vertices[i1 as usize];
+        let v2 = surface.vertices[i2 as usize];
         let v0_2 = DVec2::new(v0.x, v0.y);
         let v1_2 = DVec2::new(v1.x, v1.y);
         let v2_2 = DVec2::new(v2.x, v2.y);
-        if !point_in_triangle_2d_finishing(q, v0_2, v1_2, v2_2) {
+        if !point_in_triangle_2d(q, v0_2, v1_2, v2_2) {
             continue;
         }
         let n = tri.normal;
@@ -1394,304 +1385,4 @@ fn column_overhang_bottom_above_gap(
     } else {
         ColumnGapCheck::MissedUpper
     }
-}
-
-/// Evaluates the highest analytical Drop-Cutter contact `(z_tip_raw, contact_pt_3d, tri_idx)`
-/// at horizontal cutter axis `(c_xy.x, c_xy.y)`.
-fn drop_cutter_highest_contact(
-    surface: &SurfaceMesh3D,
-    cutter: &SurfaceCutterProfile,
-    c_xy: DVec2,
-    cand_buf: &mut Vec<usize>,
-) -> Option<(f64, DVec3, usize)> {
-    let r_max = cutter.max_radius_mm();
-    surface
-        .bvh
-        .query_xy_circle_into(c_xy.x, c_xy.y, r_max + 1e-6, cand_buf);
-    if cand_buf.is_empty() {
-        return None;
-    }
-
-    let mut best: Option<(f64, DVec3, usize)> = None;
-    for &ti in cand_buf.iter() {
-        let tri = &surface.triangles[ti];
-        if let Some((best_z, _, _)) = best
-            && tri.aabb.max.z <= best_z
-        {
-            continue;
-        }
-        let [i0, i1, i2] = tri.indices;
-        let v0 = surface.vertices_wcs[i0 as usize];
-        let v1 = surface.vertices_wcs[i1 as usize];
-        let v2 = surface.vertices_wcs[i2 as usize];
-        if let Some((z_tri, c_pt)) = drop_profile_triangle_with_contact(cutter, c_xy, v0, v1, v2)
-            && z_tri.is_finite()
-            && best.is_none_or(|(bz, _, _)| z_tri > bz)
-        {
-            best = Some((z_tri, c_pt, ti));
-        }
-    }
-    best
-}
-
-fn drop_profile_triangle_with_contact(
-    cutter: &SurfaceCutterProfile,
-    c_xy: DVec2,
-    v0: DVec3,
-    v1: DVec3,
-    v2: DVec3,
-) -> Option<(f64, DVec3)> {
-    let r_max = cutter.max_radius_mm();
-    let mut best: Option<(f64, DVec3)> = None;
-    let mut consider = |z: f64, pt: DVec3| {
-        if z.is_finite() && best.is_none_or(|(bz, _)| z > bz) {
-            best = Some((z, pt));
-        }
-    };
-
-    for v in [v0, v1, v2] {
-        let d = (DVec2::new(v.x, v.y) - c_xy).length();
-        if let Some(h) = cutter.profile_height_at_radius(d) {
-            consider(v.z - h, v);
-        }
-    }
-
-    for (a, b) in [(v0, v1), (v1, v2), (v2, v0)] {
-        if let Some((z_e, pt_e)) = drop_profile_edge_with_contact(cutter, c_xy, a, b, r_max) {
-            consider(z_e, pt_e);
-        }
-    }
-
-    let raw_n = (v1 - v0).cross(v2 - v0);
-    let n_len = raw_n.length();
-    if n_len > 1e-12 {
-        let mut n = raw_n / n_len;
-        if n.z < 0.0 {
-            n = -n;
-        }
-        if n.z > 1e-9 {
-            let plane_z =
-                |p: DVec2| -> f64 { v0.z - (n.x * (p.x - v0.x) + n.y * (p.y - v0.y)) / n.z };
-            let v0_2 = DVec2::new(v0.x, v0.y);
-            let v1_2 = DVec2::new(v1.x, v1.y);
-            let v2_2 = DVec2::new(v2.x, v2.y);
-
-            if point_in_triangle_2d_finishing(c_xy, v0_2, v1_2, v2_2) {
-                let zp = plane_z(c_xy);
-                consider(zp, DVec3::new(c_xy.x, c_xy.y, zp));
-            }
-
-            let n_xy_len = n.x.hypot(n.y);
-            if n_xy_len > 1e-11 {
-                let u = DVec2::new(-n.x / n_xy_len, -n.y / n_xy_len);
-                let slope = n_xy_len / n.z;
-                match cutter.shape {
-                    SurfaceCutterShape::Flat { radius_mm } => {
-                        let p = c_xy + u * radius_mm;
-                        if point_in_triangle_2d_finishing(p, v0_2, v1_2, v2_2) {
-                            let zp = plane_z(p);
-                            consider(zp, DVec3::new(p.x, p.y, zp));
-                        }
-                    }
-                    SurfaceCutterShape::Ball { radius_mm } => {
-                        let d_star = radius_mm * n_xy_len;
-                        let p = c_xy + u * d_star;
-                        if point_in_triangle_2d_finishing(p, v0_2, v1_2, v2_2)
-                            && let Some(h) = cutter.profile_height_at_radius(d_star)
-                        {
-                            let zp = plane_z(p);
-                            consider(zp - h, DVec3::new(p.x, p.y, zp));
-                        }
-                    }
-                    SurfaceCutterShape::BullNose {
-                        flat_radius_mm,
-                        corner_radius_mm,
-                    } => {
-                        let d_star = flat_radius_mm + corner_radius_mm * n_xy_len;
-                        let p = c_xy + u * d_star;
-                        if point_in_triangle_2d_finishing(p, v0_2, v1_2, v2_2)
-                            && let Some(h) = cutter.profile_height_at_radius(d_star)
-                        {
-                            let zp = plane_z(p);
-                            consider(zp - h, DVec3::new(p.x, p.y, zp));
-                        }
-                    }
-                    SurfaceCutterShape::TaperedVBit {
-                        tip_radius_mm,
-                        upper_radius_mm,
-                        half_angle_rad,
-                    } => {
-                        let cone_slope = 1.0 / half_angle_rad.tan().max(1e-9);
-                        let candidates: [f64; 2] = if slope < cone_slope {
-                            [tip_radius_mm, tip_radius_mm]
-                        } else if slope > cone_slope {
-                            [upper_radius_mm, upper_radius_mm]
-                        } else {
-                            [tip_radius_mm, upper_radius_mm]
-                        };
-                        for d_c in candidates {
-                            let p = c_xy + u * d_c;
-                            if point_in_triangle_2d_finishing(p, v0_2, v1_2, v2_2)
-                                && let Some(h) = cutter.profile_height_at_radius(d_c)
-                            {
-                                let zp = plane_z(p);
-                                consider(zp - h, DVec3::new(p.x, p.y, zp));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    best
-}
-
-fn drop_profile_edge_with_contact(
-    cutter: &SurfaceCutterProfile,
-    c_xy: DVec2,
-    a: DVec3,
-    b: DVec3,
-    r_max: f64,
-) -> Option<(f64, DVec3)> {
-    let a2 = DVec2::new(a.x, a.y) - c_xy;
-    let d2 = DVec2::new(b.x - a.x, b.y - a.y);
-    let dz = b.z - a.z;
-    let len2_sq = d2.length_squared();
-    if len2_sq <= 1e-18 {
-        let dist = a2.length();
-        let top = if a.z >= b.z { a } else { b };
-        return cutter
-            .profile_height_at_radius(dist)
-            .map(|h| (top.z - h, top));
-    }
-
-    let (t_lo, t_hi) = segment_disk_interval_finishing(a2, d2, len2_sq, r_max)?;
-    let eval = |t: f64| -> Option<(f64, DVec3)> {
-        let dist = (a2 + d2 * t).length();
-        let h = cutter.profile_height_at_radius(dist)?;
-        let pt = a + (b - a) * t;
-        Some((pt.z - h, pt))
-    };
-
-    let mut best: Option<(f64, DVec3)> = None;
-    let mut consider_t = |t: f64| {
-        let tc = t.clamp(t_lo, t_hi);
-        if let Some((z, pt)) = eval(tc)
-            && best.is_none_or(|(bz, _)| z > bz)
-        {
-            best = Some((z, pt));
-        }
-    };
-
-    consider_t(t_lo);
-    consider_t(t_hi);
-
-    let len2 = len2_sq.sqrt();
-    let dir = d2 / len2;
-    let s0 = a2.dot(dir);
-    let u_perp = a2.x * dir.y - a2.y * dir.x;
-    let m = dz / len2;
-
-    match cutter.shape {
-        SurfaceCutterShape::Flat { .. } => {}
-        SurfaceCutterShape::Ball { radius_mm } => {
-            let r_eff_sq = (radius_mm * radius_mm - u_perp * u_perp).max(0.0);
-            if r_eff_sq > 0.0 {
-                let s_star = (m / (1.0 + m * m).sqrt()) * r_eff_sq.sqrt();
-                consider_t((s_star - s0) / len2);
-            }
-        }
-        SurfaceCutterShape::TaperedVBit {
-            tip_radius_mm,
-            half_angle_rad,
-            ..
-        } => {
-            if let Some((f_lo, f_hi)) =
-                segment_disk_interval_finishing(a2, d2, len2_sq, tip_radius_mm)
-            {
-                consider_t(f_lo);
-                consider_t(f_hi);
-            }
-            let k = m * half_angle_rad.tan();
-            if k.abs() < 1.0 - 1e-12 {
-                let s_star = u_perp.abs() * k / (1.0 - k * k).sqrt();
-                consider_t((s_star - s0) / len2);
-            }
-        }
-        SurfaceCutterShape::BullNose { flat_radius_mm, .. } => {
-            if let Some((f_lo, f_hi)) =
-                segment_disk_interval_finishing(a2, d2, len2_sq, flat_radius_mm)
-            {
-                consider_t(f_lo);
-                consider_t(f_hi);
-            }
-            const INV_PHI: f64 = 0.618_033_988_749_894_9;
-            let mut lo = t_lo;
-            let mut hi = t_hi;
-            let mut c = hi - INV_PHI * (hi - lo);
-            let mut d = lo + INV_PHI * (hi - lo);
-            let mut fc = eval(c).map_or(f64::NEG_INFINITY, |(z, _)| z);
-            let mut fd = eval(d).map_or(f64::NEG_INFINITY, |(z, _)| z);
-            for _ in 0..32 {
-                if hi - lo <= 1e-9 {
-                    break;
-                }
-                if fc < fd {
-                    lo = c;
-                    c = d;
-                    fc = fd;
-                    d = lo + INV_PHI * (hi - lo);
-                    fd = eval(d).map_or(f64::NEG_INFINITY, |(z, _)| z);
-                } else {
-                    hi = d;
-                    d = c;
-                    fd = fc;
-                    c = hi - INV_PHI * (hi - lo);
-                    fc = eval(c).map_or(f64::NEG_INFINITY, |(z, _)| z);
-                }
-            }
-            consider_t(0.5 * (lo + hi));
-        }
-    }
-
-    best
-}
-
-#[inline]
-fn segment_disk_interval_finishing(
-    a2: DVec2,
-    d2: DVec2,
-    len2_sq: f64,
-    radius: f64,
-) -> Option<(f64, f64)> {
-    let b = a2.dot(d2);
-    let c = a2.length_squared() - radius * radius;
-    let disc = b * b - len2_sq * c;
-    if disc < -1e-14 {
-        return None;
-    }
-    let sqrt_d = disc.max(0.0).sqrt();
-    let t0 = (-b - sqrt_d) / len2_sq;
-    let t1 = (-b + sqrt_d) / len2_sq;
-    let lo = t0.max(0.0);
-    let hi = t1.min(1.0);
-    if lo <= hi + 1e-12 {
-        Some((lo.clamp(0.0, 1.0), hi.clamp(0.0, 1.0)))
-    } else {
-        None
-    }
-}
-
-#[inline]
-fn point_in_triangle_2d_finishing(p: DVec2, a: DVec2, b: DVec2, c: DVec2) -> bool {
-    let area2 = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
-    if area2.abs() <= 1e-14 {
-        return false;
-    }
-    let inv = 1.0 / area2;
-    let w0 = ((b.x - p.x) * (c.y - p.y) - (b.y - p.y) * (c.x - p.x)) * inv;
-    let w1 = ((c.x - p.x) * (a.y - p.y) - (c.y - p.y) * (a.x - p.x)) * inv;
-    let w2 = 1.0 - w0 - w1;
-    w0 >= -1e-10 && w1 >= -1e-10 && w2 >= -1e-10
 }

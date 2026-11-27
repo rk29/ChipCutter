@@ -92,15 +92,6 @@ pub(crate) fn effective_setup_for_indexed_preview<'a>(
     Cow::Borrowed(rs)
 }
 
-fn transform_rigid_frame_by_dmat4(f: RigidFrame3, m: DMat4) -> RigidFrame3 {
-    RigidFrame3 {
-        origin_mm: m.transform_point3(f.origin_mm),
-        x_axis: m.transform_vector3(f.x_axis).normalize_or_zero(),
-        y_axis: m.transform_vector3(f.y_axis).normalize_or_zero(),
-        z_axis: m.transform_vector3(f.z_axis).normalize_or_zero(),
-    }
-}
-
 impl ChipCutterApp {
     pub(crate) fn sync_viewport_scene_state(&mut self) {
         self.highlight.theme = self.theme;
@@ -256,7 +247,7 @@ impl ChipCutterApp {
                         resolve_sketch_world_frame(false, sk, rs_for_sk)
                     };
                     if has_cad_rot && matches!(sk.anchor, SketchAnchor::PlanarFace { .. }) {
-                        wf = transform_rigid_frame_by_dmat4(wf, cad_xf);
+                        wf = wf.transformed_by(&cad_xf);
                     }
                     if matches!(self.inspector_focus, InspectorFocus::Sketch { sketch_idx } if sketch_idx == si)
                         && matches!(sk.anchor, SketchAnchor::PlanarFace { .. })
@@ -723,7 +714,7 @@ impl ChipCutterApp {
                     resolve_sketch_world_frame(doc_has_bodies, sk, rs)
                 };
                 if has_cad_rot && matches!(sk.anchor, SketchAnchor::PlanarFace { .. }) {
-                    wf = transform_rigid_frame_by_dmat4(wf, cad_xf);
+                    wf = wf.transformed_by(&cad_xf);
                 }
                 let denom = ray.dir.dot(wf.z_axis);
                 if denom.abs() <= 1e-6 {
@@ -859,7 +850,7 @@ impl ChipCutterApp {
                 resolve_sketch_world_frame(doc_has_bodies, sk, &rs)
             };
             if has_cad_rot && matches!(sk.anchor, SketchAnchor::PlanarFace { .. }) {
-                wf = transform_rigid_frame_by_dmat4(wf, cad_xf);
+                wf = wf.transformed_by(&cad_xf);
             }
             let denom = ray.dir.dot(wf.z_axis);
             if denom.abs() <= 1e-6 {

@@ -7,11 +7,11 @@ pub use chip_geom2d::region::{
     RegionSet2D, clip_polyline_by_region_set, clip_polyline_outside_region_set,
     contours_to_region_set, swept_segment_capsule_2d,
 };
+use chip_geom2d::{PocketRegion2D, offset_polyline};
 use chip_math::{ArcPolyline2D, ArcSegment2D, DVec2};
 
 use crate::{
     cl_data::ArcPlane,
-    offset2d::{PocketRegion2D, offset_polyline},
     params::{RestMachiningConfig, RestMachiningMode},
     toolpath::{GeneratedToolpath, SegmentMotion3D},
 };

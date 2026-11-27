@@ -624,15 +624,7 @@ pub struct PlanarVectorRegion {
 
 impl PlanarVectorRegion {
     pub fn contains_point(&self, pt: DVec2) -> bool {
-        if !self.outer_ccw.contains_point(pt) {
-            return false;
-        }
-        for isl in &self.islands_cw {
-            if isl.contains_point(pt) && isl.distance_to_point(pt) > 1e-6 {
-                return false;
-            }
-        }
-        true
+        chip_geom2d::region_contains_point(&self.outer_ccw, &self.islands_cw, pt)
     }
 }
 

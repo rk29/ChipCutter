@@ -1,9 +1,9 @@
+use chip_geom2d::{clip_scanline_to_region, offset_polyline};
 use chip_math::{ArcPolyline2D, ArcSegment2D, DVec2, DVec3};
 
 use crate::{
     avoid_regions::clip_polyline_outside_avoid,
     cl_data::{ArcPlane, ClEvent, CutterCompMode, MotionRole},
-    offset2d::{clip_scanline_to_region, offset_polyline},
     params::{
         Contour2DParams, ContourCompensation, EntryStrategy, HoldingTabsConfig, LeadConfig,
         TabPlacementMode, TabProfileKind,
@@ -166,7 +166,7 @@ pub fn generate_contour2d(
         .then(|| SurfaceMesh3D::from_cad_document(ctx.doc, &[], &ctx.setup.frame));
     let overhang_field = overhang_surface
         .as_ref()
-        .filter(|s| !s.triangles.is_empty() && s.aabb_wcs.is_valid())
+        .filter(|s| !s.triangles.is_empty() && s.bounds.is_valid())
         .map(|s| PushCutterField::build_with_z_min(s, overhang_cutter, target_bottom_z));
 
     for (contour_idx, src) in contours.iter().enumerate() {

@@ -2,7 +2,9 @@
 //! used by both `chip-cam` (3D Drop-Cutter / Push-Cutter contact) and `chip-sim`
 //! (Heightmap, Tri-Dexel, and Cylindrical stock removal & 5-rule verification).
 
-use crate::model::CutterGeometry;
+use serde::{Deserialize, Serialize};
+
+use crate::model::{CutterGeometry, Tool};
 
 /// Canonical shape classification of an [`AnalyticCutterEnvelope`] in `f64` millimeters.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -475,6 +477,191 @@ impl AnalyticCutterEnvelope {
             shank_radius_mm: self.shank_radius_mm + sr,
             stock_radial_mm: self.stock_radial_mm + sr,
             stock_axial_mm: self.stock_axial_mm + sz,
+        }
+    }
+
+    /// Returns a radially shrunk copy of `self` (`shrink_mm >= 0`) used for grazing-tolerant
+    /// overhang checks so flush vertical walls and modeled hole cylinders do not false-trigger.
+    pub fn with_radial_shrink(&self, shrink_mm: f64) -> Self {
+        let s = shrink_mm.max(0.0);
+        if s <= 1e-9 {
+            return *self;
+        }
+        let (cutting_radius_mm, shape) = match self.shape {
+            CutterEnvelopeShape::Flat { radius_mm } => {
+                let r = (radius_mm - s).max(0.05);
+                (r, CutterEnvelopeShape::Flat { radius_mm: r })
+            }
+            CutterEnvelopeShape::Ball { radius_mm } => {
+                let r = (radius_mm - s).max(0.05);
+                (r, CutterEnvelopeShape::Ball { radius_mm: r })
+            }
+            CutterEnvelopeShape::BullNose {
+                flat_radius_mm,
+                corner_radius_mm,
+            } => {
+                if flat_radius_mm >= s {
+                    let new_flat = flat_radius_mm - s;
+                    (
+                        new_flat + corner_radius_mm,
+                        CutterEnvelopeShape::BullNose {
+                            flat_radius_mm: new_flat,
+                            corner_radius_mm,
+                        },
+                    )
+                } else {
+                    let rem = s - flat_radius_mm;
+                    let r = (corner_radius_mm - rem).max(0.05);
+                    (r, CutterEnvelopeShape::Ball { radius_mm: r })
+                }
+            }
+            CutterEnvelopeShape::Conical {
+                tip_radius_mm,
+                upper_radius_mm,
+                half_angle_rad,
+                tan_half_angle,
+            } => {
+                let new_upper = (upper_radius_mm - s).max(0.05);
+                let new_tip = (tip_radius_mm - s).max(0.0).min(new_upper);
+                (
+                    new_upper,
+                    CutterEnvelopeShape::Conical {
+                        tip_radius_mm: new_tip,
+                        upper_radius_mm: new_upper,
+                        half_angle_rad,
+                        tan_half_angle,
+                    },
+                )
+            }
+            CutterEnvelopeShape::Face {
+                flat_radius_mm,
+                bottom_radius_mm,
+                outer_radius_mm,
+                corner_radius_mm,
+            } => {
+                let new_outer = (outer_radius_mm - s).max(0.05);
+                let new_bottom = (bottom_radius_mm - s).max(0.05).min(new_outer);
+                let new_flat = (flat_radius_mm - s).max(0.0).min(new_bottom);
+                let new_rc = corner_radius_mm.min(new_bottom - new_flat).max(0.0);
+                (
+                    new_outer,
+                    CutterEnvelopeShape::Face {
+                        flat_radius_mm: new_flat,
+                        bottom_radius_mm: new_bottom,
+                        outer_radius_mm: new_outer,
+                        corner_radius_mm: new_rc,
+                    },
+                )
+            }
+            CutterEnvelopeShape::ThreadMill {
+                cutting_radius_mm,
+                neck_radius_mm,
+                neck_length_mm,
+                pitch_mm,
+                teeth_count,
+                thread_angle_deg,
+            } => {
+                let new_cut = (cutting_radius_mm - s).max(0.05);
+                let new_neck = (neck_radius_mm - s).max(0.05).min(new_cut);
+                (
+                    new_cut,
+                    CutterEnvelopeShape::ThreadMill {
+                        cutting_radius_mm: new_cut,
+                        neck_radius_mm: new_neck,
+                        neck_length_mm,
+                        pitch_mm,
+                        teeth_count,
+                        thread_angle_deg,
+                    },
+                )
+            }
+            CutterEnvelopeShape::Lollipop {
+                flat_radius_mm,
+                sphere_radius_mm,
+                neck_radius_mm,
+                neck_length_mm,
+                z_neck_join_mm,
+            } => {
+                let (new_flat, new_sphere) = if flat_radius_mm >= s {
+                    (flat_radius_mm - s, sphere_radius_mm)
+                } else {
+                    (0.0, (sphere_radius_mm - (s - flat_radius_mm)).max(0.05))
+                };
+                let new_cut = new_flat + new_sphere;
+                let new_neck = (neck_radius_mm - s).max(0.05).min(new_cut);
+                (
+                    new_cut,
+                    CutterEnvelopeShape::Lollipop {
+                        flat_radius_mm: new_flat,
+                        sphere_radius_mm: new_sphere,
+                        neck_radius_mm: new_neck,
+                        neck_length_mm,
+                        z_neck_join_mm,
+                    },
+                )
+            }
+            CutterEnvelopeShape::SlotMill {
+                flat_radius_mm,
+                cutting_radius_mm,
+                cutting_thickness_mm,
+                corner_radius_mm,
+                neck_radius_mm,
+                neck_length_mm,
+            } => {
+                let new_cut = (cutting_radius_mm - s).max(0.05);
+                let new_flat = (flat_radius_mm - s).max(0.0).min(new_cut);
+                let new_rc = corner_radius_mm.min(new_cut - new_flat).max(0.0);
+                let new_neck = (neck_radius_mm - s).max(0.05).min(new_cut);
+                (
+                    new_cut,
+                    CutterEnvelopeShape::SlotMill {
+                        flat_radius_mm: new_flat,
+                        cutting_radius_mm: new_cut,
+                        cutting_thickness_mm,
+                        corner_radius_mm: new_rc,
+                        neck_radius_mm: new_neck,
+                        neck_length_mm,
+                    },
+                )
+            }
+            CutterEnvelopeShape::Dovetail {
+                bottom_radius_mm,
+                top_radius_mm,
+                cutting_height_mm,
+                side_angle_rad,
+                tan_side_angle,
+                corner_radius_mm,
+                neck_radius_mm,
+                neck_length_mm,
+            } => {
+                let new_bot = (bottom_radius_mm - s).max(0.05);
+                let new_top = (top_radius_mm - s).max(0.05).min(new_bot);
+                let new_neck = (neck_radius_mm - s).max(0.05).min(new_top);
+                let new_rc = corner_radius_mm.min(new_bot).max(0.0);
+                (
+                    new_bot,
+                    CutterEnvelopeShape::Dovetail {
+                        bottom_radius_mm: new_bot,
+                        top_radius_mm: new_top,
+                        cutting_height_mm,
+                        side_angle_rad,
+                        tan_side_angle,
+                        corner_radius_mm: new_rc,
+                        neck_radius_mm: new_neck,
+                        neck_length_mm,
+                    },
+                )
+            }
+        };
+
+        Self {
+            shape,
+            cutting_radius_mm,
+            flute_length_mm: self.flute_length_mm,
+            overall_length_mm: self.overall_length_mm,
+            shank_radius_mm: (self.shank_radius_mm - s).max(0.05),
+            stock_radial_mm: (self.stock_radial_mm - s).max(0.0),
+            stock_axial_mm: self.stock_axial_mm,
         }
     }
 
@@ -1148,6 +1335,244 @@ impl AnalyticCutterEnvelope {
         let mut out = Vec::new();
         self.push_thread_mill_axial_intervals_at_radius(r_mm, &mut out);
         out
+    }
+}
+
+/// Physical portion of the revolved cutter assembly (flutes, non-cutting shank/neck, or collet/holder).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolAssemblyPart {
+    Flute,
+    Shank,
+    Holder,
+}
+
+impl ToolAssemblyPart {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Flute => "Cutter flutes",
+            Self::Shank => "Non-cutting shank",
+            Self::Holder => "Holder/collet",
+        }
+    }
+}
+
+/// Canonical full revolved tool assembly envelope (cutting flutes, relieved neck, non-cutting
+/// shank, collet nut, tapered holder body, effective non-rubbing reach, and plunge limits)
+/// shared across `chip-cam`, `chip-stock`, and `chip-sim`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ToolAssemblyEnvelope {
+    pub envelope: AnalyticCutterEnvelope,
+    pub stickout_length_mm: f64,
+    pub holder_nut_radius_mm: f64,
+    pub holder_body_radius_mm: f64,
+    pub holder_cone_z0: f64,
+    pub holder_cone_z1: f64,
+    pub effective_non_rubbing_reach_mm: f64,
+    pub is_center_cutting: bool,
+    pub max_safe_plunge_depth_mm: f64,
+}
+
+impl ToolAssemblyEnvelope {
+    /// Builds the canonical revolved assembly envelope for `tool` (`nut_r = max(shank_r * 2.2, 12.0, shank_r + 4.0)`).
+    pub fn from_tool(tool: &Tool) -> Self {
+        let envelope = AnalyticCutterEnvelope::from_geometry(&tool.geometry);
+        let flute_length_mm = envelope.flute_length_mm();
+        let stickout_length_mm = tool.stickout_length_mm.max(flute_length_mm);
+        let shank_radius_mm = envelope.shank_radius_mm();
+        let holder_nut_radius_mm = (shank_radius_mm * 2.2).max(12.0).max(shank_radius_mm + 4.0);
+        let holder_body_radius_mm = holder_nut_radius_mm * 1.25;
+        let holder_cone_z0 = stickout_length_mm + 18.0;
+        let holder_cone_z1 = stickout_length_mm + 28.0;
+
+        let raw_flute = tool.geometry.flute_length_mm().max(0.0);
+        let raw_stickout = tool.stickout_length_mm.max(raw_flute);
+        let d_cut = tool.geometry.cutting_diameter_mm();
+        let effective_non_rubbing_reach_mm = match tool.geometry {
+            CutterGeometry::ThreadMill {
+                neck_diameter_mm,
+                neck_length_mm,
+                ..
+            }
+            | CutterGeometry::LollipopEndmill {
+                neck_diameter_mm,
+                neck_length_mm,
+                ..
+            }
+            | CutterGeometry::SlotMill {
+                neck_diameter_mm,
+                neck_length_mm,
+                ..
+            }
+            | CutterGeometry::DovetailCutter {
+                neck_diameter_mm,
+                neck_length_mm,
+                ..
+            } => {
+                if neck_diameter_mm + 1e-3 < d_cut {
+                    neck_length_mm.max(raw_flute).min(raw_stickout)
+                } else {
+                    raw_flute
+                }
+            }
+            _ => {
+                let shank = tool.geometry.shank_diameter_mm();
+                if shank > 0.0 && shank + 1e-3 < d_cut {
+                    raw_stickout
+                } else {
+                    raw_flute
+                }
+            }
+        };
+
+        let (is_center_cutting, max_safe_plunge_depth_mm) = match tool.geometry {
+            CutterGeometry::FlatEndmill { diameter_mm, .. }
+            | CutterGeometry::BullNoseEndmill { diameter_mm, .. }
+            | CutterGeometry::BallEndmill { diameter_mm, .. } => {
+                (true, (1.5 * diameter_mm).min(flute_length_mm))
+            }
+            CutterGeometry::LollipopEndmill { diameter_mm, .. } => {
+                (true, (0.5 * diameter_mm).min(flute_length_mm))
+            }
+            CutterGeometry::ChamferMill { .. } | CutterGeometry::TwistDrill { .. } => {
+                (true, flute_length_mm)
+            }
+            CutterGeometry::FaceMill { .. }
+            | CutterGeometry::ThreadMill { .. }
+            | CutterGeometry::SlotMill { .. }
+            | CutterGeometry::DovetailCutter { .. } => (false, 0.0),
+        };
+
+        Self {
+            envelope,
+            stickout_length_mm,
+            holder_nut_radius_mm,
+            holder_body_radius_mm,
+            holder_cone_z0,
+            holder_cone_z1,
+            effective_non_rubbing_reach_mm,
+            is_center_cutting,
+            max_safe_plunge_depth_mm,
+        }
+    }
+
+    #[inline]
+    pub const fn cutting_radius_mm(&self) -> f64 {
+        self.envelope.cutting_radius_mm()
+    }
+
+    #[inline]
+    pub const fn flute_length_mm(&self) -> f64 {
+        self.envelope.flute_length_mm()
+    }
+
+    #[inline]
+    pub const fn overall_length_mm(&self) -> f64 {
+        self.envelope.overall_length_mm()
+    }
+
+    #[inline]
+    pub const fn shank_radius_mm(&self) -> f64 {
+        self.envelope.shank_radius_mm()
+    }
+
+    #[inline]
+    pub const fn neck_radius_mm(&self) -> f64 {
+        self.envelope.neck_radius_mm()
+    }
+
+    #[inline]
+    pub fn neck_length_mm(&self) -> f64 {
+        self.envelope.effective_reach_mm()
+    }
+
+    #[inline]
+    pub const fn is_thread_mill(&self) -> bool {
+        self.envelope.is_thread_mill()
+    }
+
+    #[inline]
+    pub const fn has_relieved_neck(&self) -> bool {
+        self.envelope.has_relieved_neck()
+    }
+
+    #[inline]
+    pub const fn has_bounded_undercut_head(&self) -> bool {
+        self.envelope.has_bounded_undercut_head()
+    }
+
+    #[inline]
+    pub fn max_assembly_radius_mm(&self) -> f64 {
+        self.cutting_radius_mm()
+            .max(self.shank_radius_mm())
+            .max(self.holder_body_radius_mm)
+    }
+
+    /// Evaluates the collet nut / tapered holder cone radius at `dz >= stickout_length_mm`.
+    #[inline]
+    pub fn holder_radius_at_dz(&self, dz: f64) -> f64 {
+        if dz <= self.holder_cone_z0 {
+            self.holder_nut_radius_mm
+        } else if dz < self.holder_cone_z1 {
+            let span = (self.holder_cone_z1 - self.holder_cone_z0).max(1e-6);
+            let u = ((dz - self.holder_cone_z0) / span).clamp(0.0, 1.0);
+            self.holder_nut_radius_mm + (self.holder_body_radius_mm - self.holder_nut_radius_mm) * u
+        } else {
+            self.holder_body_radius_mm
+        }
+    }
+
+    /// Evaluates the full revolved assembly radius at axial height `dz >= 0` above the cutter tip,
+    /// spanning cutting flutes, relieved neck, non-cutting shank, collet nut, and tapered holder cone.
+    #[inline]
+    pub fn radius_at_dz(&self, dz: f64) -> Option<f64> {
+        if !dz.is_finite() || dz < -1e-9 {
+            return None;
+        }
+        let z = dz.max(0.0);
+        if z < self.stickout_length_mm {
+            self.envelope.assembly_radius_at_dz(z)
+        } else {
+            Some(self.holder_radius_at_dz(z))
+        }
+    }
+
+    /// Returns the lowest axial height `dz >= 0` above the tip where the assembly reaches radial
+    /// distance `r_eff` from the spindle axis, paired with the corresponding [`ToolAssemblyPart`].
+    #[inline]
+    pub fn min_dz_and_part_for_radius(&self, r_eff: f64) -> Option<(f64, ToolAssemblyPart)> {
+        if !r_eff.is_finite() || r_eff < 0.0 {
+            return None;
+        }
+        if r_eff <= self.cutting_radius_mm() + 1e-9
+            && let Some(dz) = self.envelope.profile_dz_at_radius(r_eff)
+        {
+            return Some((dz, ToolAssemblyPart::Flute));
+        }
+        if self.stickout_length_mm > self.flute_length_mm() + 1e-6
+            && r_eff <= self.shank_radius_mm() + 1e-9
+        {
+            let shank_z = if self.has_relieved_neck() {
+                if r_eff <= self.neck_radius_mm() + 1e-9 {
+                    self.flute_length_mm()
+                } else {
+                    self.neck_length_mm()
+                }
+            } else {
+                self.flute_length_mm()
+            };
+            return Some((shank_z, ToolAssemblyPart::Shank));
+        }
+        if r_eff <= self.holder_nut_radius_mm + 1e-9 {
+            return Some((self.stickout_length_mm, ToolAssemblyPart::Holder));
+        }
+        if r_eff <= self.holder_body_radius_mm + 1e-9 {
+            let dr = (self.holder_body_radius_mm - self.holder_nut_radius_mm).max(1e-9);
+            let frac = ((r_eff - self.holder_nut_radius_mm) / dr).clamp(0.0, 1.0);
+            let dz = self.holder_cone_z0 + frac * (self.holder_cone_z1 - self.holder_cone_z0);
+            return Some((dz, ToolAssemblyPart::Holder));
+        }
+        None
     }
 }
 

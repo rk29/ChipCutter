@@ -4,9 +4,9 @@
 
 use std::{collections::HashSet, io::Cursor, path::Path};
 
-use cavalier_contours::polyline::{PlineVertex, seg_arc_radius_and_center};
 use chip_math::{
-    ArcPolyline2D, ArcSegment2D, DEFAULT_ARC_FIT_TOL_MM, DVec2, DisplayUnit, MM_PER_INCH,
+    ArcPolyline2D, ArcSegment2D, DAffine2, DEFAULT_ARC_FIT_TOL_MM, DMat2, DVec2, DisplayUnit,
+    MM_PER_INCH,
 };
 use dxf::{
     Drawing,
@@ -81,54 +81,16 @@ pub struct DxfImportReport {
     pub available_layers: Vec<String>,
 }
 
-#[derive(Clone, Copy)]
-struct Affine2D {
-    m: [[f64; 2]; 2],
-    t: DVec2,
-}
-
-impl Affine2D {
-    fn from_scale(s: f64) -> Self {
-        Self {
-            m: [[s, 0.0], [0.0, s]],
-            t: DVec2::ZERO,
-        }
-    }
-
-    fn apply_point(&self, p: DVec2) -> DVec2 {
-        DVec2::new(
-            self.m[0][0] * p.x + self.m[0][1] * p.y + self.t.x,
-            self.m[1][0] * p.x + self.m[1][1] * p.y + self.t.y,
-        )
-    }
-
-    fn compose(&self, rhs: &Self) -> Self {
-        let m00 = self.m[0][0] * rhs.m[0][0] + self.m[0][1] * rhs.m[1][0];
-        let m01 = self.m[0][0] * rhs.m[0][1] + self.m[0][1] * rhs.m[1][1];
-        let m10 = self.m[1][0] * rhs.m[0][0] + self.m[1][1] * rhs.m[1][0];
-        let m11 = self.m[1][0] * rhs.m[0][1] + self.m[1][1] * rhs.m[1][1];
-        let t = self.apply_point(rhs.t);
-        Self {
-            m: [[m00, m01], [m10, m11]],
-            t,
-        }
-    }
-
-    fn det(&self) -> f64 {
-        self.m[0][0] * self.m[1][1] - self.m[0][1] * self.m[1][0]
-    }
-
-    /// Returns `Some(uniform_scale)` when the linear part is isotropic (`sx == sy` and orthogonal).
-    fn uniform_scale(&self) -> Option<f64> {
-        let c0 = DVec2::new(self.m[0][0], self.m[1][0]);
-        let c1 = DVec2::new(self.m[0][1], self.m[1][1]);
-        let s0 = c0.length();
-        let s1 = c1.length();
-        if s0 > 1e-9 && (s0 - s1).abs() <= 1e-4 * s0 && c0.dot(c1).abs() <= 1e-4 * s0 * s1 {
-            Some(s0)
-        } else {
-            None
-        }
+/// Returns `Some(uniform_scale)` when the linear part of `xf` is isotropic (`sx == sy` and orthogonal).
+fn affine2_uniform_scale(xf: &DAffine2) -> Option<f64> {
+    let c0 = xf.matrix2.x_axis;
+    let c1 = xf.matrix2.y_axis;
+    let s0 = c0.length();
+    let s1 = c1.length();
+    if s0 > 1e-9 && (s0 - s1).abs() <= 1e-4 * s0 && c0.dot(c1).abs() <= 1e-4 * s0 * s1 {
+        Some(s0)
+    } else {
+        None
     }
 }
 
@@ -182,7 +144,7 @@ pub fn import_dxf_bytes(
     let mut available_layers: Vec<String> = available_layers_set.into_iter().collect();
     available_layers.sort();
 
-    let root_xf = Affine2D::from_scale(unit_scale);
+    let root_xf = DAffine2::from_scale(DVec2::splat(unit_scale));
     let mut raw_items: Vec<RawImportedItem> = Vec::new();
 
     let env = DxfTraverseEnv {
@@ -290,7 +252,7 @@ fn collect_dxf_entity_with_env(
     env: &DxfTraverseEnv<'_>,
     ent: &Entity,
     inherited_layer: Option<&str>,
-    xf: &Affine2D,
+    xf: &DAffine2,
     depth: u32,
     insert_expansions: &mut usize,
     limit_exceeded: &mut bool,
@@ -352,15 +314,13 @@ fn collect_dxf_entity_with_env(
                         ins.location.x + (c as f64) * ins.column_spacing,
                         ins.location.y + (r as f64) * ins.row_spacing,
                     );
-                    let m = [[cos_r * sx, -sin_r * sy], [sin_r * sx, cos_r * sy]];
-                    let shifted_base = DVec2::new(
-                        m[0][0] * base_pt.x + m[0][1] * base_pt.y,
-                        m[1][0] * base_pt.x + m[1][1] * base_pt.y,
+                    let mat = DMat2::from_cols(
+                        DVec2::new(cos_r * sx, sin_r * sx),
+                        DVec2::new(-sin_r * sy, cos_r * sy),
                     );
-                    let ins_xf = xf.compose(&Affine2D {
-                        m,
-                        t: local_offset - shifted_base,
-                    });
+                    let shifted_base = mat * base_pt;
+                    let ins_xf =
+                        *xf * DAffine2::from_mat2_translation(mat, local_offset - shifted_base);
                     for child in &block.entities {
                         collect_dxf_entity_with_env(
                             env,
@@ -391,8 +351,8 @@ fn collect_dxf_entity_with_env(
 
     match &ent.specific {
         EntityType::Line(line) => {
-            let p0 = xf.apply_point(DVec2::new(line.p1.x, line.p1.y));
-            let p1 = xf.apply_point(DVec2::new(line.p2.x, line.p2.y));
+            let p0 = xf.transform_point2(DVec2::new(line.p1.x, line.p1.y));
+            let p1 = xf.transform_point2(DVec2::new(line.p2.x, line.p2.y));
             if p0.distance(p1) > 1e-5 {
                 out.push(RawImportedItem::Curve {
                     sub_layer,
@@ -406,8 +366,8 @@ fn collect_dxf_entity_with_env(
         EntityType::Circle(circ) => {
             let ocs_flip_x = if circ.normal.z < -0.5 { -1.0 } else { 1.0 };
             let c_local = DVec2::new(ocs_flip_x * circ.center.x, circ.center.y);
-            if let Some(u_scale) = xf.uniform_scale() {
-                let c = xf.apply_point(c_local);
+            if let Some(u_scale) = affine2_uniform_scale(xf) {
+                let c = xf.transform_point2(c_local);
                 let d = 2.0 * circ.radius.abs() * u_scale;
                 if d > 1e-4 {
                     out.push(RawImportedItem::Circle {
@@ -441,18 +401,19 @@ fn collect_dxf_entity_with_env(
             if sweep <= 1e-6 {
                 sweep = std::f64::consts::TAU;
             }
-            if let Some(u_scale) = xf.uniform_scale()
+            if let Some(u_scale) = affine2_uniform_scale(xf)
                 && ocs_flip_x > 0.0
             {
-                let p0 = xf.apply_point(c_local + DVec2::new(a0.cos(), a0.sin()) * arc.radius);
-                let p1 = xf.apply_point(c_local + DVec2::new(a1.cos(), a1.sin()) * arc.radius);
-                let center = xf.apply_point(c_local);
+                let p0 = xf.transform_point2(c_local + DVec2::new(a0.cos(), a0.sin()) * arc.radius);
+                let p1 = xf.transform_point2(c_local + DVec2::new(a1.cos(), a1.sin()) * arc.radius);
+                let center = xf.transform_point2(c_local);
                 let radius = arc.radius.abs() * u_scale;
-                let ccw = xf.det() >= 0.0;
+                let ccw = xf.matrix2.determinant() >= 0.0;
                 // Split arcs > 180° into two halves so unambiguous arc endpoints are always well-conditioned
                 if sweep > std::f64::consts::PI + 1e-4 {
                     let am = a0 + 0.5 * sweep;
-                    let pm = xf.apply_point(c_local + DVec2::new(am.cos(), am.sin()) * arc.radius);
+                    let pm =
+                        xf.transform_point2(c_local + DVec2::new(am.cos(), am.sin()) * arc.radius);
                     out.push(RawImportedItem::Curve {
                         sub_layer,
                         polyline: ArcPolyline2D {
@@ -570,13 +531,13 @@ fn collect_dxf_entity_with_env(
                     if first {
                         let s0 =
                             sample_ellipse(&c, &maj, ell.minor_axis_ratio, ell.start_parameter);
-                        let ts0 = xf.apply_point(s0);
+                        let ts0 = xf.transform_point2(s0);
                         bez.move_to(KPoint::new(ts0.x, ts0.y));
                         first = false;
                     }
-                    let tp1 = xf.apply_point(DVec2::new(p1.x, p1.y));
-                    let tp2 = xf.apply_point(DVec2::new(p2.x, p2.y));
-                    let tp3 = xf.apply_point(DVec2::new(p3.x, p3.y));
+                    let tp1 = xf.transform_point2(DVec2::new(p1.x, p1.y));
+                    let tp2 = xf.transform_point2(DVec2::new(p2.x, p2.y));
+                    let tp3 = xf.transform_point2(DVec2::new(p3.x, p3.y));
                     bez.curve_to(
                         KPoint::new(tp1.x, tp1.y),
                         KPoint::new(tp2.x, tp2.y),
@@ -621,7 +582,7 @@ struct LocalArcSpan {
 
 fn emit_transformed_arc(
     arc: LocalArcSpan,
-    xf: &Affine2D,
+    xf: &DAffine2,
     arc_tol: f64,
     sub_layer: Option<String>,
     out: &mut Vec<RawImportedItem>,
@@ -643,12 +604,13 @@ fn emit_transformed_arc(
         0.0,
     );
     let mut bez = BezPath::new();
-    let p0 = xf.apply_point(center + DVec2::new(start_angle.cos(), start_angle.sin()) * radius);
+    let p0 =
+        xf.transform_point2(center + DVec2::new(start_angle.cos(), start_angle.sin()) * radius);
     bez.move_to(KPoint::new(p0.x, p0.y));
     k_arc.to_cubic_beziers(0.05, |p1, p2, p3| {
-        let tp1 = xf.apply_point(DVec2::new(p1.x, p1.y));
-        let tp2 = xf.apply_point(DVec2::new(p2.x, p2.y));
-        let tp3 = xf.apply_point(DVec2::new(p3.x, p3.y));
+        let tp1 = xf.transform_point2(DVec2::new(p1.x, p1.y));
+        let tp2 = xf.transform_point2(DVec2::new(p2.x, p2.y));
+        let tp3 = xf.transform_point2(DVec2::new(p3.x, p3.y));
         bez.curve_to(
             KPoint::new(tp1.x, tp1.y),
             KPoint::new(tp2.x, tp2.y),
@@ -669,7 +631,7 @@ fn emit_transformed_arc(
 fn build_bulge_polyline(
     verts: &[(DVec2, f64)],
     is_closed_flag: bool,
-    xf: &Affine2D,
+    xf: &DAffine2,
     arc_tol: f64,
 ) -> Option<ArcPolyline2D> {
     if verts.len() < 2 {
@@ -683,8 +645,8 @@ fn build_bulge_polyline(
         verts.len() - 1
     };
 
-    let uniform = xf.uniform_scale();
-    let flip = xf.det() < 0.0;
+    let uniform = affine2_uniform_scale(xf);
+    let flip = xf.matrix2.determinant() < 0.0;
     let mut segments = Vec::with_capacity(seg_count);
 
     for i in 0..seg_count {
@@ -693,46 +655,47 @@ fn build_bulge_polyline(
         if p0_local.distance(p1_local) <= 1e-6 {
             continue;
         }
-        if bulge.abs() <= 1e-6 {
-            segments.push(ArcSegment2D::Line {
-                start: xf.apply_point(p0_local),
-                end: xf.apply_point(p1_local),
-            });
-        } else {
-            let v1 = PlineVertex::new(p0_local.x, p0_local.y, bulge);
-            let v2 = PlineVertex::new(p1_local.x, p1_local.y, 0.0);
-            let (rad_local, c_local_cv) = seg_arc_radius_and_center(v1, v2);
-            let c_local = DVec2::new(c_local_cv.x, c_local_cv.y);
-            if let Some(u_scale) = uniform
-                && rad_local.is_finite()
-                && rad_local > 1e-5
-            {
-                segments.push(ArcSegment2D::Arc {
-                    start: xf.apply_point(p0_local),
-                    end: xf.apply_point(p1_local),
-                    center: xf.apply_point(c_local),
-                    radius: rad_local * u_scale,
-                    ccw: if flip { bulge < 0.0 } else { bulge > 0.0 },
+        match ArcSegment2D::from_bulge(p0_local, p1_local, bulge) {
+            ArcSegment2D::Line { .. } => {
+                segments.push(ArcSegment2D::Line {
+                    start: xf.transform_point2(p0_local),
+                    end: xf.transform_point2(p1_local),
                 });
-            } else {
-                let sweep = 4.0 * bulge.atan();
-                let a0 = (p0_local.y - c_local.y).atan2(p0_local.x - c_local.x);
-                let mut temp = Vec::new();
-                emit_transformed_arc(
-                    LocalArcSpan {
-                        center: c_local,
-                        radius: rad_local,
-                        start_angle: a0,
-                        sweep,
-                    },
-                    xf,
-                    arc_tol,
-                    None,
-                    &mut temp,
-                );
-                for item in temp {
-                    if let RawImportedItem::Curve { polyline, .. } = item {
-                        segments.extend(polyline.segments);
+            }
+            ArcSegment2D::Arc {
+                center: c_local,
+                radius: rad_local,
+                ccw,
+                ..
+            } => {
+                if let Some(u_scale) = uniform {
+                    segments.push(ArcSegment2D::Arc {
+                        start: xf.transform_point2(p0_local),
+                        end: xf.transform_point2(p1_local),
+                        center: xf.transform_point2(c_local),
+                        radius: rad_local * u_scale,
+                        ccw: if flip { !ccw } else { ccw },
+                    });
+                } else {
+                    let sweep = 4.0 * bulge.atan();
+                    let a0 = (p0_local.y - c_local.y).atan2(p0_local.x - c_local.x);
+                    let mut temp = Vec::new();
+                    emit_transformed_arc(
+                        LocalArcSpan {
+                            center: c_local,
+                            radius: rad_local,
+                            start_angle: a0,
+                            sweep,
+                        },
+                        xf,
+                        arc_tol,
+                        None,
+                        &mut temp,
+                    );
+                    for item in temp {
+                        if let RawImportedItem::Curve { polyline, .. } = item {
+                            segments.extend(polyline.segments);
+                        }
                     }
                 }
             }
@@ -758,13 +721,13 @@ fn build_bulge_polyline(
 /// smooth segments within `arc_tol_mm`.
 fn evaluate_dxf_spline(
     sp: &dxf::entities::Spline,
-    xf: &Affine2D,
+    xf: &DAffine2,
     arc_tol_mm: f64,
 ) -> Option<ArcPolyline2D> {
     let ctrl: Vec<DVec2> = sp
         .control_points
         .iter()
-        .map(|p| xf.apply_point(DVec2::new(p.x, p.y)))
+        .map(|p| xf.transform_point2(DVec2::new(p.x, p.y)))
         .collect();
 
     if ctrl.len() < 2 {
@@ -772,7 +735,7 @@ fn evaluate_dxf_spline(
         let fits: Vec<DVec2> = sp
             .fit_points
             .iter()
-            .map(|p| xf.apply_point(DVec2::new(p.x, p.y)))
+            .map(|p| xf.transform_point2(DVec2::new(p.x, p.y)))
             .collect();
         if fits.len() < 2 {
             return None;

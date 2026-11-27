@@ -13,7 +13,6 @@ chip-geom2d.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 rstar.workspace = true
-cavalier_contours.workspace = true
 dxf.workspace = true
 usvg.workspace = true
 kurbo.workspace = true

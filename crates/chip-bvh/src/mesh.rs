@@ -42,6 +42,13 @@ impl Default for TriMesh3D {
     }
 }
 
+impl AsRef<TriMesh3D> for TriMesh3D {
+    #[inline]
+    fn as_ref(&self) -> &Self {
+        self
+    }
+}
+
 impl TriMesh3D {
     /// Builds a [`TriMesh3D`] from indexed vertices and triangle index triples (`face_id = 0`).
     pub fn from_indexed(vertices: Vec<DVec3>, indices: &[[u32; 3]]) -> Self {

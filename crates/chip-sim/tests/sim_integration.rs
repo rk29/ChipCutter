@@ -2635,7 +2635,6 @@ fn deburr3d_auto_detect_sharp_edges_ignores_tangent_fillets_and_vertical_walls()
 fn m66_tslot_undercut_cpu_and_gpu_tridexel_parity() {
     use std::sync::atomic::AtomicBool;
 
-    use chip_cam::chip_sketch::{SketchEntity, SketchEntityEntry, SketchLayer};
     use chip_cam::{
         BoxAnchor27, FixedBoxXyAlign, FixedBoxZAlign, GeometrySelectionItem, HeightReference,
         HeightSpec, Operation, OperationGenRequest, OperationKind, SegmentMotion3D, Setup,
@@ -2644,6 +2643,7 @@ fn m66_tslot_undercut_cpu_and_gpu_tridexel_parity() {
     };
     use chip_math::{ArcPolyline2D, ArcSegment2D, DVec2, DisplayUnit, ParamLength};
     use chip_sim::SimComputeBackendChoice;
+    use chip_sketch::{SketchEntity, SketchEntityEntry, SketchLayer};
     use chip_tools::{default_starter_tool_library, starter_tslot_12mm};
 
     let doc = chip_cad::CadDocument::empty();
@@ -2876,7 +2876,6 @@ fn m66_tslot_undercut_cpu_and_gpu_tridexel_parity() {
 fn m66_dovetail_60deg_cpu_and_gpu_tridexel_parity() {
     use std::sync::atomic::AtomicBool;
 
-    use chip_cam::chip_sketch::{SketchEntity, SketchEntityEntry, SketchLayer};
     use chip_cam::{
         BoxAnchor27, CamError, DovetailMode, DovetailParams, FixedBoxXyAlign, FixedBoxZAlign,
         GeometrySelectionItem, HeightReference, HeightSpec, Operation, OperationGenRequest,
@@ -2886,6 +2885,7 @@ fn m66_dovetail_60deg_cpu_and_gpu_tridexel_parity() {
     };
     use chip_math::{ArcPolyline2D, ArcSegment2D, DVec2, DisplayUnit, ParamLength};
     use chip_sim::SimComputeBackendChoice;
+    use chip_sketch::{SketchEntity, SketchEntityEntry, SketchLayer};
     use chip_tools::{CutterGeometry, default_starter_tool_library, starter_dovetail_60deg_12mm};
 
     let doc = chip_cad::CadDocument::empty();

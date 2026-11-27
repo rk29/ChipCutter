@@ -5,14 +5,12 @@
 //! ensuring fast-twisting helical blades and sloped walls are covered continuously across the
 //! entire slab `[z_lo, z_hi]` with zero missed intermediate positions.
 
+use chip_bvh::{TriMesh3D, clip_triangle_to_z_slab};
 use chip_geom2d::contours_to_region_set;
-use chip_math::{ArcPolyline2D, ArcSegment2D, DVec2, DVec3};
+use chip_math::{DVec2, DVec3, point_to_segment_dist_sq_2d, trace_binary_grid_contours};
 use rayon::prelude::*;
 
-use crate::{
-    rest2d::RegionSet2D,
-    surface3d::{SurfaceMesh3D, push_cutter::slice_surface_contours_z},
-};
+use crate::{rest2d::RegionSet2D, surface3d::push_cutter::slice_surface_contours_z};
 
 /// Convex 2D polygon produced by clipping a 3D triangle against `z_lo <= z <= z_hi` and projecting
 /// onto XY (`3..=5` vertices stored inline with zero heap allocation).
@@ -136,78 +134,13 @@ impl ClippedTri2D {
             for i in 0..n {
                 let a = self.pts[i];
                 let b = self.pts[(i + 1) % n];
-                if point_to_segment_dist_sq(c, a, b) <= max_d2 {
+                if point_to_segment_dist_sq_2d(c, a, b) <= max_d2 {
                     return true;
                 }
             }
             false
         }
     }
-}
-
-#[inline]
-fn point_to_segment_dist_sq(p: DVec2, a: DVec2, b: DVec2) -> f64 {
-    let ab = b - a;
-    let ab2 = ab.length_squared();
-    if ab2 <= 1e-18 {
-        return p.distance_squared(a);
-    }
-    let t = ((p - a).dot(ab) / ab2).clamp(0.0, 1.0);
-    p.distance_squared(a + ab * t)
-}
-
-/// Sutherland-Hodgman clips a 3D convex polygon against a single horizontal half-space:
-/// - `keep_above == true`: keeps `p.z >= z_plane`
-/// - `keep_above == false`: keeps `p.z <= z_plane`
-fn clip_poly_z_plane(
-    input: &[DVec3],
-    in_len: usize,
-    z_plane: f64,
-    keep_above: bool,
-    out: &mut [DVec3; 5],
-) -> usize {
-    if in_len == 0 {
-        return 0;
-    }
-    let signed_dist = |p: DVec3| -> f64 {
-        if keep_above {
-            p.z - z_plane
-        } else {
-            z_plane - p.z
-        }
-    };
-
-    let mut out_len = 0usize;
-    let mut prev = input[in_len - 1];
-    let mut d_prev = signed_dist(prev);
-    let mut prev_in = d_prev >= -1e-12;
-
-    for &cur in &input[..in_len] {
-        let d_cur = signed_dist(cur);
-        let cur_in = d_cur >= -1e-12;
-
-        if cur_in != prev_in {
-            let denom = d_prev - d_cur;
-            if denom.abs() > 1e-15 {
-                let t = (d_prev / denom).clamp(0.0, 1.0);
-                let hit = prev.lerp(cur, t);
-                if out_len < out.len() {
-                    out[out_len] = hit;
-                    out_len += 1;
-                }
-            }
-        }
-        if cur_in && out_len < out.len() {
-            out[out_len] = cur;
-            out_len += 1;
-        }
-
-        prev = cur;
-        d_prev = d_cur;
-        prev_in = cur_in;
-    }
-
-    out_len
 }
 
 /// Clips triangle `(v0, v1, v2)` to the Z slab `[z_lo, z_hi]` and returns its 2D XY projection.
@@ -218,18 +151,12 @@ fn clip_triangle_to_z_slab_xy(
     z_lo: f64,
     z_hi: f64,
 ) -> Option<ClippedTri2D> {
-    let tri_in = [v0, v1, v2, DVec3::ZERO, DVec3::ZERO];
-    let mut buf_a = [DVec3::ZERO; 5];
-    let len_a = clip_poly_z_plane(&tri_in, 3, z_lo, true, &mut buf_a);
-    if len_a < 2 {
+    let mut clipped = [DVec3::ZERO; 7];
+    let len = clip_triangle_to_z_slab(v0, v1, v2, z_lo, z_hi, &mut clipped);
+    if len < 2 {
         return None;
     }
-    let mut buf_b = [DVec3::ZERO; 5];
-    let len_b = clip_poly_z_plane(&buf_a, len_a, z_hi, false, &mut buf_b);
-    if len_b < 2 {
-        return None;
-    }
-    ClippedTri2D::from_clipped_3d(&buf_b, len_b)
+    ClippedTri2D::from_clipped_3d(&clipped, len)
 }
 
 /// Computes the exact swept XY footprint (`RegionSet2D`) of the 3D solid bounded by `surface`
@@ -244,15 +171,16 @@ fn clip_triangle_to_z_slab_xy(
 ///   spacing `<= cell_mm` covers 100% of every sloped wall, plateau, and fast-twisting helical
 ///   blade position continuously between `z_lo` and `z_hi` with zero gaps.
 pub fn project_surface_z_slab_xy(
-    surface: &SurfaceMesh3D,
+    surface: &(impl AsRef<TriMesh3D> + ?Sized),
     z_lo: f64,
     z_hi: f64,
     cell_mm: f64,
 ) -> RegionSet2D {
+    let surface = surface.as_ref();
     if !z_lo.is_finite()
         || !z_hi.is_finite()
         || surface.triangles.is_empty()
-        || !surface.aabb_wcs.is_valid()
+        || !surface.bounds.is_valid()
     {
         return RegionSet2D::empty();
     }
@@ -262,8 +190,8 @@ pub fn project_surface_z_slab_xy(
     } else {
         (z_hi, z_lo)
     };
-    let mesh_min_z = surface.aabb_wcs.min.z;
-    let mesh_max_z = surface.aabb_wcs.max.z;
+    let mesh_min_z = surface.bounds.min.z;
+    let mesh_max_z = surface.bounds.max.z;
     if z1 < mesh_min_z - 1e-6 || z0 > mesh_max_z + 1e-6 {
         return RegionSet2D::empty();
     }
@@ -307,9 +235,9 @@ pub fn project_surface_z_slab_xy(
                     return None;
                 }
                 let [i0, i1, i2] = tri.indices;
-                let v0 = *surface.vertices_wcs.get(i0 as usize)?;
-                let v1 = *surface.vertices_wcs.get(i1 as usize)?;
-                let v2 = *surface.vertices_wcs.get(i2 as usize)?;
+                let v0 = *surface.vertices.get(i0 as usize)?;
+                let v1 = *surface.vertices.get(i1 as usize)?;
+                let v2 = *surface.vertices.get(i2 as usize)?;
                 clip_triangle_to_z_slab_xy(v0, v1, v2, slab_lo, slab_hi)
             })
             .collect()
@@ -440,162 +368,9 @@ pub fn project_surface_z_slab_xy(
             }
         });
 
-    let swept_contours = trace_binary_grid_contours(&occ, nx, ny, origin_x, origin_y, pitch);
+    let swept_contours =
+        trace_binary_grid_contours(&occ, nx, ny, origin_x, origin_y, pitch, pitch, 0.0);
     contours_to_region_set(&swept_contours)
-}
-
-#[inline]
-fn edge_dest(u: usize, v: usize, dir: u8) -> (usize, usize) {
-    match dir {
-        0 => (u + 1, v),
-        1 => (u, v + 1),
-        2 => (u - 1, v),
-        _ => (u, v - 1),
-    }
-}
-
-/// Deterministic dual-grid boundary contour tracer (`CCW` outer loops, `CW` inner holes,
-/// right-turn saddle disambiguation, lossless collinear vertex merge).
-fn trace_binary_grid_contours(
-    occ: &[bool],
-    w: usize,
-    h: usize,
-    origin_x: f64,
-    origin_y: f64,
-    pitch: f64,
-) -> Vec<ArcPolyline2D> {
-    let gw = w + 1;
-    let gh = h + 1;
-    let mut out_mask = vec![0u8; gw * gh];
-    let mut edge_count = 0usize;
-
-    let is_solid = |ix: isize, iy: isize| -> bool {
-        if ix < 0 || iy < 0 || ix >= w as isize || iy >= h as isize {
-            false
-        } else {
-            occ[(iy as usize) * w + (ix as usize)]
-        }
-    };
-
-    for j in 0..h {
-        let row = j * w;
-        for i in 0..w {
-            if !occ[row + i] {
-                continue;
-            }
-            let ii = i as isize;
-            let jj = j as isize;
-            if !is_solid(ii, jj - 1) {
-                out_mask[j * gw + i] |= 1 << 0;
-                edge_count += 1;
-            }
-            if !is_solid(ii + 1, jj) {
-                out_mask[j * gw + (i + 1)] |= 1 << 1;
-                edge_count += 1;
-            }
-            if !is_solid(ii, jj + 1) {
-                out_mask[(j + 1) * gw + (i + 1)] |= 1 << 2;
-                edge_count += 1;
-            }
-            if !is_solid(ii - 1, jj) {
-                out_mask[(j + 1) * gw + i] |= 1 << 3;
-                edge_count += 1;
-            }
-        }
-    }
-
-    if edge_count == 0 {
-        return Vec::new();
-    }
-
-    let mut contours = Vec::new();
-    let mut pts_buf: Vec<DVec2> = Vec::new();
-
-    for sv in 0..gh {
-        for su in 0..gw {
-            loop {
-                let mask = out_mask[sv * gw + su];
-                if mask == 0 {
-                    break;
-                }
-                let start_dir = mask.trailing_zeros() as u8;
-                pts_buf.clear();
-
-                let mut cur_u = su;
-                let mut cur_v = sv;
-                let mut cur_dir = start_dir;
-                let mut prev_dir: Option<u8> = None;
-
-                for _ in 0..=edge_count {
-                    let vidx = cur_v * gw + cur_u;
-                    if (out_mask[vidx] & (1 << cur_dir)) == 0 {
-                        break;
-                    }
-                    out_mask[vidx] &= !(1 << cur_dir);
-
-                    if prev_dir != Some(cur_dir) {
-                        pts_buf.push(DVec2::new(
-                            origin_x + (cur_u as f64) * pitch,
-                            origin_y + (cur_v as f64) * pitch,
-                        ));
-                    }
-                    prev_dir = Some(cur_dir);
-
-                    let (nu, nv) = edge_dest(cur_u, cur_v, cur_dir);
-                    if nu == su && nv == sv {
-                        break;
-                    }
-                    let next_mask = out_mask[nv * gw + nu];
-                    if next_mask == 0 {
-                        break;
-                    }
-                    let candidates = [
-                        (cur_dir + 3) & 3,
-                        cur_dir,
-                        (cur_dir + 1) & 3,
-                        (cur_dir + 2) & 3,
-                    ];
-                    let Some(&ndir) = candidates.iter().find(|&&d| (next_mask & (1 << d)) != 0)
-                    else {
-                        break;
-                    };
-                    cur_u = nu;
-                    cur_v = nv;
-                    cur_dir = ndir;
-                }
-
-                if pts_buf.len() >= 3 {
-                    let first = pts_buf[0];
-                    let second = pts_buf[1];
-                    let last = pts_buf[pts_buf.len() - 1];
-                    let d1 = second - first;
-                    let d0 = first - last;
-                    if (d0.x * d1.y - d0.y * d1.x).abs() <= 1e-9 && d0.dot(d1) > 0.0 {
-                        pts_buf.remove(0);
-                    }
-                }
-
-                if pts_buf.len() >= 3 {
-                    let mut segs = Vec::with_capacity(pts_buf.len());
-                    for k in 0..pts_buf.len() {
-                        let a = pts_buf[k];
-                        let b = pts_buf[(k + 1) % pts_buf.len()];
-                        if a.distance_squared(b) > 1e-12 {
-                            segs.push(ArcSegment2D::Line { start: a, end: b });
-                        }
-                    }
-                    if segs.len() >= 3 {
-                        contours.push(ArcPolyline2D {
-                            segments: segs,
-                            closed: true,
-                        });
-                    }
-                }
-            }
-        }
-    }
-
-    contours
 }
 
 #[cfg(test)]
@@ -604,6 +379,7 @@ mod tests {
     use chip_math::{DVec2, DVec3};
 
     use super::*;
+    use crate::surface3d::SurfaceMesh3D;
 
     /// Builds a watertight twisting rectangular blade along Z ∈ `[z0, z1]` rotating linearly from
     /// `0°` at `z0` to `twist_deg` at `z1` (width = `2 * half_len`, thickness = `2 * half_thick`).

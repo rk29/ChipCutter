@@ -48,28 +48,22 @@ impl RegionSet2D {
         if !center.is_finite() || !radius_mm.is_finite() || radius_mm <= 1e-5 {
             return Self::empty();
         }
-        let p_r = center + DVec2::new(radius_mm, 0.0);
-        let p_l = center - DVec2::new(radius_mm, 0.0);
-        let circle = ArcPolyline2D {
-            segments: vec![
-                ArcSegment2D::Arc {
-                    start: p_r,
-                    end: p_l,
-                    center,
-                    radius: radius_mm,
-                    ccw: true,
-                },
-                ArcSegment2D::Arc {
-                    start: p_l,
-                    end: p_r,
-                    center,
-                    radius: radius_mm,
-                    ccw: true,
-                },
-            ],
-            closed: true,
-        };
-        Self::from_single(PocketRegion2D::new(circle, Vec::new()))
+        Self::from_single(PocketRegion2D::new(
+            ArcPolyline2D::circle(center, radius_mm),
+            Vec::new(),
+        ))
+    }
+
+    /// Exact combined 2D axis-aligned bounding box of all outer contours in this region set.
+    pub fn exact_aabb(&self) -> Option<Aabb2> {
+        let mut acc = Aabb2::EMPTY;
+        for r in &self.regions {
+            let b = r.exact_aabb();
+            if b.is_valid() {
+                acc = acc.union(&b);
+            }
+        }
+        acc.is_valid().then_some(acc)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -718,6 +712,131 @@ pub fn contours_to_region_set(contours: &[ArcPolyline2D]) -> RegionSet2D {
         }
     }
     result
+}
+
+/// Organizes already-deduplicated simple closed `CCW` loops into Even-Odd nested
+/// [`PocketRegion2D`]s (`outer_ccw` paired with direct `CW` child islands).
+///
+/// Expects loops with positive area and valid sample points; loops are sorted descending by
+/// absolute area internally so parent loops always precede contained child loops.
+pub fn nest_closed_loops_even_odd(ccw_loops: &[ArcPolyline2D]) -> Vec<PocketRegion2D> {
+    struct Entry<'a> {
+        ccw: &'a ArcPolyline2D,
+        abs_area: f64,
+        sample_pt: DVec2,
+    }
+
+    let mut entries: Vec<Entry<'_>> = ccw_loops
+        .iter()
+        .filter_map(|ccw| {
+            let abs_area = ccw.signed_area().abs();
+            if abs_area <= 1e-4 {
+                return None;
+            }
+            let (sample_pt, _) = ccw.sample_at_fraction(0.137)?;
+            Some(Entry {
+                ccw,
+                abs_area,
+                sample_pt,
+            })
+        })
+        .collect();
+    entries.sort_by(|a, b| b.abs_area.total_cmp(&a.abs_area));
+
+    let n = entries.len();
+    let mut parent: Vec<Option<usize>> = vec![None; n];
+    let mut depth: Vec<usize> = vec![0; n];
+
+    for i in 0..n {
+        let mut direct_parent: Option<usize> = None;
+        for j in (0..i).rev() {
+            if entries[j].ccw.contains_point(entries[i].sample_pt) {
+                direct_parent = Some(j);
+                break;
+            }
+        }
+        parent[i] = direct_parent;
+        depth[i] = direct_parent.map_or(0, |p| depth[p] + 1);
+    }
+
+    let mut out = Vec::new();
+    for i in 0..n {
+        if !depth[i].is_multiple_of(2) {
+            continue;
+        }
+        let mut islands_cw = Vec::new();
+        let mut isl_area_sum = 0.0;
+        for child in (i + 1)..n {
+            if parent[child] == Some(i) {
+                isl_area_sum += entries[child].abs_area;
+                islands_cw.push(entries[child].ccw.ensure_orientation(false));
+            }
+        }
+        let net_area = (entries[i].abs_area - isl_area_sum).max(0.0);
+        if net_area > 1e-4 {
+            out.push(PocketRegion2D {
+                outer_ccw: entries[i].ccw.ensure_orientation(true),
+                islands_cw,
+            });
+        }
+    }
+    out
+}
+
+/// Computes the exact 2D CCW convex hull of `points` via Andrew's monotone chain (`O(N log N)`)
+/// and wraps it as a single-region [`RegionSet2D`].
+pub fn region_from_convex_hull_2d(points: &[DVec2]) -> Option<RegionSet2D> {
+    if points.len() < 3 {
+        return None;
+    }
+    let mut pts: Vec<DVec2> = points.iter().copied().filter(|p| p.is_finite()).collect();
+    pts.sort_by(|a, b| a.x.total_cmp(&b.x).then_with(|| a.y.total_cmp(&b.y)));
+    pts.dedup_by(|a, b| a.distance_squared(*b) <= 1e-10);
+    if pts.len() < 3 {
+        return None;
+    }
+
+    let cross =
+        |o: DVec2, a: DVec2, b: DVec2| (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+    let mut lower: Vec<DVec2> = Vec::with_capacity(pts.len());
+    for &p in &pts {
+        while lower.len() >= 2 && cross(lower[lower.len() - 2], lower[lower.len() - 1], p) <= 1e-9 {
+            lower.pop();
+        }
+        lower.push(p);
+    }
+    let mut upper: Vec<DVec2> = Vec::with_capacity(pts.len());
+    for &p in pts.iter().rev() {
+        while upper.len() >= 2 && cross(upper[upper.len() - 2], upper[upper.len() - 1], p) <= 1e-9 {
+            upper.pop();
+        }
+        upper.push(p);
+    }
+    lower.pop();
+    upper.pop();
+    lower.extend(upper);
+    if lower.len() < 3 {
+        return None;
+    }
+
+    let mut segs = Vec::with_capacity(lower.len());
+    for i in 0..lower.len() {
+        let a = lower[i];
+        let b = lower[(i + 1) % lower.len()];
+        if a.distance_squared(b) > 1e-10 {
+            segs.push(ArcSegment2D::Line { start: a, end: b });
+        }
+    }
+    if segs.len() < 3 {
+        return None;
+    }
+    let poly = ArcPolyline2D {
+        segments: segs,
+        closed: true,
+    }
+    .ensure_orientation(true);
+    let reg = RegionSet2D::from_single(PocketRegion2D::new(poly, Vec::new()));
+    (!reg.is_empty()).then_some(reg)
 }
 
 /// Computes the exact 2D capsule (`CCW` stadium or annular sector) swept by a disk of `radius_mm`

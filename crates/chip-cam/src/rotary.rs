@@ -1145,7 +1145,7 @@ pub fn resolve_rotary_window(
 
     let mut mesh_u_min = f64::INFINITY;
     let mut mesh_u_max = f64::NEG_INFINITY;
-    for &v in &input.base_mesh.vertices_wcs {
+    for &v in &input.base_mesh.vertices {
         let u = v.dot(u_vec);
         mesh_u_min = mesh_u_min.min(u);
         mesh_u_max = mesh_u_max.max(u);
@@ -1382,7 +1382,7 @@ pub fn build_rotated_strip_mesh(
     z_floor: f64,
 ) -> SurfaceMesh3D {
     let vertices_wcs: Vec<DVec3> = base
-        .vertices_wcs
+        .vertices
         .iter()
         .map(|&v| rot.rotate_point_wcs(v, theta_deg))
         .collect();
@@ -1605,9 +1605,9 @@ pub fn drop_cutter_rotary_at(
             for &pi in &prim_indices[first..end] {
                 let tri = &base_mesh.triangles[pi as usize];
                 let [i0, i1, i2] = tri.indices;
-                let v0 = rot_pt(base_mesh.vertices_wcs[i0 as usize]);
-                let v1 = rot_pt(base_mesh.vertices_wcs[i1 as usize]);
-                let v2 = rot_pt(base_mesh.vertices_wcs[i2 as usize]);
+                let v0 = rot_pt(base_mesh.vertices[i0 as usize]);
+                let v1 = rot_pt(base_mesh.vertices[i1 as usize]);
+                let v2 = rot_pt(base_mesh.vertices[i2 as usize]);
 
                 let tz_max = v0.z.max(v1.z).max(v2.z);
                 if tz_max < z_min_cutoff || (hit_any && tz_max <= best_z) {
@@ -1796,9 +1796,9 @@ fn mesh_outward_winding_sign(base_mesh: &SurfaceMesh3D) -> f64 {
     let mut signed_vol6 = 0.0_f64;
     for tri in &base_mesh.triangles {
         let [i0, i1, i2] = tri.indices;
-        let v0 = base_mesh.vertices_wcs[i0 as usize];
-        let v1 = base_mesh.vertices_wcs[i1 as usize];
-        let v2 = base_mesh.vertices_wcs[i2 as usize];
+        let v0 = base_mesh.vertices[i0 as usize];
+        let v1 = base_mesh.vertices[i1 as usize];
+        let v2 = base_mesh.vertices[i2 as usize];
         signed_vol6 += v0.dot(v1.cross(v2));
     }
     if signed_vol6 < -1e-6 { -1.0 } else { 1.0 }
@@ -1829,9 +1829,9 @@ pub fn mesh_has_steep_circumferential_overhang(
 
     for tri in &base_mesh.triangles {
         let [i0, i1, i2] = tri.indices;
-        let v0 = base_mesh.vertices_wcs[i0 as usize];
-        let v1 = base_mesh.vertices_wcs[i1 as usize];
-        let v2 = base_mesh.vertices_wcs[i2 as usize];
+        let v0 = base_mesh.vertices[i0 as usize];
+        let v1 = base_mesh.vertices[i1 as usize];
+        let v2 = base_mesh.vertices[i2 as usize];
         let centroid = (v0 + v1 + v2) / 3.0;
         let u = centroid.dot(u_vec);
         if u < u_lo || u > u_hi {
@@ -1887,7 +1887,7 @@ pub fn detect_rotary_axial_undercut_warning(
     let (_, _, u_vec) = rot.axis.basis();
     let mut mesh_u_min = f64::INFINITY;
     let mut mesh_u_max = f64::NEG_INFINITY;
-    for &v in &base_mesh.vertices_wcs {
+    for &v in &base_mesh.vertices {
         let u = v.dot(u_vec);
         mesh_u_min = mesh_u_min.min(u);
         mesh_u_max = mesh_u_max.max(u);
@@ -1912,9 +1912,9 @@ pub fn detect_rotary_axial_undercut_warning(
         .par_iter()
         .map(|tri| {
             let [i0, i1, i2] = tri.indices;
-            let v0 = base_mesh.vertices_wcs[i0 as usize];
-            let v1 = base_mesh.vertices_wcs[i1 as usize];
-            let v2 = base_mesh.vertices_wcs[i2 as usize];
+            let v0 = base_mesh.vertices[i0 as usize];
+            let v1 = base_mesh.vertices[i1 as usize];
+            let v2 = base_mesh.vertices[i2 as usize];
             let centroid = (v0 + v1 + v2) / 3.0;
             let u = centroid.dot(u_vec);
             if u < u_lo || u > u_hi {
@@ -2164,7 +2164,7 @@ mod tests {
         // Also build a Y-axis rotated version of the shaft (swap X <-> Y) with a non-zero center offset
         let shift = DVec3::new(1.25, -2.5, 3.5);
         let y_verts: Vec<DVec3> = base_mesh_x
-            .vertices_wcs
+            .vertices
             .iter()
             .map(|&v| DVec3::new(v.y, v.x, v.z) + shift)
             .collect();

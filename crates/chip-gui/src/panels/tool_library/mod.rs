@@ -354,7 +354,10 @@ impl ToolLibraryModalState {
                     {
                         let sel_idx = self.selected_tool_idx.min(global_lib.tools.len() - 1);
                         let target_id = global_lib.tools[sel_idx].id.clone();
-                        let refs = referencing_operations(project, &target_id);
+                        let refs = project
+                            .tool_usage_map()
+                            .remove(&target_id)
+                            .unwrap_or_default();
                         if refs.is_empty() {
                             let removed = global_lib.tools.remove(sel_idx);
                             if !global_lib.tools.is_empty() {
@@ -511,7 +514,17 @@ impl ToolLibraryModalState {
 
                 // Active-operation usage warning & confirmation guard for in-use tool deletion.
                 let selected_id = global_lib.tools[self.selected_tool_idx].id.clone();
-                let active_refs = referencing_operations(project, &selected_id);
+                let active_refs: Vec<String> = {
+                    let mut seen = std::collections::HashSet::new();
+                    project
+                        .tool_usage_map()
+                        .remove(&selected_id)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter(|r| seen.insert((r.setup_idx, r.op_idx)))
+                        .map(|r| format!("{} / {}", r.setup_name, r.op_name))
+                        .collect()
+                };
                 if !active_refs.is_empty() {
                     let preview_refs = if active_refs.len() <= 3 {
                         active_refs.join(", ")
@@ -912,20 +925,6 @@ impl ToolLibraryModalState {
         self.open = keep_open;
         actions
     }
-}
-
-fn referencing_operations(project: &ProjectDocument, tool_id: &ToolId) -> Vec<String> {
-    let mut refs = Vec::new();
-    for setup in &project.setups {
-        for op in &setup.operations {
-            let uses_primary = op.tool_id.as_ref() == Some(tool_id);
-            let uses_clearing = op.clearing_tool_id() == Some(tool_id);
-            if uses_primary || uses_clearing {
-                refs.push(format!("{} / {}", setup.name, op.name));
-            }
-        }
-    }
-    refs
 }
 
 #[cfg(test)]

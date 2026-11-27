@@ -9,7 +9,7 @@ use std::f64::consts::TAU;
 
 use chip_bvh::TriMesh3D;
 use chip_cad::CadDocument;
-use chip_geom2d::{PocketRegion2D, RegionSet2D};
+use chip_geom2d::{PocketRegion2D, RegionSet2D, region_from_convex_hull_2d};
 use chip_math::{
     Aabb3, ArcPolyline2D, ArcSegment2D, DMat3, DVec2, DVec3, DisplayUnit, EvalContext, ParamLength,
 };
@@ -1416,7 +1416,8 @@ impl MeshBuilder {
         }
 
         // End caps via exact ear-clipping triangulation of simple CCW 2D polygon `profile_rz`
-        let cap_tris = ear_clip_ccw_2d(profile_rz);
+        let profile_pts: Vec<DVec2> = profile_rz.iter().map(|&(x, y)| DVec2::new(x, y)).collect();
+        let cap_tris = chip_geom2d::ear_clip_ccw_2d(&profile_pts);
         for [i0, i1, i2] in cap_tris {
             let a = i0 as u32;
             let b = i1 as u32;
@@ -1499,60 +1500,6 @@ impl MeshBuilder {
     }
 }
 
-/// Exact ear-clipping triangulation for a simple CCW 2D polygon (`(x, y)` pairs).
-fn ear_clip_ccw_2d(pts: &[(f64, f64)]) -> Vec<[usize; 3]> {
-    let n = pts.len();
-    if n < 3 {
-        return Vec::new();
-    }
-    let mut rem: Vec<usize> = (0..n).collect();
-    let mut tris = Vec::with_capacity(n.saturating_sub(2));
-
-    let cross2 = |a: (f64, f64), b: (f64, f64), c: (f64, f64)| -> f64 {
-        (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0)
-    };
-    let point_in_tri = |p: (f64, f64), a: (f64, f64), b: (f64, f64), c: (f64, f64)| -> bool {
-        let c1 = cross2(a, b, p);
-        let c2 = cross2(b, c, p);
-        let c3 = cross2(c, a, p);
-        c1 >= -1e-10 && c2 >= -1e-10 && c3 >= -1e-10
-    };
-
-    let mut guard = n * n + 4;
-    while rem.len() > 3 && guard > 0 {
-        guard -= 1;
-        let m = rem.len();
-        let mut clipped = false;
-        for i in 0..m {
-            let prev = rem[(i + m - 1) % m];
-            let curr = rem[i];
-            let next = rem[(i + 1) % m];
-            let a = pts[prev];
-            let b = pts[curr];
-            let c = pts[next];
-            if cross2(a, b, c) <= 1e-10 {
-                continue;
-            }
-            let any_inside = rem.iter().copied().any(|idx| {
-                idx != prev && idx != curr && idx != next && point_in_tri(pts[idx], a, b, c)
-            });
-            if !any_inside {
-                tris.push([prev, curr, next]);
-                rem.remove(i);
-                clipped = true;
-                break;
-            }
-        }
-        if !clipped {
-            break;
-        }
-    }
-    if rem.len() == 3 {
-        tris.push([rem[0], rem[1], rem[2]]);
-    }
-    tris
-}
-
 // ============================================================================
 // Exact 2D Keep-Out Footprint Helpers (`RegionSet2D`)
 // ============================================================================
@@ -1602,44 +1549,6 @@ fn region_from_ccw_ring(pts: &[DVec2]) -> RegionSet2D {
     }
     .ensure_orientation(true);
     RegionSet2D::from_single(PocketRegion2D::new(poly, Vec::new()))
-}
-
-/// Computes the exact 2D CCW convex hull of `points` via Andrew's monotone chain (`O(N log N)`).
-fn region_from_convex_hull_2d(points: &[DVec2]) -> Option<RegionSet2D> {
-    if points.len() < 3 {
-        return None;
-    }
-    let mut pts: Vec<DVec2> = points.iter().copied().filter(|p| p.is_finite()).collect();
-    pts.sort_by(|a, b| a.x.total_cmp(&b.x).then_with(|| a.y.total_cmp(&b.y)));
-    pts.dedup_by(|a, b| a.distance_squared(*b) <= 1e-10);
-    if pts.len() < 3 {
-        return None;
-    }
-
-    let cross =
-        |o: DVec2, a: DVec2, b: DVec2| (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
-    let mut lower: Vec<DVec2> = Vec::with_capacity(pts.len());
-    for &p in &pts {
-        while lower.len() >= 2 && cross(lower[lower.len() - 2], lower[lower.len() - 1], p) <= 1e-9 {
-            lower.pop();
-        }
-        lower.push(p);
-    }
-    let mut upper: Vec<DVec2> = Vec::with_capacity(pts.len());
-    for &p in pts.iter().rev() {
-        while upper.len() >= 2 && cross(upper[upper.len() - 2], upper[upper.len() - 1], p) <= 1e-9 {
-            upper.pop();
-        }
-        upper.push(p);
-    }
-    lower.pop();
-    upper.pop();
-    lower.extend(upper);
-    if lower.len() < 3 {
-        return None;
-    }
-    let reg = region_from_ccw_ring(&lower);
-    (!reg.is_empty()).then_some(reg)
 }
 
 #[cfg(test)]

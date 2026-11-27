@@ -232,15 +232,18 @@ pub fn build_cutter_assembly_mesh(
         }
     };
 
-    let nut_r = prof.holder_radius_mm;
-    let body_r = nut_r * 1.25;
+    let asm = prof.assembly();
+    let nut_r = asm.holder_nut_radius_mm;
+    let body_r = asm.holder_body_radius_mm;
+    let cone_z0 = stickout_z + (asm.holder_cone_z0 - asm.stickout_length_mm);
+    let cone_z1 = stickout_z + (asm.holder_cone_z1 - asm.stickout_length_mm);
     let holder_pts = vec![
         (prof.shank_radius_mm, stickout_z),
         (nut_r, stickout_z + 6.0),
-        (nut_r, stickout_z + 18.0),
-        (body_r, stickout_z + 28.0),
-        (body_r, stickout_z + 42.0),
-        (0.0, stickout_z + 42.0),
+        (nut_r, cone_z0),
+        (body_r, cone_z1),
+        (body_r, cone_z1 + 14.0),
+        (0.0, cone_z1 + 14.0),
     ];
 
     let mut mesh = SimToolMesh::default();

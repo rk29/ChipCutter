@@ -17,6 +17,7 @@ gpu-compute = ["chip-sim/gpu-compute", "chip-project/gpu-compute"]
 
 [dependencies]
 chip-math.workspace = true
+chip-geom2d.workspace = true
 chip-cad.workspace = true
 chip-sketch.workspace = true
 chip-tools.workspace = true

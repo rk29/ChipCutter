@@ -4,13 +4,12 @@
 //! so every cutting pass is a bounded-engagement crescent peel ($\text{radial bite} \le a_e$), linked via
 //! dogleg-safe linear `G1` micro-lifts across cleared cavity air.
 
+use chip_geom2d::{PocketRegion2D, clip_scanline_to_region, find_medial_inscribed_pole};
 use chip_math::{ArcPolyline2D, ArcSegment2D, DVec2, DVec3};
 use chip_tools::compute_adaptive_thinning_feed;
 
 use crate::{
     cl_data::MotionRole,
-    medial::find_medial_inscribed_pole,
-    offset2d::{PocketRegion2D, clip_scanline_to_region},
     params::{AdaptiveClearingParams, AdaptiveCutDirection, EntryStrategy, Pocket2DParams},
     rest2d::{RegionSet2D, clip_polyline_outside_region_set, swept_segment_capsule_2d},
     strategies::StrategyExecContext,

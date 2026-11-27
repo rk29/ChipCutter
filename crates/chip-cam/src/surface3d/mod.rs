@@ -11,9 +11,9 @@ pub mod overhang_guard;
 pub mod push_cutter;
 pub mod slab_projection;
 
-use chip_bvh::{
-    ClosestPointHit, FlatBvh, RayHit, TriMesh3D, closest_point_on_triangle, ray_triangle_intersect,
-};
+use std::ops::Deref;
+
+use chip_bvh::{ClosestPointHit, FlatBvh, RayHit, Tri3D, TriMesh3D};
 use chip_cad::{BodyId, CadDocument, MeshTriangle};
 use chip_math::{Aabb3, DVec3, RigidFrame3};
 
@@ -39,33 +39,33 @@ pub use overhang_guard::{
 pub use push_cutter::{PushCutterField, push_cutter_region_z, slice_surface_contours_z};
 pub use slab_projection::project_surface_z_slab_xy;
 
-/// WCS-space canonical `f64` triangle surface mesh accelerated by a [`chip_bvh::FlatBvh`].
-#[derive(Debug, Clone)]
+/// WCS-space canonical `f64` triangle surface mesh backed zero-copy by a [`chip_bvh::TriMesh3D`].
+#[derive(Debug, Clone, Default)]
 pub struct SurfaceMesh3D {
-    pub vertices_wcs: Vec<DVec3>,
-    pub triangles: Vec<MeshTriangle>,
-    pub aabb_wcs: Aabb3,
-    pub bvh: FlatBvh,
+    pub mesh: TriMesh3D,
+}
+
+impl Deref for SurfaceMesh3D {
+    type Target = TriMesh3D;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        &self.mesh
+    }
+}
+
+impl AsRef<TriMesh3D> for SurfaceMesh3D {
+    #[inline]
+    fn as_ref(&self) -> &TriMesh3D {
+        &self.mesh
+    }
 }
 
 impl SurfaceMesh3D {
-    /// Wraps a canonical [`chip_bvh::TriMesh3D`] as a [`SurfaceMesh3D`] without rebuilding the BVH.
+    /// Wraps a canonical [`chip_bvh::TriMesh3D`] as a [`SurfaceMesh3D`] with zero copy or BVH rebuild.
+    #[inline]
     pub fn from_tri_mesh(mesh: TriMesh3D) -> Self {
-        let triangles = mesh
-            .triangles
-            .into_iter()
-            .map(|tri| MeshTriangle {
-                indices: tri.indices,
-                normal: tri.normal,
-                aabb: tri.aabb,
-            })
-            .collect();
-        Self {
-            vertices_wcs: mesh.vertices,
-            triangles,
-            aabb_wcs: mesh.bounds,
-            bvh: mesh.bvh,
-        }
+        Self { mesh }
     }
 
     /// Builds a [`SurfaceMesh3D`] from pre-computed WCS vertices, triangles, and overall bounds.
@@ -76,11 +76,22 @@ impl SurfaceMesh3D {
     ) -> Self {
         let aabbs: Vec<Aabb3> = triangles.iter().map(|t| t.aabb).collect();
         let bvh = FlatBvh::build(&aabbs);
+        let tri3ds = triangles
+            .into_iter()
+            .map(|t| Tri3D {
+                indices: t.indices,
+                face_id: 0,
+                normal: t.normal,
+                aabb: t.aabb,
+            })
+            .collect();
         Self {
-            vertices_wcs,
-            triangles,
-            aabb_wcs,
-            bvh,
+            mesh: TriMesh3D {
+                vertices: vertices_wcs,
+                triangles: tri3ds,
+                bounds: aabb_wcs,
+                bvh,
+            },
         }
     }
 
@@ -100,53 +111,15 @@ impl SurfaceMesh3D {
     }
 
     /// Casts an exact `f64` ray against this surface mesh in `O(log N)` front-to-back order.
+    #[inline]
     pub fn raycast(&self, origin: DVec3, dir: DVec3, max_t: f64) -> Option<RayHit> {
-        self.bvh
-            .traverse_ray_closest(origin, dir, max_t, |tri_idx, best_t| {
-                let tri = self.triangles.get(tri_idx)?;
-                let v0 = *self.vertices_wcs.get(tri.indices[0] as usize)?;
-                let v1 = *self.vertices_wcs.get(tri.indices[1] as usize)?;
-                let v2 = *self.vertices_wcs.get(tri.indices[2] as usize)?;
-                let (t, u, v) = ray_triangle_intersect(origin, dir, v0, v1, v2, best_t)?;
-                Some((
-                    t,
-                    RayHit {
-                        tri_index: tri_idx,
-                        face_id: 0,
-                        t,
-                        point: origin + dir * t,
-                        normal: tri.normal,
-                        bary_u: u,
-                        bary_v: v,
-                    },
-                ))
-            })
-            .map(|(_, hit)| hit)
+        self.mesh.raycast(origin, dir, max_t)
     }
 
     /// Finds the exact `f64` closest point on this surface mesh to `point` in `O(log N)` time.
+    #[inline]
     pub fn closest_point(&self, point: DVec3) -> Option<ClosestPointHit> {
-        self.bvh
-            .traverse_closest_point(point, |tri_idx, _best_d2| {
-                let tri = self.triangles.get(tri_idx)?;
-                let v0 = *self.vertices_wcs.get(tri.indices[0] as usize)?;
-                let v1 = *self.vertices_wcs.get(tri.indices[1] as usize)?;
-                let v2 = *self.vertices_wcs.get(tri.indices[2] as usize)?;
-                let (q, d2, u, v) = closest_point_on_triangle(point, v0, v1, v2);
-                Some((
-                    d2,
-                    ClosestPointHit {
-                        tri_index: tri_idx,
-                        face_id: 0,
-                        point: q,
-                        normal: tri.normal,
-                        distance: d2.sqrt(),
-                        bary_u: u,
-                        bary_v: v,
-                    },
-                ))
-            })
-            .map(|(_, hit)| hit)
+        self.mesh.closest_point(point)
     }
 }
 

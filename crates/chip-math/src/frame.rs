@@ -128,6 +128,18 @@ impl RigidFrame3 {
         self
     }
 
+    /// Transforms this frame's origin and axes by homogeneous `4x4` matrix `m`,
+    /// re-normalizing the axis directions.
+    #[inline]
+    pub fn transformed_by(&self, m: &DMat4) -> Self {
+        Self {
+            origin_mm: m.transform_point3(self.origin_mm),
+            x_axis: m.transform_vector3(self.x_axis).normalize_or_zero(),
+            y_axis: m.transform_vector3(self.y_axis).normalize_or_zero(),
+            z_axis: m.transform_vector3(self.z_axis).normalize_or_zero(),
+        }
+    }
+
     /// Transforms a world-space point (`mm`) into local frame coordinates (`mm`).
     #[inline]
     pub fn world_to_local_point(&self, p_world: DVec3) -> DVec3 {

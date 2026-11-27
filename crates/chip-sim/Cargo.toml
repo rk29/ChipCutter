@@ -19,3 +19,6 @@ chip-math.workspace = true
 chip-stock.workspace = true
 chip-tools.workspace = true
 serde.workspace = true
+
+[dev-dependencies]
+chip-sketch.workspace = true

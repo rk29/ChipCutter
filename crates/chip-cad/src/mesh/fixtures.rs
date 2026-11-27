@@ -3,7 +3,7 @@ use std::{f64::consts::PI, io::Write as _};
 use chip_math::DVec3;
 use zip::{CompressionMethod, DateTime, System, ZipWriter, write::SimpleFileOptions};
 
-use crate::mesh::MeshUnitKind;
+use crate::mesh::{MeshUnitKind, stl::encode_binary_stl};
 
 /// Generates a deterministic, 100% watertight binary STL of a **Sculpted Hemispherical Dome**
 /// (`R = 25.0 mm` hemisphere centered at `(0, 0, 8.0)`) seamlessly stitched onto a `70 × 70 × 8 mm`
@@ -879,28 +879,8 @@ pub fn tutorial_yup_bracket_stl_bytes() -> Vec<u8> {
         .map(|[a, b, c]| [to_yup(a), to_yup(b), to_yup(c)])
         .collect();
 
-    encode_binary_stl(
+    crate::mesh::stl::encode_binary_stl(
         "ChipCutter Tutorial 16 Y-Up Sculpted Mounting Boss (mm)",
         &yup_tris,
     )
-}
-
-fn encode_binary_stl(header_text: &str, tris: &[[DVec3; 3]]) -> Vec<u8> {
-    let mut buf = Vec::with_capacity(84 + tris.len() * 50);
-    let mut header = [0u8; 80];
-    let hb = header_text.as_bytes();
-    let copy_len = hb.len().min(80);
-    header[..copy_len].copy_from_slice(&hb[..copy_len]);
-    buf.extend_from_slice(&header);
-    buf.extend_from_slice(&(tris.len() as u32).to_le_bytes());
-    for &[v0, v1, v2] in tris {
-        let n = (v1 - v0).cross(v2 - v0).normalize_or_zero();
-        for p in [n, v0, v1, v2] {
-            buf.extend_from_slice(&(p.x as f32).to_le_bytes());
-            buf.extend_from_slice(&(p.y as f32).to_le_bytes());
-            buf.extend_from_slice(&(p.z as f32).to_le_bytes());
-        }
-        buf.extend_from_slice(&0u16.to_le_bytes());
-    }
-    buf
 }

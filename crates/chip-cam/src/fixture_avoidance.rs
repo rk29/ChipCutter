@@ -5,9 +5,9 @@
 //! watertight triangle meshes and their [`chip_bvh::FlatBvh`] spatial indexes—strictly UI-agnostic.
 
 use chip_math::{Aabb3, DVec2, DVec3};
-use chip_tools::{AnalyticCutterEnvelope, Tool};
+pub use chip_tools::ToolAssemblyPart;
+use chip_tools::{AnalyticCutterEnvelope, Tool, ToolAssemblyEnvelope};
 use rayon::prelude::*;
-use serde::{Deserialize, Serialize};
 
 use crate::{
     cl_data::{ClEvent, MotionRole},
@@ -16,25 +16,6 @@ use crate::{
     toolpath::{GeneratedToolpath, SegmentMotion3D, ToolpathSegment3D},
     workholding::ResolvedFixtureSolid,
 };
-
-/// Physical portion of the revolved cutter assembly that contacted a workholding fixture.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ToolAssemblyPart {
-    Flute,
-    Shank,
-    Holder,
-}
-
-impl ToolAssemblyPart {
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Flute => "Cutter flutes",
-            Self::Shank => "Non-cutting shank",
-            Self::Holder => "Holder/collet",
-        }
-    }
-}
 
 /// Exact full-assembly collision finding against a [`ResolvedFixtureSolid`].
 #[derive(Debug, Clone, PartialEq)]
@@ -55,9 +36,10 @@ pub struct FixtureRoutingSummary {
 }
 
 /// Full revolved tool assembly profile (cutting flutes, non-cutting shank/neck, collet nut, and
-/// tapered holder body) derived from [`Tool`] and [`AnalyticCutterEnvelope`].
+/// tapered holder body) backed by canonical [`chip_tools::ToolAssemblyEnvelope`].
 #[derive(Debug, Clone, Copy)]
 pub struct ToolAssemblyProfile {
+    pub assembly: ToolAssemblyEnvelope,
     pub envelope: AnalyticCutterEnvelope,
     pub cutting_radius_mm: f64,
     pub flute_length_mm: f64,
@@ -74,97 +56,43 @@ pub struct ToolAssemblyProfile {
 }
 
 impl ToolAssemblyProfile {
-    /// Builds the full revolved assembly envelope matching `chip-stock`'s `RadialCutterProfile`
-    /// and `chip-sim`'s 3D cutter visualization (`nut_r = max(shank_r * 2.2, 12.0, shank_r + 4.0)`).
+    /// Builds the full revolved assembly envelope from canonical [`ToolAssemblyEnvelope::from_tool`].
     pub fn from_tool(tool: &Tool) -> Self {
-        let envelope = AnalyticCutterEnvelope::from_geometry(&tool.geometry);
-        let cutting_radius_mm = envelope.cutting_radius_mm();
-        let flute_length_mm = envelope.flute_length_mm();
-        let neck_radius_mm = envelope.neck_radius_mm();
-        let neck_length_mm = envelope.effective_reach_mm();
-        let is_thread_mill = envelope.is_thread_mill();
-        let has_relieved_neck = envelope.has_relieved_neck();
-        let shank_radius_mm = envelope.shank_radius_mm();
-        let stickout_length_mm = tool.stickout_length_mm.max(flute_length_mm);
-        let holder_nut_radius_mm = (shank_radius_mm * 2.2).max(12.0).max(shank_radius_mm + 4.0);
-        let holder_body_radius_mm = holder_nut_radius_mm * 1.25;
-        let holder_cone_z0 = stickout_length_mm + 18.0;
-        let holder_cone_z1 = stickout_length_mm + 28.0;
-
+        let assembly = ToolAssemblyEnvelope::from_tool(tool);
         Self {
-            envelope,
-            cutting_radius_mm,
-            flute_length_mm,
-            neck_radius_mm,
-            neck_length_mm,
-            is_thread_mill,
-            has_relieved_neck,
-            shank_radius_mm,
-            stickout_length_mm,
-            holder_nut_radius_mm,
-            holder_body_radius_mm,
-            holder_cone_z0,
-            holder_cone_z1,
+            assembly,
+            envelope: assembly.envelope,
+            cutting_radius_mm: assembly.cutting_radius_mm(),
+            flute_length_mm: assembly.flute_length_mm(),
+            neck_radius_mm: assembly.neck_radius_mm(),
+            neck_length_mm: assembly.neck_length_mm(),
+            is_thread_mill: assembly.is_thread_mill(),
+            has_relieved_neck: assembly.has_relieved_neck(),
+            shank_radius_mm: assembly.shank_radius_mm(),
+            stickout_length_mm: assembly.stickout_length_mm,
+            holder_nut_radius_mm: assembly.holder_nut_radius_mm,
+            holder_body_radius_mm: assembly.holder_body_radius_mm,
+            holder_cone_z0: assembly.holder_cone_z0,
+            holder_cone_z1: assembly.holder_cone_z1,
         }
     }
 
     #[inline]
     pub fn max_assembly_radius_mm(&self) -> f64 {
-        self.cutting_radius_mm
-            .max(self.shank_radius_mm)
-            .max(self.holder_body_radius_mm)
+        self.assembly.max_assembly_radius_mm()
     }
 
     /// Evaluates the collet nut / tapered holder cone radius at `dz >= stickout_length_mm`.
     #[inline]
     pub fn holder_radius_at_dz(&self, dz: f64) -> f64 {
-        if dz <= self.holder_cone_z0 {
-            self.holder_nut_radius_mm
-        } else if dz < self.holder_cone_z1 {
-            let span = (self.holder_cone_z1 - self.holder_cone_z0).max(1e-6);
-            let u = ((dz - self.holder_cone_z0) / span).clamp(0.0, 1.0);
-            self.holder_nut_radius_mm + (self.holder_body_radius_mm - self.holder_nut_radius_mm) * u
-        } else {
-            self.holder_body_radius_mm
-        }
+        self.assembly.holder_radius_at_dz(dz)
     }
 
     /// Returns the lowest axial height `dz >= 0` above the tip where the assembly reaches radial
     /// distance `r_eff` from the spindle axis, paired with the corresponding [`ToolAssemblyPart`].
     #[inline]
     pub fn min_dz_and_part_for_radius(&self, r_eff: f64) -> Option<(f64, ToolAssemblyPart)> {
-        if !r_eff.is_finite() || r_eff < 0.0 {
-            return None;
-        }
-        if r_eff <= self.cutting_radius_mm + 1e-9
-            && let Some(dz) = self.envelope.profile_dz_at_radius(r_eff)
-        {
-            return Some((dz, ToolAssemblyPart::Flute));
-        }
-        if self.stickout_length_mm > self.flute_length_mm + 1e-6
-            && r_eff <= self.shank_radius_mm + 1e-9
-        {
-            let shank_z = if self.has_relieved_neck {
-                if r_eff <= self.neck_radius_mm + 1e-9 {
-                    self.flute_length_mm
-                } else {
-                    self.neck_length_mm
-                }
-            } else {
-                self.flute_length_mm
-            };
-            return Some((shank_z, ToolAssemblyPart::Shank));
-        }
-        if r_eff <= self.holder_nut_radius_mm + 1e-9 {
-            return Some((self.stickout_length_mm, ToolAssemblyPart::Holder));
-        }
-        if r_eff <= self.holder_body_radius_mm + 1e-9 {
-            let dr = (self.holder_body_radius_mm - self.holder_nut_radius_mm).max(1e-9);
-            let frac = ((r_eff - self.holder_nut_radius_mm) / dr).clamp(0.0, 1.0);
-            let dz = self.holder_cone_z0 + frac * (self.holder_cone_z1 - self.holder_cone_z0);
-            return Some((dz, ToolAssemblyPart::Holder));
-        }
-        None
+        self.assembly.min_dz_and_part_for_radius(r_eff)
     }
 }
 
@@ -769,7 +697,7 @@ fn evaluate_flat_or_vertical_chord_on_tri(
             f64::INFINITY
         };
         let slab_lo = z_lo - v_margin;
-        let n_poly = clip_triangle_to_z_slab(v0, v1, v2, slab_lo, z_hi, &mut clipped);
+        let n_poly = chip_bvh::clip_triangle_to_z_slab(v0, v1, v2, slab_lo, z_hi, &mut clipped);
         if n_poly < 3 {
             continue;
         }
@@ -802,7 +730,7 @@ fn evaluate_flat_or_vertical_chord_on_tri(
         // Highest Z among clipped polygon points inside `r_allow` of the chord
         let mut poly_max_z = witness.z;
         for &pt in poly {
-            let dp = point_to_segment_dist_2d(DVec2::new(pt.x, pt.y), s0, s1);
+            let dp = chip_math::point_to_segment_dist_2d(DVec2::new(pt.x, pt.y), s0, s1);
             if dp <= r_allow + 1e-6 && pt.z > poly_max_z {
                 poly_max_z = pt.z;
             }
@@ -1276,90 +1204,6 @@ fn push_safe_rapid_bridge_3axis(
 // Exact 2D / 3D Computational Geometry Primitives
 // ---------------------------------------------------------------------------
 
-/// Clips 3D triangle `(v0, v1, v2)` to the horizontal Z-slab `[z_lo, z_hi]` via exact
-/// Sutherland-Hodgman plane clipping. Returns the number of output vertices (`0` or `3..=5`).
-fn clip_triangle_to_z_slab(
-    v0: DVec3,
-    v1: DVec3,
-    v2: DVec3,
-    z_lo: f64,
-    z_hi: f64,
-    out: &mut [DVec3; 7],
-) -> usize {
-    let mut buf_a = [
-        v0,
-        v1,
-        v2,
-        DVec3::ZERO,
-        DVec3::ZERO,
-        DVec3::ZERO,
-        DVec3::ZERO,
-    ];
-    let mut n = 3usize;
-
-    // Clip against `z >= z_lo`
-    if z_lo.is_finite() {
-        let mut next_n = 0usize;
-        let mut prev = buf_a[n - 1];
-        let mut prev_in = prev.z >= z_lo;
-        for &cur in &buf_a[..n] {
-            let cur_in = cur.z >= z_lo;
-            if cur_in != prev_in {
-                let denom = cur.z - prev.z;
-                if denom.abs() > 1e-15 && next_n < out.len() {
-                    let t = ((z_lo - prev.z) / denom).clamp(0.0, 1.0);
-                    out[next_n] = prev.lerp(cur, t);
-                    out[next_n].z = z_lo;
-                    next_n += 1;
-                }
-            }
-            if cur_in && next_n < out.len() {
-                out[next_n] = cur;
-                next_n += 1;
-            }
-            prev = cur;
-            prev_in = cur_in;
-        }
-        if next_n < 3 {
-            return 0;
-        }
-        buf_a[..next_n].copy_from_slice(&out[..next_n]);
-        n = next_n;
-    }
-
-    // Clip against `z <= z_hi`
-    if z_hi.is_finite() {
-        let mut next_n = 0usize;
-        let mut prev = buf_a[n - 1];
-        let mut prev_in = prev.z <= z_hi;
-        for &cur in &buf_a[..n] {
-            let cur_in = cur.z <= z_hi;
-            if cur_in != prev_in {
-                let denom = cur.z - prev.z;
-                if denom.abs() > 1e-15 && next_n < out.len() {
-                    let t = ((z_hi - prev.z) / denom).clamp(0.0, 1.0);
-                    out[next_n] = prev.lerp(cur, t);
-                    out[next_n].z = z_hi;
-                    next_n += 1;
-                }
-            }
-            if cur_in && next_n < out.len() {
-                out[next_n] = cur;
-                next_n += 1;
-            }
-            prev = cur;
-            prev_in = cur_in;
-        }
-        if next_n < 3 {
-            return 0;
-        }
-        next_n
-    } else {
-        out[..n].copy_from_slice(&buf_a[..n]);
-        n
-    }
-}
-
 /// Computes the exact minimum 2D XY distance between 2D segment `(s0, s1)` and a 3D convex polygon
 /// `poly` (3..=5 vertices, coplanar), along with a 3D witness point on `poly` achieving that
 /// distance (choosing the highest-Z witness when `distance == 0.0`).
@@ -1390,7 +1234,7 @@ fn segment_to_convex_poly_xy_dist(s0: DVec2, s1: DVec2, poly: &[DVec3]) -> (f64,
         let b3 = poly[(i + 1) % n];
         let a2 = DVec2::new(a3.x, a3.y);
         let b2 = DVec2::new(b3.x, b3.y);
-        let (d, u_edge) = segment_to_segment_dist_2d(s0, s1, a2, b2);
+        let (d, u_edge) = chip_math::segment_to_segment_dist_2d(s0, s1, a2, b2);
         let q = a3.lerp(b3, u_edge);
         if d <= 1e-9 {
             consider_zero(q);
@@ -1432,69 +1276,6 @@ fn eval_point_in_convex_poly_xy(p: DVec2, poly: &[DVec3]) -> Option<f64> {
         }
     }
     None
-}
-
-/// Exact distance from 2D point `p` to 2D segment `(a, b)`.
-#[inline]
-fn point_to_segment_dist_2d(p: DVec2, a: DVec2, b: DVec2) -> f64 {
-    let ab = b - a;
-    let len2 = ab.length_squared();
-    if len2 <= 1e-18 {
-        return p.distance(a);
-    }
-    let t = ((p - a).dot(ab) / len2).clamp(0.0, 1.0);
-    p.distance(a + ab * t)
-}
-
-/// Exact minimum 2D distance between segments `(p0, p1)` and `(q0, q1)`, returning
-/// `(distance, u_on_q)` where `q0.lerp(q1, u_on_q)` achieves the minimum distance.
-fn segment_to_segment_dist_2d(p0: DVec2, p1: DVec2, q0: DVec2, q1: DVec2) -> (f64, f64) {
-    let dp = p1 - p0;
-    let dq = q1 - q0;
-    let denom = dp.x * dq.y - dp.y * dq.x;
-    if denom.abs() > 1e-12 {
-        let r = q0 - p0;
-        let t = (r.x * dq.y - r.y * dq.x) / denom;
-        let u = (r.x * dp.y - r.y * dp.x) / denom;
-        if (-1e-9..=1.0 + 1e-9).contains(&t) && (-1e-9..=1.0 + 1e-9).contains(&u) {
-            return (0.0, u.clamp(0.0, 1.0));
-        }
-    }
-
-    let mut best_d = f64::INFINITY;
-    let mut best_u = 0.0;
-
-    // 1. Endpoints of `p` projected onto `q`
-    let q_len2 = dq.length_squared();
-    for &ep in &[p0, p1] {
-        let u = if q_len2 <= 1e-18 {
-            0.0
-        } else {
-            ((ep - q0).dot(dq) / q_len2).clamp(0.0, 1.0)
-        };
-        let d = ep.distance(q0 + dq * u);
-        if d < best_d {
-            best_d = d;
-            best_u = u;
-        }
-    }
-
-    // 2. Endpoints of `q` projected onto `p`
-    let p_len2 = dp.length_squared();
-    for &(eq, u_fixed) in &[(q0, 0.0), (q1, 1.0)] {
-        let t = if p_len2 <= 1e-18 {
-            0.0
-        } else {
-            ((eq - p0).dot(dp) / p_len2).clamp(0.0, 1.0)
-        };
-        let d = eq.distance(p0 + dp * t);
-        if d < best_d {
-            best_d = d;
-            best_u = u_fixed;
-        }
-    }
-
-    (best_d, best_u)
 }
 
 /// Computes the normalized parameter interval `[t_min, t_max] ⊆ [0, 1]` where 2D segment `(s0, s1)`

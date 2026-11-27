@@ -14,14 +14,15 @@ use std::{
 use chip_cad::CadDocument;
 use chip_cam::{
     AvoidAxialBandsInput, AvoidRegionInput, ExtractedFeature25D, ExtractedSelectionSummary,
-    MachiningBoundaryMode, Operation, OperationKind, PocketBoundaryMode, PocketRegion2D,
-    RegionSet2D, ResolvedAvoidAxialBands, ResolvedAvoidRegion2D, ResolvedFixtureSolid,
-    ResolvedHeights, ResolvedRotaryConfig, ResolvedRotaryWindow, ResolvedSetup,
-    ResolvedStockGeometry, RotaryWindowInput, SharedAvoidRegion, StockAxis, StrategyParams,
-    SurfaceMesh3D, ToolContainmentMode, rect_region_2d, resolve_3d_boundary_config_detailed,
+    MachiningBoundaryMode, Operation, OperationKind, PocketBoundaryMode, RegionSet2D,
+    ResolvedAvoidAxialBands, ResolvedAvoidRegion2D, ResolvedFixtureSolid, ResolvedHeights,
+    ResolvedRotaryConfig, ResolvedRotaryWindow, ResolvedSetup, ResolvedStockGeometry,
+    RotaryWindowInput, SharedAvoidRegion, StockAxis, StrategyParams, SurfaceMesh3D,
+    ToolContainmentMode, rect_region_2d, resolve_3d_boundary_config_detailed,
     resolve_avoid_axial_bands, resolve_avoid_region_2d, resolve_rotary_window, stock_xy_region,
     transform_fixtures_to_frame,
 };
+use chip_geom2d::PocketRegion2D;
 use chip_math::{Aabb3, DVec2, DVec3, DisplayUnit, EvalContext, RigidFrame3};
 use chip_sketch::SketchLayer;
 use chip_tools::Tool;
@@ -768,7 +769,7 @@ fn resolve_facing_preview(
     if mode == MachiningBoundaryMode::ModelBoundingBox {
         let proxy_mesh;
         let surf_opt = if let Some(surf) = surface_mesh
-            && surf.aabb_wcs.is_valid()
+            && surf.bounds.is_valid()
         {
             Some(surf)
         } else if rs.model_aabb_wcs.is_valid() {
@@ -802,7 +803,7 @@ fn resolve_facing_preview(
         MachiningBoundaryMode::ModelSilhouette => {
             if let Some(surf) = surface_mesh
                 && !surf.triangles.is_empty()
-                && surf.aabb_wcs.is_valid()
+                && surf.bounds.is_valid()
             {
                 let mut cfg = boundary.clone();
                 cfg.tool_containment = ToolContainmentMode::ToolCenterOnBoundary;

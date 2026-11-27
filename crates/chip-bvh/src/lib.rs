@@ -16,8 +16,9 @@ pub mod mesh;
 pub mod segment;
 
 pub use bvh::{
-    ClosestPointHit, FlatBvh, FlatBvhNode, GpuTriangle, RayHit, closest_point_on_segment,
-    closest_point_on_triangle, ray_triangle_intersect,
+    ClosestPointHit, FlatBvh, FlatBvhNode, GpuTriangle, RayHit, clip_triangle_to_z_slab,
+    closest_point_on_segment, closest_point_on_triangle, closest_point_on_triangle_at_z,
+    ray_triangle_intersect,
 };
 pub use mesh::{Tri3D, TriMesh3D};
 pub use segment::{BvhSegment, SegmentBvh, SegmentClosestHit, SegmentPickHit};

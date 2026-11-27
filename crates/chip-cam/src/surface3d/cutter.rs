@@ -1,9 +1,9 @@
-use chip_tools::{AnalyticCutterEnvelope, CutterEnvelopeShape, CutterGeometry, Tool};
-
-use crate::fixture_avoidance::ToolAssemblyProfile;
+use chip_tools::{
+    AnalyticCutterEnvelope, CutterEnvelopeShape, CutterGeometry, Tool, ToolAssemblyEnvelope,
+};
 
 /// Full-assembly upper shank, collet nut, and tapered holder clearance envelope (`mm` above cutter
-/// tip) derived from [`ToolAssemblyProfile::from_tool`].
+/// tip) derived from [`ToolAssemblyEnvelope::from_tool`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AssemblyClearanceSpec {
     /// Axial height above tip (`mm`) where the non-cutting shank begins (uses relieved-neck reach
@@ -296,7 +296,7 @@ impl SurfaceCutterProfile {
     }
 
     /// Builds a full-assembly [`SurfaceCutterProfile`] from [`Tool`] including non-cutting shank,
-    /// collet nut, and tapered holder clearance derived from [`ToolAssemblyProfile::from_tool`].
+    /// collet nut, and tapered holder clearance derived from [`ToolAssemblyEnvelope::from_tool`].
     pub fn from_tool(
         tool: &Tool,
         stock_radial_mm: f64,
@@ -304,16 +304,16 @@ impl SurfaceCutterProfile {
         holder_clearance_mm: f64,
     ) -> Self {
         let mut prof = Self::from_tool_geometry(&tool.geometry, stock_radial_mm, stock_axial_mm);
-        let asm = ToolAssemblyProfile::from_tool(tool);
-        let shank_start_z = if asm.has_relieved_neck {
-            asm.neck_length_mm.max(asm.flute_length_mm)
+        let asm = ToolAssemblyEnvelope::from_tool(tool);
+        let shank_start_z = if asm.has_relieved_neck() {
+            asm.neck_length_mm().max(asm.flute_length_mm())
         } else {
-            asm.flute_length_mm
+            asm.flute_length_mm()
         };
         prof.assembly = Some(AssemblyClearanceSpec {
             flute_length_mm: shank_start_z.max(0.1),
             stickout_length_mm: asm.stickout_length_mm.max(shank_start_z),
-            shank_radius_mm: asm.shank_radius_mm,
+            shank_radius_mm: asm.shank_radius_mm(),
             holder_nut_radius_mm: asm.holder_nut_radius_mm,
             holder_body_radius_mm: asm.holder_body_radius_mm,
             holder_cone_z0: asm.holder_cone_z0,
@@ -428,7 +428,7 @@ impl SurfaceCutterProfile {
             flute_length_mm: self.flute_length_mm,
             stock_axial_mm: self.stock_axial_mm,
             assembly,
-            envelope: self.envelope,
+            envelope: self.envelope.with_radial_shrink(s),
         }
     }
 
@@ -505,5 +505,79 @@ impl SurfaceCutterProfile {
     #[inline]
     pub fn profile_height_at_radius(&self, d: f64) -> Option<f64> {
         self.shape.profile_height_at_radius(d)
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use chip_math::approx_eq;
+    use chip_tools::CutterGeometry;
+
+    use super::*;
+
+    #[test]
+    fn with_radial_shrink_keeps_envelope_consistent_with_shape() {
+        let cases = [
+            CutterGeometry::FlatEndmill {
+                diameter_mm: 8.0,
+                flute_length_mm: 24.0,
+                overall_length_mm: 60.0,
+                shank_diameter_mm: 8.0,
+                flutes: 3,
+            },
+            CutterGeometry::BallEndmill {
+                diameter_mm: 6.0,
+                flute_length_mm: 20.0,
+                overall_length_mm: 55.0,
+                shank_diameter_mm: 6.0,
+                flutes: 2,
+            },
+            CutterGeometry::BullNoseEndmill {
+                diameter_mm: 10.0,
+                corner_radius_mm: 2.0,
+                flute_length_mm: 24.0,
+                overall_length_mm: 60.0,
+                shank_diameter_mm: 10.0,
+                flutes: 3,
+            },
+            CutterGeometry::ChamferMill {
+                diameter_mm: 8.0,
+                tip_diameter_mm: 1.0,
+                included_angle_deg: 90.0,
+                flute_length_mm: 12.0,
+                overall_length_mm: 50.0,
+                shank_diameter_mm: 8.0,
+                flutes: 2,
+            },
+        ];
+
+        let shrink = 0.25;
+        for geom in cases {
+            let base = SurfaceCutterProfile::from_tool_geometry(&geom, 0.0, 0.0);
+            let shrunk = base.with_radial_shrink(shrink);
+            assert!(
+                approx_eq(
+                    shrunk.max_radius_mm(),
+                    shrunk.envelope().cutting_radius_mm(),
+                    1e-9
+                ),
+                "shrunk envelope cutting_radius_mm ({}) must match shape max_radius_mm ({}) for {geom:?}",
+                shrunk.envelope().cutting_radius_mm(),
+                shrunk.max_radius_mm(),
+            );
+            // Tip height at shrunk radius must match between shape and envelope
+            let r_test = shrunk.max_radius_mm() * 0.8;
+            let h_shape = shrunk.profile_height_at_radius(r_test).unwrap();
+            let h_env = shrunk.envelope().profile_dz_at_radius(r_test).unwrap();
+            assert!(
+                approx_eq(h_shape, h_env, 1e-9),
+                "profile height mismatch at r={r_test} for {geom:?}: shape={h_shape} env={h_env}"
+            );
+            // Points beyond shrunk radius (inside unshrunk radius) must return None on both
+            let r_outside = shrunk.max_radius_mm() + 0.1;
+            assert!(shrunk.profile_height_at_radius(r_outside).is_none());
+            assert!(shrunk.envelope().profile_dz_at_radius(r_outside).is_none());
+        }
     }
 }

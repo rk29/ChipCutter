@@ -1276,3 +1276,169 @@ pub fn closest_point_on_triangle(p: DVec3, a: DVec3, b: DVec3, c: DVec3) -> (DVe
     let q = a + ab * v + ac * w;
     (q, p.distance_squared(q), v, w)
 }
+
+/// Clips 3D triangle `(v0, v1, v2)` to the horizontal Z-slab `[z_lo, z_hi]` via exact
+/// Sutherland–Hodgman half-space clipping.
+///
+/// Writes the resulting convex polygon vertices into `out` and returns the output vertex count
+/// (`0` if fewer than 2 vertices survive, otherwise `2..=5`). Infinite `z_lo` / `z_hi` bounds
+/// are treated as unbounded.
+pub fn clip_triangle_to_z_slab(
+    v0: DVec3,
+    v1: DVec3,
+    v2: DVec3,
+    z_lo: f64,
+    z_hi: f64,
+    out: &mut [DVec3; 7],
+) -> usize {
+    let mut buf_a = [
+        v0,
+        v1,
+        v2,
+        DVec3::ZERO,
+        DVec3::ZERO,
+        DVec3::ZERO,
+        DVec3::ZERO,
+    ];
+    let mut n = 3usize;
+
+    // Clip against `z >= z_lo`
+    if z_lo.is_finite() {
+        let mut next_n = 0usize;
+        let mut prev = buf_a[n - 1];
+        let mut d_prev = prev.z - z_lo;
+        let mut prev_in = d_prev >= -1e-12;
+        for &cur in &buf_a[..n] {
+            let d_cur = cur.z - z_lo;
+            let cur_in = d_cur >= -1e-12;
+            if cur_in != prev_in {
+                let denom = d_prev - d_cur;
+                if denom.abs() > 1e-15 && next_n < out.len() {
+                    let t = (d_prev / denom).clamp(0.0, 1.0);
+                    let mut hit = prev.lerp(cur, t);
+                    hit.z = z_lo;
+                    out[next_n] = hit;
+                    next_n += 1;
+                }
+            }
+            if cur_in && next_n < out.len() {
+                out[next_n] = cur;
+                next_n += 1;
+            }
+            prev = cur;
+            d_prev = d_cur;
+            prev_in = cur_in;
+        }
+        if next_n < 2 {
+            return 0;
+        }
+        buf_a[..next_n].copy_from_slice(&out[..next_n]);
+        n = next_n;
+    }
+
+    // Clip against `z <= z_hi`
+    if z_hi.is_finite() {
+        let mut next_n = 0usize;
+        let mut prev = buf_a[n - 1];
+        let mut d_prev = z_hi - prev.z;
+        let mut prev_in = d_prev >= -1e-12;
+        for &cur in &buf_a[..n] {
+            let d_cur = z_hi - cur.z;
+            let cur_in = d_cur >= -1e-12;
+            if cur_in != prev_in {
+                let denom = d_prev - d_cur;
+                if denom.abs() > 1e-15 && next_n < out.len() {
+                    let t = (d_prev / denom).clamp(0.0, 1.0);
+                    let mut hit = prev.lerp(cur, t);
+                    hit.z = z_hi;
+                    out[next_n] = hit;
+                    next_n += 1;
+                }
+            }
+            if cur_in && next_n < out.len() {
+                out[next_n] = cur;
+                next_n += 1;
+            }
+            prev = cur;
+            d_prev = d_cur;
+            prev_in = cur_in;
+        }
+        if next_n < 2 {
+            return 0;
+        }
+        next_n
+    } else {
+        out[..n].copy_from_slice(&buf_a[..n]);
+        n
+    }
+}
+
+/// Intersects triangle `(v0, v1, v2)` with horizontal plane `Z = z_plane` and returns the closest
+/// 3D point on that cross-section (with `.z == z_plane`) to `(target_xy.x, target_xy.y)`.
+pub fn closest_point_on_triangle_at_z(
+    v0: DVec3,
+    v1: DVec3,
+    v2: DVec3,
+    z_plane: f64,
+    target_xy: chip_math::DVec2,
+) -> Option<DVec3> {
+    let z_min = v0.z.min(v1.z).min(v2.z);
+    let z_max = v0.z.max(v1.z).max(v2.z);
+    if z_plane < z_min - 1e-6 || z_plane > z_max + 1e-6 {
+        return None;
+    }
+
+    // Nearly horizontal triangle: use exact 3D triangle closest point directly.
+    if z_max - z_min < 1e-5 {
+        let (p, _, _, _) =
+            closest_point_on_triangle(DVec3::new(target_xy.x, target_xy.y, z_plane), v0, v1, v2);
+        return Some(DVec3::new(p.x, p.y, z_plane));
+    }
+
+    let verts = [v0, v1, v2];
+    let mut hits = [chip_math::DVec2::ZERO; 4];
+    let mut n_hits = 0usize;
+
+    for e in 0..3 {
+        let a = verts[e];
+        let b = verts[(e + 1) % 3];
+        let da = a.z - z_plane;
+        let db = b.z - z_plane;
+        if da.abs() <= 1e-9 {
+            if n_hits < hits.len() {
+                hits[n_hits] = chip_math::DVec2::new(a.x, a.y);
+                n_hits += 1;
+            }
+        } else if (da < 0.0 && db > 0.0) || (da > 0.0 && db < 0.0) {
+            let t = da / (da - db);
+            let p = a.lerp(b, t);
+            if n_hits < hits.len() {
+                hits[n_hits] = chip_math::DVec2::new(p.x, p.y);
+                n_hits += 1;
+            }
+        }
+    }
+
+    if n_hits == 0 {
+        let (p, _, _, _) =
+            closest_point_on_triangle(DVec3::new(target_xy.x, target_xy.y, z_plane), v0, v1, v2);
+        return Some(DVec3::new(p.x, p.y, z_plane));
+    }
+    if n_hits == 1 {
+        return Some(DVec3::new(hits[0].x, hits[0].y, z_plane));
+    }
+
+    let mut best_pt = hits[0];
+    let mut best_d2 = hits[0].distance_squared(target_xy);
+    for i in 0..n_hits {
+        let a = hits[i];
+        let b = hits[(i + 1) % n_hits];
+        let cp = chip_math::closest_point_on_segment_2d(target_xy, a, b);
+        let d2 = cp.distance_squared(target_xy);
+        if d2 < best_d2 {
+            best_d2 = d2;
+            best_pt = cp;
+        }
+    }
+    Some(DVec3::new(best_pt.x, best_pt.y, z_plane))
+}

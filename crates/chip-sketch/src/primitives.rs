@@ -227,31 +227,7 @@ impl PointPatternSpec {
 
 /// Builds a closed `CCW` 2-arc [`ArcPolyline2D`] for a circle of `diameter_mm` at `center_xy`.
 pub fn build_circle_polyline(center_xy: DVec2, diameter_mm: f64) -> ArcPolyline2D {
-    let r = (0.5 * diameter_mm).max(0.0);
-    if r <= 1e-6 || !center_xy.is_finite() {
-        return ArcPolyline2D::default();
-    }
-    let p_r = center_xy + DVec2::new(r, 0.0);
-    let p_l = center_xy - DVec2::new(r, 0.0);
-    ArcPolyline2D {
-        segments: vec![
-            ArcSegment2D::Arc {
-                start: p_r,
-                end: p_l,
-                center: center_xy,
-                radius: r,
-                ccw: true,
-            },
-            ArcSegment2D::Arc {
-                start: p_l,
-                end: p_r,
-                center: center_xy,
-                radius: r,
-                ccw: true,
-            },
-        ],
-        closed: true,
-    }
+    ArcPolyline2D::circle(center_xy, 0.5 * diameter_mm)
 }
 
 /// Configuration for [`build_rectangle_polyline`].
@@ -499,46 +475,5 @@ pub fn transform_arc_polyline_2d(
     scale: f64,
     rotation_deg: f64,
 ) -> ArcPolyline2D {
-    let s = if scale.is_finite() && scale.abs() > 1e-6 {
-        scale
-    } else {
-        1.0
-    };
-    let (sin_r, cos_r) = rotation_deg.to_radians().sin_cos();
-    let map_pt = |p: DVec2| -> DVec2 {
-        let sp = p * s;
-        DVec2::new(cos_r * sp.x - sin_r * sp.y, sin_r * sp.x + cos_r * sp.y) + translate_xy
-    };
-    let rad_scale = s.abs();
-    let flip = s < 0.0;
-    let mut segs = Vec::with_capacity(poly.segments.len());
-    for seg in &poly.segments {
-        match *seg {
-            ArcSegment2D::Line { start, end } => {
-                segs.push(ArcSegment2D::Line {
-                    start: map_pt(start),
-                    end: map_pt(end),
-                });
-            }
-            ArcSegment2D::Arc {
-                start,
-                end,
-                center,
-                radius,
-                ccw,
-            } => {
-                segs.push(ArcSegment2D::Arc {
-                    start: map_pt(start),
-                    end: map_pt(end),
-                    center: map_pt(center),
-                    radius: radius * rad_scale,
-                    ccw: if flip { !ccw } else { ccw },
-                });
-            }
-        }
-    }
-    ArcPolyline2D {
-        segments: segs,
-        closed: poly.closed,
-    }
+    poly.transformed(translate_xy, scale, rotation_deg)
 }

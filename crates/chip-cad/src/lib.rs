@@ -34,12 +34,12 @@ pub use fixtures::{
 };
 pub use kernel::{CadError, CadKernel};
 pub use mesh::{
-    MeshBvh, MeshDiagnostics, MeshFormat, MeshImportOptions, MeshRayHit, MeshTriangle,
-    MeshUnitKind, TriangleMeshBody, build_render_mesh_for_triangle_mesh, is_mesh_extension,
-    load_mesh_bytes, load_mesh_cad_document, sample_box_3mf_bytes,
-    sample_helical_flute_shaft_stl_bytes, sample_relief_wave_obj_text,
-    sample_rotary_shaft_stl_bytes, sample_sculpted_dome_stl_bytes, sample_sculpted_mount_3mf_bytes,
-    sample_triple_helix_loft_stl_bytes, tutorial_yup_bracket_stl_bytes,
+    MeshDiagnostics, MeshFormat, MeshImportOptions, MeshTriangle, MeshUnitKind, TriangleMeshBody,
+    build_render_mesh_for_triangle_mesh, encode_binary_stl, is_mesh_extension, load_mesh_bytes,
+    load_mesh_cad_document, sample_box_3mf_bytes, sample_helical_flute_shaft_stl_bytes,
+    sample_relief_wave_obj_text, sample_rotary_shaft_stl_bytes, sample_sculpted_dome_stl_bytes,
+    sample_sculpted_mount_3mf_bytes, sample_triple_helix_loft_stl_bytes,
+    tutorial_yup_bracket_stl_bytes,
 };
 pub use model::{
     BRepEdge, BRepFace, BRepLoop, BodyId, CadDocument, CurveKind, EdgeId, EdgePolyline,

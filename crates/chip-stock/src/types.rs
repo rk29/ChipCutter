@@ -1,5 +1,5 @@
 use chip_math::{Aabb2, Aabb3, ArcPolyline2D, DVec2, DVec3};
-use chip_tools::{AnalyticCutterEnvelope, CutterEnvelopeShape, CutterGeometry, Tool};
+use chip_tools::{AnalyticCutterEnvelope, CutterEnvelopeShape, Tool, ToolAssemblyEnvelope};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -535,25 +535,15 @@ pub struct RadialCutterProfile {
     pub has_relieved_neck: bool,
     /// `true` for bounded-head undercut cutters (`LollipopEndmill`, `SlotMill`, `DovetailCutter`).
     pub has_bounded_undercut_head: bool,
-    envelope: AnalyticCutterEnvelope,
+    assembly: ToolAssemblyEnvelope,
 }
 
 impl RadialCutterProfile {
-    /// Builds the exact radial height function `P(r)` and holder clearance envelope for `tool`.
+    /// Builds the exact radial height function `P(r)` and holder clearance envelope for `tool`
+    /// from canonical [`ToolAssemblyEnvelope::from_tool`].
     pub fn from_tool(tool: &Tool) -> Self {
-        let envelope = AnalyticCutterEnvelope::from_geometry(&tool.geometry);
-        let flute_length_mm = envelope.flute_length_mm();
-        let overall_length_mm = envelope.overall_length_mm();
-        let stickout_length_mm = tool.stickout_length_mm.max(flute_length_mm);
-        let shank_radius_mm = envelope.shank_radius_mm();
-        let cutting_radius_mm = envelope.cutting_radius_mm();
-        let neck_radius_mm = envelope.neck_radius_mm();
-        let neck_length_mm = envelope.effective_reach_mm();
-        let is_thread_mill = envelope.is_thread_mill();
-        let has_relieved_neck = envelope.has_relieved_neck();
-        let has_bounded_undercut_head = envelope.has_bounded_undercut_head();
-
-        let (thread_pitch_mm, teeth_count, thread_angle_deg) = match envelope.shape() {
+        let assembly = ToolAssemblyEnvelope::from_tool(tool);
+        let (thread_pitch_mm, teeth_count, thread_angle_deg) = match assembly.envelope.shape() {
             CutterEnvelopeShape::ThreadMill {
                 pitch_mm,
                 teeth_count,
@@ -563,72 +553,60 @@ impl RadialCutterProfile {
             _ => (0.0, 0, 0.0),
         };
 
-        let (is_center_cutting, max_safe_plunge_depth_mm) = match tool.geometry {
-            CutterGeometry::FlatEndmill { diameter_mm, .. }
-            | CutterGeometry::BullNoseEndmill { diameter_mm, .. }
-            | CutterGeometry::BallEndmill { diameter_mm, .. } => {
-                (true, (1.5 * diameter_mm).min(flute_length_mm))
-            }
-            CutterGeometry::LollipopEndmill { diameter_mm, .. } => {
-                (true, (0.5 * diameter_mm).min(flute_length_mm))
-            }
-            CutterGeometry::ChamferMill { .. } | CutterGeometry::TwistDrill { .. } => {
-                (true, flute_length_mm)
-            }
-            CutterGeometry::FaceMill { .. }
-            | CutterGeometry::ThreadMill { .. }
-            | CutterGeometry::SlotMill { .. }
-            | CutterGeometry::DovetailCutter { .. } => (false, 0.0),
-        };
-
-        let holder_radius_mm = (shank_radius_mm * 2.2).max(12.0).max(shank_radius_mm + 4.0);
-
         Self {
-            cutting_radius_mm,
-            shank_radius_mm,
-            holder_radius_mm,
-            flute_length_mm,
-            stickout_length_mm,
-            overall_length_mm,
-            is_center_cutting,
-            max_safe_plunge_depth_mm,
-            neck_radius_mm,
-            neck_length_mm,
+            cutting_radius_mm: assembly.cutting_radius_mm(),
+            shank_radius_mm: assembly.shank_radius_mm(),
+            holder_radius_mm: assembly.holder_nut_radius_mm,
+            flute_length_mm: assembly.flute_length_mm(),
+            stickout_length_mm: assembly.stickout_length_mm,
+            overall_length_mm: assembly.overall_length_mm(),
+            is_center_cutting: assembly.is_center_cutting,
+            max_safe_plunge_depth_mm: assembly.max_safe_plunge_depth_mm,
+            neck_radius_mm: assembly.neck_radius_mm(),
+            neck_length_mm: assembly.neck_length_mm(),
             thread_pitch_mm,
             teeth_count,
             thread_angle_deg,
-            is_thread_mill,
-            has_relieved_neck,
-            has_bounded_undercut_head,
-            envelope,
+            is_thread_mill: assembly.is_thread_mill(),
+            has_relieved_neck: assembly.has_relieved_neck(),
+            has_bounded_undercut_head: assembly.has_bounded_undercut_head(),
+            assembly,
         }
+    }
+
+    /// Underlying shared [`ToolAssemblyEnvelope`] from `chip-tools`.
+    #[inline]
+    pub const fn assembly(&self) -> &ToolAssemblyEnvelope {
+        &self.assembly
     }
 
     /// Underlying shared [`AnalyticCutterEnvelope`] from `chip-tools`.
     #[inline]
     pub const fn envelope(&self) -> &AnalyticCutterEnvelope {
-        &self.envelope
+        &self.assembly.envelope
     }
 
     /// Maximum usable reach above the cutter tip before the non-cutting shank begins:
     /// `neck_length_mm` for relieved-neck thread mills, `flute_length_mm` for all other cutters.
     #[inline]
     pub fn effective_reach_mm(&self) -> f64 {
-        self.envelope.effective_reach_mm()
+        self.assembly.envelope.effective_reach_mm()
     }
 
     /// Returns `(z_start, tooth_step, n_teeth, tan_half_angle)` describing the periodic V-tooth
-    /// cutting band of a [`CutterGeometry::ThreadMill`] within `z ∈ [0, flute_length_mm]`.
+    /// cutting band of a [`chip_tools::CutterGeometry::ThreadMill`] within `z ∈ [0, flute_length_mm]`.
     #[inline]
     pub fn thread_mill_tooth_band_params(&self) -> (f64, f64, u32, f64) {
-        self.envelope.thread_mill_tooth_band_params()
+        self.assembly.envelope.thread_mill_tooth_band_params()
     }
 
     /// Evaluates the V-tooth radial envelope `R_tooth(z_local)` inside `[0, flute_length_mm]`
-    /// for a [`CutterGeometry::ThreadMill`], clamped to `[neck_radius_mm, cutting_radius_mm]`.
+    /// for a [`chip_tools::CutterGeometry::ThreadMill`], clamped to `[neck_radius_mm, cutting_radius_mm]`.
     #[inline]
     pub fn thread_mill_tooth_radius_at_z(&self, z_local: f64) -> f64 {
-        self.envelope.thread_mill_tooth_radius_at_z(z_local)
+        self.assembly
+            .envelope
+            .thread_mill_tooth_radius_at_z(z_local)
     }
 
     /// Evaluates the height-dependent cutter radius `R(z_local)` at axial height `z_local` above
@@ -637,41 +615,44 @@ impl RadialCutterProfile {
     #[inline]
     pub fn cutter_radius_at_z(&self, z_local: f64) -> Option<f64> {
         let max_z = self.stickout_length_mm.max(self.effective_reach_mm());
-        self.envelope.cutter_radius_at_z_within(z_local, max_z)
+        self.assembly
+            .envelope
+            .cutter_radius_at_z_within(z_local, max_z)
     }
 
-    /// Pushes exact local axial intervals `(dz_lo, dz_hi)` where a [`CutterGeometry::ThreadMill`]
+    /// Pushes exact local axial intervals `(dz_lo, dz_hi)` where a [`chip_tools::CutterGeometry::ThreadMill`]
     /// occupies radial distance `r_mm` from the spindle axis.
     #[inline]
     pub fn thread_mill_axial_intervals_at_radius(&self, r_mm: f64, out: &mut Vec<(f64, f64)>) {
-        self.envelope
+        self.assembly
+            .envelope
             .push_thread_mill_axial_intervals_at_radius(r_mm, out);
     }
 
     /// Returns `cot(θ) = 1 / tan(θ)` when the cutter has a conical flute envelope (`Chamfer` / `V-Bit` / `Drill`).
     #[inline]
     pub fn conical_slope_cot_theta(&self) -> Option<f64> {
-        self.envelope.conical_slope_cot()
+        self.assembly.envelope.conical_slope_cot()
     }
 
     /// Evaluates axial offset `dz >= 0` from the cutter tip `(0, 0, 0)` to the lower cutting
     /// envelope at radial distance `r_mm` from the spindle axis (`None` if `r_mm > cutting_radius_mm`).
     #[inline]
     pub fn tip_to_envelope_dz(&self, r_mm: f64) -> Option<f64> {
-        self.envelope.profile_dz_at_radius(r_mm)
+        self.assembly.envelope.profile_dz_at_radius(r_mm)
     }
 
     /// Evaluates the exact bounded axial cutting interval `(dz_lo, dz_hi)` above the cutter tip
     /// at radial distance `r_mm` (`None` if `r_mm > cutting_radius_mm`).
     #[inline]
     pub fn cutting_z_interval_at_radius(&self, r_mm: f64) -> Option<(f64, f64)> {
-        self.envelope.cutting_z_interval_at_radius(r_mm)
+        self.assembly.envelope.cutting_z_interval_at_radius(r_mm)
     }
 
     /// Evaluates the exact cutting-head horizontal radius `r(dz)` strictly within `[0, flute_length_mm]`.
     #[inline]
     pub fn cutting_radius_at_dz(&self, dz_mm: f64) -> Option<f64> {
-        self.envelope.cutting_radius_at_dz(dz_mm)
+        self.assembly.envelope.cutting_radius_at_dz(dz_mm)
     }
 
     /// Axial height above the cutter tip swept on X/Y horizontal dexel planes (`effective_reach_mm`
@@ -689,7 +670,7 @@ impl RadialCutterProfile {
     /// the cutter tip `(0, 0, 0)` (exact inverse of [`Self::tip_to_envelope_dz`]).
     #[inline]
     pub fn radius_at_height_dz(&self, dz_mm: f64) -> Option<f64> {
-        self.envelope.radius_at_dz(dz_mm)
+        self.assembly.envelope.radius_at_dz(dz_mm)
     }
 
     /// Maximum envelope radius among cutting flutes, shank, and collet/holder.

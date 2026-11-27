@@ -1,4 +1,4 @@
-use chip_math::{DVec2, DVec3};
+use chip_math::{DVec2, DVec3, point_in_triangle_2d};
 use rayon::prelude::*;
 
 use crate::{
@@ -72,7 +72,7 @@ pub fn drop_cutter_z_detailed_with_scratch(
         return None;
     }
     let r_flute = cutter.max_radius_mm();
-    let eval_assembly = cutter.assembly_can_overlap(surface.aabb_wcs.max.z, z_floor);
+    let eval_assembly = cutter.assembly_can_overlap(surface.bounds.max.z, z_floor);
 
     if !eval_assembly {
         // Fast single-disk path: zero overhead on normal parts and bit-exact parity with flute-only.
@@ -93,9 +93,9 @@ pub fn drop_cutter_z_detailed_with_scratch(
                 continue;
             }
             let [i0, i1, i2] = tri.indices;
-            let v0 = surface.vertices_wcs[i0 as usize];
-            let v1 = surface.vertices_wcs[i1 as usize];
-            let v2 = surface.vertices_wcs[i2 as usize];
+            let v0 = surface.vertices[i0 as usize];
+            let v1 = surface.vertices[i1 as usize];
+            let v2 = surface.vertices[i2 as usize];
 
             if let Some(z_tri) = drop_cutter_triangle_shape(&cutter.shape, c_xy, v0, v1, v2)
                 && z_tri.is_finite()
@@ -124,19 +124,18 @@ pub fn drop_cutter_z_detailed_with_scratch(
 
     let r_shank_eff = asm.effective_shank_radius_mm();
     let check_shank = r_shank_eff > r_flute + 1e-6
-        && surface.aabb_wcs.max.z + cutter.stock_axial_mm > z_floor + asm.flute_length_mm - 1e-4;
+        && surface.bounds.max.z + cutter.stock_axial_mm > z_floor + asm.flute_length_mm - 1e-4;
 
     let r_nut_eff = asm.effective_holder_nut_radius_mm();
     let check_nut = r_nut_eff > r_flute.max(r_shank_eff) + 1e-6
-        && surface.aabb_wcs.max.z + asm.holder_clearance_mm
-            > z_floor + asm.stickout_length_mm - 1e-4;
+        && surface.bounds.max.z + asm.holder_clearance_mm > z_floor + asm.stickout_length_mm - 1e-4;
 
     let r_body_eff = asm.effective_holder_body_radius_mm();
     let cone_dz = (asm.holder_cone_z1 - asm.holder_cone_z0).max(1e-6);
     let check_cone = r_body_eff > r_nut_eff + 1e-6
-        && surface.aabb_wcs.max.z + asm.holder_clearance_mm > z_floor + asm.holder_cone_z0 - 1e-4;
+        && surface.bounds.max.z + asm.holder_clearance_mm > z_floor + asm.holder_cone_z0 - 1e-4;
 
-    let r_query = cutter.effective_query_radius_mm(surface.aabb_wcs.max.z, z_floor);
+    let r_query = cutter.effective_query_radius_mm(surface.bounds.max.z, z_floor);
     surface
         .bvh
         .query_xy_circle_into(x, y, r_query + 1e-6, candidate_buf);
@@ -169,9 +168,9 @@ pub fn drop_cutter_z_detailed_with_scratch(
     for &ti in candidate_buf.iter() {
         let tri = &surface.triangles[ti];
         let [i0, i1, i2] = tri.indices;
-        let v0 = surface.vertices_wcs[i0 as usize];
-        let v1 = surface.vertices_wcs[i1 as usize];
-        let v2 = surface.vertices_wcs[i2 as usize];
+        let v0 = surface.vertices[i0 as usize];
+        let v1 = surface.vertices[i1 as usize];
+        let v2 = surface.vertices[i2 as usize];
 
         // 1. Flute contact (only when triangle XY AABB overlaps flute disk)
         let tri_overlaps_flute = tri.aabb.max.x >= x - flute_xy_pad
@@ -318,6 +317,45 @@ pub fn drop_cutter_points_parallel(
         .collect()
 }
 
+/// Evaluates the highest analytical Drop-Cutter contact `(z_tip_raw, contact_pt_3d, tri_idx)`
+/// at horizontal cutter axis `(c_xy.x, c_xy.y)`.
+pub(crate) fn drop_cutter_highest_contact(
+    surface: &SurfaceMesh3D,
+    cutter: &SurfaceCutterProfile,
+    c_xy: DVec2,
+    cand_buf: &mut Vec<usize>,
+) -> Option<(f64, DVec3, usize)> {
+    let r_max = cutter.max_radius_mm();
+    surface
+        .bvh
+        .query_xy_circle_into(c_xy.x, c_xy.y, r_max + 1e-6, cand_buf);
+    if cand_buf.is_empty() {
+        return None;
+    }
+
+    let mut best: Option<(f64, DVec3, usize)> = None;
+    for &ti in cand_buf.iter() {
+        let tri = &surface.triangles[ti];
+        if let Some((best_z, _, _)) = best
+            && tri.aabb.max.z <= best_z
+        {
+            continue;
+        }
+        let [i0, i1, i2] = tri.indices;
+        let v0 = surface.vertices[i0 as usize];
+        let v1 = surface.vertices[i1 as usize];
+        let v2 = surface.vertices[i2 as usize];
+        if let Some((z_tri, c_pt)) =
+            drop_cutter_triangle_contact_shape(&cutter.shape, c_xy, v0, v1, v2)
+            && z_tri.is_finite()
+            && best.is_none_or(|(bz, _, _)| z_tri > bz)
+        {
+            best = Some((z_tri, c_pt, ti));
+        }
+    }
+    best
+}
+
 /// Evaluates exact analytical `f64` Drop-Cutter contact against a single 3D triangle `(v0, v1, v2)`:
 /// 1. Facet interior / rim contact,
 /// 2. All 3 triangle edges clipped to the cutter disk `d <= R_max`,
@@ -332,6 +370,7 @@ pub(crate) fn drop_cutter_triangle(
     drop_cutter_triangle_shape(&cutter.shape, c_xy, v0, v1, v2)
 }
 
+#[inline]
 pub(crate) fn drop_cutter_triangle_shape(
     shape: &SurfaceCutterShape,
     c_xy: DVec2,
@@ -339,11 +378,21 @@ pub(crate) fn drop_cutter_triangle_shape(
     v1: DVec3,
     v2: DVec3,
 ) -> Option<f64> {
+    drop_cutter_triangle_contact_shape(shape, c_xy, v0, v1, v2).map(|(z, _)| z)
+}
+
+pub(crate) fn drop_cutter_triangle_contact_shape(
+    shape: &SurfaceCutterShape,
+    c_xy: DVec2,
+    v0: DVec3,
+    v1: DVec3,
+    v2: DVec3,
+) -> Option<(f64, DVec3)> {
     let r_max = shape.max_radius_mm();
-    let mut best: Option<f64> = None;
-    let mut consider = |z: f64| {
-        if z.is_finite() && best.is_none_or(|b| z > b) {
-            best = Some(z);
+    let mut best: Option<(f64, DVec3)> = None;
+    let mut consider = |z: f64, pt: DVec3| {
+        if z.is_finite() && best.is_none_or(|(bz, _)| z > bz) {
+            best = Some((z, pt));
         }
     };
 
@@ -351,14 +400,14 @@ pub(crate) fn drop_cutter_triangle_shape(
     for v in [v0, v1, v2] {
         let d = (DVec2::new(v.x, v.y) - c_xy).length();
         if let Some(h) = shape.profile_height_at_radius(d) {
-            consider(v.z - h);
+            consider(v.z - h, v);
         }
     }
 
     // 2. Edge contacts (exact closed-form for Flat/Ball/VBit; safeguarded unimodal refinement for BullNose)
     for (a, b) in [(v0, v1), (v1, v2), (v2, v0)] {
-        if let Some(z_e) = drop_cutter_edge_shape(shape, c_xy, a, b, r_max) {
-            consider(z_e);
+        if let Some((z_e, pt_e)) = drop_cutter_edge_contact_shape(shape, c_xy, a, b, r_max) {
+            consider(z_e, pt_e);
         }
     }
 
@@ -379,7 +428,8 @@ pub(crate) fn drop_cutter_triangle_shape(
 
             // Always test axis center `(cx, cy)` (exact on horizontal triangles and flat center zones)
             if point_in_triangle_2d(c_xy, v0_2, v1_2, v2_2) {
-                consider(plane_z(c_xy));
+                let zp = plane_z(c_xy);
+                consider(zp, DVec3::new(c_xy.x, c_xy.y, zp));
             }
 
             // Uphill XY direction `u = (-nx, -ny) / hypot(nx, ny)`
@@ -392,7 +442,8 @@ pub(crate) fn drop_cutter_triangle_shape(
                     SurfaceCutterShape::Flat { radius_mm } => {
                         let p = c_xy + u * radius_mm;
                         if point_in_triangle_2d(p, v0_2, v1_2, v2_2) {
-                            consider(plane_z(p));
+                            let zp = plane_z(p);
+                            consider(zp, DVec3::new(p.x, p.y, zp));
                         }
                     }
                     SurfaceCutterShape::Ball { radius_mm } => {
@@ -401,7 +452,8 @@ pub(crate) fn drop_cutter_triangle_shape(
                         if point_in_triangle_2d(p, v0_2, v1_2, v2_2)
                             && let Some(h) = shape.profile_height_at_radius(d_star)
                         {
-                            consider(plane_z(p) - h);
+                            let zp = plane_z(p);
+                            consider(zp - h, DVec3::new(p.x, p.y, zp));
                         }
                     }
                     SurfaceCutterShape::BullNose {
@@ -413,7 +465,8 @@ pub(crate) fn drop_cutter_triangle_shape(
                         if point_in_triangle_2d(p, v0_2, v1_2, v2_2)
                             && let Some(h) = shape.profile_height_at_radius(d_star)
                         {
-                            consider(plane_z(p) - h);
+                            let zp = plane_z(p);
+                            consider(zp - h, DVec3::new(p.x, p.y, zp));
                         }
                     }
                     SurfaceCutterShape::TaperedVBit {
@@ -434,7 +487,8 @@ pub(crate) fn drop_cutter_triangle_shape(
                             if point_in_triangle_2d(p, v0_2, v1_2, v2_2)
                                 && let Some(h) = shape.profile_height_at_radius(d_c)
                             {
-                                consider(plane_z(p) - h);
+                                let zp = plane_z(p);
+                                consider(zp - h, DVec3::new(p.x, p.y, zp));
                             }
                         }
                     }
@@ -446,14 +500,15 @@ pub(crate) fn drop_cutter_triangle_shape(
     best
 }
 
-/// Computes exact maximum of `p(t).z - h(||p_xy(t) - c_xy||)` over `t ∈ [0, 1]` where `d(t) <= r_max`.
-fn drop_cutter_edge_shape(
+/// Computes exact maximum `(z_tip, contact_pt)` of `p(t).z - h(||p_xy(t) - c_xy||)` over
+/// `t ∈ [0, 1]` where `d(t) <= r_max`.
+fn drop_cutter_edge_contact_shape(
     shape: &SurfaceCutterShape,
     c_xy: DVec2,
     a: DVec3,
     b: DVec3,
     r_max: f64,
-) -> Option<f64> {
+) -> Option<(f64, DVec3)> {
     let a2 = DVec2::new(a.x, a.y) - c_xy;
     let d2 = DVec2::new(b.x - a.x, b.y - a.y);
     let dz = b.z - a.z;
@@ -462,27 +517,29 @@ fn drop_cutter_edge_shape(
     if len2_sq <= 1e-18 {
         // Purely vertical edge: endpoints already evaluated, return highest point if inside disk
         let dist = a2.length();
+        let top = if a.z >= b.z { a } else { b };
         return shape
             .profile_height_at_radius(dist)
-            .map(|h| a.z.max(b.z) - h);
+            .map(|h| (top.z - h, top));
     }
 
     // Intersect `||a2 + t * d2||^2 <= r_max^2` with `t ∈ [0, 1]`
     let (t_lo, t_hi) = segment_disk_interval(a2, d2, len2_sq, r_max)?;
 
-    let eval = |t: f64| -> Option<f64> {
+    let eval = |t: f64| -> Option<(f64, DVec3)> {
         let dist = (a2 + d2 * t).length();
         let h = shape.profile_height_at_radius(dist)?;
-        Some(a.z + t * dz - h)
+        let pt = a + (b - a) * t;
+        Some((pt.z - h, pt))
     };
 
-    let mut best: Option<f64> = None;
+    let mut best: Option<(f64, DVec3)> = None;
     let mut consider_t = |t: f64| {
         let tc = t.clamp(t_lo, t_hi);
-        if let Some(z) = eval(tc)
-            && best.is_none_or(|b| z > b)
+        if let Some((z, pt)) = eval(tc)
+            && best.is_none_or(|(bz, _)| z > bz)
         {
-            best = Some(z);
+            best = Some((z, pt));
         }
     };
 
@@ -539,8 +596,8 @@ fn drop_cutter_edge_shape(
             let mut hi = t_hi;
             let mut c = hi - INV_PHI * (hi - lo);
             let mut d = lo + INV_PHI * (hi - lo);
-            let mut fc = eval(c).unwrap_or(f64::NEG_INFINITY);
-            let mut fd = eval(d).unwrap_or(f64::NEG_INFINITY);
+            let mut fc = eval(c).map_or(f64::NEG_INFINITY, |(z, _)| z);
+            let mut fd = eval(d).map_or(f64::NEG_INFINITY, |(z, _)| z);
             for _ in 0..48 {
                 if hi - lo <= 1e-12 {
                     break;
@@ -550,13 +607,13 @@ fn drop_cutter_edge_shape(
                     c = d;
                     fc = fd;
                     d = lo + INV_PHI * (hi - lo);
-                    fd = eval(d).unwrap_or(f64::NEG_INFINITY);
+                    fd = eval(d).map_or(f64::NEG_INFINITY, |(z, _)| z);
                 } else {
                     hi = d;
                     d = c;
                     fd = fc;
                     c = hi - INV_PHI * (hi - lo);
-                    fc = eval(c).unwrap_or(f64::NEG_INFINITY);
+                    fc = eval(c).map_or(f64::NEG_INFINITY, |(z, _)| z);
                 }
             }
             consider_t(0.5 * (lo + hi));
@@ -585,18 +642,4 @@ fn segment_disk_interval(a2: DVec2, d2: DVec2, len2_sq: f64, radius: f64) -> Opt
     } else {
         None
     }
-}
-
-/// Exact `f64` 2D point-in-triangle test (orientation-independent, inclusive of edges within `1e-10`).
-#[inline]
-fn point_in_triangle_2d(p: DVec2, a: DVec2, b: DVec2, c: DVec2) -> bool {
-    let area2 = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
-    if area2.abs() <= 1e-14 {
-        return false;
-    }
-    let inv = 1.0 / area2;
-    let w0 = ((b.x - p.x) * (c.y - p.y) - (b.y - p.y) * (c.x - p.x)) * inv;
-    let w1 = ((c.x - p.x) * (a.y - p.y) - (c.y - p.y) * (a.x - p.x)) * inv;
-    let w2 = 1.0 - w0 - w1;
-    w0 >= -1e-10 && w1 >= -1e-10 && w2 >= -1e-10
 }

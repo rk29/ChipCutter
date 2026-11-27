@@ -769,27 +769,7 @@ mod tests {
     }
 
     fn circle_ccw(center: DVec2, radius: f64) -> ArcPolyline2D {
-        let p_r = center + DVec2::new(radius, 0.0);
-        let p_l = center - DVec2::new(radius, 0.0);
-        ArcPolyline2D {
-            segments: vec![
-                ArcSegment2D::Arc {
-                    start: p_r,
-                    end: p_l,
-                    center,
-                    radius,
-                    ccw: true,
-                },
-                ArcSegment2D::Arc {
-                    start: p_l,
-                    end: p_r,
-                    center,
-                    radius,
-                    ccw: true,
-                },
-            ],
-            closed: true,
-        }
+        ArcPolyline2D::circle(center, radius)
     }
 
     #[test]

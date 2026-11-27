@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use chip_bvh::TriMesh3D;
 use chip_geom2d::{contours_to_region_set, simplify_rdp_2d};
 use chip_math::{ArcPolyline2D, ArcSegment2D, DVec2, DVec3};
 use chip_tools::Tool;
@@ -20,7 +21,11 @@ use crate::{
 ///
 /// Closed outer boundaries are oriented CCW and interior holes CW whenever triangle normals
 /// point outward; open meshes emit open polylines when boundary edges terminate.
-pub fn slice_surface_contours_z(surface: &SurfaceMesh3D, z_wcs: f64) -> Vec<ArcPolyline2D> {
+pub fn slice_surface_contours_z(
+    surface: &(impl AsRef<TriMesh3D> + ?Sized),
+    z_wcs: f64,
+) -> Vec<ArcPolyline2D> {
+    let surface = surface.as_ref();
     if !z_wcs.is_finite() || surface.triangles.is_empty() {
         return Vec::new();
     }
@@ -34,9 +39,9 @@ pub fn slice_surface_contours_z(surface: &SurfaceMesh3D, z_wcs: f64) -> Vec<ArcP
     }
     let hits_vertex = slab.iter().any(|&ti| {
         let [i0, i1, i2] = surface.triangles[ti].indices;
-        (surface.vertices_wcs[i0 as usize].z - z_eval).abs() <= 1e-8
-            || (surface.vertices_wcs[i1 as usize].z - z_eval).abs() <= 1e-8
-            || (surface.vertices_wcs[i2 as usize].z - z_eval).abs() <= 1e-8
+        (surface.vertices[i0 as usize].z - z_eval).abs() <= 1e-8
+            || (surface.vertices[i1 as usize].z - z_eval).abs() <= 1e-8
+            || (surface.vertices[i2 as usize].z - z_eval).abs() <= 1e-8
     });
     if hits_vertex {
         z_eval += 1e-6;
@@ -49,9 +54,9 @@ pub fn slice_surface_contours_z(surface: &SurfaceMesh3D, z_wcs: f64) -> Vec<ArcP
             continue;
         }
         let [i0, i1, i2] = tri.indices;
-        let v0 = surface.vertices_wcs[i0 as usize];
-        let v1 = surface.vertices_wcs[i1 as usize];
-        let v2 = surface.vertices_wcs[i2 as usize];
+        let v0 = surface.vertices[i0 as usize];
+        let v1 = surface.vertices[i1 as usize];
+        let v2 = surface.vertices[i2 as usize];
 
         if let Some((p_a, p_b)) = intersect_triangle_with_z_plane(v0, v1, v2, tri.normal, z_eval)
             && p_a.distance_squared(p_b) > 1e-12
@@ -100,8 +105,8 @@ impl<'a> PushCutterField<'a> {
     /// `cutter.max_radius_mm()` (or `cutter.max_assembly_radius_mm()` when wider shank or holder
     /// tiers can overlap `surface.aabb_wcs`).
     pub fn build(surface: &'a SurfaceMesh3D, cutter: SurfaceCutterProfile) -> Self {
-        let z_min = if surface.aabb_wcs.is_valid() {
-            surface.aabb_wcs.min.z
+        let z_min = if surface.bounds.is_valid() {
+            surface.bounds.min.z
         } else {
             -1000.0
         };
@@ -117,7 +122,7 @@ impl<'a> PushCutterField<'a> {
         z_min_wcs: f64,
     ) -> Self {
         let safe_cutter = cutter.with_extra_radial_margin(Self::RADIAL_SAG_MARGIN_MM);
-        if surface.triangles.is_empty() || !surface.aabb_wcs.is_valid() {
+        if surface.triangles.is_empty() || !surface.bounds.is_valid() {
             return Self {
                 surface,
                 safe_cutter,
@@ -135,7 +140,7 @@ impl<'a> PushCutterField<'a> {
         }
 
         let r_max = safe_cutter.max_radius_mm().max(0.05);
-        let aabb = surface.aabb_wcs;
+        let aabb = surface.bounds;
         let span_x = (aabb.max.x - aabb.min.x).max(0.1) + 2.0 * r_max;
         let span_y = (aabb.max.y - aabb.min.y).max(0.1) + 2.0 * r_max;
 
@@ -332,7 +337,7 @@ impl<'a> PushCutterField<'a> {
             return RegionSet2D::empty();
         }
         let z_eff = z_wcs - self.safe_cutter.stock_axial_mm;
-        if z_eff > self.surface.aabb_wcs.max.z + 1e-5 {
+        if z_eff > self.surface.bounds.max.z + 1e-5 {
             return RegionSet2D::empty();
         }
 
@@ -652,11 +657,11 @@ pub fn push_cutter_region_z(
     cutter: &SurfaceCutterProfile,
     z_wcs: f64,
 ) -> RegionSet2D {
-    if !z_wcs.is_finite() || surface.triangles.is_empty() || !surface.aabb_wcs.is_valid() {
+    if !z_wcs.is_finite() || surface.triangles.is_empty() || !surface.bounds.is_valid() {
         return RegionSet2D::empty();
     }
     let z_eff = z_wcs - cutter.stock_axial_mm;
-    if z_eff > surface.aabb_wcs.max.z + 1e-6 {
+    if z_eff > surface.bounds.max.z + 1e-6 {
         return RegionSet2D::empty();
     }
     PushCutterField::build(surface, *cutter).avoidance_region_z(z_wcs)

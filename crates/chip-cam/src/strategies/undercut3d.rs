@@ -154,7 +154,7 @@ pub fn generate_undercut3d(
         return Err(CamError::EmptyCadDocument);
     }
     let surface = SurfaceMesh3D::from_cad_document(ctx.doc, &[], &ctx.setup.frame);
-    if surface.triangles.is_empty() || !surface.aabb_wcs.is_valid() {
+    if surface.triangles.is_empty() || !surface.bounds.is_valid() {
         return Err(CamError::EmptyCadDocument);
     }
 
@@ -271,7 +271,7 @@ pub fn generate_undercut3d(
             }
             tri.indices
                 .iter()
-                .any(|&vi| (surface.vertices_wcs[vi as usize].z - z_eval).abs() <= 1e-7)
+                .any(|&vi| (surface.vertices[vi as usize].z - z_eval).abs() <= 1e-7)
         });
         if hits_v {
             z_eval += 1e-5;
@@ -395,9 +395,9 @@ fn slice_overhang_triangles_at_z(
             continue;
         }
         let [i0, i1, i2] = tri.indices;
-        let v0 = surface.vertices_wcs[i0 as usize];
-        let v1 = surface.vertices_wcs[i1 as usize];
-        let v2 = surface.vertices_wcs[i2 as usize];
+        let v0 = surface.vertices[i0 as usize];
+        let v1 = surface.vertices[i1 as usize];
+        let v2 = surface.vertices[i2 as usize];
 
         let d0 = v0.z - z_plane;
         let d1 = v1.z - z_plane;
@@ -720,9 +720,9 @@ fn is_lollipop_station_clear(
 
     for &ti in cand_buf.iter() {
         let tri = &surface.triangles[ti];
-        let v0 = surface.vertices_wcs[tri.indices[0] as usize];
-        let v1 = surface.vertices_wcs[tri.indices[1] as usize];
-        let v2 = surface.vertices_wcs[tri.indices[2] as usize];
+        let v0 = surface.vertices[tri.indices[0] as usize];
+        let v1 = surface.vertices[tri.indices[1] as usize];
+        let v2 = surface.vertices[tri.indices[2] as usize];
 
         // 1. Spherical head gouge test (`closest_point_on_triangle` in exact f64!)
         if tri.aabb.min.z <= sphere_center.z + specs.eff_r
@@ -746,9 +746,10 @@ fn is_lollipop_station_clear(
         // Check critical Z planes (`z_lo`, `z_hi`, `z_neck_top`) plus uniform 0.4 mm sub-samples
         let z_neck_top_abs = tip.z + specs.z_neck_top;
         let check_plane = |zk: f64| -> bool {
-            let Some(q) = closest_point_on_triangle_at_z(v0, v1, v2, zk, tip_xy) else {
+            let Some(q3) = chip_bvh::closest_point_on_triangle_at_z(v0, v1, v2, zk, tip_xy) else {
                 return true;
             };
+            let q = DVec2::new(q3.x, q3.y);
             let dz = zk - tip.z;
             let req_r = if dz <= specs.z_neck_top + 1e-6 {
                 neck_req
@@ -803,9 +804,9 @@ fn is_vertical_column_open_air(
 
     for &ti in cand_buf.iter() {
         let tri = &surface.triangles[ti];
-        let v0 = surface.vertices_wcs[tri.indices[0] as usize];
-        let v1 = surface.vertices_wcs[tri.indices[1] as usize];
-        let v2 = surface.vertices_wcs[tri.indices[2] as usize];
+        let v0 = surface.vertices[tri.indices[0] as usize];
+        let v1 = surface.vertices[tri.indices[1] as usize];
+        let v2 = surface.vertices[tri.indices[2] as usize];
         let z_lo = tri.aabb.min.z.max(tip.z);
         let z_hi = tri.aabb.max.z.min(safe_z.max(tip.z + specs.z_stickout));
         if z_hi < z_lo - 1e-6 {
@@ -815,8 +816,8 @@ fn is_vertical_column_open_air(
         let n_sub = ((span / 0.5).ceil() as usize).clamp(1, 48);
         for k in 0..=n_sub {
             let zk = z_lo + span * (k as f64 / n_sub as f64);
-            if let Some(q) = closest_point_on_triangle_at_z(v0, v1, v2, zk, xy)
-                && q.distance(xy) < req_r - 1e-4
+            if let Some(q3) = chip_bvh::closest_point_on_triangle_at_z(v0, v1, v2, zk, xy)
+                && DVec2::new(q3.x, q3.y).distance(xy) < req_r - 1e-4
             {
                 return false;
             }
@@ -895,86 +896,6 @@ fn orient_overhang_subchain(sub: &mut [OverhangStation], climb_direction: bool) 
 }
 
 /// Computes the closest XY point on the horizontal cross-section `triangle ∩ {z = z_plane}` to `target_xy`.
-fn closest_point_on_triangle_at_z(
-    v0: DVec3,
-    v1: DVec3,
-    v2: DVec3,
-    z_plane: f64,
-    target_xy: DVec2,
-) -> Option<DVec2> {
-    let d0 = v0.z - z_plane;
-    let d1 = v1.z - z_plane;
-    let d2 = v2.z - z_plane;
-    let eps = 1e-7;
-    if (d0 > eps && d1 > eps && d2 > eps) || (d0 < -eps && d1 < -eps && d2 < -eps) {
-        return None;
-    }
-
-    let mut pts = [DVec2::ZERO; 4];
-    let mut n = 0usize;
-    for (p, q, dp, dq) in [(v0, v1, d0, d1), (v1, v2, d1, d2), (v2, v0, d2, d0)] {
-        if dp.abs() <= eps && n < 4 {
-            pts[n] = DVec2::new(p.x, p.y);
-            n += 1;
-        }
-        if (dp > eps && dq < -eps) || (dp < -eps && dq > eps) {
-            let t = dp / (dp - dq);
-            if n < 4 {
-                pts[n] = DVec2::new(p.x + t * (q.x - p.x), p.y + t * (q.y - p.y));
-                n += 1;
-            }
-        }
-    }
-
-    if n == 0 {
-        return None;
-    }
-    if n == 1 {
-        return Some(pts[0]);
-    }
-    if n == 2 {
-        return Some(closest_point_on_segment_2d(pts[0], pts[1], target_xy));
-    }
-    // Degenerate horizontal triangle lying on `z = z_plane`: test all 3 edges + interior!
-    let p0 = DVec2::new(v0.x, v0.y);
-    let p1 = DVec2::new(v1.x, v1.y);
-    let p2 = DVec2::new(v2.x, v2.y);
-    if point_in_triangle_2d(target_xy, p0, p1, p2) {
-        return Some(target_xy);
-    }
-    let c0 = closest_point_on_segment_2d(p0, p1, target_xy);
-    let c1 = closest_point_on_segment_2d(p1, p2, target_xy);
-    let c2 = closest_point_on_segment_2d(p2, p0, target_xy);
-    let mut best = c0;
-    if c1.distance_squared(target_xy) < best.distance_squared(target_xy) {
-        best = c1;
-    }
-    if c2.distance_squared(target_xy) < best.distance_squared(target_xy) {
-        best = c2;
-    }
-    Some(best)
-}
-
-#[inline]
-fn closest_point_on_segment_2d(a: DVec2, b: DVec2, p: DVec2) -> DVec2 {
-    let ab = b - a;
-    let l2 = ab.length_squared();
-    if l2 <= 1e-12 {
-        return a;
-    }
-    let t = ((p - a).dot(ab) / l2).clamp(0.0, 1.0);
-    a + ab * t
-}
-
-#[inline]
-fn point_in_triangle_2d(p: DVec2, a: DVec2, b: DVec2, c: DVec2) -> bool {
-    let cross = |u: DVec2, v: DVec2| u.x * v.y - u.y * v.x;
-    let c1 = cross(b - a, p - a);
-    let c2 = cross(c - b, p - b);
-    let c3 = cross(a - c, p - c);
-    (c1 >= -1e-9 && c2 >= -1e-9 && c3 >= -1e-9) || (c1 <= 1e-9 && c2 <= 1e-9 && c3 <= 1e-9)
-}
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {

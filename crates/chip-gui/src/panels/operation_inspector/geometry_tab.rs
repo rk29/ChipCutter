@@ -1427,15 +1427,7 @@ fn show_contour_cutting_area_card(
 }
 
 fn region_set_aabb(region: &chip_cam::RegionSet2D) -> Option<chip_math::Aabb2> {
-    let mut out = chip_math::Aabb2::EMPTY;
-    for r in &region.regions {
-        let b = r.outer_ccw.exact_aabb();
-        if b.is_valid() {
-            out.extend_point(b.min);
-            out.extend_point(b.max);
-        }
-    }
-    out.is_valid().then_some(out)
+    region.exact_aabb()
 }
 
 fn expand_same_diameter_holes(

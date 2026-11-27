@@ -1,7 +1,7 @@
 //! Segment deduplication, R-tree (`rstar`) endpoint gap-healing chainer, and Even-Odd planar
 //! region + island hierarchy classification (`11-sketches-vectors.md`).
 
-use chip_geom2d::is_simple_closed_polyline;
+use chip_geom2d::{is_simple_closed_polyline, nest_closed_loops_even_odd};
 use chip_math::{ArcPolyline2D, ArcSegment2D, DVec2, ParamLength};
 use rstar::{AABB, PointDistance, RTree, RTreeObject};
 
@@ -429,7 +429,6 @@ pub fn classify_planar_regions_from_candidates(
         sub_layer: Option<String>,
         ccw: ArcPolyline2D,
         abs_area: f64,
-        sample_pt: DVec2,
     }
 
     // Deduplicate coincident closed loops WITHIN the same `sub_layer`
@@ -461,7 +460,6 @@ pub fn classify_planar_regions_from_candidates(
                 sub_layer,
                 ccw,
                 abs_area,
-                sample_pt,
             });
         }
     }
@@ -472,44 +470,19 @@ pub fn classify_planar_regions_from_candidates(
     // single-layer drawings (`"0"` or `None`) still nest Even-Odd across all loops!
     let mut regions = Vec::new();
     for key in layer_keys {
-        let mut loops: Vec<&LoopItem> = all_loops.iter().filter(|l| l.sub_layer == key).collect();
-        loops.sort_by(|a, b| b.abs_area.total_cmp(&a.abs_area));
-
-        let n = loops.len();
-        let mut parent: Vec<Option<usize>> = vec![None; n];
-        let mut depth: Vec<usize> = vec![0; n];
-
-        for i in 0..n {
-            let mut direct_parent: Option<usize> = None;
-            for j in (0..i).rev() {
-                if loops[j].ccw.contains_point(loops[i].sample_pt) {
-                    direct_parent = Some(j);
-                    break;
-                }
-            }
-            parent[i] = direct_parent;
-            depth[i] = direct_parent.map_or(0, |p| depth[p] + 1);
-        }
-
-        for i in 0..n {
-            if !depth[i].is_multiple_of(2) {
-                continue;
-            }
-            let mut islands_cw = Vec::new();
-            let mut isl_area_sum = 0.0;
-            for child in (i + 1)..n {
-                if parent[child] == Some(i) {
-                    isl_area_sum += loops[child].abs_area;
-                    islands_cw.push(loops[child].ccw.ensure_orientation(false));
-                }
-            }
-            let net_area = (loops[i].abs_area - isl_area_sum).max(0.0);
+        let layer_loops: Vec<ArcPolyline2D> = all_loops
+            .iter()
+            .filter(|l| l.sub_layer == key)
+            .map(|l| l.ccw.clone())
+            .collect();
+        for nested in nest_closed_loops_even_odd(&layer_loops) {
+            let net_area = nested.net_area_mm2();
             if net_area > 1e-4 {
                 regions.push(PlanarVectorRegion {
                     id: format!("region_{}", regions.len() + 1),
-                    sub_layer: loops[i].sub_layer.clone(),
-                    outer_ccw: loops[i].ccw.clone(),
-                    islands_cw,
+                    sub_layer: key.clone(),
+                    outer_ccw: nested.outer_ccw,
+                    islands_cw: nested.islands_cw,
                     area_mm2: net_area,
                 });
             }

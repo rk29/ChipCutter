@@ -69,7 +69,7 @@ pub fn generate_pencil3d(
     }
 
     let surface = SurfaceMesh3D::from_cad_document(ctx.doc, &[], &ctx.setup.frame);
-    if surface.triangles.is_empty() || !surface.aabb_wcs.is_valid() {
+    if surface.triangles.is_empty() || !surface.bounds.is_valid() {
         return Err(CamError::EmptyCadDocument);
     }
 
@@ -82,11 +82,11 @@ pub fn generate_pencil3d(
     let z_bottom = ctx
         .heights
         .bottom_z_wcs
-        .max(surface.aabb_wcs.min.z + axial_stock);
+        .max(surface.bounds.min.z + axial_stock);
     let z_top = ctx
         .heights
         .top_z_wcs
-        .min(surface.aabb_wcs.max.z + axial_stock);
+        .min(surface.bounds.max.z + axial_stock);
     if z_top < z_bottom - 1e-4 {
         return Err(CamError::EmptyToolpath {
             op_name: ctx.op.name.clone(),

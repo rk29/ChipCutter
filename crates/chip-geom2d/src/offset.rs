@@ -5,7 +5,7 @@ use cavalier_contours::{
     core::math::Vector2,
     polyline::{
         BooleanOp, PlineBooleanOptions, PlineOffsetOptions, PlineOrientation, PlineSource,
-        PlineSourceMut, PlineVertex, Polyline, seg_arc_radius_and_center,
+        PlineSourceMut, PlineVertex, Polyline,
     },
     shape_algorithms::{Shape, ShapeOffsetOptions},
 };
@@ -13,7 +13,7 @@ use chip_math::{Aabb2, ArcPolyline2D, ArcSegment2D, DVec2};
 
 /// Losslessly converts an [`ArcPolyline2D`] into a `cavalier_contours::Polyline<f64>` using
 /// exact bulge factors `b = tan(Δθ / 4)` (splitting arcs `> 170°` so `|b| < 1`).
-pub fn to_cavalier_polyline(poly: &ArcPolyline2D) -> Polyline<f64> {
+pub(crate) fn to_cavalier_polyline(poly: &ArcPolyline2D) -> Polyline<f64> {
     let mut normalized: Vec<ArcSegment2D> = Vec::with_capacity(poly.segments.len() + 4);
     for seg in &poly.segments {
         if seg.length() <= 1e-6 {
@@ -71,7 +71,7 @@ pub fn to_cavalier_polyline(poly: &ArcPolyline2D) -> Polyline<f64> {
 
 /// Losslessly converts a `cavalier_contours::Polyline<f64>` back into an exact [`ArcPolyline2D`],
 /// preserving circular arcs (`ArcSegment2D::Arc`) rather than discretizing into line segments.
-pub fn from_cavalier_polyline(pline: &Polyline<f64>) -> ArcPolyline2D {
+pub(crate) fn from_cavalier_polyline(pline: &Polyline<f64>) -> ArcPolyline2D {
     let n = pline.vertex_count();
     let closed = pline.is_closed();
     if n < 2 {
@@ -102,22 +102,10 @@ pub fn from_cavalier_polyline(pline: &Polyline<f64>) -> ArcPolyline2D {
             continue;
         }
 
-        if v1.bulge_is_zero() || v1.bulge.abs() <= 1e-6 {
+        if v1.bulge_is_zero() {
             segments.push(ArcSegment2D::Line { start: p1, end: p2 });
         } else {
-            let (radius, c_vec) = seg_arc_radius_and_center(v1, v2);
-            let center = DVec2::new(c_vec.x, c_vec.y);
-            if radius.is_finite() && radius > 1e-5 && radius < 1e7 && center.is_finite() {
-                segments.push(ArcSegment2D::Arc {
-                    start: p1,
-                    end: p2,
-                    center,
-                    radius,
-                    ccw: v1.bulge > 0.0,
-                });
-            } else {
-                segments.push(ArcSegment2D::Line { start: p1, end: p2 });
-            }
+            segments.push(ArcSegment2D::from_bulge(p1, p2, v1.bulge));
         }
     }
 
@@ -268,6 +256,20 @@ pub fn offset_polyline(poly: &ArcPolyline2D, signed_left_offset_mm: f64) -> Vec<
         .collect()
 }
 
+/// Exact point-in-region test for an outer boundary with interior islands
+/// (`inside outer` AND `strictly outside every island` beyond `1e-6 mm`).
+pub fn region_contains_point(outer: &ArcPolyline2D, islands: &[ArcPolyline2D], pt: DVec2) -> bool {
+    if !outer.contains_point(pt) {
+        return false;
+    }
+    for isl in islands {
+        if isl.contains_point(pt) && isl.distance_to_point(pt) > 1e-6 {
+            return false;
+        }
+    }
+    true
+}
+
 /// Planar 2D region bounded by one `CCW` outer boundary and zero or more `CW` interior island holes.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PocketRegion2D {
@@ -321,15 +323,7 @@ impl PocketRegion2D {
 
     /// Exact point-in-pocket test (`inside outer_ccw` AND `strictly outside every island`).
     pub fn contains_interior_point(&self, pt: DVec2) -> bool {
-        if !self.outer_ccw.contains_point(pt) {
-            return false;
-        }
-        for isl in &self.islands_cw {
-            if isl.contains_point(pt) && isl.distance_to_point(pt) > 1e-6 {
-                return false;
-            }
-        }
-        true
+        region_contains_point(&self.outer_ccw, &self.islands_cw, pt)
     }
 
     /// Minimum Euclidean distance from `pt` to any boundary curve (outer wall or island wall).
@@ -861,27 +855,7 @@ mod tests {
     }
 
     fn circle_ccw(center: DVec2, radius: f64) -> ArcPolyline2D {
-        let p_r = center + DVec2::new(radius, 0.0);
-        let p_l = center - DVec2::new(radius, 0.0);
-        ArcPolyline2D {
-            segments: vec![
-                ArcSegment2D::Arc {
-                    start: p_r,
-                    end: p_l,
-                    center,
-                    radius,
-                    ccw: true,
-                },
-                ArcSegment2D::Arc {
-                    start: p_l,
-                    end: p_r,
-                    center,
-                    radius,
-                    ccw: true,
-                },
-            ],
-            closed: true,
-        }
+        ArcPolyline2D::circle(center, radius)
     }
 
     #[test]

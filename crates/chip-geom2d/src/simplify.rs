@@ -1,6 +1,6 @@
-//! Exact 2D and 3D Ramer–Douglas–Peucker polyline decimation preserving corners within tolerance.
+//! Exact 2D Ramer–Douglas–Peucker polyline decimation preserving corners within tolerance.
 
-use chip_math::{DVec2, DVec3};
+use chip_math::DVec2;
 
 /// Ramer–Douglas–Peucker 2D polyline simplification preserving corners within `tol_mm`.
 pub fn simplify_rdp_2d(pts: &[DVec2], closed: bool, tol_mm: f64) -> Vec<DVec2> {
@@ -75,62 +75,6 @@ fn rdp_recurse_2d(pts: &[DVec2], tol_sq: f64, out: &mut Vec<DVec2>) {
     }
 }
 
-/// Simplifies a 3D toolpath polyline using exact iterative 3D Ramer–Douglas–Peucker decimation
-/// within `tol_mm` chord deviation.
-pub fn simplify_3d_polyline_rdp(pts: &[DVec3], tol_mm: f64) -> Vec<DVec3> {
-    if pts.len() <= 2 {
-        return pts.to_vec();
-    }
-    let tol = tol_mm.clamp(1e-4, 0.012);
-    let tol_sq = tol * tol;
-
-    let mut keep = vec![false; pts.len()];
-    keep[0] = true;
-    keep[pts.len() - 1] = true;
-
-    let mut stack = vec![(0usize, pts.len() - 1)];
-    while let Some((start, end)) = stack.pop() {
-        if end <= start + 1 {
-            continue;
-        }
-        let a = pts[start];
-        let b = pts[end];
-        let ab = b - a;
-        let ab_len_sq = ab.length_squared();
-
-        let mut max_dist_sq = -1.0_f64;
-        let mut max_idx = start;
-
-        for (i, &p) in pts.iter().enumerate().take(end).skip(start + 1) {
-            let dist_sq = if ab_len_sq > 1e-18 {
-                let t = ((p - a).dot(ab) / ab_len_sq).clamp(0.0, 1.0);
-                let proj = a + ab * t;
-                (p - proj).length_squared()
-            } else {
-                (p - a).length_squared()
-            };
-            if dist_sq > max_dist_sq {
-                max_dist_sq = dist_sq;
-                max_idx = i;
-            }
-        }
-
-        if max_dist_sq > tol_sq {
-            keep[max_idx] = true;
-            stack.push((start, max_idx));
-            stack.push((max_idx, end));
-        }
-    }
-
-    let mut out = Vec::with_capacity(pts.len());
-    for (i, &p) in pts.iter().enumerate() {
-        if keep[i] {
-            out.push(p);
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -167,19 +111,5 @@ mod tests {
         ];
         let closed_out = simplify_rdp_2d(&closed, true, 0.01);
         assert_eq!(closed_out.len(), 4);
-    }
-
-    #[test]
-    fn simplify_3d_rdp_preserves_ridge_apex() {
-        let pts = vec![
-            DVec3::new(0.0, 0.0, 0.0),
-            DVec3::new(2.5, 0.0, 0.0),
-            DVec3::new(5.0, 0.0, 2.0),
-            DVec3::new(7.5, 0.0, 1.0),
-            DVec3::new(10.0, 0.0, 0.0),
-        ];
-        let out = simplify_3d_polyline_rdp(&pts, 0.005);
-        assert_eq!(out.len(), 4);
-        assert!(out.contains(&DVec3::new(5.0, 0.0, 2.0)));
     }
 }

@@ -155,7 +155,7 @@ impl<'a> FaceTriLookup<'a> {
         let mut best_n = DVec3::ZERO;
         for &idx in tris {
             let t = self.doc.render_mesh.pick_triangles[idx];
-            let cp = closest_point_on_triangle_3d(p_world, t.v0_mm, t.v1_mm, t.v2_mm);
+            let cp = chip_bvh::closest_point_on_triangle(p_world, t.v0_mm, t.v1_mm, t.v2_mm).0;
             let d2 = cp.distance_squared(p_world);
             if d2 < best_d2 {
                 let n = (t.v1_mm - t.v0_mm)
@@ -184,7 +184,7 @@ impl<'a> FaceTriLookup<'a> {
 
         for &idx in tris {
             let t = self.doc.render_mesh.pick_triangles[idx];
-            let cp = closest_point_on_triangle_3d(p_world, t.v0_mm, t.v1_mm, t.v2_mm);
+            let cp = chip_bvh::closest_point_on_triangle(p_world, t.v0_mm, t.v1_mm, t.v2_mm).0;
             let dist_to_edge_pt = cp.distance(p_world);
             let centroid = (t.v0_mm + t.v1_mm + t.v2_mm) / 3.0;
             let delta = centroid - p_world;
@@ -528,14 +528,15 @@ pub fn generate_deburr3d(
     }
 
     // 3. Build target B-Rep TriMesh3D + FlatBvh in Setup WCS for full-assembly collision trimming
-    let target_mesh = ctx.doc.build_wcs_tri_mesh(&[], &ctx.setup.frame);
+    let target_surface =
+        SurfaceMesh3D::from_tri_mesh(ctx.doc.build_wcs_tri_mesh(&[], &ctx.setup.frame));
+    let target_mesh = &target_surface.mesh;
     let avoid_2d = ctx.resolve_avoid_2d(ctx.heights.bottom_z_wcs, ctx.heights.top_z_wcs);
     let had_avoid = !avoid_2d.effective_region.is_empty();
     let (xy_containment, avoid_keepout): (Option<RegionSet2D>, RegionSet2D) = if use_auto_detect {
-        let surface = SurfaceMesh3D::from_tri_mesh(target_mesh.clone());
         let tool_r = 0.5 * ctx.tool.geometry.cutting_diameter_mm().max(0.1);
         let mut resolved_boundary = resolve_3d_boundary_config_detailed(
-            &surface,
+            &target_surface,
             ctx.setup,
             &ctx.selection,
             &params.boundary,
@@ -593,7 +594,7 @@ pub fn generate_deburr3d(
                 ctx.tool,
                 &envelope,
                 stickout_mm,
-                &target_mesh,
+                target_mesh,
                 w_pass,
                 tip_offset,
                 wall_clearance,
@@ -610,7 +611,7 @@ pub fn generate_deburr3d(
                     &sub,
                     &envelope,
                     stickout_mm,
-                    &target_mesh,
+                    target_mesh,
                     wall_clearance,
                     retract_z,
                     cut_role,
@@ -1961,7 +1962,8 @@ fn is_station_collision_free(
         let n_sub = ((z_span / 0.5).ceil() as usize).clamp(1, 64);
 
         let check_z = |zk: f64| -> bool {
-            let Some(q) = closest_point_on_triangle_at_z(v0, v1, v2, zk, DVec2::new(tip.x, tip.y))
+            let Some(q) =
+                chip_bvh::closest_point_on_triangle_at_z(v0, v1, v2, zk, DVec2::new(tip.x, tip.y))
             else {
                 return true;
             };
@@ -2072,7 +2074,7 @@ fn is_vertical_column_clear(
             continue;
         }
         for zk in [z_a, 0.5 * (z_a + z_b), z_b] {
-            if let Some(q) = closest_point_on_triangle_at_z(v0, v1, v2, zk, xy) {
+            if let Some(q) = chip_bvh::closest_point_on_triangle_at_z(v0, v1, v2, zk, xy) {
                 let r_axis = (q.x - xy.x).hypot(q.y - xy.y);
                 let r_lim = if zk < tip_bottom.z {
                     cutter_inflated_radius_at_dz(
@@ -2131,7 +2133,7 @@ fn is_air_position_clear(
         let n_sub = ((z_span / 0.5).ceil() as usize).clamp(1, 32);
         for s in 0..=n_sub {
             let zk = z_lo + z_span * (s as f64) / (n_sub as f64);
-            if let Some(q) = closest_point_on_triangle_at_z(v0, v1, v2, zk, xy) {
+            if let Some(q) = chip_bvh::closest_point_on_triangle_at_z(v0, v1, v2, zk, xy) {
                 let dz = zk - tip.z;
                 if let Some(r_lim) =
                     cutter_inflated_radius_at_dz(envelope, stickout_mm, dz, wall_clearance)
@@ -2675,135 +2677,6 @@ fn plan_safe_lead(
     }
 
     (edge_tip, None, None)
-}
-
-/// Intersects triangle `(v0, v1, v2)` with horizontal plane `Z = zk` and returns the closest point
-/// on that intersection to `(xy.x, xy.y)`.
-fn closest_point_on_triangle_at_z(
-    v0: DVec3,
-    v1: DVec3,
-    v2: DVec3,
-    zk: f64,
-    xy: DVec2,
-) -> Option<DVec3> {
-    let z_min = v0.z.min(v1.z).min(v2.z);
-    let z_max = v0.z.max(v1.z).max(v2.z);
-    if zk < z_min - 1e-6 || zk > z_max + 1e-6 {
-        return None;
-    }
-
-    // Nearly horizontal triangle: use exact 3D triangle closest point directly!
-    if z_max - z_min < 1e-5 {
-        let p = closest_point_on_triangle_3d(DVec3::new(xy.x, xy.y, zk), v0, v1, v2);
-        return Some(DVec3::new(p.x, p.y, zk));
-    }
-
-    let verts = [v0, v1, v2];
-    let mut hits = [DVec2::ZERO; 4];
-    let mut n_hits = 0usize;
-
-    for e in 0..3 {
-        let a = verts[e];
-        let b = verts[(e + 1) % 3];
-        let da = a.z - zk;
-        let db = b.z - zk;
-        if da.abs() <= 1e-9 {
-            if n_hits < hits.len() {
-                hits[n_hits] = DVec2::new(a.x, a.y);
-                n_hits += 1;
-            }
-        } else if (da < 0.0 && db > 0.0) || (da > 0.0 && db < 0.0) {
-            let t = da / (da - db);
-            let p = a.lerp(b, t);
-            if n_hits < hits.len() {
-                hits[n_hits] = DVec2::new(p.x, p.y);
-                n_hits += 1;
-            }
-        }
-    }
-
-    if n_hits == 0 {
-        let p = closest_point_on_triangle_3d(DVec3::new(xy.x, xy.y, zk), v0, v1, v2);
-        return Some(DVec3::new(p.x, p.y, zk));
-    }
-    if n_hits == 1 {
-        return Some(DVec3::new(hits[0].x, hits[0].y, zk));
-    }
-
-    // Closest point on the 2D intersection segment (or polygon if > 2 hits due to coplanar edge)
-    let mut best_pt = hits[0];
-    let mut best_d2 = hits[0].distance_squared(xy);
-    for i in 0..n_hits {
-        let a = hits[i];
-        let b = hits[(i + 1) % n_hits];
-        let cp = closest_point_on_segment_2d(xy, a, b);
-        let d2 = cp.distance_squared(xy);
-        if d2 < best_d2 {
-            best_d2 = d2;
-            best_pt = cp;
-        }
-    }
-    Some(DVec3::new(best_pt.x, best_pt.y, zk))
-}
-
-#[inline]
-fn closest_point_on_segment_2d(p: DVec2, a: DVec2, b: DVec2) -> DVec2 {
-    let ab = b - a;
-    let len_sq = ab.length_squared();
-    if len_sq <= 1e-18 {
-        return a;
-    }
-    let t = ((p - a).dot(ab) / len_sq).clamp(0.0, 1.0);
-    a + ab * t
-}
-
-/// Exact Ericson closest point on a 3D triangle `(a, b, c)` to point `p`.
-fn closest_point_on_triangle_3d(p: DVec3, a: DVec3, b: DVec3, c: DVec3) -> DVec3 {
-    let ab = b - a;
-    let ac = c - a;
-    let ap = p - a;
-    let d1 = ab.dot(ap);
-    let d2 = ac.dot(ap);
-    if d1 <= 0.0 && d2 <= 0.0 {
-        return a;
-    }
-
-    let bp = p - b;
-    let d3 = ab.dot(bp);
-    let d4 = ac.dot(bp);
-    if d3 >= 0.0 && d4 <= d3 {
-        return b;
-    }
-
-    let vc = d1 * d4 - d3 * d2;
-    if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 {
-        let v = d1 / (d1 - d3);
-        return a + ab * v;
-    }
-
-    let cp = p - c;
-    let d5 = ab.dot(cp);
-    let d6 = ac.dot(cp);
-    if d6 >= 0.0 && d5 <= d6 {
-        return c;
-    }
-
-    let vb = d5 * d2 - d1 * d6;
-    if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 {
-        let w = d2 / (d2 - d6);
-        return a + ac * w;
-    }
-
-    let va = d3 * d6 - d5 * d4;
-    if va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0 {
-        let w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
-        return b + (c - b) * w;
-    }
-
-    let denom = 1.0 / (va + vb + vc).max(1e-18);
-    let v = vb * denom;
-    let w = vc * denom;
-    a + ab * v + ac * w
 }
 
 #[cfg(test)]

@@ -12,13 +12,13 @@ use std::collections::HashSet;
 
 use chip_bvh::TriMesh3D;
 use chip_cad::{CadDocument, FaceId};
+use chip_geom2d::PocketRegion2D;
 use chip_math::{DVec3, DisplayUnit, RigidFrame3};
 use chip_sketch::SketchLayer;
 use chip_tools::Tool;
 
 use crate::{
     fixture_avoidance::ToolAssemblyProfile,
-    offset2d::PocketRegion2D,
     params::{AvoidRegionConfig, SharedAvoidRegion},
     rest2d::RegionSet2D,
     rotary::{ResolvedRotaryConfig, project_selections_onto_rotary_axis},
@@ -261,7 +261,6 @@ pub fn resolve_avoid_region_2d(input: &AvoidRegionInput<'_>) -> ResolvedAvoidReg
                 continue;
             }
 
-            let fix_surf = SurfaceMesh3D::from_tri_mesh(fix.mesh_wcs.clone());
             let span_xy = fix.aabb_wcs.size().x.max(fix.aabb_wcs.size().y).max(1.0);
             let cell_mm = (span_xy / 240.0).clamp(0.08, 0.25);
 
@@ -272,7 +271,7 @@ pub fn resolve_avoid_region_2d(input: &AvoidRegionInput<'_>) -> ResolvedAvoidReg
                 slab_z_lo
             };
             let proj_z_hi = slab_z_hi.max(fix.aabb_wcs.min.z + 0.1);
-            let projected = project_surface_z_slab_xy(&fix_surf, proj_z_lo, proj_z_hi, cell_mm);
+            let projected = project_surface_z_slab_xy(&fix.mesh_wcs, proj_z_lo, proj_z_hi, cell_mm);
             let nominal_fix = if projected.is_empty() {
                 fix.footprint_2d.clone()
             } else {
@@ -296,7 +295,8 @@ pub fn resolve_avoid_region_2d(input: &AvoidRegionInput<'_>) -> ResolvedAvoidReg
                     let sh_lo = z_bottom + asm.flute_length_mm - group.axial_clearance_mm;
                     let sh_hi = z_bottom + asm.stickout_length_mm + group.axial_clearance_mm;
                     if fix.aabb_wcs.max.z >= sh_lo - 1e-4 && fix.aabb_wcs.min.z <= sh_hi + 1e-4 {
-                        let sh_proj = project_surface_z_slab_xy(&fix_surf, sh_lo, sh_hi, cell_mm);
+                        let sh_proj =
+                            project_surface_z_slab_xy(&fix.mesh_wcs, sh_lo, sh_hi, cell_mm);
                         if !sh_proj.is_empty() {
                             let sh_eff = inflate_region(
                                 &sh_proj,
@@ -315,7 +315,7 @@ pub fn resolve_avoid_region_2d(input: &AvoidRegionInput<'_>) -> ResolvedAvoidReg
                         .min(fix.aabb_wcs.max.z + group.axial_clearance_mm);
                     if nut_hi > nut_lo + 1e-4 {
                         let nut_proj =
-                            project_surface_z_slab_xy(&fix_surf, nut_lo, nut_hi, cell_mm);
+                            project_surface_z_slab_xy(&fix.mesh_wcs, nut_lo, nut_hi, cell_mm);
                         if !nut_proj.is_empty() {
                             let nut_eff = inflate_region(
                                 &nut_proj,
@@ -329,7 +329,7 @@ pub fn resolve_avoid_region_2d(input: &AvoidRegionInput<'_>) -> ResolvedAvoidReg
                     let body_lo = z_bottom + asm.holder_cone_z0 - group.axial_clearance_mm;
                     if fix.aabb_wcs.max.z > body_lo + 1e-4 {
                         let body_proj = project_surface_z_slab_xy(
-                            &fix_surf,
+                            &fix.mesh_wcs,
                             body_lo,
                             fix.aabb_wcs.max.z + group.axial_clearance_mm,
                             cell_mm,
@@ -512,10 +512,10 @@ fn project_cad_face_xy(
         return RegionSet2D::empty();
     }
     let surf = SurfaceMesh3D::from_raw_triangles(&tris);
-    if !surf.aabb_wcs.is_valid() {
+    if !surf.bounds.is_valid() {
         return RegionSet2D::empty();
     }
-    let span = surf.aabb_wcs.size().x.max(surf.aabb_wcs.size().y).max(1.0);
+    let span = surf.bounds.size().x.max(surf.bounds.size().y).max(1.0);
     let cell = (span / 160.0).clamp(0.08, 0.25);
     project_surface_z_slab_xy(&surf, z_lo, z_hi, cell)
 }
@@ -550,12 +550,11 @@ pub fn transform_fixtures_to_frame(
             let indices: Vec<[u32; 3]> = fix.mesh_wcs.triangles.iter().map(|t| t.indices).collect();
             let new_mesh = TriMesh3D::from_indexed(new_verts, &indices);
             let new_aabb = new_mesh.bounds;
-            let new_surf = SurfaceMesh3D::from_tri_mesh(new_mesh.clone());
             let new_footprint = if new_aabb.is_valid() {
                 let span = new_aabb.size().x.max(new_aabb.size().y).max(1.0);
                 let cell = (span / 200.0).clamp(0.08, 0.30);
                 project_surface_z_slab_xy(
-                    &new_surf,
+                    &new_mesh,
                     new_aabb.min.z - 0.5,
                     new_aabb.max.z + 0.5,
                     cell,

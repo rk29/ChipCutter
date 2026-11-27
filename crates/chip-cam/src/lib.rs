@@ -8,8 +8,6 @@ pub mod fixture_avoidance;
 pub mod heights;
 pub mod machinability_advisor;
 pub mod measurement;
-pub mod medial;
-pub mod offset2d;
 pub mod operation;
 pub mod params;
 pub mod reach_analysis;
@@ -32,7 +30,6 @@ pub use avoid_regions::{
     subtract_u_intervals_1d, transform_fixtures_to_frame,
 };
 pub use chip_bvh::TriMesh3D;
-pub use chip_sketch;
 pub use cl_data::{ArcDir, ArcPlane, ClEvent, CutterCompMode, DrillCycleKind, MotionRole};
 pub use feed_opt::{
     corner_feed_scale, internal_arc_feed_scale, optimize_toolpath_feedrates,
@@ -55,15 +52,6 @@ pub use measurement::{
     snap_brep_edge_to_measure_target, snap_brep_face_to_measure_target,
     snap_brep_pick_to_measure_target, snap_mesh_hit_to_measure_target,
     snap_sketch_to_measure_target,
-};
-pub use medial::{
-    MedialChain2D, MedialNode2D, extract_interior_medial_nodes, extract_medial_axis_chains,
-    find_medial_inscribed_pole,
-};
-pub use offset2d::{
-    HelicalEntryPole, OffsetRegionNode, PocketRegion2D, build_offset_region_tree,
-    clip_scanline_to_region, find_helical_entry_pole, from_cavalier_polyline, offset_polyline,
-    to_cavalier_polyline,
 };
 pub use operation::{
     EffectiveCuttingParams, Operation, OperationFeedOverrides, OperationKind, OperationStatus,
