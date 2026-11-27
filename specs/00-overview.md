@@ -46,7 +46,7 @@
 ## Explicit Non-Goals (Deferred to Future Releases)
 - **No nonlinear 2D CAD constraint solver:** Built-in 2D Sketch tools use direct parametric expressions and viewport snapping rather than a parametric CAD sketch solver.
 - **No machine control / G-code streaming or jogging:** ChipCutter is pure offline CAM; jogging and live G-code streaming stay in dedicated senders (LinuxCNC, gSender, FluidNC UI, etc.).
-- **No in-machine `G38.2` probing routines yet:** Probing cycles belong to dedicated controller macros or future releases.
+- **No in-machine `G38.2` probing routines:** ChipCutter is pure offline CAM and does not directly interface with a live machine; probing cycles belong to dedicated controller or sender macros.
 - **No standalone printable HTML/PDF setup sheets yet:** Operator summary metadata is emitted directly as structured G-code header comments.
 - **No WebAssembly/browser target:** Native desktop + headless CLI only.
 - **No copyleft dependencies:** Third-party crates must use permissive or weak-copyleft licenses (`MIT`, `Apache-2.0`, `BSD`, `MPL-2.0`, `BSL-1.0`, `Zlib`, `ISC`).

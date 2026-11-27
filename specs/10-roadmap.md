@@ -409,7 +409,7 @@ Phase 16 leveraged Phase 15's GPU-accelerated Ultra simulation and `chipcutter s
 
 ## Phase 17 — Shop-Floor Workholding, Fixture Collision Verification, & Multi-Setup Stock Carryover (Completed — M60–M63)
 
-Phase 17 delivered real shop-floor workholding awareness, full-assembly 3D fixture collision verification, true multi-setup volumetric Tri-Dexel continuity, and shop-floor Flip-Jig & Auto Soft-Jaw automation wizards—building directly on Phase 14's `chip-bvh`/`chip-geom2d`/`chip-stock` architecture and Phase 15's GPU-accelerated simulation while preserving 100% lossless `.chip.toml` backward compatibility and byte-for-byte Phase 1–2 golden G-code parity (with `G38.2` probing operations explicitly retained in Future Phases):
+Phase 17 delivered real shop-floor workholding awareness, full-assembly 3D fixture collision verification, true multi-setup volumetric Tri-Dexel continuity, and shop-floor Flip-Jig & Auto Soft-Jaw automation wizards—building directly on Phase 14's `chip-bvh`/`chip-geom2d`/`chip-stock` architecture and Phase 15's GPU-accelerated simulation while preserving 100% lossless `.chip.toml` backward compatibility and byte-for-byte Phase 1–2 golden G-code parity:
 
 ### Milestone 60 — 3D Fixture, Vise, & Clamp Workholding Model, Persistence, & Viewport Rendering (`plans/60-milestone-60-plan.md`)
 - **Schema-Safe Workholding Model (`chip-cam/src/workholding.rs`):** Add optional `fixtures: Vec<FixtureBody>` on `Setup` (omitted when empty for zero diff on existing projects) supporting parametric **`ViseJaws`** (fixed/movable jaws, step shelves, parallels auto-clamped to stock), **`ToeClamp`** (placed strap/toe clamps with overhang & bolt stud), **`Spoilboard`** (sacrificial bed with allowed overcut margin), **`BoxKeepOut` / `CylinderKeepOut`**, and **`ImportedModel`** (`.step`/`.stl`/`.obj`/`.3mf` fixture solids bundled inside `.chipz` and automatically excluded from target-part gouge metrics).
@@ -625,6 +625,28 @@ Brings real-world cutting physics, tool-breakage protection, and in-viewport geo
 
 ---
 
+## Phase 27 — Workspace Architecture Refactoring, Clean Crate Boundaries, & De-Monolithing (Planned — M97–M100)
+
+Refactors the workspace across all crates to eliminate cross-crate misplacement, duplicated geometry/envelope/workflow logic, and heavyweight transitive dependency leaks—extracting four focused crates (`chip-cl`, `chip-fixtures`, `chip-demos`, `chip-machines`), moving non-UI domain logic out of `chip-gui` and `chip-cli`, separating viewport GPU presentation from `chip-stock`/`chip-sim`, and decomposing oversized production monoliths and inline test blocks while strictly preserving 100% lossless `.chip.toml` compatibility, zero new external dependencies, and byte-for-byte golden G-code parity.
+
+### Milestone 97 — Dead Code Cleanup, Pure Geometry Consolidation, & Canonical `ToolAssemblyEnvelope` (`plans/97-milestone-97-plan.md`)
+- **Dead Code & Encapsulation (`chip-cad`, `chip-math`, `chip-geom2d`, `chip-sketch`, `chip-cam`):** Remove dead `MeshBvh`, `Ray3::intersect_triangle`, and `medial.rs`/`offset2d.rs` shims; add `ArcSegment2D::from_bulge` to drop `cavalier_contours` from `chip-sketch`; privatize `to/from_cavalier_polyline` in `chip-geom2d`; replace hand-rolled `Affine2D` with `glam::DAffine2`.
+- **Pure Geometry, STL, & Envelope Consolidation (`chip-math`, `chip-bvh`, `chip-geom2d`, `chip-cad`, `chip-tools`, `chip-cam`):** Consolidate duplicated 2D/3D primitives (`trace_binary_grid_contours`, `clip_triangle_to_z_slab`, `ear_clip_ccw_2d`, `point_in_triangle_2d`, `encode_binary_stl`, `format_cycle_time_hms`), deduplicate `surface3d/finishing.rs` drop-cutter math and `SurfaceMesh3D` copies, and unify the 4-way cutter/holder envelope math into `chip_tools::ToolAssemblyEnvelope` (fixing the stale-envelope radial-shrink bug in `surface3d/cutter.rs`).
+
+### Milestone 98 — Direct Cross-Crate Moves & CLI/GUI Domain Unification (`plans/98-milestone-98-plan.md`)
+- **Domain-Aligned Crate Moves:** Move `thread_tables.rs` (`chip-cam` → `chip-tools`), `ToolOperationClass` & `machinability.rs` (`chip-tools` → `chip-cam`), B-Rep/mesh `measurement.rs` (`chip-cam` → `chip-cad`), `spindle_up_world` B-Rep helpers (`chip-cad` → `chip-cam`), `workholding_wizards.rs` (`chip-cam` → `chip-project/src/wizards/`), `boundary_preview.rs` (`chip-gui` → `chip-cam`), `load_model_*_cad_doc` (`chip-project` → `chip-cad`), and `StrategyParams` validation (`chip-project` → `chip-cam`).
+- **CLI/GUI Workflow Unification (`chip-project`, `chip-sim`, `chip-post`):** Extract pure `ProjectDocument` mutations, batch export, machine-limit warnings, wizard plan application, and canonical `resolve_setup_kinematics` / `setup_requires_volumetric_sim` / `new_pure_2d_sheet` into `chip-project` (fixing CLI/GUI drift on `machine_id` kinematics, Tri-Dexel detection, Pure-2D margins, and mesh reload); unify `MachineKinematicsConfig` with `MachineKinematicsSpec`, alias `SimVerificationConfig` to `StockVerifyTolerances`, and collapse telescoping simulation overloads.
+
+### Milestone 99 — Focused Crate Extractions (`chip-cl`, `chip-fixtures`, `chip-demos`, `chip-machines`) & Presentation Separation (`plans/99-milestone-99-plan.md`)
+- **New Crates & Severed Dependency Cones:** Extract `chip-cl` (severing `chip-post → chip-cam` completely), `chip-fixtures` (dropping `monstertruck-modeling` from `chip-cad`), `chip-demos` (unified `SampleCatalog` replacing ~1.4k LOC of duplicated CLI/GUI sample dispatch), and `chip-machines` + shared `PresetStore` (deduplicating machine/post user-config CRUD and feature-gating `fusion_import`/`dirs` in `chip-tools`).
+- **Viewport Presentation Boundary (`chip-stock`, `chip-sim`, `chip-gui`):** Relocate `cutter_profile.rs` (`SimToolMesh`), `gpu/render_handle.rs` + `tridexel_emit.wgsl`, and GUI tooltip labels into `chip-gui/src/viewport/` (exposing raw read-only `GpuStockBufferSnapshot` from `chip-stock`) and trim 53 unused/test-only `chip-stock` re-exports from `chip-sim/src/lib.rs`.
+
+### Milestone 100 — Internal Monolith Decomposition, Inline Test Extraction, & Phase 27 Spec Sync (`plans/100-milestone-100-plan.md`)
+- **Inline Test Extraction & Monolith Splits:** Move ~13k LOC of inline integration tests out of `src/` into `tests/`; decompose `chip-gui` monoliths (`browser/mod.rs`, `viewport_controller.rs`, `gizmos.rs`, `pane_behavior.rs`, `geometry_tab.rs`, `workholding_wizards.rs`, `ChipCutterApp`), `chip-cam` (`deburr3d.rs`, `rotary.rs`, `fixture_avoidance.rs`, `workholding.rs`, `finishing.rs`), `chip-stock` (`tridexel/sweep.rs`), and `chip-sim` (`driver.rs`, `cad_adapter.rs`).
+- **Architecture Spec Sync & Verification Gate:** Update `specs/{00,01,10}-*.md`, `AGENTS.md`, `ARCHITECTURE.md`, and `DEVELOPMENT.md` for the refactored workspace and pass the full `fmt`, `clippy` (default + `flatpak-portal`), `cargo deny`, Vulkan `cargo test`, and headless screenshot verification gate.
+
+---
+
 ## Future Phases
 
 ChipCutter's long-term roadmap focuses on bringing pro-grade CAM capabilities to hobby and benchtop machinists—making everyday job setup faster, safer, and easier to use without commercial CAM complexity or licensing cost.
@@ -632,18 +654,16 @@ ChipCutter's long-term roadmap focuses on bringing pro-grade CAM capabilities to
 1. **Guided Operation Setup & Reusable Machining Recipes:**
    - **Guided Operation Setup Mode (Automatic Feature Recognition):** Interactive workflow inspecting imported STEP/mesh/sketch geometry against the active Setup WCS, stock, and target machine's tool library to automatically recognize machinable features and propose a sequenced operation plan—**Facing**, **2D Adaptive / Pocket**, **Drill vs. Helical Bore / Thread Mill**, **2D Contour + Tabs**, **Edge Chamfer**, and **3D Roughing/Finishing**—letting the machinist review, tweak, accept, or skip each step.
    - **Reusable Operation Templates & Recipes:** Save proven multi-op patterns (e.g., *"6061-T6 Pocket + Finish + Chamfer"* or *"M6 Counterbored Hole = Spot + Drill + Helical Bore"*) and apply them in one click to new parts.
-2. **In-Machine Probing Operations (`G38.2`):**
-   - **Probing Operations (`G38.2`):** First-class WCS corner, bore/boss center, Z-surface, and 2-point rotation/skew probing cycles integrated directly into Setups for grblHAL/Carvera and LinuxCNC controllers.
-3. **2D Sheet Nesting, Multi-Part Arrays, & PCB Isolation Milling:**
+2. **2D Sheet Nesting, Multi-Part Arrays, & PCB Isolation Milling:**
    - **2D Sheet Nesting & Multi-Part Arrays:** Pack multiple parts onto plate, plywood, or composite sheets with tool-diameter spacing, grain-direction rules, and automatic tabs.
    - **PCB Isolation Milling & Drilling (Gerber / Excellon):** Isolation routing, copper rub-out, Excellon drill import, and height-probe leveling hooks.
-4. **Frictionless CAD Prep, Verification, & Ecosystem:**
+3. **Frictionless CAD Prep, Verification, & Ecosystem:**
    - **Live CAD Auto-Reload & Diff Preview:** Watch exported `.step`/`.dxf`/`.svg` files from FreeCAD/Fusion/Onshape, reload automatically on save, and visually highlight changed faces and re-matched selections.
    - **STL / Mesh 2.5D Feature Extraction:** Auto-detect flat Z-planes, cylindrical holes, and outer silhouettes from triangle meshes so STL models can use fast 2.5D strategies in addition to 3D surface passes.
    - **Standalone G-Code Backplot & Crash Verification Mode:** Open any external `.nc`/`.ngc` file and run ChipCutter's Tri-Dexel simulator and 6-rule crash verifier on it.
    - **Broader Tool Library Interop & Printable Setup Sheets:** Import tool libraries from FreeCAD (`.fctb`), Carbide Create, and Vectric alongside Fusion 360, and generate printable HTML/PDF setup sheets with isometric views, WCS origin diagrams, stock dimensions, tool stickout checklists, and cycle times.
-   - **Additional Controller Dialects & CAD Kernel Backends:** Fanuc/Haas, Mach4, Masso, and Centroid post dialects, plus an optional OpenCASCADE (`opencascade-rs`) `CadKernel` feature backend.
-5. **Functional & Behavioral User-Level Testing:**
+   - **Additional CAD Kernel Backends:** Optional OpenCASCADE (`opencascade-rs`) `CadKernel` feature backend.
+4. **Functional & Behavioral User-Level Testing:**
    - Durable end-to-end user-journey and GUI behavioral test harness (`egui_kittest` / headless interactive workflows + CLI workflows) verifying every feature from a machinist's point of view without brittle coupling to internal implementation details.
-6. **Tutorials for Upcoming Future-Phase Capabilities:**
-   - Dedicated illustrated guides and sample projects accompanying upcoming future-phase capabilities (guided operation setup, probing, 2D nesting, and PCB isolation milling).
+5. **Tutorials for Upcoming Future-Phase Capabilities:**
+   - Dedicated illustrated guides and sample projects accompanying upcoming future-phase capabilities (guided operation setup, 2D nesting, and PCB isolation milling).
