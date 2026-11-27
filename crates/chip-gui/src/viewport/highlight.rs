@@ -1,10 +1,12 @@
 use std::{collections::HashSet, sync::Arc};
 
-use chip_cad::{CadDocument, EdgeId, FaceId, PickTarget, expand_coaxial_hole_faces};
+use chip_cad::{
+    CadDocument, EdgeId, FaceId, MeasureSnapTarget, MeasurementResult, PickTarget,
+    expand_coaxial_hole_faces, measure_pair, measure_single,
+};
 use chip_cam::{
-    ChainDirectionArrow3D, GeneratedToolpath, MeasureSnapTarget, MeasurementResult,
-    ReachAnalysisResult, ResolvedRotaryConfig, ResolvedStockGeometry, TabMarker3D, TriMesh3D,
-    measure_pair, measure_single,
+    BoundaryPreviewOverlay, ChainDirectionArrow3D, GeneratedToolpath, ReachAnalysisResult,
+    ResolvedRotaryConfig, ResolvedStockGeometry, TabMarker3D, TriMesh3D,
 };
 use chip_math::{ArcPolyline2D, DMat4, DVec2, DVec3, DisplayUnit, MM_PER_INCH, Ray3, RigidFrame3};
 #[cfg(feature = "gpu-compute")]
@@ -12,9 +14,7 @@ use chip_sim::{GpuStockRenderHandle, SimStockColorMode};
 use chip_sim::{SimStockMesh, SimToolMesh};
 use chip_sketch::{SketchLayer, SketchPickHit};
 
-use crate::{
-    camera::CadCamera, theme::AppTheme, viewport::boundary_preview::BoundaryPreviewOverlay,
-};
+use crate::{camera::CadCamera, theme::AppTheme};
 
 /// Pass #6 simulation machined-stock render source consumed by [`crate::viewport::ViewportRenderer`].
 ///

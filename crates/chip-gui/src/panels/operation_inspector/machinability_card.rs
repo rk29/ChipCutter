@@ -1,14 +1,10 @@
 //! Live **Machinability & Safety** advisor card for the Operation Inspector (`[Tool]` card +
 //! `[Passes]` alert banner) and shared setup/browser evaluation helpers (`chip-gui`, Milestone 96).
 
-use chip_cad::CadDocument;
 use chip_cam::{
-    MachinabilityFinding, MachinabilityFix, MachinabilitySeverity, OperationMachinabilityContext,
-    OperationMachinabilityReport, ResolvedSetup, SetupMachinabilityReport,
-    analyze_operation_machinability, analyze_setup_machinability,
+    MachinabilityFinding, MachinabilityFix, MachinabilitySeverity, OperationMachinabilityReport,
 };
-use chip_project::ProjectDocument;
-use chip_tools::{MachineDefinition, Tool, ToolLibrary, builtin_generic_machine};
+pub use chip_project::{evaluate_operation_machinability, evaluate_setup_machinability};
 use egui::{CornerRadius, Margin, RichText, Stroke, Ui};
 
 use crate::{
@@ -36,79 +32,6 @@ pub fn sanitize_physics_text(raw: &str) -> String {
         }
     }
     out
-}
-
-/// Evaluates cutting-mechanics telemetry and advisory findings for a single operation.
-pub fn evaluate_operation_machinability(
-    project: &ProjectDocument,
-    setup_idx: usize,
-    op_idx: usize,
-    global_tools: &ToolLibrary,
-    active_machine: Option<&MachineDefinition>,
-    resolved_setup: Option<&ResolvedSetup>,
-    cad_doc: Option<&CadDocument>,
-) -> Option<OperationMachinabilityReport> {
-    let setup = project.setups.get(setup_idx)?;
-    let op = setup.operations.get(op_idx)?;
-    let tool = op
-        .tool_id
-        .as_ref()
-        .and_then(|tid| project.tool(tid).or_else(|| global_tools.tool(tid)));
-    let material = project.effective_workpiece_material();
-    let fallback_machine;
-    let machine = match active_machine {
-        Some(m) => m,
-        None => {
-            fallback_machine = builtin_generic_machine();
-            &fallback_machine
-        }
-    };
-    let ctx = OperationMachinabilityContext {
-        setup_id: &setup.id,
-        setup_name: &setup.name,
-        resolved_setup,
-        cad_doc,
-        sketches: &project.sketches,
-        material: &material,
-        machine,
-        display_unit: project.display_units,
-    };
-    Some(analyze_operation_machinability(op, tool, &ctx))
-}
-
-/// Evaluates cutting-mechanics telemetry across all operations in a Setup.
-pub fn evaluate_setup_machinability(
-    project: &ProjectDocument,
-    setup_idx: usize,
-    global_tools: &ToolLibrary,
-    active_machine: Option<&MachineDefinition>,
-    cad_doc: Option<&CadDocument>,
-) -> Option<SetupMachinabilityReport> {
-    let setup = project.setups.get(setup_idx)?;
-    let mut merged_tools: Vec<Tool> = project.tools.clone();
-    for gt in &global_tools.tools {
-        if !merged_tools.iter().any(|t| t.id == gt.id) {
-            merged_tools.push(gt.clone());
-        }
-    }
-    let material = project.effective_workpiece_material();
-    let fallback_machine;
-    let machine = match active_machine {
-        Some(m) => m,
-        None => {
-            fallback_machine = builtin_generic_machine();
-            &fallback_machine
-        }
-    };
-    Some(analyze_setup_machinability(
-        setup,
-        &merged_tools,
-        &material,
-        machine,
-        cad_doc,
-        &project.sketches,
-        project.display_units,
-    ))
 }
 
 /// Returns a concise plain-ASCII warning summary for Project Tree hover tooltips when an
@@ -142,17 +65,6 @@ pub fn compact_browser_warning_summary(report: &OperationMachinabilityReport) ->
         String::new()
     };
     Some(format!("Machinability [{tag}]: {top_title}{extra}"))
-}
-
-/// Returns the highest-severity finding that carries a deterministic 1-click safe fix.
-pub fn primary_fixable_finding(
-    report: &OperationMachinabilityReport,
-) -> Option<&MachinabilityFinding> {
-    report
-        .findings
-        .iter()
-        .filter(|f| f.suggested_fix.is_some())
-        .max_by_key(|f| f.severity)
 }
 
 fn severity_palette(
@@ -517,7 +429,7 @@ pub fn show_passes_machinability_banner(
         .iter()
         .filter(|f| f.severity >= MachinabilitySeverity::Warning)
         .max_by_key(|f| f.severity);
-    let fix_candidate = primary_fixable_finding(report);
+    let fix_candidate = report.primary_fixable_finding();
 
     let mut action = PassesMachinabilityBannerAction::None;
 
@@ -589,6 +501,7 @@ pub fn show_passes_machinability_banner(
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
+    use chip_cad::CadDocument;
     use chip_cam::{Operation, OperationKind, OperationStatus, Setup, StockConfig, WorkOffsetSlot};
     use chip_math::{DisplayUnit, ParamLength};
     use chip_project::{ProjectDocument, UndoHistory};

@@ -370,6 +370,22 @@ impl PostProfile {
             message: e.to_string(),
         })
     }
+
+    /// Converts this post profile's rapid rate, acceleration, tool-change time, and rotary slew
+    /// rate into a canonical [`chip_tools::MachineKinematicsSpec`].
+    pub fn to_kinematics_spec(&self) -> chip_tools::MachineKinematicsSpec {
+        let rapid = self.rapid_rate_mm_min.max(100.0);
+        chip_tools::MachineKinematicsSpec {
+            max_rapid_xy_mm_min: rapid,
+            max_rapid_z_mm_min: rapid,
+            max_cut_feed_xy_mm_min: rapid,
+            max_cut_feed_z_mm_min: rapid,
+            accel_mm_s2: self.accel_mm_s2.max(10.0),
+            junction_deviation_mm: 0.05,
+            tool_change_time_sec: self.tool_change_time_sec.max(0.0),
+            max_rotary_rate_deg_min: self.rotary.max_rotary_feed_deg_min.max(60.0),
+        }
+    }
 }
 
 /// Returns all built-in post profiles (`grbl`, `grblhal_atc`, `linuxcnc`, `linuxcnc_4axis`,

@@ -2,14 +2,14 @@ use std::time::{Duration, Instant};
 
 use chip_cad::CadDocument;
 use chip_cam::{MachinabilityFix, MachinabilitySeverity, OperationStatus};
-use chip_project::{ProjectDocument, ToolpathCache};
+use chip_project::{
+    ProjectDocument, ToolpathCache, evaluate_setup_machinability, validate_setup_machine_limits,
+};
 use chip_sim::{SetupSimulationResult, SimDiagnostic, SimSeverity};
 use chip_tools::{MachineDefinition, ToolLibrary};
 
 use crate::{
-    panels::operation_inspector::machinability_card::{
-        evaluate_setup_machinability, primary_fixable_finding, sanitize_physics_text,
-    },
+    panels::operation_inspector::machinability_card::sanitize_physics_text,
     theme::ThemeTokens,
     widgets::{StatusBadgeKind, status_badge_icon},
 };
@@ -42,86 +42,6 @@ fn truncate_cell_label(text: &str, max_chars: usize) -> String {
         let prefix: String = text.chars().take(max_chars - 3).collect();
         format!("{prefix}...")
     }
-}
-
-/// Collects fast in-memory machine envelope / spindle / feedrate / rotary warnings for the active
-/// setup without touching disk or running full B-Rep extraction.
-fn collect_active_setup_machine_warnings(
-    project: &ProjectDocument,
-    setup: &chip_cam::Setup,
-    machine: &MachineDefinition,
-    loaded_cad: Option<&CadDocument>,
-) -> Vec<String> {
-    let mut warnings = Vec::new();
-    let empty_cad = CadDocument::empty();
-    let cad = loaded_cad.unwrap_or(&empty_cad);
-    if let Ok(resolved) = setup.resolve_with_sketches(cad, &project.sketches, project.display_units)
-    {
-        let sb = resolved.stock.aabb_wcs();
-        let sx = sb.max.x - sb.min.x;
-        let sy = sb.max.y - sb.min.y;
-        let sz = sb.max.z - sb.min.z;
-        let tr = &machine.travel_mm;
-        if sx > tr.x_mm + 0.01 || sy > tr.y_mm + 0.01 || sz > tr.z_mm + 0.01 {
-            warnings.push(format!(
-                "Stock ({sx:.1} × {sy:.1} × {sz:.1} mm) exceeds '{}' travel envelope ({:.0} × {:.0} × {:.0} mm).",
-                machine.name, tr.x_mm, tr.y_mm, tr.z_mm
-            ));
-        }
-        if let Some(rot) = resolved.rotary {
-            match &machine.rotary {
-                None => warnings.push(format!(
-                    "4th-axis rotary is active ({}-Axis), but '{}' is 3-axis only.",
-                    rot.axis_letter, machine.name
-                )),
-                Some(mrot) => {
-                    let dia = rot.stock_outer_radius_mm * 2.0;
-                    let len = (rot.stock_u_max - rot.stock_u_min).abs();
-                    if dia > mrot.max_stock_diameter_mm + 0.01
-                        || len > mrot.max_stock_length_mm + 0.01
-                    {
-                        warnings.push(format!(
-                            "Rotary stock (Ø{dia:.1} × {len:.1} mm) exceeds '{}' capacity (Ø{:.1} × {:.1} mm).",
-                            machine.name, mrot.max_stock_diameter_mm, mrot.max_stock_length_mm
-                        ));
-                    }
-                }
-            }
-        }
-    }
-    let sp = &machine.spindle;
-    let kin = &machine.kinematics;
-    for op in &setup.operations {
-        if op.suppressed {
-            continue;
-        }
-        let Some(tid) = &op.tool_id else {
-            continue;
-        };
-        let Some(tool) = project.tool(tid) else {
-            continue;
-        };
-        let eff = op.effective_cutting_params(tool);
-        if eff.spindle_rpm < sp.min_rpm - 0.5 || eff.spindle_rpm > sp.max_rpm + 0.5 {
-            warnings.push(format!(
-                "{}: {:.0} RPM outside '{}' range ({:.0}–{:.0} RPM).",
-                op.name, eff.spindle_rpm, machine.name, sp.min_rpm, sp.max_rpm
-            ));
-        }
-        if eff.cutting_feed_mm_min > kin.max_cut_feed_xy_mm_min + 0.5 {
-            warnings.push(format!(
-                "{}: feed {:.0} mm/min exceeds '{}' XY limit ({:.0} mm/min).",
-                op.name, eff.cutting_feed_mm_min, machine.name, kin.max_cut_feed_xy_mm_min
-            ));
-        }
-        if eff.plunge_feed_mm_min > kin.max_cut_feed_z_mm_min + 0.5 {
-            warnings.push(format!(
-                "{}: plunge {:.0} mm/min exceeds '{}' Z limit ({:.0} mm/min).",
-                op.name, eff.plunge_feed_mm_min, machine.name, kin.max_cut_feed_z_mm_min
-            ));
-        }
-    }
-    warnings
 }
 
 /// Formats estimated cycle seconds as `Xm YYs` or `YY.Ys`.
@@ -167,7 +87,7 @@ pub fn show_diagnostics_panel(
             let mut total_sec = 0.0;
             let mut total_cut_mm = 0.0;
             let machine_warnings = active_machine
-                .map(|m| collect_active_setup_machine_warnings(project, setup, m, loaded_cad))
+                .map(|m| validate_setup_machine_limits(project, setup, m, loaded_cad))
                 .unwrap_or_default();
             let setup_mach = evaluate_setup_machinability(
                 project,
@@ -343,7 +263,7 @@ pub fn show_diagnostics_panel(
                                                 .color(st_col),
                                         );
 
-                                        if let Some(finding) = primary_fixable_finding(rep)
+                                        if let Some(finding) = rep.primary_fixable_finding()
                                             && let Some(fix) = &finding.suggested_fix
                                         {
                                             let fix_tip = format!(

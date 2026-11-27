@@ -10,13 +10,13 @@ use chip_post::builtin_post_profiles;
 use chip_project::{
     ProjectDocument, SetupPostRequest, SetupSimRequest, ToolpathCache,
     build_undercut_deburr_block_project, compute_sha256_hex, generate_project_blocking,
-    post_process_project_setup, resolve_kinematics_for_key, simulate_project_setup_with_choice,
+    post_process_project_setup, resolve_kinematics_for_key, simulate_project_setup,
     validate_project,
 };
 use chip_sim::{
     MachineKinematicsConfig, SetupSimulationInput, SimComputeBackendChoice, SimEngineKind,
     SimIssueKind, SimOperationInput, SimResolution, SimSeverity, SimVerificationConfig,
-    run_setup_simulation_with_choice,
+    run_setup_simulation,
 };
 use chip_tools::{default_starter_tool_library, starter_tslot_12mm};
 
@@ -83,20 +83,19 @@ fn undercut_deburr_sample_full_pipeline_cpu_gpu_tridexel_parity_and_posts() {
     //    at Fine Tri-Dexel resolution to assert strict `max_gouge_mm <= 0.02 mm`!
     let mut proj_ops1_5 = proj.clone();
     proj_ops1_5.setups[0].operations[5].suppressed = true;
-    let sim_ops1_5 = simulate_project_setup_with_choice(
-        &SetupSimRequest {
-            project: &proj_ops1_5,
-            setup_idx: 0,
-            cad_doc: &cad_doc,
-            cad_revision: 1,
-            cache: &cache,
-            kinematics: kin,
-            resolution: SimResolution::Fine,
-            cancel: None,
-        },
-        SimEngineKind::TriDexel,
-        SimComputeBackendChoice::Auto,
-    )
+    let sim_ops1_5 = simulate_project_setup(&SetupSimRequest {
+        project: &proj_ops1_5,
+        setup_idx: 0,
+        cad_doc: &cad_doc,
+        cad_revision: 1,
+        cache: &cache,
+        kinematics: kin,
+        resolution: SimResolution::Fine,
+        cancel: None,
+        engine: SimEngineKind::TriDexel,
+        backend_choice: SimComputeBackendChoice::Auto,
+        ..SetupSimRequest::new(&proj_ops1_5, 0, &cad_doc, 1, &cache)
+    })
     .unwrap();
     assert_eq!(
         sim_ops1_5.critical_error_count(),
@@ -134,36 +133,34 @@ fn undercut_deburr_sample_full_pipeline_cpu_gpu_tridexel_parity_and_posts() {
     );
 
     // B. Full 6-operation Tri-Dexel Fine simulation on BOTH CPU and GPU (Auto) backends
-    let sim_cpu = simulate_project_setup_with_choice(
-        &SetupSimRequest {
-            project: &proj,
-            setup_idx: 0,
-            cad_doc: &cad_doc,
-            cad_revision: 1,
-            cache: &cache,
-            kinematics: kin,
-            resolution: SimResolution::Fine,
-            cancel: None,
-        },
-        SimEngineKind::TriDexel,
-        SimComputeBackendChoice::Cpu,
-    )
+    let sim_cpu = simulate_project_setup(&SetupSimRequest {
+        project: &proj,
+        setup_idx: 0,
+        cad_doc: &cad_doc,
+        cad_revision: 1,
+        cache: &cache,
+        kinematics: kin,
+        resolution: SimResolution::Fine,
+        cancel: None,
+        engine: SimEngineKind::TriDexel,
+        backend_choice: SimComputeBackendChoice::Cpu,
+        ..SetupSimRequest::new(&proj, 0, &cad_doc, 1, &cache)
+    })
     .unwrap();
 
-    let sim_gpu = simulate_project_setup_with_choice(
-        &SetupSimRequest {
-            project: &proj,
-            setup_idx: 0,
-            cad_doc: &cad_doc,
-            cad_revision: 1,
-            cache: &cache,
-            kinematics: kin,
-            resolution: SimResolution::Fine,
-            cancel: None,
-        },
-        SimEngineKind::TriDexel,
-        SimComputeBackendChoice::Auto,
-    )
+    let sim_gpu = simulate_project_setup(&SetupSimRequest {
+        project: &proj,
+        setup_idx: 0,
+        cad_doc: &cad_doc,
+        cad_revision: 1,
+        cache: &cache,
+        kinematics: kin,
+        resolution: SimResolution::Fine,
+        cancel: None,
+        engine: SimEngineKind::TriDexel,
+        backend_choice: SimComputeBackendChoice::Auto,
+        ..SetupSimRequest::new(&proj, 0, &cad_doc, 1, &cache)
+    })
     .unwrap();
 
     for (label, sim) in [("CPU", &sim_cpu), ("Auto/GPU", &sim_gpu)] {
@@ -353,20 +350,19 @@ fn fault_injection_missing_preslot_triggers_slotmill_and_dovetail_neck_collision
         ("CPU", SimComputeBackendChoice::Cpu),
         ("Auto/GPU", SimComputeBackendChoice::Auto),
     ] {
-        let sim = simulate_project_setup_with_choice(
-            &SetupSimRequest {
-                project: &proj,
-                setup_idx: 0,
-                cad_doc: &cad_doc,
-                cad_revision: 1,
-                cache: &cache,
-                kinematics: kin,
-                resolution: SimResolution::Standard,
-                cancel: None,
-            },
-            SimEngineKind::TriDexel,
-            backend,
-        )
+        let sim = simulate_project_setup(&SetupSimRequest {
+            project: &proj,
+            setup_idx: 0,
+            cad_doc: &cad_doc,
+            cad_revision: 1,
+            cache: &cache,
+            kinematics: kin,
+            resolution: SimResolution::Standard,
+            cancel: None,
+            engine: SimEngineKind::TriDexel,
+            backend_choice: backend,
+            ..SetupSimRequest::new(&proj, 0, &cad_doc, 1, &cache)
+        })
         .unwrap();
 
         assert!(
@@ -460,24 +456,23 @@ fn fault_injection_vertical_retract_through_undercut_roof_triggers_crash_and_gou
         ("CPU", SimComputeBackendChoice::Cpu),
         ("Auto/GPU", SimComputeBackendChoice::Auto),
     ] {
-        let sim = run_setup_simulation_with_choice(
-            &SetupSimulationInput {
-                doc: &cad_doc,
-                setup: &resolved,
-                target_bodies: &[],
-                fixtures: &[],
-                operations: &sim_ops,
-                resolution: SimResolution::Standard,
-                kinematics: MachineKinematicsConfig::default(),
-                verify_config: SimVerificationConfig::default(),
-                initial_stock: None,
-                initial_raw_volume_mm3: None,
-                carried_over_from_setup: None,
-                cancel: None,
-            },
-            SimEngineKind::TriDexel,
-            backend,
-        )
+        let sim = run_setup_simulation(&SetupSimulationInput {
+            doc: &cad_doc,
+            setup: &resolved,
+            target_bodies: &[],
+            fixtures: &[],
+            operations: &sim_ops,
+            resolution: SimResolution::Standard,
+            kinematics: MachineKinematicsConfig::default(),
+            verify_config: SimVerificationConfig::default(),
+            initial_stock: None,
+            initial_raw_volume_mm3: None,
+            carried_over_from_setup: None,
+            cancel: None,
+            engine: SimEngineKind::TriDexel,
+            backend_choice: backend,
+            ..SetupSimulationInput::new(&cad_doc, &resolved, &[])
+        })
         .unwrap();
 
         assert!(

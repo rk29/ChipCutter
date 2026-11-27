@@ -15,16 +15,19 @@ use std::{
     time::Instant,
 };
 
-use chip_cad::{CadDocument, CadPicker, PickFilter, TopologyGraph};
+use chip_cad::{
+    CadDocument, CadPicker, PickFilter, TopologyGraph, is_mesh_path,
+    load_model_entry_cad_doc_transformed,
+};
 use chip_cam::{
-    ExtractedSelectionSummary, FixtureBody, OperationStatus, ReachAnalysisResult,
-    ResolvedFixtureSolid, ResolvedSetup, TriMesh3D, extract_selection_features_with_sketches,
-    resolve_fixture_body,
+    BoundaryPreviewCache, ExtractedSelectionSummary, FixtureBody, OperationStatus,
+    ReachAnalysisResult, ResolvedFixtureSolid, ResolvedSetup, TriMesh3D,
+    extract_selection_features_with_sketches, resolve_fixture_body,
 };
 use chip_math::{Aabb3, DVec3, EvalContext};
 use chip_project::{
     JobDispatcher, ModelEntry, ProjectDocument, ToolpathCache, UndoHistory, compute_sha256_hex,
-    is_chipz_path, is_mesh_path, load_model_entry_cad_doc_transformed, portable_model_path,
+    is_chipz_path, portable_model_path,
 };
 use chip_sim::SimDiagnostic;
 use chip_tools::{ToolLibrary, load_or_default_global_library};
@@ -47,7 +50,7 @@ use crate::{
     },
     prefs::{UserPreferences, load_or_default_prefs, save_prefs},
     theme::{AppTheme, ThemeTokens, apply_theme},
-    viewport::{BoundaryPreviewCache, HighlightState, MeasureToolState, ViewportRenderer},
+    viewport::{HighlightState, MeasureToolState, ViewportRenderer},
     widgets::ExpressionInput,
 };
 

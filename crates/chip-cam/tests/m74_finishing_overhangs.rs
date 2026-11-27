@@ -2,20 +2,19 @@
 
 use std::sync::atomic::AtomicBool;
 
-use chip_cad::{MeshImportOptions, load_mesh_bytes, load_mesh_cad_document};
+use chip_cad::{MeshImportOptions, load_mesh_cad_document};
 use chip_cam::{
     AxisAnchor, BoxAnchor27, HeightReference, HeightSpec, MachiningBoundaryMode, MotionRole,
     Operation, OperationGenRequest, OperationKind, ParallelCutDirection, RestMachiningConfig,
-    RestMachiningMode, SegmentMotion3D, Setup, SoftJawBoltPattern, SoftJawConfig,
-    SoftJawOutputMode, StockConfig, StrategyParams, SurfaceCutterProfile, SurfaceMesh3D,
-    ToolContainmentMode, WcsOriginMode, WorkOffsetSlot, build_3d_rest_mask, build_soft_jaw_plan,
+    RestMachiningMode, SegmentMotion3D, Setup, StockConfig, StrategyParams, SurfaceCutterProfile,
+    SurfaceMesh3D, ToolContainmentMode, WcsOriginMode, WorkOffsetSlot, build_3d_rest_mask,
     generate_operation_toolpath_with_rest,
     surface3d::{finishing::split_chains_at_overhang_cliffs, rect_region_2d},
 };
 use chip_math::{DVec2, DVec3, DisplayUnit, ParamLength};
 use chip_sim::{
     MachineKinematicsConfig, SetupSimulationInput, SimComputeBackendChoice, SimEngineKind,
-    SimOperationInput, SimResolution, SimVerificationConfig, run_setup_simulation_with_choice,
+    SimOperationInput, SimResolution, SimVerificationConfig, run_setup_simulation,
 };
 use chip_tools::{
     CoolantMode, CutterGeometry, CuttingPreset, SpindleDirection, SurfaceSpeedPresetSpec, Tool,
@@ -568,27 +567,26 @@ fn parallel3d_and_scallop3d_on_overhanging_flange_zero_gouge_zero_crash_no_cliff
     }
 
     // Verify both strategies against chip-sim's volumetric Tri-Dexel oracle: 0 crashes, <= 0.015 mm gouge!
-    let sim = run_setup_simulation_with_choice(
-        &SetupSimulationInput {
-            doc: &doc,
-            setup: &resolved,
-            target_bodies: &[],
-            fixtures: &[],
-            operations: &[
-                SimOperationInput::from_operation(&op_par, &ball_4, &tp_par),
-                SimOperationInput::from_operation(&op_sc, &ball_4, &tp_sc),
-            ],
-            kinematics: MachineKinematicsConfig::default(),
-            resolution: SimResolution::Standard,
-            verify_config: SimVerificationConfig::default(),
-            initial_stock: None,
-            initial_raw_volume_mm3: None,
-            carried_over_from_setup: None,
-            cancel: None,
-        },
-        SimEngineKind::TriDexel,
-        SimComputeBackendChoice::Auto,
-    )
+    let sim = run_setup_simulation(&SetupSimulationInput {
+        doc: &doc,
+        setup: &resolved,
+        target_bodies: &[],
+        fixtures: &[],
+        operations: &[
+            SimOperationInput::from_operation(&op_par, &ball_4, &tp_par),
+            SimOperationInput::from_operation(&op_sc, &ball_4, &tp_sc),
+        ],
+        kinematics: MachineKinematicsConfig::default(),
+        resolution: SimResolution::Standard,
+        verify_config: SimVerificationConfig::default(),
+        initial_stock: None,
+        initial_raw_volume_mm3: None,
+        carried_over_from_setup: None,
+        cancel: None,
+        engine: SimEngineKind::TriDexel,
+        backend_choice: SimComputeBackendChoice::Auto,
+        ..SetupSimulationInput::new(&doc, &resolved, &[])
+    })
     .unwrap();
 
     assert_eq!(
@@ -603,109 +601,6 @@ fn parallel3d_and_scallop3d_on_overhanging_flange_zero_gouge_zero_crash_no_cliff
         "Parallel3D + Scallop3D on overhanging flange max_gouge_mm must be <= 0.015 mm, got {:.4} mm",
         err.max_gouge_mm
     );
-}
-
-#[test]
-fn soft_jaw_wizard_90deg_twisted_helical_loft_zero_scalloping_interference() {
-    let stl = build_twisted_90deg_helical_blade_stl();
-    let doc = load_mesh_cad_document(
-        "twisted_90deg_helix.stl",
-        &stl,
-        &MeshImportOptions::default(),
-    )
-    .unwrap();
-
-    let mut setup = Setup::new("setup_helical_jaw", "Helical Soft Jaw", WorkOffsetSlot::G54);
-    setup.wcs.origin = WcsOriginMode::ModelBoxPoint {
-        anchor: BoxAnchor27 {
-            x: AxisAnchor::Center,
-            y: AxisAnchor::Center,
-            z: AxisAnchor::Min,
-        },
-    };
-    let grip_depth_mm = 10.0;
-    let cfg = SoftJawConfig {
-        jaw_width_mm: 80.0,
-        jaw_depth_mm: 30.0,
-        jaw_height_mm: 36.0,
-        jaw_gap_mm: 4.0,
-        grip_depth_mm,
-        part_clearance_mm: 0.05,
-        corner_relief_radius_mm: 0.0,
-        mounting_bolt_pattern: SoftJawBoltPattern::CarveraModVise,
-        output_mode: SoftJawOutputMode::Both,
-        z_band_bottom_offset_mm: 0.0,
-        ..SoftJawConfig::default()
-    };
-
-    let plan = build_soft_jaw_plan(&doc, &setup, &[], DisplayUnit::Millimeter, &cfg).unwrap();
-
-    // Sample 101 continuous Z heights inside `[0, grip_depth_mm]` (including every intermediate
-    // phase between coarse 9-slice levels) around the entire twisted helical blade perimeter.
-    let z_max_part = 12.0_f64;
-    let a = 18.0_f64;
-    let b = 6.0_f64;
-    let mut outside_sil_count = 0usize;
-    let mut outside_jaw_pocket_count = 0usize;
-    let mut max_miss_mm = 0.0_f64;
-    let half_gap = 0.5 * cfg.jaw_gap_mm;
-
-    for iz in 0..=100 {
-        let z = grip_depth_mm * (iz as f64 / 100.0);
-        let twist = std::f64::consts::FRAC_PI_2 * (z / z_max_part);
-        let (st, ct) = twist.sin_cos();
-        for it in 0..64 {
-            let phi = std::f64::consts::TAU * (it as f64 / 64.0);
-            // Slightly inward by 0.002 mm to test exact interior of the faceted 64-gon section
-            let lx = (a - 0.002) * phi.cos();
-            let ly = (b - 0.002) * phi.sin();
-            let pt = DVec2::new(lx * ct - ly * st, lx * st + ly * ct);
-
-            if !plan.part_silhouette_2d.contains_point(pt) {
-                let d = plan.part_silhouette_2d.min_distance_to_boundary(pt);
-                if d > 0.01 {
-                    outside_sil_count += 1;
-                    max_miss_mm = max_miss_mm.max(d);
-                }
-            }
-
-            // Inside the fixed jaw (`y > half_gap + 0.05`) or movable jaw (`y < -half_gap - 0.05`),
-            // every point of the twisted helical blade MUST lie strictly inside the jaw pocket!
-            if pt.y > half_gap + 0.05 && !plan.fixed_pocket_2d.contains_point(pt) {
-                outside_jaw_pocket_count += 1;
-            }
-            if pt.y < -(half_gap + 0.05) && !plan.movable_pocket_2d.contains_point(pt) {
-                outside_jaw_pocket_count += 1;
-            }
-        }
-    }
-
-    assert_eq!(
-        outside_sil_count, 0,
-        "Continuous swept helical silhouette must contain every twisted blade point in [0, {grip_depth_mm}] (missed {outside_sil_count} pts, max_miss={max_miss_mm:.4} mm)"
-    );
-    assert_eq!(
-        outside_jaw_pocket_count, 0,
-        "Generated soft-jaw pockets must have zero scalloping interference with the 90° twisted helical loft (missed {outside_jaw_pocket_count} pts)"
-    );
-
-    // Verify both generated STL jaws are 100% watertight
-    for (label, bytes) in [
-        ("helical_fixed.stl", plan.fixed_jaw_stl.as_ref().unwrap()),
-        (
-            "helical_movable.stl",
-            plan.movable_jaw_stl.as_ref().unwrap(),
-        ),
-    ] {
-        let reloaded = load_mesh_bytes(label, bytes, &MeshImportOptions::default()).unwrap();
-        assert!(
-            reloaded.diagnostics.is_watertight,
-            "{label} must be watertight: {:?}",
-            reloaded.diagnostics
-        );
-        assert_eq!(reloaded.diagnostics.open_boundary_edges, 0);
-        assert_eq!(reloaded.diagnostics.non_manifold_edges, 0);
-    }
 }
 
 #[test]
@@ -843,27 +738,26 @@ fn parallel3d_and_scallop3d_on_twisted_overhanging_helical_loft_zero_gouge_zero_
         );
     }
 
-    let sim = run_setup_simulation_with_choice(
-        &SetupSimulationInput {
-            doc: &doc,
-            setup: &resolved,
-            target_bodies: &[],
-            fixtures: &[],
-            operations: &[
-                SimOperationInput::from_operation(&op_par, &ball_4, &tp_par),
-                SimOperationInput::from_operation(&op_sc, &ball_4, &tp_sc),
-            ],
-            kinematics: MachineKinematicsConfig::default(),
-            resolution: SimResolution::Standard,
-            verify_config: SimVerificationConfig::default(),
-            initial_stock: None,
-            initial_raw_volume_mm3: None,
-            carried_over_from_setup: None,
-            cancel: None,
-        },
-        SimEngineKind::TriDexel,
-        SimComputeBackendChoice::Auto,
-    )
+    let sim = run_setup_simulation(&SetupSimulationInput {
+        doc: &doc,
+        setup: &resolved,
+        target_bodies: &[],
+        fixtures: &[],
+        operations: &[
+            SimOperationInput::from_operation(&op_par, &ball_4, &tp_par),
+            SimOperationInput::from_operation(&op_sc, &ball_4, &tp_sc),
+        ],
+        kinematics: MachineKinematicsConfig::default(),
+        resolution: SimResolution::Standard,
+        verify_config: SimVerificationConfig::default(),
+        initial_stock: None,
+        initial_raw_volume_mm3: None,
+        carried_over_from_setup: None,
+        cancel: None,
+        engine: SimEngineKind::TriDexel,
+        backend_choice: SimComputeBackendChoice::Auto,
+        ..SetupSimulationInput::new(&doc, &resolved, &[])
+    })
     .unwrap();
 
     assert_eq!(

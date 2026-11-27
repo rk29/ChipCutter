@@ -85,24 +85,8 @@ pub struct SimDiagnostic {
     pub fixture_name: Option<String>,
 }
 
-/// Tolerances governing automated crash & gouge detection.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct SimVerificationConfig {
-    /// Allowed axial surface tolerance before declaring a target solid gouge (`06-simulation.md`: `0.02 mm`).
-    pub gouge_tol_mm: f64,
-    /// Allowed axial rapid contact tolerance (`mm`).
-    pub rapid_crash_tol_mm: f64,
-    /// Radial skin tolerance (`mm`) preventing tangential contact along vertical cliff walls from
-    /// false-triggering axial cliff gouges due to chord/grid quantization.
-    pub radial_wall_skin_mm: f64,
-}
-
-impl Default for SimVerificationConfig {
-    fn default() -> Self {
-        Self {
-            gouge_tol_mm: 0.02,
-            rapid_crash_tol_mm: 0.02,
-            radial_wall_skin_mm: 0.018,
-        }
-    }
-}
+/// Tolerances governing automated crash & gouge detection (`06-simulation.md`).
+///
+/// Unified with [`chip_stock::StockVerifyTolerances`] so verification thresholds have a single
+/// canonical definition across `chip-stock`, `chip-sim`, `chip-project`, and `chip-gui`.
+pub type SimVerificationConfig = chip_stock::StockVerifyTolerances;

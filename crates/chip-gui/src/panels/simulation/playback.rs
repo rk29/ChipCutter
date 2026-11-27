@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use chip_math::{DMat4, DVec3};
+use chip_math::DVec3;
 use chip_project::ProjectDocument;
 use chip_sim::{ScrubSnapshot, SetupSimulationResult, build_cutter_assembly_mesh};
 
@@ -215,7 +215,7 @@ impl SimulationPanelState {
         } else {
             0.0
         };
-        let stock_model = compute_stock_model_wcs(&res, sim_rot_deg);
+        let stock_model = res.stock_model_wcs_transform(sim_rot_deg);
 
         // 1. 3D Machined Stock Render Source (off-thread coalescing interactively; synchronous in headless capture)
         let stock_out = if self.show_machined_stock {
@@ -364,19 +364,6 @@ impl SimulationPanelState {
     }
 }
 
-fn compute_stock_model_wcs(res: &SetupSimulationResult, rotary_deg: f64) -> DMat4 {
-    if let Some(rot) = res.rotary_spec()
-        && rotary_deg.abs() > 1e-6
-    {
-        let angle_rad = (rotary_deg * rot.direction_sign).to_radians();
-        DMat4::from_translation(rot.center_wcs)
-            * DMat4::from_axis_angle(rot.axis_unit(), angle_rad)
-            * DMat4::from_translation(-rot.center_wcs)
-    } else {
-        DMat4::IDENTITY
-    }
-}
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -448,6 +435,7 @@ mod tests {
             initial_raw_volume_mm3: None,
             carried_over_from_setup: None,
             cancel: None,
+            ..SetupSimulationInput::new(&doc, &resolved, &[])
         })
         .unwrap();
 
@@ -581,6 +569,7 @@ mod tests {
             initial_raw_volume_mm3: None,
             carried_over_from_setup: None,
             cancel: None,
+            ..SetupSimulationInput::new(&doc, &resolved, &[])
         })
         .unwrap();
 
@@ -652,30 +641,29 @@ mod tests {
         b.linear_to(DVec3::new(30.0, 0.0, -6.0), 600.0, MotionRole::Cut);
         let tp = b.finish();
 
-        let sim = chip_sim::run_setup_simulation_with_engine(
-            &SetupSimulationInput {
-                doc: &doc,
-                setup: &resolved,
-                target_bodies: &[],
-                fixtures: &[],
-                operations: &[SimOperationInput {
-                    op_id: "op_td_slot",
-                    op_name: "TriDexel Slot",
-                    tool: flat_6mm,
-                    fallback_spindle_rpm: 12_000.0,
-                    intentional_edge_break_mm: 0.0,
-                    toolpath: &tp,
-                }],
-                resolution: SimResolution::Standard,
-                kinematics: MachineKinematicsConfig::default(),
-                verify_config: SimVerificationConfig::default(),
-                initial_stock: None,
-                initial_raw_volume_mm3: None,
-                carried_over_from_setup: None,
-                cancel: None,
-            },
-            chip_sim::SimEngineKind::TriDexel,
-        )
+        let sim = chip_sim::run_setup_simulation(&SetupSimulationInput {
+            doc: &doc,
+            setup: &resolved,
+            target_bodies: &[],
+            fixtures: &[],
+            operations: &[SimOperationInput {
+                op_id: "op_td_slot",
+                op_name: "TriDexel Slot",
+                tool: flat_6mm,
+                fallback_spindle_rpm: 12_000.0,
+                intentional_edge_break_mm: 0.0,
+                toolpath: &tp,
+            }],
+            resolution: SimResolution::Standard,
+            kinematics: MachineKinematicsConfig::default(),
+            verify_config: SimVerificationConfig::default(),
+            initial_stock: None,
+            initial_raw_volume_mm3: None,
+            carried_over_from_setup: None,
+            cancel: None,
+            engine: chip_sim::SimEngineKind::TriDexel,
+            ..SetupSimulationInput::new(&doc, &resolved, &[])
+        })
         .unwrap();
         assert_eq!(sim.engine, chip_sim::SimEngineKind::TriDexel);
         assert!(sim.as_tridexel().is_some());
@@ -825,30 +813,29 @@ mod tests {
         );
         let tp = b.finish();
 
-        let sim = chip_sim::run_setup_simulation_with_engine(
-            &SetupSimulationInput {
-                doc: &doc,
-                setup: &resolved,
-                target_bodies: &[],
-                fixtures: &[],
-                operations: &[SimOperationInput {
-                    op_id: "op_rot_err",
-                    op_name: "Rotary Cut",
-                    tool: flat_6mm,
-                    fallback_spindle_rpm: 12_000.0,
-                    intentional_edge_break_mm: 0.0,
-                    toolpath: &tp,
-                }],
-                resolution: SimResolution::Standard,
-                kinematics: MachineKinematicsConfig::default(),
-                verify_config: SimVerificationConfig::default(),
-                initial_stock: None,
-                initial_raw_volume_mm3: None,
-                carried_over_from_setup: None,
-                cancel: None,
-            },
-            chip_sim::SimEngineKind::TriDexel,
-        )
+        let sim = chip_sim::run_setup_simulation(&SetupSimulationInput {
+            doc: &doc,
+            setup: &resolved,
+            target_bodies: &[],
+            fixtures: &[],
+            operations: &[SimOperationInput {
+                op_id: "op_rot_err",
+                op_name: "Rotary Cut",
+                tool: flat_6mm,
+                fallback_spindle_rpm: 12_000.0,
+                intentional_edge_break_mm: 0.0,
+                toolpath: &tp,
+            }],
+            resolution: SimResolution::Standard,
+            kinematics: MachineKinematicsConfig::default(),
+            verify_config: SimVerificationConfig::default(),
+            initial_stock: None,
+            initial_raw_volume_mm3: None,
+            carried_over_from_setup: None,
+            cancel: None,
+            engine: chip_sim::SimEngineKind::TriDexel,
+            ..SetupSimulationInput::new(&doc, &resolved, &[])
+        })
         .unwrap();
 
         let mut panel = SimulationPanelState {
@@ -922,30 +909,29 @@ mod tests {
         );
         let tp = b.finish();
 
-        let sim = chip_sim::run_setup_simulation_with_engine(
-            &SetupSimulationInput {
-                doc: &doc,
-                setup: &resolved,
-                target_bodies: &[],
-                fixtures: &[],
-                operations: &[SimOperationInput {
-                    op_id: "op_helical",
-                    op_name: "4-Axis Helical",
-                    tool: ball_6mm,
-                    fallback_spindle_rpm: 12_000.0,
-                    intentional_edge_break_mm: 0.0,
-                    toolpath: &tp,
-                }],
-                resolution: SimResolution::Standard,
-                kinematics: MachineKinematicsConfig::default(),
-                verify_config: SimVerificationConfig::default(),
-                initial_stock: None,
-                initial_raw_volume_mm3: None,
-                carried_over_from_setup: None,
-                cancel: None,
-            },
-            chip_sim::SimEngineKind::TriDexel,
-        )
+        let sim = chip_sim::run_setup_simulation(&SetupSimulationInput {
+            doc: &doc,
+            setup: &resolved,
+            target_bodies: &[],
+            fixtures: &[],
+            operations: &[SimOperationInput {
+                op_id: "op_helical",
+                op_name: "4-Axis Helical",
+                tool: ball_6mm,
+                fallback_spindle_rpm: 12_000.0,
+                intentional_edge_break_mm: 0.0,
+                toolpath: &tp,
+            }],
+            resolution: SimResolution::Standard,
+            kinematics: MachineKinematicsConfig::default(),
+            verify_config: SimVerificationConfig::default(),
+            initial_stock: None,
+            initial_raw_volume_mm3: None,
+            carried_over_from_setup: None,
+            cancel: None,
+            engine: chip_sim::SimEngineKind::TriDexel,
+            ..SetupSimulationInput::new(&doc, &resolved, &[])
+        })
         .unwrap();
 
         let mut panel = SimulationPanelState {
@@ -1073,6 +1059,7 @@ mod tests {
             initial_raw_volume_mm3: None,
             carried_over_from_setup: None,
             cancel: None,
+            ..SetupSimulationInput::new(&doc, &resolved, &[])
         })
         .unwrap();
 
@@ -1168,31 +1155,30 @@ mod tests {
         b.linear_to(DVec3::new(30.0, 0.0, -5.0), 600.0, MotionRole::Cut);
         let tp = b.finish();
 
-        let sim = chip_sim::run_setup_simulation_with_choice(
-            &SetupSimulationInput {
-                doc: &doc,
-                setup: &resolved,
-                target_bodies: &[],
-                fixtures: &[],
-                operations: &[SimOperationInput {
-                    op_id: "op_gpu_slot",
-                    op_name: "GPU Slot",
-                    tool: flat_6mm,
-                    fallback_spindle_rpm: 12_000.0,
-                    intentional_edge_break_mm: 0.0,
-                    toolpath: &tp,
-                }],
-                resolution: SimResolution::Standard,
-                kinematics: MachineKinematicsConfig::default(),
-                verify_config: SimVerificationConfig::default(),
-                initial_stock: None,
-                initial_raw_volume_mm3: None,
-                carried_over_from_setup: None,
-                cancel: None,
-            },
-            chip_sim::SimEngineKind::Heightmap,
-            chip_sim::SimComputeBackendChoice::Gpu,
-        )
+        let sim = chip_sim::run_setup_simulation(&SetupSimulationInput {
+            doc: &doc,
+            setup: &resolved,
+            target_bodies: &[],
+            fixtures: &[],
+            operations: &[SimOperationInput {
+                op_id: "op_gpu_slot",
+                op_name: "GPU Slot",
+                tool: flat_6mm,
+                fallback_spindle_rpm: 12_000.0,
+                intentional_edge_break_mm: 0.0,
+                toolpath: &tp,
+            }],
+            resolution: SimResolution::Standard,
+            kinematics: MachineKinematicsConfig::default(),
+            verify_config: SimVerificationConfig::default(),
+            initial_stock: None,
+            initial_raw_volume_mm3: None,
+            carried_over_from_setup: None,
+            cancel: None,
+            engine: chip_sim::SimEngineKind::Heightmap,
+            backend_choice: chip_sim::SimComputeBackendChoice::Gpu,
+            ..SetupSimulationInput::new(&doc, &resolved, &[])
+        })
         .unwrap();
         assert!(sim.active_backend.is_gpu);
 

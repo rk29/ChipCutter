@@ -2,11 +2,13 @@
 //! Z-height hierarchy resolution, and CAM operation models (`chip-cam`).
 
 pub mod avoid_regions;
+pub mod boundary_preview;
 pub mod cl_data;
 pub mod feed_opt;
 pub mod fixture_avoidance;
 pub mod heights;
 pub mod machinability_advisor;
+pub mod machinability_physics;
 pub mod measurement;
 pub mod operation;
 pub mod params;
@@ -18,16 +20,19 @@ pub mod setup;
 pub mod stock;
 pub mod strategies;
 pub mod surface3d;
-pub mod thread_tables;
 pub mod toolpath;
+pub mod validation;
 pub mod wcs;
 pub mod workholding;
-pub mod workholding_wizards;
 
 pub use avoid_regions::{
     AvoidAxialBandsInput, AvoidRegionInput, ResolvedAvoidAxialBands, ResolvedAvoidRegion2D,
     merge_u_intervals_1d, resolve_avoid_axial_bands, resolve_avoid_region_2d,
     subtract_u_intervals_1d, transform_fixtures_to_frame,
+};
+pub use boundary_preview::{
+    BoundaryPreviewCache, BoundaryPreviewInput, BoundaryPreviewOverlay, SharedAvoidPreviewInput,
+    resolve_rotary_window_for_preview,
 };
 pub use chip_bvh::TriMesh3D;
 pub use cl_data::{ArcDir, ArcPlane, ClEvent, CutterCompMode, DrillCycleKind, MotionRole};
@@ -47,14 +52,17 @@ pub use machinability_advisor::{
     OperationMachinabilityContext, OperationMachinabilityReport, SetupMachinabilityReport,
     analyze_operation_machinability, analyze_setup_machinability, apply_machinability_fix,
 };
-pub use measurement::{
-    MeasureSnapTarget, MeasurementResult, measure_pair, measure_single,
-    snap_brep_edge_to_measure_target, snap_brep_face_to_measure_target,
-    snap_brep_pick_to_measure_target, snap_mesh_hit_to_measure_target,
-    snap_sketch_to_measure_target,
+pub use machinability_physics::{
+    CARBIDE_TRS_MPA, CARBIDE_YOUNGS_MODULUS_MPA, CutPhysicsInput, CutPhysicsMetrics,
+    DEFAULT_SPINDLE_EFFICIENCY, DeflectionResult, HSS_TRS_MPA, HSS_YOUNGS_MODULUS_MPA,
+    ToolSubstrate, available_spindle_power_watts, cantilever_deflection_and_stress,
+    cantilever_deflection_and_stress_with_substrate, compute_engagement_physics,
+    effective_core_diameter_mm, engagement_arc_rad,
 };
+pub use measurement::snap_sketch_to_measure_target;
 pub use operation::{
     EffectiveCuttingParams, Operation, OperationFeedOverrides, OperationKind, OperationStatus,
+    ToolOperationClass, cutter_supports_operation,
 };
 pub use params::{
     Adaptive3DParams, AdaptiveClearingParams, AdaptiveCutDirection, AvoidRegionConfig,
@@ -94,11 +102,14 @@ pub use rotary::{
 };
 pub use selection::{
     ChainDirectionArrow3D, ExtractedFeature25D, ExtractedSelectionSummary, GeometrySelectionItem,
-    extract_rotary_selection_features, extract_selection_features,
-    extract_selection_features_with_sketches,
+    ModeledChamferStrip, PlanarFaceLoopClassification, classify_planar_face_loops,
+    extract_modeled_chamfer_strip, extract_rotary_selection_features, extract_selection_features,
+    extract_selection_features_with_sketches, highest_adjacent_lower_floor_proj,
+    highest_adjacent_wall_top,
 };
 pub use setup::{
-    ResolvedSetup, Setup, resolve_sketch_world_frame, resolve_sketch_world_frame_with_doc,
+    ResolvedSetup, Setup, cad_binding_to_sketch_face, resolve_sketch_world_frame,
+    resolve_sketch_world_frame_with_doc, sketch_face_to_cad_binding,
 };
 pub use stock::{
     FixedBoxXyAlign, FixedBoxZAlign, ResolvedStockGeometry, StockAxis, StockConfig,
@@ -130,15 +141,14 @@ pub use surface3d::{
     resolve_3d_containment_region_detailed, sample_surface_slope_deg, simplify_3d_polyline_rdp,
     slice_surface_contours_z, stepover_for_cusp_height, stock_xy_region,
 };
-pub use thread_tables::{
-    ISO_60_H_OVER_P, ThreadSpecEntry, ThreadStandardKind, all_thread_specs, find_thread_spec,
-    iso60_minor_diameter_internal_mm, iso60_pitch_diameter_mm, suggest_thread_for_hole_diameter,
-    thread_specs_for_standard,
-};
 pub use toolpath::{
     ClearingSubToolpath, DEFAULT_RAPID_RATE_MM_MIN, DrillCycleSpec, GeneratedToolpath,
     SegmentMotion3D, TabMarker3D, ToolpathBuilder, ToolpathSegment3D, ToolpathStats,
     VerticalArcMove, XyArcMove, expand_drill_cycle_segments,
+};
+pub use validation::{
+    CamValidationIssue, CamValidationSeverity, validate_operation_extracted_geometry,
+    validate_operation_strategy_and_rotary, validate_operation_undercut_depth,
 };
 pub use wcs::{
     AxisAnchor, BoxAnchor27, CamError, WcsAxisRef, WcsConfig, WcsFeaturePointRef,
@@ -147,11 +157,6 @@ pub use wcs::{
 pub use workholding::{
     FixtureBody, FixtureKind, FixtureZRef, ResolvedFixtureSolid, ViseClampAxis, ViseFixedSide,
     resolve_fixture_body, resolve_setup_fixtures, resolve_setup_fixtures_parametric,
-};
-pub use workholding_wizards::{
-    FlipAxis, FlipJigConfig, FlipJigPinCount, FlipJigPlan, STANDARD_PIN_DIAMETERS_MM,
-    SoftJawBoltPattern, SoftJawConfig, SoftJawOutputMode, SoftJawPlan, build_soft_jaw_plan,
-    build_two_sided_flip_jig, extract_part_silhouette_2d,
 };
 
 #[cfg(test)]

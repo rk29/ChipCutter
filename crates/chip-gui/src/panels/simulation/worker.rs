@@ -8,9 +8,8 @@ use std::{
 use chip_cad::CadDocument;
 use chip_cam::{FixtureKind, GeneratedToolpath, Operation, resolve_setup_fixtures};
 use chip_project::{
-    SetupSimRequest, collect_ready_setup_operations, format_exec_duration,
-    resolve_kinematics_for_key, simulate_all_setups_with_verify_and_progress,
-    simulate_project_setup_with_verify_and_progress_in_dir,
+    AllSetupsSimRequest, SetupSimRequest, collect_ready_setup_operations, format_exec_duration,
+    resolve_setup_kinematics, simulate_all_setups, simulate_project_setup,
 };
 #[cfg(feature = "gpu-compute")]
 use chip_sim::{GpuCheckpointCache, GpuSimContext, WgpuComputeBackend};
@@ -18,7 +17,7 @@ use chip_sim::{
     ScrubSnapshot, SetupSimulationInput, SetupSimulationResult, SimEngineKind, SimError,
     SimMeshOptions, SimOperationInput, SimProgressTracker, SimStockColorMode, SimStockMesh,
     SimulatedStock, SimulatedStockPlaybackExt, StockPlaybackCursor, format_cycle_time_hms,
-    run_setup_simulation_with_choice_and_progress,
+    run_setup_simulation,
 };
 use chip_tools::Tool;
 use crossbeam_channel::{Receiver, Sender, unbounded};
@@ -613,13 +612,7 @@ impl SimulationPanelState {
         } else {
             BTreeMap::new()
         };
-        let kin = if let Some(mid) = project.machine_id.as_deref()
-            && let Ok(machine) = chip_tools::resolve_machine_definition(mid, project_dir)
-        {
-            chip_sim::MachineKinematicsConfig::from_machine_spec(&machine.kinematics)
-        } else {
-            resolve_kinematics_for_key(&setup.post_profile, project_dir)
-        };
+        let kin = resolve_setup_kinematics(project, setup_idx, project_dir);
 
         let has_carryover = setup.carryover_from_setup_id.is_some();
         let carryover_bundle = if has_carryover {
@@ -647,23 +640,21 @@ impl SimulationPanelState {
                 // Multi-setup carryover path: resolves upstream Setup chain on this background
                 // thread using isolated headless GPU compute (`GpuSimContext::shared_headless()`),
                 // NEVER touching `eframe`'s presentation device!
-                let res = simulate_project_setup_with_verify_and_progress_in_dir(
-                    &SetupSimRequest {
-                        project: &proj_owned,
-                        setup_idx,
-                        cad_doc: &cad_doc,
-                        cad_revision,
-                        cache: &cache_owned,
-                        kinematics: kin,
-                        resolution,
-                        cancel: Some(&cancel_flag),
-                    },
-                    proj_dir_owned.as_deref(),
+                let res = simulate_project_setup(&SetupSimRequest {
+                    project: &proj_owned,
+                    setup_idx,
+                    cad_doc: &cad_doc,
+                    cad_revision,
+                    cache: &cache_owned,
+                    project_dir: proj_dir_owned.as_deref(),
+                    kinematics: kin,
+                    resolution,
                     engine,
                     backend_choice,
                     verify_config,
-                    Some(progress_tracker.full_scope()),
-                );
+                    cancel: Some(&cancel_flag),
+                    progress: Some(progress_tracker.full_scope()),
+                });
                 let mapped = match res {
                     Ok(sim) => Ok(Arc::new(sim)),
                     Err(e) if e.contains("cancelled") => return,
@@ -710,30 +701,21 @@ impl SimulationPanelState {
                 Vec::new()
             };
 
-            let input = SetupSimulationInput {
-                doc: &cad_doc,
-                setup: &resolved,
-                target_bodies: &target_bodies,
-                fixtures: &resolved_fixtures,
-                operations: &refs,
-                resolution,
-                kinematics: kin,
-                verify_config,
-                initial_stock: None,
-                initial_raw_volume_mm3: None,
-                carried_over_from_setup: None,
-                cancel: Some(&cancel_flag),
-            };
+            let mut input = SetupSimulationInput::new(&cad_doc, &resolved, &refs);
+            input.target_bodies = &target_bodies;
+            input.fixtures = &resolved_fixtures;
+            input.resolution = resolution;
+            input.engine = engine;
+            input.backend_choice = backend_choice;
+            input.kinematics = kin;
+            input.verify_config = verify_config;
+            input.progress = Some(progress_tracker.full_scope());
+            input.cancel = Some(&cancel_flag);
             // Always run full-setup background GPU simulation on an isolated headless compute
             // `wgpu::Device` (`GpuSimContext::shared_headless()`), NEVER on `eframe`'s presentation
             // device—otherwise resizing the window mid-simulation causes `Surface::configure` to
             // fail with `ConfigureSurfaceError::GpuWaitTimeout`.
-            let res = run_setup_simulation_with_choice_and_progress(
-                &input,
-                engine,
-                backend_choice,
-                Some(progress_tracker.full_scope()),
-            );
+            let res = run_setup_simulation(&input);
             let mapped = match res {
                 Ok(sim) => Ok(Arc::new(sim)),
                 Err(SimError::Cancelled) => return,
@@ -814,19 +796,19 @@ impl SimulationPanelState {
         let tx = self.tx.clone();
         rayon::spawn(move || {
             let t0 = Instant::now();
-            let res = simulate_all_setups_with_verify_and_progress(
-                &proj_owned,
-                &cad_doc,
+            let res = simulate_all_setups(&AllSetupsSimRequest {
+                project: &proj_owned,
+                cad_doc: &cad_doc,
                 cad_revision,
-                &cache_owned,
-                proj_dir_owned.as_deref(),
+                cache: &cache_owned,
+                project_dir: proj_dir_owned.as_deref(),
                 resolution,
                 engine,
                 backend_choice,
                 verify_config,
-                Some(&cancel_flag),
-                Some(progress_tracker.full_scope()),
-            );
+                cancel: Some(&cancel_flag),
+                progress: Some(progress_tracker.full_scope()),
+            });
             let mapped = match res {
                 Ok(sims) => Ok(proj_owned
                     .setups
@@ -1068,6 +1050,7 @@ mod tests {
             initial_raw_volume_mm3: None,
             carried_over_from_setup: None,
             cancel: None,
+            ..SetupSimulationInput::new(&doc, &resolved, &[])
         })
         .unwrap();
 

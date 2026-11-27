@@ -1,19 +1,19 @@
 use std::time::Instant;
 
 use chip_cad::{
-    TopologyGraph, sample_cam_torture_block_step, sample_curved_deburr_overhang_step_bytes,
-    sample_dovetail_rail_keyway_step_bytes, sample_helical_flute_shaft_stl_bytes,
-    sample_indexed_4sided_bar_step_bytes, sample_keepout_clamp_plate_step_bytes,
-    sample_machined_plate_step, sample_multi_feature_bracket_step, sample_relief_wave_obj_text,
-    sample_revised_part_pair_step, sample_rotary_shaft_stl_bytes, sample_sculpted_dome_stl_bytes,
-    sample_sculpted_mount_3mf_bytes, sample_threaded_manifold_step,
-    sample_undercut_deburr_block_step_bytes, tutorial_adaptive_pocket_step,
-    tutorial_contour_plate_step,
+    TopologyGraph, load_model_bytes_cad_doc, sample_cam_torture_block_step,
+    sample_curved_deburr_overhang_step_bytes, sample_dovetail_rail_keyway_step_bytes,
+    sample_helical_flute_shaft_stl_bytes, sample_indexed_4sided_bar_step_bytes,
+    sample_keepout_clamp_plate_step_bytes, sample_machined_plate_step,
+    sample_multi_feature_bracket_step, sample_relief_wave_obj_text, sample_revised_part_pair_step,
+    sample_rotary_shaft_stl_bytes, sample_sculpted_dome_stl_bytes, sample_sculpted_mount_3mf_bytes,
+    sample_threaded_manifold_step, sample_undercut_deburr_block_step_bytes,
+    tutorial_adaptive_pocket_step, tutorial_contour_plate_step,
 };
 use chip_project::{
     build_pure2d_router_panel_demo_project, build_revision_v1_demo_project,
     build_rotary_wrapped_engraving_project, build_svg_badge_sign_project, compute_sha256_hex,
-    load_model_bytes_cad_doc, sample_two_sided_vise_part_stl_bytes,
+    sample_two_sided_vise_part_stl_bytes,
 };
 
 use crate::{

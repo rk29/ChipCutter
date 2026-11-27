@@ -1,8 +1,8 @@
 use std::{path::PathBuf, process::ExitCode};
 
-use chip_cad::{MeshImportOptions, MeshUnitKind, is_mesh_extension, load_mesh_bytes};
-use chip_cam::{BoxAnchor27, StockConfig, WcsOriginMode};
-use chip_math::ParamLength;
+use chip_cad::{
+    MeshImportOptions, MeshUnitKind, ModelTransform, is_mesh_extension, load_mesh_bytes,
+};
 use chip_project::{ModelEntry, ProjectDocument, compute_sha256_hex, portable_model_path};
 use chip_tools::default_starter_tool_library;
 use clap::Args;
@@ -81,65 +81,36 @@ pub fn run_import_mesh(args: ImportMeshArgs) -> Result<ExitCode, Box<dyn std::er
         },
     )?;
 
-    let mut xf = if args.y_up_to_z_up {
-        chip_cad::ModelTransform::y_up_to_z_up()
-    } else {
-        chip_cad::ModelTransform::IDENTITY
-    };
-    if args.rot_x.abs() > 1e-9 || args.rot_y.abs() > 1e-9 || args.rot_z.abs() > 1e-9 {
-        xf.rotate_deg = [
-            xf.rotate_deg[0] + args.rot_x,
-            xf.rotate_deg[1] + args.rot_y,
-            xf.rotate_deg[2] + args.rot_z,
-        ];
-    }
-    if (args.scale - 1.0).abs() > 1e-9 {
-        xf = xf.with_uniform_scale(args.scale);
-    }
+    let (xf, _) = ModelTransform::compose_for_mesh_import(
+        &raw_mesh.vertices_mm,
+        [args.rot_x, args.rot_y, args.rot_z],
+        args.scale,
+        args.y_up_to_z_up,
+        args.center_xy,
+        args.drop_z0,
+    );
     xf.validate()?;
-    let mut mesh = raw_mesh.transformed(&xf);
-    if args.center_xy {
-        xf = xf.centered_xy_for_aabb(mesh.aabb_mm);
-        mesh = raw_mesh.transformed(&xf);
-    }
-    if args.drop_z0 {
-        xf = xf.dropped_bottom_to_z0_for_aabb(mesh.aabb_mm);
-        mesh = raw_mesh.transformed(&xf);
-    }
+    let mesh = raw_mesh.transformed(&xf);
 
     let stem = args
         .input
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("Mesh Job");
-    let mut proj = ProjectDocument::new(stem);
     let rel_path = portable_model_path(Some(&args.output), &args.input);
-    proj.models = vec![ModelEntry {
-        id: "model_1".to_string(),
-        path: rel_path,
-        sha256: compute_sha256_hex(&bytes),
-        role: Default::default(),
-        unit_override,
-        transform: xf,
-    }];
-    proj.setups[0].wcs.origin = WcsOriginMode::StockBoxPoint {
-        anchor: BoxAnchor27::TOP_CENTER,
-    };
-    proj.setups[0].stock = StockConfig::RelativeBox {
-        side_pos_x: ParamLength::from_mm(2.0),
-        side_neg_x: ParamLength::from_mm(2.0),
-        side_pos_y: ParamLength::from_mm(2.0),
-        side_neg_y: ParamLength::from_mm(2.0),
-        symmetric_xy: true,
-        top_offset_z: ParamLength::from_mm(1.0),
-        bottom_offset_z: ParamLength::from_mm(0.0),
-        sheet_thickness_z: ParamLength::from_mm(12.0),
-        round_increment_mm: None,
-    };
     let starter = default_starter_tool_library();
-    for t in &starter.tools {
-        proj.ensure_tool_embedded(t);
-    }
+    let proj = ProjectDocument::new_from_mesh(
+        stem,
+        ModelEntry {
+            id: "model_1".to_string(),
+            path: rel_path,
+            sha256: compute_sha256_hex(&bytes),
+            role: Default::default(),
+            unit_override,
+            transform: xf,
+        },
+        &starter.tools,
+    );
 
     proj.save_to_path(&args.output)?;
     let sz = mesh.aabb_mm.size();

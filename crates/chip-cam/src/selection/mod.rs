@@ -8,6 +8,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::{setup::ResolvedSetup, wcs::CamError};
 
+pub use self::brep::{
+    ModeledChamferStrip, PlanarFaceLoopClassification, classify_planar_face_loops,
+    extract_modeled_chamfer_strip, highest_adjacent_lower_floor_proj, highest_adjacent_wall_top,
+};
 use self::{
     brep::{
         BRepExtractAccum, collect_cylindrical_hole, extract_closed_loop, extract_open_chain,

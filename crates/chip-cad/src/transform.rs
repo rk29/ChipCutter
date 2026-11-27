@@ -166,6 +166,49 @@ impl ModelTransform {
         }
     }
 
+    /// Composes an import transform from rotation, uniform scale, optional `Y-Up -> Z-Up` (`+90° X`),
+    /// optional XY centering on `(0, 0)`, and optional drop-to-`Z = 0` against `vertices_mm`,
+    /// returning `(transform, transformed_aabb)` for both CLI `import-mesh` and GUI preview modal.
+    pub fn compose_for_mesh_import(
+        vertices_mm: &[DVec3],
+        rotate_deg: [f64; 3],
+        uniform_scale: f64,
+        y_up_to_z_up: bool,
+        center_xy: bool,
+        drop_z0: bool,
+    ) -> (Self, Aabb3) {
+        let mut xf = Self {
+            translate_mm: [0.0; 3],
+            rotate_deg: [
+                rotate_deg[0] + if y_up_to_z_up { 90.0 } else { 0.0 },
+                rotate_deg[1],
+                rotate_deg[2],
+            ],
+            scale: [uniform_scale; 3],
+        };
+        let mut aabb = Aabb3::EMPTY;
+        for v in vertices_mm {
+            aabb.extend_point(xf.transform_point(*v));
+        }
+        if aabb.is_valid() {
+            if center_xy {
+                xf = xf.centered_xy_for_aabb(aabb);
+                let shift = DVec3::new(
+                    -0.5 * (aabb.min.x + aabb.max.x),
+                    -0.5 * (aabb.min.y + aabb.max.y),
+                    0.0,
+                );
+                aabb = Aabb3::new(aabb.min + shift, aabb.max + shift);
+            }
+            if drop_z0 {
+                xf = xf.dropped_bottom_to_z0_for_aabb(aabb);
+                let shift = DVec3::new(0.0, 0.0, -aabb.min.z);
+                aabb = Aabb3::new(aabb.min + shift, aabb.max + shift);
+            }
+        }
+        (xf, aabb)
+    }
+
     /// Composes a world-space rotation `delta_rot` around `pivot_mm` onto `self`:
     /// `R' = delta_rot * R`, `S' = S`, `t' = delta_rot * (t - pivot) + pivot`.
     pub fn rotated_world(&self, delta_rot: DMat3, pivot_mm: DVec3) -> Self {

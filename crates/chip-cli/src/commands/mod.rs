@@ -8,95 +8,23 @@ pub mod transform_model;
 pub mod validate_sim_build;
 pub mod workholding;
 
-use std::path::{Path, PathBuf};
-
-use chip_cad::CadDocument;
-use chip_project::{
-    ProjectDocument, create_private_temp_extract_dir, is_chipz_path,
-    load_model_entry_cad_doc_transformed, resolve_model_path, unpack_chipz_bundle,
-};
+pub use chip_project::{load_primary_cad_for_project, load_project_or_chipz};
 use chip_sim::{
     ActiveSimBackendInfo, SimComputeBackendChoice, SimDiagnostic, SimEngineKind, SimResolution,
     SimTimingBreakdown, StockErrorReport,
 };
 use serde::Serialize;
 
-pub struct TempExtractGuard(PathBuf);
-
-impl Drop for TempExtractGuard {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
-pub struct LoadedCliInput {
-    pub proj: ProjectDocument,
-    pub dir: Option<PathBuf>,
-    pub _guard: Option<TempExtractGuard>,
-}
-
-pub fn load_project_or_chipz(path: &Path) -> Result<LoadedCliInput, Box<dyn std::error::Error>> {
-    if is_chipz_path(path) {
-        let temp_dir = create_private_temp_extract_dir("chipcutter_cli_chipz")?;
-        let guard = TempExtractGuard(temp_dir.clone());
-        let unpacked = unpack_chipz_bundle(path, &temp_dir)?;
-        Ok(LoadedCliInput {
-            proj: unpacked.project,
-            dir: Some(temp_dir),
-            _guard: Some(guard),
-        })
-    } else {
-        let proj = ProjectDocument::load_from_path(path)?;
-        let dir = path.parent().map(Path::to_path_buf);
-        Ok(LoadedCliInput {
-            proj,
-            dir,
-            _guard: None,
-        })
-    }
-}
-
-pub fn load_primary_cad_for_project(
-    proj: &ProjectDocument,
-    proj_dir: Option<&Path>,
-) -> Result<CadDocument, Box<dyn std::error::Error>> {
-    let Some(first) = proj.primary_part_model() else {
-        return Ok(CadDocument::empty());
-    };
-    let model_path = resolve_model_path(proj_dir, &first.path);
-    Ok(
-        load_model_entry_cad_doc_transformed(&model_path, first.unit_override, &first.transform)
-            .map_err(|e| format!("failed to load model '{}': {e}", model_path.display()))?,
-    )
-}
-
 pub fn parse_sim_resolution(raw: &str) -> SimResolution {
-    match raw.trim().to_ascii_lowercase().as_str() {
-        "fine" | "1024" => SimResolution::Fine,
-        "ultra" | "2048" => SimResolution::Ultra,
-        _ => SimResolution::Standard,
-    }
+    SimResolution::from_str_loose(raw).unwrap_or(SimResolution::Standard)
 }
 
 pub fn parse_sim_engine(raw: &str) -> Result<SimEngineKind, String> {
-    match raw.trim().to_ascii_lowercase().as_str() {
-        "heightmap" | "2.5d" | "z-dexel" | "zdexel" => Ok(SimEngineKind::Heightmap),
-        "tri-dexel" | "tridexel" | "tri_dexel" | "3d" => Ok(SimEngineKind::TriDexel),
-        other => Err(format!(
-            "unknown simulation engine '{other}'; expected 'heightmap' or 'tri-dexel'"
-        )),
-    }
+    SimEngineKind::from_str_loose(raw)
 }
 
 pub fn parse_sim_backend(raw: &str) -> Result<SimComputeBackendChoice, String> {
-    match raw.trim().to_ascii_lowercase().as_str() {
-        "auto" => Ok(SimComputeBackendChoice::Auto),
-        "gpu" | "wgpu" => Ok(SimComputeBackendChoice::Gpu),
-        "cpu" | "exact" => Ok(SimComputeBackendChoice::Cpu),
-        other => Err(format!(
-            "unknown simulation backend '{other}'; expected 'auto', 'gpu', or 'cpu'"
-        )),
-    }
+    SimComputeBackendChoice::from_str_loose(raw)
 }
 
 #[derive(Debug, Serialize)]

@@ -10,12 +10,13 @@ use chip_geom2d::{
     extract_medial_axis_chains,
 };
 use chip_math::{Aabb2, ArcPolyline2D, ArcSegment2D, DVec2, DVec3, ParamLength};
-use chip_tools::{CutterGeometry, Tool, ToolOperationClass};
+use chip_tools::{CutterGeometry, Tool};
 
 use crate::{
     avoid_regions::clip_polyline_outside_avoid,
     cl_data::{ClEvent, MotionRole},
     heights::ResolvedHeights,
+    operation::{ToolOperationClass, cutter_supports_operation},
     params::{
         AdaptiveClearingParams, Pocket2DParams, PocketPassOrder, PocketStrategyKind,
         VCarveClearingKind, VCarveInlayMode, VCarveParams,
@@ -99,10 +100,10 @@ pub fn generate_vcarve(
     // 4. Optional Stage 1: Secondary Flat Endmill Area Clearance when `flat_depth` + `clearing_tool` are set!
     let mut stage1_swept_coverage: Option<RegionSet2D> = None;
     if let (Some(d_flat), Some(clear_tool)) = (eff_flat_depth_opt, ctx.clearing_tool) {
-        if !clear_tool
-            .geometry
-            .supports_operation(ToolOperationClass::VCarveFlatClearance)
-        {
+        if !cutter_supports_operation(
+            &clear_tool.geometry,
+            ToolOperationClass::VCarveFlatClearance,
+        ) {
             return Err(CamError::IncompatibleTool {
                 op_name: format!("{} (Flat Clearance)", ctx.op.name),
                 op_kind: "V-Carve Flat Clearance",

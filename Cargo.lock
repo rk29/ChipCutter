@@ -814,8 +814,10 @@ dependencies = [
 name = "chip-project"
 version = "0.26.0"
 dependencies = [
+ "chip-bvh",
  "chip-cad",
  "chip-cam",
+ "chip-geom2d",
  "chip-math",
  "chip-post",
  "chip-sim",

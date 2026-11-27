@@ -29,7 +29,7 @@ use chip_project::{
     build_indexed_model_bounds_project, build_keepout_clamps_project,
     build_mesh_3mf_bracket_project, build_svg_badge_sign_project, compute_sha256_hex,
     generate_project_blocking, post_process_project_setup, resolve_kinematics_for_key,
-    simulate_all_setups_with_choice, simulate_project_setup_with_choice, validate_project,
+    simulate_all_setups, simulate_project_setup, validate_project,
 };
 use chip_sim::{SimComputeBackendChoice, SimEngineKind, SimIssueKind, SimResolution};
 use chip_tools::default_starter_tool_library;
@@ -143,20 +143,19 @@ fn sample_feed_opt_pocket_e2e_modulated_feed_and_zero_errors() {
     );
 
     let kin = resolve_kinematics_for_key(&proj.setups[0].post_profile, None);
-    let sim = simulate_project_setup_with_choice(
-        &SetupSimRequest {
-            project: &proj,
-            setup_idx: 0,
-            cad_doc: &cad_doc,
-            cad_revision: 1,
-            cache: &cache,
-            kinematics: kin,
-            resolution: SimResolution::Standard,
-            cancel: None,
-        },
-        SimEngineKind::Heightmap,
-        SimComputeBackendChoice::Cpu,
-    )
+    let sim = simulate_project_setup(&SetupSimRequest {
+        project: &proj,
+        setup_idx: 0,
+        cad_doc: &cad_doc,
+        cad_revision: 1,
+        cache: &cache,
+        kinematics: kin,
+        resolution: SimResolution::Standard,
+        cancel: None,
+        engine: SimEngineKind::Heightmap,
+        backend_choice: SimComputeBackendChoice::Cpu,
+        ..SetupSimRequest::new(&proj, 0, &cad_doc, 1, &cache)
+    })
     .unwrap();
 
     assert_eq!(
@@ -255,17 +254,19 @@ fn sample_flip_jig_softjaws_e2e_carryover_pins_and_soft_jaws() {
     );
 
     // Simulate Setups 1 & 2 via sequential Tri-Dexel carryover (and Setup 3 soft jaws)
-    let sims = simulate_all_setups_with_choice(
-        &proj,
-        &cad_doc,
-        1,
-        &cache,
-        None,
-        SimResolution::Standard,
-        SimEngineKind::TriDexel,
-        SimComputeBackendChoice::Cpu,
-        None,
-    )
+    let sims = simulate_all_setups(&chip_project::AllSetupsSimRequest {
+        project: &proj,
+        cad_doc: &cad_doc,
+        cad_revision: 1,
+        cache: &cache,
+        project_dir: None,
+        resolution: SimResolution::Standard,
+        engine: SimEngineKind::TriDexel,
+        backend_choice: SimComputeBackendChoice::Cpu,
+        verify_config: Default::default(),
+        cancel: None,
+        progress: None,
+    })
     .unwrap();
     assert_eq!(sims.len(), 3);
     for (idx, sim) in sims.iter().enumerate() {
@@ -345,35 +346,33 @@ fn sample_curved_deburr_3d_e2e_three_cutters_and_cpu_gpu_tridexel_parity() {
     assert_eq!(batch.generated.len(), 6);
 
     let kin = resolve_kinematics_for_key(&proj.setups[0].post_profile, None);
-    let sim_cpu = simulate_project_setup_with_choice(
-        &SetupSimRequest {
-            project: &proj,
-            setup_idx: 0,
-            cad_doc: &cad_doc,
-            cad_revision: 1,
-            cache: &cache,
-            kinematics: kin,
-            resolution: SimResolution::Standard,
-            cancel: None,
-        },
-        SimEngineKind::TriDexel,
-        SimComputeBackendChoice::Cpu,
-    )
+    let sim_cpu = simulate_project_setup(&SetupSimRequest {
+        project: &proj,
+        setup_idx: 0,
+        cad_doc: &cad_doc,
+        cad_revision: 1,
+        cache: &cache,
+        kinematics: kin,
+        resolution: SimResolution::Standard,
+        cancel: None,
+        engine: SimEngineKind::TriDexel,
+        backend_choice: SimComputeBackendChoice::Cpu,
+        ..SetupSimRequest::new(&proj, 0, &cad_doc, 1, &cache)
+    })
     .unwrap();
-    let sim_gpu = simulate_project_setup_with_choice(
-        &SetupSimRequest {
-            project: &proj,
-            setup_idx: 0,
-            cad_doc: &cad_doc,
-            cad_revision: 1,
-            cache: &cache,
-            kinematics: kin,
-            resolution: SimResolution::Standard,
-            cancel: None,
-        },
-        SimEngineKind::TriDexel,
-        SimComputeBackendChoice::Auto,
-    )
+    let sim_gpu = simulate_project_setup(&SetupSimRequest {
+        project: &proj,
+        setup_idx: 0,
+        cad_doc: &cad_doc,
+        cad_revision: 1,
+        cache: &cache,
+        kinematics: kin,
+        resolution: SimResolution::Standard,
+        cancel: None,
+        engine: SimEngineKind::TriDexel,
+        backend_choice: SimComputeBackendChoice::Auto,
+        ..SetupSimRequest::new(&proj, 0, &cad_doc, 1, &cache)
+    })
     .unwrap();
 
     for (label, sim) in [("CPU", &sim_cpu), ("Auto/GPU", &sim_gpu)] {
@@ -456,35 +455,33 @@ fn sample_dovetail_rail_keyway_e2e_external_rail_entry_bore_and_cpu_gpu_parity()
     assert_eq!(batch.generated.len(), 4);
 
     let kin = resolve_kinematics_for_key(&proj.setups[0].post_profile, None);
-    let sim_cpu = simulate_project_setup_with_choice(
-        &SetupSimRequest {
-            project: &proj,
-            setup_idx: 0,
-            cad_doc: &cad_doc,
-            cad_revision: 1,
-            cache: &cache,
-            kinematics: kin,
-            resolution: SimResolution::Fine,
-            cancel: None,
-        },
-        SimEngineKind::TriDexel,
-        SimComputeBackendChoice::Cpu,
-    )
+    let sim_cpu = simulate_project_setup(&SetupSimRequest {
+        project: &proj,
+        setup_idx: 0,
+        cad_doc: &cad_doc,
+        cad_revision: 1,
+        cache: &cache,
+        kinematics: kin,
+        resolution: SimResolution::Fine,
+        cancel: None,
+        engine: SimEngineKind::TriDexel,
+        backend_choice: SimComputeBackendChoice::Cpu,
+        ..SetupSimRequest::new(&proj, 0, &cad_doc, 1, &cache)
+    })
     .unwrap();
-    let sim_gpu = simulate_project_setup_with_choice(
-        &SetupSimRequest {
-            project: &proj,
-            setup_idx: 0,
-            cad_doc: &cad_doc,
-            cad_revision: 1,
-            cache: &cache,
-            kinematics: kin,
-            resolution: SimResolution::Fine,
-            cancel: None,
-        },
-        SimEngineKind::TriDexel,
-        SimComputeBackendChoice::Auto,
-    )
+    let sim_gpu = simulate_project_setup(&SetupSimRequest {
+        project: &proj,
+        setup_idx: 0,
+        cad_doc: &cad_doc,
+        cad_revision: 1,
+        cache: &cache,
+        kinematics: kin,
+        resolution: SimResolution::Fine,
+        cancel: None,
+        engine: SimEngineKind::TriDexel,
+        backend_choice: SimComputeBackendChoice::Auto,
+        ..SetupSimRequest::new(&proj, 0, &cad_doc, 1, &cache)
+    })
     .unwrap();
 
     for (label, sim) in [("CPU", &sim_cpu), ("Auto/GPU", &sim_gpu)] {
@@ -556,20 +553,19 @@ fn sample_svg_badge_e2e_biarc_g2_g3_emission_and_zero_errors() {
     assert_eq!(batch.generated.len(), 3);
 
     let kin = resolve_kinematics_for_key(&proj.setups[0].post_profile, None);
-    let sim = simulate_project_setup_with_choice(
-        &SetupSimRequest {
-            project: &proj,
-            setup_idx: 0,
-            cad_doc: &cad_doc,
-            cad_revision: 1,
-            cache: &cache,
-            kinematics: kin,
-            resolution: SimResolution::Standard,
-            cancel: None,
-        },
-        SimEngineKind::Heightmap,
-        SimComputeBackendChoice::Cpu,
-    )
+    let sim = simulate_project_setup(&SetupSimRequest {
+        project: &proj,
+        setup_idx: 0,
+        cad_doc: &cad_doc,
+        cad_revision: 1,
+        cache: &cache,
+        kinematics: kin,
+        resolution: SimResolution::Standard,
+        cancel: None,
+        engine: SimEngineKind::Heightmap,
+        backend_choice: SimComputeBackendChoice::Cpu,
+        ..SetupSimRequest::new(&proj, 0, &cad_doc, 1, &cache)
+    })
     .unwrap();
     assert_eq!(
         sim.critical_error_count(),
@@ -626,20 +622,19 @@ fn sample_mesh_3mf_bracket_e2e_watertight_import_and_zero_errors() {
     assert_eq!(batch.generated.len(), 2);
 
     let kin = resolve_kinematics_for_key(&proj.setups[0].post_profile, None);
-    let sim = simulate_project_setup_with_choice(
-        &SetupSimRequest {
-            project: &proj,
-            setup_idx: 0,
-            cad_doc: &cad_doc,
-            cad_revision: 1,
-            cache: &cache,
-            kinematics: kin,
-            resolution: SimResolution::Standard,
-            cancel: None,
-        },
-        SimEngineKind::Heightmap,
-        SimComputeBackendChoice::Cpu,
-    )
+    let sim = simulate_project_setup(&SetupSimRequest {
+        project: &proj,
+        setup_idx: 0,
+        cad_doc: &cad_doc,
+        cad_revision: 1,
+        cache: &cache,
+        kinematics: kin,
+        resolution: SimResolution::Standard,
+        cancel: None,
+        engine: SimEngineKind::Heightmap,
+        backend_choice: SimComputeBackendChoice::Cpu,
+        ..SetupSimRequest::new(&proj, 0, &cad_doc, 1, &cache)
+    })
     .unwrap();
     assert_eq!(
         sim.critical_error_count(),
@@ -732,20 +727,19 @@ fn sample_keepout_clamps_e2e_shared_avoid_and_zero_fixture_collisions() {
     assert_eq!(batch.generated.len(), 4);
 
     let kin = resolve_kinematics_for_key(&proj.setups[0].post_profile, None);
-    let sim = simulate_project_setup_with_choice(
-        &SetupSimRequest {
-            project: &proj,
-            setup_idx: 0,
-            cad_doc: &cad_doc,
-            cad_revision: 1,
-            cache: &cache,
-            kinematics: kin,
-            resolution: SimResolution::Standard,
-            cancel: None,
-        },
-        SimEngineKind::Heightmap,
-        SimComputeBackendChoice::Cpu,
-    )
+    let sim = simulate_project_setup(&SetupSimRequest {
+        project: &proj,
+        setup_idx: 0,
+        cad_doc: &cad_doc,
+        cad_revision: 1,
+        cache: &cache,
+        kinematics: kin,
+        resolution: SimResolution::Standard,
+        cancel: None,
+        engine: SimEngineKind::Heightmap,
+        backend_choice: SimComputeBackendChoice::Cpu,
+        ..SetupSimRequest::new(&proj, 0, &cad_doc, 1, &cache)
+    })
     .unwrap();
 
     assert_eq!(
@@ -857,20 +851,19 @@ fn sample_indexed_model_bounds_e2e_center_z_offsets_and_zero_errors() {
     assert_eq!(batch.generated.len(), 4);
 
     let kin = resolve_kinematics_for_key(&proj.setups[0].post_profile, None);
-    let sim = simulate_project_setup_with_choice(
-        &SetupSimRequest {
-            project: &proj,
-            setup_idx: 0,
-            cad_doc: &cad_doc,
-            cad_revision: 1,
-            cache: &cache,
-            kinematics: kin,
-            resolution: SimResolution::Standard,
-            cancel: None,
-        },
-        SimEngineKind::Heightmap,
-        SimComputeBackendChoice::Cpu,
-    )
+    let sim = simulate_project_setup(&SetupSimRequest {
+        project: &proj,
+        setup_idx: 0,
+        cad_doc: &cad_doc,
+        cad_revision: 1,
+        cache: &cache,
+        kinematics: kin,
+        resolution: SimResolution::Standard,
+        cancel: None,
+        engine: SimEngineKind::Heightmap,
+        backend_choice: SimComputeBackendChoice::Cpu,
+        ..SetupSimRequest::new(&proj, 0, &cad_doc, 1, &cache)
+    })
     .unwrap();
 
     assert_eq!(

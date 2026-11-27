@@ -24,6 +24,7 @@ pub use model::{
     FaceSketchOriginMode, PlanarVectorRegion, SketchAnchor, SketchDiagnosticKind, SketchEntity,
     SketchEntityEntry, SketchFaceBinding, SketchImportDiagnostic, SketchLayer, SketchPlaneRef,
     VectorAssetFormat, VectorImportUnits, VectorSourceAsset, compute_sketch_sha256_hex,
+    create_default_sketch_entity,
 };
 pub use picker::{SketchPickHit, pick_sketch_layer_2d};
 pub use primitives::{

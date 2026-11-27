@@ -11,8 +11,7 @@ use std::{
     sync::Arc,
 };
 
-use chip_cad::CadDocument;
-use chip_cam::{
+use crate::{
     AvoidAxialBandsInput, AvoidRegionInput, ExtractedFeature25D, ExtractedSelectionSummary,
     MachiningBoundaryMode, Operation, OperationKind, PocketBoundaryMode, RegionSet2D,
     ResolvedAvoidAxialBands, ResolvedAvoidRegion2D, ResolvedFixtureSolid, ResolvedHeights,
@@ -22,6 +21,7 @@ use chip_cam::{
     resolve_avoid_axial_bands, resolve_avoid_region_2d, resolve_rotary_window, stock_xy_region,
     transform_fixtures_to_frame,
 };
+use chip_cad::CadDocument;
 use chip_geom2d::PocketRegion2D;
 use chip_math::{Aabb3, DVec2, DVec3, DisplayUnit, EvalContext, RigidFrame3};
 use chip_sketch::SketchLayer;
@@ -223,15 +223,15 @@ impl BoundaryPreviewCache {
         let mut preview_region = input.shared_region.clone();
         // Always preview nominal geometry while actively inspecting this region, even if suppressed
         preview_region.suppressed = false;
-        let avoid_cfg = chip_cam::AvoidRegionConfig {
+        let avoid_cfg = crate::AvoidRegionConfig {
             shared_region_ids: vec![preview_region.id.clone()],
             radial_clearance: preview_region.radial_clearance.clone().unwrap_or_else(|| {
-                chip_math::ParamLength::from_mm(chip_cam::DEFAULT_AVOID_CLEARANCE_MM)
+                chip_math::ParamLength::from_mm(crate::DEFAULT_AVOID_CLEARANCE_MM)
             }),
             axial_clearance: preview_region.axial_clearance.clone().unwrap_or_else(|| {
-                chip_math::ParamLength::from_mm(chip_cam::DEFAULT_AVOID_CLEARANCE_MM)
+                chip_math::ParamLength::from_mm(crate::DEFAULT_AVOID_CLEARANCE_MM)
             }),
-            ..chip_cam::AvoidRegionConfig::default()
+            ..crate::AvoidRegionConfig::default()
         };
         let stock_aabb = input.resolved_setup.stock.aabb_wcs();
         let top_z_wcs = if stock_aabb.is_valid() {
@@ -756,7 +756,7 @@ fn resolve_facing_preview(
     rs: &ResolvedSetup,
     surface_mesh: Option<&SurfaceMesh3D>,
     selection: &ExtractedSelectionSummary,
-    boundary: &chip_cam::MachiningBoundaryConfig,
+    boundary: &crate::MachiningBoundaryConfig,
     tool_r: f64,
     show_effective: bool,
     avoid_2d: ResolvedAvoidRegion2D,
@@ -926,7 +926,7 @@ fn resolve_facing_preview(
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    use chip_cam::{
+    use crate::{
         Operation, OperationKind, RotaryAxialBoundaryMode, RotaryAxisKind, RotaryDirection,
         RotaryDriveMode, RotaryUnwindMode, Setup, StockConfig, WorkOffsetSlot,
     };
@@ -1211,7 +1211,7 @@ mod tests {
 
     #[test]
     fn m84_model_bounds_cache_invalidation_and_indexed_virtual_setup_90deg_preview() {
-        use chip_cam::{OperationRotaryMode, build_indexed_virtual_setup};
+        use crate::{OperationRotaryMode, build_indexed_virtual_setup};
 
         // Asymmetric non-square rotary model + box stock:
         // X ∈ [-40, 40], Y ∈ [-10, 10], Z ∈ [-25, 25]
@@ -1347,9 +1347,7 @@ mod tests {
 
     #[test]
     fn m86_avoid_region_cache_invalidation_and_zero_idle_recompute() {
-        use chip_cam::{
-            FixtureBody, GeometrySelectionItem, SharedAvoidRegion, resolve_fixture_body,
-        };
+        use crate::{FixtureBody, GeometrySelectionItem, SharedAvoidRegion, resolve_fixture_body};
         use chip_sketch::{RectAnchorMode, SketchEntity, SketchEntityEntry, SketchLayer};
 
         let rs = sample_box_setup();
@@ -1492,7 +1490,7 @@ mod tests {
         );
 
         // Moving fixture position invalidates cache immediately
-        if let chip_cam::FixtureKind::ToeClamp {
+        if let crate::FixtureKind::ToeClamp {
             ref mut anchor_xy, ..
         } = clamp.kind
         {

@@ -75,7 +75,7 @@ pub fn run_transform_model(
         .ok_or("project contains no target part [[models]] entry to transform")?;
     let first = proj.models[part_idx].clone();
     let model_path = chip_project::resolve_model_path(args.project.parent(), &first.path);
-    let raw_doc = chip_project::load_model_entry_cad_doc(&model_path, first.unit_override)?;
+    let raw_doc = chip_cad::load_model_entry_cad_doc(&model_path, first.unit_override)?;
 
     let before_doc = raw_doc.transformed(&first.transform);
     let before_sz = before_doc.aabb_mm.size();
@@ -146,12 +146,7 @@ pub fn run_transform_model(
     }
     xf.validate()?;
 
-    proj.models[part_idx].transform = xf;
-    for setup in &mut proj.setups {
-        for op in &mut setup.operations {
-            op.mark_dirty();
-        }
-    }
+    proj.apply_model_transform(part_idx, xf);
 
     let dest = args.output.unwrap_or(args.project);
     proj.save_to_path(&dest)?;

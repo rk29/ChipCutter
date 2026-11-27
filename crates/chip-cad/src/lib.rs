@@ -8,6 +8,8 @@
 
 pub mod fixtures;
 pub mod kernel;
+pub mod loader;
+pub mod measurement;
 pub mod mesh;
 pub mod model;
 pub mod monstertruck_kernel;
@@ -33,6 +35,15 @@ pub use fixtures::{
     tutorial_indexed_4side_block_step, tutorial_pocket_block_step,
 };
 pub use kernel::{CadError, CadKernel};
+pub use loader::{
+    is_mesh_path, load_model_bytes_cad_doc, load_model_entry_cad_doc,
+    load_model_entry_cad_doc_transformed,
+};
+pub use measurement::{
+    MeasureSnapTarget, MeasurementResult, measure_pair, measure_single,
+    snap_brep_edge_to_measure_target, snap_brep_face_to_measure_target,
+    snap_brep_pick_to_measure_target, snap_mesh_hit_to_measure_target,
+};
 pub use mesh::{
     MeshDiagnostics, MeshFormat, MeshImportOptions, MeshTriangle, MeshUnitKind, TriangleMeshBody,
     build_render_mesh_for_triangle_mesh, encode_binary_stl, is_mesh_extension, load_mesh_bytes,
@@ -51,11 +62,9 @@ pub use monstertruck_kernel::MonstertruckKernel;
 pub use picking::{CadPicker, PickFilter, PickHit, PickTarget};
 pub use rematch::{RematchOutcome, rematch_edge, rematch_face, rematch_loop};
 pub use topology::{
-    CylindricalHoleSpan, EdgeEndpointInfo, LogicalCylindricalHole, ModeledChamferStrip,
-    PlanarFaceLoopClassification, TopologyGraph, VertexId, analyze_cylindrical_hole,
-    classify_planar_face_loops, expand_coaxial_hole_faces, extract_modeled_chamfer_strip,
-    find_coplanar_faces, find_same_diameter_holes, group_coaxial_holes,
-    highest_adjacent_lower_floor_proj, highest_adjacent_wall_top,
+    CylindricalHoleSpan, EdgeEndpointInfo, LogicalCylindricalHole, TopologyGraph, VertexId,
+    analyze_cylindrical_hole, expand_coaxial_hole_faces, find_coplanar_faces,
+    find_same_diameter_holes, group_coaxial_holes,
 };
 pub use transform::{
     MAX_MODEL_SCALE, MIN_MODEL_SCALE, ModelTransform, rotation_matrix_to_xyz_euler_deg,

@@ -775,3 +775,75 @@ fn sanitize_bundle_filename(raw: &str) -> String {
         trimmed.to_string()
     }
 }
+
+/// RAII cleanup guard that deletes a temporary `.chipz` extraction directory on drop.
+#[derive(Debug)]
+pub struct TempExtractGuard(PathBuf);
+
+impl TempExtractGuard {
+    pub fn new(path: PathBuf) -> Self {
+        Self(path)
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for TempExtractGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// Loaded `.chip.toml` project or unpacked `.chipz` bundle along with its base directory and
+/// optional [`TempExtractGuard`] lifetime handle.
+pub struct LoadedProjectInput {
+    pub proj: ProjectDocument,
+    pub dir: Option<PathBuf>,
+    pub _guard: Option<TempExtractGuard>,
+}
+
+/// Loads either a plain `.chip.toml` project file or a portable `.chipz` bundle (unpacking the
+/// bundle into a private temp directory cleaned up when the returned [`LoadedProjectInput`] drops).
+pub fn load_project_or_chipz(path: &Path) -> Result<LoadedProjectInput, String> {
+    if is_chipz_path(path) {
+        let temp_dir = create_private_temp_extract_dir("chipcutter_chipz")
+            .map_err(|e| format!("failed to create temp extraction dir: {e}"))?;
+        let guard = TempExtractGuard(temp_dir.clone());
+        let unpacked = unpack_chipz_bundle(path, &temp_dir)
+            .map_err(|e| format!("failed to unpack '{}': {e}", path.display()))?;
+        Ok(LoadedProjectInput {
+            proj: unpacked.project,
+            dir: Some(temp_dir),
+            _guard: Some(guard),
+        })
+    } else {
+        let proj = ProjectDocument::load_from_path(path)
+            .map_err(|e| format!("failed to load '{}': {e}", path.display()))?;
+        let dir = path.parent().map(Path::to_path_buf);
+        Ok(LoadedProjectInput {
+            proj,
+            dir,
+            _guard: None,
+        })
+    }
+}
+
+/// Loads and transforms the primary `ModelRole::Part` CAD/mesh document for `proj` relative to
+/// `proj_dir`, returning [`chip_cad::CadDocument::empty`] for Pure-2D projects without 3D models.
+pub fn load_primary_cad_for_project(
+    proj: &ProjectDocument,
+    proj_dir: Option<&Path>,
+) -> Result<chip_cad::CadDocument, String> {
+    let Some(first) = proj.primary_part_model() else {
+        return Ok(chip_cad::CadDocument::empty());
+    };
+    let model_path = resolve_model_path(proj_dir, &first.path);
+    chip_cad::load_model_entry_cad_doc_transformed(
+        &model_path,
+        first.unit_override,
+        &first.transform,
+    )
+    .map_err(|e| format!("failed to load model '{}': {e}", model_path.display()))
+}

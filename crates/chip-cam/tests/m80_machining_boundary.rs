@@ -18,7 +18,6 @@ use chip_math::{DEFAULT_TESS_CHORD_TOL_MM, DVec2, DVec3, DisplayUnit, ParamLengt
 use chip_sim::{
     MachineKinematicsConfig, SetupSimulationInput, SimComputeBackendChoice, SimEngineKind,
     SimOperationInput, SimResolution, SimVerificationConfig, run_setup_simulation,
-    run_setup_simulation_with_choice,
 };
 use chip_sketch::{RectAnchorMode, SketchEntity, SketchEntityEntry, SketchLayer};
 use chip_tools::{CutterGeometry, default_starter_tool_library, starter_lollipop_6mm};
@@ -425,6 +424,7 @@ fn true_model_silhouette_is_circular_eliminates_corner_air_cuts_and_warns_on_emp
         initial_raw_volume_mm3: None,
         carried_over_from_setup: None,
         cancel: None,
+        ..SetupSimulationInput::new(&doc, &resolved, &[])
     })
     .unwrap();
     assert_eq!(
@@ -635,6 +635,7 @@ fn adaptive3d_honors_stockbox_containment_negative_offset_and_cylindrical_z_stoc
         initial_raw_volume_mm3: None,
         carried_over_from_setup: None,
         cancel: None,
+        ..SetupSimulationInput::new(&doc, &resolved_cyl, &[])
     })
     .unwrap();
     assert_eq!(
@@ -742,24 +743,23 @@ fn undercut3d_respects_selected_regions_containment_offset_and_passes_sim() {
 
     // Verify TriDexel simulation has zero crashes / zero gouges / zero neck rubs
     let sim_ops = vec![SimOperationInput::from_operation(&op_in, &lolli_6, &tp_in)];
-    let sim_res = run_setup_simulation_with_choice(
-        &SetupSimulationInput {
-            doc: &doc,
-            setup: &resolved,
-            target_bodies: &[],
-            fixtures: &[],
-            operations: &sim_ops,
-            kinematics: MachineKinematicsConfig::default(),
-            resolution: SimResolution::Standard,
-            verify_config: SimVerificationConfig::default(),
-            initial_stock: None,
-            initial_raw_volume_mm3: None,
-            carried_over_from_setup: None,
-            cancel: None,
-        },
-        SimEngineKind::TriDexel,
-        SimComputeBackendChoice::Cpu,
-    )
+    let sim_res = run_setup_simulation(&SetupSimulationInput {
+        doc: &doc,
+        setup: &resolved,
+        target_bodies: &[],
+        fixtures: &[],
+        operations: &sim_ops,
+        kinematics: MachineKinematicsConfig::default(),
+        resolution: SimResolution::Standard,
+        verify_config: SimVerificationConfig::default(),
+        initial_stock: None,
+        initial_raw_volume_mm3: None,
+        carried_over_from_setup: None,
+        cancel: None,
+        engine: SimEngineKind::TriDexel,
+        backend_choice: SimComputeBackendChoice::Cpu,
+        ..SetupSimulationInput::new(&doc, &resolved, &[])
+    })
     .unwrap();
     assert_eq!(
         sim_res.critical_error_count(),
@@ -922,6 +922,7 @@ fn deburr3d_auto_detect_respects_selected_regions_and_passes_sim() {
         initial_raw_volume_mm3: None,
         carried_over_from_setup: None,
         cancel: None,
+        ..SetupSimulationInput::new(&doc, &resolved, &[])
     })
     .unwrap();
     assert_eq!(
@@ -1134,6 +1135,7 @@ fn model_silhouette_fill_through_holes_option_toggles_interior_void_machining() 
         initial_raw_volume_mm3: None,
         carried_over_from_setup: None,
         cancel: None,
+        ..SetupSimulationInput::new(&doc, &resolved, &[])
     })
     .unwrap();
     assert_eq!(
@@ -1463,6 +1465,7 @@ fn m84_model_bounding_box_offsets_sharp_corners_collapse_guard_and_sim_verificat
         initial_raw_volume_mm3: None,
         carried_over_from_setup: None,
         cancel: None,
+        ..SetupSimulationInput::new(&doc, &resolved, &[])
     })
     .unwrap();
     assert_eq!(

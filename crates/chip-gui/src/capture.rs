@@ -211,37 +211,17 @@ pub fn parse_capture_post_profile(raw: &str) -> Result<String, String> {
 
 /// Parse and normalize a simulation engine identifier for `--capture-sim-engine`.
 pub fn parse_capture_sim_engine(raw: &str) -> Result<chip_sim::SimEngineKind, String> {
-    match raw.trim().to_ascii_lowercase().as_str() {
-        "heightmap" | "2.5d" | "z-dexel" => Ok(chip_sim::SimEngineKind::Heightmap),
-        "tri-dexel" | "tridexel" | "tri_dexel" | "3d" => Ok(chip_sim::SimEngineKind::TriDexel),
-        other => Err(format!(
-            "invalid --capture-sim-engine '{other}'; expected one of: heightmap, tri-dexel"
-        )),
-    }
+    chip_sim::SimEngineKind::from_str_loose(raw)
 }
 
 /// Parse and normalize a simulation compute backend choice for `--capture-sim-backend`.
 pub fn parse_capture_sim_backend(raw: &str) -> Result<chip_sim::SimComputeBackendChoice, String> {
-    match raw.trim().to_ascii_lowercase().as_str() {
-        "auto" => Ok(chip_sim::SimComputeBackendChoice::Auto),
-        "gpu" | "wgpu" => Ok(chip_sim::SimComputeBackendChoice::Gpu),
-        "cpu" | "exact" => Ok(chip_sim::SimComputeBackendChoice::Cpu),
-        other => Err(format!(
-            "invalid --capture-sim-backend '{other}'; expected one of: auto, gpu, cpu"
-        )),
-    }
+    chip_sim::SimComputeBackendChoice::from_str_loose(raw)
 }
 
 /// Parse and normalize a simulation resolution preset for `--capture-sim-resolution`.
 pub fn parse_capture_sim_resolution(raw: &str) -> Result<chip_sim::SimResolution, String> {
-    match raw.trim().to_ascii_lowercase().as_str() {
-        "standard" | "512" | "160" => Ok(chip_sim::SimResolution::Standard),
-        "fine" | "1024" | "288" => Ok(chip_sim::SimResolution::Fine),
-        "ultra" | "2048" | "448" => Ok(chip_sim::SimResolution::Ultra),
-        other => Err(format!(
-            "invalid --capture-sim-resolution '{other}'; expected one of: standard, fine, ultra"
-        )),
-    }
+    chip_sim::SimResolution::from_str_loose(raw)
 }
 
 /// Structured options controlling headless UI state before PNG capture.

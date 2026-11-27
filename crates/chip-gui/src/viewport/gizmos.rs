@@ -1,13 +1,12 @@
-use chip_cad::CadDocument;
+use chip_cad::{CadDocument, MeasureSnapTarget, MeasurementResult};
 use chip_cam::{
-    MeasureSnapTarget, MeasurementResult, ReachAnalysisResult, ReachSeverity, RegionSet2D,
-    ResolvedRotaryConfig, ResolvedStockGeometry, RotaryAxisKind, StockAxis, TabMarker3D,
+    BoundaryPreviewOverlay, ReachAnalysisResult, ReachSeverity, RegionSet2D, ResolvedRotaryConfig,
+    ResolvedStockGeometry, RotaryAxisKind, StockAxis, TabMarker3D,
 };
 use chip_math::{Aabb3, ArcPolyline2D, ArcSegment2D, DMat4, DVec2, DVec3, RigidFrame3};
 use chip_sketch::{SketchDiagnosticKind, SketchEntity, SketchPickHit};
 
 use super::{
-    boundary_preview::BoundaryPreviewOverlay,
     gpu_types::{EdgeInstanceGpu, OverlayVertexGpu},
     highlight::{HighlightState, dvec3_f32},
 };

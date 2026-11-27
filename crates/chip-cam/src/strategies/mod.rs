@@ -27,7 +27,7 @@ use std::sync::{
 use chip_cad::CadDocument;
 use chip_math::{Aabb3, DVec3, DisplayUnit, EvalContext};
 use chip_sketch::SketchLayer;
-use chip_stock::{SimResolution, TriDexelStock};
+use chip_stock::TriDexelStock;
 use chip_tools::Tool;
 
 use crate::{
@@ -239,19 +239,6 @@ pub fn generate_operation_toolpath(
     })
 }
 
-/// Infers the matching [`SimResolution`] tier of an existing [`TriDexelStock`] for oblique
-/// rigid-frame re-voxelization.
-fn infer_tridexel_resolution(td: &TriDexelStock) -> SimResolution {
-    let max_dim = td.dims[0].max(td.dims[1]).max(td.dims[2]);
-    if max_dim >= 360 {
-        SimResolution::Ultra
-    } else if max_dim >= 220 {
-        SimResolution::Fine
-    } else {
-        SimResolution::Standard
-    }
-}
-
 /// Returns `true` when two rigid frames coincide within `1e-9`.
 fn frames_approx_equal(a: &chip_math::RigidFrame3, b: &chip_math::RigidFrame3) -> bool {
     a.origin_mm.distance_squared(b.origin_mm) <= 1e-18
@@ -312,7 +299,7 @@ pub fn generate_operation_toolpath_with_rest(
                 if frames_approx_equal(&req.setup.frame, &virtual_setup.frame) {
                     Some(Arc::clone(td))
                 } else {
-                    let res = infer_tridexel_resolution(td);
+                    let res = td.infer_resolution();
                     let transformed = td
                         .transform_to_frame(req.setup.frame, virtual_setup.frame, res)
                         .map_err(|e| CamError::InvalidRotarySetup {

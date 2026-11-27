@@ -15,7 +15,7 @@ use chip_cam::{
 use chip_math::{DVec3, DisplayUnit, ParamLength};
 use chip_sim::{
     MachineKinematicsConfig, SetupSimulationInput, SimComputeBackendChoice, SimEngineKind,
-    SimOperationInput, SimResolution, SimVerificationConfig, run_setup_simulation_with_choice,
+    SimOperationInput, SimResolution, SimVerificationConfig, run_setup_simulation,
 };
 use chip_tools::{
     CoolantMode, CutterGeometry, CuttingPreset, SpindleDirection, SurfaceSpeedPresetSpec, Tool,
@@ -393,28 +393,27 @@ fn relief_wave_09_finishing_tridexel_oracle_eliminates_gouge() {
     })
     .unwrap();
 
-    let sim = run_setup_simulation_with_choice(
-        &SetupSimulationInput {
-            doc: &doc,
-            setup: &resolved,
-            target_bodies: &[],
-            fixtures: &[],
-            operations: &[
-                SimOperationInput::from_operation(&op_rough, &flat_6, &tp_rough),
-                SimOperationInput::from_operation(&op_par, &ball_6, &tp_par),
-                SimOperationInput::from_operation(&op_sc, &ball_6, &tp_sc),
-            ],
-            kinematics: MachineKinematicsConfig::default(),
-            resolution: SimResolution::Standard,
-            verify_config: SimVerificationConfig::default(),
-            initial_stock: None,
-            initial_raw_volume_mm3: None,
-            carried_over_from_setup: None,
-            cancel: None,
-        },
-        SimEngineKind::TriDexel,
-        SimComputeBackendChoice::Auto,
-    )
+    let sim = run_setup_simulation(&SetupSimulationInput {
+        doc: &doc,
+        setup: &resolved,
+        target_bodies: &[],
+        fixtures: &[],
+        operations: &[
+            SimOperationInput::from_operation(&op_rough, &flat_6, &tp_rough),
+            SimOperationInput::from_operation(&op_par, &ball_6, &tp_par),
+            SimOperationInput::from_operation(&op_sc, &ball_6, &tp_sc),
+        ],
+        kinematics: MachineKinematicsConfig::default(),
+        resolution: SimResolution::Standard,
+        verify_config: SimVerificationConfig::default(),
+        initial_stock: None,
+        initial_raw_volume_mm3: None,
+        carried_over_from_setup: None,
+        cancel: None,
+        engine: SimEngineKind::TriDexel,
+        backend_choice: SimComputeBackendChoice::Auto,
+        ..SetupSimulationInput::new(&doc, &resolved, &[])
+    })
     .unwrap();
 
     assert_eq!(
@@ -766,28 +765,27 @@ fn sculpted_dome_08_tridexel_oracle_zero_gouge_and_clean_crown() {
     })
     .unwrap();
 
-    let sim = run_setup_simulation_with_choice(
-        &SetupSimulationInput {
-            doc: &doc,
-            setup: &resolved,
-            target_bodies: &[],
-            fixtures: &[],
-            operations: &[
-                SimOperationInput::from_operation(&op_rough, &flat_6, &tp_rough),
-                SimOperationInput::from_operation(&op_wl, &ball_6, &tp_wl),
-                SimOperationInput::from_operation(&op_pencil, &ball_3, &tp_pencil),
-            ],
-            kinematics: MachineKinematicsConfig::default(),
-            resolution: SimResolution::Standard,
-            verify_config: SimVerificationConfig::default(),
-            initial_stock: None,
-            initial_raw_volume_mm3: None,
-            carried_over_from_setup: None,
-            cancel: None,
-        },
-        SimEngineKind::TriDexel,
-        SimComputeBackendChoice::Auto,
-    )
+    let sim = run_setup_simulation(&SetupSimulationInput {
+        doc: &doc,
+        setup: &resolved,
+        target_bodies: &[],
+        fixtures: &[],
+        operations: &[
+            SimOperationInput::from_operation(&op_rough, &flat_6, &tp_rough),
+            SimOperationInput::from_operation(&op_wl, &ball_6, &tp_wl),
+            SimOperationInput::from_operation(&op_pencil, &ball_3, &tp_pencil),
+        ],
+        kinematics: MachineKinematicsConfig::default(),
+        resolution: SimResolution::Standard,
+        verify_config: SimVerificationConfig::default(),
+        initial_stock: None,
+        initial_raw_volume_mm3: None,
+        carried_over_from_setup: None,
+        cancel: None,
+        engine: SimEngineKind::TriDexel,
+        backend_choice: SimComputeBackendChoice::Auto,
+        ..SetupSimulationInput::new(&doc, &resolved, &[])
+    })
     .unwrap();
 
     assert_eq!(
@@ -943,24 +941,23 @@ fn adaptive3d_indexed_helical_loft_zero_gouge_and_zero_rapid_crashes() {
     })
     .unwrap();
 
-    let sim_box = run_setup_simulation_with_choice(
-        &SetupSimulationInput {
-            doc: &doc,
-            setup: &resolved_box,
-            target_bodies: &[],
-            fixtures: &[],
-            operations: &[SimOperationInput::from_operation(&op_3ax, &ball_4, &tp_3ax)],
-            kinematics: MachineKinematicsConfig::default(),
-            resolution: SimResolution::Standard,
-            verify_config: SimVerificationConfig::default(),
-            initial_stock: None,
-            initial_raw_volume_mm3: None,
-            carried_over_from_setup: None,
-            cancel: None,
-        },
-        SimEngineKind::TriDexel,
-        SimComputeBackendChoice::Auto,
-    )
+    let sim_box = run_setup_simulation(&SetupSimulationInput {
+        doc: &doc,
+        setup: &resolved_box,
+        target_bodies: &[],
+        fixtures: &[],
+        operations: &[SimOperationInput::from_operation(&op_3ax, &ball_4, &tp_3ax)],
+        kinematics: MachineKinematicsConfig::default(),
+        resolution: SimResolution::Standard,
+        verify_config: SimVerificationConfig::default(),
+        initial_stock: None,
+        initial_raw_volume_mm3: None,
+        carried_over_from_setup: None,
+        cancel: None,
+        engine: SimEngineKind::TriDexel,
+        backend_choice: SimComputeBackendChoice::Auto,
+        ..SetupSimulationInput::new(&doc, &resolved_box, &[])
+    })
     .unwrap();
 
     assert_eq!(

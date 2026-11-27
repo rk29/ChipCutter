@@ -217,26 +217,7 @@ impl SimulationPanelState {
             }
 
             if self.engine == SimEngineKind::Heightmap
-                && project.setups.get(setup_idx).is_some_and(|setup| {
-                    setup.operations.iter().any(|op| {
-                        !op.suppressed
-                            && op.tool_id.as_ref().is_some_and(|tid| {
-                                project
-                                    .tools
-                                    .iter()
-                                    .find(|t| &t.id == tid)
-                                    .is_some_and(|t| {
-                                        matches!(
-                                            t.geometry,
-                                            chip_tools::CutterGeometry::LollipopEndmill { .. }
-                                                | chip_tools::CutterGeometry::SlotMill { .. }
-                                                | chip_tools::CutterGeometry::DovetailCutter { .. }
-                                                | chip_tools::CutterGeometry::ThreadMill { .. }
-                                        )
-                                    })
-                            })
-                    })
-                })
+                && chip_project::setup_requires_volumetric_sim(project, setup_idx)
             {
                 egui::Frame::NONE
                     .fill(tok.warn_bg)
@@ -1148,6 +1129,7 @@ mod tests {
             initial_raw_volume_mm3: None,
             carried_over_from_setup: None,
             cancel: None,
+            ..SetupSimulationInput::new(&doc, &resolved, &[])
         })
         .unwrap();
 

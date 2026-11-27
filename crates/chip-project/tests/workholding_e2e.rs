@@ -8,17 +8,18 @@ use chip_cad::{
     sample_multi_feature_bracket_step, sample_sculpted_dome_stl_bytes,
 };
 use chip_cam::{
-    FlipAxis, FlipJigConfig, FlipJigPinCount, HeightReference, HeightSpec, Operation,
-    OperationKind, Setup, SoftJawBoltPattern, SoftJawConfig, SoftJawOutputMode, StockConfig,
-    ViseClampAxis, WorkOffsetSlot, build_soft_jaw_plan, build_two_sided_flip_jig,
+    HeightReference, HeightSpec, Operation, OperationKind, Setup, StockConfig, ViseClampAxis,
+    WorkOffsetSlot,
 };
 use chip_math::{DEFAULT_TESS_CHORD_TOL_MM, DisplayUnit, ParamLength};
 use chip_post::builtin_post_profiles;
 use chip_project::{
-    ProjectDocument, SetupPostRequest, SetupSimRequest, ToolpathCache,
-    build_two_sided_vise_workholding_project, compute_sha256_hex, generate_project_blocking,
-    post_process_project_setup, resolve_kinematics_for_key, sample_two_sided_vise_part_stl_bytes,
-    simulate_all_setups_with_choice, simulate_project_setup_with_choice, validate_project,
+    FlipAxis, FlipJigConfig, FlipJigPinCount, ProjectDocument, SetupPostRequest, SetupSimRequest,
+    SoftJawBoltPattern, SoftJawConfig, SoftJawOutputMode, ToolpathCache, build_soft_jaw_plan,
+    build_two_sided_flip_jig, build_two_sided_vise_workholding_project, compute_sha256_hex,
+    generate_project_blocking, post_process_project_setup, resolve_kinematics_for_key,
+    sample_two_sided_vise_part_stl_bytes, simulate_all_setups, simulate_project_setup,
+    validate_project,
 };
 use chip_sim::{SimComputeBackendChoice, SimEngineKind, SimResolution};
 use chip_tools::{CutterGeometry, default_starter_tool_library};
@@ -78,17 +79,19 @@ fn two_sided_vise_sample_generates_simulates_cpu_gpu_and_posts_cleanly() {
     assert_eq!(batch.generated.len(), 4);
 
     // CPU Tri-Dexel sequential carryover simulation
-    let sims_cpu = simulate_all_setups_with_choice(
-        &proj,
-        &cad_doc,
-        1,
-        &cache,
-        None,
-        SimResolution::Standard,
-        SimEngineKind::TriDexel,
-        SimComputeBackendChoice::Cpu,
-        None,
-    )
+    let sims_cpu = simulate_all_setups(&chip_project::AllSetupsSimRequest {
+        project: &proj,
+        cad_doc: &cad_doc,
+        cad_revision: 1,
+        cache: &cache,
+        project_dir: None,
+        resolution: SimResolution::Standard,
+        engine: SimEngineKind::TriDexel,
+        backend_choice: SimComputeBackendChoice::Cpu,
+        verify_config: Default::default(),
+        cancel: None,
+        progress: None,
+    })
     .unwrap();
     assert_eq!(sims_cpu.len(), 2);
 
@@ -138,17 +141,19 @@ fn two_sided_vise_sample_generates_simulates_cpu_gpu_and_posts_cleanly() {
     );
 
     // GPU (Auto) Tri-Dexel parity check
-    let sims_gpu = simulate_all_setups_with_choice(
-        &proj,
-        &cad_doc,
-        1,
-        &cache,
-        None,
-        SimResolution::Standard,
-        SimEngineKind::TriDexel,
-        SimComputeBackendChoice::Auto,
-        None,
-    )
+    let sims_gpu = simulate_all_setups(&chip_project::AllSetupsSimRequest {
+        project: &proj,
+        cad_doc: &cad_doc,
+        cad_revision: 1,
+        cache: &cache,
+        project_dir: None,
+        resolution: SimResolution::Standard,
+        engine: SimEngineKind::TriDexel,
+        backend_choice: SimComputeBackendChoice::Auto,
+        verify_config: Default::default(),
+        cancel: None,
+        progress: None,
+    })
     .unwrap();
     assert!(
         !sims_gpu[0].has_critical_errors(),
@@ -316,17 +321,19 @@ fn flip_jig_wizard_e2e_symmetry_clearance_and_crash_free_simulation() {
     );
 
     // Simulate all 3 Setups (Setup 1 pin drilling, Setup 2 carryover + pin keep-outs, Spoilboard pins)
-    let sims = simulate_all_setups_with_choice(
-        &proj,
-        &cad_doc,
-        1,
-        &cache,
-        None,
-        SimResolution::Standard,
-        SimEngineKind::TriDexel,
-        SimComputeBackendChoice::Cpu,
-        None,
-    )
+    let sims = simulate_all_setups(&chip_project::AllSetupsSimRequest {
+        project: &proj,
+        cad_doc: &cad_doc,
+        cad_revision: 1,
+        cache: &cache,
+        project_dir: None,
+        resolution: SimResolution::Standard,
+        engine: SimEngineKind::TriDexel,
+        backend_choice: SimComputeBackendChoice::Cpu,
+        verify_config: Default::default(),
+        cancel: None,
+        progress: None,
+    })
     .unwrap();
     assert_eq!(sims.len(), 3);
     for (idx, sim) in sims.iter().enumerate() {
@@ -478,20 +485,19 @@ fn soft_jaw_wizard_e2e_machining_simulation_and_watertight_stl_verification() {
     );
     assert_eq!(proj.setups[1].operations.len(), 3);
 
-    let sim_sj = simulate_project_setup_with_choice(
-        &SetupSimRequest {
-            project: &proj,
-            setup_idx: 1,
-            cad_doc: &bracket_doc,
-            cad_revision: 1,
-            cache: &cache,
-            kinematics: resolve_kinematics_for_key("grbl", None),
-            resolution: SimResolution::Standard,
-            cancel: None,
-        },
-        SimEngineKind::Heightmap,
-        SimComputeBackendChoice::Cpu,
-    )
+    let sim_sj = simulate_project_setup(&SetupSimRequest {
+        project: &proj,
+        setup_idx: 1,
+        cad_doc: &bracket_doc,
+        cad_revision: 1,
+        cache: &cache,
+        kinematics: resolve_kinematics_for_key("grbl", None),
+        resolution: SimResolution::Standard,
+        cancel: None,
+        engine: SimEngineKind::Heightmap,
+        backend_choice: SimComputeBackendChoice::Cpu,
+        ..SetupSimRequest::new(&proj, 1, &bracket_doc, 1, &cache)
+    })
     .unwrap();
     assert!(
         !sim_sj.has_critical_errors(),
@@ -529,4 +535,146 @@ fn soft_jaw_wizard_e2e_machining_simulation_and_watertight_stl_verification() {
     )
     .unwrap();
     assert!(dome_fixed.diagnostics.is_watertight);
+}
+
+#[test]
+fn soft_jaw_wizard_90deg_twisted_helical_loft_zero_scalloping_interference() {
+    use chip_cam::{AxisAnchor, BoxAnchor27, WcsOriginMode};
+    use chip_math::{DVec2, DVec3};
+
+    let nz = 48usize;
+    let n_theta = 64usize;
+    let z_max = 12.0_f64;
+    let a = 18.0_f64;
+    let b = 6.0_f64;
+
+    let section_pt = |z: f64, phi: f64| -> DVec3 {
+        let twist = std::f64::consts::FRAC_PI_2 * (z / z_max);
+        let lx = a * phi.cos();
+        let ly = b * phi.sin();
+        let (st, ct) = twist.sin_cos();
+        DVec3::new(lx * ct - ly * st, lx * st + ly * ct, z)
+    };
+
+    let mut rings: Vec<Vec<DVec3>> = Vec::with_capacity(nz + 1);
+    for iz in 0..=nz {
+        let z = z_max * (iz as f64 / nz as f64);
+        let mut ring = Vec::with_capacity(n_theta);
+        for it in 0..n_theta {
+            let phi = std::f64::consts::TAU * (it as f64 / n_theta as f64);
+            ring.push(section_pt(z, phi));
+        }
+        rings.push(ring);
+    }
+
+    let mut tris: Vec<[DVec3; 3]> = Vec::new();
+    for iz in 0..nz {
+        for it in 0..n_theta {
+            let it_n = (it + 1) % n_theta;
+            let p00 = rings[iz][it];
+            let p01 = rings[iz][it_n];
+            let p11 = rings[iz + 1][it_n];
+            let p10 = rings[iz + 1][it];
+            tris.push([p00, p01, p11]);
+            tris.push([p00, p11, p10]);
+        }
+    }
+    let c_bot = DVec3::new(0.0, 0.0, 0.0);
+    let c_top = DVec3::new(0.0, 0.0, z_max);
+    for it in 0..n_theta {
+        let it_n = (it + 1) % n_theta;
+        tris.push([c_bot, rings[0][it_n], rings[0][it]]);
+        tris.push([c_top, rings[nz][it], rings[nz][it_n]]);
+    }
+
+    let stl = chip_cad::encode_binary_stl("twisted_90deg_helix", &tris);
+    let doc = load_mesh_cad_document(
+        "twisted_90deg_helix.stl",
+        &stl,
+        &MeshImportOptions::default(),
+    )
+    .unwrap();
+
+    let mut setup = Setup::new("setup_helical_jaw", "Helical Soft Jaw", WorkOffsetSlot::G54);
+    setup.wcs.origin = WcsOriginMode::ModelBoxPoint {
+        anchor: BoxAnchor27 {
+            x: AxisAnchor::Center,
+            y: AxisAnchor::Center,
+            z: AxisAnchor::Min,
+        },
+    };
+    let grip_depth_mm = 10.0;
+    let cfg = SoftJawConfig {
+        jaw_width_mm: 80.0,
+        jaw_depth_mm: 30.0,
+        jaw_height_mm: 36.0,
+        jaw_gap_mm: 4.0,
+        grip_depth_mm,
+        part_clearance_mm: 0.05,
+        corner_relief_radius_mm: 0.0,
+        mounting_bolt_pattern: SoftJawBoltPattern::CarveraModVise,
+        output_mode: SoftJawOutputMode::Both,
+        z_band_bottom_offset_mm: 0.0,
+        ..SoftJawConfig::default()
+    };
+
+    let plan = build_soft_jaw_plan(&doc, &setup, &[], DisplayUnit::Millimeter, &cfg).unwrap();
+
+    let mut outside_sil_count = 0usize;
+    let mut outside_jaw_pocket_count = 0usize;
+    let mut max_miss_mm = 0.0_f64;
+    let half_gap = 0.5 * cfg.jaw_gap_mm;
+
+    for iz in 0..=100 {
+        let z = grip_depth_mm * (iz as f64 / 100.0);
+        let twist = std::f64::consts::FRAC_PI_2 * (z / z_max);
+        let (st, ct) = twist.sin_cos();
+        for it in 0..64 {
+            let phi = std::f64::consts::TAU * (it as f64 / 64.0);
+            let lx = (a - 0.002) * phi.cos();
+            let ly = (b - 0.002) * phi.sin();
+            let pt = DVec2::new(lx * ct - ly * st, lx * st + ly * ct);
+
+            if !plan.part_silhouette_2d.contains_point(pt) {
+                let d = plan.part_silhouette_2d.min_distance_to_boundary(pt);
+                if d > 0.01 {
+                    outside_sil_count += 1;
+                    max_miss_mm = max_miss_mm.max(d);
+                }
+            }
+
+            if pt.y > half_gap + 0.05 && !plan.fixed_pocket_2d.contains_point(pt) {
+                outside_jaw_pocket_count += 1;
+            }
+            if pt.y < -(half_gap + 0.05) && !plan.movable_pocket_2d.contains_point(pt) {
+                outside_jaw_pocket_count += 1;
+            }
+        }
+    }
+
+    assert_eq!(
+        outside_sil_count, 0,
+        "Continuous swept helical silhouette must contain every twisted blade point in [0, {grip_depth_mm}] (missed {outside_sil_count} pts, max_miss={max_miss_mm:.4} mm)"
+    );
+    assert_eq!(
+        outside_jaw_pocket_count, 0,
+        "Generated soft-jaw pockets must have zero scalloping interference with the 90° twisted helical loft (missed {outside_jaw_pocket_count} pts)"
+    );
+
+    for (label, bytes) in [
+        ("helical_fixed.stl", plan.fixed_jaw_stl.as_ref().unwrap()),
+        (
+            "helical_movable.stl",
+            plan.movable_jaw_stl.as_ref().unwrap(),
+        ),
+    ] {
+        let reloaded = load_mesh_bytes(label, bytes, &MeshImportOptions::default()).unwrap();
+        assert!(
+            reloaded.diagnostics.is_watertight,
+            "{label} must be watertight: {:?}",
+            reloaded.diagnostics
+        );
+        assert_eq!(reloaded.diagnostics.open_boundary_edges, 0);
+        assert_eq!(reloaded.diagnostics.non_manifold_edges, 0);
+    }
 }

@@ -1,7 +1,6 @@
 use std::{path::PathBuf, process::ExitCode};
 
-use chip_cad::{CadKernel, MonstertruckKernel, TopologyGraph};
-use chip_math::DEFAULT_TESS_CHORD_TOL_MM;
+use chip_cad::{TopologyGraph, load_model_bytes_cad_doc};
 use chip_project::{
     BundleError, OperationReloadOutcome, ProjectDocument, compute_sha256_hex, export_chipz_bundle,
     external_or_suspicious_assets_referenced, portable_model_path, rebind_project_to_reloaded_cad,
@@ -33,8 +32,8 @@ pub fn run_reload_step(
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or("model.step");
-    let raw_doc =
-        MonstertruckKernel.load_step_bytes(name, &step_bytes, DEFAULT_TESS_CHORD_TOL_MM)?;
+    let unit_override = proj_doc.primary_part_model().and_then(|m| m.unit_override);
+    let raw_doc = load_model_bytes_cad_doc(name, &step_bytes, unit_override)?;
     let existing_xf = proj_doc
         .primary_part_model()
         .map_or(chip_cad::ModelTransform::IDENTITY, |m| m.transform);

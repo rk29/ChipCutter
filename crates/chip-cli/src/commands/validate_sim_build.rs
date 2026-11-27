@@ -6,11 +6,11 @@ use chip_post::{
     validate_safe_output_filename,
 };
 use chip_project::{
-    DiagnosticSeverity, ProjectMachinabilityReport, SetupPostRequest, SetupSimRequest,
-    ToolpathCache, ValidationDiagnostic, analyze_project_machinability,
+    AllSetupsSimRequest, DiagnosticSeverity, ProjectMachinabilityReport, SetupPostRequest,
+    SetupSimRequest, ToolpathCache, ValidationDiagnostic, analyze_project_machinability,
     generate_project_blocking_in_dir, kinematics_for_post_profile, post_process_project_setup,
-    simulate_all_setups_with_choice, simulate_project_setup_in_dir,
-    simulate_project_setup_with_choice_in_dir, validate_project, validate_project_with_machine,
+    resolve_setup_kinematics, setup_requires_volumetric_sim, simulate_all_setups,
+    simulate_project_setup, validate_project, validate_project_with_machine,
 };
 use chip_sim::{
     SetupSimulationResult, SimComputeBackendChoice, SimEngineKind, SimResolution, StockModelKind,
@@ -317,17 +317,13 @@ pub fn run_simulate(args: SimulateArgs) -> Result<ExitCode, Box<dyn std::error::
         );
     }
 
-    let all_sims = simulate_all_setups_with_choice(
-        &proj_doc,
-        &cad_doc,
-        1,
-        &cache,
-        proj_dir,
-        sim_res_enum,
-        sim_engine,
-        sim_backend,
-        None,
-    )?;
+    let all_sims = simulate_all_setups(&AllSetupsSimRequest {
+        project_dir: proj_dir,
+        resolution: sim_res_enum,
+        engine: sim_engine,
+        backend_choice: sim_backend,
+        ..AllSetupsSimRequest::new(&proj_doc, &cad_doc, 1, &cache)
+    })?;
 
     let mut setup_reports = Vec::with_capacity(proj_doc.setups.len());
     let mut any_critical = false;
@@ -589,56 +585,33 @@ pub fn run_build(args: BuildArgs) -> Result<ExitCode, Box<dyn std::error::Error>
                 setup.name, post_profile.id
             );
         }
-        let kin = kinematics_for_post_profile(&post_profile);
+        let kin = if proj_doc.machine_id.is_some() {
+            resolve_setup_kinematics(&proj_doc, s_idx, proj_dir)
+        } else {
+            kinematics_for_post_profile(&post_profile)
+        };
 
         // Mandatory pre-post physical crash, gouge, & fixture gate (`06-simulation.md` §4)!
         // Automatically select full-3D Tri-Dexel when a Setup carries over volumetric stock or
-        // runs undercut strategies / relieved-neck undercut cutters (`SlotMill`, `DovetailCutter`, `LollipopEndmill`).
-        let needs_tridexel = setup.carryover_from_setup_id.is_some()
-            || setup.operations.iter().any(|op| {
-                if op.suppressed {
-                    return false;
-                }
-                if matches!(
-                    op.kind,
-                    chip_cam::OperationKind::SlotUndercut
-                        | chip_cam::OperationKind::Dovetail
-                        | chip_cam::OperationKind::Undercut3D
-                ) {
-                    return true;
-                }
-                op.tool_id
-                    .as_ref()
-                    .and_then(|tid| proj_doc.tool(tid))
-                    .is_some_and(|t| {
-                        matches!(
-                            t.geometry,
-                            chip_tools::CutterGeometry::LollipopEndmill { .. }
-                                | chip_tools::CutterGeometry::SlotMill { .. }
-                                | chip_tools::CutterGeometry::DovetailCutter { .. }
-                        )
-                    })
-            });
+        // runs undercut strategies / relieved-neck undercut/thread cutters.
+        let needs_tridexel = setup_requires_volumetric_sim(&proj_doc, s_idx);
         let sim_req = SetupSimRequest {
-            project: &proj_doc,
-            setup_idx: s_idx,
-            cad_doc: &cad_doc,
-            cad_revision: 1,
-            cache: &cache,
+            project_dir: proj_dir,
             kinematics: kin,
             resolution: SimResolution::Standard,
-            cancel: None,
+            engine: if needs_tridexel {
+                SimEngineKind::TriDexel
+            } else {
+                SimEngineKind::Heightmap
+            },
+            backend_choice: if needs_tridexel {
+                SimComputeBackendChoice::Auto
+            } else {
+                SimComputeBackendChoice::Cpu
+            },
+            ..SetupSimRequest::new(&proj_doc, s_idx, &cad_doc, 1, &cache)
         };
-        let sim = if needs_tridexel {
-            simulate_project_setup_with_choice_in_dir(
-                &sim_req,
-                proj_dir,
-                SimEngineKind::TriDexel,
-                SimComputeBackendChoice::Auto,
-            )?
-        } else {
-            simulate_project_setup_in_dir(&sim_req, proj_dir)?
-        };
+        let sim = simulate_project_setup(&sim_req)?;
 
         for d in &sim.diagnostics {
             eprintln!(

@@ -677,6 +677,25 @@ impl TriDexelStock {
         }
     }
 
+    /// Infers the matching [`SimResolution`] tier of this [`TriDexelStock`] for oblique
+    /// rigid-frame re-voxelization.
+    pub const fn infer_resolution(&self) -> SimResolution {
+        let mut max_dim = self.dims[0];
+        if self.dims[1] > max_dim {
+            max_dim = self.dims[1];
+        }
+        if self.dims[2] > max_dim {
+            max_dim = self.dims[2];
+        }
+        if max_dim >= 360 {
+            SimResolution::Ultra
+        } else if max_dim >= 220 {
+            SimResolution::Fine
+        } else {
+            SimResolution::Standard
+        }
+    }
+
     #[inline]
     pub const fn nx(&self) -> usize {
         self.dims[0]

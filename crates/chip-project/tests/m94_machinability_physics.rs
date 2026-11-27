@@ -12,7 +12,7 @@ use chip_cam::{
 use chip_math::{DisplayUnit, ParamLength};
 use chip_project::{
     ProjectDocument, SetupSimRequest, ToolpathCache, analyze_project_machinability,
-    generate_project_blocking_in_dir, simulate_project_setup_with_choice,
+    generate_project_blocking_in_dir, simulate_project_setup,
 };
 use chip_sim::{MachineKinematicsConfig, SimComputeBackendChoice, SimEngineKind, SimResolution};
 use chip_sketch::{SketchEntity, SketchEntityEntry, SketchLayer};
@@ -227,20 +227,19 @@ fn m94_bartrim_helical_bore_inner_arc_comp_chip_clear_and_tridexel_crash_free() 
     let batch = generate_project_blocking_in_dir(&mut proj, &cad, None, &mut cache, 1);
     assert!(batch.errors.is_empty(), "gen errors: {:?}", batch.errors);
 
-    let sim = simulate_project_setup_with_choice(
-        &SetupSimRequest {
-            project: &proj,
-            setup_idx: 0,
-            cad_doc: &cad,
-            cad_revision: 1,
-            cache: &cache,
-            kinematics: MachineKinematicsConfig::default(),
-            resolution: SimResolution::Standard,
-            cancel: None,
-        },
-        SimEngineKind::TriDexel,
-        SimComputeBackendChoice::Cpu,
-    )
+    let sim = simulate_project_setup(&SetupSimRequest {
+        project: &proj,
+        setup_idx: 0,
+        cad_doc: &cad,
+        cad_revision: 1,
+        cache: &cache,
+        kinematics: MachineKinematicsConfig::default(),
+        resolution: SimResolution::Standard,
+        cancel: None,
+        engine: SimEngineKind::TriDexel,
+        backend_choice: SimComputeBackendChoice::Cpu,
+        ..SetupSimRequest::new(&proj, 0, &cad, 1, &cache)
+    })
     .unwrap();
     assert_eq!(
         sim.critical_error_count(),

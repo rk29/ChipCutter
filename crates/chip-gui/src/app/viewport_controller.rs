@@ -1,18 +1,19 @@
 use std::borrow::Cow;
 
-use chip_cad::{CurveKind, PickFilter, PickTarget, SurfaceKind};
+use chip_cad::{
+    CurveKind, PickFilter, PickTarget, SurfaceKind, snap_brep_pick_to_measure_target,
+    snap_mesh_hit_to_measure_target,
+};
 use chip_cam::{
-    ExtractedFeature25D, FixtureBody, FixtureKind, GeometrySelectionItem, HeightReference,
-    HeightSpec, ManualTabAnchor, Operation, OperationRotaryMode, OperationStatus, ResolvedHeights,
-    ResolvedRotaryConfig, ResolvedSetup, StrategyParams, TabMarker3D, TabPlacementMode,
-    TabProfileKind, WcsAxisRef, WcsFeaturePointRef, WcsOrientationMode, WcsOriginMode,
-    analyze_machinability_reach, build_indexed_virtual_setup, compute_reach_cache_key,
-    extract_selection_features_with_sketches, resolve_sketch_world_frame,
-    resolve_sketch_world_frame_with_doc, snap_brep_pick_to_measure_target,
-    snap_mesh_hit_to_measure_target, snap_sketch_to_measure_target,
+    BoundaryPreviewInput, ExtractedFeature25D, FixtureBody, FixtureKind, GeometrySelectionItem,
+    HeightReference, HeightSpec, ManualTabAnchor, Operation, OperationRotaryMode, OperationStatus,
+    ResolvedHeights, ResolvedRotaryConfig, ResolvedSetup, SharedAvoidPreviewInput, StrategyParams,
+    TabMarker3D, TabPlacementMode, TabProfileKind, WcsAxisRef, WcsFeaturePointRef,
+    WcsOrientationMode, WcsOriginMode, analyze_machinability_reach, build_indexed_virtual_setup,
+    cad_binding_to_sketch_face, compute_reach_cache_key, extract_selection_features_with_sketches,
+    resolve_sketch_world_frame, resolve_sketch_world_frame_with_doc, snap_sketch_to_measure_target,
 };
 use chip_math::{Aabb2, DMat4, DVec2, DVec3, ParamLength, Ray3, RigidFrame3};
-use chip_project::cad_binding_to_sketch_face;
 use chip_sketch::{
     FaceSketchOriginMode, PointPatternSpec, PolygonEvalSpec, PolygonSizingMode, RectAnchorMode,
     RectEvalSpec, SketchAnchor, SketchEntity, SketchEntityEntry, SketchLayer, SketchPickHit,
@@ -30,10 +31,7 @@ use crate::{
             mark_ops_dirty_with_rest, mark_shared_avoid_dependents_dirty,
         },
     },
-    viewport::{
-        BoundaryPreviewInput, FixtureVisualMesh, SharedAvoidPreviewInput, SketchLayerVisual,
-        ToolpathRenderEntry, ZPlaneVisual,
-    },
+    viewport::{FixtureVisualMesh, SketchLayerVisual, ToolpathRenderEntry, ZPlaneVisual},
 };
 
 pub(crate) struct SketchAuthorInteractionInput {
@@ -2317,11 +2315,8 @@ mod tests {
 
     #[test]
     fn m95_measure_state_machine_set_bottom_z_undo_and_headless_cards() {
-        use chip_cad::FaceId;
-        use chip_cam::{
-            MeasureSnapTarget, MeasurementResult, OperationKind, ReachAnalysisResult,
-            ReachIssueKind, ReachSeverity,
-        };
+        use chip_cad::{FaceId, MeasureSnapTarget, MeasurementResult};
+        use chip_cam::{OperationKind, ReachAnalysisResult, ReachIssueKind, ReachSeverity};
         use chip_math::DisplayUnit;
 
         use crate::{

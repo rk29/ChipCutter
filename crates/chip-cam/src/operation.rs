@@ -1,5 +1,5 @@
 use chip_math::EvalContext;
-use chip_tools::{CoolantMode, CuttingPreset, Tool, ToolId, ToolOperationClass};
+use chip_tools::{CoolantMode, CutterGeometry, CuttingPreset, Tool, ToolId};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -10,6 +10,118 @@ use crate::{
     rotary::OperationRotaryMode,
     selection::GeometrySelectionItem,
 };
+
+/// High-level CAM operation classes used to validate cutter compatibility (`04-tool-library.md`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolOperationClass {
+    Facing,
+    Contour2D,
+    Pocket2D,
+    Drill,
+    HelicalBore,
+    Chamfer,
+    Trace,
+    VCarve,
+    VCarveFlatClearance,
+    Waterline3D,
+    Adaptive3D,
+    Parallel3D,
+    Scallop3D,
+    Pencil3D,
+    Rotary2Linear,
+    Rotary4AxisSim,
+    ThreadMill,
+    Deburr3D,
+    SlotUndercut,
+    Dovetail,
+    Undercut3D,
+}
+
+impl ToolOperationClass {
+    /// Checks whether `geom` is valid for this CAM operation class per `04-tool-library.md`.
+    pub fn is_supported_by(self, geom: &CutterGeometry) -> bool {
+        cutter_supports_operation(geom, self)
+    }
+}
+
+/// Checks whether a [`CutterGeometry`] is valid for `op_class` per `04-tool-library.md`.
+pub fn cutter_supports_operation(geom: &CutterGeometry, op_class: ToolOperationClass) -> bool {
+    match geom {
+        CutterGeometry::FlatEndmill { .. } => matches!(
+            op_class,
+            ToolOperationClass::Facing
+                | ToolOperationClass::Contour2D
+                | ToolOperationClass::Pocket2D
+                | ToolOperationClass::HelicalBore
+                | ToolOperationClass::Trace
+                | ToolOperationClass::VCarveFlatClearance
+                | ToolOperationClass::Waterline3D
+                | ToolOperationClass::Adaptive3D
+                | ToolOperationClass::Parallel3D
+                | ToolOperationClass::Scallop3D
+                | ToolOperationClass::Pencil3D
+                | ToolOperationClass::Rotary2Linear
+                | ToolOperationClass::Rotary4AxisSim
+                | ToolOperationClass::SlotUndercut
+        ),
+        CutterGeometry::BullNoseEndmill { .. } => matches!(
+            op_class,
+            ToolOperationClass::Facing
+                | ToolOperationClass::Contour2D
+                | ToolOperationClass::Pocket2D
+                | ToolOperationClass::HelicalBore
+                | ToolOperationClass::Trace
+                | ToolOperationClass::Waterline3D
+                | ToolOperationClass::Adaptive3D
+                | ToolOperationClass::Parallel3D
+                | ToolOperationClass::Scallop3D
+                | ToolOperationClass::Pencil3D
+                | ToolOperationClass::Rotary2Linear
+                | ToolOperationClass::Rotary4AxisSim
+        ),
+        CutterGeometry::BallEndmill { .. } => matches!(
+            op_class,
+            ToolOperationClass::Contour2D
+                | ToolOperationClass::Pocket2D
+                | ToolOperationClass::Trace
+                | ToolOperationClass::Waterline3D
+                | ToolOperationClass::Adaptive3D
+                | ToolOperationClass::Parallel3D
+                | ToolOperationClass::Scallop3D
+                | ToolOperationClass::Pencil3D
+                | ToolOperationClass::Rotary2Linear
+                | ToolOperationClass::Rotary4AxisSim
+                | ToolOperationClass::Deburr3D
+        ),
+        CutterGeometry::ChamferMill {
+            included_angle_deg, ..
+        } => match op_class {
+            ToolOperationClass::VCarve => (10.0..=160.0).contains(included_angle_deg),
+            ToolOperationClass::Chamfer
+            | ToolOperationClass::Trace
+            | ToolOperationClass::Drill
+            | ToolOperationClass::Parallel3D
+            | ToolOperationClass::Pencil3D
+            | ToolOperationClass::Rotary2Linear
+            | ToolOperationClass::Rotary4AxisSim
+            | ToolOperationClass::Deburr3D => true,
+            _ => false,
+        },
+        CutterGeometry::TwistDrill { .. } => matches!(op_class, ToolOperationClass::Drill),
+        CutterGeometry::FaceMill { .. } => matches!(
+            op_class,
+            ToolOperationClass::Facing | ToolOperationClass::Contour2D
+        ),
+        CutterGeometry::ThreadMill { .. } => matches!(op_class, ToolOperationClass::ThreadMill),
+        CutterGeometry::LollipopEndmill { .. } => matches!(
+            op_class,
+            ToolOperationClass::Deburr3D | ToolOperationClass::Undercut3D
+        ),
+        CutterGeometry::SlotMill { .. } => matches!(op_class, ToolOperationClass::SlotUndercut),
+        CutterGeometry::DovetailCutter { .. } => matches!(op_class, ToolOperationClass::Dovetail),
+    }
+}
 
 /// Supported 2.5D and 3-axis CAM operation types (`05-operations.md`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -140,62 +252,34 @@ impl OperationKind {
     }
 
     pub fn is_compatible_with_tool(self, tool: &Tool) -> bool {
+        let g = &tool.geometry;
         match self {
-            Self::Facing => tool.geometry.supports_operation(ToolOperationClass::Facing),
-            Self::Contour2D => tool
-                .geometry
-                .supports_operation(ToolOperationClass::Contour2D),
-            Self::Pocket2D => tool
-                .geometry
-                .supports_operation(ToolOperationClass::Pocket2D),
+            Self::Facing => cutter_supports_operation(g, ToolOperationClass::Facing),
+            Self::Contour2D => cutter_supports_operation(g, ToolOperationClass::Contour2D),
+            Self::Pocket2D => cutter_supports_operation(g, ToolOperationClass::Pocket2D),
             Self::DrillBore => {
-                tool.geometry.supports_operation(ToolOperationClass::Drill)
-                    || tool
-                        .geometry
-                        .supports_operation(ToolOperationClass::HelicalBore)
+                cutter_supports_operation(g, ToolOperationClass::Drill)
+                    || cutter_supports_operation(g, ToolOperationClass::HelicalBore)
             }
             Self::ChamferTrace => {
-                tool.geometry
-                    .supports_operation(ToolOperationClass::Chamfer)
-                    || tool.geometry.supports_operation(ToolOperationClass::Trace)
+                cutter_supports_operation(g, ToolOperationClass::Chamfer)
+                    || cutter_supports_operation(g, ToolOperationClass::Trace)
             }
-            Self::VCarve => tool.geometry.supports_operation(ToolOperationClass::VCarve),
-            Self::Waterline3D => tool
-                .geometry
-                .supports_operation(ToolOperationClass::Waterline3D),
-            Self::Adaptive3D => tool
-                .geometry
-                .supports_operation(ToolOperationClass::Adaptive3D),
-            Self::Parallel3D => tool
-                .geometry
-                .supports_operation(ToolOperationClass::Parallel3D),
-            Self::Scallop3D => tool
-                .geometry
-                .supports_operation(ToolOperationClass::Scallop3D),
-            Self::Pencil3D => tool
-                .geometry
-                .supports_operation(ToolOperationClass::Pencil3D),
-            Self::Deburr3D => tool
-                .geometry
-                .supports_operation(ToolOperationClass::Deburr3D),
-            Self::Rotary2Linear => tool
-                .geometry
-                .supports_operation(ToolOperationClass::Rotary2Linear),
-            Self::Rotary4AxisSim => tool
-                .geometry
-                .supports_operation(ToolOperationClass::Rotary4AxisSim),
-            Self::ThreadMill => tool
-                .geometry
-                .supports_operation(ToolOperationClass::ThreadMill),
-            Self::SlotUndercut => tool
-                .geometry
-                .supports_operation(ToolOperationClass::SlotUndercut),
-            Self::Dovetail => tool
-                .geometry
-                .supports_operation(ToolOperationClass::Dovetail),
-            Self::Undercut3D => tool
-                .geometry
-                .supports_operation(ToolOperationClass::Undercut3D),
+            Self::VCarve => cutter_supports_operation(g, ToolOperationClass::VCarve),
+            Self::Waterline3D => cutter_supports_operation(g, ToolOperationClass::Waterline3D),
+            Self::Adaptive3D => cutter_supports_operation(g, ToolOperationClass::Adaptive3D),
+            Self::Parallel3D => cutter_supports_operation(g, ToolOperationClass::Parallel3D),
+            Self::Scallop3D => cutter_supports_operation(g, ToolOperationClass::Scallop3D),
+            Self::Pencil3D => cutter_supports_operation(g, ToolOperationClass::Pencil3D),
+            Self::Deburr3D => cutter_supports_operation(g, ToolOperationClass::Deburr3D),
+            Self::Rotary2Linear => cutter_supports_operation(g, ToolOperationClass::Rotary2Linear),
+            Self::Rotary4AxisSim => {
+                cutter_supports_operation(g, ToolOperationClass::Rotary4AxisSim)
+            }
+            Self::ThreadMill => cutter_supports_operation(g, ToolOperationClass::ThreadMill),
+            Self::SlotUndercut => cutter_supports_operation(g, ToolOperationClass::SlotUndercut),
+            Self::Dovetail => cutter_supports_operation(g, ToolOperationClass::Dovetail),
+            Self::Undercut3D => cutter_supports_operation(g, ToolOperationClass::Undercut3D),
         }
     }
 }
@@ -532,5 +616,79 @@ impl Operation {
                 .or(p_cool)
                 .unwrap_or(tool.default_coolant),
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use chip_tools::{CutterGeometry, default_starter_tool_library, starter_undercut_tools};
+
+    use super::*;
+
+    #[test]
+    fn cutter_operation_compatibility_covers_thread_mill_and_undercut_tools() {
+        let starter_default = default_starter_tool_library();
+        let tm = starter_default
+            .tools
+            .iter()
+            .find(|t| matches!(t.geometry, CutterGeometry::ThreadMill { .. }))
+            .unwrap();
+        assert!(cutter_supports_operation(
+            &tm.geometry,
+            ToolOperationClass::ThreadMill
+        ));
+        assert!(!cutter_supports_operation(
+            &tm.geometry,
+            ToolOperationClass::Pocket2D
+        ));
+
+        let undercuts = starter_undercut_tools();
+        let lolli = &undercuts[0];
+        let slot = &undercuts[1];
+        let dove = &undercuts[2];
+
+        assert!(cutter_supports_operation(
+            &lolli.geometry,
+            ToolOperationClass::Deburr3D
+        ));
+        assert!(cutter_supports_operation(
+            &lolli.geometry,
+            ToolOperationClass::Undercut3D
+        ));
+        assert!(!cutter_supports_operation(
+            &lolli.geometry,
+            ToolOperationClass::Dovetail
+        ));
+        assert!(cutter_supports_operation(
+            &slot.geometry,
+            ToolOperationClass::SlotUndercut
+        ));
+        assert!(!cutter_supports_operation(
+            &slot.geometry,
+            ToolOperationClass::Undercut3D
+        ));
+        assert!(cutter_supports_operation(
+            &dove.geometry,
+            ToolOperationClass::Dovetail
+        ));
+        assert!(!cutter_supports_operation(
+            &dove.geometry,
+            ToolOperationClass::SlotUndercut
+        ));
+
+        // Flat endmill also supports SlotUndercut; Ball & Chamfer support Deburr3D
+        assert!(cutter_supports_operation(
+            &starter_default.tools[0].geometry,
+            ToolOperationClass::SlotUndercut
+        ));
+        assert!(cutter_supports_operation(
+            &starter_default.tools[3].geometry,
+            ToolOperationClass::Deburr3D
+        ));
+        assert!(cutter_supports_operation(
+            &starter_default.tools[4].geometry,
+            ToolOperationClass::Deburr3D
+        ));
     }
 }

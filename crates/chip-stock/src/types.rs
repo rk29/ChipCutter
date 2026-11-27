@@ -313,6 +313,26 @@ impl SimComputeBackendChoice {
             Self::Cpu => "CPU Exact (Rayon)",
         }
     }
+
+    /// Parses a CLI/config backend token (`auto`, `gpu`/`wgpu`, `cpu`/`exact`) case-insensitively.
+    pub fn from_str_loose(raw: &str) -> Result<Self, String> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "auto" => Ok(Self::Auto),
+            "gpu" | "wgpu" => Ok(Self::Gpu),
+            "cpu" | "exact" => Ok(Self::Cpu),
+            other => Err(format!(
+                "unknown simulation backend '{other}'; expected 'auto', 'gpu', or 'cpu'"
+            )),
+        }
+    }
+}
+
+impl std::str::FromStr for SimComputeBackendChoice {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::from_str_loose(s)
+    }
 }
 
 /// Metadata identifying which concrete simulation backend executed a simulation run.
@@ -376,6 +396,26 @@ impl SimEngineKind {
                 "Full 3D volumetric stock using 3 orthogonal ray grids (X, Y, Z) with exact sub-voxel endpoints. Accurately models vertical walls, steep reliefs, undercuts, and 3D error-volume/RMS metrology (slower than Heightmap)."
             }
         }
+    }
+
+    /// Parses a CLI/config engine token (`heightmap`/`2.5d`/`z-dexel`/`zdexel`,
+    /// `tri-dexel`/`tridexel`/`tri_dexel`/`3d`) case-insensitively.
+    pub fn from_str_loose(raw: &str) -> Result<Self, String> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "heightmap" | "2.5d" | "z-dexel" | "zdexel" => Ok(Self::Heightmap),
+            "tri-dexel" | "tridexel" | "tri_dexel" | "3d" => Ok(Self::TriDexel),
+            other => Err(format!(
+                "unknown simulation engine '{other}'; expected 'heightmap' or 'tri-dexel'"
+            )),
+        }
+    }
+}
+
+impl std::str::FromStr for SimEngineKind {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::from_str_loose(s)
     }
 }
 
@@ -445,6 +485,27 @@ impl SimResolution {
                 "Up to 448 isotropic cells along the longest 3D axis across X, Y, and Z ray planes (~7.8x rays). Ultra-fine 3D inspection and metrology (slower, higher memory use)."
             }
         }
+    }
+
+    /// Parses a CLI/config resolution token (`standard`/`512`/`160`, `fine`/`1024`/`288`,
+    /// `ultra`/`2048`/`448`) case-insensitively.
+    pub fn from_str_loose(raw: &str) -> Result<Self, String> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "standard" | "512" | "160" => Ok(Self::Standard),
+            "fine" | "1024" | "288" => Ok(Self::Fine),
+            "ultra" | "2048" | "448" => Ok(Self::Ultra),
+            other => Err(format!(
+                "unknown simulation resolution '{other}'; expected 'standard', 'fine', or 'ultra'"
+            )),
+        }
+    }
+}
+
+impl std::str::FromStr for SimResolution {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::from_str_loose(s)
     }
 }
 

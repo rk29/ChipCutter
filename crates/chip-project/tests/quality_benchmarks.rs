@@ -20,7 +20,7 @@ use chip_project::{
     build_thread_mill_manifold_project, build_tutorial_3d_adaptive_waterline_project,
     build_tutorial_3d_surface_finishing_project, build_tutorial_adaptive_rest_project,
     build_tutorial_pocket_project, compute_sha256_hex, generate_project_blocking,
-    resolve_kinematics_for_key, simulate_project_setup_with_choice,
+    resolve_kinematics_for_key, simulate_project_setup,
 };
 use chip_sim::{SetupSimulationResult, SimComputeBackendChoice, SimEngineKind, SimResolution};
 use chip_tools::default_starter_tool_library;
@@ -40,20 +40,19 @@ fn run_quality_sim(
         batch.errors
     );
     let post_key = proj.setups[0].post_profile.clone();
-    let sim = simulate_project_setup_with_choice(
-        &SetupSimRequest {
-            project: proj,
-            setup_idx: 0,
-            cad_doc,
-            cad_revision: 1,
-            cache: &cache,
-            kinematics: resolve_kinematics_for_key(&post_key, None),
-            resolution,
-            cancel: None,
-        },
+    let sim = simulate_project_setup(&SetupSimRequest {
+        project: proj,
+        setup_idx: 0,
+        cad_doc,
+        cad_revision: 1,
+        cache: &cache,
+        kinematics: resolve_kinematics_for_key(&post_key, None),
+        resolution,
+        cancel: None,
         engine,
-        SimComputeBackendChoice::Auto,
-    )
+        backend_choice: SimComputeBackendChoice::Auto,
+        ..SetupSimRequest::new(proj, 0, cad_doc, 1, &cache)
+    })
     .unwrap_or_else(|e| panic!("{label}: simulation failed: {e}"));
 
     if let Some(err) = &sim.error_report {

@@ -716,6 +716,7 @@ fn verifies_all_five_v1_strategies_against_torture_block_invariants() {
         initial_raw_volume_mm3: None,
         carried_over_from_setup: None,
         cancel: None,
+        ..chip_sim::SetupSimulationInput::new(&doc, &resolved_setup, &[])
     })
     .unwrap();
 
@@ -1100,6 +1101,7 @@ fn verifies_adaptive_clearing_and_rest_machining_against_sim_oracle() {
         initial_raw_volume_mm3: None,
         carried_over_from_setup: None,
         cancel: None,
+        ..chip_sim::SetupSimulationInput::new(&doc, &resolved_setup, &[])
     })
     .unwrap();
     assert_eq!(sim_before_rest.critical_error_count(), 0);
@@ -1131,6 +1133,7 @@ fn verifies_adaptive_clearing_and_rest_machining_against_sim_oracle() {
         initial_raw_volume_mm3: None,
         carried_over_from_setup: None,
         cancel: None,
+        ..chip_sim::SetupSimulationInput::new(&doc, &resolved_setup, &[])
     })
     .unwrap();
     assert_eq!(
@@ -1305,6 +1308,7 @@ fn verifies_vcarve_medial_corner_climbs_two_tool_flat_clearance_and_male_inlay_p
         initial_raw_volume_mm3: None,
         carried_over_from_setup: None,
         cancel: None,
+        ..chip_sim::SetupSimulationInput::new(&empty_doc, &resolved_sq, &[])
     })
     .unwrap();
     assert_eq!(sim_sq.critical_error_count(), 0);
@@ -1395,6 +1399,7 @@ fn verifies_vcarve_medial_corner_climbs_two_tool_flat_clearance_and_male_inlay_p
         initial_raw_volume_mm3: None,
         carried_over_from_setup: None,
         cancel: None,
+        ..chip_sim::SetupSimulationInput::new(&empty_doc, &resolved_txt, &[])
     })
     .unwrap();
     assert_eq!(
@@ -1584,6 +1589,7 @@ fn verifies_adaptive_3d_and_waterline_3d_on_stl_obj_and_step_against_sim_oracle(
         initial_raw_volume_mm3: None,
         carried_over_from_setup: None,
         cancel: None,
+        ..SetupSimulationInput::new(&dome_doc, &resolved_dome, &[])
     })
     .unwrap();
     assert_eq!(
@@ -1742,6 +1748,7 @@ fn verifies_adaptive_3d_and_waterline_3d_on_stl_obj_and_step_against_sim_oracle(
         initial_raw_volume_mm3: None,
         carried_over_from_setup: None,
         cancel: None,
+        ..SetupSimulationInput::new(&wave_doc, &resolved_wave, &[])
     })
     .unwrap();
     assert_eq!(
@@ -2221,6 +2228,7 @@ fn milestone_18_3d_finishing_parallel_scallop_pencil_and_rest_oracles() {
         initial_raw_volume_mm3: None,
         carried_over_from_setup: None,
         cancel: None,
+        ..SetupSimulationInput::new(&dome_doc, &resolved_dome, &[])
     })
     .unwrap();
     assert_eq!(
@@ -2304,6 +2312,7 @@ fn milestone_18_3d_finishing_parallel_scallop_pencil_and_rest_oracles() {
         initial_raw_volume_mm3: None,
         carried_over_from_setup: None,
         cancel: None,
+        ..SetupSimulationInput::new(&wave_doc, &resolved_wave, &[])
     })
     .unwrap();
     assert_eq!(
@@ -2474,6 +2483,7 @@ fn rotary2linear_spiral_and_axial_parallel_on_x_and_y_axes_are_centerline_locked
         initial_raw_volume_mm3: None,
         carried_over_from_setup: None,
         cancel: None,
+        ..SetupSimulationInput::new(&doc, &resolved_x, &[])
     })
     .unwrap();
     assert_eq!(
@@ -2555,6 +2565,7 @@ fn rotary2linear_spiral_and_axial_parallel_on_x_and_y_axes_are_centerline_locked
         initial_raw_volume_mm3: None,
         carried_over_from_setup: None,
         cancel: None,
+        ..SetupSimulationInput::new(&doc, &resolved_y, &[])
     })
     .unwrap();
     assert_eq!(
@@ -2711,6 +2722,7 @@ fn wrap_cylinder_2d_pocket_respects_centerline_lock_arc_mapping_and_simulates_cl
         initial_raw_volume_mm3: None,
         carried_over_from_setup: None,
         cancel: None,
+        ..SetupSimulationInput::new(&doc, &resolved, &[])
     })
     .unwrap();
     assert_eq!(
@@ -2880,6 +2892,7 @@ fn indexed_3plus1_four_flats_on_rotary_shaft_retract_safely_and_verify_crash_fre
         initial_raw_volume_mm3: None,
         carried_over_from_setup: None,
         cancel: None,
+        ..SetupSimulationInput::new(&doc, &resolved, &[])
     })
     .unwrap();
     assert_eq!(
@@ -3094,6 +3107,7 @@ fn rotary4axis_sim_off_centerline_helical_flutes_on_x_and_y_are_smooth_and_crash
         initial_raw_volume_mm3: None,
         carried_over_from_setup: None,
         cancel: None,
+        ..SetupSimulationInput::new(&doc, &resolved_x, &[])
     })
     .unwrap();
     assert_eq!(
@@ -3175,6 +3189,7 @@ fn rotary4axis_sim_off_centerline_helical_flutes_on_x_and_y_are_smooth_and_crash
         initial_raw_volume_mm3: None,
         carried_over_from_setup: None,
         cancel: None,
+        ..SetupSimulationInput::new(&doc, &resolved_y, &[])
     })
     .unwrap();
     assert_eq!(
@@ -3266,7 +3281,6 @@ fn rotary_4axis_and_2linear_clear_empty_center_without_leaving_stem() {
     use chip_sim::{
         MachineKinematicsConfig, SetupSimulationInput, SimComputeBackendChoice, SimEngineKind,
         SimOperationInput, SimResolution, SimVerificationConfig, run_setup_simulation,
-        run_setup_simulation_with_choice,
     };
 
     // 1. Star-shaped watertight part: centered cylindrical base (`x ∈ [-10, 0], R = 9 mm`) plus
@@ -3383,6 +3397,7 @@ fn rotary_4axis_and_2linear_clear_empty_center_without_leaving_stem() {
         initial_raw_volume_mm3: None,
         carried_over_from_setup: None,
         cancel: None,
+        ..SetupSimulationInput::new(&doc, &resolved_4ax, &[])
     })
     .unwrap();
     assert_eq!(
@@ -3475,6 +3490,7 @@ fn rotary_4axis_and_2linear_clear_empty_center_without_leaving_stem() {
         initial_raw_volume_mm3: None,
         carried_over_from_setup: None,
         cancel: None,
+        ..SetupSimulationInput::new(&doc, &resolved_4ax, &[])
     })
     .unwrap();
     assert_eq!(
@@ -3576,6 +3592,7 @@ fn rotary_4axis_and_2linear_clear_empty_center_without_leaving_stem() {
         initial_raw_volume_mm3: None,
         carried_over_from_setup: None,
         cancel: None,
+        ..SetupSimulationInput::new(&doc, &resolved_2lin, &[])
     })
     .unwrap();
     assert_eq!(
@@ -3680,12 +3697,16 @@ fn rotary_4axis_and_2linear_clear_empty_center_without_leaving_stem() {
         initial_raw_volume_mm3: None,
         carried_over_from_setup: None,
         cancel: None,
+        ..SetupSimulationInput::new(&prong_doc, &resolved_prongs, &[])
     };
 
     for backend in [SimComputeBackendChoice::Cpu, SimComputeBackendChoice::Auto] {
-        let sim_prongs =
-            run_setup_simulation_with_choice(&prong_sim_input, SimEngineKind::Heightmap, backend)
-                .unwrap();
+        let sim_prongs = run_setup_simulation(&SetupSimulationInput {
+            engine: SimEngineKind::Heightmap,
+            backend_choice: backend,
+            ..prong_sim_input
+        })
+        .unwrap();
         assert_eq!(
             sim_prongs.critical_error_count(),
             0,
@@ -3736,7 +3757,7 @@ fn m81_stepped_shaft_outer_radial_ceiling_reduces_passes_and_verifies_zero_gouge
     };
     use chip_sim::{
         MachineKinematicsConfig, SetupSimulationInput, SimComputeBackendChoice, SimEngineKind,
-        SimOperationInput, SimResolution, SimVerificationConfig, run_setup_simulation_with_choice,
+        SimOperationInput, SimResolution, SimVerificationConfig, run_setup_simulation,
     };
 
     let stl = sample_rotary_shaft_stl_bytes();
@@ -3908,24 +3929,23 @@ fn m81_stepped_shaft_outer_radial_ceiling_reduces_passes_and_verifies_zero_gouge
         ("Rotary4AxisSim lowered ceiling", &op_4ax_low, &tp_4a_low),
     ] {
         for engine in [SimEngineKind::Heightmap, SimEngineKind::TriDexel] {
-            let sim = run_setup_simulation_with_choice(
-                &SetupSimulationInput {
-                    doc: &doc,
-                    setup: &resolved,
-                    target_bodies: &[],
-                    fixtures: &[],
-                    operations: &[SimOperationInput::from_operation(op, &ball_6mm, tp)],
-                    kinematics: MachineKinematicsConfig::default(),
-                    resolution: SimResolution::Standard,
-                    verify_config: SimVerificationConfig::default(),
-                    initial_stock: None,
-                    initial_raw_volume_mm3: None,
-                    carried_over_from_setup: None,
-                    cancel: None,
-                },
+            let sim = run_setup_simulation(&SetupSimulationInput {
+                doc: &doc,
+                setup: &resolved,
+                target_bodies: &[],
+                fixtures: &[],
+                operations: &[SimOperationInput::from_operation(op, &ball_6mm, tp)],
+                kinematics: MachineKinematicsConfig::default(),
+                resolution: SimResolution::Standard,
+                verify_config: SimVerificationConfig::default(),
+                initial_stock: None,
+                initial_raw_volume_mm3: None,
+                carried_over_from_setup: None,
+                cancel: None,
                 engine,
-                SimComputeBackendChoice::Cpu,
-            )
+                backend_choice: SimComputeBackendChoice::Cpu,
+                ..SetupSimulationInput::new(&doc, &resolved, &[])
+            })
             .unwrap();
             assert_eq!(
                 sim.critical_error_count(),

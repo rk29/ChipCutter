@@ -14,7 +14,7 @@ use chip_cam::{
 use chip_math::{ArcPolyline2D, ArcSegment2D, DVec2, DVec3, DisplayUnit, ParamLength};
 use chip_sim::{
     MachineKinematicsConfig, SetupSimulationInput, SimComputeBackendChoice, SimEngineKind,
-    SimOperationInput, SimResolution, SimVerificationConfig, run_setup_simulation_with_choice,
+    SimOperationInput, SimResolution, SimVerificationConfig, run_setup_simulation,
 };
 use chip_sketch::{RectAnchorMode, SketchEntity, SketchEntityEntry, SketchLayer};
 use chip_tools::{CutterGeometry, Tool, ToolId, default_starter_tool_library};
@@ -276,24 +276,23 @@ fn facing_l_shape_with_raised_boss_clips_missing_quadrant_and_avoids_boss_gouges
     // 2. Verify with `chip-sim` Heightmap oracle: zero rapid crashes, zero target gouges,
     //    boss intact at Z=16, L-shape arms cleanly cleared down to Z=10!
     let sim_ops = vec![SimOperationInput::from_operation(&op, &tool, &tp)];
-    let sim = run_setup_simulation_with_choice(
-        &SetupSimulationInput {
-            doc: &doc,
-            setup: &resolved,
-            target_bodies: &[],
-            fixtures: &[],
-            operations: &sim_ops,
-            kinematics: MachineKinematicsConfig::default(),
-            resolution: SimResolution::Fine,
-            verify_config: SimVerificationConfig::default(),
-            initial_stock: None,
-            initial_raw_volume_mm3: None,
-            carried_over_from_setup: None,
-            cancel: None,
-        },
-        SimEngineKind::Heightmap,
-        SimComputeBackendChoice::Cpu,
-    )
+    let sim = run_setup_simulation(&SetupSimulationInput {
+        doc: &doc,
+        setup: &resolved,
+        target_bodies: &[],
+        fixtures: &[],
+        operations: &sim_ops,
+        kinematics: MachineKinematicsConfig::default(),
+        resolution: SimResolution::Fine,
+        verify_config: SimVerificationConfig::default(),
+        initial_stock: None,
+        initial_raw_volume_mm3: None,
+        carried_over_from_setup: None,
+        cancel: None,
+        engine: SimEngineKind::Heightmap,
+        backend_choice: SimComputeBackendChoice::Cpu,
+        ..SetupSimulationInput::new(&doc, &resolved, &[])
+    })
     .unwrap();
 
     assert_eq!(
@@ -557,24 +556,23 @@ fn pocket2d_and_adaptive2d_clear_outside_selected_boss_to_stock_gouge_free() {
         // Verify in `chip-sim` Heightmap AND TriDexel: zero crashes, zero boss gouges, deck cleared!
         let sim_ops = vec![SimOperationInput::from_operation(&op, &tool, &tp)];
         for engine in [SimEngineKind::Heightmap, SimEngineKind::TriDexel] {
-            let sim = run_setup_simulation_with_choice(
-                &SetupSimulationInput {
-                    doc: &doc,
-                    setup: &resolved,
-                    target_bodies: &[],
-                    fixtures: &[],
-                    operations: &sim_ops,
-                    kinematics: MachineKinematicsConfig::default(),
-                    resolution: SimResolution::Standard,
-                    verify_config: SimVerificationConfig::default(),
-                    initial_stock: None,
-                    initial_raw_volume_mm3: None,
-                    carried_over_from_setup: None,
-                    cancel: None,
-                },
+            let sim = run_setup_simulation(&SetupSimulationInput {
+                doc: &doc,
+                setup: &resolved,
+                target_bodies: &[],
+                fixtures: &[],
+                operations: &sim_ops,
+                kinematics: MachineKinematicsConfig::default(),
+                resolution: SimResolution::Standard,
+                verify_config: SimVerificationConfig::default(),
+                initial_stock: None,
+                initial_raw_volume_mm3: None,
+                carried_over_from_setup: None,
+                cancel: None,
                 engine,
-                SimComputeBackendChoice::Cpu,
-            )
+                backend_choice: SimComputeBackendChoice::Cpu,
+                ..SetupSimulationInput::new(&doc, &resolved, &[])
+            })
             .unwrap();
 
             assert_eq!(

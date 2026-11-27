@@ -14,10 +14,7 @@ use chip_cam::{
 };
 use chip_math::{EvalContext, ParamLength};
 use chip_project::{ProjectDocument, UndoHistory};
-use chip_sketch::{
-    FaceSketchOriginMode, PointPatternSpec, PolygonSizingMode, RectAnchorMode, SketchAnchor,
-    SketchEntity, SketchEntityEntry, SketchPlaneRef, SketchTextSpec, SlotLengthMode,
-};
+use chip_sketch::{FaceSketchOriginMode, SketchAnchor, SketchEntityEntry, SketchPlaneRef};
 
 use crate::{
     panels::{SketchAuthorTool, ViewportPickMode},
@@ -654,85 +651,11 @@ fn is_sketch_pick_mode(mode: ViewportPickMode, sketch_idx: usize) -> bool {
     )
 }
 
-pub(crate) fn create_default_sketch_entity(
-    n: usize,
-    spec: u8,
-    sub_layer: Option<&str>,
-) -> SketchEntityEntry {
-    ent_entry(n, spec, sub_layer)
-}
+pub(crate) use chip_project::mark_sketch_dependent_ops_dirty;
+pub(crate) use chip_sketch::create_default_sketch_entity;
 
 fn ent_entry(n: usize, spec: u8, sub_layer: Option<&str>) -> SketchEntityEntry {
-    let mm = ParamLength::from_mm;
-    let (p, title) = match spec {
-        0 => ("rect", "Rectangle"),
-        1 => ("circle", "Circle"),
-        2 => ("slot", "Slot"),
-        3 => ("poly", "Hexagon"),
-        4 => ("bolts", "Bolt Circle"),
-        _ => ("text", "Text"),
-    };
-    let entity = match spec {
-        0 => SketchEntity::Rectangle {
-            anchor: RectAnchorMode::Center,
-            x: mm(0.0),
-            y: mm(0.0),
-            width: mm(50.0),
-            height: mm(30.0),
-            corner_radius: mm(4.0),
-            rotation_deg: 0.0,
-        },
-        1 => SketchEntity::new_circle(mm(0.0), mm(0.0), mm(12.0)),
-        2 => SketchEntity::Slot {
-            mode: SlotLengthMode::CenterToCenter,
-            x: mm(0.0),
-            y: mm(0.0),
-            length: mm(24.0),
-            width: mm(8.0),
-            angle_deg: 0.0,
-        },
-        3 => SketchEntity::RegularPolygon {
-            center_x: mm(0.0),
-            center_y: mm(0.0),
-            sides: 6,
-            sizing: PolygonSizingMode::AcrossFlats,
-            diameter: mm(19.0),
-            corner_radius: mm(0.0),
-            rotation_deg: 0.0,
-        },
-        4 => SketchEntity::PointPattern(PointPatternSpec::BoltCircle {
-            center_x: mm(0.0),
-            center_y: mm(0.0),
-            bolt_circle_diameter: mm(40.0),
-            hole_diameter: mm(6.0),
-            count: 6,
-            start_angle_deg: 0.0,
-        }),
-        _ => SketchEntity::Text(SketchTextSpec::default()),
-    };
-    SketchEntityEntry {
-        id: format!("{p}_{n}"),
-        name: format!("{title} {n}"),
-        sub_layer: sub_layer.map(str::to_string),
-        is_construction: false,
-        entity,
-    }
-}
-
-pub(crate) fn mark_sketch_dependent_ops_dirty(project: &mut ProjectDocument, sketch_id: &str) {
-    for setup in &mut project.setups {
-        for op in &mut setup.operations {
-            let uses = op.selections.iter().any(|s| match s {
-                GeometrySelectionItem::SketchRegion { sketch_id: id, .. }
-                | GeometrySelectionItem::SketchEntity { sketch_id: id, .. }
-                | GeometrySelectionItem::SketchLayerAll { sketch_id: id, .. } => id == sketch_id,
-                _ => false,
-            });
-            if uses {
-                op.mark_dirty();
-            }
-        }
-    }
+    create_default_sketch_entity(n, spec, sub_layer)
 }
 
 fn create_quick_sketch_op(

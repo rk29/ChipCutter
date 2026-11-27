@@ -49,13 +49,7 @@ pub use chip_stock::{
 pub use cutter_profile::{SimToolMesh, build_cutter_assembly_mesh};
 pub use driver::{
     SetupSimulationInput, SetupSimulationResult, SimTimingBreakdown, SimulatedStockPlaybackExt,
-    run_setup_simulation, run_setup_simulation_with_backend_and_progress,
-    run_setup_simulation_with_choice, run_setup_simulation_with_choice_and_progress,
-    run_setup_simulation_with_engine,
-};
-#[cfg(feature = "gpu-compute")]
-pub use driver::{
-    run_setup_simulation_with_gpu_context, run_setup_simulation_with_gpu_context_and_progress,
+    run_setup_simulation, run_setup_simulation_with_backend,
 };
 pub use progress::{SimProgressScope, SimProgressSnapshot, SimProgressStage, SimProgressTracker};
 pub use timeline::{

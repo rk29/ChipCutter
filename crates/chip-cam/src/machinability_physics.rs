@@ -1,14 +1,11 @@
 //! Exact `f64` cutting-mechanics, flute-aware stepped cantilever deflection/stress,
-//! spindle power-curve derating, and concave internal-bore engagement physics (`chip-tools`).
+//! spindle power-curve derating, and concave internal-bore engagement physics (`chip-cam`).
 
-use serde::{Deserialize, Serialize};
-
-use crate::{
-    feeds_speeds::{chipload_from_feed, surface_speed_from_rpm},
-    machine::MachineSpindleSpec,
-    materials::WorkpieceMaterialProfile,
-    model::{CutterGeometry, Tool},
+use chip_tools::{
+    CutterGeometry, MachineSpindleSpec, Tool, WorkpieceMaterialProfile, chipload_from_feed,
+    surface_speed_from_rpm,
 };
+use serde::{Deserialize, Serialize};
 
 /// Solid micro-grain tungsten carbide elastic modulus (`600 GPa = 600,000 N/mm^2`).
 pub const CARBIDE_YOUNGS_MODULUS_MPA: f64 = 600_000.0;
@@ -730,11 +727,10 @@ pub fn compute_engagement_physics(input: &CutPhysicsInput<'_>) -> CutPhysicsMetr
 mod tests {
     use chip_math::{DisplayUnit, approx_eq};
 
-    use crate::{
-        ALUMINUM_6061_T6_ID, ALUMINUM_6063_T5_ID, ProjectMaterialSelection,
-        builtin_carvera_air_machine, builtin_carvera_z1_machine, builtin_milo_1_5_machine,
-        model::{CoolantMode, SpindleDirection, ToolId},
-        resolve_workpiece_material,
+    use chip_tools::{
+        ALUMINUM_6061_T6_ID, ALUMINUM_6063_T5_ID, CoolantMode, ProjectMaterialSelection,
+        SpindleDirection, ToolId, builtin_carvera_air_machine, builtin_carvera_z1_machine,
+        builtin_milo_1_5_machine, resolve_workpiece_material,
     };
 
     use super::*;

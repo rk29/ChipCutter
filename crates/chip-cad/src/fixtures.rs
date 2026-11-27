@@ -2405,7 +2405,7 @@ mod tests {
     fn multi_feature_fixture_supports_same_diameter_coplanar_blind_hole_and_open_chains() {
         use crate::topology::{
             TopologyGraph, analyze_cylindrical_hole, find_coplanar_faces, find_same_diameter_holes,
-            group_coaxial_holes, highest_adjacent_wall_top,
+            group_coaxial_holes,
         };
 
         let step = sample_multi_feature_bracket_step(false).unwrap();
@@ -2499,8 +2499,6 @@ mod tests {
             2,
             "expected Pocket A and Pocket B floors at Z=12mm to match"
         );
-        let wall_top = highest_adjacent_wall_top(&doc, z12_floor, DVec3::Z).unwrap();
-        assert!(approx_eq(wall_top, 20.0, 0.05));
 
         // 4. Verify TopologyGraph open-chain pathfinding along top outer edges across the R10 fillet
         let topo = TopologyGraph::build(&doc);
@@ -2543,99 +2541,6 @@ mod tests {
             )
             .unwrap();
         assert_eq!(tilted_doc.bodies.len(), 1);
-    }
-
-    #[test]
-    fn torture_block_classifies_open_step_raised_island_modeled_chamfer_and_lower_floor() {
-        use crate::topology::{
-            classify_planar_face_loops, extract_modeled_chamfer_strip,
-            highest_adjacent_lower_floor_proj,
-        };
-
-        let step = sample_cam_torture_block_step().unwrap();
-        let doc = MonstertruckKernel
-            .load_step_bytes(
-                "torture_block.step",
-                step.as_bytes(),
-                DEFAULT_TESS_CHORD_TOL_MM,
-            )
-            .unwrap();
-        assert_eq!(doc.bodies.len(), 1);
-
-        // 1. Open-edge step floor at Z = 14.0 mm: 3 open air edges + 1 rising wall edge at X = 76,
-        //    and its 4 Ø6mm through-hole inner loops are downward holes (0 raised islands!)
-        let step_floor = doc
-            .faces
-            .iter()
-            .find(|f| {
-                matches!(
-                    f.surface,
-                    SurfaceKind::Plane { origin_mm, normal }
-                    if normal.z > 0.99 && approx_eq(origin_mm.z, 14.0, 1e-2)
-                )
-            })
-            .unwrap()
-            .id;
-        let step_cls = classify_planar_face_loops(&doc, step_floor, DVec3::Z);
-        assert_eq!(step_cls.open_outer_edges.len(), 3);
-        assert!(step_cls.raised_inner_loops.is_empty());
-
-        // 2. Enclosed island pocket floor at Z = 12.0 mm: 0 open outer edges + 1 raised Ø10mm island boss!
-        let island_pkt_floor = doc
-            .faces
-            .iter()
-            .find(|f| {
-                matches!(
-                    f.surface,
-                    SurfaceKind::Plane { origin_mm, normal }
-                    if normal.z > 0.99 && approx_eq(origin_mm.z, 12.0, 1e-2)
-                )
-            })
-            .unwrap()
-            .id;
-        let pkt_cls = classify_planar_face_loops(&doc, island_pkt_floor, DVec3::Z);
-        assert!(pkt_cls.open_outer_edges.is_empty());
-        assert_eq!(pkt_cls.raised_inner_loops.len(), 1);
-
-        // 3. Modeled 45° x 2.0 mm chamfer strip on the beveled boss (Z = 20..22 mm)
-        let chamfer_face = doc
-            .faces
-            .iter()
-            .find(|f| {
-                matches!(
-                    f.surface,
-                    SurfaceKind::Plane { normal, .. }
-                    if approx_eq(normal.z, std::f64::consts::FRAC_1_SQRT_2, 1e-2)
-                )
-            })
-            .unwrap()
-            .id;
-        let strip = extract_modeled_chamfer_strip(&doc, chamfer_face, DVec3::Z).unwrap();
-        assert!(approx_eq(
-            strip.bevel_half_angle_rad,
-            std::f64::consts::FRAC_PI_4,
-            1e-2
-        ));
-        assert!(approx_eq(strip.axial_drop_mm, 2.0, 2e-2));
-        assert!(approx_eq(strip.radial_width_mm, 2.0, 2e-2));
-        assert!(!strip.upper_edges.is_empty());
-        assert!(!strip.lower_edges.is_empty());
-
-        // 4. Adjacent lower step floor detection below the X = 76, Z = 20 sharp edge
-        let step_top_edge = doc
-            .edges
-            .iter()
-            .find(|e| {
-                approx_eq(e.aabb_mm.min.z, 20.0, 1e-2)
-                    && approx_eq(e.aabb_mm.max.z, 20.0, 1e-2)
-                    && approx_eq(e.aabb_mm.min.x, 76.0, 1e-2)
-                    && approx_eq(e.aabb_mm.max.x, 76.0, 1e-2)
-            })
-            .unwrap()
-            .id;
-        let lower_floor =
-            highest_adjacent_lower_floor_proj(&doc, &[step_top_edge], 20.0, DVec3::Z).unwrap();
-        assert!(approx_eq(lower_floor, 14.0, 2e-2));
     }
 
     #[test]
@@ -2793,26 +2698,11 @@ mod tests {
         assert!(approx_eq(ch_doc.aabb_mm.size().x, 100.0, 1e-2));
         assert!(approx_eq(ch_doc.aabb_mm.size().y, 70.0, 1e-2));
         assert!(approx_eq(ch_doc.aabb_mm.size().z, 18.0, 1e-2));
-        let bevel_face = ch_doc
-            .faces
-            .iter()
-            .find(|f| {
-                matches!(
-                    f.surface,
-                    SurfaceKind::Plane { normal, .. }
-                    if normal.z > 0.65 && normal.z < 0.76
-                )
-            })
-            .unwrap()
-            .id;
-        let strip = crate::extract_modeled_chamfer_strip(&ch_doc, bevel_face, DVec3::Z).unwrap();
-        assert!(approx_eq(
-            strip.bevel_half_angle_rad,
-            std::f64::consts::FRAC_PI_4,
-            1e-2
-        ));
-        assert!(approx_eq(strip.radial_width_mm, 1.5, 2e-2));
-        assert!(approx_eq(strip.axial_drop_mm, 1.5, 2e-2));
+        assert!(ch_doc.faces.iter().any(|f| matches!(
+            f.surface,
+            SurfaceKind::Plane { normal, .. }
+            if normal.z > 0.65 && normal.z < 0.76
+        )));
     }
 
     #[test]
@@ -2872,9 +2762,7 @@ mod tests {
 
     #[test]
     fn sample_threaded_manifold_step_roundtrips_with_pilot_holes_and_proud_boss() {
-        use crate::topology::{
-            classify_planar_face_loops, find_same_diameter_holes, group_coaxial_holes,
-        };
+        use crate::topology::{find_same_diameter_holes, group_coaxial_holes};
 
         let step = sample_threaded_manifold_step().unwrap();
         let doc = MonstertruckKernel
@@ -2978,23 +2866,6 @@ mod tests {
             std::f64::consts::PI * 36.0,
             0.5
         ));
-
-        // Manifold deck at Z = 12 mm has 4 open outer edges + 1 raised Ø12 mm island boss!
-        let deck_z12 = doc
-            .faces
-            .iter()
-            .find(|f| {
-                matches!(
-                    f.surface,
-                    SurfaceKind::Plane { origin_mm, normal }
-                    if normal.z > 0.99 && approx_eq(origin_mm.z, 12.0, 1e-2)
-                )
-            })
-            .unwrap()
-            .id;
-        let deck_cls = classify_planar_face_loops(&doc, deck_z12, DVec3::Z);
-        assert_eq!(deck_cls.open_outer_edges.len(), 4);
-        assert_eq!(deck_cls.raised_inner_loops.len(), 1);
     }
 
     #[test]

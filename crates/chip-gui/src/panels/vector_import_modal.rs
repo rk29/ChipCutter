@@ -1,6 +1,5 @@
 use std::{collections::HashSet, path::PathBuf};
 
-use chip_cam::{BoxAnchor27, StockConfig, WcsOriginMode};
 use chip_math::{DisplayUnit, MM_PER_INCH, ParamLength};
 use chip_project::{ProjectDocument, UndoHistory, portable_model_path};
 use chip_sketch::{
@@ -628,31 +627,12 @@ impl VectorImportModalState {
                             )
                             .clicked()
                         {
-                            let mut fresh = ProjectDocument::new(&self.sketch_name);
-                            fresh.display_units = display_unit;
-                            fresh.setups[0].name = format!(
-                                "Setup 1 — {:.1}mm Sheet (G54)",
-                                self.sheet_thickness_mm
+                            let mut fresh = ProjectDocument::new_pure_2d_sheet(
+                                &self.sketch_name,
+                                self.sheet_thickness_mm,
+                                display_unit,
+                                &global_tools.tools,
                             );
-                            fresh.setups[0].wcs.origin = WcsOriginMode::StockBoxPoint {
-                                anchor: BoxAnchor27::TOP_FRONT_LEFT,
-                            };
-                            fresh.setups[0].stock = StockConfig::RelativeBox {
-                                side_pos_x: ParamLength::from_mm(3.0),
-                                side_neg_x: ParamLength::from_mm(3.0),
-                                side_pos_y: ParamLength::from_mm(3.0),
-                                side_neg_y: ParamLength::from_mm(3.0),
-                                symmetric_xy: true,
-                                top_offset_z: ParamLength::from_mm(0.0),
-                                bottom_offset_z: ParamLength::from_mm(0.0),
-                                sheet_thickness_z: ParamLength::from_mm(
-                                    self.sheet_thickness_mm.max(0.5),
-                                ),
-                                round_increment_mm: None,
-                            };
-                            for t in &global_tools.tools {
-                                fresh.ensure_tool_embedded(t);
-                            }
                             let mut final_sk = sk.clone();
                             final_sk.id = "sketch_1".to_string();
                             final_sk.anchor = SketchAnchor::SetupXy {

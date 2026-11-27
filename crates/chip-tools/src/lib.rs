@@ -6,11 +6,11 @@ pub mod builtin_machines;
 pub mod envelope;
 pub mod feeds_speeds;
 pub mod fusion_import;
-pub mod machinability;
 pub mod machine;
 pub mod materials;
 pub mod model;
 pub mod storage;
+pub mod thread_tables;
 
 pub use builtin::{
     default_starter_tool_library, starter_dovetail_60deg_12mm, starter_lollipop_6mm,
@@ -33,13 +33,6 @@ pub use feeds_speeds::{
 pub use fusion_import::{
     FusionImportError, FusionImportReport, import_fusion_library_bytes, import_fusion_library_path,
 };
-pub use machinability::{
-    CARBIDE_TRS_MPA, CARBIDE_YOUNGS_MODULUS_MPA, CutPhysicsInput, CutPhysicsMetrics,
-    DEFAULT_SPINDLE_EFFICIENCY, DeflectionResult, HSS_TRS_MPA, HSS_YOUNGS_MODULUS_MPA,
-    ToolSubstrate, available_spindle_power_watts, cantilever_deflection_and_stress,
-    cantilever_deflection_and_stress_with_substrate, compute_engagement_physics,
-    effective_core_diameter_mm, engagement_arc_rad,
-};
 pub use machine::{
     DEFAULT_MACHINE_ID, MachineDefinition, MachineKinematicsSpec, MachineRotaryDefaults,
     MachineSpindleSpec, MachineStorageError, MachineToolChangeKind, MachineTravelEnvelope,
@@ -60,11 +53,16 @@ pub use materials::{
     resolve_workpiece_material,
 };
 pub use model::{
-    CoolantMode, CutterGeometry, SpindleDirection, Tool, ToolId, ToolOperationClass,
-    ToolValidationError, is_exact_tool_match, rank_replacement_tools,
+    CoolantMode, CutterGeometry, SpindleDirection, Tool, ToolId, ToolValidationError,
+    is_exact_tool_match, rank_replacement_tools,
 };
 pub use storage::{
     ToolLibrary, ToolStorageError, default_global_tool_library_path, load_or_default_global_library,
+};
+pub use thread_tables::{
+    ISO_60_H_OVER_P, ThreadSpecEntry, ThreadStandardKind, all_thread_specs, find_thread_spec,
+    iso60_minor_diameter_internal_mm, iso60_pitch_diameter_mm, suggest_thread_for_hole_diameter,
+    thread_specs_for_standard,
 };
 
 #[cfg(test)]
@@ -707,16 +705,6 @@ mod tests {
             presets: Vec::new(),
         };
         valid_tm.validate().unwrap();
-        assert!(
-            valid_tm
-                .geometry
-                .supports_operation(ToolOperationClass::ThreadMill)
-        );
-        assert!(
-            !valid_tm
-                .geometry
-                .supports_operation(ToolOperationClass::Pocket2D)
-        );
 
         // Deterministic TOML roundtrip with `type = "thread_mill"`
         let lib = ToolLibrary {
@@ -891,57 +879,6 @@ mod tests {
         let lolli = &undercuts[0];
         let slot = &undercuts[1];
         let dove = &undercuts[2];
-
-        assert!(
-            lolli
-                .geometry
-                .supports_operation(ToolOperationClass::Deburr3D)
-        );
-        assert!(
-            lolli
-                .geometry
-                .supports_operation(ToolOperationClass::Undercut3D)
-        );
-        assert!(
-            !lolli
-                .geometry
-                .supports_operation(ToolOperationClass::Dovetail)
-        );
-        assert!(
-            slot.geometry
-                .supports_operation(ToolOperationClass::SlotUndercut)
-        );
-        assert!(
-            !slot
-                .geometry
-                .supports_operation(ToolOperationClass::Undercut3D)
-        );
-        assert!(
-            dove.geometry
-                .supports_operation(ToolOperationClass::Dovetail)
-        );
-        assert!(
-            !dove
-                .geometry
-                .supports_operation(ToolOperationClass::SlotUndercut)
-        );
-
-        // Flat endmill also supports SlotUndercut; Ball & Chamfer support Deburr3D
-        assert!(
-            starter_default.tools[0]
-                .geometry
-                .supports_operation(ToolOperationClass::SlotUndercut)
-        );
-        assert!(
-            starter_default.tools[3]
-                .geometry
-                .supports_operation(ToolOperationClass::Deburr3D)
-        );
-        assert!(
-            starter_default.tools[4]
-                .geometry
-                .supports_operation(ToolOperationClass::Deburr3D)
-        );
 
         // Deterministic TOML roundtrip with exact serde tag names
         let lib = ToolLibrary {

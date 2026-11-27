@@ -2,12 +2,17 @@ use std::{borrow::Cow, path::Path};
 
 use chip_cad::CadDocument;
 use chip_cam::{
-    ExtractedFeature25D, FixtureKind, MachinabilitySeverity, OperationRotaryMode, ResolvedHeights,
-    RestMachiningMode, RotaryAxialBoundaryMode, RotaryAxisKind, SetupMachinabilityReport,
-    analyze_setup_machinability, build_indexed_virtual_setup, extract_rotary_selection_features,
-    extract_selection_features_with_sketches, resolve_fixture_body, rotary_chuck_guard_u,
+    CamValidationIssue, CamValidationSeverity, FixtureKind, MachinabilitySeverity,
+    OperationMachinabilityContext, OperationMachinabilityReport, OperationRotaryMode,
+    ResolvedHeights, ResolvedSetup, RestMachiningMode, Setup, SetupMachinabilityReport,
+    analyze_operation_machinability, analyze_setup_machinability, build_indexed_virtual_setup,
+    extract_rotary_selection_features, extract_selection_features_with_sketches,
+    resolve_fixture_body, validate_operation_extracted_geometry,
+    validate_operation_strategy_and_rotary, validate_operation_undercut_depth,
 };
-use chip_tools::{MachineDefinition, builtin_generic_machine, resolve_machine_definition};
+use chip_tools::{
+    MachineDefinition, Tool, ToolLibrary, builtin_generic_machine, resolve_machine_definition,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::document::{ModelRole, ProjectDocument, compute_sha256_hex, resolve_model_path};
@@ -638,8 +643,9 @@ pub fn validate_project_with_machine(
                 if let Some(ctid) = op.clearing_tool_id() {
                     match project.tool(ctid) {
                         Some(ctool) => {
-                            if !ctool.geometry.supports_operation(
-                                chip_tools::ToolOperationClass::VCarveFlatClearance,
+                            if !chip_cam::cutter_supports_operation(
+                                &ctool.geometry,
+                                chip_cam::ToolOperationClass::VCarveFlatClearance,
                             ) {
                                 report.push_error(
                                     &op_scope,
@@ -671,457 +677,30 @@ pub fn validate_project_with_machine(
                     continue;
                 }
 
-                // Strategy-specific validation for `OperationKind::Deburr3D`
-                if op.kind == chip_cam::OperationKind::Deburr3D
-                    && let chip_cam::StrategyParams::Deburr3D(mut p) = op.resolved_strategy()
-                {
-                    p.reevaluate(&eval_ctx);
-                    if !p.chamfer_width.value_mm.is_finite() || p.chamfer_width.value_mm <= 1e-4 {
-                        report.push_error(
-                            &op_scope,
-                            format!(
-                                "3D Deburr chamfer width ({:.3} mm) must be finite and > 0.",
-                                p.chamfer_width.value_mm
-                            ),
-                        );
-                    }
-                    if !p.tip_offset.value_mm.is_finite() || p.tip_offset.value_mm < 0.0 {
-                        report.push_error(
-                            &op_scope,
-                            format!(
-                                "3D Deburr tip offset ({:.3} mm) must be finite and >= 0.",
-                                p.tip_offset.value_mm
-                            ),
-                        );
-                    }
-                    if !p.wall_clearance.value_mm.is_finite() || p.wall_clearance.value_mm < 0.0 {
-                        report.push_error(
-                            &op_scope,
-                            format!(
-                                "3D Deburr wall clearance ({:.3} mm) must be finite and >= 0.",
-                                p.wall_clearance.value_mm
-                            ),
-                        );
-                    }
-                    if !p.edge_extension.value_mm.is_finite() || p.edge_extension.value_mm < 0.0 {
-                        report.push_error(
-                            &op_scope,
-                            format!(
-                                "3D Deburr edge extension ({:.3} mm) must be finite and >= 0.",
-                                p.edge_extension.value_mm
-                            ),
-                        );
-                    }
-                    if !p.chord_tolerance_mm.is_finite() || p.chord_tolerance_mm <= 1e-5 {
-                        report.push_error(
-                            &op_scope,
-                            format!(
-                                "3D Deburr chord tolerance ({:.4} mm) must be finite and > 0.",
-                                p.chord_tolerance_mm
-                            ),
-                        );
-                    }
-                    if !p.min_dihedral_angle_deg.is_finite()
-                        || p.min_dihedral_angle_deg <= 0.0
-                        || p.min_dihedral_angle_deg >= 179.0
-                    {
-                        report.push_error(
-                            &op_scope,
-                            format!(
-                                "3D Deburr min edge angle ({:.1}°) must be within (0°, 179°).",
-                                p.min_dihedral_angle_deg
-                            ),
-                        );
-                    }
-                    if p.multiple_passes == 0 {
-                        report.push_error(&op_scope, "3D Deburr passes count must be >= 1.");
-                    }
-                    if let Some(tool) = op.tool_id.as_ref().and_then(|tid| project.tool(tid)) {
-                        if p.allow_underside_back_chamfer
-                            && !matches!(
-                                tool.geometry,
-                                chip_tools::CutterGeometry::LollipopEndmill { .. }
-                            )
-                        {
-                            report.push_error(
-                                &op_scope,
-                                format!(
-                                    "Underside back-chamfering requires a Lollipop Endmill cutter (assigned: {}).",
-                                    tool.geometry.kind_label()
-                                ),
-                            );
-                        }
-                        if let chip_tools::CutterGeometry::ChamferMill {
-                            diameter_mm,
-                            tip_diameter_mm,
-                            included_angle_deg,
-                            ..
-                        } = tool.geometry
-                        {
-                            let half_a = (0.5 * included_angle_deg).clamp(5.0, 85.0).to_radians();
-                            let max_r = 0.5 * (diameter_mm - tip_diameter_mm).max(0.0);
-                            let req_r = p.tip_offset.value_mm.max(0.0) * half_a.tan()
-                                + p.chamfer_width.value_mm.max(0.0);
-                            if req_r > max_r + 1e-3 {
-                                report.push_error(
-                                    &op_scope,
-                                    format!(
-                                        "Chamfer width + tip offset radial reach ({req_r:.2} mm) exceeds chamfer mill flute span ({max_r:.2} mm)."
-                                    ),
-                                );
-                            }
-                        }
-                    }
-                }
-
-                // Strategy-specific validation for Milestone 66 Undercut operations
-                if op.kind == chip_cam::OperationKind::SlotUndercut
-                    && let chip_cam::StrategyParams::SlotUndercut(mut p) = op.resolved_strategy()
-                {
-                    p.reevaluate(&eval_ctx);
-                    if !p.slot_width.value_mm.is_finite() || p.slot_width.value_mm <= 1e-4 {
-                        report.push_error(
-                            &op_scope,
-                            format!(
-                                "Slot/T-Slot width ({:.3} mm) must be finite and > 0.",
-                                p.slot_width.value_mm
-                            ),
-                        );
-                    }
-                    if !p.throat_width.value_mm.is_finite() || p.throat_width.value_mm <= 1e-4 {
-                        report.push_error(
-                            &op_scope,
-                            format!(
-                                "Slot/T-Slot throat width ({:.3} mm) must be finite and > 0.",
-                                p.throat_width.value_mm
-                            ),
-                        );
-                    }
-                    if !p.slot_height.value_mm.is_finite() || p.slot_height.value_mm <= 1e-4 {
-                        report.push_error(
-                            &op_scope,
-                            format!(
-                                "Slot/T-Slot height ({:.3} mm) must be finite and > 0.",
-                                p.slot_height.value_mm
-                            ),
-                        );
-                    }
-                    if !p.radial_stepover.value_mm.is_finite() || p.radial_stepover.value_mm <= 1e-4
-                    {
-                        report.push_error(
-                            &op_scope,
-                            format!(
-                                "Slot/T-Slot radial stepover ({:.3} mm) must be finite and > 0.",
-                                p.radial_stepover.value_mm
-                            ),
-                        );
-                    }
-                    if !p.axial_stepdown.value_mm.is_finite() || p.axial_stepdown.value_mm <= 1e-4 {
-                        report.push_error(
-                            &op_scope,
-                            format!(
-                                "Slot/T-Slot axial stepdown ({:.3} mm) must be finite and > 0.",
-                                p.axial_stepdown.value_mm
-                            ),
-                        );
-                    }
-                    if let Some(tool) = op.tool_id.as_ref().and_then(|tid| project.tool(tid)) {
-                        let needs_undercut = p.mode == chip_cam::SlotUndercutMode::TSlot
-                            || p.throat_width.value_mm < p.slot_width.value_mm - 1e-4;
-                        match tool.geometry {
-                            chip_tools::CutterGeometry::SlotMill {
-                                diameter_mm,
-                                cutting_thickness_mm,
-                                neck_diameter_mm,
-                                ..
-                            } => {
-                                if diameter_mm > p.slot_width.value_mm + 1e-4 {
-                                    report.push_error(
-                                        &op_scope,
-                                        format!(
-                                            "Slot mill diameter (Ø{diameter_mm:.3} mm) exceeds slot width ({:.3} mm).",
-                                            p.slot_width.value_mm
-                                        ),
-                                    );
+                let assigned_tool = op.tool_id.as_ref().and_then(|tid| project.tool(tid));
+                let push_cam_issues =
+                    |report: &mut ProjectValidationReport, issues: Vec<CamValidationIssue>| {
+                        for issue in issues {
+                            match issue.severity {
+                                CamValidationSeverity::Error => {
+                                    report.push_error(&op_scope, issue.message);
                                 }
-                                if cutting_thickness_mm > p.slot_height.value_mm + 1e-4 {
-                                    report.push_error(
-                                        &op_scope,
-                                        format!(
-                                            "Slot mill cutting thickness ({cutting_thickness_mm:.3} mm) exceeds slot height ({:.3} mm).",
-                                            p.slot_height.value_mm
-                                        ),
-                                    );
-                                }
-                                if p.mode != chip_cam::SlotUndercutMode::SideGroove
-                                    && needs_undercut
-                                {
-                                    if neck_diameter_mm >= p.throat_width.value_mm - 1e-4 {
-                                        report.push_error(
-                                            &op_scope,
-                                            format!(
-                                                "Slot mill neck diameter (Ø{neck_diameter_mm:.3} mm) must be strictly smaller than throat width ({:.3} mm).",
-                                                p.throat_width.value_mm
-                                            ),
-                                        );
-                                    } else {
-                                        let max_lat = (0.5 * p.slot_width.value_mm
-                                            - 0.5 * diameter_mm)
-                                            .max(0.0);
-                                        if max_lat + 0.5 * neck_diameter_mm
-                                            > 0.5 * p.throat_width.value_mm + 1e-4
-                                        {
-                                            report.push_error(
-                                                &op_scope,
-                                                format!(
-                                                    "Slot mill relieved neck collides with throat wall at full lateral offset ({max_lat:.3} mm + neck radius {:.3} mm > half-throat {:.3} mm).",
-                                                    0.5 * neck_diameter_mm,
-                                                    0.5 * p.throat_width.value_mm
-                                                ),
-                                            );
-                                        }
-                                    }
+                                CamValidationSeverity::Warning => {
+                                    report.push_warning(&op_scope, issue.message);
                                 }
                             }
-                            chip_tools::CutterGeometry::FlatEndmill { diameter_mm, .. } => {
-                                if needs_undercut {
-                                    report.push_error(
-                                        &op_scope,
-                                        "T-Slot undercut requires a relieved-neck Slot / T-Slot Mill cutter (assigned: Flat Endmill).",
-                                    );
-                                } else if diameter_mm > p.slot_width.value_mm + 1e-4 {
-                                    report.push_error(
-                                        &op_scope,
-                                        format!(
-                                            "Flat Endmill diameter (Ø{diameter_mm:.3} mm) exceeds keyway width ({:.3} mm).",
-                                            p.slot_width.value_mm
-                                        ),
-                                    );
-                                }
-                            }
-                            _ => {}
                         }
-                    }
-                }
+                    };
 
-                if op.kind == chip_cam::OperationKind::Dovetail
-                    && let chip_cam::StrategyParams::Dovetail(mut p) = op.resolved_strategy()
-                {
-                    p.reevaluate(&eval_ctx);
-                    if !p.side_angle_deg.is_finite()
-                        || p.side_angle_deg <= 15.0
-                        || p.side_angle_deg >= 85.0
-                    {
-                        report.push_error(
-                            &op_scope,
-                            format!(
-                                "Dovetail side angle ({:.1}°) must be within (15°, 85°).",
-                                p.side_angle_deg
-                            ),
-                        );
-                    }
-                    if !p.dovetail_depth.value_mm.is_finite() || p.dovetail_depth.value_mm <= 1e-4 {
-                        report.push_error(
-                            &op_scope,
-                            format!(
-                                "Dovetail depth ({:.3} mm) must be finite and > 0.",
-                                p.dovetail_depth.value_mm
-                            ),
-                        );
-                    }
-                    if !p.radial_stepover.value_mm.is_finite() || p.radial_stepover.value_mm <= 1e-4
-                    {
-                        report.push_error(
-                            &op_scope,
-                            format!(
-                                "Dovetail radial stepover ({:.3} mm) must be finite and > 0.",
-                                p.radial_stepover.value_mm
-                            ),
-                        );
-                    }
-                    if let Some(tool) = op.tool_id.as_ref().and_then(|tid| project.tool(tid))
-                        && let chip_tools::CutterGeometry::DovetailCutter {
-                            diameter_mm,
-                            side_angle_deg,
-                            cutting_height_mm,
-                            corner_radius_mm,
-                            neck_diameter_mm,
-                            ..
-                        } = tool.geometry
-                    {
-                        if (side_angle_deg - p.side_angle_deg).abs() > 0.5 {
-                            report.push_error(
-                                &op_scope,
-                                format!(
-                                    "Dovetail cutter angle ({side_angle_deg:.2}°) mismatches target dovetail angle ({:.2}°, max tolerance ±0.5°).",
-                                    p.side_angle_deg
-                                ),
-                            );
-                        }
-                        if cutting_height_mm + 1e-4 < p.dovetail_depth.value_mm {
-                            report.push_error(
-                                &op_scope,
-                                format!(
-                                    "Dovetail cutter cutting height ({cutting_height_mm:.3} mm) is shallower than dovetail depth ({:.3} mm).",
-                                    p.dovetail_depth.value_mm
-                                ),
-                            );
-                        }
-                        if p.mode == chip_cam::DovetailMode::InternalSlot {
-                            let throat = p.top_throat_width.value_mm;
-                            if neck_diameter_mm >= throat - 1e-4 {
-                                report.push_error(
-                                    &op_scope,
-                                    format!(
-                                        "Dovetail cutter neck diameter (Ø{neck_diameter_mm:.3} mm) must be strictly smaller than top throat width ({throat:.3} mm)."
-                                    ),
-                                );
-                            }
-                            let top_d = chip_tools::CutterGeometry::dovetail_top_diameter_mm(
-                                diameter_mm,
-                                side_angle_deg,
-                                p.dovetail_depth.value_mm.max(0.0),
-                                corner_radius_mm,
-                            );
-                            if top_d > throat + 1e-4 {
-                                report.push_error(
-                                    &op_scope,
-                                    format!(
-                                        "Dovetail cutter upper flank diameter (Ø{top_d:.3} mm) exceeds top throat width ({throat:.3} mm)."
-                                    ),
-                                );
-                            }
-                        }
-                    }
-                }
-
-                if op.kind == chip_cam::OperationKind::Undercut3D
-                    && let chip_cam::StrategyParams::Undercut3D(mut p) = op.resolved_strategy()
-                {
-                    p.reevaluate(&eval_ctx);
-                    if !p.use_cusp_height
-                        && (!p.z_stepdown.value_mm.is_finite() || p.z_stepdown.value_mm <= 1e-4)
-                    {
-                        report.push_error(
-                            &op_scope,
-                            format!(
-                                "3D Undercut Z stepdown ({:.3} mm) must be finite and > 0.",
-                                p.z_stepdown.value_mm
-                            ),
-                        );
-                    }
-                    if p.use_cusp_height
-                        && (!p.target_cusp.value_mm.is_finite() || p.target_cusp.value_mm <= 1e-5)
-                    {
-                        report.push_error(
-                            &op_scope,
-                            format!(
-                                "3D Undercut target cusp ({:.4} mm) must be finite and > 0.",
-                                p.target_cusp.value_mm
-                            ),
-                        );
-                    }
-                    if !p.min_overhang_angle_deg.is_finite()
-                        || p.min_overhang_angle_deg <= 0.0
-                        || p.min_overhang_angle_deg >= 89.0
-                    {
-                        report.push_error(
-                            &op_scope,
-                            format!(
-                                "3D Undercut min overhang angle ({:.1}°) must be within (0°, 89°).",
-                                p.min_overhang_angle_deg
-                            ),
-                        );
-                    }
-                    if !p.neck_clearance.value_mm.is_finite() || p.neck_clearance.value_mm < 0.0 {
-                        report.push_error(
-                            &op_scope,
-                            format!(
-                                "3D Undercut neck clearance ({:.3} mm) must be finite and >= 0.",
-                                p.neck_clearance.value_mm
-                            ),
-                        );
-                    }
-                    if !p.lead_out_distance.value_mm.is_finite()
-                        || p.lead_out_distance.value_mm < 0.0
-                    {
-                        report.push_error(
-                            &op_scope,
-                            format!(
-                                "3D Undercut lead-out distance ({:.3} mm) must be finite and >= 0.",
-                                p.lead_out_distance.value_mm
-                            ),
-                        );
-                    }
-                }
-
-                if op.kind.is_rotary_native() && resolved_setup.rotary.is_none() {
-                    report.push_error(
-                        &op_scope,
-                        "4th-Axis Rotary operations require 4th-Axis Rotary to be enabled on this Setup.",
-                    );
+                let (strategy_issues, abort_op) = validate_operation_strategy_and_rotary(
+                    op,
+                    assigned_tool,
+                    &resolved_setup,
+                    &eval_ctx,
+                );
+                push_cam_issues(&mut report, strategy_issues);
+                if abort_op {
                     continue;
-                }
-                if op.kind == chip_cam::OperationKind::Rotary4AxisSim
-                    && let Some(rot) = resolved_setup.rotary
-                    && rot.mode != chip_cam::RotaryDriveMode::Simultaneous4Axis
-                {
-                    report.push_error(
-                        &op_scope,
-                        "Simultaneous 4-Axis Milling requires Setup Rotary Mode 'Simultaneous 4-Axis (X+Y+Z+Rotary)'.",
-                    );
-                    continue;
-                }
-                if !op.rotary.is_none() && resolved_setup.rotary.is_none() {
-                    report.push_error(
-                        &op_scope,
-                        "Operation 4th-axis indexing/wrapping requires 4th-Axis Rotary to be enabled on this Setup.",
-                    );
-                    continue;
-                }
-
-                // Strategy-specific axial/angular boundary validation for native 4th-axis rotary ops
-                if op.kind.is_rotary_native()
-                    && let Some(mut ab) = op.rotary_axial_boundary().cloned()
-                {
-                    ab.reevaluate(&eval_ctx);
-                    if ab.axial_boundary_mode == RotaryAxialBoundaryMode::SelectedGeometry
-                        && op.selections.is_empty()
-                    {
-                        report.push_warning(
-                            &op_scope,
-                            "Rotary axial boundary mode 'Selected Geometry' has no selections; generation will fall back to Model Bounds.",
-                        );
-                    }
-                    if ab.axial_boundary_mode == RotaryAxialBoundaryMode::ExplicitRange {
-                        let u_start = ab.explicit_u_start.value_mm;
-                        let u_end = ab.explicit_u_end.value_mm;
-                        if !u_start.is_finite() || !u_end.is_finite() {
-                            report.push_error(
-                                &op_scope,
-                                "Rotary explicit axial range bounds must be finite.",
-                            );
-                        } else if u_start >= u_end - 1e-6 {
-                            report.push_warning(
-                                &op_scope,
-                                format!(
-                                    "Rotary explicit axial range start ({u_start:.2} mm) is >= end ({u_end:.2} mm)."
-                                ),
-                            );
-                        }
-                    }
-                    if !ab.start_angle_deg.is_finite()
-                        || !ab.end_angle_deg.is_finite()
-                        || ab.end_angle_deg <= ab.start_angle_deg + 1e-3
-                    {
-                        report.push_error(
-                            &op_scope,
-                            format!(
-                                "Rotary angular span [{:.1}°, {:.1}°] must be finite with end_angle_deg > start_angle_deg.",
-                                ab.start_angle_deg, ab.end_angle_deg
-                            ),
-                        );
-                    }
                 }
 
                 // Validate selections & Z-height hierarchy (in rotated virtual Setup for Indexed 3+1)
@@ -1154,134 +733,14 @@ pub fn validate_project_with_machine(
                     }
                 };
 
-                if let Some(boundary) = op.resolved_strategy().machining_boundary()
-                    && boundary.boundary_mode == chip_cam::MachiningBoundaryMode::SelectedRegions
-                {
-                    let has_2d_region = summary.features.iter().any(|feat| {
-                        matches!(
-                            feat,
-                            chip_cam::ExtractedFeature25D::PlanarFace { .. }
-                                | chip_cam::ExtractedFeature25D::Contour {
-                                    polyline_wcs: chip_math::ArcPolyline2D { closed: true, .. },
-                                    ..
-                                }
-                        )
-                    });
-                    if !has_2d_region {
-                        report.push_warning(
-                            &op_scope,
-                            "3D Machining Boundary is set to 'Selected 2D Contours' but no closed 2D contours or planar faces are selected; falling back to Model Silhouette.",
-                        );
-                    }
-                }
-
-                // Warn early if a `WrapCylinder` operation intrudes into the rotary chuck keep-out
-                // zone or wraps beyond 360° around the cylinder circumference.
-                if let (
-                    OperationRotaryMode::WrapCylinder {
-                        wrap_radius,
-                        axial_offset,
-                        ..
-                    },
-                    Some(rot),
-                ) = (&op.rotary, resolved_setup.rotary)
-                    && rot.axis != RotaryAxisKind::ZAxis
-                {
-                    let mut wr = wrap_radius.clone();
-                    let _ = wr.reevaluate(&eval_ctx);
-                    let mut ao = axial_offset.clone();
-                    let _ = ao.reevaluate(&eval_ctx);
-                    let r_wrap = wr.value_mm.max(1.0);
-                    let ax_off = ao.value_mm;
-
-                    let mut u_min = f64::INFINITY;
-                    let mut u_max = f64::NEG_INFINITY;
-                    let mut s_min = f64::INFINITY;
-                    let mut s_max = f64::NEG_INFINITY;
-                    let mut extend_aabb = |b: chip_math::Aabb2| {
-                        if b.is_valid() {
-                            match rot.axis {
-                                RotaryAxisKind::XAxis | RotaryAxisKind::ZAxis => {
-                                    u_min = u_min.min(b.min.x + ax_off);
-                                    u_max = u_max.max(b.max.x + ax_off);
-                                    s_min = s_min.min(b.min.y);
-                                    s_max = s_max.max(b.max.y);
-                                }
-                                RotaryAxisKind::YAxis => {
-                                    u_min = u_min.min(b.min.y + ax_off);
-                                    u_max = u_max.max(b.max.y + ax_off);
-                                    s_min = s_min.min(-b.max.x);
-                                    s_max = s_max.max(-b.min.x);
-                                }
-                            }
-                        }
-                    };
-                    for feat in &summary.features {
-                        match feat {
-                            ExtractedFeature25D::PlanarFace {
-                                outer_boundary_wcs, ..
-                            } => extend_aabb(outer_boundary_wcs.exact_aabb()),
-                            ExtractedFeature25D::Contour { polyline_wcs, .. } => {
-                                extend_aabb(polyline_wcs.exact_aabb());
-                            }
-                            ExtractedFeature25D::ModeledChamfer {
-                                upper_polyline_wcs,
-                                lower_polyline_wcs,
-                                ..
-                            } => {
-                                extend_aabb(upper_polyline_wcs.exact_aabb());
-                                extend_aabb(lower_polyline_wcs.exact_aabb());
-                            }
-                            ExtractedFeature25D::CylindricalHole {
-                                center_wcs,
-                                diameter_mm,
-                                ..
-                            } => {
-                                let r = 0.5 * diameter_mm.abs();
-                                extend_aabb(chip_math::Aabb2::from_points([
-                                    chip_math::DVec2::new(center_wcs.x - r, center_wcs.y - r),
-                                    chip_math::DVec2::new(center_wcs.x + r, center_wcs.y + r),
-                                ]));
-                            }
-                        }
-                    }
-
-                    if u_min.is_finite()
-                        && u_max.is_finite()
-                        && (rot.chuck_u_max - rot.chuck_u_min).abs() > 1e-6
-                    {
-                        let tool_d = op
-                            .tool_id
-                            .as_ref()
-                            .and_then(|tid| project.tool(tid))
-                            .map_or(0.1, |t| t.geometry.cutting_diameter_mm());
-                        let guard_u = rotary_chuck_guard_u(&rot, tool_d);
-                        let intrudes = if rot.chuck_end_positive {
-                            u_max > guard_u + 1e-4
-                        } else {
-                            u_min < guard_u - 1e-4
-                        };
-                        if intrudes {
-                            report.push_warning(
-                                &op_scope,
-                                format!(
-                                    "Wrapped 2D operation axial extent [{u_min:.2}, {u_max:.2}] mm intrudes into the rotary chuck keep-out zone (limit {guard_u:.2} mm)."
-                                ),
-                            );
-                        }
-                    }
-                    if s_min.is_finite() && s_max.is_finite() {
-                        let span_deg = ((s_max - s_min) / r_wrap).to_degrees();
-                        if span_deg > 360.0 + 1e-3 {
-                            report.push_warning(
-                                &op_scope,
-                                format!(
-                                    "Wrapped 2D geometry circumferential span ({span_deg:.1}°) exceeds 360° at wrap radius {r_wrap:.2} mm."
-                                ),
-                            );
-                        }
-                    }
-                }
+                let geom_issues = validate_operation_extracted_geometry(
+                    op,
+                    assigned_tool,
+                    &resolved_setup,
+                    &summary,
+                    &eval_ctx,
+                );
+                push_cam_issues(&mut report, geom_issues);
 
                 let (inf_top_z, inf_bot_z) =
                     if op.kind.is_3d_surface() && summary.features.is_empty() {
@@ -1314,39 +773,9 @@ pub fn validate_project_with_machine(
                         report.push_error(&op_scope, err.to_string());
                     }
                     Ok(rh) => {
-                        let total_depth = (rh.top_z_wcs
-                            - (rh.bottom_z_wcs + op.passes.stock_to_leave_axial.value_mm.max(0.0)))
-                        .max(0.0);
-                        if let Some(tool) = op.tool_id.as_ref().and_then(|tid| project.tool(tid)) {
-                            match (op.kind, &tool.geometry) {
-                                (
-                                    chip_cam::OperationKind::SlotUndercut,
-                                    chip_tools::CutterGeometry::SlotMill { neck_length_mm, .. },
-                                ) if *neck_length_mm + 1e-4 < total_depth => {
-                                    report.push_error(
-                                        &op_scope,
-                                        format!(
-                                            "Slot mill relieved neck length ({neck_length_mm:.3} mm) is shorter than total slot depth ({total_depth:.3} mm)."
-                                        ),
-                                    );
-                                }
-                                (
-                                    chip_cam::OperationKind::Dovetail,
-                                    chip_tools::CutterGeometry::DovetailCutter {
-                                        neck_length_mm,
-                                        ..
-                                    },
-                                ) if *neck_length_mm + 1e-4 < total_depth => {
-                                    report.push_error(
-                                        &op_scope,
-                                        format!(
-                                            "Dovetail cutter relieved neck length ({neck_length_mm:.3} mm) is shorter than total cut depth ({total_depth:.3} mm)."
-                                        ),
-                                    );
-                                }
-                                _ => {}
-                            }
-                        }
+                        let depth_issues =
+                            validate_operation_undercut_depth(op, assigned_tool, &rh);
+                        push_cam_issues(&mut report, depth_issues);
                     }
                 }
             }
@@ -1419,6 +848,159 @@ pub fn analyze_project_machinability(
         info_count,
         setups,
     }
+}
+
+/// Fast in-memory machine travel envelope, rotary capacity, spindle RPM, and XY/Z feedrate limit
+/// check for a single [`Setup`] without touching disk or running full B-Rep extraction.
+pub fn validate_setup_machine_limits(
+    project: &ProjectDocument,
+    setup: &Setup,
+    machine: &MachineDefinition,
+    loaded_cad: Option<&CadDocument>,
+) -> Vec<String> {
+    let mut warnings = Vec::new();
+    let empty_cad = CadDocument::empty();
+    let cad = loaded_cad.unwrap_or(&empty_cad);
+    if let Ok(resolved) = setup.resolve_with_sketches(cad, &project.sketches, project.display_units)
+    {
+        let sb = resolved.stock.aabb_wcs();
+        let sx = sb.max.x - sb.min.x;
+        let sy = sb.max.y - sb.min.y;
+        let sz = sb.max.z - sb.min.z;
+        let tr = &machine.travel_mm;
+        if sx > tr.x_mm + 0.01 || sy > tr.y_mm + 0.01 || sz > tr.z_mm + 0.01 {
+            warnings.push(format!(
+                "Stock ({sx:.1} × {sy:.1} × {sz:.1} mm) exceeds '{}' travel envelope ({:.0} × {:.0} × {:.0} mm).",
+                machine.name, tr.x_mm, tr.y_mm, tr.z_mm
+            ));
+        }
+        if let Some(rot) = resolved.rotary {
+            match &machine.rotary {
+                None => warnings.push(format!(
+                    "4th-axis rotary is active ({}-Axis), but '{}' is 3-axis only.",
+                    rot.axis_letter, machine.name
+                )),
+                Some(mrot) => {
+                    let dia = rot.stock_outer_radius_mm * 2.0;
+                    let len = (rot.stock_u_max - rot.stock_u_min).abs();
+                    if dia > mrot.max_stock_diameter_mm + 0.01
+                        || len > mrot.max_stock_length_mm + 0.01
+                    {
+                        warnings.push(format!(
+                            "Rotary stock (Ø{dia:.1} × {len:.1} mm) exceeds '{}' capacity (Ø{:.1} × {:.1} mm).",
+                            machine.name, mrot.max_stock_diameter_mm, mrot.max_stock_length_mm
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    let sp = &machine.spindle;
+    let kin = &machine.kinematics;
+    for op in &setup.operations {
+        if op.suppressed {
+            continue;
+        }
+        let Some(tid) = &op.tool_id else {
+            continue;
+        };
+        let Some(tool) = project.tool(tid) else {
+            continue;
+        };
+        let eff = op.effective_cutting_params(tool);
+        if eff.spindle_rpm < sp.min_rpm - 0.5 || eff.spindle_rpm > sp.max_rpm + 0.5 {
+            warnings.push(format!(
+                "{}: {:.0} RPM outside '{}' range ({:.0}–{:.0} RPM).",
+                op.name, eff.spindle_rpm, machine.name, sp.min_rpm, sp.max_rpm
+            ));
+        }
+        if eff.cutting_feed_mm_min > kin.max_cut_feed_xy_mm_min + 0.5 {
+            warnings.push(format!(
+                "{}: feed {:.0} mm/min exceeds '{}' XY limit ({:.0} mm/min).",
+                op.name, eff.cutting_feed_mm_min, machine.name, kin.max_cut_feed_xy_mm_min
+            ));
+        }
+        if eff.plunge_feed_mm_min > kin.max_cut_feed_z_mm_min + 0.5 {
+            warnings.push(format!(
+                "{}: plunge {:.0} mm/min exceeds '{}' Z limit ({:.0} mm/min).",
+                op.name, eff.plunge_feed_mm_min, machine.name, kin.max_cut_feed_z_mm_min
+            ));
+        }
+    }
+    warnings
+}
+
+/// Evaluates cutting-mechanics telemetry and advisory findings for a single operation in `project`.
+pub fn evaluate_operation_machinability(
+    project: &ProjectDocument,
+    setup_idx: usize,
+    op_idx: usize,
+    global_tools: &ToolLibrary,
+    active_machine: Option<&MachineDefinition>,
+    resolved_setup: Option<&ResolvedSetup>,
+    cad_doc: Option<&CadDocument>,
+) -> Option<OperationMachinabilityReport> {
+    let setup = project.setups.get(setup_idx)?;
+    let op = setup.operations.get(op_idx)?;
+    let tool = op
+        .tool_id
+        .as_ref()
+        .and_then(|tid| project.tool(tid).or_else(|| global_tools.tool(tid)));
+    let material = project.effective_workpiece_material();
+    let fallback_machine;
+    let machine = match active_machine {
+        Some(m) => m,
+        None => {
+            fallback_machine = builtin_generic_machine();
+            &fallback_machine
+        }
+    };
+    let ctx = OperationMachinabilityContext {
+        setup_id: &setup.id,
+        setup_name: &setup.name,
+        resolved_setup,
+        cad_doc,
+        sketches: &project.sketches,
+        material: &material,
+        machine,
+        display_unit: project.display_units,
+    };
+    Some(analyze_operation_machinability(op, tool, &ctx))
+}
+
+/// Evaluates cutting-mechanics telemetry across all operations in `project.setups[setup_idx]`.
+pub fn evaluate_setup_machinability(
+    project: &ProjectDocument,
+    setup_idx: usize,
+    global_tools: &ToolLibrary,
+    active_machine: Option<&MachineDefinition>,
+    cad_doc: Option<&CadDocument>,
+) -> Option<SetupMachinabilityReport> {
+    let setup = project.setups.get(setup_idx)?;
+    let mut merged_tools: Vec<Tool> = project.tools.clone();
+    for gt in &global_tools.tools {
+        if !merged_tools.iter().any(|t| t.id == gt.id) {
+            merged_tools.push(gt.clone());
+        }
+    }
+    let material = project.effective_workpiece_material();
+    let fallback_machine;
+    let machine = match active_machine {
+        Some(m) => m,
+        None => {
+            fallback_machine = builtin_generic_machine();
+            &fallback_machine
+        }
+    };
+    Some(analyze_setup_machinability(
+        setup,
+        &merged_tools,
+        &material,
+        machine,
+        cad_doc,
+        &project.sketches,
+        project.display_units,
+    ))
 }
 
 #[cfg(test)]

@@ -2,19 +2,16 @@
 //! sections (`Setups`, `Operations`, `Sketches`, `Sketch Entities`, `Keep-Out Regions`, `Fixtures`),
 //! enforcing strict parent-container boundaries and preserving selection/focus & Rest/Carryover dirty state.
 
-use chip_cam::Setup;
-use chip_project::ProjectDocument;
+use chip_project::{
+    ProjectDocument, move_avoid_region_to_slot_in_project, move_fixture_to_slot_in_project,
+    move_setup_to_slot_in_project, move_sketch_entity_to_slot_in_project,
+    move_sketch_to_slot_in_project,
+};
+pub use chip_project::{move_operation_to_slot, remap_index_after_slot_move};
 use egui::{CursorIcon, Id, Pos2, Rect, Stroke};
 
 use crate::{
-    panels::{
-        InspectorFocus,
-        browser::{
-            actions::{invalidate_changed_rest_dependents, snapshot_rest_upstream_ids},
-            tree_widget::TREE_INDENT_STEP,
-        },
-        sketch_inspector::mark_sketch_dependent_ops_dirty,
-    },
+    panels::{InspectorFocus, browser::tree_widget::TREE_INDENT_STEP},
     theme::ThemeTokens,
 };
 
@@ -36,30 +33,6 @@ pub enum DragSection {
 pub struct DraggedTreeItem {
     pub section: DragSection,
     pub item_idx: usize,
-}
-
-/// Remaps an existing item index `idx` after moving `from_idx` to `dst_idx` within a slice.
-pub const fn remap_index_after_slot_move(idx: usize, from_idx: usize, dst_idx: usize) -> usize {
-    if idx == from_idx {
-        dst_idx
-    } else if from_idx < dst_idx && idx > from_idx && idx <= dst_idx {
-        idx - 1
-    } else if dst_idx < from_idx && idx >= dst_idx && idx < from_idx {
-        idx + 1
-    } else {
-        idx
-    }
-}
-
-fn resolve_target_index(len: usize, from_idx: usize, to_slot: usize) -> Option<usize> {
-    if from_idx >= len || to_slot > len || to_slot == from_idx || to_slot == from_idx + 1 {
-        return None;
-    }
-    Some(if to_slot > from_idx {
-        to_slot - 1
-    } else {
-        to_slot
-    })
 }
 
 /// Resolves the target insertion slot (`0..=row_rects.len()`) for `active` dropped onto
@@ -132,18 +105,6 @@ pub(super) fn handle_section_drag_overlay(
     None
 }
 
-/// Moves `setup.operations[from_idx]` to insertion slot `to_slot` (`0..=operations.len()`),
-/// returning the new operation index if its position actually changed, and marking any affected
-/// `FromPrecedingOperations` Rest Machining dependents `Dirty`.
-pub fn move_operation_to_slot(setup: &mut Setup, from_idx: usize, to_slot: usize) -> Option<usize> {
-    let dst_idx = resolve_target_index(setup.operations.len(), from_idx, to_slot)?;
-    let before_rest = snapshot_rest_upstream_ids(setup);
-    let moved = setup.operations.remove(from_idx);
-    setup.operations.insert(dst_idx, moved);
-    invalidate_changed_rest_dependents(setup, &before_rest);
-    Some(dst_idx)
-}
-
 /// Moves `project.setups[from_idx]` to insertion slot `to_slot` (`0..=setups.len()`),
 /// updating `active_setup_idx` and `focus`, and marking any Setup using `carryover_from_setup_id`
 /// `Dirty` if its upstream setup ordering changed.
@@ -154,23 +115,7 @@ pub fn move_setup_to_slot(
     active_setup_idx: &mut usize,
     focus: &mut InspectorFocus,
 ) -> Option<usize> {
-    let dst_idx = resolve_target_index(project.setups.len(), from_idx, to_slot)?;
-
-    // Snapshot upstream setup IDs preceding every carryover-dependent setup before reordering
-    let before_carryover: Vec<(String, Vec<String>)> = project
-        .setups
-        .iter()
-        .enumerate()
-        .filter(|(_, s)| s.carryover_from_setup_id.is_some())
-        .map(|(idx, s)| {
-            let upstream = project.setups[..idx].iter().map(|u| u.id.clone()).collect();
-            (s.id.clone(), upstream)
-        })
-        .collect();
-
-    let moved = project.setups.remove(from_idx);
-    project.setups.insert(dst_idx, moved);
-
+    let dst_idx = move_setup_to_slot_in_project(project, from_idx, to_slot)?;
     *active_setup_idx = remap_index_after_slot_move(*active_setup_idx, from_idx, dst_idx);
     match focus {
         InspectorFocus::Setup { setup_idx } => {
@@ -181,25 +126,6 @@ pub fn move_setup_to_slot(
         }
         _ => {}
     }
-
-    // Mark operations Dirty in any carryover-dependent setup whose upstream ordering changed
-    let setup_ids: Vec<String> = project.setups.iter().map(|s| s.id.clone()).collect();
-    for (idx, setup) in project.setups.iter_mut().enumerate() {
-        if setup.carryover_from_setup_id.is_none() {
-            continue;
-        }
-        let after_upstream: Vec<String> = setup_ids[..idx].to_vec();
-        let unchanged = before_carryover
-            .iter()
-            .find(|(id, _)| id == &setup.id)
-            .is_some_and(|(_, prev)| prev == &after_upstream);
-        if !unchanged {
-            for op in &mut setup.operations {
-                op.mark_dirty();
-            }
-        }
-    }
-
     Some(dst_idx)
 }
 
@@ -211,9 +137,7 @@ pub fn move_sketch_to_slot(
     to_slot: usize,
     focus: &mut InspectorFocus,
 ) -> Option<usize> {
-    let dst_idx = resolve_target_index(project.sketches.len(), from_idx, to_slot)?;
-    let moved = project.sketches.remove(from_idx);
-    project.sketches.insert(dst_idx, moved);
+    let dst_idx = move_sketch_to_slot_in_project(project, from_idx, to_slot)?;
     if let InspectorFocus::Sketch { sketch_idx } = focus {
         *sketch_idx = remap_index_after_slot_move(*sketch_idx, from_idx, dst_idx);
     }
@@ -229,13 +153,7 @@ pub fn move_sketch_entity_to_slot(
     to_slot: usize,
     selected_sketch_entity_idx: &mut Option<usize>,
 ) -> Option<usize> {
-    let sk = project.sketches.get_mut(sketch_idx)?;
-    let dst_idx = resolve_target_index(sk.entities.len(), from_idx, to_slot)?;
-    let moved = sk.entities.remove(from_idx);
-    sk.entities.insert(dst_idx, moved);
-    sk.rebuild_regions(None);
-    let sk_id = sk.id.clone();
-    mark_sketch_dependent_ops_dirty(project, &sk_id);
+    let dst_idx = move_sketch_entity_to_slot_in_project(project, sketch_idx, from_idx, to_slot)?;
     if let Some(sel) = selected_sketch_entity_idx {
         *sel = remap_index_after_slot_move(*sel, from_idx, dst_idx);
     }
@@ -250,9 +168,7 @@ pub fn move_avoid_region_to_slot(
     to_slot: usize,
     focus: &mut InspectorFocus,
 ) -> Option<usize> {
-    let dst_idx = resolve_target_index(project.avoid_regions.len(), from_idx, to_slot)?;
-    let moved = project.avoid_regions.remove(from_idx);
-    project.avoid_regions.insert(dst_idx, moved);
+    let dst_idx = move_avoid_region_to_slot_in_project(project, from_idx, to_slot)?;
     if let InspectorFocus::KeepOutRegion { region_idx } = focus {
         *region_idx = remap_index_after_slot_move(*region_idx, from_idx, dst_idx);
     }
@@ -268,10 +184,7 @@ pub fn move_fixture_to_slot(
     to_slot: usize,
     selected_fixture_idx: &mut Option<usize>,
 ) -> Option<usize> {
-    let setup = project.setups.get_mut(setup_idx)?;
-    let dst_idx = resolve_target_index(setup.fixtures.len(), from_idx, to_slot)?;
-    let moved = setup.fixtures.remove(from_idx);
-    setup.fixtures.insert(dst_idx, moved);
+    let dst_idx = move_fixture_to_slot_in_project(project, setup_idx, from_idx, to_slot)?;
     if let Some(sel) = selected_fixture_idx {
         *sel = remap_index_after_slot_move(*sel, from_idx, dst_idx);
     }

@@ -1,8 +1,12 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use chip_cad::{CadKernel, MonstertruckKernel, SurfaceKind, sample_multi_feature_bracket_step};
+use chip_cad::{
+    CadKernel, MonstertruckKernel, SurfaceKind, is_mesh_path, load_model_bytes_cad_doc,
+    load_model_entry_cad_doc, sample_multi_feature_bracket_step,
+};
 use chip_cam::{
     GeometrySelectionItem, HeightReference, HeightSpec, Operation, OperationKind, WorkOffsetSlot,
+    cad_binding_to_sketch_face,
 };
 use chip_math::DEFAULT_TESS_CHORD_TOL_MM;
 use chip_tools::default_starter_tool_library;
@@ -466,6 +470,7 @@ fn associative_step_reload_v1_to_v2_rebinds_dirty_flags_deleted_needs_repick_and
         kinematics: MachineKinematicsConfig::default(),
         resolution: SimResolution::Standard,
         cancel: None,
+        ..SetupSimRequest::new(&proj, 0, &doc_v2, 2, &cache)
     })
     .unwrap();
     assert_eq!(
@@ -624,6 +629,7 @@ fn adaptive_and_rest_machining_dag_waves_dirty_propagation_and_undo_work() {
         resolution: SimResolution::Standard,
         kinematics: resolve_kinematics_for_key("grbl", None),
         cancel: Some(&cancel),
+        ..SetupSimRequest::new(&proj, 0, &doc, 1, &cache)
     })
     .unwrap();
     assert!(
@@ -716,6 +722,7 @@ setups = []
         kinematics: resolve_kinematics_for_key("grbl", None),
         resolution: SimResolution::Standard,
         cancel: None,
+        ..SetupSimRequest::new(&proj, 0, &empty_cad, 1, &cache)
     })
     .unwrap();
     assert!(
@@ -887,6 +894,7 @@ fn associative_planar_face_sketch_rebinds_across_step_v1_to_v2_and_checks_setup_
         kinematics: resolve_kinematics_for_key("grbl", None),
         resolution: SimResolution::Standard,
         cancel: None,
+        ..SetupSimRequest::new(&proj, 0, &doc_v2, 2, &cache)
     })
     .unwrap();
     assert!(!sim_v2.has_critical_errors());
@@ -961,6 +969,7 @@ fn engraved_nameplate_demo_passes_sim_and_chipz_bundles_custom_ttf_fonts() {
         kinematics: resolve_kinematics_for_key("grbl", None),
         resolution: SimResolution::Standard,
         cancel: None,
+        ..SetupSimRequest::new(&proj, 0, &empty_cad, 1, &cache)
     })
     .unwrap();
     assert!(
@@ -1042,6 +1051,7 @@ fn vcarve_sign_and_inlay_demo_passes_sim_and_posts_atc_and_grbl_split_files() {
             kinematics: resolve_kinematics_for_key("linuxcnc", None),
             resolution: SimResolution::Standard,
             cancel: None,
+            ..SetupSimRequest::new(&proj, setup_idx, &empty_cad, 1, &cache)
         })
         .unwrap();
         assert!(
@@ -1179,6 +1189,7 @@ fn minimal_tutorial_projects_pass_heightmap_sim_with_zero_crashes() {
             kinematics: resolve_kinematics_for_key("linuxcnc", None),
             resolution: SimResolution::Standard,
             cancel: None,
+            ..SetupSimRequest::new(&proj, 0, &doc, 1, &cache)
         })
         .unwrap();
         assert!(
@@ -1224,6 +1235,7 @@ fn minimal_tutorial_projects_pass_heightmap_sim_with_zero_crashes() {
                 kinematics: resolve_kinematics_for_key("linuxcnc", None),
                 resolution: SimResolution::Standard,
                 cancel: None,
+                ..SetupSimRequest::new(&vc_proj, setup_idx, &empty_cad, 1, &cache)
             })
             .unwrap();
             assert!(
@@ -1409,6 +1421,7 @@ fn sculpted_mesh_dome_3d_adaptive_and_waterline_roundtrips_simulates_and_posts_g
         kinematics: resolve_kinematics_for_key("grbl", None),
         resolution: SimResolution::Standard,
         cancel: None,
+        ..SetupSimRequest::new(&proj, 0, &cad_doc, 1, &cache)
     })
     .unwrap();
     assert!(
@@ -1501,6 +1514,7 @@ fn relief_wave_mesh_sample_round_trips_simulates_and_posts_cleanly() {
         kinematics: resolve_kinematics_for_key("grbl", None),
         resolution: SimResolution::Standard,
         cancel: None,
+        ..SetupSimRequest::new(&proj, 0, &cad_doc, 1, &cache)
     })
     .unwrap();
     assert!(
@@ -1610,6 +1624,7 @@ fn tutorial_3d_surfacing_projects_roundtrip_simulate_crash_free_and_post() {
         kinematics: resolve_kinematics_for_key("grbl", None),
         resolution: SimResolution::Standard,
         cancel: None,
+        ..SetupSimRequest::new(&proj_08, 0, &dome_doc, 1, &cache_08)
     })
     .unwrap();
     assert_eq!(
@@ -1700,6 +1715,7 @@ fn tutorial_3d_surfacing_projects_roundtrip_simulate_crash_free_and_post() {
         kinematics: resolve_kinematics_for_key("grbl", None),
         resolution: SimResolution::Standard,
         cancel: None,
+        ..SetupSimRequest::new(&proj_09, 0, &wave_doc, 1, &cache_09)
     })
     .unwrap();
     assert_eq!(
@@ -1803,6 +1819,7 @@ fn rotary_setup_roundtrips_toml_omits_when_disabled_and_validates_post_compatibi
         kinematics: resolve_kinematics_for_key("linuxcnc_4axis", None),
         resolution: SimResolution::Standard,
         cancel: None,
+        ..SetupSimRequest::new(&proj, 0, &cad_doc, 1, &cache)
     })
     .unwrap();
     assert!(
@@ -1882,6 +1899,7 @@ fn rotary_setup_roundtrips_toml_omits_when_disabled_and_validates_post_compatibi
         kinematics: resolve_kinematics_for_key("linuxcnc_4axis", None),
         resolution: SimResolution::Standard,
         cancel: None,
+        ..SetupSimRequest::new(&wrap_proj, 0, &empty_cad, 1, &wrap_cache)
     })
     .unwrap();
     assert!(
@@ -1974,6 +1992,7 @@ fn rotary_setup_roundtrips_toml_omits_when_disabled_and_validates_post_compatibi
         kinematics: resolve_kinematics_for_key("linuxcnc_4axis", None),
         resolution: SimResolution::Standard,
         cancel: None,
+        ..SetupSimRequest::new(&flute_proj, 0, &flute_doc, 1, &flute_cache)
     })
     .unwrap();
     assert!(
@@ -2079,6 +2098,7 @@ fn tutorial_rotary_projects_roundtrip_simulate_crash_free_and_post() {
         kinematics: resolve_kinematics_for_key("linuxcnc_4axis", None),
         resolution: SimResolution::Standard,
         cancel: None,
+        ..SetupSimRequest::new(&axial_proj, 0, &shaft_doc, 1, &axial_cache)
     })
     .unwrap();
     assert!(
@@ -2172,6 +2192,7 @@ fn tutorial_rotary_projects_roundtrip_simulate_crash_free_and_post() {
         kinematics: resolve_kinematics_for_key("linuxcnc_4axis", None),
         resolution: SimResolution::Standard,
         cancel: None,
+        ..SetupSimRequest::new(&idx_proj, 0, &block_doc, 1, &idx_cache)
     })
     .unwrap();
     assert!(
@@ -2246,6 +2267,7 @@ fn tutorial_rotary_projects_roundtrip_simulate_crash_free_and_post() {
         kinematics: resolve_kinematics_for_key("grblhal_4axis", None),
         resolution: SimResolution::Standard,
         cancel: None,
+        ..SetupSimRequest::new(&flow_proj, 0, &flute_doc, 1, &flow_cache)
     })
     .unwrap();
     assert!(
@@ -2398,7 +2420,7 @@ fn milo_1_5_and_carvera_air_end_to_end_machining_simulates_crash_free_with_zero_
     use chip_cad::{sample_rotary_shaft_stl_bytes, tutorial_contour_plate_step};
     use chip_cam::{OperationKind, StrategyParams};
     use chip_math::ParamLength;
-    use chip_sim::{MachineKinematicsConfig, SimResolution};
+    use chip_sim::SimResolution;
     use chip_tools::{builtin_carvera_air_machine, builtin_milo_1_5_machine};
 
     // 1. Millennium Milo v1.5 (LDO Kit): 2D Contour plate using Milo T1 (Ø6mm 1FL DLC Flat)
@@ -2446,8 +2468,9 @@ fn milo_1_5_and_carvera_air_end_to_end_machining_simulates_crash_free_with_zero_
         cad_revision: 1,
         cache: &milo_cache,
         resolution: SimResolution::Standard,
-        kinematics: MachineKinematicsConfig::from_machine_spec(&milo.kinematics),
+        kinematics: milo.kinematics,
         cancel: None,
+        ..SetupSimRequest::new(&milo_proj, 0, &plate_doc, 1, &milo_cache)
     })
     .unwrap();
     assert_eq!(
@@ -2497,8 +2520,9 @@ fn milo_1_5_and_carvera_air_end_to_end_machining_simulates_crash_free_with_zero_
         cad_revision: 1,
         cache: &carvera_cache,
         resolution: SimResolution::Standard,
-        kinematics: MachineKinematicsConfig::from_machine_spec(&carvera.kinematics),
+        kinematics: carvera.kinematics,
         cancel: None,
+        ..SetupSimRequest::new(&carvera_proj, 0, &shaft_doc, 1, &carvera_cache)
     })
     .unwrap();
     assert_eq!(
@@ -2671,6 +2695,7 @@ fn milestone_37_tutorial_16_yup_stl_and_tilted_step_simulate_crash_free() {
         kinematics: MachineKinematicsConfig::default(),
         resolution: SimResolution::Standard,
         cancel: None,
+        ..SetupSimRequest::new(&stl_proj, 0, &transformed_stl, 1, &cache_stl)
     })
     .unwrap();
     assert!(
@@ -2725,6 +2750,7 @@ fn milestone_37_tutorial_16_yup_stl_and_tilted_step_simulate_crash_free() {
             kinematics: MachineKinematicsConfig::default(),
             resolution: SimResolution::Standard,
             cancel: None,
+            ..SetupSimRequest::new(&step_proj, s_idx, &step_doc, 1, &cache_step)
         })
         .unwrap();
         assert!(
@@ -2907,19 +2933,18 @@ fn milestone_47_thread_mill_manifold_generates_and_simulates_cleanly_in_heightma
     assert_eq!(batch.generated.len(), 6);
 
     for engine in [SimEngineKind::Heightmap, SimEngineKind::TriDexel] {
-        let sim = simulate_project_setup_with_engine(
-            &SetupSimRequest {
-                project: &proj,
-                setup_idx: 0,
-                cad_doc: &doc,
-                cad_revision: 1,
-                cache: &cache,
-                kinematics: resolve_kinematics_for_key("linuxcnc", None),
-                resolution: SimResolution::Standard,
-                cancel: None,
-            },
+        let sim = simulate_project_setup(&SetupSimRequest {
+            project: &proj,
+            setup_idx: 0,
+            cad_doc: &doc,
+            cad_revision: 1,
+            cache: &cache,
+            kinematics: resolve_kinematics_for_key("linuxcnc", None),
+            resolution: SimResolution::Standard,
+            cancel: None,
             engine,
-        )
+            ..SetupSimRequest::new(&proj, 0, &doc, 1, &cache)
+        })
         .unwrap();
 
         assert_eq!(
@@ -3297,20 +3322,19 @@ fn m61_cam_torture_toe_clamp_between_pockets_auto_avoid_off_vs_on() {
         .sum();
     assert_eq!(total_lifts_off, 0);
 
-    let sim_off = simulate_project_setup_with_choice(
-        &SetupSimRequest {
-            project: &proj,
-            setup_idx: 0,
-            cad_doc: &cad_doc,
-            cad_revision: 1,
-            cache: &cache_off,
-            kinematics: resolve_kinematics_for_key(&proj.setups[0].post_profile, None),
-            resolution: SimResolution::Standard,
-            cancel: None,
-        },
-        SimEngineKind::Heightmap,
-        SimComputeBackendChoice::Cpu,
-    )
+    let sim_off = simulate_project_setup(&SetupSimRequest {
+        project: &proj,
+        setup_idx: 0,
+        cad_doc: &cad_doc,
+        cad_revision: 1,
+        cache: &cache_off,
+        kinematics: resolve_kinematics_for_key(&proj.setups[0].post_profile, None),
+        resolution: SimResolution::Standard,
+        cancel: None,
+        engine: SimEngineKind::Heightmap,
+        backend_choice: SimComputeBackendChoice::Cpu,
+        ..SetupSimRequest::new(&proj, 0, &cad_doc, 1, &cache_off)
+    })
     .unwrap();
     assert!(
         sim_off.diagnostics.iter().any(|d| {
@@ -3336,20 +3360,19 @@ fn m61_cam_torture_toe_clamp_between_pockets_auto_avoid_off_vs_on() {
         "expected >= 1 rapid lift inserted over bridge clamp"
     );
 
-    let sim_on = simulate_project_setup_with_choice(
-        &SetupSimRequest {
-            project: &proj,
-            setup_idx: 0,
-            cad_doc: &cad_doc,
-            cad_revision: 1,
-            cache: &cache_on,
-            kinematics: resolve_kinematics_for_key(&proj.setups[0].post_profile, None),
-            resolution: SimResolution::Standard,
-            cancel: None,
-        },
-        SimEngineKind::Heightmap,
-        SimComputeBackendChoice::Cpu,
-    )
+    let sim_on = simulate_project_setup(&SetupSimRequest {
+        project: &proj,
+        setup_idx: 0,
+        cad_doc: &cad_doc,
+        cad_revision: 1,
+        cache: &cache_on,
+        kinematics: resolve_kinematics_for_key(&proj.setups[0].post_profile, None),
+        resolution: SimResolution::Standard,
+        cancel: None,
+        engine: SimEngineKind::Heightmap,
+        backend_choice: SimComputeBackendChoice::Cpu,
+        ..SetupSimRequest::new(&proj, 0, &cad_doc, 1, &cache_on)
+    })
     .unwrap();
     assert!(
         !sim_on
@@ -3455,9 +3478,7 @@ fn milestone_62_two_sided_carryover_rest_roughing_cumulative_metrology_and_gpu_p
         Setup, StockConfig, StrategyParams, WcsOrientationMode, WcsOriginMode, WorkOffsetSlot,
     };
     use chip_math::ParamLength;
-    use chip_project::{
-        JobDispatcher, compute_operation_input_hash, simulate_all_setups_with_choice,
-    };
+    use chip_project::{JobDispatcher, compute_operation_input_hash, simulate_all_setups};
     use chip_sim::{SimComputeBackendChoice, SimEngineKind, SimResolution};
 
     let stl_bytes = build_two_sided_stepped_block_stl_bytes();
@@ -3667,17 +3688,19 @@ fn milestone_62_two_sided_carryover_rest_roughing_cumulative_metrology_and_gpu_p
     );
 
     // 4. Multi-setup Tri-Dexel simulation chain (CPU) + cumulative metrology
-    let sims_cpu = simulate_all_setups_with_choice(
-        &proj_carry,
-        &cad_doc,
-        1,
-        &cache_carry,
-        None,
-        SimResolution::Standard,
-        SimEngineKind::TriDexel,
-        SimComputeBackendChoice::Cpu,
-        None,
-    )
+    let sims_cpu = simulate_all_setups(&chip_project::AllSetupsSimRequest {
+        project: &proj_carry,
+        cad_doc: &cad_doc,
+        cad_revision: 1,
+        cache: &cache_carry,
+        project_dir: None,
+        resolution: SimResolution::Standard,
+        engine: SimEngineKind::TriDexel,
+        backend_choice: SimComputeBackendChoice::Cpu,
+        verify_config: Default::default(),
+        cancel: None,
+        progress: None,
+    })
     .unwrap();
     assert_eq!(sims_cpu.len(), 2);
     let sim1 = &sims_cpu[0];
@@ -3736,20 +3759,19 @@ fn milestone_62_two_sided_carryover_rest_roughing_cumulative_metrology_and_gpu_p
     );
 
     // 5. Heightmap projection carryover on Setup 2 works cleanly with 0 critical errors
-    let sim2_hf = simulate_project_setup_with_choice(
-        &SetupSimRequest {
-            project: &proj_carry,
-            setup_idx: 1,
-            cad_doc: &cad_doc,
-            cad_revision: 1,
-            cache: &cache_carry,
-            kinematics: resolve_kinematics_for_key(&proj_carry.setups[1].post_profile, None),
-            resolution: SimResolution::Standard,
-            cancel: None,
-        },
-        SimEngineKind::Heightmap,
-        SimComputeBackendChoice::Cpu,
-    )
+    let sim2_hf = simulate_project_setup(&SetupSimRequest {
+        project: &proj_carry,
+        setup_idx: 1,
+        cad_doc: &cad_doc,
+        cad_revision: 1,
+        cache: &cache_carry,
+        kinematics: resolve_kinematics_for_key(&proj_carry.setups[1].post_profile, None),
+        resolution: SimResolution::Standard,
+        cancel: None,
+        engine: SimEngineKind::Heightmap,
+        backend_choice: SimComputeBackendChoice::Cpu,
+        ..SetupSimRequest::new(&proj_carry, 1, &cad_doc, 1, &cache_carry)
+    })
     .unwrap();
     assert!(
         !sim2_hf.has_critical_errors(),
@@ -3762,17 +3784,19 @@ fn milestone_62_two_sided_carryover_rest_roughing_cumulative_metrology_and_gpu_p
     );
 
     // 6. CPU vs. GPU parity on Setup 2 carried-over Tri-Dexel simulation
-    let sims_gpu = simulate_all_setups_with_choice(
-        &proj_carry,
-        &cad_doc,
-        1,
-        &cache_carry,
-        None,
-        SimResolution::Standard,
-        SimEngineKind::TriDexel,
-        SimComputeBackendChoice::Auto,
-        None,
-    )
+    let sims_gpu = simulate_all_setups(&chip_project::AllSetupsSimRequest {
+        project: &proj_carry,
+        cad_doc: &cad_doc,
+        cad_revision: 1,
+        cache: &cache_carry,
+        project_dir: None,
+        resolution: SimResolution::Standard,
+        engine: SimEngineKind::TriDexel,
+        backend_choice: SimComputeBackendChoice::Auto,
+        verify_config: Default::default(),
+        cancel: None,
+        progress: None,
+    })
     .unwrap();
     let sim2_gpu = &sims_gpu[1];
     assert!(

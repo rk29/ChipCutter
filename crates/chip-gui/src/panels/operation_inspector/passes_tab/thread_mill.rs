@@ -1,11 +1,13 @@
 use chip_cam::{
-    ThreadCutDirection, ThreadFormKind, ThreadHandedness, ThreadMillParams, ThreadSpecEntry,
-    ThreadStandardKind, compute_thread_mill_centerline_feed, compute_thread_minor_diameter_mm,
-    find_thread_spec, iso60_pitch_diameter_mm, resolve_thread_helix_kinematics,
-    thread_specs_for_standard,
+    ThreadCutDirection, ThreadFormKind, ThreadHandedness, ThreadMillParams,
+    compute_thread_mill_centerline_feed, compute_thread_minor_diameter_mm,
+    resolve_thread_helix_kinematics,
 };
 use chip_math::{DisplayUnit, ParamLength};
-use chip_tools::CutterGeometry;
+use chip_tools::{
+    CutterGeometry, ThreadSpecEntry, ThreadStandardKind, find_thread_spec, iso60_pitch_diameter_mm,
+    thread_specs_for_standard,
+};
 
 use super::{COMBO_COL_WIDTH, PassItemCtx};
 use crate::{

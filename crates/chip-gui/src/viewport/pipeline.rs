@@ -1334,6 +1334,7 @@ mod tests {
             initial_raw_volume_mm3: None,
             carried_over_from_setup: None,
             cancel: None,
+            ..SetupSimulationInput::new(&doc, &resolved, &[])
         })
         .unwrap();
 
@@ -1683,6 +1684,7 @@ mod tests {
             initial_raw_volume_mm3: None,
             carried_over_from_setup: None,
             cancel: None,
+            ..SetupSimulationInput::new(&doc, &resolved, &[])
         })
         .unwrap();
 
@@ -1866,8 +1868,7 @@ mod tests {
         use chip_sim::{
             GpuSimContext, GpuStockRenderHandle, MachineKinematicsConfig, SetupSimulationInput,
             SimComputeBackendChoice, SimEngineKind, SimOperationInput, SimResolution,
-            SimStockColorMode, SimVerificationConfig, WgpuComputeBackend,
-            run_setup_simulation_with_gpu_context,
+            SimStockColorMode, SimVerificationConfig, WgpuComputeBackend, run_setup_simulation,
         };
         use chip_tools::default_starter_tool_library;
 
@@ -1974,32 +1975,31 @@ mod tests {
             b.linear_to(DVec3::new(0.0, 15.0, -25.0), 300.0, MotionRole::Plunge);
             let tp = b.finish();
 
-            let mut sim = run_setup_simulation_with_gpu_context(
-                &SetupSimulationInput {
-                    doc: &doc_empty,
-                    setup: &resolved,
-                    target_bodies: &[],
-                    fixtures: &[],
-                    operations: &[SimOperationInput {
-                        op_id: "op_hf",
-                        op_name: "Slot + Hole",
-                        tool: flat_6mm,
-                        fallback_spindle_rpm: 12_000.0,
-                        intentional_edge_break_mm: 0.0,
-                        toolpath: &tp,
-                    }],
-                    resolution: SimResolution::Standard,
-                    kinematics: MachineKinematicsConfig::default(),
-                    verify_config: SimVerificationConfig::default(),
-                    initial_stock: None,
-                    initial_raw_volume_mm3: None,
-                    carried_over_from_setup: None,
-                    cancel: None,
-                },
-                SimEngineKind::Heightmap,
-                SimComputeBackendChoice::Gpu,
-                Some(Arc::clone(&ctx)),
-            )
+            let mut sim = run_setup_simulation(&SetupSimulationInput {
+                doc: &doc_empty,
+                setup: &resolved,
+                target_bodies: &[],
+                fixtures: &[],
+                operations: &[SimOperationInput {
+                    op_id: "op_hf",
+                    op_name: "Slot + Hole",
+                    tool: flat_6mm,
+                    fallback_spindle_rpm: 12_000.0,
+                    intentional_edge_break_mm: 0.0,
+                    toolpath: &tp,
+                }],
+                resolution: SimResolution::Standard,
+                kinematics: MachineKinematicsConfig::default(),
+                verify_config: SimVerificationConfig::default(),
+                initial_stock: None,
+                initial_raw_volume_mm3: None,
+                carried_over_from_setup: None,
+                cancel: None,
+                engine: SimEngineKind::Heightmap,
+                backend_choice: SimComputeBackendChoice::Gpu,
+                gpu_ctx: Some(&ctx),
+                ..SetupSimulationInput::new(&doc_empty, &resolved, &[])
+            })
             .unwrap();
             // Inject synthetic flat target surface at z_wcs = -4.0 (gouge in slot, excess on top)
             if let Some(hf) = sim.final_stock.as_heightfield_mut() {
@@ -2109,32 +2109,31 @@ mod tests {
             );
             let tp = b.finish();
 
-            let mut sim = run_setup_simulation_with_gpu_context(
-                &SetupSimulationInput {
-                    doc: &doc_empty,
-                    setup: &resolved,
-                    target_bodies: &[],
-                    fixtures: &[],
-                    operations: &[SimOperationInput {
-                        op_id: "op_cyl",
-                        op_name: "Rotary Flute",
-                        tool: flat_6mm,
-                        fallback_spindle_rpm: 12_000.0,
-                        intentional_edge_break_mm: 0.0,
-                        toolpath: &tp,
-                    }],
-                    resolution: SimResolution::Standard,
-                    kinematics: MachineKinematicsConfig::default(),
-                    verify_config: SimVerificationConfig::default(),
-                    initial_stock: None,
-                    initial_raw_volume_mm3: None,
-                    carried_over_from_setup: None,
-                    cancel: None,
-                },
-                SimEngineKind::Heightmap,
-                SimComputeBackendChoice::Gpu,
-                Some(Arc::clone(&ctx)),
-            )
+            let mut sim = run_setup_simulation(&SetupSimulationInput {
+                doc: &doc_empty,
+                setup: &resolved,
+                target_bodies: &[],
+                fixtures: &[],
+                operations: &[SimOperationInput {
+                    op_id: "op_cyl",
+                    op_name: "Rotary Flute",
+                    tool: flat_6mm,
+                    fallback_spindle_rpm: 12_000.0,
+                    intentional_edge_break_mm: 0.0,
+                    toolpath: &tp,
+                }],
+                resolution: SimResolution::Standard,
+                kinematics: MachineKinematicsConfig::default(),
+                verify_config: SimVerificationConfig::default(),
+                initial_stock: None,
+                initial_raw_volume_mm3: None,
+                carried_over_from_setup: None,
+                cancel: None,
+                engine: SimEngineKind::Heightmap,
+                backend_choice: SimComputeBackendChoice::Gpu,
+                gpu_ctx: Some(&ctx),
+                ..SetupSimulationInput::new(&doc_empty, &resolved, &[])
+            })
             .unwrap();
             if let Some(cyl) = sim.final_stock.as_cylindrical_mut() {
                 cyl.r_target.fill(16.0_f32);
@@ -2232,32 +2231,31 @@ mod tests {
             );
             let tp = b.finish();
 
-            let sim = run_setup_simulation_with_gpu_context(
-                &SetupSimulationInput {
-                    doc: &doc,
-                    setup: &resolved,
-                    target_bodies: &[],
-                    fixtures: &[],
-                    operations: &[SimOperationInput {
-                        op_id: "op_td",
-                        op_name: "TD Slot",
-                        tool: flat_6mm,
-                        fallback_spindle_rpm: 12_000.0,
-                        intentional_edge_break_mm: 0.0,
-                        toolpath: &tp,
-                    }],
-                    resolution: SimResolution::Standard,
-                    kinematics: MachineKinematicsConfig::default(),
-                    verify_config: SimVerificationConfig::default(),
-                    initial_stock: None,
-                    initial_raw_volume_mm3: None,
-                    carried_over_from_setup: None,
-                    cancel: None,
-                },
-                SimEngineKind::TriDexel,
-                SimComputeBackendChoice::Gpu,
-                Some(Arc::clone(&ctx)),
-            )
+            let sim = run_setup_simulation(&SetupSimulationInput {
+                doc: &doc,
+                setup: &resolved,
+                target_bodies: &[],
+                fixtures: &[],
+                operations: &[SimOperationInput {
+                    op_id: "op_td",
+                    op_name: "TD Slot",
+                    tool: flat_6mm,
+                    fallback_spindle_rpm: 12_000.0,
+                    intentional_edge_break_mm: 0.0,
+                    toolpath: &tp,
+                }],
+                resolution: SimResolution::Standard,
+                kinematics: MachineKinematicsConfig::default(),
+                verify_config: SimVerificationConfig::default(),
+                initial_stock: None,
+                initial_raw_volume_mm3: None,
+                carried_over_from_setup: None,
+                cancel: None,
+                engine: SimEngineKind::TriDexel,
+                backend_choice: SimComputeBackendChoice::Gpu,
+                gpu_ctx: Some(&ctx),
+                ..SetupSimulationInput::new(&doc, &resolved, &[])
+            })
             .unwrap();
 
             let mut backend = WgpuComputeBackend::new(
@@ -2883,9 +2881,10 @@ mod tests {
     fn m95_offscreen_wgpu_renders_measure_leaders_and_reach_heatmap_in_dark_and_light() {
         use std::sync::Arc;
 
+        use chip_cad::MeasureSnapTarget;
         use chip_cam::{
-            MeasureSnapTarget, ReachAnalysisResult, ReachHighlightEdge, ReachHighlightFace,
-            ReachIssueKind, ReachSeverity,
+            ReachAnalysisResult, ReachHighlightEdge, ReachHighlightFace, ReachIssueKind,
+            ReachSeverity,
         };
         use chip_math::{DVec3, RigidFrame3};
 

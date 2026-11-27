@@ -6,11 +6,11 @@ use std::{
     time::Instant,
 };
 
-use chip_cad::{CadDocument, CadPicker, MeshUnitKind, TopologyGraph};
+use chip_cad::{CadDocument, CadPicker, MeshUnitKind, TopologyGraph, load_model_bytes_cad_doc};
 use chip_project::{
     ProjectDocument, compute_sha256_hex, create_private_temp_extract_dir, export_chipz_bundle,
     external_or_suspicious_assets_referenced, is_chipz_path, is_flatpak_document_portal_path,
-    load_model_bytes_cad_doc, portable_model_path, resolve_model_path, unpack_chipz_bundle,
+    portable_model_path, resolve_model_path, unpack_chipz_bundle,
 };
 
 use crate::{
@@ -761,6 +761,7 @@ mod tests {
             initial_raw_volume_mm3: None,
             carried_over_from_setup: None,
             cancel: None,
+            ..SetupSimulationInput::new(&doc, &resolved, &[])
         })
         .unwrap();
         app.sim_panel.active_result = Some(Arc::new(sim));

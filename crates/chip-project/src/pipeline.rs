@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, HashMap},
-    path::Path,
+    path::{Path, PathBuf},
     sync::{Arc, atomic::AtomicBool},
 };
 
@@ -8,13 +8,14 @@ use chip_cad::CadDocument;
 use chip_cam::{FixtureKind, GeneratedToolpath, Operation, resolve_setup_fixtures};
 use chip_math::RigidFrame3;
 use chip_post::{
-    OperationPostInput, PostOutputFile, PostProfile, SetupPostInput, describe_wcs_origin,
-    post_process_setup, resolve_post_profile,
+    OperationPostInput, PostOutputFile, PostProfile, PostProfileSource, SetupPostInput,
+    describe_wcs_origin, load_available_post_profiles, post_process_setup, resolve_post_profile,
+    validate_safe_output_filename,
 };
 use chip_sim::{
     MachineKinematicsConfig, SetupSimulationInput, SetupSimulationResult, SimComputeBackendChoice,
     SimEngineKind, SimOperationInput, SimProgressScope, SimResolution, SimVerificationConfig,
-    TriDexelStock, run_setup_simulation_with_choice_and_progress,
+    TriDexelStock, run_setup_simulation,
 };
 use chip_tools::Tool;
 
@@ -78,13 +79,7 @@ pub fn collect_ready_setup_operations<'a>(
 /// Maps a [`PostProfile`]'s rapid rate, acceleration, and tool-change duration into
 /// [`MachineKinematicsConfig`].
 pub fn kinematics_for_post_profile(profile: &PostProfile) -> MachineKinematicsConfig {
-    MachineKinematicsConfig {
-        rapid_rate_mm_min: profile.rapid_rate_mm_min,
-        accel_mm_s2: profile.accel_mm_s2,
-        junction_deviation_mm: 0.05,
-        tool_change_time_sec: profile.tool_change_time_sec,
-        max_rotary_rate_deg_min: profile.rotary.max_rotary_feed_deg_min.max(60.0),
-    }
+    profile.to_kinematics_spec()
 }
 
 /// Resolves machine kinematics for `post_profile_key` (falling back to default kinematics if unknown).
@@ -93,58 +88,115 @@ pub fn resolve_kinematics_for_key(
     project_dir: Option<&Path>,
 ) -> MachineKinematicsConfig {
     resolve_post_profile(post_profile_key, project_dir)
-        .map(|p| kinematics_for_post_profile(&p))
+        .map(|p| p.to_kinematics_spec())
         .unwrap_or_default()
 }
 
-/// Input configuration for [`simulate_project_setup`].
+/// Canonical setup kinematics resolver: honors `project.machine_id` first when explicitly set
+/// and resolvable, falling back to `setup.post_profile` kinematics otherwise.
+pub fn resolve_setup_kinematics(
+    project: &ProjectDocument,
+    setup_idx: usize,
+    project_dir: Option<&Path>,
+) -> MachineKinematicsConfig {
+    if let Some(mid) = project.machine_id.as_deref()
+        && !mid.trim().is_empty()
+        && let Ok(machine) = chip_tools::resolve_machine_definition(mid, project_dir)
+    {
+        return machine.kinematics;
+    }
+    project
+        .setups
+        .get(setup_idx)
+        .map(|s| resolve_kinematics_for_key(&s.post_profile, project_dir))
+        .unwrap_or_default()
+}
+
+/// Unified request struct for single-setup simulation via [`simulate_project_setup`].
+#[derive(Clone, Copy)]
 pub struct SetupSimRequest<'a> {
     pub project: &'a ProjectDocument,
     pub setup_idx: usize,
     pub cad_doc: &'a CadDocument,
     pub cad_revision: u64,
     pub cache: &'a ToolpathCache,
+    pub project_dir: Option<&'a Path>,
     pub kinematics: MachineKinematicsConfig,
     pub resolution: SimResolution,
+    pub engine: SimEngineKind,
+    pub backend_choice: SimComputeBackendChoice,
+    pub verify_config: SimVerificationConfig,
     pub cancel: Option<&'a AtomicBool>,
+    pub progress: Option<SimProgressScope<'a>>,
 }
 
-/// Runs 2.5D Z-dexel heightmap stock removal & 6-rule crash/gouge/fixture verification for a single Setup.
-pub fn simulate_project_setup(req: &SetupSimRequest<'_>) -> Result<SetupSimulationResult, String> {
-    simulate_project_setup_with_engine(req, SimEngineKind::Heightmap)
+impl<'a> SetupSimRequest<'a> {
+    /// Creates a [`SetupSimRequest`] with canonical resolved setup kinematics, `Standard`
+    /// resolution, `Heightmap` engine, exact `Cpu` backend, and default verification tolerances.
+    pub fn new(
+        project: &'a ProjectDocument,
+        setup_idx: usize,
+        cad_doc: &'a CadDocument,
+        cad_revision: u64,
+        cache: &'a ToolpathCache,
+    ) -> Self {
+        Self {
+            project,
+            setup_idx,
+            cad_doc,
+            cad_revision,
+            cache,
+            project_dir: None,
+            kinematics: resolve_setup_kinematics(project, setup_idx, None),
+            resolution: SimResolution::Standard,
+            engine: SimEngineKind::Heightmap,
+            backend_choice: SimComputeBackendChoice::Cpu,
+            verify_config: SimVerificationConfig::default(),
+            cancel: None,
+            progress: None,
+        }
+    }
 }
 
-/// Runs 2.5D Z-dexel heightmap stock removal & 6-rule crash/gouge/fixture verification for a single Setup,
-/// resolving any `ImportedModel` workholding fixtures relative to `project_dir`.
-pub fn simulate_project_setup_in_dir(
-    req: &SetupSimRequest<'_>,
-    project_dir: Option<&Path>,
-) -> Result<SetupSimulationResult, String> {
-    simulate_project_setup_with_choice_in_dir(
-        req,
-        project_dir,
-        SimEngineKind::Heightmap,
-        SimComputeBackendChoice::Cpu,
-    )
+/// Unified request struct for sequential multi-setup simulation via [`simulate_all_setups`].
+#[derive(Clone, Copy)]
+pub struct AllSetupsSimRequest<'a> {
+    pub project: &'a ProjectDocument,
+    pub cad_doc: &'a CadDocument,
+    pub cad_revision: u64,
+    pub cache: &'a ToolpathCache,
+    pub project_dir: Option<&'a Path>,
+    pub resolution: SimResolution,
+    pub engine: SimEngineKind,
+    pub backend_choice: SimComputeBackendChoice,
+    pub verify_config: SimVerificationConfig,
+    pub cancel: Option<&'a AtomicBool>,
+    pub progress: Option<SimProgressScope<'a>>,
 }
 
-/// Runs stock removal & 6-rule crash/gouge/fixture verification for a single Setup using the chosen
-/// [`SimEngineKind`] (`Heightmap` or volumetric `TriDexel`) on the exact CPU backend.
-pub fn simulate_project_setup_with_engine(
-    req: &SetupSimRequest<'_>,
-    engine: SimEngineKind,
-) -> Result<SetupSimulationResult, String> {
-    simulate_project_setup_with_choice(req, engine, SimComputeBackendChoice::Cpu)
-}
-
-/// Runs stock removal & 6-rule crash/gouge/fixture verification for a single Setup using the chosen
-/// [`SimEngineKind`] and [`SimComputeBackendChoice`] (`Auto` / `Gpu` / `Cpu`).
-pub fn simulate_project_setup_with_choice(
-    req: &SetupSimRequest<'_>,
-    engine: SimEngineKind,
-    choice: SimComputeBackendChoice,
-) -> Result<SetupSimulationResult, String> {
-    simulate_project_setup_with_choice_in_dir(req, None, engine, choice)
+impl<'a> AllSetupsSimRequest<'a> {
+    /// Creates an [`AllSetupsSimRequest`] with `Standard` resolution, `Heightmap` engine,
+    /// `Auto` backend choice, and default verification tolerances.
+    pub fn new(
+        project: &'a ProjectDocument,
+        cad_doc: &'a CadDocument,
+        cad_revision: u64,
+        cache: &'a ToolpathCache,
+    ) -> Self {
+        Self {
+            project,
+            cad_doc,
+            cad_revision,
+            cache,
+            project_dir: None,
+            resolution: SimResolution::Standard,
+            engine: SimEngineKind::Heightmap,
+            backend_choice: SimComputeBackendChoice::Auto,
+            verify_config: SimVerificationConfig::default(),
+            cancel: None,
+            progress: None,
+        }
+    }
 }
 
 /// Carried-over volumetric stock transferred from a preceding Setup (`M62`).
@@ -163,11 +215,9 @@ pub struct CarryoverStockResult {
 /// Returns `Ok(None)` when `setup.carryover_from_setup_id` is `None`.
 pub fn compute_setup_carryover_stock(
     req: &SetupSimRequest<'_>,
-    project_dir: Option<&Path>,
-    choice: SimComputeBackendChoice,
 ) -> Result<Option<CarryoverStockResult>, String> {
     let mut chain_cache: HashMap<usize, (TriDexelStock, RigidFrame3, f64, String)> = HashMap::new();
-    compute_setup_carryover_stock_with_cache(req, project_dir, choice, &mut chain_cache, None, None)
+    compute_setup_carryover_stock_with_cache(req, &mut chain_cache, None, None)
 }
 
 fn compute_carryover_progress_ranges(
@@ -230,8 +280,6 @@ fn scope_for_setup<'a>(
 
 fn compute_setup_carryover_stock_with_cache(
     req: &SetupSimRequest<'_>,
-    project_dir: Option<&Path>,
-    choice: SimComputeBackendChoice,
     chain_cache: &mut HashMap<usize, (TriDexelStock, RigidFrame3, f64, String)>,
     progress: Option<SimProgressScope<'_>>,
     progress_ranges: Option<&HashMap<usize, (f64, f64)>>,
@@ -288,14 +336,17 @@ fn compute_setup_carryover_stock_with_cache(
             cad_doc: req.cad_doc,
             cad_revision: req.cad_revision,
             cache: req.cache,
-            kinematics: resolve_kinematics_for_key(&src_setup.post_profile, project_dir),
+            project_dir: req.project_dir,
+            kinematics: resolve_setup_kinematics(req.project, src_idx, req.project_dir),
             resolution: req.resolution,
+            engine: SimEngineKind::TriDexel,
+            backend_choice: req.backend_choice,
+            verify_config: SimVerificationConfig::default(),
             cancel: req.cancel,
+            progress: scope_for_setup(progress, progress_ranges, src_idx),
         };
         let src_carryover = compute_setup_carryover_stock_with_cache(
             &src_req,
-            project_dir,
-            choice,
             chain_cache,
             progress,
             progress_ranges,
@@ -307,17 +358,11 @@ fn compute_setup_carryover_stock_with_cache(
                 req.project.display_units,
             )
             .map_err(|e| e.to_string())?;
-        let src_progress = scope_for_setup(progress, progress_ranges, src_idx);
         let src_sim = simulate_single_setup_inner(
             &src_req,
             &src_resolved,
             &src_ready,
-            project_dir,
-            SimEngineKind::TriDexel,
-            choice,
-            SimVerificationConfig::default(),
             src_carryover.as_ref(),
-            src_progress,
         )?;
         let src_td = src_sim
             .as_tridexel()
@@ -360,8 +405,6 @@ fn compute_setup_carryover_stock_with_cache(
 pub fn compute_in_setup_carryover_stock(
     req: &SetupSimRequest<'_>,
     upstream_op_indices: &[usize],
-    project_dir: Option<&Path>,
-    choice: SimComputeBackendChoice,
 ) -> Result<TriDexelStock, String> {
     let setup = req
         .project
@@ -375,7 +418,7 @@ pub fn compute_in_setup_carryover_stock(
             req.project.display_units,
         )
         .map_err(|e| e.to_string())?;
-    let base_carryover = compute_setup_carryover_stock(req, project_dir, choice)?;
+    let base_carryover = compute_setup_carryover_stock(req)?;
 
     let mut ready_upstream = Vec::with_capacity(upstream_op_indices.len());
     for &op_idx in upstream_op_indices {
@@ -421,17 +464,14 @@ pub fn compute_in_setup_carryover_stock(
         });
     }
 
-    let sim = simulate_single_setup_inner(
-        req,
-        &resolved,
-        &ready_upstream,
-        project_dir,
-        SimEngineKind::TriDexel,
-        choice,
-        SimVerificationConfig::default(),
-        base_carryover.as_ref(),
-        None,
-    )?;
+    let td_req = SetupSimRequest {
+        engine: SimEngineKind::TriDexel,
+        verify_config: SimVerificationConfig::default(),
+        progress: None,
+        ..*req
+    };
+    let sim =
+        simulate_single_setup_inner(&td_req, &resolved, &ready_upstream, base_carryover.as_ref())?;
     sim.as_tridexel().cloned().ok_or_else(|| {
         format!(
             "in-setup carryover for setup '{}' did not produce a Tri-Dexel stock solid",
@@ -440,17 +480,11 @@ pub fn compute_in_setup_carryover_stock(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
 fn simulate_single_setup_inner(
     req: &SetupSimRequest<'_>,
     resolved: &chip_cam::ResolvedSetup,
     ready: &[ReadySetupOperation<'_>],
-    project_dir: Option<&Path>,
-    engine: SimEngineKind,
-    choice: SimComputeBackendChoice,
-    verify_config: SimVerificationConfig,
     carryover: Option<&CarryoverStockResult>,
-    progress: Option<SimProgressScope<'_>>,
 ) -> Result<SetupSimulationResult, String> {
     let setup = &req.project.setups[req.setup_idx];
     let sim_inputs: Vec<SimOperationInput<'_>> = ready
@@ -464,7 +498,7 @@ fn simulate_single_setup_inner(
             .iter()
             .any(|f| f.enabled && matches!(f.kind, FixtureKind::ImportedModel { .. }));
         let fixture_docs: BTreeMap<String, CadDocument> = if needs_imported {
-            req.project.load_fixture_cad_documents(project_dir)
+            req.project.load_fixture_cad_documents(req.project_dir)
         } else {
             BTreeMap::new()
         };
@@ -476,70 +510,28 @@ fn simulate_single_setup_inner(
         Vec::new()
     };
 
-    run_setup_simulation_with_choice_and_progress(
-        &SetupSimulationInput {
-            doc: req.cad_doc,
-            setup: resolved,
-            target_bodies: &setup.target_bodies,
-            fixtures: &resolved_fixtures,
-            operations: &sim_inputs,
-            resolution: req.resolution,
-            kinematics: req.kinematics,
-            verify_config,
-            initial_stock: carryover.map(|c| &c.stock),
-            initial_raw_volume_mm3: carryover.map(|c| c.initial_raw_volume_mm3),
-            carried_over_from_setup: carryover.map(|c| c.source_setup_name.as_str()),
-            cancel: req.cancel,
-        },
-        engine,
-        choice,
-        progress,
-    )
-    .map_err(|e| e.to_string())
+    let mut input = SetupSimulationInput::new(req.cad_doc, resolved, &sim_inputs);
+    input.target_bodies = &setup.target_bodies;
+    input.fixtures = &resolved_fixtures;
+    input.resolution = req.resolution;
+    input.engine = req.engine;
+    input.backend_choice = req.backend_choice;
+    input.kinematics = req.kinematics;
+    input.verify_config = req.verify_config;
+    input.initial_stock = carryover.map(|c| &c.stock);
+    input.initial_raw_volume_mm3 = carryover.map(|c| c.initial_raw_volume_mm3);
+    input.carried_over_from_setup = carryover.map(|c| c.source_setup_name.as_str());
+    input.progress = req.progress;
+    input.cancel = req.cancel;
+
+    run_setup_simulation(&input).map_err(|e| e.to_string())
 }
 
-/// Runs stock removal & 6-rule crash/gouge/fixture verification for a single Setup using the chosen
-/// [`SimEngineKind`] and [`SimComputeBackendChoice`], resolving any `ImportedModel` workholding
-/// fixtures relative to `project_dir` and automatically carrying over remaining volumetric stock
-/// when `setup.carryover_from_setup_id` is set (`M62`).
-pub fn simulate_project_setup_with_choice_in_dir(
-    req: &SetupSimRequest<'_>,
-    project_dir: Option<&Path>,
-    engine: SimEngineKind,
-    choice: SimComputeBackendChoice,
-) -> Result<SetupSimulationResult, String> {
-    simulate_project_setup_with_choice_and_progress_in_dir(req, project_dir, engine, choice, None)
-}
-
-/// Runs stock removal & 6-rule crash/gouge/fixture verification for a single Setup (including any
-/// upstream carryover chain) while reporting live completion progress into `progress` (`0%`–`100%`).
-pub fn simulate_project_setup_with_choice_and_progress_in_dir(
-    req: &SetupSimRequest<'_>,
-    project_dir: Option<&Path>,
-    engine: SimEngineKind,
-    choice: SimComputeBackendChoice,
-    progress: Option<SimProgressScope<'_>>,
-) -> Result<SetupSimulationResult, String> {
-    simulate_project_setup_with_verify_and_progress_in_dir(
-        req,
-        project_dir,
-        engine,
-        choice,
-        SimVerificationConfig::default(),
-        progress,
-    )
-}
-
-/// Runs stock removal & 6-rule crash/gouge/fixture verification for a single Setup with explicit
-/// [`SimVerificationConfig`] tolerances and optional live progress reporting (`M89`).
-pub fn simulate_project_setup_with_verify_and_progress_in_dir(
-    req: &SetupSimRequest<'_>,
-    project_dir: Option<&Path>,
-    engine: SimEngineKind,
-    choice: SimComputeBackendChoice,
-    verify_config: SimVerificationConfig,
-    progress: Option<SimProgressScope<'_>>,
-) -> Result<SetupSimulationResult, String> {
+/// Runs stock removal & 6-rule crash/gouge/fixture verification for a single Setup using the
+/// engine, compute backend, fixture project directory, verification tolerances, and progress
+/// reporter configured on [`SetupSimRequest`], automatically carrying over remaining volumetric
+/// stock when `setup.carryover_from_setup_id` is set (`M62`, `M89`).
+pub fn simulate_project_setup(req: &SetupSimRequest<'_>) -> Result<SetupSimulationResult, String> {
     let setup = req
         .project
         .setups
@@ -555,128 +547,70 @@ pub fn simulate_project_setup_with_verify_and_progress_in_dir(
     let ready =
         collect_ready_setup_operations(req.project, req.setup_idx, req.cache, req.cad_revision);
     let mut chain_cache: HashMap<usize, (TriDexelStock, RigidFrame3, f64, String)> = HashMap::new();
-    let progress_ranges = progress.map(|_| compute_carryover_progress_ranges(req, &chain_cache));
+    let progress_ranges = req
+        .progress
+        .map(|_| compute_carryover_progress_ranges(req, &chain_cache));
     let carryover = compute_setup_carryover_stock_with_cache(
         req,
-        project_dir,
-        choice,
         &mut chain_cache,
-        progress,
+        req.progress,
         progress_ranges.as_ref(),
     )?;
-    let dst_progress = scope_for_setup(progress, progress_ranges.as_ref(), req.setup_idx);
-    simulate_single_setup_inner(
-        req,
-        &resolved,
-        &ready,
-        project_dir,
-        engine,
-        choice,
-        verify_config,
-        carryover.as_ref(),
-        dst_progress,
-    )
+    let dst_req = SetupSimRequest {
+        progress: scope_for_setup(req.progress, progress_ranges.as_ref(), req.setup_idx),
+        ..*req
+    };
+    simulate_single_setup_inner(&dst_req, &resolved, &ready, carryover.as_ref())
 }
 
-/// Simulates all Setups in `project` sequentially, caching and reusing each Setup's final
+/// Simulates all Setups in `req.project` sequentially, caching and reusing each Setup's final
 /// `TriDexelStock` for downstream `carryover_from_setup_id` chains so upstream Setups are never
-/// simulated redundantly (`M62`).
-#[allow(clippy::too_many_arguments)]
-pub fn simulate_all_setups_with_choice(
-    project: &ProjectDocument,
-    cad_doc: &CadDocument,
-    cad_revision: u64,
-    cache: &ToolpathCache,
-    project_dir: Option<&Path>,
-    resolution: SimResolution,
-    engine: SimEngineKind,
-    choice: SimComputeBackendChoice,
-    cancel: Option<&AtomicBool>,
+/// simulated redundantly (`M62`, `M89`).
+pub fn simulate_all_setups(
+    req: &AllSetupsSimRequest<'_>,
 ) -> Result<Vec<SetupSimulationResult>, String> {
-    simulate_all_setups_with_verify_and_progress(
-        project,
-        cad_doc,
-        cad_revision,
-        cache,
-        project_dir,
-        resolution,
-        engine,
-        choice,
-        SimVerificationConfig::default(),
-        cancel,
-        None,
-    )
-}
-
-/// Simulates all Setups in `project` sequentially with custom [`SimVerificationConfig`] tolerances
-/// and optional live progress reporting (`M89`).
-#[allow(clippy::too_many_arguments)]
-pub fn simulate_all_setups_with_verify_and_progress(
-    project: &ProjectDocument,
-    cad_doc: &CadDocument,
-    cad_revision: u64,
-    cache: &ToolpathCache,
-    project_dir: Option<&Path>,
-    resolution: SimResolution,
-    engine: SimEngineKind,
-    choice: SimComputeBackendChoice,
-    verify_config: SimVerificationConfig,
-    cancel: Option<&AtomicBool>,
-    progress: Option<SimProgressScope<'_>>,
-) -> Result<Vec<SetupSimulationResult>, String> {
-    let n_setups = project.setups.len();
+    let n_setups = req.project.setups.len();
     let mut results = Vec::with_capacity(n_setups);
     let mut chain_cache: HashMap<usize, (TriDexelStock, RigidFrame3, f64, String)> = HashMap::new();
 
-    for (s_idx, setup) in project.setups.iter().enumerate() {
-        if cancel.is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed)) {
+    for (s_idx, setup) in req.project.setups.iter().enumerate() {
+        if req
+            .cancel
+            .is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed))
+        {
             return Err("simulation cancelled".to_string());
         }
-        let kin = if let Some(mid) = project.machine_id.as_deref()
-            && let Ok(machine) = chip_tools::resolve_machine_definition(mid, project_dir)
-        {
-            MachineKinematicsConfig::from_machine_spec(&machine.kinematics)
-        } else {
-            resolve_kinematics_for_key(&setup.post_profile, project_dir)
-        };
-        let req = SetupSimRequest {
-            project,
-            setup_idx: s_idx,
-            cad_doc,
-            cad_revision,
-            cache,
-            kinematics: kin,
-            resolution,
-            cancel,
-        };
-        let resolved = setup
-            .resolve_with_sketches(cad_doc, &project.sketches, project.display_units)
-            .map_err(|e| e.to_string())?;
-        let ready = collect_ready_setup_operations(project, s_idx, cache, cad_revision);
-        let carryover = compute_setup_carryover_stock_with_cache(
-            &req,
-            project_dir,
-            choice,
-            &mut chain_cache,
-            None,
-            None,
-        )?;
-        let setup_scope = progress.map(|p| {
+        let setup_scope = req.progress.map(|p| {
             let start = s_idx as f64 / n_setups.max(1) as f64;
             let end = (s_idx + 1) as f64 / n_setups.max(1) as f64;
             p.sub_scope(start, end)
         });
-        let sim = simulate_single_setup_inner(
-            &req,
-            &resolved,
-            &ready,
-            project_dir,
-            engine,
-            choice,
-            verify_config,
-            carryover.as_ref(),
-            setup_scope,
-        )?;
+        let setup_req = SetupSimRequest {
+            project: req.project,
+            setup_idx: s_idx,
+            cad_doc: req.cad_doc,
+            cad_revision: req.cad_revision,
+            cache: req.cache,
+            project_dir: req.project_dir,
+            kinematics: resolve_setup_kinematics(req.project, s_idx, req.project_dir),
+            resolution: req.resolution,
+            engine: req.engine,
+            backend_choice: req.backend_choice,
+            verify_config: req.verify_config,
+            cancel: req.cancel,
+            progress: setup_scope,
+        };
+        let resolved = setup
+            .resolve_with_sketches(
+                req.cad_doc,
+                &req.project.sketches,
+                req.project.display_units,
+            )
+            .map_err(|e| e.to_string())?;
+        let ready = collect_ready_setup_operations(req.project, s_idx, req.cache, req.cad_revision);
+        let carryover =
+            compute_setup_carryover_stock_with_cache(&setup_req, &mut chain_cache, None, None)?;
+        let sim = simulate_single_setup_inner(&setup_req, &resolved, &ready, carryover.as_ref())?;
 
         if let Some(td) = sim.as_tridexel() {
             chain_cache.insert(
@@ -753,6 +687,217 @@ pub fn post_process_project_setup(
     post_process_setup(&post_input, req.post_profile, req.program_stem).map_err(|e| e.to_string())
 }
 
+/// Per-setup outcome produced by [`export_all_setups_to_dir`].
+#[derive(Debug, Clone)]
+pub struct BatchSetupExportItem {
+    pub setup_idx: usize,
+    pub setup_name: String,
+    pub post_profile_id: String,
+    pub files_written: Vec<PathBuf>,
+    pub lines_written: usize,
+    pub warnings: Vec<String>,
+    pub error: Option<String>,
+}
+
+/// Aggregated result of exporting all Setups in a project into an output directory.
+#[derive(Debug, Clone)]
+pub struct BatchExportSummary {
+    pub output_dir: PathBuf,
+    pub setups: Vec<BatchSetupExportItem>,
+    pub total_files_written: usize,
+    pub total_lines: usize,
+}
+
+impl BatchExportSummary {
+    pub fn succeeded_setup_count(&self) -> usize {
+        self.setups
+            .iter()
+            .filter(|s| s.error.is_none() && !s.files_written.is_empty())
+            .count()
+    }
+
+    pub fn failed_setup_count(&self) -> usize {
+        self.setups.iter().filter(|s| s.error.is_some()).count()
+    }
+
+    pub fn total_warning_count(&self) -> usize {
+        self.setups.iter().map(|s| s.warnings.len()).sum()
+    }
+}
+
+/// Sanitizes an arbitrary project or setup label into a portable ASCII G-code filename stem.
+pub fn sanitize_program_stem(raw: &str, fallback: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for ch in raw.trim().chars() {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_') {
+            out.push(ch);
+        } else if (ch.is_whitespace() || ch == '.') && !out.ends_with('_') && !out.is_empty() {
+            out.push('_');
+        }
+    }
+    let trimmed = out.trim_matches(|c| c == '_' || c == '-');
+    if trimmed.is_empty() {
+        fallback.to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+/// Post-processes and writes every Setup's G-code file(s) into `output_dir`, enforcing
+/// single-component filename & extension safety rules.
+pub fn export_all_setups_to_dir(
+    project: &ProjectDocument,
+    cad_doc: &CadDocument,
+    cad_revision: u64,
+    cache: &ToolpathCache,
+    project_file_path: Option<&Path>,
+    extra_profiles: &[PostProfile],
+    output_dir: &Path,
+) -> Result<BatchExportSummary, String> {
+    if project.setups.is_empty() {
+        return Err("Project has no Setups to export.".to_string());
+    }
+    std::fs::create_dir_all(output_dir).map_err(|e| {
+        format!(
+            "Failed to create output directory '{}': {e}",
+            output_dir.display()
+        )
+    })?;
+
+    let proj_dir = project_file_path.and_then(Path::parent);
+    let mut available = load_available_post_profiles(proj_dir);
+    for custom in extra_profiles {
+        if let Some(existing) = available
+            .iter_mut()
+            .find(|p| !p.is_builtin && p.id.eq_ignore_ascii_case(&custom.id))
+        {
+            *existing = custom.clone();
+        } else if !available
+            .iter()
+            .any(|p| p.id.eq_ignore_ascii_case(&custom.id))
+        {
+            available.push(custom.clone());
+        }
+    }
+
+    let proj_label = project_file_path
+        .and_then(Path::file_name)
+        .and_then(|s| s.to_str())
+        .unwrap_or(&project.project_name);
+    let raw_base_stem = project_file_path
+        .and_then(Path::file_stem)
+        .and_then(|s| s.to_str())
+        .map(|s| s.trim_end_matches(".chip"))
+        .unwrap_or(&project.project_name);
+    let base_stem = sanitize_program_stem(raw_base_stem, "program");
+
+    let mut setups_out = Vec::with_capacity(project.setups.len());
+    let mut total_files_written = 0usize;
+    let mut total_lines = 0usize;
+
+    for (s_idx, setup) in project.setups.iter().enumerate() {
+        let mut warnings = Vec::new();
+        let Some(post_profile) = available
+            .iter()
+            .find(|p| p.id.eq_ignore_ascii_case(&setup.post_profile))
+            .cloned()
+        else {
+            setups_out.push(BatchSetupExportItem {
+                setup_idx: s_idx,
+                setup_name: setup.name.clone(),
+                post_profile_id: setup.post_profile.clone(),
+                files_written: Vec::new(),
+                lines_written: 0,
+                warnings,
+                error: Some(format!(
+                    "Unknown post-processor profile '{}'",
+                    setup.post_profile
+                )),
+            });
+            continue;
+        };
+
+        if post_profile.source == PostProfileSource::ProjectOrBundle {
+            warnings.push(format!(
+                "Uses custom post profile '{}' loaded from project/bundle directory; review header/footer G-code before machining.",
+                post_profile.id
+            ));
+        }
+
+        let setup_slug = sanitize_program_stem(&setup.id, &format!("setup_{}", s_idx + 1));
+        let setup_stem = if project.setups.len() > 1 {
+            format!("{base_stem}_{setup_slug}")
+        } else {
+            base_stem.clone()
+        };
+
+        let nc_files = match post_process_project_setup(&SetupPostRequest {
+            project,
+            setup_idx: s_idx,
+            cad_doc,
+            cad_revision,
+            cache,
+            post_profile: &post_profile,
+            project_label: proj_label,
+            program_stem: &setup_stem,
+        }) {
+            Ok(files) => files,
+            Err(err) => {
+                setups_out.push(BatchSetupExportItem {
+                    setup_idx: s_idx,
+                    setup_name: setup.name.clone(),
+                    post_profile_id: post_profile.id,
+                    files_written: Vec::new(),
+                    lines_written: 0,
+                    warnings,
+                    error: Some(err),
+                });
+                continue;
+            }
+        };
+
+        let mut written = Vec::new();
+        let mut setup_lines = 0usize;
+        let mut write_error = None;
+        for nc in nc_files {
+            warnings.extend(nc.warnings);
+            let safe_name = match validate_safe_output_filename(&nc.filename) {
+                Ok(name) => name,
+                Err(err) => {
+                    write_error = Some(format!("Unsafe output filename rejected: {err}"));
+                    break;
+                }
+            };
+            let dest = output_dir.join(safe_name);
+            if let Err(err) = std::fs::write(&dest, &nc.content) {
+                write_error = Some(format!("Failed writing '{}': {err}", dest.display()));
+                break;
+            }
+            setup_lines += nc.line_count;
+            total_lines += nc.line_count;
+            total_files_written += 1;
+            written.push(dest);
+        }
+
+        setups_out.push(BatchSetupExportItem {
+            setup_idx: s_idx,
+            setup_name: setup.name.clone(),
+            post_profile_id: post_profile.id,
+            files_written: written,
+            lines_written: setup_lines,
+            warnings,
+            error: write_error,
+        });
+    }
+
+    Ok(BatchExportSummary {
+        output_dir: output_dir.to_path_buf(),
+        setups: setups_out,
+        total_files_written,
+        total_lines,
+    })
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -771,8 +916,9 @@ mod tests {
     use chip_tools::default_starter_tool_library;
 
     use crate::{
-        ProjectDocument, SetupSimRequest, ToolpathCache, compute_operation_input_hash,
-        simulate_project_setup_with_choice_and_progress_in_dir,
+        DEFAULT_PURE_2D_SHEET_MARGIN_MM, ProjectDocument, SetupSimRequest, ToolpathCache,
+        compute_operation_input_hash, resolve_setup_kinematics, setup_requires_volumetric_sim,
+        simulate_project_setup,
     };
 
     #[test]
@@ -835,22 +981,21 @@ mod tests {
         })));
         *slot.lock().unwrap() = Some(Arc::clone(&tracker));
 
-        let res = simulate_project_setup_with_choice_and_progress_in_dir(
-            &SetupSimRequest {
-                project: &project,
-                setup_idx: 1,
-                cad_doc: &doc,
-                cad_revision: 0,
-                cache: &cache,
-                kinematics: MachineKinematicsConfig::default(),
-                resolution: SimResolution::Standard,
-                cancel: None,
-            },
-            None,
-            SimEngineKind::TriDexel,
-            SimComputeBackendChoice::Cpu,
-            Some(tracker.full_scope()),
-        )
+        let res = simulate_project_setup(&SetupSimRequest {
+            project: &project,
+            setup_idx: 1,
+            cad_doc: &doc,
+            cad_revision: 0,
+            cache: &cache,
+            project_dir: None,
+            kinematics: MachineKinematicsConfig::default(),
+            resolution: SimResolution::Standard,
+            engine: SimEngineKind::TriDexel,
+            backend_choice: SimComputeBackendChoice::Cpu,
+            verify_config: chip_sim::SimVerificationConfig::default(),
+            cancel: None,
+            progress: Some(tracker.full_scope()),
+        })
         .unwrap();
 
         assert_eq!(res.carried_over_from_setup.as_deref(), Some("Setup 1"));
@@ -868,6 +1013,122 @@ mod tests {
                 w[1] >= w[0],
                 "carryover progress must never regress: {pcts:?}"
             );
+        }
+    }
+
+    #[test]
+    fn resolve_setup_kinematics_prefers_machine_id_then_falls_back_to_post_profile() {
+        let mut proj = ProjectDocument::new("Kinematics Precedence");
+        let mut setup = Setup::new("s1", "Setup 1", WorkOffsetSlot::G54);
+        setup.post_profile = "linuxcnc".to_string();
+        proj.setups = vec![setup];
+
+        // No machine_id -> falls back to setup.post_profile ("linuxcnc")
+        let linuxcnc_prof = chip_post::resolve_post_profile("linuxcnc", None).unwrap();
+        let from_post = resolve_setup_kinematics(&proj, 0, None);
+        assert_eq!(from_post, linuxcnc_prof.to_kinematics_spec());
+
+        // Explicit machine_id -> honors machine kinematics over post_profile
+        let carvera = chip_tools::builtin_carvera_air_machine();
+        proj.machine_id = Some(carvera.id.clone());
+        let from_machine = resolve_setup_kinematics(&proj, 0, None);
+        assert_eq!(from_machine, carvera.kinematics);
+        assert_ne!(
+            from_machine.max_rapid_z_mm_min,
+            linuxcnc_prof.to_kinematics_spec().max_rapid_z_mm_min
+        );
+    }
+
+    #[test]
+    fn setup_requires_volumetric_sim_covers_carryover_strategies_and_undercut_tools() {
+        let mut proj = ProjectDocument::new("Volumetric Sim Check");
+        let lib = default_starter_tool_library();
+        proj.tools = lib.tools.clone();
+        let flat_id = proj.tools[0].id.clone();
+
+        let mut thread_tool = proj.tools[0].clone();
+        thread_tool.id = chip_tools::ToolId("t_thread".to_string());
+        thread_tool.geometry = chip_tools::CutterGeometry::ThreadMill {
+            diameter_mm: 5.0,
+            neck_diameter_mm: 3.0,
+            pitch_mm: 1.0,
+            teeth_count: 3,
+            flutes: 3,
+            flute_length_mm: 4.0,
+            neck_length_mm: 15.0,
+            shank_diameter_mm: 6.0,
+            overall_length_mm: 50.0,
+            thread_angle_deg: 60.0,
+        };
+        let thread_id = thread_tool.id.clone();
+        proj.tools.push(thread_tool);
+
+        // Plain 2.5D facing setup -> false
+        let mut s = Setup::new("s1", "Setup 1", WorkOffsetSlot::G54);
+        let mut op_face = Operation::new("op1", "Facing", OperationKind::Facing);
+        op_face.tool_id = Some(flat_id.clone());
+        s.operations.push(op_face);
+        proj.setups = vec![s];
+        assert!(!setup_requires_volumetric_sim(&proj, 0));
+
+        // Carryover setup -> true
+        proj.setups[0].carryover_from_setup_id = Some("s0".to_string());
+        assert!(setup_requires_volumetric_sim(&proj, 0));
+        proj.setups[0].carryover_from_setup_id = None;
+
+        // Undercut strategy (Dovetail) -> true, suppressed -> false
+        let mut op_dove = Operation::new("op2", "Dovetail", OperationKind::Dovetail);
+        op_dove.tool_id = Some(flat_id);
+        proj.setups[0].operations.push(op_dove);
+        assert!(setup_requires_volumetric_sim(&proj, 0));
+        proj.setups[0].operations[1].suppressed = true;
+        assert!(!setup_requires_volumetric_sim(&proj, 0));
+        proj.setups[0].operations.pop();
+
+        // ThreadMill cutter even on non-undercut op -> true
+        proj.setups[0].operations[0].tool_id = Some(thread_id);
+        assert!(setup_requires_volumetric_sim(&proj, 0));
+    }
+
+    #[test]
+    fn new_pure_2d_sheet_applies_canonical_margin_wcs_and_clamped_thickness() {
+        let lib = default_starter_tool_library();
+        let proj = ProjectDocument::new_pure_2d_sheet(
+            "Sign Project",
+            0.01, // below 0.5 mm clamp
+            chip_math::DisplayUnit::Millimeter,
+            &lib.tools,
+        );
+        assert_eq!(proj.project_name, "Sign Project");
+        assert!(proj.models.is_empty());
+        assert_eq!(proj.setups.len(), 1);
+        assert_eq!(proj.tools.len(), lib.tools.len());
+        assert_eq!(
+            proj.setups[0].wcs.origin,
+            WcsOriginMode::StockBoxPoint {
+                anchor: BoxAnchor27::TOP_FRONT_LEFT
+            }
+        );
+        match &proj.setups[0].stock {
+            StockConfig::RelativeBox {
+                side_pos_x,
+                side_neg_x,
+                side_pos_y,
+                side_neg_y,
+                top_offset_z,
+                bottom_offset_z,
+                sheet_thickness_z,
+                ..
+            } => {
+                assert!((side_pos_x.value_mm - DEFAULT_PURE_2D_SHEET_MARGIN_MM).abs() < 1e-9);
+                assert!((side_neg_x.value_mm - DEFAULT_PURE_2D_SHEET_MARGIN_MM).abs() < 1e-9);
+                assert!((side_pos_y.value_mm - DEFAULT_PURE_2D_SHEET_MARGIN_MM).abs() < 1e-9);
+                assert!((side_neg_y.value_mm - DEFAULT_PURE_2D_SHEET_MARGIN_MM).abs() < 1e-9);
+                assert!((top_offset_z.value_mm - 0.0).abs() < 1e-9);
+                assert!((bottom_offset_z.value_mm - 0.0).abs() < 1e-9);
+                assert!((sheet_thickness_z.value_mm - 0.5).abs() < 1e-9);
+            }
+            other => panic!("expected RelativeBox stock, got {other:?}"),
         }
     }
 }

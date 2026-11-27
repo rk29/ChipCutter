@@ -1,4 +1,5 @@
-use chip_cam::{BoxAnchor27, MeasureSnapTarget, MeasurementResult, ReachAnalysisResult};
+use chip_cad::{MeasureSnapTarget, MeasurementResult};
+use chip_cam::{BoxAnchor27, ReachAnalysisResult};
 use chip_math::{Aabb3, DisplayUnit, RigidFrame3};
 
 use crate::{

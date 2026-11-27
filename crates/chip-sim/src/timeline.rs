@@ -6,56 +6,11 @@ use chip_math::DVec3;
 use chip_tools::{MachineKinematicsSpec, Tool, ToolId};
 use serde::{Deserialize, Serialize};
 
-fn default_max_rotary_rate_deg_min() -> f64 {
-    3_600.0
-}
-
 /// Machine velocity, acceleration, cornering, and ATC parameters for cycle-time estimation (`06-simulation.md`).
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct MachineKinematicsConfig {
-    /// Machine `G0` rapid traverse feedrate (`mm/min`). Default: `5000.0`.
-    pub rapid_rate_mm_min: f64,
-    /// Axis acceleration limit (`mm/s²`). Default: `500.0`.
-    pub accel_mm_s2: f64,
-    /// Cornering junction deviation (`mm`, GRBL `$11` model). Default: `0.05`.
-    pub junction_deviation_mm: f64,
-    /// Tool change duration (`s`) added whenever `tool_number` changes after the first tool. Default: `15.0`.
-    pub tool_change_time_sec: f64,
-    /// Maximum 4th-axis rotary angular slew rate (`deg/min`). Default: `3600.0`.
-    #[serde(default = "default_max_rotary_rate_deg_min")]
-    pub max_rotary_rate_deg_min: f64,
-}
-
-impl Default for MachineKinematicsConfig {
-    fn default() -> Self {
-        Self {
-            rapid_rate_mm_min: 5_000.0,
-            accel_mm_s2: 500.0,
-            junction_deviation_mm: 0.05,
-            tool_change_time_sec: 15.0,
-            max_rotary_rate_deg_min: default_max_rotary_rate_deg_min(),
-        }
-    }
-}
-
-impl MachineKinematicsConfig {
-    /// Builds simulation kinematics directly from a [`MachineKinematicsSpec`].
-    pub fn from_machine_spec(spec: &MachineKinematicsSpec) -> Self {
-        Self {
-            rapid_rate_mm_min: spec.max_rapid_xy_mm_min.max(100.0),
-            accel_mm_s2: spec.accel_mm_s2.max(10.0),
-            junction_deviation_mm: spec.junction_deviation_mm.max(0.0),
-            tool_change_time_sec: spec.tool_change_time_sec.max(0.0),
-            max_rotary_rate_deg_min: spec.max_rotary_rate_deg_min.max(60.0),
-        }
-    }
-}
-
-impl From<&MachineKinematicsSpec> for MachineKinematicsConfig {
-    fn from(spec: &MachineKinematicsSpec) -> Self {
-        Self::from_machine_spec(spec)
-    }
-}
+///
+/// Unified directly with [`MachineKinematicsSpec`] so XY/Z rapid limits, acceleration, cornering
+/// junction deviation, tool-change duration, and 4th-axis rotary slew have a single source of truth.
+pub type MachineKinematicsConfig = MachineKinematicsSpec;
 
 /// Borrowed operation descriptor passed to [`SimulationTimeline::from_operations`] and `run_setup_simulation`.
 #[derive(Debug, Clone, Copy)]
@@ -241,7 +196,10 @@ impl SimulationTimeline {
         ops: &[SimOperationInput<'_>],
         kinematics: MachineKinematicsConfig,
     ) -> Self {
-        let rapid_mm_s = (kinematics.rapid_rate_mm_min.max(60.0)) / 60.0;
+        let rapid_xy_mm_min = kinematics.max_rapid_xy_mm_min.max(60.0);
+        let rapid_z_mm_min = kinematics.max_rapid_z_mm_min.max(60.0);
+        let rapid_xy_mm_s = rapid_xy_mm_min / 60.0;
+        let rapid_z_mm_s = rapid_z_mm_min / 60.0;
         let accel = kinematics.accel_mm_s2.max(10.0);
         let junc_dev = kinematics.junction_deviation_mm.max(1e-4);
 
@@ -351,7 +309,17 @@ impl SimulationTimeline {
                     let len = seg.length_mm();
                     lengths.push(len);
                     let v_mm_s = match seg.motion {
-                        SegmentMotion3D::Rapid => rapid_mm_s,
+                        SegmentMotion3D::Rapid => {
+                            let d = seg.end_wcs - seg.start_wcs;
+                            let d_xy = d.x.hypot(d.y);
+                            let d_z = d.z.abs();
+                            let dt_axes = (d_xy / rapid_xy_mm_s).max(d_z / rapid_z_mm_s);
+                            if len > 1e-9 && dt_axes > 1e-9 {
+                                len / dt_axes
+                            } else {
+                                rapid_xy_mm_s
+                            }
+                        }
                         SegmentMotion3D::Linear { feed_mm_min, .. }
                         | SegmentMotion3D::Arc { feed_mm_min, .. } => (feed_mm_min.max(1.0)) / 60.0,
                     };
@@ -414,7 +382,7 @@ impl SimulationTimeline {
                         (dt_linear, len)
                     };
                     let commanded_feed_mm_min = match seg.motion {
-                        SegmentMotion3D::Rapid => kinematics.rapid_rate_mm_min,
+                        SegmentMotion3D::Rapid => target_v[local_idx] * 60.0,
                         SegmentMotion3D::Linear { feed_mm_min, .. }
                         | SegmentMotion3D::Arc { feed_mm_min, .. } => feed_mm_min,
                     };

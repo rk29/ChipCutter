@@ -1,9 +1,9 @@
 use chip_cad::{CadDocument, FaceId, find_coplanar_faces, find_same_diameter_holes};
 use chip_cam::{
-    ExtractedFeature25D, ExtractedSelectionSummary, GeometrySelectionItem, MachiningBoundaryMode,
-    Operation, OperationKind, PocketBoundaryMode, ResolvedHeights, ResolvedRotaryWindow,
-    ResolvedSetup, RotaryAxialBoundaryMode, SharedAvoidRegion, StrategyParams, SurfaceMesh3D,
-    ToolContainmentMode,
+    BoundaryPreviewOverlay, ExtractedFeature25D, ExtractedSelectionSummary, GeometrySelectionItem,
+    MachiningBoundaryMode, Operation, OperationKind, PocketBoundaryMode, ResolvedHeights,
+    ResolvedRotaryWindow, ResolvedSetup, RotaryAxialBoundaryMode, SharedAvoidRegion,
+    StrategyParams, SurfaceMesh3D, ToolContainmentMode, resolve_rotary_window_for_preview,
 };
 use chip_math::{ArcSegment2D, DisplayUnit, EvalContext};
 use chip_sketch::SketchLayer;
@@ -15,7 +15,6 @@ use super::avoid_card::{
 use crate::{
     panels::{GeometryPickTarget, ViewportPickMode},
     theme::ThemeTokens,
-    viewport::{BoundaryPreviewOverlay, resolve_rotary_window_for_preview},
     widgets::{
         BannerKind, INPUT_COL_WIDTH, IconKind, edit_param_length, grid_row, inline_banner,
         inspector_grid, section_card, small_icon_button, static_card,

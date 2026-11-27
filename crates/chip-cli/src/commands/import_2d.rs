@@ -1,7 +1,6 @@
 use std::{path::PathBuf, process::ExitCode};
 
-use chip_cam::{BoxAnchor27, StockConfig, WcsOriginMode};
-use chip_math::{DisplayUnit, ParamLength};
+use chip_math::DisplayUnit;
 use chip_project::{ProjectDocument, portable_model_path};
 use chip_sketch::{
     DxfImportOptions, SketchLayer, SvgImportOptions, VectorImportUnits, import_dxf_path,
@@ -63,26 +62,13 @@ pub fn run_import_2d(args: Import2dArgs) -> Result<ExitCode, Box<dyn std::error:
                 .file_stem()
                 .and_then(|s| s.to_str())
                 .unwrap_or("Pure 2D Job");
-            let mut fresh = ProjectDocument::new(stem);
-            fresh.setups[0].wcs.origin = WcsOriginMode::StockBoxPoint {
-                anchor: BoxAnchor27::TOP_FRONT_LEFT,
-            };
-            fresh.setups[0].stock = StockConfig::RelativeBox {
-                side_pos_x: ParamLength::from_mm(2.0),
-                side_neg_x: ParamLength::from_mm(2.0),
-                side_pos_y: ParamLength::from_mm(2.0),
-                side_neg_y: ParamLength::from_mm(2.0),
-                symmetric_xy: true,
-                top_offset_z: ParamLength::from_mm(0.0),
-                bottom_offset_z: ParamLength::from_mm(0.0),
-                sheet_thickness_z: ParamLength::from_mm(args.sheet_thickness_mm.max(0.5)),
-                round_increment_mm: None,
-            };
             let starter = default_starter_tool_library();
-            for t in &starter.tools {
-                fresh.ensure_tool_embedded(t);
-            }
-            fresh
+            ProjectDocument::new_pure_2d_sheet(
+                stem,
+                args.sheet_thickness_mm,
+                DisplayUnit::Millimeter,
+                &starter.tools,
+            )
         }
     };
 

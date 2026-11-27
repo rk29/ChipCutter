@@ -4,19 +4,22 @@ use std::{
     sync::Arc,
 };
 
-use chip_cad::{
-    CadDocument, CadError, CadKernel, MeshImportOptions, MeshUnitKind, ModelTransform,
-    MonstertruckKernel, is_mesh_extension, load_mesh_cad_document,
+use chip_cad::{CadDocument, MeshUnitKind, ModelTransform, load_model_entry_cad_doc_transformed};
+use chip_cam::{
+    BoxAnchor27, Setup, SharedAvoidRegion, StockConfig, StrategyParams, WcsOriginMode,
+    WorkOffsetSlot,
 };
-use chip_cam::{Setup, SharedAvoidRegion, StrategyParams, WorkOffsetSlot};
-use chip_math::{DEFAULT_TESS_CHORD_TOL_MM, DisplayUnit, ParamLength};
+use chip_math::{DisplayUnit, ParamLength};
 use chip_sketch::{CustomFontMap, SketchEntity, SketchFontSource, SketchLayer};
 use chip_tools::{
     DEFAULT_MACHINE_ID, MachineDefinition, ProjectMaterialSelection, Tool, ToolId,
     WorkpieceMaterialProfile, match_best_preset_for_material, resolve_workpiece_material,
 };
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
+
+/// Canonical default XY sheet margin (`mm`) used by [`ProjectDocument::new_pure_2d_sheet`]
+/// across both CLI (`import-2d`) and GUI (`Start New Pure-2D Sheet Job`).
+pub const DEFAULT_PURE_2D_SHEET_MARGIN_MM: f64 = 3.0;
 
 /// Semantic role of a 3D model file referenced in `ProjectDocument.models`.
 ///
@@ -160,6 +163,79 @@ impl ProjectDocument {
                 WorkOffsetSlot::G54,
             )],
         }
+    }
+
+    /// Initializes a fresh Pure-2D sheet CNC project (`models = []`) with consistent
+    /// `TOP_FRONT_LEFT` WCS origin, symmetric [`DEFAULT_PURE_2D_SHEET_MARGIN_MM`] XY margin,
+    /// `sheet_thickness_mm` sheet Z depth, and embedded starter/global tools.
+    pub fn new_pure_2d_sheet(
+        name: impl Into<String>,
+        sheet_thickness_mm: f64,
+        display_units: DisplayUnit,
+        tools: &[Tool],
+    ) -> Self {
+        let clamped_z = sheet_thickness_mm.max(0.5);
+        let mut proj = Self::new(name);
+        proj.display_units = display_units;
+        proj.setups[0].name = format!("Setup 1 — {clamped_z:.1}mm Sheet (G54)");
+        proj.setups[0].wcs.origin = WcsOriginMode::StockBoxPoint {
+            anchor: BoxAnchor27::TOP_FRONT_LEFT,
+        };
+        proj.setups[0].stock = StockConfig::RelativeBox {
+            side_pos_x: ParamLength::from_mm(DEFAULT_PURE_2D_SHEET_MARGIN_MM),
+            side_neg_x: ParamLength::from_mm(DEFAULT_PURE_2D_SHEET_MARGIN_MM),
+            side_pos_y: ParamLength::from_mm(DEFAULT_PURE_2D_SHEET_MARGIN_MM),
+            side_neg_y: ParamLength::from_mm(DEFAULT_PURE_2D_SHEET_MARGIN_MM),
+            symmetric_xy: true,
+            top_offset_z: ParamLength::from_mm(0.0),
+            bottom_offset_z: ParamLength::from_mm(0.0),
+            sheet_thickness_z: ParamLength::from_mm(clamped_z),
+            round_increment_mm: None,
+        };
+        for t in tools {
+            proj.ensure_tool_embedded(t);
+        }
+        proj
+    }
+
+    /// Initializes a fresh 3D triangle-mesh project (`STL`/`OBJ`/`3MF`) with `TOP_CENTER` WCS,
+    /// symmetric `2.0 mm` XY / `1.0 mm` top stock allowance, and embedded starter tools.
+    pub fn new_from_mesh(name: impl Into<String>, model: ModelEntry, tools: &[Tool]) -> Self {
+        let mut proj = Self::new(name);
+        proj.models = vec![model];
+        proj.setups[0].wcs.origin = WcsOriginMode::StockBoxPoint {
+            anchor: BoxAnchor27::TOP_CENTER,
+        };
+        proj.setups[0].stock = StockConfig::RelativeBox {
+            side_pos_x: ParamLength::from_mm(2.0),
+            side_neg_x: ParamLength::from_mm(2.0),
+            side_pos_y: ParamLength::from_mm(2.0),
+            side_neg_y: ParamLength::from_mm(2.0),
+            symmetric_xy: true,
+            top_offset_z: ParamLength::from_mm(1.0),
+            bottom_offset_z: ParamLength::from_mm(0.0),
+            sheet_thickness_z: ParamLength::from_mm(12.0),
+            round_increment_mm: None,
+        };
+        for t in tools {
+            proj.ensure_tool_embedded(t);
+        }
+        proj
+    }
+
+    /// Updates `self.models[model_idx].transform` to `transform` and marks all Setup operations
+    /// `Dirty` so regenerated toolpaths reflect the new CAD/mesh pose.
+    pub fn apply_model_transform(&mut self, model_idx: usize, transform: ModelTransform) -> bool {
+        let Some(entry) = self.models.get_mut(model_idx) else {
+            return false;
+        };
+        entry.transform = transform;
+        for setup in &mut self.setups {
+            for op in &mut setup.operations {
+                op.mark_dirty();
+            }
+        }
+        true
     }
 
     /// Returns the effective target machine ID (`"generic"` when omitted).
@@ -689,16 +765,19 @@ pub struct MachineToolSwapSummary {
     pub pruned_unused_count: usize,
 }
 
-/// Computes lowercase `64`-character SHA-256 hex digest of `bytes`.
+/// Computes lowercase `64`-character SHA-256 hex digest of `bytes` (delegating to `chip-sketch`).
 pub fn compute_sha256_hex(bytes: &[u8]) -> String {
-    let digest = Sha256::digest(bytes);
-    let mut out = String::with_capacity(64);
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    for &b in digest.as_slice() {
-        out.push(HEX[(b >> 4) as usize] as char);
-        out.push(HEX[(b & 0x0f) as usize] as char);
-    }
-    out
+    chip_sketch::compute_sketch_sha256_hex(bytes)
+}
+
+/// Canonical check for whether `project.setups[setup_idx]` requires full 3D volumetric
+/// (`Tri-Dexel`) stock simulation (multi-setup carryover, undercut strategies, or relieved-neck
+/// undercut/thread cutters).
+pub fn setup_requires_volumetric_sim(project: &ProjectDocument, setup_idx: usize) -> bool {
+    project
+        .setups
+        .get(setup_idx)
+        .is_some_and(|s| s.requires_volumetric_sim(&project.tools))
 }
 
 /// Returns `true` when `path` points inside a Linux Flatpak `xdg-document-portal` FUSE mount
@@ -798,62 +877,6 @@ pub fn resolve_model_path(project_dir: Option<&Path>, stored_path: &str) -> Path
 
 fn normalize_slashes(raw: &str) -> String {
     raw.replace('\\', "/")
-}
-
-/// Returns `true` if `path` has a supported 3D triangle mesh extension (`.stl`, `.obj`, `.3mf`).
-pub fn is_mesh_path(path: &Path) -> bool {
-    path.extension()
-        .and_then(|s| s.to_str())
-        .is_some_and(is_mesh_extension)
-}
-
-/// Unified CAD/Mesh loader from in-memory bytes, dispatching `.stl`/`.obj`/`.3mf` to
-/// [`load_mesh_cad_document`] and STEP files to [`MonstertruckKernel::load_step_bytes`].
-pub fn load_model_bytes_cad_doc(
-    source_name: &str,
-    bytes: &[u8],
-    unit_override: Option<MeshUnitKind>,
-) -> Result<CadDocument, CadError> {
-    if is_mesh_path(Path::new(source_name)) {
-        load_mesh_cad_document(
-            source_name,
-            bytes,
-            &MeshImportOptions {
-                unit_override,
-                ..MeshImportOptions::default()
-            },
-        )
-    } else {
-        MonstertruckKernel.load_step_bytes(source_name, bytes, DEFAULT_TESS_CHORD_TOL_MM)
-    }
-}
-
-/// Unified CAD/Mesh loader reading `path` from disk and dispatching STEP vs. STL/OBJ/3MF cleanly.
-pub fn load_model_entry_cad_doc(
-    path: &Path,
-    unit_override: Option<MeshUnitKind>,
-) -> Result<CadDocument, CadError> {
-    let bytes = std::fs::read(path)?;
-    let source_name = path
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("model.step");
-    load_model_bytes_cad_doc(source_name, &bytes, unit_override)
-}
-
-/// Unified CAD/Mesh loader reading `path` from disk and applying `transform` in exact `f64` mm.
-pub fn load_model_entry_cad_doc_transformed(
-    path: &Path,
-    unit_override: Option<MeshUnitKind>,
-    transform: &ModelTransform,
-) -> Result<CadDocument, CadError> {
-    transform.validate()?;
-    let raw = load_model_entry_cad_doc(path, unit_override)?;
-    if transform.is_identity() {
-        Ok(raw)
-    } else {
-        Ok(raw.transformed(transform))
-    }
 }
 
 #[cfg(test)]

@@ -34,7 +34,7 @@ use chip_math::{DEFAULT_TESS_CHORD_TOL_MM, DVec2, DVec3, DisplayUnit, ParamLengt
 use chip_project::{
     ProjectDocument, SetupSimRequest, ToolpathCache, compute_operation_input_hash,
     generate_project_blocking, rebind_project_to_reloaded_cad, resolve_kinematics_for_key,
-    simulate_project_setup_with_engine, validate_project,
+    simulate_project_setup, validate_project,
 };
 use chip_sim::{SimEngineKind, SimIssueKind, SimResolution};
 use chip_sketch::{RectAnchorMode, SketchEntity, SketchEntityEntry, SketchLayer};
@@ -775,19 +775,18 @@ fn fixture_trimmed_cutting_areas_pass_chip_sim_zero_collision_and_zero_gouges() 
 
         let kin = resolve_kinematics_for_key(&project.setups[0].post_profile, None);
         for engine in [SimEngineKind::Heightmap, SimEngineKind::TriDexel] {
-            let sim = simulate_project_setup_with_engine(
-                &SetupSimRequest {
-                    project: &project,
-                    setup_idx: 0,
-                    cad_doc: &cad_doc,
-                    cad_revision: 1,
-                    cache: &cache,
-                    kinematics: kin,
-                    resolution: SimResolution::Standard,
-                    cancel: None,
-                },
+            let sim = simulate_project_setup(&SetupSimRequest {
+                project: &project,
+                setup_idx: 0,
+                cad_doc: &cad_doc,
+                cad_revision: 1,
+                cache: &cache,
+                kinematics: kin,
+                resolution: SimResolution::Standard,
+                cancel: None,
                 engine,
-            )
+                ..SetupSimRequest::new(&project, 0, &cad_doc, 1, &cache)
+            })
             .unwrap();
             let fix_hits: Vec<_> = sim
                 .diagnostics
@@ -917,19 +916,18 @@ fn fixture_trimmed_cutting_areas_pass_chip_sim_zero_collision_and_zero_gouges() 
 
         let kin = resolve_kinematics_for_key(&project.setups[0].post_profile, None);
         for engine in [SimEngineKind::Heightmap, SimEngineKind::TriDexel] {
-            let sim = simulate_project_setup_with_engine(
-                &SetupSimRequest {
-                    project: &project,
-                    setup_idx: 0,
-                    cad_doc: &cad_doc,
-                    cad_revision: 1,
-                    cache: &cache,
-                    kinematics: kin,
-                    resolution: SimResolution::Standard,
-                    cancel: None,
-                },
+            let sim = simulate_project_setup(&SetupSimRequest {
+                project: &project,
+                setup_idx: 0,
+                cad_doc: &cad_doc,
+                cad_revision: 1,
+                cache: &cache,
+                kinematics: kin,
+                resolution: SimResolution::Standard,
+                cancel: None,
                 engine,
-            )
+                ..SetupSimRequest::new(&project, 0, &cad_doc, 1, &cache)
+            })
             .unwrap();
             let fix_hits: Vec<_> = sim
                 .diagnostics
@@ -1524,19 +1522,18 @@ fn rotary_axial_keepout_splits_passes_with_safe_retracts_and_passes_chip_sim() {
     // Verify against BOTH CylindricalStock (`Heightmap`) and volumetric `TriDexel` in `chip-sim`!
     let kin = resolve_kinematics_for_key(&project.setups[0].post_profile, None);
     for engine in [SimEngineKind::Heightmap, SimEngineKind::TriDexel] {
-        let sim = simulate_project_setup_with_engine(
-            &SetupSimRequest {
-                project: &project,
-                setup_idx: 0,
-                cad_doc: &cad_doc,
-                cad_revision: 1,
-                cache: &cache,
-                kinematics: kin,
-                resolution: SimResolution::Standard,
-                cancel: None,
-            },
+        let sim = simulate_project_setup(&SetupSimRequest {
+            project: &project,
+            setup_idx: 0,
+            cad_doc: &cad_doc,
+            cad_revision: 1,
+            cache: &cache,
+            kinematics: kin,
+            resolution: SimResolution::Standard,
+            cancel: None,
             engine,
-        )
+            ..SetupSimRequest::new(&project, 0, &cad_doc, 1, &cache)
+        })
         .unwrap();
         let bad: Vec<_> = sim
             .diagnostics

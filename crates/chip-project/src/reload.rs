@@ -1,45 +1,18 @@
 use std::collections::{HashMap, HashSet};
 
 use chip_cad::{
-    BodyId, CadDocument, EntitySignatureKind, FaceId, GeometricSignature, RematchOutcome,
-    SelectionBinding, TopologyGraph, expand_coaxial_hole_faces, rematch_edge, rematch_face,
-    rematch_loop,
+    CadDocument, FaceId, RematchOutcome, SelectionBinding, TopologyGraph,
+    expand_coaxial_hole_faces, rematch_edge, rematch_face, rematch_loop,
 };
 use chip_cam::{
     GeometrySelectionItem, OperationStatus, WcsAxisRef, WcsFeaturePointRef, WcsOrientationMode,
-    WcsOriginMode, extract_selection_features_with_sketches,
+    WcsOriginMode, cad_binding_to_sketch_face, extract_selection_features_with_sketches,
+    sketch_face_to_cad_binding,
 };
-use chip_sketch::{SketchAnchor, SketchFaceBinding};
+use chip_sketch::SketchAnchor;
 use serde::{Deserialize, Serialize};
 
 use crate::document::{ModelEntry, ProjectDocument};
-
-/// Converts a CAD-kernel-independent [`SketchFaceBinding`] into a [`SelectionBinding`] (`PlanarFace`).
-pub fn sketch_face_to_cad_binding(b: &SketchFaceBinding) -> SelectionBinding {
-    SelectionBinding {
-        body_id: BodyId(b.body_id),
-        last_index: b.last_face_index,
-        signature: GeometricSignature {
-            kind: EntitySignatureKind::PlanarFace,
-            normal_or_axis: b.normal_world,
-            centroid_mm: b.centroid_world_mm,
-            characteristic_measure: b.area_mm2,
-            aabb_mm: b.aabb_mm,
-        },
-    }
-}
-
-/// Converts a planar [`SelectionBinding`] (`chip-cad`) into a serializable [`SketchFaceBinding`].
-pub fn cad_binding_to_sketch_face(b: &SelectionBinding) -> SketchFaceBinding {
-    SketchFaceBinding {
-        body_id: b.body_id.0,
-        last_face_index: b.last_index,
-        normal_world: b.signature.normal_or_axis,
-        centroid_world_mm: b.signature.centroid_mm,
-        area_mm2: b.signature.characteristic_measure,
-        aabb_mm: b.signature.aabb_mm,
-    }
-}
 
 /// Per-operation outcome after reloading a revised STEP model (`02-cad-selection.md` §CAD Reload).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -8,12 +8,13 @@ pub mod tool_tab;
 
 use chip_cad::CadDocument;
 use chip_cam::{
-    ExtractedSelectionSummary, MachinabilityFix, OperationStatus, ResolvedHeights, ResolvedSetup,
-    SharedAvoidRegion, SurfaceMesh3D, apply_machinability_fix,
+    BoundaryPreviewOverlay, ExtractedSelectionSummary, MachinabilityFix, OperationStatus,
+    ResolvedHeights, ResolvedSetup, SharedAvoidRegion, SurfaceMesh3D, ToolOperationClass,
+    apply_machinability_fix, cutter_supports_operation,
 };
 use chip_math::{DVec3, EvalContext};
 use chip_project::{ProjectDocument, UndoHistory};
-use chip_tools::{MachineDefinition, ToolLibrary, ToolOperationClass};
+use chip_tools::{MachineDefinition, ToolLibrary};
 
 use self::avoid_card::{
     AvoidCardAction, AvoidCardSetupView, create_and_link_shared_avoid,
@@ -25,7 +26,6 @@ use crate::{
         GeometryPickTarget, OperationTab, ViewportPickMode, browser::default_pick_mode_for_op,
     },
     theme::ThemeTokens,
-    viewport::BoundaryPreviewOverlay,
     widgets::{BannerKind, IconKind, inline_banner, inline_icon, static_card},
 };
 
@@ -406,9 +406,10 @@ pub fn show_operation_inspector(
                     let mut clearing_tool_candidates: Vec<passes_tab::ClearingToolCandidate> =
                         Vec::new();
                     for t in project.tools.iter().chain(global_tools.tools.iter()) {
-                        if t.geometry
-                            .supports_operation(ToolOperationClass::VCarveFlatClearance)
-                            && !clearing_tool_candidates.iter().any(|cand| cand.id == t.id)
+                        if cutter_supports_operation(
+                            &t.geometry,
+                            ToolOperationClass::VCarveFlatClearance,
+                        ) && !clearing_tool_candidates.iter().any(|cand| cand.id == t.id)
                         {
                             let presets = t
                                 .presets
@@ -2433,8 +2434,7 @@ mod tests {
             .tools
             .iter_mut()
             .find(|t| {
-                t.geometry
-                    .supports_operation(ToolOperationClass::VCarveFlatClearance)
+                cutter_supports_operation(&t.geometry, ToolOperationClass::VCarveFlatClearance)
             })
             .expect("starter library must include a flat endmill");
         let flat_id = flat_tool.id.clone();

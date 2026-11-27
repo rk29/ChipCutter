@@ -5,14 +5,16 @@
 //! single-step `< 1 ms` Undo on Apply, and native / XDG-portal STL folder export.
 
 use chip_cad::CadDocument;
-use chip_cam::{
-    FlipAxis, FlipJigConfig, FlipJigPinCount, FlipJigPlan, STANDARD_PIN_DIAMETERS_MM,
-    SoftJawBoltPattern, SoftJawConfig, SoftJawOutputMode, SoftJawPlan, ViseClampAxis,
-    WorkOffsetSlot, build_soft_jaw_plan, build_two_sided_flip_jig,
-};
+use chip_cam::{ViseClampAxis, WorkOffsetSlot};
 use chip_math::DisplayUnit;
-use chip_project::{ProjectDocument, UndoHistory};
-use chip_tools::{CutterGeometry, Tool, ToolId};
+use chip_project::{
+    FlipAxis, FlipJigConfig, FlipJigPinCount, FlipJigPlan, ProjectDocument,
+    STANDARD_PIN_DIAMETERS_MM, SoftJawBoltPattern, SoftJawConfig, SoftJawOutputMode, SoftJawPlan,
+    UndoHistory, apply_flip_jig_plan, apply_soft_jaw_plan, build_soft_jaw_plan,
+    build_two_sided_flip_jig, next_unique_setup_id_with_base, next_work_offset_slot,
+    pick_flat_endmill_id, pick_pin_tool,
+};
+use chip_tools::{Tool, ToolId};
 
 use crate::{
     theme::ThemeTokens,
@@ -516,35 +518,19 @@ impl FlipJigWizardModalState {
         if apply_clicked && let Some(Ok(plan)) = self.cached_preview.take() {
             history.record_before_edit("Apply Flip-Jig Dowel-Pin Wizard", None, project);
             let s_idx = self.setup_idx;
-            if let Some(new_stock) = plan.updated_setup1_stock {
-                project.setups[s_idx].stock = new_stock;
-            }
-            project.sketches.push(plan.pin_sketch);
-            project.setups[s_idx]
-                .operations
-                .insert(0, plan.setup1_pin_op);
-            for op in &mut project.setups[s_idx].operations {
-                op.mark_dirty();
-            }
-            let new_setup_idx = project.setups.len();
             let s2_name = plan.setup2_flip.name.clone();
             let pin_count = plan.pin_centers_setup1_wcs.len();
-            project.setups.push(plan.setup2_flip);
-            if let Some(sb_sk) = plan.spoilboard_sketch {
-                project.sketches.push(sb_sk);
+            let flip_code = plan.flip_axis.short_code();
+            let max_sym_err = plan.max_symmetry_error_mm;
+            if let Some(new_setup_idx) = apply_flip_jig_plan(project, s_idx, plan) {
+                keep_open = false;
+                result = Some(FlipJigApplyResult {
+                    new_setup_idx,
+                    log_message: format!(
+                        "[WORKHOLDING] Applied Flip-Jig Wizard ({flip_code} · {pin_count} pins · sym err {max_sym_err:.2e} mm) -> added '{s2_name}'."
+                    ),
+                });
             }
-            if let Some(sb_setup) = plan.spoilboard_setup {
-                project.setups.push(sb_setup);
-            }
-            keep_open = false;
-            result = Some(FlipJigApplyResult {
-                new_setup_idx,
-                log_message: format!(
-                    "[WORKHOLDING] Applied Flip-Jig Wizard ({} · {pin_count} pins · sym err {:.2e} mm) -> added '{s2_name}'.",
-                    plan.flip_axis.short_code(),
-                    plan.max_symmetry_error_mm
-                ),
-            });
         }
 
         self.open = keep_open;
@@ -562,11 +548,14 @@ impl FlipJigWizardModalState {
         let mut cfg = self.config.clone();
         cfg.pin_tool_id = pin_tool_id;
         cfg.pin_tool_diameter_mm = pin_tool_dia;
-        cfg.setup2_id = Some(next_unique_setup_id(project, "setup_2_flip"));
+        cfg.setup2_id = Some(next_unique_setup_id_with_base(project, "setup_2_flip"));
         cfg.setup2_wcs_slot = self
             .setup2_wcs_slot_override
             .unwrap_or_else(|| next_work_offset_slot(project));
-        cfg.spoilboard_setup_id = Some(next_unique_setup_id(project, "setup_spoilboard_pins"));
+        cfg.spoilboard_setup_id = Some(next_unique_setup_id_with_base(
+            project,
+            "setup_spoilboard_pins",
+        ));
         cfg.spoilboard_wcs_slot = self
             .spoilboard_wcs_slot_override
             .unwrap_or(WorkOffsetSlot::G54);
@@ -1208,25 +1197,22 @@ impl SoftJawWizardModalState {
             }
         }
 
-        if apply_setup_clicked
-            && let Some(Ok(mut plan)) = self.cached_preview.take()
-            && let Some(sj_setup) = plan.machining_setup.take()
-        {
-            history.record_before_edit("Apply Auto Soft-Jaw Wizard", None, project);
-            if let Some(sk) = plan.pocket_sketch.take() {
-                project.sketches.push(sk);
+        if apply_setup_clicked && let Some(Ok(plan)) = self.cached_preview.take() {
+            let grip_depth_mm = plan.grip_depth_mm;
+            let part_clearance_mm = plan.part_clearance_mm;
+            if plan.machining_setup.is_some() {
+                history.record_before_edit("Apply Auto Soft-Jaw Wizard", None, project);
+                if let Some(new_setup_idx) = apply_soft_jaw_plan(project, plan) {
+                    let sj_name = project.setups[new_setup_idx].name.clone();
+                    keep_open = false;
+                    result = Some(SoftJawApplyResult {
+                        new_setup_idx: Some(new_setup_idx),
+                        log_message: format!(
+                            "[WORKHOLDING] Applied Auto Soft-Jaw Wizard -> added '{sj_name}' (grip={grip_depth_mm:.2} mm, clearance={part_clearance_mm:.2} mm)."
+                        ),
+                    });
+                }
             }
-            let new_setup_idx = project.setups.len();
-            let sj_name = sj_setup.name.clone();
-            project.setups.push(sj_setup);
-            keep_open = false;
-            result = Some(SoftJawApplyResult {
-                new_setup_idx: Some(new_setup_idx),
-                log_message: format!(
-                    "[WORKHOLDING] Applied Auto Soft-Jaw Wizard -> added '{sj_name}' (grip={:.2} mm, clearance={:.2} mm).",
-                    plan.grip_depth_mm, plan.part_clearance_mm
-                ),
-            });
         }
 
         self.open = keep_open;
@@ -1258,7 +1244,7 @@ impl SoftJawWizardModalState {
         if cfg.finishing_tool_id.is_none() {
             cfg.finishing_tool_id = auto_tool_id;
         }
-        cfg.setup_id = Some(next_unique_setup_id(project, "setup_soft_jaws"));
+        cfg.setup_id = Some(next_unique_setup_id_with_base(project, "setup_soft_jaws"));
         cfg.wcs_slot = self
             .wcs_slot_override
             .unwrap_or_else(|| next_work_offset_slot(project));
@@ -1388,80 +1374,13 @@ fn render_optional_wcs_combo(
     *selected != prev
 }
 
-fn next_unique_setup_id(proj: &ProjectDocument, base: &str) -> String {
-    if !proj.setups.iter().any(|s| s.id == base) {
-        return base.to_string();
-    }
-    let mut n = 2usize;
-    loop {
-        let cand = format!("{base}_{n}");
-        if !proj.setups.iter().any(|s| s.id == cand) {
-            return cand;
-        }
-        n += 1;
-    }
-}
-
-fn next_work_offset_slot(proj: &ProjectDocument) -> WorkOffsetSlot {
-    for slot in [
-        WorkOffsetSlot::G55,
-        WorkOffsetSlot::G56,
-        WorkOffsetSlot::G57,
-        WorkOffsetSlot::G58,
-        WorkOffsetSlot::G59,
-    ] {
-        if !proj.setups.iter().any(|s| s.wcs_slot == slot) {
-            return slot;
-        }
-    }
-    WorkOffsetSlot::G55
-}
-
-fn pick_pin_tool(tools: &[Tool], hole_dia_mm: f64) -> (Option<ToolId>, Option<f64>) {
-    if let Some(drill) = tools.iter().find(|t| {
-        matches!(
-            t.geometry,
-            CutterGeometry::TwistDrill { diameter_mm, .. }
-            if (diameter_mm - hole_dia_mm).abs() <= 0.15
-        )
-    }) {
-        return (
-            Some(drill.id.clone()),
-            Some(drill.geometry.cutting_diameter_mm()),
-        );
-    }
-    if let Some(em) = tools.iter().find(|t| {
-        matches!(
-            t.geometry,
-            CutterGeometry::FlatEndmill { diameter_mm, .. }
-            if diameter_mm < hole_dia_mm - 0.2
-        )
-    }) {
-        return (Some(em.id.clone()), Some(em.geometry.cutting_diameter_mm()));
-    }
-    if let Some(first) = tools.first() {
-        return (
-            Some(first.id.clone()),
-            Some(first.geometry.cutting_diameter_mm()),
-        );
-    }
-    (None, None)
-}
-
-fn pick_flat_endmill_id(tools: &[Tool]) -> Option<ToolId> {
-    tools
-        .iter()
-        .find(|t| matches!(t.geometry, CutterGeometry::FlatEndmill { .. }))
-        .or_else(|| tools.first())
-        .map(|t| t.id.clone())
-}
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use chip_cad::{CadKernel, MonstertruckKernel, sample_machined_plate_step};
-    use chip_cam::{FixtureKind, SoftJawBoltPattern, WorkOffsetSlot};
+    use chip_cam::{FixtureKind, WorkOffsetSlot};
     use chip_math::{DEFAULT_TESS_CHORD_TOL_MM, DisplayUnit};
+    use chip_project::SoftJawBoltPattern;
     use chip_project::{ProjectDocument, UndoHistory};
     use chip_tools::{CoolantMode, CutterGeometry, SpindleDirection, Tool, ToolId};
 

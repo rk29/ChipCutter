@@ -1,7 +1,7 @@
 use std::path::Path;
 
-use chip_cad::{CurveKind, PickFilter, PickTarget, SurfaceKind};
-use chip_cam::{MeasureSnapTarget, WcsOriginMode, apply_machinability_fix};
+use chip_cad::{CurveKind, MeasureSnapTarget, PickFilter, PickTarget, SurfaceKind};
+use chip_cam::{WcsOriginMode, apply_machinability_fix};
 
 use crate::{
     app::{ChipCutterApp, viewport_controller::SketchAuthorInteractionInput},
@@ -14,10 +14,8 @@ use crate::{
         keepout_inspector::{KeepOutInspectorAction, KeepOutInspectorCtx, show_keepout_inspector},
         model_inspector::{ModelInspectorCtx, show_model_inspector},
         operation_inspector::{
-            OperationInspectorAction, OperationInspectorCtx,
-            avoid_card::mark_ops_dirty_with_rest,
-            machinability_card::{evaluate_operation_machinability, primary_fixable_finding},
-            show_operation_inspector,
+            OperationInspectorAction, OperationInspectorCtx, avoid_card::mark_ops_dirty_with_rest,
+            machinability_card::evaluate_operation_machinability, show_operation_inspector,
         },
         project_properties::{ProjectPropertiesCtx, show_project_inspector},
         project_tool_inspector::{
@@ -1637,7 +1635,8 @@ impl ChipCutterApp {
                     cad_ref,
                 )
                 .and_then(|rep| {
-                    primary_fixable_finding(&rep).and_then(|f| f.suggested_fix.clone())
+                    rep.primary_fixable_finding()
+                        .and_then(|f| f.suggested_fix.clone())
                 });
                 let Some(fix) = fix_opt else {
                     break;

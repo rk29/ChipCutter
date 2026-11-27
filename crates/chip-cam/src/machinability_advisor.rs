@@ -11,15 +11,18 @@ use chip_cad::CadDocument;
 use chip_math::{DisplayUnit, EvalContext, ParamLength};
 use chip_sketch::SketchLayer;
 use chip_tools::{
-    CoolantMode, CutPhysicsInput, CutPhysicsMetrics, CutterGeometry, MachineDefinition, Tool,
-    ToolOperationClass, ToolSubstrate, WorkpieceMaterialProfile, compute_adaptive_thinning_feed,
-    compute_engagement_physics,
+    CoolantMode, CutterGeometry, MachineDefinition, Tool, WorkpieceMaterialProfile,
+    compute_adaptive_thinning_feed,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::{
     heights::ResolvedHeights,
-    operation::{Operation, OperationKind},
+    machinability_physics::{
+        CutPhysicsInput, CutPhysicsMetrics, ToolSubstrate, available_spindle_power_watts,
+        cantilever_deflection_and_stress, compute_engagement_physics,
+    },
+    operation::{Operation, OperationKind, ToolOperationClass, cutter_supports_operation},
     params::{
         ChamferSourceMode, DrillBoreParams, EntryStrategy, HoleMachiningMode, PocketBoundaryMode,
         PocketStrategyKind, StrategyParams,
@@ -145,6 +148,16 @@ pub struct OperationMachinabilityReport {
     pub metrics: Option<CutPhysicsMetrics>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub findings: Vec<MachinabilityFinding>,
+}
+
+impl OperationMachinabilityReport {
+    /// Returns the highest-severity finding that carries a deterministic 1-click safe fix.
+    pub fn primary_fixable_finding(&self) -> Option<&MachinabilityFinding> {
+        self.findings
+            .iter()
+            .filter(|f| f.suggested_fix.is_some())
+            .max_by_key(|f| f.severity)
+    }
 }
 
 /// Aggregated machinability analysis across all operations in a [`Setup`].
@@ -307,9 +320,8 @@ fn is_helical_bore_op(tool: &Tool, params: &DrillBoreParams, hole_d: Option<f64>
         HoleMachiningMode::Drill => false,
         HoleMachiningMode::HelicalBore => true,
         HoleMachiningMode::AutoByTool => {
-            let can_bore = tool
-                .geometry
-                .supports_operation(ToolOperationClass::HelicalBore);
+            let can_bore =
+                cutter_supports_operation(&tool.geometry, ToolOperationClass::HelicalBore);
             let is_drill_geom = matches!(
                 tool.geometry,
                 CutterGeometry::TwistDrill { .. } | CutterGeometry::ChamferMill { .. }
@@ -622,8 +634,7 @@ pub fn analyze_operation_machinability(
             std::f64::consts::PI * tool_r * tool_r * cutting.plunge_feed_mm_min.max(0.0);
         let u_s = ctx.material.specific_cutting_energy_w_s_mm3.max(0.0);
         let cutting_power_watts = u_s * (mrr_mm3_min / 60.0);
-        let avail_w =
-            chip_tools::available_spindle_power_watts(&ctx.machine.spindle, cutting.spindle_rpm);
+        let avail_w = available_spindle_power_watts(&ctx.machine.spindle, cutting.spindle_rpm);
         let spindle_load_pct = avail_w
             .filter(|&w| w > 1e-6)
             .map(|w| (cutting_power_watts / w) * 100.0);
@@ -638,7 +649,7 @@ pub fn analyze_operation_machinability(
         let fz =
             chip_tools::chipload_from_feed(cutting.spindle_rpm, flutes, cutting.plunge_feed_mm_min)
                 .unwrap_or(0.0);
-        let deflection = chip_tools::cantilever_deflection_and_stress(tool, f_r, 0.5 * ap, false);
+        let deflection = cantilever_deflection_and_stress(tool, f_r, 0.5 * ap, false);
         CutPhysicsMetrics {
             surface_speed_m_min: vc,
             programmed_center_feed_mm_min: cutting.plunge_feed_mm_min,

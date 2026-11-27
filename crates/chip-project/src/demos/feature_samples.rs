@@ -20,14 +20,12 @@
 use chip_cad::{CadDocument, CurveKind, OrientedEdgeUse, SurfaceKind, sample_svg_badge_bytes};
 use chip_cam::{
     BoxAnchor27, Deburr3DParams, DovetailMode, DovetailParams, FeedOptimizationConfig,
-    FixedBoxXyAlign, FixedBoxZAlign, FixtureBody, FixtureKind, FixtureZRef, FlipAxis,
-    FlipJigConfig, FlipJigPinCount, GeometrySelectionItem, HeightReference, HeightSpec,
-    HoleMachiningMode, MachiningBoundaryMode, Operation, OperationKind, OperationRotaryMode,
-    PocketStrategyKind, RestMachiningConfig, RestMachiningMode, RotaryAxisKind, RotaryDirection,
-    RotaryDriveMode, Setup, SharedAvoidRegion, SlotUndercutMode, SlotUndercutParams,
-    SlotUndercutPreset, SoftJawBoltPattern, SoftJawConfig, SoftJawOutputMode, StockConfig,
-    StrategyParams, TabProfileKind, ToolContainmentMode, UndercutEntryMode, ViseClampAxis,
-    WcsOriginMode, WorkOffsetSlot, build_soft_jaw_plan, build_two_sided_flip_jig,
+    FixedBoxXyAlign, FixedBoxZAlign, FixtureBody, FixtureKind, FixtureZRef, GeometrySelectionItem,
+    HeightReference, HeightSpec, HoleMachiningMode, MachiningBoundaryMode, Operation,
+    OperationKind, OperationRotaryMode, PocketStrategyKind, RestMachiningConfig, RestMachiningMode,
+    RotaryAxisKind, RotaryDirection, RotaryDriveMode, Setup, SharedAvoidRegion, SlotUndercutMode,
+    SlotUndercutParams, SlotUndercutPreset, StockConfig, StrategyParams, TabProfileKind,
+    ToolContainmentMode, UndercutEntryMode, ViseClampAxis, WcsOriginMode, WorkOffsetSlot,
 };
 use chip_math::{ArcPolyline2D, ArcSegment2D, DVec2, DisplayUnit, ParamLength, approx_eq};
 use chip_sketch::{
@@ -36,7 +34,13 @@ use chip_sketch::{
 };
 use chip_tools::{CutterGeometry, Tool, starter_undercut_tools};
 
-use crate::document::{ModelEntry, ProjectDocument};
+use crate::{
+    document::{ModelEntry, ProjectDocument},
+    wizards::{
+        FlipAxis, FlipJigConfig, FlipJigPinCount, SoftJawBoltPattern, SoftJawConfig,
+        SoftJawOutputMode, build_soft_jaw_plan, build_two_sided_flip_jig,
+    },
+};
 
 fn find_flat_endmill(tools: &[Tool], target_dia_mm: f64, tol_mm: f64) -> Option<Tool> {
     tools

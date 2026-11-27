@@ -15,7 +15,7 @@ use chip_cam::{
     generate_operation_toolpath_with_fixtures, normalize_indexed_angle_deg, resolve_setup_fixtures,
 };
 use chip_math::DisplayUnit;
-use chip_sim::{SimComputeBackendChoice, SimResolution, TriDexelStock};
+use chip_sim::{SimComputeBackendChoice, TriDexelStock};
 use chip_sketch::SketchLayer;
 use chip_tools::{Tool, resolve_machine_definition};
 use crossbeam_channel::{Receiver, Sender};
@@ -30,7 +30,7 @@ use crate::{
     document::ProjectDocument,
     pipeline::{
         SetupSimRequest, compute_in_setup_carryover_stock, compute_setup_carryover_stock,
-        resolve_kinematics_for_key,
+        resolve_setup_kinematics,
     },
 };
 
@@ -713,26 +713,18 @@ impl JobDispatcher {
         let cad_owned = Arc::clone(cad_doc);
 
         rayon::spawn(move || {
-            let kin = proj_owned
-                .setups
-                .get(setup_idx)
-                .map(|s| resolve_kinematics_for_key(&s.post_profile, None))
-                .unwrap_or_default();
-            let req = SetupSimRequest {
-                project: &proj_owned,
+            let mut req = SetupSimRequest::new(
+                &proj_owned,
                 setup_idx,
-                cad_doc: &cad_owned,
+                &cad_owned,
                 cad_revision,
-                cache: &cache_owned,
-                kinematics: kin,
-                resolution: SimResolution::Standard,
-                cancel: None,
-            };
-            let res = compute_setup_carryover_stock(&req, None, SimComputeBackendChoice::Auto)
-                .and_then(|opt| {
-                    opt.map(|c| Arc::new(c.stock))
-                        .ok_or_else(|| "carryover stock not configured".to_string())
-                });
+                &cache_owned,
+            );
+            req.backend_choice = SimComputeBackendChoice::Auto;
+            let res = compute_setup_carryover_stock(&req).and_then(|opt| {
+                opt.map(|c| Arc::new(c.stock))
+                    .ok_or_else(|| "carryover stock not configured".to_string())
+            });
             let _ = tx.send((epoch, setup_idx, digest, res));
             if let Some(cb) = &wakeup {
                 cb();
@@ -762,28 +754,15 @@ impl JobDispatcher {
         let cad_owned = Arc::clone(cad_doc);
 
         rayon::spawn(move || {
-            let kin = proj_owned
-                .setups
-                .get(setup_idx)
-                .map(|s| resolve_kinematics_for_key(&s.post_profile, None))
-                .unwrap_or_default();
-            let req = SetupSimRequest {
-                project: &proj_owned,
+            let mut req = SetupSimRequest::new(
+                &proj_owned,
                 setup_idx,
-                cad_doc: &cad_owned,
+                &cad_owned,
                 cad_revision,
-                cache: &cache_owned,
-                kinematics: kin,
-                resolution: SimResolution::Standard,
-                cancel: None,
-            };
-            let res = compute_in_setup_carryover_stock(
-                &req,
-                &upstream_indices,
-                None,
-                SimComputeBackendChoice::Auto,
-            )
-            .map(Arc::new);
+                &cache_owned,
+            );
+            req.backend_choice = SimComputeBackendChoice::Auto;
+            let res = compute_in_setup_carryover_stock(&req, &upstream_indices).map(Arc::new);
             let _ = tx.send((epoch, setup_idx, digest, res));
             if let Some(cb) = &wakeup {
                 cb();
@@ -1372,25 +1351,12 @@ pub fn generate_project_blocking_in_dir(
                     CarryoverReadiness::None => None,
                     CarryoverReadiness::Ready(td) => Some(td),
                     CarryoverReadiness::NeedCompute { digest } => {
-                        let kin = resolve_kinematics_for_key(
-                            &project.setups[s_idx].post_profile,
-                            project_dir,
-                        );
-                        let sim_req = SetupSimRequest {
-                            project,
-                            setup_idx: s_idx,
-                            cad_doc,
-                            cad_revision,
-                            cache,
-                            kinematics: kin,
-                            resolution: SimResolution::Standard,
-                            cancel: None,
-                        };
-                        match compute_setup_carryover_stock(
-                            &sim_req,
-                            project_dir,
-                            SimComputeBackendChoice::Auto,
-                        ) {
+                        let mut sim_req =
+                            SetupSimRequest::new(project, s_idx, cad_doc, cad_revision, cache);
+                        sim_req.project_dir = project_dir;
+                        sim_req.kinematics = resolve_setup_kinematics(project, s_idx, project_dir);
+                        sim_req.backend_choice = SimComputeBackendChoice::Auto;
+                        match compute_setup_carryover_stock(&sim_req) {
                             Ok(Some(res)) => {
                                 let arc_td = Arc::new(res.stock);
                                 carryover_cache.insert((s_idx, digest), Arc::clone(&arc_td));
@@ -1442,25 +1408,20 @@ pub fn generate_project_blocking_in_dir(
                                         &project.setups[s_idx],
                                         o_idx,
                                     );
-                                    let kin = resolve_kinematics_for_key(
-                                        &project.setups[s_idx].post_profile,
-                                        project_dir,
-                                    );
-                                    let sim_req = SetupSimRequest {
+                                    let mut sim_req = SetupSimRequest::new(
                                         project,
-                                        setup_idx: s_idx,
+                                        s_idx,
                                         cad_doc,
                                         cad_revision,
                                         cache,
-                                        kinematics: kin,
-                                        resolution: SimResolution::Standard,
-                                        cancel: None,
-                                    };
+                                    );
+                                    sim_req.project_dir = project_dir;
+                                    sim_req.kinematics =
+                                        resolve_setup_kinematics(project, s_idx, project_dir);
+                                    sim_req.backend_choice = SimComputeBackendChoice::Auto;
                                     match compute_in_setup_carryover_stock(
                                         &sim_req,
                                         &upstream_indices,
-                                        project_dir,
-                                        SimComputeBackendChoice::Auto,
                                     ) {
                                         Ok(td) => {
                                             let arc_td = Arc::new(td);

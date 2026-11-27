@@ -1,4 +1,7 @@
-use chip_cad::{BodyId, CadDocument, FaceId, SurfaceKind};
+use chip_cad::{
+    BodyId, CadDocument, EntitySignatureKind, FaceId, GeometricSignature, SelectionBinding,
+    SurfaceKind,
+};
 use chip_math::{Aabb2, Aabb3, DVec2, DVec3, DisplayUnit, EvalContext, RigidFrame3};
 use chip_sketch::{
     FaceSketchOriginMode, SketchAnchor, SketchFaceBinding, SketchLayer, SketchPlaneRef,
@@ -72,6 +75,39 @@ impl Setup {
             auto_avoid_fixtures_on_rapids: true,
             operations: Vec::new(),
         }
+    }
+
+    /// Returns `true` when this Setup requires true 3D volumetric (`Tri-Dexel`) stock simulation
+    /// because it carries over multi-setup stock, executes an undercut strategy (`SlotUndercut`,
+    /// `Dovetail`, `Undercut3D`), or assigns a relieved-neck undercut/thread cutter
+    /// (`LollipopEndmill`, `SlotMill`, `DovetailCutter`, `ThreadMill`).
+    pub fn requires_volumetric_sim(&self, tools: &[chip_tools::Tool]) -> bool {
+        self.carryover_from_setup_id.is_some()
+            || self.operations.iter().any(|op| {
+                if op.suppressed {
+                    return false;
+                }
+                if matches!(
+                    op.kind,
+                    crate::operation::OperationKind::SlotUndercut
+                        | crate::operation::OperationKind::Dovetail
+                        | crate::operation::OperationKind::Undercut3D
+                ) {
+                    return true;
+                }
+                op.tool_id
+                    .as_ref()
+                    .and_then(|tid| tools.iter().find(|t| &t.id == tid))
+                    .is_some_and(|t| {
+                        matches!(
+                            t.geometry,
+                            chip_tools::CutterGeometry::LollipopEndmill { .. }
+                                | chip_tools::CutterGeometry::SlotMill { .. }
+                                | chip_tools::CutterGeometry::DovetailCutter { .. }
+                                | chip_tools::CutterGeometry::ThreadMill { .. }
+                        )
+                    })
+            })
     }
 
     /// Resolves this Setup's orthonormal WCS [`RigidFrame3`], tight oriented model AABB,
@@ -469,6 +505,33 @@ fn resolve_planar_face_sketch_frame(
     let _ = y_axis;
     RigidFrame3::from_z_and_x_hint(origin_mm, z_axis, Some(x_axis), false, false, 0)
         .unwrap_or_else(|_| setup.frame.with_origin(origin_mm))
+}
+
+/// Converts a CAD-kernel-independent [`SketchFaceBinding`] into a [`SelectionBinding`] (`PlanarFace`).
+pub fn sketch_face_to_cad_binding(b: &SketchFaceBinding) -> SelectionBinding {
+    SelectionBinding {
+        body_id: BodyId(b.body_id),
+        last_index: b.last_face_index,
+        signature: GeometricSignature {
+            kind: EntitySignatureKind::PlanarFace,
+            normal_or_axis: b.normal_world,
+            centroid_mm: b.centroid_world_mm,
+            characteristic_measure: b.area_mm2,
+            aabb_mm: b.aabb_mm,
+        },
+    }
+}
+
+/// Converts a planar [`SelectionBinding`] (`chip-cad`) into a serializable [`SketchFaceBinding`].
+pub fn cad_binding_to_sketch_face(b: &SelectionBinding) -> SketchFaceBinding {
+    SketchFaceBinding {
+        body_id: b.body_id.0,
+        last_face_index: b.last_index,
+        normal_world: b.signature.normal_or_axis,
+        centroid_world_mm: b.signature.centroid_mm,
+        area_mm2: b.signature.characteristic_measure,
+        aabb_mm: b.signature.aabb_mm,
+    }
 }
 
 #[cfg(test)]

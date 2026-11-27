@@ -291,6 +291,7 @@ fn fault_injection_catches_rapid_crash_target_gouge_flute_rub_holder_crash_and_u
         initial_raw_volume_mm3: None,
         carried_over_from_setup: None,
         cancel: None,
+        ..SetupSimulationInput::new(&cad_doc, &resolved, &[])
     })
     .unwrap();
 
@@ -380,6 +381,7 @@ fn fault_injection_catches_3d_ball_endmill_gouge_on_sculpted_dome_mesh() {
         initial_raw_volume_mm3: None,
         carried_over_from_setup: None,
         cancel: None,
+        ..SetupSimulationInput::new(&cad_doc, &resolved, &[])
     })
     .unwrap();
 
@@ -463,6 +465,7 @@ fn incremental_sync_stock_matches_full_reconstruction_mid_segment_and_across_scr
         initial_raw_volume_mm3: None,
         carried_over_from_setup: None,
         cancel: None,
+        ..SetupSimulationInput::new(&doc, &resolved, &[])
     })
     .unwrap();
 
@@ -798,66 +801,64 @@ fn tridexel_internal_m8_helical_thread_mill_carves_real_undercut_grooves_with_ze
     let tp_thread =
         build_internal_helical_thread_toolpath("op_m8_thread", DVec2::ZERO, 1.625, 1.25, -10.0, 8);
 
-    let sim_drill_only = run_setup_simulation_with_engine(
-        &SetupSimulationInput {
-            doc: &doc,
-            setup: &resolved,
-            target_bodies: &[],
-            fixtures: &[],
-            operations: &[SimOperationInput {
+    let sim_drill_only = run_setup_simulation(&SetupSimulationInput {
+        doc: &doc,
+        setup: &resolved,
+        target_bodies: &[],
+        fixtures: &[],
+        operations: &[SimOperationInput {
+            op_id: "op_pilot",
+            op_name: "Pilot Drill Ø6.8",
+            tool: &pilot_drill,
+            fallback_spindle_rpm: 3_500.0,
+            intentional_edge_break_mm: 0.0,
+            toolpath: &tp_drill,
+        }],
+        resolution: SimResolution::Standard,
+        kinematics: MachineKinematicsConfig::default(),
+        verify_config: SimVerificationConfig::default(),
+        initial_stock: None,
+        initial_raw_volume_mm3: None,
+        carried_over_from_setup: None,
+        cancel: None,
+        engine: SimEngineKind::TriDexel,
+        ..SetupSimulationInput::new(&doc, &resolved, &[])
+    })
+    .unwrap();
+
+    let sim = run_setup_simulation(&SetupSimulationInput {
+        doc: &doc,
+        setup: &resolved,
+        target_bodies: &[],
+        fixtures: &[],
+        operations: &[
+            SimOperationInput {
                 op_id: "op_pilot",
                 op_name: "Pilot Drill Ø6.8",
                 tool: &pilot_drill,
                 fallback_spindle_rpm: 3_500.0,
                 intentional_edge_break_mm: 0.0,
                 toolpath: &tp_drill,
-            }],
-            resolution: SimResolution::Standard,
-            kinematics: MachineKinematicsConfig::default(),
-            verify_config: SimVerificationConfig::default(),
-            initial_stock: None,
-            initial_raw_volume_mm3: None,
-            carried_over_from_setup: None,
-            cancel: None,
-        },
-        SimEngineKind::TriDexel,
-    )
-    .unwrap();
-
-    let sim = run_setup_simulation_with_engine(
-        &SetupSimulationInput {
-            doc: &doc,
-            setup: &resolved,
-            target_bodies: &[],
-            fixtures: &[],
-            operations: &[
-                SimOperationInput {
-                    op_id: "op_pilot",
-                    op_name: "Pilot Drill Ø6.8",
-                    tool: &pilot_drill,
-                    fallback_spindle_rpm: 3_500.0,
-                    intentional_edge_break_mm: 0.0,
-                    toolpath: &tp_drill,
-                },
-                SimOperationInput {
-                    op_id: "op_m8_thread",
-                    op_name: "M8x1.25 Thread Mill",
-                    tool: tm_475,
-                    fallback_spindle_rpm: 10_000.0,
-                    intentional_edge_break_mm: 0.0,
-                    toolpath: &tp_thread,
-                },
-            ],
-            resolution: SimResolution::Standard,
-            kinematics: MachineKinematicsConfig::default(),
-            verify_config: SimVerificationConfig::default(),
-            initial_stock: None,
-            initial_raw_volume_mm3: None,
-            carried_over_from_setup: None,
-            cancel: None,
-        },
-        SimEngineKind::TriDexel,
-    )
+            },
+            SimOperationInput {
+                op_id: "op_m8_thread",
+                op_name: "M8x1.25 Thread Mill",
+                tool: tm_475,
+                fallback_spindle_rpm: 10_000.0,
+                intentional_edge_break_mm: 0.0,
+                toolpath: &tp_thread,
+            },
+        ],
+        resolution: SimResolution::Standard,
+        kinematics: MachineKinematicsConfig::default(),
+        verify_config: SimVerificationConfig::default(),
+        initial_stock: None,
+        initial_raw_volume_mm3: None,
+        carried_over_from_setup: None,
+        cancel: None,
+        engine: SimEngineKind::TriDexel,
+        ..SetupSimulationInput::new(&doc, &resolved, &[])
+    })
     .unwrap();
 
     assert!(
@@ -1032,30 +1033,29 @@ fn tridexel_external_m12_boss_thread_mill_carves_helical_grooves_with_zero_crash
     let tp = b.finish();
 
     let doc = CadDocument::empty();
-    let sim = run_setup_simulation_with_engine(
-        &SetupSimulationInput {
-            doc: &doc,
-            setup: &resolved,
-            target_bodies: &[],
-            fixtures: &[],
-            operations: &[SimOperationInput {
-                op_id: "op_ext_m12",
-                op_name: "External M12x1.75 Thread",
-                tool: &ext_tm,
-                fallback_spindle_rpm: 10_000.0,
-                intentional_edge_break_mm: 0.0,
-                toolpath: &tp,
-            }],
-            resolution: SimResolution::Standard,
-            kinematics: MachineKinematicsConfig::default(),
-            verify_config: SimVerificationConfig::default(),
-            initial_stock: None,
-            initial_raw_volume_mm3: None,
-            carried_over_from_setup: None,
-            cancel: None,
-        },
-        SimEngineKind::TriDexel,
-    )
+    let sim = run_setup_simulation(&SetupSimulationInput {
+        doc: &doc,
+        setup: &resolved,
+        target_bodies: &[],
+        fixtures: &[],
+        operations: &[SimOperationInput {
+            op_id: "op_ext_m12",
+            op_name: "External M12x1.75 Thread",
+            tool: &ext_tm,
+            fallback_spindle_rpm: 10_000.0,
+            intentional_edge_break_mm: 0.0,
+            toolpath: &tp,
+        }],
+        resolution: SimResolution::Standard,
+        kinematics: MachineKinematicsConfig::default(),
+        verify_config: SimVerificationConfig::default(),
+        initial_stock: None,
+        initial_raw_volume_mm3: None,
+        carried_over_from_setup: None,
+        cancel: None,
+        engine: SimEngineKind::TriDexel,
+        ..SetupSimulationInput::new(&doc, &resolved, &[])
+    })
     .unwrap();
 
     assert!(
@@ -1142,30 +1142,29 @@ fn thread_mill_fault_injection_catches_missing_pilot_plunge_and_neck_reach_excee
         build_internal_helical_thread_toolpath("op_too_deep", DVec2::ZERO, 1.625, 1.25, -18.5, 2);
 
     for engine in [SimEngineKind::Heightmap, SimEngineKind::TriDexel] {
-        let sim_no_pilot = run_setup_simulation_with_engine(
-            &SetupSimulationInput {
-                doc: &doc,
-                setup: &resolved,
-                target_bodies: &[],
-                fixtures: &[],
-                operations: &[SimOperationInput {
-                    op_id: "op_no_pilot",
-                    op_name: "Un-Drilled Thread Plunge",
-                    tool: tm_475,
-                    fallback_spindle_rpm: 10_000.0,
-                    intentional_edge_break_mm: 0.0,
-                    toolpath: &tp_no_pilot,
-                }],
-                resolution: SimResolution::Standard,
-                kinematics: MachineKinematicsConfig::default(),
-                verify_config: SimVerificationConfig::default(),
-                initial_stock: None,
-                initial_raw_volume_mm3: None,
-                carried_over_from_setup: None,
-                cancel: None,
-            },
+        let sim_no_pilot = run_setup_simulation(&SetupSimulationInput {
+            doc: &doc,
+            setup: &resolved,
+            target_bodies: &[],
+            fixtures: &[],
+            operations: &[SimOperationInput {
+                op_id: "op_no_pilot",
+                op_name: "Un-Drilled Thread Plunge",
+                tool: tm_475,
+                fallback_spindle_rpm: 10_000.0,
+                intentional_edge_break_mm: 0.0,
+                toolpath: &tp_no_pilot,
+            }],
+            resolution: SimResolution::Standard,
+            kinematics: MachineKinematicsConfig::default(),
+            verify_config: SimVerificationConfig::default(),
+            initial_stock: None,
+            initial_raw_volume_mm3: None,
+            carried_over_from_setup: None,
+            cancel: None,
             engine,
-        )
+            ..SetupSimulationInput::new(&doc, &resolved, &[])
+        })
         .unwrap();
 
         assert!(
@@ -1182,40 +1181,39 @@ fn thread_mill_fault_injection_catches_missing_pilot_plunge_and_neck_reach_excee
             sim_no_pilot.diagnostics
         );
 
-        let sim_too_deep = run_setup_simulation_with_engine(
-            &SetupSimulationInput {
-                doc: &doc,
-                setup: &resolved,
-                target_bodies: &[],
-                fixtures: &[],
-                operations: &[
-                    SimOperationInput {
-                        op_id: "op_deep_pilot",
-                        op_name: "Deep Pilot Drill",
-                        tool: &pilot_drill,
-                        fallback_spindle_rpm: 3_500.0,
-                        intentional_edge_break_mm: 0.0,
-                        toolpath: &tp_deep_drill,
-                    },
-                    SimOperationInput {
-                        op_id: "op_too_deep",
-                        op_name: "Over-Reach Thread Mill",
-                        tool: tm_475,
-                        fallback_spindle_rpm: 10_000.0,
-                        intentional_edge_break_mm: 0.0,
-                        toolpath: &tp_too_deep,
-                    },
-                ],
-                resolution: SimResolution::Standard,
-                kinematics: MachineKinematicsConfig::default(),
-                verify_config: SimVerificationConfig::default(),
-                initial_stock: None,
-                initial_raw_volume_mm3: None,
-                carried_over_from_setup: None,
-                cancel: None,
-            },
+        let sim_too_deep = run_setup_simulation(&SetupSimulationInput {
+            doc: &doc,
+            setup: &resolved,
+            target_bodies: &[],
+            fixtures: &[],
+            operations: &[
+                SimOperationInput {
+                    op_id: "op_deep_pilot",
+                    op_name: "Deep Pilot Drill",
+                    tool: &pilot_drill,
+                    fallback_spindle_rpm: 3_500.0,
+                    intentional_edge_break_mm: 0.0,
+                    toolpath: &tp_deep_drill,
+                },
+                SimOperationInput {
+                    op_id: "op_too_deep",
+                    op_name: "Over-Reach Thread Mill",
+                    tool: tm_475,
+                    fallback_spindle_rpm: 10_000.0,
+                    intentional_edge_break_mm: 0.0,
+                    toolpath: &tp_too_deep,
+                },
+            ],
+            resolution: SimResolution::Standard,
+            kinematics: MachineKinematicsConfig::default(),
+            verify_config: SimVerificationConfig::default(),
+            initial_stock: None,
+            initial_raw_volume_mm3: None,
+            carried_over_from_setup: None,
+            cancel: None,
             engine,
-        )
+            ..SetupSimulationInput::new(&doc, &resolved, &[])
+        })
         .unwrap();
 
         assert!(
@@ -1335,23 +1333,22 @@ fn heightmap_and_tridexel_pre_drilled_step_hole_thread_mill_report_zero_critical
     ];
 
     for engine in [SimEngineKind::Heightmap, SimEngineKind::TriDexel] {
-        let sim = run_setup_simulation_with_engine(
-            &SetupSimulationInput {
-                doc: &doc,
-                setup: &resolved,
-                target_bodies: &[],
-                fixtures: &[],
-                operations: &sim_ops,
-                resolution: SimResolution::Standard,
-                kinematics: MachineKinematicsConfig::default(),
-                verify_config: SimVerificationConfig::default(),
-                initial_stock: None,
-                initial_raw_volume_mm3: None,
-                carried_over_from_setup: None,
-                cancel: None,
-            },
+        let sim = run_setup_simulation(&SetupSimulationInput {
+            doc: &doc,
+            setup: &resolved,
+            target_bodies: &[],
+            fixtures: &[],
+            operations: &sim_ops,
+            resolution: SimResolution::Standard,
+            kinematics: MachineKinematicsConfig::default(),
+            verify_config: SimVerificationConfig::default(),
+            initial_stock: None,
+            initial_raw_volume_mm3: None,
+            carried_over_from_setup: None,
+            cancel: None,
             engine,
-        )
+            ..SetupSimulationInput::new(&doc, &resolved, &[])
+        })
         .unwrap();
 
         assert!(
@@ -1438,31 +1435,30 @@ fn m61_clamp_in_rapid_path_avoidance_and_cpu_gpu_parity_across_engines() {
     let mut baseline_fixture_diags: Option<Vec<chip_sim::SimDiagnostic>> = None;
     for engine in [SimEngineKind::Heightmap, SimEngineKind::TriDexel] {
         for choice in [SimComputeBackendChoice::Cpu, SimComputeBackendChoice::Auto] {
-            let sim_bad = run_setup_simulation_with_choice(
-                &SetupSimulationInput {
-                    doc: &doc,
-                    setup: &resolved,
-                    target_bodies: &[],
-                    fixtures: &fixtures,
-                    operations: &[SimOperationInput {
-                        op_id: "op_two_pockets",
-                        op_name: "Two Pockets",
-                        tool: flat_6mm,
-                        fallback_spindle_rpm: 12_000.0,
-                        intentional_edge_break_mm: 0.0,
-                        toolpath: &tp_unrouted,
-                    }],
-                    resolution: SimResolution::Standard,
-                    kinematics: MachineKinematicsConfig::default(),
-                    verify_config: SimVerificationConfig::default(),
-                    initial_stock: None,
-                    initial_raw_volume_mm3: None,
-                    carried_over_from_setup: None,
-                    cancel: None,
-                },
+            let sim_bad = run_setup_simulation(&SetupSimulationInput {
+                doc: &doc,
+                setup: &resolved,
+                target_bodies: &[],
+                fixtures: &fixtures,
+                operations: &[SimOperationInput {
+                    op_id: "op_two_pockets",
+                    op_name: "Two Pockets",
+                    tool: flat_6mm,
+                    fallback_spindle_rpm: 12_000.0,
+                    intentional_edge_break_mm: 0.0,
+                    toolpath: &tp_unrouted,
+                }],
+                resolution: SimResolution::Standard,
+                kinematics: MachineKinematicsConfig::default(),
+                verify_config: SimVerificationConfig::default(),
+                initial_stock: None,
+                initial_raw_volume_mm3: None,
+                carried_over_from_setup: None,
+                cancel: None,
                 engine,
-                choice,
-            )
+                backend_choice: choice,
+                ..SetupSimulationInput::new(&doc, &resolved, &[])
+            })
             .unwrap();
             let f_diags: Vec<_> = sim_bad
                 .diagnostics
@@ -1489,31 +1485,30 @@ fn m61_clamp_in_rapid_path_avoidance_and_cpu_gpu_parity_across_engines() {
             }
 
             // 2. Routed toolpath (`auto_avoid = true`) MUST have ZERO critical errors!
-            let sim_ok = run_setup_simulation_with_choice(
-                &SetupSimulationInput {
-                    doc: &doc,
-                    setup: &resolved,
-                    target_bodies: &[],
-                    fixtures: &fixtures,
-                    operations: &[SimOperationInput {
-                        op_id: "op_two_pockets",
-                        op_name: "Two Pockets",
-                        tool: flat_6mm,
-                        fallback_spindle_rpm: 12_000.0,
-                        intentional_edge_break_mm: 0.0,
-                        toolpath: &tp_routed,
-                    }],
-                    resolution: SimResolution::Standard,
-                    kinematics: MachineKinematicsConfig::default(),
-                    verify_config: SimVerificationConfig::default(),
-                    initial_stock: None,
-                    initial_raw_volume_mm3: None,
-                    carried_over_from_setup: None,
-                    cancel: None,
-                },
+            let sim_ok = run_setup_simulation(&SetupSimulationInput {
+                doc: &doc,
+                setup: &resolved,
+                target_bodies: &[],
+                fixtures: &fixtures,
+                operations: &[SimOperationInput {
+                    op_id: "op_two_pockets",
+                    op_name: "Two Pockets",
+                    tool: flat_6mm,
+                    fallback_spindle_rpm: 12_000.0,
+                    intentional_edge_break_mm: 0.0,
+                    toolpath: &tp_routed,
+                }],
+                resolution: SimResolution::Standard,
+                kinematics: MachineKinematicsConfig::default(),
+                verify_config: SimVerificationConfig::default(),
+                initial_stock: None,
+                initial_raw_volume_mm3: None,
+                carried_over_from_setup: None,
+                cancel: None,
                 engine,
-                choice,
-            )
+                backend_choice: choice,
+                ..SetupSimulationInput::new(&doc, &resolved, &[])
+            })
             .unwrap();
             assert!(
                 !sim_ok.has_critical_errors(),
@@ -1632,6 +1627,7 @@ fn m61_holder_vs_vise_jaw_spoilboard_overcut_clamp_in_cut_and_cylindrical_parity
         initial_raw_volume_mm3: None,
         carried_over_from_setup: None,
         cancel: None,
+        ..SetupSimulationInput::new(&doc, &res_vise, &[])
     })
     .unwrap();
     let holder_diag = sim_vise
@@ -1701,6 +1697,7 @@ fn m61_holder_vs_vise_jaw_spoilboard_overcut_clamp_in_cut_and_cylindrical_parity
         initial_raw_volume_mm3: None,
         carried_over_from_setup: None,
         cancel: None,
+        ..SetupSimulationInput::new(&doc, &res_sb, &[])
     })
     .unwrap();
     assert!(
@@ -1739,6 +1736,7 @@ fn m61_holder_vs_vise_jaw_spoilboard_overcut_clamp_in_cut_and_cylindrical_parity
         initial_raw_volume_mm3: None,
         carried_over_from_setup: None,
         cancel: None,
+        ..SetupSimulationInput::new(&doc, &res_sb, &[])
     })
     .unwrap();
     let sb_diag = sim_deep
@@ -1805,6 +1803,7 @@ fn m61_holder_vs_vise_jaw_spoilboard_overcut_clamp_in_cut_and_cylindrical_parity
         initial_raw_volume_mm3: None,
         carried_over_from_setup: None,
         cancel: None,
+        ..SetupSimulationInput::new(&doc, &res_cut, &[])
     })
     .unwrap();
     assert!(sim_cut.has_critical_errors());
@@ -1858,57 +1857,55 @@ fn m61_holder_vs_vise_jaw_spoilboard_overcut_clamp_in_cut_and_cylindrical_parity
     tb_rot.rotary_rapid_to(DVec3::new(30.0, 0.0, 26.0), 90.0); // Hits tailstock pin!
     let tp_rot = tb_rot.finish();
 
-    let cyl_cpu = run_setup_simulation_with_choice(
-        &SetupSimulationInput {
-            doc: &shaft_doc,
-            setup: &res_rot,
-            target_bodies: &[],
-            fixtures: &rot_fix,
-            operations: &[SimOperationInput {
-                op_id: "op_rot_hit",
-                op_name: "Rotary Traverse",
-                tool: flat_6mm,
-                fallback_spindle_rpm: 12_000.0,
-                intentional_edge_break_mm: 0.0,
-                toolpath: &tp_rot,
-            }],
-            resolution: SimResolution::Standard,
-            kinematics: MachineKinematicsConfig::default(),
-            verify_config: SimVerificationConfig::default(),
-            initial_stock: None,
-            initial_raw_volume_mm3: None,
-            carried_over_from_setup: None,
-            cancel: None,
-        },
-        SimEngineKind::Heightmap,
-        SimComputeBackendChoice::Cpu,
-    )
+    let cyl_cpu = run_setup_simulation(&SetupSimulationInput {
+        doc: &shaft_doc,
+        setup: &res_rot,
+        target_bodies: &[],
+        fixtures: &rot_fix,
+        operations: &[SimOperationInput {
+            op_id: "op_rot_hit",
+            op_name: "Rotary Traverse",
+            tool: flat_6mm,
+            fallback_spindle_rpm: 12_000.0,
+            intentional_edge_break_mm: 0.0,
+            toolpath: &tp_rot,
+        }],
+        resolution: SimResolution::Standard,
+        kinematics: MachineKinematicsConfig::default(),
+        verify_config: SimVerificationConfig::default(),
+        initial_stock: None,
+        initial_raw_volume_mm3: None,
+        carried_over_from_setup: None,
+        cancel: None,
+        engine: SimEngineKind::Heightmap,
+        backend_choice: SimComputeBackendChoice::Cpu,
+        ..SetupSimulationInput::new(&shaft_doc, &res_rot, &[])
+    })
     .unwrap();
-    let cyl_gpu = run_setup_simulation_with_choice(
-        &SetupSimulationInput {
-            doc: &shaft_doc,
-            setup: &res_rot,
-            target_bodies: &[],
-            fixtures: &rot_fix,
-            operations: &[SimOperationInput {
-                op_id: "op_rot_hit",
-                op_name: "Rotary Traverse",
-                tool: flat_6mm,
-                fallback_spindle_rpm: 12_000.0,
-                intentional_edge_break_mm: 0.0,
-                toolpath: &tp_rot,
-            }],
-            resolution: SimResolution::Standard,
-            kinematics: MachineKinematicsConfig::default(),
-            verify_config: SimVerificationConfig::default(),
-            initial_stock: None,
-            initial_raw_volume_mm3: None,
-            carried_over_from_setup: None,
-            cancel: None,
-        },
-        SimEngineKind::Heightmap,
-        SimComputeBackendChoice::Auto,
-    )
+    let cyl_gpu = run_setup_simulation(&SetupSimulationInput {
+        doc: &shaft_doc,
+        setup: &res_rot,
+        target_bodies: &[],
+        fixtures: &rot_fix,
+        operations: &[SimOperationInput {
+            op_id: "op_rot_hit",
+            op_name: "Rotary Traverse",
+            tool: flat_6mm,
+            fallback_spindle_rpm: 12_000.0,
+            intentional_edge_break_mm: 0.0,
+            toolpath: &tp_rot,
+        }],
+        resolution: SimResolution::Standard,
+        kinematics: MachineKinematicsConfig::default(),
+        verify_config: SimVerificationConfig::default(),
+        initial_stock: None,
+        initial_raw_volume_mm3: None,
+        carried_over_from_setup: None,
+        cancel: None,
+        engine: SimEngineKind::Heightmap,
+        backend_choice: SimComputeBackendChoice::Auto,
+        ..SetupSimulationInput::new(&shaft_doc, &res_rot, &[])
+    })
     .unwrap();
     assert!(cyl_cpu.is_cylindrical());
     assert!(cyl_gpu.is_cylindrical());
@@ -2046,49 +2043,48 @@ fn m64_all_ten_cutter_meshes_and_undercut_sim_fault_detection() {
     let tp_lolli = tb_lolli.finish();
 
     for backend in [SimComputeBackendChoice::Cpu, SimComputeBackendChoice::Auto] {
-        let res_ok = run_setup_simulation_with_choice(
-            &SetupSimulationInput {
-                doc: &doc,
-                setup: &resolved,
-                target_bodies: &[],
-                fixtures: &[],
-                operations: &[
-                    SimOperationInput {
-                        op_id: "op_preslot",
-                        op_name: "Pre-Slot",
-                        tool: flat_6,
-                        fallback_spindle_rpm: 12_000.0,
-                        intentional_edge_break_mm: 0.0,
-                        toolpath: &tp_pre,
-                    },
-                    SimOperationInput {
-                        op_id: "op_tslot",
-                        op_name: "T-Slot",
-                        tool: &slot_12,
-                        fallback_spindle_rpm: 8_000.0,
-                        intentional_edge_break_mm: 0.0,
-                        toolpath: &tp_tslot,
-                    },
-                    SimOperationInput {
-                        op_id: "op_lolli",
-                        op_name: "Lollipop Pass",
-                        tool: &lolli_6,
-                        fallback_spindle_rpm: 10_000.0,
-                        intentional_edge_break_mm: 0.0,
-                        toolpath: &tp_lolli,
-                    },
-                ],
-                resolution: SimResolution::Standard,
-                kinematics: MachineKinematicsConfig::default(),
-                verify_config: SimVerificationConfig::default(),
-                initial_stock: None,
-                initial_raw_volume_mm3: None,
-                carried_over_from_setup: None,
-                cancel: None,
-            },
-            SimEngineKind::TriDexel,
-            backend,
-        )
+        let res_ok = run_setup_simulation(&SetupSimulationInput {
+            doc: &doc,
+            setup: &resolved,
+            target_bodies: &[],
+            fixtures: &[],
+            operations: &[
+                SimOperationInput {
+                    op_id: "op_preslot",
+                    op_name: "Pre-Slot",
+                    tool: flat_6,
+                    fallback_spindle_rpm: 12_000.0,
+                    intentional_edge_break_mm: 0.0,
+                    toolpath: &tp_pre,
+                },
+                SimOperationInput {
+                    op_id: "op_tslot",
+                    op_name: "T-Slot",
+                    tool: &slot_12,
+                    fallback_spindle_rpm: 8_000.0,
+                    intentional_edge_break_mm: 0.0,
+                    toolpath: &tp_tslot,
+                },
+                SimOperationInput {
+                    op_id: "op_lolli",
+                    op_name: "Lollipop Pass",
+                    tool: &lolli_6,
+                    fallback_spindle_rpm: 10_000.0,
+                    intentional_edge_break_mm: 0.0,
+                    toolpath: &tp_lolli,
+                },
+            ],
+            resolution: SimResolution::Standard,
+            kinematics: MachineKinematicsConfig::default(),
+            verify_config: SimVerificationConfig::default(),
+            initial_stock: None,
+            initial_raw_volume_mm3: None,
+            carried_over_from_setup: None,
+            cancel: None,
+            engine: SimEngineKind::TriDexel,
+            backend_choice: backend,
+            ..SetupSimulationInput::new(&doc, &resolved, &[])
+        })
         .unwrap();
         assert!(
             !res_ok.has_critical_errors(),
@@ -2103,31 +2099,30 @@ fn m64_all_ten_cutter_meshes_and_undercut_sim_fault_detection() {
         tb_bad.rapid_to(DVec3::new(0.0, 8.0, 5.0));
         let tp_bad = tb_bad.finish();
 
-        let res_bad = run_setup_simulation_with_choice(
-            &SetupSimulationInput {
-                doc: &doc,
-                setup: &resolved,
-                target_bodies: &[],
-                fixtures: &[],
-                operations: &[SimOperationInput {
-                    op_id: "op_bad_dove",
-                    op_name: "Bad Dovetail Plunge",
-                    tool: &dove_12,
-                    fallback_spindle_rpm: 8_000.0,
-                    intentional_edge_break_mm: 0.0,
-                    toolpath: &tp_bad,
-                }],
-                resolution: SimResolution::Standard,
-                kinematics: MachineKinematicsConfig::default(),
-                verify_config: SimVerificationConfig::default(),
-                initial_stock: None,
-                initial_raw_volume_mm3: None,
-                carried_over_from_setup: None,
-                cancel: None,
-            },
-            SimEngineKind::TriDexel,
-            backend,
-        )
+        let res_bad = run_setup_simulation(&SetupSimulationInput {
+            doc: &doc,
+            setup: &resolved,
+            target_bodies: &[],
+            fixtures: &[],
+            operations: &[SimOperationInput {
+                op_id: "op_bad_dove",
+                op_name: "Bad Dovetail Plunge",
+                tool: &dove_12,
+                fallback_spindle_rpm: 8_000.0,
+                intentional_edge_break_mm: 0.0,
+                toolpath: &tp_bad,
+            }],
+            resolution: SimResolution::Standard,
+            kinematics: MachineKinematicsConfig::default(),
+            verify_config: SimVerificationConfig::default(),
+            initial_stock: None,
+            initial_raw_volume_mm3: None,
+            carried_over_from_setup: None,
+            cancel: None,
+            engine: SimEngineKind::TriDexel,
+            backend_choice: backend,
+            ..SetupSimulationInput::new(&doc, &resolved, &[])
+        })
         .unwrap();
         assert!(
             res_bad.has_critical_errors(),
@@ -2351,24 +2346,23 @@ fn deburr3d_curved_nonplanar_edge_and_stepped_wall_trimming_cpu_and_gpu_tridexel
                 .expect("build TriDexel stock matching target solid");
 
         for backend in [SimComputeBackendChoice::Cpu, SimComputeBackendChoice::Auto] {
-            let sim_res = run_setup_simulation_with_choice(
-                &SetupSimulationInput {
-                    doc: &doc,
-                    setup: &resolved,
-                    target_bodies: &[],
-                    fixtures: &[],
-                    operations: &[SimOperationInput::from_operation(&op, tool, &tp)],
-                    resolution: SimResolution::Standard,
-                    kinematics: MachineKinematicsConfig::default(),
-                    verify_config: SimVerificationConfig::default(),
-                    initial_stock: Some(&init_stock),
-                    initial_raw_volume_mm3: None,
-                    carried_over_from_setup: None,
-                    cancel: None,
-                },
-                SimEngineKind::TriDexel,
-                backend,
-            )
+            let sim_res = run_setup_simulation(&SetupSimulationInput {
+                doc: &doc,
+                setup: &resolved,
+                target_bodies: &[],
+                fixtures: &[],
+                operations: &[SimOperationInput::from_operation(&op, tool, &tp)],
+                resolution: SimResolution::Standard,
+                kinematics: MachineKinematicsConfig::default(),
+                verify_config: SimVerificationConfig::default(),
+                initial_stock: Some(&init_stock),
+                initial_raw_volume_mm3: None,
+                carried_over_from_setup: None,
+                cancel: None,
+                engine: SimEngineKind::TriDexel,
+                backend_choice: backend,
+                ..SetupSimulationInput::new(&doc, &resolved, &[])
+            })
             .unwrap();
 
             assert!(
@@ -2482,24 +2476,23 @@ fn deburr3d_lollipop_underside_back_chamfer_cpu_and_gpu_tridexel() {
         .expect("build TriDexel stock matching overhang flange");
 
     for backend in [SimComputeBackendChoice::Cpu, SimComputeBackendChoice::Auto] {
-        let sim_res = run_setup_simulation_with_choice(
-            &SetupSimulationInput {
-                doc: &doc,
-                setup: &resolved,
-                target_bodies: &[],
-                fixtures: &[],
-                operations: &[SimOperationInput::from_operation(&op, &lolli_6, &tp)],
-                resolution: SimResolution::Standard,
-                kinematics: MachineKinematicsConfig::default(),
-                verify_config: SimVerificationConfig::default(),
-                initial_stock: Some(&init_stock),
-                initial_raw_volume_mm3: None,
-                carried_over_from_setup: None,
-                cancel: None,
-            },
-            SimEngineKind::TriDexel,
-            backend,
-        )
+        let sim_res = run_setup_simulation(&SetupSimulationInput {
+            doc: &doc,
+            setup: &resolved,
+            target_bodies: &[],
+            fixtures: &[],
+            operations: &[SimOperationInput::from_operation(&op, &lolli_6, &tp)],
+            resolution: SimResolution::Standard,
+            kinematics: MachineKinematicsConfig::default(),
+            verify_config: SimVerificationConfig::default(),
+            initial_stock: Some(&init_stock),
+            initial_raw_volume_mm3: None,
+            carried_over_from_setup: None,
+            cancel: None,
+            engine: SimEngineKind::TriDexel,
+            backend_choice: backend,
+            ..SetupSimulationInput::new(&doc, &resolved, &[])
+        })
         .unwrap();
 
         assert!(
@@ -2605,24 +2598,23 @@ fn deburr3d_auto_detect_sharp_edges_ignores_tangent_fillets_and_vertical_walls()
     .unwrap();
     let init_stock = chip_sim::extract_tridexel_target_from_cad(&doc, &resolved, &[], &template)
         .expect("build TriDexel stock matching plate");
-    let sim_res = run_setup_simulation_with_choice(
-        &SetupSimulationInput {
-            doc: &doc,
-            setup: &resolved,
-            target_bodies: &[],
-            fixtures: &[],
-            operations: &[SimOperationInput::from_operation(&op, chamfer_90, &tp)],
-            resolution: SimResolution::Standard,
-            kinematics: MachineKinematicsConfig::default(),
-            verify_config: SimVerificationConfig::default(),
-            initial_stock: Some(&init_stock),
-            initial_raw_volume_mm3: None,
-            carried_over_from_setup: None,
-            cancel: None,
-        },
-        SimEngineKind::TriDexel,
-        SimComputeBackendChoice::Cpu,
-    )
+    let sim_res = run_setup_simulation(&SetupSimulationInput {
+        doc: &doc,
+        setup: &resolved,
+        target_bodies: &[],
+        fixtures: &[],
+        operations: &[SimOperationInput::from_operation(&op, chamfer_90, &tp)],
+        resolution: SimResolution::Standard,
+        kinematics: MachineKinematicsConfig::default(),
+        verify_config: SimVerificationConfig::default(),
+        initial_stock: Some(&init_stock),
+        initial_raw_volume_mm3: None,
+        carried_over_from_setup: None,
+        cancel: None,
+        engine: SimEngineKind::TriDexel,
+        backend_choice: SimComputeBackendChoice::Cpu,
+        ..SetupSimulationInput::new(&doc, &resolved, &[])
+    })
     .unwrap();
     assert!(
         !sim_res.has_critical_errors(),
@@ -2783,24 +2775,23 @@ fn m66_tslot_undercut_cpu_and_gpu_tridexel_parity() {
 
     let mut cpu_vol: Option<f64> = None;
     for backend in [SimComputeBackendChoice::Cpu, SimComputeBackendChoice::Auto] {
-        let sim = run_setup_simulation_with_choice(
-            &SetupSimulationInput {
-                doc: &doc,
-                setup: &resolved,
-                target_bodies: &[],
-                fixtures: &[],
-                operations: &sim_ops,
-                resolution: SimResolution::Standard,
-                kinematics: MachineKinematicsConfig::default(),
-                verify_config: SimVerificationConfig::default(),
-                initial_stock: None,
-                initial_raw_volume_mm3: None,
-                carried_over_from_setup: None,
-                cancel: None,
-            },
-            SimEngineKind::TriDexel,
-            backend,
-        )
+        let sim = run_setup_simulation(&SetupSimulationInput {
+            doc: &doc,
+            setup: &resolved,
+            target_bodies: &[],
+            fixtures: &[],
+            operations: &sim_ops,
+            resolution: SimResolution::Standard,
+            kinematics: MachineKinematicsConfig::default(),
+            verify_config: SimVerificationConfig::default(),
+            initial_stock: None,
+            initial_raw_volume_mm3: None,
+            carried_over_from_setup: None,
+            cancel: None,
+            engine: SimEngineKind::TriDexel,
+            backend_choice: backend,
+            ..SetupSimulationInput::new(&doc, &resolved, &[])
+        })
         .unwrap();
 
         assert!(
@@ -3038,24 +3029,23 @@ fn m66_dovetail_60deg_cpu_and_gpu_tridexel_parity() {
     let tan60 = 60.0_f64.to_radians().tan();
     let mut cpu_vol: Option<f64> = None;
     for backend in [SimComputeBackendChoice::Cpu, SimComputeBackendChoice::Auto] {
-        let sim = run_setup_simulation_with_choice(
-            &SetupSimulationInput {
-                doc: &doc,
-                setup: &resolved,
-                target_bodies: &[],
-                fixtures: &[],
-                operations: &sim_ops,
-                resolution: SimResolution::Fine,
-                kinematics: MachineKinematicsConfig::default(),
-                verify_config: SimVerificationConfig::default(),
-                initial_stock: None,
-                initial_raw_volume_mm3: None,
-                carried_over_from_setup: None,
-                cancel: None,
-            },
-            SimEngineKind::TriDexel,
-            backend,
-        )
+        let sim = run_setup_simulation(&SetupSimulationInput {
+            doc: &doc,
+            setup: &resolved,
+            target_bodies: &[],
+            fixtures: &[],
+            operations: &sim_ops,
+            resolution: SimResolution::Fine,
+            kinematics: MachineKinematicsConfig::default(),
+            verify_config: SimVerificationConfig::default(),
+            initial_stock: None,
+            initial_raw_volume_mm3: None,
+            carried_over_from_setup: None,
+            cancel: None,
+            engine: SimEngineKind::TriDexel,
+            backend_choice: backend,
+            ..SetupSimulationInput::new(&doc, &resolved, &[])
+        })
         .unwrap();
 
         assert!(
@@ -3289,24 +3279,23 @@ fn m66_undercut3d_lollipop_neck_clipping_and_tridexel_parity() {
     //    so the Lollipop actively carves the reachable 45° overhang cavity underneath the intact roof!
     let mut cpu_vol: Option<f64> = None;
     for backend in [SimComputeBackendChoice::Cpu, SimComputeBackendChoice::Auto] {
-        let sim = run_setup_simulation_with_choice(
-            &SetupSimulationInput {
-                doc: &doc,
-                setup: &resolved,
-                target_bodies: &[],
-                fixtures: &[],
-                operations: &[SimOperationInput::from_operation(&op, &lolli_6, &tp)],
-                resolution: SimResolution::Standard,
-                kinematics: MachineKinematicsConfig::default(),
-                verify_config: SimVerificationConfig::default(),
-                initial_stock: None,
-                initial_raw_volume_mm3: None,
-                carried_over_from_setup: None,
-                cancel: None,
-            },
-            SimEngineKind::TriDexel,
-            backend,
-        )
+        let sim = run_setup_simulation(&SetupSimulationInput {
+            doc: &doc,
+            setup: &resolved,
+            target_bodies: &[],
+            fixtures: &[],
+            operations: &[SimOperationInput::from_operation(&op, &lolli_6, &tp)],
+            resolution: SimResolution::Standard,
+            kinematics: MachineKinematicsConfig::default(),
+            verify_config: SimVerificationConfig::default(),
+            initial_stock: None,
+            initial_raw_volume_mm3: None,
+            carried_over_from_setup: None,
+            cancel: None,
+            engine: SimEngineKind::TriDexel,
+            backend_choice: backend,
+            ..SetupSimulationInput::new(&doc, &resolved, &[])
+        })
         .unwrap();
 
         assert!(
@@ -3447,24 +3436,23 @@ fn periodic_helical_sweep_step_parallel3d_respects_helix_geometry_with_zero_goug
         "expected Parallel3D passes riding over mid-height helical geometry (Z ∈ 10..35 mm), got {mid_helix_cuts}"
     );
 
-    let sim = run_setup_simulation_with_choice(
-        &SetupSimulationInput {
-            doc: &doc,
-            setup: &resolved,
-            target_bodies: &[],
-            fixtures: &[],
-            operations: &[SimOperationInput::from_operation(&op, &ball_6, &tp)],
-            resolution: SimResolution::Standard,
-            kinematics: MachineKinematicsConfig::default(),
-            verify_config: SimVerificationConfig::default(),
-            initial_stock: None,
-            initial_raw_volume_mm3: None,
-            carried_over_from_setup: None,
-            cancel: None,
-        },
-        SimEngineKind::Heightmap,
-        SimComputeBackendChoice::Cpu,
-    )
+    let sim = run_setup_simulation(&SetupSimulationInput {
+        doc: &doc,
+        setup: &resolved,
+        target_bodies: &[],
+        fixtures: &[],
+        operations: &[SimOperationInput::from_operation(&op, &ball_6, &tp)],
+        resolution: SimResolution::Standard,
+        kinematics: MachineKinematicsConfig::default(),
+        verify_config: SimVerificationConfig::default(),
+        initial_stock: None,
+        initial_raw_volume_mm3: None,
+        carried_over_from_setup: None,
+        cancel: None,
+        engine: SimEngineKind::Heightmap,
+        backend_choice: SimComputeBackendChoice::Cpu,
+        ..SetupSimulationInput::new(&doc, &resolved, &[])
+    })
     .unwrap();
 
     assert!(

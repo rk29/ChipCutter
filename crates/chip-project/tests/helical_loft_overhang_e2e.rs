@@ -30,20 +30,19 @@ use chip_cam::{
     MachiningBoundaryMode, MotionRole, Operation, OperationGenRequest, OperationKind,
     OperationRotaryMode, ParallelCutDirection, PocketStrategyKind, RestMachiningConfig,
     RestMachiningMode, Rotary4AxisPattern, RotaryAxisKind, RotaryCutDirection, RotaryDriveMode,
-    RotaryPatternMode, RotaryTiltMode, SegmentMotion3D, Setup, SoftJawBoltPattern, SoftJawConfig,
-    SoftJawOutputMode, StockAxis, StockConfig, StrategyParams, SurfaceCutterProfile, SurfaceMesh3D,
-    ToolContainmentMode, WcsOriginMode, WorkOffsetSlot, build_soft_jaw_plan,
-    generate_operation_toolpath_with_rest,
+    RotaryPatternMode, RotaryTiltMode, SegmentMotion3D, Setup, StockAxis, StockConfig,
+    StrategyParams, SurfaceCutterProfile, SurfaceMesh3D, ToolContainmentMode, WcsOriginMode,
+    WorkOffsetSlot, generate_operation_toolpath_with_rest,
 };
 use chip_math::{DVec2, DisplayUnit, ParamLength};
 use chip_project::{
-    ModelEntry, ProjectDocument, SetupSimRequest, ToolpathCache, compute_sha256_hex,
-    generate_project_blocking, resolve_kinematics_for_key, simulate_project_setup_with_choice,
+    ModelEntry, ProjectDocument, SetupSimRequest, SoftJawBoltPattern, SoftJawConfig,
+    SoftJawOutputMode, ToolpathCache, build_soft_jaw_plan, compute_sha256_hex,
+    generate_project_blocking, resolve_kinematics_for_key, simulate_project_setup,
 };
 use chip_sim::{
     MachineKinematicsConfig, SetupSimulationInput, SimComputeBackendChoice, SimEngineKind,
-    SimIssueKind, SimOperationInput, SimResolution, SimVerificationConfig,
-    run_setup_simulation_with_choice,
+    SimIssueKind, SimOperationInput, SimResolution, SimVerificationConfig, run_setup_simulation,
 };
 use chip_sketch::{
     RectAnchorMode, SketchAnchor, SketchEntity, SketchEntityEntry, SketchLayer, SketchPlaneRef,
@@ -259,27 +258,26 @@ fn m72_triple_helix_full_assembly_clearance_and_25d_overhang_guard() {
     );
 
     for backend in [SimComputeBackendChoice::Cpu, SimComputeBackendChoice::Auto] {
-        let sim = run_setup_simulation_with_choice(
-            &SetupSimulationInput {
-                doc: &doc,
-                setup: &resolved,
-                target_bodies: &[],
-                fixtures: &[],
-                operations: &[
-                    SimOperationInput::from_operation(&op_rough, &rough_tool, &tp_rough),
-                    SimOperationInput::from_operation(&op_wl, &stepped_tool, &tp_wl),
-                ],
-                kinematics: MachineKinematicsConfig::default(),
-                resolution: SimResolution::Standard,
-                verify_config: SimVerificationConfig::default(),
-                initial_stock: None,
-                initial_raw_volume_mm3: None,
-                carried_over_from_setup: None,
-                cancel: None,
-            },
-            SimEngineKind::TriDexel,
-            backend,
-        )
+        let sim = run_setup_simulation(&SetupSimulationInput {
+            doc: &doc,
+            setup: &resolved,
+            target_bodies: &[],
+            fixtures: &[],
+            operations: &[
+                SimOperationInput::from_operation(&op_rough, &rough_tool, &tp_rough),
+                SimOperationInput::from_operation(&op_wl, &stepped_tool, &tp_wl),
+            ],
+            kinematics: MachineKinematicsConfig::default(),
+            resolution: SimResolution::Standard,
+            verify_config: SimVerificationConfig::default(),
+            initial_stock: None,
+            initial_raw_volume_mm3: None,
+            carried_over_from_setup: None,
+            cancel: None,
+            engine: SimEngineKind::TriDexel,
+            backend_choice: backend,
+            ..SetupSimulationInput::new(&doc, &resolved, &[])
+        })
         .unwrap();
 
         let bad_issues: Vec<_> = sim
@@ -394,26 +392,25 @@ fn m72_triple_helix_full_assembly_clearance_and_25d_overhang_guard() {
         cancel: &cancel,
     })
     .unwrap();
-    let sim_avoid = run_setup_simulation_with_choice(
-        &SetupSimulationInput {
-            doc: &doc,
-            setup: &resolved,
-            target_bodies: &[],
-            fixtures: &[],
-            operations: &[SimOperationInput::from_operation(
-                &op_avoid, &pock_tool, &tp_avoid,
-            )],
-            kinematics: MachineKinematicsConfig::default(),
-            resolution: SimResolution::Fine,
-            verify_config: SimVerificationConfig::default(),
-            initial_stock: None,
-            initial_raw_volume_mm3: None,
-            carried_over_from_setup: None,
-            cancel: None,
-        },
-        SimEngineKind::TriDexel,
-        SimComputeBackendChoice::Auto,
-    )
+    let sim_avoid = run_setup_simulation(&SetupSimulationInput {
+        doc: &doc,
+        setup: &resolved,
+        target_bodies: &[],
+        fixtures: &[],
+        operations: &[SimOperationInput::from_operation(
+            &op_avoid, &pock_tool, &tp_avoid,
+        )],
+        kinematics: MachineKinematicsConfig::default(),
+        resolution: SimResolution::Fine,
+        verify_config: SimVerificationConfig::default(),
+        initial_stock: None,
+        initial_raw_volume_mm3: None,
+        carried_over_from_setup: None,
+        cancel: None,
+        engine: SimEngineKind::TriDexel,
+        backend_choice: SimComputeBackendChoice::Auto,
+        ..SetupSimulationInput::new(&doc, &resolved, &[])
+    })
     .unwrap();
     assert_eq!(
         sim_avoid.critical_error_count(),
@@ -543,35 +540,33 @@ fn m73_triple_helix_indexed_3plus1_volumetric_carryover_cpu_gpu_parity() {
     );
 
     let post_key = proj_rest.setups[0].post_profile.clone();
-    let sim_cpu = simulate_project_setup_with_choice(
-        &SetupSimRequest {
-            project: &proj_rest,
-            setup_idx: 0,
-            cad_doc: &doc,
-            cad_revision: 1,
-            cache: &cache_rest,
-            kinematics: resolve_kinematics_for_key(&post_key, None),
-            resolution: SimResolution::Standard,
-            cancel: None,
-        },
-        SimEngineKind::TriDexel,
-        SimComputeBackendChoice::Cpu,
-    )
+    let sim_cpu = simulate_project_setup(&SetupSimRequest {
+        project: &proj_rest,
+        setup_idx: 0,
+        cad_doc: &doc,
+        cad_revision: 1,
+        cache: &cache_rest,
+        kinematics: resolve_kinematics_for_key(&post_key, None),
+        resolution: SimResolution::Standard,
+        cancel: None,
+        engine: SimEngineKind::TriDexel,
+        backend_choice: SimComputeBackendChoice::Cpu,
+        ..SetupSimRequest::new(&proj_rest, 0, &doc, 1, &cache_rest)
+    })
     .unwrap();
-    let sim_auto = simulate_project_setup_with_choice(
-        &SetupSimRequest {
-            project: &proj_rest,
-            setup_idx: 0,
-            cad_doc: &doc,
-            cad_revision: 1,
-            cache: &cache_rest,
-            kinematics: resolve_kinematics_for_key(&post_key, None),
-            resolution: SimResolution::Standard,
-            cancel: None,
-        },
-        SimEngineKind::TriDexel,
-        SimComputeBackendChoice::Auto,
-    )
+    let sim_auto = simulate_project_setup(&SetupSimRequest {
+        project: &proj_rest,
+        setup_idx: 0,
+        cad_doc: &doc,
+        cad_revision: 1,
+        cache: &cache_rest,
+        kinematics: resolve_kinematics_for_key(&post_key, None),
+        resolution: SimResolution::Standard,
+        cancel: None,
+        engine: SimEngineKind::TriDexel,
+        backend_choice: SimComputeBackendChoice::Auto,
+        ..SetupSimRequest::new(&proj_rest, 0, &doc, 1, &cache_rest)
+    })
     .unwrap();
 
     for (label, sim) in [("CPU", &sim_cpu), ("Auto/GPU", &sim_auto)] {
@@ -752,28 +747,27 @@ fn m74_triple_helix_overhang_safe_finishing_and_swept_soft_jaws() {
         );
     }
 
-    let sim = run_setup_simulation_with_choice(
-        &SetupSimulationInput {
-            doc: &doc,
-            setup: &resolved,
-            target_bodies: &[],
-            fixtures: &[],
-            operations: &[
-                SimOperationInput::from_operation(&op_par, &ball_4, &tp_par),
-                SimOperationInput::from_operation(&op_sc, &ball_4, &tp_sc),
-                SimOperationInput::from_operation(&op_pen, &ball_4, &tp_pen),
-            ],
-            kinematics: MachineKinematicsConfig::default(),
-            resolution: SimResolution::Fine,
-            verify_config: SimVerificationConfig::default(),
-            initial_stock: None,
-            initial_raw_volume_mm3: None,
-            carried_over_from_setup: None,
-            cancel: None,
-        },
-        SimEngineKind::TriDexel,
-        SimComputeBackendChoice::Auto,
-    )
+    let sim = run_setup_simulation(&SetupSimulationInput {
+        doc: &doc,
+        setup: &resolved,
+        target_bodies: &[],
+        fixtures: &[],
+        operations: &[
+            SimOperationInput::from_operation(&op_par, &ball_4, &tp_par),
+            SimOperationInput::from_operation(&op_sc, &ball_4, &tp_sc),
+            SimOperationInput::from_operation(&op_pen, &ball_4, &tp_pen),
+        ],
+        kinematics: MachineKinematicsConfig::default(),
+        resolution: SimResolution::Fine,
+        verify_config: SimVerificationConfig::default(),
+        initial_stock: None,
+        initial_raw_volume_mm3: None,
+        carried_over_from_setup: None,
+        cancel: None,
+        engine: SimEngineKind::TriDexel,
+        backend_choice: SimComputeBackendChoice::Auto,
+        ..SetupSimulationInput::new(&doc, &resolved, &[])
+    })
     .unwrap();
     assert_eq!(
         sim.critical_error_count(),
@@ -1064,24 +1058,23 @@ fn m75_partial_sector_zigzag_rotary2linear_and_rotary4axis_sim_gouge_free() {
     ] {
         for engine in [SimEngineKind::Heightmap, SimEngineKind::TriDexel] {
             for backend in [SimComputeBackendChoice::Cpu, SimComputeBackendChoice::Auto] {
-                let sim = run_setup_simulation_with_choice(
-                    &SetupSimulationInput {
-                        doc: &doc,
-                        setup: resolved,
-                        target_bodies: &[],
-                        fixtures: &[],
-                        operations: &[SimOperationInput::from_operation(op, &ball_4, tp)],
-                        kinematics: MachineKinematicsConfig::default(),
-                        resolution: SimResolution::Standard,
-                        verify_config: SimVerificationConfig::default(),
-                        initial_stock: None,
-                        initial_raw_volume_mm3: None,
-                        carried_over_from_setup: None,
-                        cancel: None,
-                    },
+                let sim = run_setup_simulation(&SetupSimulationInput {
+                    doc: &doc,
+                    setup: resolved,
+                    target_bodies: &[],
+                    fixtures: &[],
+                    operations: &[SimOperationInput::from_operation(op, &ball_4, tp)],
+                    kinematics: MachineKinematicsConfig::default(),
+                    resolution: SimResolution::Standard,
+                    verify_config: SimVerificationConfig::default(),
+                    initial_stock: None,
+                    initial_raw_volume_mm3: None,
+                    carried_over_from_setup: None,
+                    cancel: None,
                     engine,
-                    backend,
-                )
+                    backend_choice: backend,
+                    ..SetupSimulationInput::new(&doc, resolved, &[])
+                })
                 .unwrap();
 
                 assert_eq!(
@@ -1232,45 +1225,43 @@ fn m75_rotary4axis_auto_tilt_improves_overhanging_helical_grooves_vs_rotary2line
     let mut tri_4ax_cpu = None;
     let mut tri_4ax_auto = None;
     for backend in [SimComputeBackendChoice::Cpu, SimComputeBackendChoice::Auto] {
-        let sim_2lin = run_setup_simulation_with_choice(
-            &SetupSimulationInput {
-                doc: &doc,
-                setup: &resolved_2lin,
-                target_bodies: &[],
-                fixtures: &[],
-                operations: &[SimOperationInput::from_operation(
-                    &op_2lin, &ball_4, &tp_2lin,
-                )],
-                kinematics: MachineKinematicsConfig::default(),
-                resolution: SimResolution::Standard,
-                verify_config: SimVerificationConfig::default(),
-                initial_stock: None,
-                initial_raw_volume_mm3: None,
-                carried_over_from_setup: None,
-                cancel: None,
-            },
-            SimEngineKind::TriDexel,
-            backend,
-        )
+        let sim_2lin = run_setup_simulation(&SetupSimulationInput {
+            doc: &doc,
+            setup: &resolved_2lin,
+            target_bodies: &[],
+            fixtures: &[],
+            operations: &[SimOperationInput::from_operation(
+                &op_2lin, &ball_4, &tp_2lin,
+            )],
+            kinematics: MachineKinematicsConfig::default(),
+            resolution: SimResolution::Standard,
+            verify_config: SimVerificationConfig::default(),
+            initial_stock: None,
+            initial_raw_volume_mm3: None,
+            carried_over_from_setup: None,
+            cancel: None,
+            engine: SimEngineKind::TriDexel,
+            backend_choice: backend,
+            ..SetupSimulationInput::new(&doc, &resolved_2lin, &[])
+        })
         .unwrap();
-        let sim_4ax = run_setup_simulation_with_choice(
-            &SetupSimulationInput {
-                doc: &doc,
-                setup: &resolved_4ax,
-                target_bodies: &[],
-                fixtures: &[],
-                operations: &[SimOperationInput::from_operation(&op_4ax, &ball_4, &tp_4ax)],
-                kinematics: MachineKinematicsConfig::default(),
-                resolution: SimResolution::Standard,
-                verify_config: SimVerificationConfig::default(),
-                initial_stock: None,
-                initial_raw_volume_mm3: None,
-                carried_over_from_setup: None,
-                cancel: None,
-            },
-            SimEngineKind::TriDexel,
-            backend,
-        )
+        let sim_4ax = run_setup_simulation(&SetupSimulationInput {
+            doc: &doc,
+            setup: &resolved_4ax,
+            target_bodies: &[],
+            fixtures: &[],
+            operations: &[SimOperationInput::from_operation(&op_4ax, &ball_4, &tp_4ax)],
+            kinematics: MachineKinematicsConfig::default(),
+            resolution: SimResolution::Standard,
+            verify_config: SimVerificationConfig::default(),
+            initial_stock: None,
+            initial_raw_volume_mm3: None,
+            carried_over_from_setup: None,
+            cancel: None,
+            engine: SimEngineKind::TriDexel,
+            backend_choice: backend,
+            ..SetupSimulationInput::new(&doc, &resolved_4ax, &[])
+        })
         .unwrap();
 
         assert_eq!(
@@ -1323,43 +1314,41 @@ fn m75_rotary4axis_auto_tilt_improves_overhanging_helical_grooves_vs_rotary2line
     let _ = tri_2lin_cpu;
 
     // Also verify CylindricalStock CPU vs Auto/GPU parity on Rotary4AxisSim
-    let cyl_cpu = run_setup_simulation_with_choice(
-        &SetupSimulationInput {
-            doc: &doc,
-            setup: &resolved_4ax,
-            target_bodies: &[],
-            fixtures: &[],
-            operations: &[SimOperationInput::from_operation(&op_4ax, &ball_4, &tp_4ax)],
-            kinematics: MachineKinematicsConfig::default(),
-            resolution: SimResolution::Fine,
-            verify_config: SimVerificationConfig::default(),
-            initial_stock: None,
-            initial_raw_volume_mm3: None,
-            carried_over_from_setup: None,
-            cancel: None,
-        },
-        SimEngineKind::Heightmap,
-        SimComputeBackendChoice::Cpu,
-    )
+    let cyl_cpu = run_setup_simulation(&SetupSimulationInput {
+        doc: &doc,
+        setup: &resolved_4ax,
+        target_bodies: &[],
+        fixtures: &[],
+        operations: &[SimOperationInput::from_operation(&op_4ax, &ball_4, &tp_4ax)],
+        kinematics: MachineKinematicsConfig::default(),
+        resolution: SimResolution::Fine,
+        verify_config: SimVerificationConfig::default(),
+        initial_stock: None,
+        initial_raw_volume_mm3: None,
+        carried_over_from_setup: None,
+        cancel: None,
+        engine: SimEngineKind::Heightmap,
+        backend_choice: SimComputeBackendChoice::Cpu,
+        ..SetupSimulationInput::new(&doc, &resolved_4ax, &[])
+    })
     .unwrap();
-    let cyl_auto = run_setup_simulation_with_choice(
-        &SetupSimulationInput {
-            doc: &doc,
-            setup: &resolved_4ax,
-            target_bodies: &[],
-            fixtures: &[],
-            operations: &[SimOperationInput::from_operation(&op_4ax, &ball_4, &tp_4ax)],
-            kinematics: MachineKinematicsConfig::default(),
-            resolution: SimResolution::Fine,
-            verify_config: SimVerificationConfig::default(),
-            initial_stock: None,
-            initial_raw_volume_mm3: None,
-            carried_over_from_setup: None,
-            cancel: None,
-        },
-        SimEngineKind::Heightmap,
-        SimComputeBackendChoice::Auto,
-    )
+    let cyl_auto = run_setup_simulation(&SetupSimulationInput {
+        doc: &doc,
+        setup: &resolved_4ax,
+        target_bodies: &[],
+        fixtures: &[],
+        operations: &[SimOperationInput::from_operation(&op_4ax, &ball_4, &tp_4ax)],
+        kinematics: MachineKinematicsConfig::default(),
+        resolution: SimResolution::Fine,
+        verify_config: SimVerificationConfig::default(),
+        initial_stock: None,
+        initial_raw_volume_mm3: None,
+        carried_over_from_setup: None,
+        cancel: None,
+        engine: SimEngineKind::Heightmap,
+        backend_choice: SimComputeBackendChoice::Auto,
+        ..SetupSimulationInput::new(&doc, &resolved_4ax, &[])
+    })
     .unwrap();
 
     for (label, sim) in [("Cyl CPU", &cyl_cpu), ("Cyl Auto/GPU", &cyl_auto)] {

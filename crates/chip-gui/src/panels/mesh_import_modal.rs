@@ -4,7 +4,7 @@ use chip_cad::{
     MAX_MODEL_SCALE, MIN_MODEL_SCALE, MeshImportOptions, MeshUnitKind, ModelTransform,
     TriangleMeshBody, load_mesh_bytes, sample_relief_wave_obj_text, sample_sculpted_dome_stl_bytes,
 };
-use chip_math::{Aabb3, DVec3, DisplayUnit};
+use chip_math::{Aabb3, DisplayUnit};
 
 use crate::{
     theme::ThemeTokens,
@@ -163,32 +163,14 @@ impl MeshImportModalState {
         &self,
         mesh: &TriangleMeshBody,
     ) -> (ModelTransform, Aabb3) {
-        let mut xf = ModelTransform {
-            translate_mm: [0.0; 3],
-            rotate_deg: self.rotate_deg,
-            scale: [self.uniform_scale; 3],
-        };
-        let mut aabb = Aabb3::EMPTY;
-        for v in &mesh.vertices_mm {
-            aabb.extend_point(xf.transform_point(*v));
-        }
-        if aabb.is_valid() {
-            if self.center_xy {
-                xf = xf.centered_xy_for_aabb(aabb);
-                let shift = DVec3::new(
-                    -0.5 * (aabb.min.x + aabb.max.x),
-                    -0.5 * (aabb.min.y + aabb.max.y),
-                    0.0,
-                );
-                aabb = Aabb3::new(aabb.min + shift, aabb.max + shift);
-            }
-            if self.drop_z0 {
-                xf = xf.dropped_bottom_to_z0_for_aabb(aabb);
-                let shift = DVec3::new(0.0, 0.0, -aabb.min.z);
-                aabb = Aabb3::new(aabb.min + shift, aabb.max + shift);
-            }
-        }
-        (xf, aabb)
+        ModelTransform::compose_for_mesh_import(
+            &mesh.vertices_mm,
+            self.rotate_deg,
+            self.uniform_scale,
+            false,
+            self.center_xy,
+            self.drop_z0,
+        )
     }
 
     /// Renders the **Import 3D Mesh (STL / OBJ / 3MF)** preview modal.

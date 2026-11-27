@@ -2,8 +2,7 @@ use std::collections::HashSet;
 
 use chip_cad::{
     CadDocument, CurveKind, EdgeId, FaceId, LoopId, OrientedEdgeUse, SelectionBinding, SurfaceKind,
-    classify_planar_face_loops, extract_modeled_chamfer_strip, group_coaxial_holes,
-    highest_adjacent_lower_floor_proj, highest_adjacent_wall_top,
+    group_coaxial_holes,
 };
 use chip_math::{ArcPolyline2D, ArcSegment2D, DVec2, DVec3, RigidFrame3};
 
@@ -706,5 +705,505 @@ fn append_discretized_edge(
         if s2.distance(e2) > 1e-6 {
             segments.push(ArcSegment2D::Line { start: s2, end: e2 });
         }
+    }
+}
+
+/// Finds the highest projection (`p · spindle_up_world`) among side walls directly adjacent to
+/// a planar floor face (used for automatic Pocket `Top Height` inference).
+pub fn highest_adjacent_wall_top(
+    doc: &CadDocument,
+    floor_face_id: FaceId,
+    spindle_up_world: DVec3,
+) -> Option<f64> {
+    let floor = doc.face(floor_face_id)?;
+    let up = spindle_up_world.normalize_or_zero();
+    if up.length_squared() < 0.5 {
+        return None;
+    }
+
+    let floor_proj = match floor.surface {
+        SurfaceKind::Plane { origin_mm, .. } => origin_mm.dot(up),
+        _ => floor.aabb_mm.center().dot(up),
+    };
+
+    let mut max_wall_top: Option<f64> = None;
+
+    for loop_id in floor.outer_loop.iter().chain(floor.inner_loops.iter()) {
+        let Some(lp) = doc.brep_loop(*loop_id) else {
+            continue;
+        };
+        for use_rec in &lp.edges {
+            let Some(edge) = doc.edge(use_rec.edge_id) else {
+                continue;
+            };
+            for &adj_fid in &edge.adjacent_faces {
+                if adj_fid == floor_face_id {
+                    continue;
+                }
+                // Compute exact max projection of this adjacent wall's triangles/edges along `up`
+                let mut adj_max = f64::NEG_INFINITY;
+                for tri in &doc.render_mesh.pick_triangles {
+                    if tri.face_id == adj_fid {
+                        for v in [tri.v0_mm, tri.v1_mm, tri.v2_mm] {
+                            adj_max = adj_max.max(v.dot(up));
+                        }
+                    }
+                }
+                if adj_max.is_finite() && adj_max > floor_proj + 1e-3 {
+                    max_wall_top = Some(max_wall_top.map_or(adj_max, |cur| cur.max(adj_max)));
+                }
+            }
+        }
+    }
+
+    max_wall_top
+}
+
+/// Topological wall/air/island classification for a planar pocket or step floor face (`05-operations.md`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PlanarFaceLoopClassification {
+    /// Outer loop edges whose neighboring face drops downward/away (open to air/stock) rather than rising into a wall.
+    pub open_outer_edges: HashSet<EdgeId>,
+    /// Inner loops that bound a raised island/boss (`adj_max_proj > floor_proj`), as opposed to downward holes.
+    pub raised_inner_loops: HashSet<LoopId>,
+}
+
+/// Classifies outer-loop open-air edges and inner-loop raised bosses vs. downward holes on `floor_face_id`.
+pub fn classify_planar_face_loops(
+    doc: &CadDocument,
+    floor_face_id: FaceId,
+    spindle_up_world: DVec3,
+) -> PlanarFaceLoopClassification {
+    let mut out = PlanarFaceLoopClassification::default();
+    let Some(floor) = doc.face(floor_face_id) else {
+        return out;
+    };
+    let up = spindle_up_world.normalize_or_zero();
+    if up.length_squared() < 0.5 {
+        return out;
+    }
+
+    let floor_proj = match floor.surface {
+        SurfaceKind::Plane { origin_mm, .. } => origin_mm.dot(up),
+        _ => floor.aabb_mm.center().dot(up),
+    };
+
+    let face_rises_above_floor = |adj_fid: FaceId| -> bool {
+        let mut adj_max = f64::NEG_INFINITY;
+        for tri in &doc.render_mesh.pick_triangles {
+            if tri.face_id == adj_fid {
+                for v in [tri.v0_mm, tri.v1_mm, tri.v2_mm] {
+                    adj_max = adj_max.max(v.dot(up));
+                }
+            }
+        }
+        adj_max.is_finite() && adj_max > floor_proj + 1e-2
+    };
+
+    if let Some(outer_lid) = floor.outer_loop
+        && let Some(lp) = doc.brep_loop(outer_lid)
+    {
+        for u in &lp.edges {
+            let Some(edge) = doc.edge(u.edge_id) else {
+                continue;
+            };
+            let has_rising_wall = edge
+                .adjacent_faces
+                .iter()
+                .copied()
+                .filter(|&fid| fid != floor_face_id)
+                .any(face_rises_above_floor);
+            if !has_rising_wall {
+                out.open_outer_edges.insert(u.edge_id);
+            }
+        }
+    }
+
+    for &ilid in &floor.inner_loops {
+        let Some(lp) = doc.brep_loop(ilid) else {
+            continue;
+        };
+        let has_rising_island_wall = lp.edges.iter().any(|u| {
+            doc.edge(u.edge_id).is_some_and(|edge| {
+                edge.adjacent_faces
+                    .iter()
+                    .copied()
+                    .filter(|&fid| fid != floor_face_id)
+                    .any(face_rises_above_floor)
+            })
+        });
+        if has_rising_island_wall {
+            out.raised_inner_loops.insert(ilid);
+        }
+    }
+
+    out
+}
+
+/// Extracted geometry for an angled B-Rep chamfer/bevel face (`05-operations.md` §5A).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModeledChamferStrip {
+    pub chamfer_face_id: FaceId,
+    pub upper_edges: Vec<OrientedEdgeUse>,
+    pub lower_edges: Vec<OrientedEdgeUse>,
+    pub radial_width_mm: f64,
+    pub axial_drop_mm: f64,
+    /// Angle `θ` measured from spindle `+Z` axis to the chamfer face surface (`π/4` for a `45°` chamfer).
+    pub bevel_half_angle_rad: f64,
+    pub top_proj_mm: f64,
+    pub bottom_proj_mm: f64,
+}
+
+/// Extracts upper/lower rim edges, chamfer width `w`, and bevel angle `θ` from a modeled angled planar/conical face.
+pub fn extract_modeled_chamfer_strip(
+    doc: &CadDocument,
+    chamfer_face_id: FaceId,
+    spindle_up_world: DVec3,
+) -> Option<ModeledChamferStrip> {
+    let face = doc.face(chamfer_face_id)?;
+    let up = spindle_up_world.normalize_or_zero();
+    if up.length_squared() < 0.5 {
+        return None;
+    }
+
+    // Determine bevel half-angle from vertical (`θ`):
+    // For an upward-tilted planar bevel with outward unit normal `n`, `cos_up = n · up ∈ (0.05, 0.995)`,
+    // and the surface tangent makes angle `θ = arcsin(n · up)` with spindle vertical (`cos_up = sin(45°) = 0.707` -> `θ = 45°`).
+    let bevel_half_angle_rad = match face.surface {
+        SurfaceKind::Plane { normal, .. } => {
+            let cos_up = normal.normalize_or_zero().dot(up).abs();
+            if !(0.05..=0.995).contains(&cos_up) {
+                return None;
+            }
+            cos_up.asin()
+        }
+        SurfaceKind::Cone {
+            axis_dir,
+            half_angle_rad,
+            ..
+        } => {
+            if axis_dir.normalize_or_zero().dot(up).abs() < 0.999 {
+                return None;
+            }
+            let ha = half_angle_rad.abs();
+            if !(0.05..=1.52).contains(&ha) {
+                return None;
+            }
+            ha
+        }
+        _ => return None,
+    };
+
+    let mut min_proj = f64::INFINITY;
+    let mut max_proj = f64::NEG_INFINITY;
+    for tri in &doc.render_mesh.pick_triangles {
+        if tri.face_id == chamfer_face_id {
+            for v in [tri.v0_mm, tri.v1_mm, tri.v2_mm] {
+                let pr = v.dot(up);
+                min_proj = min_proj.min(pr);
+                max_proj = max_proj.max(pr);
+            }
+        }
+    }
+    let axial_drop_mm = max_proj - min_proj;
+    if !axial_drop_mm.is_finite() || axial_drop_mm <= 1e-3 {
+        return None;
+    }
+
+    let radial_width_mm = axial_drop_mm * bevel_half_angle_rad.tan();
+    let band = (0.12 * axial_drop_mm).max(0.05);
+    let mut upper_edges = Vec::new();
+    let mut lower_edges = Vec::new();
+
+    for lid in face.outer_loop.iter().chain(face.inner_loops.iter()) {
+        let Some(lp) = doc.brep_loop(*lid) else {
+            continue;
+        };
+        for u in &lp.edges {
+            if doc.edge(u.edge_id).is_none() {
+                continue;
+            }
+            // Check whether this edge sits entirely along the upper rim or lower rim
+            let mut e_min = f64::INFINITY;
+            let mut e_max = f64::NEG_INFINITY;
+            if let Some(ep) = doc
+                .render_mesh
+                .edge_polylines
+                .iter()
+                .find(|ep| ep.edge_id == u.edge_id)
+            {
+                for &pt in &ep.points_mm {
+                    let pr = pt.dot(up);
+                    e_min = e_min.min(pr);
+                    e_max = e_max.max(pr);
+                }
+            }
+            if !e_min.is_finite() {
+                continue;
+            }
+            if (e_min - max_proj).abs() <= band && (e_max - max_proj).abs() <= band {
+                upper_edges.push(*u);
+            } else if (e_min - min_proj).abs() <= band && (e_max - min_proj).abs() <= band {
+                lower_edges.push(*u);
+            }
+        }
+    }
+
+    if upper_edges.is_empty() && lower_edges.is_empty() {
+        return None;
+    }
+
+    Some(ModeledChamferStrip {
+        chamfer_face_id,
+        upper_edges,
+        lower_edges,
+        radial_width_mm,
+        axial_drop_mm,
+        bevel_half_angle_rad,
+        top_proj_mm: max_proj,
+        bottom_proj_mm: min_proj,
+    })
+}
+
+/// Finds the highest upward-facing horizontal step floor directly below any vertical/angled wall
+/// bordering `chamfer_edges` (`proj < ref_top_proj_mm - 1e-2`), used to guard against `tip_offset` floor gouges.
+pub fn highest_adjacent_lower_floor_proj(
+    doc: &CadDocument,
+    chamfer_edges: &[EdgeId],
+    ref_top_proj_mm: f64,
+    spindle_up_world: DVec3,
+) -> Option<f64> {
+    let up = spindle_up_world.normalize_or_zero();
+    if up.length_squared() < 0.5 {
+        return None;
+    }
+
+    // Collect side walls directly touching `chamfer_edges`
+    let mut side_wall_faces = HashSet::new();
+    for &eid in chamfer_edges {
+        if let Some(edge) = doc.edge(eid) {
+            for &fid in &edge.adjacent_faces {
+                if let Some(face) = doc.face(fid) {
+                    let is_top_cap = matches!(
+                        face.surface,
+                        SurfaceKind::Plane { origin_mm, normal }
+                        if normal.normalize_or_zero().dot(up).abs() > 0.99
+                            && (origin_mm.dot(up) - ref_top_proj_mm).abs() <= 0.05
+                    );
+                    if !is_top_cap {
+                        side_wall_faces.insert(fid);
+                    }
+                }
+            }
+        }
+    }
+
+    // Check every edge of those side walls for an upward-pointing horizontal floor (`n · up > 0.98`)
+    let mut highest_floor: Option<f64> = None;
+    for wall_fid in side_wall_faces {
+        let Some(wall) = doc.face(wall_fid) else {
+            continue;
+        };
+        for lid in wall.outer_loop.iter().chain(wall.inner_loops.iter()) {
+            let Some(lp) = doc.brep_loop(*lid) else {
+                continue;
+            };
+            for u in &lp.edges {
+                let Some(edge) = doc.edge(u.edge_id) else {
+                    continue;
+                };
+                for &adj_fid in &edge.adjacent_faces {
+                    if adj_fid == wall_fid {
+                        continue;
+                    }
+                    if let Some(adj_face) = doc.face(adj_fid)
+                        && let SurfaceKind::Plane { origin_mm, normal } = adj_face.surface
+                    {
+                        let cos_up = normal.normalize_or_zero().dot(up);
+                        let f_proj = origin_mm.dot(up);
+                        if cos_up > 0.98 && f_proj < ref_top_proj_mm - 0.05 {
+                            highest_floor =
+                                Some(highest_floor.map_or(f_proj, |cur| cur.max(f_proj)));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    highest_floor
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use chip_cad::{
+        CadKernel, MonstertruckKernel, SurfaceKind, sample_cam_torture_block_step,
+        sample_multi_feature_bracket_step, sample_threaded_manifold_step,
+        tutorial_chamfer_engrave_block_step,
+    };
+    use chip_math::{DEFAULT_TESS_CHORD_TOL_MM, DVec3, approx_eq};
+
+    use super::*;
+
+    #[test]
+    fn brep_spindle_feature_helpers_classify_walls_steps_islands_chamfers_and_floors() {
+        // 1. Multi-feature bracket adjacent wall top Z = 20.0 mm above Z = 12.0 mm pocket floor
+        let bracket_step = sample_multi_feature_bracket_step(false).unwrap();
+        let bracket_doc = MonstertruckKernel
+            .load_step_bytes(
+                "multi_bracket.step",
+                bracket_step.as_bytes(),
+                DEFAULT_TESS_CHORD_TOL_MM,
+            )
+            .unwrap();
+        let z12_floor = bracket_doc
+            .faces
+            .iter()
+            .find(|f| {
+                matches!(
+                    f.surface,
+                    SurfaceKind::Plane { origin_mm, normal }
+                    if normal.z > 0.99 && approx_eq(origin_mm.z, 12.0, 1e-2)
+                )
+            })
+            .unwrap()
+            .id;
+        let wall_top = highest_adjacent_wall_top(&bracket_doc, z12_floor, DVec3::Z).unwrap();
+        assert!(approx_eq(wall_top, 20.0, 0.05));
+
+        // 2. Torture block open step, raised island, modeled 45° x 2.0 mm chamfer, and lower floor
+        let torture_step = sample_cam_torture_block_step().unwrap();
+        let doc = MonstertruckKernel
+            .load_step_bytes(
+                "torture_block.step",
+                torture_step.as_bytes(),
+                DEFAULT_TESS_CHORD_TOL_MM,
+            )
+            .unwrap();
+        let step_floor = doc
+            .faces
+            .iter()
+            .find(|f| {
+                matches!(
+                    f.surface,
+                    SurfaceKind::Plane { origin_mm, normal }
+                    if normal.z > 0.99 && approx_eq(origin_mm.z, 14.0, 1e-2)
+                )
+            })
+            .unwrap()
+            .id;
+        let step_cls = classify_planar_face_loops(&doc, step_floor, DVec3::Z);
+        assert_eq!(step_cls.open_outer_edges.len(), 3);
+        assert!(step_cls.raised_inner_loops.is_empty());
+
+        let island_pkt_floor = doc
+            .faces
+            .iter()
+            .find(|f| {
+                matches!(
+                    f.surface,
+                    SurfaceKind::Plane { origin_mm, normal }
+                    if normal.z > 0.99 && approx_eq(origin_mm.z, 12.0, 1e-2)
+                )
+            })
+            .unwrap()
+            .id;
+        let pkt_cls = classify_planar_face_loops(&doc, island_pkt_floor, DVec3::Z);
+        assert!(pkt_cls.open_outer_edges.is_empty());
+        assert_eq!(pkt_cls.raised_inner_loops.len(), 1);
+
+        let chamfer_face = doc
+            .faces
+            .iter()
+            .find(|f| {
+                matches!(
+                    f.surface,
+                    SurfaceKind::Plane { normal, .. }
+                    if approx_eq(normal.z, std::f64::consts::FRAC_1_SQRT_2, 1e-2)
+                )
+            })
+            .unwrap()
+            .id;
+        let strip = extract_modeled_chamfer_strip(&doc, chamfer_face, DVec3::Z).unwrap();
+        assert!(approx_eq(
+            strip.bevel_half_angle_rad,
+            std::f64::consts::FRAC_PI_4,
+            1e-2
+        ));
+        assert!(approx_eq(strip.axial_drop_mm, 2.0, 2e-2));
+        assert!(approx_eq(strip.radial_width_mm, 2.0, 2e-2));
+        assert!(!strip.upper_edges.is_empty());
+        assert!(!strip.lower_edges.is_empty());
+
+        let step_top_edge = doc
+            .edges
+            .iter()
+            .find(|e| {
+                approx_eq(e.aabb_mm.min.z, 20.0, 1e-2)
+                    && approx_eq(e.aabb_mm.max.z, 20.0, 1e-2)
+                    && approx_eq(e.aabb_mm.min.x, 76.0, 1e-2)
+                    && approx_eq(e.aabb_mm.max.x, 76.0, 1e-2)
+            })
+            .unwrap()
+            .id;
+        let lower_floor =
+            highest_adjacent_lower_floor_proj(&doc, &[step_top_edge], 20.0, DVec3::Z).unwrap();
+        assert!(approx_eq(lower_floor, 14.0, 2e-2));
+
+        // 3. Tutorial chamfer block 45° x 1.5 mm front bevel
+        let ch_step = tutorial_chamfer_engrave_block_step().unwrap();
+        let ch_doc = MonstertruckKernel
+            .load_step_bytes(
+                "06-chamfer-engrave-block.step",
+                ch_step.as_bytes(),
+                DEFAULT_TESS_CHORD_TOL_MM,
+            )
+            .unwrap();
+        let bevel_face = ch_doc
+            .faces
+            .iter()
+            .find(|f| {
+                matches!(
+                    f.surface,
+                    SurfaceKind::Plane { normal, .. }
+                    if normal.z > 0.65 && normal.z < 0.76
+                )
+            })
+            .unwrap()
+            .id;
+        let ch_strip = extract_modeled_chamfer_strip(&ch_doc, bevel_face, DVec3::Z).unwrap();
+        assert!(approx_eq(
+            ch_strip.bevel_half_angle_rad,
+            std::f64::consts::FRAC_PI_4,
+            1e-2
+        ));
+        assert!(approx_eq(ch_strip.radial_width_mm, 1.5, 2e-2));
+        assert!(approx_eq(ch_strip.axial_drop_mm, 1.5, 2e-2));
+
+        // 4. Threaded manifold deck at Z = 12 mm has 4 open outer edges + 1 raised Ø12 mm boss
+        let man_step = sample_threaded_manifold_step().unwrap();
+        let man_doc = MonstertruckKernel
+            .load_step_bytes(
+                "18-threaded-manifold.step",
+                man_step.as_bytes(),
+                DEFAULT_TESS_CHORD_TOL_MM,
+            )
+            .unwrap();
+        let deck_z12 = man_doc
+            .faces
+            .iter()
+            .find(|f| {
+                matches!(
+                    f.surface,
+                    SurfaceKind::Plane { origin_mm, normal }
+                    if normal.z > 0.99 && approx_eq(origin_mm.z, 12.0, 1e-2)
+                )
+            })
+            .unwrap()
+            .id;
+        let deck_cls = classify_planar_face_loops(&man_doc, deck_z12, DVec3::Z);
+        assert_eq!(deck_cls.open_outer_edges.len(), 4);
+        assert_eq!(deck_cls.raised_inner_loops.len(), 1);
     }
 }

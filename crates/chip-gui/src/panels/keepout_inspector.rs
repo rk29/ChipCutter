@@ -586,12 +586,13 @@ pub fn show_keepout_inspector(
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    use chip_cam::{GeometrySelectionItem, Operation, OperationKind, SharedAvoidRegion};
+    use chip_cam::{
+        BoundaryPreviewCache, BoundaryPreviewOverlay, GeometrySelectionItem, Operation,
+        OperationKind, SharedAvoidPreviewInput, SharedAvoidRegion,
+    };
     use chip_math::{DisplayUnit, ParamLength};
     use chip_project::ProjectDocument;
     use chip_sketch::{SketchEntity, SketchEntityEntry, SketchLayer};
-
-    use crate::viewport::{BoundaryPreviewCache, BoundaryPreviewOverlay, SharedAvoidPreviewInput};
 
     #[test]
     fn shared_avoid_region_produces_live_3d_keepout_overlay() {

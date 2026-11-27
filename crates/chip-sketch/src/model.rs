@@ -812,6 +812,69 @@ impl SketchLayer {
     }
 }
 
+/// Creates a default parametric [`SketchEntityEntry`] for quick-insert UI & CLI presets:
+/// `spec`: `0` = Rectangle, `1` = Circle, `2` = Slot, `3` = Hexagon, `4` = Bolt Circle, `_` = Text.
+pub fn create_default_sketch_entity(
+    n: usize,
+    spec: u8,
+    sub_layer: Option<&str>,
+) -> SketchEntityEntry {
+    let mm = ParamLength::from_mm;
+    let (p, title) = match spec {
+        0 => ("rect", "Rectangle"),
+        1 => ("circle", "Circle"),
+        2 => ("slot", "Slot"),
+        3 => ("poly", "Hexagon"),
+        4 => ("bolts", "Bolt Circle"),
+        _ => ("text", "Text"),
+    };
+    let entity = match spec {
+        0 => SketchEntity::Rectangle {
+            anchor: RectAnchorMode::Center,
+            x: mm(0.0),
+            y: mm(0.0),
+            width: mm(50.0),
+            height: mm(30.0),
+            corner_radius: mm(4.0),
+            rotation_deg: 0.0,
+        },
+        1 => SketchEntity::new_circle(mm(0.0), mm(0.0), mm(12.0)),
+        2 => SketchEntity::Slot {
+            mode: SlotLengthMode::CenterToCenter,
+            x: mm(0.0),
+            y: mm(0.0),
+            length: mm(24.0),
+            width: mm(8.0),
+            angle_deg: 0.0,
+        },
+        3 => SketchEntity::RegularPolygon {
+            center_x: mm(0.0),
+            center_y: mm(0.0),
+            sides: 6,
+            sizing: PolygonSizingMode::AcrossFlats,
+            diameter: mm(19.0),
+            corner_radius: mm(0.0),
+            rotation_deg: 0.0,
+        },
+        4 => SketchEntity::PointPattern(PointPatternSpec::BoltCircle {
+            center_x: mm(0.0),
+            center_y: mm(0.0),
+            bolt_circle_diameter: mm(40.0),
+            hole_diameter: mm(6.0),
+            count: 6,
+            start_angle_deg: 0.0,
+        }),
+        _ => SketchEntity::Text(SketchTextSpec::default()),
+    };
+    SketchEntityEntry {
+        id: format!("{p}_{n}"),
+        name: format!("{title} {n}"),
+        sub_layer: sub_layer.map(str::to_string),
+        is_construction: false,
+        entity,
+    }
+}
+
 /// Computes lowercase `64`-character SHA-256 hex digest of `bytes`.
 pub fn compute_sketch_sha256_hex(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);

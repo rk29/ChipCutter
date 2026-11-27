@@ -1,8 +1,9 @@
 use chip_math::{DVec2, DVec3};
-use chip_tools::{CutterGeometry, ToolOperationClass};
+use chip_tools::CutterGeometry;
 
 use crate::{
     cl_data::{DrillCycleKind, MotionRole},
+    operation::{ToolOperationClass, cutter_supports_operation},
     params::{DrillBoreParams, HoleMachiningMode},
     selection::ExtractedFeature25D,
     strategies::StrategyExecContext,
@@ -101,10 +102,8 @@ pub fn generate_drill_bore(
             HoleMachiningMode::Drill => false,
             HoleMachiningMode::HelicalBore => true,
             HoleMachiningMode::AutoByTool => {
-                let can_bore = ctx
-                    .tool
-                    .geometry
-                    .supports_operation(ToolOperationClass::HelicalBore);
+                let can_bore =
+                    cutter_supports_operation(&ctx.tool.geometry, ToolOperationClass::HelicalBore);
                 let is_drill_geom = matches!(
                     ctx.tool.geometry,
                     CutterGeometry::TwistDrill { .. } | CutterGeometry::ChamferMill { .. }

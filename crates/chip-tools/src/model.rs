@@ -58,33 +58,6 @@ impl CoolantMode {
     }
 }
 
-/// High-level 2.5D operation classes used to validate tool compatibility.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ToolOperationClass {
-    Facing,
-    Contour2D,
-    Pocket2D,
-    Drill,
-    HelicalBore,
-    Chamfer,
-    Trace,
-    VCarve,
-    VCarveFlatClearance,
-    Waterline3D,
-    Adaptive3D,
-    Parallel3D,
-    Scallop3D,
-    Pencil3D,
-    Rotary2Linear,
-    Rotary4AxisSim,
-    ThreadMill,
-    Deburr3D,
-    SlotUndercut,
-    Dovetail,
-    Undercut3D,
-}
-
 /// Physical cutter geometry stored in canonical `f64` millimeters.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -415,84 +388,6 @@ impl CutterGeometry {
                 point_angle_deg, ..
             } => point_angle_deg.to_radians(),
             _ => std::f64::consts::PI,
-        }
-    }
-
-    /// Checks whether this cutter type is valid for `op_class` per `04-tool-library.md`.
-    pub fn supports_operation(&self, op_class: ToolOperationClass) -> bool {
-        match self {
-            Self::FlatEndmill { .. } => matches!(
-                op_class,
-                ToolOperationClass::Facing
-                    | ToolOperationClass::Contour2D
-                    | ToolOperationClass::Pocket2D
-                    | ToolOperationClass::HelicalBore
-                    | ToolOperationClass::Trace
-                    | ToolOperationClass::VCarveFlatClearance
-                    | ToolOperationClass::Waterline3D
-                    | ToolOperationClass::Adaptive3D
-                    | ToolOperationClass::Parallel3D
-                    | ToolOperationClass::Scallop3D
-                    | ToolOperationClass::Pencil3D
-                    | ToolOperationClass::Rotary2Linear
-                    | ToolOperationClass::Rotary4AxisSim
-                    | ToolOperationClass::SlotUndercut
-            ),
-            Self::BullNoseEndmill { .. } => matches!(
-                op_class,
-                ToolOperationClass::Facing
-                    | ToolOperationClass::Contour2D
-                    | ToolOperationClass::Pocket2D
-                    | ToolOperationClass::HelicalBore
-                    | ToolOperationClass::Trace
-                    | ToolOperationClass::Waterline3D
-                    | ToolOperationClass::Adaptive3D
-                    | ToolOperationClass::Parallel3D
-                    | ToolOperationClass::Scallop3D
-                    | ToolOperationClass::Pencil3D
-                    | ToolOperationClass::Rotary2Linear
-                    | ToolOperationClass::Rotary4AxisSim
-            ),
-            Self::BallEndmill { .. } => matches!(
-                op_class,
-                ToolOperationClass::Contour2D
-                    | ToolOperationClass::Pocket2D
-                    | ToolOperationClass::Trace
-                    | ToolOperationClass::Waterline3D
-                    | ToolOperationClass::Adaptive3D
-                    | ToolOperationClass::Parallel3D
-                    | ToolOperationClass::Scallop3D
-                    | ToolOperationClass::Pencil3D
-                    | ToolOperationClass::Rotary2Linear
-                    | ToolOperationClass::Rotary4AxisSim
-                    | ToolOperationClass::Deburr3D
-            ),
-            Self::ChamferMill {
-                included_angle_deg, ..
-            } => match op_class {
-                ToolOperationClass::VCarve => (10.0..=160.0).contains(included_angle_deg),
-                ToolOperationClass::Chamfer
-                | ToolOperationClass::Trace
-                | ToolOperationClass::Drill
-                | ToolOperationClass::Parallel3D
-                | ToolOperationClass::Pencil3D
-                | ToolOperationClass::Rotary2Linear
-                | ToolOperationClass::Rotary4AxisSim
-                | ToolOperationClass::Deburr3D => true,
-                _ => false,
-            },
-            Self::TwistDrill { .. } => matches!(op_class, ToolOperationClass::Drill),
-            Self::FaceMill { .. } => matches!(
-                op_class,
-                ToolOperationClass::Facing | ToolOperationClass::Contour2D
-            ),
-            Self::ThreadMill { .. } => matches!(op_class, ToolOperationClass::ThreadMill),
-            Self::LollipopEndmill { .. } => matches!(
-                op_class,
-                ToolOperationClass::Deburr3D | ToolOperationClass::Undercut3D
-            ),
-            Self::SlotMill { .. } => matches!(op_class, ToolOperationClass::SlotUndercut),
-            Self::DovetailCutter { .. } => matches!(op_class, ToolOperationClass::Dovetail),
         }
     }
 }

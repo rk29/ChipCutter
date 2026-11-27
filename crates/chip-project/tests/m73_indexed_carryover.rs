@@ -13,7 +13,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use chip_cad::{MeshImportOptions, ModelTransform, load_mesh_cad_document};
+use chip_cad::{
+    MeshImportOptions, ModelTransform, load_mesh_cad_document, load_model_entry_cad_doc_transformed,
+};
 use chip_cam::{
     AxisAnchor, BoxAnchor27, GeometrySelectionItem, HeightReference, HeightSpec,
     MachiningBoundaryMode, Operation, OperationGenRequest, OperationKind, OperationRotaryMode,
@@ -26,8 +28,7 @@ use chip_project::{
     JobDispatcher, ModelEntry, ProjectDocument, SetupSimRequest, ToolpathCache,
     cache::{compute_operation_input_hash, op_needs_in_setup_rotary_carryover},
     compute_sha256_hex, generate_project_blocking, generate_project_blocking_in_dir,
-    load_model_entry_cad_doc_transformed, resolve_kinematics_for_key,
-    simulate_project_setup_with_choice,
+    resolve_kinematics_for_key, simulate_project_setup,
 };
 use chip_sim::{SimComputeBackendChoice, SimEngineKind, SimIssueKind, SimResolution};
 use chip_tools::{CutterGeometry, Tool, ToolId, default_starter_tool_library};
@@ -287,20 +288,19 @@ fn three_angle_indexed_adaptive3d_volumetric_carryover_reduces_air_cutting_with_
 
     // 3. Full multi-op rotary Tri-Dexel verification: ZERO gouges & ZERO rapid-into-stock crashes!
     let kin = resolve_kinematics_for_key(&proj_rest.setups[0].post_profile, None);
-    let sim = simulate_project_setup_with_choice(
-        &SetupSimRequest {
-            project: &proj_rest,
-            setup_idx: 0,
-            cad_doc: &cad_doc,
-            cad_revision: 1,
-            cache: &cache_rest,
-            kinematics: kin,
-            resolution: SimResolution::Standard,
-            cancel: None,
-        },
-        SimEngineKind::TriDexel,
-        SimComputeBackendChoice::Cpu,
-    )
+    let sim = simulate_project_setup(&SetupSimRequest {
+        project: &proj_rest,
+        setup_idx: 0,
+        cad_doc: &cad_doc,
+        cad_revision: 1,
+        cache: &cache_rest,
+        kinematics: kin,
+        resolution: SimResolution::Standard,
+        cancel: None,
+        engine: SimEngineKind::TriDexel,
+        backend_choice: SimComputeBackendChoice::Cpu,
+        ..SetupSimRequest::new(&proj_rest, 0, &cad_doc, 1, &cache_rest)
+    })
     .unwrap();
 
     let rapid_crashes: Vec<_> = sim
@@ -570,20 +570,19 @@ fn torture_triple_and_double_helix_indexed_projects_sanity_check() {
         );
 
         let kin = resolve_kinematics_for_key(&proj.setups[0].post_profile, Some(&torture_dir));
-        let sim = simulate_project_setup_with_choice(
-            &SetupSimRequest {
-                project: &proj,
-                setup_idx: 0,
-                cad_doc: &cad_doc,
-                cad_revision: 1,
-                cache: &cache,
-                kinematics: kin,
-                resolution: SimResolution::Standard,
-                cancel: None,
-            },
-            SimEngineKind::TriDexel,
-            SimComputeBackendChoice::Auto,
-        )
+        let sim = simulate_project_setup(&SetupSimRequest {
+            project: &proj,
+            setup_idx: 0,
+            cad_doc: &cad_doc,
+            cad_revision: 1,
+            cache: &cache,
+            kinematics: kin,
+            resolution: SimResolution::Standard,
+            cancel: None,
+            engine: SimEngineKind::TriDexel,
+            backend_choice: SimComputeBackendChoice::Auto,
+            ..SetupSimRequest::new(&proj, 0, &cad_doc, 1, &cache)
+        })
         .unwrap();
 
         let rapid_crashes: Vec<_> = sim
@@ -646,20 +645,19 @@ fn torture_triple_helix_full_4angle_indexed_carryover() {
     assert_eq!(rep.generated.len(), 4);
 
     let kin = resolve_kinematics_for_key(&proj.setups[0].post_profile, Some(&torture_dir));
-    let sim = simulate_project_setup_with_choice(
-        &SetupSimRequest {
-            project: &proj,
-            setup_idx: 0,
-            cad_doc: &cad_doc,
-            cad_revision: 1,
-            cache: &cache,
-            kinematics: kin,
-            resolution: SimResolution::Standard,
-            cancel: None,
-        },
-        SimEngineKind::TriDexel,
-        SimComputeBackendChoice::Auto,
-    )
+    let sim = simulate_project_setup(&SetupSimRequest {
+        project: &proj,
+        setup_idx: 0,
+        cad_doc: &cad_doc,
+        cad_revision: 1,
+        cache: &cache,
+        kinematics: kin,
+        resolution: SimResolution::Standard,
+        cancel: None,
+        engine: SimEngineKind::TriDexel,
+        backend_choice: SimComputeBackendChoice::Auto,
+        ..SetupSimRequest::new(&proj, 0, &cad_doc, 1, &cache)
+    })
     .unwrap();
 
     assert!(

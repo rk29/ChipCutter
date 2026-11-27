@@ -17,8 +17,7 @@ use chip_cam::{
 use chip_math::{DEFAULT_TESS_CHORD_TOL_MM, DVec2, DVec3, DisplayUnit, ParamLength};
 use chip_sim::{
     MachineKinematicsConfig, SetupSimulationInput, SimComputeBackendChoice, SimEngineKind,
-    SimIssueKind, SimOperationInput, SimResolution, SimVerificationConfig,
-    run_setup_simulation_with_choice,
+    SimIssueKind, SimOperationInput, SimResolution, SimVerificationConfig, run_setup_simulation,
 };
 use chip_sketch::{
     RectAnchorMode, SketchAnchor, SketchEntity, SketchEntityEntry, SketchLayer, SketchPlaneRef,
@@ -351,27 +350,26 @@ fn adaptive3d_and_waterline3d_wider_shank_overhang_pass_tridexel_zero_collisions
     );
 
     // Verify both operations together against `chip-sim` volumetric Tri-Dexel oracle!
-    let sim_res = run_setup_simulation_with_choice(
-        &SetupSimulationInput {
-            doc: &doc,
-            setup: &resolved,
-            target_bodies: &[],
-            fixtures: &[],
-            operations: &[
-                SimOperationInput::from_operation(&op_adap, &tool, &tp_adap),
-                SimOperationInput::from_operation(&op_wl, &tool, &tp_wl),
-            ],
-            kinematics: MachineKinematicsConfig::default(),
-            resolution: SimResolution::Standard,
-            verify_config: SimVerificationConfig::default(),
-            initial_stock: None,
-            initial_raw_volume_mm3: None,
-            carried_over_from_setup: None,
-            cancel: Some(&cancel),
-        },
-        SimEngineKind::TriDexel,
-        SimComputeBackendChoice::Auto,
-    )
+    let sim_res = run_setup_simulation(&SetupSimulationInput {
+        doc: &doc,
+        setup: &resolved,
+        target_bodies: &[],
+        fixtures: &[],
+        operations: &[
+            SimOperationInput::from_operation(&op_adap, &tool, &tp_adap),
+            SimOperationInput::from_operation(&op_wl, &tool, &tp_wl),
+        ],
+        kinematics: MachineKinematicsConfig::default(),
+        resolution: SimResolution::Standard,
+        verify_config: SimVerificationConfig::default(),
+        initial_stock: None,
+        initial_raw_volume_mm3: None,
+        carried_over_from_setup: None,
+        cancel: Some(&cancel),
+        engine: SimEngineKind::TriDexel,
+        backend_choice: SimComputeBackendChoice::Auto,
+        ..SetupSimulationInput::new(&doc, &resolved, &[])
+    })
     .unwrap();
 
     let bad: Vec<_> = sim_res
@@ -501,27 +499,26 @@ fn adaptive3d_and_waterline3d_holder_clearance_avoids_tall_overhang_in_tridexel(
         tp_wl.warnings
     );
 
-    let sim_res = run_setup_simulation_with_choice(
-        &SetupSimulationInput {
-            doc: &doc,
-            setup: &resolved,
-            target_bodies: &[],
-            fixtures: &[],
-            operations: &[
-                SimOperationInput::from_operation(&op_adap, &tool, &tp_adap),
-                SimOperationInput::from_operation(&op_wl, &tool, &tp_wl),
-            ],
-            kinematics: MachineKinematicsConfig::default(),
-            resolution: SimResolution::Standard,
-            verify_config: SimVerificationConfig::default(),
-            initial_stock: None,
-            initial_raw_volume_mm3: None,
-            carried_over_from_setup: None,
-            cancel: Some(&cancel),
-        },
-        SimEngineKind::TriDexel,
-        SimComputeBackendChoice::Auto,
-    )
+    let sim_res = run_setup_simulation(&SetupSimulationInput {
+        doc: &doc,
+        setup: &resolved,
+        target_bodies: &[],
+        fixtures: &[],
+        operations: &[
+            SimOperationInput::from_operation(&op_adap, &tool, &tp_adap),
+            SimOperationInput::from_operation(&op_wl, &tool, &tp_wl),
+        ],
+        kinematics: MachineKinematicsConfig::default(),
+        resolution: SimResolution::Standard,
+        verify_config: SimVerificationConfig::default(),
+        initial_stock: None,
+        initial_raw_volume_mm3: None,
+        carried_over_from_setup: None,
+        cancel: Some(&cancel),
+        engine: SimEngineKind::TriDexel,
+        backend_choice: SimComputeBackendChoice::Auto,
+        ..SetupSimulationInput::new(&doc, &resolved, &[])
+    })
     .unwrap();
 
     let bad: Vec<_> = sim_res
@@ -915,29 +912,28 @@ fn overhang_guard_warns_and_opt_in_avoidance_protects_25d_ops_beneath_bridge() {
     // --- 5. Tri-Dexel verification of all 4 overhang-avoiding 2.5D toolpaths ---
     // Note: in `bridge_overhang.stl`, the lower shelf sits at Z=4 with open air above it up to Z=20;
     // verify zero TargetModelGouge and zero HolderCollision against the 3D overhanging bridge solid!
-    let sim_res = run_setup_simulation_with_choice(
-        &SetupSimulationInput {
-            doc: &doc,
-            setup: &resolved,
-            target_bodies: &[],
-            fixtures: &[],
-            operations: &[
-                SimOperationInput::from_operation(&op_face_safe, &flat_4, &tp_face_safe),
-                SimOperationInput::from_operation(&op_pkt_safe, &flat_4, &tp_pkt_safe),
-                SimOperationInput::from_operation(&op_cnt_safe, &flat_4, &tp_cnt_safe),
-                SimOperationInput::from_operation(&op_drill_safe, &drill_4, &tp_drill_safe),
-            ],
-            kinematics: MachineKinematicsConfig::default(),
-            resolution: SimResolution::Standard,
-            verify_config: SimVerificationConfig::default(),
-            initial_stock: None,
-            initial_raw_volume_mm3: None,
-            carried_over_from_setup: None,
-            cancel: Some(&cancel),
-        },
-        SimEngineKind::TriDexel,
-        SimComputeBackendChoice::Auto,
-    )
+    let sim_res = run_setup_simulation(&SetupSimulationInput {
+        doc: &doc,
+        setup: &resolved,
+        target_bodies: &[],
+        fixtures: &[],
+        operations: &[
+            SimOperationInput::from_operation(&op_face_safe, &flat_4, &tp_face_safe),
+            SimOperationInput::from_operation(&op_pkt_safe, &flat_4, &tp_pkt_safe),
+            SimOperationInput::from_operation(&op_cnt_safe, &flat_4, &tp_cnt_safe),
+            SimOperationInput::from_operation(&op_drill_safe, &drill_4, &tp_drill_safe),
+        ],
+        kinematics: MachineKinematicsConfig::default(),
+        resolution: SimResolution::Standard,
+        verify_config: SimVerificationConfig::default(),
+        initial_stock: None,
+        initial_raw_volume_mm3: None,
+        carried_over_from_setup: None,
+        cancel: Some(&cancel),
+        engine: SimEngineKind::TriDexel,
+        backend_choice: SimComputeBackendChoice::Auto,
+        ..SetupSimulationInput::new(&doc, &resolved, &[])
+    })
     .unwrap();
 
     let gouges_or_holder: Vec<_> = sim_res

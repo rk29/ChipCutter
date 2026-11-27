@@ -37,7 +37,7 @@ use crate::{
     },
 };
 
-/// Borrowed input bundle passed to [`run_setup_simulation`] and [`run_setup_simulation_with_engine`].
+/// Borrowed input bundle passed to [`run_setup_simulation`] and [`run_setup_simulation_with_backend`].
 #[derive(Clone, Copy)]
 pub struct SetupSimulationInput<'a> {
     pub doc: &'a CadDocument,
@@ -46,6 +46,8 @@ pub struct SetupSimulationInput<'a> {
     pub fixtures: &'a [ResolvedFixtureSolid],
     pub operations: &'a [SimOperationInput<'a>],
     pub resolution: SimResolution,
+    pub engine: SimEngineKind,
+    pub backend_choice: SimComputeBackendChoice,
     pub kinematics: MachineKinematicsConfig,
     pub verify_config: SimVerificationConfig,
     /// Optional carried-over volumetric stock transferred from a preceding Setup (`M62`).
@@ -56,7 +58,104 @@ pub struct SetupSimulationInput<'a> {
     pub initial_raw_volume_mm3: Option<f64>,
     /// Optional display name of the preceding Setup that produced `initial_stock`.
     pub carried_over_from_setup: Option<&'a str>,
+    /// Optional explicit shared GPU compute context (`None` uses `GpuSimContext::shared_headless()`
+    /// when `backend_choice != SimComputeBackendChoice::Cpu`).
+    #[cfg(feature = "gpu-compute")]
+    pub gpu_ctx: Option<&'a Arc<GpuSimContext>>,
+    /// Optional live completion progress reporter (`0%`–`100%`).
+    pub progress: Option<SimProgressScope<'a>>,
     pub cancel: Option<&'a AtomicBool>,
+}
+
+impl<'a> SetupSimulationInput<'a> {
+    /// Creates a [`SetupSimulationInput`] with default `Heightmap` engine, exact `Cpu` backend,
+    /// `Standard` resolution, and default kinematics & verification tolerances.
+    pub fn new(
+        doc: &'a CadDocument,
+        setup: &'a ResolvedSetup,
+        operations: &'a [SimOperationInput<'a>],
+    ) -> Self {
+        Self {
+            doc,
+            setup,
+            target_bodies: &[],
+            fixtures: &[],
+            operations,
+            resolution: SimResolution::Standard,
+            engine: SimEngineKind::Heightmap,
+            backend_choice: SimComputeBackendChoice::Cpu,
+            kinematics: MachineKinematicsConfig::default(),
+            verify_config: SimVerificationConfig::default(),
+            initial_stock: None,
+            initial_raw_volume_mm3: None,
+            carried_over_from_setup: None,
+            #[cfg(feature = "gpu-compute")]
+            gpu_ctx: None,
+            progress: None,
+            cancel: None,
+        }
+    }
+
+    #[inline]
+    pub const fn with_engine(mut self, engine: SimEngineKind) -> Self {
+        self.engine = engine;
+        self
+    }
+
+    #[inline]
+    pub const fn with_backend_choice(mut self, backend_choice: SimComputeBackendChoice) -> Self {
+        self.backend_choice = backend_choice;
+        self
+    }
+
+    #[inline]
+    pub const fn with_resolution(mut self, resolution: SimResolution) -> Self {
+        self.resolution = resolution;
+        self
+    }
+
+    #[inline]
+    pub const fn with_kinematics(mut self, kinematics: MachineKinematicsConfig) -> Self {
+        self.kinematics = kinematics;
+        self
+    }
+
+    #[inline]
+    pub const fn with_verify_config(mut self, verify_config: SimVerificationConfig) -> Self {
+        self.verify_config = verify_config;
+        self
+    }
+
+    #[inline]
+    pub const fn with_target_bodies(mut self, target_bodies: &'a [BodyId]) -> Self {
+        self.target_bodies = target_bodies;
+        self
+    }
+
+    #[inline]
+    pub const fn with_fixtures(mut self, fixtures: &'a [ResolvedFixtureSolid]) -> Self {
+        self.fixtures = fixtures;
+        self
+    }
+
+    #[inline]
+    pub const fn with_progress(mut self, progress: Option<SimProgressScope<'a>>) -> Self {
+        self.progress = progress;
+        self
+    }
+
+    #[inline]
+    pub const fn with_cancel(mut self, cancel: Option<&'a AtomicBool>) -> Self {
+        self.cancel = cancel;
+        self
+    }
+
+    #[cfg(feature = "gpu-compute")]
+    #[inline]
+    pub const fn with_gpu_ctx(mut self, gpu_ctx: Option<&'a Arc<GpuSimContext>>) -> Self {
+        self.gpu_ctx = gpu_ctx;
+        self
+    }
 }
 
 /// Structured per-stage wall-clock timing & segment throughput metadata for a simulation run.
@@ -117,6 +216,21 @@ impl SetupSimulationResult {
     #[inline]
     pub const fn is_rotary(&self) -> bool {
         self.final_stock.is_rotary()
+    }
+
+    /// Computes the 4x4 WCS model matrix rotating simulated rotary stock by `rotary_deg`
+    /// around its configured rotary axis and center (identity for 3-axis stock or zero angle).
+    pub fn stock_model_wcs_transform(&self, rotary_deg: f64) -> chip_math::DMat4 {
+        if let Some(rot) = self.rotary_spec()
+            && rotary_deg.abs() > 1e-6
+        {
+            let angle_rad = (rotary_deg * rot.direction_sign).to_radians();
+            chip_math::DMat4::from_translation(rot.center_wcs)
+                * chip_math::DMat4::from_axis_angle(rot.axis_unit(), angle_rad)
+                * chip_math::DMat4::from_translation(-rot.center_wcs)
+        } else {
+            chip_math::DMat4::IDENTITY
+        }
     }
 
     #[inline]
@@ -482,129 +596,60 @@ pub(crate) fn target_cursor_from_snap(
     }
 }
 
-/// Executes full heightmap (or 4th-axis cylindrical) stock removal, periodic checkpoint capture,
-/// and 5-rule crash/gouge verification across all active Setup operations (`06-simulation.md`).
+/// Executes volumetric stock removal (`Heightmap`, `TriDexel`, or 4th-axis `Cylindrical`),
+/// periodic checkpoint capture, and 6-rule crash/gouge/fixture verification across all active
+/// Setup operations using the engine, backend choice, GPU context, and progress scope configured
+/// on [`SetupSimulationInput`] (`06-simulation.md`).
 pub fn run_setup_simulation(
     input: &SetupSimulationInput<'_>,
 ) -> Result<SetupSimulationResult, SimError> {
-    run_setup_simulation_with_engine(input, SimEngineKind::Heightmap)
-}
+    let t_total = Instant::now();
+    let t_setup = Instant::now();
 
-/// Executes stock simulation & 5-rule crash/gouge verification using the selected [`SimEngineKind`]
-/// (`Heightmap` or volumetric `TriDexel`, automatically selecting 4th-axis `Cylindrical` on rotary setups).
-pub fn run_setup_simulation_with_engine(
-    input: &SetupSimulationInput<'_>,
-    engine: SimEngineKind,
-) -> Result<SetupSimulationResult, SimError> {
-    run_setup_simulation_with_choice(input, engine, SimComputeBackendChoice::Cpu)
-}
-
-/// Executes stock simulation & 5-rule crash/gouge verification using the selected [`SimEngineKind`]
-/// and [`SimComputeBackendChoice`] (`Auto` / `Gpu` / `Cpu`), falling back cleanly to
-/// [`CpuExactBackend`] whenever `gpu-compute` is disabled or no GPU adapter is available.
-pub fn run_setup_simulation_with_choice(
-    input: &SetupSimulationInput<'_>,
-    engine: SimEngineKind,
-    choice: SimComputeBackendChoice,
-) -> Result<SetupSimulationResult, SimError> {
-    run_setup_simulation_with_choice_and_progress(input, engine, choice, None)
-}
-
-/// Executes stock simulation & 6-rule crash/gouge/fixture verification using the selected
-/// [`SimEngineKind`] and [`SimComputeBackendChoice`], reporting live completion progress into
-/// `progress` (`0%`–`100%`) when provided.
-pub fn run_setup_simulation_with_choice_and_progress(
-    input: &SetupSimulationInput<'_>,
-    engine: SimEngineKind,
-    choice: SimComputeBackendChoice,
-    progress: Option<SimProgressScope<'_>>,
-) -> Result<SetupSimulationResult, SimError> {
     #[cfg(feature = "gpu-compute")]
     {
-        let gpu_ctx = match choice {
+        let active_ctx = match input.backend_choice {
             SimComputeBackendChoice::Cpu => None,
-            SimComputeBackendChoice::Auto | SimComputeBackendChoice::Gpu => {
-                GpuSimContext::shared_headless()
-            }
+            SimComputeBackendChoice::Auto | SimComputeBackendChoice::Gpu => input
+                .gpu_ctx
+                .cloned()
+                .or_else(GpuSimContext::shared_headless),
         };
-        run_setup_simulation_with_gpu_context_and_progress(input, engine, choice, gpu_ctx, progress)
+        let (effective_engine, stock, target_td) = prepare_initial_stock_with_gpu(
+            input,
+            input.engine,
+            active_ctx.as_deref(),
+            input.progress,
+        )?;
+
+        let mut res = if let Some(ctx) = active_ctx {
+            let backend = WgpuComputeBackend::new(ctx, stock, target_td);
+            let target_setup_ms = t_setup.elapsed().as_secs_f64() * 1000.0;
+            let mut out = run_setup_simulation_with_backend(input, effective_engine, backend)?;
+            finalize_timing(&mut out.timing, target_setup_ms, t_total);
+            out
+        } else {
+            let backend = CpuExactBackend::new(stock, target_td);
+            let target_setup_ms = t_setup.elapsed().as_secs_f64() * 1000.0;
+            let mut out = run_setup_simulation_with_backend(input, effective_engine, backend)?;
+            finalize_timing(&mut out.timing, target_setup_ms, t_total);
+            out
+        };
+        res.timing.total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
+        res.timing.segments_per_sec =
+            compute_segments_per_sec(res.timing.total_segments, res.timing.total_ms);
+        Ok(res)
     }
     #[cfg(not(feature = "gpu-compute"))]
     {
-        let _ = choice;
-        let t_total = Instant::now();
-        let t_setup = Instant::now();
-        let (effective_engine, stock, target_td) = prepare_initial_stock(input, engine, progress)?;
+        let (effective_engine, stock, target_td) =
+            prepare_initial_stock(input, input.engine, input.progress)?;
         let backend = CpuExactBackend::new(stock, target_td);
         let target_setup_ms = t_setup.elapsed().as_secs_f64() * 1000.0;
-        let mut res = run_setup_simulation_with_backend_and_progress(
-            input,
-            effective_engine,
-            backend,
-            progress,
-        )?;
+        let mut res = run_setup_simulation_with_backend(input, effective_engine, backend)?;
         finalize_timing(&mut res.timing, target_setup_ms, t_total);
         Ok(res)
     }
-}
-
-/// Executes stock simulation with an explicitly provided shared [`GpuSimContext`] (e.g., from
-/// `eframe`/`ViewportRenderer`), transparently falling back to [`CpuExactBackend`] when
-/// `choice == SimComputeBackendChoice::Cpu` or `gpu_ctx` is `None`.
-#[cfg(feature = "gpu-compute")]
-pub fn run_setup_simulation_with_gpu_context(
-    input: &SetupSimulationInput<'_>,
-    engine: SimEngineKind,
-    choice: SimComputeBackendChoice,
-    gpu_ctx: Option<Arc<GpuSimContext>>,
-) -> Result<SetupSimulationResult, SimError> {
-    run_setup_simulation_with_gpu_context_and_progress(input, engine, choice, gpu_ctx, None)
-}
-
-/// Executes stock simulation with an explicitly provided shared [`GpuSimContext`] and optional
-/// live progress reporting into `progress`.
-#[cfg(feature = "gpu-compute")]
-pub fn run_setup_simulation_with_gpu_context_and_progress(
-    input: &SetupSimulationInput<'_>,
-    engine: SimEngineKind,
-    choice: SimComputeBackendChoice,
-    gpu_ctx: Option<Arc<GpuSimContext>>,
-    progress: Option<SimProgressScope<'_>>,
-) -> Result<SetupSimulationResult, SimError> {
-    let t_total = Instant::now();
-    let t_setup = Instant::now();
-    let use_gpu = choice != SimComputeBackendChoice::Cpu;
-    let active_ctx = if use_gpu { gpu_ctx } else { None };
-    let (effective_engine, stock, target_td) =
-        prepare_initial_stock_with_gpu(input, engine, active_ctx.as_deref(), progress)?;
-
-    let mut res = if let Some(ctx) = active_ctx {
-        let backend = WgpuComputeBackend::new(ctx, stock, target_td);
-        let target_setup_ms = t_setup.elapsed().as_secs_f64() * 1000.0;
-        let mut out = run_setup_simulation_with_backend_and_progress(
-            input,
-            effective_engine,
-            backend,
-            progress,
-        )?;
-        finalize_timing(&mut out.timing, target_setup_ms, t_total);
-        out
-    } else {
-        let backend = CpuExactBackend::new(stock, target_td);
-        let target_setup_ms = t_setup.elapsed().as_secs_f64() * 1000.0;
-        let mut out = run_setup_simulation_with_backend_and_progress(
-            input,
-            effective_engine,
-            backend,
-            progress,
-        )?;
-        finalize_timing(&mut out.timing, target_setup_ms, t_total);
-        out
-    };
-    res.timing.total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
-    res.timing.segments_per_sec =
-        compute_segments_per_sec(res.timing.total_segments, res.timing.total_ms);
-    Ok(res)
 }
 
 #[inline]
@@ -814,13 +859,13 @@ fn prepare_initial_stock_with_gpu(
 }
 
 /// Single unified polymorphic setup simulation loop driving any [`SimStockBackend`] with optional
-/// live completion progress reporting (`0%`–`100%`).
-pub fn run_setup_simulation_with_backend_and_progress<B: SimStockBackend>(
+/// live completion progress reporting from `input.progress` (`0%`–`100%`).
+pub fn run_setup_simulation_with_backend<B: SimStockBackend>(
     input: &SetupSimulationInput<'_>,
     engine: SimEngineKind,
     mut backend: B,
-    progress: Option<SimProgressScope<'_>>,
 ) -> Result<SetupSimulationResult, SimError> {
+    let progress = input.progress;
     let t_driver_start = Instant::now();
     if let Some(p) = progress {
         p.report(0.05, SimProgressStage::PreparingStock);
@@ -1218,30 +1263,29 @@ mod tests {
         b.rapid_to(DVec3::new(10.0, 0.0, 5.0));
         let tp = b.finish();
 
-        let sim = run_setup_simulation_with_engine(
-            &SetupSimulationInput {
-                doc: &empty_doc,
-                setup: &resolved,
-                target_bodies: &[],
-                fixtures: &[],
-                operations: &[SimOperationInput {
-                    op_id: "op_slot",
-                    op_name: "Slot",
-                    tool: flat_6,
-                    fallback_spindle_rpm: 12_000.0,
-                    toolpath: &tp,
-                    intentional_edge_break_mm: 0.0,
-                }],
-                resolution: SimResolution::Standard,
-                kinematics: MachineKinematicsConfig::default(),
-                verify_config: SimVerificationConfig::default(),
-                initial_stock: None,
-                initial_raw_volume_mm3: None,
-                carried_over_from_setup: None,
-                cancel: None,
-            },
-            SimEngineKind::TriDexel,
-        )
+        let sim = run_setup_simulation(&SetupSimulationInput {
+            doc: &empty_doc,
+            setup: &resolved,
+            target_bodies: &[],
+            fixtures: &[],
+            operations: &[SimOperationInput {
+                op_id: "op_slot",
+                op_name: "Slot",
+                tool: flat_6,
+                fallback_spindle_rpm: 12_000.0,
+                toolpath: &tp,
+                intentional_edge_break_mm: 0.0,
+            }],
+            resolution: SimResolution::Standard,
+            kinematics: MachineKinematicsConfig::default(),
+            verify_config: SimVerificationConfig::default(),
+            initial_stock: None,
+            initial_raw_volume_mm3: None,
+            carried_over_from_setup: None,
+            cancel: None,
+            engine: SimEngineKind::TriDexel,
+            ..SetupSimulationInput::new(&empty_doc, &resolved, &[])
+        })
         .unwrap();
 
         assert_eq!(sim.engine, SimEngineKind::TriDexel);
@@ -1257,30 +1301,29 @@ mod tests {
             rel_err * 100.0
         );
 
-        let sim_fine = run_setup_simulation_with_engine(
-            &SetupSimulationInput {
-                doc: &empty_doc,
-                setup: &resolved,
-                target_bodies: &[],
-                fixtures: &[],
-                operations: &[SimOperationInput {
-                    op_id: "op_slot",
-                    op_name: "Slot",
-                    tool: flat_6,
-                    fallback_spindle_rpm: 12_000.0,
-                    toolpath: &tp,
-                    intentional_edge_break_mm: 0.0,
-                }],
-                resolution: SimResolution::Fine,
-                kinematics: MachineKinematicsConfig::default(),
-                verify_config: SimVerificationConfig::default(),
-                initial_stock: None,
-                initial_raw_volume_mm3: None,
-                carried_over_from_setup: None,
-                cancel: None,
-            },
-            SimEngineKind::TriDexel,
-        )
+        let sim_fine = run_setup_simulation(&SetupSimulationInput {
+            doc: &empty_doc,
+            setup: &resolved,
+            target_bodies: &[],
+            fixtures: &[],
+            operations: &[SimOperationInput {
+                op_id: "op_slot",
+                op_name: "Slot",
+                tool: flat_6,
+                fallback_spindle_rpm: 12_000.0,
+                toolpath: &tp,
+                intentional_edge_break_mm: 0.0,
+            }],
+            resolution: SimResolution::Fine,
+            kinematics: MachineKinematicsConfig::default(),
+            verify_config: SimVerificationConfig::default(),
+            initial_stock: None,
+            initial_raw_volume_mm3: None,
+            carried_over_from_setup: None,
+            cancel: None,
+            engine: SimEngineKind::TriDexel,
+            ..SetupSimulationInput::new(&empty_doc, &resolved, &[])
+        })
         .unwrap();
         let fine_err = (sim_fine.removed_volume_mm3 - expected_removed).abs() / expected_removed;
         assert!(
@@ -1332,30 +1375,29 @@ mod tests {
         );
         let tp = b.finish();
 
-        let sim = run_setup_simulation_with_engine(
-            &SetupSimulationInput {
-                doc: &doc,
-                setup: &resolved,
-                target_bodies: &[],
-                fixtures: &[],
-                operations: &[SimOperationInput {
-                    op_id: "op_bad",
-                    op_name: "Bad Cut",
-                    tool: flat_6,
-                    fallback_spindle_rpm: 12_000.0,
-                    toolpath: &tp,
-                    intentional_edge_break_mm: 0.0,
-                }],
-                resolution: SimResolution::Standard,
-                kinematics: MachineKinematicsConfig::default(),
-                verify_config: SimVerificationConfig::default(),
-                initial_stock: None,
-                initial_raw_volume_mm3: None,
-                carried_over_from_setup: None,
-                cancel: None,
-            },
-            SimEngineKind::TriDexel,
-        )
+        let sim = run_setup_simulation(&SetupSimulationInput {
+            doc: &doc,
+            setup: &resolved,
+            target_bodies: &[],
+            fixtures: &[],
+            operations: &[SimOperationInput {
+                op_id: "op_bad",
+                op_name: "Bad Cut",
+                tool: flat_6,
+                fallback_spindle_rpm: 12_000.0,
+                toolpath: &tp,
+                intentional_edge_break_mm: 0.0,
+            }],
+            resolution: SimResolution::Standard,
+            kinematics: MachineKinematicsConfig::default(),
+            verify_config: SimVerificationConfig::default(),
+            initial_stock: None,
+            initial_raw_volume_mm3: None,
+            carried_over_from_setup: None,
+            cancel: None,
+            engine: SimEngineKind::TriDexel,
+            ..SetupSimulationInput::new(&doc, &resolved, &[])
+        })
         .unwrap();
 
         assert!(sim.has_critical_errors());
@@ -1449,6 +1491,7 @@ mod tests {
             initial_raw_volume_mm3: None,
             carried_over_from_setup: None,
             cancel: None,
+            ..SetupSimulationInput::new(&doc, &resolved, &[])
         })
         .unwrap();
 
@@ -1559,6 +1602,7 @@ mod tests {
             initial_raw_volume_mm3: None,
             carried_over_from_setup: None,
             cancel: None,
+            ..SetupSimulationInput::new(&doc, &resolved, &[])
         })
         .unwrap();
 
@@ -1653,6 +1697,7 @@ mod tests {
             initial_raw_volume_mm3: None,
             carried_over_from_setup: None,
             cancel: None,
+            ..SetupSimulationInput::new(&doc, &resolved, &[])
         })
         .unwrap();
 
@@ -1713,30 +1758,29 @@ mod tests {
         b.rotary_rapid_to(DVec3::new(10.0, 0.0, 30.0), 360.0);
         let tp = b.finish();
 
-        let sim = run_setup_simulation_with_engine(
-            &SetupSimulationInput {
-                doc: &doc,
-                setup: &resolved,
-                target_bodies: &[],
-                fixtures: &[],
-                operations: &[SimOperationInput {
-                    op_id: "op_turn",
-                    op_name: "Rotary Rough",
-                    tool: flat_6mm,
-                    fallback_spindle_rpm: 10_000.0,
-                    intentional_edge_break_mm: 0.0,
-                    toolpath: &tp,
-                }],
-                resolution: SimResolution::Standard,
-                kinematics: MachineKinematicsConfig::default(),
-                verify_config: SimVerificationConfig::default(),
-                initial_stock: None,
-                initial_raw_volume_mm3: None,
-                carried_over_from_setup: None,
-                cancel: None,
-            },
-            SimEngineKind::TriDexel,
-        )
+        let sim = run_setup_simulation(&SetupSimulationInput {
+            doc: &doc,
+            setup: &resolved,
+            target_bodies: &[],
+            fixtures: &[],
+            operations: &[SimOperationInput {
+                op_id: "op_turn",
+                op_name: "Rotary Rough",
+                tool: flat_6mm,
+                fallback_spindle_rpm: 10_000.0,
+                intentional_edge_break_mm: 0.0,
+                toolpath: &tp,
+            }],
+            resolution: SimResolution::Standard,
+            kinematics: MachineKinematicsConfig::default(),
+            verify_config: SimVerificationConfig::default(),
+            initial_stock: None,
+            initial_raw_volume_mm3: None,
+            carried_over_from_setup: None,
+            cancel: None,
+            engine: SimEngineKind::TriDexel,
+            ..SetupSimulationInput::new(&doc, &resolved, &[])
+        })
         .unwrap();
 
         let rep = sim
@@ -1899,56 +1943,54 @@ mod tests {
         b4.rotary_rapid_to(DVec3::new(20.0, 0.0, 26.0), 180.0);
         let tp4 = b4.finish();
 
-        let sim_hf = run_setup_simulation_with_engine(
-            &SetupSimulationInput {
-                doc: &doc,
-                setup: &resolved_3ax,
-                target_bodies: &[],
-                fixtures: &[],
-                operations: &[SimOperationInput {
-                    op_id: "op_3ax",
-                    op_name: "3-Axis Cut",
-                    tool: flat_6mm,
-                    fallback_spindle_rpm: 12_000.0,
-                    intentional_edge_break_mm: 0.0,
-                    toolpath: &tp3,
-                }],
-                resolution: SimResolution::Standard,
-                kinematics: MachineKinematicsConfig::default(),
-                verify_config: SimVerificationConfig::default(),
-                initial_stock: None,
-                initial_raw_volume_mm3: None,
-                carried_over_from_setup: None,
-                cancel: None,
-            },
-            SimEngineKind::Heightmap,
-        )
+        let sim_hf = run_setup_simulation(&SetupSimulationInput {
+            doc: &doc,
+            setup: &resolved_3ax,
+            target_bodies: &[],
+            fixtures: &[],
+            operations: &[SimOperationInput {
+                op_id: "op_3ax",
+                op_name: "3-Axis Cut",
+                tool: flat_6mm,
+                fallback_spindle_rpm: 12_000.0,
+                intentional_edge_break_mm: 0.0,
+                toolpath: &tp3,
+            }],
+            resolution: SimResolution::Standard,
+            kinematics: MachineKinematicsConfig::default(),
+            verify_config: SimVerificationConfig::default(),
+            initial_stock: None,
+            initial_raw_volume_mm3: None,
+            carried_over_from_setup: None,
+            cancel: None,
+            engine: SimEngineKind::Heightmap,
+            ..SetupSimulationInput::new(&doc, &resolved_3ax, &[])
+        })
         .unwrap();
 
-        let sim_td = run_setup_simulation_with_engine(
-            &SetupSimulationInput {
-                doc: &doc,
-                setup: &resolved_3ax,
-                target_bodies: &[],
-                fixtures: &[],
-                operations: &[SimOperationInput {
-                    op_id: "op_3ax",
-                    op_name: "3-Axis Cut",
-                    tool: flat_6mm,
-                    fallback_spindle_rpm: 12_000.0,
-                    intentional_edge_break_mm: 0.0,
-                    toolpath: &tp3,
-                }],
-                resolution: SimResolution::Standard,
-                kinematics: MachineKinematicsConfig::default(),
-                verify_config: SimVerificationConfig::default(),
-                initial_stock: None,
-                initial_raw_volume_mm3: None,
-                carried_over_from_setup: None,
-                cancel: None,
-            },
-            SimEngineKind::TriDexel,
-        )
+        let sim_td = run_setup_simulation(&SetupSimulationInput {
+            doc: &doc,
+            setup: &resolved_3ax,
+            target_bodies: &[],
+            fixtures: &[],
+            operations: &[SimOperationInput {
+                op_id: "op_3ax",
+                op_name: "3-Axis Cut",
+                tool: flat_6mm,
+                fallback_spindle_rpm: 12_000.0,
+                intentional_edge_break_mm: 0.0,
+                toolpath: &tp3,
+            }],
+            resolution: SimResolution::Standard,
+            kinematics: MachineKinematicsConfig::default(),
+            verify_config: SimVerificationConfig::default(),
+            initial_stock: None,
+            initial_raw_volume_mm3: None,
+            carried_over_from_setup: None,
+            cancel: None,
+            engine: SimEngineKind::TriDexel,
+            ..SetupSimulationInput::new(&doc, &resolved_3ax, &[])
+        })
         .unwrap();
 
         let sim_cyl = run_setup_simulation(&SetupSimulationInput {
@@ -1971,6 +2013,7 @@ mod tests {
             initial_raw_volume_mm3: None,
             carried_over_from_setup: None,
             cancel: None,
+            ..SetupSimulationInput::new(&doc, &resolved_4ax, &[])
         })
         .unwrap();
 
@@ -2124,19 +2167,20 @@ mod tests {
             initial_raw_volume_mm3: None,
             carried_over_from_setup: None,
             cancel: None,
+            ..SetupSimulationInput::new(&doc, &resolved, &[])
         };
 
-        let sim_cpu = run_setup_simulation_with_choice(
-            &input,
-            SimEngineKind::Heightmap,
-            SimComputeBackendChoice::Cpu,
-        )
+        let sim_cpu = run_setup_simulation(&SetupSimulationInput {
+            engine: SimEngineKind::Heightmap,
+            backend_choice: SimComputeBackendChoice::Cpu,
+            ..input
+        })
         .unwrap();
-        let sim_gpu = run_setup_simulation_with_choice(
-            &input,
-            SimEngineKind::Heightmap,
-            SimComputeBackendChoice::Gpu,
-        )
+        let sim_gpu = run_setup_simulation(&SetupSimulationInput {
+            engine: SimEngineKind::Heightmap,
+            backend_choice: SimComputeBackendChoice::Gpu,
+            ..input
+        })
         .unwrap();
 
         assert!(!sim_cpu.active_backend.is_gpu);
@@ -2328,18 +2372,19 @@ mod tests {
             initial_raw_volume_mm3: None,
             carried_over_from_setup: None,
             cancel: None,
+            ..SetupSimulationInput::new(&doc_shaft, &res_shaft, &[])
         };
-        let shaft_cpu = run_setup_simulation_with_choice(
-            &in_shaft,
-            SimEngineKind::Heightmap,
-            SimComputeBackendChoice::Cpu,
-        )
+        let shaft_cpu = run_setup_simulation(&SetupSimulationInput {
+            engine: SimEngineKind::Heightmap,
+            backend_choice: SimComputeBackendChoice::Cpu,
+            ..in_shaft
+        })
         .unwrap();
-        let shaft_gpu = run_setup_simulation_with_choice(
-            &in_shaft,
-            SimEngineKind::Heightmap,
-            SimComputeBackendChoice::Gpu,
-        )
+        let shaft_gpu = run_setup_simulation(&SetupSimulationInput {
+            engine: SimEngineKind::Heightmap,
+            backend_choice: SimComputeBackendChoice::Gpu,
+            ..in_shaft
+        })
         .unwrap();
         assert!(shaft_gpu.active_backend.is_gpu);
 
@@ -2462,18 +2507,19 @@ mod tests {
             initial_raw_volume_mm3: None,
             carried_over_from_setup: None,
             cancel: None,
+            ..SetupSimulationInput::new(&doc_helical, &res_4ax, &[])
         };
-        let sim4_cpu = run_setup_simulation_with_choice(
-            &in_4ax,
-            SimEngineKind::Heightmap,
-            SimComputeBackendChoice::Cpu,
-        )
+        let sim4_cpu = run_setup_simulation(&SetupSimulationInput {
+            engine: SimEngineKind::Heightmap,
+            backend_choice: SimComputeBackendChoice::Cpu,
+            ..in_4ax
+        })
         .unwrap();
-        let sim4_gpu = run_setup_simulation_with_choice(
-            &in_4ax,
-            SimEngineKind::Heightmap,
-            SimComputeBackendChoice::Gpu,
-        )
+        let sim4_gpu = run_setup_simulation(&SetupSimulationInput {
+            engine: SimEngineKind::Heightmap,
+            backend_choice: SimComputeBackendChoice::Gpu,
+            ..in_4ax
+        })
         .unwrap();
         assert!(sim4_gpu.active_backend.is_gpu);
 
@@ -2527,24 +2573,23 @@ mod tests {
         let res_td = setup_td
             .resolve(&empty_doc, DisplayUnit::Millimeter)
             .unwrap();
-        let sim_td = run_setup_simulation_with_choice(
-            &SetupSimulationInput {
-                doc: &empty_doc,
-                setup: &res_td,
-                target_bodies: &[],
-                fixtures: &[],
-                operations: &[],
-                resolution: SimResolution::Standard,
-                kinematics: MachineKinematicsConfig::default(),
-                verify_config: SimVerificationConfig::default(),
-                initial_stock: None,
-                initial_raw_volume_mm3: None,
-                carried_over_from_setup: None,
-                cancel: None,
-            },
-            SimEngineKind::TriDexel,
-            SimComputeBackendChoice::Auto,
-        )
+        let sim_td = run_setup_simulation(&SetupSimulationInput {
+            doc: &empty_doc,
+            setup: &res_td,
+            target_bodies: &[],
+            fixtures: &[],
+            operations: &[],
+            resolution: SimResolution::Standard,
+            kinematics: MachineKinematicsConfig::default(),
+            verify_config: SimVerificationConfig::default(),
+            initial_stock: None,
+            initial_raw_volume_mm3: None,
+            carried_over_from_setup: None,
+            cancel: None,
+            engine: SimEngineKind::TriDexel,
+            backend_choice: SimComputeBackendChoice::Auto,
+            ..SetupSimulationInput::new(&empty_doc, &res_td, &[])
+        })
         .unwrap();
         assert!(sim_td.active_backend.is_gpu);
     }
@@ -2819,18 +2864,19 @@ mod tests {
                 initial_raw_volume_mm3: None,
                 carried_over_from_setup: None,
                 cancel: None,
+                ..SetupSimulationInput::new(&doc, &resolved, &[])
             };
-            let sim_cpu = run_setup_simulation_with_choice(
-                &input,
-                SimEngineKind::TriDexel,
-                SimComputeBackendChoice::Cpu,
-            )
+            let sim_cpu = run_setup_simulation(&SetupSimulationInput {
+                engine: SimEngineKind::TriDexel,
+                backend_choice: SimComputeBackendChoice::Cpu,
+                ..input
+            })
             .unwrap();
-            let sim_gpu = run_setup_simulation_with_choice(
-                &input,
-                SimEngineKind::TriDexel,
-                SimComputeBackendChoice::Gpu,
-            )
+            let sim_gpu = run_setup_simulation(&SetupSimulationInput {
+                engine: SimEngineKind::TriDexel,
+                backend_choice: SimComputeBackendChoice::Gpu,
+                ..input
+            })
             .unwrap();
             assert!(!sim_cpu.active_backend.is_gpu);
             assert!(sim_gpu.active_backend.is_gpu);
@@ -2939,18 +2985,19 @@ mod tests {
                 initial_raw_volume_mm3: None,
                 carried_over_from_setup: None,
                 cancel: None,
+                ..SetupSimulationInput::new(&doc, &resolved, &[])
             };
-            let sim_cpu = run_setup_simulation_with_choice(
-                &input,
-                SimEngineKind::TriDexel,
-                SimComputeBackendChoice::Cpu,
-            )
+            let sim_cpu = run_setup_simulation(&SetupSimulationInput {
+                engine: SimEngineKind::TriDexel,
+                backend_choice: SimComputeBackendChoice::Cpu,
+                ..input
+            })
             .unwrap();
-            let sim_gpu = run_setup_simulation_with_choice(
-                &input,
-                SimEngineKind::TriDexel,
-                SimComputeBackendChoice::Gpu,
-            )
+            let sim_gpu = run_setup_simulation(&SetupSimulationInput {
+                engine: SimEngineKind::TriDexel,
+                backend_choice: SimComputeBackendChoice::Gpu,
+                ..input
+            })
             .unwrap();
             assert!(sim_gpu.active_backend.is_gpu);
 
@@ -3088,18 +3135,19 @@ mod tests {
                 initial_raw_volume_mm3: None,
                 carried_over_from_setup: None,
                 cancel: None,
+                ..SetupSimulationInput::new(&empty_doc, &resolved, &[])
             };
-            let sim_cpu = run_setup_simulation_with_choice(
-                &input,
-                SimEngineKind::TriDexel,
-                SimComputeBackendChoice::Cpu,
-            )
+            let sim_cpu = run_setup_simulation(&SetupSimulationInput {
+                engine: SimEngineKind::TriDexel,
+                backend_choice: SimComputeBackendChoice::Cpu,
+                ..input
+            })
             .unwrap();
-            let sim_gpu = run_setup_simulation_with_choice(
-                &input,
-                SimEngineKind::TriDexel,
-                SimComputeBackendChoice::Gpu,
-            )
+            let sim_gpu = run_setup_simulation(&SetupSimulationInput {
+                engine: SimEngineKind::TriDexel,
+                backend_choice: SimComputeBackendChoice::Gpu,
+                ..input
+            })
             .unwrap();
             assert!(sim_gpu.active_backend.is_gpu);
 
@@ -3190,18 +3238,19 @@ mod tests {
             initial_raw_volume_mm3: None,
             carried_over_from_setup: None,
             cancel: None,
+            ..SetupSimulationInput::new(&doc, &resolved, &[])
         };
-        let cpu_td = run_setup_simulation_with_choice(
-            &input_right,
-            SimEngineKind::TriDexel,
-            SimComputeBackendChoice::Cpu,
-        )
+        let cpu_td = run_setup_simulation(&SetupSimulationInput {
+            engine: SimEngineKind::TriDexel,
+            backend_choice: SimComputeBackendChoice::Cpu,
+            ..input_right
+        })
         .unwrap();
-        let gpu_td = run_setup_simulation_with_choice(
-            &input_right,
-            SimEngineKind::TriDexel,
-            SimComputeBackendChoice::Gpu,
-        )
+        let gpu_td = run_setup_simulation(&SetupSimulationInput {
+            engine: SimEngineKind::TriDexel,
+            backend_choice: SimComputeBackendChoice::Gpu,
+            ..input_right
+        })
         .unwrap();
         assert!(gpu_td.active_backend.is_gpu);
 
@@ -3266,18 +3315,19 @@ mod tests {
             initial_raw_volume_mm3: None,
             carried_over_from_setup: None,
             cancel: None,
+            ..SetupSimulationInput::new(&doc, &res_cyl, &[])
         };
-        let cpu_cyl = run_setup_simulation_with_choice(
-            &in_cyl,
-            SimEngineKind::Heightmap,
-            SimComputeBackendChoice::Cpu,
-        )
+        let cpu_cyl = run_setup_simulation(&SetupSimulationInput {
+            engine: SimEngineKind::Heightmap,
+            backend_choice: SimComputeBackendChoice::Cpu,
+            ..in_cyl
+        })
         .unwrap();
-        let gpu_cyl = run_setup_simulation_with_choice(
-            &in_cyl,
-            SimEngineKind::Heightmap,
-            SimComputeBackendChoice::Gpu,
-        )
+        let gpu_cyl = run_setup_simulation(&SetupSimulationInput {
+            engine: SimEngineKind::Heightmap,
+            backend_choice: SimComputeBackendChoice::Gpu,
+            ..in_cyl
+        })
         .unwrap();
         assert!(gpu_cyl.active_backend.is_gpu);
         let cc = cpu_cyl.as_cylindrical().unwrap();
@@ -3407,12 +3457,13 @@ mod tests {
                 initial_raw_volume_mm3: None,
                 carried_over_from_setup: None,
                 cancel: None,
+                ..SetupSimulationInput::new(&doc, &resolved, &[])
             };
-            let sim = run_setup_simulation_with_choice(
-                &input,
-                SimEngineKind::Heightmap,
-                SimComputeBackendChoice::Auto,
-            )
+            let sim = run_setup_simulation(&SetupSimulationInput {
+                engine: SimEngineKind::Heightmap,
+                backend_choice: SimComputeBackendChoice::Auto,
+                ..input
+            })
             .unwrap();
             assert_eq!(
                 sim.critical_error_count(),
@@ -3550,12 +3601,13 @@ mod tests {
                 initial_raw_volume_mm3: None,
                 carried_over_from_setup: None,
                 cancel: None,
+                ..SetupSimulationInput::new(&doc, &resolved, &[])
             };
-            let sim = run_setup_simulation_with_choice(
-                &input,
-                SimEngineKind::Heightmap,
-                SimComputeBackendChoice::Auto,
-            )
+            let sim = run_setup_simulation(&SetupSimulationInput {
+                engine: SimEngineKind::Heightmap,
+                backend_choice: SimComputeBackendChoice::Auto,
+                ..input
+            })
             .unwrap();
             assert_eq!(
                 sim.critical_error_count(),
@@ -3731,13 +3783,14 @@ mod tests {
             initial_raw_volume_mm3: None,
             carried_over_from_setup: None,
             cancel: None,
+            ..SetupSimulationInput::new(&doc, &resolved, &[])
         };
 
-        let cpu = run_setup_simulation_with_choice(
-            &input,
-            SimEngineKind::Heightmap,
-            SimComputeBackendChoice::Cpu,
-        )
+        let cpu = run_setup_simulation(&SetupSimulationInput {
+            engine: SimEngineKind::Heightmap,
+            backend_choice: SimComputeBackendChoice::Cpu,
+            ..input
+        })
         .unwrap();
         assert_eq!(cpu.critical_error_count(), 0);
         let rc = cpu
@@ -3767,11 +3820,11 @@ mod tests {
 
         #[cfg(feature = "gpu-compute")]
         if GpuSimContext::shared_headless().is_some() {
-            let gpu = run_setup_simulation_with_choice(
-                &input,
-                SimEngineKind::Heightmap,
-                SimComputeBackendChoice::Gpu,
-            )
+            let gpu = run_setup_simulation(&SetupSimulationInput {
+                engine: SimEngineKind::Heightmap,
+                backend_choice: SimComputeBackendChoice::Gpu,
+                ..input
+            })
             .unwrap();
             assert!(gpu.active_backend.is_gpu);
             assert_eq!(gpu.critical_error_count(), 0);
@@ -3900,13 +3953,14 @@ mod tests {
             initial_raw_volume_mm3: None,
             carried_over_from_setup: None,
             cancel: None,
+            ..SetupSimulationInput::new(&doc, &resolved, &[])
         };
 
-        let cpu = run_setup_simulation_with_choice(
-            &input,
-            SimEngineKind::TriDexel,
-            SimComputeBackendChoice::Cpu,
-        )
+        let cpu = run_setup_simulation(&SetupSimulationInput {
+            engine: SimEngineKind::TriDexel,
+            backend_choice: SimComputeBackendChoice::Cpu,
+            ..input
+        })
         .unwrap();
         assert_eq!(cpu.engine, SimEngineKind::TriDexel);
         assert!(cpu.is_rotary());
@@ -3950,11 +4004,11 @@ mod tests {
 
         #[cfg(feature = "gpu-compute")]
         if GpuSimContext::shared_headless().is_some() {
-            let gpu = run_setup_simulation_with_choice(
-                &input,
-                SimEngineKind::TriDexel,
-                SimComputeBackendChoice::Gpu,
-            )
+            let gpu = run_setup_simulation(&SetupSimulationInput {
+                engine: SimEngineKind::TriDexel,
+                backend_choice: SimComputeBackendChoice::Gpu,
+                ..input
+            })
             .unwrap();
             assert!(gpu.active_backend.is_gpu);
             assert_eq!(gpu.engine, SimEngineKind::TriDexel);
@@ -4055,14 +4109,15 @@ mod tests {
             initial_raw_volume_mm3: None,
             carried_over_from_setup: None,
             cancel: None,
+            ..SetupSimulationInput::new(&doc, &resolved, &[])
         };
 
-        let _res = run_setup_simulation_with_choice_and_progress(
-            &input,
-            SimEngineKind::Heightmap,
-            SimComputeBackendChoice::Cpu,
-            Some(tracker.full_scope()),
-        )
+        let _res = run_setup_simulation(&SetupSimulationInput {
+            engine: SimEngineKind::Heightmap,
+            backend_choice: SimComputeBackendChoice::Cpu,
+            progress: Some(tracker.full_scope()),
+            ..input
+        })
         .unwrap();
 
         let final_snap = tracker.snapshot();
@@ -4095,12 +4150,12 @@ mod tests {
             cancel: Some(&cancel),
             ..input
         };
-        let err = run_setup_simulation_with_choice_and_progress(
-            &cancel_input,
-            SimEngineKind::Heightmap,
-            SimComputeBackendChoice::Cpu,
-            Some(cancel_tracker.full_scope()),
-        )
+        let err = run_setup_simulation(&SetupSimulationInput {
+            engine: SimEngineKind::Heightmap,
+            backend_choice: SimComputeBackendChoice::Cpu,
+            progress: Some(cancel_tracker.full_scope()),
+            ..cancel_input
+        })
         .unwrap_err();
         assert!(matches!(err, SimError::Cancelled));
         assert!(cancel_tracker.snapshot().percent_rounded() < 100);
@@ -4171,15 +4226,22 @@ mod tests {
             initial_raw_volume_mm3: None,
             carried_over_from_setup: None,
             cancel: None,
+            ..SetupSimulationInput::new(&doc, &resolved, &[])
         };
 
         for engine in [SimEngineKind::Heightmap, SimEngineKind::TriDexel] {
-            let cpu =
-                run_setup_simulation_with_choice(&input, engine, SimComputeBackendChoice::Cpu)
-                    .unwrap();
-            let gpu =
-                run_setup_simulation_with_choice(&input, engine, SimComputeBackendChoice::Gpu)
-                    .unwrap();
+            let cpu = run_setup_simulation(&SetupSimulationInput {
+                engine,
+                backend_choice: SimComputeBackendChoice::Cpu,
+                ..input
+            })
+            .unwrap();
+            let gpu = run_setup_simulation(&SetupSimulationInput {
+                engine,
+                backend_choice: SimComputeBackendChoice::Gpu,
+                ..input
+            })
+            .unwrap();
             assert!(gpu.active_backend.is_gpu);
 
             let vol_err = (gpu.remaining_stock_volume_mm3 - cpu.remaining_stock_volume_mm3).abs()
@@ -4296,10 +4358,11 @@ mod tests {
             initial_raw_volume_mm3: None,
             carried_over_from_setup: None,
             cancel: None,
+            ..SetupSimulationInput::new(&doc, &resolved, &[])
         };
 
         for engine in [SimEngineKind::Heightmap, SimEngineKind::TriDexel] {
-            let res = run_setup_simulation_with_engine(&input, engine).unwrap();
+            let res = run_setup_simulation(&SetupSimulationInput { engine, ..input }).unwrap();
             let rep_before = res.compute_error_report_at_tolerance(0.05).unwrap();
             let mesh_crisp = res.extract_stock_mesh_with_options(
                 &res.final_stock,
